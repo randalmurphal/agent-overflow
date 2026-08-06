@@ -56,6 +56,21 @@ gated on "no glide running or armed"), and `timelineRowUiPrune.ts`
 `MessageTimeline` keeps only the thin `$effect` bodies that call into
 them.
 
+`ChatView.svelte` is split the same way: the edit-and-resend flow (stage
+machine, confirm gate, the destructive RPC and every failure branch)
+lives in `editResendFlow.svelte.ts`, and the component keeps prop wiring,
+two invalidation `$effect` bodies and the confirm dialog's markup.
+
+On saga success the flow lands the pane at the thread's new tail with
+bottom-follow engaged, through the controller adapter's optional
+`stickToLatest` (MessageTimeline maps it to `paging.jumpToLatest`, which
+reconciles a windowed tail before pinning). This is the one deliberate
+divergence from "a send never yanks a scrolled-up reader": the height
+the reader was parked at measured rows the revert just destroyed, and
+they asked for this message to become the tail. Success only — every
+failure branch and the mid-RPC-thread-switch case leave the scroll
+untouched.
+
 ## Row Contract
 
 Every row rendered inside `<TimelineVirtualizer>`:
@@ -71,6 +86,46 @@ Every row rendered inside `<TimelineVirtualizer>`:
 - Survives windowing remount. Row-local state disappears when scrolled out
   of the rendered window, so remembered state belongs in per-pane registries
   keyed by `item.id`, `payloadId`, or `groupKey`.
+- May be dimmed by `MessageTimeline`'s `pendingCutAfter` prop while an
+  edit-and-resend saga's revert is actually in flight (rows strictly after
+  the anchor in display order get `chat-row-pending-cut`). That is a CLASS
+  toggle on the existing row wrapper and nothing else: the timeline is not
+  truncated until the backend's `user_message:reverted` lands, so a row must
+  not change DOM shape or write per-row state on the strength of a pending
+  destruction. The base `transition-opacity` on those wrappers is
+  unconditional on purpose — a CSS transition needs the property present
+  BEFORE the value changes, so gating the class on `pendingCutAfter` would
+  make the dim snap in and out instead of fading.
+
+The user row's body swap to a live editor (`UserMessageEditor.svelte`) is
+the one deliberate exception to "keep the outer shell stable", and it is
+scoped: the swap happens only through `preservePaneScrollAnchorAt`, which
+holds the bubble's top edge across a height change the reader is looking
+straight at. Nothing else may swap a row's body.
+
+Because the anchor row is virtualized and CAN remount mid-edit,
+everything the editor must remember lives on the `UserMessageEditSession`
+that `ChatView`'s flow (`editResendFlow.svelte.ts`) owns — the local
+draft store, the seed the dirty check compares against, the session's
+upload id set, and the `ui` object (focus intent, caret, open discard
+confirm, inline command error). None of it may become row-local `$state`:
+a remount would silently reset it, and `ui` is one mutable object
+precisely because the flow rebuilds the session on every stage
+transition.
+
+The editor can also outlive a failed saga. When the destructive RPC dies
+with the WIRE (rather than being refused), the flow returns to its editor
+holding the edit instead of voiding: the backend runs to completion
+regardless of the lost answer, and the anchor row is the witness for which
+way it went. Surviving the reconnect's event replay means nothing
+committed, so the user just sends again; disappearing means something did,
+and the ordinary anchor-removed invalidation voids the editor. The one
+thing every later exit of that flow must skip is deleting the session's
+uploaded attachment records — a resend that actually landed, or the
+backend's merged crash-copy draft row, may reference those ids, and the
+anchor is a stale witness until the resync replays what the socket lost,
+so an outcome-unknown flow never reclaims (an orphaned record is
+invisible; deleting a referenced one corrupts a visible message).
 
 Use these pane registries instead of local row state:
 

@@ -64,6 +64,7 @@ export {
     ReleaseSummary,
     RemoteEndpointSummary,
     RetainedWorktree,
+    RevertAndResendOptions,
     SendDiffReviewCommentsInput,
     SendMessageOptions,
     SourceDiffReview,

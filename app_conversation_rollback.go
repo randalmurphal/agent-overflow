@@ -22,10 +22,19 @@ import (
 // (provider rollback → draft upsert → SQLite truncate). Event emission
 // stays with the caller.
 type rollbackConversationLockedArgs struct {
-	thread      store.Thread
-	userItem    store.Item
-	anchor      store.MessageAnchor
-	promptDraft store.ThreadDraft
+	thread   store.Thread
+	userItem store.Item
+	anchor   store.MessageAnchor
+	// promptDraft is the composer draft that replaces the rolled-back
+	// prompt, upserted BEFORE the truncation so the text is never
+	// homeless (see the call site below).
+	//
+	// nil means the CALLER owns the draft row and this tail must not
+	// write it at all — the edit-and-resend saga parks its own crash copy
+	// there before calling in, and restoring the old prompt would clobber
+	// it. Restoring a composer the user is about to replace would be
+	// meaningless there anyway.
+	promptDraft *store.ThreadDraft
 	// errorPrefix scopes wrapped errors so the calling surface is
 	// identifiable in logs and toasts.
 	errorPrefix string
@@ -45,9 +54,11 @@ type rollbackConversationLockedArgs struct {
 	clearRunningBackgroundTasks bool
 }
 
-// rollbackConversationLocked is the destructive tail of a conversation
-// rollback (revert-on-interrupt today; fork-from-message shares the
-// provider-slice helpers below but clones instead of truncating). The
+// rollbackConversationLocked is the destructive tail shared by the two
+// entry points that mutate the thread in place: revert-on-interrupt (the
+// Stop/Esc un-send) and the edit-and-resend saga
+// (RevertConversationAndResendMessage). Fork-from-message shares the
+// provider-slice helpers below but clones instead of truncating. The
 // caller is responsible for the per-thread action lock, loading the
 // user item + anchor, projecting the composer draft via
 // composerdraft.FromUserItem, AND emitting whatever post-rollback event
@@ -67,7 +78,8 @@ type rollbackConversationLockedArgs struct {
 //     delivered; AO only mirrors the cut in its own timeline + draft.
 //     - Claude stops the provider subprocess first, then writes a
 //     sliced session file.
-//  3. UpsertThreadDraft restores the composer draft.
+//  3. UpsertThreadDraft restores the composer draft — skipped entirely
+//     when the caller owns the draft row (promptDraft nil).
 //  4. SQLite truncation at the provider rollback's granularity: Codex
 //     deletes whole turns from the user-item's turnIndex (inclusive,
 //     matching thread/fork's turn-boundary cut); Claude deletes from
@@ -138,8 +150,12 @@ func (a *App) rollbackConversationLocked(args rollbackConversationLockedArgs) (k
 	// anchor, and a retry converges — the provider rollback re-runs
 	// against the already-cut transcript (the already-cut detector clones
 	// it whole) and this upsert is idempotent (round-4 review, CT4-4).
-	if err := a.store.UpsertThreadDraft(args.promptDraft); err != nil {
-		return nil, fmt.Errorf("%s: restore prompt draft: %w", args.errorPrefix, err)
+	// A nil promptDraft means the caller already put a durable copy in
+	// that row itself and owns settling it.
+	if args.promptDraft != nil {
+		if err := a.store.UpsertThreadDraft(*args.promptDraft); err != nil {
+			return nil, fmt.Errorf("%s: restore prompt draft: %w", args.errorPrefix, err)
+		}
 	}
 
 	// Truncation granularity must match the provider rollback above. Codex

@@ -2,6 +2,12 @@ import type { Attachment } from '../types/attachment';
 import type { Draft, TerminalChip } from '../types/draft';
 import type { SourceProposedPlan } from '../types/models';
 import {
+  ClearDraft,
+  GetDraft,
+  ListAttachments,
+  SaveDraft,
+} from './bindings';
+import {
   cloneDraftSnapshot,
   draftSnapshotMatchesPersistedState,
   forgetDraftSnapshot,
@@ -13,19 +19,30 @@ import {
   waitForActiveDraftSaves,
   type ComposerDraftSnapshot,
 } from './composerDraftSnapshots';
-import {
-  ClearDraft,
-  GetDraft,
-  ListAttachments,
-  SaveDraft,
-} from './bindings';
+import { addToast } from './toast.svelte';
 import { errString } from '../utils/errors';
 import { ensureImagePlaceholders } from '../utils/imagePlaceholders';
 
 const DEFAULT_DEBOUNCE_MS = 500;
 
-interface DraftStoreOptions {
+export interface DraftStoreOptions {
   debounceMs?: number;
+  /**
+   * Where mutations go. Fixed for the store's lifetime — a store never
+   * changes modes, so no call sequence can leave persisted state behind
+   * from a mode it has since left, and `persists` below is the one guard
+   * every persistence-touching function opens with.
+   *
+   * - `'backend'` (default) — the thread's draft row plus the shared
+   *   snapshot registry. This is the composer.
+   * - `'none'` — purely local state. No RPC, no registry, no ClearDraft;
+   *   `hasPendingSave` stays false and nothing hydrates. Seed it with
+   *   `seedLocalSnapshot`. For surfaces that edit a COPY of a message and
+   *   must not touch the draft the thread's real composer is holding —
+   *   one SaveDraft or one registry write from such a store would
+   *   overwrite work the user can see.
+   */
+  persistence?: 'backend' | 'none';
 }
 
 export function resetComposerDraftSnapshotsForTest(): void {
@@ -39,6 +56,7 @@ export function resetComposerDraftSnapshotsForTest(): void {
  */
 export function createComposerDraftStore(options: DraftStoreOptions = {}) {
   const debounceMs = options.debounceMs ?? DEFAULT_DEBOUNCE_MS;
+  const persists = options.persistence !== 'none';
 
   let threadId: string | null = $state(null);
   let content: string = $state('');
@@ -50,12 +68,17 @@ export function createComposerDraftStore(options: DraftStoreOptions = {}) {
   // afterwards so subsequent turns in this thread don't re-mark.
   let sourceProposedPlan: SourceProposedPlan | null = $state(null);
   let hydrating: boolean = $state(false);
-  let error: string | null = $state(null);
 
   let debounceTimer: ReturnType<typeof setTimeout> | null = null;
   let pendingSaveGeneration = 0;
   let switchGeneration = 0;
   let hasPendingSave: boolean = $state(false);
+  // Edge-trigger for the fire-and-forget save paths (debounce, flush,
+  // switch-flush): the first failure after a working period toasts, the
+  // retries a failing backend provokes every debounce tick do not. Reset
+  // by any successful save. The awaited paths (restoreDraftFor) rethrow
+  // instead — their callers own the message.
+  let saveFailureSurfaced = false;
   let optimisticRestoredDraft: { threadId: string; snapshot: ComposerDraftSnapshot } | null = null;
   let optimisticRestoredDraftDirty = false;
 
@@ -66,72 +89,130 @@ export function createComposerDraftStore(options: DraftStoreOptions = {}) {
     }
   }
 
+  // ---- persistence ----
+  //
+  // Every RPC and every write to the shared snapshot registry passes
+  // through one of the functions below, and each opens with the same
+  // `persists` guard. That is the ONE mechanism that makes a local store
+  // inert: there is no second place to consult, and a new call site is
+  // inert by construction rather than by remembering to add a check.
+
+  function rememberSnapshot(id: string, snapshot: ComposerDraftSnapshot): void {
+    if (!persists) return;
+    rememberDraftSnapshot(id, snapshot);
+  }
+
+  function forgetSnapshot(id: string): void {
+    if (!persists) return;
+    forgetDraftSnapshot(id);
+  }
+
+  function peekSnapshot(id: string): ComposerDraftSnapshot | undefined {
+    if (!persists) return undefined;
+    return getRememberedDraftSnapshotForStore(id);
+  }
+
+  /**
+   * Drop the durable row. Fire-and-forget by design — the send it follows
+   * has already succeeded and nothing the user sees waits on the delete —
+   * but a failure leaves a stale draft that will reappear on the next
+   * thread open, so it is logged rather than swallowed.
+   */
+  function clearPersistedDraft(id: string): void {
+    if (!persists) return;
+    void ClearDraft(id).catch((err) => {
+      console.error(`Failed to clear the persisted draft for thread ${id}:`, err);
+    });
+  }
+
   function clearLocalSnapshotIfCurrent(id: string, savedSnapshot: ComposerDraftSnapshot): void {
+    if (!persists) return;
     forgetDraftSnapshotIfMatches(id, savedSnapshot);
     if (threadId === id && draftSnapshotMatchesPersistedState(buildSnapshot(), savedSnapshot)) {
       hasPendingSave = false;
     }
   }
 
-  async function saveSnapshot(id: string, snapshot: ComposerDraftSnapshot, failureLabel: string): Promise<void> {
+  /**
+   * Read the persisted draft row and its attachment records as a snapshot.
+   * The image-placeholder normalization is part of the read: a row whose
+   * content lost a `[Image #n]` marker must come back with it, or the
+   * attachment renders as an invisible extra on the next send.
+   *
+   * Rejects with the underlying error — the callers decide what a failed
+   * read means for them.
+   */
+  async function fetchPersistedSnapshot(id: string): Promise<ComposerDraftSnapshot> {
+    const [draft, records] = await Promise.all([
+      GetDraft(id) as Promise<Draft>,
+      ListAttachments(id).then((rows) => (rows as Attachment[] | null) ?? []),
+    ]);
+    const attachmentIds = new Set(draft.attachmentIds ?? []);
+    const attachments = records.filter((record) => attachmentIds.has(record.id));
+    return {
+      content: ensureImagePlaceholders(draft.content ?? '', attachments),
+      attachments,
+      terminalChips: draft.terminalChips ?? [],
+      sourceProposedPlan: draft.sourceProposedPlan ?? null,
+    };
+  }
+
+  async function saveSnapshot(id: string, snapshot: ComposerDraftSnapshot): Promise<void> {
+    if (!persists) return;
     try {
       const savePromise = SaveDraft(
         id,
         snapshot.content,
-        snapshot.attachments.map((a) => a.id),
+        snapshot.attachments.map((attachment) => attachment.id),
         snapshot.terminalChips,
         snapshot.sourceProposedPlan,
       );
       trackActiveDraftSave(id, savePromise);
       await savePromise;
       clearLocalSnapshotIfCurrent(id, snapshot);
+      saveFailureSurfaced = false;
     } catch (err) {
-      rememberDraftSnapshot(id, snapshot);
+      rememberSnapshot(id, snapshot);
       if (threadId === id && draftSnapshotMatchesPersistedState(buildSnapshot(), snapshot)) {
         hasPendingSave = true;
       }
-      error = `${failureLabel}: ${errString(err)}`;
       throw err;
     }
   }
 
-  async function loadAttachments(id: string): Promise<Attachment[]> {
-    const records = (await ListAttachments(id)) as Attachment[] | null;
-    return records ?? [];
+  // The one surfacing point for the paths that swallow saveSnapshot's
+  // rejection. The text itself is safe either way (remembered snapshot +
+  // `hasPendingSave` retry machinery) — this is about the user KNOWING
+  // their draft is not durably saved, instead of finding out on the next
+  // restart.
+  function surfaceSwallowedSaveFailure(failureLabel: string, err: unknown): void {
+    if (saveFailureSurfaced) return;
+    saveFailureSurfaced = true;
+    addToast('error', `${failureLabel}: ${errString(err)}`);
   }
 
   async function hydrate(id: string, expectedGeneration: number): Promise<void> {
+    if (!persists) return;
     hydrating = true;
-    error = null;
-    const cached = getRememberedDraftSnapshotForStore(id);
+    const cached = peekSnapshot(id);
     if (cached) {
       applySnapshot(cached);
       hasPendingSave = true;
     }
     try {
-      const [draft, records] = await Promise.all([
-        GetDraft(id) as Promise<Draft>,
-        loadAttachments(id),
-      ]);
+      const loaded = await fetchPersistedSnapshot(id);
       if (threadId !== id || switchGeneration !== expectedGeneration) return; // thread switched while loading
-      const currentCached = getRememberedDraftSnapshotForStore(id);
+      const currentCached = peekSnapshot(id);
       if (currentCached) {
         applySnapshot(currentCached);
         return;
       }
-
-      const attachmentIds = new Set(draft.attachmentIds ?? []);
-      const draftAttachments = records.filter((rec) => attachmentIds.has(rec.id));
-      const snapshot: ComposerDraftSnapshot = {
-        content: ensureImagePlaceholders(draft.content ?? '', draftAttachments),
-        attachments: draftAttachments,
-        terminalChips: draft.terminalChips ?? [],
-        sourceProposedPlan: draft.sourceProposedPlan ?? null,
-      };
-      applySnapshot(snapshot);
+      applySnapshot(loaded);
     } catch (err) {
       if (threadId === id && switchGeneration === expectedGeneration) {
-        error = `Failed to load draft: ${errString(err)}`;
+        // The composer renders empty over a row that still exists — say
+        // so, or a draft the user KNOWS they left here reads as lost.
+        addToast('error', `Failed to load draft: ${errString(err)}`);
       }
     } finally {
       if (threadId === id && switchGeneration === expectedGeneration) {
@@ -141,7 +222,7 @@ export function createComposerDraftStore(options: DraftStoreOptions = {}) {
   }
 
   function queueSave(): void {
-    if (!threadId) return;
+    if (!threadId || !persists) return;
     clearDebounce();
     const id = threadId;
     const generation = ++pendingSaveGeneration;
@@ -151,28 +232,28 @@ export function createComposerDraftStore(options: DraftStoreOptions = {}) {
       debounceTimer = null;
       if (threadId !== id || generation !== pendingSaveGeneration) return;
       try {
-        await saveSnapshot(id, snapshot, 'Failed to save draft');
+        await saveSnapshot(id, snapshot);
         if (threadId === id && generation === pendingSaveGeneration) {
           hasPendingSave = false;
         }
-      } catch {
-        // saveSnapshot already recorded the user-facing error and retained
-        // the unsaved local snapshot.
+      } catch (err) {
+        // The unsaved snapshot is retained; surfacing is edge-triggered
+        // so a failing backend doesn't toast on every debounce tick.
+        surfaceSwallowedSaveFailure('Failed to save draft', err);
       }
     }, debounceMs);
   }
 
   async function flush(): Promise<void> {
-    if (!threadId) return;
+    if (!threadId || !persists) return;
     clearDebounce();
     const id = threadId;
     const snapshot = buildSnapshot();
     try {
-      await saveSnapshot(id, snapshot, 'Failed to save draft');
+      await saveSnapshot(id, snapshot);
       hasPendingSave = false;
-    } catch {
-      // saveSnapshot already recorded the user-facing error and retained
-      // the unsaved local snapshot.
+    } catch (err) {
+      surfaceSwallowedSaveFailure('Failed to save draft', err);
     }
   }
 
@@ -218,9 +299,11 @@ export function createComposerDraftStore(options: DraftStoreOptions = {}) {
     optimisticRestoredDraftDirty = false;
   }
 
+  // Called on every mutation, so it checks `persists` itself rather than
+  // building a snapshot per keystroke for `rememberSnapshot` to discard.
   function rememberCurrentDraft(): void {
-    if (!threadId) return;
-    rememberDraftSnapshot(threadId, buildSnapshot());
+    if (!persists || !threadId) return;
+    rememberSnapshot(threadId, buildSnapshot());
   }
 
   async function setThread(id: string | null): Promise<void> {
@@ -231,10 +314,10 @@ export function createComposerDraftStore(options: DraftStoreOptions = {}) {
     pendingSaveGeneration++;
     const generation = ++switchGeneration;
     if (previousId && previousSnapshot) {
-      rememberDraftSnapshot(previousId, previousSnapshot);
-      void saveSnapshot(previousId, previousSnapshot, 'Failed to save draft')
-        .catch(() => {
-          // saveSnapshot keeps the local snapshot and error state.
+      rememberSnapshot(previousId, previousSnapshot);
+      void saveSnapshot(previousId, previousSnapshot)
+        .catch((err: unknown) => {
+          surfaceSwallowedSaveFailure('Failed to save draft', err);
         });
     }
     threadId = id;
@@ -244,9 +327,8 @@ export function createComposerDraftStore(options: DraftStoreOptions = {}) {
     sourceProposedPlan = null;
     clearOptimisticRestoredDraftMarker();
     hasPendingSave = false;
-    error = null;
     hydrating = false;
-    if (id) {
+    if (id && persists) {
       await hydrate(id, generation);
       if (generation !== switchGeneration || threadId !== id) return;
     }
@@ -259,10 +341,12 @@ export function createComposerDraftStore(options: DraftStoreOptions = {}) {
     switchGeneration++;
     threadId = id;
     hydrating = false;
-    error = null;
     clearOptimisticRestoredDraftMarker();
-    rememberDraftSnapshot(id, buildSnapshot());
-    if (content.trim() || attachments.length > 0 || terminalChips.length > 0 || sourceProposedPlan) {
+    rememberSnapshot(id, buildSnapshot());
+    if (
+      persists
+      && (content.trim() || attachments.length > 0 || terminalChips.length > 0 || sourceProposedPlan)
+    ) {
       hasPendingSave = true;
       queueSave();
     }
@@ -270,6 +354,9 @@ export function createComposerDraftStore(options: DraftStoreOptions = {}) {
 
   async function reloadFromBackend(id: string | null = threadId): Promise<void> {
     if (!id || threadId !== id) return;
+    // A local store has no backend row behind it: local state IS the draft,
+    // and re-reading would blank it.
+    if (!persists) return;
     if (
       optimisticRestoredDraft?.threadId === id
       && (
@@ -285,7 +372,7 @@ export function createComposerDraftStore(options: DraftStoreOptions = {}) {
     if (optimisticRestoredDraft?.threadId === id) {
       clearOptimisticRestoredDraftMarker();
     }
-    forgetDraftSnapshot(id);
+    forgetSnapshot(id);
     hasPendingSave = false;
     const generation = ++switchGeneration;
     await hydrate(id, generation);
@@ -293,13 +380,16 @@ export function createComposerDraftStore(options: DraftStoreOptions = {}) {
 
   async function prepareForExternalDraftReplace(id: string | null = threadId): Promise<void> {
     if (!id) return;
+    // Nothing external can replace a local draft — there is no row to
+    // replace and no in-flight write to wait for.
+    if (!persists) return;
     if (threadId === id) {
       clearDebounce();
       pendingSaveGeneration++;
       clearOptimisticRestoredDraftMarker();
       hasPendingSave = false;
     }
-    forgetDraftSnapshot(id);
+    forgetSnapshot(id);
     await waitForActiveDraftSaves(id);
   }
 
@@ -311,11 +401,12 @@ export function createComposerDraftStore(options: DraftStoreOptions = {}) {
     get terminalChips() { return terminalChips; },
     get sourceProposedPlan() { return sourceProposedPlan; },
     get hydrating() { return hydrating; },
-    get error() { return error; },
     get hasPendingSave() { return hasPendingSave; },
     get hasDraft() {
       return content.trim().length > 0 || attachments.length > 0 || terminalChips.length > 0;
     },
+    /** False for a `persistence: 'none'` store. */
+    get persists() { return persists; },
 
     // ---- thread lifecycle ----
     setThread,
@@ -324,6 +415,46 @@ export function createComposerDraftStore(options: DraftStoreOptions = {}) {
     prepareForExternalDraftReplace,
     flush,
     flushPending,
+
+    /**
+     * Read a thread's persisted draft as a snapshot, normalized exactly
+     * as hydration normalizes it (they share one loader, so a caller that
+     * merges against the row can never disagree with what a hydrate would
+     * have shown). Pure read: it touches no store state, which is why it
+     * takes the thread explicitly and works regardless of where this store
+     * is pointed.
+     *
+     * Rejects on failure. A caller merging edited text into the row has to
+     * know it never read the row — an empty snapshot would look like an
+     * empty draft and silently take the "nothing to merge" branch.
+     */
+    loadPersistedSnapshot(id: string): Promise<ComposerDraftSnapshot> {
+      return fetchPersistedSnapshot(id);
+    },
+
+    /**
+     * Point a local store at a thread and fill it, without hydrating.
+     * The seeded content is the caller's — a message being edited, say —
+     * not the thread's persisted draft, so there is nothing to load and
+     * nothing to save.
+     *
+     * Refuses on a persisting store: seeding one would show state the
+     * backend row does not have and the next mutation would overwrite the
+     * user's real draft with it.
+     */
+    seedLocalSnapshot(id: string | null, snapshot: ComposerDraftSnapshot): void {
+      if (persists) {
+        throw new Error('seedLocalSnapshot requires a store created with persistence: "none"');
+      }
+      clearDebounce();
+      pendingSaveGeneration++;
+      switchGeneration++;
+      threadId = id;
+      clearOptimisticRestoredDraftMarker();
+      applySnapshot(snapshot);
+      hasPendingSave = false;
+      hydrating = false;
+      },
 
     /**
      * Paints a reverted prompt back into the live composer without
@@ -342,8 +473,7 @@ export function createComposerDraftStore(options: DraftStoreOptions = {}) {
       };
       optimisticRestoredDraftDirty = false;
       hasPendingSave = false;
-      error = null;
-    },
+      },
 
     /**
      * Undo the local-only optimistic restore when the backend declines
@@ -352,11 +482,15 @@ export function createComposerDraftStore(options: DraftStoreOptions = {}) {
      *
      * Returns true when the untouched restore was cleared back to the
      * empty baseline — the caller may then safely repaint whatever the
-     * composer held before the optimistic apply (the explicit
-     * revert-to-message path restores the user's pre-revert draft).
-     * Returns false when the user's newer edits were preserved (or the
-     * store has moved to another thread) and repainting would clobber
-     * them.
+     * composer held before the optimistic apply. Returns false when the
+     * user's newer edits were preserved (or the store has moved to another
+     * thread) and repainting would clobber them.
+     *
+     * The Stop/Esc un-send path (`revertOnInterrupt`) is the one caller.
+     * Edit-and-resend also paints optimistically — once, through
+     * `applyOptimisticRestoredDraft`, when a committed revert's resend
+     * fails — but it has nothing to undo: that paint IS the recovery, so
+     * it never reaches for this.
      */
     clearOptimisticRestoredDraft(id: string, snapshot: ComposerDraftSnapshot): boolean {
       if (threadId !== id) return false;
@@ -371,7 +505,7 @@ export function createComposerDraftStore(options: DraftStoreOptions = {}) {
       clearDebounce();
       pendingSaveGeneration++;
       applySnapshot(emptySnapshot());
-      forgetDraftSnapshot(id);
+      forgetSnapshot(id);
       hasPendingSave = false;
       return true;
     },
@@ -426,10 +560,6 @@ export function createComposerDraftStore(options: DraftStoreOptions = {}) {
       queueSave();
     },
 
-    setError(message: string | null): void {
-      error = message;
-    },
-
     /**
      * Called after a successful Send. Clears local state and the backend
      * row so the thread re-loads empty next time. The source-plan ref is
@@ -448,8 +578,8 @@ export function createComposerDraftStore(options: DraftStoreOptions = {}) {
       sourceProposedPlan = null;
       hasPendingSave = false;
       if (id) {
-        forgetDraftSnapshot(id);
-        void ClearDraft(id).catch(() => {});
+        forgetSnapshot(id);
+        clearPersistedDraft(id);
       }
     },
 
@@ -470,7 +600,7 @@ export function createComposerDraftStore(options: DraftStoreOptions = {}) {
       sourceProposedPlan = null;
       hasPendingSave = false;
       if (id) {
-        forgetDraftSnapshot(id);
+        forgetSnapshot(id);
       }
     },
 
@@ -478,9 +608,19 @@ export function createComposerDraftStore(options: DraftStoreOptions = {}) {
      * Restore a draft snapshot to a specific thread. Used when a send
      * rejects AFTER the user has switched panes: we don't want to silently
      * dump thread A's failed message into thread B's composer. If the draft
-     * store is still on the given thread we also restore the local UI state
-     * so the composer re-populates immediately; otherwise the backend row
-     * is repopulated so the user sees the draft next time they return.
+     * store is still on the given thread the snapshot is painted into the
+     * local UI state FIRST, then persisted — the paint is what puts the
+     * user's text back where they can act on it, and it must not be
+     * hostage to the write succeeding (the write failing is precisely
+     * when the text has nowhere else to live). Otherwise only the backend
+     * row is repopulated so the draft is there next time they return.
+     *
+     * REJECTS when the write fails. The caller asked for the user's text
+     * to be put somewhere it SURVIVES; painted-but-unsaved is not that,
+     * so it has to be able to say so. The store is left in the ordinary
+     * unsaved-draft state (`hasPendingSave` + the remembered snapshot),
+     * which the debounce and switch-flush machinery retries like any
+     * other unsaved keystrokes.
      */
     async restoreDraftFor(
       id: string,
@@ -491,26 +631,33 @@ export function createComposerDraftStore(options: DraftStoreOptions = {}) {
         sourceProposedPlan?: SourceProposedPlan | null;
       },
     ): Promise<void> {
-      // Persist the snapshot back to the backend regardless of active thread
-      // so the draft lives across thread switches.
       const restoredSnapshot: ComposerDraftSnapshot = {
         content: snapshot.content,
         attachments: snapshot.attachments,
         terminalChips: snapshot.terminalChips,
         sourceProposedPlan: snapshot.sourceProposedPlan ?? null,
       };
-      try {
-        await saveSnapshot(id, restoredSnapshot, 'Failed to restore draft');
-      } catch {
-        return;
-      }
-      // If the store is still pointed at the same thread, mirror the
-      // snapshot into the local state so the composer shows it right away.
       if (threadId === id) {
         clearDebounce();
         pendingSaveGeneration++;
-        clearOptimisticRestoredDraftMarker();
         applySnapshot(restoredSnapshot);
+      }
+      try {
+        await saveSnapshot(id, restoredSnapshot);
+      } catch (err) {
+        // The marker claims "painted locally, and the backend already has
+        // it" — which this failure disproves. Only THIS thread's marker:
+        // the store may be sitting on another thread, whose paint this
+        // failure says nothing about. (Same-thread: saveSnapshot has
+        // already re-remembered the snapshot and raised `hasPendingSave`,
+        // so the painted text survives and retries.)
+        if (optimisticRestoredDraft?.threadId === id) {
+          clearOptimisticRestoredDraftMarker();
+        }
+        throw err;
+      }
+      if (threadId === id) {
+        clearOptimisticRestoredDraftMarker();
         hasPendingSave = false;
       }
     },

@@ -44,7 +44,7 @@ func rollbackToMessage(app *App, threadID, userItemID string) error {
 		thread:      thread,
 		userItem:    item,
 		anchor:      anchor,
-		promptDraft: promptDraft,
+		promptDraft: &promptDraft,
 		errorPrefix: "test rollback",
 	})
 	return err

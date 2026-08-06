@@ -29,10 +29,10 @@ type Part struct {
 // composer-only context and not part of the persisted user item.
 //
 // Use this when the attachment IDs on the source item are valid for
-// targetThreadID (e.g. the in-place revert-to-message path, where the
-// thread doesn't change). Use the App-bound clone variant in
-// `app_draft.go` when you need to clone attachment bytes across
-// threads.
+// targetThreadID (e.g. the Stop/Esc un-send, which rehydrates the
+// message into the composer of the same thread). Use the App-bound
+// clone variant in `app_draft.go` when you need to clone attachment
+// bytes across threads.
 func FromUserItem(targetThreadID string, userItem store.Item, updatedAt int64) (store.ThreadDraft, error) {
 	part, err := PartFromUserItem(userItem)
 	if err != nil {

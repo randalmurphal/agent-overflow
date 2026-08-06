@@ -231,7 +231,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "RestartTerminal", ID: 4152403588},                      // main.App.RestartTerminal
 	{Name: "RestartToUpdate", ID: 3141913084},                      // main.App.RestartToUpdate
 	{Name: "RetryThreadWorktreeSetup", ID: 1657104469},             // main.App.RetryThreadWorktreeSetup
-	{Name: "RevertConversationToMessage", ID: 250090428},           // main.App.RevertConversationToMessage
+	{Name: "RevertConversationAndResendMessage", ID: 2059566413},   // main.App.RevertConversationAndResendMessage
 	{Name: "SaveDraft", ID: 3025273299},                            // main.App.SaveDraft
 	{Name: "SavePRCIJobLog", ID: 1537914193},                       // main.App.SavePRCIJobLog
 	{Name: "SavePayloadToFile", ID: 3576148797},                    // main.App.SavePayloadToFile

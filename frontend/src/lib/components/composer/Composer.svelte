@@ -1,18 +1,23 @@
 <script lang="ts">
-  // Pure message entry. Coordinates between the draft store, the mention
-  // popover (composerMentions.svelte.ts), and the upload flow
-  // (composerUploads.svelte.ts). Everything else — model/provider picker,
+  // Send + prompt shell. The editing core — textarea, completion menus,
+  // attachments, uploads, image placeholders, terminal chips — is
+  // ComposerInputSurface.svelte; everything else (model/provider picker,
   // effort + fast-mode, runtime mode, mode cycle, branch picker, env /
-  // worktree picker — lives in the composer toolbar / below-composer bar.
+  // worktree picker) lives in the composer toolbar / below-composer bar.
+  //
+  // What stays here is what the surface must not decide: whether a send
+  // happens and on which thread, thread materialization and empty-draft
+  // cleanup, the pending approval / user-input panels, and the activity
+  // rail.
 
   import { onDestroy, onMount, untrack } from 'svelte';
   import { paneWorkspacePath, type ThreadPane } from '../../stores/thread.svelte';
   import type { ComposerDraftStore } from '../../stores/composerDraft.svelte';
-  import ComposerAttachmentRow from './ComposerAttachmentRow.svelte';
-  import ComposerCommandHighlight from './ComposerCommandHighlight.svelte';
-  import ComposerMentionPopover from './ComposerMentionPopover.svelte';
-  import ComposerSlashPopover from './ComposerSlashPopover.svelte';
-  import ComposerTerminalChip from './ComposerTerminalChip.svelte';
+  import ComposerInputSurface from './ComposerInputSurface.svelte';
+  import type {
+    ComposerInputSurfaceHandle,
+    ComposerInputValueInfo,
+  } from './composerInputSurface';
   import ComposerToolbar from './toolbar/ComposerToolbar.svelte';
   import ActivityRail from './ActivityRail.svelte';
   import { createActivityRailHost } from './activityRailHost.svelte';
@@ -20,18 +25,8 @@
   import ComposerWorkspaceStrip from './ComposerWorkspaceStrip.svelte';
   import ComposerPendingApprovalPanel from './ComposerPendingApprovalPanel.svelte';
   import ComposerPendingUserInputPanel from './ComposerPendingUserInputPanel.svelte';
-  import {
-    focusTextareaAtEnd,
-    handleMentionPopoverKeydown,
-    handleSlashPopoverKeydown,
-  } from './composerKeyboard';
-  import { createComposerSlash } from './composerSlash.svelte';
-  import { slashCommandMatches } from './slashCommands';
-  import { createComposerImagePlaceholders } from './composerImagePlaceholders';
   import { deriveComposerInputState } from './composerInputState';
-  import { createComposerMentions } from './composerMentions.svelte';
   import { deriveComposerSendState } from './composerSendState';
-  import { createComposerUploads } from './composerUploads.svelte';
   import { dispatchSend } from './composerSend';
   import { runInterruptOrRevert } from '../../stores/revertOnInterrupt.svelte';
   import {
@@ -59,11 +54,10 @@
   import { registerQueueItem } from '../../stores/sendQueue.svelte';
   import { registerComposerDraft } from '../../stores/composerDraftRegistry.svelte';
   import { getThreadById, prependThread } from '../../stores/threads.svelte';
-  import { getActiveTurn, isSendInFlight, isThreadWorking } from '../../stores/threadStatuses.svelte';
+  import { getActiveTurn, isSendInFlight } from '../../stores/threadStatuses.svelte';
   import { getFocusedPaneId } from '../../stores/panes.svelte';
   import { getTerminalFocused } from '../terminal/terminalStore.svelte';
   import { errString } from '../../utils/errors';
-  import { isImeComposingEvent } from '../../utils/imeComposition';
   import type { ExpandedImagePreview } from '../../utils/attachmentPreview.svelte';
   import { implementProposedPlan, implementProposedPlanInNewThread } from '../../utils/proposedPlanImplementation';
   import { sourceFromProposedPlanItem } from '../../utils/proposedPlan';
@@ -73,47 +67,24 @@
     pane: ThreadPane;
     draft: ComposerDraftStore;
     onImageExpand?: (preview: ExpandedImagePreview) => void;
+    /**
+     * Refuse to send while a thread-level operation owns sending — the
+     * edit-and-resend saga, which reverts and re-sends under one backend
+     * lock. The Send button disables rather than turning into Stop:
+     * there is no turn to interrupt, and interrupting would race the
+     * saga's own revert. Enter routes through `send()`, so it is gated
+     * by the same predicate.
+     */
+    sendSuspended?: boolean;
   }
 
-  let { pane, draft, onImageExpand }: Props = $props();
+  let { pane, draft, onImageExpand, sendSuspended = false }: Props = $props();
 
-  let textarea: HTMLTextAreaElement | undefined = $state(undefined);
+  let surface: ComposerInputSurfaceHandle | undefined = $state(undefined);
   let composerRoot: HTMLDivElement | undefined = $state(undefined);
-  let expandedChips = new Set<string>();
-  let expandedVersion = $state(0);
-  let lastAutosizedTextarea: HTMLTextAreaElement | undefined;
-  let lastAutosizedValue = '';
   let focusInitialized = false;
   let focusThreadId: string | null = null;
   let emptyDraftCleanupKey: string | null = null;
-
-  const mentions = createComposerMentions({
-    getTextarea: () => textarea,
-    getThreadId: () => pane.threadId,
-  });
-
-  const slash = createComposerSlash({ getTextarea: () => textarea, getPane: () => pane });
-
-  const uploads = createComposerUploads({
-    getThreadId: threadIdForUpload,
-    ensureThreadId: ensureThreadIdForUpload,
-    getAttachmentCount: () => draft.attachments.length,
-    addAttachment: (a, insertion) => imagePlaceholders.addUploadedAttachment(a, insertion),
-    removeAttachment: (id) => draft.removeAttachment(id),
-  });
-
-  const imagePlaceholders = createComposerImagePlaceholders({
-    getTextarea: () => textarea,
-    getContent: () => draft.content,
-    getAttachments: () => draft.attachments,
-    setContentAndAttachments: (content, attachments) => draft.setContentAndAttachments(content, attachments),
-    addAttachment: (attachment) => draft.addAttachment(attachment),
-    removeAttachment: (id) => draft.removeAttachment(id),
-    deleteAttachmentRecord: (id) => void uploads.deleteAttachmentRecord(id),
-    refreshTriggers: () => refreshCompletionTriggers(),
-    autosizeTextarea,
-    hasUserInputPrompt: () => hasUserInputPrompt,
-  });
 
   let isDisabled = $derived(!pane.canCompose);
   // Mid-round signal: a wire round is currently in flight (the model
@@ -189,6 +160,7 @@
   let sendState = $derived(deriveComposerSendState({
     isDisabled,
     sending,
+    sendSuspended,
     hasBlockingPrompt,
     hasUserInputPrompt,
     hasDraftContent,
@@ -217,40 +189,9 @@
   let inputValue = $derived(inputState.value);
   let placeholder = $derived(inputState.placeholder);
 
-  // Accent-coloured command words (D31). Derived from the same value the
-  // textarea renders, so they track every edit path — typing, completion,
-  // paste, image-placeholder reconciliation — without a listener of its own.
-  // Every occurrence is painted, because every one of them is live: the
-  // backend expands the command once no matter how often the draft names it.
-  // Suppressed during IME composition and while a selection is live; see
-  // ComposerCommandHighlight for why each is a lie the overlay must not tell.
-  let composingText = $state(false);
-  let textareaScrollTop = $state(0);
-  let selectionCollapsed = $state(true);
-  // AO's registered words at any position, plus a leading intercepted command
-  // (`/model`, `/clear`, …) — both are words AO acts on rather than sends, so
-  // both read as commands. The intercepted one is painted only at position 0,
-  // where interception actually fires. The two lists cannot overlap: no name
-  // is in both registries.
-  let commandRanges = $derived.by(() => {
-    if (hasUserInputPrompt || inputDisabled || composingText || !selectionCollapsed) return [];
-    return [...slash.interceptedRanges(inputValue), ...slashCommandMatches(inputValue)];
-  });
   $effect(() => {
     activeUserInput?.requestId;
     userInputCustomAnswer = '';
-  });
-
-  $effect(() => {
-    const value = inputValue;
-    const node = textarea;
-    if (!node) return;
-    if (lastAutosizedTextarea === node && lastAutosizedValue === value) return;
-    queueMicrotask(() => {
-      if (textarea === node && inputValue === value) {
-        autosizeTextarea();
-      }
-    });
   });
 
   $effect(() => {
@@ -275,7 +216,7 @@
       sending ||
       pane.sendInFlight ||
       isTurnActive ||
-      uploads.uploading ||
+      (surface?.uploading() ?? false) ||
       // Applying a staged branch/worktree intent materializes an item-less
       // draft row first; deleting it mid-RPC fails the apply on the backend.
       isWorktreeIntentApplying(pane.threadId)
@@ -354,11 +295,11 @@
   // placeholder materialization so the same draft store can finish the
   // user's first send/upload; reset focus initialization explicitly when
   // the active backend thread changes.
-  // `focusTextareaAtEnd` reads off the live DOM so the same code
+  // `focusInputAtEnd` reads off the live DOM so the same code
   // covers the regular composer (bound to draft.content) and the
   // user-input-prompt case (bound to userInputCustomAnswer).
   $effect(() => {
-    const node = textarea;
+    const inputMounted = surface?.inputMounted() ?? false;
     const hydrating = draft.hydrating;
     const draftThreadId = draft.threadId;
     const expectedThreadId = pane.threadId;
@@ -367,7 +308,7 @@
       focusInitialized = false;
     }
     if (focusInitialized) return;
-    if (!node) return;
+    if (!inputMounted) return;
     if (draftThreadId !== expectedThreadId) return;
     if (hydrating) return;
     focusInitialized = true;
@@ -391,7 +332,7 @@
     // point-in-time check like the terminal guard above — the one-shot is
     // already consumed, so later focus changes must not re-arm it.
     if (untrack(getFocusedPaneId) !== pane.paneId) return;
-    focusTextareaAtEnd(node);
+    surface?.focusInputAtEnd();
   });
 
   $effect(() => {
@@ -423,7 +364,7 @@
     // must not materialize a thread, open a queue slot, or leave a persisted
     // draft behind. The composed message is what the backend would have seen,
     // so the classification matches what a send would actually have sent.
-    if (!hasUserInputPrompt && slash.consumeInterceptedSend(draft.composeOutgoingMessage())) {
+    if (!hasUserInputPrompt && (surface?.consumeInterceptedSend(draft.composeOutgoingMessage()) ?? false)) {
       // Consume the TEXT only. Attachments and terminal chips are the user's
       // uploads, not part of the command, so they stay in the draft.
       draft.setContent('');
@@ -476,7 +417,7 @@
     // of Claude's outbound slash guard. Derived from the message, never from
     // whether the menu was used — a hand-typed `/usage` works, and an unknown
     // `/word` stays guarded.
-    const providerCommand = message !== '' && slash.isProviderCommandSend(message);
+    const providerCommand = message !== '' && (surface?.isProviderCommandSend(message) ?? false);
     // Drafts seeded by "Implement plan in new thread" carry a persisted
     // sourceProposedPlan ref. dispatchSend applies the revision-vs-source
     // precedence rule, so we forward both fields and let composerSend
@@ -524,7 +465,17 @@
         });
       } catch (err) {
         pane.setGeneralError(`Failed to queue message: ${String(err)}`);
-        await draft.restoreDraftFor(midTurnThreadId, queuedDraftSnapshot);
+        // Putting the message back is a second, independent operation: if
+        // it fails too, the banner has to say so rather than let the queue
+        // failure imply the text is safe in the composer.
+        try {
+          await draft.restoreDraftFor(midTurnThreadId, queuedDraftSnapshot);
+        } catch (restoreErr) {
+          console.error('Failed to restore the draft after a failed queue:', restoreErr);
+          pane.setGeneralError(
+            `Failed to queue message, and the draft could not be restored: ${String(err)}`,
+          );
+        }
         return;
       }
       return;
@@ -642,112 +593,52 @@
   }
 
   function resetTextareaHeight() {
-    if (!textarea) return;
-    textarea.style.height = 'auto';
+    surface?.resetInputHeight();
   }
 
-  function autosizeTextarea() {
-    if (!textarea) return;
-    textarea.style.height = 'auto';
-    const measuredHeight = textarea.scrollHeight;
-    if (measuredHeight > 0) {
-      textarea.style.height = Math.min(measuredHeight, 200) + 'px';
-    }
-    lastAutosizedTextarea = textarea;
-    lastAutosizedValue = inputValue;
-  }
-
-  async function handleKeydown(e: KeyboardEvent) {
+  /**
+   * The composer's first look at a composer-textarea keydown, before the
+   * completion menus see it. ArrowUp with a user-input request open walks
+   * into its option list — rendered above the input surface, so only this
+   * component can find it.
+   */
+  function claimKeydown(e: KeyboardEvent): boolean {
     if (hasUserInputPrompt && e.key === 'ArrowUp' && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
       const optionButtons = composerRoot?.querySelectorAll<HTMLButtonElement>('[data-user-input-option]');
       const lastOption = optionButtons?.[optionButtons.length - 1];
       if (lastOption) {
         e.preventDefault();
         lastOption.focus();
-        return;
+        return true;
       }
     }
-
-    // Shift+Tab is owned by the global keydown handler (`mode.cycle`).
-    // Yield without preventDefault — the global handler bails on
-    // `defaultPrevented`, so consuming the chord here would cancel
-    // the dispatch; the global handler preventDefaults on successful
-    // dispatch to suppress the browser's focus-shift. The mention
-    // guard skips this branch when the popover is open, but
-    // `handleMentionPopoverKeydown` below has its own Shift+Tab
-    // bail-out so the chord still reaches the global dispatcher.
-    if (e.key === 'Tab' && e.shiftKey && !mentions.mentionTrigger && !slash.slashOpen) {
-      return;
-    }
-
-    // Plain Tab (no popover) is a no-op inside the composer. Browser
-    // default would advance focus out of the textarea, which we don't
-    // want — users navigate panes/sidebar via explicit chords. With either
-    // completion menu open, Tab belongs to the menu (it completes) and the
-    // dispatch below claims it.
-    if (e.key === 'Tab' && !e.shiftKey && !mentions.mentionTrigger && !slash.slashOpen) {
-      e.preventDefault();
-      return;
-    }
-
-    // Popover dispatch short-circuits when the keystroke was consumed;
-    // otherwise we fall through to the send guard below.
-    if (handleMentionPopoverKeydown(e, mentions)) return;
-    if (handleSlashPopoverKeydown(e, slash)) return;
-
-    if (imagePlaceholders.handleAtomicPlaceholderKeydown(e)) return;
-
-    // Enter mid-IME-composition confirms the candidate; the composed text is
-    // still in the IME's buffer, not the textarea's value. Yield WITHOUT
-    // preventDefault — the browser has to deliver it to the composition.
-    if (e.key === 'Enter' && isImeComposingEvent(e)) return;
-
-    if (e.key === 'Enter' && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
-      e.preventDefault();
-      if (hasUserInputPrompt) {
-        userInputSubmitSignal += 1;
-        return;
-      }
-      if (hasBlockingPrompt) return;
-      // Mid-turn Enter routes through send() like a click; send() picks
-      // the enqueue path when `isTurnActive` is true. No mid-turn
-      // keyboard block — it would diverge from both reference UIs and
-      // from the click-to-queue affordance below.
-      await send();
-    }
+    return false;
   }
 
-  function handleInput(event: Event) {
-    const value = (event.target as HTMLTextAreaElement).value;
+  function submitFromEnter(): void {
+    if (hasUserInputPrompt) {
+      userInputSubmitSignal += 1;
+      return;
+    }
+    if (hasBlockingPrompt) return;
+    // Mid-turn Enter routes through send() like a click; send() picks
+    // the enqueue path when `isTurnActive` is true. No mid-turn
+    // keyboard block — it would diverge from both reference UIs and
+    // from the click-to-queue affordance below.
+    void send();
+  }
+
+  function handleInputValue(value: string, { appliedToDraft }: ComposerInputValueInfo) {
     if (hasUserInputPrompt) {
       userInputCustomAnswer = value;
-    } else {
-      if (!imagePlaceholders.reconcileContent(value)) {
-        draft.setContent(value);
-      }
-      if (pane.hasDraftPlaceholder && value.trim().length > 0) {
-        void pane.ensureMaterializedThread();
-      }
+      return;
     }
-    autosizeTextarea();
-    slash.clearCommandError();
-    refreshCompletionTriggers();
-  }
-
-  // Both completion menus read the same (value, caret) pair, so they refresh
-  // together — a caret move that closes one must be able to open the other.
-  function refreshCompletionTriggers() {
-    mentions.refreshTriggers();
-    slash.refreshTrigger();
-    syncSelectionState();
-  }
-
-  // The command overlay hides while a selection covers text (its opaque word
-  // would punch a hole in the highlight) and follows the textarea's scroll.
-  function syncSelectionState() {
-    if (!textarea) return;
-    selectionCollapsed = textarea.selectionStart === textarea.selectionEnd;
-    textareaScrollTop = textarea.scrollTop;
+    if (!appliedToDraft) {
+      draft.setContent(value);
+    }
+    if (pane.hasDraftPlaceholder && value.trim().length > 0) {
+      void pane.ensureMaterializedThread();
+    }
   }
 
   function blockPromptAttachment(event: DragEvent | ClipboardEvent, notify = true): boolean {
@@ -778,26 +669,6 @@
     return blockPromptAttachment(event, notify);
   }
 
-  function handleDragEnter(event: DragEvent): void {
-    if (blockAttachment(event, false)) return;
-    uploads.handleDragEnter(event);
-  }
-
-  function handleDragOver(event: DragEvent): void {
-    if (blockAttachment(event, false)) return;
-    uploads.handleDragOver(event);
-  }
-
-  function handleDrop(event: DragEvent): void {
-    if (blockAttachment(event)) return;
-    void uploads.handleDrop(event, imagePlaceholders.currentUploadInsertion());
-  }
-
-  function handlePaste(event: ClipboardEvent): void {
-    if (blockAttachment(event)) return;
-    void uploads.handlePaste(event, imagePlaceholders.currentUploadInsertion());
-  }
-
   async function resolveApproval(response: ApprovalResponse): Promise<void> {
     const threadId = pane.threadId;
     if (!threadId) return;
@@ -817,36 +688,6 @@
 
   function handlePromptError(message: string): void {
     pane.setGeneralError(message);
-  }
-
-  function handleSelectionChange() {
-    refreshCompletionTriggers();
-  }
-
-  function handleCompositionStart() {
-    composingText = true;
-  }
-
-  function handleCompositionEnd() {
-    composingText = false;
-  }
-
-  function handleTextareaScroll() {
-    if (textarea) textareaScrollTop = textarea.scrollTop;
-  }
-
-  function handleToggleChip(id: string) {
-    if (expandedChips.has(id)) {
-      expandedChips.delete(id);
-    } else {
-      expandedChips.add(id);
-    }
-    expandedVersion++;
-  }
-
-  function isChipExpanded(id: string): boolean {
-    void expandedVersion;
-    return expandedChips.has(id);
   }
 
   let releaseDraftRegistration: (() => void) | null = null;
@@ -871,7 +712,6 @@
     releaseDraftRegistration = null;
     releaseActivityRail?.();
     releaseActivityRail = null;
-    mentions.closeMention();
   });
 </script>
 
@@ -900,10 +740,10 @@
     role="region"
     aria-label="Message Composer"
     data-testid="composer-root"
-    ondragenter={handleDragEnter}
-    ondragover={handleDragOver}
-    ondragleave={uploads.handleDragLeave}
-    ondrop={handleDrop}
+    ondragenter={(event) => surface?.handleDragEnter(event)}
+    ondragover={(event) => surface?.handleDragOver(event)}
+    ondragleave={(event) => surface?.handleDragLeave(event)}
+    ondrop={(event) => surface?.handleDrop(event)}
   >
     {#if railVisible}
       <ActivityRail
@@ -934,7 +774,7 @@
           collapsed={userInputCollapsed}
           setCustomAnswerText={(value) => {
             userInputCustomAnswer = value;
-            queueMicrotask(autosizeTextarea);
+            queueMicrotask(() => surface?.autosizeInput());
           }}
           onResolve={resolveUserInput}
           onResolved={handlePromptResolved}
@@ -944,100 +784,24 @@
       {/key}
     {/if}
 
-    {#if !hasInteractivePrompt}
-      <ComposerAttachmentRow
-        attachments={draft.attachments}
-        onRemove={imagePlaceholders.removeAttachmentFromComposer}
-        onExpand={onImageExpand}
-        dragActive={uploads.dragActive}
-      />
-    {/if}
+    <ComposerInputSurface
+      bind:this={surface}
+      {pane}
+      {draft}
+      value={inputValue}
+      disabled={inputDisabled}
+      {placeholder}
+      oninput={handleInputValue}
+      onSubmitEnter={submitFromEnter}
+      onKeydown={claimKeydown}
+      editsDraft={!hasUserInputPrompt}
+      showDraftRows={!hasInteractivePrompt}
+      {blockAttachment}
+      uploadThreadId={threadIdForUpload}
+      ensureUploadThreadId={ensureThreadIdForUpload}
+      {onImageExpand}
+    />
 
-    {#if !hasInteractivePrompt && draft.terminalChips.length > 0}
-      <div
-        class="flex flex-col gap-1 border-b border-border-subtle px-4 py-2"
-        data-testid="terminal-chip-row"
-      >
-        {#each draft.terminalChips as chip (chip.id)}
-          <ComposerTerminalChip
-            {chip}
-            expanded={isChipExpanded(chip.id)}
-            onToggle={handleToggleChip}
-            onRemove={draft.removeTerminalChip}
-          />
-        {/each}
-      </div>
-    {/if}
-
-    <div class="px-4 pt-3 pb-2">
-      <div class="relative">
-        <ComposerMentionPopover
-          anchor={textarea}
-          open={mentions.mentionTrigger !== null}
-          query={mentions.mentionTrigger?.query ?? ''}
-          results={mentions.mentionResults}
-          activeIndex={mentions.mentionActiveIndex}
-          loading={mentions.mentionLoading}
-          workspacePath={paneWorkspacePath(pane)}
-          onSelect={mentions.insertMention}
-          onClose={mentions.closeMention}
-          onHover={(idx) => mentions.setMentionActiveIndex(idx)}
-        />
-
-        <ComposerSlashPopover
-          anchor={textarea}
-          open={slash.slashOpen}
-          sections={slash.slashSections}
-          activeIndex={slash.slashActiveIndex}
-          onSelect={slash.insertCommand}
-          onClose={slash.closeSlash}
-          onHover={(idx) => slash.setSlashActiveIndex(idx)}
-        />
-
-        <textarea
-          bind:this={textarea}
-          onbeforeinput={imagePlaceholders.handleBeforeInput}
-          onkeydown={handleKeydown}
-          oninput={handleInput}
-          onselect={handleSelectionChange}
-          onkeyup={handleSelectionChange}
-          onclick={handleSelectionChange}
-          oncompositionstart={handleCompositionStart}
-          oncompositionend={handleCompositionEnd}
-          onscroll={handleTextareaScroll}
-          onpaste={handlePaste}
-          disabled={inputDisabled}
-          placeholder={placeholder}
-          aria-label="Message Input"
-          rows={1}
-          value={inputValue}
-          class="w-full resize-none bg-transparent px-1 py-1 text-[0.8125rem] leading-[1.55] text-fg placeholder:text-fg-hint focus:outline-none disabled:opacity-40 disabled:cursor-not-allowed"
-        ></textarea>
-
-        <!-- After the textarea in DOM order as well as above it in paint
-             order, so each accent word covers the glyphs it replaces. -->
-        <ComposerCommandHighlight
-          value={inputValue}
-          ranges={commandRanges}
-          scrollTop={textareaScrollTop}
-          {textarea}
-        />
-      </div>
-
-    </div>
-
-    {#if !hasInteractivePrompt && slash.commandError}
-      <!-- Composer-local, not a toast and not the pane banner: the user is
-           looking at the text they just typed, which is where the answer to
-           "that command did not work" belongs. Cleared by the next edit. -->
-      <div
-        class="px-4 pb-1 text-[0.6875rem] text-error"
-        role="alert"
-        data-testid="composer-command-error"
-      >
-        {slash.commandError}
-      </div>
-    {/if}
     {#if !hasInteractivePrompt && preparingWorktree}
       <div
         class="px-4 pb-1 text-[0.6875rem] text-text-secondary/70"

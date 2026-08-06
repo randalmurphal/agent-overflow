@@ -14,6 +14,18 @@ import (
 	"agent-overflow/internal/store"
 )
 
+// newTestApp is the light App fixture for the rollback / fork / revert
+// tests: a real in-memory store and settings, no triage router and no
+// sessions unless the test wires them.
+//
+// It is send-capable — RevertConversationAndResendMessage and friends
+// reach sendMessageLocked from here — so the provider-spawn isolation is
+// applied INSIDE the fixture rather than left to each caller. A guard
+// that regressed would otherwise resolve `claude` from PATH against the
+// developer's real credentials; see isolateE2EProviderSpawns for what
+// that costs. Callers that need a specific HOME set it after this
+// returns (last t.Setenv wins); callers that need a live session install
+// a mock binary over the poisoned default.
 func newTestApp(t *testing.T) (*App, func()) {
 	t.Helper()
 	st, err := store.New(":memory:")
@@ -25,6 +37,9 @@ func newTestApp(t *testing.T) (*App, func()) {
 		settings: settings.NewService(t.TempDir()),
 		sessions: make(map[string]session),
 	}
+	// Registered before the cleanups below so (LIFO) its spawn check runs
+	// last, once nothing is still in flight.
+	isolateE2EProviderSpawns(t, app)
 	app.appCtx, app.appCancel = context.WithCancel(context.Background())
 	t.Cleanup(app.appCancel)
 	return app, func() { st.Close() }

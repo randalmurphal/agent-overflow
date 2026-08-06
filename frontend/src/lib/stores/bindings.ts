@@ -11,7 +11,7 @@ export {
   DeleteThread,
   ForkThread,
   ForkThreadFromMessage,
-  RevertConversationToMessage,
+  RevertConversationAndResendMessage,
   GetThread,
   ListArchivedThreads,
   ListThreads,

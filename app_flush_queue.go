@@ -356,7 +356,7 @@ func (a *App) restoreUnconfirmedQueueOnSessionDeath(threadID string) []triage.Un
 		}
 	}
 	if len(parts) > 0 {
-		if err := a.restoreFlushDraft(threadID, parts); err != nil {
+		if _, err := a.mergeAndUpsertThreadDraft(threadID, parts); err != nil {
 			log.Printf("flush queue: restore draft after session death for %s: %v", threadID, err)
 			// The quiet rows behind these items are already deleted, so
 			// the requeued entries carry deferred semantics — the retained
@@ -447,7 +447,7 @@ func (a *App) restoreEagerPersistedFlushesToDraft(threadID string, persisted []t
 		}
 	}
 	if len(parts) > 0 {
-		if err := a.restoreFlushDraft(threadID, parts); err != nil {
+		if _, err := a.mergeAndUpsertThreadDraft(threadID, parts); err != nil {
 			log.Printf("flush queue: restore draft after failed resend for %s: %v", threadID, err)
 			// The rows are already deleted — emit the removal so the
 			// frontend drops them, then requeue so the messages keep a
@@ -702,18 +702,6 @@ func (a *App) restoredDraftPartFromQueuedPayload(threadID string, item triage.Un
 		AttachmentIDs:      payload.AttachmentIDs,
 		SourceProposedPlan: payload.SourceProposedPlan,
 	}
-}
-
-func (a *App) restoreFlushDraft(threadID string, parts []composerdraft.Part) error {
-	current, _, err := a.store.GetThreadDraft(threadID)
-	if err != nil {
-		return err
-	}
-	draft, err := composerdraft.MergeParts(threadID, current, parts, time.Now().UnixMilli())
-	if err != nil {
-		return err
-	}
-	return a.store.UpsertThreadDraft(draft)
 }
 
 // flushQueuePayload is the local-scope alias for flushqueue.Payload.

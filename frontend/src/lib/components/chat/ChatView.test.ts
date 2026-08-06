@@ -6,7 +6,7 @@
 // visible contract that's still meaningful after the rewrite.
 
 import { describe, expect, it, beforeAll, beforeEach, vi } from 'vitest';
-import { fireEvent, render, waitFor } from '@testing-library/svelte';
+import { fireEvent, render, waitFor, within } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import appCss from '../../../app.css?raw';
 import ChatView from './ChatView.svelte';
@@ -21,15 +21,20 @@ import {
   projectThreadItem,
   resetForTest as resetThreadStatuses,
 } from '../../stores/threadStatuses.svelte';
+import {
+  applyUserMessageReverted,
+  resetResendRevertMarkersForTest,
+} from '../../stores/eventsMessageRevert';
 import type { Item, Thread } from '../../types/models';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
-import { installPaneMocks, makeItem } from '../../../test/helpers/chat';
+import { installPaneMocks, installThreadSwitchMocks, makeItem } from '../../../test/helpers/chat';
 import { resetLayoutMetricsForTest } from '../../stores/layoutMetrics.svelte';
 import {
   resetPaneLayoutForTest,
   setPaneLayoutItemsForTest,
 } from '../../stores/paneLayout.svelte';
 import { resetCompanionPanesForTest } from '../../stores/companionPanes.svelte';
+import { resetEditResendExecutionForTest } from './editResendFlow.svelte';
 
 beforeAll(() => {
   // Svelte transitions used by children call element.animate; happy-dom
@@ -74,6 +79,11 @@ beforeEach(() => {
   resetPanesForTest();
   resetThreadStatuses();
   resetComposerDraftSnapshotsForTest();
+  resetResendRevertMarkersForTest();
+  // The per-thread execute lane is module-level and released on settle;
+  // tests that park the destructive RPC forever never settle, so the
+  // reset is what stops one leaking into the next test's submit.
+  resetEditResendExecutionForTest();
 });
 
 function seedThread(): Thread {
@@ -227,250 +237,372 @@ describe('<ChatView>', () => {
     });
   });
 
-  it('reverts to a user message directly when nothing else would be destroyed', async () => {
-    const thread = seedThread();
-    const userItem = makeItem({
-      id: 'user:1',
-      threadId: thread.id,
-      turnIndex: 1,
+  function userItem(id: string, turnIndex: number, summary: string, threadId = 'thread-1'): Item {
+    return makeItem({
+      id,
+      threadId,
+      turnIndex,
       itemIndex: 0,
       kind: 'user_text',
       role: 'user',
-      summary: 'Update one of the lines',
+      summary,
     });
-    const pane = await buildPane(thread, [userItem]);
+  }
+
+  // Structural, not `ReturnType<typeof render>`: the testing-library
+  // render result's index signature does not survive being named.
+  interface EditorQueries {
+    getAllByLabelText(text: string): HTMLElement[];
+    getByTestId(id: string): HTMLElement;
+  }
+
+  async function openMessageEditor(
+    view: EditorQueries,
+    index = 0,
+  ): Promise<HTMLElement> {
+    await fireEvent.click(view.getAllByLabelText('Edit message and resend from here')[index]);
+    await waitFor(() => expect(view.getByTestId('user-message-editor')).toBeInTheDocument());
+    return view.getByTestId('user-message-editor');
+  }
+
+  async function typeInEditor(editor: HTMLElement, value: string): Promise<void> {
+    const textarea = within(editor).getByLabelText('Message Input') as HTMLTextAreaElement;
+    await fireEvent.input(textarea, { target: { value } });
+    textarea.setSelectionRange(value.length, value.length);
+    await fireEvent.select(textarea);
+    await tick();
+  }
+
+  it('opens the in-place editor and closes it silently when nothing was changed', async () => {
+    const thread = seedThread();
+    const item = userItem('user:1', 1, 'Update one of the lines');
+    const pane = await buildPane(thread, [item]);
     mockDrafts(new Map([[thread.id, '']]));
-    setBindingMock('CountRunningBackgroundTasks', async () => 0);
-    const revert = setBindingMock('RevertConversationToMessage', async () => undefined);
+    const resend = setBindingMock('RevertConversationAndResendMessage', async () => undefined);
 
-    const { getByLabelText, queryByText } = render(ChatView, { props: { pane } });
-    await fireEvent.click(getByLabelText('Revert to this message'));
+    const view = render(ChatView, { props: { pane } });
+    await openMessageEditor(view);
 
-    await waitFor(() => {
-      expect(revert).toHaveBeenCalledWith(thread.id, userItem.id, false);
-    });
-    expect(queryByText('Revert to this message?')).toBeNull();
+    await fireEvent.click(view.getByTestId('user-message-edit-cancel'));
+    await waitFor(() => expect(view.queryByTestId('user-message-editor')).toBeNull());
+    expect(view.queryByText('Discard changes?')).toBeNull();
+    expect(resend).not.toHaveBeenCalled();
   });
 
-  it('gates revert behind a kill confirmation when background tasks are running', async () => {
+  it('confirms before discarding an edited message', async () => {
     const thread = seedThread();
-    const userItem = makeItem({
-      id: 'user:1',
-      threadId: thread.id,
-      turnIndex: 1,
-      itemIndex: 0,
-      kind: 'user_text',
-      role: 'user',
-      summary: 'Update one of the lines',
+    const item = userItem('user:1', 1, 'Update one of the lines');
+    const pane = await buildPane(thread, [item]);
+    mockDrafts(new Map([[thread.id, '']]));
+
+    const view = render(ChatView, { props: { pane } });
+    const editor = await openMessageEditor(view);
+    await typeInEditor(editor, 'Update TWO of the lines');
+
+    await fireEvent.click(view.getByTestId('user-message-edit-cancel'));
+    await view.findByText('Discard changes?');
+    expect(view.queryByTestId('user-message-editor')).toBeInTheDocument();
+
+    await fireEvent.click(view.getByText('Discard'));
+    await waitFor(() => expect(view.queryByTestId('user-message-editor')).toBeNull());
+  });
+
+  it('reverts and resends directly when no background work would be killed', async () => {
+    const thread = seedThread();
+    const item = userItem('user:1', 1, 'Update one of the lines');
+    const pane = await buildPane(thread, [item]);
+    mockDrafts(new Map([[thread.id, 'untouched composer work']]));
+    setBindingMock('CountRunningBackgroundTasks', async () => 0);
+    const resend = setBindingMock('RevertConversationAndResendMessage', async () => undefined);
+
+    const view = render(ChatView, { props: { pane } });
+    const editor = await openMessageEditor(view);
+    await typeInEditor(editor, 'Update TWO of the lines');
+    await fireEvent.click(view.getByTestId('user-message-edit-send'));
+
+    await waitFor(() => {
+      expect(resend).toHaveBeenCalledWith(
+        thread.id,
+        item.id,
+        {
+          content: 'Update TWO of the lines',
+          attachmentIds: [],
+          killRunningBackgroundTasks: false,
+          providerCommand: false,
+        },
+      );
     });
-    const pane = await buildPane(thread, [userItem]);
+    // Success ends the flow; the truncate + the resent message are the
+    // confirmation, so there is no dialog and no toast.
+    await waitFor(() => expect(view.queryByTestId('user-message-editor')).toBeNull());
+    expect(view.queryByText('Revert to this message?')).toBeNull();
+    // The composer's own draft was never in this flow's way.
+    expect(view.getAllByLabelText('Message Input')[0]).toHaveValue('untouched composer work');
+  });
+
+  it('gates the resend behind a kill confirmation when background tasks are running', async () => {
+    const thread = seedThread();
+    const item = userItem('user:1', 1, 'Update one of the lines');
+    const pane = await buildPane(thread, [item]);
     mockDrafts(new Map([[thread.id, '']]));
     setBindingMock('CountRunningBackgroundTasks', async () => 2);
-    const revert = setBindingMock('RevertConversationToMessage', async () => undefined);
+    const resend = setBindingMock('RevertConversationAndResendMessage', async () => undefined);
 
-    const { getByLabelText, getByText, findByText } = render(ChatView, { props: { pane } });
-    await fireEvent.click(getByLabelText('Revert to this message'));
+    const view = render(ChatView, { props: { pane } });
+    await openMessageEditor(view);
+    await fireEvent.click(view.getByTestId('user-message-edit-send'));
 
-    // Confirmation dialog opens instead of reverting; the count is in the copy.
-    await findByText('Revert to this message?');
-    expect(getByText(/kills 2 running background tasks/)).toBeInTheDocument();
-    expect(revert).not.toHaveBeenCalled();
+    await view.findByText('Revert to this message?');
+    expect(view.getByText(/kills 2 running background tasks/)).toBeInTheDocument();
+    expect(resend).not.toHaveBeenCalled();
 
-    await fireEvent.click(getByText('Revert'));
+    await fireEvent.click(within(view.getByRole('dialog')).getByText('Revert & send'));
     await waitFor(() => {
-      expect(revert).toHaveBeenCalledWith(thread.id, userItem.id, true);
+      expect(resend).toHaveBeenCalledWith(
+        thread.id,
+        item.id,
+        {
+          content: 'Update one of the lines',
+          attachmentIds: [],
+          killRunningBackgroundTasks: true,
+          providerCommand: false,
+        },
+      );
     });
   });
 
-  it('gates revert behind a draft-replace confirmation when the composer holds unsent work', async () => {
+  it('declining the kill confirmation returns to the editor with the edit intact', async () => {
     const thread = seedThread();
-    const userItem = makeItem({
-      id: 'user:1',
-      threadId: thread.id,
-      turnIndex: 1,
-      itemIndex: 0,
-      kind: 'user_text',
-      role: 'user',
-      summary: 'Update one of the lines',
-    });
-    const pane = await buildPane(thread, [userItem]);
-    mockDrafts(new Map([[thread.id, 'half-typed follow-up']]));
-    setBindingMock('CountRunningBackgroundTasks', async () => 0);
-    const revert = setBindingMock('RevertConversationToMessage', async () => undefined);
-
-    const { getByLabelText, getByText, findByText } = render(ChatView, { props: { pane } });
-    // Wait for the draft hydration to land in the composer so the click
-    // observes the non-empty state.
-    await waitFor(() => {
-      expect(getByLabelText('Message Input')).toHaveValue('half-typed follow-up');
-    });
-    await fireEvent.click(getByLabelText('Revert to this message'));
-
-    await findByText('Revert to this message?');
-    expect(getByText(/unsent draft will be replaced/)).toBeInTheDocument();
-    expect(revert).not.toHaveBeenCalled();
-
-    // No background tasks were involved, so confirming must NOT consent
-    // to a background kill.
-    await fireEvent.click(getByText('Revert'));
-    await waitFor(() => {
-      expect(revert).toHaveBeenCalledWith(thread.id, userItem.id, false);
-    });
-  });
-
-  it('cancelling the revert confirmation leaves the thread untouched', async () => {
-    const thread = seedThread();
-    const userItem = makeItem({
-      id: 'user:1',
-      threadId: thread.id,
-      turnIndex: 1,
-      itemIndex: 0,
-      kind: 'user_text',
-      role: 'user',
-      summary: 'Update one of the lines',
-    });
-    const pane = await buildPane(thread, [userItem]);
+    const item = userItem('user:1', 1, 'Update one of the lines');
+    const pane = await buildPane(thread, [item]);
     mockDrafts(new Map([[thread.id, '']]));
     setBindingMock('CountRunningBackgroundTasks', async () => 1);
-    const revert = setBindingMock('RevertConversationToMessage', async () => undefined);
+    const resend = setBindingMock('RevertConversationAndResendMessage', async () => undefined);
 
-    const { getByLabelText, getByText, findByText, queryByText } = render(ChatView, {
-      props: { pane },
-    });
-    await fireEvent.click(getByLabelText('Revert to this message'));
-    await findByText('Revert to this message?');
+    const view = render(ChatView, { props: { pane } });
+    const editor = await openMessageEditor(view);
+    await typeInEditor(editor, 'Update TWO of the lines');
+    await fireEvent.click(view.getByTestId('user-message-edit-send'));
+    await view.findByText('Revert to this message?');
 
-    await fireEvent.click(getByText('Cancel'));
-    await waitFor(() => {
-      expect(queryByText('Revert to this message?')).toBeNull();
-    });
-    expect(revert).not.toHaveBeenCalled();
+    await fireEvent.click(within(view.getByRole('dialog')).getByText('Cancel'));
+    await waitFor(() => expect(view.queryByText('Revert to this message?')).toBeNull());
+    expect(resend).not.toHaveBeenCalled();
+    expect(within(view.getByTestId('user-message-editor')).getByLabelText('Message Input'))
+      .toHaveValue('Update TWO of the lines');
   });
 
-  it('locks every revert button for the whole flow, starting at preflight', async () => {
+  it('returns to the editor when a guard refuses before anything was committed', async () => {
     const thread = seedThread();
-    const userA = makeItem({
-      id: 'user:1',
-      threadId: thread.id,
-      turnIndex: 1,
-      itemIndex: 0,
-      kind: 'user_text',
-      role: 'user',
-      summary: 'first prompt',
+    const item = userItem('user:1', 1, 'Update one of the lines');
+    const pane = await buildPane(thread, [item]);
+    mockDrafts(new Map([[thread.id, '']]));
+    setBindingMock('CountRunningBackgroundTasks', async () => 0);
+    setBindingMock('RevertConversationAndResendMessage', async () => {
+      throw new Error('revert and resend: thread is busy');
     });
-    const userB = makeItem({
-      id: 'user:2',
-      threadId: thread.id,
-      turnIndex: 2,
-      itemIndex: 0,
-      kind: 'user_text',
-      role: 'user',
-      summary: 'second prompt',
+
+    const view = render(ChatView, { props: { pane } });
+    const editor = await openMessageEditor(view);
+    await typeInEditor(editor, 'Update TWO of the lines');
+    await fireEvent.click(view.getByTestId('user-message-edit-send'));
+
+    // The anchor row survived, so nothing happened: the editor comes back
+    // with the user's text rather than dumping it. Both assertions live
+    // inside the waitFor: the input holds the same value while the flow
+    // is still executing, so the value alone cannot prove the editor was
+    // handed back — the re-enabled Send button is the discriminator.
+    await waitFor(() => {
+      expect(within(view.getByTestId('user-message-editor')).getByLabelText('Message Input'))
+        .toHaveValue('Update TWO of the lines');
+      expect(view.getByTestId('user-message-edit-send')).not.toBeDisabled();
     });
+  });
+
+  it('hands the message to the composer when the revert committed but the resend failed', async () => {
+    const thread = seedThread();
+    const item = userItem('user:1', 1, 'Update one of the lines');
+    const pane = await buildPane(thread, [item]);
+    mockDrafts(new Map([[thread.id, '']]));
+    setBindingMock('CountRunningBackgroundTasks', async () => 0);
+    setBindingMock('RevertConversationAndResendMessage', async () => {
+      // The backend truncated, then the send failed. Mirror the committed
+      // revert the way the WIRE delivers it — through the event handler,
+      // which truncates the panes AND records the draftPendingResend
+      // marker the failure handler consults — and leave the merged
+      // crash-copy draft behind for the composer to pick up.
+      applyUserMessageReverted({
+        threadId: item.threadId,
+        userItemId: item.id,
+        turnIndex: item.turnIndex,
+        keptAnchorTurnItemIds: [],
+        draftPendingResend: true,
+      });
+      mockDrafts(new Map([[thread.id, 'Update TWO of the lines']]));
+      throw new Error('revert and resend: resend failed: provider died');
+    });
+
+    const view = render(ChatView, { props: { pane } });
+    const editor = await openMessageEditor(view);
+    await typeInEditor(editor, 'Update TWO of the lines');
+    await fireEvent.click(view.getByTestId('user-message-edit-send'));
+
+    await waitFor(() => expect(view.queryByTestId('user-message-editor')).toBeNull());
+    await waitFor(() => {
+      expect(view.getByLabelText('Message Input')).toHaveValue('Update TWO of the lines');
+    });
+  });
+
+  it('locks every edit button for the whole flow, starting at preflight', async () => {
+    const thread = seedThread();
+    const userA = userItem('user:1', 1, 'first prompt');
+    const userB = userItem('user:2', 2, 'second prompt');
     const pane = await buildPane(thread, [userA, userB]);
     mockDrafts(new Map([[thread.id, '']]));
-    // Deferred count keeps the flow parked in 'preflight' so the test
-    // can observe the lock during the window where the old shape
-    // (busy id set only at execute time) silently swallowed clicks.
+    // Deferred count keeps the flow parked in 'preflight' so the test can
+    // observe the lock across the window where a busy-id-set-at-execute
+    // shape would have swallowed the click.
     let resolveCount: (n: number) => void = () => {};
     setBindingMock(
       'CountRunningBackgroundTasks',
       () => new Promise<number>((resolve) => { resolveCount = resolve; }),
     );
-    const revert = setBindingMock('RevertConversationToMessage', async () => undefined);
+    const resend = setBindingMock('RevertConversationAndResendMessage', async () => undefined);
 
-    const { getAllByLabelText } = render(ChatView, { props: { pane } });
-    const buttons = getAllByLabelText('Revert to this message');
+    const view = render(ChatView, { props: { pane } });
+    const buttons = view.getAllByLabelText('Edit message and resend from here');
     expect(buttons).toHaveLength(2);
-    await fireEvent.click(buttons[0]);
 
-    // Both rows lock while the first flow's preflight is in flight —
-    // a second click can't start an overlapping flow.
-    expect(buttons[0]).toBeDisabled();
+    // Opening the editor on one row already locks the other.
+    await openMessageEditor(view, 0);
+    expect(buttons[1]).toBeDisabled();
+
+    await fireEvent.click(view.getByTestId('user-message-edit-send'));
     expect(buttons[1]).toBeDisabled();
     await fireEvent.click(buttons[1]);
 
     resolveCount(0);
     await waitFor(() => {
-      expect(revert).toHaveBeenCalledWith(thread.id, userA.id, false);
+      expect(resend).toHaveBeenCalledWith(thread.id, userA.id, {
+        content: 'first prompt',
+        attachmentIds: [],
+        killRunningBackgroundTasks: false,
+        providerCommand: false,
+      });
     });
-    expect(revert).toHaveBeenCalledTimes(1);
-    await waitFor(() => {
-      expect(buttons[0]).not.toBeDisabled();
-    });
+    expect(resend).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(buttons[1]).not.toBeDisabled());
   });
 
-  it('self-dismisses the revert confirmation when the anchor row disappears', async () => {
+  it('voids the edit flow when the anchor row disappears through another path', async () => {
     const thread = seedThread();
-    const userItem = makeItem({
-      id: 'user:1',
-      threadId: thread.id,
-      turnIndex: 1,
-      itemIndex: 0,
-      kind: 'user_text',
-      role: 'user',
-      summary: 'Update one of the lines',
-    });
-    const pane = await buildPane(thread, [userItem]);
+    const item = userItem('user:1', 1, 'Update one of the lines');
+    const pane = await buildPane(thread, [item]);
     mockDrafts(new Map([[thread.id, '']]));
-    setBindingMock('CountRunningBackgroundTasks', async () => 1);
-    const revert = setBindingMock('RevertConversationToMessage', async () => undefined);
+    const resend = setBindingMock('RevertConversationAndResendMessage', async () => undefined);
 
-    const { getByLabelText, findByText, queryByText } = render(ChatView, { props: { pane } });
-    await fireEvent.click(getByLabelText('Revert to this message'));
-    await findByText('Revert to this message?');
+    const view = render(ChatView, { props: { pane } });
+    await openMessageEditor(view);
 
-    // The anchor is removed by another path (un-send / a concurrent
-    // revert reflected from a second pane) while the dialog is parked.
-    pane.removeRevertedItems(userItem.turnIndex, []);
-    await waitFor(() => {
-      expect(queryByText('Revert to this message?')).toBeNull();
-    });
-    expect(revert).not.toHaveBeenCalled();
+    // Un-send, or a concurrent revert reflected from a second pane.
+    pane.removeRevertedItems(item.turnIndex, []);
+    await waitFor(() => expect(view.queryByTestId('user-message-editor')).toBeNull());
+    expect(resend).not.toHaveBeenCalled();
   });
 
-  it('paints the reverted prompt during the RPC and restores the pre-revert draft on failure', async () => {
+  it('keeps the flow alive while executing, and suspends the composer send', async () => {
     const thread = seedThread();
-    const userItem = makeItem({
-      id: 'user:1',
-      threadId: thread.id,
-      turnIndex: 1,
-      itemIndex: 0,
-      kind: 'user_text',
-      role: 'user',
-      summary: 'Update one of the lines',
-    });
-    const pane = await buildPane(thread, [userItem]);
-    mockDrafts(new Map([[thread.id, 'half-typed follow-up']]));
+    const item = userItem('user:1', 1, 'Update one of the lines');
+    const pane = await buildPane(thread, [item]);
+    // A composer that WOULD be sendable, so the suspension is what
+    // disables it rather than an empty draft.
+    mockDrafts(new Map([[thread.id, 'composer work']]));
     setBindingMock('CountRunningBackgroundTasks', async () => 0);
-    let rejectRevert: (err: Error) => void = () => {};
+    let resolveResend: () => void = () => {};
     setBindingMock(
-      'RevertConversationToMessage',
-      () => new Promise<void>((_resolve, reject) => { rejectRevert = reject; }),
+      'RevertConversationAndResendMessage',
+      () => new Promise<void>((resolve) => { resolveResend = resolve; }),
     );
 
-    const { getByLabelText, getByText, findByText } = render(ChatView, { props: { pane } });
-    await waitFor(() => {
-      expect(getByLabelText('Message Input')).toHaveValue('half-typed follow-up');
-    });
-    await fireEvent.click(getByLabelText('Revert to this message'));
-    await findByText('Revert to this message?');
-    await fireEvent.click(getByText('Revert'));
+    const view = render(ChatView, { props: { pane } });
+    await waitFor(() => expect(view.getByTestId('composer-send')).not.toBeDisabled());
+    await openMessageEditor(view);
+    await fireEvent.click(view.getByTestId('user-message-edit-send'));
+    await waitFor(() => expect(view.getByTestId('composer-send')).toBeDisabled());
+    // Disabled, NOT flipped to Stop: there is no turn to interrupt and an
+    // interrupt would race the backend's own locked revert.
+    expect(view.queryByTestId('composer-interrupt')).toBeNull();
 
-    // While the destructive RPC is in flight the composer already shows
-    // the reverted prompt (the un-send path's optimistic-restore
-    // choreography) — typing here lands on top of it instead of being
-    // clobbered by the later event-driven reload.
-    await waitFor(() => {
-      expect(getByLabelText('Message Input')).toHaveValue(userItem.summary);
+    // The truncation lands mid-RPC — that is our own event, not an
+    // invalidation, so the flow must survive it and end on the resolve.
+    applyUserMessageReverted({
+      threadId: item.threadId,
+      userItemId: item.id,
+      turnIndex: item.turnIndex,
+      keptAnchorTurnItemIds: [],
+      draftPendingResend: true,
     });
+    await tick();
+    expect(view.getByTestId('composer-send')).toBeDisabled();
 
-    // Backend refuses: nothing was truncated, so the user's pre-revert
-    // draft comes back instead of an emptied (or reverted) composer.
-    rejectRevert(new Error('refused'));
-    await waitFor(() => {
-      expect(getByLabelText('Message Input')).toHaveValue('half-typed follow-up');
+    resolveResend();
+    await waitFor(() => expect(view.getByTestId('composer-send')).not.toBeDisabled());
+  });
+
+  it('voids the edit flow on a thread switch', async () => {
+    const thread = seedThread();
+    const other: Thread = { ...seedThread(), id: 'thread-2', title: 'Other thread' };
+    const item = userItem('user:1', 1, 'Update one of the lines');
+    const pane = await buildPane(thread, [item]);
+    mockDrafts(new Map([[thread.id, ''], [other.id, '']]));
+    const deleteAttachment = setBindingMock('DeleteAttachment', async () => {});
+    const resend = setBindingMock('RevertConversationAndResendMessage', async () => undefined);
+
+    const view = render(ChatView, { props: { pane } });
+    await openMessageEditor(view);
+
+    installThreadSwitchMocks(other, []);
+    await pane.switchThread(other);
+    await waitFor(() => expect(view.queryByTestId('user-message-editor')).toBeNull());
+    expect(resend).not.toHaveBeenCalled();
+    // Nothing was uploaded inside this edit, so nothing is deleted.
+    expect(deleteAttachment).not.toHaveBeenCalled();
+  });
+
+  it('dims exactly the rows the committed revert will destroy', async () => {
+    const thread = seedThread();
+    const before = userItem('user:0', 0, 'earlier prompt');
+    const anchor = userItem('user:1', 1, 'anchor prompt');
+    const sameTurnAfter = makeItem({
+      id: 'assistant:1',
+      threadId: thread.id,
+      turnIndex: 1,
+      itemIndex: 1,
+      kind: 'assistant_text',
+      role: 'assistant',
+      summary: 'an answer',
     });
+    const laterTurn = userItem('user:2', 2, 'later prompt');
+    const pane = await buildPane(thread, [before, anchor, sameTurnAfter, laterTurn]);
+    mockDrafts(new Map([[thread.id, '']]));
+    setBindingMock('CountRunningBackgroundTasks', async () => 0);
+    setBindingMock('RevertConversationAndResendMessage', () => new Promise<void>(() => {}));
+
+    const view = render(ChatView, { props: { pane } });
+    const rows = () => Array.from(
+      view.container.querySelectorAll<HTMLElement>('[data-row-index]'),
+    ).map((row) => row.classList.contains('chat-row-pending-cut'));
+
+    // Nothing is dimmed while the editor is merely open: nothing is being
+    // destroyed yet.
+    await openMessageEditor(view, 1);
+    expect(rows()).toEqual([false, false, false, false]);
+
+    await fireEvent.click(view.getByTestId('user-message-edit-send'));
+    // Strictly after the anchor in DISPLAY order — the same-turn row that
+    // PRECEDES it (here, the anchor itself) is not doomed, which is why
+    // the comparison is positional rather than per-turn.
+    await waitFor(() => expect(rows()).toEqual([false, false, true, true]));
   });
 
   it('does not render design preview inside ChatView after explicit toggle', async () => {

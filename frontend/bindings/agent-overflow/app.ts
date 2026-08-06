@@ -2305,15 +2305,10 @@ export function ProbeCodexAccount(): $CancellablePromise<provider$0.AccountInfo>
 
 /**
  * ProbeDevServerURL reports whether something is currently listening on
- * the loopback URL a command row's meta announced. Triage's textual
- * detection (internal/triage/dev_server_url.go) proves only that the
- * output mentioned the URL — a `cat` of a file containing
- * "http://localhost:5173" produces the same meta as a Vite banner — so
- * the DevServerChip calls this before rendering, and the "open in
- * browser" affordance is offered only while a server is actually
- * reachable. Loopback-only on the wire: the answer is a port-scan
- * oracle for the backend host, and a remote viewer's localhost is not
- * this machine anyway.
+ * the loopback URL a command row's meta announced, gating the
+ * DevServerChip (rationale: internal/devserverprobe doc.go). Loopback-
+ * only on the wire: the answer is a port-scan oracle for the backend
+ * host, and a remote viewer's localhost is not this machine anyway.
  */
 export function ProbeDevServerURL(rawURL: string): $CancellablePromise<boolean> {
     return $Call.ByID(3448359500, rawURL);
@@ -2691,27 +2686,35 @@ export function RetryThreadWorktreeSetup(threadID: string): $CancellablePromise<
 }
 
 /**
- * RevertConversationToMessage rolls a thread back to the selected user
- * message IN PLACE: the provider session is cut before that message,
- * every later turn is truncated from SQLite, and the reverted prompt is
- * restored to the composer draft. It is the message-keyed, idle-thread
- * counterpart to the two existing rollback entry points:
+ * RevertConversationAndResendMessage rolls a thread back to the selected
+ * user message and sends the caller's EDITED replacement in its place,
+ * atomically under one per-thread action lock. It is the backend half of
+ * the edit-in-place affordance on a past user message: the frontend
+ * opens an editor on the message and submits once, so there is never an
+ * intermediate state where the conversation is truncated and the user
+ * still has to press Enter on a rehydrated composer.
+ * 
+ * It is the message-keyed, idle-thread counterpart to the two other
+ * rollback entry points:
  * 
  *   - InterruptAndRevertIfClean un-sends the LATEST message while its
- *     turn is still live (Stop button); it interrupts the turn first.
+ *     turn is still live (Stop button); it interrupts the turn first and
+ *     DOES restore the prompt to the composer, because it has no
+ *     replacement to send.
  *   - ForkThreadFromMessage clones the kept prefix into a NEW thread and
  *     leaves the source thread untouched.
  * 
- * This one mutates the current thread and keeps it — the "revert to
- * here" affordance on a past user message. It shares the entire
- * destructive tail (provider rollback -> draft restore -> truncate) with
+ * This one mutates the current thread and keeps it. It shares the whole
+ * destructive tail (provider rollback -> truncate) with
  * InterruptAndRevertIfClean through rollbackConversationLocked and emits
  * the same `user_message:reverted` event, so the frontend truncates the
- * timeline and rehydrates the composer through one code path.
+ * timeline through one code path — distinguished only by
+ * DraftPendingResend, which tells it a replacement message is already on
+ * the way and the draft row is saga state rather than composer content.
  * 
  * Reverting stops the provider session, which kills any background work
  * it owns (Claude background tasks, Codex background terminals /
- * subagents). killRunningBackgroundTasks is the caller's explicit
+ * subagents). opts.KillRunningBackgroundTasks is the caller's explicit
  * consent to that: false refuses the revert while background tasks are
  * live (re-checked under the thread lock — the frontend preflights the
  * count to decide whether to show its confirmation dialog, but this
@@ -2730,9 +2733,17 @@ export function RetryThreadWorktreeSetup(threadID: string): $CancellablePromise<
  * caller reaching this method on a claude-tui thread would otherwise
  * truncate AO's history cache while the live TUI keeps the full
  * conversation.
+ * 
+ * Workflow-mode threads are rejected for the same structural reason. A
+ * send into a taken-over workflow run has to detach the run first, and
+ * that preparation round-trips the engine command loop — which
+ * re-acquires this thread's action lock and would deadlock against the
+ * lock this saga holds across the whole sequence. Rather than reach
+ * half of the takeover machinery from inside the lock, an unguarded
+ * call fails loudly.
  */
-export function RevertConversationToMessage(threadID: string, userItemID: string, killRunningBackgroundTasks: boolean): $CancellablePromise<void> {
-    return $Call.ByID(250090428, threadID, userItemID, killRunningBackgroundTasks);
+export function RevertConversationAndResendMessage(threadID: string, userItemID: string, opts: $models.RevertAndResendOptions): $CancellablePromise<void> {
+    return $Call.ByID(2059566413, threadID, userItemID, opts);
 }
 
 /**

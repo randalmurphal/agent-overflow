@@ -2473,6 +2473,56 @@ export class RetainedWorktree {
     }
 }
 
+/**
+ * RevertAndResendOptions carries the resend half of
+ * RevertConversationAndResendMessage — everything past "which message".
+ * Content is required; the zero value of the rest is an attachment-less
+ * prose resend with no background-kill consent. A struct rather than
+ * positionals because the method crossed the arity where a transposed
+ * bool still type-checks (mirrors SendMessageOptions).
+ */
+export class RevertAndResendOptions {
+    /**
+     * Content is the edited replacement message.
+     */
+    "content": string;
+    "attachmentIds"?: string[];
+
+    /**
+     * KillRunningBackgroundTasks is the caller's explicit consent to kill
+     * background work the revert orphans; see the method doc.
+     */
+    "killRunningBackgroundTasks"?: boolean;
+
+    /**
+     * ProviderCommand mirrors SendMessageOptions.ProviderCommand: set only
+     * when the user invoked a provider-executed command from the command
+     * menu, so the Claude slash guard lets it through.
+     */
+    "providerCommand"?: boolean;
+
+    /** Creates a new RevertAndResendOptions instance. */
+    constructor($$source: Partial<RevertAndResendOptions> = {}) {
+        if (!("content" in $$source)) {
+            this["content"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new RevertAndResendOptions instance from a string or object.
+     */
+    static createFrom($$source: any = {}): RevertAndResendOptions {
+        const $$createField1_0 = $$createType2;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("attachmentIds" in $$parsedSource) {
+            $$parsedSource["attachmentIds"] = $$createField1_0($$parsedSource["attachmentIds"]);
+        }
+        return new RevertAndResendOptions($$parsedSource as Partial<RevertAndResendOptions>);
+    }
+}
+
 export class SendDiffReviewCommentsInput {
     "pr"?: store$0.DiffReviewPRContext | null;
 

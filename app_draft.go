@@ -186,6 +186,45 @@ func (a *App) DeleteEmptyDraftThread(threadID string) (bool, error) {
 	return deleted, nil
 }
 
+// stagedThreadDraft is the before/after pair one merge-and-upsert wrote.
+// A caller parking transient saga state in the draft row
+// (RevertConversationAndResendMessage) needs both: prior to put the
+// user's untouched work-in-progress back afterwards, and merged to
+// prove the row it is about to overwrite is still its own staged copy
+// and not a composer save that landed while the saga ran.
+type stagedThreadDraft struct {
+	merged store.ThreadDraft
+	// prior is the row as it was BEFORE the merge; priorExisted
+	// distinguishes an empty composer from a persisted empty draft, which
+	// settle back differently (delete vs restore).
+	prior        store.ThreadDraft
+	priorExisted bool
+}
+
+// mergeAndUpsertThreadDraft merges parts AHEAD of the thread's current
+// composer draft and persists the result. The order is chronological —
+// the parts were typed before whatever is sitting in the composer now —
+// and composerdraft.MergeParts carries the current row's terminal chips
+// and pending-plan link through untouched, so a merge round-trip never
+// costs the user composer context.
+//
+// Callers that only ever ADD to the draft (the flush-queue restore
+// paths) discard the result.
+func (a *App) mergeAndUpsertThreadDraft(threadID string, parts []composerdraft.Part) (stagedThreadDraft, error) {
+	current, existed, err := a.store.GetThreadDraft(threadID)
+	if err != nil {
+		return stagedThreadDraft{}, err
+	}
+	merged, err := composerdraft.MergeParts(threadID, current, parts, time.Now().UnixMilli())
+	if err != nil {
+		return stagedThreadDraft{}, err
+	}
+	if err := a.store.UpsertThreadDraft(merged); err != nil {
+		return stagedThreadDraft{}, err
+	}
+	return stagedThreadDraft{merged: merged, prior: current, priorExisted: existed}, nil
+}
+
 func (a *App) composerDraftFromUserItemWithClonedAttachments(threadID string, userItem store.Item, updatedAt int64) (store.ThreadDraft, error) {
 	meta, err := usermessage.FromItem(userItem)
 	if err != nil {

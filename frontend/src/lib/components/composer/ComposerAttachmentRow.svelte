@@ -1,10 +1,12 @@
 <script lang="ts">
   import X from 'lucide-svelte/icons/x';
+  import { untrack } from 'svelte';
   import Icon from '../primitives/Icon.svelte';
   import type { Attachment } from '../../types/attachment';
   import { formatAttachmentSize } from '../../types/attachment';
   import {
     createAttachmentPreviews,
+    type AttachmentPreviewCache,
     type ExpandedImagePreview,
   } from '../../utils/attachmentPreview.svelte';
 
@@ -13,10 +15,24 @@
     onRemove: (id: string) => void;
     onExpand?: (preview: ExpandedImagePreview) => void;
     dragActive?: boolean;
+    /**
+     * Blob-URL owner. Absent, this row owns them and revokes on destroy —
+     * right for the composer, which only unmounts with its pane. A row
+     * inside the virtualized timeline passes the pane's cache so a
+     * windowing remount re-uses the decoded thumbnails instead of
+     * revoking and re-fetching every image.
+     */
+    cache?: AttachmentPreviewCache;
   }
 
-  let { attachments, onRemove, onExpand, dragActive = false }: Props = $props();
-  const attachmentPreviews = createAttachmentPreviews(() => attachments);
+  let { attachments, onRemove, onExpand, dragActive = false, cache }: Props = $props();
+  // Captured once, deliberately: the factory holds the cache for the
+  // component's lifetime, and a host's cache identity is fixed per mounted
+  // row (it is keyed by pane + item, both stable while this row exists).
+  const attachmentPreviews = createAttachmentPreviews(
+    () => attachments,
+    { cache: untrack(() => cache) },
+  );
 
   async function expandAttachment(id: string): Promise<void> {
     if (!onExpand) return;

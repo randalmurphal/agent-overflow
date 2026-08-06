@@ -25,7 +25,11 @@ Svelte 5 + Vite 8 (Rolldown) + Tailwind 4 + TypeScript.
   editing rows, virtualized scrolling, markdown, or review/companion
   pane affordances.
 - `src/lib/components/composer/` — message composer, mode / effort /
-  model pickers.
+  model pickers. `ComposerInputSurface.svelte` is the reusable editing
+  core (text entry, mentions, `/` commands, attachments) with two hosts:
+  `Composer.svelte` and chat's `UserMessageEditor.svelte`. Everything
+  send-, thread- or prompt-shaped stays with the host — the surface edits
+  text, it does not decide what happens to it.
 - `src/lib/components/sidebar/` — projects + thread list.
 - `src/lib/components/primitives/` — reusable Menu / Popover / Modal /
   dropdown shells. Pickers compose these rather than rolling their own

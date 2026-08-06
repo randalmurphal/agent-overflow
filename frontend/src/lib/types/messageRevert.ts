@@ -1,7 +1,7 @@
 /**
  * Event emitted via `user_message:reverted` after a successful
- * conversation revert — the Stop/Esc un-send and the explicit
- * revert-to-message button. The backend has truncated SQLite; this
+ * conversation revert — the Stop/Esc un-send and the edit-and-resend
+ * saga. The backend has truncated SQLite; this
  * event tells the frontend exactly how to mirror that cut:
  *
  * - Every item with `turnIndex > turnIndex` is gone.
@@ -25,4 +25,14 @@ export interface UserMessageRevertedEvent {
   userItemId: string;
   turnIndex: number;
   keptAnchorTurnItemIds?: string[];
+  /**
+   * True when the revert is the middle of the edit-and-resend saga
+   * (`RevertConversationAndResendMessage`): the backend wrote a merged
+   * draft row (edited text + the composer's WIP) as a crash copy before
+   * truncating, and the replacement message is already being dispatched
+   * behind this event. That row is saga state, not composer content —
+   * so the composer must NOT rehydrate from it. The saga restores the
+   * user's real WIP draft row byte-identically once the resend lands.
+   */
+  draftPendingResend?: boolean;
 }

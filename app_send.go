@@ -244,18 +244,37 @@ func (a *App) sendMessage(threadID string, content string, attachmentIDs []strin
 	return err
 }
 
-func (a *App) sendMessageWithOptions(threadID string, content string, opts sendMessageOptions) (item store.Item, err error) {
+// sendMessagePrepared is what sendMessageWithOptions resolves BEFORE it
+// takes the per-thread action lock. Neither field can be produced inside
+// the critical section: an invalid runtime mode has to be rejected
+// before the workflow takeover detaches a run, and the takeover
+// preparation itself round-trips the engine command loop, which
+// re-acquires this thread's action lock.
+//
+// The zero value is the correct input for a caller that already holds
+// the lock and has neither concern — no runtime-mode override, no
+// workflow takeover (see RevertConversationAndResendMessage, which
+// rejects workflow-mode threads outright rather than reaching the
+// takeover machinery from inside the lock).
+type sendMessagePrepared struct {
+	runtimeMode    provider.RuntimeMode
+	hasRuntimeMode bool
+	// takeoverItemID names the workflow item prepareWorkflowTakeoverSend
+	// detached for user steering. Empty for every non-workflow send; the
+	// locked tail re-verifies it once the lock is held.
+	takeoverItemID string
+}
+
+func (a *App) sendMessageWithOptions(threadID string, content string, opts sendMessageOptions) (store.Item, error) {
 	if a.shuttingDown.Load() {
 		return store.Item{}, ErrShuttingDown
-	}
-	if a.sendMessageFn != nil {
-		return store.Item{}, a.sendMessageFn(threadID, content, opts.AttachmentIDs)
 	}
 
 	runtimeMode, hasRuntimeMode, err := threadmode.ParseOptionalRuntime(opts.RuntimeMode)
 	if err != nil {
 		return store.Item{}, fmt.Errorf("send message: %w", err)
 	}
+	prepared := sendMessagePrepared{runtimeMode: runtimeMode, hasRuntimeMode: hasRuntimeMode}
 
 	// Workflow phase threads: a user send steers a taken-over run. The
 	// preparation round-trips the engine command loop, whose takeover
@@ -265,7 +284,6 @@ func (a *App) sendMessageWithOptions(threadID string, content string, opts sendM
 	// critical section and is re-verified cheaply once the lock is held
 	// (registerTakeover is idempotent for a live registration and fails
 	// typed when the takeover raced away in between).
-	var takeoverItemID string
 	if len(opts.OutputSchema) == 0 {
 		peek, err := a.store.GetThread(threadID)
 		if err != nil {
@@ -276,7 +294,7 @@ func (a *App) sendMessageWithOptions(threadID string, content string, opts sendM
 			if err != nil {
 				return store.Item{}, fmt.Errorf("send message: %w", err)
 			}
-			takeoverItemID = itemID
+			prepared.takeoverItemID = itemID
 		}
 	}
 
@@ -288,8 +306,29 @@ func (a *App) sendMessageWithOptions(threadID string, content string, opts sendM
 	unlock := a.threadLocks().Lock(threadID)
 	defer unlock()
 
-	if hasRuntimeMode {
-		if err := a.applyRuntimeModeLocked(threadID, runtimeMode); err != nil {
+	return a.sendMessageLocked(threadID, content, opts, prepared)
+}
+
+// sendMessageLocked is the send pipe's critical section: runtime-mode
+// update, envelope resolution, optimistic user-item persist, lazy
+// session start, pending-send registration, and provider dispatch. The
+// CALLER must already hold a.threadLocks().Lock(threadID) — it is split
+// out so a saga that has to hold that lock across more than a send (the
+// edit-and-resend revert) can dispatch the send inside its own critical
+// section instead of dropping the lock and racing the window.
+func (a *App) sendMessageLocked(
+	threadID string, content string, opts sendMessageOptions, prepared sendMessagePrepared,
+) (item store.Item, err error) {
+	// The test seam lives at the narrowest waist every send path passes
+	// through, not at the outer entry point: a saga that dispatches its
+	// send here (RevertConversationAndResendMessage) would otherwise
+	// bypass a test's stub and drive a real provider session.
+	if a.sendMessageFn != nil {
+		return store.Item{}, a.sendMessageFn(threadID, content, opts.AttachmentIDs)
+	}
+
+	if prepared.hasRuntimeMode {
+		if err := a.applyRuntimeModeLocked(threadID, prepared.runtimeMode); err != nil {
 			return store.Item{}, fmt.Errorf("send message: runtime mode: %w", err)
 		}
 	}
@@ -299,10 +338,10 @@ func (a *App) sendMessageWithOptions(threadID string, content string, opts sendM
 		return store.Item{}, fmt.Errorf("send message: load thread: %w", err)
 	}
 	if len(opts.OutputSchema) == 0 && thread.Mode == threadmode.ModeWorkflow {
-		if takeoverItemID == "" {
+		if prepared.takeoverItemID == "" {
 			return store.Item{}, fmt.Errorf("send message: workflow takeover: thread entered workflow mode mid-send; retry")
 		}
-		if err := a.workflowRunner.registerTakeover(takeoverItemID, threadID); err != nil {
+		if err := a.workflowRunner.registerTakeover(prepared.takeoverItemID, threadID); err != nil {
 			return store.Item{}, fmt.Errorf("send message: workflow takeover: %w", err)
 		}
 	}

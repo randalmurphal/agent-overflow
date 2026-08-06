@@ -125,15 +125,31 @@ export async function dispatchSend(opts: SendOptions): Promise<boolean> {
     // the local draft store if it's still on that thread. If the user has
     // moved on, surface a toast so the failed send is visible rather than
     // silent.
-    await opts.restoreDraft(opts.threadId, opts.snapshot);
+    //
+    // Its own failure is a SECOND failure, not a replacement for the first:
+    // it must neither swallow the send error's reporting below nor let the
+    // "draft preserved" wording claim something that did not happen.
+    let draftPreserved = true;
+    try {
+      await opts.restoreDraft(opts.threadId, opts.snapshot);
+    } catch (restoreErr) {
+      draftPreserved = false;
+      console.error('Failed to restore the draft after a failed send:', restoreErr);
+    }
     const readableError = userFacingError(err);
     if (opts.draftThreadId() !== opts.threadId) {
       addToast(
         'error',
-        `Message to the previous thread failed to send; draft preserved: ${readableError}`,
+        draftPreserved
+          ? `Message to the previous thread failed to send; draft preserved: ${readableError}`
+          : `Message to the previous thread failed to send, and its draft could not be saved: ${readableError}`,
       );
     } else {
-      opts.reportError(`Failed to send message: ${readableError}`);
+      opts.reportError(
+        draftPreserved
+          ? `Failed to send message: ${readableError}`
+          : `Failed to send message, and the draft could not be restored: ${readableError}`,
+      );
     }
     return false;
   }

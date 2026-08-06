@@ -5,6 +5,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   popoverNav,
+  dispatchComposerInputKeydown,
   handleMentionPopoverKeydown,
   handleSlashPopoverKeydown,
 } from './composerKeyboard';
@@ -279,5 +280,87 @@ describe('handleSlashPopoverKeydown', () => {
     expect(handleSlashPopoverKeydown(ev, slash)).toBe(false);
     expect(ev.defaultPrevented).toBe(false);
     expect(slash.insertCommand).not.toHaveBeenCalled();
+  });
+});
+
+// The whole textarea keydown contract, in dispatch order — one owner for
+// both hosts (the composer and the in-place message editor), so the send
+// gate below is the only place either of them can submit from.
+describe('dispatchComposerInputKeydown', () => {
+  function deps(overrides: Partial<Parameters<typeof dispatchComposerInputKeydown>[1]> = {}) {
+    return {
+      mentions: stubMentions(),
+      slash: stubSlash(),
+      placeholderKeydown: vi.fn(() => false),
+      submitEnter: vi.fn(),
+      ...overrides,
+    };
+  }
+
+  it('plain Enter submits and swallows the keystroke', () => {
+    const d = deps();
+    const ev = kdown('Enter');
+    dispatchComposerInputKeydown(ev, d);
+    expect(d.submitEnter).toHaveBeenCalledTimes(1);
+    expect(ev.defaultPrevented).toBe(true);
+  });
+
+  it.each([
+    ['shiftKey', { shiftKey: true }],
+    ['ctrlKey', { ctrlKey: true }],
+    ['metaKey', { metaKey: true }],
+    ['altKey', { altKey: true }],
+  ])('Enter with %s is a newline, not a send', (_label, init) => {
+    const d = deps();
+    const ev = kdown('Enter', init);
+    dispatchComposerInputKeydown(ev, d);
+    expect(d.submitEnter).not.toHaveBeenCalled();
+    expect(ev.defaultPrevented).toBe(false);
+  });
+
+  it('Enter mid-IME-composition confirms the candidate instead of sending', () => {
+    // No preventDefault either: the browser has to deliver this one to the
+    // composition, or the IME loses the keystroke it was waiting for.
+    const d = deps();
+    const ev = kdown('Enter', { isComposing: true });
+    dispatchComposerInputKeydown(ev, d);
+    expect(d.submitEnter).not.toHaveBeenCalled();
+    expect(ev.defaultPrevented).toBe(false);
+  });
+
+  it('the legacy keyCode 229 sentinel counts as composing', () => {
+    // WebKit and some Android IMEs deliver the composition's final keydown
+    // after compositionend, with isComposing already false.
+    const d = deps();
+    const ev = kdown('Enter', { keyCode: 229 });
+    dispatchComposerInputKeydown(ev, d);
+    expect(d.submitEnter).not.toHaveBeenCalled();
+    expect(ev.defaultPrevented).toBe(false);
+  });
+
+  it('an Enter the placeholder handler claims never reaches the send gate', () => {
+    const d = deps({ placeholderKeydown: vi.fn(() => true) });
+    dispatchComposerInputKeydown(kdown('Enter'), d);
+    expect(d.submitEnter).not.toHaveBeenCalled();
+  });
+
+  it('an Enter the host claims never reaches the popovers or the send gate', () => {
+    const d = deps({ claimKey: vi.fn(() => true) });
+    dispatchComposerInputKeydown(kdown('Enter'), d);
+    expect(d.placeholderKeydown).not.toHaveBeenCalled();
+    expect(d.submitEnter).not.toHaveBeenCalled();
+  });
+
+  it('Tab is swallowed with no popover open, and yielded as Shift+Tab', () => {
+    const d = deps();
+    const tab = kdown('Tab');
+    dispatchComposerInputKeydown(tab, d);
+    expect(tab.defaultPrevented).toBe(true);
+
+    // Shift+Tab is the global mode.cycle chord: consuming it here would
+    // cancel the dispatch the global handler is waiting to make.
+    const chord = kdown('Tab', { shiftKey: true });
+    dispatchComposerInputKeydown(chord, d);
+    expect(chord.defaultPrevented).toBe(false);
   });
 });

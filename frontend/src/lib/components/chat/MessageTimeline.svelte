@@ -12,7 +12,12 @@
   } from './markdownSettledContext';
   import type { TimelineVirtualizerHandle } from '../../utils/virtual/types';
   import TimelineVirtualizer from '../virtual/TimelineVirtualizer.svelte';
-  import { timelineNodeKey, type TimelineNode } from '../../utils/subagentGrouping';
+  import {
+    timelineNodeItemIndex,
+    timelineNodeKey,
+    timelineNodeTurnIndex,
+    type TimelineNode,
+  } from '../../utils/subagentGrouping';
   import { getActiveTurn, isThreadWorking } from '../../stores/threadStatuses.svelte';
   import Button from '../primitives/Button.svelte';
   import ReadGroupRow from './ReadGroupRow.svelte';
@@ -108,11 +113,38 @@
     pane,
     onImageExpand,
     userMessageActions,
+    pendingCutAfter = null,
   }: {
     pane: ThreadPane;
     onImageExpand?: (preview: ExpandedImagePreview) => void;
     userMessageActions?: UserMessageActions;
+    /**
+     * Display position of a revert that is actually in flight. Every row
+     * strictly AFTER it is about to be destroyed, and renders dimmed for
+     * the duration — an honest pending state, since nothing truncates
+     * until the backend's own event lands. Null whenever no destruction
+     * is running (an open editor destroys nothing yet).
+     *
+     * A separate prop rather than a field on `userMessageActions`: this
+     * is consumed by the row WRAPPER, one level above the components
+     * that read those actions, and it applies to every row kind.
+     */
+    pendingCutAfter?: { turnIndex: number; itemIndex: number } | null;
   } = $props();
+
+  /**
+   * Strictly after the pending cut in DISPLAY order. Positional, not
+   * per-turn: Claude's item-granular cut keeps the anchor turn's rows
+   * that precede the anchor, so those are not doomed. The anchor is a
+   * user message, so no activity run ever straddles it and comparing a
+   * node by its first item's position is exact.
+   */
+  function isPendingCutRow(node: TimelineNode): boolean {
+    if (!pendingCutAfter) return false;
+    const turnIndex = timelineNodeTurnIndex(node);
+    if (turnIndex !== pendingCutAfter.turnIndex) return turnIndex > pendingCutAfter.turnIndex;
+    return timelineNodeItemIndex(node) > pendingCutAfter.itemIndex;
+  }
 
   // Inner scroll container. We own scrolling here; <TimelineVirtualizer>
   // renders its measured rows inside `contentEl` and reads scroll input
@@ -447,6 +479,9 @@
     autoScrollInFlight: () => stick.autoScrollInFlight(),
     preserveTimelineWindowAnchor: windowAnchor.preserveTimelineWindowAnchor,
     preserveViewportBottom: windowAnchor.preserveViewportBottom,
+    stickToLatest: () => {
+      void paging.jumpToLatest();
+    },
   };
 
   // Hide contentEl while the virtualizer and async row content settle.
@@ -876,9 +911,15 @@
                  wrapper directly (prose, user messages, errors,
                  notifications, proposed plans) are exactly the ones that
                  never had a rail. -->
+            <!-- `chat-row-pending-cut` is a pure class toggle on a wrapper
+                 that already exists: dimming must not change any row's DOM
+                 shape or write per-row state, or a virtualizer remeasure
+                 lands in the middle of a destructive RPC. -->
             <div
               data-row-index={index}
+              class="transition-opacity duration-200"
               class:mt-4={rows.rowDecorations.toolTextBoundaryIndexes.has(index)}
+              class:chat-row-pending-cut={isPendingCutRow(node)}
             >
               <!-- Style-load-bearing: app.css sets `display: flow-root` on
                    [data-row-geometry-content] to establish a BFC that CONTAINS
@@ -1016,3 +1057,13 @@
        area regardless of transcript scrollTop. -->
   <ScrollToBottomButton visible={!stick.isAtBottom || pane.hasMoreNewer} onClick={() => { void paging.jumpToLatest(); }} />
 </div>
+
+<style>
+  /* Honest pending state for a revert that is actually running: the rows
+     the backend is about to destroy recede, but stay readable and stay
+     interactive — nothing has been truncated yet, and pretending
+     otherwise would be the optimistic lie this flow exists to avoid. */
+  .chat-row-pending-cut {
+    opacity: 0.42;
+  }
+</style>

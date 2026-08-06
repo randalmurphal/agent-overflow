@@ -1,5 +1,5 @@
 <script lang="ts">
-  import RotateCcw from 'lucide-svelte/icons/rotate-ccw';
+  import Pencil from 'lucide-svelte/icons/pencil';
   import GitFork from 'lucide-svelte/icons/git-fork';
   import { untrack } from 'svelte';
   import type { Item } from '../../types/models';
@@ -11,6 +11,8 @@
   } from '../../utils/attachmentPreview.svelte';
   import CopyButton from '../primitives/CopyButton.svelte';
   import UserMessageBody from './UserMessageBody.svelte';
+  import UserMessageEditor from './UserMessageEditor.svelte';
+  import { preservePaneScrollAnchorAt } from './preserveScrollAnchor';
   import Icon from '../primitives/Icon.svelte';
   import IconButton from '../primitives/IconButton.svelte';
   import { addToast } from '../../stores/toast.svelte';
@@ -44,13 +46,19 @@
 
   const userMeta = $derived(parseUserMessageMeta(item.meta));
   const isWireOnlyUserMessage = $derived(userMeta?.wire_only === true);
-  const canRequestRevert = $derived(typeof actions?.onRevertMessage === 'function');
-  // ANY active revert flow locks every revert button, not just the
-  // anchor row's: only one revert can run at a time, and a disabled
-  // control beats a click that ChatView's flow guard would silently
-  // swallow (the flow spans preflight and the confirm dialog, not just
+  const canRequestEdit = $derived(typeof actions?.onEditMessage === 'function');
+  // ANY active edit session locks every pencil, not just the anchor
+  // row's: only one edit can run at a time, and a disabled control beats
+  // a click that ChatView's flow guard would silently swallow (the
+  // session spans the editor, preflight and the confirm dialog, not just
   // the destructive RPC).
-  const revertLocked = $derived((actions?.revertingItemId ?? null) !== null);
+  const editLocked = $derived((actions?.editSession ?? null) !== null);
+  // This row IS the open editor. The bubble renders the editor in place
+  // of its body — the read-only attachment grid included, since the
+  // editor's own attachment row renders the draft's copy of them.
+  const editSession = $derived(
+    actions?.editSession?.itemId === item.id ? actions.editSession : null,
+  );
   const canRequestFork = $derived(typeof actions?.onForkMessage === 'function');
   const forkBusy = $derived(actions?.forkingItemId === item.id);
 
@@ -112,9 +120,28 @@
   const time = $derived(formatTimeOfDay(item.createdAt));
   const isoTime = $derived(new Date(item.createdAt).toISOString());
 
-  async function requestRevert(): Promise<void> {
-    if (!canRequestRevert || revertLocked || actionsTurnLocked) return;
-    await actions?.onRevertMessage?.(item);
+  // Both mode transitions change the row's height by a lot (a clamped
+  // paragraph becomes a composer card, and back), so both hold the
+  // bubble's top edge: the reader's eye is on the message they are about
+  // to rewrite, and it must not slide out from under them.
+  let bubbleEl: HTMLDivElement | undefined = $state(undefined);
+
+  function requestEdit(): void {
+    if (!canRequestEdit || editLocked || actionsTurnLocked) return;
+    void preservePaneScrollAnchorAt(pane, bubbleEl, () => {
+      // A clamped message must open in full to be edited — and stay open
+      // if the edit is cancelled, because the reader chose to look at it.
+      pane?.setUserMessageExpanded(item.id, true);
+      void actions?.onEditMessage?.(item);
+    });
+  }
+
+  function cancelEdit(): void {
+    const session = editSession;
+    if (!session) return;
+    void preservePaneScrollAnchorAt(pane, bubbleEl, () => {
+      session.onCancel();
+    });
   }
 
   async function requestFork(): Promise<void> {
@@ -123,73 +150,89 @@
   }
 </script>
 
+{#snippet readOnlyBody()}
+  {#if attachments.length > 0}
+    <div
+      class="mb-2 grid max-w-[420px] grid-cols-2 gap-2"
+      data-testid="user-message-attachments"
+    >
+      {#each attachments as attachment, index (attachment.id)}
+        {@const preview = attachmentPreviews.previewFor(attachment.id)}
+        <button
+          type="button"
+          aria-label={`Preview ${attachment.filename}`}
+          class="relative overflow-hidden rounded-lg border border-border bg-surface-1 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
+          onclick={() => expandAttachment(attachment.id)}
+        >
+          {#if preview}
+            <img
+              src={preview.url}
+              alt={attachment.filename}
+              class="aspect-[4/3] w-full object-cover"
+            />
+          {:else}
+            <span class="flex aspect-[4/3] w-full items-center justify-center px-2 text-center text-xs text-text-secondary">
+              {attachment.filename}
+            </span>
+          {/if}
+          <span
+            class="absolute bottom-1 left-1 rounded bg-black/70 px-1 py-0.5 text-[0.625rem] font-medium leading-none text-white"
+            aria-label={`Image ${index + 1}`}
+          >
+            #{index + 1}
+          </span>
+        </button>
+      {/each}
+    </div>
+  {/if}
+  {#if visibleSummary}
+    <!-- Text only: attachments above stay outside the clamped region. -->
+    <UserMessageBody
+      text={visibleSummary}
+      segments={summarySegments}
+      itemId={item.id}
+      {pane}
+    />
+  {/if}
+{/snippet}
+
 <div class="group mb-5 flex justify-end">
   <div class="flex max-w-[82%] flex-col items-end">
     <div
+      bind:this={bubbleEl}
       class="rounded-[18px] rounded-br-[8px] border border-border-subtle bg-surface-2/60
              px-4 py-2.5 text-[0.8125rem] leading-[1.55] text-fg shadow-sheet"
       class:user-message-target-flash-a={targetFlash && targetFlashNonce % 2 === 0}
       class:user-message-target-flash-b={targetFlash && targetFlashNonce % 2 === 1}
+      class:w-[46rem]={editSession !== null}
+      class:max-w-full={editSession !== null}
       data-target-flash={targetFlash ? 'true' : undefined}
       data-testid="user-message-bubble"
     >
-      {#if attachments.length > 0}
-        <div
-          class="mb-2 grid max-w-[420px] grid-cols-2 gap-2"
-          data-testid="user-message-attachments"
-        >
-          {#each attachments as attachment, index (attachment.id)}
-            {@const preview = attachmentPreviews.previewFor(attachment.id)}
-            <button
-              type="button"
-              aria-label={`Preview ${attachment.filename}`}
-              class="relative overflow-hidden rounded-lg border border-border bg-surface-1 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
-              onclick={() => expandAttachment(attachment.id)}
-            >
-              {#if preview}
-                <img
-                  src={preview.url}
-                  alt={attachment.filename}
-                  class="aspect-[4/3] w-full object-cover"
-                />
-              {:else}
-                <span class="flex aspect-[4/3] w-full items-center justify-center px-2 text-center text-xs text-text-secondary">
-                  {attachment.filename}
-                </span>
-              {/if}
-              <span
-                class="absolute bottom-1 left-1 rounded bg-black/70 px-1 py-0.5 text-[0.625rem] font-medium leading-none text-white"
-                aria-label={`Image ${index + 1}`}
-              >
-                #{index + 1}
-              </span>
-            </button>
-          {/each}
-        </div>
-      {/if}
-      {#if visibleSummary}
-        <!-- Text only: attachments above stay outside the clamped region. -->
-        <UserMessageBody
-          text={visibleSummary}
-          segments={summarySegments}
-          itemId={item.id}
+      {#if editSession && pane}
+        <UserMessageEditor
           {pane}
+          session={editSession}
+          onCancel={cancelEdit}
+          {onImageExpand}
         />
+      {:else}
+        {@render readOnlyBody()}
       {/if}
     </div>
     <div class="mt-1 flex items-center justify-end gap-1.5 pr-1 text-[0.625rem] text-fg-hint">
       {#if showMessageActions && pane}
-        {#if canRequestRevert}
+        {#if canRequestEdit}
           <span class="opacity-0 transition-opacity duration-150 group-hover:opacity-100 focus-within:opacity-100">
             <IconButton
-              label="Revert to this message"
+              label="Edit message and resend from here"
               size="sm"
               variant="ghost"
-              disabled={revertLocked || actionsTurnLocked}
-              onClick={() => void requestRevert()}
+              disabled={editLocked || actionsTurnLocked}
+              onClick={requestEdit}
             >
               {#snippet children()}
-                <Icon icon={RotateCcw} size={13} strokeWidth={2.2} />
+                <Icon icon={Pencil} size={13} strokeWidth={2.2} />
               {/snippet}
             </IconButton>
           </span>

@@ -188,6 +188,17 @@ export interface PaneScrollController {
    * `withViewportBottomHeld` rather than reaching for it directly.
    */
   preserveViewportBottom?(change: () => void, opts?: PreserveViewportBottomOptions): void;
+  /**
+   * Land the viewport at the thread's true tail and engage bottom-follow,
+   * reconciling a windowed timeline first (`hasMoreNewer` → tail reload —
+   * a bare bottom write would pin the bottom of a stale window). The
+   * edit-and-resend flow calls this after a successful saga: the rows the
+   * reader was parked against were just destroyed at their own request,
+   * and the resend streams at the new tail. Optional because ChannelView
+   * registers its raw stick controller and no discussion surface runs
+   * that flow.
+   */
+  stickToLatest?(): void;
 }
 
 export interface PreserveViewportBottomOptions {

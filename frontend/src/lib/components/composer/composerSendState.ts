@@ -11,6 +11,13 @@ export interface ComposerSendStateInput {
   hasDiffReviewSource: boolean;
   hasDraftDiffReviewComments: boolean;
   isTurnActive: boolean;
+  /**
+   * A thread-level operation owns sending right now — the edit-and-resend
+   * saga, which reverts and re-sends under one backend lock. Distinct
+   * from `sending` (this composer's own send) because nothing here
+   * started it and nothing here can stop it; the button just refuses.
+   */
+  sendSuspended?: boolean;
 }
 
 export interface ComposerSendState {
@@ -37,6 +44,7 @@ export function deriveComposerSendState(input: ComposerSendStateInput): Composer
     // helper, not just a SendMessage RPC.
     canSend: !input.isDisabled
       && !input.sending
+      && !input.sendSuspended
       && !input.hasBlockingPrompt
       && !input.hasUserInputPrompt
       && (

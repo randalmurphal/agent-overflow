@@ -249,7 +249,17 @@ func (h *Harness) seedHistory(threadID string, turns []HarnessSeedTurn) error {
 	}
 	base := time.Now().Add(-time.Duration(len(turns)) * time.Minute).UnixMilli()
 	for i, turn := range turns {
-		turnIndex := i + 1
+		// Turn indexes are 0-based, exactly as sendMessageLocked
+		// allocates them: the first turn of a live thread is 0
+		// (LastTurnIndex on an empty thread, un-incremented because
+		// there are no prior items). Seeding from 1 made every seeded
+		// thread one index off from the same conversation produced
+		// live, which silently put turn-0-specific behavior out of
+		// reach of the whole e2e suite — the conversation rollback
+		// branches on `anchor.TurnIndex == 0` to drop the provider
+		// session reference instead of slicing its transcript, and no
+		// seeded fixture could ever reach it.
+		turnIndex := i
 		at := base + int64(i)*time.Minute.Milliseconds()
 		if err := h.seedTurn(threadID, turnIndex, at, turn); err != nil {
 			return fmt.Errorf("turn %d: %w", turnIndex, err)

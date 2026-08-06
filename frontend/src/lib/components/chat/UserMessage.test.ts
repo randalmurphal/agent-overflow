@@ -9,8 +9,11 @@ import {
   resetForTest as resetThreadStatuses,
 } from '../../stores/threadStatuses.svelte';
 import type { ThreadPane } from '../../stores/thread.svelte';
+import { createComposerDraftStore } from '../../stores/composerDraft.svelte';
+import type { ComposerDraftSnapshot } from '../../stores/composerDraftSnapshots';
 import UserMessage from './UserMessage.svelte';
-import type { UserMessageActions } from './userMessageActions';
+import type { UserMessageActions, UserMessageEditSession } from './userMessageActions';
+import { createUserMessageEditUiState } from './userMessageEditUi.svelte';
 import { USER_MESSAGE_CLAMP_LINES } from './userMessageClamp';
 
 describe('<UserMessage>', () => {
@@ -37,7 +40,33 @@ describe('<UserMessage>', () => {
       paneId: 'pane-1',
       thread: makeThread({ id: 'thread-1' }),
       attachmentCacheFor: () => undefined,
+      setUserMessageExpanded: () => {},
     } as unknown as ThreadPane;
+  }
+
+  /**
+   * A session for a row that is NOT this one — enough to exercise the
+   * one-edit-at-a-time lock without mounting an editor.
+   */
+  function makeEditSession(itemId: string): UserMessageEditSession {
+    const draft = createComposerDraftStore({ persistence: 'none' });
+    const seeded: ComposerDraftSnapshot = {
+      content: '',
+      attachments: [],
+      terminalChips: [],
+      sourceProposedPlan: null,
+    };
+    draft.seedLocalSnapshot('thread-1', seeded);
+    return {
+      itemId,
+      draft,
+      seeded,
+      sessionUploadedIds: new Set<string>(),
+      ui: createUserMessageEditUiState(),
+      stage: 'editing',
+      onCancel: () => {},
+      onSubmit: () => {},
+    };
   }
 
   it('shows its timestamp without requiring row hover', () => {
@@ -269,10 +298,10 @@ describe('<UserMessage>', () => {
     expect(queryByLabelText('Fork from this message')).toBeNull();
   });
 
-  it('shows the revert action for an inactive user message when the handler is available', () => {
+  it('shows the edit action for an inactive user message when the handler is available', () => {
     const pane = makeActionsPane();
     const actions: UserMessageActions = {
-      onRevertMessage: vi.fn(),
+      onEditMessage: vi.fn(),
     };
 
     const { getByLabelText } = render(UserMessage, {
@@ -285,15 +314,42 @@ describe('<UserMessage>', () => {
           turnIndex: 1,
           kind: 'user_text',
           role: 'user',
-          summary: 'revertable',
+          summary: 'editable',
         }),
       },
     });
 
-    expect(getByLabelText('Revert to this message')).toBeInTheDocument();
+    expect(getByLabelText('Edit message and resend from here')).toBeInTheDocument();
   });
 
-  it('requests message revert through the parent-owned handler', async () => {
+  it('opens the editor through the parent-owned handler and unclamps the message', async () => {
+    const pane = makeActionsPane();
+    const setUserMessageExpanded = vi.fn();
+    (pane as unknown as { setUserMessageExpanded: unknown }).setUserMessageExpanded =
+      setUserMessageExpanded;
+    const item = makeItem({
+      id: 'user:1',
+      threadId: 'thread-1',
+      turnIndex: 1,
+      kind: 'user_text',
+      role: 'user',
+      summary: 'editable',
+    });
+    const onEditMessage = vi.fn(async () => {});
+    const actions: UserMessageActions = { onEditMessage };
+
+    const { getByLabelText } = render(UserMessage, {
+      props: { pane, item, actions },
+    });
+
+    await fireEvent.click(getByLabelText('Edit message and resend from here'));
+    await waitFor(() => expect(onEditMessage).toHaveBeenCalledWith(item));
+    // A clamped message has to open in full to be edited — and stays open
+    // if the edit is cancelled.
+    expect(setUserMessageExpanded).toHaveBeenCalledWith('user:1', true);
+  });
+
+  it('disables the edit action during an active turn and blocks activation', async () => {
     const pane = makeActionsPane();
     const item = makeItem({
       id: 'user:1',
@@ -301,52 +357,31 @@ describe('<UserMessage>', () => {
       turnIndex: 1,
       kind: 'user_text',
       role: 'user',
-      summary: 'revertable',
+      summary: 'editable',
     });
-    const onRevertMessage = vi.fn(async () => {});
-    const actions: UserMessageActions = { onRevertMessage };
+    const onEditMessage = vi.fn(async () => {});
+    const actions: UserMessageActions = { onEditMessage };
 
     const { getByLabelText } = render(UserMessage, {
       props: { pane, item, actions },
     });
 
-    await fireEvent.click(getByLabelText('Revert to this message'));
-    await waitFor(() => expect(onRevertMessage).toHaveBeenCalledWith(item));
-  });
-
-  it('disables the revert action during an active turn and blocks activation', async () => {
-    const pane = makeActionsPane();
-    const item = makeItem({
-      id: 'user:1',
-      threadId: 'thread-1',
-      turnIndex: 1,
-      kind: 'user_text',
-      role: 'user',
-      summary: 'revertable',
-    });
-    const onRevertMessage = vi.fn(async () => {});
-    const actions: UserMessageActions = { onRevertMessage };
-
-    const { getByLabelText } = render(UserMessage, {
-      props: { pane, item, actions },
-    });
-
-    const revertButton = getByLabelText('Revert to this message');
-    expect(revertButton).not.toBeDisabled();
+    const editButton = getByLabelText('Edit message and resend from here');
+    expect(editButton).not.toBeDisabled();
 
     projectTurnStarted('thread-1', 'turn-1', 1, 1000);
     await tick();
 
-    expect(revertButton).toBeDisabled();
-    await fireEvent.click(revertButton);
-    expect(onRevertMessage).not.toHaveBeenCalled();
+    expect(editButton).toBeDisabled();
+    await fireEvent.click(editButton);
+    expect(onEditMessage).not.toHaveBeenCalled();
 
     projectTurnCompleted('thread-1', 'turn-1');
     await tick();
-    expect(revertButton).not.toBeDisabled();
+    expect(editButton).not.toBeDisabled();
   });
 
-  it('disables the revert action while ANOTHER message\'s revert flow is active', async () => {
+  it('disables the edit action while ANOTHER message\'s edit session is active', async () => {
     const pane = makeActionsPane();
     const item = makeItem({
       id: 'user:1',
@@ -354,28 +389,31 @@ describe('<UserMessage>', () => {
       turnIndex: 1,
       kind: 'user_text',
       role: 'user',
-      summary: 'revertable',
+      summary: 'editable',
     });
-    const onRevertMessage = vi.fn(async () => {});
-    // revertingItemId points at a different row: one revert flow at a
-    // time, so this row's button locks too instead of swallowing the
-    // click in ChatView's flow guard.
-    const actions: UserMessageActions = { onRevertMessage, revertingItemId: 'user:other' };
+    const onEditMessage = vi.fn(async () => {});
+    // The session names a different row: one edit at a time, so this
+    // row's button locks too instead of swallowing the click in
+    // ChatView's flow guard.
+    const actions: UserMessageActions = {
+      onEditMessage,
+      editSession: makeEditSession('user:other'),
+    };
 
     const { getByLabelText } = render(UserMessage, {
       props: { pane, item, actions },
     });
 
-    const revertButton = getByLabelText('Revert to this message');
-    expect(revertButton).toBeDisabled();
-    await fireEvent.click(revertButton);
-    expect(onRevertMessage).not.toHaveBeenCalled();
+    const editButton = getByLabelText('Edit message and resend from here');
+    expect(editButton).toBeDisabled();
+    await fireEvent.click(editButton);
+    expect(onEditMessage).not.toHaveBeenCalled();
   });
 
-  it('does not show the revert action for wire-only user messages', () => {
+  it('does not show the edit action for wire-only user messages', () => {
     const pane = makeActionsPane();
     const actions: UserMessageActions = {
-      onRevertMessage: vi.fn(),
+      onEditMessage: vi.fn(),
     };
 
     const { queryByLabelText } = render(UserMessage, {
@@ -394,7 +432,7 @@ describe('<UserMessage>', () => {
       },
     });
 
-    expect(queryByLabelText('Revert to this message')).toBeNull();
+    expect(queryByLabelText('Edit message and resend from here')).toBeNull();
   });
 
   it('renders image attachments from item metadata and expands them', async () => {

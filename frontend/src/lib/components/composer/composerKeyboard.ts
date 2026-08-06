@@ -176,6 +176,75 @@ export function handleSlashPopoverKeydown(
   return false;
 }
 
+export interface ComposerInputKeydownDeps {
+  mentions: ComposerMentionsHandle;
+  slash: ComposerSlashHandle;
+  /**
+   * The host's first look at the keystroke, before either popover. Return
+   * true when it was consumed. The composer uses it to walk ArrowUp into a
+   * pending user-input request's options, which are rendered above the
+   * input surface and so are not the surface's to find.
+   */
+  claimKey?: (event: KeyboardEvent) => boolean;
+  /** Atomic image-placeholder deletion. Returns true when consumed. */
+  placeholderKeydown: (event: KeyboardEvent) => boolean;
+  /** A plain Enter that nothing above claimed, i.e. "submit this". */
+  submitEnter: () => void;
+}
+
+/**
+ * The composer textarea's whole keydown contract, in dispatch order. Lives
+ * here rather than in the component because the order IS the contract:
+ * every branch below exists to stop a later one from firing, and reading
+ * them together is the only way to see that.
+ */
+export function dispatchComposerInputKeydown(
+  e: KeyboardEvent,
+  deps: ComposerInputKeydownDeps,
+): void {
+  if (deps.claimKey?.(e)) return;
+
+  const popoverOpen = deps.mentions.mentionTrigger !== null || deps.slash.slashOpen;
+
+  // Shift+Tab is owned by the global keydown handler (`mode.cycle`).
+  // Yield without preventDefault — the global handler bails on
+  // `defaultPrevented`, so consuming the chord here would cancel
+  // the dispatch; the global handler preventDefaults on successful
+  // dispatch to suppress the browser's focus-shift. The popover
+  // guard skips this branch when a menu is open, but
+  // `handleMentionPopoverKeydown` / `handleSlashPopoverKeydown` below
+  // have their own Shift+Tab bail-out so the chord still reaches the
+  // global dispatcher.
+  if (e.key === 'Tab' && e.shiftKey && !popoverOpen) return;
+
+  // Plain Tab (no popover) is a no-op inside the composer. Browser
+  // default would advance focus out of the textarea, which we don't
+  // want — users navigate panes/sidebar via explicit chords. With either
+  // completion menu open, Tab belongs to the menu (it completes) and the
+  // dispatch below claims it.
+  if (e.key === 'Tab' && !e.shiftKey && !popoverOpen) {
+    e.preventDefault();
+    return;
+  }
+
+  // Popover dispatch short-circuits when the keystroke was consumed;
+  // otherwise we fall through to the send guard below.
+  if (handleMentionPopoverKeydown(e, deps.mentions)) return;
+  if (handleSlashPopoverKeydown(e, deps.slash)) return;
+
+  if (deps.placeholderKeydown(e)) return;
+
+  // Enter mid-IME-composition confirms the candidate; the composed text is
+  // still in the IME's buffer, not the textarea's value. Yield WITHOUT
+  // preventDefault — the browser has to deliver it to the composition.
+  if (e.key === 'Enter' && isImeComposingEvent(e)) return;
+
+  if (e.key === 'Enter' && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
+    e.preventDefault();
+    deps.submitEnter();
+  }
+}
+
 /**
  * Focus the textarea and place the cursor at the end of its current
  * value. Shared idiom: any time the composer programmatically grabs

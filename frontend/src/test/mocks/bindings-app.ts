@@ -426,7 +426,7 @@ export const HighlightCode = dispatch('HighlightCode');
 export const HighlightPatch = dispatch('HighlightPatch');
 export const HighlightPatchWithContext = dispatch('HighlightPatchWithContext');
 export const ForkThreadFromMessage = dispatch('ForkThreadFromMessage');
-export const RevertConversationToMessage = dispatch('RevertConversationToMessage');
+export const RevertConversationAndResendMessage = dispatch('RevertConversationAndResendMessage');
 
 // Thread runtime mode
 export const GetThreadRuntimeMode = dispatch('GetThreadRuntimeMode');

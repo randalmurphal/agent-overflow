@@ -4,6 +4,7 @@ import {
   resetComposerDraftSnapshotsForTest,
 } from './composerDraft.svelte';
 import type { Attachment } from '../types/attachment';
+import { getToasts } from './toast.svelte';
 import { setBindingMock } from '../../test/mocks/bindings-app';
 
 function installMocks(draft: {
@@ -405,15 +406,41 @@ describe('composerDraft store', () => {
     expect(saveMock.mock.calls.length).toBeGreaterThan(preFlushCalls);
   });
 
-  it('exposes an `error` message when SaveDraft rejects', async () => {
+  it('toasts once per failing streak when the debounced save rejects', async () => {
+    // The debounced path swallows the rejection (the text is safe in the
+    // remembered snapshot), so the toast is the only way the user learns
+    // the draft is not durably saved. Edge-triggered: a failing backend
+    // provokes a retry per keystroke, and toasting each one is spam.
     setBindingMock('SaveDraft', async () => {
       throw new Error('offline');
     });
     const store = createComposerDraftStore({ debounceMs: 0 });
     await store.setThread('thread-1');
+    const preexisting = new Set(getToasts().map((t) => t.id));
+    const fresh = () => getToasts().filter((t) => !preexisting.has(t.id));
+
     store.setContent('boom');
     await new Promise((r) => setTimeout(r, 10));
-    expect(store.error).toMatch(/offline/);
+    expect(fresh()).toHaveLength(1);
+    expect(fresh()[0].type).toBe('error');
+    expect(fresh()[0].message).toMatch(/Failed to save draft.*offline/);
+
+    // Retries while the backend stays down are quiet…
+    store.setContent('boom again');
+    await new Promise((r) => setTimeout(r, 10));
+    expect(fresh()).toHaveLength(1);
+
+    // …and a successful save re-arms the next failure.
+    setBindingMock('SaveDraft', async () => {});
+    store.setContent('recovered');
+    await new Promise((r) => setTimeout(r, 10));
+    setBindingMock('SaveDraft', async () => {
+      throw new Error('offline again');
+    });
+    store.setContent('down again');
+    await new Promise((r) => setTimeout(r, 10));
+    expect(fresh()).toHaveLength(2);
+    expect(fresh()[1].message).toMatch(/offline again/);
   });
 
   it('hasDraft reflects non-empty content / attachments / chips', async () => {
@@ -489,6 +516,82 @@ describe('composerDraft store', () => {
       sourceProposedPlan: { threadId: 'src', itemId: 'plan-1' },
     });
     expect(store.sourceProposedPlan).toEqual({ threadId: 'src', itemId: 'plan-1' });
+  });
+
+  it('restoreDraftFor paints the text before persisting, and rejects when the write fails', async () => {
+    // Paint-first: the write failing is precisely when the text has
+    // nowhere else to live, so it must already be on screen. The store is
+    // left in the ordinary unsaved-draft state (`hasPendingSave` + the
+    // remembered snapshot) that the retry machinery understands, and the
+    // rejection lets the caller say the restore is not durable.
+    setBindingMock('SaveDraft', async () => {
+      throw new Error('offline');
+    });
+    const store = createComposerDraftStore({ debounceMs: 0 });
+    await store.setThread('thread-1');
+
+    await expect(store.restoreDraftFor('thread-1', {
+      content: 'failed send',
+      attachments: [],
+      terminalChips: [],
+    })).rejects.toThrow(/offline/);
+
+    expect(store.content).toBe('failed send');
+    expect(store.hasPendingSave).toBe(true);
+  });
+
+  it('a failed restore leaves no optimistic marker behind', async () => {
+    // The marker means "painted locally, expecting the backend to already
+    // hold this". A failed write makes that false, so the state is the
+    // ordinary unsaved-draft one — which a reload discards, exactly as it
+    // does for any other unsaved local draft.
+    installMocks({ content: 'backend prompt', attachmentIds: [], terminalChips: [] });
+    setBindingMock('SaveDraft', async () => {
+      throw new Error('offline');
+    });
+    const store = createComposerDraftStore({ debounceMs: 50 });
+    await store.setThread('thread-1');
+    const snapshot = {
+      content: 'interrupted prompt',
+      attachments: [],
+      terminalChips: [],
+      sourceProposedPlan: null,
+    };
+
+    store.applyOptimisticRestoredDraft('thread-1', snapshot);
+    await expect(store.restoreDraftFor('thread-1', snapshot)).rejects.toThrow(/offline/);
+    store.setContent('edited prompt');
+    await store.reloadFromBackend('thread-1');
+
+    expect(store.content).toBe('backend prompt');
+    await store.flushPending();
+  });
+
+  it('loadPersistedSnapshot reads the row and its attachment records', async () => {
+    // Same loader hydration uses, placeholder normalization included, so a
+    // caller merging against the row cannot disagree with what a hydrate
+    // would have shown.
+    installMocks({ content: 'row text', attachmentIds: ['att-2'], terminalChips: [] });
+    const store = createComposerDraftStore({ debounceMs: 0 });
+    await store.setThread('thread-1');
+
+    const loaded = await store.loadPersistedSnapshot('thread-other');
+
+    expect(loaded.content).toBe('row text [Image #1]');
+    expect(loaded.attachments.map((a) => a.id)).toEqual(['att-2']);
+    // A pure read: the store's own state is untouched.
+    expect(store.threadId).toBe('thread-1');
+  });
+
+  it('loadPersistedSnapshot rejects rather than reporting an empty draft', async () => {
+    // An empty snapshot would read as "the row holds nothing", which is a
+    // different fact from "we could not read the row".
+    setBindingMock('GetDraft', async () => {
+      throw new Error('no such thread');
+    });
+    const store = createComposerDraftStore({ debounceMs: 0 });
+
+    await expect(store.loadPersistedSnapshot('thread-1')).rejects.toThrow(/no such thread/);
   });
 
   it('persists sourceProposedPlan via SaveDraft and resets on thread switch', async () => {

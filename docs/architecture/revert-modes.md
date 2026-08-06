@@ -3,18 +3,28 @@
 Every real user message gets a `message_anchors` row written immediately
 after its `items` row persists. The anchor carries the provider-side
 identity of the message — Claude's wire uuid + parent uuid, and the AO
-`turn_index` Codex anchors resolve against — so the two surviving
+`turn_index` Codex anchors resolve against — so the three
 message-boundary operations can slice provider history at that message:
 
 - **Fork-from-message** (`app_thread_fork.go`) — clone the thread up to
-  a chosen user message into a new thread.
+  a chosen user message into a new thread. The source thread is left
+  untouched.
 - **Revert-on-interrupt** (`app_revert_on_interrupt.go`) — the Stop/Esc
   un-send: when exactly one user message is in flight with no assistant
   content yet, Stop rolls the message back (conversation only) and
   restores it into the composer draft instead of leaving a dangling
   turn.
+- **Edit-and-resend** (`app_revert_and_resend.go`) — the edit-in-place
+  affordance on a past user message on an IDLE thread: one saga stages
+  the edited text in `thread_drafts` as a crash copy (merged ahead of
+  any composer work-in-progress), rolls back, emits
+  `user_message:reverted` with `draftPendingResend`, resends the
+  replacement through `sendMessageLocked`, and settles the draft row
+  back to the user's work-in-progress. The whole sequence holds one
+  acquisition of the thread's action lock, so no send, revert, or
+  session start can slip between the truncation and the replacement.
 
-Both are conversation-level operations. There is no working-tree
+All three are conversation-level operations. There is no working-tree
 revert: the per-message git-checkpoint machinery (hidden
 `refs/agent-overflow/*` snapshot refs, `thread_tracked_files`,
 revert-to-message with file restore) was removed — it flooded repo
@@ -33,10 +43,19 @@ missing or drifted anchor is synthesized from the item's persisted meta
 ## Rollback sequence
 
 `rollbackConversationLocked` (`app_conversation_rollback.go`) is the
-shared saga behind both entry points: reject active turns, stop the
-provider session, roll provider history back, delete `items`/`turns`
-from the selected turn onward, and restore the prompt into
+shared destructive tail behind the un-send and the edit-and-resend saga:
+stop the provider session, roll provider history back, delete
+`items`/`turns` from the selected turn onward, and — only when the
+caller passed a `promptDraft` — restore the prompt into
 `thread_drafts`.
+
+That last step is caller-owned. A nil `promptDraft` means the caller
+already put a durable copy in the draft row and settles it itself: the
+un-send passes the rolled-back prompt so the composer rehydrates, while
+edit-and-resend passes nil because there is nothing to rehydrate (the
+replacement is being sent) and the row is holding its crash copy. The
+active-turn rejection lives in the entry points, not here — the un-send
+interrupts the live turn first, and edit-and-resend refuses outright.
 
 Provider-side rollback differs by provider:
 

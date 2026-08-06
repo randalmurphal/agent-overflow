@@ -11,7 +11,12 @@
 // handler immediately with the seeded snapshot) and that's forbidden
 // inside a derive.
 
-import { wsClient, type TransportStatusSnapshot } from '../transport/wsClient';
+import {
+  DisconnectedError,
+  TransportError,
+  wsClient,
+  type TransportStatusSnapshot,
+} from '../transport/wsClient';
 
 let snapshot = $state<TransportStatusSnapshot>({
   status: 'disconnected',
@@ -24,6 +29,53 @@ let unsubscribe: (() => void) | null = wsClient.onStatusChange((next) => {
 
 export function getTransportStatus(): TransportStatusSnapshot {
   return snapshot;
+}
+
+/**
+ * Whether an RPC rejection means "the wire broke", as opposed to "the
+ * backend answered and refused".
+ *
+ * The distinction matters to any caller whose RPC has side effects: a
+ * refusal is a definite "nothing happened", while a transport-class
+ * failure leaves the caller epistemically crash-equivalent — the request
+ * may have been fully executed on the far side and only its answer lost.
+ * A timed-out RPC is in the same class for a stronger reason: the server
+ * is still holding it, so it can complete AFTER the rejection.
+ *
+ * Feature code classifies through this predicate rather than importing
+ * the transport's error classes, which stay behind `stores/` per
+ * `frontend/AGENTS.md`.
+ */
+export function isTransportClassError(err: unknown): boolean {
+  return err instanceof DisconnectedError
+    || (err instanceof TransportError && err.code === 'timeout');
+}
+
+/**
+ * Resolves the next time the transport is connected — immediately when it
+ * already is. One-shot: the subscription is dropped as soon as it fires,
+ * so a caller awaiting it cannot leak a handler across reconnect cycles.
+ *
+ * Never rejects. A transport that never comes back leaves the promise
+ * pending forever, which is the honest answer for "do this once we can
+ * talk to the backend again" — the caller has nothing to do meanwhile.
+ */
+export function whenTransportConnected(): Promise<void> {
+  return new Promise<void>((resolve) => {
+    let unsubscribe: (() => void) | null = null;
+    let settled = false;
+    unsubscribe = wsClient.onStatusChange((next) => {
+      if (settled || next.status !== 'connected') return;
+      settled = true;
+      // `onStatusChange` invokes the handler synchronously with the
+      // current snapshot, so on an already-connected transport this runs
+      // BEFORE the assignment above completes — the post-call check below
+      // is what drops the subscription in that case.
+      unsubscribe?.();
+      resolve();
+    });
+    if (settled) unsubscribe();
+  });
 }
 
 /** Force a reconnect attempt immediately. Wired to the banner's "Retry"

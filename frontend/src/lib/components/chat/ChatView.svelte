@@ -14,12 +14,8 @@
   import type { ExpandedImagePreview } from '../../utils/attachmentPreview.svelte';
   import { createComposerDraftStore } from '../../stores/composerDraft.svelte';
   import { registerComposerDraft } from '../../stores/composerDraftRegistry.svelte';
-  import type { ComposerDraftSnapshot } from '../../stores/composerDraftSnapshots';
-  import { restoredDraftSnapshotFromUserItem } from '../../utils/userMessageDraftSnapshot';
   import {
-    CountRunningBackgroundTasks,
     ForkThreadFromMessage,
-    RevertConversationToMessage,
     MarkThreadRead,
   } from '../../stores/bindings';
   import { prependThread, updateThreadReadState } from '../../stores/threads.svelte';
@@ -32,6 +28,7 @@
   import type { Item, Thread } from '../../types/models';
   import { userFacingError } from '../../utils/userFacingError';
   import type { UserMessageActions } from './userMessageActions';
+  import { createEditResendFlow } from './editResendFlow.svelte';
   import { providerSupports } from '../../providers/catalog';
   import {
     isUiRenderTraceEnabled,
@@ -68,40 +65,19 @@
   let composerHeight = $state(120);
   let expandedImagePreview: ExpandedImagePreview | null = $state(null);
   let forkingMessageItemId: string | null = $state(null);
-  // Revert-to-message flow. One flow at a time, tracked from the moment
-  // of the click: 'preflight' spans the background-task count RPC,
-  // 'confirm' parks the flow behind the ConfirmDialog, 'executing'
-  // spans the destructive RPC. Tracking the whole lifecycle in one
-  // value (instead of a busy id set only at execute time) is what lets
-  // UserMessage disable every revert button while any flow exists — a
-  // disabled control beats a silently swallowed click during the
-  // preflight window.
-  //
-  // The flow is one-click UNLESS the revert would destroy something
-  // beyond the conversation tail itself — then it parks at 'confirm'
-  // and the dialog names exactly what else is lost:
-  //   - runningCount > 0: the revert stops the provider session, which
-  //     kills that background work (confirm re-runs with
-  //     killRunningBackgroundTasks=true; the backend re-checks under
-  //     the thread lock, so a task that starts between preflight and
-  //     RPC surfaces as a loud refusal, never a silent kill).
-  //   - replacesDraft: the composer holds unsent work that the restored
-  //     prompt would overwrite (frontend-only guard — the live composer
-  //     is frontend state the backend can't see).
-  //
-  // $state.raw: stages transition by whole-object replacement, and the
-  // invalidation effects below compare flow identity across awaits —
-  // a deep proxy would break that identity.
-  type RevertFlow =
-    | { stage: 'preflight'; item: Item }
-    | { stage: 'confirm'; item: Item; runningCount: number; replacesDraft: boolean }
-    | { stage: 'executing'; item: Item };
-  let revertFlow = $state.raw<RevertFlow | null>(null);
-  // Fork-from-message and revert-to-message are AO-mediated affordances
+  // Edit-and-resend. The whole flow — stages, the confirm gate, the
+  // destructive RPC and every failure branch — lives in
+  // `editResendFlow.svelte.ts`; this component keeps the prop wiring, the
+  // two invalidation effects and the confirm dialog's markup.
+  const editResend = createEditResendFlow({
+    getPane: () => pane,
+    getComposerDraft: () => draft,
+  });
+  // Fork-from-message and edit-and-resend are AO-mediated affordances
   // that claude-tui doesn't support (its per-message actions live inside
   // the TUI via take-control) — leaving a handler undefined makes
   // UserMessage drop that button (it derives `canRequestFork` /
-  // `canRequestRevert` from `typeof onForkMessage / onRevertMessage ===
+  // `canRequestEdit` from `typeof onForkMessage / onEditMessage ===
   // 'function'`), so the gate lands on every rendered user message from
   // this single point. Both share the `fork` capability flag: they are
   // the same message-anchor class and both are off for claude-tui.
@@ -111,8 +87,8 @@
   const userMessageActions = $derived<UserMessageActions>({
     onForkMessage: supportsMessageAnchorActions ? forkFromUserMessage : undefined,
     forkingItemId: forkingMessageItemId,
-    onRevertMessage: supportsMessageAnchorActions ? revertToUserMessage : undefined,
-    revertingItemId: revertFlow?.item.id ?? null,
+    onEditMessage: supportsMessageAnchorActions ? editResend.open : undefined,
+    editSession: editResend.editSession,
   });
 
   // Compose-overlay ResizeObserver: publishes the composer's actual height
@@ -414,149 +390,24 @@
     }
   }
 
-  // Revert the current thread in place to this message. The backend cuts
-  // the provider session, truncates SQLite, and restores the reverted
-  // prompt to the composer draft, then emits `user_message:reverted` —
-  // which the events layer consumes to mirror the exact cut and reload
-  // the draft (see stores/eventsMessageRevert.ts). So there's no
-  // navigation and no success toast here: the visible timeline collapse
-  // plus the refilled composer IS the confirmation.
-  async function revertToUserMessage(item: Item): Promise<void> {
-    const thread = pane.thread;
-    if (!thread || revertFlow) return;
-    const flow: RevertFlow = { stage: 'preflight', item };
-    revertFlow = flow;
-    let runningCount = 0;
-    try {
-      runningCount = Number(await CountRunningBackgroundTasks(thread.id));
-    } catch (err) {
-      if (revertFlow === flow) revertFlow = null;
-      addToast('error', `Failed to check background tasks: ${userFacingError(err)}`);
-      return;
-    }
-    // The invalidation effects below (thread switch, anchor removed)
-    // may have voided the flow while the count RPC was in flight.
-    if (revertFlow !== flow) return;
-    // Same composer-occupancy predicate as the un-send path
-    // (canRevertEarlyInterrupt): typed text, attachments, or terminal
-    // chips all count as unsent work.
-    const replacesDraft =
-      draft.content !== '' || draft.attachments.length > 0 || draft.terminalChips.length > 0;
-    if (runningCount > 0 || replacesDraft) {
-      revertFlow = { stage: 'confirm', item, runningCount, replacesDraft };
-      return;
-    }
-    await executeRevertToUserMessage(item, false);
-  }
-
-  async function executeRevertToUserMessage(
-    item: Item,
-    killRunningBackgroundTasks: boolean,
-  ): Promise<void> {
-    if (revertFlow?.stage === 'executing') return;
-    const thread = pane.thread;
-    if (!thread || thread.id !== item.threadId) {
-      revertFlow = null;
-      return;
-    }
-    const flow: RevertFlow = { stage: 'executing', item };
-    revertFlow = flow;
-    // What the composer holds right now is the failure baseline: if the
-    // revert is refused or errors, this comes back (unless the user has
-    // typed over the optimistic restore by then).
-    const previousDraft: ComposerDraftSnapshot = {
-      content: draft.content,
-      attachments: [...draft.attachments],
-      terminalChips: [...draft.terminalChips],
-      sourceProposedPlan: draft.sourceProposedPlan,
-    };
-    try {
-      // Settle the composer's save pipeline BEFORE the destructive RPC:
-      // cancel the debounce and wait out in-flight saves so a stale
-      // draft save can't land after the backend's UpsertThreadDraft and
-      // clobber the restored prompt.
-      await draft.prepareForExternalDraftReplace(thread.id);
-      // Paint the reverted prompt optimistically — the same choreography
-      // as the un-send path. This is what makes typing during the
-      // RPC→event gap safe: edits land on top of the already-restored
-      // prompt and mark the restore dirty, so the event's
-      // reloadFromBackend preserves them instead of clobbering the
-      // composer with a re-hydrate.
-      const restoredDraft = restoredDraftSnapshotFromUserItem(item);
-      draft.applyOptimisticRestoredDraft(thread.id, restoredDraft);
-      try {
-        await RevertConversationToMessage(thread.id, item.id, killRunningBackgroundTasks);
-      } catch (err) {
-        // Failed revert: nothing was truncated (the event only fires on
-        // full success), so put the user's pre-revert draft back —
-        // locally and durably — unless they already typed over the
-        // optimistic restore; their newer edits win.
-        if (draft.clearOptimisticRestoredDraft(thread.id, restoredDraft)) {
-          void draft.restoreDraftFor(thread.id, previousDraft);
-        }
-        throw err;
-      }
-    } catch (err) {
-      addToast('error', `Revert failed: ${userFacingError(err)}`);
-    } finally {
-      if (revertFlow === flow) revertFlow = null;
-    }
-  }
-
-  function confirmPendingRevert(): void {
-    const flow = revertFlow;
-    if (flow?.stage !== 'confirm') return;
-    void executeRevertToUserMessage(flow.item, flow.runningCount > 0);
-  }
-
-  function cancelPendingRevert(): void {
-    if (revertFlow?.stage === 'confirm') revertFlow = null;
-  }
-
-  // A thread switch voids the flow at any stage: preflight/confirm
-  // consent was given against the thread it was opened on, and an
-  // executing flow's busy state is meaningless on another thread (the
-  // RPC itself runs to completion and errors still surface via toast).
+  // A thread switch voids the flow at any stage; an anchor row that
+  // disappears through another path (un-send, a concurrent revert
+  // reflected from a second pane) voids it too. Both passes read the
+  // pane themselves — deliberately, so the second one only subscribes to
+  // `pane.items` while a flow is actually parked against a row.
   $effect(() => {
-    const currentThreadId = pane.thread?.id;
-    if (revertFlow && currentThreadId !== revertFlow.item.threadId) {
-      revertFlow = null;
-    }
+    editResend.invalidateOnThreadChange();
   });
 
-  // The flow is parked against a specific user row; if that row
-  // disappears through another path — an un-send or a concurrent revert
-  // reflected from a second pane on the same thread — the flow is void:
-  // self-dismiss instead of letting Confirm fire a doomed RPC against a
-  // deleted anchor. The executing stage is exempt because our own
-  // revert removes the row when `user_message:reverted` lands mid-RPC.
   $effect(() => {
-    const flow = revertFlow;
-    if (!flow || flow.stage === 'executing') return;
-    if (!pane.items.some((it) => it.id === flow.item.id)) {
-      revertFlow = null;
-    }
-  });
-
-  const pendingRevertConfirmDescription = $derived.by(() => {
-    const flow = revertFlow;
-    if (flow?.stage !== 'confirm') return '';
-    const parts: string[] = [];
-    if (flow.runningCount > 0) {
-      const noun = flow.runningCount === 1 ? 'background task' : 'background tasks';
-      parts.push(`Reverting stops the session, which kills ${flow.runningCount} running ${noun}.`);
-    }
-    if (flow.replacesDraft) {
-      parts.push('Your unsent draft will be replaced with the reverted message.');
-    }
-    parts.push('This cannot be undone.');
-    return parts.join(' ');
+    editResend.invalidateOnAnchorRemoved();
   });
 
   onDestroy(() => {
     releaseComposerDraft?.();
     releaseComposerDraft = null;
     void draft.flushPending();
+    editResend.destroy();
     if (queuedReadTimer !== null) {
       clearTimeout(queuedReadTimer);
       queuedReadTimer = null;
@@ -591,6 +442,7 @@
         {pane}
         onImageExpand={openImagePreview}
         {userMessageActions}
+        pendingCutAfter={editResend.pendingCutAfter}
       />
       <div
         bind:this={composerOverlay}
@@ -616,7 +468,12 @@
             </div>
           </div>
         {/if}
-        <Composer {pane} {draft} onImageExpand={openImagePreview} />
+        <Composer
+          {pane}
+          {draft}
+          onImageExpand={openImagePreview}
+          sendSuspended={editResend.stage === 'executing'}
+        />
       </div>
     </div>
     <ThreadTerminalPlacement {pane} />
@@ -658,13 +515,13 @@
       <ExpandedImageDialog preview={expandedImagePreview} onClose={closeImagePreview} />
     {/if}
     <ConfirmDialog
-      open={revertFlow?.stage === 'confirm'}
+      open={editResend.confirmOpen}
       title="Revert to this message?"
-      description={pendingRevertConfirmDescription}
-      confirmLabel="Revert"
+      description={editResend.confirmDescription}
+      confirmLabel="Revert &amp; send"
       destructive={true}
-      onConfirm={confirmPendingRevert}
-      onCancel={cancelPendingRevert}
+      onConfirm={editResend.confirmPending}
+      onCancel={editResend.declinePending}
     />
   </div>
 {:else}

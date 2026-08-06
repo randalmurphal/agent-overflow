@@ -30,6 +30,28 @@ export interface UploadInsertionPoint {
   end: number;
 }
 
+/**
+ * Drop attachment records that ended up backing nothing — an abandoned
+ * edit session's uploads, say, where no message references the ids and
+ * the draft holding them is gone.
+ *
+ * Here rather than at the caller because this layer owns attachment
+ * record deletion; a second `DeleteAttachment` call site would be a
+ * second error policy to keep in step. It is a DIFFERENT policy from the
+ * handle's `deleteAttachmentRecord` on purpose: that one answers a
+ * gesture the user just made (remove this image), so a failure is worth a
+ * toast, while this runs after the user has already left the surface, and
+ * a leaked blob is a housekeeping miss rather than something to interrupt
+ * them with. Fire-and-forget, never silent.
+ */
+export function discardAbandonedAttachmentRecords(ids: Iterable<string>): void {
+  for (const id of ids) {
+    void DeleteAttachment(id).catch((err) => {
+      console.error('Failed to delete abandoned attachment record:', err);
+    });
+  }
+}
+
 export interface ComposerUploadsOptions {
   /**
    * Returns the thread id at the moment an upload starts. Captured per-call

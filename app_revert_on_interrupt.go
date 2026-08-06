@@ -37,10 +37,12 @@ type InterruptAndRevertResult struct {
 
 // UserMessageRevertedEvent is the wire payload for the
 // `user_message:reverted` event emitted at the end of a successful
-// conversation revert (Stop/Esc un-send and the explicit
-// revert-to-message). The frontend consumes this to truncate its
-// timeline to match the SQLite cut. Idempotent on the frontend: a
-// removal of an already-absent id is a no-op.
+// conversation revert. Two callers: the Stop/Esc un-send
+// (InterruptAndRevertIfClean, below) and the edit-and-resend saga
+// (RevertConversationAndResendMessage), which sets DraftPendingResend.
+// The frontend consumes this to truncate its timeline to match the
+// SQLite cut. Idempotent on the frontend: a removal of an
+// already-absent id is a no-op.
 type UserMessageRevertedEvent struct {
 	ThreadID   string `json:"threadId"`
 	UserItemID string `json:"userItemId"`
@@ -57,6 +59,17 @@ type UserMessageRevertedEvent struct {
 	// DeleteConversationFromItem's promoted-row predicate — carried here
 	// as data so the frontend never re-derives it.
 	KeptAnchorTurnItemIDs []string `json:"keptAnchorTurnItemIds,omitempty"`
+	// DraftPendingResend marks this revert as the first half of an
+	// edit-and-resend saga (RevertConversationAndResendMessage): the
+	// replacement message is being dispatched right behind this event.
+	// The thread's persisted draft row at this instant is that saga's
+	// transient crash copy — the edited text merged ahead of the user's
+	// untouched composer WIP — NOT composer content, so a handler seeing
+	// this flag must not rehydrate composers from it. The saga settles
+	// the row itself (WIP restored on success, crash copy kept for the
+	// still-open editor on failure). False on the un-send path, where
+	// the draft row IS the restored composer.
+	DraftPendingResend bool `json:"draftPendingResend,omitempty"`
 }
 
 // InterruptAndRevertIfClean is the unified Stop-button entry point.
@@ -140,7 +153,7 @@ func (a *App) InterruptAndRevertIfClean(threadID string) (InterruptAndRevertResu
 		thread:       thread,
 		userItem:     userItem,
 		anchor:       anchor,
-		promptDraft:  promptDraft,
+		promptDraft:  &promptDraft,
 		errorPrefix:  "interrupt-and-revert",
 		markReverted: false,
 	})
