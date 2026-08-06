@@ -10,7 +10,7 @@
   // close/reopen and restart.
 
   import { onDestroy } from 'svelte';
-  import ChevronLeft from 'lucide-svelte/icons/chevron-left';
+  import ChevronLeft from '@lucide/svelte/icons/chevron-left';
   import Icon from '../primitives/Icon.svelte';
   import IconButton from '../primitives/IconButton.svelte';
   import OverlayShell from '../primitives/OverlayShell.svelte';

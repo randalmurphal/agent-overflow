@@ -25,7 +25,7 @@
    * remounts). Collapsed blocks skip the request entirely. Lines
    * render with the line-tint background until spans land.
    */
-  import PanelRightOpen from 'lucide-svelte/icons/panel-right-open';
+  import PanelRightOpen from '@lucide/svelte/icons/panel-right-open';
   import { chatRowDomId } from '../../utils/chatDomIds';
   import { untrack } from 'svelte';
   import EditorLink from '../common/EditorLink.svelte';

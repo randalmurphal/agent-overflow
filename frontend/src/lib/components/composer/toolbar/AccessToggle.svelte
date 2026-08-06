@@ -2,12 +2,12 @@
   // Runtime/access mode selector. Placeholder changes update new-thread
   // defaults; materialized threads persist the selected runtime mode directly.
 
-  import ChevronDown from 'lucide-svelte/icons/chevron-down';
-  import Eye from 'lucide-svelte/icons/eye';
-  import Lock from 'lucide-svelte/icons/lock';
-  import LockOpen from 'lucide-svelte/icons/lock-open';
-  import PenLine from 'lucide-svelte/icons/pen-line';
-  import ShieldCheck from 'lucide-svelte/icons/shield-check';
+  import ChevronDown from '@lucide/svelte/icons/chevron-down';
+  import Eye from '@lucide/svelte/icons/eye';
+  import Lock from '@lucide/svelte/icons/lock';
+  import LockOpen from '@lucide/svelte/icons/lock-open';
+  import PenLine from '@lucide/svelte/icons/pen-line';
+  import ShieldCheck from '@lucide/svelte/icons/shield-check';
   import type { ThreadPane } from '../../../stores/thread.svelte';
   import type { RuntimeMode, Thread } from '../../../types/models';
   import { asProviderID } from '../../../types/providers';

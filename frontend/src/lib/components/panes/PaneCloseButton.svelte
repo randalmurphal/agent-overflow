@@ -15,7 +15,7 @@
   //     then focus + reveal its neighbor — stealing focus from the pane the
   //     user was actually working in. (focusin no longer scrolls anywhere;
   //     this stop is purely about keeping logical focus off the dying pane.)
-  import X from 'lucide-svelte/icons/x';
+  import X from '@lucide/svelte/icons/x';
   import Icon from '../primitives/Icon.svelte';
   import { destroyPane } from '../../stores/panes.svelte';
 

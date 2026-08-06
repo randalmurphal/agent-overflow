@@ -1,5 +1,5 @@
 <script lang="ts">
-  import X from 'lucide-svelte/icons/x';
+  import X from '@lucide/svelte/icons/x';
   import { untrack } from 'svelte';
   import Icon from '../primitives/Icon.svelte';
   import type { Attachment } from '../../types/attachment';

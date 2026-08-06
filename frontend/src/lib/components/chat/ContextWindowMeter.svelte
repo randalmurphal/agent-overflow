@@ -3,7 +3,7 @@
   import type { Thread } from '../../types/models';
   import { formatTokens } from '../../utils/format';
   import { openSettingsOverlay } from '../../stores/settingsOverlay.svelte';
-  import SlidersHorizontal from 'lucide-svelte/icons/sliders-horizontal';
+  import SlidersHorizontal from '@lucide/svelte/icons/sliders-horizontal';
   import Icon from '../primitives/Icon.svelte';
   import { useHoverPopover } from './hoverPopover.svelte';
   import MeterRing, { METER_BUTTON_CLASS } from './MeterRing.svelte';

@@ -14,7 +14,7 @@
   // draft icon's slot, so they read apart from chat rows from the left edge
   // rather than via a trailing badge.
 
-  import Palette from 'lucide-svelte/icons/palette';
+  import Palette from '@lucide/svelte/icons/palette';
   import Icon from '../primitives/Icon.svelte';
   import type { Thread } from '../../types/models';
 

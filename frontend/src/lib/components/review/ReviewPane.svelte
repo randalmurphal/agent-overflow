@@ -1,14 +1,14 @@
 <script lang="ts">
   import { onDestroy, onMount, untrack } from 'svelte';
   import { SvelteSet } from 'svelte/reactivity';
-  import ChevronsDownUp from 'lucide-svelte/icons/chevrons-down-up';
-  import ChevronsUpDown from 'lucide-svelte/icons/chevrons-up-down';
-  import Columns2 from 'lucide-svelte/icons/columns-2';
-  import ListTree from 'lucide-svelte/icons/list-tree';
-  import MessagesSquare from 'lucide-svelte/icons/messages-square';
-  import Pilcrow from 'lucide-svelte/icons/pilcrow';
-  import RefreshCw from 'lucide-svelte/icons/refresh-cw';
-  import WrapText from 'lucide-svelte/icons/wrap-text';
+  import ChevronsDownUp from '@lucide/svelte/icons/chevrons-down-up';
+  import ChevronsUpDown from '@lucide/svelte/icons/chevrons-up-down';
+  import Columns2 from '@lucide/svelte/icons/columns-2';
+  import ListTree from '@lucide/svelte/icons/list-tree';
+  import MessagesSquare from '@lucide/svelte/icons/messages-square';
+  import Pilcrow from '@lucide/svelte/icons/pilcrow';
+  import RefreshCw from '@lucide/svelte/icons/refresh-cw';
+  import WrapText from '@lucide/svelte/icons/wrap-text';
   import ReviewCILogView from './ReviewCILogView.svelte';
   import ReviewCommentThread from './ReviewCommentThread.svelte';
   import ReviewDiffBody from './ReviewDiffBody.svelte';

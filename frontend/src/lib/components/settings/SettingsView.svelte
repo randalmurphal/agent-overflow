@@ -1,5 +1,5 @@
 <script lang="ts">
-  import X from 'lucide-svelte/icons/x';
+  import X from '@lucide/svelte/icons/x';
   import Icon from '../primitives/Icon.svelte';
   import MicroLabel from '../primitives/MicroLabel.svelte';
   import GeneralSettings from './GeneralSettings.svelte';

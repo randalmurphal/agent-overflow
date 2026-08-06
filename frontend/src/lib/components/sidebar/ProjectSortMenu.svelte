@@ -12,7 +12,7 @@
     setProjectSortMode,
     type ProjectSortMode,
   } from '../../stores/sidebar.svelte';
-  import ArrowDownUp from 'lucide-svelte/icons/arrow-down-up';
+  import ArrowDownUp from '@lucide/svelte/icons/arrow-down-up';
   import Icon from '../primitives/Icon.svelte';
   import IconButton from '../primitives/IconButton.svelte';
   import Menu from '../primitives/Menu.svelte';

@@ -8,7 +8,7 @@
   // a missed or cleared OS notification never loses work. R1 keeps
   // done-awaiting-disposition out of it: that state is neutral, never amber.
 
-  import Workflow from 'lucide-svelte/icons/workflow';
+  import Workflow from '@lucide/svelte/icons/workflow';
   import Icon from '../primitives/Icon.svelte';
   import Button from '../primitives/Button.svelte';
   import { getWorkflowAttentionCount } from '../../stores/workflowRuns.svelte';

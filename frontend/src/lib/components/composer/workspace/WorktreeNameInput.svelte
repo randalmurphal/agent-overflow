@@ -16,9 +16,9 @@
   // message remains an equivalent trigger, so the intent applies exactly
   // once whichever comes first.
 
-  import Check from 'lucide-svelte/icons/check';
-  import Plus from 'lucide-svelte/icons/plus';
-  import X from 'lucide-svelte/icons/x';
+  import Check from '@lucide/svelte/icons/check';
+  import Plus from '@lucide/svelte/icons/plus';
+  import X from '@lucide/svelte/icons/x';
   import Icon from '../../primitives/Icon.svelte';
   import SteppedSpinner from '../../primitives/SteppedSpinner.svelte';
   import type { ThreadPane } from '../../../stores/thread.svelte';

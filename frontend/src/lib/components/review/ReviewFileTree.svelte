@@ -1,10 +1,10 @@
 <script lang="ts">
   import { SvelteSet } from 'svelte/reactivity';
-  import ChevronRight from 'lucide-svelte/icons/chevron-right';
-  import FileText from 'lucide-svelte/icons/file-text';
-  import Folder from 'lucide-svelte/icons/folder';
-  import ListFilter from 'lucide-svelte/icons/list-filter';
-  import Search from 'lucide-svelte/icons/search';
+  import ChevronRight from '@lucide/svelte/icons/chevron-right';
+  import FileText from '@lucide/svelte/icons/file-text';
+  import Folder from '@lucide/svelte/icons/folder';
+  import ListFilter from '@lucide/svelte/icons/list-filter';
+  import Search from '@lucide/svelte/icons/search';
   import Icon from '../primitives/Icon.svelte';
   import Menu from '../primitives/Menu.svelte';
   import MenuDivider from '../primitives/MenuDivider.svelte';

@@ -1,6 +1,6 @@
 <script lang="ts">
   import { untrack } from 'svelte';
-  import ChevronRight from 'lucide-svelte/icons/chevron-right';
+  import ChevronRight from '@lucide/svelte/icons/chevron-right';
   import Icon from '../primitives/Icon.svelte';
   import type { Item } from '../../types/models';
   import { chatRowDomId } from '../../utils/chatDomIds';

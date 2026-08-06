@@ -1,5 +1,5 @@
 <script lang="ts">
-  import RefreshCw from 'lucide-svelte/icons/refresh-cw';
+  import RefreshCw from '@lucide/svelte/icons/refresh-cw';
   import ChatMarkdown from '../chat/ChatMarkdown.svelte';
   import ReviewCIChips from './ReviewCIChips.svelte';
   import Icon from '../primitives/Icon.svelte';

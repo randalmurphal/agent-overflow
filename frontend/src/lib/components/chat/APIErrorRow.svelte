@@ -15,7 +15,7 @@
    * Reference: claude-code-source-code/src/components/messages/
    *   AssistantTextMessage.tsx:60-227.
    */
-  import AlertCircle from 'lucide-svelte/icons/alert-circle';
+  import AlertCircle from '@lucide/svelte/icons/alert-circle';
   import Icon from '../primitives/Icon.svelte';
   import type { Item } from '../../types/models';
   import { parseJsonObject } from '../../utils/parseJsonObject';

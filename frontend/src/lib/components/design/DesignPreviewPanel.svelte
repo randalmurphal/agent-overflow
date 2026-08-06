@@ -32,12 +32,12 @@
   // opaque origins).
 
   import { onMount } from 'svelte';
-  import Smartphone from 'lucide-svelte/icons/smartphone';
-  import TabletIcon from 'lucide-svelte/icons/tablet';
-  import Monitor from 'lucide-svelte/icons/monitor';
-  import RefreshCw from 'lucide-svelte/icons/refresh-cw';
-  import MessagesSquare from 'lucide-svelte/icons/messages-square';
-  import MessageSquarePlus from 'lucide-svelte/icons/message-square-plus';
+  import Smartphone from '@lucide/svelte/icons/smartphone';
+  import TabletIcon from '@lucide/svelte/icons/tablet';
+  import Monitor from '@lucide/svelte/icons/monitor';
+  import RefreshCw from '@lucide/svelte/icons/refresh-cw';
+  import MessagesSquare from '@lucide/svelte/icons/messages-square';
+  import MessageSquarePlus from '@lucide/svelte/icons/message-square-plus';
   import type { PanelContext } from '../../stores/panelContext.svelte';
   import {
     IngestDiagnosticBatch,

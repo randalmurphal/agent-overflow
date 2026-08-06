@@ -1,6 +1,6 @@
 <script lang="ts">
-  import Save from 'lucide-svelte/icons/save';
-  import PanelRightOpen from 'lucide-svelte/icons/panel-right-open';
+  import Save from '@lucide/svelte/icons/save';
+  import PanelRightOpen from '@lucide/svelte/icons/panel-right-open';
   import Icon from '../primitives/Icon.svelte';
   import IconButton from '../primitives/IconButton.svelte';
   import CopyButton from '../primitives/CopyButton.svelte';

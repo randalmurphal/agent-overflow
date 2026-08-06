@@ -30,10 +30,10 @@
   } from '../../stores/threadStatuses.svelte';
   import { addToast } from '../../stores/toast.svelte';
   import { userFacingError } from '../../utils/userFacingError';
-  import ChevronRight from 'lucide-svelte/icons/chevron-right';
-  import FolderOpen from 'lucide-svelte/icons/folder-open';
-  import Plus from 'lucide-svelte/icons/plus';
-  import Terminal from 'lucide-svelte/icons/terminal';
+  import ChevronRight from '@lucide/svelte/icons/chevron-right';
+  import FolderOpen from '@lucide/svelte/icons/folder-open';
+  import Plus from '@lucide/svelte/icons/plus';
+  import Terminal from '@lucide/svelte/icons/terminal';
   import Icon from '../primitives/Icon.svelte';
   import ProjectContextMenu from './ProjectContextMenu.svelte';
   import ProjectThreadList from './ProjectThreadList.svelte';

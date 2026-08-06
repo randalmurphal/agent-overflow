@@ -15,7 +15,7 @@
    *   ⟳ Retrying (4/10, rate_limit)
    * with the icon pulsing while running and steady once completed.
    */
-  import RefreshCw from 'lucide-svelte/icons/refresh-cw';
+  import RefreshCw from '@lucide/svelte/icons/refresh-cw';
   import Icon from '../primitives/Icon.svelte';
   import type { Item } from '../../types/models';
   import { parseJsonObject } from '../../utils/parseJsonObject';

@@ -55,7 +55,7 @@ export default defineConfig({
             },
             {
               name: "ui-vendor",
-              test: /node_modules\/(lucide-svelte)\//,
+              test: /node_modules\/@lucide\/svelte\//,
             },
             // Transport shim is small but every chat surface imports
             // through it (the @wailsio/runtime alias). Keep it in its

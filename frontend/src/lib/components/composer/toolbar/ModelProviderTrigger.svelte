@@ -1,5 +1,5 @@
 <script lang="ts">
-  import ChevronDown from 'lucide-svelte/icons/chevron-down';
+  import ChevronDown from '@lucide/svelte/icons/chevron-down';
   import Icon from '../../primitives/Icon.svelte';
   import { composerTriggerClasses } from '../triggerClasses';
   import ProviderIcon from '../../shared/ProviderIcon.svelte';

@@ -1,8 +1,8 @@
 <script lang="ts">
   import { onMount, tick } from 'svelte';
-  import ChevronLeft from 'lucide-svelte/icons/chevron-left';
-  import ChevronRight from 'lucide-svelte/icons/chevron-right';
-  import X from 'lucide-svelte/icons/x';
+  import ChevronLeft from '@lucide/svelte/icons/chevron-left';
+  import ChevronRight from '@lucide/svelte/icons/chevron-right';
+  import X from '@lucide/svelte/icons/x';
   import Icon from '../primitives/Icon.svelte';
   import { focusTrap } from '../../utils/focusTrap';
   import type { ExpandedImagePreview } from '../../utils/attachmentPreview.svelte';

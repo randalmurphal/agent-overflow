@@ -13,10 +13,10 @@
   // This component owns the pane's single gitwatch subscription via the
   // $effect below — GitActionsControl and the two badges all read the resulting
   // status from `pane.gitStatus`, so there is exactly one subscription per pane.
-  import SquareTerminal from 'lucide-svelte/icons/square-terminal';
-  import PanelRightOpen from 'lucide-svelte/icons/panel-right-open';
-  import ChevronsDownUp from 'lucide-svelte/icons/chevrons-down-up';
-  import ChevronsUpDown from 'lucide-svelte/icons/chevrons-up-down';
+  import SquareTerminal from '@lucide/svelte/icons/square-terminal';
+  import PanelRightOpen from '@lucide/svelte/icons/panel-right-open';
+  import ChevronsDownUp from '@lucide/svelte/icons/chevrons-down-up';
+  import ChevronsUpDown from '@lucide/svelte/icons/chevrons-up-down';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import { withViewportBottomHeld } from '../../stores/threadPaneShared';
   import { getProject } from '../../stores/projects.svelte';

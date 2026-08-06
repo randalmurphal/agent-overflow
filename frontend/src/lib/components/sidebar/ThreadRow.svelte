@@ -15,10 +15,10 @@
     type ThreadLiveStatus,
   } from '../../stores/threadStatuses.svelte';
   import type { Thread } from '../../types/models';
-  import ChevronRight from 'lucide-svelte/icons/chevron-right';
-  import FileText from 'lucide-svelte/icons/file-text';
-  import FolderGit2 from 'lucide-svelte/icons/folder-git-2';
-  import Terminal from 'lucide-svelte/icons/terminal';
+  import ChevronRight from '@lucide/svelte/icons/chevron-right';
+  import FileText from '@lucide/svelte/icons/file-text';
+  import FolderGit2 from '@lucide/svelte/icons/folder-git-2';
+  import Terminal from '@lucide/svelte/icons/terminal';
   import Icon from '../primitives/Icon.svelte';
   import ConfirmDialog from '../shared/ConfirmDialog.svelte';
   import { relativeTime } from '../../utils/format';

@@ -11,8 +11,8 @@
   import Popover from '../../primitives/Popover.svelte';
   import Menu from '../../primitives/Menu.svelte';
   import MenuItem from '../../primitives/MenuItem.svelte';
-  import RefreshCw from 'lucide-svelte/icons/refresh-cw';
-  import LogIn from 'lucide-svelte/icons/log-in';
+  import RefreshCw from '@lucide/svelte/icons/refresh-cw';
+  import LogIn from '@lucide/svelte/icons/log-in';
   import Icon from '../../primitives/Icon.svelte';
   import type { ThreadPane } from '../../../stores/thread.svelte';
   import {

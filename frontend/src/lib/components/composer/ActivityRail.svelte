@@ -44,8 +44,8 @@
   import ActivityRailTodosBody from './ActivityRailTodosBody.svelte';
   import ActivityRailBackgroundBody from './ActivityRailBackgroundBody.svelte';
   import Icon from '../primitives/Icon.svelte';
-  import ChevronDown from 'lucide-svelte/icons/chevron-down';
-  import ChevronRight from 'lucide-svelte/icons/chevron-right';
+  import ChevronDown from '@lucide/svelte/icons/chevron-down';
+  import ChevronRight from '@lucide/svelte/icons/chevron-right';
 
   interface Props {
     pane: ThreadPane;

@@ -29,7 +29,7 @@
   import { errString } from '../../../utils/errors';
   import { hiddenModelSlugs } from '../../../utils/hiddenModels';
   import { displayModelLabel } from '../../../utils/modelLabels';
-  import MessagesSquare from 'lucide-svelte/icons/messages-square';
+  import MessagesSquare from '@lucide/svelte/icons/messages-square';
   import Popover from '../../primitives/Popover.svelte';
   import Menu from '../../primitives/Menu.svelte';
   import MenuDivider from '../../primitives/MenuDivider.svelte';

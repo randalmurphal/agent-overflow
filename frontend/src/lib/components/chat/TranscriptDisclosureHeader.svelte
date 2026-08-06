@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { Snippet } from 'svelte';
-  import ChevronRight from 'lucide-svelte/icons/chevron-right';
+  import ChevronRight from '@lucide/svelte/icons/chevron-right';
   import Icon from '../primitives/Icon.svelte';
 
   interface Props {

@@ -16,8 +16,8 @@
   // catalog → add its path here (or reuse a sibling's, as Insiders
   // reuses the VS Code mark).
   import Icon from '../primitives/Icon.svelte';
-  import FolderOpen from 'lucide-svelte/icons/folder-open';
-  import FileCode from 'lucide-svelte/icons/file-code';
+  import FolderOpen from '@lucide/svelte/icons/folder-open';
+  import FileCode from '@lucide/svelte/icons/file-code';
 
   interface Props {
     editorId: string | null | undefined;

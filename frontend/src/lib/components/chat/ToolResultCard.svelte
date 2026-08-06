@@ -1,6 +1,6 @@
 <script lang="ts">
   import { untrack } from 'svelte';
-  import PanelRightOpen from 'lucide-svelte/icons/panel-right-open';
+  import PanelRightOpen from '@lucide/svelte/icons/panel-right-open';
   import { getSettings } from '../../stores/settings.svelte';
   import type { Item, ToolInlineDiffFile, ToolResultMeta } from '../../types/models';
   import { chatRowDomId } from '../../utils/chatDomIds';

@@ -17,8 +17,8 @@
   // behavior as clicking the sidebar pencil on multiple projects in
   // succession.
 
-  import ChevronDown from 'lucide-svelte/icons/chevron-down';
-  import FolderIcon from 'lucide-svelte/icons/folder';
+  import ChevronDown from '@lucide/svelte/icons/chevron-down';
+  import FolderIcon from '@lucide/svelte/icons/folder';
   import Icon from '../../primitives/Icon.svelte';
   import { composerTriggerClasses } from '../triggerClasses';
   import type { ThreadPane } from '../../../stores/thread.svelte';

@@ -1,10 +1,10 @@
 <script lang="ts">
   import { fly, fade } from 'svelte/transition';
-  import CheckCircle2 from 'lucide-svelte/icons/check-circle-2';
-  import AlertTriangle from 'lucide-svelte/icons/alert-triangle';
-  import Info from 'lucide-svelte/icons/info';
-  import XCircle from 'lucide-svelte/icons/x-circle';
-  import X from 'lucide-svelte/icons/x';
+  import CheckCircle2 from '@lucide/svelte/icons/check-circle-2';
+  import AlertTriangle from '@lucide/svelte/icons/alert-triangle';
+  import Info from '@lucide/svelte/icons/info';
+  import XCircle from '@lucide/svelte/icons/x-circle';
+  import X from '@lucide/svelte/icons/x';
   import Icon from '../primitives/Icon.svelte';
   import { getToasts, removeToast, type ToastType } from '../../stores/toast.svelte';
 

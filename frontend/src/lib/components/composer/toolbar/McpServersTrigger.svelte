@@ -6,8 +6,8 @@
   // provider-native listing: it counts non-disabled rows for the
   // pane's scope.
 
-  import Plug from 'lucide-svelte/icons/plug';
-  import ChevronDown from 'lucide-svelte/icons/chevron-down';
+  import Plug from '@lucide/svelte/icons/plug';
+  import ChevronDown from '@lucide/svelte/icons/chevron-down';
   import Icon from '../../primitives/Icon.svelte';
   import type { ThreadPane } from '../../../stores/thread.svelte';
   import { mcpServersStore, mcpScopeFor } from '../../../stores/mcpServers.svelte';

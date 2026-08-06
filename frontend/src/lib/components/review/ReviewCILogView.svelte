@@ -1,7 +1,7 @@
 <script lang="ts">
   import { untrack } from 'svelte';
-  import ExternalLink from 'lucide-svelte/icons/external-link';
-  import RefreshCw from 'lucide-svelte/icons/refresh-cw';
+  import ExternalLink from '@lucide/svelte/icons/external-link';
+  import RefreshCw from '@lucide/svelte/icons/refresh-cw';
   import AnsiText from '../chat/AnsiText.svelte';
   import Icon from '../primitives/Icon.svelte';
   import TimelineVirtualizer from '../virtual/TimelineVirtualizer.svelte';

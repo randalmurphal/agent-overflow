@@ -8,8 +8,8 @@
   import { onMount, onDestroy } from 'svelte';
   import type { Terminal } from '@xterm/xterm';
   import type { FitAddon } from '@xterm/addon-fit';
-  import Hand from 'lucide-svelte/icons/hand';
-  import Eye from 'lucide-svelte/icons/eye';
+  import Hand from '@lucide/svelte/icons/hand';
+  import Eye from '@lucide/svelte/icons/eye';
   import {
     ProviderTerminalAttach,
     ProviderTerminalDetach,

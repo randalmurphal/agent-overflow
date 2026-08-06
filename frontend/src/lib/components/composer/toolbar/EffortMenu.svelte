@@ -17,8 +17,8 @@
   import { addToast } from '../../../stores/toast.svelte';
   import { errString } from '../../../utils/errors';
   import { formatTokens } from '../../../utils/format';
-  import ChevronDown from 'lucide-svelte/icons/chevron-down';
-  import Gauge from 'lucide-svelte/icons/gauge';
+  import ChevronDown from '@lucide/svelte/icons/chevron-down';
+  import Gauge from '@lucide/svelte/icons/gauge';
   import Popover from '../../primitives/Popover.svelte';
   import Menu from '../../primitives/Menu.svelte';
   import MenuItem from '../../primitives/MenuItem.svelte';

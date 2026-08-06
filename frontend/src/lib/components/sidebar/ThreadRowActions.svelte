@@ -3,8 +3,8 @@
   // terminal thread gets Delete (terminals aren't archivable — there's
   // nothing to keep). The parent passes exactly one callback and this
   // renders the matching button, so the row stays a thin shell.
-  import Archive from 'lucide-svelte/icons/archive';
-  import X from 'lucide-svelte/icons/x';
+  import Archive from '@lucide/svelte/icons/archive';
+  import X from '@lucide/svelte/icons/x';
   import Icon from '../primitives/Icon.svelte';
 
   let {

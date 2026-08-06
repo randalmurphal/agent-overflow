@@ -13,7 +13,7 @@
   // fs-watcher debounce.
 
   import { onMount, onDestroy } from 'svelte';
-  import ChevronDown from 'lucide-svelte/icons/chevron-down';
+  import ChevronDown from '@lucide/svelte/icons/chevron-down';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import { forgeLabels } from '../../utils/forgeLabels';
   import { handleExternalURL, safeExternalURL } from '../../utils/externalLinks';
