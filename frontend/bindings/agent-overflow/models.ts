@@ -3202,6 +3202,28 @@ export class UpdateAvailability {
     "releaseName"?: string;
     "releaseNotes"?: string;
 
+    /**
+     * LastApplyFailure is the boot-detected notice that a previously staged
+     * update never got applied (WSL only: the Windows launcher owns that swap
+     * and this process is gone by the time it runs, so the NEXT boot is the
+     * only observer). Empty on every ordinary launch. It is process-lifetime
+     * state recomputed from the on-disk marker at boot, so it persists across
+     * re-checks within a session and clears on the next boot whose running
+     * version matches what the marker expected — a re-check must not make a
+     * failed install look successful.
+     */
+    "lastApplyFailure"?: string;
+
+    /**
+     * CheckError, when non-empty, reports that the release check itself failed
+     * (network down, GitHub unreachable, rate-limited). It is result state
+     * rather than an RPC error so the fields the backend knows WITHOUT the
+     * network — Supported, CurrentVersion, and above all LastApplyFailure —
+     * still reach the panel: the boot-detected "didn't apply" notice must not
+     * vanish behind an offline check.
+     */
+    "checkError"?: string;
+
     /** Creates a new UpdateAvailability instance. */
     constructor($$source: Partial<UpdateAvailability> = {}) {
         if (!("supported" in $$source)) {

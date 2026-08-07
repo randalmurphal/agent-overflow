@@ -14,6 +14,7 @@ import {
 } from './bindings';
 import type { ReleaseSummary } from './bindings';
 import { wailsEventOn } from './wailsEvents';
+import { isMethodUnavailableError } from './transportStatus.svelte';
 import { userFacingError } from '../utils/userFacingError';
 
 export type { ReleaseSummary };
@@ -27,6 +28,14 @@ export type UpdaterPhase =
   | 'verifying'
   | 'installing'
   | 'ready'
+  // 'restarting' latches after a successful RestartToUpdate call. On desktop
+  // the process quits moments later, but on WSL the RPC returns as soon as the
+  // directive is handed to the Windows launcher, which then spends up to two
+  // minutes verifying and swapping while this app stays alive. The phase keeps
+  // the Restart button (and every other update action) out of reach in that
+  // window; the backend's terminal updater:error moves us to 'error' if the
+  // handoff fails, and success kills the process.
+  | 'restarting'
   | 'error';
 
 interface ProgressPayload {
@@ -41,8 +50,9 @@ interface ErrorPayload {
 }
 
 const state = $state({
-  // supported is false on builds that can't self-update (headless WSL backend,
-  // dev builds); the UI hides the section and the badge stays dark.
+  // supported is false on builds that can't self-update (dev builds) and on
+  // remote sessions, where the updater RPCs are LocalOnly; the UI hides the
+  // section and the badge stays dark.
   supported: true,
   phase: 'idle' as UpdaterPhase,
   currentVersion: '',
@@ -52,6 +62,14 @@ const state = $state({
   written: 0,
   total: 0,
   error: '',
+  // lastApplyFailure mirrors the backend's boot-detected notice that the
+  // PREVIOUS session's staged update never got applied. It is backend-owned
+  // process-lifetime state, so this store copies whatever each check returns
+  // rather than latching it: that is what makes the notice both survive
+  // re-checks (the backend keeps returning it) and disappear the moment a
+  // check stops reporting it. Unlike `error` it is not a phase — it stays
+  // visible through checking / available / downloading alike.
+  lastApplyFailure: '',
 
   // Version selection (the "Advanced" disclosure). Lazily populated by
   // loadVersions the first time the user expands it — the common path only
@@ -88,6 +106,23 @@ export function hasPendingUpdate(): boolean {
  * new check/download while any of them is current. */
 export function isDownloadInFlight(phase: UpdaterPhase): boolean {
   return phase === 'downloading' || phase === 'verifying' || phase === 'installing';
+}
+
+/**
+ * isUpdateFlowBusy reports whether the update flow is mid-action: a check
+ * running, a download/verify/install in flight, an update staged ready (a
+ * re-check or second download would clobber the staged release), or a restart
+ * handoff under way. Every action entry point — check, download, the Advanced
+ * install, and the settings Check button — gates on this one predicate, so a
+ * new phase joins the set here once instead of at each call site.
+ */
+export function isUpdateFlowBusy(phase: UpdaterPhase): boolean {
+  return (
+    phase === 'checking' ||
+    phase === 'ready' ||
+    phase === 'restarting' ||
+    isDownloadInFlight(phase)
+  );
 }
 
 /**
@@ -135,7 +170,7 @@ export function selectedVersion(): ReleaseSummary | undefined {
 export function canInstallSelected(): boolean {
   const v = selectedVersion();
   if (!v || v.isCurrent) return false;
-  return !isDownloadInFlight(state.phase) && state.phase !== 'checking' && state.phase !== 'ready';
+  return !isUpdateFlowBusy(state.phase);
 }
 
 /**
@@ -144,24 +179,33 @@ export function canInstallSelected(): boolean {
  * mid-download calls are ignored.
  */
 export async function runUpdateCheck(): Promise<void> {
-  // Skip if a check is already running or a download is in flight. Also skip
-  // when an update is already staged ('ready'): a re-check would re-resolve the
-  // same release and flip the phase back to 'available', dropping the user from
-  // "Restart to update" to "Download" even though the staged build is still
-  // valid and waiting. Every branch below sets a terminal phase, so no overlap
-  // flag or finally is needed.
-  if (state.phase === 'checking' || state.phase === 'ready' || isDownloadInFlight(state.phase)) {
+  // Skip while the flow is mid-action. The 'ready' member of that set matters
+  // most here: a re-check would re-resolve the same release and flip the phase
+  // back to 'available', dropping the user from "Restart to update" to
+  // "Download" even though the staged build is still valid and waiting. Every
+  // branch below sets a terminal phase, so no overlap flag or finally is
+  // needed.
+  if (isUpdateFlowBusy(state.phase)) {
     return;
   }
   state.phase = 'checking';
   state.error = '';
   try {
     const result = await CheckForUpdate();
-    state.supported = result.supported;
     state.currentVersion = result.currentVersion;
     if (!result.supported) {
-      state.phase = 'idle';
-      state.latestVersion = '';
+      markUnsupported();
+      return;
+    }
+    state.supported = true;
+    state.lastApplyFailure = result.lastApplyFailure ?? '';
+    if (result.checkError) {
+      // The backend carries a failed release check as result state rather
+      // than an RPC error, so lastApplyFailure above still arrives — a boot
+      // notice must not vanish behind an offline check. Rendered exactly like
+      // a thrown failure.
+      state.phase = 'error';
+      state.error = userFacingError(result.checkError, 'Could not check for updates.');
       return;
     }
     if (result.available) {
@@ -176,9 +220,35 @@ export async function runUpdateCheck(): Promise<void> {
       state.phase = 'up-to-date';
     }
   } catch (err) {
+    if (isMethodUnavailableError(err)) {
+      // A remote (non-loopback) session. The updater RPCs are LocalOnly, and
+      // the transport refuses them with the same method_not_found envelope it
+      // uses for an unregistered method — see isMethodUnavailableError. That
+      // is not a failure worth alarming the user about; it is this session
+      // telling us in-app updates aren't reachable from here, which is exactly
+      // what the unsupported copy says.
+      markUnsupported();
+      return;
+    }
     state.phase = 'error';
     state.error = userFacingError(err, 'Could not check for updates.');
   }
+}
+
+/**
+ * markUnsupported puts the store in the "self-update isn't available on this
+ * session" resting state. Two paths reach it — the backend answering
+ * supported=false (dev build, no updater configured) and a remote session
+ * whose LocalOnly updater RPCs are refused — and neither writes these fields
+ * directly, so the two can't drift into leaving stale release metadata behind.
+ */
+function markUnsupported(): void {
+  state.supported = false;
+  state.phase = 'idle';
+  state.latestVersion = '';
+  state.releaseName = '';
+  state.releaseNotes = '';
+  state.lastApplyFailure = '';
 }
 
 /**
@@ -195,11 +265,7 @@ export async function startUpdateDownload(tag = ''): Promise<void> {
   if (!state.supported) return;
   if (tag === '') {
     if (state.phase !== 'available') return;
-  } else if (
-    isDownloadInFlight(state.phase) ||
-    state.phase === 'checking' ||
-    state.phase === 'ready'
-  ) {
+  } else if (isUpdateFlowBusy(state.phase)) {
     return;
   }
   state.error = '';
@@ -222,9 +288,15 @@ export async function startUpdateDownload(tag = ''): Promise<void> {
  */
 export async function restartForUpdate(): Promise<void> {
   if (state.phase !== 'ready') return;
+  // Latch out of 'ready' before the RPC so the button cannot double-fire; see
+  // the 'restarting' phase comment for why the process may outlive this call.
+  state.phase = 'restarting';
   try {
     await RestartToUpdate();
-    // The app is now shutting down; the swap helper relaunches the new version.
+    // Desktop: the app is shutting down and the swap helper relaunches the new
+    // version. WSL: the Windows launcher has the directive and this process
+    // stays 'restarting' until the launcher kills it — or the backend reports
+    // the handoff failed via updater:error, which lands us in 'error'.
   } catch (err) {
     state.phase = 'error';
     state.error = userFacingError(err, 'Could not restart to apply the update.');
@@ -291,6 +363,7 @@ export function resetForTest(): void {
   state.written = 0;
   state.total = 0;
   state.error = '';
+  state.lastApplyFailure = '';
   state.availableVersions = [];
   state.versionsLoaded = false;
   state.versionsLoading = false;

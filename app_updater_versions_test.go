@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -28,6 +29,29 @@ const testRepo = "owner/repo"
 // (and arch aliasing) always finds it.
 var platformAssetName = "agent-overflow-" + runtime.GOOS + "-" + runtime.GOARCH + ".zip"
 
+// wslAssetName is the asset the headless WSL backend targets: a Windows binary
+// the launcher swaps in, named for platform "wsl" rather than the linux/amd64
+// process that downloads it.
+const wslAssetName = "agent-overflow-wsl-amd64.exe"
+
+// Asset payloads the mock release server hands out, and the real SHA-256 of the
+// WSL one. Tests that download end to end need a checksum sidecar that actually
+// matches the bytes; testValidDigestHex is deliberately bogus and only suits
+// metadata-level assertions.
+var (
+	wslAssetBytes      = []byte("MZ agent-overflow wsl payload — deterministic test bytes\n")
+	platformAssetBytes = []byte("agent-overflow desktop payload — deterministic test bytes\n")
+	wslAssetDigest     = sha256.Sum256(wslAssetBytes)
+	wslAssetDigestHex  = hex.EncodeToString(wslAssetDigest[:])
+)
+
+// sumsForWSL is a SHASUMS256 body whose wsl entry is the TRUE digest of
+// wslAssetBytes, so a download through the real verifier succeeds.
+func sumsForWSL(string) string {
+	return wslAssetDigestHex + "  " + wslAssetName + "\n" +
+		testValidDigestHex + "  " + platformAssetName + "\n"
+}
+
 // relSpec is a compact description of a mock GitHub release.
 type relSpec struct {
 	tag          string
@@ -35,6 +59,7 @@ type relSpec struct {
 	prerelease   bool
 	draft        bool
 	withPlatform bool // include an asset matching the running platform
+	withWSL      bool // include the wsl-target asset the WSL backend installs
 	withChecksum bool // include the SHASUMS256 sidecar
 	withBogus    bool // include a non-matching asset (no platform/arch tokens)
 	published    time.Time
@@ -54,6 +79,14 @@ func buildRelease(srvURL string, s relSpec) apiRelease {
 			ContentType:        "application/zip",
 			Size:               1024,
 			BrowserDownloadURL: srvURL + "/dl/bin/" + s.tag,
+		})
+	}
+	if s.withWSL {
+		r.Assets = append(r.Assets, apiAsset{
+			Name:               wslAssetName,
+			ContentType:        "application/octet-stream",
+			Size:               2048,
+			BrowserDownloadURL: srvURL + "/dl/wsl/" + s.tag,
 		})
 	}
 	if s.withBogus {
@@ -126,6 +159,19 @@ func newMockGitHub(t *testing.T, specs []relSpec, checksumBody func(tag string) 
 			t.Errorf("write checksum body: %v", err)
 		}
 	})
+	// Asset bytes. Only the download-through tests reach these; the resolve /
+	// listing tests stop at metadata, which is why most of them can get away
+	// with the fixed (bogus) digest in sumsForPlatform.
+	serveAsset := func(body []byte) http.HandlerFunc {
+		return func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/octet-stream")
+			if _, err := w.Write(body); err != nil {
+				t.Errorf("write asset body: %v", err)
+			}
+		}
+	}
+	mux.HandleFunc("/dl/wsl/", serveAsset(wslAssetBytes))
+	mux.HandleFunc("/dl/bin/", serveAsset(platformAssetBytes))
 
 	srv = httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
@@ -133,19 +179,25 @@ func newMockGitHub(t *testing.T, specs []relSpec, checksumBody func(tag string) 
 }
 
 func newTestTargetable(srv *httptest.Server, current string) *targetableProvider {
+	return newTestTargetableFor(srv, current, runtime.GOOS, runtime.GOARCH)
+}
+
+func newTestTargetableFor(srv *httptest.Server, current, platform, arch string) *targetableProvider {
 	return &targetableProvider{
-		repo:           testRepo,
-		checksumAsset:  "SHASUMS256",
-		currentVersion: current,
-		baseURL:        srv.URL,
-		httpClient:     srv.Client(),
-		matcher:        github.DefaultAssetMatcher,
+		repo:          testRepo,
+		checksumAsset: "SHASUMS256",
+		req:           updater.CheckRequest{CurrentVersion: current, Platform: platform, Arch: arch},
+		baseURL:       srv.URL,
+		httpClient:    srv.Client(),
+		matcher:       github.DefaultAssetMatcher,
 	}
 }
 
-// sumsForPlatform yields a SHASUMS256 body listing the running platform's asset.
+// sumsForPlatform yields a SHASUMS256 body listing both the running platform's
+// asset and the wsl-target asset.
 func sumsForPlatform(string) string {
-	return testValidDigestHex + "  " + platformAssetName + "\n"
+	return testValidDigestHex + "  " + platformAssetName + "\n" +
+		testValidDigestHex + "  " + wslAssetName + "\n"
 }
 
 func platformRequest() updater.CheckRequest {
@@ -371,6 +423,43 @@ func TestTargetableProviderListReleasesFiltersAndAnnotates(t *testing.T) {
 	}
 }
 
+func TestTargetableProviderTargetsConfiguredPlatform(t *testing.T) {
+	// The headless WSL backend is a linux/amd64 process that installs the
+	// `agent-overflow-wsl-amd64.exe` asset, so its provider is configured with
+	// platform "wsl". Both the listing and the by-tag resolve must follow that
+	// configuration, not runtime.GOOS.
+	srv := newMockGitHub(t, []relSpec{
+		{tag: "v0.0.8", name: "WSL + desktop", withPlatform: true, withWSL: true, withChecksum: true},
+		{tag: "v0.0.7", name: "desktop only", withPlatform: true, withChecksum: true}, // no wsl asset
+	}, sumsForPlatform)
+	tp := newTestTargetableFor(srv, "0.0.7", "wsl", "amd64")
+
+	got, err := tp.listReleases(context.Background())
+	if err != nil {
+		t.Fatalf("listReleases: %v", err)
+	}
+	if len(got) != 1 || got[0].Tag != "v0.0.8" {
+		t.Fatalf("releases = %+v, want only v0.0.8 (the release shipping a wsl asset)", got)
+	}
+
+	tp.SetTarget("v0.0.8")
+	// The incoming request describes the RUNNING process (linux/amd64 in the
+	// backend's case); the provider must still resolve its configured wsl asset.
+	rel, err := tp.Check(context.Background(), platformRequest())
+	if err != nil {
+		t.Fatalf("Check by tag: %v", err)
+	}
+	if rel.Artifact.Filename != wslAssetName {
+		t.Fatalf("Artifact.Filename = %q, want %q", rel.Artifact.Filename, wslAssetName)
+	}
+	if got := rel.Metadata["github.asset.url"]; got != srv.URL+"/dl/wsl/v0.0.8" {
+		t.Fatalf("asset url = %v, want %s/dl/wsl/v0.0.8", got, srv.URL)
+	}
+	if rel.Artifact.Platform != "wsl" || rel.Artifact.Arch != "amd64" {
+		t.Fatalf("artifact platform/arch = %s/%s, want wsl/amd64", rel.Artifact.Platform, rel.Artifact.Arch)
+	}
+}
+
 func TestTargetableProviderListReleasesServerError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, "boom", http.StatusInternalServerError)
@@ -496,11 +585,14 @@ func newUpdaterApp(t *testing.T, srv *httptest.Server, current string) (*App, *t
 	if err != nil {
 		t.Fatalf("github.New: %v", err)
 	}
-	tp := newTargetableProvider(gh, testRepo, "SHASUMS256", current, srv.Client())
+	req := updater.CheckRequest{CurrentVersion: current, Platform: runtime.GOOS, Arch: runtime.GOARCH}
+	tp := newTargetableProvider(gh, testRepo, "SHASUMS256", req, srv.Client())
 	tp.baseURL = srv.URL // override the production api.github.com base for the mock
 	up := updater.New(noopUpdaterHost{})
 	if err := up.Init(updater.Config{
-		CurrentVersion: current,
+		CurrentVersion: req.CurrentVersion,
+		Platform:       req.Platform,
+		Arch:           req.Arch,
 		Providers:      []updater.Provider{verifiedProvider{inner: tp}},
 		Window:         updater.WindowNone,
 	}); err != nil {

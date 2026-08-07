@@ -17,10 +17,12 @@ import { buildPane as buildRegisteredPane, makeThread as makeBaseThread } from '
 
 // Pin transport connected for the createThreadPane import chain (the real
 // store reads from wsClient, never initialised in test scope).
-vi.mock('../../stores/transportStatus.svelte', () => ({
+// Partial mock: only the snapshot is pinned. A whole-module factory would
+// have to re-declare every export, so any new one silently becomes undefined
+// here (isMethodUnavailableError did exactly that).
+vi.mock('../../stores/transportStatus.svelte', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../stores/transportStatus.svelte')>()),
   getTransportStatus: () => ({ status: 'connected', nextAttemptAt: null }),
-  retryTransport: () => {},
-  resetTransportStatusForTest: () => {},
 }));
 
 // Svelte transitions poke Element.animate on mount; jsdom lacks it.

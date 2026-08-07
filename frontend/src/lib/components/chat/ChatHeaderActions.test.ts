@@ -20,10 +20,12 @@ vi.mock('../../stores/threadCreation.svelte', () => ({ openTerminalThread: vi.fn
 
 // Pin transport connected so the attach $effect actually subscribes (the real
 // store reads from wsClient, never initialised in test scope).
-vi.mock('../../stores/transportStatus.svelte', () => ({
+// Partial mock: only the snapshot is pinned. A whole-module factory would
+// have to re-declare every export, so any new one silently becomes undefined
+// here (isMethodUnavailableError did exactly that).
+vi.mock('../../stores/transportStatus.svelte', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../stores/transportStatus.svelte')>()),
   getTransportStatus: () => ({ status: 'connected', nextAttemptAt: null }),
-  retryTransport: () => {},
-  resetTransportStatusForTest: () => {},
 }));
 
 // Svelte transitions (Popover/Menu inside GitActionsControl) poke

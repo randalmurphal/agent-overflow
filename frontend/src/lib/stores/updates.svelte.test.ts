@@ -15,6 +15,7 @@ import {
   getUpdateState,
   hasPendingUpdate,
   isDownloadInFlight,
+  isUpdateFlowBusy,
   runUpdateCheck,
   startUpdateDownload,
   restartForUpdate,
@@ -62,10 +63,28 @@ interface Availability {
   latestVersion?: string;
   releaseName?: string;
   releaseNotes?: string;
+  lastApplyFailure?: string;
+  checkError?: string;
 }
 
 function availability(overrides: Partial<Availability> = {}): Availability {
   return { supported: true, available: false, currentVersion: '1.0.0', ...overrides };
+}
+
+// The transport refuses a LocalOnly method to a non-loopback peer with the
+// same envelope it uses for an unregistered one (internal/transport/
+// dispatcher.go). This is that rejection as the wsClient surfaces it.
+function methodNotFound(): Error {
+  return Object.assign(new Error('method not registered'), {
+    name: 'TransportError',
+    code: 'method_not_found',
+  });
+}
+
+// A method that ran and returned an error carries a different code — the
+// discriminator must not confuse the two.
+function methodError(message: string): Error {
+  return Object.assign(new Error(message), { name: 'TransportError', code: 'method_error' });
 }
 
 describe('updates store', () => {
@@ -85,7 +104,21 @@ describe('updates store', () => {
       expect(isDownloadInFlight('installing')).toBe(true);
       expect(isDownloadInFlight('available')).toBe(false);
       expect(isDownloadInFlight('ready')).toBe(false);
+      expect(isDownloadInFlight('restarting')).toBe(false);
       expect(isDownloadInFlight('idle')).toBe(false);
+    });
+  });
+
+  describe('isUpdateFlowBusy', () => {
+    it('covers every mid-action phase and leaves the resting ones actionable', () => {
+      // The one predicate every action entry point gates on; a phase missing
+      // from it re-opens the double-fire bugs the guards exist to prevent.
+      for (const busy of ['checking', 'downloading', 'verifying', 'installing', 'ready', 'restarting'] as const) {
+        expect(isUpdateFlowBusy(busy)).toBe(true);
+      }
+      for (const resting of ['idle', 'available', 'up-to-date', 'error'] as const) {
+        expect(isUpdateFlowBusy(resting)).toBe(false);
+      }
     });
   });
 
@@ -134,6 +167,42 @@ describe('updates store', () => {
       expect(s.error).not.toBe('');
     });
 
+    it('surfaces a backend-reported checkError as the error phase', async () => {
+      // The backend carries a failed release check as result state rather than
+      // an RPC error, so the network-independent fields still arrive.
+      mockCheck.mockResolvedValue(
+        availability({ checkError: 'check for update: github unreachable' }),
+      );
+      await runUpdateCheck();
+      const s = getUpdateState();
+      expect(s.phase).toBe('error');
+      expect(s.error).not.toBe('');
+      expect(s.supported).toBe(true);
+    });
+
+    it('does NOT re-check while a restart handoff is in flight', async () => {
+      getUpdateState().phase = 'restarting';
+      await runUpdateCheck();
+      expect(mockCheck).not.toHaveBeenCalled();
+      expect(getUpdateState().phase).toBe('restarting');
+    });
+
+    it('clears stale release metadata when a build turns out to be unsupported', async () => {
+      // A supported check followed by an unsupported one must not leave the
+      // "version X available" card's data behind the hidden section.
+      mockCheck.mockResolvedValue(
+        availability({ available: true, latestVersion: '2.0.0', releaseName: 'Big', releaseNotes: 'n' }),
+      );
+      await runUpdateCheck();
+      mockCheck.mockResolvedValue(availability({ supported: false }));
+      await runUpdateCheck();
+      const s = getUpdateState();
+      expect(s.supported).toBe(false);
+      expect(s.latestVersion).toBe('');
+      expect(s.releaseName).toBe('');
+      expect(s.releaseNotes).toBe('');
+    });
+
     it('does NOT re-check (and clobber) when an update is already staged ready', async () => {
       // Regression: a re-check from "ready" would re-resolve the same release
       // and demote the user from "Restart to update" back to "Download" even
@@ -150,6 +219,124 @@ describe('updates store', () => {
       await runUpdateCheck();
       expect(mockCheck).not.toHaveBeenCalled();
       expect(getUpdateState().phase).toBe('downloading');
+    });
+  });
+
+  describe('remote (non-loopback) sessions', () => {
+    it('maps a method_not_found refusal to unsupported, not the error phase', async () => {
+      // The updater RPCs are LocalOnly, so a remote client's launch check is
+      // refused. That is "not available here", not a failure — the panel must
+      // show the clean unsupported copy rather than a scary error callout.
+      mockCheck.mockRejectedValue(methodNotFound());
+      await runUpdateCheck();
+      const s = getUpdateState();
+      expect(s.supported).toBe(false);
+      expect(s.phase).toBe('idle');
+      expect(s.error).toBe('');
+      expect(hasPendingUpdate()).toBe(false);
+    });
+
+    it('drops a previously-found update when a later check is refused', async () => {
+      mockCheck.mockResolvedValue(availability({ available: true, latestVersion: '2.0.0' }));
+      await runUpdateCheck();
+      expect(hasPendingUpdate()).toBe(true);
+      mockCheck.mockRejectedValue(methodNotFound());
+      await runUpdateCheck();
+      expect(getUpdateState().latestVersion).toBe('');
+      expect(hasPendingUpdate()).toBe(false);
+    });
+
+    it('keeps a genuine backend error (method_error) in the error phase', async () => {
+      mockCheck.mockRejectedValue(methodError('check for update: github: 503'));
+      await runUpdateCheck();
+      const s = getUpdateState();
+      expect(s.phase).toBe('error');
+      expect(s.supported).toBe(true);
+      expect(s.error).not.toBe('');
+    });
+
+    it('keeps a transport failure (no code) in the error phase', async () => {
+      // A dead socket rejects with DisconnectedError — no `code` at all.
+      mockCheck.mockRejectedValue(
+        Object.assign(new Error('socket closed'), { name: 'DisconnectedError' }),
+      );
+      await runUpdateCheck();
+      expect(getUpdateState().phase).toBe('error');
+      expect(getUpdateState().supported).toBe(true);
+    });
+
+    it('keeps an RPC timeout in the error phase', async () => {
+      mockCheck.mockRejectedValue(
+        Object.assign(new Error('RPC timed out'), { name: 'TransportError', code: 'timeout' }),
+      );
+      await runUpdateCheck();
+      expect(getUpdateState().phase).toBe('error');
+      expect(getUpdateState().supported).toBe(true);
+    });
+  });
+
+  describe('lastApplyFailure', () => {
+    const notice = 'Update to 2.0.0 didn’t apply — still running 1.0.0.';
+
+    it('surfaces the backend notice alongside a supported check', async () => {
+      mockCheck.mockResolvedValue(availability({ lastApplyFailure: notice }));
+      await runUpdateCheck();
+      const s = getUpdateState();
+      expect(s.supported).toBe(true);
+      expect(s.lastApplyFailure).toBe(notice);
+    });
+
+    it('persists across re-checks and through a found update', async () => {
+      // The backend recomputes it once at boot and returns it from every
+      // check for the rest of the process; the store must not drop it just
+      // because the phase moved on.
+      mockCheck.mockResolvedValue(availability({ lastApplyFailure: notice }));
+      await runUpdateCheck();
+      mockCheck.mockResolvedValue(
+        availability({ available: true, latestVersion: '2.0.0', lastApplyFailure: notice }),
+      );
+      await runUpdateCheck();
+      expect(getUpdateState().phase).toBe('available');
+      expect(getUpdateState().lastApplyFailure).toBe(notice);
+    });
+
+    it('disappears when a check returns without one', async () => {
+      mockCheck.mockResolvedValue(availability({ lastApplyFailure: notice }));
+      await runUpdateCheck();
+      mockCheck.mockResolvedValue(availability());
+      await runUpdateCheck();
+      expect(getUpdateState().lastApplyFailure).toBe('');
+    });
+
+    it('survives a failed check rather than being erased by it', async () => {
+      // A network blip says nothing about whether the previous session's
+      // install applied, so the notice must outlive it.
+      mockCheck.mockResolvedValue(availability({ lastApplyFailure: notice }));
+      await runUpdateCheck();
+      mockCheck.mockRejectedValue(new Error('network boom'));
+      await runUpdateCheck();
+      expect(getUpdateState().phase).toBe('error');
+      expect(getUpdateState().lastApplyFailure).toBe(notice);
+    });
+
+    it('arrives even when the very first check is offline', async () => {
+      // The backend reports a failed release check as checkError on the
+      // result, precisely so the boot-detected notice is not lost behind it —
+      // there is no earlier successful check to have latched it from.
+      mockCheck.mockResolvedValue(
+        availability({ lastApplyFailure: notice, checkError: 'check for update: offline' }),
+      );
+      await runUpdateCheck();
+      expect(getUpdateState().phase).toBe('error');
+      expect(getUpdateState().lastApplyFailure).toBe(notice);
+    });
+
+    it('is cleared when the session turns out not to support updates', async () => {
+      mockCheck.mockResolvedValue(availability({ lastApplyFailure: notice }));
+      await runUpdateCheck();
+      mockCheck.mockRejectedValue(methodNotFound());
+      await runUpdateCheck();
+      expect(getUpdateState().lastApplyFailure).toBe('');
     });
   });
 
@@ -298,6 +485,34 @@ describe('updates store', () => {
     });
   });
 
+  describe('recovery from the error phase', () => {
+    it('completes a full re-check → available → download → ready cycle', async () => {
+      // After a failed install the UI rests in "error" with the staged
+      // artifact still on disk, and the only affordance is Check for Updates.
+      // That path must not be blocked anywhere: runUpdateCheck's overlap guard
+      // deliberately does not list "error", and startUpdateDownload accepts
+      // "available" whether it was reached from idle or from a failure.
+      mockCheck.mockResolvedValue(availability({ available: false }));
+      const cleanup = initUpdates();
+      await tick(); // settle the launch check before driving the failure
+      emitWailsEvent('updater:error', { stage: 'install', message: 'swap failed' });
+      expect(getUpdateState().phase).toBe('error');
+
+      mockCheck.mockResolvedValue(availability({ available: true, latestVersion: '2.0.0' }));
+      await runUpdateCheck();
+      expect(getUpdateState().phase).toBe('available');
+      expect(getUpdateState().error).toBe('');
+
+      await startUpdateDownload();
+      expect(mockDownload).toHaveBeenCalledWith('');
+      expect(getUpdateState().phase).toBe('downloading');
+
+      emitWailsEvent('updater:ready', null);
+      expect(getUpdateState().phase).toBe('ready');
+      cleanup();
+    });
+  });
+
   describe('restartForUpdate', () => {
     it('restarts only when an update is staged ready', async () => {
       getUpdateState().phase = 'ready';
@@ -309,6 +524,45 @@ describe('updates store', () => {
       getUpdateState().phase = 'available';
       await restartForUpdate();
       expect(mockRestart).not.toHaveBeenCalled();
+    });
+
+    it('latches into "restarting" so the handoff cannot be double-fired', async () => {
+      // On WSL the RPC returns once the directive reaches the Windows
+      // launcher, which then spends up to two minutes verifying and swapping
+      // while this process stays alive. Staying in "ready" would leave the
+      // Restart button live, and a second click would be refused as busy —
+      // an error surfaced for an install that is in fact proceeding.
+      getUpdateState().phase = 'ready';
+      await restartForUpdate();
+      expect(getUpdateState().phase).toBe('restarting');
+      await restartForUpdate();
+      expect(mockRestart).toHaveBeenCalledOnce();
+    });
+
+    it('moves to "error" when the restart RPC rejects', async () => {
+      getUpdateState().phase = 'ready';
+      mockRestart.mockRejectedValue(new Error('nothing staged'));
+      await restartForUpdate();
+      expect(getUpdateState().phase).toBe('error');
+      expect(getUpdateState().error).not.toBe('');
+    });
+
+    it('a failed handoff reported via updater:error lands in "error"', async () => {
+      // The backend unwinds a handoff the launcher never acknowledged (or
+      // failed) with a terminal updater:error; that event is what moves the
+      // UI out of "restarting".
+      mockCheck.mockResolvedValue(availability({ available: false }));
+      const cleanup = initUpdates();
+      await tick();
+      getUpdateState().phase = 'ready';
+      await restartForUpdate();
+      expect(getUpdateState().phase).toBe('restarting');
+      emitWailsEvent('updater:error', {
+        stage: 'install',
+        message: 'The Windows launcher did not respond to the install request within 10s, so the update was not applied.',
+      });
+      expect(getUpdateState().phase).toBe('error');
+      cleanup();
     });
   });
 

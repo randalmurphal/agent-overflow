@@ -173,7 +173,9 @@ export function BrowseDirectory(path: string): $CancellablePromise<dirbrowse$0.L
  * CheckForUpdate asks the configured provider whether a newer release exists.
  * It only reads metadata — nothing is downloaded or installed. Returns
  * Supported=false (no error) on builds without an updater so the caller can
- * quietly hide the UI.
+ * quietly hide the UI. A failed release check comes back as CheckError on the
+ * result rather than an RPC error — the caller still gets every field that
+ * does not depend on the network.
  */
 export function CheckForUpdate(): $CancellablePromise<$models.UpdateAvailability> {
     return $Call.ByID(2347956003).then(($result: any) => {
@@ -1930,8 +1932,8 @@ export function ListRecentTurns(threadID: string, limit: number): $CancellablePr
 }
 
 /**
- * ListReleases returns the installable releases for the running platform, newest
- * first, so the frontend can offer a version picker. Read-only; LocalOnly.
+ * ListReleases returns the installable releases for this build's update target,
+ * newest first, so the frontend can offer a version picker. Read-only; LocalOnly.
  */
 export function ListReleases(): $CancellablePromise<$models.ReleaseSummary[]> {
     return $Call.ByID(397986043).then(($result: any) => {
@@ -2620,6 +2622,32 @@ export function ReportFrontendErrorBatch(lines: string[]): $CancellablePromise<s
 }
 
 /**
+ * ReportUpdateInstallStatus is how the Windows launcher answers an
+ * updater:install directive. Its name is pinned by selfupdate.RPCReportStatus,
+ * which both sides of the wire import.
+ * 
+ * stage is selfupdate.StatusProceeding (the launcher accepted the directive and
+ * is about to install and kill this process) or selfupdate.StatusFailed
+ * (terminal failure; the launcher stays on the old version and message says
+ * why). version must name the install actually in flight — a report that does
+ * not is refused with no state change, so a stale or malformed answer can never
+ * cancel a real install.
+ * 
+ * A "proceeding" report does not end the install, it moves it into its second
+ * phase: the launcher has promised to kill this process, so the ACK deadline is
+ * replaced by the silence backstop that catches the promise going unkept. A
+ * "failed" report is terminal from either phase — the launcher can hit an
+ * install error after acknowledging, which is the ordinary way that second
+ * phase ends without a swap.
+ * 
+ * LocalOnly: it mutates install state, clears an on-disk marker, and releases
+ * the updater's busy fence.
+ */
+export function ReportUpdateInstallStatus(stage: string, version: string, message: string): $CancellablePromise<void> {
+    return $Call.ByID(314214419, stage, version, message);
+}
+
+/**
  * ResetKeybindings deletes the user file so GetKeybindings returns
  * defaults.
  */
@@ -2664,6 +2692,11 @@ export function RestartTerminal(terminalID: string): $CancellablePromise<$models
  * transport drains and stores flush before the process exits; the helper then
  * replaces the binary (or .app bundle) and starts the new version. This quits
  * the running app, so it is only ever wired to an explicit button.
+ * 
+ * The WSL backend cannot do any of that — the executable being replaced is the
+ * Windows launcher's, on a filesystem this process only sees through /mnt/c —
+ * so it hands the staged artifact to the launcher instead and lets the launcher
+ * kill it. See restartToUpdateWSL.
  */
 export function RestartToUpdate(): $CancellablePromise<void> {
     return $Call.ByID(3141913084);

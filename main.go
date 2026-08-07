@@ -339,6 +339,10 @@ func bootTransport(appService *App, listenAddr string, opts bootTransportOptions
 // process has published a port" from "backend is ready to render."
 func runHeadless(listenAddr string, printURLFD int) {
 	appService := newApp()
+	// Before the transport server starts, so the updater RPC handlers see a
+	// fully wired App.updater / App.wslUpdate without a race. Gated at runtime
+	// on the Windows launcher having spawned us; a no-op otherwise.
+	initWSLUpdater(appService)
 	// Headless mode honors only the explicit --listen flag — the
 	// Windows launcher always passes 127.0.0.1:0, so the persisted
 	// LAN-bind preference is irrelevant here. The Windows-side
@@ -348,6 +352,10 @@ func runHeadless(listenAddr string, printURLFD int) {
 	// handler so non-RPC paths return 404 cleanly.
 	srv := bootTransport(appService, listenAddr, bootTransportOptions{RequireReadyForBootstrap: true})
 	appService.osNotifications = newTransportNotificationSender(appService)
+	// Now that the bus exists, the boot check above can say its piece. The
+	// notice itself was recorded before the server started, so a client that
+	// checks for updates the instant it connects already sees it.
+	appService.notifyPendingUpdateApplyFailure()
 	log.Printf("transport: headless mode")
 
 	phaseStarted := time.Now()

@@ -10,10 +10,12 @@ import { render, fireEvent, waitFor } from '@testing-library/svelte';
 // WS is brought up, so we force the transport mirror to "connected" —
 // otherwise the subscribe $effect bails and the split-button never
 // renders, masking what these tests are trying to exercise.
-vi.mock('../../lib/stores/transportStatus.svelte', () => ({
+// Partial mock: only the snapshot is pinned. A whole-module factory would
+// have to re-declare every export, so any new one silently becomes undefined
+// here (isMethodUnavailableError did exactly that).
+vi.mock('../../lib/stores/transportStatus.svelte', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../lib/stores/transportStatus.svelte')>()),
   getTransportStatus: () => ({ status: 'connected', nextAttemptAt: null }),
-  retryTransport: () => {},
-  resetTransportStatusForTest: () => {},
 }));
 
 import App from '../../App.svelte';

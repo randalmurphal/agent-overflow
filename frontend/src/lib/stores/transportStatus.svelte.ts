@@ -52,6 +52,38 @@ export function isTransportClassError(err: unknown): boolean {
 }
 
 /**
+ * Whether an RPC rejection means "this backend exposes no such method to
+ * this caller".
+ *
+ * One wire shape covers two causes, deliberately: a genuinely
+ * unregistered method, and a `LocalOnlyMethods` method refused to a
+ * non-loopback peer. `internal/transport/dispatcher.go` returns the
+ * identical `method_not_found` envelope for both so a LAN scanner cannot
+ * fingerprint which methods are privileged. Callers therefore read it as
+ * "this capability isn't available on this session", never as a failure
+ * to report.
+ *
+ * The discriminator is the wire error CODE (`ErrCodeMethodNotFound` in
+ * `internal/transport/frame.go`), never message prose. Every other
+ * failure carries a different code — a method that returned an error is
+ * `method_error`, a decode failure is `bad_params`, an RPC timeout is
+ * `timeout`, and a dead socket rejects with `DisconnectedError` (no code
+ * at all) — so this cannot swallow a real backend or network failure.
+ *
+ * Duck-typed on `code` rather than `instanceof TransportError` so a
+ * rejection that crossed a serialization boundary still classifies.
+ *
+ * Feature code classifies through this predicate rather than importing
+ * the transport's error classes, which stay behind `stores/` per
+ * `frontend/AGENTS.md`.
+ */
+export function isMethodUnavailableError(err: unknown): boolean {
+  return typeof err === 'object'
+    && err !== null
+    && (err as { code?: unknown }).code === 'method_not_found';
+}
+
+/**
  * Resolves the next time the transport is connected — immediately when it
  * already is. One-shot: the subscription is dropped as soon as it fires,
  * so a caller awaiting it cannot leak a handler across reconnect cycles.

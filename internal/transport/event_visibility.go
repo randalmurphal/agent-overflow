@@ -36,6 +36,13 @@ var loopbackOnlyEventChannels = map[string]bool{
 	"provider:session_account":     true,
 	"provider:account_usage_error": true,
 
+	// updater:install is an imperative directive, not a notification: the
+	// Windows launcher acts on it by swapping the app binary and killing this
+	// backend. Its only legitimate consumer is the launcher on this host, which
+	// is loopback by construction, so a LAN peer has no reason to see it — and
+	// a peer that did would learn exactly which staged file to tamper with.
+	"updater:install": true,
+
 	// provider:usage (token counts, context %, rate limits) and
 	// provider:session_died are open to remote clients — essential
 	// feedback for understanding resource consumption and provider
@@ -83,9 +90,19 @@ var remoteOnlyEventChannels = map[string]bool{
 // never try to "recover" frames that were never history). The one
 // exception is a cursor ABOVE the channel's head, which is not a
 // retention question at all — see ring.replayAfter.
+//
+// updater:install joins them for the opposite reason — not size, but
+// imperativeness. It is a one-shot instruction to swap the app binary and
+// restart, valid only for the install that was in flight when it was emitted.
+// Retaining it would mean a launcher that reconnects (the Windows↔WSL relay
+// tears connections down mid-session) replays a directive whose install has
+// long since been abandoned or already applied, and spontaneously restarts the
+// app. The backend re-emits on the next RestartToUpdate; there is nothing here
+// worth recovering.
 var ephemeralEventChannels = map[string]bool{
 	"highlight:seed":      true,
 	"highlight:diff_seed": true,
+	"updater:install":     true,
 }
 
 // latestOnlyEventChannels get a capacity-1 replay ring: unkeyed

@@ -16,6 +16,7 @@ window at the resulting `http://localhost:<port>` URL.
 - Native Windows notification authorization/presentation in
   `notifications.go`; the reconnecting backend WS client lives in
   `internal/wsllauncher/notification_client.go` so it is testable off-Windows.
+- Acting on a self-update install directive in `update.go` (below).
 
 ## When to edit elsewhere instead
 
@@ -58,6 +59,46 @@ Windows may also launch the registered toast activation executable with the
 internal `-Embedding` COM-server switch. The parser accepts it so a click can
 cold-start the launcher and register the notification callback; it is not a
 user-facing option and does not alter distro selection.
+
+## Self-update: acting on an install directive
+
+The WSL backend downloads and digest-verifies the new launcher `.exe` and
+stages it into `%APPDATA%\agent-overflow\update` through `/mnt/c`. It cannot
+replace a running Windows executable, so it emits an `InstallDirective` on
+`updater:install`; `update.go` is the half that swaps.
+
+- `handleUpdateInstall` is wired into the notification client
+  (`HandleUpdateInstall`) in `startNotificationBridge`. One install runs at a
+  time — a directive arriving during one is logged and dropped, not reported as
+  a failure of the install that is already proceeding.
+- The staged path is `<%APPDATA%\agent-overflow>\update\<directive.Filename>`.
+  `InstallDirective.Validate` (in `internal/selfupdate`) guarantees a bare file
+  name; the join is what makes "the wire can never name a path" structural.
+- The swap runs a **fresh** `updater.New` per directive — `Init` is one-shot,
+  and directives repeat after a failure — over a `selfupdate.StagedFileProvider`
+  with `updater.WindowNone`. `CheckAndInstall`'s streaming hash re-verifies the
+  staged bytes against the release digest; that is the launcher-side integrity
+  gate, so there is no separate pre-hash.
+- `ReportUpdateInstallStatus` acknowledges (`proceeding`) before the work and
+  reports `failed` with a reason on any error before `Restart` succeeds. The
+  acknowledgement's result decides whether the swap happens at all, via
+  `wsllauncher.ClassifyInstallAck`: **refused** (the backend answered and
+  rejected it — its ACK deadline already unwound the install and showed the user
+  an error) aborts without a `failed` report, since swapping would contradict
+  what the user is looking at; **undelivered** (timeout / disconnect) proceeds,
+  since an unanswered report may have landed with only its response lost.
+- `armUpdateExitWatchdog` force-exits 25s after `Restart`, under the swap
+  helper's 30s parent-exit abort, so a wedged graceful shutdown can never
+  silently cancel the swap. Disarmed only when the helper spawn itself fails.
+
+`updater.HandleHelperMode()` is therefore the **first statement of `main()`**,
+before flags, config, and logging. The helper child is this same binary; Wails'
+own call inside `application.New` would first run distro detection, the picker,
+the payload install, and the single-instance machinery against the app it is
+trying to replace.
+
+The wire half — subscription, decode, validation, status RPCs — lives in
+`internal/wsllauncher` so it is covered by ordinary Linux unit tests.
 
 ## Minimised-window memory trim
 

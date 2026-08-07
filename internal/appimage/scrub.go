@@ -75,6 +75,19 @@ func ScrubInherited() []string {
 	return scrubbed
 }
 
+// Running reports whether THIS process was launched from an AppImage.
+//
+// Same marker gate as Scrub — APPIMAGE or APPDIR present and non-empty —
+// read from the live environment, so the one place that knows what marks
+// an AppImage launch stays the one place. Callers use it to refuse
+// operations that assume a writable install: the type-2 runtime mounts
+// the app's squashfs read-only and unmounts it on exit, so replacing the
+// running executable in place is impossible by construction rather than
+// merely permission-denied.
+func Running() bool {
+	return detect(os.Environ()).active
+}
+
 // scrub reports whether it changed anything alongside the result, so both
 // public entry points can tell "no AppImage" from "AppImage with nothing
 // left to remove" without re-comparing the two slices.

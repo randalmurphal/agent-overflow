@@ -240,6 +240,13 @@ decision core, exhaustive over its state × observation matrix),
 starting states, frame-level physics invariants across the drain), and
 `src/lib/components/chat/scroll.test.ts`.
 
+`vi.mock` a shared store with an `importOriginal` spread, never a
+whole-module factory. A factory that lists only the exports a test drives
+turns every LATER export of that module into `undefined` for it, and the
+failure lands in an unrelated file (adding `isMethodUnavailableError` to
+`transportStatus.svelte.ts` broke five suites that only wanted to pin
+`getTransportStatus`).
+
 `pnpm run check` and `pnpm run build` are blockers. `pnpm test` is the
 frontend unit-test gate.
 

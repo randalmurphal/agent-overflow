@@ -1,4 +1,5 @@
 import { ReportFrontendErrorBatch } from '../stores/bindings';
+import { isMethodUnavailableError } from '../stores/transportStatus.svelte';
 import { wsClient } from '../transport/wsClient';
 import { UI_TRACE_MAX_LINE_BYTES } from './uiTraceLimits';
 import { redactDiagnosticText } from './diagnosticRedaction';
@@ -304,9 +305,13 @@ function takeBatch(): string[] {
 }
 
 function isMethodUnavailable(err: unknown): boolean {
+  if (isMethodUnavailableError(err)) return true;
+  // Message fallback, kept only for this sink: dropping error reporting is
+  // cheap to get wrong in the tolerant direction and expensive in the strict
+  // one (a refused ReportFrontendErrorBatch would otherwise retry forever
+  // against a backend that will never accept it). Callers deciding user-facing
+  // behaviour should use the code-only predicate above.
   if (!err || typeof err !== 'object') return false;
-  const code = (err as { code?: unknown }).code;
-  if (code === 'method_not_found') return true;
   const message = (err as { message?: unknown }).message;
   return typeof message === 'string' && message.includes('method not registered');
 }

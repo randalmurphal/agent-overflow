@@ -63,6 +63,7 @@ import (
 
 	"github.com/wailsapp/wails/v3/pkg/application"
 	"github.com/wailsapp/wails/v3/pkg/events"
+	"github.com/wailsapp/wails/v3/pkg/updater"
 )
 
 //go:embed picker.html
@@ -139,6 +140,16 @@ const bootstrapProbeDeadline = 30 * time.Second
 const bootstrapProbePollInterval = 250 * time.Millisecond
 
 func main() {
+	// FIRST, before flags, config, logging, or anything else. When this
+	// process was spawned as an updater swap helper (WAILS_UPDATER_HELPER=1),
+	// HandleHelperMode performs the swap and never returns; without the
+	// sentinel it returns immediately and costs one getenv. Wails calls this
+	// itself from application.New, but that is far too late here: the helper
+	// child is this same launcher binary, so it would first run distro
+	// detection, the picker, and the payload install, and trip the
+	// single-instance machinery against the app it is trying to replace.
+	updater.HandleHelperMode()
+
 	bootStarted := time.Now()
 	logFile, err := openLog()
 	if err == nil {
@@ -413,6 +424,13 @@ type launcherApp struct {
 	// backstop to the WindowClosing flush; both under mu. nil until that
 	// handler runs.
 	flushGeometry func()
+
+	// updateInstalling serializes install directives: one swap in flight at a
+	// time, and a directive that arrives while one is running is dropped (see
+	// handleUpdateInstall). Not under mu — it is claimed from the notification
+	// bridge's dispatch goroutine and held across the whole install, which
+	// would otherwise block every lifecycle path that takes the mutex.
+	updateInstalling atomic.Bool
 
 	// backendURL holds the full http://127.0.0.1:<port>/?t=<token> URL
 	// once launchAndShow points the WebView at the WSL backend. Read by
@@ -987,6 +1005,9 @@ func (a *launcherApp) startNotificationBridge(bs *wsllauncher.Bootstrap, launche
 		Token:   bs.Token,
 		Present: a.notificationService.present,
 		Logf:    log.Printf,
+		// The backend stages the new launcher .exe but cannot swap a running
+		// Windows executable; this is the callback that does (see update.go).
+		HandleUpdateInstall: a.handleUpdateInstall,
 	})
 	if err != nil {
 		return err

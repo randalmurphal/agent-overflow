@@ -12,10 +12,13 @@ const h = vi.hoisted(() => ({
   retry: vi.fn(),
 }));
 
-vi.mock('../../stores/transportStatus.svelte', () => ({
+// Partial mock: only the two exports this component drives are replaced. A
+// whole-module factory would have to re-declare every export, so any new one
+// silently becomes undefined here.
+vi.mock('../../stores/transportStatus.svelte', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../stores/transportStatus.svelte')>()),
   getTransportStatus: () => h.snapshot,
   retryTransport: () => h.retry(),
-  resetTransportStatusForTest: () => {},
 }));
 
 import TransportStatusBanner from './TransportStatusBanner.svelte';

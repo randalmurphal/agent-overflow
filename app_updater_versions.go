@@ -24,7 +24,6 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
-	"runtime"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -78,28 +77,41 @@ type ReleaseSummary struct {
 // only ever delegates Check (latest), Download, and Name to it, and keeping it
 // behind the interface both loosens the coupling and lets tests substitute a
 // recording fake for the delegation path.
+//
+// req is the build's own target: the platform/arch tokens release assets are
+// named for, plus the running version. Every asset-matching decision this type
+// makes — by-tag resolve, listReleases, installable — reads it, so a listing and
+// a by-tag install can never disagree about what "this platform" means. It is
+// NOT derivable from runtime.GOOS: the headless WSL backend is a linux/amd64
+// process that installs `agent-overflow-wsl-amd64.exe` for the Windows launcher
+// to swap in, so it targets platform "wsl".
 type targetableProvider struct {
-	inner          updater.Provider // stock provider: latest Check + Download
-	repo           string           // "owner/repo"
-	checksumAsset  string           // sidecar asset name, e.g. "SHASUMS256"
-	currentVersion string           // running build version, for downgrade annotation
-	baseURL        string           // GitHub API base (overridable for tests)
-	httpClient     *http.Client
-	matcher        github.AssetMatcher // reused asset picker
-	target         atomic.Pointer[string]
+	inner         updater.Provider // stock provider: latest Check + Download
+	repo          string           // "owner/repo"
+	checksumAsset string           // sidecar asset name, e.g. "SHASUMS256"
+	req           updater.CheckRequest
+	baseURL       string // GitHub API base (overridable for tests)
+	httpClient    *http.Client
+	matcher       github.AssetMatcher // reused asset picker
+	target        atomic.Pointer[string]
 }
 
 // newTargetableProvider builds the provider around an already-constructed stock
 // github provider so both share the same matching/verification configuration.
-func newTargetableProvider(inner updater.Provider, repo, checksumAsset, currentVersion string, httpClient *http.Client) *targetableProvider {
+//
+// req must be the same CheckRequest the caller configures the Updater with
+// (updater.Config's CurrentVersion / Platform / Arch), so the passive latest
+// check the stock provider serves and the listing this type serves describe the
+// same set of assets.
+func newTargetableProvider(inner updater.Provider, repo, checksumAsset string, req updater.CheckRequest, httpClient *http.Client) *targetableProvider {
 	return &targetableProvider{
-		inner:          inner,
-		repo:           repo,
-		checksumAsset:  checksumAsset,
-		currentVersion: currentVersion,
-		baseURL:        defaultGitHubAPIBase,
-		httpClient:     httpClient,
-		matcher:        github.DefaultAssetMatcher,
+		inner:         inner,
+		repo:          repo,
+		checksumAsset: checksumAsset,
+		req:           req,
+		baseURL:       defaultGitHubAPIBase,
+		httpClient:    httpClient,
+		matcher:       github.DefaultAssetMatcher,
 	}
 }
 
@@ -118,10 +130,12 @@ func (p *targetableProvider) Name() string { return p.inner.Name() }
 
 // Check resolves the targeted release: the stock latest path when no target is
 // set, or a specific tag otherwise. The by-tag path deliberately skips the
-// newer-than-current gate so a rollback resolves.
+// newer-than-current gate so a rollback resolves, and matches assets against
+// this provider's configured target rather than the incoming request, so it
+// resolves exactly what listReleases offered.
 func (p *targetableProvider) Check(ctx context.Context, req updater.CheckRequest) (*updater.Release, error) {
 	if t := p.target.Load(); t != nil && *t != "" {
-		return p.resolveTag(ctx, *t, req)
+		return p.resolveTag(ctx, *t, p.req)
 	}
 	return p.inner.Check(ctx, req)
 }
@@ -179,9 +193,9 @@ func (p *targetableProvider) resolveTag(ctx context.Context, tag string, req upd
 	return out, nil
 }
 
-// listReleases enumerates installable releases (those with both a platform
-// asset and a checksum sidecar), newest first, annotated relative to the
-// running version.
+// listReleases enumerates installable releases (those with an asset for the
+// configured target and a checksum sidecar), newest first, annotated relative to
+// the running version.
 func (p *targetableProvider) listReleases(ctx context.Context) ([]ReleaseSummary, error) {
 	var raw []apiRelease
 	endpoint := fmt.Sprintf("%s/repos/%s/releases?per_page=%d", p.baseURL, p.repo, releaseListPageSize)
@@ -189,12 +203,11 @@ func (p *targetableProvider) listReleases(ctx context.Context) ([]ReleaseSummary
 		return nil, err
 	}
 
-	req := updater.CheckRequest{Platform: runtime.GOOS, Arch: runtime.GOARCH}
-	curV := ensureVPrefix(p.currentVersion)
+	curV := ensureVPrefix(p.req.CurrentVersion)
 	out := make([]ReleaseSummary, 0, len(raw))
 	latestMarked := false
 	for _, r := range raw {
-		if r.Draft || !p.installable(req, r) {
+		if r.Draft || !p.installable(p.req, r) {
 			continue
 		}
 		s := ReleaseSummary{
@@ -225,7 +238,7 @@ func (p *targetableProvider) listReleases(ctx context.Context) ([]ReleaseSummary
 	return out, nil
 }
 
-// installable reports whether a release ships an asset for the running platform
+// installable reports whether a release ships an asset for the requested target
 // and a checksum sidecar — the two things a download here needs.
 func (p *targetableProvider) installable(req updater.CheckRequest, r apiRelease) bool {
 	idx := p.matcher(req, toReleaseAssets(r.Assets))
@@ -365,8 +378,8 @@ type apiAsset struct {
 	BrowserDownloadURL string `json:"browser_download_url"`
 }
 
-// ListReleases returns the installable releases for the running platform, newest
-// first, so the frontend can offer a version picker. Read-only; LocalOnly.
+// ListReleases returns the installable releases for this build's update target,
+// newest first, so the frontend can offer a version picker. Read-only; LocalOnly.
 func (a *App) ListReleases() ([]ReleaseSummary, error) {
 	if a.updater == nil || a.updaterProvider == nil {
 		return nil, ErrUpdatesUnsupported

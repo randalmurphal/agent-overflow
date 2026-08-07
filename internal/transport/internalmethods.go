@@ -608,4 +608,15 @@ var LocalOnlyMethods = map[string]bool{
 	"ListReleases":    true,
 	"DownloadUpdate":  true,
 	"RestartToUpdate": true,
+
+	// 9b. The Windows launcher's answer to an updater:install directive.
+	// ReportUpdateInstallStatus settles the in-flight install: it clears the
+	// on-disk update marker and releases the updater's busy fence (category 5's
+	// app-managed FS bookkeeping, wrapped around category 2's lifecycle
+	// control). The only legitimate caller is the launcher process on this
+	// host, which reaches the backend over the WSL localhost relay and is
+	// therefore loopback by construction. A LAN-attached peer forging "failed"
+	// would cancel a real install; forging "proceeding" would strand the app
+	// with the fence held until the launcher's own report was refused as stale.
+	"ReportUpdateInstallStatus": true,
 }

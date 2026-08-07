@@ -872,10 +872,11 @@ func (p *privilegedApp) RemoveProviderAccount() string       { return "ok" }
 func (p *privilegedApp) RefreshProviderAccountUsage() string { return "ok" }
 
 // 10. In-app self-update (network + local-FS + host-process control).
-func (p *privilegedApp) CheckForUpdate() string  { return "ok" }
-func (p *privilegedApp) ListReleases() string    { return "ok" }
-func (p *privilegedApp) DownloadUpdate() string  { return "ok" }
-func (p *privilegedApp) RestartToUpdate() string { return "ok" }
+func (p *privilegedApp) CheckForUpdate() string            { return "ok" }
+func (p *privilegedApp) ListReleases() string              { return "ok" }
+func (p *privilegedApp) DownloadUpdate() string            { return "ok" }
+func (p *privilegedApp) RestartToUpdate() string           { return "ok" }
+func (p *privilegedApp) ReportUpdateInstallStatus() string { return "ok" }
 
 // TestDispatcher_LocalOnlyRefusedFromNonLoopback pins the LAN-bind
 // safety contract on the dispatcher itself. ResolveForOrigin must

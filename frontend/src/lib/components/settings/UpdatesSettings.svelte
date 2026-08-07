@@ -10,6 +10,7 @@
   import {
     getUpdateState,
     isDownloadInFlight,
+    isUpdateFlowBusy,
     runUpdateCheck,
     startUpdateDownload,
     restartForUpdate,
@@ -22,7 +23,7 @@
   // The progress / restart block renders for ANY install in flight — the latest
   // flow and a by-tag rollback alike — so it can't hang off the latestVersion
   // card (a rollback while up-to-date has no latestVersion).
-  const showActive = $derived(downloading || s.phase === 'ready');
+  const showActive = $derived(downloading || s.phase === 'ready' || s.phase === 'restarting');
   const progressPercent = $derived(
     s.total > 0 ? Math.min(100, Math.round((s.written / s.total) * 100)) : 0,
   );
@@ -40,6 +41,15 @@
     }
   });
 
+  // Built here rather than spliced around an {#if} in the template: a
+  // conditional block boundary swallows the whitespace that separates the two
+  // sentences, which rendered as "…for this build.You’re running version…".
+  const unsupportedMessage = $derived(
+    s.currentVersion
+      ? `In-app updates aren’t available for this build. You’re running version ${s.currentVersion}.`
+      : 'In-app updates aren’t available for this build.',
+  );
+
   function formatMB(bytes: number): string {
     return (bytes / (1024 * 1024)).toFixed(1);
   }
@@ -52,11 +62,17 @@
   />
 
   {#if !s.supported}
-    <p class="text-[0.75rem] text-fg-muted">
-      In-app updates aren’t available for this build.{#if s.currentVersion}
-        You’re running version {s.currentVersion}.{/if}
-    </p>
+    <p class="text-[0.75rem] text-fg-muted">{unsupportedMessage}</p>
   {:else}
+    <!-- Sits above the current-version card because it describes the version
+         that card is reporting: the previous session staged an update that
+         never got applied, so this build is not the one the user asked for.
+         Backend-owned and re-returned by every check, so it persists through
+         the whole session rather than clearing on the next phase change. -->
+    {#if s.lastApplyFailure}
+      <SettingsCallout tone="error">{s.lastApplyFailure}</SettingsCallout>
+    {/if}
+
     <div
       class="flex items-center justify-between gap-4 rounded-[var(--radius-field)] border border-border-subtle bg-surface-0/40 px-4 py-3"
     >
@@ -67,7 +83,7 @@
       <button
         class={SECONDARY_BUTTON_CLASS}
         onclick={() => void runUpdateCheck()}
-        disabled={checking || downloading || s.phase === 'ready'}
+        disabled={isUpdateFlowBusy(s.phase)}
       >
         {checking ? 'Checking…' : 'Check for Updates'}
       </button>
@@ -142,6 +158,13 @@
               Restart to update
             </button>
           </div>
+        {/if}
+
+        {#if s.phase === 'restarting'}
+          <!-- On the WSL build the Windows launcher owns the swap and may take
+               a couple of minutes verifying before it restarts the app; the
+               button stays gone so a second handoff can't be requested. -->
+          <p class="text-[0.6875rem] text-fg-muted">Restarting to apply the update…</p>
         {/if}
       </section>
     {/if}

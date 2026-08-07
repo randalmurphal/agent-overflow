@@ -5,10 +5,12 @@ import { resetPanesForTest } from '../../stores/panes.svelte';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
 import { buildPane } from '../../../test/helpers/chat';
 
-vi.mock('../../stores/transportStatus.svelte', () => ({
+// Partial mock: only the snapshot is pinned. A whole-module factory would
+// have to re-declare every export, so any new one silently becomes undefined
+// here (isMethodUnavailableError did exactly that).
+vi.mock('../../stores/transportStatus.svelte', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../stores/transportStatus.svelte')>()),
   getTransportStatus: () => ({ status: 'connected', nextAttemptAt: null }),
-  retryTransport: () => {},
-  resetTransportStatusForTest: () => {},
 }));
 
 describe('<CommitDialog> — Generate commit message', () => {

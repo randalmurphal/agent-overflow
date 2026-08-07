@@ -42,10 +42,41 @@ Two callers:
   UI's empty-state branch is exercisable off-platform.
 - `notification_client.go` — cross-platform transport client used by the
   Windows launcher: replay-aware `notification:send` consumption,
-  bounded reconnect, and `NotificationActivated` RPC posting. Kept
+  bounded reconnect, and RPC posting over the same connection. Kept
   cross-platform so its wire behavior is exercised by Linux unit tests.
   The notification wire contract itself (`Target`, `Send`, validation,
   content limits) lives in `internal/notify`, shared with the backend.
+  Setting `HandleUpdateInstall` additionally subscribes the connection to
+  `selfupdate.ChannelInstall` and dispatches every directive that passes
+  `InstallDirective.Validate` — invalid ones are logged and dropped, never
+  handed on, since a directive names a file the launcher resolves on disk.
+  That channel is ephemeral on the server, so it deliberately carries no
+  replay cursor and no sequence tracking; only `notification:send` does.
+  Leaving the callback nil keeps the wire exactly as it was.
+- `notification_rpc.go` — the call layer both of the launcher's RPCs share
+  (`NotificationActivated` and `ReportUpdateInstallStatus`, the latter pinned by
+  `selfupdate.RPCReportStatus` and posted as `stage, version, message`): one
+  pending map, one 5s timeout, one disconnect story. The two differ in what
+  the timeout covers, and the difference is deliberate: `Activate`'s
+  connection wait rides the caller's context so a cold-boot toast click
+  survives the bridge still connecting, while `ReportUpdateInstallStatus` is
+  bounded end to end — connection wait included — because a directive only
+  arrives over a live connection, the backend's ACK deadline is already
+  counting, and a report blocked on a reconnect would hold the launcher's
+  install guard indefinitely and could land late enough to be refused. A call
+  the backend *answered and rejected* returns `*RPCRefusedError`; every other
+  failure (no connection, write error, timeout) returns a plain error. That
+  split is load-bearing, not cosmetic — see below.
+- `install_ack.go` — `ClassifyInstallAck` turns the result of a
+  `proceeding` report into the launcher's decision: **accepted** → swap;
+  **refused** → abandon, because a server answer proves the report did not take
+  effect (the backend's ACK deadline already unwound the install and told the
+  user, or the directive is stale), so swapping would contradict the error on
+  screen; **undelivered** → swap anyway, because an unanswered report is
+  ambiguous — it may have landed with only its response lost, and abandoning
+  then would strand a backend holding its fence for a swap that never comes.
+  Kept here so all three branches are covered by Linux unit tests rather than
+  living in the launcher's Windows-only driver.
 - `notification_activation_queue.go` — bounded cold-click FIFO and serialized
   drain state shared with the launcher, also cross-platform for unit tests.
 - `distro_test.go`, `launcher_test.go` — table-driven against fixture

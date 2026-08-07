@@ -13,10 +13,12 @@ import { emitWailsEvent } from '../../test/mocks/wailsio-runtime';
 // transport store directly — but the createThreadPane import chain might. Pin
 // it connected so nothing in that chain reaches for the (never-initialised)
 // wsClient in test scope.
-vi.mock('./transportStatus.svelte', () => ({
+// Partial mock: only the snapshot is pinned. A whole-module factory would
+// have to re-declare every export, so any new one silently becomes undefined
+// here (isMethodUnavailableError did exactly that).
+vi.mock('./transportStatus.svelte', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./transportStatus.svelte')>()),
   getTransportStatus: () => ({ status: 'connected', nextAttemptAt: null }),
-  retryTransport: () => {},
-  resetTransportStatusForTest: () => {},
 }));
 
 function makeThread(overrides: Partial<Thread> = {}): Thread {

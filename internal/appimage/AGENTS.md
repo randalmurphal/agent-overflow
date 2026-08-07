@@ -35,6 +35,10 @@ how *this* process was launched. A child is not that process:
   or `nil` when nothing would change. The nil is the contract: `cmd.Env =
   appimage.ScrubInherited()` leaves a non-AppImage launch on `exec.Cmd`'s
   own inherit path instead of freezing a snapshot of `os.Environ()`.
+- `Running() bool` — whether this process was launched from an AppImage,
+  under the same marker gate. For callers that must refuse work assuming
+  a writable install (the self-updater's in-place binary swap), not for
+  branching child environments — that is what `Scrub` is for.
 
 Properties every caller may rely on: pure (the input is never mutated),
 order-preserving, idempotent (a second pass finds no markers), and inert

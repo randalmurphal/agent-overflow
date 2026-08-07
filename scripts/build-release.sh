@@ -103,10 +103,11 @@ validate_launcher() {
 	fi
 }
 
-# The darwin zips are arch-labeled and the in-app updater matches assets by
-# those labels, so a mislabeled slice would ship an unrunnable build to
-# updaters. The bundle must be UNIVERSAL (arm64 + x86_64) before it may be
-# published under either arch name.
+# The darwin zip is arch-labeled and the in-app updater matches assets by that
+# label, so a mislabeled slice would ship an unrunnable build to updaters. The
+# bundle must be UNIVERSAL (arm64 + x86_64) before it may be published under an
+# arch name — the check stays even though only arm64 is published, because the
+# asset name promises a bundle that runs on the machines the label covers.
 validate_universal_macho() {
 	path=$1
 	[ -f "$path" ] || { echo "ERROR: missing macOS binary: $path" >&2; exit 1; }
@@ -131,15 +132,13 @@ validate_universal_macho() {
 	fi
 }
 
-# One universal bundle, published once per arch label: the updater's asset
-# matcher requires BOTH the platform and arch tokens in an asset name, so a
-# single "universal"-named zip would match nobody (and renaming the existing
-# darwin-arm64 asset would strand already-shipped clients).
+# The universal bundle ships under the darwin-arm64 name only — Intel Macs are
+# no longer a target. The name stays exactly that: the updater's asset matcher
+# requires BOTH the platform and arch tokens, so a "universal"-named zip would
+# match nobody and a rename would strand already-shipped clients.
 package_darwin_zips() {
 	validate_universal_macho "$ROOT_DIR/bin/agent-overflow.app/Contents/MacOS/agent-overflow"
-	arm64_zip="$OUT_DIR/agent-overflow-darwin-arm64.zip"
-	( cd "$ROOT_DIR/bin" && zip -qr "$arm64_zip" "agent-overflow.app" )
-	cp "$arm64_zip" "$OUT_DIR/agent-overflow-darwin-amd64.zip"
+	( cd "$ROOT_DIR/bin" && zip -qr "$OUT_DIR/agent-overflow-darwin-arm64.zip" "agent-overflow.app" )
 }
 
 validate_version

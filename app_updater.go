@@ -12,10 +12,13 @@ import (
 	"github.com/wailsapp/wails/v3/pkg/updater"
 )
 
-// In-app self-update surface. The Wails app.Updater singleton is configured
-// for the native desktop path only (see initUpdater in app_updater_desktop.go);
-// the headless WSL backend and tests leave a.updater nil, so every method here
-// guards that case and reports the feature unsupported rather than panicking.
+// In-app self-update surface, shared by both builds. The Wails app.Updater
+// singleton backs the native desktop path (initUpdater in
+// app_updater_desktop.go); the headless WSL backend builds its own Updater over
+// the same providers and stages the artifact for the Windows launcher to swap
+// (initWSLUpdater in app_updater_wsl.go). Tests leave a.updater nil, so every
+// method here guards that case and reports the feature unsupported rather than
+// panicking.
 //
 // Trust model: integrity-only. Releases are verified against the SHA-256
 // SHASUMS256 sidecar published alongside each GitHub release (not cryptographic
@@ -41,6 +44,62 @@ const (
 	updaterDownloadTimeout = 15 * time.Minute
 )
 
+// updaterRepository is the GitHub "owner/repo" the updater polls for releases.
+// Releases are matched by asset filename (agent-overflow-<platform>-<arch>[.ext],
+// where platform is the running GOOS on desktop and "wsl" on the WSL backend)
+// and verified against the SHASUMS256 sidecar.
+const updaterRepository = "randalmurphal/agent-overflow"
+
+// updaterChecksumAsset is the exact release-asset name the GitHub provider
+// fetches and parses for SHA-256 digests. Must match the file written by
+// scripts/package-release-assets.sh; a mismatch makes the provider fall open
+// (no verification), which verifiedProvider then rejects.
+const updaterChecksumAsset = "SHASUMS256"
+
+// updaterEventBridge maps each Wails updater lifecycle event onto the transport
+// channel the Svelte UI subscribes to. Both hosts forward through this one
+// table so the two builds cannot drift on channel names.
+//
+// The desktop path receives these on the Wails application event bus
+// (pkg/updater/events.go); EventManager.Emit stores a single argument as
+// CustomEvent.Data, so e.Data is already the typed payload (updater.Progress
+// for progress, *updater.Release for the lifecycle events, updater.ErrorInfo
+// for errors) and we forward it verbatim. The WSL host receives the same
+// payloads as Host.Emit's first variadic argument.
+//
+// Check results (update-available / no-update) are deliberately NOT bridged:
+// the frontend drives Check via the CheckForUpdate RPC and uses its return
+// value, so re-emitting them as events would be redundant.
+var updaterEventBridge = map[string]string{
+	updater.EventDownloadStarted:  "updater:download-started",
+	updater.EventDownloadProgress: "updater:progress",
+	updater.EventVerifying:        "updater:verifying",
+	updater.EventInstalling:       "updater:installing",
+	updater.EventUpdateReady:      "updater:ready",
+	updater.EventError:            "updater:error",
+}
+
+// updaterReadyChannel and updaterErrorChannel name the two channels the App
+// emits on directly rather than through a host bridge: the WSL path raises its
+// own readiness (the framework's fires too early there), and both paths raise
+// errors for the failures the framework returns instead of emitting.
+//
+// They are resolved from updaterEventBridge so there is still exactly one
+// name↔channel table, and mustBridgedChannel makes deleting a row from it a
+// startup panic rather than a silent emit onto the empty channel.
+var (
+	updaterReadyChannel = mustBridgedChannel(updater.EventUpdateReady)
+	updaterErrorChannel = mustBridgedChannel(updater.EventError)
+)
+
+func mustBridgedChannel(event string) string {
+	channel, ok := updaterEventBridge[event]
+	if !ok || channel == "" {
+		panic("updater: " + event + " has no transport channel in updaterEventBridge")
+	}
+	return channel
+}
+
 var (
 	// ErrUpdatesUnsupported is returned by the updater RPCs on builds that
 	// can't self-update: the headless WSL backend (no Wails application) and
@@ -58,6 +117,22 @@ var (
 	// ErrUpdateBusy is returned by DownloadUpdate when another download/install
 	// is already in flight (the updater handles one at a time).
 	ErrUpdateBusy = errors.New("app: an update is already being installed")
+
+	// The next three are the WSL install-handoff refusals, returned to the
+	// Windows launcher by ReportUpdateInstallStatus. Each leaves the in-flight
+	// install state untouched, so a malformed or stale report can never cancel
+	// an install that is genuinely under way.
+	//
+	// ErrInvalidInstallStatus rejects a stage outside the selfupdate vocabulary.
+	ErrInvalidInstallStatus = errors.New("app: unknown update install status")
+	// ErrNoInstallInFlight rejects a report that matches no outstanding
+	// directive: one that arrives before any RestartToUpdate, a duplicate after
+	// the first report settled the install, or one that lost the race with the
+	// acknowledgement timeout.
+	ErrNoInstallInFlight = errors.New("app: no update install is awaiting a launcher report")
+	// ErrInstallVersionMismatch rejects a report naming a different release
+	// than the one in flight — a stale directive the launcher acted on late.
+	ErrInstallVersionMismatch = errors.New("app: update install report names a different release")
 )
 
 // UpdateAvailability is the result of CheckForUpdate. Supported is false on
@@ -71,12 +146,30 @@ type UpdateAvailability struct {
 	LatestVersion  string `json:"latestVersion,omitempty"`
 	ReleaseName    string `json:"releaseName,omitempty"`
 	ReleaseNotes   string `json:"releaseNotes,omitempty"`
+	// LastApplyFailure is the boot-detected notice that a previously staged
+	// update never got applied (WSL only: the Windows launcher owns that swap
+	// and this process is gone by the time it runs, so the NEXT boot is the
+	// only observer). Empty on every ordinary launch. It is process-lifetime
+	// state recomputed from the on-disk marker at boot, so it persists across
+	// re-checks within a session and clears on the next boot whose running
+	// version matches what the marker expected — a re-check must not make a
+	// failed install look successful.
+	LastApplyFailure string `json:"lastApplyFailure,omitempty"`
+	// CheckError, when non-empty, reports that the release check itself failed
+	// (network down, GitHub unreachable, rate-limited). It is result state
+	// rather than an RPC error so the fields the backend knows WITHOUT the
+	// network — Supported, CurrentVersion, and above all LastApplyFailure —
+	// still reach the panel: the boot-detected "didn't apply" notice must not
+	// vanish behind an offline check.
+	CheckError string `json:"checkError,omitempty"`
 }
 
 // CheckForUpdate asks the configured provider whether a newer release exists.
 // It only reads metadata — nothing is downloaded or installed. Returns
 // Supported=false (no error) on builds without an updater so the caller can
-// quietly hide the UI.
+// quietly hide the UI. A failed release check comes back as CheckError on the
+// result rather than an RPC error — the caller still gets every field that
+// does not depend on the network.
 func (a *App) CheckForUpdate() (UpdateAvailability, error) {
 	if a.updater == nil {
 		return UpdateAvailability{Supported: false, CurrentVersion: version}, nil
@@ -92,7 +185,11 @@ func (a *App) CheckForUpdate() (UpdateAvailability, error) {
 	// probing the network. The busy client's next check, after the install
 	// settles, returns the authoritative answer.
 	if a.updaterBusy {
-		return UpdateAvailability{Supported: true, CurrentVersion: a.updater.CurrentVersion()}, nil
+		return UpdateAvailability{
+			Supported:        true,
+			CurrentVersion:   a.updater.CurrentVersion(),
+			LastApplyFailure: a.updateApplyFailure,
+		}, nil
 	}
 
 	// The passive check always reports the newest release: clear any tag a
@@ -107,10 +204,28 @@ func (a *App) CheckForUpdate() (UpdateAvailability, error) {
 
 	rel, err := a.updater.Check(ctx)
 	if err != nil {
-		return UpdateAvailability{}, fmt.Errorf("check for update: %w", err)
+		// The stash mirrors what the updater would install NOW; a failed
+		// resolve means we no longer know, so drop it rather than let a stale
+		// identity outlive the release it described.
+		a.updaterPending = nil
+		return UpdateAvailability{
+			Supported:        true,
+			CurrentVersion:   a.updater.CurrentVersion(),
+			LastApplyFailure: a.updateApplyFailure,
+			CheckError:       fmt.Sprintf("check for update: %v", err),
+		}, nil
 	}
+	// Stash the resolved identity (nil when up to date) under the same lock
+	// that just ran the Check, so the updater's pending release and our record
+	// of it can never be observed out of step. The WSL staging path is the only
+	// reader; on desktop this is one small snapshot per check and nothing more.
+	a.updaterPending = snapshotRelease(rel)
 
-	out := UpdateAvailability{Supported: true, CurrentVersion: a.updater.CurrentVersion()}
+	out := UpdateAvailability{
+		Supported:        true,
+		CurrentVersion:   a.updater.CurrentVersion(),
+		LastApplyFailure: a.updateApplyFailure,
+	}
 	if rel != nil {
 		out.Available = true
 		out.LatestVersion = rel.Version
@@ -118,6 +233,27 @@ func (a *App) CheckForUpdate() (UpdateAvailability, error) {
 		out.ReleaseNotes = rel.Notes
 	}
 	return out, nil
+}
+
+// snapshotRelease copies the parts of a resolved release the App retains, so
+// nothing we hold aliases a struct the Wails updater owns and may reuse. nil in,
+// nil out — "up to date" is a legitimate resolve result.
+//
+// Metadata is carried by reference on purpose: the map is populated at resolve
+// time and never mutated afterwards, and it is part of the payload the desktop
+// bridge already forwards on updater:ready.
+func snapshotRelease(rel *updater.Release) *updater.Release {
+	if rel == nil {
+		return nil
+	}
+	out := *rel
+	if rel.Verification != nil {
+		v := *rel.Verification
+		v.Digest = append([]byte(nil), rel.Verification.Digest...)
+		v.Signature = append([]byte(nil), rel.Verification.Signature...)
+		out.Verification = &v
+	}
+	return &out
 }
 
 // DownloadUpdate downloads, verifies, and stages a release, then leaves it
@@ -171,13 +307,29 @@ func (a *App) DownloadUpdate(tag string) error {
 		}
 	}
 	a.updaterBusy = true
+	// Copy the resolved identity out under the busy fence. From here on the
+	// goroutine works from this local, so a CheckForUpdate that lands after the
+	// install settles (the busy flag only fences it until then) cannot retarget
+	// the release the staging step is about to name and verify against. The
+	// by-tag path below overwrites it with its own resolve.
+	pending := a.updaterPending
 	a.updaterMu.Unlock()
 
 	go func() {
+		// terminal, when set, is the event that ends this flow for the
+		// frontend. It fires from the deferred block AFTER updaterBusy drops,
+		// because a client's very next action can test that same fence: the WSL
+		// RestartToUpdate refuses while a download holds it, and a UI that acts
+		// on "ready" the instant it lands must not be told an update is still
+		// installing by the goroutine that just finished installing it.
+		var terminal func()
 		defer func() {
 			a.updaterMu.Lock()
 			a.updaterBusy = false
 			a.updaterMu.Unlock()
+			if terminal != nil {
+				terminal()
+			}
 		}()
 
 		if tag != "" {
@@ -194,6 +346,12 @@ func (a *App) DownloadUpdate(tag string) error {
 				a.updaterProvider.SetTarget(tag)
 			}
 			rel, err := a.updater.Check(rctx)
+			// Both resolve paths stash the same way, still holding the lock the
+			// Check ran under: this one and CheckForUpdate's. If only one did,
+			// the WSL staging step below could copy freshly downloaded bytes
+			// under a stale release's filename and digest.
+			a.updaterPending = snapshotRelease(rel)
+			pending = a.updaterPending
 			a.updaterMu.Unlock()
 			rcancel()
 			// Check errors are RETURNED by the updater, not emitted, so on
@@ -203,12 +361,12 @@ func (a *App) DownloadUpdate(tag string) error {
 			// this platform (no matching asset).
 			if err != nil {
 				log.Printf("updater: resolve %s failed: %v", tag, err)
-				a.emit("updater:error", updater.ErrorInfo{Stage: updater.StageCheck, Message: err.Error(), Provider: "github"})
+				terminal = a.updaterErrorEmitter(updater.ErrorInfo{Stage: updater.StageCheck, Message: err.Error(), Provider: "github"})
 				return
 			}
 			if rel == nil {
 				log.Printf("updater: resolve %s returned no installable release", tag)
-				a.emit("updater:error", updater.ErrorInfo{Stage: updater.StageCheck, Message: fmt.Sprintf("release %s is not installable on this platform", tag), Provider: "github"})
+				terminal = a.updaterErrorEmitter(updater.ErrorInfo{Stage: updater.StageCheck, Message: fmt.Sprintf("release %s is not installable on this platform", tag), Provider: "github"})
 				return
 			}
 		}
@@ -221,9 +379,28 @@ func (a *App) DownloadUpdate(tag string) error {
 		// with the returned error is log it for the server-side record.
 		if err := a.updater.DownloadAndInstall(ctx); err != nil {
 			log.Printf("updater: download/install failed: %v", err)
+			return
+		}
+		// WSL mode: the verified artifact is still inside the distro, where the
+		// Windows launcher that performs the swap cannot reach it. Copying it
+		// across /mnt/c is what "ready" means here, so the WSL host suppresses
+		// the framework's EventUpdateReady and stageWSLUpdate emits the
+		// updater:ready the frontend acts on once the bytes have landed —
+		// verified again on the far side. Desktop mode never enters this branch
+		// and keeps the bridged event.
+		if a.wslUpdate != nil {
+			terminal = a.stageWSLUpdate(pending)
 		}
 	}()
 	return nil
+}
+
+// updaterErrorEmitter defers one updater:error emission. Used for the terminal
+// events DownloadUpdate's goroutine raises itself (the ones the framework does
+// not emit for us), so they land on the same after-the-fence edge as the
+// success event.
+func (a *App) updaterErrorEmitter(info updater.ErrorInfo) func() {
+	return func() { a.emit(updaterErrorChannel, info) }
 }
 
 // restartExitWatchdogDelay is how long RestartToUpdate lets the graceful
@@ -240,9 +417,17 @@ const restartExitWatchdogDelay = 25 * time.Second
 // transport drains and stores flush before the process exits; the helper then
 // replaces the binary (or .app bundle) and starts the new version. This quits
 // the running app, so it is only ever wired to an explicit button.
+//
+// The WSL backend cannot do any of that — the executable being replaced is the
+// Windows launcher's, on a filesystem this process only sees through /mnt/c —
+// so it hands the staged artifact to the launcher instead and lets the launcher
+// kill it. See restartToUpdateWSL.
 func (a *App) RestartToUpdate() error {
 	if a.updater == nil {
 		return ErrUpdatesUnsupported
+	}
+	if a.wslUpdate != nil {
+		return a.restartToUpdateWSL()
 	}
 	if a.updater.DownloadedPath() == "" {
 		return ErrUpdateNotReady

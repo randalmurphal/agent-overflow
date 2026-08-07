@@ -14,13 +14,13 @@ import (
 	"time"
 
 	"agent-overflow/internal/notify"
+	"agent-overflow/internal/selfupdate"
 
 	"github.com/coder/websocket"
 )
 
 var ErrNotificationBridgeDisconnected = errors.New("notification bridge disconnected")
 
-const notificationActivationRPCTimeout = 5 * time.Second
 const notificationBridgeReadLimit = 1024 * 1024
 
 type NotificationClientConfig struct {
@@ -30,18 +30,38 @@ type NotificationClientConfig struct {
 	Logf       func(string, ...any)
 	MinBackoff time.Duration
 	MaxBackoff time.Duration
+
+	// HandleUpdateInstall, when non-nil, additionally subscribes this
+	// connection to selfupdate.ChannelInstall and hands every well-formed
+	// directive to the callback. Leaving it nil keeps the client's wire
+	// behavior exactly as it was before self-update existed: one subscribed
+	// channel, one replay cursor.
+	//
+	// The callback runs on its own goroutine, not the read loop: the launcher
+	// answers a directive by posting an RPC back over this same connection,
+	// and that response can only arrive if the read loop is free.
+	HandleUpdateInstall func(selfupdate.InstallDirective)
 }
 
 // NotificationClient is the launcher's narrow transport client. It consumes
-// only notification:send, replays that channel after reconnect, and uses the
-// same connection for activation RPCs.
+// notification:send (replayed after reconnect) plus, when the launcher asks
+// for it, the ephemeral updater:install directive channel, and uses the same
+// connection for the RPCs both of those produce.
 type NotificationClient struct {
-	wsURL   string
-	token   string
-	present func(notify.Send) error
-	logf    func(string, ...any)
-	minWait time.Duration
-	maxWait time.Duration
+	wsURL         string
+	token         string
+	present       func(notify.Send) error
+	handleInstall func(selfupdate.InstallDirective)
+	// channels is the exact subscribe-frame payload, fixed at construction so
+	// every reconnect asks for the same set.
+	channels []string
+	logf     func(string, ...any)
+	minWait  time.Duration
+	maxWait  time.Duration
+	// rpcTimeout bounds one RPC exchange (notificationBridgeRPCTimeout in
+	// production; tests inject a short one so the disconnected-bridge path is
+	// asserted rather than slept through).
+	rpcTimeout time.Duration
 
 	connMu sync.RWMutex
 	conn   *websocket.Conn
@@ -55,12 +75,8 @@ type NotificationClient struct {
 	lastSeq uint64
 
 	pendingMu sync.Mutex
-	pending   map[string]chan notificationRPCResult
+	pending   map[string]pendingRPC
 	nextRPC   atomic.Uint64
-}
-
-type notificationRPCResult struct {
-	err error
 }
 
 func NewNotificationClient(config NotificationClientConfig) (*NotificationClient, error) {
@@ -95,15 +111,22 @@ func NewNotificationClient(config NotificationClientConfig) (*NotificationClient
 	if logf == nil {
 		logf = log.Printf
 	}
+	channels := []string{notify.SendChannel}
+	if config.HandleUpdateInstall != nil {
+		channels = append(channels, selfupdate.ChannelInstall)
+	}
 	return &NotificationClient{
-		wsURL:     parsed.String(),
-		token:     config.Token,
-		present:   config.Present,
-		logf:      logf,
-		minWait:   minWait,
-		maxWait:   maxWait,
-		pending:   make(map[string]chan notificationRPCResult),
-		connReady: make(chan struct{}),
+		wsURL:         parsed.String(),
+		token:         config.Token,
+		present:       config.Present,
+		handleInstall: config.HandleUpdateInstall,
+		channels:      channels,
+		logf:          logf,
+		minWait:       minWait,
+		maxWait:       maxWait,
+		rpcTimeout:    notificationBridgeRPCTimeout,
+		pending:       make(map[string]pendingRPC),
+		connReady:     make(chan struct{}),
 	}, nil
 }
 
@@ -161,11 +184,15 @@ func (c *NotificationClient) runConnection(ctx context.Context) (bool, error) {
 	}()
 	if err := c.writeJSON(ctx, conn, notificationClientFrame{
 		Type:     "subscribe",
-		Channels: []string{notify.SendChannel},
+		Channels: c.channels,
 	}); err != nil {
 		return true, fmt.Errorf("subscribe to notification channel: %w", err)
 	}
 
+	// Only notification:send carries a replay cursor. updater:install is
+	// ephemeral on the server (never retained in the replay ring), and a
+	// directive is only actionable while the user is waiting on it — a channel
+	// absent from lastSeqByChannel gets no replay, which is exactly right.
 	c.seqMu.Lock()
 	lastSeq := c.lastSeq
 	c.seqMu.Unlock()
@@ -246,50 +273,11 @@ func redactNotificationBridgeError(err error, token string) string {
 	return message
 }
 
-// Activate posts the validated target back to the backend's local-only
-// NotificationActivated RPC and waits for its response.
-func (c *NotificationClient) Activate(ctx context.Context, target notify.Target) error {
-	if err := notify.ValidateTarget(target); err != nil {
-		return err
-	}
-	conn, err := c.waitForConnection(ctx)
-	if err != nil {
-		return err
-	}
-
-	id := fmt.Sprintf("notification-%d", c.nextRPC.Add(1))
-	result := make(chan notificationRPCResult, 1)
-	c.pendingMu.Lock()
-	c.pending[id] = result
-	c.pendingMu.Unlock()
-
-	params, err := json.Marshal(target)
-	if err != nil {
-		c.removePending(id)
-		return fmt.Errorf("encode notification activation target: %w", err)
-	}
-	rpcCtx, cancel := context.WithTimeout(ctx, notificationActivationRPCTimeout)
-	defer cancel()
-	if err := c.writeJSON(rpcCtx, conn, notificationClientFrame{
-		Type:   "rpc",
-		ID:     id,
-		Method: "NotificationActivated",
-		Params: []json.RawMessage{params},
-	}); err != nil {
-		c.removePending(id)
-		return fmt.Errorf("%w: write notification activation RPC: %v", ErrNotificationBridgeDisconnected, err)
-	}
-
-	select {
-	case <-rpcCtx.Done():
-		c.removePending(id)
-		return fmt.Errorf("notification activation RPC: %w", rpcCtx.Err())
-	case response := <-result:
-		return response.err
-	}
-}
-
 func (c *NotificationClient) handleEvent(event notificationEvent) error {
+	if event.Channel == selfupdate.ChannelInstall {
+		c.handleInstallDirective(event.Data)
+		return nil
+	}
 	if event.Channel != notify.SendChannel {
 		return nil
 	}
@@ -331,6 +319,33 @@ func (c *NotificationClient) handleEvent(event notificationEvent) error {
 		c.logf("notifications: present bridged notification %s: %v", notification.ID, err)
 	}
 	return nil
+}
+
+// handleInstallDirective decodes and validates one updater:install frame and
+// hands it to the launcher. A directive that fails validation is dropped with
+// a log line and never reaches the handler: it names a file the launcher would
+// otherwise resolve on disk, so validation is the trust boundary, not a
+// formatting nicety. A malformed frame is never connection-fatal — dropping
+// one directive costs the user a retry, while returning an error would tear
+// down the notification bridge with it.
+func (c *NotificationClient) handleInstallDirective(data json.RawMessage) {
+	if c.handleInstall == nil {
+		// Unsubscribed channel; the server should never push it here.
+		c.logf("updater: ignore install directive on an unsubscribed connection")
+		return
+	}
+	var directive selfupdate.InstallDirective
+	if err := json.Unmarshal(data, &directive); err != nil {
+		c.logf("updater: ignore malformed install directive: %v", err)
+		return
+	}
+	if err := directive.Validate(); err != nil {
+		c.logf("updater: ignore invalid install directive: %v", err)
+		return
+	}
+	// Off the read loop: the handler answers by posting an RPC over this same
+	// connection and can only see the response if the read loop keeps running.
+	go c.handleInstall(directive)
 }
 
 func (c *NotificationClient) writeJSON(ctx context.Context, conn *websocket.Conn, frame notificationClientFrame) error {
@@ -378,37 +393,6 @@ func (c *NotificationClient) waitForConnection(ctx context.Context) (*websocket.
 			return nil, fmt.Errorf("wait for notification bridge connection: %w", ctx.Err())
 		case <-ready:
 		}
-	}
-}
-
-func (c *NotificationClient) resolveRPC(frame notificationServerFrame) {
-	c.pendingMu.Lock()
-	result := c.pending[frame.ID]
-	delete(c.pending, frame.ID)
-	c.pendingMu.Unlock()
-	if result == nil {
-		return
-	}
-	if frame.Error != nil {
-		result <- notificationRPCResult{err: fmt.Errorf("notification activation RPC %s: %s", frame.Error.Code, frame.Error.Message)}
-		return
-	}
-	result <- notificationRPCResult{}
-}
-
-func (c *NotificationClient) removePending(id string) {
-	c.pendingMu.Lock()
-	delete(c.pending, id)
-	c.pendingMu.Unlock()
-}
-
-func (c *NotificationClient) failPending(err error) {
-	c.pendingMu.Lock()
-	pending := c.pending
-	c.pending = make(map[string]chan notificationRPCResult)
-	c.pendingMu.Unlock()
-	for _, result := range pending {
-		result <- notificationRPCResult{err: err}
 	}
 }
 

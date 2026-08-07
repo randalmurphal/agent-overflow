@@ -241,6 +241,46 @@ type App struct {
 	// clobbering the pending release the installer is about to use.
 	updaterMu   sync.Mutex
 	updaterBusy bool
+	// updaterPending mirrors the release a.updater would install right now:
+	// stashed by every successful resolve (CheckForUpdate and DownloadUpdate's
+	// by-tag path), cleared when a resolve finds nothing or fails. Only
+	// meaningful while a.updater.State() == StateAvailable. It exists for the
+	// WSL staging step, which needs the release's asset filename and digest
+	// AFTER DownloadAndInstall — the Updater exposes neither, only the staged
+	// file's path. Guarded by updaterMu.
+	updaterPending *updater.Release
+	// updaterStaged is the release copied into the Windows-side staging
+	// directory and waiting for RestartToUpdate to hand it to the launcher.
+	// WSL mode only; nil until a download stages successfully. Guarded by
+	// updaterMu.
+	updaterStaged *updater.Release
+	// updaterInstall is the install RestartToUpdate handed the launcher and has
+	// not yet settled; nil at rest. updaterInstallAcked distinguishes its two
+	// phases — awaiting the launcher's acknowledgement, then awaiting the
+	// process death that acknowledgement promised — and updaterInstallTimer is
+	// the single deadline whichever phase is currently under (see
+	// armWSLInstallDeadlineLocked; one field means a phase change can never
+	// leave the previous phase's timer armed). updaterInstallGen rises on every
+	// armed deadline so a callback whose deadline was replaced or settled —
+	// even one already fired and parked on updaterMu — cannot unwind an
+	// install it no longer speaks for. All guarded by updaterMu.
+	updaterInstall      *updater.Release
+	updaterInstallAcked bool
+	updaterInstallGen   uint64
+	updaterInstallTimer *time.Timer
+	// updateApplyFailure is the boot-detected "the launcher never applied the
+	// staged update" notice, surfaced to the UI on
+	// UpdateAvailability.LastApplyFailure. Process-lifetime only: it is
+	// recomputed from the on-disk marker at every boot and never persisted, so
+	// a boot that finds no marker (or one matching the running version) starts
+	// with it empty. Guarded by updaterMu.
+	updateApplyFailure string
+	// wslUpdate is non-nil only on the headless WSL backend spawned by the
+	// Windows launcher (see initWSLUpdater). It is the mode switch every WSL
+	// branch of the updater RPCs keys off, and carries the two directories that
+	// path needs. Immutable after init — set before the transport server
+	// starts, read without a lock afterwards.
+	wslUpdate *wslUpdateMode
 	// restartExitFn is the process-exit call RestartToUpdate's watchdog
 	// fires when graceful shutdown wedges (see armRestartExitWatchdog).
 	// nil means os.Exit; tests inject a recorder.

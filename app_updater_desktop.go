@@ -3,49 +3,22 @@
 // app_updater_desktop.go wires the Wails app.Updater into the native desktop
 // path and bridges its lifecycle events onto our transport event bus. It lives
 // behind the !nogui tag because it imports the Wails application package (and
-// the GitHub provider through it); the headless WSL backend compiles without
-// any of this and leaves App.updater nil. The provider-agnostic RPC surface
-// and the verifiedProvider wrapper live in app_updater.go (no build tag).
+// the GitHub provider through it); the headless WSL backend has no Wails
+// application to hang an Updater off, so it builds its own — see
+// app_updater_wsl.go. The provider-agnostic RPC surface, the shared provider
+// constants, the wails-event → transport-channel bridge table, and the
+// verifiedProvider wrapper all live in app_updater.go (no build tag).
 package main
 
 import (
 	"log"
 	"net/http"
+	"runtime"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
 	"github.com/wailsapp/wails/v3/pkg/updater"
 	"github.com/wailsapp/wails/v3/pkg/updater/providers/github"
 )
-
-// updaterRepository is the GitHub "owner/repo" the updater polls for releases.
-// Releases are matched by asset filename (agent-overflow-<goos>-<goarch>[.ext])
-// and verified against the SHASUMS256 sidecar.
-const updaterRepository = "randalmurphal/agent-overflow"
-
-// updaterChecksumAsset is the exact release-asset name the GitHub provider
-// fetches and parses for SHA-256 digests. Must match the file written by
-// scripts/package-release-assets.sh; a mismatch makes the provider fall open
-// (no verification), which verifiedProvider then rejects.
-const updaterChecksumAsset = "SHASUMS256"
-
-// updaterEventBridge maps each Wails updater lifecycle event onto the transport
-// channel the Svelte UI subscribes to. The updater emits these on the Wails
-// application event bus (pkg/updater/events.go); EventManager.Emit stores a
-// single argument as CustomEvent.Data, so e.Data is already the typed payload
-// (updater.Progress for progress, *updater.Release for the lifecycle events,
-// updater.ErrorInfo for errors) and we forward it verbatim.
-//
-// Check results (update-available / no-update) are deliberately NOT bridged:
-// the frontend drives Check via the CheckForUpdate RPC and uses its return
-// value, so re-emitting them as events would be redundant.
-var updaterEventBridge = map[string]string{
-	updater.EventDownloadStarted:  "updater:download-started",
-	updater.EventDownloadProgress: "updater:progress",
-	updater.EventVerifying:        "updater:verifying",
-	updater.EventInstalling:       "updater:installing",
-	updater.EventUpdateReady:      "updater:ready",
-	updater.EventError:            "updater:error",
-}
 
 // initUpdater configures app.Updater for in-app self-update and bridges its
 // events onto the transport bus. Called once from runDesktop after
@@ -53,13 +26,26 @@ var updaterEventBridge = map[string]string{
 // visible to RPC handlers without a race.
 //
 // It is a no-op (App.updater stays nil → the RPCs report unsupported) for
-// unstamped "dev" builds, and on any provider/init failure (logged): in-app
-// updates simply stay unavailable while the app runs normally. Failing to set
-// up the updater must never block startup.
+// unstamped "dev" builds, for Linux installs the swap could never write to
+// (see app_updater_linuxgate.go), and on any provider/init failure (logged):
+// in-app updates simply stay unavailable while the app runs normally. Failing
+// to set up the updater must never block startup.
 func initUpdater(appService *App, app *application.App) {
 	if version == "dev" {
 		log.Printf("updater: disabled for dev build (version=%q)", version)
 		return
+	}
+
+	// Native-Linux preflight: an AppImage's squashfs mount is read-only, and
+	// a system-wide install (/usr/bin, /opt) is not writable by the user
+	// running us. Neither can host the in-place binary swap, so report the
+	// feature unsupported now rather than after a tens-of-MB download. See
+	// app_updater_linuxgate.go; macOS is deliberately unaffected.
+	if runtime.GOOS == "linux" {
+		if reason := linuxUpdaterBlocked(); reason != "" {
+			log.Printf("updater: %s — in-app updates disabled", reason)
+			return
+		}
 	}
 
 	// No global client timeout: the same client streams the (tens-of-MB)
@@ -80,14 +66,27 @@ func initUpdater(appService *App, app *application.App) {
 		return
 	}
 
+	// One CheckRequest describes what this build asks the release feed for, and
+	// it feeds both the Updater (which passes it to every Provider.Check) and
+	// the targetable wrapper (whose ListReleases has no Updater to ask), so the
+	// two can never disagree about which assets are installable here. The
+	// native desktop path targets the running platform verbatim.
+	req := updater.CheckRequest{
+		CurrentVersion: version,
+		Platform:       runtime.GOOS,
+		Arch:           runtime.GOARCH,
+	}
+
 	// targetable adds version selection (ListReleases + by-tag download) on top
 	// of the stock latest-only provider; verifiedProvider still wraps it, so
 	// every resolved release — latest or a specific tag — is checksum-verified
 	// or rejected fail-closed.
-	targetable := newTargetableProvider(provider, updaterRepository, updaterChecksumAsset, version, httpClient)
+	targetable := newTargetableProvider(provider, updaterRepository, updaterChecksumAsset, req, httpClient)
 
 	if err := app.Updater.Init(updater.Config{
-		CurrentVersion: version,
+		CurrentVersion: req.CurrentVersion,
+		Platform:       req.Platform,
+		Arch:           req.Arch,
 		Providers:      []updater.Provider{verifiedProvider{inner: targetable}},
 		Window:         updater.WindowNone, // we drive our own Svelte UI
 	}); err != nil {

@@ -233,9 +233,6 @@ thread — `close_agent` is a model tool only.
 These are intentional non-goals for the current phase — don't implement
 them without a scope conversation first.
 
-- **Auto-updater wiring.** Wails v3 ships a built-in updater
-  (https://v3alpha.wails.io/guides/distribution/auto-updates/); enable
-  it when we're ready to distribute. No custom updater required.
 - **Correction-needed / mid-turn correction flow.** Forge has this as
   a workflow/gate mechanic (`thread.correct` command, guidance channel
   projection, `correction-needed` interactive-request kind). Workflows are

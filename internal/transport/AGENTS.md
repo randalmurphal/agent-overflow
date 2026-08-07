@@ -141,15 +141,20 @@ on the wire at all. Rules for any future receiver:
   now because its persist-time seeds can be parse-primed — better than
   the loopback RPC recompute — and local clients consume them as
   in-place cache upgrades.)
-- `ephemeralEventChannels` — both seed channels are also excluded from
-  replay-ring retention (`eventbus.go` gives them a zero-capacity
-  ring: sequence tracking only). Seeds are point-in-time cache warmers
-  — replaying superseded frames after a reconnect is useless, and each
-  frame can carry large span/hash arrays that would otherwise sit in
-  the ring up to `DefaultRingCapacity` deep. Replay for these channels
-  returns nothing and no gap marker — except for an above-head cursor,
-  which is a client-state fault rather than a retention question (see
-  the gap discussion under Wire frames).
+- `ephemeralEventChannels` — channels excluded from replay-ring
+  retention (`eventbus.go` gives them a zero-capacity ring: sequence
+  tracking only). Both seed channels are here because seeds are
+  point-in-time cache warmers — replaying superseded frames after a
+  reconnect is useless, and each frame can carry large span/hash
+  arrays that would otherwise sit in the ring up to
+  `DefaultRingCapacity` deep. `updater:install` is here for the
+  opposite reason: it is an imperative directive (swap the app binary
+  and restart), valid only for the install in flight when it was
+  emitted, so replaying it to a launcher that reconnects would
+  spontaneously restart the app on a stale instruction. Replay for
+  these channels returns nothing and no gap marker — except for an
+  above-head cursor, which is a client-state fault rather than a
+  retention question (see the gap discussion under Wire frames).
 - `latestOnlyEventChannels` — unkeyed whole-state channels
   (`system:stats`) get a capacity-1 ring: the newest frame fully
   supersedes all prior ones, so a default-depth ring would retain
