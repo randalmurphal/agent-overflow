@@ -11,6 +11,7 @@ import {
   trimToTailRunes,
 } from './threadPaneShared';
 import { compareItemsByTimelinePosition } from './threadItems';
+import { createReentrantTrampoline } from '../utils/reentrantTrampoline';
 import { getSettings } from './settings.svelte';
 import {
   COMPACTION_REASONING_PAYLOAD_EXPANSION_STATE_KEY,
@@ -352,24 +353,17 @@ export function createThreadStreamingReveal(
    * async work, but the guard is cheap and the corruption mode — the
    * outer pass overwriting the boundary and pause/resume decisions the
    * nested pass computed from fresher state — is silent).
+   *
+   * The re-run loop is CAPPED (`createReentrantTrampoline`). A pass that
+   * re-enters on every lap would spin here inside one macrotask with nothing
+   * reported — the same unbounded-synchronous-loop class as the quiet-work
+   * scheduler and svelte's flush loops, and the same answer: abandon and
+   * report.
    */
-  let recomputingReveal = false;
-  let recomputeRevealAgain = false;
-  function recomputeReveal(): void {
-    if (recomputingReveal) {
-      recomputeRevealAgain = true;
-      return;
-    }
-    recomputingReveal = true;
-    try {
-      do {
-        recomputeRevealAgain = false;
-        recomputeRevealPass();
-      } while (recomputeRevealAgain);
-    } finally {
-      recomputingReveal = false;
-    }
-  }
+  const recomputeReveal = createReentrantTrampoline(
+    'threadStreamingReveal.recomputeReveal',
+    recomputeRevealPass,
+  );
 
   function recomputeRevealPass(): void {
     let frontier: Item | null = null;

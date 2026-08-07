@@ -137,10 +137,12 @@ describe('growing the window', () => {
 });
 
 describe('revealActivityRunItem', () => {
-  function registry(runExists = true): ActivityRunReveal {
+  /** `members` defaults to "the registry still holds everything the node says". */
+  function registry(runExists = true, members: (id: string) => boolean = () => true): ActivityRunReveal {
     return {
       setCollapsed: vi.fn(),
       setWindowAnchor: vi.fn(),
+      containsMember: vi.fn((_runId: string, itemId: string) => members(itemId)),
       requestFocus: vi.fn(() => runExists),
     };
   }
@@ -180,6 +182,19 @@ describe('revealActivityRunItem', () => {
     const node = run(rows(100), { from: 90, rows: 10 });
 
     expect(revealActivityRunItem(reveal, node, 'i40')).toBe(false);
+  });
+
+  it('degrades a stale anchor to tail-follow instead of writing it', () => {
+    // A jump is resolved when the reader clicks, against a node the projection
+    // built earlier. If an older-side prune took `i35` in between, writing it
+    // would be coerced to tail-follow by the registry AND reported as a broken
+    // TimelineNode kind — a false positive on the one writer that cannot read
+    // from a live node. Ask first; write the answer the coercion would give.
+    const reveal = registry(true, (id) => id !== 'i35');
+    const node = run(rows(100), { from: 90, rows: 10 });
+
+    expect(revealActivityRunItem(reveal, node, 'i40')).toBe(true);
+    expect(reveal.setWindowAnchor).toHaveBeenCalledWith('r1', null);
   });
 
   it('changes nothing for an item the run does not carry', () => {

@@ -3,6 +3,14 @@ build/bin/
 frontend/dist/
 bin/
 dist/
+# ...except inside frontend/vendor/. An npm tarball ships a package's code
+# AS `dist/` (that is the published layout, not a build output), so for a
+# vendored package that tree is checked-in SOURCE — we edit it in place.
+# The blanket `dist/` above would silently leave every vendored package as
+# an empty directory in git. The negation has to re-include the DIRECTORY:
+# git will not look inside an excluded parent, so `!.../dist/**` alone
+# would not work.
+!frontend/vendor/*/dist/
 
 # Task runner cache
 .task/
@@ -49,3 +57,11 @@ frontend/.vitest-attachments/
 
 # Stale Wails v2 bindings — current bindings live in frontend/bindings/
 frontend/wailsjs/
+
+# Freeze-replay corpus. A verbatim capture of one real session's streamed
+# payloads, pulled out of the local SQLite store by
+# frontend/scripts/generate-freeze-replay-fixture.mjs. It is somebody's actual
+# code and conversation — never committable, under any circumstances.
+# frontend/src/lib/markdown/freezeReplay.manual.ts skips its corpus suites
+# when the file is absent, so nothing breaks without it.
+frontend/src/lib/markdown/__fixtures__/freezeReplay.fixture.json

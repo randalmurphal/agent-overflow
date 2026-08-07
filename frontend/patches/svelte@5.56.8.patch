@@ -370,6 +370,228 @@ index 45e042a8c6ddb6837fad161f0f3ecba2f11fdf97..4047e16c477b54f260a795b5713c383d
  	// composedPath contains list of nodes the event has propagated through.
  	// We check `event_symbol` to skip all nodes below it in case this is a
  	// parent of the `event_symbol` node, which indicates that there's nested
+diff --git a/src/internal/client/dom/task.js b/src/internal/client/dom/task.js
+index 8c513614672b07a41e4626dc041f8d216345e014..8c593df62edc70e76c065a3e30a2e2d6e31633e1 100644
+--- a/src/internal/client/dom/task.js
++++ b/src/internal/client/dom/task.js
+@@ -1,13 +1,20 @@
+ import { run_all } from '../../shared/utils.js';
+ import { is_flushing_sync } from '../reactivity/batch.js';
++import { FLUSH_TASKS_MAX_TASKS, flush_loop_exceeded } from '../flush-caps.js';
+ 
+ /** @type {Array<() => void>} */
+ let micro_tasks = [];
+ 
++/**
++ * PATCH(agent-overflow flush-loop-caps): returns how many tasks ran, so
++ * `flush_tasks` can bound its drain.
++ * @returns {number}
++ */
+ function run_micro_tasks() {
+ 	var tasks = micro_tasks;
+ 	micro_tasks = [];
+ 	run_all(tasks);
++	return tasks.length;
+ }
+ 
+ /**
+@@ -32,11 +39,36 @@ export function queue_micro_task(fn) {
+ 	micro_tasks.push(fn);
+ }
+ 
++/**
++ * PATCH(agent-overflow flush-loop-caps): abandon everything currently queued.
++ *
++ * Both caps need this, and for the same reason: when a drain is aborted the
++ * queue IS the cycle, so leaving it in place re-wedges the very next drain and
++ * turns one aborted flush into a permanent tax on every later one. Dropping
++ * the array also makes any microtask `queue_micro_task` already scheduled a
++ * no-op, via the `tasks === micro_tasks` identity check above.
++ */
++export function clear_micro_tasks() {
++	micro_tasks = [];
++}
++
+ /**
+  * Synchronously run any queued tasks.
+  */
+ export function flush_tasks() {
++	// PATCH(agent-overflow flush-loop-caps): while `is_flushing_sync`,
++	// `queue_micro_task` appends straight to `micro_tasks` instead of
++	// scheduling — so a task that re-queues itself keeps this drain going
++	// forever inside one macrotask. Bound it.
++	var ran = 0;
++
+ 	while (micro_tasks.length > 0) {
+-		run_micro_tasks();
++		if (ran >= FLUSH_TASKS_MAX_TASKS) {
++			// Abandon the queue BEFORE throwing — see `clear_micro_tasks`.
++			clear_micro_tasks();
++			flush_loop_exceeded('flush_tasks', FLUSH_TASKS_MAX_TASKS);
++		}
++
++		ran += run_micro_tasks();
+ 	}
+ }
+diff --git a/src/internal/client/error-handling.js b/src/internal/client/error-handling.js
+index 7c404dd933422cff8e735145c3b8101aea0db078..5b3674592e8d3f5ec2ab4a9da623c157dc9114ef 100644
+--- a/src/internal/client/error-handling.js
++++ b/src/internal/client/error-handling.js
+@@ -43,10 +43,16 @@ export function handle_error(error) {
+ /**
+  * @param {unknown} error
+  * @param {Effect | null} effect
++ * @returns {boolean} PATCH(agent-overflow flush-loop-caps): `true` when the
++ * error was handed to a boundary. `false` is returned ONLY on the
++ * destroyed-anchor path below, which drops the error on the floor; a caller
++ * that has no other way to report (the infinite-loop guard) rethrows on it.
++ * Every other outcome either throws or is handled, so ignoring the return
++ * value — which every pre-existing caller does — is unchanged behaviour.
+  */
+ export function invoke_error_boundary(error, effect) {
+ 	if (effect !== null && (effect.f & DESTROYED) !== 0) {
+-		return;
++		return false;
+ 	}
+ 
+ 	while (effect !== null) {
+@@ -58,7 +64,7 @@ export function invoke_error_boundary(error, effect) {
+ 
+ 			try {
+ 				/** @type {Boundary} */ (effect.b).error(error);
+-				return;
++				return true;
+ 			} catch (e) {
+ 				error = e;
+ 			}
+diff --git a/src/internal/client/flush-caps.js b/src/internal/client/flush-caps.js
+new file mode 100644
+index 0000000000000000000000000000000000000000..95f077b4370fb89cb11c9487bfca75cff187d4d1
+--- /dev/null
++++ b/src/internal/client/flush-caps.js
+@@ -0,0 +1,63 @@
++/**
++ * PATCH(agent-overflow flush-loop-caps): bounds for the two unbounded
++ * synchronous flush loops, plus the error they raise.
++ *
++ * Both `flushSync`'s outer `while (true)` and `flush_tasks`'s drain loop are
++ * written as "keep going until there is nothing left", and neither has a
++ * counter. `Batch.#process` DOES have one (`flush_count > 1000` ->
++ * `infinite_loop_guard`), but `Batch.flush`'s `finally` resets `flush_count`
++ * to 0, so a cycle that produces exactly one batch per `flushSync` lap never
++ * accumulates a count and spins forever inside a single macrotask: one core
++ * pegged, no paint, no error, nothing in any log. That is the shape of the
++ * 8-minute WebView2 renderer freeze this hunk exists for.
++ *
++ * The caps are deliberately far above anything the app can legitimately
++ * reach, so tripping one is a bug report rather than a tuning parameter.
++ * Reaching one ABORTS the flush — the wedge is not survivable by
++ * definition, and continuing would just re-enter it — and the thrown error
++ * reaches `window.onerror`, where `utils/frontendErrorCapture.ts` persists
++ * it to `ui-trace/frontend-errors.jsonl`.
++ */
++
++/**
++ * Max laps of `flushSync`'s outer loop. Each lap is a full microtask drain
++ * plus a batch flush; a settling app needs a handful (the deepest observed
++ * in-app cascade is single digits).
++ */
++export const FLUSH_SYNC_MAX_LAPS = 1000;
++
++/**
++ * Max TASKS (not rounds) run by one `flush_tasks` drain. Counting tasks
++ * rather than rounds means the bound has to clear whatever a legitimate
++ * flush queues, and `queue_micro_task` is called roughly per mounted
++ * element-ish unit — bounded in this app by the virtualizer's mounted
++ * window (dozens of rows), not by thread length. 50k leaves ~3 orders of
++ * magnitude of headroom while still bounding a self-re-queueing task.
++ */
++export const FLUSH_TASKS_MAX_TASKS = 50_000;
++
++/**
++ * Abort a wedged flush loop.
++ *
++ * Modelled on `errors.js#effect_update_depth_exceeded` (same `Error` shape
++ * and `name`, so svelte's own boundary/DEV handling treats it identically),
++ * with one deliberate divergence: the message is present in production too.
++ * Svelte can drop it because `https://svelte.dev/e/<code>` documents the
++ * error; this one has no such page, and the whole point of the hunk is that
++ * the captured production record says which loop wedged.
++ *
++ * @param {'flushSync' | 'flush_tasks'} loop
++ * @param {number} limit
++ * @returns {never}
++ */
++export function flush_loop_exceeded(loop, limit) {
++	const error = new Error(
++		`flush_loop_exceeded\nSvelte's \`${loop}\` loop did not settle after ${limit} ${
++			loop === 'flushSync' ? 'laps' : 'tasks'
++		}. A reactive cycle is producing new work on every iteration; the flush was aborted to release the main thread. (agent-overflow patch: patches/svelte@5.56.8.patch, hunk flush-loop-caps)`
++	);
++
++	error.name = 'Svelte error';
++
++	throw error;
++}
+diff --git a/src/internal/client/reactivity/batch.js b/src/internal/client/reactivity/batch.js
+index 5becae2dc971bcf9edc12063739070d527fbebd9..3dad28dce362f11f129455b55f9219939a46ff69 100644
+--- a/src/internal/client/reactivity/batch.js
++++ b/src/internal/client/reactivity/batch.js
+@@ -30,7 +30,8 @@ import {
+ 	update_effect
+ } from '../runtime.js';
+ import * as e from '../errors.js';
+-import { flush_tasks, queue_micro_task } from '../dom/task.js';
++import { clear_micro_tasks, flush_tasks, queue_micro_task } from '../dom/task.js';
++import { FLUSH_SYNC_MAX_LAPS, flush_loop_exceeded } from '../flush-caps.js';
+ import { DEV } from 'esm-env';
+ import { invoke_error_boundary } from '../error-handling.js';
+ import { flush_eager_effects, old_values, set_eager_effects, source, update } from './sources.js';
+@@ -1024,7 +1025,26 @@ export function flushSync(fn) {
+ 			result = fn();
+ 		}
+ 
++		// PATCH(agent-overflow flush-loop-caps): `Batch.#process`'s
++		// `flush_count` guard cannot see this loop — `Batch.flush`'s `finally`
++		// resets the count on every lap — so a cycle that produces exactly one
++		// batch per lap spins here forever inside a single macrotask.
++		var laps = 0;
++
+ 		while (true) {
++			if (laps++ >= FLUSH_SYNC_MAX_LAPS) {
++				// Abandon the microtask queue before throwing, exactly as the
++				// `flush_tasks` cap does. The shape that trips this cap defers
++				// its re-dirtying write into a `queue_micro_task`, and while
++				// `is_flushing_sync` that append does not schedule — so at the
++				// cap the cycle's next task is sitting in `micro_tasks`,
++				// waiting. Leaving it there makes the NEXT `flushSync` re-pay
++				// 1000 laps and throw again, forever: one wedged flush would
++				// become a permanently wedged app.
++				clear_micro_tasks();
++				flush_loop_exceeded('flushSync', FLUSH_SYNC_MAX_LAPS);
++			}
++
+ 			flush_tasks();
+ 
+ 			if (current_batch === null) {
+@@ -1073,7 +1093,16 @@ function infinite_loop_guard() {
+ 
+ 		// Best effort: invoke the boundary nearest the most recent
+ 		// effect and hope that it's relevant to the infinite loop
+-		invoke_error_boundary(error, last_scheduled_effect);
++		//
++		// PATCH(agent-overflow flush-loop-caps): `invoke_error_boundary`
++		// returns silently when the anchor effect is already DESTROYED — which
++		// is exactly the state a torn-down subtree's runaway effect leaves
++		// `last_scheduled_effect` in. Swallowing here loses the ONLY signal
++		// that a flush wedged, and `#process` carries on. Nothing else can
++		// report this, so rethrow when no boundary took it.
++		if (!invoke_error_boundary(error, last_scheduled_effect)) {
++			throw error;
++		}
+ 	}
+ }
+ 
 diff --git a/src/internal/client/reactivity/deriveds.js b/src/internal/client/reactivity/deriveds.js
 index 6b48bc8a2320b895773eb0d222eb7bed92a5e0e9..323a31ac973e85fc06db8c4208a32e90834433a1 100644
 --- a/src/internal/client/reactivity/deriveds.js

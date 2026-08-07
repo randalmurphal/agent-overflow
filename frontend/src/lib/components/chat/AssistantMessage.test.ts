@@ -7,7 +7,8 @@ import AssistantMessage from './AssistantMessage.svelte';
 
 describe('<AssistantMessage>', () => {
   it('renders an unterminated inline marker as literal text during stream', async () => {
-    // `patches/svelte-streamdown@3.1.2.patch` strips Streamdown's
+    // The vendored svelte-streamdown (`vendor/svelte-streamdown/`, ledger
+    // entry 4 in its `DIVERGENCE.md`) strips Streamdown's
     // inline-emphasis plugins from `IncompleteMarkdownParser.createDefaultPlugins`,
     // so unterminated `**`, `~~`, backtick, `_`, etc. are no longer
     // speculatively closed mid-stream. The user sees literal `**markdown`
@@ -279,11 +280,11 @@ describe('<AssistantMessage>', () => {
   // Streamdown's inline-emphasis plugins entirely
   // (boldItalic / bold / strikethrough / singleAsteriskItalic /
   // inlineCode / singleUnderscoreItalic / subscript / superscript /
-  // inlineMath — see `patches/svelte-streamdown@*.patch` `.filter`
+  // inlineMath — see `DIVERGENCE.md` entry 4, the `.filter`
   // at the end of `createDefaultPlugins`), so there is nothing left
   // to balance. The two `status` values still cover both gating paths:
   // `'completed'` flips `parseIncompleteMarkdown` off entirely (the
-  // `Block.svelte` short-circuit from the original patch), and
+  // `Block.svelte` short-circuit, `DIVERGENCE.md` entry 7), and
   // `'streaming'` runs the remaining (block-level) plugins. Either path
   // regressing — a future Streamdown update putting the inline plugins
   // back, or the filter losing a name — would resurface the stray
@@ -371,8 +372,8 @@ describe('<AssistantMessage>', () => {
   // alternation `[`~]+|[^`~]`, whose `[`~]+` branch is a COMBINED run of
   // backticks AND tildes — so a `~` fused to a backtick (no space) was
   // swallowed into a literal text run and the code span never opened:
-  // `` ~`x` `` rendered as plain text. The patch
-  // (`patches/svelte-streamdown@*.patch`, `_fixText` next to `_fixedDel`)
+  // `` ~`x` `` rendered as plain text. The lexer-rule override
+  // (`DIVERGENCE.md` entry 2 — `_fixText` next to `_fixedDel`)
   // splits that leading class into homogeneous runs so a backtick is never
   // eaten as part of a tilde run. A `~` glued to a code span must now leave
   // a literal tilde and a real `<code>`. These Tier-1 cases also guard
@@ -549,7 +550,8 @@ describe('<AssistantMessage>', () => {
   // between them and rendering it in math mode (serif font, collapsed
   // whitespace — visibly corrupt; the reported `` `$ref` … `$ref` ``
   // paragraph). The `singleDollarLooksLikeProse` guard in
-  // `patches/svelte-streamdown@3.1.2.patch` rejects a single-`$` span when
+  // the vendored svelte-streamdown (`DIVERGENCE.md` entry 1) rejects a
+  // single-`$` span when
   // EITHER its closing `$` abuts an identifier char (it closed on a bare
   // `$ref`/`$PATH`) OR its captured content holds a backtick — the closing
   // `$` landed inside a `` `$` `` code span, so the content ran up to that
@@ -632,7 +634,8 @@ describe('<AssistantMessage>', () => {
   // symptom (a `~~partial` mid-stream synthesised `~~partial~~` →
   // `<del>partial</del>`, and the closer migrated outward on each chunk).
   // The `IncompleteMarkdownParser.createDefaultPlugins` `.filter` we
-  // ship in `patches/svelte-streamdown@3.1.2.patch` drops those plugins,
+  // ship in the vendored svelte-streamdown (`DIVERGENCE.md` entry 4)
+  // drops those plugins,
   // so partial tokens stay literal until the real closer arrives. Each
   // delimiter that was previously in the filtered plugin list gets an
   // independent regression case: a future Streamdown update putting any
@@ -727,7 +730,8 @@ describe('<AssistantMessage>', () => {
   // bullet text streams in — it collapses back to a paragraph + nested <ul>.
   // That up-then-down relayout is the visible jank. The
   // `stripDanglingSetextUnderline` hunk in
-  // `patches/svelte-streamdown@3.1.2.patch` drops a trailing lone `-`/`=` line
+  // the vendored svelte-streamdown (`DIVERGENCE.md` entry 6) drops a
+  // trailing lone `-`/`=` line
   // (when the line above is non-blank) from `parseIncompleteMarkdown`'s output,
   // so the underline never promotes the line above while it is the last thing
   // streamed. It runs only on the volatile tail; settled messages and the
@@ -881,7 +885,8 @@ describe('<AssistantMessage>', () => {
   });
 
   // Regression battery for the fence-seal fidelity hunk in
-  // `patches/svelte-streamdown@3.1.2.patch` (parse-incomplete-markdown.js,
+  // the vendored svelte-streamdown (`DIVERGENCE.md` entry 11 —
+  // parse-incomplete-markdown.js,
   // contextManager). While a fence streams, the volatile tail is sealed with
   // an auto-appended closer. The original seal was always a flush-left ` ``` `,
   // which is NOT a closer for a fence opened with indentation (list item) or

@@ -1,9 +1,26 @@
+# `vendor/svelte-streamdown` is an in-repo package, not a registry install —
+# see `vendor/svelte-streamdown/VENDOR.md`. Declaring it as a workspace
+# package (rather than `file:`) is load-bearing: pnpm resolves `file:`
+# directories through its content-addressed store and HARDLINKS the tree
+# in, so edits to the vendored source would silently mutate the store and
+# would not reach the build without a reinstall. A workspace package is a
+# plain symlink — the checked-in tree is what the build compiles, and pnpm
+# still installs the package's own `dependencies` and resolves `svelte`
+# from the peer the app already provides (one runtime copy).
+packages:
+  - vendor/*
+
 # ws: @vitest/browser 4.x pins a ws range with known advisories (fragment
 # DoS < 8.21.0, uninitialized-memory disclosure < 8.20.1); dev-only test
 # server, but override until vitest moves its pin.
 overrides:
   ws: '>=8.21.0'
+  # @ungap/structured-clone: 1.3.0 is deprecated and carries a prototype-
+  # pollution advisory (CWE-502). It sits under mermaid (hast-util-*), which
+  # renders diagrams straight out of model output — the one dependency path in
+  # this app whose input is attacker-influenced by construction. Override until
+  # mermaid's transitive pin moves.
+  '@ungap/structured-clone': '>=1.3.1'
 
 patchedDependencies:
-  svelte-streamdown@3.1.2: patches/svelte-streamdown@3.1.2.patch
   svelte@5.56.8: patches/svelte@5.56.8.patch

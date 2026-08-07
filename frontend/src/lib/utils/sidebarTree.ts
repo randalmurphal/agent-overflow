@@ -36,6 +36,7 @@ import {
 } from './threadStatusPill';
 import { THREAD_PREVIEW_LIMIT } from './sidebarThreadLimits';
 import { isHiddenThreadMode } from './threadModes';
+import { reportFrontendDiagnostic } from './frontendErrorCapture';
 
 export const DEFAULT_SIDEBAR_TREE_MAX_DEPTH = 2;
 
@@ -478,8 +479,41 @@ export function syncExpandedTreeForActiveThread(input: {
 
   const next = new Set([...input.expandedThreadIds].filter((id) => expandableIds.has(id)));
 
+  // `parentThreadId` is backend data, and a cycle in it (A's parent is B,
+  // B's parent is A) would spin this walk forever inside one macrotask —
+  // a wedged renderer with nothing reported. Bound it by the ancestors
+  // already seen, and report, because a cycle here means the thread tree is
+  // corrupt and the sidebar is only the first place it shows up.
+  //
+  // Defence in depth, deliberately: a cycle cannot reach this walk TODAY
+  // through `buildSidebarThreadTree`, which excludes cycle members from its
+  // roots and bounds nesting by `maxDepth` — so `parentByThreadId` above
+  // never contains a cyclic chain that starts at a rendered node. That is a
+  // property of the builder, not of this function's inputs, and this function
+  // is exported and callable with any node array. The Set is therefore
+  // allocated only if the loop is entered at all, which is the common case's
+  // cost (zero) versus a corrupt tree's (one Set).
   let cursor = input.activeThreadId ? parentByThreadId.get(input.activeThreadId) ?? null : null;
+  let walked: Set<string> | null = null;
   while (cursor !== null) {
+    if (walked === null) {
+      walked = new Set<string>(input.activeThreadId ? [input.activeThreadId] : []);
+    }
+    if (walked.has(cursor)) {
+      // Constant message, variables in `detail`: ids in the message would mint
+      // a signature per corrupt thread and bypass the per-signature cap.
+      // Console too — a remote session cannot persist (the reporter is
+      // LocalOnly), so there the console line is the only evidence.
+      const detail = `revisited ${cursor} expanding ancestors of ${input.activeThreadId}`;
+      console.warn(`[sidebarTree] parentThreadId cycle; walk stopped (${detail})`);
+      reportFrontendDiagnostic(
+        'sidebarTree: parentThreadId cycle — an ancestor was reached twice while expanding ' +
+          'the active thread; walk stopped',
+        detail,
+      );
+      break;
+    }
+    walked.add(cursor);
     if (expandableIds.has(cursor)) next.add(cursor);
     cursor = parentByThreadId.get(cursor) ?? null;
   }

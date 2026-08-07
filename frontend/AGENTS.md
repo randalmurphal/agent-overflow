@@ -46,6 +46,9 @@ Svelte 5 + Vite 8 (Rolldown) + Tailwind 4 + TypeScript.
 - `src/lib/transport/` — WebSocket client + `@wailsio/runtime` shim.
   Feature code should go through `stores/bindings.ts`, not this package.
 - `bindings/` — Wails-generated TypeScript. Never edit by hand.
+- `vendor/` — in-repo third-party packages, linked in as pnpm workspace
+  packages. Currently `svelte-streamdown`; edit it like any other source
+  in the tree, but read its `VENDOR.md` and `DIVERGENCE.md` first.
 
 ## State Boundaries
 
@@ -184,7 +187,10 @@ projections. Do not add server-rendered chat HTML or a global DOM
 observer.
 
 Assistant text, discussion messages, and proposed plans render through
-`ChatMarkdown.svelte` and `svelte-streamdown`. Path linkification happens
+`ChatMarkdown.svelte` and `svelte-streamdown` — which is vendored in
+`vendor/svelte-streamdown/`, not installed from npm (see
+[`vendor/svelte-streamdown/DIVERGENCE.md`](vendor/svelte-streamdown/DIVERGENCE.md)).
+Path linkification happens
 inside marked parsing using server-validated `PathRef[]` metadata and a
 per-page-load nonce; click/copy behavior is delegated by
 `markdownEnhance.ts`.
@@ -247,19 +253,55 @@ failure lands in an unrelated file (adding `isMethodUnavailableError` to
 `transportStatus.svelte.ts` broke five suites that only wanted to pin
 `getTransportStatus`).
 
+`vi.mock` does not reliably reach importers that are `.svelte.ts`
+modules: a mocked dependency was observed replacing the binding seen by
+plain `.ts` importers (`timelineQuietWork.ts`) while `.svelte.ts`
+importers of the same module (`threadActivityRuns.svelte.ts`) silently
+kept the real one — the mock is ignored with no error, and the assertion
+fails with no indication why. Until the vitest/vite-plugin-svelte
+transform-order root cause is run down, don't mock a dependency of a
+`.svelte.ts` module; assert one layer deeper against the real pipeline
+instead (e.g. the diagnostics guards assert via
+`setBindingMock('ReportFrontendErrorBatch', …)` rather than mocking
+`utils/frontendErrorCapture`).
+
+Operator-run investigation drivers are named `*.manual.ts` and collected only
+by the `manual` vitest project (`pnpm test:manual`), never by a gate:
+`markdown/freezeReplay.manual.ts` replays a recorded streaming corpus through
+the production markdown path (`markdown/freezeReplayHarness.ts` is the reusable
+rig), and a genuine finding WEDGES the worker rather than failing. Its corpus is
+a real-session capture that is gitignored and must never be committed; generate
+one locally with `scripts/generate-freeze-replay-fixture.mjs`, and the driver
+skips its corpus suites when none is present.
+
 `pnpm run check` and `pnpm run build` are blockers. `pnpm test` is the
 frontend unit-test gate.
 
 ## Vendor Patches
 
-`patches/` holds pnpm patches, keyed to exact versions in
-`pnpm-workspace.yaml` (`patchedDependencies`) — a version bump without
-re-rolling the patch fails `pnpm install`. Never edit `node_modules`
-directly; packages are hardlinked from the pnpm store, so direct edits
-corrupt every project on the machine. Use
-`pnpm patch <pkg>@<version> --edit-dir <dir>` + `pnpm patch-commit`.
+Third-party divergence lives in one of two places, and which one is a
+decision about the upstream, not about the change:
 
-- `svelte@5.56.8.patch` — three hunks with different drop rules:
+- `patches/` holds pnpm patches, keyed to exact versions in
+  `pnpm-workspace.yaml` (`patchedDependencies`) — a version bump without
+  re-rolling the patch fails `pnpm install`. Use
+  `pnpm patch <pkg>@<version> --edit-dir <dir>` + `pnpm patch-commit`.
+  This is right when the upstream is alive: the patch is small, it
+  re-rolls cheaply, and it is meant to be dropped when the fix lands.
+- `vendor/` holds in-repo packages, wired in as pnpm workspace packages
+  (`packages: [vendor/*]` + `"workspace:*"`). This is right when the
+  upstream is dormant and the divergence is permanent — a patch you will
+  re-roll by hand forever is pure overhead. Each vendored package carries
+  a `VENDOR.md` (upstream URL, baseline version, how to diff a future
+  release) and its divergence is documented as a ledger below.
+
+Never edit `node_modules` directly; packages are hardlinked from the pnpm
+store, so direct edits corrupt every project on the machine. That is also
+why vendored packages are `workspace:` and never `file:` — pnpm resolves a
+`file:` directory through the same store and hardlinks the tree in, so the
+`vendor/` files and the ones the build reads would share inodes.
+
+- `svelte@5.56.8.patch` — four hunks with different drop rules:
   1. **ownerless-roots** — `$effect.root` no longer inherits the
      creating component's context/parent, so store-level roots
      (threadRowUiState's expansion registry) don't pin dead row
@@ -293,6 +335,41 @@ corrupt every project on the machine. Use
      [#18415](https://github.com/sveltejs/svelte/issues/18415); this
      hunk is that PR's source diff. Drop when
      `svelte-patch-destroy-pass.test.ts` passes on an unpatched release.
+  4. **flush-loop-caps** — svelte's two synchronous flush loops are
+     unbounded, and a cycle in either one is an unreportable renderer
+     freeze: one core pegged, no paint, no error, nothing in any log
+     (incident 2026-08-07 — WebView2 wedged 8+ minutes in a single
+     never-completing task). `flushSync`'s outer
+     `while (true) { flush_tasks(); …; batch.flush(); }` is invisible to
+     `Batch.#process`'s own `flush_count > 1000` guard, because
+     `Batch.flush`'s `finally` resets the count — so a cycle producing
+     exactly ONE batch per lap (an `$effect` whose re-dirtying write is
+     deferred into a `queue_micro_task`, which is what nine streaming hot
+     paths' `tick()` looks like under load) never accumulates a count.
+     `flush_tasks`'s `while (micro_tasks.length > 0)` drain has no counter
+     at all, and while `is_flushing_sync` `queue_micro_task` appends
+     straight to that array, so a self-re-queueing task never lets it
+     finish. The hunk caps the first at 1000 laps and the second at 50k
+     tasks per drain (both ~3 orders of magnitude above anything real —
+     tripping one is a bug report, not a tuning knob) and ABORTS: a
+     wedged flush must not keep spinning. The error is svelte-shaped
+     (`errors.js#effect_update_depth_exceeded`'s construction, same
+     `name`) and names the loop, so `utils/frontendErrorCapture.ts`
+     persists it to `ui-trace/frontend-errors.jsonl`; unlike svelte's own
+     errors it keeps its message in production, because there is no
+     `svelte.dev/e/` page to look it up in. The `flush_tasks` cap
+     abandons the queue before throwing — the queue IS the cycle, so
+     leaving it would re-wedge the very next drain. Third piece, same
+     concern: `invoke_error_boundary` returned SILENTLY when the anchor
+     effect was DESTROYED, so even when `infinite_loop_guard()` fired its
+     error could vanish and `#process` carried on. It now reports whether
+     a boundary took the error and the guard rethrows when none did;
+     ordinary error-boundary semantics are untouched (every pre-existing
+     caller ignores the return value). Touches
+     `flush-caps.js` (new), `dom/task.js`, `reactivity/batch.js` and
+     `error-handling.js`. No upstream issue filed — all three pieces are
+     upstream-PR candidates. Drop when
+     `svelte-patch-flush-caps.test.ts` passes on an unpatched release.
 
   Dropped on the 5.56.3 → 5.56.8 re-roll: the **zombie-mint fix** and its
   **probe** (`src/lib/utils/zombieMintProbe.ts`, deleted). Upstream fixed
@@ -302,189 +379,23 @@ corrupt every project on the machine. Use
   init-time prop reads no longer force-connect what they read.
   `svelte-patch-zombie-leak.test.ts` passes unpatched on 5.56.8 and stays
   as the tripwire if that regresses.
-- `svelte-streamdown@3.1.2.patch` — markdown-pipeline fixes, grouped by
-  concern. Behavior is held across version bumps: re-roll by
-  `git apply --reject`-ing the prior patch into a clean `pnpm patch`
-  edit-dir, hand-merging only the rejected hunks, then diffing the
-  in-flight-completion battery old-vs-new to prove the inline path is
-  byte-identical. Pieces to preserve on the next bump:
-  1. **`$`-prose guard** (`marked/marked-math.js`,
-     `singleDollarLooksLikeProse`) — a bare single `$` only opens inline
-     math when its closer is not an identifier char and its content holds
-     no backtick; otherwise agent prose like `$ref … $foo` renders as
-     serif KaTeX. Regression: `components/chat/AssistantMessage.test.ts`.
-  2. **lexer-rule overrides** (`marked/index.js`, top-of-file) — require
-     `~~` for strikethrough (single `~` false-positives on `~240MB`),
-     disable mailto autolinking (`composer@0.7s` → bogus `mailto:`), and
-     split the GFM text rule's leading ``[`~]+`` run so a `~` cannot
-     swallow an adjacent backtick. Composes with upstream's
-     bottom-of-file options cache + incremental `parseBlocks`.
-  3. **deferred-typesetting hosts** (`Elements/{Math,Mermaid}`,
-     `context`, `Streamdown`) — `registerAsyncResource` /
-     `pendingAsyncCount` / `onsettled` let a Streamdown signal when its
-     async work (katex, mermaid, backend highlight spans) has settled,
-     so the committed-prefix vs volatile-tail two-instance split in
-     `ChatMarkdown.svelte` defers math/mermaid typesetting off the
-     streaming tail. Our own `StreamdownCodeHost` participates through
-     the same context hooks (no `Code.svelte` hunk needed — the
-     library's shiki Code component is unused and tree-shaken).
-     Orthogonal to upstream's parse cache — they stack.
-  4. **completion-disable** (`utils/parse-incomplete-markdown.js`) — a
-     trailing `.filter` drops the 10 inline emphasis/code/math
-     speculative completers (they mis-close on lone delimiters
-     mid-stream); the structural completers (links, citations,
-     footnotes, fences, MDX) keep upstream's behavior. Re-enabling the
-     safe ones (bold/italic/strike) is a separate follow-up. The
-     isWithinInlineCode guards that used to patch the dropped
-     completers were removed as dead code when the patch was re-rolled
-     onto 3.1.2; recover both from git history if the re-enable
-     follow-up happens.
-  5. **subscript range-guard** (`marked/marked-subsup.js`) — `subRule`'s
-     closing `~` carries a `(?!\d)` lookahead so approximate-range prose
-     like `~5~10` / `~50~100` no longer tokenizes its low bound as
-     `<sub>5</sub>`. Legit subscript (`H~2~O`, closing `~` before a
-     letter) is unaffected. `supRule` (`^N^M`) is deliberately left
-     unguarded — carets are rare in agent prose and none was reported;
-     revisit if `^5^10`-style superscript false-positives surface.
-     Regression: `AssistantMessage.test.ts`. Both sub/sup rules also
-     exclude backticks from their content (code spans bind tighter, so
-     a delimiter inside an inline code span can no longer open sub/sup
-     across it).
-  6. **setext-dash-guard** (`utils/parse-incomplete-markdown.js`,
-     `stripDanglingSetextUnderline`) — mid-stream a nested bullet's marker
-     arrives a chunk before its text, so the volatile tail momentarily ends
-     in `…text:\n  -`; CommonMark reads that lone `-`/`=` run under a
-     non-blank line as a Setext underline and balloons the line above to
-     `<h2>`/`<h1>` for one chunk (font + margin + re-wrap), collapsing back
-     the next chunk. The guard drops a trailing lone `^[ \t]*[-=]+[ \t]*$`
-     line when the line above is non-blank, applied AFTER
-     `defaultParser.parse` so an open fence is sealed first (a `-` inside it
-     is no longer the last line). Streaming volatile-tail only: prefix and
-     settled instances pass `parseIncompleteMarkdown === false`, so a
-     *settled* Setext heading still renders (a streamed one defers one
-     chunk — rare; agent prose uses ATX `#`). No upstream issue filed —
-     a general svelte-streamdown streaming bug, candidate to upstream. Full
-     rationale + the blank-above safety net are in the source comment.
-     Regression: `AssistantMessage.test.ts`.
-  7. **split-instance parse bypass** (`Block.svelte`) — honors
-     `parseIncompleteMarkdown === false` from props; upstream types the
-     prop but never reads it in Block, so the committed-prefix and
-     settled instances in `ChatMarkdown.svelte` couldn't opt out of
-     speculative completion without this. Trivial upstream-PR candidate;
-     drop when upstream honors the prop.
-  8. **block-math flexible form** (`marked/marked-math.js`, `blockRule`
-     alt 3) — accepts `$$ CONTENT $$` where the content opens with a
-     space (not a newline) and contains internal newlines, e.g.
-     LLM-emitted matrices (`$$ \begin{pmatrix}…`). Without it those
-     blocks fell through to paragraph rendering mid-stream ("math
-     starts to render then turns back into raw markdown"). Closing `$$`
-     must be followed by newline/end-of-string so adjacent same-line
-     inline `$$X$$` pairs still take the single-line alternative.
-  9. **typeset caches** (`Elements/Math.svelte`,
-     `Elements/Mermaid.svelte`) — module-level KaTeX HTML cache
-     (deterministic output, LRU cap 500); Mermaid SVG cache keyed on
-     `(theme, sanitized source)` with a per-insertion uniqueId rewrite
-     so two in-DOM instances of the same diagram can't collide on
-     document-scoped `url(#…)`/`xlink:href` ids (LRU cap 100). Both
-     exist because the committed-prefix/volatile-tail split remounts
-     each settled block once — the caches make that migration free.
-     (Code blocks get the same treatment from our own
-     `markdown/codeSpanCache.ts`, outside the patch.) Perf-only: each
-     can be dropped independently if upstream grows an equivalent.
-  10. **relative-reference links** (`Elements/Link.svelte`) — the
-      blocked-link branch drops its " [blocked]" suffix for schemeless
-      relative references (`docs/guide.md`, `../x`, `#frag` — common
-      repo-relative links in PR/issue bodies). They aren't navigable
-      here but they aren't *blocked URLs* either; the text renders
-      muted with the href as hover title. Disallowed absolute URLs
-      (`javascript:` etc.) and network-path refs (`//host/x`) keep the
-      tag. Regression: `ChatMarkdown.test.ts`. Upstream-PR candidate.
-  11. **fence-seal fidelity** (`utils/parse-incomplete-markdown.js`,
-      `contextManager`) — sealing a streamed open fence now replicates
-      the opener's leading prefix (list indentation, blockquote `>`
-      markers), fence char, and run length instead of always appending
-      a flush-left ` ``` `. A flush-left closer under a list-indented
-      fence is not a closer per CommonMark: it terminates the list and
-      opens a NEW top-level fence, which rendered as a persistent
-      phantom empty code-block container under the streaming one,
-      vanishing with a layout snap when the real closer arrived. Same
-      shape for blockquote-nested fences; `~~~` fences were sealed with
-      a mismatched ` ``` `. The close toggle is now char/length-aware
-      (a bare ``` inside a ```` fence is content, matching marked), and
-      the seal drops a trailing half-streamed closer (lone `` ` ``/
-      ` `` ` line) so the close moment doesn't grow-then-shrink by a
-      line. Streaming volatile-tail only. Upstream-PR candidate.
-      Regression: `AssistantMessage.test.ts` (fence-seal battery).
-  12. **incremental list/table lexing** (`marked/index.js`,
-      `Block.svelte`, `index.js` exports) — the volatile tail re-lexed
-      from scratch on every reveal tick, and the boundary splitter
-      cannot commit inside a list or table, so a list-shaped answer
-      made each tick O(whole block): ~27ms of lexing per tick at
-      120KB, visible as the "5fps" drain the spring couldn't hide. Two
-      layers, same unit of reuse (a completed list item / table source
-      row — append-only growth can only touch the last one). *Block
-      layer:* `incrementalLex` + a per-`Block` instance
-      `createIncrementalLexCache`; when the block grew append-only and
-      the cached tokens are one list (or one `[thead, tbody]` table),
-      it re-lexes only from the last item's offset (tables: replays
-      the header bytes over the volatile rows) and splices the fresh
-      tail onto **reference-identical** sealed tokens, so Svelte's
-      `===` prop equality skips their subtrees entirely. *parseBlocks
-      layer:* a `trailingBlock` descent record (kind `list` | `table`)
-      lets the append path block-lex from inside the trailing block.
-      Every guard falls back to a full lex — correctness never depends
-      on the fast path (`cache.lastPath` is the test breadcrumb).
-      List looseness is monotonic under append-only growth: a
-      tight→loose flip takes the full-lex fallback; an already-loose
-      list gets its tail items loosened exactly as marked's
-      `finalizeList` would. Table bails: footer-marker rows, rowspan
-      carets in the volatile slice, AND a caret-shaped cell at the
-      cached document's end (a half-arrived `[^t]` momentarily reads
-      as a rowspan mark, whose mutation of the previous row the next
-      characters revoke — sealed rows are untrustworthy until it
-      resolves). Reference-link/footnote definitions are exact, not
-      divergent: a definition DECLARED in the tail bails to full
-      re-lexes while its line streams (marked's first-wins table, and
-      the footnote extension's mutate-the-ref mechanism, cannot
-      survive a still-growing definition), and sealed definitions
-      carry into tail re-lexes by seeding the merge lexer's links
-      table and footnote maps. Cross-block definitions never resolved
-      mid-stream upstream (per-block lexing) — unchanged. Blockquotes
-      deliberately keep the full-lex fallback: an exact seal would
-      replicate marked's per-line strip + lazy-continuation rules, and
-      agent prose doesn't produce blockquotes at sizes where it
-      matters. Regression: `markdown/incrementalLex.test.ts`
-      (byte-equivalence corpus × chunkings + perf contracts for both
-      shapes and both layers) and
-      `chat/streamingIncrementalReuse.browser.test.ts` (DOM identity
-      of sealed `<li>`s and `<tr>`s through a real timeline drain).
-  13. **marker-line alignment isn't code** (`marked/marked-list.js`,
-      `tokenizeListItemContent`; `marked/index.js` calls it from
-      `loosenTailItems`) — CommonMark reads five or more columns between a
-      list marker and its content as "list item starting with indented
-      code", so `-     $499 per month` is spec-correctly a code block.
-      LLM prose uses that spacing to ALIGN values, never to open a code
-      block, and the mis-render is a full code card per bullet. Deliberate
-      spec deviation, same scoping as t3-code's remark fix (54f167e2e),
-      widened to include the exactly-five-column form t3 leaves as code:
-      when a list item's FIRST child token is indented-style `code` (so it
-      opened on the marker's own line), the item is re-lexed with the
-      marker line's leading run stripped from every line, clamped per
-      line. The gate tests the TOKEN, not the raw indentation — block
-      extensions tokenize ahead of marked's built-ins, so an aligned
-      `$$…$$` is math and must not be dedented out from under the math
-      extension. Untouched: `- item\n\n        deep indent` (code, but not
-      the first child), `-\n\n    code` (blank marker line closes the
-      item; the code is the list's sibling), and any fence
-      (`codeBlockStyle` is only `'indented'` for the indented form).
-      `tokenizeListItemContent` is the one chokepoint for tokenizing item
-      content — `finalizeList`'s tight and loose passes and hunk 12's
-      `loosenTailItems` all route through it, so a streamed render can't
-      disagree with its settled one. Upstream-PR candidate only as an
-      opt-in: it is a knowing spec deviation, not a marked bug.
-      Regression: `markdown/listMarkerCode.test.ts` (artifact shapes,
-      the deliberate-code shapes that must survive, and streamed-vs-settled
-      parity across chunkings with the list-append fast path engaged).
+
+### Vendored svelte-streamdown
+
+`vendor/svelte-streamdown/` is `svelte-streamdown@3.1.2` with 15 permanent
+in-tree fixes. The per-entry rationale, drop rules and regression-test names
+live in
+[`vendor/svelte-streamdown/DIVERGENCE.md`](vendor/svelte-streamdown/DIVERGENCE.md);
+wiring, build-config couplings and the upstream-diff recipe live in
+[`vendor/svelte-streamdown/VENDOR.md`](vendor/svelte-streamdown/VENDOR.md).
+Fix markdown-pipeline bugs in that tree and record them in that ledger.
+
+The asymmetry is deliberate, not an oversight: a vendored package has a
+DIRECTORY of its own, so its ledger belongs beside the code it describes,
+where anyone editing the code will find it. A pnpm patch has no such place —
+`patches/svelte@5.56.8.patch` is one file, and a `patches/svelte.md` next to
+it would be a second thing to keep in sync with no code to sit beside. Patch
+hunks therefore stay documented above, in this file.
 
 ## References
 

@@ -175,6 +175,10 @@ export function buildPathLinkExtension(
   // tokenizer and the tool-card preview matcher.
   const bareRe = new RegExp(`^(@)?(${alternation})${OPTIONAL_PATH_SUFFIX_SOURCE}`);
   const wrappedRe = new RegExp(`^\`(@)?(${alternation})${OPTIONAL_PATH_SUFFIX_SOURCE}\``);
+  // Unanchored scanner for `start` — the whole allowlist as ONE pass. See
+  // `earliestPathLinkHit`. Its `lastIndex` is reset on entry there, never
+  // carried between calls.
+  const scanRe = new RegExp(`(?:${alternation})`, 'g');
 
   // Build a link token from a successful regex match. `childKind`
   // selects the marked token type that wraps the visible text inside
@@ -212,7 +216,7 @@ export function buildPathLinkExtension(
     name: 'pathLink',
     level: 'inline',
     start(src) {
-      return earliestPathLinkHit(src, paths);
+      return earliestPathLinkHit(src, scanRe);
     },
     tokenizer(this: unknown, src, tokens) {
       if (isInsideMarkdownLinkLabel(this)) return undefined;
@@ -325,33 +329,73 @@ export function parsePathLinkHref(href: string | null | undefined): {
  * `tokenizer` on `src.slice(hit)`. A return of `undefined` means
  * "no allowlisted path appears anywhere in this slice" and the lexer
  * falls through to its built-in tokenizers.
+ *
+ * Cost is the reason this takes a compiled scanner rather than the path
+ * list. Marked calls every inline extension's `start` on every tokenizer
+ * loop iteration, handing it a fresh `src.slice(…)` of whatever is left —
+ * so this runs once per inline token per block, and a streaming tail
+ * re-pays the whole thing on every reveal tick. Searching per path
+ * (`src.indexOf(path)` for each) made that O(tokens × paths × |src|):
+ * every allowlisted path that does NOT occur costs a full scan of the
+ * source before the answer is known, and most of them never occur.
+ *
+ * One alternation over the whole allowlist collapses those into a single
+ * left-to-right pass that STOPS at the first boundary-qualified hit. Be
+ * precise about what that buys: it is NOT an allowlist-independent bound.
+ * Leftmost alternation still considers each alternative at each position,
+ * so a source with no match is O(|src| × N) in the worst case, same order
+ * as the per-path loop. What changes is that the source is walked ONCE
+ * instead of N times (so the engine's own first-character dispatch prunes
+ * most alternatives per position, and the cache stays warm), and that a
+ * document WITH a match stops at the first one instead of paying N-1 full
+ * scans for the paths that never occur — which is the case that actually
+ * dominates, because `start` is re-run over the whole remaining tail on
+ * every inline token. Measured effect: parse time went from scaling ~10×
+ * between a 1-path and a 64-path allowlist to flat (see the performance
+ * contract in `pathLinkExtension.test.ts`).
+ *
+ * Non-qualifying hits restart the scan one character past the match (not
+ * past the whole match) because a shorter allowlisted path may still begin
+ * inside it — the same overlap rule the per-path loop had.
  */
-function earliestPathLinkHit(src: string, paths: readonly string[]): number | undefined {
+function earliestPathLinkHit(src: string, scanRe: RegExp): number | undefined {
   let earliest = -1;
-  for (const path of paths) {
-    let from = 0;
-    while (from < src.length) {
-      const idx = src.indexOf(path, from);
-      if (idx === -1) break;
-      const prev = idx === 0 ? undefined : src[idx - 1];
-      if (isBoundary(prev)) {
-        if (earliest === -1 || idx < earliest) earliest = idx;
-        break; // earliest hit for this path; longer paths already searched.
-      }
-      if (prev === '@') {
-        const prev2 = idx >= 2 ? src[idx - 2] : undefined;
-        if (isBoundary(prev2)) {
-          const at = idx - 1;
-          if (earliest === -1 || at < earliest) earliest = at;
-          break;
-        }
-      }
-      from = idx + 1;
+  scanRe.lastIndex = 0;
+  for (let match = scanRe.exec(src); match !== null; match = scanRe.exec(src)) {
+    const idx = match.index;
+    const prev = idx === 0 ? undefined : src[idx - 1];
+    if (isBoundary(prev)) {
+      earliest = idx;
+      break; // Scan order is document order — nothing earlier can follow.
     }
+    if (prev === '@') {
+      const prev2 = idx >= 2 ? src[idx - 2] : undefined;
+      if (isBoundary(prev2)) {
+        earliest = idx - 1;
+        break;
+      }
+    }
+    scanRe.lastIndex = idx + 1;
   }
-  const markdownHit = earliestMarkdownLinkHit(src);
-  if (markdownHit !== undefined && (earliest === -1 || markdownHit < earliest)) {
-    earliest = markdownHit;
+  // A markdown link's hit is its label's `[`, which sits BEFORE the `](`
+  // that identifies it — so it can beat a path hit that the scan above
+  // already found, and cannot be folded into that scan.
+  //
+  // The `firstBracket` guard is a filter, not a speedup in general: a
+  // markdown-link hit can never precede the source's first `[`, so a
+  // source with no `[` at all skips the `](` search outright (the win —
+  // most agent prose in a streaming tail has no brackets), while a source
+  // that DOES contain one has paid an extra `indexOf` on top of the search
+  // it was going to run anyway (a wash). The second clause is the part
+  // that matters for bracket-heavy sources: when the scan already found a
+  // hit earlier than the first `[`, no label can beat it, so the `](`
+  // search is skipped even though brackets exist.
+  const firstBracket = src.indexOf('[');
+  if (firstBracket !== -1 && (earliest === -1 || firstBracket < earliest)) {
+    const markdownHit = earliestMarkdownLinkHit(src);
+    if (markdownHit !== undefined && (earliest === -1 || markdownHit < earliest)) {
+      earliest = markdownHit;
+    }
   }
   return earliest === -1 ? undefined : earliest;
 }

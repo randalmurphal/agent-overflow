@@ -31,7 +31,7 @@ const happyDomResolve = {
   ],
 };
 
-// Two projects:
+// Three projects:
 //  - `unit`: the default happy-dom component/store suite. Deliberately does NOT
 //    load tailwindcss -- those tests render against mocked bindings and don't
 //    exercise styles, and tailwind's plugin resolves project-level paths we'd
@@ -41,11 +41,20 @@ const happyDomResolve = {
 //    markdown rows stay flush) can only be verified with a real layout engine.
 //    Loads tailwindcss so the test can import the production app.css and assert
 //    against the real cascade. Files matched by `*.browser.test.ts`.
+//  - `manual`: operator-driven investigation drivers, matched by `*.manual.ts`.
+//    They need a locally generated corpus that cannot be committed, and a
+//    genuine finding WEDGES THE WORKER rather than failing an assertion —
+//    which is the repro signal, and precisely why they must never be
+//    collectable by a gate. A separate project (rather than a naming
+//    convention alone) is what makes that structural: `*.manual.ts` matches
+//    neither other project's include glob, and no project runs unless it is
+//    named.
 //
 // The default `pnpm test` runs ONLY the unit project, so the `make test` /
 // `make verify` gate needs no browser binary (`make install` does not provision
 // one). Run the browser suite explicitly with `pnpm test:browser`, which needs
-// `pnpm exec playwright install chromium`.
+// `pnpm exec playwright install chromium`; run a manual driver with
+// `pnpm test:manual`.
 export default defineConfig({
   test: {
     projects: [
@@ -121,6 +130,27 @@ export default defineConfig({
             // failure screenshot is useless and would litter the tree with
             // `.vitest-attachments/` + `__screenshots__/` byproducts.
             screenshotFailures: false,
+          },
+        },
+      },
+      {
+        // Same environment as `unit` — the drivers mount real components and
+        // reach the same mocked bindings — with a disjoint include glob and a
+        // timeout that lets a long sweep finish rather than being cut off
+        // mid-corpus.
+        plugins: [svelte()],
+        resolve: happyDomResolve,
+        test: {
+          name: 'manual',
+          environment: 'happy-dom',
+          globals: false,
+          setupFiles: ['./src/test/setup.ts'],
+          include: ['src/**/*.manual.ts'],
+          testTimeout: 300_000,
+          server: {
+            deps: {
+              inline: [/@testing-library\/svelte/, /svelte/],
+            },
           },
         },
       },

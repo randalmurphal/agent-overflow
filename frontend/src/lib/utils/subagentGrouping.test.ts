@@ -4,6 +4,7 @@ import {
   findTimelineNodeIndex,
   groupItemsBySubagent,
   isToolTextBoundary,
+  MAX_DEPTH,
   nodeContainsItem,
   sliceRevealedNodes,
   timelineNodeItemId,
@@ -18,6 +19,7 @@ import {
 } from './subagentGrouping';
 import type { SubagentFoldAggregate } from './subagentFold';
 import type { Item } from '../types/models';
+import { installDiagnosticsCapture } from '../../test/helpers/diagnostics';
 
 function mkItem(overrides: Partial<Item> & { id: string }): Item {
   const createdAt = overrides.createdAt ?? 0;
@@ -1790,5 +1792,123 @@ describe('subagent anchor decoration fallback', () => {
     expect(group.descendantCount).toBe(0);
     expect(group.loadedDescendantCount).toBe(0);
     expect(group.latestChildSummary).toBe('');
+  });
+});
+
+// ── Corrupt parent links at the depth cap ─────────────────────────────────
+//
+// `childrenByParent` is built from provider-supplied `parentId`s and keyed by
+// item id, neither of which this pass owns. The depth-cap flatten walks it as
+// a BFS, and written as "keep going until you run out" that is, for corrupt
+// links, not a wrong render but a synchronous loop that never returns: one
+// core pegged, no paint, no error, nothing in any log.
+//
+// Diagnostics are asserted against the real capture pipeline (dedupe ->
+// serialize -> batch -> RPC), so the claim under test is that the report
+// reaches `ui-trace/frontend-errors.jsonl`, not that a spy was called.
+
+describe('subagentGrouping depth-cap flattening survives corrupt parent links', () => {
+  const diagnostics = installDiagnosticsCapture();
+
+  function launch(id: string, itemIndex: number, parentId?: string): Item {
+    return mkItem({ id, itemIndex, parentId, kind: 'tool_call', toolName: 'Task', summary: id });
+  }
+
+  /** A launch chain exactly deep enough that the last group flattens its subtree. */
+  function chainToCap(): Item[] {
+    expect(MAX_DEPTH).toBe(3);
+    return [
+      launch('root', 0),
+      launch('a', 1, 'root'),
+      launch('b', 2, 'a'),
+      launch('c', 3, 'b'), // sits AT the cap: its subtree flattens
+    ];
+  }
+
+  function flattenedIds(items: Item[]): string[] {
+    let node = groupItemsBySubagent(items)[0];
+    for (let depth = 0; depth < MAX_DEPTH; depth += 1) {
+      if (node.kind !== 'group') throw new Error(`depth ${depth} is ${node.kind}`);
+      node = node.children[0];
+    }
+    if (node.kind !== 'group') throw new Error(`cap node is ${node.kind}`);
+    return node.children.map((child) => {
+      if (child.kind !== 'leaf') throw new Error('flattened subtree must be leaves');
+      return child.item.id;
+    });
+  }
+
+  it('de-duplicates the cap node\'s OWN children, not only their descendants', async () => {
+    // `d` is emitted twice — the shape a transport-gap replay produces
+    // (`eventsTransportGap.ts` refreshes and re-upserts) — so the initial
+    // bucket itself carries a duplicate. Seeding the visited set FROM that
+    // bucket (rather than pushing it through the same path) deduped nothing
+    // and reported nothing: the run rendered two leaves with the same id,
+    // which is a duplicate key in the row `{#each}` downstream, and that
+    // throws.
+    const items = [
+      ...chainToCap(),
+      launch('d', 4, 'c'),
+      launch('d', 5, 'c'), // duplicate id
+      mkItem({ id: 'e', itemIndex: 6, parentId: 'd', summary: 'grandchild' }),
+    ];
+
+    expect(flattenedIds(items)).toEqual(['d', 'e']);
+
+    const records = await diagnostics.all();
+    expect(records).toHaveLength(1);
+    expect(records[0].message).toContain('subagentGrouping');
+    // Constant message; the launch id and the skip count ride in the detail,
+    // or every corrupt launch would mint its own dedupe signature.
+    expect(records[0].message).not.toContain('launch c');
+    expect(records[0].detail).toContain('launch c');
+    // Console fallback: a remote session cannot persist the record at all.
+    expect(diagnostics.warnings().join('\n')).toContain('launch c');
+  });
+
+  it('terminates on a genuine parentId cycle instead of allocating until dead', async () => {
+    // A real cycle in the links: c -> d, d -> e, e -> d. Provider items are
+    // keyed by id, so the second `d` is a distinct item carrying an id already
+    // in the walk — which is exactly how a cycle reaches this code. With no
+    // visited set at all (how this walk was originally written) the queue
+    // grows forever and the tab dies with nothing logged.
+    const items = [
+      ...chainToCap(),
+      launch('d', 4, 'c'),
+      launch('e', 5, 'd'),
+      launch('d', 6, 'e'), // closes the loop back onto `d`
+    ];
+
+    expect(flattenedIds(items)).toEqual(['d', 'e']);
+    expect((await diagnostics.messages())).toHaveLength(1);
+  });
+
+  it('says nothing for a well-formed subtree', async () => {
+    const items = [
+      ...chainToCap(),
+      launch('d', 4, 'c'),
+      mkItem({ id: 'e', itemIndex: 6, parentId: 'd', summary: 'grandchild' }),
+    ];
+
+    expect(flattenedIds(items)).toEqual(['d', 'e']);
+    expect(await diagnostics.messages()).toEqual([]);
+  });
+
+  it('flattens a wide bucket without a spread-apply', async () => {
+    // The other half of the rewrite: `queue.push(...grand)` is bounded by the
+    // engine's argument limit. This width is well under it — the point is
+    // that a wide bucket flattens in one pass, in order, with nothing
+    // reported.
+    const wide = [
+      ...chainToCap(),
+      ...Array.from({ length: 5_000 }, (_, i) =>
+        mkItem({ id: `w${i}`, itemIndex: 4 + i, parentId: 'c', summary: `w${i}` })),
+    ];
+
+    const ids = flattenedIds(wide);
+    expect(ids).toHaveLength(5_000);
+    expect(ids[0]).toBe('w0');
+    expect(ids[4_999]).toBe('w4999');
+    expect(await diagnostics.messages()).toEqual([]);
   });
 });

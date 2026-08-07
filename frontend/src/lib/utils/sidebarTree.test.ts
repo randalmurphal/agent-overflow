@@ -11,6 +11,7 @@ import {
   toggleSidebarTreeThreadExpansion,
 } from './sidebarTree';
 import { THREAD_PREVIEW_LIMIT } from './sidebarThreadLimits';
+import { installDiagnosticsCapture } from '../../test/helpers/diagnostics';
 
 function mkThread(id: string, overrides: Partial<Thread> = {}): Thread {
   return {
@@ -600,5 +601,78 @@ describe('syncExpandedTreeForActiveThread', () => {
       activeThreadId: 'leaf',
     });
     expect([...next].sort()).toEqual(['mid', 'root']);
+  });
+});
+
+// ── Corrupt parentThreadId links ─────────────────────────────────────────
+//
+// The ancestor walk reads `parentThreadId`, which is backend data this module
+// does not own. Written as "keep going until you run out", a cycle in those
+// links is not a wrong render but a synchronous loop that never returns.
+//
+// The guard is defence in depth: `buildSidebarThreadTree` excludes cycle
+// members from its roots and bounds nesting by `maxDepth`, so no cycle reaches
+// the walk through it today. That is a property of the BUILDER, and this
+// function is exported and callable with any node array — the test below
+// therefore corrupts the links after the tree is built, which is also exactly
+// what a backend that reparented a thread under its own child would hand it.
+//
+// Asserted against the real capture pipeline, so the claim is that the report
+// reaches `ui-trace/frontend-errors.jsonl`.
+
+describe('sidebarTree ancestor expansion survives a parentThreadId cycle', () => {
+  const diagnostics = installDiagnosticsCapture();
+
+  it('stops at the first repeated ancestor and reports', async () => {
+    const root = mkThread('root');
+    const mid = mkThread('mid', { parentThreadId: 'root' });
+    const nodes = buildSidebarThreadTree({
+      threads: [root, mid],
+      liveStatusOf: () => 'idle',
+    });
+    // Corrupt the link AFTER the tree is built: the walk reads
+    // `node.thread.parentThreadId`. Built this way rather than hand-rolling
+    // nodes so the walk still sees a real tree — the cycle is in the links,
+    // not in the render shape.
+    root.parentThreadId = 'mid';
+
+    const next = syncExpandedTreeForActiveThread({
+      nodes,
+      expandedThreadIds: new Set<string>(),
+      activeThreadId: 'mid',
+    });
+
+    // The reachable ancestor still expands; the walk just refuses the second
+    // lap. Unguarded this call never returns.
+    expect([...next]).toEqual(['root']);
+
+    const records = await diagnostics.all();
+    expect(records).toHaveLength(1);
+    expect(records[0].message).toContain('sidebarTree');
+    // Constant message; the thread ids ride in the detail, or every corrupt
+    // tree would mint its own dedupe signature.
+    expect(records[0].message).not.toContain('mid');
+    expect(records[0].detail).toContain('mid');
+    // Console fallback: a remote session cannot persist the record at all.
+    expect(diagnostics.warnings().join('\n')).toContain('mid');
+  });
+
+  it('says nothing for a well-formed ancestor chain', async () => {
+    const root = mkThread('root');
+    const mid = mkThread('mid', { parentThreadId: 'root' });
+    const leaf = mkThread('leaf', { parentThreadId: 'mid' });
+    const nodes = buildSidebarThreadTree({
+      threads: [root, mid, leaf],
+      liveStatusOf: () => 'idle',
+    });
+
+    const next = syncExpandedTreeForActiveThread({
+      nodes,
+      expandedThreadIds: new Set<string>(),
+      activeThreadId: 'leaf',
+    });
+
+    expect([...next].sort()).toEqual(['mid', 'root']);
+    expect(await diagnostics.messages()).toEqual([]);
   });
 });

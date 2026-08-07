@@ -34,6 +34,7 @@ import type {
   ActivityRunFocusRequest,
   ActivityRunMountWindow,
 } from '../utils/activityRunWindow';
+import { reportFrontendDiagnostic } from '../utils/frontendErrorCapture';
 
 export interface ActivityRunScrollSnapshot {
   scrollTop: number;
@@ -139,6 +140,17 @@ export interface ThreadActivityRuns extends ActivityRunIdentity {
    * rebuild the spring every time the pin it sets moves.
    */
   windowAnchor(runId: string): string | null;
+  /**
+   * Whether the run holds `itemId` RIGHT NOW.
+   *
+   * For callers holding a projected `ActivityRunNode` that may predate a
+   * prune or a sweep — a jump is the one such path — so they can tell a stale
+   * node from a broken one before writing an anchor derived from it. Writing
+   * a stale id is coerced to tail-follow and REPORTED as a contract break by
+   * `resolvableAnchor`, which is the right answer for every writer that reads
+   * from a live node and the wrong one for a writer that cannot.
+   */
+  containsMember(runId: string, itemId: string): boolean;
   /**
    * Ask the run's row to bring `itemId` into view once it is mounted. Held
    * on the entry rather than passed down a prop because the row may not
@@ -260,6 +272,81 @@ function rowIndexOfMember(
     if (rowMemberIds[row].includes(itemId)) return row;
   }
   return -1;
+}
+
+/**
+ * The window anchor a run will actually hold, given what it currently
+ * contains. `null` means "follow the tail".
+ *
+ * Every anchor writer names `timelineNodeItemId(run.children[from])`
+ * (`ActivityRun.svelte`'s escape effect, `activityRunWindow.ts`'s window
+ * helpers, `revealActivityRunItem`), and that id is only resolvable back to a
+ * row because `activityRunGrouping.ts#buildRun` yields it into
+ * `rowMemberIds[from]`. That is a CONTRACT across two files and every
+ * `TimelineNode` kind, and nothing but this check enforces it.
+ *
+ * When it breaks the failure is not a wrong window, it is an infinite
+ * rebuild: `resolve()` cannot find the anchor, nulls it, the effect sees the
+ * moved window and rewrites the same id, `revision` bumps, the projection
+ * rebuilds, forever — one full run-node rebuild per lap with no paint
+ * between. Coercing the unresolvable anchor to the tail HERE closes that
+ * loop structurally: the second write matches the stored `null` and returns
+ * without bumping `revision`, so a broken node kind degrades to a
+ * tail-following window instead of wedging the renderer.
+ *
+ * Nothing legitimate reaches the report. An anchor row lost to an older-side
+ * prune or a payloadKind split is dropped by `resolve()` a pass later, when
+ * the run genuinely no longer contains it; a write naming an id the run does
+ * not contain RIGHT NOW can only be the contract breaking.
+ */
+/**
+ * Runs already reported by `resolvableAnchor`, so a broken node kind reports
+ * ONCE rather than on every re-assertion.
+ *
+ * The write that trips this is an `$effect` re-asserting the row's escape
+ * anchor, which runs on every reveal tick — measured as a report per tick
+ * before this existed, which buries the finding under its own repetition and
+ * burns the ui-trace rotation budget. Entries only ever arrive for a run whose
+ * contract is broken, so in a healthy app this set stays empty; the cap bounds
+ * it anyway, because a systematically broken node kind would otherwise add one
+ * entry per run for the life of the page. Past the cap the guard still coerces
+ * the anchor — it just stops reporting, and the first entries carry all the
+ * signal.
+ */
+const reportedAnchorRuns = new Set<string>();
+const MAX_REPORTED_ANCHOR_RUNS = 100;
+
+function resolvableAnchor(
+  entry: RunEntry,
+  runId: string,
+  anchorItemId: string | null,
+): string | null {
+  if (anchorItemId === null || entry.members.has(anchorItemId)) return anchorItemId;
+  // Keyed by thread too: `runId`s are minted per registry, so `run-1` in one
+  // pane is a different run from `run-1` in another.
+  const key = `${entry.threadId} ${runId}`;
+  if (!reportedAnchorRuns.has(key) && reportedAnchorRuns.size < MAX_REPORTED_ANCHOR_RUNS) {
+    reportedAnchorRuns.add(key);
+    // Constant message, variables in `detail`: an item id and a member count
+    // in the message would mint a fresh signature per run, which is unbounded
+    // map growth in the capture pipeline AND a walk around its per-signature
+    // cap. Console too — a remote session cannot persist the record
+    // (`ReportFrontendErrorBatch` is LocalOnly), and the console line is then
+    // the only surviving evidence.
+    const detail = `anchor "${anchorItemId}" not in run ${runId} (${entry.members.size} members)`;
+    console.warn(`[threadActivityRuns] unresolvable window anchor; tail-follow (${detail})`);
+    reportFrontendDiagnostic(
+      'threadActivityRuns: window anchor is not a member of its run — a TimelineNode kind\'s ' +
+        'rowMemberIds does not contain its own timelineNodeItemId; falling back to tail-follow',
+      detail,
+    );
+  }
+  return null;
+}
+
+/** Test hook: the once-per-run report ledger is module state. */
+export function resetActivityRunAnchorReportsForTest(): void {
+  reportedAnchorRuns.clear();
 }
 
 export function createThreadActivityRuns(
@@ -438,6 +525,9 @@ export function createThreadActivityRuns(
         // The anchor row is gone — an older-side prune took it, or a
         // payloadKind flip split the run and it landed on the other side.
         // There is nothing left to hold, so the window follows the tail again.
+        // Not a contract violation: an anchor that was never resolvable is
+        // refused at the write (`resolvableAnchor`), so reaching here means
+        // the run really did lose a row it used to have.
         entry.windowStartItemId = null;
       } else {
         // Clamped so a late anchor still mounts a full window. Deliberately
@@ -639,19 +729,23 @@ export function createThreadActivityRuns(
     setMountWindow: (runId, window) => {
       const entry = entries.get(runId);
       if (!entry) return;
+      const anchor = resolvableAnchor(entry, runId, window.startItemId);
       if (entry.windowRows === window.rows
-        && entry.windowStartItemId === window.startItemId) return;
+        && entry.windowStartItemId === anchor) return;
       entry.windowRows = window.rows;
-      entry.windowStartItemId = window.startItemId;
+      entry.windowStartItemId = anchor;
       revision += 1;
     },
     setWindowAnchor: (runId, anchorItemId) => {
       const entry = entries.get(runId);
-      if (!entry || entry.windowStartItemId === anchorItemId) return;
-      entry.windowStartItemId = anchorItemId;
+      if (!entry) return;
+      const anchor = resolvableAnchor(entry, runId, anchorItemId);
+      if (entry.windowStartItemId === anchor) return;
+      entry.windowStartItemId = anchor;
       revision += 1;
     },
     windowAnchor: (runId) => entries.get(runId)?.windowStartItemId ?? null,
+    containsMember: (runId, itemId) => entries.get(runId)?.members.has(itemId) ?? false,
     requestFocus: (runId, request) => {
       const entry = entries.get(runId);
       if (!entry) return false;

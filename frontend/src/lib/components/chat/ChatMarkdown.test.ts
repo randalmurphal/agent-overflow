@@ -207,8 +207,9 @@ describe('<ChatMarkdown> path-link rendering', () => {
   it('renders a repo-relative link as plain text without a [blocked] tag', async () => {
     // PR/issue bodies routinely carry repo-relative links like
     // `[docs/guide.md](docs/guide.md)` — not navigable from the app,
-    // but not *blocked URLs* either. The Link.svelte hunk in
-    // `patches/svelte-streamdown@3.1.2.patch` drops the " [blocked]"
+    // but not *blocked URLs* either. The Link.svelte divergence in the
+    // vendored svelte-streamdown (`DIVERGENCE.md` entry 10) drops the
+    // " [blocked]"
     // suffix for schemeless relative references (the href survives as
     // the hover title); disallowed absolute URLs keep the tag.
     const { container } = render(ChatMarkdown, {

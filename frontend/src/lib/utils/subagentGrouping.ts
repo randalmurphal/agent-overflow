@@ -56,6 +56,7 @@ import type { Item } from '../types/models';
 import type { SubagentFoldAggregate } from './subagentFold';
 import { parseJsonObject } from './parseJsonObject';
 import { isCodexSubagentLaunchItem } from './subagentLaunch';
+import { reportFrontendDiagnostic } from './frontendErrorCapture';
 
 /**
  * Accessor into the pane's live-eviction fold registry. Group nodes add
@@ -1040,15 +1041,60 @@ export function groupItemsBySubagent(
       // here because they render as leaves, not fold-aware group nodes.
       const flatChildren: TimelineNode[] = [];
       let flattenedFoldCount = 0;
-      const queue: Item[] = [...(childItems ?? [])];
+      // `childrenByParent` is built from provider-supplied `parentId`s and
+      // keyed by item id, neither of which this pass owns. A cycle in those
+      // links is a synchronous allocate-until-dead loop (the queue grows
+      // forever, one core pegged, nothing reported); a duplicate item id —
+      // which a transport-gap replay can produce — re-walks a whole subtree
+      // and renders it twice. A visited set closes both, and is the same
+      // guard `threadTimelineWindow.svelte.ts`'s parent walk carries.
+      //
+      // EVERY enqueue goes through `enqueue`, the initial bucket included.
+      // Seeding `visited` from that bucket instead would leave its own
+      // duplicates un-deduped and unreported — and two leaves with the same
+      // id are a duplicate key in the row `{#each}` downstream, which throws.
+      // The append is iterative for a second reason: `push(...children)` is a
+      // spread-apply, so a wide enough bucket throws RangeError instead of
+      // flattening.
+      const queue: Item[] = [];
+      const visited = new Set<string>();
+      let revisits = 0;
+      const enqueue = (children: readonly Item[] | undefined): void => {
+        if (!children) return;
+        for (const child of children) {
+          if (visited.has(child.id)) {
+            revisits += 1;
+            continue;
+          }
+          visited.add(child.id);
+          queue.push(child);
+        }
+      };
+
+      enqueue(childItems);
       for (let head = 0; head < queue.length; head++) {
         const next = queue[head];
         flatChildren.push({ kind: 'leaf', item: next });
         if (subagentLaunchKind(next) !== null) {
           flattenedFoldCount += aggregates?.(next.id)?.evictedCount ?? 0;
         }
-        const grand = childrenByParent.get(next.id);
-        if (grand) queue.push(...grand);
+        enqueue(childrenByParent.get(next.id));
+      }
+      if (revisits > 0) {
+        // Surviving the corruption silently would leave it in place and the
+        // transcript quietly short; only the report says why. Constant
+        // message, variables in `detail` — an id in the message would mint a
+        // fresh signature per launch and walk straight past the per-signature
+        // cap. Console too: a remote session cannot persist (the reporter is
+        // LocalOnly), and there the console line is the only evidence.
+        const detail = `launch ${item.id}, ${revisits} skipped`;
+        console.warn(`[subagentGrouping] corrupt parent links while flattening (${detail})`);
+        reportFrontendDiagnostic(
+          'subagentGrouping: corrupt parent links under a subagent launch — already-visited ' +
+            'descendant(s) skipped while flattening at the depth cap (a parentId cycle, or a ' +
+            'duplicate item id)',
+          detail,
+        );
       }
       return subagentGroupNode(
         item,

@@ -472,3 +472,83 @@ describe('parsePathLinkHref', () => {
     expect(parsePathLinkHref(PATH_LINK_HREF_PREFIX)).toBeNull();
   });
 });
+
+describe('path-link start() performance contract', () => {
+  // Why this suite exists: marked calls `start` on EVERY inline tokenizer
+  // loop iteration, handing it a fresh slice of the remaining source. The
+  // original implementation answered by running `src.indexOf(path)` once
+  // per allowlisted path, so every path that did not occur cost a full
+  // scan of the slice before the answer was known — O(tokens × paths ×
+  // |src|) per parse, re-paid on every reveal tick of a streaming tail.
+  //
+  // The contract is therefore about SHAPE, not milliseconds: parse cost
+  // must not scale with how many paths the server validated. The bound is
+  // deliberately RELATIVE only — the same document, in the same process,
+  // with an allowlist of 1 vs 64 — so it holds on any machine and under
+  // any CI load. An absolute millisecond cap was tried and removed: it
+  // fails on a loaded runner for reasons that have nothing to do with the
+  // property under test, and a wall-clock regression that slows both sides
+  // together is not what this suite is for. Reference numbers on the
+  // profiling machine, same document both times: pre-fix 108ms at one path
+  // and 1098ms at 64 (10.2×, and it keeps climbing with the allowlist);
+  // post-fix 90ms and 91ms (1.0×). Nearly all of that 90ms is marked's own
+  // inline pass over a single 180KB paragraph — the extension has stopped
+  // being a term in the cost.
+  const perfPaths = Array.from({ length: 64 }, (_, i) => `src/lib/module${i}/handler.ts`);
+
+  // One long paragraph: marked's inline pass gets the whole thing as a
+  // single `src`, and every emphasis / code span / bracket forces another
+  // loop iteration (another `start` call over the still-huge remainder).
+  // Recurrences are deliberately sparse and clustered so the scan has both
+  // "answer is near" and "answer is far" regions to cross.
+  const perfDoc = Array.from({ length: 900 }, (_, i) => {
+    const filler =
+      `pass ${i} keeps a *steady* cadence while the \`resolver\` holds ` +
+      `**its** viewport and the drain settles, ` +
+      `and the follow-up sentence adds enough prose to make the slice long. `;
+    return i % 9 === 0 ? `${filler}see src/lib/module${i % 64}/handler.ts here. ` : filler;
+  }).join('');
+
+  const median = (samples: number[]): number => {
+    const sorted = [...samples].sort((a, b) => a - b);
+    return sorted[Math.floor(sorted.length / 2)];
+  };
+
+  const timeParse = (paths: readonly string[], runs: number): number => {
+    const ext = buildPathLinkExtension(
+      paths.map((path) => ({ path })),
+      '/workspace',
+    );
+    const samples: number[] = [];
+    for (let i = 0; i < runs; i += 1) {
+      const t0 = performance.now();
+      lex(perfDoc, ext);
+      samples.push(performance.now() - t0);
+    }
+    return median(samples);
+  };
+
+  it('parse cost does not scale with the size of the path allowlist', () => {
+    // Warm the JIT on both shapes before either is measured.
+    timeParse(perfPaths.slice(0, 1), 1);
+    timeParse(perfPaths, 1);
+
+    const one = timeParse(perfPaths.slice(0, 1), 3);
+    const many = timeParse(perfPaths, 3);
+
+    expect(
+      many,
+      `1 path=${one.toFixed(2)}ms 64 paths=${many.toFixed(2)}ms (${(many / one).toFixed(1)}x)`,
+    ).toBeLessThan(one * 4);
+  });
+
+  it('still linkifies every recurrence in the pathological document', () => {
+    const ext = buildPathLinkExtension(
+      perfPaths.map((path) => ({ path })),
+      '/workspace',
+    );
+    const links = findLinks(lex(perfDoc, ext));
+    expect(links).toHaveLength(100);
+    expect(new Set(links.map((l) => l.raw)).size).toBe(64);
+  });
+});

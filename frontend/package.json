@@ -16,6 +16,7 @@
     "test": "vitest run --project unit",
     "test:watch": "vitest --project unit",
     "test:browser": "vitest run --project browser",
+    "test:manual": "vitest run --project manual",
     "test:ui": "vitest --ui"
   },
   "dependencies": {
@@ -35,7 +36,7 @@
     "mermaid": "11.16.1",
     "modern-screenshot": "4.7.0",
     "svelte": "5.56.8",
-    "svelte-streamdown": "3.1.2"
+    "svelte-streamdown": "workspace:*"
   },
   "devDependencies": {
     "@sveltejs/vite-plugin-svelte": "7.2.0",
@@ -45,6 +46,7 @@
     "@testing-library/svelte": "5.4.2",
     "@tsconfig/svelte": "5.0.8",
     "@types/katex": "0.16.8",
+    "@types/node": "25.6.0",
     "@vitest/browser-playwright": "4.1.10",
     "@vitest/ui": "4.1.10",
     "happy-dom": "20.11.1",

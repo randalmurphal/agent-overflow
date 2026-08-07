@@ -2,6 +2,16 @@
 @import "./styles/tokens.css";
 @import "./styles/syntax.css";
 
+/* `vendor/` holds in-repo third-party packages (svelte-streamdown — see
+   its VENDOR.md). They were `node_modules` installs until they were
+   vendored, so Tailwind's automatic content detection never saw them:
+   their utility classes are library defaults we override wholesale via
+   Streamdown's `mergeTheme`, and generating CSS for the ones we don't
+   use would both bloat the bundle and start applying rules to markup
+   that has rendered unstyled since day one. Vendoring must not change
+   what the cascade contains. */
+@source not "../vendor";
+
 :root {
   --surface-0: oklch(0.145 0.014 285.82);
   --surface-1: oklch(0.178 0.014 285.82);

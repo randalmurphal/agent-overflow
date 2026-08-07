@@ -218,11 +218,16 @@ tool github.com/wailsapp/wails/v3/cmd/wails3
 // What remains in the fork, and what retires each patch:
 //
 //  1. WebView2 ProcessFailed recovery (rebuild the controller on browser
-//     process exit; re-navigate on renderer exit) and 4. escalation of a
-//     repeatedly-unresponsive renderer to that same rebuild. Both are
-//     blocked on wails #5733, which is still OPEN — upstream already
-//     exposes edge.Chromium.ProcessFailedCallback but nothing in
-//     pkg/application consumes it. Upstream-PR candidate.
+//     process exit; re-navigate on renderer exit) and 4. hung-renderer
+//     recovery: an unresponsive-renderer signal opens a recovery episode
+//     (re-navigate, then a 5s deadline into that same rebuild), and a
+//     liveness watchdog (ExecuteScript ping; 3 misses + 15s silence)
+//     detects a wedged main thread with NO user input — Chromium's hang
+//     monitor is input-driven, so ProcessFailed alone can fire zero times
+//     during a real freeze (incidents 2026-08-03/07). Both are blocked on
+//     wails #5733, which is still OPEN — upstream already exposes
+//     edge.Chromium.ProcessFailedCallback but nothing in pkg/application
+//     consumes it. Upstream-PR candidate.
 //
 //  2. WebviewWindow.SuspendWebview/ResumeWebview (minimised-window memory
 //     trim, consumed by cmd/agent-overflow-windows/webviewtrim.go).
@@ -240,4 +245,4 @@ tool github.com/wailsapp/wails/v3/cmd/wails3
 // monitor-scale-detection re-enable (#5732 -> PR #5734) and the host
 // rasterization-scale stand-down (PR #5761, which generalised it to
 // visual hosting). Do not re-add them.
-replace github.com/wailsapp/wails/v3 => github.com/randalmurphal/wails/v3 v3.0.0-beta.4.0.20260806200522-fd752498afa2
+replace github.com/wailsapp/wails/v3 => github.com/randalmurphal/wails/v3 v3.0.0-beta.4.0.20260807223251-3f2d4fc38366

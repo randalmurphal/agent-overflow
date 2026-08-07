@@ -71,9 +71,16 @@ export default defineConfig({
             // it off keeps the main `index.js` bundle from ballooning
             // on initial load and means library upgrades don't bust
             // unrelated chunks.
+            //
+            // `vendor/` is in the alternation because svelte-streamdown
+            // is vendored in-repo (`frontend/vendor/svelte-streamdown`,
+            // see its VENDOR.md). Rolldown resolves the pnpm symlink to
+            // its real path, so the module ids are `vendor/...`, not
+            // `node_modules/...` — matching only the latter silently
+            // dumps the whole library back into the entry chunk.
             {
               name: "markdown-vendor",
-              test: /node_modules\/(svelte-streamdown|marked|idiomorph)\//,
+              test: /(?:node_modules|vendor)\/(svelte-streamdown|marked|idiomorph)\//,
             },
           ],
         },

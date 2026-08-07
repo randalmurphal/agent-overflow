@@ -426,10 +426,17 @@ and the RPC path recomputes. The ingest is deliberately not memoized:
 thread switches evict the span caches, and remounts must be able to
 re-seed.
 
-The `svelte-streamdown@3.1.2` pnpm patch is intentional. Parser bugs in
-that pipeline go upstream-then-patch; do not duplicate parser fixes in
-`markdownEnhance.ts` or the host wrappers. Regression coverage lives in
-`AssistantMessage.test.ts`.
+`svelte-streamdown` is VENDORED, not installed —
+`frontend/vendor/svelte-streamdown` is 3.1.2 with our divergence applied
+in place (upstream is dormant; the former 13-hunk pnpm patch was pure
+re-roll overhead). Parser bugs in that pipeline are fixed in the vendored
+tree and recorded in its divergence ledger
+([`frontend/vendor/svelte-streamdown/DIVERGENCE.md`](../../../../vendor/svelte-streamdown/DIVERGENCE.md)),
+with an upstream PR when the fix is a general bug rather than a deliberate
+deviation. Do not duplicate parser fixes in `markdownEnhance.ts` or the
+host wrappers.
+Regression coverage lives in `AssistantMessage.test.ts` and
+`src/lib/markdown/`.
 
 ## Test Notes
 

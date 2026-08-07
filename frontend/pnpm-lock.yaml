@@ -6,13 +6,11 @@ settings:
 
 overrides:
   ws: '>=8.21.0'
+  '@ungap/structured-clone': '>=1.3.1'
 
 patchedDependencies:
-  svelte-streamdown@3.1.2:
-    hash: 875266c4328bf185b50476a4ecdc62c57c60d0f5a440d6b876bebaa4c1357db5
-    path: patches/svelte-streamdown@3.1.2.patch
   svelte@5.56.8:
-    hash: f76f57848914d0562bb4d2c29b1afb2f4cdbddc93bc311e46fb1f0cccacf78e5
+    hash: 1315b80c8cc0e9fb10b7a7798ec174a4f61ca695857b4a367688144f43a299b7
     path: patches/svelte@5.56.8.patch
 
 importers:
@@ -30,7 +28,7 @@ importers:
         version: 0.9.0
       '@lucide/svelte':
         specifier: 1.28.0
-        version: 1.28.0(svelte@5.56.8(patch_hash=f76f57848914d0562bb4d2c29b1afb2f4cdbddc93bc311e46fb1f0cccacf78e5))
+        version: 1.28.0(svelte@5.56.8(patch_hash=1315b80c8cc0e9fb10b7a7798ec174a4f61ca695857b4a367688144f43a299b7))
       '@wailsio/runtime':
         specifier: 3.0.0-beta.1
         version: 3.0.0-beta.1
@@ -66,14 +64,14 @@ importers:
         version: 4.7.0
       svelte:
         specifier: 5.56.8
-        version: 5.56.8(patch_hash=f76f57848914d0562bb4d2c29b1afb2f4cdbddc93bc311e46fb1f0cccacf78e5)
+        version: 5.56.8(patch_hash=1315b80c8cc0e9fb10b7a7798ec174a4f61ca695857b4a367688144f43a299b7)
       svelte-streamdown:
-        specifier: 3.1.2
-        version: 3.1.2(patch_hash=875266c4328bf185b50476a4ecdc62c57c60d0f5a440d6b876bebaa4c1357db5)(svelte@5.56.8(patch_hash=f76f57848914d0562bb4d2c29b1afb2f4cdbddc93bc311e46fb1f0cccacf78e5))
+        specifier: workspace:*
+        version: link:vendor/svelte-streamdown
     devDependencies:
       '@sveltejs/vite-plugin-svelte':
         specifier: 7.2.0
-        version: 7.2.0(svelte@5.56.8(patch_hash=f76f57848914d0562bb4d2c29b1afb2f4cdbddc93bc311e46fb1f0cccacf78e5))(vite@8.2.0(@types/node@25.6.0)(jiti@2.7.0))
+        version: 7.2.0(svelte@5.56.8(patch_hash=1315b80c8cc0e9fb10b7a7798ec174a4f61ca695857b4a367688144f43a299b7))(vite@8.2.0(@types/node@25.6.0)(jiti@2.7.0))
       '@tailwindcss/vite':
         specifier: 4.3.3
         version: 4.3.3(vite@8.2.0(@types/node@25.6.0)(jiti@2.7.0))
@@ -85,13 +83,16 @@ importers:
         version: 7.0.0(@testing-library/dom@10.4.1)
       '@testing-library/svelte':
         specifier: 5.4.2
-        version: 5.4.2(svelte@5.56.8(patch_hash=f76f57848914d0562bb4d2c29b1afb2f4cdbddc93bc311e46fb1f0cccacf78e5))(vite@8.2.0(@types/node@25.6.0)(jiti@2.7.0))(vitest@4.1.10)
+        version: 5.4.2(svelte@5.56.8(patch_hash=1315b80c8cc0e9fb10b7a7798ec174a4f61ca695857b4a367688144f43a299b7))(vite@8.2.0(@types/node@25.6.0)(jiti@2.7.0))(vitest@4.1.10)
       '@tsconfig/svelte':
         specifier: 5.0.8
         version: 5.0.8
       '@types/katex':
         specifier: 0.16.8
         version: 0.16.8
+      '@types/node':
+        specifier: 25.6.0
+        version: 25.6.0
       '@vitest/browser-playwright':
         specifier: 4.1.10
         version: 4.1.10(playwright@1.62.1)(vite@8.2.0(@types/node@25.6.0)(jiti@2.7.0))(vitest@4.1.10)
@@ -106,7 +107,7 @@ importers:
         version: 1.62.1
       svelte-check:
         specifier: 4.7.4
-        version: 4.7.4(picomatch@4.0.5)(svelte@5.56.8(patch_hash=f76f57848914d0562bb4d2c29b1afb2f4cdbddc93bc311e46fb1f0cccacf78e5))(typescript@6.0.2)
+        version: 4.7.4(picomatch@4.0.5)(svelte@5.56.8(patch_hash=1315b80c8cc0e9fb10b7a7798ec174a4f61ca695857b4a367688144f43a299b7))(typescript@6.0.2)
       tailwindcss:
         specifier: 4.3.3
         version: 4.3.3
@@ -119,6 +120,39 @@ importers:
       vitest:
         specifier: 4.1.10
         version: 4.1.10(@types/node@25.6.0)(@vitest/browser-playwright@4.1.10)(@vitest/ui@4.1.10)(happy-dom@20.11.1)(vite@8.2.0(@types/node@25.6.0)(jiti@2.7.0))
+
+  vendor/svelte-streamdown:
+    dependencies:
+      '@floating-ui/dom':
+        specifier: ^1.7.4
+        version: 1.7.6
+      '@shikijs/langs':
+        specifier: ^3.17.1
+        version: 3.23.0
+      '@shikijs/themes':
+        specifier: ^3.17.1
+        version: 3.23.0
+      clsx:
+        specifier: ^2.1.1
+        version: 2.1.1
+      katex:
+        specifier: ^0.16.22
+        version: 0.16.45
+      marked:
+        specifier: ^16.2.1
+        version: 16.4.2
+      mermaid:
+        specifier: ^11.15.0
+        version: 11.16.1
+      shiki:
+        specifier: ^3.13.0
+        version: 3.23.0
+      svelte:
+        specifier: ^5.0.0
+        version: 5.56.8(patch_hash=1315b80c8cc0e9fb10b7a7798ec174a4f61ca695857b4a367688144f43a299b7)
+      tailwind-merge:
+        specifier: ^3.3.1
+        version: 3.5.0
 
 packages:
 
@@ -594,8 +628,8 @@ packages:
   '@types/ws@8.18.1':
     resolution: {integrity: sha512-ThVF6DCVhA8kUGy+aazFQ4kXQ7E1Ty7A3ypFOe0IcJV8O/M511G99AW24irKrW56Wt44yG9+ij8FaqoBGkuBXg==}
 
-  '@ungap/structured-clone@1.3.0':
-    resolution: {integrity: sha512-WmoN8qaIAo7WTYWbAZuG8PYEhn5fkz7dZrqTBZ7dtt//lL2Gwms1IcnQ5yHqjDfX8Ft5j4YzDM23f87zBfDe9g==}
+  '@ungap/structured-clone@1.3.3':
+    resolution: {integrity: sha512-60YRaenCQcVjYEKOcG824+DRGGIQ3VKErcBoAEDJZz5bKIs2ZG+X/H9Nk+Q6EVkwJk5QNApxbrc5QtBSwtrXAg==}
 
   '@upsetjs/venn.js@2.0.0':
     resolution: {integrity: sha512-WbBhLrooyePuQ1VZxrJjtLvTc4NVfpOyKx0sKqioq9bX1C1m7Jgykkn8gLrtwumBioXIqam8DLxp88Adbue6Hw==}
@@ -1404,11 +1438,6 @@ packages:
       svelte: ^4.0.0 || ^5.0.0-next.0
       typescript: ^5.0.0 || ^6.0.0
 
-  svelte-streamdown@3.1.2:
-    resolution: {integrity: sha512-yGbe24Bodv/xiPc36+YRAmhb/js+aIPpNud4GMb4qT93yviln40/qMWBw8VfaHOmQ/oQtuTtpr+pyqzEzQa2Zg==}
-    peerDependencies:
-      svelte: ^5.0.0
-
   svelte@5.56.8:
     resolution: {integrity: sha512-PY8LOw7xP6c8IOiVqdo0sbbZVYhXRSfklOQLAUyGBKqjTX0wx/z4l/9J+PmBpmlLnxzEb1NqltxQ5/wZme/Cmg==}
     engines: {node: '>=18'}
@@ -1677,9 +1706,9 @@ snapshots:
       '@jridgewell/resolve-uri': 3.1.2
       '@jridgewell/sourcemap-codec': 1.5.5
 
-  '@lucide/svelte@1.28.0(svelte@5.56.8(patch_hash=f76f57848914d0562bb4d2c29b1afb2f4cdbddc93bc311e46fb1f0cccacf78e5))':
+  '@lucide/svelte@1.28.0(svelte@5.56.8(patch_hash=1315b80c8cc0e9fb10b7a7798ec174a4f61ca695857b4a367688144f43a299b7))':
     dependencies:
-      svelte: 5.56.8(patch_hash=f76f57848914d0562bb4d2c29b1afb2f4cdbddc93bc311e46fb1f0cccacf78e5)
+      svelte: 5.56.8(patch_hash=1315b80c8cc0e9fb10b7a7798ec174a4f61ca695857b4a367688144f43a299b7)
 
   '@mermaid-js/parser@1.2.0':
     dependencies:
@@ -1774,12 +1803,12 @@ snapshots:
 
   '@sveltejs/load-config@0.2.1': {}
 
-  '@sveltejs/vite-plugin-svelte@7.2.0(svelte@5.56.8(patch_hash=f76f57848914d0562bb4d2c29b1afb2f4cdbddc93bc311e46fb1f0cccacf78e5))(vite@8.2.0(@types/node@25.6.0)(jiti@2.7.0))':
+  '@sveltejs/vite-plugin-svelte@7.2.0(svelte@5.56.8(patch_hash=1315b80c8cc0e9fb10b7a7798ec174a4f61ca695857b4a367688144f43a299b7))(vite@8.2.0(@types/node@25.6.0)(jiti@2.7.0))':
     dependencies:
       deepmerge: 4.3.1
       magic-string: 0.30.21
       obug: 2.1.1
-      svelte: 5.56.8(patch_hash=f76f57848914d0562bb4d2c29b1afb2f4cdbddc93bc311e46fb1f0cccacf78e5)
+      svelte: 5.56.8(patch_hash=1315b80c8cc0e9fb10b7a7798ec174a4f61ca695857b4a367688144f43a299b7)
       vite: 8.2.0(@types/node@25.6.0)(jiti@2.7.0)
       vitefu: 1.1.3(vite@8.2.0(@types/node@25.6.0)(jiti@2.7.0))
 
@@ -1872,15 +1901,15 @@ snapshots:
       picocolors: 1.1.1
       redent: 3.0.0
 
-  '@testing-library/svelte-core@1.1.3(svelte@5.56.8(patch_hash=f76f57848914d0562bb4d2c29b1afb2f4cdbddc93bc311e46fb1f0cccacf78e5))':
+  '@testing-library/svelte-core@1.1.3(svelte@5.56.8(patch_hash=1315b80c8cc0e9fb10b7a7798ec174a4f61ca695857b4a367688144f43a299b7))':
     dependencies:
-      svelte: 5.56.8(patch_hash=f76f57848914d0562bb4d2c29b1afb2f4cdbddc93bc311e46fb1f0cccacf78e5)
+      svelte: 5.56.8(patch_hash=1315b80c8cc0e9fb10b7a7798ec174a4f61ca695857b4a367688144f43a299b7)
 
-  '@testing-library/svelte@5.4.2(svelte@5.56.8(patch_hash=f76f57848914d0562bb4d2c29b1afb2f4cdbddc93bc311e46fb1f0cccacf78e5))(vite@8.2.0(@types/node@25.6.0)(jiti@2.7.0))(vitest@4.1.10)':
+  '@testing-library/svelte@5.4.2(svelte@5.56.8(patch_hash=1315b80c8cc0e9fb10b7a7798ec174a4f61ca695857b4a367688144f43a299b7))(vite@8.2.0(@types/node@25.6.0)(jiti@2.7.0))(vitest@4.1.10)':
     dependencies:
       '@testing-library/dom': 10.4.1
-      '@testing-library/svelte-core': 1.1.3(svelte@5.56.8(patch_hash=f76f57848914d0562bb4d2c29b1afb2f4cdbddc93bc311e46fb1f0cccacf78e5))
-      svelte: 5.56.8(patch_hash=f76f57848914d0562bb4d2c29b1afb2f4cdbddc93bc311e46fb1f0cccacf78e5)
+      '@testing-library/svelte-core': 1.1.3(svelte@5.56.8(patch_hash=1315b80c8cc0e9fb10b7a7798ec174a4f61ca695857b4a367688144f43a299b7))
+      svelte: 5.56.8(patch_hash=1315b80c8cc0e9fb10b7a7798ec174a4f61ca695857b4a367688144f43a299b7)
     optionalDependencies:
       vite: 8.2.0(@types/node@25.6.0)(jiti@2.7.0)
       vitest: 4.1.10(@types/node@25.6.0)(@vitest/browser-playwright@4.1.10)(@vitest/ui@4.1.10)(happy-dom@20.11.1)(vite@8.2.0(@types/node@25.6.0)(jiti@2.7.0))
@@ -2041,7 +2070,7 @@ snapshots:
     dependencies:
       '@types/node': 25.6.0
 
-  '@ungap/structured-clone@1.3.0': {}
+  '@ungap/structured-clone@1.3.3': {}
 
   '@upsetjs/venn.js@2.0.0':
     optionalDependencies:
@@ -2628,7 +2657,7 @@ snapshots:
     dependencies:
       '@types/hast': 3.0.4
       '@types/mdast': 4.0.4
-      '@ungap/structured-clone': 1.3.0
+      '@ungap/structured-clone': 1.3.3
       devlop: 1.1.0
       micromark-util-sanitize-uri: 2.0.1
       trim-lines: 3.0.1
@@ -2847,7 +2876,7 @@ snapshots:
 
   stylis@4.4.0: {}
 
-  svelte-check@4.7.4(picomatch@4.0.5)(svelte@5.56.8(patch_hash=f76f57848914d0562bb4d2c29b1afb2f4cdbddc93bc311e46fb1f0cccacf78e5))(typescript@6.0.2):
+  svelte-check@4.7.4(picomatch@4.0.5)(svelte@5.56.8(patch_hash=1315b80c8cc0e9fb10b7a7798ec174a4f61ca695857b4a367688144f43a299b7))(typescript@6.0.2):
     dependencies:
       '@jridgewell/trace-mapping': 0.3.31
       '@sveltejs/load-config': 0.2.1
@@ -2855,25 +2884,12 @@ snapshots:
       fdir: 6.5.0(picomatch@4.0.5)
       picocolors: 1.1.1
       sade: 1.8.1
-      svelte: 5.56.8(patch_hash=f76f57848914d0562bb4d2c29b1afb2f4cdbddc93bc311e46fb1f0cccacf78e5)
+      svelte: 5.56.8(patch_hash=1315b80c8cc0e9fb10b7a7798ec174a4f61ca695857b4a367688144f43a299b7)
       typescript: 6.0.2
     transitivePeerDependencies:
       - picomatch
 
-  svelte-streamdown@3.1.2(patch_hash=875266c4328bf185b50476a4ecdc62c57c60d0f5a440d6b876bebaa4c1357db5)(svelte@5.56.8(patch_hash=f76f57848914d0562bb4d2c29b1afb2f4cdbddc93bc311e46fb1f0cccacf78e5)):
-    dependencies:
-      '@floating-ui/dom': 1.7.6
-      '@shikijs/langs': 3.23.0
-      '@shikijs/themes': 3.23.0
-      clsx: 2.1.1
-      katex: 0.16.45
-      marked: 16.4.2
-      mermaid: 11.16.1
-      shiki: 3.23.0
-      svelte: 5.56.8(patch_hash=f76f57848914d0562bb4d2c29b1afb2f4cdbddc93bc311e46fb1f0cccacf78e5)
-      tailwind-merge: 3.5.0
-
-  svelte@5.56.8(patch_hash=f76f57848914d0562bb4d2c29b1afb2f4cdbddc93bc311e46fb1f0cccacf78e5):
+  svelte@5.56.8(patch_hash=1315b80c8cc0e9fb10b7a7798ec174a4f61ca695857b4a367688144f43a299b7):
     dependencies:
       '@jridgewell/remapping': 2.3.5
       '@jridgewell/sourcemap-codec': 1.5.5

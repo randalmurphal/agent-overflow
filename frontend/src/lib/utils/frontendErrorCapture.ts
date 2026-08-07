@@ -127,16 +127,35 @@ export function installFrontendErrorCapture(): void {
 
 /**
  * Record an app-internal diagnostic through the same dedupe/cap/batch
- * pipeline as runtime errors. Used by instrumentation probes (e.g. the
- * Svelte zombie-mint probe) so their findings land in the always-on
- * error log instead of a devtools console nobody is watching.
+ * pipeline as runtime errors, so a finding lands in the always-on error log
+ * instead of a devtools console nobody is watching.
+ *
+ * `message` MUST be a constant and every variable — ids, counts, durations —
+ * belongs in `detail`. The dedupe signature is built from the message, so an
+ * interpolated id mints a fresh signature per occurrence: it walks straight
+ * past `MAX_PER_SIGNATURE`, and it grows `signatureCounts` until the
+ * distinct-signature overflow bucket catches it. Callers pair the report with
+ * a `console.warn` carrying the same detail, because a non-loopback session
+ * cannot persist at all (`ReportFrontendErrorBatch` is LocalOnly) and the
+ * console line is then the only surviving evidence.
+ *
+ * Current callers: the transport's outage/staleness summaries
+ * (`transport/wsClient.ts`, injected as its diagnostics sink) and the
+ * unbounded-loop guards — `utils/subagentGrouping.ts`,
+ * `utils/sidebarTree.ts`, `utils/reentrantTrampoline.ts`,
+ * `components/chat/timelineQuietWork.ts`, and
+ * `stores/threadActivityRuns.svelte.ts`.
  */
-export function reportFrontendDiagnostic(message: string, stack = ''): void {
+export function reportFrontendDiagnostic(message: string, detail = ''): void {
   try {
     capture({
       kind: 'diagnostic',
       message: redact(truncate(message, MAX_MESSAGE_CHARS)),
-      stack: redact(truncate(stack, MAX_STACK_CHARS)),
+      // Rides in the record's `stack` field: it is the record's free-form
+      // slot, and it is deliberately outside the dedupe signature (only the
+      // first `at …`/`…@…` frame of a real stack contributes), which is
+      // exactly the property the constant-message rule needs.
+      stack: redact(truncate(detail, MAX_STACK_CHARS)),
       source: '',
       line: 0,
       col: 0,

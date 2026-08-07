@@ -1,0 +1,47 @@
+{
+	"name": "svelte-streamdown",
+	"version": "3.1.2",
+	"license": "MIT",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/beynar/svelte-streamdown.git"
+	},
+	"type": "module",
+	"sideEffects": [
+		"**/*.css"
+	],
+	"svelte": "./dist/index.js",
+	"types": "./dist/index.d.ts",
+	"exports": {
+		".": {
+			"types": "./dist/index.d.ts",
+			"svelte": "./dist/index.js"
+		},
+		"./code": {
+			"types": "./dist/Elements/Code.svelte.d.ts",
+			"svelte": "./dist/Elements/Code.svelte"
+		},
+		"./mermaid": {
+			"types": "./dist/Elements/Mermaid.svelte.d.ts",
+			"svelte": "./dist/Elements/Mermaid.svelte"
+		},
+		"./math": {
+			"types": "./dist/Elements/Math.svelte.d.ts",
+			"svelte": "./dist/Elements/Math.svelte"
+		}
+	},
+	"peerDependencies": {
+		"svelte": "^5.0.0"
+	},
+	"dependencies": {
+		"@floating-ui/dom": "^1.7.4",
+		"@shikijs/langs": "^3.17.1",
+		"@shikijs/themes": "^3.17.1",
+		"clsx": "^2.1.1",
+		"katex": "^0.16.22",
+		"marked": "^16.2.1",
+		"mermaid": "^11.15.0",
+		"shiki": "^3.13.0",
+		"tailwind-merge": "^3.3.1"
+	}
+}

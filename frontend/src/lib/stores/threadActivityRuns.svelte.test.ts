@@ -1,6 +1,13 @@
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 import type { ActivityRunResolution } from '../utils/activityRunGrouping';
-import { createThreadActivityRuns } from './threadActivityRuns.svelte';
+import type { ActivityRunNode } from '../utils/subagentGrouping';
+import { revealActivityRunItem } from '../utils/activityRunWindow';
+import {
+  createThreadActivityRuns,
+  resetActivityRunAnchorReportsForTest,
+} from './threadActivityRuns.svelte';
+import { installDiagnosticsCapture } from '../../test/helpers/diagnostics';
+import { makeItem } from '../../test/helpers/chat';
 
 function registry(overrides: { defaultCollapsed?: boolean; windowRows?: number } = {}) {
   return createThreadActivityRuns({
@@ -859,5 +866,180 @@ describe('state across a sweep', () => {
     // run still going, so it wins.
     expect(pass(runs, [['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h']])[0].mountedRows)
       .toBe(7);
+  });
+});
+
+// ── Window-anchor contract guard ──────────────────────────────────────────
+//
+// Every anchor writer names `timelineNodeItemId(run.children[from])`, and that
+// id is only resolvable back to a row because `buildRun` yields it into
+// `rowMemberIds[from]`. That is a contract across two files and every
+// `TimelineNode` kind; the contract itself is pinned in
+// `utils/activityRunAnchorContract.test.ts`. What is pinned HERE is the
+// registry's structural defence when it breaks: an unresolvable anchor is
+// coerced to tail-follow at the write, so a second write of the same id
+// matches the stored `null` and does NOT bump `revision` — which is what stops
+// resolve()-nulls-it / effect-rewrites-it becoming an infinite rebuild.
+//
+// Asserted against the REAL capture pipeline rather than a spy: the claim is
+// that a broken invariant lands in `ui-trace/frontend-errors.jsonl`.
+
+/** A projected node for a run, as a jump site would be holding it. */
+function nodeFor(resolved: ActivityRunResolution, ids: readonly string[]): ActivityRunNode {
+  return {
+    kind: 'activity_run',
+    runId: resolved.runId,
+    threadId: 'thread-1',
+    children: ids.map((id) => ({ kind: 'leaf' as const, item: makeItem({ id }) })),
+    collapsed: false,
+    live: false,
+    mountedFrom: resolved.mountedFrom,
+    mountedRows: resolved.mountedRows,
+    memberItemIds: [...ids],
+  };
+}
+
+describe('window-anchor guard', () => {
+  const diagnostics = installDiagnosticsCapture();
+
+  beforeEach(() => {
+    // The once-per-run report ledger is module state.
+    resetActivityRunAnchorReportsForTest();
+  });
+
+  function fixture() {
+    const runs = registry({ windowRows: 2 });
+    const [run] = pass(runs, [['a', 'b', 'c']]);
+    return { runs, run };
+  }
+
+  it('reaches a fixpoint in two iterations for a contract-resolvable anchor', async () => {
+    const { runs, run } = fixture();
+
+    const before = runs.revision;
+    runs.setWindowAnchor(run.runId, 'a');
+    const afterFirst = runs.revision;
+    // Second write of the same anchor: the registry already holds it, so the
+    // projection is not invalidated again. That is the fixpoint — without it
+    // every ActivityRun effect pass would rebuild the run node.
+    runs.setWindowAnchor(run.runId, 'a');
+
+    expect(afterFirst).toBe(before + 1);
+    expect(runs.revision).toBe(afterFirst);
+    expect(runs.windowAnchor(run.runId)).toBe('a');
+    expect(await diagnostics.messages()).toEqual([]);
+  });
+
+  it('refuses an anchor the run does not contain, reports once, and does not spin', async () => {
+    // The shape a broken node kind produces: the writer names an id that is
+    // not in the run's membership. Accepting it would null on the next
+    // resolve(), the effect would rewrite it, and revision would bump every
+    // lap forever.
+    const { runs, run } = fixture();
+
+    const before = runs.revision;
+    runs.setWindowAnchor(run.runId, 'not-a-member');
+    runs.setWindowAnchor(run.runId, 'not-a-member');
+    runs.setWindowAnchor(run.runId, 'not-a-member');
+
+    // Coerced to tail-follow, which the entry already was — so no rebuild at
+    // all, however many times the effect re-asserts it.
+    expect(runs.revision).toBe(before);
+    expect(runs.windowAnchor(run.runId)).toBeNull();
+
+    // ONE report for three writes. The re-assertion is an `$effect` that runs
+    // per reveal tick, so reporting per write buries the finding under its own
+    // repetition and burns the ui-trace rotation budget.
+    const records = await diagnostics.all();
+    expect(records).toHaveLength(1);
+    expect(records[0].message).toContain('threadActivityRuns');
+    // Constant message, variables in the detail — an id in the message would
+    // mint a signature per run and walk past the per-signature cap.
+    expect(records[0].message).not.toContain('not-a-member');
+    expect(records[0].detail).toContain('not-a-member');
+    // Console fallback: a remote session cannot persist at all.
+    expect(diagnostics.warnings().join('\n')).toContain('not-a-member');
+  });
+
+  it('setMountWindow stores a resolvable anchor together with its row count', async () => {
+    const { runs, run } = fixture();
+
+    runs.setMountWindow(run.runId, { rows: 3, startItemId: 'a' });
+
+    expect(runs.windowAnchor(run.runId)).toBe('a');
+    expect(pass(runs, [['a', 'b', 'c']])[0]).toMatchObject({ mountedFrom: 0, mountedRows: 3 });
+    expect(await diagnostics.messages()).toEqual([]);
+  });
+
+  it('setMountWindow applies the same guard while still honouring the row count', async () => {
+    const { runs, run } = fixture();
+
+    runs.setMountWindow(run.runId, { rows: 3, startItemId: 'not-a-member' });
+
+    expect(runs.windowAnchor(run.runId)).toBeNull();
+    expect((await diagnostics.messages()).length).toBe(1);
+    // The size is a separate, valid instruction — dropping it would silently
+    // revert a chunk the reader explicitly paged in.
+    expect(pass(runs, [['a', 'b', 'c']])[0].mountedRows).toBe(3);
+  });
+
+  it('an invalid write after a valid one releases the pin rather than keeping it', async () => {
+    // Transition coverage: the guard is not only about the first write. A run
+    // that legitimately pinned a row and is then handed a broken id must end
+    // up following its tail — keeping the old pin would leave the reader
+    // parked while the effect kept trying to move them.
+    const { runs, run } = fixture();
+    runs.setWindowAnchor(run.runId, 'a');
+    const pinned = runs.revision;
+
+    runs.setWindowAnchor(run.runId, 'not-a-member');
+
+    expect(runs.windowAnchor(run.runId)).toBeNull();
+    expect(runs.revision).toBe(pinned + 1);
+    expect((await diagnostics.messages()).length).toBe(1);
+  });
+
+  it('releasing the anchor (null) is never reported', async () => {
+    const { runs, run } = fixture();
+    runs.setWindowAnchor(run.runId, 'a');
+    runs.setWindowAnchor(run.runId, null);
+
+    expect(runs.windowAnchor(run.runId)).toBeNull();
+    expect(await diagnostics.messages()).toEqual([]);
+  });
+
+  it('a jump from a stale run node degrades to tail-follow without reporting', async () => {
+    // `revealActivityRunItem` is the one anchor writer that can legitimately
+    // hold a node older than the registry: a jump is resolved when the reader
+    // clicks, and an older-side prune can have run since the node was built.
+    // Reporting that as a broken node kind would be a false positive on the
+    // only path that produces it — so the jump asks about membership first.
+    const runs = registry({ windowRows: 10 });
+    const ids = rows(100) as string[];
+    const [resolved] = pass(runs, [ids]);
+    const stale = nodeFor(resolved, ids);
+
+    // The older half is pruned; the node the jump site holds still names it.
+    pass(runs, [ids.slice(50)]);
+
+    // Target row 10 => anchor row 5 => 'i5', gone with the prune.
+    expect(revealActivityRunItem(runs, stale, 'i10')).toBe(true);
+    expect(runs.windowAnchor(resolved.runId)).toBeNull();
+    expect(await diagnostics.messages()).toEqual([]);
+  });
+
+  it('still reports a write of that same unresolvable anchor from anywhere else', async () => {
+    // The contrast that makes the previous case a narrowing rather than a
+    // hole: the id really is unresolvable, and a writer reading from a LIVE
+    // node naming it is a broken contract, not a stale node.
+    const runs = registry({ windowRows: 10 });
+    const ids = rows(100) as string[];
+    const [resolved] = pass(runs, [ids]);
+    pass(runs, [ids.slice(50)]);
+
+    runs.setWindowAnchor(resolved.runId, 'i5');
+
+    expect(runs.windowAnchor(resolved.runId)).toBeNull();
+    expect((await diagnostics.messages()).length).toBe(1);
   });
 });

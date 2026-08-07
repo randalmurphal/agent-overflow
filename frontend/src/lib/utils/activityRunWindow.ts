@@ -132,6 +132,8 @@ function clampWindowStart(run: ActivityRunNode, from: number, rows: number): num
 export interface ActivityRunReveal {
   setCollapsed(runId: string, collapsed: boolean): void;
   setWindowAnchor(runId: string, anchorItemId: string | null): void;
+  /** Whether the run holds the item now; see `ThreadActivityRuns`. */
+  containsMember(runId: string, itemId: string): boolean;
   /** False when the registry holds no such run; see `ThreadActivityRuns`. */
   requestFocus(runId: string, request: ActivityRunFocusRequest): boolean;
 }
@@ -163,7 +165,21 @@ export function revealActivityRunItem(
   // it, and asking for the size it already has would record that size as an
   // explicit override — pinning a short run at its current length so it stops
   // widening as it grows.
-  registry.setWindowAnchor(run.runId, window.startItemId);
+  //
+  // Resolved against CURRENT membership first. `run` is a projected node, and
+  // this is the one anchor writer that can legitimately hold one that predates
+  // a prune or a sweep — a jump is resolved when the reader clicks, not when
+  // the node was built. The registry coerces an unresolvable anchor to
+  // tail-follow AND reports it as a broken `TimelineNode` kind, which is right
+  // for every writer reading from a live node and a false positive here. Ask
+  // instead of writing-and-being-corrected: a stale anchor degrades to the
+  // same tail-follow, silently, which is also the correct window for a run
+  // whose head has moved past where the node said it was.
+  const anchor =
+    window.startItemId !== null && !registry.containsMember(run.runId, window.startItemId)
+      ? null
+      : window.startItemId;
+  registry.setWindowAnchor(run.runId, anchor);
   return registry.requestFocus(run.runId, {
     itemId,
     relocated: window.from !== run.mountedFrom,
