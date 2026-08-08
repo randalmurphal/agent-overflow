@@ -88,6 +88,14 @@ declares:
   **tool** (a profile-bound deterministic command — build, test, lint, merge,
   provision). Deterministic work is a first-class phase, not "an agent
   babysitting a script." **Both drivers are in scope; neither is optional.**
+- an optional **`effort:`** on an agent turn — the reasoning tier, from the
+  closed none/minimal/low/medium/high/xhigh/max/ultra set. Unset means the
+  model's catalog default. It is legal exactly where `provider:`/`model:` are
+  (an agent phase, an agent fan-out unit, an agent join) and a validation error
+  anywhere else. The *name* is validated statically; whether a **given model**
+  advertises that tier is not — the model catalog is provider-owned and partly
+  live — so an unsupported tier is coerced onto the model's own default when
+  the turn's thread is created.
 - **tools / MCP** available to it (optional, per phase),
 - a **prompt** assembled from a template with variables injected (agent
   driver), or a **command** resolved through the project profile (tool driver),
@@ -134,10 +142,10 @@ and that output also becomes the variables the next phase consumes.
   over them). A unit is bound to **exactly one** of three things — a `prompt:`
   (agent), a `command:` (tool), or a `call:` (another workflow, §3a) — and any
   other combination is a validation error. Each unit names its
-  **own driver/provider/model/access** (mixed
+  **own driver/provider/model/effort/access** (mixed
   Claude/Codex fan-outs are a feature, not an accident) — and only the units
   and the join do: **a fan-out phase runs no work of its own, so declaring a
-  driver, provider, model, prompt, command, or access on the phase is a
+  driver, provider, model, effort, prompt, command, or access on the phase is a
   validation error** naming the per-unit field instead. (A phase-level
   declaration that reached no unit would be an authoring trap: it reads like
   it governs them and it does not.) The phase still declares what belongs to
@@ -176,8 +184,8 @@ and that output also becomes the variables the next phase consumes.
     implement → review → fix loop on its own branch, then the join merges" —
     the unit is the isolation boundary and the child is the work. A call unit
     declares `call:`, `args:`, and optionally `max_depth:` and nothing else:
-    provider/model/prompt, command, access, and outputs are all the child
-    workflow's to declare. A **join may not be a call**: its envelope IS the
+    provider/model/effort/prompt, command, access, and outputs are all the
+    child workflow's to declare. A **join may not be a call**: its envelope IS the
     phase's, and every phase-level continuation (an answer, a takeover
     finalize, a resume in place) is a continuation of the join's own session;
     fan out to a call unit instead.

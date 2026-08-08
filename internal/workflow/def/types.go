@@ -50,12 +50,18 @@ type WorkflowOutput struct {
 
 // Phase is one graph node and its ordered exit routes.
 type Phase struct {
-	ID           string              `yaml:"id" json:"id"`
-	Name         string              `yaml:"name,omitempty" json:"name,omitempty"`
-	Driver       Driver              `yaml:"driver" json:"driver"`
-	Shape        Shape               `yaml:"shape,omitempty" json:"shape,omitempty"`
-	Provider     string              `yaml:"provider,omitempty" json:"provider,omitempty"`
-	Model        string              `yaml:"model,omitempty" json:"model,omitempty"`
+	ID       string `yaml:"id" json:"id"`
+	Name     string `yaml:"name,omitempty" json:"name,omitempty"`
+	Driver   Driver `yaml:"driver" json:"driver"`
+	Shape    Shape  `yaml:"shape,omitempty" json:"shape,omitempty"`
+	Provider string `yaml:"provider,omitempty" json:"provider,omitempty"`
+	Model    string `yaml:"model,omitempty" json:"model,omitempty"`
+	// Effort pins the reasoning tier of this phase's turn, from the closed
+	// EffortTier vocabulary. It is legal exactly where provider/model are — on a
+	// phase that runs its own agent turn — and empty means the model's catalog
+	// default. A tier the model does not advertise is coerced at thread creation
+	// rather than refused by validation; see effortTierFindings.
+	Effort       string              `yaml:"effort,omitempty" json:"effort,omitempty"`
 	Prompt       string              `yaml:"prompt,omitempty" json:"prompt,omitempty"`
 	Watchdog     string              `yaml:"watchdog,omitempty" json:"watchdog,omitempty"`
 	Inputs       map[string]Variable `yaml:"inputs,omitempty" json:"inputs,omitempty"`
@@ -145,9 +151,13 @@ const (
 // declares none either: its envelope is synthesized from the child workflow's
 // declared `outputs:`, exactly as a call phase's is (§3a).
 type Unit struct {
-	ID       string              `yaml:"id" json:"id"`
-	Provider string              `yaml:"provider,omitempty" json:"provider,omitempty"`
-	Model    string              `yaml:"model,omitempty" json:"model,omitempty"`
+	ID       string `yaml:"id" json:"id"`
+	Provider string `yaml:"provider,omitempty" json:"provider,omitempty"`
+	Model    string `yaml:"model,omitempty" json:"model,omitempty"`
+	// Effort pins the reasoning tier of this unit's turn. Like provider/model it
+	// is an agent-unit field: a command unit and a call unit run no turn of their
+	// own and refuse it.
+	Effort   string              `yaml:"effort,omitempty" json:"effort,omitempty"`
 	Prompt   string              `yaml:"prompt,omitempty" json:"prompt,omitempty"`
 	Command  string              `yaml:"command,omitempty" json:"command,omitempty"`
 	Call     string              `yaml:"call,omitempty" json:"call,omitempty"`

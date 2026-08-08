@@ -110,8 +110,9 @@ func fanOutPhaseFieldFindings(phase Phase, phaseElement string) []Finding {
 	}{
 		{[]string{"driver"}, phase.Driver != "",
 			"a fan-out phase runs no work of its own; each unit and the join declares its driver by the binding it carries — command: for a tool one, provider/model/prompt for an agent one"},
-		{[]string{"provider", "model", "prompt"}, phase.Provider != "" || phase.Model != "" || phase.Prompt != "",
-			"a fan-out phase runs no turn of its own; declare provider, model, and prompt on each fan_out unit (or on the unit: template) and on the join"},
+		{[]string{"provider", "model", "effort", "prompt"},
+			phase.Provider != "" || phase.Model != "" || phase.Effort != "" || phase.Prompt != "",
+			"a fan-out phase runs no turn of its own; declare provider, model, effort, and prompt on each fan_out unit (or on the unit: template) and on the join"},
 		{[]string{"check", "command", "commands"}, phase.Check != "" || phase.Command != "" || len(phase.Commands) > 0,
 			"a fan-out phase runs no command of its own; declare command: on the unit or the join that runs it"},
 		{[]string{"access"}, phase.Access != "",
@@ -160,7 +161,11 @@ func validateElementBinding(workflow Workflow, phase Phase, phaseElement string)
 func validateUnitDefinition(unit Unit, element, role string) []Finding {
 	var findings []Finding
 	command := strings.TrimSpace(unit.Command)
-	agentFields := strings.TrimSpace(unit.Provider) != "" || strings.TrimSpace(unit.Model) != "" || unit.Prompt != ""
+	// `effort:` counts as an agent field for exactly the reason provider/model do:
+	// it configures a model turn, so declaring it beside a command — or on a call
+	// unit, which runs no turn at all — is the same mistake.
+	agentFields := strings.TrimSpace(unit.Provider) != "" || strings.TrimSpace(unit.Model) != "" ||
+		strings.TrimSpace(unit.Effort) != "" || unit.Prompt != ""
 	if unit.IsCall() {
 		return append(findings, validateUnitCallShape(unit, element, role, command, agentFields)...)
 	}
@@ -173,9 +178,12 @@ func validateUnitDefinition(unit Unit, element, role string) []Finding {
 	}
 	switch {
 	case command != "" && agentFields:
-		findings = append(findings, finding("phase.fan-out-unit", element, "a unit declares a command, provider/model/prompt, or call, not more than one"))
+		findings = append(findings, finding("phase.fan-out-unit", element, "a unit declares a command, provider/model/effort/prompt, or call, not more than one"))
 	case command == "" && (strings.TrimSpace(unit.Provider) == "" || strings.TrimSpace(unit.Model) == "" || unit.Prompt == ""):
 		findings = append(findings, finding("phase.fan-out-unit", element, "an agent unit requires provider, model, and prompt; a tool unit requires a command; a call unit requires call"))
+	}
+	if command == "" {
+		findings = append(findings, effortTierFindings(unit.Effort, element)...)
 	}
 	return append(findings, validateUnitOutputs(unit, element, role)...)
 }
@@ -214,8 +222,8 @@ func validateUnitCallShape(unit Unit, element, role, command string, agentFields
 		present bool
 		message string
 	}{
-		{[]string{"provider", "model", "prompt"}, agentFields,
-			"a call unit runs no turn of its own; the child workflow's phases declare their own provider, model, and prompt"},
+		{[]string{"provider", "model", "effort", "prompt"}, agentFields,
+			"a call unit runs no turn of its own; the child workflow's phases declare their own provider, model, effort, and prompt"},
 		{[]string{"command"}, command != "",
 			"a call unit runs no command of its own; bind commands in the child workflow's phases"},
 		{[]string{"access"}, unit.Access != "",

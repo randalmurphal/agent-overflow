@@ -172,6 +172,7 @@ func (r *workflowAppRunner) Start(ctx context.Context, request engine.RunRequest
 		itemID: request.Key.ItemID, label: fmt.Sprintf("phase %q", request.Phase.ID),
 		title:        workflowThreadTitle(request.Phase.Name, request.Phase.ID),
 		providerName: request.Phase.Provider, model: request.Phase.Model,
+		effort: request.Phase.Effort,
 		access: request.Phase.EffectiveAccess(), workspace: preparedWorkspace,
 	}
 	threadID := request.PriorThreadID

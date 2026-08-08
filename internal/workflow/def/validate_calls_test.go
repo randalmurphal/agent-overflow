@@ -138,7 +138,8 @@ func TestCallPhaseRefusesFieldsThatConfigureWork(t *testing.T) {
 		message string
 	}{
 		{"driver", func(p *Phase) { p.Driver = DriverAgent }, "driver is not valid on a call phase"},
-		{"turn", func(p *Phase) { p.Provider = "codex"; p.Model = "m"; p.Prompt = "p.md" }, "provider/model/prompt is not valid on a call phase"},
+		{"turn", func(p *Phase) { p.Provider = "codex"; p.Model = "m"; p.Prompt = "p.md" }, "provider/model/effort/prompt is not valid on a call phase"},
+		{"effort", func(p *Phase) { p.Effort = string(EffortHigh) }, "provider/model/effort/prompt is not valid on a call phase"},
 		{"command", func(p *Phase) { p.Command = "report" }, "check/command/commands is not valid on a call phase"},
 		{"check", func(p *Phase) { p.Check = "test" }, "check/command/commands is not valid on a call phase"},
 		{"resources", func(p *Phase) { p.Resources = []string{"builder"} }, "resources is not valid on a call phase"},

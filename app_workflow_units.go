@@ -127,6 +127,12 @@ func (r *workflowAppRunner) planUnit(ctx context.Context, request engine.RunRequ
 		}
 		plan.workspace = sub
 	}
+	if plan.kind == engine.UnitJoin {
+		// Before anything interpolates `units` into the join's prompt or argv:
+		// both shapes read the same map, so enriching it once here is what makes
+		// the agent join and the tool join see the same facts.
+		r.enrichJoinUnits(request, primary)
+	}
 	plan.narrativePath, err = workflowrunner.UnitNarrativePath(
 		r.dataRoot, request.Key.ItemID, request.Key.PhaseID, request.Key.Attempt,
 		request.Key.UnitID, plan.unitAttempt,
@@ -142,6 +148,76 @@ func (r *workflowAppRunner) planUnit(ctx context.Context, request engine.RunRequ
 		return workflowUnitPlan{}, err
 	}
 	return plan, nil
+}
+
+// enrichJoinUnits adds the per-unit git state to the reserved `units` results
+// the join consolidates from. The engine builds those results from store rows
+// and is git-free by boundary, so the two fields that require asking git are
+// added here, in the app runner, on the one seam both join shapes pass through.
+//
+// `commitsAhead` is what the unit's branch carries that the item's branch does
+// not — the only durable measure of what a lane produced, since the join merges
+// branches and a done join then retires the checkouts. `dirty` is what that
+// branch does NOT carry: work still sitting in the unit's worktree, which the
+// merge cannot see. Together they let a merge command refuse a lane, commit it,
+// or report it, instead of silently merging nothing.
+//
+// It is informational, so it never fails a join. A read fails, the field is
+// absent for that entry, and the failure is reported once on the error channel
+// rather than swallowed — a join that cannot start because a git count failed
+// would be strictly worse than a join that runs without the count.
+func (r *workflowAppRunner) enrichJoinUnits(request engine.RunRequest, primary preparedWorkflowWorkspace) {
+	entries, ok := request.Vars[def.UnitsVariable].([]any)
+	if !ok || len(entries) == 0 {
+		return
+	}
+	// The project root, not a worktree: a unit's checkout may already be gone
+	// (a re-run join after retirement), and refs are repository-wide anyway.
+	projectPath := primary.project.Path
+	base := strings.TrimSpace(primary.branch)
+	var errs []error
+	for _, entry := range entries {
+		result, ok := entry.(map[string]any)
+		if !ok {
+			continue
+		}
+		branch, _ := result["branch"].(string)
+		if strings.TrimSpace(branch) == "" {
+			// A unit that never started, or was dropped before it cut anything,
+			// has no branch and no checkout: there is nothing to ask git about.
+			continue
+		}
+		unitID, _ := result["id"].(string)
+		if base == "" {
+			// A unit branch exists but the item records none to count it against.
+			// Unit branches are cut FROM the item's, so this cannot happen without
+			// something else being wrong — it is reported rather than skipped.
+			errs = append(errs, fmt.Errorf(
+				"unit %q is on branch %q but the item workspace records no branch to count against",
+				unitID, branch,
+			))
+		} else if ahead, err := r.app.gitCore().CountCommitsAhead(projectPath, branch, base); err != nil {
+			errs = append(errs, fmt.Errorf("count commits on unit %q branch %q: %w", unitID, branch, err))
+		} else {
+			result["commitsAhead"] = ahead
+		}
+		worktree, _ := result["worktree"].(string)
+		if strings.TrimSpace(worktree) == "" {
+			// The checkout is already retired, so there is no working tree to
+			// have anything in. The key is omitted rather than reported false:
+			// "no answer" and "clean" are different facts to a merge script.
+			continue
+		}
+		changes, err := r.app.gitCore().CountWorkingTreeChanges(worktree)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("read unit %q worktree %q state: %w", unitID, worktree, err))
+			continue
+		}
+		result["dirty"] = changes > 0
+	}
+	if len(errs) > 0 {
+		r.reportUnitGitStateFailure(request.Key.ItemID, errors.Join(errs...))
+	}
 }
 
 // startAgentUnit runs one unit as a provider turn on its own AO thread.
@@ -173,6 +249,7 @@ func (r *workflowAppRunner) startAgentUnit(
 		itemID: request.Key.ItemID, label: plan.label,
 		title:        workflowUnitThreadTitle(request.Phase, request.Key.UnitID),
 		providerName: unit.Provider, model: unit.Model,
+		effort: unit.Effort,
 		access: unit.EffectiveAccess(), workspace: plan.workspace,
 	}
 	threadID := request.PriorThreadID
@@ -313,6 +390,15 @@ func (r *workflowAppRunner) attachUnitRun(key engine.RunKey, plan workflowUnitPl
 // no checkout is still being worked in, and the drop decision is already
 // recorded — its branch keeps whatever it committed.
 //
+// Removal is deliberately NOT forced. `git worktree remove` refuses a checkout
+// carrying uncommitted or untracked work, and that refusal is the safety valve:
+// every writing element is told to leave its work committed on its branch (the
+// system prompt suffix states it), so a dirty unit checkout here means that
+// contract slipped — and forcing would destroy the only copy of work no branch
+// carries. Such a checkout is KEPT, path and all, and named loudly instead.
+// `removeWorkflowUnitWorktrees` stays forced, because a discard is the human
+// saying the work is not wanted.
+//
 // A removal failure is reported and never changes the phase's outcome: the join
 // is done, and an undeleted directory is not a reason to fail a run.
 func (r *workflowAppRunner) retireUnitWorktrees(done workflowCompletion) {
@@ -325,7 +411,16 @@ func (r *workflowAppRunner) retireUnitWorktrees(done workflowCompletion) {
 		if unit.Kind == store.WorkItemUnitKindJoin || strings.TrimSpace(unit.WorktreePath) == "" {
 			continue
 		}
-		if err := r.app.gitCore().RemoveWorktreeForce(done.projectPath, unit.WorktreePath, true); err != nil {
+		if err := r.app.gitCore().RemoveWorktree(done.projectPath, unit.WorktreePath); err != nil {
+			// Ask the checkout the same question `git worktree remove` decides
+			// on, rather than matching its refusal text: that sentence is
+			// localized and free to change between git versions.
+			if _, changes, stateErr := r.app.gitCore().WorkingTreeChanges(unit.WorktreePath, 0); stateErr == nil && changes > 0 {
+				r.reportUnitWorktreeRetained(done.key.ItemID, unit, changes)
+				continue
+			}
+			// Clean, or the question itself failed: git broke rather than
+			// refused, so its own words are what gets reported.
 			r.reportUnitCleanupFailure(done.key.ItemID, fmt.Errorf(
 				"remove unit %q worktree %q: %w", unit.UnitID, unit.WorktreePath, err,
 			))
@@ -393,5 +488,34 @@ func (r *workflowAppRunner) reportUnitCleanupFailure(itemID string, cause error)
 	r.app.emit("workflow:error", map[string]any{
 		"itemId": itemID,
 		"error":  "workflow fan-out unit worktrees could not be cleaned up; inspect local diagnostics",
+	})
+}
+
+// reportUnitWorktreeRetained names a unit checkout the retirement kept because
+// it still held uncommitted work. Unlike a cleanup failure this is not a broken
+// git operation, so the message is specific rather than a pointer at the logs:
+// the join consolidated branches, and whatever is in this directory reached no
+// branch — which is a slip of the commit contract every writing element is
+// given, and the only place a human can still recover it.
+func (r *workflowAppRunner) reportUnitWorktreeRetained(itemID string, unit store.WorkItemUnit, changes int) {
+	message := fmt.Sprintf(
+		"fan-out unit %q left %s in %s; the checkout was kept instead of removed, and none of that work is on branch %q",
+		unit.UnitID, retainedDirtyReason(changes), unit.WorktreePath, unit.Branch,
+	)
+	log.Printf("workflow unit worktree retained %s: %s", itemID, message)
+	r.app.emit("workflow:error", map[string]any{
+		"itemId": itemID,
+		"error":  message,
+	})
+}
+
+// reportUnitGitStateFailure reports informational git reads that failed while
+// enriching a join's unit results. The join still runs — the fields are simply
+// absent — so this exists to keep "the count is missing" from being silent.
+func (r *workflowAppRunner) reportUnitGitStateFailure(itemID string, cause error) {
+	log.Printf("workflow join unit git state %s: %v", itemID, cause)
+	r.app.emit("workflow:error", map[string]any{
+		"itemId": itemID,
+		"error":  "some fan-out unit branch or worktree state could not be read for the join; inspect local diagnostics",
 	})
 }

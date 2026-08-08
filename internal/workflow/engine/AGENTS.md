@@ -181,7 +181,12 @@ resource semaphores, and startup recovery.
   it. A profile that cannot be read parks `setup-failed` rather than expanding
   unbounded. `parkFanOutSetup` writes the cause into the attempt's envelope
   (`parkCauseEnvelope`), since no unit ran to author one and the resolved width
-  is stated nowhere else. `restoreFanOut` deliberately does **not** re-check:
+  is stated nowhere else. The same live-profile read also backs
+  `noteFanOutCapacity`, which logs (never emits) when a wave is wider than the
+  provider capacity its units will contend on — inside the ceiling but over
+  capacity is pacing, not a refusal, and a wave of eight against a bound of two
+  is otherwise indistinguishable from a slow provider. `restoreFanOut`
+  deliberately does **not** re-check:
   lowering a ceiling must not make an attempt whose rows already exist
   unrecoverable.
 - Whether an attempt may still launch is derived from its unit statuses
@@ -195,7 +200,13 @@ resource semaphores, and startup recovery.
   `dropped`, receives their persisted results (id, index, status, outputs,
   branch, worktree, thread) under the reserved `units` variable, and its
   envelope *is* the phase's envelope — so a join failure is an ordinary phase
-  failure (`agent-error`), not the unit-failure policy.
+  failure (`agent-error`), not the unit-failure policy. Those results are what
+  the STORE knows; the per-unit git state a merge join actually decides on
+  (`commitsAhead`, `dirty`) is added by the app runner on the way in
+  (`app_workflow_units.go` `enrichJoinUnits`), because this package is git-free
+  by boundary. `def` declares the whole shape, enriched fields included, so the
+  prompt validator and the runtime context cannot disagree about what
+  `{{units}}` renders.
 - **Reopening a unit goes through `reopenUnit`.** Bumping the try number,
   attaching the feedback, clearing the envelope, and persisting all of it via
   `store.RetryWorkItemUnit` is one helper shared by `RetryUnit`,

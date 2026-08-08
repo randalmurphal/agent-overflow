@@ -366,3 +366,41 @@ func TestResourceCapacityDefaultsOnlyForProviderNamespace(t *testing.T) {
 		}
 	}
 }
+
+// A wave inside the fan-out ceiling but over the capacity its units contend on
+// is legal and is pacing — nothing refuses it, and nothing else says it is
+// happening, which is why expansion states it once.
+func TestFanOutCapacityNotesReportOnlyWavesOverTheirBound(t *testing.T) {
+	agent := func(id, providerName string) def.ExpandedUnit {
+		return def.ExpandedUnit{ID: id, Unit: def.Unit{ID: id, Provider: providerName, Prompt: "work"}}
+	}
+	expanded := []def.ExpandedUnit{
+		agent("a", "codex"), agent("b", "codex"), agent("c", "codex"),
+		agent("d", "claude"),
+		// A tool unit and a call unit acquire nothing, so they contend with
+		// nobody and must not inflate any width.
+		{ID: "e", Unit: def.Unit{ID: "e", Command: "merge"}},
+		{ID: "f", Unit: def.Unit{ID: "f", Call: "lane"}},
+	}
+	capacities := map[string]int{ProviderResource("codex"): 2}
+
+	notes := fanOutCapacityNotes(expanded, capacities, "project")
+	want := []fanOutCapacityNote{{resource: ProviderResource("codex"), width: 3, capacity: 2}}
+	if !reflect.DeepEqual(notes, want) {
+		t.Fatalf("capacity notes = %+v, want %+v", notes, want)
+	}
+
+	// One claude unit is under the default bound, and raising codex's capacity
+	// past the wave leaves nothing to say at all.
+	capacities[ProviderResource("codex")] = 3
+	if notes := fanOutCapacityNotes(expanded, capacities, "project"); len(notes) != 0 {
+		t.Fatalf("a wave within every bound produced notes: %+v", notes)
+	}
+
+	// A capacity that cannot be resolved is left to the admission path, which
+	// parks the attempt with a typed reason moments later.
+	capacities[ProviderResource("codex")] = 0
+	if notes := fanOutCapacityNotes(expanded, capacities, "project"); len(notes) != 0 {
+		t.Fatalf("unresolvable capacity produced notes: %+v", notes)
+	}
+}

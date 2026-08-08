@@ -228,9 +228,10 @@ func TestFanOutRefusesPhaseLevelExecutionFields(t *testing.T) {
 	}{
 		{"driver", "driver", func(p *Phase) { p.Driver = DriverAgent }},
 		{"tool driver", "driver", func(p *Phase) { p.Driver = DriverTool }},
-		{"provider", "provider/model/prompt", func(p *Phase) { p.Provider = "claude" }},
-		{"model", "provider/model/prompt", func(p *Phase) { p.Model = "sonnet" }},
-		{"prompt", "provider/model/prompt", func(p *Phase) { p.Prompt = "unit.md" }},
+		{"provider", "provider/model/effort/prompt", func(p *Phase) { p.Provider = "claude" }},
+		{"model", "provider/model/effort/prompt", func(p *Phase) { p.Model = "sonnet" }},
+		{"effort", "provider/model/effort/prompt", func(p *Phase) { p.Effort = string(EffortHigh) }},
+		{"prompt", "provider/model/effort/prompt", func(p *Phase) { p.Prompt = "unit.md" }},
 		{"check", "check/command/commands", func(p *Phase) { p.Check = "build-and-test" }},
 		{"command", "check/command/commands", func(p *Phase) { p.Command = "merge-branches" }},
 		{"commands", "check/command/commands", func(p *Phase) { p.Commands = []string{"merge-branches"} }},

@@ -266,7 +266,10 @@ checkout, not forty.
 
 `max_fan_out_width` and the capacity bound are different statements and
 both stand: inside the ceiling but over capacity is pacing, over the
-ceiling is a refusal to start.
+ceiling is a refusal to start. An expansion wider than the capacity its
+units will contend on says so in the app log at expansion time — a wave
+of eight against a provider bound of two runs two at a time, which from
+the outside looks like nothing more than a slow provider.
 
 **Depth.** The spine declares `max_depth: 200` on its self-call — the
 campaign's wave ceiling — under the engine's absolute `MaxCallDepth` of
@@ -281,7 +284,26 @@ wants a new root anyway.
 | Name | Kind | Contract |
 |---|---|---|
 | `build-and-test` | check | The integration gate on the merged campaign branch. Exit status is the whole answer. |
-| `merge-unit-branches` | command | Merges the fan-out's unit branches into the item branch. Must write `outputs.conflicts[]` (workspace-relative paths, empty when clean) to `$AO_ENVELOPE`. Non-zero exit on conflict. Bind `"{{units}}"` as an argv element to receive the units as JSON — `id`, `status`, `branch`, `worktree` per entry. |
+| `merge-unit-branches` | command | Merges the fan-out's unit **branches** into the item branch — a lane's work has to be COMMITTED on its branch by join time or the merge consumes nothing. Must write `outputs.conflicts[]` (workspace-relative paths, empty when clean) to `$AO_ENVELOPE`. Non-zero exit on conflict. Bind `"{{units}}"` as an argv element to receive the units as JSON — `id`, `status`, `branch`, `worktree`, `commitsAhead`, `dirty` per entry. |
+
+**The commit contract, and how a merge script checks it.** Every writing
+element — phase, work unit, and join alike — is told by the system prompt
+suffix to leave its work committed on its branch before it finishes, because
+nothing in the engine ever commits and everything downstream reads the branch:
+later phases resume on it, unit worktrees are cut from it, this join merges it,
+and a done join then retires the unit checkouts. The `units` JSON carries the
+two facts that say whether a lane honored it:
+
+| Field | Meaning |
+|---|---|
+| `commitsAhead` | Commits on the unit's branch that the item branch does not have. `0` means the lane produced nothing to merge. Absent for a unit that never got a branch (never started, dropped early). |
+| `dirty` | Whether the unit's worktree still holds uncommitted or untracked files. Absent once the checkout has been retired — absent is "no answer", not "clean". |
+
+A merge script decides what to do with them: refuse the wave, skip an empty
+lane, auto-commit a dirty one on its branch before merging, or report it into
+`conflicts[]`. Doing nothing is also a choice — worktree retirement after a done
+join is non-force, so a lane that left work uncommitted keeps its checkout and
+is named on the `workflow:error` channel instead of having it deleted.
 
 Capacity: `validation-slot`, held by `verify`.
 

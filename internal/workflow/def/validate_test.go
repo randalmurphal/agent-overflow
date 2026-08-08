@@ -166,6 +166,10 @@ func TestValidateStructuralGoldenErrors(t *testing.T) {
 		{"access", "phase.access", "phase \"plan\"", func(r *ResolvedWorkflow) { r.Workflow.Phases[0].Access = "root" }},
 		{"driver", "phase.driver", "phase \"plan\"", func(r *ResolvedWorkflow) { r.Workflow.Phases[0].Driver = "script" }},
 		{"agent model", "phase.model", "phase \"plan\"", func(r *ResolvedWorkflow) { r.Workflow.Phases[0].Model = "" }},
+		{"tool phase model turn fields", "phase.tool", "phase \"review\"", func(r *ResolvedWorkflow) {
+			r.Workflow.Phases[2].Provider = "codex"
+			r.Workflow.Phases[2].Model = "gpt-5.6-sol"
+		}},
 		{"shape", "phase.shape", "phase \"plan\"", func(r *ResolvedWorkflow) { r.Workflow.Phases[0].Shape = "nested" }},
 		{"watchdog syntax", "phase.watchdog", "phase \"plan\"", func(r *ResolvedWorkflow) { r.Workflow.Phases[0].Watchdog = "eventually" }},
 		{"watchdog positive", "phase.watchdog", "phase \"plan\"", func(r *ResolvedWorkflow) { r.Workflow.Phases[0].Watchdog = "0s" }},

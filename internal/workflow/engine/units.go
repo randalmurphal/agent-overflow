@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
+	"sort"
 
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/workflow/def"
@@ -168,11 +170,16 @@ func (e *Engine) expandFanOut(item *runtimeItem, phase def.Phase, vars map[strin
 		return e.parkFanOutSetup(item, ReasonWiringError,
 			fmt.Errorf("expand fan-out %s/%s/%d: %w", item.item.ID, phase.ID, item.attempt, err))
 	}
-	maxWidth, err := e.maxFanOutWidth(item.item.ProjectID)
+	// The live profile, read here rather than frozen into the run snapshot (§6):
+	// both bounds this expansion answers to — the ceiling and the capacities its
+	// units will contend on — have to reflect an edit made since the run
+	// started, including on the next attempt of a run already going.
+	projectProfile, err := e.liveProfile(item.item.ProjectID)
 	if err != nil {
 		return e.parkFanOutSetup(item, ReasonSetupFailed,
 			fmt.Errorf("expand fan-out %s/%s/%d: %w", item.item.ID, phase.ID, item.attempt, err))
 	}
+	maxWidth := def.EffectiveMaxFanOutWidth(projectProfile)
 	if len(expanded) > maxWidth {
 		// A wiring error, for the same reason the non-array `over` above is one:
 		// the frozen definition and the live project together could not produce
@@ -183,6 +190,7 @@ func (e *Engine) expandFanOut(item *runtimeItem, phase def.Phase, vars map[strin
 			phase.ID, item.item.ID, len(expanded), maxWidth,
 		))
 	}
+	e.noteFanOutCapacity(item, phase, expanded, projectProfile.Capacities)
 	fan := &fanOutRun{vars: vars, units: make([]*unitRun, 0, len(expanded))}
 	for _, unit := range expanded {
 		fan.units = append(fan.units, unitRunFrom(unit, UnitWork))
@@ -211,16 +219,70 @@ func (e *Engine) expandFanOut(item *runtimeItem, phase def.Phase, vars map[strin
 	return nil
 }
 
-// maxFanOutWidth is the ceiling this project's next expansion gets, read from
-// the live profile like every other bound (§6). It is deliberately not frozen
-// into the run snapshot: lowering the ceiling has to take effect on the next
-// expansion, including the next attempt of a run that is already going.
-func (e *Engine) maxFanOutWidth(projectID string) (int, error) {
-	projectProfile, err := e.liveProfile(projectID)
-	if err != nil {
-		return 0, err
+// noteFanOutCapacity records, once per expansion, that a wave is wider than the
+// provider capacity its units will contend on. Width inside the ceiling but over
+// capacity is legal and is pacing, not a refusal (D29 refuses only the ceiling),
+// but nothing else says it: eight units against the default capacity of two run
+// two at a time, and from the outside that is indistinguishable from a slow
+// provider. This is a log line rather than an event because it is an
+// observation, not a state a run can be in — `workflow:error` would tell a human
+// something failed when nothing did.
+//
+// A capacity that cannot be resolved is skipped rather than reported here: the
+// admission path resolves the same value moments later and parks the attempt
+// with a typed reason, which is the loud, actionable version of the same fact.
+func (e *Engine) noteFanOutCapacity(
+	item *runtimeItem, phase def.Phase, expanded []def.ExpandedUnit, capacities map[string]int,
+) {
+	for _, note := range fanOutCapacityNotes(expanded, capacities, item.item.ProjectID) {
+		log.Printf(
+			"workflow fan-out %s/%s/%d expands %d units onto %s at capacity %d; they run %d at a time",
+			item.item.ID, phase.ID, item.attempt, note.width, note.resource, note.capacity, note.capacity,
+		)
 	}
-	return def.EffectiveMaxFanOutWidth(projectProfile), nil
+}
+
+// fanOutCapacityNote is one bound this wave is wider than.
+type fanOutCapacityNote struct {
+	resource string
+	width    int
+	capacity int
+}
+
+// fanOutCapacityNotes counts the wave per resource its units will contend on
+// and reports every resource the count exceeds, in canonical order. Units that
+// acquire nothing — tool units, call units — contend on nothing and count
+// toward nothing, which is what makes this the same arithmetic admission does
+// rather than a second opinion about it.
+func fanOutCapacityNotes(
+	expanded []def.ExpandedUnit, capacities map[string]int, projectID string,
+) []fanOutCapacityNote {
+	widths := make(map[string]int, 2)
+	for _, unit := range expanded {
+		names, err := unitResources(unit.Unit)
+		if err != nil {
+			// A unit that declares no provider is a wiring failure the start path
+			// reports; it acquires nothing, so it counts toward nothing.
+			continue
+		}
+		for _, name := range names {
+			widths[name]++
+		}
+	}
+	names := make([]string, 0, len(widths))
+	for name := range widths {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	notes := make([]fanOutCapacityNote, 0, len(names))
+	for _, name := range names {
+		capacity, err := resourceCapacity(capacities, projectID, name)
+		if err != nil || widths[name] <= capacity {
+			continue
+		}
+		notes = append(notes, fanOutCapacityNote{resource: name, width: widths[name], capacity: capacity})
+	}
+	return notes
 }
 
 // parkFanOutSetup parks an attempt that could not be expanded at all. Nothing

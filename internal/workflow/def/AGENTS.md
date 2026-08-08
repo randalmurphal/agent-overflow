@@ -167,6 +167,35 @@ resolution fails) pay one extra directory listing only when a human is asking.
 It stays pure — no stderr, no log — so the caller decides how loud a skipped
 directory is.
 
+## Reasoning effort
+
+- `effort:` pins the reasoning tier of one model turn. It is legal **exactly
+  where `provider:`/`model:` are** — an agent-driver phase running its own turn,
+  and a prompt-bound fan-out unit or join. On a tool phase it is
+  `phase.effort`, and a stray `provider:`/`model:`/`prompt:` on a tool phase is
+  refused the same way (`phase.tool`) — a tool phase runs a command, not a model
+  turn, so any of the four would be a dead line the author never learns was
+  ignored. On a call phase, a fan-out phase, and a call unit `effort:` joins the
+  existing `provider/model/effort/prompt` refusal group, because those elements
+  run no turn of their own. A command unit gets the same "a unit declares a
+  command, provider/model/effort/prompt, or call, not more than one" finding a
+  stray `provider:` gets: it is one rule, not a parallel one.
+- **Validation checks the tier NAME; the app checks the tier against the
+  model.** `effort.go` owns the closed vocabulary (`none`, `minimal`, `low`,
+  `medium`, `high`, `xhigh`, `max`, `ultra`) and an unknown name is a finding —
+  a typo must not read as "run at the model's default". Which of those tiers a
+  *given* model advertises is deliberately NOT validated: the catalog is
+  provider-owned and partly live (Codex's comes off the app-server, Claude's is
+  probe-enriched), so a static rule would make a definition's validity depend on
+  data the author cannot see in the YAML and cannot pin. An authored tier the
+  model does not advertise is coerced onto that model's own default at thread
+  creation instead (`createWorkflowThread`, repo root), which is also where the
+  `threads.reasoning_effort` CHECK constraint is satisfied.
+- The vocabulary is declared here rather than imported because this package
+  stays free of `internal/provider`. The two lists are held together by
+  `TestWorkflowEffortTiersMatchTheProviderReasoningEfforts` in the root package,
+  which compares them in both directions and in order.
+
 ## Phase grants
 
 - A phase may declare `grants:`, the first-party `ao` capabilities its agent is
@@ -240,6 +269,7 @@ directory is.
 | `resolve.go` | Ordered scoped-directory resolution, plus `SkippedDirs` (below). |
 | `schema.go` | JSON-Schema fragments and embedded authoring schema. |
 | `grants.go` | The closed `ao` grant set and the phase-level grant checks. |
+| `effort.go` | The closed reasoning-tier vocabulary and the tier-name check. |
 | `envelope.go` | Generated control schema and payload post-validation. |
 | `tool.go` | The tool driver's implicit outputs and the merged `PhaseOutputs` contract. |
 | `interpolate.go` | Single-pass prompt interpolation and template checks. |

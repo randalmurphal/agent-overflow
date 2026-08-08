@@ -222,6 +222,202 @@ func TestWorkflowUnitBranchNamesAreDerivedAndDeterministic(t *testing.T) {
 	}
 }
 
+// TestWorkflowJoinReceivesUnitGitStateAndKeepsDirtyWorktrees covers the two
+// halves of the commit contract at the join boundary: the join is TOLD what each
+// lane actually committed and what it left behind, and a lane that left work
+// uncommitted keeps its checkout instead of having it destroyed by the
+// retirement that follows a done join.
+//
+// The join here is a tool, which is the shipped campaign shape
+// (`merge-unit-branches`): it receives `{{units}}` as one argv element, so this
+// also pins that the enrichment reaches argv interpolation and not only prompts.
+func TestWorkflowJoinReceivesUnitGitStateAndKeepsDirtyWorktrees(t *testing.T) {
+	app, bus := setupE2EApp(t)
+	configRoot := t.TempDir()
+	repo := testutil.InitGitRepo(t)
+	projectRow := mustReloadProject(t, app.store, testutil.EnsureProject(t, app.store, repo).ID)
+	writeCommitFanOutWorkflow(t, configRoot)
+	unitsJSON := filepath.Join(t.TempDir(), "units.json")
+	writeWorkspaceProfile(t, configRoot, projectRow.Slug, `
+base_branch: main
+reliability:
+  watchdog: 1h
+  backoff: [5ms]
+commands:
+  merge-units: `+mustJSONArgv(t, []string{
+		writeExecutable(t, "merge-units.sh", "#!/bin/sh\nprintf '%s' \"$1\" > "+unitsJSON+"\n"),
+		"{{units}}",
+	}))
+	if _, err := app.settings.Update(map[string]any{
+		"claudeBinaryPath": writeCommittingFanOutClaude(t),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	app.testEmitHook = bus.emit
+	startWorkflowEngineForTest(t, app, configRoot)
+
+	item, err := app.WorkflowStartRun(projectRow.ID, "commit-fanout", "shared", "port it", json.RawMessage(`{}`), nil, "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	item = waitForWorkflowItem(t, app, item.ID, engine.StateDone, "")
+	t.Cleanup(func() { _ = app.gitCore().RemoveWorktreeForce(repo, item.WorktreePath, true) })
+
+	units := unitsByID(t, app, item.ID)
+	// What the join was handed. Both lanes committed one commit onto their own
+	// branch; only the untidy one left anything in its working tree.
+	state := map[string]map[string]any{}
+	for _, entry := range decodeUnitsArgv(t, unitsJSON) {
+		id, _ := entry["id"].(string)
+		state[id] = entry
+	}
+	if len(state) != 2 {
+		t.Fatalf("join received %d unit entries: %+v", len(state), state)
+	}
+	for _, id := range []string{"tidy", "untidy"} {
+		if ahead, ok := state[id]["commitsAhead"].(float64); !ok || ahead != 1 {
+			t.Fatalf("unit %q commitsAhead = %v, want 1", id, state[id]["commitsAhead"])
+		}
+		if state[id]["branch"] != units[id].Branch {
+			t.Fatalf("unit %q branch in join input = %v, row = %q", id, state[id]["branch"], units[id].Branch)
+		}
+	}
+	if state["tidy"]["dirty"] != false {
+		t.Fatalf("committed lane reported dirty = %v", state["tidy"]["dirty"])
+	}
+	if state["untidy"]["dirty"] != true {
+		t.Fatalf("lane with uncommitted work reported dirty = %v", state["untidy"]["dirty"])
+	}
+
+	// Retirement is non-force, so it takes the clean checkout and refuses the
+	// one still holding work no branch carries. The refused row KEEPS its path:
+	// it is the only pointer left to that work.
+	if units["tidy"].WorktreePath != "" {
+		t.Fatalf("clean unit worktree survived a done join: %q", units["tidy"].WorktreePath)
+	}
+	if units["untidy"].WorktreePath == "" {
+		t.Fatal("retirement cleared the path of a worktree it did not remove")
+	}
+	if _, err := os.Stat(units["untidy"].WorktreePath); err != nil {
+		t.Fatalf("uncommitted unit work was destroyed: %v", err)
+	}
+	t.Cleanup(func() { _ = app.gitCore().RemoveWorktreeForce(repo, units["untidy"].WorktreePath, true) })
+
+	// And it is loud: a slipped commit contract must not be a silent retention.
+	retained := ""
+	for _, event := range bus.allEvents() {
+		payload, ok := event.Data.(map[string]any)
+		if event.Name != "workflow:error" || !ok || payload["itemId"] != item.ID {
+			continue
+		}
+		if message, _ := payload["error"].(string); strings.Contains(message, "untidy") {
+			retained = message
+		}
+	}
+	if retained == "" {
+		t.Fatalf("retained worktree emitted no workflow:error; events = %+v", bus.allEvents())
+	}
+	for _, want := range []string{units["untidy"].WorktreePath, units["untidy"].Branch, "uncommitted"} {
+		if !strings.Contains(retained, want) {
+			t.Fatalf("retention message %q does not name %q", retained, want)
+		}
+	}
+}
+
+func mustJSONArgv(t *testing.T, argv []string) string {
+	t.Helper()
+	encoded, err := json.Marshal(argv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(encoded)
+}
+
+func decodeUnitsArgv(t *testing.T, path string) []map[string]any {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var entries []map[string]any
+	if err := json.Unmarshal(data, &entries); err != nil {
+		t.Fatalf("join received %q, which is not the units array: %v", data, err)
+	}
+	return entries
+}
+
+// writeCommitFanOutWorkflow declares two writing units and a tool join, which is
+// the campaign shape: the join consolidates BRANCHES, so what each unit
+// committed is the only thing it can consume.
+func writeCommitFanOutWorkflow(t *testing.T, configRoot string) {
+	t.Helper()
+	dir := filepath.Join(configRoot, "workflows")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	unit := func(id string) string {
+		return fmt.Sprintf(`      - id: %s
+        provider: claude
+        model: claude-opus-4-7
+        prompt: %s.md
+        access: write
+        outputs:
+          report:
+            schema:
+              type: string
+`, id, id)
+	}
+	definition := `id: commit-fanout
+name: Commit fan-out
+phases:
+  - id: port
+    name: Port in parallel
+    shape: fan-out
+    fan_out:
+` + unit("tidy") + unit("untidy") + `    join:
+      id: merge
+      command: merge-units
+    gate:
+      routes:
+        - to: done
+cleanup: manual
+`
+	if err := os.WriteFile(filepath.Join(dir, "commit-fanout.yaml"), []byte(definition), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for name, body := range map[string]string{
+		"tidy.md":   "Port the TIDY-LANE slice",
+		"untidy.md": "Port the UNTIDY-LANE slice",
+	} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// writeCommittingFanOutClaude commits its work like a writing element is told
+// to. The untidy lane also leaves an untracked file behind, which is the slip
+// the retention path exists for.
+func writeCommittingFanOutClaude(t *testing.T) string {
+	t.Helper()
+	done := `{"status":"done","outputs":{"report":"ok"},"question":null,"reason":null}`
+	script := `#!/bin/bash
+while IFS= read -r line; do
+  if [[ "$line" == *TIDY-LANE* || "$line" == *UNTIDY-LANE* ]]; then
+    printf 'lane\n' > lane.txt
+    git add lane.txt
+    git commit -q -m 'lane work'
+  fi
+  if [[ "$line" == *UNTIDY-LANE* ]]; then
+    printf 'never committed\n' > scratch.txt
+  fi
+  printf '%s\n' '{"type":"system","subtype":"init","session_id":"commit-fanout","model":"claude-opus-4-7","cwd":"/tmp","tools":[],"claude_code_version":"1.0"}'
+  printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"structured_output":` + done + `}'
+done
+`
+	return writeExecutable(t, "committing-claude.sh", script)
+}
+
 func unitsByID(t *testing.T, app *App, itemID string) map[string]store.WorkItemUnit {
 	t.Helper()
 	rows, err := app.store.ListWorkItemUnits(itemID)

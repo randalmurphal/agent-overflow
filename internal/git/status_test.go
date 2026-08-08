@@ -987,6 +987,101 @@ func TestCountUnpushedCommitsSeparatesBranchNameFromPath(t *testing.T) {
 	}
 }
 
+// CountCommitsAhead answers between two local branches, which is what a
+// workflow fan-out has: unit branches are cut from the item branch and never
+// acquire an upstream, so the unpushed-commit question cannot answer for them.
+func TestCountCommitsAheadCountsLocalBranchDivergence(t *testing.T) {
+	repo := testutil.InitGitRepo(t)
+	core := NewCore()
+
+	const unit = "ao-workflow-port-unit-1"
+	testutil.RunGit(t, repo, "checkout", "-b", unit)
+
+	count, err := core.CountCommitsAhead(repo, unit, "main")
+	if err != nil {
+		t.Fatalf("baseline CountCommitsAhead: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("baseline count = %d, want 0", count)
+	}
+
+	for i := range 2 {
+		name := fmt.Sprintf("unit-%d.txt", i)
+		if err := os.WriteFile(filepath.Join(repo, name), []byte("work\n"), 0o644); err != nil {
+			t.Fatalf("write unit file: %v", err)
+		}
+		testutil.RunGit(t, repo, "add", name)
+		testutil.RunGit(t, repo, "commit", "-m", fmt.Sprintf("unit work %d", i))
+	}
+
+	count, err = core.CountCommitsAhead(repo, unit, "main")
+	if err != nil {
+		t.Fatalf("CountCommitsAhead: %v", err)
+	}
+	if count != 2 {
+		t.Fatalf("count = %d, want 2 commits ahead of the base branch", count)
+	}
+	// The question is directional: the base is not ahead of the branch that
+	// carries the work.
+	if back, err := core.CountCommitsAhead(repo, "main", unit); err != nil || back != 0 {
+		t.Fatalf("CountCommitsAhead(main, unit) = %d, %v; want 0", back, err)
+	}
+
+	// An uncommitted change is not a commit, which is the whole point of the
+	// signal: a lane that worked but never committed reads as 0 ahead.
+	if err := os.WriteFile(filepath.Join(repo, "uncommitted.txt"), []byte("left behind\n"), 0o644); err != nil {
+		t.Fatalf("write uncommitted file: %v", err)
+	}
+	if count, err := core.CountCommitsAhead(repo, unit, "main"); err != nil || count != 2 {
+		t.Fatalf("CountCommitsAhead with a dirty tree = %d, %v; want 2", count, err)
+	}
+}
+
+// The count stays answerable from the project root after the branch's own
+// checkout is gone — which is exactly when a join reads it, and why cwd is the
+// project rather than the unit worktree.
+func TestCountCommitsAheadAnswersAfterTheWorktreeIsRemoved(t *testing.T) {
+	repo := testutil.InitGitRepo(t)
+	core := NewCore()
+
+	const unit = "ao-workflow-port-unit-1"
+	worktree := filepath.Join(t.TempDir(), "unit")
+	if err := core.CreateWorktreeFromBranch(repo, worktree, "main", unit); err != nil {
+		t.Fatalf("create unit worktree: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(worktree, "unit.txt"), []byte("work\n"), 0o644); err != nil {
+		t.Fatalf("write unit file: %v", err)
+	}
+	testutil.RunGit(t, worktree, "add", "unit.txt")
+	testutil.RunGit(t, worktree, "commit", "-m", "unit work")
+	if err := core.RemoveWorktree(repo, worktree); err != nil {
+		t.Fatalf("remove unit worktree: %v", err)
+	}
+
+	count, err := core.CountCommitsAhead(repo, unit, "main")
+	if err != nil {
+		t.Fatalf("CountCommitsAhead: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("count = %d, want 1 commit still readable from the retired branch", count)
+	}
+}
+
+func TestCountCommitsAheadValidatesBothRefs(t *testing.T) {
+	core := NewCore()
+
+	for _, tc := range []struct{ branch, base string }{
+		{"--objects", "main"},
+		{"main", "--all"},
+		{"", "main"},
+		{"main", ""},
+	} {
+		if _, err := core.CountCommitsAhead(t.TempDir(), tc.branch, tc.base); err == nil {
+			t.Fatalf("CountCommitsAhead(%q, %q) was accepted", tc.branch, tc.base)
+		}
+	}
+}
+
 func TestUpstreamForReturnsFalseWhenNoUpstream(t *testing.T) {
 	repo := testutil.InitGitRepo(t)
 	core := NewCore()

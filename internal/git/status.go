@@ -440,6 +440,39 @@ func (c *Core) CountUnpushedCommits(cwd, branch string) (count int, hasUpstream 
 	return value, true, nil
 }
 
+// CountCommitsAhead returns the number of commits reachable from branch but not
+// from base — what branch has that base does not. Both are local refs, so this
+// answers for a branch with no upstream at all, which is what a workflow's
+// item and unit branches are.
+//
+// cwd may be any checkout of the repository, including one from which the
+// branch's own worktree has already been removed: refs are repository-wide, so
+// this stays answerable after a checkout is retired.
+func (c *Core) CountCommitsAhead(cwd, branch, base string) (int, error) {
+	branch = strings.TrimSpace(branch)
+	base = strings.TrimSpace(base)
+	if branch == "" || base == "" {
+		return 0, fmt.Errorf("git branch and base branch are required")
+	}
+	if err := validateBranchName(branch); err != nil {
+		return 0, err
+	}
+	if err := validateBranchName(base); err != nil {
+		return 0, err
+	}
+	// The trailing "--" disambiguates refs from pathspecs when a branch
+	// name also exists as a filesystem path in the worktree.
+	stdout, _, err := c.Execute(cwd, "rev-list", "--count", branch, "^"+base, "--")
+	if err != nil {
+		return 0, err
+	}
+	value, parseErr := strconv.Atoi(strings.TrimSpace(stdout))
+	if parseErr != nil {
+		return 0, fmt.Errorf("parse rev-list count %q: %w", strings.TrimSpace(stdout), parseErr)
+	}
+	return value, nil
+}
+
 // upstreamFor resolves the upstream ref for branch (e.g. "origin/main").
 // Returns false when no upstream is configured.
 func (c *Core) upstreamFor(cwd, branch string) (string, bool) {

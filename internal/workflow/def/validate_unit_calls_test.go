@@ -54,12 +54,22 @@ func TestUnitBindingMatrix(t *testing.T) {
 		{
 			name:     "command and agent",
 			unit:     Unit{ID: "port-section", Command: "report", Provider: "claude", Model: "sonnet", Prompt: "unit.md"},
-			contains: "a unit declares a command, provider/model/prompt, or call, not more than one",
+			contains: "a unit declares a command, provider/model/effort/prompt, or call, not more than one",
+		},
+		{
+			name:     "command and effort",
+			unit:     Unit{ID: "port-section", Command: "report", Effort: string(EffortHigh)},
+			contains: "a unit declares a command, provider/model/effort/prompt, or call, not more than one",
 		},
 		{
 			name:     "call and agent",
 			unit:     Unit{ID: "port-section", Call: "child-audit", Provider: "claude", Model: "sonnet", Prompt: "unit.md"},
-			contains: "provider/model/prompt is not valid on a call unit",
+			contains: "provider/model/effort/prompt is not valid on a call unit",
+		},
+		{
+			name:     "call and effort",
+			unit:     Unit{ID: "port-section", Call: "child-audit", Effort: string(EffortHigh)},
+			contains: "provider/model/effort/prompt is not valid on a call unit",
 		},
 		{
 			name:     "call and command",

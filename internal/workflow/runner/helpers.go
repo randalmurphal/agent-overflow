@@ -176,6 +176,10 @@ func BuildTakeoverFinalizePrompt(narrativePath string, access def.Access) (strin
 // The path is required in both cases — the caller has already resolved it, the
 // runner writes there either way, and validating it here keeps a bad path from
 // reaching only one of the two branches.
+//
+// `access` also decides whether the commit default below is stated at all: a
+// read-only element cannot write, so it has nothing to commit and telling it to
+// would be another instruction it cannot follow.
 func PromptSuffix(narrativePath string, access def.Access, feedback *engine.Feedback) (string, error) {
 	if !filepath.IsAbs(narrativePath) {
 		return "", fmt.Errorf("workflow prompt suffix: narrative path must be absolute")
@@ -196,6 +200,18 @@ func PromptSuffix(narrativePath string, access def.Access, feedback *engine.Feed
 	// moves every later phase's ground. Stated as a default the authored prompt
 	// overrides, because a landing phase's whole job is to do exactly this.
 	prompt.WriteString("Work only in this workspace on its current branch; do not switch branches, merge, or push unless your prompt says to.\n")
+	if access == def.AccessWrite {
+		// Everything downstream reads the BRANCH, never the checkout: a later
+		// phase resumes on it, a fan-out unit's worktree is cut from it, a join
+		// merges it, and a done join's worktrees are retired out from under
+		// whatever was left uncommitted. Nothing in the engine commits — that is
+		// the element's job — and nothing else tells it so, so an element that
+		// rests on an uncommitted tree silently produces nothing. Stated as a
+		// default the authored prompt overrides, like the workspace line above,
+		// because a phase whose whole job is staging work for a human to commit
+		// is a legitimate shape.
+		prompt.WriteString("Leave your work committed on this branch before you finish: later phases, worktree cuts, and fan-out merges read this branch's commits, never its working tree. Leave nothing uncommitted unless your prompt says otherwise.\n")
+	}
 	if feedback != nil {
 		values := feedback.Values
 		if values == nil {

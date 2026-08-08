@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"agent-overflow/internal/chatmodel"
 	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
@@ -27,8 +28,13 @@ type workflowThreadSpec struct {
 	title        string
 	providerName string
 	model        string
-	access       def.Access
-	workspace    preparedWorkflowWorkspace
+	// effort is the reasoning tier the definition authored (`effort:` on the
+	// phase or the unit), or empty for "whatever the model's catalog default is".
+	// It is coerced against the model at creation, never validated statically —
+	// which tiers a model advertises is provider-owned and partly live.
+	effort    string
+	access    def.Access
+	workspace preparedWorkflowWorkspace
 }
 
 // createWorkflowThread creates the AO thread one workflow turn runs on.
@@ -49,14 +55,31 @@ func (a *App) createWorkflowThread(spec workflowThreadSpec) (store.Thread, error
 	if strings.TrimSpace(workspace) == "" {
 		return store.Thread{}, fmt.Errorf("workflow runner: %s has no workspace", spec.label)
 	}
-	seed := a.seedChatModelProfile(spec.providerName, spec.model)
+	model := provider.NormalizeModelSlug(spec.providerName, spec.model)
+	// A workflow lane's model settings come from the catalog's defaults for
+	// (provider, model) plus what the definition authored — deliberately NOT from
+	// `chat_model_profiles`. Seeding from the last-remembered CHAT profile would
+	// make a phase's reasoning effort, context window, and fast mode depend on
+	// unrelated interactive use of the same model, so the same run could behave
+	// differently on two machines, or on one machine a week apart.
+	seed := chatmodel.FallbackProfile(spec.providerName, model)
+	effort := seed.ReasoningEffort
+	if authored := strings.TrimSpace(spec.effort); authored != "" {
+		// Validation accepted the tier as a NAME; whether this model advertises it
+		// is a catalog question, so it is answered here and coerced onto the
+		// model's own default when the answer is no. `threads.reasoning_effort` is
+		// NOT NULL under a per-provider CHECK — what persists is always a legal
+		// tier, and an argv builder is what decides a model with no tiers at all
+		// gets no flag (see internal/provider/AGENTS.md §Model catalogs).
+		effort = a.coerceReasoningEffortForModel(spec.providerName, model, authored)
+	}
 	now := time.Now().UnixMilli()
 	thread := store.Thread{
 		ID: uuid.NewString(), ProjectID: spec.workspace.project.ID, ProjectPath: spec.workspace.project.Path,
 		Title: spec.title, Provider: spec.providerName,
-		Model:         provider.NormalizeModelSlug(spec.providerName, spec.model),
+		Model:         model,
 		WorkspacePath: workspace, Mode: "workflow",
-		ReasoningEffort: seed.ReasoningEffort, FastMode: seed.FastMode,
+		ReasoningEffort: effort, FastMode: seed.FastMode,
 		ContextWindow: seed.ContextWindow,
 		RuntimeMode:   string(workflowPhaseRuntimeMode(spec.access)),
 		CreatedAt:     now, UpdatedAt: now,
@@ -136,6 +159,12 @@ func (r *workflowAppRunner) validatePriorThread(spec workflowThreadSpec, threadI
 			threadID, spec.label, spec.providerName, spec.model,
 		)
 	}
+	// `effort` is deliberately NOT compared. Provider, model, and workspace decide
+	// whether the parked session is still the right one to resume; the reasoning
+	// tier is stamped once, at creation, onto the session that is now mid-turn.
+	// Refusing a continuation because the definition's `effort:` was edited would
+	// strand a run whose session is perfectly usable, and re-stamping the thread
+	// row would not reconfigure the process anyway.
 	workspace := spec.workspace.path
 	if !filepath.IsAbs(workspace) || !filepath.IsAbs(thread.WorkspacePath) ||
 		!gitops.SameFilesystemPath(thread.WorkspacePath, workspace) {

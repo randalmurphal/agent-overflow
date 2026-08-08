@@ -17,7 +17,9 @@ behavior onto it, and say exactly what you did. Never resolve by deleting a
 test, weakening an assertion, or commenting a call out.
 
 Finish the merge and leave the tree buildable. Run the project's deterministic
-checks before you declare the resolution done.
+checks before you declare the resolution done, then **conclude the merge with a
+commit** - a resolved but uncommitted merge leaves the campaign branch mid-merge
+and `verify` gates the branch, not your working tree.
 
 If a conflict cannot be resolved without a decision that is not yours to make -
 an API the campaign has not chosen between, a semantic the goal does not settle

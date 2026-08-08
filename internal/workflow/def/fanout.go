@@ -173,6 +173,14 @@ const UnitsVariable = "units"
 // unitsDeclaration is the shape one entry of the reserved `units` binding has.
 // `outputs` is an open object because each unit answers its own declared
 // contract; the join reads it as JSON rather than by declared path.
+//
+// `commitsAhead` and `dirty` are the unit's git state, which the app runner
+// adds on the way into the join (the engine is git-free by boundary). They are
+// declared here with the rest because this function is the one statement of
+// what `{{units}}` renders, and a field the runtime binds but the declaration
+// omits is exactly the disagreement this shape exists to prevent. Both are
+// optional: a unit with no branch never gets a count, and a unit whose checkout
+// has already been retired has no working tree left to describe.
 func unitsDeclaration() Variable {
 	return Variable{Schema: JSONSchema{
 		Type:        "array",
@@ -187,6 +195,14 @@ func unitsDeclaration() Variable {
 				"worktree": {Type: "string"},
 				"thread":   {Type: "string"},
 				"outputs":  {Type: "object"},
+				"commitsAhead": {
+					Type:        "number",
+					Description: "Commits on the unit's branch that the item's branch does not have.",
+				},
+				"dirty": {
+					Type:        "boolean",
+					Description: "Whether the unit's worktree still holds uncommitted or untracked changes.",
+				},
 			},
 			Required: []string{"id", "index", "status"},
 		},

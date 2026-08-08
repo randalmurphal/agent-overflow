@@ -79,7 +79,11 @@ status, diff, branches, commits, worktrees, and PR/MR creation.
 - `status.go` — `GitStatus` shape + status aggregation (branch,
   ahead/behind, open PR, detected forge) and small status-related
   primitives (`CountWorkingTreeChanges`, `CountUnpushedCommits`,
-  `upstreamFor`, `CurrentBranch`, `BranchIsDefault`).
+  `CountCommitsAhead` — the same `rev-list --count` question between two
+  *local* branches, which is what a workflow fan-out unit has instead of
+  an upstream, and answerable from the project root after the branch's
+  own checkout is gone — `upstreamFor`, `CurrentBranch`,
+  `BranchIsDefault`).
   `baseStatus` fans its six independent probes (status, numstat diff,
   default branch, origin remote, untracked scan, pending operation) out
   concurrently and joins with the serial version's exact error

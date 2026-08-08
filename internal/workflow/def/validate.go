@@ -160,6 +160,24 @@ func validatePhaseExecution(phase Phase, phaseElement string) []Finding {
 	if phase.Driver == DriverAgent && (strings.TrimSpace(phase.Provider) == "" || strings.TrimSpace(phase.Model) == "") {
 		add("phase.model", "agent driver requires provider and model")
 	}
+	// `effort:` tunes a model turn and is legal exactly where provider/model are.
+	// A tool phase runs a command, so the tier would configure nothing — refused
+	// rather than left as a line the author never learns was ignored.
+	if strings.TrimSpace(phase.Effort) != "" {
+		if phase.Driver != DriverAgent {
+			add("phase.effort", "effort requires driver: agent; it pins the reasoning tier of a model turn, and a tool phase runs a command")
+		} else {
+			findings = append(findings, effortTierFindings(phase.Effort, phaseElement)...)
+		}
+	}
+	// The mirror of the agent requirement above: a tool phase runs a command,
+	// not a model turn, so the fields that configure one would be dead lines the
+	// author never learns were ignored — refused for the same reason `effort:`
+	// is, and for the same reason a call phase and a fan-out phase refuse them.
+	if phase.Driver == DriverTool &&
+		(strings.TrimSpace(phase.Provider) != "" || strings.TrimSpace(phase.Model) != "" || phase.Prompt != "") {
+		add("phase.tool", "a tool phase runs a command, not a model turn; provider, model, and prompt belong on an agent phase")
+	}
 	if phase.Driver == DriverTool && phase.Check == "" && phase.Command == "" {
 		add("phase.tool", "tool driver requires a check or command binding")
 	}

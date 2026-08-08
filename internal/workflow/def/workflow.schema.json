@@ -39,12 +39,17 @@
       "type": "object", "additionalProperties": false, "required": ["from"],
       "properties": {"from": {"type": "string"}, "artifact": {"type": "boolean"}}
     },
+    "effort": {
+      "description": "Reasoning tier for an agent turn. Which tiers a given model actually advertises is provider-owned and partly live, so a tier the model does not support is coerced to its default at run time rather than rejected here.",
+      "enum": ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]
+    },
     "phase": {
       "type": "object", "additionalProperties": false, "required": ["id", "gate"],
       "properties": {
         "id": {"type": "string", "pattern": "^[a-z0-9-]+$"}, "name": {"type": "string"},
         "driver": {"enum": ["agent", "tool"]}, "shape": {"enum": ["single", "fan-out", "call"]},
-        "provider": {"type": "string"}, "model": {"type": "string"}, "prompt": {"type": "string"},
+        "provider": {"type": "string"}, "model": {"type": "string"},
+        "effort": {"$ref": "#/$defs/effort"}, "prompt": {"type": "string"},
         "watchdog": {"type": "string"},
         "inputs": {"$ref": "#/$defs/variables"}, "outputs": {"$ref": "#/$defs/variables"},
         "check": {"type": "string"}, "command": {"type": "string"},
@@ -83,6 +88,7 @@
             "required": ["call"],
             "not": {"anyOf": [
               {"required": ["driver"]}, {"required": ["provider"]}, {"required": ["model"]},
+              {"required": ["effort"]},
               {"required": ["prompt"]}, {"required": ["watchdog"]}, {"required": ["inputs"]},
               {"required": ["outputs"]}, {"required": ["check"]}, {"required": ["command"]},
               {"required": ["resources"]}, {"required": ["commands"]}, {"required": ["capabilities"]},
@@ -102,6 +108,7 @@
             "required": ["join"],
             "not": {"anyOf": [
               {"required": ["driver"]}, {"required": ["provider"]}, {"required": ["model"]},
+              {"required": ["effort"]},
               {"required": ["prompt"]}, {"required": ["check"]}, {"required": ["command"]},
               {"required": ["commands"]}, {"required": ["access"]}
             ]}
@@ -115,6 +122,15 @@
             ]}
           },
           "then": {"required": ["driver"]}
+        },
+        {
+          "if": {"properties": {"driver": {"const": "tool"}}, "required": ["driver"]},
+          "then": {
+            "not": {"anyOf": [
+              {"required": ["provider"]}, {"required": ["model"]},
+              {"required": ["effort"]}, {"required": ["prompt"]}
+            ]}
+          }
         }
       ]
     },
@@ -122,6 +138,7 @@
       "type": "object", "additionalProperties": false, "required": ["id"],
       "properties": {
         "id": {"type": "string", "pattern": "^[a-z0-9-]+$"}, "provider": {"type": "string"}, "model": {"type": "string"},
+        "effort": {"$ref": "#/$defs/effort"},
         "prompt": {"type": "string"}, "command": {"type": "string"}, "access": {"enum": ["read-only", "write"]},
         "call": {"type": "string", "pattern": "^[a-z0-9-]+$"},
         "args": {"type": "object", "additionalProperties": {"type": "string"}},
@@ -133,7 +150,8 @@
           "if": {"required": ["call"]},
           "then": {
             "not": {"anyOf": [
-              {"required": ["provider"]}, {"required": ["model"]}, {"required": ["prompt"]},
+              {"required": ["provider"]}, {"required": ["model"]}, {"required": ["effort"]},
+              {"required": ["prompt"]},
               {"required": ["command"]}, {"required": ["access"]}, {"required": ["outputs"]}
             ]}
           },

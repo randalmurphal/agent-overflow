@@ -58,6 +58,16 @@ otherwise get it wrong and the engine could not tell it so afterwards:
   tree shares one branch down the stack (§3a/§9), so a phase that moves it on
   its own initiative moves every later phase's ground. Phrased as a default the
   authored prompt overrides, because a landing phase's whole job is to do this.
+- **The commit default**, stated to `write` elements only — phases, work units,
+  and joins alike, gated on the same `access` value the narrative branch reads.
+  Nothing in the engine ever commits, and everything downstream reads the
+  BRANCH rather than the checkout: a later phase resumes on it, a unit's
+  sub-worktree is cut from it, a join merges it, and a done join then retires
+  the unit worktrees. Without the sentence a writing element can rest on an
+  uncommitted tree nothing will ever read, and the retirement destroys it. A
+  `read-only` element is told nothing — it has nothing to commit, and the
+  instruction would be one more it could not follow. Phrased as a default the
+  authored prompt overrides, like the workspace line above.
 - **The envelope branch rules**, which `def.ValidateEnvelope` enforces and the
   schema cannot express (D2a). The `question` and `stuck` bullets carry their
   MEANING as well as their mechanics — both park the run for a human, so a

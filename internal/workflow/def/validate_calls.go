@@ -46,8 +46,9 @@ func validateCall(phase Phase, phaseElement string) []Finding {
 	}{
 		{[]string{"driver"}, phase.Driver != "",
 			"a call phase runs no work of its own; the child workflow's phases carry the drivers"},
-		{[]string{"provider", "model", "prompt"}, phase.Provider != "" || phase.Model != "" || phase.Prompt != "",
-			"a call phase runs no turn of its own; the child workflow's phases declare their own provider, model, and prompt"},
+		{[]string{"provider", "model", "effort", "prompt"},
+			phase.Provider != "" || phase.Model != "" || phase.Effort != "" || phase.Prompt != "",
+			"a call phase runs no turn of its own; the child workflow's phases declare their own provider, model, effort, and prompt"},
 		{[]string{"check", "command", "commands"}, phase.Check != "" || phase.Command != "" || len(phase.Commands) > 0,
 			"a call phase runs no command of its own; bind commands in the child workflow's phases"},
 		{[]string{"resources"}, len(phase.Resources) > 0,

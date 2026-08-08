@@ -49,7 +49,12 @@ func TestBuildPromptSuffixShape(t *testing.T) {
 		// The workspace default is system-owned and unconditional: a phase that
 		// switches branches on its own moves the ground under every later phase
 		// of the same call tree, which shares one branch down the stack.
-		"Work only in this workspace on its current branch; do not switch branches, merge, or push unless your prompt says to.\n"
+		"Work only in this workspace on its current branch; do not switch branches, merge, or push unless your prompt says to.\n" +
+		// Nothing in the engine commits, and everything downstream — a later
+		// phase, a unit worktree cut, a join's merge — reads the branch rather
+		// than the checkout, which a done join then removes. A writing element
+		// that is not told this rests on work nothing can see.
+		"Leave your work committed on this branch before you finish: later phases, worktree cuts, and fan-out merges read this branch's commits, never its working tree. Leave nothing uncommitted unless your prompt says otherwise.\n"
 	want := header +
 		"<workflow-feedback>\nNote:\naddress review\nValues:\n```json\n{\n  \"review.ok\": false\n}\n```\n</workflow-feedback>\n" +
 		envelopeRules +
@@ -130,6 +135,11 @@ func TestPromptSuffixAsksReadOnlyElementsForAMessage(t *testing.T) {
 		if strings.Contains(suffix, narrative) {
 			t.Fatalf("PromptSuffix(access=%q) named a file the session cannot write:\n%s", access, suffix)
 		}
+		// A read-only element has nothing to commit, so the commit default is
+		// another instruction it could not follow.
+		if strings.Contains(suffix, "Leave your work committed") {
+			t.Fatalf("PromptSuffix(access=%q) told a read-only element to commit:\n%s", access, suffix)
+		}
 	}
 
 	writing, err := PromptSuffix(narrative, def.AccessWrite, nil)
@@ -141,6 +151,9 @@ func TestPromptSuffixAsksReadOnlyElementsForAMessage(t *testing.T) {
 	}
 	if strings.Contains(writing, "cannot write files") {
 		t.Fatalf("write-access suffix took the read-only form:\n%s", writing)
+	}
+	if !strings.Contains(writing, "Leave your work committed on this branch before you finish") {
+		t.Fatalf("write-access suffix lost the commit default:\n%s", writing)
 	}
 
 	// The path is validated on both branches: the runner writes there either way.
