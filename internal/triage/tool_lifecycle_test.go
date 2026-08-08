@@ -371,7 +371,7 @@ func TestToolCompleteFlipsInlineStatus(t *testing.T) {
 }
 
 // TestToolCompleteOnErroredFlipsToErrored covers the error transition.
-// The exit_code-or-is_error fork in completionStatus picks errored over
+// The exit_code-or-is_error fork in CompletionStatus picks errored over
 // completed; the summary picks up an "(error)" suffix for the row label.
 func TestToolCompleteOnErroredFlipsToErrored(t *testing.T) {
 	router, st, _ := newTestRouter(t)
@@ -1771,8 +1771,8 @@ func TestHandleEventBackgroundTaskTerminal_InsertsSibling(t *testing.T) {
 		t.Fatalf("expected exactly 1 tool_completion sibling, got %d", len(dones))
 	}
 	done := dones[0]
-	if done.ID != nextToolCompletionID("bg-insert") {
-		t.Errorf("sibling id = %q, want %q", done.ID, nextToolCompletionID("bg-insert"))
+	if done.ID != ToolCompletionID("bg-insert") {
+		t.Errorf("sibling id = %q, want %q", done.ID, ToolCompletionID("bg-insert"))
 	}
 	if done.CompletionOf != "bg-insert" {
 		t.Errorf("CompletionOf = %q, want bg-insert", done.CompletionOf)
@@ -1804,7 +1804,7 @@ func TestHandleEventBackgroundTaskTerminal_InsertsSibling(t *testing.T) {
 	// so the frontend reconciler merges in place.
 	siblingUpserts := 0
 	for _, item := range filterItemEventUpserts(emissions.snapshot()) {
-		if item.ID == nextToolCompletionID("bg-insert") {
+		if item.ID == ToolCompletionID("bg-insert") {
 			siblingUpserts++
 		}
 	}
@@ -2246,7 +2246,7 @@ func TestHandleEventBackgroundTaskTerminal_EnrichmentPreservesCompletionTurn(t *
 	}); err != nil {
 		t.Fatalf("basic terminal: %v", err)
 	}
-	initial, ok, err := st.GetThreadItem("t1", nextToolCompletionID("bg-stable-turn"))
+	initial, ok, err := st.GetThreadItem("t1", ToolCompletionID("bg-stable-turn"))
 	if err != nil || !ok {
 		t.Fatalf("lookup initial sibling: ok=%v err=%v", ok, err)
 	}
@@ -2271,7 +2271,7 @@ func TestHandleEventBackgroundTaskTerminal_EnrichmentPreservesCompletionTurn(t *
 		t.Fatalf("enriched terminal: %v", err)
 	}
 
-	after, ok, err := st.GetThreadItem("t1", nextToolCompletionID("bg-stable-turn"))
+	after, ok, err := st.GetThreadItem("t1", ToolCompletionID("bg-stable-turn"))
 	if err != nil || !ok {
 		t.Fatalf("lookup enriched sibling: ok=%v err=%v", ok, err)
 	}

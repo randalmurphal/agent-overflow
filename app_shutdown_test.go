@@ -283,6 +283,10 @@ func TestShutdownWalksDocumentedOrder(t *testing.T) {
 		// a run writes the thread's durable worktree_setup_state. It joins
 		// alongside the other background cadences for the same reason.
 		"stop worktree setups",
+		// "stop session imports" MUST appear before "close store" — an
+		// import run writes threads, items and turns straight into SQLite.
+		// Same slot as the other background work for the same reason.
+		"stop session imports",
 		"close provider sessions",
 		// "stop orphan reaper" follows session close: each session
 		// releases its watched group on a clean close, so the sidecar has

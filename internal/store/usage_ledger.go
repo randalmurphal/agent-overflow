@@ -53,6 +53,20 @@ func (s *Store) AppendUsage(rows []UsageLedgerRow) error {
 	}
 	defer func() { _ = tx.Rollback() }()
 
+	if err := appendUsageTx(tx, rows); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// appendUsageTx is AppendUsage's body inside a caller-owned transaction,
+// shared with the import batch writer so usage rows land in the same commit
+// as the items they account for — and so the empty-CostSource defaulting
+// rule has one implementation.
+func appendUsageTx(tx *sql.Tx, rows []UsageLedgerRow) error {
+	if len(rows) == 0 {
+		return nil
+	}
 	stmt, err := tx.Prepare(`INSERT INTO usage_ledger (
         created_at, thread_id, project_id, work_item_id, turn_id, provider, model,
         input_tokens, output_tokens, cache_read_input_tokens,
@@ -83,7 +97,7 @@ func (s *Store) AppendUsage(rows []UsageLedgerRow) error {
 			return fmt.Errorf("store: usage append insert: %w", err)
 		}
 	}
-	return tx.Commit()
+	return nil
 }
 
 // WorkItemUsage is the persisted token and wire-cost total for one workflow

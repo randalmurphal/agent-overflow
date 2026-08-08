@@ -82,7 +82,7 @@ func BuildForkLinesWithUUIDMap(
 	upToMessageUUID string,
 	customTitle string,
 ) (newSessionID string, lines []string, uuidMap map[string]string, err error) {
-	transcript, contentReplacements, err := parseTranscript(src, srcSessionID)
+	transcript, contentReplacements, err := ParseTranscript(src, srcSessionID)
 	if err != nil {
 		return "", nil, nil, fmt.Errorf("sessionfork: parse transcript: %w", err)
 	}
@@ -262,7 +262,7 @@ func writeForkFileFromTranscript(
 	customTitle string,
 	computeAnchor func(transcript []map[string]any) (string, error),
 ) (newSessionID string, newPath string, uuidMap map[string]string, err error) {
-	srcSessionID := sessionIDFromPath(srcPath)
+	srcSessionID := SessionIDFromPath(srcPath)
 
 	f, err := os.Open(srcPath)
 	if err != nil {
@@ -270,7 +270,7 @@ func writeForkFileFromTranscript(
 	}
 	defer f.Close()
 
-	transcript, contentReplacements, err := parseTranscript(f, srcSessionID)
+	transcript, contentReplacements, err := ParseTranscript(f, srcSessionID)
 	if err != nil {
 		return "", "", nil, fmt.Errorf("sessionfork: parse transcript: %w", err)
 	}
@@ -463,9 +463,9 @@ func sliceUUIDInTranscript(transcript []map[string]any, userTurnIndex int) (stri
 	return "", fmt.Errorf("%w: requested %d, found %d", ErrUserTurnOutOfRange, userTurnIndex, count)
 }
 
-// sessionIDFromPath extracts the session UUID from a path like
+// SessionIDFromPath extracts the session UUID from a path like
 // `~/.claude/projects/<slug>/<uuid>.jsonl`.
-func sessionIDFromPath(p string) string {
+func SessionIDFromPath(p string) string {
 	base := filepath.Base(p)
 	if ext := filepath.Ext(base); ext == ".jsonl" {
 		base = base[:len(base)-len(ext)]
@@ -473,12 +473,16 @@ func sessionIDFromPath(p string) string {
 	return base
 }
 
-// parseTranscript splits the JSONL stream into transcript entries (user/
+// ParseTranscript splits the JSONL stream into transcript entries (user/
 // assistant/attachment/system/progress with a uuid) and content-replacement
 // records targeting srcSessionID. Lines that fail to parse are silently
 // skipped (mirrors the Python implementation's behavior — a final
 // truncated line on a crashing session shouldn't fail the whole fork).
-func parseTranscript(r io.Reader, srcSessionID string) (
+//
+// Exported for the session importer, which reads the same files with the
+// same admission rules: a second reader would drift from the fork
+// transform's idea of what a transcript row is.
+func ParseTranscript(r io.Reader, srcSessionID string) (
 	transcript []map[string]any,
 	contentReplacements []any,
 	err error,
@@ -593,7 +597,7 @@ func buildLines(
 		oldUUID, _ := original["uuid"].(string)
 		newUUID := uuidMap[oldUUID]
 
-		newParent := resolveParent(original, byUUID, uuidMap)
+		newParent := ResolveParent(original, byUUID, uuidMap)
 		if i > 0 && isDeferredAPIErrorRow(original) {
 			// Deferred api_error rows carry a known-stale parentUuid
 			// (written at next-send with the retry-time leaf, bypassing
@@ -603,7 +607,7 @@ func buildLines(
 			// predecessor. See rechain.go for the full contract.
 			newParent = prevWritableNewUUID
 		}
-		newLogicalParent, hadLogicalParent := resolveLogicalParent(original, uuidMap)
+		newLogicalParent, hadLogicalParent := ResolveLogicalParent(original, uuidMap)
 
 		// Update timestamp only on the LAST writable entry — readers use
 		// it for leaf detection on resume. Untouched timestamps preserve
@@ -678,36 +682,69 @@ func buildLines(
 	return forkedSessionID, lines, uuidMap, nil
 }
 
-// resolveParent walks the parentUuid chain skipping progress ancestors —
+// TranscriptParent is the minimum a parent-chain walk needs about one
+// transcript row: the parent it records and its own type.
+type TranscriptParent struct {
+	ParentUUID string
+	Type       string
+}
+
+// ResolveParentUUID walks the parentUuid chain skipping progress
+// ancestors and returns the uuid of the first non-progress ancestor, or
+// "" when the row is a chain root or the chain leaves this file.
+//
+// Exported alongside ResolveParent because the session importer walks
+// SKELETON rows (uuid + parent + type + a byte offset, never the decoded
+// entry — a real transcript is too large to hold decoded) and must apply
+// the identical rule. Progress rows are transparent to a fork's writable
+// output and to the importer's DAG for the same reason; two copies of
+// that walk would drift.
+func ResolveParentUUID(parentUUID string, lookup func(uuid string) (TranscriptParent, bool)) string {
+	for parentUUID != "" {
+		parent, ok := lookup(parentUUID)
+		if !ok {
+			return ""
+		}
+		if parent.Type != "progress" {
+			return parentUUID
+		}
+		parentUUID = parent.ParentUUID
+	}
+	return ""
+}
+
+// ResolveParent walks the parentUuid chain skipping progress ancestors —
 // progress entries don't appear in the writable output, so a writable
 // entry's effective parent is its first non-progress ancestor.
-func resolveParent(
+func ResolveParent(
 	entry map[string]any,
 	byUUID map[string]map[string]any,
 	uuidMap map[string]string,
 ) any {
 	parentID, _ := entry["parentUuid"].(string)
-	for parentID != "" {
-		parent, ok := byUUID[parentID]
+	resolved := ResolveParentUUID(parentID, func(u string) (TranscriptParent, bool) {
+		parent, ok := byUUID[u]
 		if !ok {
-			return nil
+			return TranscriptParent{}, false
 		}
-		if t, _ := parent["type"].(string); t != "progress" {
-			if mapped, ok := uuidMap[parentID]; ok {
-				return mapped
-			}
-			return nil
-		}
-		parentID, _ = parent["parentUuid"].(string)
+		next, _ := parent["parentUuid"].(string)
+		typ, _ := parent["type"].(string)
+		return TranscriptParent{ParentUUID: next, Type: typ}, true
+	})
+	if resolved == "" {
+		return nil
+	}
+	if mapped, ok := uuidMap[resolved]; ok {
+		return mapped
 	}
 	return nil
 }
 
-// resolveLogicalParent remaps logicalParentUuid (compact-boundary backpointer).
+// ResolveLogicalParent remaps logicalParentUuid (compact-boundary backpointer).
 // Returns (value, true) when the original entry had the field — even if its
 // value was null — so the caller knows to write `logicalParentUuid: null`
 // rather than omit the field.
-func resolveLogicalParent(
+func ResolveLogicalParent(
 	entry map[string]any,
 	uuidMap map[string]string,
 ) (any, bool) {

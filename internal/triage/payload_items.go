@@ -29,7 +29,7 @@ func (r *Router) handleDiff(evt provider.ProviderEvent) error {
 			return fmt.Errorf("diff get item %s: %w", itemID, err)
 		}
 		if !found {
-			item, err = r.newToolCallItem(evt.ThreadID, itemID, "file_change", buildSummary("diff", buildPayloadMeta("diff", evt)), statusCompleted, eventTimestampMillis(evt))
+			item, err = r.newToolCallItem(evt.ThreadID, itemID, "file_change", buildSummary("diff", BuildPayloadMeta("diff", evt)), statusCompleted, eventTimestampMillis(evt))
 			if err != nil {
 				return fmt.Errorf("diff create tool_call %s: %w", itemID, err)
 			}
@@ -58,7 +58,7 @@ func (r *Router) handleDiff(evt provider.ProviderEvent) error {
 			evt.ThreadID,
 			fmt.Sprintf("diff:%d", turnIndex),
 			"file_change",
-			buildSummary("diff", buildPayloadMeta("diff", evt)),
+			buildSummary("diff", BuildPayloadMeta("diff", evt)),
 			statusCompleted,
 			eventTimestampMillis(evt),
 		)
@@ -127,7 +127,7 @@ func (r *Router) newCommandOutputToolCall(
 		threadID,
 		itemID,
 		"command_execution",
-		buildSummary(payloadKindCommandOutput, buildPayloadMeta(payloadKindCommandOutput, evt)),
+		buildSummary(payloadKindCommandOutput, BuildPayloadMeta(payloadKindCommandOutput, evt)),
 		statusRunning,
 		eventTimestampMillis(evt),
 	)
@@ -218,7 +218,7 @@ func (r *Router) handleProposedPlan(evt provider.ProviderEvent) error {
 	r.observeCodexModelContent(evt.ThreadID)
 
 	now := eventTimestampMillis(evt)
-	metaJSON := buildPayloadMeta("proposed_plan", evt)
+	metaJSON := BuildPayloadMeta("proposed_plan", evt)
 	summary := buildSummary("proposed_plan", metaJSON)
 	itemID := eventItemID(evt)
 	if itemID == "" {
@@ -445,7 +445,7 @@ func (r *Router) attachPayloadToItemWithEmit(
 	if linked && !replace {
 		metaEvt := evt
 		metaEvt.Content = string(data)
-		metaJSON := buildPayloadMeta(payloadKind, metaEvt)
+		metaJSON := BuildPayloadMeta(payloadKind, metaEvt)
 		item.PayloadID = payloadID
 		if summary != "" {
 			item.Summary = summary
@@ -470,7 +470,7 @@ func (r *Router) attachPayloadToItemWithEmit(
 
 	metaEvt := evt
 	metaEvt.Content = string(data)
-	metaJSON := buildPayloadMeta(payloadKind, metaEvt)
+	metaJSON := BuildPayloadMeta(payloadKind, metaEvt)
 	payload := store.Payload{
 		ID:        payloadID,
 		Kind:      payloadKind,
@@ -506,7 +506,7 @@ func (r *Router) attachPayloadToItemWithEmit(
 	return nil
 }
 
-func buildPayloadMeta(payloadKind string, evt provider.ProviderEvent) string {
+func BuildPayloadMeta(payloadKind string, evt provider.ProviderEvent) string {
 	switch payloadKind {
 	case "diff":
 		dm := ExtractDiffMeta(evt.Content)

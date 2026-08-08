@@ -229,6 +229,15 @@ func (a *App) Shutdown(ctx context.Context) error {
 	a.stopThreadWorktreeSetups()
 	record("stop worktree setups", nil)
 
+	// Step 3f: stop an in-flight session import. It writes threads, items and
+	// turns straight into SQLite, so it must join before Step 9's store close.
+	// Cancelling mid-session is safe: ImportOne rolls the whole session back,
+	// so an interrupted run leaves only the sessions it fully finished — and
+	// the dedup set keys on the source session id, so the next scan offers the
+	// rest again. Idempotent and blocks until the goroutine returns.
+	a.stopSessionImports()
+	record("stop session imports", nil)
+
 	// Step 4: stop provider sessions. Each session's Close tears down
 	// its own design-thread state as part of the same parallel closer,
 	// so a slow design teardown can't serialize behind an unrelated

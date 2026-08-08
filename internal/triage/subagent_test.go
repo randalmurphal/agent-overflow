@@ -149,7 +149,7 @@ func TestParentToolUseIDEmptyWhenAbsent(t *testing.T) {
 }
 
 // TestTextItemIDDisambiguatesSubagentScopes is the correctness check on
-// textItemID scoping: two text deltas in the same turn but under
+// TextItemID scoping: two text deltas in the same turn but under
 // different ParentToolUseIDs must produce DISTINCT rows. If the item-id
 // namespace collapsed subagent scopes, one subagent's streaming text
 // would concatenate into another's, and the SubagentGroup UI would

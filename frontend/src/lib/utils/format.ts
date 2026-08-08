@@ -189,3 +189,12 @@ export function formatGiB(bytes: number): string {
   if (!Number.isFinite(bytes) || bytes < 0) return '0.0';
   return (bytes / 1024 ** 3).toFixed(1);
 }
+
+/**
+ * `3 threads` / `1 thread` — a count with its noun, pluralized by adding an
+ * `s`. Only for nouns whose plural is regular; anything else (`entry`,
+ * `child`) needs its own wording rather than a broken suffix rule.
+ */
+export function countNoun(count: number, noun: string): string {
+  return `${count} ${noun}${count === 1 ? '' : 's'}`;
+}

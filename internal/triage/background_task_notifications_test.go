@@ -297,8 +297,8 @@ func TestBackgroundTaskNotification_StashedTerminalThenNotificationWritesSibling
 		t.Fatalf("expected 1 tool_completion sibling, got %d (the case-1 bug)", len(dones))
 	}
 	done := dones[0]
-	if done.ID != nextToolCompletionID("bg-subagent") {
-		t.Fatalf("sibling.id = %q, want %q (stable per-launch derivation)", done.ID, nextToolCompletionID("bg-subagent"))
+	if done.ID != ToolCompletionID("bg-subagent") {
+		t.Fatalf("sibling.id = %q, want %q (stable per-launch derivation)", done.ID, ToolCompletionID("bg-subagent"))
 	}
 	if done.CompletionOf != "bg-subagent" {
 		t.Fatalf("sibling.completionOf = %q, want bg-subagent", done.CompletionOf)
@@ -439,7 +439,7 @@ func TestBackgroundTaskNotification_SiblingEmitsBeforeNotificationRow(t *testing
 		}
 		return -1
 	}
-	siblingIdx := firstUpsertIndex(nextToolCompletionID("bg-subagent"))
+	siblingIdx := firstUpsertIndex(ToolCompletionID("bg-subagent"))
 	notificationIdx := firstUpsertIndex(nextTaskNotificationID("task-bg-subagent-1"))
 	if siblingIdx < 0 {
 		t.Fatalf("no upsert emission for the tool_completion sibling (emissions: %+v)", snapshot)
@@ -1524,7 +1524,7 @@ func TestBackgroundTaskNotification_EnrichesExistingCompletionWithLoadingAndLoad
 		t.Fatalf("terminal: %v", err)
 	}
 
-	initial, ok, err := st.GetThreadItem("t1", nextToolCompletionID("bg-enrich-notify"))
+	initial, ok, err := st.GetThreadItem("t1", ToolCompletionID("bg-enrich-notify"))
 	if err != nil || !ok {
 		t.Fatalf("lookup initial completion: ok=%v err=%v", ok, err)
 	}
@@ -1555,7 +1555,7 @@ func TestBackgroundTaskNotification_EnrichesExistingCompletionWithLoadingAndLoad
 		t.Fatalf("notification: %v", err)
 	}
 
-	after, ok, err := st.GetThreadItem("t1", nextToolCompletionID("bg-enrich-notify"))
+	after, ok, err := st.GetThreadItem("t1", ToolCompletionID("bg-enrich-notify"))
 	if err != nil || !ok {
 		t.Fatalf("lookup enriched completion: ok=%v err=%v", ok, err)
 	}
@@ -1576,7 +1576,7 @@ func TestBackgroundTaskNotification_EnrichesExistingCompletionWithLoadingAndLoad
 	upserts := findUpsertedItems(emissions.snapshot()[before:])
 	var completionStates []string
 	for _, item := range upserts {
-		if item.ID != nextToolCompletionID("bg-enrich-notify") {
+		if item.ID != ToolCompletionID("bg-enrich-notify") {
 			continue
 		}
 		meta := decodeItemMetaMap(t, item.Meta)

@@ -27,6 +27,17 @@ logic lives here. Stdlib-only.
   MultiAgentV2 collaboration message ciphertext from persisted item
   metadata, keyed structurally by `input.activityKind`; legacy plaintext
   V1 prompts are preserved.
+- `promoted_at_interrupt.go` — the truncation-relevant markers on a
+  queued flush user row (`promoted_at_interrupt`,
+  `promoted_echo_boundary`) plus `DecodePromotionState`, and the
+  `mergeKey` primitive every marker writer in this package uses:
+  decode → set one key → re-encode, erroring on malformed meta.
+- `import.go` — the session-import markers: `ImportSourceUUIDKey`
+  provenance via `MarkImported`, and `ImportUnavailableKey` +
+  `MarkImportUnavailable` for an item whose payload the provider session
+  no longer contains (`tool-output-gc`, `exec-detail`). The reason set is
+  open; the frontend maps known reasons to copy and falls back to its
+  existing empty-payload branch. Written by `internal/sessionimport`.
 
 ## Responsibility boundary
 

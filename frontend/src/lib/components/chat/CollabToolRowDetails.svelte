@@ -16,6 +16,7 @@
     tool,
     receiverDisplayLabels,
     expansion,
+    emptyMessage,
   }: {
     pane?: ThreadPane;
     itemId: string;
@@ -29,6 +30,10 @@
     tool: string;
     receiverDisplayLabels: string[];
     expansion: PayloadExpansionHandle | null;
+    /** Body copy when there is no payload. Owned by `CollabToolRow`, which
+     * holds the item this row's output belongs to and so is the one that can
+     * tell a missing payload from one an import could not carry over. */
+    emptyMessage: string;
   } = $props();
 </script>
 
@@ -70,6 +75,6 @@
     testPrefix="collab-tool-row"
     bodyTestId="collab-tool-row-output"
     outputTestId="collab-tool-row-output-text"
-    emptyMessage="No stored output for this agent."
+    {emptyMessage}
   />
 {/if}

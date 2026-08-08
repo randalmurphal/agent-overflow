@@ -483,7 +483,7 @@ func settledTurnStatus(meta turnCompleteMeta) string {
 // frontend-bound `provider:item_event` upserts stay per-row so the
 // UI still updates each card independently.
 func (r *Router) forceCloseOrphanToolCalls(threadID string, turnIndex int, now int64) error {
-	flipped, err := r.store.ForceCloseRunningToolCallsInTurn(threadID, turnIndex, forceCloseSummary, now)
+	flipped, err := r.store.ForceCloseRunningToolCallsInTurn(threadID, turnIndex, ForceCloseSummary, now)
 	if err != nil {
 		return fmt.Errorf("force-close orphan tool calls: %w", err)
 	}
@@ -497,11 +497,11 @@ func (r *Router) forceCloseOrphanToolCalls(threadID string, turnIndex int, now i
 
 const forceCloseSuffix = " — turn ended with tool unresolved"
 
-// forceCloseSummary adds the force-close marker to the tool_call's
+// ForceCloseSummary adds the force-close marker to the tool_call's
 // summary. Idempotent — a second call leaves the string unchanged, so
 // a repeated turn-complete (Claude re-init → re-complete) doesn't
 // accumulate suffixes.
-func forceCloseSummary(summary string) string {
+func ForceCloseSummary(summary string) string {
 	summary = strings.TrimSpace(summary)
 	if summary == "" {
 		return "Turn ended with tool unresolved"
@@ -998,7 +998,7 @@ func (r *Router) clearActiveStreamBlocksForTurnLocked(threadID string, turnIndex
 	}
 	// streamingPathRefsLast is keyed by streamPersistKey
 	// (threadID|itemID). Assistant_text ids carry the turn index in
-	// their suffix (textItemID → "text:<turnIndex>:[scope:]<n>"), so
+	// their suffix (TextItemID → "text:<turnIndex>:[scope:]<n>"), so
 	// the prefix "threadID|text:<turnIndex>:" sweeps every entry this
 	// turn allocated — scoped (subagent) variants share the same
 	// turn-index segment because scope appears AFTER it.
@@ -1346,7 +1346,7 @@ func (r *Router) MarkUserInterrupt(threadID string, sampledTurnIndex int, tok Fl
 		return "", err
 	}
 	seq := r.nextErrorSequence(threadID, turnIndex, "")
-	errID := nextErrorID(turnIndex, "", seq)
+	errID := ErrorItemID(turnIndex, "", seq)
 	item := store.Item{
 		ID:        errID,
 		ThreadID:  threadID,

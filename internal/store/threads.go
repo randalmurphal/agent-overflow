@@ -33,7 +33,7 @@ const threadColumns = `id, COALESCE(project_id, ''),
     (SELECT MAX(completed_at) FROM turns
       WHERE turns.thread_id = threads.id AND completed_at IS NOT NULL),
     archived, last_read_at, pinned_at,
-    worktree_setup_state,
+    worktree_setup_state, import_source,
     EXISTS (
       SELECT 1
         FROM proposed_plans
@@ -87,6 +87,9 @@ var (
 	// ErrThreadProviderLocked is returned when a caller tries to switch a
 	// thread's provider after timeline items have been persisted.
 	ErrThreadProviderLocked = errors.New("store: thread provider locked")
+	// ErrInvalidImportSource is returned for an import provenance outside
+	// the migration v50 enum ("", "claude", "codex").
+	ErrInvalidImportSource = errors.New("store: invalid import source")
 )
 
 var legalEfforts = map[string]struct{}{
@@ -134,6 +137,18 @@ func validContextWindow(tokens int) bool {
 	return tokens > 0
 }
 
+// validImportSource mirrors the migration v50 CHECK. Only the two
+// importable providers are legal: claude-tui shares claude's binary but has
+// no session files of its own to import from.
+func validImportSource(source string) bool {
+	switch source {
+	case "", "claude", "codex":
+		return true
+	default:
+		return false
+	}
+}
+
 func validAutoCompactPercent(percent int) bool {
 	return percent >= 0 && percent <= 90
 }
@@ -150,7 +165,7 @@ func scanThread(scanner interface{ Scan(...any) error }) (Thread, error) {
 		&t.AutoCompactStandardPercent, &t.AutoCompactExtendedPercent, &t.RuntimeMode,
 		&t.DiscussionID, &t.ParentThreadID, &t.ForkedFromThreadID, &t.LastTokenUsage,
 		&t.CreatedAt, &t.UpdatedAt, &latestTurnCompletedAt, &archived, &lastReadAt, &pinnedAt,
-		&t.WorktreeSetupState,
+		&t.WorktreeSetupState, &t.ImportSource,
 		&hasActionableProposedPlan, &hasIncompleteTurn, &isDraft,
 	); err != nil {
 		return Thread{}, err
@@ -212,6 +227,9 @@ func prepareThreadForCreate(t Thread) (Thread, any, error) {
 	if !validAutoCompactPercent(t.AutoCompactExtendedPercent) {
 		return Thread{}, nil, fmt.Errorf("%w: %d", ErrInvalidAutoCompactPercent, t.AutoCompactExtendedPercent)
 	}
+	if !validImportSource(t.ImportSource) {
+		return Thread{}, nil, fmt.Errorf("%w: %q", ErrInvalidImportSource, t.ImportSource)
+	}
 	lastReadAt := t.LastReadAt
 	if lastReadAt == nil {
 		lastReadAt = &t.CreatedAt
@@ -226,8 +244,8 @@ func insertThread(execer threadExecer, t Thread, lastReadAtArg any) error {
 		    mode, reasoning_effort, fast_mode, context_window,
 		    auto_compact_standard_percent, auto_compact_extended_percent, runtime_mode,
 		    discussion_id, parent_thread_id, forked_from_thread_id, last_token_usage,
-		    created_at, updated_at, archived, last_read_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		    created_at, updated_at, archived, last_read_at, import_source)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		t.ID, nilIfEmpty(t.ProjectID), t.Title, t.Provider, t.Model,
 		t.WorkspacePath, nilIfEmpty(t.WorktreePath), nilIfEmpty(t.Branch),
 		t.PRRef,
@@ -235,7 +253,7 @@ func insertThread(execer threadExecer, t Thread, lastReadAtArg any) error {
 		t.Mode, t.ReasoningEffort, boolToInt(t.FastMode), t.ContextWindow,
 		t.AutoCompactStandardPercent, t.AutoCompactExtendedPercent, t.RuntimeMode,
 		nilIfEmpty(t.DiscussionID), nilIfEmpty(t.ParentThreadID), nilIfEmpty(t.ForkedFromThreadID), t.LastTokenUsage,
-		t.CreatedAt, t.UpdatedAt, boolToInt(t.Archived), lastReadAtArg,
+		t.CreatedAt, t.UpdatedAt, boolToInt(t.Archived), lastReadAtArg, t.ImportSource,
 	)
 	return err
 }
@@ -566,6 +584,10 @@ func (s *Store) ListBlockedThreadWorkspaceRefsForProject(projectID string) ([]Th
 	return refs, rows.Err()
 }
 
+// updateThreadSetSQL deliberately omits worktree_setup_state (owned by its
+// own writer) and import_source (write-once provenance): a whole-row
+// UpdateThread issued by any workspace/model/title path must not be able to
+// rewrite either.
 const updateThreadSetSQL = `UPDATE threads SET project_id=?, title=?, provider=?, model=?,
     workspace_path=?, worktree_path=?, branch=?, pr_ref=?, session_ref=?, pending_fork_session_ref=?,
     mode=?, reasoning_effort=?, fast_mode=?, context_window=?,

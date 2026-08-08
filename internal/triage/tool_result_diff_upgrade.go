@@ -71,7 +71,7 @@ func (r *Router) upgradeSummaryOnlyToolResults(threadID string, turnIndex int, t
 			CreatedAt: now,
 		}
 		candidate.item.PayloadID = candidate.payloadID
-		candidate.item.Summary = summarizeToolResult(candidate.meta)
+		candidate.item.Summary = SummarizeToolResult(candidate.meta)
 		candidate.item.UpdatedAt = now
 		if err := r.persistItem(candidate.item, &payload); err != nil {
 			return false, fmt.Errorf("persist upgraded tool result item: %w", err)

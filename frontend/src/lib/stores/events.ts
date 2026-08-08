@@ -17,6 +17,9 @@
 //   - eventsNotification.ts  — OS activation routing + cold-start queue
 //   - eventsHighlight.ts     — highlight:seed span ingest (remote clients)
 //   - eventsWorktreeSetup.ts — worktree:setup run stream + snapshot resync
+//   - eventsSessionImport.ts — session-import:progress run frames (+ the
+//                              transport-loss end condition a run has no
+//                              other way to learn about)
 //
 // This file itself stays a thin fan-in: channel names, generics, and the
 // teardown order live here; the reaction logic lives in the domain modules.
@@ -122,6 +125,7 @@ import {
   type DiscussionStateEvent,
 } from './eventsDiscussion';
 import { applyPRReviewUpdated } from './eventsPRReview';
+import { setupSessionImportEvents } from './eventsSessionImport';
 import {
   applyHighlightSeed,
   applyHighlightDiffSeed,
@@ -466,6 +470,12 @@ export function setupEventListeners(): () => void {
     'workflow:definitions-changed', applyWorkflowDefinitionsChangedEvent,
   );
 
+  // session-import:progress — one frame per session an import run finishes
+  // plus exactly one terminal frame. Its own module because consuming the
+  // channel also means watching the connection: a dropped transport is the
+  // run's other terminal condition and nothing replays the frames it ate.
+  const cancelSessionImport = setupSessionImportEvents();
+
   // highlight:seed — backend-pushed syntax spans for streaming code
   // fences. Remote-only by transport filtering; loopback clients never
   // see this channel (they highlight via the local RPC round trip).
@@ -522,6 +532,7 @@ export function setupEventListeners(): () => void {
     cancelWorkflowEngineState();
     cancelWorkflowSoftStop();
     cancelWorkflowDefinitions();
+    cancelSessionImport();
     cancelHighlightSeed();
     cancelHighlightDiffSeed();
     clearAllDesignThrottles();

@@ -194,7 +194,7 @@ func (r *Router) persistTimelineNotification(evt provider.ProviderEvent, notific
 	turnIndex := r.timelineNotificationTurnIndex(evt.ThreadID)
 	itemID := eventItemID(evt)
 	if strings.TrimSpace(itemID) == "" {
-		itemID = nextTimelineNotificationID(turnIndex, r.nextNotificationSequence(evt.ThreadID, turnIndex))
+		itemID = NotificationItemID(turnIndex, r.nextNotificationSequence(evt.ThreadID, turnIndex))
 	}
 	_, err := r.persistTimelineNotificationWithID(evt, itemID, notificationKind, summary)
 	return err
@@ -276,7 +276,9 @@ func (r *Router) nextScopeSequence(threadID string, turnIndex int, label string)
 	return seq
 }
 
-func nextTimelineNotificationID(turnIndex, seq int) string {
+// NotificationItemID is the id of a timeline `notification` row that
+// carried no provider id of its own: the Nth notification of a turn.
+func NotificationItemID(turnIndex, seq int) string {
 	return fmt.Sprintf("notification:%d:%d", turnIndex, seq)
 }
 

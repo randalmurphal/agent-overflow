@@ -81,14 +81,14 @@ func TestDiffPayloadObserverToolResults(t *testing.T) {
 	}
 	exact := (*calls)[0]
 	mu.Unlock()
-	if exact.payloadID != toolResultPayloadID("item-exact") {
-		t.Fatalf("observer payload id = %q, want %q", exact.payloadID, toolResultPayloadID("item-exact"))
+	if exact.payloadID != ToolResultPayloadID("item-exact") {
+		t.Fatalf("observer payload id = %q, want %q", exact.payloadID, ToolResultPayloadID("item-exact"))
 	}
 	if !strings.HasPrefix(exact.previews[0], "diff --git a/src/app.py b/src/app.py") ||
 		!strings.Contains(exact.previews[0], "+    pass") {
 		t.Fatalf("exact preview patch wrong: %q", exact.previews[0])
 	}
-	meta := readToolResultMeta(t, st, toolResultPayloadID("item-exact"))
+	meta := readToolResultMeta(t, st, ToolResultPayloadID("item-exact"))
 	if len(meta.InlineDiff.Files) != 1 || meta.InlineDiff.Files[0].PreviewPatch != exact.previews[0] {
 		t.Fatalf("observer preview must equal the persisted meta's PreviewPatch")
 	}
@@ -162,10 +162,10 @@ func TestDiffPayloadObserverToolResults(t *testing.T) {
 		t.Fatalf("expected upgrade observation, got %#v", *calls)
 	}
 	upgrade := (*calls)[1]
-	if upgrade.payloadID != toolResultPayloadID("item-summary") {
-		t.Fatalf("upgrade payload id = %q, want %q", upgrade.payloadID, toolResultPayloadID("item-summary"))
+	if upgrade.payloadID != ToolResultPayloadID("item-summary") {
+		t.Fatalf("upgrade payload id = %q, want %q", upgrade.payloadID, ToolResultPayloadID("item-summary"))
 	}
-	upgraded := readToolResultMeta(t, st, toolResultPayloadID("item-summary"))
+	upgraded := readToolResultMeta(t, st, ToolResultPayloadID("item-summary"))
 	if upgraded.InlineDiff.Availability != "exact_patch" {
 		t.Fatalf("upgrade did not land: %+v", upgraded.InlineDiff)
 	}

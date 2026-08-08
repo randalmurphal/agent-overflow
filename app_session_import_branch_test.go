@@ -1,0 +1,259 @@
+//go:build !providersmoke
+
+package main
+
+import (
+	"bufio"
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"slices"
+	"sort"
+	"testing"
+
+	"agent-overflow/internal/provider"
+	"agent-overflow/internal/store"
+)
+
+// transcriptRows reads a Claude session file back as decoded rows.
+func transcriptRows(t *testing.T, path string) []map[string]any {
+	t.Helper()
+	file, err := os.Open(path)
+	if err != nil {
+		t.Fatalf("open %s: %v", path, err)
+	}
+	defer file.Close()
+	var rows []map[string]any
+	scanner := bufio.NewScanner(file)
+	scanner.Buffer(make([]byte, 1<<20), 8<<20)
+	for scanner.Scan() {
+		var row map[string]any
+		if err := json.Unmarshal(scanner.Bytes(), &row); err != nil {
+			t.Fatalf("decode row in %s: %v", path, err)
+		}
+		rows = append(rows, row)
+	}
+	if err := scanner.Err(); err != nil {
+		t.Fatalf("scan %s: %v", path, err)
+	}
+	return rows
+}
+
+func threadsBySessionRef(threads []store.Thread) (active store.Thread, abandoned store.Thread, ok bool) {
+	for _, thread := range threads {
+		if thread.SessionRef == "" {
+			abandoned = thread
+		} else {
+			active = thread
+		}
+	}
+	return active, abandoned, active.ID != "" && abandoned.ID != ""
+}
+
+// A multi-branch Claude transcript imports as one thread per branch, and only
+// the file's active branch can carry the session id — `claude --resume`
+// reopens that branch and nothing else. This pins the other half of the
+// locked decision: the abandoned branches stay continuable, by cutting their
+// own session file out of the source on first start.
+func TestImportedClaudeBranchesSplitTheSessionRef(t *testing.T) {
+	app := newTestAppWithStore(t)
+	home := newImportHome(t)
+	home.attach(app)
+	home.claudeBranchedSession(t, importFixtureClaudeBranchy)
+
+	threads := importOneClaudeSession(t, app, home, importFixtureClaudeBranchy)
+	if len(threads) != 2 {
+		t.Fatalf("threads = %d, want one per branch", len(threads))
+	}
+	active, abandoned, ok := threadsBySessionRef(threads)
+	if !ok {
+		t.Fatalf("threads = %+v, want exactly one with a session ref", threads)
+	}
+	if active.SessionRef != importFixtureClaudeBranchy {
+		t.Fatalf("active branch sessionRef = %q, want the source session %q",
+			active.SessionRef, importFixtureClaudeBranchy)
+	}
+	state, found, err := app.store.GetThreadImportState(abandoned.ID)
+	if err != nil || !found {
+		t.Fatalf("GetThreadImportState(%s) = %v, %v", abandoned.ID, found, err)
+	}
+	if state.LeafUUID != "a2a" {
+		t.Fatalf("abandoned branch leaf = %q, want the first branch's leaf a2a", state.LeafUUID)
+	}
+}
+
+func TestImportedClaudeBranchGetsItsOwnSessionOnFirstStart(t *testing.T) {
+	app := newTestAppWithStore(t)
+	home := newImportHome(t)
+	home.attach(app)
+	home.claudeBranchedSession(t, importFixtureClaudeBranchy)
+
+	threads := importOneClaudeSession(t, app, home, importFixtureClaudeBranchy)
+	active, abandoned, ok := threadsBySessionRef(threads)
+	if !ok {
+		t.Fatalf("threads = %+v, want exactly one with a session ref", threads)
+	}
+
+	// This is what the session-start path calls before it builds its options.
+	materialized := app.materializeImportedClaudeBranch(abandoned)
+	if materialized.SessionRef == "" {
+		t.Fatal("abandoned branch got no session ref; it would start a fresh session with no history")
+	}
+	if materialized.SessionRef == importFixtureClaudeBranchy {
+		t.Fatal("abandoned branch was pointed at the source session, which resumes the OTHER branch")
+	}
+	stored, err := app.store.GetThread(abandoned.ID)
+	if err != nil {
+		t.Fatalf("GetThread: %v", err)
+	}
+	if stored.SessionRef != materialized.SessionRef {
+		t.Fatalf("stored sessionRef = %q, want the materialized %q", stored.SessionRef, materialized.SessionRef)
+	}
+	if stored.ImportSource != "claude" {
+		t.Errorf("importSource = %q, want it preserved across the update", stored.ImportSource)
+	}
+
+	// The session-start path resumes that id directly — no --fork-session,
+	// which would fork the SOURCE at its tail (the wrong branch).
+	opts := provider.SessionOptionsFromThread(
+		stored, provider.AutoCompactDefaults{}, "", stored.PendingForkRef != "")
+	if opts.Resume != materialized.SessionRef || opts.ForkSession {
+		t.Fatalf("session options = {Resume:%q ForkSession:%v}, want a plain resume of %q",
+			opts.Resume, opts.ForkSession, materialized.SessionRef)
+	}
+
+	// The cut file is a complete session whose LAST transcript row is this
+	// branch's leaf — which is what makes it the file's active branch, and so
+	// the one a resume lands on. The row carries the leaf as its fork
+	// provenance because every uuid is reminted.
+	cut := home.claudeSessionPath(materialized.SessionRef)
+	rows := transcriptRows(t, cut)
+	if len(rows) == 0 {
+		t.Fatalf("cut session %s is empty", cut)
+	}
+	var lastTranscript map[string]any
+	for _, row := range rows {
+		switch row["type"] {
+		case "user", "assistant", "system", "attachment":
+			lastTranscript = row
+		}
+	}
+	if lastTranscript == nil {
+		t.Fatalf("cut session %s has no transcript rows", cut)
+	}
+	provenance, _ := lastTranscript["forkedFrom"].(map[string]any)
+	if provenance["messageUuid"] != "a2a" {
+		t.Fatalf("cut session's last row came from %v, want the branch leaf a2a", provenance["messageUuid"])
+	}
+	if lastTranscript["sessionId"] != materialized.SessionRef {
+		t.Fatalf("cut session rows claim session %v, want %q",
+			lastTranscript["sessionId"], materialized.SessionRef)
+	}
+	// The other branch's rows are not in the cut: the slice stops at the leaf.
+	for _, row := range rows {
+		if from, _ := row["forkedFrom"].(map[string]any); from != nil && from["messageUuid"] == "a2b" {
+			t.Fatal("the cut session carried the other branch's leaf; a resume would see both")
+		}
+	}
+
+	// Idempotent for a thread that already has a ref: the active branch and a
+	// second start on the same thread both pass through untouched.
+	if got := app.materializeImportedClaudeBranch(active); got.SessionRef != active.SessionRef {
+		t.Fatalf("active branch sessionRef changed to %q; it already resumes correctly", got.SessionRef)
+	}
+	if got := app.materializeImportedClaudeBranch(stored); got.SessionRef != stored.SessionRef {
+		t.Fatalf("second start minted another session %q; the first cut is the thread's session", got.SessionRef)
+	}
+}
+
+// A thread AO created itself must never be touched by the branch materializer
+// — it has no import state, and a stray session file would be worse than the
+// fresh session it is entitled to.
+func TestMaterializeImportedClaudeBranchIgnoresOrdinaryThreads(t *testing.T) {
+	app := newTestAppWithStore(t)
+	thread := testThread("thread-plain")
+	thread.Provider = string(provider.Claude)
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+	if got := app.materializeImportedClaudeBranch(thread); got.SessionRef != "" {
+		t.Fatalf("sessionRef = %q, want an AO-created thread left alone", got.SessionRef)
+	}
+}
+
+// The source transcript can be gone by the time the user sends. That degrades
+// to a fresh session — the thread's own history is in SQLite either way — and
+// must not fail the start.
+func TestMaterializeImportedClaudeBranchDegradesWhenTheSourceIsGone(t *testing.T) {
+	app := newTestAppWithStore(t)
+	home := newImportHome(t)
+	home.attach(app)
+	home.claudeBranchedSession(t, importFixtureClaudeBranchy)
+
+	threads := importOneClaudeSession(t, app, home, importFixtureClaudeBranchy)
+	_, abandoned, ok := threadsBySessionRef(threads)
+	if !ok {
+		t.Fatalf("threads = %+v, want exactly one with a session ref", threads)
+	}
+	if err := os.Remove(home.claudeSessionPath(importFixtureClaudeBranchy)); err != nil {
+		t.Fatalf("remove transcript: %v", err)
+	}
+	if got := app.materializeImportedClaudeBranch(abandoned); got.SessionRef != "" {
+		t.Fatalf("sessionRef = %q, want no ref when the source is gone", got.SessionRef)
+	}
+}
+
+// claudeSessionFiles lists the transcripts in the fixture project directory,
+// which is where a cut branch would land.
+func claudeSessionFiles(t *testing.T, home importHome) []string {
+	t.Helper()
+	matches, err := filepath.Glob(filepath.Join(home.claudeProjectDir(), "*.jsonl"))
+	if err != nil {
+		t.Fatalf("glob transcripts: %v", err)
+	}
+	sort.Strings(matches)
+	return matches
+}
+
+// The transcript can still be there while the branch this thread was cut from
+// is not — the user rewound the session in Claude, or compaction rewrote the
+// file. The materializer must degrade exactly as it does for a missing file:
+// no ref, no half-written transcript left behind in the user's Claude home.
+func TestMaterializeImportedClaudeBranchDegradesWhenTheLeafIsGone(t *testing.T) {
+	app := newTestAppWithStore(t)
+	home := newImportHome(t)
+	home.attach(app)
+	home.claudeBranchedSession(t, importFixtureClaudeBranchy)
+
+	threads := importOneClaudeSession(t, app, home, importFixtureClaudeBranchy)
+	_, abandoned, ok := threadsBySessionRef(threads)
+	if !ok {
+		t.Fatalf("threads = %+v, want exactly one with a session ref", threads)
+	}
+
+	// Rewrite the source without the abandoned branch: its leaf a2a no longer
+	// names a row in the file the thread's import state points at.
+	home.writeClaudeSession(t, importFixtureClaudeBranchy,
+		home.claudeUserRow("u1", "", "add a test", 0),
+		home.claudeAssistantRow("a1", "u1", "msg-1", "Added it.", 1_000),
+		home.claudeUserRow("u2b", "a1", "now benchmark it", 4_000),
+		home.claudeAssistantRow("a2b", "u2b", "msg-2b", "Benchmarked.", 5_000),
+		claudeLastPrompt("a2b", "now benchmark it"),
+	)
+	before := claudeSessionFiles(t, home)
+
+	got := app.materializeImportedClaudeBranch(abandoned)
+	if got.SessionRef != "" {
+		t.Fatalf("sessionRef = %q, want no ref when the leaf is no longer in the file", got.SessionRef)
+	}
+	stored, err := app.store.GetThread(abandoned.ID)
+	if err != nil {
+		t.Fatalf("GetThread: %v", err)
+	}
+	if stored.SessionRef != "" {
+		t.Fatalf("stored sessionRef = %q, want the row left alone on a degrade", stored.SessionRef)
+	}
+	if after := claudeSessionFiles(t, home); !slices.Equal(before, after) {
+		t.Fatalf("transcripts = %v, want %v — a failed cut must leave no orphan session file", after, before)
+	}
+}

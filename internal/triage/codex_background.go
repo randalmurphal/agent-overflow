@@ -494,8 +494,8 @@ func (r *Router) observeCodexToolStart(evt provider.ProviderEvent) bool {
 			}
 			return true
 		}
-		startMeta := decodeToolStartMeta(evt.Meta)
-		summary := buildToolCallSummary(startMeta, evt.ItemType)
+		startMeta := DecodeToolStartMeta(evt.Meta)
+		summary := BuildToolCallSummary(startMeta, evt.ItemType)
 		if strings.TrimSpace(summary) == "" {
 			summary = "Bash"
 		}
@@ -1000,8 +1000,8 @@ func (r *Router) observeCodexUnifiedExecComplete(evt provider.ProviderEvent) (bo
 }
 
 func (r *Router) persistCodexUnifiedExecCommand(evt provider.ProviderEvent, tracker unifiedExecTracker, turnIndex int) error {
-	meta := decodeToolStartMeta(evt.Meta)
-	summary := buildToolCallSummary(meta, evt.ItemType)
+	meta := DecodeToolStartMeta(evt.Meta)
+	summary := BuildToolCallSummary(meta, evt.ItemType)
 	if strings.TrimSpace(summary) == "" {
 		summary = tracker.summary
 	}
@@ -1013,7 +1013,7 @@ func (r *Router) persistCodexUnifiedExecCommand(evt provider.ProviderEvent, trac
 		Kind:      itemKindToolCall,
 		Role:      "assistant",
 		Status:    tracker.status,
-		Summary:   buildCompletionSummary(summary, decodeToolCompleteMeta(evt.Meta)),
+		Summary:   BuildCompletionSummary(summary, DecodeToolCompleteMeta(evt.Meta)),
 		ParentID:  tracker.parentID,
 		ToolName:  "command_execution",
 		Meta:      validJSONObjectString(mergeRawJSONObject(tracker.meta, evt.Meta)),
@@ -1686,7 +1686,7 @@ func (r *Router) observeCodexSubagentNotification(evt provider.ProviderEvent) er
 func codexMailboxCompletionID(launchID, deliveryID string) string {
 	deliveryID = strings.TrimSpace(deliveryID)
 	if deliveryID == "" {
-		return nextToolCompletionID(launchID)
+		return ToolCompletionID(launchID)
 	}
 	digest := sha256.Sum256([]byte(deliveryID))
 	return fmt.Sprintf("complete:%s:delivery:%x", launchID, digest[:8])
@@ -1786,7 +1786,7 @@ func (r *Router) synthesizeCodexBackgroundCompletion(evt provider.ProviderEvent,
 
 	completionID := strings.TrimSpace(opts.completionID)
 	if completionID == "" {
-		completionID = nextToolCompletionID(launch.ID)
+		completionID = ToolCompletionID(launch.ID)
 	}
 	completion := store.Item{
 		ID:           completionID,
@@ -1842,7 +1842,7 @@ func attachCodexBackgroundCompletionPayload(
 		return nil
 	}
 
-	payload := completionPayload(completion.ID, evt, decodeToolCompleteMeta(evt.Meta), now)
+	payload := completionPayload(completion.ID, evt, DecodeToolCompleteMeta(evt.Meta), now)
 	if payload == nil {
 		return nil
 	}
@@ -1860,7 +1860,7 @@ func (r *Router) reusableCodexWaitPayloadID(evt provider.ProviderEvent, content 
 	if strings.TrimSpace(content) == "" || strings.TrimSpace(content) != strings.TrimSpace(evt.Content) {
 		return ""
 	}
-	waitRow, found, err := r.store.GetThreadItem(evt.ThreadID, nextToolCompletionID(evt.ItemID))
+	waitRow, found, err := r.store.GetThreadItem(evt.ThreadID, ToolCompletionID(evt.ItemID))
 	if err != nil {
 		log.Printf("triage: codex-background wait payload lookup %s: %v", evt.ItemID, err)
 		return ""

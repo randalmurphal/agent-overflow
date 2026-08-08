@@ -155,6 +155,11 @@ none fits.
   resolver stamps `work_item_id`; registrations exist only while a phase turn
   can settle, so ordinary threads remain unattributed. Ledger append failure
   is error-logged, never dropped silently.
+- `shape.go` — the exported, Router-free row-shape surface: wire meta
+  in, `store.Item` / `store.Payload` field values out. Tool-call summary
+  / status / result-payload builders, the `ToolStartMeta` /
+  `ToolCompleteMeta` decoded wire shapes, and the deterministic row-id
+  constructors. See "Exported shape surface" below before editing.
 - `meta.go` — shared JSON-inspection helpers.
 - `dev_server_url.go` — `DetectDevServerURL`: finds the loopback URL a
   command announced ("Local: http://localhost:5173"), so a collapsed
@@ -268,6 +273,71 @@ Load-bearing reminders:
 - Re-round paths (`maybeReopenSettledRound`) must not call
   `setOpenTurn`; that would reset id-allocating counters and collide
   with rows already persisted under the same logical turn.
+
+## Exported shape surface
+
+Triage is no longer the only writer of AO's timeline rows.
+`internal/sessionimport` replays historical provider sessions
+(`~/.claude` transcripts, `~/.codex` rollouts) straight into SQLite and
+deliberately does NOT drive `Router`: the Router has live-only side
+effects (session-ref updates, activity marks, `now()`-stamped usage,
+async settle goroutines) and would persist imported prompts as "Injected
+provider context" notifications. The only thing keeping an imported
+thread from rendering differently than a live one is that both call the
+same shaping code, so the pure helpers are exported rather than
+duplicated.
+
+The surface, and the rules that come with it:
+
+- `shape.go` — `ToolStartMeta` / `ToolCompleteMeta` +
+  `DecodeToolStartMeta` / `DecodeToolCompleteMeta`,
+  `StoredToolCallMeta`, `BuildToolCallSummary`,
+  `BuildCompletionSummary`, `CompletionBaseSummary`,
+  `CompletionSuffix`, `CompletionStatus`, `CompletionPayloadForTool`,
+  `CommandCompletionPayload`, and the row-id constructors `TextItemID`,
+  `ThinkingItemID`, `ErrorItemID`, `ToolCompletionID`,
+  `AssistantTextPayloadID`, `ThinkingPayloadID`.
+- `tool_meta_rules.go` — `ShapeToolItemMeta(item, now)`, the pure core.
+  The `(*Router).shapeToolItemMeta` wrapper adds nothing but the
+  log-and-keep-going policy for a shaping error; import owns its own.
+- Pure helpers that stayed in the lifecycle file that owns their
+  concern, because their private twin sits right next to them:
+  `CompactionItemID` / `NormalizeProviderCompactionID` +
+  `ExtractCompactionSummary` / `BuildCompactionPayload`
+  (`usage_compaction.go`), `CanonicalStopReason` (`turn_events.go`),
+  `BuildCommandResultRow` / `CommandResultItemID`
+  (`command_result.go`), `ForceCloseSummary` (`turn_lifecycle.go` —
+  invariant 23's marker; the import applies the same settle at its own
+  turn boundaries, since an imported thread has no live session to
+  settle a stuck tool_call later), `APIErrorEnum` +
+  `ClampErrorSummary` (`router.go`), `SummarizeToolResult` /
+  `ToolResultPayloadID` / `ExtractFileChangeToolResult`
+  (`tool_result_file_change.go`), `IsFileChangeItemType` /
+  `IsClaudeFilePathTool` (`tool_paths.go`), `NotificationItemID`
+  (`timeline_notifications.go`), `CommandFromLaunch`
+  (`background_task_notifications.go`), `MergeStoredToolCallMeta`
+  (`tool_lifecycle.go`), `BuildPayloadMeta` (`payload_items.go`), and
+  `ThinkingSummaryPreview` (`stream_items.go`). Same rules as
+  `shape.go`: pure, and a change to one changes both writers.
+- Already exported and reused as-is: `ExtractDiffMeta`,
+  `ExtractCommandOutputMeta(WithError)`, `ExtractThinkingMeta`,
+  `ExtractCompactionMeta`, `ExtractProposedPlanMeta`, `ToolResultMeta`,
+  `ToolInlineDiff(File)`, and the Claude file-change extractors
+  `ExtractClaudeFileChangeToolResult` / `ExtractClaudeLaunchFilePath`.
+
+Editing rules:
+
+- These stay PURE — no Router receiver, no store access, no clock, no
+  logging. A helper that needs correlation state belongs in the
+  lifecycle file that owns that state; only its pure core belongs here.
+- Changing an id format or a summary/status rule changes BOTH writers at
+  once. That is the point. `internal/sessionimport`'s parity test routes
+  synthetic events through the real `Router` and through the import
+  writer and asserts identical rows modulo ids and timestamps, so it is
+  the gate that catches a shape change made on only one side.
+- Do not "fix" a shape for import alone. If import needs a different
+  row, that is a routing decision and belongs in the importer, not in a
+  branch inside a shared helper.
 
 ## Responsibility boundary
 

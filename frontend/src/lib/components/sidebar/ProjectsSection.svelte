@@ -27,6 +27,9 @@
     openDraftThreadForProject,
     openTerminalThread,
   } from '../../stores/threadCreation.svelte';
+  import { openSessionImport } from '../../stores/sessionImport.svelte';
+  import { isViewOnlySession } from '../../transport/runMode';
+  import History from '@lucide/svelte/icons/history';
   import Plus from '@lucide/svelte/icons/plus';
   import IconButton from '../primitives/IconButton.svelte';
   import Icon from '../primitives/Icon.svelte';
@@ -48,6 +51,11 @@
 
   let addProjectOpen = $state(false);
   let flashProjectId: string | null = $state(null);
+
+  // Session import reads provider session files off the local disk, so the
+  // trigger is inert in a view-only session (the store refuses the RPC too —
+  // this is the visible half of that guard, not the whole of it).
+  let importViewOnly = $derived(isViewOnlySession());
 
   // Normalise the search query once per derivation so every filter path
   // uses the same lowercase form.
@@ -239,6 +247,19 @@
     <MicroLabel as="h2" class="flex-1 select-none">Projects</MicroLabel>
     <ProjectSortMenu />
     <IconButton
+      label="Import Sessions"
+      title={importViewOnly ? 'Local only' : undefined}
+      size="sm"
+      disabled={importViewOnly}
+      onClick={openSessionImport}
+    >
+      {#snippet children()}
+        <span data-testid="sidebar-import-sessions-icon" class="flex items-center">
+          <Icon icon={History} size={13} strokeWidth={2} class="opacity-80" />
+        </span>
+      {/snippet}
+    </IconButton>
+    <IconButton
       label="Add Project"
       size="sm"
       onClick={handleAddClick}
@@ -276,3 +297,10 @@
   onDuplicate={(id) => flashProject(id)}
   onCreated={(p) => flashProject(p.id)}
 />
+<!--
+  The import surface itself is NOT mounted here. Sidebar renders this
+  section only while expanded, so a mod+b collapse would unmount the modal
+  mid-run. It hangs off App.svelte with the other store-gated overlays; this
+  header owns the trigger only.
+-->
+

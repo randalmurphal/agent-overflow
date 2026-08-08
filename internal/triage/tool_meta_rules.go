@@ -245,7 +245,28 @@ func stringSet(values []string) map[string]struct{} {
 	return out
 }
 
-// shapeToolItemMeta bounds item.Meta in place and returns the optional
+// shapeToolItemMeta is the Router-side wrapper over ShapeToolItemMeta.
+// It exists only so shape errors are logged against the triage
+// subsystem: a failing registry entry must not abort the launch, but it
+// must be loud. Every triage persist path goes through this wrapper;
+// out-of-package callers (session import) use ShapeToolItemMeta and own
+// the error.
+func (r *Router) shapeToolItemMeta(item *store.Item, now int64) *store.Payload {
+	if item == nil {
+		return nil
+	}
+	payload, err := ShapeToolItemMeta(item, now)
+	if err != nil {
+		// Failure here is non-fatal: keep the launch event going with
+		// the un-shaped meta, but log loudly so we notice and can fix
+		// the registry entry.
+		log.Printf("triage: shape tool meta for %s/%s: %v", strings.TrimSpace(item.ToolName), item.ID, err)
+		return nil
+	}
+	return payload
+}
+
+// ShapeToolItemMeta bounds item.Meta in place and returns the optional
 // tool_call_input payload to persist alongside the item. Two stages
 // apply: the itemmeta trims cap completion echoes, Codex collab
 // agentsStates messages, and encrypted V2 prompt blobs for every tool; then
@@ -263,22 +284,21 @@ func stringSet(values []string) map[string]struct{} {
 //     existing payload is canonical.
 //
 // Tool calls without a registry entry, with non-decodable meta, or
-// without a meta.input field are returned unchanged.
-//
-// This is a Router method only because shape errors should be logged
-// against the triage subsystem; the trim work itself lives in
-// applyToolMetaRule and stays a pure function.
-func (r *Router) shapeToolItemMeta(item *store.Item, now int64) *store.Payload {
+// without a meta.input field are returned unchanged. A shaping error
+// leaves item.Meta at the last successfully trimmed form and returns no
+// payload; callers decide whether that is fatal (triage logs and keeps
+// going — see the shapeToolItemMeta wrapper).
+func ShapeToolItemMeta(item *store.Item, now int64) (*store.Payload, error) {
 	if item == nil {
-		return nil
+		return nil, nil
 	}
 	toolName := strings.TrimSpace(item.ToolName)
 	if toolName == "" {
-		return nil
+		return nil, nil
 	}
 	raw := json.RawMessage(item.Meta)
 	if len(raw) == 0 {
-		return nil
+		return nil, nil
 	}
 	// Bound the completion-echo fields (tool_result / tool_use_result)
 	// and the Codex collab agentsStates messages before the per-tool
@@ -301,11 +321,7 @@ func (r *Router) shapeToolItemMeta(item *store.Item, now int64) *store.Payload {
 	}
 	trimmed, payload, err := applyToolMetaRule(toolName, raw, now)
 	if err != nil {
-		// Failure here is non-fatal: keep the launch event going with
-		// the un-shaped meta, but log loudly so we notice and can fix
-		// the registry entry.
-		log.Printf("triage: shape tool meta for %s/%s: %v", toolName, item.ID, err)
-		return nil
+		return nil, err
 	}
 	if len(trimmed) > 0 {
 		item.Meta = string(trimmed)
@@ -313,7 +329,7 @@ func (r *Router) shapeToolItemMeta(item *store.Item, now int64) *store.Payload {
 	if item.InputPayloadID != "" {
 		// Already has a canonical input payload from the launch row;
 		// drop the freshly-extracted one to avoid duplicate writes.
-		return nil
+		return nil, nil
 	}
-	return payload
+	return payload, nil
 }

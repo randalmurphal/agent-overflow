@@ -6,12 +6,17 @@
   //
   // `label` is both the aria-label (required for screen readers on
   // icon-only controls) AND the native title, so a hovering user sees the
-  // same thing the AT user hears.
+  // same thing the AT user hears. `title` overrides only the hover text,
+  // for the case where the tooltip has to explain why the control is
+  // unavailable ("Local only") while the aria-label still names the action.
 
   import type { Snippet } from 'svelte';
 
   interface Props {
     label: string;
+    /** Hover tooltip. Defaults to `label`; pass this only when the tooltip
+     *  must say something the aria-label shouldn't (e.g. a disabled reason). */
+    title?: string;
     disabled?: boolean;
     /** Optional `data-testid` stamp — mirrors Button's `testId` so icon-only
      *  controls can migrate to this primitive without losing their test hook. */
@@ -31,6 +36,7 @@
 
   let {
     label,
+    title,
     disabled = false,
     testId,
     onClick,
@@ -70,7 +76,7 @@
   aria-label={label}
   aria-haspopup={ariaHaspopup}
   aria-expanded={ariaExpanded}
-  title={label}
+  title={title ?? label}
   onclick={handleClick}
   onpointerdown={onPointerDown}
   class={[

@@ -167,6 +167,11 @@ over stdio.
   carrying `failureReason: "reauthenticationRequired"` resolves to
   needs-auth (which surfaces the existing Sign in action) instead of a
   dead error string.
+- `rollout/` — subpackage. Read-only reader for Codex's own on-disk state:
+  the `state_5.sqlite` thread index (session listing) and rollout JSONL
+  (parse → `internal/importir` events) behind session import. Spawns
+  nothing, writes nothing, and never resolves the Codex home itself. Has its
+  own subarea guide.
 
 ## Methods we call
 

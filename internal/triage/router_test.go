@@ -804,7 +804,7 @@ func TestExtractCompactionSummary(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			summary, rest := extractCompactionSummary(json.RawMessage(tc.meta))
+			summary, rest := ExtractCompactionSummary(json.RawMessage(tc.meta))
 			if summary != tc.wantSummary {
 				t.Errorf("summary = %q, want %q", summary, tc.wantSummary)
 			}
@@ -831,12 +831,12 @@ func TestExtractCompactionSummary(t *testing.T) {
 }
 
 func TestBuildCompactionPayload(t *testing.T) {
-	if p := buildCompactionPayload("", 100); p != nil {
+	if p := BuildCompactionPayload("", 100); p != nil {
 		t.Fatalf("empty summary must not build a payload, got %+v", p)
 	}
 
 	const summary = "The committed compaction summary."
-	p := buildCompactionPayload(summary, 100)
+	p := BuildCompactionPayload(summary, 100)
 	if p == nil {
 		t.Fatal("summary built no payload")
 	}

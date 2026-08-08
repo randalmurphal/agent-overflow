@@ -449,3 +449,49 @@ describe('<GenericToolCallRow> editor-link wiring', () => {
     expect(queryByText('done')).toBeInTheDocument();
   });
 });
+
+describe('<GenericToolCallRow> empty-body message', () => {
+  beforeEach(() => {
+    resetBindingMocks();
+  });
+
+  // A row that advertises a payload whose expansion resolves none lands in
+  // ExpandablePayloadBody's empty branch — where an imported item whose tool
+  // output the provider CLI garbage-collected also lands.
+  function renderWithUnresolvedPayload(item: Item) {
+    const handle = createPayloadExpansion(() => undefined, () => item.threadId);
+    const pane = { expansionStateFor: () => handle } as unknown as import('../../stores/thread.svelte').ThreadPane;
+    return render(GenericToolCallRow, { props: { pane, item } });
+  }
+
+  it('uses the row default when nothing marks the item as an import casualty', async () => {
+    const { getByTestId } = renderWithUnresolvedPayload(makeItem({
+      kind: 'tool_completion',
+      status: 'completed',
+      toolName: 'Bash',
+      payloadId: 'p-missing',
+    }));
+
+    await fireEvent.click(getByTestId('tool-call-card-toggle'));
+    await waitFor(() => {
+      expect(getByTestId('tool-call-card-body').textContent?.trim())
+        .toBe('No stored payload for this tool result.');
+    });
+  });
+
+  it('says the payload did not come across when the importer stamped the item', async () => {
+    const { getByTestId } = renderWithUnresolvedPayload(makeItem({
+      kind: 'tool_completion',
+      status: 'completed',
+      toolName: 'Bash',
+      payloadId: 'p-missing',
+      meta: JSON.stringify({ import_unavailable: 'tool-output-gc' }),
+    }));
+
+    await fireEvent.click(getByTestId('tool-call-card-toggle'));
+    await waitFor(() => {
+      expect(getByTestId('tool-call-card-body').textContent?.trim())
+        .toBe('Not available from import.');
+    });
+  });
+});

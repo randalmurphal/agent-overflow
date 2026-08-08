@@ -51,6 +51,39 @@ The tray is frontend state only. Background output accumulates in Go and
 flushes to SQLite on completion as a payload. No real-time delta streaming
 for background items.
 
+## The Second Writer: Session Import
+
+Triage is not the only thing that writes timeline rows. Session import
+(`internal/sessionimport`) reads a provider's own session file off disk and
+writes the same `items` / `payloads` / `turns` / `usage_ledger` rows for
+history that already happened. It is the only writer that does not have a
+live provider process behind it, which is what the differences follow from:
+
+- **It bypasses `triage.Router` on purpose.** The Router has live-only side
+  effects (session-ref updates, thread-activity bumps, `now()`-stamped usage,
+  async settle goroutines). The importer reuses triage's *exported, Router-free
+  shaping helpers* instead, so one definition of "what row does this event
+  become" serves both. `internal/sessionimport/parity_test.go` drives one
+  synthetic wire sequence per provider through both writers and asserts the
+  rows match.
+- **Nothing stamps `time.Now()`.** Every row carries the provider's own clock,
+  end to end, including `turns.completed_at`.
+- **It writes a whole session in one transaction** (`store.ApplyImportBatch`),
+  not per item. The persist-per-item rule above exists to bound crash loss
+  during a live turn; an import has nothing in flight to lose, and a 400-row
+  session costs one fsync instead of 400. A failure part-way leaves no
+  half-imported thread.
+- **It does not bump `threads.updated_at` or thread activity.** Floating every
+  imported thread to the top of the sidebar would contradict the timestamps it
+  just wrote.
+
+Where a live session's provider process is the source of truth for the turn,
+an imported thread's source of truth is the session FILE — which keeps
+growing after the import. `PlanUpdate` / `ApplyUpdate` re-read the tail from
+the cursor in `thread_import_state`, and refuse when the thread has since been
+resumed inside AO (the timeline and the file are then two different futures).
+See `internal/sessionimport/AGENTS.md`.
+
 ## Memory Model
 
 - **Go**: flat. Only the event currently being triaged is in memory.

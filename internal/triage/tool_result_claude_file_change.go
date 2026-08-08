@@ -32,7 +32,7 @@ import (
 	"github.com/pmezard/go-difflib/difflib"
 )
 
-// extractClaudeFileChangeToolResult translates a Claude EventToolComplete
+// ExtractClaudeFileChangeToolResult translates a Claude EventToolComplete
 // Meta into the same (ToolResultMeta, unified-diff bytes) shape the
 // Codex extractor returns. Returns ok=false when the wire shape doesn't
 // carry enough data to render — caller treats it as a no-op (typical
@@ -43,7 +43,7 @@ import (
 // tool_use_result entry doesn't carry the path itself. Real Claude
 // CLIs always populate it, so the fallback is a defensive safety
 // net for older versions or partial wire data.
-func extractClaudeFileChangeToolResult(rawMeta json.RawMessage, toolName, fallbackFilePath, workspaceRoot string) (ToolResultMeta, []byte, bool) {
+func ExtractClaudeFileChangeToolResult(rawMeta json.RawMessage, toolName, fallbackFilePath, workspaceRoot string) (ToolResultMeta, []byte, bool) {
 	if len(rawMeta) == 0 {
 		return ToolResultMeta{}, nil, false
 	}
@@ -302,7 +302,7 @@ func claudeNotebookSummaryOnly(normalizedPath string) (ToolResultMeta, []byte, b
 
 // finaliseClaudeFileChange runs the shared Codex pipeline and stamps
 // ItemType / Title / Preview onto the resulting meta the same way
-// extractFileChangeToolResult does for Codex.
+// ExtractFileChangeToolResult does for Codex.
 func finaliseClaudeFileChange(changes []fileChange) (ToolResultMeta, []byte, bool) {
 	if len(changes) == 0 {
 		return ToolResultMeta{}, nil, false
@@ -350,12 +350,12 @@ func claudeNotebookContentField(payload map[string]json.RawMessage, primary, sec
 	return rawString(payload, secondary)
 }
 
-// extractClaudeLaunchFilePath reads the file path the Claude tool
+// ExtractClaudeLaunchFilePath reads the file path the Claude tool
 // committed to write at start time. Used as a fallback when
 // tool_use_result doesn't carry the path. Sources are the persisted
 // `items.meta` shape produced by marshalToolMeta in
 // internal/provider/claude/parse_assistant.go: `{"toolName":"Edit","input":{"file_path":"..."}}`.
-func extractClaudeLaunchFilePath(metaJSON string) string {
+func ExtractClaudeLaunchFilePath(metaJSON string) string {
 	if metaJSON == "" {
 		return ""
 	}

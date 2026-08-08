@@ -30,7 +30,9 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "AutoResumeThread", ID: 4095667805},                     // main.App.AutoResumeThread
 	{Name: "BookmarkUIRenderTrace", ID: 1374242488},                // main.App.BookmarkUIRenderTrace
 	{Name: "BrowseDirectory", ID: 320967638},                       // main.App.BrowseDirectory
+	{Name: "CancelSessionImport", ID: 2562316972},                  // main.App.CancelSessionImport
 	{Name: "CheckForUpdate", ID: 2347956003},                       // main.App.CheckForUpdate
+	{Name: "CheckThreadImportUpdates", ID: 2932719708},             // main.App.CheckThreadImportUpdates
 	{Name: "CleanCodexBackgroundTerminals", ID: 16360282},          // main.App.CleanCodexBackgroundTerminals
 	{Name: "ClearDraft", ID: 296814681},                            // main.App.ClearDraft
 	{Name: "CloseTerminal", ID: 2702963191},                        // main.App.CloseTerminal
@@ -144,6 +146,8 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "HighlightPatch", ID: 834878499},                        // main.App.HighlightPatch
 	{Name: "HighlightPatchWithContext", ID: 3722752402},            // main.App.HighlightPatchWithContext
 	{Name: "HighlightSchemaVersion", ID: 2896867980},               // main.App.HighlightSchemaVersion
+	{Name: "ImportSessions", ID: 786331585},                        // main.App.ImportSessions
+	{Name: "ImportThreadUpdates", ID: 535929682},                   // main.App.ImportThreadUpdates
 	{Name: "IngestDiagnosticBatch", ID: 2606775930},                // main.App.IngestDiagnosticBatch
 	{Name: "InterruptAndRevertIfClean", ID: 753394581},             // main.App.InterruptAndRevertIfClean
 	{Name: "InterruptTurn", ID: 850013031},                         // main.App.InterruptTurn
@@ -158,6 +162,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "ListDiffReviewComments", ID: 3057473088},               // main.App.ListDiffReviewComments
 	{Name: "ListDiscussions", ID: 942288562},                       // main.App.ListDiscussions
 	{Name: "ListDiscussionsForThread", ID: 2502562885},             // main.App.ListDiscussionsForThread
+	{Name: "ListImportableSessions", ID: 99668597},                 // main.App.ListImportableSessions
 	{Name: "ListItems", ID: 2158085763},                            // main.App.ListItems
 	{Name: "ListItemsAfterCursor", ID: 2915892537},                 // main.App.ListItemsAfterCursor
 	{Name: "ListItemsAfterTurn", ID: 932754656},                    // main.App.ListItemsAfterTurn

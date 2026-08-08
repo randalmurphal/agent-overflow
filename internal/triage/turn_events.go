@@ -217,20 +217,20 @@ func wireTurnCompleteMeta(meta provider.WireTurnCompleteMeta) turnCompleteMeta {
 // values pass through untouched so a future provider extension isn't
 // silently rewritten to "error".
 func canonicalStopReason(meta turnCompleteMeta) string {
-	// Interruption always wins.
-	if meta.Aborted || meta.Truncated {
+	return CanonicalStopReason(meta.StopReason, meta.Aborted || meta.Truncated)
+}
+
+// CanonicalStopReason maps a provider-reported stop reason onto the
+// canonical set documented in turn-lifecycle.md, given whether the turn
+// was interrupted. Interruption always wins; an unknown value passes
+// through untouched so a future provider extension isn't silently
+// rewritten to "error".
+func CanonicalStopReason(stopReason string, interrupted bool) string {
+	if interrupted {
 		return "interrupted"
 	}
-	// Explicit provider-reported reason.
-	if r := meta.StopReason; r != "" {
-		switch r {
-		case "end_turn", "max_tokens", "tool_use", "stop_sequence", "refusal", "error", "interrupted":
-			return r
-		case "error_during_execution":
-			return "error"
-		default:
-			return r
-		}
+	if stopReason == "error_during_execution" {
+		return "error"
 	}
-	return ""
+	return stopReason
 }

@@ -125,27 +125,27 @@ func headItemIndexTx(tx *sql.Tx, threadID string, turnIndex int, label string) (
 	return int(minIndex.Int64) - 1, nil
 }
 
-func insertItemTx(exec sqlExecutor, item Item, label string) error {
-	if _, err := exec.Exec(
-		itemInsertSQL,
+// itemInsertArgs is the bind list itemInsertSQL takes, in column order.
+// It exists so the one-off inserts and the prepared-statement bulk path
+// (ApplyImportBatch) cannot drift into two different column orders.
+func itemInsertArgs(item Item) []any {
+	return []any{
 		item.ID, item.ThreadID, item.TurnIndex, item.ItemIndex, item.Kind, item.Role, item.Status, item.Summary,
 		nilIfEmpty(item.PayloadID), nilIfEmpty(item.InputPayloadID), item.ParentID,
 		boolToInt(item.IsBackground), item.CompletionOf, item.ToolName, item.Decision, item.Meta,
 		item.CreatedAt, item.UpdatedAt,
-	); err != nil {
+	}
+}
+
+func insertItemTx(exec sqlExecutor, item Item, label string) error {
+	if _, err := exec.Exec(itemInsertSQL, itemInsertArgs(item)...); err != nil {
 		return fmt.Errorf("%s: %w", label, err)
 	}
 	return nil
 }
 
 func insertItemWithIDTx(exec sqlExecutor, item Item, label string) error {
-	if _, err := exec.Exec(
-		itemInsertSQL,
-		item.ID, item.ThreadID, item.TurnIndex, item.ItemIndex, item.Kind, item.Role, item.Status, item.Summary,
-		nilIfEmpty(item.PayloadID), nilIfEmpty(item.InputPayloadID), item.ParentID,
-		boolToInt(item.IsBackground), item.CompletionOf, item.ToolName, item.Decision, item.Meta,
-		item.CreatedAt, item.UpdatedAt,
-	); err != nil {
+	if _, err := exec.Exec(itemInsertSQL, itemInsertArgs(item)...); err != nil {
 		return fmt.Errorf("%s %s: %w", label, item.ID, err)
 	}
 	return nil

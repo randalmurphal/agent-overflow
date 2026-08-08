@@ -240,7 +240,7 @@ func TestBuildForkLines_OnBranchAPIErrorIsNoop(t *testing.T) {
 // guard: an api_error landing as the fork's FIRST writable row has no
 // predecessor to chain to — forcing prevWritableNewUUID there would
 // stamp an empty-string parent, which is junk (neither a valid uuid nor
-// the null that marks a root). It keeps resolveParent's verdict
+// the null that marks a root). It keeps ResolveParent's verdict
 // instead: nil, because its stale parent is outside the slice.
 func TestBuildForkLines_FirstWritableAPIErrorNotRechained(t *testing.T) {
 	src := `{"type":"system","subtype":"api_error","uuid":"err0","parentUuid":"uuid-outside-slice","sessionId":"src","level":"error","retryAttempt":1,"error":{"message":"Connection error."}}

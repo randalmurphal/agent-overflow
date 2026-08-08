@@ -48,7 +48,7 @@ func (r *Router) handleTextDelta(evt provider.ProviderEvent) error {
 		now = time.Now().UnixMilli()
 	}
 
-	payloadID := assistantTextPayloadID(evt.ThreadID, itemID)
+	payloadID := AssistantTextPayloadID(evt.ThreadID, itemID)
 
 	if firstBlock {
 		item := store.Item{
@@ -68,7 +68,7 @@ func (r *Router) handleTextDelta(evt provider.ProviderEvent) error {
 		payload := store.Payload{
 			ID:        payloadID,
 			Kind:      itemKindAssistantText,
-			Meta:      buildPayloadMeta(itemKindAssistantText, evt),
+			Meta:      BuildPayloadMeta(itemKindAssistantText, evt),
 			Data:      []byte(evt.Content),
 			CreatedAt: now,
 		}
@@ -117,7 +117,7 @@ func (r *Router) handleThinking(evt provider.ProviderEvent) error {
 	// same blob without a Store round-trip. The live UI gets an ordered
 	// provider:item_event delta immediately; SQLite receives buffered
 	// appends by interval, threshold, or lifecycle boundary.
-	payloadID := thinkingPayloadID(itemID)
+	payloadID := ThinkingPayloadID(itemID)
 
 	if firstBlock {
 		metaEvt := evt
@@ -128,7 +128,7 @@ func (r *Router) handleThinking(evt provider.ProviderEvent) error {
 			Kind:      itemKindThinking,
 			Role:      "assistant",
 			Status:    statusStreaming,
-			Summary:   thinkingSummaryPreview(evt.Content),
+			Summary:   ThinkingSummaryPreview(evt.Content),
 			PayloadID: payloadID,
 			ParentID:  eventParentID(evt),
 			Meta:      withProviderItemMeta(validJSONObjectString(evt.Meta), evt.ItemID),
@@ -138,7 +138,7 @@ func (r *Router) handleThinking(evt provider.ProviderEvent) error {
 		payload := store.Payload{
 			ID:        payloadID,
 			Kind:      itemKindThinking,
-			Meta:      buildPayloadMeta(itemKindThinking, metaEvt),
+			Meta:      BuildPayloadMeta(itemKindThinking, metaEvt),
 			Data:      []byte(evt.Content),
 			CreatedAt: now,
 		}
@@ -256,7 +256,7 @@ func scopeCounterKey(threadID string, turnIndex int, scope string) string {
 	return fmt.Sprintf("%s|%d|%s", threadID, turnIndex, scope)
 }
 
-// thinkingSummaryPreview seeds a new thinking row's items.summary with
+// ThinkingSummaryPreview seeds a new thinking row's items.summary with
 // the tail of the first delta. Subsequent deltas land via
 // `AppendItemSummaryTail`, which keeps the row tail-bounded at
 // `thinkingPreviewRunes` characters across the whole streaming run.
@@ -264,7 +264,7 @@ func scopeCounterKey(threadID string, turnIndex int, scope string) string {
 // clipped via CSS); a raw character slice with no ellipsis prefix is
 // fine because the leading characters fall outside the visible window
 // regardless.
-func thinkingSummaryPreview(content string) string {
+func ThinkingSummaryPreview(content string) string {
 	runes := []rune(content)
 	if len(runes) <= thinkingPreviewRunes {
 		return content
@@ -272,39 +272,11 @@ func thinkingSummaryPreview(content string) string {
 	return string(runes[len(runes)-thinkingPreviewRunes:])
 }
 
-func textItemID(turnIndex int, scope string, segmentIndex int) string {
-	if scope == "" {
-		return fmt.Sprintf("text:%d:%d", turnIndex, segmentIndex)
-	}
-	return fmt.Sprintf("text:%d:%s:%d", turnIndex, scope, segmentIndex)
-}
-
-func thinkingItemID(turnIndex int, scope string, blockIndex int) string {
-	if scope == "" {
-		return fmt.Sprintf("think:%d:%d", turnIndex, blockIndex)
-	}
-	return fmt.Sprintf("think:%d:%s:%d", turnIndex, scope, blockIndex)
-}
-
-func assistantTextPayloadID(threadID, itemID string) string {
-	return "assistant-text:" + threadID + ":" + itemID
-}
-
-// thinkingPayloadID is the deterministic payload id for a streaming
-// thinking-style row, keyed off the item id so later deltas address the same
-// blob without a Store round-trip. Shared by handleThinking, the
-// persistCompletedThinkingItem fallback, and handleCompactionReasoning — the
-// last reuses the thinking streaming machinery under its reserved scope, so its
-// payload follows the same convention.
-func thinkingPayloadID(itemID string) string {
-	return "thinking:" + itemID
-}
-
 func assistantTextPayload(threadID, itemID, content string, now int64) store.Payload {
 	return store.Payload{
-		ID:        assistantTextPayloadID(threadID, itemID),
+		ID:        AssistantTextPayloadID(threadID, itemID),
 		Kind:      itemKindAssistantText,
-		Meta:      buildPayloadMeta(itemKindAssistantText, provider.ProviderEvent{Content: content, Timestamp: time.UnixMilli(now)}),
+		Meta:      BuildPayloadMeta(itemKindAssistantText, provider.ProviderEvent{Content: content, Timestamp: time.UnixMilli(now)}),
 		Data:      []byte(content),
 		CreatedAt: now,
 	}

@@ -54,6 +54,7 @@
   import { closeMessageSearch, getMessageSearchMode, getMessageSearchTargetPaneId, isMessageSearchOpen } from './lib/stores/messageSearch.svelte';
   import { closeThreadPicker, getThreadPickerTargetPaneId, isThreadPickerOpen } from './lib/stores/threadPicker.svelte';
   import { closeAccountSwitcher, isAccountSwitcherOpen } from './lib/stores/accountSwitcher.svelte';
+  import { isSessionImportOpen } from './lib/stores/sessionImport.svelte';
   import { isAnyComposerPickerOpen } from './lib/stores/composerPickerRegistry.svelte';
   import {
     dispatchKey,
@@ -464,6 +465,21 @@
   load={() => import('./lib/components/accounts/AccountSwitcher.svelte')}
   active={isAccountSwitcherOpen()}
   props={{ open: isAccountSwitcherOpen(), onClose: closeAccountSwitcher }}
+/>
+<!--
+  Session import: a whole feature chunk (catalogue list, virtualized rows,
+  filters) that most sessions never open, so it loads on first use. It takes
+  no props — `open` and the close guard both live in the store, so there is
+  no second copy of that state for a call site to disagree with.
+
+  Mounted here rather than next to its sidebar trigger: Sidebar renders
+  ProjectsSection only while expanded, so a mod+b collapse would unmount a
+  run in progress.
+-->
+<LazyOverlay
+  load={() => import('./lib/components/import/SessionImportModal.svelte')}
+  active={isSessionImportOpen()}
+  props={{}}
 />
 <Toast />
 <DiagramInteractionHost />

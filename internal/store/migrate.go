@@ -1626,6 +1626,47 @@ CREATE INDEX idx_work_items_automation_source_ref
 		SQL: `ALTER TABLE threads DROP COLUMN disabled_mcp_servers;
 DROP TABLE new_thread_mcp_defaults;`,
 	},
+	{
+		Version: 50,
+		Name:    "session_import_state",
+		// Imported provider sessions. Two halves that only make sense
+		// together: the thread's provenance, and the cursor a refresh
+		// continues from.
+		//
+		// `threads.import_source` is set once, at import, and never
+		// rewritten — it is what the "Check for Provider Updates" menu item
+		// is gated on. `session_ref` cannot gate it: every thread that has
+		// run a turn has one. A plain ADD COLUMN with a CHECK (SQLite allows
+		// a CHECK on an added column), so the FK-parent threads table is not
+		// rebuilt.
+		//
+		// `(last_turn_index, last_item_index)` is the divergence guard, and
+		// it is a PAIR because `items.item_index` restarts at 0 in every
+		// turn (store's own nextItemIndexTx allocates per turn). A single
+		// item index therefore names no position in a thread: item 3 of
+		// turn 1 and item 3 of turn 9 share it. The pair is the same
+		// (turn_index, item_index) ordering every timeline read sorts by, so
+		// "the thread grew past the import" is exactly "an item exists
+		// lexicographically after the pair" — one index range scan on
+		// idx_items_thread. Both default to -1 so "imported nothing yet"
+		// sits below every real position rather than colliding with turn 0 /
+		// item 0.
+		SQL: `ALTER TABLE threads ADD COLUMN import_source TEXT NOT NULL DEFAULT ''
+    CHECK(import_source IN ('', 'claude', 'codex'));
+CREATE TABLE thread_import_state (
+    thread_id          TEXT PRIMARY KEY REFERENCES threads(id) ON DELETE CASCADE,
+    provider           TEXT NOT NULL CHECK(provider IN ('claude','codex')),
+    source_path        TEXT NOT NULL,
+    source_session_id  TEXT NOT NULL,
+    leaf_uuid          TEXT NOT NULL DEFAULT '',
+    last_source_uuid   TEXT NOT NULL DEFAULT '',
+    last_source_offset INTEGER NOT NULL DEFAULT 0,
+    last_turn_index    INTEGER NOT NULL DEFAULT -1,
+    last_item_index    INTEGER NOT NULL DEFAULT -1,
+    imported_at        INTEGER NOT NULL,
+    refreshed_at       INTEGER NOT NULL DEFAULT 0
+);`,
+	},
 }
 
 // rebuildWorkItemsSoftStopV44SQL adds `soft_stop` — a standing request to stop

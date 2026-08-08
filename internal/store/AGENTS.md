@@ -78,6 +78,11 @@ root `CLAUDE.md` principle 3.
 - `thread_worktree_setup_state.go` — the `threads.worktree_setup_state`
   column (migration v47): the enum constants, the validating writer, and the
   startup sweep. See "Recent schema changes (v47)" below.
+- `thread_import_state.go` / `items_import.go` — the session-import surface
+  (migration v50). The first owns `thread_import_state` CRUD and
+  `ListImportedSessionRefs` (the dedup set a scan subtracts from); the
+  second owns `ApplyImportBatch`, the one-transaction write of a whole
+  imported session. See "Recent schema changes (v50)" below.
 - `drafts.go` — composer drafts per thread.
 - `chat_bar.go` — composer favorites and last-used model profile seeds.
 - `search.go` — case-insensitive substring search across thread titles
@@ -431,6 +436,65 @@ baseline:
 - `updateThreadSetSQL` deliberately omits the column, so the whole-row
   `UpdateThread` every workspace-switch path issues cannot clobber a live run's
   state. Pinned by `TestUpdateThreadPreservesWorktreeSetupState`.
+
+## Recent schema changes (v50) — imported provider sessions
+
+- `threads.import_source` (`TEXT NOT NULL DEFAULT '' CHECK(import_source IN
+  ('', 'claude', 'codex'))`) is write-once provenance: the provider whose
+  on-disk session file a thread was imported from. It exists because
+  `session_ref` cannot gate the "Check for Provider Updates" affordance —
+  every thread that has run a turn has one. Never rendered as a badge.
+  `claude-tui` is deliberately not in the enum: it drives claude's binary
+  and has no session files of its own. A plain `ADD COLUMN` with a CHECK, so
+  the FK-parent `threads` table is not rebuilt.
+- `updateThreadSetSQL` omits the column (as it does `worktree_setup_state`),
+  so no whole-row `UpdateThread` can rewrite provenance. `CreateThread` is
+  the only writer, and `prepareThreadForCreate` validates against the enum
+  before SQLite would report a raw CHECK failure. Pinned by
+  `TestUpdateThreadPreservesImportSource`.
+- `thread_import_state` is the per-thread cursor into the source file, one
+  row per imported thread, cascading on thread deletion. `last_source_uuid`
+  is written by BOTH providers — it is the provenance stamp of the last
+  event consumed, a transcript uuid for Claude and `line:<byte offset>` for
+  Codex, the same value that lands in `items.meta.import_source_uuid` — but
+  only Claude ANCHORS a refresh on it, because its transcript is a uuid DAG
+  where a byte offset says nothing about conversation position.
+  `last_source_offset` is Codex's anchor and stays 0 for Claude
+  (append-only JSONL, so a tail read is the cheap refresh and a SHRUNK file
+  is the diverged-source signal). `leaf_uuid` records which Claude branch a
+  thread was cut from, because one session file can produce several
+  threads.
+- `last_turn_index` + `last_item_index` are ONE cursor, and both default to
+  **-1**, not 0. They are a pair because `items.item_index` restarts at 0 in
+  every turn (that is what `nextItemIndexTx` allocates), so a lone item index
+  names no position in a thread — item 2 of turn 1 and item 2 of turn 9 share
+  it. `HasItemsAfterCursor` asks the only exact question: does any row sort
+  lexicographically after `(last_turn_index, last_item_index)`? A true answer
+  means the thread was resumed inside AO after the import and appending the
+  source's tail would interleave duplicate history under indices the live
+  session already claimed. The predicate is spelled
+  `turn_index > ? OR (turn_index = ? AND item_index > ?)` rather than a tuple
+  compare so `idx_items_thread` serves it as a range scan. -1 rather than 0 on
+  both halves is what keeps "imported nothing yet" below every real position.
+- `ListImportedSessionRefs` unions `threads.session_ref`,
+  `threads.pending_fork_session_ref`, and
+  `thread_import_state.source_session_id`. The middle one is load-bearing: a
+  fork that has never been resumed has a session file on disk and no
+  `session_ref` at all, so a `session_ref`-only check would offer it for
+  import. Deleting a thread drops its entry, which is what makes the source
+  session importable again.
+- `ApplyImportBatch` writes turns → completions → payloads → items → usage in
+  ONE transaction, and deliberately does not touch `threads.updated_at` or
+  thread activity: an import replays history that already happened, and
+  floating every imported thread to the top of the sidebar contradicts the
+  original timestamps it just wrote. Turns and items are plain INSERTs — a
+  re-applied batch must fail loudly rather than overwrite — while turn
+  completions are UPDATEs, because a refresh settles a turn an earlier
+  import inserted. Failing loudly here is a LAST resort, not the check:
+  `PlanUpdate` has already promised the user the refresh would apply by
+  the time this runs, so the import writer reads `TurnIDsForThread` up
+  front and refuses a batch that would re-open a turn id the thread
+  already holds.
 
 ## Extension points
 

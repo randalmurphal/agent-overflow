@@ -160,6 +160,21 @@ owner. The top-level `ParseLine` (in `parser.go`) reads the envelope's
   `internal/mcpstatus` via the shared `Fetcher` interface.
   `sanitizeChildStderr` lives here too for bounding child-process
   stderr in user-facing errors.
+- `sessionfork/` — subpackage. The fork transform over an existing
+  transcript, plus the shared reading surface (`TranscriptTypes`,
+  `ParseTranscript`, `ResolveParent`, `ResolveLogicalParent`,
+  `SessionIDFromPath`) that both the live resume path and the importer
+  read transcripts through. Has its own subarea guide.
+- `sessionimport/` — subpackage. Read-only reader for
+  `~/.claude/projects/…` behind session import: the lite lister (a stat
+  plus two 64 KB reads per file, no parse), the conversation DAG and its
+  leaf enumeration, the subagent join, and the transcript →
+  `internal/importir` event projection. Spawns nothing, writes nothing,
+  and never resolves the Claude home itself. It deliberately does NOT
+  reuse `claudeBranchIndex` — that answers "which chain will
+  `claude --resume` accept" and returns exactly one; import needs every
+  leaf, and bending the live resume path to answer both is not worth the
+  blast radius (invariant 28). Has its own subarea guide.
 
 Parser state method names are part of the contract:
 

@@ -59,6 +59,47 @@ type commandResultMeta struct {
 	TotalBytes int `json:"totalBytes,omitempty"`
 }
 
+// CommandResultRow is the shaped `command_result` row content: what goes
+// in items.summary, what goes in items.meta, and whether the output was
+// too large to live inline (in which case the caller owns a
+// `command_result` payload holding the full text).
+type CommandResultRow struct {
+	Summary   string
+	Meta      string
+	Oversized bool
+}
+
+// BuildCommandResultRow shapes one provider-executed command's output
+// into the row fields both writers persist. Pure: text in, field values
+// out. The caller decides where the full bytes live when Oversized.
+func BuildCommandResultRow(text string) (CommandResultRow, error) {
+	preview := truncateRunes(text, commandResultInlineRunes)
+	truncated := preview != text
+	meta := commandResultMeta{
+		Kind:      itemKindCommandResult,
+		Preview:   preview,
+		Truncated: truncated,
+	}
+	if truncated {
+		meta.TotalBytes = len(text)
+	}
+	encoded, err := json.Marshal(meta)
+	if err != nil {
+		return CommandResultRow{}, err
+	}
+	return CommandResultRow{Summary: preview, Meta: string(encoded), Oversized: truncated}, nil
+}
+
+// CommandResultItemID is the id of a `command_result` row. A
+// provider-supplied message id keys the row (making a replayed envelope
+// idempotent); otherwise it falls back to the caller's per-turn sequence.
+func CommandResultItemID(turnIndex int, providerItemID string, seq int) string {
+	if id := strings.TrimSpace(providerItemID); id != "" {
+		return "command-result:" + id
+	}
+	return fmt.Sprintf("command-result:%d:%d", turnIndex, seq)
+}
+
 // handleCommandResult persists one command_result row.
 //
 // The row is attributed to the thread's current turn — a local command runs
@@ -78,20 +119,11 @@ func (r *Router) handleCommandResult(evt provider.ProviderEvent) error {
 	itemID := commandResultItemID(evt, turnIndex, r)
 	now := eventTimestampMillis(evt)
 
-	preview := truncateRunes(text, commandResultInlineRunes)
-	truncated := preview != text
-	meta := commandResultMeta{
-		Kind:      itemKindCommandResult,
-		Preview:   preview,
-		Truncated: truncated,
-	}
-	if truncated {
-		meta.TotalBytes = len(text)
-	}
-	encodedMeta, err := json.Marshal(meta)
+	shaped, err := BuildCommandResultRow(text)
 	if err != nil {
 		return fmt.Errorf("command result marshal meta %s: %w", itemID, err)
 	}
+	preview, truncated := shaped.Summary, shaped.Oversized
 
 	item := store.Item{
 		ID:        itemID,
@@ -102,7 +134,7 @@ func (r *Router) handleCommandResult(evt provider.ProviderEvent) error {
 		Status:    statusCompleted,
 		Summary:   preview,
 		ParentID:  eventParentID(evt),
-		Meta:      string(encodedMeta),
+		Meta:      shaped.Meta,
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
@@ -135,10 +167,10 @@ func (r *Router) handleCommandResult(evt provider.ProviderEvent) error {
 // distinct across kinds and get swept by the same CleanupThread pass.
 func commandResultItemID(evt provider.ProviderEvent, turnIndex int, r *Router) string {
 	if id := strings.TrimSpace(eventItemID(evt)); id != "" {
-		return "command-result:" + id
+		return CommandResultItemID(turnIndex, id, 0)
 	}
 	seq := r.nextScopeSequence(evt.ThreadID, turnIndex, itemKindCommandResult)
-	id := fmt.Sprintf("command-result:%d:%d", turnIndex, seq)
+	id := CommandResultItemID(turnIndex, "", seq)
 	log.Printf("triage: command_result on %s carried no provider id; allocated %s", evt.ThreadID, id)
 	return id
 }

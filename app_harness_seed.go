@@ -441,6 +441,12 @@ func (h *Harness) HarnessReset() (err error) {
 			return fmt.Errorf("delete project %s: %w", p.Project.ID, err)
 		}
 	}
+	// The session-import scan is a cached projection OF the rows just
+	// deleted: its dedup subtracts sessions AO already has, so a scan taken
+	// before this reset would keep hiding provider sessions whose threads no
+	// longer exist for up to its TTL. Nothing else invalidates it (the
+	// production reset is an import run finishing), so reset drops it here.
+	h.app.sessionImportScanCache().Reset()
 	// Generated seed workspaces live under <dataRoot>/workspaces only —
 	// removing the tree lets the next test seed the same project names
 	// (CreateRepo refuses a surviving .git). User-supplied Path projects

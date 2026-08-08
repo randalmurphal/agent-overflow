@@ -177,7 +177,7 @@ func isToolApproval(request provider.ApprovalRequest, itemID string) bool {
 }
 
 func approvalSummary(request provider.ApprovalRequest) string {
-	summary := buildToolCallSummary(toolStartMeta{
+	summary := BuildToolCallSummary(ToolStartMeta{
 		ToolName: request.ToolName,
 		Input:    request.Input,
 	}, request.ToolName)

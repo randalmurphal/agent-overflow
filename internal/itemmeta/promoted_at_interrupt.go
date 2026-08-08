@@ -3,6 +3,7 @@ package itemmeta
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 )
 
 // promotedAtInterruptKey marks a queued flush user row whose same-turn
@@ -114,10 +115,17 @@ func MarkPromotedEchoBoundary(raw string, boundary int) (string, error) {
 	return mergeKey(raw, promotedEchoBoundaryKey, boundary)
 }
 
+// mergeKey decodes raw, sets one key, and re-encodes. Numbers decode as
+// json.Number rather than float64: a plain `any` decode re-encodes an
+// attachment size of 1000000 as `1e+06` and a large provider counter as
+// a lossy float, so stamping a marker would silently rewrite values the
+// marker has nothing to do with.
 func mergeKey(raw, key string, value any) (string, error) {
 	merged := map[string]any{}
 	if raw != "" {
-		if err := json.Unmarshal([]byte(raw), &merged); err != nil {
+		decoder := json.NewDecoder(strings.NewReader(raw))
+		decoder.UseNumber()
+		if err := decoder.Decode(&merged); err != nil {
 			return "", err
 		}
 		if merged == nil {

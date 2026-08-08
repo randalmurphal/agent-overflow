@@ -3,10 +3,11 @@
 // (handleThreadContextMenu): Rename, Fork (when fork-able), Mark Unread,
 // Copy Path, Copy Thread ID, Delete (when not a child thread).
 
-import { describe, expect, it, beforeEach } from 'vitest';
+import { afterEach, describe, expect, it, beforeEach } from 'vitest';
 import { render, fireEvent } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import ThreadContextMenu from './ThreadContextMenu.svelte';
+import { setViewOnlySessionFromBootstrap } from '../../transport/runMode';
 import { createThreadPane } from '../../stores/thread.svelte';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
 import { clearThreadSelection, setThreadSelection } from '../../stores/threadFilter.svelte';
@@ -181,5 +182,143 @@ describe('<ThreadContextMenu> Delete honors the confirm-delete setting', () => {
 
     expect(getByRole('button', { name: 'Delete' })).toBeInTheDocument();
     expect(deleted).toBe(false);
+  });
+});
+
+describe('<ThreadContextMenu> Check for Provider Updates', () => {
+  // Gated on the write-once import stamp, never on sessionRef: every thread
+  // that has run a turn has a sessionRef, so that gate would offer the item
+  // on threads with no source file to check.
+  beforeEach(() => {
+    resetBindingMocks();
+    clearThreadSelection();
+    setViewOnlySessionFromBootstrap(false);
+    setBindingMock('ListThreads', async () => []);
+    setBindingMock('ListProjects', async () => []);
+  });
+
+  afterEach(() => {
+    setViewOnlySessionFromBootstrap(false);
+  });
+
+  it('is absent on a thread Agent Overflow created itself', () => {
+    const { baseElement } = renderMenu(makeThread());
+    expect(visibleLabels(baseElement)).not.toContain('Check for Provider Updates');
+  });
+
+  it('is absent when the stamp is the empty string, not just missing', () => {
+    const { baseElement } = renderMenu(makeThread({ importSource: '' }));
+    expect(visibleLabels(baseElement)).not.toContain('Check for Provider Updates');
+  });
+
+  it('is present on an imported thread', () => {
+    const { baseElement } = renderMenu(makeThread({ importSource: 'codex' }));
+    expect(visibleLabels(baseElement)).toContain('Check for Provider Updates');
+  });
+
+  it('confirms with the backend prose, then applies', async () => {
+    setBindingMock('CheckThreadImportUpdates', async () => ({
+      threadId: 'thread-1',
+      status: 'updates-available',
+      newItems: 12,
+      newTurns: 2,
+      detail: '12 new messages are waiting in the Claude session file.',
+    }));
+    let appliedId: string | null = null;
+    setBindingMock('ImportThreadUpdates', async (id: string) => {
+      appliedId = id;
+      return { appliedItems: 12, appliedTurns: 2 };
+    });
+
+    const { getByRole, queryByRole } = renderMenu(makeThread({ importSource: 'claude' }));
+    await fireEvent.click(getByRole('menuitem', { name: 'Check for Provider Updates' }));
+    for (let i = 0; i < 5; i += 1) await Promise.resolve();
+    await tick();
+
+    expect(queryByRole('dialog')).toBeInTheDocument();
+    // The backend ships prose for the verdict it returned; re-deriving it
+    // here would drop the turn count and drift from the toast path.
+    expect(queryByRole('dialog')?.textContent).toContain(
+      '12 new messages are waiting in the Claude session file.',
+    );
+    expect(appliedId).toBeNull();
+
+    await fireEvent.click(getByRole('button', { name: 'Import' }));
+    for (let i = 0; i < 5; i += 1) await Promise.resolve();
+    expect(appliedId).toBe('thread-1');
+  });
+
+  it('falls back to both counts when the backend sends no prose', async () => {
+    setBindingMock('CheckThreadImportUpdates', async () => ({
+      threadId: 'thread-1',
+      status: 'updates-available',
+      newItems: 12,
+      newTurns: 2,
+      detail: '',
+    }));
+
+    const { getByRole, queryByRole } = renderMenu(makeThread({ importSource: 'claude' }));
+    await fireEvent.click(getByRole('menuitem', { name: 'Check for Provider Updates' }));
+    for (let i = 0; i < 5; i += 1) await Promise.resolve();
+    await tick();
+
+    expect(queryByRole('dialog')?.textContent).toContain(
+      '12 new items across 2 turns since this thread was imported.',
+    );
+  });
+
+  it('is disabled with a Local only tooltip in a view-only session', async () => {
+    setViewOnlySessionFromBootstrap(true);
+    const check = setBindingMock('CheckThreadImportUpdates', async () => ({
+      threadId: 'thread-1',
+      status: 'updates-available',
+      newItems: 1,
+      newTurns: 1,
+    }));
+
+    const { getByRole } = renderMenu(makeThread({ importSource: 'claude' }));
+    const item = getByRole('menuitem', { name: 'Check for Provider Updates' });
+
+    // Visible-but-disabled, not hidden: hiding it would read as "this thread
+    // wasn't imported", which is a different fact.
+    expect(item.getAttribute('aria-disabled')).toBe('true');
+    expect(item.getAttribute('title')).toBe('Local only');
+
+    await fireEvent.click(item);
+    for (let i = 0; i < 5; i += 1) await Promise.resolve();
+    expect(check).not.toHaveBeenCalled();
+  });
+
+  it('opens no dialog when there is nothing to import', async () => {
+    setBindingMock('CheckThreadImportUpdates', async () => ({
+      threadId: 'thread-1',
+      status: 'up-to-date',
+      newItems: 0,
+      newTurns: 0,
+    }));
+
+    const { getByRole, queryByRole } = renderMenu(makeThread({ importSource: 'claude' }));
+    await fireEvent.click(getByRole('menuitem', { name: 'Check for Provider Updates' }));
+    for (let i = 0; i < 5; i += 1) await Promise.resolve();
+    await tick();
+
+    expect(queryByRole('dialog')).toBeNull();
+  });
+
+  it('shows the check is running instead of a menu that looks unresponsive', async () => {
+    let release: (value: unknown) => void = () => {};
+    setBindingMock('CheckThreadImportUpdates', () => new Promise((resolve) => (release = resolve)));
+
+    const { getByRole } = renderMenu(makeThread({ importSource: 'claude' }));
+    await fireEvent.click(getByRole('menuitem', { name: 'Check for Provider Updates' }));
+    await tick();
+
+    // MenuItem disables via aria-disabled (Menu owns roving tabindex, so the
+    // rows are never natively disabled buttons).
+    const item = getByRole('menuitem', { name: 'Checking for Provider Updates…' });
+    expect(item.getAttribute('aria-disabled')).toBe('true');
+
+    release({ threadId: 'thread-1', status: 'up-to-date', newItems: 0, newTurns: 0 });
+    for (let i = 0; i < 5; i += 1) await Promise.resolve();
   });
 });

@@ -1,0 +1,227 @@
+{
+  "rows": [
+    {
+      "turnIndex": 1,
+      "itemIndex": 0,
+      "id": "user:1",
+      "kind": "user_text",
+      "role": "user",
+      "status": "completed",
+      "summary": "Audit the parser.",
+      "createdAt": 1700000000000,
+      "updatedAt": 1700000000000,
+      "meta": {
+        "import_source_uuid": "00000000-0000-4000-8000-000000000000",
+        "provider_item_id": "user-1",
+        "provider_parent_uuid": "root"
+      }
+    },
+    {
+      "turnIndex": 1,
+      "itemIndex": 1,
+      "id": "think:1:0",
+      "kind": "thinking",
+      "role": "assistant",
+      "status": "completed",
+      "summary": "Delegate the sweep.",
+      "createdAt": 1700000000001,
+      "updatedAt": 1700000000001,
+      "meta": {
+        "import_source_uuid": "00000000-0000-4000-8000-000000000001",
+        "provider_item_id": "reasoning-1"
+      },
+      "payload": {
+        "id": "thinking:think:1:0",
+        "kind": "thinking",
+        "meta": {
+          "preview": "Delegate the sweep.",
+          "tokenCount": 4
+        }
+      }
+    },
+    {
+      "turnIndex": 1,
+      "itemIndex": 2,
+      "id": "toolu_task_1",
+      "kind": "tool_call",
+      "role": "assistant",
+      "status": "completed",
+      "summary": "Task: sweep parser",
+      "toolName": "Task",
+      "isBackground": true,
+      "createdAt": 1700000000002,
+      "updatedAt": 1700000000006,
+      "meta": {
+        "import_source_uuid": "00000000-0000-4000-8000-000000000002",
+        "input": {
+          "description": "sweep parser"
+        },
+        "is_background": true,
+        "toolName": "Task"
+      }
+    },
+    {
+      "turnIndex": 1,
+      "itemIndex": 3,
+      "id": "user:wire:child-prompt-1",
+      "kind": "user_text",
+      "role": "user",
+      "status": "completed",
+      "summary": "Sweep every parser file.",
+      "parentId": "toolu_task_1",
+      "createdAt": 1700000000003,
+      "updatedAt": 1700000000003,
+      "meta": {
+        "import_source_uuid": "00000000-0000-4000-8000-000000000003",
+        "provider_item_id": "child-prompt-1",
+        "wire_only": true
+      }
+    },
+    {
+      "turnIndex": 1,
+      "itemIndex": 4,
+      "id": "text:1:toolu_task_1:0",
+      "kind": "assistant_text",
+      "role": "assistant",
+      "status": "completed",
+      "summary": "Found two gaps.",
+      "parentId": "toolu_task_1",
+      "createdAt": 1700000000004,
+      "updatedAt": 1700000000004,
+      "meta": {
+        "import_source_uuid": "00000000-0000-4000-8000-000000000004",
+        "provider_item_id": "child-msg-1"
+      },
+      "payload": {
+        "id": "assistant-text:thread-sessionimport:text:1:toolu_task_1:0",
+        "kind": "assistant_text",
+        "meta": {}
+      }
+    },
+    {
+      "turnIndex": 1,
+      "itemIndex": 5,
+      "id": "complete:toolu_task_1",
+      "kind": "tool_completion",
+      "role": "assistant",
+      "status": "completed",
+      "summary": "Task: sweep parser",
+      "completionOf": "toolu_task_1",
+      "toolName": "Task",
+      "createdAt": 1700000000006,
+      "updatedAt": 1700000000006,
+      "meta": {
+        "import_source_uuid": "00000000-0000-4000-8000-000000000006"
+      },
+      "payload": {
+        "id": "tool-call-result:complete:toolu_task_1",
+        "kind": "tool_call_result",
+        "meta": {
+          "preview": "Sweep finished."
+        }
+      }
+    },
+    {
+      "turnIndex": 1,
+      "itemIndex": 6,
+      "id": "command-result:msg_cmd_1",
+      "kind": "command_result",
+      "role": "system",
+      "status": "completed",
+      "summary": "Total cost: $0.42",
+      "createdAt": 1700000000007,
+      "updatedAt": 1700000000007,
+      "meta": {
+        "import_source_uuid": "00000000-0000-4000-8000-000000000007",
+        "kind": "command_result",
+        "preview": "Total cost: $0.42"
+      }
+    },
+    {
+      "turnIndex": 2,
+      "itemIndex": 0,
+      "id": "user:2",
+      "kind": "user_text",
+      "role": "user",
+      "status": "completed",
+      "summary": "Show me the second gap.",
+      "createdAt": 1700000000020,
+      "updatedAt": 1700000000020,
+      "meta": {
+        "import_source_uuid": "00000000-0000-4000-8000-000000000009",
+        "provider_item_id": "user-2",
+        "provider_parent_uuid": "user-1"
+      }
+    },
+    {
+      "turnIndex": 2,
+      "itemIndex": 1,
+      "id": "toolu_bash_2",
+      "kind": "tool_call",
+      "role": "assistant",
+      "status": "completed",
+      "summary": "Bash: rg parser -n",
+      "toolName": "Bash",
+      "createdAt": 1700000000021,
+      "updatedAt": 1700000000022,
+      "meta": {
+        "exit_code": 0,
+        "import_source_uuid": "00000000-0000-4000-8000-00000000000a",
+        "import_unavailable": "tool-output-gc",
+        "input": {
+          "command": "rg parser -n"
+        },
+        "toolName": "Bash"
+      }
+    },
+    {
+      "turnIndex": 2,
+      "itemIndex": 2,
+      "id": "notice-1",
+      "kind": "notification",
+      "role": "system",
+      "status": "completed",
+      "summary": "Session ended.",
+      "toolName": "session_died",
+      "createdAt": 1700000000023,
+      "updatedAt": 1700000000023,
+      "meta": {
+        "import_source_uuid": "00000000-0000-4000-8000-00000000000c"
+      }
+    }
+  ],
+  "turns": [
+    {
+      "turnId": "thread-sessionimport:2",
+      "turnIndex": 2,
+      "startedAt": 1700000000020,
+      "completedAt": 1700000000023
+    },
+    {
+      "turnId": "thread-sessionimport:1",
+      "turnIndex": 1,
+      "startedAt": 1700000000000,
+      "completedAt": 1700000000008,
+      "stopReason": "end_turn",
+      "assistantMessageId": "msg_1"
+    }
+  ],
+  "usage": [
+    {
+      "createdAt": 1700000000008,
+      "threadId": "thread-sessionimport",
+      "projectId": "project-sessionimport",
+      "turnId": "thread-sessionimport:1",
+      "provider": "claude",
+      "model": "claude-sonnet-4-5",
+      "inputTokens": 900,
+      "outputTokens": 120,
+      "cacheReadInputTokens": 0,
+      "cacheCreationInputTokens": 0,
+      "reasoningOutputTokens": 0,
+      "costUsd": 0,
+      "costSource": "none"
+    }
+  ],
+  "warnings": null
+}

@@ -90,7 +90,7 @@ func TestRecoveredTopLevelBlocksEmitStreamingWireShape(t *testing.T) {
 		content     string
 		wantSummary string
 	}{
-		{"thinking", thinkingItems[0].ID, itemKindThinking, longThinking, thinkingSummaryPreview(longThinking)},
+		{"thinking", thinkingItems[0].ID, itemKindThinking, longThinking, ThinkingSummaryPreview(longThinking)},
 		{"text", textItems[0].ID, itemKindAssistantText, recoveredText, recoveredText},
 	}
 	if cases[0].wantSummary == longThinking {

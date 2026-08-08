@@ -19,12 +19,18 @@ func upsertPayloadTx(exec sqlExecutor, payload Payload, label string) error {
 	return nil
 }
 
+const payloadInsertSQL = `INSERT INTO payloads (id, kind, meta, data, created_at)
+	 VALUES (?, ?, ?, ?, ?)`
+
+// payloadInsertArgs is the bind list payloadInsertSQL takes, in column
+// order — shared with the prepared-statement bulk path in
+// ApplyImportBatch so the two cannot drift.
+func payloadInsertArgs(payload Payload) []any {
+	return []any{payload.ID, payload.Kind, payload.Meta, payload.Data, payload.CreatedAt}
+}
+
 func insertPayloadTx(exec sqlExecutor, payload Payload, label string) error {
-	if _, err := exec.Exec(
-		`INSERT INTO payloads (id, kind, meta, data, created_at)
-		 VALUES (?, ?, ?, ?, ?)`,
-		payload.ID, payload.Kind, payload.Meta, payload.Data, payload.CreatedAt,
-	); err != nil {
+	if _, err := exec.Exec(payloadInsertSQL, payloadInsertArgs(payload)...); err != nil {
 		return fmt.Errorf("%s: %w", label, err)
 	}
 	return nil

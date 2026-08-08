@@ -43,6 +43,14 @@ var loopbackOnlyEventChannels = map[string]bool{
 	// a peer that did would learn exactly which staged file to tamper with.
 	"updater:install": true,
 
+	// session-import:progress reports on files in the user's provider homes:
+	// each frame names the scan row it settled, and a failure carries the
+	// reader's own message, which quotes the absolute transcript path. Its
+	// RPCs are all LocalOnly, so a LAN peer can neither list nor start an
+	// import; keeping the push side loopback-only closes the third door, the
+	// same reasoning as worktree:setup above.
+	"session-import:progress": true,
+
 	// provider:usage (token counts, context %, rate limits) and
 	// provider:session_died are open to remote clients — essential
 	// feedback for understanding resource consumption and provider

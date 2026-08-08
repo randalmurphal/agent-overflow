@@ -517,6 +517,21 @@ type App struct {
 	// store closes, because settling a run writes the thread's durable
 	// setup state.
 	worktreeSetupWG sync.WaitGroup
+	// sessionImportScans caches provider-home scans behind the import modal
+	// (app_session_import_cache.go). Lazy-init through
+	// sessionImportScanCache() so tests building a bare App{} don't wire it.
+	sessionImportScansOnce sync.Once
+	sessionImportScans     *sessionImportScanCache
+	// The one in-flight session-import run. Importing writes threads and
+	// projects, and two concurrent runs over overlapping ids would race the
+	// dedup set that makes "Import All" idempotent — so there is at most one,
+	// and a second request is refused rather than queued. Same
+	// stopped-flag-plus-WaitGroup discipline as the worktree setups above;
+	// Shutdown joins it before the store closes. See app_session_import_run.go.
+	sessionImportMu      sync.Mutex
+	sessionImportActive  *sessionImportRun
+	sessionImportStopped bool
+	sessionImportWG      sync.WaitGroup
 	// Per-provider usage-probe gates (app_usage_probe_gate.go): every
 	// automatic rate-limit refresh trigger funnels through one so bursts
 	// coalesce and a cooldown bounds request rate. Lazily built via

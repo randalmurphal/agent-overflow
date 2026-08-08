@@ -3209,3 +3209,122 @@ func TestMigrationV49DropsPerThreadMCPState(t *testing.T) {
 		}
 	}
 }
+
+func TestMigrationV50AddsSessionImportState(t *testing.T) {
+	db := migrateThrough(t, 49)
+	mustExec(t, db, `
+		INSERT INTO projects (id, path, name, color, sort_position, created_at, updated_at, archived)
+		VALUES ('project-v50', '/tmp/v50', 'V50', 'red', 6, 10, 11, 0)
+	`)
+	mustExec(t, db, `
+		INSERT INTO threads (
+			id, project_id, title, provider, model, workspace_path, worktree_path,
+			branch, pr_ref, session_ref, pending_fork_session_ref, mode, reasoning_effort,
+			fast_mode, context_window, auto_compact_standard_percent,
+			auto_compact_extended_percent, runtime_mode, last_token_usage, last_read_at,
+			pinned_at, created_at, updated_at, archived
+		) VALUES (
+			'thread-v50', 'project-v50', 'Pre-migration row', 'claude', 'claude-opus-4-8', '/tmp/v50', NULL,
+			NULL, '', '', '', 'chat', 'high',
+			0, 1000000, 0, 0, 'full-access', '', 31,
+			NULL, 33, 34, 0
+		)
+	`)
+
+	if err := applyMigration(db, migrationByVersion(t, 50)); err != nil {
+		t.Fatalf("apply migration v50: %v", err)
+	}
+
+	// A row that predates the column reads as "AO created this thread",
+	// never NULL: the column is NOT NULL so absence has one spelling.
+	var source string
+	if err := db.QueryRow(
+		`SELECT import_source FROM threads WHERE id = 'thread-v50'`,
+	).Scan(&source); err != nil {
+		t.Fatalf("read import_source: %v", err)
+	}
+	if source != "" {
+		t.Fatalf("backfilled import_source = %q, want empty", source)
+	}
+
+	for _, good := range []string{"claude", "codex", ""} {
+		if _, err := db.Exec(
+			`UPDATE threads SET import_source = ? WHERE id = 'thread-v50'`, good,
+		); err != nil {
+			t.Fatalf("threads rejected import_source %q: %v", good, err)
+		}
+	}
+	for _, bad := range []string{"claude-tui", "Claude", "gemini"} {
+		if _, err := db.Exec(
+			`UPDATE threads SET import_source = ? WHERE id = 'thread-v50'`, bad,
+		); err == nil {
+			t.Errorf("threads accepted import_source %q after v50", bad)
+		}
+	}
+	if _, err := db.Exec(
+		`UPDATE threads SET import_source = NULL WHERE id = 'thread-v50'`,
+	); err == nil {
+		t.Error("threads accepted a NULL import_source after v50")
+	}
+
+	mustExec(t, db, `
+		INSERT INTO thread_import_state (thread_id, provider, source_path, source_session_id, imported_at)
+		VALUES ('thread-v50', 'claude', '/tmp/v50/sess.jsonl', 'sess-1', 90)
+	`)
+	var leaf, lastUUID string
+	var offset, imported, refreshed int64
+	var lastTurnIndex, lastItemIndex int
+	if err := db.QueryRow(
+		`SELECT leaf_uuid, last_source_uuid, last_source_offset,
+		        last_turn_index, last_item_index, imported_at, refreshed_at
+		   FROM thread_import_state WHERE thread_id = 'thread-v50'`,
+	).Scan(&leaf, &lastUUID, &offset, &lastTurnIndex, &lastItemIndex, &imported, &refreshed); err != nil {
+		t.Fatalf("read thread_import_state: %v", err)
+	}
+	if leaf != "" || lastUUID != "" || offset != 0 || refreshed != 0 || imported != 90 {
+		t.Fatalf("cursor defaults = %q/%q/%d/%d/%d", leaf, lastUUID, offset, imported, refreshed)
+	}
+	// -1, not 0, on BOTH halves: "imported nothing yet" must sort below
+	// every real position or the divergence guard fires on turn 0 / item 0.
+	// The pair is what makes the guard exact — item_index restarts at 0 in
+	// every turn, so a lone item index names no position in a thread.
+	if lastTurnIndex != -1 || lastItemIndex != -1 {
+		t.Fatalf("cursor defaults = (%d, %d), want (-1, -1)", lastTurnIndex, lastItemIndex)
+	}
+
+	if _, err := db.Exec(`
+		INSERT INTO thread_import_state (thread_id, provider, source_path, source_session_id, imported_at)
+		VALUES ('thread-missing', 'claude', '/tmp/x.jsonl', 'sess-2', 1)
+	`); err == nil {
+		t.Error("thread_import_state accepted a row for an unknown thread")
+	}
+	if _, err := db.Exec(`
+		INSERT INTO thread_import_state (thread_id, provider, source_path, source_session_id, imported_at)
+		VALUES ('thread-v50-2', 'gemini', '/tmp/x.jsonl', 'sess-3', 1)
+	`); err == nil {
+		t.Error("thread_import_state accepted an unknown provider")
+	}
+
+	// Deleting the thread takes its cursor with it.
+	mustExec(t, db, `DELETE FROM threads WHERE id = 'thread-v50'`)
+	var remaining int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM thread_import_state`).Scan(&remaining); err != nil {
+		t.Fatalf("count thread_import_state: %v", err)
+	}
+	if remaining != 0 {
+		t.Errorf("thread_import_state rows survived thread deletion: %d", remaining)
+	}
+
+	// ADD COLUMN + CREATE TABLE, not a rebuild: the threads indexes stand.
+	for _, index := range []string{
+		"idx_threads_project", "idx_threads_updated", "idx_threads_parent",
+		"idx_threads_forked_from", "idx_threads_pinned_at",
+	} {
+		var found string
+		if err := db.QueryRow(
+			`SELECT name FROM sqlite_master WHERE type = 'index' AND name = ?`, index,
+		).Scan(&found); err != nil {
+			t.Fatalf("index %s missing after v50: %v", index, err)
+		}
+	}
+}

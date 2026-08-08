@@ -17,7 +17,7 @@ func TestFileChangeToolResultUpgradesFromTurnDiff(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	workspace := t.TempDir()
 	createToolResultThread(t, st, "t1", workspace)
-	payloadID := toolResultPayloadID("item-file-change")
+	payloadID := ToolResultPayloadID("item-file-change")
 
 	startMeta := json.RawMessage(`{
 		"item": {
@@ -124,7 +124,7 @@ func TestFileChangeToolResultDoesNotOverwriteExistingExactPatch(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	workspace := t.TempDir()
 	createToolResultThread(t, st, "t1", workspace)
-	payloadID := toolResultPayloadID("item-file-change")
+	payloadID := ToolResultPayloadID("item-file-change")
 
 	startMeta := json.RawMessage(`{
 		"item": {
@@ -218,7 +218,7 @@ func TestExtractFileChangeToolResultNormalizesAbsoluteWorkspacePaths(t *testing.
 		t.Fatalf("marshal raw tool result: %v", err)
 	}
 
-	meta, _, ok := extractFileChangeToolResult(raw, workspace)
+	meta, _, ok := ExtractFileChangeToolResult(raw, workspace)
 	if !ok {
 		t.Fatal("expected absolute-path tool result extraction to succeed")
 	}
@@ -251,7 +251,7 @@ func TestExtractFileChangeToolResultDropsUnsafePaths(t *testing.T) {
 		t.Fatalf("marshal raw tool result: %v", err)
 	}
 
-	meta, _, ok := extractFileChangeToolResult(raw, workspace)
+	meta, _, ok := ExtractFileChangeToolResult(raw, workspace)
 	if !ok {
 		t.Fatal("expected valid fileChange entry to extract")
 	}
@@ -284,7 +284,7 @@ func TestExtractFileChangeToolResultReadsCurrentCodexFileChangeShape(t *testing.
 		}
 	}`)
 
-	meta, diffData, ok := extractFileChangeToolResult(raw, "")
+	meta, diffData, ok := ExtractFileChangeToolResult(raw, "")
 	if !ok {
 		t.Fatal("expected current fileChange shape to extract")
 	}
@@ -333,7 +333,7 @@ func TestExtractFileChangeToolResultAcceptsMatchingFullPatch(t *testing.T) {
 		}
 	}`)
 
-	meta, diffData, ok := extractFileChangeToolResult(raw, "")
+	meta, diffData, ok := ExtractFileChangeToolResult(raw, "")
 	if !ok {
 		t.Fatal("expected matching full-patch fileChange extraction to succeed")
 	}
@@ -379,7 +379,7 @@ func TestExtractFileChangeToolResultRejectsMismatchedFullPatchPath(t *testing.T)
 				t.Fatalf("marshal raw: %v", err)
 			}
 
-			meta, diffData, ok := extractFileChangeToolResult(raw, "")
+			meta, diffData, ok := ExtractFileChangeToolResult(raw, "")
 			if !ok {
 				t.Fatal("expected summary-only fileChange extraction to succeed")
 			}
@@ -576,7 +576,7 @@ func TestExtractFileChangeToolResultPreservesPartialSummaryCounts(t *testing.T) 
 		}
 	}`)
 
-	meta, diffData, ok := extractFileChangeToolResult(raw, "")
+	meta, diffData, ok := ExtractFileChangeToolResult(raw, "")
 	if !ok {
 		t.Fatal("expected mixed fileChange extraction to succeed")
 	}
@@ -606,7 +606,7 @@ func TestExtractFileChangeToolResultBuildsAddAndDeleteContentPatches(t *testing.
 		}
 	}`)
 
-	meta, diffData, ok := extractFileChangeToolResult(raw, "")
+	meta, diffData, ok := ExtractFileChangeToolResult(raw, "")
 	if !ok {
 		t.Fatal("expected add/delete fileChange extraction to succeed")
 	}
@@ -694,7 +694,7 @@ func TestCommandExecutionToolResultPersistsExactDeletePatch(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	workspace := t.TempDir()
 	createToolResultThread(t, st, "t1", workspace)
-	payloadID := toolResultPayloadID("item-command-rm")
+	payloadID := ToolResultPayloadID("item-command-rm")
 
 	path := filepath.Join(workspace, "src", "remove.ts")
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -850,10 +850,10 @@ func TestCommandExecutionToolResultSkipsDependentAndFailedCommands(t *testing.T)
 		t.Fatalf("handle failed complete: %v", err)
 	}
 
-	if _, err := st.GetPayloadMeta(toolResultPayloadID("item-command-dependent")); err == nil {
+	if _, err := st.GetPayloadMeta(ToolResultPayloadID("item-command-dependent")); err == nil {
 		t.Fatal("expected no payload for dependent command")
 	}
-	if _, err := st.GetPayloadMeta(toolResultPayloadID("item-command-failed")); err == nil {
+	if _, err := st.GetPayloadMeta(ToolResultPayloadID("item-command-failed")); err == nil {
 		t.Fatal("expected no payload for failed command")
 	}
 }

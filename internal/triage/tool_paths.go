@@ -28,10 +28,10 @@ var claudeFilePathTools = map[string]struct{}{
 	"NotebookEdit": {},
 }
 
-// isClaudeFilePathTool reports whether the given item type is one of
+// IsClaudeFilePathTool reports whether the given item type is one of
 // Claude's file-edit tools (Edit / Write / MultiEdit / NotebookEdit)
 // — the set that drives file_change tool_result dispatch.
-func isClaudeFilePathTool(itemType string) bool {
+func IsClaudeFilePathTool(itemType string) bool {
 	_, ok := claudeFilePathTools[itemType]
 	return ok
 }
@@ -42,7 +42,7 @@ func isCodexFileChangeItem(itemType string) bool {
 	return itemType == "fileChange" || itemType == "file_change"
 }
 
-// isFileChangeItemType is the unified predicate for the file_change
+// IsFileChangeItemType is the unified predicate for the file_change
 // tool_result extractor. Both providers route through
 // persistFileChangeToolResult; this is the gate that determines
 // whether to attempt extraction at all. Codex stamps `fileChange` /
@@ -50,8 +50,8 @@ func isCodexFileChangeItem(itemType string) bool {
 // the tool name (`Edit`, etc.). The dispatcher in tool_result_file_change.go
 // uses this predicate AFTER resolving an empty ItemType from the
 // persisted launch row's ToolName.
-func isFileChangeItemType(itemType string) bool {
-	return isCodexFileChangeItem(itemType) || isClaudeFilePathTool(itemType)
+func IsFileChangeItemType(itemType string) bool {
+	return isCodexFileChangeItem(itemType) || IsClaudeFilePathTool(itemType)
 }
 
 // normalizeDisplayPath is the display-friendly path normalizer used

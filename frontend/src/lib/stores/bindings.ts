@@ -354,6 +354,18 @@ export {
   UnarchiveProject,
   UpdateProjectSortPositions,
 
+  // Session import (provider session files → AO threads). All five are
+  // LOCAL-ONLY: they read the provider homes and name file paths, so a
+  // remote client gets a method_not_found refusal and the surface has to
+  // stay disabled there (stores/sessionImport.svelte.ts refuses first).
+  // ImportSessions starts an ASYNC run — progress arrives on the
+  // `session-import:progress` channel, never as a return value.
+  ListImportableSessions,
+  ImportSessions,
+  CancelSessionImport,
+  CheckThreadImportUpdates,
+  ImportThreadUpdates,
+
   // MCP (provider-native state: live session truth per thread, config
   // + status cache for threads without a session)
   ListThreadMcpServers,

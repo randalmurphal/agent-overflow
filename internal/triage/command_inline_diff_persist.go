@@ -65,7 +65,7 @@ func (r *Router) persistToolResult(evt provider.ProviderEvent, meta ToolResultMe
 
 	now := eventTimestampMillis(evt)
 
-	payloadID := toolResultPayloadID(itemID)
+	payloadID := ToolResultPayloadID(itemID)
 	meta, diffData = r.mergeToolResultPayload(payloadID, meta, diffData)
 	metaJSON, err := json.Marshal(meta)
 	if err != nil {
@@ -83,7 +83,7 @@ func (r *Router) persistToolResult(evt provider.ProviderEvent, meta ToolResultMe
 	if err != nil {
 		return fmt.Errorf("lookup tool result item: %w", err)
 	}
-	summary := summarizeToolResult(meta)
+	summary := SummarizeToolResult(meta)
 	if found {
 		item.PayloadID = payloadID
 		item.Summary = summary
@@ -96,7 +96,7 @@ func (r *Router) persistToolResult(evt provider.ProviderEvent, meta ToolResultMe
 	}
 	status := statusCompleted
 	if evt.Kind == provider.EventToolComplete {
-		status = completionStatus(decodeToolCompleteMeta(evt.Meta))
+		status = CompletionStatus(DecodeToolCompleteMeta(evt.Meta))
 	}
 
 	turnIndex, err := r.turnIndexForEvent(evt)

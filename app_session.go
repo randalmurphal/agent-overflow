@@ -130,6 +130,12 @@ func (a *App) startSessionNowWithClaudeResumeAt(threadID, claudeResumeAt string)
 		}
 		t = sanitized
 	}
+	// An imported Claude branch that is not its transcript's active branch
+	// has no resume reference until it needs one. This is where it gets one,
+	// by cutting the branch out of the source transcript into a session file
+	// of its own. No-op for every other thread. See
+	// app_session_import_branch.go.
+	t = a.materializeImportedClaudeBranch(t)
 
 	sessionToken := uuid.NewString()
 	onEvent := a.sessionEventHandler(threadID, sessionToken, t.Provider)

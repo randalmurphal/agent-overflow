@@ -280,6 +280,14 @@ type Thread struct {
 	// what a restart still knows, and what the sidebar's "Setup failed" pill
 	// falls back to.
 	WorktreeSetupState string `json:"worktreeSetupState"`
+	// ImportSource names the provider whose on-disk session this thread was
+	// imported from (migration v50): "claude", "codex", or "" for a thread
+	// AO created itself. Provenance, not a badge — it is what gates the
+	// "Check for Provider Updates" affordance, which SessionRef cannot do
+	// because every thread that has run a turn has one. Written once by the
+	// import and deliberately absent from updateThreadSetSQL, so no
+	// whole-row UpdateThread can rewrite it.
+	ImportSource string `json:"importSource"`
 	// HasActionableProposedPlan is derived for sidebar boot state. It is
 	// true when the latest assistant proposed plan is completed and has
 	// not been implemented yet. It is not a persisted threads column.

@@ -42,7 +42,7 @@ func (r *Router) handleCompactionReasoning(evt provider.ProviderEvent) error {
 
 	// Deterministic payload id keyed off the item, mirroring thinking, so later
 	// deltas address the same blob without a store round-trip.
-	payloadID := thinkingPayloadID(itemID)
+	payloadID := ThinkingPayloadID(itemID)
 
 	if firstBlock {
 		item := store.Item{
@@ -52,7 +52,7 @@ func (r *Router) handleCompactionReasoning(evt provider.ProviderEvent) error {
 			Kind:      itemKindCompactionReasoning,
 			Role:      "assistant",
 			Status:    statusStreaming,
-			Summary:   thinkingSummaryPreview(evt.Content),
+			Summary:   ThinkingSummaryPreview(evt.Content),
 			PayloadID: payloadID,
 			// ParentID intentionally empty: the reserved scope isolates this
 			// row's id + stream counters, but it renders top-level (above the
@@ -63,7 +63,7 @@ func (r *Router) handleCompactionReasoning(evt provider.ProviderEvent) error {
 		payload := store.Payload{
 			ID:        payloadID,
 			Kind:      itemKindCompactionReasoning,
-			Meta:      buildPayloadMeta(itemKindCompactionReasoning, evt),
+			Meta:      BuildPayloadMeta(itemKindCompactionReasoning, evt),
 			Data:      []byte(evt.Content),
 			CreatedAt: now,
 		}

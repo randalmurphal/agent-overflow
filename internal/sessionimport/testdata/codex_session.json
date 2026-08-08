@@ -1,0 +1,138 @@
+{
+  "rows": [
+    {
+      "turnIndex": 1,
+      "itemIndex": 0,
+      "id": "user:1",
+      "kind": "user_text",
+      "role": "user",
+      "status": "completed",
+      "summary": "Spawn a reviewer.",
+      "createdAt": 1700000000001,
+      "updatedAt": 1700000000001,
+      "meta": {
+        "import_source_uuid": "00000000-0000-4000-8000-000000000001",
+        "provider_item_id": "item_user_1"
+      }
+    },
+    {
+      "turnIndex": 1,
+      "itemIndex": 1,
+      "id": "item_spawn_1",
+      "kind": "tool_call",
+      "role": "assistant",
+      "status": "errored",
+      "summary": "spawn_agent: review — turn ended with tool unresolved",
+      "toolName": "spawn_agent",
+      "createdAt": 1700000000002,
+      "updatedAt": 1700000000007,
+      "meta": {
+        "import_source_uuid": "00000000-0000-4000-8000-000000000002",
+        "input": {
+          "prompt": "review"
+        },
+        "toolName": "spawn_agent"
+      }
+    },
+    {
+      "turnIndex": 1,
+      "itemIndex": 2,
+      "id": "item_wait_1",
+      "kind": "tool_call",
+      "role": "assistant",
+      "status": "completed",
+      "summary": "wait_agent",
+      "toolName": "wait_agent",
+      "createdAt": 1700000000003,
+      "updatedAt": 1700000000004,
+      "meta": {
+        "import_source_uuid": "00000000-0000-4000-8000-000000000003",
+        "input": {
+          "agent_id": "a1"
+        },
+        "toolName": "wait_agent"
+      }
+    },
+    {
+      "turnIndex": 1,
+      "itemIndex": 3,
+      "id": "complete:item_wait_1",
+      "kind": "tool_completion",
+      "role": "assistant",
+      "status": "completed",
+      "summary": "wait_agent",
+      "completionOf": "item_wait_1",
+      "toolName": "wait_agent",
+      "createdAt": 1700000000004,
+      "updatedAt": 1700000000004,
+      "meta": {
+        "import_source_uuid": "00000000-0000-4000-8000-000000000004",
+        "toolName": "wait_agent"
+      },
+      "payload": {
+        "id": "tool-call-result:complete:item_wait_1",
+        "kind": "tool_call_result",
+        "meta": {
+          "preview": "Reviewer approved."
+        }
+      }
+    },
+    {
+      "turnIndex": 1,
+      "itemIndex": 4,
+      "id": "compact:1:provider:item_compact_1",
+      "kind": "compaction",
+      "role": "system",
+      "status": "completed",
+      "summary": "Context compacted",
+      "createdAt": 1700000000005,
+      "updatedAt": 1700000000005,
+      "meta": {
+        "import_source_uuid": "00000000-0000-4000-8000-000000000005",
+        "trigger": "auto"
+      }
+    },
+    {
+      "turnIndex": 1,
+      "itemIndex": 5,
+      "id": "error:1:0",
+      "kind": "error",
+      "role": "system",
+      "status": "completed",
+      "summary": "stream disconnected",
+      "createdAt": 1700000000006,
+      "updatedAt": 1700000000006,
+      "meta": {
+        "import_source_uuid": "00000000-0000-4000-8000-000000000006"
+      }
+    }
+  ],
+  "turns": [
+    {
+      "turnId": "turn_abc",
+      "turnIndex": 1,
+      "startedAt": 1700000000000,
+      "completedAt": 1700000000007,
+      "stopReason": "end_turn",
+      "providerTurnId": "turn_abc"
+    }
+  ],
+  "usage": [
+    {
+      "createdAt": 1700000000007,
+      "threadId": "thread-sessionimport",
+      "projectId": "project-sessionimport",
+      "turnId": "turn_abc",
+      "provider": "codex",
+      "model": "gpt-5-codex",
+      "inputTokens": 400,
+      "outputTokens": 60,
+      "cacheReadInputTokens": 0,
+      "cacheCreationInputTokens": 0,
+      "reasoningOutputTokens": 40,
+      "costUsd": 0,
+      "costSource": "none"
+    }
+  ],
+  "warnings": null
+}

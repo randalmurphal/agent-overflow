@@ -62,11 +62,11 @@ func (r *Router) persistFileChangeToolResult(evt provider.ProviderEvent) error {
 	if toolName == "" && evt.Kind == provider.EventToolComplete {
 		if existing, found, err := r.store.GetThreadItem(evt.ThreadID, evt.ItemID); err == nil && found {
 			toolName = existing.ToolName
-			claudeFallbackFilePath = extractClaudeLaunchFilePath(existing.Meta)
+			claudeFallbackFilePath = ExtractClaudeLaunchFilePath(existing.Meta)
 		}
 	}
 
-	if !isFileChangeItemType(toolName) {
+	if !IsFileChangeItemType(toolName) {
 		return nil
 	}
 
@@ -80,10 +80,10 @@ func (r *Router) persistFileChangeToolResult(evt provider.ProviderEvent) error {
 		diffData []byte
 		ok       bool
 	)
-	if isClaudeFilePathTool(toolName) {
-		meta, diffData, ok = extractClaudeFileChangeToolResult(evt.Meta, toolName, claudeFallbackFilePath, workspacePath)
+	if IsClaudeFilePathTool(toolName) {
+		meta, diffData, ok = ExtractClaudeFileChangeToolResult(evt.Meta, toolName, claudeFallbackFilePath, workspacePath)
 	} else {
-		meta, diffData, ok = extractFileChangeToolResult(evt.Meta, workspacePath)
+		meta, diffData, ok = ExtractFileChangeToolResult(evt.Meta, workspacePath)
 	}
 	if !ok {
 		return nil
@@ -112,7 +112,7 @@ func (r *Router) mergeToolResultPayload(payloadID string, next ToolResultMeta, n
 	return existing, data
 }
 
-func extractFileChangeToolResult(raw json.RawMessage, workspaceRoot string) (ToolResultMeta, []byte, bool) {
+func ExtractFileChangeToolResult(raw json.RawMessage, workspaceRoot string) (ToolResultMeta, []byte, bool) {
 	var payload map[string]json.RawMessage
 	if json.Unmarshal(raw, &payload) != nil {
 		return ToolResultMeta{}, nil, false
@@ -664,7 +664,7 @@ func rawString(m map[string]json.RawMessage, key string) string {
 	return value
 }
 
-func summarizeToolResult(meta ToolResultMeta) string {
+func SummarizeToolResult(meta ToolResultMeta) string {
 	if meta.ItemType == "file_change" && meta.Title != "" {
 		return meta.Title
 	}
@@ -736,7 +736,7 @@ func formatInlineDiffCounts(insertions, deletions int) string {
 	return fmt.Sprintf("(+%d -%d)", insertions, deletions)
 }
 
-func toolResultPayloadID(itemID string) string {
+func ToolResultPayloadID(itemID string) string {
 	return "tool-result:" + itemID
 }
 

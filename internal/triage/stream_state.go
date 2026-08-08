@@ -62,7 +62,7 @@ func (r *Router) ensureTextBlockStarted(threadID string, turnIndex int, scope, p
 		return false, r.activeTextBlockRefs[key].itemID
 	}
 	r.segmentIndexByScope[counterKey] = r.segmentIndexByScope[counterKey] + 1
-	itemID := textItemID(turnIndex, scope, r.segmentIndexByScope[counterKey])
+	itemID := TextItemID(turnIndex, scope, r.segmentIndexByScope[counterKey])
 	r.activeTextBlocks[key] = true
 	r.activeTextBlockRefs[key] = activeStreamBlock{
 		threadID:  threadID,
@@ -83,7 +83,7 @@ func (r *Router) ensureThinkingBlockStarted(threadID string, turnIndex int, scop
 		return false, r.activeThinkingBlockRefs[key].itemID
 	}
 	r.blockIndexByScope[counterKey] = r.blockIndexByScope[counterKey] + 1
-	itemID := thinkingItemID(turnIndex, scope, r.blockIndexByScope[counterKey])
+	itemID := ThinkingItemID(turnIndex, scope, r.blockIndexByScope[counterKey])
 	r.activeThinkingBlocks[key] = true
 	r.activeThinkingBlockRefs[key] = activeStreamBlock{
 		threadID:  threadID,
@@ -463,7 +463,7 @@ func (r *Router) doSettleStreamingText(threadID, scope, itemID, status, finalCon
 	// open fence is the rendered content).
 	r.enrichCodeSpans(&item)
 	if finalContentPresent && item.PayloadID != "" {
-		metaJSON := buildPayloadMeta(itemKindAssistantText, provider.ProviderEvent{
+		metaJSON := BuildPayloadMeta(itemKindAssistantText, provider.ProviderEvent{
 			ThreadID:  threadID,
 			Content:   finalContent,
 			Timestamp: time.UnixMilli(now),
@@ -595,7 +595,7 @@ func (r *Router) persistCompletedTextItem(threadID string, turnIndex int, scope,
 		Role:      "assistant",
 		Status:    statusCompleted,
 		Summary:   content,
-		PayloadID: assistantTextPayloadID(threadID, itemID),
+		PayloadID: AssistantTextPayloadID(threadID, itemID),
 		ParentID:  scope,
 		Meta:      providerItemMeta(providerItemID),
 		CreatedAt: now,
@@ -625,7 +625,7 @@ func (r *Router) nextTextItemID(threadID string, turnIndex int, scope string) st
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.segmentIndexByScope[key] = r.segmentIndexByScope[key] + 1
-	return textItemID(turnIndex, scope, r.segmentIndexByScope[key])
+	return TextItemID(turnIndex, scope, r.segmentIndexByScope[key])
 }
 
 // enrichPathRefs is the settle-time hook for assistant_text rows.
@@ -936,7 +936,7 @@ func (r *Router) doSettleStreamingThinking(threadID, scope, itemID, status, fina
 		UpdatedAt: &now,
 	}
 	if finalContentPresent {
-		summary := thinkingSummaryPreview(finalContent)
+		summary := ThinkingSummaryPreview(finalContent)
 		update.Summary = &summary
 		if item.PayloadID != "" {
 			if err := r.store.ReplacePayloadData(item.PayloadID, []byte(finalContent), item.PayloadMeta, now); err != nil {
@@ -1016,7 +1016,7 @@ func (r *Router) persistOrUpdateCompletedThinkingItem(threadID string, turnIndex
 			if item.Status != statusStreaming && item.Status != statusCompleted {
 				return nil
 			}
-			if item.Status == statusCompleted && item.Summary == thinkingSummaryPreview(content) {
+			if item.Status == statusCompleted && item.Summary == ThinkingSummaryPreview(content) {
 				// Idempotent re-assert (duplicate content-present stop):
 				// same rationale as the text branch above. The preview is
 				// the trailing 400 runes, so for a same-provider-item-id
@@ -1024,7 +1024,7 @@ func (r *Router) persistOrUpdateCompletedThinkingItem(threadID string, turnIndex
 				// the payload rewrite along with the upsert.
 				return nil
 			}
-			item.Summary = thinkingSummaryPreview(content)
+			item.Summary = ThinkingSummaryPreview(content)
 			item.Status = statusCompleted
 			item.UpdatedAt = time.Now().UnixMilli()
 			if item.PayloadID != "" {
@@ -1040,7 +1040,7 @@ func (r *Router) persistOrUpdateCompletedThinkingItem(threadID string, turnIndex
 
 func (r *Router) persistCompletedThinkingItem(threadID string, turnIndex int, scope, providerItemID, content string) error {
 	itemID := r.nextThinkingItemID(threadID, turnIndex, scope)
-	payloadID := thinkingPayloadID(itemID)
+	payloadID := ThinkingPayloadID(itemID)
 	now := time.Now().UnixMilli()
 	item := store.Item{
 		ID:        itemID,
@@ -1049,7 +1049,7 @@ func (r *Router) persistCompletedThinkingItem(threadID string, turnIndex int, sc
 		Kind:      itemKindThinking,
 		Role:      "assistant",
 		Status:    statusCompleted,
-		Summary:   thinkingSummaryPreview(content),
+		Summary:   ThinkingSummaryPreview(content),
 		PayloadID: payloadID,
 		ParentID:  scope,
 		Meta:      providerItemMeta(providerItemID),
@@ -1059,7 +1059,7 @@ func (r *Router) persistCompletedThinkingItem(threadID string, turnIndex int, sc
 	payload := store.Payload{
 		ID:        payloadID,
 		Kind:      itemKindThinking,
-		Meta:      buildPayloadMeta(itemKindThinking, provider.ProviderEvent{ThreadID: threadID, Content: content, Timestamp: time.Now()}),
+		Meta:      BuildPayloadMeta(itemKindThinking, provider.ProviderEvent{ThreadID: threadID, Content: content, Timestamp: time.Now()}),
 		Data:      []byte(content),
 		CreatedAt: now,
 	}
@@ -1078,14 +1078,7 @@ func (r *Router) nextThinkingItemID(threadID string, turnIndex int, scope string
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.blockIndexByScope[key] = r.blockIndexByScope[key] + 1
-	return thinkingItemID(turnIndex, scope, r.blockIndexByScope[key])
-}
-
-func nextErrorID(turnIndex int, scope string, seq int) string {
-	if scope == "" {
-		return fmt.Sprintf("error:%d:%d", turnIndex, seq)
-	}
-	return fmt.Sprintf("error:%d:%s:%d", turnIndex, scope, seq)
+	return ThinkingItemID(turnIndex, scope, r.blockIndexByScope[key])
 }
 
 func (r *Router) nextErrorSequence(threadID string, turnIndex int, scope string) int {
@@ -1106,10 +1099,6 @@ func (r *Router) nextCompactionSequence(threadID string, turnIndex int) int {
 	return seq
 }
 
-func nextToolCompletionID(launchID string) string {
-	return "complete:" + launchID
-}
-
 // backgroundCompletionID returns the stable id for a backgrounded
 // task's tool_completion sibling. Steady-state callers must resolve a
 // launch tool_use_id before writing a sibling. The task_id fallback is
@@ -1117,7 +1106,7 @@ func nextToolCompletionID(launchID string) string {
 // future real tool_use id.
 func backgroundCompletionID(launchID, taskID string) string {
 	if launchID != "" {
-		return "complete:" + launchID
+		return ToolCompletionID(launchID)
 	}
 	return "complete:by-task:" + taskID
 }

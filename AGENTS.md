@@ -43,6 +43,21 @@ Ubuntu 23.04+ / Debian 13+).
   tokens** and needs authenticated `claude` + `codex` CLIs on PATH. Run it
   before a release and after upgrading either provider CLI.
   See [providersmoke_test.go](providersmoke_test.go).
+- `make import-corpus-smoke` — manual session-import gate; spends no tokens
+  and spawns nothing, but needs a **copy** of your provider homes. The
+  committed importer tests run on synthetic fixtures, which only know the
+  shapes whoever wrote them knew about; this runs the Claude transcript
+  reader, the Codex rollout reader, and the store writer over a real corpus
+  and reports what it found (warnings by code, unknown wire types, corrupt
+  lines, peak heap). Format drift shows up as a new code or a new unknown
+  type; only a session that fails to load, convert, or Build fails the gate.
+  Point it at copies via `AO_IMPORT_CORPUS_CLAUDE` /
+  `AO_IMPORT_CORPUS_CODEX` — a root that overlaps the live `~/.claude` or
+  `~/.codex` is refused outright, and there is no fallback to a real home.
+  Run it after upgrading either provider CLI and before shipping importer
+  changes. Unlike `provider-smoke` it carries no build tag: `make go-test`
+  compiles it and both legs skip when their variable is unset. See
+  [importcorpussmoke_test.go](importcorpussmoke_test.go).
 
 Every task must leave `make go-build`, `make go-test`,
 `cd frontend && pnpm run check`, and `cd frontend && pnpm run build` passing.

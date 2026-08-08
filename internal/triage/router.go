@@ -1199,10 +1199,10 @@ func (r *Router) persistProviderErrorItem(threadID string, turnIndex int, summar
 	// items.summary is a preview surface shipped with every thread
 	// emit. Clamp before the dedup probe so a re-fired long error
 	// compares equal to its already-clamped row.
-	summary = clampErrorSummary(summary)
+	summary = ClampErrorSummary(summary)
 	itemKind := "error"
 	itemMeta := ""
-	if enum := apiErrorEnum(meta); enum != "" {
+	if enum := APIErrorEnum(meta); enum != "" {
 		itemKind = itemKindAPIError
 		itemMeta = string(meta)
 	}
@@ -1210,7 +1210,7 @@ func (r *Router) persistProviderErrorItem(threadID string, turnIndex int, summar
 		return nil
 	}
 	errorItem := store.Item{
-		ID:        nextErrorID(turnIndex, scope, r.nextErrorSequence(threadID, turnIndex, scope)),
+		ID:        ErrorItemID(turnIndex, scope, r.nextErrorSequence(threadID, turnIndex, scope)),
 		ThreadID:  threadID,
 		TurnIndex: turnIndex,
 		Kind:      itemKind,
@@ -1231,10 +1231,10 @@ func (r *Router) persistProviderErrorItem(threadID string, turnIndex int, summar
 // otherwise ride along on every thread-list emit.
 const maxErrorSummaryRunes = 1000
 
-// clampErrorSummary truncates at a rune boundary with an ellipsis so a
+// ClampErrorSummary truncates at a rune boundary with an ellipsis so a
 // multi-byte character is never split mid-sequence. Byte length bounds
 // rune count, so the common short summary returns without allocating.
-func clampErrorSummary(summary string) string {
+func ClampErrorSummary(summary string) string {
 	if len(summary) <= maxErrorSummaryRunes {
 		return summary
 	}
@@ -1268,14 +1268,14 @@ func (r *Router) finishFatalProviderError(threadID string, now int64, summary st
 	return nil
 }
 
-// apiErrorEnum extracts the Claude `assistant.error` enum string from
+// APIErrorEnum extracts the Claude `assistant.error` enum string from
 // an EventError's Meta. The enum is the wire-typed signal that this
 // error came from the SDK's documented closed set (rate_limit,
 // authentication_failed, billing_error, ...) and warrants the
 // `api_error` row kind. An empty return means the error came from a
 // generic source (read-loop EOF, Codex willRetry:false) and should
 // persist as the catch-all `error` kind.
-func apiErrorEnum(meta json.RawMessage) string {
+func APIErrorEnum(meta json.RawMessage) string {
 	if len(meta) == 0 {
 		return ""
 	}
@@ -1698,5 +1698,5 @@ func (r *Router) NextErrorSequence(threadID string, turnIndex int, scope string)
 // build rows that slot in next to provider-sourced errors without
 // reimplementing the id format.
 func NewErrorID(turnIndex int, scope string, seq int) string {
-	return nextErrorID(turnIndex, scope, seq)
+	return ErrorItemID(turnIndex, scope, seq)
 }

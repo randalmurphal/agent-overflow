@@ -48,7 +48,7 @@ func TestExtractClaudeEdit_SingleHunk(t *testing.T) {
 		}},
 	})
 
-	result, diffData, ok := extractClaudeFileChangeToolResult(meta, "Edit", "", "")
+	result, diffData, ok := ExtractClaudeFileChangeToolResult(meta, "Edit", "", "")
 	if !ok {
 		t.Fatal("expected Edit extraction to succeed")
 	}
@@ -100,7 +100,7 @@ func TestExtractClaudeMultiEdit_MultiHunk(t *testing.T) {
 		},
 	})
 
-	result, diffData, ok := extractClaudeFileChangeToolResult(meta, "MultiEdit", "", "")
+	result, diffData, ok := ExtractClaudeFileChangeToolResult(meta, "MultiEdit", "", "")
 	if !ok {
 		t.Fatal("expected MultiEdit extraction to succeed")
 	}
@@ -124,7 +124,7 @@ func TestExtractClaudeWrite_Create(t *testing.T) {
 		"structuredPatch": []any{},
 	})
 
-	result, diffData, ok := extractClaudeFileChangeToolResult(meta, "Write", "", "")
+	result, diffData, ok := ExtractClaudeFileChangeToolResult(meta, "Write", "", "")
 	if !ok {
 		t.Fatal("expected Write create extraction to succeed")
 	}
@@ -167,7 +167,7 @@ func TestExtractClaudeWrite_Update(t *testing.T) {
 		}},
 	})
 
-	result, _, ok := extractClaudeFileChangeToolResult(meta, "Write", "", "")
+	result, _, ok := ExtractClaudeFileChangeToolResult(meta, "Write", "", "")
 	if !ok {
 		t.Fatal("expected Write update extraction to succeed")
 	}
@@ -189,7 +189,7 @@ func TestExtractClaudeNotebookEdit_UnifiedDiffSynthesis(t *testing.T) {
 		"updated_file":  updated,
 	})
 
-	result, diffData, ok := extractClaudeFileChangeToolResult(meta, "NotebookEdit", "", "")
+	result, diffData, ok := ExtractClaudeFileChangeToolResult(meta, "NotebookEdit", "", "")
 	if !ok {
 		t.Fatal("expected NotebookEdit extraction to succeed")
 	}
@@ -220,7 +220,7 @@ func TestExtractClaudeNotebookEdit_IdenticalContent(t *testing.T) {
 		"updated_file":  content,
 	})
 
-	result, diffData, ok := extractClaudeFileChangeToolResult(meta, "NotebookEdit", "", "")
+	result, diffData, ok := ExtractClaudeFileChangeToolResult(meta, "NotebookEdit", "", "")
 	if !ok {
 		t.Fatal("expected identical-content NotebookEdit to surface as summary_only")
 	}
@@ -245,7 +245,7 @@ func TestExtractClaude_IsErrorDropped(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
-	if _, _, ok := extractClaudeFileChangeToolResult(raw, "Edit", "", ""); ok {
+	if _, _, ok := ExtractClaudeFileChangeToolResult(raw, "Edit", "", ""); ok {
 		t.Fatal("expected is_error meta to drop the extraction")
 	}
 }
@@ -270,7 +270,7 @@ func TestExtractClaude_IsErrorDropsSuccessfulShape(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
-	if _, _, ok := extractClaudeFileChangeToolResult(raw, "Edit", "", ""); ok {
+	if _, _, ok := ExtractClaudeFileChangeToolResult(raw, "Edit", "", ""); ok {
 		t.Fatal("is_error=true must drop even when structuredPatch would otherwise extract cleanly")
 	}
 }
@@ -297,7 +297,7 @@ func TestExtractClaude_ToolUseResultArrayShape(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
-	result, _, ok := extractClaudeFileChangeToolResult(raw, "Edit", "", "")
+	result, _, ok := ExtractClaudeFileChangeToolResult(raw, "Edit", "", "")
 	if !ok {
 		t.Fatal("expected array-shape tool_use_result to extract")
 	}
@@ -324,7 +324,7 @@ func TestExtractClaude_ToolUseResultKeyedByID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
-	result, _, ok := extractClaudeFileChangeToolResult(raw, "Edit", "", "")
+	result, _, ok := ExtractClaudeFileChangeToolResult(raw, "Edit", "", "")
 	if !ok {
 		t.Fatal("expected keyed-object tool_use_result to extract")
 	}
@@ -346,7 +346,7 @@ func TestExtractClaudeNotebookEdit_LargeInputSummaryOnly(t *testing.T) {
 		"original_file": bigOriginal,
 		"updated_file":  bigUpdated,
 	})
-	result, diffData, ok := extractClaudeFileChangeToolResult(meta, "NotebookEdit", "", "")
+	result, diffData, ok := ExtractClaudeFileChangeToolResult(meta, "NotebookEdit", "", "")
 	if !ok {
 		t.Fatal("expected large NotebookEdit to surface as summary-only, not drop")
 	}
@@ -373,7 +373,7 @@ func TestExtractClaude_AbsolutePathNormalized(t *testing.T) {
 		}},
 	})
 
-	result, _, ok := extractClaudeFileChangeToolResult(meta, "Edit", "", workspace)
+	result, _, ok := ExtractClaudeFileChangeToolResult(meta, "Edit", "", workspace)
 	if !ok {
 		t.Fatal("expected absolute-path normalization to succeed")
 	}
@@ -403,7 +403,7 @@ func TestExtractClaude_AbsolutePathOutsideWorkspacePreserved(t *testing.T) {
 		}},
 	})
 
-	result, _, ok := extractClaudeFileChangeToolResult(meta, "Edit", "", workspace)
+	result, _, ok := ExtractClaudeFileChangeToolResult(meta, "Edit", "", workspace)
 	if !ok {
 		t.Fatal("expected outside-workspace Edit to extract a diff")
 	}
@@ -425,7 +425,7 @@ func TestExtractClaude_FallbackPathFromLaunchRow(t *testing.T) {
 		}},
 	})
 
-	result, _, ok := extractClaudeFileChangeToolResult(meta, "Edit", "src/from-launch.ts", "")
+	result, _, ok := ExtractClaudeFileChangeToolResult(meta, "Edit", "src/from-launch.ts", "")
 	if !ok {
 		t.Fatal("expected fallback path to enable extraction")
 	}
@@ -446,7 +446,7 @@ func TestExtractClaude_NoToolUseResultIsNoop(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
-	if _, _, ok := extractClaudeFileChangeToolResult(raw, "Edit", "", ""); ok {
+	if _, _, ok := ExtractClaudeFileChangeToolResult(raw, "Edit", "", ""); ok {
 		t.Fatal("expected no-tool_use_result meta to skip extraction")
 	}
 }
@@ -455,7 +455,7 @@ func TestExtractClaude_UnknownToolNameRejected(t *testing.T) {
 	meta := claudeMeta(map[string]any{
 		"filePath": "src/app.ts",
 	})
-	if _, _, ok := extractClaudeFileChangeToolResult(meta, "Bash", "", ""); ok {
+	if _, _, ok := ExtractClaudeFileChangeToolResult(meta, "Bash", "", ""); ok {
 		t.Fatal("expected non-file-change tool name to skip extraction")
 	}
 }
@@ -514,7 +514,7 @@ func TestNotebookEditSummaryOnlyUpgradesFromTurnDiff(t *testing.T) {
 		t.Fatalf("tool complete: %v", err)
 	}
 
-	payloadID := toolResultPayloadID("tu_nb_1")
+	payloadID := ToolResultPayloadID("tu_nb_1")
 	pre := readToolResultMeta(t, st, payloadID)
 	if pre.InlineDiff == nil || pre.InlineDiff.Availability != "summary_only" {
 		t.Fatalf("expected summary_only pre-upgrade, got %+v", pre.InlineDiff)
@@ -603,7 +603,7 @@ func TestEndToEndClaudeEditProducesDiffPayload(t *testing.T) {
 	}
 
 	// 4. Verify the payload landed with the unified-diff bytes.
-	payloadID := toolResultPayloadID("tu_edit_e2e")
+	payloadID := ToolResultPayloadID("tu_edit_e2e")
 	pm, err := st.GetPayloadMeta(payloadID)
 	if err != nil {
 		t.Fatalf("payload meta: %v (no payload was written — parser→triage composition is broken)", err)
@@ -706,7 +706,7 @@ func TestPersistClaudeFileChangeToolResult_RoutesViaLaunchRowToolName(t *testing
 	}
 
 	// Verify the tool_result payload landed and carries the rich diff.
-	payloadID := toolResultPayloadID("tu_edit_1")
+	payloadID := ToolResultPayloadID("tu_edit_1")
 	pm, err := st.GetPayloadMeta(payloadID)
 	if err != nil {
 		t.Fatalf("payload meta: %v", err)

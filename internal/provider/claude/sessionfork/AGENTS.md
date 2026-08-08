@@ -16,7 +16,9 @@ SDK `fork_session(session_id, up_to_message_id)`:
   ceiling for multi-MB sessions. Exports `TranscriptTypes`, the row
   admission set shared with the claude package's branch validator
   (`sessionleaf_branch.go`) so the fork transform and the resume-at
-  branch walk can never drift apart (invariant 28).
+  branch walk can never drift apart (invariant 28). It also exports the
+  four transcript-reading primitives listed under "Shared reading
+  surface" below.
 - `rechain.go` — `isDeferredAPIErrorRow`, the predicate behind the
   fork transform's re-chain rule (below).
 - `compact_rewind.go` — `compactCommandSliceAnchor`, the anchor rewind
@@ -79,6 +81,25 @@ SDK `fork_session(session_id, up_to_message_id)`:
   Deletion can't abort (the worktree is already gone), so there the hard
   error surfaces and resume is left to fail loudly — bricked, never
   fabricated.
+
+## Shared reading surface
+
+Four primitives are exported because a second consumer reads the same
+transcript files and must not grow its own copy of these rules. The
+consumer is `internal/provider/claude/sessionimport`, which builds the
+branch DAG of an existing session so it can be imported into AO as one
+thread per leaf.
+
+| Symbol | Why it is shared |
+|---|---|
+| `SessionIDFromPath` | The filename uuid is the session's identity; a re-derivation would disagree on the `.jsonl` trim. |
+| `ParseTranscript` | Row admission (`TranscriptTypes`, empty-uuid rejection, skip-unparseable) must match what a fork would accept. |
+| `ResolveParent` | Skips progress ancestors. An importer walking raw `parentUuid` would break its chain on every progress row. |
+| `ResolveLogicalParent` | `compact_boundary` rows chain through `logicalParentUuid` — `parentUuid` is null there — so compaction stitching depends on it. |
+
+These stay behaviourally identical for both callers. If the importer ever
+needs different semantics, it gets its own function; it does not get a
+flag on one of these.
 
 ## Re-chain rule (invariant 28)
 

@@ -26,6 +26,7 @@
   import { formatDurationMs, formatTimeOfDay } from '../../utils/format';
   import { displayModelLabel } from '../../utils/modelLabels';
   import { parseJsonObject } from '../../utils/parseJsonObject';
+  import { importUnavailableLabel } from '../../utils/importUnavailable';
   import ToolHeaderMeta from './ToolHeaderMeta.svelte';
   import ToolRowStatusIndicator from './ToolRowStatusIndicator.svelte';
   import RowError from './RowError.svelte';
@@ -165,7 +166,7 @@ let hasExpandableBody = $derived(Boolean(item.payloadId));
       {expansion}
       id={bodyDomId}
       testPrefix="advisor-row"
-      emptyMessage="No stored advisor response."
+      emptyMessage={importUnavailableLabel(item) ?? 'No stored advisor response.'}
       copyLabel="Copy response"
       renderContent={advisorBodyContent}
     />

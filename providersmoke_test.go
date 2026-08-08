@@ -12,16 +12,25 @@
 // It is behind the `providersmoke` build tag, so `make go-test` and `make
 // verify` never compile it and stay hermetic. Run it manually before a release
 // and after upgrading either provider CLI. It spends real model tokens — one
-// trivial turn per provider — which is the price of the only assertion a mock
-// cannot make.
+// trivial turn per provider here, plus the four the Claude imported-branch
+// scenario costs (providersmoke_importbranch_test.go) — which is the price of
+// the only assertions a mock cannot make.
 //
-// The gate measures three things, in the order a failure should be read:
+// This file's workflow gate measures three things, in the order a failure
+// should be read:
 //
 //  1. SCHEMA ACCEPTANCE — the CLI accepted the generated envelope schema.
 //  2. ENVELOPE ROUND-TRIP — the run reached done through a real envelope
 //     carrying its declared output.
 //  3. BRANCH-RULE CONFORMANCE — the writing phase ran in the run's isolated
 //     worktree on the run's own branch, and the project checkout was untouched.
+//
+// A fourth dimension lives in its own file because it drives raw provider
+// sessions rather than a workflow run:
+//
+//  4. IMPORTED-BRANCH RESUME (Claude only) — the real CLI accepts a transcript
+//     the session importer's lazy branch materialisation cut, and continues
+//     THAT branch's conversation. See providersmoke_importbranch_test.go.
 //
 // Nothing here overrides `claudeBinaryPath` / `codexBinaryPath`: the point is to
 // exercise the exact default binary resolution production uses. There is no
@@ -85,7 +94,15 @@ type providerSmokeCase struct {
 }
 
 func TestProviderSmokeClaude(t *testing.T) {
-	runProviderSmoke(t, providerSmokeCase{
+	runProviderSmoke(t, providerSmokeClaudeCase())
+}
+
+// providerSmokeClaudeCase is the Claude leg's case. It is shared with the
+// imported-branch scenario so both preflight the same default binary, run the
+// same model, and print the same operator instructions; a private second copy
+// would drift the moment either moved.
+func providerSmokeClaudeCase() providerSmokeCase {
+	return providerSmokeCase{
 		providerName: string(provider.Claude),
 		// Sonnet 4.6 is the cheapest non-Haiku model in the Claude catalog and is
 		// accepted by Claude Code 2.1.219.
@@ -99,7 +116,7 @@ func TestProviderSmokeClaude(t *testing.T) {
 		// (Bedrock/Vertex accounts surface only apiProvider, firstParty
 		// profile logins only email).
 		unauthenticated: providerstatus.ClaudeUnauthenticated,
-	})
+	}
 }
 
 func TestProviderSmokeCodex(t *testing.T) {

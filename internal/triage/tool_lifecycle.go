@@ -53,27 +53,6 @@ const (
 	statusKilled = "killed"
 )
 
-type toolStartMeta struct {
-	ToolName        string          `json:"toolName"`
-	Input           json.RawMessage `json:"input"`
-	MetaUpdateOnly  bool            `json:"meta_update_only"`
-	IsBackground    bool            `json:"is_background"`
-	TaskID          string          `json:"task_id"`
-	SubagentModel   string          `json:"subagent_model"`
-	ParentToolUseID string          `json:"parent_tool_use_id"`
-	// ResumesToolUseID and Description carry Claude's resume-rebind
-	// linkage: system/task_started rebinding an idle async agent's
-	// task_id onto a NEW tool_use (e.g. the harness's SendMessage call)
-	// — see claude-wire.md §E6. ResumesToolUseID is the tool_use_id of
-	// the ORIGINAL launch this tool_use is resuming; Description is the
-	// original agent's description straight off the rebind
-	// task_started envelope. Both are only populated by the parser's
-	// resume path (parse_system.go); a normal launch's meta-only
-	// task_started update never sets them.
-	ResumesToolUseID string `json:"resumes_tool_use_id"`
-	Description      string `json:"description"`
-}
-
 // isMetaUpdateOnly reports whether this EventToolStart only annotates an
 // already-persisted tool_call row (merging correlation metadata that
 // arrived on a later signal) rather than launching a new tool. Two forms:
@@ -90,7 +69,7 @@ type toolStartMeta struct {
 // settles the MAIN scope) that fragments the main message mid-stream whenever
 // a backgrounded subagent reports in. If persist under-detects it fabricates a
 // duplicate launch row. One predicate keeps the two from drifting.
-func (m toolStartMeta) isMetaUpdateOnly() bool {
+func (m ToolStartMeta) isMetaUpdateOnly() bool {
 	if m.MetaUpdateOnly {
 		return true
 	}
@@ -99,31 +78,13 @@ func (m toolStartMeta) isMetaUpdateOnly() bool {
 		(m.TaskID != "" || m.SubagentModel != "" || m.ParentToolUseID != "")
 }
 
-type toolCompleteMeta struct {
-	IsBackground bool `json:"is_background"`
-	// WatchTask marks a background launch that OBSERVES rather than
-	// works (Claude's Monitor, claude-wire.md §E7): it never produces a
-	// result a queued user send could be waiting on, so the flush-queue
-	// drain ignores it while the reaper/revert/context-repair consumers
-	// still count it as live background work. Copied onto the launch
-	// row's meta by the keep-running flip below so the store predicate
-	// can filter on it.
-	WatchTask  bool            `json:"watch_task"`
-	IsError    bool            `json:"is_error"`
-	ExitCode   *int            `json:"exit_code,omitempty"`
-	ItemStatus string          `json:"item_status,omitempty"`
-	TaskID     string          `json:"task_id,omitempty"`
-	ToolName   string          `json:"toolName,omitempty"`
-	Input      json.RawMessage `json:"input,omitempty"`
-}
-
 func (r *Router) persistToolCallLaunch(evt provider.ProviderEvent) error {
 	itemID := eventItemID(evt)
 	if itemID == "" {
 		return nil
 	}
 
-	meta := decodeToolStartMeta(evt.Meta)
+	meta := DecodeToolStartMeta(evt.Meta)
 	now := eventTimestampMillis(evt)
 
 	// A "meta update" EventToolStart targets an already-persisted
@@ -164,7 +125,7 @@ func (r *Router) persistToolCallLaunch(evt provider.ProviderEvent) error {
 		if meta.ToolName != "" {
 			existing.ToolName = meta.ToolName
 		}
-		if summary := buildToolCallSummary(meta, evt.ItemType); meta.MetaUpdateOnly && strings.TrimSpace(summary) != "" {
+		if summary := BuildToolCallSummary(meta, evt.ItemType); meta.MetaUpdateOnly && strings.TrimSpace(summary) != "" {
 			existing.Summary = summary
 		}
 		parentToolUseID := stringsx.FirstNonEmptyTrimmed(eventParentID(evt), meta.ParentToolUseID)
@@ -196,7 +157,7 @@ func (r *Router) persistToolCallLaunch(evt provider.ProviderEvent) error {
 	}
 
 	toolName := stringsx.FirstNonEmptyTrimmed(meta.ToolName, evt.ItemType, "tool")
-	summary := buildToolCallSummary(meta, evt.ItemType)
+	summary := BuildToolCallSummary(meta, evt.ItemType)
 
 	turnIndex, err := r.turnIndexForEvent(evt)
 	if err != nil {
@@ -214,7 +175,7 @@ func (r *Router) persistToolCallLaunch(evt provider.ProviderEvent) error {
 		ParentID:     eventParentID(evt),
 		IsBackground: meta.IsBackground,
 		ToolName:     toolName,
-		Meta:         storedToolCallMeta(evt.ItemType, evt.Meta),
+		Meta:         StoredToolCallMeta(evt.ItemType, evt.Meta),
 		CreatedAt:    now,
 		UpdatedAt:    now,
 	}
@@ -225,7 +186,7 @@ func (r *Router) persistToolCallLaunch(evt provider.ProviderEvent) error {
 		item.ParentID = stringsx.FirstNonEmptyTrimmed(eventParentID(evt), existing.ParentID)
 		item.ToolName = toolName
 		item.IsBackground = existing.IsBackground || meta.IsBackground
-		item.Meta = mergeStoredToolCallMeta(existing.Meta, evt.ItemType, evt.Meta)
+		item.Meta = MergeStoredToolCallMeta(existing.Meta, evt.ItemType, evt.Meta)
 		if existing.Status == "" {
 			item.Status = statusRunning
 		}
@@ -307,7 +268,7 @@ func userInputValidationTexts(toolName, metaJSON string) []string {
 
 func (r *Router) persistToolCallCompletion(evt provider.ProviderEvent) error {
 	itemID := eventItemID(evt)
-	meta := decodeToolCompleteMeta(evt.Meta)
+	meta := DecodeToolCompleteMeta(evt.Meta)
 
 	if itemID == "" {
 		return nil
@@ -352,12 +313,12 @@ func (r *Router) persistToolCallCompletion(evt provider.ProviderEvent) error {
 	if err != nil {
 		return err
 	}
-	if codexThread && shouldSplitCodexToolCompletion(launch.ToolName) {
+	if codexThread && ShouldSplitCodexToolCompletion(launch.ToolName) {
 		return r.persistSplitToolCompletion(launch, evt, meta, now)
 	}
 	if codexThread && isCodexSpawnAgentLaunch(launch, evt.Meta) {
-		launch.Status = completionStatus(meta)
-		launch.Summary = buildCompletionSummary(completionBaseSummary(launch, meta, evt.ItemType), meta)
+		launch.Status = CompletionStatus(meta)
+		launch.Summary = BuildCompletionSummary(CompletionBaseSummary(launch, meta, evt.ItemType), meta)
 		if meta.IsBackground {
 			launch.IsBackground = true
 		}
@@ -398,13 +359,13 @@ func (r *Router) persistToolCallCompletion(evt provider.ProviderEvent) error {
 		return nil
 	}
 
-	status := completionStatus(meta)
+	status := CompletionStatus(meta)
 	launch.Status = status
-	launch.Summary = buildCompletionSummary(completionBaseSummary(launch, meta, evt.ItemType), meta)
+	launch.Summary = BuildCompletionSummary(CompletionBaseSummary(launch, meta, evt.ItemType), meta)
 	if strings.TrimSpace(meta.ToolName) != "" {
 		launch.ToolName = strings.TrimSpace(meta.ToolName)
 	}
-	launch.Meta = mergeStoredToolCallMeta(launch.Meta, evt.ItemType, evt.Meta)
+	launch.Meta = MergeStoredToolCallMeta(launch.Meta, evt.ItemType, evt.Meta)
 	launch.UpdatedAt = now
 	// Re-shape the merged meta so a completion event whose meta still
 	// carries heavy input bytes (Codex curated input) doesn't re-bloat
@@ -455,7 +416,7 @@ func (r *Router) persistToolCallCompletion(evt provider.ProviderEvent) error {
 	}
 }
 
-func (r *Router) persistToolCallCompletedWithoutLaunch(evt provider.ProviderEvent, meta toolCompleteMeta) error {
+func (r *Router) persistToolCallCompletedWithoutLaunch(evt provider.ProviderEvent, meta ToolCompleteMeta) error {
 	toolName := stringsx.FirstNonEmptyTrimmed(meta.ToolName, evt.ItemType, "tool")
 	now := eventTimestampMillis(evt)
 	turnIndex, err := r.turnIndexForEvent(evt)
@@ -468,26 +429,17 @@ func (r *Router) persistToolCallCompletedWithoutLaunch(evt provider.ProviderEven
 		TurnIndex: turnIndex,
 		Kind:      itemKindToolCall,
 		Role:      "assistant",
-		Status:    completionStatus(meta),
-		Summary:   buildCompletionSummary(buildToolCallSummary(toolStartMeta{ToolName: toolName, Input: meta.Input}, evt.ItemType), meta),
+		Status:    CompletionStatus(meta),
+		Summary:   BuildCompletionSummary(BuildToolCallSummary(ToolStartMeta{ToolName: toolName, Input: meta.Input}, evt.ItemType), meta),
 		ParentID:  eventParentID(evt),
 		ToolName:  toolName,
-		Meta:      storedToolCallMeta(evt.ItemType, evt.Meta),
+		Meta:      StoredToolCallMeta(evt.ItemType, evt.Meta),
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
-	payload := completionPayloadForTool(item.ID, toolName, commandFromInput(meta.Input), evt, meta, now)
+	payload := CompletionPayloadForTool(item.ID, toolName, commandFromInput(meta.Input), evt, meta, now)
 	inputPayload := r.shapeToolItemMeta(&item, now)
 	return r.persistItemWithInputPayload(item, payload, inputPayload)
-}
-
-func shouldSplitCodexToolCompletion(toolName string) bool {
-	switch strings.TrimSpace(toolName) {
-	case "wait_agent", "resume_agent":
-		return true
-	default:
-		return false
-	}
 }
 
 func shouldPersistCodexCompletionWithoutLaunch(toolName string) bool {
@@ -510,7 +462,7 @@ func isCodexSpawnAgentLaunch(launch store.Item, completionMeta json.RawMessage) 
 	return decodeCodexItemMeta(completionMeta).Tool == "spawn_agent"
 }
 
-func (r *Router) persistSplitToolCompletion(launch store.Item, evt provider.ProviderEvent, meta toolCompleteMeta, now int64) error {
+func (r *Router) persistSplitToolCompletion(launch store.Item, evt provider.ProviderEvent, meta ToolCompleteMeta, now int64) error {
 	if launch.ToolName == "wait_agent" {
 		evt.Meta = preserveCodexWaitLaunchReceiverTargets(launch.Meta, evt.Meta)
 	}
@@ -525,15 +477,15 @@ func (r *Router) persistSplitToolCompletion(launch store.Item, evt provider.Prov
 	if err := r.persistItemWithInputPayload(launch, nil, launchInputPayload); err != nil {
 		return err
 	}
-	completionID := nextToolCompletionID(launch.ID)
+	completionID := ToolCompletionID(launch.ID)
 	completion := store.Item{
 		ID:           completionID,
 		ThreadID:     evt.ThreadID,
 		TurnIndex:    launch.TurnIndex,
 		Kind:         itemKindBackgroundDone,
 		Role:         "assistant",
-		Status:       completionStatus(meta),
-		Summary:      buildCompletionSummary(completionBaseSummary(launch, meta, evt.ItemType), meta),
+		Status:       CompletionStatus(meta),
+		Summary:      BuildCompletionSummary(CompletionBaseSummary(launch, meta, evt.ItemType), meta),
 		ParentID:     launch.ParentID,
 		CompletionOf: launch.ID,
 		ToolName:     launch.ToolName,
@@ -1199,7 +1151,7 @@ func backgroundTerminalStatus(meta backgroundTaskTerminalMeta) string {
 // from it — reads as the resumed agent's own completion instead of
 // "SendMessage -> done". Only triggers when metaJSON carries
 // resumes_tool_use_id (stamped by the parser's task_started resume
-// path — see toolStartMeta.ResumesToolUseID); a carrier whose original
+// path — see ToolStartMeta.ResumesToolUseID); a carrier whose original
 // launch predates this parser instance (the reconnect edge in
 // parse_system.go's task_started case) has no resumes_tool_use_id and
 // keeps its default launch Summary, since there is no anchor id to
@@ -1212,7 +1164,7 @@ func backgroundTerminalStatus(meta backgroundTaskTerminalMeta) string {
 // "Agent: " + description when the original row lookup misses (e.g.
 // retention already pruned it).
 func (r *Router) resumeCarrierSummary(threadID, currentSummary, metaJSON string) string {
-	resumeMeta := decodeToolStartMeta(json.RawMessage(metaJSON))
+	resumeMeta := DecodeToolStartMeta(json.RawMessage(metaJSON))
 	if resumeMeta.ResumesToolUseID == "" {
 		return currentSummary
 	}
@@ -1223,7 +1175,7 @@ func (r *Router) resumeCarrierSummary(threadID, currentSummary, metaJSON string)
 	}
 	if resumeMeta.Description != "" {
 		// Intentional duplication of the "Agent: <preview>" shape the
-		// launch path derives via buildToolCallSummary+toolInputPreview
+		// launch path derives via BuildToolCallSummary+toolInputPreview
 		// — there is no input JSON here to feed that pipeline, only the
 		// bare description string off the rebind task_started. Bound it
 		// the same way toolInputPreview bounds every other summary
@@ -1294,7 +1246,7 @@ func backgroundTerminalPayload(launch store.Item, evt provider.ProviderEvent, me
 		if meta.ExitCode != nil {
 			code = *meta.ExitCode
 		}
-		commandMeta := ExtractCommandOutputMetaWithError(evt.Content, commandFromLaunch(launch), code, "")
+		commandMeta := ExtractCommandOutputMetaWithError(evt.Content, CommandFromLaunch(launch), code, "")
 		if commandMeta.ErrorMessage == "" && meta.IsError {
 			commandMeta.ErrorMessage = compactCommandErrorMessage(evt.Content)
 		}
@@ -1439,30 +1391,8 @@ func (r *Router) emitItemUpsertWithActivity(item store.Item, countsAsActivity bo
 	r.emit("provider:item_event", NewItemStreamUpsertWithActivity(item, &countsAsActivity))
 }
 
-func decodeToolStartMeta(raw json.RawMessage) toolStartMeta {
-	if len(raw) == 0 {
-		return toolStartMeta{}
-	}
-	var m toolStartMeta
-	if json.Unmarshal(raw, &m) != nil {
-		return toolStartMeta{}
-	}
-	return m
-}
-
 func isToolStartMetaUpdateOnly(raw json.RawMessage) bool {
-	return decodeToolStartMeta(raw).isMetaUpdateOnly()
-}
-
-func decodeToolCompleteMeta(raw json.RawMessage) toolCompleteMeta {
-	if len(raw) == 0 {
-		return toolCompleteMeta{}
-	}
-	var m toolCompleteMeta
-	if json.Unmarshal(raw, &m) != nil {
-		return toolCompleteMeta{}
-	}
-	return m
+	return DecodeToolStartMeta(raw).isMetaUpdateOnly()
 }
 
 func validJSONObjectString(raw json.RawMessage) string {
@@ -1480,14 +1410,10 @@ func validJSONObjectString(raw json.RawMessage) string {
 	return string(encoded)
 }
 
-func storedToolCallMeta(itemType string, raw json.RawMessage) string {
-	return validJSONObjectString(stripStoredToolCallMeta(itemType, raw))
-}
-
-func mergeStoredToolCallMeta(existing string, itemType string, incoming json.RawMessage) string {
+func MergeStoredToolCallMeta(existing string, itemType string, incoming json.RawMessage) string {
 	incoming = stripStoredToolCallMeta(itemType, incoming)
 	merged := mergeItemMetaJSON(existing, incoming)
-	return storedToolCallMeta(itemType, json.RawMessage(merged))
+	return StoredToolCallMeta(itemType, json.RawMessage(merged))
 }
 
 func stripStoredToolCallMeta(itemType string, raw json.RawMessage) json.RawMessage {
@@ -1544,71 +1470,6 @@ func mergeJSONObjectBytes(existing, incoming json.RawMessage) (json.RawMessage, 
 		return nil, false
 	}
 	return out, true
-}
-
-func buildToolCallSummary(meta toolStartMeta, itemType string) string {
-	name := strings.TrimSpace(meta.ToolName)
-	if name == "" {
-		name = strings.TrimSpace(itemType)
-	}
-	if name == "" {
-		name = "tool"
-	}
-	preview := toolInputPreview(meta.Input)
-	if preview == "" {
-		return name
-	}
-	return name + ": " + preview
-}
-
-func buildCompletionSummary(launchSummary string, meta toolCompleteMeta) string {
-	suffix := completionSuffix(meta)
-	if suffix == "" {
-		return launchSummary
-	}
-	return launchSummary + " " + suffix
-}
-
-func completionBaseSummary(launch store.Item, meta toolCompleteMeta, itemType string) string {
-	preview := toolInputPreview(meta.Input)
-	if preview == "" {
-		return launch.Summary
-	}
-	toolName := stringsx.FirstNonEmptyTrimmed(meta.ToolName, launch.ToolName, itemType, "tool")
-	current := strings.TrimSpace(launch.Summary)
-	if current == "" || current == strings.TrimSpace(launch.ToolName) || current == strings.TrimSpace(itemType) || !strings.Contains(current, ":") {
-		return toolName + ": " + preview
-	}
-	return launch.Summary
-}
-
-func completionSuffix(meta toolCompleteMeta) string {
-	switch {
-	case meta.IsError:
-		return "(error)"
-	case meta.ExitCode != nil && *meta.ExitCode != 0:
-		return fmt.Sprintf("(exit %d)", *meta.ExitCode)
-	case meta.ItemStatus == "failed":
-		return "(failed)"
-	case meta.ItemStatus == "errored":
-		return "(errored)"
-	case meta.ItemStatus == "killed":
-		return "(killed)"
-	case meta.ItemStatus == "declined":
-		return "(declined)"
-	default:
-		return ""
-	}
-}
-
-func completionStatus(meta toolCompleteMeta) string {
-	if meta.IsError || meta.ItemStatus == "failed" || meta.ItemStatus == "errored" || meta.ItemStatus == "killed" {
-		return statusErrored
-	}
-	if meta.ItemStatus == "declined" {
-		return "declined"
-	}
-	return statusCompleted
 }
 
 func toolInputPreview(input json.RawMessage) string {
@@ -1704,64 +1565,8 @@ func truncatePreview(s string, max int) string {
 	return truncatedPreview.String()
 }
 
-func completionPayloadForLaunch(launch store.Item, evt provider.ProviderEvent, meta toolCompleteMeta, now int64) *store.Payload {
-	return completionPayloadForTool(launch.ID, launch.ToolName, commandFromLaunch(launch), evt, meta, now)
-}
-
-func completionPayloadForTool(itemID string, toolName string, command string, evt provider.ProviderEvent, meta toolCompleteMeta, now int64) *store.Payload {
-	if isCommandOutputToolName(toolName) {
-		return commandCompletionPayload(itemID, command, evt, meta, now)
-	}
-	return completionPayload(itemID, evt, meta, now)
-}
-
-func commandCompletionPayload(itemID string, command string, evt provider.ProviderEvent, meta toolCompleteMeta, now int64) *store.Payload {
-	if evt.Content == "" {
-		return nil
-	}
-	header := map[string]any{}
-	if strings.TrimSpace(command) != "" {
-		header["command"] = strings.TrimSpace(command)
-	}
-	if meta.ExitCode != nil {
-		header["exitCode"] = *meta.ExitCode
-		header["exit_code"] = *meta.ExitCode
-	}
-	if meta.IsError {
-		header["is_error"] = true
-	}
-	if meta.ItemStatus != "" {
-		header["itemStatus"] = meta.ItemStatus
-	}
-	if len(evt.Meta) > 0 {
-		if merged, ok := mergeJSONObjectBytes(marshalJSONObjectOrEmpty(header), evt.Meta); ok {
-			headerJSON := buildPayloadMeta("command_output", provider.ProviderEvent{
-				Content: evt.Content,
-				Meta:    merged,
-			})
-			return &store.Payload{
-				ID:        "command-output:" + itemID,
-				Kind:      "command_output",
-				Meta:      headerJSON,
-				Data:      []byte(evt.Content),
-				CreatedAt: now,
-			}
-		}
-	}
-	headerJSONBytes, err := json.Marshal(header)
-	if err != nil {
-		headerJSONBytes = []byte("{}")
-	}
-	return &store.Payload{
-		ID:   "command-output:" + itemID,
-		Kind: "command_output",
-		Meta: buildPayloadMeta("command_output", provider.ProviderEvent{
-			Content: evt.Content,
-			Meta:    headerJSONBytes,
-		}),
-		Data:      []byte(evt.Content),
-		CreatedAt: now,
-	}
+func completionPayloadForLaunch(launch store.Item, evt provider.ProviderEvent, meta ToolCompleteMeta, now int64) *store.Payload {
+	return CompletionPayloadForTool(launch.ID, launch.ToolName, CommandFromLaunch(launch), evt, meta, now)
 }
 
 func marshalJSONObjectOrEmpty(fields map[string]any) json.RawMessage {
@@ -1781,7 +1586,7 @@ func isCommandOutputToolName(toolName string) bool {
 	}
 }
 
-func completionPayload(itemID string, evt provider.ProviderEvent, meta toolCompleteMeta, now int64) *store.Payload {
+func completionPayload(itemID string, evt provider.ProviderEvent, meta ToolCompleteMeta, now int64) *store.Payload {
 	if evt.Content == "" {
 		return nil
 	}

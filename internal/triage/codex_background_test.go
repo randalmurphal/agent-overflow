@@ -1329,7 +1329,7 @@ func TestCodexSubagentInactiveStatusMarksLaunchInactiveWithoutTranscriptCompleti
 	if len(live) != 0 {
 		t.Fatalf("inactive subagent should leave no live tray rows, got %+v", live)
 	}
-	if _, found, err := st.GetThreadItem("t1", nextToolCompletionID("spawn-inactive")); err != nil || found {
+	if _, found, err := st.GetThreadItem("t1", ToolCompletionID("spawn-inactive")); err != nil || found {
 		t.Fatalf("direct child lifecycle must not create transcript completion: found=%v err=%v", found, err)
 	}
 	row, found, err := st.GetThreadItem("t1", "spawn-inactive")
@@ -1361,7 +1361,7 @@ func TestCodexSubagentRunningStatusReactivatesCompletedChild(t *testing.T) {
 	// Follow-up activity must still make the launch live again.
 	now := time.Now().UnixMilli()
 	if _, err := st.AppendItem(store.Item{
-		ID:           nextToolCompletionID("spawn-followup"),
+		ID:           ToolCompletionID("spawn-followup"),
 		ThreadID:     "t1",
 		TurnIndex:    0,
 		Kind:         itemKindBackgroundDone,
@@ -1452,7 +1452,7 @@ func TestCodexSubagentStatusWaitsForAllChildrenBeforeHidingLiveBackground(t *tes
 	if len(live) != 0 {
 		t.Fatalf("spawn should hide after all children finish without transcript completion, got %+v", live)
 	}
-	if _, found, err := st.GetThreadItem("t1", nextToolCompletionID("spawn-multi-status")); err != nil || found {
+	if _, found, err := st.GetThreadItem("t1", ToolCompletionID("spawn-multi-status")); err != nil || found {
 		t.Fatalf("direct child lifecycle must not create completion sibling: found=%v err=%v", found, err)
 	}
 }
@@ -1503,7 +1503,7 @@ func TestCodexSubagentStatusAggregatesMultiChildFailures(t *testing.T) {
 	if meta["codex_child_status"] != "errored" {
 		t.Fatalf("codex_child_status = %v, want errored", meta["codex_child_status"])
 	}
-	completion, found, err := st.GetThreadItem("t1", nextToolCompletionID("spawn-mixed-status"))
+	completion, found, err := st.GetThreadItem("t1", ToolCompletionID("spawn-mixed-status"))
 	if err != nil || found {
 		t.Fatalf("direct child lifecycle must not create completion row: found=%v item=%+v err=%v", found, completion, err)
 	}
@@ -1548,7 +1548,7 @@ func TestCodexSubagentStatusDoesNotFlushBufferedChildTextToTranscriptCompletion(
 		t.Fatalf("subagent status: %v", err)
 	}
 
-	completion, found, err := st.GetThreadItem("t1", nextToolCompletionID("spawn-buffered"))
+	completion, found, err := st.GetThreadItem("t1", ToolCompletionID("spawn-buffered"))
 	if err != nil || found {
 		t.Fatalf("direct child lifecycle must not create completion row: found=%v item=%+v err=%v", found, completion, err)
 	}
@@ -1598,7 +1598,7 @@ func TestCodexSubagentWaitAfterInactiveStatusCreatesCompletion(t *testing.T) {
 		t.Fatalf("wait complete: %v", err)
 	}
 
-	completion, found, err := st.GetThreadItem("t1", nextToolCompletionID("spawn-inactive-wait"))
+	completion, found, err := st.GetThreadItem("t1", ToolCompletionID("spawn-inactive-wait"))
 	if err != nil || !found {
 		t.Fatalf("subagent completion missing after wait: found=%v err=%v", found, err)
 	}
@@ -1648,7 +1648,7 @@ func TestCodexSubagentWaitCompletionRehydratesPersistedLaunch(t *testing.T) {
 		t.Fatalf("wait complete: %v", err)
 	}
 
-	completion, found, err := st.GetThreadItem("t1", nextToolCompletionID("spawn-rehydrate"))
+	completion, found, err := st.GetThreadItem("t1", ToolCompletionID("spawn-rehydrate"))
 	if err != nil || !found {
 		t.Fatalf("rehydrated subagent completion missing: found=%v err=%v", found, err)
 	}
@@ -1735,7 +1735,7 @@ func TestCodexSubagentNotificationRehydratesPersistedLaunch(t *testing.T) {
 		t.Fatalf("subagent notification: %v", err)
 	}
 
-	completion, found, err := st.GetThreadItem("t1", nextToolCompletionID("spawn-notify-rehydrate"))
+	completion, found, err := st.GetThreadItem("t1", ToolCompletionID("spawn-notify-rehydrate"))
 	if err != nil || !found {
 		t.Fatalf("rehydrated notification sibling missing: found=%v err=%v", found, err)
 	}
@@ -1802,7 +1802,7 @@ func TestCodexSubagentWaitDoesNotMergePriorChildLifecycleStatus(t *testing.T) {
 		t.Fatalf("wait complete: %v", err)
 	}
 
-	completion, found, err := st.GetThreadItem("t1", nextToolCompletionID("spawn-mixed"))
+	completion, found, err := st.GetThreadItem("t1", ToolCompletionID("spawn-mixed"))
 	if err != nil || found {
 		t.Fatalf("lifecycle status must not complete wait sibling: found=%v item=%+v err=%v", found, completion, err)
 	}
@@ -1872,7 +1872,7 @@ func TestCodexSubagentPriorLifecycleStatusDoesNotAttachToUnrelatedLaterWait(t *t
 		t.Fatalf("unrelated wait complete: %v", err)
 	}
 
-	if completion, found, err := st.GetThreadItem("t1", nextToolCompletionID("spawn-franklin")); err != nil || found {
+	if completion, found, err := st.GetThreadItem("t1", ToolCompletionID("spawn-franklin")); err != nil || found {
 		t.Fatalf("franklin completion = %+v found=%v err=%v, want no unrelated wait attachment", completion, found, err)
 	}
 }
@@ -1908,7 +1908,7 @@ func TestCodexSubagentNotificationAfterLifecycleStatusCarriesFinalOutput(t *test
 	}); err != nil {
 		t.Fatalf("subagent status: %v", err)
 	}
-	if completion, found, err := st.GetThreadItem("t1", nextToolCompletionID("spawn-franklin")); err != nil || found {
+	if completion, found, err := st.GetThreadItem("t1", ToolCompletionID("spawn-franklin")); err != nil || found {
 		t.Fatalf("lifecycle status completion = %+v found=%v err=%v, want none", completion, found, err)
 	}
 	launchAfterStatus, found, err := st.GetThreadItem("t1", "spawn-franklin")
@@ -2022,7 +2022,7 @@ func TestCodexSubagentNotificationAfterWaitTimeoutDoesNotAttachToWaitCarrier(t *
 		t.Fatalf("subagent notification: %v", err)
 	}
 
-	completion, found, err := st.GetThreadItem("t1", nextToolCompletionID("spawn-timeout"))
+	completion, found, err := st.GetThreadItem("t1", ToolCompletionID("spawn-timeout"))
 	if err != nil || !found {
 		t.Fatalf("subagent sibling missing: found=%v err=%v", found, err)
 	}
@@ -2086,7 +2086,7 @@ func TestCodexSubagentWaitCompletionCarriesFinalOutputPayload(t *testing.T) {
 	if siblingMeta["wait_carrier_id"] != "wait-child" {
 		t.Fatalf("wait_carrier_id = %v, want wait-child", siblingMeta["wait_carrier_id"])
 	}
-	waitRow, found, err := st.GetThreadItem("t1", nextToolCompletionID("wait-child"))
+	waitRow, found, err := st.GetThreadItem("t1", ToolCompletionID("wait-child"))
 	if err != nil || !found {
 		t.Fatalf("wait row missing: found=%v err=%v", found, err)
 	}
@@ -2184,7 +2184,7 @@ func TestCodexSubagentDuplicateBlankCompletionPreservesPayload(t *testing.T) {
 		t.Fatalf("wait complete: %v", err)
 	}
 
-	completionID := nextToolCompletionID("spawn-blank-dup")
+	completionID := ToolCompletionID("spawn-blank-dup")
 	before, found, err := st.GetThreadItem("t1", completionID)
 	if err != nil || !found {
 		t.Fatalf("subagent sibling missing before duplicate: found=%v err=%v", found, err)
@@ -2270,7 +2270,7 @@ func TestCodexSubagentWaitCompletionPersistsImmediatelyWithActiveStream(t *testi
 		t.Fatalf("wait complete: %v", err)
 	}
 
-	subagentSibling, found, err := st.GetThreadItem("t1", nextToolCompletionID("spawn-immediate"))
+	subagentSibling, found, err := st.GetThreadItem("t1", ToolCompletionID("spawn-immediate"))
 	if err != nil || !found {
 		t.Fatalf("subagent sibling should persist at wait completion even with active stream: found=%v err=%v", found, err)
 	}
@@ -2346,11 +2346,11 @@ func TestCodexSubagentWaitCompletionReusesPayloadForOutOfOrderChildren(t *testin
 		t.Fatalf("wait complete: %v", err)
 	}
 
-	waitRow, found, err := st.GetThreadItem("t1", nextToolCompletionID("wait-multi"))
+	waitRow, found, err := st.GetThreadItem("t1", ToolCompletionID("wait-multi"))
 	if err != nil || !found {
 		t.Fatalf("wait row missing: found=%v err=%v", found, err)
 	}
-	subagentSibling, found, err := st.GetThreadItem("t1", nextToolCompletionID("spawn-multi"))
+	subagentSibling, found, err := st.GetThreadItem("t1", ToolCompletionID("spawn-multi"))
 	if err != nil || !found {
 		t.Fatalf("subagent sibling missing: found=%v err=%v", found, err)
 	}
@@ -2472,7 +2472,7 @@ func TestCodexSubagentNotificationWaitsForAllChildren(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("second subagent notification: %v", err)
 	}
-	completion, found, err := st.GetThreadItem("t1", nextToolCompletionID("spawn-notify-multi"))
+	completion, found, err := st.GetThreadItem("t1", ToolCompletionID("spawn-notify-multi"))
 	if err != nil || !found {
 		t.Fatalf("multi notification sibling missing: found=%v err=%v", found, err)
 	}

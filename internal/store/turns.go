@@ -377,6 +377,35 @@ func (s *Store) GetTurnByThreadIndex(threadID string, turnIndex int) (Turn, bool
 	return turn, true, nil
 }
 
+// TurnIDsForThread returns every turn id already recorded for a thread.
+//
+// `turns.turn_id` is the primary key and ApplyImportBatch INSERTs, so an
+// import or refresh that re-opens an id the thread already holds would
+// fail the transaction after a check RPC has already promised the user it
+// would succeed. The import writer loads this set up front and refuses the
+// batch instead — see internal/sessionimport/AGENTS.md §Writer contract.
+func (s *Store) TurnIDsForThread(threadID string) (map[string]struct{}, error) {
+	rows, err := s.reader().Query(
+		`SELECT turn_id FROM turns WHERE thread_id = ?`, threadID)
+	if err != nil {
+		return nil, fmt.Errorf("store: turn ids for %s: %w", threadID, err)
+	}
+	defer rows.Close()
+
+	out := map[string]struct{}{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("store: scan turn id for %s: %w", threadID, err)
+		}
+		out[id] = struct{}{}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: turn ids for %s: %w", threadID, err)
+	}
+	return out, nil
+}
+
 // ListRecentTurns returns the N most recent turns for a thread, newest
 // first (turn_index DESC). Used by the frontend on thread-switch to
 // hydrate latestSettledTurn. A non-positive limit returns an empty

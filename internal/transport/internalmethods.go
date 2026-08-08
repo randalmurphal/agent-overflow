@@ -619,4 +619,22 @@ var LocalOnlyMethods = map[string]bool{
 	// would cancel a real install; forging "proceeding" would strand the app
 	// with the fence held until the launcher's own report was refused as stale.
 	"ReportUpdateInstallStatus": true,
+
+	// 10. Session import. Every method here reads the user's provider homes
+	// (~/.claude, ~/.codex) off the local filesystem and hands back what it
+	// finds: absolute session-file paths, workspace paths, and the prompt text
+	// the session titles are derived from — a directory listing of the user's
+	// entire conversation history, which is category 1's local-FS read surface
+	// at its widest. ImportSessions additionally creates threads and project
+	// rows from those files, and the progress frames it pushes carry the same
+	// paths (which is why the channel is loopback-only too). The two refresh
+	// methods read one named session file and append to an existing thread.
+	// None of them spawn a process — import is a file read and a SQLite write
+	// — but "a LAN peer can enumerate and ingest every conversation on this
+	// host" is exactly the disclosure the local-only cut exists to prevent.
+	"ListImportableSessions":   true,
+	"ImportSessions":           true,
+	"CancelSessionImport":      true,
+	"CheckThreadImportUpdates": true,
+	"ImportThreadUpdates":      true,
 }

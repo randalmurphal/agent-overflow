@@ -22,8 +22,8 @@ func TestIsFileChangeItemType(t *testing.T) {
 		{"", false},
 	}
 	for _, tc := range cases {
-		if got := isFileChangeItemType(tc.itemType); got != tc.want {
-			t.Errorf("isFileChangeItemType(%q) = %v, want %v", tc.itemType, got, tc.want)
+		if got := IsFileChangeItemType(tc.itemType); got != tc.want {
+			t.Errorf("IsFileChangeItemType(%q) = %v, want %v", tc.itemType, got, tc.want)
 		}
 	}
 }

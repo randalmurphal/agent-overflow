@@ -251,7 +251,7 @@ func (r *Router) enrichExistingBackgroundCompletionFromNotification(
 	outputState string,
 	readError string,
 ) error {
-	completionID := nextToolCompletionID(launch.ID)
+	completionID := ToolCompletionID(launch.ID)
 	completion, ok, err := r.store.GetThreadItem(evt.ThreadID, completionID)
 	if err != nil {
 		return fmt.Errorf("task notification completion lookup %s: %w", completionID, err)
@@ -334,7 +334,7 @@ func buildBackgroundOutputFilePayload(payloadID string, launch store.Item, outpu
 		if exitCode != nil {
 			code = *exitCode
 		}
-		commandMeta := ExtractCommandOutputMetaWithError(string(data), commandFromLaunch(launch), code, "")
+		commandMeta := ExtractCommandOutputMetaWithError(string(data), CommandFromLaunch(launch), code, "")
 		commandMeta.OutputState = "loaded"
 		commandMetaJSON, err := json.Marshal(commandMeta)
 		if err != nil {
@@ -366,7 +366,7 @@ func isCommandOutputLaunch(launch store.Item) bool {
 	return isCommandOutputToolName(launch.ToolName)
 }
 
-func commandFromLaunch(launch store.Item) string {
+func CommandFromLaunch(launch store.Item) string {
 	var meta struct {
 		Input struct {
 			Command string `json:"command"`

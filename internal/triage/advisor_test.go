@@ -92,7 +92,7 @@ func TestAdvisorEndToEndProducesToolCallRowAndPayload(t *testing.T) {
 
 	// The unknown `advisor_model` / `assistant_message_id` fields are
 	// preserved verbatim through validJSONObjectString — the typed
-	// toolStartMeta struct doesn't enumerate them, but the raw
+	// ToolStartMeta struct doesn't enumerate them, but the raw
 	// round-trip keeps every top-level key. AdvisorRow reads these
 	// directly off item.meta to render the "Advisor (Opus 4.7)" affix.
 	var runningMeta map[string]any

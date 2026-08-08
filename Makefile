@@ -1,4 +1,4 @@
-.PHONY: install dev dev-wsl build build-wsl test check verify release go-build go-test test-race provider-smoke mockprovider harness-build harness e2e
+.PHONY: install dev dev-wsl build build-wsl test check verify release go-build go-test test-race provider-smoke import-corpus-smoke mockprovider harness-build harness e2e
 
 # `make dev DEBUG=1` / `make dev-wsl DEBUG=1` enables every debug surface
 # wired through this Makefile: frontend UI render tracing and raw provider
@@ -106,16 +106,53 @@ test-race:
 # provider-smoke is the real-provider gate: it drives one trivial workflow
 # through the REAL `claude` and `codex` binaries (default PATH resolution — no
 # binary-path override) and asserts schema acceptance, envelope round-trip, and
-# the §9 worktree/branch rules. It SPENDS REAL MODEL TOKENS — one trivial turn
-# per provider — and requires both CLIs installed and authenticated.
+# the §9 worktree/branch rules. A Claude-only scenario additionally builds a
+# real multi-branch transcript and proves the CLI resumes a fork cut by the
+# session importer's lazy branch materialisation. It SPENDS REAL MODEL TOKENS —
+# one trivial turn per provider plus four for that scenario — and requires both
+# CLIs installed and authenticated.
 #
 # The `providersmoke` build tag is what keeps it out of `make go-test` and
 # `make verify`, which stay hermetic. Run this manually before a release and
 # after upgrading either provider CLI; the mocked suites accept any
 # structured-output schema, so nothing else in the repo can catch a schema the
 # real CLIs reject. See providersmoke_test.go.
+#
+# -timeout covers the sum of the in-test deadlines (6m per workflow leg, 3m for
+# the imported-branch scenario, plus per-leg auth probes) with headroom, so a
+# wedged turn fails through the gate's own diagnostics rather than as a bare
+# test-binary timeout panic.
 provider-smoke:
-	go test -tags providersmoke -run 'TestProviderSmoke' -v -count=1 -timeout 15m .
+	go test -tags providersmoke -run 'TestProviderSmoke' -v -count=1 -timeout 20m .
+
+# import-corpus-smoke is the manual session-import gate: it runs the Claude
+# transcript reader, the Codex rollout reader, and the store writer over a COPY
+# of a developer's real provider homes and reports what the corpus contains
+# (warnings by code, unknown wire types, corrupt lines, wall time, peak heap).
+# The committed importer tests use synthetic fixtures, which only know the
+# shapes whoever wrote them knew about; this is what catches real-world format
+# drift.
+#
+# It spends no tokens and spawns nothing — it is a file read plus a store-pure
+# Build — but it must never be pointed at the live homes: the gate FAILS when a
+# corpus root overlaps ~/.claude or ~/.codex. Copy them first, and repoint the
+# Codex thread index at the copy (its rollout_path column is absolute):
+#
+#   cp -a ~/.claude /tmp/claude-corpus
+#   cp -a ~/.codex  /tmp/codex-corpus
+#   sqlite3 /tmp/codex-corpus/state_5.sqlite \
+#     "UPDATE threads SET rollout_path = replace(rollout_path, '$$HOME/.codex', '/tmp/codex-corpus');"
+#   make import-corpus-smoke \
+#     AO_IMPORT_CORPUS_CLAUDE=/tmp/claude-corpus AO_IMPORT_CORPUS_CODEX=/tmp/codex-corpus
+#
+# Unlike provider-smoke there is no build tag: both legs are compiled into
+# `make go-test` and SKIP when their variable is unset, which is what keeps the
+# runner's own logic covered (importcorpussmoke_fixture_test.go) without ever
+# reading a provider home. Either variable may be set on its own. See
+# importcorpussmoke_test.go.
+import-corpus-smoke:
+	AO_IMPORT_CORPUS_CLAUDE="$(AO_IMPORT_CORPUS_CLAUDE)" AO_IMPORT_CORPUS_CODEX="$(AO_IMPORT_CORPUS_CODEX)" \
+		go test -run 'TestImportCorpusSmoke' -v -count=1 -timeout 30m .
 
 # playwright install is idempotent and cached (~/.cache/ms-playwright);
 # the Chromium binary backs the frontend browser test project

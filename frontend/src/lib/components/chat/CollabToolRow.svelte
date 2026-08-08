@@ -13,6 +13,7 @@
   import type { ThreadPane } from '../../stores/thread.svelte';
   import { formatTimeOfDay } from '../../utils/format';
   import { parseJsonObject } from '../../utils/parseJsonObject';
+  import { importUnavailableLabel } from '../../utils/importUnavailable';
   import {
     codexModelEffortAffix,
     codexSubagentLaunchInfo,
@@ -265,5 +266,6 @@
     {tool}
     {receiverDisplayLabels}
     expansion={hasExpandableOutput ? expansion : null}
+    emptyMessage={importUnavailableLabel(item) ?? 'No stored output for this agent.'}
   />
 </div>

@@ -30,6 +30,11 @@
     type ThreadActionCtx,
   } from './threadRowActions';
   import {
+    applyThreadImportUpdatesAction,
+    checkThreadImportUpdatesAction,
+  } from './threadImportUpdates';
+  import type { ImportUpdateStatus } from '../../types/sessionImport';
+  import {
     clearThreadSelection,
     getSelectedThreadIds,
     isThreadSelected,
@@ -39,6 +44,8 @@
   import { openThreadFromNavigation, openThreadInNewPane } from '../../stores/panes.svelte';
   import { addToast } from '../../stores/toast.svelte';
   import { getSettings } from '../../stores/settings.svelte';
+  import { isViewOnlySession } from '../../transport/runMode';
+  import { countNoun } from '../../utils/format';
 
   interface Props {
     thread: Thread;
@@ -66,6 +73,12 @@
 
   let showDeleteConfirm = $state(false);
   let showBulkDeleteConfirm = $state(false);
+  // Provider-update check: in flight while the backend reads the session
+  // file (it builds the rows a refresh WOULD write, so it is a real read of
+  // a possibly-large transcript, not an instant stat), then the plan it
+  // found, which the confirm dialog describes.
+  let checkingUpdates = $state(false);
+  let pendingUpdate = $state<ImportUpdateStatus | null>(null);
 
   function ctx(): ThreadActionCtx {
     return {
@@ -101,6 +114,26 @@
   let canFork = $derived(
     Boolean(thread.sessionRef) && providerSupports(thread.provider, 'fork'),
   );
+  // Only a thread that came FROM a provider session file can be refreshed
+  // from one. sessionRef would be the wrong gate — every thread that has run
+  // a turn has one — so this reads the write-once import stamp.
+  let canCheckImportUpdates = $derived(Boolean(thread.importSource));
+  // Reading the provider session file is a local-disk operation the server
+  // refuses over a remote connection. Visible-but-disabled, per the §10
+  // treatment every other mutating affordance uses: hiding it would read as
+  // "this thread wasn't imported", which is a different fact.
+  let importUpdatesViewOnly = $derived(isViewOnlySession());
+  // The backend ships user-facing prose for the verdict it returned; it
+  // knows the turn count and the exact wording, so it wins. The fallback
+  // only covers a backend that sends none — and says the same two numbers.
+  let pendingUpdateDescription = $derived.by(() => {
+    if (pendingUpdate?.detail) return pendingUpdate.detail;
+    const items = countNoun(pendingUpdate?.newItems ?? 0, 'new item');
+    const turns = pendingUpdate?.newTurns ?? 0;
+    const across = turns > 0 ? ` across ${countNoun(turns, 'turn')}` : '';
+    return `${items}${across} since this thread was imported.`;
+  });
+
   // Discussion children (threads with a parentThreadId) cannot be
   // deleted in isolation — the parent thread owns the subtree's
   // lifecycle. Matches forge's right-click visibility.
@@ -169,6 +202,24 @@
   // delete immediately, on → confirm first. Bulk delete (runBulk via
   // showBulkDeleteConfirm) keeps its own always-on confirm; a
   // multi-thread delete is a higher-stakes action.
+  /**
+   * The check reads the source transcript, which on a large session is not
+   * instant — so the menu stays open with the item in a disabled "checking"
+   * state rather than closing onto nothing. It closes once there is
+   * something to say: a toast (handled inside the action) or the confirm
+   * dialog below.
+   */
+  async function handleCheckImportUpdates(): Promise<void> {
+    if (checkingUpdates) return;
+    checkingUpdates = true;
+    try {
+      pendingUpdate = await checkThreadImportUpdatesAction(ctx());
+    } finally {
+      checkingUpdates = false;
+      onClose();
+    }
+  }
+
   function handleDelete(): void {
     onClose();
     if (getSettings().confirmDelete) {
@@ -241,6 +292,14 @@
               }}
             />
           {/if}
+          {#if canCheckImportUpdates}
+            <MenuItem
+              label={checkingUpdates ? 'Checking for Provider Updates…' : 'Check for Provider Updates'}
+              disabled={checkingUpdates || importUpdatesViewOnly}
+              title={importUpdatesViewOnly ? 'Local only' : undefined}
+              onSelect={() => void handleCheckImportUpdates()}
+            />
+          {/if}
           <MenuItem
             label="Mark Unread"
             onSelect={() => {
@@ -284,6 +343,22 @@
   }}
   onCancel={() => {
     showDeleteConfirm = false;
+  }}
+/>
+
+<!-- Non-destructive, so Enter accepts: appending the session file's newer
+     messages adds history, it never rewrites what is already there. -->
+<ConfirmDialog
+  open={pendingUpdate !== null}
+  title="Import New Items"
+  description={pendingUpdateDescription}
+  confirmLabel="Import"
+  onConfirm={() => {
+    pendingUpdate = null;
+    void applyThreadImportUpdatesAction(ctx());
+  }}
+  onCancel={() => {
+    pendingUpdate = null;
   }}
 />
 

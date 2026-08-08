@@ -12,6 +12,7 @@ import { fetchDiscussionChannelSnapshot } from './eventsDiscussion';
 import { hydrateProviderAccounts } from './eventsProvider';
 import { hydrateRateLimitsSnapshots } from './eventsRateLimits';
 import { resyncWorktreeSetups } from './eventsWorktreeSetup';
+import { markImportConnectionLost } from './sessionImport.svelte';
 import { getThreads } from './threads.svelte';
 
 // The handler matches on the channel name we lost rather than each
@@ -88,6 +89,17 @@ export function applyTransportGap(gap: { channel: string; seq: number }): void {
       // Scoped to threads whose row says a setup ran — every other thread
       // would be an RPC for a guaranteed-idle answer.
       resyncWorktreeSetups(getThreads());
+      return;
+    }
+    case 'session-import:progress': {
+      // Like the worktree case, the gap carries no range — and unlike every
+      // other channel here there is no snapshot to re-fetch: an import run
+      // exists only as its frame stream, so lost frames cannot be recovered
+      // and the terminal `done` may be among them. The store ends the run as
+      // "outcome unknown" (and resyncs the sidebar for whatever landed)
+      // rather than leaving a progress bar frozen forever. A gap with no run
+      // in flight is a no-op there.
+      markImportConnectionLost();
       return;
     }
     case 'discussion:message':

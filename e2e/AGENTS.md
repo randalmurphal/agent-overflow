@@ -105,6 +105,31 @@ headless, isolated data dir, mocked providers. Full harness guide:
   mock-observation surface: a scenario reaches only the mocks that register
   after it is set, which is how a spec stages one behaviour for a run and a
   different one for the session a recovery action starts.
+- `tests/session-import.spec.ts` — session import through the REAL UI: the
+  sidebar trigger opening the lazy modal, rows from BOTH providers with the
+  provider segment / search / clear-filters narrowing them, a two-session
+  import settling into threads whose imported history renders (including the
+  Bash row's on-demand output payload), a multi-leaf Claude transcript landing
+  as one thread per branch, the dedup that empties the catalogue on the next
+  open, and "Check for Provider Updates" appending what the transcript grew on
+  disk. The progress strip, the per-row outcome stamps and the Retry CTA are
+  pinned on a run that FAILS a session — a clean run closes its own surface in
+  milliseconds, so asserting the strip there would be a race; the happy path
+  awaits the `session-import:progress` frames on the wire instead (the
+  terminal frame carries no per-row detail, so `threadIds` is read off the
+  row's own frame).
+- `tests/session-import-fixtures.ts` — the hand-written provider homes that
+  spec seeds. The harness already pins `$HOME` **and**
+  `App.credentialHomeOverride` at `<dataRoot>/home`, and session import
+  resolves its homes through that override, so seeding is just writing files
+  under `harness.bootstrap.homeDir` — a harness process cannot reach the
+  developer's real `~/.claude` / `~/.codex`. Claude transcripts are JSONL
+  rows (linear + tool call, multi-leaf + subagent join, and one that lists
+  cleanly but fails the writer); the Codex thread index is a `state_5.sqlite`
+  built with `node:sqlite` in the same schema subset the Go fixtures use, in
+  `journal_mode=DELETE` because the reader opens it `immutable=1` and would
+  not see a WAL. The workspace the sessions record is a `HarnessSeed`'d git
+  repo, so reset owns its cleanup.
 - `tests/notifications.spec.ts` — OS-notification pipe: `HarnessNotify`'s
   typed degraded send error, cold activation through transport replay and
   the pre-hydration queue, and the `none`-target no-op log.

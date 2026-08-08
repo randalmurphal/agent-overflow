@@ -87,7 +87,7 @@ One WebSocket carries everything:
 | `HarnessInfo()` | Identity + evidence paths (DB, event-log dir, UI trace, frontend error log). |
 | `HarnessEmit(channel, payload)` | Publish a raw event on the bus — escape hatch for injecting one-off frames at the frontend. |
 | `HarnessSeed(spec)` | Declarative fixtures: projects (existing path or generated git repo), threads, pre-baked turn/item history, plus project-scoped workflow definitions/profile/items. Returns created ids. |
-| `HarnessReset()` | Blank slate without a reboot: set the global workflow pause and cancel every live run through the production cancel path, stop sessions, settle in-flight turns, delete the workflow run records (`DeleteProjectWorkflowRecords` — production deletion drops these too under D25, but reset drops them first so the delete has no worktrees left to walk against a spec's fixtures), delete projects through the production cascade, remove workflow config/run dirs and generated seed workspaces, and drop harness-owned state (scenario rules, active replay, in-flight recording, mock registrations). The pause is then **cleared**, not restored, so a spec that deliberately left the engine paused cannot hold every later spec's runs in the same worker. Recorded bundles survive. Reload the page after. |
+| `HarnessReset()` | Blank slate without a reboot: set the global workflow pause and cancel every live run through the production cancel path, stop sessions, settle in-flight turns, delete the workflow run records (`DeleteProjectWorkflowRecords` — production deletion drops these too under D25, but reset drops them first so the delete has no worktrees left to walk against a spec's fixtures), delete projects through the production cascade, remove workflow config/run dirs and generated seed workspaces, drop the cached session-import scan (its dedup is a projection of the rows just deleted, and nothing but a finished import run invalidates it), and drop harness-owned state (scenario rules, active replay, in-flight recording, mock registrations). The pause is then **cleared**, not restored, so a spec that deliberately left the engine paused cannot hold every later spec's runs in the same worker. Recorded bundles survive. Reload the page after. |
 | `HarnessSetScenario(spec)` | Install/replace a mock scenario rule (library `name` or inline `scenario` JSON, optional `cwd` scope). Validated at set time. |
 | `HarnessClearScenarios()` / `HarnessListScenarios()` | Drop rules / list library + active rules. |
 | `HarnessListMocks()` | Registered mock processes in spawn order. |
@@ -287,7 +287,11 @@ watchdog stall, and cancellation; the rest of the workflow surface is split by
 concern across `workflows-rerun`, `workflows-tool`, `workflows-access`,
 `workflows-fanout`, `workflows-call`, `workflows-wake`,
 `workflows-automations`, `workflows-cli`, and
-`workflows-overlay` (see `e2e/AGENTS.md` for what each one pins). Read
+`workflows-overlay` (see `e2e/AGENTS.md` for what each one pins).
+`e2e/tests/session-import.spec.ts` drives session import end to end against
+hand-written provider homes written into the harness's redirected `HOME`
+(`session-import-fixtures.ts`) — the seeding pattern for anything that reads
+`~/.claude` or `~/.codex`. Read
 `harness.spec.ts` and `workflows.spec.ts` as references for new specs.
 
 ```

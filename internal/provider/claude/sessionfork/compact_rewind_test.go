@@ -223,9 +223,9 @@ func TestCompactCommandSliceAnchor_Table(t *testing.T) {
 
 func parseFixture(t *testing.T, jsonl string) []map[string]any {
 	t.Helper()
-	transcript, _, err := parseTranscript(strings.NewReader(jsonl), "src")
+	transcript, _, err := ParseTranscript(strings.NewReader(jsonl), "src")
 	if err != nil {
-		t.Fatalf("parseTranscript: %v", err)
+		t.Fatalf("ParseTranscript: %v", err)
 	}
 	return transcript
 }

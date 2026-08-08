@@ -6,13 +6,10 @@
 package triage
 
 import (
-	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"log"
-	"strings"
 	"time"
-	"unicode"
 
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
@@ -27,8 +24,6 @@ type usageEmitThrottle struct {
 	lastEmittedAt time.Time
 	pending       *provider.UsageEvent
 }
-
-const maxProviderCompactionIDLength = 420
 
 func decodeContextWindow(raw json.RawMessage) (provider.ContextWindow, bool) {
 	if len(raw) == 0 {
@@ -95,7 +90,7 @@ func (r *Router) handleCompaction(evt provider.ProviderEvent) error {
 	// streamed live as its own compaction_reasoning row, so it is not here.
 	// Headless claude and Codex carry no summary, so it is empty, restMeta is
 	// evt.Meta byte-for-byte, and the row persists exactly as before.
-	summary, restMeta := extractCompactionSummary(evt.Meta)
+	summary, restMeta := ExtractCompactionSummary(evt.Meta)
 
 	item := store.Item{
 		ID:        itemID,
@@ -109,7 +104,7 @@ func (r *Router) handleCompaction(evt provider.ProviderEvent) error {
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
-	payload := buildCompactionPayload(summary, now)
+	payload := BuildCompactionPayload(summary, now)
 	if payload != nil {
 		item.PayloadID = payload.ID
 	}
@@ -132,15 +127,15 @@ func (r *Router) handleCompaction(evt provider.ProviderEvent) error {
 }
 
 func (r *Router) compactionItemID(evt provider.ProviderEvent, turnIndex int) (string, error) {
-	if providerID := normalizeProviderCompactionID(evt.ItemID); providerID != "" {
-		return providerCompactionID(turnIndex, providerID), nil
+	if NormalizeProviderCompactionID(evt.ItemID) != "" {
+		return CompactionItemID(turnIndex, evt.ItemID, 0), nil
 	}
 	return r.nextAvailableSequencedCompactionID(evt.ThreadID, turnIndex)
 }
 
 func (r *Router) nextAvailableSequencedCompactionID(threadID string, turnIndex int) (string, error) {
 	for {
-		itemID := sequencedCompactionID(turnIndex, r.nextCompactionSequence(threadID, turnIndex))
+		itemID := CompactionItemID(turnIndex, "", r.nextCompactionSequence(threadID, turnIndex))
 		if _, ok, err := r.store.GetThreadItem(threadID, itemID); err != nil {
 			return "", fmt.Errorf("compaction id lookup %s: %w", itemID, err)
 		} else if !ok {
@@ -149,34 +144,14 @@ func (r *Router) nextAvailableSequencedCompactionID(threadID string, turnIndex i
 	}
 }
 
-func providerCompactionID(turnIndex int, providerID string) string {
-	return fmt.Sprintf("compact:%d:provider:%s", turnIndex, providerID)
-}
-
-func sequencedCompactionID(turnIndex, seq int) string {
-	return fmt.Sprintf("compact:%d:seq:%d", turnIndex, seq)
-}
-
-func normalizeProviderCompactionID(providerID string) string {
-	trimmed := strings.TrimSpace(providerID)
-	if trimmed == "" || strings.ContainsFunc(trimmed, unicode.IsControl) {
-		return ""
-	}
-	if len(trimmed) <= maxProviderCompactionIDLength {
-		return trimmed
-	}
-	hash := sha256.Sum256([]byte(trimmed))
-	return fmt.Sprintf("sha256:%x", hash)
-}
-
-// extractCompactionSummary pulls the committed summary out of a compact-
+// ExtractCompactionSummary pulls the committed summary out of a compact-
 // boundary's meta (the verbatim compactMetadata the parser passes through) and
 // returns the meta with that key removed. That keeps items.meta a cheap
 // {trigger} blob while the heavy summary routes to a payload. When no summary
 // is present — headless claude, Codex, or a context-window snapshot — it
 // returns the meta unchanged byte-for-byte so trigger persistence and
 // context-window decoding are untouched.
-func extractCompactionSummary(meta json.RawMessage) (summary string, rest json.RawMessage) {
+func ExtractCompactionSummary(meta json.RawMessage) (summary string, rest json.RawMessage) {
 	if len(meta) == 0 {
 		return "", meta
 	}
@@ -198,12 +173,12 @@ func extractCompactionSummary(meta json.RawMessage) (summary string, rest json.R
 	return summary, rebuilt
 }
 
-// buildCompactionPayload builds the on-demand payload for a committed
+// BuildCompactionPayload builds the on-demand payload for a committed
 // compaction summary: preview/size in meta, the raw summary text in data
 // (same shape as a thinking payload — raw text, not a JSON wrapper). Returns
 // nil for an empty summary, so headless/Codex boundaries persist with no
 // payload exactly as before.
-func buildCompactionPayload(summary string, now int64) *store.Payload {
+func BuildCompactionPayload(summary string, now int64) *store.Payload {
 	if summary == "" {
 		return nil
 	}

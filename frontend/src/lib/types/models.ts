@@ -123,6 +123,17 @@ export interface Thread {
    * the top — only real activity (first message send and onward) counts.
    */
   isDraft?: boolean;
+  /**
+   * Which provider's session file this thread was imported from
+   * ('claude' | 'codex'), or '' / undefined for a thread Agent Overflow
+   * created itself. Write-once at import time.
+   *
+   * It gates the "Check for Provider Updates" context-menu item and NOTHING
+   * else — it is never rendered as a badge, and an imported thread is not
+   * meant to look different from any other. (`sessionRef` cannot gate that
+   * item: every thread that has run a turn has one.)
+   */
+  importSource?: string;
 }
 
 /**

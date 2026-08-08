@@ -8,6 +8,7 @@
   import ToolKindIcon from './ToolKindIcon.svelte';
   import { classifyToolName } from './toolCardHeader';
   import { parseJsonObject } from '../../utils/parseJsonObject';
+  import { importUnavailableLabel } from '../../utils/importUnavailable';
   import { presentToolCardInputPreview } from './toolCardPreview';
   import {
     createPayloadExpansion,
@@ -216,7 +217,7 @@ let hasExpandableBody = $derived(
       {expansion}
       id={bodyDomId}
       testPrefix="tool-call-card"
-      emptyMessage="No stored payload for this tool result."
+      emptyMessage={importUnavailableLabel(item) ?? 'No stored payload for this tool result.'}
       {deferredOutputState}
       {deferredOutputError}
     />

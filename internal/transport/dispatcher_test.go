@@ -878,6 +878,13 @@ func (p *privilegedApp) DownloadUpdate() string            { return "ok" }
 func (p *privilegedApp) RestartToUpdate() string           { return "ok" }
 func (p *privilegedApp) ReportUpdateInstallStatus() string { return "ok" }
 
+// 11. Session import (provider-home enumeration + ingest).
+func (p *privilegedApp) ListImportableSessions() string   { return "ok" }
+func (p *privilegedApp) ImportSessions() string           { return "ok" }
+func (p *privilegedApp) CancelSessionImport() string      { return "ok" }
+func (p *privilegedApp) CheckThreadImportUpdates() string { return "ok" }
+func (p *privilegedApp) ImportThreadUpdates() string      { return "ok" }
+
 // TestDispatcher_LocalOnlyRefusedFromNonLoopback pins the LAN-bind
 // safety contract on the dispatcher itself. ResolveForOrigin must
 // refuse a LocalOnlyMethods entry when isLoopback is false, and the

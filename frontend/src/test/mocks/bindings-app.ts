@@ -506,6 +506,15 @@ export const GetUIState = dispatch('GetUIState');
 export const SetUIState = dispatch('SetUIState');
 export const DeleteUIState = dispatch('DeleteUIState');
 
+// Session import (provider session files → AO threads). ImportSessions is
+// async on the backend: a mock returns the run handle and the test drives
+// the rest through applyImportProgress / the session-import:progress channel.
+export const ListImportableSessions = dispatch('ListImportableSessions');
+export const ImportSessions = dispatch('ImportSessions');
+export const CancelSessionImport = dispatch('CancelSessionImport');
+export const CheckThreadImportUpdates = dispatch('CheckThreadImportUpdates');
+export const ImportThreadUpdates = dispatch('ImportThreadUpdates');
+
 // MCP (provider-native state)
 export const ListThreadMcpServers = dispatch('ListThreadMcpServers');
 export const ListWorkspaceMcpServers = dispatch('ListWorkspaceMcpServers');
