@@ -130,8 +130,8 @@ describe('setupEventListeners', () => {
     setBindingMock('GetRateLimitsSnapshots', async () => [{
       provider: 'codex',
       limits: [
-        { limitId: 'codex', limitName: '', usedPercent: 31, windowMins: 300, resetsAt: 1783643306 },
-        { limitId: 'codex', limitName: '', usedPercent: 30, windowMins: 10080, resetsAt: 1784009268 },
+        { limitId: 'codex', limitName: '', usedPercent: 31, windowMins: 300, resetsAt: 4102444800 },
+        { limitId: 'codex', limitName: '', usedPercent: 30, windowMins: 10080, resetsAt: 4103049600 },
       ],
       updatedAt: 1783629000000,
     }]);
@@ -2044,8 +2044,8 @@ describe('setupEventListeners', () => {
     setBindingMock('GetRateLimitsSnapshots', async () => [{
       provider: 'codex',
       limits: [
-        { limitId: 'codex', limitName: '', usedPercent: 47, windowMins: 300, resetsAt: 1783643306 },
-        { limitId: 'codex', limitName: '', usedPercent: 28, windowMins: 10080, resetsAt: 1784009268 },
+        { limitId: 'codex', limitName: '', usedPercent: 47, windowMins: 300, resetsAt: 4102444800 },
+        { limitId: 'codex', limitName: '', usedPercent: 28, windowMins: 10080, resetsAt: 4103049600 },
       ],
       updatedAt: 1783629000000,
     }]);
@@ -2255,7 +2255,7 @@ describe('setupEventListeners', () => {
         limitName: 'All models',
         usedPercent: 80,
         windowMins: 300,
-        resetsAt: 1776283200,
+        resetsAt: 4102444800,
       }],
       updatedAt: 1776283000,
     });
@@ -2515,7 +2515,7 @@ describe('setupEventListeners', () => {
       rateLimits: {
         provider: 'claude',
         limits: [
-          { limitId: 'five_hour', limitName: '5h', usedPercent: 62.5, windowMins: 300, resetsAt: 1776283200 },
+          { limitId: 'five_hour', limitName: '5h', usedPercent: 62.5, windowMins: 300, resetsAt: 4102444800 },
         ],
         updatedAt: 1776283000,
       },
@@ -2529,7 +2529,7 @@ describe('setupEventListeners', () => {
     const fiveHour = getProviderRateLimit('claude', 300);
     expect(fiveHour).not.toBeNull();
     expect(fiveHour?.usedPercent).toBe(62.5);
-    expect(fiveHour?.resetsAt).toBe(1776283200);
+    expect(fiveHour?.resetsAt).toBe(4102444800);
   });
 
   // Claude emits one window per `rate_limit_event` (5h XOR 7d). A
@@ -2545,7 +2545,7 @@ describe('setupEventListeners', () => {
       rateLimits: {
         provider: 'claude',
         limits: [
-          { limitId: 'five_hour', limitName: '5h', usedPercent: 30, windowMins: 300, resetsAt: 1776283200 },
+          { limitId: 'five_hour', limitName: '5h', usedPercent: 30, windowMins: 300, resetsAt: 4102444800 },
         ],
         updatedAt: 1776283000,
       },
@@ -2557,7 +2557,7 @@ describe('setupEventListeners', () => {
       rateLimits: {
         provider: 'claude',
         limits: [
-          { limitId: 'seven_day', limitName: '7d', usedPercent: 51, windowMins: 10080, resetsAt: 1776981600 },
+          { limitId: 'seven_day', limitName: '7d', usedPercent: 51, windowMins: 10080, resetsAt: 4103049600 },
         ],
         updatedAt: 1776283500,
       },
@@ -2581,8 +2581,8 @@ describe('setupEventListeners', () => {
       rateLimits: {
         provider: 'claude',
         limits: [
-          { limitId: 'thirty_day', limitName: 'thirty_day', usedPercent: 10, windowMins: 0, resetsAt: 1776283200 },
-          { limitId: 'five_hour', limitName: '5h', usedPercent: 42, windowMins: 300, resetsAt: 1776283200 },
+          { limitId: 'thirty_day', limitName: 'thirty_day', usedPercent: 10, windowMins: 0, resetsAt: 4102444800 },
+          { limitId: 'five_hour', limitName: '5h', usedPercent: 42, windowMins: 300, resetsAt: 4102444800 },
         ],
         updatedAt: 1776283000,
       },
@@ -2605,7 +2605,7 @@ describe('setupEventListeners', () => {
       rateLimits: {
         provider: 'claude',
         limits: [
-          { limitId: 'five_hour', limitName: '5h', usedPercent: 73, windowMins: 300, resetsAt: 1776283200 },
+          { limitId: 'five_hour', limitName: '5h', usedPercent: 73, windowMins: 300, resetsAt: 4102444800 },
         ],
         updatedAt: 1776283000,
       },
@@ -2626,7 +2626,7 @@ describe('setupEventListeners', () => {
       rateLimits: {
         provider: 'codex',
         limits: [
-          { limitId: 'codex', limitName: '5h', usedPercent: 88, windowMins: 300, resetsAt: 1776283200 },
+          { limitId: 'codex', limitName: '5h', usedPercent: 88, windowMins: 300, resetsAt: 4102444800 },
         ],
         updatedAt: 1776283000,
       },
@@ -2648,7 +2648,7 @@ describe('setupEventListeners', () => {
       rateLimits: {
         provider: 'claude',
         limits: [
-          { limitId: 'five_hour', limitName: '5h', usedPercent: 42, windowMins: 300, resetsAt: 1776283200 },
+          { limitId: 'five_hour', limitName: '5h', usedPercent: 42, windowMins: 300, resetsAt: 4102444800 },
         ],
         updatedAt: 1776283000,
       },

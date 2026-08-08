@@ -15,6 +15,10 @@ type AccountMap = Map<string, LimitMap>;
 
 let limitsByProvider: Map<ProviderID, AccountMap> = $state(new Map());
 let expiryTimer: ReturnType<typeof setTimeout> | undefined;
+// Bumped when a stored reset boundary passes so getter-driven $deriveds
+// re-read. The stored entries themselves are never rewritten at expiry —
+// see entriesForAccount.
+let expiryGeneration = $state(0);
 
 function entryKey(entry: RateLimitEntry): string {
   return `${entry.limitId.trim().toLowerCase()}\u0000${entry.windowMins}`;
@@ -97,6 +101,28 @@ function limitsForAccount(provider: ProviderID, accountId?: string): LimitMap | 
   return accounts.get(key) ?? (key !== LEGACY_ACCOUNT ? accounts.get(LEGACY_ACCOUNT) : undefined);
 }
 
+// Every getter reads through this accessor: it projects entries whose reset
+// boundary has passed to 0% used, and re-runs consumers when a boundary
+// passes (expiryGeneration). The projection is read-time only — the stored
+// entry keeps the server-reported boundary untouched, because the next
+// window's boundary is server-assigned and cannot be derived from the old
+// one (Claude re-anchors 5h windows; a fabricated `old + window` boundary
+// sat 10 minutes past the real next boundary on 2026-08-07 and made the
+// stale-window guard in setProviderRateLimits reject every real post-reset
+// snapshot for the entire window). formatResetCountdown renders the passed
+// boundary as "Resetting now" until the next snapshot lands.
+function entriesForAccount(provider: ProviderID, accountId?: string): RateLimitEntry[] {
+  void expiryGeneration;
+  const nowSeconds = Date.now() / 1000;
+  return [...(limitsForAccount(provider, accountId)?.values() ?? [])]
+    .map((entry) => projectExpired(entry, nowSeconds));
+}
+
+function projectExpired(entry: RateLimitEntry, nowSeconds: number): RateLimitEntry {
+  if (entry.resetsAt <= 0 || entry.resetsAt > nowSeconds || entry.usedPercent === 0) return entry;
+  return { ...entry, usedPercent: 0 };
+}
+
 function defaultLimit(provider: ProviderID, entries: RateLimitEntry[]): RateLimitEntry | null {
   if (provider === 'codex') {
     return entries.find((entry) => entry.limitId.toLowerCase() === 'codex') ?? null;
@@ -141,7 +167,7 @@ export function getProviderRateLimit(
   accountId?: string,
 ): RateLimitEntry | null {
   if (!provider || windowMins <= 0) return null;
-  const candidates = [...(limitsForAccount(provider, accountId)?.values() ?? [])]
+  const candidates = entriesForAccount(provider, accountId)
     .filter((entry) => entry.windowMins === windowMins);
   return defaultLimit(provider, candidates);
 }
@@ -161,7 +187,7 @@ export function getProviderRateLimitsForWindow(
   accountId?: string,
 ): RateLimitWindowGroup {
   if (!provider || windowMins <= 0) return { primary: null, limits: [] };
-  const candidates = [...(limitsForAccount(provider, accountId)?.values() ?? [])]
+  const candidates = entriesForAccount(provider, accountId)
     .filter((entry) => entry.windowMins === windowMins);
   const primary = defaultLimit(provider, candidates);
   const primaryKey = primary ? entryKey(primary) : '';
@@ -178,7 +204,7 @@ export function getProviderRateLimits(
   provider: ProviderID,
   accountId?: string,
 ): RateLimitEntry[] {
-  return [...(limitsForAccount(provider, accountId)?.values() ?? [])]
+  return entriesForAccount(provider, accountId)
     .sort((a, b) => a.windowMins - b.windowMins
       || rateLimitDisplayName(a).localeCompare(rateLimitDisplayName(b)));
 }
@@ -198,19 +224,12 @@ export function clearProviderRateLimits(provider: ProviderID, accountId: string)
   scheduleExpiry();
 }
 
-function normalizeExpired(entry: RateLimitEntry | null): RateLimitEntry | null {
-  if (!entry || entry.resetsAt <= 0 || entry.resetsAt > Date.now() / 1000) return entry;
-  let resetsAt = entry.resetsAt;
-  const windowSeconds = entry.windowMins * 60;
-  if (windowSeconds > 0) {
-    const elapsedWindows = Math.floor((Date.now() / 1000 - resetsAt) / windowSeconds) + 1;
-    resetsAt += elapsedWindows * windowSeconds;
-  }
-  return { ...entry, usedPercent: 0, resetsAt };
-}
-
+// Arms one timer for the nearest future reset boundary. Firing only bumps
+// expiryGeneration — the read-time projection in entriesForAccount is what
+// flips the display to 0% — then re-arms for the next boundary.
 function scheduleExpiry(): void {
   if (expiryTimer) clearTimeout(expiryTimer);
+  expiryTimer = undefined;
   let nextReset = Number.POSITIVE_INFINITY;
   const nowSeconds = Date.now() / 1000;
   for (const accounts of limitsByProvider.values()) {
@@ -222,32 +241,13 @@ function scheduleExpiry(): void {
       }
     }
   }
-  if (!Number.isFinite(nextReset)) {
-    expiryTimer = undefined;
-    return;
-  }
+  if (!Number.isFinite(nextReset)) return;
   const delay = Math.min(MAX_TIMER_DELAY, Math.max(1, (nextReset - nowSeconds) * 1000));
   expiryTimer = setTimeout(() => {
     expiryTimer = undefined;
-    expireElapsedLimits();
+    expiryGeneration += 1;
+    scheduleExpiry();
   }, delay);
-}
-
-function expireElapsedLimits(): void {
-  const next = new Map<ProviderID, AccountMap>();
-  for (const [provider, accounts] of limitsByProvider) {
-    const nextAccounts = new Map<string, LimitMap>();
-    for (const [accountId, limits] of accounts) {
-      const nextLimits = new Map<string, RateLimitEntry>();
-      for (const [key, entry] of limits) {
-        nextLimits.set(key, normalizeExpired(entry) ?? entry);
-      }
-      nextAccounts.set(accountId, nextLimits);
-    }
-    next.set(provider, nextAccounts);
-  }
-  limitsByProvider = next;
-  scheduleExpiry();
 }
 
 export function resetForTest(): void {
