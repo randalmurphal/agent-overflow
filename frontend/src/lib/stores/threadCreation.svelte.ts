@@ -4,8 +4,8 @@ import {
   ensureMainPane,
   ensurePaneInLayout,
   getFocusedPaneOrNull,
+  mountThreadInPane,
   openEmptyPane,
-  replaceThreadInPane,
 } from './panes.svelte';
 import { expandProject } from './sidebar.svelte';
 import { prependThread } from './threads.svelte';
@@ -190,15 +190,14 @@ export interface OpenTerminalThreadOptions {
  * thread-list refresh.
  *
  * Two timing decisions are load-bearing:
- *  - The focus latch is set BEFORE `replaceThreadInPane`. `switchThread` mounts
+ *  - The focus latch is set BEFORE `mountThreadInPane`. `switchThread` mounts
  *    `TerminalView` synchronously inside its await and `TerminalSurface.onMount`
  *    consumes the latch on that mount — latching after the open is one tick too
  *    late and the new shell never grabs focus.
- *  - `replaceThreadInPane` is called directly rather than `openThreadInPane`.
- *    The thread is brand-new, so the `revealThreadIfOpen` probe can never hit;
- *    skipping it also removes the extra await between minting the empty pane and
- *    `switchThread`, keeping the empty-pane → terminal transition in a single
- *    paint frame (no "pick a project" flash).
+ *  - The pane is passed explicitly. `mountThreadInPane`'s already-open probe is
+ *    synchronous, so it costs no await here (the thread is brand-new and can
+ *    never hit it anyway) and the empty-pane → terminal transition stays in a
+ *    single paint frame — no "pick a project" flash.
  *
  * Returns the opened pane, or `null` when `StartTerminal` fails — the failure is
  * surfaced as an error toast rather than an unhandled rejection, since the user
@@ -224,6 +223,6 @@ export async function openTerminalThread(
   prependThread(thread);
   const pane = openEmptyPane();
   pane.requestTerminalFocus();
-  await replaceThreadInPane(thread, pane, 'committed');
+  await mountThreadInPane(thread, pane, 'committed');
   return pane;
 }

@@ -627,7 +627,7 @@ func (p *privilegedApp) GitPush() string                        { return "ok" }
 func (p *privilegedApp) GitStatusSubscribe() string             { return "ok" }
 func (p *privilegedApp) GitStatusUnsubscribe() string           { return "ok" }
 func (p *privilegedApp) GetGitStatus() string                   { return "ok" }
-func (p *privilegedApp) GetGitStatusFast() string               { return "ok" }
+func (p *privilegedApp) GetWorkspaceActivity() string           { return "ok" }
 func (p *privilegedApp) GetGitStatusFastForProject() string     { return "ok" }
 func (p *privilegedApp) GitCheckout() string                    { return "ok" }
 func (p *privilegedApp) GitCheckoutForProject() string          { return "ok" }

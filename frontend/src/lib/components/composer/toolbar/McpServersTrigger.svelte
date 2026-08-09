@@ -2,15 +2,23 @@
   // Composer-toolbar entry for MCP server selection. Renders the
   // trigger button (icon + "MCP" + active count) and hosts the
   // popup that lets the user toggle which provider-configured
-  // servers are active for this thread. The count reflects the
-  // provider-native listing: it counts non-disabled rows for the
-  // pane's scope.
+  // servers are active. The count reflects the provider-native
+  // listing: it counts non-disabled rows for the pane's MCP entity
+  // (the workspace for Claude, the app for Codex).
+  //
+  // This is the surface that HOLDS the entity — it is mounted for as
+  // long as the composer is, where the menu comes and goes — so the
+  // attach lives here and McpServersMenu only reads.
 
   import Plug from '@lucide/svelte/icons/plug';
   import ChevronDown from '@lucide/svelte/icons/chevron-down';
   import Icon from '../../primitives/Icon.svelte';
   import type { ThreadPane } from '../../../stores/thread.svelte';
-  import { mcpServersStore, mcpScopeFor } from '../../../stores/mcpServers.svelte';
+  import {
+    attachMcpServers,
+    mcpTargetFor,
+    peekMcpServers,
+  } from '../../../stores/mcpServers.svelte';
   import { registerComposerPicker } from '../../../stores/composerPickerRegistry.svelte';
   import { focusPaneComposer } from '../../panes/paneComposerFocus';
   import McpServersMenu from './McpServersMenu.svelte';
@@ -27,10 +35,6 @@
   function openMenu(): void {
     if (!pane.thread) return;
     open = true;
-    // Prime the store on open. McpServersMenu's own load effect also
-    // fires, but load() single-flights per scope, so this just starts
-    // the background refresh a frame earlier while cached rows render.
-    if (scope) void mcpServersStore.load(scope).catch(() => undefined);
   }
 
   function closeMenu(): void {
@@ -53,26 +57,45 @@
 
   // Value-stable deriveds: the raw pane.thread reference is replaced
   // on every streaming event; deriving the strings first keeps the
-  // scope (and the priming effect below) quiet while a turn runs.
+  // target (and the attach effect below) quiet while a turn runs.
+  // `pane.threadId` is null for a draft placeholder, which is exactly
+  // the "no thread row, list from config" signal the store wants.
   let provider = $derived(pane.thread?.provider ?? '');
   let threadId = $derived(pane.threadId ?? '');
   let workspacePath = $derived(pane.thread?.workspacePath ?? '');
-  let isPlaceholder = $derived(pane.hasDraftPlaceholder);
-  let scope = $derived(mcpScopeFor(provider, threadId, workspacePath, isPlaceholder));
+  let target = $derived(mcpTargetFor(provider, threadId, workspacePath));
   let enabledCount = $derived(
-    scope ? mcpServersStore.rowsFor(scope).filter((r) => !r.disabled).length : 0,
+    target ? peekMcpServers(target.key).filter((r) => !r.disabled).length : 0,
   );
 
-  // Prime the row cache when the pane's scope settles, so the badge
-  // shows the enabled count without waiting for a menu open. noFetch:
-  // priming must never spawn a provider health-check — the count comes
-  // from config plus whatever the status cache already knows, and the
-  // menu's own load (which may fetch) takes over on open. Failures
-  // stay silent here; opening the menu surfaces the same error as a
-  // toast.
+  // Hold the entity while this composer is mounted, so the badge shows the
+  // enabled count without waiting for a menu open. The listing itself never
+  // spawns a provider health-check — only an open menu permits that.
+  //
+  // The effect tracks the KEY and nothing else. `target` is a fresh object
+  // whenever the pane's thread id moves, and that moves without changing the
+  // entity — a thread switch inside one workspace is the same Claude entity —
+  // so tracking it released and re-attached, dropping the shared listing to
+  // refcount zero and re-listing for a change the entity never saw. The ctx
+  // reads through to the live target for the same reason the key does not:
+  // the listing RPC picks its variant from whichever thread is current when
+  // it RUNS.
+  let mcpKey = $derived(target?.key ?? null);
   $effect(() => {
-    if (!scope) return;
-    void mcpServersStore.load(scope, { noFetch: true }).catch(() => undefined);
+    const key = mcpKey;
+    if (key === null) return;
+    const handle = attachMcpServers(key, {
+      get provider() {
+        return target?.provider ?? '';
+      },
+      get threadId() {
+        return target?.threadId ?? '';
+      },
+      get workspacePath() {
+        return target?.workspacePath ?? '';
+      },
+    });
+    return () => handle.release();
   });
 </script>
 

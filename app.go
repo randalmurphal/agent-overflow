@@ -375,20 +375,40 @@ type App struct {
 	threadSystemPrompts map[string]string
 	// channelID → active deliberation state
 	deliberations map[string]*discussion.Deliberation
-	// gitWatchPumpsMu / gitWatchPumps index every active
-	// GitStatusSubscribe by its wire-visible subscription ID.
-	// gitwatch.Manager itself refcounts the underlying watchers per
-	// cwd; this map is the App's view of "which id maps to which
-	// pump goroutine + Subscription handle". gitWatchPumpWG tracks
-	// pump goroutines so Shutdown drains them before returning.
+	// gitWatchPumps holds one pump per canonical cwd — one
+	// gitwatch.Subscription and one goroutine forwarding it to the
+	// "git:status" channel, shared by every caller of that workspace
+	// via the pump's refcount. gitWatchHandles maps each caller's
+	// wire-visible GitStatusSubscribe id to the PUMP it holds a
+	// reference on, which is what GitStatusUnsubscribe and the
+	// per-connection cleanup release. The pump, not its cwd: a dying
+	// pump can be replaced under the same cwd, and a handle naming the
+	// cwd would then release a reference it never took. Both maps are
+	// guarded by gitWatchPumpsMu; gitWatchPumpWG tracks pump goroutines
+	// so Shutdown drains them before returning.
 	gitWatchPumpsMu sync.Mutex
 	gitWatchPumps   map[string]*gitWatchPump
+	gitWatchHandles map[string]*gitWatchPump
 	gitWatchPumpWG  sync.WaitGroup
-	// prUpdatePumps index active PR-scope review-pane polling
-	// subscriptions. Each subscription owns one low-cadence poller and
-	// emits only when the normalized snapshot changes.
+	// prUpdatePumps index active PR-scope review-pane polling by PR key
+	// ("<forge>:<namespace>/<repo>:<number>"). Each PR owns ONE
+	// low-cadence poller and one change-detection state however many
+	// callers watch it, and emits only when the normalized snapshot (or
+	// its failure) changes. prUpdateHandles maps each caller's
+	// wire-visible SubscribePRUpdates id to its reference on that pump,
+	// which is what UnsubscribePRUpdates, SetPRUpdatesActive, and the
+	// per-connection cleanup act on. Both maps are guarded by
+	// prUpdatePumpsMu; prUpdatePumpWG tracks pump goroutines so Shutdown
+	// drains them before returning. prUpdateSeq stamps every stored pump
+	// state so a subscriber can order the frames it sees against the state
+	// its subscribe returned; it is GLOBAL rather than per-pump because a
+	// pump can be replaced under its key (a dead pump's successor), and a
+	// per-pump counter would restart at zero — letting the dead one's late
+	// frames outrank the replacement's fresh state.
 	prUpdatePumpsMu  sync.Mutex
 	prUpdatePumps    map[string]*prUpdatePump
+	prUpdateHandles  map[string]*prUpdateHandle
+	prUpdateSeq      uint64
 	prUpdatePumpWG   sync.WaitGroup
 	prUpdateInterval time.Duration
 	prUpdateFetchFn  func(gitops.PRReference) (prUpdateSnapshot, error)
@@ -780,7 +800,9 @@ func NewApp() *App {
 		threadSystemPrompts:            make(map[string]string),
 		deliberations:                  make(map[string]*discussion.Deliberation),
 		gitWatchPumps:                  make(map[string]*gitWatchPump),
+		gitWatchHandles:                make(map[string]*gitWatchPump),
 		prUpdatePumps:                  make(map[string]*prUpdatePump),
+		prUpdateHandles:                make(map[string]*prUpdateHandle),
 		providerCredentialFingerprints: make(map[string][32]byte),
 		worktreeSetupRuns:              make(map[string]*worktreeSetupRun),
 	}

@@ -45,8 +45,15 @@ const DefaultSubscriberBuffer = 1024
 //     subsequent Subscribe / Close don't touch the snapshot's
 //     backing array slots.
 //   - Subscribers' deliver() drops to a non-blocking select; a slow
-//     consumer drops events. The wsClient (Phase B) detects per-channel
-//     seq gaps and re-fetches via list endpoints.
+//     consumer drops events. Nothing on this side records the drop — the
+//     per-channel seq is what makes it observable: the next event the
+//     subscriber does receive carries a seq more than one past its last,
+//     and the client treats that forward skip as the drop it is
+//     (frontend/src/lib/transport/wsClient.ts handleEventEntry), firing
+//     the same synthetic resync the reconnect-path gap marker does.
+//     Detection is scoped to one connection there, because across a
+//     reconnect a legitimate skip is expected (ephemeral and latest-only
+//     channels — see event_visibility.go) and Replay is the authority.
 type EventBus struct {
 	mu       sync.RWMutex
 	rings    map[string]*ring
@@ -316,8 +323,8 @@ func encodeEventFrame(evt Event) ([]byte, error) {
 // Subscribe registers a subscriber and returns it. The caller must
 // invoke Subscriber.Close when finished. Buffered channel sized for
 // burst absorption; if a subscriber falls behind, deliveries drop
-// silently and the wsClient (Phase B) detects per-channel seq gaps to
-// trigger a re-fetch.
+// silently and the client detects the resulting per-channel seq skip to
+// trigger a re-fetch (see the EventBus doc comment).
 //
 // The bus does NOT replay history on subscribe. Callers wanting replay
 // invoke Replay(lastSeqByChannel) which returns a slice of missed
@@ -511,8 +518,8 @@ func (s *Subscriber) explicitlySubscribes(channel string) bool {
 }
 
 // deliver pushes an event into the subscriber's buffered channel. A
-// full channel drops the event silently — the wsClient detects the
-// per-channel seq gap on the next received event and re-fetches via
+// full channel drops the event silently — the client detects the
+// per-channel seq skip on the next received event and re-fetches via
 // list endpoints. Falling behind is the subscriber's problem to detect.
 func (s *Subscriber) deliver(e Event) {
 	if s.closed.Load() {

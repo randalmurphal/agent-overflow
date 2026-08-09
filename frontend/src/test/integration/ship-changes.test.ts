@@ -5,18 +5,11 @@
 import { describe, expect, it, beforeAll, beforeEach, vi } from 'vitest';
 import { render, fireEvent, waitFor } from '@testing-library/svelte';
 
-// GitActionsControl now subscribes through the backend gitwatch stream
-// and gates on the WS being live. Tests mount under happy-dom where no
-// WS is brought up, so we force the transport mirror to "connected" —
-// otherwise the subscribe $effect bails and the split-button never
-// renders, masking what these tests are trying to exercise.
-// Partial mock: only the snapshot is pinned. A whole-module factory would
-// have to re-declare every export, so any new one silently becomes undefined
-// here (isMethodUnavailableError did exactly that).
-vi.mock('../../lib/stores/transportStatus.svelte', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../../lib/stores/transportStatus.svelte')>()),
-  getTransportStatus: () => ({ status: 'connected', nextAttemptAt: null }),
-}));
+// The header subscribes through the backend gitwatch stream and the store
+// only sources while the wire is live. src/test/setup.ts pins transport
+// connected for every suite, so nothing is mocked here — the git-status
+// store is a `.svelte.ts` importer of transportStatus and vi.mock does not
+// reliably reach those (frontend/CLAUDE.md § Testing).
 
 import App from '../../App.svelte';
 import type { GitActionResult, GitStatus } from '../../lib/types/git';
@@ -27,6 +20,7 @@ import {
   installAppDefaults,
   installComposerDefaults,
   installThreadViewDefaults,
+  INTEGRATION_WORKSPACE,
   makeGitStatus,
   makeThread,
   resetAppState,
@@ -42,8 +36,15 @@ async function mountWithThread(status: GitStatus = makeGitStatus({ hasChanges: t
   seedSidebarProject([thread]);
   installThreadViewDefaults();
   installComposerDefaults(thread.id);
-  // GitActionsControl calls GetGitStatus on $effect when a thread becomes
-  // active; the drawer also refreshes status after mutations.
+  // The header subscribes to the workspace and every git surface — badges,
+  // the split button, the drawer — reads that one observation. GetGitStatus
+  // is only the post-action refresh, so both have to say the same thing for
+  // a test that never mutates.
+  setBindingMock('GitStatusSubscribe', async () => ({
+    id: 'ship-sub',
+    cwd: INTEGRATION_WORKSPACE,
+    status,
+  }));
   setBindingMock('GetGitStatus', async () => status);
 
   const rendered = render(App);

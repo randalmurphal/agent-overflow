@@ -79,7 +79,6 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "GetDraft", ID: 875977146},                              // main.App.GetDraft
 	{Name: "GetEditorSettings", ID: 1655853383},                    // main.App.GetEditorSettings
 	{Name: "GetGitStatus", ID: 4123560639},                         // main.App.GetGitStatus
-	{Name: "GetGitStatusFast", ID: 2937986089},                     // main.App.GetGitStatusFast
 	{Name: "GetGitStatusFastForProject", ID: 2193133889},           // main.App.GetGitStatusFastForProject
 	{Name: "GetKeybindings", ID: 3015840904},                       // main.App.GetKeybindings
 	{Name: "GetMcpServerStatus", ID: 4139359668},                   // main.App.GetMcpServerStatus
@@ -115,6 +114,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "GetUsageStats", ID: 3135466533},                        // main.App.GetUsageStats
 	{Name: "GetWSLDistroPreference", ID: 294719565},                // main.App.GetWSLDistroPreference
 	{Name: "GetWorkingTreeDiff", ID: 1858968113},                   // main.App.GetWorkingTreeDiff
+	{Name: "GetWorkspaceActivity", ID: 673985705},                  // main.App.GetWorkspaceActivity
 	{Name: "GetWorkspaceCurrentDiff", ID: 736820142},               // main.App.GetWorkspaceCurrentDiff
 	{Name: "GitCheckout", ID: 1598126927},                          // main.App.GitCheckout
 	{Name: "GitCheckoutForProject", ID: 585511915},                 // main.App.GitCheckoutForProject

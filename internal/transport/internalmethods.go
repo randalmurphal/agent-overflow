@@ -107,18 +107,24 @@ var LocalOnlyMethods = map[string]bool{
 	// the thread's worktree; GetThreadWorktreeSetup returns their captured
 	// output. RCE and the transcript of it, same pairing as
 	// RestartTerminal / GetTerminalReplay.
-	"RetryThreadWorktreeSetup":       true,
-	"GetThreadWorktreeSetup":         true,
-	"OpenInEditor":                   true,
-	"OpenExternalURL":                true,
-	"BrowseDirectory":                true,
-	"SavePayloadToFile":              true,
-	"WriteThreadWorkspaceFile":       true,
-	"GitPush":                        true,
-	"GitStatusSubscribe":             true,
-	"GitStatusUnsubscribe":           true,
-	"GetGitStatus":                   true,
-	"GetGitStatusFast":               true,
+	"RetryThreadWorktreeSetup": true,
+	"GetThreadWorktreeSetup":   true,
+	"OpenInEditor":             true,
+	"OpenExternalURL":          true,
+	"BrowseDirectory":          true,
+	"SavePayloadToFile":        true,
+	"WriteThreadWorkspaceFile": true,
+	"GitPush":                  true,
+	"GitStatusSubscribe":       true,
+	"GitStatusUnsubscribe":     true,
+	"GetGitStatus":             true,
+	// GetWorkspaceActivity answers two integer counters, but it takes a
+	// caller-supplied path and resolves it through EvalSymlinks — a
+	// filesystem probe, and therefore an existence-and-shape oracle for a
+	// LAN token-holder over any path they care to name. It sits with the
+	// rest of the workspace-path surface for that reason, not for what it
+	// returns.
+	"GetWorkspaceActivity":           true,
 	"GetGitStatusFastForProject":     true,
 	"GitCheckout":                    true,
 	"GitCheckoutForProject":          true,

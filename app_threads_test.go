@@ -11,6 +11,7 @@ import (
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/testutil"
+	"agent-overflow/internal/triage"
 )
 
 // Smoke tests for the per-field thread update bindings. These sit at the
@@ -508,12 +509,12 @@ func TestUpdateThreadBranchAndWorkspace(t *testing.T) {
 		t.Fatalf("createTestThread: %v", err)
 	}
 
-	updated, err := app.UpdateThreadBranch(thread.ID, thread.WorkspacePath, "feat/abc")
+	updated, err := app.UpdateThreadBranch(thread.WorkspacePath, "feat/abc")
 	if err != nil {
 		t.Fatalf("UpdateThreadBranch: %v", err)
 	}
-	if updated.Branch != "feat/abc" {
-		t.Fatalf("Branch = %q, want feat/abc", updated.Branch)
+	if len(updated) != 1 || updated[0].ID != thread.ID || updated[0].Branch != "feat/abc" {
+		t.Fatalf("UpdateThreadBranch returned %+v, want the one thread on feat/abc", updated)
 	}
 
 	if _, err := app.UpdateThreadWorkspace(thread.ID, ""); err == nil ||
@@ -522,12 +523,122 @@ func TestUpdateThreadBranchAndWorkspace(t *testing.T) {
 	}
 }
 
-// TestUpdateThreadBranchRefusesStaleWorkspaceObservation is the binding-level
-// half of the CAS guard: the caller is an unlocked async queue, so a branch
-// observed in a workspace the thread has since left must be dropped, and the
-// binding must hand back the row as it stands so the caller re-syncs instead
-// of retrying against its stale copy forever.
-func TestUpdateThreadBranchRefusesStaleWorkspaceObservation(t *testing.T) {
+// TestUpdateThreadBranchRejectsUnsafeBranchNames: the persisted branch is
+// read back by later git operations and reaches argv there, so the binding
+// validates at the door rather than trusting that its only caller happens to
+// have read the value off a git status.
+func TestUpdateThreadBranchRejectsUnsafeBranchNames(t *testing.T) {
+	app := newTestAppWithStore(t)
+	thread, err := createTestThread(t, app, "claude", "/tmp/tbw-unsafe", "claude-sonnet-4-6", "")
+	if err != nil {
+		t.Fatalf("createTestThread: %v", err)
+	}
+
+	for _, branch := range []string{"--upload-pack=touch /tmp/pwned", "a..b", "bad\x00name", "ctl\x01char"} {
+		if _, err := app.UpdateThreadBranch(thread.WorkspacePath, branch); err == nil {
+			t.Fatalf("UpdateThreadBranch(%q) error = nil, want a validation error", branch)
+		}
+		got, err := app.store.GetThread(thread.ID)
+		if err != nil {
+			t.Fatalf("GetThread: %v", err)
+		}
+		if got.Branch == branch {
+			t.Fatalf("branch %q was persisted despite the refusal", branch)
+		}
+	}
+
+	// Clearing is still legal — that is how the column is emptied.
+	if _, err := app.UpdateThreadBranch(thread.WorkspacePath, ""); err != nil {
+		t.Fatalf("UpdateThreadBranch(clear): %v", err)
+	}
+}
+
+// TestUpdateThreadBranchFansOutAcrossTheWorkspace is the binding-level half
+// of the entity keying: the branch belongs to the checkout, so every thread
+// sitting in that workspace must learn it from one observation. Two panes on
+// one worktree is the normal case.
+func TestUpdateThreadBranchFansOutAcrossTheWorkspace(t *testing.T) {
+	app := newTestAppWithStore(t)
+	first, err := createTestThread(t, app, "claude", "/tmp/tbw-shared", "claude-sonnet-4-6", "")
+	if err != nil {
+		t.Fatalf("createTestThread(first): %v", err)
+	}
+	second, err := createTestThread(t, app, "claude", "/tmp/tbw-shared", "claude-sonnet-4-6", "")
+	if err != nil {
+		t.Fatalf("createTestThread(second): %v", err)
+	}
+
+	updated, err := app.UpdateThreadBranch(first.WorkspacePath, "feature/live")
+	if err != nil {
+		t.Fatalf("UpdateThreadBranch: %v", err)
+	}
+	if len(updated) != 2 {
+		t.Fatalf("UpdateThreadBranch returned %d rows, want 2", len(updated))
+	}
+	for _, id := range []string{first.ID, second.ID} {
+		got, err := app.store.GetThread(id)
+		if err != nil {
+			t.Fatalf("GetThread(%s): %v", id, err)
+		}
+		if got.Branch != "feature/live" {
+			t.Fatalf("thread %s Branch = %q, want feature/live", id, got.Branch)
+		}
+	}
+}
+
+// TestUpdateThreadBranchBroadcastsChangedRows: the CALLING client heals from
+// the return value, but a second client writing the same observation matches
+// zero rows — the first one already moved them — so without a broadcast its
+// panes keep the superseded branch until something else refreshes them. A
+// write that changed nothing must stay silent.
+func TestUpdateThreadBranchBroadcastsChangedRows(t *testing.T) {
+	app := newTestAppWithStore(t)
+	thread, err := createTestThread(t, app, "claude", "/tmp/tbw-broadcast", "claude-sonnet-4-6", "")
+	if err != nil {
+		t.Fatalf("createTestThread: %v", err)
+	}
+
+	var broadcast []triage.ThreadUpdateEvent
+	app.emitEventFn = func(name string, data any) {
+		if name != "thread:updated" {
+			return
+		}
+		evt, ok := data.(triage.ThreadUpdateEvent)
+		if !ok {
+			t.Errorf("thread:updated payload type = %T, want triage.ThreadUpdateEvent", data)
+			return
+		}
+		broadcast = append(broadcast, evt)
+	}
+
+	if _, err := app.UpdateThreadBranch(thread.WorkspacePath, "feature/live"); err != nil {
+		t.Fatalf("UpdateThreadBranch: %v", err)
+	}
+	if len(broadcast) != 1 {
+		t.Fatalf("emitted %d thread:updated events, want 1", len(broadcast))
+	}
+	if broadcast[0].Thread == nil || broadcast[0].Thread.ID != thread.ID {
+		t.Fatalf("broadcast row = %+v, want thread %s", broadcast[0].Thread, thread.ID)
+	}
+	if broadcast[0].Thread.Branch != "feature/live" {
+		t.Fatalf("broadcast branch = %q, want feature/live", broadcast[0].Thread.Branch)
+	}
+
+	// The second client's identical write: nothing changed, nothing said.
+	broadcast = nil
+	if _, err := app.UpdateThreadBranch(thread.WorkspacePath, "feature/live"); err != nil {
+		t.Fatalf("UpdateThreadBranch(repeat): %v", err)
+	}
+	if len(broadcast) != 0 {
+		t.Fatalf("a no-op write emitted %d events, want 0", len(broadcast))
+	}
+}
+
+// TestUpdateThreadBranchDropsStaleWorkspaceObservation is the binding-level
+// half of the workspace keying: the caller is an unlocked async queue, so a
+// branch observed in a workspace every thread has since left must land
+// nowhere rather than following the thread to its new checkout.
+func TestUpdateThreadBranchDropsStaleWorkspaceObservation(t *testing.T) {
 	app := newTestAppWithStore(t)
 	thread, err := createTestThread(t, app, "claude", "/tmp/tbw-stale", "claude-sonnet-4-6", "")
 	if err != nil {
@@ -546,19 +657,23 @@ func TestUpdateThreadBranchRefusesStaleWorkspaceObservation(t *testing.T) {
 		t.Fatalf("UpdateThread: %v", err)
 	}
 
-	current, err := app.UpdateThreadBranch(thread.ID, observedWorkspace, "stale/branch")
+	current, err := app.UpdateThreadBranch(observedWorkspace, "stale/branch")
 	if err != nil {
-		t.Fatalf("UpdateThreadBranch(stale) error = %v, want nil (a refusal is not an error)", err)
+		t.Fatalf("UpdateThreadBranch(stale) error = %v, want nil (a no-op is not an error)", err)
 	}
-	if current.Branch != "feature/moved" {
-		t.Fatalf("Branch = %q, want feature/moved", current.Branch)
+	if len(current) != 0 {
+		t.Fatalf("UpdateThreadBranch(stale) returned %+v, want no rows", current)
 	}
-	if current.WorkspacePath != moved.WorkspacePath {
-		t.Fatalf("WorkspacePath = %q, want %q", current.WorkspacePath, moved.WorkspacePath)
+	after, err := app.store.GetThread(thread.ID)
+	if err != nil {
+		t.Fatalf("GetThread: %v", err)
+	}
+	if after.Branch != "feature/moved" {
+		t.Fatalf("Branch = %q, want feature/moved", after.Branch)
 	}
 
-	if _, err := app.UpdateThreadBranch(thread.ID, "  ", "x"); err == nil ||
-		!strings.Contains(err.Error(), "expected workspace path is required") {
+	if _, err := app.UpdateThreadBranch("  ", "x"); err == nil ||
+		!strings.Contains(err.Error(), "workspace path is required") {
 		t.Fatalf("UpdateThreadBranch(blank workspace) error = %v, want required-field error", err)
 	}
 }

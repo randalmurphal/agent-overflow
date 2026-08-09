@@ -14,6 +14,13 @@
 //     its seq is adopted in BOTH directions and never dedup-dropped
 //     (the restarted-backend case answers an above-head cursor with a
 //     LOWER seq)
+//   - mid-connection drop detection: a forward seq skip on a channel
+//     already seen on THIS connection fires the same synthetic
+//     transport:gap and still delivers the carried event. Contiguous
+//     seqs, a channel's first event, a dedup-dropped duplicate, and an
+//     explicit gap:true frame do not fire it; the batch path detects
+//     too; a post-reconnect jump does NOT (Replay is the authority
+//     across a connection boundary)
 //   - exponential backoff: second reconnect waits >first delay
 //   - backoff resets on stability (BACKOFF_RESET_AFTER_MS), not on
 //     open — an accept-then-close server keeps climbing the ladder
@@ -531,6 +538,164 @@ describe('WSClient', () => {
       type: 'replay',
       lastSeqByChannel: { 'thread:updated': 40 },
     });
+
+    client.close();
+  });
+
+  // Mid-connection drop detection. The bus drops non-blockingly into a
+  // full subscriber buffer and records nothing, so the forward seq skip
+  // on the next event is the ONLY evidence — and for an edge-triggered
+  // channel (one frame per state change) the only thing standing between
+  // a dropped frame and permanently stale UI.
+  it('fires transport:gap on a forward seq skip and still dispatches the event', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
+
+    const gaps: unknown[] = [];
+    const seen: unknown[] = [];
+    client.subscribe(transportGapChannel, (data) => gaps.push(data));
+    client.subscribe('git:status', (data) => seen.push(data));
+    await flushMicrotasks();
+    const ws = MockWebSocket.instances[0]!;
+    ws.acceptOpen();
+    await flushMicrotasks();
+
+    ws.pushFrame({ type: 'event', channel: 'git:status', seq: 4, data: { cwd: '/a' } });
+    expect(gaps).toEqual([]);
+
+    // seq 5 and 6 were dropped into a full subscriber buffer.
+    ws.pushFrame({ type: 'event', channel: 'git:status', seq: 7, data: { cwd: '/b' } });
+
+    expect(gaps).toEqual([{ channel: 'git:status', seq: 7 }]);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('dropped 2 event(s) on git:status'));
+    // The carried event is real data, not a marker — it must be delivered.
+    expect(seen).toEqual([{ cwd: '/a' }, { cwd: '/b' }]);
+
+    // The cursor advanced to the event we did receive, so the next
+    // contiguous one is not a second gap.
+    ws.pushFrame({ type: 'event', channel: 'git:status', seq: 8, data: { cwd: '/c' } });
+    expect(gaps).toHaveLength(1);
+    expect(seen).toHaveLength(3);
+
+    client.close();
+  });
+
+  it('does not fire transport:gap on contiguous seqs or a channel first event', async () => {
+    const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
+
+    const gaps: unknown[] = [];
+    client.subscribe(transportGapChannel, (data) => gaps.push(data));
+    client.subscribe('mcp:status', () => {});
+    await flushMicrotasks();
+    const ws = MockWebSocket.instances[0]!;
+    ws.acceptOpen();
+    await flushMicrotasks();
+
+    // First event of a channel has no cursor to skip past, whatever its
+    // seq — the client joined mid-stream, it didn't miss anything.
+    ws.pushFrame({ type: 'event', channel: 'mcp:status', seq: 91, data: { name: 'a' } });
+    ws.pushFrame({ type: 'event', channel: 'mcp:status', seq: 92, data: { name: 'b' } });
+    ws.pushFrame({ type: 'event', channel: 'mcp:status', seq: 93, data: { name: 'c' } });
+    // A duplicate is dedup-dropped, and must not read as a backward gap.
+    ws.pushFrame({ type: 'event', channel: 'mcp:status', seq: 93, data: { name: 'c' } });
+    // Interleaving another channel doesn't confuse the per-channel cursor.
+    ws.pushFrame({ type: 'event', channel: 'pr:updated', seq: 1, data: {} });
+    ws.pushFrame({ type: 'event', channel: 'mcp:status', seq: 94, data: { name: 'd' } });
+
+    expect(gaps).toEqual([]);
+
+    client.close();
+  });
+
+  it('detects a forward seq skip inside a batch frame', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
+
+    const gaps: unknown[] = [];
+    const seen: unknown[] = [];
+    client.subscribe(transportGapChannel, (data) => gaps.push(data));
+    client.subscribe('pr:updated', (data) => seen.push(data));
+    await flushMicrotasks();
+    const ws = MockWebSocket.instances[0]!;
+    ws.acceptOpen();
+    await flushMicrotasks();
+
+    ws.pushFrame({
+      type: 'batch',
+      events: [
+        { channel: 'pr:updated', seq: 10, data: { v: 1 } },
+        { channel: 'other:channel', seq: 1, data: {} },
+        { channel: 'pr:updated', seq: 14, data: { v: 2 } },
+      ],
+    });
+
+    expect(gaps).toEqual([{ channel: 'pr:updated', seq: 14 }]);
+    expect(seen).toEqual([{ v: 1 }, { v: 2 }]);
+
+    client.close();
+  });
+
+  it('does not double-fire the synthetic gap for an explicit gap:true frame', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
+
+    const gaps: unknown[] = [];
+    client.subscribe(transportGapChannel, (data) => gaps.push(data));
+    client.subscribe('thread:updated', () => {});
+    await flushMicrotasks();
+    const ws = MockWebSocket.instances[0]!;
+    ws.acceptOpen();
+    await flushMicrotasks();
+
+    ws.pushFrame({ type: 'event', channel: 'thread:updated', seq: 3, data: 'a' });
+    // A server gap marker skips far forward. The explicit path already
+    // dispatched for it; the skip check must not fire a second time.
+    ws.pushFrame({ type: 'event', channel: 'thread:updated', seq: 30, data: null, gap: true });
+
+    expect(gaps).toEqual([{ channel: 'thread:updated', seq: 30 }]);
+
+    // The marker adopted the cursor, so the next live event is contiguous
+    // and the detection is armed again from there.
+    ws.pushFrame({ type: 'event', channel: 'thread:updated', seq: 31, data: 'b' });
+    expect(gaps).toHaveLength(1);
+
+    client.close();
+  });
+
+  // Across a reconnect a forward skip is not evidence of a drop: Replay
+  // answers an ephemeral channel with nothing and a latest-only channel
+  // with just its newest frame, both by design. Judging those against the
+  // carried-over cursor would resync spuriously on every reconnect.
+  it('does not treat a post-reconnect seq jump as a mid-connection drop', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.spyOn(Math, 'random').mockReturnValue(0.5);
+    const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
+
+    const gaps: unknown[] = [];
+    client.subscribe(transportGapChannel, (data) => gaps.push(data));
+    client.subscribe('system:stats', () => {});
+    await vi.advanceTimersByTimeAsync(0);
+    const first = MockWebSocket.instances[0]!;
+    first.acceptOpen();
+    await vi.advanceTimersByTimeAsync(0);
+    first.pushFrame({ type: 'event', channel: 'system:stats', seq: 5, data: { cpu: 1 } });
+    expect(gaps).toEqual([]);
+
+    first.triggerClose();
+    await vi.advanceTimersByTimeAsync(125);
+    const second = MockWebSocket.instances[1]!;
+    second.acceptOpen();
+    await flushMicrotasks();
+
+    // Samples 6..80 were emitted while we were away; the capacity-1 ring
+    // replays only the newest, with no gap marker.
+    second.pushFrame({ type: 'event', channel: 'system:stats', seq: 81, data: { cpu: 2 } });
+    expect(gaps).toEqual([]);
+
+    // Detection re-arms from the first event observed on THIS connection.
+    second.pushFrame({ type: 'event', channel: 'system:stats', seq: 90, data: { cpu: 3 } });
+    expect(gaps).toEqual([{ channel: 'system:stats', seq: 90 }]);
 
     client.close();
   });

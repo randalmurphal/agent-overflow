@@ -29,14 +29,24 @@ root `CLAUDE.md` principle 3.
   co-located — split by responsibility, not visibility.
 - `threads.go` / `thread_view.go` / `thread_forks.go` — threads table
   plus the `ThreadView` translation layer that hydrates `SessionOptions`
-  for the provider packages. Two writers here are compare-and-swap
-  because their callers hold no lock and can land after someone else
-  rewrote the row: `UpdateTitleIfCurrent` (auto-title vs. a manual
-  rename) and `UpdateBranchIfWorkspace` (an async observed-branch
-  persist vs. a worktree switch, which rewrites `workspace_path` and
-  `branch` together under `threadLocks`). Both return "applied" rather
-  than erroring — a lost race is a normal outcome, and the caller
-  re-reads the row.
+  for the provider packages. Two writers here are reached by callers
+  that hold no lock and can land after someone else rewrote the row,
+  and each carries its own guard rather than erroring — a lost race is
+  a normal outcome:
+  - `UpdateTitleIfCurrent` (auto-title vs. a manual rename) is a
+    compare-and-swap on the title and returns "applied".
+  - `UpdateBranchForWorkspace` (an async observed-branch persist vs. a
+    worktree switch, which rewrites `workspace_path` and `branch`
+    together under `threadLocks`) is keyed on the WORKSPACE, and that
+    scope IS the guard: a thread that has since moved is simply not
+    matched, so a stale observation cannot follow it. The branch is a
+    fact about the checkout, so it lands on every thread sitting there,
+    not just the observing one. The UPDATE additionally excludes rows
+    that would not change (`branch IS NOT ?`, null-safe so the
+    empty-string/NULL spelling behaves) and returns exactly the rows it
+    wrote, read back by id inside the same transaction. Returning none
+    is the ordinary answer: the caller writes on every UI attach and the
+    observed branch usually already matches.
 - `projects.go` — projects table (threads carry a `project_id` FK).
 - `project_worktree_setup.go` — the `projects.worktree_setup` JSON column
   (migration v46): the project's worktree setup recipe, read and written

@@ -9,7 +9,7 @@ export function makeWorkspaceLock(
     locked: false,
     reason: '',
     runningBackgroundCount: 0,
-    refresh: async () => {},
+    refresh: () => {},
     ...overrides,
   };
 }

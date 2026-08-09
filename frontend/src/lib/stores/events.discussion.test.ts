@@ -426,6 +426,27 @@ describe('transport gap recovery for discussion channels', () => {
     expect(stateMock).not.toHaveBeenCalled();
   });
 
+  // The counterpart to the default fallback below: channels whose very next
+  // frame repairs them must NOT fall through to it. They are also the
+  // highest-rate channels on the wire and therefore the likeliest to be the
+  // ones a full subscriber buffer drops, so a fallthrough would turn every
+  // overflow into a full sidebar + pane refetch for self-healing data.
+  it('does not refresh panes for gaps on self-healing channels', async () => {
+    const pane = await buildPane(makeThread({ id: 'plain-thread' }), [], 'a');
+    const refreshSpy = vi.spyOn(pane, 'refreshFromBackend').mockResolvedValue(undefined);
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    for (const channel of ['system:stats', 'highlight:seed', 'highlight:diff_seed']) {
+      emitWailsEvent(transportGapChannel, { channel, seq: 1 });
+    }
+    await Promise.resolve();
+
+    expect(refreshSpy).not.toHaveBeenCalled();
+    expect(warnSpy).not.toHaveBeenCalled();
+    refreshSpy.mockRestore();
+    warnSpy.mockRestore();
+  });
+
   it('keeps the unknown-channel default fallback working after adding discussion cases', async () => {
     const pane = await buildPane(makeThread({ id: 'plain-thread' }), [], 'a');
     const refreshSpy = vi.spyOn(pane, 'refreshFromBackend').mockResolvedValue(undefined);

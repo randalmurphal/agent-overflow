@@ -10,9 +10,11 @@
   // threads keep their existing Design Preview button instead. GitActionsControl
   // (commit/push/ship) and the terminal toggle are unchanged on both.
   //
-  // This component owns the pane's single gitwatch subscription via the
-  // $effect below — GitActionsControl and the two badges all read the resulting
-  // status from `pane.gitStatus`, so there is exactly one subscription per pane.
+  // This component is the pane's attacher on the shared, workspace-keyed
+  // git-status store (stores/gitStatusStore.svelte.ts). GitActionsControl and
+  // the two badges read the resulting status through `pane.gitStatus`, which
+  // is a view onto the same entry — so two panes on one worktree share one
+  // subscription and can never show different Commit/Push state.
   import SquareTerminal from '@lucide/svelte/icons/square-terminal';
   import PanelRightOpen from '@lucide/svelte/icons/panel-right-open';
   import ChevronsDownUp from '@lucide/svelte/icons/chevrons-down-up';
@@ -22,10 +24,11 @@
   import { getProject } from '../../stores/projects.svelte';
   import { addToast } from '../../stores/toast.svelte';
   import { chordHintForCommand, chordHintSuffix } from '../../stores/keybindings.svelte';
-  import { getTransportStatus } from '../../stores/transportStatus.svelte';
   import { runTerminalToggle } from '../terminal/terminalToggle';
   import { openTerminalThread } from '../../stores/threadCreation.svelte';
   import { openReviewCompanion } from '../../stores/reviewPane.svelte';
+  import { attachGitStatus } from '../../stores/gitStatusStore.svelte';
+  import { workspaceKeyForThread } from '../../utils/workspaceKey';
   import GitActionsControl from '../git/GitActionsControl.svelte';
   import PrBadge from '../git/PrBadge.svelte';
   import WorkspaceDiffBadge from '../git/WorkspaceDiffBadge.svelte';
@@ -47,31 +50,38 @@
   let terminalToggleSuffix = $derived(chordHintSuffix('terminal.toggle'));
   let reviewToggleChord = $derived(chordHintForCommand('diff.panel.toggle'));
 
-  // Subscription deps. Derived primitives so the attach $effect re-runs only
-  // when the actual value changes — pane.replaceThread() for unrelated metadata
-  // (token usage, mode) won't thrash the git-status pipe (value-equality on the
-  // derived suppresses the downstream re-run). gitCwd resolves to the worktree
-  // dir for worktree threads, so the subscription is worktree-correct.
-  let threadId = $derived(pane.threadId);
-  let gitCwd = $derived(
-    pane.thread?.worktreePath ?? pane.thread?.workspacePath ?? null,
-  );
-  let transportConnected = $derived(getTransportStatus().status === 'connected');
+  // Attach deps as $derived primitives so the effect re-runs only when the
+  // values actually change — pane.replaceThread() fires for unrelated metadata
+  // (token usage, mode) on every streamed token, and value-equality on these
+  // derives suppresses the downstream re-subscribe.
+  //
+  // Deliberately NOT the thread id: the entity is the workspace, and two
+  // threads in one worktree are one entity. Tracking the id made a
+  // same-workspace thread switch release and re-attach, which bounced the
+  // backend refcount through zero — the whole fs watcher torn down and
+  // rebuilt, and every badge in the pane blanked, for a switch that changed
+  // nothing about the checkout. `hasThread` is a boolean for the same
+  // reason: it flips only when the pane gains or loses a real thread row.
+  let hasThread = $derived(Boolean(pane.threadId));
+  let gitStatusKey = $derived(workspaceKeyForThread(pane.thread ?? null));
 
-  // Single gitwatch subscription for this pane's workspace. Lives here (not in
-  // GitActionsControl) so the commit/push control and the header badges share
-  // one stream. The slot owns the subscribe / retry-backoff / git:status
-  // listener / observed-branch persist; this effect just wires the reactive
-  // deps and returns the slot's cleanup.
+  // The pane's reference on its workspace's git-status entry. The store owns
+  // the subscription, the retry backoff, the `git:status` routing, the
+  // transport-reconnect re-acquire, and the observed-branch persist; this
+  // effect owns only the reference's lifetime. Consumers read through
+  // `pane.gitStatus` and never attach a second time.
   $effect(() => {
-    return pane.gitStatus.attach({
-      threadId,
-      cwd: gitCwd,
-      connected: transportConnected,
-      getThread: () => pane.thread ?? null,
-      getLiveThreadId: () => pane.threadId,
-      reportError: (message) => pane.setGeneralError(message),
+    if (!hasThread || gitStatusKey === null) return;
+    const attachment = attachGitStatus(gitStatusKey, {
+      // Read at SOURCE time, not attach time. The reference outlives any one
+      // thread the pane shows, so a re-source (reconnect, retry) has to run
+      // against a thread that still exists. The store's source prologue runs
+      // untracked, so this read cannot pull the id back into the effect.
+      get threadId() {
+        return pane.threadId ?? '';
+      },
     });
+    return () => attachment.release();
   });
 
   // Project lookup for the badge. The projects store is a singleton;

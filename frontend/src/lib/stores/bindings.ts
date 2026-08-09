@@ -170,7 +170,6 @@ export {
   // Git operations
   GenerateCommitMessage,
   GetGitStatus,
-  GetGitStatusFast,
   GetGitStatusFastForProject,
   GitStatusSubscribe,
   GitStatusUnsubscribe,
@@ -341,6 +340,7 @@ export {
   UnsubscribePRUpdates,
   SetPRUpdatesActive,
   ListLiveBackgroundTasks,
+  GetWorkspaceActivity,
   GetThreadItem,
 
   // Projects + directory browser
@@ -461,6 +461,7 @@ export {
   TerminalOpenOptions,
   ThreadMCPServer,
   UpdateAvailability,
+  WorkspaceActivity,
   WorktreeStatus,
 } from '../../../bindings/agent-overflow/models.js';
 export {

@@ -166,6 +166,33 @@ on the wire at all. Rules for any future receiver:
   must NOT join this set: capacity 1 would evict other keys' latest
   frames.
 
+## Events Are Entity-Keyed
+
+A pushed frame is addressed by the ENTITY it describes — a cwd
+(`git:status`), a PR key (`pr:updated`), a thread id, a project — never
+by the subscription that happens to be listening. Subscription ids stay
+legitimate on the RPC RESULT that hands out the unsubscribe /
+ConnState-cleanup handle (`GitStatusSubscriptionResult.ID`): that is a
+per-caller lease, not an address.
+
+The reason lives on the client. Two panes routinely watch one entity —
+two threads on one worktree is the default for project-root threads, and
+"implement this plan in a new thread" inherits the source worktree. A
+subscription-keyed frame forces each pane to keep a private copy filtered
+by its own handle, and those copies drift: they disagreed about whether
+there was anything to commit for minutes at a time before `git:status`
+was re-keyed (audit 2026-08-08). One entity-keyed frame heals every
+consumer.
+
+It follows that the producer is refcounted per entity, not per caller: N
+subscribers on one cwd share one `gitwatch.Subscription`, one forwarding
+goroutine, and one frame per change. Pause/resume composes across
+subscribers (active if ANY subscriber is active), and fetch errors ride
+the payload so consumers can show them.
+
+`TestWirePayloadsAreEntityKeyedNotSubscriptionKeyed` (repo root) fails on
+any struct field that serializes as `subscriptionId`.
+
 ## Wire frames
 
 - **Client → Server**:
@@ -205,6 +232,27 @@ channel cursor to the marker's seq in both directions
 (`wsClient.handleEventEntry`). It is also why the latest-only
 newest-frame substitution applies to the eviction-side gap only — the
 newest frame's seq would read as a duplicate to an ahead cursor.
+
+`gap:true` is the RECONNECT half of the story, and the server is the
+only party that can raise it. The other half is client-side: a live
+event whose seq is more than one past that channel's cursor means the
+events between them were dropped into a full subscriber buffer
+(`Subscriber.deliver`), which the server never records and no later
+frame announces. `wsClient.handleEventEntry` treats that forward skip as
+a gap — same console warning, same synthetic `transport:gap` dispatch —
+and still delivers the carried event, which is real data. Without it a
+single drop on an edge-triggered channel (`git:status`, `pr:updated`,
+`mcp:status` emit exactly one frame per state change) leaves every
+consumer of that entity stale until the entity next changes.
+
+That detection is scoped to ONE connection: it fires only when the
+channel's previous event arrived on the current socket. Across a
+reconnect a forward skip is expected and not a drop — `Replay` answers
+an ephemeral channel with nothing at all, and a latest-only channel
+with just its newest frame — so a client that judged those against a
+carried-over cursor would resync spuriously on every reconnect. Within
+a connection there is no such ambiguity: every event on a visible
+channel is either delivered or dropped.
 
 ## Code generation
 

@@ -10,6 +10,11 @@ Superseded in part 2026-07-19: the checkpoint-backed **Turn**/**Session**
 scopes were removed with the git-checkpoint machinery; the shipped
 scopes are Workspace / Branch / PR, with a per-commit selector on the
 branch and PR scopes (`app_review_diffs.go`, `internal/gitdiff/`).
+Superseded in part 2026-08-08: PR polling is keyed by PR, not by
+subscription — one refcounted pump per `forge:namespace/repo:number` on
+both sides of the wire, with `pr:updated` addressed by that key. See
+`frontend/src/lib/components/review/AGENTS.md` → "PR state is keyed by
+the PR, not by the pane".
 
 ## Goal
 
@@ -26,7 +31,7 @@ usually linked to a thread. The diff document is virtualized by the existing
 (mid-splice compensation, exact-height rows, group/range queries) and driven
 by a new `ReviewVirtualizer` adapter. PR data flows through the existing
 `internal/git` forge layer (`gh`/`glab` CLIs), extended with review-thread
-read/write APIs and subscription-scoped polling.
+read/write APIs and per-PR-key polling.
 
 ## Success Criteria
 
@@ -95,10 +100,13 @@ read/write APIs and subscription-scoped polling.
   Provider specifics stay in `github.go` / `gitlab.go`; the normalized
   types are ours (same pattern `forge.go` already uses — this is not the
   Claude/Codex unified-abstraction anti-pattern).
-- **Polling is Go-owned and subscription-scoped.** `SubscribePRUpdates`
-  when a pane enters PR scope; Go polls ~45s, diffs snapshots, `a.emit`s
-  only on change; unsubscribe on close. No background polling in v1.
-- **Persistence stays lean.** PR snapshots live in memory per subscription.
+- **Polling is Go-owned and keyed by the PR.** `SubscribePRUpdates` when a
+  pane enters PR scope; the pump is refcounted per
+  `forge:namespace/repo:number`, so N panes on one PR share one poll. Go
+  polls ~45s, diffs snapshots, `a.emit`s only on change (addressed by that
+  same key); the last unsubscribe stops the pump. No background polling in
+  v1.
+- **Persistence stays lean.** PR snapshots live in memory per PR key.
   Only comment drafts touch SQLite: the existing `diff_review_comments`
   table extended with target + PR anchors (`commit_sha`, `side`,
   `thread_id` for replies), so a half-written review survives restart.
@@ -186,7 +194,7 @@ read/write APIs and subscription-scoped polling.
 3. **Review pane, local scopes** — tree + continuous scroll + stacked/split
    + comments→agent for Turn / Session / Workspace / vs Branch. Absorbs
    both RHS diff surfaces; **the RHS system is deleted in this phase.**
-4. **PR scope** — forge review APIs, subscription polling, PR header /
+4. **PR scope** — forge review APIs, per-PR-key polling, PR header /
    verdicts / checks / conflicts badge, inline threads, submit-review,
    immediate replies, send-thread-to-agent.
 5. **Conflict viewer** — local `git merge-tree` conflict listing + marker

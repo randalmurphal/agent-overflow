@@ -679,12 +679,63 @@ func (a *App) threadsReferencingWorkspace(path string) ([]string, error) {
 	canon := gitops.CanonicalPath(path)
 	var ids []string
 	for _, ref := range refs {
-		if gitops.CanonicalPath(ref.WorktreePath) == canon ||
-			gitops.CanonicalPath(ref.WorkspacePath) == canon {
+		if workspaceRefMatches(ref, canon) {
 			ids = append(ids, ref.ID)
 		}
 	}
 	return ids, nil
+}
+
+// workspaceRefMatches reports whether a thread's stored pointers name the
+// already-canonicalized directory. Both columns count: `workspace_path` is
+// where the thread's provider runs, and `worktree_path` is the checkout it
+// would be reattached FROM if that checkout were removed. Removal has to
+// account for a thread pointing at the doomed directory by either column, so
+// every "is this directory in use" answer is computed the same way.
+func workspaceRefMatches(ref store.ThreadWorkspaceRef, canonicalPath string) bool {
+	return gitops.CanonicalPath(ref.WorktreePath) == canonicalPath ||
+		gitops.CanonicalPath(ref.WorkspacePath) == canonicalPath
+}
+
+// busyThreadWorkspaceRefs returns workspace pointers for every thread with
+// work running right now, across every project.
+//
+// Two sources, because live background work has two homes. Persisted rows
+// (open turns, Claude background launches, Codex subagent launches) come from
+// the store's one busy predicate. Codex unified-exec terminals are transient
+// router state that is deliberately never persisted, so those thread ids come
+// from the router and have their paths looked up separately — the store scan
+// cannot see them at all.
+func (a *App) busyThreadWorkspaceRefs() ([]store.ThreadWorkspaceRef, error) {
+	refs, err := a.store.ListBlockedThreadWorkspaceRefs()
+	if err != nil {
+		return nil, err
+	}
+	if a.triage == nil {
+		return refs, nil
+	}
+	transient := make(map[string]struct{})
+	for _, threadID := range a.triage.ThreadIDsWithLiveCodexBackgroundTasks() {
+		transient[threadID] = struct{}{}
+	}
+	// A thread the busy predicate already returned needs no second lookup,
+	// and appending it twice would double-count its tasks downstream.
+	for _, ref := range refs {
+		delete(transient, ref.ID)
+	}
+	if len(transient) == 0 {
+		return refs, nil
+	}
+	all, err := a.store.ListThreadWorkspaceRefs()
+	if err != nil {
+		return nil, err
+	}
+	for _, ref := range all {
+		if _, ok := transient[ref.ID]; ok {
+			refs = append(refs, ref)
+		}
+	}
+	return refs, nil
 }
 
 // GitWorktreeStatus classifies a worktree under the thread's project for the
@@ -770,7 +821,7 @@ func (a *App) GitListWorktrees(threadID string) ([]WorktreeListItem, error) {
 		return nil, err
 	}
 
-	return a.listWorktreesForPicker(thread.ProjectID, project)
+	return a.listWorktreesForPicker(project)
 }
 
 // GitListWorktreesForProject lists worktrees for a project without requiring
@@ -780,35 +831,21 @@ func (a *App) GitListWorktreesForProject(projectID string) ([]WorktreeListItem, 
 	if err != nil {
 		return nil, err
 	}
-	return a.listWorktreesForPicker(projectID, project)
+	return a.listWorktreesForPicker(project)
 }
 
-func (a *App) listWorktreesForPicker(projectID, project string) ([]WorktreeListItem, error) {
+func (a *App) listWorktreesForPicker(project string) ([]WorktreeListItem, error) {
 	worktrees, err := a.gitCore().ListWorktrees(project)
 	if err != nil {
 		return nil, err
 	}
-	refs, err := a.store.ListBlockedThreadWorkspaceRefsForProject(projectID)
+	// Unscoped by project on purpose: removal refuses on ANY thread pointing
+	// at the directory (threadsReferencingWorkspace walks every project), so
+	// a project-scoped DeleteBlocked would leave the trash icon live over a
+	// worktree the backend then declines to delete.
+	refs, err := a.busyThreadWorkspaceRefs()
 	if err != nil {
 		return nil, err
-	}
-	if a.triage != nil {
-		liveThreadIDs := a.triage.ThreadIDsWithLiveCodexBackgroundTasks()
-		if len(liveThreadIDs) > 0 {
-			liveThreads := make(map[string]struct{}, len(liveThreadIDs))
-			for _, threadID := range liveThreadIDs {
-				liveThreads[threadID] = struct{}{}
-			}
-			projectRefs, err := a.store.ListThreadWorkspaceRefsForProject(projectID)
-			if err != nil {
-				return nil, err
-			}
-			for _, ref := range projectRefs {
-				if _, live := liveThreads[ref.ID]; live {
-					refs = append(refs, ref)
-				}
-			}
-		}
 	}
 
 	items := make([]WorktreeListItem, len(worktrees))

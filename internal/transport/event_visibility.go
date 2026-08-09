@@ -1,7 +1,24 @@
 package transport
 
 var loopbackOnlyEventChannels = map[string]bool{
-	"git:status":                     true,
+	// git:status is addressed by the CANONICAL ABSOLUTE workspace path (it
+	// has to be — one frame serves every pane on that worktree), so every
+	// frame discloses where the user's repositories live on disk. That makes
+	// this entry load-bearing for path disclosure, not merely a way to spare
+	// a LAN peer the watcher cost: GitStatusSubscribe is LocalOnly, so a
+	// remote peer cannot arm the stream itself, but once a local pane does
+	// the push side reaches every subscriber. Same third-door reasoning as
+	// worktree:setup below.
+	"git:status": true,
+	// pr:updated carries a pull request's full detail and every review
+	// thread on it — private-repo titles, branch names, reviewer logins and
+	// comment bodies — plus a poll-failure summary. Every one of its RPCs
+	// (SubscribePRUpdates / UnsubscribePRUpdates / SetPRUpdatesActive) is
+	// LocalOnly, so a LAN peer can neither arm nor pause the stream, but
+	// once a local pane subscribes the pump emits to every subscriber:
+	// the push side is the third door, same reasoning as worktree:setup
+	// and git:status.
+	"pr:updated":                     true,
 	"notification:activated":         true,
 	"notification:send":              true,
 	"provider:approval":              true,

@@ -158,6 +158,7 @@ async function buildPane(
   installPaneMocks(items);
   setBindingMock('SwitchThread', async () => thread);
   setBindingMock('ListLiveBackgroundTasks', async () => []);
+  setBindingMock('GetWorkspaceActivity', async () => ({ activeTurnThreads: 0, runningBackgroundTasks: 0 }));
   setBindingMock('CountRunningBackgroundTasks', async () => 0);
   setBindingMock('GetGitStatus', async () => ({
     isRepo: false,

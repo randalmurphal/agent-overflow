@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 
@@ -12,52 +13,73 @@ import (
 	"agent-overflow/internal/transport"
 )
 
+// maxGitWatchHandles bounds the outstanding GitStatusSubscribe handles for
+// the whole app. Each distinct cwd behind them costs a recursive fs watch
+// (hundreds of inotify watchpoints on a real repo) and a git status cadence,
+// so an unbounded handle map is a resource-exhaustion surface reachable by
+// anything that can call the binding in a loop — a compromised renderer, a
+// buggy caller that never unsubscribes. Panes are counted in single digits;
+// this is three orders of magnitude above any real UI.
+const maxGitWatchHandles = 256
+
+// ErrTooManyGitStatusSubscriptions is returned once the handle cap is hit.
+// Typed so the frontend can tell it apart from a workspace that failed to
+// resolve — this one is never fixed by retrying the same call.
+var ErrTooManyGitStatusSubscriptions = errors.New("gitwatch: too many active git status subscriptions")
+
 // GitStatusSubscriptionResult is the wire shape returned by
-// GitStatusSubscribe. ID is the handle the frontend uses to filter
-// "git:status" events and to call GitStatusUnsubscribe.
+// GitStatusSubscribe. ID is the per-caller handle used to call
+// GitStatusUnsubscribe. Cwd is the canonical workspace path the stream is
+// keyed on — the frontend maps it back to whatever local spelling it asked
+// with, because "git:status" events are addressed by cwd.
 type GitStatusSubscriptionResult struct {
 	ID     string           `json:"id"`
+	Cwd    string           `json:"cwd"`
 	Status gitops.GitStatus `json:"status"`
 }
 
-// GitStatusEvent is the shape pushed on the "git:status" channel.
-// Frontend listens, filters by SubscriptionID, and updates its local
-// status state. One event per actual change — gitwatch dedups
-// against the previous status before broadcasting.
+// GitStatusEvent is the shape pushed on the "git:status" channel. One
+// event per actual change per cwd — gitwatch dedups against the previous
+// status before broadcasting, and the App forwards each cwd's stream
+// exactly once regardless of how many callers subscribed to it.
 //
-// Per-subscription emission is deliberate. N same-workspace panes do
-// produce N copies of each change, but the expensive work (fs watcher,
-// git subprocess, PR lookup) is already shared via gitwatch.Manager's
-// per-cwd refcount; the duplicated part is a ~300-byte scalar struct at
-// a debounced ≤4Hz cadence, and the transport's per-connection
-// coalescing batches simultaneous copies into one frame. A shared
-// `subscriptionIds []string` emit was evaluated (2026-06) and rejected:
-// it would duplicate the manager's per-workspace bookkeeping at the app
-// layer, change the wire contract, and mix subscription ids from
-// different WS connections into one event for no perceivable win.
+// The event carries no subscription id on purpose. Git status is workspace
+// state, so the wire key is the workspace: two panes on one worktree are
+// the normal case, and addressing them by subscription made each hold a
+// private copy that could disagree with the other's for minutes.
 type GitStatusEvent struct {
-	SubscriptionID string           `json:"subscriptionId"`
-	Status         gitops.GitStatus `json:"status"`
+	Cwd    string           `json:"cwd"`
+	Status gitops.GitStatus `json:"status"`
 }
 
-// gitWatchPump is the App's per-id record for an active gitwatch
-// subscription. The pump goroutine forwards Updates() to the wire and
-// exits when either the underlying channel closes or the per-sub done
-// signal closes (explicit Unsubscribe).
+// gitWatchPump is the App's per-cwd record for an active gitwatch stream:
+// one gitwatch.Subscription and one goroutine forwarding its Updates() to
+// the wire, shared by every caller of that cwd via refs. The goroutine
+// exits when either the underlying channel closes or done is closed (the
+// last caller unsubscribed).
 //
 // Naming: the upstream handle is `gitwatch.Subscription`. The App's
-// adapter is the *pump* that translates Subscription.Updates() into
-// wire events — that's the responsibility this struct represents,
-// not "another subscription".
+// adapter is the *pump* that translates Subscription.Updates() into wire
+// events — that's the responsibility this struct represents, not "another
+// subscription".
+//
+// refs and dead are guarded by App.gitWatchPumpsMu, never by the pump
+// itself. `dead` is set by the goroutine's own teardown: a pump whose
+// Updates() channel closed under it (Manager.Close) forwards nothing ever
+// again, so a caller must not be handed a reference on it — it would get a
+// subscription id that receives no events and releases nothing.
 type gitWatchPump struct {
+	cwd  string
 	sub  *gitwatch.Subscription
 	done chan struct{}
+	refs int
+	dead bool
 }
 
 // GitStatusSubscribe begins streaming git-status updates for the
 // thread's workspace. Returns the initial status synchronously so the
-// caller can render immediately, plus a subscription id used to filter
-// the "git:status" event channel and to call GitStatusUnsubscribe.
+// caller can render immediately, plus the canonical cwd the stream is
+// keyed on and a handle used to call GitStatusUnsubscribe.
 //
 // LocalOnly: workspace paths are local FS paths and gitwatch can spawn
 // recursive fs watches plus continuous git invocations; exposing this
@@ -84,25 +106,65 @@ func (a *App) GitStatusSubscribe(ctx context.Context, threadID string) (GitStatu
 		return GitStatusSubscriptionResult{}, err
 	}
 
+	// Capacity is checked BEFORE anything is acquired: a capped caller would
+	// otherwise drop the PR cache and stand up a recursive fs watch plus a
+	// git-status pass for a workspace it is about to be refused. The check
+	// under the pump lock below stays the authoritative one — it is the only
+	// point where the handle actually lands — so a caller that loses a race
+	// for the last slot still cannot exceed the cap.
+	a.gitWatchPumpsMu.Lock()
+	atCap := len(a.gitWatchHandles) >= maxGitWatchHandles
+	a.gitWatchPumpsMu.Unlock()
+	if atCap {
+		return GitStatusSubscriptionResult{}, ErrTooManyGitStatusSubscriptions
+	}
+
 	// Opening a thread is an explicit UI attach. Drop cached open-PR lookups so
 	// the async full refresh requested by gitwatch can see remote-only MR
 	// creation that did not touch the local filesystem.
 	a.gitCore().InvalidatePRCache(workspace)
+	// Subscribe unconditionally, even when a pump for this cwd already
+	// exists: it is the manager's own canonicalization of the path, it
+	// hands back the watcher's freshest snapshot under the watcher lock,
+	// and it re-arms the attach-time PR re-check. On the shared path the
+	// handle is released again immediately below — the pump's own
+	// subscription is what keeps the watcher alive.
 	sub, err := a.gitWatch.Subscribe(workspace)
 	if err != nil {
 		return GitStatusSubscriptionResult{}, fmt.Errorf("gitwatch subscribe: %w", err)
 	}
+	cwd, initial := sub.Cwd(), sub.Initial()
 
 	id := uuid.NewString()
-	entry := &gitWatchPump{
-		sub:  sub,
-		done: make(chan struct{}),
-	}
 	a.gitWatchPumpsMu.Lock()
-	a.gitWatchPumps[id] = entry
+	if len(a.gitWatchHandles) >= maxGitWatchHandles {
+		a.gitWatchPumpsMu.Unlock()
+		sub.Close()
+		return GitStatusSubscriptionResult{}, ErrTooManyGitStatusSubscriptions
+	}
+	pump, shared := a.gitWatchPumps[cwd]
+	// A dead pump reads as absent. Its goroutine has already stopped
+	// forwarding, so sharing it would hand back a handle that receives
+	// nothing; the fresh pump replaces the map entry and the dead one's
+	// own drop leaves it alone (it checks identity) while still releasing
+	// exactly the handles that referenced IT.
+	if shared && pump.dead {
+		shared = false
+	}
+	if shared {
+		pump.refs++
+	} else {
+		pump = &gitWatchPump{cwd: cwd, sub: sub, done: make(chan struct{}), refs: 1}
+		a.gitWatchPumps[cwd] = pump
+	}
+	a.gitWatchHandles[id] = pump
 	a.gitWatchPumpsMu.Unlock()
 
-	a.gitWatchPumpWG.Go(func() { a.pumpGitWatch(id, entry) })
+	if shared {
+		sub.Close()
+	} else {
+		a.gitWatchPumpWG.Go(func() { a.pumpGitWatch(pump) })
+	}
 
 	if state := transport.ConnStateFromContext(ctx); state != nil {
 		// If RegisterCleanup returns false the connection is already
@@ -115,7 +177,7 @@ func (a *App) GitStatusSubscribe(ctx context.Context, threadID string) (GitStatu
 		}
 	}
 
-	return GitStatusSubscriptionResult{ID: id, Status: sub.Initial()}, nil
+	return GitStatusSubscriptionResult{ID: id, Cwd: cwd, Status: initial}, nil
 }
 
 // GitStatusUnsubscribe releases a subscription previously created via
@@ -127,60 +189,68 @@ func (a *App) GitStatusUnsubscribe(subscriptionID string) error {
 	return nil
 }
 
-// pumpGitWatch forwards a Subscription's Updates() to the wire as
+// pumpGitWatch forwards a cwd's Subscription updates to the wire as
 // "git:status" events. Exits when either the underlying channel closes
-// (Manager teardown / refcount hit zero) or done is closed (explicit
-// Unsubscribe path).
+// (Manager teardown) or done is closed (the last caller unsubscribed).
 //
 // The select prefers done over Updates() on every iteration AFTER a
 // value is received, so an Unsubscribe that closes done can't lose to
 // a buffered Updates() value sneaking through one final emit.
-func (a *App) pumpGitWatch(id string, entry *gitWatchPump) {
+func (a *App) pumpGitWatch(pump *gitWatchPump) {
 	defer func() {
 		if r := recover(); r != nil {
-			log.Printf("gitwatch: pump panic for id=%s: %v", id, r)
+			log.Printf("gitwatch: pump panic for cwd=%s: %v", pump.cwd, r)
 		}
 		// Self-clean if the channel closed under us (Manager.Close
-		// path). The Unsubscribe path already deleted the entry
-		// before reaching here; double-delete is a benign no-op.
-		a.gitWatchPumpsMu.Lock()
-		delete(a.gitWatchPumps, id)
-		a.gitWatchPumpsMu.Unlock()
+		// path). The Unsubscribe path already dropped the pump before
+		// reaching here; dropping again is a benign no-op.
+		a.dropGitWatchPump(pump)
 	}()
 	for {
 		select {
-		case <-entry.done:
+		case <-pump.done:
 			return
-		case status, ok := <-entry.sub.Updates():
+		case status, ok := <-pump.sub.Updates():
 			if !ok {
 				return
 			}
 			// Re-check done before emitting: when both arms are ready
 			// Go's select picks at random, so a closed done racing a
 			// pending Updates() value could otherwise leak one final
-			// wire event past Unsubscribe. The explicit recheck makes
-			// the "done wins after closing" guarantee real.
+			// wire event past the last Unsubscribe. The explicit recheck
+			// makes the "done wins after closing" guarantee real.
 			select {
-			case <-entry.done:
+			case <-pump.done:
 				return
 			default:
 			}
-			a.emit("git:status", GitStatusEvent{
-				SubscriptionID: id,
-				Status:         status,
-			})
+			a.emit("git:status", GitStatusEvent{Cwd: pump.cwd, Status: status})
 		}
 	}
 }
 
+// unsubscribeGitWatch releases one caller's handle. The pump (and the
+// gitwatch subscription under it) survives until the last handle goes.
 func (a *App) unsubscribeGitWatch(id string) {
 	a.gitWatchPumpsMu.Lock()
-	entry, ok := a.gitWatchPumps[id]
-	if ok {
-		delete(a.gitWatchPumps, id)
+	pump, ok := a.gitWatchHandles[id]
+	if !ok {
+		a.gitWatchPumpsMu.Unlock()
+		return
+	}
+	delete(a.gitWatchHandles, id)
+	pump.refs--
+	var teardown *gitWatchPump
+	if pump.refs <= 0 {
+		teardown = pump
+		// Only if it is still the pump serving this cwd — a superseded
+		// pump was replaced in the map and must not evict its successor.
+		if a.gitWatchPumps[pump.cwd] == pump {
+			delete(a.gitWatchPumps, pump.cwd)
+		}
 	}
 	a.gitWatchPumpsMu.Unlock()
-	if !ok {
+	if teardown == nil {
 		return
 	}
 	// Order matters: close done FIRST so the pump goroutine stops
@@ -188,6 +258,31 @@ func (a *App) unsubscribeGitWatch(id string) {
 	// the underlying subscription down. Then Close the subscription so
 	// the gitwatch refcount drops and (if last sub on this cwd) the
 	// watcher tears down its goroutine + fs watcher.
-	close(entry.done)
-	entry.sub.Close()
+	close(teardown.done)
+	teardown.sub.Close()
+}
+
+// dropGitWatchPump removes a pump whose Updates() channel closed under it
+// (Manager.Close), along with every handle that referenced it — those
+// handles name a stream that no longer exists.
+//
+// The `dead` stamp goes on FIRST and unconditionally, so a Subscribe that
+// takes the lock after this point mints a fresh pump instead of taking a
+// reference on a goroutine that has stopped. The residual window is a
+// Subscribe that took the lock BEFORE this ran: it is unclosable from here
+// (the goroutine cannot mark the pump under the lock any earlier than its
+// own teardown), and it is shutdown-only — the channel closes on
+// Manager.Close, after which gitwatch.Subscribe itself refuses.
+func (a *App) dropGitWatchPump(pump *gitWatchPump) {
+	a.gitWatchPumpsMu.Lock()
+	defer a.gitWatchPumpsMu.Unlock()
+	pump.dead = true
+	if a.gitWatchPumps[pump.cwd] == pump {
+		delete(a.gitWatchPumps, pump.cwd)
+	}
+	for id, held := range a.gitWatchHandles {
+		if held == pump {
+			delete(a.gitWatchHandles, id)
+		}
+	}
 }

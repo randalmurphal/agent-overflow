@@ -53,14 +53,17 @@ function seedPane(paneId: string, thread: Thread): void {
   pane.replaceThread(thread);
 }
 
+// A thread whose hydration blows up. The throw is on `mode` rather than `id`
+// deliberately: `id` is read by the restore path BEFORE hydration (matching
+// persisted pane rows to threads, and the one-thread-one-pane dedup), so a
+// counted `id` getter models "hydration failed" only until the next reader is
+// added — and then it throws synchronously outside the per-pane isolation and
+// takes the whole restore with it. `mode` is read by `switchThread` alone.
 function makeThreadThatThrowsDuringSwitch(threadId: string): Thread {
   const thread = makeThread({ id: threadId });
-  let idReads = 0;
-  Object.defineProperty(thread, 'id', {
+  Object.defineProperty(thread, 'mode', {
     configurable: true,
     get: () => {
-      idReads++;
-      if (idReads === 1) return threadId;
       throw new Error('switch failed');
     },
   });

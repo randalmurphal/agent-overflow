@@ -110,12 +110,22 @@ func TestCache_InvalidateEmitsUnknown(t *testing.T) {
 	}
 }
 
-func TestCache_InvalidateMissingKeyIsNoop(t *testing.T) {
+// TestCache_InvalidateEmitsForAMissingKey pins the sentinel to the
+// EVENT, not to the cache's bookkeeping. A toggle on a server whose
+// status was never fetched still moves the authoritative listing, and
+// the frontend's only re-list trigger is this emission — gating it on
+// a present entry meant a cold cache swallowed the refresh.
+func TestCache_InvalidateEmitsForAMissingKey(t *testing.T) {
 	bus := &recordingBus{}
 	c := NewCache(time.Minute, bus)
-	c.Invalidate(Key{Provider: ProviderClaude, Name: "absent"})
-	if events := bus.snapshot(); len(events) != 0 {
-		t.Fatalf("expected no emissions for missing-key invalidate, got %d", len(events))
+	k := Key{Provider: ProviderClaude, Name: "absent"}
+	c.Invalidate(k)
+	events := bus.snapshot()
+	if len(events) != 1 {
+		t.Fatalf("expected 1 emission for missing-key invalidate, got %d", len(events))
+	}
+	if events[0].Key != k || events[0].Status != StatusUnknown {
+		t.Fatalf("unexpected sentinel: %+v", events[0])
 	}
 }
 

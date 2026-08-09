@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"sync"
@@ -21,14 +22,28 @@ import (
 type stubGitWatch struct {
 	mu      sync.Mutex
 	current gitops.GitStatus
+	// Status passes per cwd. A cwd with no watcher yet is only reached by
+	// a Subscribe, so its count is a deterministic "did this call acquire
+	// anything" probe.
+	passes map[string]int
 }
 
 func (s *stubGitWatch) fn() gitwatch.StatusFn {
-	return func(string) (gitops.GitStatus, error) {
+	return func(cwd string) (gitops.GitStatus, error) {
 		s.mu.Lock()
 		defer s.mu.Unlock()
+		if s.passes == nil {
+			s.passes = make(map[string]int)
+		}
+		s.passes[cwd]++
 		return s.current, nil
 	}
+}
+
+func (s *stubGitWatch) passesFor(cwd string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.passes[cwd]
 }
 
 func (s *stubGitWatch) setStatus(next gitops.GitStatus) {
@@ -77,36 +92,54 @@ func captureGitStatusEmissions(app *App) (*[]recordedEmission, *sync.Mutex) {
 	return &events, &mu
 }
 
-// waitForGitStatusEvent blocks until at least one git:status emission
-// matching subID arrives, or the timeout fires. Returns the matching
-// event (or t.Fatal-s on timeout). Uses 50ms polling to avoid
-// time.Sleep-style synchronization while keeping the test fast on the
-// happy path.
-func waitForGitStatusEvent(t *testing.T, events *[]recordedEmission, mu *sync.Mutex, subID string, timeout time.Duration) GitStatusEvent {
+// gitStatusEventsFor collects every git:status emission recorded so far
+// for cwd.
+func gitStatusEventsFor(events *[]recordedEmission, mu *sync.Mutex, cwd string) []GitStatusEvent {
+	mu.Lock()
+	defer mu.Unlock()
+	var matches []GitStatusEvent
+	for _, ev := range *events {
+		if ev.name != "git:status" {
+			continue
+		}
+		payload, ok := ev.data.(GitStatusEvent)
+		if !ok || payload.Cwd != cwd {
+			continue
+		}
+		matches = append(matches, payload)
+	}
+	return matches
+}
+
+// waitForGitStatusEvent blocks until at least one git:status emission for
+// cwd arrives, or the timeout fires. Returns the first matching event (or
+// t.Fatal-s on timeout). Uses 50ms polling to avoid time.Sleep-style
+// synchronization while keeping the test fast on the happy path.
+func waitForGitStatusEvent(t *testing.T, events *[]recordedEmission, mu *sync.Mutex, cwd string, timeout time.Duration) GitStatusEvent {
 	t.Helper()
 	deadline := time.After(timeout)
 	for {
-		mu.Lock()
-		for _, ev := range *events {
-			if ev.name != "git:status" {
-				continue
-			}
-			payload, ok := ev.data.(GitStatusEvent)
-			if !ok {
-				continue
-			}
-			if payload.SubscriptionID == subID {
-				mu.Unlock()
-				return payload
-			}
+		if matches := gitStatusEventsFor(events, mu, cwd); len(matches) > 0 {
+			return matches[0]
 		}
-		mu.Unlock()
 		select {
 		case <-deadline:
-			t.Fatalf("no git:status event received for sub %q within %s", subID, timeout)
+			t.Fatalf("no git:status event received for cwd %q within %s", cwd, timeout)
 		case <-time.After(50 * time.Millisecond):
 		}
 	}
+}
+
+// gitWatchPumpRefs reports the App-side refcount on cwd's pump, and
+// whether a pump exists at all.
+func gitWatchPumpRefs(app *App, cwd string) (int, bool) {
+	app.gitWatchPumpsMu.Lock()
+	defer app.gitWatchPumpsMu.Unlock()
+	pump, ok := app.gitWatchPumps[cwd]
+	if !ok {
+		return 0, false
+	}
+	return pump.refs, true
 }
 
 func TestGitStatusSubscribeReturnsInitialAndStreamsUpdates(t *testing.T) {
@@ -124,6 +157,9 @@ func TestGitStatusSubscribeReturnsInitialAndStreamsUpdates(t *testing.T) {
 	if res.ID == "" {
 		t.Fatalf("expected non-empty subscription ID")
 	}
+	if res.Cwd == "" {
+		t.Fatalf("expected the canonical cwd on the subscribe result")
+	}
 	if res.Status.Branch != "main" {
 		t.Fatalf("initial Branch = %q, want main", res.Status.Branch)
 	}
@@ -133,7 +169,7 @@ func TestGitStatusSubscribeReturnsInitialAndStreamsUpdates(t *testing.T) {
 		t.Fatalf("write trigger file: %v", err)
 	}
 
-	got := waitForGitStatusEvent(t, events, mu, res.ID, 5*time.Second)
+	got := waitForGitStatusEvent(t, events, mu, res.Cwd, 5*time.Second)
 	if !got.Status.HasChanges {
 		t.Fatalf("event Status.HasChanges = false, want true")
 	}
@@ -141,11 +177,8 @@ func TestGitStatusSubscribeReturnsInitialAndStreamsUpdates(t *testing.T) {
 	if err := app.GitStatusUnsubscribe(res.ID); err != nil {
 		t.Fatalf("GitStatusUnsubscribe: %v", err)
 	}
-	app.gitWatchPumpsMu.Lock()
-	_, stillTracked := app.gitWatchPumps[res.ID]
-	app.gitWatchPumpsMu.Unlock()
-	if stillTracked {
-		t.Fatalf("subscription %q still tracked after Unsubscribe", res.ID)
+	if _, tracked := gitWatchPumpRefs(app, res.Cwd); tracked {
+		t.Fatalf("pump for %q still tracked after the last Unsubscribe", res.Cwd)
 	}
 }
 
@@ -186,19 +219,13 @@ func TestGitStatusSubscribeReleasesOnConnectionClose(t *testing.T) {
 		t.Fatalf("subscribe: %v", err)
 	}
 
-	app.gitWatchPumpsMu.Lock()
-	_, present := app.gitWatchPumps[res.ID]
-	app.gitWatchPumpsMu.Unlock()
-	if !present {
-		t.Fatalf("subscription should be tracked after Subscribe")
+	if _, present := gitWatchPumpRefs(app, res.Cwd); !present {
+		t.Fatalf("pump should be tracked after Subscribe")
 	}
 
 	state.RunCleanups()
 
-	app.gitWatchPumpsMu.Lock()
-	_, stillTracked := app.gitWatchPumps[res.ID]
-	app.gitWatchPumpsMu.Unlock()
-	if stillTracked {
+	if _, stillTracked := gitWatchPumpRefs(app, res.Cwd); stillTracked {
 		t.Fatalf("connection cleanup did not release subscription %q", res.ID)
 	}
 
@@ -219,7 +246,11 @@ func TestGitStatusSubscribeFailsOnUnknownThread(t *testing.T) {
 	}
 }
 
-func TestGitStatusSubscribeReusesWatcherForSameWorkspace(t *testing.T) {
+// TestGitStatusSubscribeSharesOnePumpPerCwd pins the refcount: git status
+// is workspace state, so N callers on one workspace share ONE gitwatch
+// subscription and ONE wire event per change — not N copies that can drift
+// apart. Releasing one caller must leave the stream running for the rest.
+func TestGitStatusSubscribeSharesOnePumpPerCwd(t *testing.T) {
 	app := newTestAppWithStore(t)
 	stub := &stubGitWatch{current: gitops.GitStatus{IsRepo: true, Branch: "main"}}
 	installGitWatchForTest(t, app, stub)
@@ -240,11 +271,21 @@ func TestGitStatusSubscribeReusesWatcherForSameWorkspace(t *testing.T) {
 	if err != nil {
 		t.Fatalf("subscribe B: %v", err)
 	}
-	defer app.GitStatusUnsubscribe(resA.ID)
-	defer app.GitStatusUnsubscribe(resB.ID)
 
 	if resA.ID == resB.ID {
-		t.Fatalf("expected distinct subscription IDs")
+		t.Fatalf("expected distinct subscription handles")
+	}
+	if resA.Cwd != resB.Cwd {
+		t.Fatalf("same workspace resolved to different cwds: %q vs %q", resA.Cwd, resB.Cwd)
+	}
+	if refs, ok := gitWatchPumpRefs(app, resA.Cwd); !ok || refs != 2 {
+		t.Fatalf("pump refs = %d (present=%v), want 2", refs, ok)
+	}
+	app.gitWatchPumpsMu.Lock()
+	pumpCount := len(app.gitWatchPumps)
+	app.gitWatchPumpsMu.Unlock()
+	if pumpCount != 1 {
+		t.Fatalf("pump count = %d, want 1 for one workspace", pumpCount)
 	}
 
 	events, mu := captureGitStatusEmissions(app)
@@ -253,6 +294,214 @@ func TestGitStatusSubscribeReusesWatcherForSameWorkspace(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 
-	waitForGitStatusEvent(t, events, mu, resA.ID, 5*time.Second)
-	waitForGitStatusEvent(t, events, mu, resB.ID, 5*time.Second)
+	got := waitForGitStatusEvent(t, events, mu, resA.Cwd, 5*time.Second)
+	if !got.Status.HasChanges {
+		t.Fatalf("event Status.HasChanges = false, want true")
+	}
+	// One change, one event — the pre-refactor per-subscriber emit produced
+	// one copy per caller on the same channel.
+	if n := len(gitStatusEventsFor(events, mu, resA.Cwd)); n != 1 {
+		t.Fatalf("got %d git:status events for one change, want exactly 1", n)
+	}
+
+	// Releasing one caller leaves the pump running for the other.
+	if err := app.GitStatusUnsubscribe(resA.ID); err != nil {
+		t.Fatalf("unsubscribe A: %v", err)
+	}
+	if refs, ok := gitWatchPumpRefs(app, resA.Cwd); !ok || refs != 1 {
+		t.Fatalf("after releasing A: refs = %d (present=%v), want 1", refs, ok)
+	}
+
+	stub.setStatus(gitops.GitStatus{IsRepo: true, Branch: "main", HasChanges: true, AheadCount: 3})
+	if err := os.WriteFile(filepath.Join(threadA.WorkspacePath, "shared-trigger-2.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	deadline := time.After(5 * time.Second)
+	for {
+		matches := gitStatusEventsFor(events, mu, resA.Cwd)
+		if len(matches) > 0 && matches[len(matches)-1].Status.AheadCount == 3 {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("pump stopped emitting after one of two callers unsubscribed")
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
+
+	if err := app.GitStatusUnsubscribe(resB.ID); err != nil {
+		t.Fatalf("unsubscribe B: %v", err)
+	}
+	if _, ok := gitWatchPumpRefs(app, resA.Cwd); ok {
+		t.Fatalf("pump survived the last unsubscribe")
+	}
+}
+
+// TestGetGitStatusPushesTheRefreshToSubscribers pins the healing half of
+// item 2: a post-action GetGitStatus is not the acting client's private
+// answer. Every other client watching the workspace observes the same
+// refresh through the shared stream.
+func TestGetGitStatusPushesTheRefreshToSubscribers(t *testing.T) {
+	app := newTestAppWithStore(t)
+	stub := &stubGitWatch{current: gitops.GitStatus{IsRepo: true, Branch: "main"}}
+	installGitWatchForTest(t, app, stub)
+	thread := makeWorkspaceThread(t, app, "thread-refresh-fanout")
+
+	res, err := app.GitStatusSubscribe(context.Background(), thread.ID)
+	if err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+	defer app.GitStatusUnsubscribe(res.ID)
+
+	events, mu := captureGitStatusEmissions(app)
+	// The watcher's StatusFn now reports a change no filesystem event
+	// announced — exactly the shape of "another client just committed".
+	stub.setStatus(gitops.GitStatus{IsRepo: true, Branch: "main", AheadCount: 1})
+
+	if _, err := app.GetGitStatus(thread.ID); err != nil {
+		t.Fatalf("GetGitStatus: %v", err)
+	}
+
+	deadline := time.After(5 * time.Second)
+	for {
+		matches := gitStatusEventsFor(events, mu, res.Cwd)
+		if len(matches) > 0 && matches[len(matches)-1].Status.AheadCount == 1 {
+			return
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("GetGitStatus did not push the refresh to the workspace's subscribers")
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
+}
+
+// TestGitStatusSubscribeRefusesADyingPump covers the window between a pump
+// goroutine exiting (its Updates() channel closed under it) and its deferred
+// drop taking the lock. A Subscribe that lands in that window used to
+// increment the doomed pump's refcount and hand back a handle that would
+// receive no events and, once the drop deleted every handle for that cwd,
+// release nothing either.
+func TestGitStatusSubscribeRefusesADyingPump(t *testing.T) {
+	app := newTestAppWithStore(t)
+	stub := &stubGitWatch{current: gitops.GitStatus{IsRepo: true, Branch: "main"}}
+	installGitWatchForTest(t, app, stub)
+	thread := makeWorkspaceThread(t, app, "thread-dying-pump")
+
+	first, err := app.GitStatusSubscribe(context.Background(), thread.ID)
+	if err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+
+	// Stand in for the goroutine's teardown having begun: the pump is
+	// stamped dead but its drop has not removed it from the map yet.
+	app.gitWatchPumpsMu.Lock()
+	dying := app.gitWatchPumps[first.Cwd]
+	if dying == nil {
+		app.gitWatchPumpsMu.Unlock()
+		t.Fatalf("no pump tracked for %q after Subscribe", first.Cwd)
+	}
+	dying.dead = true
+	app.gitWatchPumpsMu.Unlock()
+
+	second, err := app.GitStatusSubscribe(context.Background(), thread.ID)
+	if err != nil {
+		t.Fatalf("subscribe onto a dying pump: %v", err)
+	}
+
+	app.gitWatchPumpsMu.Lock()
+	fresh := app.gitWatchPumps[first.Cwd]
+	held := app.gitWatchHandles[second.ID]
+	app.gitWatchPumpsMu.Unlock()
+	if fresh == dying {
+		t.Fatalf("Subscribe shared the dying pump instead of minting a fresh one")
+	}
+	if held != fresh {
+		t.Fatalf("the new handle references %p, want the fresh pump %p", held, fresh)
+	}
+
+	// The dying pump's own drop must take only what belonged to IT.
+	app.dropGitWatchPump(dying)
+
+	app.gitWatchPumpsMu.Lock()
+	stillMapped := app.gitWatchPumps[first.Cwd]
+	stillHeld, ok := app.gitWatchHandles[second.ID]
+	_, staleHeld := app.gitWatchHandles[first.ID]
+	app.gitWatchPumpsMu.Unlock()
+	if stillMapped != fresh {
+		t.Fatalf("the dying pump's drop evicted its successor")
+	}
+	if !ok || stillHeld != fresh {
+		t.Fatalf("the dying pump's drop released a handle it did not own")
+	}
+	if staleHeld {
+		t.Fatalf("the dying pump's own handle survived its drop")
+	}
+
+	if err := app.GitStatusUnsubscribe(second.ID); err != nil {
+		t.Fatalf("unsubscribe: %v", err)
+	}
+	if _, tracked := gitWatchPumpRefs(app, first.Cwd); tracked {
+		t.Fatalf("fresh pump survived its last unsubscribe")
+	}
+}
+
+// TestGitStatusSubscribeCapsOutstandingHandles: every distinct cwd behind a
+// handle costs a recursive fs watch and a status cadence, so the handle map
+// is bounded rather than trusting callers to unsubscribe. The refusal is
+// typed — retrying the same call never fixes it.
+func TestGitStatusSubscribeCapsOutstandingHandles(t *testing.T) {
+	app := newTestAppWithStore(t)
+	stub := &stubGitWatch{current: gitops.GitStatus{IsRepo: true, Branch: "main"}}
+	installGitWatchForTest(t, app, stub)
+	thread := makeWorkspaceThread(t, app, "thread-handle-cap")
+
+	ids := make([]string, 0, maxGitWatchHandles)
+	cwd := ""
+	for i := 0; i < maxGitWatchHandles; i++ {
+		res, err := app.GitStatusSubscribe(context.Background(), thread.ID)
+		if err != nil {
+			t.Fatalf("subscribe %d: %v", i, err)
+		}
+		ids = append(ids, res.ID)
+		cwd = res.Cwd
+	}
+
+	if _, err := app.GitStatusSubscribe(context.Background(), thread.ID); !errors.Is(err, ErrTooManyGitStatusSubscriptions) {
+		t.Fatalf("subscribe past the cap: err = %v, want ErrTooManyGitStatusSubscriptions", err)
+	}
+	// The refusal must not have leaked a reference into the pump.
+	if refs, ok := gitWatchPumpRefs(app, cwd); !ok || refs != maxGitWatchHandles {
+		t.Fatalf("pump refs = %d (present=%v), want %d", refs, ok, maxGitWatchHandles)
+	}
+
+	// …and it must be refused BEFORE it acquires anything. A capped caller
+	// naming an unwatched workspace used to drop that workspace's PR cache
+	// and stand up a recursive fs watch — a full status pass — for a
+	// subscription it was about to refuse.
+	other := makeWorkspaceThread(t, app, "thread-handle-cap-other")
+	if _, err := app.GitStatusSubscribe(context.Background(), other.ID); !errors.Is(err, ErrTooManyGitStatusSubscriptions) {
+		t.Fatalf("subscribe past the cap (unwatched cwd): err = %v, want ErrTooManyGitStatusSubscriptions", err)
+	}
+	if passes := stub.passesFor(other.WorkspacePath); passes != 0 {
+		t.Fatalf("a refused subscribe ran %d status passes on %s, want 0", passes, other.WorkspacePath)
+	}
+	if _, tracked := gitWatchPumpRefs(app, other.WorkspacePath); tracked {
+		t.Fatalf("a refused subscribe left a pump behind for %s", other.WorkspacePath)
+	}
+
+	// Releasing one makes room again.
+	if err := app.GitStatusUnsubscribe(ids[0]); err != nil {
+		t.Fatalf("unsubscribe: %v", err)
+	}
+	res, err := app.GitStatusSubscribe(context.Background(), thread.ID)
+	if err != nil {
+		t.Fatalf("subscribe after releasing one handle: %v", err)
+	}
+	ids = append(ids[1:], res.ID)
+	for _, id := range ids {
+		if err := app.GitStatusUnsubscribe(id); err != nil {
+			t.Fatalf("teardown unsubscribe: %v", err)
+		}
+	}
 }

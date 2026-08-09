@@ -3,7 +3,12 @@ import { render, waitFor } from '@testing-library/svelte';
 
 import Harness from './WorkspaceChangeLockHarness.svelte';
 import { createThreadPane, type ThreadPane } from './thread.svelte';
-import type { Item, Thread } from '../types/models';
+import {
+  workspaceChangeLockKeys,
+  type WorkspaceChangeLockState,
+} from './workspaceChangeLock.svelte';
+import { __setTransportStatusForTest } from './transportStatus.svelte';
+import type { Project, Thread } from '../types/models';
 import {
   getBindingMock,
   resetBindingMocks,
@@ -11,35 +16,38 @@ import {
 } from '../../test/mocks/bindings-app';
 import { emitWailsEvent, resetWailsMocks } from '../../test/mocks/wailsio-runtime';
 
+const WORKSPACE = '/repo';
+const OTHER_WORKSPACE = '/repo/.worktrees/feature';
+
+interface Activity {
+  activeTurnThreads: number;
+  runningBackgroundTasks: number;
+}
+
+function idle(): Activity {
+  return { activeTurnThreads: 0, runningBackgroundTasks: 0 };
+}
+
+function busyWithTasks(count = 1): Activity {
+  return { activeTurnThreads: 0, runningBackgroundTasks: count };
+}
+
+function busyWithTurn(): Activity {
+  return { activeTurnThreads: 1, runningBackgroundTasks: 0 };
+}
+
 function makeThread(overrides: Partial<Thread> = {}): Thread {
   return {
     id: 'thread-1',
     title: 'Test',
     provider: 'claude',
-    workspacePath: '/repo',
-    projectPath: '/repo',
+    workspacePath: WORKSPACE,
+    projectPath: WORKSPACE,
     mode: 'chat',
     model: 'm',
     createdAt: 0,
     updatedAt: 0,
     archived: false,
-    ...overrides,
-  };
-}
-
-function backgroundLaunch(overrides: Partial<Item> = {}): Item {
-  return {
-    id: 'bg-1',
-    threadId: 'thread-1',
-    turnIndex: 0,
-    itemIndex: 0,
-    kind: 'tool_call',
-    role: 'assistant',
-    status: 'running',
-    summary: 'Bash',
-    isBackground: true,
-    createdAt: 1,
-    updatedAt: 1,
     ...overrides,
   };
 }
@@ -59,8 +67,8 @@ describe('createWorkspaceChangeLockState', () => {
     vi.useRealTimers();
   });
 
-  it('locks while a turn is active', async () => {
-    setBindingMock('ListLiveBackgroundTasks', async () => []);
+  it('locks while this pane\'s own turn is active, without waiting on a round trip', async () => {
+    setBindingMock('GetWorkspaceActivity', async () => idle());
     const pane = await buildPane();
     pane.setActiveTurn({ turnId: 'turn-1', turnIndex: 0, startedAt: 1 });
 
@@ -71,11 +79,11 @@ describe('createWorkspaceChangeLockState', () => {
     expect(state.getAttribute('data-reason') ?? '').toMatch(/agent is responding/);
   });
 
-  it('locks until the initial background-task check resolves', async () => {
-    let resolveTasks: (items: Item[]) => void = () => {};
-    setBindingMock('ListLiveBackgroundTasks', () =>
-      new Promise<Item[]>((resolve) => {
-        resolveTasks = resolve;
+  it('locks until the initial workspace-activity check resolves', async () => {
+    let resolveActivity: (activity: Activity) => void = () => {};
+    setBindingMock('GetWorkspaceActivity', () =>
+      new Promise<Activity>((resolve) => {
+        resolveActivity = resolve;
       }),
     );
     const pane = await buildPane();
@@ -86,15 +94,15 @@ describe('createWorkspaceChangeLockState', () => {
     expect(state).toHaveAttribute('data-locked', 'true');
     expect(state.getAttribute('data-reason') ?? '').toMatch(/Checking workspace availability/);
 
-    resolveTasks([]);
+    resolveActivity(idle());
 
     await waitFor(() => {
       expect(state).toHaveAttribute('data-locked', 'false');
     });
   });
 
-  it('counts running background launches as blocking', async () => {
-    setBindingMock('ListLiveBackgroundTasks', async () => [backgroundLaunch()]);
+  it('counts running background tasks in the workspace as blocking', async () => {
+    setBindingMock('GetWorkspaceActivity', async () => busyWithTasks());
     const pane = await buildPane();
 
     const { getByTestId } = render(Harness, { props: { pane } });
@@ -107,43 +115,50 @@ describe('createWorkspaceChangeLockState', () => {
     });
   });
 
-  it('counts projected running Codex subagent launches as blocking', async () => {
-    setBindingMock('ListLiveBackgroundTasks', async () => [
-      backgroundLaunch({
-        id: 'spawn-agent',
-        status: 'running',
-        toolName: 'collab_agent',
-        meta: JSON.stringify({
-          input: {
-            tool: 'spawn_agent',
-            receiverThreadIds: ['child-1'],
-          },
-        }),
-      }),
-    ]);
-    const pane = await buildPane(makeThread({ provider: 'codex' }));
+  // The regression this store was re-keyed for. Thread A's pane shows a
+  // worktree; thread B is a DIFFERENT conversation in the SAME worktree with a
+  // background task running. Under the old thread-keyed lock, A asked only
+  // about A's own tasks, saw none, and left Remove Worktree live over a
+  // directory B's agent was writing into.
+  it('locks a pane when a SIBLING thread in the same workspace has a running task', async () => {
+    const asked: string[] = [];
+    setBindingMock('GetWorkspaceActivity', async (workspacePath: unknown) => {
+      asked.push(String(workspacePath));
+      // Nothing is running in thread A. The count belongs to thread B, which
+      // this pane has never mounted and cannot name.
+      return busyWithTasks(2);
+    });
+    const paneA = await buildPane(makeThread({ id: 'thread-a' }));
+
+    const { getByTestId } = render(Harness, { props: { pane: paneA } });
+    const state = getByTestId('workspace-change-lock');
+
+    await waitFor(() => {
+      expect(state).toHaveAttribute('data-locked', 'true');
+      expect(state).toHaveAttribute('data-running-background-count', '2');
+      expect(state.getAttribute('data-reason') ?? '').toMatch(/background tasks/);
+    });
+    // The question asked is about the DIRECTORY, never about the thread id.
+    expect(asked).toEqual([WORKSPACE]);
+  });
+
+  it('locks a pane when a SIBLING thread in the same workspace has an open turn', async () => {
+    setBindingMock('GetWorkspaceActivity', async () => busyWithTurn());
+    const pane = await buildPane(makeThread({ id: 'thread-a' }));
 
     const { getByTestId } = render(Harness, { props: { pane } });
     const state = getByTestId('workspace-change-lock');
 
     await waitFor(() => {
       expect(state).toHaveAttribute('data-locked', 'true');
-      expect(state).toHaveAttribute('data-running-background-count', '1');
-      expect(state.getAttribute('data-reason') ?? '').toMatch(/background tasks/);
+      expect(state.getAttribute('data-reason') ?? '').toMatch(/agent is responding/);
     });
+    // No task is running — the lock is the sibling's turn, not a task count.
+    expect(state).toHaveAttribute('data-running-background-count', '0');
   });
 
-  it('does not count completed background launch pairs as blocking', async () => {
-    setBindingMock('ListLiveBackgroundTasks', async () => [
-      backgroundLaunch({ id: 'bg-1' }),
-      backgroundLaunch({
-        id: 'bg-1-complete',
-        kind: 'tool_completion',
-        status: 'completed',
-        completionOf: 'bg-1',
-        isBackground: true,
-      }),
-    ]);
+  it('does not lock when nothing in the workspace is running', async () => {
+    setBindingMock('GetWorkspaceActivity', async () => idle());
     const pane = await buildPane();
 
     const { getByTestId } = render(Harness, { props: { pane } });
@@ -155,50 +170,316 @@ describe('createWorkspaceChangeLockState', () => {
     });
   });
 
-  it('refreshes from background task events', async () => {
+  // Event routing: the wire events are thread-keyed and the busy thread need
+  // not be mounted anywhere, so a live key re-checks on ANY activity event —
+  // including one naming a thread this client has never seen. Filtering on
+  // threadId is what would leave the lock stale over a sibling's work.
+  it.each([
+    'provider:background_tasks_changed',
+    'provider:background_task_state',
+    'provider:turn_started',
+    'provider:turn_completed',
+  ])('re-checks on %s carrying an UNKNOWN thread id', async (eventName) => {
     vi.useFakeTimers();
-    let response: Item[] = [];
-    setBindingMock('ListLiveBackgroundTasks', async () => response);
+    let response: Activity = idle();
+    setBindingMock('GetWorkspaceActivity', async () => response);
     const pane = await buildPane();
 
     const { getByTestId } = render(Harness, { props: { pane } });
     const state = getByTestId('workspace-change-lock');
-    await waitFor(() => {
-      expect(state).toHaveAttribute('data-locked', 'false');
-    });
+    await vi.waitFor(() => expect(state).toHaveAttribute('data-locked', 'false'));
 
-    response = [backgroundLaunch()];
-    emitWailsEvent('provider:background_tasks_changed', { threadId: 'thread-1' });
+    response = busyWithTasks();
+    emitWailsEvent(eventName, { threadId: 'a-thread-this-client-never-mounted' });
     await vi.advanceTimersByTimeAsync(100);
 
-    await waitFor(() => {
+    await vi.waitFor(() => {
       expect(state).toHaveAttribute('data-locked', 'true');
-      expect(getBindingMock('ListLiveBackgroundTasks')!.mock.calls.length).toBeGreaterThanOrEqual(2);
+      expect(getBindingMock('GetWorkspaceActivity')!.mock.calls.length).toBeGreaterThanOrEqual(2);
     });
   });
 
-  it('ignores stale refresh results after switching threads', async () => {
-    let resolveFirst: (items: Item[]) => void = () => {};
-    let calls = 0;
-    setBindingMock('ListLiveBackgroundTasks', (threadId: unknown) => {
-      calls += 1;
-      if (calls === 1) {
-        return new Promise<Item[]>((resolve) => {
-          resolveFirst = resolve;
-        });
-      }
-      return Promise.resolve([backgroundLaunch({ id: 'bg-2', threadId: String(threadId) })]);
+  it('shares ONE check between the two controls that gate on it', async () => {
+    setBindingMock('GetWorkspaceActivity', async () => idle());
+    const pane = await buildPane();
+
+    // GitActionsControl and the composer's workspace strip both mount one.
+    const { getAllByTestId } = render(Harness, { props: { pane } });
+    render(Harness, { props: { pane } });
+
+    await waitFor(() => {
+      const states = getAllByTestId('workspace-change-lock');
+      expect(states).toHaveLength(2);
+      for (const state of states) expect(state).toHaveAttribute('data-locked', 'false');
     });
+    expect(getBindingMock('GetWorkspaceActivity')!.mock.calls.length).toBe(1);
+  });
+
+  it('shares ONE entry between two PANES on the same workspace', async () => {
+    setBindingMock('GetWorkspaceActivity', async () => idle());
+    const paneA = await buildPane(makeThread({ id: 'thread-a' }));
+    const paneB = await buildPane(makeThread({ id: 'thread-b' }));
+
+    render(Harness, { props: { pane: paneA } });
+    render(Harness, { props: { pane: paneB } });
+
+    await waitFor(() => {
+      expect(workspaceChangeLockKeys()).toEqual([WORKSPACE]);
+    });
+    expect(getBindingMock('GetWorkspaceActivity')!.mock.calls.length).toBe(1);
+  });
+
+  it('stays LOCKED when the workspace-activity check fails, and says it cannot verify', async () => {
+    setBindingMock('GetWorkspaceActivity', async () => {
+      throw new Error('backend unavailable');
+    });
+    const pane = await buildPane();
+
+    const { getByTestId } = render(Harness, { props: { pane } });
+    const state = getByTestId('workspace-change-lock');
+
+    await waitFor(() => {
+      expect(state).toHaveAttribute('data-locked', 'true');
+      expect(state.getAttribute('data-reason') ?? '').toMatch(/Cannot check for running/);
+      expect(state.getAttribute('data-reason') ?? '').toMatch(/backend unavailable/);
+    });
+  });
+
+  // The initial check and every event-driven refresh are separate RPCs on
+  // ONE entity generation, so nothing in the primitive orders them. An older
+  // IDLE answer landing after a newer BUSY one unlocks the destructive
+  // controls over a sibling thread's live agent.
+  it('discards a workspace-activity response that a newer one already superseded', async () => {
+    vi.useFakeTimers();
+    const pending: Array<(activity: Activity) => void> = [];
+    const list = setBindingMock('GetWorkspaceActivity', () =>
+      new Promise<Activity>((resolve) => {
+        pending.push(resolve);
+      }),
+    );
+    const pane = await buildPane();
+
+    const { getByTestId } = render(Harness, { props: { pane } });
+    const state = getByTestId('workspace-change-lock');
+    await vi.waitFor(() => expect(list.mock.calls.length).toBe(1));
+
+    // A sibling's turn opens while the initial check is still in flight.
+    emitWailsEvent('provider:turn_started', { threadId: 'a-sibling-thread' });
+    await vi.advanceTimersByTimeAsync(100);
+    expect(list.mock.calls.length).toBe(2);
+
+    // The NEWER answer lands first…
+    pending[1](busyWithTurn());
+    await vi.waitFor(() => expect(state).toHaveAttribute('data-locked', 'true'));
+
+    // …and the older, slower one must not overwrite it.
+    pending[0](idle());
+    await vi.advanceTimersByTimeAsync(50);
+    expect(state).toHaveAttribute('data-locked', 'true');
+    expect(state.getAttribute('data-reason') ?? '').toMatch(/agent is responding/);
+  });
+
+  // GetWorkspaceActivity is loopback-only. A remote session's refusal is
+  // permanent, so the fail-safe posture holds (unverified is locked) but the
+  // reason must say why instead of leaking the transport's own shape.
+  it('reads as locked with the local-only reason when the backend refuses the call', async () => {
+    setBindingMock('GetWorkspaceActivity', async () => {
+      throw Object.assign(new Error('method not registered'), { code: 'method_not_found' });
+    });
+    const pane = await buildPane();
+
+    const { getByTestId } = render(Harness, { props: { pane } });
+    const state = getByTestId('workspace-change-lock');
+
+    await waitFor(() => {
+      expect(state).toHaveAttribute('data-locked', 'true');
+      expect(state.getAttribute('data-reason') ?? '')
+        .toBe('Workspace changes are only available on the local machine.');
+    });
+  });
+
+  it('unlocks once a retry after a failure succeeds', async () => {
+    let broken = true;
+    setBindingMock('GetWorkspaceActivity', async () => {
+      if (broken) throw new Error('backend unavailable');
+      return idle();
+    });
+    const pane = await buildPane();
+    let lock: WorkspaceChangeLockState | null = null;
+
+    const { getByTestId } = render(Harness, {
+      props: { pane, expose: (value: WorkspaceChangeLockState) => { lock = value; } },
+    });
+    const state = getByTestId('workspace-change-lock');
+    await waitFor(() => {
+      expect(state).toHaveAttribute('data-locked', 'true');
+    });
+
+    broken = false;
+    lock!.refresh();
+
+    await waitFor(() => {
+      expect(state).toHaveAttribute('data-locked', 'false');
+      expect(state.getAttribute('data-reason') ?? '').toBe('');
+    });
+  });
+
+  it('never asks about a draft placeholder — it stages a choice, it moves no directory', async () => {
+    setBindingMock('GetWorkspaceActivity', async () => idle());
+    const pane = createThreadPane();
+    pane.startDraftPlaceholder(
+      { id: 'proj-1', name: 'proj', path: WORKSPACE, createdAt: 0, updatedAt: 0 } as Project,
+      'chat',
+    );
+
+    const { getByTestId } = render(Harness, { props: { pane } });
+    const state = getByTestId('workspace-change-lock');
+
+    await waitFor(() => {
+      expect(state).toHaveAttribute('data-locked', 'false');
+    });
+    // The placeholder carries the project root as its workspace path, so a
+    // key-derivation that ignored the missing thread row would have attached
+    // it to the project-root entry and locked staging on a sibling's work.
+    expect(getBindingMock('GetWorkspaceActivity')!.mock.calls.length).toBe(0);
+    expect(workspaceChangeLockKeys()).toEqual([]);
+  });
+
+  it('surfaces a failing event-driven re-check ONCE and lets the retry curve own recovery', async () => {
+    // The failure path used to fail() and then invalidate(), which reset the
+    // primitive's backoff on every inbound event: a broken backend under a
+    // streaming thread re-polled forever at the event rate instead of
+    // backing off.
+    vi.useFakeTimers();
+    let broken = false;
+    const list = setBindingMock('GetWorkspaceActivity', async () => {
+      if (broken) throw new Error('backend unavailable');
+      return idle();
+    });
+    const pane = await buildPane();
+
+    const { getByTestId } = render(Harness, { props: { pane } });
+    const state = getByTestId('workspace-change-lock');
+    await vi.waitFor(() => expect(state).toHaveAttribute('data-locked', 'false'));
+    expect(list.mock.calls.length).toBe(1);
+
+    broken = true;
+    for (let i = 0; i < 5; i += 1) {
+      emitWailsEvent('provider:background_tasks_changed', { threadId: 'thread-1' });
+      await vi.advanceTimersByTimeAsync(100);
+    }
+
+    // One poll per event and NOT one more: the failure schedules a backed-off
+    // re-source, it does not fire one per report.
+    expect(list.mock.calls.length).toBe(6);
+    expect(state).toHaveAttribute('data-locked', 'true');
+    expect(state.getAttribute('data-reason') ?? '').toMatch(/backend unavailable/);
+
+    // The curve is armed: the first retry lands at 3s and heals the lock.
+    broken = false;
+    await vi.advanceTimersByTimeAsync(3_000);
+    await vi.waitFor(() => {
+      expect(state).toHaveAttribute('data-locked', 'false');
+      expect(state.getAttribute('data-reason') ?? '').toBe('');
+    });
+  });
+
+  it('reads as locked with no RPC while disconnected, and re-checks on reconnect', async () => {
+    const list = setBindingMock('GetWorkspaceActivity', async () => idle());
+    const pane = await buildPane();
+
+    const { getByTestId } = render(Harness, { props: { pane } });
+    const state = getByTestId('workspace-change-lock');
+    await waitFor(() => expect(state).toHaveAttribute('data-locked', 'false'));
+    expect(list.mock.calls.length).toBe(1);
+
+    // The primitive suspends every entry on disconnect: the observation is
+    // dropped, so the lock is unverified — and nothing is asked over a dead
+    // wire.
+    __setTransportStatusForTest({ status: 'disconnected', nextAttemptAt: null });
+    await waitFor(() => {
+      expect(state).toHaveAttribute('data-locked', 'true');
+      expect(state.getAttribute('data-reason') ?? '').toMatch(/Checking workspace availability/);
+    });
+    expect(list.mock.calls.length).toBe(1);
+
+    __setTransportStatusForTest({ status: 'connected', nextAttemptAt: null });
+    await waitFor(() => {
+      expect(state).toHaveAttribute('data-locked', 'false');
+      expect(list.mock.calls.length).toBe(2);
+    });
+  });
+
+  it('releases the shared entry when the last consumer unmounts', async () => {
+    setBindingMock('GetWorkspaceActivity', async () => idle());
+    const pane = await buildPane();
+
+    const first = render(Harness, { props: { pane } });
+    const second = render(Harness, { props: { pane } });
+    await waitFor(() => expect(workspaceChangeLockKeys()).toEqual([WORKSPACE]));
+
+    first.unmount();
+    expect(workspaceChangeLockKeys()).toEqual([WORKSPACE]);
+
+    second.unmount();
+    expect(workspaceChangeLockKeys()).toEqual([]);
+  });
+
+  // The listeners are installed BEFORE the initial check is awaited, and the
+  // primitive has nothing to release until the run RETURNS a cleanup. Without
+  // the abort hook a torn-down entry kept refreshing beside its replacement —
+  // forever, when the RPC it is parked on never answers.
+  it('releases the listeners when the entry dies while the initial check hangs', async () => {
+    vi.useFakeTimers();
+    const list = setBindingMock('GetWorkspaceActivity', () => new Promise<Activity>(() => {}));
+    const pane = await buildPane();
+
+    const view = render(Harness, { props: { pane } });
+    await vi.waitFor(() => expect(list.mock.calls.length).toBe(1));
+
+    view.unmount();
+    expect(workspaceChangeLockKeys()).toEqual([]);
+
+    emitWailsEvent('provider:turn_started', { threadId: 'thread-1' });
+    await vi.advanceTimersByTimeAsync(100);
+    expect(list.mock.calls.length).toBe(1);
+  });
+
+  it('re-points to the new workspace when the pane switches to a thread elsewhere', async () => {
+    setBindingMock('GetWorkspaceActivity', async (workspacePath: unknown) =>
+      workspacePath === OTHER_WORKSPACE ? busyWithTasks() : idle(),
+    );
     const pane = await buildPane(makeThread({ id: 'thread-a' }));
     const { getByTestId } = render(Harness, { props: { pane } });
     const state = getByTestId('workspace-change-lock');
 
-    await pane.switchThread(makeThread({ id: 'thread-b' }));
-    resolveFirst([backgroundLaunch({ id: 'stale', threadId: 'thread-a' })]);
+    await waitFor(() => {
+      expect(state).toHaveAttribute('data-locked', 'false');
+      expect(workspaceChangeLockKeys()).toEqual([WORKSPACE]);
+    });
+
+    await pane.switchThread(
+      makeThread({ id: 'thread-b', workspacePath: OTHER_WORKSPACE }),
+    );
 
     await waitFor(() => {
+      expect(workspaceChangeLockKeys()).toEqual([OTHER_WORKSPACE]);
       expect(state).toHaveAttribute('data-locked', 'true');
       expect(state).toHaveAttribute('data-running-background-count', '1');
     });
+  });
+
+  it('does NOT re-key when the pane switches to another thread in the SAME workspace', async () => {
+    const list = setBindingMock('GetWorkspaceActivity', async () => idle());
+    const pane = await buildPane(makeThread({ id: 'thread-a' }));
+    render(Harness, { props: { pane } });
+    await waitFor(() => expect(workspaceChangeLockKeys()).toEqual([WORKSPACE]));
+    expect(list.mock.calls.length).toBe(1);
+
+    await pane.switchThread(makeThread({ id: 'thread-b' }));
+
+    await waitFor(() => expect(workspaceChangeLockKeys()).toEqual([WORKSPACE]));
+    // Same directory, same entry: nothing was torn down and re-acquired.
+    expect(list.mock.calls.length).toBe(1);
   });
 });

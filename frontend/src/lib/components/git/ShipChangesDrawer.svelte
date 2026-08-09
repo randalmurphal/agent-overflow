@@ -7,21 +7,27 @@
   // here.
   //
   // The dialog and the state machine stay loosely coupled on purpose:
-  //   * The dialog owns GetGitStatus + the three Git* RPC calls.
+  //   * The dialog owns the three Git* RPC calls.
   //   * The state machine owns phase transitions and error storage.
   //   * The step components only read state + call intent handlers.
+  //
+  // Git status is NOT fetched here. It is workspace state, read from the
+  // shared store through `pane.gitStatus` and fed into the wizard by the
+  // effect below, so the gates the wizard opens on (hasChanges, aheadCount,
+  // openPrUrl, pendingOperation) are the same values the header badges and
+  // every other pane on this worktree are showing. After each action the
+  // wizard asks for one refresh through the same chokepoint, which also
+  // reconciles the observed branch and heals the other clients.
 
   import { untrack } from 'svelte';
   import {
-    GetGitStatus,
     GitCommit,
     GitPush,
     GitCreatePR,
   } from '../../stores/bindings';
   import { addToast } from '../../stores/toast.svelte';
-  import { errString } from '../../utils/errors';
   import { forgeLabels } from '../../utils/forgeLabels';
-  import type { GitActionResult, GitStatus } from '../../types/git';
+  import type { GitActionResult } from '../../types/git';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import {
     createShipChangesState,
@@ -47,32 +53,19 @@
   // prop updates — swapping the state store mid-wizard would be a bug.
   // Named `wizard` to avoid colliding with Svelte's `$state` rune.
   const wizard: ShipChangesState = untrack(() => externalState ?? createShipChangesState());
-  let statusLoadGeneration = 0;
   // Track the thread the wizard was opened for so we can detect a switch
   // while the drawer is still open and bail out rather than silently
   // resetting the user's typed content onto a different thread's state.
   let openedForThreadId: string | null = null;
 
-  async function refreshStatus(threadId: string): Promise<GitStatus | null> {
-    const generation = ++statusLoadGeneration;
-    try {
-      const fetched = (await GetGitStatus(threadId)) as GitStatus;
-      if (generation !== statusLoadGeneration) return null;
-      wizard.setStatus(fetched);
-      return fetched;
-    } catch (err) {
-      console.error('ship-changes: GetGitStatus failed', err);
-      pane.setGeneralError(`Failed to load git status: ${errString(err)}`);
-      return null;
-    }
-  }
-
-  async function refreshAfterAction(threadId: string): Promise<void> {
-    const fetched = await refreshStatus(threadId);
-    if (pane.threadId !== threadId || fetched === null) return;
-    pane.gitStatus.set(fetched);
-    pane.gitStatus.setError(false);
-  }
+  // The workspace's live status feeds the wizard. setStatus auto-advances
+  // only out of `idle`, so once the user is inside a step this is purely
+  // informational and cannot yank them between stages.
+  $effect(() => {
+    const status = pane.gitStatus.status;
+    if (!open || status === null) return;
+    untrack(() => wizard.setStatus(status));
+  });
 
   $effect(() => {
     if (!open) {
@@ -101,7 +94,13 @@
 
     untrack(() => {
       wizard.open(threadId);
-      void refreshStatus(threadId);
+      // Seed synchronously: open() resets to idle, and the feed effect
+      // above has already run for this flush (its deps did not change
+      // again), so without this the wizard would sit on "Loading…" until
+      // the next status push. Null status keeps the loading state, which
+      // that push then resolves.
+      const status = pane.gitStatus.status;
+      if (status !== null) wizard.setStatus(status);
     });
     openedForThreadId = threadId;
   });
@@ -128,7 +127,7 @@
       // again in the common one-commit-per-PR flow.
       if (wizard.prTitle === '') wizard.seedPR(subject, body);
       addToast('success', `Committed ${(result.commitSha ?? '').slice(0, 7)}`);
-      await refreshAfterAction(threadId);
+      await pane.gitStatus.refreshNow();
     } catch (err) {
       if (wizard.generation !== startGeneration) return;
       wizard.failCommit(err instanceof Error ? err.message : String(err));
@@ -154,7 +153,7 @@
       }
       wizard.completePush();
       addToast('success', 'Pushed');
-      await refreshAfterAction(threadId);
+      await pane.gitStatus.refreshNow();
     } catch (err) {
       if (wizard.generation !== startGeneration) return;
       wizard.failPush(err instanceof Error ? err.message : String(err));
@@ -183,7 +182,7 @@
       }
       wizard.completeCreatePR(result.prUrl ?? '');
       addToast('success', `${forgeLabels(wizard.status?.forge).longSingular} opened`);
-      await refreshAfterAction(threadId);
+      await pane.gitStatus.refreshNow();
     } catch (err) {
       if (wizard.generation !== startGeneration) return;
       wizard.failCreatePR(err instanceof Error ? err.message : String(err));

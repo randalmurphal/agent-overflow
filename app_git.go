@@ -54,6 +54,14 @@ type GitWorkspaceState struct {
 }
 
 // GetGitStatus returns git status for the thread's active workspace.
+//
+// The answer is not the caller's alone: every other client watching this
+// workspace is looking at the same checkout, so the fresh status is also
+// pushed through the workspace's gitwatch stream (a no-op when nobody is
+// subscribed). Doing that AFTER the synchronous fetch means the watcher's
+// refresh runs against a warm PR cache, and it arms gitwatch's
+// missed-event detection — a refresh that observes a change the fs watches
+// never reported is how a silently dead watchpoint gets reinstalled.
 func (a *App) GetGitStatus(threadID string) (gitops.GitStatus, error) {
 	thread, err := a.store.GetThread(threadID)
 	if err != nil {
@@ -67,29 +75,22 @@ func (a *App) GetGitStatus(threadID string) (gitops.GitStatus, error) {
 
 	core := a.gitCore()
 	core.InvalidatePRCache(workspace)
-	return core.Status(workspace)
-}
-
-// GetGitStatusFast returns git status for the thread's workspace using only
-// cached open-PR info — no gh/glab network call. For callers that need the
-// local fields (dirty bit, branch, ahead/behind) without a forge round-trip;
-// surfaces that render live PR state use GetGitStatus.
-func (a *App) GetGitStatusFast(threadID string) (gitops.GitStatus, error) {
-	thread, err := a.store.GetThread(threadID)
+	status, err := core.Status(workspace)
 	if err != nil {
 		return gitops.GitStatus{}, err
 	}
-
-	_, workspace, err := a.resolveGitPaths(thread)
-	if err != nil {
-		return gitops.GitStatus{}, err
+	if a.gitWatch != nil {
+		a.gitWatch.RequestRefresh(workspace)
 	}
-
-	return a.gitCore().StatusFast(workspace)
+	return status, nil
 }
 
-// GetGitStatusFastForProject mirrors GetGitStatusFast for a project root
-// without requiring a thread row. Used by local draft placeholders.
+// GetGitStatusFastForProject returns git status for a project root using only
+// cached open-PR info — no gh/glab network call — and without requiring a
+// thread row. The one caller is the composer's draft placeholder: it has no
+// thread, so it can hold no git-status subscription, and it wants the local
+// dirty bit rather than a forge round-trip. Every thread-backed surface reads
+// the shared workspace-keyed git-status store instead.
 func (a *App) GetGitStatusFastForProject(projectID string) (gitops.GitStatus, error) {
 	project, err := a.gitProjectPath(projectID)
 	if err != nil {

@@ -16,6 +16,9 @@
     favorites: ChatBarFavorite[];
     activeProvider: ProviderID | null;
     currentModel?: string;
+    /** Load failure for the shared list; rendered instead of a toast so it
+     * persists while the store's retry curve runs. */
+    error?: string | null;
     onSelectModel: (provider: ProviderID, model: string) => void;
     onSelectDiscussion: (favorite: ChatBarFavorite) => void;
   }
@@ -24,12 +27,19 @@
     favorites,
     activeProvider,
     currentModel,
+    error = null,
     onSelectModel,
     onSelectDiscussion,
   }: Props = $props();
 </script>
 
-{#if favorites.length > 0}
+{#if error}
+  <MenuSectionHeader label="Favorites" />
+  <div class="px-3 py-1.5 text-[0.75rem] text-error" data-testid="chat-bar-favorites-error">
+    Failed to load favorites: {error}
+  </div>
+  <MenuDivider />
+{:else if favorites.length > 0}
   <MenuSectionHeader label="Favorites" />
   {#each favorites as fav (`${fav.kind}:${fav.provider ?? ''}:${fav.value}`)}
     {@const providerID = asProviderID(fav.provider)}

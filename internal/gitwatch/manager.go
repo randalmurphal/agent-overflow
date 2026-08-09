@@ -2,6 +2,7 @@ package gitwatch
 
 import (
 	"errors"
+	"log"
 	"sync"
 
 	"github.com/rjeczalik/notify"
@@ -178,6 +179,37 @@ func (m *Manager) Subscribe(cwd string) (*Subscription, error) {
 	}
 
 	return sub, nil
+}
+
+// RequestRefresh asks the watcher for cwd (if one exists) to re-run
+// StatusFn and broadcast the result to every subscriber. Callers that
+// computed a fresh status out-of-band (a post-action RPC) use it so the
+// change reaches every other client instead of only the acting one; it
+// also arms the watcher's missed-event detection, since a refresh that
+// observes a non-PR change the fs watches never reported is evidence of
+// dead watchpoints.
+//
+// No watcher for cwd is a valid state — nobody is subscribed — so it is
+// a silent no-op rather than an error.
+func (m *Manager) RequestRefresh(cwd string) {
+	if cwd == "" {
+		return
+	}
+	_, canon, err := canonicalize(cwd)
+	if err != nil {
+		// A path that will not canonicalize is a caller bug or a workspace
+		// that vanished, and either way the refresh every other client was
+		// counting on is not happening. No-watcher below is the only silent
+		// outcome here.
+		log.Printf("gitwatch: refresh request for %q dropped: %v", cwd, err)
+		return
+	}
+	m.mu.Lock()
+	w := m.watchers[canon]
+	m.mu.Unlock()
+	if w != nil {
+		w.requestRefresh()
+	}
 }
 
 func (m *Manager) shouldRefreshMissingPR(status gitops.GitStatus) bool {

@@ -43,6 +43,14 @@ import {
 import { clearThreadScrollSnapshotsForTest } from '../../lib/utils/threadScrollSnapshots';
 import { makeSettings } from '../helpers/settings';
 
+/**
+ * The one workspace every integration fixture lives in: the project root,
+ * the thread's workspace path, and the canonical cwd the git-status
+ * subscription reports. Those three agreeing is what lets a pushed
+ * `git:status` event route to the thread's git-status entry.
+ */
+export const INTEGRATION_WORKSPACE = '/tmp/ws';
+
 // Drain microtasks + Svelte reactions so $effects and async mounts settle.
 // `n` should be generous for integration tests that depend on $effects
 // cascading through App -> Sidebar -> ChatView -> Composer.
@@ -127,7 +135,7 @@ export function installAppDefaults(): void {
 export function seedSidebarProject(threads: Thread[]): Project {
   const project: Project = {
     id: 'proj-int',
-    path: '/tmp/ws',
+    path: INTEGRATION_WORKSPACE,
     name: 'Integration Project',
     sortPosition: 0,
     createdAt: 0,
@@ -146,8 +154,8 @@ export function seedSidebarProject(threads: Thread[]): Project {
 
 // Bindings that start firing the moment a thread becomes active: ChatView
 // mounts GitActionsControl (header) and the in-card ComposerWorkspaceStrip
-// hosts BranchPicker, which call GetGitStatus / GetGitStatusFast /
-// GitListBranches in $effect. Tests that switch into a thread need these
+// hosts BranchPicker, which call GetGitStatus /
+// GetGitStatusFastForProject / GitListBranches in $effect. Tests that switch into a thread need these
 // mocked even if they don't assert on git UI.
 export function installThreadViewDefaults(): void {
   setBindingMock('SwitchThread', async (threadId: unknown) => {
@@ -184,22 +192,38 @@ export function installThreadViewDefaults(): void {
     todo: null,
   }));
   setBindingMock('ListItems', async () => []);
+  // The composer toolbar's MCP trigger holds the pane's MCP entity while it
+  // is mounted, so switching into a thread lists its servers once.
+  setBindingMock('ListThreadMcpServers', async () => []);
+  setBindingMock('ListWorkspaceMcpServers', async () => []);
   // switchThread rehydrates latestSettledTurn via ListRecentTurns — default
   // to an empty list so tests that don't care about turn history don't
   // need to set the mock themselves.
   setBindingMock('ListRecentTurns', async () => []);
   setBindingMock('GetGitStatus', async () => makeGitStatus());
-  // BranchPicker's awaited dirty-bit fetch skips the forge round-trip.
-  setBindingMock('GetGitStatusFast', async () => makeGitStatus());
+  // BranchPicker's awaited draft-placeholder dirty-bit fetch skips the
+  // forge round-trip.
   setBindingMock('GetGitStatusFastForProject', async () => makeGitStatus());
-  // GitActionsControl now subscribes to backend gitwatch instead of
-  // polling. Default to a successful subscribe returning the same
-  // status as GetGitStatus so the header renders the split-button.
+  // The header subscribes to backend gitwatch instead of polling. Default to
+  // a successful subscribe returning the same status as GetGitStatus so the
+  // header renders the split-button. `cwd` is the canonical directory the
+  // backend watches and the value `git:status` pushes are addressed by; it
+  // matches makeThread's workspacePath so a pushed event routes to the
+  // thread's store key.
   setBindingMock('GitStatusSubscribe', async () => ({
     id: 'integration-sub',
+    cwd: INTEGRATION_WORKSPACE,
     status: makeGitStatus(),
   }));
   setBindingMock('GitStatusUnsubscribe', async () => {});
+  // The first observation for a workspace reconciles its branch onto every
+  // thread row there. Echo the rows back with the branch applied, so the
+  // reconciliation settles instead of erroring in suites that never look at
+  // git at all.
+  setBindingMock('UpdateThreadBranch', async (workspacePath: unknown, branch: unknown) =>
+    getThreads()
+      .filter((thread) => thread.workspacePath === workspacePath)
+      .map((thread) => ({ ...thread, branch: branch as string })));
   setBindingMock('GitListBranches', async () => []);
   // Thread-wide aggregate surfaces (PlanSidebar / ActivityRail) fetch
   // these bindings on mount / thread-switch.
@@ -209,6 +233,7 @@ export function installThreadViewDefaults(): void {
   setBindingMock('ListProposedPlanComments', async () => []);
   setBindingMock('GetPayloadData', async () => ({ data: '# Plan\n\nBody' }));
   setBindingMock('ListLiveBackgroundTasks', async () => []);
+  setBindingMock('GetWorkspaceActivity', async () => ({ activeTurnThreads: 0, runningBackgroundTasks: 0 }));
   setBindingMock('AppendUIRenderTraceBatch', async () => '/tmp/ui-render.jsonl');
   // Design-thread mounts spin DesignPreviewPanel's $effect which
   // immediately calls EnsureDesignWorkdir + LatestDesignOptionSet on
@@ -237,7 +262,7 @@ export function installComposerDefaults(threadId: string): void {
   setBindingMock('SearchWorkspaceFiles', async () => ({
     files: [],
     truncated: false,
-    root: '/tmp/ws',
+    root: INTEGRATION_WORKSPACE,
   }));
   // Default RegisterQueueItem mock — the backend handler stores the
   // item and emits provider:queue_state_changed which seeds Zone 1.
@@ -296,8 +321,8 @@ export function makeThread(overrides: Partial<Thread> = {}): Thread {
     id: 'thread-1',
     title: 'Integration Thread',
     provider: 'claude',
-    workspacePath: '/tmp/ws',
-    projectPath: '/tmp/ws',
+    workspacePath: INTEGRATION_WORKSPACE,
+    projectPath: INTEGRATION_WORKSPACE,
     // All post-Wave-1 threads carry a projectId; default to the seeded
     // integration project so the sidebar renders the row under its group.
     projectId: 'proj-int',

@@ -73,6 +73,108 @@ per-anchor fold (`utils/subagentFold.ts`) and re-hydrate on card
 expansion; see "Live Window Bounds" in
 [`docs/architecture/frontend-scroll.md`](../docs/architecture/frontend-scroll.md).
 
+### State ownership
+
+State is keyed by its ENTITY, never by its consumer. Before adding
+`$state`, name the entity the value describes:
+
+- **app** — chat-bar favorites, Codex MCP rows (that backend flag is
+  global), settings, provider accounts.
+- **project** — new-thread defaults.
+- **workspace**, i.e. the worktree cwd — git status, branch, dirty bit,
+  the open-PR reference, the Claude MCP LISTING (membership is walked
+  from the cwd out — `.mcp.json` files plus plugin manifests — so two
+  worktrees of one project can legitimately differ). The Claude toggle
+  that listing renders is project-scoped and Codex's is global, so a
+  toggle changes what a SIBLING workspace should show; that fan-out is
+  a push (the `mcp:status` sentinel re-lists every key carrying the
+  server), not a reason to widen the key.
+  Also the workspace-change lock: it gates removing a worktree and
+  moving where the next turn runs, so it guards a DIRECTORY, not a
+  conversation. Two threads sharing a worktree is first-class, and a
+  thread-keyed lock asked only about the thread that happened to be
+  asking — leaving `rm -rf` live over a checkout a sibling thread's
+  agent was writing into. Both legs are workspace-scoped (open turns
+  and live background tasks, aggregated backend-side over every thread
+  that references the path) so the affordance matches the refusal
+  `removeProjectWorktree` would issue. A pane's OWN turn is still read
+  from local state on top, purely so the lock closes without waiting
+  for an event round trip.
+- **PR** — detail, review threads, live head SHA, CI pipeline, merge
+  conflicts.
+- **thread** — items, streaming, approvals.
+- **pane** — view concerns and nothing else: scroll, expansion,
+  selection, drafts, and the head a loaded diff was computed AT (PR
+  staleness is derived from that against the store's live head; a shared
+  `stale` flag would lie to one of two panes).
+
+If the entity outlives or spans the component, it lives in a shared
+entity-keyed store. There are TWO primitives for that and the choice is
+not stylistic — it follows from what backs the key:
+
+- **`stores/entityStore.svelte.ts`** — the key is backed by a BACKEND
+  RESOURCE that has to be acquired, released, and re-acquired across a
+  transport reconnect (a subscription, a watcher, a poll pump, an RPC
+  whose answer goes stale). Refcounted `attach`, one `apply` chokepoint,
+  a retry curve, and the transport edge come with it. Reference
+  migrations: `gitStatusStore.svelte.ts`, `prReviewStore.svelte.ts`,
+  `mcpServers.svelte.ts`, `chatBarFavorites.svelte.ts`.
+- **`stores/keyedSignalRegistry.svelte.ts`** — the key is PUSH-FED or a
+  lazy per-key cache with nothing to acquire: events arrive and are
+  written, and a reader of key K must not be woken by a write to key J.
+  One `$state.raw` box per key, no refcount, no source, no transport
+  edge. Users: `threadStatuses`, `sendQueue`, `compactingState`,
+  `fastModeState`, `claudeSkills`, `codexSkills`, `providerCommands`,
+  `worktreeSetup`.
+
+The deciding question is "is there something to release?", not "is it
+keyed?". Both module headers carry the full rationale — read the one you
+are about to build on.
+
+Every consumer `$derived`s from whichever store owns the entity. What
+the entity-store primitive requires:
+
+- `apply()` is the single write chokepoint. Event push, RPC result and
+  post-action refresh all land there, so reconciliation (persisting an
+  observed branch) happens once and every consumer heals together. Do not
+  add a `set()` beside it.
+- `attach()` is refcounted per key and the last release tears the backend
+  resource down. The transport edge is the primitive's — it suspends on
+  disconnect and `resetAll()`s on reconnect for every store built on it, so
+  a store neither re-subscribes per consumer nor wires the edge itself.
+- Key an attach `$effect` on the ENTITY KEY alone, never on the consumer's
+  id. A pane switching threads inside one workspace is still the same
+  workspace: tracking the thread id there released and re-attached, dropping
+  the shared resource to refcount zero — the fs watcher torn down and rebuilt
+  for a change the entity never saw. Values the source needs but the key does
+  not (a thread id for the subscribe RPC) go in the ctx as GETTERS, so a
+  re-source runs against what the consumer holds now.
+- A `source()` run gets an `AbortSignal` that fires the moment it is
+  superseded (release, invalidate, suspend, resetAll, retry). `apply`/`fail`
+  from a superseded run are dropped for free, so a single-RPC source can
+  ignore it — but anything a source does AFTER an await must check it, or a
+  superseded run doubles the side effect (mcpServers chains a health check
+  that spawns `claude mcp list`).
+- Wire events are entity-keyed, never subscription-keyed. See
+  [`internal/transport/AGENTS.md`](../internal/transport/AGENTS.md) §
+  "Events Are Entity-Keyed".
+
+One thread is mounted in at most one pane, and that is structural rather
+than a habit of the callers: `stores/panes.svelte.ts` keeps
+`replaceThreadInPane` private and exports `mountThreadInPane` as the only
+door into the registry. It reveals the pane already showing the thread
+before mounting anything, and a duplicate reaching the registry through
+either door — mount or layout restore — is reported to the console AND to
+`reportFrontendDiagnostic`, so a breach in the field lands in
+`ui-trace/frontend-errors.jsonl` instead of needing devtools open. Two panes
+on one WORKSPACE are common and first-class; two panes on one THREAD are a
+bug.
+
+`src/lib/architecture.test.ts` enforces the mechanical half: entity-owned
+RPCs stay inside `stores/`, and `wailsEventOn` does not appear outside it.
+Both rules carry shrink-only allowlists — an exception that has been fixed
+must be deleted from the list, not left to grandfather the next one.
+
 ## Workflows Overlay
 
 Spec: [`docs/specs/workflows-system-ui/UI-SPEC.md`](../docs/specs/workflows-system-ui/UI-SPEC.md)

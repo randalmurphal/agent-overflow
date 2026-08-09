@@ -723,39 +723,60 @@ func (a *App) UpdateThreadRuntimeMode(id, mode string) (store.Thread, error) {
 	return thread, nil
 }
 
-// UpdateThreadBranch persists the branch column for a thread that is still
-// in expectedWorkspacePath. Does NOT perform the git checkout — that flow
-// lives in GitCheckout. Kept as a narrow metadata binding for callers that
-// need to repair/import thread state without touching the repository
-// checkout.
+// UpdateThreadBranch persists a branch observed in workspacePath onto every
+// thread row currently in that workspace. Does NOT perform the git checkout
+// — that flow lives in GitCheckout. This is the narrow metadata binding the
+// frontend's observed-branch reconciliation writes through.
 //
-// expectedWorkspacePath is the workspace the branch was observed in, and it
-// is required: the caller is the frontend's asynchronous branch-persist
-// queue, which holds no thread lock and can land after a worktree switch
-// has already moved the thread somewhere else. See
-// store.UpdateBranchIfWorkspace for why the guard is on the workspace.
+// The branch is a property of the workspace, not of a thread: two threads on
+// one worktree see the same checkout, so writing only the observing thread's
+// row leaves the other claiming a branch the working tree left behind.
+// Keying the write on the workspace is also what makes it safe to issue
+// without a thread lock — a thread that moved since the observation is no
+// longer matched. See store.UpdateBranchForWorkspace.
 //
-// A refused write is NOT an error — it means another writer owns the row.
-// Either way this returns the thread AS IT STANDS, so the caller can sync
-// its local copy and its next observation compares against the truth.
-func (a *App) UpdateThreadBranch(id, expectedWorkspacePath, branch string) (store.Thread, error) {
+// Returns exactly the rows whose branch CHANGED, so the caller syncs only
+// what moved. None is the ordinary answer: the frontend writes on every
+// attach and the observed branch usually already matches what is cached.
+//
+// The write matches BOTH the spelling the caller observed and its
+// symlink-resolved form, because thread rows carry whichever spelling was
+// current when they were created (a worktree cut through a symlinked path
+// stores that path) while the observing client knows only its own. Matching
+// one of the two left half the rows in a workspace claiming a branch the
+// working tree had left behind.
+//
+// A changed row is broadcast on `thread:updated`. The CALLER heals from the
+// return value, but a second client's identical write matches zero rows —
+// the first one already moved them — so without the broadcast its panes
+// would keep the superseded branch until something else refreshed them. A
+// write that changed nothing emits nothing.
+func (a *App) UpdateThreadBranch(workspacePath, branch string) ([]store.Thread, error) {
 	if a.store == nil {
-		return store.Thread{}, fmt.Errorf("update branch: store unavailable")
+		return nil, fmt.Errorf("update branch: store unavailable")
 	}
-	if strings.TrimSpace(expectedWorkspacePath) == "" {
-		return store.Thread{}, fmt.Errorf("update branch: expected workspace path is required")
+	if strings.TrimSpace(workspacePath) == "" {
+		return nil, fmt.Errorf("update branch: workspace path is required")
 	}
-	applied, err := a.store.UpdateBranchIfWorkspace(id, expectedWorkspacePath, branch)
+	// The value reaches argv the moment any later git operation reads the
+	// cached branch back, so it is validated at the door rather than trusted
+	// because today's only writer happens to have read it off a git status.
+	// Empty stays legal — it is how the column is cleared.
+	if branch != "" {
+		if err := gitops.ValidateBranchName(branch); err != nil {
+			return nil, fmt.Errorf("update branch: %w", err)
+		}
+	}
+	rows, err := a.store.UpdateBranchForWorkspace(
+		workspacePath, gitops.CanonicalPath(workspacePath), branch)
 	if err != nil {
-		return store.Thread{}, err
+		return nil, err
 	}
-	if !applied {
-		log.Printf(
-			"thread %s: branch %q observed in %s not persisted; the thread has moved on",
-			id, branch, expectedWorkspacePath,
-		)
+	for i := range rows {
+		row := rows[i]
+		a.emitEvent("thread:updated", triage.ThreadUpdateEvent{Action: "full", Thread: &row})
 	}
-	return a.store.GetThread(id)
+	return rows, nil
 }
 
 // UpdateThreadWorkspace persists a new workspace path. Used by the

@@ -1,6 +1,6 @@
 import type { Thread } from '../types/models';
 import type { ActiveOptionSet, DesignViewport } from '../types/design';
-import { syncThread } from './panes.svelte';
+import { mountThreadInPane, syncThread } from './panes.svelte';
 import type { ThreadPane } from './thread.svelte';
 
 /**
@@ -38,7 +38,10 @@ export interface PanelContext {
    *  pane plus the global threads registry). Use after a panel action
    *  mutates the thread server-side. */
   replaceThread(thread: Thread): void;
-  /** Switch this pane to another thread after a panel action creates one. */
+  /** Show another thread after a panel action creates one. Routes through the
+   *  pane-mount chokepoint, so it reveals an already-open thread rather than
+   *  mounting a second copy of it — and the pane's new contents are persisted
+   *  with the layout. */
   switchThread(thread: Thread): Promise<void>;
   /** Update the design preview viewport. */
   setDesignViewport(viewport: DesignViewport): void;
@@ -71,7 +74,7 @@ export function makePanelContext(pane: ThreadPane, close: () => void): PanelCont
     get activeOptionSet() { return pane.activeOptionSet; },
     close,
     replaceThread: syncThread,
-    switchThread: (thread) => pane.switchThread(thread),
+    switchThread: async (thread) => { await mountThreadInPane(thread, pane); },
     setDesignViewport: (viewport) => pane.setDesignViewport(viewport),
     setActiveOptionSet: (set) => pane.setActiveOptionSet(set),
     refreshDesignOptions: (threadId) => pane.applyDesignOptionsUpdate(threadId, ''),

@@ -23,7 +23,10 @@
 // The client owns:
 //   - The (single) WebSocket connection and its lifecycle.
 //   - In-flight RPC tracking, by request id.
-//   - Per-channel last-seen seq for replay-on-reconnect.
+//   - Per-channel last-seen seq: the replay-on-reconnect cursor, the
+//     dedup check, AND mid-connection drop detection (a forward skip in
+//     the seq of a channel we already saw on THIS connection means the
+//     server's non-blocking fanout dropped what sat between).
 //   - Subscriber fanout (Events.On registers here; the transport pumps
 //     incoming event frames into the registered handlers).
 //
@@ -243,6 +246,28 @@ interface WSClientOptions {
   maxFrameBytes?: number;
 }
 
+// ChannelCursor is one channel's seq bookkeeping: the last seq we
+// accepted plus the connection generation that observation belongs to.
+// Both are read on the event hot path and must move together — two
+// parallel maps would be one forgotten write away from a cursor whose
+// epoch lies — so they live in one mutable record per channel.
+//
+// `epoch` is what scopes drop detection to a SINGLE connection. Across a
+// reconnect the server's replay answer is the authority on what was
+// missed: it either delivers the missed events, sends an explicit
+// `gap:true` marker, or deliberately sends nothing (channels excluded
+// from ring retention, and whole-state channels whose newest frame
+// supersedes everything before it — see internal/transport/
+// event_visibility.go). In those last cases the next live frame's seq
+// legitimately jumps far past our cursor, and treating that as a drop
+// would fire a spurious resync on every reconnect. Within one
+// connection there is no such ambiguity: every event on a visible
+// channel is delivered or dropped, so a skip IS a drop.
+interface ChannelCursor {
+  seq: number;
+  epoch: number;
+}
+
 // ConnectAttempt is the per-attempt settlement state shared by one
 // socket's open and close handlers. `settled` flips once the attempt's
 // promise has been resolved/rejected; settling an already-settled
@@ -360,16 +385,22 @@ export class WSClient {
     nextAttemptAt: null,
   };
 
-  // Per-channel last-seen seq, replayed to the server on reconnect.
-  // Map iteration order is insertion-ordered, so we evict the oldest
-  // entry once we hit MAX_REPLAY_CHANNELS — the cap mirrors the server's
-  // own clamp and stops a hostile remote from blowing the wire frame.
-  private readonly lastSeqByChannel: Map<string, number> = new Map();
+  // Per-channel cursor, replayed to the server on reconnect. Map
+  // iteration order is insertion-ordered, so we evict the oldest entry
+  // once we hit MAX_REPLAY_CHANNELS — the cap mirrors the server's own
+  // clamp and stops a hostile remote from blowing the wire frame.
+  private readonly lastSeqByChannel: Map<string, ChannelCursor> = new Map();
   // The channel currently at lastSeqByChannel's insertion-order tail —
   // lets recordChannelSeq skip the LRU delete/re-insert for the common
   // consecutive-events-on-one-channel case. Only recordChannelSeq
   // mutates the map, so the hint cannot go stale.
   private lastSeqTailChannel: string | null = null;
+  // Bumped by every socket open. Stamped onto a channel's cursor when we
+  // accept an event, so handleEventEntry can tell "this channel's last
+  // event arrived on the connection I am on now" (a forward skip is a
+  // drop) from "…on a previous one" (the replay answer already settled
+  // what was missed). See ChannelCursor.
+  private connectionEpoch = 0;
   private notificationReplayPending = false;
   private notificationReplayBuffer: ServerEventFrame[] = [];
   private notificationCheckpointScope: string | null = null;
@@ -792,6 +823,11 @@ export class WSClient {
       return;
     }
     attempt.settled = true;
+    // New connection generation: every cursor carried across the
+    // reconnect now reads as "observed on a previous connection", so the
+    // seq jump the replay answer may legitimately produce on this
+    // channel isn't mistaken for a mid-connection drop (see ChannelCursor).
+    this.connectionEpoch += 1;
     // NOT a backoff reset: reaching OPEN only proves the handshake
     // succeeded, and an accept-then-close server would pin the ladder
     // at its floor. handleSocketClose resets it once the connection
@@ -807,8 +843,8 @@ export class WSClient {
     this.notificationCheckpointScope = bootstrap.token;
     this.notificationReplayPending = true;
     this.notificationReplayBuffer = [];
-    for (const [channel, seq] of this.lastSeqByChannel) {
-      replay[channel] = seq;
+    for (const [channel, cursor] of this.lastSeqByChannel) {
+      replay[channel] = cursor.seq;
     }
     this.sendFrame({
       type: 'replay',
@@ -1220,8 +1256,33 @@ export class WSClient {
       this.dispatchToSubscribers(evt.channel, evt.data);
       return;
     }
-    const lastSeq = this.lastSeqByChannel.get(evt.channel);
-    if (lastSeq !== undefined && evt.seq <= lastSeq) return;
+    const cursor = this.lastSeqByChannel.get(evt.channel);
+    if (cursor !== undefined && evt.seq <= cursor.seq) return;
+    if (
+      cursor !== undefined
+      && cursor.epoch === this.connectionEpoch
+      && evt.seq > cursor.seq + 1
+    ) {
+      // Forward skip inside one connection: the events between the two
+      // seqs existed and never reached us, because the server's fanout
+      // drops non-blockingly when a subscriber's buffer fills
+      // (internal/transport/eventbus.go Subscriber.deliver). Nothing
+      // else will announce it — the explicit `gap:true` marker only
+      // covers the reconnect-replay path — so for an edge-triggered
+      // channel (one frame per state change) this is the ONLY signal
+      // that every consumer of that entity is now stale.
+      //
+      // The carried event is real data and still dispatches below: this
+      // reports what came before it, not what it is.
+      console.warn(
+        `wsClient: dropped ${evt.seq - cursor.seq - 1} event(s) on `
+          + `${clampString(evt.channel)} (seq ${cursor.seq} -> ${evt.seq})`,
+      );
+      this.dispatchToSubscribers(TRANSPORT_GAP_CHANNEL, {
+        channel: evt.channel,
+        seq: evt.seq,
+      });
+    }
     this.recordChannelSeq(evt.channel, evt.seq);
     this.dispatchToSubscribers(evt.channel, evt.data);
   }
@@ -1231,7 +1292,10 @@ export class WSClient {
   // V8/modern engines is insertion order, so the first entry yielded by
   // .keys() is the oldest — that's what we evict.
   private recordChannelSeq(channel: string, seq: number): void {
-    if (this.lastSeqByChannel.has(channel)) {
+    const cursor = this.lastSeqByChannel.get(channel);
+    if (cursor !== undefined) {
+      cursor.seq = seq;
+      cursor.epoch = this.connectionEpoch;
       // Re-insert so the entry moves to the tail and stays "fresh"
       // rather than aging out on the next overflow — but skip the
       // delete/re-insert when the entry already sits at the tail,
@@ -1240,21 +1304,17 @@ export class WSClient {
       // position, so the LRU order is preserved exactly.
       if (channel !== this.lastSeqTailChannel) {
         this.lastSeqByChannel.delete(channel);
+        this.lastSeqByChannel.set(channel, cursor);
       }
-      this.lastSeqByChannel.set(channel, seq);
-      this.lastSeqTailChannel = channel;
-      if (channel === NOTIFICATION_ACTIVATED_CHANNEL && this.notificationCheckpointScope !== null) {
-        storeNotificationActivationSeq(this.notificationCheckpointScope, seq);
+    } else {
+      if (this.lastSeqByChannel.size >= MAX_TRACKED_REPLAY_CHANNELS) {
+        const oldest = this.lastSeqByChannel.keys().next().value;
+        if (typeof oldest === 'string') {
+          this.lastSeqByChannel.delete(oldest);
+        }
       }
-      return;
+      this.lastSeqByChannel.set(channel, { seq, epoch: this.connectionEpoch });
     }
-    if (this.lastSeqByChannel.size >= MAX_TRACKED_REPLAY_CHANNELS) {
-      const oldest = this.lastSeqByChannel.keys().next().value;
-      if (typeof oldest === 'string') {
-        this.lastSeqByChannel.delete(oldest);
-      }
-    }
-    this.lastSeqByChannel.set(channel, seq);
     this.lastSeqTailChannel = channel;
     if (channel === NOTIFICATION_ACTIVATED_CHANNEL && this.notificationCheckpointScope !== null) {
       storeNotificationActivationSeq(this.notificationCheckpointScope, seq);

@@ -16,6 +16,7 @@ import {
   makeItem as makeBaseItem,
   makeThread as makeBaseThread,
 } from '../../../../test/helpers/chat';
+import { setChatBarFavorite } from '../../../stores/chatBarFavorites.svelte';
 
 function makeThread(overrides: Partial<Thread> = {}): Thread {
   return makeBaseThread({
@@ -179,6 +180,51 @@ describe('<ModelProviderMenu>', () => {
     expect(favorite.querySelector('svg.lucide-claude')).not.toBeNull();
     expect(favorite.textContent ?? '').not.toMatch(/\bClaude\b/);
     await findByRole('menuitem', { name: /Architects/i });
+  });
+
+  it('loads the favorites list once and updates EVERY mounted menu when it changes', async () => {
+    const pane = await buildPane(makeThread({ provider: 'claude', model: 'claude-opus-4-7' }));
+    setBindingMock('GetModelsForProvider', async () => []);
+    const opus = {
+      kind: 'model' as const,
+      provider: 'claude',
+      value: 'claude-opus-4-7',
+      label: 'Claude Opus 4.7',
+      createdAt: 1,
+    };
+    setBindingMock('SetChatBarFavorite', async () => [opus]);
+
+    const first = render(ModelProviderMenu, { props: { pane } });
+    render(ModelProviderMenu, { props: { pane } });
+    const triggers = first.getAllByTestId('composer-model-menu-trigger');
+    expect(triggers).toHaveLength(2);
+    await fireEvent.click(triggers[0]);
+    await fireEvent.click(triggers[1]);
+
+    // One app-global list, one fetch — not one per mounted menu.
+    await waitFor(() => {
+      expect(getBindingMock('ListChatBarFavorites')!.mock.calls.length).toBe(1);
+    });
+
+    await setChatBarFavorite(opus, true);
+
+    await waitFor(() => {
+      expect(first.getAllByRole('menuitem', { name: /Opus 4\.7/i })).toHaveLength(2);
+    });
+  });
+
+  it('shows a failed favorites load instead of an empty list', async () => {
+    const pane = await buildPane(makeThread({ provider: 'claude', model: 'claude-opus-4-7' }));
+    setBindingMock('GetModelsForProvider', async () => []);
+    setBindingMock('ListChatBarFavorites', async () => {
+      throw new Error('favorites unavailable');
+    });
+
+    const { getByTestId, findByTestId } = render(ModelProviderMenu, { props: { pane } });
+    await fireEvent.click(getByTestId('composer-model-menu-trigger'));
+
+    const errorRow = await findByTestId('chat-bar-favorites-error');
+    expect(errorRow.textContent ?? '').toMatch(/favorites unavailable/);
   });
 
   it('filters favorites whose model is hidden in settings (star survives for re-show)', async () => {

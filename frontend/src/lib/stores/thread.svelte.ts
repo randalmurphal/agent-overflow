@@ -36,7 +36,7 @@ import {
 import { getComposerDraftForPane } from './composerDraftRegistry.svelte';
 
 import { addToast } from './toast.svelte';
-import { createGitStatusSlot, type GitStatusSlot } from './gitStatus.svelte';
+import { createGitStatusView, type GitStatusView } from './gitStatusStore.svelte';
 import {
   closeCompanion,
   closeCompanionsForSource,
@@ -315,11 +315,18 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
   // event fired on a cold first open (the lazy import hadn't resolved).
   let pendingTerminalFocus = $state(false);
 
-  // Live git-status for this pane's workspace. Owns the single gitwatch
-  // subscription (driven by ChatHeaderActions via attach); GitActionsControl
-  // and the header diff/PR badges read it. Reset on thread switch so a
-  // stale count never flashes for the incoming thread.
-  const gitStatus: GitStatusSlot = createGitStatusSlot();
+  // Read view onto the shared, workspace-keyed git-status store —
+  // GitActionsControl, the header diff/PR badges, the Ship Changes wizard,
+  // and the review pane's staleness dot all read it. It resolves its key
+  // from the pane's current thread on every read, so a thread switch or a
+  // worktree move re-points it with no reset of its own: the incoming
+  // thread's workspace answers immediately, and the outgoing one's entry is
+  // released by whoever attached it. The subscription itself is attached by
+  // ChatHeaderActions (see gitStatusStore.svelte.ts).
+  const gitStatus: GitStatusView = createGitStatusView(
+    () => thread,
+    () => (draftPlaceholder ? null : (thread?.id ?? null)),
+  );
 
   const channelState = createThreadChannelState();
   const designState = createThreadDesignState();
@@ -817,7 +824,6 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     updateEffectiveModel('');
 
     liveTodoState.resetForThread(newThread.id);
-    gitStatus.reset();
   }
 
   function placeholderHasTerminalState(placeholderId: string): boolean {
@@ -1700,7 +1706,9 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       // `pagingGeneration` and `scrollToItemRequest.nonce` stay
       // monotonic for the pane's lifetime so no consumer observes a
       // regressed counter.
-      gitStatus.reset();
+      // Git status needs no reset: it is keyed by workspace in a shared
+      // store, so clearing the pane's thread already re-points the view at
+      // "no workspace".
       // Invalidate any in-flight switchThread so its late resolutions can't
       // repopulate the pane we just cleared.
       switchGeneration++;

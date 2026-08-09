@@ -127,7 +127,7 @@ func TestCreateThreadWithNewFields(t *testing.T) {
 	}
 }
 
-func TestListBlockedThreadWorkspaceRefsForProject(t *testing.T) {
+func TestListBlockedThreadWorkspaceRefs(t *testing.T) {
 	s := newTestStore(t)
 	project := newTestProject(t, s, "project-blocked-refs", "/repo")
 	otherProject := newTestProject(t, s, "project-blocked-refs-other", "/other")
@@ -225,12 +225,9 @@ func TestListBlockedThreadWorkspaceRefsForProject(t *testing.T) {
 		t.Fatalf("AppendItem(codex subagent): %v", err)
 	}
 
-	refs, err := s.ListBlockedThreadWorkspaceRefsForProject(project.ID)
+	refs, err := s.ListBlockedThreadWorkspaceRefs()
 	if err != nil {
-		t.Fatalf("ListBlockedThreadWorkspaceRefsForProject(): %v", err)
-	}
-	if len(refs) != 3 {
-		t.Fatalf("blocked refs = %+v, want active, background, and Codex subagent", refs)
+		t.Fatalf("ListBlockedThreadWorkspaceRefs(): %v", err)
 	}
 	got := map[string]bool{}
 	for _, ref := range refs {
@@ -239,11 +236,20 @@ func TestListBlockedThreadWorkspaceRefsForProject(t *testing.T) {
 	if !got["active"] || !got["background"] || !got["codex-subagent"] {
 		t.Fatalf("blocked ref ids = %v, want active, background, and Codex subagent", got)
 	}
-	if got["idle"] || got["completed-background"] || got["other-active"] {
-		t.Fatalf("blocked ref ids leaked idle or another project: %v", got)
+	// Unscoped by project on purpose: a directory does not stop being in use
+	// because a second project row also names it, and the removal gate this
+	// feeds matches paths across every project.
+	if !got["other-active"] {
+		t.Fatalf("blocked ref ids dropped a busy thread in another project: %v", got)
+	}
+	if got["idle"] || got["completed-background"] {
+		t.Fatalf("blocked ref ids leaked an idle thread: %v", got)
+	}
+	if len(refs) != 4 {
+		t.Fatalf("blocked refs = %+v, want active, background, codex-subagent, other-active", refs)
 	}
 
-	planRows, err := s.db.Query("EXPLAIN QUERY PLAN "+blockedThreadWorkspaceRefsForProjectSQL, project.ID)
+	planRows, err := s.db.Query("EXPLAIN QUERY PLAN " + blockedThreadWorkspaceRefsSQL)
 	if err != nil {
 		t.Fatalf("EXPLAIN QUERY PLAN: %v", err)
 	}
@@ -880,7 +886,7 @@ func TestUpdateProviderInvalid(t *testing.T) {
 	}
 }
 
-func TestUpdateBranchIfWorkspacePersists(t *testing.T) {
+func TestUpdateBranchForWorkspacePersists(t *testing.T) {
 	s := newTestStore(t)
 	proj := newTestProject(t, s, "proj-branch", "/tmp/branch")
 
@@ -890,12 +896,12 @@ func TestUpdateBranchIfWorkspacePersists(t *testing.T) {
 		t.Fatalf("CreateThread(): %v", err)
 	}
 
-	applied, err := s.UpdateBranchIfWorkspace(thr.ID, thr.WorkspacePath, "feat/abc")
+	rows, err := s.UpdateBranchForWorkspace(thr.WorkspacePath, thr.WorkspacePath, "feat/abc")
 	if err != nil {
-		t.Fatalf("UpdateBranchIfWorkspace(): %v", err)
+		t.Fatalf("UpdateBranchForWorkspace(): %v", err)
 	}
-	if !applied {
-		t.Fatal("UpdateBranchIfWorkspace() applied = false, want true")
+	if len(rows) != 1 || rows[0].ID != thr.ID || rows[0].Branch != "feat/abc" {
+		t.Fatalf("returned rows = %+v, want the one thread on feat/abc", rows)
 	}
 	got, _ := s.GetThread(thr.ID)
 	if got.Branch != "feat/abc" {
@@ -903,12 +909,12 @@ func TestUpdateBranchIfWorkspacePersists(t *testing.T) {
 	}
 
 	// Empty string clears the column.
-	applied, err = s.UpdateBranchIfWorkspace(thr.ID, thr.WorkspacePath, "")
+	rows, err = s.UpdateBranchForWorkspace(thr.WorkspacePath, thr.WorkspacePath, "")
 	if err != nil {
-		t.Fatalf("UpdateBranchIfWorkspace(empty): %v", err)
+		t.Fatalf("UpdateBranchForWorkspace(empty): %v", err)
 	}
-	if !applied {
-		t.Fatal("UpdateBranchIfWorkspace(empty) applied = false, want true")
+	if len(rows) != 1 || rows[0].Branch != "" {
+		t.Fatalf("returned rows = %+v, want the one thread with a cleared branch", rows)
 	}
 	got, _ = s.GetThread(thr.ID)
 	if got.Branch != "" {
@@ -916,11 +922,62 @@ func TestUpdateBranchIfWorkspacePersists(t *testing.T) {
 	}
 }
 
-// TestUpdateBranchIfWorkspaceRefusesAfterWorkspaceMoves reproduces the race
-// the guard exists for: a branch observed against the old workspace is
-// written back after a worktree switch has already re-pointed the thread.
-// Without the CAS the stale value lands and stays.
-func TestUpdateBranchIfWorkspaceRefusesAfterWorkspaceMoves(t *testing.T) {
+// TestUpdateBranchForWorkspaceUpdatesEveryThreadThere is the whole reason
+// the write is keyed on the workspace: two threads sharing a worktree see
+// the same checkout, so a branch observed once must land on both. A
+// per-thread write left the second one advertising a branch the working
+// tree had left behind.
+func TestUpdateBranchForWorkspaceUpdatesEveryThreadThere(t *testing.T) {
+	s := newTestStore(t)
+	proj := newTestProject(t, s, "proj-branch-shared", "/tmp/branch-shared")
+
+	shared := "/tmp/branch-shared"
+	for _, id := range []string{"shared-a", "shared-b"} {
+		thr := makeThread(id, "claude")
+		thr.ProjectID = proj.ID
+		thr.WorkspacePath = shared
+		thr.Branch = "main"
+		if err := s.CreateThread(thr); err != nil {
+			t.Fatalf("CreateThread(%s): %v", id, err)
+		}
+	}
+	// A third thread in a different workspace must NOT be touched.
+	other := makeThread("other-workspace", "claude")
+	other.ProjectID = proj.ID
+	other.WorkspacePath = "/tmp/branch-shared-worktree"
+	other.Branch = "main"
+	if err := s.CreateThread(other); err != nil {
+		t.Fatalf("CreateThread(other): %v", err)
+	}
+
+	rows, err := s.UpdateBranchForWorkspace(shared, shared, "feature/live")
+	if err != nil {
+		t.Fatalf("UpdateBranchForWorkspace(): %v", err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("returned %d rows, want 2 (both threads in the workspace)", len(rows))
+	}
+	for _, id := range []string{"shared-a", "shared-b"} {
+		got, err := s.GetThread(id)
+		if err != nil {
+			t.Fatalf("GetThread(%s): %v", id, err)
+		}
+		if got.Branch != "feature/live" {
+			t.Fatalf("thread %s Branch = %q, want feature/live", id, got.Branch)
+		}
+	}
+	got, _ := s.GetThread(other.ID)
+	if got.Branch != "main" {
+		t.Fatalf("thread in another workspace Branch = %q, want main (untouched)", got.Branch)
+	}
+}
+
+// TestUpdateBranchForWorkspaceSkipsThreadsThatMoved reproduces the race the
+// workspace keying exists for: a branch observed against the old workspace
+// is written back after a worktree switch has already re-pointed the
+// thread. Keying on the workspace means the moved row is simply not
+// matched, so the stale value cannot follow it.
+func TestUpdateBranchForWorkspaceSkipsThreadsThatMoved(t *testing.T) {
 	s := newTestStore(t)
 	proj := newTestProject(t, s, "proj-branch-cas", "/tmp/branch-cas")
 
@@ -943,26 +1000,26 @@ func TestUpdateBranchIfWorkspaceRefusesAfterWorkspaceMoves(t *testing.T) {
 	}
 
 	// The queued observation from the OLD workspace arrives afterwards.
-	applied, err := s.UpdateBranchIfWorkspace(thr.ID, observedWorkspace, "stale/branch")
+	rows, err := s.UpdateBranchForWorkspace(observedWorkspace, observedWorkspace, "stale/branch")
 	if err != nil {
-		t.Fatalf("UpdateBranchIfWorkspace(): %v", err)
+		t.Fatalf("UpdateBranchForWorkspace(): %v", err)
 	}
-	if applied {
-		t.Fatal("stale observation applied; the workspace guard did not hold")
+	if len(rows) != 0 {
+		t.Fatalf("returned %+v, want no rows: nothing occupies the old workspace", rows)
 	}
 	got, _ := s.GetThread(thr.ID)
 	if got.Branch != "feature/new" {
 		t.Fatalf("Branch = %q, want feature/new (the switch's value)", got.Branch)
 	}
 
-	// The same-workspace write still applies, so the guard is not simply
+	// The same-workspace write still applies, so the keying is not simply
 	// rejecting everything and the thread converges once it re-observes.
-	applied, err = s.UpdateBranchIfWorkspace(thr.ID, moved.WorkspacePath, "feature/renamed")
+	rows, err = s.UpdateBranchForWorkspace(moved.WorkspacePath, moved.WorkspacePath, "feature/renamed")
 	if err != nil {
-		t.Fatalf("UpdateBranchIfWorkspace(current workspace): %v", err)
+		t.Fatalf("UpdateBranchForWorkspace(current workspace): %v", err)
 	}
-	if !applied {
-		t.Fatal("write against the current workspace should apply")
+	if len(rows) != 1 || rows[0].Branch != "feature/renamed" {
+		t.Fatalf("returned rows = %+v, want the moved thread on feature/renamed", rows)
 	}
 	got, _ = s.GetThread(thr.ID)
 	if got.Branch != "feature/renamed" {
@@ -970,18 +1027,149 @@ func TestUpdateBranchIfWorkspaceRefusesAfterWorkspaceMoves(t *testing.T) {
 	}
 }
 
-// TestUpdateBranchIfWorkspaceMissingThreadIsNotAnError covers the other
-// no-rows case: a deleted thread must report "not applied" rather than a
-// SQL error the caller has to string-match.
-func TestUpdateBranchIfWorkspaceMissingThreadIsNotAnError(t *testing.T) {
+// TestUpdateBranchForWorkspaceMatchesEitherSpelling: thread rows carry
+// whichever spelling of a directory was current when they were created (a
+// worktree cut through a symlinked path keeps that path), while the
+// observing client knows only its own. Matching one spelling left the rows
+// stored under the other claiming a branch the working tree had left behind.
+func TestUpdateBranchForWorkspaceMatchesEitherSpelling(t *testing.T) {
+	s := newTestStore(t)
+	proj := newTestProject(t, s, "proj-branch-alias", "/tmp/branch-alias")
+
+	const linked = "/tmp/link/branch-alias"
+	const canonical = "/tmp/real/branch-alias"
+	for id, path := range map[string]string{"alias-linked": linked, "alias-canonical": canonical} {
+		thr := makeThread(id, "claude")
+		thr.ProjectID = proj.ID
+		thr.WorkspacePath = path
+		thr.Branch = "main"
+		if err := s.CreateThread(thr); err != nil {
+			t.Fatalf("CreateThread(%s): %v", id, err)
+		}
+	}
+
+	rows, err := s.UpdateBranchForWorkspace(linked, canonical, "feature/live")
+	if err != nil {
+		t.Fatalf("UpdateBranchForWorkspace(): %v", err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("returned %d rows, want 2 (both spellings of one directory)", len(rows))
+	}
+	for _, id := range []string{"alias-linked", "alias-canonical"} {
+		got, err := s.GetThread(id)
+		if err != nil {
+			t.Fatalf("GetThread(%s): %v", id, err)
+		}
+		if got.Branch != "feature/live" {
+			t.Fatalf("thread %s Branch = %q, want feature/live", id, got.Branch)
+		}
+	}
+}
+
+// TestUpdateBranchForWorkspaceEmptyWorkspaceIsNotAnError covers the
+// no-rows case: an unoccupied workspace must report an empty row set
+// rather than a SQL error the caller has to string-match.
+func TestUpdateBranchForWorkspaceEmptyWorkspaceIsNotAnError(t *testing.T) {
 	s := newTestStore(t)
 
-	applied, err := s.UpdateBranchIfWorkspace("no-such-thread", "/tmp/x", "main")
+	rows, err := s.UpdateBranchForWorkspace("/tmp/nobody-here", "/tmp/nobody-here", "main")
 	if err != nil {
-		t.Fatalf("UpdateBranchIfWorkspace(missing): %v", err)
+		t.Fatalf("UpdateBranchForWorkspace(empty workspace): %v", err)
 	}
-	if applied {
-		t.Fatal("applied = true for a thread that does not exist")
+	if len(rows) != 0 {
+		t.Fatalf("returned %+v, want no rows", rows)
+	}
+}
+
+// TestUpdateBranchForWorkspaceReturnsOnlyChangedRows pins the perf contract
+// the caller depends on: it writes on EVERY attach, so the overwhelmingly
+// common case — the observed branch already equals the cached one — must
+// read nothing back and hand back nothing to sync.
+func TestUpdateBranchForWorkspaceReturnsOnlyChangedRows(t *testing.T) {
+	s := newTestStore(t)
+	proj := newTestProject(t, s, "proj-branch-nochange", "/tmp/branch-nochange")
+
+	shared := "/tmp/branch-nochange"
+	for _, id := range []string{"nc-a", "nc-b"} {
+		thr := makeThread(id, "claude")
+		thr.ProjectID = proj.ID
+		thr.WorkspacePath = shared
+		thr.Branch = "main"
+		if err := s.CreateThread(thr); err != nil {
+			t.Fatalf("CreateThread(%s): %v", id, err)
+		}
+	}
+
+	// Nothing moved: both rows already say main.
+	rows, err := s.UpdateBranchForWorkspace(shared, shared, "main")
+	if err != nil {
+		t.Fatalf("UpdateBranchForWorkspace(no change): %v", err)
+	}
+	if len(rows) != 0 {
+		t.Fatalf("returned %+v, want no rows: no thread's branch changed", rows)
+	}
+
+	// One row moves out of band; only that one comes back.
+	moved, err := s.GetThread("nc-a")
+	if err != nil {
+		t.Fatalf("GetThread(nc-a): %v", err)
+	}
+	moved.Branch = "feature/x"
+	if err := s.UpdateThread(moved); err != nil {
+		t.Fatalf("UpdateThread(nc-a): %v", err)
+	}
+	rows, err = s.UpdateBranchForWorkspace(shared, shared, "main")
+	if err != nil {
+		t.Fatalf("UpdateBranchForWorkspace(partial): %v", err)
+	}
+	if len(rows) != 1 || rows[0].ID != "nc-a" || rows[0].Branch != "main" {
+		t.Fatalf("returned rows = %+v, want only nc-a back on main", rows)
+	}
+	// …and the row that never moved is untouched, not merely unreported.
+	got, _ := s.GetThread("nc-b")
+	if got.Branch != "main" {
+		t.Fatalf("nc-b Branch = %q, want main", got.Branch)
+	}
+}
+
+// TestUpdateBranchForWorkspaceClearIsNullSafe covers the empty-string
+// spelling: "" is stored as NULL, so the no-change predicate has to be
+// null-safe or clearing an already-cleared column would report a write.
+func TestUpdateBranchForWorkspaceClearIsNullSafe(t *testing.T) {
+	s := newTestStore(t)
+	proj := newTestProject(t, s, "proj-branch-null", "/tmp/branch-null")
+
+	thr := makeThread("thread-branch-null", "claude")
+	thr.ProjectID = proj.ID
+	thr.WorkspacePath = "/tmp/branch-null"
+	thr.Branch = ""
+	if err := s.CreateThread(thr); err != nil {
+		t.Fatalf("CreateThread(): %v", err)
+	}
+
+	rows, err := s.UpdateBranchForWorkspace(thr.WorkspacePath, thr.WorkspacePath, "")
+	if err != nil {
+		t.Fatalf("UpdateBranchForWorkspace(clear an empty branch): %v", err)
+	}
+	if len(rows) != 0 {
+		t.Fatalf("returned %+v, want no rows: the branch was already unset", rows)
+	}
+
+	// A real clear still reports the row it cleared.
+	set, err := s.GetThread(thr.ID)
+	if err != nil {
+		t.Fatalf("GetThread(): %v", err)
+	}
+	set.Branch = "feature/y"
+	if err := s.UpdateThread(set); err != nil {
+		t.Fatalf("UpdateThread(): %v", err)
+	}
+	rows, err = s.UpdateBranchForWorkspace(thr.WorkspacePath, thr.WorkspacePath, "")
+	if err != nil {
+		t.Fatalf("UpdateBranchForWorkspace(clear): %v", err)
+	}
+	if len(rows) != 1 || rows[0].Branch != "" {
+		t.Fatalf("returned rows = %+v, want the one cleared row", rows)
 	}
 }
 

@@ -1,39 +1,22 @@
 import { SvelteMap, SvelteSet } from 'svelte/reactivity';
-import { documentHidden } from '../utils/pageVisibility';
 import {
-  GetBranchBaseDiff,
-  GetCommitDiff,
   GetDiffContextLines,
-  GetGitStatus,
-  GetMergeConflictFile,
   GetPRCIJobLog,
-  GetPRCIJobs,
-  GetPRCommitDiff,
   GetPRDetail,
-  GetPRDiff,
-  GetPRMergeConflicts,
-  GetPayloadData,
   GetThread,
-  GetTurnEditsDiff,
   SavePRCIJobLog,
-  GetWorkspaceCurrentDiff,
-  GitListBranches,
-  ListBranchCommits,
-  ListPRCommits,
-  ListThreadEditDiffs,
   ListPRReviewThreads,
   MarkDiffReviewCommentsSent,
   ReplyToPRThread,
   SendMessage,
   SendDiffReviewComments,
   SubmitPRReview,
-  SetPRUpdatesActive,
-  SubscribePRUpdates,
-  UnsubscribePRUpdates,
   VerifyEditDiffs,
 } from './bindings';
-import { appStorageGet, appStorageSet } from './appStorage';
 import { openCompanion } from './companionPanes.svelte';
+import { peekGitStatus } from './gitStatusStore.svelte';
+import { workspaceKeyForThread } from '../utils/workspaceKey';
+import { getPane } from './panes.svelte';
 import { getComposerDraftForPane } from './composerDraftRegistry.svelte';
 import {
   createDiffReviewComment,
@@ -43,9 +26,39 @@ import {
   setActiveDiffReviewSource,
   updateDiffReviewComment,
 } from './diffReviewComments.svelte';
+import {
+  applyPRSnapshot,
+  applyPRThreads,
+  attachPR,
+  peekPRError,
+  peekPRSnapshot,
+  type PRAttachment,
+  type PRSnapshot,
+} from './prReviewStore.svelte';
+import { loadPRCIJobs, peekPRCI } from './prReviewCI.svelte';
+import {
+  ensurePRConflictFile,
+  openPRConflicts,
+  peekPRConflicts,
+  permitPRConflictReconcile,
+  type PRConflicts,
+} from './prReviewConflicts.svelte';
+import {
+  defaultBaseBranch,
+  defaultCollapsedPaths,
+  draftAnchorExists,
+  editSelectionFromKey,
+  editSelectionKey,
+  loadPatch,
+  reviewLineCommentForDraft,
+  supportsIgnoreWhitespace,
+  type EditDiffEntryView,
+  type EditSelection,
+} from './reviewPaneLoad';
+import { persistScope, readPersistedScope } from './reviewPaneScope';
 import { getSettings } from './settings.svelte';
 import { getActiveTurn } from './threadStatuses.svelte';
-import type { BranchCommit, GitBranch } from '../types/git';
+import type { BranchCommit } from '../types/git';
 import type {
   CIJob,
   CIJobLogResult,
@@ -53,16 +66,23 @@ import type {
   DiffReviewComment,
   DiffReviewScope,
   PRDetail,
-  ReviewLineComment,
   ReviewThread,
   SubmitPRReviewResult,
   Thread,
 } from '../types/models';
 import { diffSourceKey } from '../utils/diffSourceKey';
-import { seedPayloadPatchSpans, type PatchScopeContext } from '../utils/diffSpanCache.svelte';
+import { type PatchScopeContext } from '../utils/diffSpanCache.svelte';
 import { conflictPatchFile } from '../utils/conflictFile';
 import { hunkExcerptForComment } from '../utils/prHunkExcerpt';
-import { prRefFromThread, prRefFromUrl, prScopeLabel, type PRRef } from '../utils/prReference';
+import {
+  prKey,
+  prRefFromThread,
+  prRefFromUrl,
+  prReferenceWire,
+  prScopeLabel,
+  prSourceKey,
+  type PRRef,
+} from '../utils/prReference';
 import {
   applyContextExpansion,
   expansionFetchRange,
@@ -71,7 +91,6 @@ import {
   type ExpandDirection,
 } from '../utils/diffContextExpansion';
 import {
-  filePatchDisplayRows,
   mergePatchFilesByPathCached,
   parsePatchFilesCached,
   type DiffGap,
@@ -82,51 +101,6 @@ import { sortFilesTreeOrder } from '../utils/reviewTree';
 import type { CommentListItem } from '../utils/reviewComments';
 
 export type ReviewScope = DiffReviewScope;
-
-/** Whether the diff for this selection comes from `internal/gitdiff`, the
- * only source that can apply `-w`:
- *
- * - workspace / branch — `GetWorkspaceCurrentDiff` / `GetBranchBaseDiff`.
- * - any selected commit, including in pr scope — `GetCommitDiff` /
- *   `GetPRCommitDiff`.
- * - pr whole-diff — NO. It is a local `git diff --merge-base` when the
- *   thread has a clone and the forge's own diff API when it doesn't, and
- *   the API cannot ignore whitespace at all. A toggle that quietly worked
- *   only for cloned threads is worse than no toggle.
- * - edits — NO. Those are persisted tool-call patches replayed verbatim,
- *   never a git recomputation.
- *
- * Shared by the toolbar's enablement and by loadPatch, so the control can
- * never offer a mode the load path won't deliver. */
-export function supportsIgnoreWhitespace(scope: ReviewScope, selectedCommitSHA: string | null): boolean {
-  if (selectedCommitSHA) return scope === 'branch' || scope === 'pr';
-  return scope === 'workspace' || scope === 'branch';
-}
-
-/** One edit tool call in the Edits selector — metadata only, the diff
- * loads on selection. Mirrors the ListThreadEditDiffs wire entry. */
-export interface EditDiffEntryView {
-  itemId: string;
-  payloadId: string;
-  turnIndex: number;
-  title: string;
-  paths: string[];
-  insertions: number;
-  deletions: number;
-  createdAt: number;
-}
-
-/** Edits-scope selection: one tool call's diff, or a whole turn's
- * edits concatenated in order. */
-export type EditSelection =
-  | { kind: 'item'; itemId: string; payloadId: string }
-  | { kind: 'turn'; turnIndex: number };
-
-/** Selector `<option>` value encoding for an EditSelection. */
-export function editSelectionKey(selection: EditSelection | null): string | null {
-  if (!selection) return null;
-  return selection.kind === 'item' ? `item:${selection.itemId}` : `turn:${selection.turnIndex}`;
-}
 
 export interface ReviewPaneState {
   /** Thread this state was created for — the registry's staleness check. */
@@ -162,16 +136,27 @@ export interface ReviewPaneState {
   readonly loading: boolean;
   readonly error: string | null;
   readonly sendingComments: boolean;
+  /** Live PR detail, shared by every pane on this PR. */
   readonly prDetail: PRDetail | null;
   readonly prThreads: readonly ReviewThread[];
+  /** The head the LOADED diff was computed at — not the PR's live head.
+   * Comment anchors, span context, and sent-marks all describe the diff
+   * on screen, so they read this. */
   readonly prHeadSHA: string;
+  /** The live PR data went stale on us: the poll pump or a refresh failed.
+   * Separate from `error`, which owns the diff — the diff on screen is
+   * still valid, only what surrounds it stopped updating. */
+  readonly prUpdateError: string | null;
   /** Scope fields for parse-priming span requests — the same triple
    * the diff-context expansion sends (`app_diff_context.go` scopes). */
   readonly spanContext: PatchScopeContext;
+  /** The PR moved since this pane loaded its diff: derived from the live
+   * head against the head this pane loaded at, so a push seen by one pane
+   * can never mark another pane's freshly-loaded diff stale. */
   readonly prStale: boolean;
   readonly refreshingPRData: boolean;
   readonly conflictView: boolean;
-  readonly conflicts: PRMergeConflictsView | null;
+  readonly conflicts: PRConflicts | null;
   readonly conflictsLoading: boolean;
   readonly conflictsError: string | null;
   readonly conflictContentByPath: SvelteMap<string, string>;
@@ -265,78 +250,17 @@ export interface ReviewPaneState {
   dispose(): void;
 }
 
-interface PersistedReviewScope {
-  scope: ReviewScope;
-  baseBranch?: string | null;
-}
-
 export interface CILogView {
   stageName: string;
   job: CIJob;
 }
 
-interface PRMergeConflictsView {
-  treeOID: string;
-  baseLabel: string;
-  headLabel: string;
-  paths: string[];
-  /** Per-path merge-tree messages — the only signal for non-textual
-   * conflicts (modify/delete, rename/rename, …); rendered as marker
-   * rows at the top of that file's body. */
-  notes: Partial<Record<string, string[]>>;
-  /** Fallback strip: messages that name no conflicted path (rare). */
-  messages: string[];
-}
-
 const statesBySourcePane = new Map<string, ReviewPaneState>();
-const prStatesBySubscription = new Map<string, { applyPRUpdate(event: PRUpdatedEvent): void }>();
 
-export interface PRUpdatedEvent {
-  subscriptionId: string;
-  threadId: string;
-  pr: PRRef;
-  detail: PRDetail;
-  threads: ReviewThread[];
-  headSHA: string;
-}
-
-function registerPRReviewState(subscriptionId: string, state: { applyPRUpdate(event: PRUpdatedEvent): void }): void {
-  prStatesBySubscription.set(subscriptionId, state);
-  // A load can finish while the window sits minimized; the fresh pump
-  // must start paused like every other live one.
-  if (documentHidden()) setPRUpdatesActive(subscriptionId, false);
-}
-
-function unregisterPRReviewState(subscriptionId: string): void {
-  prStatesBySubscription.delete(subscriptionId);
-}
-
-export function applyPRUpdatedEvent(event: PRUpdatedEvent): void {
-  prStatesBySubscription.get(event.subscriptionId)?.applyPRUpdate(event);
-}
-
-function setPRUpdatesActive(subscriptionId: string, active: boolean): void {
-  void SetPRUpdatesActive(subscriptionId, active).catch((err: unknown) => {
-    // Not user-surfaced: a failed pause keeps the status quo (the pump
-    // just keeps polling), and a failed resume implies a dying transport
-    // whose server-side connection cleanup closes the pump anyway.
-    console.error('review: SetPRUpdatesActive failed', { subscriptionId, active, err });
-  });
-}
-
-// A hidden window doesn't need PR polling: pause every live subscription's
-// Go-side pump while the document is hidden and resume (with a catch-up
-// poll when a tick was missed) once it becomes visible again.
-export function handleReviewVisibilityChange(): void {
-  const active = !documentHidden();
-  for (const id of prStatesBySubscription.keys()) {
-    setPRUpdatesActive(id, active);
-  }
-}
-
-if (typeof document !== 'undefined') {
-  document.addEventListener('visibilitychange', handleReviewVisibilityChange);
-}
+// Stable identity for "this pane is on no PR": ReviewDiffBody re-anchors
+// the reader on a prThreads IDENTITY change, so a fresh [] per read would
+// look like the review threads moved on every keystroke.
+const EMPTY_PR_THREADS: readonly ReviewThread[] = Object.freeze([]);
 
 export function reviewStateForPane(
   sourcePaneId: string,
@@ -407,26 +331,32 @@ function createReviewPaneState(
     initialPRRef && (initialThread?.workspacePath ?? '') === '' ? 'pr' : (persisted?.scope ?? 'workspace'),
   );
   let baseBranch: string | null = $state(persisted?.baseBranch ?? null);
-  let prDetail: PRDetail | null = $state(null);
-  let prThreads: ReviewThread[] = $state([]);
-  let prHeadSHA = $state('');
-  let prStale = $state(false);
+  // The head THIS pane's diff was computed at, stamped with the PR it was
+  // computed FOR. The PR's live head lives in the shared store; staleness
+  // is the difference between the two, so a push observed once cannot mark
+  // a pane that has already reloaded stale.
+  //
+  // The key half is load-bearing, not bookkeeping: a PR→PR switch changes
+  // `prRef` (and therefore the live head this pane reads) synchronously,
+  // while the anchor only moves when the new diff finishes loading. A bare
+  // SHA would spend that window comparing the OLD PR's loaded head against
+  // the NEW PR's live head — two unrelated OIDs, so the stale banner
+  // flashed on a diff that had not even been requested yet.
+  let loadedPRHead = $state<{ key: string; sha: string } | null>(null);
   let refreshingPRData = $state(false);
-  let subscriptionId: string | null = null;
+  // This pane's reference on the shared PR entity — held exactly while the
+  // pane is in pr scope. The subscription, poll pump, CI pipeline and
+  // conflict tree under it are shared with every other pane on the PR.
+  let prAttachment: PRAttachment | null = null;
   let conflictView = $state(false);
-  let conflicts: PRMergeConflictsView | null = $state(null);
-  let conflictsLoading = $state(false);
-  let conflictsError: string | null = $state(null);
-  const conflictContentByPath = new SvelteMap<string, string>();
+  // The conflict view's reconcile permit, held for exactly as long as the
+  // surface is on screen: a head move recomputes the merged tree only for
+  // a view somebody is looking at (see prReviewConflicts.svelte.ts).
+  let conflictReconcilePermit: (() => void) | null = null;
   let conflictCollapsedPaths: SvelteSet<string> = $state(new SvelteSet<string>());
-  const conflictFileLoads = new Map<string, Promise<void>>();
   // Expanded fold ids per path. Entries are replaced wholesale on expand
   // so the SvelteMap write re-derives conflictFiles.
   const conflictExpandedFolds = new SvelteMap<string, ReadonlySet<number>>();
-  let ciPipeline: CIPipeline | null = $state(null);
-  let ciLoading = $state(false);
-  let ciError: string | null = $state(null);
-  let ciLoadSeq = 0;
   let ciLogView: CILogView | null = $state(null);
   let ciLog: CIJobLogResult | null = $state(null);
   let ciLogLoading = $state(false);
@@ -493,6 +423,28 @@ function createReviewPaneState(
   // never appears. Cleared with the expansions on every reload.
   const editExpandablePaths = new SvelteSet<string>();
   let loadSeq = 0;
+  // The shared PR entity this pane is looking at. Null outside pr scope:
+  // the PR data survives a scope switch (another pane may still be on it),
+  // but a pane that left is not reporting a PR's state as its own.
+  const prEntityKey = $derived(scope === 'pr' && prRef ? prKey(prRef) : null);
+  const prSnapshot = $derived<PRSnapshot | null>(peekPRSnapshot(prEntityKey));
+  // A failed poll/refresh is user-facing state, not a log line — and it is
+  // deliberately NOT `error` (which owns the diff): the rendered diff is
+  // still valid, only the live PR data behind it went stale.
+  const prUpdateError = $derived(peekPRError(prEntityKey));
+  const ciState = $derived(peekPRCI(prEntityKey));
+  const conflictsState = $derived(peekPRConflicts(prEntityKey));
+  // The loaded head, but only while it still describes the PR on screen.
+  // Everything anchored to the diff — the stale banner, span context,
+  // draft commitSha, sent-marks — reads this rather than the raw stamp, so
+  // none of them can quote a head that belongs to another pull request.
+  const loadedPRHeadSHA = $derived(
+    loadedPRHead !== null && loadedPRHead.key === prEntityKey ? loadedPRHead.sha : '',
+  );
+  const prStale = $derived.by(() => {
+    const live = prSnapshot?.headSHA ?? '';
+    return live !== '' && loadedPRHeadSHA !== '' && live !== loadedPRHeadSHA;
+  });
   const sourceKey = $derived.by(() => {
     if (scope === 'edits') {
       // An edit payload is immutable, so its id is the stable identity;
@@ -511,7 +463,7 @@ function createReviewPaneState(
     if (scope === 'pr' && prRef) {
       // Stable across PR head movement: drafts must survive pushes; each
       // draft's commitSha records the head SHA it was anchored to.
-      return `pr:${prRef.forge}:${prRef.namespace}/${prRef.repo}:${prRef.number}`;
+      return prSourceKey(prRef);
     }
     return patchText ? diffSourceKey(patchText) : '';
   });
@@ -556,10 +508,11 @@ function createReviewPaneState(
     return parsed.map((file) => applyContextExpansion(file, contextExpansions.get(file.path)));
   });
   const conflictFiles = $derived.by(() => {
+    const conflicts = conflictsState.state;
     if (!conflicts) return [];
     const { baseLabel, headLabel, notes } = conflicts;
     return conflicts.paths.map((path) => {
-      const content = conflictContentByPath.get(path);
+      const content = conflictsState.contentByPath.get(path);
       const pathNotes = notes[path];
       // A structural conflict's content can be unfetchable (the path may
       // not exist in the merged tree at all) — its notes still render.
@@ -578,7 +531,7 @@ function createReviewPaneState(
   // collapsed — drives the toolbar's expand-all/collapse-all toggle.
   const allCollapsed = $derived.by(() => {
     if (conflictView) {
-      const paths = conflicts?.paths ?? [];
+      const paths = conflictsState.state?.paths ?? [];
       return paths.length > 0 && paths.every((path) => conflictCollapsedPaths.has(path));
     }
     return files.length > 0 && files.every((file) => collapsedPaths.has(file.path));
@@ -593,28 +546,36 @@ function createReviewPaneState(
   const drafts = $derived(comments.filter((comment) => comment.status === 'draft'));
   const isTurnActive = $derived(getActiveTurn(threadId) !== null);
 
+  // The thread row's own PR reference — set when the thread was created FROM
+  // a pull request, and never rewritten afterwards, so resolving it once is
+  // honest memoization. `undefined` means "not looked up yet".
+  let threadPRRef: PRRef | null | undefined =
+    initialThread === null ? undefined : prRefFromThread(initialThread);
+
+  // The workspace's CURRENT open PR, read live from the shared git-status
+  // store. Not memoized: a PR opened while this pane sat open must become
+  // selectable, and one that merged must stop being offered.
+  function workspacePRRef(): PRRef | null {
+    const status = peekGitStatus(workspaceKeyForThread(getPane(sourcePaneId)?.thread ?? null));
+    if (!status) return null;
+    return prRefFromUrl(
+      String(status.forge ?? ''),
+      String(status.openPrUrl ?? ''),
+      Number(status.openPrNumber ?? 0),
+    );
+  }
+
   async function ensurePRRef(): Promise<PRRef | null> {
-    if (prRef) return prRef;
-    try {
-      const thread = (await GetThread(threadId)) as Thread;
-      prRef = prRefFromThread(thread);
-      if (prRef) return prRef;
-    } catch (err) {
-      error = userFacingError(err);
-      throw err;
+    if (threadPRRef === undefined) {
+      try {
+        threadPRRef = prRefFromThread((await GetThread(threadId)) as Thread);
+      } catch (err) {
+        error = userFacingError(err);
+        throw err;
+      }
     }
-    try {
-      const status = await GetGitStatus(threadId);
-      const ref = prRefFromUrl(
-        String(status?.forge ?? ''),
-        String(status?.openPrUrl ?? ''),
-        Number(status?.openPrNumber ?? 0),
-      );
-      prRef = ref;
-      return ref;
-    } catch {
-      return null;
-    }
+    prRef = threadPRRef ?? workspacePRRef();
+    return prRef;
   }
 
   // The scope dropdown's PR option renders only once prRef resolves, and
@@ -623,79 +584,77 @@ function createReviewPaneState(
   // open), a thread whose BRANCH has an open PR (the git-status detection
   // path) could never surface the option at all.
   function probePRRef(): void {
-    if (prRef) return;
     void ensurePRRef().catch(() => {
       // Not swallowed: ensurePRRef records a thread-lookup failure in
       // `error` before throwing, and no-PR resolves to null, not a throw.
     });
   }
 
-  // Set by dispose(); a reload that resolves after disposal must drop the
-  // subscription it just created instead of registering it on a dead state.
+  // Set by dispose(); a load that resolves after disposal must not write
+  // back into a dead state — or hold a PR reference nobody will release.
   let disposed = false;
 
-  async function unsubscribePR(): Promise<void> {
-    const id = subscriptionId;
-    if (!id) return;
-    subscriptionId = null;
-    unregisterPRReviewState(id);
-    try {
-      await UnsubscribePRUpdates(id);
-    } catch (err) {
-      error = userFacingError(err);
-    }
+  /**
+   * Take (or keep) this pane's reference on the shared PR entity. One
+   * reference per pane at a time: re-entering pr scope or switching to a
+   * different PR releases the previous one first, so the refcount under
+   * the poll pump matches the panes actually looking at it.
+   */
+  function holdPR(ref: PRRef): PRAttachment | null {
+    if (disposed) return null;
+    const key = prKey(ref);
+    if (prAttachment?.key === key) return prAttachment;
+    releasePR();
+    prAttachment = attachPR(key, { ref });
+    return prAttachment;
+  }
+
+  function releasePR(): void {
+    prAttachment?.release();
+    prAttachment = null;
+    // The anchor `prStale` is measured from describes a diff of THAT PR.
+    // Carrying it to the next one would compare two different PRs' heads
+    // and raise the banner on a diff that was never loaded.
+    loadedPRHead = null;
   }
 
   function dispose(): void {
     disposed = true;
-    resetConflictState();
-    resetCIState();
-    const id = subscriptionId;
-    if (!id) return;
-    subscriptionId = null;
-    unregisterPRReviewState(id);
-    void UnsubscribePRUpdates(id).catch((err: unknown) => {
-      error = userFacingError(err);
-    });
+    resetConflictView();
+    closeCILogView();
+    releasePR();
   }
 
-  function applyPRUpdate(event: PRUpdatedEvent): void {
-    if (event.subscriptionId !== subscriptionId) return;
-    if (event.headSHA && prHeadSHA && event.headSHA !== prHeadSHA) {
-      prDetail = event.detail;
-      prThreads = event.threads ?? [];
-      prHeadSHA = event.headSHA;
-      prStale = true;
-      void loadCIJobs();
-      return;
-    }
-    prDetail = event.detail;
-    prThreads = event.threads ?? [];
-    prHeadSHA = event.headSHA || event.detail?.headSHA || prHeadSHA;
-    // The pump only fires on snapshot change, so this refresh tracks
-    // check/pipeline movement without its own poll.
-    void loadCIJobs();
+  // The one writer of `conflictView`, so the reconcile permit cannot drift
+  // out of step with what is on screen: an unreleased permit keeps
+  // recomputing merge trees for a surface nobody closed, and a missing one
+  // leaves an open view rendering the previous head's merge.
+  function setConflictView(open: boolean): void {
+    conflictReconcilePermit?.();
+    conflictReconcilePermit = null;
+    conflictView = open;
+    if (!open) return;
+    const key = prEntityKey;
+    if (key) conflictReconcilePermit = permitPRConflictReconcile(key);
   }
 
-  function resetConflictState(): void {
-    conflictView = false;
-    conflicts = null;
-    conflictsLoading = false;
-    conflictsError = null;
-    conflictContentByPath.clear();
+  // Only the pane's VIEW of the conflicts resets on a scope switch: the
+  // merged tree belongs to the PR and may still be on screen in another
+  // pane. It is released with this pane's reference.
+  function resetConflictView(): void {
+    setConflictView(false);
     conflictCollapsedPaths = new SvelteSet<string>();
-    conflictFileLoads.clear();
     conflictExpandedFolds.clear();
   }
 
   async function setScope(nextScope: ReviewScope, opts?: { baseBranch?: string }): Promise<void> {
     const scopeChanged = nextScope !== scope;
     if (scopeChanged) {
-      resetConflictState();
-      resetCIState();
+      resetConflictView();
+      closeCILogView();
     }
     if (scope === 'pr' && nextScope !== 'pr') {
-      await unsubscribePR();
+      releasePR();
     }
     if (nextScope === 'pr') {
       const ref = await ensurePRRef();
@@ -763,14 +722,13 @@ function createReviewPaneState(
 
   async function reload(opts?: { selectionOnly?: boolean }): Promise<void> {
     // A commit/edit selection changes only which diff is shown — the
-    // selector list, PR detail, and subscription are all still valid,
-    // so reuse them and fetch just the diff. Only when a previous full
-    // load actually populated them; otherwise fall through to a full
-    // load.
+    // selector list and the PR snapshot are still valid, so reuse them and
+    // fetch just the diff. Only when a previous full load actually
+    // populated them; otherwise fall through to a full load.
     const selectionOnly = opts?.selectionOnly === true
       && (scope === 'edits'
         ? edits.length > 0
-        : commits.length > 0 && (scope !== 'pr' || subscriptionId !== null));
+        : commits.length > 0 && (scope !== 'pr' || prAttachment !== null));
     // The inline-diff affordance pins an edit for the NEXT load;
     // consumed here so a later manual reload doesn't re-pin it.
     const pinnedEditItemID = pendingEditItemID;
@@ -779,14 +737,6 @@ function createReviewPaneState(
     loadSeq = seq;
     loading = true;
     error = null;
-    if (!selectionOnly) {
-      // Unconditionally, not just in pr scope: scope can change mid-load
-      // (the selector stays enabled while a PR loads), and an in-flight
-      // pr load that resolved during setScope's awaits may have
-      // registered a subscription after the scope flipped. No-op when
-      // none is held.
-      await unsubscribePR();
-    }
     try {
       if (!selectionOnly) {
         if (scope === 'pr' && !prRef) {
@@ -798,26 +748,46 @@ function createReviewPaneState(
           // selectable on the next reload without blocking the diff load.
           probePRRef();
         }
+        if (seq !== loadSeq || disposed) return;
+      }
+      // The diff needs the PR detail's base ref (a local three-dot diff is
+      // the only source without gh/glab's 20k-line cap), so the shared
+      // snapshot is awaited before the patch call. Attaching is what
+      // starts the poll pump — and re-attaching for a PR this pane already
+      // holds costs nothing.
+      let snapshot: PRSnapshot | null = null;
+      // The PR this load COMMITS to, captured here and used for the rest of
+      // it. `prRef` is reactive and the probe can re-resolve it under the
+      // awaits below; re-reading it afterwards would let a diff fetched for
+      // one pull request be stamped with another one's key.
+      let loadingPRRef: PRRef | null = null;
+      let loadingPRKey: string | null = null;
+      if (scope === 'pr' && prRef) {
+        loadingPRRef = prRef;
+        loadingPRKey = prKey(loadingPRRef);
+        const hold = holdPR(loadingPRRef);
+        snapshot = hold ? await hold.ready() : null;
+        if (seq !== loadSeq || disposed) return;
+      } else if (scope !== 'pr') {
+        // Scope can change mid-load (the selector stays enabled while a PR
+        // loads); a pane that is no longer on a PR holds no reference.
+        releasePR();
       }
       const loaded = await loadPatch(
         threadId,
         scope,
         baseBranch,
         selectedCommitSHA,
-        prRef,
+        loadingPRRef ?? prRef,
+        snapshot,
         { pinnedItemId: pinnedEditItemID, current: selectedEdit },
         // Gate on support, not just the flag: a scope switch can leave the
         // toggle on while the new source can't honor it, and passing it
         // anyway would make the button's state a lie.
         ignoreWhitespace && canIgnoreWhitespace,
-        selectionOnly ? { commits, prDetail, edits, editTurnLabels } : undefined,
+        selectionOnly ? { commits, edits, editTurnLabels } : undefined,
       );
-      if (seq !== loadSeq || disposed) {
-        // A newer load or dispose superseded this one — the subscription it
-        // opened has no owner, so close it before dropping the result.
-        if (loaded.subscriptionId) void UnsubscribePRUpdates(loaded.subscriptionId);
-        return;
-      }
+      if (seq !== loadSeq || disposed) return;
       commits = loaded.commits ?? [];
       edits = loaded.edits ?? [];
       editTurnLabels = loaded.editTurnLabels ?? new Map();
@@ -826,13 +796,6 @@ function createReviewPaneState(
       }
       if (loaded.selectedCommitSHA !== undefined) {
         selectedCommitSHA = loaded.selectedCommitSHA;
-      }
-      if (loaded.prDetail) prDetail = loaded.prDetail;
-      if (loaded.prThreads) prThreads = loaded.prThreads;
-      if (loaded.prHeadSHA !== undefined) prHeadSHA = loaded.prHeadSHA;
-      if (loaded.subscriptionId) {
-        subscriptionId = loaded.subscriptionId;
-        registerPRReviewState(subscriptionId, { applyPRUpdate });
       }
       clearContextExpansions();
       patchText = loaded.patchText;
@@ -848,11 +811,16 @@ function createReviewPaneState(
         else nextCollapsed.delete(path);
       }
       collapsedPaths = nextCollapsed;
-      if (scope === 'pr') {
-        prStale = false;
+      if (scope === 'pr' && loadingPRKey && loadingPRRef) {
+        // The anchor staleness is measured against: this diff describes
+        // this head OF THIS PULL REQUEST, so the banner clears until the PR
+        // moves again — for THIS pane, without touching what another pane
+        // loaded, and without a switch to a different PR being compared
+        // against a head that was never its own.
+        loadedPRHead = { key: loadingPRKey, sha: loaded.prHeadSHA ?? loadedPRHeadSHA };
         // The fast path didn't refresh the PR snapshot, so CI state
         // hasn't moved either — the subscription pump covers it.
-        if (!selectionOnly) void loadCIJobs();
+        if (!selectionOnly) void loadPRCIJobs(loadingPRKey, loadingPRRef);
       }
       // patchText and selectedCommitSHA are already updated above, so
       // the derived reflects this load — no need to re-derive by hand.
@@ -874,7 +842,7 @@ function createReviewPaneState(
         error = userFacingError(err);
       }
     } catch (err) {
-      if (seq !== loadSeq) return;
+      if (seq !== loadSeq || disposed) return;
       clearContextExpansions();
       patchText = '';
       openEditors = [];
@@ -904,7 +872,7 @@ function createReviewPaneState(
   // set (falling back to the head).
   function patchScopeContext(): PatchScopeContext {
     if (scope === 'pr') {
-      return { scope: 'pr', commitSHA: selectedCommitSHA ?? '', headSHA: prHeadSHA };
+      return { scope: 'pr', commitSHA: selectedCommitSHA ?? '', headSHA: loadedPRHeadSHA };
     }
     if (selectedCommitSHA) {
       return { scope: 'commit', commitSHA: selectedCommitSHA, headSHA: '' };
@@ -1047,7 +1015,7 @@ function createReviewPaneState(
       await createDiffReviewComment(threadId, {
         scope,
         sourceKey,
-        commitSha: selectedCommitSHA ?? (scope === 'pr' ? prHeadSHA : undefined),
+        commitSha: selectedCommitSHA ?? (scope === 'pr' ? loadedPRHeadSHA : undefined),
         filePath: anchor.filePath,
         oldLine: anchor.oldLine,
         newLine: anchor.newLine,
@@ -1091,11 +1059,12 @@ function createReviewPaneState(
     if (!sourceKey || drafts.length === 0 || sendingComments || getActiveTurn(threadId) !== null) return;
     sendingComments = true;
     try {
+      const detail = prSnapshot?.detail;
       await SendDiffReviewComments(threadId, scope, sourceKey, drafts.map((comment) => comment.id), {
-        pr: scope === 'pr' && prDetail
+        pr: scope === 'pr' && detail
           ? {
-              number: prDetail.number,
-              url: prDetail.url,
+              number: detail.number,
+              url: detail.url,
               comments: drafts.map((comment) => ({
                 commentId: comment.id,
                 hunkExcerpt: hunkExcerptForComment(files, comment),
@@ -1130,10 +1099,10 @@ function createReviewPaneState(
     sendingComments = true;
     submitError = null;
     try {
-      const result = (await SubmitPRReview(prReference(prRef), {
+      const result = (await SubmitPRReview(prReferenceWire(prRef), {
         verdict,
         body: summaryBody.trim(),
-        comments: submitDrafts.map(reviewLineCommentForDraft).filter((comment): comment is ReviewLineComment => comment !== null),
+        comments: submitDrafts.map(reviewLineCommentForDraft).filter((comment) => comment !== null),
       })) as SubmitPRReviewResult;
       let sent = submitDrafts;
       if (result.partialFailurePath) {
@@ -1149,10 +1118,12 @@ function createReviewPaneState(
         submitError = `Review posted, but a follow-up step failed: ${result.partialFailure}`;
       }
       if (sent.length > 0) {
-        await MarkDiffReviewCommentsSent(threadId, scope, sourceKey, sent.map((comment) => comment.id), `pr:${prHeadSHA}`);
+        await MarkDiffReviewCommentsSent(threadId, scope, sourceKey, sent.map((comment) => comment.id), `pr:${loadedPRHeadSHA}`);
       }
       await refreshDiffReviewComments(threadId, scope, sourceKey);
-      prThreads = ((await ListPRReviewThreads(prReference(prRef))) ?? []) as ReviewThread[];
+      // Through the store: the posted review is now part of the PR, so
+      // every pane looking at it shows the new threads.
+      applyPRThreads(prKey(prRef), ((await ListPRReviewThreads(prReferenceWire(prRef))) ?? []) as ReviewThread[]);
       if (!result.partialFailure) {
         summaryBody = '';
         submitError = null;
@@ -1169,23 +1140,25 @@ function createReviewPaneState(
 
   // Comments-only refresh: PR detail + review threads, WITHOUT touching
   // the diff (they are fetched by separate calls, so this never reloads
-  // or re-renders the patch). A moved head raises the stale banner the
-  // same way the poll pump does — the diff never swaps mid-read.
+  // or re-renders the patch). Applied through the store, so a head that
+  // moved raises the stale banner on every pane whose diff predates it —
+  // and on none whose diff doesn't. The diff never swaps mid-read.
   async function refreshPRThreads(): Promise<void> {
     if (scope !== 'pr' || !prRef || refreshingPRData) return;
+    const key = prKey(prRef);
     refreshingPRData = true;
     try {
-      const pr = prReference(prRef);
+      const pr = prReferenceWire(prRef);
       const [detail, threads] = await Promise.all([
         GetPRDetail(pr) as Promise<PRDetail>,
         ListPRReviewThreads(pr) as Promise<ReviewThread[] | null>,
       ]);
       if (disposed || scope !== 'pr') return;
-      const headSHA = String(detail?.headSHA ?? '');
-      if (headSHA && prHeadSHA && headSHA !== prHeadSHA) prStale = true;
-      prDetail = detail;
-      prThreads = threads ?? [];
-      if (headSHA) prHeadSHA = headSHA;
+      applyPRSnapshot(key, {
+        detail: detail ?? null,
+        threads: threads ?? [],
+        headSHA: String(detail?.headSHA ?? ''),
+      });
       error = null;
     } catch (err) {
       if (disposed) return;
@@ -1207,9 +1180,9 @@ function createReviewPaneState(
     sendingReplyIds.add(thread.id);
     replyErrors.delete(thread.id);
     try {
-      await ReplyToPRThread(prReference(prRef), thread.id, first.databaseID, body);
+      await ReplyToPRThread(prReferenceWire(prRef), thread.id, first.databaseID, body);
       replyBodies.delete(thread.id);
-      prThreads = ((await ListPRReviewThreads(prReference(prRef))) ?? []) as ReviewThread[];
+      applyPRThreads(prKey(prRef), ((await ListPRReviewThreads(prReferenceWire(prRef))) ?? []) as ReviewThread[]);
     } catch (err) {
       const message = userFacingError(err);
       replyErrors.set(thread.id, message);
@@ -1237,72 +1210,62 @@ function createReviewPaneState(
     }
   }
 
+  // The merged tree and every conflicted file's content belong to the PR
+  // (one merge-tree run serves every pane); what this pane owns is
+  // whether the surface is showing and which files it has collapsed.
   async function openConflictView(): Promise<void> {
-    if (!prRef || !prDetail) {
-      conflictsError = 'PR details are not loaded.';
+    const detail = prSnapshot?.detail;
+    const key = prEntityKey;
+    if (!prRef || !detail || !key) {
+      // Unreachable from the UI (the affordance lives on the PR header,
+      // which only renders with a detail), so it is not a conflict-load
+      // failure — it is this pane having no PR to ask about.
+      error = 'PR details are not loaded.';
       return;
     }
     closeCILogView();
-    conflictView = true;
-    conflictsLoading = true;
-    conflictsError = null;
-    conflicts = null;
-    conflictContentByPath.clear();
-    conflictCollapsedPaths = new SvelteSet<string>();
-    conflictFileLoads.clear();
+    setConflictView(true);
     conflictExpandedFolds.clear();
-    try {
-      const result = await GetPRMergeConflicts(
-        threadId,
-        prReference(prRef),
-        prDetail.baseRefName,
-        prDetail.headRefName,
-      );
-      conflicts = {
-        treeOID: String(result.treeOID ?? ''),
-        baseLabel: String(result.baseLabel ?? `origin/${prDetail.baseRefName}`),
-        headLabel: String(result.headLabel ?? prDetail.headRefName),
-        paths: result.conflicted ? [...(result.paths ?? [])] : [],
-        notes: result.conflicted ? { ...(result.notes ?? {}) } : {},
-        messages: result.conflicted ? [...(result.messages ?? [])] : [],
-      };
-      conflictCollapsedPaths = new SvelteSet<string>(conflicts.paths);
-      conflictsError = null;
-      // Conflict files open expanded like the regular diff; the loads
-      // fan out in parallel (one local git read per conflicted file).
-      // A file whose load fails stays collapsed and surfaces the error.
-      await Promise.all(conflicts.paths.map((path) => toggleConflictCollapsed(path)));
-    } catch (err) {
-      conflictsError = userFacingError(err);
-    } finally {
-      conflictsLoading = false;
-    }
+    await openPRConflicts(key, threadId, prRef, detail);
+    if (disposed) return;
+    // Everything the store could show opens expanded, like the regular
+    // diff. A file whose content read failed and that carries no notes has
+    // nothing to render, so it stays collapsed (the error is in the
+    // banner) — the same outcome the per-path expand loop produced.
+    const conflicts = peekPRConflicts(key);
+    conflictCollapsedPaths = new SvelteSet<string>(
+      (conflicts.state?.paths ?? []).filter((path) => !conflictFileHasBody(path)),
+    );
+  }
+
+  function conflictFileHasBody(path: string): boolean {
+    const conflicts = conflictsState;
+    return conflicts.contentByPath.has(path) || (conflicts.state?.notes[path]?.length ?? 0) > 0;
   }
 
   function closeConflictView(): void {
-    conflictView = false;
-    conflictsLoading = false;
-    conflictsError = null;
+    setConflictView(false);
   }
 
   async function toggleConflictCollapsed(path: string): Promise<void> {
-    if (!conflicts) return;
+    const key = prEntityKey;
+    if (!key || !conflictsState.state) return;
     if (!conflictCollapsedPaths.has(path)) {
       conflictCollapsedPaths.add(path);
       return;
     }
-    await ensureConflictFileLoaded(path);
+    await ensurePRConflictFile(key, path);
     // A note-bearing file expands even when its content load failed —
     // the notes are the conflict's only signal (the path may not exist
     // in the merged tree). The load error still surfaces in the banner.
-    if (conflictContentByPath.has(path) || conflicts.notes[path]?.length) {
+    if (conflictFileHasBody(path)) {
       conflictCollapsedPaths.delete(path);
     }
   }
 
   async function toggleCollapseAll(): Promise<void> {
     if (conflictView) {
-      const paths = conflicts?.paths ?? [];
+      const paths = conflictsState.state?.paths ?? [];
       if (allCollapsed) {
         // Expanding a conflict file loads its content; an explicit
         // expand-all fans the loads out in parallel.
@@ -1329,35 +1292,16 @@ function createReviewPaneState(
     conflictExpandedFolds.set(path, next);
   }
 
-  function resetCIState(): void {
-    ciLoadSeq += 1;
-    ciPipeline = null;
-    ciLoading = false;
-    ciError = null;
-    closeCILogView();
-  }
-
   async function loadCIJobs(): Promise<void> {
-    if (scope !== 'pr' || !prRef) return;
-    const seq = ++ciLoadSeq;
-    ciLoading = true;
-    try {
-      const pipeline = (await GetPRCIJobs(prReference(prRef))) as CIPipeline;
-      if (seq !== ciLoadSeq || disposed) return;
-      ciPipeline = pipeline ?? null;
-      ciError = null;
-    } catch (err) {
-      if (seq !== ciLoadSeq || disposed) return;
-      ciError = userFacingError(err);
-    } finally {
-      if (seq === ciLoadSeq) ciLoading = false;
-    }
+    const key = prEntityKey;
+    if (!key || !prRef) return;
+    await loadPRCIJobs(key, prRef);
   }
 
   async function openCIJobLog(stageName: string, job: CIJob): Promise<void> {
     if (!prRef || !job.logsAvailable || !job.id) return;
     // The log view and the conflict view both replace the diff body.
-    conflictView = false;
+    setConflictView(false);
     ciLogView = { stageName, job };
     ciLogSavedPath = null;
     await fetchCILog(job);
@@ -1375,7 +1319,7 @@ function createReviewPaneState(
     ciLogLoading = true;
     ciLogError = null;
     try {
-      const result = (await GetPRCIJobLog(prReference(prRef), job.id)) as CIJobLogResult;
+      const result = (await GetPRCIJobLog(prReferenceWire(prRef), job.id)) as CIJobLogResult;
       if (seq !== ciLogSeq || disposed) return;
       ciLog = result;
     } catch (err) {
@@ -1400,7 +1344,7 @@ function createReviewPaneState(
     const view = ciLogView;
     if (!prRef || !view?.job.id) return null;
     try {
-      const path = String(await SavePRCIJobLog(prReference(prRef), view.job.id, view.job.name));
+      const path = String(await SavePRCIJobLog(prReferenceWire(prRef), view.job.id, view.job.name));
       if (ciLogView === view) ciLogSavedPath = path;
       return path;
     } catch (err) {
@@ -1425,28 +1369,6 @@ function createReviewPaneState(
     ].join('\n');
     const existing = draft.content.trim();
     draft.setContent(existing ? `${existing}\n\n${message}` : message);
-  }
-
-  async function ensureConflictFileLoaded(path: string): Promise<void> {
-    if (conflictContentByPath.has(path)) return;
-    const existing = conflictFileLoads.get(path);
-    if (existing) {
-      await existing;
-      return;
-    }
-    const load = (async () => {
-      try {
-        const content = await GetMergeConflictFile(threadId, conflicts?.treeOID ?? '', path);
-        conflictContentByPath.set(path, String(content ?? ''));
-        conflictsError = null;
-      } catch (err) {
-        conflictsError = userFacingError(err);
-      } finally {
-        conflictFileLoads.delete(path);
-      }
-    })();
-    conflictFileLoads.set(path, load);
-    await load;
   }
 
   // Orphan detection is only needed where a sourceKey outlives the patch
@@ -1509,24 +1431,25 @@ function createReviewPaneState(
     get loading() { return loading; },
     get error() { return error; },
     get sendingComments() { return sendingComments; },
-    get prDetail() { return prDetail; },
-    get prThreads() { return prThreads; },
-    get prHeadSHA() { return prHeadSHA; },
+    get prDetail() { return prSnapshot?.detail ?? null; },
+    get prThreads() { return prSnapshot?.threads ?? EMPTY_PR_THREADS; },
+    get prHeadSHA() { return loadedPRHeadSHA; },
+    get prUpdateError() { return prUpdateError; },
     get spanContext(): PatchScopeContext {
       return patchScopeContext();
     },
     get prStale() { return prStale; },
     get refreshingPRData() { return refreshingPRData; },
     get conflictView() { return conflictView; },
-    get conflicts() { return conflicts; },
-    get conflictsLoading() { return conflictsLoading; },
-    get conflictsError() { return conflictsError; },
-    get conflictContentByPath() { return conflictContentByPath; },
+    get conflicts() { return conflictsState.state; },
+    get conflictsLoading() { return conflictsState.loading; },
+    get conflictsError() { return conflictsState.error; },
+    get conflictContentByPath() { return conflictsState.contentByPath; },
     get conflictCollapsedPaths() { return conflictCollapsedPaths; },
     get conflictFiles() { return conflictFiles; },
-    get ciPipeline() { return ciPipeline; },
-    get ciLoading() { return ciLoading; },
-    get ciError() { return ciError; },
+    get ciPipeline() { return ciState.pipeline; },
+    get ciLoading() { return ciState.loading; },
+    get ciError() { return ciState.error; },
     get ciLogView() { return ciLogView; },
     get ciLog() { return ciLog; },
     get ciLogLoading() { return ciLogLoading; },
@@ -1642,332 +1565,6 @@ function createReviewPaneState(
   };
 }
 
-interface LoadedPatch {
-  patchText: string;
-  /** Commit selector rows for the loaded range; omitted → empty. */
-  commits?: BranchCommit[];
-  /** The commit the diff was actually computed for — a stale selection
-   * that left the range resolves back to null (full range). */
-  selectedCommitSHA?: string | null;
-  /** Edit selector rows (edits scope); omitted → empty. */
-  edits?: EditDiffEntryView[];
-  editTurnLabels?: ReadonlyMap<number, string>;
-  /** The edit selection the diff was actually computed for — a pinned
-   * or stale selection resolves against the fresh list. */
-  selectedEdit?: EditSelection | null;
-  prDetail?: PRDetail;
-  prThreads?: ReviewThread[];
-  prHeadSHA?: string;
-  subscriptionId?: string;
-}
-
-/** The edits-scope selection reload should aim for: a freshly pinned
- * tool call (inline-diff affordance) wins over the current selection. */
-interface EditDesire {
-  pinnedItemId: string | null;
-  current: EditSelection | null;
-}
-
-/** State a selection-only reload reuses instead of refetching: the
- * commit/edit lists are unchanged by picking an entry, and in pr scope
- * the live subscription already holds the detail. */
-interface ExistingLoad {
-  commits: BranchCommit[];
-  prDetail: PRDetail | null;
-  edits: EditDiffEntryView[];
-  editTurnLabels: ReadonlyMap<number, string>;
-}
-
-/** Decode a selector value (`item:<id>` / `turn:<n>`) against the
- * current entries; unknown or null values resolve to the default. */
-function editSelectionFromKey(key: string | null, entries: readonly EditDiffEntryView[]): EditSelection | null {
-  if (key) {
-    if (key.startsWith('item:')) {
-      const itemId = key.slice('item:'.length);
-      const entry = entries.find((candidate) => candidate.itemId === itemId);
-      if (entry) return { kind: 'item', itemId: entry.itemId, payloadId: entry.payloadId };
-    } else if (key.startsWith('turn:')) {
-      const turnIndex = Number(key.slice('turn:'.length));
-      if (entries.some((candidate) => candidate.turnIndex === turnIndex)) {
-        return { kind: 'turn', turnIndex };
-      }
-    }
-  }
-  return defaultEditSelection(entries);
-}
-
-/** Default edits-scope selection: the latest turn's whole set. */
-function defaultEditSelection(entries: readonly EditDiffEntryView[]): EditSelection | null {
-  if (entries.length === 0) return null;
-  return { kind: 'turn', turnIndex: entries[entries.length - 1].turnIndex };
-}
-
-/** Validate a desired selection against the fresh list: a pinned tool
- * call wins; a stale selection falls back to the default. */
-function resolveEditSelection(desire: EditDesire, entries: readonly EditDiffEntryView[]): EditSelection | null {
-  if (desire.pinnedItemId) {
-    const pinned = entries.find((candidate) => candidate.itemId === desire.pinnedItemId);
-    if (pinned) return { kind: 'item', itemId: pinned.itemId, payloadId: pinned.payloadId };
-  }
-  const current = desire.current;
-  if (current?.kind === 'item' && entries.some((candidate) => candidate.itemId === current.itemId)) {
-    return current;
-  }
-  if (current?.kind === 'turn' && entries.some((candidate) => candidate.turnIndex === current.turnIndex)) {
-    return current;
-  }
-  return defaultEditSelection(entries);
-}
-
-/** Validate a selection against the fresh list, not just the diff call:
- * after a rebase, base change, or force-push the selected SHA can vanish
- * — fall back to the full range instead of erroring. */
-function resolveSelectedCommit(
-  selectedCommitSHA: string | null,
-  commits: readonly BranchCommit[],
-): string | null {
-  if (selectedCommitSHA && commits.some((commit) => commit.sha === selectedCommitSHA)) {
-    return selectedCommitSHA;
-  }
-  return null;
-}
-
-async function loadPatch(
-  threadId: string,
-  scope: ReviewScope,
-  baseBranch: string | null,
-  selectedCommitSHA: string | null,
-  prRef: PRRef | null,
-  editDesire: EditDesire,
-  // `-w`, applied only by the branches whose binding accepts it — see
-  // supportsIgnoreWhitespace. The unsupported calls take no such argument,
-  // so the flag structurally cannot reach a source that would ignore it.
-  ignoreWhitespace: boolean,
-  existing?: ExistingLoad,
-): Promise<LoadedPatch> {
-  switch (scope) {
-    case 'pr': {
-      if (!prRef) throw new Error('No PR or MR is available for this thread.');
-      if (existing) return loadPRPatchCommitOnly(threadId, prRef, selectedCommitSHA, ignoreWhitespace, existing);
-      return loadPRPatch(threadId, prRef, selectedCommitSHA, ignoreWhitespace);
-    }
-    case 'workspace':
-      return { patchText: ((await GetWorkspaceCurrentDiff(threadId, ignoreWhitespace)) ?? '') as string };
-    case 'edits': {
-      let entries = existing?.edits;
-      let turnLabels = existing?.editTurnLabels;
-      if (!entries || !turnLabels) {
-        const list = await ListThreadEditDiffs(threadId);
-        entries = (list?.entries ?? []).map((entry) => ({
-          itemId: String(entry.itemId),
-          payloadId: String(entry.payloadId),
-          turnIndex: Number(entry.turnIndex),
-          title: String(entry.title ?? ''),
-          paths: (entry.paths ?? []).map(String),
-          insertions: Number(entry.insertions ?? 0),
-          deletions: Number(entry.deletions ?? 0),
-          createdAt: Number(entry.createdAt ?? 0),
-        }));
-        turnLabels = new Map((list?.turnLabels ?? []).map((label) => [Number(label.turnIndex), String(label.label ?? '')]));
-      }
-      const selection = resolveEditSelection(editDesire, entries);
-      let patchText = '';
-      if (selection?.kind === 'item') {
-        const payload = await GetPayloadData(threadId, selection.payloadId);
-        patchText = String(payload?.data ?? '');
-        // Persist-time spans travel with the data (primed when the file
-        // still matched at edit time) — seed them so the first paint is
-        // colored without the RPC path. Fire-and-forget cache warmer.
-        void seedPayloadPatchSpans(threadId, payload?.patchSpans);
-      } else if (selection) {
-        const turnDiff = await GetTurnEditsDiff(threadId, selection.turnIndex);
-        patchText = String(turnDiff?.data ?? '');
-        void seedPayloadPatchSpans(threadId, turnDiff?.patchSpans);
-      }
-      return { patchText, edits: entries, editTurnLabels: turnLabels, selectedEdit: selection };
-    }
-    case 'branch': {
-      const branch = baseBranch?.trim() || await defaultBaseBranch(threadId);
-      if (existing) {
-        const commitSHA = resolveSelectedCommit(selectedCommitSHA, existing.commits);
-        const patchText = commitSHA
-          ? ((await GetCommitDiff(threadId, commitSHA, ignoreWhitespace)) ?? '') as string
-          : ((await GetBranchBaseDiff(threadId, branch, ignoreWhitespace)) ?? '') as string;
-        return { patchText, commits: existing.commits, selectedCommitSHA: commitSHA };
-      }
-      if (selectedCommitSHA) {
-        // Sequenced: the selection must be validated against the fresh
-        // list before deciding which diff to fetch.
-        const commits = ((await ListBranchCommits(threadId, branch)) ?? []) as BranchCommit[];
-        const commitSHA = resolveSelectedCommit(selectedCommitSHA, commits);
-        const patchText = commitSHA
-          ? ((await GetCommitDiff(threadId, commitSHA, ignoreWhitespace)) ?? '') as string
-          : ((await GetBranchBaseDiff(threadId, branch, ignoreWhitespace)) ?? '') as string;
-        return { patchText, commits, selectedCommitSHA: commitSHA };
-      }
-      const [commits, patchText] = await Promise.all([
-        ListBranchCommits(threadId, branch).then((rows) => (rows ?? []) as BranchCommit[]),
-        GetBranchBaseDiff(threadId, branch, ignoreWhitespace).then((patch) => (patch ?? '') as string),
-      ]);
-      return { patchText, commits, selectedCommitSHA: null };
-    }
-  }
-}
-
-async function loadPRPatch(
-  threadId: string,
-  ref: PRRef,
-  selectedCommitSHA: string | null,
-  ignoreWhitespace: boolean,
-): Promise<LoadedPatch> {
-  const pr = prReference(ref);
-  // The subscription resolves the PR detail, whose baseRefName the diff
-  // needs to compute a local three-dot diff (gh/glab's PR-diff API caps at
-  // 20k lines; large PRs must go through the local-clone path). Sequenced,
-  // not parallel — the base ref is only known once the detail lands.
-  const subResult = await SubscribePRUpdates(threadId, pr);
-  try {
-    const detail = subResult.detail as PRDetail;
-    const baseRef = detail?.baseRefName ?? '';
-    const headSHA = String(subResult.headSHA ?? detail?.headSHA ?? '');
-    // Per-commit PR review needs the local clone; without one the backend
-    // returns an empty list and the selector stays hidden. The known head
-    // SHA lets the backend skip its fetch when the objects are local.
-    const commits = baseRef
-      ? (((await ListPRCommits(threadId, pr, baseRef, headSHA)) ?? []) as BranchCommit[])
-      : [];
-    const commitSHA = resolveSelectedCommit(selectedCommitSHA, commits);
-    // GetPRDiff takes no ignoreWhitespace: the PR whole-diff can come from
-    // the forge API, which cannot ignore whitespace at all.
-    const patchText = commitSHA
-      ? String((await GetPRCommitDiff(threadId, pr, commitSHA, ignoreWhitespace)) ?? '')
-      : String((await GetPRDiff(threadId, pr, baseRef)) ?? '');
-    return {
-      patchText,
-      commits,
-      selectedCommitSHA: commitSHA,
-      prDetail: detail,
-      prThreads: (subResult.threads ?? []) as ReviewThread[],
-      prHeadSHA: headSHA,
-      subscriptionId: String(subResult.id),
-    };
-  } catch (err) {
-    await UnsubscribePRUpdates(String(subResult.id ?? ''));
-    throw err;
-  }
-}
-
-/** Commit-selection fast path: the caller's PR subscription stays live,
- * so only the diff itself is refetched — no re-subscribe, no detail or
- * commit-list round-trips. Returns no subscriptionId on purpose. */
-async function loadPRPatchCommitOnly(
-  threadId: string,
-  ref: PRRef,
-  selectedCommitSHA: string | null,
-  ignoreWhitespace: boolean,
-  existing: ExistingLoad,
-): Promise<LoadedPatch> {
-  const pr = prReference(ref);
-  const baseRef = existing.prDetail?.baseRefName ?? '';
-  const commitSHA = resolveSelectedCommit(selectedCommitSHA, existing.commits);
-  const patchText = commitSHA
-    ? String((await GetPRCommitDiff(threadId, pr, commitSHA, ignoreWhitespace)) ?? '')
-    : String((await GetPRDiff(threadId, pr, baseRef)) ?? '');
-  return { patchText, commits: existing.commits, selectedCommitSHA: commitSHA };
-}
-
-function prReference(ref: PRRef): Parameters<typeof GetPRDiff>[1] {
-  return {
-    Forge: ref.forge,
-    Namespace: ref.namespace,
-    Repo: ref.repo,
-    Number: ref.number,
-  };
-}
-
-async function defaultBaseBranch(threadId: string): Promise<string> {
-  const branches = ((await GitListBranches(threadId)) ?? []) as GitBranch[];
-  const defaultBranch = branches.find((branch) => branch.isDefault);
-  if (!defaultBranch?.name) {
-    throw new Error('default branch not found');
-  }
-  return defaultBranch.name;
-}
-
-function defaultCollapsedPaths(files: readonly PatchFile[]): SvelteSet<string> {
-  const collapsed = new SvelteSet<string>();
-  for (const file of files) {
-    if (isLockfileish(file.path) || filePatchDisplayRows(file).length > 400) {
-      collapsed.add(file.path);
-    }
-  }
-  return collapsed;
-}
-
-export function reviewLineCommentForDraft(comment: DiffReviewComment): ReviewLineComment | null {
-  if (comment.side === 'file') {
-    return { path: comment.filePath, body: comment.body, side: 'file' };
-  }
-  if (comment.side === 'old' && comment.oldLine) {
-    return { path: comment.filePath, body: comment.body, line: comment.oldLine, side: 'left' };
-  }
-  if (comment.side === 'new' && comment.newLine) {
-    return { path: comment.filePath, body: comment.body, line: comment.newLine, side: 'right' };
-  }
-  if (comment.side === 'context' && comment.newLine) {
-    return { path: comment.filePath, body: comment.body, line: comment.newLine, side: 'right' };
-  }
-  return null;
-}
-
-export function draftAnchorExists(files: readonly PatchFile[], comment: DiffReviewComment): boolean {
-  if (comment.side === 'file') return files.some((file) => file.path === comment.filePath);
-  const file = files.find((candidate) => candidate.path === comment.filePath);
-  if (!file) return false;
-  const rows = filePatchDisplayRows(file);
-  return rows.some((row) => {
-    if (row.gap) return false;
-    if (comment.side === 'old') return row.side === 'old' && row.oldLine === comment.oldLine;
-    if (comment.side === 'new') return row.side === 'new' && row.newLine === comment.newLine;
-    return row.oldLine === comment.oldLine && row.newLine === comment.newLine;
-  });
-}
-
-function isLockfileish(path: string): boolean {
-  const name = path.split('/').pop() ?? path;
-  return name === 'pnpm-lock.yaml' ||
-    name === 'package-lock.json' ||
-    name === 'go.sum' ||
-    name.endsWith('.lock');
-}
-
-function storageKey(threadId: string): string {
-  return `reviewScope:${threadId}`;
-}
-
-function readPersistedScope(threadId: string): PersistedReviewScope | null {
-  const raw = appStorageGet(storageKey(threadId));
-  if (!raw) return null;
-  try {
-    const parsed = JSON.parse(raw) as Partial<PersistedReviewScope>;
-    if (!isReviewScope(parsed.scope)) return null;
-    return {
-      scope: parsed.scope,
-      baseBranch: typeof parsed.baseBranch === 'string' ? parsed.baseBranch : null,
-    };
-  } catch {
-    return null;
-  }
-}
-
-function persistScope(threadId: string, scope: ReviewScope, baseBranch: string | null): void {
-  appStorageSet(storageKey(threadId), JSON.stringify({ scope, baseBranch }));
-}
-
-function isReviewScope(value: unknown): value is ReviewScope {
-  return value === 'workspace' || value === 'branch' || value === 'pr' || value === 'edits';
-}
-
 function userFacingError(err: unknown): string {
   if (err instanceof Error) return err.message;
   if (typeof err === 'string') return err;
@@ -1975,8 +1572,8 @@ function userFacingError(err: unknown): string {
 }
 
 export function __resetReviewPaneStateForTest(): void {
+  for (const state of statesBySourcePane.values()) state.dispose();
   statesBySourcePane.clear();
-  prStatesBySubscription.clear();
 }
 
 export type { CommentAnchor };

@@ -1,5 +1,5 @@
 import '@testing-library/jest-dom/vitest';
-import { afterEach } from 'vitest';
+import { afterEach, beforeEach } from 'vitest';
 import { cleanup } from '@testing-library/svelte';
 import { resetWailsMocks } from './mocks/wailsio-runtime';
 import { resetBindingMocks } from './mocks/bindings-app';
@@ -14,6 +14,12 @@ import { clearThreadItemCacheForTest } from '../lib/stores/threadItemCache';
 import { resetProviderModelsForTest } from '../lib/stores/providerModels.svelte';
 import { clearAllThreadSizePriorsForTest } from '../lib/utils/virtual/priors';
 import { __resetSizePriorsStorageForTest } from '../lib/utils/virtual/priorsStorage';
+import { __setTransportStatusForTest } from '../lib/stores/transportStatus.svelte';
+import { __resetGitStatusStoreForTest } from '../lib/stores/gitStatusStore.svelte';
+import { __resetPRReviewStoreForTest } from '../lib/stores/prReviewStore.svelte';
+import { __resetMcpServersStoreForTest } from '../lib/stores/mcpServers.svelte';
+import { __resetChatBarFavoritesForTest } from '../lib/stores/chatBarFavorites.svelte';
+import { __resetWorkspaceChangeLockForTest } from '../lib/stores/workspaceChangeLock.svelte';
 
 if (typeof globalThis.ResizeObserver === 'undefined') {
   class StubResizeObserver {
@@ -170,6 +176,27 @@ if (typeof globalThis.window !== 'undefined') {
     writable: true,
   });
 }
+
+beforeEach(() => {
+  // The unit suite has no transport, so the wsClient's module-load snapshot
+  // is `disconnected` — a state no test means to exercise, and one that
+  // suspends every connection-gated store. Pin it connected; a test that
+  // cares about an outage drives it itself.
+  __setTransportStatusForTest({ status: 'connected', nextAttemptAt: null });
+  // Entity-keyed git status is a module-level singleton shared by every
+  // pane, so it outlives a test. Reset after the transport pin, which
+  // itself re-sources whatever the previous test left attached.
+  __resetGitStatusStoreForTest();
+  // Same shape for PR review state: one poll pump, CI pipeline and merge
+  // tree per PR, shared by every pane — and by every test in a file.
+  __resetPRReviewStoreForTest();
+  // MCP rows are keyed by project (Claude) / app (Codex), chat-bar favorites
+  // by the app, and the workspace-change lock by thread — all module-level
+  // singletons that outlive a test the same way.
+  __resetMcpServersStoreForTest();
+  __resetChatBarFavoritesForTest();
+  __resetWorkspaceChangeLockForTest();
+});
 
 afterEach(() => {
   resetDiffReviewCommentsForTest();

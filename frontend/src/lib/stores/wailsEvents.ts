@@ -3,10 +3,11 @@
 // This lives in its own leaf module — it imports only `@wailsio/runtime` — so
 // any store can subscribe to a backend-emitted event without importing the
 // heavy `events.ts` handler module. Importing `events.ts` from a low-level
-// store (e.g. gitStatus.svelte) would re-form the `events → thread.svelte →
-// gitStatus → events` ESM cycle that previously corrupted `events.ts`
-// init-order and silently dropped its handler registration. Subscribing
-// through this leaf keeps those stores decoupled from the event graph.
+// store (e.g. gitStatusStore.svelte) would re-form the `events →
+// thread.svelte → gitStatusStore → events` ESM cycle that previously
+// corrupted `events.ts` init-order and silently dropped its handler
+// registration. Subscribing through this leaf keeps those stores decoupled
+// from the event graph.
 //
 // `events.ts` re-exports `wailsEventOn` so existing `./events` import sites keep
 // their path; new low-level subscribers should import it from here directly.

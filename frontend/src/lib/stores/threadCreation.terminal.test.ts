@@ -2,8 +2,9 @@
 // terminal entry point (the per-project +terminal button, the mod+shift+~
 // chord, the ChatHeader ctrl/cmd-click) routes through.
 //
-// We mock the four collaborators (StartTerminal, expandProject, openEmptyPane,
-// replaceThreadInPane) so the test pins the WIRING and the load-bearing ORDER
+// We replace the four collaborators (StartTerminal, expandProject,
+// openEmptyPane, mountThreadInPane) over the real modules so the test pins the
+// WIRING and the load-bearing ORDER
 // without standing up a backend or the real pane registry / switchThread
 // fan-out. The mount → auto-open → focus-consume behaviour those collaborators
 // drive is covered separately by TerminalView.test.ts and ChatView.test.ts.
@@ -46,8 +47,8 @@ const h = vi.hoisted(() => {
       order.push('openEmptyPane');
       return fakePane;
     }),
-    replaceThreadInPane: vi.fn(async (_thread: unknown, _pane: unknown, _activation: string) => {
-      order.push('replaceThreadInPane');
+    mountThreadInPane: vi.fn(async (_thread: unknown, _pane: unknown, _activation: string) => {
+      order.push('mountThreadInPane');
       return fakePane;
     }),
     expandProject: vi.fn(),
@@ -55,24 +56,27 @@ const h = vi.hoisted(() => {
   };
 });
 
-vi.mock('./bindings', () => ({
+// importOriginal spreads, never whole-module factories (frontend/CLAUDE.md →
+// Testing): a factory that lists only the exports this file drives turns every
+// OTHER export of the module into `undefined`, and the failure lands in an
+// unrelated suite the next time somebody adds one.
+vi.mock('./bindings', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./bindings')>()),
   StartTerminal: h.startTerminal,
-  // Imported at module load by the draft helpers in the same file; stub so the
-  // import resolves even though openTerminalThread never touches it.
-  GetThreadDefaults: vi.fn(),
 }));
-vi.mock('./panes.svelte', () => ({
+vi.mock('./panes.svelte', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./panes.svelte')>()),
   openEmptyPane: h.openEmptyPane,
-  replaceThreadInPane: h.replaceThreadInPane,
-  // Unused by openTerminalThread, imported at module load by the draft helpers.
-  ensureMainPane: vi.fn(),
-  ensurePaneInLayout: vi.fn(),
-  getFocusedPaneOrNull: vi.fn(),
+  mountThreadInPane: h.mountThreadInPane,
 }));
-vi.mock('./sidebar.svelte', () => ({
+vi.mock('./sidebar.svelte', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./sidebar.svelte')>()),
   expandProject: h.expandProject,
 }));
-vi.mock('./toast.svelte', () => ({ addToast: h.addToast }));
+vi.mock('./toast.svelte', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./toast.svelte')>()),
+  addToast: h.addToast,
+}));
 
 import { openTerminalThread } from './threadCreation.svelte';
 // ./threads.svelte is intentionally NOT mocked — openTerminalThread prepends
@@ -88,7 +92,7 @@ beforeEach(() => {
   h.startTerminal.mockClear();
   h.requestTerminalFocus.mockClear();
   h.openEmptyPane.mockClear();
-  h.replaceThreadInPane.mockClear();
+  h.mountThreadInPane.mockClear();
   h.expandProject.mockClear();
   h.addToast.mockClear();
   // openTerminalThread console.error's the failure before toasting; keep the
@@ -108,9 +112,9 @@ describe('openTerminalThread', () => {
     expect(h.startTerminal).toHaveBeenCalledWith({ projectId: 'proj-1', cwd: '/work' });
     expect(h.expandProject).toHaveBeenCalledWith('proj-1');
     expect(h.openEmptyPane).toHaveBeenCalledTimes(1);
-    expect(h.replaceThreadInPane).toHaveBeenCalledTimes(1);
+    expect(h.mountThreadInPane).toHaveBeenCalledTimes(1);
 
-    const [thread, targetPane, activation] = h.replaceThreadInPane.mock.calls[0]!;
+    const [thread, targetPane, activation] = h.mountThreadInPane.mock.calls[0]!;
     expect(thread).toMatchObject({ id: 'term-1', mode: 'terminal' });
     expect(targetPane).toBe(h.fakePane);
     expect(activation).toBe('committed');
@@ -123,18 +127,18 @@ describe('openTerminalThread', () => {
     expect(getThreads()[0]?.id).toBe('term-1');
   });
 
-  it('latches focus on the pane BEFORE replaceThreadInPane mounts the surface', async () => {
+  it('latches focus on the pane BEFORE mountThreadInPane mounts the surface', async () => {
     await openTerminalThread({ projectId: 'proj-1' });
 
     // TerminalSurface.onMount consumes the focus latch during switchThread,
-    // which runs inside replaceThreadInPane — so the latch must already be set.
+    // which runs inside mountThreadInPane — so the latch must already be set.
     // Pinning the exact sequence guards against a refactor that opens the pane
     // first and latches after (one tick too late; the shell never grabs focus).
     expect(h.order).toEqual([
       'StartTerminal',
       'openEmptyPane',
       'requestTerminalFocus',
-      'replaceThreadInPane',
+      'mountThreadInPane',
     ]);
   });
 
@@ -167,6 +171,6 @@ describe('openTerminalThread', () => {
     expect(h.expandProject).not.toHaveBeenCalled();
     expect(h.openEmptyPane).not.toHaveBeenCalled();
     expect(h.requestTerminalFocus).not.toHaveBeenCalled();
-    expect(h.replaceThreadInPane).not.toHaveBeenCalled();
+    expect(h.mountThreadInPane).not.toHaveBeenCalled();
   });
 });

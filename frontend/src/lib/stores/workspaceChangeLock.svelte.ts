@@ -1,112 +1,265 @@
+// Whether a WORKSPACE can be changed right now.
+//
+// Doctrine (frontend/CLAUDE.md → State Boundaries): state is keyed by its
+// ENTITY. The question this answers — "would moving or deleting this checkout
+// break something that is running in it?" — is a fact about the DIRECTORY,
+// not about the thread that happens to be asking and not about the control
+// that asks. Remove Worktree runs `git worktree remove` on a directory; the
+// env picker moves where the next turn runs. Two threads sharing one worktree
+// is first-class (project-root threads default to it, and "implement this
+// plan in a new thread" inherits the source worktree), so a thread-keyed lock
+// left the destructive action live while a SIBLING thread's agent was writing
+// into the very directory being deleted.
+//
+// Error posture is FAIL-SAFE. These gate irreversible actions. A failed
+// GetWorkspaceActivity means we do not KNOW whether anything is running, and
+// "we do not know" must read as locked with a visible reason — the original
+// code logged the failure and resolved to zero running tasks, which reads as
+// "safe to delete".
+//
+// The backend answer is deliberately the same computation the removal gate
+// performs while holding the thread locks (App.GetWorkspaceActivity and
+// removeProjectWorktree share threadsReferencingWorkspace's path matching and
+// threadActivityBlockReason's activity reads), so the affordance and the
+// refusal cannot disagree. It covers BOTH legs of "busy" — open turns and
+// live background tasks — across every thread in the directory.
+//
+// EVENT ROUTING: refresh every live key on any activity event, rather than
+// enriching the wire payload with a workspacePath and routing precisely. The
+// events are correctly THREAD-keyed (a background task belongs to a thread;
+// the workspace is a derived fact), and the frontend cannot map an arbitrary
+// thread id to a workspace — the busy thread need not be mounted in any pane.
+// Enriching at the emit site would mean a store read on a hot triage emit
+// path, and its failure mode is silent: a payload that lost its workspacePath
+// routes nowhere and the lock reads UNLOCKED over running work, which is the
+// bug this file exists to close. A blind refresh has no such mode, and the
+// cost is bounded by the number of distinct workspaces on screen — a handful
+// — each behind its own 100ms debounce.
+
 import type { ThreadPane } from './thread.svelte';
-import { ListLiveBackgroundTasks } from './bindings';
-import { onItemUpsert, wailsEventOn } from './events';
+import { GetWorkspaceActivity, type WorkspaceActivity } from './bindings';
+// Imported from the leaf that OWNS the fan-out, not from the `events.ts`
+// composition root: this module is loaded by the test setup (it holds a
+// module-level store that has to be reset between tests), and pulling the
+// whole event graph in there would evaluate every handler module before a
+// suite's own `vi.mock` calls register.
+import { onItemUpsert } from './eventsItemStream';
+import { wailsEventOn } from './wailsEvents';
 import { getActiveTurn } from './threadStatuses.svelte';
-import type { BackgroundTaskStateEvent, BackgroundTasksChangedEvent } from '../types/events';
-import type { Item } from '../types/models';
+import { createEntityStore } from './entityStore.svelte';
+import { isMethodUnavailableError } from './transportStatus.svelte';
 import { debounce } from '../utils/debounce';
-import { countRunningTrayTasks } from '../utils/backgroundTray';
+import { workspaceKeyForThread } from '../utils/workspaceKey';
+
+// Item-stream events fire per wire round — several per second while any pane
+// streams — and every live key answers each one.
+const REFRESH_DEBOUNCE_MS = 100;
+
+const TURN_REASON = 'Workspace changes are unavailable while the agent is responding.';
+const TASKS_REASON = 'Workspace changes are unavailable while background tasks are running.';
+const CHECKING_REASON = 'Checking workspace availability...';
+// GetWorkspaceActivity is loopback-only, so a remote session can never
+// verify a workspace and never will — the refusal is a permanent property
+// of the session, not a failure to report. Unverified stays LOCKED; only
+// the reason changes, because "method not registered" reads as a broken
+// app rather than as the remote posture every other local-only affordance
+// already states (workflows UI-SPEC §10).
+const LOCAL_ONLY_REASON = 'Workspace changes are only available on the local machine.';
+
+function activityError(err: unknown): unknown {
+  return isMethodUnavailableError(err) ? new Error(LOCAL_ONLY_REASON) : err;
+}
+
+// Value is the workspace's live activity. `null` (no observation yet) and an
+// error both mean "unverified", which is locked.
+const store = createEntityStore<WorkspaceActivity, void>({
+  name: 'workspaceChangeLock',
+  source: async ({ key, apply, fail, signal }) => {
+    // Responses can overtake each other: the initial load and every
+    // debounced event refresh are separate RPCs on ONE entity generation,
+    // so nothing in the primitive orders them. An older IDLE answer landing
+    // after a newer BUSY one briefly unlocks `rm -rf` over a sibling
+    // thread's live agent — so each request is stamped and only the newest
+    // one may be observed, in either direction (a stale FAILURE overwriting
+    // a fresh answer is the same defect, fail-safe or not).
+    let issued = 0;
+    const request = (): (() => boolean) => {
+      const token = ++issued;
+      return () => token === issued;
+    };
+    const refresh = debounce(() => {
+      const isLatest = request();
+      void GetWorkspaceActivity(key).then(
+        (activity) => {
+          if (isLatest()) apply(activity as WorkspaceActivity);
+        },
+        // fail() is the whole recovery: the lock reads as blocked
+        // immediately and the primitive schedules a backed-off re-source.
+        // Adding an invalidate() here reset that curve on every inbound
+        // event, so a broken backend under a streaming thread never backed
+        // off — it just re-polled forever at the event rate.
+        (err: unknown) => {
+          if (isLatest()) fail(activityError(err));
+        },
+      );
+    }, REFRESH_DEBOUNCE_MS);
+
+    // None of these filter on the event's threadId: the busy thread may be
+    // one this client has never mounted, so there is nothing to compare a
+    // workspace key against. See EVENT ROUTING in the header.
+    const cancels = [
+      onItemUpsert((item) => {
+        if (item.isBackground || item.completionOf) refresh();
+      }),
+      // A turn opening or closing in ANY thread can flip a workspace's lock:
+      // the local pane's own turn is covered synchronously below, but a
+      // sibling thread's is only visible through these.
+      wailsEventOn('provider:turn_started', () => refresh()),
+      wailsEventOn('provider:turn_completed', () => refresh()),
+      wailsEventOn('provider:background_tasks_changed', () => refresh()),
+      // Background-task state events fire on host-process exit
+      // (state=exited) and on agent-observation drain (state=drained). Both
+      // transitions can flip the lock if a backgrounded task drops out of
+      // the live set.
+      wailsEventOn('provider:background_task_state', () => refresh()),
+    ];
+    let released = false;
+    const cleanup = (): void => {
+      if (released) return;
+      released = true;
+      refresh.cancel();
+      for (const cancel of cancels) cancel();
+    };
+    // The primitive has nothing to release until this run RETURNS a cleanup,
+    // so the abort hook is what frees the listeners when the entry dies while
+    // the initial fetch is still in flight — otherwise a dead run keeps
+    // issuing debounced calls beside its replacement's, forever if the RPC
+    // never answers.
+    signal.addEventListener('abort', cleanup);
+
+    const isLatest = request();
+    try {
+      const activity = (await GetWorkspaceActivity(key)) as WorkspaceActivity;
+      if (isLatest()) apply(activity);
+    } catch (err) {
+      // A superseded initial load is not this key's answer: a refresh
+      // issued while it was in flight has already observed (or failed)
+      // for everyone, and throwing here would tear the listeners down to
+      // re-run a call the newer one just made.
+      if (!isLatest()) return cleanup;
+      // The store has no cleanup registered for a source that throws, so
+      // release the listeners here before handing it the failure.
+      cleanup();
+      throw activityError(err);
+    }
+    return cleanup;
+  },
+});
+
+// The primitive's transport edge does the right thing here for free: a
+// disconnect suspends, which leaves every lock in its unverified — locked —
+// state, and nothing can be verified over a dead wire anyway.
 
 export interface WorkspaceChangeLockState {
   readonly locked: boolean;
   readonly reason: string;
   readonly runningBackgroundCount: number;
-  refresh(): Promise<void>;
+  /** Re-check now. No-op when the pane holds no thread row. */
+  refresh(): void;
 }
 
-export function createWorkspaceChangeLockState(getPane: () => ThreadPane): WorkspaceChangeLockState {
-  let runningBackgroundCount = $state(0);
-  let backgroundCheckInFlight = $state(false);
-  let checkedThreadId = $state('');
-  let fetchSeq = 0;
-
-  let threadId = $derived(getPane().thread?.id ?? '');
-  const debouncedRefresh = debounce(() => { void refresh(); }, 100);
-
-  async function refresh(): Promise<void> {
-    const id = threadId;
-    const seq = ++fetchSeq;
-    if (!id) {
-      runningBackgroundCount = 0;
-      backgroundCheckInFlight = false;
-      checkedThreadId = '';
-      return;
-    }
-    backgroundCheckInFlight = true;
-    try {
-      const items = (await ListLiveBackgroundTasks(id)) as Item[] | null;
-      if (seq !== fetchSeq || id !== threadId) return;
-      runningBackgroundCount = countRunningTrayTasks(items ?? []);
-      checkedThreadId = id;
-    } catch (err) {
-      if (seq !== fetchSeq || id !== threadId) return;
-      console.error('workspace change lock: ListLiveBackgroundTasks failed:', err);
-      runningBackgroundCount = 0;
-      checkedThreadId = id;
-    } finally {
-      if (seq === fetchSeq && id === threadId) {
-        backgroundCheckInFlight = false;
-      }
-    }
-  }
-
-  $effect(() => {
-    threadId;
-    debouncedRefresh.cancel();
-    void refresh();
+/**
+ * A read view over the shared per-workspace lock, resolving its key on every
+ * read so a thread switch re-points it with no bookkeeping. Attaching is
+ * refcounted, so both consumers on a pane — and every other pane on the same
+ * worktree — share one fetch and one debounce.
+ */
+export function createWorkspaceChangeLockState(
+  getPane: () => ThreadPane,
+): WorkspaceChangeLockState {
+  // $derived, not a plain function, and that is load-bearing: it memoizes by
+  // VALUE, so a pane switching to another thread in the same worktree
+  // produces the same string and the attach effect below is never
+  // invalidated. Reading `pane.thread` inside the effect directly would drop
+  // the shared entry to refcount zero and re-acquire it on every thread
+  // switch — the exact anti-pattern frontend/CLAUDE.md names under "Key an
+  // attach $effect on the ENTITY KEY alone".
+  const workspaceKey = $derived.by((): string => {
+    const pane = getPane();
+    // DRAFT PLACEHOLDERS DO NOT ATTACH, and that is about what they can do,
+    // not about the synthetic `draft:…` id — a placeholder carries a real
+    // workspacePath, so keying on the path alone WOULD attach it. Its env /
+    // worktree-name pickers only STAGE where a not-yet-created thread will
+    // run: nothing is written, no session exists, and no directory is
+    // touched, so a busy sibling in the project root is no reason to refuse
+    // the choice. The one destructive affordance a draft reaches — the
+    // picker's per-row worktree trash — is gated by the backend's own
+    // `deleteBlocked` per row and by RemoveOtherWorktreeForProject's
+    // refusal, never by this lock.
+    if (!pane.threadId) return '';
+    return workspaceKeyForThread(pane.thread) ?? '';
   });
 
   $effect(() => {
-    const cancelItemUpsert = onItemUpsert((item) => {
-      if (item.threadId !== threadId) return;
-      if (item.isBackground || item.completionOf) {
-        debouncedRefresh();
-      }
-    });
-    const cancelBackgroundTasksChanged = wailsEventOn<BackgroundTasksChangedEvent>(
-      'provider:background_tasks_changed',
-      (evt) => {
-        if (!evt || evt.threadId !== threadId) return;
-        debouncedRefresh();
-      },
-    );
-    // Background-task state events fire on host-process exit
-    // (state=exited) and on agent-observation drain (state=drained).
-    // Both transitions can flip the workspace lock if a backgrounded
-    // task drops out of the live set.
-    const cancelBackgroundTaskState = wailsEventOn<BackgroundTaskStateEvent>(
-      'provider:background_task_state',
-      (evt) => {
-        if (!evt || evt.threadId !== threadId) return;
-        debouncedRefresh();
-      },
-    );
-    return () => {
-      debouncedRefresh.cancel();
-      cancelItemUpsert();
-      cancelBackgroundTasksChanged();
-      cancelBackgroundTaskState();
-    };
+    if (!workspaceKey) return;
+    const handle = store.attach(workspaceKey, undefined);
+    return () => handle.release();
   });
+
+  // The pane's OWN turn, read synchronously from local state. The backend
+  // answer covers it too (and covers every sibling thread's), but only after
+  // an event round trip plus the debounce — a window in which the user could
+  // still click a destructive action on a turn they just started. Locking on
+  // local state closes it at zero cost; the backend leg is what makes the
+  // lock truthful about threads this pane cannot see.
+  const localTurnActive = (): boolean => getActiveTurn(getPane().threadId) !== null;
 
   return {
     get locked() {
-      return getActiveTurn(getPane().threadId) !== null ||
-        backgroundCheckInFlight ||
-        (threadId !== '' && checkedThreadId !== threadId) ||
-        runningBackgroundCount > 0;
+      if (localTurnActive()) return true;
+      const key = workspaceKey;
+      if (!key) return false;
+      if (store.peekError(key) !== null) return true;
+      const activity = store.peek(key);
+      // No observation yet — unverified, which is locked. Same shape as
+      // `reason` below, rather than a sentinel count that means "not a
+      // count".
+      if (activity === null) return true;
+      return activity.activeTurnThreads > 0 || activity.runningBackgroundTasks > 0;
     },
     get reason() {
-      if (getActiveTurn(getPane().threadId) !== null) return 'Workspace changes are unavailable while the agent is responding.';
-      if (runningBackgroundCount > 0) return 'Workspace changes are unavailable while background tasks are running.';
-      if (backgroundCheckInFlight || (threadId !== '' && checkedThreadId !== threadId)) {
-        return 'Checking workspace availability...';
-      }
-      return '';
+      if (localTurnActive()) return TURN_REASON;
+      const key = workspaceKey;
+      if (!key) return '';
+      const error = store.peekError(key);
+      if (error === LOCAL_ONLY_REASON) return error;
+      if (error !== null) return `Cannot check for running background tasks: ${error}`;
+      const activity = store.peek(key);
+      if (activity === null) return CHECKING_REASON;
+      if (activity.activeTurnThreads > 0) return TURN_REASON;
+      return activity.runningBackgroundTasks > 0 ? TASKS_REASON : '';
     },
     get runningBackgroundCount() {
-      return runningBackgroundCount;
+      return workspaceKey ? (store.peek(workspaceKey)?.runningBackgroundTasks ?? 0) : 0;
     },
-    refresh,
+    refresh() {
+      if (workspaceKey) store.invalidate(workspaceKey);
+    },
   };
+}
+
+/**
+ * Diagnostics / tests: the workspaces currently held. Both consumers create
+ * their view inside a component, so an unmount that failed to release would
+ * pin a workspace's listeners and its debounce for the app's lifetime — the
+ * leak is only visible from here.
+ */
+export function workspaceChangeLockKeys(): string[] {
+  return store.keys();
+}
+
+/** Test seam: drop every entry, as a fresh module load would. */
+export function __resetWorkspaceChangeLockForTest(): void {
+  store.suspend();
+  store.resetAll();
 }

@@ -10,7 +10,10 @@ import {
   type PaneLayoutItem,
 } from './paneLayout.svelte';
 import { getThreadById, replaceThread as replaceThreadInRegistry } from './threads.svelte';
+import { setGitStatusPaneBridge } from './gitStatusStore.svelte';
+import { workspaceKeyForThread } from '../utils/workspaceKey';
 import { REVEAL_PANE_EVENT } from './eventNames';
+import { reportFrontendDiagnostic } from '../utils/frontendErrorCapture';
 
 // Active panes, keyed by pane ID. PaneHost mounts panes from layout order;
 // command routing and sidebar actions resolve explicit pane targets through
@@ -245,6 +248,27 @@ export function isThreadVisible(threadId: string): boolean {
   return findPaneShowingThread(threadId) !== null;
 }
 
+/**
+ * Every pane currently hosting a draft placeholder for `projectId`.
+ *
+ * A placeholder has no thread row, so nothing the backend broadcasts can
+ * reach it — the fan-out has to happen here. Callers that act on project or
+ * workspace state (new-thread defaults, a checkout, a worktree removal) use
+ * this so every open "New Thread" composer on that project observes the
+ * change, not just the one the user clicked in.
+ */
+export function forEachDraftPlaceholderPane(
+  projectId: string,
+  fn: (pane: ThreadPane) => void,
+): void {
+  if (!projectId) return;
+  for (const pane of panes.values()) {
+    if (!pane.hasDraftPlaceholder) continue;
+    if (pane.thread?.projectId !== projectId) continue;
+    fn(pane);
+  }
+}
+
 export function destroyPane(id: string): void {
   const pane = panes.get(id);
   if (!pane) return;
@@ -337,7 +361,24 @@ export async function hydrateRestoredPaneRegistry(
   let nextPanes = new Map<string, ThreadPane>();
   let nextActivation = new Map<string, PaneActivation>();
   const hydratedPanes: Array<{ pane: ThreadPane; thread: Thread }> = [];
+  // The other door into the registry. `paneLayoutPersistence` drops repeated
+  // thread ids before it gets here; if one still arrives, the restore would
+  // silently rebuild the two-panes-one-thread state the invariant forbids.
+  const restoredThreadIds = new Set<string>();
+  const droppedPaneIds = new Set<string>();
   for (const entry of entries) {
+    if (restoredThreadIds.has(entry.thread.id)) {
+      const detail = `thread ${entry.thread.id} requested for pane ${entry.paneId} and an earlier pane`;
+      console.error(`[panes] duplicate thread in restore; pane skipped (${detail})`);
+      reportFrontendDiagnostic(
+        'panes: restore supplied one thread for two panes — the paneLayoutPersistence dedup '
+        + 'let a duplicate through (frontend/CLAUDE.md → State ownership)',
+        detail,
+      );
+      droppedPaneIds.add(entry.paneId);
+      continue;
+    }
+    restoredThreadIds.add(entry.thread.id);
     const pane = createThreadPane({ paneId: entry.paneId });
     nextPanes = nextPanes.set(entry.paneId, pane);
     nextActivation = nextActivation.set(entry.paneId, 'committed');
@@ -350,15 +391,16 @@ export async function hydrateRestoredPaneRegistry(
   const results = await Promise.allSettled(
     hydratedPanes.map(({ pane, thread }) => pane.switchThread(thread)),
   );
-  const failedPaneIds = new Set<string>();
   for (const [index, result] of results.entries()) {
     if (result.status === 'fulfilled') continue;
     const paneId = hydratedPanes[index]?.pane.paneId ?? 'unknown';
-    failedPaneIds.add(paneId);
+    droppedPaneIds.add(paneId);
     console.error(`Failed to restore pane "${paneId}":`, result.reason);
   }
-  if (failedPaneIds.size === 0) return;
-  for (const paneId of failedPaneIds) {
+  if (droppedPaneIds.size === 0) return;
+  // Skipped duplicates were never registered, so only their layout slot needs
+  // clearing; the map deletes below are no-ops for them.
+  for (const paneId of droppedPaneIds) {
     panes.get(paneId)?.clear();
     const nextPanes = new Map(panes);
     nextPanes.delete(paneId);
@@ -368,7 +410,15 @@ export async function hydrateRestoredPaneRegistry(
     paneActivationById = nextActivation;
     removePaneLayoutItem(paneId, { persist: false });
   }
-  if (focusedPaneId && failedPaneIds.has(focusedPaneId)) {
+  // Based on what was REQUESTED, not on what survived the resolve above: a
+  // focused pane that was deduplicated never entered `panes`, so
+  // `focusedPaneId` is already null here and a truthiness check would skip
+  // the fallback entirely — leaving the session with no focused pane at all,
+  // and every keyboard pane command a no-op until the user clicks one.
+  if (
+    nextFocusedPaneId !== null
+    && (focusedPaneId === null || droppedPaneIds.has(focusedPaneId))
+  ) {
     focusedPaneId = orderedPaneIds()[0] ?? null;
   }
 }
@@ -381,10 +431,40 @@ export function findPaneShowingThread(threadId: string): ThreadPane | null {
   return null;
 }
 
-export async function replaceThreadInPane(
+/**
+ * One thread is mounted in at most one pane. Enforced structurally by
+ * `mountThreadInPane` being the only door into `replaceThreadInPane`; this is
+ * the tripwire for a future path that mounts around it.
+ *
+ * Not dev-gated. It costs one scan of a registry holding a handful of panes,
+ * on a user-initiated mount, and a breach produces two panes that disagree
+ * about one thread — worth the evidence in the field, not just on a dev
+ * machine. Constant message, ids in `detail`: an id in the message would mint
+ * a diagnostic signature per thread and bypass the per-signature cap.
+ */
+function reportDuplicateMount(threadId: string, targetPaneId: string): void {
+  for (const pane of panes.values()) {
+    if (pane.paneId === targetPaneId || pane.threadId !== threadId) continue;
+    const detail = `thread ${threadId} already in pane ${pane.paneId}, mounting into ${targetPaneId}`;
+    console.error(`[panes] duplicate thread mount (${detail})`);
+    reportFrontendDiagnostic(
+      'panes: one thread mounted in two panes — an open bypassed mountThreadInPane '
+      + '(frontend/CLAUDE.md → State ownership)',
+      detail,
+    );
+    return;
+  }
+}
+
+/**
+ * Mount a thread into a pane unconditionally. PRIVATE: every open goes
+ * through `mountThreadInPane`, which probes for an existing mount first.
+ * Calling this directly is how a thread ends up in two panes.
+ */
+async function replaceThreadInPane(
   thread: Thread,
   targetPane: string | ThreadPane,
-  activation: PaneActivation = 'committed',
+  activation: PaneActivation,
 ): Promise<ThreadPane> {
   const target = typeof targetPane === 'string'
     ? panes.get(targetPane)
@@ -392,6 +472,7 @@ export async function replaceThreadInPane(
   if (!target) {
     throw new Error(`Target pane "${targetPane}" is not registered.`);
   }
+  reportDuplicateMount(thread.id, target.paneId);
   if (!panes.has(target.paneId)) {
     registerPane(target.paneId, target, activation);
   } else {
@@ -405,9 +486,20 @@ export async function replaceThreadInPane(
   return target;
 }
 
-export async function revealThreadIfOpen(thread: Thread): Promise<ThreadPane | null> {
-  const pane = findPaneShowingThread(thread.id);
+/**
+ * Focus + reveal the pane already showing `threadId`, or null when none is.
+ * A `committed` request also promotes a preview pane — opening a previewed
+ * thread deliberately is what commits it.
+ *
+ * Synchronous on purpose: this runs ahead of every mount, and
+ * `openTerminalThread` needs the empty-pane → terminal transition to stay
+ * inside one paint frame (an await here reintroduces the "pick a project"
+ * flash it was written to avoid).
+ */
+function revealThreadIfOpen(threadId: string, activation: PaneActivation): ThreadPane | null {
+  const pane = findPaneShowingThread(threadId);
   if (!pane) return null;
+  if (activation === 'committed') commitPanePreview(pane.paneId);
   focusedPaneId = pane.paneId;
   requestPanePersistence();
   revealPane(pane.paneId);
@@ -421,37 +513,49 @@ function resolveOpenTargetPane(targetPane?: string | ThreadPane | null): string 
   return ensureMainPane();
 }
 
+/**
+ * THE way a thread is put on screen. Reveals the pane already showing it when
+ * there is one — otherwise mounts it in `targetPane` (default: the focused
+ * pane, else main). Every open path funnels here, which is what makes
+ * "one thread, one pane" a property of the registry rather than a habit of
+ * its callers.
+ *
+ * `activation` is the mount's intent, not just the new pane's state: a
+ * `committed` open also promotes an existing preview pane.
+ */
+export async function mountThreadInPane(
+  thread: Thread,
+  targetPane?: string | ThreadPane | null,
+  activation: PaneActivation = 'committed',
+): Promise<ThreadPane> {
+  const existing = revealThreadIfOpen(thread.id, activation);
+  if (existing) return existing;
+  return replaceThreadInPane(thread, resolveOpenTargetPane(targetPane), activation);
+}
+
 export async function openThreadInPane(
   thread: Thread,
   targetPane?: string | ThreadPane | null,
 ): Promise<ThreadPane> {
-  const existing = await revealThreadIfOpen(thread);
-  if (existing) {
-    commitPanePreview(existing.paneId);
-    return existing;
-  }
-  return replaceThreadInPane(thread, resolveOpenTargetPane(targetPane), 'committed');
+  return mountThreadInPane(thread, targetPane, 'committed');
 }
 
 export async function openThreadFromNavigation(
   thread: Thread,
   targetPane?: string | ThreadPane | null,
 ): Promise<ThreadPane> {
-  const existing = await revealThreadIfOpen(thread);
-  if (existing) return existing;
-  return replaceThreadInPane(thread, resolveOpenTargetPane(targetPane), 'preview');
+  return mountThreadInPane(thread, targetPane, 'preview');
 }
 
 export async function openThreadInNewPane(thread: Thread, insertIndex?: number): Promise<ThreadPane> {
-  const existing = await revealThreadIfOpen(thread);
-  if (existing) {
-    commitPanePreview(existing.paneId);
-    return existing;
-  }
+  // Probed before minting the pane: a thread that is already open must not
+  // leave an orphan empty pane behind.
+  const existing = revealThreadIfOpen(thread.id, 'committed');
+  if (existing) return existing;
   const paneId = nextPaneId();
   const pane = createPane(paneId);
   addThreadPaneToLayout(paneId, resolveNewPaneInsertIndex(insertIndex));
-  return replaceThreadInPane(thread, pane, 'committed');
+  return mountThreadInPane(thread, pane, 'committed');
 }
 
 /**
@@ -471,14 +575,10 @@ export function openEmptyPane(insertIndex?: number): ThreadPane {
 }
 
 export async function openThreadIdInNewPane(threadId: string, insertIndex?: number): Promise<ThreadPane | null> {
-  const existing = findPaneShowingThread(threadId);
-  if (existing) {
-    commitPanePreview(existing.paneId);
-    focusedPaneId = existing.paneId;
-    requestPanePersistence();
-    revealPane(existing.paneId);
-    return existing;
-  }
+  // Probed before the registry lookup: an open thread is revealed even when
+  // the sidebar registry no longer carries its row.
+  const existing = revealThreadIfOpen(threadId, 'committed');
+  if (existing) return existing;
   const thread = getThreadById(threadId);
   if (!thread) return null;
   return openThreadInNewPane(thread, insertIndex);
@@ -548,3 +648,21 @@ export function syncThread(thread: Thread): void {
     pane.replaceThread(thread);
   }
 }
+
+// Arm the git-status store's pane bridge at module init. The import goes one
+// way — panes → gitStatusStore — because the reverse closed a cycle
+// (gitStatusStore → panes → thread → gitStatusStore) whose init order
+// decided whether a module-level event listener registered. Importing this
+// module is the whole wiring: no registration order, and no test reset that
+// can leave branch reconciliation unable to reach a pane.
+setGitStatusPaneBridge({
+  syncThread,
+  reportWorkspaceError(workspacePath, message) {
+    // Only the panes still in that workspace. A pane that has moved on is
+    // not shown an error about a checkout it left.
+    for (const pane of panes.values()) {
+      if (workspaceKeyForThread(pane.thread ?? null) !== workspacePath) continue;
+      pane.setGeneralError(message);
+    }
+  },
+});

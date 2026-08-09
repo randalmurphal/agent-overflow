@@ -22,6 +22,13 @@
 //    not on every write); after the key's first-ever write creates the
 //    box, that reader re-runs once and tracks the box directly.
 //
+// NOT the primitive for every keyed store. This one is a per-key SIGNAL and
+// nothing else: no refcount, no source, no transport edge. A key backed by a
+// backend resource that must be acquired, released, and re-acquired across a
+// reconnect belongs in `entityStore.svelte.ts` instead — building that on a
+// registry means hand-rolling the acquire/release/retry/reconnect machinery
+// per store, which is the drift the entity primitive exists to end.
+//
 // Boxes live for the session (bounded by distinct keys observed);
 // `drop` releases a key when its owner is discarded. Values are held
 // in `$state.raw` — replaced wholesale, never mutated in place — so

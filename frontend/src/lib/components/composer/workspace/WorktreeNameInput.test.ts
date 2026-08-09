@@ -23,6 +23,7 @@ function threadOverrides() {
 
 async function buildWorktreePane() {
   setBindingMock('ListLiveBackgroundTasks', async () => []);
+  setBindingMock('GetWorkspaceActivity', async () => ({ activeTurnThreads: 0, runningBackgroundTasks: 0 }));
   return buildPane(makeThread(threadOverrides()));
 }
 

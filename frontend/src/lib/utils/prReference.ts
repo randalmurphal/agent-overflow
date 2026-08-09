@@ -176,6 +176,44 @@ export function prScopeLabel(ref: PRRef): string {
   return ref.forge === 'gitlab' ? `MR !${ref.number}` : `PR #${ref.number}`;
 }
 
+/**
+ * The entity key for a pull/merge request: `<forge>:<namespace>/<repo>:<n>`.
+ *
+ * One spelling of "which PR" everywhere it is needed — the PR-review store's
+ * key, the `pr:updated` wire address (`prUpdateKey` in app_forge_review.go
+ * builds the identical string), and, with the `pr:` prefix below, the review
+ * pane's comment sourceKey.
+ */
+export function prKey(ref: PRRef): string {
+  return `${ref.forge}:${ref.namespace}/${ref.repo}:${ref.number}`;
+}
+
+/**
+ * Comment sourceKey for pr scope. Stable across PR head movement: drafts
+ * must survive pushes, and each draft's commitSha records the head it was
+ * anchored to.
+ */
+export function prSourceKey(ref: PRRef): string {
+  return `pr:${prKey(ref)}`;
+}
+
+/** The wire shape the Go `git.PRReference` parameter expects. */
+export interface PRReferenceWire {
+  Forge: string;
+  Namespace: string;
+  Repo: string;
+  Number: number;
+}
+
+export function prReferenceWire(ref: PRRef): PRReferenceWire {
+  return {
+    Forge: ref.forge,
+    Namespace: ref.namespace,
+    Repo: ref.repo,
+    Number: ref.number,
+  };
+}
+
 function parseMatch(forge: Forge, namespace: string, repo: string, numberStr: string): PRReferenceResult {
   const number = Number.parseInt(numberStr, 10);
   if (!Number.isFinite(number) || number <= 0) {

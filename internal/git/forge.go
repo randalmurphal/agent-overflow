@@ -378,8 +378,15 @@ func SplitProjectForForge(forgeID, project string) (namespace, repo string, err 
 
 // ValidateProjectSegment enforces a conservative char class on a
 // single namespace/repo path segment. Rejects empty, `.`/`..`, leading
-// dash, whitespace, and control characters. The accepted set covers
+// dash, whitespace, control characters, and `:`. The accepted set covers
 // all real github / gitlab owner / namespace / repo names.
+//
+// `:` is rejected because the PR entity key is `<forge>:<project>:<number>`
+// (prUpdateKey / the frontend's prKey). A segment carrying a colon would
+// let two different pull requests spell the same key, and the key is what
+// every `pr:updated` frame is addressed by — one PR's poll results would
+// land on another PR's panes. GitHub and GitLab both refuse `:` in a path
+// segment, so nothing legitimate is lost.
 func ValidateProjectSegment(seg string) error {
 	if seg == "" {
 		return errors.New("segment is empty")
@@ -393,6 +400,9 @@ func ValidateProjectSegment(seg string) error {
 	for _, r := range seg {
 		if r <= 0x20 || r == 0x7f {
 			return fmt.Errorf("segment %q contains a control or whitespace character", seg)
+		}
+		if r == ':' {
+			return fmt.Errorf("segment %q must not contain ':'", seg)
 		}
 	}
 	return nil

@@ -7,23 +7,22 @@ import { loadSettings } from '../../stores/settings.svelte';
 import type { GitStatus } from '../../types/git';
 import type { Thread } from '../../types/models';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
+import {
+  __seedGitStatusErrorForTest,
+  __seedGitStatusForTest,
+} from '../../stores/gitStatusStore.svelte';
 import { buildPane as buildRegisteredPane, makeThread as makeBaseThread } from '../../../test/helpers/chat';
 
-// GitActionsControl is now a pure consumer of the pane-owned gitStatus slot —
-// it owns no subscription. The slot's subscribe / retry / branch-persist /
-// event-routing behavior is covered in stores/gitStatus.svelte.test.ts; these
-// tests drive rendering by setting the slot status directly via
-// `pane.gitStatus.set(...)` / `.setError(...)`.
+// GitActionsControl is a pure consumer of the shared workspace-keyed
+// git-status store — it owns no subscription (ChatHeaderActions attaches).
+// The store's subscribe / retry / branch-persist / event-routing behavior is
+// covered in stores/gitStatusStore.svelte.test.ts; these tests drive
+// rendering by seeding the workspace's entry directly.
 
-// Pin transport connected for the createThreadPane import chain (the real
-// store reads from wsClient, never initialised in test scope).
-// Partial mock: only the snapshot is pinned. A whole-module factory would
-// have to re-declare every export, so any new one silently becomes undefined
-// here (isMethodUnavailableError did exactly that).
-vi.mock('../../stores/transportStatus.svelte', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../../stores/transportStatus.svelte')>()),
-  getTransportStatus: () => ({ status: 'connected', nextAttemptAt: null }),
-}));
+// Transport is pinned connected globally (src/test/setup.ts). It is not
+// mocked here: the git-status store is a `.svelte.ts` importer of
+// transportStatus, and vi.mock does not reliably reach those
+// (frontend/CLAUDE.md § Testing).
 
 // Svelte transitions poke Element.animate on mount; jsdom lacks it.
 if (typeof Element !== 'undefined' && !('animate' in Element.prototype)) {
@@ -36,6 +35,10 @@ if (typeof Element !== 'undefined' && !('animate' in Element.prototype)) {
     };
   };
 }
+
+// Every pane in this file lives in the same workspace, which is the store
+// key the component reads through.
+const WORKSPACE = '/workspace';
 
 function makeThread(overrides: Partial<Thread> = {}): Thread {
   return makeBaseThread({
@@ -90,7 +93,7 @@ describe('<GitActionsControl> consumer rendering', () => {
 
   it('renders nothing when the workspace is not a git repo', async () => {
     const pane = await buildPane();
-    pane.gitStatus.set(status({ isRepo: false, branch: '' }));
+    __seedGitStatusForTest(WORKSPACE, status({ isRepo: false, branch: '' }));
     const { container, queryByTestId } = render(GitActionsControl, { props: { pane } });
     await flush();
     expect(queryByTestId('git-actions-error')).toBeNull();
@@ -99,14 +102,14 @@ describe('<GitActionsControl> consumer rendering', () => {
 
   it('shows the retry affordance when the slot reports an error', async () => {
     const pane = await buildPane();
-    pane.gitStatus.setError(true);
+    __seedGitStatusErrorForTest(WORKSPACE, 'git busy');
     const { findByTestId } = render(GitActionsControl, { props: { pane } });
     expect(await findByTestId('git-actions-error')).toBeInTheDocument();
   });
 
   it('retry button asks the slot to refresh', async () => {
     const pane = await buildPane();
-    pane.gitStatus.setError(true);
+    __seedGitStatusErrorForTest(WORKSPACE, 'git busy');
     const refreshNow = vi.spyOn(pane.gitStatus, 'refreshNow').mockResolvedValue();
     const { findByTestId } = render(GitActionsControl, { props: { pane } });
     await fireEvent.click(await findByTestId('git-actions-error'));
@@ -115,7 +118,7 @@ describe('<GitActionsControl> consumer rendering', () => {
 
   it('renders the split button + Ship Changes menu entry in a valid repo', async () => {
     const pane = await buildPane();
-    pane.gitStatus.set(status({ isRepo: true, hasChanges: true }));
+    __seedGitStatusForTest(WORKSPACE, status({ isRepo: true, hasChanges: true }));
     const { container, queryByTestId, findByRole } = render(GitActionsControl, { props: { pane } });
     await flush();
 
@@ -128,12 +131,15 @@ describe('<GitActionsControl> consumer rendering', () => {
 
   it('disables Remove Worktree while this pane thread is busy', async () => {
     setBindingMock('ListLiveBackgroundTasks', async () => []);
+    setBindingMock('GetWorkspaceActivity', async () => ({ activeTurnThreads: 0, runningBackgroundTasks: 0 }));
     const pane = await buildPane(makeThread({
       workspacePath: '/workspace-wt/feat',
       worktreePath: '/workspace-wt/feat',
     }));
     pane.setActiveTurn({ turnId: 'turn-1', turnIndex: 0, startedAt: 1 });
-    pane.gitStatus.set(status({ isRepo: true }));
+    // Seeded on the worktree this thread actually sits in — the store is keyed
+    // by the thread's workspace path, not by the project root.
+    __seedGitStatusForTest('/workspace-wt/feat', status({ isRepo: true }));
     const { container, findByRole, queryByText } = render(GitActionsControl, { props: { pane } });
     await flush();
 
@@ -148,9 +154,44 @@ describe('<GitActionsControl> consumer rendering', () => {
     expect(queryByText(/This will remove the git worktree/)).toBeNull();
   });
 
+  // The regression the workspace-change lock was re-keyed for. This pane's
+  // thread is idle; a DIFFERENT thread sharing the same worktree has a
+  // background task running. The thread-keyed lock this replaced asked only
+  // about the pane's own thread, saw nothing, and left Remove Worktree live
+  // over a directory a sibling agent was writing into.
+  it('disables Remove Worktree while a SIBLING thread in the same worktree is busy', async () => {
+    const WORKTREE = '/workspace-wt/shared';
+    const asked: string[] = [];
+    setBindingMock('ListLiveBackgroundTasks', async () => []);
+    setBindingMock('GetWorkspaceActivity', async (workspacePath: unknown) => {
+      asked.push(String(workspacePath));
+      return { activeTurnThreads: 0, runningBackgroundTasks: 1 };
+    });
+    const pane = await buildPane(makeThread({
+      id: 'thread-a',
+      workspacePath: WORKTREE,
+      worktreePath: WORKTREE,
+    }));
+    // No active turn and no background task of its own: everything this pane
+    // can see about itself says the worktree is free.
+    __seedGitStatusForTest(WORKTREE, status({ isRepo: true }));
+    const { container, findByRole, queryByText } = render(GitActionsControl, { props: { pane } });
+    await flush();
+
+    const trigger = container.querySelector<HTMLButtonElement>('button[aria-label="More git actions"]');
+    await fireEvent.click(trigger!);
+    const item = await findByRole('menuitem', { name: /Remove Worktree/ });
+    expect(item).toHaveAttribute('aria-disabled', 'true');
+    expect(item).toHaveAttribute('title', expect.stringMatching(/background tasks/));
+    await fireEvent.click(item);
+    expect(queryByText(/This will remove the git worktree/)).toBeNull();
+    // The lock asked about the DIRECTORY, never about the thread id.
+    expect(asked).toEqual([WORKTREE]);
+  });
+
   it('reflects the primary action label for the observed status', async () => {
     const pane = await buildPane();
-    pane.gitStatus.set(status({ hasChanges: true }));
+    __seedGitStatusForTest(WORKSPACE, status({ hasChanges: true }));
     const { container } = render(GitActionsControl, { props: { pane } });
     await flush();
 
@@ -159,7 +200,7 @@ describe('<GitActionsControl> consumer rendering', () => {
 
     // A new observed status (no changes, ahead of upstream) re-renders the
     // same primary button in place.
-    pane.gitStatus.set(status({ hasChanges: false, aheadCount: 2 }));
+    __seedGitStatusForTest(WORKSPACE, status({ hasChanges: false, aheadCount: 2 }));
     await flush();
     expect(primary?.textContent?.trim()).toBe('Push');
   });
@@ -175,7 +216,7 @@ describe('<GitActionsControl> forge labels', () => {
 
   it('renders "Create PR" for github forge', async () => {
     const pane = await buildPane();
-    pane.gitStatus.set(status({ forge: 'github', branch: 'feature', isDefaultBranch: false }));
+    __seedGitStatusForTest(WORKSPACE, status({ forge: 'github', branch: 'feature', isDefaultBranch: false }));
     const { findByLabelText, getByText } = render(GitActionsControl, { props: { pane } });
     await fireEvent.click(await findByLabelText('More git actions'));
     await flush();
@@ -184,7 +225,7 @@ describe('<GitActionsControl> forge labels', () => {
 
   it('renders "Create MR" for gitlab forge', async () => {
     const pane = await buildPane();
-    pane.gitStatus.set(status({ forge: 'gitlab', branch: 'feature', isDefaultBranch: false }));
+    __seedGitStatusForTest(WORKSPACE, status({ forge: 'gitlab', branch: 'feature', isDefaultBranch: false }));
     const { findByLabelText, getByText } = render(GitActionsControl, { props: { pane } });
     await fireEvent.click(await findByLabelText('More git actions'));
     await flush();
@@ -193,7 +234,7 @@ describe('<GitActionsControl> forge labels', () => {
 
   it('renders "Open MR" instead of "Create MR" when a GitLab MR is already open', async () => {
     const pane = await buildPane();
-    pane.gitStatus.set(status({
+    __seedGitStatusForTest(WORKSPACE, status({
       forge: 'gitlab',
       branch: 'feature',
       isDefaultBranch: false,
@@ -211,7 +252,7 @@ describe('<GitActionsControl> forge labels', () => {
 
   it('disables Create MR when checking for an existing MR failed', async () => {
     const pane = await buildPane();
-    pane.gitStatus.set(status({
+    __seedGitStatusForTest(WORKSPACE, status({
       forge: 'gitlab',
       branch: 'feature',
       isDefaultBranch: false,
@@ -228,7 +269,7 @@ describe('<GitActionsControl> forge labels', () => {
 
   it('disables the Create PR menu item when the forge is unsupported', async () => {
     const pane = await buildPane();
-    pane.gitStatus.set(status({ forge: '', branch: 'feature', isDefaultBranch: false }));
+    __seedGitStatusForTest(WORKSPACE, status({ forge: '', branch: 'feature', isDefaultBranch: false }));
     const { findByLabelText, getByText } = render(GitActionsControl, { props: { pane } });
     await fireEvent.click(await findByLabelText('More git actions'));
     await flush();
@@ -258,7 +299,7 @@ describe('<GitActionsControl> header action controls are height-locked', () => {
 
   it('locks the repo split-button (primary + caret) to the h-6 cluster height', async () => {
     const pane = await buildPane();
-    pane.gitStatus.set(status({ isRepo: true, hasChanges: true }));
+    __seedGitStatusForTest(WORKSPACE, status({ isRepo: true, hasChanges: true }));
     const { container } = render(GitActionsControl, { props: { pane } });
     await flush();
 
@@ -278,7 +319,7 @@ describe('<GitActionsControl> header action controls are height-locked', () => {
 
   it('locks the git-error retry button to the h-6 cluster height', async () => {
     const pane = await buildPane();
-    pane.gitStatus.setError(true);
+    __seedGitStatusErrorForTest(WORKSPACE, 'git busy');
     const { findByTestId } = render(GitActionsControl, { props: { pane } });
     const errorBtn = await findByTestId('git-actions-error');
     // size="xs" → h-6; size="sm" (the prior value) is h-7 (28px) and would jump

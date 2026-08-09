@@ -116,6 +116,26 @@ func TestValidateProjectSegment(t *testing.T) {
 	}
 }
 
+// TestValidateProjectSegmentRejectsColon guards the injectivity of the PR
+// entity key `<forge>:<project>:<number>`. A colon inside a segment lets two
+// different pull requests spell one key — `github:a/b:c:1` is both
+// (project "a/b:c", #1) and (project "a/b", #"c:1") — and that key is what
+// every `pr:updated` frame is addressed by, so one PR's poll results would
+// land on the other's panes. Neither forge allows a colon in a path segment.
+func TestValidateProjectSegmentRejectsColon(t *testing.T) {
+	for _, seg := range []string{"a:b", ":", "repo:1", "own:er"} {
+		if err := ValidateProjectSegment(seg); err == nil {
+			t.Errorf("ValidateProjectSegment(%q) = nil, want a colon rejection", seg)
+		}
+	}
+	// And through the parser the PR-reference path actually uses.
+	for _, project := range []string{"owner/re:po", "grp:sub/repo"} {
+		if _, _, err := SplitProjectForForge("gitlab", project); err == nil {
+			t.Errorf("SplitProjectForForge(gitlab, %q) = nil, want a colon rejection", project)
+		}
+	}
+}
+
 func TestBuildPRAnchor(t *testing.T) {
 	cases := []struct {
 		forge, namespace, repo string

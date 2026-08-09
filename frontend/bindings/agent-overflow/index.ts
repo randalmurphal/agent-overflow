@@ -117,6 +117,7 @@ export {
     WorkflowItemUnitView,
     WorkflowItemView,
     WorkflowPRReviewComments,
+    WorkspaceActivity,
     WorkspaceFileSearchResult,
     WorktreeListItem,
     WorktreeSetupConfig,

@@ -105,14 +105,20 @@ func (c *Cache) Put(s ServerStatus) {
 // StatusUnknown so subscribers can clear stale UI state immediately
 // (CRUD edits, OAuth completion, etc.) without waiting for a refetch
 // to arrive.
+//
+// The emission is UNCONDITIONAL — it does not depend on an entry
+// having been present. The sentinel says "the authoritative answer
+// for this server moved", which is a fact about the toggle/OAuth that
+// just landed, not about this cache's bookkeeping; a caller that has
+// never asked for the status is exactly the caller whose listing is
+// most obviously wrong. It is also the frontend's ONE re-list trigger
+// after a toggle (mcpServers.svelte.ts), so a cold cache silently
+// eating the sentinel meant the menu never refreshed.
 func (c *Cache) Invalidate(k Key) {
 	c.mu.Lock()
-	_, had := c.entries[k]
 	delete(c.entries, k)
 	c.mu.Unlock()
-	if had {
-		c.bus.Emit(ServerStatus{Key: k, Status: StatusUnknown, Source: SourceEphemeralFetch, CheckedAt: c.now()})
-	}
+	c.bus.Emit(ServerStatus{Key: k, Status: StatusUnknown, Source: SourceEphemeralFetch, CheckedAt: c.now()})
 }
 
 // InvalidateProvider drops every entry for the given provider. Used

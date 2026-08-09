@@ -7,6 +7,7 @@ import { resetForTest as resetDiffReviewCommentsForTest } from '../../stores/dif
 import { resetAppStorageForTest } from '../../stores/appStorage';
 import type { DiffReviewComment, DiffReviewCommentInput, PRDetail, Thread } from '../../types/models';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
+import { applyPRReviewUpdated } from '../../stores/eventsPRReview';
 
 function makeCtx(): PanelContext {
   return {
@@ -360,10 +361,9 @@ describe('<ReviewPane>', () => {
       checks: { total: 0, success: 0, pending: 0, failure: 0, skipped: 0, canceled: 0, checks: [] },
       mergeability: 'clean',
     };
-    setBindingMock('SubscribePRUpdates', async (threadId: string, pr: unknown) => ({
+    setBindingMock('SubscribePRUpdates', async () => ({
       id: 'sub-1',
-      threadId,
-      pr,
+      prKey: 'github:owner/repo:5',
       detail,
       threads: [],
       headSHA: 'sha-a',
@@ -425,10 +425,9 @@ describe('<ReviewPane>', () => {
       checks: { total: 0, success: 0, pending: 0, failure: 0, skipped: 0, canceled: 0, checks: [] },
       mergeability: 'clean',
     };
-    setBindingMock('SubscribePRUpdates', async (threadId: string, pr: unknown) => ({
+    setBindingMock('SubscribePRUpdates', async () => ({
       id: 'sub-1',
-      threadId,
-      pr,
+      prKey: 'github:owner/repo:5',
       detail,
       threads: [],
       headSHA: 'sha-a',
@@ -510,10 +509,9 @@ describe('<ReviewPane>', () => {
       checks: { total: 0, success: 0, pending: 0, failure: 0, skipped: 0, canceled: 0, checks: [] },
       mergeability: 'clean',
     };
-    setBindingMock('SubscribePRUpdates', async (threadId: string, pr: unknown) => ({
+    setBindingMock('SubscribePRUpdates', async () => ({
       id: 'sub-1',
-      threadId,
-      pr,
+      prKey: 'github:owner/repo:5',
       detail,
       threads: [],
       headSHA: 'sha-a',
@@ -625,10 +623,9 @@ describe('<ReviewPane>', () => {
   });
 
   it('keeps the scope selector enabled while a slow PR load is in flight', async () => {
-    setBindingMock('SubscribePRUpdates', async (threadId: string, pr: unknown) => ({
+    setBindingMock('SubscribePRUpdates', async () => ({
       id: 'sub-1',
-      threadId,
-      pr,
+      prKey: 'github:owner/repo:5',
       detail: null,
       threads: [],
       headSHA: 'sha-a',
@@ -660,5 +657,64 @@ describe('<ReviewPane>', () => {
     await waitFor(() => {
       expect(view.getByTestId('review-diff-stats')).toBeInTheDocument();
     });
+  });
+
+  it('shows a failing PR poll as state, without disturbing the diff', async () => {
+    const detail: PRDetail = {
+      number: 5,
+      title: 'Add feature',
+      body: '',
+      authorLogin: 'octocat',
+      state: 'open',
+      draft: false,
+      headRefName: 'feature',
+      baseRefName: 'main',
+      headSHA: 'sha-a',
+      url: 'https://github.com/owner/repo/pull/5',
+      additions: 1,
+      deletions: 0,
+      changedFiles: 1,
+      viewerIsAuthor: false,
+      reviewDecision: '',
+      latestReviews: [],
+      checks: { total: 0, success: 0, pending: 0, failure: 0, skipped: 0, canceled: 0, checks: [] },
+      mergeability: 'clean',
+    };
+    setBindingMock('SubscribePRUpdates', async () => ({
+      id: 'sub-1',
+      prKey: 'github:owner/repo:5',
+      detail,
+      threads: [],
+      headSHA: 'sha-a',
+    }));
+    setBindingMock('UnsubscribePRUpdates', async () => undefined);
+    setBindingMock('GetPRDiff', async () => patch());
+    setBindingMock('ListPRReviewThreads', async () => []);
+
+    const ctx: PanelContext = {
+      ...makeCtx(),
+      thread: {
+        prRef: JSON.stringify({ Forge: 'github', Namespace: 'owner', Repo: 'repo', Number: 5 }),
+        workspacePath: '/repo',
+      } as unknown as Thread,
+    };
+    const view = render(ReviewPane, { ctx });
+    await waitFor(() => {
+      expect(view.getByTestId('review-diff-stats')).toBeInTheDocument();
+    });
+    await fireEvent.change(view.getByTestId('review-scope-select'), { target: { value: 'pr' } });
+    await waitFor(() => {
+      expect(view.getByTestId('review-pr-header')).toBeInTheDocument();
+    });
+
+    applyPRReviewUpdated({ prKey: 'github:owner/repo:5', error: 'gh api rate limit exceeded' });
+
+    await waitFor(() => {
+      expect(view.getByTestId('review-pr-update-error').textContent).toContain('rate limit');
+    });
+    // Errors are user-facing state, and this one is about the PR data, not
+    // the diff: the header and the rendered patch stay put.
+    expect(view.getByTestId('review-pr-header')).toBeInTheDocument();
+    expect(view.queryByTestId('review-error')).not.toBeInTheDocument();
   });
 });

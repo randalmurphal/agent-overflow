@@ -7,7 +7,7 @@ import {
   SaveDraft,
   SendMessageWithOptions,
 } from '../stores/bindings';
-import { syncThread } from '../stores/panes.svelte';
+import { mountThreadInPane, syncThread } from '../stores/panes.svelte';
 import { prependThread } from '../stores/threads.svelte';
 import { expandProject } from '../stores/sidebar.svelte';
 import { projectSendResolved, projectSendStarted } from '../stores/threadStatuses.svelte';
@@ -183,7 +183,7 @@ export async function implementProposedPlanInNewThread(
     }
     prependThread(created);
     if (created.projectId) expandProject(created.projectId);
-    await pane.switchThread(created);
+    await mountThreadInPane(created, pane);
     return true;
   } catch (err) {
     console.error(`${failureLabel}:`, err);

@@ -28,7 +28,6 @@
   import type { GitBranch, GitStatus } from '../../../types/git';
   import type { Thread } from '../../../types/models';
   import {
-    GetGitStatusFast,
     GetGitStatusFastForProject,
     GetThread,
     GitCheckout,
@@ -41,7 +40,7 @@
     GitSyncBranchForProject,
     type GitWorkspaceState,
   } from '../../../stores/bindings';
-  import { syncThread } from '../../../stores/panes.svelte';
+  import { forEachDraftPlaceholderPane, syncThread } from '../../../stores/panes.svelte';
   import { addToast } from '../../../stores/toast.svelte';
   import { recentBranchSelections, recordBranchSelection } from '../../../stores/branchMru';
   import { userFacingError } from '../../../utils/userFacingError';
@@ -77,7 +76,11 @@
   let query = $state('');
   let loading = $state(false);
   let applying = $state(false);
-  let workspaceDirty = $state(false);
+  // Dirty bit for a DRAFT PLACEHOLDER only: it has no thread row, so it can
+  // hold no git-status subscription, and this one-shot project-root read is
+  // the only answer available. A real thread reads the shared
+  // workspace-keyed store instead (workspaceDirty below).
+  let placeholderWorkspaceDirty = $state(false);
   // Non-empty while the prune preview dialog is up; captures the thread
   // id at open so a pane switch mid-dialog can't retarget the deletion.
   let pruneDialogThreadId = $state('');
@@ -85,6 +88,10 @@
   let syncConfirmation: { branchName: string; targetWorkspace: string } | null = $state(null);
   let lastOpenBranchKey = $state('');
   let branchRefreshSeq = 0;
+
+  let workspaceDirty = $derived(
+    pane.threadId ? !!pane.gitStatus.status?.hasChanges : placeholderWorkspaceDirty,
+  );
 
   let currentBranch = $derived(pane.thread?.branch ?? '');
   let currentWorkspace = $derived(pane.thread?.workspacePath ?? '');
@@ -133,10 +140,22 @@
     mruBranches = recentBranchSelections(pane.thread?.projectId ?? '');
   }
 
-  function recordSelection(branch: string): void {
-    const projectId = pane.thread?.projectId;
-    if (!projectId) return;
-    recordBranchSelection(projectId, branch);
+  // A checkout changes a DIRECTORY, and a draft placeholder has no thread
+  // row for the backend to broadcast an update to — so every open draft
+  // composer sitting in that directory has to be told here. Returns the
+  // panes it reached so a caller can tell whether its own pane was covered.
+  function applyToDraftPlaceholdersInWorkspace(
+    projectId: string,
+    workspacePath: string,
+    workspace: { workspacePath: string; worktreePath: string; branch: string },
+  ): Set<string> {
+    const reached = new Set<string>();
+    forEachDraftPlaceholderPane(projectId, (target) => {
+      if (!sameNormalizedPath(target.thread?.workspacePath ?? '', workspacePath)) return;
+      reached.add(target.paneId);
+      target.applyDraftPlaceholderWorkspace(workspace);
+    });
+    return reached;
   }
 
   let filteredBranches = $derived.by(() => {
@@ -185,21 +204,18 @@
     refreshMru();
     loading = true;
     const fetchBranches = refreshBranches(threadIdentity);
+    // A real thread's dirty bit already streams in through the shared
+    // git-status store; only a draft placeholder needs a fetch, and the
+    // fast variant is used because this surface wants the local dirty bit,
+    // not a gh/glab open-PR lookup holding the picker's spinner.
     const fetchStatus = (async () => {
+      if (pane.threadId || !projectId) return;
       try {
-        let status: GitStatus;
-        // Fast variant: this surface only needs the local dirty bit, so
-        // don't hold the picker's spinner on a gh/glab open-PR lookup.
-        if (pane.threadId) {
-          status = (await GetGitStatusFast(pane.threadId)) as GitStatus;
-        } else {
-          if (!projectId) return;
-          status = (await GetGitStatusFastForProject(projectId)) as GitStatus;
-        }
-        workspaceDirty = !!status?.hasChanges;
+        const status = (await GetGitStatusFastForProject(projectId)) as GitStatus;
+        placeholderWorkspaceDirty = !!status?.hasChanges;
       } catch (err) {
-        console.error('GetGitStatusFast failed:', err);
-        workspaceDirty = false;
+        console.error('GetGitStatusFastForProject failed:', err);
+        placeholderWorkspaceDirty = false;
       }
     })();
     void (async () => {
@@ -471,7 +487,7 @@
     }
     if (intent.mode === 'new-worktree') {
       setAttachBranch(pane.thread, branch.name);
-      recordSelection(branch.name);
+      recordBranchSelection(pane.thread.projectId ?? '', branch.name);
       closeMenu();
       return;
     }
@@ -495,20 +511,36 @@
           requestedWorkspace,
           branch.name,
         )) as GitWorkspaceState;
-        if (
-          pane.draftPlaceholder?.id !== placeholderId ||
-          !sameNormalizedPath(pane.thread?.workspacePath ?? '', requestedWorkspace)
-        ) {
-          closeMenu();
-          return;
-        }
-        pane.applyDraftPlaceholderWorkspace({
+        const checkedOut = {
           workspacePath: next.workspacePath,
           worktreePath: next.worktreePath ?? '',
           branch: next.branch || branch.name,
-        });
-        recordSelection(branch.name);
-        addToast('info', `Checked out ${next.branch || branch.name}`);
+        };
+        // A checkout happens in a DIRECTORY, so every open draft composer
+        // pointed at that directory is now on the new branch — a draft has
+        // no thread row, so nothing the backend broadcasts reaches it.
+        // Panes on the same project but a different worktree are untouched:
+        // the checkout did not move them.
+        const reached = applyToDraftPlaceholdersInWorkspace(
+          projectId,
+          requestedWorkspace,
+          checkedOut,
+        );
+        // The acting pane is normally one of those; apply directly when it
+        // is not in the registry, guarding the placeholder identity and the
+        // workspace the checkout was launched against (either can move
+        // under the await).
+        if (
+          !reached.has(pane.paneId) &&
+          pane.draftPlaceholder?.id === placeholderId &&
+          sameNormalizedPath(pane.thread?.workspacePath ?? '', requestedWorkspace)
+        ) {
+          pane.applyDraftPlaceholderWorkspace(checkedOut);
+        }
+        // Recorded against the captured project, not the pane's current one:
+        // the checkout happened in that project whatever the pane shows now.
+        recordBranchSelection(projectId, branch.name);
+        addToast('info', `Checked out ${checkedOut.branch}`);
       } catch (err) {
         console.error('branch checkout failed:', err);
         addToast('error', `Failed to checkout: ${userFacingError(err)}`);
@@ -519,13 +551,30 @@
       return;
     }
     applying = true;
+    // Captured BEFORE the first await, and read from the captures for the
+    // rest of the flow: a pane switch mid-checkout re-points `pane.thread`,
+    // and re-reading it after an await asked the backend about thread B and
+    // then wrote B's workspace and branch into the draft placeholders parked
+    // on thread A's project.
+    const checkoutThreadId = pane.thread.id;
+    const threadWorkspace = pane.thread.workspacePath ?? '';
+    const threadProjectId = pane.thread.projectId ?? '';
     try {
-      await GitCheckout(pane.thread.id, branch.name);
-      const refreshed = (await GetThread(pane.thread.id)) as Thread | null;
+      await GitCheckout(checkoutThreadId, branch.name);
+      const refreshed = (await GetThread(checkoutThreadId)) as Thread | null;
       if (refreshed) {
         syncThread(refreshed);
+        // Same directory, same new branch: draft composers parked in this
+        // thread's workspace have no row for syncThread to reach.
+        applyToDraftPlaceholdersInWorkspace(threadProjectId, threadWorkspace, {
+          workspacePath: refreshed.workspacePath,
+          worktreePath: refreshed.worktreePath ?? '',
+          branch: refreshed.branch || branch.name,
+        });
       }
-      recordSelection(branch.name);
+      // threadProjectId, not a fresh pane.thread read: two awaits ago this
+      // was the thread being checked out, and the pane may have moved on.
+      recordBranchSelection(threadProjectId, branch.name);
       addToast('info', `Checked out ${branch.name}`);
     } catch (err) {
       console.error('branch checkout failed:', err);

@@ -48,6 +48,7 @@ function installBaseMocks() {
   setBindingMock('DeleteEmptyDraftThread', async () => false);
   setBindingMock('ListAttachments', async () => []);
   setBindingMock('ListLiveBackgroundTasks', async () => []);
+  setBindingMock('GetWorkspaceActivity', async () => ({ activeTurnThreads: 0, runningBackgroundTasks: 0 }));
   setBindingMock('ListThreadProposedPlans', async () => []);
   setBindingMock('ListProposedPlanComments', async () => []);
   setBindingMock('SearchWorkspaceFiles', async () => ({

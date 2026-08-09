@@ -1,6 +1,6 @@
 import type { SourceDiffReview, SourceProposedPlan } from '../types/models';
 import type { QueuedItem as WireQueuedItem } from '../../../bindings/agent-overflow/models';
-import * as bindings from './bindings';
+import { RegisterQueueItem } from './bindings';
 import { createKeyedSignalRegistry, type KeyedSignalRegistry } from './keyedSignalRegistry.svelte';
 
 /**
@@ -201,7 +201,7 @@ export async function registerQueueItem(
   if (!threadId) {
     throw new Error('sendQueue.registerQueueItem: threadId is required');
   }
-  const wire = await bindings.RegisterQueueItem(threadId, message, {
+  const wire = await RegisterQueueItem(threadId, message, {
     providerCommand: options.providerCommand ? true : undefined,
     attachmentIds: options.attachmentIds ? [...options.attachmentIds] : undefined,
     sourceProposedPlan: options.sourceProposedPlan ?? undefined,
@@ -217,7 +217,7 @@ export async function registerQueueItem(
   return queueItemFromWire(wire);
 }
 
-// Note: `bindings.GetQueueState` exists for remote-client / re-attach
+// Note: `GetQueueState` (stores/bindings.ts) exists for remote-client / re-attach
 // bootstrap, but no caller wires it today (events drive Zone 1 in the
 // running session). Re-add a `fetchQueueState` wrapper here when the
 // bootstrap path needs it; keeping a dead helper around invites

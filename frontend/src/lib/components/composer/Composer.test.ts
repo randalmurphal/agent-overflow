@@ -57,6 +57,11 @@ function installDraftMocks() {
   setBindingMock('ListAttachments', async () => []);
   setBindingMock('GetAttachmentData', async () => 'iVBORw0KGgo=');
   setBindingMock('ListLiveBackgroundTasks', async () => []);
+  setBindingMock('GetWorkspaceActivity', async () => ({ activeTurnThreads: 0, runningBackgroundTasks: 0 }));
+  // The composer toolbar's MCP trigger holds the pane's MCP entity for as
+  // long as it is mounted, so every composer render lists once.
+  setBindingMock('ListThreadMcpServers', async () => []);
+  setBindingMock('ListWorkspaceMcpServers', async () => []);
   setBindingMock('ListThreadProposedPlans', async () => []);
   setBindingMock('ListProposedPlanComments', async () => []);
   setBindingMock('SearchWorkspaceFiles', async () => ({

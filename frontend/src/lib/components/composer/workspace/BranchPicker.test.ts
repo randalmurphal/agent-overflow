@@ -19,6 +19,8 @@ import {
 import { buildPane as buildRegisteredPane, makeThread as makeBaseThread } from '../../../../test/helpers/chat';
 import { recentBranchSelections, recordBranchSelection } from '../../../stores/branchMru';
 import { resetAppStorageForTest } from '../../../stores/appStorage';
+import { __seedGitStatusForTest } from '../../../stores/gitStatusStore.svelte';
+import { registerPaneForTest, resetPanesForTest } from '../../../stores/panes.svelte';
 
 function makeThread(branch: string, overrides: Partial<Thread> = {}): Thread {
   return makeBaseThread({
@@ -45,17 +47,19 @@ function makeProject(overrides: Partial<Project> = {}): Project {
 
 async function buildPane(branch: string, overrides: Partial<Thread> = {}) {
   setBindingMock('ListLiveBackgroundTasks', async () => []);
+  setBindingMock('GetWorkspaceActivity', async () => ({ activeTurnThreads: 0, runningBackgroundTasks: 0 }));
   return buildRegisteredPane(makeThread(branch, overrides));
 }
 
-function buildPlaceholderPane(branch = 'main') {
-  const pane = createThreadPane();
+function buildPlaceholderPane(branch = 'main', paneId?: string) {
+  const pane = createThreadPane(paneId ? { paneId } : undefined);
   pane.startDraftPlaceholder(makeProject(), 'chat', {
     provider: 'claude',
     model: 'm',
     workspacePath: '/repo',
     branch,
   });
+  if (paneId) registerPaneForTest(paneId, pane);
   return pane;
 }
 
@@ -64,6 +68,7 @@ describe('<BranchPicker>', () => {
     resetBindingMocks();
     resetWorktreeIntent();
     resetAppStorageForTest();
+    resetPanesForTest();
   });
 
   it('renders the current branch on the trigger', async () => {
@@ -177,19 +182,6 @@ describe('<BranchPicker>', () => {
         { name: 'feature/external', isCurrent: true, isDefault: false },
       ];
     });
-    setBindingMock('GetGitStatusFast', async () => ({
-      isRepo: true,
-      branch: 'main',
-      isDefaultBranch: true,
-      hasChanges: false,
-      insertions: 0,
-      deletions: 0,
-      fileCount: 0,
-      hasUpstream: true,
-      aheadCount: 0,
-      behindCount: 0,
-      hasOriginRemote: true,
-    }));
 
     const { getByTestId, findByRole } = render(BranchPicker, {
       props: { pane },
@@ -220,19 +212,6 @@ describe('<BranchPicker>', () => {
         { name: 'feature/external', isCurrent: true, isDefault: false },
       ];
     });
-    setBindingMock('GetGitStatusFast', async () => ({
-      isRepo: true,
-      branch: 'main',
-      isDefaultBranch: true,
-      hasChanges: false,
-      insertions: 0,
-      deletions: 0,
-      fileCount: 0,
-      hasUpstream: true,
-      aheadCount: 0,
-      behindCount: 0,
-      hasOriginRemote: true,
-    }));
 
     const { getByTestId, findByRole, queryByRole } = render(BranchPicker, {
       props: { pane },
@@ -271,6 +250,53 @@ describe('<BranchPicker>', () => {
     await waitFor(() => {
       expect(getBindingMock('GitCheckout')!.mock.calls[0]).toEqual(['thread-1', 'feat/abc']);
       expect(getBindingMock('GetThread')!.mock.calls[0]).toEqual(['thread-1']);
+    });
+  });
+
+  // The refresh legs used to re-read `pane.thread` AFTER the awaits, so a
+  // pane switch mid-checkout asked the backend about thread B and then wrote
+  // B's workspace and branch into the draft placeholders parked on thread
+  // A's project.
+  it('refreshes the thread it checked out, not whatever the pane switched to', async () => {
+    const pane = await buildPane('main', { projectId: 'project-1' });
+    const sibling = buildPlaceholderPane('main', 'pane-1');
+    setBindingMock('GitListBranches', async () => [
+      { name: 'main', isCurrent: true, isDefault: true },
+      { name: 'feat/abc', isCurrent: false, isDefault: false },
+    ]);
+    setBindingMock('GitMaybeFetchRemotes', async () => false);
+    let finishCheckout: (() => void) | undefined;
+    setBindingMock('GitCheckout', () => new Promise<void>((resolve) => {
+      finishCheckout = resolve;
+    }));
+    setBindingMock('GetThread', async (threadId: unknown) =>
+      threadId === 'thread-1'
+        ? makeThread('feat/abc')
+        : makeThread('other-branch', {
+          id: 'thread-2',
+          workspacePath: '/other',
+          projectPath: '/other',
+        }));
+
+    const { getByTestId, findByRole } = render(BranchPicker, { props: { pane } });
+    await fireEvent.click(getByTestId('branch-picker-trigger'));
+    await fireEvent.click(await findByRole('menuitem', { name: /feat\/abc/ }));
+    await waitFor(() => expect(finishCheckout).toBeDefined());
+
+    // The user moves the pane onto another thread in another worktree while
+    // the checkout is still running.
+    await pane.switchThread(makeThread('other-branch', {
+      id: 'thread-2',
+      workspacePath: '/other',
+      projectPath: '/other',
+    }));
+    finishCheckout!();
+
+    await waitFor(() => {
+      expect(getBindingMock('GetThread')!.mock.calls[0]).toEqual(['thread-1']);
+      // …and thread B's workspace never reaches the drafts parked on A's.
+      expect(sibling.thread?.branch).toBe('feat/abc');
+      expect(sibling.thread?.workspacePath).toBe('/repo');
     });
   });
 
@@ -316,6 +342,50 @@ describe('<BranchPicker>', () => {
     });
     expect(getBindingMock('GitCheckout')).toBeUndefined();
     expect(getBindingMock('CreateThread')).not.toHaveBeenCalled();
+  });
+
+  it('moves every draft composer in the checked-out workspace, not just the acting one', async () => {
+    const acting = buildPlaceholderPane('main', 'main');
+    const sibling = buildPlaceholderPane('main', 'pane-1');
+    const elsewhere = buildPlaceholderPane('main', 'pane-2');
+    // A worktree the checkout did not touch.
+    elsewhere.applyDraftPlaceholderWorkspace({
+      workspacePath: '/repo/.wt/a',
+      worktreePath: '/repo/.wt/a',
+      branch: 'wt-branch',
+    });
+    setBindingMock('GitListBranchesForProject', async () => [
+      { name: 'main', isCurrent: true, isDefault: true },
+      { name: 'feat/abc', isCurrent: false, isDefault: false },
+    ]);
+    setBindingMock('GetGitStatusFastForProject', async () => ({
+      isRepo: true,
+      branch: 'main',
+      isDefaultBranch: true,
+      hasChanges: false,
+      insertions: 0,
+      deletions: 0,
+      fileCount: 0,
+      hasUpstream: true,
+      aheadCount: 0,
+      behindCount: 0,
+      hasOriginRemote: true,
+    }));
+    setBindingMock('GitMaybeFetchRemotesForProject', async () => false);
+    setBindingMock('GitCheckoutForProject', async () => ({
+      workspacePath: '/repo',
+      branch: 'feat/abc',
+    }));
+
+    const { getByTestId, findByRole } = render(BranchPicker, { props: { pane: acting } });
+    await fireEvent.click(getByTestId('branch-picker-trigger'));
+    await fireEvent.click(await findByRole('menuitem', { name: /feat\/abc/ }));
+
+    await waitFor(() => {
+      expect(acting.thread?.branch).toBe('feat/abc');
+      expect(sibling.thread?.branch).toBe('feat/abc');
+    });
+    expect(elsewhere.thread?.branch).toBe('wt-branch');
   });
 
   it('ignores a stale placeholder checkout response after the placeholder is replaced', async () => {
@@ -562,19 +632,6 @@ describe('<BranchPicker>', () => {
     setBindingMock('GitListBranches', async () => [
       { name: 'main', isCurrent: true, isDefault: true },
     ]);
-    setBindingMock('GetGitStatusFast', async () => ({
-      isRepo: true,
-      branch: 'main',
-      isDefaultBranch: true,
-      hasChanges: false,
-      insertions: 0,
-      deletions: 0,
-      fileCount: 0,
-      hasUpstream: true,
-      aheadCount: 0,
-      behindCount: 0,
-      hasOriginRemote: true,
-    }));
 
     const { getByTestId, findByRole, queryByRole } = render(BranchPicker, {
       props: { pane },
@@ -631,7 +688,10 @@ describe('<BranchPicker>', () => {
     setBindingMock('GitListBranches', async () => [
       { name: 'main', isCurrent: true, isDefault: true },
     ]);
-    setBindingMock('GetGitStatusFast', async () => ({
+    // A real thread reads the dirty bit off the workspace's shared git status
+    // rather than re-fetching it — only a draft placeholder, which has no
+    // workspace entity yet, still calls GetGitStatusFastForProject.
+    __seedGitStatusForTest('/repo', {
       isRepo: true,
       branch: 'main',
       isDefaultBranch: true,
@@ -643,7 +703,7 @@ describe('<BranchPicker>', () => {
       aheadCount: 0,
       behindCount: 0,
       hasOriginRemote: true,
-    }));
+    });
 
     const { getByTestId, findByRole } = render(BranchPicker, {
       props: { pane },

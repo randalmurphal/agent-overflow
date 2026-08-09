@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { parsePRReference, prRefFromThread, prRefFromUrl, prScopeLabel } from './prReference';
+import {
+  parsePRReference,
+  prKey,
+  prRefFromThread,
+  prRefFromUrl,
+  prScopeLabel,
+  prSourceKey,
+} from './prReference';
 
 describe('parsePRReference — GitHub', () => {
   it('parses https://github.com/OWNER/REPO/pull/N', () => {
@@ -229,5 +236,43 @@ describe('review-pane PRRef helpers', () => {
   it('prScopeLabel adapts by forge', () => {
     expect(prScopeLabel({ forge: 'github', namespace: 'o', repo: 'r', number: 12 })).toBe('PR #12');
     expect(prScopeLabel({ forge: 'gitlab', namespace: 'o', repo: 'r', number: 12 })).toBe('MR !12');
+  });
+});
+
+// prKey is a WIRE address, not a local convenience: `prUpdateKey` in
+// app_forge_review.go builds the identical string and the `pr:updated` event
+// is addressed with it, so a change on either side silently stops routing.
+// These cases are the same table as Go's
+// TestPRUpdateKeyMatchesTheFrontendSourceKey — if one moves, both fail.
+describe('prKey — the shared PR wire address', () => {
+  it.each([
+    [{ forge: 'github', namespace: 'owner', repo: 'repo', number: 5 } as const, 'github:owner/repo:5'],
+    [
+      { forge: 'gitlab', namespace: 'group/sub', repo: 'repo', number: 12 } as const,
+      'gitlab:group/sub/repo:12',
+    ],
+  ])('prKey(%o) === %s', (ref, want) => {
+    expect(prKey(ref)).toBe(want);
+  });
+
+  it('prSourceKey is prKey behind the pr: scope prefix', () => {
+    expect(prSourceKey({ forge: 'github', namespace: 'owner', repo: 'repo', number: 5 })).toBe(
+      'pr:github:owner/repo:5',
+    );
+    expect(prSourceKey({ forge: 'gitlab', namespace: 'group/sub', repo: 'repo', number: 12 })).toBe(
+      'pr:gitlab:group/sub/repo:12',
+    );
+  });
+
+  // A namespace containing ':' would make two different PRs share a key, so
+  // the backend refuses one (internal/git/forge.go ValidateProjectSegment).
+  // Nothing here can produce one: every parse path splits on '/' and the
+  // short forms reject ':' in neither — this asserts the shape the parser
+  // hands prKey, so a future loosening of the parser trips a test.
+  it('never builds a key from a segment carrying the delimiter', () => {
+    const parsed = parsePRReference('https://gitlab.com/group/sub/repo/-/merge_requests/12');
+    if (!parsed.ok) throw new Error('expected ok');
+    const key = prKey({ ...parsed.value });
+    expect(key.split(':')).toHaveLength(3);
   });
 });

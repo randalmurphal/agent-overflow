@@ -3,6 +3,14 @@
 // projections and the affected panes' loaded windows so SQLite (the
 // authoritative history cache) backfills whatever was lost. Fan-in
 // target of events.ts's setupEventListeners.
+//
+// Two producers reach here, and the distinction matters for what a gap
+// implies. The RECONNECT one is the server's explicit `gap:true` marker:
+// the replay ring couldn't cover our cursor. The MID-CONNECTION one is
+// wsClient's forward-seq-skip detection: the bus dropped events into a
+// full subscriber buffer while the socket stayed up. Neither carries the
+// missed range or the entity key, so every branch below is a re-fetch of
+// current truth rather than a replay of what was lost.
 import type { Thread } from '../types/models';
 import { iterPanes } from './panes.svelte';
 import { GetThread } from './bindings';
@@ -14,6 +22,9 @@ import { hydrateRateLimitsSnapshots } from './eventsRateLimits';
 import { resyncWorktreeSetups } from './eventsWorktreeSetup';
 import { markImportConnectionLost } from './sessionImport.svelte';
 import { getThreads } from './threads.svelte';
+import { resyncGitStatusAfterGap } from './gitStatusStore.svelte';
+import { resyncPRReviewAfterGap } from './prReviewStore.svelte';
+import { resyncMcpServersAfterGap } from './mcpServers.svelte';
 
 // The handler matches on the channel name we lost rather than each
 // payload kind because a single gap on `provider:item_event` can
@@ -82,6 +93,45 @@ export function applyTransportGap(gap: { channel: string; seq: number }): void {
           console.warn(`events: refresh thread ${threadId} after provider:usage gap: ${err}`);
         });
       }
+      return;
+    }
+    // The entity channels (git:status / pr:updated / mcp:status). Each
+    // emits exactly ONE frame per state change, so a dropped frame is
+    // terminal for every consumer of that entity: no later frame happens
+    // to repair it, and the stale value is indistinguishable from a
+    // correct one (a clean worktree that isn't, a PR head that has moved
+    // on, an MCP server shown connected after it dropped).
+    //
+    // Recovery is deliberately blanket — every live key of the store, not
+    // one. The gap payload carries no entity key and cannot: the frames
+    // that would have named it are the ones that never arrived. Coarse is
+    // correct here rather than lazy, because the two things that would
+    // make it expensive are both absent — live keys are bounded by what is
+    // mounted (a handful of workspaces / PRs / panes, not the store's
+    // history), and each store's re-source KEEPS its last value while the
+    // fresh one loads, so a blanket resync costs a few RPCs and zero
+    // flicker.
+    case 'git:status':
+      resyncGitStatusAfterGap();
+      return;
+    case 'pr:updated':
+      resyncPRReviewAfterGap();
+      return;
+    case 'mcp:status':
+      resyncMcpServersAfterGap();
+      return;
+    case 'system:stats':
+    case 'highlight:seed':
+    case 'highlight:diff_seed': {
+      // The opposite of the entity channels: nothing to recover. A
+      // system:stats frame carries the WHOLE host sample and the next one
+      // lands within ~2s; the highlight seeds are point-in-time cache
+      // warmers whose consumers fall back to the highlight RPC on a miss.
+      // These are also the highest-rate channels on the wire, so they are
+      // the likeliest to be the ones dropped when a subscriber buffer
+      // fills — letting them reach the default branch would turn every
+      // overflow into a full sidebar + pane refetch for data that repairs
+      // itself.
       return;
     }
     case 'worktree:setup': {

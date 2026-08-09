@@ -8,6 +8,7 @@ import { getToasts } from '../../stores/toast.svelte';
 import type { GitActionResult, GitStatus } from '../../types/git';
 import type { Thread } from '../../types/models';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
+import { __seedGitStatusForTest } from '../../stores/gitStatusStore.svelte';
 import { buildPane as buildRegisteredPane, makeThread as makeBaseThread } from '../../../test/helpers/chat';
 
 // Element.animate shim for jsdom — Svelte transitions poke at it on mount.
@@ -40,14 +41,28 @@ function status(overrides: Partial<GitStatus> = {}): GitStatus {
   };
 }
 
+const WORKSPACE = '/ship-workspace';
+
 async function buildPane() {
   return buildRegisteredPane(makeBaseThread({
     id: 't-1',
     title: 't',
-    workspacePath: '',
-    projectPath: '',
+    workspacePath: WORKSPACE,
+    projectPath: WORKSPACE,
     model: 'm',
   }));
+}
+
+/**
+ * The drawer no longer fetches status: it reads the workspace's shared
+ * observation and only calls GetGitStatus for the post-action refresh. So a
+ * test declares the world in two places at once — the store the drawer opens
+ * on, and the refresh's answer — and unless it overrides the latter, both say
+ * the same thing.
+ */
+function installStatus(s: GitStatus): void {
+  __seedGitStatusForTest(WORKSPACE, s);
+  setBindingMock('GetGitStatus', async () => s);
 }
 
 async function flush(n = 6): Promise<void> {
@@ -71,7 +86,7 @@ describe('<ShipChangesDrawer>', () => {
 
   it('loads git status and lands on the commit step when there are changes', async () => {
     const pane = await buildPane();
-    setBindingMock('GetGitStatus', async () => status({ hasChanges: true }));
+    installStatus(status({ hasChanges: true }));
     const { findByTestId } = render(ShipChangesDrawer, {
       props: { open: true, pane, onClose: () => {} },
     });
@@ -80,7 +95,7 @@ describe('<ShipChangesDrawer>', () => {
 
   it('lands on the push step when there are no changes but commits ahead', async () => {
     const pane = await buildPane();
-    setBindingMock('GetGitStatus', async () => status({ hasChanges: false, aheadCount: 3 }));
+    installStatus(status({ hasChanges: false, aheadCount: 3 }));
     const { findByTestId } = render(ShipChangesDrawer, {
       props: { open: true, pane, onClose: () => {} },
     });
@@ -89,7 +104,7 @@ describe('<ShipChangesDrawer>', () => {
 
   it('lands on the PR step when branch is clean and up to date with upstream', async () => {
     const pane = await buildPane();
-    setBindingMock('GetGitStatus', async () => status({ hasChanges: false, aheadCount: 0 }));
+    installStatus(status({ hasChanges: false, aheadCount: 0 }));
     const { findByTestId } = render(ShipChangesDrawer, {
       props: { open: true, pane, onClose: () => {} },
     });
@@ -98,7 +113,7 @@ describe('<ShipChangesDrawer>', () => {
 
   it('calls GitCommit with trimmed subject/body and advances to push', async () => {
     const pane = await buildPane();
-    setBindingMock('GetGitStatus', async () => status({ hasChanges: true }));
+    installStatus(status({ hasChanges: true }));
     const commit = setBindingMock('GitCommit', async () => ({
       action: 'commit',
       commitSha: 'sha-123',
@@ -121,13 +136,10 @@ describe('<ShipChangesDrawer>', () => {
 
   it('refreshes the pane git-status slot after a successful commit', async () => {
     const pane = await buildPane();
-    let statusCalls = 0;
-    setBindingMock('GetGitStatus', async () => {
-      statusCalls += 1;
-      return statusCalls === 1
-        ? status({ hasChanges: true })
-        : status({ hasChanges: false, aheadCount: 1 });
-    });
+    installStatus(status({ hasChanges: true }));
+    // The post-action refresh is the only GetGitStatus call now, so it can
+    // state the world the commit left behind unconditionally.
+    setBindingMock('GetGitStatus', async () => status({ hasChanges: false, aheadCount: 1 }));
     setBindingMock('GitCommit', async () => ({
       action: 'commit',
       commitSha: 'sha-123',
@@ -147,7 +159,7 @@ describe('<ShipChangesDrawer>', () => {
 
   it('surfaces a commit error inline and offers a retry', async () => {
     const pane = await buildPane();
-    setBindingMock('GetGitStatus', async () => status({ hasChanges: true }));
+    installStatus(status({ hasChanges: true }));
     setBindingMock('GitCommit', async () => { throw new Error('pre-commit failed'); });
     const { findByTestId, getByTestId } = render(ShipChangesDrawer, {
       props: { open: true, pane, onClose: () => {} },
@@ -166,7 +178,7 @@ describe('<ShipChangesDrawer>', () => {
 
   it('skipCommit button jumps the user to the push step', async () => {
     const pane = await buildPane();
-    setBindingMock('GetGitStatus', async () => status({ hasChanges: true }));
+    installStatus(status({ hasChanges: true }));
     const { findByTestId, getByTestId } = render(ShipChangesDrawer, {
       props: { open: true, pane, onClose: () => {} },
     });
@@ -178,13 +190,8 @@ describe('<ShipChangesDrawer>', () => {
 
   it('calls GitPush and advances to PR step on success', async () => {
     const pane = await buildPane();
-    let statusCalls = 0;
-    setBindingMock('GetGitStatus', async () => {
-      statusCalls += 1;
-      return statusCalls === 1
-        ? status({ hasChanges: false, aheadCount: 1 })
-        : status({ hasChanges: false, aheadCount: 0 });
-    });
+    installStatus(status({ hasChanges: false, aheadCount: 1 }));
+    setBindingMock('GetGitStatus', async () => status({ hasChanges: false, aheadCount: 0 }));
     const push = setBindingMock('GitPush', async () => ({ action: 'push' } as GitActionResult));
     const { findByTestId, getByTestId } = render(ShipChangesDrawer, {
       props: { open: true, pane, onClose: () => {} },
@@ -199,7 +206,7 @@ describe('<ShipChangesDrawer>', () => {
 
   it('surfaces a push error and allows retry', async () => {
     const pane = await buildPane();
-    setBindingMock('GetGitStatus', async () => status({ hasChanges: false, aheadCount: 1 }));
+    installStatus(status({ hasChanges: false, aheadCount: 1 }));
     setBindingMock('GitPush', async () => ({ action: 'push', error: 'auth required' } as GitActionResult));
     const { findByTestId, getByTestId } = render(ShipChangesDrawer, {
       props: { open: true, pane, onClose: () => {} },
@@ -215,13 +222,13 @@ describe('<ShipChangesDrawer>', () => {
 
   it('calls GitCreatePR with the trimmed title/body and shows the URL', async () => {
     const pane = await buildPane();
-    let statusCalls = 0;
-    setBindingMock('GetGitStatus', async () => {
-      statusCalls += 1;
-      return statusCalls === 1
-        ? status({ hasChanges: false, aheadCount: 0 })
-        : status({ hasChanges: false, aheadCount: 0, openPrUrl: 'https://github.com/owner/repo/pull/42', openPrNumber: 42 });
-    });
+    installStatus(status({ hasChanges: false, aheadCount: 0 }));
+    setBindingMock('GetGitStatus', async () => status({
+      hasChanges: false,
+      aheadCount: 0,
+      openPrUrl: 'https://github.com/owner/repo/pull/42',
+      openPrNumber: 42,
+    }));
     const createPR = setBindingMock('GitCreatePR', async () => ({
       action: 'pr',
       prUrl: 'https://github.com/owner/repo/pull/42',
@@ -245,7 +252,7 @@ describe('<ShipChangesDrawer>', () => {
 
   it('surfaces a PR error and allows retry', async () => {
     const pane = await buildPane();
-    setBindingMock('GetGitStatus', async () => status({ hasChanges: false, aheadCount: 0 }));
+    installStatus(status({ hasChanges: false, aheadCount: 0 }));
     setBindingMock('GitCreatePR', async () => ({ action: 'pr', error: 'gh not installed' } as GitActionResult));
     const { findByTestId, getByTestId } = render(ShipChangesDrawer, {
       props: { open: true, pane, onClose: () => {} },
@@ -263,7 +270,7 @@ describe('<ShipChangesDrawer>', () => {
 
   it('shows an existing PR link instead of the form when one is already open', async () => {
     const pane = await buildPane();
-    setBindingMock('GetGitStatus', async () => status({
+    installStatus(status({
       hasChanges: false,
       aheadCount: 0,
       openPrUrl: 'https://github.com/o/r/pull/7',
@@ -284,7 +291,7 @@ describe('<ShipChangesDrawer>', () => {
 
   it('Close button calls onClose', async () => {
     const pane = await buildPane();
-    setBindingMock('GetGitStatus', async () => status({ hasChanges: true }));
+    installStatus(status({ hasChanges: true }));
     let closed = 0;
     const { findByTestId } = render(ShipChangesDrawer, {
       props: { open: true, pane, onClose: () => { closed += 1; } },
@@ -296,7 +303,7 @@ describe('<ShipChangesDrawer>', () => {
 
   it('Escape key closes the drawer', async () => {
     const pane = await buildPane();
-    setBindingMock('GetGitStatus', async () => status({ hasChanges: true }));
+    installStatus(status({ hasChanges: true }));
     let closed = 0;
     const { container, findByTestId } = render(ShipChangesDrawer, {
       props: { open: true, pane, onClose: () => { closed += 1; } },
@@ -311,7 +318,7 @@ describe('<ShipChangesDrawer>', () => {
 
   it('honours an externally-provided state store', async () => {
     const pane = await buildPane();
-    setBindingMock('GetGitStatus', async () => status({ hasChanges: true }));
+    installStatus(status({ hasChanges: true }));
     const external = createShipChangesState();
     const { findByTestId } = render(ShipChangesDrawer, {
       props: { open: true, pane, onClose: () => {}, state: external },
@@ -324,7 +331,7 @@ describe('<ShipChangesDrawer>', () => {
 
   it('renders the 3-step indicator with Commit active on entry', async () => {
     const pane = await buildPane();
-    setBindingMock('GetGitStatus', async () => status({ hasChanges: true }));
+    installStatus(status({ hasChanges: true }));
     const { findByTestId } = render(ShipChangesDrawer, {
       props: { open: true, pane, onClose: () => {} },
     });
@@ -359,7 +366,7 @@ describe('<ShipChangesDrawer>', () => {
   // mismatch before touching state.
   it('ignores a commit result that lands after the drawer was closed', async () => {
     const pane = await buildPane();
-    setBindingMock('GetGitStatus', async () => status({ hasChanges: true }));
+    installStatus(status({ hasChanges: true }));
 
     let resolveCommit!: (value: GitActionResult) => void;
     const commitPromise = new Promise<GitActionResult>((r) => { resolveCommit = r; });
@@ -411,7 +418,7 @@ describe('<ShipChangesDrawer>', () => {
 
   it('ignores a GitCommit rejection that lands after the drawer was closed', async () => {
     const pane = await buildPane();
-    setBindingMock('GetGitStatus', async () => status({ hasChanges: true }));
+    installStatus(status({ hasChanges: true }));
 
     let rejectCommit!: (err: unknown) => void;
     const commitPromise = new Promise<GitActionResult>((_, r) => { rejectCommit = r; });
@@ -450,7 +457,7 @@ describe('<ShipChangesDrawer>', () => {
   // The drawer must surface the reason and keep the Commit button disabled.
   it('disables commit and shows a merge-in-progress banner when PendingOperation=merge', async () => {
     const pane = await buildPane();
-    setBindingMock('GetGitStatus', async () => status({ hasChanges: true, pendingOperation: 'merge' }));
+    installStatus(status({ hasChanges: true, pendingOperation: 'merge' }));
     const { findByTestId, getByTestId } = render(ShipChangesDrawer, {
       props: { open: true, pane, onClose: () => {} },
     });
@@ -467,7 +474,7 @@ describe('<ShipChangesDrawer>', () => {
 
   it('disables commit and shows a rebase-in-progress banner when PendingOperation=rebase', async () => {
     const pane = await buildPane();
-    setBindingMock('GetGitStatus', async () => status({ hasChanges: true, pendingOperation: 'rebase' }));
+    installStatus(status({ hasChanges: true, pendingOperation: 'rebase' }));
     const { findByTestId } = render(ShipChangesDrawer, {
       props: { open: true, pane, onClose: () => {} },
     });
@@ -478,7 +485,7 @@ describe('<ShipChangesDrawer>', () => {
 
   it('does not render the pending-operation banner in a clean repo', async () => {
     const pane = await buildPane();
-    setBindingMock('GetGitStatus', async () => status({ hasChanges: true, pendingOperation: '' }));
+    installStatus(status({ hasChanges: true, pendingOperation: '' }));
     const { findByTestId, queryByTestId } = render(ShipChangesDrawer, {
       props: { open: true, pane, onClose: () => {} },
     });
@@ -489,7 +496,7 @@ describe('<ShipChangesDrawer>', () => {
 
   it('drops stale results from sequential commit+push after drawer is closed', async () => {
     const pane = await buildPane();
-    setBindingMock('GetGitStatus', async () => status({ hasChanges: true }));
+    installStatus(status({ hasChanges: true }));
 
     let resolveCommit!: (value: GitActionResult) => void;
     const commitPromise = new Promise<GitActionResult>((r) => { resolveCommit = r; });
@@ -536,7 +543,7 @@ describe('<ShipChangesDrawer>', () => {
   // happened.
   it('auto-closes with a toast when the active thread switches mid-wizard', async () => {
     const pane = await buildPane();
-    setBindingMock('GetGitStatus', async () => status({ hasChanges: true }));
+    installStatus(status({ hasChanges: true }));
     let closed = 0;
     const beforeToastCount = getToasts().length;
     const { findByTestId, getByTestId } = render(ShipChangesDrawer, {
@@ -577,7 +584,7 @@ describe('<ShipChangesDrawer>', () => {
 
   it('re-opening on the same thread after a close-and-reopen resets cleanly', async () => {
     const pane = await buildPane();
-    setBindingMock('GetGitStatus', async () => status({ hasChanges: true }));
+    installStatus(status({ hasChanges: true }));
     const { findByTestId, rerender } = render(ShipChangesDrawer, {
       props: { open: true, pane, onClose: () => {} },
     });
@@ -597,7 +604,7 @@ describe('<ShipChangesDrawer>', () => {
 
   it('renders MR labels and "Open MR" step when forge is gitlab', async () => {
     const pane = await buildPane();
-    setBindingMock('GetGitStatus', async () => status({
+    installStatus(status({
       forge: 'gitlab',
       hasChanges: false,
       aheadCount: 0,
@@ -614,7 +621,7 @@ describe('<ShipChangesDrawer>', () => {
 
   it('renders self-hosted notice when forge is unknown', async () => {
     const pane = await buildPane();
-    setBindingMock('GetGitStatus', async () => status({
+    installStatus(status({
       forge: '',
       hasChanges: false,
       aheadCount: 0,
@@ -628,7 +635,7 @@ describe('<ShipChangesDrawer>', () => {
 
   it('blocks PR creation when checking for an existing MR failed', async () => {
     const pane = await buildPane();
-    setBindingMock('GetGitStatus', async () => status({
+    installStatus(status({
       forge: 'gitlab',
       hasChanges: false,
       aheadCount: 0,

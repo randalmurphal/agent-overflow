@@ -23,12 +23,51 @@ let snapshot = $state<TransportStatusSnapshot>({
   nextAttemptAt: null,
 });
 
-let unsubscribe: (() => void) | null = wsClient.onStatusChange((next) => {
+type TransportStatusListener = (snapshot: TransportStatusSnapshot) => void;
+
+const edgeListeners = new Set<TransportStatusListener>();
+
+function publish(next: TransportStatusSnapshot): void {
   snapshot = next;
-});
+  for (const listener of edgeListeners) listener(next);
+}
+
+let unsubscribe: (() => void) | null = wsClient.onStatusChange(publish);
 
 export function getTransportStatus(): TransportStatusSnapshot {
   return snapshot;
+}
+
+/**
+ * Subscribe to connection-state changes imperatively. Fires once
+ * immediately with the current snapshot, then on every change.
+ *
+ * For RENDERING, read `getTransportStatus()` from a `$derived` — that is the
+ * reactive surface. This is for stores that must act on the EDGE: a
+ * reconnect silently invalidates every subscription the backend was holding
+ * for the old socket, so the owning store has to re-acquire them. An
+ * `$effect` would work but needs an owning root and only fires a microtask
+ * later, which is pure overhead for a listener that renders nothing.
+ */
+export function onTransportStatusChange(listener: TransportStatusListener): () => void {
+  listener(snapshot);
+  edgeListeners.add(listener);
+  return () => {
+    edgeListeners.delete(listener);
+  };
+}
+
+/**
+ * Test seam: drive the connection snapshot without a live socket, through
+ * the same publish path the wsClient uses so edge listeners see it.
+ *
+ * The unit suite has no transport, so the module-load snapshot is
+ * `disconnected` — which is not the state any test means to exercise.
+ * `src/test/setup.ts` pins it to `connected` before each test; tests that
+ * care about an outage drive it themselves.
+ */
+export function __setTransportStatusForTest(next: TransportStatusSnapshot): void {
+  publish(next);
 }
 
 /**

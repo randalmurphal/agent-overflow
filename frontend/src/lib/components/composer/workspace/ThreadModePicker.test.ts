@@ -39,6 +39,7 @@ function makeThread(overrides: Partial<Thread> = {}): Thread {
 
 async function buildPane(thread: Thread) {
   setBindingMock('ListLiveBackgroundTasks', async () => []);
+  setBindingMock('GetWorkspaceActivity', async () => ({ activeTurnThreads: 0, runningBackgroundTasks: 0 }));
   // ThreadModePicker fetches fresh defaults via GetThreadDefaults
   // before swapping the placeholder so the new mode picks up the
   // seeded model / branch / effort. Tests mock a stable payload so

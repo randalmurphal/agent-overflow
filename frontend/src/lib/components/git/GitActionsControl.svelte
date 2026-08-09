@@ -5,12 +5,12 @@
   // typeahead, and focus management from the shared implementation.
   //
   // Status freshness model: this control does NOT own a subscription. It reads
-  // the pane-owned gitStatus slot (`pane.gitStatus`), which holds the single
-  // gitwatch stream for the workspace — subscribed/retried/pushed by
-  // ChatHeaderActions, shared with the header's diff/PR badges. After a git
-  // action completes, it asks the slot for a one-shot `refreshNow()` so the
-  // button label catches up immediately instead of waiting on the ~250ms
-  // fs-watcher debounce.
+  // `pane.gitStatus`, a view onto the shared workspace-keyed git-status store
+  // — subscribed/retried/pushed once per workspace, shared with the header's
+  // diff/PR badges and every other pane on the same worktree. After a git
+  // action completes it asks for a one-shot `refreshNow()` so the button label
+  // catches up immediately instead of waiting on the ~250ms fs-watcher
+  // debounce; the backend pushes that same refresh to the other panes.
 
   import { onMount, onDestroy } from 'svelte';
   import ChevronDown from '@lucide/svelte/icons/chevron-down';
@@ -51,10 +51,11 @@
   // height is load-bearing. Per-segment padding / rounded corners / middle
   // border are appended at each use site below.
 
-  // Live status for this pane's workspace, observed by the shared gitStatus
-  // slot. Reading through $derived keeps this control reactive to the single
-  // subscription without owning it.
+  // Live status for this pane's workspace. Reading through $derived keeps
+  // this control reactive to the shared entry without owning it.
   let status = $derived(pane.gitStatus.status);
+  // Null when healthy; the message itself when the workspace's stream is
+  // failing, so the retry button can say what went wrong.
   let statusError = $derived(pane.gitStatus.statusError);
 
   let actionLoading = $state(false);
@@ -155,7 +156,7 @@
     size="xs"
     onclick={() => void pane.gitStatus.refreshNow()}
     testId="git-actions-error"
-    title="Failed to load git status. Click to retry."
+    title={`Failed to load git status: ${statusError}. Click to retry.`}
   >
     {#snippet children()}Git: error{/snippet}
   </Button>

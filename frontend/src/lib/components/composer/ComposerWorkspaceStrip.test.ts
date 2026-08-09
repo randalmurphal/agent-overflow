@@ -17,6 +17,7 @@ describe('<ComposerWorkspaceStrip>', () => {
     resetBindingMocks();
     resetWorktreeIntent();
     setBindingMock('ListLiveBackgroundTasks', async () => []);
+    setBindingMock('GetWorkspaceActivity', async () => ({ activeTurnThreads: 0, runningBackgroundTasks: 0 }));
     setBindingMock('GitListBranches', async () => []);
   });
 

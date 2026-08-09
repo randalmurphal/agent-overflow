@@ -42,9 +42,13 @@ unfetchable (the path may not exist in the merged tree). Messages
 naming no conflicted path (rare) fall back to a strip above the diff
 body. The surface is deliberately read-only — no comment anchors,
 drafts, or PR-thread rows on conflict content. Files open EXPANDED
-(content loads fan out in parallel via `GetMergeConflictFile` inside
-`openConflictView`); a file whose load fails with no notes stays
-collapsed.
+(content loads fan out in parallel via `GetMergeConflictFile` inside the
+store's `openPRConflicts`); a file whose load fails with no notes stays
+collapsed. The tree and its file contents belong to the PR, not the pane:
+a second pane opening the view pays nothing, and the tree is RECOMPUTED
+when the head or base ref moves under it — a tree OID names one
+(base, head) pair, and reading files against a superseded one rendered
+the previous merge's content forever.
 
 The PR-scope CI surface (`GetPRCIJobs` / `GetPRCIJobLog` /
 `SavePRCIJobLog`, normalized in `internal/git/ci.go`) loads lazily with
@@ -56,7 +60,8 @@ auto-sends). The log wire payload is tail-capped (2 MB) because failures
 read tail-first.
 
 Data orchestration lives in `stores/reviewPane.svelte.ts` (per-source-pane
-state registry); the row model in `utils/reviewRows.ts`.
+view state registry) over `stores/prReviewStore.svelte.ts` (the shared
+per-PR entity); the row model in `utils/reviewRows.ts`.
 
 ## Contracts that bite
 
@@ -165,23 +170,34 @@ state registry); the row model in `utils/reviewRows.ts`.
   <fetched-head-oid>`) when the thread has a clone — gh/glab's PR-diff
   endpoints refuse diffs over 20k lines (HTTP 406), which large PRs blow
   past. The forge API is the fallback for pr-anchor threads with no local
-  checkout. `loadPRPatch` sequences the subscription BEFORE the diff (not
-  parallel) because the base ref only lands with the PR detail.
-- **PR subscription lifecycle**: entering pr scope opens a Go-side poll
-  pump (`SubscribePRUpdates`); the pane state OWNS that subscription.
-  Every exit path must unsubscribe exactly once — scope switch, pane
-  dispose, a superseded/late-resolving reload, and
-  `reviewStateForPane` replacing a thread-mismatched state all do. If
-  you add a new path that can drop a state or abandon a load, close its
-  subscription or the pump polls `gh`/`glab` until the connection dies.
-  `pr:updated` events route by subscription id
-  (`stores/eventsPRReview.ts`); a moved head sets `prStale` (banner) and
-  never swaps the diff out from under the user. A hidden document
-  (minimized window, background tab) pauses every live pump via
-  `SetPRUpdatesActive` — the store's module-level `visibilitychange`
-  listener owns that flip, and resume catch-up-polls only when a tick
-  was missed. Pausing suspends fetches without releasing ownership;
-  the unsubscribe-exactly-once rule above is unaffected.
+  checkout. The PR load sequences the entity hold BEFORE the diff (not
+  parallel) because the base ref only lands with the PR detail — it awaits
+  `attachPR(...).ready()`, which resolves from the first observation and
+  REJECTS if the subscribe fails or the last holder leaves, so a load can
+  never hang on a PR nobody is watching.
+- **PR state is keyed by the PR, not by the pane**
+  (`stores/prReviewStore.svelte.ts`). Detail, review threads, the live
+  head, the CI pipeline and the merge-conflict tree describe the pull
+  request; two panes on one PR observe ONE snapshot, one poll pump and
+  one merge-tree run. A pane holds the key (`attachPR`, refcounted) and
+  keeps only view concerns: the diff it loaded, the head it loaded that
+  diff AT, collapse/expansion, drafts, the CI log view.
+  `prStale` is DERIVED from those two heads, so a push observed by one
+  pane can never mark another pane's freshly-loaded diff stale — and it
+  still never swaps the diff out from under the user (banner only).
+  Backend side, `SubscribePRUpdates` is refcounted per PR key too
+  (`prUpdateKey` in `app_forge_review.go` — the same string
+  `utils/prReference.ts#prKey` builds): one ticker, one change-detection
+  state, however many subscribers. `pr:updated` therefore carries a
+  `prKey` and no subscription id, and `stores/eventsPRReview.ts` routes
+  by it. A fetch failure on the pump rides the same event as `error` and
+  surfaces as `prUpdateError` — separate from the pane's `error`, which
+  owns the diff. A hidden document (minimized window, background tab)
+  votes every live pump down via `SetPRUpdatesActive`; the votes COMPOSE
+  backend-side, so one visible client keeps the shared pump running, and
+  resume catch-up-polls only when a tick was missed. The store's
+  module-level `visibilitychange` listener owns the flip — one call per
+  PR, not per pane.
 
 - **Edits scope** renders persisted tool-call diff payloads — the
   historical change itself, correct after commits/rebases — never a

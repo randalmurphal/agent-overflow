@@ -1,12 +1,16 @@
 <script lang="ts">
   // The popup behind the composer-toolbar "MCP" trigger. Rows come
-  // from the provider-native listing for the pane's scope (live
+  // from the provider-native listing for the pane's MCP entity (live
   // session truth when the thread has one, config + status cache
   // otherwise) and render instantly from the last load while a
   // background reload runs. The row's primary onSelect toggles the
   // server; the trailing action is the most useful next step for the
   // row's state: Sign in for needs-auth, Reconnect for live-session
   // rows, Refresh (ephemeral status re-check) for config rows.
+  //
+  // The entity is HELD by McpServersTrigger, which outlives this popup;
+  // opening only asks for a fresh listing and permits that listing to
+  // chain a provider status fetch.
 
   import Popover from '../../primitives/Popover.svelte';
   import Menu from '../../primitives/Menu.svelte';
@@ -16,9 +20,18 @@
   import Icon from '../../primitives/Icon.svelte';
   import type { ThreadPane } from '../../../stores/thread.svelte';
   import {
-    mcpServersStore,
+    isMcpServersLoading,
     mcpRowKey,
-    mcpScopeFor,
+    mcpRowsSourceThreadId,
+    mcpTargetFor,
+    peekMcpServers,
+    peekMcpServersError,
+    permitMcpStatusFetch,
+    reconnectMcpServer,
+    refreshMcpServers,
+    refreshMcpServerStatus,
+    setMcpServerEnabled,
+    triggerMcpAuth,
   } from '../../../stores/mcpServers.svelte';
   import type { ThreadMCPServer } from '../../../stores/bindings';
   import { OpenExternalURL } from '../../../stores/bindings';
@@ -34,7 +47,7 @@
 
   let { anchor, open, pane, onClose }: Props = $props();
 
-  // Derive the fields the scope actually depends on. The raw
+  // Derive the fields the target actually depends on. The raw
   // `pane.thread` reference is replaced on every usage event / item
   // upsert / durable-status patch, so reading it inside the effect
   // would re-trigger the loader on every Codex streaming token while
@@ -42,20 +55,19 @@
   let scopeProvider = $derived(pane.thread?.provider ?? '');
   let scopeThreadId = $derived(pane.threadId ?? '');
   let scopeWorkspacePath = $derived(pane.thread?.workspacePath ?? '');
-  let isPlaceholder = $derived(pane.hasDraftPlaceholder);
-
-  let scope = $derived(
-    mcpScopeFor(scopeProvider, scopeThreadId, scopeWorkspacePath, isPlaceholder),
-  );
+  let target = $derived(mcpTargetFor(scopeProvider, scopeThreadId, scopeWorkspacePath));
 
   $effect(() => {
-    if (!(open && scope)) return;
+    const opened = target;
+    if (!open || !opened) return;
     // Background refresh: cached rows stay on screen while the
     // authoritative listing loads, so opening the menu never blanks
-    // or blocks on a provider round-trip.
-    void mcpServersStore.load(scope).catch((err: unknown) => {
-      addToast('error', `MCP server listing failed: ${errString(err)}`);
-    });
+    // or blocks on a provider round-trip. The permit is what lets that
+    // listing chain a provider status fetch — released on close, so a
+    // closed composer never spawns one.
+    const release = permitMcpStatusFetch(opened.key);
+    refreshMcpServers(opened.key);
+    return release;
   });
 
   type StatusKey = 'connected' | 'starting' | 'needs-auth' | 'failed' | 'disabled' | 'unknown';
@@ -98,9 +110,9 @@
   }
 
   async function toggleServer(row: ThreadMCPServer, enable: boolean): Promise<void> {
-    if (!scope) return;
+    if (!target) return;
     try {
-      await mcpServersStore.setEnabled(scope, row.name, enable);
+      await setMcpServerEnabled(target, row.name, enable);
     } catch (err) {
       addToast('error', `Failed to update MCP server: ${errString(err)}`);
     }
@@ -111,12 +123,12 @@
       addToast('info', `Enable ${row.name} first, then sign in.`);
       return;
     }
-    if (scope?.kind !== 'thread') {
+    if (!target?.threadId) {
       addToast('info', 'Start the thread before signing in.');
       return;
     }
     try {
-      const res = await mcpServersStore.triggerAuth(scope.threadId, row.name);
+      const res = await triggerMcpAuth(target.threadId, row.name);
       if (res?.authUrl) {
         await OpenExternalURL(res.authUrl);
       } else {
@@ -128,9 +140,9 @@
   }
 
   async function reconnect(row: ThreadMCPServer): Promise<void> {
-    if (scope?.kind !== 'thread') return;
+    if (!target?.threadId) return;
     try {
-      await mcpServersStore.reconnect(scope, row.name);
+      await reconnectMcpServer(target, row.name);
     } catch (err) {
       addToast('error', `Reconnect failed for ${row.name}: ${errString(err)}`);
     }
@@ -138,14 +150,24 @@
 
   async function refresh(row: ThreadMCPServer): Promise<void> {
     try {
-      await mcpServersStore.refreshStatus(row.provider, row.name);
+      await refreshMcpServerStatus(row.provider, row.name);
     } catch (err) {
       addToast('error', `Status check failed for ${row.name}: ${errString(err)}`);
     }
   }
 
-  let rows = $derived(scope ? mcpServersStore.rowsFor(scope) : []);
-  let loading = $derived(scope ? mcpServersStore.isLoading(scope) : false);
+  let rows = $derived(peekMcpServers(target?.key ?? null));
+  let loading = $derived(isMcpServersLoading(target?.key ?? null));
+  // Reconnect runs against a LIVE session, and one workspace key is shared by
+  // every pane on it — so `row.source === 'session'` only says some pane's
+  // session answered. Offering the action to a pane whose own thread is not
+  // that one renders a button whose only outcome is a backend refusal toast.
+  let rowsFromOwnSession = $derived(
+    !!target?.threadId && mcpRowsSourceThreadId(target.key) === target.threadId,
+  );
+  // The listing's own failure is state, not a toast: it persists while the
+  // store's retry curve runs, and a toast per retry would be noise.
+  let listingError = $derived(peekMcpServersError(target?.key ?? null));
 </script>
 
 <Popover
@@ -156,11 +178,16 @@
   role="none"
 >
   <Menu ariaLabel="MCP servers" {onClose}>
+    {#if listingError}
+      <div class="px-3 py-2 text-[0.75rem] text-error" data-testid="mcp-menu-error">
+        MCP server listing failed: {listingError}
+      </div>
+    {/if}
     {#if rows.length === 0}
       <div class="px-3 py-4 text-[0.75rem] text-fg-muted" data-testid="mcp-menu-empty">
         {#if loading}
           <div class="font-medium text-fg">Loading MCP servers…</div>
-        {:else}
+        {:else if !listingError}
           <div class="mb-2 font-medium text-fg">No MCP servers configured</div>
           <div class="text-fg-subtle">
             Servers configured for {scopeProvider === 'codex' ? 'Codex' : 'Claude Code'} appear
@@ -173,7 +200,7 @@
         {@const key = statusKey(row)}
         {@const inSet = !row.disabled}
         {@const needsAuth = key === 'needs-auth'}
-        {@const canReconnect = row.source === 'session' && scope?.kind === 'thread'}
+        {@const canReconnect = row.source === 'session' && rowsFromOwnSession}
         {#snippet rowAction()}
           <Icon
             icon={needsAuth ? LogIn : RefreshCw}

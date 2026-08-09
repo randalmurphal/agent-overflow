@@ -13,8 +13,10 @@ import {
   getFocusedThreadPaneId,
   getMainPane,
   getPaneActivation,
+  hydrateRestoredPaneRegistry,
   isThreadVisible,
   listPanes,
+  mountThreadInPane,
   moveFocusedPane,
   openEmptyPane,
   openThreadInNewPane,
@@ -364,6 +366,67 @@ describe('panes store', () => {
       expect(getFocusedPaneId()).toBe('left');
     });
 
+    it('mountThreadInPane reveals the pane already showing the thread instead of mounting a second copy', async () => {
+      // The one-thread-one-pane invariant, at the chokepoint every open path
+      // goes through: `mountThreadInPane` is the only door into the registry,
+      // so a duplicate cannot be produced by picking the wrong helper.
+      const thread = makeThread({ id: 'already-open' });
+      mockThreadSwitch(thread);
+      const left = createPane('left');
+      const right = createPane('right');
+      await mountThreadInPane(thread, left);
+      focusPane('right');
+
+      const reveals: string[] = [];
+      const onReveal = (event: Event) => {
+        reveals.push((event as CustomEvent<{ paneId: string }>).detail.paneId);
+      };
+      window.addEventListener(REVEAL_PANE_EVENT, onReveal);
+      try {
+        const mounted = await mountThreadInPane(thread, right);
+        expect(mounted).toBe(left);
+      } finally {
+        window.removeEventListener(REVEAL_PANE_EVENT, onReveal);
+      }
+
+      expect(panesShowingThread('already-open')).toEqual([left]);
+      expect(right.threadId).toBeNull();
+      expect(getFocusedPaneId()).toBe('left');
+      expect(reveals).toEqual(['left']);
+    });
+
+    it('mountThreadInPane promotes the existing pane only when the mount is committed', async () => {
+      const thread = makeThread({ id: 'previewed-mount' });
+      mockThreadSwitch(thread);
+      const left = createPane('left');
+      const right = createPane('right');
+
+      await mountThreadInPane(thread, left, 'preview');
+      expect(getPaneActivation('left')).toBe('preview');
+
+      // A second preview-intent mount reveals without committing…
+      expect(await mountThreadInPane(thread, right, 'preview')).toBe(left);
+      expect(getPaneActivation('left')).toBe('preview');
+
+      // …a committed one promotes it, still without a second mount.
+      expect(await mountThreadInPane(thread, right, 'committed')).toBe(left);
+      expect(getPaneActivation('left')).toBe('committed');
+      expect(panesShowingThread('previewed-mount')).toEqual([left]);
+    });
+
+    it('mountThreadInPane falls back to the focused pane when no target is given', async () => {
+      const thread = makeThread({ id: 'no-target' });
+      mockThreadSwitch(thread);
+      createPane('left');
+      const right = createPane('right');
+      focusPane('right');
+
+      const mounted = await mountThreadInPane(thread);
+
+      expect(mounted).toBe(right);
+      expect(right.threadId).toBe('no-target');
+    });
+
     it('focusPane sets logical focus without dispatching a reveal', () => {
       createPane('left');
       createPane('right');
@@ -536,6 +599,90 @@ describe('panes store', () => {
       expect(getPaneLayoutItems().find((i) => i.paneId === 'left')).toBeUndefined();
       expect(getPaneLayoutItems().find((i) => i.paneId === 'right')).toBeUndefined();
       expect(untouched.threadId).toBe(other.id);
+    });
+  });
+
+  describe('hydrateRestoredPaneRegistry()', () => {
+    // Restore is the other door into the registry: it builds panes from a
+    // persisted snapshot rather than from a mount. `paneLayoutPersistence`
+    // drops repeated thread ids while parsing, so a duplicate arriving here
+    // means that filter regressed — the restore must refuse it rather than
+    // rebuild two panes on one thread.
+    it('drops a restore entry that would mount one thread in two panes', async () => {
+      const thread = makeThread({ id: 'restored-dup' });
+      mockThreadSwitch(thread);
+      setPaneLayoutItemsForTest([
+        { id: 'a', paneId: 'a', kind: 'thread', widthPx: 1 },
+        { id: 'b', paneId: 'b', kind: 'thread', widthPx: 1 },
+      ]);
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      let reported: unknown[][];
+      try {
+        await hydrateRestoredPaneRegistry(
+          [{ paneId: 'a', thread }, { paneId: 'b', thread }],
+          'a',
+        );
+        // Snapshot before mockRestore, which also clears the recorded calls.
+        reported = errorSpy.mock.calls.map((call) => [...call]);
+      } finally {
+        errorSpy.mockRestore();
+      }
+
+      expect(listPanes().map((pane) => pane.paneId)).toEqual(['a']);
+      expect(getPaneLayoutItems().map((item) => item.paneId)).toEqual(['a']);
+      expect(getFocusedPaneId()).toBe('a');
+      expect(panesShowingThread('restored-dup').map((pane) => pane.paneId)).toEqual(['a']);
+      expect(reported).toHaveLength(1);
+      expect(String(reported[0]?.[0])).toContain('restored-dup');
+    });
+
+    // The persisted focus naming the pane that gets deduplicated: it never
+    // enters the registry, so `focusedPaneId` is already null when the drop
+    // sweep runs and a truthiness-based fallback selects nobody — the
+    // session restores with no focused pane and every keyboard pane command
+    // no-ops until the user clicks one.
+    it('falls back to a surviving pane when the focused one was deduplicated away', async () => {
+      const thread = makeThread({ id: 'restored-dup' });
+      mockThreadSwitch(thread);
+      setPaneLayoutItemsForTest([
+        { id: 'a', paneId: 'a', kind: 'thread', widthPx: 1 },
+        { id: 'b', paneId: 'b', kind: 'thread', widthPx: 1 },
+      ]);
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      try {
+        await hydrateRestoredPaneRegistry(
+          [{ paneId: 'a', thread }, { paneId: 'b', thread }],
+          'b',
+        );
+      } finally {
+        errorSpy.mockRestore();
+      }
+
+      expect(listPanes().map((pane) => pane.paneId)).toEqual(['a']);
+      expect(getFocusedPaneId()).toBe('a');
+    });
+
+    it('restores distinct threads into their own panes', async () => {
+      const first = makeThread({ id: 'restored-1' });
+      const second = makeThread({ id: 'restored-2' });
+      mockThreadSwitch(first);
+      // mockThreadSwitch pins one thread; this restore drives two.
+      setBindingMock('SwitchThread', async (threadId: unknown) => (
+        threadId === 'restored-1' ? first : second
+      ));
+      setPaneLayoutItemsForTest([
+        { id: 'a', paneId: 'a', kind: 'thread', widthPx: 1 },
+        { id: 'b', paneId: 'b', kind: 'thread', widthPx: 1 },
+      ]);
+
+      await hydrateRestoredPaneRegistry(
+        [{ paneId: 'a', thread: first }, { paneId: 'b', thread: second }],
+        'b',
+      );
+
+      expect(listPanes().map((pane) => pane.paneId)).toEqual(['a', 'b']);
+      expect(getPaneLayoutItems().map((item) => item.paneId)).toEqual(['a', 'b']);
+      expect(getFocusedPaneId()).toBe('b');
     });
   });
 

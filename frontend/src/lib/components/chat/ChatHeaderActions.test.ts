@@ -1,5 +1,5 @@
 import { describe, expect, it, beforeEach, vi } from 'vitest';
-import { render, fireEvent } from '@testing-library/svelte';
+import { render, fireEvent, within } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import ChatHeaderActions from './ChatHeaderActions.svelte';
 import { resetPanesForTest } from '../../stores/panes.svelte';
@@ -9,6 +9,7 @@ import { resetEditorsForTest } from '../../stores/editors.svelte';
 import type { GitStatus } from '../../types/git';
 import type { Thread } from '../../types/models';
 import { setBindingMock, getBindingMock } from '../../../test/mocks/bindings-app';
+import { __setTransportStatusForTest } from '../../stores/transportStatus.svelte';
 import { emitWailsEvent } from '../../../test/mocks/wailsio-runtime';
 import {
   buildPane as buildRegisteredPane,
@@ -18,15 +19,10 @@ import {
 
 vi.mock('../../stores/threadCreation.svelte', () => ({ openTerminalThread: vi.fn() }));
 
-// Pin transport connected so the attach $effect actually subscribes (the real
-// store reads from wsClient, never initialised in test scope).
-// Partial mock: only the snapshot is pinned. A whole-module factory would
-// have to re-declare every export, so any new one silently becomes undefined
-// here (isMethodUnavailableError did exactly that).
-vi.mock('../../stores/transportStatus.svelte', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../../stores/transportStatus.svelte')>()),
-  getTransportStatus: () => ({ status: 'connected', nextAttemptAt: null }),
-}));
+// Transport is pinned connected globally (src/test/setup.ts) so the git-status
+// store sources instead of staying suspended. It is not mocked here: the store
+// is a `.svelte.ts` importer of transportStatus, and vi.mock does not reliably
+// reach those (frontend/CLAUDE.md § Testing).
 
 // Svelte transitions (Popover/Menu inside GitActionsControl) poke
 // Element.animate on mount; jsdom lacks it.
@@ -41,11 +37,13 @@ if (typeof Element !== 'undefined' && !('animate' in Element.prototype)) {
   };
 }
 
+const WORKSPACE = '/workspace';
+
 function makeThread(overrides: Partial<Thread> = {}): Thread {
   return makeBaseThread({
     title: 'Example',
-    workspacePath: '/workspace',
-    projectPath: '/workspace',
+    workspacePath: WORKSPACE,
+    projectPath: WORKSPACE,
     branch: 'main',
     ...overrides,
   });
@@ -77,10 +75,17 @@ async function flush(n = 8): Promise<void> {
   for (let i = 0; i < n; i += 1) await tick();
 }
 
-function installSubscribeMock(initial: GitStatus, id = 'sub-1') {
-  const subscribeFn = setBindingMock('GitStatusSubscribe', async () => ({ id, status: initial }));
+// The backend addresses status pushes by canonical cwd, so the subscribe
+// result carries it. Defaulting it to the fixture workspace is what lets a
+// `git:status` push in these tests route back to the thread's entry.
+function installSubscribeMock(initial: GitStatus, id = 'sub-1', cwd = WORKSPACE) {
+  const subscribeFn = setBindingMock('GitStatusSubscribe', async () => ({
+    id,
+    cwd,
+    status: initial,
+  }));
   setBindingMock('GitStatusUnsubscribe', async () => {});
-  return { id, subscribeFn };
+  return { id, cwd, subscribeFn };
 }
 
 describe('<ChatHeaderActions> badge gating', () => {
@@ -229,9 +234,9 @@ describe('<ChatHeaderActions> subscription effect', () => {
 
   it('does NOT re-subscribe when pane.replaceThread updates unrelated metadata', async () => {
     // Regression guard for the per-token flicker: the attach effect tracks the
-    // $derived gitCwd, whose value-equality short-circuits re-runs when only
+    // $derived store key, whose value-equality short-circuits re-runs when only
     // token usage / mode changed.
-    const thread = makeThread({ workspacePath: '/workspace' });
+    const thread = makeThread({ workspacePath: WORKSPACE });
     const pane = await buildPane(thread);
     const { subscribeFn } = installSubscribeMock(status({ hasChanges: true }));
     render(ChatHeaderActions, { props: { pane } });
@@ -245,16 +250,59 @@ describe('<ChatHeaderActions> subscription effect', () => {
     expect(getBindingMock('GitStatusUnsubscribe')).not.toHaveBeenCalled();
   });
 
+  it('does NOT re-subscribe when the pane switches threads inside one workspace', async () => {
+    // The entity is the WORKSPACE. Switching which thread a pane shows says
+    // nothing about the checkout, so a release + re-attach here would bounce
+    // the backend refcount through zero: the fs watcher torn down and
+    // rebuilt, and every badge in the header blanked, for nothing.
+    const thread = makeThread({ id: 'thread-a', workspacePath: WORKSPACE });
+    const pane = await buildPane(thread);
+    const { subscribeFn } = installSubscribeMock(status({ insertions: 3 }));
+    const { getByTestId } = render(ChatHeaderActions, { props: { pane } });
+    await flush();
+    expect(subscribeFn).toHaveBeenCalledTimes(1);
+
+    pane.replaceThread(makeThread({ id: 'thread-b', workspacePath: WORKSPACE }));
+    await flush();
+
+    expect(subscribeFn).toHaveBeenCalledTimes(1);
+    expect(getBindingMock('GitStatusUnsubscribe')).not.toHaveBeenCalled();
+    // And the observation is still there — no blank frame on the switch.
+    expect(getByTestId('workspace-diff-counts').textContent).toContain('+3');
+  });
+
+  it('subscribes against the thread the pane holds NOW, not the one it attached with', async () => {
+    // The reference outlives any one thread, so a re-source has to name a
+    // thread that still exists — the id it attached with may since have been
+    // deleted along with its pane's previous conversation.
+    const pane = await buildPane(makeThread({ id: 'thread-a', workspacePath: WORKSPACE }));
+    const { subscribeFn } = installSubscribeMock(status());
+    render(ChatHeaderActions, { props: { pane } });
+    await flush();
+    expect(subscribeFn).toHaveBeenCalledWith('thread-a');
+
+    pane.replaceThread(makeThread({ id: 'thread-b', workspacePath: WORKSPACE }));
+    await flush();
+
+    // A reconnect re-acquires every key; the store asks the ctx again.
+    __setTransportStatusForTest({ status: 'reconnecting', nextAttemptAt: null });
+    __setTransportStatusForTest({ status: 'connected', nextAttemptAt: null });
+    await flush();
+
+    expect(subscribeFn).toHaveBeenLastCalledWith('thread-b');
+  });
+
   it('resubscribes when the workspace path changes', async () => {
-    const thread = makeThread({ workspacePath: '/workspace' });
+    const thread = makeThread({ workspacePath: WORKSPACE });
     const pane = await buildPane(thread);
     const { subscribeFn } = installSubscribeMock(status());
     render(ChatHeaderActions, { props: { pane } });
     await flush();
     expect(subscribeFn).toHaveBeenCalledTimes(1);
 
-    // A worktree path supersedes workspacePath in gitCwd → new watcher.
-    pane.replaceThread({ ...thread, worktreePath: '/wt/branch-a' });
+    // A worktree move rewrites workspace_path — a different checkout, so a
+    // different entity and a different watcher.
+    pane.replaceThread({ ...thread, workspacePath: '/wt/branch-a', worktreePath: '/wt/branch-a' });
     await flush();
 
     expect(subscribeFn).toHaveBeenCalledTimes(2);
@@ -262,26 +310,53 @@ describe('<ChatHeaderActions> subscription effect', () => {
   });
 
   it('updates the workspace +/- when a live git:status push arrives', async () => {
-    // End-to-end through the mounted component: ChatHeaderActions wires
-    // pane.gitStatus.attach(), the slot subscribes to 'git:status' itself, and a
-    // live push flows slot → reactive status → WorkspaceDiffBadge re-render. The
-    // store unit test covers the slot in isolation; this adds the component
-    // mount + badge re-render path on top.
+    // End-to-end through the mounted component: ChatHeaderActions attaches the
+    // workspace entity, the store routes the push by canonical cwd, and the
+    // badge re-renders off the shared observation. The store unit test covers
+    // the routing in isolation; this adds the mount + render path on top.
     const pane = await buildPane();
-    const { id } = installSubscribeMock(status({ insertions: 1, deletions: 0 }));
+    const { cwd } = installSubscribeMock(status({ insertions: 1, deletions: 0 }));
     const { getByTestId } = render(ChatHeaderActions, { props: { pane } });
     await flush();
     // Initial value comes from the subscribe result, not the listener.
     expect(getByTestId('workspace-diff-counts').textContent).toContain('+1');
 
     emitWailsEvent('git:status', {
-      subscriptionId: id,
+      cwd,
       status: status({ insertions: 99, deletions: 7 }),
     });
     await flush();
 
-    // Only the live push (the slot's own git:status subscription) produces +99 / -7.
     expect(getByTestId('workspace-diff-counts').textContent).toContain('+99');
     expect(getByTestId('workspace-diff-counts').textContent).toContain('-7');
+  });
+
+  it('two panes on one workspace share a single subscription', async () => {
+    // The defect the entity keying exists to make impossible: a second pane on
+    // the same worktree used to open its own watcher and hold a private copy,
+    // so the two headers could disagree about whether there was anything to
+    // commit until both happened to refresh.
+    const left = await buildPane(makeThread({ id: 'thread-left' }));
+    const right = await buildPane(makeThread({ id: 'thread-right' }));
+    const { cwd, subscribeFn } = installSubscribeMock(status({ insertions: 1 }));
+
+    const a = render(ChatHeaderActions, { props: { pane: left } });
+    const b = render(ChatHeaderActions, { props: { pane: right } });
+    await flush();
+    expect(subscribeFn).toHaveBeenCalledTimes(1);
+
+    emitWailsEvent('git:status', { cwd, status: status({ insertions: 42 }) });
+    await flush();
+    // Scoped to each render's own container: both headers are in one document,
+    // so the default body-wide queries would match twice.
+    expect(within(a.container).getByTestId('workspace-diff-counts').textContent).toContain('+42');
+    expect(within(b.container).getByTestId('workspace-diff-counts').textContent).toContain('+42');
+
+    a.unmount();
+    await flush();
+    expect(getBindingMock('GitStatusUnsubscribe')).not.toHaveBeenCalled();
+    b.unmount();
+    await flush();
+    expect(getBindingMock('GitStatusUnsubscribe')).toHaveBeenCalledTimes(1);
   });
 });

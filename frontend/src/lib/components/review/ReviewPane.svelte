@@ -503,6 +503,11 @@
         {review.conflictsError}
       </div>
     {/if}
+    {#if review.prUpdateError}
+      <div class="border-b border-error/30 bg-error/10 px-3 py-2 text-xs text-error" data-testid="review-pr-update-error">
+        PR updates stopped: {review.prUpdateError}
+      </div>
+    {/if}
     {#if review.prStale}
       <div class="flex items-center justify-between gap-3 border-b border-warning/30 bg-warning/10 px-3 py-2 text-xs text-warning" data-testid="review-pr-stale">
         <span>PR updated.</span>

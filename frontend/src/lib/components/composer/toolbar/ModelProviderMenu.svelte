@@ -5,12 +5,16 @@
   import type { ChatBarFavorite } from '../../../stores/bindings';
   import type { DiscussionDefinition } from '../../../types/discussion';
   import {
-    ListChatBarFavorites,
     ListDiscussionsForThread,
-    SetChatBarFavorite,
     StartDiscussionByID,
     GetThread,
   } from '../../../stores/bindings';
+  import {
+    ensureChatBarFavorites,
+    peekChatBarFavorites,
+    peekChatBarFavoritesError,
+    setChatBarFavorite,
+  } from '../../../stores/chatBarFavorites.svelte';
   import { applyThreadModelSelection } from '../../../stores/threadModelControls';
   import {
     asProviderID,
@@ -51,8 +55,10 @@
   let triggerEl: HTMLButtonElement | undefined = $state(undefined);
   let open = $state(false);
   let applying = $state(false);
-  let favorites: ChatBarFavorite[] = $state([]);
-  let favoritesLoaded = $state(false);
+  // Favorites are app state, not menu state: every mounted menu derives from
+  // the one shared list, so a star set in one pane lands in all of them.
+  let favorites = $derived(peekChatBarFavorites());
+  let favoritesError = $derived(peekChatBarFavoritesError());
   let discussionDefs: DiscussionDefinition[] = $state([]);
   let discussionDefsError: string | null = $state(null);
   let discussionsLoadGeneration = 0;
@@ -67,21 +73,7 @@
     }
   }
 
-  async function ensureFavorites(): Promise<void> {
-    if (favoritesLoaded) return;
-    try {
-      const res = (await ListChatBarFavorites()) as ChatBarFavorite[] | null;
-      favorites = Array.isArray(res) ? res : [];
-      favoritesLoaded = true;
-    } catch (err) {
-      console.error('ListChatBarFavorites failed:', err);
-      addToast('error', 'Failed to load favorites');
-      favorites = [];
-      favoritesLoaded = true;
-    }
-  }
-
-  // Unlike ensureFavorites there is no loaded-once flag: definitions can
+  // Unlike the favorites store there is no shared cache: definitions can
   // be created in Settings mid-session, and this is a cheap local query,
   // so every menu open refetches. A draft placeholder can't start a
   // discussion at all, so the entry is simply hidden for it without a
@@ -126,7 +118,7 @@
     if (open) {
       const provider = asProviderID(pane.thread?.provider);
       if (provider) void ensureModels(provider);
-      void ensureFavorites();
+      ensureChatBarFavorites();
       void ensureDiscussions();
     }
   }
@@ -149,7 +141,7 @@
         open = true;
         const provider = asProviderID(pane.thread?.provider);
         if (provider) void ensureModels(provider);
-        void ensureFavorites();
+        ensureChatBarFavorites();
         void ensureDiscussions();
       },
       close: closeMenu,
@@ -184,9 +176,7 @@
 
   async function setFavorite(fav: ChatBarFavorite, starred: boolean): Promise<void> {
     try {
-      const updated = (await SetChatBarFavorite(fav, starred)) as ChatBarFavorite[] | null;
-      favorites = Array.isArray(updated) ? updated : [];
-      favoritesLoaded = true;
+      await setChatBarFavorite(fav, starred);
     } catch (err) {
       console.error('SetChatBarFavorite failed:', err);
       addToast('error', `Failed to update favorites: ${errString(err)}`);
@@ -295,6 +285,7 @@
   <Menu ariaLabel="Model and Provider" onClose={closeMenu}>
     <ChatBarFavoritesSection
       favorites={visibleFavorites}
+      error={favoritesError}
       {activeProvider}
       currentModel={pane.activeModel}
       onSelectModel={(provider, model) => void handleSelectModel(provider, model)}

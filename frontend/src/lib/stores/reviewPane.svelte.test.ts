@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { tick } from 'svelte';
 import { appStorageGet, appStorageSet, resetAppStorageForTest } from './appStorage';
 import {
   activeDiffReviewSourceForThread,
@@ -7,18 +8,24 @@ import {
 import { projectTurnStarted } from './threadStatuses.svelte';
 import {
   __resetReviewPaneStateForTest,
-  applyPRUpdatedEvent,
-  draftAnchorExists,
   disposeReviewStateForPane,
   openReviewCompanion,
   reviewStateForPane,
+} from './reviewPane.svelte';
+import {
+  draftAnchorExists,
   reviewLineCommentForDraft,
   supportsIgnoreWhitespace,
-} from './reviewPane.svelte';
+} from './reviewPaneLoad';
+import { applyPRUpdatedEvent } from './prReviewStore.svelte';
 import { resetCompanionPanesForTest } from './companionPanes.svelte';
+import { __seedGitStatusForTest } from './gitStatusStore.svelte';
+import { registerPaneForTest, resetPanesForTest } from './panes.svelte';
+import { createThreadPane } from './thread.svelte';
 import { registerComposerDraft, resetComposerDraftRegistryForTest } from './composerDraftRegistry.svelte';
 import { resetPaneLayoutForTest, setPaneLayoutItemsForTest } from './paneLayout.svelte';
-import type { DiffReviewComment, PRDetail, Thread } from '../types/models';
+import type { DiffReviewComment, PRDetail, ReviewThread, Thread } from '../types/models';
+import type { GitStatus } from '../types/git';
 import { diffSourceKey } from '../utils/diffSourceKey';
 import { expansionPredecessor } from '../utils/diffContextExpansion';
 import { filePatchDisplayRows, parsePatchFilesCached } from '../utils/patchFiles';
@@ -43,11 +50,55 @@ async function waitLoaded(state: ReturnType<typeof reviewStateForPane>): Promise
   });
 }
 
+const REVIEW_WORKSPACE = '/tmp/ws';
+
+/**
+ * The mount/reload PR probe resolves the thread's own `prRef` first and falls
+ * back to the workspace's LIVE git status — the same observation the header
+ * badge renders, read from the shared store rather than re-fetched. Reaching
+ * that fallback needs the source pane registered (that is how the probe finds
+ * the workspace) and that workspace observed.
+ */
+function seedPaneWorkspaceStatus(paneId: string, overrides: Partial<GitStatus>): void {
+  const pane = createThreadPane({ paneId });
+  pane.replaceThread({
+    id: 'thread-1',
+    title: 'Review',
+    provider: 'claude',
+    workspacePath: REVIEW_WORKSPACE,
+    projectPath: REVIEW_WORKSPACE,
+    model: 'm',
+    createdAt: 0,
+    updatedAt: 0,
+    archived: false,
+  });
+  registerPaneForTest(paneId, pane);
+  __seedGitStatusForTest(REVIEW_WORKSPACE, {
+    isRepo: true,
+    branch: 'feature',
+    isDefaultBranch: false,
+    hasChanges: false,
+    insertions: 0,
+    deletions: 0,
+    fileCount: 0,
+    hasUpstream: true,
+    aheadCount: 0,
+    behindCount: 0,
+    hasOriginRemote: true,
+    ...overrides,
+  });
+}
+
 function installDefaultMocks(): void {
-  // The mount/reload PR probe (probePRRef) reads both of these on every
-  // state creation; the defaults resolve to "no PR anywhere".
-  setBindingMock('GetThread', async () => ({ id: 'thread-1', workspacePath: '/tmp/ws' }) as Thread);
-  setBindingMock('GetGitStatus', async () => ({}));
+  // probePRRef reads the thread row on every state creation; the default
+  // resolves to "no PR on the thread", and with nothing seeded into the
+  // git-status store the workspace fallback finds none either.
+  setBindingMock('GetThread', async () => ({ id: 'thread-1', workspacePath: REVIEW_WORKSPACE }) as Thread);
+  // Seeding a workspace status runs the shared store's branch reconciliation;
+  // no rows come back, which is the ordinary answer for an already-correct
+  // cache. Unmocked it only produces console noise, but noise in a passing
+  // suite is where a real failure goes to hide.
+  setBindingMock('UpdateThreadBranch', async () => []);
   setBindingMock('GetWorkspaceCurrentDiff', async () => '');
   setBindingMock('GetBranchBaseDiff', async () => '');
   setBindingMock('ListBranchCommits', async () => []);
@@ -86,6 +137,7 @@ beforeEach(() => {
   resetCompanionPanesForTest();
   resetComposerDraftRegistryForTest();
   resetPaneLayoutForTest();
+  resetPanesForTest();
   installDefaultMocks();
 });
 
@@ -492,7 +544,8 @@ describe('reviewPane store', () => {
   });
 });
 
-const PR_SOURCE_KEY = 'pr:github:owner/repo:5';
+const PR_KEY = 'github:owner/repo:5';
+const PR_SOURCE_KEY = `pr:${PR_KEY}`;
 
 function prThreadStub(): Thread {
   // workspacePath set: a workspace-less thread with a prRef defaults straight
@@ -527,14 +580,26 @@ function prDetailStub(overrides: Partial<PRDetail> = {}): PRDetail {
   };
 }
 
+function reviewThreadStub(id: string): ReviewThread {
+  return {
+    id,
+    path: 'src/app.ts',
+    line: 1,
+    side: 'right',
+    isResolvable: true,
+    isResolved: false,
+    isOutdated: false,
+    comments: [],
+  };
+}
+
 function installPRMocks(): {
   subscribe: ReturnType<typeof vi.fn>;
   unsubscribe: ReturnType<typeof vi.fn>;
 } {
-  const subscribe = setBindingMock('SubscribePRUpdates', async (threadId: string, pr: unknown) => ({
+  const subscribe = setBindingMock('SubscribePRUpdates', async () => ({
     id: 'sub-1',
-    threadId,
-    pr,
+    prKey: PR_KEY,
     detail: prDetailStub(),
     threads: [],
     headSHA: 'sha-a',
@@ -714,7 +779,7 @@ describe('reviewPane store — PR scope', () => {
     expect(state.scope).toBe('workspace');
   });
 
-  it('a diff failure after subscribe unsubscribes and surfaces the error', async () => {
+  it('a diff failure surfaces the error and keeps the PR subscription for the retry', async () => {
     const { unsubscribe } = installPRMocks();
     setBindingMock('GetPRDiff', async () => {
       throw new Error('diff exploded');
@@ -724,6 +789,14 @@ describe('reviewPane store — PR scope', () => {
 
     await state.setScope('pr');
     expect(state.error).toContain('diff exploded');
+    // The pane is still on the PR, so the entity hold is still wanted: the
+    // detail/threads it feeds render the header, and a retry must not have
+    // to re-subscribe.
+    expect(unsubscribe).not.toHaveBeenCalled();
+    expect(state.prDetail?.number).toBe(5);
+
+    await state.setScope('workspace');
+    expect(unsubscribe).toHaveBeenCalledTimes(1);
     expect(unsubscribe).toHaveBeenCalledWith('sub-1');
   });
 
@@ -743,8 +816,7 @@ describe('reviewPane store — PR scope', () => {
     disposeReviewStateForPane('pane-1');
     resolveSubscribe?.({
       id: 'sub-late',
-      threadId: 'thread-1',
-      pr: {},
+      prKey: PR_KEY,
       detail: prDetailStub(),
       threads: [],
       headSHA: 'sha-a',
@@ -773,9 +845,7 @@ describe('reviewPane store — PR scope', () => {
     const filesBefore = state.files;
 
     applyPRUpdatedEvent({
-      subscriptionId: 'sub-1',
-      threadId: 'thread-1',
-      pr: { forge: 'github', namespace: 'owner', repo: 'repo', number: 5 },
+      prKey: PR_KEY,
       detail: prDetailStub({ mergeability: 'conflicts' }),
       threads: [],
       headSHA: 'sha-a',
@@ -784,19 +854,171 @@ describe('reviewPane store — PR scope', () => {
     expect(state.prDetail?.mergeability).toBe('conflicts');
 
     applyPRUpdatedEvent({
-      subscriptionId: 'sub-1',
-      threadId: 'thread-1',
-      pr: { forge: 'github', namespace: 'owner', repo: 'repo', number: 5 },
+      prKey: PR_KEY,
       detail: prDetailStub({ headSHA: 'sha-b' }),
       threads: [],
       headSHA: 'sha-b',
     });
     expect(state.prStale).toBe(true);
-    expect(state.prHeadSHA).toBe('sha-b');
+    // prHeadSHA is the head the RENDERED diff was loaded at, not the live
+    // head — that is exactly what makes the banner derivable per pane.
+    expect(state.prHeadSHA).toBe('sha-a');
+    expect(state.prDetail?.headSHA).toBe('sha-b');
     expect(state.files).toBe(filesBefore);
 
     await state.reload();
     expect(state.prStale).toBe(false);
+    expect(state.prHeadSHA).toBe('sha-b');
+  });
+
+  it('leaving the PR drops the head its diff was anchored to', async () => {
+    installPRMocks();
+    const state = reviewStateForPane('pane-1', 'thread-1', prThreadStub());
+    await waitLoaded(state);
+    await state.setScope('pr');
+    expect(state.prHeadSHA).toBe('sha-a');
+
+    await state.setScope('workspace');
+    // The anchor describes a diff of THAT PR. Kept around, it would be
+    // compared against the NEXT PR's live head and raise a stale banner on
+    // a diff that was never loaded.
+    expect(state.prHeadSHA).toBe('');
+    expect(state.prStale).toBe(false);
+  });
+
+  it('a PR→PR switch never compares the old PR\'s loaded head against the new PR\'s live head', async () => {
+    // The workspace's open-PR reference is what moves under a pane: a
+    // branch's MR merges and a new one opens, and the probe re-resolves it.
+    seedPaneWorkspaceStatus('pane-1', {
+      forge: 'github',
+      openPrUrl: 'https://github.com/owner/repo/pull/5',
+      openPrNumber: 5,
+    });
+    installPRMocks();
+    // The thread carries no PR of its own, so the reference comes from the
+    // workspace and is free to change.
+    setBindingMock('GetThread', async () => ({ id: 'thread-1', workspacePath: REVIEW_WORKSPACE }) as Thread);
+    setBindingMock('SubscribePRUpdates', async (pr: { Number: number }) => ({
+      id: `sub-${pr.Number}`,
+      prKey: `github:owner/repo:${pr.Number}`,
+      detail: prDetailStub({ number: pr.Number, headSHA: pr.Number === 5 ? 'sha-a' : 'sha-z' }),
+      threads: [],
+      headSHA: pr.Number === 5 ? 'sha-a' : 'sha-z',
+    }));
+
+    const state = reviewStateForPane('pane-1', 'thread-1');
+    await waitLoaded(state);
+    await state.setScope('pr');
+    expect(state.prRef?.number).toBe(5);
+    expect(state.prHeadSHA).toBe('sha-a');
+    expect(state.prStale).toBe(false);
+
+    // PR #5 merged; the workspace now points at #7, which another pane has
+    // already observed at a completely unrelated head.
+    seedPaneWorkspaceStatus('pane-1', {
+      forge: 'github',
+      openPrUrl: 'https://github.com/owner/repo/pull/7',
+      openPrNumber: 7,
+    });
+    let releaseDiff!: (patch: string) => void;
+    setBindingMock('GetPRDiff', () => new Promise<string>((resolve) => {
+      releaseDiff = resolve;
+    }));
+
+    const reloading = state.reload();
+    await vi.waitFor(() => {
+      expect(state.prRef?.number).toBe(7);
+      expect(releaseDiff).toBeTypeOf('function');
+    });
+    // The pane is now reading PR #7's live head (sha-z) while the diff on
+    // screen was computed for PR #5 at sha-a. Those are two unrelated OIDs:
+    // the anchor is stamped with the PR it belongs to, so it simply does not
+    // apply here — no banner, and no head quoted from another pull request.
+    expect(state.prStale).toBe(false);
+    expect(state.prHeadSHA).toBe('');
+
+    releaseDiff(patchFor('src/app.ts', 3));
+    await reloading;
+    expect(state.prHeadSHA).toBe('sha-z');
+    expect(state.prStale).toBe(false);
+  });
+
+  it('a pr:updated error surfaces as pane state and clears on the next good snapshot', async () => {
+    installPRMocks();
+    const state = reviewStateForPane('pane-1', 'thread-1', prThreadStub());
+    await waitLoaded(state);
+    await state.setScope('pr');
+    const filesBefore = state.files;
+
+    applyPRUpdatedEvent({ prKey: PR_KEY, error: 'gh api rate limit exceeded' });
+    expect(state.prUpdateError).toContain('rate limit');
+    // A failed poll is not a reason to blank the PR the user is reading.
+    expect(state.prDetail?.number).toBe(5);
+    expect(state.files).toBe(filesBefore);
+
+    applyPRUpdatedEvent({
+      prKey: PR_KEY,
+      detail: prDetailStub(),
+      threads: [],
+      headSHA: 'sha-a',
+    });
+    expect(state.prUpdateError).toBeNull();
+  });
+
+  it('one poll heals every pane on the PR, and staleness stays per pane', async () => {
+    const { subscribe } = installPRMocks();
+    const first = reviewStateForPane('pane-1', 'thread-1', prThreadStub());
+    const second = reviewStateForPane('pane-2', 'thread-1', prThreadStub());
+    await waitLoaded(first);
+    await waitLoaded(second);
+    await first.setScope('pr');
+    await second.setScope('pr');
+    // Both panes ride one pump: the subscription is refcounted by PR key.
+    expect(subscribe).toHaveBeenCalledTimes(1);
+
+    applyPRUpdatedEvent({
+      prKey: PR_KEY,
+      detail: prDetailStub({ headSHA: 'sha-b', title: 'retitled' }),
+      threads: [reviewThreadStub('t-9')],
+      headSHA: 'sha-b',
+    });
+
+    // One apply, both panes healed — no second fetch, no per-pane copy.
+    expect(first.prDetail?.title).toBe('retitled');
+    expect(second.prDetail?.title).toBe('retitled');
+    expect(first.prThreads.map((t) => t.id)).toEqual(['t-9']);
+    expect(second.prThreads.map((t) => t.id)).toEqual(['t-9']);
+    expect(first.prStale).toBe(true);
+    expect(second.prStale).toBe(true);
+
+    // Reloading ONE pane clears only that pane's banner: the other is still
+    // rendering the old head's diff and must keep saying so.
+    await first.reload();
+    expect(first.prStale).toBe(false);
+    expect(second.prStale).toBe(true);
+  });
+
+  it('the last pane to leave the PR releases the shared subscription', async () => {
+    const { subscribe, unsubscribe } = installPRMocks();
+    const first = reviewStateForPane('pane-1', 'thread-1', prThreadStub());
+    const second = reviewStateForPane('pane-2', 'thread-1', prThreadStub());
+    await waitLoaded(first);
+    await waitLoaded(second);
+    await first.setScope('pr');
+    await second.setScope('pr');
+    expect(subscribe).toHaveBeenCalledTimes(1);
+
+    await first.setScope('workspace');
+    expect(unsubscribe).not.toHaveBeenCalled();
+
+    await second.setScope('workspace');
+    expect(unsubscribe).toHaveBeenCalledTimes(1);
+    expect(unsubscribe).toHaveBeenCalledWith('sub-1');
+
+    // Re-entering after the refcount hit zero subscribes again rather than
+    // resurrecting a released handle.
+    await first.setScope('pr');
+    expect(subscribe).toHaveBeenCalledTimes(2);
   });
 
   it('opens conflict view expanded with file content loaded once', async () => {
@@ -1162,11 +1384,11 @@ describe('reviewPane store — PR scope', () => {
     // The scope dropdown's PR option is gated on a resolved prRef, so a
     // thread whose BRANCH has an open PR must resolve it proactively —
     // entering pr scope can't be the trigger (the option wouldn't exist).
-    setBindingMock('GetGitStatus', async () => ({
+    seedPaneWorkspaceStatus('pane-1', {
       forge: 'github',
       openPrUrl: 'https://github.com/acme/widgets/pull/7',
       openPrNumber: 7,
-    }));
+    });
 
     const state = reviewStateForPane('pane-1', 'thread-1');
     await waitLoaded(state);
@@ -1183,11 +1405,13 @@ describe('reviewPane store — PR scope', () => {
     await waitLoaded(state);
     expect(state.prRef).toBeNull();
 
-    setBindingMock('GetGitStatus', async () => ({
+    // The push that carries the newly-opened PR lands on the shared store;
+    // the pane picks it up on its next reload.
+    seedPaneWorkspaceStatus('pane-1', {
       forge: 'gitlab',
       openPrUrl: 'https://gitlab.com/group/sub/repo/-/merge_requests/3',
       openPrNumber: 3,
-    }));
+    });
     await state.reload();
 
     await vi.waitFor(() => {
@@ -1329,8 +1553,12 @@ describe('reviewPane store — PR scope', () => {
 
     setDocumentVisibility('hidden');
     expect(setActive).toHaveBeenCalledWith('sub-1', false);
+    // Votes are serialized per subscription, so the next one leaves only
+    // once this one has answered — see prReviewStore.svelte.test.ts.
+    await tick();
 
     setDocumentVisibility('visible');
+    await tick();
     expect(setActive).toHaveBeenCalledWith('sub-1', true);
     expect(setActive).toHaveBeenCalledTimes(2);
   });
@@ -1505,7 +1733,10 @@ describe('comments-only PR refresh', () => {
     await state.refreshPRThreads();
 
     expect(state.prStale).toBe(true);
-    expect(state.prHeadSHA).toBe('sha-b');
+    // The pane keeps reporting the head its diff came from; the moved head
+    // lives on the shared detail.
+    expect(state.prHeadSHA).toBe('sha-a');
+    expect(state.prDetail?.headSHA).toBe('sha-b');
     expect(diff).toHaveBeenCalledTimes(1);
   });
 

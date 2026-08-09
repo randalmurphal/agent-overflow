@@ -490,36 +490,19 @@ func (s *Store) ListThreadWorkspaceRefs() ([]ThreadWorkspaceRef, error) {
 	return refs, rows.Err()
 }
 
-// ListThreadWorkspaceRefsForProject is the project-scoped counterpart used by
-// app-layer transient activity overlays. It intentionally reads only thread
-// identity and paths, never item history.
-func (s *Store) ListThreadWorkspaceRefsForProject(projectID string) ([]ThreadWorkspaceRef, error) {
-	rows, err := s.reader().Query(
-		`SELECT id, workspace_path, COALESCE(worktree_path, '')
-		   FROM threads
-		  WHERE project_id = ?`,
-		projectID,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("store: list thread workspace refs for project %s: %w", projectID, err)
-	}
-	defer rows.Close()
-
-	var refs []ThreadWorkspaceRef
-	for rows.Next() {
-		var ref ThreadWorkspaceRef
-		if err := rows.Scan(&ref.ID, &ref.WorkspacePath, &ref.WorktreePath); err != nil {
-			return nil, fmt.Errorf("store: scan project thread workspace ref: %w", err)
-		}
-		refs = append(refs, ref)
-	}
-	return refs, rows.Err()
-}
-
-const blockedThreadWorkspaceRefsForProjectSQL = `SELECT t.id, t.workspace_path, COALESCE(t.worktree_path, '')
-  FROM threads t
- WHERE t.project_id = ?
-   AND (
+// threadBusyPredicateSQL is the persisted "this thread is doing work in its
+// checkout right now" test, correlated on `t` (the `threads` row) so any query
+// over threads can drop it straight into a WHERE clause. Three signals: an
+// open turn, a live background launch, or a live Codex subagent whose child
+// thread is still running.
+//
+// It is deliberately the same shape App.threadActivityBlockReason evaluates
+// per thread while holding that thread's lock before removing a worktree. The
+// affordance that greys the destructive action out and the refusal that
+// rejects it must be computed from ONE predicate; two spellings of "busy" are
+// two things to keep in sync, and the direction they drift in is a button
+// that stays enabled over a running agent.
+const threadBusyPredicateSQL = `(
      COALESCE((
        SELECT latest.completed_at IS NULL
          FROM turns latest
@@ -563,13 +546,25 @@ const blockedThreadWorkspaceRefsForProjectSQL = `SELECT t.id, t.workspace_path, 
      )
    )`
 
-// ListBlockedThreadWorkspaceRefsForProject returns workspace pointers only for
-// threads whose persisted activity currently blocks worktree removal. It is
-// scoped to one project so opening a picker never scans unrelated history.
-func (s *Store) ListBlockedThreadWorkspaceRefsForProject(projectID string) ([]ThreadWorkspaceRef, error) {
-	rows, err := s.reader().Query(blockedThreadWorkspaceRefsForProjectSQL, projectID)
+const blockedThreadWorkspaceRefsSQL = `SELECT t.id, t.workspace_path, COALESCE(t.worktree_path, '')
+  FROM threads t
+ WHERE ` + threadBusyPredicateSQL
+
+// ListBlockedThreadWorkspaceRefs returns workspace pointers for every thread —
+// any project, archived included — whose persisted activity currently blocks
+// moving or deleting the checkout it points at.
+//
+// Unscoped on purpose. The removal gate it feeds (App.threadsReferencingWorkspace
+// → removeProjectWorktree) matches paths across every project, because a
+// directory does not stop being in use when a second project row also names
+// it; a project-scoped answer would leave the affordance enabled over work the
+// backend then refuses. The scan is affordable precisely because the predicate
+// is selective: it is three index probes per thread row and the result set is
+// the handful of threads that are busy right now, not the history.
+func (s *Store) ListBlockedThreadWorkspaceRefs() ([]ThreadWorkspaceRef, error) {
+	rows, err := s.reader().Query(blockedThreadWorkspaceRefsSQL)
 	if err != nil {
-		return nil, fmt.Errorf("store: list blocked thread workspace refs for project %s: %w", projectID, err)
+		return nil, fmt.Errorf("store: list blocked thread workspace refs: %w", err)
 	}
 	defer rows.Close()
 
@@ -1235,44 +1230,134 @@ func (s *Store) UpdateContextSettings(threadID string, tokens, standardPercent, 
 	return requireRowsAffected(result, fmt.Sprintf("store: update context settings for %s", threadID))
 }
 
-// UpdateBranchIfWorkspace persists a new branch string without touching the
-// git working tree, but only while the thread is still in the workspace the
-// caller observed the branch in. Returns whether the write applied.
+// UpdateBranchForWorkspace persists a branch observed in workspacePath onto
+// every thread row currently sitting in that workspace, and returns those
+// rows as they stand afterwards.
 //
-// The compare-and-swap is not optional bookkeeping. The only caller is the
-// frontend's asynchronous branch-persist queue, which reads a branch off a
-// gitwatch status for one workspace and writes it back a moment later,
+// The branch is a fact about the CHECKOUT, not about one thread: several
+// threads share a worktree routinely (project-root threads default to it,
+// and "implement this plan in a new thread" inherits the source worktree),
+// so a per-thread write leaves the others claiming a branch the working
+// tree left behind. The workspace is the entity, so the workspace is what
+// the write is keyed on.
+//
+// That keying is also the compare-and-swap the caller needs. The caller is
+// the frontend's asynchronous branch-persist queue, which reads a branch off
+// a gitwatch status for one workspace and writes it back a moment later,
 // holding no lock — while a worktree switch (which takes threadLocks and
-// rewrites workspace_path AND branch together) can land in between. An
-// unconditional UPDATE lets the older observation win, leaving the thread
-// row claiming the previous workspace's branch: durable, silent, and
-// invisible until the next branch change happens to correct it.
+// rewrites workspace_path AND branch together) can land in between. Scoping
+// the UPDATE to the workspace path means a thread that has since moved is
+// simply not matched, so the stale observation cannot follow it.
 //
-// Guarding on workspace_path rather than on the previous branch value is
-// deliberate. The corruption is cross-workspace by nature: within one
-// workspace, a stale observation is only ever an older reading of the same
-// checkout, and the next status event corrects it. After a switch nothing
-// re-observes the old workspace, so nothing corrects it. A branch-valued
-// guard would also miss the case where both workspaces sit on the same
-// branch name, and would drop legitimate writes whenever the queue
-// collapsed a burst of observations.
+// The match is an EXACT one against either of two spellings of the same
+// directory: the path as the caller observed it, and its symlink-resolved
+// canonical form (the App resolves it; passing the same string twice is
+// legal and deduped). Thread rows store whichever spelling was current when
+// they were created — a worktree cut through a symlinked path keeps that
+// path — so matching only the caller's spelling left the rows stored under
+// the other one claiming a branch the working tree had left behind. It stays
+// an exact comparison, never a prefix or a re-resolution per row: that is
+// what keeps this a compare-and-swap on a directory rather than a scan.
 //
-// No rows updated is a normal outcome, not an error: it means another
-// writer owns the row now (or the thread is gone). The caller decides what
-// to show.
-func (s *Store) UpdateBranchIfWorkspace(threadID, workspacePath, branch string) (bool, error) {
-	result, err := s.db.Exec(
-		`UPDATE threads SET branch = ? WHERE id = ? AND workspace_path = ?`,
-		nilIfEmpty(branch), threadID, workspacePath,
+// Matching zero rows is a normal outcome, not an error: every thread may
+// have left the workspace (or the last one was deleted) between the
+// observation and the write.
+//
+// Returning zero rows is the COMMON outcome, and deliberately so. The caller
+// writes on every attach — a pane mount, a thread switch, a reconnect — and
+// the branch it observed almost always equals the one already cached, so the
+// UPDATE excludes rows that would not change (`branch IS NOT ?`, null-safe,
+// which is what makes the empty-string/NULL spelling work) and nothing is
+// read back for them. An unconditional write plus a full workspace listing
+// meant every attach paid the threadColumns projection — two correlated
+// subqueries per row — to hand back rows nobody had changed.
+//
+// The read runs inside the write's transaction and is anchored on the ids
+// the UPDATE returned, so the rows handed back are exactly the rows written:
+// neither a concurrent writer nor a thread that already sat on this branch
+// can widen the answer.
+func (s *Store) UpdateBranchForWorkspace(workspacePath, canonicalPath, branch string) ([]Thread, error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, fmt.Errorf("store: begin branch write for workspace %s: %w", workspacePath, err)
+	}
+	defer tx.Rollback()
+
+	// One placeholder when the two spellings agree (the ordinary case), so
+	// the common path issues exactly the query it always did.
+	if canonicalPath == "" {
+		canonicalPath = workspacePath
+	}
+	value := nilIfEmpty(branch)
+	updated, err := tx.Query(
+		`UPDATE threads SET branch = ?
+		   WHERE (workspace_path = ? OR workspace_path = ?) AND branch IS NOT ?
+		 RETURNING id`,
+		value, workspacePath, canonicalPath, value,
 	)
 	if err != nil {
-		return false, fmt.Errorf("store: compare-and-swap branch for %s: %w", threadID, err)
+		return nil, fmt.Errorf("store: update branch for workspace %s: %w", workspacePath, err)
 	}
-	rows, err := result.RowsAffected()
+	var ids []string
+	for updated.Next() {
+		var id string
+		if err := updated.Scan(&id); err != nil {
+			updated.Close()
+			return nil, fmt.Errorf("store: scan updated branch row in %s: %w", workspacePath, err)
+		}
+		ids = append(ids, id)
+	}
+	if err := updated.Err(); err != nil {
+		updated.Close()
+		return nil, fmt.Errorf("store: iterate updated branch rows in %s: %w", workspacePath, err)
+	}
+	updated.Close()
+
+	if len(ids) == 0 {
+		if err := tx.Commit(); err != nil {
+			return nil, fmt.Errorf("store: commit branch write for workspace %s: %w", workspacePath, err)
+		}
+		return nil, nil
+	}
+
+	threads, err := listThreadsByIDTx(tx, ids)
 	if err != nil {
-		return false, fmt.Errorf("store: compare-and-swap branch rows affected for %s: %w", threadID, err)
+		return nil, fmt.Errorf("store: read back branch write for workspace %s: %w", workspacePath, err)
 	}
-	return rows > 0, nil
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("store: commit branch write for workspace %s: %w", workspacePath, err)
+	}
+	return threads, nil
+}
+
+// listThreadsByIDTx reads the full thread projection for an explicit id set,
+// inside the caller's transaction. Only used by writers that have to hand
+// back exactly the rows they touched.
+func listThreadsByIDTx(tx *sql.Tx, ids []string) ([]Thread, error) {
+	placeholders := make([]string, len(ids))
+	args := make([]any, len(ids))
+	for i, id := range ids {
+		placeholders[i] = "?"
+		args[i] = id
+	}
+	rows, err := tx.Query(
+		`SELECT `+threadColumns+` FROM threads WHERE id IN (`+strings.Join(placeholders, ",")+`) ORDER BY id`,
+		args...,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	threads := make([]Thread, 0, len(ids))
+	for rows.Next() {
+		thread, err := scanThread(rows)
+		if err != nil {
+			return nil, err
+		}
+		threads = append(threads, thread)
+	}
+	return threads, rows.Err()
 }
 
 // UpdateWorkspacePath overwrites workspace_path. Used by the env/worktree

@@ -308,7 +308,6 @@ export const RecheckClaudeAccount = dispatch('RecheckClaudeAccount');
 export const RecheckCodexAccount = dispatch('RecheckCodexAccount');
 
 export const GetGitStatus = dispatch('GetGitStatus');
-export const GetGitStatusFast = dispatch('GetGitStatusFast');
 export const GetGitStatusFastForProject = dispatch('GetGitStatusFastForProject');
 export const GitStatusSubscribe = dispatch('GitStatusSubscribe');
 export const GitStatusUnsubscribe = dispatch('GitStatusUnsubscribe');
@@ -317,9 +316,11 @@ export const GitStatusUnsubscribe = dispatch('GitStatusUnsubscribe');
 // only need the type to satisfy `import type` consumers.
 export class GitStatusSubscriptionResult {
   id: string;
+  cwd: string;
   status: import('../../lib/types/git').GitStatus;
   constructor(s: Partial<GitStatusSubscriptionResult> = {}) {
     this.id = s.id ?? '';
+    this.cwd = s.cwd ?? '';
     this.status = s.status ?? ({} as import('../../lib/types/git').GitStatus);
   }
 }
@@ -495,6 +496,7 @@ export const UnsubscribePRUpdates = dispatch('UnsubscribePRUpdates');
 export const SetPRUpdatesActive = dispatch('SetPRUpdatesActive');
 export const CountRunningBackgroundTasks = dispatch('CountRunningBackgroundTasks');
 export const ListLiveBackgroundTasks = dispatch('ListLiveBackgroundTasks');
+export const GetWorkspaceActivity = dispatch('GetWorkspaceActivity');
 export const GetThreadItem = dispatch('GetThreadItem');
 
 // Usage accounting
