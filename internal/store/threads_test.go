@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"strings"
@@ -2015,7 +2016,7 @@ func TestMarkThreadReadNowClampsToLatestCompletedTurn(t *testing.T) {
 	completedAt := time.Now().UnixMilli() + 60_000
 	insertCompletedTurn(t, s, thr.ID, "turn-read-clamp", completedAt-1000, completedAt)
 
-	if err := s.MarkThreadReadNow(thr.ID); err != nil {
+	if err := s.MarkThreadReadNow(context.Background(), thr.ID); err != nil {
 		t.Fatalf("MarkThreadReadNow: %v", err)
 	}
 	got, err := s.GetThread(thr.ID)
@@ -2050,7 +2051,7 @@ func TestMarkThreadReadNowClearsIncompleteNewestTurn(t *testing.T) {
 		t.Fatalf("InsertTurn: %v", err)
 	}
 
-	if err := s.MarkThreadReadNow(thr.ID); err != nil {
+	if err := s.MarkThreadReadNow(context.Background(), thr.ID); err != nil {
 		t.Fatalf("MarkThreadReadNow: %v", err)
 	}
 	got, err := s.GetThread(thr.ID)
@@ -2081,7 +2082,7 @@ func TestMarkThreadReadNowAlreadyReadDoesNotRewrite(t *testing.T) {
 	if err := s.setThreadLastRead(thr.ID, &ts); err != nil {
 		t.Fatalf("setThreadLastRead: %v", err)
 	}
-	if err := s.MarkThreadReadNow(thr.ID); err != nil {
+	if err := s.MarkThreadReadNow(context.Background(), thr.ID); err != nil {
 		t.Fatalf("MarkThreadReadNow: %v", err)
 	}
 
@@ -2105,7 +2106,7 @@ func TestMarkThreadReadNowRefreshesEmptyThreadBaseline(t *testing.T) {
 	}
 
 	before := nowMillis()
-	if err := s.MarkThreadReadNow(thr.ID); err != nil {
+	if err := s.MarkThreadReadNow(context.Background(), thr.ID); err != nil {
 		t.Fatalf("MarkThreadReadNow: %v", err)
 	}
 
@@ -2135,7 +2136,7 @@ func TestMarkThreadReadNowIgnoresMetadataOnlyUpdatedAt(t *testing.T) {
 	if err := s.setThreadLastRead(thr.ID, &ts); err != nil {
 		t.Fatalf("setThreadLastRead: %v", err)
 	}
-	if err := s.MarkThreadReadNow(thr.ID); err != nil {
+	if err := s.MarkThreadReadNow(context.Background(), thr.ID); err != nil {
 		t.Fatalf("MarkThreadReadNow: %v", err)
 	}
 
@@ -2459,7 +2460,7 @@ func TestMarkThreadReadNowClearsInterruptedSettledTurn(t *testing.T) {
 		t.Fatalf("UpdateTurnCompleted(): %v", err)
 	}
 
-	if err := s.MarkThreadReadNow(thread.ID); err != nil {
+	if err := s.MarkThreadReadNow(context.Background(), thread.ID); err != nil {
 		t.Fatalf("MarkThreadReadNow(): %v", err)
 	}
 	got := mustListSingleThreadWithItems(t, s)

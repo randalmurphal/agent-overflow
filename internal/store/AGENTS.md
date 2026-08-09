@@ -8,17 +8,33 @@ root `CLAUDE.md` principle 3.
 - `store.go` — `Store` construct, `Thread` / `Project` / `Item` /
   `Payload` shared shapes, and the two connection pools: a
   single-connection writer (all writes, migrations, snapshot restore,
-  checkpoint, VACUUM — what makes `Exec`-scoped PRAGMAs behave as
-  global) plus a small `query_only` read pool so reads run against WAL
-  snapshots instead of queuing behind flush transactions. Read
+  checkpoint, VACUUM — what makes `RestoreFrom`'s temporary
+  `foreign_keys` toggle behave as global) plus a small `query_only`
+  read pool so reads run against WAL snapshots instead of queuing
+  behind flush transactions. Read
   accessors route through `reader()`; the pool is absent (writer
   fallback) for `:memory:` and non-WAL databases, and VACUUM quiesces
   it (`quiesceReads`) to keep its exclusive lock unstarvable. A read
   that must see connection-local state (attached snapshot DBs, PRAGMA
   probes) stays on `s.db`; so does the one write-through-QueryRow
   (`InsertChannelMessageAtomic`'s INSERT..RETURNING).
+  `Store.Close` and `New` both run a TRUNCATE checkpoint — see "WAL
+  hygiene" below.
+- `dsn.go` — the connection-scoped PRAGMAs each pool's DSN carries
+  (`writerConnPragmas` / `readerConnPragmas`), the `poolDSN` renderer,
+  and `verifyConnPragmas`. These PRAGMAs live in the DSN, never in a
+  post-`Open` `Exec`: they are per-connection, and database/sql
+  replaces a pooled connection whenever it likes, so an `Exec`-applied
+  `busy_timeout` / `foreign_keys` / `synchronous` silently reverts to
+  the defaults on the replacement (measured: `fk=1/bt=5000/sync=1`
+  before a recycle, `fk=0/bt=0/sync=2` after). `verifyConnPragmas` runs
+  once at boot because modernc.org/sqlite executes `_pragma` values
+  verbatim and SQLite ignores an unknown PRAGMA name without an error —
+  a DSN typo would otherwise open cleanly and run the whole app with
+  foreign keys off.
 - `migrate.go` — forward-only migration chain with the per-version
-  upgrade SQL.
+  upgrade SQL. `configureDatabase` owns only `journal_mode=WAL` (a
+  persistent, database-level setting) plus the `dsn.go` verification.
 - `items.go` / `items_read.go` / `items_write.go` /
   `items_lifecycle.go` / `payloads.go` — timeline item + heavy-payload
   tables. `items.go` carries the shared core (constants, scanners,
@@ -633,6 +649,36 @@ baseline:
   front and refuses a batch that would re-open a turn id the thread
   already holds.
 
+## WAL hygiene
+
+`PASSIVE` is the only checkpoint mode safe on a hot path — it returns
+immediately without waiting for readers — but it never shrinks the `-wal`
+file. It recycles WAL pages so the file stops GROWING; whatever
+high-water mark a burst pushed it to stays on disk. A user's live
+database reached a 300MB WAL that way.
+
+`TruncateCheckpoint` is the counterweight, and it runs at exactly three
+moments, all of them chosen because exclusivity is cheap there:
+
+- **Boot** (`New`, after migrations, before the read pool opens). The one
+  place a WAL stranded by an ungraceful exit — a Windows Job Object kill,
+  an OOM, a crash — gets reclaimed, and the one place no reader can
+  exist. This is why the Windows launcher's hard teardown does not have
+  to be graceful for WAL size to recover.
+- **`Store.Close`**, after the read pool closes and before the writer
+  does. Order is load-bearing: TRUNCATE cannot reset a WAL any connection
+  holds a read mark on, and the checkpoint runs on the writer.
+- **The retention sweep's trailing pass** (`app_retention_cleanup.go`),
+  after its VACUUM — which appends the entire rebuilt database to the
+  WAL. Skipped while shutting down, since `Close` runs it anyway.
+
+Two properties to keep in mind when adding a caller: TRUNCATE waits out
+an open read transaction for the full `busy_timeout` and then reports
+`CheckpointResult.Busy` having reclaimed nothing (SQLite answers a
+blocked checkpoint with a result ROW, never an error — a caller that only
+checks `err` cannot tell a reclaimed WAL from an abandoned one), and it
+quiesces the read pool internally, exactly like VACUUM.
+
 ## Extension points
 
 - To add a new column / index / CHECK: write a new migration — never
@@ -656,6 +702,10 @@ baseline:
   cheap, `data` loads on explicit expand.
 - Do NOT leave `items.summary` empty. The frontend renders it by
   default.
+- Do NOT configure a connection-scoped PRAGMA with an `Exec` after
+  `sql.Open`. It configures one connection instance, not the pool, and
+  the replacement comes up with the SQLite defaults. Add it to the
+  pool's DSN list in `dsn.go` — which also gets it verified at boot.
 
 ## Testing
 

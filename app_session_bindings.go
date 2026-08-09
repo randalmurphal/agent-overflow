@@ -1,17 +1,46 @@
 package main
 
 import (
+	"context"
+	"log"
+	"time"
+
 	"agent-overflow/internal/chatmodel"
 	"agent-overflow/internal/store"
 )
 
-// SwitchThread returns the requested thread and marks it read durably.
-// Provider sessions are started lazily on first send, not on focus.
+// markThreadReadTimeout bounds a read-state stamp's wait for the single
+// writer connection. It matches the busy_timeout PRAGMA on purpose: past
+// five seconds the writer isn't contended, it's wedged, and waiting
+// longer only parks a goroutine that shutdown then has to join.
+const markThreadReadTimeout = 5 * time.Second
+
+// SwitchThread returns the requested thread. Provider sessions are
+// started lazily on first send, not on focus.
+//
+// The read-state stamp runs OFF this RPC's critical path. It is a write,
+// so it queues for the store's single writer connection behind whatever
+// that connection is already doing — a retention sweep's delete batch, a
+// streaming flush, a checkpoint — and doing it first put the thread load
+// the UI is blocked on behind an unrelated write.
+//
+// Nothing downstream depends on the returned row carrying the new stamp.
+// The sidebar badge is the frontend's own state: ChatView patches
+// lastReadAt locally the moment the thread is focused and persists it
+// through the MarkThreadRead binding on a debounce, and it deliberately
+// re-enters that path when a row arrives carrying an OLDER lastReadAt
+// than it holds. So a returned row that predates the stamp is a state
+// the frontend already handles rather than a stale badge. The write
+// itself cannot lose a race either: MarkThreadReadNow never moves
+// last_read_at backward, so a late async stamp cannot revert a newer one
+// the user's own mark-read landed in the meantime.
 func (a *App) SwitchThread(threadID string) (store.Thread, error) {
-	if err := a.markThreadFocused(threadID); err != nil {
+	thread, err := a.loadThreadForFocus(threadID)
+	if err != nil {
 		return store.Thread{}, err
 	}
-	return a.loadThreadForFocus(threadID)
+	a.markThreadFocused(threadID)
+	return thread, nil
 }
 
 // AutoResumeThread is a no-op retained for wire compatibility. Provider
@@ -24,8 +53,49 @@ func (a *App) AutoResumeThread(threadID string) error {
 	return nil
 }
 
-func (a *App) markThreadFocused(threadID string) error {
-	return a.store.MarkThreadReadNow(threadID)
+// markThreadFocused stamps the thread's read-state in the background.
+// Registration happens synchronously under markThreadReadMu so the
+// WaitGroup can never be joined by a stamp that was accepted after
+// stopMarkThreadReads decided nothing more would run.
+func (a *App) markThreadFocused(threadID string) {
+	a.markThreadReadMu.Lock()
+	if a.markThreadReadStopped {
+		a.markThreadReadMu.Unlock()
+		return
+	}
+	a.markThreadReadWG.Add(1)
+	a.markThreadReadMu.Unlock()
+
+	go func() {
+		defer a.markThreadReadWG.Done()
+		ctx, cancel := context.WithTimeout(context.Background(), markThreadReadTimeout)
+		defer cancel()
+		if err := a.store.MarkThreadReadNow(ctx, threadID); err != nil {
+			// Nobody is waiting on this write, so a failure would
+			// otherwise be invisible: the sidebar keeps showing the
+			// frontend's optimistic read state and the next launch
+			// reverts to an unread badge with no explanation.
+			log.Printf("app: mark thread %s read: %v", threadID, err)
+		}
+	}()
+}
+
+// waitMarkThreadReads blocks until every read-state stamp already
+// registered has landed, WITHOUT refusing later ones. It is the
+// observation point for tests that need the durable row.
+func (a *App) waitMarkThreadReads() {
+	a.markThreadReadWG.Wait()
+}
+
+// stopMarkThreadReads refuses new read-state stamps and waits out the
+// in-flight ones. Shutdown calls it before the store closes — each stamp
+// writes to SQLite, and markThreadReadTimeout caps how long that wait
+// can add to quit latency.
+func (a *App) stopMarkThreadReads() {
+	a.markThreadReadMu.Lock()
+	a.markThreadReadStopped = true
+	a.markThreadReadMu.Unlock()
+	a.markThreadReadWG.Wait()
 }
 
 func (a *App) loadThreadForFocus(threadID string) (store.Thread, error) {

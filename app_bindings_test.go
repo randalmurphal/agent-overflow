@@ -457,7 +457,11 @@ func TestAutoResumeThreadIsNoOp(t *testing.T) {
 	}
 }
 
-func TestSwitchThreadMarksThreadReadBeforeReturning(t *testing.T) {
+// TestSwitchThreadMarksThreadReadAsync pins the split contract: the RPC
+// answers with the thread read (never blocked behind the store's single
+// writer connection), and the read-state stamp lands durably right after
+// on its own goroutine.
+func TestSwitchThreadMarksThreadReadAsync(t *testing.T) {
 	app := newTestAppWithStore(t)
 	thread := testThread("thread-switch-read")
 	if err := app.store.CreateThread(thread); err != nil {
@@ -470,15 +474,14 @@ func TestSwitchThreadMarksThreadReadBeforeReturning(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SwitchThread() error = %v", err)
 	}
+	if got.ID != thread.ID {
+		t.Fatalf("returned thread id = %q, want %q", got.ID, thread.ID)
+	}
 	if got.LatestTurnCompletedAt == nil {
 		t.Fatalf("returned LatestTurnCompletedAt = nil, want completed turn")
 	}
-	if got.LastReadAt == nil {
-		t.Fatalf("returned LastReadAt = nil, want >= latest turn completed")
-	}
-	if *got.LastReadAt < *got.LatestTurnCompletedAt {
-		t.Fatalf("returned LastReadAt = %d, want >= latest turn completed %d", *got.LastReadAt, *got.LatestTurnCompletedAt)
-	}
+
+	app.waitMarkThreadReads()
 
 	stored, err := app.store.GetThread(thread.ID)
 	if err != nil {
@@ -492,6 +495,62 @@ func TestSwitchThreadMarksThreadReadBeforeReturning(t *testing.T) {
 	}
 	if *stored.LastReadAt < *stored.LatestTurnCompletedAt {
 		t.Fatalf("stored LastReadAt = %d, want >= latest turn completed %d", *stored.LastReadAt, *stored.LatestTurnCompletedAt)
+	}
+}
+
+// TestSwitchThreadAnswersWhileTheWriterIsHeld is the regression guard for
+// the ordering defect: SwitchThread used to mark the thread read BEFORE
+// loading it, so the read the UI blocks on queued behind the store's
+// single writer connection. Holding SQLite's write lock from outside the
+// App makes that queue real — a SwitchThread that still writes first
+// cannot answer until busy_timeout (5s) expires.
+func TestSwitchThreadAnswersWhileTheWriterIsHeld(t *testing.T) {
+	app, dbPath := newTestAppWithStorePath(t)
+	thread := testThread("thread-switch-blocked-writer")
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread() error = %v", err)
+	}
+	completedAt := time.Now().UnixMilli()
+	insertCompletedTurnForAppTest(t, app, thread.ID, "turn-blocked-writer", completedAt-1000, completedAt)
+
+	blocker, err := sql.Open("sqlite", "file:"+dbPath+"?_pragma=busy_timeout(0)")
+	if err != nil {
+		t.Fatalf("open blocker: %v", err)
+	}
+	t.Cleanup(func() { _ = blocker.Close() })
+	blocker.SetMaxOpenConns(1)
+	held, err := blocker.Conn(context.Background())
+	if err != nil {
+		t.Fatalf("blocker conn: %v", err)
+	}
+	if _, err := held.ExecContext(context.Background(), "BEGIN IMMEDIATE"); err != nil {
+		t.Fatalf("take write lock: %v", err)
+	}
+	releaseWriteLock := func() {
+		_, _ = held.ExecContext(context.Background(), "ROLLBACK")
+		_ = held.Close()
+	}
+	// The async stamp is still parked on the held lock when the test
+	// body ends; release before the fixture's store.Close so shutdown
+	// isn't the thing waiting it out.
+	t.Cleanup(func() {
+		releaseWriteLock()
+		app.waitMarkThreadReads()
+	})
+
+	start := time.Now()
+	got, err := app.SwitchThread(thread.ID)
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatalf("SwitchThread() error = %v", err)
+	}
+	if got.ID != thread.ID {
+		t.Fatalf("returned thread id = %q, want %q", got.ID, thread.ID)
+	}
+	// busy_timeout is 5s; anything approaching it means the RPC waited
+	// on the writer. One second is a wide margin over a WAL-snapshot read.
+	if elapsed > time.Second {
+		t.Fatalf("SwitchThread took %s with the writer held — it is still waiting on the write", elapsed)
 	}
 }
 
@@ -1031,6 +1090,15 @@ func TestUpdateThreadModelRejectsBlankModel(t *testing.T) {
 
 func newTestAppWithStore(t *testing.T) *App {
 	t.Helper()
+	app, _ := newTestAppWithStorePath(t)
+	return app
+}
+
+// newTestAppWithStorePath is newTestAppWithStore plus the database path,
+// for the handful of tests that need a second handle on the same file
+// (contending for SQLite's write lock from outside the App).
+func newTestAppWithStorePath(t *testing.T) (*App, string) {
+	t.Helper()
 
 	dbPath := filepath.Join(t.TempDir(), "app.db")
 	st, err := store.New(dbPath)
@@ -1066,7 +1134,7 @@ func newTestAppWithStore(t *testing.T) *App {
 	isolateE2EProviderSpawns(t, app)
 	t.Cleanup(app.appCancel)
 	ensureDefaultTestProject(t, app)
-	return app
+	return app, dbPath
 }
 
 // resetProviderBinarySettings restores the bare-name binary defaults that

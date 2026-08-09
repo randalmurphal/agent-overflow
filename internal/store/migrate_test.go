@@ -29,7 +29,7 @@ import (
 func openSQLiteDB(t *testing.T) *sql.DB {
 	t.Helper()
 
-	db, err := sql.Open("sqlite", ":memory:")
+	db, err := sql.Open("sqlite", poolDSN(":memory:", writerConnPragmas))
 	if err != nil {
 		t.Fatalf("open sqlite db: %v", err)
 	}
@@ -1705,7 +1705,7 @@ func TestV12ChannelMaxTurnsColumn(t *testing.T) {
 // the schema at `target`, then drive the next migration.
 func migrateThrough(t *testing.T, target int) *sql.DB {
 	t.Helper()
-	db, err := sql.Open("sqlite", ":memory:")
+	db, err := sql.Open("sqlite", poolDSN(":memory:", writerConnPragmas))
 	if err != nil {
 		t.Fatalf("open sqlite db: %v", err)
 	}

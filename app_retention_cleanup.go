@@ -203,6 +203,29 @@ func (a *App) runRetentionSweep(now time.Time) {
 			} else if ran {
 				log.Printf("app: retention sweep: vacuum reclaimed freed space in %s", time.Since(start).Round(time.Millisecond))
 			}
+
+			// Trailing truncating checkpoint. The passive checkpoints
+			// above (and the per-batch ones inside the sweep) keep the
+			// WAL from growing but never shrink the file, so a sweep
+			// that just pushed thousands of thread deletions — and
+			// possibly a VACUUM, which appends the entire rebuilt
+			// database to the WAL — leaves the session's high-water
+			// mark on disk. TRUNCATE is what reclaims it, and this is
+			// the right moment for it: a controlled background pass
+			// that already took an exclusive lock for the VACUUM.
+			// It quiesces reads internally, and a checkpoint it still
+			// can't complete reports Busy and changes nothing rather
+			// than failing the sweep — the next qualifying sweep, or
+			// the next boot, retries. Skipped while shutting down
+			// because Store.Close runs the same checkpoint with the
+			// read pool already gone.
+			res, err := a.store.TruncateCheckpoint()
+			switch {
+			case err != nil:
+				log.Printf("app: retention sweep: truncate checkpoint: %v", err)
+			case res.Busy:
+				log.Printf("app: retention sweep: truncate checkpoint blocked by an open read; %d frames left in the WAL", res.WALFrames)
+			}
 		}
 	}
 }

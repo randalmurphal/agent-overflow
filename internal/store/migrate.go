@@ -2112,35 +2112,15 @@ func configureDatabase(db *sql.DB) error {
 	if !strings.EqualFold(journalMode, "wal") {
 		log.Printf("store: journal_mode=WAL returned %q; SQLite fell back to rollback journaling (often caused by NFS or read-only mount)", journalMode)
 	}
-	if _, err := db.Exec("PRAGMA foreign_keys=ON"); err != nil {
-		return fmt.Errorf("enable foreign keys: %w", err)
-	}
-	// busy_timeout=5000 lets SQLite poll the lock for up to 5s before
-	// surfacing a SQLITE_BUSY to the caller. WAL allows concurrent
-	// readers + one writer, but UI threads, the checkpoint capture, the
-	// replay writer, and the triage flusher all write — without this
-	// timeout the rare contention window surfaces as "database is
-	// locked" toasts. Five seconds is the canonical SQLite recommendation
-	// for a UI-attached database; a turn rarely needs longer than that
-	// to land its writes, and longer windows would just mask a real
-	// deadlock.
-	if _, err := db.Exec("PRAGMA busy_timeout=5000"); err != nil {
-		return fmt.Errorf("set busy timeout: %w", err)
-	}
-	// synchronous=NORMAL is the WAL-recommended desktop config. With WAL
-	// the journal file is always fsync'd before commit; synchronous=NORMAL
-	// drops the redundant fsync of the main database file at checkpoint
-	// time. Power-loss can lose the last few committed transactions, but
-	// the database cannot corrupt — and per root/CLAUDE.md principle 2
-	// the provider session files are the authoritative history, so a
-	// re-stream covers any lost SQLite-side writes. synchronous=FULL (the
-	// SQLite default) is needed only when the database is the sole record
-	// of truth; that's not us. NORMAL meaningfully shortens fsync stalls
-	// during stream-bursts, which is the per-block-stop freeze hot path.
-	if _, err := db.Exec("PRAGMA synchronous=NORMAL"); err != nil {
-		return fmt.Errorf("set synchronous=NORMAL: %w", err)
-	}
-	return nil
+	// foreign_keys, busy_timeout and synchronous are connection-scoped, so
+	// setting them here would only configure whichever connection served
+	// this call — the writer DSN carries them instead (see dsn.go), which
+	// is what makes them survive a recycled connection. What's left to do
+	// is prove the DSN actually applied them: modernc.org/sqlite runs
+	// _pragma values verbatim and SQLite ignores an unknown PRAGMA name
+	// without complaining, so a typo would open cleanly and run the whole
+	// app with foreign keys off.
+	return verifyConnPragmas(db, writerConnPragmas)
 }
 
 func ensureMigrationTable(db *sql.DB) error {

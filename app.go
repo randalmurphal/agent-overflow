@@ -572,6 +572,15 @@ type App struct {
 	sessionImportActive  *sessionImportRun
 	sessionImportStopped bool
 	sessionImportWG      sync.WaitGroup
+	// Background thread read-state stamps (app_session_bindings.go).
+	// SwitchThread registers one per focus so the RPC the UI blocks on
+	// doesn't queue behind the store's single writer connection.
+	// markThreadReadStopped is set inside the same critical section that
+	// the WaitGroup is joined from, so no stamp can register after the
+	// wait has begun; Shutdown joins them before the store closes.
+	markThreadReadMu      sync.Mutex
+	markThreadReadStopped bool
+	markThreadReadWG      sync.WaitGroup
 	// Per-provider usage-probe gates (app_usage_probe_gate.go): every
 	// automatic rate-limit refresh trigger funnels through one so bursts
 	// coalesce and a cooldown bounds request rate. Lazily built via

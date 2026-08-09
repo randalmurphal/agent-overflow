@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -867,16 +868,24 @@ func (s *Store) MarkThreadActivity(threadID string, at int64) error {
 //
 // Does NOT bump updated_at: read-state is UI bookkeeping, not a thread
 // mutation, and bumping would thrash the sidebar ordering.
-func (s *Store) MarkThreadReadNow(id string) error {
+//
+// The context is required rather than optional. This is a write, so it
+// runs on the single writer connection, and database/sql makes a caller
+// wait for that connection to come free — behind a retention sweep's
+// delete batch, a streaming flush, or a checkpoint. A context-less
+// Begin waits for that with no ceiling; callers of a bookkeeping write
+// nobody is watching need one.
+func (s *Store) MarkThreadReadNow(ctx context.Context, id string) error {
 	now := nowMillis()
-	tx, err := s.db.Begin()
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("store: begin mark thread read %s: %w", id, err)
 	}
 	defer tx.Rollback()
 
 	var latestTurnCompletedAt, latestIncompleteStartedAt, lastReadAt sql.NullInt64
-	err = tx.QueryRow(
+	err = tx.QueryRowContext(
+		ctx,
 		`SELECT
 		    (SELECT MAX(completed_at) FROM turns
 		      WHERE thread_id = threads.id AND completed_at IS NOT NULL),
@@ -929,7 +938,7 @@ func (s *Store) MarkThreadReadNow(id string) error {
 		}
 		return nil
 	}
-	result, err := tx.Exec(`UPDATE threads SET last_read_at = ? WHERE id = ?`, readAt, id)
+	result, err := tx.ExecContext(ctx, `UPDATE threads SET last_read_at = ? WHERE id = ?`, readAt, id)
 	if err != nil {
 		return fmt.Errorf("store: mark thread read %s: %w", id, err)
 	}

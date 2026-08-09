@@ -244,6 +244,15 @@ func (a *App) Shutdown(ctx context.Context) error {
 	a.stopSessionImports()
 	record("stop session imports", nil)
 
+	// Step 3g: join the background thread read-state stamps. Each one is a
+	// SQLite write, so it has to land before Step 9 closes the store.
+	// Bounded without a timeout here: every stamp carries its own
+	// markThreadReadTimeout, so the join cannot outlast the longest one
+	// already in flight.
+	a.stopMarkThreadReads()
+	record("stop thread read stamps", nil)
+
+
 	// Step 4: stop provider sessions. Each session's Close tears down
 	// its own design-thread state as part of the same parallel closer,
 	// so a slow design teardown can't serialize behind an unrelated

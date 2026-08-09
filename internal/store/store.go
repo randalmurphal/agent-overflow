@@ -3,7 +3,9 @@ package store
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -15,9 +17,12 @@ import (
 //
 // Two pools back it. db is the single-connection writer: every write,
 // migration, snapshot restore, checkpoint, and vacuum runs there, which
-// is what lets connection-scoped PRAGMAs (foreign_keys, busy_timeout,
-// synchronous — and RestoreFrom's temporary foreign_keys toggle) behave
-// as if they were global. read is a small read-only pool so UI reads run
+// is what lets RestoreFrom's temporary foreign_keys toggle behave as if
+// it were global. The connection-scoped PRAGMAs both pools depend on
+// (foreign_keys, busy_timeout, synchronous, query_only) ride the DSN so
+// they survive connection recycling — see dsn.go.
+//
+// read is a small read-only pool so UI reads run
 // against WAL snapshots instead of queuing behind streaming flush
 // transactions; its connections carry query_only(1), so a mis-routed
 // write fails loudly instead of contending. read is nil when the read
@@ -37,7 +42,7 @@ type Store struct {
 // New opens (or creates) the SQLite database at the given path and runs migrations.
 // Pass ":memory:" for tests.
 func New(dbPath string) (*Store, error) {
-	db, err := sql.Open("sqlite", dbPath)
+	db, err := sql.Open("sqlite", poolDSN(dbPath, writerConnPragmas))
 	if err != nil {
 		return nil, fmt.Errorf("store: open database: %w", err)
 	}
@@ -49,6 +54,20 @@ func New(dbPath string) (*Store, error) {
 	}
 
 	s := &Store{db: db}
+
+	// Reclaim the WAL file before anything can read from it. Every other
+	// checkpoint the app runs is PASSIVE, which recycles WAL pages for
+	// reuse but never shrinks the file — so a WAL that ballooned during a
+	// session the process did not survive (a Windows Job Object kill, an
+	// OOM, a crash) stays at its high-water mark for the rest of the
+	// database's life. TRUNCATE resets it to zero bytes but needs a moment
+	// with no open read transaction; boot is the one place that moment is
+	// structurally free, since the read pool is not open yet and no RPC has
+	// been served. Failure is logged, never fatal: an oversized WAL is a
+	// disk-space problem, not a reason to refuse to start.
+	bootCheckpoint, bootErr := s.TruncateCheckpoint()
+	s.logCheckpoint("boot", bootCheckpoint, bootErr)
+
 	if read, err := openReadPool(db, dbPath); err != nil {
 		db.Close()
 		return nil, err
@@ -79,12 +98,8 @@ func openReadPool(db *sql.DB, dbPath string) (*sql.DB, error) {
 	}
 	// _pragma values apply per connection (verified against
 	// modernc.org/sqlite v1.56.0). journal_mode is a property of the
-	// database file, so read connections inherit WAL. The path is
-	// %-escaped for SQLite URI parsing: '%', '?', and '#' are the only
-	// characters that can cut the path short or corrupt the query
-	// string; spaces pass through unescaped.
-	escaped := strings.NewReplacer("%", "%25", "?", "%3F", "#", "%23").Replace(dbPath)
-	read, err := sql.Open("sqlite", "file:"+escaped+"?_pragma=query_only(1)&_pragma=busy_timeout(5000)")
+	// database file, so read connections inherit WAL.
+	read, err := sql.Open("sqlite", poolDSN(dbPath, readerConnPragmas))
 	if err != nil {
 		return nil, fmt.Errorf("store: open read pool: %w", err)
 	}
@@ -94,6 +109,10 @@ func openReadPool(db *sql.DB, dbPath string) (*sql.DB, error) {
 	if err := read.QueryRow("SELECT 1").Scan(&probe); err != nil {
 		read.Close()
 		return nil, fmt.Errorf("store: read pool probe: %w", err)
+	}
+	if err := verifyConnPragmas(read, readerConnPragmas); err != nil {
+		read.Close()
+		return nil, err
 	}
 	return read, nil
 }
@@ -133,16 +152,28 @@ func (s *Store) quiesceReads(fn func() error) error {
 	return fn()
 }
 
-// Close closes the database connections.
+// Close closes the database connections, truncating the WAL on the way
+// out.
+//
+// Order is load-bearing. The read pool closes first because TRUNCATE
+// cannot reset a WAL any connection still holds a read mark on, and the
+// checkpoint has to run on the writer, which therefore closes last. A
+// failed or blocked checkpoint is logged and shutdown continues: quitting
+// must not depend on reclaiming disk space, and the next boot's
+// checkpoint picks up whatever this one left behind.
 func (s *Store) Close() error {
-	var readErr error
+	var errs []error
 	if s.read != nil {
-		readErr = s.read.Close()
+		if err := s.read.Close(); err != nil {
+			errs = append(errs, fmt.Errorf("store: close read pool: %w", err))
+		}
 	}
+	closeCheckpoint, checkpointErr := s.TruncateCheckpoint()
+	s.logCheckpoint("close", closeCheckpoint, checkpointErr)
 	if err := s.db.Close(); err != nil {
-		return err
+		errs = append(errs, fmt.Errorf("store: close writer: %w", err))
 	}
-	return readErr
+	return errors.Join(errs...)
 }
 
 // PassiveCheckpoint triggers a non-blocking WAL checkpoint. PASSIVE
@@ -163,6 +194,66 @@ func (s *Store) Close() error {
 func (s *Store) PassiveCheckpoint() error {
 	_, err := s.db.Exec("PRAGMA wal_checkpoint(PASSIVE)")
 	return err
+}
+
+// CheckpointResult is the three-column answer PRAGMA wal_checkpoint
+// returns. SQLite reports a checkpoint it could not complete as a result
+// ROW, not an error, so a caller that only checks err cannot tell a
+// reclaimed WAL from an abandoned one.
+type CheckpointResult struct {
+	// Busy is true when SQLite could not get the locks the mode needed
+	// and gave up (after busy_timeout). The WAL is left alone.
+	Busy bool
+	// WALFrames is the number of frames left in the WAL afterwards, or
+	// -1 on a database that is not in WAL mode.
+	WALFrames int64
+	// Checkpointed is the number of frames moved into the main database.
+	Checkpointed int64
+}
+
+// TruncateCheckpoint moves the whole WAL into the main database and
+// truncates the WAL file to zero bytes.
+//
+// This is the only checkpoint mode that shrinks the file. PASSIVE
+// recycles WAL pages so the file stops GROWING, which is why the hot
+// paths use it, but the file itself keeps whatever high-water mark a
+// burst pushed it to — a WAL that hit 300MB during a large backfill
+// stays a 300MB file until something truncates it.
+//
+// The cost is exclusivity: TRUNCATE waits for every reader to finish
+// (measured: an open read transaction costs the full busy_timeout and
+// then returns Busy with nothing reclaimed), so it runs inside
+// quiesceReads like VACUUM does — in-flight read-pool queries drain and
+// new reads route to the writer for the duration. Callers pick the
+// moment; it does not belong on a user-facing path.
+func (s *Store) TruncateCheckpoint() (CheckpointResult, error) {
+	var res CheckpointResult
+	err := s.quiesceReads(func() error {
+		var busy int64
+		if err := s.db.QueryRow("PRAGMA wal_checkpoint(TRUNCATE)").
+			Scan(&busy, &res.WALFrames, &res.Checkpointed); err != nil {
+			return err
+		}
+		res.Busy = busy != 0
+		return nil
+	})
+	if err != nil {
+		return CheckpointResult{}, fmt.Errorf("store: truncate checkpoint: %w", err)
+	}
+	return res, nil
+}
+
+// logCheckpoint reports a TruncateCheckpoint outcome at a lifecycle
+// moment where the caller has decided not to fail on it. Both failure
+// shapes are visible: an error, and the silent one where SQLite answered
+// with busy=1 and reclaimed nothing.
+func (s *Store) logCheckpoint(moment string, res CheckpointResult, err error) {
+	switch {
+	case err != nil:
+		log.Printf("store: %s WAL checkpoint: %v", moment, err)
+	case res.Busy:
+		log.Printf("store: %s WAL checkpoint blocked by an open read; %d frames left in the WAL", moment, res.WALFrames)
+	}
 }
 
 // Freed pages accumulate on the freelist forever (auto_vacuum is off —

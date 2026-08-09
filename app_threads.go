@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"os"
@@ -489,8 +490,16 @@ func (a *App) RenameThread(id string, title string) error {
 // completed turn so the sidebar stops showing a Completed pill. The timestamp
 // is owned by the store so the App layer stays free of nowMillis() calls,
 // matching ArchiveThread / UpdateTitle etc.
+//
+// The deadline is the App's to supply, not the caller's: bound methods
+// are the frontend's wire surface and take no context. Five seconds
+// matches the store's busy_timeout — a wait past that is a wedged writer,
+// and the frontend has already patched its own read state optimistically,
+// so returning the error beats holding the RPC open.
 func (a *App) MarkThreadRead(id string) error {
-	return a.store.MarkThreadReadNow(id)
+	ctx, cancel := context.WithTimeout(context.Background(), markThreadReadTimeout)
+	defer cancel()
+	return a.store.MarkThreadReadNow(ctx, id)
 }
 
 // MarkThreadUnread stamps last_read_at to zero. NULL is reserved for

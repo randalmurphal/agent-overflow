@@ -287,6 +287,10 @@ func TestShutdownWalksDocumentedOrder(t *testing.T) {
 		// import run writes threads, items and turns straight into SQLite.
 		// Same slot as the other background work for the same reason.
 		"stop session imports",
+		// "stop thread read stamps" MUST appear before "close store" —
+		// SwitchThread's read-state stamp runs off the RPC path, so an
+		// in-flight one is a SQLite write with nobody holding it open.
+		"stop thread read stamps",
 		"close provider sessions",
 		// "stop orphan reaper" follows session close: each session
 		// releases its watched group on a clean close, so the sidecar has
