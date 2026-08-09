@@ -44,7 +44,12 @@ import { DisconnectedError, TransportError } from '../../transport/wsClient';
 import { resetEditResendExecutionForTest } from './editResendFlow.svelte';
 import type { Item, Thread } from '../../types/models';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
-import { installPaneMocks, installThreadSwitchMocks, makeItem } from '../../../test/helpers/chat';
+import {
+  installPaneMocks,
+  installThreadSwitchMocks,
+  makeItem,
+  stubScrollController,
+} from '../../../test/helpers/chat';
 import { resetLayoutMetricsForTest } from '../../stores/layoutMetrics.svelte';
 import { resetPaneLayoutForTest } from '../../stores/paneLayout.svelte';
 import { resetCompanionPanesForTest } from '../../stores/companionPanes.svelte';
@@ -1211,16 +1216,14 @@ describe('edit-and-resend flow — landing at the new tail', () => {
   /** Replace MessageTimeline's adapter with a spy the flow can reach. */
   function attachSpyController(pane: ReturnType<typeof createThreadPane>) {
     const stickToLatest = vi.fn();
-    pane.attachScrollController({
-      pauseAutoScroll: () => () => {},
-      autoScrollInFlight: () => false,
-      observe: () => {},
-      markStructuralContentPending: () => {},
-      preserveScrollAnchor: async (_anchor, action) => {
-        await action();
-      },
-      stickToLatest,
-    });
+    pane.attachScrollController(
+      stubScrollController({
+        preserveScrollAnchor: async (_anchor, action) => {
+          await action();
+        },
+        stickToLatest,
+      }),
+    );
     return stickToLatest;
   }
 

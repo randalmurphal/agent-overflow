@@ -277,17 +277,23 @@ export function createContentObserver(deps: ContentObserverDeps): ContentObserve
     lastContentHeightDelta = Number.POSITIVE_INFINITY;
     lastSettleEvidence = false;
     // ONLY arm the failsafe. The quiet timer is armed by `bumpQuietTimer`
-    // on the FIRST contentRO event — gating the "quiet" signal on actual
-    // RO evidence is what defends against the load-bearing case where
-    // contentEl is absent when the gate is armed: a thread switch where
-    // the slice fetch is in flight, MessageTimeline is rendering the
-    // loading-spinner / empty branch, and there is no contentEl for the
-    // RO to observe. If we armed quietTimer here, it would fire at
-    // QUIET_MS without any cascade evidence; once items finally arrived
-    // and contentEl mounted, the consumer's hide-gate (gated on isWarm)
-    // would be already open and the cascade would be visible. The
-    // failsafe still bounds the worst case (slow shiki / mermaid / KaTeX
-    // typesetting that keeps ROs continuously firing for > FAILSAFE_MS).
+    // on the FIRST content-geometry delivery — gating the "quiet" signal
+    // on actual geometry evidence is what keeps an arm made against a
+    // surface that has not reported yet from opening at QUIET_MS with no
+    // cascade to have waited out. The failsafe still bounds the worst
+    // case (slow shiki / mermaid / KaTeX typesetting that keeps
+    // deliveries firing for > FAILSAFE_MS).
+    //
+    // That gate covers "no geometry source yet", NOT "no content yet".
+    // Under an external geometry source an EMPTY mount window still
+    // delivers a (zero-height) sample, which is indistinguishable here
+    // from a real fire — so a chat pane armed at the switch edge while
+    // its slice fetch is in flight legitimately warms ~QUIET_MS later,
+    // against nothing. Re-closing the gate for the rows that arrive
+    // afterwards is the pane data layer's job, not a heuristic here:
+    // see `PaneScrollController.armWarmup` (stores/threadPaneShared.ts),
+    // which the initial-slice application calls synchronously with the
+    // item mutation.
     failsafeTimer = setTimeout(() => markWarm('failsafe'), FAILSAFE_MS);
   }
 

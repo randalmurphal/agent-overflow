@@ -23,6 +23,7 @@ export function stubScrollController(
     autoScrollInFlight: () => false,
     observe: () => {},
     markStructuralContentPending: () => {},
+    armWarmup: () => {},
     preserveScrollAnchor: async () => {},
     ...overrides,
   };

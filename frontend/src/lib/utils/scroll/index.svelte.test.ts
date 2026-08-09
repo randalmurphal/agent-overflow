@@ -7566,6 +7566,101 @@ describe('createUseStickToBottomController — external content-geometry source'
       expect(controller.isWarm).toBe(true);
     });
   });
+
+  // The fetch-path cold open, end to end at the controller. The
+  // load-bearing fact this pins is that an EMPTY mount window is still a
+  // geometry delivery — it arms the quiet timer and legitimately opens
+  // the gate against nothing, ~QUIET_MS into a round trip that has not
+  // returned yet. Under the RO-backed source that could not happen
+  // (no contentEl mounted → no observer → no fire), which is why the
+  // gate's own "arm the quiet timer only on evidence" rule reads as
+  // sufficient and is not. The pane data layer's re-arm on initial-slice
+  // application (PaneScrollController.armWarmup) is what closes it again
+  // for the mount it exists for.
+  describe('warm-up gate — cold-load re-arm', () => {
+    it('opens against the empty pane while the slice is in flight', async () => {
+      controller.armWarmup();
+      // The empty mount window: totalSize 0, nothing measured.
+      deliver(0, 800);
+      expect(controller.isWarm).toBe(false);
+      await waitMs(150);
+      expect(controller.isWarm).toBe(true);
+      expect(controller.warmReason).toBe('quiet');
+    });
+
+    it('re-arming as the slice lands hides the cascade and reveals once it quiets', async () => {
+      controller.armWarmup();
+      deliver(0, 800);
+      await waitMs(150);
+      expect(controller.isWarm).toBe(true);
+
+      // Initial slice applied: the pane re-arms synchronously with the
+      // item mutation, before the flush that mounts those rows.
+      controller.armWarmup();
+      expect(controller.isWarm).toBe(false);
+      expect(controller.warmReason).toBeNull();
+
+      // The estimate→measure cascade. Each step resets the conservative
+      // quiet window, so the gate stays shut across the whole thing even
+      // though the steps are spaced wider than SETTLED_QUIET_MS.
+      deliver(4000, 800);
+      await waitMs(60);
+      expect(controller.isWarm).toBe(false);
+      deliver(4600, 800, { windowMeasured: true, maxFirstMeasureCorrectionPx: 180 });
+      await waitMs(60);
+      expect(controller.isWarm).toBe(false);
+      deliver(4740, 800, { windowMeasured: true, maxFirstMeasureCorrectionPx: 180 });
+      expect(controller.isWarm).toBe(false);
+
+      // Cascade quiet → one clean reveal.
+      await waitMs(150);
+      expect(controller.isWarm).toBe(true);
+      expect(controller.warmReason).toBe('quiet');
+    });
+
+    it('a second re-arm for the same pane re-closes an already-revealed gate', async () => {
+      // Switch away and back, or a re-issued slice for the same pane:
+      // the re-arm is idempotent in effect and total over call order —
+      // it never leaves the gate open on the strength of a prior cycle.
+      controller.armWarmup();
+      deliver(0, 800);
+      await waitMs(150);
+      controller.armWarmup();
+      deliver(4000, 800);
+      await waitMs(150);
+      expect(controller.isWarm).toBe(true);
+
+      controller.armWarmup();
+      expect(controller.isWarm).toBe(false);
+      deliver(0, 800);
+      deliver(3000, 800);
+      await waitMs(60);
+      expect(controller.isWarm).toBe(false);
+      await waitMs(100);
+      expect(controller.isWarm).toBe(true);
+    });
+
+    it('the FAILSAFE_MS ceiling still bounds a re-armed gate', async () => {
+      // A pathological surface that never goes quiet after the re-arm
+      // must not stay hidden — the failsafe restarts with the re-arm and
+      // is the upper bound on the whole hidden window.
+      controller.armWarmup();
+      deliver(0, 800);
+      await waitMs(150);
+      controller.armWarmup();
+      signal = false;
+      // Continuous deliveries: the quiet window never closes (and the
+      // falsy typesetting signal disarms it outright).
+      const interval = setInterval(() => deliver(4000 + Math.random(), 800), 20);
+      try {
+        await waitMs(2600);
+      } finally {
+        clearInterval(interval);
+      }
+      expect(controller.isWarm).toBe(true);
+      expect(controller.warmReason).toBe('failsafe');
+    });
+  });
 });
 
 // An activity run attaches a SECOND controller to its own clip while the

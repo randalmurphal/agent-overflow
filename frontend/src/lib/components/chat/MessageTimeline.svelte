@@ -476,6 +476,11 @@
     preserveScrollAnchor: (anchor, action) =>
       stick.preserveScrollAnchor(anchor, action),
     markStructuralContentPending: () => stick.markStructuralContentPending(),
+    // The reset form, not the bare controller call: the incoming rows'
+    // markdown has not typeset yet, so the settled-since-arm latch must
+    // start this cycle false or the shortened quiet window would open on
+    // a stale settle.
+    armWarmup: armWarmupWithReset,
     autoScrollInFlight: () => stick.autoScrollInFlight(),
     preserveTimelineWindowAnchor: windowAnchor.preserveTimelineWindowAnchor,
     preserveViewportBottom: windowAnchor.preserveViewportBottom,

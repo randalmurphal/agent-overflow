@@ -522,6 +522,43 @@ effect then calls `stick.forceStick({ reason: 'restore' })` and schedules
 one rAF `observe('content')` settle pass for late composer padding, row
 measurement, or Streamdown layout changes. The rAF pass is escape-aware.
 
+**That arm does not survive a fetch.** On the cache-miss path the pane
+sits EMPTY for the whole `ListThreadSliceAround` round trip, and an empty
+mount window is still a content-geometry delivery — the virtualizer
+reports `totalSize` 0, which arms the quiet timer exactly as a real
+cascade fire would, and the gate opens ~`QUIET_MS` in, against nothing.
+(The gate's own "arm the quiet timer only on geometry evidence" rule
+covers *no source yet*, not *no content yet*; under the RO-backed source
+the two coincided, because an unmounted `contentEl` has no observer.) So
+the rows that arrive 100–300ms later would mount through an open gate and
+run their estimate cascade in front of the reader.
+
+The **initial-slice re-arm** closes it again: `applyInitialSlice`'s call
+site in `thread.svelte.ts` (`armInitialSliceWarmup`) calls
+`PaneScrollController.armWarmup` synchronously with the item mutation —
+strictly before the flush that mounts those rows, the same ordering
+contract `markStructuralContentPending` carries — so the hide covers the
+mount from its first paint to the quiet edge, and `FAILSAFE_MS` still
+bounds it. Scope is exact, and each exclusion is a blank flash avoided
+rather than a missing case:
+
+- **Initial slice only.** Streaming appends, reveal-gate releases, and
+  load-older/newer pages mount against content the reader is already
+  looking at.
+- **Rows only.** An empty result re-arms nothing: there is no cascade to
+  hide, and holding the gate would sync-pin the first streamed tokens
+  instead of gliding them and park an empty pane behind the 2.5s
+  failsafe. Empty panes stay visible, as the placeholder→materialized
+  path already treats them.
+- **Chat only.** A discussion pane registers ChannelView's controller
+  over an unrelated surface (the same stand-down `armStructuralSpring`
+  makes).
+
+The chat adapter maps it to `armWarmupWithReset`, not the bare controller
+call: the incoming rows' markdown has not typeset yet, so the
+settled-since-arm latch has to start the cycle false or the shortened
+quiet window would open on a stale settle.
+
 Same-thread reloads must watch `pane.switchGeneration`, not just
 `pane.threadId`, because revert/reload can replace items without changing
 the thread id.
@@ -1254,8 +1291,9 @@ Useful trace records:
   into segments instead of leaving them scattered across the
   `scroll.warmup.*` / `chat.state` records above. Fields: `source`
   (`'cache-restore'` or `'fetch'`), `fetchMs` (switch start → initial
-  slice applied; `null` on a cache restore), `itemCount` (rows in that
-  slice), `settleMs` (slice applied — or switch start on a cache
+  slice applied; `null` on a cache restore), `itemCount` (rows the pane
+  holds after that slice merged — what actually mounts, not the wire
+  count), `settleMs` (slice applied — or switch start on a cache
   restore — → the warm gate's rising edge), `totalMs` (switch start →
   warm), `warmReason` (the controller's `warmReason` at that edge —
   `'quiet'`, `'failsafe'`, `'settled'`, or `'skip'`), and `priors` (the
@@ -1267,6 +1305,19 @@ Useful trace records:
   points at a measurement cascade that never went quiet; `priors`
   distinguishes "no stored entry" from "entry refused (width/expansion
   mismatch)" from "replayed N rows".
+
+  Three fields describe the gate's own cold-load behavior (see
+  **Warm-Up And Restore**). `warmBeforeItems` counts warm rising edges
+  that landed BEFORE the slice — on a fetch these measure the empty
+  pane, so the session survives them rather than closing on one, which
+  is what makes `fetchMs`/`itemCount` non-null on a real cold open.
+  `warmupRearmed` reports whether applying the slice re-closed the gate;
+  a fetch record with `itemCount > 0` and `warmupRearmed: false` is this
+  defense regressing. `abandoned` is `null` on a normal close and names
+  why otherwise — `'switched-away'` (a new switch replaced a session
+  still in flight) or `'thread-changed'` (the pane's warm edge arrived
+  for a different thread). Every session emits on exactly one of these
+  paths, so a switch that produced no record at all is itself a signal.
   Needs a `make dev DEBUG=1` build (`VITE_AGENT_OVERFLOW_UI_TRACE=1`).
 
 Work backward from the visible symptom to the last relevant

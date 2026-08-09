@@ -8898,6 +8898,134 @@ describe('createThreadPane', () => {
     });
   });
 
+  // The warm-up gate is armed at the switch edge, but on the FETCH path
+  // the pane then sits empty for the whole round trip — and an empty
+  // mount window still delivers a zero-height content-geometry sample,
+  // which the gate reads as cascade evidence and opens on ~QUIET_MS
+  // later. So by the time the slice lands, the gate is already open and
+  // the estimate cascade runs in front of the reader. The pane data
+  // layer re-closes it as part of applying that slice, synchronously
+  // with the item mutation (see PaneScrollController.armWarmup).
+  describe('warm-gate re-arm on initial slice', () => {
+    function attachWarmupSpy(pane: ReturnType<typeof createThreadPane>) {
+      const armWarmup = vi.fn();
+      pane.attachScrollController(stubScrollController({ armWarmup }));
+      return armWarmup;
+    }
+
+    it('re-arms when the initial slice mounts rows into an empty pane', async () => {
+      const pane = createThreadPane();
+      const armWarmup = attachWarmupSpy(pane);
+      const thread = makeThread({ id: 'thread-cold' });
+      setBindingMock('SwitchThread', async () => thread);
+      setBindingMock('ListThreadSliceAround', async () => ({
+        items: [
+          makeItem({ id: 'a', threadId: thread.id, turnIndex: 0, itemIndex: 0 }),
+          makeItem({ id: 'b', threadId: thread.id, turnIndex: 0, itemIndex: 1 }),
+        ],
+        oldestTurnIndex: 0,
+        hasMore: false,
+      }));
+
+      await pane.switchThread(thread);
+
+      expect(armWarmup).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not re-arm for a thread whose slice is empty', async () => {
+      // A brand-new thread mounts nothing to cascade. Holding the gate
+      // closed would leave the pane behind an empty 2.5s failsafe and
+      // sync-pin the first streamed tokens instead of gliding them.
+      const pane = createThreadPane();
+      const armWarmup = attachWarmupSpy(pane);
+      const thread = makeThread({ id: 'thread-empty' });
+      setBindingMock('SwitchThread', async () => thread);
+      setBindingMock('ListThreadSliceAround', async () => ({
+        items: [],
+        oldestTurnIndex: 0,
+        hasMore: false,
+      }));
+
+      await pane.switchThread(thread);
+
+      expect(armWarmup).not.toHaveBeenCalled();
+    });
+
+    it('does not re-arm on a cache-restore switch', async () => {
+      // Cached items are present synchronously at the switch edge, so
+      // the arm made there already covers their mount — and there is no
+      // initial slice to apply.
+      const thread = makeThread({ id: 'thread-cached' });
+      const pane = await buildPane(thread, [
+        makeItem({ id: 'a', threadId: thread.id, turnIndex: 0, itemIndex: 0 }),
+      ]);
+      const other = makeThread({ id: 'thread-other' });
+      setBindingMock('SwitchThread', async (id: unknown) =>
+        id === thread.id ? thread : other,
+      );
+      setBindingMock('ListThreadSliceAround', async () => ({
+        items: [],
+        oldestTurnIndex: 0,
+        hasMore: false,
+      }));
+      await pane.switchThread(other);
+
+      const armWarmup = attachWarmupSpy(pane);
+      await pane.switchThread(thread);
+
+      expect(pane.items.map((it) => it.id)).toEqual(['a']);
+      expect(armWarmup).not.toHaveBeenCalled();
+    });
+
+    it('does not re-arm for streaming appends or older paging', async () => {
+      // Both mount against content the reader is already looking at;
+      // hiding that is a blank flash, not a cascade defense.
+      const thread = makeThread({ id: 'thread-live' });
+      const pane = await buildPane(thread, [
+        makeItem({ id: 'seed', threadId: thread.id, turnIndex: 5, itemIndex: 0 }),
+      ]);
+      const armWarmup = attachWarmupSpy(pane);
+
+      pane.applyProviderItemUpserts([
+        makeItem({ id: 'next', threadId: thread.id, turnIndex: 5, itemIndex: 1 }),
+      ]);
+      expect(armWarmup).not.toHaveBeenCalled();
+
+      setBindingMock('ListThreadItemsBefore', async () => ({
+        items: [makeItem({ id: 'older', threadId: thread.id, turnIndex: 4, itemIndex: 0 })],
+        oldestTurnIndex: 4,
+        hasMore: false,
+      }));
+      await pane.loadOlder();
+      expect(armWarmup).not.toHaveBeenCalled();
+    });
+
+    it('re-arms once per switch across a rapid switch away and back', async () => {
+      // Each switch's own slice application is its own re-arm; a
+      // superseded switch's late response is gen-guarded out and must
+      // not add one.
+      const pane = createThreadPane();
+      const armWarmup = attachWarmupSpy(pane);
+      const threadA = makeThread({ id: 'thread-ab-a' });
+      const threadB = makeThread({ id: 'thread-ab-b' });
+      setBindingMock('SwitchThread', async (id: unknown) =>
+        id === threadA.id ? threadA : threadB,
+      );
+      setBindingMock('ListThreadSliceAround', async (id: unknown) => ({
+        items: [makeItem({ id: `${id}-row`, threadId: id as string, turnIndex: 0, itemIndex: 0 })],
+        oldestTurnIndex: 0,
+        hasMore: false,
+      }));
+
+      const first = pane.switchThread(threadA);
+      const second = pane.switchThread(threadB);
+      await Promise.all([first, second]);
+
+      expect(armWarmup).toHaveBeenCalledTimes(1);
+      expect(pane.threadId).toBe(threadB.id);
+    });
+  });
+
   // `pane.lastLiveContentAt` is the source the chat scroll controller
   // reads to decide whether more content is expected imminently
   // (MessageTimeline's liveContentActiveNow → isLiveContentActive).

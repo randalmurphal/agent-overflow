@@ -219,6 +219,136 @@ describe('createTimelineSizePriors', () => {
     expect(priors.replayStats().rowsResolved).toBe(0);
   });
 
+  // Regression battery for the restore-time capture destroying settled
+  // priors (the coldload trace's memory/replayed/rowsResolved:0 signature).
+  // timelineRestore's restoreToBottom/restoreAnchor call saveScrollSnapshot
+  // — and through it maybePersistSizePriors — synchronously at restore
+  // time, when the freshly remounted engine has measured nothing and the
+  // size-gate was just reset on the thread edge. Pre-fix, that persisted an
+  // empty rows map over the thread's settled entry.
+  it('does not destroy a settled entry when a restore-time capture has measured nothing', () => {
+    const threadId = 'thread-restore-wipe';
+    const nodes: TimelineNode[] = Array.from({ length: 8 }, (_, i) =>
+      leaf(`item-${i}`, { summary: `body ${i}`, status: 'completed', updatedAt: i }),
+    );
+    const settledSizes = nodes.map((_, i) => 60 + i);
+    let listRef = fakeListRef(settledSizes);
+    const pane = fakePane(threadId);
+    const priors = createTimelineSizePriors({
+      getPane: () => pane,
+      getListRef: () => listRef,
+      getRevealedNodes: () => nodes,
+      getScrollSurfaceContentWidth: () => 800,
+      getRestoredThreadId: () => threadId,
+    });
+    priors.maybePersistSizePriors(); // the settled capture
+
+    // Remount of the same thread: the size-gate resets on the thread edge,
+    // and restore fires a capture before any row has re-measured.
+    priors.resolveRowEstimateOnThreadEdge(null);
+    priors.resolveRowEstimateOnThreadEdge(threadId);
+    listRef = fakeListRef(nodes.map(() => -1));
+    priors.maybePersistSizePriors(); // restore-time capture, nothing measured
+
+    // A later mount must still resolve every settled size.
+    priors.resolveRowEstimateOnThreadEdge(null);
+    priors.resolveRowEstimateOnThreadEdge(threadId);
+    for (let i = 0; i < nodes.length; i++) {
+      expect(priors.rowEstimate!.at(i)).toBe(settledSizes[i]);
+    }
+    expect(priors.replayStats().rowsResolved).toBe(nodes.length);
+  });
+
+  it('carries settled sizes through a partial mid-cascade capture, dropping changed rows', () => {
+    const threadId = 'thread-partial';
+    let nodes: TimelineNode[] = Array.from({ length: 6 }, (_, i) =>
+      leaf(`item-${i}`, { summary: `body ${i}`, status: 'completed', updatedAt: i }),
+    );
+    const settledSizes = [50, 51, 52, 53, 54, 55];
+    let listRef = fakeListRef(settledSizes);
+    const pane = fakePane(threadId);
+    const priors = createTimelineSizePriors({
+      getPane: () => pane,
+      getListRef: () => listRef,
+      getRevealedNodes: () => nodes,
+      getScrollSurfaceContentWidth: () => 800,
+      getRestoredThreadId: () => threadId,
+    });
+    priors.maybePersistSizePriors();
+
+    // Remount: only rows 0-1 have re-measured (mid-cascade scrollend
+    // capture), and item-5's content changed since the settled capture —
+    // its old signature is no longer live, so its stale size must drop.
+    nodes = [
+      ...nodes.slice(0, 5),
+      leaf('item-5', { summary: 'body 5 grew longer', status: 'completed', updatedAt: 99 }),
+    ];
+    priors.resolveRowEstimateOnThreadEdge(null);
+    priors.resolveRowEstimateOnThreadEdge(threadId);
+    listRef = fakeListRef([70, 71, -1, -1, -1, -1]);
+    priors.maybePersistSizePriors();
+
+    priors.resolveRowEstimateOnThreadEdge(null);
+    priors.resolveRowEstimateOnThreadEdge(threadId);
+    const estimate = priors.rowEstimate!;
+    expect(estimate.at(0)).toBe(70); // fresh measurement wins
+    expect(estimate.at(1)).toBe(71);
+    expect(estimate.at(2)).toBe(52); // carried forward from the settled capture
+    expect(estimate.at(4)).toBe(54);
+    expect(estimate.at(5)).toBe(44); // changed signature: stale size dropped → kind estimate
+  });
+
+  it('refuses carry-forward across a width change', () => {
+    const threadId = 'thread-width-carry';
+    const nodes: TimelineNode[] = Array.from({ length: 4 }, (_, i) =>
+      leaf(`item-${i}`, { summary: `body ${i}`, status: 'completed', updatedAt: i }),
+    );
+    let currentWidth = 800;
+    let listRef = fakeListRef([90, 91, 92, 93]);
+    const pane = fakePane(threadId);
+    const priors = createTimelineSizePriors({
+      getPane: () => pane,
+      getListRef: () => listRef,
+      getRevealedNodes: () => nodes,
+      getScrollSurfaceContentWidth: () => currentWidth,
+      getRestoredThreadId: () => threadId,
+    });
+    priors.maybePersistSizePriors(); // settled at width 800
+
+    // Pane resized: a partial capture at the new width must not smuggle
+    // 800px-width sizes into a 640px-width entry.
+    currentWidth = 640;
+    priors.resolveRowEstimateOnThreadEdge(null);
+    priors.resolveRowEstimateOnThreadEdge(threadId);
+    listRef = fakeListRef([110, -1, -1, -1]);
+    priors.maybePersistSizePriors();
+
+    priors.resolveRowEstimateOnThreadEdge(null);
+    priors.resolveRowEstimateOnThreadEdge(threadId);
+    const estimate = priors.rowEstimate!;
+    expect(estimate.at(0)).toBe(110); // measured at 640 — replays
+    expect(estimate.at(1)).toBe(44); // old 800px size not carried → kind estimate
+  });
+
+  it('never stores an entry for a capture that resolves nothing', () => {
+    const threadId = 'thread-nothing';
+    const nodes: TimelineNode[] = [leaf('a', { summary: 'hi' })];
+    const listRef = fakeListRef([-1]);
+    const pane = fakePane(threadId);
+    const priors = createTimelineSizePriors({
+      getPane: () => pane,
+      getListRef: () => listRef,
+      getRevealedNodes: () => nodes,
+      getScrollSurfaceContentWidth: () => 800,
+      getRestoredThreadId: () => threadId,
+    });
+    priors.maybePersistSizePriors();
+
+    priors.resolveRowEstimateOnThreadEdge(threadId);
+    expect(priors.replayStats().source).toBe('none');
+    expect(priors.replayStats().validity).toBe('no-entry');
+  });
+
   it('resolves from localStorage after an in-memory clear (restart simulation)', () => {
     vi.useFakeTimers();
     __resetSizePriorsStorageForTest();

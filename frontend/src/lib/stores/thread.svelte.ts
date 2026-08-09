@@ -526,6 +526,37 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
   }
 
   /**
+   * Re-close the warm-up gate for the rows an initial slice just merged
+   * into an empty pane. See `PaneScrollController.armWarmup` for why the
+   * switch-edge arm alone does not survive the fetch, and
+   * `armStructuralSpring` above for the same synchronous-with-the-data
+   * ordering contract.
+   *
+   * Returns whether the gate was re-armed (the cold-load trace records
+   * it — a fetch that mounted rows without re-arming is this defect
+   * regressing).
+   *
+   * Two gates:
+   * - Nothing mounted (`items` still empty — a genuinely empty thread):
+   *   there is no cascade to hide, and holding the gate closed would
+   *   sync-pin the first streamed tokens instead of gliding them and
+   *   leave the pane behind an empty 2.5s failsafe. Empty panes stay
+   *   visible, exactly as the placeholder→materialized path already
+   *   treats them.
+   * - Discussion surface: those panes register ChannelView's controller,
+   *   which owns an unrelated scroll surface — the same reason
+   *   `armStructuralSpring` stands down.
+   */
+  function armInitialSliceWarmup(): boolean {
+    if (items.length === 0) return false;
+    if (threadUsesDiscussionSurface(thread)) return false;
+    const controller = scrollController;
+    if (!controller) return false;
+    controller.armWarmup();
+    return true;
+  }
+
+  /**
    * A wire append to the loaded tail (or a reveal-gate release mounting
    * withheld rows) IS live content advancing: arm the structural spring
    * AND stamp live content, sharing the arm's restore gates.
@@ -1049,9 +1080,12 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
             ),
           (paged) => {
             timelineWindow.applyInitialSlice(paged, newThread.id);
-            // Only the initial switch load marks this — loadOlder/loadNewer
-            // paging never calls applyInitialSlice.
-            coldLoadItemsApplied(paneId, (paged.items ?? []).length);
+            // Only the initial switch load reaches here — loadOlder/loadNewer
+            // paging never calls applyInitialSlice. The re-arm must run
+            // synchronously with the merge above, before the flush that
+            // mounts the merged rows.
+            const rearmed = armInitialSliceWarmup();
+            coldLoadItemsApplied(paneId, items.length, rearmed);
           },
           (err) => {
             // Cache miss + load failure leaves the timeline blank and

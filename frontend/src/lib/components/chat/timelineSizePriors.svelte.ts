@@ -219,6 +219,21 @@ export function createTimelineSizePriors(
   // whole entry). Deliberately NOT gated on spring-chase state: that would risk
   // dropping the settle capture on an already-warm streaming thread (isWarm
   // does not re-arm), regressing replay.
+  //
+  // A capture is a REPLACE at the store level, so an early capture must not
+  // discard what a settled one stored: the restore flow saves a snapshot
+  // synchronously at restore time (timelineRestore's restoreToBottom /
+  // restoreAnchor), when the freshly remounted engine has measured NOTHING —
+  // persisting that as-is wholesale-replaced the thread's settled entry with
+  // an empty map, and the next visit replayed zero rows (the coldload trace's
+  // memory/replayed/rowsResolved:0 signature). Two guards close that class:
+  // rows the engine has not (re)measured CARRY FORWARD from the previous
+  // entry when their signature is still live in the current window and the
+  // entry's width/expansionSig match this capture's (sizes measured under
+  // different geometry never mix), and a capture that still resolves nothing
+  // is skipped outright rather than stored. Self-cleaning is preserved: only
+  // signatures present in the current window survive a capture, so streaming
+  // signature churn still drops dead rows for free.
   function maybePersistSizePriors(): void {
     const pane = options.getPane();
     const threadId = pane.threadId || null;
@@ -231,21 +246,31 @@ export function createTimelineSizePriors(
     if (totalSize === lastPersistedTotalSize) return;
     lastPersistedTotalSize = totalSize;
 
+    const width = Math.round(options.getScrollSurfaceContentWidth());
+    const expansionSig = pane.expansionSignature();
+    const previous = getThreadSizePriors(threadId);
+    const carry =
+      previous && previous.width === width && previous.expansionSig === expansionSig
+        ? previous.rows
+        : undefined;
     const nodes = options.getRevealedNodes();
     const snapshot = listRef.takeSnapshot();
     const rows = new Map<string, number>();
     for (let index = 0; index < snapshot.length; index++) {
-      const size = snapshot[index];
-      if (size < 0) continue; // UNMEASURED (or any corrupt negative) — never persisted
       const node = nodes[index];
       if (!node) continue;
-      rows.set(nodeSignature(node), size);
+      const signature = nodeSignature(node);
+      const size = snapshot[index];
+      if (size >= 0) {
+        // Negative sizes (UNMEASURED or any corrupt value) never persist.
+        rows.set(signature, size);
+        continue;
+      }
+      const carried = carry?.get(signature);
+      if (carried !== undefined) rows.set(signature, carried);
     }
-    setThreadSizePriors(threadId, {
-      width: Math.round(options.getScrollSurfaceContentWidth()),
-      expansionSig: pane.expansionSignature(),
-      rows,
-    });
+    if (rows.size === 0) return;
+    setThreadSizePriors(threadId, { width, expansionSig, rows });
   }
 
   // Resolve the row estimate for the INCOMING thread before the

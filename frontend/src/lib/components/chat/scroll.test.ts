@@ -34,8 +34,9 @@ import {
 } from '../../utils/threadScrollSnapshots';
 import {
   clearAllThreadSizePriorsForTest,
-  getThreadSizePriors,
   peekThreadSizePriorsForTest,
+  setThreadSizePriors,
+  type SizePriorsEntry,
 } from '../../utils/virtual/priors';
 import * as sizePriorsModule from '../../utils/virtual/priors';
 import type { UseStickToBottomController } from '../../utils/scroll/index.svelte';
@@ -204,7 +205,18 @@ describe('scroll integration — per-thread snapshot save/restore', () => {
   // which reports zero geometry and never delivers a ResizeObserver
   // callback — see setup.ts's StubResizeObserver — so `rows` in this
   // environment captures no real measurements, only the wiring).
-  it('persists a size-priors entry for a thread after mount settles', async () => {
+  it('runs the settle capture but stores nothing while no row has measured', async () => {
+    // happy-dom's ResizeObserver is a no-op, so no row ever measures in
+    // this suite. The capture path must still RUN on settle (that wiring
+    // is what this test pins), but a capture that resolved no sizes is
+    // refused rather than stored: pre-guard it persisted an EMPTY rows
+    // map here, and in the real app the restore-time save did the same —
+    // wholesale-replacing a thread's settled priors with nothing (the
+    // coldload trace's memory/replayed/rowsResolved:0 signature).
+    // Measured-row capture/replay behavior lives in
+    // timelineSizePriors.svelte.test.ts, driven by a fake handle.
+    const resolveSpy = vi.spyOn(sizePriorsModule, 'getThreadSizePriors');
+    onTestFinished(() => resolveSpy.mockRestore());
     const pane = await buildPane(undefined, [
       makeItem({ id: 'a', summary: 'first' }),
       makeItem({ id: 'b', itemIndex: 1, summary: 'second' }),
@@ -216,17 +228,13 @@ describe('scroll integration — per-thread snapshot save/restore', () => {
     await tick();
     await tick();
 
-    // Persist fired once warm-up settled AND restoration completed (the
-    // effect depends on both — see the ordering note in MessageTimeline).
-    const entry = peekThreadSizePriorsForTest('thread-size-cache');
-    expect(entry).toBeTruthy();
-    expect(entry?.rows).toBeInstanceOf(Map);
-    expect(entry?.expansionSig).toBe('');
-
-    // It round-trips through the store by threadId (no validity key
-    // argument anymore — validity is a per-row, lazy-once check made by
-    // the consumer; see timelineSizePriors.svelte.ts's `rowPrior`).
-    expect(getThreadSizePriors('thread-size-cache')).toBe(entry);
+    // The mount's estimate resolve is one lookup; a capture that passed
+    // the size-gate performs a second (the carry-forward lookup). Two or
+    // more proves the capture wiring fired.
+    const lookups = resolveSpy.mock.calls.filter((call) => call[0] === 'thread-size-cache');
+    expect(lookups.length).toBeGreaterThanOrEqual(2);
+    // ...and the information-free capture stored nothing.
+    expect(peekThreadSizePriorsForTest('thread-size-cache')).toBeUndefined();
   });
 
   // The decisive regression: actually switch away and back, and prove the
@@ -255,9 +263,18 @@ describe('scroll integration — per-thread snapshot save/restore', () => {
     await tick();
     await waitForAnimationFrame();
 
-    // First visit captured A's settled size priors.
-    const firstEntry = peekThreadSizePriorsForTest('thread-aba-a');
-    expect(firstEntry).toBeTruthy();
+    // A real first visit captures A's settled priors; under happy-dom no
+    // row ever measures, so the capture guard (see the test above) stores
+    // nothing. Seed A's entry directly — the wiring under test is the
+    // RESOLVE on re-entry, not the capture. The B visit and A's own
+    // restore-time captures must leave it untouched (nothing measures, so
+    // every capture is refused rather than replacing this entry).
+    const firstEntry: SizePriorsEntry = {
+      width: 0,
+      expansionSig: '',
+      rows: new Map([['L:seeded:completed:5:0', 50]]),
+    };
+    setThreadSizePriors('thread-aba-a', firstEntry);
 
     // Switch to an uncached thread B.
     const threadB = makeThread({ id: 'thread-aba-b' });

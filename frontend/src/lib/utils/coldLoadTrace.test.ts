@@ -36,7 +36,7 @@ describe('coldLoadTrace', () => {
   it('emits exactly one record with correct segment arithmetic for a fetch-source cold load', () => {
     coldLoadSwitchStart('pane-1', 'thread-a', 'fetch');
     mockNow = 40;
-    coldLoadItemsApplied('pane-1', 12);
+    coldLoadItemsApplied('pane-1', 12, true);
     mockNow = 55;
     coldLoadWarmEdge('pane-1', 'thread-a', true, 'quiet');
 
@@ -53,13 +53,90 @@ describe('coldLoadTrace', () => {
         settleMs: 15, // itemsApplied(40) -> warmEdge(55)
         totalMs: 55, // switchStart(0) -> warmEdge(55)
         warmReason: 'quiet',
+        warmupRearmed: true,
+        warmBeforeItems: 0,
+        abandoned: null,
       },
+    });
+  });
+
+  it('holds a fetch session through the empty-pane warm edge and closes on the post-items one', () => {
+    // The real cold open: the switch-edge arm opens against an EMPTY
+    // pane (whose zero-height geometry sample is indistinguishable from
+    // a cascade fire), so the gate warms ~QUIET_MS in, before the slice
+    // lands. That edge measured nothing this record is about — the
+    // session must survive it, and the items-applied re-arm produces the
+    // edge that closes it.
+    coldLoadSwitchStart('pane-1', 'thread-a', 'fetch');
+    mockNow = 100;
+    coldLoadWarmEdge('pane-1', 'thread-a', true, 'quiet');
+    expect(coldLoadRecords()).toHaveLength(0);
+
+    mockNow = 220;
+    coldLoadItemsApplied('pane-1', 40, true);
+    // The re-arm drops the gate again.
+    coldLoadWarmEdge('pane-1', 'thread-a', false, null);
+    mockNow = 460;
+    coldLoadWarmEdge('pane-1', 'thread-a', true, 'quiet');
+
+    const records = coldLoadRecords();
+    expect(records).toHaveLength(1);
+    expect(records[0]).toMatchObject({
+      data: {
+        fetchMs: 220,
+        itemCount: 40,
+        settleMs: 240, // itemsApplied(220) -> post-items warmEdge(460)
+        totalMs: 460,
+        warmupRearmed: true,
+        warmBeforeItems: 1,
+      },
+    });
+  });
+
+  it('closes at items-applied when nothing re-armed an already-open gate', () => {
+    // A genuinely empty thread: the slice merges no rows, so the pane
+    // never re-arms and no further rising edge is coming. The session's
+    // measurement is complete as it stands.
+    coldLoadSwitchStart('pane-1', 'thread-a', 'fetch');
+    mockNow = 100;
+    coldLoadWarmEdge('pane-1', 'thread-a', true, 'quiet');
+    mockNow = 180;
+    coldLoadItemsApplied('pane-1', 0, false);
+
+    const records = coldLoadRecords();
+    expect(records).toHaveLength(1);
+    expect(records[0]).toMatchObject({
+      data: {
+        fetchMs: 180,
+        itemCount: 0,
+        settleMs: 0,
+        totalMs: 180,
+        warmReason: null,
+        warmupRearmed: false,
+        warmBeforeItems: 1,
+        abandoned: null,
+      },
+    });
+  });
+
+  it('waits for the warm edge when no re-arm happened but the gate is still closed', () => {
+    // Same no-re-arm shape, but the fetch beat the quiet window: the
+    // gate never opened, so the edge that does open it is the real one.
+    coldLoadSwitchStart('pane-1', 'thread-a', 'fetch');
+    mockNow = 30;
+    coldLoadItemsApplied('pane-1', 0, false);
+    expect(coldLoadRecords()).toHaveLength(0);
+
+    mockNow = 140;
+    coldLoadWarmEdge('pane-1', 'thread-a', true, 'quiet');
+    expect(coldLoadRecords()[0]).toMatchObject({
+      data: { fetchMs: 30, itemCount: 0, settleMs: 110, warmupRearmed: false },
     });
   });
 
   it('does not double-emit on repeated warm-edge calls once already warm', () => {
     coldLoadSwitchStart('pane-1', 'thread-a', 'fetch');
-    coldLoadItemsApplied('pane-1', 3);
+    coldLoadItemsApplied('pane-1', 3, true);
     coldLoadWarmEdge('pane-1', 'thread-a', true, 'quiet');
     // Re-renders after warming (e.g. MessageTimeline's $effect firing
     // again for an unrelated reason) must not add more records.
@@ -68,7 +145,7 @@ describe('coldLoadTrace', () => {
     expect(coldLoadRecords()).toHaveLength(1);
   });
 
-  it('yields fetchMs=null for a cache-restore source even when itemsApplied is never called', () => {
+  it('closes a cache-restore session on its first warm edge — it never sees itemsApplied', () => {
     coldLoadSwitchStart('pane-1', 'thread-a', 'cache-restore');
     mockNow = 20;
     coldLoadWarmEdge('pane-1', 'thread-a', true, 'failsafe');
@@ -83,26 +160,15 @@ describe('coldLoadTrace', () => {
         settleMs: 20, // switchStart(0) -> warmEdge(20), no itemsApplied base
         totalMs: 20,
         warmReason: 'failsafe',
+        warmupRearmed: false,
       },
     });
   });
 
-  it('yields fetchMs=null for a fetch source whose itemsApplied never fired', () => {
-    coldLoadSwitchStart('pane-1', 'thread-a', 'fetch');
-    mockNow = 30;
-    coldLoadWarmEdge('pane-1', 'thread-a', true, 'quiet');
-
-    const records = coldLoadRecords();
-    expect(records).toHaveLength(1);
-    expect(records[0]).toMatchObject({
-      data: { source: 'fetch', fetchMs: null, itemCount: null },
-    });
-  });
-
-  it('a second switchStart overwrites the first, discarding it without ever emitting', () => {
+  it('emits the outrun session as abandoned when a second switchStart replaces it', () => {
     coldLoadSwitchStart('pane-1', 'thread-a', 'fetch');
     mockNow = 10;
-    coldLoadItemsApplied('pane-1', 5);
+    coldLoadItemsApplied('pane-1', 5, true);
     // User switched away before thread-a warmed; a new switch starts.
     mockNow = 20;
     coldLoadSwitchStart('pane-1', 'thread-b', 'cache-restore');
@@ -110,28 +176,45 @@ describe('coldLoadTrace', () => {
     coldLoadWarmEdge('pane-1', 'thread-b', true, 'settled');
 
     const records = coldLoadRecords();
-    expect(records).toHaveLength(1);
+    expect(records).toHaveLength(2);
     expect(records[0]).toMatchObject({
+      data: {
+        threadId: 'thread-a',
+        source: 'fetch',
+        fetchMs: 10,
+        itemCount: 5,
+        totalMs: 20, // switchStart(0) -> the switch that replaced it (20)
+        abandoned: 'switched-away',
+        warmReason: null,
+      },
+    });
+    expect(records[1]).toMatchObject({
       data: {
         threadId: 'thread-b',
         source: 'cache-restore',
         fetchMs: null,
-        totalMs: 5, // switchStart(20) -> warmEdge(25); thread-a's session is gone
+        totalMs: 5, // switchStart(20) -> warmEdge(25)
+        abandoned: null,
       },
     });
   });
 
-  it('drops the session silently when the warm edge threadId does not match', () => {
+  it('emits the session as abandoned when the warm edge threadId does not match', () => {
     coldLoadSwitchStart('pane-1', 'thread-a', 'fetch');
+    mockNow = 12;
     coldLoadWarmEdge('pane-1', 'thread-b', true, 'quiet');
-    expect(coldLoadRecords()).toHaveLength(0);
+    const records = coldLoadRecords();
+    expect(records).toHaveLength(1);
+    expect(records[0]).toMatchObject({
+      data: { threadId: 'thread-a', abandoned: 'thread-changed', totalMs: 12 },
+    });
 
-    // The stale session was deleted on the mismatch, not left open — a
+    // The stale session was closed on the mismatch, not left open — a
     // later false->true edge for thread-a (a realistic re-arm/re-warm
     // cycle) finds no session and must not resurrect it.
     coldLoadWarmEdge('pane-1', 'thread-a', false, null);
     coldLoadWarmEdge('pane-1', 'thread-a', true, 'quiet');
-    expect(coldLoadRecords()).toHaveLength(0);
+    expect(coldLoadRecords()).toHaveLength(1);
   });
 
   it('no-ops on a warm edge with no open session for the pane', () => {
@@ -142,14 +225,14 @@ describe('coldLoadTrace', () => {
   it('everything no-ops when the trace is disabled', () => {
     setUiRenderTraceEnabled(false);
     coldLoadSwitchStart('pane-1', 'thread-a', 'fetch');
-    coldLoadItemsApplied('pane-1', 7);
+    coldLoadItemsApplied('pane-1', 7, true);
     coldLoadWarmEdge('pane-1', 'thread-a', true, 'quiet');
     expect(coldLoadRecords()).toHaveLength(0);
   });
 
   it('carries the last priors summary stamped before the warm edge; null when never stamped', () => {
     coldLoadSwitchStart('pane-1', 'thread-a', 'fetch');
-    coldLoadItemsApplied('pane-1', 3);
+    coldLoadItemsApplied('pane-1', 3, true);
     // MessageTimeline's warm-edge $effect stamps on every run — only the
     // last write before the edge matters.
     coldLoadPriors('pane-1', { source: 'storage', validity: 'pending', rowsResolved: 0 });
@@ -175,10 +258,23 @@ describe('coldLoadTrace', () => {
     expect(coldLoadRecords()).toHaveLength(0);
   });
 
+  it('keeps panes independent — one pane warming does not close another pane session', () => {
+    coldLoadSwitchStart('pane-1', 'thread-a', 'fetch');
+    coldLoadSwitchStart('pane-2', 'thread-b', 'fetch');
+    mockNow = 50;
+    coldLoadItemsApplied('pane-2', 8, true);
+    mockNow = 70;
+    coldLoadWarmEdge('pane-2', 'thread-b', true, 'quiet');
+
+    const records = coldLoadRecords();
+    expect(records).toHaveLength(1);
+    expect(records[0]).toMatchObject({ data: { paneId: 'pane-2', threadId: 'thread-b' } });
+  });
+
   it('rounds fractional millisecond segments to integers', () => {
     coldLoadSwitchStart('pane-1', 'thread-a', 'fetch');
     mockNow = 12.6;
-    coldLoadItemsApplied('pane-1', 4);
+    coldLoadItemsApplied('pane-1', 4, true);
     mockNow = 30.2;
     coldLoadWarmEdge('pane-1', 'thread-a', true, 'quiet');
 

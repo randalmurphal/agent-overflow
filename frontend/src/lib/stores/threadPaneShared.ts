@@ -171,6 +171,28 @@ export interface PaneScrollController {
    * (bug-report-20260702T193212Z).
    */
   markStructuralContentPending(): void;
+  /**
+   * Re-close the warm-up (cascade-hide) gate because rows are about to
+   * mount into a pane that has been empty.
+   *
+   * The switch edge arms the gate before the slice fetch, but on the
+   * fetch path the pane then sits EMPTY for the whole round trip, and an
+   * empty mount window still delivers a zero-height content-geometry
+   * sample. The gate cannot tell that sample from a real cascade fire,
+   * so it opens on quiet ~100ms later and the rows that arrive
+   * afterwards mount fully visible — the estimate cascade the gate
+   * exists to hide, in front of the reader.
+   *
+   * The pane data layer is the sole caller (`armInitialSliceWarmup` in
+   * thread.svelte.ts), from the initial-slice application only, and
+   * synchronously with the item mutation — strictly before the flush
+   * that mounts those rows, the same ordering contract
+   * `markStructuralContentPending` carries. Incremental appends and
+   * load-older pages deliberately do NOT re-arm: they mount against
+   * content the reader is already looking at, and hiding that is a blank
+   * flash.
+   */
+  armWarmup(): void;
   preserveScrollAnchor(
     anchor: HTMLElement,
     action: () => void | Promise<void>,

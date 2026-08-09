@@ -59,7 +59,12 @@
 // rows carry `updatedAt`/`summary.length` in their signature, so a row's
 // key changes on every append — merging would accumulate an ever-growing
 // tail of dead signatures from rows that no longer exist in that exact
-// form. A wholesale replace self-cleans that churn for free.
+// form. A wholesale replace self-cleans that churn for free. The consumer
+// (timelineSizePriors.svelte.ts `maybePersistSizePriors`) builds each
+// replacement by carrying forward the previous entry's sizes for
+// signatures still live in the current window — so an early capture with
+// few (or no) measured rows cannot destroy a settled one — but the store
+// contract here stays a plain replace.
 //
 // Consumption is unchanged in spirit from the prior generation: the
 // engine reads priors lazily per row through `RowEstimate` whenever a row
