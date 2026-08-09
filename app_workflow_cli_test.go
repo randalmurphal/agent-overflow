@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -321,13 +322,18 @@ func TestAgentRunStatusNamesTheParentAndTheFailedUnits(t *testing.T) {
 	if err := fixture.app.store.CreateWorkItem(child); err != nil {
 		t.Fatal(err)
 	}
+	if err := fixture.app.store.CreateWorkItemPhase(store.WorkItemPhase{
+		ItemID: child.ID, PhaseID: "fan", Attempt: 1, Status: "parked", StartedAt: 3,
+	}); err != nil {
+		t.Fatal(err)
+	}
 	if err := fixture.app.store.CreateWorkItemUnits([]store.WorkItemUnit{
 		{ItemID: child.ID, PhaseID: "fan", Attempt: 1, UnitID: "lane-1", UnitIndex: 0,
 			Kind: store.WorkItemUnitKindUnit, Status: store.WorkItemUnitFailed, UnitAttempt: 2},
 		{ItemID: child.ID, PhaseID: "fan", Attempt: 1, UnitID: "lane-2", UnitIndex: 1,
 			Kind: store.WorkItemUnitKindUnit, Status: store.WorkItemUnitDone, UnitAttempt: 1},
-		// A failed join is the phase's own closing step, not a unit a human
-		// retries — the same exclusion `run retry-failed-units` applies.
+		// A failed join is a failed unit of the attempt, so it is named here for
+		// the same reason every other one is: `run retry-unit` takes its id.
 		{ItemID: child.ID, PhaseID: "fan", Attempt: 1, UnitID: "merge", UnitIndex: 2,
 			Kind: store.WorkItemUnitKindJoin, Status: store.WorkItemUnitFailed, UnitAttempt: 1},
 	}); err != nil {
@@ -348,8 +354,10 @@ func TestAgentRunStatusNamesTheParentAndTheFailedUnits(t *testing.T) {
 	if view.ParentItemID != root.ID {
 		t.Fatalf("status parent = %q, want %q", view.ParentItemID, root.ID)
 	}
-	if len(view.FailedUnits) != 1 || view.FailedUnits[0].UnitID != "lane-1" || view.FailedUnits[0].UnitAttempt != 2 {
-		t.Fatalf("status failed units = %#v, want only lane-1 on its second try", view.FailedUnits)
+	if len(view.FailedUnits) != 2 ||
+		view.FailedUnits[0].UnitID != "lane-1" || view.FailedUnits[0].UnitAttempt != 2 ||
+		view.FailedUnits[1].UnitID != "merge" {
+		t.Fatalf("status failed units = %#v, want lane-1 on its second try and the failed join", view.FailedUnits)
 	}
 
 	// A run that is not parked on a failed fan-out carries none, and neither
@@ -442,6 +450,172 @@ func TestAnInteractiveScopeActsOnDescendantRunsAndAPhaseScopeDoesNot(t *testing.
 	phase := transport.WithCallerScope(context.Background(), phaseScope(fixture, root.ID, def.GrantStartRun))
 	if err := fixture.app.authorizeScopedRunAction(phase, grandchild.ID, "resume workflow run"); err == nil {
 		t.Fatal("a phase credential acted on a descendant it did not start")
+	}
+}
+
+// Deciding a park is authority a workflow author hands out on purpose, and the
+// transport half of that — a phase without the `resolve` grant never reaching
+// either method — is TestResolveGrantAdmitsTheHumanDecisionMethods in
+// internal/transport. What is asserted here is the half a method name cannot
+// express: a phase that HOLDS the grant may still decide only the parks of the
+// runs it started, while an interactive session and the UI reach the project.
+func TestResolvingAParkIsConfinedToWhatAPhaseStarted(t *testing.T) {
+	fixture := newCLIFixture(t)
+	resolving := transport.WithCallerScope(context.Background(),
+		phaseScope(fixture, "caller-item", def.GrantStartRun, def.GrantResolve))
+	started, err := fixture.app.WorkflowAgentStartRun(resolving, WorkflowAgentStartInput{
+		WorkflowID: "tool-flow", Goal: "mine",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitForWorkflowItem(t, fixture.app, started.ItemID, engine.StateDone, "")
+	foreign, err := fixture.app.WorkflowStartRun(
+		fixture.project.ID, "tool-flow", "shared", "someone else's", json.RawMessage(`{}`), nil, "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitForWorkflowItem(t, fixture.app, foreign.ID, engine.StateDone, "")
+
+	thread, err := fixture.app.CreateThread(CreateThreadOptions{
+		ProjectID: fixture.project.ID, Provider: "claude", Model: "claude-opus-4-7",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	interactive := transport.WithCallerScope(context.Background(), interactiveScope(fixture, thread.ID))
+
+	for _, decide := range []struct {
+		name string
+		call func(context.Context, string) error
+	}{
+		{"resolve gate", func(ctx context.Context, itemID string) error {
+			return fixture.app.WorkflowResolveGate(ctx, itemID, "approve", "")
+		}},
+		{"answer question", func(ctx context.Context, itemID string) error {
+			return fixture.app.WorkflowAnswerQuestion(ctx, itemID, "carry on")
+		}},
+	} {
+		err := decide.call(resolving, foreign.ID)
+		if err == nil || !strings.Contains(err.Error(), "may only act on the runs it started") {
+			t.Fatalf("%s on a run this phase did not start = %v", decide.name, err)
+		}
+		// Every other caller gets past authorization and is refused by the engine
+		// for the reason the UI is refused for: these runs finished, so there is
+		// no park to decide. That refusal is the proof the scope check passed.
+		for _, caller := range []struct {
+			name   string
+			ctx    context.Context
+			itemID string
+		}{
+			{"the phase that started it", resolving, started.ItemID},
+			{"an interactive session", interactive, foreign.ID},
+			{"the UI, which carries no scope", context.Background(), foreign.ID},
+		} {
+			err := decide.call(caller.ctx, caller.itemID)
+			if err == nil || !strings.Contains(err.Error(), "want needs-human") {
+				t.Fatalf("%s by %s = %v, want the engine's not-parked refusal", decide.name, caller.name, err)
+			}
+		}
+	}
+}
+
+// The campaign shape's second blind spot: a gate consumed the outputs of ONE
+// attempt, and a reader holding only the CLI could see neither which attempt
+// that was nor what it ran with. Both are already persisted — the attempt rows
+// carry the gate trace, the thread rows carry the settings resolution landed on
+// — so `run status` projects them rather than making an agent open the app.
+func TestAgentRunStatusReportsPerAttemptProvenance(t *testing.T) {
+	fixture := newCLIFixture(t)
+	item := store.WorkItem{
+		ID: "provenance-run", ProjectID: fixture.project.ID, Goal: "loop twice", WorkflowID: "tool-flow",
+		WorkflowScope: "shared", State: string(engine.StateDone), Source: "manual", CreatedAt: 1,
+	}
+	if err := fixture.app.store.CreateWorkItem(item); err != nil {
+		t.Fatal(err)
+	}
+	// One thread serves both attempts of a phase, which is what makes the
+	// per-ATTEMPT projection worth having: the settings are the thread's, and the
+	// attempt is the only thing that distinguishes the two runs of the same phase.
+	thread := store.Thread{
+		ID: "provenance-thread", ProjectID: fixture.project.ID, Mode: threadmode.ModeWorkflow,
+		Provider: "codex", Model: "gpt-5.2-codex", ReasoningEffort: "xhigh", CreatedAt: 1, UpdatedAt: 1,
+	}
+	if err := fixture.app.store.CreateThread(thread); err != nil {
+		t.Fatal(err)
+	}
+	looped, err := json.Marshal(def.GateTrace{
+		Decision: def.RouteDecision{Kind: def.DecisionLoop, Target: "fix", RouteIndex: 0},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	exhausted, err := json.Marshal(def.GateTrace{
+		Decision:       def.RouteDecision{Kind: def.DecisionRetriesExhausted, RouteIndex: -1},
+		ExhaustedLoops: []string{def.GateEdgeKey("review", 0)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, attempt := range []struct {
+		phaseID  string
+		attempt  int
+		threadID string
+		trace    json.RawMessage
+		started  int64
+	}{
+		{"review", 1, thread.ID, looped, 10},
+		{"review", 2, thread.ID, exhausted, 20},
+		// A tool phase runs a command, not a provider session: it has no thread
+		// and therefore no model settings to report.
+		{"check", 1, "", nil, 30},
+	} {
+		if err := fixture.app.store.CreateWorkItemPhase(store.WorkItemPhase{
+			ItemID: item.ID, PhaseID: attempt.phaseID, Attempt: attempt.attempt,
+			ThreadID: attempt.threadID, Status: "running", StartedAt: attempt.started,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := fixture.app.store.CompleteWorkItemPhase(
+			item.ID, attempt.phaseID, attempt.attempt, nil, attempt.trace, "completed", attempt.started+1,
+		); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	thread2, err := fixture.app.CreateThread(CreateThreadOptions{
+		ProjectID: fixture.project.ID, Provider: "claude", Model: "claude-opus-4-7",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	interactive := transport.WithCallerScope(context.Background(), interactiveScope(fixture, thread2.ID))
+	view, err := fixture.app.WorkflowAgentRunStatus(interactive, item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []WorkflowAgentPhaseAttempt{
+		{PhaseID: "review", Attempt: 1, Status: "completed", Provider: "codex", Model: "gpt-5.2-codex",
+			Effort: "xhigh", Decision: string(def.DecisionLoop), DecisionTarget: "fix"},
+		{PhaseID: "review", Attempt: 2, Status: "completed", Provider: "codex", Model: "gpt-5.2-codex",
+			Effort: "xhigh", Decision: string(def.DecisionRetriesExhausted),
+			ExhaustedLoops: []string{def.GateEdgeKey("review", 0)}},
+		{PhaseID: "check", Attempt: 1, Status: "completed"},
+	}
+	if !reflect.DeepEqual(view.Phases, want) {
+		t.Fatalf("phase attempts = %#v, want %#v", view.Phases, want)
+	}
+
+	// A listing pays one query per row, so it carries none — the same bound
+	// FailedUnits is held to.
+	views, err := fixture.app.WorkflowAgentListRuns(interactive, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, listed := range views {
+		if len(listed.Phases) != 0 {
+			t.Fatalf("run %s carried phase attempts in a list: %#v", listed.ItemID, listed.Phases)
+		}
 	}
 }
 

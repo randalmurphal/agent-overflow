@@ -18,13 +18,22 @@ Pure helper functions for app-owned workflow phase execution.
 
 ## Narrative recovery (D39)
 
-`RecoverNarrative` is the pure half of the guarantee that **an attempt that
-produced an account has a narrative file**, whatever its access allowed:
+**An attempt that produced an account has a narrative file**, whatever its access
+allowed. There are three sources, in order, and `app_workflow_narrative.go`
+(`settleAttemptNarrative`) resolves them behind one existence check and one
+`O_EXCL` write, so "an authored account always beats a reconstructed one" is
+stated once:
 
-- The app runner calls it when an agent turn's envelope is accepted (`done`,
-  `question`, or `stuck`) and the narrative file is absent — see
-  `app_workflow_narrative.go`. It applies to phases, fan-out units, and joins
-  alike, because all three own a narrative path.
+1. the file the element wrote itself — always wins, never touched;
+2. the `narrative` control field of its accepted envelope, written verbatim with
+   **no** `RecoveredNarrativeHeader`: the element deliberately put it there, so it
+   is authored exactly as a file it wrote would be. This is what a `read-only`
+   element is now asked for;
+3. `RecoverNarrative`, this package's pure fallback for an element that supplied
+   neither.
+
+`RecoverNarrative` itself:
+
 - The content is the session's **last** assistant text, prefixed with
   `RecoveredNarrativeHeader` so a reader can tell a reconstructed account from an
   authored one. Earlier texts are not concatenated: the account a phase gives
@@ -34,21 +43,33 @@ produced an account has a narrative file**, whatever its access allowed:
   recovering that JSON as the narrative would be worse than recovering nothing.
   The test is identity with the envelope as a decoded document, never "looks like
   JSON": prose that happens to be JSON is still prose.
+- Falling back past that echo is not enough on Codex, whose `outputSchema`
+  constrains **every** assistant message of the turn: the earlier texts are
+  envelope JSON too. A candidate carrying a top-level `status` is therefore read
+  as an envelope (`def.EnvelopeAccount`) and what is lifted is the account it
+  holds — its `narrative`, else its `reason` — never its raw JSON. One with no
+  account is skipped like the echo. That shape test is deliberately weaker than
+  the identity test above, and applies only to candidates that already failed it.
 - It reports `false` for a session that said nothing, and the app side never
-  overwrites an existing file. Absence stays absence, and an authored narrative
-  always wins over a reconstructed one.
+  overwrites an existing file. Absence stays absence.
 
 ## What `PromptSuffix` states, and why
 
 Everything in `<workflow-system-instructions>` is there because the phase would
 otherwise get it wrong and the engine could not tell it so afterwards:
 
-- **The narrative** — for human inspection; not part of the envelope. **How it
+- **The narrative** — for human inspection; the system never parses it. **How it
   is asked for follows `access`**, which is the one thing in the suffix that
   varies. A `write` element is given the path and writes the file; a `read-only`
   element runs in a session that denies every file write (D22), so it is asked
-  for the narrative as the message immediately before its envelope and the path
-  is not named at all. `BuildPrompt` / `BuildUnitPrompt` derive the access from
+  for the narrative in the envelope's `narrative` control field and the path is
+  not named at all. The read-only branch asks for a FIELD rather than a message
+  because Codex applies a turn's `outputSchema` to every assistant message in it:
+  an element under a schema cannot emit prose there, so the old "send it as the
+  message immediately before your envelope" was an instruction only Claude could
+  follow, and on Codex the D39 fallback recovered a JSON blob as the "narrative".
+  The field works identically on both providers, which kills the message leg
+  entirely. `BuildPrompt` / `BuildUnitPrompt` derive the access from
   the phase and the unit respectively — a fan-out phase may not declare one, so
   a unit's own declaration is the only correct source — and
   `BuildTakeoverFinalizePrompt` takes it from the caller because a takeover
@@ -72,7 +93,12 @@ otherwise get it wrong and the engine could not tell it so afterwards:
   schema cannot express (D2a). The `question` and `stuck` bullets carry their
   MEANING as well as their mechanics — both park the run for a human, so a
   phase reading `question` as "ask a clarifying question" parks a run that
-  should have kept going.
+  should have kept going. `narrative` is stated as being OUTSIDE those rules, on
+  both access branches: the schema makes every element answer the field, and an
+  unexplained required field is one a phase guesses at. A `read-only` element is
+  told it is legal on every status (or a stuck one leaves it null and loses its
+  account); a `write` element is told to null it, so the file it authored during
+  the work — richer than a field summarized after it — stays the account.
 
 ## Fan-out units
 
@@ -123,6 +149,13 @@ what that process produces. The contract both sides implement:
   envelope-production failure → execution failure with the findings recorded
   (a deterministic command cannot be retried into validity, so it parks through
   the existing exhaustion path with no retry attempt).
+- A command may write the optional `narrative` control field too — the schema
+  permits it and post-validation is written once against the contract for both
+  drivers, so refusing it here would be a second rule set for one contract. It is
+  folded into the same file as `ToolReport.Narrative`, leading the process output
+  tail (the account is the only part of that file a human did not have to
+  reconstruct), and stripped from the envelope at exactly the point the agent
+  path strips it.
 - Combined stdout+stderr is tail-capped and persisted through the existing
   per-attempt **narrative** file (`ToolNarrative`), masked with the profile's
   secret masks. Tool attempts hold no provider session, so their

@@ -192,6 +192,86 @@ func TestCallChildDoneCompletesParentPhaseWithChildOutputs(t *testing.T) {
 	h.requireNoHeldResources(t)
 }
 
+// optionalNotesChild declares the shape the live campaign incident turned on: a
+// child input that is legally absent, which a caller's `args:` forwards whether
+// or not the run was seeded with one.
+func optionalNotesChild(optional bool) def.Workflow {
+	child := childWorkflow("child")
+	child.Inputs = map[string]def.Variable{
+		"job-notes": {Schema: def.JSONSchema{Type: "string"}, Optional: optional},
+	}
+	return child
+}
+
+// notesForwardingCaller adds the unseeded forward to the ordinary caller: an
+// argument reading a workflow input this run was started without.
+func notesForwardingCaller() def.Workflow {
+	workflow := callerWorkflow("child")
+	workflow.Phases[1].Args["job-notes"] = "job-notes"
+	return workflow
+}
+
+// An input the child declares optional may be absent, so the argument that
+// forwards it may be too: the child is started without that seed, which is the
+// same run a direct start without it would have produced. A campaign whose
+// final gate calls itself for the next wave must not die at its own recursion
+// point because a value it never had is still missing.
+func TestCallPhaseOmitsAnArgumentAnAbsentOptionalChildInputWouldSeed(t *testing.T) {
+	h := newCallHarness(t, map[string]def.Workflow{
+		"caller": notesForwardingCaller(), "child": optionalNotesChild(true),
+	}, nil)
+	parent := startCaller(t, h)
+
+	child := h.callChild(t, parent, "audit", 1)
+	if string(child.Seeds) != `{"seed":true}` {
+		t.Fatalf("child seeds = %s, want the absent optional argument omitted entirely", child.Seeds)
+	}
+	requireItemState(t, h.store, parent, StateRunning, "")
+	requireItemState(t, h.store, child.ID, StateRunning, "")
+}
+
+// The same absence against a REQUIRED child input is still a wiring error — and
+// it now parks on a phase attempt that exists, so the refusal is readable from
+// the run's own history instead of vanishing with the invocation.
+func TestCallPhaseParksWhenAnAbsentArgumentSeedsARequiredChildInput(t *testing.T) {
+	h := newCallHarness(t, map[string]def.Workflow{
+		"caller": notesForwardingCaller(), "child": optionalNotesChild(false),
+	}, nil)
+	parent := startCaller(t, h)
+
+	requireItemState(t, h.store, parent, StateNeedsHuman, ReasonWiringError)
+	attempt := h.phaseAttempt(t, parent, "audit", 1)
+	if attempt.Status != "parked" {
+		t.Fatalf("call attempt = %+v, want the park recorded on it", attempt)
+	}
+	if !strings.Contains(string(attempt.OutputEnvelope), "job-notes (job-notes)") {
+		t.Fatalf("park envelope did not name the unresolved argument: %s", attempt.OutputEnvelope)
+	}
+	children, err := h.store.ListWorkItemCallChildren(parent, "audit", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(children) != 0 {
+		t.Fatalf("a refused call still created %d child runs", len(children))
+	}
+	h.requireNoHeldResources(t)
+}
+
+// An argument naming no child input at all is refused whether or not it
+// resolves: there is no declaration that could be optional, so nothing says the
+// absence is legal.
+func TestCallPhaseParksWhenAnAbsentArgumentNamesNoChildInput(t *testing.T) {
+	h := newCallHarness(t, map[string]def.Workflow{
+		"caller": notesForwardingCaller(), "child": childWorkflow("child"),
+	}, nil)
+	parent := startCaller(t, h)
+
+	requireItemState(t, h.store, parent, StateNeedsHuman, ReasonWiringError)
+	if envelope := h.phaseAttempt(t, parent, "audit", 1).OutputEnvelope; !strings.Contains(string(envelope), "job-notes") {
+		t.Fatalf("park envelope did not name the unresolved argument: %s", envelope)
+	}
+}
+
 func TestCallChildFailedFailsParentPhaseAndRerunCallsAgain(t *testing.T) {
 	workflows := defaultCallWorkflows()
 	// The child's own gate sends it to `failed`.
@@ -217,7 +297,7 @@ func TestCallChildFailedFailsParentPhaseAndRerunCallsAgain(t *testing.T) {
 
 	// A rerun makes a fresh call: the failed child is history, not something to
 	// resume.
-	if err := h.engine.RerunFailed(parent, ""); err != nil {
+	if err := h.engine.RerunFailed(parent, "", false); err != nil {
 		t.Fatal(err)
 	}
 	requireItemState(t, h.store, parent, StateRunning, "")
@@ -351,7 +431,7 @@ func TestFreshChildStartsWithEmptyLoopCounts(t *testing.T) {
 	// inherited its parent's spend could not loop at all.
 	looping := def.Workflow{ID: "recurse", Phases: []def.Phase{
 		agentPhase("work", nil, []def.Route{
-			{When: &def.Predicate{Eq: &def.Comparison{Ref: "work.ok", Value: false}}, Loop: "work", Max: 1},
+			{When: &def.Predicate{Eq: &def.Comparison{Ref: "work.ok", Value: false}}, Loop: "work", Max: def.LiteralBound(1)},
 			{To: "again"},
 		}),
 		callPhaseDef("again", "recurse", nil, 2, []def.Route{{To: "done"}}),

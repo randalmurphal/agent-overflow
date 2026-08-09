@@ -571,9 +571,17 @@ func TestUnitRecoveryRejectsRunsAndUnitsItCannotRepair(t *testing.T) {
 		!strings.Contains(err.Error(), "failed or taken-over") {
 		t.Fatalf("retry of a finished unit = %v, want a refusal", err)
 	}
+	// The join is refused by its STATUS like any other unit — it has not run, so
+	// there is nothing to re-run — rather than for being the join.
+	if err := h.engine.RetryUnit(item, "work-join", ""); err == nil ||
+		!strings.Contains(err.Error(), "failed or taken-over") {
+		t.Fatalf("retry of a join that never ran = %v, want the status refusal", err)
+	}
+	// A drop is the one action the join can never take: nothing else consolidates
+	// the units, so accepting its absence would leave the phase with no envelope.
 	if err := h.engine.DropUnit(item, "work-join", ""); err == nil ||
-		!strings.Contains(err.Error(), "join") {
-		t.Fatalf("dropping the join = %v, want a refusal", err)
+		!strings.Contains(err.Error(), "absence cannot be accepted") {
+		t.Fatalf("dropping the join = %v, want a refusal naming why", err)
 	}
 	if err := h.engine.RetryUnit(item, "", ""); err == nil {
 		t.Fatal("retry without a unit id was accepted")

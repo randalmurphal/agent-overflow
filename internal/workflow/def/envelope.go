@@ -11,6 +11,46 @@ import (
 
 const DefaultEnvelopeSizeCap = 64 * 1024
 
+// EnvelopeNarrativeField is the optional control field an element may deliver
+// its narrative in. It exists because Codex applies a turn's `outputSchema` to
+// EVERY assistant message in that turn, not just the last one: an element under
+// a schema physically cannot send prose, so "send your narrative as a message
+// before your envelope" is unfollowable there. Carrying the account inside the
+// envelope works identically on both providers.
+//
+// It is a control field, not an output: outputs nest under `outputs`, so an
+// author may still declare an output literally named `narrative` and the two
+// never meet. It is legal on every status — a done, a question, and a stuck
+// element all did work worth an account — and the app strips it before the
+// envelope reaches the engine, so no gate, join result, or persisted envelope
+// ever carries prose.
+const EnvelopeNarrativeField = "narrative"
+
+// envelopeControlFields is the closed set of top-level names an envelope may
+// carry. `status` is the only one post-validation requires literally: it is the
+// discriminator, and a document without it is not an envelope at all.
+//
+// The generated schema requires all five, because strict mode has no optional —
+// only required-and-nullable (providerschema) — so a provider under a schema
+// emits every key and answers null for the ones it has nothing to say with.
+// Post-validation reads back what that null MEANT rather than the null itself:
+// an absent `question`, `reason`, or `narrative` is the null a provider would
+// have sent, and an absent `outputs` is an empty one. The keys a schema forces
+// onto a provider are not a debt a hand-written envelope owes — a tool
+// command's, and every envelope frozen before a field existed, simply omit
+// them, and the branch and declaration rules below judge them identically
+// either way.
+var (
+	envelopeControlFields   = []string{"status", "outputs", "question", "reason", EnvelopeNarrativeField}
+	envelopeAllowedFieldSet = func() map[string]bool {
+		allowed := make(map[string]bool, len(envelopeControlFields))
+		for _, name := range envelopeControlFields {
+			allowed[name] = true
+		}
+		return allowed
+	}()
+)
+
 // EnvelopeContract is what one control envelope must satisfy: the declared
 // outputs, plus the element name diagnostics blame. A phase attempt and a
 // fan-out unit produce the same envelope shape from different declarations, so
@@ -29,7 +69,8 @@ func PhaseEnvelope(phase Phase) EnvelopeContract {
 
 // UnitEnvelope is the contract one fan-out work unit's envelope answers. A unit
 // that declares no outputs gets the control-only envelope: status, question,
-// and reason, with `outputs` present but always null.
+// and reason, with nothing under `outputs` to answer — the run still has to
+// learn done/question/stuck from it.
 func UnitEnvelope(unit Unit) EnvelopeContract {
 	return EnvelopeContract{owner: fmt.Sprintf("unit %q", unit.ID), outputs: UnitOutputs(unit)}
 }
@@ -78,8 +119,11 @@ func (c EnvelopeContract) Schema() ([]byte, error) {
 			},
 			"question": map[string]any{"type": []string{"string", "null"}},
 			"reason":   map[string]any{"type": []string{"string", "null"}},
+			// The element fills it when it was asked to (a read-only element, which
+			// cannot write the narrative file) and answers null otherwise.
+			EnvelopeNarrativeField: map[string]any{"type": []string{"string", "null"}},
 		},
-		"required": []string{"outputs", "question", "reason", "status"},
+		"required": []string{EnvelopeNarrativeField, "outputs", "question", "reason", "status"},
 	}
 	encoded, err := json.Marshal(schema)
 	if err != nil {
@@ -224,35 +268,44 @@ func (c EnvelopeContract) Validate(payload []byte, sizeCap ...int) error {
 		return &EnvelopeValidationError{Findings: []EnvelopeFinding{{Path: "$", Message: "invalid trailing JSON: " + err.Error()}}}
 	}
 	var findings []EnvelopeFinding
-	allowed := map[string]bool{"status": true, "outputs": true, "question": true, "reason": true}
 	for name := range raw {
-		if !allowed[name] {
+		if !envelopeAllowedFieldSet[name] {
 			findings = append(findings, EnvelopeFinding{Path: "$." + name, Message: "property is not allowed"})
 		}
 	}
-	for _, name := range []string{"status", "outputs", "question", "reason"} {
-		if _, ok := raw[name]; !ok {
-			findings = append(findings, EnvelopeFinding{Path: "$." + name, Message: "property is required"})
-		}
-	}
 	var status string
-	if data, ok := raw["status"]; ok {
-		if bytes.Equal(bytes.TrimSpace(data), []byte("null")) || json.Unmarshal(data, &status) != nil {
-			findings = append(findings, EnvelopeFinding{Path: "$.status", Message: "must be a string"})
-		}
+	if data, ok := raw["status"]; !ok {
+		findings = append(findings, EnvelopeFinding{Path: "$.status", Message: "property is required"})
+	} else if bytes.Equal(bytes.TrimSpace(data), []byte("null")) || json.Unmarshal(data, &status) != nil {
+		findings = append(findings, EnvelopeFinding{Path: "$.status", Message: "must be a string"})
 	}
-	var question, reason *string
+	var question, reason, narrative *string
 	decodeNullableString(raw["question"], "$.question", &question, &findings)
 	decodeNullableString(raw["reason"], "$.reason", &reason, &findings)
+	// Type-checked and then deliberately left out of every branch rule below: an
+	// element that finished, one that has to ask, and one that got stuck all did
+	// work worth an account, so refusing the narrative anywhere would burn the
+	// element's single envelope retry on the one field that is never a mistake.
+	decodeNullableString(raw[EnvelopeNarrativeField], "$."+EnvelopeNarrativeField, &narrative, &findings)
+	// Absent, null, and unreadable all leave no object to read; only the last has
+	// anything said about it, and `outputsReadable` is what keeps the declaration
+	// rules below from burying that one finding under one per declaration.
 	var outputs map[string]any
+	outputsReadable := true
 	if data, ok := raw["outputs"]; ok && !bytes.Equal(bytes.TrimSpace(data), []byte("null")) {
 		decoder := json.NewDecoder(bytes.NewReader(data))
 		if err := decoder.Decode(&outputs); err != nil {
 			findings = append(findings, EnvelopeFinding{Path: "$.outputs", Message: "must be an object or null"})
+			outputs, outputsReadable = nil, false
 		}
 	}
+	// A `done` element owes every declared output whether or not it carried an
+	// object, so an absent one is judged as the empty object it is: the envelope
+	// is told which deliverables are missing, never that a container is. Under
+	// the other statuses nothing is owed until an object is actually carried,
+	// which is itself the branch finding below.
 	declaredOutputs := c.outputs
-	if outputs != nil {
+	if outputsReadable && (outputs != nil || status == "done") {
 		for name := range outputs {
 			if _, ok := declaredOutputs[name]; !ok {
 				findings = append(findings, EnvelopeFinding{Path: "$.outputs." + name, Message: "property is not allowed"})
@@ -277,9 +330,6 @@ func (c EnvelopeContract) Validate(payload []byte, sizeCap ...int) error {
 	}
 	switch status {
 	case "done":
-		if outputs == nil {
-			findings = append(findings, EnvelopeFinding{Path: "$.outputs", Message: "must be non-null when status is done"})
-		}
 		if question != nil {
 			findings = append(findings, EnvelopeFinding{Path: "$.question", Message: "must be null when status is done"})
 		}
@@ -316,6 +366,68 @@ func (c EnvelopeContract) Validate(payload []byte, sizeCap ...int) error {
 		return &EnvelopeValidationError{Findings: findings}
 	}
 	return nil
+}
+
+// SplitEnvelopeNarrative separates the authored narrative from a control
+// envelope, returning the narrative text and the envelope with the field
+// removed. It is the one seam that keeps prose out of everything downstream:
+// gate evaluation, a join's `units` results, call synthesis, and the persisted
+// attempt envelope all read the returned payload.
+//
+// Anything that does not decode as a JSON object, and any envelope that carries
+// no narrative, is returned byte-for-byte unchanged — this is not a validator,
+// and a payload that failed post-validation must reach the human as it was
+// written. A narrative that is present but not a string strips the same way and
+// yields no text: post-validation has already reported the type finding, and
+// leaving the field in place would hand the engine the prose slot it exists to
+// keep empty.
+func SplitEnvelopeNarrative(payload json.RawMessage) (string, json.RawMessage) {
+	var envelope map[string]json.RawMessage
+	if len(payload) == 0 || json.Unmarshal(payload, &envelope) != nil {
+		return "", payload
+	}
+	raw, present := envelope[EnvelopeNarrativeField]
+	if !present {
+		return "", payload
+	}
+	delete(envelope, EnvelopeNarrativeField)
+	stripped, err := json.Marshal(envelope)
+	if err != nil {
+		return "", payload
+	}
+	var narrative string
+	if json.Unmarshal(raw, &narrative) != nil {
+		return "", stripped
+	}
+	return narrative, stripped
+}
+
+// EnvelopeAccount reads the human-readable account out of a document that is
+// SHAPED like a control envelope, and reports whether it was one at all.
+//
+// "Shaped like" is a top-level `status` key, which is the identity every
+// envelope has and no narrative does. It is deliberately weaker than the
+// document-identity test narrative recovery applies to the accepted envelope:
+// under Codex every assistant message of a schema-constrained turn is envelope
+// JSON, so recovery has to recognize the ones that are NOT this turn's accepted
+// envelope and lift their account rather than writing raw JSON into a file a
+// human is meant to read. The account is the narrative if there is one, else the
+// stuck reason; an envelope-shaped document with neither carries no account.
+func EnvelopeAccount(payload []byte) (string, bool) {
+	var envelope map[string]json.RawMessage
+	if len(payload) == 0 || json.Unmarshal(payload, &envelope) != nil {
+		return "", false
+	}
+	if _, shaped := envelope["status"]; !shaped {
+		return "", false
+	}
+	for _, field := range []string{EnvelopeNarrativeField, "reason"} {
+		var value string
+		if json.Unmarshal(envelope[field], &value) == nil && strings.TrimSpace(value) != "" {
+			return value, true
+		}
+	}
+	return "", true
 }
 
 func decodeNullableString(data json.RawMessage, path string, target **string, findings *[]EnvelopeFinding) {

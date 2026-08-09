@@ -40,6 +40,41 @@ phase-envelope schemas, post-validation, and whole-graph dry-run validation.
   reason: the ceiling always exists, so 0 means undeclared and
   `EffectiveMaxFanOutWidth` is the single place that resolves it.
 
+## Loop bounds
+
+- A loop route's `max:` is a `LoopBound`: an authored count (`max: 2`) or a
+  reference into the run's variable context (`max: fix-budget`), told apart by
+  node type alone because a scalar in that position can mean nothing else. The
+  reference form is what lets a campaign seed its own budget at run start
+  instead of editing the YAML for every run.
+- **Frozen snapshots are decoded and never re-validated**, so every run
+  persisted before the reference form existed carries `"max": 2` as a plain
+  JSON integer. The JSON decoder accepts both shapes and each re-encodes as
+  what it was authored as; `IsZero` backs `json:",omitzero"`, so a route that
+  declares no bound still persists without the key.
+- Validation splits the way every other reference does. `loopBoundShapeFindings`
+  (`validate_graph.go`) checks what a bound is on its own — a literal of at
+  least one, a non-blank reference — and `validateLoopBoundRef`
+  (`validate_vars.go`) resolves the reference where the dominator graph lives. A
+  seeded bound obeys a feedback reference's rules plus two of its own: its
+  producer may not be optional and must be number-typed, because a bound that is
+  absent or non-numeric when the gate evaluates parks the run instead of routing
+  it, which is exactly what the dry-run promises will not happen.
+- **Resolution happens once, at evaluation, in `EvaluateGate`.** It reads the
+  reference through `LookupVariable` and converts it through the same numeric
+  conversion predicate comparison uses, so a seeded budget and a routing
+  condition can never disagree about what a variable holds. The result must be a
+  whole count of at least one; anything else is an error (the engine parks it
+  `wiring-error`), never a coerced zero that would end the loop or a coerced one
+  that would invent a budget nobody wrote. `RouteDecision.Max` therefore carries
+  the RESOLVED number, and because the decision is persisted in the gate trace,
+  the trace states the budget the run actually got rather than the name it came
+  from.
+- A human route's `reject.max` is the same bound and resolves under the same
+  rules, in the engine (`resolveHumanGate`) against that attempt's variables. A
+  failure there fails the human's action and leaves the run parked; it is never
+  read as an exhausted budget.
+
 ## Fan-out authoring
 
 - A phase declares its units either statically (`fan_out:` list) or dynamically
@@ -58,6 +93,15 @@ phase-envelope schemas, post-validation, and whole-graph dry-run validation.
   child's declared outputs, so a declaration here is either a duplicate or a
   lie. `args:` and `max_depth:` require `call:` for the mirror-image reason.
   See "Call authoring" for what a unit's call edge shares with a phase's.
+- **A unit declares its own `resources:`, and they are unit-scoped.** The
+  phase's are acquired once at entry and held for the whole attempt; a unit's
+  are taken per running unit, by any unit that runs work — a `command:` unit
+  gating on a container slot as readily as an agent one, which is the case the
+  field exists for, since no provider bound paces a command. A call unit
+  declares none: it runs no work of its own, and the child workflow's phases
+  acquire what they need on the same project bounds, so a declaration here would
+  hold a slot for something else's work. Every entry is held to the same
+  `binding.capacity` rule a phase's is.
 - A fan-out phase **runs no work of its own**, so every field that would
   configure some — `driver`, `provider`/`model`/`prompt`,
   `check`/`command`/`commands`, `access` — is a finding, exactly as it is on a
@@ -232,11 +276,42 @@ directory is.
   `PhaseEnvelope(phase)` and `UnitEnvelope(unit)` differ only in the
   declarations they carry and the element name diagnostics blame.
   `EnvelopeSchema` / `ValidateEnvelope` remain the phase-level shorthands.
+- The control fields are `status`, `outputs`, `question`, `reason`, and
+  `narrative`. **`narrative` is the one field with no branch rule**: a done, a
+  question, and a stuck element all did work worth an account, so refusing it
+  anywhere would burn the element's single envelope retry on the one field that
+  is never a mistake. It exists because Codex applies a turn's `outputSchema` to
+  EVERY assistant message in that turn — an element under a schema cannot emit
+  prose there at all, so "send your narrative as the message before your
+  envelope" was an instruction only Claude could follow. Outputs nest under
+  `outputs`, so an author may still declare an output literally named
+  `narrative` and the two never meet — no reserved-name check is needed or
+  wanted.
+- **The generated schema requires every control key; post-validation requires
+  only `status`.** Strict mode has no optional, only required-and-nullable
+  (`internal/providerschema`), so the schema lists all five and a provider under
+  it emits all five, answering null where it has nothing to say. Post-validation
+  reads back what that null MEANT rather than the null itself: an absent
+  `question`, `reason`, or `narrative` is that null, and an absent `outputs` is
+  an empty one — a `done` element still owes every declared output, so an
+  envelope that omits the key is told which deliverables are missing, never that
+  a container is. `status` is the one literal requirement, because it is the
+  discriminator and a document without it is not an envelope. The keys a schema
+  forces onto a provider are not a debt a hand-written envelope owes: a tool
+  command's envelope, and every envelope frozen before a field existed, carry no
+  null boilerplate and are judged identically to one that does.
+- `SplitEnvelopeNarrative` is the seam the app lifts that field out at, and
+  `EnvelopeAccount` is what narrative recovery reads an envelope-SHAPED document
+  with (a top-level `status`, weaker than the document-identity test recovery
+  applies to the accepted envelope). Both live here because this package owns
+  what an envelope is; neither validates, and both return their input untouched
+  when it is not one.
 - A unit may declare its own `outputs:`, validated by the same name grammar,
   schema vocabulary, and reserved-tool-output rules a phase's are. A unit that
   declares none gets the control-only envelope: `status`, `question`, `reason`,
-  and `outputs` present but empty — the run still has to learn done/question/
-  stuck from it.
+  and an `outputs` with nothing to answer — empty, null, and absent are one
+  answer there, since no declaration is being withheld. The run still has to
+  learn done/question/stuck from it.
 - A **call unit** declares none either, and for the opposite reason: its
   envelope is the *child workflow's* declared `outputs:`, synthesized from the
   child run rather than authored, so any declaration here duplicates or
@@ -274,6 +349,7 @@ directory is.
 | `tool.go` | The tool driver's implicit outputs and the merged `PhaseOutputs` contract. |
 | `interpolate.go` | Single-pass prompt interpolation and template checks. |
 | `predicate.go` | The one predicate shape check shared by validation and evaluation, plus the standalone `ValidatePredicateShape` / `EvaluatePredicate` entry points. |
+| `loopbound.go` | A loop route's `max:`: both authored forms, their YAML/JSON (un)marshaling including legacy integer snapshots, the shape check, and runtime resolution. |
 | `fanout.go` | Unit expansion, unit-scoped declarations, and the implicit `provider:<name>` resource + its default capacity. |
 | `calls.go` | Call-phase accessors, the child-outputs surface, and the call-aware workspace need. |
 | `validate*.go` | Whole-definition structural, graph, variable, and binding checks. `validate_fanout.go` holds the fan-out structural rules and the width report; `validate_calls.go` holds the call shape, the call-graph traversal (cycles, child validity), and the argument checks. |

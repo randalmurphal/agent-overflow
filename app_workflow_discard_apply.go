@@ -96,10 +96,18 @@ func (a *App) discardWorkflowTree(root store.WorkItem) (WorkflowDiscardResult, e
 	return result, a.clearDiscardedTreeWorkspaces(members)
 }
 
-// cancelWorkflowTreeMembers stops the members still in flight and reports
-// which ones it stopped. Cancel is itself tree-aware, so the shallowest live
-// member brings its own descendants down; deeper members are skipped once an
-// ancestor has cancelled them.
+// cancelWorkflowTreeMembers stops the members that are not finished and reports
+// which ones it stopped. Cancel is itself tree-aware, so the shallowest one
+// brings its own descendants down; deeper members are skipped once an ancestor
+// has cancelled them.
+//
+// A PARKED member is stopped too, not only a running one. Cancel reaches a
+// parked run under any park reason, and leaving one alive is what left a
+// discarded tree with a run still resting on a worktree this very call is about
+// to remove — a run whose only remaining move would fail on a checkout that no
+// longer exists. The one exception is a run parked awaiting DISPOSITION: it is
+// done, and the disposition currently running is what settles it, which is why
+// the engine refuses to cancel it at all.
 //
 // Shared by the discard and by project deletion's cleanup (D25) — both have to
 // stop a tree before they can touch its checkouts, and neither may hold a
@@ -108,7 +116,7 @@ func (a *App) cancelWorkflowTreeMembers(members []store.WorkItem) ([]string, err
 	stopped := make([]string, 0)
 	live := make([]store.WorkItem, 0)
 	for _, member := range members {
-		if engine.State(member.State) == engine.StateRunning {
+		if workflowDiscardStops(member) {
 			live = append(live, member)
 		}
 	}
@@ -135,6 +143,24 @@ func (a *App) cancelWorkflowTreeMembers(members []store.WorkItem) ([]string, err
 		stopped = append(stopped, member.ID)
 	}
 	return stopped, errors.Join(errs...)
+}
+
+// workflowDiscardStops reports whether a tree member still has to be settled
+// before the tree's checkouts can be removed. It is deliberately wider than the
+// preview's "still working" list: a parked run is not working, but it is not
+// finished either, and leaving it would strand a run whose every remaining move
+// reads a worktree this call is about to delete.
+func workflowDiscardStops(member store.WorkItem) bool {
+	switch engine.State(member.State) {
+	case engine.StateRunning:
+		return true
+	case engine.StateNeedsHuman:
+		// A done run awaiting a merge/PR/discard is settled by the disposition
+		// that is running right now; the engine refuses to cancel one at all.
+		return engine.Reason(member.Reason) != engine.ReasonDisposition
+	default:
+		return false
+	}
 }
 
 // discardRemoval is what one target actually cost: the checkout that was

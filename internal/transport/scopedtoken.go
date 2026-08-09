@@ -111,6 +111,14 @@ var ScopedTokenMethods = map[string][]string{
 	// session is the one that notices a usage limit reset, so it is the one that
 	// needs the verb.
 	"WorkflowRetryFailedUnits": {"start-run"},
+	// Settling the two parks a workflow author routed to a person. `resolve` is
+	// its own grant rather than part of start-run because the authorities differ
+	// in kind: start-run is the routine one — start work, stop it, repair it —
+	// while approving a gate or answering a question is the decision the author
+	// deliberately took away from the machine, so handing it back has to be just
+	// as deliberate.
+	"WorkflowResolveGate":    {"resolve"},
+	"WorkflowAnswerQuestion": {"resolve"},
 	// Reading run state: project-wide with introspect, own-started-only with
 	// start-run alone.
 	"WorkflowAgentRunStatus": {"introspect", "start-run"},

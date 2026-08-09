@@ -26,33 +26,63 @@ func phaseResources(phase def.Phase) ([]string, error) {
 	if phase.Driver == def.DriverAgent && phase.EffectiveShape() != def.ShapeFanOut {
 		provider := strings.TrimSpace(phase.Provider)
 		if provider == "" {
-			return nil, fmt.Errorf("agent phase %q declares no provider", phase.ID)
+			return nil, fmt.Errorf("agent phase %q declares no provider: %w", phase.ID, ErrWiringFailed)
 		}
 		names = append(append([]string(nil), names...), ProviderResource(provider))
 	}
 	return canonicalResources(names), nil
 }
 
-// unitResources is what one fan-out unit or join acquires: its own provider
-// capacity, and nothing else. The phase's declared resources stay phase-scoped
-// — acquired once at phase entry and held for the whole attempt — so a
-// `live-stack` mutex is taken once by the attempt, not once per unit.
+// unitResources is what one fan-out unit or join acquires: everything it
+// declared, plus the implicit `provider:<name>` slot an agent unit takes for
+// its own turn. Declared resources belong to any unit that runs work — a
+// command unit gating on a container slot contends for it exactly as an agent
+// unit would — while provider capacity is an agent-turn bound and is appended
+// only there.
+//
+// A unit's resources are unit-scoped and are taken once per running unit. The
+// phase's own `resources:` stay phase-scoped — acquired once at phase entry and
+// held for the whole attempt — so a `live-stack` mutex the phase declares is
+// taken once by the attempt, not once per unit.
 //
 // A call unit takes nothing, for the same reason a call phase takes nothing: it
 // runs no turn. Its child run's phases acquire what they need through the same
 // project semaphores while the unit rests, so the tree's provider bound is
 // respected without the resting unit holding a slot its own child would then
-// have to wait for.
+// have to wait for. A call unit that nonetheless declares resources is refused:
+// validation rejects the declaration statically, so a frozen definition
+// carrying one cannot produce runnable work, and quietly dropping the claim
+// would run the child outside a bound the author wrote down.
 func unitResources(unit def.Unit) ([]string, error) {
 	driver, runsWork := unit.EffectiveDriver()
-	if !runsWork || driver != def.DriverAgent {
+	if !runsWork {
+		if len(unit.Resources) > 0 {
+			return nil, fmt.Errorf("call unit %q declares resources it runs no work to hold: %w", unit.ID, ErrWiringFailed)
+		}
 		return nil, nil
 	}
-	provider := strings.TrimSpace(unit.Provider)
-	if provider == "" {
-		return nil, fmt.Errorf("agent unit %q declares no provider", unit.ID)
+	names := unit.Resources
+	if driver == def.DriverAgent {
+		provider := strings.TrimSpace(unit.Provider)
+		if provider == "" {
+			return nil, fmt.Errorf("agent unit %q declares no provider: %w", unit.ID, ErrWiringFailed)
+		}
+		names = append(append([]string(nil), names...), ProviderResource(provider))
 	}
-	return []string{ProviderResource(provider)}, nil
+	return canonicalResources(names), nil
+}
+
+// acquisitionParkReason classifies why an acquisition failed, by sentinel and
+// never by string matching, exactly as parkStartFailure classifies a runner's.
+// A frozen definition that cannot describe a runnable acquisition — an agent
+// element with no provider, a call unit claiming capacity for work it does not
+// run — is `wiring-error`; a profile that cannot be read or a resource the
+// project never sized is `setup-failed`.
+func acquisitionParkReason(err error) Reason {
+	if errors.Is(err, ErrWiringFailed) {
+		return ReasonWiringError
+	}
+	return ReasonSetupFailed
 }
 
 func canonicalResources(resources []string) []string {
@@ -288,7 +318,7 @@ func (e *Engine) startWaiting() error {
 		}
 		acquired, ok, err := e.acquirePhaseResources(item.item.ProjectID, phase)
 		if err != nil {
-			combined := errors.Join(err, e.teardown(item, teardownRequest{phaseStatus: "parked", nextState: StateNeedsHuman, reason: ReasonSetupFailed}))
+			combined := errors.Join(err, e.teardown(item, teardownRequest{phaseStatus: "parked", nextState: StateNeedsHuman, reason: acquisitionParkReason(err)}))
 			e.emitError(item.item.ID, combined)
 			errs = append(errs, combined)
 			continue
@@ -329,7 +359,7 @@ func (e *Engine) releaseWaitingUnit(item *runtimeItem, unit *unitRun) (bool, err
 	acquired, ok, err := e.acquireUnitResources(item.item.ProjectID, unit.definition)
 	if err != nil {
 		return true, errors.Join(err, e.teardown(item, teardownRequest{
-			phaseStatus: "parked", nextState: StateNeedsHuman, reason: ReasonSetupFailed,
+			phaseStatus: "parked", nextState: StateNeedsHuman, reason: acquisitionParkReason(err),
 		}))
 	}
 	if !ok {

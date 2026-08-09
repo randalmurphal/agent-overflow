@@ -162,7 +162,10 @@ func (a *App) WorkflowListItemCosts(projectID string) (map[string]float64, error
 // WorkflowRerunItem starts a failed run's last phase again immediately,
 // carrying its latest diagnosis, plus the caller's optional guidance, into the
 // new attempt.
-func (a *App) WorkflowRerunItem(ctx context.Context, itemID, guidance string) error {
+//
+// refreshDefinition re-reads the workflow and its prompt files from disk for
+// that attempt instead of rendering the definition the run froze at start.
+func (a *App) WorkflowRerunItem(ctx context.Context, itemID, guidance string, refreshDefinition bool) error {
 	workflowEngine, err := a.requireWorkflowEngine()
 	if err != nil {
 		return err
@@ -174,5 +177,5 @@ func (a *App) WorkflowRerunItem(ctx context.Context, itemID, guidance string) er
 	if err := a.authorizeScopedRunAction(ctx, itemID, "rerun workflow run"); err != nil {
 		return err
 	}
-	return workflowEngine.RerunFailed(itemID, guidance)
+	return workflowEngine.RerunFailed(itemID, guidance, refreshDefinition)
 }

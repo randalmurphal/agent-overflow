@@ -30,6 +30,11 @@ func TestSemaphoreReleaseOnEveryImplementedExitPath(t *testing.T) {
 		{"explicit park", []def.Route{{Park: "review"}}, completeWith(OutcomeDone, doneEnvelope(true)), StateNeedsHuman, ReasonGate},
 		{"failed route", []def.Route{{To: "failed"}}, completeWith(OutcomeDone, doneEnvelope(true)), StateFailed, ReasonCheckFailedGenuine},
 		{"wiring no-match", []def.Route{{When: &def.Predicate{Eq: &def.Comparison{Ref: "work.ok", Value: true}}, To: "done"}}, completeWith(OutcomeDone, doneEnvelope(false)), StateNeedsHuman, ReasonWiringError},
+		// A seeded loop bound the run's variables cannot answer is the frozen
+		// definition and the live context failing to say how many traversals are
+		// allowed — the same wiring error an unroutable gate takes, and the same
+		// release contract.
+		{"unresolvable loop bound", []def.Route{{Loop: "work", Max: def.RefBound("fix-budget")}}, completeWith(OutcomeDone, doneEnvelope(true)), StateNeedsHuman, ReasonWiringError},
 		{"cancel", []def.Route{{To: "done"}}, func(t *testing.T, h *testHarness, itemID string) {
 			t.Helper()
 			if err := h.engine.Cancel(itemID); err != nil {
@@ -220,7 +225,7 @@ func TestLoweredCapacityBlocksWithoutEvictingHolders(t *testing.T) {
 func TestLoopPhaseExitReleasesBeforeRetryAndExhaustionParks(t *testing.T) {
 	workflow := def.Workflow{ID: "loop", Phases: []def.Phase{
 		agentPhase("build", []string{"stack"}, []def.Route{{To: "review"}}),
-		agentPhase("review", []string{"stack"}, []def.Route{{Loop: "build", Max: 1}}),
+		agentPhase("review", []string{"stack"}, []def.Route{{Loop: "build", Max: def.LiteralBound(1)}}),
 	}}
 	waiterWorkflow := onePhaseWorkflow("waiter", []string{"stack"}, []def.Route{{To: "done"}})
 	h := newHarness(t, Config{}, map[string]def.Workflow{"loop": workflow, "waiter": waiterWorkflow}, []string{"project"}, nil)

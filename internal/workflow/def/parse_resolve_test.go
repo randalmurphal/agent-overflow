@@ -63,6 +63,20 @@ func validateFixtureSchema(value any, schema, root map[string]any, path string) 
 		}
 		return validateFixtureSchema(value, definition, root, path)
 	}
+	if alternatives, ok := schema["anyOf"].([]any); ok {
+		var last error
+		for _, alternative := range alternatives {
+			branch, ok := alternative.(map[string]any)
+			if !ok {
+				return fmt.Errorf("%s: unsupported anyOf branch %T", path, alternative)
+			}
+			last = validateFixtureSchema(value, branch, root, path)
+			if last == nil {
+				return nil
+			}
+		}
+		return fmt.Errorf("%s: value %v matches no anyOf branch (last: %v)", path, value, last)
+	}
 	if allowed, ok := schema["enum"].([]any); ok {
 		matched := false
 		for _, candidate := range allowed {
@@ -137,8 +151,12 @@ func validateFixtureSchema(value any, schema, root map[string]any, path string) 
 			return fmt.Errorf("%s: expected boolean, got %T", path, value)
 		}
 	case "integer":
-		if _, ok := value.(int); !ok {
+		number, ok := value.(int)
+		if !ok {
 			return fmt.Errorf("%s: expected integer, got %T", path, value)
+		}
+		if minimum, ok := schema["minimum"].(float64); ok && number < int(minimum) {
+			return fmt.Errorf("%s: integer is below %d", path, int(minimum))
 		}
 	case "number":
 		switch value.(type) {
@@ -159,6 +177,62 @@ func stringValues(value any) []string {
 		}
 	}
 	return result
+}
+
+// The published schema is what an editor holds a workflow to before Go ever
+// reads it, so it has to admit exactly the two forms a `max:` can take.
+func TestPublishedSchemaAcceptsBothLoopBoundForms(t *testing.T) {
+	var published map[string]any
+	if err := json.Unmarshal(AuthoringSchema(), &published); err != nil {
+		t.Fatalf("published schema is invalid JSON: %v", err)
+	}
+	defs := published["$defs"].(map[string]any)
+	bound, ok := defs["loopBound"].(map[string]any)
+	if !ok {
+		t.Fatal("published schema lacks the loopBound definition")
+	}
+	for _, key := range []string{"route", "loopTarget"} {
+		properties := defs[key].(map[string]any)["properties"].(map[string]any)
+		if properties["max"].(map[string]any)["$ref"] != "#/$defs/loopBound" {
+			t.Errorf("%s.max does not reference loopBound: %v", key, properties["max"])
+		}
+	}
+	for _, value := range []any{2, 1, "fix-budget", "plan.rounds"} {
+		if err := validateFixtureSchema(value, bound, published, "$.max"); err != nil {
+			t.Errorf("published schema refused loop bound %v: %v", value, err)
+		}
+	}
+	for _, value := range []any{0, -1, "", true, 2.5} {
+		if err := validateFixtureSchema(value, bound, published, "$.max"); err == nil {
+			t.Errorf("published schema accepted %v as a loop bound", value)
+		}
+	}
+}
+
+// A unit declares its own `resources:` — except a call unit, which runs no work
+// to hold capacity for. Both halves have to hold in the published schema too,
+// or an editor blesses a definition Go validation refuses.
+func TestPublishedSchemaCarriesUnitResources(t *testing.T) {
+	var published map[string]any
+	if err := json.Unmarshal(AuthoringSchema(), &published); err != nil {
+		t.Fatalf("published schema is invalid JSON: %v", err)
+	}
+	unit := published["$defs"].(map[string]any)["unit"].(map[string]any)
+	if _, ok := unit["properties"].(map[string]any)["resources"]; !ok {
+		t.Fatal("published schema lacks unit key \"resources\" used by Go format")
+	}
+	callBranch := unit["allOf"].([]any)[0].(map[string]any)["then"].(map[string]any)
+	refused := false
+	for _, entry := range callBranch["not"].(map[string]any)["anyOf"].([]any) {
+		for _, name := range stringValues(entry.(map[string]any)["required"]) {
+			if name == "resources" {
+				refused = true
+			}
+		}
+	}
+	if !refused {
+		t.Fatal("published schema allows resources on a call unit")
+	}
 }
 
 func TestParseRejectsUnknownField(t *testing.T) {

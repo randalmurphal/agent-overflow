@@ -88,6 +88,14 @@ func (b *fakeBackend) refuse(method, code, message string) {
 	b.errors[method] = &transport.FrameError{Code: code, Message: message}
 }
 
+// reset drops the recorded calls, so a table may drive one method several times
+// and still assert "called once, with these params" per row.
+func (b *fakeBackend) reset() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.calls = nil
+}
+
 func (b *fakeBackend) recorded(method string) []transport.ClientFrame {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -209,6 +217,8 @@ func TestUnknownCommandsAndMissingArgumentsExitTwo(t *testing.T) {
 		{"run", "start", "a", "b"},
 		{"run", "status"},
 		{"run", "retry-unit", "item"},
+		{"run", "resolve"},
+		{"run", "answer", "item"},
 		{"run", "list", "extra"},
 		{"notes"},
 		{"notes", "nonsense"},
@@ -228,6 +238,7 @@ func TestHelpExitsZeroAndPrintsUsage(t *testing.T) {
 	for _, args := range [][]string{
 		{"help"}, {"workflow", "help"}, {"run", "help"}, {"notes", "help"},
 		{"run", "start", "--help"}, {"schedule", "--help"},
+		{"run", "resolve", "--help"}, {"run", "answer", "--help"},
 	} {
 		code, stdout, stderr := runCLI(args, noEnv)
 		if code != exitOK {

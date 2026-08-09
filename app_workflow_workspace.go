@@ -341,13 +341,13 @@ type workflowUnitWorkspaceRef struct {
 // unit row before the session starts, so a crash between `git worktree add` and
 // the first turn can never strand either.
 //
-// The unit's branch name is a deterministic function of the item's branch, the
-// unit id, and the unit's try number: re-entering the same try finds its own
-// worktree and adopts it instead of cutting a second, and a retry (a new try
-// number) always cuts fresh from the item branch rather than inheriting what
-// the failed try left behind. That adoption is also what makes a call-bound
-// unit work: its child run resolves the same coordinates and lands in the
-// checkout the unit already owns.
+// The unit's branch name is a deterministic function of the item's branch and
+// the full unit coordinate: re-entering the same try finds its own worktree and
+// adopts it instead of cutting a second, and a retry (a new try number) always
+// cuts fresh from the item branch rather than inheriting what the failed try
+// left behind. That adoption is also what makes a call-bound unit work: its
+// child run resolves the same coordinates and lands in the checkout the unit
+// already owns.
 func (r *workflowAppRunner) provisionUnitWorktree(
 	ctx context.Context, ref workflowUnitWorkspaceRef, primary preparedWorkflowWorkspace,
 ) (preparedWorkflowWorkspace, error) {
@@ -365,7 +365,7 @@ func (r *workflowAppRunner) provisionUnitWorktree(
 			"unit %q of item %q has no try number to name its worktree from", ref.unitID, ref.itemID,
 		)
 	}
-	branch := workflowUnitBranch(primary.branch, ref.unitID, ref.unitAttempt)
+	branch := workflowUnitBranch(primary.branch, ref)
 	if err := gitops.ValidateBranchName(branch); err != nil {
 		return preparedWorkflowWorkspace{}, fmt.Errorf("unit branch %q: %w", branch, err)
 	}
@@ -441,11 +441,45 @@ func (r *workflowAppRunner) existingUnitWorktree(projectPath, branch string) (st
 // workflowUnitBranch names a fan-out unit's sub-worktree branch. It extends the
 // item's own branch so every branch a run created shares one prefix — which is
 // what makes the run's branches findable from the item alone.
-func workflowUnitBranch(itemBranch, unitID string, unitAttempt int) string {
+//
+// The name carries the WHOLE provisioning coordinate, not just the unit id and
+// try, because an item branch is not one fan-out's private namespace. A called
+// run executes in its caller's workspace (§9), so every wave of a self-calling
+// campaign fans out from the same item branch; a re-expanded phase opens a new
+// attempt whose tries restart at 1; and one workflow may declare two fan-out
+// phases that name their units alike. Retirement removes a lane's checkout and
+// never its branch, so a name two provisionings share does not fail cleanly —
+// it either refuses the cut or adopts the other lane's checkout as this try's.
+func workflowUnitBranch(itemBranch string, ref workflowUnitWorkspaceRef) string {
+	attempt, unitAttempt := ref.attempt, ref.unitAttempt
+	if attempt < 1 {
+		attempt = 1
+	}
 	if unitAttempt < 1 {
 		unitAttempt = 1
 	}
-	return fmt.Sprintf("%s-%s-%d", itemBranch, gitops.SanitizeBranchFragment(unitID), unitAttempt)
+	return fmt.Sprintf("%s-%s-%s-a%d-%s-%d",
+		itemBranch,
+		workflowUnitBranchOwner(ref.itemID),
+		gitops.SanitizeBranchFragment(ref.phaseID),
+		attempt,
+		gitops.SanitizeBranchFragment(ref.unitID),
+		unitAttempt,
+	)
+}
+
+// workflowUnitBranchOwner is the fan-out owner's identity inside a unit branch:
+// the head of its item id, which is a uuid at every site that creates one, so
+// the leading group already separates the items of a run tree. Sanitation first
+// means the truncation can never be what makes the name illegal.
+func workflowUnitBranchOwner(itemID string) string {
+	// SanitizeBranchFragment returns a non-empty fragment with no leading or
+	// trailing separator, so the head of one is non-empty too.
+	fragment := gitops.SanitizeBranchFragment(itemID)
+	if len(fragment) > 8 {
+		fragment = strings.TrimRight(fragment[:8], "-_.")
+	}
+	return fragment
 }
 
 func workflowWorktreeBranch(prefix, workflowID, itemID string) string {

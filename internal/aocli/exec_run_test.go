@@ -260,6 +260,134 @@ func TestRunStatusNamesTheFailedUnits(t *testing.T) {
 	}
 }
 
+// A gate is a decision, so neither direction can be the default: the command
+// has to refuse both "no decision" and "both decisions" before anything reaches
+// the app, because either one would otherwise resolve as an approve.
+func TestRunResolveRequiresExactlyOneDecision(t *testing.T) {
+	backend := newFakeBackend(t)
+	backend.reply("WorkflowResolveGate", nil)
+	backend.reply("WorkflowAgentRunStatus", map[string]any{"itemId": "run-1", "state": "running"})
+	for _, args := range [][]string{
+		{"run", "resolve", "run-1"},
+		{"run", "resolve", "run-1", "--approve", "--reject"},
+	} {
+		code, stdout, stderr := runCLI(args, backend.env())
+		if code != exitError {
+			t.Fatalf("%v exit = %d, want %d", args, code, exitError)
+		}
+		if stdout != "" {
+			t.Fatalf("%v wrote to stdout: %q", args, stdout)
+		}
+		if !strings.Contains(stderr, "--approve or --reject") {
+			t.Fatalf("%v stderr = %q", args, stderr)
+		}
+	}
+	if calls := backend.recorded("WorkflowResolveGate"); len(calls) != 0 {
+		t.Fatalf("an undecided resolve still reached the backend: %#v", calls)
+	}
+}
+
+// Both human-decision verbs put the decision on the wire and then report where
+// the run went, the same contract the rest of the acting verbs hold to.
+func TestRunResolveAndAnswerSendTheDecisionAndReportTheRun(t *testing.T) {
+	for _, test := range []struct {
+		args   []string
+		method string
+		want   []string
+	}{
+		{[]string{"run", "resolve", "run-1", "--approve"}, "WorkflowResolveGate",
+			[]string{`"run-1"`, `"approve"`, `""`}},
+		{[]string{"run", "resolve", "run-1", "--reject", "--note", "the diff is wrong"}, "WorkflowResolveGate",
+			[]string{`"run-1"`, `"reject"`, `"the diff is wrong"`}},
+		{[]string{"run", "answer", "run-1", "use the second option"}, "WorkflowAnswerQuestion",
+			[]string{`"run-1"`, `"use the second option"`}},
+	} {
+		backend := newFakeBackend(t)
+		backend.reply(test.method, nil)
+		backend.reply("WorkflowAgentRunStatus", map[string]any{"itemId": "run-1", "state": "running"})
+		code, stdout, stderr := runCLI(test.args, backend.env())
+		if code != exitOK {
+			t.Fatalf("%v exit = %d (%s)", test.args, code, stderr)
+		}
+		if !strings.Contains(stdout, "run=run-1") || !strings.Contains(stdout, "state=running") {
+			t.Fatalf("%v output = %q", test.args, stdout)
+		}
+		calls := backend.recorded(test.method)
+		if len(calls) != 1 {
+			t.Fatalf("%s called %d times", test.method, len(calls))
+		}
+		if len(calls[0].Params) != len(test.want) {
+			t.Fatalf("%s params = %v, want %v", test.method, calls[0].Params, test.want)
+		}
+		for index, want := range test.want {
+			if string(calls[0].Params[index]) != want {
+				t.Fatalf("%s param %d = %s, want %s", test.method, index, calls[0].Params[index], want)
+			}
+		}
+	}
+}
+
+// An answer is the point of the command, so it is a positional — and a blank
+// one is a question still unanswered rather than an answer of nothing.
+func TestRunAnswerNeedsARunIdAndText(t *testing.T) {
+	backend := newFakeBackend(t)
+	backend.reply("WorkflowAnswerQuestion", nil)
+	for _, args := range [][]string{
+		{"run", "answer", "run-1"},
+		{"run", "answer", "run-1", "   "},
+		{"run", "answer", "run-1", "text", "extra"},
+	} {
+		if code, _, _ := runCLI(args, backend.env()); code != exitError {
+			t.Fatalf("%v exit = %d, want %d", args, code, exitError)
+		}
+	}
+	if calls := backend.recorded("WorkflowAnswerQuestion"); len(calls) != 0 {
+		t.Fatalf("a usage error still reached the backend: %#v", calls)
+	}
+}
+
+// A gate consumed one attempt's outputs; `run status` is where the reader finds
+// out which one it was and what it ran with. The control verbs deliberately do
+// not print these lines — they answer "where is it now".
+func TestRunStatusRendersPerAttemptProvenance(t *testing.T) {
+	backend := newFakeBackend(t)
+	backend.reply("WorkflowAgentRunStatus", map[string]any{
+		"itemId": "run-1", "workflowId": "flow", "state": "needs-human", "reason": "gate", "resting": true,
+		"phases": []map[string]any{
+			{"phaseId": "review", "attempt": 1, "status": "completed", "provider": "codex",
+				"model": "gpt-5.2-codex", "effort": "xhigh", "decision": "loop", "decisionTarget": "fix"},
+			{"phaseId": "review", "attempt": 2, "status": "completed", "provider": "codex",
+				"model": "gpt-5.2-codex", "effort": "xhigh", "decision": "retries-exhausted",
+				"exhaustedLoops": []string{"review:0"}},
+			{"phaseId": "check", "attempt": 1, "status": "completed"},
+		},
+	})
+	code, stdout, stderr := runCLI([]string{"run", "status", "run-1"}, backend.env())
+	if code != exitOK {
+		t.Fatalf("exit = %d (%s)", code, stderr)
+	}
+	for _, want := range []string{
+		"run=run-1 workflow=flow state=needs-human reason=gate\n",
+		"phase=review attempt=1 status=completed provider=codex model=gpt-5.2-codex effort=xhigh decision=loop->fix\n",
+		"phase=review attempt=2 status=completed provider=codex model=gpt-5.2-codex effort=xhigh decision=retries-exhausted exhausted-loops=review:0\n",
+		// A tool phase has no session, so its line carries no empty columns.
+		"phase=check attempt=1 status=completed\n",
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("status output is missing %q:\n%s", want, stdout)
+		}
+	}
+
+	backend.reply("WorkflowPauseItem", nil)
+	code, stdout, stderr = runCLI([]string{"run", "pause", "run-1"}, backend.env())
+	if code != exitOK {
+		t.Fatalf("pause exit = %d (%s)", code, stderr)
+	}
+	if strings.Contains(stdout, "phase=review") {
+		t.Fatalf("a control verb printed the per-attempt lines:\n%s", stdout)
+	}
+}
+
 // --clear is the same verb withdrawing the request, so it must reach the app as
 // the state asked for rather than as a different call the server would have to
 // tell apart.
@@ -304,9 +432,9 @@ func TestRunControlCommandsSendTheirExtraArguments(t *testing.T) {
 		want   []string
 	}{
 		{[]string{"run", "rerun", "run-1", "--guidance", "try the other branch"}, "WorkflowRerunItem",
-			[]string{`"run-1"`, `"try the other branch"`}},
+			[]string{`"run-1"`, `"try the other branch"`, `false`}},
 		{[]string{"run", "resume", "run-1", "--phase", "verify"}, "WorkflowResumeItem",
-			[]string{`"run-1"`, `"verify"`}},
+			[]string{`"run-1"`, `"verify"`, `false`}},
 		{[]string{"run", "retry-unit", "run-1", "beta", "--note", "fixed"}, "WorkflowRetryUnit",
 			[]string{`"run-1"`, `"beta"`, `"fixed"`}},
 		// One run id and a note, no unit id: the arity is what separates the
@@ -341,6 +469,78 @@ func TestRunControlCommandsSendTheirExtraArguments(t *testing.T) {
 		for i, want := range test.want {
 			if string(calls[0].Params[i]) != want {
 				t.Fatalf("%s param %d = %s, want %s", test.method, i, calls[0].Params[i], want)
+			}
+		}
+	}
+}
+
+// --refresh-def is the repair for a prompt edited while the run was parked, so
+// it has to reach the app from wherever a caller typed it: flags permute around
+// positionals, and a run id that follows the flag is still the run id.
+func TestRunRefreshDefReachesTheAppFromEveryPosition(t *testing.T) {
+	backend := newFakeBackend(t)
+	backend.reply("WorkflowResumeItem", nil)
+	backend.reply("WorkflowRerunItem", nil)
+	backend.reply("WorkflowAgentRunStatus", map[string]any{"itemId": "run-1", "state": "running"})
+
+	for _, test := range []struct {
+		args   []string
+		method string
+		want   []string
+	}{
+		{[]string{"run", "resume", "--refresh-def", "run-1"}, "WorkflowResumeItem",
+			[]string{`"run-1"`, `""`, `true`}},
+		{[]string{"run", "resume", "run-1", "--refresh-def"}, "WorkflowResumeItem",
+			[]string{`"run-1"`, `""`, `true`}},
+		{[]string{"run", "resume", "--phase", "verify", "run-1", "--refresh-def"}, "WorkflowResumeItem",
+			[]string{`"run-1"`, `"verify"`, `true`}},
+		{[]string{"run", "rerun", "--refresh-def", "run-1", "--guidance", "the prompt changed"}, "WorkflowRerunItem",
+			[]string{`"run-1"`, `"the prompt changed"`, `true`}},
+	} {
+		backend.reset()
+		code, _, stderr := runCLI(test.args, backend.env())
+		if code != exitOK {
+			t.Fatalf("%v exit = %d (%s)", test.args, code, stderr)
+		}
+		calls := backend.recorded(test.method)
+		if len(calls) != 1 {
+			t.Fatalf("%v: %s called %d times", test.args, test.method, len(calls))
+		}
+		if len(calls[0].Params) != len(test.want) {
+			t.Fatalf("%v params = %v, want %v", test.args, calls[0].Params, test.want)
+		}
+		for i, want := range test.want {
+			if string(calls[0].Params[i]) != want {
+				t.Fatalf("%v param %d = %s, want %s", test.args, i, calls[0].Params[i], want)
+			}
+		}
+	}
+}
+
+// The freeze is invisible from the outside, so the two verbs that can undo it
+// have to say so where a caller reads before typing.
+func TestRunUsageStatesTheDefinitionFreezeAndItsRepair(t *testing.T) {
+	for _, test := range []struct{ args, wants []string }{
+		{[]string{"run", "resume", "--help"}, []string{
+			"[--refresh-def]",
+			"The\ndefinition a run froze at start is what it runs",
+			"re-reads the workflow\nand its prompt files from disk",
+			"It applies at a fresh phase entry only",
+			"a call reads its target\nfrom disk every time it is made",
+		}},
+		{[]string{"run", "rerun", "--help"}, []string{
+			"[--refresh-def]",
+			"re-reads the workflow and its prompt files from disk",
+		}},
+		{[]string{"run", "help"}, []string{"--refresh-def re-reads the definition from disk"}},
+	} {
+		code, stdout, stderr := runCLI(test.args, noEnv)
+		if code != exitOK {
+			t.Fatalf("%v exit = %d (%s)", test.args, code, stderr)
+		}
+		for _, want := range test.wants {
+			if !strings.Contains(stdout, want) {
+				t.Fatalf("%v usage is missing %q:\n%s", test.args, want, stdout)
 			}
 		}
 	}

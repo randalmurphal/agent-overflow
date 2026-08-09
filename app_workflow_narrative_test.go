@@ -75,10 +75,13 @@ reliability:
 	}
 }
 
-// The recovery is bookkeeping on an outcome the engine has already accepted, so
-// its two refusals matter as much as its one write: it never replaces a file that
-// is already there, and it never invents one for a session that said nothing.
-func TestRecoverAttemptNarrativeRefusesToOverwriteOrInvent(t *testing.T) {
+// Settling is bookkeeping on an outcome the engine has already accepted, so its
+// two refusals matter as much as its writes: it never replaces a file that is
+// already there, and it never invents one for a turn that produced no account at
+// any tier. The three sources are ordered — the element's own file, then the
+// `narrative` it authored into its envelope, then the D39 recovery — and only
+// the last one is marked as recovered.
+func TestSettleAttemptNarrativeRefusesToOverwriteOrInvent(t *testing.T) {
 	app := newTestAppWithStore(t)
 	runner := newWorkflowAppRunner(app, t.TempDir(), nil)
 	envelope := json.RawMessage(`{"status":"done","outputs":{"report":"ok"}}`)
@@ -96,7 +99,7 @@ func TestRecoverAttemptNarrativeRefusesToOverwriteOrInvent(t *testing.T) {
 
 	t.Run("a silent session leaves no file", func(t *testing.T) {
 		attempt := newAttempt(t, "silent-thread")
-		runner.recoverAttemptNarrative(attempt, envelope)
+		runner.settleAttemptNarrative(attempt, "", envelope)
 		if _, err := os.Stat(attempt.narrativePath); !os.IsNotExist(err) {
 			t.Fatalf("stat(%q) = %v, want the file to be absent", attempt.narrativePath, err)
 		}
@@ -111,7 +114,7 @@ func TestRecoverAttemptNarrativeRefusesToOverwriteOrInvent(t *testing.T) {
 		if err := os.WriteFile(attempt.narrativePath, []byte("the agent's own account"), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		runner.recoverAttemptNarrative(attempt, envelope)
+		runner.settleAttemptNarrative(attempt, "the envelope field must not win either", envelope)
 		contents, err := os.ReadFile(attempt.narrativePath)
 		if err != nil {
 			t.Fatal(err)
@@ -124,7 +127,7 @@ func TestRecoverAttemptNarrativeRefusesToOverwriteOrInvent(t *testing.T) {
 	t.Run("prose becomes the narrative", func(t *testing.T) {
 		attempt := newAttempt(t, "speaking-thread")
 		seedAssistantText(t, app, attempt.threadID, "I read the callers and found two")
-		runner.recoverAttemptNarrative(attempt, envelope)
+		runner.settleAttemptNarrative(attempt, "", envelope)
 		contents, err := os.ReadFile(attempt.narrativePath)
 		if err != nil {
 			t.Fatal(err)
@@ -134,6 +137,150 @@ func TestRecoverAttemptNarrativeRefusesToOverwriteOrInvent(t *testing.T) {
 			t.Fatalf("narrative = %q", contents)
 		}
 	})
+
+	// The element deliberately put this account in its envelope, so it is
+	// authored exactly as a file it wrote would be — no recovered header — and it
+	// beats whatever the session happened to say.
+	t.Run("an authored envelope narrative is not marked as recovered", func(t *testing.T) {
+		attempt := newAttempt(t, "envelope-thread")
+		seedAssistantText(t, app, attempt.threadID, "prose the envelope field must beat")
+		runner.settleAttemptNarrative(attempt, "I surveyed the resolver and found one binding", envelope)
+		contents, err := os.ReadFile(attempt.narrativePath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(contents) != "I surveyed the resolver and found one binding\n" {
+			t.Fatalf("narrative = %q, want the authored account verbatim", contents)
+		}
+		if strings.Contains(string(contents), workflowrunner.RecoveredNarrativeHeader) {
+			t.Fatalf("an authored envelope narrative was marked as recovered:\n%s", contents)
+		}
+	})
+}
+
+// The `narrative` control field is lifted out at the one seam every agent-backed
+// turn reports through, so nothing downstream — the gate, a join's `units`
+// results, the persisted attempt envelope — can ever see prose in an envelope.
+func TestWorkflowFinishStripsTheEnvelopeNarrative(t *testing.T) {
+	app := newTestAppWithStore(t)
+	runner := newWorkflowAppRunner(app, t.TempDir(), nil)
+	narrativePath := filepath.Join(t.TempDir(), "attempt", "narrative.md")
+	delivered := make(chan engine.Outcome, 1)
+	attempt := &workflowAttempt{
+		workflowCompletion: workflowCompletion{
+			key: engine.RunKey{ItemID: "item", PhaseID: "survey", Attempt: 1}, narrativePath: narrativePath,
+		},
+		threadID: "stripping-thread",
+		complete: func(outcome engine.Outcome) { delivered <- outcome },
+	}
+	runKey := workflowRunKey(attempt.key)
+	runner.mu.Lock()
+	runner.runs[runKey] = attempt
+	runner.mu.Unlock()
+
+	runner.finish(runKey, engine.Outcome{
+		Kind: engine.OutcomeQuestion,
+		Envelope: json.RawMessage(
+			`{"status":"question","outputs":null,"question":"which branch?","reason":null,"narrative":"I got as far as the resolver"}`,
+		),
+	})
+	outcome := <-delivered
+	if strings.Contains(string(outcome.Envelope), "narrative") ||
+		strings.Contains(string(outcome.Envelope), "I got as far as the resolver") {
+		t.Fatalf("the engine was handed prose in the envelope: %s", outcome.Envelope)
+	}
+	if !strings.Contains(string(outcome.Envelope), `"which branch?"`) {
+		t.Fatalf("stripping damaged the envelope: %s", outcome.Envelope)
+	}
+	contents, err := os.ReadFile(narrativePath)
+	if err != nil {
+		t.Fatalf("a question envelope's narrative was not written: %v", err)
+	}
+	if string(contents) != "I got as far as the resolver\n" {
+		t.Fatalf("narrative = %q", contents)
+	}
+}
+
+// The whole reason `narrative` is a control field: Codex constrains EVERY
+// assistant message of a schema'd turn, so a read-only element cannot send prose
+// at all and the account has to ride in the envelope. End to end, the field
+// becomes the attempt's narrative file — authored, not recovered — and never
+// reaches the persisted envelope the gate and the wake read.
+func TestWorkflowEnvelopeNarrativeBecomesTheAttemptNarrative(t *testing.T) {
+	app, _ := setupE2EApp(t)
+	configRoot := t.TempDir()
+	repo := testutil.InitGitRepo(t)
+	projectRow := testutil.EnsureProject(t, app.store, repo)
+	projectRow = mustReloadProject(t, app.store, projectRow.ID)
+	writeUndeclaredAccessWorkflow(t, configRoot)
+	writeWorkspaceProfile(t, configRoot, projectRow.Slug, `
+base_branch: main
+reliability:
+  watchdog: 1h
+  backoff: [5ms]
+`)
+	if _, err := app.settings.Update(map[string]any{
+		"claudeBinaryPath": writeEnvelopeNarrativeClaude(t),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	startWorkflowEngineForTest(t, app, configRoot)
+
+	item, err := app.WorkflowStartRun(
+		projectRow.ID, "undeclared-access", "shared", "exercise envelope narratives",
+		json.RawMessage(`{}`), nil, "", false,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	item = waitForWorkflowItem(t, app, item.ID, engine.StateDone, "")
+	t.Cleanup(func() {
+		if item.WorktreePath != "" {
+			_ = app.gitCore().RemoveWorktreeForce(repo, item.WorktreePath, true)
+		}
+	})
+
+	narrative := readAttemptNarrative(t, app, item.ID, "survey")
+	if narrative != envelopeNarrativeAccount+"\n" {
+		t.Fatalf("narrative = %q, want the envelope's own account", narrative)
+	}
+	if strings.Contains(narrative, workflowrunner.RecoveredNarrativeHeader) {
+		t.Fatalf("an authored envelope narrative was marked as recovered:\n%s", narrative)
+	}
+	if strings.Contains(narrative, narrativeMockProse) {
+		t.Fatalf("the envelope field lost to the session's prose:\n%s", narrative)
+	}
+	phases := listWorkflowPhases(t, app, item.ID)
+	if len(phases) != 1 {
+		t.Fatalf("phases = %+v", phases)
+	}
+	persisted := string(phases[0].OutputEnvelope)
+	if strings.Contains(persisted, "narrative") || strings.Contains(persisted, envelopeNarrativeAccount) {
+		t.Fatalf("the persisted envelope carried prose: %s", persisted)
+	}
+	if outputs := decodeEnvelopeOutputs(t, phases[0].OutputEnvelope); outputs["report"] != "deliverable.md" {
+		t.Fatalf("stripping damaged the outputs = %v", outputs)
+	}
+}
+
+const envelopeNarrativeAccount = "I surveyed the resolver and found one binding"
+
+// writeEnvelopeNarrativeClaude is a mock read-only element that does what the
+// suffix now asks: it puts its account in the envelope's `narrative` field. It
+// also speaks prose, so the authored field has to beat the D39 recovery rather
+// than merely fill in for it.
+func writeEnvelopeNarrativeClaude(t *testing.T) string {
+	t.Helper()
+	status := `{"status":"done","outputs":{"report":"deliverable.md"},"question":null,"reason":null,` +
+		`"narrative":"` + envelopeNarrativeAccount + `"}`
+	script := `#!/bin/bash
+while IFS= read -r line; do
+  printf '%s\n' '{"type":"system","subtype":"init","session_id":"envelope-narrative","model":"claude-opus-4-7","cwd":"/tmp","tools":[],"claude_code_version":"1.0"}'
+  printf '%s\n' '{"type":"assistant","message":{"id":"msg-1","role":"assistant","content":[{"type":"text","text":"` + narrativeMockProse + `"}]}}'
+  printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"structured_output":` + status + `}'
+done
+`
+	return writeExecutable(t, "envelope-narrative-claude.sh", script)
 }
 
 func seedAssistantText(t *testing.T, app *App, threadID, text string) {

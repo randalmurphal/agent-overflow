@@ -224,7 +224,7 @@ test('a paused run resumes on the provider session it parked on', async ({ harne
   const parkedThread = parked.phases[0]?.threadId ?? '';
   expect(parkedThread).toBeTruthy();
 
-  await harness.rpc('WorkflowResumeItem', item.id, '');
+  await harness.rpc('WorkflowResumeItem', item.id, '', false);
   // The continuation is turn 2 of the session that parked — not a new session
   // replaying the phase, which is what keeps the provider's history intact.
   const secondTurn = await harness.waitForEvent<HarnessMockEvent>(
@@ -538,7 +538,7 @@ test('a soft stop parks a campaign at its next call boundary and the root hears 
   await setClaudeScenario(harness, 'campaign-wave', [
     { steps: [{ emit: { lines: [doneResult({ more: false })] } }] },
   ]);
-  await harness.rpc('WorkflowResumeItem', childId, '');
+  await harness.rpc('WorkflowResumeItem', childId, '', false);
   await waitForWorkflowState(harness, root.id, 'done');
 
   const resumed = await harness.rpc<WorkflowDetail>('WorkflowGetItem', childId);

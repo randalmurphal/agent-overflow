@@ -62,13 +62,18 @@ type WorkflowAgentRunView struct {
 	Resting             bool   `json:"resting"`
 	StartedAt           int64  `json:"startedAt,omitempty"`
 	EndedAt             int64  `json:"endedAt,omitempty"`
-	// FailedUnits names the units `run retry-unit` takes, populated only by
+	// FailedUnits names the units `run retry-unit` takes — the attempt's join
+	// among them when it is what failed — populated only by
 	// `run status` on a run resting needs-human(unit-failed). The reason already
 	// says a fan-out needs repair; without the ids the caller has to find them in
 	// the app, which is the one thing an agent holding a CLI cannot do. It is
 	// deliberately absent from `run list` — one extra query per run is a fan-out
 	// of its own, and a list is for locating a run, not for repairing one.
 	FailedUnits []WorkflowAgentFailedUnit `json:"failedUnits,omitempty"`
+	// Phases is the run's per-attempt provenance, populated only by `run status`
+	// for the same reason FailedUnits is: it costs one extra query per run, and a
+	// list is for locating a run rather than reading one.
+	Phases []WorkflowAgentPhaseAttempt `json:"phases,omitempty"`
 }
 
 // WorkflowAgentFailedUnit is one unit of a parked fan-out that is resting
@@ -288,6 +293,11 @@ func (a *App) WorkflowAgentRunStatus(ctx context.Context, itemID string) (Workfl
 		return WorkflowAgentRunView{}, err
 	}
 	view := workflowAgentRunView(summary)
+	phases, err := a.workflowAgentPhaseAttempts(summary.ID)
+	if err != nil {
+		return WorkflowAgentRunView{}, err
+	}
+	view.Phases = phases
 	if engine.State(summary.State) == engine.StateNeedsHuman && engine.Reason(summary.Reason) == engine.ReasonUnitFailed {
 		units, err := a.workflowFailedUnits(summary.ID)
 		if err != nil {

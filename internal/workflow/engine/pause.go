@@ -25,6 +25,14 @@ const resumeAction = "resume item"
 // stopped an attempt without the phase producing a result, so continuing is a
 // next turn on the session that parked, not a fresh attempt. The distinct
 // reasons exist for the human reading the run list, not for the recovery.
+//
+// A `unit-failed` park enters here too (ContinuableReason). It stopped an
+// attempt without a phase result for a different cause — a unit of the wave, its
+// join included, ended without one — and the answer is the same: repair what is
+// blocking and let the attempt finish, rather than re-expanding a wave whose
+// finished units may each be an entire called run. Starting over is what
+// `Resume(itemID, phaseID)` is for, and naming the parked phase itself is how a
+// human asks for exactly that.
 
 // PauseItem parks a whole run tree `needs-human(paused)`. Members already
 // parked for another reason keep the reason they parked under — a pause never
@@ -40,9 +48,12 @@ func (e *Engine) PauseAllActive() error {
 	return e.request(pauseAllActiveCommand{})
 }
 
-// ResumeItem continues a run tree parked `paused` or `interrupted` on the
-// provider sessions it parked on. Descendants parked for any other reason stay
-// parked and the root returns to waiting on them.
+// ResumeItem continues a parked run where it stopped instead of re-entering its
+// phase: a stopped attempt (`paused`, `interrupted`, `checkpoint`) resumes on
+// the provider sessions it parked on and carries its whole tree with it, and a
+// `unit-failed` fan-out reopens what is blocking it while every finished unit
+// keeps its result. Descendants parked for any other reason stay parked and the
+// root returns to waiting on them.
 func (e *Engine) ResumeItem(itemID string) error {
 	return e.request(resumeItemCommand{itemID: itemID})
 }
@@ -135,10 +146,10 @@ func (e *Engine) resumeItem(itemID string) error {
 	if err != nil {
 		return err
 	}
-	if !ResumableReason(Reason(item.item.Reason)) {
+	if !ContinuableReason(Reason(item.item.Reason)) {
 		return fmt.Errorf(
-			"resume item %q: item is parked %q; continuing a parked run applies to %s, %s, and %s",
-			itemID, item.item.Reason, ReasonPaused, ReasonInterrupted, ReasonCheckpoint,
+			"resume item %q: item is parked %q; continuing a parked run applies to %s, %s, %s, and %s",
+			itemID, item.item.Reason, ReasonPaused, ReasonInterrupted, ReasonCheckpoint, ReasonUnitFailed,
 		)
 	}
 	if _, tracked := e.items[itemID]; tracked {
@@ -147,8 +158,10 @@ func (e *Engine) resumeItem(itemID string) error {
 	if len(item.workflow.Phases) == 0 || item.phaseID == "" || item.attempt < 1 {
 		// Nothing was ever attempted (a run interrupted before its first phase
 		// row landed, or a setup failure with no frozen snapshot). There is no
-		// session to continue, so this is an ordinary fresh entry.
-		return e.resume(itemID, "")
+		// session to continue, so this is an ordinary fresh entry. It goes
+		// straight to the entry itself rather than back through resume, which
+		// would dispatch right back to here.
+		return e.enterPhaseFresh(item, "", false)
 	}
 	phase, ok := findPhase(item.workflow, item.phaseID)
 	if !ok {
@@ -189,11 +202,12 @@ func (e *Engine) resumeItem(itemID string) error {
 	return e.continueParkedAttempt(item, threadID, feedback, false, resumeAction)
 }
 
-// resumeFanOutAttempt repairs a fan-out attempt the pause (or the crash) cut
-// mid-flight and returns it to running. Units the teardown marked failed are
-// exactly what RetryUnit recovers, so resume applies the same repair to all of
-// them at once — that is the whole difference between an interrupted attempt
-// and one that parked because a unit genuinely failed.
+// resumeFanOutAttempt repairs a fan-out attempt that stopped short of its
+// result and returns it to running: the pause or crash that cut it mid-flight,
+// and the unit failure that blocked it. Units resting failed are exactly what
+// RetryUnit recovers, so resume applies the same repair to all of them at once,
+// and a join that failed is continued rather than re-launched from scratch.
+// Every unit that finished keeps its result, including a call unit's child run.
 //
 // A unit under human steering is not repaired: the human is driving it, and
 // deciding what happens to it is their call, not the resume's.
@@ -263,6 +277,8 @@ func resumeNote(reason Reason, sessionLost bool) string {
 		note = "resumed after the run was interrupted"
 	case ReasonCheckpoint:
 		note = "resumed after the run stopped at the requested checkpoint"
+	case ReasonUnitFailed:
+		note = "resumed after a unit of the fan-out failed"
 	}
 	if sessionLost {
 		return note + "; the previous attempt's provider session no longer exists, so its context is gone — redo the phase from its inputs"
@@ -283,7 +299,7 @@ func (e *Engine) resumeCallPhase(item *runtimeItem) error {
 		// The pause landed between the attempt row and the child's creation.
 		// Re-entering the phase invokes the call again, which is exactly what
 		// crash recovery does with the same gap.
-		return e.resume(itemID, "")
+		return e.enterPhaseFresh(item, "", false)
 	}
 	if err := e.store.ReopenWorkItemPhase(itemID, item.phaseID, item.attempt); err != nil {
 		return fmt.Errorf("resume item %q: reopen call attempt %s/%d: %w", itemID, item.phaseID, item.attempt, err)

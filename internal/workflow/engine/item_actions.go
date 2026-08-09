@@ -17,8 +17,12 @@ func (e *Engine) ParkDisposition(itemID string) error {
 // guidance from whoever asked for the rerun is appended to that diagnosis, the
 // same way RetryUnit's note rides a unit retry — a human or an agent re-running
 // a failure usually knows something the diagnosis does not.
-func (e *Engine) RerunFailed(itemID, guidance string) error {
-	return e.request(rerunFailedCommand{itemID: itemID, guidance: guidance})
+//
+// refreshDefinition re-reads the workflow from disk for the new attempt instead
+// of rendering the one the run froze at start. A rerun is a fresh phase entry,
+// which is the only place a refresh is offered (refresh.go).
+func (e *Engine) RerunFailed(itemID, guidance string, refreshDefinition bool) error {
+	return e.request(rerunFailedCommand{itemID: itemID, guidance: guidance, refreshDefinition: refreshDefinition})
 }
 
 // ResolveDisposition returns a disposition-parked item to done after its
@@ -43,7 +47,11 @@ func (e *Engine) parkDisposition(itemID string) error {
 	return nil
 }
 
-func (e *Engine) rerunFailed(itemID, guidance string) error {
+// rerunAction labels the refusals a rerun's definition re-read can raise, so
+// they read as the verb the human used.
+const rerunAction = "rerun failed item"
+
+func (e *Engine) rerunFailed(itemID, guidance string, refreshDefinition bool) error {
 	stored, err := e.store.GetWorkItem(itemID)
 	if err != nil {
 		return fmt.Errorf("rerun failed item %q: %w", itemID, err)
@@ -71,6 +79,19 @@ func (e *Engine) rerunFailed(itemID, guidance string) error {
 		return fmt.Errorf("rerun failed item %q: no phase attempts", itemID)
 	}
 	latest := phases[len(phases)-1]
+	frozen := stored.Snapshot
+	// Everything a re-read can refuse is decided before the first write, so a
+	// refused rerun leaves the failed run exactly as it was.
+	if refreshDefinition {
+		refreshed, encoded, err := e.resolveDefinition(runtime, latest.PhaseID, rerunAction)
+		if err != nil {
+			return err
+		}
+		// Adopted in memory here so every check below reads the definition this
+		// attempt will render; the run-start write below is what persists it.
+		runtime.adoptSnapshot(refreshed)
+		snapshot, frozen = refreshed, encoded
+	}
 	if _, ok := findPhase(runtime.workflow, latest.PhaseID); !ok {
 		return fmt.Errorf("rerun failed item %q: phase %q is not in the frozen workflow", itemID, latest.PhaseID)
 	}
@@ -94,12 +115,12 @@ func (e *Engine) rerunFailed(itemID, guidance string) error {
 	// next rerun overwrites; the reverse order could leave a running item the
 	// engine is not tracking.
 	startedAt := e.timestamp()
-	if err := e.store.UpdateWorkItemRunStart(
-		itemID, stored.Snapshot, stored.WorktreePath, stored.Branch, stored.BaseBranch, startedAt,
-	); err != nil {
+	if err := e.freezeSnapshot(runtime, snapshot, frozen, startedAt); err != nil {
 		return fmt.Errorf("rerun failed item %q run start: %w", itemID, err)
 	}
-	runtime.item.StartedAt = startedAt
+	if refreshDefinition {
+		e.noteDefinitionRefresh(runtime, latest.PhaseID)
+	}
 	if err := e.transition(runtime, StateRunning, ""); err != nil {
 		return err
 	}

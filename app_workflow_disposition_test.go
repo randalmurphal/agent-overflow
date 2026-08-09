@@ -330,6 +330,12 @@ func TestWorkflowDiscardAcceptsEverySpecifiedTerminalAndParkedState(t *testing.T
 	for _, state := range []engine.State{engine.StateFailed, engine.StateCancelled, engine.StateNeedsHuman} {
 		t.Run(string(state), func(t *testing.T) {
 			app, _ := setupE2EApp(t)
+			// A parked member is settled by the discard, so the engine has to be
+			// there for it: the discard is what stops it.
+			if err := app.initWorkflowEngine(t.TempDir()); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = app.workflowEngine.Close() })
 			repo := testutil.InitGitRepo(t)
 			projectRow := testutil.EnsureProject(t, app.store, repo)
 			item := createDoneWorkflowWorktree(t, app, projectRow, "discard-"+string(state))
@@ -347,7 +353,62 @@ func TestWorkflowDiscardAcceptsEverySpecifiedTerminalAndParkedState(t *testing.T
 			if receipt.Action != "discarded" || receipt.Policy != "manual" {
 				t.Fatalf("receipt = %+v", receipt)
 			}
+			stored, err := app.store.GetWorkItem(item.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			// A discarded run must not still be resting on a checkout that no
+			// longer exists: the park is settled, the terminal states are left as
+			// they are.
+			want := state
+			if state == engine.StateNeedsHuman {
+				want = engine.StateCancelled
+			}
+			if stored.State != string(want) {
+				t.Fatalf("discarded %s item = state %q, want %q", state, stored.State, want)
+			}
 		})
+	}
+}
+
+// The tree's PARKED members are settled by the discard, not only its running
+// ones. A member left needing a human after its worktree was removed and its
+// branch deleted has no move left that can succeed — every repair verb it
+// carries reads a checkout that is gone.
+func TestWorkflowDiscardSettlesParkedTreeMembers(t *testing.T) {
+	app, _ := setupE2EApp(t)
+	if err := app.initWorkflowEngine(t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = app.workflowEngine.Close() })
+	repo := testutil.InitGitRepo(t)
+	projectRow := testutil.EnsureProject(t, app.store, repo)
+	root := createDoneWorkflowWorktree(t, app, projectRow, "discard-tree-root")
+	child := store.WorkItem{
+		ID: "discard-tree-child", ProjectID: projectRow.ID, Goal: "wave",
+		WorkflowID: "wf", WorkflowScope: "shared", State: string(engine.StateNeedsHuman),
+		Reason: string(engine.ReasonUnitFailed), Source: engine.WorkItemSourceCall,
+		ParentItemID: root.ID, ParentPhaseID: "wave", ParentAttempt: 1, CallDepth: 1,
+		CreatedAt: time.Now().UnixMilli(), StartedAt: time.Now().UnixMilli(),
+	}
+	if err := app.store.CreateWorkItem(child); err != nil {
+		t.Fatal(err)
+	}
+
+	receipt, err := app.WorkflowDiscardItem(root.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if receipt.Action != "discarded" {
+		t.Fatalf("receipt = %+v", receipt)
+	}
+	stored, err := app.store.GetWorkItem(child.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if engine.State(stored.State) != engine.StateCancelled {
+		t.Fatalf("parked tree member after discard = state %q reason %q, want cancelled",
+			stored.State, stored.Reason)
 	}
 }
 

@@ -191,7 +191,13 @@ and that output also becomes the variables the next phase consumes.
     fan out to a call unit instead.
   - the **join** is an ordinary unit (agent or tool) that runs after all units
     rest; its envelope is the phase's envelope. What a join *does* — synthesis
-    or merge — is the author's choice (§9).
+    or merge — is the author's choice (§9). A join that **fails is a unit
+    failure** (D48): the attempt parks `needs-human(unit-failed)` with the
+    join in the failed set, and the retry verbs re-run the join alone over
+    the preserved unit results — the wave's finished work, including entire
+    called child runs, is never the price of a failed merge. Dropping a join
+    stays refused: it is what consolidates the units, so its absence cannot
+    be accepted.
 - **call** — the phase invokes another workflow (§3a). Its result envelope is
   the child run's declared `outputs:`.
 
@@ -231,7 +237,24 @@ true of both edges, and where they differ is stated per point.
 - **A child is resolved from disk per invocation.** The caller's own remaining
   phases keep the definition the run froze at start, but every call reads its
   target fresh (§8 scoping) — which is what makes a campaign's next wave pick
-  up a prompt the human edited while the previous wave ran.
+  up a prompt the human edited while the previous wave ran. For a run parked
+  mid-flight, the freeze has an explicit escape (D50): `run resume
+  --refresh-def` / `run rerun --refresh-def` re-read the definition and its
+  prompt files from disk at that fresh entry — the repair for "I edited the
+  prompt of a parked phase". Refresh never happens implicitly, only ever at
+  a fresh phase entry (a continuation keeps the definition its attempt was
+  launched under), and it is refused when the entry phase is absent from the
+  edited definition or the new workspace need is incompatible with what the
+  run has.
+- **Absence crosses the edge as absence.** Arguments evaluate where the
+  resolved child is in scope: an arg whose reference does not resolve is
+  **omitted** when the child input it seeds is declared `optional:` — the
+  child sees the same absence a direct start without that seed would give it
+  — and refuses (`wiring-error`, message naming `arg (ref)`) only when the
+  input is required or undeclared. The refusal parks on a **persisted phase
+  attempt row**, so it is diagnosable from run status (D45 — the first live
+  campaign died at its own recursion point because an absent optional input
+  was treated as a wiring failure, with no attempt row to say so).
 - **"Loop with an exit condition" is a call**: a workflow whose final gate
   either routes to a call of itself (next batch / next round) or to done. Each
   invocation is a fresh child run with fresh loop counters — per-iteration
@@ -256,17 +279,33 @@ true of both edges, and where they differ is stated per point.
 - **Engine post-validation is the sole success authority.** The engine
   re-validates every envelope against the full schema regardless of what the
   provider claims (§10), and **envelope size caps are engine-enforced**
-  ("write to a file, return a path") — run records stay lean.
+  ("write to a file, return a path") — run records stay lean. Post-validation
+  owes literal presence to **`status` alone**: an absent `outputs` /
+  `question` / `reason` / `narrative` reads exactly as the null a
+  schema-bound provider would have sent, so a hand-written tool envelope
+  carries no null boilerplate — while a `done` envelope whose phase declares
+  outputs is still refused per missing declared output, by name (D44). The
+  generated schema is untouched: provider strict mode still requires every
+  key, nullable.
 - The **narrative** (what it did, reasoning, decisions) is written to a
   **file** in a system-dictated location; its path is **system-attached** to
   the run record, never an agent-filled envelope field. The system never
   parses it; humans and later phases read it on demand. **Who writes the file
   depends on the driver and the access**: a writing agent element writes it
   itself, a tool element gets its masked output tail written there, and a
-  `read-only` agent element — which cannot write files at all (§9) — is asked for
-  the narrative as the message before its envelope, which the system then writes
-  to the file, marked as recovered (D39). A phase that produced neither leaves no
-  file, and every surface that points at one checks it exists first.
+  `read-only` agent element — which cannot write files at all (§9) — puts its
+  account in the envelope's optional **`narrative` control field**, which the
+  system lifts into the file. That field is the fifth control name alongside
+  `status` / `outputs` / `question` / `reason`; it is **legal on every status**
+  (a done, a question, and a stuck element all did work worth an account) and is
+  **stripped before the envelope reaches the engine**, so no gate, join result,
+  or persisted envelope ever carries prose. A separate narrative *message* is
+  not an option: Codex applies a turn's `outputSchema` to every assistant
+  message in the turn, so a schema-constrained element cannot emit prose at all.
+  An element that supplies neither file nor field falls back to the session's
+  final assistant text, marked as recovered (D39). A phase that produced nothing
+  at any tier leaves no file, and every surface that points at one checks it
+  exists first.
 
 **Workflow-level `outputs:` — the run's deliverables.** A workflow may declare
 named values and/or artifact files, sourced from phase outputs — distinct from
@@ -329,6 +368,14 @@ predicate trace persisted — never a crash, never a silent advance.
 feedback; **every loop route declares a mandatory bound**) · **park**
 (needs-human).
 
+**A loop bound is a literal or a reference.** `max: 2` is static; `max:
+inputs.fix-budget` resolves against the run's variables at evaluation time, so
+a campaign can seed retry budgets per run (`--seed fix-budget=4`) without
+editing the definition. The resolved value must be an integer ≥ 1 — anything
+else is a `wiring-error` park, never a silent default — and the gate trace
+records the resolved bound, so a run's history says what budget it actually
+ran under.
+
 **Loop bounds are per fresh entry, not per item lifetime.** A loop edge's
 counter counts consecutive traversals **since the loop's target phase was last
 entered from outside the cycle**; entering the cycle fresh (a forward edge, a
@@ -339,6 +386,48 @@ iterations of any retry budget inside outer loops; batch-scale iteration
 belongs to call phases (§3a), whose child runs get fresh counters by
 construction.) An exhausted bound falls through to the next route; exhausting
 everything parks needs-human.
+
+**Fall-through is the "on exhausted" hook — author it, don't wish for it.**
+Because an exhausted loop route continues down the route list, the routes
+*after* a loop are its exhaustion policy: they are reachable exactly when the
+loop no longer fires (its predicate stopped matching, or its budget is spent).
+A gate that parks on retries-exhausted is a gate whose author declared no
+cheaper exit. The pattern for severity-aware exhaustion — have the deciding
+phase emit a routable output (e.g. `worst-severity`), then:
+
+```yaml
+gate:
+  routes:
+    - when: {gt: {ref: review.findings-count, value: 0}}
+      loop: fix
+      max: 2
+    - when: {eq: {ref: review.worst-severity, value: minor}}
+      to: confirm-minor        # reached only once the loop is spent
+    - park: review-unresolved  # majors with no budget left → a human
+```
+
+**`park:` is undecidable on purpose; `human:` is the decidable form.** Both
+rest under `needs-human(gate)`, but a `human:` route declares an approve
+target and a reject loop — resolving it (D41) *completes* the parked attempt,
+so its outputs stay in the variable context — while a `park:` route declares
+no continuation at all: there is nothing an approve could select, `run
+resolve` refuses it by construction, and the repair is `run resume` (a fresh
+attempt of the phase) once the cause is addressed. Only *completed* attempts
+feed later phases' variables, so resuming with `--phase` past a parked
+attempt runs the target without the parked phase's outputs. If the final stop
+of a route list should be decidable — "a person confirms, or sends it back" —
+author it as a `human:` route, not a `park:`.
+
+**A spent reject budget refuses the reject; it never converts the park.** A
+`human:` route's reject loop carries a bound like any loop; once it is spent
+the gate still declares an approve, so a further reject is **refused** with
+the live options named — approve, `run resume --phase <target>` (entering the
+loop's target from outside is a fresh entry that refills its bound), or
+cancel — and the run stays parked exactly as it was (D47; converting the park
+to `retries-exhausted`, as rev 1 did, destroyed the still-declared approve).
+A human-gate park likewise refuses a bare resume and a resume at the parked
+phase — the decision belongs to `run resolve` — while naming a *different*
+phase is allowed: that is the human abandoning the gate to redo earlier work.
 
 **What a gate reads to decide:**
 
@@ -448,7 +537,13 @@ Grantable first-party capabilities (phase-side):
   notes (§11); a no-op rewrite is a normal outcome;
 - **introspection** — run status / outputs / records, for the agents that
   manage the system (a woken origin thread investigating a failure, an agent
-  a human pointed at the workflow files).
+  a human pointed at the workflow files);
+- **resolve** — decide the parks a run this phase started rests on:
+  approve/reject a human gate, answer a question. Separate from start-run on
+  purpose: starting and stopping work is routine, while answering a decision
+  the workflow author routed to a human is authority an author hands out
+  deliberately. Interactive sessions (a human-driven thread, where every
+  invocation passes the provider's own approval UX) hold it implicitly.
 
 **Deferred (post-v1): agent-invoked inter-agent discussions** — an agent
 questioning another agent via AO's native discussions. Additive, not
@@ -486,6 +581,14 @@ level, on resources**:
 - A resource lock is **phase-scoped**: acquired on phase entry, released on
   exit — including on failure, park, or pause (never leaked). An item holds
   `live-stack` only during the phase that needs it, not its whole run.
+- **A fan-out unit may declare `resources:` of its own**, acquired for that
+  unit's lifetime through the same project semaphores — the case is a
+  command unit inside a wave that needs environment capacity (e.g. one
+  `container-slot` per gate-check). Phase-declared resources stay
+  phase-scoped (taken once by the attempt, not once per unit); unit-declared
+  ones are per unit, on top of the agent unit's implicit provider slot.
+  Call units declare none — the child workflow's phases declare what they
+  need.
 - **A capacity is not a ceiling.** Capacity paces work that all still runs;
   the profile's `max_fan_out_width` (§3, §8) refuses a fan-out attempt outright
   before any unit starts. A fan-out inside the ceiling but over provider
@@ -573,8 +676,10 @@ stop/interrupt.)
 anything is destroyed, the system shows exactly what would be lost — per
 worktree in the run's tree (primary, sub-worktrees, child runs): branch name,
 dirty file count, unmerged commit count. Accepting tears the tree down through
-the §12 contract and removes run-created branches whose commits never landed.
-The preview is the consent; nothing is cleaned silently.
+the §12 contract — settling **parked** tree members too, now that cancel
+reaches them (D46; only a `disposition` park is skipped, since its running
+disposition settles it) — and removes run-created branches whose commits never
+landed. The preview is the consent; nothing is cleaned silently.
 
 ### needs-human — when the phase yields on its own
 
@@ -598,9 +703,16 @@ Resolve by:
 - **Take over** — drive it yourself, exactly as above: open the phase's
   thread from the run tree and send (steer free-form → Complete or discard +
   re-run). The send is what takes over; there is no take-over button (D32).
-- **Unit recovery** — for `unit-failed` parks: retry the unit, retry every
-  failed unit of the attempt at once, drop it (join proceeds over survivors),
-  or open its thread. The whole-attempt repair (D33) is the usage-limit case:
+- **Unit recovery** — for `unit-failed` parks: retry the unit (the join
+  included, D48), retry every failed unit of the attempt at once, drop it
+  (join proceeds over survivors; never the join itself), or open its thread.
+  One rule governs the resume verbs here (D48): **`run resume` continues and
+  preserves** — on a `unit-failed` park it reopens the failed units and the
+  join over the attempt's finished work, exactly as the retry verbs do —
+  while **`run resume --phase <id>` (which may name the parked phase) is the
+  one explicit "start over"**: a fresh attempt, the wave re-expanded, called
+  child runs respawned. Discarding finished work always requires saying so.
+  The whole-attempt repair (D33) is the usage-limit case:
   one cause fails most of a wide fan-out, the human waits the limit out (or
   switches account) and repairs all of it with one action — the same edge, the
   same reopened attempt, and the same admission through the project's
@@ -661,8 +773,9 @@ thread is about to author or drive workflows, the user invokes `/workflow` in
 the composer (or the overlay's "author in a thread" button opens a thread
 pre-seeded the same way): it injects one compact block — the `ao` binary path,
 this project's workflow directory and scope rules, the §5 command cheat-sheet,
-the **reason→verb repair map** (D38, including the reasons only a human
-settles), and links to the project's active runs. Everything deeper is
+the **reason→verb repair map** (D38; since D41 that map includes settling a
+gate or question via `run resolve` / `run answer`, under the `resolve` grant
+in a phase session), and links to the project's active runs. Everything deeper is
 discovered via `--help` and `agent-overflow workflow schema`. This replaces rev 1's chat-enqueue MCP
 server and its proposal/confirm flow entirely: the agent starts runs directly
 through the CLI under normal bash approval, and the human control point is the
@@ -795,8 +908,9 @@ refusal.
 
 One consequence worth stating: `access: read-only` on an AGENT element also means
 that element cannot write its own **narrative** file. It is asked for the
-narrative as the message before its envelope instead, and the system writes the
-file from it (D39).
+narrative in its envelope's `narrative` control field instead (§3), and the
+system writes the file from it; an element that supplies neither falls back to
+D39 recovery.
 
 **Otherwise: one item = one primary worktree + branch**, cut from the project
 profile's base branch at start (base overridable at intake). **By default it
@@ -824,8 +938,11 @@ a crashed run can never strand them silently; the §7 discard preview lists
 them. A **call-bound unit** (§3) gets exactly the same checkout, cut and
 registered on the same unit row: what runs inside it is a child run rather
 than a turn, which the join, the discard preview, and the crash sweep are all
-indifferent to. Its try number names the branch, so a retried unit's next
-child cuts fresh instead of inheriting what the failed try left behind.
+indifferent to. The branch name carries the whole provisioning coordinate —
+owning item, phase, phase attempt, unit, try — so a retried unit's next child
+cuts fresh instead of inheriting what the failed try left behind, and two
+fan-outs that share one item branch (successive waves of a self-call campaign,
+a re-expanded phase) can never derive each other's names.
 
 **Two join patterns — the author picks by what the join does:**
 
@@ -1099,9 +1216,15 @@ never leave a grandchild running or a sub-worktree stranded.
 
 - **Cancel (the kill button).** A human stops a running item: kill the
   subprocess(es) → teardown → terminal **`cancelled`** (distinct from
-  `failed`). A core desktop affordance for "this is running away" or "wrong
-  goal." The worktree persists like any terminal state (§9); discard (§7) is
-  the separate, previewed cleanup step.
+  `failed`). A **parked** item is cancellable too (D46): `needs-human →
+  cancelled` is a legal edge, and since a parked run holds no processes and
+  no resources the cancel is pure bookkeeping — the parked attempt row stays
+  untouched as the record of why a human was asked, resting call children
+  settle with the tree, and a parent whose called child was cancelled
+  observes it through the normal child-settlement path. A core desktop
+  affordance for "this is running away" or "wrong goal." The worktree
+  persists like any terminal state (§9); discard (§7) is the separate,
+  previewed cleanup step.
 
 - **Transient-execution retry.** A phase that **fails to produce an envelope**
   due to a **conservative allowlist** of transient errors (subprocess exit,

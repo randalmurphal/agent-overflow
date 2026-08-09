@@ -176,7 +176,6 @@ func (e *Engine) continueFanOutJoin(item *runtimeItem, threadID string, feedback
 	if err := e.reopenUnit(item, join, feedback); err != nil {
 		return fmt.Errorf("%s %q: reopen join: %w", action, item.item.ID, err)
 	}
-	item.fan.joinStarted = false
 	// Consumed by startUnitRunner when it launches the join, exactly as
 	// startRunner consumes them for a single-shape phase.
 	item.priorThreadID = threadID
@@ -254,6 +253,16 @@ func (e *Engine) resolveHumanGate(itemID string, choice HumanDecision, note stri
 			return e.continueHumanDecision(item, trace.Decision, feedbackFor(vars, trace.Decision.Feedback, note))
 		}
 		if len(current.Intervention) == 0 {
+			// A park: route is the undecidable form on purpose: it declares no
+			// approve target and no reject loop, so there is nothing a decision
+			// could select. Saying so — and naming both the repair and the
+			// construct that IS decidable — is what stops a caller from reading
+			// this as a missing verb.
+			if trace.Decision.Kind == def.DecisionPark {
+				return fmt.Errorf(
+					"resolve human gate %q: this gate parked on a park: route (%q), which declares no approve or reject; resume the run to re-enter the phase once the cause is addressed — an approvable park is authored as a human: route",
+					itemID, trace.Decision.Target)
+			}
 			return fmt.Errorf("resolve human gate %q: persisted decision is %q without a human intervention", itemID, trace.Decision.Kind)
 		}
 		return e.continuePersistedHumanDecision(item, current, trace.Decision, vars)
@@ -278,14 +287,29 @@ func (e *Engine) resolveHumanGate(itemID string, choice HumanDecision, note stri
 		if err != nil {
 			return err
 		}
-		if counts[edge] >= reject.Max {
-			decision = def.RouteDecision{Kind: def.DecisionRetriesExhausted, RouteIndex: -1}
-		} else {
-			decision = def.RouteDecision{
-				Kind: def.DecisionLoop, RouteIndex: trace.Decision.RouteIndex,
-				Target: reject.Loop, Feedback: append([]string(nil), reject.Feedback...),
-				LoopEdge: edge, Max: reject.Max,
-			}
+		// The reject bound resolves against this attempt's variables under the
+		// same rules a loop route's does. A bound that will not resolve is not
+		// an exhausted budget: nothing can say how many rejections are left, so
+		// the human's action fails loudly and the run stays parked on its gate.
+		max, err := reject.Max.Resolve(vars)
+		if err != nil {
+			return fmt.Errorf("resolve human gate %q: %w", itemID, err)
+		}
+		if counts[edge] >= max {
+			// The reject route has no traversals left. Refused, not converted: the
+			// gate declared two verbs, and turning the spent one into a
+			// retries-exhausted park would silently take the other away as well —
+			// approve is still a live, declared answer to this gate. The run stays
+			// parked exactly as it was, gate trace intact.
+			return fmt.Errorf(
+				"resolve human gate %q: the reject route has spent its bound of %d; approve is still open, `run resume --phase %s` re-enters that phase with refilled loop budgets, and cancel stops the run",
+				itemID, max, reject.Loop,
+			)
+		}
+		decision = def.RouteDecision{
+			Kind: def.DecisionLoop, RouteIndex: trace.Decision.RouteIndex,
+			Target: reject.Loop, Feedback: append([]string(nil), reject.Feedback...),
+			LoopEdge: edge, Max: max,
 		}
 	}
 	intervention, err := json.Marshal(HumanIntervention{Decision: choice, Note: note})
@@ -300,17 +324,16 @@ func (e *Engine) resolveHumanGate(itemID string, choice HumanDecision, note stri
 	if err != nil {
 		return err
 	}
-	phaseStatus := "completed"
-	if decision.Kind == def.DecisionRetriesExhausted {
-		phaseStatus = "parked"
-	}
+	// Both remaining outcomes continue the run: an approve takes its declared
+	// target, a reject inside its bound takes the loop. A decision that could not
+	// be taken returned above, leaving the attempt parked.
 	if err := e.store.CompleteWorkItemPhase(
 		itemID, item.phaseID, item.attempt, current.OutputEnvelope,
-		encodedTrace, phaseStatus, e.timestamp(),
+		encodedTrace, "completed", e.timestamp(),
 	); err != nil {
 		return err
 	}
-	e.emitter.Emit("workflow:phase-state", PhaseEvent{ItemID: itemID, PhaseID: item.phaseID, Attempt: item.attempt, Status: phaseStatus})
+	e.emitter.Emit("workflow:phase-state", PhaseEvent{ItemID: itemID, PhaseID: item.phaseID, Attempt: item.attempt, Status: "completed"})
 
 	if err := e.transition(item, StateRunning, ""); err != nil {
 		return err

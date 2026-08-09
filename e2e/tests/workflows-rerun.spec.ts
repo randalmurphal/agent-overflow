@@ -50,7 +50,7 @@ test('failed run reruns with guidance and completes', async ({ harness }) => {
     { steps: [{ emit: { lines: [doneResult({ complete: true })] } }] },
   ]);
   const restarted = waitForWorkflowState(harness, item.id, 'running');
-  await harness.rpc('WorkflowRerunItem', item.id, '');
+  await harness.rpc('WorkflowRerunItem', item.id, '', false);
   await restarted;
   await waitForWorkflowState(harness, item.id, 'done');
 });

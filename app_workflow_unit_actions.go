@@ -14,8 +14,8 @@ import (
 // bookkeeping a taken-over unit thread needs.
 
 // WorkflowRetryUnit re-runs one failed or taken-over unit of a parked fan-out
-// attempt. The note explains the retry in the run record and reaches the unit's
-// next try as feedback.
+// attempt, the attempt's join included. The note explains the retry in the run
+// record and reaches the unit's next try as feedback.
 func (a *App) WorkflowRetryUnit(ctx context.Context, itemID, unitID, note string) error {
 	workflowEngine, err := a.requireWorkflowEngine()
 	if err != nil {
@@ -55,8 +55,10 @@ func (a *App) WorkflowRetryFailedUnits(ctx context.Context, itemID, note string)
 	return workflowEngine.RetryFailedUnits(itemID, note)
 }
 
-// WorkflowDropUnit accepts a failed or taken-over unit's absence. The unit is
-// recorded `dropped`, its join sees it as such, and the attempt resumes.
+// WorkflowDropUnit accepts a failed or taken-over WORK unit's absence. The unit
+// is recorded `dropped`, its join sees it as such, and the attempt resumes. The
+// join itself is refused: it is what consolidates the units, so its absence
+// leaves nothing to accept.
 func (a *App) WorkflowDropUnit(itemID, unitID, note string) error {
 	workflowEngine, err := a.requireWorkflowEngine()
 	if err != nil {
@@ -104,20 +106,32 @@ func (a *App) WorkflowTakeOverUnit(itemID, unitID string) error {
 	return nil
 }
 
-// workflowFailedUnits lists one run's units resting `failed` — exactly the set
-// WorkflowRetryFailedUnits acts on. The join is excluded because it is the
-// phase's own closing step rather than a unit a human repairs, and that rule
-// lives here so the surfaces that REPORT the set (the wake's failed-unit
-// references, `agent-overflow run status`) cannot disagree with the verb that
-// repairs it.
+// workflowFailedUnits lists the units resting `failed` in a run's CURRENT phase
+// attempt — exactly the set WorkflowRetryFailedUnits acts on, and exactly the
+// ids WorkflowRetryUnit accepts. The join is one of them: its failure is the
+// failure of a unit of the attempt, and a human repairs it by name like any
+// other. The rule lives here so the surfaces that REPORT the set (the wake's
+// failed-unit references, `agent-overflow run status`) cannot disagree with the
+// verbs that repair it.
+//
+// Earlier attempts are excluded for the same reason: their rows are history, and
+// the engine's repair only ever addresses the attempt the run is parked on.
 func (a *App) workflowFailedUnits(itemID string) ([]store.WorkItemUnit, error) {
-	units, err := a.store.ListWorkItemUnits(itemID)
+	phases, err := a.store.ListWorkItemPhases(itemID)
+	if err != nil {
+		return nil, fmt.Errorf("list phases of %s: %w", itemID, err)
+	}
+	current, ok := currentWorkflowPhaseAttempt(phases)
+	if !ok {
+		return nil, nil
+	}
+	units, err := a.store.ListWorkItemPhaseUnits(itemID, current.PhaseID, current.Attempt)
 	if err != nil {
 		return nil, fmt.Errorf("list fan-out units of %s: %w", itemID, err)
 	}
 	failed := make([]store.WorkItemUnit, 0, len(units))
 	for _, unit := range units {
-		if unit.Kind == store.WorkItemUnitKindJoin || unit.Status != store.WorkItemUnitFailed {
+		if unit.Status != store.WorkItemUnitFailed {
 			continue
 		}
 		failed = append(failed, unit)

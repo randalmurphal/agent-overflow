@@ -154,6 +154,13 @@ root `CLAUDE.md` principle 3.
   the engine's teardown. `ReopenWorkItemPhase` (in `work_item_phases.go`) puts
   a settled attempt back to `running` for that recovery, since repairing one
   unit continues the attempt its siblings already produced results for.
+  The phase-attempt reads are four narrow projections rather than one, and each
+  is named for what it must NOT carry: `ListWorkItemPhases` (everything),
+  `…PhaseContexts` (the engine's variable/loop rebuild), `…PhaseTimeline` (the
+  detail views, no gate trace or cumulative input), and `…PhaseProvenance` — the
+  `ao run status` read, which LEFT JOINs `threads` for the provider/model/effort
+  the attempt actually ran with and carries no envelope at all, because an
+  agent's context window pays for every byte it returns.
   `work_items.go` also owns the call linkage (v38): `ListWorkItemChildren` reads
   a run's callees, `ListWorkItemCallChildren` narrows that to the child one call
   *attempt* created, and `WorkItemListFilter.ParentItemID` is the same edge for

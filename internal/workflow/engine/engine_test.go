@@ -35,7 +35,7 @@ func TestRerunFailedStartsImmediatelyWithDiagnosisFeedback(t *testing.T) {
 	if failed.State != string(StateFailed) {
 		t.Fatalf("failed item state = %q", failed.State)
 	}
-	if err := h.engine.RerunFailed(item.ID, ""); err != nil {
+	if err := h.engine.RerunFailed(item.ID, "", false); err != nil {
 		t.Fatal(err)
 	}
 	starts := h.runner.started()
@@ -102,7 +102,7 @@ func TestRerunFailedWaitsForProviderCapacity(t *testing.T) {
 	if err := h.engine.StartItem(holder); err != nil {
 		t.Fatal(err)
 	}
-	if err := h.engine.RerunFailed(item.ID, ""); err != nil {
+	if err := h.engine.RerunFailed(item.ID, "", false); err != nil {
 		t.Fatal(err)
 	}
 	requireItemState(t, h.store, item.ID, StateRunning, "")
@@ -134,7 +134,7 @@ func TestRerunFailedRejectsOtherStatesAndBrokenSnapshot(t *testing.T) {
 		if err := h.store.CreateWorkItem(item); err != nil {
 			t.Fatal(err)
 		}
-		if err := h.engine.RerunFailed(item.ID, ""); err == nil || !strings.Contains(err.Error(), "invalid state "+string(state)) {
+		if err := h.engine.RerunFailed(item.ID, "", false); err == nil || !strings.Contains(err.Error(), "invalid state "+string(state)) {
 			t.Fatalf("%s rerun error = %v", state, err)
 		}
 	}
@@ -145,7 +145,7 @@ func TestRerunFailedRejectsOtherStatesAndBrokenSnapshot(t *testing.T) {
 	if err := h.store.CreateWorkItem(broken); err != nil {
 		t.Fatal(err)
 	}
-	if err := h.engine.RerunFailed(broken.ID, ""); err == nil || !strings.Contains(err.Error(), "snapshot") {
+	if err := h.engine.RerunFailed(broken.ID, "", false); err == nil || !strings.Contains(err.Error(), "snapshot") {
 		t.Fatalf("broken snapshot rerun error = %v", err)
 	}
 
@@ -156,7 +156,7 @@ func TestRerunFailedRejectsOtherStatesAndBrokenSnapshot(t *testing.T) {
 	if err := h.store.CreateWorkItem(discarded); err != nil {
 		t.Fatal(err)
 	}
-	if err := h.engine.RerunFailed(discarded.ID, ""); err == nil || !strings.Contains(err.Error(), "discarded") {
+	if err := h.engine.RerunFailed(discarded.ID, "", false); err == nil || !strings.Contains(err.Error(), "discarded") {
 		t.Fatalf("discarded rerun error = %v", err)
 	}
 }
@@ -170,7 +170,7 @@ func TestResolveDispositionAndResumeRejections(t *testing.T) {
 	if err := h.store.CreateWorkItem(parked); err != nil {
 		t.Fatal(err)
 	}
-	if err := h.engine.Resume(parked.ID, ""); err == nil || !strings.Contains(err.Error(), "WorkflowMergeItem") {
+	if err := h.engine.Resume(parked.ID, "", false); err == nil || !strings.Contains(err.Error(), "WorkflowMergeItem") {
 		t.Fatalf("disposition resume error = %v", err)
 	}
 	if err := h.engine.ResolveDisposition(parked.ID); err != nil {
@@ -416,8 +416,10 @@ func TestRunnerStartupDoesNotBlockEngineCancellation(t *testing.T) {
 func TestFSMTransitionTableIsClosed(t *testing.T) {
 	states := []State{StateRunning, StateNeedsHuman, StateDone, StateFailed, StateCancelled}
 	want := map[State]map[State]bool{
-		StateRunning:    {StateNeedsHuman: true, StateDone: true, StateFailed: true, StateCancelled: true},
-		StateNeedsHuman: {StateRunning: true},
+		StateRunning: {StateNeedsHuman: true, StateDone: true, StateFailed: true, StateCancelled: true},
+		// Resume is one way out of a park; cancel is the other, so a run resting
+		// at a gate nobody will approve is not immortal.
+		StateNeedsHuman: {StateRunning: true, StateCancelled: true},
 		StateDone:       {},
 		// Rerun is the only way back out of failed.
 		StateFailed:    {StateRunning: true},
@@ -444,7 +446,7 @@ func TestNeedsHumanResumeCreatesNewAttempt(t *testing.T) {
 		t.Fatal(err)
 	}
 	requireItemState(t, h.store, item.ID, StateNeedsHuman, ReasonQuestion)
-	if err := h.engine.Resume(item.ID, ""); err != nil {
+	if err := h.engine.Resume(item.ID, "", false); err != nil {
 		t.Fatal(err)
 	}
 	starts := h.runner.started()
@@ -616,7 +618,7 @@ func TestExplicitParkCanResumeWithoutHumanDecision(t *testing.T) {
 		t.Fatal(err)
 	}
 	requireItemState(t, h.store, item.ID, StateNeedsHuman, ReasonGate)
-	if err := h.engine.Resume(item.ID, ""); err != nil {
+	if err := h.engine.Resume(item.ID, "", false); err != nil {
 		t.Fatal(err)
 	}
 	starts := h.runner.started()
@@ -629,7 +631,7 @@ func TestGateLoopExhaustionFallsThroughToNextRoute(t *testing.T) {
 	workflow := def.Workflow{ID: "fallthrough", Phases: []def.Phase{
 		agentPhase("build", nil, []def.Route{{To: "review"}}),
 		agentPhase("review", nil, []def.Route{
-			{Loop: "build", Max: 1},
+			{Loop: "build", Max: def.LiteralBound(1)},
 			{To: "done"},
 		}),
 	}}

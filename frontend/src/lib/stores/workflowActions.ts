@@ -51,8 +51,8 @@ export interface WorkflowActionBindings {
   pauseItem: (itemId: string) => Promise<void>;
   resolveGate: (itemId: string, decision: string, note: string) => Promise<void>;
   requestSoftStop: (itemId: string, armed: boolean) => Promise<void>;
-  resumeItem: (itemId: string, targetPhase: string) => Promise<void>;
-  rerunItem: (itemId: string, guidance: string) => Promise<void>;
+  resumeItem: (itemId: string, targetPhase: string, refreshDefinition: boolean) => Promise<void>;
+  rerunItem: (itemId: string, guidance: string, refreshDefinition: boolean) => Promise<void>;
   retryUnit: (itemId: string, unitId: string, note: string) => Promise<void>;
   retryFailedUnits: (itemId: string, note: string) => Promise<void>;
 }
@@ -101,7 +101,7 @@ export async function dispatchWorkflowAction(
       await bindings.answerQuestion(item.id, action.answer);
       return { itemId: item.id, kind: 'answered', message: `Answered ${quoted(action.answer)} — the phase continues its session`, costUsd };
     case 'rerun':
-      await bindings.rerunItem(item.id, action.guidance);
+      await bindings.rerunItem(item.id, action.guidance, false);
       return {
         itemId: item.id,
         kind: 'restarted',
@@ -111,7 +111,7 @@ export async function dispatchWorkflowAction(
         costUsd,
       };
     case 'resume':
-      await bindings.resumeItem(item.id, '');
+      await bindings.resumeItem(item.id, '', false);
       return { itemId: item.id, kind: 'restarted', message: 'Resumed — the phase continues its session', costUsd };
     case 'complete-takeover':
       await bindings.completeTakeover(item.id);

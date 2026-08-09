@@ -157,14 +157,20 @@ type Unit struct {
 	// Effort pins the reasoning tier of this unit's turn. Like provider/model it
 	// is an agent-unit field: a command unit and a call unit run no turn of their
 	// own and refuse it.
-	Effort   string              `yaml:"effort,omitempty" json:"effort,omitempty"`
-	Prompt   string              `yaml:"prompt,omitempty" json:"prompt,omitempty"`
-	Command  string              `yaml:"command,omitempty" json:"command,omitempty"`
-	Call     string              `yaml:"call,omitempty" json:"call,omitempty"`
-	Args     map[string]string   `yaml:"args,omitempty" json:"args,omitempty"`
-	MaxDepth int                 `yaml:"max_depth,omitempty" json:"maxDepth,omitempty"`
-	Access   Access              `yaml:"access,omitempty" json:"access,omitempty"`
-	Outputs  map[string]Variable `yaml:"outputs,omitempty" json:"outputs,omitempty"`
+	Effort  string `yaml:"effort,omitempty" json:"effort,omitempty"`
+	Prompt  string `yaml:"prompt,omitempty" json:"prompt,omitempty"`
+	Command string `yaml:"command,omitempty" json:"command,omitempty"`
+	// Resources are the project capacities this unit holds for its own work, on
+	// top of the implicit `provider:<name>` slot an agent unit takes. They are
+	// unit-scoped and per running unit — the phase's `resources:` are acquired
+	// once for the whole attempt — so a wave of units contends on them like any
+	// other work. A call unit runs no work of its own and declares none.
+	Resources []string            `yaml:"resources,omitempty" json:"resources,omitempty"`
+	Call      string              `yaml:"call,omitempty" json:"call,omitempty"`
+	Args      map[string]string   `yaml:"args,omitempty" json:"args,omitempty"`
+	MaxDepth  int                 `yaml:"max_depth,omitempty" json:"maxDepth,omitempty"`
+	Access    Access              `yaml:"access,omitempty" json:"access,omitempty"`
+	Outputs   map[string]Variable `yaml:"outputs,omitempty" json:"outputs,omitempty"`
 }
 
 // CallTarget is the workflow id a call unit invokes. Like a call phase's it is
@@ -215,7 +221,7 @@ type Route struct {
 	When     *Predicate  `yaml:"when,omitempty" json:"when,omitempty"`
 	To       string      `yaml:"to,omitempty" json:"to,omitempty"`
 	Loop     string      `yaml:"loop,omitempty" json:"loop,omitempty"`
-	Max      int         `yaml:"max,omitempty" json:"max,omitempty"`
+	Max      LoopBound   `yaml:"max,omitempty" json:"max,omitzero"`
 	Feedback []string    `yaml:"feedback,omitempty" json:"feedback,omitempty"`
 	Park     string      `yaml:"park,omitempty" json:"park,omitempty"`
 	Human    *HumanRoute `yaml:"human,omitempty" json:"human,omitempty"`
@@ -227,9 +233,9 @@ type HumanRoute struct {
 }
 
 type LoopTarget struct {
-	Loop     string   `yaml:"loop" json:"loop"`
-	Max      int      `yaml:"max" json:"max"`
-	Feedback []string `yaml:"feedback,omitempty" json:"feedback,omitempty"`
+	Loop     string    `yaml:"loop" json:"loop"`
+	Max      LoopBound `yaml:"max" json:"max"`
+	Feedback []string  `yaml:"feedback,omitempty" json:"feedback,omitempty"`
 }
 
 // Predicate is a closed recursive predicate language. Exactly one field is set.

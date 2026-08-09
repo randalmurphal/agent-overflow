@@ -26,6 +26,12 @@ const (
 // RouteDecision is the first route selected by EvaluateGate. RouteIndex is -1
 // for exhausted/no-match results. LoopEdge is stable across process restarts
 // and is the key callers use when reconstructing persisted loop counts.
+//
+// Max is the RESOLVED bound this traversal was measured against, never the
+// authored form: a seeded `max: <ref>` is a number only once the run's
+// variables exist, and the decision is persisted in the gate trace, so the
+// trace states the budget the run actually got rather than the name it came
+// from.
 type RouteDecision struct {
 	Kind       DecisionKind `json:"kind"`
 	RouteIndex int          `json:"routeIndex"`
@@ -83,7 +89,16 @@ func EvaluateGate(phase Phase, vars map[string]any, loopCounts map[string]int) (
 		decision := decisionForRoute(route, routeIndex)
 		if decision.Kind == DecisionLoop {
 			decision.LoopEdge = GateEdgeKey(phase.ID, routeIndex)
-			if loopCounts[decision.LoopEdge] >= route.Max {
+			// A bound that cannot be resolved is not an exhausted loop: the
+			// definition and this run's variables cannot say how many
+			// traversals are allowed at all, so the caller parks the attempt
+			// rather than routing it somewhere the author never chose.
+			max, err := route.Max.Resolve(vars)
+			if err != nil {
+				return RouteDecision{}, trace, fmt.Errorf("evaluate phase %q route %d: %w", phase.ID, routeIndex, err)
+			}
+			decision.Max = max
+			if loopCounts[decision.LoopEdge] >= max {
 				exhaustedLoop = true
 				trace.ExhaustedLoops = append(trace.ExhaustedLoops, decision.LoopEdge)
 				continue
@@ -102,6 +117,9 @@ func EvaluateGate(phase Phase, vars map[string]any, loopCounts map[string]int) (
 	return decision, trace, nil
 }
 
+// decisionForRoute maps one matched route onto its decision. A loop route's
+// LoopEdge and resolved Max are stamped by EvaluateGate, which is the only
+// place a variable context exists to resolve a seeded bound against.
 func decisionForRoute(route Route, routeIndex int) RouteDecision {
 	decision := RouteDecision{RouteIndex: routeIndex}
 	switch {
@@ -109,7 +127,6 @@ func decisionForRoute(route Route, routeIndex int) RouteDecision {
 		decision.Kind = DecisionLoop
 		decision.Target = route.Loop
 		decision.Feedback = append([]string(nil), route.Feedback...)
-		decision.Max = route.Max
 	case route.Human != nil:
 		decision.Kind = DecisionHuman
 	case route.Park != "":

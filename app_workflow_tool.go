@@ -235,6 +235,7 @@ func (r *workflowAppRunner) awaitToolPhase(runKey string, attempt *workflowToolA
 	}
 	if validationErr := attempt.contract.Validate(payload); validationErr != nil {
 		report.Findings = findingsForEnvelopeError(validationErr)
+		report.Narrative, payload = def.SplitEnvelopeNarrative(payload)
 		r.writeToolNarrative(attempt, report)
 		// A deterministic command has no feedback turn to correct itself, so
 		// this goes straight to the exhaustion outcome an agent reaches after
@@ -246,6 +247,13 @@ func (r *workflowAppRunner) awaitToolPhase(runKey string, attempt *workflowToolA
 		attempt.complete(outcome)
 		return
 	}
+	// The schema now permits `narrative`, and post-validation is written once
+	// against the contract for both drivers, so a command may write one too.
+	// Refusing it here would be a second rule set for one contract; folding it
+	// in costs a report field and keeps the strip in exactly the same place the
+	// agent path does it — the account leads the narrative file, the process
+	// output tail follows, and the engine never sees prose.
+	report.Narrative, payload = def.SplitEnvelopeNarrative(payload)
 	r.writeToolNarrative(attempt, report)
 	outcome, err := workflowrunner.OutcomeFromEnvelope(payload)
 	if err != nil {

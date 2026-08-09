@@ -153,8 +153,10 @@ func TestStartupRebuildCancelsItemsWhoseProjectWasDeleted(t *testing.T) {
 	if len(events) != 1 || events[0].From != StateRunning || events[0].To != StateCancelled || events[0].Reason != ReasonInterrupted {
 		t.Fatalf("orphan cancellation events = %+v", events)
 	}
-	if err := h.engine.Cancel("orphan"); err == nil || !strings.Contains(err.Error(), "not tracked") {
-		t.Fatalf("orphan remained tracked: %v", err)
+	// Cancelled is terminal: a second cancel is refused by naming the state the
+	// item is already in rather than by pretending it is parked.
+	if err := h.engine.Cancel("orphan"); err == nil || !strings.Contains(err.Error(), "state is cancelled") {
+		t.Fatalf("orphan accepted a second cancel: %v", err)
 	}
 }
 
@@ -168,7 +170,7 @@ func TestStartupIgnoresParkedSetupFailureUntilResume(t *testing.T) {
 			t.Fatal(err)
 		}
 	})
-	if err := h.engine.Resume("setup-failed", ""); err != nil {
+	if err := h.engine.Resume("setup-failed", "", false); err != nil {
 		t.Fatal(err)
 	}
 	starts := h.runner.started()
@@ -398,7 +400,7 @@ func TestMalformedRecoveredDecisionDoesNotBlockOtherItems(t *testing.T) {
 	}
 	// The unrelated item is untouched and still resumable after the broken one
 	// failed to recover.
-	if err := h.engine.Resume("healthy", ""); err != nil {
+	if err := h.engine.Resume("healthy", "", false); err != nil {
 		t.Fatal(err)
 	}
 	starts := h.runner.started()

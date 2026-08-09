@@ -35,6 +35,11 @@ func (f *fakeDefinitions) ResolveCall(_ context.Context, _ string, workflowID st
 }
 
 func (f *fakeDefinitions) resolve(workflowID string) (ResolvedDefinition, error) {
+	// Held across the whole resolution because a test edits the set while the
+	// engine's goroutine may be resolving from it, which is the point: a
+	// definition on disk changes under a parked run.
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	workflow, ok := f.workflows[workflowID]
 	if !ok {
 		return ResolvedDefinition{}, fmt.Errorf("workflow %q not found", workflowID)
@@ -46,6 +51,15 @@ func (f *fakeDefinitions) resolve(workflowID string) (ResolvedDefinition, error)
 		return ResolvedDefinition{}, err
 	}
 	return ResolvedDefinition{Workflow: workflow, Scope: def.ScopeShared, WorkspaceNeed: need}, nil
+}
+
+// edit replaces what the source answers for one workflow id, which is a
+// definition file changing on disk while a run that froze the old one is
+// parked.
+func (f *fakeDefinitions) edit(workflowID string, workflow def.Workflow) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.workflows[workflowID] = workflow
 }
 
 func (f *fakeDefinitions) callResolveCount(workflowID string) int {

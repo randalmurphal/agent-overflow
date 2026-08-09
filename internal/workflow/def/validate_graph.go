@@ -44,7 +44,7 @@ func buildGraph(workflow Workflow, phaseIndex map[string]int, findings *[]Findin
 			if kinds != 1 {
 				*findings = append(*findings, finding("gate.route-kind", element, "route must declare exactly one of to, loop, park, or human"))
 			}
-			if route.Loop == "" && (route.Max != 0 || len(route.Feedback) != 0) {
+			if route.Loop == "" && (!route.Max.IsZero() || len(route.Feedback) != 0) {
 				*findings = append(*findings, finding("gate.route-fields", element, "max and feedback are valid only on loop routes"))
 			}
 			addTarget(i, routeIndex, route.To, "forward")
@@ -58,18 +58,14 @@ func buildGraph(workflow Workflow, phaseIndex map[string]int, findings *[]Findin
 				}
 			}
 			if route.Loop != "" {
-				if route.Max < 1 {
-					*findings = append(*findings, finding("gate.loop-max", element, fmt.Sprintf("loop to %q requires max >= 1", route.Loop)))
-				}
+				*findings = append(*findings, loopBoundShapeFindings(route.Max, element, fmt.Sprintf("loop to %q", route.Loop))...)
 				if _, ok := phaseIndex[route.Loop]; !ok {
 					*findings = append(*findings, finding("gate.target", element, fmt.Sprintf("loop target %q does not exist", route.Loop)))
 				}
 			}
 			if route.Human != nil && route.Human.Reject != nil {
 				reject := route.Human.Reject
-				if reject.Max < 1 {
-					*findings = append(*findings, finding("gate.loop-max", element, fmt.Sprintf("human reject loop to %q requires max >= 1", reject.Loop)))
-				}
+				*findings = append(*findings, loopBoundShapeFindings(reject.Max, element, fmt.Sprintf("human reject loop to %q", reject.Loop))...)
 				if _, ok := phaseIndex[reject.Loop]; !ok {
 					*findings = append(*findings, finding("gate.target", element, fmt.Sprintf("human reject loop target %q does not exist", reject.Loop)))
 				}

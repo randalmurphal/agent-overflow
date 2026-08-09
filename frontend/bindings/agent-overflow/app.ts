@@ -3780,6 +3780,16 @@ export function WorkflowAgentStartRun(input: $models.WorkflowAgentStartInput): $
     });
 }
 
+/**
+ * WorkflowAnswerQuestion and WorkflowResolveGate settle the two parks a
+ * workflow author routed to a person. Both are reachable from the CLI as well
+ * as the overlay, and both carry the `resolve` grant rather than `start-run`:
+ * starting and stopping work is routine, while deciding a park the author
+ * deliberately handed to a human is authority the author hands out just as
+ * deliberately. The scope check is the same one every run-control RPC applies —
+ * a webview call carries none and passes untouched, a phase session is confined
+ * to the runs it started.
+ */
 export function WorkflowAnswerQuestion(itemID: string, answer: string): $CancellablePromise<void> {
     return $Call.ByID(4150249282, itemID, answer);
 }
@@ -3871,8 +3881,10 @@ export function WorkflowDiscussPR(itemID: string): $CancellablePromise<store$0.T
 }
 
 /**
- * WorkflowDropUnit accepts a failed or taken-over unit's absence. The unit is
- * recorded `dropped`, its join sees it as such, and the attempt resumes.
+ * WorkflowDropUnit accepts a failed or taken-over WORK unit's absence. The unit
+ * is recorded `dropped`, its join sees it as such, and the attempt resumes. The
+ * join itself is refused: it is what consolidates the units, so its absence
+ * leaves nothing to accept.
  */
 export function WorkflowDropUnit(itemID: string, unitID: string, note: string): $CancellablePromise<void> {
     return $Call.ByID(1005356607, itemID, unitID, note);
@@ -4003,9 +4015,12 @@ export function WorkflowRequestSoftStop(itemID: string, armed: boolean): $Cancel
  * WorkflowRerunItem starts a failed run's last phase again immediately,
  * carrying its latest diagnosis, plus the caller's optional guidance, into the
  * new attempt.
+ * 
+ * refreshDefinition re-reads the workflow and its prompt files from disk for
+ * that attempt instead of rendering the definition the run froze at start.
  */
-export function WorkflowRerunItem(itemID: string, guidance: string): $CancellablePromise<void> {
-    return $Call.ByID(1986594501, itemID, guidance);
+export function WorkflowRerunItem(itemID: string, guidance: string, refreshDefinition: boolean): $CancellablePromise<void> {
+    return $Call.ByID(1986594501, itemID, guidance, refreshDefinition);
 }
 
 export function WorkflowResolveGate(itemID: string, decision: string, note: string): $CancellablePromise<void> {
@@ -4014,14 +4029,22 @@ export function WorkflowResolveGate(itemID: string, decision: string, note: stri
 
 /**
  * WorkflowResumeItem returns a parked run to running. With no target phase it
- * dispatches on why the run parked: a run stopped mid-attempt (`paused`,
- * `interrupted`) continues on the provider session it parked on and carries its
- * whole tree with it, while every other reason re-enters the phase with a fresh
- * attempt. Naming a target phase is always a fresh entry — that is what
- * choosing a different phase means.
+ * CONTINUES: a run stopped mid-attempt (`paused`, `interrupted`, `checkpoint`)
+ * picks up the provider session it parked on and carries its whole tree with it,
+ * a fan-out parked on a failed unit reopens what blocked it while every finished
+ * unit — and every run its call units already completed — keeps its result, and
+ * a park with nothing to continue re-enters the phase. Naming a target phase is
+ * always the fresh entry, including when it names the parked phase. The engine
+ * owns that dispatch; this method adds only the takeover bookkeeping the runner
+ * needs.
+ * 
+ * refreshDefinition re-reads the workflow and its prompt files from disk for
+ * this entry instead of rendering the definition the run froze at start — the
+ * repair for a phase whose prompt was edited while the run was parked. The
+ * engine offers it at fresh phase entries only.
  */
-export function WorkflowResumeItem(itemID: string, targetPhase: string): $CancellablePromise<void> {
-    return $Call.ByID(3138507556, itemID, targetPhase);
+export function WorkflowResumeItem(itemID: string, targetPhase: string, refreshDefinition: boolean): $CancellablePromise<void> {
+    return $Call.ByID(3138507556, itemID, targetPhase, refreshDefinition);
 }
 
 /**
@@ -4038,8 +4061,8 @@ export function WorkflowRetryFailedUnits(itemID: string, note: string): $Cancell
 
 /**
  * WorkflowRetryUnit re-runs one failed or taken-over unit of a parked fan-out
- * attempt. The note explains the retry in the run record and reaches the unit's
- * next try as feedback.
+ * attempt, the attempt's join included. The note explains the retry in the run
+ * record and reaches the unit's next try as feedback.
  */
 export function WorkflowRetryUnit(itemID: string, unitID: string, note: string): $CancellablePromise<void> {
     return $Call.ByID(1648002260, itemID, unitID, note);

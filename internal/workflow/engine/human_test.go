@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 
 	"agent-overflow/internal/workflow/def"
@@ -14,7 +15,7 @@ func humanWorkflow() def.Workflow {
 		agentPhase("build", nil, []def.Route{{To: "review"}}),
 		agentPhase("review", nil, []def.Route{{Human: &def.HumanRoute{
 			Approve: "done",
-			Reject:  &def.LoopTarget{Loop: "build", Max: 1, Feedback: []string{"review.ok"}},
+			Reject:  &def.LoopTarget{Loop: "build", Max: def.LiteralBound(1), Feedback: []string{"review.ok"}},
 		}}}),
 	}}
 }
@@ -30,6 +31,40 @@ func parkAtHumanGate(t *testing.T, h *testHarness, itemID string) {
 	requireItemState(t, h.store, itemID, StateNeedsHuman, ReasonGate)
 }
 
+// A park: route rests under the same `gate` reason a human: route does, but it
+// declares no approve or reject — there is nothing a decision could select. The
+// refusal has to say that and name the repair, because "persisted decision is
+// park without a human intervention" reads as a corrupt record rather than as
+// the construct working; and the repair it names must actually work.
+func TestParkRouteRefusesResolveAndNamesTheRepair(t *testing.T) {
+	workflow := def.Workflow{ID: "parking", Phases: []def.Phase{
+		agentPhase("review", nil, []def.Route{{Park: "review-unresolved"}}),
+	}}
+	h := newHarness(t, Config{}, map[string]def.Workflow{"parking": workflow}, []string{"project"}, nil)
+	item := testItem("item", "project", "parking", 0)
+	if err := h.engine.StartItem(item); err != nil {
+		t.Fatal(err)
+	}
+	h.runner.complete(t, item.ID, Outcome{Kind: OutcomeDone, Envelope: doneEnvelope(true)})
+	if err := h.engine.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	requireItemState(t, h.store, item.ID, StateNeedsHuman, ReasonGate)
+	err := h.engine.ResolveHumanGate(item.ID, HumanApprove, "")
+	if err == nil {
+		t.Fatal("a park: route accepted an approve decision it never declared")
+	}
+	for _, want := range []string{`park: route ("review-unresolved")`, "resume the run", "human: route"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("park refusal %q does not carry %q", err, want)
+		}
+	}
+	if err := h.engine.Resume(item.ID, "", false); err != nil {
+		t.Fatal(err)
+	}
+	requireItemState(t, h.store, item.ID, StateRunning, "")
+}
+
 func TestHumanGateApprovalRoutesToDone(t *testing.T) {
 	workflow := humanWorkflow()
 	h := newHarness(t, Config{}, map[string]def.Workflow{"human": workflow}, []string{"project"}, nil)
@@ -38,7 +73,9 @@ func TestHumanGateApprovalRoutesToDone(t *testing.T) {
 		t.Fatal(err)
 	}
 	parkAtHumanGate(t, h, item.ID)
-	if err := h.engine.Resume(item.ID, "done"); err == nil {
+	// The gate's own decision belongs to ResolveHumanGate: re-entering the phase
+	// that is waiting on one is not a way to take it.
+	if err := h.engine.Resume(item.ID, "", false); err == nil {
 		t.Fatal("generic resume bypassed human gate decision")
 	}
 	if err := h.engine.ResolveHumanGate(item.ID, HumanApprove, ""); err != nil {
@@ -79,13 +116,91 @@ func TestHumanGateRejectPersistsFeedbackAndEnforcesBound(t *testing.T) {
 	}
 
 	parkAtHumanGate(t, h, item.ID)
-	if err := h.engine.ResolveHumanGate(item.ID, HumanReject, "again"); err != nil {
-		t.Fatal(err)
+	if err := h.engine.ResolveHumanGate(item.ID, HumanReject, "again"); err == nil {
+		t.Fatal("a reject past its bound was taken")
 	}
-	requireItemState(t, h.store, item.ID, StateNeedsHuman, ReasonRetriesExhausted)
+	requireItemState(t, h.store, item.ID, StateNeedsHuman, ReasonGate)
 	if got := len(h.runner.started()); got != 4 {
 		t.Fatalf("exhausted human reject started another phase: %d starts", got)
 	}
+}
+
+// A reject the route has no budget left for is refused, not converted. The gate
+// offered two verbs; parking the run `retries-exhausted` on the spent one would
+// take the other away too, so approve has to still be there afterwards — and
+// the refusal has to name every option that is.
+func TestHumanRejectPastItsBoundIsRefusedAndLeavesTheGateDecidable(t *testing.T) {
+	h := newHarness(t, Config{}, map[string]def.Workflow{"human": humanWorkflow()}, []string{"project"}, nil)
+	item := testItem("item", "project", "human", 0)
+	if err := h.engine.StartItem(item); err != nil {
+		t.Fatal(err)
+	}
+	parkAtHumanGate(t, h, item.ID)
+	if err := h.engine.ResolveHumanGate(item.ID, HumanReject, "once"); err != nil {
+		t.Fatal(err)
+	}
+	parkAtHumanGate(t, h, item.ID)
+
+	err := h.engine.ResolveHumanGate(item.ID, HumanReject, "twice")
+	if err == nil {
+		t.Fatal("a reject past its bound was taken")
+	}
+	for _, want := range []string{"approve", "run resume --phase build", "cancel"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("over-budget reject refusal %q does not name %q", err, want)
+		}
+	}
+	// The run rests exactly where it was, on the trace the gate wrote: nothing
+	// about the refused decision was persisted.
+	requireItemState(t, h.store, item.ID, StateNeedsHuman, ReasonGate)
+	phases, err := h.store.ListWorkItemPhases(item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parked := phases[len(phases)-1]
+	if parked.Status != "parked" || len(parked.Intervention) != 0 {
+		t.Fatalf("refused reject changed the parked attempt: %+v", parked)
+	}
+	var trace def.GateTrace
+	if err := json.Unmarshal(parked.GateTrace, &trace); err != nil {
+		t.Fatal(err)
+	}
+	if trace.Decision.Kind != def.DecisionHuman {
+		t.Fatalf("gate trace decision = %+v, want the gate still undecided", trace.Decision)
+	}
+
+	// The approve the gate declared is still there and still completes.
+	if err := h.engine.ResolveHumanGate(item.ID, HumanApprove, ""); err != nil {
+		t.Fatal(err)
+	}
+	requireItemState(t, h.store, item.ID, StateDone, "")
+}
+
+// The other option the refusal names: a fresh entry into the loop's target
+// refills the budget, so the reject becomes available again.
+func TestResumeToTheRejectTargetRefillsTheRejectBudget(t *testing.T) {
+	h := newHarness(t, Config{}, map[string]def.Workflow{"human": humanWorkflow()}, []string{"project"}, nil)
+	item := testItem("item", "project", "human", 0)
+	if err := h.engine.StartItem(item); err != nil {
+		t.Fatal(err)
+	}
+	parkAtHumanGate(t, h, item.ID)
+	if err := h.engine.ResolveHumanGate(item.ID, HumanReject, "once"); err != nil {
+		t.Fatal(err)
+	}
+	parkAtHumanGate(t, h, item.ID)
+	if err := h.engine.ResolveHumanGate(item.ID, HumanReject, "twice"); err == nil {
+		t.Fatal("a reject past its bound was taken")
+	}
+
+	if err := h.engine.Resume(item.ID, "build", false); err != nil {
+		t.Fatal(err)
+	}
+	parkAtHumanGate(t, h, item.ID)
+	if err := h.engine.ResolveHumanGate(item.ID, HumanReject, "after a fresh entry"); err != nil {
+		t.Fatalf("a refilled reject budget was still refused: %v", err)
+	}
+	requireItemState(t, h.store, item.ID, StateRunning, "")
 }
 
 func TestFeedbackForResolvesNestedValues(t *testing.T) {
@@ -220,7 +335,7 @@ func TestTakeoverFinalizeValidationFailureReparksAndResumeIsFresh(t *testing.T) 
 		t.Fatal(err)
 	}
 	requireItemState(t, h.store, item.ID, StateNeedsHuman, ReasonTakenOver)
-	if err := h.engine.Resume(item.ID, ""); err != nil {
+	if err := h.engine.Resume(item.ID, "", false); err != nil {
 		t.Fatal(err)
 	}
 	starts := h.runner.started()
@@ -251,4 +366,66 @@ func TestTakeoverOfParkedQuestionLeavesAnswerPathUntouchedUntilTakeover(t *testi
 	if err := h.engine.Answer(item.ID, "too late"); err == nil {
 		t.Fatal("question answer succeeded after explicit takeover")
 	}
+}
+
+// seededRejectWorkflow reads its reject budget from a run input rather than
+// from the definition, which is what lets one campaign spend two rejections
+// where another spends five without a second workflow.
+func seededRejectWorkflow() def.Workflow {
+	workflow := humanWorkflow()
+	workflow.Phases[1].Gate.Routes[0].Human.Reject.Max = def.RefBound("fix-budget")
+	return workflow
+}
+
+func TestHumanRejectResolvesASeededBoundAndRecordsIt(t *testing.T) {
+	h := newHarness(t, Config{}, map[string]def.Workflow{"human": seededRejectWorkflow()}, []string{"project"}, nil)
+	item := testItem("item", "project", "human", 0)
+	item.Seeds = json.RawMessage(`{"fix-budget":1}`)
+	if err := h.engine.StartItem(item); err != nil {
+		t.Fatal(err)
+	}
+	parkAtHumanGate(t, h, item.ID)
+	if err := h.engine.ResolveHumanGate(item.ID, HumanReject, "seeded"); err != nil {
+		t.Fatal(err)
+	}
+	phases, err := h.store.ListWorkItemPhases(item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var trace def.GateTrace
+	if err := json.Unmarshal(phases[1].GateTrace, &trace); err != nil {
+		t.Fatal(err)
+	}
+	if trace.Decision.Kind != def.DecisionLoop || trace.Decision.Max != 1 {
+		t.Fatalf("persisted reject decision = %+v, want a loop bounded at the seeded 1", trace.Decision)
+	}
+
+	parkAtHumanGate(t, h, item.ID)
+	if err := h.engine.ResolveHumanGate(item.ID, HumanReject, "again"); err == nil {
+		t.Fatal("a reject past its seeded bound was taken")
+	}
+	requireItemState(t, h.store, item.ID, StateNeedsHuman, ReasonGate)
+}
+
+// A bound that will not resolve is not an exhausted budget and not an implicit
+// one: the human's action fails loudly and the run stays parked exactly where
+// it was, still answerable the other way.
+func TestHumanRejectRefusesAnUnresolvableSeededBound(t *testing.T) {
+	h := newHarness(t, Config{}, map[string]def.Workflow{"human": seededRejectWorkflow()}, []string{"project"}, nil)
+	item := testItem("item", "project", "human", 0)
+	if err := h.engine.StartItem(item); err != nil {
+		t.Fatal(err)
+	}
+	parkAtHumanGate(t, h, item.ID)
+	if err := h.engine.ResolveHumanGate(item.ID, HumanReject, ""); err == nil {
+		t.Fatal("an unresolvable reject bound was spent silently")
+	}
+	requireItemState(t, h.store, item.ID, StateNeedsHuman, ReasonGate)
+	if got := len(h.runner.started()); got != 2 {
+		t.Fatalf("refused reject started another phase: %d starts", got)
+	}
+	if err := h.engine.ResolveHumanGate(item.ID, HumanApprove, ""); err != nil {
+		t.Fatal(err)
+	}
+	requireItemState(t, h.store, item.ID, StateDone, "")
 }

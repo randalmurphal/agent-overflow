@@ -154,6 +154,37 @@ func TestAuthorizeScopedMethodByKindAndGrant(t *testing.T) {
 	}
 }
 
+// TestResolveGrantAdmitsTheHumanDecisionMethods pins the separation `resolve`
+// exists for: a phase that may start work and stop it is not thereby allowed to
+// answer the decision its author routed to a human. The row-level half — which
+// runs a resolve-granted phase may decide — is enforced by the bound methods
+// (TestResolvingAParkIsConfinedToWhatAPhaseStarted, repo root).
+func TestResolveGrantAdmitsTheHumanDecisionMethods(t *testing.T) {
+	starter := CallerScope{
+		Kind: ScopeKindPhase, ThreadID: "t", ProjectID: "p", ItemID: "i", PhaseID: "build",
+		Grants: []string{string(def.GrantStartRun)},
+	}
+	resolver := starter
+	resolver.Grants = []string{string(def.GrantStartRun), string(def.GrantResolve)}
+	interactive := CallerScope{Kind: ScopeKindInteractive, ThreadID: "t", ProjectID: "p"}
+
+	for _, method := range []string{"WorkflowResolveGate", "WorkflowAnswerQuestion"} {
+		frameErr := AuthorizeScopedMethod(starter, method)
+		if frameErr == nil || frameErr.Code != ErrCodeGrantRequired {
+			t.Fatalf("%s for a start-run-only phase = %#v, want %s", method, frameErr, ErrCodeGrantRequired)
+		}
+		if !strings.Contains(frameErr.Message, `"resolve"`) {
+			t.Fatalf("%s refusal does not name the missing grant: %q", method, frameErr.Message)
+		}
+		if frameErr := AuthorizeScopedMethod(resolver, method); frameErr != nil {
+			t.Fatalf("%s for a resolve-granted phase = %#v", method, frameErr)
+		}
+		if frameErr := AuthorizeScopedMethod(interactive, method); frameErr != nil {
+			t.Fatalf("%s for an interactive scope = %#v", method, frameErr)
+		}
+	}
+}
+
 // newScopedRPCServer boots a server whose only receiver is scopedApp and returns
 // it with its registry.
 func newScopedRPCServer(t *testing.T) (*Server, *scopedApp, *tokenRegistry) {

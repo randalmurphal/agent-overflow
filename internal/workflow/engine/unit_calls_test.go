@@ -548,7 +548,53 @@ func TestCallUnitWithUnresolvableArgsParksWiringError(t *testing.T) {
 	if !strings.Contains(string(attempt.OutputEnvelope), "prepare.nothing") {
 		t.Fatalf("park envelope did not name the unresolvable argument: %s", attempt.OutputEnvelope)
 	}
+	// The edge is decided before the unit row moves, so there is no unit outcome
+	// to record: the row is still pending rather than failed.
+	h.requireUnitStatuses(t, parent, "wave", 1, map[string]string{
+		"wave-unit-0": store.WorkItemUnitPending,
+		"wave-join":   store.WorkItemUnitPending,
+	})
 	h.requireNoHeldResources(t)
+}
+
+// A unit call edge answers to the same optionality rule a phase call edge does,
+// because both go through one implementation: an argument seeding an input the
+// child declares optional is omitted rather than refused.
+func TestCallUnitOmitsAnArgumentAnAbsentOptionalChildInputWouldSeed(t *testing.T) {
+	workflows := callUnitWorkflows(1)
+	campaign := workflows["campaign"]
+	campaign.Phases[1].FanOut[0].Args["job-notes"] = "job-notes"
+	workflows["campaign"] = campaign
+	workflows["child"] = optionalNotesChild(true)
+	h := newCallHarness(t, workflows, nil)
+	parent := startCampaign(t, h)
+
+	child := h.unitCallChild(t, parent, "wave", 1, "wave-unit-0")
+	if string(child.Seeds) != `{"seed":true}` {
+		t.Fatalf("child seeds = %s, want the absent optional argument omitted entirely", child.Seeds)
+	}
+	requireItemState(t, h.store, parent, StateRunning, "")
+	requireItemState(t, h.store, child.ID, StateRunning, "")
+}
+
+func TestCallUnitParksWhenAnAbsentArgumentSeedsARequiredChildInput(t *testing.T) {
+	workflows := callUnitWorkflows(1)
+	campaign := workflows["campaign"]
+	campaign.Phases[1].FanOut[0].Args["job-notes"] = "job-notes"
+	workflows["campaign"] = campaign
+	workflows["child"] = optionalNotesChild(false)
+	h := newCallHarness(t, workflows, nil)
+	parent := startCampaign(t, h)
+
+	requireItemState(t, h.store, parent, StateNeedsHuman, ReasonWiringError)
+	attempt := h.phaseAttempt(t, parent, "wave", 1)
+	if !strings.Contains(string(attempt.OutputEnvelope), "job-notes (job-notes)") {
+		t.Fatalf("park envelope did not name the unresolved argument: %s", attempt.OutputEnvelope)
+	}
+	h.requireUnitStatuses(t, parent, "wave", 1, map[string]string{
+		"wave-unit-0": store.WorkItemUnitPending,
+		"wave-join":   store.WorkItemUnitPending,
+	})
 }
 
 // The unit-scoped repair is the same one an agent unit gets: a retried call unit

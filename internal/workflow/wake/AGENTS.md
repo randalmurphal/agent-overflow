@@ -39,9 +39,23 @@ The compact message a resting root run injects into its bound thread
 - **A closing names the verb, not just the run (D38).** `repairSentence`
   appends the literal command to the closing: `run resume` for
   paused/interrupted/checkpoint, `run rerun` for a failed state,
-  `run retry-failed-units` / `run retry-unit` for `unit-failed`, and for
-  `gate`/`question` the fact that only a human decides them — no CLI verb
-  does. Every other reason prints no verb, because the reason names its
+  `run retry-failed-units` / `run retry-unit` for `unit-failed` (a failed
+  JOIN is one of those units, so the closing says so, and it names `run
+  resume` alongside them: it continues the same attempt, while `run resume
+  --phase <id>` is the one form that re-runs work the wave already
+  finished),
+  `run resolve --approve|--reject` for a `gate` park whose persisted decision
+  is a human: route, `run resume` for one whose decision is a park: route
+  (D41 amendment — a park: route declares no approve/reject, so naming
+  `run resolve` for it would be the dead verb this sentence exists to
+  prevent; the kind rides in on `Run.GateDecision` / `Descendant.GateDecision`,
+  resolved app-side from the gate trace, and an empty kind names both verbs
+  keyed off `run status`'s decision= field), `run answer` for `question`
+  (resolve/answer exist since D41; the closing also says a phase session needs
+  the `resolve` grant and that the judgment must be the reader's to make), and
+  `run resume --phase` for `retries-exhausted` (an earlier phase is a fresh
+  entry that refills loop budgets; resuming in place does not). Every other
+  reason prints no verb, because the reason names its
   own cause and a generic "resume" would be exactly the wrong guess. The
   command carries the id of the run being acted on, which for a
   descendant park is the DESCENDANT's, still quoted as untrusted data.

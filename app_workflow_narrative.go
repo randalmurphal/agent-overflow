@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 
 	workflowrunner "agent-overflow/internal/workflow/runner"
 )
@@ -18,39 +19,47 @@ import (
 // that package's surface for nothing.
 const workflowAssistantTextKind = "assistant_text"
 
-// Per-attempt narrative files: recovering the ones an agent could not write, and
+// Per-attempt narrative files: settling the ones an agent could not write, and
 // refusing to point at ones that do not exist.
 //
 // The narrative is the single human-readable account of what one phase attempt,
 // fan-out unit, or join did. A writing agent element is told to write the file
 // and can; a `read-only` one runs in a session that denies every file write
-// (D22, spec §9), so its narrative arrives as prose in the session instead and
-// the runner lifts it into the file. Without that, a completed read-only run left
-// every attempt directory empty, the wake pointed at a path nothing created, and
-// the triage seed read "narrative unavailable".
+// (D22, spec §9), so it is asked for the account in its envelope's `narrative`
+// control field and the runner writes the file from there. A session that
+// ignored the instruction still gets the D39 fallback below. Without any of
+// this, a completed read-only run left every attempt directory empty, the wake
+// pointed at a path nothing created, and the triage seed read "narrative
+// unavailable".
 
-// recoverAttemptNarrative writes the narrative file an agent turn was asked for
-// and did not produce, from the session's final assistant text.
+// settleAttemptNarrative guarantees an accepted agent turn has left a narrative
+// file, from whichever source it produced one:
 //
-// It NEVER overwrites: a file that exists is the agent's own account, which is
-// richer than the message this reconstructs and is the thing a human is meant to
-// read. A session with no assistant text writes nothing — absence stays absence
-// rather than becoming a file that says nothing.
+//  1. the file the element wrote itself — always wins, never touched;
+//  2. `authored`, the `narrative` field of its accepted envelope, written
+//     verbatim because the element deliberately put it there;
+//  3. the D39 recovery from the session's final assistant text, marked with
+//     RecoveredNarrativeHeader because the system reconstructed it.
 //
-// Failing to recover never changes the run's outcome; it is reported the way
+// One existence check and one O_EXCL write serve all three, so the "an authored
+// account always beats a reconstructed one" rule cannot be stated twice and
+// drift. A turn with no account at any tier writes nothing — absence stays
+// absence rather than becoming a file that says nothing.
+//
+// Failing to settle never changes the run's outcome; it is reported the way
 // every other post-success bookkeeping failure is, because an outcome the engine
 // has already accepted must not be re-decided by a filesystem error.
-func (r *workflowAppRunner) recoverAttemptNarrative(attempt *workflowAttempt, envelope json.RawMessage) {
-	if err := r.writeRecoveredNarrative(attempt, envelope); err != nil {
-		log.Printf("workflow narrative recovery %s: %v", workflowRunKey(attempt.key), err)
+func (r *workflowAppRunner) settleAttemptNarrative(attempt *workflowAttempt, authored string, envelope json.RawMessage) {
+	if err := r.writeAttemptNarrative(attempt, authored, envelope); err != nil {
+		log.Printf("workflow narrative %s: %v", workflowRunKey(attempt.key), err)
 		r.app.emit("workflow:error", map[string]any{
 			"itemId": attempt.key.ItemID,
-			"error":  "workflow narrative could not be recovered from the phase's final message; inspect local diagnostics",
+			"error":  "workflow narrative could not be written from the phase's final envelope; inspect local diagnostics",
 		})
 	}
 }
 
-func (r *workflowAppRunner) writeRecoveredNarrative(attempt *workflowAttempt, envelope json.RawMessage) error {
+func (r *workflowAppRunner) writeAttemptNarrative(attempt *workflowAttempt, authored string, envelope json.RawMessage) error {
 	if attempt.narrativePath == "" {
 		return errors.New("the attempt carries no narrative path")
 	}
@@ -61,13 +70,21 @@ func (r *workflowAppRunner) writeRecoveredNarrative(attempt *workflowAttempt, en
 	if present {
 		return nil
 	}
-	texts, err := r.app.threadAssistantTexts(attempt.threadID)
-	if err != nil {
-		return err
-	}
-	narrative, ok := workflowrunner.RecoverNarrative(texts, envelope)
-	if !ok {
-		return nil
+	narrative := ""
+	if strings.TrimSpace(authored) != "" {
+		// No RecoveredNarrativeHeader: the element chose to put this account in
+		// its envelope, so it is authored exactly as a file it wrote would be.
+		narrative = strings.TrimRight(authored, "\n") + "\n"
+	} else {
+		texts, err := r.app.threadAssistantTexts(attempt.threadID)
+		if err != nil {
+			return err
+		}
+		recovered, ok := workflowrunner.RecoverNarrative(texts, envelope)
+		if !ok {
+			return nil
+		}
+		narrative = recovered
 	}
 	if err := os.MkdirAll(filepath.Dir(attempt.narrativePath), appPrivateDirPerm); err != nil {
 		return fmt.Errorf("create narrative directory: %w", err)

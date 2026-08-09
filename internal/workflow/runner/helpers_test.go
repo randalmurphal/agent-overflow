@@ -39,10 +39,13 @@ func TestBuildPromptSuffixShape(t *testing.T) {
 	// enforces them and cannot express them in the schema, so a silent drop
 	// here costs every phase its one envelope retry.
 	const envelopeRules = "Your final message must satisfy the attached schema; status must be done, question, or stuck.\n" +
-		"Exactly one branch may be populated, and the other two fields must be null:\n" +
+		"Exactly one of outputs, question, and reason may be populated, and the other two must be null:\n" +
 		"- status done: outputs must be non-null; question and reason must both be null.\n" +
 		"- status question: a decision only a human can make; question must be a non-empty string; outputs and reason must both be null.\n" +
-		"- status stuck: you cannot proceed and retrying will not change that; reason must be a non-empty string; outputs and question must both be null.\n"
+		"- status stuck: you cannot proceed and retrying will not change that; reason must be a non-empty string; outputs and question must both be null.\n" +
+		// The schema makes every element answer `narrative`, so a writing one has
+		// to be told what to do with a field whose account belongs in its file.
+		"The narrative field is outside those rules and is not yours to fill: your account goes in the file named above, so set narrative to null.\n"
 	header := "Goal: ship\n\n<workflow-system-instructions>\n" +
 		"Write a concise narrative of the work performed, decisions made, and validation results to this file:\n" + narrative +
 		"\nThe narrative is for human inspection and is not part of the control envelope.\n" +
@@ -112,18 +115,19 @@ func TestBuildTakeoverFinalizePrompt(t *testing.T) {
 }
 
 // A read-only element runs in a session that denies every file write, so the
-// suffix must ask for the narrative as a message. Instructing it to write the
-// file is an instruction it cannot follow — the defect that left every read-only
-// run's attempt directory empty.
-func TestPromptSuffixAsksReadOnlyElementsForAMessage(t *testing.T) {
+// suffix must ask for the narrative in the envelope's `narrative` field.
+// Instructing it to write the file is an instruction it cannot follow — the
+// defect that left every read-only run's attempt directory empty — and asking
+// for a separate MESSAGE is one only Claude can follow, because Codex applies a
+// turn's outputSchema to every assistant message in it.
+func TestPromptSuffixAsksReadOnlyElementsForTheEnvelopeField(t *testing.T) {
 	narrative := filepath.Join(t.TempDir(), "narrative.md")
-	const readOnlyInstruction = "You run read-only and cannot write files, so send your narrative as a message instead: " +
-		"a concise account of the work performed, decisions made, and validation results, " +
-		"as the message immediately before your final envelope.\n" +
-		"The narrative is for human inspection and is not part of the control envelope.\n"
+	const readOnlyInstruction = "You run read-only and cannot write files, so put your narrative in the `narrative` field " +
+		"of your final envelope: a concise account of the work performed, decisions made, and validation results.\n" +
+		"The narrative is for human inspection; the system lifts it out of the envelope into a file and never parses it.\n"
 
 	// Unset access is read-only (def.DefaultAccess), so both spellings take the
-	// message form — the default must not fall through to the file instruction.
+	// envelope form — the default must not fall through to the file instruction.
 	for _, access := range []def.Access{def.AccessReadOnly, ""} {
 		suffix, err := PromptSuffix(narrative, access, nil)
 		if err != nil {
@@ -134,6 +138,16 @@ func TestPromptSuffixAsksReadOnlyElementsForAMessage(t *testing.T) {
 		}
 		if strings.Contains(suffix, narrative) {
 			t.Fatalf("PromptSuffix(access=%q) named a file the session cannot write:\n%s", access, suffix)
+		}
+		// The message leg is gone: nothing may still ask for prose outside the
+		// envelope, because a schema-constrained Codex turn cannot emit any.
+		if strings.Contains(suffix, "as a message") || strings.Contains(suffix, "message immediately before") {
+			t.Fatalf("PromptSuffix(access=%q) still asks for a narrative message:\n%s", access, suffix)
+		}
+		// The branch rules enumerate the fields, so they must say the narrative
+		// is legal on every status or a stuck element will leave it null.
+		if !strings.Contains(suffix, "The narrative field is outside those rules: it is legal on every status") {
+			t.Fatalf("PromptSuffix(access=%q) did not exempt narrative from the branch rules:\n%s", access, suffix)
 		}
 		// A read-only element has nothing to commit, so the commit default is
 		// another instruction it could not follow.
@@ -151,6 +165,14 @@ func TestPromptSuffixAsksReadOnlyElementsForAMessage(t *testing.T) {
 	}
 	if strings.Contains(writing, "cannot write files") {
 		t.Fatalf("write-access suffix took the read-only form:\n%s", writing)
+	}
+	// The file stays the writing element's primary instruction: a narrative
+	// authored during the work is richer than one summarized into a field.
+	if strings.Contains(writing, "put your narrative in the `narrative` field") {
+		t.Fatalf("write-access suffix advertised the envelope field as an alternative:\n%s", writing)
+	}
+	if !strings.Contains(writing, "your account goes in the file named above, so set narrative to null") {
+		t.Fatalf("write-access suffix left the schema's narrative field unexplained:\n%s", writing)
 	}
 	if !strings.Contains(writing, "Leave your work committed on this branch before you finish") {
 		t.Fatalf("write-access suffix lost the commit default:\n%s", writing)

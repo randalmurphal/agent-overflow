@@ -94,6 +94,7 @@ export {
     VerifyEditDiffsResult,
     WorkflowAgentFailedUnit,
     WorkflowAgentNotesResult,
+    WorkflowAgentPhaseAttempt,
     WorkflowAgentRunOutputs,
     WorkflowAgentRunView,
     WorkflowAgentScheduleInput,

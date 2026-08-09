@@ -23,6 +23,7 @@ func TestRenderComposerContextNamesTheSurfaceAndTheLiveState(t *testing.T) {
 	})
 	for _, want := range []string{
 		"agent-overflow run start", "agent-overflow run list", "agent-overflow workflow list|validate", "--json",
+		"agent-overflow run resolve <run-id> --approve|--reject", "agent-overflow run answer <run-id> <text>",
 		EnvEndpoint, EnvToken, EnvThreadID,
 		"/config/workflows", "Agent Overflow",
 		// The project scope line names the slug --project takes: the offline
@@ -32,15 +33,32 @@ func TestRenderComposerContextNamesTheSurfaceAndTheLiveState(t *testing.T) {
 		"audit (shared) — Dependency audit", "release (project) — Release train",
 		"run-1 workflow=release state=running phase=build",
 		"run-2 workflow=audit state=needs-human reason=gate",
-		// The repair map: a reason an agent can act on names its verb, and the
-		// ones only a human can settle say that rather than being omitted — an
-		// omission reads as "there must be a verb I haven't found".
+		// The repair map: every reason a verb settles names that verb and what
+		// taking it does, so an agent never has to guess which of two resumes it
+		// meant — and never invents a verb for a reason the map omits.
 		"When a run needs a human, the reason picks the fix:",
 		"paused|interrupted|checkpoint → run resume",
-		"unit-failed → run retry-failed-units (retry-unit for one)",
+		"gate (decision=human) → run resolve --approve|--reject [--note <text>]",
+		"gate (decision=park) → run resume",
+		"a park: route declares no approve/reject",
+		"question → run answer <run-id> <text>",
+		"unit-failed → run retry-failed-units",
+		"repairs every failed unit, the join included",
+		"run resume continues the same attempt without a note",
+		"retries-exhausted → run resume",
+		"--phase <id> goes back further and refills loop budgets",
 		"state failed → run rerun",
-		"gate|question → a human decides in the app; surface it, don't answer it",
-		"`run status` names a run's failed units and its parent; any other reason names its own cause",
+		// The one sentence the whole verb set turns on: what resume preserves and
+		// what --phase throws away.
+		"`run resume` continues and preserves finished work; `run resume --phase <id>` starts that phase over and re-runs everything in it, including runs it called.",
+		// The freeze is invisible until it bites: an operator edits a parked
+		// phase's prompt, resumes, and gets the frozen one rendered again. The
+		// block names the flag that re-reads it and says where nothing is needed.
+		"A run renders the definition it froze at start, so a prompt edited while it was parked is read only by `run resume --phase <id> --refresh-def` (or `run rerun --refresh-def`) — a call already re-reads its target from disk every time it is made.",
+		"`run status` names a run's failed units, its parent, and what each phase attempt ran with",
+		// Which sessions may take those two decisions, in the one place an agent
+		// reads before typing the command.
+		"Deciding a park needs the `resolve` grant in a workflow phase; an interactive session like this one holds it already.",
 	} {
 		if !strings.Contains(block, want) {
 			t.Fatalf("block is missing %q:\n%s", want, block)

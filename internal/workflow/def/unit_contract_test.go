@@ -30,7 +30,8 @@ func TestUnitEnvelopeSchemaIsTheSameGeneratorAsAPhase(t *testing.T) {
 
 // A unit that declares nothing still answers a control envelope: the run has to
 // learn done/question/stuck from it. `outputs` stays a declared property with no
-// members, so the provider must emit it and can only emit it empty or null.
+// members, so the provider must emit it and can only emit it empty or null —
+// and a unit that declares no outputs withholds nothing by answering either.
 func TestUnitWithoutOutputsGetsControlOnlyEnvelope(t *testing.T) {
 	contract := UnitEnvelope(Unit{ID: "port-0", Provider: "claude", Model: "sonnet", Prompt: "u.md"})
 	if len(contract.Outputs()) != 0 {
@@ -55,7 +56,7 @@ func TestUnitWithoutOutputsGetsControlOnlyEnvelope(t *testing.T) {
 	if len(schema.Properties.Outputs.Properties) != 0 || len(schema.Properties.Outputs.Required) != 0 {
 		t.Fatalf("control-only envelope carries output members: %s", encoded)
 	}
-	if !reflect.DeepEqual(schema.Required, []string{"outputs", "question", "reason", "status"}) {
+	if !reflect.DeepEqual(schema.Required, []string{"narrative", "outputs", "question", "reason", "status"}) {
 		t.Fatalf("control envelope required = %v", schema.Required)
 	}
 	for _, tc := range []struct {
@@ -66,7 +67,10 @@ func TestUnitWithoutOutputsGetsControlOnlyEnvelope(t *testing.T) {
 		{"done with empty outputs", `{"status":"done","outputs":{},"question":null,"reason":null}`, false},
 		{"stuck", `{"status":"stuck","outputs":null,"question":null,"reason":"cannot build"}`, false},
 		{"question", `{"status":"question","outputs":null,"question":"which one?","reason":null}`, false},
-		{"done with null outputs", `{"status":"done","outputs":null,"question":null,"reason":null}`, true},
+		// Empty, null, and absent are one answer for a unit with nothing to
+		// deliver: there is no declaration for any of them to withhold.
+		{"done with null outputs", `{"status":"done","outputs":null,"question":null,"reason":null}`, false},
+		{"done with no outputs key", `{"status":"done"}`, false},
 		{"undeclared output", `{"status":"done","outputs":{"summary":"x"},"question":null,"reason":null}`, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

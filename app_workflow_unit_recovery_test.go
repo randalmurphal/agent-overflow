@@ -78,7 +78,9 @@ func TestWorkflowUnitFailureParksAndRetryCompletesTheRun(t *testing.T) {
 	if units["beta"].UnitAttempt != 2 {
 		t.Fatalf("retried unit try = %d, want 2", units["beta"].UnitAttempt)
 	}
-	if want := workflowUnitBranch(item.Branch, "beta", 2); units["beta"].Branch != want {
+	if want := workflowUnitBranch(item.Branch, workflowUnitWorkspaceRef{
+		itemID: item.ID, phaseID: "port", attempt: 1, unitID: "beta", unitAttempt: 2,
+	}); units["beta"].Branch != want {
 		t.Fatalf("retried unit branch = %q, want %q", units["beta"].Branch, want)
 	}
 	if units["alpha"].UnitAttempt != 1 {
@@ -171,7 +173,9 @@ func TestWorkflowRetryFailedUnitsRepairsEveryFailedUnitAtOnce(t *testing.T) {
 		if units[id].UnitAttempt != 2 {
 			t.Fatalf("repaired unit %q try = %d, want 2", id, units[id].UnitAttempt)
 		}
-		if want := workflowUnitBranch(item.Branch, id, 2); units[id].Branch != want {
+		if want := workflowUnitBranch(item.Branch, workflowUnitWorkspaceRef{
+			itemID: item.ID, phaseID: "port", attempt: 1, unitID: id, unitAttempt: 2,
+		}); units[id].Branch != want {
 			t.Fatalf("repaired unit %q branch = %q, want %q", id, units[id].Branch, want)
 		}
 	}

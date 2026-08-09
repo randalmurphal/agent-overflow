@@ -230,6 +230,8 @@ func validateUnitCallShape(unit Unit, element, role, command string, agentFields
 			"a call unit touches no workspace directly; access is declared by the child workflow's phases, and the child executes in this unit's sub-worktree"},
 		{[]string{"outputs"}, len(unit.Outputs) > 0,
 			"a call unit's outputs are the child workflow's declared outputs:; remove the declaration"},
+		{[]string{"resources"}, len(unit.Resources) > 0,
+			"a call unit runs no work of its own to hold capacity for; the child workflow's phases declare the resources they take, on this project's same bounds"},
 	}
 	for _, group := range forbidden {
 		if group.present {

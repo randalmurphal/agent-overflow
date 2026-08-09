@@ -139,7 +139,7 @@ func TestWorkflowHookFailureAndTimeoutParkSetupFailed(t *testing.T) {
 			if test.name == "exit" {
 				// Clearing the recipe is the fix a human applies before resuming.
 				seedWorktreeSetup(t, app, projectRow.ID, worktreesetup.Config{})
-				if err := app.WorkflowResumeItem(context.Background(), item.ID, ""); err != nil {
+				if err := app.WorkflowResumeItem(context.Background(), item.ID, "", false); err != nil {
 					t.Fatal(err)
 				}
 				item = waitForWorkflowItem(t, app, item.ID, engine.StateDone, "")
@@ -203,7 +203,7 @@ func TestWorkflowResumeWithMissingWorktreeParksSetupFailed(t *testing.T) {
 	if err := app.gitCore().RemoveWorktreeForce(repo, item.WorktreePath, true); err != nil {
 		t.Fatal(err)
 	}
-	if err := app.WorkflowResumeItem(context.Background(), item.ID, ""); err == nil {
+	if err := app.WorkflowResumeItem(context.Background(), item.ID, "", false); err == nil {
 		t.Fatal("resume with missing worktree succeeded")
 	}
 	got := waitForWorkflowItem(t, app, item.ID, engine.StateNeedsHuman, engine.ReasonSetupFailed)
@@ -288,10 +288,10 @@ func TestWorkflowStepModeBindingParksThenApprovesToDone(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitForWorkflowItem(t, app, item.ID, engine.StateNeedsHuman, engine.ReasonGate)
-	if err := app.WorkflowResolveGate(item.ID, "reject", ""); err == nil || !strings.Contains(err.Error(), "step gates support approve") {
+	if err := app.WorkflowResolveGate(context.Background(), item.ID, "reject", ""); err == nil || !strings.Contains(err.Error(), "step gates support approve") {
 		t.Fatalf("reject error = %v", err)
 	}
-	if err := app.WorkflowResolveGate(item.ID, "approve", ""); err != nil {
+	if err := app.WorkflowResolveGate(context.Background(), item.ID, "approve", ""); err != nil {
 		t.Fatal(err)
 	}
 	waitForWorkflowItem(t, app, item.ID, engine.StateDone, "")
@@ -539,7 +539,7 @@ func TestUnitWorktreeSetupFailureRollsBackOnlyFreshCut(t *testing.T) {
 		projectID: projectRow.ID, itemID: item.ID, phaseID: "fan",
 		attempt: 1, unitID: "u1", unitAttempt: 1,
 	}
-	unitBranch := workflowUnitBranch(itemBranch, "u1", 1)
+	unitBranch := workflowUnitBranch(itemBranch, ref)
 
 	// Fresh cut: the failed setup's worktree is removed, the branch and the
 	// unit's registration survive (run discard enumerates them from rows).
@@ -579,5 +579,120 @@ func TestUnitWorktreeSetupFailureRollsBackOnlyFreshCut(t *testing.T) {
 	}
 	if _, err := os.Stat(marker); err != nil {
 		t.Fatalf("failed setup destroyed the adopted worktree's prior work: %v", err)
+	}
+}
+
+// One item branch is not one fan-out's private namespace: a called run executes
+// in its caller's workspace (§9), so every wave of a self-calling campaign fans
+// out from the SAME branch, and a re-expanded phase opens an attempt whose unit
+// tries restart at 1. Retirement removes a lane's checkout and never its
+// branch, so lanes that share a name do not fail cleanly — they either refuse
+// the cut or adopt the earlier lane's checkout. Each of these must provision
+// its own, whether or not the earlier lane's checkout is still on disk.
+func TestUnitWorktreesOfSeparateFanOutsShareOneItemBranch(t *testing.T) {
+	app, _ := setupE2EApp(t)
+	repo := testutil.InitGitRepo(t)
+	projectRow := testutil.EnsureProject(t, app.store, repo)
+
+	core := app.gitCore()
+	const itemBranch = "workflow-campaign-root"
+	itemPath := filepath.Join(t.TempDir(), "root")
+	if err := core.CreateWorktreeFromBranch(repo, itemPath, "main", itemBranch); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = core.RemoveWorktreeForce(repo, itemPath, true) })
+
+	runner := newWorkflowAppRunner(app, t.TempDir(), nil)
+	primary := preparedWorkflowWorkspace{
+		path: itemPath, branch: itemBranch, baseBranch: "main", project: projectRow,
+	}
+	// Every lane below names the same phase, unit, and try. Only the fan-out
+	// owner and the phase attempt differ — the two coordinates a wave and a
+	// re-expansion move.
+	lanes := []struct {
+		name string
+		ref  workflowUnitWorkspaceRef
+	}{
+		{"wave 2", workflowUnitWorkspaceRef{
+			projectID: projectRow.ID, itemID: "wave-2", phaseID: "implement",
+			attempt: 1, unitID: "port-0", unitAttempt: 1,
+		}},
+		{"wave 3", workflowUnitWorkspaceRef{
+			projectID: projectRow.ID, itemID: "wave-3", phaseID: "implement",
+			attempt: 1, unitID: "port-0", unitAttempt: 1,
+		}},
+		{"wave 2 re-expanded", workflowUnitWorkspaceRef{
+			projectID: projectRow.ID, itemID: "wave-2", phaseID: "implement",
+			attempt: 2, unitID: "port-0", unitAttempt: 1,
+		}},
+	}
+	seeded := map[string]bool{}
+	for _, lane := range lanes {
+		if !seeded[lane.ref.itemID] {
+			if err := app.store.CreateWorkItem(store.WorkItem{
+				ID: lane.ref.itemID, ProjectID: projectRow.ID, Goal: "campaign wave",
+				WorkflowID: "campaign", WorkflowScope: "shared", State: string(engine.StateRunning),
+				Source: "manual", CreatedAt: 1,
+			}); err != nil {
+				t.Fatal(err)
+			}
+			seeded[lane.ref.itemID] = true
+		}
+		if err := app.store.CreateWorkItemUnits([]store.WorkItemUnit{{
+			ItemID: lane.ref.itemID, PhaseID: lane.ref.phaseID, Attempt: lane.ref.attempt,
+			UnitID: lane.ref.unitID, UnitIndex: 0, Kind: store.WorkItemUnitKindUnit,
+			Status: store.WorkItemUnitPending, UnitAttempt: lane.ref.unitAttempt,
+		}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	provisioned := map[string]string{}
+	for i, lane := range lanes {
+		sub, err := runner.provisionUnitWorktree(context.Background(), lane.ref, primary)
+		if err != nil {
+			t.Fatalf("%s failed to provision its lane: %v", lane.name, err)
+		}
+		if want := workflowUnitBranch(itemBranch, lane.ref); sub.branch != want {
+			t.Fatalf("%s branch = %q, want %q", lane.name, sub.branch, want)
+		}
+		if other, clash := provisioned[sub.branch]; clash {
+			t.Fatalf("%s reused branch %q, already checked out at %q", lane.name, sub.branch, other)
+		}
+		provisioned[sub.branch] = sub.path
+		unit, found, err := app.store.GetWorkItemUnit(
+			lane.ref.itemID, lane.ref.phaseID, lane.ref.attempt, lane.ref.unitID,
+		)
+		if err != nil || !found {
+			t.Fatalf("%s unit row: found=%v err=%v", lane.name, found, err)
+		}
+		if unit.Branch != sub.branch || unit.WorktreePath != sub.path {
+			t.Fatalf("%s registered %q/%q, want %q/%q", lane.name, unit.Branch, unit.WorktreePath, sub.branch, sub.path)
+		}
+		// Retirement takes the earlier lane's checkout and leaves its branch, so
+		// the next wave meets a branch that exists with nothing checked out on
+		// it — which is exactly what refused the cut in the live incident.
+		if i == 0 {
+			if err := core.RemoveWorktreeForce(repo, sub.path, true); err != nil {
+				t.Fatal(err)
+			}
+			continue
+		}
+		path := sub.path
+		t.Cleanup(func() { _ = core.RemoveWorktreeForce(repo, path, true) })
+	}
+	if len(provisioned) != len(lanes) {
+		t.Fatalf("provisioned lanes = %+v, want one per fan-out", provisioned)
+	}
+
+	// Re-entering a try is the case adoption exists for: the same coordinates
+	// must land back in the checkout that try already owns.
+	last := lanes[len(lanes)-1]
+	again, err := runner.provisionUnitWorktree(context.Background(), last.ref, primary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.path != provisioned[again.branch] {
+		t.Fatalf("re-entered try moved to %q, want its own checkout %q", again.path, provisioned[again.branch])
 	}
 }

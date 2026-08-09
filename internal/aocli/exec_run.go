@@ -26,67 +26,6 @@ type startInput struct {
 	StepMode   bool            `json:"stepMode,omitempty"`
 }
 
-// runView mirrors only the fields the human lines print. The authoritative shape
-// is the app's; `--json` forwards that one verbatim.
-type runView struct {
-	ItemID              string `json:"itemId"`
-	WorkflowID          string `json:"workflowId"`
-	WorkflowScope       string `json:"workflowScope"`
-	Goal                string `json:"goal"`
-	State               string `json:"state"`
-	Reason              string `json:"reason"`
-	CurrentPhaseID      string `json:"currentPhaseId"`
-	CurrentPhaseOrdinal int    `json:"currentPhaseOrdinal"`
-	PhaseCount          int    `json:"phaseCount"`
-	ParentItemID        string `json:"parentItemId"`
-	Resting             bool   `json:"resting"`
-	Skipped             bool   `json:"skipped"`
-	BoundThreadID       string `json:"boundThreadId"`
-	BindingWarning      string `json:"bindingWarning"`
-	// FailedUnits is present only on `run status` for a run parked on a failed
-	// fan-out; the line prints the ids because they are the second argument of
-	// `run retry-unit`.
-	FailedUnits []runFailedUnit `json:"failedUnits"`
-}
-
-// runFailedUnit is the one field of a failed unit the human line prints. The
-// app's document carries more (the unit's try count); `--json` forwards that
-// one verbatim, as it does for every other field this CLI does not model.
-type runFailedUnit struct {
-	UnitID string `json:"unitId"`
-}
-
-func (v runView) line() string {
-	phase := v.CurrentPhaseID
-	if phase != "" && v.PhaseCount > 0 {
-		phase = fmt.Sprintf("%s(%d/%d)", phase, v.CurrentPhaseOrdinal, v.PhaseCount)
-	}
-	units := make([]string, 0, len(v.FailedUnits))
-	for _, unit := range v.FailedUnits {
-		units = append(units, unit.UnitID)
-	}
-	return fields(
-		"run="+v.ItemID,
-		// Parent sits next to the run id because it is the same fact: which run
-		// this is. A campaign's `run list` is otherwise a flat list of ids with
-		// the tree that relates them invisible.
-		optionalField("parent", v.ParentItemID),
-		optionalField("workflow", v.WorkflowID),
-		"state="+v.State,
-		optionalField("reason", v.Reason),
-		optionalField("phase", phase),
-		optionalField("failed-units", strings.Join(units, ",")),
-		skippedField(v.Skipped),
-	)
-}
-
-func skippedField(skipped bool) string {
-	if !skipped {
-		return ""
-	}
-	return "skipped=true"
-}
-
 func runCommand(args []string, lookupEnv func(string) (string, bool), stdout, stderr io.Writer) int {
 	if len(args) == 0 {
 		_ = writeOutput(stderr, runUsage)
@@ -122,6 +61,10 @@ func runCommand(args []string, lookupEnv func(string) (string, bool), stdout, st
 		return runRetryFailedUnitsCommand.run(args[1:], lookupEnv, stdout, stderr)
 	case "soft-stop":
 		return runSoftStopCommand.run(args[1:], lookupEnv, stdout, stderr)
+	case "resolve":
+		return runResolveCommand.run(args[1:], lookupEnv, stdout, stderr)
+	case "answer":
+		return runAnswerCommand.run(args[1:], lookupEnv, stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "agent-overflow run: unknown command %q\n", args[0])
 		_ = writeOutput(stderr, runUsage)
@@ -188,7 +131,7 @@ var runStatusCommand = execCommand{
 			if err != nil {
 				return exitError, err
 			}
-			return exitOK, render(stdout, *jsonOutput, raw, view.line())
+			return exitOK, render(stdout, *jsonOutput, raw, view.statusBlock())
 		}
 	},
 }
@@ -305,31 +248,47 @@ func runControl(name, usage, method string, extra func(*flag.FlagSet) func() []a
 				if _, err := c.call(method, params...); err != nil {
 					return exitError, err
 				}
-				var view runView
-				raw, err := c.callInto(&view, "WorkflowAgentRunStatus", args[0])
-				if err != nil {
-					return exitError, err
-				}
-				return exitOK, render(stdout, *jsonOutput, raw, view.line())
+				return reportRunState(c, args[0], *jsonOutput, stdout)
 			}
 		},
 	}
+}
+
+// reportRunState re-reads a run after a command changed it, because "what state
+// is it in now" is the only useful answer to "I acted on it". Every acting verb
+// shares it so none of them can drift into reporting something else. The status
+// read also carries per-attempt provenance; this deliberately prints only the
+// run line, which is what `run status` is for.
+func reportRunState(c *client, itemID string, asJSON bool, stdout io.Writer, extra ...string) (int, error) {
+	var view runView
+	raw, err := c.callInto(&view, "WorkflowAgentRunStatus", itemID)
+	if err != nil {
+		return exitError, err
+	}
+	return exitOK, render(stdout, asJSON, raw, fields(append([]string{view.line()}, extra...)...))
 }
 
 var runPauseCommand = runControl("agent-overflow run pause", runPauseUsage, "WorkflowPauseItem", nil)
 
 var runCancelCommand = runControl("agent-overflow run cancel", runCancelUsage, "WorkflowCancelItem", nil)
 
+// The definition a run froze at start is what it keeps running, so --refresh-def
+// is how an operator who edited a parked phase's prompt gets the edit rendered.
+// The app refuses it where the entry is a continuation rather than a fresh one.
+const refreshDefUsage = "re-read the workflow definition and its prompt files from disk for this entry"
+
 var runResumeCommand = runControl("agent-overflow run resume", runResumeUsage, "WorkflowResumeItem",
 	func(flags *flag.FlagSet) func() []any {
 		phase := flags.String("phase", "", "re-enter this phase instead of continuing where the run parked")
-		return func() []any { return []any{*phase} }
+		refreshDef := flags.Bool("refresh-def", false, refreshDefUsage)
+		return func() []any { return []any{*phase, *refreshDef} }
 	})
 
 var runRerunCommand = runControl("agent-overflow run rerun", runRerunUsage, "WorkflowRerunItem",
 	func(flags *flag.FlagSet) func() []any {
 		guidance := flags.String("guidance", "", "text carried into the new attempt alongside the failure diagnosis")
-		return func() []any { return []any{*guidance} }
+		refreshDef := flags.Bool("refresh-def", false, refreshDefUsage)
+		return func() []any { return []any{*guidance, *refreshDef} }
 	})
 
 // retry-failed-units is its own verb rather than a --all on retry-unit: the two
@@ -371,12 +330,69 @@ var runRetryUnitCommand = execCommand{
 			if _, err := c.call("WorkflowRetryUnit", args[0], args[1], *note); err != nil {
 				return exitError, err
 			}
-			var view runView
-			raw, err := c.callInto(&view, "WorkflowAgentRunStatus", args[0])
-			if err != nil {
+			return reportRunState(c, args[0], *jsonOutput, stdout, "unit="+args[1])
+		}
+	},
+}
+
+// The gate decisions the engine accepts. Mirrored rather than imported, for the
+// same reason stateDone is: the CLI puts them on the wire, and pulling the
+// engine package in for two strings would drag the whole FSM with it.
+const (
+	decisionApprove = "approve"
+	decisionReject  = "reject"
+)
+
+// resolve settles a gate a workflow author routed to a human. It stays out of
+// the runControl family because its two directions are a DECISION rather than a
+// state: `--approve` and `--reject` take the routes the gate itself declared, so
+// neither can be the default and a caller who supplies both has not decided
+// anything. Making one of them a flag on the other would have hidden that.
+var runResolveCommand = execCommand{
+	name:  "agent-overflow run resolve",
+	usage: runResolveUsage,
+	bind: func(flags *flag.FlagSet) func(*client, []string, io.Writer) (int, error) {
+		approve := flags.Bool("approve", false, "take the gate's approve route")
+		reject := flags.Bool("reject", false, "take the gate's reject route")
+		note := flags.String("note", "", "text recorded with the decision and carried into a reject loop")
+		jsonOutput := flags.Bool("json", false, "write the app's result as JSON")
+		return func(c *client, args []string, stdout io.Writer) (int, error) {
+			if err := requireArgs("agent-overflow run resolve", args, 1, "exactly one run id"); err != nil {
 				return exitError, err
 			}
-			return exitOK, render(stdout, *jsonOutput, raw, fields(view.line(), "unit="+args[1]))
+			if *approve == *reject {
+				return exitError, usageError("agent-overflow run resolve",
+					"expected exactly one of --approve or --reject")
+			}
+			decision := decisionApprove
+			if *reject {
+				decision = decisionReject
+			}
+			if _, err := c.call("WorkflowResolveGate", args[0], decision, *note); err != nil {
+				return exitError, err
+			}
+			return reportRunState(c, args[0], *jsonOutput, stdout)
+		}
+	},
+}
+
+// answer settles the other human-routed park: the run asked a question and is
+// waiting on the text. The answer is a positional rather than a flag because it
+// is the point of the command, and requireArgs refuses a blank one — an empty
+// answer is a question still unanswered.
+var runAnswerCommand = execCommand{
+	name:  "agent-overflow run answer",
+	usage: runAnswerUsage,
+	bind: func(flags *flag.FlagSet) func(*client, []string, io.Writer) (int, error) {
+		jsonOutput := flags.Bool("json", false, "write the app's result as JSON")
+		return func(c *client, args []string, stdout io.Writer) (int, error) {
+			if err := requireArgs("agent-overflow run answer", args, 2, "a run id and the answer text"); err != nil {
+				return exitError, err
+			}
+			if _, err := c.call("WorkflowAnswerQuestion", args[0], args[1]); err != nil {
+				return exitError, err
+			}
+			return reportRunState(c, args[0], *jsonOutput, stdout)
 		}
 	},
 }

@@ -113,10 +113,12 @@ agent-overflow [--config-root <path>] <command>
   run list [--active] [--json]
   run pause|cancel <run-id> [--json]
   run soft-stop <run-id> [--clear] [--json]
-  run resume <run-id> [--phase <id>] [--json]
-  run rerun <run-id> [--guidance <text>] [--json]
+  run resume <run-id> [--phase <id>] [--refresh-def] [--json]
+  run rerun <run-id> [--guidance <text>] [--refresh-def] [--json]
   run retry-unit <run-id> <unit-id> [--note <text>] [--json]
   run retry-failed-units <run-id> [--note <text>] [--json]
+  run resolve <run-id> --approve|--reject [--note <text>] [--json]
+  run answer <run-id> <text> [--json]
   notes get|set <automation-id> [--file <path>] [--json]
   schedule <workflow-id> --cron <expr> [--name|--scope|--seed k=v|--json]
 ```
@@ -128,13 +130,49 @@ stop at, so the request is accepted and simply never fires (D36). A verb that
 succeeds and then does nothing has to say so where the caller is already
 looking.
 
+`--refresh-def` (on `run resume` and `run rerun`) is the repair for "I edited
+the prompt of a parked phase". A run freezes its whole resolved definition —
+prompt file contents inlined — at start and renders that on every attempt, which
+is invisible until it bites: the operator edits the file, resumes, and watches
+the run park again on the prompt it already had. The flag re-reads the workflow
+and its prompt files from disk for that entry and re-freezes what it read, so
+the edited version is what runs from there on. It applies where a phase is
+entered FRESH — the engine refuses it on a bare resume of a continuable park,
+naming `--phase <id>` as the way to say "discard that attempt" — and it is
+needed only for repair: between campaign waves the call edge already resolves
+its target from disk on every invocation. The usage strings and the composer
+repair-map footer both say so, because the freeze is the kind of default a
+caller only learns by being bitten.
+
+`run resolve` is the one run verb outside the `runControl` family, because its
+two directions are a DECISION rather than a state: `--approve` and `--reject`
+name the routes the gate itself declared, so neither can be the default and
+supplying both is a usage error, not a precedence rule. It settles `human:`
+routes only — a `park:` route rests under the same `gate` reason but declares
+no approve/reject, so the engine refuses it with a message naming `run resume`
+as the repair, and the usage string, composer repair map, and wake all key the
+distinction off the `decision=` field `run status` renders per attempt (D41
+amendment). `run answer` takes its
+text as a positional — it is the point of the command — and `requireArgs`
+refuses a blank one, since an empty answer is a question still unanswered. Both
+verbs need the `resolve` grant in a phase session; an interactive session holds
+every listed method already.
+
 The human lines carry what the next verb needs (D38): `runView.line()` renders
 `parent=<run-id>` so a campaign's flat `run list` shows its tree, and
 `failed-units=<ids>` on `run status` so `run retry-unit`'s second argument is
-readable from the CLI. Failed units are resolved on the single-run read only —
-a list would pay one unit query per row. A `run list` with no rows prints `No
-runs in this project.` rather than nothing, because a blank answer reads as a
-command that did not work; `--json` still prints the app's own `[]`.
+readable from the CLI. `run status` alone additionally renders one
+`phase=<id> attempt=N status=… provider=… model=… effort=… decision=<kind>->…`
+line per phase attempt (`runView.statusBlock`), because a gate consumed exactly
+one attempt's outputs and a reader deciding between `run resolve`, `run resume
+--phase`, and `run rerun` needs to know which one and what it ran with. Kind and
+target print as one field: they are one fact. Failed units and phase attempts
+are both resolved on the single-run read only — a list would pay an extra query
+per row — and the acting verbs re-read status through `reportRunState`, which
+prints the run line alone: "where is it now" is what they were asked. A `run
+list` with no rows prints `No runs in this project.` rather than nothing,
+because a blank answer reads as a command that did not work; `--json` still
+prints the app's own `[]`.
 
 `workflow list` follows the same rule and adds the one cause a blank answer has:
 with no rows it prints `No workflows are configured here.`, plus — when no
@@ -194,10 +232,24 @@ literal word `/workflow`, and the send path appends the block to the
 provider-bound payload (D31, `app_composer_commands.go`).
 
 The block also carries the **reason→verb repair map** (`composerRepair`, D38):
-which park reasons a CLI verb repairs, and — just as load-bearing — that gates
-and questions are decided by a human in the app. Both tables render through
-`writeComposerRows`, which pads the left column in runes at render time, so
-editing a row cannot leave the block ragged.
+every park reason a CLI verb settles, the verb, and what taking it does — the
+last part is load-bearing where one reason has two answers, as
+`retries-exhausted` does (`run resume` re-enters the parked phase fresh, `run
+resume --phase <id>` goes back further and refills the loop budgets). A reason
+absent from the map is one whose own cause is the instruction, and the line
+under the table says so, because an unexplained omission is what makes an agent
+invent a verb. The same line names who may decide a gate or a question: the
+`resolve` grant in a phase, implicitly in an interactive session. Both tables
+render through `writeComposerRows`, which pads the left column in runes at
+render time, so editing a row cannot leave the block ragged.
+
+Under the table sits the one sentence the whole run-verb set turns on: **`run
+resume` continues and preserves; `run resume --phase <id>` starts that phase
+over**, re-running everything in it including the runs it called. It is stated
+once, outside any row, because it is what an agent has to know before it picks a
+row at all — a `unit-failed` park is repaired by `run retry-failed-units` (the
+join included) or by a bare resume, and by `--phase` only when re-doing the wave
+is the actual intent.
 
 ## Files
 
@@ -209,6 +261,7 @@ editing a row cannot leave the block ragged.
 | `session.go` | The AO_* contract, session resolution, and the scoped HTTP RPC client. |
 | `exec.go` | Execution-command skeleton: seed parsing, permuted flag parsing, JSON/human rendering. |
 | `exec_run.go` | `agent-overflow run …`. |
+| `exec_run_view.go` | What a run and its phase attempts look like on a human line. |
 | `exec_automation.go` | `agent-overflow notes …` and `agent-overflow schedule`. |
 | `composer.go` | The `/workflow` block renderer. |
 | `workflow_files.go`, `workflow_new.go`, `profile.go` | Definition discovery, scaffolding, profile binding checks. |

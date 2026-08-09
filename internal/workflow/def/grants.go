@@ -22,6 +22,12 @@ const (
 	// GrantIntrospect lets the phase read run status, outputs, and listings
 	// across its project.
 	GrantIntrospect Grant = "introspect"
+	// GrantResolve lets the phase decide the parks a run it started rests on:
+	// approve/reject a human gate and answer a question. It is separate from
+	// start-run on purpose — starting and stopping work is routine, while
+	// answering a decision the workflow author routed to a human is authority
+	// an author must hand out deliberately.
+	GrantResolve Grant = "resolve"
 )
 
 // grantSet is the closed membership test behind validation and the app's token
@@ -34,6 +40,7 @@ var grantSet = map[Grant]struct{}{
 	GrantSchedule:    {},
 	GrantUpdateNotes: {},
 	GrantIntrospect:  {},
+	GrantResolve:     {},
 }
 
 // KnownGrant reports whether name is a grant the system can enforce.

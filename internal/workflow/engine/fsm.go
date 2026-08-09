@@ -28,7 +28,10 @@ func transitionAllowed(from, to State) bool {
 	case StateRunning:
 		return to == StateNeedsHuman || to == StateDone || to == StateFailed || to == StateCancelled
 	case StateNeedsHuman:
-		return to == StateRunning
+		// Running is the resume. Cancelled is the other way out, and it has to
+		// exist: a run resting at a gate a human decides never to approve would
+		// otherwise be immortal short of resuming it into work nobody wants.
+		return to == StateRunning || to == StateCancelled
 	case StateFailed:
 		// Rerun. `done` and `cancelled` stay terminal: a finished run is
 		// re-entered by starting a new one, and a cancelled run was stopped on
@@ -190,9 +193,10 @@ func (e *Engine) complete(key RunKey, outcome Outcome) error {
 }
 
 // completePhaseOutcome maps a phase-level outcome onto the FSM. A fan-out's
-// join reaches it too: the join's envelope is the phase's envelope, so its
-// outcome is the phase's outcome and a join that fails is an agent error, not
-// the unit-failure policy.
+// join reaches it too, under its own unit key: the join's envelope is the
+// phase's envelope, so its outcome is the phase's outcome — but a join that
+// FAILED is still a unit of the attempt failing, and it parks as one
+// (phaseFailureReason).
 func (e *Engine) completePhaseOutcome(item *runtimeItem, key RunKey, outcome Outcome) error {
 	switch outcome.Kind {
 	case OutcomeDone:
@@ -210,15 +214,30 @@ func (e *Engine) completePhaseOutcome(item *runtimeItem, key RunKey, outcome Out
 		if item.takeoverFinalize {
 			return e.teardown(item, teardownRequest{output: outcome.Envelope, phaseStatus: "parked", nextState: StateNeedsHuman, reason: ReasonTakenOver})
 		}
-		return e.teardown(item, teardownRequest{output: outcome.Envelope, phaseStatus: "parked", nextState: StateNeedsHuman, reason: ReasonAgentError})
+		return e.teardown(item, teardownRequest{output: outcome.Envelope, phaseStatus: "parked", nextState: StateNeedsHuman, reason: phaseFailureReason(key)})
 	case OutcomeStopped:
 		return e.teardown(item, teardownRequest{output: outcome.Envelope, phaseStatus: "parked", nextState: StateNeedsHuman, reason: ReasonInterrupted})
 	default:
 		return errors.Join(
-			e.teardown(item, teardownRequest{output: outcome.Envelope, phaseStatus: "parked", nextState: StateNeedsHuman, reason: ReasonAgentError}),
+			e.teardown(item, teardownRequest{output: outcome.Envelope, phaseStatus: "parked", nextState: StateNeedsHuman, reason: phaseFailureReason(key)}),
 			fmt.Errorf("phase %s/%s/%d returned unknown outcome %q", key.ItemID, key.PhaseID, key.Attempt, outcome.Kind),
 		)
 	}
+}
+
+// phaseFailureReason classifies an attempt that produced no usable result. Only
+// a fan-out's join reaches completePhaseOutcome under a unit key, and its
+// failure is the failure of one unit of the attempt: the wave's finished units
+// still hold their results, and the call children among them are entire runs
+// that must never be re-executed to repair the step that consolidates them. So
+// it parks `unit-failed`, where the retry verbs reach it and a bare resume
+// continues the attempt. A single-shape phase has nothing of the kind behind it
+// and stays an agent error.
+func phaseFailureReason(key RunKey) Reason {
+	if key.UnitID != "" {
+		return ReasonUnitFailed
+	}
+	return ReasonAgentError
 }
 
 func (e *Engine) completeDone(item *runtimeItem, envelope json.RawMessage) error {

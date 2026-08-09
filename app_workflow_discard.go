@@ -72,7 +72,9 @@ type WorkflowDiscardPreview struct {
 	Members []string `json:"members"`
 	// LiveMembers is the subset still in flight. Discarding cancels them first;
 	// they are called out because that is work the human is stopping, not just
-	// work they are throwing away.
+	// work they are throwing away. It is narrower than what the discard settles
+	// (workflowDiscardStops): a parked member is also cancelled, but naming it
+	// here as "still working" would be a lie about what it is doing.
 	LiveMembers []string                  `json:"liveMembers"`
 	Worktrees   []WorkflowDiscardWorktree `json:"worktrees"`
 }

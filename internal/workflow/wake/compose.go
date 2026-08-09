@@ -46,6 +46,14 @@ const (
 	reasonInterrupted = "interrupted"
 	reasonGate        = "gate"
 	reasonQuestion    = "question"
+
+	reasonRetriesExhausted = "retries-exhausted"
+
+	// The two decision kinds a `gate` park can rest under, mirrored from
+	// def.DecisionHuman / def.DecisionPark for the same reason the reasons
+	// above mirror the engine's.
+	gateDecisionHuman = "human"
+	gateDecisionPark  = "park"
 )
 
 // dataNotice is the one framing line. Everything quoted below it came out of a
@@ -66,6 +74,15 @@ type Run struct {
 	// Detail is the envelope's question or stuck reason — free text from the
 	// phase that rested.
 	Detail string
+	// GateDecision is the persisted decision kind behind a `gate` park —
+	// "human" for a human: route, "park" for a park: route — resolved by the
+	// app from the attempt's gate trace. Both rest under the one reason, but
+	// only a human: route has an approve/reject to resolve, so the closing's
+	// verb depends on it. Empty when unknown; the closing then names both.
+	GateDecision string
+	// GateLabel is a park: route's authored label (`park: <label>`), the one
+	// word the author chose to say why a human is needed.
+	GateLabel string
 }
 
 // Descendant is a called run that parked while its root kept waiting. When it
@@ -79,6 +96,11 @@ type Descendant struct {
 	Reason     string
 	PhaseID    string
 	Detail     string
+	// GateDecision and GateLabel mirror Run's: the closing issues its repair
+	// verb against the DESCENDANT, so the human-vs-park distinction has to
+	// travel with it.
+	GateDecision string
+	GateLabel    string
 	// Depth is how far below the root the parked run sits, 1 for a direct
 	// child. It is what tells a reader "this is not the run you started".
 	Depth int
@@ -275,7 +297,7 @@ func closing(in Input) string {
 			"Run %s cannot continue until called run %s is resolved; act on run %s, not on %s.",
 			untrustedtext.Field(in.Run.ItemID), untrustedtext.Field(child.ItemID),
 			untrustedtext.Field(child.ItemID), untrustedtext.Field(in.Run.ItemID),
-		), repairSentence(child.ItemID, child.State, child.Reason))
+		), repairSentence(child.ItemID, child.State, child.Reason, child.GateDecision, child.GateLabel))
 	}
 	switch in.Run.State {
 	case stateNeedsHuman:
@@ -285,9 +307,9 @@ func closing(in Input) string {
 		}
 		return join(fmt.Sprintf("Run %s is parked and does not continue until this is resolved.",
 			untrustedtext.Field(in.Run.ItemID)),
-			repairSentence(in.Run.ItemID, in.Run.State, in.Run.Reason))
+			repairSentence(in.Run.ItemID, in.Run.State, in.Run.Reason, in.Run.GateDecision, in.Run.GateLabel))
 	case stateFailed:
-		return join("The run is over.", repairSentence(in.Run.ItemID, in.Run.State, in.Run.Reason))
+		return join("The run is over.", repairSentence(in.Run.ItemID, in.Run.State, in.Run.Reason, "", ""))
 	case stateDone:
 		return "The run finished; nothing is waiting on a reply."
 	case stateCancelled:
@@ -299,11 +321,18 @@ func closing(in Input) string {
 
 // repairSentence names the exact command that acts on a run resting this way,
 // or the fact that no command does. Naming the run without naming the verb is
-// the gap a cold agent falls into: it knows which run to act on, guesses at how,
-// and either picks the wrong verb or answers a question that was never its to
-// answer. The reasons with no CLI verb say so rather than being left out, so
-// silence never reads as "there must be one I haven't found".
-func repairSentence(itemID, state, reason string) string {
+// the gap a cold agent falls into: it knows which run to act on, guesses at
+// how, and picks the wrong one. The reasons with no CLI verb say so rather
+// than being left out, so silence never reads as "there must be one I haven't
+// found".
+//
+// A `gate` park is two states under one reason, and the verb differs:
+// gateDecision tells a human: route (approve/reject exists — `run resolve`)
+// from a park: route (no continuation is declared — `run resume` re-enters the
+// phase). An unresolved kind names both rather than guessing, because sending
+// a reader to `run resolve` for a park: route is exactly the dead verb this
+// sentence exists to prevent.
+func repairSentence(itemID, state, reason, gateDecision, gateLabel string) string {
 	id := untrustedtext.Field(itemID)
 	if state == stateFailed {
 		return fmt.Sprintf("`agent-overflow run rerun %s` starts its last phase again once the cause is fixed.", id)
@@ -314,12 +343,37 @@ func repairSentence(itemID, state, reason string) string {
 	switch reason {
 	case reasonUnitFailed:
 		return fmt.Sprintf(
-			"Repair it with `agent-overflow run retry-failed-units %s`, or `agent-overflow run retry-unit %s <unit-id>` for one of the failed units above.",
-			id, id)
+			"Repair it with `agent-overflow run retry-failed-units %s`, or `agent-overflow run retry-unit %s <unit-id>` for one of the failed units above — a failed join is one of them. %s continues the same attempt instead. None of these re-run a unit that finished; `run resume --phase <id>` would, because it starts the phase over.",
+			id, id, resumeCommand(itemID))
 	case reasonPaused, reasonInterrupted:
 		return resumeCommand(itemID) + " returns it to running."
-	case reasonGate, reasonQuestion:
-		return "Only a human decides this, in the app; surface it rather than answering it, because no CLI verb resolves it."
+	case reasonGate:
+		switch gateDecision {
+		case gateDecisionHuman:
+			return fmt.Sprintf(
+				"Decide it with `agent-overflow run resolve %s --approve|--reject [--note <text>]` — this is a judgment the workflow routed out of the run, so decide only what you have the standing to decide (a phase session needs the `resolve` grant).",
+				id)
+		case gateDecisionPark:
+			label := ""
+			if gateLabel != "" {
+				label = fmt.Sprintf(" (%s)", untrustedtext.Field(gateLabel))
+			}
+			return fmt.Sprintf(
+				"This is a park: route%s: it declares no approve or reject, so `run resolve` does not apply. Once its cause is addressed, %s re-enters the phase — an approvable park is authored as a human: route.",
+				label, resumeCommand(itemID))
+		default:
+			return fmt.Sprintf(
+				"If `agent-overflow run status %s` shows the parked attempt's decision as human, decide it with `agent-overflow run resolve %s --approve|--reject`; a park: route instead declares no approve or reject, and %s re-enters the phase once its cause is addressed.",
+				id, id, resumeCommand(itemID))
+		}
+	case reasonQuestion:
+		return fmt.Sprintf(
+			"Answer it with `agent-overflow run answer %s <text>` — the answer rides into the phase as feedback, so answer only what you actually know (a phase session needs the `resolve` grant).",
+			id)
+	case reasonRetriesExhausted:
+		return fmt.Sprintf(
+			"`agent-overflow run resume %s --phase <phase-id>` re-enters an earlier phase with fresh loop budgets; a plain `run resume` retries the parked phase without refilling them, so fix what exhausted the loop first.",
+			id)
 	default:
 		// Every other reason names its own cause and is repaired by fixing that
 		// cause, so there is no one verb to print. Inventing a generic "resume"

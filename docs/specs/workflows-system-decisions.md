@@ -1764,3 +1764,337 @@ verdict it now is, with what the first attempt got wrong.
   `validate --id` carries them inside the not-found error, where the caller is
   already looking. The notes go to stderr in both modes so `--json`'s document
   stays exactly the list.
+
+## The narrative rides in the envelope (2026-08-08)
+
+- **D40. A read-only element's account is an optional `narrative` control
+  field, not a separate message.** D39's read-only half was written against
+  Claude's `--json-schema`, which constrains only the final structured output,
+  and it is unfollowable on Codex: `turn/start outputSchema` is a whole-turn
+  Responses-API `text.format` constraint, so EVERY assistant message of a
+  schema'd turn is forced into envelope JSON and the element cannot emit prose
+  at all. Two things followed from that on Codex — the suffix asked for a
+  message the element could not send, and the D39 fallback then recovered the
+  envelope JSON blob as the "narrative" for exactly the elements the fallback
+  exists for.
+
+  **The envelope gains a fifth control name.** `narrative` is an optional
+  top-level string beside `status` / `outputs` / `question` / `reason`, legal on
+  **every** status — a done, a question, and a stuck element all did work worth
+  an account, and refusing it anywhere would burn the element's single envelope
+  retry on the one field that is never a mistake. It is the only control field
+  the generated schema requires and post-validation does not: strict mode's only
+  optional is required-and-nullable, while a tool command writes its envelope by
+  hand and every envelope frozen before this decision omits it. Outputs nest
+  under `outputs`, so an author may still declare an output named `narrative`;
+  the two never meet, and no reserved-name check was added for a collision the
+  structure already prevents.
+
+  **Stripped at one seam, so nothing downstream sees prose.** The app lifts the
+  field out where every agent-backed turn already reports — phases, units, joins,
+  `Answer` continuations, takeover finalizes — and hands the engine the envelope
+  without it, so gate evaluation, a join's `units` results, call synthesis, and
+  the persisted attempt envelope are unchanged in shape. The lifted text becomes
+  the attempt's narrative file with **no** recovered header: the element
+  deliberately put it there, so it is authored exactly as a file it wrote would
+  be. An existing file still always wins.
+
+  **The write branch is untouched, and the field is still explained to it.** A
+  narrative authored during the work is richer than one summarized into a field
+  afterwards, so a `write` element keeps the file instruction as primary and is
+  told to null the field. It is told rather than left silent because the schema
+  makes every element answer it, and an unexplained required field is one a
+  phase guesses at.
+
+  **A command may write one too.** Post-validation is written once against the
+  contract for both drivers, so refusing `narrative` in a tool envelope would be
+  a second rule set for one contract. It is folded into the same narrative file
+  the masked output tail goes to, leading it — the account is the only part of
+  that file a human did not have to reconstruct from a process.
+
+  **D39's fallback still exists, and now survives Codex.** An element that
+  supplies neither file nor field falls back to the session's final assistant
+  text as before. A candidate carrying a top-level `status` is read as an
+  envelope rather than as prose, and what is recovered from it is the account it
+  holds (`narrative`, else `reason`) — never its raw JSON; one with no account is
+  skipped like the envelope echo. That shape test is deliberately weaker than
+  D39's document-identity test and applies only to candidates that already
+  failed it.
+
+## Agents settle parks, budgets are seedable, units claim capacity (2026-08-09)
+
+A multi-wave campaign run surfaced these as one cluster: its babysitting agent
+could not decide a park it had the judgment to decide, could not size a loop
+budget per run, could not put a command unit under capacity accounting, and
+could not see which attempt a gate had actually consumed. All four were
+authority or visibility the system withheld, not capability it lacked.
+
+- **D41. A park is settleable from the CLI, under a grant an author hands out
+  deliberately.** D38 ruled that `gate` and `question` have no CLI verb — they
+  are the judgments the system exists to route to a human. That ruling assumed
+  a human is watching an approval surface; in practice the watcher is an
+  interactive agent session babysitting a campaign, there is no approval UI,
+  and "surface it, don't answer it" meant every human gate was a dead stop.
+
+  **Two verbs, one new grant.** `run resolve <run-id> --approve|--reject
+  [--note]` decides a `needs-human(gate)` park through the same
+  `ResolveHumanGate` path the app would use; `run answer <run-id> <text>`
+  answers a `needs-human(question)` one. Both are admitted by the new
+  `resolve` grant — deliberately separate from `start-run`, because starting
+  and stopping work is routine while answering a decision the workflow author
+  routed to a human is authority an author must hand out per phase. An
+  interactive session holds every listed method implicitly (its every
+  invocation passes the provider's own approval UX); a phase session needs
+  the grant, and even then may settle only the runs that phase started — the
+  same row-level confinement every acting verb has.
+
+  **The map and the wake now say so.** D38's "naming the absence is half the
+  ruling" paragraph is superseded for these two reasons: the composer repair
+  map and the wake closing name the verbs, tell a phase session it needs the
+  grant, and tell the reader to decide only what is theirs to decide. The
+  wake also gained the `retries-exhausted` line D38 left out —
+  `run resume --phase <id>` re-enters an earlier phase and refills loop
+  budgets, a resume in place does not — because that reason DID have verbs
+  and printing nothing read as "no verb exists".
+
+  **The verb needs its evidence, so `run status` grew provenance.** Deciding
+  between `run resolve`, `run resume --phase`, and `run rerun` requires
+  knowing which attempt produced the outputs the gate consumed and what it
+  ran with. All of it was already persisted — attempt rows carry status,
+  thread, and gate trace; workflow threads are stamped with resolved
+  provider/model/effort at creation — so the single-run status read now
+  renders one line per phase attempt (phase, attempt, status, provider,
+  model, effort, gate decision, exhausted edges), resolved by one joined
+  query and never on `run list`, the same bounded-cost rule `failedUnits`
+  set.
+
+  **Amendment (same day): `run resolve` settles `human:` routes only — a
+  `park:` route is undecidable by construction, and every surface now says
+  which is which.** The first agent to hold the verb aimed it at a `park:`
+  park and got "persisted decision is park without a human intervention" —
+  engine-speak that reads as a corrupt record rather than as the construct
+  working. The two route forms rest under the one `gate` reason, but only
+  `human:` declares an approve target and a reject loop; resolving it
+  completes the parked attempt, which is why its outputs survive into the
+  variable context. A `park:` route declares no continuation — there is
+  nothing an approve could select, and no completion path exists that would
+  carry its outputs forward — so its repair is `run resume` (a fresh attempt
+  of the phase), and an author who wants the stop to be decidable writes a
+  `human:` route. What changed: the refusal now says exactly that and names
+  the repair; the wake's gate closing branches on the persisted decision kind
+  (resolved app-side from the gate trace, best-effort — an unreadable trace
+  names both verbs rather than guessing); the composer repair map carries
+  both gate rows keyed by the `decision=` field `run status` already renders;
+  and `run resolve --help` states the boundary. No new authority was added —
+  `resume` always accepted a park:-route park (`isHumanGate` is what fences
+  the human form) — this is the D38 rule applied to the distinction: a verb
+  that cannot act must say so where the reader is already looking.
+
+- **D42. A loop bound is a literal or a variable reference, resolved at
+  evaluation time.** `max: 2` froze retry budgets into the definition; a
+  campaign wanting a deeper budget for one run had to edit shared YAML. `max:
+  inputs.fix-budget` now resolves against the run's variables each time the
+  gate evaluates, so `--seed fix-budget=4` sizes one run without touching the
+  file. The resolved value must be an integer ≥ 1 — an unresolvable or
+  malformed bound is a `wiring-error` park (or fails the human's reject
+  action loudly on the `reject.max` path), never a silent default — and the
+  persisted decision carries the resolved integer, so derived loop counts and
+  recorded budgets always compare the same numbers and a run's trace says
+  what budget it actually ran under. Frozen snapshots that carry the old
+  integer form decode unchanged.
+
+- **D43. A fan-out unit may declare `resources:` of its own.** Phase-declared
+  resources are attempt-scoped by design (a `live-stack` mutex is taken once,
+  not once per unit), which left no way to put a per-unit cost under capacity
+  accounting — the concrete case being a gate-check command unit that needs
+  one `container-slot` per running check. Unit-declared resources are
+  acquired per running unit through the same all-or-nothing, live-profile,
+  shared-FIFO admission a phase uses; agent and tool units alike may declare
+  them, with provider capacity still appended only for agent units. A call
+  unit runs no work and declares none — validation refuses the declaration
+  statically, and a frozen definition carrying one parks `wiring-error`
+  rather than being silently ignored.
+
+## An envelope owes its status, absence crosses call edges, and no park is immortal (2026-08-09)
+
+The same overnight campaign, second cluster — this one diagnosed from the
+production database with the run ids in hand. The original campaign root
+turned out to have died twice by the same class of defect: the system treating
+a legal absence as an error. A fully successful merge join was refused because
+its hand-written envelope omitted the `question`/`reason` keys, and the
+restarted root then parked at its own recursion point because an `optional:`
+input was, as declared, absent. Two more were authority gaps a run could not
+escape: a parked run was uncancellable from every surface, and a third reject
+on a spent reject budget silently destroyed the gate's still-declared approve.
+
+- **D44. Post-validation owes literal presence to `status` alone.** The
+  generated envelope schema lists every control key in `required` because
+  provider strict mode demands it — but `ValidateEnvelope` also judges
+  envelopes the tool driver reads from disk, hand-written by scripts that
+  never saw that schema. Requiring the keys literally made `"question": null,
+  "reason": null` boilerplate whose omission converted a successful merge
+  into an execution failure, a failed join, and an `agent-error` park. Now an
+  absent `outputs` / `question` / `reason` / `narrative` reads exactly as the
+  null a schema-bound provider would have sent — absence and explicit null
+  are the same statement — while a `done` envelope whose phase declares
+  outputs is still refused per missing declared output, by name. The rule the
+  `narrative` field already had (D40: schema-required, absence-tolerated) is
+  now the rule for every control key but the discriminator. One contradiction
+  this resolved in the documented contract's favor: a control-only unit's
+  envelope was documented as "outputs present but always null" while
+  validation rejected exactly that on `done`; the `must be non-null when
+  status is done` finding is gone, subsumed by the per-output findings where
+  outputs are declared and ceremony where none are.
+
+- **D45. An absent optional input crosses a call edge as absence.** Call
+  arguments now evaluate where the resolved child is in scope: an arg whose
+  reference does not resolve is omitted when the child input it seeds is
+  declared `optional:` — the child sees what a direct start without that seed
+  would give it — and refuses only when the input is required or undeclared
+  (undeclared stays an error: nothing exists to be optional, and static
+  validation already rejects the argument). One implementation serves the
+  phase edge and the fan-out unit's call edge. The refusal also moved onto a
+  persisted phase attempt row: the campaign's park happened during argument
+  evaluation *before* the row persisted, which is why a run that visibly
+  decided `advance → next-wave` rested `wiring-error` with no attempt to
+  explain it. A refused unit call likewise leaves its `pending` row — a call
+  that cannot be made is still not a unit failure.
+
+- **D46. A parked run is cancellable.** `cancel` only reached items resident
+  in the engine's memory, and the FSM allowed `needs-human → running` only —
+  so a run parked at a gate nobody intended to approve was immortal short of
+  resuming it into work nobody wanted first. `needs-human → cancelled` is now
+  a legal edge; cancelling a non-resident run loads the parked record, walks
+  its call children with the same store-driven walk teardown uses, and
+  settles the tree — pure bookkeeping, since a parked run holds no processes
+  and no resources. The parked attempt row stays untouched (it is the only
+  record of why a human was asked). A parent whose called child was cancelled
+  observes it through the normal child-settlement path: a call phase parks
+  `agent-error` naming the cancelled child — cancelling the parent too is the
+  human's call — and a call unit fails, parking `unit-failed`. A
+  `disposition` park alone refuses cancel: that run is done; the disposition
+  verbs settle it.
+
+- **D47. A spent reject budget refuses the reject; it never converts the
+  park.** The reject loop's bound could be exhausted while the gate still
+  declared its approve, and the third reject converted the park to
+  `retries-exhausted` — the gate offered two verbs and taking one of them
+  destroyed both. An over-budget reject is now refused with the live options
+  named: approve, `run resume --phase <target>` (a fresh entry from outside
+  the cycle, which refills the loop bound), or cancel (real since D46).
+  Nothing is persisted by the refusal — no intervention, no trace rewrite;
+  the run rests exactly as parked and approve still completes the attempt.
+  Making the named escape true required one adjacent fix: a human-gate park
+  had refused `Resume` unconditionally, so the refusal would have named a
+  dead verb. The guard now blocks only a resume in place or at the parked
+  phase itself — the decision belongs to `ResolveHumanGate` — while naming a
+  different phase is the human abandoning the gate to redo earlier work.
+
+- **D48. Resume continues and preserves; `--phase` starts over; a failed
+  join is a failed unit (user ruling: full flexibility, sane defaults,
+  obvious usage).** The incident: a fan-out's working units were all done —
+  each a completed call child, an entire child run — when the join failed
+  (on the D44 boilerplate defect). The join was classified `agent-error`,
+  the retry verbs refuse joins ("the join settles with its attempt"), and
+  `recoverableUnitPark` excludes agent-error — so the only verb that worked
+  was bare `run resume`, whose non-resumable-reason path is a fresh attempt:
+  full wave re-expansion, completed child runs respawned from scratch. Worse,
+  bare resume on an ordinary `unit-failed` park took the same destructive
+  path — the generic verb an agent reaches for first silently discarded
+  exactly the work the retry verbs preserve.
+
+  Three rulings, one teachable rule (*resume continues and preserves;
+  `--phase` starts over; retry verbs target units, the join included*):
+
+  - **A failed join parks `unit-failed`, not `agent-error`.** The join is a
+    unit of the attempt; its failure is a unit failure. Retry (single or
+    all-failed) re-runs the join alone over the preserved unit results; drop
+    stays refused — the join is what consolidates the units, so its absence
+    cannot be accepted. `run status` lists the join among `failed-units=` so
+    it is nameable by `run retry-unit`.
+  - **Bare `run resume` never discards finished work.** `ContinuableReason`
+    (`paused | interrupted | checkpoint | unit-failed`) routes a bare resume
+    through the continuation path — reopen failed units and the join, keep
+    done units and their call children, join on the thread it parked on. The
+    dispatch lives inside the engine's `resume`, so no caller can reach the
+    destructive path by accident. Everything else keeps fresh entry: gate and
+    question parks rest on a *settled* attempt (join done), so continuation
+    would be wrong for them, and the human-gate guard (D47) runs before the
+    dispatch.
+  - **`run resume --phase <id>` — which may name the parked phase itself —
+    is the one explicit "start over".** Fresh attempt, wave re-expanded,
+    call children respawned, loop budgets refilled by the fresh entry.
+    Discarding finished work always requires saying so; the prior attempt's
+    rows stay as history.
+
+  Deliberate residue, recorded rather than papered over: a JOIN that rests
+  `question` / `stuck` / `stalled` / `transient-exhausted` keeps its own
+  typed park (those states have their own verbs — answer, takeover, the
+  transient retry layer), and bare resume from those still re-expands. If a
+  live campaign hits that footgun the fix is extending continuation to
+  settled-join-absent parks, not reclassifying the states. Rider shipped
+  with this cluster: discard now settles parked tree members too (the
+  StateRunning filter predated D46; only a `disposition` park is skipped),
+  and the frontend's existing "Retry unit" button now works on a failed join
+  — its "Drop unit" label and the missing resume row in the unit-failed
+  action group are surfaced follow-ups, not shipped here.
+
+## A lane branch is named by its whole coordinate (2026-08-09)
+
+- **D49. A fan-out unit's branch name keys on the full provisioning
+  coordinate, not just `(item branch, unit id, try)`.** Wave 3 of the live
+  campaign parked all three lanes `setup-failed` before any agent ran: a
+  self-call child inherits the caller's workspace (§9), so every wave's run
+  shares the root's branch — and wave 3's fan-out derived exactly the lane
+  branch names wave 2's fan-out already created (`<root-branch>-port-0-1`,
+  …). Lane retirement removes checkouts, never branches (deliberate — the
+  rows are the cleanup source of truth), so the cut refused. Every
+  multi-wave campaign would hit this at wave 3+, and the under-keyed name
+  hid two latent collisions besides: a `--phase` re-expansion (attempt 2,
+  tries reset to 1) derived attempt 1's exact names and would silently
+  *adopt* attempt 1's checkouts as fresh lanes, and two fan-out phases
+  sharing unit ids would collide within one item. The name is now
+  `<itemBranch>-<owner item id, 8>-<phase>-a<attempt>-<unit>-<try>` —
+  human-readable, no hashes, sanitize-then-truncate on author fragments —
+  which keeps the two load-bearing properties: same coordinates → same name
+  (re-entry adopts its own checkout; a call-bound unit's child lands in the
+  checkout the unit owns) and the `<itemBranch>-` prefix (a run's branches
+  stay findable from the item). Nothing else derives lane names — retire,
+  discard, and enrichment all read the persisted unit row — so rows carrying
+  old-format names need no migration. Known edge, loud not silent: two
+  ~64-char author ids on a long item branch can exceed the loose-ref
+  filename limit, failing the cut into a `setup-failed` park; bounding the
+  fragments would reintroduce the collision class, so it stays.
+
+## The freeze gets an explicit escape (2026-08-09)
+
+- **D50. `--refresh-def` re-reads a parked run's definition at a fresh phase
+  entry; nothing refreshes implicitly.** The snapshot freezes the whole
+  resolved definition — prompt file contents inlined — and every attempt
+  renders from it. That is deliberate (mid-flight reproducibility; the call
+  edge is the designed re-read, which is how a campaign wave picks up
+  edits), but it left a run parked for *operator repair* with no edit
+  channel at all: a live lane parked `stuck`, the operator edited the phase
+  prompt, resumed, and the lane re-rendered the frozen prompt into an
+  identical park — twice. `run resume --refresh-def` and `run rerun
+  --refresh-def` now re-resolve the definition from disk, re-validate,
+  re-freeze the snapshot, and then take the verb; the re-frozen snapshot is
+  the durable trace (a crash rebuild renders the new definition), and the
+  next attempt's feedback note says the definition was re-read.
+
+  The boundary rule: **a refresh happens only where a phase is entered
+  fresh.** A bare resume on a continuable park is a continuation of an
+  attempt whose units were launched under the frozen definition, so refresh
+  there is refused toward `--phase <id>` — swapping the definition under a
+  mid-flight attempt is incoherent. Refusals are total: a rejected refresh
+  leaves the run record byte-identical. Refused outright: an entry phase the
+  edit renamed or removed (enter it under its new id), and a workspace-need
+  flip the run cannot satisfy — a run that recorded a worktree cannot go
+  `worktree → project-root` (its work lives there), and a *called* run
+  cannot go `project-root → worktree` (a child provisions nothing, §9);
+  a root run that never cut a worktree may gain one, since the fresh entry
+  provisions exactly as its first phase would have. The human-gate resume
+  guard runs before any of this and is not bypassed. `started_at` is not
+  re-stamped by a resume refresh — the wall-clock budget measures against
+  it. No UI affordance yet; the frontend passes `false`, and exposing it is
+  a product decision.

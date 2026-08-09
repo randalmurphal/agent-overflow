@@ -42,15 +42,15 @@ describe('workflow action dispatch', () => {
   it('resumes parked items with an empty target phase', async () => {
     const deps = bindings();
     await dispatchWorkflowAction(item, { kind: 'resume' }, 2, deps);
-    expect(deps.resumeItem).toHaveBeenCalledWith('run', '');
+    expect(deps.resumeItem).toHaveBeenCalledWith('run', '', false);
   });
 
   it('distinguishes a guided rerun from a diagnosis-seeded one', async () => {
     const deps = bindings();
     const blind = await dispatchWorkflowAction(item, { kind: 'rerun', guidance: '' }, 2, deps);
     const guided = await dispatchWorkflowAction(item, { kind: 'rerun', guidance: 'skip the cache' }, 2, deps);
-    expect(deps.rerunItem).toHaveBeenNthCalledWith(1, 'run', '');
-    expect(deps.rerunItem).toHaveBeenNthCalledWith(2, 'run', 'skip the cache');
+    expect(deps.rerunItem).toHaveBeenNthCalledWith(1, 'run', '', false);
+    expect(deps.rerunItem).toHaveBeenNthCalledWith(2, 'run', 'skip the cache', false);
     expect(blind?.message).toBe('Rerunning — the diagnosis seeds the new attempt');
     expect(guided?.message).toBe('Rerunning — your guidance seeds the new attempt');
   });

@@ -312,12 +312,31 @@ func validateBindings(workflow Workflow, bindings Bindings) []Finding {
 			}
 		}
 		for _, unit := range phase.UnitDefinitions() {
+			unitElement := element + fmt.Sprintf(" fan-out unit %q", unit.ID)
 			if unit.Command != "" && !bindings.HasCommand(unit.Command) {
-				findings = append(findings, finding("binding.command", element+fmt.Sprintf(" fan-out unit %q", unit.ID), fmt.Sprintf("command %q is not bindable", unit.Command)))
+				findings = append(findings, finding("binding.command", unitElement, fmt.Sprintf("command %q is not bindable", unit.Command)))
 			}
+			findings = append(findings, unitCapacityFindings(unit, unitElement, bindings)...)
 		}
-		if phase.Join != nil && phase.Join.Command != "" && !bindings.HasCommand(phase.Join.Command) {
-			findings = append(findings, finding("binding.command", element+" join", fmt.Sprintf("command %q is not bindable", phase.Join.Command)))
+		if phase.Join != nil {
+			if phase.Join.Command != "" && !bindings.HasCommand(phase.Join.Command) {
+				findings = append(findings, finding("binding.command", element+" join", fmt.Sprintf("command %q is not bindable", phase.Join.Command)))
+			}
+			findings = append(findings, unitCapacityFindings(*phase.Join, element+" join", bindings)...)
+		}
+	}
+	return findings
+}
+
+// unitCapacityFindings holds a unit's declared resources to the same
+// bindability rule a phase's are held to. A unit acquires them itself, from the
+// same project profile and the same semaphores, so a name the project never
+// sized is refused here rather than parking the wave at its first admission.
+func unitCapacityFindings(unit Unit, element string, bindings Bindings) []Finding {
+	var findings []Finding
+	for _, resource := range unit.Resources {
+		if _, bound := bindings.Capacity(resource); !bound {
+			findings = append(findings, finding("binding.capacity", element, fmt.Sprintf("resource capacity %q is not bindable", resource)))
 		}
 	}
 	return findings

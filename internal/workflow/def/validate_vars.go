@@ -35,10 +35,12 @@ func validateVariables(workflow Workflow, phaseIndex map[string]int, graph workf
 			for _, feedback := range route.Feedback {
 				validateFeedbackRef(workflow, phaseIndex, graph, consumerIndex, routeIndex, feedback, &findings)
 			}
+			validateLoopBoundRef(workflow, phaseIndex, graph, consumerIndex, routeIndex, route.Max, &findings)
 			if route.Human != nil && route.Human.Reject != nil {
 				for _, feedback := range route.Human.Reject.Feedback {
 					validateFeedbackRef(workflow, phaseIndex, graph, consumerIndex, routeIndex, feedback, &findings)
 				}
+				validateLoopBoundRef(workflow, phaseIndex, graph, consumerIndex, routeIndex, route.Human.Reject.Max, &findings)
 			}
 		}
 	}
@@ -208,6 +210,38 @@ func validateFeedbackRef(workflow Workflow, phaseIndex map[string]int, graph wor
 	}
 	if producer >= 0 && producer != consumer && !graph.dominators[consumer][producer] {
 		*findings = append(*findings, finding("gate.feedback", element, fmt.Sprintf("producer phase %q for feedback %q does not dominate this phase", workflow.Phases[producer].ID, ref)))
+	}
+}
+
+// validateLoopBoundRef resolves a seeded loop budget (`max: <ref>`) under the
+// same rules a feedback reference gets — it must name a declared variable whose
+// producer dominates this phase — plus the two the bound itself imposes. The
+// producer may not be optional and must be number-typed, because EvaluateGate
+// needs a whole count of at least one at the moment the gate evaluates: an
+// absent or non-numeric bound parks the run as a wiring error instead of
+// routing it, which is a run the dry-run promised would not happen.
+//
+// A literal bound has nothing to resolve and is checked for its own shape in
+// validate_graph.go, beside the loop rules it belongs to.
+func validateLoopBoundRef(workflow Workflow, phaseIndex map[string]int, graph workflowGraph, consumer, route int, bound LoopBound, findings *[]Finding) {
+	ref := strings.TrimSpace(bound.Ref)
+	if ref == "" {
+		return
+	}
+	element := fmt.Sprintf("workflow %q phase %q route %d", workflow.ID, workflow.Phases[consumer].ID, route)
+	variable, producer, ok := resolveReference(workflow, phaseIndex, ref)
+	if !ok {
+		*findings = append(*findings, finding("gate.loop-max", element, fmt.Sprintf("max reference %q does not resolve", ref)))
+		return
+	}
+	if producer >= 0 && producer != consumer && !graph.dominators[consumer][producer] {
+		*findings = append(*findings, finding("gate.loop-max", element, fmt.Sprintf("producer phase %q for max %q does not dominate this phase", workflow.Phases[producer].ID, ref)))
+	}
+	if variable.Optional {
+		*findings = append(*findings, finding("gate.loop-max", element, fmt.Sprintf("optional producer %q cannot seed a loop budget", ref)))
+	}
+	if variable.Schema.Type != "number" {
+		*findings = append(*findings, finding("gate.loop-max", element, fmt.Sprintf("max reference %q must name a number-typed variable; it is %q", ref, variable.Schema.Type)))
 	}
 }
 

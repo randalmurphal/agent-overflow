@@ -59,7 +59,7 @@
         "mcp": {"type": "array", "items": {"type": "string"}},
         "grants": {
           "type": "array", "uniqueItems": true,
-          "items": {"enum": ["start-run", "schedule", "update-notes", "introspect"]}
+          "items": {"enum": ["start-run", "schedule", "update-notes", "introspect", "resolve"]}
         },
         "access": {"enum": ["read-only", "write"]},
         "fan_out": {"type": "array", "items": {"$ref": "#/$defs/unit"}},
@@ -140,6 +140,7 @@
         "id": {"type": "string", "pattern": "^[a-z0-9-]+$"}, "provider": {"type": "string"}, "model": {"type": "string"},
         "effort": {"$ref": "#/$defs/effort"},
         "prompt": {"type": "string"}, "command": {"type": "string"}, "access": {"enum": ["read-only", "write"]},
+        "resources": {"type": "array", "items": {"type": "string"}},
         "call": {"type": "string", "pattern": "^[a-z0-9-]+$"},
         "args": {"type": "object", "additionalProperties": {"type": "string"}},
         "max_depth": {"type": "integer", "minimum": 1},
@@ -152,7 +153,8 @@
             "not": {"anyOf": [
               {"required": ["provider"]}, {"required": ["model"]}, {"required": ["effort"]},
               {"required": ["prompt"]},
-              {"required": ["command"]}, {"required": ["access"]}, {"required": ["outputs"]}
+              {"required": ["command"]}, {"required": ["access"]}, {"required": ["outputs"]},
+              {"required": ["resources"]}
             ]}
           },
           "else": {
@@ -169,7 +171,7 @@
       "type": "object", "additionalProperties": false,
       "properties": {
         "when": {"$ref": "#/$defs/predicate"}, "to": {"type": "string"}, "loop": {"type": "string"},
-        "max": {"type": "integer", "minimum": 1}, "feedback": {"type": "array", "items": {"type": "string"}},
+        "max": {"$ref": "#/$defs/loopBound"}, "feedback": {"type": "array", "items": {"type": "string"}},
         "park": {"type": "string"}, "human": {"$ref": "#/$defs/human"}
       }
     },
@@ -180,9 +182,13 @@
     "loopTarget": {
       "type": "object", "additionalProperties": false, "required": ["loop", "max"],
       "properties": {
-        "loop": {"type": "string"}, "max": {"type": "integer", "minimum": 1},
+        "loop": {"type": "string"}, "max": {"$ref": "#/$defs/loopBound"},
         "feedback": {"type": "array", "items": {"type": "string"}}
       }
+    },
+    "loopBound": {
+      "description": "How many times this loop may be traversed: a literal count, or the name of a variable the run resolves the count from when the gate evaluates. A reference must name a number-typed variable that is in scope and resolves to a whole number of at least one.",
+      "anyOf": [{"type": "integer", "minimum": 1}, {"type": "string", "minLength": 1}]
     },
     "comparison": {
       "type": "object", "additionalProperties": false, "required": ["ref", "value"],

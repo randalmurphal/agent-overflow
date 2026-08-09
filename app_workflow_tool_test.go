@@ -142,6 +142,50 @@ func TestWorkflowToolPhaseWrittenEnvelopeFeedsTheNextPhaseCommand(t *testing.T) 
 	}
 }
 
+// The envelope schema permits `narrative` on every status, and post-validation
+// is written once against the contract for both drivers — so a command may write
+// one, and it is folded into the same narrative file the process output goes to
+// rather than being refused by a second rule set. The engine still sees no prose.
+func TestWorkflowToolPhaseFoldsAWrittenNarrativeIntoTheAttemptFile(t *testing.T) {
+	fixture := newToolWorkflowFixture(t, `
+  - id: probe
+    driver: tool
+    check: probe
+    outputs:
+      report:
+        schema:
+          type: string
+    gate:
+      routes:
+        - to: done`)
+	fixture.writeProfile(t, map[string][]string{
+		"probe": {writeExecutable(t, "probe.sh", "#!/bin/sh\n"+
+			`echo "scanning three modules"`+"\n"+
+			`printf '%s' '{"status":"done","outputs":{"report":"green-42"},"question":null,"reason":null,`+
+			`"narrative":"I scanned three modules and all of them resolved."}' > "$AO_ENVELOPE"`+"\n")},
+	}, nil, "")
+	item := fixture.start(t, "tool narrative")
+
+	waitForWorkflowItem(t, fixture.app, item.ID, engine.StateDone, "")
+	phases := listWorkflowPhases(t, fixture.app, item.ID)
+	if len(phases) != 1 {
+		t.Fatalf("phases = %+v", phases)
+	}
+	persisted := string(phases[0].OutputEnvelope)
+	if strings.Contains(persisted, "narrative") || strings.Contains(persisted, "I scanned three modules") {
+		t.Fatalf("the persisted envelope carried prose: %s", persisted)
+	}
+	if outputs := decodeEnvelopeOutputs(t, phases[0].OutputEnvelope); outputs["report"] != "green-42" {
+		t.Fatalf("stripping damaged the outputs = %v", outputs)
+	}
+	narrative := readFileForTest(t, phases[0].NarrativePath)
+	account := strings.Index(narrative, "I scanned three modules and all of them resolved.")
+	output := strings.Index(narrative, "scanning three modules")
+	if account < 0 || output < 0 || account > output {
+		t.Fatalf("the command's account must lead its output tail:\n%s", narrative)
+	}
+}
+
 func TestWorkflowToolPhaseInvalidWrittenEnvelopeParksWithoutRetrying(t *testing.T) {
 	for _, testCase := range []struct {
 		name            string

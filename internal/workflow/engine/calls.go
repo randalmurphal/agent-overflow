@@ -59,19 +59,18 @@ func (e *Engine) startCall(item *runtimeItem, phase def.Phase, vars map[string]a
 		return e.parkCallSetup(item, ReasonWiringError,
 			fmt.Errorf("call phase %q of item %q names no workflow", phase.ID, item.item.ID))
 	}
-	args, err := callArgs(phase, vars)
-	if err != nil {
-		return e.parkCallSetup(item, ReasonWiringError,
-			fmt.Errorf("call %s/%s/%d: %w", item.item.ID, phase.ID, item.attempt, err))
-	}
-	reason, err := e.invokeCall(item, callInvocation{
+	invocation := callInvocation{
 		edge:   callEdge{phaseID: phase.ID, maxDepth: phase.MaxDepth},
-		target: phase.CallTarget(),
-		args:   args,
+		target: phase.CallTarget(), declared: phase.Args, vars: vars,
 		// Workspace flows down the call stack (§9): a serial call's child executes
 		// in the caller's own workspace and provisions nothing of its own.
 		inheritWorkspace: true,
-	})
+	}
+	plan, reason, err := e.planCall(item, invocation)
+	if err != nil {
+		return e.parkCallSetup(item, reason, err)
+	}
+	reason, err = e.invokeCall(item, invocation, plan)
 	if reason != "" {
 		return e.parkCallSetup(item, reason, err)
 	}
@@ -79,8 +78,8 @@ func (e *Engine) startCall(item *runtimeItem, phase def.Phase, vars map[string]a
 }
 
 // callInvocation is one call edge's whole request: where it is declared, what it
-// invokes, the evaluated arguments the child is seeded with, and whether the
-// child inherits the caller's workspace.
+// invokes, the argument map and caller context the child is seeded from, and
+// whether the child inherits the caller's workspace.
 //
 // inheritWorkspace is false for a fan-out unit's call. Isolation is introduced
 // by fan-out (§9), so that child runs in the *unit's* sub-worktree rather than
@@ -91,42 +90,70 @@ func (e *Engine) startCall(item *runtimeItem, phase def.Phase, vars map[string]a
 type callInvocation struct {
 	edge             callEdge
 	target           string
-	args             map[string]any
+	declared         map[string]string
+	vars             map[string]any
 	inheritWorkspace bool
 }
 
-// invokeCall creates and starts one call edge's child run. It is shared by
-// `shape: call` phases and call-bound fan-out units, because everything up to
-// the workspace decision is identical: the ancestry, both depth bounds, the
-// live definition resolution, and the linkage that makes the child recoverable.
+// callPlan is one call edge decided but not yet made: the child definition this
+// invocation froze and the seeds it will carry. Nothing is written to produce
+// it, so an edge that cannot be made leaves no unit row, no child run, and no
+// provider session behind.
+type callPlan struct {
+	resolved ResolvedDefinition
+	args     map[string]any
+}
+
+// planCall decides one call edge without making it: the ancestry, both depth
+// bounds, the live definition resolution, and the argument evaluation that only
+// the resolved child can judge. It is shared by `shape: call` phases and
+// call-bound fan-out units, so the two edges cannot disagree about what a
+// makeable call is.
 //
-// A non-empty Reason means the caller should park under it with the returned
-// cause. An empty Reason with a non-nil error is a child that could not be
-// admitted at all; the parent is left as it is, exactly as it was before, and
-// rebuild re-invokes the call from the persisted attempt.
-func (e *Engine) invokeCall(item *runtimeItem, invocation callInvocation) (Reason, error) {
+// A non-nil error always carries the Reason the caller must park under; the
+// caller has written nothing at that point, which is what lets a unit edge park
+// its attempt without recording a unit outcome.
+func (e *Engine) planCall(item *runtimeItem, invocation callInvocation) (callPlan, Reason, error) {
 	site := fmt.Sprintf("call %s/%s/%d", item.item.ID, invocation.edge, item.attempt)
 	chain, err := e.callChain(item)
 	if err != nil {
-		return ReasonSetupFailed, err
+		return callPlan{}, ReasonSetupFailed, err
 	}
 	if err := checkCallDepth(chain, item.workflow.ID, invocation.edge, invocation.target); err != nil {
 		// A cycle past its declared bound is the definition and the run disagreeing
 		// about how far this may go: a wiring error, carrying the chain that got
 		// here so the human can see the recursion.
-		return ReasonWiringError, err
-	}
-	seeds, err := json.Marshal(invocation.args)
-	if err != nil {
-		return ReasonWiringError, fmt.Errorf("%s: encode args: %w", site, err)
+		return callPlan{}, ReasonWiringError, err
 	}
 	resolved, err := e.definitions.ResolveCall(e.ctx, item.item.ProjectID, invocation.target)
 	if err != nil {
-		return ReasonWiringError, fmt.Errorf("%s: resolve workflow %q: %w", site, invocation.target, err)
+		return callPlan{}, ReasonWiringError, fmt.Errorf("%s: resolve workflow %q: %w", site, invocation.target, err)
+	}
+	// The child is resolved before the arguments are judged because the child is
+	// what says which of them may be absent.
+	args, unresolved := resolveCallArgs(invocation.declared, invocation.vars)
+	if err := requireResolvedArgs(resolved.Workflow, unresolved); err != nil {
+		return callPlan{}, ReasonWiringError, fmt.Errorf("%s: %w", site, err)
+	}
+	return callPlan{resolved: resolved, args: args}, "", nil
+}
+
+// invokeCall creates and starts one planned call edge's child run, stamping the
+// workspace the edge inherits and the linkage that makes the child recoverable.
+//
+// A non-empty Reason means the caller should park under it with the returned
+// cause. An empty Reason with a non-nil error is a child that could not be
+// admitted at all; the parent is left as it is, exactly as it was before, and
+// rebuild re-invokes the call from the persisted attempt.
+func (e *Engine) invokeCall(item *runtimeItem, invocation callInvocation, plan callPlan) (Reason, error) {
+	site := fmt.Sprintf("call %s/%s/%d", item.item.ID, invocation.edge, item.attempt)
+	seeds, err := json.Marshal(plan.args)
+	if err != nil {
+		return ReasonWiringError, fmt.Errorf("%s: encode args: %w", site, err)
 	}
 	child := store.WorkItem{
 		ID: uuid.NewString(), ProjectID: item.item.ProjectID, Goal: item.item.Goal,
-		WorkflowID: resolved.Workflow.ID, WorkflowScope: string(resolved.Scope),
+		WorkflowID: plan.resolved.Workflow.ID, WorkflowScope: string(plan.resolved.Scope),
 		State: string(StateRunning), Seeds: seeds, StepMode: item.item.StepMode,
 		Source: WorkItemSourceCall, SourceRef: callSourceRef(item, invocation.edge),
 		ParentItemID: item.item.ID, ParentPhaseID: invocation.edge.phaseID,
@@ -153,7 +180,7 @@ func (e *Engine) invokeCall(item *runtimeItem, invocation callInvocation) (Reaso
 	// wrote it with these same args), so a crash between the two leaves an
 	// attempt with no child — which rebuild re-invokes. The reverse order would
 	// leave a child whose parent has no record of calling it.
-	return "", e.startNewItem(child, &resolved)
+	return "", e.startNewItem(child, &plan.resolved)
 }
 
 // refreshWorkspace re-reads the workspace columns the runner owns. The engine
@@ -287,43 +314,6 @@ func renderCallChain(chain []callChainStep, workflowID string, edge callEdge) st
 	}
 	parts = append(parts, workflowID+"."+edge.String())
 	return strings.Join(parts, " -> ")
-}
-
-// callArgs evaluates a call phase's argument map against the caller's variable
-// context.
-func callArgs(phase def.Phase, vars map[string]any) (map[string]any, error) {
-	return resolveCallArgs(phase.Args, vars)
-}
-
-// resolveCallArgs evaluates one call edge's argument map. Every argument is a
-// reference into the caller's variable context — a phase's for a call phase, a
-// unit's (the phase inputs plus its `as:` element binding) for a call unit — and
-// a reference that does not resolve is a wiring error rather than a silently
-// absent child input, because the child would then fail its own input validation
-// with no trace of where the value was supposed to come from.
-func resolveCallArgs(declared map[string]string, vars map[string]any) (map[string]any, error) {
-	if len(declared) == 0 {
-		return map[string]any{}, nil
-	}
-	names := make([]string, 0, len(declared))
-	for name := range declared {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	args := make(map[string]any, len(declared))
-	var missing []string
-	for _, name := range names {
-		value, ok := def.LookupVariable(vars, declared[name])
-		if !ok {
-			missing = append(missing, fmt.Sprintf("%s (%s)", name, declared[name]))
-			continue
-		}
-		args[name] = value
-	}
-	if len(missing) > 0 {
-		return nil, fmt.Errorf("arguments do not resolve: %s", strings.Join(missing, ", "))
-	}
-	return args, nil
 }
 
 // callChildOf returns the child run one call attempt created, if it exists. A

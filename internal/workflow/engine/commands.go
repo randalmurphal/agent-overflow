@@ -38,18 +38,20 @@ type parkDispositionCommand struct {
 	reply  chan response
 }
 type rerunFailedCommand struct {
-	itemID   string
-	guidance string
-	reply    chan response
+	itemID            string
+	guidance          string
+	refreshDefinition bool
+	reply             chan response
 }
 type resolveDispositionCommand struct {
 	itemID string
 	reply  chan response
 }
 type resumeCommand struct {
-	itemID      string
-	targetPhase string
-	reply       chan response
+	itemID            string
+	targetPhase       string
+	refreshDefinition bool
+	reply             chan response
 }
 type answerCommand struct {
 	itemID string
@@ -311,14 +313,14 @@ func (e *Engine) loop() {
 			e.commandStarts = nil
 			command.reply <- response{err: err}
 		case rerunFailedCommand:
-			err = e.rerunFailed(command.itemID, command.guidance)
+			err = e.rerunFailed(command.itemID, command.guidance, command.refreshDefinition)
 			command.reply <- e.itemCommandResponse(command.itemID, err)
 		case resolveDispositionCommand:
 			err = e.resolveDisposition(command.itemID)
 			e.commandStarts = nil
 			command.reply <- response{err: err}
 		case resumeCommand:
-			err = e.resume(command.itemID, command.targetPhase)
+			err = e.resume(command.itemID, command.targetPhase, command.refreshDefinition)
 			command.reply <- e.itemCommandResponse(command.itemID, err)
 		case answerCommand:
 			err = e.answer(command.itemID, command.answer)

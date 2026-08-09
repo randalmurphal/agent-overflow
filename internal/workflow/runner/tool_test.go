@@ -122,6 +122,35 @@ func TestToolNarrativeRecordsCommandOutcomeAndOutput(t *testing.T) {
 	}
 }
 
+// The envelope schema permits `narrative`, so a command may write one too. The
+// authored account leads the file — it is the only part of it a human did not
+// have to reconstruct from a process — and the output tail still follows.
+func TestToolNarrativeLeadsWithTheCommandsOwnAccount(t *testing.T) {
+	narrative := ToolNarrative(ToolReport{
+		PhaseID: "build", Attempt: 1, Argv: []string{"make"},
+		Outcome: "the command exited", Exited: true, Envelope: ToolEnvelopeWritten,
+		Narrative: "Rebuilt three packages; the cache was cold.",
+		Output:    "ok agent-overflow 0.2s\n",
+	})
+	account := strings.Index(narrative, "Rebuilt three packages; the cache was cold.")
+	output := strings.Index(narrative, "ok agent-overflow 0.2s")
+	if account < 0 || output < 0 || account > output {
+		t.Fatalf("account must lead the output tail:\n%s", narrative)
+	}
+	if !strings.Contains(narrative, "## Account (from the command's envelope)") {
+		t.Fatalf("account is unattributed:\n%s", narrative)
+	}
+	// A command that wrote no narrative gets no empty section.
+	silent := ToolNarrative(ToolReport{
+		PhaseID: "build", Attempt: 1, Argv: []string{"make"},
+		Outcome: "the command exited", Exited: true, Envelope: ToolEnvelopeWritten,
+		Narrative: "   ",
+	})
+	if strings.Contains(silent, "## Account") {
+		t.Fatalf("a command with no account got a heading anyway:\n%s", silent)
+	}
+}
+
 func TestToolNarrativeFencesBacktickHeavyOutputAndEmptyOutput(t *testing.T) {
 	narrative := ToolNarrative(ToolReport{
 		PhaseID: "build", Attempt: 1, Argv: []string{"make"},

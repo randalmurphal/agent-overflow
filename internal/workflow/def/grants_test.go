@@ -126,7 +126,7 @@ func TestPhaseGrantsSurviveSnapshotRoundTrip(t *testing.T) {
 }
 
 func TestGrantNamesIsTheClosedSet(t *testing.T) {
-	want := []string{"introspect", "schedule", "start-run", "update-notes"}
+	want := []string{"introspect", "resolve", "schedule", "start-run", "update-notes"}
 	got := GrantNames()
 	if len(got) != len(want) {
 		t.Fatalf("GrantNames() = %v, want %v", got, want)

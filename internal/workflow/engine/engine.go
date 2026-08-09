@@ -2,7 +2,6 @@ package engine
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"sync"
@@ -200,11 +199,18 @@ func (e *Engine) Cancel(itemID string) error {
 	return e.request(cancelCommand{itemID: itemID})
 }
 
-// Resume moves a parked item back to running and starts targetPhase. An empty
-// target re-runs the phase that parked, which is appropriate for question and
-// stuck intervention flows.
-func (e *Engine) Resume(itemID, targetPhase string) error {
-	return e.request(resumeCommand{itemID: itemID, targetPhase: targetPhase})
+// Resume moves a parked item back to running. Naming targetPhase is the
+// explicit start-over: that phase is entered fresh, from outside every cycle
+// through it, and may be the parked phase itself. An empty target continues the
+// parked attempt where one can be continued (ContinuableReason) and otherwise
+// re-runs the phase that parked, which is what a question or stuck intervention
+// wants.
+//
+// refreshDefinition re-reads the workflow from disk for this entry instead of
+// rendering the definition the run froze at start. It is available only where a
+// phase is entered fresh; see refresh.go for why.
+func (e *Engine) Resume(itemID, targetPhase string, refreshDefinition bool) error {
+	return e.request(resumeCommand{itemID: itemID, targetPhase: targetPhase, refreshDefinition: refreshDefinition})
 }
 
 // Answer continues a question-parked phase as the next turn on its prior
@@ -233,9 +239,12 @@ func (e *Engine) ResolveHumanGate(itemID string, decision HumanDecision, note st
 func (e *Engine) Sync() error { return e.request(syncCommand{}) }
 
 func (e *Engine) cancel(itemID string) error {
-	item, ok := e.items[itemID]
-	if !ok {
-		return fmt.Errorf("cancel item %q: not tracked", itemID)
+	item, tracked := e.items[itemID]
+	if !tracked {
+		// Not resident means parked: the scheduler evicts an item the moment it
+		// leaves `running`, and a run resting at a gate nobody will ever approve
+		// has to be stoppable without being resumed into work nobody wants first.
+		return errors.Join(e.cancelParked(itemID), e.startWaiting())
 	}
 	if State(item.item.State) != StateRunning {
 		return fmt.Errorf("cancel item %q: invalid transition %s -> %s", itemID, item.item.State, StateCancelled)
@@ -244,7 +253,44 @@ func (e *Engine) cancel(itemID string) error {
 	return errors.Join(err, e.startWaiting())
 }
 
-func (e *Engine) resume(itemID, targetPhase string) error {
+// cancelParked cancels a run resting `needs-human`, under any park reason. A
+// parked run holds no runner, no resources, and no held start — parking
+// released all three — so this is persistence and tree bookkeeping rather than
+// a teardown: its live descendant subtree comes down first through the same
+// path a running run's teardown uses, and the transition is the whole teardown
+// for the run itself.
+//
+// The parked attempt row is deliberately left as it is. It already records how
+// the run stopped — the gate it rests on, the envelope that parked it — and
+// rewriting it as cancelled would erase the only account of why a human was
+// ever asked. A descendant cancelled here reaches the parent that called it
+// through the ordinary terminal-transition path, so a live root waiting on it
+// settles instead of waiting forever.
+//
+// A run parked awaiting disposition is refused: its work is done, and the
+// disposition verbs are what settle it. Cancelling it would rewrite a
+// successful run as stopped.
+func (e *Engine) cancelParked(itemID string) error {
+	item, err := e.loadParked(itemID)
+	if err != nil {
+		return err
+	}
+	if Reason(item.item.Reason) == ReasonDisposition {
+		return fmt.Errorf(
+			"cancel item %q: this run is done and awaiting disposition; settle it with WorkflowMergeItem, WorkflowCreateItemPR, or WorkflowDiscardItem",
+			itemID,
+		)
+	}
+	var errs []error
+	if err := e.cancelCallChildren(item); err != nil {
+		errs = append(errs, err)
+	}
+	// The run comes down even if a descendant would not: a human's cancel that a
+	// store failure could veto would leave a run nothing can stop.
+	return errors.Join(append(errs, e.transition(item, StateCancelled, ReasonInterrupted))...)
+}
+
+func (e *Engine) resume(itemID, targetPhase string, refreshDefinition bool) error {
 	item, ok := e.items[itemID]
 	if !ok {
 		var err error
@@ -264,37 +310,81 @@ func (e *Engine) resume(itemID, targetPhase string) error {
 		if err != nil {
 			return err
 		}
-		if humanGate {
-			return fmt.Errorf("resume item %q: human gate decisions require ResolveHumanGate", itemID)
+		// A decision the gate declared belongs to ResolveHumanGate, so re-entering
+		// the phase that is waiting on one is refused. Naming a DIFFERENT phase is
+		// not that decision: it is the human abandoning the gate to redo earlier
+		// work, which is the one escape from a gate whose reject budget is spent —
+		// and it enters that phase from outside every cycle through it, refilling
+		// the loop bounds that got there (`freshLoopEntry`).
+		if humanGate && (targetPhase == "" || targetPhase == item.phaseID) {
+			return fmt.Errorf(
+				"resume item %q: human gate decisions require ResolveHumanGate; naming an earlier phase instead abandons the gate and re-enters that phase",
+				itemID,
+			)
 		}
 	}
-	if len(item.workflow.Phases) == 0 {
-		resolved, err := e.definitions.Resolve(e.ctx, item.item)
+	// Bare resume continues a parked attempt that still holds work worth keeping,
+	// and re-enters the phase only where there is nothing to continue. The
+	// dispatch lives here rather than in the caller so no entry point can reach a
+	// fresh attempt for a park whose finished units — whole called runs among them
+	// — it would silently redo. Naming a phase always skips it: that IS the
+	// request to start over, and it may name the parked phase itself.
+	if targetPhase == "" && ContinuableReason(Reason(item.item.Reason)) {
+		// A run that froze no definition has no attempt to continue and no phase to
+		// name: its entry resolves from disk whatever the caller asked for, so the
+		// refusal below would be about work that does not exist.
+		if refreshDefinition && item.phaseID != "" {
+			// The attempt this continues was launched under the frozen definition —
+			// its units, and the runs those units called, are mid-flight work. Handing
+			// the continuation a different definition would render one half of an
+			// attempt from each. Naming a phase is the way to say "discard it".
+			return fmt.Errorf(
+				"resume item %q: the run is parked %q, so a bare resume continues the attempt its work was launched under; re-reading the definition needs a fresh entry, so name the phase to enter (--phase %s) if discarding that attempt is intended",
+				itemID, item.item.Reason, item.phaseID,
+			)
+		}
+		return e.resumeItem(itemID)
+	}
+	return e.enterPhaseFresh(item, targetPhase, refreshDefinition)
+}
+
+// enterPhaseFresh re-enters a parked run at targetPhase with a new attempt: the
+// phase expands from its inputs again, which for a fan-out means a new wave and
+// new children for its call units. It is the "start over" half of resume, and
+// the only half a named phase can take.
+//
+// A run parked before its workflow was ever frozen (a setup failure with no
+// snapshot) resolves its definition here — it is the one resume that has to find
+// the workflow before it can name a phase at all, and it re-reads from disk
+// whether or not it was asked to. `refreshDefinition` is that same re-read
+// asked for deliberately, on a run that already has a frozen definition.
+func (e *Engine) enterPhaseFresh(item *runtimeItem, targetPhase string, refreshDefinition bool) error {
+	itemID := item.item.ID
+	switch {
+	case len(item.workflow.Phases) == 0:
+		snapshot, encoded, err := e.resolveDefinition(item, "", "resume setup-failed item")
 		if err != nil {
-			return fmt.Errorf("resume setup-failed item %q: %w", itemID, err)
-		}
-		workflow := resolved.Workflow
-		if len(workflow.Phases) == 0 {
-			return fmt.Errorf("resume setup-failed item %q: workflow has no phases", itemID)
-		}
-		snapshot, err := json.Marshal(Snapshot{Workflow: workflow, WorkspaceNeed: resolved.WorkspaceNeed})
-		if err != nil {
-			return fmt.Errorf("resume setup-failed item %q snapshot: %w", itemID, err)
-		}
-		if len(snapshot) > MaxSnapshotBytes {
-			return fmt.Errorf("resume setup-failed item %q snapshot is %d bytes; maximum is %d", itemID, len(snapshot), MaxSnapshotBytes)
-		}
-		startedAt := e.timestamp()
-		if err := e.store.UpdateWorkItemRunStart(
-			itemID, snapshot, item.item.WorktreePath, item.item.Branch,
-			item.item.BaseBranch, startedAt,
-		); err != nil {
 			return err
 		}
-		item.adoptSnapshot(Snapshot{Workflow: workflow, WorkspaceNeed: resolved.WorkspaceNeed})
-		item.item.Snapshot = snapshot
-		item.item.StartedAt = startedAt
-		item.phaseID = workflow.Phases[0].ID
+		if err := e.freezeSnapshot(item, snapshot, encoded, e.timestamp()); err != nil {
+			return err
+		}
+		item.phaseID = item.workflow.Phases[0].ID
+	case refreshDefinition:
+		entry := targetPhase
+		if entry == "" {
+			entry = item.phaseID
+		}
+		snapshot, encoded, err := e.resolveDefinition(item, entry, resumeAction)
+		if err != nil {
+			return err
+		}
+		// The run start is NOT re-stamped: a wall-clock budget is measured against
+		// it, and re-reading a definition is not the run beginning again.
+		if err := e.freezeSnapshot(item, snapshot, encoded, item.item.StartedAt); err != nil {
+			return err
+		}
+		e.noteDefinitionRefresh(item, entry)
 	}
 	if targetPhase == "" {
 		targetPhase = item.phaseID

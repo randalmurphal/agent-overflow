@@ -223,8 +223,8 @@ func nestedLoopWorkflow() def.Workflow {
 	return def.Workflow{ID: "nested", Phases: []def.Phase{
 		agentPhase("setup", nil, []def.Route{{To: "build"}}),
 		agentPhase("build", nil, []def.Route{{To: "check"}}),
-		agentPhase("check", nil, []def.Route{{Loop: "build", Max: 1}, {To: "verify"}}),
-		agentPhase("verify", nil, []def.Route{{Loop: "setup", Max: 1}, {To: "done"}}),
+		agentPhase("check", nil, []def.Route{{Loop: "build", Max: def.LiteralBound(1)}, {To: "verify"}}),
+		agentPhase("verify", nil, []def.Route{{Loop: "setup", Max: def.LiteralBound(1)}, {To: "done"}}),
 	}}
 }
 
@@ -264,7 +264,7 @@ func TestRerunAfterFailureRestoresLoopBudget(t *testing.T) {
 			{When: &def.Predicate{Eq: &def.Comparison{Ref: "build.ok", Value: false}}, To: "failed"},
 			{To: "check"},
 		}),
-		agentPhase("check", nil, []def.Route{{Loop: "build", Max: 1}, {To: "done"}}),
+		agentPhase("check", nil, []def.Route{{Loop: "build", Max: def.LiteralBound(1)}, {To: "done"}}),
 	}}
 	h := newHarness(t, Config{}, map[string]def.Workflow{"rerun-loop": workflow}, []string{"project"}, nil)
 	item := testItem("item", "project", "rerun-loop", 0)
@@ -279,7 +279,7 @@ func TestRerunAfterFailureRestoresLoopBudget(t *testing.T) {
 		}
 	}
 	requireItemState(t, h.store, item.ID, StateFailed, ReasonCheckFailedGenuine)
-	if err := h.engine.RerunFailed(item.ID, ""); err != nil {
+	if err := h.engine.RerunFailed(item.ID, "", false); err != nil {
 		t.Fatal(err)
 	}
 	for _, ok := range []bool{true, true} {
@@ -300,7 +300,7 @@ func TestRerunAfterFailureRestoresLoopBudget(t *testing.T) {
 func TestAnsweredQuestionDoesNotRestoreLoopBudget(t *testing.T) {
 	workflow := def.Workflow{ID: "answer-loop", Phases: []def.Phase{
 		agentPhase("build", nil, []def.Route{{To: "check"}}),
-		agentPhase("check", nil, []def.Route{{Loop: "build", Max: 1}, {To: "done"}}),
+		agentPhase("check", nil, []def.Route{{Loop: "build", Max: def.LiteralBound(1)}, {To: "done"}}),
 	}}
 	h := newHarness(t, Config{}, map[string]def.Workflow{"answer-loop": workflow}, []string{"project"}, nil)
 	item := testItem("item", "project", "answer-loop", 0)

@@ -168,10 +168,16 @@ func BuildTakeoverFinalizePrompt(narrativePath string, access def.Access) (strin
 // element runs in a session that denies every file write (D22), so instructing
 // it to write a file would be an instruction it cannot follow — and the run
 // would end with the wake pointing at a path nothing created. Such an element is
-// asked for the narrative as a message instead, which is what the runner
-// recovers into the file (`RecoverNarrative`). A writing element keeps the file
-// instruction: it can produce a richer account there than a message, and the
-// file is authored rather than reconstructed.
+// asked for the narrative in the envelope's `narrative` control field, which the
+// runner lifts into the file. A writing element keeps the file instruction: it
+// can produce a richer account there than one field, and the file is authored
+// during the work rather than summarized after it.
+//
+// The read-only branch asks for a FIELD rather than a message because Codex
+// applies a turn's outputSchema to every assistant message in that turn, not
+// only the last: an element under a schema cannot emit prose at all there, so
+// "send your narrative as the message before your envelope" was an instruction
+// only Claude could follow. The field works identically on both providers.
 //
 // The path is required in both cases — the caller has already resolved it, the
 // runner writes there either way, and validating it here keeps a bad path from
@@ -189,11 +195,11 @@ func PromptSuffix(narrativePath string, access def.Access, feedback *engine.Feed
 	if access == def.AccessWrite {
 		prompt.WriteString("Write a concise narrative of the work performed, decisions made, and validation results to this file:\n")
 		prompt.WriteString(narrativePath)
-		prompt.WriteString("\n")
+		prompt.WriteString("\nThe narrative is for human inspection and is not part of the control envelope.\n")
 	} else {
-		prompt.WriteString("You run read-only and cannot write files, so send your narrative as a message instead: a concise account of the work performed, decisions made, and validation results, as the message immediately before your final envelope.\n")
+		prompt.WriteString("You run read-only and cannot write files, so put your narrative in the `narrative` field of your final envelope: a concise account of the work performed, decisions made, and validation results.\n")
+		prompt.WriteString("The narrative is for human inspection; the system lifts it out of the envelope into a file and never parses it.\n")
 	}
-	prompt.WriteString("The narrative is for human inspection and is not part of the control envelope.\n")
 	// The engine hands a phase a workspace and a branch and expects to find the
 	// work there when the phase rests: a call tree shares one branch down the
 	// stack (§3a/§9), so a phase that switches or merges on its own initiative
@@ -244,10 +250,21 @@ func PromptSuffix(narrativePath string, access def.Access, feedback *engine.Feed
 	// have kept going. The semantic rides on the bullet that already exists
 	// rather than a paragraph of its own.
 	prompt.WriteString("Your final message must satisfy the attached schema; status must be done, question, or stuck.\n")
-	prompt.WriteString("Exactly one branch may be populated, and the other two fields must be null:\n")
+	prompt.WriteString("Exactly one of outputs, question, and reason may be populated, and the other two must be null:\n")
 	prompt.WriteString("- status done: outputs must be non-null; question and reason must both be null.\n")
 	prompt.WriteString("- status question: a decision only a human can make; question must be a non-empty string; outputs and reason must both be null.\n")
 	prompt.WriteString("- status stuck: you cannot proceed and retrying will not change that; reason must be a non-empty string; outputs and question must both be null.\n")
+	// `narrative` sits outside the branch rules and the schema cannot say so, so
+	// the suffix has to. It is stated on both branches because the schema makes
+	// every element answer it, and an unexplained required field is one a phase
+	// guesses at: a writing element is told to null it so its file stays the
+	// authored account, and a read-only one is told the field is legal whichever
+	// way its turn ended.
+	if access == def.AccessWrite {
+		prompt.WriteString("The narrative field is outside those rules and is not yours to fill: your account goes in the file named above, so set narrative to null.\n")
+	} else {
+		prompt.WriteString("The narrative field is outside those rules: it is legal on every status, so fill it in whether you finish, ask, or get stuck.\n")
+	}
 	prompt.WriteString("</workflow-system-instructions>")
 	return prompt.String(), nil
 }

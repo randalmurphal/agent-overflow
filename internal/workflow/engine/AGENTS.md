@@ -43,6 +43,15 @@ resource semaphores, and startup recovery.
   capacity 1 it would deadlock outright. The phase's *declared* resources stay
   phase-scoped — acquired once at entry and held for the whole attempt — so a
   `live-stack` mutex is taken once by the attempt, not once per unit.
+- A unit's *own* `resources:` are the other half, and they are per running unit.
+  `unitResources` hands admission everything a working unit declared — agent and
+  tool driver alike, with provider capacity appended only for an agent unit
+  because only it runs a turn — so a gate-check command unit inside a review
+  fan-out claims its `container-slot` through the same all-or-nothing
+  acquisition, the same live profile, and the same FIFO a phase does. A call
+  unit still acquires nothing; one that *declares* resources is refused rather
+  than ignored, because validation rejects that declaration statically and a
+  frozen definition carrying it cannot produce runnable work.
 - Runner start failures are mapped to typed park reasons by sentinel, never by
   string matching: `ErrSetupFailed` → `setup-failed` (workspace provisioning,
   setup hooks, secret resolution, a process that would not start),
@@ -50,11 +59,16 @@ resource semaphores, and startup recovery.
   profile cannot produce runnable work — an unbound check/command, a failed
   argv interpolation), everything else → `agent-error`. These are the same
   reasons the engine parks its own equivalents under — an unroutable gate or a
-  phase missing from the snapshot is `wiring-error`, a failed resource
-  acquisition is `setup-failed` — so a run's park reason does not depend on
-  which side of the `Runner` boundary noticed. A new runner failure mode picks
-  one of these sentinels or adds one here; it does not fall through to
-  `agent-error` by accident.
+  phase missing from the snapshot is `wiring-error` — so a run's park reason
+  does not depend on which side of the `Runner` boundary noticed. A failed
+  resource acquisition is classified by the same sentinel through
+  `acquisitionParkReason`: a live profile that cannot be read or a resource the
+  project never sized is `setup-failed`, while a frozen definition that cannot
+  describe an acquisition at all — an agent element with no provider, a call
+  unit claiming capacity for work it does not run — carries `ErrWiringFailed`
+  and parks `wiring-error`. A new runner failure mode picks one of these
+  sentinels or adds one here; it does not fall through to `agent-error` by
+  accident.
 - Global pause is one engine-level flag (`Pause`, persisted by the app in
   settings and restored through `Config.Paused`). While paused no phase starts
   anywhere; in-flight turns run to completion and their items rest at the next
@@ -96,6 +110,47 @@ resource semaphores, and startup recovery.
   is written only from the command loop, because the boundary's read and its
   clear live there too; `treeRoot` always re-reads the root row for the same
   reason.
+- **Resume continues and preserves; `--phase` starts over.** One rule across
+  every surface. `ContinuableReason` is the whole of it: a bare `Resume`
+  (`targetPhase == ""`) on `paused`, `interrupted`, `checkpoint`, or
+  `unit-failed` routes into `resumeItem` and continues the parked attempt, and
+  every other park re-enters the phase with a fresh attempt. The dispatch lives
+  in `resume` itself rather than in the app, so no entry point can reach the
+  fresh path for a park whose finished units — whole called runs among them — it
+  would silently redo; `enterPhaseFresh` is the other half, and `resumeItem`
+  calls it directly for the two gaps where there is nothing to continue.
+  Naming a phase is ALWAYS the fresh entry, including when it names the parked
+  phase itself: that is how a human deliberately asks for re-expansion, and it
+  is the one path that refills loop budgets (`freshLoopEntry`). The human-gate
+  guard is checked before the dispatch and is unaffected — a `gate` park is not
+  continuable, so bare resume still reaches its refusal.
+- **A run runs the definition it froze, and a fresh entry may re-read it
+  (`refresh.go`).** The freeze is the default: the snapshot inlines every prompt
+  file, and the designed channel for an edit is the call edge, which resolves
+  its target fresh per invocation — so a campaign picks an edit up at its next
+  wave. `Resume`'s and `RerunFailed`'s `refreshDefinition` is the channel a run
+  parked for OPERATOR REPAIR otherwise has none of: it re-resolves through
+  `e.definitions.Resolve`, re-freezes (`freezeSnapshot`, the same write the
+  setup-failed entry uses), and takes the verb from there, so every later
+  attempt and a crash rebuild render the edited definition too. It is offered
+  at a FRESH PHASE ENTRY only — a bare resume of a `ContinuableReason` park
+  continues an attempt whose units, and the runs those units called, were
+  launched under the frozen definition, and is refused with `--phase <id>`
+  named as the deliberate discard. `resolveDefinition` decides every other
+  refusal before the first write, so a refused refresh leaves the run record
+  untouched: a definition that will not resolve or has no phases, one that no
+  longer declares the phase being entered, and one whose `WorkspaceNeed` the run
+  cannot satisfy (`checkRefreshedWorkspace`). That last one is asymmetric
+  because provisioning is: a ROOT run under `project-root-read-only` has written
+  nothing and provisions lazily, so it may ADOPT a newly-writing definition and
+  cut the worktree at this entry exactly as its first phase would have, while a
+  run that already provisioned one may not give it back (its work lives there,
+  and the remaining phases would run in the project root) and a CALLED run may
+  not acquire one (§9: it executes in the workspace its root froze). The run
+  start is not re-stamped — a wall-clock budget is measured against it — and the
+  refresh needs no column of its own: the re-frozen snapshot IS the durable
+  evidence, with the engine log and the next attempt's feedback note
+  (`definitionRefreshNote`) saying it happened.
 - **`paused`, `interrupted`, and `checkpoint` resume identically.** All three
   stopped a run before the phase it was in produced a result, so `ResumeItem`
   continues on the session that parked rather than re-entering the phase: a
@@ -109,7 +164,35 @@ resource semaphores, and startup recovery.
   for the human reading the run list, not for the recovery. A parked attempt
   whose thread no longer exists falls back to a fresh attempt whose feedback
   says so — the `ThreadExists` probe exists so a deleted session parks as
-  itself instead of as an `agent-error` from a failed runner start.
+  itself instead of as an `agent-error` from a failed runner start. A
+  `unit-failed` park joins them through the same `resumeFanOutAttempt`: the
+  units blocking it are reopened, a failed join is continued on its thread, and
+  everything that finished keeps its result. What it does NOT join is the
+  cascade into a parked DESCENDANT — `resumeCallPhase` and
+  `resumeUnitCallChildren` stay on `ResumableReason`, because a child resting on
+  a failed unit needs a human's judgment about that unit, not a silent retry
+  ridden in on its parent's resume.
+- **Cancel reaches a parked run, under any park reason.** The scheduler evicts
+  an item the moment it leaves `running`, so `cancel` dispatches on residency:
+  a live run goes through `teardown`, and a parked one through `cancelParked`
+  — `loadParked`, the tree's live descendants down through the same
+  `cancelCallChildren`, then the `needs-human → cancelled` FSM edge. That edge
+  exists for exactly this: a run resting at a gate a human decides never to
+  approve would otherwise be immortal short of resuming it into work nobody
+  wants. A parked run holds no runner, no resources, and no held start, so the
+  transition IS its teardown, and the attempt row it parked on is left exactly
+  as it is — that row is the only account of why a human was ever asked, and
+  cancel does not rewrite history it did not make. The transition is an
+  ordinary one, so a cancelled descendant settles the call edge waiting on it
+  through `settleCallChild` like any other terminal child (a call phase parks
+  `agent-error`, a call unit fails). A `disposition` park is refused: it is a
+  DONE run waiting on a merge/PR/discard, and the disposition verbs settle it.
+- A human gate refuses `Resume` **in place** — that decision belongs to
+  `ResolveHumanGate` — but accepts one aimed at a DIFFERENT phase. Naming
+  another phase is not a way to take the gate's decision; it is the human
+  abandoning the gate to redo earlier work, and it is the escape from a gate
+  whose reject budget is spent, because it enters that phase from outside every
+  cycle through it and so refills their bounds.
 - `RerunFailed` is the only `failed → running` edge. It re-stamps the run start
   before the transition and carries the previous attempt's failure feedback into
   the new one; the attempt begins immediately, subject to resources and pause.
@@ -129,7 +212,22 @@ resource semaphores, and startup recovery.
   non-resident item seeds the engine clock from its persisted timestamps first.
   This holds only because `def` rejects cycles closed by forward routes
   (`gate.unbounded-cycle`) and requires a loop target to strictly dominate its
-  source (`gate.loop-ancestor`).
+  source (`gate.loop-ancestor`). The bound itself may be seeded (`max:` naming a
+  variable): `def` resolves it at evaluation and the persisted decision carries
+  the resolved integer, so a derived count and a recorded budget are always
+  comparing the same numbers. `resolveHumanGate` resolves a `reject.max` the
+  same way against the attempt's variables — a bound that will not resolve
+  fails the human's action rather than reading as an exhausted budget.
+- **An over-budget reject is refused, never converted.** A human gate declares
+  two verbs; parking the run `retries-exhausted` because the reject route's
+  bound is spent would silently take the approve away as well — a third outcome
+  the gate never declared. `resolveHumanGate` therefore fails the human's
+  action and leaves the run resting `needs-human(gate)` with its trace and
+  attempt untouched, the same shape a step gate's refused reject takes, and the
+  message names every option that is still live: approve, `run resume --phase
+  <id>` (a fresh entry into the loop's target refills its bound), or cancel.
+  All three actually work, which is why the resume guard admits a targeted
+  resume and why cancel reaches a parked run at all.
 - Done-item disposition parking is an item lifecycle action in
   `item_actions.go` and stays serialized through the command loop.
 - Per-item budgets are checked before every phase attempt. Item overrides win
@@ -195,12 +293,25 @@ resource semaphores, and startup recovery.
   `failed` stops further launches and parks the run `unit-failed` once the
   in-flight units finish; a unit resting `taken-over` does the same under
   `taken-over`, which outranks a failure. In-flight units are never interrupted
-  by a sibling's failure — their work is durable.
+  by a sibling's failure — their work is durable. `advanceFanOut` closes the one
+  state that is neither: an attempt resting with its join already launched and
+  not `done` has nothing left that could ever run, so it parks `unit-failed`
+  rather than sitting `running` forever. Every legitimate repair is past it —
+  reopening the join clears `joinStarted`, and a join that finished tears the
+  attempt down instead of advancing it.
 - The join is the attempt's final unit. It runs when every unit rests `done` or
   `dropped`, receives their persisted results (id, index, status, outputs,
   branch, worktree, thread) under the reserved `units` variable, and its
-  envelope *is* the phase's envelope — so a join failure is an ordinary phase
-  failure (`agent-error`), not the unit-failure policy. Those results are what
+  envelope *is* the phase's envelope — so its outcome is the phase's outcome,
+  gate and all. **A join that FAILS is a unit of the attempt failing**
+  (`phaseFailureReason`): it parks `unit-failed`, not `agent-error`, because the
+  wave behind it is finished work — for a campaign, whole child runs — and
+  `agent-error` is a reason no repair verb reaches, which left re-entering the
+  phase (and re-running every one of those children) as the only move a human
+  had. `fanOutRun.blocked` still reads the WORK units only: a failed join blocks
+  no launch, and counting it there would make its own repair refuse itself,
+  since `continueFanOutJoin` asks that question before it reopens the join.
+  Those results are what
   the STORE knows; the per-unit git state a merge join actually decides on
   (`commitsAhead`, `dirty`) is added by the app runner on the way in
   (`app_workflow_units.go` `enrichJoinUnits`), because this package is git-free
@@ -215,20 +326,34 @@ resource semaphores, and startup recovery.
   restored attempt comes back on the try it is actually on with the note that
   told it what to do differently. The engine computes the next number once and
   the later `StartWorkItemUnit` writes the same value, so there is no
-  double-bump.
+  double-bump. Reopening the JOIN also clears `joinStarted` there — the flag
+  means "the join of this attempt has been launched", and leaving it set would
+  leave an attempt with a pending join nothing ever starts.
 - `RetryUnit` / `RetryFailedUnits` / `DropUnit` / `TakeOverUnit` repair an
   attempt rather than replacing it: the phase attempt row is reopened (`ReopenWorkItemPhase`) so
   finished units keep their results, and the run only returns to `running` when
   no unit is left blocking it. A unit that cannot *start* is not a unit failure
   — it parks the attempt under the same sentinel-mapped reason a single-shape
   phase would, because nothing runnable was ever produced.
+- **The join is a retry target and never a drop target.** `repairable` is the
+  status rule every repair shares, and it says nothing about kind: retrying a
+  failed join re-runs it over the results the wave already produced, which is
+  the same continuation `Answer` takes. `droppable` adds the one refusal —
+  accepting the join's absence would leave nothing to consolidate the units and
+  no envelope for the phase, so there would be no attempt left to resume. The
+  reported failed set follows the same rule: `workflowFailedUnits`
+  (`app_workflow_unit_actions.go`) lists the CURRENT attempt's failed units,
+  join included, so `run status`, the wake's references, and the verbs that
+  repair them cannot name different sets.
 - `RetryFailedUnits` is `RetryUnit` over every unit resting `failed`, as ONE
   command (D33). It exists because the failure it repairs usually has one cause
   hitting many units at once — a provider usage limit stopping most of a wide
   fan-out — and it is one command rather than N submitted retries because the
   loop serializes commands but not the gaps between them: a half-repaired
   attempt must not be observable by a concurrent drop or single retry. It
-  collects the failed set before its first write, so "nothing was failed" is a
+  collects the failed set — from `fan.all()`, join last and included, because a
+  failed join is often the only failed unit there is — before its first write,
+  so "nothing was failed" is a
   refusal that changed nothing; it leaves `taken-over` units to the human and
   the attempt parked on them; and it resumes through `resumeRepairedFanOut`
   like the single retry, so the repaired units are admitted one at a time
@@ -250,11 +375,16 @@ resource semaphores, and startup recovery.
 
 ## Call phases
 
-- **Two call edges share one implementation.** `invokeCall` is everything up to
-  the workspace decision — the ancestry walk, both depth bounds, the live
-  `ResolveCall`, and the linkage that makes the child recoverable — and both a
-  `shape: call` phase (`startCall`) and a call-bound fan-out unit
-  (`startUnitCall`) go through it. `callEdge` is what tells them apart:
+- **Two call edges share one implementation, in two halves.** `planCall` is
+  everything that decides whether the call can be made — the ancestry walk, both
+  depth bounds, the live `ResolveCall`, and the argument evaluation — and
+  `invokeCall` is everything that makes it: the workspace decision and the
+  linkage that makes the child recoverable. Both a `shape: call` phase
+  (`startCall`) and a call-bound fan-out unit (`startUnitCall`) go through both.
+  The split is what keeps "a call that cannot be made is not a unit failure"
+  true: planning writes nothing, so the unit edge plans **before** its row moves
+  to `running` and a refusal leaves a `pending` row rather than a failed one.
+  `callEdge` is what tells the two edges apart:
   `{phase}` for one, `{phase, unit}` for the other, which is also how a
   declared `max_depth` is counted (per (workflow, phase, unit), so sibling
   units never spend each other's budget) and how a child's `SourceRef` reads
@@ -267,8 +397,23 @@ resource semaphores, and startup recovery.
   `parent_phase_id` / `parent_attempt`. The caller then rests — still `running`,
   holding no runner, no resources, and no provider capacity — until the child
   reaches a terminal state.
+- **An argument the caller cannot resolve is judged by the CHILD's declared
+  inputs, not by the caller.** `resolveCallArgs` (`call_args.go`) reports what
+  did not resolve and `requireResolvedArgs` decides: an argument seeding an
+  input the child declares `optional:` is OMITTED, so the child sees an absent
+  optional input — the same run a direct start without that seed would have
+  produced. One
+  seeding a required input, or naming no child input at all, is a
+  `wiring-error` park naming the argument and its reference. That ordering is
+  why the child is resolved before the arguments are evaluated: optionality is
+  a fact about the target, so it cannot be known before the target is. A
+  campaign forwarding its own optional seed to its next wave dies at neither
+  end of that.
 - The parent attempt row is persisted (with its evaluated args) **before** the
-  child exists. That order is what makes a crash recoverable: the only gap it
+  child exists — an argument that did not resolve is simply absent from the
+  record, since the refusal is the call edge's to raise once it has resolved
+  the child, and by then this row exists to carry it. That order is what makes
+  a crash recoverable: the only gap it
   can open is an attempt with no child, which `recoverCall` re-invokes in place
   from the persisted args — no new attempt row, so phase history and every loop
   count derived from it stay honest. The reverse order could leave a child run
@@ -321,9 +466,9 @@ resource semaphores, and startup recovery.
 ## Call units
 
 - A **call-bound fan-out unit** (`unit_calls.go`) is the phase-scoped call one
-  level down: `startUnitCall` persists the unit `running`, evaluates its args
-  against `unitVars` (the attempt's variables plus the `as:` binding), and
-  invokes the edge. The unit then rests holding no runner, no resources, and no
+  level down: `startUnitCall` plans the edge against `unitVars` (the attempt's
+  variables plus the `as:` binding), then persists the unit `running` and
+  invokes it. The unit then rests holding no runner, no resources, and no
   provider capacity — `unitResources` returns nil for it, and `resting()`
   counts a `running` status with no runner flags as resting, which is a
   legitimate state **for a call unit and only for a call unit**. That is what
@@ -349,7 +494,8 @@ resource semaphores, and startup recovery.
   depth refusal, or a failed persist park the whole attempt under the
   phase-level reason a single-shape phase would take, with the cause written
   into the attempt's envelope — nothing runnable was ever produced, so there is
-  no unit outcome to record.
+  no unit outcome to record. The first two are decided by `planCall` before the
+  unit row moves, which is what leaves that row `pending` rather than failed.
 - **Recovery keeps the children.** `recoverFanOutCalls` is the rebuild's
   adoption path: it fails the attempt's runner-backed rows (that process is
   gone), restores the fan, and — if any call unit is still resting — acquires
@@ -383,7 +529,10 @@ resource semaphores, and startup recovery.
   from that one event who is told and how (a wake into the run's bound thread,
   an OS notification when it needs a human, a descendant's park announced at
   its root). Discard — worktree removal and branch deletion — is entirely
-  app-side; the engine only cancels what is still in flight when asked.
+  app-side; the engine only cancels the tree members the app hands it, which
+  since `cancelParked` means the parked ones too (`workflowDiscardStops`): a
+  run left needing a human after its checkout was removed and its branch
+  deleted has no remaining move that can succeed.
 - Automations are app-fed and engine-unaware. `internal/workflow/scheduler`
   never imports this package: its internal-event triggers are driven by the
   app forwarding `workflow:item-state` transitions from the same listener that

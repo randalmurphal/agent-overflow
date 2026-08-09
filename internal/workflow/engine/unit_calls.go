@@ -36,14 +36,18 @@ func (e *Engine) startUnitCall(item *runtimeItem, unit *unitRun) error {
 			err,
 		)
 	}
-	args, err := resolveCallArgs(unit.definition.Args, vars)
+	invocation := callInvocation{
+		edge: callEdge{
+			phaseID: item.phaseID, unitID: unit.id, maxDepth: unit.definition.MaxDepth,
+		},
+		target: unit.definition.CallTarget(), declared: unit.definition.Args, vars: vars,
+	}
+	// Planned before the unit row moves, so a call that cannot be made is not a
+	// unit failure: nothing runnable was ever produced, the row is untouched, and
+	// the attempt parks under the phase-level reason a single-shape phase takes.
+	plan, reason, err := e.planCall(item, invocation)
 	if err != nil {
-		// A call that cannot be made is not a unit failure: nothing runnable was
-		// ever produced, so the attempt parks under the phase-level reason a
-		// single-shape phase would take.
-		return e.parkUnitCallSetup(item, ReasonWiringError, fmt.Errorf(
-			"call %s/%s[%s]/%d: %w", item.item.ID, item.phaseID, unit.id, item.attempt, err,
-		))
+		return e.parkUnitCallSetup(item, reason, err)
 	}
 	note := ""
 	if unit.feedback != nil {
@@ -61,13 +65,7 @@ func (e *Engine) startUnitCall(item *runtimeItem, unit *unitRun) error {
 	unit.feedback = nil
 	e.emitUnitState(item, unit)
 
-	reason, err := e.invokeCall(item, callInvocation{
-		edge: callEdge{
-			phaseID: item.phaseID, unitID: unit.id, maxDepth: unit.definition.MaxDepth,
-		},
-		target: unit.definition.CallTarget(),
-		args:   args,
-	})
+	reason, err = e.invokeCall(item, invocation, plan)
 	if reason != "" {
 		return e.parkUnitCallSetup(item, reason, err)
 	}

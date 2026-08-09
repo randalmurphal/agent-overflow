@@ -64,14 +64,18 @@ Commands:
   output <run-id>         Print a run's declared outputs and artifacts
   list                    List this project's runs and how they call each other
   pause <run-id>          Park a run and everything below it
-  resume <run-id>         Return a parked run to running
+  resume <run-id>         Continue a parked run; --phase <id> starts that phase over
+                          (--refresh-def re-reads the definition from disk)
   cancel <run-id>         Stop a run for good
   rerun <run-id>          Start a failed run's last phase again
   retry-unit <run-id> <unit-id>
                           Re-run one failed unit of a parked fan-out attempt
+                          (the join is one of them)
   retry-failed-units <run-id>
                           Re-run every failed unit of a parked fan-out attempt
   soft-stop <run-id>      Stop a run tree at its next call boundary
+  resolve <run-id>        Approve or reject a run parked on a gate
+  answer <run-id> <text>  Answer a run parked on a question
 `
 
 const runStartUsage = `Usage: agent-overflow run start [options] <workflow-id>
@@ -104,13 +108,45 @@ const runListUsage = `Usage: agent-overflow run list [--active] [--json]
 const runPauseUsage = `Usage: agent-overflow run pause [--json] <run-id>
 `
 
-const runResumeUsage = `Usage: agent-overflow run resume [--json] [--phase <phase-id>] <run-id>
+const runResumeUsage = `Usage: agent-overflow run resume [--json] [--phase <phase-id>] [--refresh-def] <run-id>
+
+Continues the parked run and preserves what it already finished: a stopped turn
+carries on in its own session, and a fan-out reopens only what is blocking it
+while every finished unit keeps its result — including the runs its units called,
+which are never re-executed.
+
+--phase <phase-id> is the start-over. It enters that phase fresh, from outside
+every loop through it, so loop budgets refill; a fan-out there expands a new wave
+and calls its child runs again. Naming the parked phase itself is a legitimate
+way to ask for exactly that.
+
+--refresh-def is the repair for "I edited the prompt of a parked phase". The
+definition a run froze at start is what it runs, every attempt, so an edit made
+while the run was parked is invisible to it; --refresh-def re-reads the workflow
+and its prompt files from disk for this entry and runs the edited version from
+here on. It applies at a fresh phase entry only — a bare resume on a run parked
+paused, interrupted, checkpoint, or unit-failed continues an attempt whose work
+was launched under the frozen definition, and is refused unless --phase says to
+discard it. Between campaign waves nothing is needed: a call reads its target
+from disk every time it is made.
+
+A gate decision is not resume's to take: run resolve settles a human: route, and
+run retry-unit / run retry-failed-units repair one unit or all of them — a failed
+join included, since it is a unit of the attempt like any other.
 `
 
 const runCancelUsage = `Usage: agent-overflow run cancel [--json] <run-id>
 `
 
-const runRerunUsage = `Usage: agent-overflow run rerun [--json] [--guidance <text>] <run-id>
+const runRerunUsage = `Usage: agent-overflow run rerun [--json] [--guidance <text>] [--refresh-def] <run-id>
+
+Starts a failed run's last phase again, carrying its diagnosis — and --guidance,
+when given — into the new attempt.
+
+--refresh-def re-reads the workflow and its prompt files from disk for that
+attempt. Without it the run renders the definition it froze at start, which is
+what every attempt of a run does; with it, a definition edited since the failure
+is what runs from here on.
 `
 
 const runRetryUnitUsage = `Usage: agent-overflow run retry-unit [--json] [--note <text>] <run-id> <unit-id>
@@ -119,7 +155,8 @@ const runRetryUnitUsage = `Usage: agent-overflow run retry-unit [--json] [--note
 const runRetryFailedUnitsUsage = `Usage: agent-overflow run retry-failed-units [--json] [--note <text>] <run-id>
 
 Re-runs every unit of the parked fan-out attempt that is resting failed, in one
-action. Finished units keep their results, units under human steering are left
+action — the join among them, since a join that failed is a failed unit of the
+attempt. Finished units keep their results, units under human steering are left
 alone, and the repaired ones queue for provider capacity like any other work.
 `
 
@@ -137,6 +174,33 @@ so a resume does not stop again.
 
 A run whose workflow makes no calls has no boundary to stop at. The request is
 accepted and simply never fires — nothing else is interrupted in its place.
+`
+
+const runResolveUsage = `Usage: agent-overflow run resolve [--json] [--note <text>] --approve|--reject <run-id>
+
+Settles a run resting needs-human(gate) by taking one of the two routes the
+workflow's gate declared. Exactly one of --approve and --reject is required:
+they are the decision, not a default with an override. --note is recorded with
+the decision and, on a reject, carried into the loop the gate sends the run
+back through.
+
+It applies only to a human: route — the form that declares an approve target
+and a reject loop. A park: route rests under the same gate reason but declares
+no continuation at all, so there is nothing here to select; "run resume"
+re-enters its phase once the cause is addressed. "run status" shows which kind
+a parked attempt is under its decision= field.
+
+A phase session needs the "resolve" grant to use this; an interactive session
+has it already, because a human approves each invocation.
+`
+
+const runAnswerUsage = `Usage: agent-overflow run answer [--json] <run-id> <text>
+
+Answers a run resting needs-human(question) and returns it to running. The
+answer reaches the phase that asked, as the human's would.
+
+A phase session needs the "resolve" grant to use this; an interactive session
+has it already, because a human approves each invocation.
 `
 
 const notesUsage = `Usage: agent-overflow notes <command> [options]

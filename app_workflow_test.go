@@ -81,7 +81,7 @@ func TestWorkflowBindingRunsGatesQuestionsAndEnvelopeRetry(t *testing.T) {
 	}
 	questionThreadID := questionDetail.Phases[1].ThreadID
 
-	if err := app.WorkflowAnswerQuestion(item.ID, "Use option A"); err != nil {
+	if err := app.WorkflowAnswerQuestion(context.Background(), item.ID, "Use option A"); err != nil {
 		t.Fatal(err)
 	}
 	waitForWorkflowItem(t, app, item.ID, engine.StateDone, "")
@@ -247,7 +247,7 @@ cleanup: manual
 	if err != nil || len(question.Phases) != 1 {
 		t.Fatalf("question detail = %+v, %v", question, err)
 	}
-	if err := app.WorkflowAnswerQuestion(item.ID, "continue"); err != nil {
+	if err := app.WorkflowAnswerQuestion(context.Background(), item.ID, "continue"); err != nil {
 		t.Fatal(err)
 	}
 	waitForWorkflowItem(t, app, item.ID, engine.StateDone, "")

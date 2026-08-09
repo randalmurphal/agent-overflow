@@ -82,10 +82,11 @@ func TestComposeQuestionParkCarriesTheQuestionAndBlocks(t *testing.T) {
 		`is needs-human (question)`,
 		`Phase "plan": "Should the backfill run in one transaction?"`,
 		`Run "run-3" is parked and does not continue until this is resolved.`,
-		"Only a human decides this, in the app; surface it rather than answering it, because no CLI verb resolves it.",
+		"Answer it with `agent-overflow run answer \"run-3\" <text>`",
+		"answer only what you actually know",
 	)
-	// The CLI has no verb that answers a question. Naming one — even a plausible
-	// one — is what turns a wake into an agent answering for the human.
+	// The verb is the answering one alone — a resume or a retry would restart
+	// the phase without the answer it is waiting for.
 	mustNotContain(t, message, "run resume", "run rerun", "retry-")
 }
 
@@ -105,7 +106,10 @@ func TestComposeUnitFailureNamesTheFailedUnitThread(t *testing.T) {
 		`- "failed unit": "pkg-store (thread thread-77)"`,
 		`- "phase thread": "thread-40"`,
 		"Repair it with `agent-overflow run retry-failed-units \"run-4\"`, "+
-			"or `agent-overflow run retry-unit \"run-4\" <unit-id>` for one of the failed units above.",
+			"or `agent-overflow run retry-unit \"run-4\" <unit-id>` for one of the failed units above "+
+			"— a failed join is one of them.",
+		"`agent-overflow run resume \"run-4\"` continues the same attempt instead.",
+		"None of these re-run a unit that finished; `run resume --phase <id>` would",
 	)
 }
 
@@ -114,15 +118,25 @@ func TestComposeUnitFailureNamesTheFailedUnitThread(t *testing.T) {
 // one of four control verbs that all sound alike.
 func TestComposeParkedRunNamesTheVerbThatRepairsIt(t *testing.T) {
 	for _, test := range []struct {
-		reason string
-		want   string
+		reason       string
+		gateDecision string
+		gateLabel    string
+		want         string
 	}{
-		{"paused", "`agent-overflow run resume \"run-11\"` returns it to running."},
-		{"interrupted", "`agent-overflow run resume \"run-11\"` returns it to running."},
-		{"gate", "Only a human decides this, in the app;"},
+		{"paused", "", "", "`agent-overflow run resume \"run-11\"` returns it to running."},
+		{"interrupted", "", "", "`agent-overflow run resume \"run-11\"` returns it to running."},
+		// A gate park is two states under one reason: a human: route has an
+		// approve/reject to resolve, a park: route declares no continuation, and
+		// an unreadable record names both instead of guessing.
+		{"gate", "human", "", "Decide it with `agent-overflow run resolve \"run-11\" --approve|--reject [--note <text>]`"},
+		{"gate", "park", "review-unresolved", "This is a park: route (\"review-unresolved\"): it declares no approve or reject, so `run resolve` does not apply."},
+		{"gate", "park", "review-unresolved", "`agent-overflow run resume \"run-11\"` re-enters the phase — an approvable park is authored as a human: route."},
+		{"gate", "", "", "If `agent-overflow run status \"run-11\"` shows the parked attempt's decision as human"},
+		{"retries-exhausted", "", "", "`agent-overflow run resume \"run-11\" --phase <phase-id>` re-enters an earlier phase with fresh loop budgets"},
 	} {
 		message := Compose(Input{Run: Run{
 			ItemID: "run-11", Goal: "g", WorkflowID: "w", State: "needs-human", Reason: test.reason,
+			GateDecision: test.gateDecision, GateLabel: test.gateLabel,
 		}})
 		mustContain(t, message, `Run "run-11" is parked and does not continue until this is resolved.`, test.want)
 	}
@@ -147,9 +161,11 @@ func TestComposeDescendantParkNamesTheVerbAgainstTheDescendant(t *testing.T) {
 	mustContain(t, message,
 		`act on run "wave-4", not on "root-8".`,
 		"Repair it with `agent-overflow run retry-failed-units \"wave-4\"`, "+
-			"or `agent-overflow run retry-unit \"wave-4\" <unit-id>` for one of the failed units above.",
+			"or `agent-overflow run retry-unit \"wave-4\" <unit-id>` for one of the failed units above "+
+			"— a failed join is one of them.",
+		"`agent-overflow run resume \"wave-4\"` continues the same attempt instead.",
 	)
-	mustNotContain(t, message, `retry-failed-units "root-8"`)
+	mustNotContain(t, message, `retry-failed-units "root-8"`, `run resume "root-8"`)
 }
 
 func TestComposeDescendantParkReportsTheRootAsWaiting(t *testing.T) {

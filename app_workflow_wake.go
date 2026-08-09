@@ -9,6 +9,7 @@ import (
 
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadmode"
+	"agent-overflow/internal/workflow/def"
 	"agent-overflow/internal/workflow/engine"
 	"agent-overflow/internal/workflow/wake"
 )
@@ -73,6 +74,9 @@ func (a *App) surfaceDescendantPark(child store.WorkItem) {
 		ItemID: child.ID, WorkflowID: child.WorkflowID,
 		State: child.State, Reason: child.Reason,
 		Depth: child.CallDepth - root.CallDepth, Chain: ids,
+	}
+	if engine.Reason(child.Reason) == engine.ReasonGate {
+		descendant.GateDecision, descendant.GateLabel = a.workflowGateDecision(child.ID)
 	}
 	phase, envelope, err := a.workflowRestingPhase(child.ID)
 	if err != nil {
@@ -147,6 +151,9 @@ func (a *App) composeWorkflowWake(item store.WorkItem, descendant *wake.Descenda
 			State: item.State, Reason: item.Reason,
 		},
 		Descendant: descendant,
+	}
+	if descendant == nil && engine.Reason(item.Reason) == engine.ReasonGate {
+		input.Run.GateDecision, input.Run.GateLabel = a.workflowGateDecision(item.ID)
 	}
 	if descendant != nil {
 		// The root did not rest: the composer renders it as waiting on the
@@ -285,6 +292,40 @@ func (a *App) workflowRestingNarrative(itemID string) (string, bool) {
 
 // workflowRestingPhase returns the attempt a run came to rest on plus its
 // output envelope.
+// workflowGateDecision resolves what kind of `gate` park a run rests under —
+// "human" for a human: route (an approve/reject exists), "park" for a park:
+// route (no continuation is declared, `run resolve` does not apply) — plus a
+// park: route's authored label. The two rest under one typed reason, so the
+// wake's repair verb depends on this read. Best-effort: a record that cannot
+// be read composes the wake without it, which the composer renders as the
+// sentence naming both verbs, rather than suppressing the wake over a detail.
+func (a *App) workflowGateDecision(itemID string) (kind, label string) {
+	rows, err := a.store.ListWorkItemPhaseProvenance(itemID)
+	if err != nil {
+		log.Printf("workflow wake %s: read gate decision: %v", itemID, err)
+		return "", ""
+	}
+	for index := len(rows) - 1; index >= 0; index-- {
+		if len(rows[index].GateTrace) == 0 {
+			continue
+		}
+		var trace def.GateTrace
+		if err := json.Unmarshal(rows[index].GateTrace, &trace); err != nil {
+			log.Printf("workflow wake %s: decode gate trace %s/%d: %v",
+				itemID, rows[index].PhaseID, rows[index].Attempt, err)
+			return "", ""
+		}
+		switch trace.Decision.Kind {
+		case def.DecisionHuman:
+			return "human", ""
+		case def.DecisionPark:
+			return "park", trace.Decision.Target
+		}
+		return "", ""
+	}
+	return "", ""
+}
+
 func (a *App) workflowRestingPhase(itemID string) (store.WorkItemPhaseTimeline, json.RawMessage, error) {
 	timeline, err := a.store.ListWorkItemPhaseTimeline(itemID)
 	if err != nil {

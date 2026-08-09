@@ -81,6 +81,11 @@ func (f *fanOutRun) find(unitID string) *unitRun {
 //
 // A unit a human took over outranks a failure: the human is now driving, and
 // that is the reason worth parking under.
+//
+// It reads the WORK units only. A failed join blocks nothing — every unit it
+// consolidates already rests, so there is nothing left to launch — and counting
+// it here would make the join's own repair refuse itself: continueFanOutJoin
+// asks this question before it reopens the join.
 func (f *fanOutRun) blocked() (Reason, json.RawMessage) {
 	var reason Reason
 	var output json.RawMessage
@@ -250,10 +255,12 @@ type fanOutCapacityNote struct {
 }
 
 // fanOutCapacityNotes counts the wave per resource its units will contend on
-// and reports every resource the count exceeds, in canonical order. Units that
-// acquire nothing — tool units, call units — contend on nothing and count
-// toward nothing, which is what makes this the same arithmetic admission does
-// rather than a second opinion about it.
+// and reports every resource the count exceeds, in canonical order. It counts
+// exactly what unitResources hands admission — a declared resource on a command
+// unit as readily as an agent unit's provider slot — so this is the same
+// arithmetic admission does rather than a second opinion about it. A unit that
+// acquires nothing, a call unit or an undeclared-resource tool unit, contends
+// on nothing and counts toward nothing.
 func fanOutCapacityNotes(
 	expanded []def.ExpandedUnit, capacities map[string]int, projectID string,
 ) []fanOutCapacityNote {
@@ -261,8 +268,10 @@ func fanOutCapacityNotes(
 	for _, unit := range expanded {
 		names, err := unitResources(unit.Unit)
 		if err != nil {
-			// A unit that declares no provider is a wiring failure the start path
-			// reports; it acquires nothing, so it counts toward nothing.
+			// A declaration that cannot describe an acquisition at all — an agent
+			// unit with no provider, a call unit claiming capacity — is a wiring
+			// failure the start path reports; it acquires nothing here, so it
+			// counts toward nothing.
 			continue
 		}
 		for _, name := range names {
@@ -342,6 +351,20 @@ func (e *Engine) advanceFanOut(item *runtimeItem) error {
 	}
 	if !fan.joinStarted {
 		errs = append(errs, e.startJoin(item))
+		return errors.Join(errs...)
+	}
+	if fan.join != nil && fan.join.status != store.WorkItemUnitDone {
+		// The join already ran and did not finish. Nothing is left to launch and
+		// no work unit is blocking, so an attempt that reaches here would sit
+		// `running` with nothing that could ever run — it parks under the reason
+		// the join's own failure takes, where the repair verbs reach it. Every
+		// legitimate repair is already past this: reopening the join clears
+		// `joinStarted`, and a join that finished tears the attempt down instead
+		// of advancing it.
+		errs = append(errs, e.teardown(item, teardownRequest{
+			output: fan.join.envelope, phaseStatus: "parked",
+			nextState: StateNeedsHuman, reason: ReasonUnitFailed,
+		}))
 	}
 	return errors.Join(errs...)
 }
@@ -358,7 +381,7 @@ func (e *Engine) startUnitOrWait(item *runtimeItem, unit *unitRun) error {
 	acquired, ok, err := e.acquireUnitResources(item.item.ProjectID, unit.definition)
 	if err != nil {
 		return errors.Join(
-			e.teardown(item, teardownRequest{phaseStatus: "parked", nextState: StateNeedsHuman, reason: ReasonSetupFailed}),
+			e.teardown(item, teardownRequest{phaseStatus: "parked", nextState: StateNeedsHuman, reason: acquisitionParkReason(err)}),
 			fmt.Errorf("acquire unit %s/%s/%d/%s resources: %w", item.item.ID, item.phaseID, item.attempt, unit.id, err),
 		)
 	}

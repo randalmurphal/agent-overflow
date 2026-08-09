@@ -74,7 +74,9 @@ reliability:
 		branches[branch.Name] = true
 	}
 	for _, id := range []string{"alpha", "beta"} {
-		want := workflowUnitBranch(item.Branch, id, 1)
+		want := workflowUnitBranch(item.Branch, workflowUnitWorkspaceRef{
+			itemID: item.ID, phaseID: "port", attempt: 1, unitID: id, unitAttempt: 1,
+		})
 		if units[id].Branch != want {
 			t.Fatalf("unit %q branch = %q, want %q", id, units[id].Branch, want)
 		}
@@ -189,25 +191,46 @@ reliability:
 
 // TestWorkflowUnitBranchNamesAreDerivedAndDeterministic pins the naming scheme
 // the recovery paths depend on: re-entering one try finds its own worktree, and
-// a retry cannot collide with the try it replaces.
+// nothing that provisions a DIFFERENT lane can derive the name it already
+// holds.
 func TestWorkflowUnitBranchNamesAreDerivedAndDeterministic(t *testing.T) {
 	const itemBranch = "ao-workflow-port-1234abcd-5f3a"
-	first := workflowUnitBranch(itemBranch, "port-0", 1)
-	if first != itemBranch+"-port-0-1" {
+	base := workflowUnitWorkspaceRef{
+		itemID: "9f1c3a4e-2b77-4d51-9c8a-3e6f0b2d1a55", phaseID: "implement",
+		attempt: 1, unitID: "port-0", unitAttempt: 1,
+	}
+	first := workflowUnitBranch(itemBranch, base)
+	if first != itemBranch+"-9f1c3a4e-implement-a1-port-0-1" {
 		t.Fatalf("unit branch = %q", first)
 	}
-	if again := workflowUnitBranch(itemBranch, "port-0", 1); again != first {
+	if again := workflowUnitBranch(itemBranch, base); again != first {
 		t.Fatalf("unit branch is not deterministic: %q vs %q", again, first)
 	}
-	if retry := workflowUnitBranch(itemBranch, "port-0", 2); retry == first {
-		t.Fatal("a retry reused the failed try's branch")
-	}
-	if sibling := workflowUnitBranch(itemBranch, "port-1", 1); sibling == first {
-		t.Fatal("two units share one branch")
-	}
-	// Every branch a run creates extends the item's branch, which is what makes
-	// the whole set findable from the item alone.
-	for _, branch := range []string{first, workflowUnitBranch(itemBranch, "port-1", 2)} {
+
+	// Every coordinate that can differ between two live lanes has to move the
+	// name. The item id is what separates the waves of a self-calling campaign,
+	// which all fan out from ONE item branch; the phase attempt is what
+	// separates a re-expanded phase from the attempt it replaces, whose tries
+	// restart at 1; the phase id is what separates two fan-outs of one workflow
+	// that name their units alike.
+	for _, tc := range []struct {
+		name string
+		ref  workflowUnitWorkspaceRef
+	}{
+		{"another wave's fan-out owner", withUnitRef(base, func(r *workflowUnitWorkspaceRef) {
+			r.itemID = "0d55e21b-88fa-4c19-b7d0-1a92c4e73f60"
+		})},
+		{"another fan-out phase", withUnitRef(base, func(r *workflowUnitWorkspaceRef) { r.phaseID = "review" })},
+		{"a re-expanded phase attempt", withUnitRef(base, func(r *workflowUnitWorkspaceRef) { r.attempt = 2 })},
+		{"a sibling unit", withUnitRef(base, func(r *workflowUnitWorkspaceRef) { r.unitID = "port-1" })},
+		{"a retry of the same unit", withUnitRef(base, func(r *workflowUnitWorkspaceRef) { r.unitAttempt = 2 })},
+	} {
+		branch := workflowUnitBranch(itemBranch, tc.ref)
+		if branch == first {
+			t.Fatalf("%s derived the same branch %q", tc.name, branch)
+		}
+		// Every branch a run creates extends the item's branch, which is what
+		// makes the whole set findable from the item alone.
 		if !strings.HasPrefix(branch, itemBranch+"-") {
 			t.Fatalf("unit branch %q does not extend the item branch", branch)
 		}
@@ -215,11 +238,21 @@ func TestWorkflowUnitBranchNamesAreDerivedAndDeterministic(t *testing.T) {
 			t.Fatalf("unit branch %q is not a legal ref: %v", branch, err)
 		}
 	}
-	// A unit id that is not already a legal ref fragment is sanitized, and an
-	// absent try number can never produce a branch two tries would share.
-	if got := workflowUnitBranch(itemBranch, "Port Section", 0); got != itemBranch+"-port-section-1" {
-		t.Fatalf("sanitized unit branch = %q", got)
+
+	// Author-controlled ids are sanitized into ref fragments, and an absent
+	// attempt or try can never produce a branch two of them would share.
+	sanitized := workflowUnitBranch(itemBranch, workflowUnitWorkspaceRef{
+		itemID: "9f1c3a4e-2b77-4d51-9c8a-3e6f0b2d1a55", phaseID: "Port Phase",
+		attempt: 0, unitID: "Port Section", unitAttempt: 0,
+	})
+	if want := itemBranch + "-9f1c3a4e-port-phase-a1-port-section-1"; sanitized != want {
+		t.Fatalf("sanitized unit branch = %q, want %q", sanitized, want)
 	}
+}
+
+func withUnitRef(base workflowUnitWorkspaceRef, edit func(*workflowUnitWorkspaceRef)) workflowUnitWorkspaceRef {
+	edit(&base)
+	return base
 }
 
 // TestWorkflowJoinReceivesUnitGitStateAndKeepsDirtyWorktrees covers the two

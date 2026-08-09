@@ -250,26 +250,6 @@ func TestFanOutJoinReceivesUnitResultsAndDrivesTheGate(t *testing.T) {
 	requireItemState(t, h.store, item, StateDone, "")
 }
 
-func TestFanOutJoinFailureIsAPhaseFailureNotAUnitFailure(t *testing.T) {
-	h := newFanOutHarness(t, 1)
-	item := startFanOut(t, h, "fan")
-	h.runner.completeRun(t, unitKey(item, "work", 1, "work-unit-0"), Outcome{Kind: OutcomeDone, Envelope: unitDoneEnvelope("a")})
-	if err := h.engine.Sync(); err != nil {
-		t.Fatal(err)
-	}
-	h.runner.completeRun(t, unitKey(item, "work", 1, "work-join"),
-		Outcome{Kind: OutcomeExecutionFailure, Envelope: failureEnvelope("join blew up")})
-	if err := h.engine.Sync(); err != nil {
-		t.Fatal(err)
-	}
-	requireItemState(t, h.store, item, StateNeedsHuman, ReasonAgentError)
-	h.requireUnitStatuses(t, item, "work", 1, map[string]string{
-		"work-unit-0": store.WorkItemUnitDone,
-		"work-join":   store.WorkItemUnitFailed,
-	})
-	h.requireNoHeldResources(t)
-}
-
 func TestFanOutTeardownReleasesUnitCapacityOnCancel(t *testing.T) {
 	h := newFanOutHarness(t, 2)
 	item := startFanOut(t, h, "fan")

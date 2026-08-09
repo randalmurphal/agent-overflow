@@ -74,6 +74,20 @@ func ResumableReason(reason Reason) bool {
 	return reason == ReasonPaused || reason == ReasonInterrupted || reason == ReasonCheckpoint
 }
 
+// ContinuableReason reports whether a bare resume continues the parked attempt
+// instead of re-entering the phase with a fresh one. It is ResumableReason plus
+// `unit-failed`: that park rests on a fan-out whose finished units — and the
+// call children they ran — are exactly what a fresh entry would throw away and
+// redo. Naming a phase is always the fresh entry, including when the phase named
+// is the parked one; that is the whole meaning of `run resume --phase <id>`.
+//
+// It is deliberately NOT what decides whether a resume cascades into a parked
+// DESCENDANT. A child resting `unit-failed` needs a human's judgment about its
+// units, so those sites stay on ResumableReason and the child keeps its park.
+func ContinuableReason(reason Reason) bool {
+	return ResumableReason(reason) || reason == ReasonUnitFailed
+}
+
 type OutcomeKind string
 
 const (

@@ -103,9 +103,9 @@ func TestValidateGoldenErrorsNameOffendingElement(t *testing.T) {
 		}, validBindings(), "variable.type", "input \"plan.approach\""},
 		{"missing target", func(r *ResolvedWorkflow) { r.Workflow.Phases[0].Gate.Routes[0].To = "absent" }, validBindings(), "gate.target", "route 0"},
 		{"unreachable", func(r *ResolvedWorkflow) { r.Workflow.Phases[0].Gate.Routes[0].To = "done" }, validBindings(), "graph.unreachable", "phase \"implement\""},
-		{"loop max", func(r *ResolvedWorkflow) { r.Workflow.Phases[2].Gate.Routes[1].Max = 0 }, validBindings(), "gate.loop-max", "phase \"review\" route 1"},
+		{"loop max", func(r *ResolvedWorkflow) { r.Workflow.Phases[2].Gate.Routes[1].Max = LoopBound{} }, validBindings(), "gate.loop-max", "phase \"review\" route 1"},
 		{"loop ancestor", func(r *ResolvedWorkflow) {
-			r.Workflow.Phases[0].Gate.Routes = []Route{{Loop: "review", Max: 1}}
+			r.Workflow.Phases[0].Gate.Routes = []Route{{Loop: "review", Max: LiteralBound(1)}}
 		}, validBindings(), "gate.loop-ancestor", "phase \"plan\" route 0"},
 		{"unbounded cycle", func(r *ResolvedWorkflow) {
 			r.Workflow.Phases[2].Gate.Routes[1] = Route{To: "implement"}
@@ -120,7 +120,7 @@ func TestValidateGoldenErrorsNameOffendingElement(t *testing.T) {
 			r.Workflow.Phases[2].Gate.Routes[0].When.Exists = "review.ok"
 		}, validBindings(), "predicate.operator", "phase \"review\" route 0 predicate"},
 		{"human approve", func(r *ResolvedWorkflow) {
-			r.Workflow.Phases[2].Gate.Routes[0] = Route{Human: &HumanRoute{Reject: &LoopTarget{Loop: "implement", Max: 1}}}
+			r.Workflow.Phases[2].Gate.Routes[0] = Route{Human: &HumanRoute{Reject: &LoopTarget{Loop: "implement", Max: LiteralBound(1)}}}
 		}, validBindings(), "gate.human", "phase \"review\" route 0"},
 		{"prompt missing", func(r *ResolvedWorkflow) { r.Workflow.Phases[0].Prompt = "missing.md" }, validBindings(), "prompt.file", "prompt file \"missing.md\""},
 		{"prompt template", func(r *ResolvedWorkflow) { r.Workflow.Phases[0].Prompt = "invalid-template.md" }, validBindings(), "prompt.template", "prompt file \"invalid-template.md\""},
@@ -176,7 +176,7 @@ func TestValidateStructuralGoldenErrors(t *testing.T) {
 		{"human reject feedback", "gate.feedback", "phase \"review\" route 0", func(r *ResolvedWorkflow) {
 			r.Workflow.Phases[2].Gate.Routes[0] = Route{Human: &HumanRoute{
 				Approve: "done",
-				Reject:  &LoopTarget{Loop: "implement", Max: 1, Feedback: []string{"missing"}},
+				Reject:  &LoopTarget{Loop: "implement", Max: LiteralBound(1), Feedback: []string{"missing"}},
 			}}
 		}},
 	}

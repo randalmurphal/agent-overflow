@@ -347,12 +347,20 @@ func (a *App) WorkflowCancelItem(ctx context.Context, itemID string) error {
 }
 
 // WorkflowResumeItem returns a parked run to running. With no target phase it
-// dispatches on why the run parked: a run stopped mid-attempt (`paused`,
-// `interrupted`) continues on the provider session it parked on and carries its
-// whole tree with it, while every other reason re-enters the phase with a fresh
-// attempt. Naming a target phase is always a fresh entry — that is what
-// choosing a different phase means.
-func (a *App) WorkflowResumeItem(ctx context.Context, itemID, targetPhase string) error {
+// CONTINUES: a run stopped mid-attempt (`paused`, `interrupted`, `checkpoint`)
+// picks up the provider session it parked on and carries its whole tree with it,
+// a fan-out parked on a failed unit reopens what blocked it while every finished
+// unit — and every run its call units already completed — keeps its result, and
+// a park with nothing to continue re-enters the phase. Naming a target phase is
+// always the fresh entry, including when it names the parked phase. The engine
+// owns that dispatch; this method adds only the takeover bookkeeping the runner
+// needs.
+//
+// refreshDefinition re-reads the workflow and its prompt files from disk for
+// this entry instead of rendering the definition the run froze at start — the
+// repair for a phase whose prompt was edited while the run was parked. The
+// engine offers it at fresh phase entries only.
+func (a *App) WorkflowResumeItem(ctx context.Context, itemID, targetPhase string, refreshDefinition bool) error {
 	workflowEngine, err := a.requireWorkflowEngine()
 	if err != nil {
 		return err
@@ -363,9 +371,6 @@ func (a *App) WorkflowResumeItem(ctx context.Context, itemID, targetPhase string
 	item, itemErr := a.store.GetWorkItem(itemID)
 	if itemErr != nil {
 		return itemErr
-	}
-	if targetPhase == "" && engine.ResumableReason(engine.Reason(item.Reason)) {
-		return workflowEngine.ResumeItem(itemID)
 	}
 	if item.Reason == string(engine.ReasonTakenOver) {
 		phase, phaseErr := a.currentWorkflowPhaseAttempt(itemID)
@@ -385,14 +390,14 @@ func (a *App) WorkflowResumeItem(ctx context.Context, itemID, targetPhase string
 			return err
 		}
 		unlock()
-		if err := workflowEngine.Resume(itemID, targetPhase); err != nil {
+		if err := workflowEngine.Resume(itemID, targetPhase, refreshDefinition); err != nil {
 			a.workflowRunner.cancelTakeoverTransition(itemID, phase.ThreadID)
 			return err
 		}
 		a.workflowRunner.clearTakeover(itemID)
 		return nil
 	}
-	if err := workflowEngine.Resume(itemID, targetPhase); err != nil {
+	if err := workflowEngine.Resume(itemID, targetPhase, refreshDefinition); err != nil {
 		return err
 	}
 	return nil
@@ -465,17 +470,31 @@ func currentWorkflowPhaseAttempt(phases []store.WorkItemPhase) (store.WorkItemPh
 	return phases[len(phases)-1], true
 }
 
-func (a *App) WorkflowAnswerQuestion(itemID, answer string) error {
+// WorkflowAnswerQuestion and WorkflowResolveGate settle the two parks a
+// workflow author routed to a person. Both are reachable from the CLI as well
+// as the overlay, and both carry the `resolve` grant rather than `start-run`:
+// starting and stopping work is routine, while deciding a park the author
+// deliberately handed to a human is authority the author hands out just as
+// deliberately. The scope check is the same one every run-control RPC applies —
+// a webview call carries none and passes untouched, a phase session is confined
+// to the runs it started.
+func (a *App) WorkflowAnswerQuestion(ctx context.Context, itemID, answer string) error {
 	workflowEngine, err := a.requireWorkflowEngine()
 	if err != nil {
+		return err
+	}
+	if err := a.authorizeScopedRunAction(ctx, itemID, "answer workflow question"); err != nil {
 		return err
 	}
 	return workflowEngine.Answer(itemID, answer)
 }
 
-func (a *App) WorkflowResolveGate(itemID, decision, note string) error {
+func (a *App) WorkflowResolveGate(ctx context.Context, itemID, decision, note string) error {
 	workflowEngine, err := a.requireWorkflowEngine()
 	if err != nil {
+		return err
+	}
+	if err := a.authorizeScopedRunAction(ctx, itemID, "resolve workflow gate"); err != nil {
 		return err
 	}
 	return workflowEngine.ResolveHumanGate(itemID, engine.HumanDecision(decision), note)

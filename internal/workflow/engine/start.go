@@ -135,17 +135,13 @@ func (e *Engine) enterPhase(item *runtimeItem) error {
 		// are the only thing it hands anywhere. Persisting them on the attempt row
 		// makes the invocation auditable and lets a rebuild re-invoke the same
 		// call after a crash between the attempt and the child.
-		args, argsErr := callArgs(phase, vars)
-		if argsErr != nil {
-			return errors.Join(
-				e.teardown(item, teardownRequest{
-					output:      parkCauseEnvelope(argsErr),
-					phaseStatus: "parked", nextState: StateNeedsHuman, reason: ReasonWiringError,
-				}),
-				fmt.Errorf("call %s/%s: %w", item.item.ID, phase.ID, argsErr),
-			)
-		}
-		phaseInput.Args = args
+		//
+		// An argument whose reference does not resolve is simply absent from the
+		// record. Whether that is legal is the child's declared inputs' answer,
+		// and only the call edge has resolved the child to ask — by which point
+		// this row exists to carry the refusal, which is the difference between a
+		// diagnosable park and a run that stopped with no phase history at all.
+		phaseInput.Args, _ = resolveCallArgs(phase.Args, vars)
 	}
 	input, err := json.Marshal(phaseInput)
 	if err != nil {
@@ -169,7 +165,7 @@ func (e *Engine) enterPhase(item *runtimeItem) error {
 	}
 	acquired, ok, err := e.acquirePhaseResources(item.item.ProjectID, phase)
 	if err != nil {
-		return errors.Join(e.teardown(item, teardownRequest{phaseStatus: "parked", nextState: StateNeedsHuman, reason: ReasonSetupFailed}), err)
+		return errors.Join(e.teardown(item, teardownRequest{phaseStatus: "parked", nextState: StateNeedsHuman, reason: acquisitionParkReason(err)}), err)
 	}
 	if !ok {
 		e.addWaiting(item, nil)

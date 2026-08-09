@@ -317,14 +317,26 @@ func (r *workflowAppRunner) finish(runKey string, outcome engine.Outcome) {
 	}
 	attempt.sendMu.Lock()
 	attempt.sendMu.Unlock()
+	// Every agent-backed workflow turn — phase, unit, join, Answer continuation,
+	// takeover finalize — reports here, which makes this the one seam the
+	// envelope's optional `narrative` can be lifted out at. Stripping it is
+	// unconditional so nothing downstream can ever see prose in an envelope:
+	// gate evaluation, a join's `units` results, call synthesis, and the
+	// persisted attempt envelope all read `outcome.Envelope` from here on.
+	authored, stripped := def.SplitEnvelopeNarrative(outcome.Envelope)
+	// The ORIGINAL payload is what settles the narrative, not the stripped one:
+	// recovery recognizes the assistant text that IS the envelope by comparing
+	// decoded documents, and the text the session sent still carries the field.
+	original := outcome.Envelope
+	outcome.Envelope = stripped
 	// An accepted envelope means the turn ended the way the element was told to
-	// end it, so this is the last moment its narrative can still be recovered —
+	// end it, so this is the last moment its narrative can still be settled —
 	// the engine transition that follows is what the wake and the triage seed
 	// read it for. It runs before `complete` on every branch, including the
 	// asynchronous done one, so neither surface can observe a missing file that
 	// was about to appear.
 	if workflowOutcomeCarriesEnvelope(outcome.Kind) {
-		r.recoverAttemptNarrative(attempt, outcome.Envelope)
+		r.settleAttemptNarrative(attempt, authored, original)
 	}
 	if outcome.Kind == engine.OutcomeDone {
 		go func() {

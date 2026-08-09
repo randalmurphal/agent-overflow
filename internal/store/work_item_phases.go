@@ -49,6 +49,22 @@ type WorkItemPhaseTimeline struct {
 	EndedAt        int64
 }
 
+// WorkItemPhaseProvenance is one phase attempt narrowed to what produced it:
+// the model settings its thread actually ran with and its gate trace. Envelopes
+// and narratives are absent on purpose — this projection feeds an agent's `ao
+// run status`, where a context window pays for every byte crossing the wire.
+type WorkItemPhaseProvenance struct {
+	PhaseID  string
+	Attempt  int
+	Status   string
+	ThreadID string
+	// Provider, Model, and Effort are empty for an attempt with no thread row.
+	Provider  string
+	Model     string
+	Effort    string
+	GateTrace json.RawMessage
+}
+
 const workItemPhaseColumns = `item_id, phase_id, attempt, thread_id,
 input_envelope, output_envelope, gate_trace, intervention, narrative_path,
 status, started_at, ended_at`
@@ -184,6 +200,46 @@ func (s *Store) ListWorkItemPhaseTimeline(itemID string) ([]WorkItemPhaseTimelin
 		return nil, fmt.Errorf("store: list work item phase timeline %s: iterate: %w", itemID, err)
 	}
 	return timeline, nil
+}
+
+// ListWorkItemPhaseProvenance answers "what ran this attempt, and how did its
+// gate decide". The model settings are joined from the attempt's thread row
+// because that row is where they were RESOLVED — the definition authors a
+// model and an effort tier, and coercion against the model's catalog happens
+// once, at thread creation — so reading them anywhere else would report what
+// was asked for rather than what ran. A LEFT JOIN because an attempt need not
+// have a thread: a tool-driver phase runs a command, and an attempt that has
+// not started yet has none.
+func (s *Store) ListWorkItemPhaseProvenance(itemID string) ([]WorkItemPhaseProvenance, error) {
+	rows, err := s.reader().Query(
+		`SELECT p.phase_id, p.attempt, p.status, p.thread_id, p.gate_trace,
+		 COALESCE(t.provider, ''), COALESCE(t.model, ''), COALESCE(t.reasoning_effort, '')
+		 FROM work_item_phases AS p
+		 LEFT JOIN threads AS t ON t.id = p.thread_id
+		 WHERE p.item_id = ?
+		 ORDER BY p.started_at ASC, p.phase_id ASC, p.attempt ASC`, itemID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("store: list work item phase provenance %s: %w", itemID, err)
+	}
+	defer rows.Close()
+	provenance := make([]WorkItemPhaseProvenance, 0)
+	for rows.Next() {
+		var phase WorkItemPhaseProvenance
+		var gateTrace string
+		if err := rows.Scan(
+			&phase.PhaseID, &phase.Attempt, &phase.Status, &phase.ThreadID, &gateTrace,
+			&phase.Provider, &phase.Model, &phase.Effort,
+		); err != nil {
+			return nil, fmt.Errorf("store: list work item phase provenance %s: scan: %w", itemID, err)
+		}
+		phase.GateTrace = json.RawMessage(gateTrace)
+		provenance = append(provenance, phase)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: list work item phase provenance %s: iterate: %w", itemID, err)
+	}
+	return provenance, nil
 }
 
 func (s *Store) ListWorkItemPhaseContexts(itemID string) ([]WorkItemPhaseContext, error) {

@@ -111,7 +111,7 @@ func TestEvaluateGateDecisionKinds(t *testing.T) {
 		{"failed", Route{To: "failed"}, DecisionFailed},
 		{"park", Route{Park: "review"}, DecisionPark},
 		{"human", Route{Human: &HumanRoute{Approve: "done"}}, DecisionHuman},
-		{"loop", Route{Loop: "build", Max: 2, Feedback: []string{"check.reason"}}, DecisionLoop},
+		{"loop", Route{Loop: "build", Max: LiteralBound(2), Feedback: []string{"check.reason"}}, DecisionLoop},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -129,7 +129,7 @@ func TestEvaluateGateDecisionKinds(t *testing.T) {
 
 func TestEvaluateGateLoopExhaustionFallsThrough(t *testing.T) {
 	phase := Phase{ID: "review", Gate: Gate{Routes: []Route{
-		{Loop: "build", Max: 2},
+		{Loop: "build", Max: LiteralBound(2)},
 		{To: "done"},
 	}}}
 	edge := GateEdgeKey("review", 0)
@@ -214,5 +214,59 @@ func TestEvaluateGateAnyCanMatchPresentAlternativeAfterAbsence(t *testing.T) {
 	}
 	if decision.Kind != DecisionDone {
 		t.Fatalf("decision = %+v, want done", decision)
+	}
+}
+
+// A seeded bound is resolved at evaluation, so the count the traversal is
+// measured against — and the count the persisted trace states — is the one the
+// run's own variables produced, not the name they were read from.
+func TestEvaluateGateResolvesSeededLoopBoundsIntoTheTrace(t *testing.T) {
+	phase := Phase{ID: "review", Gate: Gate{Routes: []Route{
+		{Loop: "build", Max: RefBound("fix-budget")},
+		{To: "done"},
+	}}}
+	edge := GateEdgeKey("review", 0)
+	vars := map[string]any{"fix-budget": float64(3)}
+
+	decision, trace, err := EvaluateGate(phase, vars, map[string]int{edge: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decision.Kind != DecisionLoop || decision.Max != 3 || trace.Decision.Max != 3 {
+		t.Fatalf("seeded loop decision = %+v, trace decision = %+v", decision, trace.Decision)
+	}
+
+	decision, trace, err = EvaluateGate(phase, vars, map[string]int{edge: 3})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decision.Kind != DecisionDone || !reflect.DeepEqual(trace.ExhaustedLoops, []string{edge}) {
+		t.Fatalf("spent seeded budget = %+v, trace = %+v", decision, trace)
+	}
+}
+
+// An unusable bound is not an exhausted loop and not a fall-through: nothing
+// can say how many traversals are allowed, so the caller has to park rather
+// than route somewhere the author never chose.
+func TestEvaluateGateRefusesAnUnusableSeededLoopBound(t *testing.T) {
+	phase := Phase{ID: "review", Gate: Gate{Routes: []Route{
+		{Loop: "build", Max: RefBound("fix-budget")},
+		{To: "done"},
+	}}}
+	for _, tc := range []struct {
+		name string
+		vars map[string]any
+	}{
+		{"missing", nil},
+		{"fractional", map[string]any{"fix-budget": 2.5}},
+		{"zero", map[string]any{"fix-budget": 0}},
+		{"negative", map[string]any{"fix-budget": -2}},
+		{"non-numeric", map[string]any{"fix-budget": "two"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if decision, _, err := EvaluateGate(phase, tc.vars, nil); err == nil {
+				t.Fatalf("unusable bound routed to %+v", decision)
+			}
+		})
 	}
 }

@@ -122,11 +122,15 @@ type ToolReport struct {
 	// Outcome is a one-line summary owned by the caller ("exited", "killed by
 	// the inactivity watchdog", ...). Exited/ExitCode carry the process status
 	// when the process ran to completion.
-	Outcome   string
-	Exited    bool
-	ExitCode  int
-	Envelope  ToolEnvelopeSource
-	Findings  []def.EnvelopeFinding
+	Outcome  string
+	Exited   bool
+	ExitCode int
+	Envelope ToolEnvelopeSource
+	Findings []def.EnvelopeFinding
+	// Narrative is the account the command wrote into its envelope's optional
+	// `narrative` field, if any. A command that writes one has said something no
+	// exit status or output tail can: it leads the file, above the stream.
+	Narrative string
 	Output    string
 	Truncated bool
 }
@@ -151,6 +155,15 @@ func ToolNarrative(report ToolReport) string {
 	}
 	fmt.Fprintf(&narrative, "- Duration: %s\n", report.Duration.Round(time.Millisecond))
 	fmt.Fprintf(&narrative, "- Envelope: %s\n", toolEnvelopeDescription(report.Envelope))
+
+	// The command's own account leads, because it is the only part of this file
+	// a human did not have to reconstruct from a process. The output tail stays
+	// where it is; it is evidence, not a summary.
+	if account := strings.TrimSpace(report.Narrative); account != "" {
+		narrative.WriteString("\n## Account (from the command's envelope)\n\n")
+		narrative.WriteString(account)
+		narrative.WriteString("\n")
+	}
 
 	if len(report.Findings) > 0 {
 		narrative.WriteString("\n## Envelope validation failed\n\n")

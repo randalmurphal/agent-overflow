@@ -8,15 +8,17 @@ import (
 	"agent-overflow/internal/store"
 )
 
-// RetryUnit re-runs one failed unit of a parked fan-out attempt. The attempt
-// itself continues: units that already finished keep their results, and the
-// join still runs once everything rests.
+// RetryUnit re-runs one failed unit of a parked fan-out attempt — the join
+// included, since a join that failed is a unit of the attempt that failed. The
+// attempt itself continues: units that already finished keep their results, and
+// the join runs once everything rests.
 func (e *Engine) RetryUnit(itemID, unitID, note string) error {
 	return e.request(retryUnitCommand{itemID: itemID, unitID: unitID, note: note})
 }
 
 // RetryFailedUnits re-runs every currently failed unit of a parked fan-out
-// attempt at once. It is exactly RetryUnit applied to all of them — the same
+// attempt at once, the join among them. It is exactly RetryUnit applied to all
+// of them — the same
 // reopened attempt, the same per-unit attempt bookkeeping, the same admission
 // through the project's semaphores — and it exists because the failure it
 // repairs is usually one cause hitting many units at the same time (a provider
@@ -73,10 +75,14 @@ func (e *Engine) retryFailedUnits(itemID, note string) error {
 	}
 	// Collected before anything is written, so "nothing was failed" is
 	// structurally a no-op refusal rather than a repair that happened to write
-	// nothing. The join is not in this list: `fan.units` excludes it, and it is
-	// not repairable in any case (see repairable).
-	failed := make([]*unitRun, 0, len(item.fan.units))
-	for _, unit := range item.fan.units {
+	// nothing. The set is `all()`, join included: a failed join is a failed unit
+	// of this attempt, and a verb named "retry every failed unit" that silently
+	// skipped the only failed one would leave the run with no repair at all.
+	// Ordering follows all() — join last — so the wave relaunches first and the
+	// join follows it exactly as a first attempt does.
+	units := item.fan.all()
+	failed := make([]*unitRun, 0, len(units))
+	for _, unit := range units {
 		if unit.status == store.WorkItemUnitFailed {
 			failed = append(failed, unit)
 		}
@@ -114,6 +120,10 @@ func (e *Engine) retryFailedUnits(itemID, note string) error {
 // off the row, and a failed write leaves the in-memory unit exactly as it was
 // rather than one try ahead of the record.
 //
+// Reopening the JOIN also clears `joinStarted`, because that flag is only ever
+// "the join of this attempt has already been launched". Leaving it set would
+// leave an attempt with a pending join nothing ever starts.
+//
 // Every caller previously wrote these four fields itself around a store call
 // that persisted none of them; the duplication is what let the bug hide in one
 // copy at a time.
@@ -132,6 +142,9 @@ func (e *Engine) reopenUnit(item *runtimeItem, unit *unitRun, feedback *Feedback
 	unit.attempt = next
 	unit.envelope = nil
 	unit.feedback = feedback
+	if unit.kind == UnitJoin {
+		item.fan.joinStarted = false
+	}
 	e.emitUnitState(item, unit)
 	return nil
 }
@@ -141,7 +154,7 @@ func (e *Engine) dropUnit(itemID, unitID, note string) error {
 	if err != nil {
 		return err
 	}
-	if err := repairable(itemID, unitID, "drop unit", unit); err != nil {
+	if err := droppable(itemID, unitID, "drop unit", unit); err != nil {
 		return err
 	}
 	if err := e.store.CompleteWorkItemUnit(
@@ -251,13 +264,12 @@ func (e *Engine) parkedUnit(itemID, unitID, action string) (*runtimeItem, *unitR
 	return item, unit, nil
 }
 
-// repairable is the one rule both retry and drop apply: they act on a work
-// unit resting in a state that blocks its attempt. The join is not repairable —
-// it settles with the attempt, and re-running it is re-running the phase.
+// repairable is the one rule both retry and drop apply: they act on a unit
+// resting in a state that blocks its attempt. The join is one of them — it is a
+// unit of the attempt like any other, and re-running it over the results the
+// work units already produced is the whole point of repairing rather than
+// re-entering the phase.
 func repairable(itemID, unitID, action string, unit *unitRun) error {
-	if unit.kind == UnitJoin {
-		return fmt.Errorf("%s %q of item %q: the join settles with its attempt; repair a unit instead", action, unitID, itemID)
-	}
 	if unit.status != store.WorkItemUnitFailed && unit.status != store.WorkItemUnitTakenOver {
 		return fmt.Errorf(
 			"%s %q of item %q: unit is %s; retry and drop apply to units resting %s or %s",
@@ -265,6 +277,20 @@ func repairable(itemID, unitID, action string, unit *unitRun) error {
 		)
 	}
 	return nil
+}
+
+// droppable is repairable plus the one target a drop cannot have. Accepting a
+// unit's absence means the join consolidates what is left; accepting the JOIN's
+// absence means nothing consolidates anything and the phase has no envelope, so
+// there is no attempt left to resume.
+func droppable(itemID, unitID, action string, unit *unitRun) error {
+	if unit.kind == UnitJoin {
+		return fmt.Errorf(
+			"%s %q of item %q: the join is what consolidates the units, so its absence cannot be accepted; retry it or resume the run",
+			action, unitID, itemID,
+		)
+	}
+	return repairable(itemID, unitID, action, unit)
 }
 
 // recoverableUnitPark reports whether a parked run is one whose units are the
@@ -316,7 +342,7 @@ func (e *Engine) resumeRepairedFanOut(item *runtimeItem) error {
 	acquired, ok, err := e.acquirePhaseResources(item.item.ProjectID, phase)
 	if err != nil {
 		return errors.Join(
-			e.teardown(item, teardownRequest{phaseStatus: "parked", nextState: StateNeedsHuman, reason: ReasonSetupFailed}),
+			e.teardown(item, teardownRequest{phaseStatus: "parked", nextState: StateNeedsHuman, reason: acquisitionParkReason(err)}),
 			err,
 		)
 	}
