@@ -56,7 +56,7 @@ func TestUnitWithoutOutputsGetsControlOnlyEnvelope(t *testing.T) {
 	if len(schema.Properties.Outputs.Properties) != 0 || len(schema.Properties.Outputs.Required) != 0 {
 		t.Fatalf("control-only envelope carries output members: %s", encoded)
 	}
-	if !reflect.DeepEqual(schema.Required, []string{"narrative", "outputs", "question", "reason", "status"}) {
+	if !reflect.DeepEqual(schema.Required, []string{"memory", "narrative", "outputs", "question", "reason", "status"}) {
 		t.Fatalf("control envelope required = %v", schema.Required)
 	}
 	for _, tc := range []struct {

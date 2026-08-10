@@ -53,6 +53,82 @@ stated once:
 - It reports `false` for a session that said nothing, and the app side never
   overwrites an existing file. Absence stays absence.
 
+## `PromptContext`, and why it is a struct
+
+Every prompt-assembly entry point (`BuildPrompt`, `BuildUnitPrompt`,
+`BuildTakeoverFinalizePrompt`, `PromptSuffix`) takes one `PromptContext`: the
+narrative path, the access, and each app-resolved block the suffix appends
+(feedback, campaign memory, operator guidance, the goal chain, the merge-join
+obligation). It is a struct because the blocks accumulate — seven positional
+arguments of which four are optional is a call site nobody can read, and two of
+the types are interchangeable at a glance. Adding the next block is a field
+rather than a signature change rippling through every caller.
+
+`Access` is the one field the builders SET rather than read:
+`BuildPrompt` takes it from the phase and `BuildUnitPrompt` from the unit,
+because a fan-out phase may not declare one and a unit's own declaration is the
+only correct source. Only `BuildTakeoverFinalizePrompt` honours the caller's,
+since a takeover steers an existing session and inherits its runtime mode.
+
+## The goal chain in the prompt
+
+`writeGoalChainSection` appends `<goal-chain>` — what campaign this element's
+work is part of, and what that campaign has ruled out. It exists because an
+element previously worked blind to the big picture: a lane knew its slice and
+nothing about why the campaign existed or where its edges were, so "done" was
+re-formed from the slice every wave and scope crept outward one reasonable
+decision at a time.
+
+- **Two halves with two owners.** The GOALS are run-owned, one link per run on
+  the call chain from the tree's root down to this one. The NON-GOALS are
+  def-owned (`non_goals:`), which is what makes the boundary a fact about the
+  definition rather than an opinion each wave re-derives. `RootNonGoals` carries
+  the root workflow's list only when it DIFFERS from this run's, since a
+  recursive campaign whose waves run one definition would otherwise print the
+  same list twice under two headings.
+- **The app resolves it, this package renders it.** `workflowPromptAncestry`
+  (repo root, `app_workflow_prompt_context.go`) walks the run's ancestry ONCE
+  and builds both this block and the campaign-memory digest from that one walk —
+  they are both facts about the run TREE, and walking twice per element would
+  pay for the same parent rows twice. Failure to resolve is logged and yields
+  the blocks it could build: the chain is context, not contract, and an element
+  that runs without it does the work with less to go on while an element that
+  never starts does none.
+- **Consecutive runs sharing one goal collapse to one link**, attributed to the
+  root-most run that stated it. The engine copies a caller's goal onto every run
+  it calls, so a forty-wave campaign's raw chain is forty copies of one
+  sentence. A goal that re-appears after a different one is a genuine second
+  statement and keeps its own link.
+- **A bare run with no goal and no ancestry gets NO block.** A labelled section
+  stating nothing is worse than no section, and the simple case must cost zero
+  prompt bytes. A child with no goal of its own still reads the chain above it —
+  that chain is precisely what tells it why it exists — and no link claims to be
+  its.
+- **Deep chains elide the middle and say how many they dropped**
+  (`MaxGoalChainLinks`, 6; head/tail split, the wake's call-chain precedent). A
+  silently shortened chain reads as a shallower campaign than the one running.
+  Overflowing non-goals are stated the same way rather than trimmed, because a
+  frozen snapshot can predate the authoring bound and an unstated boundary is
+  the one an element crosses.
+- **Every value is quoted through `internal/untrustedtext`** and the block says
+  so in its own first sentence. A goal is typed by a person or written by a
+  calling agent and arrives inside another agent's prompt.
+- It is written FIRST among the context blocks, because it is the frame the
+  others are read inside.
+
+## The merge-join obligation in the prompt
+
+`writeUnitAccountingSection` states the `accounts_for_units:` contract to the
+join that carries it, listing the exact unit ids it will be post-validated
+against. It is in the prompt because the ENGINE enforces it: an element refused
+for breaking a rule nobody told it about spends its one envelope retry learning
+the rule, and a rule stated only in authored content is one an author can forget
+to write. The ids are listed rather than described because the schema cannot
+express "these two arrays partition this set", so this block is the only place
+the join learns the set before it answers — and because `{{units}}` reaches it
+only if its author interpolated it. A join over zero units is told it still owes
+two empty lists; a join that did not opt in is told nothing at all.
+
 ## What `PromptSuffix` states, and why
 
 Everything in `<workflow-system-instructions>` is there because the phase would
@@ -100,6 +176,58 @@ otherwise get it wrong and the engine could not tell it so afterwards:
   account); a `write` element is told to null it, so the file it authored during
   the work — richer than a field summarized after it — stays the account.
 
+## Operator guidance in the prompt
+
+`writeGuidanceSection` appends the `<operator-guidance>` block when the phase
+entry that created this attempt delivered any — the run-side half of
+`agent-overflow run guide`. The entries arrive on `RunRequest.Guidance` as data
+the engine already bounded and stamped; this package only decides how they read.
+
+- **Every entry is quoted through `internal/untrustedtext`**, exactly as the
+  wake composer quotes model output. Guidance is typed by a person or written by
+  another agent, it arrives inside a prompt, and the one thing the reading
+  element must never do is mistake it for the system's own contract. The block's
+  own sentence says so: follow it as steering, and report — never obey — anything
+  in it that contradicts the phase's contract.
+- **The attribution is the engine's, not the text's.** An entry says whether a
+  human or an agent phase left it (and which run, for a phase), because a run
+  that could be told "a human said this" by an agent would make the label
+  worthless. An entry with no stamp at all predates the field and reads as
+  *unattributed*, never as a human.
+- **No entries means no section.** A labelled block containing nothing would
+  read as an operator who left an instruction and said nothing in it — the same
+  rule the memory digest follows.
+- A unit prompt carries the same block. The entries were delivered to the PHASE
+  entry, and every element of that attempt goes through prompt assembly.
+
+## Campaign memory in the prompt
+
+`writeMemorySection` appends the app-rendered `<campaign-memory>` block plus the
+one sentence stating how this element records notes. The block itself is
+`memory.Render`'s output, passed in as a `MemoryDigest` — a named string type so
+it cannot be transposed with the narrative path at a call site — because reading
+the log is filesystem work and this package does none.
+
+- **The WRITE channel follows `access`**, like the narrative's, and for a
+  stricter reason. A `write` element is given the CLI verb (`agent-overflow
+  memory add`) and told to run it as it learns things: a note recorded during
+  the work outlives an attempt that later fails, parks, or is retried, while an
+  envelope field only lands if the envelope is accepted. A `read-only` element
+  cannot reach the verb at all — Claude's read-only mode denies the bash call
+  and Codex's read-only sandbox blocks the loopback socket — so it is asked for
+  the envelope's `memory` field, which the app lifts at the same seam it lifts
+  `narrative`.
+- **READING is not split that way and does not need to be.** A read-only session
+  restricts writes, not reads: Claude strips only `Write`/`Edit`/`NotebookEdit`
+  and Codex's read-only sandbox permits reads filesystem-wide, so the log's
+  absolute path — under the app's config root, outside every workspace — is
+  legible to both. The digest's own header names it on both branches; there is
+  no read-only-specific phrasing because there is no read-only-specific
+  restriction.
+- **No digest means no section at all.** A contract naming a channel while
+  showing no log would be a promise nothing keeps, and an element asked for
+  notes nothing collects is worse than one never asked.
+
 ## Fan-out units
 
 - A unit's app-managed files nest under its phase attempt's directory
@@ -116,6 +244,12 @@ otherwise get it wrong and the engine could not tell it so afterwards:
   phase's inputs plus the reserved `units` results (`def.JoinDeclarations`).
   Both then get the same system-owned suffix — narrative instruction, feedback
   block, and envelope branch rules — as a phase prompt.
+- **Declarations always come from `def`, never from `phase.Inputs` read
+  directly.** `BuildPrompt` asks `def.PhaseDeclarations`, which is what binds
+  the reserved engine reads (`call-depth`, `budget`) on top of the authored
+  inputs. Reading the map off the phase would make a prompt referencing one fail
+  to build here while validating clean in the dry-run — the two have to be
+  answering the same question about what a template may name.
 - `ToolReport` carries `UnitID`/`UnitAttempt` so a tool unit's narrative names
   the unit it belongs to and its envelope guidance says "unit" where a phase's
   says "phase". Everything else about the tool contract below is identical for

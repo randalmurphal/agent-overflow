@@ -34,7 +34,36 @@ type runtimeItem struct {
 	acquired          []string
 	feedback          *Feedback
 	priorThreadID     string
-	takeoverFinalize  bool
+	// nextPromptRoute is the loop route a gate decision ARMED for the entry it is
+	// about to make; promptRoute is the one the CURRENT attempt rendered.
+	// `enterPhase` is the only consumer of either, and it consumes exactly one:
+	// a fresh entry takes the arming (and only when the armed route's loop target
+	// IS the phase being entered — `consumePromptRoute`), a continuation keeps
+	// what the round it continues rendered. That target check is what makes the
+	// override belong to one entry of one phase: a coordinate that survives a
+	// park into some other phase's entry is inert rather than a body that leaks.
+	//
+	// Two fields rather than one because the arming is written BEFORE the entry
+	// and the rendered value is read AFTER it — a phase held on resource capacity
+	// sits between the two — and because a fan-out or a tool phase never reaches
+	// the runner at all, so a single field cleared at the runner would leak into
+	// the phase after them.
+	nextPromptRoute *PromptRoute
+	promptRoute     *PromptRoute
+	// guidance is the operator guidance the CURRENT attempt was entered with. It
+	// outlives the request that carried it because a fan-out's units and its join
+	// are launched after the entry and render the same block; teardown clears it
+	// with the rest of the attempt's state.
+	guidance []GuidanceEntry
+	// guidanceUnacked is the part of `guidance` whose pending-slot entries have
+	// not been cleared yet. The slot is cleared only once a provider session that
+	// renders them has actually STARTED (`ackGuidance`), so an attempt that never
+	// reached one — held by a pause and then torn down, parked by a failed
+	// acquisition, killed by a crash — leaves the entries pending for the next
+	// entry to deliver again. Teardown clears it, which is what turns every one
+	// of those into a redelivery instead of a loss.
+	guidanceUnacked  []GuidanceEntry
+	takeoverFinalize bool
 	// fan is the live fan-out state of the current attempt, or nil for a
 	// single-shape phase. It never outlives its attempt: teardown clears it.
 	fan *fanOutRun
@@ -53,6 +82,7 @@ type Engine struct {
 	definitions DefinitionSource
 	profiles    ProfileSource
 	spend       SpendSource
+	log         LogSink
 	now         func() time.Time
 
 	commands chan any
@@ -94,7 +124,8 @@ func New(store persistence, runner Runner, emitter Emitter, definitions Definiti
 	}
 	return &Engine{
 		store: store, runner: runner, emitter: emitter, definitions: definitions,
-		profiles: profiles, spend: spend, paused: config.Paused, now: time.Now,
+		profiles: profiles, spend: spend, log: config.Log,
+		paused: config.Paused, now: time.Now,
 		commands: make(chan any, commandBuffer), done: make(chan struct{}),
 		items: make(map[string]*runtimeItem), holders: make(map[resourceKey]int),
 		waitingKeys:    make(map[waitKey]struct{}),
@@ -281,13 +312,23 @@ func (e *Engine) cancelParked(itemID string) error {
 			itemID,
 		)
 	}
+	parkedAs := item.item.Reason
 	var errs []error
 	if err := e.cancelCallChildren(item); err != nil {
 		errs = append(errs, err)
 	}
 	// The run comes down even if a descendant would not: a human's cancel that a
 	// store failure could veto would leave a run nothing can stop.
-	return errors.Join(append(errs, e.transition(item, StateCancelled, ReasonInterrupted))...)
+	transitionErr := e.transition(item, StateCancelled, ReasonInterrupted)
+	if transitionErr == nil {
+		e.logEvent(LogEvent{
+			Event: LogEventCancel, ItemID: itemID, ProjectID: item.item.ProjectID,
+			PhaseID: item.phaseID, Attempt: item.attempt,
+			State: StateCancelled, Reason: ReasonInterrupted,
+			Message: fmt.Sprintf("cancelled while parked %q", parkedAs),
+		})
+	}
+	return errors.Join(append(errs, transitionErr)...)
 }
 
 func (e *Engine) resume(itemID, targetPhase string, refreshDefinition bool) error {
@@ -329,6 +370,10 @@ func (e *Engine) resume(itemID, targetPhase string, refreshDefinition bool) erro
 	// fresh attempt for a park whose finished units — whole called runs among them
 	// — it would silently redo. Naming a phase always skips it: that IS the
 	// request to start over, and it may name the parked phase itself.
+	// Nothing is logged here. This decides which PATH a bare resume takes, not
+	// what it ends up doing: the continuation path still re-enters fresh where
+	// there is nothing to continue, so the record is emitted by the branch that
+	// knows (`noteResume`).
 	if targetPhase == "" && ContinuableReason(Reason(item.item.Reason)) {
 		// A run that froze no definition has no attempt to continue and no phase to
 		// name: its entry resolves from disk whatever the caller asked for, so the
@@ -358,8 +403,13 @@ func (e *Engine) resume(itemID, targetPhase string, refreshDefinition bool) erro
 // the workflow before it can name a phase at all, and it re-reads from disk
 // whether or not it was asked to. `refreshDefinition` is that same re-read
 // asked for deliberately, on a run that already has a frozen definition.
+//
+// Every fresh re-entry lands here — the human's `--phase`, a bare resume of a
+// park that cannot be continued, and the gaps the continuation path falls
+// through — so this is where that fact is recorded, once, for all of them.
 func (e *Engine) enterPhaseFresh(item *runtimeItem, targetPhase string, refreshDefinition bool) error {
 	itemID := item.item.ID
+	e.noteResume(item, freshEntryNote(targetPhase, refreshDefinition))
 	switch {
 	case len(item.workflow.Phases) == 0:
 		snapshot, encoded, err := e.resolveDefinition(item, "", "resume setup-failed item")
@@ -397,8 +447,16 @@ func (e *Engine) enterPhaseFresh(item *runtimeItem, targetPhase string, refreshD
 	}
 	item.phaseID = targetPhase
 	item.attempt = 0
+	// Starting a phase over is the one entry that drops a loop route's prompt
+	// override outright, whatever arming or rendered coordinate survived the park:
+	// this verb is the human saying "run this phase again from its inputs", and
+	// the phase's own body is what that means. A CONTINUATION of the parked round
+	// keeps the narrower question it was asked, and that is the other half of the
+	// rule, decided in `enterPhase` from the entry kind.
+	item.nextPromptRoute = nil
+	item.promptRoute = nil
 	e.items[itemID] = item
-	return e.enterPhase(item)
+	return e.enterPhase(item, entryFresh)
 }
 
 // loadParked rebuilds a parked run from SQLite. Every human action on a
@@ -435,6 +493,22 @@ func (e *Engine) loadParked(itemID string) (*runtimeItem, error) {
 				return nil, fmt.Errorf("load parked item %q input envelope: %w", itemID, err)
 			}
 			item.feedback = input.Feedback
+			// The parked attempt's own state, restored so a continuation of this
+			// round runs what the round was running: the loop route's prompt
+			// override (dropped again by enterPhaseFresh, which is the deliberate
+			// start-over), and the operator guidance the entry delivered — a
+			// fan-out repaired unit by unit renders the same block its siblings
+			// did rather than one the operator would have to leave twice.
+			//
+			// What is restored is the RENDERED coordinate, never the arming: the
+			// arming belongs to an entry that has already happened, and restoring
+			// it would re-arm the override for whatever phase the run enters next
+			// — which is a gate resolve's next phase as readily as a continuation
+			// of this one. A park that landed BEFORE the armed entry re-arms from
+			// the persisted decision instead (`applyLoopRoute`, reached by every
+			// recovery and step-mode path), so nothing needs it here.
+			item.promptRoute = input.PromptRoute
+			item.guidance = input.Guidance
 		}
 	} else if len(item.workflow.Phases) > 0 {
 		item.phaseID = item.workflow.Phases[0].ID
@@ -456,8 +530,22 @@ func (e *Engine) emitEngineState() {
 
 // emitItemState is the single place a lifecycle transition reaches the wire,
 // including the birth event a newly started run emits from the empty state.
+// It carries no phase coordinate: the sites that reach it hold a store row
+// rather than a resident run, and a phase read back from the row could name the
+// phase the run moved on to rather than the one the transition happened in.
 func (e *Engine) emitItemState(itemID, projectID string, from, to State, reason Reason) {
 	e.emitter.Emit("workflow:item-state", StateEvent{
 		ItemID: itemID, ProjectID: projectID, From: from, To: to, Reason: reason,
+	})
+}
+
+// emitItemStateAt is emitItemState for the transitions taken with the run
+// resident, where the phase and attempt being left are known exactly. A park
+// rests on that attempt, so its cause and its narrative are filed under this
+// coordinate and an observer needs it to read either.
+func (e *Engine) emitItemStateAt(item *runtimeItem, from, to State, reason Reason) {
+	e.emitter.Emit("workflow:item-state", StateEvent{
+		ItemID: item.item.ID, ProjectID: item.item.ProjectID, From: from, To: to, Reason: reason,
+		PhaseID: item.phaseID, Attempt: item.attempt,
 	})
 }

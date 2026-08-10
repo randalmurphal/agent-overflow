@@ -1667,6 +1667,71 @@ CREATE TABLE thread_import_state (
     refreshed_at       INTEGER NOT NULL DEFAULT 0
 );`,
 	},
+	{
+		Version: 51,
+		Name:    "work_item_phase_park_cause",
+		// Why the ENGINE parked this attempt, in its own words. It is a
+		// separate column from `output_envelope` because the envelope is the
+		// AGENT's artifact: a phase that parked because a worktree could not be
+		// cut ran no turn, and writing engine prose into the envelope makes
+		// every reader — the history binding, the crash rebuild's terminal
+		// check, the wake's detail line — treat it as something a model said.
+		//
+		// Empty means "no engine-diagnosed cause": either the attempt rested on
+		// its own envelope, or the reason names its own cause (`interrupted`,
+		// `paused`, `taken-over`) and a sentence would add nothing.
+		//
+		// A plain ADD COLUMN with no CHECK — the text is free-form and this
+		// table is nobody's FK parent, so it is not rebuilt.
+		SQL: `ALTER TABLE work_item_phases ADD COLUMN park_cause TEXT NOT NULL DEFAULT '';`,
+	},
+	{
+		Version: 52,
+		Name:    "work_item_wake_signature",
+		// The signature of the last wake DELIVERED into this run's bound thread
+		// (K2). A wake is deduplicated by what it says, never by a time window:
+		// the same ask arriving twice with nothing having happened in between is
+		// noise, and a timer would either suppress a genuinely new state or let a
+		// slow duplicate through.
+		//
+		// It is durable rather than in-memory because the app restarting is one
+		// of the ways the same ask gets re-composed: a crash rebuild parks every
+		// interrupted run, and a supervising agent that already read that message
+		// should not read it again on every launch.
+		//
+		// Empty means "nothing delivered yet, or a human/agent has acted since",
+		// which is the state every wake delivers from. The column is deliberately
+		// absent from `workItemColumns`: it is wake bookkeeping, never needed by a
+		// listing, and its own narrow accessors are the only readers and writers.
+		//
+		// A plain ADD COLUMN with no CHECK — free-form text, and this table is
+		// nobody's FK parent. A future `work_items` REBUILD has to carry it, like
+		// every other column added since v39.
+		SQL: `ALTER TABLE work_items ADD COLUMN wake_signature TEXT NOT NULL DEFAULT '';`,
+	},
+	{
+		Version: 53,
+		Name:    "work_item_pending_guidance",
+		// Operator guidance waiting for this run's next fresh phase entry — the
+		// mirror of `notify:`, which carries a run's progress out to a thread;
+		// this carries a person's steering in without parking the run.
+		//
+		// A JSON array of `{text, at, by, byRun}` objects, appended by
+		// `run guide` and cleared by the entry that delivers it. Empty (the
+		// default, and what a cleared slot is set back to) means nothing is
+		// pending. The engine bounds both the per-entry size and the entry count
+		// before it writes, so the column stays small enough to read on every
+		// phase entry.
+		//
+		// Like `wake_signature` it is deliberately absent from
+		// `workItemColumns`: no listing, overlay, or run projection carries it,
+		// and its own narrow accessors are the only readers and writers.
+		//
+		// A plain ADD COLUMN with no CHECK — the content is engine-written JSON
+		// and this table is nobody's FK parent. A future `work_items` REBUILD has
+		// to carry it, like every other column added since v39.
+		SQL: `ALTER TABLE work_items ADD COLUMN pending_guidance TEXT NOT NULL DEFAULT '';`,
+	},
 }
 
 // rebuildWorkItemsSoftStopV44SQL adds `soft_stop` — a standing request to stop

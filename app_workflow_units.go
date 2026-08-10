@@ -36,11 +36,17 @@ type workflowUnitPlan struct {
 	label       string
 	unitAttempt int
 	// contract is the phase's for a join and the unit's own for a work unit.
-	contract      def.EnvelopeContract
-	declarations  map[string]def.Variable
-	workspace     preparedWorkflowWorkspace
-	narrativePath string
-	envelopePath  string
+	contract     def.EnvelopeContract
+	declarations map[string]def.Variable
+	// accountsForUnits and accountedUnits carry the merge contract a join opted
+	// into (`accounts_for_units:`). They are resolved once, here, so the set the
+	// join's prompt names and the set its envelope is verified against are the
+	// same list — the whole point of the contract is that those cannot differ.
+	accountsForUnits bool
+	accountedUnits   []string
+	workspace        preparedWorkflowWorkspace
+	narrativePath    string
+	envelopePath     string
 }
 
 func (r *workflowAppRunner) startUnit(ctx context.Context, request engine.RunRequest, complete func(engine.Outcome)) error {
@@ -102,7 +108,13 @@ func (r *workflowAppRunner) planUnit(ctx context.Context, request engine.RunRequ
 		)
 	}
 	if plan.kind == engine.UnitJoin {
-		plan.contract = def.PhaseEnvelope(request.Phase)
+		// The ids come out of the reserved `units` binding the engine bound the
+		// attempt's results under, which is the same list the join's prompt
+		// renders — so a join can never be refused for omitting a unit it was
+		// never shown. `JoinEnvelope` is a no-op for a join that did not opt in.
+		plan.accountsForUnits = request.Phase.Join != nil && request.Phase.Join.AccountsForUnits
+		plan.accountedUnits = def.UnitIDsFromResults(request.Vars)
+		plan.contract = def.JoinEnvelope(request.Phase, plan.accountedUnits)
 		plan.declarations = def.JoinDeclarations(request.Phase)
 	} else {
 		plan.contract = def.UnitEnvelope(unit)
@@ -278,12 +290,18 @@ func (r *workflowAppRunner) startAgentUnit(
 	}
 
 	var prompt string
+	promptContext := r.app.workflowPromptAncestry(request.Key.ItemID, request.Workflow)
+	promptContext.NarrativePath = plan.narrativePath
+	promptContext.Access = unit.EffectiveAccess()
+	// A join that opted into the merge contract is told the exact set it will be
+	// post-validated against, and is told it whichever way its turn is entered:
+	// a takeover finalize answers the same contract its first try did.
+	promptContext.AccountsForUnits, promptContext.AccountedUnits = plan.accountsForUnits, plan.accountedUnits
 	if request.FinalizeTakeover {
-		prompt, err = workflowrunner.BuildTakeoverFinalizePrompt(plan.narrativePath, unit.EffectiveAccess())
+		prompt, err = workflowrunner.BuildTakeoverFinalizePrompt(promptContext)
 	} else {
-		prompt, err = workflowrunner.BuildUnitPrompt(
-			unit, plan.declarations, request.Vars, plan.narrativePath, request.Feedback,
-		)
+		promptContext.Feedback, promptContext.Guidance = request.Feedback, request.Guidance
+		prompt, err = workflowrunner.BuildUnitPrompt(unit, plan.declarations, request.Vars, promptContext)
 	}
 	if err != nil {
 		return discardThread(err)

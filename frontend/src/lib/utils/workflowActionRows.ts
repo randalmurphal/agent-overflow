@@ -54,7 +54,11 @@ export interface WorkflowActionButton {
 
 // The two reasons that share the paused ROW. `checkpoint` takes the same engine
 // edge back but gets a row of its own, so it is deliberately not here.
-const RESUMABLE_REASONS = new Set(['paused', 'interrupted']);
+// `retries-exhausted` joined the engine's continuable parks (D70): a bare
+// resume continues the parked session, exactly as for `paused`/`interrupted`,
+// so it takes the same resolution kind — the `blocked` kind's "the phase
+// starts over" would be untrue for it.
+const RESUMABLE_REASONS = new Set(['paused', 'interrupted', 'retries-exhausted']);
 const DONE_REASONS = new Set(['disposition']);
 
 /**

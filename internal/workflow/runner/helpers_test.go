@@ -29,8 +29,11 @@ func TestBuildPromptSuffixShape(t *testing.T) {
 		"goal": {Schema: def.JSONSchema{Type: "string"}},
 	}}
 	narrative := filepath.Join(t.TempDir(), "narrative.md")
-	got, err := BuildPrompt(phase, map[string]any{"goal": "ship"}, narrative, &engine.Feedback{
-		Note: "address review", Values: map[string]any{"review.ok": false},
+	got, err := BuildPrompt(phase, map[string]any{"goal": "ship"}, PromptContext{
+		NarrativePath: narrative,
+		Feedback: &engine.Feedback{
+			Note: "address review", Values: map[string]any{"review.ok": false},
+		},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -65,7 +68,7 @@ func TestBuildPromptSuffixShape(t *testing.T) {
 	if got != want {
 		t.Fatalf("BuildPrompt() =\n%s\nwant:\n%s", got, want)
 	}
-	withoutFeedback, err := BuildPrompt(phase, map[string]any{"goal": "ship"}, narrative, nil)
+	withoutFeedback, err := BuildPrompt(phase, map[string]any{"goal": "ship"}, PromptContext{NarrativePath: narrative})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -92,7 +95,7 @@ func TestOutcomeFromEnvelope(t *testing.T) {
 
 func TestBuildTakeoverFinalizePrompt(t *testing.T) {
 	narrative := filepath.Join(t.TempDir(), "narrative.md")
-	prompt, err := BuildTakeoverFinalizePrompt(narrative, def.AccessWrite)
+	prompt, err := BuildTakeoverFinalizePrompt(PromptContext{NarrativePath: narrative, Access: def.AccessWrite})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -105,7 +108,7 @@ func TestBuildTakeoverFinalizePrompt(t *testing.T) {
 	// A takeover steers the phase's own session, which keeps the runtime mode the
 	// declaration mapped to — so a read-only phase's finalize turn cannot write
 	// the file either, and must not be told to.
-	readOnly, err := BuildTakeoverFinalizePrompt(narrative, def.AccessReadOnly)
+	readOnly, err := BuildTakeoverFinalizePrompt(PromptContext{NarrativePath: narrative, Access: def.AccessReadOnly})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -129,7 +132,7 @@ func TestPromptSuffixAsksReadOnlyElementsForTheEnvelopeField(t *testing.T) {
 	// Unset access is read-only (def.DefaultAccess), so both spellings take the
 	// envelope form — the default must not fall through to the file instruction.
 	for _, access := range []def.Access{def.AccessReadOnly, ""} {
-		suffix, err := PromptSuffix(narrative, access, nil)
+		suffix, err := PromptSuffix(PromptContext{NarrativePath: narrative, Access: access})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -156,7 +159,7 @@ func TestPromptSuffixAsksReadOnlyElementsForTheEnvelopeField(t *testing.T) {
 		}
 	}
 
-	writing, err := PromptSuffix(narrative, def.AccessWrite, nil)
+	writing, err := PromptSuffix(PromptContext{NarrativePath: narrative, Access: def.AccessWrite})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -179,7 +182,7 @@ func TestPromptSuffixAsksReadOnlyElementsForTheEnvelopeField(t *testing.T) {
 	}
 
 	// The path is validated on both branches: the runner writes there either way.
-	if _, err := PromptSuffix("relative/narrative.md", def.AccessReadOnly, nil); err == nil {
+	if _, err := PromptSuffix(PromptContext{NarrativePath: "relative/narrative.md", Access: def.AccessReadOnly}); err == nil {
 		t.Fatal("PromptSuffix accepted a relative narrative path for a read-only element")
 	}
 }
@@ -190,7 +193,8 @@ func TestPromptSuffixAsksReadOnlyElementsForTheEnvelopeField(t *testing.T) {
 func TestBuildUnitPromptSuffixFollowsTheUnitAccess(t *testing.T) {
 	narrative := "/data/workflow-runs/item/port.1/units/port-0.1/narrative.md"
 	readOnly, err := BuildUnitPrompt(
-		def.Unit{ID: "port-0", Provider: "claude", Prompt: "look"}, nil, nil, narrative, nil,
+		def.Unit{ID: "port-0", Provider: "claude", Prompt: "look"}, nil, nil,
+		PromptContext{NarrativePath: narrative},
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -200,7 +204,7 @@ func TestBuildUnitPromptSuffixFollowsTheUnitAccess(t *testing.T) {
 	}
 	writing, err := BuildUnitPrompt(
 		def.Unit{ID: "port-0", Provider: "claude", Prompt: "port", Access: def.AccessWrite},
-		nil, nil, narrative, nil,
+		nil, nil, PromptContext{NarrativePath: narrative},
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -282,7 +286,7 @@ func TestBuildUnitPromptRendersRoleDeclarations(t *testing.T) {
 			Required:   []string{"path"},
 		}}},
 		map[string]any{"section": map[string]any{"path": "internal/a"}},
-		"/data/workflow-runs/item/port.1/units/port-0.1/narrative.md", nil)
+		PromptContext{NarrativePath: "/data/workflow-runs/item/port.1/units/port-0.1/narrative.md"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -299,8 +303,10 @@ func TestBuildUnitPromptRendersRoleDeclarations(t *testing.T) {
 		map[string]any{def.UnitsVariable: []any{
 			map[string]any{"id": "port-0", "index": 0, "status": "done", "outputs": map[string]any{"file": "a.go"}},
 		}},
-		"/data/workflow-runs/item/port.1/units/merge.1/narrative.md",
-		&engine.Feedback{Note: "prefer the second"})
+		PromptContext{
+			NarrativePath: "/data/workflow-runs/item/port.1/units/merge.1/narrative.md",
+			Feedback:      &engine.Feedback{Note: "prefer the second"},
+		})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -313,7 +319,44 @@ func TestBuildUnitPromptRendersRoleDeclarations(t *testing.T) {
 
 	// An undeclared reference fails the build rather than reaching a provider as
 	// a literal `{{...}}` the model would try to interpret.
-	if _, err := BuildUnitPrompt(work, nil, nil, "/data/n.md", nil); err == nil {
+	if _, err := BuildUnitPrompt(work, nil, nil, PromptContext{NarrativePath: "/data/n.md"}); err == nil {
 		t.Fatal("a unit prompt with an undeclared reference built successfully")
+	}
+}
+
+// TestPromptsRenderTheReservedCallDepth — the wave ordinal a recursive campaign
+// prints reaches every prompt surface without being declared anywhere, which is
+// the whole point: the value it replaces was threaded through call arguments and
+// incremented by the model, and it desynced from the tree it described.
+func TestPromptsRenderTheReservedCallDepth(t *testing.T) {
+	phase := def.Phase{
+		ID: "wave", Prompt: "Wave {{" + def.CallDepthVariable + "}} of the campaign.",
+		Inputs: map[string]def.Variable{"goal": {Schema: def.JSONSchema{Type: "string"}}},
+	}
+	vars := map[string]any{"goal": "port", def.CallDepthVariable: 3}
+	context := PromptContext{NarrativePath: filepath.Join(t.TempDir(), "narrative.md")}
+
+	prompt, err := BuildPrompt(phase, vars, context)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(prompt, "Wave 3 of the campaign.") {
+		t.Fatalf("phase prompt did not render the reserved call depth: %q", prompt)
+	}
+
+	// A unit and a join read the phase's declarations, so they render it too
+	// with no per-unit declaration of their own.
+	unit := def.Unit{ID: "lane", Provider: "claude", Model: "sonnet", Prompt: "Lane of wave {{" + def.CallDepthVariable + "}}."}
+	for name, declarations := range map[string]map[string]def.Variable{
+		"unit": def.UnitDeclarations(phase, nil),
+		"join": def.JoinDeclarations(phase),
+	} {
+		rendered, err := BuildUnitPrompt(unit, declarations, vars, context)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if !strings.Contains(rendered, "Lane of wave 3.") {
+			t.Fatalf("%s prompt did not render the reserved call depth: %q", name, rendered)
+		}
 	}
 }

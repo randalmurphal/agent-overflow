@@ -124,16 +124,41 @@ func (a *App) threadAssistantTexts(threadID string) ([]string, error) {
 	return texts, nil
 }
 
+// workflowNarrativeLookup resolves one phase attempt's narrative path and
+// reports whether the file is there. The path is returned either way, because a
+// reader asking for an account that was never written has to be told what was
+// looked for — "no matches found" is what sends an agent hand-globbing the run
+// directory. Every narrative resolution in the app goes through this or its unit
+// counterpart, so nothing re-derives the path shape.
+func workflowNarrativeLookup(dataRoot, itemID, phaseID string, attempt int) (string, bool, error) {
+	path, err := workflowrunner.NarrativePath(dataRoot, itemID, phaseID, attempt)
+	if err != nil {
+		return "", false, err
+	}
+	present, err := workflowNarrativeExists(path)
+	return path, present, err
+}
+
+// workflowUnitNarrativeLookup is workflowNarrativeLookup for one fan-out unit
+// try. The try number is part of the path: a retried unit keeps its row but
+// writes a new account, and the previous one stays readable as evidence.
+func workflowUnitNarrativeLookup(
+	dataRoot, itemID, phaseID string, attempt int, unitID string, unitAttempt int,
+) (string, bool, error) {
+	path, err := workflowrunner.UnitNarrativePath(dataRoot, itemID, phaseID, attempt, unitID, unitAttempt)
+	if err != nil {
+		return "", false, err
+	}
+	present, err := workflowNarrativeExists(path)
+	return path, present, err
+}
+
 // workflowNarrativeReference resolves one attempt's narrative path for a wake
 // reference, and reports false when nothing wrote the file. A reference is a
 // pointer an agent opens: a path that does not resolve is worse than no
 // reference at all, because the agent spends a tool call learning that.
 func workflowNarrativeReference(dataRoot, itemID, phaseID string, attempt int) (string, bool) {
-	path, err := workflowrunner.NarrativePath(dataRoot, itemID, phaseID, attempt)
-	if err != nil {
-		return "", false
-	}
-	present, err := workflowNarrativeExists(path)
+	path, present, err := workflowNarrativeLookup(dataRoot, itemID, phaseID, attempt)
 	if err != nil || !present {
 		return "", false
 	}

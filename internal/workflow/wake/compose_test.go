@@ -132,7 +132,12 @@ func TestComposeParkedRunNamesTheVerbThatRepairsIt(t *testing.T) {
 		{"gate", "park", "review-unresolved", "This is a park: route (\"review-unresolved\"): it declares no approve or reject, so `run resolve` does not apply."},
 		{"gate", "park", "review-unresolved", "`agent-overflow run resume \"run-11\"` re-enters the phase — an approvable park is authored as a human: route."},
 		{"gate", "", "", "If `agent-overflow run status \"run-11\"` shows the parked attempt's decision as human"},
-		{"retries-exhausted", "", "", "`agent-overflow run resume \"run-11\" --phase <phase-id>` re-enters an earlier phase with fresh loop budgets"},
+		// Two causes rest under this one reason, so the closing names both verbs:
+		// the continuation for the turn that died on the provider, and the fresh
+		// entry for the loop bound that ran out, which is the only form that
+		// refills one.
+		{"retries-exhausted", "", "", "`agent-overflow run resume \"run-11\"` continues the parked attempt on the provider session its last turn died in"},
+		{"retries-exhausted", "", "", "`agent-overflow run resume \"run-11\" --phase <phase-id>` naming an EARLIER phase is what re-enters the loop's target from outside the cycle"},
 	} {
 		message := Compose(Input{Run: Run{
 			ItemID: "run-11", Goal: "g", WorkflowID: "w", State: "needs-human", Reason: test.reason,
@@ -348,4 +353,180 @@ func TestComposeOmitsEmptySections(t *testing.T) {
 	if lines := strings.Count(message, "\n\n"); lines != 2 {
 		t.Fatalf("bare wake has %d blank-line breaks, want 2 (notice, closing):\n%s", lines, message)
 	}
+}
+
+// `stuck` used to be the one actionable reason with no verb: the phase said
+// what it needed, and the reader was left to guess which of four resume-shaped
+// commands acts on it.
+func TestComposeStuckParkNamesResumeAndTheRefreshEscape(t *testing.T) {
+	message := Compose(Input{Run: Run{
+		ItemID: "run-20", Goal: "g", WorkflowID: "w", State: "needs-human", Reason: "stuck",
+		PhaseID: "implement", Detail: "the migration needs a decision I cannot make",
+	}})
+	mustContain(t, message,
+		`Run "run-20" is parked and does not continue until this is resolved.`,
+		"`agent-overflow run resume \"run-20\"` enters the parked phase again as a fresh attempt",
+		"`agent-overflow run resume \"run-20\" --refresh-def` re-reads them at that entry",
+	)
+}
+
+// D38: the command carries the id of the run it acts on, and a descendant park
+// is acted on at the DESCENDANT.
+func TestComposeStuckDescendantParkNamesTheDescendantsResume(t *testing.T) {
+	message := Compose(Input{
+		Run: Run{ItemID: "root-20", Goal: "g", WorkflowID: "campaign", State: "running"},
+		Descendant: &Descendant{
+			ItemID: "wave-7", WorkflowID: "wave", State: "needs-human", Reason: "stuck", Depth: 2,
+		},
+	})
+	mustContain(t, message, `agent-overflow run resume "wave-7"`, `run resume "wave-7" --refresh-def`)
+	mustNotContain(t, message, `run resume "root-20"`)
+}
+
+// An engine-diagnosed park explains itself in the wake, on its own line: the
+// detail is what the PHASE said, and the two must not read as one voice.
+func TestComposeRendersTheEngineParkCauseBounded(t *testing.T) {
+	oversize := strings.Repeat("c", MaxCauseRunes*3)
+	message := Compose(Input{Run: Run{
+		ItemID: "run-21", Goal: "g", WorkflowID: "w", State: "needs-human", Reason: "setup-failed",
+		PhaseID: "implement", Cause: oversize,
+	}})
+	mustContain(t, message, "The engine stopped it here: ", untrustedtext.Quote(oversize, MaxCauseRunes))
+	if strings.Contains(message, oversize[:MaxCauseRunes+1]) {
+		t.Fatal("the park cause escaped its rune budget")
+	}
+}
+
+func TestComposeRendersADescendantsParkCause(t *testing.T) {
+	message := Compose(Input{
+		Run: Run{ItemID: "root-21", Goal: "g", WorkflowID: "campaign", State: "running"},
+		Descendant: &Descendant{
+			ItemID: "wave-8", WorkflowID: "wave", State: "needs-human", Reason: "setup-failed",
+			Depth: 1, Cause: `branch "ao/wave-8" already exists`, Chain: []string{"root-21", "wave-8"},
+		},
+	})
+	mustContain(t, message,
+		"The engine stopped it here: ",
+		untrustedtext.Quote(`branch "ao/wave-8" already exists`, MaxCauseRunes),
+	)
+}
+
+// A park with no engine-diagnosed cause renders no cause line at all. An empty
+// label would read as a diagnosis that was lost on the way here.
+func TestComposeOmitsAnAbsentParkCause(t *testing.T) {
+	for _, in := range []Input{
+		{Run: Run{ItemID: "run-22", Goal: "g", WorkflowID: "w", State: "needs-human",
+			Reason: "question", PhaseID: "ask", Detail: "which base branch?"}},
+		{Run: Run{ItemID: "run-23", Goal: "g", WorkflowID: "w", State: "needs-human",
+			Reason: "setup-failed", PhaseID: "cut", Cause: "   "}},
+		{
+			Run: Run{ItemID: "root-23", Goal: "g", WorkflowID: "campaign", State: "running"},
+			Descendant: &Descendant{ItemID: "wave-9", WorkflowID: "wave",
+				State: "needs-human", Reason: "question", Depth: 1, Detail: "which base branch?"},
+		},
+	} {
+		mustNotContain(t, Compose(in), "The engine stopped it here")
+	}
+}
+
+// K3: the facts a woken agent used to fetch by hand — where the work lives,
+// which attempt it is looking at, and what that attempt produced.
+
+func TestComposeNamesTheAttemptAndTheWorkspace(t *testing.T) {
+	message := Compose(Input{Run: Run{
+		ItemID: "run-30", Goal: "g", WorkflowID: "w", State: "needs-human", Reason: "gate",
+		PhaseID: "review", Attempt: 3, GateDecision: gateDecisionHuman,
+		WorktreePath: "/work/run-30", Branch: "ao/run-30",
+	}})
+	mustContain(t, message,
+		`Phase "review" (attempt 3).`,
+		`Workspace: "/work/run-30" on branch "ao/run-30".`,
+	)
+}
+
+// An unknown attempt renders the phase alone: "attempt 0" is a coordinate no
+// read verb accepts, and a wake that prints one sends its reader at a wall.
+func TestComposeOmitsAnUnknownAttemptAndAnAbsentWorkspace(t *testing.T) {
+	message := Compose(Input{Run: Run{
+		ItemID: "run-31", Goal: "g", WorkflowID: "w", State: "needs-human",
+		Reason: "stuck", PhaseID: "survey",
+	}})
+	mustContain(t, message, `Phase "survey".`)
+	mustNotContain(t, message, "attempt 0", "Workspace:")
+}
+
+// A read-only run has no worktree but still has a branch worth naming, and vice
+// versa: each half stands alone rather than being suppressed with the other.
+func TestComposeRendersEitherHalfOfAWorkspace(t *testing.T) {
+	branchOnly := Compose(Input{Run: Run{
+		ItemID: "run-32", Goal: "g", WorkflowID: "w", State: "done", Branch: "main",
+	}})
+	mustContain(t, branchOnly, `Workspace: branch "main".`)
+	pathOnly := Compose(Input{Run: Run{
+		ItemID: "run-33", Goal: "g", WorkflowID: "w", State: "done", WorktreePath: "/work/run-33",
+	}})
+	mustContain(t, pathOnly, `Workspace: "/work/run-33".`)
+	mustNotContain(t, pathOnly, "on branch")
+}
+
+func TestComposeCarriesTheParkedAttemptsOutputsAndItsOverflow(t *testing.T) {
+	message := Compose(Input{
+		Run: Run{
+			ItemID: "run-34", Goal: "g", WorkflowID: "w", State: "needs-human", Reason: "gate",
+			PhaseID: "review", Attempt: 2, GateDecision: gateDecisionHuman,
+		},
+		AttemptOutputs: []Output{
+			{Name: "verdict", Value: "reject"},
+			{Name: "severity", Value: "high"},
+		},
+		AttemptOutputOverflow: 5,
+	})
+	mustContain(t, message,
+		`What the parked attempt produced (phase "review", attempt 2):`,
+		`- "verdict": "reject"`,
+		`- "severity": "high"`,
+		"…and 5 more (`agent-overflow run inspect \"run-34\" --phase \"review\" --attempt 2`).",
+	)
+}
+
+// A descendant park's digest belongs to the DESCENDANT: it is the attempt whose
+// outputs the decision is about, and the drill-down has to name that run.
+func TestComposeAttributesTheAttemptDigestToTheParkedDescendant(t *testing.T) {
+	message := Compose(Input{
+		Run: Run{ItemID: "root-35", Goal: "g", WorkflowID: "campaign", State: "running",
+			WorktreePath: "/work/root-35", Branch: "ao/campaign"},
+		Descendant: &Descendant{
+			ItemID: "wave-4", WorkflowID: "wave", State: "needs-human", Reason: "gate",
+			PhaseID: "review", Attempt: 1, Depth: 1, GateDecision: gateDecisionHuman,
+			Chain:        []string{"root-35", "wave-4"},
+			WorktreePath: "/work/wave-4", Branch: "ao/wave-4",
+		},
+		AttemptOutputs:        []Output{{Name: "verdict", Value: "reject"}},
+		AttemptOutputOverflow: 1,
+	})
+	mustContain(t, message,
+		`in phase "review" (attempt 1)`,
+		`The called run works in "/work/wave-4" on branch "ao/wave-4".`,
+		`Workspace: "/work/root-35" on branch "ao/campaign".`,
+		`What the called run's parked attempt produced (phase "review", attempt 1):`,
+		"…and 1 more (`agent-overflow run inspect \"wave-4\" --phase \"review\" --attempt 1`).",
+	)
+}
+
+// The question is the one field a reader has to act on, so its budget is the
+// largest here — and it is still a budget, stated when it cuts.
+func TestComposeCarriesALongQuestionAndStatesTheCut(t *testing.T) {
+	question := strings.Repeat("q", MaxDetailRunes-1)
+	message := Compose(Input{Run: Run{
+		ItemID: "run-36", Goal: "g", WorkflowID: "w", State: "needs-human",
+		Reason: "question", PhaseID: "ask", Detail: question,
+	}})
+	mustContain(t, message, question)
+	mustNotContain(t, message, "[truncated]")
+
+	cut := Compose(Input{Run: Run{
+		ItemID: "run-37", Goal: "g", WorkflowID: "w", State: "needs-human",
+		Reason: "question", PhaseID: "ask", Detail: strings.Repeat("q", MaxDetailRunes+1),
+	}})
+	mustContain(t, cut, "[truncated]")
 }

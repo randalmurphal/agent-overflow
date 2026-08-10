@@ -170,6 +170,36 @@ func stampedUnitID(phase Phase, unitID string) bool {
 // what `{{units}}` renders.
 const UnitsVariable = "units"
 
+// UnitIDsFromResults reads the unit ids out of a join's variable context — the
+// reserved `units` binding the engine bound its results under, in launch order.
+//
+// It exists so the merge contract (`accounts_for_units:`) is verified against
+// exactly the list the join was SHOWN. Deriving the set from anywhere else
+// would let the two drift, and a join refused for omitting a unit it was never
+// told about is a refusal nothing can satisfy.
+//
+// An absent or malformed binding yields no ids rather than an error: this is a
+// read of a context the engine composed, so anything but the declared shape is
+// a bug elsewhere, and the accounting check that consumes it degrades to
+// "account for nothing" instead of failing an attempt that has already run.
+func UnitIDsFromResults(vars map[string]any) []string {
+	results, ok := vars[UnitsVariable].([]any)
+	if !ok {
+		return nil
+	}
+	ids := make([]string, 0, len(results))
+	for _, entry := range results {
+		result, ok := entry.(map[string]any)
+		if !ok {
+			continue
+		}
+		if id, ok := result["id"].(string); ok && strings.TrimSpace(id) != "" {
+			ids = append(ids, id)
+		}
+	}
+	return ids
+}
+
 // unitsDeclaration is the shape one entry of the reserved `units` binding has.
 // `outputs` is an open object because each unit answers its own declared
 // contract; the join reads it as JSON rather than by declared path.
@@ -222,7 +252,7 @@ func UnitDeclarations(phase Phase, element *Variable) map[string]Variable {
 	if phase.DynamicFanOut() && element != nil && strings.TrimSpace(phase.As) != "" {
 		declarations[strings.TrimSpace(phase.As)] = *element
 	}
-	return declarations
+	return bindReservedDeclarations(declarations)
 }
 
 // ResolveUnitDeclarations is UnitDeclarations with the element schema resolved
@@ -247,7 +277,7 @@ func JoinDeclarations(phase Phase) map[string]Variable {
 		declarations[name] = variable
 	}
 	declarations[UnitsVariable] = unitsDeclaration()
-	return declarations
+	return bindReservedDeclarations(declarations)
 }
 
 func phaseIndexes(workflow Workflow) map[string]int {

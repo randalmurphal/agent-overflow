@@ -350,13 +350,26 @@ var LocalOnlyMethods = map[string]bool{
 	// remote peer must not reach the agent surface just because the SPA can.
 	// The reads are as privileged as the writes here: they name a project's runs
 	// and a workflow's outputs, and they exist for a process on this machine.
-	"WorkflowAgentStartRun":  true,
-	"WorkflowAgentRunStatus": true,
-	"WorkflowAgentRunOutput": true,
-	"WorkflowAgentListRuns":  true,
-	"WorkflowAgentSchedule":  true,
-	"WorkflowAgentGetNotes":  true,
-	"WorkflowAgentSetNotes":  true,
+	// InspectRun and RunNarrative go further still — one names local worktree
+	// paths and the other reads a file out of the app-managed run directory — so
+	// they belong here on the plain FS rule as much as on the agent-surface one.
+	"WorkflowAgentStartRun":     true,
+	"WorkflowAgentRunStatus":    true,
+	"WorkflowAgentRunOutput":    true,
+	"WorkflowAgentInspectRun":   true,
+	"WorkflowAgentRunNarrative": true,
+	"WorkflowAgentListRuns":     true,
+	"WorkflowAgentWatchRun":     true,
+	"WorkflowAgentAmendSeeds":   true,
+	"WorkflowAgentGuideRun":     true,
+	"WorkflowAgentSchedule":     true,
+	"WorkflowAgentGetNotes":     true,
+	"WorkflowAgentSetNotes":     true,
+	// Campaign memory reads and appends a file under the app-managed config
+	// root, so it lands here on the plain FS rule as well as the agent-surface
+	// one — the same pair of reasons WorkflowAgentRunNarrative does.
+	"WorkflowAgentAddMemory":  true,
+	"WorkflowAgentListMemory": true,
 	// ConcludeDiscussion is lifecycle control over the deliberation's
 	// provider-session turn loop — same class as PostChannelMessage: it
 	// removes the in-memory FSM (a.deliberations) and can race an

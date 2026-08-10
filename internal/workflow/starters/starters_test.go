@@ -64,7 +64,10 @@ type materializedStarter struct {
 }
 
 func TestEmbeddedStartersAreCompleteAndValid(t *testing.T) {
-	want := []string{"build-and-validate", "multi-lens-review", "poll-jira-and-start", "port-campaign", "port-one-task"}
+	want := []string{
+		"build-and-validate", "converge-on-review", "multi-lens-review",
+		"poll-jira-and-start", "port-campaign", "port-one-task",
+	}
 	if got := List(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("List() = %v, want %v", got, want)
 	}

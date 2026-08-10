@@ -267,17 +267,47 @@ func (a *App) workflowRunTree(rootID string) ([]store.WorkItem, error) {
 	if err != nil {
 		return nil, fmt.Errorf("workflow run tree %s: %w", rootID, err)
 	}
+	return a.walkWorkflowRunTree(root, a.store.ListWorkItemChildren)
+}
+
+// workflowRunTreeSummaries is the same tree read through the SUMMARY
+// projection: ids, linkage, and state, with no snapshot, seeds, or budget blob.
+//
+// It exists for the readers that need the SHAPE of a tree rather than its
+// contents, and `agent-overflow run watch --tree` is the one that makes the
+// distinction matter. A watch re-resolves its set on every broadcast, and the
+// broadcast is global — one transition anywhere in the app wakes every watcher
+// — so a supervisor watching a forty-child campaign would otherwise re-read and
+// JSON-decode forty-one frozen workflows, every prompt inlined, per transition.
+// Discard needs the full rows (it inspects each member's workspace); nothing on
+// the watch path reads a field the summary omits.
+func (a *App) workflowRunTreeSummaries(rootID string) ([]store.WorkItem, error) {
+	root, err := a.store.GetWorkItemSummary(rootID)
+	if err != nil {
+		return nil, fmt.Errorf("workflow run tree %s: %w", rootID, err)
+	}
+	return a.walkWorkflowRunTree(root, func(parentID string) ([]store.WorkItem, error) {
+		return a.store.ListWorkItemSummaries(store.WorkItemListFilter{ParentItemID: parentID})
+	})
+}
+
+// walkWorkflowRunTree is the breadth-first walk both readings share, so the
+// membership, the ordering, and the depth bound have one definition and the two
+// projections cannot describe different trees.
+func (a *App) walkWorkflowRunTree(
+	root store.WorkItem, children func(parentID string) ([]store.WorkItem, error),
+) ([]store.WorkItem, error) {
 	members := []store.WorkItem{root}
 	for index := 0; index < len(members); index++ {
 		member := members[index]
 		if member.CallDepth-root.CallDepth >= engine.MaxCallDepth {
 			return nil, fmt.Errorf("workflow run tree %s: deeper than %d calls", root.ID, engine.MaxCallDepth)
 		}
-		children, err := a.store.ListWorkItemChildren(member.ID)
+		called, err := children(member.ID)
 		if err != nil {
 			return nil, fmt.Errorf("workflow run tree %s: list children of %s: %w", root.ID, member.ID, err)
 		}
-		members = append(members, children...)
+		members = append(members, called...)
 	}
 	return members, nil
 }

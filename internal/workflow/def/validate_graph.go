@@ -4,6 +4,7 @@ import "fmt"
 
 type workflowGraph struct {
 	forward    [][]int
+	reachable  []bool
 	dominators []map[int]bool
 }
 
@@ -47,6 +48,11 @@ func buildGraph(workflow Workflow, phaseIndex map[string]int, findings *[]Findin
 			if route.Loop == "" && (!route.Max.IsZero() || len(route.Feedback) != 0) {
 				*findings = append(*findings, finding("gate.route-fields", element, "max and feedback are valid only on loop routes"))
 			}
+			if route.Notify && (route.Human != nil || route.Park != "") {
+				*findings = append(*findings, finding("gate.notify", element,
+					"notify is not valid on a human or park route: parking already wakes the bound thread, and this would promise a second wake for the one event"))
+			}
+			*findings = append(*findings, loopRouteKnobFindings(workflow, phaseIndex, route, element)...)
 			addTarget(i, routeIndex, route.To, "forward")
 			if route.Human != nil {
 				if route.Human.Approve == "" {
@@ -101,7 +107,108 @@ func buildGraph(workflow Workflow, phaseIndex map[string]int, findings *[]Findin
 			}
 		}
 	}
-	return workflowGraph{forward: forward, dominators: dominators}
+	return workflowGraph{forward: forward, reachable: reachable, dominators: dominators}
+}
+
+// loopRouteKnobFindings checks the two per-round knobs a loop route may carry:
+// `session:` (continue the target phase's own session instead of starting a
+// cold one) and `prompt:` (render a different body for the one attempt this
+// route creates).
+//
+// Both are refused outside a `loop:` route, and for the same reason: a forward,
+// park, or human route enters a phase from OUTSIDE its cycle, where there is no
+// previous round of that phase to continue and no per-round question to narrow.
+// Refused rather than ignored, because a knob that silently does nothing is one
+// the author only discovers by watching a run behave as though it were absent.
+//
+// Both additionally require a target that runs ONE session of its own: a
+// `driver: tool` phase runs a command, a `shape: call` phase delegates to a
+// child workflow, and a `shape: fan-out` phase runs no turn at all — its units
+// and its join each hold their own session and their own prompt. Neither knob
+// has anything to name in those cases.
+func loopRouteKnobFindings(workflow Workflow, phaseIndex map[string]int, route Route, element string) []Finding {
+	var findings []Finding
+	if route.Loop == "" {
+		if route.Session != "" {
+			findings = append(findings, finding("gate.session", element,
+				"session is valid only on a loop route: every other route enters a phase from outside its cycle, where there is no previous round of that phase to continue"))
+		}
+		if route.Prompt != "" {
+			findings = append(findings, finding("gate.prompt", element,
+				"prompt is valid only on a loop route: it overrides the body of the phase a round re-enters, and every other route enters a phase for the first time this cycle"))
+		}
+		return findings
+	}
+	if route.Session != "" && route.Session != SessionFresh && route.Session != SessionContinue {
+		findings = append(findings, finding("gate.session", element,
+			fmt.Sprintf("session must be %q or %q", SessionFresh, SessionContinue)))
+	}
+	if route.Session != SessionContinue && route.Prompt == "" {
+		return findings
+	}
+	index, ok := phaseIndex[route.Loop]
+	if !ok {
+		// The target does not exist; `gate.target` already says so, and blaming a
+		// knob for it would report one mistake twice.
+		return findings
+	}
+	target := workflow.Phases[index]
+	if phaseRunsOwnSession(target) {
+		return findings
+	}
+	if route.Session == SessionContinue {
+		findings = append(findings, finding("gate.session", element,
+			fmt.Sprintf("session: continue needs a loop target that runs one session of its own; phase %q %s", target.ID, describeSessionlessPhase(target))))
+	}
+	if route.Prompt != "" {
+		findings = append(findings, finding("gate.prompt", element,
+			fmt.Sprintf("prompt overrides the body of the phase this loop re-enters, and phase %q %s", target.ID, describeSessionlessPhase(target))))
+	}
+	return findings
+}
+
+// phaseRunsOwnSession reports whether one phase attempt is one agent turn on one
+// provider session — the shape both loop-route knobs address.
+func phaseRunsOwnSession(phase Phase) bool {
+	return !phase.IsCall() && phase.EffectiveShape() == ShapeSingle && phase.Driver == DriverAgent
+}
+
+// describeSessionlessPhase completes the sentence "phase %q …" for a target
+// neither knob can address, naming which of the three shapes it is so the author
+// is not left to work out why.
+func describeSessionlessPhase(phase Phase) string {
+	switch {
+	case phase.IsCall():
+		return "delegates to a child workflow and runs no prompt or session of its own"
+	case phase.EffectiveShape() == ShapeFanOut:
+		return "is a fan-out: its units and its join each carry their own prompt and their own session"
+	default:
+		return "runs a command rather than a model turn"
+	}
+}
+
+// gateNotifyReports is the informational half of the `notify:` decoration: a
+// route to `done` or `failed` ends the run, and a resting run already wakes its
+// bound thread with the fuller message, so the decoration adds nothing there.
+//
+// It is a Report rather than a Finding because the definition is not wrong —
+// the same `to:` route shape carries the decoration legitimately one line
+// above — and it is not silence because a declaration nothing acts on is the
+// kind of dead line an author only discovers by watching for a wake that never
+// arrives.
+func gateNotifyReports(workflow Workflow) []Finding {
+	var reports []Finding
+	for _, phase := range workflow.Phases {
+		for routeIndex, route := range phase.Gate.Routes {
+			if !route.Notify || (route.To != "done" && route.To != "failed") {
+				continue
+			}
+			reports = append(reports, finding("gate.notify-terminal",
+				fmt.Sprintf("workflow %q phase %q route %d", workflow.ID, phase.ID, routeIndex),
+				fmt.Sprintf("notify does nothing on a route to %q: the run rests there and its resting wake already reports it", route.To)))
+		}
+	}
+	return reports
 }
 
 func validateUnboundedCycle(workflow Workflow, phaseIndex map[string]int, edges [][]int, from, routeIndex int, target string, findings *[]Finding) {

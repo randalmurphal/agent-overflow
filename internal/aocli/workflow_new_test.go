@@ -98,6 +98,45 @@ func TestScaffoldRenamesSelfCallEdges(t *testing.T) {
 	}
 }
 
+// EVERY sibling is scoped to the id being created, not only the prompts. A
+// scope is one flat directory shared by every workflow in it, so a starter
+// carrying a non-prompt sibling — the campaign's reference merge script — would
+// otherwise collide with itself the second time it is scaffolded there, and the
+// second scaffold would be refused naming a file the user never chose.
+func TestScaffoldNamespacesEverySiblingNotOnlyPrompts(t *testing.T) {
+	targetDir := filepath.Join(t.TempDir(), "workflows")
+	first, _, err := scaffoldFiles("port-campaign", "campaign-one", targetDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, _, err := scaffoldFiles("port-campaign", "campaign-two", targetDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	names := map[string]bool{}
+	script := ""
+	for _, file := range first {
+		name := filepath.Base(file.path)
+		names[name] = true
+		if name != "campaign-one.yaml" && !strings.HasPrefix(name, "campaign-one-") {
+			t.Fatalf("sibling %q was not scoped to the id being created", name)
+		}
+		if filepath.Ext(name) == ".py" {
+			script = name
+		}
+	}
+	// The case that motivated the rule: a sibling that is not a prompt.
+	if script == "" {
+		t.Fatal("port-campaign no longer ships the non-prompt sibling this rule exists for")
+	}
+	for _, file := range second {
+		if name := filepath.Base(file.path); names[name] {
+			t.Fatalf("scaffolding the same starter twice collides on %q", name)
+		}
+	}
+}
+
 func TestNewScaffoldsRenamedStarterAndRefusesOverwrite(t *testing.T) {
 	configRoot := t.TempDir()
 	args := []string{"workflow", "new", "build-and-validate", "--id", "custom-build", "--config-root", configRoot, "--json"}

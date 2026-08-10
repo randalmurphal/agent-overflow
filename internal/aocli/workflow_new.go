@@ -170,10 +170,18 @@ func scaffoldFiles(starterName, id, targetDir string) ([]scaffoldFile, string, e
 	if err != nil {
 		return nil, "", err
 	}
+	// EVERY file beside the definition is scoped to the id being created, not
+	// just the prompts. A scope is one flat directory shared by every workflow
+	// in it, so an unscoped sibling — a merge script, a helper — would collide
+	// with itself the second time the same starter is scaffolded there, and the
+	// second scaffold would be refused for a reason naming a file the user
+	// never chose. Only `.md` names are rewritten INSIDE the YAML, because
+	// `prompt:` is the one field that references a sibling.
+	sibling := func(name string) string { return id + "-" + name }
 	promptNames := make(map[string]string)
 	for _, file := range set.Files {
 		if filepath.Ext(file.Name) == ".md" {
-			promptNames[file.Name] = id + "-" + file.Name
+			promptNames[file.Name] = sibling(file.Name)
 		}
 	}
 	files := make([]scaffoldFile, 0, len(set.Files))
@@ -187,8 +195,8 @@ func scaffoldFiles(starterName, id, targetDir string) ([]scaffoldFile, string, e
 			if err != nil {
 				return nil, "", err
 			}
-		} else if renamed, ok := promptNames[name]; ok {
-			name = renamed
+		} else {
+			name = sibling(name)
 		}
 		files = append(files, scaffoldFile{path: filepath.Join(targetDir, name), data: data})
 	}

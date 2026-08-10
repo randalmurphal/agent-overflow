@@ -227,15 +227,28 @@ func (s *Store) QueryWorkItemTreeUsageDetail(rootItemID string) ([]UsageDetailRo
 	return result, nil
 }
 
-// QueryWorkItemCosts returns the wire-reported cost total for every workflow
-// item in a project. The grouped query keeps overview loads constant-time in
-// query count instead of issuing one aggregate per visible run.
-const queryWorkItemCostsSQL = `SELECT work_item_id, SUM(cost_usd)
+// WorkItemCostGroup is one work item's (model, cost_source) group. The caller
+// prices it: a row whose wire carried no cost (Codex) has tokens and no
+// dollars, and this package owns no rate table.
+type WorkItemCostGroup struct {
+	WorkItemID string `json:"workItemId"`
+	UsageDetailRow
+}
+
+// QueryWorkItemCosts returns every workflow item's ledger groups in a project,
+// split by model and cost source so the caller can price the token-only ones.
+// One query keeps overview loads constant-time in query count instead of
+// issuing an aggregate per visible run; the split is what makes the answer
+// truthful for a Codex-heavy run, whose `cost_usd` is zero in every row.
+const queryWorkItemCostsSQL = `SELECT work_item_id, model, cost_source,
+	 SUM(input_tokens), SUM(output_tokens), SUM(cache_read_input_tokens),
+	 SUM(cache_creation_input_tokens), SUM(reasoning_output_tokens),
+	 SUM(cost_usd), COUNT(*)
 	 FROM usage_ledger
 	 WHERE project_id = ? AND work_item_id <> ''
-	 GROUP BY work_item_id`
+	 GROUP BY work_item_id, model, cost_source`
 
-func (s *Store) QueryWorkItemCosts(projectID string) (map[string]float64, error) {
+func (s *Store) QueryWorkItemCosts(projectID string) ([]WorkItemCostGroup, error) {
 	if projectID == "" {
 		return nil, fmt.Errorf("store: query work item costs: empty project id")
 	}
@@ -245,19 +258,23 @@ func (s *Store) QueryWorkItemCosts(projectID string) (map[string]float64, error)
 	}
 	defer rows.Close()
 
-	costs := make(map[string]float64)
+	groups := make([]WorkItemCostGroup, 0, 16)
 	for rows.Next() {
-		var itemID string
-		var cost float64
-		if err := rows.Scan(&itemID, &cost); err != nil {
+		var group WorkItemCostGroup
+		if err := rows.Scan(
+			&group.WorkItemID, &group.Model, &group.CostSource,
+			&group.InputTokens, &group.OutputTokens,
+			&group.CacheReadInputTokens, &group.CacheCreationInputTokens,
+			&group.ReasoningOutputTokens, &group.CostUSD, &group.Rows,
+		); err != nil {
 			return nil, fmt.Errorf("store: query work item costs for project %s: scan: %w", projectID, err)
 		}
-		costs[itemID] = cost
+		groups = append(groups, group)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("store: query work item costs for project %s: iterate: %w", projectID, err)
 	}
-	return costs, nil
+	return groups, nil
 }
 
 // QueryWorkItemUsageDetail groups one work item's ledger rows by model and

@@ -310,6 +310,22 @@ func (a *App) initStores() (string, *store.Store, error) {
 			errorsx.WrapLifecycle("close store after logger initialization failure", closeErr),
 		)
 	}
+	a.engineLogger, err = logging.NewEngineEventLogger(dbDir)
+	if err != nil {
+		// The provider-event logger opened above is already holding a file
+		// handle; a boot that fails here must not leave it — or the DB —
+		// dangling.
+		var closeErr error
+		if a.logger != nil {
+			closeErr = errorsx.WrapLifecycle("close provider event logger", a.logger.Close())
+			a.logger = nil
+		}
+		return "", nil, errors.Join(
+			fmt.Errorf("failed to initialize workflow engine logger: %w", err),
+			closeErr,
+			errorsx.WrapLifecycle("close store after logger initialization failure", st.Close()),
+		)
+	}
 	// One-shot move of pre-appStorage view state (paneLayout,
 	// collapsedProjects) out of settings.json into the embedded
 	// client's ui_state bucket. Runs before any frontend RPC can

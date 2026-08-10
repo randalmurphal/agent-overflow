@@ -8,7 +8,6 @@ import (
 	"strings"
 
 	"agent-overflow/internal/store"
-	"agent-overflow/internal/threadmode"
 	"agent-overflow/internal/workflow/def"
 	"agent-overflow/internal/workflow/engine"
 	"agent-overflow/internal/workflow/wake"
@@ -27,11 +26,9 @@ import (
 // overlay badge instead (§10). The two are not exclusive — a bound run still
 // notifies — and a bound thread that has since been deleted degrades to the
 // unbound surface with the stale binding cleared, so a wake is never lost.
-
-// maxWakeMessageBytes bounds one composed wake. The composer's own budgets keep
-// a normal message far below this; the cap is the backstop that keeps a
-// pathological run record from producing a message the queue would refuse.
-const maxWakeMessageBytes = 24 * 1024
+//
+// Delivery, and the coalescing rule that decides whether a composed message is
+// worth delivering at all, live in app_workflow_wake_delivery.go.
 
 // afterWorkflowResting runs the wake half of a lifecycle transition. It is
 // called from the one app-side item-state listener, so a wake and a
@@ -40,12 +37,12 @@ func (a *App) afterWorkflowResting(item store.WorkItem) {
 	if item.OriginThreadID == "" {
 		return
 	}
-	message, err := a.composeWorkflowWake(item, nil)
+	composed, err := a.composeWorkflowWake(item, nil)
 	if err != nil {
 		log.Printf("workflow wake %s: compose: %v", item.ID, err)
 		return
 	}
-	a.deliverWorkflowWake(item, message)
+	a.deliverWorkflowWake(item, composed)
 }
 
 // surfaceDescendantPark is the root-side surface for a descendant that parked
@@ -70,20 +67,30 @@ func (a *App) surfaceDescendantPark(child store.WorkItem) {
 	for _, ancestor := range chain {
 		ids = append(ids, ancestor.ID)
 	}
-	descendant := &wake.Descendant{
+	descendant := &wakeDescendant{run: &wake.Descendant{
 		ItemID: child.ID, WorkflowID: child.WorkflowID,
 		State: child.State, Reason: child.Reason,
 		Depth: child.CallDepth - root.CallDepth, Chain: ids,
+	}}
+	// A called run inherits the root's workspace unless a fan-out unit cut it a
+	// sub-worktree of its own, so only the difference is worth a line: the root's
+	// is already on the message.
+	if child.WorktreePath != root.WorktreePath || child.Branch != root.Branch {
+		descendant.run.WorktreePath = child.WorktreePath
+		descendant.run.Branch = child.Branch
 	}
 	if engine.Reason(child.Reason) == engine.ReasonGate {
-		descendant.GateDecision, descendant.GateLabel = a.workflowGateDecision(child.ID)
+		descendant.run.GateDecision, descendant.run.GateLabel = a.workflowGateDecision(child.ID)
 	}
 	phase, envelope, err := a.workflowRestingPhase(child.ID)
 	if err != nil {
 		log.Printf("workflow wake %s: read parked phase: %v", child.ID, err)
 	} else {
-		descendant.PhaseID = phase.PhaseID
-		descendant.Detail = workflowEnvelopeDetail(envelope)
+		descendant.run.PhaseID = phase.PhaseID
+		descendant.run.Attempt = phase.Attempt
+		descendant.run.Detail = workflowEnvelopeDetail(envelope)
+		descendant.run.Cause = phase.ParkCause
+		descendant.outputs, descendant.overflow = a.wakeAttemptOutputs(child, phase, envelope)
 	}
 	// The root is the unit of attention: it carries the badge, the notification,
 	// and the binding, so the descendant's park is announced as the root's.
@@ -104,12 +111,12 @@ func (a *App) surfaceDescendantPark(child store.WorkItem) {
 	if root.OriginThreadID == "" {
 		return
 	}
-	message, err := a.composeWorkflowWake(root, descendant)
+	composed, err := a.composeWorkflowWake(root, descendant)
 	if err != nil {
 		log.Printf("workflow wake %s: compose descendant park: %v", root.ID, err)
 		return
 	}
-	a.deliverWorkflowWake(root, message)
+	a.deliverWorkflowWake(root, composed)
 }
 
 // workflowAncestry walks call linkage to the tree's root and returns the path
@@ -120,6 +127,14 @@ func (a *App) surfaceDescendantPark(child store.WorkItem) {
 // campaign is only actionable if a reader can name the runs between: the root is
 // what the human is watching, the parked run is what a repair verb takes, and
 // the ones in between are the waves that already finished.
+//
+// The ANCESTORS are read through the summary projection. Every consumer of this
+// walk reads ids, linkage, state, goal, and workspace — never a frozen workflow
+// snapshot — and this walk is on the hot path of prompt assembly: every element
+// of every wave resolves it, so a depth-forty lane would otherwise decode forty
+// snapshots with every prompt file inlined to render one goal chain. The one
+// caller that does need a snapshot needs exactly one (the ROOT's non-goals) and
+// reads that row for itself.
 func (a *App) workflowAncestry(item store.WorkItem) ([]store.WorkItem, error) {
 	reversed := []store.WorkItem{item}
 	current := item
@@ -127,7 +142,7 @@ func (a *App) workflowAncestry(item store.WorkItem) ([]store.WorkItem, error) {
 		if depth >= engine.MaxCallDepth {
 			return nil, fmt.Errorf("run %s has more than %d ancestors", item.ID, engine.MaxCallDepth)
 		}
-		parent, err := a.store.GetWorkItem(current.ParentItemID)
+		parent, err := a.store.GetWorkItemSummary(current.ParentItemID)
 		if err != nil {
 			return nil, fmt.Errorf("load parent %s of %s: %w", current.ParentItemID, current.ID, err)
 		}
@@ -141,50 +156,106 @@ func (a *App) workflowAncestry(item store.WorkItem) ([]store.WorkItem, error) {
 	return chain, nil
 }
 
+// wakeDescendant bundles a parked descendant with the digest of the attempt it
+// parked on. The digest is resolved where the descendant's records are already
+// in hand rather than looked up again from the root's composer, which holds the
+// wrong run.
+type wakeDescendant struct {
+	run      *wake.Descendant
+	outputs  []wake.Output
+	overflow int
+}
+
 // composeWorkflowWake resolves the run record into the composer's flat input.
 // Every lookup happens here so the composer stays pure and its format stays
 // testable without a store.
-func (a *App) composeWorkflowWake(item store.WorkItem, descendant *wake.Descendant) (string, error) {
+func (a *App) composeWorkflowWake(item store.WorkItem, descendant *wakeDescendant) (composedWake, error) {
 	input := wake.Input{
 		Run: wake.Run{
 			ItemID: item.ID, Goal: item.Goal, WorkflowID: item.WorkflowID,
 			State: item.State, Reason: item.Reason,
+			// Where the work lives is a fact about the run row, resolved here
+			// like every other one. It is on every wake, not only the parked
+			// ones: a done run's reader wants the branch as much as a stuck
+			// run's does.
+			WorktreePath: item.WorktreePath, Branch: item.Branch,
 		},
-		Descendant: descendant,
-	}
-	if descendant == nil && engine.Reason(item.Reason) == engine.ReasonGate {
-		input.Run.GateDecision, input.Run.GateLabel = a.workflowGateDecision(item.ID)
 	}
 	if descendant != nil {
+		input.Descendant = descendant.run
+		input.AttemptOutputs, input.AttemptOutputOverflow = descendant.outputs, descendant.overflow
 		// The root did not rest: the composer renders it as waiting on the
 		// descendant, and the root's own (empty) park reason would be noise.
 		input.Run.Reason = ""
+	} else if engine.Reason(item.Reason) == engine.ReasonGate {
+		input.Run.GateDecision, input.Run.GateLabel = a.workflowGateDecision(item.ID)
 	}
 	timeline, err := a.store.ListWorkItemPhaseTimeline(item.ID)
 	if err != nil {
-		return "", fmt.Errorf("list phase timeline: %w", err)
+		return composedWake{}, fmt.Errorf("list phase timeline: %w", err)
 	}
 	if descendant == nil {
 		if phase, ok := currentWorkflowPhaseTimelineAttempt(timeline); ok {
 			input.Run.PhaseID = phase.PhaseID
+			input.Run.Attempt = phase.Attempt
 			input.Run.Detail = workflowEnvelopeDetail(phase.OutputEnvelope)
+			// Read from the resting attempt row, never looked up by the
+			// composer: the cause is a persisted fact about THIS attempt, and
+			// a composer that went looking for one could answer for a
+			// different attempt than the message describes.
+			input.Run.Cause = phase.ParkCause
+			input.AttemptOutputs, input.AttemptOutputOverflow = a.wakeAttemptOutputs(item, phase, phase.OutputEnvelope)
 		}
 	}
 	outputs, err := workflowNamedOutputs(item.Snapshot, timeline)
 	if err != nil {
-		return "", fmt.Errorf("read declared outputs: %w", err)
+		return composedWake{}, fmt.Errorf("read declared outputs: %w", err)
 	}
 	input.Outputs = wakeOutputs(outputs)
-	references, err := a.wakeReferences(item, timeline, descendant)
+	references, err := a.wakeReferences(item, timeline, input.Descendant)
 	if err != nil {
-		return "", err
+		return composedWake{}, err
 	}
 	input.References = references
 	message := wake.Compose(input)
 	if len(message) > maxWakeMessageBytes {
-		return "", fmt.Errorf("composed wake is %d bytes; maximum is %d", len(message), maxWakeMessageBytes)
+		return composedWake{}, fmt.Errorf("composed wake is %d bytes; maximum is %d", len(message), maxWakeMessageBytes)
 	}
-	return message, nil
+	return composedWake{signature: wake.Signature(input), message: message}, nil
+}
+
+// wakeAttemptOutputs digests the envelope outputs of the attempt a run parked
+// on, for the one park where the reader is being asked to DECIDE something: a
+// gate. The decision is about what that attempt produced, and reading them was
+// the round trip that preceded every gate resolution in the campaign this came
+// out of.
+//
+// Every other park either has no decision to make (`interrupted`, `paused`) or
+// carries its own account in the detail line the envelope's question or reason
+// already supplies, so this stays scoped rather than adding outputs to every
+// message.
+//
+// It shares `run inspect`'s bounding rather than growing a second one, so the
+// same outputs read the same way on both surfaces. A digest that cannot be read
+// is logged and dropped: a wake whose repair verb is correct must not be
+// suppressed over an unreadable envelope.
+func (a *App) wakeAttemptOutputs(
+	item store.WorkItem, phase store.WorkItemPhaseTimeline, envelope json.RawMessage,
+) ([]wake.Output, int) {
+	if engine.Reason(item.Reason) != engine.ReasonGate {
+		return nil, 0
+	}
+	outputs, err := workflowAttemptOutputs(item.ID, phase.PhaseID, phase.Attempt, envelope)
+	if err != nil {
+		log.Printf("workflow wake %s: digest parked attempt outputs: %v", item.ID, err)
+		return nil, 0
+	}
+	digest, overflow := workflowOutputDigest(outputs)
+	projected := make([]wake.Output, 0, len(digest))
+	for _, output := range digest {
+		projected = append(projected, wake.Output{Name: output.Name, Value: output.Value})
+	}
+	return projected, overflow
 }
 
 // wakeOutputs projects the run's declared outputs in a stable order. Values are
@@ -378,85 +449,4 @@ func workflowStateText(state, reason string) string {
 		return state
 	}
 	return state + " (" + reason + ")"
-}
-
-// deliverWorkflowWake injects the composed message into the bound thread. The
-// two branches are the same two a human gets: a live session takes the message
-// through the flush queue (delivered at the provider's next tool boundary, or
-// straight through when nothing is in flight), and a session-less thread takes
-// an ordinary send, which lazily starts the session and persists the message as
-// a durable row rather than parking it in a queue this process would lose.
-func (a *App) deliverWorkflowWake(item store.WorkItem, message string) {
-	threadID, ok := a.resolveWakeThread(item)
-	if !ok {
-		return
-	}
-	if _, live := a.sessionManager().get(threadID); live {
-		if _, err := a.registerQueueItem(threadID, message, SendMessageOptions{}, true); err != nil {
-			a.reportWakeFailure(item, threadID, err)
-		}
-		return
-	}
-	if _, err := a.sendMessageWithOptions(threadID, message, sendMessageOptions{PreserveDraft: true}); err != nil {
-		a.reportWakeFailure(item, threadID, err)
-	}
-}
-
-// resolveWakeThread validates the binding and reports whether it can carry a
-// wake. A binding that no longer resolves is cleared here — loudly — so the run
-// converges on the unbound surface instead of retrying a dead thread on every
-// future transition.
-func (a *App) resolveWakeThread(item store.WorkItem) (string, bool) {
-	thread, err := a.store.GetThread(item.OriginThreadID)
-	if err != nil {
-		a.clearStaleWakeBinding(item, fmt.Sprintf("bound thread %s could not be loaded: %v", item.OriginThreadID, err))
-		return "", false
-	}
-	if thread.Archived {
-		a.clearStaleWakeBinding(item, fmt.Sprintf("bound thread %s is archived", thread.ID))
-		return "", false
-	}
-	if err := validWorkflowBindingThread(item, thread); err != nil {
-		a.clearStaleWakeBinding(item, err.Error())
-		return "", false
-	}
-	return thread.ID, true
-}
-
-func (a *App) clearStaleWakeBinding(item store.WorkItem, reason string) {
-	log.Printf("workflow wake %s: %s; falling back to the unbound surface", item.ID, reason)
-	if err := a.store.UpdateWorkItemOriginThread(item.ID, ""); err != nil {
-		log.Printf("workflow wake %s: clear stale binding: %v", item.ID, err)
-	}
-	a.emit("workflow:error", engine.ErrorEvent{
-		ItemID: item.ID,
-		Error:  "this run's bound thread is gone; its results now surface in the workflows overlay",
-	})
-}
-
-func (a *App) reportWakeFailure(item store.WorkItem, threadID string, cause error) {
-	log.Printf("workflow wake %s: deliver to thread %s: %v", item.ID, threadID, cause)
-	a.emit("workflow:error", engine.ErrorEvent{
-		ItemID: item.ID,
-		Error:  "this run's result could not be delivered to its bound thread; open the run in the workflows overlay",
-	})
-}
-
-// validWorkflowBindingThread is the one rule set both binding and waking apply,
-// so a thread that could never be woken can never be bound in the first place.
-//
-// Workflow-owned threads (phase, unit, studio, triage) are excluded because
-// they are driven by the run machinery itself: waking one would inject a user
-// turn into a session the engine is steering. Terminal and discussion threads
-// are excluded because neither takes an ordinary user message.
-func validWorkflowBindingThread(item store.WorkItem, thread store.Thread) error {
-	if thread.ProjectID != item.ProjectID {
-		return fmt.Errorf("thread %s belongs to project %s, not to this run's project %s",
-			thread.ID, thread.ProjectID, item.ProjectID)
-	}
-	if _, ok := threadmode.ManualSelectionModes[thread.Mode]; !ok {
-		return fmt.Errorf("thread %s has mode %q; a run binds a conversation thread (chat, plan, or design)",
-			thread.ID, thread.Mode)
-	}
-	return nil
 }

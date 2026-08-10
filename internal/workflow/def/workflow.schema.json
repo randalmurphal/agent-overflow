@@ -11,6 +11,12 @@
     "description": {"type": "string"},
     "inputs": {"$ref": "#/$defs/variables"},
     "outputs": {"type": "object", "additionalProperties": {"$ref": "#/$defs/workflowOutput"}},
+    "non_goals": {
+      "type": "array",
+      "maxItems": 12,
+      "items": {"type": "string", "minLength": 1, "maxLength": 500},
+      "description": "Work this workflow deliberately does not do, carried into every element's prompt alongside the goal chain of the run tree so a long campaign cannot drift its own scope outward one wave at a time."
+    },
     "phases": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/phase"}},
     "default_step_mode": {"type": "boolean"},
     "cleanup": {"enum": ["manual", "auto"]}
@@ -19,7 +25,30 @@
     "variables": {"type": "object", "additionalProperties": {"$ref": "#/$defs/variable"}},
     "variable": {
       "type": "object", "additionalProperties": false, "required": ["schema"],
-      "properties": {"schema": {"$ref": "#/$defs/jsonSchema"}, "optional": {"type": "boolean"}}
+      "properties": {
+        "schema": {"$ref": "#/$defs/jsonSchema"},
+        "optional": {"type": "boolean"},
+        "window": {
+          "description": "Prior attempts a reserved `history.<phase>` input binding carries, most recent kept. Legal on that binding alone; omit for 10.",
+          "type": "integer", "minimum": 1, "maximum": 50
+        }
+      }
+    },
+    "phaseInputs": {
+      "description": "What this phase consumes, keyed by the reference it binds: a workflow input name, a `<phase>.<output>` reference, or the reserved `history.<phase>` binding. Two names are supplied by the engine and must NOT be declared here. `call-depth` (this run's depth in its call tree, 0 for a directly started run) is readable from any prompt, command, or gate predicate without a declaration. `budget` (this run tree's ceiling and spend: `{kind, ceiling, spent, remaining, estimated}`) is readable from any prompt or command without a declaration, but a gate may NOT route on it — have the phase decide and declare that as an output. It is unbound on a run with no ceiling, which is most runs, so `{{budget}}` renders `(not provided)` there.",
+      "type": "object", "additionalProperties": {"$ref": "#/$defs/phaseInputVariable"}
+    },
+    "phaseInputVariable": {
+      "description": "A phase input. `schema` may be omitted when the binding is exactly a workflow input name: the phase then inherits that input's schema, which is what keeps a definition from restating one contract once per phase that reads it. Declaring a schema always wins and may narrow the workflow input's; it is never required to match it.",
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "schema": {"$ref": "#/$defs/jsonSchema"},
+        "optional": {"type": "boolean"},
+        "window": {
+          "description": "Prior attempts a reserved `history.<phase>` input binding carries, most recent kept. Legal on that binding alone; omit for 10.",
+          "type": "integer", "minimum": 1, "maximum": 50
+        }
+      }
     },
     "jsonSchema": {
       "type": "object", "additionalProperties": false, "required": ["type"],
@@ -37,7 +66,14 @@
     },
     "workflowOutput": {
       "type": "object", "additionalProperties": false, "required": ["from"],
-      "properties": {"from": {"type": "string"}, "artifact": {"type": "boolean"}}
+      "properties": {
+        "from": {"type": "string"},
+        "optional": {
+          "description": "This deliverable may be absent when the run completes. A REQUIRED output that its completion path never produced fails the run at the moment it finishes, which is correct for a value a caller routes on and wrong for one a branch of the graph simply does not produce. The dry-run reports a required output whose source phase is not on every path to done (`workflow.output-unreachable`).",
+          "type": "boolean"
+        },
+        "artifact": {"type": "boolean"}
+      }
     },
     "effort": {
       "description": "Reasoning tier for an agent turn. Which tiers a given model actually advertises is provider-owned and partly live, so a tier the model does not support is coerced to its default at run time rather than rejected here.",
@@ -51,7 +87,7 @@
         "provider": {"type": "string"}, "model": {"type": "string"},
         "effort": {"$ref": "#/$defs/effort"}, "prompt": {"type": "string"},
         "watchdog": {"type": "string"},
-        "inputs": {"$ref": "#/$defs/variables"}, "outputs": {"$ref": "#/$defs/variables"},
+        "inputs": {"$ref": "#/$defs/phaseInputs"}, "outputs": {"$ref": "#/$defs/variables"},
         "check": {"type": "string"}, "command": {"type": "string"},
         "resources": {"type": "array", "items": {"type": "string"}},
         "commands": {"type": "array", "items": {"type": "string"}},
@@ -144,7 +180,11 @@
         "call": {"type": "string", "pattern": "^[a-z0-9-]+$"},
         "args": {"type": "object", "additionalProperties": {"type": "string"}},
         "max_depth": {"type": "integer", "minimum": 1},
-        "outputs": {"$ref": "#/$defs/variables"}
+        "outputs": {"$ref": "#/$defs/variables"},
+        "accounts_for_units": {
+          "type": "boolean",
+          "description": "Hold this join's done envelope to naming every unit of the fan-out exactly once, in a merged array of unit ids or a blocked array of {unit, reason} — the phase must declare both outputs, and a unit missing from both is refused as ordinary envelope-validation feedback. Valid on a join only."
+        }
       },
       "allOf": [
         {
@@ -154,7 +194,7 @@
               {"required": ["provider"]}, {"required": ["model"]}, {"required": ["effort"]},
               {"required": ["prompt"]},
               {"required": ["command"]}, {"required": ["access"]}, {"required": ["outputs"]},
-              {"required": ["resources"]}
+              {"required": ["resources"]}, {"required": ["accounts_for_units"]}
             ]}
           },
           "else": {
@@ -172,7 +212,19 @@
       "properties": {
         "when": {"$ref": "#/$defs/predicate"}, "to": {"type": "string"}, "loop": {"type": "string"},
         "max": {"$ref": "#/$defs/loopBound"}, "feedback": {"type": "array", "items": {"type": "string"}},
-        "park": {"type": "string"}, "human": {"$ref": "#/$defs/human"}
+        "park": {"type": "string"}, "human": {"$ref": "#/$defs/human"},
+        "notify": {
+          "type": "boolean",
+          "description": "Wake the run's bound thread when the gate takes this route, without parking: the run continues exactly as it would have. Not valid on a human or park route, which already wake by parking, and inert on a route to done or failed, where the run's resting wake already reports it."
+        },
+        "session": {
+          "enum": ["fresh", "continue"],
+          "description": "Whether the attempt this loop creates runs on the target phase's own previous session (continue) or on a new one (fresh, the default). Valid only on a loop route, and only where the target runs one session of its own — not a tool, call, or fan-out phase. Use continue on a fix edge, where re-entering cold loses what the phase just tried; leave review phases fresh, where remembering the last verdict is the anchoring the loop exists to break. A previous session that is gone falls back to fresh with the fact recorded on the attempt."
+        },
+        "prompt": {
+          "type": "string",
+          "description": "Sibling-relative prompt file that replaces the authored body of the phase this loop re-enters, for the one attempt this route creates. Valid only on a loop route whose target runs one session of its own. It is route-scoped and never sticky: an attempt that loops again through a route with no prompt renders the phase's own body. The file resolves, inlines, and freezes exactly like a phase prompt, and its template is checked against the TARGET phase's inputs."
+        }
       }
     },
     "human": {

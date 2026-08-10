@@ -108,6 +108,10 @@ type App struct {
 	workflowAutoDisposition serialQueue
 	workflowWake            serialQueue
 	workflowSchedulerQueue  serialQueue
+	// workflowWatch is the bounded transition ring `run watch` long-polls
+	// against. Its zero value is usable, so it needs no construction wiring and
+	// an App with no engine still answers a watcher honestly.
+	workflowWatch workflowWatchHub
 	// workflowDigestMu guards the lazily allocated digest-generator slots.
 	workflowDigestMu         sync.Mutex
 	workflowDigestSlots      chan struct{}
@@ -147,9 +151,14 @@ type App struct {
 	attachments      *attachment.Store
 	workspaceFiles   *workspacefiles.Searcher
 	logger           *logging.Logger
-	telemetry        *obsotel.Provider
-	replay           *replay.Manager
-	configDir        string
+	// engineLogger is the workflow run-lifecycle log. Separate from `logger`
+	// because it is always on: the provider-event log is a debugging opt-in,
+	// while a park's diagnosis has to be readable without having enabled
+	// anything before the run parked.
+	engineLogger *logging.Logger
+	telemetry    *obsotel.Provider
+	replay       *replay.Manager
+	configDir    string
 	// providerAccounts persists account labels, the active selection, and
 	// last-known quota snapshots. providerCredentials keeps credential bytes
 	// in provider-native homes and treats them as opaque. Both are initialized

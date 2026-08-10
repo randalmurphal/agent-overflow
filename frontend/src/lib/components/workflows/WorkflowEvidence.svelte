@@ -33,7 +33,10 @@
   // stopped in — the diagnosis is the same question, and only the way back
   // differs (`failed` reruns, `blocked` resumes). The check strip is suppressed
   // for both because the failure evidence carries the checks that matter.
-  let unresolved = $derived(kind === 'failed' || kind === 'blocked');
+  // `retries-exhausted` resolves on the `paused` row (D70: a bare resume
+  // continues its session), but the run still stopped on a failure — a spent
+  // loop bound or a provider error — so it keeps the diagnosis block.
+  let unresolved = $derived(kind === 'failed' || kind === 'blocked' || item.reason === 'retries-exhausted');
 
   let checkPhases = $derived.by(() => {
     const checks = new Set(detail.checkPhaseIds ?? []);
@@ -45,6 +48,16 @@
   let partialOutputs = $derived(workflowPartialOutputs(detail));
   let disposition = $derived(parseWorkflowDisposition(item.disposition));
 
+  // Why the ENGINE stopped it, when the engine is what diagnosed the stop: a
+  // worktree that would not cut, a phase missing from the frozen definition, a
+  // spent budget. Such an attempt ran no turn, so it has no envelope and every
+  // other block on this page has nothing to show for it. Read off the LAST
+  // attempt only — the one the run is resting on. Scanning back for any
+  // attempt with a cause would resurrect an earlier, already-repaired park as
+  // the current diagnosis (the engine clears the cause on reopen, but a
+  // `--phase` repair leaves the old parked row behind).
+  let parkCause = $derived(((detail.phases ?? []).at(-1))?.cause ?? '');
+
   let pausedReceipt = $derived.by(() => {
     const ago = `${workflowAge(item.endedAt || item.startedAt || item.createdAt)} ago`;
     if (item.reason === 'interrupted') return 'interrupted — the app was restarted';
@@ -52,6 +65,10 @@
     // because it was asked for, and the partial outputs below it are a wave's
     // worth of finished work rather than the wreckage of an unfinished one.
     if (item.reason === 'checkpoint') return `stopped at your checkpoint · ${ago}`;
+    // Worded for both causes the reason covers (a provider failure the runner
+    // stopped retrying, and a spent loop bound) — the diagnosis block above
+    // carries the specifics.
+    if (item.reason === 'retries-exhausted') return `ran out of retries — resume continues where it stopped · ${ago}`;
     return `paused by you · ${ago}`;
   });
 
@@ -80,6 +97,12 @@
         {/each}
       </div>
     </section>
+  {/if}
+
+  {#if parkCause}
+    <blockquote class="border-l-2 border-error/60 pl-3 text-sm text-fg-muted" data-testid="workflow-park-cause">
+      {parkCause}
+    </blockquote>
   {/if}
 
   {#if kind === 'gate' || kind === 'done'}

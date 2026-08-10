@@ -1,0 +1,233 @@
+# yaml-language-server: $schema=../workflow.schema.json
+# Required project profile bindings (names must match exactly):
+# checks: (none)
+# commands: (none)
+# capacities: (none)
+#
+# A review/fix loop that CONVERGES instead of oscillating.
+#
+# The failure this exists to prevent: two elements ruling on the same work,
+# round after round, each obeying the newest verdict and none of them able to
+# see the pattern. Every round finds something - a reviewer asked "is this
+# right?" always answers yes - so the loop runs until its budget dies rather
+# than until the work is done, and the last round's minor nit gets the same
+# weight as the first round's real defect.
+#
+# Four mechanics compose into the fix, and this starter exists to show them
+# composed rather than described:
+#
+#   1. `history.review` binds the reviewer's OWN prior attempts as a series
+#      (oldest first), so round four can see that rounds one through three
+#      each raised something new and smaller. Without it a re-entered phase is
+#      structurally blind to every round before the last one.
+#   2. `session: continue` on the fix edge re-enters the implementer WARM. It
+#      is on the fix edge and nowhere else: an implementer re-entered cold has
+#      lost what it just tried, while a reviewer re-entered warm is an
+#      adjudicator that remembers arguing for its last verdict, which is the
+#      anchoring the loop exists to break.
+#   3. `prompt:` on the loop route narrows the LATER rounds. Rounds inside the
+#      first budget fix everything raised; once that budget is spent the route
+#      below it takes over with a different body and only blocking or material
+#      findings extend the loop.
+#   4. Surviving minors become RESIDUE rather than another round: recorded as
+#      campaign-memory warnings (the `memory` control field, since the reviewer
+#      runs read-only) and reported in `outputs.residue`, so shipping them is a
+#      stated decision rather than an omission.
+#
+# The ratchet is in the gate, not in a prompt asking nicely. Route 1 matches
+# every verdict and burns `fix-rounds`; route 2 matches only blocking/material
+# and burns `converge-rounds`; route 3 then ships a minor-only verdict. A loop
+# route whose budget is spent falls through to the next matching route, which
+# is what makes the ordering the ratchet.
+id: converge-on-review
+name: Converge on review
+description: Implement one change and review it in a loop that narrows - early rounds fix everything raised, later rounds only blocking and material findings, and surviving minor findings ship as recorded residue instead of extending the loop forever.
+non_goals:
+  - Rewriting or restructuring code the task did not ask about, however tempting the reviewer finds it.
+  - Raising findings about style, naming, or formatting that no project rule states. A preference is not a finding.
+  - Weakening or deleting a test to make a round come back clean.
+  - Widening the task. Work discovered on the way is residue to record, not scope to absorb.
+inputs:
+  task:
+    schema:
+      type: string
+      multiline: true
+      description: The change to make, in enough detail that an agent with no other context can make it.
+  acceptance:
+    schema:
+      type: string
+      multiline: true
+      description: How a reviewer proves the change landed. This is what the review rules against, and it is the only definition of done the loop has.
+  fix-rounds:
+    schema:
+      type: number
+      minimum: 1
+      description: How many rounds fix everything the review raises, minor findings included. Seeded rather than hardcoded because the right number depends on the change, not on this definition.
+  converge-rounds:
+    schema:
+      type: number
+      minimum: 1
+      description: How many further rounds run once the fix budget is spent. Only blocking and material findings extend the loop in these rounds; minors become residue.
+outputs:
+  verdict:
+    from: review.verdict
+  summary:
+    from: review.summary
+  residue:
+    from: review.residue
+phases:
+  - id: implement
+    name: Make the change, then fix what review finds
+    driver: agent
+    provider: codex
+    model: gpt-5.6-sol
+    prompt: implement.md
+    access: write
+    inputs:
+      task:
+        schema:
+          type: string
+          multiline: true
+      acceptance:
+        schema:
+          type: string
+          multiline: true
+      # The reviewer's whole series, so a fix round can see what earlier rounds
+      # already asked for and stop re-litigating settled ground. This phase is
+      # both the implementer and the fixer - the fix edge is a loop back into
+      # it, which is the only shape in which `session:` and `prompt:` are
+      # legal, and the honest one: the element that made the change is the
+      # element that should change it.
+      history.review:
+        schema:
+          type: array
+        window: 6
+    outputs:
+      summary:
+        schema:
+          type: string
+          multiline: true
+          description: What this attempt changed, and for a fix round, which findings it addressed and which it deliberately did not.
+      changed:
+        schema:
+          type: boolean
+    gate:
+      routes:
+        - to: review
+  - id: review
+    name: Review the change against its acceptance
+    driver: agent
+    provider: claude
+    model: claude-fable-5
+    prompt: review.md
+    access: read-only
+    inputs:
+      task:
+        schema:
+          type: string
+          multiline: true
+      acceptance:
+        schema:
+          type: string
+          multiline: true
+      implement.summary:
+        schema:
+          type: string
+          multiline: true
+      # This phase's own prior attempts, oldest first. It is the whole reason
+      # this loop can converge: without it round four sees one diff and one
+      # note, and cannot tell a genuine regression from the fourth restatement
+      # of a preference it already lost.
+      history.review:
+        schema:
+          type: array
+        window: 6
+    outputs:
+      verdict:
+        schema:
+          type: string
+          enum: [clean, blocking, material, minor]
+          description: The highest severity still open. clean means nothing is left worth another round.
+      findings:
+        schema:
+          type: array
+          description: What is still open, each reproduced against the current tree. A claim you could not reproduce is not a finding.
+          items:
+            type: object
+            properties:
+              id:
+                type: string
+              severity:
+                type: string
+                enum: [blocking, material, minor]
+              location:
+                type: string
+              claim:
+                type: string
+              evidence:
+                type: string
+            required: [id, severity, location, claim, evidence]
+            additionalProperties: false
+      residue:
+        schema:
+          type: array
+          description: Minor findings this run is shipping unfixed. Empty until the loop stops extending for minors; never empty silently.
+          items:
+            type: string
+      summary:
+        schema:
+          type: string
+          multiline: true
+          description: What the change now does, written against the tree rather than against the task.
+    gate:
+      routes:
+        # Nothing left worth a round. The run rests here and its resting wake
+        # is the fuller message, so this route carries no notify: decoration -
+        # one would be a line nothing acts on.
+        - when:
+            eq:
+              ref: review.verdict
+              value: clean
+          to: done
+        # The early rounds: everything raised gets fixed, minors included. The
+        # implementer is re-entered WARM on its own session, with a fix-focused
+        # body instead of the build-it-from-scratch one.
+        - when:
+            in:
+              ref: review.verdict
+              values: [blocking, material, minor]
+          loop: implement
+          max: fix-rounds
+          session: continue
+          prompt: implement-fix.md
+          feedback: [review.findings, review.summary]
+        # The convergence rounds. Reached only once the route above has spent
+        # its budget, because an exhausted loop route falls through to the next
+        # match - which is what makes minor findings stop extending the loop
+        # without any element having to count its own laps. notify: rides here
+        # rather than on a terminal route: entering the convergence rounds is
+        # the moment a watcher wants to hear about, and the run continues
+        # through it, so the wake says something the resting wake will not.
+        - when:
+            in:
+              ref: review.verdict
+              values: [blocking, material]
+          loop: implement
+          max: converge-rounds
+          session: continue
+          prompt: implement-converge.md
+          feedback: [review.findings, review.summary]
+          notify: true
+        # A minor-only verdict past the fix budget. This is the ratchet closing:
+        # the findings are real and they ship, recorded as residue and as
+        # campaign-memory warnings, because another round of the same size is
+        # not what the work needs.
+        - when:
+            eq:
+              ref: review.verdict
+              value: minor
+          to: done
+        # Blocking or material findings survived every convergence round. That
+        # is a judgment call, and it is a human's.
+        - park: review-unresolved
+cleanup: manual

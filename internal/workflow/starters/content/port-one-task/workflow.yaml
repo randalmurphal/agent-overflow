@@ -230,7 +230,7 @@ phases:
             eq:
               ref: review.verdict
               value: clean
-          to: done
+          to: curate
         - to: fix
   - id: fix
     name: Apply the adjudicated findings
@@ -287,4 +287,58 @@ phases:
           max: 2
           feedback: [fix.summary]
         - park: review-unresolved
+  # The curator. It is content, not machinery: the engine injects campaign
+  # memory into every element's prompt whether or not this phase exists, and
+  # this phase is only what turns one lane's raw experience into notes worth
+  # injecting. It runs read-only at the end of a CLEAN lane, so it costs one
+  # cheap turn per successful task and none at all on a lane that parked - a
+  # lane a human is already looking at does not need a machine's summary of it.
+  - id: curate
+    name: Distil what this lane learned
+    driver: agent
+    provider: codex
+    model: gpt-5.6-sol
+    effort: low
+    prompt: curate.md
+    access: read-only
+    inputs:
+      campaign-goal:
+        schema:
+          type: string
+          multiline: true
+      task-intent:
+        schema:
+          type: string
+          multiline: true
+      review.summary:
+        schema:
+          type: string
+          multiline: true
+      review.findings:
+        schema:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: string
+              severity:
+                type: string
+                enum: [blocking, material, minor]
+              location:
+                type: string
+              claim:
+                type: string
+              evidence:
+                type: string
+            required: [id, severity, location, claim, evidence]
+            additionalProperties: false
+    outputs:
+      recorded:
+        schema:
+          type: number
+          description: How many notes this lane put in the envelope's memory field. Zero is a legitimate answer; a lane that learned nothing new must not pad the log.
+    gate:
+      routes:
+        - to: done
 cleanup: manual

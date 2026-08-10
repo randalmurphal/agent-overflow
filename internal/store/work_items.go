@@ -444,6 +444,24 @@ func (s *Store) UpdateWorkItemRunStart(id string, snapshot json.RawMessage, work
 	return requireRowsAffected(result, fmt.Sprintf("store: update work item run start %s", id))
 }
 
+// UpdateWorkItemSeeds replaces the run's frozen inputs. The engine's variable
+// context reads this column at every phase entry, so the write IS the durable
+// record of an amendment — there is no second place for one to live, and a
+// reader of the row always sees the values the run will next render.
+//
+// Which values a run may be given, and when a run may be given any, are the
+// engine's rules; the store enforces only that the column stays one JSON
+// object.
+func (s *Store) UpdateWorkItemSeeds(id string, seeds json.RawMessage) error {
+	result, err := s.db.Exec(
+		`UPDATE work_items SET seeds = ? WHERE id = ?`, jsonText(seeds), id,
+	)
+	if err != nil {
+		return fmt.Errorf("store: update work item seeds %s: %w", id, err)
+	}
+	return requireRowsAffected(result, fmt.Sprintf("store: update work item seeds %s", id))
+}
+
 // UpdateWorkItemWorkspace records a successfully provisioned workspace. The
 // runner calls this only after worktree creation and setup hooks complete.
 func (s *Store) UpdateWorkItemWorkspace(id, worktreePath, branch, baseBranch string) error {
@@ -550,6 +568,74 @@ func (s *Store) UpdateWorkItemOriginThread(id, threadID string) error {
 		return fmt.Errorf("store: update work item origin thread %s: %w", id, err)
 	}
 	return requireRowsAffected(result, fmt.Sprintf("store: update work item origin thread %s", id))
+}
+
+// WorkItemWakeSignature reads the signature of the last wake delivered into
+// this run's bound thread (migration v52). An empty answer means nothing has
+// been delivered yet, or somebody has acted on the run since — both of which
+// make the next wake a new one.
+//
+// It is a read of its own rather than a column on `workItemColumns` because it
+// is wake bookkeeping: no listing, overlay, or CLI projection has any use for
+// it, and every row those reads carry would pay for it.
+func (s *Store) WorkItemWakeSignature(id string) (string, error) {
+	var signature string
+	err := s.reader().QueryRow(`SELECT wake_signature FROM work_items WHERE id = ?`, id).Scan(&signature)
+	if err != nil {
+		return "", fmt.Errorf("store: read work item wake signature %s: %w", id, err)
+	}
+	return signature, nil
+}
+
+// UpdateWorkItemWakeSignature records what was just delivered, or clears the
+// record with an empty signature when an action on the run makes the next wake
+// new whatever it says.
+func (s *Store) UpdateWorkItemWakeSignature(id, signature string) error {
+	result, err := s.db.Exec(
+		`UPDATE work_items SET wake_signature = ? WHERE id = ?`, signature, id,
+	)
+	if err != nil {
+		return fmt.Errorf("store: update work item wake signature %s: %w", id, err)
+	}
+	return requireRowsAffected(result, fmt.Sprintf("store: update work item wake signature %s", id))
+}
+
+// WorkItemPendingGuidance reads the operator guidance waiting for this run's
+// next fresh phase entry (migration v53). An empty answer means nothing is
+// pending — either none was ever left, or the entry that delivered it cleared
+// the slot.
+//
+// The content is an engine-written JSON array; this layer stores and returns it
+// whole, because what an entry IS is the engine's contract with the prompt that
+// renders it, not the store's.
+//
+// It is a read of its own rather than a column on `workItemColumns` for the
+// reason `wake_signature` is: it is read by the phase entry that delivers it and
+// by the two verbs that report it, and every listed row would otherwise pay for
+// text nothing on that surface prints.
+func (s *Store) WorkItemPendingGuidance(id string) (json.RawMessage, error) {
+	var guidance string
+	err := s.reader().QueryRow(`SELECT pending_guidance FROM work_items WHERE id = ?`, id).Scan(&guidance)
+	if err != nil {
+		return nil, fmt.Errorf("store: read work item pending guidance %s: %w", id, err)
+	}
+	return json.RawMessage(guidance), nil
+}
+
+// SetWorkItemPendingGuidance replaces the slot wholesale: with the appended
+// array when a `run guide` adds an entry, and with nothing when the phase entry
+// that delivered it clears it. It is an assignment rather than an append because
+// the read-modify-write happens on the engine's command goroutine, which is what
+// makes "append" a serialized operation rather than a racy one — and because the
+// clear needs the same write either way.
+func (s *Store) SetWorkItemPendingGuidance(id string, guidance json.RawMessage) error {
+	result, err := s.db.Exec(
+		`UPDATE work_items SET pending_guidance = ? WHERE id = ?`, jsonText(guidance), id,
+	)
+	if err != nil {
+		return fmt.Errorf("store: set work item pending guidance %s: %w", id, err)
+	}
+	return requireRowsAffected(result, fmt.Sprintf("store: set work item pending guidance %s", id))
 }
 
 // SetWorkItemSoftStop arms or disarms the standing request to stop this run

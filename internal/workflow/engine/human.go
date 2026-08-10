@@ -68,10 +68,7 @@ func (e *Engine) takeOver(itemID string) error {
 	}
 	item.item.Reason = string(ReasonTakenOver)
 	item.item.EndedAt = endedAt
-	e.emitter.Emit("workflow:item-state", StateEvent{
-		ItemID: itemID, ProjectID: item.item.ProjectID,
-		From: StateNeedsHuman, To: StateNeedsHuman, Reason: ReasonTakenOver,
-	})
+	e.emitItemStateAt(item, StateNeedsHuman, StateNeedsHuman, ReasonTakenOver)
 	return nil
 }
 
@@ -146,7 +143,7 @@ func (e *Engine) continueParkedAttempt(item *runtimeItem, threadID string, feedb
 	item.takeoverFinalize = finalize
 	item.attempt = 0
 	e.items[item.item.ID] = item
-	return e.enterPhase(item)
+	return e.enterPhase(item, entryContinuation)
 }
 
 // continueFanOutJoin reopens a parked fan-out attempt and returns its join to
@@ -213,7 +210,7 @@ func (e *Engine) resolveHumanGate(itemID string, choice HumanDecision, note stri
 	if err := decodeJSON(current.GateTrace, &trace); err != nil {
 		return fmt.Errorf("resolve human gate %q trace: %w", itemID, err)
 	}
-	vars, _, err := e.variableContext(item, current.OutputEnvelope)
+	vars, _, err := e.variableContext(item, item.currentAttempt(current.OutputEnvelope))
 	if err != nil {
 		return err
 	}
@@ -232,7 +229,7 @@ func (e *Engine) resolveHumanGate(itemID string, choice HumanDecision, note stri
 			}
 			if err := e.store.CompleteWorkItemPhase(
 				itemID, item.phaseID, item.attempt, current.OutputEnvelope,
-				current.GateTrace, phaseStatus, e.timestamp(),
+				current.GateTrace, phaseStatus, "", e.timestamp(),
 			); err != nil {
 				return err
 			}
@@ -329,7 +326,7 @@ func (e *Engine) resolveHumanGate(itemID string, choice HumanDecision, note stri
 	// be taken returned above, leaving the attempt parked.
 	if err := e.store.CompleteWorkItemPhase(
 		itemID, item.phaseID, item.attempt, current.OutputEnvelope,
-		encodedTrace, "completed", e.timestamp(),
+		encodedTrace, "completed", "", e.timestamp(),
 	); err != nil {
 		return err
 	}
@@ -365,7 +362,7 @@ func (e *Engine) recoverPersistedHumanDecision(itemID string) (bool, error) {
 	if len(current.Intervention) == 0 {
 		return false, nil
 	}
-	vars, _, err := e.variableContext(item, current.OutputEnvelope)
+	vars, _, err := e.variableContext(item, item.currentAttempt(current.OutputEnvelope))
 	if err != nil {
 		return false, err
 	}
@@ -407,13 +404,17 @@ func (e *Engine) continuePersistedHumanDecision(item *runtimeItem, current store
 func (e *Engine) continueHumanDecision(item *runtimeItem, decision def.RouteDecision, feedback *Feedback) error {
 	switch decision.Kind {
 	case def.DecisionAdvance, def.DecisionLoop:
+		// The gate's own phase, captured before the item moves on: it is the
+		// coordinate the decision's route index is an index INTO.
+		sourcePhaseID := item.phaseID
 		item.phaseID = decision.Target
 		item.attempt = 0
 		item.feedback = feedback
+		e.applyLoopRoute(item, decision, sourcePhaseID)
 		// The parked phase's locks were released at park time; hand any freed
 		// capacity to the longest-waiting phase before re-entering.
 		waitingErr := e.startWaiting()
-		return errors.Join(waitingErr, e.enterPhase(item))
+		return errors.Join(waitingErr, e.enterPhase(item, entryFresh))
 	case def.DecisionDone:
 		return e.transition(item, StateDone, "")
 	case def.DecisionFailed:

@@ -75,6 +75,240 @@ phase-envelope schemas, post-validation, and whole-graph dry-run validation.
   failure there fails the human's action and leaves the run parked; it is never
   read as an exhausted budget.
 
+## The `notify:` route decoration
+
+- `notify: true` on a gate route asks for a **progress wake**: when the gate
+  takes that route the run continues exactly as it would have, and the run's
+  bound thread additionally hears that it passed here. It is a decoration, not
+  a route kind — a route still declares exactly one of `to`/`loop`/`park`/
+  `human` — because "tell someone" is orthogonal to where the run goes.
+- **It is refused on a `human:` or `park:` route** (`gate.notify`): parking
+  already wakes the bound thread, so the decoration would promise a second
+  wake for the one event.
+- **On a route to `done` or `failed` it is a Report, not a Finding**
+  (`gate.notify-terminal`). The run rests there and its resting wake is the
+  fuller message, so the decoration is inert — but the definition is not wrong
+  (the same `to:` route shape carries it legitimately one line above), and a
+  declaration nothing acts on is exactly the dead line an author would
+  otherwise discover by waiting for a wake that never comes.
+- **`decisionForRoute` is where the rule is enforced, not only where it is
+  checked.** `RouteDecision.Notify` is set only for the kinds the run continues
+  through (`ContinuesPastGate`: advance, loop), so the persisted gate trace
+  reads as "a progress wake was owed here" rather than as an authored intention
+  nothing acted on. That matters because frozen snapshots are decoded and never
+  re-validated: a run started before the finding existed still reaches the
+  evaluator with a decorated `park:` route.
+- The engine turns the flag into one `workflow:gate-notify` event and forgets
+  it; composing and delivering the message is app wiring, as it is for a
+  resting run's wake.
+
+## The loop-route knobs: `session:` and `prompt:`
+
+- A loop route may declare **`session: continue`**, which asks that the attempt
+  it creates run as the next turn of the target phase's OWN previous session
+  rather than a cold one, and **`prompt: <file.md>`**, which renders a different
+  body for that one attempt. Both make the RE-ENTRY authorable, which is what a
+  review/fix loop needs: the fix edge wants the implementer to remember what it
+  just tried, and round three often wants a narrower question than round one.
+- **`fresh` is the default and stays the default** (`Route.EffectiveSession`).
+  Anti-anchoring is the reason: a review phase re-entered warm is an adjudicator
+  that remembers arguing for its last verdict, which is exactly the loop the
+  edge exists to break. A starter sets `continue` on the fix edge and nowhere
+  else.
+- **Both are refused outside a `loop:` route** (`gate.session`, `gate.prompt`):
+  a forward, park, or human route enters a phase from OUTSIDE its cycle, where
+  there is no previous round of that phase to continue and no per-round question
+  to narrow. Refused rather than ignored, because a knob that silently does
+  nothing is one the author only discovers by watching a run behave as though it
+  were absent.
+- **Both require a loop target that runs one session of its own.** A
+  `driver: tool` phase runs a command, a `shape: call` phase delegates to a
+  child workflow, and a fan-out runs no turn at all — its units and its join each
+  carry their own prompt and their own session. The finding names which of the
+  three the target is.
+- **`prompt:` is a prompt file like every other**: sibling-relative, resolved
+  and template-checked at validation (`validatePromptFile`, the one rule set
+  every prompt site shares), inlined by `InlinePrompts`, and frozen into the
+  snapshot. Its template is checked against the TARGET phase's inputs, because
+  that is the attempt whose body it replaces — checking it against the source
+  phase's would accept references the round cannot resolve and reject the ones
+  it can.
+- **It is ROUTE-scoped and never sticky.** The override applies to the one
+  attempt the traversal creates; an attempt that loops again through a route
+  declaring no `prompt:` renders the phase's own body.
+- **`decisionForRoute` is where `session:` is enforced, not only where it is
+  checked** — the same rule `notify:` gets, for the same reason. Only a loop
+  decision carries it, and only the NON-default: a `fresh` stamped on every loop
+  trace would be bytes every run pays for to say what its absence already says.
+  A frozen snapshot is decoded and never re-validated, so a run predating the
+  finding still reaches the evaluator with a decorated forward route.
+
+## Reserved engine reads
+
+- Some values a prompt or a predicate needs are facts the ENGINE holds and an
+  author can only restate. Those are bound by reserved name, refused at every
+  declaration site, and documented in the published authoring schema.
+  `reservedInputName` / `reservedDeclaration` / `bindReservedDeclarations`
+  (`depth.go`) are the single list; adding one means adding it there and
+  nowhere else, since `PhaseDeclarations`, `UnitDeclarations`,
+  `JoinDeclarations`, and `resolveReference` all read it.
+- **`call-depth`** is how deep this run sits in its call tree: 0 for the run
+  that was started directly, 1 for a run one call edge below it, and so on. It
+  exists because a live campaign threaded a `wave-number` seed through its own
+  `args:` and incremented it with model arithmetic — the ordinal drifted from
+  the tree it described, and nothing could notice. The engine already knows the
+  number (`store.WorkItem.CallDepth`), so the read makes it unfalsifiable
+  rather than merely convenient. It does not delete seed threading; it makes a
+  wrong ordinal impossible to render.
+- **The name is compound on purpose.** The bare `depth` is a name authors
+  already use for something else — "how deep should this audit go" — and this
+  package's own call fixtures declare one, so reserving it would convert
+  working definitions into refusals. `TestBareDepthStaysAvailableToAuthors` is
+  the evidence, and it fails the moment the reservation is narrowed to the bare
+  word.
+- **The reservation is a refusal, not a silent shadow** (`input.reserved`,
+  `phase.reserved`, and `namespace.collision` for a fan-out's `as:` binding),
+  which is the rule `history` already follows: a declaration nothing reads is
+  one an author only discovers by watching a prompt render a value they did not
+  supply. Every declaration site is covered — a workflow input, a phase input,
+  an element binding, and a PHASE ID.
+- **The phase-id half is not symmetry for its own sake.** A phase named
+  `call-depth` produces `call-depth.<output>` references, and the engine binds
+  the bare name LAST — so the reserved number would overwrite that phase's whole
+  output object and every reference into it would resolve to a number, silently.
+  That is the same collision `history` refuses at both ends, for the same
+  reason.
+- It needs no declaration to be READ, which is what the authoring schema's
+  `phaseInputs` documentation says, and a seed of the same name never displaces
+  it: the engine binds the reserved names last.
+- **`budget`** (`budget.go`) is the ceiling in force for this run's TREE and
+  what it has spent against it, so an element can say what it is nearly out of
+  instead of discovering the ceiling by being parked at it. Same reservation
+  rules as `call-depth`; three things are its own:
+  - It is declared **`optional:`**, which no other reserved read is. Most runs
+    declare no ceiling at all, and for those the engine leaves the name unbound
+    so `{{budget}}` renders `(not provided)` — absence is the honest answer, and
+    a required declaration would fail interpolation on every unbudgeted run
+    while a zero-filled object would read as "you have nothing left".
+  - Its schema declares **no properties**, so no path into it validates —
+    `{{budget}}`, the whole object, is the supported form, exactly as
+    `{{history.review}}` and `{{units}}` are. The entry shape
+    (`{kind, ceiling, spent, remaining, estimated}`, rendered in the ceiling's
+    own units) is composed by the engine from the run's ledger, so an authored
+    contract over its fields would be one this definition does not own.
+  - It is **refused in a gate predicate** (`predicate.ref`) rather than left
+    unresolved like `history.<phase>`, and the finding names the alternative:
+    have the phase decide and declare that as an output. Routing on spend is
+    arithmetic in a predicate, and a definition that reached for it wants
+    somewhere to go.
+
+## Workflow outputs, and the completion they are checked against
+
+- A workflow's `outputs:` are its deliverables, synthesized when the run
+  completes and read by whatever called it. A REQUIRED one with no value is a
+  hard failure at that moment (`childOutputEnvelope`,
+  `internal/workflow/engine`), which is right — a caller's gate routes on these
+  names — but until it was checked the failure arrived at the worst possible
+  moment: a campaign whose planner could exit directly declared a handoff
+  sourced from a phase that route never entered, and the tree died at the exact
+  transition that meant it had succeeded (incident D-C1).
+- **`optional: true` on a workflow output** is the author's statement that the
+  deliverable is genuinely absent on some completion path. An absent optional
+  output is OMITTED from the synthesized envelope — not nulled — which is the
+  same shape an absent optional call argument takes (D45), so the caller's
+  optional input sees the "not supplied" a direct start would have produced.
+- **`workflow.output-unreachable`** is the dry-run half (`validate_outputs.go`).
+  A required output whose producing phase is not on every path that reaches
+  `done` is a finding naming the output, the phase, and ONE completion path that
+  misses it — the witness is the point, because "not on every path" is not
+  something an author can check by reading one gate. The finding names both
+  repairs: declare it optional, or route every completion through the producer.
+- Two cases it deliberately stays quiet about. An OPTIONAL output is never
+  reported: absence is the run the author asked for. An UNREACHABLE producer is
+  never reported either — `graph.unreachable` already blames that phase, and a
+  second finding would name one mistake twice and point at the wrong line.
+- A `human:` route's `approve: done` is a completion path like any other. A
+  `failed` route is not a completion, and a `park:` route is a rest a human
+  resumes from rather than a way out of the graph.
+- A required output whose producer runs on every completion path stays exactly
+  as strict as it was (D44). Nothing here relaxes the runtime rule; it moves
+  the discovery of a wrong declaration to the dry-run.
+
+## Phase inputs inherit workflow input schemas
+
+- A phase input whose key is exactly a declared workflow input name and which
+  declares NO schema of its own **inherits that workflow input's schema**
+  (`inherit.go`). Roughly forty percent of a real campaign's YAML was schemas
+  re-typed one phase at a time, and every restatement was a place the two could
+  drift.
+- It is a **resolution-time copy**, applied by `Parse` — the single transition
+  from authored bytes to a `Workflow` — so a frozen snapshot carries one
+  resolved contract and a later edit to the workflow input cannot retroactively
+  change a definition already in hand. `ApplyInheritedInputSchemas` is pure: it
+  never writes through into its caller's phases, and a definition that inherits
+  nothing is returned untouched.
+- **An explicit schema wins and is NOT checked against the workflow input's.**
+  Narrowing is the reason to restate one — a phase that accepts only one of an
+  enum's values, say — and the ordinary producer/consumer type check is what
+  refuses a restatement that is not a narrowing.
+- Only the schema is inherited. `optional:` stays exactly as authored: whether
+  a PHASE may run without a value is a statement about the phase, not about the
+  workflow's input.
+- A schema-less input bound to anything else keeps today's behaviour exactly —
+  a phase output, a path into a workflow input, an undeclared name — because
+  there is no unambiguous contract to copy, and the author is told the
+  declaration is incomplete. The only new refusal is none.
+
+## Phase history bindings
+
+- A phase may declare an input named **`history.<phaseID>`** — any phase of the
+  workflow, including itself. It binds that phase's earlier attempts as a
+  series, oldest first, and it exists because the ordinary `<phase>.<output>`
+  reference resolves to the highest COMPLETED attempt alone: a phase re-entered
+  by a loop is otherwise structurally blind to every round before the last one,
+  and two adjudicators ruling opposite ways can oscillate a review/fix pair
+  indefinitely with each round obeying the newest verdict and none of them able
+  to see the pattern.
+- It is a **prompt surface, not a routing one**. `resolveReference` never
+  resolves it, so a gate predicate, a feedback reference, or a workflow output
+  naming `history.x` is the ordinary unresolved-reference finding. The
+  reference grammar has no indexing, so `{{history.review}}` — the whole series
+  rendered as JSON — is the supported form, exactly as `{{units}}` is, and a
+  path into it (`{{history.review.outputs}}`) does not validate.
+- The declaration is `schema: {type: array}` and, optionally, `window: N`.
+  **Any other schema keyword is a finding** (`history.schema`): the entry shape
+  is composed by the engine from persisted attempt rows, so an authored
+  `items:` would be a contract this definition does not own. `optional:` is a
+  finding too (`history.optional`) — the binding is always bound, as an empty
+  array before the first prior attempt, so optionality describes a state it
+  never takes.
+- `window:` is a field on `Variable` and is legal **on this binding alone**;
+  every other declaration names one value rather than a series, so
+  `validateVariableDeclaration` — what every ordinary declaration site calls —
+  refuses it as `variable.window`. Undeclared means `DefaultHistoryWindow`
+  (10); over `MaxHistoryWindow` (50) is a `history.window` finding rather than
+  a silent trim, because a window the engine will not honour is a definition
+  that does not do what it says. `EffectiveHistoryWindow` applies the ceiling
+  at resolution too, since frozen snapshots are decoded and never re-validated.
+- None of the producer rules apply: a history binding names a phase, not one of
+  its outputs, so there is nothing to dominate this phase and no optionality to
+  propagate. Reading a phase that has not run yet is an empty array, and
+  reading the declaring phase's own attempts is the primary case.
+- **`history` is a reserved name** at both ends of the namespace: a phase or a
+  workflow input called `history` would produce `history.<output>` references
+  the binding namespace already claims, so one of the two would silently win at
+  every lookup. Both are findings.
+- Scoping is the existing one, not a new one: a phase's `inputs:` are what its
+  own prompt, its fan-out units, and its join may reference
+  (`UnitDeclarations` / `JoinDeclarations` copy them), so a history binding
+  declared on a fan-out phase reaches its units without any per-unit
+  declaration. Units declare no inputs of their own, so there is nothing to
+  extend there.
+- The engine composes the values and bounds their total size; see
+  `internal/workflow/engine/AGENTS.md` for the entry shape and the byte budget.
+  `MaxHistoryBytes` lives here with the window constants because the budget is
+  part of what the binding promises, not an engine tuning knob.
+
 ## Fan-out authoring
 
 - A phase declares its units either statically (`fan_out:` list) or dynamically
@@ -300,7 +534,27 @@ directory is.
   forces onto a provider are not a debt a hand-written envelope owes: a tool
   command's envelope, and every envelope frozen before a field existed, carry no
   null boilerplate and are judged identically to one that does.
-- `SplitEnvelopeNarrative` is the seam the app lifts that field out at, and
+- **`memory` is the second field with no branch rule**, and the second one the
+  app lifts out. It carries an array of `{kind, text, files}` campaign-memory
+  notes; a `read-only` element records through it because it cannot reach the
+  `agent-overflow memory add` verb at all (see `internal/workflow/runner`), and
+  a `write` element is told to leave it null. Post-validation accepts it from
+  either — one contract, one rule set — so a write element that answers it has
+  its notes recorded rather than dropped. What a note IS lives in
+  `internal/workflow/memory` (the closed kind vocabulary, the text/file bounds,
+  `ValidateDraft`); `envelope_memory.go` adds only the schema fragment and the
+  two things a schema cannot express: the per-envelope count bound
+  (`MaxEnvelopeMemoryNotes`, 20) and the refusal of an author-supplied
+  `provenance` / `at` / `wave`, reported as `property is not allowed` rather
+  than ignored, because a field an element is told is merely ignored keeps
+  getting sent.
+- The field has to be in the GENERATED schema, not merely tolerated by
+  post-validation: the top-level object is closed, so a provider under it
+  physically cannot emit a property the schema does not declare. It is
+  required-and-nullable like every other control field, since strict mode has no
+  optional.
+- `SplitEnvelopeNarrative` is the seam the app lifts that field out at,
+  `SplitEnvelopeMemory` is its twin for the notes, and
   `EnvelopeAccount` is what narrative recovery reads an envelope-SHAPED document
   with (a top-level `status`, weaker than the document-identity test recovery
   applies to the accepted envelope). Both live here because this package owns
@@ -335,24 +589,93 @@ directory is.
   reference grammar has no indexing, so `{{units}}` — the whole array rendered
   as JSON — is the supported form in a join prompt or command.
 
+## The merge-join contract: `accounts_for_units:`
+
+- A `join:` may declare `accounts_for_units: true`, which holds it to naming
+  every unit of its fan-out exactly once. It exists for a live failure: a merge
+  join stopped at its first conflict, reported the lanes it had already taken,
+  and said nothing about the one it dropped — and since the join's envelope IS
+  the phase's, a unit it does not mention simply does not exist downstream.
+- **It is a contract, never a merge driver.** The engine merges nothing and runs
+  no script of its own; how the lanes are reconciled stays authorable content
+  (the `port-campaign` starter ships the reference script). What the flag buys
+  is that a join which loses one is REFUSED instead of believed.
+- Two halves, and they have to agree. Statically (`join_accounting.go`,
+  `join.accounting`) the PHASE must declare a non-optional `merged`
+  (array of string) and `blocked` (array of `{unit, reason}`, both required
+  strings) — blamed on the phase because a join declares no outputs, so the
+  phase's `outputs:` are what an author edits. At run time
+  `JoinEnvelope(phase, unitIDs)` carries the obligation and post-validation
+  checks a **`done`** envelope against that exact set: a missing unit is named,
+  an unknown one is refused, a duplicate is refused, and a blank reason is
+  refused.
+- `accounts` and `accounted` are separate fields on `EnvelopeContract` for one
+  reason: a join over ZERO units still owes two empty lists, so nil and empty
+  must not read the same.
+- **The refusal is ordinary envelope-validation feedback.** It rides the D44
+  retry path on the agent join and the recorded-findings execution failure on a
+  tool join, exactly as every other post-validation finding does. It is never a
+  park, never silent, and never a new failure state.
+- It applies to `done` alone. A join that asks or gets stuck produced no result
+  to account for, and demanding the lists there would refuse the very envelope
+  saying the join could not decide. It also reports nothing when either list is
+  unreadable as an array — that mistake is already one finding from the declared
+  output rules, and one per lane on top of it would bury the finding the join
+  has to act on. That whole-list case is the ONE thing it stays quiet about: a
+  malformed ENTRY (a blank id, a non-string, a `blocked` element that is not an
+  object) is reported where it sits, because a tool join hand-writes its
+  envelope under no schema at all and a skipped entry would survive the very
+  retry that fixed everything named.
+- The GENERATED schema is unchanged by the flag: JSON Schema cannot express
+  "these two arrays partition this set". The obligation therefore lives in
+  post-validation and in the prompt (`internal/workflow/runner`), which is why
+  the runner block names the ids rather than describing them.
+- `UnitIDsFromResults(vars)` reads the set out of the reserved `units` binding,
+  so the set a join is JUDGED against is the one it was SHOWN.
+
+## Non-goals
+
+- A workflow may declare `non_goals:`, the author's standing "do not drift here"
+  list. It is **def-owned where a goal is run-owned**, and the two must not be
+  conflated: a goal is what this run was started for (`--goal`, or a caller's
+  `args:`), while a non-goal is a boundary the definition states for every run
+  it ever produces.
+- Bounds are findings, never silent trims (`workflow.non-goals`,
+  `goals.go`): at most `MaxNonGoals` (12) entries, each at most
+  `MaxNonGoalRunes` (500) **runes** — counted in runes so a boundary written in
+  a non-ASCII language is still one sentence. A non-goal quietly dropped is
+  exactly the boundary an element then crosses.
+- It freezes with the snapshot like everything else authored, and the published
+  authoring schema carries the same two bounds so an editor and Go agree.
+- The rendering — which runs read whose list, and how it reaches a prompt — is
+  `internal/workflow/runner`'s goal-chain block; this package only owns what may
+  be authored.
+
 ## Files
 
 | File | Responsibility |
 |---|---|
 | `types.go` | YAML and validation result types. |
-| `parse.go` | Strict single-document YAML parsing. |
+| `parse.go` | Strict single-document YAML parsing, and the one place inherited phase-input schemas are applied. |
 | `resolve.go` | Ordered scoped-directory resolution, plus `SkippedDirs` (below). |
 | `schema.go` | JSON-Schema fragments and embedded authoring schema. |
 | `grants.go` | The closed `ao` grant set and the phase-level grant checks. |
+| `goals.go` | `non_goals:`: its bounds and its authoring checks. |
+| `join_accounting.go` | The merge-join contract: the declared-output rules a `accounts_for_units:` join is held to, and the per-unit envelope verification. |
 | `effort.go` | The closed reasoning-tier vocabulary and the tier-name check. |
 | `envelope.go` | Generated control schema and payload post-validation. |
+| `envelope_memory.go` | The `memory` control field: its schema fragment, its post-validation (including the author-supplied-provenance refusal), and `SplitEnvelopeMemory`. |
 | `tool.go` | The tool driver's implicit outputs and the merged `PhaseOutputs` contract. |
 | `interpolate.go` | Single-pass prompt interpolation and template checks. |
 | `predicate.go` | The one predicate shape check shared by validation and evaluation, plus the standalone `ValidatePredicateShape` / `EvaluatePredicate` entry points. |
 | `loopbound.go` | A loop route's `max:`: both authored forms, their YAML/JSON (un)marshaling including legacy integer snapshots, the shape check, and runtime resolution. |
 | `fanout.go` | Unit expansion, unit-scoped declarations, and the implicit `provider:<name>` resource + its default capacity. |
+| `history.go` | The reserved `history.<phase>` input binding: its namespace, window resolution and bounds, the total byte budget, and its declaration checks. |
+| `depth.go` | The reserved engine reads (`call-depth`, `budget`): the single name list, their declarations, and the binding every declaration surface shares. |
+| `budget.go` | The reserved `budget` read: its optional field-less declaration and the predicate refusal that keeps it prompt-surface only. |
+| `inherit.go` | `ApplyInheritedInputSchemas`: a schema-less phase input bound to a workflow input takes that input's schema, at resolution. |
 | `calls.go` | Call-phase accessors, the child-outputs surface, and the call-aware workspace need. |
-| `validate*.go` | Whole-definition structural, graph, variable, and binding checks. `validate_fanout.go` holds the fan-out structural rules and the width report; `validate_calls.go` holds the call shape, the call-graph traversal (cycles, child validity), and the argument checks. |
+| `validate*.go` | Whole-definition structural, graph, variable, and binding checks. `validate_fanout.go` holds the fan-out structural rules and the width report; `validate_calls.go` holds the call shape, the call-graph traversal (cycles, child validity), and the argument checks; `validate_outputs.go` holds the workflow-output checks including the completion-path reachability of a required one. |
 
 Tests use deterministic fixtures under `testdata/` and must not inspect shared
 application configuration.

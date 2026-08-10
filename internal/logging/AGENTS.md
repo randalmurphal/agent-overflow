@@ -8,8 +8,21 @@ per logger; up to three backups (`.1` / `.2` / `.3`).
 - `logger.go` — `Logger` type, `NewLogger`, `Log`, `Close`, and the
   internal `rotate` flow (delete `.3`, shift `.2→.3`, `.1→.2`,
   `current→.1`, create new current).
-- `provider_events.go` — `ProviderEventEntry` shape and the
-  `LogProviderEvent` helper for raw provider stdin/stdout bytes.
+- `provider_events.go` — `ProviderEventEntry` shape, the
+  `LogProviderEvent` helper for raw provider stdin/stdout bytes, and the
+  `AGENT_OVERFLOW_DEBUG` gate that decides whether that logger exists
+  at all.
+- `engine_events.go` — `EngineEventEntry` shape and `LogEngineEvent`,
+  the workflow run-lifecycle stream (`engine-YYYY-MM-DD.ndjson`): one
+  line per engine-significant decision — a park and the engine's own
+  diagnosis of it, a cancel, a resume, a definition re-read, a rebuild
+  action, a fan-out wider than the capacity it will contend on. Unlike
+  the provider log it takes **no env gate**: a run parks once, and
+  there is no second chance to have turned the log on beforehand.
+- `prune.go` — `logKinds` (every daily-file prefix this package mints),
+  `dailyLogPath`, and `PruneOlderThan`. A kind is minted and pruned
+  through the same list, so a new stream cannot ship with retention
+  that silently ignores it.
 
 ## Responsibility boundary
 
@@ -27,8 +40,10 @@ per logger; up to three backups (`.1` / `.2` / `.3`).
 ## Extension points
 
 - To add a new log category: declare a new typed struct (next to
-  `ProviderEventEntry`), call `logValue` from a helper. Keep the
-  public `Log`/`LogProviderEvent` surface intact.
+  `ProviderEventEntry` / `EngineEventEntry`), call `logValue` from a
+  helper, mint its path through `dailyLogPath`, and add its prefix to
+  `logKinds` so retention covers it. Keep the public
+  `Log`/`LogProviderEvent`/`LogEngineEvent` surface intact.
 - To change rotation policy: adjust `defaultMaxBytes` or the backup
   count. Keep rotation size-based — the observability/replay package
   owns the thread-partitioned flavor.
@@ -42,6 +57,11 @@ per logger; up to three backups (`.1` / `.2` / `.3`).
   `observability/replay` instead.
 - Do NOT share a `Logger` across processes. The file lock is
   Go-level; concurrent processes rotate out from under each other.
+- Do NOT put model-authored text in an `EngineEventEntry.Message`. The
+  engine writes its own prose there; the durable, user-facing copy of a
+  park's cause is the attempt row's `park_cause`, and this stream is the
+  diagnostic trail around it — including for the parks that never
+  reached an attempt row at all.
 
 ## References
 

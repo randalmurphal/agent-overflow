@@ -79,6 +79,48 @@ func validateProjectSlug(slug string) error {
 	return nil
 }
 
+// workflowScopeForPath answers which scope a definition FILE belongs to, from
+// where it sits: the shared source directory, one project's source directory,
+// or neither.
+//
+// It exists because scope is not only how a definition is found. It is also
+// what a `call:` edge resolves against and what supplies the project profile's
+// bindings, so validating a project-scoped definition BY PATH under the shared
+// scope reported call targets that do not resolve and bindings that cannot be
+// checked — phantom findings for a definition `--id` validates clean. The
+// answer is derivable from the path, so the round trip needs no extra flag:
+// the scope a file is in is a fact about the file, not something a caller
+// should have to restate.
+//
+// Neither directory is a failure. A definition drafted outside the config root
+// — in a repo checkout, before it is installed — is a legitimate thing to
+// validate, and it gets no scope unless the caller names one.
+func workflowScopeForPath(configRoot, path string) (slug string, scope def.Scope, ok bool) {
+	absRoot, err := filepath.Abs(configRoot)
+	if err != nil {
+		return "", "", false
+	}
+	absDir, err := filepath.Abs(filepath.Dir(path))
+	if err != nil {
+		return "", "", false
+	}
+	if absDir == filepath.Join(absRoot, "workflows") {
+		return "", def.ScopeShared, true
+	}
+	relative, err := filepath.Rel(filepath.Join(absRoot, "projects"), absDir)
+	if err != nil {
+		return "", "", false
+	}
+	parts := strings.Split(relative, string(filepath.Separator))
+	if len(parts) != 2 || parts[1] != "workflows" {
+		return "", "", false
+	}
+	if err := validateProjectSlug(parts[0]); err != nil {
+		return "", "", false
+	}
+	return parts[0], def.ScopeProject, true
+}
+
 func configuredSources(configRoot, projectSlug string) ([]def.Source, error) {
 	sources := make([]def.Source, 0, 2)
 	candidates := []def.Source{{Dir: filepath.Join(configRoot, "workflows"), Scope: def.ScopeShared}}

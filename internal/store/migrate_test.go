@@ -3328,3 +3328,190 @@ func TestMigrationV50AddsSessionImportState(t *testing.T) {
 		}
 	}
 }
+
+func TestMigrationV51AddsPhaseParkCause(t *testing.T) {
+	db := migrateThrough(t, 50)
+	// The attempt row alone: work_item_phases declares no foreign key, and the
+	// column being added is entirely local to it.
+	mustExec(t, db, `INSERT INTO work_item_phases
+		(item_id, phase_id, attempt, status, started_at, ended_at)
+		VALUES ('item-v51', 'work', 1, 'parked', 50, 51)`)
+
+	if err := applyMigration(db, migrationByVersion(t, 51)); err != nil {
+		t.Fatalf("apply migration v51: %v", err)
+	}
+
+	// A row that predates the column reads as "no engine-diagnosed cause",
+	// never NULL: the column is NOT NULL so absence has one spelling, and an
+	// attempt that parked before this migration genuinely has none recorded.
+	var cause string
+	if err := db.QueryRow(
+		`SELECT park_cause FROM work_item_phases WHERE item_id = 'item-v51'`,
+	).Scan(&cause); err != nil {
+		t.Fatalf("read park_cause: %v", err)
+	}
+	if cause != "" {
+		t.Fatalf("backfilled park_cause = %q, want empty", cause)
+	}
+
+	// The text is free-form — it is a Go error's message, not an enum — so the
+	// only rules are NOT NULL and that arbitrary content round-trips.
+	const engineCause = `provision worktree for item "item-v51": branch "ao/wave-3" already exists`
+	if _, err := db.Exec(
+		`UPDATE work_item_phases SET park_cause = ? WHERE item_id = 'item-v51'`, engineCause,
+	); err != nil {
+		t.Fatalf("work_item_phases rejected a park cause: %v", err)
+	}
+	if err := db.QueryRow(
+		`SELECT park_cause FROM work_item_phases WHERE item_id = 'item-v51'`,
+	).Scan(&cause); err != nil {
+		t.Fatalf("re-read park_cause: %v", err)
+	}
+	if cause != engineCause {
+		t.Fatalf("park_cause round-trip = %q, want %q", cause, engineCause)
+	}
+	if _, err := db.Exec(
+		`UPDATE work_item_phases SET park_cause = NULL WHERE item_id = 'item-v51'`,
+	); err == nil {
+		t.Error("work_item_phases accepted a NULL park_cause after v51")
+	}
+
+	// ADD COLUMN, not a rebuild: the phase indexes and the attempt uniqueness
+	// that every loop count is derived from are untouched.
+	for _, index := range []string{
+		"idx_work_item_phases_item_started", "idx_work_item_phases_thread",
+	} {
+		var found string
+		if err := db.QueryRow(
+			`SELECT name FROM sqlite_master WHERE type = 'index' AND name = ?`, index,
+		).Scan(&found); err != nil {
+			t.Fatalf("index %s missing after v51: %v", index, err)
+		}
+	}
+	if _, err := db.Exec(`INSERT INTO work_item_phases
+		(item_id, phase_id, attempt, status, started_at)
+		VALUES ('item-v51', 'work', 1, 'running', 60)`); err == nil {
+		t.Error("post-v51 work_item_phases accepted a duplicate attempt")
+	}
+}
+func TestMigrationV52AddsWorkItemWakeSignature(t *testing.T) {
+	db := migrateThrough(t, 51)
+	mustExec(t, db, `INSERT INTO work_items
+		(id, project_id, goal, workflow_id, workflow_scope, state, source, created_at)
+		VALUES ('item-v52', 'project', 'ship it', 'build', 'shared', 'needs-human', 'manual', 50)`)
+
+	if err := applyMigration(db, migrationByVersion(t, 52)); err != nil {
+		t.Fatalf("apply migration v52: %v", err)
+	}
+
+	// A run that predates the column has had nothing delivered as far as this
+	// record is concerned, which is the state every wake delivers from. NOT NULL
+	// so "nothing recorded" has exactly one spelling.
+	var signature string
+	if err := db.QueryRow(
+		`SELECT wake_signature FROM work_items WHERE id = 'item-v52'`,
+	).Scan(&signature); err != nil {
+		t.Fatalf("read wake_signature: %v", err)
+	}
+	if signature != "" {
+		t.Fatalf("backfilled wake_signature = %q, want empty", signature)
+	}
+
+	const delivered = `kind=rest run="item-v52" state="needs-human" reason="gate" phase="review" attempt=3`
+	if _, err := db.Exec(
+		`UPDATE work_items SET wake_signature = ? WHERE id = 'item-v52'`, delivered,
+	); err != nil {
+		t.Fatalf("work_items rejected a wake signature: %v", err)
+	}
+	if err := db.QueryRow(
+		`SELECT wake_signature FROM work_items WHERE id = 'item-v52'`,
+	).Scan(&signature); err != nil {
+		t.Fatalf("re-read wake_signature: %v", err)
+	}
+	if signature != delivered {
+		t.Fatalf("wake_signature round-trip = %q, want %q", signature, delivered)
+	}
+	if _, err := db.Exec(
+		`UPDATE work_items SET wake_signature = NULL WHERE id = 'item-v52'`,
+	); err == nil {
+		t.Error("work_items accepted a NULL wake_signature after v52")
+	}
+
+	// ADD COLUMN, not a rebuild: the work_items indexes and the CHECKs that make
+	// call linkage all-or-nothing survive untouched.
+	for _, index := range []string{
+		"idx_work_items_project_state_created", "idx_work_items_parent",
+		"idx_work_items_origin_thread",
+	} {
+		var found string
+		if err := db.QueryRow(
+			`SELECT name FROM sqlite_master WHERE type = 'index' AND name = ?`, index,
+		).Scan(&found); err != nil {
+			t.Fatalf("index %s missing after v52: %v", index, err)
+		}
+	}
+	if _, err := db.Exec(`INSERT INTO work_items
+		(id, project_id, goal, workflow_id, workflow_scope, state, source, created_at,
+		 parent_item_id, origin_thread_id)
+		VALUES ('item-v52-bound', 'project', 'ship it', 'build', 'shared', 'running', 'call', 60,
+		 'item-v52', 'thread-1')`); err == nil {
+		t.Error("post-v52 work_items let a called run bind a thread")
+	}
+}
+
+func TestMigrationV53AddsWorkItemPendingGuidance(t *testing.T) {
+	db := migrateThrough(t, 52)
+	mustExec(t, db, `INSERT INTO work_items
+		(id, project_id, goal, workflow_id, workflow_scope, state, source, created_at)
+		VALUES ('item-v53', 'project', 'ship it', 'build', 'shared', 'running', 'manual', 50)`)
+
+	if err := applyMigration(db, migrationByVersion(t, 53)); err != nil {
+		t.Fatalf("apply migration v53: %v", err)
+	}
+
+	// A run that predates the column has nothing pending, which is the state
+	// every phase entry delivers from. NOT NULL so "nothing pending" has exactly
+	// one spelling and the engine never has to tell empty from absent.
+	var guidance string
+	if err := db.QueryRow(
+		`SELECT pending_guidance FROM work_items WHERE id = 'item-v53'`,
+	).Scan(&guidance); err != nil {
+		t.Fatalf("read pending_guidance: %v", err)
+	}
+	if guidance != "" {
+		t.Fatalf("backfilled pending_guidance = %q, want empty", guidance)
+	}
+
+	const pending = `[{"text":"narrow the review to the auth path","at":51,"by":"human"}]`
+	if _, err := db.Exec(
+		`UPDATE work_items SET pending_guidance = ? WHERE id = 'item-v53'`, pending,
+	); err != nil {
+		t.Fatalf("work_items rejected pending guidance: %v", err)
+	}
+	if err := db.QueryRow(
+		`SELECT pending_guidance FROM work_items WHERE id = 'item-v53'`,
+	).Scan(&guidance); err != nil {
+		t.Fatalf("re-read pending_guidance: %v", err)
+	}
+	if guidance != pending {
+		t.Fatalf("pending_guidance round-trip = %q, want %q", guidance, pending)
+	}
+	if _, err := db.Exec(
+		`UPDATE work_items SET pending_guidance = NULL WHERE id = 'item-v53'`,
+	); err == nil {
+		t.Error("work_items accepted a NULL pending_guidance after v53")
+	}
+
+	// ADD COLUMN, not a rebuild: the indexes and the call-linkage CHECKs survive.
+	for _, index := range []string{
+		"idx_work_items_project_state_created", "idx_work_items_parent",
+		"idx_work_items_origin_thread",
+	} {
+		var found string
+		if err := db.QueryRow(
+			`SELECT name FROM sqlite_master WHERE type = 'index' AND name = ?`, index,
+		).Scan(&found); err != nil {
+			t.Fatalf("index %s missing after v53: %v", index, err)
+		}
+	}
+}

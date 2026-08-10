@@ -10,8 +10,23 @@ func validateVariables(workflow Workflow, phaseIndex map[string]int, graph workf
 	var findings []Finding
 	for consumerIndex, phase := range workflow.Phases {
 		for ref, consumer := range phase.Inputs {
+			// A history binding names a phase rather than one of its outputs, so
+			// none of the producer rules below apply to it: it has no producing
+			// attempt to dominate this phase, and a phase's own attempts are a
+			// legal target.
+			if target, reserved := HistoryBinding(ref); reserved {
+				findings = append(findings, historyBindingFindings(workflow, phaseIndex, phase, ref, target, consumer)...)
+				continue
+			}
 			element := fmt.Sprintf("workflow %q phase %q input %q", workflow.ID, phase.ID, ref)
-			findings = append(findings, validateSchemaDefinition(consumer.Schema, element)...)
+			// A reserved read is bound to every declaration set already, so a phase
+			// input of that name declares nothing the phase does not have — and the
+			// schema it declares would be read by nothing.
+			if reservedInputName(ref) {
+				findings = append(findings, finding("input.reserved", element, reservedInputMessage(ref)))
+				continue
+			}
+			findings = append(findings, validateVariableDeclaration(consumer, element)...)
 			producer, producerIndex, ok := resolveReference(workflow, phaseIndex, ref)
 			if !ok {
 				findings = append(findings, finding("variable.unresolved", element, fmt.Sprintf("reference %q does not resolve", ref)))
@@ -94,6 +109,13 @@ func overElement(workflow Workflow, phaseIndex map[string]int, phase Phase) (Var
 }
 
 func resolveReference(workflow Workflow, phaseIndex map[string]int, ref string) (Variable, int, bool) {
+	// The reserved reads answer before anything authored, so a declaration the
+	// validator refuses cannot still change what a reference resolves to. They
+	// carry producer -1 like a workflow input: the engine binds them at every
+	// phase entry, so there is no producing phase to dominate this one.
+	if declaration, reserved := reservedDeclaration(ref); reserved {
+		return declaration, -1, true
+	}
 	parts := strings.Split(ref, ".")
 	if input, ok := workflow.Inputs[parts[0]]; ok {
 		resolved, ok := descendVariable(input, parts[1:])
@@ -307,6 +329,14 @@ func validatePredicateRef(workflow Workflow, phaseIndex map[string]int, graph wo
 	variable, producer, ok := resolveReference(workflow, phaseIndex, ref)
 	if !ok {
 		*findings = append(*findings, finding("predicate.ref", element, fmt.Sprintf("reference %q does not resolve", ref)))
+		return Variable{}, false
+	}
+	// The reserved budget read resolves — it is a real value every element may
+	// render — but a gate may not route on it. Refused here rather than by
+	// leaving it unresolvable, so the message says why and names what to do
+	// instead of reading as a typo.
+	if ref == BudgetVariable {
+		*findings = append(*findings, finding("predicate.ref", element, budgetPredicateMessage()))
 		return Variable{}, false
 	}
 	// A phase gate is evaluated after that phase emits its outputs, so the

@@ -56,11 +56,8 @@ func TestSoftStopParksAtTheCallBoundaryInsteadOfCalling(t *testing.T) {
 	}
 	// The park explains itself on the attempt, because no turn ran to author an
 	// envelope and nothing else records which call was skipped.
-	envelope := decodeEnvelope(t, h.phaseAttempt(t, "root", "again", 1).OutputEnvelope)
-	if !strings.Contains(envelope.Reason, "requested checkpoint") ||
-		!strings.Contains(envelope.Reason, `phase "again"`) {
-		t.Fatalf("park envelope = %+v, want the skipped call named", envelope)
-	}
+	requireParkCause(t, h.phaseAttempt(t, "root", "again", 1),
+		"requested checkpoint", `phase "again"`)
 	// The boundary consumed the request: the row no longer claims a pending stop.
 	if h.softStopArmedOnRow(t, "root") {
 		t.Fatal("the fired boundary left the request armed; resume would re-park forever")
@@ -195,10 +192,8 @@ func TestSoftStopOnTheRootStopsADescendantsBoundary(t *testing.T) {
 	if h.softStopArmedOnRow(t, "root") {
 		t.Fatal("a descendant's boundary must consume the root's request")
 	}
-	envelope := decodeEnvelope(t, h.phaseAttempt(t, wave2.ID, "again", 1).OutputEnvelope)
-	if !strings.Contains(envelope.Reason, "root") {
-		t.Fatalf("a descendant's park must name the root that asked: %+v", envelope)
-	}
+	// A descendant's park must name the root that asked.
+	requireParkCause(t, h.phaseAttempt(t, wave2.ID, "again", 1), "root")
 }
 
 // A soft stop is a tree-level request, so it is set on the tree's root. A child

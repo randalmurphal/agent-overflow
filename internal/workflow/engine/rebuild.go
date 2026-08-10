@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
 
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/workflow/def"
@@ -52,8 +51,11 @@ func (e *Engine) rebuild() error {
 			e.items[storedItem.ID] = item
 			snapshot, err := decodeSnapshot(storedItem.Snapshot)
 			if err != nil {
-				parkErr := e.teardown(item, teardownRequest{phaseStatus: "parked", nextState: StateNeedsHuman, reason: ReasonWiringError})
 				rebuildErr := fmt.Errorf("rebuild item %q snapshot: %w", storedItem.ID, err)
+				parkErr := e.teardown(item, teardownRequest{
+					cause: rebuildErr, phaseStatus: "parked",
+					nextState: StateNeedsHuman, reason: ReasonWiringError,
+				})
 				e.emitError(storedItem.ID, errors.Join(rebuildErr, parkErr))
 				continue
 			}
@@ -79,7 +81,8 @@ func (e *Engine) rebuild() error {
 					recoverErr := fmt.Errorf("recover call phase for item %q: %w", storedItem.ID, err)
 					if State(item.item.State) == StateRunning {
 						recoverErr = errors.Join(recoverErr, e.teardown(item, teardownRequest{
-							phaseStatus: "parked", nextState: StateNeedsHuman, reason: ReasonWiringError,
+							cause: recoverErr, phaseStatus: "parked",
+							nextState: StateNeedsHuman, reason: ReasonWiringError,
 						}))
 					}
 					e.emitError(storedItem.ID, recoverErr)
@@ -97,7 +100,8 @@ func (e *Engine) rebuild() error {
 					recoverErr := fmt.Errorf("recover fan-out call units for item %q: %w", storedItem.ID, err)
 					if State(item.item.State) == StateRunning {
 						recoverErr = errors.Join(recoverErr, e.teardown(item, teardownRequest{
-							phaseStatus: "parked", nextState: StateNeedsHuman, reason: ReasonWiringError,
+							cause: recoverErr, phaseStatus: "parked",
+							nextState: StateNeedsHuman, reason: ReasonWiringError,
 						}))
 					}
 					e.emitError(storedItem.ID, recoverErr)
@@ -121,7 +125,7 @@ func (e *Engine) rebuild() error {
 				recoverErr := fmt.Errorf("recover terminal phase for item %q: %w", storedItem.ID, err)
 				if State(item.item.State) == StateRunning {
 					recoverErr = errors.Join(recoverErr, e.teardown(item, teardownRequest{
-						output: current.OutputEnvelope, phaseStatus: "parked",
+						output: current.OutputEnvelope, cause: recoverErr, phaseStatus: "parked",
 						nextState: StateNeedsHuman, reason: ReasonWiringError,
 					}))
 				}
@@ -136,7 +140,11 @@ func (e *Engine) rebuild() error {
 			return fmt.Errorf("rebuild workflow engine: cancel orphan item %q: %w", item.ID, err)
 		}
 		e.emitItemState(item.ID, item.ProjectID, State(item.State), StateCancelled, ReasonInterrupted)
-		log.Printf("workflow rebuild: cancelled orphan item %s for missing project %s", item.ID, item.ProjectID)
+		e.logEvent(LogEvent{
+			Event: LogEventRebuild, ItemID: item.ID, ProjectID: item.ProjectID,
+			State: StateCancelled, Reason: ReasonInterrupted,
+			Message: "cancelled: its project no longer exists",
+		})
 	}
 	e.recoverPendingHumanDecisions(pendingHuman)
 	e.emitEngineState()
@@ -253,7 +261,7 @@ func (e *Engine) recoverTerminal(item *runtimeItem, phase store.WorkItemPhase) e
 		return err
 	}
 	if trace.Decision.Kind == def.DecisionAdvance || trace.Decision.Kind == def.DecisionLoop {
-		vars, _, err := e.variableContext(item, phase.OutputEnvelope)
+		vars, _, err := e.variableContext(item, attemptRef{phaseID: phase.PhaseID, attempt: phase.Attempt, envelope: phase.OutputEnvelope})
 		if err != nil {
 			return err
 		}
@@ -273,10 +281,16 @@ func (e *Engine) recoverTerminal(item *runtimeItem, phase store.WorkItemPhase) e
 func (e *Engine) recoverDecision(item *runtimeItem, decision def.RouteDecision) error {
 	switch decision.Kind {
 	case def.DecisionAdvance, def.DecisionLoop:
+		// The gate's own phase, captured before the item moves on: a recovered
+		// decision re-enters the target with the same per-round knobs the live
+		// traversal would have applied, so a crash between a gate and its next
+		// attempt does not silently turn a warm, narrowed round into a cold one.
+		sourcePhaseID := item.phaseID
 		item.phaseID = decision.Target
 		item.attempt = 0
+		e.applyLoopRoute(item, decision, sourcePhaseID)
 		waitingErr := e.startWaiting()
-		return errors.Join(waitingErr, e.enterPhase(item))
+		return errors.Join(waitingErr, e.enterPhase(item, entryFresh))
 	case def.DecisionDone:
 		return e.transition(item, StateDone, "")
 	case def.DecisionFailed:

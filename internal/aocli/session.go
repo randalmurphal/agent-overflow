@@ -133,6 +133,21 @@ func (e *rpcError) Error() string {
 	return e.Message
 }
 
+// transportError is a failure to REACH the app: the request produced no
+// response at all. It is a type rather than a message because one command has
+// to act on the distinction — `run watch` blocks on the app for hours, and "the
+// backend is gone" and "the backend refused me" are different verdicts for
+// whoever is reading the watch. Everything else treats it as any other error,
+// and its text is unchanged from an untyped one.
+type transportError struct {
+	Method string
+	Err    error
+}
+
+func (e *transportError) Error() string { return fmt.Sprintf("call %s: %v", e.Method, e.Err) }
+
+func (e *transportError) Unwrap() error { return e.Err }
+
 // call invokes one method by name and returns its raw JSON result. Raw, because
 // `--json` prints the app's own result shape verbatim: the CLI must not become a
 // second definition of what a run status looks like. Human rendering decodes
@@ -160,7 +175,7 @@ func (c *client) call(method string, params ...any) (json.RawMessage, error) {
 
 	response, err := c.http.Do(request)
 	if err != nil {
-		return nil, fmt.Errorf("call %s: %w", method, err)
+		return nil, &transportError{Method: method, Err: err}
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {

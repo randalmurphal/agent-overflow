@@ -51,13 +51,20 @@ func validateWorkflow(resolved ResolvedWorkflow, bindings Bindings, calls CallRe
 	if workflow.Cleanup != "" && workflow.Cleanup != CleanupManual && workflow.Cleanup != CleanupAuto {
 		add(finding("workflow.cleanup", element, fmt.Sprintf("cleanup must be %q or %q", CleanupManual, CleanupAuto)))
 	}
+	add(validateNonGoals(workflow, element)...)
 	phaseIndex := make(map[string]int, len(workflow.Phases))
 	for name, input := range workflow.Inputs {
 		inputElement := fmt.Sprintf("%s input %q", element, name)
 		if !idPattern.MatchString(name) {
 			add(finding("input.name", inputElement, "name must match [a-z0-9-]+"))
 		}
-		add(validateSchemaDefinition(input.Schema, inputElement)...)
+		if name == HistoryReservedName {
+			add(finding("input.name", inputElement, fmt.Sprintf("%q is reserved for the %s<phase> input binding", HistoryReservedName, HistoryPrefix)))
+		}
+		if reservedInputName(name) {
+			add(finding("input.reserved", inputElement, reservedInputMessage(name)))
+		}
+		add(validateVariableDeclaration(input, inputElement)...)
 	}
 	for i, phase := range workflow.Phases {
 		phaseElement := fmt.Sprintf("%s phase %q", element, phase.ID)
@@ -66,6 +73,15 @@ func validateWorkflow(resolved ResolvedWorkflow, bindings Bindings, calls CallRe
 		}
 		if phase.ID == "done" || phase.ID == "failed" {
 			add(finding("phase.id", phaseElement, "done and failed are reserved terminal names"))
+		}
+		if phase.ID == HistoryReservedName {
+			// A phase named `history` produces `history.<output>` references that
+			// the reserved binding namespace already claims, so one of the two
+			// would silently win at every lookup.
+			add(finding("phase.id", phaseElement, fmt.Sprintf("%q is reserved for the %s<phase> input binding", HistoryReservedName, HistoryPrefix)))
+		}
+		if reservedInputName(phase.ID) {
+			add(finding("phase.reserved", phaseElement, reservedPhaseIDMessage(phase.ID)))
 		}
 		if _, collision := workflow.Inputs[phase.ID]; collision {
 			add(finding("namespace.collision", phaseElement, fmt.Sprintf("phase id collides with workflow input %q", phase.ID)))
@@ -110,7 +126,7 @@ func validateWorkflow(resolved ResolvedWorkflow, bindings Bindings, calls CallRe
 			if PhaseProducesToolEnvelope(phase) && ReservedToolOutput(name) {
 				add(finding("output.reserved", outputElement, "the tool driver always supplies this output; remove the declaration"))
 			}
-			add(validateSchemaDefinition(output.Schema, outputElement)...)
+			add(validateVariableDeclaration(output, outputElement)...)
 		}
 	}
 	graph := buildGraph(workflow, phaseIndex, &result.Findings)
@@ -121,10 +137,10 @@ func validateWorkflow(resolved ResolvedWorkflow, bindings Bindings, calls CallRe
 	callFindings, effective := validateCallGraph(workflow, phaseIndex, graph, bindings, calls, state)
 	add(callFindings...)
 	add(validateVariables(effective, phaseIndex, graph)...)
-	add(validateWorkflowOutputs(effective, phaseIndex)...)
+	add(validateWorkflowOutputs(effective, phaseIndex, graph)...)
 	add(validatePrompts(resolved)...)
 	add(validateBindings(workflow, bindings)...)
-	result.Reports = fanOutWidthReports(workflow, bindings)
+	result.Reports = append(fanOutWidthReports(workflow, bindings), gateNotifyReports(workflow)...)
 	sort.SliceStable(result.Findings, func(i, j int) bool {
 		if result.Findings[i].Element == result.Findings[j].Element {
 			return result.Findings[i].Code < result.Findings[j].Code
@@ -192,55 +208,17 @@ func validatePhaseExecution(phase Phase, phaseElement string) []Finding {
 
 func quoted(value string) string { return fmt.Sprintf("%q", value) }
 
-func validateWorkflowOutputs(workflow Workflow, phaseIndex map[string]int) []Finding {
-	var findings []Finding
-	for name, output := range workflow.Outputs {
-		element := fmt.Sprintf("workflow %q output %q", workflow.ID, name)
-		if !idPattern.MatchString(name) {
-			findings = append(findings, finding("workflow-output.name", element, "name must match [a-z0-9-]+"))
-		}
-		parts := strings.Split(output.From, ".")
-		resolved, producer, ok := resolveReference(workflow, phaseIndex, output.From)
-		if !ok || producer < 0 || len(parts) < 2 {
-			findings = append(findings, finding("workflow-output.ref", element, fmt.Sprintf("source %q does not resolve", output.From)))
-		} else if output.Artifact {
-			if resolved.Schema.Type != "string" {
-				findings = append(findings, finding("workflow-output.artifact-type", element, "artifact source must resolve to a string path"))
-			}
-		}
-	}
-	return findings
-}
-
 func validatePrompts(resolved ResolvedWorkflow) []Finding {
 	var findings []Finding
 	base := filepath.Dir(resolved.Path)
+	phases := make(map[string]Phase, len(resolved.Workflow.Phases))
 	for _, phase := range resolved.Workflow.Phases {
-		if phase.Prompt != "" {
-			element := fmt.Sprintf("workflow %q phase %q prompt file %q", resolved.Workflow.ID, phase.ID, phase.Prompt)
-			clean := filepath.Clean(phase.Prompt)
-			if filepath.IsAbs(phase.Prompt) || strings.HasPrefix(clean, ".."+string(filepath.Separator)) || clean == ".." {
-				findings = append(findings, finding("prompt.path", element, "prompt must be a sibling-relative path inside the definition directory"))
-			} else {
-				path, err := confinedPath(base, phase.Prompt)
-				if err != nil {
-					code := "prompt.path"
-					if errors.Is(err, fs.ErrNotExist) {
-						code = "prompt.file"
-					}
-					findings = append(findings, finding(code, element, err.Error()))
-				} else {
-					data, readErr := readLimitedFile(path, "prompt", MaxPromptBytes)
-					if readErr != nil {
-						findings = append(findings, finding("prompt.file", element, fmt.Sprintf("cannot read: %v", readErr)))
-					} else {
-						for _, message := range ValidateTemplate(string(data), phase.Inputs) {
-							findings = append(findings, finding("prompt.template", element, message))
-						}
-					}
-				}
-			}
-		}
+		phases[phase.ID] = phase
+	}
+	for _, phase := range resolved.Workflow.Phases {
+		findings = append(findings, validatePromptFile(
+			fmt.Sprintf("workflow %q phase %q prompt file %q", resolved.Workflow.ID, phase.ID, phase.Prompt),
+			base, phase.Prompt, PhaseDeclarations(phase))...)
 		// A unit's prompt may read the phase's declared inputs and, in a dynamic
 		// fan-out, the element binding. Resolving the element schema is what lets
 		// `{{section.path}}` validate against the array's item schema instead of
@@ -258,36 +236,85 @@ func validatePrompts(resolved ResolvedWorkflow) []Finding {
 			// it reads their results under the reserved `units` name instead.
 			findings = append(findings, validateUnitPrompt(resolved.Workflow.ID, phase, *phase.Join, base, JoinDeclarations(phase), unitRoleJoin)...)
 		}
+		for routeIndex, route := range phase.Gate.Routes {
+			if route.Prompt == "" {
+				continue
+			}
+			// A route's override renders in the TARGET phase's context, because
+			// that is the attempt it replaces the body of. Validating its template
+			// against the source phase's inputs would accept references the round
+			// cannot resolve and reject the ones it can. A target that does not
+			// exist is `gate.target`'s finding; there is nothing to check against
+			// here, so the file is still checked and the template is not.
+			target, known := phases[route.Loop]
+			element := fmt.Sprintf("workflow %q phase %q route %d prompt file %q",
+				resolved.Workflow.ID, phase.ID, routeIndex, route.Prompt)
+			if !known {
+				// Checking the template against NO declarations is not "the template
+				// is not checked" — it reports every reference in the file as
+				// undeclared, one finding per token, burying the single real one
+				// (`gate.target`, naming the phase this route cannot reach) that the
+				// author has to fix first.
+				_, fileFindings, _ := readAuthoredPrompt(element, base, route.Prompt)
+				findings = append(findings, fileFindings...)
+				continue
+			}
+			findings = append(findings, validatePromptFile(element, base, route.Prompt, PhaseDeclarations(target))...)
+		}
 	}
 	return findings
 }
 
 func validateUnitPrompt(workflowID string, phase Phase, unit Unit, base string, declarations map[string]Variable, role string) []Finding {
-	if unit.Prompt == "" {
-		return nil
+	return validatePromptFile(
+		fmt.Sprintf("workflow %q phase %q %s %q prompt file %q", workflowID, phase.ID, role, unit.ID, unit.Prompt),
+		base, unit.Prompt, declarations)
+}
+
+// validatePromptFile is the one set of rules every authored prompt path is held
+// to — a phase's, a unit's, a join's, and a loop route's override — so a new
+// prompt site cannot arrive with its own idea of what "sibling-relative" means
+// or forget to template-check what it read. `declarations` is what the body may
+// reference, which is the one thing that differs per site.
+func validatePromptFile(element, base, relative string, declarations map[string]Variable) []Finding {
+	body, findings, ok := readAuthoredPrompt(element, base, relative)
+	if !ok {
+		return findings
 	}
-	element := fmt.Sprintf("workflow %q phase %q %s %q prompt file %q", workflowID, phase.ID, role, unit.ID, unit.Prompt)
-	clean := filepath.Clean(unit.Prompt)
-	if filepath.IsAbs(unit.Prompt) || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
-		return []Finding{finding("prompt.path", element, "prompt must be a sibling-relative path inside the definition directory")}
+	for _, message := range ValidateTemplate(body, declarations) {
+		findings = append(findings, finding("prompt.template", element, message))
 	}
-	path, err := confinedPath(base, unit.Prompt)
+	return findings
+}
+
+// readAuthoredPrompt is the PATH half of validatePromptFile on its own: the
+// sibling-relative rule, the confinement, and the bounded read, returning the
+// body so the caller can decide whether a template check applies.
+//
+// It is split out for the one site where it does not: a loop route whose target
+// phase does not resolve has no declaration set to check against, and checking
+// against an empty one is not the same as not checking.
+func readAuthoredPrompt(element, base, relative string) (string, []Finding, bool) {
+	if relative == "" {
+		return "", nil, false
+	}
+	clean := filepath.Clean(relative)
+	if filepath.IsAbs(relative) || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+		return "", []Finding{finding("prompt.path", element, "prompt must be a sibling-relative path inside the definition directory")}, false
+	}
+	path, err := confinedPath(base, relative)
 	if err != nil {
 		code := "prompt.path"
 		if errors.Is(err, fs.ErrNotExist) {
 			code = "prompt.file"
 		}
-		return []Finding{finding(code, element, err.Error())}
+		return "", []Finding{finding(code, element, err.Error())}, false
 	}
 	data, err := readLimitedFile(path, "prompt", MaxPromptBytes)
 	if err != nil {
-		return []Finding{finding("prompt.file", element, fmt.Sprintf("cannot read: %v", err))}
+		return "", []Finding{finding("prompt.file", element, fmt.Sprintf("cannot read: %v", err))}, false
 	}
-	var findings []Finding
-	for _, message := range ValidateTemplate(string(data), declarations) {
-		findings = append(findings, finding("prompt.template", element, message))
-	}
-	return findings
+	return string(data), nil, true
 }
 
 func validateBindings(workflow Workflow, bindings Bindings) []Finding {

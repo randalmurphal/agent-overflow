@@ -33,6 +33,13 @@ const resumeAction = "resume item"
 // finished units may each be an entire called run. Starting over is what
 // `Resume(itemID, phaseID)` is for, and naming the parked phase itself is how a
 // human asks for exactly that.
+//
+// So does a `retries-exhausted` park. Its turn did not stop short of a result —
+// it DIED, on a provider API failure the runner's transient layer retried until
+// it ran out — but the session it died in is alive, and continuing on it is the
+// same move the retry layer was making one backoff earlier. The one thing a
+// continuation cannot do is refill a loop bound, which is why every surface that
+// names this resume names `--phase <id>` beside it.
 
 // PauseItem parks a whole run tree `needs-human(paused)`. Members already
 // parked for another reason keep the reason they parked under — a pause never
@@ -50,10 +57,11 @@ func (e *Engine) PauseAllActive() error {
 
 // ResumeItem continues a parked run where it stopped instead of re-entering its
 // phase: a stopped attempt (`paused`, `interrupted`, `checkpoint`) resumes on
-// the provider sessions it parked on and carries its whole tree with it, and a
+// the provider sessions it parked on and carries its whole tree with it, a
 // `unit-failed` fan-out reopens what is blocking it while every finished unit
-// keeps its result. Descendants parked for any other reason stay parked and the
-// root returns to waiting on them.
+// keeps its result, and a `retries-exhausted` phase takes its next turn on the
+// session its last one died in. Descendants parked for any other reason stay
+// parked and the root returns to waiting on them.
 func (e *Engine) ResumeItem(itemID string) error {
 	return e.request(resumeItemCommand{itemID: itemID})
 }
@@ -148,8 +156,8 @@ func (e *Engine) resumeItem(itemID string) error {
 	}
 	if !ContinuableReason(Reason(item.item.Reason)) {
 		return fmt.Errorf(
-			"resume item %q: item is parked %q; continuing a parked run applies to %s, %s, %s, and %s",
-			itemID, item.item.Reason, ReasonPaused, ReasonInterrupted, ReasonCheckpoint, ReasonUnitFailed,
+			"resume item %q: item is parked %q; continuing a parked run applies to %s",
+			itemID, item.item.Reason, continuableReasonList(),
 		)
 	}
 	if _, tracked := e.items[itemID]; tracked {
@@ -182,24 +190,42 @@ func (e *Engine) resumeItem(itemID string) error {
 	if err != nil {
 		return err
 	}
-	feedback := &Feedback{Note: resumeNote(Reason(item.item.Reason), threadID == "" && current.ThreadID != "")}
+	sessionLost := threadID == "" && current.ThreadID != ""
+	feedback := &Feedback{Note: resumeNote(Reason(item.item.Reason), sessionLost)}
 	if phase.EffectiveShape() == def.ShapeFanOut {
+		e.noteResume(item, "continuing the parked attempt by repairing its fan-out")
 		return e.resumeFanOutAttempt(item, threadID, feedback)
 	}
 	if threadID == "" {
 		// No session to continue: a tool phase never had one, and an agent
 		// phase whose thread was deleted cannot have one. Re-enter the phase
 		// from its inputs with the loss recorded in the feedback the next
-		// attempt carries.
+		// attempt carries — and in the record, because this is a fresh attempt
+		// reached through the CONTINUATION path, which is precisely the case a
+		// note taken from the request would have described as a continuation.
+		e.noteResume(item, "fresh entry into the parked phase: "+missingSessionReason(sessionLost))
 		if err := e.transition(item, StateRunning, ""); err != nil {
 			return err
 		}
 		item.feedback = feedback
 		item.attempt = 0
 		e.items[itemID] = item
-		return errors.Join(e.startWaiting(), e.enterPhase(item))
+		return errors.Join(e.startWaiting(), e.enterPhase(item, entryFresh))
 	}
+	e.noteResume(item, "continuing the parked attempt on its own session")
 	return e.continueParkedAttempt(item, threadID, feedback, false, resumeAction)
+}
+
+// missingSessionReason names why there is no session to continue. The two cases
+// are not the same event: one is a phase that never had a session (every tool
+// phase, and an agent phase that parked before its runner reported), the other
+// is a session the app no longer has — which is a deletion a reader will want to
+// correlate with something.
+func missingSessionReason(sessionLost bool) string {
+	if sessionLost {
+		return "the attempt's provider session no longer exists"
+	}
+	return "the parked attempt held no provider session to continue"
 }
 
 // resumeFanOutAttempt repairs a fan-out attempt that stopped short of its
@@ -270,6 +296,11 @@ func (e *Engine) resumableThread(item *runtimeItem, threadID string) (string, er
 // which resumes through resumeCallPhase and never reaches here: a note that
 // said "after a pause" for a reason that is not one would be a small lie
 // waiting for the day a second boundary kind exists.
+//
+// `retries-exhausted` is worded for both causes it covers — a transient
+// provider failure the runner stopped retrying, and a loop bound the gate spent
+// — because the reason does not distinguish them and a note that named the
+// wrong one would tell the next turn something untrue about why it exists.
 func resumeNote(reason Reason, sessionLost bool) string {
 	note := "resumed after a pause"
 	switch reason {
@@ -279,6 +310,8 @@ func resumeNote(reason Reason, sessionLost bool) string {
 		note = "resumed after the run stopped at the requested checkpoint"
 	case ReasonUnitFailed:
 		note = "resumed after a unit of the fan-out failed"
+	case ReasonRetriesExhausted:
+		note = "resumed after the phase ran out of retries"
 	}
 	if sessionLost {
 		return note + "; the previous attempt's provider session no longer exists, so its context is gone — redo the phase from its inputs"
@@ -301,6 +334,7 @@ func (e *Engine) resumeCallPhase(item *runtimeItem) error {
 		// crash recovery does with the same gap.
 		return e.enterPhaseFresh(item, "", false)
 	}
+	e.noteResume(item, "continuing the parked attempt by re-linking the child run it was waiting on")
 	if err := e.store.ReopenWorkItemPhase(itemID, item.phaseID, item.attempt); err != nil {
 		return fmt.Errorf("resume item %q: reopen call attempt %s/%d: %w", itemID, item.phaseID, item.attempt, err)
 	}

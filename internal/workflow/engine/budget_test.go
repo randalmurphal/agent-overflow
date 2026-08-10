@@ -2,6 +2,7 @@ package engine
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -24,12 +25,24 @@ func TestBudgetExceededBeforePhaseAttemptStarts(t *testing.T) {
 	if len(h.runner.started()) != 0 {
 		t.Fatalf("runner starts = %d, want 0", len(h.runner.started()))
 	}
+	// The budget tripped before the phase could start, so nothing ran — but the
+	// park still rests on an attempt row, because a park with no row is a run
+	// that stopped with no record of why.
 	phases, err := h.store.ListWorkItemPhases(item.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(phases) != 0 {
-		t.Fatalf("phase rows = %+v, want none before budget trip", phases)
+	if len(phases) != 1 {
+		t.Fatalf("phase rows = %+v, want exactly the parked entry", phases)
+	}
+	if phases[0].PhaseID != "work" || phases[0].Attempt != 1 || phases[0].Status != "parked" {
+		t.Fatalf("parked row = %+v", phases[0])
+	}
+	if len(phases[0].ThreadID) != 0 || len(phases[0].InputEnvelope) != 0 || len(phases[0].OutputEnvelope) != 0 {
+		t.Fatalf("parked row carries turn state it never ran: %+v", phases[0])
+	}
+	if !strings.Contains(phases[0].ParkCause, "past its budget of 100") {
+		t.Fatalf("park cause = %q, want the breached budget", phases[0].ParkCause)
 	}
 
 	events := h.emitter.errorEvents(item.ID)

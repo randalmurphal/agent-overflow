@@ -224,6 +224,17 @@ func (a *App) DeleteProject(id string) (ProjectDeletionResult, error) {
 	// asked to forget. It is dropped here, with the project. `work_items` has no
 	// foreign key to `projects` to cascade through, and a row left behind would
 	// carry a project id that resolves to nothing.
+	// Campaign memory goes with the records for the same reason: a memory tree is
+	// keyed by its root run, so one whose root row is gone is unreachable by
+	// every read verb and every prompt injection — litter that nothing can ever
+	// name again. This is the ONLY flow that removes one. Discard leaves run
+	// records in place and so leaves the memory alone, exactly as it leaves the
+	// narratives and envelopes of the campaign it discarded.
+	for _, root := range footprint.roots {
+		if err := a.removeWorkflowMemoryTree(root.ID); err != nil {
+			return ProjectDeletionResult{}, fmt.Errorf("delete project %s: %w", id, err)
+		}
+	}
 	if err := a.store.DeleteProjectWorkflowRecords(id); err != nil {
 		return ProjectDeletionResult{}, err
 	}

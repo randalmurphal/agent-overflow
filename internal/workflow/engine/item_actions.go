@@ -125,7 +125,7 @@ func (e *Engine) rerunFailed(itemID, guidance string, refreshDefinition bool) er
 		return err
 	}
 	e.items[itemID] = runtime
-	return e.enterPhase(runtime)
+	return e.enterPhase(runtime, entryFresh)
 }
 
 func (e *Engine) resolveDisposition(itemID string) error {

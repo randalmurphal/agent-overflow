@@ -748,10 +748,17 @@ func (p *privilegedApp) WorkflowTakeOverUnit() string           { return "ok" }
 func (p *privilegedApp) WorkflowAgentStartRun() string          { return "ok" }
 func (p *privilegedApp) WorkflowAgentRunStatus() string         { return "ok" }
 func (p *privilegedApp) WorkflowAgentRunOutput() string         { return "ok" }
+func (p *privilegedApp) WorkflowAgentInspectRun() string        { return "ok" }
+func (p *privilegedApp) WorkflowAgentRunNarrative() string      { return "ok" }
 func (p *privilegedApp) WorkflowAgentListRuns() string          { return "ok" }
+func (p *privilegedApp) WorkflowAgentWatchRun() string          { return "ok" }
+func (p *privilegedApp) WorkflowAgentAmendSeeds() string        { return "ok" }
+func (p *privilegedApp) WorkflowAgentGuideRun() string          { return "ok" }
 func (p *privilegedApp) WorkflowAgentSchedule() string          { return "ok" }
 func (p *privilegedApp) WorkflowAgentGetNotes() string          { return "ok" }
 func (p *privilegedApp) WorkflowAgentSetNotes() string          { return "ok" }
+func (p *privilegedApp) WorkflowAgentAddMemory() string         { return "ok" }
+func (p *privilegedApp) WorkflowAgentListMemory() string        { return "ok" }
 func (p *privilegedApp) WorkflowPauseItem() string              { return "ok" }
 func (p *privilegedApp) WorkflowRequestSoftStop() string        { return "ok" }
 func (p *privilegedApp) WorkflowBindThread() string             { return "ok" }

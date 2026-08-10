@@ -58,6 +58,25 @@ type answerCommand struct {
 	answer string
 	reply  chan response
 }
+
+// amendSeedsCommand carries its answer out through a caller-owned pointer,
+// because the command channel reports only errors. The loop is the only writer
+// and the caller reads it after waiting on the reply, so the handoff is
+// ordered by the reply itself.
+type amendSeedsCommand struct {
+	itemID string
+	values map[string]any
+	result *SeedAmendment
+	reply  chan response
+}
+
+// guideCommand carries its answer out the same way amendSeedsCommand does.
+type guideCommand struct {
+	itemID string
+	draft  GuidanceDraft
+	result *GuidanceState
+	reply  chan response
+}
 type takeoverCommand struct {
 	itemID string
 	reply  chan response
@@ -170,6 +189,12 @@ func (e *Engine) request(command any) error {
 		command.reply = reply
 		e.commands <- command
 	case answerCommand:
+		command.reply = reply
+		e.commands <- command
+	case amendSeedsCommand:
+		command.reply = reply
+		e.commands <- command
+	case guideCommand:
 		command.reply = reply
 		e.commands <- command
 	case takeoverCommand:
@@ -325,6 +350,25 @@ func (e *Engine) loop() {
 		case answerCommand:
 			err = e.answer(command.itemID, command.answer)
 			command.reply <- e.itemCommandResponse(command.itemID, err)
+		case amendSeedsCommand:
+			// An amendment starts nothing: it writes a column a later phase entry
+			// reads, so there are no held starts to report and the reply is the
+			// plain error.
+			amendment, amendErr := e.amendSeeds(command.itemID, command.values)
+			if amendErr == nil {
+				*command.result = amendment
+			}
+			e.commandStarts = nil
+			command.reply <- response{err: amendErr}
+		case guideCommand:
+			// Guiding starts nothing either: it appends to a column the run's next
+			// fresh phase entry reads, and that entry is the run's own step.
+			state, guideErr := e.guide(command.itemID, command.draft)
+			if guideErr == nil {
+				*command.result = state
+			}
+			e.commandStarts = nil
+			command.reply <- response{err: guideErr}
 		case takeoverCommand:
 			err = errors.Join(e.takeOver(command.itemID), e.startWaiting())
 			e.commandStarts = nil

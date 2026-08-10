@@ -152,15 +152,17 @@ func (a *App) runRetentionSweep(now time.Time) {
 	threadDeleted, threadFailed := a.runRetentionThreadSweep(cutoffMs)
 
 	var (
-		peDeleted   int
+		logsDeleted int
 		bookDeleted int
 		sweepErrs   []error
 	)
 	if a.configDir != "" {
 		var err error
-		peDeleted, err = logging.PruneOlderThan(a.configDir, now, cutoff)
+		// One sweep over every daily log the logging package mints — the
+		// provider-event stream and the workflow engine stream alike.
+		logsDeleted, err = logging.PruneOlderThan(a.configDir, now, cutoff)
 		if err != nil {
-			sweepErrs = append(sweepErrs, fmt.Errorf("prune provider-events: %w", err))
+			sweepErrs = append(sweepErrs, fmt.Errorf("prune logs: %w", err))
 		}
 		bookDeleted, err = uitrace.PruneBookmarksOlderThan(a.configDir, cutoff)
 		if err != nil {
@@ -168,11 +170,11 @@ func (a *App) runRetentionSweep(now time.Time) {
 		}
 	}
 
-	if threadDeleted+threadFailed+peDeleted+bookDeleted > 0 || len(sweepErrs) > 0 {
+	if threadDeleted+threadFailed+logsDeleted+bookDeleted > 0 || len(sweepErrs) > 0 {
 		log.Printf(
-			"app: retention sweep: cutoff=%s threads_deleted=%d threads_failed=%d provider_events_deleted=%d bookmarks_deleted=%d",
+			"app: retention sweep: cutoff=%s threads_deleted=%d threads_failed=%d logs_deleted=%d bookmarks_deleted=%d",
 			cutoff.UTC().Format(time.RFC3339),
-			threadDeleted, threadFailed, peDeleted, bookDeleted,
+			threadDeleted, threadFailed, logsDeleted, bookDeleted,
 		)
 	}
 	for _, err := range sweepErrs {

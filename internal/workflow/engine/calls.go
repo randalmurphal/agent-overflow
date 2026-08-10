@@ -203,11 +203,14 @@ func callSourceRef(item *runtimeItem, edge callEdge) string {
 	return fmt.Sprintf("%s/%s/%d", item.item.ID, edge, item.attempt)
 }
 
+// parkCallSetup parks a call phase whose edge could not be made. The cause rides
+// the attempt's `park_cause` — the call chain of a depth refusal, the argument
+// that named no input of the child — because the phase ran no turn and there is
+// no envelope for it to be in.
 func (e *Engine) parkCallSetup(item *runtimeItem, reason Reason, cause error) error {
 	return errors.Join(
 		e.teardown(item, teardownRequest{
-			output:      parkCauseEnvelope(cause),
-			phaseStatus: "parked", nextState: StateNeedsHuman, reason: reason,
+			cause: cause, phaseStatus: "parked", nextState: StateNeedsHuman, reason: reason,
 		}),
 		cause,
 	)
@@ -356,10 +359,14 @@ func (e *Engine) settleCallChild(child store.WorkItem) error {
 	}
 	phase, ok := findPhase(parent.workflow, parent.phaseID)
 	if !ok || !phase.IsCall() {
+		cause := fmt.Errorf("call child %q settled onto phase %q of item %q, which is not a call phase",
+			child.ID, parent.phaseID, parent.item.ID)
 		return errors.Join(
-			e.teardown(parent, teardownRequest{phaseStatus: "parked", nextState: StateNeedsHuman, reason: ReasonWiringError}),
-			fmt.Errorf("call child %q settled onto phase %q of item %q, which is not a call phase",
-				child.ID, parent.phaseID, parent.item.ID),
+			e.teardown(parent, teardownRequest{
+				cause: cause, phaseStatus: "parked",
+				nextState: StateNeedsHuman, reason: ReasonWiringError,
+			}),
+			cause,
 		)
 	}
 	switch State(child.State) {
@@ -367,7 +374,10 @@ func (e *Engine) settleCallChild(child store.WorkItem) error {
 		envelope, err := e.childOutputEnvelope(child)
 		if err != nil {
 			return errors.Join(
-				e.teardown(parent, teardownRequest{phaseStatus: "parked", nextState: StateNeedsHuman, reason: ReasonWiringError}),
+				e.teardown(parent, teardownRequest{
+					cause: err, phaseStatus: "parked",
+					nextState: StateNeedsHuman, reason: ReasonWiringError,
+				}),
 				err,
 			)
 		}
@@ -381,7 +391,10 @@ func (e *Engine) settleCallChild(child store.WorkItem) error {
 		// Cancelling the parent too is the human's call, not the engine's: the
 		// child was stopped on purpose and the parent's own work is intact.
 		return e.teardown(parent, teardownRequest{
-			output:      childOutcomeEnvelope(child, "cancelled"),
+			output: childOutcomeEnvelope(child, "cancelled"),
+			cause: fmt.Errorf(
+				"called run %s (workflow %q) was cancelled, so this phase has no result to route on; cancelling this run too is a human's decision",
+				child.ID, child.WorkflowID),
 			phaseStatus: "parked", nextState: StateNeedsHuman, reason: ReasonAgentError,
 		})
 	default:
@@ -398,7 +411,7 @@ func (e *Engine) childOutputEnvelope(child store.WorkItem) (json.RawMessage, err
 	if err != nil {
 		return nil, fmt.Errorf("read child %q snapshot: %w", child.ID, err)
 	}
-	vars, _, err := e.variableContext(&runtimeItem{item: child}, nil)
+	vars, _, err := e.variableContext(&runtimeItem{item: child}, attemptRef{})
 	if err != nil {
 		return nil, fmt.Errorf("read child %q variables: %w", child.ID, err)
 	}
@@ -407,7 +420,14 @@ func (e *Engine) childOutputEnvelope(child store.WorkItem) (json.RawMessage, err
 	for name, declaration := range snapshot.Workflow.Outputs {
 		value, ok := def.LookupVariable(vars, declaration.From)
 		if !ok {
-			missing = append(missing, fmt.Sprintf("%s (%s)", name, declaration.From))
+			// An optional deliverable the completion path did not produce is
+			// OMITTED, not failed and not nulled — the same shape an absent
+			// optional call argument takes (D45), so the parent's optional input
+			// sees the "not supplied" a direct start would have produced. A
+			// required one still fails: the caller's gate routes on these names.
+			if !declaration.Optional {
+				missing = append(missing, fmt.Sprintf("%s (%s)", name, declaration.From))
+			}
 			continue
 		}
 		outputs[name] = value

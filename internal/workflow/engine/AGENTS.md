@@ -19,12 +19,19 @@ resource semaphores, and startup recovery.
   `Runner.Stop` for a unit key), an attempt's in-flight units come down before
   the phase releases anything of its own, and `sweepPersistedUnits` then fails
   any row still claiming `running` — the case where no in-memory state
-  survived to be torn down.
+  survived to be torn down. It is also where the ATTEMPT-scoped state dies: the
+  fan, the delivered guidance, and both loop-route knobs are cleared there, so a
+  per-round value cannot reach a round that did not earn it no matter which exit
+  path the attempt took.
 - There is no queued state. `StartItem` admits an item straight to `running`
   and enters its first phase; back-pressure is a *phase* waiting on resource
   capacity, never an item waiting in line. `waiting` is one FIFO list of held
   starts — phase attempts and fan-out units alike — so freed capacity goes to
-  the longest-waiting piece of work regardless of which kind it is.
+  the longest-waiting piece of work regardless of which kind it is. A held start
+  carries the variable context its attempt row was PERSISTED with and renders
+  exactly that on release: the wait is unbounded (an unpause an hour later, a
+  wide wave's capacity), and a context rebuilt at release handed the model a
+  `budget` block the attempt's own `input_envelope` contradicted.
 - Resource capacity comes from the live project profile at acquisition time
   (`liveProfile`, the one read both acquisition and fan-out expansion go
   through). Acquisitions are sorted and all-or-nothing; names never contend
@@ -112,16 +119,23 @@ resource semaphores, and startup recovery.
   reason.
 - **Resume continues and preserves; `--phase` starts over.** One rule across
   every surface. `ContinuableReason` is the whole of it: a bare `Resume`
-  (`targetPhase == ""`) on `paused`, `interrupted`, `checkpoint`, or
-  `unit-failed` routes into `resumeItem` and continues the parked attempt, and
-  every other park re-enters the phase with a fresh attempt. The dispatch lives
+  (`targetPhase == ""`) on `paused`, `interrupted`, `checkpoint`, `unit-failed`,
+  or `retries-exhausted` routes into `resumeItem` and continues the parked
+  attempt, and every other park re-enters the phase with a fresh attempt. The
+  membership is one list (`continuableReasons`, derived from `resumableReasons`)
+  that both predicates and the refusal naming them read, so a new member cannot
+  join the rule and miss the message. The dispatch lives
   in `resume` itself rather than in the app, so no entry point can reach the
   fresh path for a park whose finished units — whole called runs among them — it
   would silently redo; `enterPhaseFresh` is the other half, and `resumeItem`
   calls it directly for the two gaps where there is nothing to continue.
   Naming a phase is ALWAYS the fresh entry, including when it names the parked
-  phase itself: that is how a human deliberately asks for re-expansion, and it
-  is the one path that refills loop budgets (`freshLoopEntry`). The human-gate
+  phase itself: that is how a human deliberately asks for re-expansion. Whether
+  it also refills a loop budget is the target's position, not the verb: only
+  entering the loop's target from OUTSIDE the cycle refills (`freshLoopEntry`
+  answers false when the previous row's phase equals the phase being entered),
+  so `--phase <the parked phase>` re-expands without giving any bound back,
+  and naming an earlier phase is the refill. The human-gate
   guard is checked before the dispatch and is unaffected — a `gate` park is not
   continuable, so bare resume still reaches its refusal.
 - **A run runs the definition it froze, and a fresh entry may re-read it
@@ -151,6 +165,33 @@ resource semaphores, and startup recovery.
   refresh needs no column of its own: the re-frozen snapshot IS the durable
   evidence, with the engine log and the next attempt's feedback note
   (`definitionRefreshNote`) saying it happened.
+- **A resting run's SEEDS may be amended, and the amendment says when it is
+  read (`amend.go`).** Seeds are not part of the snapshot: `variableContext`
+  rebuilds them from the run ROW at every phase entry, so the column is live
+  data a run re-reads rather than a definition it froze — which is the whole
+  mechanism `AmendSeeds` rests on, and why its boundary rule reads differently
+  from `--refresh-def`'s. Every refusal is decided before the write, so a
+  rejected amendment leaves the record byte-identical: a `running` run is
+  refused (an attempt reads its seeds when it starts, and a write under one
+  would leave a single attempt rendering two sets of inputs), a terminal run is
+  refused (nothing is left to read them), a `disposition` park is refused to the
+  verbs that settle it, and a key the frozen workflow does not declare is
+  refused naming the ones it does. Values are validated by `def.ValidateInput`
+  — the per-key half of the validator a start seed passes through, applied per
+  NAME rather than over the whole object so an amendment is never refused
+  because of an unrelated pre-existing gap in a manually started run's seeds.
+  What an amendment can never do is reach work that already happened: a
+  completed phase keeps its outputs, a fan-out attempt keeps the variables its
+  units were expanded with (`restoreFanOut` reads them back from the persisted
+  input envelope), and a called run keeps the seeds its caller's arguments
+  evaluated to. `SeedEffect` states which of those the parked run is in —
+  `fresh-phase-entry` when a bare resume repairs the parked attempt IN PLACE (a
+  fan-out or a call phase), `next-attempt` otherwise — so the operator is told
+  when the value will be read instead of inferring it from the verb they resume
+  with. Like the refresh, it needs no column of its own: the seeds column IS
+  the durable evidence, with `LogEventSeedAmend` saying it happened. A CALLED
+  run is amendable for exactly the reason its seeds are its own row; naming the
+  caller is the app's to add, not this package's.
 - **`paused`, `interrupted`, and `checkpoint` resume identically.** All three
   stopped a run before the phase it was in produced a result, so `ResumeItem`
   continues on the session that parked rather than re-entering the phase: a
@@ -172,6 +213,37 @@ resource semaphores, and startup recovery.
   `resumeUnitCallChildren` stay on `ResumableReason`, because a child resting on
   a failed unit needs a human's judgment about that unit, not a silent retry
   ridden in on its parent's resume.
+- **`retries-exhausted` joins them, and it is the one member whose turn DIED.**
+  The three above stopped a run — a human's pause, a process death, a requested
+  checkpoint — and `unit-failed` rests on work that finished. This one rests on
+  an attempt the runner gave up on: a provider API failure that outlasted the
+  transient-retry layer's backoffs (`app_workflow_observe.go` →
+  `OutcomeTransientExhausted`). The provider tolerance that makes continuing
+  safe is already proven on both sides — the transient layer re-sends into that
+  SAME live session between backoffs (`app_workflow_reliability.go` `timerFired`
+  → `sendIfActive`), which is the live-session case, and a `paused` or
+  `interrupted` park continues a session whose process died, which is the
+  killed-process case. What a fresh entry bought was nothing: it discarded the
+  in-context state of a turn that may have run for many minutes. The same
+  `ThreadExists` fallback covers a session that is genuinely gone.
+  - **The reason is shared, and the continuation does not repair the other
+    half.** A spent loop or reject bound parks under it too
+    (`def.DecisionRetriesExhausted` → `finishDecision`), and no continuation
+    refills a bound. Neither did the fresh entry a bare resume used to take:
+    re-entering the phase that parked is not an entry from OUTSIDE its cycle, so
+    `freshLoopEntry` never refilled it either — both shapes re-park, and the
+    continuation is the cheaper of the two (a fan-out continues its join instead
+    of re-expanding the wave; a call phase re-links its child instead of
+    starting a second one). Only `--phase <id>` naming an EARLIER phase — the
+    loop's target, entered from outside the cycle — gives the bound back, which
+    is why every surface names it beside the continuation and why `resumeNote`
+    is worded for both causes rather than naming one.
+  - **A non-transient execution failure is NOT here.** It parks `agent-error`
+    (`phaseFailureReason`, `fsm.go`) — spec §12's "not on the allowlist parks
+    immediately" — and that reason is a shared bucket: envelope-validation
+    exhaustion, a turn that completed with an error, a cancelled call child, and
+    every runner start failure that matches no sentinel land in it. Continuing
+    it wholesale would continue four unrelated things, so it stays fresh.
 - **Cancel reaches a parked run, under any park reason.** The scheduler evicts
   an item the moment it leaves `running`, so `cancel` dispatches on residency:
   a live run goes through `teardown`, and a parked one through `cancelParked`
@@ -218,6 +290,83 @@ resource semaphores, and startup recovery.
   comparing the same numbers. `resolveHumanGate` resolves a `reject.max` the
   same way against the attempt's variables — a bound that will not resolve
   fails the human's action rather than reading as an exhausted budget.
+- **A phase's variable context is built FOR one attempt, and that attempt is
+  passed, never inferred.** `attemptRef` (`context.go`) is the current attempt
+  and its envelope. It cannot be read off the runtimeItem because the two
+  disagree exactly where it matters: at a fresh phase entry `item.attempt`
+  still holds the attempt the run is LEAVING, and the attempt being entered has
+  no row yet — so inferring it would exclude a real prior attempt of that phase
+  from its own history binding, which is the round a re-entered phase most
+  needs to see. The zero value means "no current attempt" and matches no row.
+- **The reserved reads are bound from the run ROW, after the seeds.**
+  `def.CallDepthVariable` carries `store.WorkItem.CallDepth` — 0 for a directly
+  started run, one more per call edge below it — so a recursive campaign renders
+  the wave ordinal the engine knows rather than one a model incremented through
+  its own `args:` and let drift. Fan-out units and the join inherit the
+  attempt's context, so a lane reads the same number its phase does. Binding
+  after the seeds is what makes the value unfalsifiable: `def` refuses the name
+  at every declaration site, but a seeds column can still carry it (a caller's
+  arguments are evaluated, not validated against this list), and the engine's
+  answer has to win.
+- **`history.<phase>` is composed here and bounded here** (`history.go`). Only
+  the phase being run has its declarations read: the binding costs one decode
+  per prior attempt, and materializing every phase's history on every gate
+  evaluation would be paid by the runs that reference none of it. It is bound
+  LAST, for the reason `units` is — a seed of the same name cannot replace the
+  history a phase declared. Fan-out units and the join inherit the attempt's
+  context, so a unit prompt reads the same binding its phase declared.
+  - An entry is `{attempt, status}` — the persisted row's status, from the
+    `work_item_phases` enum — plus, for a `completed` attempt, its envelope's
+    `outputs`. A non-completed one (parked, failed, cancelled, superseded)
+    carries `envelopeStatus`, `reason`, and `question` from the envelope it
+    rested with, and **never `outputs`**: nothing ratified any. Non-completed
+    attempts appearing at all is a deliberate carve-out from "only completed
+    attempts feed variables", scoped to this binding — a round that parked with
+    a question is part of why a loop is on its fourth lap, and a series that
+    skipped it would read as a shorter, cleaner history than the one that
+    happened. The ordinary `<phase>.<output>` reference is untouched.
+  - The window trims from the OLD end. `def.MaxHistoryBytes` then bounds the
+    whole series: entries are measured newest-first and, once the budget is
+    reached, every older one becomes a skeleton carrying an `elided` sentence
+    instead of its content — the attempt still appears, so a shortened window
+    can never be read as a phase that ran fewer times. The newest prior attempt
+    is always carried whole, because one envelope can fill the budget by itself
+    and eliding the round the next attempt is reacting to would be worse than
+    carrying no history at all.
+  - An envelope is decoded only where its content is carried, and one that will
+    not decode is then an ERROR (the run parks `wiring-error`) rather than a
+    dropped entry — the same rule `addOutputs` applies, and the column is
+    CHECK-constrained JSON this engine wrote.
+  - The series lands in the attempt's persisted `input_envelope` like every
+    other variable, so a phase's rows grow with its lap count. That is what the
+    byte budget bounds, and it is the right record: the input envelope is the
+    account of what the attempt actually ran with.
+- **`budget` is composed here too** (`bindBudget` / `renderBudgetBinding` in
+  `context.go`), from the same `ResolveBudget` the check enforces with, at
+  attempt start. An element can then say what it is nearly out of instead of
+  discovering the ceiling by being parked at it. The entry is
+  `{kind, ceiling, spent, remaining, estimated}` rendered in the ceiling's own
+  units — int64 tokens, float64 dollars, `time.Duration` strings for a wall
+  clock — because a model reasoning about "25" must not have to guess whether
+  that is dollars or tokens. `estimated` is the one caveat that changes what the
+  number means and is always false for the two exact kinds.
+  - **A run with no ceiling leaves the name UNBOUND**, which is why `def`
+    declares it `optional:` — `Interpolate` then renders `(not provided)` per
+    D44 rather than a fabricated zero ceiling that would read as "you have
+    nothing left". Most runs are that run.
+  - **A ledger that will not answer leaves it unbound too, and `bindBudget`
+    returns nothing.** The binding is one optional field of a variable context,
+    and that context is built at GATE EVALUATION as well as at phase entry —
+    where there is no attempt left to park. Failing it there marked a phase that
+    had already COMPLETED as parked, threw its gate advance away, and left no
+    verb that could repair the run. The read failure is stated through the
+    `LogSink` (`LogEventBudgetUnread`) instead. Enforcement is the loud half and
+    stays loud: `checkBudget` / `enforceBudget` still refuse to START a phase
+    under a ceiling whose spend cannot be read.
+  - It is prompt-surface only, exactly as `history.<phase>` is: `def` refuses it
+    in a gate predicate naming the alternative (have the phase decide and
+    declare that as an output), and it is not writable. Routing on spend is
+    arithmetic in a predicate, which the anti-change list refuses.
 - **An over-budget reject is refused, never converted.** A human gate declares
   two verbs; parking the run `retries-exhausted` because the reject route's
   bound is spent would silently take the approve away as well — a third outcome
@@ -233,6 +382,33 @@ resource semaphores, and startup recovery.
 - Per-item budgets are checked before every phase attempt. Item overrides win
   over live profile defaults; token/USD spend comes through `SpendSource`, and
   wall clock uses the engine clock against the persisted item start time.
+  `ResolveBudget` (`budget.go`) is the whole answer — which ceiling is in force,
+  the tree's spend against it, and whether it is crossed — and `checkBudget` is
+  it with only the last field read. Everything that DISPLAYS a budget (the run's
+  `budget=` line on `agent-overflow run status` / `run inspect`, the reserved
+  `budget` prompt binding) resolves through the same call, so the number an
+  operator reads and the number that parks the run cannot differ. A run under no
+  ceiling never reaches the ledger at all: `ResolveBudget` answers nil before
+  `SpendSource` is asked.
+- **`Spend` says how much of itself it is sure of.** `Estimated` marks a total
+  partly composed from the app's rate table because a provider reported tokens
+  and no cost (every Codex row), and `Unpriced` counts the rows even that could
+  not price. What the two MEAN is the ceiling's to decide, and the kinds decide
+  differently: a token ceiling ignores both — a token count is exact whatever
+  the rate table knows — while a USD ceiling the tree has NOT obviously crossed
+  cannot be judged at all, because the missing rows can only move the total
+  upward and a ceiling nobody can evaluate must not read as headroom. A breach
+  already proven by the priced lower bound needs no such caveat: the run parks
+  for its budget, which is the truthful reason. The refusal used to live in the
+  spend source and so failed a TOKEN budget too, parking runs `setup-failed` on
+  the first turn of a model the rate table had not learned.
+- **`BudgetView.Unjudged` is a field, not an error, and `checkBudget` is the one
+  place it becomes one.** Enforcement must refuse an unjudgeable ceiling; a READ
+  must still answer. Returning an error from `ResolveBudget` took `run status`
+  and the `{{budget}}` binding away from the operator over exactly the fact they
+  needed to see — and would have parked a phase entry (`bindBudget`) for a run
+  comfortably inside its ceiling. The read surfaces render the priced lower
+  bound, flag it, and name the unpriced count.
 - Worktree provisioning, setup hooks, artifact copying, and cleanup execution
   stay runner/app-owned. The engine only maps typed setup failures and parks
   step-mode automatic decisions without rewriting their persisted gate trace.
@@ -256,6 +432,167 @@ resource semaphores, and startup recovery.
   nothing pretends otherwise. An agent phase pinned to a provider that cannot
   apply a runtime mode (`provider.Capabilities.EnforcesRuntimeMode` false) is
   refused with `ErrWiringFailed` rather than started with an inert declaration.
+- **Every ENGINE-diagnosed park persists its cause.** `teardownRequest.cause`
+  is the error the engine parked on, and `teardown` writes it to the attempt's
+  `park_cause` column (`store`, v51) — bounded at `MaxParkCauseBytes` with the
+  truncation stated. It is deliberately NOT the `output_envelope`: the envelope
+  is the AGENT's artifact, and a phase that parked because a worktree would not
+  cut ran no turn, so engine prose written there is read as a model's terminal
+  outcome by the history binding, the crash rebuild, and the wake alike. The
+  cause is set at every site where a Go error is the reason — setup failures,
+  wiring errors, failed acquisitions, budget breaches, unknown outcomes,
+  unroutable gates, snapshot decode failures, refused calls and refused
+  expansions, the soft-stop boundary. It is deliberately absent where the
+  reason IS the account: an agent's own resting envelope (`question`, `stuck`,
+  `stalled`, an execution failure, a gate decision with its trace), and the
+  human-driven or self-describing parks (`taken-over`, `paused`,
+  `interrupted`, `cancelled`). `ReopenWorkItemPhase` clears it, so a repaired
+  attempt does not carry a park that is being undone.
+- **A park rests on an attempt row whenever a phase is known.** `teardown`
+  completes the current attempt when there is one; when there is not — every
+  pre-create failure in `enterPhase`, and the budget check that runs before
+  it — `parkOnNewAttempt` creates one carrying the cause. This is why
+  `beginRun` names `workflow.Phases[0].ID` BEFORE it freezes the snapshot: a
+  run that could not start its first phase parks on that phase rather than on
+  nothing. It costs one thing, stated where it happens: the loop-budget
+  derivation now sees a parked attempt where it previously saw the advance, so
+  a resume through it under-refills rather than refills — the direction that
+  derivation is already required to err in. The one remaining rowless park is
+  a run whose workflow never resolved at all: it has no phase to rest on, its
+  cause reaches the caller and the engine log, and zero attempt rows is then
+  the honest record of a run that never entered a phase.
+- **A `notify:` gate announces once, and the run has already moved on.**
+  `noteGateNotify` (`fsm.go`) emits `workflow:gate-notify` (`NotifyEvent`)
+  when a decision the run CONTINUES through carries `def.RouteDecision.Notify`
+  — advance and loop, the only kinds `decisionForRoute` sets it for. Three
+  things are deliberate. It runs AFTER the teardown that persisted the attempt
+  and its gate trace, so the app resolving the message reads a record that
+  already says what the gate decided, and a failed teardown announces nothing.
+  It carries the phase and attempt the gate CONSUMED, captured before
+  `finishDecision` reassigns them, because that is the attempt whose outputs
+  the message is about. And it is fire-and-forget across the ordinary `Emit`
+  seam with no result: a progress wake can never park, fail, or delay the run
+  it reports on. Step mode is the one runtime case where a decorated advance
+  announces nothing — the run parked at that gate instead of continuing, and
+  the park is its own surface.
+- **A loop route may make its re-entry warm, and it degrades rather than parks
+  (`loop_route.go`).** `session: continue` sets `item.priorThreadID` from the
+  NEWEST attempt of the loop TARGET that holds a thread which still exists — the
+  same field an `Answer`, a resume-in-place, and a takeover finalize set, so
+  there is one same-session mechanism and a warm loop round is the same thing to
+  the runner as every other continuation. It cannot fail: every reason a session
+  is unavailable (a deleted thread, a phase that never ran, a store read that
+  would not answer) runs the round COLD with the fact stated in the attempt's
+  feedback and in `LogEventLoopSession`, because `applyLoopRoute` runs after the
+  teardown that persisted the deciding attempt and has nowhere to put an error
+  but a park — which would turn an unavailable optimisation into an outage. A
+  target that starts no session of its own — a `shape: call` phase — is the same
+  degradation decided one step earlier: the arming is refused before the field is
+  set, because an id a call phase's entry cannot consume is an id the phase after
+  it would. `enterPhase` clears it there regardless, so the field cannot outlive
+  an entry that has no use for it however it came to be set. The
+  mode needs no column: the two attempt rows share a thread id, which is what
+  `agent-overflow run status` renders as `session=continued`.
+- **A loop route may also override the prompt of the round it creates.** What is
+  persisted is the route COORDINATE (`PhaseInput.PromptRoute`), never the body:
+  the snapshot already holds every route's inlined prompt, so storing the text
+  again would double a run's largest record. `promptBody` is the single point
+  where the substitution happens — on the `RunRequest.Phase` the runner is
+  handed — so no consumer can render a phase's body while an override was in
+  force. It belongs to exactly one entry — the entry into that route's own loop
+  TARGET — and `consumePromptRoute` is where that is decided: a fresh entry
+  consumes the arming only when the armed route loops to the phase being entered,
+  so a coordinate that outlived its entry is INERT rather than a narrower question
+  asked of a phase nobody asked it of. Checking the target rather than trusting
+  the field is what makes the override phase-scoped by construction, and it is
+  what a park landing between the deciding gate and the target's entry needs:
+  every recovery path re-arms from the persisted DECISION (`recoverDecision`,
+  `recoverPersistedHumanDecision`, step mode's resolve), so `loadParked` restores
+  only the route the parked ATTEMPT ran with (`item.promptRoute`, which a
+  continuation re-renders) and never the arming itself. A coordinate that
+  no longer resolves after a `--refresh-def` falls back to the phase's body
+  rather than failing the attempt.
+- **Both knobs are read off the DECISION, not off the route alone.**
+  `decisionForRoute` sets `Session` only for a loop, and `applyLoopRoute`
+  additionally refuses a route whose `Loop` is empty — which is what a human
+  gate's reject carries, since `resolveHumanGate` synthesizes a loop decision
+  whose index points at the `human:` route it came from. Neither knob is
+  authorable there, and reading one off that route would apply a declaration
+  validation refuses.
+- **A run may be steered without being parked, at a phase-entry boundary and
+  nowhere else (`guidance.go`).** `Guide` appends one entry to the run's
+  pending-guidance slot (`store` v53); the next FRESH phase entry of that run
+  delivers every pending entry into the attempt it creates — on
+  `RunRequest.Guidance`, in the persisted `PhaseInput`, and as one feedback note
+  saying where the block came from — and clears the slot once a provider session
+  that renders them has actually started. It is the thread→run
+  direction of `notify:`, and it exists because steering a free-running campaign
+  otherwise cost a pause, an edit, and a resume.
+  - **There is no mid-turn injection, by design.** Correcting a turn already in
+    flight is an explicitly deferred non-feature (root `AGENTS.md`), it maps to
+    no provider wire event on either CLI, and a prompt arriving halfway through
+    a turn would reach the model as a second instruction with no contract saying
+    which one wins. A run that is mid-phase keeps the guidance pending.
+  - **A continuation is not a boundary.** `phaseEntry` is a parameter rather
+    than something inferred, because nothing on the item distinguishes the two —
+    a warm loop round and an `Answer` continuation both carry a prior thread id.
+    An answered question, a takeover finalize, and a bare resume of a
+    continuable park all continue a round the operator was already steering, and
+    a block arriving mid-round would be a second instruction to a turn that has
+    already read the first.
+  - **A phase that renders no prompt is not a boundary either**
+    (`deliversGuidance`): a `driver: tool` phase, a `shape: call` phase, and a
+    fan-out whose every element is a command have no turn to read the block, so
+    clearing the slot there would be the silent loss the ordering rule exists to
+    prevent. The entries wait for a phase somebody can read them in.
+  - **The two writes are deliberately NOT atomic, and the order is the whole
+    contract.** The attempt row carrying the entries is persisted first, and the
+    slot is cleared not when that row lands but when a provider session that
+    RENDERS the block has started (`ackGuidance`, off the runner's own start
+    result). Everything between those two points is a window in which the entries
+    are still pending, so every way an attempt can end without a turn — a pause
+    taking its held start down, a failed acquisition parking it, a crash — is a
+    REDELIVERY rather than a loss. The reverse order, a single transaction, and a
+    clear at the row write all convert that window into a lost instruction: a row
+    would exist, the slot would be empty, and nothing would ever render what the
+    operator wrote. Between telling a run something twice and never telling it at
+    all, twice is the answer — the entry carries the time it was left, so a
+    second delivery reads as what it is.
+  - **The clear removes the delivered entries, never the column.** The slot is
+    live during that window: an operator who guided the run again inside it left
+    an entry no attempt has read, and emptying the column wholesale would drop
+    exactly the instruction this ordering exists to protect. Removal is by value
+    and therefore idempotent — a wave's second agent unit finds nothing left to
+    remove — and a failed clear leaves the entries pending (a redelivery, the safe
+    direction) with the fact emitted and logged rather than swallowed.
+  - **The author is engine-stamped and the slot is bounded.** `GuidanceDraft.By`
+    comes from the app's authenticated caller, never from the text, because "a
+    human said this" is the one claim in a quoted block worth forging. A
+    terminal run and a `disposition` park are refused (no phase entry is left),
+    a `running` run is the target the verb exists for, and an entry past
+    `MaxGuidanceEntries` is refused rather than rotating one out: a run that has
+    not reached a boundary cannot have read what is already waiting, so a ninth
+    entry would bury the eight it joins.
+- **Run-lifecycle logging goes through an injected sink, not `log.Printf`**
+  (`log.go`). `Config.Log` is a `LogSink` taking a typed `LogEvent` (park, cancel, resume,
+  definition-refresh, rebuild, capacity); the app wires it to the NDJSON
+  `engine-YYYY-MM-DD.ndjson` stream in `internal/logging`, and a nil sink falls
+  back to the standard logger so a bare engine still says what it did. The
+  engine does not import the app's logging package: the sink is the seam, and
+  `LogEvent` is what this package is willing to say about itself. The log is
+  the diagnostic trail AROUND the durable record, never a substitute for it —
+  anything a human must act on belongs on the run or the attempt. What it says
+  is what HAPPENED, not what was asked for: a resume is recorded by the BRANCH
+  that takes it (`noteResume`), never from the request. `ContinuableReason` only
+  routes a bare resume into the continuation path, and that path still re-enters
+  fresh wherever there is nothing to continue — a `driver: tool` phase that held
+  no session, a thread deleted under an agent phase, a call whose child was never
+  created, a run that froze no definition — so a note derived from the verb
+  called every one of those a continuation. Each branch emits exactly once and
+  before doing its work, which keeps "a resume that fails partway still says what
+  it was doing" true per branch; only a resume that fails while DECIDING logs
+  nothing, and it changed nothing either. `ResumeItem` and the cascades into
+  parked descendants record themselves the same way for free.
 
 ## Fan-out attempts
 
@@ -277,8 +614,8 @@ resource semaphores, and startup recovery.
   decoded and never re-validated, so a run predating the rule or a project that
   lowered its ceiling mid-flight reaches here with no dry-run finding behind
   it. A profile that cannot be read parks `setup-failed` rather than expanding
-  unbounded. `parkFanOutSetup` writes the cause into the attempt's envelope
-  (`parkCauseEnvelope`), since no unit ran to author one and the resolved width
+  unbounded. `parkFanOutSetup` writes the cause onto the attempt's
+  `park_cause`, since no unit ran to author an envelope and the resolved width
   is stated nowhere else. The same live-profile read also backs
   `noteFanOutCapacity`, which logs (never emits) when a wave is wider than the
   provider capacity its units will contend on — inside the ceiling but over
@@ -428,6 +765,18 @@ resource semaphores, and startup recovery.
   because cancelling the parent too is the human's call. A child that parks
   `needs-human` is not terminal — the parent keeps waiting, and the child's
   eventual completion resumes it.
+- **A declared output the completing child did not produce is judged by its own
+  declaration, not by the fact of its absence** (`childOutputEnvelope`). A
+  REQUIRED one still fails — the caller's gate routes on these names — but an
+  `optional:` one is OMITTED from the synthesized envelope rather than nulled or
+  fatal, which is the same shape an absent optional call argument takes (D45),
+  so the parent's optional input sees the "not supplied" a direct start would
+  have produced. Before it, a campaign whose planner could exit directly
+  declared a handoff sourced from a phase that route never entered, and the
+  whole tree parked `wiring-error` at the exact transition that meant it had
+  succeeded (incident D-C1). The dry-run now reports that shape statically too
+  (`workflow.output-unreachable`, `internal/workflow/def`); the runtime rule is
+  what covers a snapshot frozen before the finding existed.
 - Child→parent notification never runs inside the child's own transition. The
   terminal transition appends to the loop's `deferred` queue, which is drained
   after the current command settles, so the parent's phase completion is an
@@ -438,7 +787,7 @@ resource semaphores, and startup recovery.
   because children resolve live — an edit landing after the parent's dry-run can
   introduce a cycle validation never saw. Exceeding either parks the run that
   tried to recurse as `wiring-error`, carrying the rendered call chain in the
-  attempt's envelope.
+  attempt's `park_cause`.
 - Workspace flows down and is never provisioned by a child (§9): the child row
   is stamped with the caller's worktree/branch/base branch at creation, so a
   self-calling workflow iterates in one worktree. The workspace columns belong to
@@ -493,7 +842,7 @@ resource semaphores, and startup recovery.
 - **A call that cannot be made is not a unit failure.** Unresolvable args, a
   depth refusal, or a failed persist park the whole attempt under the
   phase-level reason a single-shape phase would take, with the cause written
-  into the attempt's envelope — nothing runnable was ever produced, so there is
+  onto the attempt's `park_cause` — nothing runnable was ever produced, so there is
   no unit outcome to record. The first two are decided by `planCall` before the
   unit row moves, which is what leaves that row `pending` rather than failed.
 - **Recovery keeps the children.** `recoverFanOutCalls` is the rebuild's
@@ -524,11 +873,13 @@ resource semaphores, and startup recovery.
   runner-owned; the engine only checks phase-boundary budgets and maps outcomes.
 - Persisting the pause flag and emitting it to the frontend is app wiring. The
   engine owns the live flag and the `workflow:engine-state` payload shape.
-- Waking a bound thread is app wiring too. The engine's contribution is the
-  `workflow:item-state` transition; `app_workflow_notifications.go` decides
-  from that one event who is told and how (a wake into the run's bound thread,
-  an OS notification when it needs a human, a descendant's park announced at
-  its root). Discard — worktree removal and branch deletion — is entirely
+- Waking a bound thread is app wiring too. The engine's contribution is two
+  events and nothing else: the `workflow:item-state` transition, and
+  `workflow:gate-notify` for a `notify:` route the run continued through.
+  `app_workflow_notifications.go` decides from those who is told and how (a
+  wake into the run's bound thread, an OS notification when it needs a human, a
+  descendant's park or progress announced at its root), and whether the message
+  is one the thread has already been told. Discard — worktree removal and branch deletion — is entirely
   app-side; the engine only cancels the tree members the app hands it, which
   since `cancelParked` means the parked ones too (`workflowDiscardStops`): a
   run left needing a human after its checkout was removed and its branch

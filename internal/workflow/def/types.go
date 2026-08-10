@@ -15,14 +15,22 @@ const (
 
 // Workflow is the complete portable workflow authoring format.
 type Workflow struct {
-	ID              string                    `yaml:"id" json:"id"`
-	Name            string                    `yaml:"name" json:"name"`
-	Description     string                    `yaml:"description,omitempty" json:"description,omitempty"`
-	Inputs          map[string]Variable       `yaml:"inputs,omitempty" json:"inputs,omitempty"`
-	Outputs         map[string]WorkflowOutput `yaml:"outputs,omitempty" json:"outputs,omitempty"`
-	Phases          []Phase                   `yaml:"phases" json:"phases"`
-	DefaultStepMode bool                      `yaml:"default_step_mode,omitempty" json:"defaultStepMode,omitempty"`
-	Cleanup         CleanupPolicy             `yaml:"cleanup,omitempty" json:"cleanup,omitempty"`
+	ID          string                    `yaml:"id" json:"id"`
+	Name        string                    `yaml:"name" json:"name"`
+	Description string                    `yaml:"description,omitempty" json:"description,omitempty"`
+	Inputs      map[string]Variable       `yaml:"inputs,omitempty" json:"inputs,omitempty"`
+	Outputs     map[string]WorkflowOutput `yaml:"outputs,omitempty" json:"outputs,omitempty"`
+	// NonGoals is the author's "do not drift here" list: work this definition
+	// deliberately does not do, stated so every element of every run it produces
+	// reads it alongside the goal the run was started with. It is DEF-owned
+	// where the goal is RUN-owned — a non-goal is a property of the workflow,
+	// not of one invocation of it — and it freezes with the snapshot like every
+	// other authored field. See `goals.go` for the bounds and `PromptContext`
+	// in `internal/workflow/runner` for how it reaches an element.
+	NonGoals        []string      `yaml:"non_goals,omitempty" json:"nonGoals,omitempty"`
+	Phases          []Phase       `yaml:"phases" json:"phases"`
+	DefaultStepMode bool          `yaml:"default_step_mode,omitempty" json:"defaultStepMode,omitempty"`
+	Cleanup         CleanupPolicy `yaml:"cleanup,omitempty" json:"cleanup,omitempty"`
 }
 
 // CleanupPolicy records the requested terminal-state worktree cleanup.
@@ -40,12 +48,33 @@ const (
 type Variable struct {
 	Schema   JSONSchema `yaml:"schema" json:"schema"`
 	Optional bool       `yaml:"optional,omitempty" json:"optional,omitempty"`
+	// Window bounds a reserved `history.<phase>` input binding to that many of
+	// the phase's most recent prior attempts (DefaultHistoryWindow when
+	// omitted, MaxHistoryWindow at the ceiling). It is legal on that binding
+	// alone: every other declaration names one value rather than a series, so a
+	// window there would configure nothing and is a validation finding.
+	Window int `yaml:"window,omitempty" json:"window,omitempty"`
 }
 
 // WorkflowOutput names a run deliverable sourced from a phase output.
 type WorkflowOutput struct {
-	From     string `yaml:"from" json:"from"`
-	Artifact bool   `yaml:"artifact,omitempty" json:"artifact,omitempty"`
+	From string `yaml:"from" json:"from"`
+	// Optional says this deliverable may be absent when the run completes.
+	// A required one that its completion path never produced fails the run AT
+	// the moment it finishes — the caller of a call edge synthesizes its
+	// envelope from these names, and a name with no value is an error there.
+	// That is correct for a deliverable a consumer routes on, and wrong for one
+	// a branch of the graph simply does not produce: a campaign whose planner
+	// reports `complete` on the exit path never runs the phase that sources its
+	// per-wave handoff, so declaring it killed the campaign at the exact moment
+	// it succeeded.
+	//
+	// Absence is spelled the way an absent optional call argument is (D45): the
+	// name is OMITTED from the synthesized envelope rather than answered null,
+	// so a child's optional output and a caller's optional input meet as the
+	// same "not supplied" a direct start would have produced.
+	Optional bool `yaml:"optional,omitempty" json:"optional,omitempty"`
+	Artifact bool `yaml:"artifact,omitempty" json:"artifact,omitempty"`
 }
 
 // Phase is one graph node and its ordered exit routes.
@@ -171,6 +200,13 @@ type Unit struct {
 	MaxDepth  int                 `yaml:"max_depth,omitempty" json:"maxDepth,omitempty"`
 	Access    Access              `yaml:"access,omitempty" json:"access,omitempty"`
 	Outputs   map[string]Variable `yaml:"outputs,omitempty" json:"outputs,omitempty"`
+	// AccountsForUnits opts a JOIN into the merge contract: its phase must
+	// declare `merged` and `blocked` outputs, and a `done` join envelope is
+	// post-validated against the exact set of units the join ran over, so a
+	// wave can never be reported complete with a lane silently missing from
+	// both lists. It is legal on a join alone — a work unit consolidates
+	// nothing. See `join_accounting.go`.
+	AccountsForUnits bool `yaml:"accounts_for_units,omitempty" json:"accountsForUnits,omitempty"`
 }
 
 // CallTarget is the workflow id a call unit invokes. Like a call phase's it is
@@ -225,6 +261,64 @@ type Route struct {
 	Feedback []string    `yaml:"feedback,omitempty" json:"feedback,omitempty"`
 	Park     string      `yaml:"park,omitempty" json:"park,omitempty"`
 	Human    *HumanRoute `yaml:"human,omitempty" json:"human,omitempty"`
+	// Notify asks for a progress wake when the gate takes this route: the run
+	// continues exactly as it would have, and the bound thread additionally
+	// hears that it passed here. It is a DECORATION rather than a route kind —
+	// a route still declares exactly one of to/loop/park/human — because
+	// "tell someone" is orthogonal to where the run goes.
+	//
+	// It is refused on a `human:` or `park:` route, which already wake the
+	// bound thread by parking, and it does nothing on a route to `done` or
+	// `failed`, where the run rests and its resting wake is the fuller message
+	// (a dry-run Report says so rather than leaving it silently inert).
+	Notify bool `yaml:"notify,omitempty" json:"notify,omitempty"`
+	// Session decides whether the attempt this loop creates runs on the target
+	// phase's OWN previous session or on a new one. It is legal on a `loop:`
+	// route alone: every other route kind enters a different phase, which has no
+	// session of its own to continue.
+	//
+	// `fresh` is the default and the behaviour every loop had before this field:
+	// cold re-entry, which is what a review phase wants — an adjudicator that
+	// remembers arguing for its last verdict is the anchoring the loop exists to
+	// break. `continue` is for the FIX edge, where the opposite is true: an
+	// implementer re-entered cold has lost what it just tried and re-derives it
+	// from the rejection note alone.
+	Session RouteSession `yaml:"session,omitempty" json:"session,omitempty"`
+	// Prompt overrides the authored prompt body of the phase this loop
+	// re-enters, for the one attempt this route creates. It is a
+	// sibling-relative file path authored exactly like a phase's `prompt:`, is
+	// inlined and frozen with the definition the same way, and is legal on a
+	// `loop:` route alone.
+	//
+	// It exists so "later rounds ask a narrower question" is authorable: a
+	// review loop's fix edge can carry a fix-focused prompt, and a convergence
+	// loop can carry "only blocking findings extend this loop" without the phase
+	// having to branch on its own lap count. It is ROUTE-scoped and never
+	// sticky: an attempt that loops again through a route with no `prompt:`
+	// renders the phase's own body.
+	Prompt string `yaml:"prompt,omitempty" json:"prompt,omitempty"`
+}
+
+// RouteSession is the closed vocabulary of a loop route's `session:`.
+type RouteSession string
+
+const (
+	// SessionFresh creates a new provider session for the re-entered attempt.
+	SessionFresh RouteSession = "fresh"
+	// SessionContinue runs the re-entered attempt as the next turn of the target
+	// phase's most recent session, carrying the loop feedback as its message.
+	SessionContinue RouteSession = "continue"
+)
+
+// EffectiveSession resolves a route's declared session mode, defaulting to
+// SessionFresh. Every consumer goes through it, so an unset field and an
+// explicit `fresh` can never be read differently — and a frozen snapshot that
+// predates the field resolves to the behaviour it actually ran under.
+func (r Route) EffectiveSession() RouteSession {
+	if r.Session == SessionContinue {
+		return SessionContinue
+	}
+	return SessionFresh
 }
 
 type HumanRoute struct {

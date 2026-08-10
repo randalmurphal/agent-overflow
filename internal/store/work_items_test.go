@@ -206,6 +206,43 @@ func TestUpdateWorkItemWorkspace(t *testing.T) {
 	}
 }
 
+func TestWorkItemWakeSignatureRoundTripsAndClears(t *testing.T) {
+	s := newTestStore(t)
+	item := testWorkItem("wake", "project-a", "needs-human", 1)
+	if err := s.CreateWorkItem(item); err != nil {
+		t.Fatal(err)
+	}
+	signature, err := s.WorkItemWakeSignature(item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if signature != "" {
+		t.Fatalf("a run with no delivery reported signature %q, want empty", signature)
+	}
+	const delivered = `kind=rest run="wake" state="needs-human" reason="gate" phase="review" attempt=3`
+	if err := s.UpdateWorkItemWakeSignature(item.ID, delivered); err != nil {
+		t.Fatal(err)
+	}
+	if signature, err = s.WorkItemWakeSignature(item.ID); err != nil || signature != delivered {
+		t.Fatalf("signature = %q (err %v), want %q", signature, err, delivered)
+	}
+	// Clearing is the "somebody acted on this run" half, and it is a plain
+	// assignment so it is idempotent.
+	if err := s.UpdateWorkItemWakeSignature(item.ID, ""); err != nil {
+		t.Fatal(err)
+	}
+	if signature, err = s.WorkItemWakeSignature(item.ID); err != nil || signature != "" {
+		t.Fatalf("cleared signature = %q (err %v)", signature, err)
+	}
+	// The column is wake bookkeeping and rides no listing projection.
+	if err := s.UpdateWorkItemWakeSignature("missing", delivered); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("missing-run signature write error = %v, want sql.ErrNoRows", err)
+	}
+	if _, err := s.WorkItemWakeSignature("missing"); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("missing-run signature read error = %v, want sql.ErrNoRows", err)
+	}
+}
+
 func TestWorkItemSummaryOmitsHeavyPayloads(t *testing.T) {
 	s := newTestStore(t)
 	first := testWorkItem("first", "project-a", "running", 1)

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"path/filepath"
 	"strings"
 	"time"
@@ -15,13 +16,48 @@ import (
 
 	"agent-overflow/internal/aocli"
 	gitops "agent-overflow/internal/git"
+	"agent-overflow/internal/logging"
 	"agent-overflow/internal/project"
 	"agent-overflow/internal/store"
-	"agent-overflow/internal/usagecost"
 	"agent-overflow/internal/workflow/def"
 	"agent-overflow/internal/workflow/engine"
 	"agent-overflow/internal/workflow/profile"
 )
+
+// newWorkflowEngineLog adapts the engine's run-lifecycle sink onto the NDJSON
+// engine log, answering a nil interface for a nil logger — a bare internal
+// test app that never ran initStores has none, and the engine's own fallback
+// to the standard logger is reachable only through a nil SINK. Wrapping a nil
+// logger in a non-nil interface would defeat that check, so the choice is made
+// once, here.
+func newWorkflowEngineLog(logger *logging.Logger) engine.LogSink {
+	if logger == nil {
+		return nil
+	}
+	return workflowEngineLog{logger: logger}
+}
+
+// workflowEngineLog returns nothing because it is called on the command loop
+// and a failed log write is not something the FSM can act on, so a write error
+// is surfaced here instead of being handed back into a transition.
+type workflowEngineLog struct {
+	logger *logging.Logger
+}
+
+func (l workflowEngineLog) LogEngineEvent(event engine.LogEvent) {
+	if err := l.logger.LogEngineEvent(logging.EngineEventEntry{
+		Event:     event.Event,
+		ItemID:    event.ItemID,
+		ProjectID: event.ProjectID,
+		PhaseID:   event.PhaseID,
+		Attempt:   event.Attempt,
+		State:     string(event.State),
+		Reason:    string(event.Reason),
+		Message:   event.Message,
+	}); err != nil {
+		log.Printf("workflow engine log: %v (dropped %s for item %s)", err, event.Event, event.ItemID)
+	}
+}
 
 type workflowEmitter struct {
 	app  *App
@@ -65,8 +101,15 @@ type workflowSpendSource struct{ store *store.Store }
 
 // TreeSpend prices one run tree: the root's own ledger rows plus every run it
 // called, transitively (§12 budgets are enforced against the root across the
-// tree). The pricing rules are the item-scoped ones — the aggregation is what
-// differs.
+// tree). Composition goes through the one ledger pricing rule
+// (app_usage_pricing.go), so the dollars a budget is enforced against are the
+// dollars every other surface reports for the same rows.
+//
+// A model with no rate is NOT an error here. Its tokens are exact and a token
+// ceiling is unaffected by it; only a dollar ceiling cannot be judged, and that
+// refusal belongs where the ceiling's kind is known (engine.ResolveBudget) —
+// failing here would park a token-budgeted run over a model nobody has priced
+// yet.
 func (s workflowSpendSource) TreeSpend(_ context.Context, rootItemID string) (engine.Spend, error) {
 	usage, err := s.store.QueryWorkItemTreeUsage(rootItemID)
 	if err != nil {
@@ -76,25 +119,16 @@ func (s workflowSpendSource) TreeSpend(_ context.Context, rootItemID string) (en
 	if err != nil {
 		return engine.Spend{}, err
 	}
-	cost := usage.CostUSD
-	for _, detail := range details {
-		switch detail.CostSource {
-		case "wire":
-			// QueryWorkItemUsage already includes the wire-reported sum.
-		case "none":
-			estimate, ok := usagecost.Price(
-				detail.Model, detail.InputTokens, detail.OutputTokens,
-				detail.CacheReadInputTokens, detail.CacheCreationInputTokens,
-			)
-			if !ok {
-				return engine.Spend{}, fmt.Errorf("workflow spend: model %q has no USD rate", detail.Model)
-			}
-			cost += estimate
-		default:
-			return engine.Spend{}, fmt.Errorf("workflow spend: unexpected cost_source %q for model %q", detail.CostSource, detail.Model)
-		}
+	spend, err := priceUsageGroups(details)
+	if err != nil {
+		return engine.Spend{}, fmt.Errorf("workflow spend for run %s: %w", rootItemID, err)
 	}
-	return engine.Spend{Tokens: usage.TotalTokens, USD: cost}, nil
+	return engine.Spend{
+		Tokens:    usage.TotalTokens,
+		USD:       spend.TotalUSD(),
+		Estimated: spend.Estimated(),
+		Unpriced:  spend.UnpricedRows,
+	}, nil
 }
 
 // Resolve freezes an item's workflow at run start, by the scope the item
@@ -171,7 +205,7 @@ func (a *App) initWorkflowEngine(dataRoot string) error {
 	workflowEngine, err := engine.New(
 		a.store, runner, workflowEmitter{app: a, emit: a.emitWithReplay()}, definitions, profiles,
 		workflowSpendSource{store: a.store},
-		engine.Config{Paused: settingsSnapshot.WorkflowPaused},
+		engine.Config{Paused: settingsSnapshot.WorkflowPaused, Log: newWorkflowEngineLog(a.engineLogger)},
 	)
 	if err != nil {
 		if a.triage != nil {
@@ -625,9 +659,14 @@ type WorkflowItemPhaseView struct {
 	Attempt        int             `json:"attempt"`
 	ThreadID       string          `json:"threadId,omitempty"`
 	OutputEnvelope json.RawMessage `json:"outputEnvelope,omitempty"`
-	Status         string          `json:"status"`
-	StartedAt      int64           `json:"startedAt"`
-	EndedAt        int64           `json:"endedAt,omitempty"`
+	// Cause is why the ENGINE parked this attempt, when it was the engine that
+	// diagnosed the park rather than the phase resting on its own envelope. It
+	// is the only account a park that ran no turn has, so the detail pane reads
+	// it where it would otherwise show a parked attempt and nothing else.
+	Cause     string `json:"cause,omitempty"`
+	Status    string `json:"status"`
+	StartedAt int64  `json:"startedAt"`
+	EndedAt   int64  `json:"endedAt,omitempty"`
 }
 
 // WorkflowItemUnitView is one fan-out unit (or join) of one phase attempt. A
@@ -669,7 +708,29 @@ type WorkflowItemDetailView struct {
 	Children     []WorkflowItemChildView `json:"children"`
 	Outputs      map[string]any          `json:"outputs"`
 	Artifacts    []WorkflowArtifact      `json:"artifacts"`
-	Usage        store.WorkItemUsage     `json:"usage"`
+	// Usage carries the run tree's TOKEN totals and the providers' own reported
+	// cost. Its CostUSD is the wire half alone — read Spend for what the run
+	// actually cost.
+	Usage store.WorkItemUsage `json:"usage"`
+	// Spend is the composed cost: what providers reported plus what the rate
+	// table priced their token-only rows at, through the one ledger pricing rule
+	// the workflow budget check also enforces with.
+	Spend WorkflowRunSpend `json:"spend"`
+}
+
+// WorkflowRunSpend is one run tree's dollars, with the halves kept apart so a
+// surface can say which part of the number is an estimate. A Codex phase
+// reports tokens and no cost at all, so a run's `usage.costUsd` alone reported
+// a codex-heavy campaign as nearly free.
+type WorkflowRunSpend struct {
+	// CostUSD is the composed total: WireCostUSD + EstimatedCostUSD.
+	CostUSD          float64 `json:"costUsd"`
+	WireCostUSD      float64 `json:"wireCostUsd"`
+	EstimatedCostUSD float64 `json:"estimatedCostUsd"`
+	// UnpricedRows counts ledger rows whose model has no rate. Their tokens are
+	// in Usage; their dollars are in nothing, so a total carrying them is a
+	// lower bound.
+	UnpricedRows int64 `json:"unpricedRows"`
 }
 
 func (a *App) WorkflowGetItem(itemID string) (WorkflowItemDetailView, error) {
@@ -695,6 +756,14 @@ func (a *App) WorkflowGetItem(itemID string) (WorkflowItemDetailView, error) {
 	if err != nil {
 		return WorkflowItemDetailView{}, err
 	}
+	treeDetail, err := a.store.QueryWorkItemTreeUsageDetail(itemID)
+	if err != nil {
+		return WorkflowItemDetailView{}, err
+	}
+	priced, err := priceUsageGroups(treeDetail)
+	if err != nil {
+		return WorkflowItemDetailView{}, fmt.Errorf("workflow item %s spend: %w", itemID, err)
+	}
 	checkPhaseIDs, callPhaseIDs, err := workflowSnapshotPhaseIDs(item.Snapshot)
 	if err != nil {
 		return WorkflowItemDetailView{}, fmt.Errorf("workflow item %s snapshot: %w", itemID, err)
@@ -708,6 +777,7 @@ func (a *App) WorkflowGetItem(itemID string) (WorkflowItemDetailView, error) {
 		phaseViews = append(phaseViews, WorkflowItemPhaseView{
 			ItemID: phase.ItemID, PhaseID: phase.PhaseID, Attempt: phase.Attempt,
 			ThreadID: phase.ThreadID, OutputEnvelope: phase.OutputEnvelope,
+			Cause:  phase.ParkCause,
 			Status: phase.Status, StartedAt: phase.StartedAt, EndedAt: phase.EndedAt,
 		})
 	}
@@ -758,6 +828,12 @@ func (a *App) WorkflowGetItem(itemID string) (WorkflowItemDetailView, error) {
 		CheckPhaseIDs: checkPhaseIDs, CallPhaseIDs: callPhaseIDs,
 		Phases: phaseViews, Units: unitViews,
 		Children: childViews, Outputs: outputs, Artifacts: artifacts, Usage: usage,
+		Spend: WorkflowRunSpend{
+			CostUSD:          priced.TotalUSD(),
+			WireCostUSD:      priced.WireUSD,
+			EstimatedCostUSD: priced.EstimatedUSD,
+			UnpricedRows:     priced.UnpricedRows,
+		},
 	}, nil
 }
 

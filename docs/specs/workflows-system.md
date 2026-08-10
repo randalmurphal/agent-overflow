@@ -131,6 +131,40 @@ deterministic command cannot make it valid.
 Phases and gates are intertwined: **a phase's output is what drives its gate**,
 and that output also becomes the variables the next phase consumes.
 
+**`history.<phase>` — the loop's memory (D51).** Ordinary references carry
+only a phase's *latest completed* envelope, which makes every loop round
+blind to the rounds before it — the live campaign's review↔fix loop
+oscillated for 14 rounds because each round was memoryless. A phase (or its
+units and join) may declare the reserved input `history.<phaseID>` (schema
+exactly `{type: array}`, optional `window: N` — default 10, hard cap 50) and
+receive that phase's prior attempts oldest-first, excluding the attempt now
+running: completed attempts as `{attempt, status, outputs}`, non-completed
+ones as honest stubs (`{attempt, status, envelopeStatus?, reason?,
+question?}` — the one place a non-completed attempt is visible to prompts;
+ordinary references keep their completed-only rule). The rendered series is
+byte-budgeted with explicit whole-entry elision, never silent truncation.
+It is a prompt surface only — gates and workflow outputs cannot reference
+it. `history` is reserved as a phase id and workflow-input name.
+
+**`call-depth` — the wave ordinal nobody computes (D65).** The reserved
+read-only binding `call-depth` is the current run's depth in the call tree
+(root = 0), bound by the engine from its own counter — the live campaign
+threaded a wave-number seed through self-call args and incremented it with
+model arithmetic, which desynced. Reserved at every declaration site
+(workflow input, phase input, fan-out `as:`, and phase **id** — a phase named
+`call-depth` would have its output object silently shadowed), and bound after
+seeds so a seed carrying the name cannot override the engine's answer. It is
+not the same fact as an authored wave number: a campaign restarted as a fresh
+root has depth 0 while its wave numbering continues — both exist on purpose.
+
+**Phase inputs inherit workflow input schemas (D68).** A phase (or unit,
+join, call-arg) input bound to a declared workflow input by its bare name,
+declaring no schema of its own, inherits the workflow input's schema whole at
+parse time — frozen with the snapshot like everything else. An explicit
+schema wins and is deliberately not compatibility-checked (narrowing is the
+point). ~40% of the live campaign's YAML was re-typed schemas; the only new
+refusal is none.
+
 **Phase shape.** A phase honors one I/O contract no matter how it runs:
 
 - **single** unit;
@@ -197,7 +231,18 @@ and that output also becomes the variables the next phase consumes.
     the preserved unit results — the wave's finished work, including entire
     called child runs, is never the price of a failed merge. Dropping a join
     stays refused: it is what consolidates the units, so its absence cannot
-    be accepted.
+    be accepted. A join may additionally declare **`accounts_for_units: true`
+    (D64)**: its outputs must then include `merged` (unit-id array) and
+    `blocked` (`{unit, reason}` array), and the engine refuses a `done`
+    envelope whose merged ∪ blocked is not EXACTLY the unit set — a missing
+    unit named, an unknown or duplicated one refused, a blank reason refused.
+    The refusal is ordinary envelope-validation feedback (a retry that names
+    the unaccounted units), never a park. This is the fix for the measured
+    incident where a hand-written merge script's stop-at-first-conflict
+    silently dropped an approved lane: the engine does not merge — the
+    author's script still decides policy — but no lane can vanish from the
+    accounting. The starter content carries a reference merge script that
+    skips-and-continues on conflict and emits the contract.
 - **call** — the phase invokes another workflow (§3a). Its result envelope is
   the child run's declared `outputs:`.
 
@@ -309,11 +354,62 @@ true of both edges, and where they differ is stated per point.
 
 **Workflow-level `outputs:` — the run's deliverables.** A workflow may declare
 named values and/or artifact files, sourced from phase outputs — distinct from
-the narrative (a process log). Artifact files are **copied into an app-managed
+the narrative (a process log). An output may be **`optional: true`** (D67):
+absent at completion, it is omitted from the result envelope exactly as an
+absent optional call arg crosses a call edge (D45), never a failure — the
+repair for the incident where a campaign died at the moment it completed,
+because a declared output's producer never runs on the completion path. A
+REQUIRED output whose producer is not on every path to `done` is a dry-run
+finding (`workflow.output-unreachable`, naming the output, the phase, and one
+witness path); a producer on every done path stays exactly as strict as
+before. Artifact files are **copied into an app-managed
 per-run artifact store at the producing phase's completion**, so deliverables
 survive worktree discard (§9). Run detail lists them (§10); agents fetch them
 through the §5 CLI; a bound origin thread receives them in the wake message
 (§5). A call phase's envelope carries the child's workflow outputs.
+
+**Campaign memory — the run tree shares one log (D57).** Every root run owns
+an app-managed memory directory (`<configDir>/workflow-memory/<root-run-id>/`,
+created lazily on first note) whose `notes.ndjson` is the append-only record
+of what the tree learned: environment quirks, porting patterns, failure
+modes, hand-offs to the next wave. A note is typed from a **closed kind set
+`pattern | warning | learning | handoff`** — a bad kind is refused exactly
+like a bad envelope status — with text and cited files bounded, and
+**provenance (run / phase / attempt / unit / wave) stamped by the system,
+structurally impossible to author**. Two write channels mirror the narrative
+precedent: a write-capable element (or a human, with `--run`) uses
+`agent-overflow memory add`; a read-only element — which cannot reach the CLI
+at all — puts entries in the envelope's optional **`memory` control field**,
+stripped at the same seam as `narrative` and written with system-stamped
+provenance, so no gate or persisted envelope ever sees it. Every element's
+prompt carries the memory **path** (readable in every access mode) and a
+**bounded digest**: handoffs first, then everything else, newest-first,
+grouped by kind, entries falling off whole under the budget, the header
+stating `N of M notes` and naming the full log. Promotion is automatic —
+recency and the budget are the curation; a **curator phase** that distills
+raw notes is starter content, never an engine feature. Memory outlives the
+run (a done campaign's memory is its record), survives discard, and is
+deleted with the project's workflow records. Reading another tree's memory
+is deliberately not a capability — a campaign's lessons are not project run
+state.
+
+**The goal chain — every element knows what it serves (D63).** A workflow may
+declare **`non_goals:`** (bounded list, frozen with the snapshot) — the
+author's "do not drift here" list, def-owned where goals are run-owned. Every
+agent element's prompt (units and the join included — the join decides what
+ships) opens with a bounded **goal-chain block**: the goals from the
+campaign's root down to this run, root first, middle elided past six links
+with the elision stating its size, consecutive identical goals collapsed to
+one link (a call copies the caller's goal verbatim, and forty waves of one
+sentence is noise, not context) — followed by this run's workflow's
+non-goals, and the root workflow's when they differ. Every value is
+untrusted-quoted and labelled as recorded data, not instruction. A bare run
+with no goal and no ancestry gets no block: zero noise for the simple case.
+The acceptance-criteria ledger is deliberately CONTENT, not engine: criteria
+seed the root as a typed array input, each wave's plan emits a `coverage`
+output (`{id, state: uncovered|covered|satisfied|regressed, evidence,
+lane}`) forwarded through the self-call args exactly like the wave number —
+dry-run-checkable today, demonstrated in the campaign starter.
 
 **Typed, validatable variables.** Variables are typed as **JSON Schema
 fragments** (string/number/boolean/enum/array/object — no custom type system);
@@ -418,6 +514,46 @@ attempt runs the target without the parked phase's outputs. If the final stop
 of a route list should be decidable — "a person confirms, or sends it back" —
 author it as a `human:` route, not a `park:`.
 
+**`notify:` is the wake without the park (D54).** Any route that leaves the
+run running — forward, loop-back — may carry `notify: true`: the gate routes
+exactly as it would have, and the run's bound thread additionally receives a
+**progress wake** (run, phase, route taken, bounded outputs digest). It is
+the authorable form of "tell me at wave boundaries, don't stop" — a campaign
+gate reads `blocking → human:`, everything else `→ next, notify: true`, and
+the supervisor hears every wave without any run ever parking for it. On a
+`human:` or `park:` route it is a static finding (the park already wakes; a
+decoration there promises a second wake for one event); on a terminal route
+it is a non-blocking report and fires nothing (the resting wake already goes
+out). The gate trace records that it fired; delivery is best-effort and can
+never park, fail, or delay the run. Called runs' notifies compose as the
+**root's** progress wake naming the descendant; an unbound root has no
+progress surface and the decoration is inert.
+
+**A loop route owns its round's temperature and its question (D60/D61).** Two
+knobs, legal on `loop:` routes only (and only where the target runs one
+session of its own — refused statically against tool, call, and fan-out
+targets):
+
+- **`session: continue | fresh`** — `fresh` (the default, unchanged) re-enters
+  cold; `continue` runs the new attempt as the next turn **on the target
+  phase's most recent provider thread**, feedback as the message — the same
+  mechanics as answering a question, not a second mechanism. Anti-anchoring
+  stays the default on purpose: review edges re-enter cold, and starters set
+  `continue` on the fix edge, where losing "what I just tried" is the
+  measured ping-pong cost. If the prior thread is gone (crash, deletion),
+  the round runs cold with a recorded note — a degraded continuation is
+  never a park. Which mode actually ran is visible in provenance: two
+  attempts sharing a thread id *is* the record, rendered as
+  `session=continued` on `run status`.
+- **`prompt: <file.md>`** — the re-entered attempt renders this file instead
+  of the phase's own prompt. "Later rounds ask a narrower question" becomes
+  authorable: a convergence loop's round-3+ edge carries a "only blocking or
+  material findings extend this loop" prompt. Resolved, template-checked
+  against the target's inputs, and frozen with the snapshot exactly like
+  phase prompts; route-scoped, never sticky — a later loop without `prompt:`
+  gets the phase's own prompt back. System suffixes (envelope contract,
+  memory digest) still apply; the override replaces the authored body only.
+
 **A spent reject budget refuses the reject; it never converts the park.** A
 `human:` route's reject loop carries a bound like any loop; once it is spent
 the gate still declares an approve, so a further reject is **refused** with
@@ -482,10 +618,29 @@ CLI rides the provider's normal bash-approval UX with the user's full
 authority.
 
 **The CLI surface** (workflow-facing): `agent-overflow workflow validate | list | schema |
-new` (authoring) · `run | status | result | list-runs` (execution) · `pause |
-resume | cancel | rerun | retry-unit | retry-failed-units | soft-stop` (control). `run`
+new` (authoring) · `run | status | inspect | narrative | result | list-runs |
+watch` (execution — `watch` blocks SERVER-side and prints each transition as
+it happens, `--tree` widening to called runs; it exists because the
+alternative was 712 hand-rolled polls and one monitor that died silently, so
+its exit codes distinguish "the run rested" from "my timeout expired" from "I
+was cut off", D58) · `pause |
+resume | cancel | rerun | retry-unit | retry-failed-units | soft-stop |
+amend | guide` (control — `amend --seed k=v` is `--refresh-def`'s counterpart
+for inputs, D59: durable on a resting run, validated per key by the intake
+validator, its output stating when the run reads the change; `guide` is §7's
+pending-guidance slot, D62) ·
+`memory add | list` (the campaign memory log, §3/D57 — writing memory is part
+of doing the work, so a phase's scoped token admits it without a declared
+grant; authority is row-level, its own tree only). `run`
 starts a run
-immediately and returns the run id; it does not block.
+immediately and returns the run id; it does not block. **The read surface is a
+CLI obligation (D52):** everything an operator needs to decide a park —
+worktree and branch, seeds, children, per-attempt provenance and envelope
+output digests (`run inspect`, with `--phase` drill-down), the engine's park
+cause (D53, bounded on attempt lines, whole under `--phase`), and the
+narrative prose (`run narrative`) — is one verb away, because the live
+campaign's supervisor otherwise answered those questions with raw SQL against
+the app's own database and hand-built file paths.
 
 **Thread binding and wake — one mechanism, three entry points.** Every root
 run records an optional **bound thread**:
@@ -520,6 +675,32 @@ run records an optional **bound thread**:
 
 If a bound thread has been deleted, the run falls back to the unbound surface
 — a wake is never silently lost.
+
+**A wake says something new or it does not go out (D55).** Wakes are
+deduplicated by **content signature** — run, resting state, typed reason,
+phase and attempt, question text, engine cause, and the same again for a
+parked descendant — never by a time window. A wake matching the last one
+delivered, with nothing having happened on the run since, is suppressed with
+a durable log line; any field differing delivers. The signature of the last
+delivered wake persists on the run row (v52) so a restart's crash-rebuild
+re-park does not re-send the message a supervisor already read, and it clears
+whenever any member of the run tree returns to `running` — which is what
+every resolve, answer, resume, retry, and rerun does, so acting on a run
+re-arms its wake. One delivery seam enforces this; no composer bypasses it.
+Progress wakes (D54) coalesce under the same rule by their own signature,
+which includes the attempt — a decorated loop-back reports every wave, not
+just the first. When in doubt (a signature read fails), the wake delivers:
+a duplicate is noise, a silent drop is an outage.
+
+**The wake body is sized to act on, not to drill into (D56).** Beyond the
+digest, references, and engine cause, a wake carries the run's worktree path
+and branch (a descendant's only when they differ from the root's), and a
+needs-human gate park carries the parked attempt's **outputs digest** —
+bounded by the same helper `run inspect` uses, never a second bounding — with
+the overflow line naming the exact `run inspect` drill-down command. The
+question bound is sized for real gate questions (2000 runes; 800 truncated
+live-campaign questions mid-sentence). The read verbs (D52) stay the
+drill-down; the wake stays compact.
 
 Grantable first-party capabilities (phase-side):
 
@@ -649,6 +830,21 @@ request is one piece of state — arming and withdrawing both go through one
 verb — and the boundary that fires consumes it, so the resume does not stop
 again.
 
+**Guidance steers without parking (D62).** `run guide <run-id> "<text>"`
+appends to a run's **pending-guidance slot** — the mirror of `notify:` (that
+is run→thread; this is thread→run). Entries wait for the run's next **fresh
+phase entry**, render there as a labelled, bounded, untrusted-quoted block,
+clear on delivery (the attempt row persists first, so a crash in the gap
+**redelivers rather than loses** — a lost instruction is the worse failure),
+and leave a feedback note on the attempt that ran with them. Delivery is
+only ever at that boundary: continuation resumes leave the slot pending
+(and say so — `guidance-pending=N` rides the run's status line), phases that
+render no prompt are skipped with entries retained, and **nothing is ever
+injected into an in-flight turn** — the mid-turn half of correction remains
+explicitly deferred. A called run may be guided directly (its row, its
+prompts — same ownership truth as `run amend`). Entries are system-stamped
+with author and time; a phase's guidance names the run that wrote it.
+
 **Sending a message takes over.** If the turn is **in-flight**, sending
 **interrupts it first** (forces it to yield); your messages then run as
 **free-form turns with no schema** — ordinary steering in that thread and
@@ -688,7 +884,12 @@ A phase parks at **needs-human** because of a **gate**, a **question**, being
 **envelope statuses** (§3) — the turn ends cleanly with that shape; nothing is
 suspended provider-side. It surfaces (overlay + notification, §10) with its
 **blocking reason**, a short **digest**, and the **diff / checks / cost /
-narrative** — never raw internals (below). If the run is thread-bound (§5),
+narrative** — never raw internals (below). A park the **engine** decided —
+a worktree that would not cut, a wiring error, a budget breach — additionally
+carries the engine's own diagnosis on the parked attempt row (D53): the wake
+renders it as one bounded line, run detail and `run status` / `run inspect`
+show it, and it is never written into the envelope, which stays the agent's
+artifact. If the run is thread-bound (§5),
 the wake message carries the same digest to the origin agent, which may
 resolve it through the CLI (answer, retry-unit, retry-failed-units, rerun) or
 escalate to you.
@@ -723,7 +924,7 @@ Resolve by:
 |---|---|
 | In-flight (running) | interrupt → yields → steer free-form → **Complete** (finalize turn re-adds schema) or discard + re-run |
 | Parked on a `question` envelope | answer runs the next turn, same session, same schema → envelope |
-| Parked `paused` / `interrupted` | resume runs the next turn, same session, continue message |
+| Parked `paused` / `interrupted` / `retries-exhausted` | resume runs the next turn, same session, continue message (D70) |
 
 **One contract, one schema.** Whether a phase finishes on its own, is
 completed via a finalize turn, or has its fields filled by hand, the result is
@@ -1165,6 +1366,15 @@ There is **one teardown path**, and everything that stops a phase runs it:
 > **stop the turn → release the phase's resource locks (§6) → write a partial
 > envelope → route to a terminal / needs-human state with a typed reason.**
 
+When the trigger is the **engine's own decision** (setup failure, wiring
+error, budget breach — not an agent outcome or a human verb), teardown also
+persists the engine's diagnosis as the attempt's **park cause** (D53): a
+separate column from the envelope, created together with the attempt row if
+the park fired before one existed, bounded, and surfaced through §7's wake
+and §5's read verbs. The same events land in the **engine log**
+(`logs/engine-YYYY-MM-DD.ndjson`, D53a) — always on, because a run parks
+once.
+
 Triggers that invoke it: **crash-restart**, **pause**, **cancel**, **watchdog
 trip**, **transient-retry exhaustion**, **budget exceeded**, **discard**.
 Specifying it *once* is the point — separate release paths would each risk
@@ -1229,10 +1439,22 @@ never leave a grandchild running or a sub-worktree stranded.
 - **Transient-execution retry.** A phase that **fails to produce an envelope**
   due to a **conservative allowlist** of transient errors (subprocess exit,
   known provider-overload responses, network errors) retries with **backoff,
-  cap ~3**, then parks `needs-human(retries-exhausted)`. Anything **not** on
-  the allowlist parks immediately — never retried. This is the no-feedback
+  cap ~3** — each retry re-sending into the SAME live session — then parks
+  `needs-human(retries-exhausted)`. Anything **not** on the allowlist parks
+  immediately (`agent-error`) — never retried. This is the no-feedback
   sibling of §4's feedback-carrying loop-back: a 529 carries no validation
   signal, it just waits and re-runs.
+  **The park is continuable (D70).** A bare `run resume` continues the parked
+  attempt on its own provider session with a continue message — the same
+  contract as `paused`/`interrupted`, because an API-error death is the same
+  shape: the turn stopped through no fault of the work with the session file
+  intact, and the transient layer was already continuing that session between
+  retries. A turn that ran for an hour before the provider fell over costs a
+  resume, not a re-run. The dead-session fallback (fresh attempt with a note)
+  and `--phase <id>` as the explicit start-over apply as for every continuable
+  reason; `--refresh-def` is refused on the bare resume there like any
+  continuable park, since the attempt being continued rendered the frozen
+  definition.
   **Distinct from this allowlist:** an envelope **absent or invalid after §3
   engine post-validation** gets **feedback-carrying retry turns** ("your
   envelope failed validation: <errors>") up to a **profile-set count (default
@@ -1250,6 +1472,25 @@ never leave a grandchild running or a sub-worktree stranded.
   and a solo dev pays per token. This is the *single* runaway ceiling; it
   subsumes a per-phase turn cap, so there is deliberately **not** a second
   per-phase knob.
+  **The spend is truthful across providers, and one number serves every
+  surface (D69).** Rows that report tokens but no dollars (every Codex turn)
+  are priced at read time through the app's one rate table, so a USD ceiling
+  is enforced against wire cost *plus* estimates rather than silently
+  ignoring ~70% of real spend; the spend says how much of itself is
+  estimated and how many rows even that could not price. A token ceiling
+  ignores both caveats — a token count is exact — while a USD ceiling the
+  tree has not provably crossed refuses to be judged on missing rows (they
+  can only move the total up, and an unevaluable ceiling must not read as
+  headroom); a breach already proven by the priced lower bound parks the
+  run for its budget, the truthful reason. Display and enforcement resolve
+  through the SAME call: `run status`/`run inspect` render
+  `budget=<spent>/<ceiling> (<n>%)` with the estimated flag and unpriced
+  count, the budget-exhausted wake carries the composed number, and the
+  reserved read-only **`budget` prompt binding** ({kind, ceiling, spent,
+  remaining, estimated} in the ceiling's own units, unbound when no ceiling
+  exists) lets an element say what it is nearly out of instead of
+  discovering the ceiling by being parked at it — prompt surface only,
+  refused in predicates, never writable.
 
 ### What this is NOT (kept out on purpose)
 

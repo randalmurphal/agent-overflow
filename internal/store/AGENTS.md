@@ -117,12 +117,12 @@ root `CLAUDE.md` principle 3.
   provider/model filters and day/week/month (timezone-shifted) or
   model/provider/thread/project grouping; `QueryUsageDetail` runs the
   same filters/bucketing but additionally splits by (model,
-  cost_source) — the granularity `GetUsageStats` (repo-root
-  `app_usage.go`) needs to price `cost_source='none'` rows per model at
-  query time from `internal/usagecost`. `cost_usd` in the table is
-  wire-reported only and this package never estimates it; `QueryUsage`
-  alone always reports `UnpricedRows=0` — that field is populated by
-  `GetUsageStats` after merging in the rate-table lookup, and now means
+  cost_source) — the granularity the app (repo-root
+  `app_usage_pricing.go`) needs to price `cost_source='none'` rows per
+  model at query time from `internal/usagecost`. `cost_usd` in the table
+  is wire-reported only and this package never estimates it; `QueryUsage`
+  alone always reports `UnpricedRows=0` — that field is populated by the
+  app after merging in the rate-table lookup, and now means
   "rows whose model the rate table doesn't recognize" rather than
   "rows with no wire cost." Migration v26 adds denormalized
   `work_item_id`; `QueryWorkItemUsage` supplies the raw token and
@@ -135,6 +135,13 @@ root `CLAUDE.md` principle 3.
   against. The recursion is anchored on the id, not on a `work_items` lookup, so
   an id whose run record is gone still prices its own rows rather than silently
   reporting zero.
+  `QueryWorkItemCosts` is the many-runs read behind the workflow overview, and
+  it returns `[]WorkItemCostGroup` — one row per (work_item_id, model,
+  cost_source) — rather than the summed `map[string]float64` it used to.
+  A pre-summed dollar figure could only ever be the WIRE half, which is $0 for
+  every Codex row ever written, so the overview read a Codex-heavy run as free.
+  The group shape is the same one every other pricing consumer takes, so the
+  app prices all of them through one fold.
 - `work_items.go` / `work_item_phases.go` / `work_item_units.go` /
   `work_item_effects.go` — bare workflow run-record CRUD (migration v26;
   units v35; call linkage v38). Project, thread, and item ids are
@@ -160,7 +167,14 @@ root `CLAUDE.md` principle 3.
   detail views, no gate trace or cumulative input), and `…PhaseProvenance` — the
   `ao run status` read, which LEFT JOINs `threads` for the provider/model/effort
   the attempt actually ran with and carries no envelope at all, because an
-  agent's context window pays for every byte it returns.
+  agent's context window pays for every byte it returns — but does carry
+  `park_cause` (v51), which is the whole reason an engine-side park is
+  diagnosable from `run status` instead of from the filesystem.
+  `UpdateWorkItemSeeds` is the one writer of `work_items.seeds` after creation,
+  and it exists for `agent-overflow run amend`: seeds are re-read from the row
+  at every phase entry, so changing the column IS the amendment. It writes the
+  whole object the engine composed rather than merging here — which keys change
+  is the engine's rule, and a second merge in SQL would be a second answer to it.
   `work_items.go` also owns the call linkage (v38): `ListWorkItemChildren` reads
   a run's callees, `ListWorkItemCallChildren` narrows that to the child one call
   *attempt* created, and `WorkItemListFilter.ParentItemID` is the same edge for
@@ -453,6 +467,78 @@ baseline:
 - `updateThreadSetSQL` deliberately omits the column, so the whole-row
   `UpdateThread` every workspace-switch path issues cannot clobber a live run's
   state. Pinned by `TestUpdateThreadPreservesWorktreeSetupState`.
+
+## Recent schema changes (v51) — why the engine parked an attempt
+
+- `work_item_phases.park_cause` (`TEXT NOT NULL DEFAULT ''`) is the ENGINE's
+  own diagnosis of a park: the worktree that would not cut, the phase missing
+  from the frozen snapshot, the resolved fan-out width the project forbids,
+  the budget that ran out. It is a separate column from `output_envelope`
+  because the envelope is the AGENT's artifact — a phase that parked before
+  any turn ran authored nothing, and engine prose written there is read as
+  something a model said by every consumer of an envelope (the history
+  binding's `envelopeStatus`, the crash rebuild's terminal check, the wake's
+  detail line). Free-form text, so no CHECK; the table is nobody's FK parent,
+  so a plain `ADD COLUMN` with no rebuild.
+- Empty means "no engine-diagnosed cause", which is the common case: the
+  attempt rested on its own envelope, or the reason already names its cause
+  (`interrupted`, `paused`, `taken-over`). `CompleteWorkItemPhase` takes it as
+  a parameter and writes it unconditionally, so a non-park completion clears
+  any earlier value rather than inheriting it, and `ReopenWorkItemPhase`
+  clears it too — a reopened attempt is being re-run, and a stale diagnosis on
+  a live attempt reads as a park that already happened again.
+- It rides `ListWorkItemPhases`, `…PhaseTimeline`, and `…PhaseProvenance`. The
+  provenance read is what `agent-overflow run status` renders as `cause=`, and
+  the timeline read is what the wake resolves its one bounded cause line from.
+
+## Recent schema changes (v53) — the pending-guidance slot
+
+- `work_items.pending_guidance` (`TEXT NOT NULL DEFAULT ''`) holds what
+  `agent-overflow run guide` left for a run and no phase entry has consumed yet:
+  a JSON array of `{text, at, by, byRun?}`, oldest first. It is live data a run
+  RE-READS rather than anything it froze — the same posture as `seeds` and the
+  opposite of `snapshot` — which is what lets an operator steer a run that is
+  already working.
+- The engine is the only writer, and the author stamp is its: `by` comes from
+  the authenticated caller (an interactive session is `human`, a workflow phase
+  session is `phase` plus the run it belongs to), never from the request, so an
+  agent cannot leave an entry the delivered prompt attributes to a person.
+- Delivery CLEARS it, and the two writes are deliberately not one transaction:
+  the attempt row carrying the entries is written first and the slot cleared
+  after, so the only gap a crash can open is a redelivery rather than a lost
+  instruction. See `internal/workflow/engine/guidance.go` for the ordering
+  rationale.
+- **Deliberately absent from `workItemColumns`**, exactly like
+  `wake_signature`: no listing or overlay reads it, and every row those reads
+  carry would pay for it. `WorkItemPendingGuidance` and
+  `SetWorkItemPendingGuidance` are the only reader and writer. A plain ADD
+  COLUMN with no CHECK, so no rebuild; a future `work_items` rebuild must carry
+  it, like every other column added since v39.
+
+## Recent schema changes (v52) — the last wake delivered
+
+- `work_items.wake_signature` (`TEXT NOT NULL DEFAULT ''`) is the signature of
+  the last wake DELIVERED into a run's bound thread. Wakes are deduplicated by
+  what they SAY — run, resting state, typed reason, phase and attempt, detail,
+  engine cause, and for a descendant park the same again for the descendant —
+  never by a time window, so the column holds the content identity rather than
+  a timestamp. `internal/workflow/wake` computes it; the app compares, records,
+  and clears.
+- It is durable rather than in-memory because a restart is one of the ways the
+  same ask gets re-composed: a crash rebuild parks every interrupted run, and a
+  supervising agent that already read that message should not read it again on
+  every launch.
+- Empty means "nothing delivered yet, or somebody has acted on the run since",
+  which is the state every wake delivers from. The app clears it whenever any
+  member of a run tree returns to `running` — which is what every resolve,
+  answer, resume, retry, and rerun does.
+- **Deliberately absent from `workItemColumns`**, like `projects.worktree_setup`
+  is from `projectColumns`: no listing, overlay, or CLI projection has a use for
+  it, and every row those reads carry would pay for it. `WorkItemWakeSignature`
+  and `UpdateWorkItemWakeSignature` are the only reader and writer. A plain ADD
+  COLUMN with no CHECK — free-form text, and the table is nobody's FK parent —
+  so no rebuild; a future `work_items` rebuild must carry it, like every other
+  column added since v39.
 
 ## Recent schema changes (v50) — imported provider sessions
 

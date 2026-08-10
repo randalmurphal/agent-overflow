@@ -32,7 +32,10 @@ func (e *Engine) startUnitCall(item *runtimeItem, unit *unitRun) error {
 	vars, err := e.unitVars(item, unit)
 	if err != nil {
 		return errors.Join(
-			e.teardown(item, teardownRequest{phaseStatus: "parked", nextState: StateNeedsHuman, reason: ReasonWiringError}),
+			e.teardown(item, teardownRequest{
+				cause: err, phaseStatus: "parked",
+				nextState: StateNeedsHuman, reason: ReasonWiringError,
+			}),
 			err,
 		)
 	}
@@ -73,14 +76,13 @@ func (e *Engine) startUnitCall(item *runtimeItem, unit *unitRun) error {
 }
 
 // parkUnitCallSetup parks an attempt whose call unit could not be invoked. The
-// cause is written onto the attempt as its envelope: no unit ran to author one,
-// and the cause carries the only statement of what went wrong (the call chain of
-// a depth refusal, the argument that would not resolve).
+// cause rides the attempt's `park_cause`: no unit ran to author an envelope, and
+// the cause carries the only statement of what went wrong (the call chain of a
+// depth refusal, the argument that would not resolve).
 func (e *Engine) parkUnitCallSetup(item *runtimeItem, reason Reason, cause error) error {
 	return errors.Join(
 		e.teardown(item, teardownRequest{
-			output:      parkCauseEnvelope(cause),
-			phaseStatus: "parked", nextState: StateNeedsHuman, reason: reason,
+			cause: cause, phaseStatus: "parked", nextState: StateNeedsHuman, reason: reason,
 		}),
 		cause,
 	)
@@ -133,8 +135,13 @@ func (e *Engine) settleUnitCallChild(parent *runtimeItem, child store.WorkItem) 
 			// is no envelope to hand the join. Recorded as this unit's failure with
 			// the cause, rather than failing the whole attempt outright — the other
 			// units' work is still durable and the human repairs this one.
+			//
+			// The cause goes in the unit's NOTE, which is the row's channel for
+			// engine text, and the envelope stays empty: a synthesized envelope
+			// here would be read downstream as something the unit's run produced.
+			note := unitChildNote(child, "completed without its declared outputs") + ": " + outputErr.Error()
 			return errors.Join(
-				e.teardownUnit(parent, unit, store.WorkItemUnitFailed, parkCauseEnvelope(outputErr), unitChildNote(child, "completed without its declared outputs")),
+				e.teardownUnit(parent, unit, store.WorkItemUnitFailed, nil, note),
 				e.advanceFanOut(parent),
 				outputErr,
 			)

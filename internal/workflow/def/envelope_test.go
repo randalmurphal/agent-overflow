@@ -116,7 +116,7 @@ func TestEnvelopeSchemaUsesBindingShapeAndIsDeterministic(t *testing.T) {
 		t.Fatal("top-level schema is not closed")
 	}
 	required := schema["required"].([]any)
-	if len(required) != 5 {
+	if len(required) != len(envelopeControlFields) {
 		t.Fatalf("top-level required = %v", required)
 	}
 	properties := schema["properties"].(map[string]any)

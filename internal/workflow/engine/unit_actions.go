@@ -336,18 +336,21 @@ func (e *Engine) resumeRepairedFanOut(item *runtimeItem) error {
 		return err
 	}
 	if e.paused {
-		e.addWaiting(item, nil)
+		e.addWaitingPhase(item, item.fan.vars)
 		return nil
 	}
 	acquired, ok, err := e.acquirePhaseResources(item.item.ProjectID, phase)
 	if err != nil {
 		return errors.Join(
-			e.teardown(item, teardownRequest{phaseStatus: "parked", nextState: StateNeedsHuman, reason: acquisitionParkReason(err)}),
+			e.teardown(item, teardownRequest{
+				cause: err, phaseStatus: "parked",
+				nextState: StateNeedsHuman, reason: acquisitionParkReason(err),
+			}),
 			err,
 		)
 	}
 	if !ok {
-		e.addWaiting(item, nil)
+		e.addWaitingPhase(item, item.fan.vars)
 		return nil
 	}
 	item.acquired = acquired

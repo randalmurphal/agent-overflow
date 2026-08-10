@@ -12,10 +12,29 @@ Codex has no cost anywhere on its wire; claudetui's synthesized results
 carry none either. Those rows persist tokens only
 (`cost_source='none'`). Pricing them requires a rate table — but a
 persisted estimate would go stale the moment rates change and there
-would be no way to reprice history. Instead, `app_usage.go`'s
-`GetUsageStats` calls `Price` fresh on every query and never writes the
-result back. An app update with new rates reprices all history the
-next time someone looks at usage stats.
+would be no way to reprice history. Instead, `Price` is called fresh on
+every query and the result is never written back. An app update with new
+rates reprices all history the next time someone looks.
+
+## The one caller, and why it is not this package
+
+`app_usage_pricing.go` (package `main`) is the **only** caller: `ledgerSpend`
+folds a `store.UsageDetailRow` group into `{WireUSD, EstimatedUSD,
+UnpricedRows}`, and `priceUsageGroups` is what every dollar-reporting surface
+composes through — the usage dashboard (`GetUsageStats`), a workflow run's
+overlay cost (`WorkflowGetItem`, `WorkflowListItemCosts`), and the workflow
+engine's per-tree budget enforcement (`workflowSpendSource.TreeSpend`).
+
+**One pricing rule, one place.** Display and enforcement previously each folded
+`Price` themselves and had already drifted: one counted unpriced rows and
+carried on, the other failed the read outright and parked the run. A run's
+budget must be judged against the same number its overlay shows, so the fold is
+shared rather than duplicated.
+
+It lives in package `main` and not here because the fold is over
+`store.UsageDetailRow`, and this package's boundary — stdlib-only, no store or
+provider imports — is what lets the App layer import it at all. Every consumer
+is already in `main`, so the shared fold costs nothing by sitting there.
 
 ## Surface
 
@@ -51,7 +70,16 @@ explicit table entry the day it ships, not an assumption that the
 - What BELONGS here: the rate table and the pure `Price` function.
 - What does NOT belong here:
   - Deciding which `usage_ledger` rows need pricing (that's
-    `cost_source='none'` vs `'wire'`, decided in `app_usage.go`).
+    `cost_source='none'` vs `'wire'`, decided in
+    `app_usage_pricing.go`).
+  - Deciding what an unpriced row MEANS. `Price` reports `ok=false` and
+    stops there; whether that is tolerable is the consumer's call and
+    depends on the question being asked — a token ceiling is exact
+    regardless, a dollar ceiling the tree has not obviously crossed
+    cannot be judged at all (`engine.ResolveBudget`), and a display
+    surface reports the priced lower bound and says it is one.
+    `ledgerSpend.Estimated()` is true in that case too: a total that
+    silently omits rows must never present itself as exact.
   - Persisting an estimate anywhere. Estimates are query-time only.
   - Provider or store types. This package must stay stdlib-only so it
     can be imported from the App layer without pulling in either.
@@ -68,8 +96,9 @@ explicit table entry the day it ships, not an assumption that the
 
 - `internal/store/usage_ledger.go` — the ledger schema and
   `QueryUsage` / `QueryUsageDetail` this package's output feeds.
-- `app_usage.go` — the only caller; merges wire cost and `Price`
-  estimates into `GetUsageStats`'s response.
+- `app_usage_pricing.go` — the only caller; `ledgerSpend` /
+  `priceUsageGroups` merge wire cost and `Price` estimates for every
+  surface that reports dollars.
 - `docs/architecture/adrs/ADR-008-cost-computation-in-provider-adapters.md`
   — history of the wire-cost-only decision and why read-time estimation
   was added on top of it instead of reverting it.

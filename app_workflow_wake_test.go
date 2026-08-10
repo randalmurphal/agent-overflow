@@ -14,8 +14,10 @@ import (
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadmode"
 	"agent-overflow/internal/triage"
+	"agent-overflow/internal/untrustedtext"
 	"agent-overflow/internal/workflow/engine"
 	workflowrunner "agent-overflow/internal/workflow/runner"
+	"agent-overflow/internal/workflow/wake"
 )
 
 // wakeHarness wires the two seams a wake crosses — the ordinary send and the
@@ -104,6 +106,16 @@ func (h *wakeHarness) phase(t *testing.T, itemID, phaseID string, attempt int, s
 		InputEnvelope: json.RawMessage(`{}`), OutputEnvelope: envelope,
 		Status: status, StartedAt: 10, EndedAt: 11,
 	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// parkedPhase is the shape an ENGINE-diagnosed park leaves: no thread, no
+// envelope — nothing ran a turn — and the cause as the whole account.
+func (h *wakeHarness) parkedPhase(t *testing.T, itemID, phaseID string, attempt int, cause string) {
+	t.Helper()
+	h.phase(t, itemID, phaseID, attempt, "running", "", nil)
+	if err := h.app.store.CompleteWorkItemPhase(itemID, phaseID, attempt, nil, nil, "parked", cause, 11); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -536,6 +548,13 @@ func TestWorkflowWakeOmitsAMissingNarrative(t *testing.T) {
 	if err := os.WriteFile(narrative, []byte("what happened"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	// The run is resumed before it parks the same way again. Without that the
+	// second park is the same ask the thread was already told (K2) and is
+	// suppressed — which is the coalescing rule, not this test's subject.
+	h.app.afterWorkflowStateEvent(engine.StateEvent{
+		ItemID: item.ID, ProjectID: item.ProjectID, From: engine.StateNeedsHuman, To: engine.StateRunning,
+	})
+	h.drain()
 	h.app.afterWorkflowStateEvent(engine.StateEvent{
 		ItemID: item.ID, ProjectID: item.ProjectID, From: engine.StateRunning, To: engine.StateNeedsHuman,
 	})
@@ -543,5 +562,70 @@ func TestWorkflowWakeOmitsAMissingNarrative(t *testing.T) {
 	sends, _, _, _ = h.snapshot()
 	if len(sends) != 2 || !strings.Contains(sends[1], `- "narrative": "`+narrative+`"`) {
 		t.Fatalf("wake omitted a narrative that exists:\n%s", sends[len(sends)-1])
+	}
+}
+
+// The wake is where a park reaches a supervising agent, so an engine-diagnosed
+// one has to carry its diagnosis: the phase authored no envelope, and without
+// the cause the message says only that a run stopped.
+func TestWorkflowWakeCarriesTheEngineParkCause(t *testing.T) {
+	h := newWakeHarness(t)
+	thread := h.chatThread(t, "origin-cause")
+	item := h.run(t, "wake-cause", engine.StateNeedsHuman, engine.ReasonSetupFailed)
+	if err := h.app.store.UpdateWorkItemOriginThread(item.ID, thread.ID); err != nil {
+		t.Fatal(err)
+	}
+	const cause = `provision worktree for item "wake-cause": branch "ao/wave-3" already exists`
+	h.parkedPhase(t, item.ID, "implement", 1, cause)
+
+	h.app.afterWorkflowStateEvent(engine.StateEvent{
+		ItemID: item.ID, ProjectID: item.ProjectID, From: engine.StateRunning,
+		To: engine.StateNeedsHuman, Reason: engine.ReasonSetupFailed,
+	})
+	h.drain()
+
+	sends, _, _, _ := h.snapshot()
+	if len(sends) != 1 {
+		t.Fatalf("wake sends = %d, want 1", len(sends))
+	}
+	if !strings.Contains(sends[0], "The engine stopped it here: ") ||
+		!strings.Contains(sends[0], untrustedtext.Quote(cause, wake.MaxCauseRunes)) {
+		t.Fatalf("wake does not carry the park cause:\n%s", sends[0])
+	}
+}
+
+// A descendant's park is announced at the root, so the cause travelling with it
+// must be the DESCENDANT's — the root ran nothing to have a cause of its own.
+func TestWorkflowDescendantWakeCarriesTheDescendantsParkCause(t *testing.T) {
+	h := newWakeHarness(t)
+	thread := h.chatThread(t, "origin-cause-root")
+	root := h.run(t, "cause-root", engine.StateRunning, "")
+	if err := h.app.store.UpdateWorkItemOriginThread(root.ID, thread.ID); err != nil {
+		t.Fatal(err)
+	}
+	child := store.WorkItem{
+		ID: "cause-child", ProjectID: defaultTestProjectID, Goal: "wave", WorkflowID: "wave",
+		WorkflowScope: "shared", State: string(engine.StateNeedsHuman),
+		Reason: string(engine.ReasonSetupFailed), Source: "call",
+		ParentItemID: root.ID, ParentPhaseID: "call-wave", ParentAttempt: 1, CallDepth: 1, CreatedAt: 2,
+	}
+	if err := h.app.store.CreateWorkItem(child); err != nil {
+		t.Fatal(err)
+	}
+	const cause = `cut worktree for item "cause-child": no space left on device`
+	h.parkedPhase(t, child.ID, "implement", 1, cause)
+
+	h.app.afterWorkflowStateEvent(engine.StateEvent{
+		ItemID: child.ID, ProjectID: child.ProjectID, From: engine.StateRunning,
+		To: engine.StateNeedsHuman, Reason: engine.ReasonSetupFailed,
+	})
+	h.drain()
+
+	sends, _, _, _ := h.snapshot()
+	if len(sends) != 1 {
+		t.Fatalf("wake sends = %d, want 1", len(sends))
+	}
+	if !strings.Contains(sends[0], untrustedtext.Quote(cause, wake.MaxCauseRunes)) {
+		t.Fatalf("root wake does not carry the descendant's park cause:\n%s", sends[0])
 	}
 }

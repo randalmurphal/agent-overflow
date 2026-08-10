@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
 	"sort"
 
 	"agent-overflow/internal/store"
@@ -240,10 +239,14 @@ func (e *Engine) noteFanOutCapacity(
 	item *runtimeItem, phase def.Phase, expanded []def.ExpandedUnit, capacities map[string]int,
 ) {
 	for _, note := range fanOutCapacityNotes(expanded, capacities, item.item.ProjectID) {
-		log.Printf(
-			"workflow fan-out %s/%s/%d expands %d units onto %s at capacity %d; they run %d at a time",
-			item.item.ID, phase.ID, item.attempt, note.width, note.resource, note.capacity, note.capacity,
-		)
+		e.logEvent(LogEvent{
+			Event: LogEventCapacity, ItemID: item.item.ID, ProjectID: item.item.ProjectID,
+			PhaseID: phase.ID, Attempt: item.attempt,
+			Message: fmt.Sprintf(
+				"expands %d units onto %s at capacity %d; they run %d at a time",
+				note.width, note.resource, note.capacity, note.capacity,
+			),
+		})
 	}
 }
 
@@ -296,14 +299,13 @@ func fanOutCapacityNotes(
 
 // parkFanOutSetup parks an attempt that could not be expanded at all. Nothing
 // has started, so this is a phase-level park with the phase-level reason rather
-// than the unit-failure policy. The cause is written onto the attempt as its
-// envelope: no unit ran to author one, and the cause is the only place the
-// resolved width or the unusable `over:` value is stated.
+// than the unit-failure policy. The cause rides the attempt's `park_cause`: no
+// unit ran to author an envelope, and the cause is the only place the resolved
+// width or the unusable `over:` value is stated.
 func (e *Engine) parkFanOutSetup(item *runtimeItem, reason Reason, cause error) error {
 	return errors.Join(
 		e.teardown(item, teardownRequest{
-			output:      parkCauseEnvelope(cause),
-			phaseStatus: "parked", nextState: StateNeedsHuman, reason: reason,
+			cause: cause, phaseStatus: "parked", nextState: StateNeedsHuman, reason: reason,
 		}),
 		cause,
 	)
@@ -360,10 +362,14 @@ func (e *Engine) advanceFanOut(item *runtimeItem) error {
 		// the join's own failure takes, where the repair verbs reach it. Every
 		// legitimate repair is already past this: reopening the join clears
 		// `joinStarted`, and a join that finished tears the attempt down instead
-		// of advancing it.
+		// of advancing it. The cause names the derivation, because the join's own
+		// envelope explains its failure but not why the attempt stopped here.
 		errs = append(errs, e.teardown(item, teardownRequest{
-			output: fan.join.envelope, phaseStatus: "parked",
-			nextState: StateNeedsHuman, reason: ReasonUnitFailed,
+			output: fan.join.envelope,
+			cause: fmt.Errorf(
+				"fan-out %s/%s/%d has nothing left to run: every unit rests and its join %q rests %s",
+				item.item.ID, item.phaseID, item.attempt, fan.join.id, fan.join.status),
+			phaseStatus: "parked", nextState: StateNeedsHuman, reason: ReasonUnitFailed,
 		}))
 	}
 	return errors.Join(errs...)
@@ -375,18 +381,22 @@ func (e *Engine) advanceFanOut(item *runtimeItem) error {
 // startWaiting release path.
 func (e *Engine) startUnitOrWait(item *runtimeItem, unit *unitRun) error {
 	if e.paused {
-		e.addWaiting(item, unit)
+		e.addWaitingUnit(item, unit)
 		return nil
 	}
 	acquired, ok, err := e.acquireUnitResources(item.item.ProjectID, unit.definition)
 	if err != nil {
+		cause := fmt.Errorf("acquire unit %s/%s/%d/%s resources: %w", item.item.ID, item.phaseID, item.attempt, unit.id, err)
 		return errors.Join(
-			e.teardown(item, teardownRequest{phaseStatus: "parked", nextState: StateNeedsHuman, reason: acquisitionParkReason(err)}),
-			fmt.Errorf("acquire unit %s/%s/%d/%s resources: %w", item.item.ID, item.phaseID, item.attempt, unit.id, err),
+			e.teardown(item, teardownRequest{
+				cause: cause, phaseStatus: "parked",
+				nextState: StateNeedsHuman, reason: acquisitionParkReason(err),
+			}),
+			cause,
 		)
 	}
 	if !ok {
-		e.addWaiting(item, unit)
+		e.addWaitingUnit(item, unit)
 		return nil
 	}
 	unit.acquired = acquired
@@ -411,15 +421,22 @@ func (e *Engine) startUnitWork(item *runtimeItem, unit *unitRun) error {
 func (e *Engine) startUnitRunner(item *runtimeItem, unit *unitRun) error {
 	phase, ok := findPhase(item.workflow, item.phaseID)
 	if !ok {
+		cause := fmt.Errorf("phase %q is absent from item %q snapshot", item.phaseID, item.item.ID)
 		return errors.Join(
-			e.teardown(item, teardownRequest{phaseStatus: "parked", nextState: StateNeedsHuman, reason: ReasonWiringError}),
-			fmt.Errorf("phase %q is absent from item %q snapshot", item.phaseID, item.item.ID),
+			e.teardown(item, teardownRequest{
+				cause: cause, phaseStatus: "parked",
+				nextState: StateNeedsHuman, reason: ReasonWiringError,
+			}),
+			cause,
 		)
 	}
 	vars, err := e.unitVars(item, unit)
 	if err != nil {
 		return errors.Join(
-			e.teardown(item, teardownRequest{phaseStatus: "parked", nextState: StateNeedsHuman, reason: ReasonWiringError}),
+			e.teardown(item, teardownRequest{
+				cause: err, phaseStatus: "parked",
+				nextState: StateNeedsHuman, reason: ReasonWiringError,
+			}),
 			err,
 		)
 	}
@@ -430,9 +447,13 @@ func (e *Engine) startUnitRunner(item *runtimeItem, unit *unitRun) error {
 	if err := e.store.StartWorkItemUnit(
 		item.item.ID, item.phaseID, item.attempt, unit.id, unit.attempt, note, e.timestamp(),
 	); err != nil {
+		cause := fmt.Errorf("persist unit start %s/%s/%d/%s: %w", item.item.ID, item.phaseID, item.attempt, unit.id, err)
 		return errors.Join(
-			e.teardown(item, teardownRequest{phaseStatus: "parked", nextState: StateNeedsHuman, reason: ReasonSetupFailed}),
-			fmt.Errorf("persist unit start %s/%s/%d/%s: %w", item.item.ID, item.phaseID, item.attempt, unit.id, err),
+			e.teardown(item, teardownRequest{
+				cause: cause, phaseStatus: "parked",
+				nextState: StateNeedsHuman, reason: ReasonSetupFailed,
+			}),
+			cause,
 		)
 	}
 	unit.status = store.WorkItemUnitRunning
@@ -450,6 +471,13 @@ func (e *Engine) startUnitRunner(item *runtimeItem, unit *unitRun) error {
 		Unit:  &definition, UnitIndex: unit.index, UnitKind: unit.kind,
 		UnitAttempt: unit.attempt,
 		Vars:        vars, Feedback: cloneFeedback(unit.feedback),
+		// Every element of the attempt renders the guidance its phase entry
+		// delivered, work units and join alike: the block is part of prompt
+		// assembly, and an instruction meant for the wave that reached only the
+		// join would be steering nothing. The phase's `prompt:` override is NOT
+		// carried here — it replaces a phase's own body, and a fan-out has none;
+		// validation refuses the declaration on a route targeting one.
+		Guidance: item.guidance,
 	}
 	if unit.kind == UnitJoin {
 		// A fan-out's phase-level continuation is always the join's: it is the
@@ -564,9 +592,13 @@ func (e *Engine) unitResults(item *runtimeItem) ([]any, error) {
 func (e *Engine) startJoin(item *runtimeItem) error {
 	fan := item.fan
 	if fan.join == nil {
+		cause := fmt.Errorf("fan-out %s/%s/%d has no join", item.item.ID, item.phaseID, item.attempt)
 		return errors.Join(
-			e.teardown(item, teardownRequest{phaseStatus: "parked", nextState: StateNeedsHuman, reason: ReasonWiringError}),
-			fmt.Errorf("fan-out %s/%s/%d has no join", item.item.ID, item.phaseID, item.attempt),
+			e.teardown(item, teardownRequest{
+				cause: cause, phaseStatus: "parked",
+				nextState: StateNeedsHuman, reason: ReasonWiringError,
+			}),
+			cause,
 		)
 	}
 	fan.joinStarted = true

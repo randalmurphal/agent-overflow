@@ -81,9 +81,10 @@ Two structural facts do most of the work:
   only job that needs the merged tree.
 - **The implement join is a command, not an agent.** Nothing the lane
   *said* crosses into the campaign's next phase — the join emits the merged
-  tree, the exit status, and `conflicts[]`, the paths it could not reconcile.
-  Those paths are the one thing `resolve-conflicts` needs and the one thing a
-  merge tool can state as fact rather than as an account of its reasoning; the
+  tree, the exit status, and its accounting of the wave: `merged[]` and
+  `blocked[]`, the lanes it could not take with the reason each. Those two
+  lists are the one thing `resolve-conflicts` needs and the one thing a merge
+  tool can state as fact rather than as an account of its reasoning; the
   lane's prose still crosses nothing. Split context is a property of the graph,
   not of prompt wording. `implement.passed` is the tool driver's own output; the
   gate reads it and the phase never declares it.
@@ -284,7 +285,19 @@ wants a new root anyway.
 | Name | Kind | Contract |
 |---|---|---|
 | `build-and-test` | check | The integration gate on the merged campaign branch. Exit status is the whole answer. |
-| `merge-unit-branches` | command | Merges the fan-out's unit **branches** into the item branch — a lane's work has to be COMMITTED on its branch by join time or the merge consumes nothing. Must write `outputs.conflicts[]` (workspace-relative paths, empty when clean) to `$AO_ENVELOPE`. Non-zero exit on conflict. Bind `"{{units}}"` as an argv element to receive the units as JSON — `id`, `status`, `branch`, `worktree`, `commitsAhead`, `dirty` per entry. |
+| `merge-unit-branches` | command | Merges the fan-out's unit **branches** into the item branch — a lane's work has to be COMMITTED on its branch by join time or the merge consumes nothing. Must write the phase's two declared outputs to `$AO_ENVELOPE`: `outputs.merged[]` (the unit ids it took) and `outputs.blocked[]` (`{unit, reason}` for every unit it did not). Non-zero exit when a human still has to land something. Bind `"{{units}}"` as an argv element to receive the units as JSON — `id`, `status`, `branch`, `worktree`, `commitsAhead`, `dirty` per entry. |
+
+The join declares `accounts_for_units: true`, so those two lists are not a
+reporting convention — the engine post-validates a `done` join envelope against
+the exact set of unit ids the join was shown, and every one of them must appear
+in exactly one list, named once, with a non-blank reason where it is blocked. A
+unit a human **dropped** is in that set: the engine shows dropped lanes to the
+join so it can say what it did not receive, so the script accounts for one in
+`blocked` with a reason naming the drop, and does *not* exit non-zero for it —
+the drop was the decision, and routing the wave to `resolve-conflicts` over it
+would ask somebody to reverse themselves. An entry the engine could read no id
+from is the one thing left out of both lists, because naming it would be refused;
+the reference script reports it on stderr and fails the gate instead.
 
 **The commit contract, and how a merge script checks it.** Every writing
 element — phase, work unit, and join alike — is told by the system prompt
@@ -300,8 +313,8 @@ two facts that say whether a lane honored it:
 | `dirty` | Whether the unit's worktree still holds uncommitted or untracked files. Absent once the checkout has been retired — absent is "no answer", not "clean". |
 
 A merge script decides what to do with them: refuse the wave, skip an empty
-lane, auto-commit a dirty one on its branch before merging, or report it into
-`conflicts[]`. Doing nothing is also a choice — worktree retirement after a done
+lane, auto-commit a dirty one on its branch before merging, or account for it in
+`blocked[]`. Doing nothing is also a choice — worktree retirement after a done
 join is non-force, so a lane that left work uncommitted keeps its checkout and
 is named on the `workflow:error` channel instead of having it deleted.
 

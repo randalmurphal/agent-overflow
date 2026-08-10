@@ -120,14 +120,15 @@ func (e *Engine) parkSoftStop(item *runtimeItem, root store.WorkItem) error {
 	}
 	e.emitter.Emit("workflow:soft-stop", SoftStopEvent{ItemID: root.ID, Armed: false})
 	return e.teardown(item, teardownRequest{
-		output:      parkCauseEnvelope(softStopCause(item, root)),
+		cause:       softStopCause(item, root),
 		phaseStatus: "parked", nextState: StateNeedsHuman, reason: ReasonCheckpoint,
 	})
 }
 
-// softStopCause is what the parked attempt's envelope says. It is written as
-// the phase's own record because no turn ran to author one, and it is the only
-// place the record states which call was skipped and whose request skipped it.
+// softStopCause is what the parked attempt's `park_cause` says. It is written as
+// the phase's own record because no turn ran to author an envelope, and it is
+// the only place the record states which call was skipped and whose request
+// skipped it.
 func softStopCause(item *runtimeItem, root store.WorkItem) error {
 	if root.ID == item.item.ID {
 		return fmt.Errorf(

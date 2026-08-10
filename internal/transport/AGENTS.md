@@ -105,6 +105,28 @@ Adding a method to `ScopedTokenMethods` widens what a compromised agent session
 can do. Do it only for methods whose row-level authorization is enforced from
 `CallerScopeFrom`, and add it to `LocalOnlyMethods` too.
 
+- **One method on this route BLOCKS.** `WorkflowAgentWatchRun` holds its request
+  until the run it names moves, bounded by the app's own
+  `maxWorkflowWatchHold` (25s). Nothing in this package special-cases it — a
+  POST gets its own goroutine, and there is no per-route concurrency bound — but
+  two server timeouts do bracket it: `HTTPReadTimeout` / `HTTPWriteTimeout`
+  (60s each) must stay comfortably above that hold, or the transport would kill
+  a healthy blocked call and every quiet minute would read as a dead backend.
+  Keep the ordering `hold < CLI rpcTimeout (30s) < HTTP write timeout` in mind
+  before changing any of the three.
+
+`GrantNotRequired` (`"*"`) is the table's way of saying "this method's authority
+is ENTIRELY row-level": it admits every scoped token, phase or interactive,
+whatever grants the phase froze. It is not a grant — no workflow may declare it,
+and `def.KnownGrant` does not know it, which a test pins in both directions.
+Campaign memory is what it exists for: recording what the work learned is part of
+doing the work, exactly as returning an envelope is, and a `grants:` line
+standing between an element and its own campaign's memory would mean every
+workflow that forgot one silently relearns everything each wave. Use it only for
+a method that is part of doing the work rather than an extra capability, AND
+whose row scoping is enforced from `CallerScopeFrom`. A method that widens what a
+phase may REACH still needs a grant of its own.
+
 ## Additional receivers
 
 `Dispatcher.Register` accepts more than one receiver. The only second

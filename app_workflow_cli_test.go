@@ -544,6 +544,14 @@ func TestAgentRunStatusReportsPerAttemptProvenance(t *testing.T) {
 	if err := fixture.app.store.CreateThread(thread); err != nil {
 		t.Fatal(err)
 	}
+	// The loop's second attempt runs on a session of its own, which is what a
+	// default (`fresh`) loop re-entry produces: the settings are read from EACH
+	// attempt's own thread row, not inherited from the phase's first.
+	retryThread := thread
+	retryThread.ID = "provenance-thread-2"
+	if err := fixture.app.store.CreateThread(retryThread); err != nil {
+		t.Fatal(err)
+	}
 	looped, err := json.Marshal(def.GateTrace{
 		Decision: def.RouteDecision{Kind: def.DecisionLoop, Target: "fix", RouteIndex: 0},
 	})
@@ -557,18 +565,24 @@ func TestAgentRunStatusReportsPerAttemptProvenance(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	const parkCause = `provision worktree for item: branch "ao/wave-3" already exists`
 	for _, attempt := range []struct {
 		phaseID  string
 		attempt  int
 		threadID string
 		trace    json.RawMessage
 		started  int64
+		status   string
+		cause    string
 	}{
-		{"review", 1, thread.ID, looped, 10},
-		{"review", 2, thread.ID, exhausted, 20},
+		{"review", 1, thread.ID, looped, 10, "completed", ""},
+		{"review", 2, retryThread.ID, exhausted, 20, "completed", ""},
 		// A tool phase runs a command, not a provider session: it has no thread
 		// and therefore no model settings to report.
-		{"check", 1, "", nil, 30},
+		{"check", 1, "", nil, 30, "completed", ""},
+		// An engine-diagnosed park: no thread, no envelope, and the cause is the
+		// only account of why the run stopped.
+		{"land", 1, "", nil, 40, "parked", parkCause},
 	} {
 		if err := fixture.app.store.CreateWorkItemPhase(store.WorkItemPhase{
 			ItemID: item.ID, PhaseID: attempt.phaseID, Attempt: attempt.attempt,
@@ -577,7 +591,8 @@ func TestAgentRunStatusReportsPerAttemptProvenance(t *testing.T) {
 			t.Fatal(err)
 		}
 		if err := fixture.app.store.CompleteWorkItemPhase(
-			item.ID, attempt.phaseID, attempt.attempt, nil, attempt.trace, "completed", attempt.started+1,
+			item.ID, attempt.phaseID, attempt.attempt, nil, attempt.trace,
+			attempt.status, attempt.cause, attempt.started+1,
 		); err != nil {
 			t.Fatal(err)
 		}
@@ -601,6 +616,7 @@ func TestAgentRunStatusReportsPerAttemptProvenance(t *testing.T) {
 			Effort: "xhigh", Decision: string(def.DecisionRetriesExhausted),
 			ExhaustedLoops: []string{def.GateEdgeKey("review", 0)}},
 		{PhaseID: "check", Attempt: 1, Status: "completed"},
+		{PhaseID: "land", Attempt: 1, Status: "parked", Cause: parkCause},
 	}
 	if !reflect.DeepEqual(view.Phases, want) {
 		t.Fatalf("phase attempts = %#v, want %#v", view.Phases, want)

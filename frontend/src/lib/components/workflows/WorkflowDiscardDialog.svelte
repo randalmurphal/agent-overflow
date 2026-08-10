@@ -26,7 +26,9 @@
 
   let viewOnly = $derived(isViewOnlySession());
   let item = $derived(getWorkflowRun(itemId));
-  let costUsd = $derived(getWorkflowDetail(itemId)?.usage?.costUsd || getWorkflowCosts()[itemId] || 0);
+  // Composed spend (see WorkflowRunDetail): `usage.costUsd` is wire-reported
+  // cost alone and reads as zero for a run that ran on Codex.
+  let costUsd = $derived(getWorkflowDetail(itemId)?.spend?.costUsd || getWorkflowCosts()[itemId] || 0);
 
   let preview = $state<WorkflowDiscardPreview | null>(null);
   let loading = $state(false);

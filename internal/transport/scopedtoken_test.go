@@ -83,9 +83,38 @@ func TestScopedTokenMethodsNameOnlyKnownGrants(t *testing.T) {
 			t.Errorf("%s lists no grants; a method no grant admits is unreachable from a phase", method)
 		}
 		for _, grant := range grants {
+			if grant == GrantNotRequired {
+				continue
+			}
 			if !def.KnownGrant(grant) {
 				t.Errorf("%s requires grant %q, which is not in def's closed set %v", method, grant, def.GrantNames())
 			}
+		}
+	}
+	// GrantNotRequired must stay outside the grant vocabulary, or a workflow
+	// could declare it and every method in the table would be admitted.
+	if def.KnownGrant(GrantNotRequired) {
+		t.Fatalf("GrantNotRequired %q is a declarable grant; a workflow could name it and admit every method",
+			GrantNotRequired)
+	}
+}
+
+// TestGrantNotRequiredAdmitsEveryPhaseWhateverItsGrants pins the one thing the
+// marker is for: a phase whose workflow declared NO grants at all still reaches
+// the methods that are part of doing the work.
+func TestGrantNotRequiredAdmitsEveryPhaseWhateverItsGrants(t *testing.T) {
+	ungranted := CallerScope{Kind: ScopeKindPhase, ItemID: "run", PhaseID: "implement"}
+	for method, grants := range ScopedTokenMethods {
+		admitted := false
+		for _, grant := range grants {
+			admitted = admitted || grant == GrantNotRequired
+		}
+		err := AuthorizeScopedMethod(ungranted, method)
+		if admitted && err != nil {
+			t.Errorf("%s is marked GrantNotRequired but a grantless phase was refused: %v", method, err)
+		}
+		if !admitted && err == nil {
+			t.Errorf("%s admits a grantless phase without being marked GrantNotRequired", method)
 		}
 	}
 }

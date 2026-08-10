@@ -128,7 +128,13 @@ func TestWorkflowReliabilityAttributedTokenBudgetTripsAtBoundary(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(detail.Phases) != 1 || detail.Phases[0].PhaseID != "first" || detail.Phases[0].Status != "completed" {
+	// The budget tripped at the boundary, so `second` never ran a turn — but it
+	// still rests on an attempt row carrying the breach, because a park with no
+	// row is a run that stopped with no record of why.
+	if len(detail.Phases) != 2 ||
+		detail.Phases[0].PhaseID != "first" || detail.Phases[0].Status != "completed" ||
+		detail.Phases[1].PhaseID != "second" || detail.Phases[1].Status != "parked" ||
+		len(detail.Phases[1].ThreadID) != 0 || len(detail.Phases[1].OutputEnvelope) != 0 {
 		t.Fatalf("phase boundary detail = %+v", detail)
 	}
 	usage, err := app.store.QueryWorkItemUsage(item.ID)
@@ -155,12 +161,25 @@ func TestWorkflowSpendSourceAddsEstimatedRowsToWireCost(t *testing.T) {
 	if spend.Tokens != 4_000_000 || math.Abs(spend.USD-16.425) > 1e-12 {
 		t.Fatalf("composed spend = %+v", spend)
 	}
+	// Most of that total came off a rate table rather than a provider, and the
+	// spend says so — the caveat is what a budget surface has to be able to state.
+	if !spend.Estimated || spend.Unpriced != 0 {
+		t.Fatalf("composed spend = %+v, want estimated with nothing unpriced", spend)
+	}
 
+	// A model the rate table cannot price is REPORTED, not fatal: the refusal
+	// belongs where the ceiling's kind is known, because tokens stay exact
+	// whatever the rate table knows. See TestUSDBudgetRefusesUnpricedRowsItIsStillInside
+	// (engine) and TestWorkflowTreeSpendReportsUnpricedRowsRatherThanFailing.
 	if err := app.store.AppendUsage([]store.UsageLedgerRow{{WorkItemID: "unknown", Model: "future-model", InputTokens: 1, CostSource: "none"}}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := (workflowSpendSource{store: app.store}).TreeSpend(t.Context(), "unknown"); err == nil || !strings.Contains(err.Error(), "no USD rate") {
-		t.Fatalf("unknown model error = %v", err)
+	unpriced, err := (workflowSpendSource{store: app.store}).TreeSpend(t.Context(), "unknown")
+	if err != nil {
+		t.Fatalf("an unpriceable model must not fail the spend read: %v", err)
+	}
+	if unpriced.Tokens != 1 || unpriced.USD != 0 || unpriced.Unpriced != 1 {
+		t.Fatalf("unpriced spend = %+v", unpriced)
 	}
 }
 

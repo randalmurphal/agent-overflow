@@ -147,7 +147,11 @@ func (a *App) WorkflowListDefinitions(projectID string) (WorkflowDefinitionCatal
 	return WorkflowDefinitionCatalog{BaseBranch: bindings.BaseBranch, Workflows: listings}, nil
 }
 
-// WorkflowListItemCosts returns grouped per-run costs for overview rows.
+// WorkflowListItemCosts returns per-run costs for overview rows, composed
+// through the one ledger pricing rule (app_usage_pricing.go). A run whose
+// phases ran on Codex has no wire-reported cost at all — every one of its rows
+// carries tokens and a zero `cost_usd` — so summing the column alone reported
+// those runs as free.
 func (a *App) WorkflowListItemCosts(projectID string) (map[string]float64, error) {
 	if a.store == nil {
 		return nil, fmt.Errorf("workflow store unavailable")
@@ -156,7 +160,26 @@ func (a *App) WorkflowListItemCosts(projectID string) (map[string]float64, error
 	if projectID == "" {
 		return nil, fmt.Errorf("list workflow item costs: project id is required")
 	}
-	return a.store.QueryWorkItemCosts(projectID)
+	groups, err := a.store.QueryWorkItemCosts(projectID)
+	if err != nil {
+		return nil, err
+	}
+	spends := make(map[string]*ledgerSpend, len(groups))
+	for _, group := range groups {
+		spend, ok := spends[group.WorkItemID]
+		if !ok {
+			spend = &ledgerSpend{}
+			spends[group.WorkItemID] = spend
+		}
+		if err := spend.add(group.UsageDetailRow); err != nil {
+			return nil, fmt.Errorf("list workflow item costs for project %s: %w", projectID, err)
+		}
+	}
+	costs := make(map[string]float64, len(spends))
+	for itemID, spend := range spends {
+		costs[itemID] = spend.TotalUSD()
+	}
+	return costs, nil
 }
 
 // WorkflowRerunItem starts a failed run's last phase again immediately,

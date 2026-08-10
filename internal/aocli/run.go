@@ -47,6 +47,9 @@ var topLevelCommands = []topLevelCommand{
 	{name: "notes", run: func(args []string, _ string, lookupEnv func(string) (string, bool), stdout, stderr io.Writer) int {
 		return notesCommand(args, lookupEnv, stdout, stderr)
 	}},
+	{name: "memory", run: func(args []string, _ string, lookupEnv func(string) (string, bool), stdout, stderr io.Writer) int {
+		return memoryCommand(args, lookupEnv, stdout, stderr)
+	}},
 	{name: "schedule", run: func(args []string, _ string, lookupEnv func(string) (string, bool), stdout, stderr io.Writer) int {
 		return scheduleCommand.run(args, lookupEnv, stdout, stderr)
 	}},
@@ -198,31 +201,51 @@ func runValidate(args []string, inheritedConfigRoot string, lookupEnv func(strin
 		fmt.Fprintln(stderr, "agent-overflow workflow validate: provide exactly one path or --id <id>")
 		return exitError
 	}
-	if *id == "" && *projectSlug != "" {
-		fmt.Fprintln(stderr, "agent-overflow workflow validate: --project requires --id")
-		return exitError
-	}
 
 	root, err := resolveConfigRoot(*configRoot)
 	if err != nil {
 		return operationalError(stderr, err)
 	}
-	// Only the --id form reads a scope; validating a path reads that one file, so
-	// it neither needs a project nor may inherit one from the session.
-	scopeSlug := ""
-	if *id != "" {
-		scopeSlug, err = workflowProjectScope(*projectSlug, lookupEnv)
-		if err != nil {
-			return operationalError(stderr, err)
-		}
-	}
+	// Both forms resolve a scope, and for the same reasons: a `call:` edge is
+	// resolved against it and the project profile's bindings come from it.
+	// Before, only `--id` did, so the same definition validated by path was
+	// checked against no call graph and no bindings at all — phantom
+	// `call.target` findings for a file `--id` called clean.
+	//
+	// The path form additionally DERIVES its scope from where the file sits,
+	// because that is a fact about the file rather than something a caller
+	// should have to restate: a definition in a project's source directory is
+	// project-scoped, and it names the project whose calls and bindings it runs
+	// under even when the session is working in a different one. A file in the
+	// shared directory is shared-scoped and keeps whatever project the caller
+	// (or AO_PROJECT) supplied, exactly as `--id` on that same shared definition
+	// does — a shared workflow is visible to every project and is checked
+	// against the one asking. That is the invariant
+	// TestValidateByIDAndByPathAgreeOverEveryStarter pins.
 	var resolved def.ResolvedWorkflow
+	scopeSlug, err := workflowProjectScope(*projectSlug, lookupEnv)
+	if err != nil {
+		return operationalError(stderr, err)
+	}
 	if *id == "" {
 		workflow, err := def.ParseFile(paths[0])
 		if err != nil {
 			return operationalError(stderr, err)
 		}
-		resolved = def.ResolvedWorkflow{Workflow: workflow, Path: paths[0], Scope: def.ScopeShared}
+		scope := def.ScopeShared
+		if derivedSlug, derivedScope, ok := workflowScopeForPath(root, paths[0]); ok {
+			scope = derivedScope
+			// An explicit --project still wins: it is how a definition drafted
+			// outside the config root names the project whose calls and bindings
+			// it is meant to run under.
+			if derivedSlug != "" && strings.TrimSpace(*projectSlug) == "" {
+				scopeSlug = derivedSlug
+			}
+		}
+		resolved = def.ResolvedWorkflow{
+			Workflow: workflow, Path: paths[0], Scope: scope,
+			HumanGateCount: def.CountHumanGates(workflow),
+		}
 	} else {
 		workflows, err := ResolveConfigured(root, scopeSlug)
 		if err != nil {

@@ -8,6 +8,7 @@ import (
 
 	"agent-overflow/internal/workflow/def"
 	"agent-overflow/internal/workflow/engine"
+	"agent-overflow/internal/workflow/memory"
 )
 
 // AttemptDir returns the absolute system-owned directory holding one phase
@@ -106,10 +107,64 @@ func EnvelopePath(dataRoot, itemID, phaseID string, attempt int) (string, error)
 	return filepath.Join(dir, "envelope.json"), nil
 }
 
+// MemoryDigest is the rendered `<campaign-memory>` block a prompt carries
+// (`memory.Render`'s output), or empty when the run tree has no memory to
+// resolve. It is a named type rather than a bare string so it cannot be
+// transposed with the narrative path at a call site.
+type MemoryDigest string
+
+// PromptContext is everything a prompt needs beyond the element's own authored
+// body: where its account goes, what it is allowed to do, and each app-resolved
+// block the system-owned suffix appends.
+//
+// It is one struct rather than a parameter list because the blocks accumulate:
+// the narrative path and access have always been here, the feedback retry and
+// the campaign digest joined them, then operator guidance, and now the goal
+// chain and the merge-join obligation. Seven positional arguments of which
+// four are optional is a call site nobody can read and two of the types are
+// interchangeable at a glance; a struct makes every block named at every call
+// site and makes adding the next one a field rather than a signature change
+// rippling through every caller.
+type PromptContext struct {
+	// NarrativePath is the absolute file the element's account belongs in, and
+	// is required whichever way the account is asked for: the runner writes
+	// there either way, and validating it once here keeps a bad path from
+	// reaching only one of the two access branches.
+	NarrativePath string
+	// Access decides how the narrative is asked for, whether the commit default
+	// is stated at all, and which campaign-memory channel the element is given.
+	Access def.Access
+	// Feedback is the one envelope-validation retry turn's findings, or nil.
+	Feedback *engine.Feedback
+	// Memory is the rendered campaign-memory digest, empty when the run tree
+	// has none to show.
+	Memory MemoryDigest
+	// Guidance is what an operator left for this run, delivered at this phase
+	// entry and nowhere else.
+	Guidance []engine.GuidanceEntry
+	// Goals is the campaign this run serves: the call chain of goals from the
+	// tree's root down, and the non-goals in force.
+	Goals GoalChain
+	// AccountsForUnits is set for a JOIN whose declaration opted into the merge
+	// contract (`accounts_for_units:`), and AccountedUnits holds the exact unit
+	// ids its `merged` / `blocked` outputs will be post-validated against. The
+	// flag is separate for the reason it is separate on def.EnvelopeContract: a
+	// join over ZERO units still owes two empty lists, so nil and empty must
+	// not read the same.
+	//
+	// The obligation is stated in the prompt because the engine enforces it. An
+	// element refused for breaking a rule nobody told it about spends its one
+	// envelope retry learning the rule, and a rule stated only in authored
+	// content is one an author can forget to write.
+	AccountsForUnits bool
+	AccountedUnits   []string
+}
+
 // BuildPrompt interpolates an inlined runtime phase prompt and appends the
 // system-owned workflow instructions shared by both providers.
-func BuildPrompt(phase def.Phase, vars map[string]any, narrativePath string, feedback *engine.Feedback) (string, error) {
-	prompt, err := buildPrompt(phase.Prompt, phase.Inputs, vars, narrativePath, phase.EffectiveAccess(), feedback)
+func BuildPrompt(phase def.Phase, vars map[string]any, context PromptContext) (string, error) {
+	context.Access = phase.EffectiveAccess()
+	prompt, err := buildPrompt(phase.Prompt, def.PhaseDeclarations(phase), vars, context)
 	if err != nil {
 		return "", fmt.Errorf("build workflow prompt for phase %q: %w", phase.ID, err)
 	}
@@ -122,8 +177,11 @@ func BuildPrompt(phase def.Phase, vars map[string]any, narrativePath string, fee
 // supplies them from def rather than this package re-deriving them. Access comes
 // from the unit for the same reason it comes from the phase above: units and
 // joins carry their own declaration.
-func BuildUnitPrompt(unit def.Unit, declarations map[string]def.Variable, vars map[string]any, narrativePath string, feedback *engine.Feedback) (string, error) {
-	prompt, err := buildPrompt(unit.Prompt, declarations, vars, narrativePath, unit.EffectiveAccess(), feedback)
+func BuildUnitPrompt(
+	unit def.Unit, declarations map[string]def.Variable, vars map[string]any, context PromptContext,
+) (string, error) {
+	context.Access = unit.EffectiveAccess()
+	prompt, err := buildPrompt(unit.Prompt, declarations, vars, context)
 	if err != nil {
 		return "", fmt.Errorf("build workflow prompt for unit %q: %w", unit.ID, err)
 	}
@@ -131,14 +189,13 @@ func BuildUnitPrompt(unit def.Unit, declarations map[string]def.Variable, vars m
 }
 
 func buildPrompt(
-	body string, declarations map[string]def.Variable, vars map[string]any,
-	narrativePath string, access def.Access, feedback *engine.Feedback,
+	body string, declarations map[string]def.Variable, vars map[string]any, context PromptContext,
 ) (string, error) {
 	interpolated, err := def.Interpolate(body, declarations, vars)
 	if err != nil {
 		return "", err
 	}
-	suffix, err := PromptSuffix(narrativePath, access, feedback)
+	suffix, err := PromptSuffix(context)
 	if err != nil {
 		return "", err
 	}
@@ -153,8 +210,11 @@ func buildPrompt(
 // phase's original task. Access is the taken-over element's own: a takeover
 // steers the phase's session, which keeps the runtime mode that declaration
 // mapped to, so a read-only phase's finalize turn still cannot write a file.
-func BuildTakeoverFinalizePrompt(narrativePath string, access def.Access) (string, error) {
-	suffix, err := PromptSuffix(narrativePath, access, nil)
+// It carries no operator guidance, and cannot: a finalize turn is a
+// continuation, which is not a delivery boundary, so the engine hands it none.
+func BuildTakeoverFinalizePrompt(context PromptContext) (string, error) {
+	context.Feedback, context.Guidance = nil, nil
+	suffix, err := PromptSuffix(context)
 	if err != nil {
 		return "", err
 	}
@@ -186,7 +246,18 @@ func BuildTakeoverFinalizePrompt(narrativePath string, access def.Access) (strin
 // `access` also decides whether the commit default below is stated at all: a
 // read-only element cannot write, so it has nothing to commit and telling it to
 // would be another instruction it cannot follow.
-func PromptSuffix(narrativePath string, access def.Access, feedback *engine.Feedback) (string, error) {
+//
+// `Guidance` is what an operator left for the run while it was working, and it
+// is delivered here because a phase entry is the only boundary that exists: it
+// is quoted as data, attributed, and stated to be outside the phase's authored
+// instructions, so an element can tell a person's steer from its own task.
+//
+// `Goals` is the campaign the run serves. It comes first among the context
+// blocks because it is the frame every other one is read inside: an element
+// that knows the campaign's goal and its stated non-goals scopes its own work,
+// and one that does not infers the scope from its slice and drifts outward.
+func PromptSuffix(context PromptContext) (string, error) {
+	narrativePath, access := context.NarrativePath, context.Access
 	if !filepath.IsAbs(narrativePath) {
 		return "", fmt.Errorf("workflow prompt suffix: narrative path must be absolute")
 	}
@@ -218,7 +289,9 @@ func PromptSuffix(narrativePath string, access def.Access, feedback *engine.Feed
 		// is a legitimate shape.
 		prompt.WriteString("Leave your work committed on this branch before you finish: later phases, worktree cuts, and fan-out merges read this branch's commits, never its working tree. Leave nothing uncommitted unless your prompt says otherwise.\n")
 	}
-	if feedback != nil {
+	writeGoalChainSection(&prompt, context.Goals)
+	writeMemorySection(&prompt, access, context.Memory)
+	if feedback := context.Feedback; feedback != nil {
 		values := feedback.Values
 		if values == nil {
 			values = map[string]any{}
@@ -237,6 +310,7 @@ func PromptSuffix(narrativePath string, access def.Access, feedback *engine.Feed
 		prompt.Write(encoded)
 		prompt.WriteString("\n```\n</workflow-feedback>\n")
 	}
+	writeGuidanceSection(&prompt, context.Guidance)
 	// The branch rules below are enforced by def.ValidateEnvelope but cannot be
 	// expressed in the schema itself (discriminated unions are not portable
 	// across providers — D2a), so they have to be stated. Without them both
@@ -265,8 +339,48 @@ func PromptSuffix(narrativePath string, access def.Access, feedback *engine.Feed
 	} else {
 		prompt.WriteString("The narrative field is outside those rules: it is legal on every status, so fill it in whether you finish, ask, or get stuck.\n")
 	}
+	writeUnitAccountingSection(&prompt, context.AccountsForUnits, context.AccountedUnits)
 	prompt.WriteString("</workflow-system-instructions>")
 	return prompt.String(), nil
+}
+
+// writeMemorySection states the campaign-memory contract and appends the
+// digest the app rendered.
+//
+// The CHANNEL follows `access` for the same reason the narrative's does, and
+// for a stricter reason besides. A `write` element records through the CLI verb,
+// which lands the note the moment it is learned — a note written during the work
+// survives an attempt that later fails, parks, or is retried, and an envelope
+// field only lands if the envelope is accepted. A `read-only` element runs a
+// session that denies file writes and, on both providers, cannot reach the
+// loopback RPC the CLI speaks (Claude's read-only mode denies the bash call;
+// Codex's read-only sandbox blocks the socket), so the verb is not a channel it
+// has at all. It answers the envelope's `memory` field instead, which the app
+// lifts at the same seam it lifts `narrative`.
+//
+// READING is not split that way, and does not need to be. A read-only session
+// restricts writes, not reads: Claude strips only Write/Edit/NotebookEdit and
+// Codex's read-only sandbox permits reads filesystem-wide, so the log's absolute
+// path — which sits under the app's config root, outside every workspace — is
+// legible to both. The digest's own header is what names it, on both branches.
+//
+// The section is omitted entirely when the app could not resolve a tree. A
+// contract that names a channel and then shows no log would read as a broken
+// promise, and an element told to record notes nothing collects is worse than
+// one never asked.
+func writeMemorySection(prompt *strings.Builder, access def.Access, digest MemoryDigest) {
+	if strings.TrimSpace(string(digest)) == "" {
+		return
+	}
+	if access == def.AccessWrite {
+		prompt.WriteString("Record durable lessons for later work in this campaign as you learn them:\n")
+		prompt.WriteString("  agent-overflow memory add --kind <" + strings.Join(memory.Kinds, "|") + "> \"<text>\" [--file <path>]...\n")
+		prompt.WriteString("Run it when you learn the thing, not at the end: a note recorded during the work outlives an attempt that later fails. Write each note for an element with NO context — it will see your text and nothing else. Leave the envelope's `memory` field null.\n")
+	} else {
+		prompt.WriteString("Record durable lessons for later work in this campaign in the `memory` field of your final envelope: an array of {kind, text, files}, kind one of " + memory.KindList() + ". You run read-only, so the `agent-overflow memory add` command is not available to you and this field is your channel. Write each note for an element with NO context — it will see your text and nothing else. Null when there is nothing worth recording.\n")
+	}
+	prompt.WriteString(string(digest))
+	prompt.WriteString("\n")
 }
 
 // OutcomeFromEnvelope maps a previously validated control envelope to its

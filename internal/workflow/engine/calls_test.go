@@ -240,13 +240,7 @@ func TestCallPhaseParksWhenAnAbsentArgumentSeedsARequiredChildInput(t *testing.T
 	parent := startCaller(t, h)
 
 	requireItemState(t, h.store, parent, StateNeedsHuman, ReasonWiringError)
-	attempt := h.phaseAttempt(t, parent, "audit", 1)
-	if attempt.Status != "parked" {
-		t.Fatalf("call attempt = %+v, want the park recorded on it", attempt)
-	}
-	if !strings.Contains(string(attempt.OutputEnvelope), "job-notes (job-notes)") {
-		t.Fatalf("park envelope did not name the unresolved argument: %s", attempt.OutputEnvelope)
-	}
+	requireParkCause(t, h.phaseAttempt(t, parent, "audit", 1), "job-notes (job-notes)")
 	children, err := h.store.ListWorkItemCallChildren(parent, "audit", 1)
 	if err != nil {
 		t.Fatal(err)
@@ -267,9 +261,7 @@ func TestCallPhaseParksWhenAnAbsentArgumentNamesNoChildInput(t *testing.T) {
 	parent := startCaller(t, h)
 
 	requireItemState(t, h.store, parent, StateNeedsHuman, ReasonWiringError)
-	if envelope := h.phaseAttempt(t, parent, "audit", 1).OutputEnvelope; !strings.Contains(string(envelope), "job-notes") {
-		t.Fatalf("park envelope did not name the unresolved argument: %s", envelope)
-	}
+	requireParkCause(t, h.phaseAttempt(t, parent, "audit", 1), "job-notes")
 }
 
 func TestCallChildFailedFailsParentPhaseAndRerunCallsAgain(t *testing.T) {
@@ -413,13 +405,8 @@ func TestSelfCallRecursionStopsAtDeclaredMaxDepth(t *testing.T) {
 	if len(grandchildren) != 0 {
 		t.Fatalf("depth bound did not stop the recursion: %+v", grandchildren)
 	}
-	envelope := decodeEnvelope(t, h.phaseAttempt(t, second.ID, "again", 1).OutputEnvelope)
-	if !strings.Contains(envelope.Reason, "max_depth of 2") {
-		t.Fatalf("park envelope = %+v, want the declared bound", envelope)
-	}
-	if !strings.Contains(envelope.Reason, "recurse.again -> recurse.again -> recurse.again") {
-		t.Fatalf("park envelope must carry the call chain: %+v", envelope)
-	}
+	requireParkCause(t, h.phaseAttempt(t, second.ID, "again", 1),
+		"max_depth of 2", "recurse.again -> recurse.again -> recurse.again")
 	// Its ancestors are still waiting on it; a bounded recursion parks the run
 	// that hit the bound, not the tree.
 	requireItemState(t, h.store, first.ID, StateRunning, "")

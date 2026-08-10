@@ -77,6 +77,10 @@ func (e *Engine) beginRun(item *runtimeItem, resolved *ResolvedDefinition) error
 	if len(workflow.Phases) == 0 {
 		return e.parkUnstartable(item, fmt.Errorf("resolve item %q workflow: workflow has no phases", item.item.ID))
 	}
+	// Named before the freeze, not after it: a failure from here on is a run
+	// that could not start its FIRST PHASE, and knowing which phase is what lets
+	// the park rest on an attempt row carrying its cause instead of on nothing.
+	item.phaseID = workflow.Phases[0].ID
 	snapshot, err := json.Marshal(Snapshot{Workflow: workflow, WorkspaceNeed: resolved.WorkspaceNeed})
 	if err != nil {
 		return e.parkUnstartable(item, fmt.Errorf("snapshot item %q workflow: %w", item.item.ID, err))
@@ -95,26 +99,82 @@ func (e *Engine) beginRun(item *runtimeItem, resolved *ResolvedDefinition) error
 	item.item.StartedAt = startedAt
 	item.workflow = workflow
 	item.workspaceNeed = resolved.WorkspaceNeed
-	item.phaseID = workflow.Phases[0].ID
-	return e.enterPhase(item)
+	return e.enterPhase(item, entryFresh)
 }
 
+// parkUnstartable parks a run that never reached its first phase. A run whose
+// workflow would not resolve at all has no phase to rest an attempt on, so its
+// cause reaches the caller and the engine log and stops there — which is the
+// honest record, since a run with zero attempt rows is exactly a run that never
+// entered a phase.
 func (e *Engine) parkUnstartable(item *runtimeItem, cause error) error {
 	return errors.Join(
-		e.teardown(item, teardownRequest{phaseStatus: "parked", nextState: StateNeedsHuman, reason: ReasonSetupFailed}),
+		e.teardown(item, teardownRequest{
+			cause: cause, phaseStatus: "parked",
+			nextState: StateNeedsHuman, reason: ReasonSetupFailed,
+		}),
 		cause,
 	)
 }
 
+// phaseEntry says what the attempt about to be created IS: a fresh entry into
+// the phase, or the continuation of a round that already ran.
+//
+// It is a parameter rather than something inferred from the item, because
+// nothing on the item distinguishes the two — a warm loop round and an `Answer`
+// continuation both carry a prior thread id, and both create a new attempt row.
+// What separates them is which caller asked, so the caller says. It decides one
+// thing today: whether pending operator guidance is delivered here. A
+// continuation continues a turn the operator was already steering; guidance
+// delivered into it would arrive as a second instruction to a round that has
+// already read the first.
+type phaseEntry int
+
+const (
+	// entryFresh starts the phase over: a gate advance or loop, a resume aimed at
+	// a phase, a rerun, the run's first phase, and the resume whose parked
+	// attempt had no session left to continue.
+	entryFresh phaseEntry = iota
+	// entryContinuation continues the round the parked attempt was in, on the
+	// session it parked on: an answered question, a finalized takeover, a bare
+	// resume of a continuable park.
+	entryContinuation
+)
+
+// entryPromptRoute resolves which loop route's `prompt:` override the attempt
+// being created renders.
+//
+// A FRESH entry renders what the decision that produced it armed — and only
+// that: `consumePromptRoute` refuses an arming whose route does not loop to
+// THIS phase, so a coordinate that outlived its entry is inert rather than a
+// body borrowed by the next phase. A CONTINUATION renders what the round it
+// continues rendered, restored from that round's own persisted input, because a
+// continuation is the same round asked the same narrower question.
+func entryPromptRoute(item *runtimeItem, entry phaseEntry, phaseID string) *PromptRoute {
+	if entry == entryContinuation {
+		return item.promptRoute
+	}
+	return consumePromptRoute(item.workflow, item.nextPromptRoute, phaseID)
+}
+
+// consumesPriorSession reports whether entering this phase can hand a prior
+// provider session to something that starts a turn on it. Only a call phase
+// cannot: it starts a child run and rests.
+func consumesPriorSession(phase def.Phase) bool { return !phase.IsCall() }
+
 // enterPhase records the next phase attempt and starts it as soon as the
 // global pause is clear and its resources are free. A held phase leaves the
 // item running and waiting, never parked.
-func (e *Engine) enterPhase(item *runtimeItem) error {
+func (e *Engine) enterPhase(item *runtimeItem, entry phaseEntry) error {
 	phase, ok := findPhase(item.workflow, item.phaseID)
 	if !ok {
+		cause := fmt.Errorf("phase %q is absent from item %q snapshot", item.phaseID, item.item.ID)
 		return errors.Join(
-			e.teardown(item, teardownRequest{phaseStatus: "parked", nextState: StateNeedsHuman, reason: ReasonWiringError}),
-			fmt.Errorf("phase %q is absent from item %q snapshot", item.phaseID, item.item.ID),
+			e.teardown(item, teardownRequest{
+				cause: cause, phaseStatus: "parked",
+				nextState: StateNeedsHuman, reason: ReasonWiringError,
+			}),
+			cause,
 		)
 	}
 	if halted, err := e.enforceBudget(item); halted {
@@ -124,12 +184,45 @@ func (e *Engine) enterPhase(item *runtimeItem) error {
 	// clears it on every exit path; this keeps that true by construction rather
 	// than by the caller having come through teardown.
 	item.fan = nil
-	vars, priorPhases, err := e.variableContext(item, nil)
+	vars, priorPhases, err := e.variableContext(item, attemptRef{})
 	if err != nil {
-		return errors.Join(e.teardown(item, teardownRequest{phaseStatus: "parked", nextState: StateNeedsHuman, reason: ReasonWiringError}), err)
+		return errors.Join(e.teardown(item, teardownRequest{
+			cause: err, phaseStatus: "parked",
+			nextState: StateNeedsHuman, reason: ReasonWiringError,
+		}), err)
+	}
+	delivered, err := e.deliverGuidance(item, phase, entry)
+	if err != nil {
+		return errors.Join(e.teardown(item, teardownRequest{
+			cause: err, phaseStatus: "parked",
+			nextState: StateNeedsHuman, reason: ReasonWiringError,
+		}), err)
+	}
+	if len(delivered) > 0 {
+		item.feedback = appendFeedbackNote(item.feedback, guidanceNote(delivered))
+	}
+	// Assigned on every entry, delivered or not: they belong to the attempt being
+	// created, so leaving a previous attempt's values in place would render them
+	// again for a round nobody asked for either on. The entries stay owed an
+	// acknowledgement until a session that renders them starts (`ackGuidance`).
+	item.guidance, item.guidanceUnacked = delivered, delivered
+	// The arming is consumed here and nowhere else, and a fresh entry consumes it
+	// only when the armed route's loop target is the phase being entered.
+	item.promptRoute = entryPromptRoute(item, entry, phase.ID)
+	item.nextPromptRoute = nil
+	if !consumesPriorSession(phase) {
+		// A call phase runs no turn of its own: it starts a child run and rests.
+		// Nothing in this attempt will ever hand a prior session to a runner, so
+		// an id still set here would be consumed by whatever phase starts NEXT.
+		// Every other shape consumes it at its own start — `startRunner` for a
+		// single-shape phase, the join for a fan-out.
+		item.priorThreadID = ""
 	}
 	attempt := nextAttempt(priorPhases, phase.ID)
-	phaseInput := PhaseInput{Vars: vars, Feedback: item.feedback}
+	phaseInput := PhaseInput{
+		Vars: vars, Feedback: item.feedback,
+		PromptRoute: item.promptRoute, Guidance: delivered,
+	}
 	if phase.IsCall() {
 		// A call phase's input *is* its argument map: it runs no turn, so the args
 		// are the only thing it hands anywhere. Persisting them on the attempt row
@@ -145,30 +238,45 @@ func (e *Engine) enterPhase(item *runtimeItem) error {
 	}
 	input, err := json.Marshal(phaseInput)
 	if err != nil {
-		return errors.Join(e.teardown(item, teardownRequest{phaseStatus: "parked", nextState: StateNeedsHuman, reason: ReasonWiringError}), err)
+		return errors.Join(e.teardown(item, teardownRequest{
+			cause:       fmt.Errorf("encode phase attempt %s/%s/%d input: %w", item.item.ID, phase.ID, attempt, err),
+			phaseStatus: "parked", nextState: StateNeedsHuman, reason: ReasonWiringError,
+		}), err)
 	}
 	if err := e.store.CreateWorkItemPhase(store.WorkItemPhase{
 		ItemID: item.item.ID, PhaseID: phase.ID, Attempt: attempt,
 		InputEnvelope: input, Status: "running", StartedAt: e.timestamp(),
 	}); err != nil {
 		createErr := fmt.Errorf("create phase attempt %s/%s/%d: %w", item.item.ID, phase.ID, attempt, err)
-		return errors.Join(e.teardown(item, teardownRequest{phaseStatus: "parked", nextState: StateNeedsHuman, reason: ReasonSetupFailed}), createErr)
+		return errors.Join(e.teardown(item, teardownRequest{
+			cause: createErr, phaseStatus: "parked",
+			nextState: StateNeedsHuman, reason: ReasonSetupFailed,
+		}), createErr)
 	}
 	item.attempt = attempt
+	// The pending slot is deliberately NOT cleared here. The row carrying the
+	// entries now exists, but nothing has rendered them yet: this attempt may
+	// still be held by a pause, parked by a failed acquisition, or lost to a
+	// crash, and a slot cleared against a turn that never ran is the silent loss
+	// the whole ordering rule exists to prevent. `ackGuidance` clears it once a
+	// provider session that renders the block has started.
 	e.emitter.Emit("workflow:phase-state", PhaseEvent{
 		ItemID: item.item.ID, PhaseID: phase.ID, Attempt: attempt, Status: "running",
 	})
 
 	if e.paused {
-		e.addWaiting(item, nil)
+		e.addWaitingPhase(item, vars)
 		return nil
 	}
 	acquired, ok, err := e.acquirePhaseResources(item.item.ProjectID, phase)
 	if err != nil {
-		return errors.Join(e.teardown(item, teardownRequest{phaseStatus: "parked", nextState: StateNeedsHuman, reason: acquisitionParkReason(err)}), err)
+		return errors.Join(e.teardown(item, teardownRequest{
+			cause: err, phaseStatus: "parked",
+			nextState: StateNeedsHuman, reason: acquisitionParkReason(err),
+		}), err)
 	}
 	if !ok {
-		e.addWaiting(item, nil)
+		e.addWaitingPhase(item, vars)
 		return nil
 	}
 	item.acquired = acquired
@@ -176,10 +284,15 @@ func (e *Engine) enterPhase(item *runtimeItem) error {
 }
 
 func (e *Engine) startRunner(item *runtimeItem, phase def.Phase, vars map[string]any) error {
+	// The one place a route's prompt override becomes the body that runs. The
+	// phase handed to the runner is otherwise the snapshot's, and a request built
+	// without going through here cannot exist: this is the only constructor of a
+	// phase-level RunRequest.
+	phase.Prompt = promptBody(item.workflow, phase, item.promptRoute)
 	request := RunRequest{
 		Key:  RunKey{ItemID: item.item.ID, PhaseID: item.phaseID, Attempt: item.attempt},
 		Item: item.item, Workflow: item.workflow, WorkspaceNeed: item.workspaceNeed,
-		Phase: phase, Vars: vars,
+		Phase: phase, Vars: vars, Guidance: item.guidance,
 		Feedback: cloneFeedback(item.feedback), PriorThreadID: item.priorThreadID,
 		FinalizeTakeover: item.takeoverFinalize,
 	}
@@ -234,6 +347,10 @@ func (e *Engine) finishRunnerStart(command runnerStartCommand) error {
 	item.runnerStartCancel = nil
 	if command.err == nil {
 		item.runnerActive = true
+		// The turn that renders this attempt's guidance block now exists, which is
+		// the event the pending slot is cleared against. Only an agent phase is a
+		// delivery boundary, so only one ever has entries owed here.
+		e.ackGuidance(item)
 		return nil
 	}
 	return e.parkStartFailure(item, command.err)
@@ -254,6 +371,12 @@ func (e *Engine) finishUnitStart(item *runtimeItem, command runnerStartCommand) 
 	clearUnitStart(unit)
 	if command.err == nil {
 		unit.runnerActive = true
+		if driver, runsWork := unit.definition.EffectiveDriver(); runsWork && driver == def.DriverAgent {
+			// The first agent element of the wave — a unit or the join — is the
+			// first turn that renders the phase entry's guidance block. A command
+			// unit renders no prompt, so its start acknowledges nothing.
+			e.ackGuidance(item)
+		}
 		return nil
 	}
 	return e.parkStartFailure(item, command.err)
@@ -270,7 +393,10 @@ func (e *Engine) parkStartFailure(item *runtimeItem, cause error) error {
 		reason = ReasonWiringError
 	}
 	return errors.Join(
-		e.teardown(item, teardownRequest{phaseStatus: "parked", nextState: StateNeedsHuman, reason: reason}),
+		e.teardown(item, teardownRequest{
+			cause: cause, phaseStatus: "parked",
+			nextState: StateNeedsHuman, reason: reason,
+		}),
 		cause,
 	)
 }

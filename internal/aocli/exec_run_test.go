@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"agent-overflow/internal/untrustedtext"
 )
 
 // `agent-overflow run …`. The shared skeleton — session resolution, usage and exit codes,
@@ -519,14 +521,22 @@ func TestRunRefreshDefReachesTheAppFromEveryPosition(t *testing.T) {
 
 // The freeze is invisible from the outside, so the two verbs that can undo it
 // have to say so where a caller reads before typing.
+//
+// The comparison unwraps both sides. A usage page is prose wrapped for a
+// terminal, so where its line breaks fall is a rendering detail — pinning them
+// makes an edit to a neighbouring sentence fail on the wrap rather than on
+// anything a caller would notice.
 func TestRunUsageStatesTheDefinitionFreezeAndItsRepair(t *testing.T) {
 	for _, test := range []struct{ args, wants []string }{
 		{[]string{"run", "resume", "--help"}, []string{
 			"[--refresh-def]",
-			"The\ndefinition a run froze at start is what it runs",
-			"re-reads the workflow\nand its prompt files from disk",
+			"The definition a run froze at start is what it runs",
+			"re-reads the workflow and its prompt files from disk",
 			"It applies at a fresh phase entry only",
-			"a call reads its target\nfrom disk every time it is made",
+			"a call reads its target from disk every time it is made",
+			// Every continuable park, because this is the page that says which
+			// resumes --refresh-def is refused on.
+			"paused, interrupted, checkpoint, unit-failed, or retries-exhausted continues an attempt whose work was launched under the frozen definition",
 		}},
 		{[]string{"run", "rerun", "--help"}, []string{
 			"[--refresh-def]",
@@ -538,10 +548,57 @@ func TestRunUsageStatesTheDefinitionFreezeAndItsRepair(t *testing.T) {
 		if code != exitOK {
 			t.Fatalf("%v exit = %d (%s)", test.args, code, stderr)
 		}
+		unwrapped := unwrapText(stdout)
 		for _, want := range test.wants {
-			if !strings.Contains(stdout, want) {
+			if !strings.Contains(unwrapped, unwrapText(want)) {
 				t.Fatalf("%v usage is missing %q:\n%s", test.args, want, stdout)
 			}
 		}
+	}
+}
+
+// unwrapText collapses every run of whitespace to one space, so an assertion
+// about what a usage page SAYS is not also an assertion about where it wraps.
+func unwrapText(text string) string {
+	return strings.Join(strings.Fields(text), " ")
+}
+
+// An engine-diagnosed park had no readable surface at all: `run status` showed
+// `status=parked` and the reader went to the filesystem. The cause is a field on
+// the attempt line, bounded because a status block carries one line per attempt.
+func TestRunStatusRendersTheParkCauseBounded(t *testing.T) {
+	oversize := strings.Repeat("c", maxCauseRunes*3)
+	backend := newFakeBackend(t)
+	backend.reply("WorkflowAgentRunStatus", map[string]any{
+		"itemId": "run-1", "workflowId": "flow", "state": "needs-human", "reason": "setup-failed",
+		"resting": true,
+		"phases": []map[string]any{
+			{"phaseId": "implement", "attempt": 1, "status": "parked",
+				"cause": `provision worktree: branch "ao/wave-3" already exists`},
+			{"phaseId": "plan", "attempt": 1, "status": "completed"},
+			{"phaseId": "wide", "attempt": 1, "status": "parked", "cause": oversize},
+		},
+	})
+	code, stdout, stderr := runCLI([]string{"run", "status", "run-1"}, backend.env())
+	if code != exitOK {
+		t.Fatalf("exit = %d (%s)", code, stderr)
+	}
+	// Quoted as untrusted data: the sentence is the engine's, but the branch
+	// name inside it is not.
+	if !strings.Contains(stdout,
+		`phase=implement attempt=1 status=parked cause="provision worktree: branch \"ao/wave-3\" already exists"`) {
+		t.Fatalf("status output is missing the park cause:\n%s", stdout)
+	}
+	// An attempt with no engine-diagnosed cause carries no empty column.
+	if !strings.Contains(stdout, "phase=plan attempt=1 status=completed\n") {
+		t.Fatalf("a causeless attempt rendered a cause field:\n%s", stdout)
+	}
+	if strings.Contains(stdout, oversize[:maxCauseRunes+1]) {
+		t.Fatalf("the park cause escaped its rune budget:\n%s", stdout)
+	}
+	// The marker survives quoting with its ellipsis escaped to ASCII, which is
+	// what makes a cut-off cause distinguishable from a short one.
+	if !strings.Contains(stdout, untrustedtext.Quote(oversize, maxCauseRunes)) {
+		t.Fatalf("the cause was truncated without the visible marker:\n%s", stdout)
 	}
 }

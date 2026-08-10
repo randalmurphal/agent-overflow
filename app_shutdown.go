@@ -351,6 +351,11 @@ func (a *App) Shutdown(ctx context.Context) error {
 	if a.logger != nil {
 		record("close logger", a.logger.Close())
 	}
+	// The engine stopped at step 1b, so nothing is still appending here
+	// either.
+	if a.engineLogger != nil {
+		record("close workflow engine logger", a.engineLogger.Close())
+	}
 
 	// Step 8b: final settle-goroutine drain. Provider session close at
 	// Step 4 may have emitted session_died / EventTurnComplete events

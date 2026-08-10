@@ -3,7 +3,6 @@ package engine
 import (
 	"encoding/json"
 	"fmt"
-	"log"
 
 	"agent-overflow/internal/workflow/def"
 )
@@ -137,15 +136,11 @@ func (e *Engine) freezeSnapshot(item *runtimeItem, snapshot Snapshot, encoded js
 // else" looks. The run record needs no column for it — the snapshot it now
 // carries IS the durable evidence.
 func (e *Engine) noteDefinitionRefresh(item *runtimeItem, entryPhase string) {
-	if item.feedback == nil {
-		item.feedback = &Feedback{}
-	}
-	if item.feedback.Note != "" {
-		item.feedback.Note += "\n"
-	}
-	item.feedback.Note += definitionRefreshNote
-	log.Printf(
-		"workflow definition refresh %s: workflow %s re-read from disk for a fresh entry into phase %s (workspace need %s)",
-		item.item.ID, item.workflow.ID, entryPhase, item.workspaceNeed,
-	)
+	item.feedback = appendFeedbackNote(item.feedback, definitionRefreshNote)
+	e.logEvent(LogEvent{
+		Event: LogEventDefinitionRefresh, ItemID: item.item.ID, ProjectID: item.item.ProjectID,
+		PhaseID: entryPhase,
+		Message: fmt.Sprintf("workflow %s re-read from disk for a fresh entry (workspace need %s)",
+			item.workflow.ID, item.workspaceNeed),
+	})
 }

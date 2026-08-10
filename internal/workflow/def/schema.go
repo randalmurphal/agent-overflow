@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"reflect"
+	"sort"
 )
 
 // JSONSchema is the supported JSON-Schema fragment vocabulary for variables.
@@ -32,6 +33,18 @@ var authoringSchema []byte
 
 // AuthoringSchema returns an isolated copy of the published authoring schema.
 func AuthoringSchema() []byte { return append([]byte(nil), authoringSchema...) }
+
+// validateVariableDeclaration checks one authored variable whole: its schema,
+// plus the fields that are legal only on a reserved binding. It is what every
+// ordinary declaration site calls, so `window:` — a history binding's field —
+// cannot sit unread on a workflow input, a phase output, or a unit output.
+func validateVariableDeclaration(variable Variable, element string) []Finding {
+	findings := validateSchemaDefinition(variable.Schema, element)
+	if variable.Window != 0 {
+		findings = append(findings, finding("variable.window", element, fmt.Sprintf("window is valid only on a %s<phase> input binding", HistoryPrefix)))
+	}
+	return findings
+}
 
 func validateSchemaDefinition(schema JSONSchema, element string) []Finding {
 	var findings []Finding
@@ -197,24 +210,53 @@ func validateJSONValue(schema JSONSchema, value any, path string) []string {
 // ValidateInputs typechecks one run's supplied workflow inputs against the
 // same schema validator used for authored variable contracts. Undeclared
 // inputs are rejected so a typo cannot be persisted as an inert seed.
+//
+// It is the WHOLE-object answer: every required input has to be present. A
+// caller changing one value on a run that already started asks ValidateInput
+// instead, which is the per-value half this shares — one validator, two
+// questions, so a seed accepted at start and a seed accepted later can never be
+// judged by different rules.
 func ValidateInputs(workflow Workflow, inputs map[string]any) []string {
+	// Both loops walk a SORTED name list, so a caller printing several refusals
+	// prints them in the same order twice: map iteration would otherwise reshuffle
+	// one refusal's text between two identical requests, and the missing-required
+	// half is the one a first run is most likely to hit several of at once.
 	errors := make([]string, 0)
-	for name, variable := range workflow.Inputs {
-		value, present := inputs[name]
-		if !present {
-			if !variable.Optional {
-				errors = append(errors, fmt.Sprintf("$.seeds.%s is required", name))
-			}
+	for _, name := range sortedNames(workflow.Inputs) {
+		if variable := workflow.Inputs[name]; variable.Optional {
 			continue
 		}
-		errors = append(errors, validateJSONValue(variable.Schema, value, "$.seeds."+name)...)
-	}
-	for name := range inputs {
-		if _, declared := workflow.Inputs[name]; !declared {
-			errors = append(errors, fmt.Sprintf("$.seeds.%s is not declared by workflow %q", name, workflow.ID))
+		if _, present := inputs[name]; !present {
+			errors = append(errors, fmt.Sprintf("$.seeds.%s is required", name))
 		}
 	}
+	for _, name := range sortedNames(inputs) {
+		errors = append(errors, ValidateInput(workflow, name, inputs[name])...)
+	}
 	return errors
+}
+
+// sortedNames is the deterministic iteration order both halves of ValidateInputs
+// take over their maps.
+func sortedNames[V any](values map[string]V) []string {
+	names := make([]string, 0, len(values))
+	for name := range values {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// ValidateInput typechecks one supplied input value against the workflow's
+// declaration of it. An undeclared name is refused here rather than left to the
+// caller to notice: a value the workflow never declared is inert wherever it is
+// written, so no caller of this function has a legitimate reason to accept one.
+func ValidateInput(workflow Workflow, name string, value any) []string {
+	variable, declared := workflow.Inputs[name]
+	if !declared {
+		return []string{fmt.Sprintf("$.seeds.%s is not declared by workflow %q", name, workflow.ID)}
+	}
+	return validateJSONValue(variable.Schema, value, "$.seeds."+name)
 }
 
 func numericallyEqual(left, right any) bool {

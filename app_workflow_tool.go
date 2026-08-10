@@ -18,6 +18,7 @@ import (
 	"agent-overflow/internal/procutil"
 	"agent-overflow/internal/workflow/def"
 	"agent-overflow/internal/workflow/engine"
+	"agent-overflow/internal/workflow/memory"
 	"agent-overflow/internal/workflow/profile"
 	workflowrunner "agent-overflow/internal/workflow/runner"
 )
@@ -236,6 +237,10 @@ func (r *workflowAppRunner) awaitToolPhase(runKey string, attempt *workflowToolA
 	if validationErr := attempt.contract.Validate(payload); validationErr != nil {
 		report.Findings = findingsForEnvelopeError(validationErr)
 		report.Narrative, payload = def.SplitEnvelopeNarrative(payload)
+		// Nothing is recorded from a REFUSED envelope: its notes are exactly
+		// what post-validation just declined to accept. Stripping the field
+		// anyway is what keeps the partial payload below prose-free.
+		_, payload = def.SplitEnvelopeMemory(payload)
 		r.writeToolNarrative(attempt, report)
 		// A deterministic command has no feedback turn to correct itself, so
 		// this goes straight to the exhaustion outcome an agent reaches after
@@ -254,6 +259,13 @@ func (r *workflowAppRunner) awaitToolPhase(runKey string, attempt *workflowToolA
 	// agent path does it — the account leads the narrative file, the process
 	// output tail follows, and the engine never sees prose.
 	report.Narrative, payload = def.SplitEnvelopeNarrative(payload)
+	// Campaign memory is stripped and recorded on the same argument: one
+	// contract, one strip point, and a command that learned something durable
+	// (a check that only fails on a cold cache, say) has the same channel an
+	// agent does.
+	var notes []memory.Draft
+	notes, payload = def.SplitEnvelopeMemory(payload)
+	r.app.recordEnvelopeMemory(attempt.key, notes)
 	r.writeToolNarrative(attempt, report)
 	outcome, err := workflowrunner.OutcomeFromEnvelope(payload)
 	if err != nil {
@@ -381,7 +393,7 @@ func workflowToolCommand(projectProfile *profile.Profile, phase def.Phase, vars 
 	default:
 		return "", nil, fmt.Errorf("phase declares neither a check nor a command binding")
 	}
-	argv, err := interpolateToolArgv(binding, template, bound, phase.Inputs, vars)
+	argv, err := interpolateToolArgv(binding, template, bound, def.PhaseDeclarations(phase), vars)
 	return binding, argv, err
 }
 

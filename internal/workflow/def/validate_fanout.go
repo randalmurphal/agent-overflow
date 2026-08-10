@@ -87,6 +87,7 @@ func validateFanOut(workflow Workflow, phase Phase, phaseElement string, maxWidt
 			add("phase.fan-out-unit", joinElement, "join id must match [a-z0-9-]+")
 		}
 		findings = append(findings, validateUnitDefinition(*phase.Join, joinElement, unitRoleJoin)...)
+		findings = append(findings, joinAccountingFindings(phase, phaseElement)...)
 	}
 	return findings
 }
@@ -144,6 +145,9 @@ func validateElementBinding(workflow Workflow, phase Phase, phaseElement string)
 	if _, collision := workflow.Inputs[binding]; collision {
 		findings = append(findings, finding("namespace.collision", phaseElement, fmt.Sprintf("element binding %q collides with workflow input %q", binding, binding)))
 	}
+	if reservedInputName(binding) {
+		findings = append(findings, finding("namespace.collision", phaseElement, fmt.Sprintf("element binding %q collides with a reserved input: %s", binding, reservedInputMessage(binding))))
+	}
 	for _, other := range workflow.Phases {
 		if other.ID == binding {
 			findings = append(findings, finding("namespace.collision", phaseElement, fmt.Sprintf("element binding %q collides with phase %q", binding, binding)))
@@ -160,6 +164,14 @@ func validateElementBinding(workflow Workflow, phase Phase, phaseElement string)
 // a unit with two of them or none would make the discriminator a guess.
 func validateUnitDefinition(unit Unit, element, role string) []Finding {
 	var findings []Finding
+	// Checked before the call-unit branch returns, so the refusal reaches every
+	// shape of unit that is not a join. A work unit consolidates nothing and
+	// answers its own envelope, so the accounting obligation would hold it to a
+	// contract it does not own — refused rather than silently inert.
+	if unit.AccountsForUnits && role != unitRoleJoin {
+		findings = append(findings, finding("join.accounting", element,
+			"accounts_for_units is valid on a join only: it holds the element that answers the phase's envelope to naming every unit it merged or blocked"))
+	}
 	command := strings.TrimSpace(unit.Command)
 	// `effort:` counts as an agent field for exactly the reason provider/model do:
 	// it configures a model turn, so declaring it beside a command — or on a call
@@ -265,7 +277,7 @@ func validateUnitOutputs(unit Unit, element, role string) []Finding {
 		if driver, runsWork := unit.EffectiveDriver(); runsWork && driver == DriverTool && ReservedToolOutput(name) {
 			findings = append(findings, finding("output.reserved", outputElement, "the tool driver always supplies this output; remove the declaration"))
 		}
-		findings = append(findings, validateSchemaDefinition(output.Schema, outputElement)...)
+		findings = append(findings, validateVariableDeclaration(output, outputElement)...)
 	}
 	return findings
 }

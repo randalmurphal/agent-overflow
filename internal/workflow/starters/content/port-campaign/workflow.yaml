@@ -25,28 +25,87 @@
 #     tree at its next call boundary (D36), and `checkpoint-every` below parks
 #     it on a schedule.
 #
-# `merge-unit-branches` must write its control envelope to $AO_ENVELOPE:
-# outputs.conflicts (workspace-relative paths, empty when clean). It exits
-# non-zero on conflict; the gate reads that through the tool driver's own
-# `passed` output. The units to merge reach it as one JSON argv element - bind
-# it with "{{units}}" and read id, status, branch, and worktree from each entry.
+# The merge join is bound to `merge-unit-branches`, and a reference
+# implementation is scaffolded beside this definition as
+# `<id>-merge-unit-branches.py` (where `<id>` is what you passed to
+# `workflow new --id`). Bind that name in the project profile's command map to
+# the argv ["python3", "<abs path to the scaffolded script>", "{{units}}"].
+#
+# The units reach it as one JSON argv element with id, status, branch, and
+# worktree per entry. It merges the lane branches ONE AT A TIME and a lane that
+# conflicts is aborted, skipped, and REPORTED - it never stops the lanes behind
+# it. The join declares `accounts_for_units: true`, so the engine refuses a done
+# envelope unless every unit appears exactly once across outputs.merged and
+# outputs.blocked: a lane can no longer be silently lost by a merge that gave up
+# early. A unit a human DROPPED is one of those units and is accounted for in
+# outputs.blocked with a reason naming the drop. The script exits non-zero when
+# a human still has to land something - a conflict, not a drop - which the gate
+# reads through the tool driver's own `passed` output.
 #
 # Disposition is MANUAL. The campaign branch is the deliverable and it stays
 # where a human can read it; nothing here merges to a base branch on its own.
 id: port-campaign
 name: Port campaign
-description: Run a long port campaign as one call tree - a Claude planner schedules each wave, every task runs as its own child workflow in its own worktree, the wave is merged and verified on the campaign branch, and the final phase calls the next wave.
+description: Run a long port campaign as one call tree - a Claude planner schedules each wave against a fixed acceptance-criteria ledger, every task runs as its own child workflow in its own worktree, the wave is merged and verified on the campaign branch, and the final phase calls the next wave.
+# What this campaign will not do, carried into every element's prompt for the
+# life of the run. Scope growth one reasonable-looking decision at a time is how
+# a forty-wave campaign fails, and a boundary each wave re-derives is a boundary
+# that moves.
+non_goals:
+  - Redesigning or refactoring code that is not on a scheduled task's targets. Note it for a future campaign instead.
+  - Changing public APIs, wire formats, or database schemas unless a scheduled task's intent says to.
+  - Weakening, skipping, or deleting a test to make a wave pass. A failing test is a finding, never an obstacle.
+  - Adding dependencies, build steps, or tooling the campaign goal did not ask for.
+  - Reformatting, renaming, or restyling files a task does not otherwise change.
 inputs:
   campaign-goal:
     schema:
       type: string
       multiline: true
       description: What the campaign is porting, to what, and the standing rules every wave must respect.
+  criteria:
+    schema:
+      type: array
+      description: The campaign's acceptance criteria, fixed at the start and never rewritten by a wave. They are what "done" means; the planner reports coverage against them instead of re-forming its own opinion of done every wave.
+      items:
+        type: object
+        properties:
+          id:
+            type: string
+          statement:
+            type: string
+        required: [id, statement]
+        additionalProperties: false
+  coverage:
+    schema:
+      type: array
+      description: The previous wave's ledger of where each criterion stood. Written by that wave's planner and forwarded through the self-call; leave it empty when starting a campaign.
+      items:
+        type: object
+        properties:
+          id:
+            type: string
+          state:
+            type: string
+            enum: [uncovered, covered, satisfied, regressed]
+          evidence:
+            type: string
+          lane:
+            type: string
+        required: [id, state, evidence, lane]
+        additionalProperties: false
+    optional: true
   max-tasks:
     schema:
       type: number
       minimum: 1
       description: Upper bound on the tasks one wave schedules. Keep it at or under the project's max_fan_out_width, which refuses a wider expansion rather than truncating it.
+  # This is a seed rather than the reserved `call-depth` read on purpose. The
+  # engine's read is how deep THIS run sits in THIS call tree, so a campaign
+  # picked back up as a fresh root starts again at 0 while its wave numbering
+  # continues - which is why the ordinal is content here. Use `{{call-depth}}`
+  # when what you want really is the tree depth: the engine supplies it, no
+  # declaration exists to get wrong, and nothing downstream can restate it.
   wave-number:
     schema:
       type: number
@@ -78,6 +137,8 @@ outputs:
     from: plan.next-wave-number
   carry-forward:
     from: plan.carry-forward
+  coverage:
+    from: plan.coverage
 phases:
   - id: plan
     name: Plan this wave
@@ -91,6 +152,36 @@ phases:
         schema:
           type: string
           multiline: true
+      criteria:
+        schema:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: string
+              statement:
+                type: string
+            required: [id, statement]
+            additionalProperties: false
+      coverage:
+        schema:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: string
+              state:
+                type: string
+                enum: [uncovered, covered, satisfied, regressed]
+              evidence:
+                type: string
+              lane:
+                type: string
+            required: [id, state, evidence, lane]
+            additionalProperties: false
+        optional: true
       max-tasks:
         schema:
           type: number
@@ -140,10 +231,28 @@ phases:
           type: number
           minimum: 0
           description: Number of entries in tasks. Reported separately so the gate can route on it.
+      coverage:
+        schema:
+          type: array
+          description: Where every criterion stands after this wave was planned, one entry per criterion in the criteria input - never a subset. Forwarded to the next wave through the self-call, which is what makes the ledger cumulative without the engine knowing it exists.
+          items:
+            type: object
+            properties:
+              id:
+                type: string
+              state:
+                type: string
+                enum: [uncovered, covered, satisfied, regressed]
+              evidence:
+                type: string
+              lane:
+                type: string
+            required: [id, state, evidence, lane]
+            additionalProperties: false
       complete:
         schema:
           type: boolean
-          description: True only when the campaign goal is fully met and nothing is left to schedule. This is the campaign's exit - the run finishes here and never takes the self-call.
+          description: True only when every criterion is satisfied and nothing is left to schedule. This is the campaign's exit - the run finishes here and never takes the self-call.
       next-wave-number:
         schema:
           type: number
@@ -185,13 +294,32 @@ phases:
         schema:
           type: string
           multiline: true
+    # The merge contract (`accounts_for_units:` on the join below). Every unit of
+    # the wave appears exactly once across these two lists, and the engine
+    # refuses a done join envelope that leaves one out or names one twice - the
+    # failure mode being closed is a merge that stopped at its first conflict
+    # and reported a clean-looking result while an approved lane's work went
+    # nowhere and nothing said so.
     outputs:
-      conflicts:
+      merged:
         schema:
           type: array
-          description: Workspace-relative paths the merge could not reconcile. Empty on a clean merge.
+          description: Unit ids whose lane branch is now in the campaign branch.
           items:
             type: string
+      blocked:
+        schema:
+          type: array
+          description: Units whose work is not in the campaign branch, each with the reason. A conflicting lane is aborted, skipped, and listed here; it never stops the lanes behind it and it is never left unmentioned. A unit a human dropped is listed here too, with a reason saying so - it is accounted for, not repaired.
+          items:
+            type: object
+            properties:
+              unit:
+                type: string
+              reason:
+                type: string
+            required: [unit, reason]
+            additionalProperties: false
     # One unit per planned task, and each unit is a whole `port-one-task` run in
     # the unit's own sub-worktree. The lane owns implement, review and fix for
     # its task; this phase owns only isolation and the merge.
@@ -210,9 +338,12 @@ phases:
       id: merge
       command: merge-unit-branches
       access: write
+      accounts_for_units: true
     gate:
       routes:
-        # passed comes from the tool driver and is never declared above.
+        # passed comes from the tool driver and is never declared above. The
+        # script exits non-zero exactly when it blocked something, so this is
+        # "every lane landed" without a second way of saying it.
         - when:
             eq:
               ref: implement.passed
@@ -220,7 +351,7 @@ phases:
           to: verify
         - to: resolve-conflicts
   - id: resolve-conflicts
-    name: Resolve the merge conflicts
+    name: Land the lanes the merge could not take
     driver: agent
     provider: codex
     model: gpt-5.6-sol
@@ -231,11 +362,18 @@ phases:
         schema:
           type: string
           multiline: true
-      implement.conflicts:
+      implement.blocked:
         schema:
           type: array
           items:
-            type: string
+            type: object
+            properties:
+              unit:
+                type: string
+              reason:
+                type: string
+            required: [unit, reason]
+            additionalProperties: false
     outputs:
       resolved:
         schema:
@@ -327,6 +465,12 @@ phases:
     max_depth: 200
     args:
       campaign-goal: campaign-goal
+      # The criteria are the campaign's fixed definition of done and are handed
+      # on unchanged; the coverage ledger is this wave's answer against them.
+      # Both ride the ordinary self-call args, exactly as wave-number does - the
+      # ledger is CONTENT, and the engine has no idea it exists.
+      criteria: criteria
+      coverage: plan.coverage
       max-tasks: max-tasks
       wave-number: plan.next-wave-number
       checkpoint-every: checkpoint-every

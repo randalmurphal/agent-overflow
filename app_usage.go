@@ -4,7 +4,6 @@ import (
 	"fmt"
 
 	"agent-overflow/internal/store"
-	"agent-overflow/internal/usagecost"
 )
 
 // GetUsageStats aggregates the append-only usage ledger (per-turn,
@@ -48,30 +47,29 @@ func (a *App) GetUsageStats(query store.UsageQuery) ([]store.UsageBucket, error)
 		byBucket[buckets[i].Bucket] = &buckets[i]
 	}
 
+	// Composed through the one ledger pricing rule (app_usage_pricing.go), the
+	// same one the workflow budget check enforces with — a bucket's dollars and
+	// a run's dollars are the same arithmetic over the same rate table.
+	spendByBucket := make(map[string]*ledgerSpend, len(buckets))
 	for _, d := range details {
-		b, ok := byBucket[d.Bucket]
-		if !ok {
+		if _, ok := byBucket[d.Bucket]; !ok {
 			// QueryUsageDetail shares QueryUsage's filters and bucket
 			// expression, so every detail group's bucket key must
 			// already exist in the aggregate result.
 			return nil, fmt.Errorf("usage stats: detail bucket %q has no matching aggregate bucket", d.Bucket)
 		}
-		switch d.CostSource {
-		case "wire":
-			b.CostUSD += d.CostUSD
-		case "none":
-			estimate, priced := usagecost.Price(
-				d.Model, d.InputTokens, d.OutputTokens,
-				d.CacheReadInputTokens, d.CacheCreationInputTokens,
-			)
-			if priced {
-				b.CostUSD += estimate
-			} else {
-				b.UnpricedRows += d.Rows
-			}
-		default:
-			return nil, fmt.Errorf("usage stats: unexpected cost_source %q for model %q", d.CostSource, d.Model)
+		spend, ok := spendByBucket[d.Bucket]
+		if !ok {
+			spend = &ledgerSpend{}
+			spendByBucket[d.Bucket] = spend
 		}
+		if err := spend.add(d); err != nil {
+			return nil, fmt.Errorf("usage stats: %w", err)
+		}
+	}
+	for bucket, spend := range spendByBucket {
+		byBucket[bucket].CostUSD = spend.TotalUSD()
+		byBucket[bucket].UnpricedRows = spend.UnpricedRows
 	}
 
 	return buckets, nil

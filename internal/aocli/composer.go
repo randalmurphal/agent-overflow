@@ -77,12 +77,18 @@ type composerRow struct{ left, right string }
 var composerCommands = []composerRow{
 	{"agent-overflow run start <workflow-id> [--goal <text>] [--seed k=v] [--wait]", "start a run"},
 	{"agent-overflow run status|output|wait <run-id>", "check on one"},
+	{"agent-overflow run watch <run-id> [--tree] [--timeout <dur>]", "block; one line per state change until it rests — the verb that replaces a sleep loop"},
+	{"agent-overflow run inspect <run-id> [--phase <id> [--attempt <n>]]", "read one whole: worktree, branch, seeds, children, outputs"},
+	{"agent-overflow run narrative <run-id> --phase <id> [--unit <id>]", "read what an attempt says it did"},
 	{"agent-overflow run list [--active]", "see this project's runs"},
 	{"agent-overflow run pause|resume|cancel|rerun <run-id>", "control one"},
 	{"agent-overflow run retry-unit <run-id> <unit-id>|retry-failed-units <run-id>", "repair a fan-out"},
 	{"agent-overflow run resolve <run-id> --approve|--reject [--note <text>]", "decide a parked gate"},
 	{"agent-overflow run answer <run-id> <text>", "answer a parked question"},
 	{"agent-overflow run soft-stop <run-id> [--clear]", "stop after the current wave"},
+	{"agent-overflow run amend <run-id> --seed k=v", "fix a parked run's seed; the result says when the run reads it"},
+	{"agent-overflow run guide <run-id> \"<text>\"", "steer a working run; delivered at its next phase entry, never mid-turn"},
+	{"agent-overflow memory add --kind <kind> \"<text>\" | memory list", "the campaign's shared lessons, injected into every element's prompt"},
 	{"agent-overflow workflow list|validate <path>|schema", "author one"},
 	{"agent-overflow <command> --help", "full options"},
 }
@@ -100,7 +106,8 @@ var composerRepair = []composerRow{
 	{"gate (decision=park) → run resume", "a park: route declares no approve/reject; resume re-enters the phase once its cause is addressed"},
 	{"question → run answer <run-id> <text>", "the answer reaches the phase that asked"},
 	{"unit-failed → run retry-failed-units", "repairs every failed unit, the join included (retry-unit <run-id> <unit-id> repairs one); run resume continues the same attempt without a note"},
-	{"retries-exhausted → run resume", "re-enters the parked phase fresh; --phase <id> goes back further and refills loop budgets"},
+	{"stuck → run resume", "re-enters the parked phase fresh once the blocker the phase named is cleared; --refresh-def re-reads the definition when the fix was an edit to it"},
+	{"retries-exhausted → run resume", "continues the parked attempt on the session its turn died in; --phase <id> goes back further and is the only thing that refills loop budgets"},
 	{"state failed → run rerun", "starts the failed run's last phase again"},
 }
 
@@ -149,8 +156,8 @@ func RenderComposerContext(context ComposerContext) string {
 	block.WriteString("When a run needs a human, the reason picks the fix:\n")
 	writeComposerRows(&block, composerRepair)
 	block.WriteString("`run resume` continues and preserves finished work; `run resume --phase <id>` starts that phase over and re-runs everything in it, including runs it called.\n")
-	block.WriteString("A run renders the definition it froze at start, so a prompt edited while it was parked is read only by `run resume --phase <id> --refresh-def` (or `run rerun --refresh-def`) — a call already re-reads its target from disk every time it is made.\n")
-	block.WriteString("`run status` names a run's failed units, its parent, and what each phase attempt ran with — its per-attempt decision= field is what tells a human: gate from a park: one; any other reason names its own cause — read that run in the app.\n")
+	block.WriteString("A run renders the definition it froze at start, so a prompt edited while it was parked is read only by a resume that carries --refresh-def — accepted wherever the verb enters a phase FRESH: bare `run resume --refresh-def` on a park that re-enters fresh (stuck and the like), `run resume --phase <id> --refresh-def` on a continuable one, or `run rerun --refresh-def` — a call already re-reads its target from disk every time it is made.\n")
+	block.WriteString("`run status` names a run's failed units, its parent, and what each phase attempt ran with — its per-attempt decision= field is what tells a human: gate from a park: one; any other reason names its own cause, and `run inspect <run-id>` is where you read it: worktree, branch, seeds, called runs, and every attempt's outputs in one call.\n")
 	block.WriteString("Deciding a park needs the `resolve` grant in a workflow phase; an interactive session like this one holds it already.\n\n")
 
 	fmt.Fprintf(&block, "Workflow definitions for %s live in:\n", displayName(context.ProjectName))

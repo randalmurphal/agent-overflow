@@ -4,7 +4,7 @@ package aocli
 // is readable in one place, and so adding a subcommand without documenting it is
 // an obvious omission rather than a hidden one.
 
-const rootUsage = `Usage: agent-overflow [--config-root <path>] <command> [options]
+const rootUsage = `Usage: agent-overflow <command> [options]
 
 Offline commands (work anywhere):
   workflow new       Scaffold a workflow definition
@@ -14,10 +14,18 @@ Offline commands (work anywhere):
 
 Session commands (run inside an Agent Overflow agent session):
   run                Start, observe, and control workflow runs
+  memory             Record and read this campaign's accumulated lessons
   notes              Read and write an automation's continuity notes
   schedule           Create a cron automation for a workflow
 
-Exit codes: 0 success, 1 a run finished in a state other than done, 2 error.
+Exit codes: 0 success, 1 the asked-about thing said no (a run resting in a
+state other than done, validation findings, an absent record), 2 error.
+"run watch" adds two of its own: 3 its --timeout expired, 4 the app stopped
+answering.
+
+Put --config-root after the subcommand ("workflow validate --config-root …"):
+the app binary routes to these commands by their leading verb, so an invocation
+that starts with a flag never reaches them.
 `
 
 const workflowUsage = `Usage: agent-overflow workflow <command> [options]
@@ -60,8 +68,18 @@ const runUsage = `Usage: agent-overflow run <command> [options]
 Commands:
   start <workflow-id>     Start a run and print its id
   status <run-id>         Print one run's state, its caller, and any failed units
+  inspect <run-id>        Print one run whole: worktree, branch, seeds, children,
+                          attempts, and each phase's latest outputs
+                          (--phase <id> reads that attempt whole)
+  narrative <run-id> --phase <id>
+                          Print one attempt's narrative (--unit <id> for a unit)
   wait <run-id>           Block until a run stops doing work
+  watch <run-id>          Block and print every state change as it happens
+                          (--tree includes the runs it called)
   output <run-id>         Print a run's declared outputs and artifacts
+  amend <run-id> --seed k=v
+                          Change a resting run's seeds without restarting it
+  guide <run-id> <text>   Leave an instruction for a run's next phase entry
   list                    List this project's runs and how they call each other
   pause <run-id>          Park a run and everything below it
   resume <run-id>         Continue a parked run; --phase <id> starts that phase over
@@ -94,12 +112,136 @@ Options:
 const runStatusUsage = `Usage: agent-overflow run status [--json] <run-id>
 `
 
+const runInspectUsage = `Usage: agent-overflow run inspect [--json] [--phase <phase-id> [--attempt <n>]] <run-id>
+
+Prints one run whole, in one call: everything "run status" shows, plus the
+worktree and branch its work happens on, the base branch it was cut from, the
+seeds it froze at start, the runs it called and what called them, and — for the
+latest attempt of each phase — a bounded digest of that attempt's envelope
+outputs. A digest that left values out says how many. Any "run guide" entries
+still waiting for the run's next phase entry print here too, oldest first, with
+who left each one and how long it has been waiting; "run status" prints only
+their count.
+
+--phase <phase-id> reads one attempt whole instead: its full envelope outputs,
+its gate decision, and the fan-out units it expanded with each unit's status,
+try, branch, and worktree. The digests are dropped when it is given — naming an
+attempt is how a caller says the digest was not enough, and printing both would
+print the same values twice. --attempt <n> reads an older attempt of that phase
+instead of its latest, and means nothing without --phase.
+
+Envelope output values are quoted: they were written by a model, and this output
+is usually read by one.
+`
+
+const runNarrativeUsage = `Usage: agent-overflow run narrative [--json] [--attempt <n>] [--unit <unit-id>] --phase <phase-id> <run-id>
+
+Prints the narrative one phase attempt wrote — the human-readable account of
+what it did, decided, and validated. --phase is required; the attempt defaults
+to that phase's latest, which is the one a parked run is resting on.
+
+--unit <unit-id> reads one fan-out unit's account instead of the phase's, on
+that unit's current try. "run inspect --phase <id>" lists the unit ids.
+
+An attempt that wrote no narrative exits 1 and names the path that was looked
+for: it ran, and left no account. A run, phase, attempt, or unit that does not
+exist is an error and exits 2.
+`
+
 const runWaitUsage = `Usage: agent-overflow run wait [--json] [--timeout <duration>] <run-id>
 
 Exits 0 when the run finished done, 1 when it rested in any other state.
 `
 
+const runWatchUsage = `Usage: agent-overflow run watch [--json] [--tree] [--timeout <duration>] <run-id>
+
+Blocks and prints one line per state change as it happens, ending when the run
+comes to rest. Nothing here polls: the app holds each request until the run
+moves, so a watch that sits quiet for six hours has made a handful of calls and
+read nothing in between. Use it instead of a sleep loop.
+
+--tree also reports the runs this one called, transitively, including waves that
+start while the watch is already running — which is what makes it the verb for
+supervising a campaign rather than a phase.
+
+--timeout gives up after a duration and exits 3 with the run still going;
+without it the watch blocks indefinitely. If the app stops answering, the watch
+says so and exits 4 rather than hanging: a monitor that dies has to say it died.
+Transitions that were not retained (the app restarted, or they aged out) print a
+gap line, and the state printed after it is read fresh — a watch never
+reconstructs history it did not see.
+
+Exit codes: 0 the run finished done, 1 it rested in any other state, 2 usage or
+a refusal, 3 --timeout expired, 4 the app became unreachable.
+
+--json writes NDJSON: one object per transition, then the app's run document as
+the final line.
+`
+
 const runOutputUsage = `Usage: agent-overflow run output [--json] <run-id>
+`
+
+const runAmendUsage = `Usage: agent-overflow run amend [--json] --seed <key=value> <run-id>
+
+Changes seed values on a run that is RESTING, without cancelling and restarting
+it. Only the named seeds change; everything else the run froze is left alone,
+and only inputs the run's frozen workflow declares may be named — an undeclared
+key is refused naming the ones that exist. Values are typechecked against the
+same input schema a "run start --seed" is.
+
+A running run is refused: an attempt reads its seeds when it starts, so changing
+them under one would leave a single attempt rendering two sets of inputs. Pause
+it first, or wait. A finished run is refused too — nothing is left to read them.
+
+The amendment is durable the moment it succeeds, and the output says WHEN the
+run will read it. Usually that is the next attempt the run starts, whichever
+verb starts it. Where the parked attempt is repaired in place instead — a
+fan-out reopening its failed units, a call phase re-linking the child it waits
+on — that attempt keeps the variables it froze, and the output names the
+"run resume --phase <id>" that enters the phase fresh.
+
+Amending a run that was CALLED by another changes its own remaining phases only.
+The next run its caller starts re-evaluates the caller's arguments, so amend the
+root to change what later waves are given; the output names it.
+`
+
+const runGuideUsage = `Usage: agent-overflow run guide [--json] <run-id> <text>
+
+Leaves one instruction for a run WITHOUT parking it. The run keeps working; the
+text is delivered at its next FRESH phase entry, rendered into that attempt's
+prompt as a clearly labelled block of operator guidance, and the slot is cleared.
+
+It is the opposite direction of a "notify:" gate: that tells the watching thread
+what the run decided, this tells the run what the watcher wants next. Before it
+existed, redirecting a free-running campaign meant pausing it, editing, and
+resuming — which throws away the turn in flight and, in a fan-out, the wave under
+it.
+
+The turn in flight is NEVER interrupted. There is no mid-turn injection: a run
+that is mid-phase keeps the guidance pending until it advances or loops into the
+next phase. A run parked on a continuable reason (paused, interrupted,
+checkpoint, unit-failed, retries-exhausted) is CONTINUED by a bare "run resume",
+and a continuation is not a phase entry — the output says so and names
+"run resume <id> --phase <id>" as what enters one now.
+
+Entries accumulate in order and are all delivered together at the next entry.
+Both bounds — how many may wait and how long one may be — are the app's, and its
+refusal states the number rather than this page duplicating it: a call past the
+limit is refused rather than burying the earlier entries. A steer belongs in a
+sentence; a specification belongs in the phase's prompt file, which
+"run resume --refresh-def" re-reads.
+
+The author is stamped by the app from the calling credential, never from the
+text: an interactive session is recorded as a human operator and a workflow
+phase session as that phase's run, and the delivered block says which. Guiding a
+run that was CALLED by another reaches that run's own remaining phases only.
+
+A terminal run is refused, as is a done run awaiting disposition — neither has a
+phase entry left. Pending entries and their ages are printed by
+"agent-overflow run inspect <run-id>"; "run status" prints the count.
+
+Text that BEGINS with a dash reads as a flag. Put a literal -- before it:
+  agent-overflow run guide r-1 -- "--refresh-def is the flag you want next time"
 `
 
 const runListUsage = `Usage: agent-overflow run list [--active] [--json]
@@ -111,24 +253,28 @@ const runPauseUsage = `Usage: agent-overflow run pause [--json] <run-id>
 const runResumeUsage = `Usage: agent-overflow run resume [--json] [--phase <phase-id>] [--refresh-def] <run-id>
 
 Continues the parked run and preserves what it already finished: a stopped turn
-carries on in its own session, and a fan-out reopens only what is blocking it
-while every finished unit keeps its result — including the runs its units called,
-which are never re-executed.
+carries on in its own session, a turn that DIED on a provider failure the
+transient retries could not outlast takes its next turn on that same session,
+and a fan-out reopens only what is blocking it while every finished unit keeps
+its result — including the runs its units called, which are never re-executed.
 
 --phase <phase-id> is the start-over. It enters that phase fresh, from outside
 every loop through it, so loop budgets refill; a fan-out there expands a new wave
 and calls its child runs again. Naming the parked phase itself is a legitimate
-way to ask for exactly that.
+way to ask for exactly that. Naming an EARLIER one is what a retries-exhausted
+park wants when what ran out was a loop bound rather than the provider: the
+bound refills when the loop's target is entered from outside the cycle, which a
+bare resume — a continuation — never does.
 
 --refresh-def is the repair for "I edited the prompt of a parked phase". The
 definition a run froze at start is what it runs, every attempt, so an edit made
 while the run was parked is invisible to it; --refresh-def re-reads the workflow
 and its prompt files from disk for this entry and runs the edited version from
 here on. It applies at a fresh phase entry only — a bare resume on a run parked
-paused, interrupted, checkpoint, or unit-failed continues an attempt whose work
-was launched under the frozen definition, and is refused unless --phase says to
-discard it. Between campaign waves nothing is needed: a call reads its target
-from disk every time it is made.
+paused, interrupted, checkpoint, unit-failed, or retries-exhausted continues an
+attempt whose work was launched under the frozen definition, and is refused
+unless --phase says to discard it. Between campaign waves nothing is needed: a
+call reads its target from disk every time it is made.
 
 A gate decision is not resume's to take: run resolve settles a human: route, and
 run retry-unit / run retry-failed-units repair one unit or all of them — a failed
@@ -201,6 +347,50 @@ answer reaches the phase that asked, as the human's would.
 
 A phase session needs the "resolve" grant to use this; an interactive session
 has it already, because a human approves each invocation.
+
+An answer that BEGINS with a dash reads as a flag. Put a literal -- before it:
+  agent-overflow run answer r-1 -- "-Werror stays; fix the warnings instead"
+`
+
+const memoryUsage = `Usage: agent-overflow memory <command> [options]
+
+Commands:
+  add   Record one durable lesson for later work in this campaign
+  list  Print the campaign's recorded notes
+
+A campaign's memory is the whole run TREE's, keyed by its root run, and it
+outlives every run in it. Every element's prompt already carries a bounded,
+newest-first digest of it; this is how notes get in, and how to read past the
+digest's budget.
+`
+
+const memoryAddUsage = `Usage: agent-overflow memory add [options] --kind <kind> "<note>"
+
+Options:
+  --kind <kind>   pattern | warning | learning | handoff (required)
+  --file <path>   cite one path as evidence (repeatable)
+  --json          write the app's result as JSON
+  --run <run-id>  record against this run instead of the calling phase's own
+
+Kinds:
+  pattern   a shape that worked and should be repeated
+  warning   a trap: something that looked right and was not
+  learning  a fact about the environment, codebase, or tools
+  handoff   state you are deliberately leaving for the next element
+
+Write for a reader with NO context: they see your text and nothing else. Do not
+restate the diff, report status, or narrate what you did — that is the
+narrative's job. Provenance and timestamps are stamped by the system.
+
+A note that BEGINS with a dash reads as a flag. Put a literal -- before it:
+  agent-overflow memory add --kind learning -- "- rebase before merging a lane"
+`
+
+const memoryListUsage = `Usage: agent-overflow memory list [--kind <kind>] [--run <run-id>] [--json]
+
+Prints the campaign's notes oldest first, with the element and wave that wrote
+each. Unreadable lines (a note torn by a crash) are counted in the header
+rather than hidden.
 `
 
 const notesUsage = `Usage: agent-overflow notes <command> [options]

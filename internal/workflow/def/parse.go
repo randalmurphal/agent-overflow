@@ -8,7 +8,16 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// Parse decodes exactly one workflow document with strict field checking.
+// Parse decodes exactly one workflow document with strict field checking, and
+// resolves the one contract the document leaves implicit: a phase input bound
+// straight to a workflow input and declaring no schema inherits that input's
+// (ApplyInheritedInputSchemas).
+//
+// The resolution belongs here because this is the single transition from
+// authored bytes to a Workflow. Every consumer — dry-run validation, prompt
+// template checking, the frozen run snapshot, the definition listing — reads
+// what this returns, so there is exactly one resolved contract rather than one
+// per consumer that remembered to resolve it.
 func Parse(r io.Reader) (Workflow, error) {
 	decoder := yaml.NewDecoder(r)
 	decoder.KnownFields(true)
@@ -23,7 +32,7 @@ func Parse(r io.Reader) (Workflow, error) {
 		}
 		return Workflow{}, fmt.Errorf("decode workflow trailing document: %w", err)
 	}
-	return workflow, nil
+	return ApplyInheritedInputSchemas(workflow), nil
 }
 
 // ParseBytes decodes one strict workflow document.

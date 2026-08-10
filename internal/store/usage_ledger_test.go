@@ -353,9 +353,13 @@ func TestQueryWorkItemCostsGroupsByProjectAndItem(t *testing.T) {
 	if err := s.AppendUsage([]UsageLedgerRow{
 		{CreatedAt: 1, ProjectID: "project-a", WorkItemID: "item-1", ThreadID: "t1", Provider: "claude", Model: "m", CostUSD: 0.25},
 		{CreatedAt: 2, ProjectID: "project-a", WorkItemID: "item-1", ThreadID: "t2", Provider: "claude", Model: "m", CostUSD: 0.75},
-		{CreatedAt: 3, ProjectID: "project-a", WorkItemID: "item-2", ThreadID: "t3", Provider: "claude", Model: "m", CostUSD: 2},
-		{CreatedAt: 4, ProjectID: "project-b", WorkItemID: "item-1", ThreadID: "t4", Provider: "claude", Model: "m", CostUSD: 10},
-		{CreatedAt: 5, ProjectID: "project-a", WorkItemID: "", ThreadID: "t5", Provider: "claude", Model: "m", CostUSD: 20},
+		// A Codex turn on the same run: tokens, no dollars anywhere on its wire.
+		// It is a group of its own so the caller can price it, which is the whole
+		// reason this read does not sum.
+		{CreatedAt: 3, ProjectID: "project-a", WorkItemID: "item-1", ThreadID: "t6", Provider: "codex", Model: "c", InputTokens: 400, OutputTokens: 100},
+		{CreatedAt: 4, ProjectID: "project-a", WorkItemID: "item-2", ThreadID: "t3", Provider: "claude", Model: "m", CostUSD: 2},
+		{CreatedAt: 5, ProjectID: "project-b", WorkItemID: "item-1", ThreadID: "t4", Provider: "claude", Model: "m", CostUSD: 10},
+		{CreatedAt: 6, ProjectID: "project-a", WorkItemID: "", ThreadID: "t5", Provider: "claude", Model: "m", CostUSD: 20},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -363,8 +367,26 @@ func TestQueryWorkItemCostsGroupsByProjectAndItem(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(costs) != 2 || costs["item-1"] != 1 || costs["item-2"] != 2 {
-		t.Fatalf("costs = %#v", costs)
+	want := map[string]WorkItemCostGroup{
+		"item-1/m/wire": {WorkItemID: "item-1", UsageDetailRow: UsageDetailRow{
+			Model: "m", CostSource: "wire", CostUSD: 1, Rows: 2}},
+		"item-1/c/none": {WorkItemID: "item-1", UsageDetailRow: UsageDetailRow{
+			Model: "c", CostSource: "none", InputTokens: 400, OutputTokens: 100, Rows: 1}},
+		"item-2/m/wire": {WorkItemID: "item-2", UsageDetailRow: UsageDetailRow{
+			Model: "m", CostSource: "wire", CostUSD: 2, Rows: 1}},
+	}
+	if len(costs) != len(want) {
+		t.Fatalf("costs = %#v, want %d groups", costs, len(want))
+	}
+	for _, group := range costs {
+		key := group.WorkItemID + "/" + group.Model + "/" + group.CostSource
+		expected, known := want[key]
+		if !known {
+			t.Fatalf("unexpected group %q: %#v", key, group)
+		}
+		if group != expected {
+			t.Fatalf("group %q = %#v, want %#v", key, group, expected)
+		}
 	}
 	empty, err := s.QueryWorkItemCosts("missing")
 	if err != nil {

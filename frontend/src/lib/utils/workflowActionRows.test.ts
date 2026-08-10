@@ -42,7 +42,9 @@ describe('workflowResolutionKind', () => {
     ['needs-human', 'setup-failed', 'blocked'],
     ['needs-human', 'budget-exhausted', 'blocked'],
     ['needs-human', 'stalled', 'blocked'],
-    ['needs-human', 'retries-exhausted', 'blocked'],
+    // D70: a bare resume CONTINUES a retries-exhausted park's session, so the
+    // `blocked` row's "the phase starts over" would lie about it.
+    ['needs-human', 'retries-exhausted', 'paused'],
     ['needs-human', '', 'blocked'],
   ])('%s(%s) resolves on the %s row', (state, reason, expected) => {
     expect(workflowResolutionKind(item(state, reason))).toBe(expected);

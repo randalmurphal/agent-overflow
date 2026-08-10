@@ -31,6 +31,9 @@ import * as store$0 from "./internal/store/models.js";
 import * as terminal$0 from "./internal/terminal/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
+import * as memory$0 from "./internal/workflow/memory/models.js";
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
 import * as workspacefiles$0 from "./internal/workspacefiles/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
@@ -3694,6 +3697,135 @@ export class VerifyEditDiffsResult {
 }
 
 /**
+ * WorkflowAgentAmendSeedsInput is `run amend`. Seeds is a partial object: only
+ * the named keys change, every other seed the run froze is left alone. Clearing
+ * a seed is deliberately not expressible — an absent optional input and one
+ * explicitly set to null are different runs, and "remove this key" is a verb
+ * nobody has asked for.
+ */
+export class WorkflowAgentAmendSeedsInput {
+    "itemId": string;
+    "seeds": json$0.RawMessage;
+
+    /** Creates a new WorkflowAgentAmendSeedsInput instance. */
+    constructor($$source: Partial<WorkflowAgentAmendSeedsInput> = {}) {
+        if (!("itemId" in $$source)) {
+            this["itemId"] = "";
+        }
+        if (!("seeds" in $$source)) {
+            this["seeds"] = null;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new WorkflowAgentAmendSeedsInput instance from a string or object.
+     */
+    static createFrom($$source: any = {}): WorkflowAgentAmendSeedsInput {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new WorkflowAgentAmendSeedsInput($$parsedSource as Partial<WorkflowAgentAmendSeedsInput>);
+    }
+}
+
+/**
+ * WorkflowAgentAmendSeedsResult is what the amendment did. Effect is the
+ * engine's own answer to "when is this read", and AppliesNote states it in the
+ * words the operator needs; CallerNote is present only for a called run.
+ */
+export class WorkflowAgentAmendSeedsResult {
+    "itemId": string;
+    "names": string[];
+    "seeds": json$0.RawMessage;
+    "phaseId"?: string;
+    "effect": string;
+
+    /**
+     * AppliesNote is one sentence saying when the run reads the new values and,
+     * where it matters, which verb makes it read them sooner. It is composed here
+     * rather than by the CLI because the answer depends on the run record, and a
+     * caller that had to derive it would be deriving the engine's dispatch.
+     */
+    "appliesNote": string;
+
+    /**
+     * CallerNote is set when the amended run was CALLED by another. Its seeds are
+     * its own — its remaining phases read this row — but the next run its caller
+     * invokes re-evaluates the caller's `args:` and will not carry this change.
+     */
+    "callerNote"?: string;
+
+    /** Creates a new WorkflowAgentAmendSeedsResult instance. */
+    constructor($$source: Partial<WorkflowAgentAmendSeedsResult> = {}) {
+        if (!("itemId" in $$source)) {
+            this["itemId"] = "";
+        }
+        if (!("names" in $$source)) {
+            this["names"] = [];
+        }
+        if (!("seeds" in $$source)) {
+            this["seeds"] = null;
+        }
+        if (!("effect" in $$source)) {
+            this["effect"] = "";
+        }
+        if (!("appliesNote" in $$source)) {
+            this["appliesNote"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new WorkflowAgentAmendSeedsResult instance from a string or object.
+     */
+    static createFrom($$source: any = {}): WorkflowAgentAmendSeedsResult {
+        const $$createField1_0 = $$createType2;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("names" in $$parsedSource) {
+            $$parsedSource["names"] = $$createField1_0($$parsedSource["names"]);
+        }
+        return new WorkflowAgentAmendSeedsResult($$parsedSource as Partial<WorkflowAgentAmendSeedsResult>);
+    }
+}
+
+/**
+ * WorkflowAgentChildRun is one run this run called. The parent coordinate rides
+ * along because it is what tells two children apart: a call phase re-entered by
+ * a loop makes one child per attempt, and a fan-out makes one per unit.
+ */
+export class WorkflowAgentChildRun {
+    "itemId": string;
+    "workflowId"?: string;
+    "goal"?: string;
+    "state": string;
+    "reason"?: string;
+    "parentPhaseId"?: string;
+    "parentUnitId"?: string;
+    "parentAttempt"?: number;
+
+    /** Creates a new WorkflowAgentChildRun instance. */
+    constructor($$source: Partial<WorkflowAgentChildRun> = {}) {
+        if (!("itemId" in $$source)) {
+            this["itemId"] = "";
+        }
+        if (!("state" in $$source)) {
+            this["state"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new WorkflowAgentChildRun instance from a string or object.
+     */
+    static createFrom($$source: any = {}): WorkflowAgentChildRun {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new WorkflowAgentChildRun($$parsedSource as Partial<WorkflowAgentChildRun>);
+    }
+}
+
+/**
  * WorkflowAgentFailedUnit is one unit of a parked fan-out that is resting
  * failed. The attempt count rides along because "this unit has already been
  * retried twice" is what decides between retrying it again and reading it.
@@ -3724,6 +3856,438 @@ export class WorkflowAgentFailedUnit {
 }
 
 /**
+ * WorkflowAgentGuidanceEntry is one pending entry as `run inspect` reports it.
+ * The text is bounded — the slot holds several kilobytes per entry and an
+ * inspection is read by an agent paying per byte — and the age is computed here
+ * rather than left as a timestamp for the reader to subtract, because "left four
+ * hours ago and still not delivered" is the fact the field exists for.
+ */
+export class WorkflowAgentGuidanceEntry {
+    "text": string;
+    "at": number;
+
+    /**
+     * AgeSeconds is how long this entry has been waiting for a phase entry. It
+     * can legitimately be zero (an entry left this second) and is never negative:
+     * a clock that moved backwards clamps rather than reporting the future.
+     */
+    "ageSeconds": number;
+
+    /**
+     * By is the author the engine stamped, and ByRun the run whose phase left it.
+     */
+    "by": string;
+    "byRun"?: string;
+
+    /** Creates a new WorkflowAgentGuidanceEntry instance. */
+    constructor($$source: Partial<WorkflowAgentGuidanceEntry> = {}) {
+        if (!("text" in $$source)) {
+            this["text"] = "";
+        }
+        if (!("at" in $$source)) {
+            this["at"] = 0;
+        }
+        if (!("ageSeconds" in $$source)) {
+            this["ageSeconds"] = 0;
+        }
+        if (!("by" in $$source)) {
+            this["by"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new WorkflowAgentGuidanceEntry instance from a string or object.
+     */
+    static createFrom($$source: any = {}): WorkflowAgentGuidanceEntry {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new WorkflowAgentGuidanceEntry($$parsedSource as Partial<WorkflowAgentGuidanceEntry>);
+    }
+}
+
+/**
+ * WorkflowAgentGuideRunInput is `run guide`. One entry per call: the slot is a
+ * list of instructions, and merging two calls into one entry would lose the
+ * order and the times they were left at.
+ */
+export class WorkflowAgentGuideRunInput {
+    "itemId": string;
+    "text": string;
+
+    /** Creates a new WorkflowAgentGuideRunInput instance. */
+    constructor($$source: Partial<WorkflowAgentGuideRunInput> = {}) {
+        if (!("itemId" in $$source)) {
+            this["itemId"] = "";
+        }
+        if (!("text" in $$source)) {
+            this["text"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new WorkflowAgentGuideRunInput instance from a string or object.
+     */
+    static createFrom($$source: any = {}): WorkflowAgentGuideRunInput {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new WorkflowAgentGuideRunInput($$parsedSource as Partial<WorkflowAgentGuideRunInput>);
+    }
+}
+
+/**
+ * WorkflowAgentGuideRunResult is what is now waiting for the run, and when the
+ * run will read it. Entries are not echoed back: the caller wrote the newest one
+ * and the older ones are the run's business, while `run inspect` is the read
+ * surface for the whole slot.
+ */
+export class WorkflowAgentGuideRunResult {
+    "itemId": string;
+
+    /**
+     * Pending is the slot depth after this entry, against MaxGuidanceEntries.
+     */
+    "pending": number;
+    "maxPending": number;
+
+    /**
+     * By is the author the ENGINE stamped, echoed so a caller can see that the
+     * attribution is not the one it typed — it is the one its credential earned.
+     */
+    "by": string;
+    "state": string;
+    "reason"?: string;
+    "phaseId"?: string;
+
+    /**
+     * DeliversNote is one sentence saying when the run reads this, in the terms
+     * the operator's next command is expressed in. It is composed here rather
+     * than by the CLI because the answer depends on where the run is resting.
+     */
+    "deliversNote": string;
+
+    /**
+     * CallerNote is set when the guided run was CALLED by another. The entry
+     * reaches this run's own remaining phases and nothing else.
+     */
+    "callerNote"?: string;
+
+    /** Creates a new WorkflowAgentGuideRunResult instance. */
+    constructor($$source: Partial<WorkflowAgentGuideRunResult> = {}) {
+        if (!("itemId" in $$source)) {
+            this["itemId"] = "";
+        }
+        if (!("pending" in $$source)) {
+            this["pending"] = 0;
+        }
+        if (!("maxPending" in $$source)) {
+            this["maxPending"] = 0;
+        }
+        if (!("by" in $$source)) {
+            this["by"] = "";
+        }
+        if (!("state" in $$source)) {
+            this["state"] = "";
+        }
+        if (!("deliversNote" in $$source)) {
+            this["deliversNote"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new WorkflowAgentGuideRunResult instance from a string or object.
+     */
+    static createFrom($$source: any = {}): WorkflowAgentGuideRunResult {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new WorkflowAgentGuideRunResult($$parsedSource as Partial<WorkflowAgentGuideRunResult>);
+    }
+}
+
+/**
+ * WorkflowAgentInspectInput is `run inspect`. PhaseID selects a single attempt
+ * to read whole; Attempt narrows that to one try and is meaningless without it.
+ */
+export class WorkflowAgentInspectInput {
+    "itemId": string;
+    "phaseId"?: string;
+    "attempt"?: number;
+
+    /** Creates a new WorkflowAgentInspectInput instance. */
+    constructor($$source: Partial<WorkflowAgentInspectInput> = {}) {
+        if (!("itemId" in $$source)) {
+            this["itemId"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new WorkflowAgentInspectInput instance from a string or object.
+     */
+    static createFrom($$source: any = {}): WorkflowAgentInspectInput {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new WorkflowAgentInspectInput($$parsedSource as Partial<WorkflowAgentInspectInput>);
+    }
+}
+
+/**
+ * WorkflowAgentMemoryInput is one recorded note. There is deliberately no
+ * provenance or timestamp field: those are the system's answer to "who wrote
+ * this and when", and a shape that could carry a supplied one is a shape that
+ * could be lied to.
+ */
+export class WorkflowAgentMemoryInput {
+    /**
+     * ItemID names the run to attribute the note to. Optional for a phase
+     * session, which is already a phase of one; required for an interactive
+     * session, which is not.
+     */
+    "itemId"?: string;
+    "kind": string;
+    "text": string;
+    "files"?: string[];
+
+    /** Creates a new WorkflowAgentMemoryInput instance. */
+    constructor($$source: Partial<WorkflowAgentMemoryInput> = {}) {
+        if (!("kind" in $$source)) {
+            this["kind"] = "";
+        }
+        if (!("text" in $$source)) {
+            this["text"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new WorkflowAgentMemoryInput instance from a string or object.
+     */
+    static createFrom($$source: any = {}): WorkflowAgentMemoryInput {
+        const $$createField3_0 = $$createType2;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("files" in $$parsedSource) {
+            $$parsedSource["files"] = $$createField3_0($$parsedSource["files"]);
+        }
+        return new WorkflowAgentMemoryInput($$parsedSource as Partial<WorkflowAgentMemoryInput>);
+    }
+}
+
+/**
+ * WorkflowAgentMemoryListInput selects what a read returns.
+ */
+export class WorkflowAgentMemoryListInput {
+    "itemId"?: string;
+
+    /**
+     * Kind narrows to one of the four; empty returns every kind.
+     */
+    "kind"?: string;
+
+    /** Creates a new WorkflowAgentMemoryListInput instance. */
+    constructor($$source: Partial<WorkflowAgentMemoryListInput> = {}) {
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new WorkflowAgentMemoryListInput instance from a string or object.
+     */
+    static createFrom($$source: any = {}): WorkflowAgentMemoryListInput {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new WorkflowAgentMemoryListInput($$parsedSource as Partial<WorkflowAgentMemoryListInput>);
+    }
+}
+
+/**
+ * WorkflowAgentMemoryLog is one tree's notes, oldest last — the order they were
+ * written, which is the order the log holds them in.
+ */
+export class WorkflowAgentMemoryLog {
+    "itemId": string;
+    "rootId": string;
+    "path": string;
+    "notes": memory$0.Note[];
+
+    /**
+     * Total is how many notes the tree holds before Kind narrowed them, so a
+     * filtered read still states the size of what it read from.
+     */
+    "total": number;
+
+    /**
+     * Skipped counts lines the log holds that are not readable notes — a torn
+     * final line from a crash. Reported rather than hidden: a reader deciding
+     * whether the memory is complete needs to know one was lost.
+     */
+    "skipped": number;
+
+    /** Creates a new WorkflowAgentMemoryLog instance. */
+    constructor($$source: Partial<WorkflowAgentMemoryLog> = {}) {
+        if (!("itemId" in $$source)) {
+            this["itemId"] = "";
+        }
+        if (!("rootId" in $$source)) {
+            this["rootId"] = "";
+        }
+        if (!("path" in $$source)) {
+            this["path"] = "";
+        }
+        if (!("notes" in $$source)) {
+            this["notes"] = [];
+        }
+        if (!("total" in $$source)) {
+            this["total"] = 0;
+        }
+        if (!("skipped" in $$source)) {
+            this["skipped"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new WorkflowAgentMemoryLog instance from a string or object.
+     */
+    static createFrom($$source: any = {}): WorkflowAgentMemoryLog {
+        const $$createField3_0 = $$createType63;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("notes" in $$parsedSource) {
+            $$parsedSource["notes"] = $$createField3_0($$parsedSource["notes"]);
+        }
+        return new WorkflowAgentMemoryLog($$parsedSource as Partial<WorkflowAgentMemoryLog>);
+    }
+}
+
+/**
+ * WorkflowAgentMemoryResult reports where the note landed. The path is returned
+ * so a caller can read the log it just wrote to without being told the layout.
+ */
+export class WorkflowAgentMemoryResult {
+    "itemId": string;
+    "rootId": string;
+    "kind": string;
+    "wave": number;
+    "path": string;
+
+    /** Creates a new WorkflowAgentMemoryResult instance. */
+    constructor($$source: Partial<WorkflowAgentMemoryResult> = {}) {
+        if (!("itemId" in $$source)) {
+            this["itemId"] = "";
+        }
+        if (!("rootId" in $$source)) {
+            this["rootId"] = "";
+        }
+        if (!("kind" in $$source)) {
+            this["kind"] = "";
+        }
+        if (!("wave" in $$source)) {
+            this["wave"] = 0;
+        }
+        if (!("path" in $$source)) {
+            this["path"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new WorkflowAgentMemoryResult instance from a string or object.
+     */
+    static createFrom($$source: any = {}): WorkflowAgentMemoryResult {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new WorkflowAgentMemoryResult($$parsedSource as Partial<WorkflowAgentMemoryResult>);
+    }
+}
+
+/**
+ * WorkflowAgentNarrative is one resolved account. Path is populated whether or
+ * not the file exists: an absent narrative is an answer, and the answer has to
+ * say what was looked for.
+ */
+export class WorkflowAgentNarrative {
+    "itemId": string;
+    "phaseId": string;
+    "attempt": number;
+    "unitId"?: string;
+    "unitAttempt"?: number;
+    "path": string;
+    "present": boolean;
+
+    /**
+     * Bytes is the file's real size, so a truncated read still reports how much
+     * account there is.
+     */
+    "bytes"?: number;
+    "truncated"?: boolean;
+    "content"?: string;
+
+    /** Creates a new WorkflowAgentNarrative instance. */
+    constructor($$source: Partial<WorkflowAgentNarrative> = {}) {
+        if (!("itemId" in $$source)) {
+            this["itemId"] = "";
+        }
+        if (!("phaseId" in $$source)) {
+            this["phaseId"] = "";
+        }
+        if (!("attempt" in $$source)) {
+            this["attempt"] = 0;
+        }
+        if (!("path" in $$source)) {
+            this["path"] = "";
+        }
+        if (!("present" in $$source)) {
+            this["present"] = false;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new WorkflowAgentNarrative instance from a string or object.
+     */
+    static createFrom($$source: any = {}): WorkflowAgentNarrative {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new WorkflowAgentNarrative($$parsedSource as Partial<WorkflowAgentNarrative>);
+    }
+}
+
+/**
+ * WorkflowAgentNarrativeInput names one attempt's account. Attempt defaults to
+ * the latest attempt of the phase, which is the one a parked run is resting on;
+ * UnitID selects a fan-out unit's account instead of the phase's, on the unit's
+ * current try — the try is the unit row's, not the caller's to guess.
+ */
+export class WorkflowAgentNarrativeInput {
+    "itemId": string;
+    "phaseId": string;
+    "attempt"?: number;
+    "unitId"?: string;
+
+    /** Creates a new WorkflowAgentNarrativeInput instance. */
+    constructor($$source: Partial<WorkflowAgentNarrativeInput> = {}) {
+        if (!("itemId" in $$source)) {
+            this["itemId"] = "";
+        }
+        if (!("phaseId" in $$source)) {
+            this["phaseId"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new WorkflowAgentNarrativeInput instance from a string or object.
+     */
+    static createFrom($$source: any = {}): WorkflowAgentNarrativeInput {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new WorkflowAgentNarrativeInput($$parsedSource as Partial<WorkflowAgentNarrativeInput>);
+    }
+}
+
+/**
  * WorkflowAgentNotesResult is `ao notes set`.
  */
 export class WorkflowAgentNotesResult {
@@ -3745,6 +4309,38 @@ export class WorkflowAgentNotesResult {
     static createFrom($$source: any = {}): WorkflowAgentNotesResult {
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         return new WorkflowAgentNotesResult($$parsedSource as Partial<WorkflowAgentNotesResult>);
+    }
+}
+
+/**
+ * WorkflowAgentOutputDigest is one envelope output rendered small enough that a
+ * whole run's worth fits in one read. The value is the output's text when it is
+ * a JSON string and its compact JSON otherwise, rune-capped with the shared
+ * truncation marker — a reader that needs the untruncated value asks for the
+ * attempt.
+ */
+export class WorkflowAgentOutputDigest {
+    "name": string;
+    "value": string;
+
+    /** Creates a new WorkflowAgentOutputDigest instance. */
+    constructor($$source: Partial<WorkflowAgentOutputDigest> = {}) {
+        if (!("name" in $$source)) {
+            this["name"] = "";
+        }
+        if (!("value" in $$source)) {
+            this["value"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new WorkflowAgentOutputDigest instance from a string or object.
+     */
+    static createFrom($$source: any = {}): WorkflowAgentOutputDigest {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new WorkflowAgentOutputDigest($$parsedSource as Partial<WorkflowAgentOutputDigest>);
     }
 }
 
@@ -3771,12 +4367,44 @@ export class WorkflowAgentPhaseAttempt {
     "effort"?: string;
 
     /**
+     * Cause is why the ENGINE parked this attempt, in its own words — a
+     * worktree that could not be cut, a phase missing from the snapshot, a
+     * budget that ran out. It is empty for every attempt that rested on its
+     * own envelope, and for the reasons that name their own cause
+     * (`interrupted`, `paused`, `taken-over`). It is never model output.
+     */
+    "cause"?: string;
+
+    /**
+     * Session is "continued" when this attempt ran as the next turn of a session
+     * an EARLIER attempt of the same phase started, and empty otherwise — which
+     * is the same fact the two rows' shared thread id is, named so a reader does
+     * not have to compare thread ids to see it. Three things produce it and they
+     * are deliberately not distinguished: a loop route declaring
+     * `session: continue`, an answered question, and a finalized takeover. All
+     * three mean the same thing to anyone reading the run — this round remembers
+     * the last one — and the definition says which edge asked for it.
+     */
+    "session"?: string;
+
+    /**
      * Decision, DecisionTarget, and ExhaustedLoops are absent until the attempt's
      * gate has been evaluated and persisted.
      */
     "decision"?: string;
     "decisionTarget"?: string;
     "exhaustedLoops"?: string[];
+
+    /**
+     * Outputs is a bounded digest of the attempt's envelope outputs and
+     * OutputOverflow how many it left out. Only `run inspect` populates them, and
+     * only for the LATEST attempt of each phase: the digest exists so a reader
+     * deciding a gate does not have to open every attempt, and `run inspect
+     * --phase` returns that attempt's outputs whole instead. `run status` carries
+     * neither — its projection is deliberately envelope-free.
+     */
+    "outputs"?: WorkflowAgentOutputDigest[];
+    "outputOverflow"?: number;
 
     /** Creates a new WorkflowAgentPhaseAttempt instance. */
     constructor($$source: Partial<WorkflowAgentPhaseAttempt> = {}) {
@@ -3797,12 +4425,250 @@ export class WorkflowAgentPhaseAttempt {
      * Creates a new WorkflowAgentPhaseAttempt instance from a string or object.
      */
     static createFrom($$source: any = {}): WorkflowAgentPhaseAttempt {
-        const $$createField8_0 = $$createType2;
+        const $$createField10_0 = $$createType2;
+        const $$createField11_0 = $$createType65;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("exhaustedLoops" in $$parsedSource) {
-            $$parsedSource["exhaustedLoops"] = $$createField8_0($$parsedSource["exhaustedLoops"]);
+            $$parsedSource["exhaustedLoops"] = $$createField10_0($$parsedSource["exhaustedLoops"]);
+        }
+        if ("outputs" in $$parsedSource) {
+            $$parsedSource["outputs"] = $$createField11_0($$parsedSource["outputs"]);
         }
         return new WorkflowAgentPhaseAttempt($$parsedSource as Partial<WorkflowAgentPhaseAttempt>);
+    }
+}
+
+/**
+ * WorkflowAgentPhaseDetail is one phase attempt read whole: the outputs its
+ * envelope declared, how its gate decided, and the units it expanded. Outputs
+ * are the full values rather than the digest — naming an attempt is how a caller
+ * says the digest was not enough — bounded only by the envelope size cap every
+ * envelope was accepted under.
+ */
+export class WorkflowAgentPhaseDetail {
+    "phaseId": string;
+    "attempt": number;
+    "status": string;
+
+    /**
+     * Provider, Model, and Effort mirror the attempt line's, so a drill-down is
+     * readable without pairing it back up with the attempt it came from.
+     */
+    "provider"?: string;
+    "model"?: string;
+    "effort"?: string;
+
+    /**
+     * Cause mirrors the attempt line's: why the ENGINE parked this attempt.
+     */
+    "cause"?: string;
+
+    /**
+     * Outputs is empty for an attempt that produced no envelope, and for one
+     * that rested on a question or a stuck reason: neither declares outputs.
+     */
+    "outputs"?: { [_ in string]?: json$0.RawMessage };
+    "decision"?: string;
+    "decisionTarget"?: string;
+    "exhaustedLoops"?: string[];
+
+    /**
+     * Units is empty for an attempt that is not a fan-out.
+     */
+    "units": WorkflowAgentUnitView[];
+
+    /** Creates a new WorkflowAgentPhaseDetail instance. */
+    constructor($$source: Partial<WorkflowAgentPhaseDetail> = {}) {
+        if (!("phaseId" in $$source)) {
+            this["phaseId"] = "";
+        }
+        if (!("attempt" in $$source)) {
+            this["attempt"] = 0;
+        }
+        if (!("status" in $$source)) {
+            this["status"] = "";
+        }
+        if (!("units" in $$source)) {
+            this["units"] = [];
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new WorkflowAgentPhaseDetail instance from a string or object.
+     */
+    static createFrom($$source: any = {}): WorkflowAgentPhaseDetail {
+        const $$createField7_0 = $$createType66;
+        const $$createField10_0 = $$createType2;
+        const $$createField11_0 = $$createType68;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("outputs" in $$parsedSource) {
+            $$parsedSource["outputs"] = $$createField7_0($$parsedSource["outputs"]);
+        }
+        if ("exhaustedLoops" in $$parsedSource) {
+            $$parsedSource["exhaustedLoops"] = $$createField10_0($$parsedSource["exhaustedLoops"]);
+        }
+        if ("units" in $$parsedSource) {
+            $$parsedSource["units"] = $$createField11_0($$parsedSource["units"]);
+        }
+        return new WorkflowAgentPhaseDetail($$parsedSource as Partial<WorkflowAgentPhaseDetail>);
+    }
+}
+
+/**
+ * WorkflowAgentRunBudget is the ceiling in force for one run and where its run
+ * TREE stands against it. Present only on a run that has one — most runs
+ * declare no budget, and a field saying "no ceiling" on every one of them would
+ * be noise on the surface a reader scans for what a run needs.
+ * 
+ * The numbers are the enforcement's own (`engine.ResolveBudget`), not a second
+ * aggregation: a status line that could disagree with the check that parks the
+ * run would be worse than no line, because a reader would trust it.
+ */
+export class WorkflowAgentRunBudget {
+    /**
+     * Kind names which ceiling is in force and therefore which pair of fields
+     * below carries it: tokens, usd, or wall_clock.
+     */
+    "kind": string;
+    "ceilingTokens"?: number;
+    "ceilingUsd"?: number;
+    "ceilingMillis"?: number;
+    "spentTokens"?: number;
+    "spentUsd"?: number;
+    "elapsedMillis"?: number;
+
+    /**
+     * Percent is spend as a share of the ceiling, rounded. It is NOT clamped:
+     * a run parks the first time it goes over, and rounding a breach down to
+     * 100 would hide the one state the field exists to make visible.
+     */
+    "percent": number;
+
+    /**
+     * Estimated says the dollar figure is not exactly what the providers
+     * reported — the rate table priced part of it (Codex reports tokens only),
+     * or some rows could not be priced at all. Never set for a token or
+     * wall-clock ceiling: both are exact.
+     */
+    "estimated"?: boolean;
+
+    /**
+     * UnpricedRows counts ledger rows whose model resolves to no rate, which
+     * makes SpentUSD a LOWER BOUND rather than an estimate. The run cannot be
+     * judged against a dollar ceiling it has not already crossed and will park
+     * at its next phase boundary, so the status surface has to name the reason.
+     */
+    "unpricedRows"?: number;
+
+    /**
+     * Exhausted is the ceiling already crossed — true only in the window
+     * between the breach and the park it produces, and on a run parked for it.
+     */
+    "exhausted"?: boolean;
+
+    /**
+     * RootItemID is set only when the ceiling belongs to an ANCESTOR: §12
+     * enforces the root's budget across the whole tree, so a called run's
+     * status has to say whose ceiling it is spending.
+     */
+    "rootItemId"?: string;
+
+    /** Creates a new WorkflowAgentRunBudget instance. */
+    constructor($$source: Partial<WorkflowAgentRunBudget> = {}) {
+        if (!("kind" in $$source)) {
+            this["kind"] = "";
+        }
+        if (!("percent" in $$source)) {
+            this["percent"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new WorkflowAgentRunBudget instance from a string or object.
+     */
+    static createFrom($$source: any = {}): WorkflowAgentRunBudget {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new WorkflowAgentRunBudget($$parsedSource as Partial<WorkflowAgentRunBudget>);
+    }
+}
+
+/**
+ * WorkflowAgentRunInspection is what `run inspect` returns. Run is exactly the
+ * `run status` document, so a reader that already parses one parses this; the
+ * rest is what a run record carries and that projection deliberately omits.
+ */
+export class WorkflowAgentRunInspection {
+    "run": WorkflowAgentRunView;
+
+    /**
+     * WorktreePath, Branch, and BaseBranch are where the run's work actually
+     * happens. Nothing else on the CLI surface names them, and a supervising
+     * agent cannot inspect a diff, a log, or a commit without them.
+     */
+    "worktreePath"?: string;
+    "branch"?: string;
+    "baseBranch"?: string;
+
+    /**
+     * Children are the runs this run called, oldest first. They are NOT bounded:
+     * a campaign's waves are its children, so eliding them would truncate the
+     * answer to the question that is being asked — and one row per child is the
+     * same cost `run list` already pays per run.
+     */
+    "children": WorkflowAgentChildRun[];
+
+    /**
+     * Guidance is what `run guide` left and the run has not reached a phase entry
+     * to consume yet, oldest first. It is RUN-level rather than phase-level
+     * because the slot is: an entry is delivered at whichever phase the run
+     * enters next, not at one it is resting in. Absent when nothing is pending.
+     */
+    "guidance"?: WorkflowAgentGuidanceEntry[];
+
+    /**
+     * Phase is present only when the caller named one, and carries that attempt
+     * read whole.
+     */
+    "phase"?: WorkflowAgentPhaseDetail | null;
+
+    /** Creates a new WorkflowAgentRunInspection instance. */
+    constructor($$source: Partial<WorkflowAgentRunInspection> = {}) {
+        if (!("run" in $$source)) {
+            this["run"] = (new WorkflowAgentRunView());
+        }
+        if (!("children" in $$source)) {
+            this["children"] = [];
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new WorkflowAgentRunInspection instance from a string or object.
+     */
+    static createFrom($$source: any = {}): WorkflowAgentRunInspection {
+        const $$createField0_0 = $$createType69;
+        const $$createField4_0 = $$createType71;
+        const $$createField5_0 = $$createType73;
+        const $$createField6_0 = $$createType75;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("run" in $$parsedSource) {
+            $$parsedSource["run"] = $$createField0_0($$parsedSource["run"]);
+        }
+        if ("children" in $$parsedSource) {
+            $$parsedSource["children"] = $$createField4_0($$parsedSource["children"]);
+        }
+        if ("guidance" in $$parsedSource) {
+            $$parsedSource["guidance"] = $$createField5_0($$parsedSource["guidance"]);
+        }
+        if ("phase" in $$parsedSource) {
+            $$parsedSource["phase"] = $$createField6_0($$parsedSource["phase"]);
+        }
+        return new WorkflowAgentRunInspection($$parsedSource as Partial<WorkflowAgentRunInspection>);
     }
 }
 
@@ -3843,7 +4709,7 @@ export class WorkflowAgentRunOutputs {
      * Creates a new WorkflowAgentRunOutputs instance from a string or object.
      */
     static createFrom($$source: any = {}): WorkflowAgentRunOutputs {
-        const $$createField4_0 = $$createType62;
+        const $$createField4_0 = $$createType76;
         const $$createField5_0 = $$createType2;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("outputs" in $$parsedSource) {
@@ -3877,6 +4743,14 @@ export class WorkflowAgentRunView {
     "endedAt"?: number;
 
     /**
+     * Seeds is what the run was started with, populated only by the single-run
+     * reads. It is the run's own frozen input, so a caller reconstructing what a
+     * wave was asked for has it without a second surface; the listing projection
+     * does not carry it at all, because a summary row blanks the column.
+     */
+    "seeds"?: json$0.RawMessage;
+
+    /**
      * FailedUnits names the units `run retry-unit` takes — the attempt's join
      * among them when it is what failed — populated only by
      * `run status` on a run resting needs-human(unit-failed). The reason already
@@ -3893,6 +4767,25 @@ export class WorkflowAgentRunView {
      * list is for locating a run rather than reading one.
      */
     "phases"?: WorkflowAgentPhaseAttempt[];
+
+    /**
+     * Budget is the ceiling in force and the tree's spend against it, absent on
+     * a run that has none. Populated by the single-run reads only: resolving it
+     * costs a root lookup, a profile read, and — for a run that HAS a ceiling —
+     * the same tree-spend aggregate the engine's check runs, which is a per-run
+     * fan-out a listing must not pay.
+     */
+    "budget"?: WorkflowAgentRunBudget | null;
+
+    /**
+     * PendingGuidance counts the `run guide` entries waiting for this run's next
+     * fresh phase entry. It is a COUNT here and the entries themselves are on
+     * `run inspect`: the number is what a reader of a run's state needs — an
+     * operator about to leave a fourth steer, or one wondering why the run has
+     * not turned yet — while the text of what somebody else left is a read of
+     * its own. Populated by the single-run reads only, like the two fields above.
+     */
+    "pendingGuidance"?: number;
 
     /** Creates a new WorkflowAgentRunView instance. */
     constructor($$source: Partial<WorkflowAgentRunView> = {}) {
@@ -3919,14 +4812,18 @@ export class WorkflowAgentRunView {
      * Creates a new WorkflowAgentRunView instance from a string or object.
      */
     static createFrom($$source: any = {}): WorkflowAgentRunView {
-        const $$createField12_0 = $$createType64;
-        const $$createField13_0 = $$createType66;
+        const $$createField13_0 = $$createType78;
+        const $$createField14_0 = $$createType80;
+        const $$createField15_0 = $$createType82;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("failedUnits" in $$parsedSource) {
-            $$parsedSource["failedUnits"] = $$createField12_0($$parsedSource["failedUnits"]);
+            $$parsedSource["failedUnits"] = $$createField13_0($$parsedSource["failedUnits"]);
         }
         if ("phases" in $$parsedSource) {
-            $$parsedSource["phases"] = $$createField13_0($$parsedSource["phases"]);
+            $$parsedSource["phases"] = $$createField14_0($$parsedSource["phases"]);
+        }
+        if ("budget" in $$parsedSource) {
+            $$parsedSource["budget"] = $$createField15_0($$parsedSource["budget"]);
         }
         return new WorkflowAgentRunView($$parsedSource as Partial<WorkflowAgentRunView>);
     }
@@ -4065,6 +4962,241 @@ export class WorkflowAgentStartResult {
     static createFrom($$source: any = {}): WorkflowAgentStartResult {
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         return new WorkflowAgentStartResult($$parsedSource as Partial<WorkflowAgentStartResult>);
+    }
+}
+
+/**
+ * WorkflowAgentTransition is one item-state transition of a watched run. The
+ * coordinate is the engine's own — the phase and attempt the run was in when it
+ * moved — so Cause names the attempt a park actually rests on.
+ */
+export class WorkflowAgentTransition {
+    "seq": number;
+    "at": number;
+    "itemId": string;
+    "phaseId"?: string;
+    "attempt"?: number;
+
+    /**
+     * From is empty for the birth transition of a run that has just started,
+     * which is how a `--tree` watcher sees a new wave appear.
+     */
+    "from"?: string;
+    "to": string;
+    "reason"?: string;
+    "cause"?: string;
+    "resting": boolean;
+
+    /** Creates a new WorkflowAgentTransition instance. */
+    constructor($$source: Partial<WorkflowAgentTransition> = {}) {
+        if (!("seq" in $$source)) {
+            this["seq"] = 0;
+        }
+        if (!("at" in $$source)) {
+            this["at"] = 0;
+        }
+        if (!("itemId" in $$source)) {
+            this["itemId"] = "";
+        }
+        if (!("to" in $$source)) {
+            this["to"] = "";
+        }
+        if (!("resting" in $$source)) {
+            this["resting"] = false;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new WorkflowAgentTransition instance from a string or object.
+     */
+    static createFrom($$source: any = {}): WorkflowAgentTransition {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new WorkflowAgentTransition($$parsedSource as Partial<WorkflowAgentTransition>);
+    }
+}
+
+/**
+ * WorkflowAgentUnitView is one fan-out unit (or the join) of the inspected
+ * attempt. Branch and worktree are on it for the same reason they are on the
+ * run: they are where that unit's work is, and nothing else names them.
+ */
+export class WorkflowAgentUnitView {
+    "unitId": string;
+    "kind": string;
+    "status": string;
+    "unitAttempt": number;
+    "branch"?: string;
+    "worktreePath"?: string;
+    "threadId"?: string;
+
+    /** Creates a new WorkflowAgentUnitView instance. */
+    constructor($$source: Partial<WorkflowAgentUnitView> = {}) {
+        if (!("unitId" in $$source)) {
+            this["unitId"] = "";
+        }
+        if (!("kind" in $$source)) {
+            this["kind"] = "";
+        }
+        if (!("status" in $$source)) {
+            this["status"] = "";
+        }
+        if (!("unitAttempt" in $$source)) {
+            this["unitAttempt"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new WorkflowAgentUnitView instance from a string or object.
+     */
+    static createFrom($$source: any = {}): WorkflowAgentUnitView {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new WorkflowAgentUnitView($$parsedSource as Partial<WorkflowAgentUnitView>);
+    }
+}
+
+/**
+ * WorkflowAgentWatchInput is `run watch`. Cursor is the sequence the caller
+ * already has: zero means "I have none", which is answered immediately with the
+ * run's current state so a watch on an already-resting run exits instead of
+ * blocking on a transition that has already happened.
+ */
+export class WorkflowAgentWatchInput {
+    "itemId": string;
+    "cursor"?: number;
+
+    /**
+     * Tree widens the watch to the run and every run it called, transitively.
+     * The set is re-resolved on every wake, so a wave started while this call
+     * was blocked is watched from its birth transition rather than from the
+     * next call.
+     */
+    "tree"?: boolean;
+
+    /**
+     * WaitMillis is how long the caller is willing to have this call block,
+     * clamped to maxWorkflowWatchHold. It exists so `--timeout` is exact: the
+     * last poll of a bounded watch waits the remainder and not a second more.
+     */
+    "waitMillis"?: number;
+
+    /** Creates a new WorkflowAgentWatchInput instance. */
+    constructor($$source: Partial<WorkflowAgentWatchInput> = {}) {
+        if (!("itemId" in $$source)) {
+            this["itemId"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new WorkflowAgentWatchInput instance from a string or object.
+     */
+    static createFrom($$source: any = {}): WorkflowAgentWatchInput {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new WorkflowAgentWatchInput($$parsedSource as Partial<WorkflowAgentWatchInput>);
+    }
+}
+
+/**
+ * WorkflowAgentWatchResult is one long poll's answer.
+ */
+export class WorkflowAgentWatchResult {
+    "itemId": string;
+    "cursor": number;
+    "transitions": WorkflowAgentTransition[];
+    "run": WorkflowAgentWatchRunState;
+
+    /**
+     * Gap says transitions between the caller's cursor and the oldest retained
+     * one were lost — the ring evicted them, or this backend restarted and
+     * re-seeded its sequence. It is a resync instruction, exactly as it is on the
+     * event wire: the run state above is current, and the cursor to continue from
+     * is the one returned.
+     */
+    "gap"?: boolean;
+
+    /** Creates a new WorkflowAgentWatchResult instance. */
+    constructor($$source: Partial<WorkflowAgentWatchResult> = {}) {
+        if (!("itemId" in $$source)) {
+            this["itemId"] = "";
+        }
+        if (!("cursor" in $$source)) {
+            this["cursor"] = 0;
+        }
+        if (!("transitions" in $$source)) {
+            this["transitions"] = [];
+        }
+        if (!("run" in $$source)) {
+            this["run"] = (new WorkflowAgentWatchRunState());
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new WorkflowAgentWatchResult instance from a string or object.
+     */
+    static createFrom($$source: any = {}): WorkflowAgentWatchResult {
+        const $$createField2_0 = $$createType84;
+        const $$createField3_0 = $$createType85;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("transitions" in $$parsedSource) {
+            $$parsedSource["transitions"] = $$createField2_0($$parsedSource["transitions"]);
+        }
+        if ("run" in $$parsedSource) {
+            $$parsedSource["run"] = $$createField3_0($$parsedSource["run"]);
+        }
+        return new WorkflowAgentWatchResult($$parsedSource as Partial<WorkflowAgentWatchResult>);
+    }
+}
+
+/**
+ * WorkflowAgentWatchRunState is where the watched run is right now, read from
+ * SQLite rather than derived from the transitions — a watcher that resynced
+ * after a gap has to be told the truth, not the tail of a ring.
+ */
+export class WorkflowAgentWatchRunState {
+    "itemId": string;
+    "workflowId"?: string;
+    "goal"?: string;
+    "state": string;
+    "reason"?: string;
+    "phaseId"?: string;
+    "resting": boolean;
+
+    /**
+     * Repair is the sentence naming the verb that settles this park, composed by
+     * the same helper every wake uses (`wake.RepairSentence`) so the two surfaces
+     * cannot send a reader to different commands for one reason. Present only
+     * once the run is resting, and empty for the reasons that have no one verb.
+     */
+    "repair"?: string;
+
+    /** Creates a new WorkflowAgentWatchRunState instance. */
+    constructor($$source: Partial<WorkflowAgentWatchRunState> = {}) {
+        if (!("itemId" in $$source)) {
+            this["itemId"] = "";
+        }
+        if (!("state" in $$source)) {
+            this["state"] = "";
+        }
+        if (!("resting" in $$source)) {
+            this["resting"] = false;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new WorkflowAgentWatchRunState instance from a string or object.
+     */
+    static createFrom($$source: any = {}): WorkflowAgentWatchRunState {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new WorkflowAgentWatchRunState($$parsedSource as Partial<WorkflowAgentWatchRunState>);
     }
 }
 
@@ -4261,7 +5393,7 @@ export class WorkflowDefinitionCatalog {
      * Creates a new WorkflowDefinitionCatalog instance from a string or object.
      */
     static createFrom($$source: any = {}): WorkflowDefinitionCatalog {
-        const $$createField1_0 = $$createType68;
+        const $$createField1_0 = $$createType87;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("workflows" in $$parsedSource) {
             $$parsedSource["workflows"] = $$createField1_0($$parsedSource["workflows"]);
@@ -4298,7 +5430,7 @@ export class WorkflowDefinitionInput {
      * Creates a new WorkflowDefinitionInput instance from a string or object.
      */
     static createFrom($$source: any = {}): WorkflowDefinitionInput {
-        const $$createField3_0 = $$createType69;
+        const $$createField3_0 = $$createType88;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("enum" in $$parsedSource) {
             $$parsedSource["enum"] = $$createField3_0($$parsedSource["enum"]);
@@ -4360,8 +5492,8 @@ export class WorkflowDefinitionListing {
      * Creates a new WorkflowDefinitionListing instance from a string or object.
      */
     static createFrom($$source: any = {}): WorkflowDefinitionListing {
-        const $$createField5_0 = $$createType71;
-        const $$createField6_0 = $$createType73;
+        const $$createField5_0 = $$createType90;
+        const $$createField6_0 = $$createType92;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("phases" in $$parsedSource) {
             $$parsedSource["phases"] = $$createField5_0($$parsedSource["phases"]);
@@ -4441,7 +5573,7 @@ export class WorkflowDiscardPreview {
     static createFrom($$source: any = {}): WorkflowDiscardPreview {
         const $$createField1_0 = $$createType2;
         const $$createField2_0 = $$createType2;
-        const $$createField3_0 = $$createType75;
+        const $$createField3_0 = $$createType94;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("members" in $$parsedSource) {
             $$parsedSource["members"] = $$createField1_0($$parsedSource["members"]);
@@ -4610,7 +5742,7 @@ export class WorkflowDiscardWorktree {
      */
     static createFrom($$source: any = {}): WorkflowDiscardWorktree {
         const $$createField7_0 = $$createType2;
-        const $$createField9_0 = $$createType77;
+        const $$createField9_0 = $$createType96;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("dirtyFiles" in $$parsedSource) {
             $$parsedSource["dirtyFiles"] = $$createField7_0($$parsedSource["dirtyFiles"]);
@@ -4658,7 +5790,7 @@ export class WorkflowDispositionReceipt {
      * Creates a new WorkflowDispositionReceipt instance from a string or object.
      */
     static createFrom($$source: any = {}): WorkflowDispositionReceipt {
-        const $$createField6_0 = $$createType79;
+        const $$createField6_0 = $$createType98;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("discarded" in $$parsedSource) {
             $$parsedSource["discarded"] = $$createField6_0($$parsedSource["discarded"]);
@@ -4748,7 +5880,20 @@ export class WorkflowItemDetailView {
     "children": WorkflowItemChildView[];
     "outputs": { [_ in string]?: any };
     "artifacts": WorkflowArtifact[];
+
+    /**
+     * Usage carries the run tree's TOKEN totals and the providers' own reported
+     * cost. Its CostUSD is the wire half alone — read Spend for what the run
+     * actually cost.
+     */
     "usage": store$0.WorkItemUsage;
+
+    /**
+     * Spend is the composed cost: what providers reported plus what the rate
+     * table priced their token-only rows at, through the one ledger pricing rule
+     * the workflow budget check also enforces with.
+     */
+    "spend": WorkflowRunSpend;
 
     /** Creates a new WorkflowItemDetailView instance. */
     constructor($$source: Partial<WorkflowItemDetailView> = {}) {
@@ -4779,6 +5924,9 @@ export class WorkflowItemDetailView {
         if (!("usage" in $$source)) {
             this["usage"] = (new store$0.WorkItemUsage());
         }
+        if (!("spend" in $$source)) {
+            this["spend"] = (new WorkflowRunSpend());
+        }
 
         Object.assign(this, $$source);
     }
@@ -4787,15 +5935,16 @@ export class WorkflowItemDetailView {
      * Creates a new WorkflowItemDetailView instance from a string or object.
      */
     static createFrom($$source: any = {}): WorkflowItemDetailView {
-        const $$createField0_0 = $$createType80;
+        const $$createField0_0 = $$createType99;
         const $$createField1_0 = $$createType2;
         const $$createField2_0 = $$createType2;
-        const $$createField3_0 = $$createType82;
-        const $$createField4_0 = $$createType84;
-        const $$createField5_0 = $$createType86;
-        const $$createField6_0 = $$createType62;
-        const $$createField7_0 = $$createType88;
-        const $$createField8_0 = $$createType89;
+        const $$createField3_0 = $$createType101;
+        const $$createField4_0 = $$createType103;
+        const $$createField5_0 = $$createType105;
+        const $$createField6_0 = $$createType76;
+        const $$createField7_0 = $$createType107;
+        const $$createField8_0 = $$createType108;
+        const $$createField9_0 = $$createType109;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("item" in $$parsedSource) {
             $$parsedSource["item"] = $$createField0_0($$parsedSource["item"]);
@@ -4824,6 +5973,9 @@ export class WorkflowItemDetailView {
         if ("usage" in $$parsedSource) {
             $$parsedSource["usage"] = $$createField8_0($$parsedSource["usage"]);
         }
+        if ("spend" in $$parsedSource) {
+            $$parsedSource["spend"] = $$createField9_0($$parsedSource["spend"]);
+        }
         return new WorkflowItemDetailView($$parsedSource as Partial<WorkflowItemDetailView>);
     }
 }
@@ -4839,6 +5991,14 @@ export class WorkflowItemPhaseView {
     "attempt": number;
     "threadId"?: string;
     "outputEnvelope"?: json$0.RawMessage;
+
+    /**
+     * Cause is why the ENGINE parked this attempt, when it was the engine that
+     * diagnosed the park rather than the phase resting on its own envelope. It
+     * is the only account a park that ran no turn has, so the detail pane reads
+     * it where it would otherwise show a parked attempt and nothing else.
+     */
+    "cause"?: string;
     "status": string;
     "startedAt": number;
     "endedAt"?: number;
@@ -5065,6 +6225,54 @@ export class WorkflowPRReviewComments {
 }
 
 /**
+ * WorkflowRunSpend is one run tree's dollars, with the halves kept apart so a
+ * surface can say which part of the number is an estimate. A Codex phase
+ * reports tokens and no cost at all, so a run's `usage.costUsd` alone reported
+ * a codex-heavy campaign as nearly free.
+ */
+export class WorkflowRunSpend {
+    /**
+     * CostUSD is the composed total: WireCostUSD + EstimatedCostUSD.
+     */
+    "costUsd": number;
+    "wireCostUsd": number;
+    "estimatedCostUsd": number;
+
+    /**
+     * UnpricedRows counts ledger rows whose model has no rate. Their tokens are
+     * in Usage; their dollars are in nothing, so a total carrying them is a
+     * lower bound.
+     */
+    "unpricedRows": number;
+
+    /** Creates a new WorkflowRunSpend instance. */
+    constructor($$source: Partial<WorkflowRunSpend> = {}) {
+        if (!("costUsd" in $$source)) {
+            this["costUsd"] = 0;
+        }
+        if (!("wireCostUsd" in $$source)) {
+            this["wireCostUsd"] = 0;
+        }
+        if (!("estimatedCostUsd" in $$source)) {
+            this["estimatedCostUsd"] = 0;
+        }
+        if (!("unpricedRows" in $$source)) {
+            this["unpricedRows"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new WorkflowRunSpend instance from a string or object.
+     */
+    static createFrom($$source: any = {}): WorkflowRunSpend {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new WorkflowRunSpend($$parsedSource as Partial<WorkflowRunSpend>);
+    }
+}
+
+/**
  * WorkspaceActivity reports the work that makes a workspace's checkout unsafe
  * to move or delete right now, aggregated over EVERY thread that references
  * the directory rather than only the one asking.
@@ -5141,7 +6349,7 @@ export class WorkspaceFileSearchResult {
      * Creates a new WorkspaceFileSearchResult instance from a string or object.
      */
     static createFrom($$source: any = {}): WorkspaceFileSearchResult {
-        const $$createField0_0 = $$createType91;
+        const $$createField0_0 = $$createType111;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("files" in $$parsedSource) {
             $$parsedSource["files"] = $$createField0_0($$parsedSource["files"]);
@@ -5219,7 +6427,7 @@ export class WorktreeSetupConfig {
      */
     static createFrom($$source: any = {}): WorktreeSetupConfig {
         const $$createField0_0 = $$createType2;
-        const $$createField1_0 = $$createType92;
+        const $$createField1_0 = $$createType112;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("copy" in $$parsedSource) {
             $$parsedSource["copy"] = $$createField0_0($$parsedSource["copy"]);
@@ -5293,7 +6501,7 @@ export class WorktreeSetupRunState {
      * Creates a new WorktreeSetupRunState instance from a string or object.
      */
     static createFrom($$source: any = {}): WorktreeSetupRunState {
-        const $$createField3_0 = $$createType94;
+        const $$createField3_0 = $$createType114;
         const $$createField4_0 = $$createType2;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("steps" in $$parsedSource) {
@@ -5459,36 +6667,56 @@ const $$createType58 = ProviderSessionAccountEvent.createFrom;
 const $$createType59 = $Create.Nullable($$createType58);
 const $$createType60 = EditDiffVerifyFile.createFrom;
 const $$createType61 = $Create.Array($$createType60);
-const $$createType62 = $Create.Map($Create.Any, $Create.Any);
-const $$createType63 = WorkflowAgentFailedUnit.createFrom;
-const $$createType64 = $Create.Array($$createType63);
-const $$createType65 = WorkflowAgentPhaseAttempt.createFrom;
-const $$createType66 = $Create.Array($$createType65);
-const $$createType67 = WorkflowDefinitionListing.createFrom;
+const $$createType62 = memory$0.Note.createFrom;
+const $$createType63 = $Create.Array($$createType62);
+const $$createType64 = WorkflowAgentOutputDigest.createFrom;
+const $$createType65 = $Create.Array($$createType64);
+const $$createType66 = $Create.Map($Create.Any, $Create.Any);
+const $$createType67 = WorkflowAgentUnitView.createFrom;
 const $$createType68 = $Create.Array($$createType67);
-const $$createType69 = $Create.Array($Create.Any);
-const $$createType70 = WorkflowDefinitionPhase.createFrom;
+const $$createType69 = WorkflowAgentRunView.createFrom;
+const $$createType70 = WorkflowAgentChildRun.createFrom;
 const $$createType71 = $Create.Array($$createType70);
-const $$createType72 = WorkflowDefinitionInput.createFrom;
+const $$createType72 = WorkflowAgentGuidanceEntry.createFrom;
 const $$createType73 = $Create.Array($$createType72);
-const $$createType74 = WorkflowDiscardWorktree.createFrom;
-const $$createType75 = $Create.Array($$createType74);
-const $$createType76 = gitdiff$0.Commit.createFrom;
-const $$createType77 = $Create.Array($$createType76);
-const $$createType78 = WorkflowDiscardResult.createFrom;
-const $$createType79 = $Create.Nullable($$createType78);
-const $$createType80 = WorkflowItemView.createFrom;
-const $$createType81 = WorkflowItemPhaseView.createFrom;
-const $$createType82 = $Create.Array($$createType81);
-const $$createType83 = WorkflowItemUnitView.createFrom;
+const $$createType74 = WorkflowAgentPhaseDetail.createFrom;
+const $$createType75 = $Create.Nullable($$createType74);
+const $$createType76 = $Create.Map($Create.Any, $Create.Any);
+const $$createType77 = WorkflowAgentFailedUnit.createFrom;
+const $$createType78 = $Create.Array($$createType77);
+const $$createType79 = WorkflowAgentPhaseAttempt.createFrom;
+const $$createType80 = $Create.Array($$createType79);
+const $$createType81 = WorkflowAgentRunBudget.createFrom;
+const $$createType82 = $Create.Nullable($$createType81);
+const $$createType83 = WorkflowAgentTransition.createFrom;
 const $$createType84 = $Create.Array($$createType83);
-const $$createType85 = WorkflowItemChildView.createFrom;
-const $$createType86 = $Create.Array($$createType85);
-const $$createType87 = WorkflowArtifact.createFrom;
-const $$createType88 = $Create.Array($$createType87);
-const $$createType89 = store$0.WorkItemUsage.createFrom;
-const $$createType90 = workspacefiles$0.WorkspaceFile.createFrom;
-const $$createType91 = $Create.Array($$createType90);
-const $$createType92 = $Create.Array($$createType2);
-const $$createType93 = WorktreeSetupStep.createFrom;
+const $$createType85 = WorkflowAgentWatchRunState.createFrom;
+const $$createType86 = WorkflowDefinitionListing.createFrom;
+const $$createType87 = $Create.Array($$createType86);
+const $$createType88 = $Create.Array($Create.Any);
+const $$createType89 = WorkflowDefinitionPhase.createFrom;
+const $$createType90 = $Create.Array($$createType89);
+const $$createType91 = WorkflowDefinitionInput.createFrom;
+const $$createType92 = $Create.Array($$createType91);
+const $$createType93 = WorkflowDiscardWorktree.createFrom;
 const $$createType94 = $Create.Array($$createType93);
+const $$createType95 = gitdiff$0.Commit.createFrom;
+const $$createType96 = $Create.Array($$createType95);
+const $$createType97 = WorkflowDiscardResult.createFrom;
+const $$createType98 = $Create.Nullable($$createType97);
+const $$createType99 = WorkflowItemView.createFrom;
+const $$createType100 = WorkflowItemPhaseView.createFrom;
+const $$createType101 = $Create.Array($$createType100);
+const $$createType102 = WorkflowItemUnitView.createFrom;
+const $$createType103 = $Create.Array($$createType102);
+const $$createType104 = WorkflowItemChildView.createFrom;
+const $$createType105 = $Create.Array($$createType104);
+const $$createType106 = WorkflowArtifact.createFrom;
+const $$createType107 = $Create.Array($$createType106);
+const $$createType108 = store$0.WorkItemUsage.createFrom;
+const $$createType109 = WorkflowRunSpend.createFrom;
+const $$createType110 = workspacefiles$0.WorkspaceFile.createFrom;
+const $$createType111 = $Create.Array($$createType110);
+const $$createType112 = $Create.Array($$createType2);
+const $$createType113 = WorktreeSetupStep.createFrom;
+const $$createType114 = $Create.Array($$createType113);

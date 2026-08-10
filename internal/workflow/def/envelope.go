@@ -26,6 +26,20 @@ const DefaultEnvelopeSizeCap = 64 * 1024
 // ever carries prose.
 const EnvelopeNarrativeField = "narrative"
 
+// EnvelopeMemoryField is the optional control field an element records campaign
+// memory in. It exists for the same reason `narrative` does and is lifted at the
+// same seam: a `read-only` element runs in a session that denies file writes and
+// cannot reliably run a command either, so the CLI verb a writing element uses
+// (`agent-overflow memory add`) is not a channel available to it. Carrying the
+// notes in the envelope works identically on both providers.
+//
+// It is a control field, not an output, so an author may still declare an output
+// named `memory` and the two never meet. It is legal on every status — an
+// element that got stuck learned the most worth recording — and the app strips
+// it before the envelope reaches the engine, so no gate, join result, or
+// persisted envelope ever carries one.
+const EnvelopeMemoryField = "memory"
+
 // envelopeControlFields is the closed set of top-level names an envelope may
 // carry. `status` is the only one post-validation requires literally: it is the
 // discriminator, and a document without it is not an envelope at all.
@@ -41,7 +55,7 @@ const EnvelopeNarrativeField = "narrative"
 // them, and the branch and declaration rules below judge them identically
 // either way.
 var (
-	envelopeControlFields   = []string{"status", "outputs", "question", "reason", EnvelopeNarrativeField}
+	envelopeControlFields   = []string{"status", "outputs", "question", "reason", EnvelopeNarrativeField, EnvelopeMemoryField}
 	envelopeAllowedFieldSet = func() map[string]bool {
 		allowed := make(map[string]bool, len(envelopeControlFields))
 		for _, name := range envelopeControlFields {
@@ -59,12 +73,40 @@ var (
 type EnvelopeContract struct {
 	owner   string
 	outputs map[string]Variable
+	// accounts records that this contract carries the merge-join obligation,
+	// and accounted is the exact set of unit ids it is held to. The flag is
+	// separate from the slice because a join over ZERO units still owes empty
+	// `merged` / `blocked` lists — nil and empty must not read the same.
+	accounts  bool
+	accounted []string
 }
 
 // PhaseEnvelope is the contract a phase attempt's envelope answers. A fan-out
 // phase's join answers it too: the join's envelope IS the phase's.
 func PhaseEnvelope(phase Phase) EnvelopeContract {
 	return EnvelopeContract{owner: fmt.Sprintf("phase %q", phase.ID), outputs: PhaseOutputs(phase)}
+}
+
+// JoinEnvelope is the contract a fan-out phase's JOIN answers: the phase's own
+// contract, plus — when the join declares `accounts_for_units: true` — the
+// exact set of unit ids its `merged` / `blocked` outputs must account for.
+//
+// The ids are PASSED rather than derived. They come from the store, which this
+// package does not know about, and passing them is what keeps the set the join
+// is JUDGED against identical to the set it was SHOWN under the reserved
+// `units` binding — a verification against some other list would refuse a join
+// for failing to mention a unit it was never told existed.
+//
+// A join that did not opt in gets `PhaseEnvelope(phase)` exactly, so nothing
+// about the existing contract changes for the definitions that do not use it.
+func JoinEnvelope(phase Phase, unitIDs []string) EnvelopeContract {
+	contract := PhaseEnvelope(phase)
+	if phase.Join == nil || !phase.Join.AccountsForUnits {
+		return contract
+	}
+	contract.accounts = true
+	contract.accounted = append([]string(nil), unitIDs...)
+	return contract
 }
 
 // UnitEnvelope is the contract one fan-out work unit's envelope answers. A unit
@@ -122,8 +164,9 @@ func (c EnvelopeContract) Schema() ([]byte, error) {
 			// The element fills it when it was asked to (a read-only element, which
 			// cannot write the narrative file) and answers null otherwise.
 			EnvelopeNarrativeField: map[string]any{"type": []string{"string", "null"}},
+			EnvelopeMemoryField:    envelopeMemorySchema(),
 		},
-		"required": []string{EnvelopeNarrativeField, "outputs", "question", "reason", "status"},
+		"required": []string{EnvelopeMemoryField, EnvelopeNarrativeField, "outputs", "question", "reason", "status"},
 	}
 	encoded, err := json.Marshal(schema)
 	if err != nil {
@@ -287,6 +330,9 @@ func (c EnvelopeContract) Validate(payload []byte, sizeCap ...int) error {
 	// work worth an account, so refusing the narrative anywhere would burn the
 	// element's single envelope retry on the one field that is never a mistake.
 	decodeNullableString(raw[EnvelopeNarrativeField], "$."+EnvelopeNarrativeField, &narrative, &findings)
+	// `memory` sits outside the branch rules for the same reason: a done, a
+	// question, and a stuck element all learned things worth recording.
+	validateEnvelopeMemory(raw[EnvelopeMemoryField], &findings)
 	// Absent, null, and unreadable all leave no object to read; only the last has
 	// anything said about it, and `outputsReadable` is what keeps the declaration
 	// rules below from burying that one finding under one per declaration.
@@ -327,6 +373,13 @@ func (c EnvelopeContract) Validate(payload []byte, sizeCap ...int) error {
 				findings = append(findings, EnvelopeFinding{Path: "$.outputs." + name, Message: strings.TrimPrefix(message, "$.outputs."+name+" ")})
 			}
 		}
+	}
+	// The merge-join obligation applies to a `done` envelope alone: a join that
+	// asks a question or gets stuck produced no result to account for, and
+	// demanding the lists there would refuse the very envelope that says the
+	// join could not decide.
+	if c.accounts && status == "done" && outputsReadable {
+		findings = append(findings, c.accountingFindings(outputs)...)
 	}
 	switch status {
 	case "done":

@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"reflect"
@@ -407,5 +408,65 @@ func TestFanOutCapacityNotesReportOnlyWavesOverTheirBound(t *testing.T) {
 	capacities[ProviderResource("codex")] = 0
 	if notes := fanOutCapacityNotes(expanded, capacities, "project"); len(notes) != 0 {
 		t.Fatalf("unresolvable capacity produced notes: %+v", notes)
+	}
+}
+
+// A held start renders the context its attempt row was PERSISTED with.
+//
+// The gap between an attempt's creation and its release is unbounded — a pause a
+// human lifts an hour later, capacity a wide wave holds — and the world moves
+// inside it. Rebuilding the variable context at release made the run's own
+// record a lie about the turn: the `input_envelope` is the account of what an
+// attempt ran with, and the model was handed a `budget` block the row it is
+// filed under contradicts. The record and the render come from one build.
+func TestAHeldStartRendersThePersistedInputItWasCreatedWith(t *testing.T) {
+	h := newHarness(t, Config{Paused: true}, map[string]def.Workflow{
+		"flow": onePhaseWorkflow("flow", nil, []def.Route{{To: "done"}}),
+	}, []string{"p"}, nil)
+	h.spend.spends["budgeted"] = Spend{Tokens: 40}
+	item := testItem("budgeted", "p", "flow", 0)
+	item.Budget = json.RawMessage(`{"tokens":1000}`)
+	if err := h.engine.StartItem(item); err != nil {
+		t.Fatal(err)
+	}
+	if starts := h.runner.started(); len(starts) != 0 {
+		t.Fatalf("a phase started while the engine was paused: %+v", starts)
+	}
+
+	// The tree spends while the start is held — a sibling run under the same
+	// ceiling, which is the ordinary case for a campaign.
+	h.spend.spends["budgeted"] = Spend{Tokens: 900}
+	if err := h.engine.Pause(false); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.engine.Sync(); err != nil {
+		t.Fatal(err)
+	}
+
+	start := h.runner.startFor(t, RunKey{ItemID: item.ID, PhaseID: "work", Attempt: 1})
+	var persisted PhaseInput
+	if err := json.Unmarshal(h.phaseAttempt(t, item.ID, "work", 1).InputEnvelope, &persisted); err != nil {
+		t.Fatal(err)
+	}
+	// Compared as JSON because that is the form the row holds, and over the whole
+	// map rather than one key: any variable that would be rebuilt differently is
+	// the same defect.
+	rendered, err := json.Marshal(start.Vars)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recorded, err := json.Marshal(persisted.Vars)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(rendered) != string(recorded) {
+		t.Fatalf("released attempt rendered %s but its row records %s", rendered, recorded)
+	}
+	binding, ok := start.Vars[def.BudgetVariable].(map[string]any)
+	if !ok {
+		t.Fatalf("budget binding = %+v, want an object", start.Vars[def.BudgetVariable])
+	}
+	if binding["spent"] != int64(40) {
+		t.Fatalf("released attempt reports spend %v, want the 40 its row was created with", binding["spent"])
 	}
 }

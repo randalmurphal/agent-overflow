@@ -27,8 +27,11 @@ func TestValidateExitCodes(t *testing.T) {
 		wantStderr string
 	}{
 		{
+			// The config root is named even for a path validate: both forms
+			// resolve a scope now, so an unrooted run would read the developer's
+			// real workflow directory and their real project profile.
 			name:       "valid path",
-			args:       []string{"workflow", "validate", validPath},
+			args:       []string{"--config-root", configRoot, "workflow", "validate", validPath},
 			wantCode:   exitOK,
 			wantStdout: "bindings: unchecked\n",
 		},
@@ -49,7 +52,10 @@ func TestValidateExitCodes(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			var stdout bytes.Buffer
 			var stderr bytes.Buffer
-			if code := Run(test.args, &stdout, &stderr); code != test.wantCode {
+			// noEnv, because offline validation now resolves a scope for BOTH
+			// forms: inheriting the developer's own AO_PROJECT would make what
+			// this asserts depend on whose machine it runs on.
+			if code := RunWithEnv(test.args, noEnv, &stdout, &stderr); code != test.wantCode {
 				t.Fatalf("Run exit code = %d, want %d; stderr=%q", code, test.wantCode, stderr.String())
 			}
 			if !strings.Contains(stdout.String(), test.wantStdout) {
@@ -110,7 +116,7 @@ func TestJSONShapes(t *testing.T) {
 	}{
 		{
 			name:     "validation result",
-			args:     []string{"workflow", "validate", "--json", validPath},
+			args:     []string{"workflow", "validate", "--json", "--config-root", configRoot, validPath},
 			wantKeys: []string{"bindingStatus", "findings"},
 		},
 		{
@@ -123,7 +129,7 @@ func TestJSONShapes(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			var stdout bytes.Buffer
 			var stderr bytes.Buffer
-			if code := Run(test.args, &stdout, &stderr); code != exitOK {
+			if code := RunWithEnv(test.args, noEnv, &stdout, &stderr); code != exitOK {
 				t.Fatalf("Run exit code = %d; stderr=%q", code, stderr.String())
 			}
 			var object map[string]json.RawMessage
@@ -165,7 +171,7 @@ func TestValidationJSONIncludesTypedFindings(t *testing.T) {
 	mustWriteFile(t, path, workflowYAML("findings", ""))
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-	if code := Run([]string{"workflow", "validate", "--json", path}, &stdout, &stderr); code != exitFindings {
+	if code := RunWithEnv([]string{"workflow", "validate", "--json", path}, noEnv, &stdout, &stderr); code != exitFindings {
 		t.Fatalf("Run exit code = %d, want %d; stderr=%q", code, exitFindings, stderr.String())
 	}
 	var result struct {

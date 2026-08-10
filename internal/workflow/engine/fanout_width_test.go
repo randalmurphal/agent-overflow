@@ -2,7 +2,6 @@ package engine
 
 import (
 	"encoding/json"
-	"strings"
 	"testing"
 
 	"agent-overflow/internal/workflow/def"
@@ -26,24 +25,16 @@ func requireRefusedBeforeAnyUnitStarted(t *testing.T, h *testHarness, itemID str
 	}
 	h.requireNoHeldResources(t)
 
-	// The park has to explain itself: nothing ran a turn, so the engine's own
-	// envelope is the only place the width and the ceiling are stated.
+	// The park has to explain itself: nothing ran a turn, so the attempt's
+	// recorded cause is the only place the width and the ceiling are stated.
 	phases, err := h.store.ListWorkItemPhases(itemID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(phases) != 1 || phases[0].Status != "parked" {
+	if len(phases) != 1 {
 		t.Fatalf("phase attempts = %+v, want one parked attempt", phases)
 	}
-	var envelope controlEnvelope
-	if err := json.Unmarshal(phases[0].OutputEnvelope, &envelope); err != nil {
-		t.Fatalf("park envelope %s: %v", phases[0].OutputEnvelope, err)
-	}
-	for _, want := range wantInReason {
-		if !strings.Contains(envelope.Reason, want) {
-			t.Fatalf("park reason %q does not state %q", envelope.Reason, want)
-		}
-	}
+	requireParkCause(t, phases[0], wantInReason...)
 }
 
 // A dynamic width only exists once the attempt's variables are resolved, so the

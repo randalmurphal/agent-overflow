@@ -203,10 +203,14 @@ func (r *workflowAppRunner) Start(ctx context.Context, request engine.RunRequest
 	}
 
 	var prompt string
+	promptContext := r.app.workflowPromptAncestry(request.Key.ItemID, request.Workflow)
+	promptContext.NarrativePath = narrativePath
+	promptContext.Access = request.Phase.EffectiveAccess()
 	if request.FinalizeTakeover {
-		prompt, err = workflowrunner.BuildTakeoverFinalizePrompt(narrativePath, request.Phase.EffectiveAccess())
+		prompt, err = workflowrunner.BuildTakeoverFinalizePrompt(promptContext)
 	} else {
-		prompt, err = workflowrunner.BuildPrompt(request.Phase, request.Vars, narrativePath, request.Feedback)
+		promptContext.Feedback, promptContext.Guidance = request.Feedback, request.Guidance
+		prompt, err = workflowrunner.BuildPrompt(request.Phase, request.Vars, promptContext)
 	}
 	if err != nil {
 		return err
@@ -324,6 +328,12 @@ func (r *workflowAppRunner) finish(runKey string, outcome engine.Outcome) {
 	// gate evaluation, a join's `units` results, call synthesis, and the
 	// persisted attempt envelope all read `outcome.Envelope` from here on.
 	authored, stripped := def.SplitEnvelopeNarrative(outcome.Envelope)
+	// Campaign memory rides the same seam and is stripped just as
+	// unconditionally: `memory` is a prose channel, and the engine's contract is
+	// that nothing downstream of here ever carries one. The notes are recorded
+	// after the narrative settles, below, because the recording is best-effort
+	// and must never sit between an accepted envelope and its account.
+	notes, stripped := def.SplitEnvelopeMemory(stripped)
 	// The ORIGINAL payload is what settles the narrative, not the stripped one:
 	// recovery recognizes the assistant text that IS the envelope by comparing
 	// decoded documents, and the text the session sent still carries the field.
@@ -337,6 +347,7 @@ func (r *workflowAppRunner) finish(runKey string, outcome engine.Outcome) {
 	// was about to appear.
 	if workflowOutcomeCarriesEnvelope(outcome.Kind) {
 		r.settleAttemptNarrative(attempt, authored, original)
+		r.app.recordEnvelopeMemory(attempt.key, notes)
 	}
 	if outcome.Kind == engine.OutcomeDone {
 		go func() {

@@ -21,17 +21,42 @@ import (
 // or re-enter the engine. Everything past the classification below runs on the
 // per-App serial queues.
 func (a *App) afterWorkflowEngineEvent(name string, payload any) {
-	if name != "workflow:item-state" {
-		return
+	switch name {
+	case "workflow:item-state":
+		event, ok := payload.(engine.StateEvent)
+		if !ok {
+			return
+		}
+		// Recorded before the classification below, and without its
+		// from == to filter: a `run watch` reports what MOVED, and a takeover
+		// re-parking an already-parked run under a new reason is a move a
+		// monitor must not be blind to.
+		a.recordWorkflowTransition(event)
+		if event.From == event.To {
+			return
+		}
+		a.afterWorkflowStateEvent(event)
+	case "workflow:gate-notify":
+		// A gate took a `notify:` route and the run continued (K1). It is the
+		// one surface that reports without a park, so it is decided from its own
+		// event rather than from a transition that never happens.
+		if event, ok := payload.(engine.NotifyEvent); ok {
+			a.afterWorkflowGateNotify(event)
+		}
 	}
-	event, ok := payload.(engine.StateEvent)
-	if !ok || event.From == event.To {
-		return
-	}
-	a.afterWorkflowStateEvent(event)
 }
 
 func (a *App) afterWorkflowStateEvent(event engine.StateEvent) {
+	if event.To == engine.StateRunning {
+		// Somebody acted on this run — a resolve, an answer, a resume, a retry,
+		// a rerun all land here — so whatever its bound thread was last told is
+		// spent, and the next wake delivers however familiar it looks. This is
+		// the record half of the coalescing rule; the comparison half lives in
+		// wakeAlreadyDelivered.
+		itemID := event.ItemID
+		a.workflowWake.Go(func() { a.clearTreeWakeSignature(itemID) })
+		return
+	}
 	if !restingWorkflowState(event.To) {
 		return
 	}

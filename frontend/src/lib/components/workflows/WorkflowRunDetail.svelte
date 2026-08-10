@@ -53,7 +53,10 @@
   let digest = $derived(item ? parseWorkflowDigest(item.digest) : null);
   let fallback = $derived(workflowDigestFallback(kind, item?.currentPhaseId ?? ''));
   let failedUnit = $derived(detail ? failedWorkflowUnitInDetail(detail) : null);
-  let costUsd = $derived(detail?.usage?.costUsd || getWorkflowCosts()[itemId] || 0);
+  // The composed spend, not `usage.costUsd`: that field is the providers'
+  // reported half alone, and a Codex phase reports none — a codex-heavy run
+  // read as free until the app started pricing its token-only rows.
+  let costUsd = $derived(detail?.spend?.costUsd || getWorkflowCosts()[itemId] || 0);
   let terminal = $derived(
     item !== undefined && (item.state === 'done' || item.state === 'failed' || item.state === 'cancelled' || kind === 'done'),
   );

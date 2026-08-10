@@ -490,10 +490,8 @@ func TestUnitCallDepthIsBounded(t *testing.T) {
 	if deepest.CallDepth < MaxCallDepth {
 		t.Fatalf("recursion stopped at depth %d, before the absolute ceiling %d", deepest.CallDepth, MaxCallDepth)
 	}
-	attempt := h.phaseAttempt(t, current, "wave", 1)
-	if !strings.Contains(string(attempt.OutputEnvelope), "campaign") {
-		t.Fatalf("depth refusal did not carry the call chain: %s", attempt.OutputEnvelope)
-	}
+	// The depth refusal carries the call chain.
+	requireParkCause(t, h.phaseAttempt(t, current, "wave", 1), "campaign")
 }
 
 // The declared bound is the author's much tighter one, and a unit edge carries
@@ -544,10 +542,7 @@ func TestCallUnitWithUnresolvableArgsParksWiringError(t *testing.T) {
 	parent := startCampaign(t, h)
 
 	requireItemState(t, h.store, parent, StateNeedsHuman, ReasonWiringError)
-	attempt := h.phaseAttempt(t, parent, "wave", 1)
-	if !strings.Contains(string(attempt.OutputEnvelope), "prepare.nothing") {
-		t.Fatalf("park envelope did not name the unresolvable argument: %s", attempt.OutputEnvelope)
-	}
+	requireParkCause(t, h.phaseAttempt(t, parent, "wave", 1), "prepare.nothing")
 	// The edge is decided before the unit row moves, so there is no unit outcome
 	// to record: the row is still pending rather than failed.
 	h.requireUnitStatuses(t, parent, "wave", 1, map[string]string{
@@ -587,10 +582,7 @@ func TestCallUnitParksWhenAnAbsentArgumentSeedsARequiredChildInput(t *testing.T)
 	parent := startCampaign(t, h)
 
 	requireItemState(t, h.store, parent, StateNeedsHuman, ReasonWiringError)
-	attempt := h.phaseAttempt(t, parent, "wave", 1)
-	if !strings.Contains(string(attempt.OutputEnvelope), "job-notes (job-notes)") {
-		t.Fatalf("park envelope did not name the unresolved argument: %s", attempt.OutputEnvelope)
-	}
+	requireParkCause(t, h.phaseAttempt(t, parent, "wave", 1), "job-notes (job-notes)")
 	h.requireUnitStatuses(t, parent, "wave", 1, map[string]string{
 		"wave-unit-0": store.WorkItemUnitPending,
 		"wave-join":   store.WorkItemUnitPending,

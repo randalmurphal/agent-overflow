@@ -94,6 +94,15 @@ func CallerScopeFrom(ctx context.Context) (CallerScope, bool) {
 // here. It cannot be: it depends on the run record, not on the method name. The
 // bound methods enforce it from the scope on their context.
 var ScopedTokenMethods = map[string][]string{
+	// Campaign memory. GrantNotRequired: recording what the work learned is part
+	// of doing the work, exactly as returning an envelope is, and a `grants:`
+	// line between an element and its own campaign's memory would mean every
+	// workflow that forgot one silently relearns everything each wave. The
+	// authority that does apply is row-level — a phase writes its own tree and
+	// the trees of runs it started — and `app_workflow_cli_memory.go` enforces
+	// it from the scope on the context.
+	"WorkflowAgentAddMemory":  {GrantNotRequired},
+	"WorkflowAgentListMemory": {GrantNotRequired},
 	// Starting a run, and controlling the runs this phase started.
 	"WorkflowAgentStartRun": {"start-run"},
 	"WorkflowCancelItem":    {"start-run"},
@@ -106,6 +115,15 @@ var ScopedTokenMethods = map[string][]string{
 	"WorkflowRequestSoftStop": {"start-run"},
 	"WorkflowRerunItem":       {"start-run"},
 	"WorkflowRetryUnit":       {"start-run"},
+	// Changing a resting run's seeds is the same authority as resuming it: it
+	// decides what the next attempt is told to do, which is what a start-run
+	// grant already covers for every attempt after the first.
+	"WorkflowAgentAmendSeeds": {"start-run"},
+	// Leaving guidance for a run's next phase entry is the same authority as
+	// amending its seeds: both decide what the next attempt is told to do, and
+	// neither interrupts the one in flight. A babysitting session is the caller
+	// this verb exists for, and it holds start-run for the runs it started.
+	"WorkflowAgentGuideRun": {"start-run"},
 	// Repairing every failed unit at once is the same authority as repairing one
 	// at a time: same edge, same admission, N times in one command. A babysitting
 	// session is the one that notices a usage limit reset, so it is the one that
@@ -120,15 +138,37 @@ var ScopedTokenMethods = map[string][]string{
 	"WorkflowResolveGate":    {"resolve"},
 	"WorkflowAnswerQuestion": {"resolve"},
 	// Reading run state: project-wide with introspect, own-started-only with
-	// start-run alone.
-	"WorkflowAgentRunStatus": {"introspect", "start-run"},
-	"WorkflowAgentRunOutput": {"introspect", "start-run"},
-	"WorkflowAgentListRuns":  {"introspect"},
+	// start-run alone. Inspecting a run and reading one attempt's narrative are
+	// the same authority as reading its status — a wider view of a run the caller
+	// may already see, never a wider set of runs — so they take the same grants
+	// rather than a read grant of their own.
+	"WorkflowAgentRunStatus":    {"introspect", "start-run"},
+	"WorkflowAgentRunOutput":    {"introspect", "start-run"},
+	"WorkflowAgentInspectRun":   {"introspect", "start-run"},
+	"WorkflowAgentRunNarrative": {"introspect", "start-run"},
+	// Watching a run is reading its status, delivered when it changes instead of
+	// when it is asked for — the same fact, the same rows, so the same grants. A
+	// blocked call is not wider authority than a polled one; it is the same
+	// authority exercised once instead of hundreds of times.
+	"WorkflowAgentWatchRun": {"introspect", "start-run"},
+	"WorkflowAgentListRuns": {"introspect"},
 	// Automations.
 	"WorkflowAgentSchedule": {"schedule"},
 	"WorkflowAgentGetNotes": {"introspect", "update-notes"},
 	"WorkflowAgentSetNotes": {"update-notes"},
 }
+
+// GrantNotRequired admits a method to EVERY scoped token, phase or interactive,
+// whatever grants the phase froze. It is not a grant — no workflow may declare
+// it, and `def.KnownGrant` does not know it — it is the table's way of saying
+// "this method's authority is entirely row-level".
+//
+// Use it only where the method is part of doing the work rather than an extra
+// capability, AND its row-level authorization is enforced from `CallerScopeFrom`.
+// A method that widens what a phase may REACH still needs a grant of its own.
+// The `*` spelling cannot collide with a grant name: `def`'s grant vocabulary is
+// a closed set of identifiers.
+const GrantNotRequired = "*"
 
 // ErrCodeGrantRequired is the typed refusal a phase token gets for a method its
 // workflow did not grant. It is deliberately distinct from method_not_found:
@@ -149,7 +189,7 @@ func AuthorizeScopedMethod(scope CallerScope, methodName string) *FrameError {
 		return nil
 	}
 	for _, grant := range grants {
-		if scope.HasGrant(grant) {
+		if grant == GrantNotRequired || scope.HasGrant(grant) {
 			return nil
 		}
 	}

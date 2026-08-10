@@ -252,3 +252,76 @@ func TestSubagentTurnCompleteSkipsUsageLedger(t *testing.T) {
 		t.Fatalf("nested turn appended ledger rows: %+v", buckets)
 	}
 }
+
+// TestCodexWorkflowTurnUsageAttributesTokenOnlyRows — the attribution seam is
+// provider-agnostic and has to STAY that way. A Codex phase turn reports tokens
+// and no cost anywhere on its wire, so its ledger rows carry `cost_source =
+// none` and a zero `cost_usd`; if the work-item stamp were skipped for them (or
+// the rows dropped for carrying no dollars), a Codex-heavy campaign would spend
+// its whole budget invisibly. Claude's own attribution is covered above; this is
+// the same assertion for the provider whose spend the ledger cannot price.
+func TestCodexWorkflowTurnUsageAttributesTokenOnlyRows(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createCodexTestThread(t, st, "codex-phase-thread")
+	router.SetUsageWorkItemResolver(func(threadID string) string {
+		if threadID == "codex-phase-thread" {
+			return "run-1"
+		}
+		return ""
+	})
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTurnStart, ThreadID: "codex-phase-thread", TurnIndex: 0,
+		Timestamp: time.UnixMilli(1_700_000_000_000),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTurnComplete, ThreadID: "codex-phase-thread",
+		TurnComplete: usageTurnCompleteMeta(provider.ModelTokenUsage{
+			Model: "gpt-5.6-sol",
+			// No TotalCostUSD: Codex has no cost on its wire at all.
+			TokenUsage: provider.TokenUsage{
+				InputTokens: 1_000, OutputTokens: 250, CacheReadInputTokens: 4_000,
+			},
+		}),
+		Timestamp: time.UnixMilli(1_700_000_001_000),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	usage, err := st.QueryWorkItemUsage("run-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if usage.TotalTokens != 5_250 {
+		t.Fatalf("attributed tokens = %d, want 5250 — codex phase spend must land on the run", usage.TotalTokens)
+	}
+	// The dollars are absent on purpose. They are supplied at read time from the
+	// rate table, keyed off cost_source='none' — which is exactly why the row has
+	// to say `none` rather than `wire` with a zero.
+	if usage.CostUSD != 0 {
+		t.Fatalf("wire cost = %v, want 0: codex reports none", usage.CostUSD)
+	}
+	details, err := st.QueryWorkItemUsageDetail("run-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(details) != 1 || details[0].Model != "gpt-5.6-sol" || details[0].CostSource != "none" {
+		t.Fatalf("usage detail = %+v, want one token-only gpt-5.6-sol group", details)
+	}
+}
+
+// createCodexTestThread is createTestThread with the provider that reports no
+// cost, which is the whole point of the case above.
+func createCodexTestThread(t *testing.T, st *store.Store, id string) {
+	t.Helper()
+	ensureTriageProject(t, st)
+	now := time.Now().UnixMilli()
+	if err := st.CreateThread(store.Thread{
+		ID: id, ProjectID: triageTestProjectID, Title: "Codex phase",
+		Provider: "codex", WorkspacePath: "/tmp", CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("create codex thread: %v", err)
+	}
+}

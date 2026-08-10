@@ -216,6 +216,15 @@ func (e *Engine) releaseHeld(projectID string, names []string) error {
 type waiter struct {
 	item *runtimeItem
 	unit *unitRun
+	// vars is the variable context the held PHASE start will run with: the very
+	// map its attempt row was persisted carrying. It is carried rather than
+	// rebuilt at release because rebuilding re-reads time-varying sources — the
+	// tree's spend, behind the `budget` binding — and an attempt whose
+	// `input_envelope` says one thing while its prompt renders another is not the
+	// account of what it ran with that the envelope is supposed to be. A unit
+	// waiter carries none: a unit's context is derived from its attempt's own
+	// `fan.vars` when it starts.
+	vars map[string]any
 }
 
 // itemID identifies the run a held start belongs to, whichever kind it is.
@@ -234,17 +243,29 @@ func waiterKey(item *runtimeItem, unit *unitRun) waitKey {
 	return key
 }
 
+// addWaitingPhase holds a phase attempt's start until its resources are free.
+// The context it will run with is passed rather than rebuilt at release: see
+// waiter.vars.
+func (e *Engine) addWaitingPhase(item *runtimeItem, vars map[string]any) {
+	e.addWaiting(waiter{item: item, vars: vars})
+}
+
+// addWaitingUnit holds one fan-out unit's start in the same FIFO.
+func (e *Engine) addWaitingUnit(item *runtimeItem, unit *unitRun) {
+	e.addWaiting(waiter{item: item, unit: unit})
+}
+
 // addWaiting appends to a FIFO list, so freed capacity goes to the
 // longest-waiting phase or unit.
-func (e *Engine) addWaiting(item *runtimeItem, unit *unitRun) {
-	key := waiterKey(item, unit)
+func (e *Engine) addWaiting(held waiter) {
+	key := waiterKey(held.item, held.unit)
 	if _, exists := e.waitingKeys[key]; exists {
-		markWaiting(item, unit, true)
+		markWaiting(held.item, held.unit, true)
 		return
 	}
-	e.waiting = append(e.waiting, waiter{item: item, unit: unit})
+	e.waiting = append(e.waiting, held)
 	e.waitingKeys[key] = struct{}{}
-	markWaiting(item, unit, true)
+	markWaiting(held.item, held.unit, true)
 }
 
 func (e *Engine) removeWaiting(item *runtimeItem, unit *unitRun) {
@@ -308,9 +329,13 @@ func (e *Engine) startWaiting() error {
 		item := held.item
 		phase, ok := findPhase(item.workflow, item.phaseID)
 		if !ok {
+			cause := fmt.Errorf("phase %q is absent from item %q snapshot", item.phaseID, item.item.ID)
 			err := errors.Join(
-				e.teardown(item, teardownRequest{phaseStatus: "parked", nextState: StateNeedsHuman, reason: ReasonWiringError}),
-				fmt.Errorf("phase %q is absent from item %q snapshot", item.phaseID, item.item.ID),
+				e.teardown(item, teardownRequest{
+					cause: cause, phaseStatus: "parked",
+					nextState: StateNeedsHuman, reason: ReasonWiringError,
+				}),
+				cause,
 			)
 			e.emitError(item.item.ID, err)
 			errs = append(errs, err)
@@ -318,7 +343,10 @@ func (e *Engine) startWaiting() error {
 		}
 		acquired, ok, err := e.acquirePhaseResources(item.item.ProjectID, phase)
 		if err != nil {
-			combined := errors.Join(err, e.teardown(item, teardownRequest{phaseStatus: "parked", nextState: StateNeedsHuman, reason: acquisitionParkReason(err)}))
+			combined := errors.Join(err, e.teardown(item, teardownRequest{
+				cause: err, phaseStatus: "parked",
+				nextState: StateNeedsHuman, reason: acquisitionParkReason(err),
+			}))
 			e.emitError(item.item.ID, combined)
 			errs = append(errs, combined)
 			continue
@@ -328,6 +356,7 @@ func (e *Engine) startWaiting() error {
 			continue
 		}
 		item.acquired = acquired
+		vars := held.vars
 		e.removeWaiting(item, nil)
 		halted, err := e.enforceBudget(item)
 		if halted {
@@ -337,13 +366,9 @@ func (e *Engine) startWaiting() error {
 			}
 			continue
 		}
-		vars, _, err := e.variableContext(item, nil)
-		if err != nil {
-			combined := errors.Join(err, e.teardown(item, teardownRequest{phaseStatus: "parked", nextState: StateNeedsHuman, reason: ReasonWiringError}))
-			e.emitError(item.item.ID, combined)
-			errs = append(errs, combined)
-			continue
-		}
+		// The context is the one this attempt's row was persisted with, not a
+		// rebuild: a second build would re-read the tree's spend and hand the model
+		// a `budget` block the attempt's own record contradicts.
 		if err := e.startPhaseWork(item, phase, vars); err != nil {
 			e.emitError(item.item.ID, err)
 			errs = append(errs, err)
@@ -359,6 +384,7 @@ func (e *Engine) releaseWaitingUnit(item *runtimeItem, unit *unitRun) (bool, err
 	acquired, ok, err := e.acquireUnitResources(item.item.ProjectID, unit.definition)
 	if err != nil {
 		return true, errors.Join(err, e.teardown(item, teardownRequest{
+			cause:       fmt.Errorf("acquire unit %q resources: %w", unit.id, err),
 			phaseStatus: "parked", nextState: StateNeedsHuman, reason: acquisitionParkReason(err),
 		}))
 	}

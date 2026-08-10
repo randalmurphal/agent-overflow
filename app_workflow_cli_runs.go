@@ -62,6 +62,11 @@ type WorkflowAgentRunView struct {
 	Resting             bool   `json:"resting"`
 	StartedAt           int64  `json:"startedAt,omitempty"`
 	EndedAt             int64  `json:"endedAt,omitempty"`
+	// Seeds is what the run was started with, populated only by the single-run
+	// reads. It is the run's own frozen input, so a caller reconstructing what a
+	// wave was asked for has it without a second surface; the listing projection
+	// does not carry it at all, because a summary row blanks the column.
+	Seeds json.RawMessage `json:"seeds,omitempty"`
 	// FailedUnits names the units `run retry-unit` takes — the attempt's join
 	// among them when it is what failed — populated only by
 	// `run status` on a run resting needs-human(unit-failed). The reason already
@@ -74,6 +79,19 @@ type WorkflowAgentRunView struct {
 	// for the same reason FailedUnits is: it costs one extra query per run, and a
 	// list is for locating a run rather than reading one.
 	Phases []WorkflowAgentPhaseAttempt `json:"phases,omitempty"`
+	// Budget is the ceiling in force and the tree's spend against it, absent on
+	// a run that has none. Populated by the single-run reads only: resolving it
+	// costs a root lookup, a profile read, and — for a run that HAS a ceiling —
+	// the same tree-spend aggregate the engine's check runs, which is a per-run
+	// fan-out a listing must not pay.
+	Budget *WorkflowAgentRunBudget `json:"budget,omitempty"`
+	// PendingGuidance counts the `run guide` entries waiting for this run's next
+	// fresh phase entry. It is a COUNT here and the entries themselves are on
+	// `run inspect`: the number is what a reader of a run's state needs — an
+	// operator about to leave a fourth steer, or one wondering why the run has
+	// not turned yet — while the text of what somebody else left is a read of
+	// its own. Populated by the single-run reads only, like the two fields above.
+	PendingGuidance int `json:"pendingGuidance,omitempty"`
 }
 
 // WorkflowAgentFailedUnit is one unit of a parked fan-out that is resting
@@ -286,18 +304,36 @@ func (a *App) WorkflowAgentRunStatus(ctx context.Context, itemID string) (Workfl
 	if err != nil {
 		return WorkflowAgentRunView{}, err
 	}
-	// scopedRun answers "may you see it"; the summary projection answers "where
-	// is it", carrying the phase progress GetWorkItem does not compute.
+	return a.workflowAgentRunDetail(ctx, item)
+}
+
+// workflowAgentRunDetail is the single-run projection `run status` prints and
+// `run inspect` builds on, so the two cannot disagree about what reading one run
+// answers. `item` is the row scopedRun already loaded: the summary projection
+// carries the phase progress GetWorkItem does not compute, and blanks the seeds
+// column that only the full row has.
+func (a *App) workflowAgentRunDetail(ctx context.Context, item store.WorkItem) (WorkflowAgentRunView, error) {
 	summary, err := a.store.GetWorkItemSummary(item.ID)
 	if err != nil {
 		return WorkflowAgentRunView{}, err
 	}
 	view := workflowAgentRunView(summary)
+	view.Seeds = item.Seeds
+	budget, err := a.workflowRunBudget(ctx, item)
+	if err != nil {
+		return WorkflowAgentRunView{}, err
+	}
+	view.Budget = budget
 	phases, err := a.workflowAgentPhaseAttempts(summary.ID)
 	if err != nil {
 		return WorkflowAgentRunView{}, err
 	}
 	view.Phases = phases
+	pending, err := a.workflowPendingGuidance(item.ID)
+	if err != nil {
+		return WorkflowAgentRunView{}, err
+	}
+	view.PendingGuidance = len(pending)
 	if engine.State(summary.State) == engine.StateNeedsHuman && engine.Reason(summary.Reason) == engine.ReasonUnitFailed {
 		units, err := a.workflowFailedUnits(summary.ID)
 		if err != nil {

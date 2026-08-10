@@ -300,13 +300,20 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "UploadAttachment", ID: 2485473713},                     // main.App.UploadAttachment
 	{Name: "VerifyEditDiffs", ID: 3907724148},                      // main.App.VerifyEditDiffs
 	{Name: "Version", ID: 2431199839},                              // main.App.Version
+	{Name: "WorkflowAgentAddMemory", ID: 4000394635},               // main.App.WorkflowAgentAddMemory
+	{Name: "WorkflowAgentAmendSeeds", ID: 4273669366},              // main.App.WorkflowAgentAmendSeeds
 	{Name: "WorkflowAgentGetNotes", ID: 864025136},                 // main.App.WorkflowAgentGetNotes
+	{Name: "WorkflowAgentGuideRun", ID: 76499272},                  // main.App.WorkflowAgentGuideRun
+	{Name: "WorkflowAgentInspectRun", ID: 1146143060},              // main.App.WorkflowAgentInspectRun
+	{Name: "WorkflowAgentListMemory", ID: 1978122086},              // main.App.WorkflowAgentListMemory
 	{Name: "WorkflowAgentListRuns", ID: 717593283},                 // main.App.WorkflowAgentListRuns
+	{Name: "WorkflowAgentRunNarrative", ID: 3748461612},            // main.App.WorkflowAgentRunNarrative
 	{Name: "WorkflowAgentRunOutput", ID: 315193175},                // main.App.WorkflowAgentRunOutput
 	{Name: "WorkflowAgentRunStatus", ID: 49502656},                 // main.App.WorkflowAgentRunStatus
 	{Name: "WorkflowAgentSchedule", ID: 3469145856},                // main.App.WorkflowAgentSchedule
 	{Name: "WorkflowAgentSetNotes", ID: 8517788},                   // main.App.WorkflowAgentSetNotes
 	{Name: "WorkflowAgentStartRun", ID: 1060823172},                // main.App.WorkflowAgentStartRun
+	{Name: "WorkflowAgentWatchRun", ID: 2308429865},                // main.App.WorkflowAgentWatchRun
 	{Name: "WorkflowAnswerQuestion", ID: 4150249282},               // main.App.WorkflowAnswerQuestion
 	{Name: "WorkflowBindThread", ID: 1931806823},                   // main.App.WorkflowBindThread
 	{Name: "WorkflowCancelItem", ID: 4158962817},                   // main.App.WorkflowCancelItem

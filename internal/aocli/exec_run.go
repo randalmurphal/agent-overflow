@@ -43,8 +43,18 @@ func runCommand(args []string, lookupEnv func(string) (string, bool), stdout, st
 		return runStatusCommand.run(args[1:], lookupEnv, stdout, stderr)
 	case "wait":
 		return runWaitCommand.run(args[1:], lookupEnv, stdout, stderr)
+	case "watch":
+		return runWatchCommand.run(args[1:], lookupEnv, stdout, stderr)
+	case "amend":
+		return runAmendCommand.run(args[1:], lookupEnv, stdout, stderr)
+	case "guide":
+		return runGuideCommand.run(args[1:], lookupEnv, stdout, stderr)
 	case "output":
 		return runOutputCommand.run(args[1:], lookupEnv, stdout, stderr)
+	case "inspect":
+		return runInspectCommand.run(args[1:], lookupEnv, stdout, stderr)
+	case "narrative":
+		return runNarrativeCommand.run(args[1:], lookupEnv, stdout, stderr)
 	case "list":
 		return runListCommand.run(args[1:], lookupEnv, stdout, stderr)
 	case "pause":

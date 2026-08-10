@@ -4,13 +4,23 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"unicode/utf8"
 
+	"agent-overflow/internal/store"
 	"agent-overflow/internal/workflow/def"
 )
 
 type teardownRequest struct {
-	output      json.RawMessage
-	gateTrace   json.RawMessage
+	output    json.RawMessage
+	gateTrace json.RawMessage
+	// cause is the ENGINE's diagnosis of why this teardown is happening, set by
+	// every site whose trigger is a Go error rather than an envelope an agent
+	// authored. It is persisted on the attempt row (`park_cause`) and written to
+	// the engine log, and it is the difference between a run that rests with a
+	// typed reason and one a human can act on. Sites whose reason names its own
+	// cause — `interrupted`, `paused`, `taken-over`, a gate a human is deciding
+	// — deliberately leave it nil; a restatement there would be noise.
+	cause       error
 	phaseStatus string
 	nextState   State
 	reason      Reason
@@ -79,7 +89,7 @@ func (e *Engine) transition(item *runtimeItem, to State, reason Reason) error {
 	item.item.State = string(to)
 	item.item.Reason = string(reason)
 	item.item.EndedAt = endedAt
-	e.emitItemState(item.item.ID, item.item.ProjectID, from, to, reason)
+	e.emitItemStateAt(item, from, to, reason)
 	if to != StateRunning {
 		delete(e.items, item.item.ID)
 	}
@@ -150,13 +160,27 @@ func (e *Engine) teardown(item *runtimeItem, request teardownRequest) error {
 	if err := e.sweepPersistedUnits(item, request.phaseStatus, request.retainCallChildren); err != nil {
 		errs = append(errs, err)
 	}
+	// The attempt's own state dies with the attempt, here rather than in each
+	// caller: the fan-out it expanded, the guidance block its elements rendered
+	// (and the acknowledgement it still owed the pending slot, so entries no turn
+	// read stay pending), and both halves of the prompt-route override — what this
+	// attempt rendered, and any arming for an entry this teardown means will never
+	// happen. Leaving them for the next `enterPhase` to reassign put the safety in
+	// caller discipline, and one caller that entered a phase without going through
+	// that reassignment leaked a loop route's body into an unrelated round.
 	item.fan = nil
+	item.guidance = nil
+	item.guidanceUnacked = nil
+	item.promptRoute = nil
+	item.nextPromptRoute = nil
 
+	cause := parkCauseText(request.cause)
 	phasePersisted := true
-	if item.phaseID != "" && item.attempt > 0 {
+	switch {
+	case item.phaseID != "" && item.attempt > 0:
 		if err := e.store.CompleteWorkItemPhase(
 			item.item.ID, item.phaseID, item.attempt, output, request.gateTrace,
-			request.phaseStatus, e.timestamp(),
+			request.phaseStatus, cause, e.timestamp(),
 		); err != nil {
 			errs = append(errs, fmt.Errorf("persist phase teardown: %w", err))
 			phasePersisted = false
@@ -166,13 +190,88 @@ func (e *Engine) teardown(item *runtimeItem, request teardownRequest) error {
 				Attempt: item.attempt, Status: request.phaseStatus,
 			})
 		}
+	case cause != "" && item.phaseID != "":
+		if err := e.parkOnNewAttempt(item, request.phaseStatus, cause); err != nil {
+			errs = append(errs, err)
+			phasePersisted = false
+		}
 	}
 	if request.nextState != "" && phasePersisted {
 		if err := e.transition(item, request.nextState, request.reason); err != nil {
 			errs = append(errs, err)
+		} else {
+			e.logTeardown(item, request, cause)
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// parkOnNewAttempt persists the attempt row an engine-diagnosed park rests on
+// when the failure landed BEFORE the attempt existed — a phase the frozen
+// snapshot does not declare, a budget the tree had already spent, a variable
+// context that would not build. Those parks used to leave a typed reason and
+// nothing else: no row, no cause, and no way to answer "entering what, and why
+// did it stop" short of reading the process's stderr.
+//
+// The row is an honest record — the run did attempt to enter that phase and did
+// not get past it — and it costs one thing worth stating: the loop-budget
+// derivation now sees a parked attempt of that phase where it previously saw the
+// advance that led there, so a resume through it under-refills rather than
+// refills. That is the direction the derivation is already required to err in.
+func (e *Engine) parkOnNewAttempt(item *runtimeItem, status, cause string) error {
+	phases, err := e.store.ListWorkItemPhaseContexts(item.item.ID)
+	if err != nil {
+		return fmt.Errorf("park item %q on phase %q: %w", item.item.ID, item.phaseID, err)
+	}
+	attempt := nextAttempt(phases, item.phaseID)
+	now := e.timestamp()
+	if err := e.store.CreateWorkItemPhase(store.WorkItemPhase{
+		ItemID: item.item.ID, PhaseID: item.phaseID, Attempt: attempt,
+		ParkCause: cause, Status: status, StartedAt: now, EndedAt: now,
+	}); err != nil {
+		return fmt.Errorf("park item %q on phase %q: %w", item.item.ID, item.phaseID, err)
+	}
+	item.attempt = attempt
+	e.emitter.Emit("workflow:phase-state", PhaseEvent{
+		ItemID: item.item.ID, PhaseID: item.phaseID, Attempt: attempt, Status: status,
+	})
+	return nil
+}
+
+// parkCauseText renders a cause for persistence, bounded. A cause that would
+// exceed the bound is truncated with the fact stated, because a reader who
+// cannot tell a short cause from a cut-off one will trust the wrong half.
+func parkCauseText(cause error) string {
+	if cause == nil {
+		return ""
+	}
+	text := cause.Error()
+	if len(text) <= MaxParkCauseBytes {
+		return text
+	}
+	// Cut on a rune boundary. The column is TEXT and the cause can carry a path,
+	// a branch name, or a model's own words; half a rune would be invalid UTF-8
+	// in the store before any reader got the chance to quote it.
+	cut := MaxParkCauseBytes
+	for cut > 0 && !utf8.RuneStart(text[cut]) {
+		cut--
+	}
+	return text[:cut] + " …(cause truncated)"
+}
+
+// logTeardown records the lifecycle transition a teardown just made. It runs
+// after the transition rather than before it, so the log never claims a park
+// that a failed write did not make.
+func (e *Engine) logTeardown(item *runtimeItem, request teardownRequest, cause string) {
+	event := LogEventPark
+	if request.nextState == StateCancelled {
+		event = LogEventCancel
+	}
+	e.logEvent(LogEvent{
+		Event: event, ItemID: item.item.ID, ProjectID: item.item.ProjectID,
+		PhaseID: item.phaseID, Attempt: item.attempt,
+		State: request.nextState, Reason: request.reason, Message: cause,
+	})
 }
 
 func (e *Engine) complete(key RunKey, outcome Outcome) error {
@@ -218,9 +317,13 @@ func (e *Engine) completePhaseOutcome(item *runtimeItem, key RunKey, outcome Out
 	case OutcomeStopped:
 		return e.teardown(item, teardownRequest{output: outcome.Envelope, phaseStatus: "parked", nextState: StateNeedsHuman, reason: ReasonInterrupted})
 	default:
+		cause := fmt.Errorf("phase %s/%s/%d returned unknown outcome %q", key.ItemID, key.PhaseID, key.Attempt, outcome.Kind)
 		return errors.Join(
-			e.teardown(item, teardownRequest{output: outcome.Envelope, phaseStatus: "parked", nextState: StateNeedsHuman, reason: phaseFailureReason(key)}),
-			fmt.Errorf("phase %s/%s/%d returned unknown outcome %q", key.ItemID, key.PhaseID, key.Attempt, outcome.Kind),
+			e.teardown(item, teardownRequest{
+				output: outcome.Envelope, cause: cause, phaseStatus: "parked",
+				nextState: StateNeedsHuman, reason: phaseFailureReason(key),
+			}),
+			cause,
 		)
 	}
 }
@@ -241,20 +344,35 @@ func phaseFailureReason(key RunKey) Reason {
 }
 
 func (e *Engine) completeDone(item *runtimeItem, envelope json.RawMessage) error {
-	vars, phases, err := e.variableContext(item, envelope)
+	vars, phases, err := e.variableContext(item, item.currentAttempt(envelope))
 	if err != nil {
-		return errors.Join(e.teardown(item, teardownRequest{output: envelope, phaseStatus: "parked", nextState: StateNeedsHuman, reason: ReasonAgentError}), err)
+		// A context this engine cannot build is a WIRING error, the same reason
+		// `enterPhase` parks the identical failure under — an envelope this engine
+		// wrote and cannot read back, a seeds column that will not decode. It used
+		// to land in `agent-error`, the one bucket no repair verb reaches, for a
+		// failure no agent had anything to do with.
+		return errors.Join(e.teardown(item, teardownRequest{
+			output: envelope, cause: err, phaseStatus: "parked",
+			nextState: StateNeedsHuman, reason: ReasonWiringError,
+		}), err)
 	}
 	phase, ok := findPhase(item.workflow, item.phaseID)
 	if !ok {
+		cause := fmt.Errorf("phase %q is absent from item %q snapshot", item.phaseID, item.item.ID)
 		return errors.Join(
-			e.teardown(item, teardownRequest{output: envelope, phaseStatus: "parked", nextState: StateNeedsHuman, reason: ReasonWiringError}),
-			fmt.Errorf("phase %q is absent from item %q snapshot", item.phaseID, item.item.ID),
+			e.teardown(item, teardownRequest{
+				output: envelope, cause: cause, phaseStatus: "parked",
+				nextState: StateNeedsHuman, reason: ReasonWiringError,
+			}),
+			cause,
 		)
 	}
 	counts, countErr := loopCounts(item.item.ID, phases)
 	if countErr != nil {
-		return errors.Join(e.teardown(item, teardownRequest{output: envelope, phaseStatus: "parked", nextState: StateNeedsHuman, reason: ReasonWiringError}), countErr)
+		return errors.Join(e.teardown(item, teardownRequest{
+			output: envelope, cause: countErr, phaseStatus: "parked",
+			nextState: StateNeedsHuman, reason: ReasonWiringError,
+		}), countErr)
 	}
 	decision, trace, evaluateErr := def.EvaluateGate(phase, vars, counts)
 	if evaluateErr != nil {
@@ -263,11 +381,17 @@ func (e *Engine) completeDone(item *runtimeItem, envelope json.RawMessage) error
 	}
 	encodedTrace, marshalErr := json.Marshal(trace)
 	if marshalErr != nil {
-		return errors.Join(e.teardown(item, teardownRequest{output: envelope, phaseStatus: "parked", nextState: StateNeedsHuman, reason: ReasonWiringError}), marshalErr)
+		return errors.Join(e.teardown(item, teardownRequest{
+			output: envelope, cause: marshalErr, phaseStatus: "parked",
+			nextState: StateNeedsHuman, reason: ReasonWiringError,
+		}), marshalErr)
 	}
 	if evaluateErr != nil {
 		return errors.Join(
-			e.teardown(item, teardownRequest{output: envelope, gateTrace: encodedTrace, phaseStatus: "parked", nextState: StateNeedsHuman, reason: ReasonWiringError}),
+			e.teardown(item, teardownRequest{
+				output: envelope, gateTrace: encodedTrace, cause: evaluateErr,
+				phaseStatus: "parked", nextState: StateNeedsHuman, reason: ReasonWiringError,
+			}),
 			evaluateErr,
 		)
 	}
@@ -283,16 +407,23 @@ func (e *Engine) finishDecision(item *runtimeItem, decision def.RouteDecision, e
 	}
 	switch decision.Kind {
 	case def.DecisionAdvance, def.DecisionLoop:
+		gatePhase, gateAttempt := item.phaseID, item.attempt
 		if err := e.teardown(item, teardownRequest{output: envelope, gateTrace: gateTrace, phaseStatus: "completed"}); err != nil {
 			return err
 		}
+		e.noteGateNotify(item, decision, gatePhase, gateAttempt)
 		item.feedback = feedbackFor(vars, decision.Feedback, "")
+		// The loop route's per-round knobs are applied after the feedback is
+		// composed, because a continuation the engine could not honour states so
+		// in it, and after the teardown, because `session: continue` resolves the
+		// session off the attempt rows that teardown just completed.
+		e.applyLoopRoute(item, decision, gatePhase)
 		item.phaseID = decision.Target
 		item.attempt = 0
 		// The phase just released its locks; hand them to the longest-waiting
 		// phase before this item competes for them again.
 		waitingErr := e.startWaiting()
-		return errors.Join(waitingErr, e.enterPhase(item))
+		return errors.Join(waitingErr, e.enterPhase(item, entryFresh))
 	case def.DecisionDone:
 		return e.teardown(item, teardownRequest{output: envelope, gateTrace: gateTrace, phaseStatus: "completed", nextState: StateDone})
 	case def.DecisionFailed:
@@ -302,10 +433,43 @@ func (e *Engine) finishDecision(item *runtimeItem, decision def.RouteDecision, e
 	case def.DecisionRetriesExhausted:
 		return e.teardown(item, teardownRequest{output: envelope, gateTrace: gateTrace, phaseStatus: "parked", nextState: StateNeedsHuman, reason: ReasonRetriesExhausted})
 	case def.DecisionNoMatch:
-		return e.teardown(item, teardownRequest{output: envelope, gateTrace: gateTrace, phaseStatus: "parked", nextState: StateNeedsHuman, reason: ReasonWiringError})
+		return e.teardown(item, teardownRequest{
+			output: envelope, gateTrace: gateTrace,
+			cause: fmt.Errorf(
+				"phase %q of item %q completed and its gate matched no route; the trace on this attempt shows which predicates were evaluated",
+				item.phaseID, item.item.ID),
+			phaseStatus: "parked", nextState: StateNeedsHuman, reason: ReasonWiringError,
+		})
 	default:
-		return e.teardown(item, teardownRequest{output: envelope, gateTrace: gateTrace, phaseStatus: "parked", nextState: StateNeedsHuman, reason: ReasonWiringError})
+		return e.teardown(item, teardownRequest{
+			output: envelope, gateTrace: gateTrace,
+			cause: fmt.Errorf("phase %q of item %q produced unknown gate decision %q",
+				item.phaseID, item.item.ID, decision.Kind),
+			phaseStatus: "parked", nextState: StateNeedsHuman, reason: ReasonWiringError,
+		})
 	}
+}
+
+// noteGateNotify announces a `notify:`-decorated route the run just continued
+// through. It runs AFTER the teardown that persisted the attempt and its gate
+// trace, so the app resolving the message reads a record that already says what
+// the gate decided; a teardown that failed returns before this and announces
+// nothing.
+//
+// It is fire-and-forget by construction: `Emit` is the same seam every other
+// engine event crosses, the app hands the work to its own queue, and no result
+// comes back. A progress wake can therefore never park, fail, or delay the run
+// it is reporting on — the run has already moved.
+func (e *Engine) noteGateNotify(item *runtimeItem, decision def.RouteDecision, phaseID string, attempt int) {
+	if !decision.Notify {
+		return
+	}
+	e.emitter.Emit("workflow:gate-notify", NotifyEvent{
+		ItemID: item.item.ID, ProjectID: item.item.ProjectID,
+		PhaseID: phaseID, Attempt: attempt,
+		Decision: string(decision.Kind), Target: decision.Target,
+		RouteIndex: decision.RouteIndex,
+	})
 }
 
 func stepModeAutomaticDecision(kind def.DecisionKind) bool {

@@ -39,6 +39,21 @@ type RouteDecision struct {
 	Feedback   []string     `json:"feedback,omitempty"`
 	LoopEdge   string       `json:"loopEdge,omitempty"`
 	Max        int          `json:"max,omitempty"`
+	// Notify is the route's `notify:` decoration, carried onto the decision so
+	// the persisted gate trace states that this traversal asked for a progress
+	// wake. It is set only for the decisions the run CONTINUES through, which
+	// is what makes the flag readable as "a progress wake was dispatched"
+	// rather than as an authored intention nothing acted on.
+	Notify bool `json:"notify,omitempty"`
+	// Session is the route's `session:` mode, carried onto the decision so the
+	// persisted gate trace states which one the gate ASKED for. Like Notify it
+	// is set only where the mode can mean anything — a loop decision — so a
+	// trace can never claim a session mode for a route that entered a different
+	// phase. What the attempt actually ran under is a separate fact: a
+	// continuation the engine could not honour falls back to a fresh session
+	// with a note on the attempt, and the two attempts sharing one thread id is
+	// the durable evidence that it did continue.
+	Session RouteSession `json:"session,omitempty"`
 }
 
 // PredicateTrace records one predicate node that was actually evaluated.
@@ -120,6 +135,13 @@ func EvaluateGate(phase Phase, vars map[string]any, loopCounts map[string]int) (
 // decisionForRoute maps one matched route onto its decision. A loop route's
 // LoopEdge and resolved Max are stamped by EvaluateGate, which is the only
 // place a variable context exists to resolve a seeded bound against.
+//
+// `notify:` survives onto exactly the two kinds where the run continues past
+// the gate. Validation already refuses the decoration on a human/park route and
+// reports it as inert on a route to done/failed, but a frozen snapshot is
+// decoded and never re-validated, so the rule is enforced here as well: this is
+// the one place that decides whether a progress wake is owed, and a decision
+// that claimed one where the run rested would be a trace nobody could trust.
 func decisionForRoute(route Route, routeIndex int) RouteDecision {
 	decision := RouteDecision{RouteIndex: routeIndex}
 	switch {
@@ -127,6 +149,17 @@ func decisionForRoute(route Route, routeIndex int) RouteDecision {
 		decision.Kind = DecisionLoop
 		decision.Target = route.Loop
 		decision.Feedback = append([]string(nil), route.Feedback...)
+		// Resolved here rather than read off the route later, for the reason
+		// `notify:` is: a frozen snapshot is decoded and never re-validated, so a
+		// run started before the field was refused on other route kinds still
+		// reaches the evaluator with one declared there. Setting it on the loop
+		// decision alone is what makes the trace readable as "this re-entry asked
+		// to continue the phase's session". Only the non-default mode is
+		// recorded: absent means `fresh`, which is what every trace written
+		// before the field existed already means.
+		if route.EffectiveSession() == SessionContinue {
+			decision.Session = SessionContinue
+		}
 	case route.Human != nil:
 		decision.Kind = DecisionHuman
 	case route.Park != "":
@@ -140,7 +173,16 @@ func decisionForRoute(route Route, routeIndex int) RouteDecision {
 		decision.Kind = DecisionAdvance
 		decision.Target = route.To
 	}
+	decision.Notify = route.Notify && ContinuesPastGate(decision.Kind)
 	return decision
+}
+
+// ContinuesPastGate reports whether a decision leaves the run running. It is
+// what tells a progress wake (the run passed here) from a resting one (the run
+// stopped here), and both the evaluator and the engine ask it rather than each
+// keeping a list of kinds.
+func ContinuesPastGate(kind DecisionKind) bool {
+	return kind == DecisionAdvance || kind == DecisionLoop
 }
 
 func evaluatePredicate(predicate Predicate, vars map[string]any, routeIndex int, path string, trace *GateTrace) (bool, bool, error) {

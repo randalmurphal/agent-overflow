@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"time"
 
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/workflow/def"
@@ -20,21 +21,35 @@ type controlEnvelope struct {
 	Reason  string         `json:"reason,omitempty"`
 }
 
-// parkCauseEnvelope is the partial envelope the engine writes onto a phase
-// attempt it parked before anything ran a turn — a call invocation that could
-// not be made, a fan-out that could not be expanded. There is no agent to write
-// one, and the cause carries the only statement of what went wrong (the call
-// chain of a depth refusal, the resolved width of a ceiling refusal), so
-// without this the run record would park with a typed reason and no sentence.
-func parkCauseEnvelope(cause error) json.RawMessage {
-	envelope, err := json.Marshal(controlEnvelope{Status: "stuck", Outputs: map[string]any{}, Reason: cause.Error()})
-	if err != nil {
-		return nil
-	}
-	return envelope
+// attemptRef identifies the phase attempt a variable context is being built
+// FOR, and carries that attempt's envelope when it has produced one.
+//
+// It is passed rather than read off the runtimeItem because the two disagree at
+// a fresh phase entry: `item.attempt` there still holds the attempt the run is
+// leaving, and the attempt being entered has no row yet. Reading the item would
+// therefore exclude a real prior attempt from that phase's history binding —
+// which is exactly the round a re-entered phase most needs to see. The zero
+// value means "no current attempt" and matches no row, since attempts start
+// at 1.
+type attemptRef struct {
+	phaseID  string
+	attempt  int
+	envelope json.RawMessage
 }
 
-func (e *Engine) variableContext(item *runtimeItem, current json.RawMessage) (map[string]any, []store.WorkItemPhaseContext, error) {
+// currentAttempt is the attemptRef of the attempt an item is resident in, for
+// the paths that build a context for a live or parked attempt rather than for
+// one being entered.
+func (i *runtimeItem) currentAttempt(envelope json.RawMessage) attemptRef {
+	return attemptRef{phaseID: i.phaseID, attempt: i.attempt, envelope: envelope}
+}
+
+// matches reports whether a persisted attempt row IS the current attempt.
+func (a attemptRef) matches(phase store.WorkItemPhaseContext) bool {
+	return a.attempt > 0 && a.phaseID == phase.PhaseID && a.attempt == phase.Attempt
+}
+
+func (e *Engine) variableContext(item *runtimeItem, current attemptRef) (map[string]any, []store.WorkItemPhaseContext, error) {
 	vars := make(map[string]any)
 	if len(item.item.Seeds) > 0 {
 		if len(item.item.Seeds) > MaxSeedBytes {
@@ -65,12 +80,102 @@ func (e *Engine) variableContext(item *runtimeItem, current json.RawMessage) (ma
 			return nil, nil, fmt.Errorf("decode completed phase %s/%s/%d: %w", item.item.ID, phaseID, phase.Attempt, err)
 		}
 	}
-	if len(current) > 0 {
-		if err := addOutputs(vars, item.phaseID, current); err != nil {
-			return nil, nil, fmt.Errorf("decode current phase %s/%s/%d: %w", item.item.ID, item.phaseID, item.attempt, err)
+	if len(current.envelope) > 0 {
+		if err := addOutputs(vars, current.phaseID, current.envelope); err != nil {
+			return nil, nil, fmt.Errorf("decode current phase %s/%s/%d: %w", item.item.ID, current.phaseID, current.attempt, err)
 		}
 	}
+	// Bound last, and under the names def declares to the prompt validator, so an
+	// authored variable can never shadow a phase's own attempt history.
+	if err := bindPhaseHistory(vars, item, current, phases); err != nil {
+		return nil, nil, err
+	}
+	// The reserved call-depth read, bound last for the same reason: a seed of the
+	// same name must not be able to tell a wave it is a different wave. The value
+	// is the run row's own depth (0 for a directly started run), which is the one
+	// place the ordinal exists and the same number campaign memory stamps a note's
+	// `wave` provenance from. Declaring it is a validation finding, so nothing an
+	// author wrote is being replaced here.
+	vars[def.CallDepthVariable] = item.item.CallDepth
+	e.bindBudget(vars, item)
 	return vars, phases, nil
+}
+
+// bindBudget binds the reserved `budget` read: the ceiling in force for this
+// run's TREE and where the tree stands against it, from the same
+// `ResolveBudget` the enforcement calls — so a prompt can never quote a number
+// that would not park the run.
+//
+// Absence is a real state and is bound as one: a run under no ceiling leaves
+// the name unset, and `{{budget}}` renders the "(not provided)" every absent
+// optional input renders. The alternative — a zero ceiling, or a `present:
+// false` object — asks every prompt that reads it to special-case a shape.
+//
+// A read that cannot be answered leaves the name unbound too, and says so
+// through the log. This binding is PROMPT SURFACE — `def` refuses it in a gate
+// predicate — so a ledger that would not answer (a locked database, a profile
+// that could not be read) must degrade exactly as an absent ceiling does, never
+// fail the context it is one field of. It used to: a variable context is built
+// at gate evaluation as well as at phase entry, so a transient spend-source
+// error there marked an attempt that had COMPLETED as parked and threw away the
+// advance its gate had already decided, with no continuation that could repair
+// it. Enforcement is the loud half and stays loud: `checkBudget` refuses a
+// ceiling it cannot judge, and refuses it before the phase starts.
+//
+// Cost: a run WITH a ceiling pays one tree-spend aggregate per context build,
+// on top of the one its phase-entry budget check already runs. A run without
+// one pays a root lookup and the profile read the engine does at every
+// acquisition anyway, and never touches the ledger.
+func (e *Engine) bindBudget(vars map[string]any, item *runtimeItem) {
+	view, err := e.budgetView(item)
+	if err != nil {
+		e.logEvent(LogEvent{
+			Event: LogEventBudgetUnread, ItemID: item.item.ID, ProjectID: item.item.ProjectID,
+			PhaseID: item.phaseID, Attempt: item.attempt,
+			Message: fmt.Sprintf(
+				"the {{budget}} binding is unbound for this context: the ceiling could not be read (%v)", err),
+		})
+		return
+	}
+	if view == nil {
+		return
+	}
+	vars[def.BudgetVariable] = renderBudgetBinding(*view)
+}
+
+// renderBudgetBinding is what an element sees. It carries the four numbers a
+// prompt can act on and nothing else: which ceiling is in force, what the tree
+// has spent, what is left, and whether the spend figure was partly priced from
+// a rate table rather than reported by a provider (Codex reports tokens only).
+//
+// Tokens and dollars render as numbers; a wall clock renders as a duration
+// string, because "1h24m48s" is what a model can reason about and a millisecond
+// count is not.
+func renderBudgetBinding(view BudgetView) map[string]any {
+	binding := map[string]any{"kind": view.Kind}
+	switch view.Kind {
+	case BudgetKindTokens:
+		binding["ceiling"] = view.CeilingTokens
+		binding["spent"] = view.Spend.Tokens
+		binding["remaining"] = max(view.CeilingTokens-view.Spend.Tokens, 0)
+		// Token counts are exact whatever the rate table knows, so a token
+		// ceiling is never estimated — saying otherwise would put a caveat on the
+		// one budget kind that never needs one.
+		binding["estimated"] = false
+	case BudgetKindUSD:
+		binding["ceiling"] = view.CeilingUSD
+		binding["spent"] = view.Spend.USD
+		binding["remaining"] = max(view.CeilingUSD-view.Spend.USD, 0)
+		binding["estimated"] = view.Spend.Estimated
+	case BudgetKindWallClock:
+		ceiling := time.Duration(view.CeilingMillis) * time.Millisecond
+		elapsed := view.Elapsed()
+		binding["ceiling"] = ceiling.String()
+		binding["spent"] = elapsed.Round(time.Second).String()
+		binding["remaining"] = max(ceiling-elapsed, 0).Round(time.Second).String()
+		binding["estimated"] = false
+	}
+	return binding
 }
 
 func addOutputs(vars map[string]any, phaseID string, payload json.RawMessage) error {

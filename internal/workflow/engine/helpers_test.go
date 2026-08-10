@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -129,6 +130,12 @@ func (f *fakeSpendSource) treeSpend(itemID string) (Spend, error) {
 		}
 		total.Tokens += childSpend.Tokens
 		total.USD += childSpend.USD
+		// An estimate anywhere in the tree makes the tree's dollars an estimate,
+		// and unpriced rows accumulate — the app's source composes both the same
+		// way, and a fake that dropped them would let a test pass on a number the
+		// real one would have flagged.
+		total.Estimated = total.Estimated || childSpend.Estimated
+		total.Unpriced += childSpend.Unpriced
 	}
 	return total, nil
 }
@@ -416,10 +423,14 @@ type testHarness struct {
 // project profiles before Start, so a test can make the rebuild itself run
 // under a specific resource bound.
 type harnessOptions struct {
-	config      Config
-	workflows   map[string]def.Workflow
-	projectIDs  []string
-	capacities  map[string]map[string]int
+	config     Config
+	workflows  map[string]def.Workflow
+	projectIDs []string
+	capacities map[string]map[string]int
+	// wrapStore interposes on the engine's persistence handle only; the harness
+	// keeps the real store for its own assertions, so a test can fail one call
+	// and still read what the run record actually holds.
+	wrapStore   func(persistence) persistence
 	beforeStart func(*store.Store)
 }
 
@@ -460,7 +471,11 @@ func newHarnessWith(t *testing.T, options harnessOptions) *testHarness {
 		profiles.profiles[projectID] = &profile.Profile{Capacities: capacities}
 	}
 	definitions := &fakeDefinitions{workflows: options.workflows}
-	engine, err := New(database, runner, emitter, definitions, profiles, spend, options.config)
+	var handle persistence = database
+	if options.wrapStore != nil {
+		handle = options.wrapStore(handle)
+	}
+	engine, err := New(handle, runner, emitter, definitions, profiles, spend, options.config)
 	if err != nil {
 		database.Close()
 		t.Fatal(err)
@@ -639,5 +654,25 @@ func requireItemState(t *testing.T, database *store.Store, itemID string, state 
 	}
 	if item.State != string(state) || item.Reason != string(reason) {
 		t.Fatalf("item %q = state %q reason %q, want %q/%q", itemID, item.State, item.Reason, state, reason)
+	}
+}
+
+// requireParkCause asserts an engine-diagnosed park recorded its own diagnosis
+// on the attempt row, and that it did NOT write one into the output envelope.
+// The second half is the point: the envelope is the AGENT's artifact, and these
+// parks happened without a turn ever running, so anything there would be engine
+// prose every reader treats as something a model said.
+func requireParkCause(t *testing.T, phase store.WorkItemPhase, wants ...string) {
+	t.Helper()
+	if phase.Status != "parked" {
+		t.Fatalf("attempt %s/%d = status %q, want parked", phase.PhaseID, phase.Attempt, phase.Status)
+	}
+	if len(phase.OutputEnvelope) != 0 {
+		t.Fatalf("engine park forged an agent envelope: %s", phase.OutputEnvelope)
+	}
+	for _, want := range wants {
+		if !strings.Contains(phase.ParkCause, want) {
+			t.Fatalf("park cause %q does not state %q", phase.ParkCause, want)
+		}
 	}
 }

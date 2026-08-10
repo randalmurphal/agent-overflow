@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"slices"
+	"strings"
 
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/workflow/def"
@@ -64,6 +66,17 @@ const (
 	ReasonCheckpoint Reason = "checkpoint"
 )
 
+// resumableReasons is ResumableReason's whole membership, and continuableReasons
+// is ContinuableReason's — derived from it rather than restated, so a resumable
+// reason cannot be continuable-by-omission. Both predicates and every refusal
+// that has to NAME the set read these, which is what stops a message from
+// falling behind the rule it explains.
+var (
+	resumableReasons   = []Reason{ReasonPaused, ReasonInterrupted, ReasonCheckpoint}
+	continuableReasons = append(append([]Reason(nil), resumableReasons...),
+		ReasonUnitFailed, ReasonRetriesExhausted)
+)
+
 // ResumableReason reports whether a park continues where it stopped rather than
 // being re-entered from scratch. Every member stopped an attempt before the
 // phase produced a result, so the next step is a continuation — of the provider
@@ -71,21 +84,54 @@ const (
 // `checkpoint` call boundary. The reasons differ for the human reading the run
 // list, not for the recovery.
 func ResumableReason(reason Reason) bool {
-	return reason == ReasonPaused || reason == ReasonInterrupted || reason == ReasonCheckpoint
+	return slices.Contains(resumableReasons, reason)
 }
 
 // ContinuableReason reports whether a bare resume continues the parked attempt
 // instead of re-entering the phase with a fresh one. It is ResumableReason plus
-// `unit-failed`: that park rests on a fan-out whose finished units — and the
-// call children they ran — are exactly what a fresh entry would throw away and
-// redo. Naming a phase is always the fresh entry, including when the phase named
-// is the parked one; that is the whole meaning of `run resume --phase <id>`.
+// the two parks whose attempt holds work a fresh entry would throw away:
+//
+//   - `unit-failed` rests on a fan-out whose finished units — and the call
+//     children they ran — are exactly what re-expansion would redo.
+//   - `retries-exhausted` rests on a phase whose turn DIED mid-flight, after the
+//     runner's transient-retry layer gave up on a provider API failure. Nothing
+//     stopped it on purpose, which is why it reads like a fault and was entered
+//     fresh for so long — but the session it died in is still there, holding the
+//     context of a turn that may have run for many minutes, and both halves of
+//     the precedent already exist here: the transient layer itself re-sends into
+//     that SAME live session between backoffs, and an `interrupted` park
+//     continues a session whose process died outright. Discarding that context
+//     bought nothing.
+//
+// Naming a phase is always the fresh entry, including when the phase named is
+// the parked one; that is the whole meaning of `run resume --phase <id>`.
+//
+// `retries-exhausted` is also the reason a spent loop or reject bound parks
+// under (`def.DecisionRetriesExhausted`), and a continuation refills no bound.
+// Neither did the fresh entry a bare resume used to take: re-entering the phase
+// that parked is not an entry from OUTSIDE its cycle, so `freshLoopEntry` never
+// refilled it either. Only `--phase <id>` naming an EARLIER phase — the loop's
+// target, entered from outside the cycle — gives a bound back, which is what
+// every repair surface names alongside the continuation.
 //
 // It is deliberately NOT what decides whether a resume cascades into a parked
 // DESCENDANT. A child resting `unit-failed` needs a human's judgment about its
 // units, so those sites stay on ResumableReason and the child keeps its park.
 func ContinuableReason(reason Reason) bool {
-	return ResumableReason(reason) || reason == ReasonUnitFailed
+	return slices.Contains(continuableReasons, reason)
+}
+
+// continuableReasonList renders ContinuableReason's membership for a refusal
+// that has to say which parks it applies to.
+func continuableReasonList() string {
+	names := make([]string, len(continuableReasons))
+	for index, reason := range continuableReasons {
+		names[index] = string(reason)
+	}
+	if len(names) < 2 {
+		return strings.Join(names, "")
+	}
+	return strings.Join(names[:len(names)-1], ", ") + ", and " + names[len(names)-1]
 }
 
 type OutcomeKind string
@@ -135,21 +181,36 @@ type RunRequest struct {
 	Key      RunKey         `json:"key"`
 	Item     store.WorkItem `json:"item"`
 	Workflow def.Workflow   `json:"workflow"`
+	// Guidance is the operator guidance this phase entry delivered, empty on
+	// every attempt that is not a delivery boundary. It rides the request rather
+	// than the feedback because it is a different thing said by a different
+	// author: feedback is the gate's own words to the next round, and this is a
+	// person's, quoted as untrusted data by the prompt that renders it. A
+	// fan-out's units and its join carry the same entries their phase entry
+	// delivered — the block is part of prompt assembly, which every element of
+	// the attempt goes through.
+	Guidance []GuidanceEntry `json:"guidance,omitempty"`
 	// WorkspaceNeed is the run's frozen workspace decision (§9) — derived at
 	// start with write-need propagated through the call graph, so a read-only
 	// root that calls a writing child still provisions the worktree its whole
 	// tree shares. The runner provisions against this, never against a fresh
 	// derivation from Workflow alone, which cannot see the child.
-	WorkspaceNeed    def.WorkspaceNeed `json:"workspaceNeed,omitempty"`
-	Phase            def.Phase         `json:"phase"`
-	Unit             *def.Unit         `json:"unit,omitempty"`
-	UnitIndex        int               `json:"unitIndex,omitempty"`
-	UnitKind         UnitKind          `json:"unitKind,omitempty"`
-	UnitAttempt      int               `json:"unitAttempt,omitempty"`
-	Vars             map[string]any    `json:"vars"`
-	Feedback         *Feedback         `json:"feedback,omitempty"`
-	PriorThreadID    string            `json:"priorThreadId,omitempty"`
-	FinalizeTakeover bool              `json:"finalizeTakeover,omitempty"`
+	WorkspaceNeed def.WorkspaceNeed `json:"workspaceNeed,omitempty"`
+	// Phase is the frozen phase this work belongs to, with ONE field resolved
+	// rather than copied: `Prompt` carries the body this attempt renders, which
+	// is the phase's own unless the loop route that created the attempt declared
+	// a `prompt:` override. The substitution happens here, at the single point
+	// the request is built, so no consumer can render a phase's body while a
+	// route override was in force — and every other field is the snapshot's.
+	Phase            def.Phase      `json:"phase"`
+	Unit             *def.Unit      `json:"unit,omitempty"`
+	UnitIndex        int            `json:"unitIndex,omitempty"`
+	UnitKind         UnitKind       `json:"unitKind,omitempty"`
+	UnitAttempt      int            `json:"unitAttempt,omitempty"`
+	Vars             map[string]any `json:"vars"`
+	Feedback         *Feedback      `json:"feedback,omitempty"`
+	PriorThreadID    string         `json:"priorThreadId,omitempty"`
+	FinalizeTakeover bool           `json:"finalizeTakeover,omitempty"`
 }
 
 type Feedback struct {
@@ -164,7 +225,85 @@ type PhaseInput struct {
 	Vars     map[string]any `json:"vars"`
 	Feedback *Feedback      `json:"feedback,omitempty"`
 	Args     map[string]any `json:"args,omitempty"`
+	// PromptRoute names the loop route whose `prompt:` override this attempt
+	// rendered, and is absent for every attempt that rendered its phase's own
+	// body. It is a COORDINATE rather than the body: the frozen snapshot already
+	// holds every route's inlined prompt, so recording the reference makes the
+	// override recoverable — by a resume that continues this round, and by a
+	// human asking what an attempt actually ran — without copying a prompt file
+	// into every attempt row.
+	PromptRoute *PromptRoute `json:"promptRoute,omitempty"`
+	// Guidance is the operator guidance delivered at this attempt's entry. It is
+	// persisted with the attempt because the slot it came from is cleared the
+	// moment it is delivered: this row is then the only record that the round
+	// ran with a person's instruction in it, which is exactly what someone
+	// reading back a surprising attempt needs.
+	Guidance []GuidanceEntry `json:"guidance,omitempty"`
 }
+
+// PromptRoute is the gate route an attempt took its prompt body from: the phase
+// whose gate it is, and the route's index in that gate. Together with the frozen
+// snapshot it resolves to the inlined override body.
+type PromptRoute struct {
+	PhaseID    string `json:"phaseId"`
+	RouteIndex int    `json:"routeIndex"`
+}
+
+// GuidanceEntry is one piece of operator guidance waiting for a run's next fresh
+// phase entry — the thread→run direction, mirroring `notify:`'s run→thread one.
+//
+// At and By are stamped by the engine from the authenticated caller, never by
+// the author: guidance is quoted into a prompt as data, and an entry that could
+// claim to come from a human when a phase wrote it would be exactly the claim
+// worth forging.
+type GuidanceEntry struct {
+	Text string `json:"text"`
+	At   int64  `json:"at"`
+	// By is `human` for an interactive session and `phase` for a scoped workflow
+	// phase session.
+	By GuidanceAuthor `json:"by"`
+	// ByRun is the run the authoring phase belongs to, empty for a human.
+	ByRun string `json:"byRun,omitempty"`
+}
+
+// GuidanceAuthor is the closed vocabulary of who left a guidance entry.
+type GuidanceAuthor string
+
+const (
+	GuidanceByHuman GuidanceAuthor = "human"
+	GuidanceByPhase GuidanceAuthor = "phase"
+)
+
+// GuidanceDraft is what a caller may say: the text, and the identity the app
+// resolved from the caller's credential. The timestamp is the engine's.
+type GuidanceDraft struct {
+	Text  string
+	By    GuidanceAuthor
+	ByRun string
+}
+
+// GuidanceState is the slot after an append: every entry still pending, oldest
+// first, plus where the run is, so the caller can say when it will be read.
+type GuidanceState struct {
+	ItemID  string          `json:"itemId"`
+	Pending []GuidanceEntry `json:"pending"`
+	State   State           `json:"state"`
+	Reason  Reason          `json:"reason,omitempty"`
+	PhaseID string          `json:"phaseId,omitempty"`
+}
+
+// Guidance bounds. Both are refusals rather than trims: guidance is rendered
+// verbatim into a prompt, and silently dropping half of what an operator wrote
+// would be worse than telling them it did not fit.
+const (
+	// MaxGuidanceEntryBytes bounds one entry. It is a steering instruction, not
+	// a specification — a phase's prompt file is where a long one belongs.
+	MaxGuidanceEntryBytes = 4 * 1024
+	// MaxGuidanceEntries bounds how many wait at once. Past this the slot has
+	// stopped being "steer the next boundary" and become a backlog nobody
+	// deliberately assembled.
+	MaxGuidanceEntries = 8
+)
 
 type HumanDecision string
 
@@ -233,9 +372,19 @@ type ProfileSource interface {
 }
 
 // Spend is the attributed provider spend accumulated by one work item.
+//
+// Tokens is exact: every settled turn's usage lands in the ledger whatever the
+// provider reports about cost. USD is composed — wire-reported where the
+// provider priced its own turn, rate-table estimated where it reported tokens
+// only (Codex reports no cost anywhere on its wire). Estimated says some of USD
+// came from the rate table, and Unpriced counts ledger rows whose model has no
+// rate at all: their tokens are in Tokens, their dollars are in nothing, so a
+// USD figure carrying them is a lower bound rather than a total.
 type Spend struct {
-	Tokens int64   `json:"tokens"`
-	USD    float64 `json:"usd"`
+	Tokens    int64   `json:"tokens"`
+	USD       float64 `json:"usd"`
+	Estimated bool    `json:"estimated,omitempty"`
+	Unpriced  int64   `json:"unpriced,omitempty"`
 }
 
 // SpendSource supplies token and composed wire-plus-estimated USD spend for a
@@ -251,7 +400,93 @@ type SpendSource interface {
 // knob, so the global pause kill switch is all that survives a restart.
 type Config struct {
 	Paused bool
+	// Log receives the run-lifecycle record. It is optional: a nil sink falls
+	// back to the standard logger, which is exactly where these lines went
+	// before there was a sink, so an engine wired without one loses nothing.
+	Log LogSink
 }
+
+// Engine log event kinds. They name what happened to a RUN, not what the code
+// did, because the reader is someone asking why a run is where it is.
+const (
+	LogEventPark              = "park"
+	LogEventCancel            = "cancel"
+	LogEventResume            = "resume"
+	LogEventDefinitionRefresh = "definition-refresh"
+	LogEventSeedAmend         = "seed-amend"
+	LogEventRebuild           = "rebuild"
+	LogEventCapacity          = "capacity"
+	// LogEventGuide is one `run guide` appending to the pending slot, and
+	// LogEventGuidanceDeliver the phase entry that rendered it and cleared it.
+	// Both are logged because the pair is what answers "an operator says they
+	// steered this run — did it ever read it, and where".
+	LogEventGuide           = "guide"
+	LogEventGuidanceDeliver = "guidance-delivered"
+	// LogEventLoopSession is a `session: continue` loop route that could not
+	// continue: the target phase's previous session is gone, so the re-entry
+	// started a cold one. It is a degraded continuation rather than an error —
+	// the run keeps going — which is exactly why it has to be said somewhere.
+	LogEventLoopSession = "loop-session"
+	// LogEventBudgetUnread is the reserved `budget` read left unbound because the
+	// ceiling or the tree's spend could not be read at that moment. It is a
+	// prompt-surface degradation, never a park — enforcement refuses loudly on its
+	// own path — so this line is the only record that an element rendered
+	// "(not provided)" for a run that does have a ceiling.
+	LogEventBudgetUnread = "budget-unread"
+)
+
+// LogEvent is one engine-significant record: a run parked with its cause, a
+// cancel, a resume, a re-read definition, a rebuild decision, or a wave wider
+// than the capacity it will contend on.
+//
+// It is a flat value rather than a formatted string so the app-side sink can
+// write NDJSON a later reader can filter, and it carries the run coordinate on
+// every line because "which run" is the first question asked of any of them.
+type LogEvent struct {
+	Event     string `json:"event"`
+	ItemID    string `json:"itemId,omitempty"`
+	ProjectID string `json:"projectId,omitempty"`
+	PhaseID   string `json:"phaseId,omitempty"`
+	Attempt   int    `json:"attempt,omitempty"`
+	State     State  `json:"state,omitempty"`
+	Reason    Reason `json:"reason,omitempty"`
+	Message   string `json:"message,omitempty"`
+}
+
+// NotifyEvent announces that a gate took a route its author decorated with
+// `notify:` and the run CONTINUED (K1). It is the engine's whole contribution
+// to a progress wake: composing and delivering one is app wiring, exactly as it
+// is for a resting run's wake, and the engine neither waits for it nor learns
+// whether it landed.
+//
+// The coordinate is the phase the gate belongs to and the attempt it consumed,
+// captured before the run moves on, so the app reads the outputs the gate
+// actually decided on rather than whatever the run produced by the time the
+// message is composed.
+type NotifyEvent struct {
+	ItemID     string `json:"itemId"`
+	ProjectID  string `json:"projectId,omitempty"`
+	PhaseID    string `json:"phaseId"`
+	Attempt    int    `json:"attempt"`
+	Decision   string `json:"decision"`
+	Target     string `json:"target,omitempty"`
+	RouteIndex int    `json:"routeIndex"`
+}
+
+// LogSink writes the engine's run-lifecycle log. It is called on the command
+// goroutine, so an implementation must return promptly and must never call back
+// into Engine.
+type LogSink interface {
+	LogEngineEvent(LogEvent)
+}
+
+// MaxParkCauseBytes bounds the engine text one park persists. A cause is a
+// sentence — the resolved width, the argument that named no input, the call
+// chain of a depth refusal — and the deepest of those (a call chain at
+// MaxCallDepth) is what this is sized for. A cause past the bound is truncated
+// rather than dropped: a shortened statement of what went wrong still beats
+// none.
+const MaxParkCauseBytes = 8 * 1024
 
 const MaxSeedBytes = 64 * 1024
 const MaxSnapshotBytes = 4 * 1024 * 1024
@@ -285,6 +520,14 @@ type StateEvent struct {
 	From      State  `json:"from"`
 	To        State  `json:"to"`
 	Reason    Reason `json:"reason,omitempty"`
+	// PhaseID and Attempt are where the run WAS when the transition happened —
+	// the attempt a park rests on, which is the coordinate its cause and its
+	// narrative are filed under. They are captured here rather than looked up by
+	// a consumer because only the transition knows: by the time an observer
+	// reads the row the run may have entered the next phase. A run that has not
+	// reached a phase yet carries neither.
+	PhaseID string `json:"phaseId,omitempty"`
+	Attempt int    `json:"attempt,omitempty"`
 }
 
 // EngineState is both the Paused query result and the `workflow:engine-state`
@@ -324,8 +567,11 @@ type persistence interface {
 	UpdateWorkItemState(string, string, string, int64) error
 	SetWorkItemSoftStop(string, bool) error
 	UpdateWorkItemRunStart(string, json.RawMessage, string, string, string, int64) error
+	UpdateWorkItemSeeds(string, json.RawMessage) error
+	WorkItemPendingGuidance(string) (json.RawMessage, error)
+	SetWorkItemPendingGuidance(string, json.RawMessage) error
 	CreateWorkItemPhase(store.WorkItemPhase) error
-	CompleteWorkItemPhase(string, string, int, json.RawMessage, json.RawMessage, string, int64) error
+	CompleteWorkItemPhase(string, string, int, json.RawMessage, json.RawMessage, string, string, int64) error
 	ReopenWorkItemPhase(string, string, int) error
 	ListWorkItemPhases(string) ([]store.WorkItemPhase, error)
 	ListWorkItemPhaseContexts(string) ([]store.WorkItemPhaseContext, error)
