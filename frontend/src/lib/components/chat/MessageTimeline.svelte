@@ -18,7 +18,7 @@
     timelineNodeTurnIndex,
     type TimelineNode,
   } from '../../utils/subagentGrouping';
-  import { getActiveTurn, isThreadWorking } from '../../stores/threadStatuses.svelte';
+  import { getActiveTurn } from '../../stores/threadStatuses.svelte';
   import Button from '../primitives/Button.svelte';
   import ReadGroupRow from './ReadGroupRow.svelte';
   import ScrollToBottomButton from './ScrollToBottomButton.svelte';
@@ -57,16 +57,16 @@
   // NOT a memory dial. The 1800 -> 1200 trim (2026-07-21) was tried as
   // a tile-memory cut and measured ~nothing (86.4 -> 89.9MB renderer
   // cc/tile_memory, within noise): parked-at-bottom panes only fill
-  // the above-side buffer, and layer overheads dominated. The real
-  // tile win was the content-layer promotion lease
-  // (utils/scroll/index.svelte.ts) + the launcher AA flags — after
-  // which parked panes raster NONE of the buffer (demoted panes have
-  // no layer; buffered rows cost DOM only, ~10 rows/pane parked, with
-  // transient raster only on the actively-promoted pane). Shrinking
-  // below ~800px starts exposing the stall x fling blanking scenarios
-  // above for low-single-digit-MB DOM savings; 1200 ≈ a viewport of
-  // stall insurance. Keep in sync with TimelineVirtualizer's
-  // DEFAULT_BUFFER_PX.
+  // the above-side buffer, and layer overheads dominated — buffered
+  // rows cost DOM, not raster; tiles only exist near each pane's
+  // viewport. (A promote/demote lease once reclaimed parked panes'
+  // layers entirely, but its transitions caused three visible-flicker
+  // incidents and it was removed 2026-08-10 — contentEl is now
+  // permanently composited; see chokepoint.ts, "Fractional glide
+  // residue".) Shrinking below ~800px starts exposing the stall x
+  // fling blanking scenarios above for low-single-digit-MB DOM
+  // savings; 1200 ≈ a viewport of stall insurance. Keep in sync with
+  // TimelineVirtualizer's DEFAULT_BUFFER_PX.
   const BUFFER_SIZE_PX = 1200;
   // Visual breathing room between the last message and the composer
   // overlay; combined with the --composer-height variable from ChatView.
@@ -244,38 +244,6 @@
     // IS the content height) — the controller creates no contentEl RO;
     // samples arrive through `onContentGeometry` below.
     externalContentGeometry: true,
-    // Leading motion signal for the content-layer lease: a turn in
-    // flight (send included) means glides are coming, so the layer must
-    // not demote through the model gaps between them.
-    //
-    // Three clauses because no one of them covers a whole logical turn,
-    // and the union has to: a demote anywhere inside one puts the next
-    // promote on a glide's first frame.
-    //
-    //   - `isThreadWorking` — an open WIRE ROUND (send included). It is
-    //     per-round by design: `activeTurns` is nulled by every
-    //     `provider:turn_completed`, and turn-lifecycle.md documents
-    //     logical turns spanning several rounds plus waits where a
-    //     subagent outlives the round that spawned it.
-    //   - `liveContentActiveNow()` — content advanced within the last
-    //     500ms, whatever the round bookkeeping says.
-    //   - `pane.hasEngagedItems()` — an item is still `streaming` or
-    //     `running`. This is the round-independent one, and it is what
-    //     closes the quiet-wait window: a subagent-outlives wait holds a
-    //     `running` task row for as long as it lasts, with no round open
-    //     and nothing advancing.
-    //
-    // Between them the turn is covered end to end: open round → clause 1;
-    // content inside the hold → clause 2; a quiet stretch inside a
-    // logical turn → clause 3; and a genuinely NEW turn re-holds at rest
-    // on the `turn_started` rising edge below, before its content lands.
-    // The `midMotion` tripwire in the scroll.lease trace is now purely a
-    // detector for something unforeseen, not a known hole's recorder.
-    //
-    // Read per-fire from the lease's timer callback, outside any
-    // reactive scope (attach()'s read is explicitly untracked).
-    motionImminent: () =>
-      isThreadWorking(pane.threadId) || liveContentActiveNow() || pane.hasEngagedItems(),
   });
 
   function markMarkdownSettled(): void {
@@ -538,23 +506,6 @@
       surface.removeEventListener('touchmove', onUserGesture);
       surface.removeEventListener('keydown', onUserGesture);
     };
-  });
-
-  // Promote the content layer the moment a turn starts (send included),
-  // while the pane is still at rest — the lease's transitions are only
-  // invisible at rest, and scroll activity alone can't see motion
-  // coming. Falling edge does nothing; the lease timer demotes after the
-  // turn + idle + app lull.
-  //
-  // Keyed on `isThreadWorking` ONLY, not on the composed predicate the
-  // option uses: `pane.lastLiveContentAt` is deliberately non-reactive,
-  // and a new round's `turn_started` flips this back to true and
-  // re-holds at rest before that round's content lands. Nothing further
-  // reactive belongs in here — the keyed-signal registry keeps the
-  // re-runs to that flag's transitions (plus the occasional
-  // creation-version wakeup, which no-ops).
-  $effect(() => {
-    if (isThreadWorking(pane.threadId)) stick.holdContentLease();
   });
 
   // The scroll surface's CONTENT-box width, sourced ONLY from the async
@@ -871,18 +822,20 @@
            estimate→measure cascade — the thread-switch flicker. On any
            mismatch the estimate degrades per-row to the kind table /
            flat default. See utils/virtual/priors.ts and
-           docs/architecture/frontend-scroll.md. -->
-      <!-- Layer promotion (will-change: transform, for the spring's
-           sub-pixel translateY glide residue) is controller-owned: the
-           scroll controller writes it inline as a scroll-activity lease
-           and demotes after idle, because a permanent hint here kept a
-           full-content-height composited layer plus composited-scrolling
-           machinery alive per parked pane (~15-18MB of tile memory each;
-           see the lease section in utils/scroll/index.svelte.ts). Do not
-           re-add a static will-change class — it would defeat the lease
-           and silently re-tax every pane. -->
+           docs/architecture/frontend-scroll.md.
+
+           The static will-change-transform keeps contentEl permanently
+           composited so the spring's sub-pixel translateY glide residue
+           rides the compositor (utils/scroll/chokepoint.ts, "Fractional
+           glide residue"). Permanent by design: promotion used to be a
+           promote/demote lease that reclaimed idle-pane tile memory, but
+           its transitions re-raster a layer the reader may be looking at
+           and caused three visible-flicker incidents; a hint that never
+           changes on a mounted element cannot flicker. Do not make it
+           conditional. -->
       <div
         bind:this={contentEl}
+        class="will-change-transform"
         style:visibility={hideContentForWarmup ? 'hidden' : 'visible'}
       >
         {#key pane.threadId}

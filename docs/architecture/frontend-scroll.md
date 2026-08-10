@@ -53,43 +53,30 @@ the timeline virtualizer, or the scroll controller (`utils/scroll/`).
     import from `utils/scroll/index.svelte`.
   - `chokepoint.ts` — the single `writeScrollTop` chokepoint every
     programmatic write routes through, plus its satellites: the
-    provenance ledger, arrival-readback acceptance, spring-tick trace
-    sampling, and the content layer-promotion lease (promotion is
-    leased rather than permanent — a permanent `will-change: transform`
-    was a measured tile-memory tax). **A lease transition may only
-    happen while the surface is at rest**: at rest the re-raster
-    produces identical pixels, mid-motion it is a raster storm over a
-    full-content-height layer. So the promotion is held while motion is
-    IMMINENT — the `motionImminent` option, wired to
-    `isThreadWorking(pane.threadId) || <live-content hold>` on
-    chat/discussion (the OR is load-bearing: `isThreadWorking` is
-    per-wire-round and reads false inside multi-round logical turns) and
-    to the run's liveness on an activity-run clip. The two pane surfaces
-    pair it with a rising-edge `holdContentLease()`; the run clip does
-    not need to, because its controller only exists while the run is
-    live, so `attach()` reading the same option IS the rising edge.
-    Motion may also be RECENT (scroll activity, the lagging signal that
-    also covers unheld surfaces). Leasing against scroll activity ALONE
-    demoted through mid-turn model gaps and re-promoted from the first
-    spring tick of the next burst, which is the 2026-08-05 boundary
-    stutter (worst on WKWebView). The hold is deliberately uncapped and
-    not gated on escape, so the tile-memory guarantee is conditional on
-    the consumer's predicate falling when the turn ends — a pane parked
-    on an open approval keeps its layer by design.
-    A due demotion additionally waits for an app-wide motion lull
-    (`appMotion.ts`, probes registered per attached controller),
-    hard-capped at 30s: the demote's re-raster is only invisible on an
-    uncontended compositor, and one firing mid-stream of a neighboring
-    pane smeared across frames as a visible text shimmer
-    (2026-08-03). Detach's CLEAR is the third transition and takes the
-    same route — inline when the element has left the DOM or the app is
-    quiet, otherwise handed to a module-level deferred-clear registry
-    that applies it at the next lull (same 30s cap). All three edges
-    emit `scroll.lease` trace records (`promote` / `demote` / `defer` /
-    `clear` / `clear-applied`); the two flips carry `midMotion` (spring
-    active or residue live at the flip) as the invariant's tripwire — a
-    promote with `midMotion: true` is a surface that produced
-    programmatic motion without holding the lease.
+    provenance ledger, arrival-readback acceptance, and spring-tick
+    trace sampling. The compositing the glide residue below depends on
+    comes from a **static `will-change-transform` class on every
+    controller-owned content element** (MessageTimeline, ChannelView,
+    ActivityRun's clip content) — permanent by design. It replaced a
+    promote/demote lease that reclaimed idle-pane tile memory (~27MB
+    across four parked panes, measured 2026-07-21 on Windows/WebView2):
+    every lease transition re-rasters a layer the reader may be looking
+    at, and three separate visible-flicker incidents traced to those
+    transitions — a demote firing mid-stream of a neighboring pane
+    (2026-08-03 shimmer), a re-promote landing on the first spring tick
+    after a mid-turn demote (2026-08-05 boundary stutter), and a
+    detach-path clear stripping the hint from a still-visible run clip
+    on a cold compositor after hours of idle (2026-08-10). Each fix
+    added guards around the transitions; removing the transitions
+    removed the whole class of bug. A hint that never changes on a
+    mounted element cannot flicker. The steady-state cost is the tile
+    memory the lease used to reclaim (the ~27MB above), plus a layer
+    per mounted expanded run clip — ActivityRun carries the class
+    unconditionally, live or not, because liveness can land on an
+    already-mounted run and a class that appears then is itself a
+    raster transition. Do not reintroduce conditional promotion here
+    or in consumer markup; `attach()` reports an uncomposited
+    contentEl to frontend-errors.jsonl in trace-enabled builds.
     The chokepoint also owns the **fractional glide residue**: spring
     writes are fractional, the engine rounds `scrollTop` to whole CSS
     pixels, and the sub-pixel remainder is composited as a `translateY`
@@ -1034,6 +1021,9 @@ side ([`activity-runs.md`](activity-runs.md) has the rest):
 - **Only the live run.** Historical runs are plain `overflow-y: auto` with a
   restored `scrollTop`; a controller per run in the buffer would be a spring,
   an observer set, and intent listeners each for physics one of them can use.
+  (The static `will-change-transform` on the clip content is the one thing
+  every expanded run carries, controller or not — see the `chokepoint.ts`
+  bullet under `utils/scroll/` above.)
 - **The clip's outer height changes only on explicit events** — growth toward
   the cap, item expansion, a collapse toggle — never from inner streaming.
   That is what keeps the outer engine quiet, and it keeps `rowDelta === 0` for

@@ -253,20 +253,15 @@ export interface UseStickToBottomController {
   requestBottom(opts: RequestBottomOptions): void;
 
   /**
-   * Promote the content layer NOW, ahead of expected motion, while the
-   * surface is still at rest — the only moment the promotion's
-   * re-raster is invisible (chokepoint.ts, "Content layer-promotion
-   * lease"). Call it on the rising edge of whatever the surface passes
-   * as `motionImminent`; that option then holds the promotion for the
-   * duration. Idempotent (a call while already promoted just renews the
-   * lease deadline) and a no-op before `attach()`.
-   *
-   * PAIRS with `motionImminent`. Without that option this promotes but
-   * cannot hold — the ordinary release window then demotes mid-turn,
-   * which is the pathology the pair exists to close.
+   * Bind the controller to its scroll container and the content element
+   * the glide residue's translateY targets. Contract: `contentEl` must
+   * carry a static `will-change-transform` class in the consumer's own
+   * markup so it is composited from first paint — never applied or
+   * toggled at runtime, because a will-change transition re-rasters a
+   * layer the reader may be looking at (three flicker incidents;
+   * chokepoint.ts, "Fractional glide residue"). attach() reports a
+   * missing class to frontend-errors.jsonl.
    */
-  holdContentLease(): void;
-
   attach(scrollEl: HTMLElement, contentEl: HTMLElement): void;
   detach(): void;
 
@@ -475,49 +470,4 @@ export interface UseStickToBottomOptions {
    * double-report every height change).
    */
   externalContentGeometry?: boolean;
-  /**
-   * How long the content layer-promotion lease outlives the last scroll
-   * activity (scroll event or spring tick) before the controller demotes
-   * contentEl back to unpromoted (`will-change` cleared) — provided no
-   * motion is imminent, which holds the lease open regardless. See the
-   * "Content layer-promotion lease" section in chokepoint.ts for the
-   * memory economics. Override is a tuning/test seam; the default is
-   * CONTENT_LEASE_RELEASE_MS.
-   */
-  contentLeaseReleaseMs?: number;
-  /**
-   * Cap on how long a due demotion may additionally wait for an
-   * app-wide motion lull (appMotion.ts) before firing under load
-   * anyway. Bounds the tile-memory hold; see the lease section in
-   * chokepoint.ts. Override is a test seam; the default is
-   * CONTENT_LEASE_MAX_DEFER_MS.
-   */
-  contentLeaseMaxDeferMs?: number;
-  /**
-   * Does this surface expect programmatic motion soon? The LEADING
-   * motion signal, consulted per-fire by the content layer-promotion
-   * lease: while it reads true the lease never demotes, so the layer is
-   * already there when the next glide starts rather than being created
-   * on its first frame (chokepoint.ts, "Content layer-promotion
-   * lease"). Chat and Discussion wire it to
-   * `isThreadWorking(pane.threadId) || <their live-content hold>`; an
-   * activity-run clip wires it to the run's liveness.
-   *
-   * PAIRS with `holdContentLease()`. This option only PREVENTS demotes —
-   * it cannot undo one that already happened, so a surface supplying it
-   * without the rising-edge call reverts to the lagging behavior after
-   * any demote (the next promote lands on a glide's first frame). The
-   * exception is a controller whose own lifetime is scoped to the
-   * signal, where `attach()` reading this option IS the rising edge
-   * (ActivityRun).
-   *
-   * Read per-fire from a timer callback, and explicitly untracked at
-   * `attach()` — a tracked read there would make the predicate a
-   * dependency of the consumer's DOM-binding effect.
-   *
-   * Defaults to () => false: a surface that supplies none keeps the
-   * pre-lease-hold behavior (promotion leased against scroll activity
-   * alone).
-   */
-  motionImminent?: () => boolean;
 }

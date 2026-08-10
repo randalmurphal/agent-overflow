@@ -56,10 +56,10 @@
 // 'composer-geometry' from their composer ResizeObservers when
 // out-of-content height changes; the seam is identical on both surfaces.
 
-import { tick, untrack } from 'svelte';
+import { tick } from 'svelte';
 import { motionReduced } from '../reducedMotion';
 import { isUiRenderTraceEnabled } from '../uiRenderTrace';
-import { appMotionActive, registerAppMotionProbe } from './appMotion';
+import { reportFrontendDiagnostic } from '../frontendErrorCapture';
 import { createScrollIntent, isSelectingInside } from './intent';
 import { createContentObserver } from './observers';
 import type { EngineCompensation } from '../virtual/types';
@@ -117,8 +117,7 @@ const STICK_TO_BOTTOM_OFFSET_PX = 70;
 // Spring kinematics, tuning constants, and the sentinel/structural-append
 // windows live in scroll/spring.ts. The write chokepoint and its
 // satellites (provenance ledger, arrival readback, spring-tick trace
-// sampling, glide residue, content layer-promotion lease) live in
-// scroll/chokepoint.ts.
+// sampling, glide residue) live in scroll/chokepoint.ts.
 
 export function createUseStickToBottomController(
   options: UseStickToBottomOptions = {},
@@ -201,27 +200,21 @@ export function createUseStickToBottomController(
   // ===== Write chokepoint =====
   // The single programmatic-write site and its satellites — the
   // provenance ledger, arrival-readback acceptance, spring-tick trace
-  // sampling, the fractional glide residue, and the content
-  // layer-promotion lease — live in scroll/chokepoint.ts as one unit.
-  // The two late-bound deps close over `intent` / `spring` (created
-  // below) and are only invoked at write/check time.
+  // sampling, and the fractional glide residue — live in
+  // scroll/chokepoint.ts as one unit. The late-bound dep closes over
+  // `intent` (created below) and is only invoked at write time.
   const chokepoint = createWriteChokepoint({
     getScrollEl: () => scrollEl,
     getContentEl: () => contentEl,
     scrollTopIsAtTarget,
     refreshIsNearBottom,
     noteProgrammaticWrite: (top) => intent.noteProgrammaticWrite(top),
-    springActive: () => spring.isActive(),
-    appMotionActive,
-    motionImminent: () => options.motionImminent?.() === true,
     traceState: () => ({
       isAtBottomState,
       escapedFromLockState,
       pauseDepth,
       isNearBottomState,
     }),
-    contentLeaseReleaseMs: options.contentLeaseReleaseMs,
-    contentLeaseMaxDeferMs: options.contentLeaseMaxDeferMs,
   });
   const {
     writeScrollTop,
@@ -230,9 +223,6 @@ export function createUseStickToBottomController(
     forceNextSpringTickTrace,
     applyGlideResidue,
     settleGlideResidue,
-    renewContentLease,
-    holdContentLease,
-    clearContentLease,
   } = chokepoint;
   // OS reduced-motion OR the app's low-power setting, both meaning
   // "place instantly, never spring-glide" — see utils/reducedMotion.ts,
@@ -337,7 +327,6 @@ export function createUseStickToBottomController(
     spring,
     sampleResizeCorrelation: observers.sampleResizeCorrelation,
     resizeDifferenceNow: observers.resizeDifferenceNow,
-    noteScrollActivity: renewContentLease,
     noteUserScroll: chokepoint.noteUserScroll,
   });
 
@@ -802,25 +791,29 @@ export function createUseStickToBottomController(
   }
 
   // ===== Lifecycle =====
-  // While attached, this controller reports its motion into the
-  // app-wide registry so OTHER panes' lease demotions can wait for a
-  // lull (chokepoint.ts, the cross-pane deferral). Spring liveness and
-  // the armed structural one-shot cover glides current and imminent;
-  // the live-content hold covers streaming repaints that pin without
-  // springing (low-power mode, clamped rows). Registered on attach and
-  // released on detach: a detached controller produces no motion, and
-  // a leaked probe would keep its closure alive for the session.
-  let releaseAppMotionProbe: (() => void) | null = null;
-
   function attach(nextScrollEl: HTMLElement, nextContentEl: HTMLElement): void {
     if (scrollEl === nextScrollEl && contentEl === nextContentEl) return;
     detach();
     scrollEl = nextScrollEl;
     contentEl = nextContentEl;
-    releaseAppMotionProbe = registerAppMotionProbe(
-      () => spring.isActive() || spring.structuralAppendPending() || liveContentActiveNow(),
-    );
     observers.beginWarmup();
+    // The compositing contract check: the glide residue's translateY
+    // needs contentEl composited, which comes from a static
+    // `will-change-transform` class the consumer's own markup must
+    // carry (chokepoint.ts, "Fractional glide residue"). A controller
+    // attached without it repaints on every glide frame with nothing
+    // visibly wrong, so the breach is made loud here instead. The class
+    // is the contract (never a runtime style write — a will-change
+    // transition re-rasters a visible layer), so the class is what is
+    // checked.
+    const contentComposited = nextContentEl.classList.contains('will-change-transform');
+    if (!contentComposited) {
+      reportFrontendDiagnostic(
+        'scroll: controller attached to an uncomposited contentEl — its markup must carry '
+          + 'the static will-change-transform class (utils/scroll/chokepoint.ts)',
+        `surface ${nextScrollEl.dataset?.testid ?? 'unknown'}`,
+      );
+    }
     if (isUiRenderTraceEnabled()) trace('scroll.attach', () => ({
       surface: nextScrollEl.dataset?.testid ?? '',
       scrollTop: Math.round(nextScrollEl.scrollTop),
@@ -830,24 +823,11 @@ export function createUseStickToBottomController(
       isAtBottomState,
       escapedFromLockState,
       pauseDepth,
+      contentComposited,
     }));
     observers.attach();
     intent.attach(nextScrollEl);
     refreshIsNearBottom();
-    // A controller attaching mid-motion-window — a run clip mounting
-    // while its run is live, a pane remounting during a turn — promotes
-    // here, which is the one moment it is guaranteed to be at rest.
-    // Without it the first promote would wait for scroll activity, i.e.
-    // the first frame of the glide it should have preceded.
-    //
-    // UNTRACKED because every consumer calls attach() from inside an
-    // $effect: a tracked read would make the consumer's motion predicate
-    // (`isThreadWorking`, a run's liveness) a dependency of the
-    // DOM-binding effect, which would then tear down and re-add its
-    // scroll/gesture listeners on every working-flip — and, because the
-    // re-run early-returns above before reaching this line, the
-    // dependency would vanish again, leaving a one-shot phantom.
-    if (untrack(() => options.motionImminent?.()) === true) holdContentLease();
     installStickStateDevHook();
   }
 
@@ -905,8 +885,6 @@ export function createUseStickToBottomController(
 
   function detach(): void {
     uninstallStickStateDevHook();
-    releaseAppMotionProbe?.();
-    releaseAppMotionProbe = null;
     // Disconnects the RO and resets classification + warm-up state
     // (warm → false).
     observers.detach();
@@ -922,10 +900,6 @@ export function createUseStickToBottomController(
     spring.cancel();
     spring.clearStopRequest();
     applyGlideResidue(0);
-    // Lease teardown must run while contentEl is still set so the
-    // element leaves the controller unpromoted (a stale will-change on
-    // a detached-but-reused element would silently re-tax the pane).
-    clearContentLease();
     chokepoint.resetLedger();
     scrollEl = undefined;
     contentEl = undefined;
@@ -952,7 +926,6 @@ export function createUseStickToBottomController(
     markStructuralContentPending: spring.markStructuralAppend,
     autoScrollInFlight: () => spring.isActive() || spring.structuralAppendPending(),
     preserveScrollAnchor,
-    holdContentLease,
     attach,
     detach,
     forceStick,

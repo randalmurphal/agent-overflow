@@ -114,6 +114,22 @@ describe('activity run clip — scrollbar suppression', () => {
     expect(bar?.style.height).toBe('0px');
   });
 
+  it('resolves will-change-transform to a real compositing hint', () => {
+    // The three controller-owned content elements (MessageTimeline,
+    // ChannelView, this clip's content) carry a static
+    // `will-change-transform` class as their compositing contract
+    // (utils/scroll/chokepoint.ts, "Fractional glide residue"). The
+    // unit suites pin the class's presence in the markup; this pins the
+    // other half — that the utility actually exists in the built
+    // app.css and computes to `will-change: transform`. A Tailwind
+    // rename (or a purge that stops seeing the class) would pass every
+    // class-presence assertion while shipping an inert string.
+    const { content } = mountColumn();
+    content.className = 'will-change-transform';
+
+    expect(getComputedStyle(content).willChange).toBe('transform');
+  });
+
   it('takes no gutter either, so its rows sit on the rail', () => {
     const { prose, clip, content } = mountColumn();
     rows(content, 40);

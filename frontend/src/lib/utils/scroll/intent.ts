@@ -103,13 +103,6 @@ export interface ScrollIntentDeps {
   /** Raw resizeDifference read for trace payloads only. */
   resizeDifferenceNow(): number;
   /**
-   * Called on EVERY scroll event — before the tagged-write bail, so
-   * programmatic writes count too. Renews the controller's content
-   * layer-promotion lease ("the scroller is in motion"); must stay
-   * allocation-free (it runs at chase rate during streaming).
-   */
-  noteScrollActivity(): void;
-  /**
    * A scroll event classified as USER-driven landed at `top`: untagged
    * (no programmatic token matched) and not resize-correlated. Updates
    * the controller's provenance ledger — the ledger's invariant is
@@ -469,10 +462,6 @@ export function createScrollIntent(deps: ScrollIntentDeps): ScrollIntent {
   function handleScroll(): void {
     const scrollEl = deps.getScrollEl();
     if (!scrollEl) return;
-    // Lease renewal sees every scroll event — including tagged
-    // programmatic ones that bail below — because any scroll motion
-    // means the pane should be composited right now.
-    deps.noteScrollActivity();
     const scrollTopAtEvent = scrollEl.scrollTop;
     // Bug A fix (Change 1): capture distance-from-bottom synchronously
     // at scroll-event time. The deferred re-stick check (below) must

@@ -94,6 +94,12 @@ describe('<ActivityRun>', () => {
       // would consume HEIGHT and shift every row below it.
       expect(clip.className).toContain('overflow-y-auto');
       expect(clip.className).toContain('overflow-x-hidden');
+      // The clip content's static will-change-transform is the composited
+      // glide-residue contract (utils/scroll/chokepoint.ts) and is
+      // deliberately unconditional — settled runs carry it too, because
+      // liveness can land on an already-mounted run and a class that
+      // appears then is a raster transition.
+      expect(clip.firstElementChild?.className).toContain('will-change-transform');
       expect(getAllByTestId('command-output-row')).toHaveLength(3);
       expect(getByTestId('activity-run').getAttribute('data-collapsed')).toBe('false');
     });

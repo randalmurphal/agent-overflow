@@ -124,12 +124,14 @@ function buildScenario(): Record<string, unknown> {
               lines: toolPair(T, 7, runOutput),
             },
           },
-          // A long mid-turn gap: the content lease's real 5s release
-          // window elapses INSIDE the turn, which is what made the next
-          // burst's first spring tick create the layer (the 2026-08-05
-          // promote-at-glide-start). 7s rather than 6 for margin over the
-          // 5s deadline + the 500ms live-content hold + a 250ms recheck.
-          { delayMs: 7000 },
+          // A mid-turn gap long enough that the 500ms live-content hold
+          // expires INSIDE the turn, so the next burst restarts the
+          // spring from rest and the restart lands in the dumped trace.
+          // This pacing is what used to trip the 2026-08-05 lease
+          // promotion; the lease is gone, the restart shape is still
+          // worth dumping. 2000ms = the 500ms hold plus settle margin
+          // (was 7000ms, sized against the removed lease deadlines).
+          { delayMs: 2000 },
           {
             emit: {
               delayBetweenMs: 30,
@@ -203,24 +205,9 @@ function summarize(records: TraceRecord[]): Record<string, unknown> {
   let willSpringFalse = 0;
   let willSpringTrue = 0;
   const chases: unknown[] = [];
-  const leases: Record<string, unknown>[] = [];
-  let leasePromotes = 0;
-  let leaseDemotes = 0;
-  // The lease invariant's tripwire: a transition may only happen while
-  // the surface is at rest, so a promote recorded mid-motion is a
-  // surface that produced programmatic motion without holding the lease.
-  let leasePromotesMidMotion = 0;
   for (const r of records) {
     const d = (r.data ?? {}) as Record<string, unknown>;
-    if (r.label === 'scroll.lease') {
-      leases.push(d);
-      if (d.action === 'promote') {
-        leasePromotes += 1;
-        if (d.midMotion === true) leasePromotesMidMotion += 1;
-      } else if (d.action === 'demote') {
-        leaseDemotes += 1;
-      }
-    } else if (r.label === 'scroll.write') {
+    if (r.label === 'scroll.write') {
       const caller = String(d.caller ?? 'unknown');
       const before = Number(d.beforeTop ?? Number.NaN);
       const after = Number(d.afterTop ?? Number.NaN);
@@ -243,10 +230,6 @@ function summarize(records: TraceRecord[]): Record<string, unknown> {
     willSpringTrue,
     willSpringFalse,
     chases,
-    leasePromotes,
-    leaseDemotes,
-    leasePromotesMidMotion,
-    leases,
   };
 }
 
@@ -274,19 +257,15 @@ test.describe('boundary probe', () => {
       );
       console.log(`[boundary-probe:${engine}]`, JSON.stringify(summary));
       expect(records.length).toBeGreaterThan(0);
-      // The assertions this instrument carries, all one claim: the turn
-      // HOLDS its content-layer lease across the 7s gap.
-      //   - promotes > 0 kills the vacuous pass where the trace carries
-      //     no lease records at all and every count is trivially 0;
-      //   - demotes === 0 is the direct statement of the hold;
-      //   - midMotion === 0 is the invariant's tripwire.
-      // On a build that emits the trace field but has the hold removed,
-      // midMotion runs non-zero on both engines (the promote lands on
-      // the first spring tick of the burst after the gap).
-      expect(summary.leasePromotes).toBeGreaterThan(0);
-      expect(summary.leaseDemotes).toBe(0);
-      expect(summary.leasePromotesMidMotion).toBe(0);
-
+      // The scripted turn always streams enough to spring — a trace with
+      // no spring.tick writes means the instrument lost its subject, not
+      // that there was nothing to measure. This is what kills the
+      // vacuous pass.
+      const springTicks = (summary.writesByCaller as Record<
+        string,
+        { maxJump: number } | undefined
+      >)['spring.tick'];
+      expect(springTicks, 'no spring.tick writes captured').toBeDefined();
       // No presented frame advances more than ONE velocity-capped step.
       // 30 = SPRING_MAX_VELOCITY_PX_PER_FRAME (27, in frontend
       // utils/scroll/spring.ts — e2e cannot import frontend src) plus
@@ -294,11 +273,7 @@ test.describe('boundary probe', () => {
       // of SPRING_MAX_CATCHUP_STEPS = 1: before that change a stalled
       // frame integrated up to three steps (~81px) in a single write,
       // which is routine on WebKit and is the "fast jump" mechanism.
-      const springTicks = (summary.writesByCaller as Record<
-        string,
-        { maxJump: number } | undefined
-      >)['spring.tick'];
-      if (springTicks) expect(springTicks.maxJump).toBeLessThanOrEqual(30);
+      expect(springTicks!.maxJump).toBeLessThanOrEqual(30);
     });
   }
 });

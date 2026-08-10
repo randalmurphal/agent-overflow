@@ -196,6 +196,25 @@ describe('scroll integration — per-thread snapshot save/restore', () => {
     }
   });
 
+  it('keeps the static will-change-transform on the controller contentEl', async () => {
+    // Load-bearing compositing hint (utils/scroll/chokepoint.ts,
+    // "Fractional glide residue"), permanent by design after the
+    // promote/demote lease's transitions caused three flicker incidents.
+    // Nothing else fails if the class silently disappears — the glide
+    // residue just starts repainting on the main thread every frame.
+    const pane = await buildPane(undefined, [makeItem({ id: 'a', summary: 'first' })]);
+    pane.thread!.id = 'thread-will-change';
+
+    const { getByTestId } = render(MessageTimeline, { props: { pane } });
+    await tick();
+
+    const scroll = getByTestId('message-timeline-scroll') as HTMLElement;
+    const content = Array.from(scroll.children).find((c) =>
+      c.classList.contains('will-change-transform'),
+    );
+    expect(content, 'contentEl lost its static will-change-transform class').toBeTruthy();
+  });
+
   // The measured-size priors are what let a revisited thread skip the
   // estimate→measure cascade (the thread-switch flicker). This proves the
   // wiring: a mount that settles persists an entry stamped with the

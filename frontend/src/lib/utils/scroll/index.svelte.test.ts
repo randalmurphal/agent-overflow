@@ -4,7 +4,6 @@ import {
   type UseStickToBottomController,
   type UseStickToBottomOptions,
 } from './index.svelte';
-import { appMotionActive, registerAppMotionProbe } from './appMotion';
 import { resetScrollIntentModuleStateForTest } from './intent';
 import { RETAIN_ANIMATION_DURATION_MS } from './spring';
 import { isLiveContentActive, LIVE_CONTENT_ACTIVE_HOLD_MS } from '../liveContentActivity';
@@ -103,6 +102,7 @@ describe('createUseStickToBottomController', () => {
 
     scrollEl = document.createElement('div');
     contentEl = document.createElement('div');
+    contentEl.className = 'will-change-transform';
     scrollEl.appendChild(contentEl);
     document.body.appendChild(scrollEl);
 
@@ -1627,6 +1627,7 @@ describe('createUseStickToBottomController', () => {
     it('attach with new elements detaches old listeners', async () => {
       const newScrollEl = document.createElement('div');
       const newContentEl = document.createElement('div');
+      newContentEl.className = 'will-change-transform';
       newScrollEl.appendChild(newContentEl);
       document.body.appendChild(newScrollEl);
       const newGeom = { scrollHeight: 500, clientHeight: 400, scrollTop: 99, contentHeight: 400 };
@@ -2027,6 +2028,7 @@ describe('createUseStickToBottomController — spring chase', () => {
 
     scrollEl = document.createElement('div');
     contentEl = document.createElement('div');
+    contentEl.className = 'will-change-transform';
     scrollEl.appendChild(contentEl);
     document.body.appendChild(scrollEl);
 
@@ -2760,6 +2762,7 @@ describe('createUseStickToBottomController — spring chase', () => {
     ): UseStickToBottomOptions {
       localScrollEl = document.createElement('div');
       localContentEl = document.createElement('div');
+      localContentEl.className = 'will-change-transform';
       localScrollEl.appendChild(localContentEl);
       document.body.appendChild(localScrollEl);
       localGeom = { scrollHeight: 1000, clientHeight: 600, scrollTop: 400, contentHeight: 800 };
@@ -3846,583 +3849,6 @@ describe('createUseStickToBottomController — spring chase', () => {
         controller.forceStick();
         expect(geom.scrollTop).toBe(800);
         expect(contentEl.style.transform).toBe('');
-      });
-    });
-
-    describe('content layer-promotion lease (will-change on contentEl)', () => {
-      // The glide residue needs contentEl composited, but a permanent
-      // will-change is a steady-state tile-memory tax (full-content-
-      // height layer + composited-scrolling machinery per parked pane —
-      // see the lease section in index.svelte.ts). The lease promotes on
-      // scroll activity and demotes after idle. Per project rules these
-      // tests pin the TRANSITIONS (promote → release → re-promote,
-      // detach while promoted), not just the two states.
-      let leaseScrollEl: HTMLDivElement | undefined;
-      let leaseController: UseStickToBottomController | undefined;
-      // Mirrors MessageTimeline's content-keyed latch: 'spring' while
-      // streaming, flipped to 'instant' once live content stops — which
-      // is what lets the post-arrival sentinel (and with it
-      // spring.isActive()) die so the lease can demote.
-      let leaseLiveContent = true;
-      // The consumer's LEADING motion signal (a turn in flight, a live
-      // activity run). Flipped inside tests so the lease's turn hold is
-      // exercised across transitions, not only in its two states.
-      let leaseMotionImminent = false;
-
-      function buildLeaseController(
-        releaseMs: number,
-        opts: { maxDeferMs?: number; motionImminent?: boolean } = {},
-      ): {
-        scrollEl: HTMLDivElement;
-        contentEl: HTMLDivElement;
-        geom: Geometry;
-        controller: UseStickToBottomController;
-      } {
-        const sEl = document.createElement('div');
-        const cEl = document.createElement('div');
-        sEl.appendChild(cEl);
-        document.body.appendChild(sEl);
-        const g: Geometry = { scrollHeight: 1400, clientHeight: 600, scrollTop: 800, contentHeight: 1200 };
-        stubGeometry(sEl, cEl, g);
-        leaseLiveContent = true;
-        leaseMotionImminent = opts.motionImminent === true;
-        const localController = createUseStickToBottomController({
-          liveContentActive: () => leaseLiveContent,
-          motionImminent: () => leaseMotionImminent,
-          contentLeaseReleaseMs: releaseMs,
-          contentLeaseMaxDeferMs: opts.maxDeferMs,
-        });
-        localController.attach(sEl, cEl);
-        leaseScrollEl = sEl;
-        leaseController = localController;
-        return { scrollEl: sEl, contentEl: cEl, geom: g, controller: localController };
-      }
-
-      /** The `scroll.lease` promote records with their invariant tripwire. */
-      function leasePromoteRecords(): { midMotion: boolean }[] {
-        return getUiRenderTraceRecords()
-          .filter((r) => r.label === 'scroll.lease')
-          .map((r) => r.data as { action: string; midMotion: boolean })
-          .filter((d) => d.action === 'promote');
-      }
-
-      afterEach(() => {
-        leaseController?.detach();
-        leaseScrollEl?.remove();
-        leaseController = undefined;
-        leaseScrollEl = undefined;
-        setUiRenderTraceEnabled(false);
-        clearUiRenderTrace();
-      });
-
-      it('starts unpromoted; instant writes alone do not promote', () => {
-        expect(contentEl.style.willChange).toBe('');
-        // Instant placements involve no glide transform, and the stubbed
-        // scrollTop setter fires no scroll event — nothing should promote.
-        controller.forceStick();
-        expect(contentEl.style.willChange).toBe('');
-      });
-
-      it('a scroll event promotes the content layer', () => {
-        fireScroll(scrollEl);
-        expect(contentEl.style.willChange).toBe('transform');
-      });
-
-      it('a spring chase promotes via tick writes (no scroll event needed)', async () => {
-        const ro = getRO();
-        ro.fire(contentEl, 800);
-        await waitMs(150); // warm — first-fire snap is an instant write
-        expect(contentEl.style.willChange).toBe('');
-        geom.scrollHeight = 1400;
-        geom.contentHeight = 1200;
-        ro.fire(contentEl, 1200);
-        await advanceUntil(() => contentEl.style.willChange === 'transform');
-      });
-
-      it('releases after the idle window and re-promotes on the next activity', async () => {
-        const { scrollEl: sEl, contentEl: cEl } = buildLeaseController(40);
-        // Every surface quiet: the path under test is the plain deadline
-        // expiry, not the cross-pane deferral (its own tests below).
-        liveContent = false;
-        leaseLiveContent = false;
-        fireScroll(sEl);
-        expect(cEl.style.willChange).toBe('transform');
-        // Deadline passes in mocked time; the real release timer then
-        // observes it expired with no spring and no residue.
-        mockNow += 60;
-        await waitMs(80);
-        expect(cEl.style.willChange).toBe('');
-        // Transition coverage: the lease must re-arm after a release.
-        fireScroll(sEl);
-        expect(cEl.style.willChange).toBe('transform');
-      });
-
-      it('defers demotion while the chase is live, then demotes once settled', async () => {
-        const { scrollEl: sEl, contentEl: cEl, geom: g } = buildLeaseController(30);
-        // Rounding scrollTop stub so the chase leaves a live residue.
-        stubGeometry(sEl, cEl, g, {
-          setScrollTop: (v, gg) => {
-            gg.scrollTop = Math.round(Math.max(0, Math.min(v, gg.scrollHeight - gg.clientHeight)));
-          },
-        });
-        const ro = getRO();
-        ro.fire(cEl, 1200);
-        await waitMs(150); // warm
-        g.scrollHeight = 1800;
-        g.contentHeight = 1600;
-        ro.fire(cEl, 1600);
-        await advanceUntil(() => cEl.style.transform !== '');
-        expect(cEl.style.willChange).toBe('transform');
-        // Freeze frames mid-glide: deadline expires but the residue is
-        // still on the transform — the lease must never demote mid-motion.
-        mockNow += 60;
-        await waitMs(60);
-        expect(cEl.style.willChange).toBe('transform');
-        // Let the chase land and the residue ease out. The spring then
-        // idles in sentinel mode (isActive() stays true — the lease
-        // keeps deferring); flipping the consumer latch to 'instant'
-        // kills the sentinel on its next tick, after which the deferred
-        // recheck demotes.
-        await advanceUntil(() => g.scrollTop === 1200);
-        await advanceUntil(() => cEl.style.transform === '');
-        leaseLiveContent = false;
-        liveContent = false; // the outer controller's probe must not defer this demote
-        await nextFrame();
-        await nextFrame();
-        mockNow += 5000;
-        await waitMs(600);
-        expect(cEl.style.willChange).toBe('');
-      });
-
-      it('a due demotion waits for app-wide motion to lull, then fires', async () => {
-        const { scrollEl: sEl, contentEl: cEl } = buildLeaseController(40);
-        liveContent = false;
-        leaseLiveContent = false;
-        // A neighboring pane mid-stream: demoting now would re-raster
-        // into a contended compositor and smear visibly (the 2026-08-03
-        // shimmer), so the due demote must hold for the lull.
-        let neighborBusy = true;
-        const releaseProbe = registerAppMotionProbe(() => neighborBusy);
-        try {
-          fireScroll(sEl);
-          expect(cEl.style.willChange).toBe('transform');
-          mockNow += 60;
-          await waitMs(600); // several rechecks past the deadline
-          expect(cEl.style.willChange).toBe('transform');
-          neighborBusy = false;
-          await waitMs(300); // next recheck sees the lull
-          expect(cEl.style.willChange).toBe('');
-        } finally {
-          releaseProbe();
-        }
-      });
-
-      it('the cross-pane deferral is hard-capped: continuous motion cannot starve the demote', async () => {
-        const { scrollEl: sEl, contentEl: cEl } = buildLeaseController(40, { maxDeferMs: 500 });
-        liveContent = false;
-        leaseLiveContent = false;
-        const releaseProbe = registerAppMotionProbe(() => true);
-        try {
-          fireScroll(sEl);
-          mockNow += 60;
-          await waitMs(300); // deferral starts
-          expect(cEl.style.willChange).toBe('transform');
-          mockNow += 500; // the cap elapses with motion still continuous
-          await waitMs(300);
-          // At the cap the demote fires under load — exactly the
-          // pre-deferral behavior, so memory reclamation is late but
-          // never starved.
-          expect(cEl.style.willChange).toBe('');
-        } finally {
-          releaseProbe();
-        }
-      });
-
-      it('activity during a cross-pane deferral renews the lease and restarts the wait', async () => {
-        const { scrollEl: sEl, contentEl: cEl } = buildLeaseController(40, { maxDeferMs: 500 });
-        liveContent = false;
-        leaseLiveContent = false;
-        const releaseProbe = registerAppMotionProbe(() => true);
-        try {
-          fireScroll(sEl);
-          mockNow += 60;
-          await waitMs(300); // deferral running
-          fireScroll(sEl); // fresh activity: new deadline, deferral reset
-          mockNow += 500; // past the OLD cap and the new deadline
-          await waitMs(300);
-          // The stale cap must not fire a demote the renewal superseded —
-          // this is a fresh attempt with its own full window.
-          expect(cEl.style.willChange).toBe('transform');
-          mockNow += 500; // the fresh window's cap
-          await waitMs(300);
-          expect(cEl.style.willChange).toBe('');
-        } finally {
-          releaseProbe();
-        }
-      });
-
-      // The turn hold — the LEADING half of the lease policy. Scroll
-      // activity can only re-promote AFTER motion started, so a lease
-      // leased against it alone demoted through mid-turn model gaps and
-      // re-promoted from the first spring tick of the next burst: the
-      // 2026-08-05 boundary stutter. These pin the hold across its
-      // transitions, and the trace tripwire that would catch the
-      // pathology coming back.
-      it('a held lease survives a mid-turn gap far past the release window', async () => {
-        const { scrollEl: sEl, contentEl: cEl } = buildLeaseController(40, { motionImminent: true });
-        liveContent = false;
-        leaseLiveContent = false;
-        fireScroll(sEl);
-        expect(cEl.style.willChange).toBe('transform');
-        // A think gap orders of magnitude past the release window: the
-        // deadline expires on every recheck and the hold refuses each one.
-        mockNow += 5000;
-        await waitMs(600);
-        expect(cEl.style.willChange).toBe('transform');
-        // Turn over. The deadline is long gone, so the next recheck demotes.
-        leaseMotionImminent = false;
-        mockNow += 60;
-        await waitMs(300);
-        expect(cEl.style.willChange).toBe('');
-      });
-
-      it('holds, demotes and re-holds across on→off→on→off', async () => {
-        const { contentEl: cEl, controller: c } = buildLeaseController(40);
-        liveContent = false;
-        leaseLiveContent = false;
-
-        // On: the rising-edge hold promotes at rest. Called twice because
-        // a consumer's effect can re-run — it must be idempotent.
-        leaseMotionImminent = true;
-        c.holdContentLease();
-        c.holdContentLease();
-        expect(cEl.style.willChange).toBe('transform');
-        mockNow += 500;
-        await waitMs(300);
-        expect(cEl.style.willChange).toBe('transform');
-
-        // Off: the hold releases and the overdue demote lands.
-        leaseMotionImminent = false;
-        mockNow += 60;
-        await waitMs(300);
-        expect(cEl.style.willChange).toBe('');
-
-        // On again: a demoted lease must re-arm from a hold alone, with
-        // no scroll activity to lean on.
-        leaseMotionImminent = true;
-        c.holdContentLease();
-        expect(cEl.style.willChange).toBe('transform');
-        mockNow += 500;
-        await waitMs(300);
-        expect(cEl.style.willChange).toBe('transform');
-
-        // Off again.
-        leaseMotionImminent = false;
-        mockNow += 60;
-        await waitMs(300);
-        expect(cEl.style.willChange).toBe('');
-      });
-
-      it('holdContentLease while already promoted renews the deadline', async () => {
-        const { scrollEl: sEl, contentEl: cEl, controller: c } = buildLeaseController(400);
-        liveContent = false;
-        leaseLiveContent = false;
-        fireScroll(sEl);
-        expect(cEl.style.willChange).toBe('transform');
-        // Renew at +300 (deadline 400 → 700), then let the armed timer
-        // fire at +550: BETWEEN the un-renewed deadline and the renewed
-        // one, so the assertion can only pass if the renewal moved it.
-        mockNow += 300;
-        c.holdContentLease();
-        mockNow += 250;
-        await waitMs(500);
-        expect(cEl.style.willChange).toBe('transform');
-        // Nothing renews the extended deadline, so it expires.
-        mockNow += 300;
-        await waitMs(400);
-        expect(cEl.style.willChange).toBe('');
-      });
-
-      it('attaching mid-turn promotes at attach, before any write or scroll', () => {
-        const { contentEl: cEl } = buildLeaseController(40, { motionImminent: true });
-        // No scroll event and no write have happened — attach() read
-        // motionImminent itself, which is the one moment a clip mounting
-        // into a live run (or a pane remounting mid-turn) is at rest.
-        expect(cEl.style.willChange).toBe('transform');
-      });
-
-      it('holdContentLease before attach is a no-op', () => {
-        const sEl = document.createElement('div');
-        const cEl = document.createElement('div');
-        sEl.appendChild(cEl);
-        document.body.appendChild(sEl);
-        const g: Geometry = { scrollHeight: 1400, clientHeight: 600, scrollTop: 800, contentHeight: 1200 };
-        stubGeometry(sEl, cEl, g);
-        const c = createUseStickToBottomController({ contentLeaseReleaseMs: 40 });
-        try {
-          c.holdContentLease();
-          expect(cEl.style.willChange).toBe('');
-          // And nothing was armed against the element behind the
-          // controller's back: attaching starts a clean, unpromoted lease.
-          c.attach(sEl, cEl);
-          expect(cEl.style.willChange).toBe('');
-        } finally {
-          c.detach();
-          sEl.remove();
-        }
-      });
-
-      it('records midMotion:true when an unheld surface promotes from a spring tick', async () => {
-        // The pathology, reproduced: no motionImminent, so the layer is
-        // gone when the burst starts and the promote lands on the glide's
-        // first tick. A promote traced this way is by definition a
-        // surface that produced programmatic motion without holding the
-        // lease — the tripwire is what catches that coming back.
-        const { scrollEl: sEl, contentEl: cEl, geom: g } = buildLeaseController(40);
-        stubGeometry(sEl, cEl, g, {
-          setScrollTop: (v, gg) => {
-            gg.scrollTop = Math.round(Math.max(0, Math.min(v, gg.scrollHeight - gg.clientHeight)));
-          },
-        });
-        const ro = getRO();
-        ro.fire(cEl, 1200);
-        await waitMs(150); // warm
-        liveContent = false;
-        leaseLiveContent = false;
-        fireScroll(sEl);
-        mockNow += 60;
-        await waitMs(300);
-        expect(cEl.style.willChange).toBe('');
-
-        leaseLiveContent = true;
-        setUiRenderTraceEnabled(true);
-        clearUiRenderTrace();
-        try {
-          g.scrollHeight = 1800;
-          g.contentHeight = 1600;
-          ro.fire(cEl, 1600);
-          await advanceUntil(() => cEl.style.willChange === 'transform');
-          const promotes = leasePromoteRecords();
-          expect(promotes).toHaveLength(1);
-          expect(promotes[0].midMotion).toBe(true);
-        } finally {
-          setUiRenderTraceEnabled(false);
-        }
-      });
-
-      it('records midMotion:false when the hold precedes the same burst', async () => {
-        const { scrollEl: sEl, contentEl: cEl, geom: g, controller: c } = buildLeaseController(40);
-        stubGeometry(sEl, cEl, g, {
-          setScrollTop: (v, gg) => {
-            gg.scrollTop = Math.round(Math.max(0, Math.min(v, gg.scrollHeight - gg.clientHeight)));
-          },
-        });
-        const ro = getRO();
-        ro.fire(cEl, 1200);
-        await waitMs(150); // warm
-        liveContent = false;
-        leaseLiveContent = false;
-        fireScroll(sEl);
-        mockNow += 60;
-        await waitMs(300);
-        expect(cEl.style.willChange).toBe(''); // same starting state as above
-
-        setUiRenderTraceEnabled(true);
-        clearUiRenderTrace();
-        try {
-          // The turn starts: the consumer holds while the pane is still
-          // at rest, and only THEN does the content burst arrive.
-          leaseMotionImminent = true;
-          leaseLiveContent = true;
-          c.holdContentLease();
-          expect(cEl.style.willChange).toBe('transform');
-          g.scrollHeight = 1800;
-          g.contentHeight = 1600;
-          ro.fire(cEl, 1600);
-          await advanceUntil(() => cEl.style.transform !== '');
-          const promotes = leasePromoteRecords();
-          expect(promotes).toHaveLength(1);
-          expect(promotes[0].midMotion).toBe(false);
-        } finally {
-          setUiRenderTraceEnabled(false);
-        }
-      });
-
-      it('the turn hold resets the cross-pane defer clock: the cap starts at the flip', async () => {
-        // Starts with the hold OFF so a real cross-pane deferral runs and
-        // the clock is genuinely non-null before the turn arrives — the
-        // only arrangement in which the reset can be observed at all.
-        const { scrollEl: sEl, contentEl: cEl } = buildLeaseController(40, { maxDeferMs: 500 });
-        liveContent = false;
-        leaseLiveContent = false;
-        const releaseProbe = registerAppMotionProbe(() => true);
-        try {
-          fireScroll(sEl);
-          mockNow += 60;
-          await waitMs(300); // past the deadline: the cross-pane wait starts
-          expect(cEl.style.willChange).toBe('transform');
-
-          // A turn starts. Every recheck now takes the hold branch,
-          // which clears the clock that wait had started.
-          leaseMotionImminent = true;
-          mockNow += 2000; // far past the cap the old wait began under
-          await waitMs(300);
-          expect(cEl.style.willChange).toBe('transform');
-
-          // Turn ends with the neighbor still streaming. Without the
-          // reset the stale clock is already 2s past a 500ms cap and the
-          // demote fires on this first recheck.
-          leaseMotionImminent = false;
-          mockNow += 60;
-          await waitMs(300);
-          expect(cEl.style.willChange).toBe('transform');
-
-          mockNow += 500; // a fresh full cap, measured from the flip
-          await waitMs(300);
-          expect(cEl.style.willChange).toBe('');
-        } finally {
-          releaseProbe();
-        }
-      });
-
-      // The lease's THIRD transition. Detach drops the promotion, but
-      // dropping the HINT re-rasters an element that has usually not left
-      // the DOM — an activity-run clip hands its lease over at the `live`
-      // falling edge with the successor run already streaming, which is
-      // the 2026-08-03 shimmer shape exactly.
-      it('detach defers the will-change clear while the app is in motion, then applies it at the lull', async () => {
-        const { scrollEl: sEl, contentEl: cEl, controller: c } = buildLeaseController(40);
-        liveContent = false;
-        leaseLiveContent = false;
-        let neighborBusy = true;
-        const releaseProbe = registerAppMotionProbe(() => neighborBusy);
-        try {
-          fireScroll(sEl);
-          expect(cEl.style.willChange).toBe('transform');
-          c.detach();
-          // Still mounted, neighbor still streaming: the hint stays.
-          expect(cEl.style.willChange).toBe('transform');
-          await waitMs(600); // several registry passes
-          expect(cEl.style.willChange).toBe('transform');
-          neighborBusy = false;
-          await waitMs(300); // the next pass sees the lull
-          expect(cEl.style.willChange).toBe('');
-        } finally {
-          releaseProbe();
-        }
-      });
-
-      it('re-attaching and promoting the same element cancels the pending clear', async () => {
-        const { scrollEl: sEl, contentEl: cEl, controller: c } = buildLeaseController(40);
-        liveContent = false;
-        leaseLiveContent = false;
-        let neighborBusy = true;
-        const releaseProbe = registerAppMotionProbe(() => neighborBusy);
-        try {
-          fireScroll(sEl);
-          c.detach(); // clear deferred — the element keeps the hint
-          c.attach(sEl, cEl);
-          fireScroll(sEl); // the new lease takes the element back
-          expect(cEl.style.willChange).toBe('transform');
-          // The neighbour settles, which is exactly when an uncancelled
-          // clear would apply — a demote of a live lease that nothing
-          // armed and nothing can renew. (The new lease's own deadline is
-          // not in play: the mock clock is frozen here.)
-          neighborBusy = false;
-          await waitMs(600);
-          expect(cEl.style.willChange).toBe('transform');
-        } finally {
-          releaseProbe();
-        }
-      });
-
-      it('detach clears inline when the app is quiet', () => {
-        const { scrollEl: sEl, contentEl: cEl, controller: c } = buildLeaseController(40);
-        liveContent = false;
-        leaseLiveContent = false;
-        fireScroll(sEl);
-        expect(cEl.style.willChange).toBe('transform');
-        c.detach();
-        // Nothing to smear into: the re-raster lands inside one vsync.
-        expect(cEl.style.willChange).toBe('');
-      });
-
-      it('the deferred clear is hard-capped: continuous motion cannot starve it', async () => {
-        const { scrollEl: sEl, contentEl: cEl, controller: c } = buildLeaseController(40, {
-          maxDeferMs: 300,
-        });
-        liveContent = false;
-        leaseLiveContent = false;
-        const releaseProbe = registerAppMotionProbe(() => true);
-        try {
-          fireScroll(sEl);
-          c.detach();
-          expect(cEl.style.willChange).toBe('transform');
-          await waitMs(300);
-          expect(cEl.style.willChange).toBe('transform');
-          mockNow += 300; // the cap elapses with motion still continuous
-          await waitMs(300);
-          expect(cEl.style.willChange).toBe('');
-        } finally {
-          releaseProbe();
-        }
-      });
-
-      it('re-attach re-promotes only while motion is still imminent', () => {
-        const { scrollEl: sEl, contentEl: cEl, controller: c } = buildLeaseController(40, {
-          motionImminent: true,
-        });
-        liveContent = false;
-        leaseLiveContent = false;
-        expect(cEl.style.willChange).toBe('transform'); // attach promoted
-        // Detach → re-attach mid-turn (a pane remount): the fresh
-        // controller promotes at attach, still at rest.
-        c.detach();
-        c.attach(sEl, cEl);
-        expect(cEl.style.willChange).toBe('transform');
-        // Same sequence with the turn ending in the gap: nothing to hold,
-        // so the element comes back unpromoted.
-        c.detach();
-        leaseMotionImminent = false;
-        c.attach(sEl, cEl);
-        expect(cEl.style.willChange).toBe('');
-      });
-
-      it('detach cancels an armed hold recheck: no stale timer fires afterwards', async () => {
-        const { scrollEl: sEl, contentEl: cEl, controller: c } = buildLeaseController(40, {
-          motionImminent: true,
-        });
-        liveContent = false;
-        leaseLiveContent = false;
-        fireScroll(sEl);
-        mockNow += 60;
-        await waitMs(120); // at least one hold recheck has run and re-armed
-        expect(cEl.style.willChange).toBe('transform');
-        c.detach();
-        expect(cEl.style.willChange).toBe('');
-        // The predicate is still true; a surviving recheck would find a
-        // torn-down lease, and a surviving arm would be a leak.
-        await waitMs(300);
-        expect(cEl.style.willChange).toBe('');
-      });
-
-      it('detach releases the app-motion probe', () => {
-        buildLeaseController(40);
-        liveContent = false; // outer controller quiet
-        leaseLiveContent = true; // the lease controller reads as motion while attached
-        expect(appMotionActive()).toBe(true);
-        leaseController!.detach();
-        expect(appMotionActive()).toBe(false);
-      });
-
-      it('detach demotes and cancels the lease', () => {
-        fireScroll(scrollEl);
-        expect(contentEl.style.willChange).toBe('transform');
-        controller.detach();
-        expect(contentEl.style.willChange).toBe('');
-        // Re-attach starts a fresh, unpromoted lease.
-        controller.attach(scrollEl, contentEl);
-        expect(contentEl.style.willChange).toBe('');
       });
     });
 
@@ -7366,6 +6792,7 @@ describe('createUseStickToBottomController — external content-geometry source'
 
     scrollEl = document.createElement('div');
     contentEl = document.createElement('div');
+    contentEl.className = 'will-change-transform';
     scrollEl.appendChild(contentEl);
     document.body.appendChild(scrollEl);
 
@@ -7688,12 +7115,14 @@ describe('createUseStickToBottomController — two instances', () => {
 
     outerScroll = document.createElement('div');
     outerContent = document.createElement('div');
+    outerContent.className = 'will-change-transform';
     outerScroll.appendChild(outerContent);
     document.body.appendChild(outerScroll);
     // The run's clip lives INSIDE the timeline's content, as it does in the
     // DOM: an inner gesture's target is an outer descendant.
     innerScroll = document.createElement('div');
     innerContent = document.createElement('div');
+    innerContent.className = 'will-change-transform';
     innerScroll.appendChild(innerContent);
     outerContent.appendChild(innerScroll);
 

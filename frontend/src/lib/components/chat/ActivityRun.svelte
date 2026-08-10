@@ -141,18 +141,6 @@
           pane.lastLiveContentAt,
           LIVE_CONTENT_ACTIVE_HOLD_MS,
         ),
-      // Leading motion signal for the clip's content-layer lease: while
-      // this run holds the tail, activity keeps landing in it, so the
-      // layer must survive the gaps between rows rather than be created
-      // on the first frame of the next glide. Read from the lease's timer
-      // callback (and untracked by attach()).
-      //
-      // No rising-edge `holdContentLease()` pairs with it here, unlike
-      // the two pane surfaces: this controller EXISTS only while the run
-      // is live, so every false→true transition re-runs the effect above
-      // and the fresh `attach()` promotes from this same predicate. A
-      // second call would be unreachable.
-      motionImminent: () => isLive,
     });
   }
 
@@ -729,7 +717,17 @@
             onscroll={onClipScroll}
             data-testid="activity-run-clip"
           >
-            <div bind:this={contentEl}>
+            <!-- Static will-change-transform: composited for the inner
+                 controller's sub-pixel glide residue, same contract as
+                 the pane's contentEl (see MessageTimeline). Deliberately
+                 unconditional even though only the live run gets a
+                 controller: liveness can land on an already-mounted run
+                 (see the escape-flag comment in the controller effect),
+                 and a class that appears or disappears on a mounted
+                 element is a raster transition — the flicker class the
+                 static hint exists to rule out. Cost: one composited
+                 layer per mounted expanded run, live or not. -->
+            <div bind:this={contentEl} class="will-change-transform">
               {#if hiddenEarlier > 0}
                 <ActivityRunBoundary count={hiddenEarlier} edge="earlier" onclick={mountEarlier} />
               {/if}

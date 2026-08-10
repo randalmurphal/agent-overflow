@@ -1300,17 +1300,15 @@ func browserArgs(enableDevArgs bool) []string {
 		// an index and in-memory bookkeeping for it in the network
 		// service. 1 MiB is the practical floor (0 means "default").
 		"--disk-cache-size=1048576",
-		// Force grayscale text AA in every layer state. The scroll
-		// controller demotes each parked pane's content layer to shed
-		// its tile memory (the promotion lease in
-		// frontend/src/lib/utils/scroll/index.svelte.ts); without this
-		// flag, demoted text picks up ClearType subpixel AA while
-		// composited text renders grayscale, so panes visibly snap
-		// between the two styles at lease boundaries. With it, chat
-		// text is pixel-identical to the permanently-promoted rendering
-		// this replaced, and root-layer text (sidebar/topbar) matches
-		// instead of being the app's odd subpixel surface. Glyph-edge
-		// blending only — text color is untouched. MANDATORY COMPANION:
+		// Force grayscale text AA in every layer state. Chat content is
+		// permanently composited (static will-change-transform class in
+		// the MessageTimeline / ChannelView / ActivityRun markup;
+		// rationale in frontend/src/lib/utils/scroll/chokepoint.ts,
+		// "Fractional glide residue"), and composited text renders
+		// grayscale; without this flag root-layer text (sidebar/topbar)
+		// would pick up ClearType subpixel AA and sit next to it as the
+		// app's odd mismatched surface. Glyph-edge blending only — text
+		// color is untouched. MANDATORY COMPANION:
 		// PreferNonCompositedScrolling in browserEnabledFeatures, or
 		// every scroller gets eagerly composited (see that comment).
 		"--disable-lcd-text",
@@ -1391,17 +1389,20 @@ func browserEnabledFeatures() []string {
 		// passes, so EVERY scroller (each pane timeline, the pane strip)
 		// got promoted to composited scrolling with content-sized raster
 		// layers — measured 2026-07-21: renderer cc/tile_memory 165.5MB
-		// vs the 89.9MB the lease work started from. This feature
+		// vs an 89.9MB same-day baseline (captured while chat
+		// compositing was still a promote/demote lease; today's static
+		// promotion raises that baseline by the parked chat layers'
+		// tile cost, not by eager-compositing every scroller). This feature
 		// (verified present in WebView2 150.0.4078.83) restores the
 		// prefer-non-composited default so scrollers stay unlayerized;
 		// scrolling still runs on the compositor via raster-inducing
-		// scroll, and the lease's explicit will-change promotion — which
-		// bypasses the preference — keeps actively-scrolling panes
+		// scroll, and the static will-change promotion on chat content
+		// elements — which bypasses the preference — keeps chat panes
 		// composited exactly as designed. If a future WebView2 drops the
 		// feature the symptom to watch for is this same eager-compositing
 		// regression, visible as full-scroll-height layers in the CDP
-		// LayerTree dump for panes whose contentEl carries no
-		// will-change.
+		// LayerTree dump for scrollers whose content carries no
+		// will-change (sidebar lists, the pane strip).
 		"PreferNonCompositedScrolling",
 	}
 }

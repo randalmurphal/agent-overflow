@@ -5,7 +5,6 @@
   import { PostChannelMessage, ConcludeDiscussion } from '../../stores/bindings';
   import { refreshDiscussionChannel, DISCUSSION_CHANNEL_FETCH_LIMIT } from '../../stores/eventsDiscussion';
   import { getSettings } from '../../stores/settings.svelte';
-  import { isThreadWorking } from '../../stores/threadStatuses.svelte';
   import { addToast } from '../../stores/toast.svelte';
   import { errString } from '../../utils/errors';
   import { createUseStickToBottomController } from '../../utils/scroll/index.svelte';
@@ -54,26 +53,6 @@
 
   const stick = createUseStickToBottomController({
     liveContentActive: channelLiveContentActive,
-    // Leading motion signal for the content-layer lease. Discussion
-    // turns flow through the same thread statuses, so the same predicate
-    // holds the layer across the gaps between speakers instead of
-    // letting it demote and re-promote on a glide's first frame. Same
-    // three clauses as chat, for the same reasons — open wire round,
-    // content inside the 500ms hold, an item still engaged — with the
-    // channel's own stamp standing in for the timeline's (see
-    // MessageTimeline for the full rationale).
-    motionImminent: () =>
-      isThreadWorking(pane.threadId)
-      || channelLiveContentActive()
-      || pane.hasEngagedItems(),
-  });
-
-  // Rising edge of the round signal: promote while the surface is still
-  // at rest, ahead of the turn's first glide. Keyed on `isThreadWorking`
-  // alone — the channel stamp is deliberately non-reactive, and each new
-  // round flips this back before its content arrives.
-  $effect(() => {
-    if (isThreadWorking(pane.threadId)) stick.holdContentLease();
   });
 
   let messages = $derived(pane.channelMessages);
@@ -317,13 +296,12 @@
       aria-label="Discussion Channel Messages"
       data-testid="channel-message-list"
     >
-      <!-- Layer promotion for the scroll controller's sub-pixel glide
-           residue is controller-owned (scroll-activity lease, matching
-           MessageTimeline's contentEl — see the lease section in
-           utils/scroll/index.svelte.ts). No static will-change class:
-           it would pin a full-content-height composited layer per
-           parked surface. -->
-      <div bind:this={contentEl} class="space-y-3">
+      <!-- Static will-change-transform keeps contentEl composited for
+           the scroll controller's sub-pixel glide residue, matching
+           MessageTimeline's contentEl (see the comment there and
+           utils/scroll/chokepoint.ts, "Fractional glide residue").
+           Permanent by design — do not make it conditional. -->
+      <div bind:this={contentEl} class="space-y-3 will-change-transform">
         {#if loadingInitial}
           <div class="text-[0.75rem] text-fg-subtle">Loading channel messages…</div>
         {:else if loadError}

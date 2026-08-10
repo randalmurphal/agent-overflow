@@ -1647,38 +1647,6 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     get lastLiveContentAt() {
       return lastLiveContentAt;
     },
-    /**
-     * Is any item in the loaded window still active — the
-     * round-INDEPENDENT "this logical turn is still engaged" fact.
-     *
-     * The content lease's `motionImminent` (utils/scroll/chokepoint.ts)
-     * needs it because neither of the other two signals covers a quiet
-     * stretch inside a logical turn: `isThreadWorking` is per-WIRE-ROUND
-     * (`activeTurns` is nulled by every `provider:turn_completed`, and
-     * docs/architecture/turn-lifecycle.md documents logical turns that
-     * span several rounds plus waits where a subagent outlives the round
-     * that spawned it), and the live-content stamp holds for only 500ms
-     * after the last advance. A subagent-outlives wait keeps its
-     * task/monitor row at `'running'`; a block mid-stream sits at
-     * `'streaming'`. Either means more content is coming.
-     *
-     * O(n) over the bounded loaded window, read at the lease's
-     * multi-second cadence. Deliberately NOT reactive — like
-     * `lastLiveContentAt`, callers read it from timer callbacks and
-     * untracked contexts, and a `$derived` would subscribe every reader
-     * to the items array.
-     *
-     * Failure mode: an item stranded in an active status (a crash with
-     * no settlement) holds that pane's lease for the pane's lifetime.
-     * It shows up as an unending hold in the `scroll.lease` traces;
-     * item settlement on turn completion is the invariant that ends it.
-     */
-    hasEngagedItems(): boolean {
-      for (const item of items) {
-        if (item.status === 'streaming' || item.status === 'running') return true;
-      }
-      return false;
-    },
     // Stamp a live content advance from a site OUTSIDE the pane's own
     // mutation methods — specifically the live provider-upsert fan-out in
     // events.ts (a new row arriving). The optimistic user-send echo and

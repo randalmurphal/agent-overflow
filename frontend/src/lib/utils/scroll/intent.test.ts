@@ -44,7 +44,6 @@ interface Harness {
     clearStructuralAppend: ReturnType<typeof vi.fn>;
   };
   refreshIsNearBottom: ReturnType<typeof vi.fn>;
-  noteScrollActivity: ReturnType<typeof vi.fn>;
   noteUserScroll: ReturnType<typeof vi.fn>;
 }
 
@@ -81,7 +80,6 @@ function harness(
     clearStructuralAppend: vi.fn(),
   };
   const refreshIsNearBottom = vi.fn(() => state.distanceFromBottom);
-  const noteScrollActivity = vi.fn();
   const noteUserScroll = vi.fn();
 
   const deps: ScrollIntentDeps = {
@@ -101,7 +99,6 @@ function harness(
     spring,
     sampleResizeCorrelation: () => state.resizeCorrelated,
     resizeDifferenceNow: () => 0,
-    noteScrollActivity,
     noteUserScroll,
   };
 
@@ -116,7 +113,6 @@ function harness(
     state,
     spring,
     refreshIsNearBottom,
-    noteScrollActivity,
     noteUserScroll,
   };
 }
@@ -497,16 +493,6 @@ describe('programmatic write tagging', () => {
     h.scrollEl.dispatchEvent(new Event('scroll'));
 
     expect(h.refreshIsNearBottom).toHaveBeenCalled();
-  });
-
-  it('renews the content-layer lease on every scroll, tagged or not', () => {
-    const h = build();
-    h.intent.noteProgrammaticWrite(600);
-    h.scrollEl.scrollTop = 600;
-
-    h.scrollEl.dispatchEvent(new Event('scroll'));
-
-    expect(h.noteScrollActivity).toHaveBeenCalledTimes(1);
   });
 
   // One write carries a duplicate budget (PROGRAMMATIC_SCROLL_EVENT_DUPLICATE_

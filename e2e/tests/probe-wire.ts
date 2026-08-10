@@ -210,7 +210,8 @@ export interface WriteTraceSummary {
 /**
  * Scroll-write trace fold: per-caller write count + largest single write,
  * plus the spring's chase records. (boundary-probe keeps its own richer
- * fold — it additionally tracks the content-layer lease.)
+ * fold — it additionally records per-caller jump lists and the willSpring
+ * outcome counts from `scroll.notifyLiveContentMaybeGrew`.)
  */
 export function summarizeWriteTrace(records: readonly TraceRecord[]): WriteTraceSummary {
   const writesByCaller = new Map<string, { count: number; maxJump: number }>();
