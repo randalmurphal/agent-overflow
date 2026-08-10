@@ -498,6 +498,25 @@ Prerequisite sweep, valuable standalone:
   keys live in webview WebCrypto — the shell serves the app from an
   app-local secure context, so non-extractable keys work even when
   the backend is plain-HTTP.
+- **Bundle sync: the backend is the phone's update server.** The
+  backend already embeds its exactly-matching frontend bundle; the
+  shell self-updates its web bundle from the attached backend over the
+  authenticated channel (the established live-update pattern,
+  self-hosted — no update SaaS). Semantics: never blocking — attach
+  runs on the current bundle, the new one downloads in the background
+  and swaps when ready or at next launch, so an urgent approval is
+  never stuck behind a download. Bundles declare a minimum shell
+  version (a too-old native shell is the one case that gates on a
+  store update); last-known-good is kept with first-boot healthcheck
+  and auto-rollback, mirroring the remote-update posture. Trust line:
+  bundles are code — only owner-tier backends may supply them; peer
+  and hub connections never push executable content and are served by
+  capability flags instead. With this, the compatibility window does
+  the heavy lifting only at the shell boundary and against
+  not-yet-updated *backends*; the SPA layer is effectively
+  skew-free for the single-backend common case (multi-backend runs
+  the newest attached backend's bundle and speaks flags to older
+  ones).
 - **Phone transport security.** WKWebView cannot accept a self-signed
   cert for WebSocket at all (the auth-challenge hook covers HTTPS
   only; ATS exceptions are ignored for WS), so §7's pairing-anchored
@@ -802,7 +821,8 @@ leases) is a net *reduction* in wire and CPU cost, not an addition.
 6. **Phone preparation.** Subscription narrowing, buffered deltas, scope
    leases, reduced snapshots, attachment flows, push senders +
    notification semantics + deep links. The Capacitor shell itself
-   (same SPA + native plugins, §9) is scaffolded here; store builds
+   (same SPA + native plugins, §9) is scaffolded here, including
+   bundle sync from the backend with rollback (§9); store builds
    come whenever the app ships.
 7. **Multi-backend UI.** Keying the collision-prone singletons, sidebar
    sections.
