@@ -20,9 +20,17 @@ is per-device by design; prefer over-doing it to under-doing it.
   among many.
 - One client may attach to several backends; the sidebar groups projects
   under backend sections.
+- An always-on personal machine (home server) is a first-class case:
+  every other device pairs once over LAN and attaches automatically
+  thereafter — no tailnet required; tailnet/tunnel exist for
+  off-network reach only.
 - Teammates' *backends* peer with ours (federation) holding read-only
   scoped sessions over shared workspaces, and can fork enrolled threads
   to continue locally. Their devices never touch our machine.
+- A team server is the same binary in `serve` mode on shared
+  infrastructure: workflows + MCP + external triggers supply the
+  dispatch-style automation, members attach as principals, and hubs
+  peer with other hubs over the same federation protocol as laptops.
 - Reference: t3code's environment auth (pairing → token exchange →
   scoped sessions → DPoP → WS tickets), fully self-hosted. We adopt its
   shape, add a user model and a credential-binding axis it lacks.
@@ -356,6 +364,21 @@ Port becomes a setting (pick-random-once-then-persist default,
 user-fixable). Durable sessions remove re-pairing after restarts; origin
 stability keeps browser storage attached.
 
+### LAN access without a tailnet
+
+The always-on home machine is a first-class case, not a degraded one:
+enable the LAN listener, pair each device once (QR/code), and durable
+rotating sessions plus the stable endpoint make every later attach
+automatic — laptop, phone app, and the machine's own window connect
+the same way, no tailnet involved. Tailscale/Funnel are for
+*off-network* reach only, never a LAN prerequisite. The one
+platform-imposed limit (constraint 6): plain-HTTP LAN **browsers** are
+bearer-only — no passkeys, no service workers. The desktop app, CLI,
+and native phone app are unaffected; they hold device keys and are not
+subject to browser secure-context rules. Wanting passkeys in a LAN
+browser is exactly what the DNS-01 owned-domain path (above) upgrades:
+real HTTPS on a private address, still no tunnel.
+
 ### TLS (in-app termination)
 
 Two supported paths; others are documented escape hatches, not built:
@@ -500,9 +523,31 @@ simpler but puts N of their devices and credentials against our machine;
 one revocable peer principal per teammate is the better boundary and is
 what the owner wants.
 
+**Hub deployment.** A team server is the same binary in `serve` mode on
+shared infrastructure — nobody's personal machine. It is the preferred
+team topology: enrollment publishes to the hub, members read from the
+hub, forks download from the hub, and the author's laptop can sleep
+(resolving constraint 7 for the team case). Cross-team access is
+hub-to-hub peering; because peering is backend-to-backend and
+symmetric, laptop↔hub and hub↔hub are one code path. Dispatch-style
+automation on the hub (ticket refinement, reports, sprint prep,
+context gathered over time) is workflows + MCP servers + external
+triggers, specced in the workflows system when built; what it demands
+*here* is N-user identity (§3), attributable audit, ingress routes
+entering the §13 inventory, and scope-capped workflow grants — an
+externally-authored ticket body is untrusted input reaching an agent
+that holds write credentials, so ingress-fed workflows declare bounded
+write scopes. Report/context outputs are workflow artifacts committed
+to a hub-side git repo plus their threads — versioned and forkable,
+no new store.
+
 - **Shared workspace** is the ACL unit; enrollment is the grant.
-- **Read-only + fork.** No forwarded operations, no approval proxying,
-  no peer-triggered spawns.
+- **Read-only + fork** on personal backends, unconditionally. No
+  forwarded operations, no approval proxying, no peer-triggered
+  spawns. Whether *hub* threads are operable by members via workspace
+  roles — and who may answer approvals there — is open (§18): the
+  "approvals one-tap everywhere" decision was scoped to the owner's
+  own devices and does not transfer to shared infrastructure.
 - **Payload contents need classification.** Thread payloads routinely
   contain `.env` contents, tokens echoed into logs, absolute host paths,
   and diffs of private config. "Read-only" does not mean "low
@@ -672,7 +717,10 @@ leases) is a net *reduction* in wire and CPU cost, not an addition.
 1. **Sync sweep + seams.** Emits, channels, gap entries, race handling,
    device attribution column, thread branch/remote/head recording,
    backend UUID, hello frame, multi-backend seams (§10).
-2. **Identity core.** Schema (users/devices/sessions/audit), pairing
+2. **Identity core.** Genuinely N-user from the start — no implicit
+   single owner anywhere in queries, session checks, or audit
+   attribution (hub deployments depend on it; §11). Schema
+   (users/devices/sessions/audit), pairing
    with proof-of-possession + verification number, token exchange,
    rotating refresh with reuse detection, generalized ticket primitive
    (WS + HTTP), revocation with live teardown, recovery codes, device
@@ -687,13 +735,18 @@ leases) is a net *reduction* in wire and CPU cost, not an addition.
 5. **Serve mode, endpoint, TLS, tsnet, passkeys, remote update with
    rollback, provider remote re-auth.** DPoP mandatory here (the token
    endpoint accepts thumbprints from phase 2 so nothing reworks).
+   Includes a headless build target that does not link the webview/GTK
+   stack, and the unattended credential-storage posture (§7) — both
+   prerequisites for server deployments.
 6. **Phone preparation.** Subscription narrowing, buffered deltas, scope
    leases, reduced snapshots, attachment flows, push senders +
    notification semantics + deep links.
 7. **Multi-backend UI.** Keying the collision-prone singletons, sidebar
    sections.
-8. **Team sharing.** Shared workspaces, peer sessions, payload
-   sensitivity tiers, fork pipeline.
+8. **Team sharing.** Hub-first: team-server deployment, shared
+   workspaces with roles, peer sessions, hub-to-hub peering, payload
+   sensitivity tiers, fork pipeline. Ingress triggers and per-workflow
+   scope grants land alongside as workflows-system work (§11).
 
 Each phase leaves `make check` green.
 
@@ -727,6 +780,11 @@ Each phase leaves `make check` green.
 5. Whether the public-path ceiling (§2) should exclude anything beyond
    the step-up set — e.g. whether `terminal:operate` over a public
    tunnel is acceptable given it is already key-bound and TLS-wrapped.
+6. Hub-thread operability (§11): whether shared-workspace threads on a
+   team server are operable by members via workspace roles (personal
+   backends stay read-only + fork regardless), and who may answer
+   approvals on a hub thread — any member holding the scope, the
+   thread starter, or a role gate.
 
 Settled in review: approvals are never gated on the owner's own devices;
 terminal access is not withheld from native clients by device class;
