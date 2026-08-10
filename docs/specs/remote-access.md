@@ -374,10 +374,12 @@ the same way, no tailnet involved. Tailscale/Funnel are for
 *off-network* reach only, never a LAN prerequisite. The one
 platform-imposed limit (constraint 6): plain-HTTP LAN **browsers** are
 bearer-only — no passkeys, no service workers. The desktop app, CLI,
-and native phone app are unaffected; they hold device keys and are not
-subject to browser secure-context rules. Wanting passkeys in a LAN
-browser is exactly what the DNS-01 owned-domain path (above) upgrades:
-real HTTPS on a private address, still no tunnel.
+and native phone app are unaffected; they hold device keys, are not
+subject to browser secure-context rules, and get encrypted TLS with no
+domain at all via cert pinning anchored in the pairing payload (see
+TLS below). Wanting passkeys in a LAN browser is the one thing that
+requires the DNS-01 owned-domain path: real HTTPS on a private
+address, still no tunnel — an optional upgrade, never a dependency.
 
 ### TLS (in-app termination)
 
@@ -388,6 +390,17 @@ Two supported paths; others are documented escape hatches, not built:
    HTTPS on a LAN-only path, valid passkey RP ID, no tunnel.
 2. **tsnet cert** — LE cert for the node's `*.ts.net` name, MagicDNS
    resolution, direct peer connections.
+
+**Domainless TLS for native clients (pinning via pairing).** The
+backend always mints a self-signed cert, and the pairing payload (QR /
+code exchange) carries its fingerprint; the desktop app, phone app,
+and CLI pin that exact cert. Result: encrypted, authenticated TLS on
+the LAN with no domain, no CA, and no trust prompts — the pairing
+ceremony that already establishes trust also anchors the channel.
+Rotation rides the session: a paired client that holds a valid session
+accepts a signed successor-cert announcement. Browsers cannot pin, so
+they remain the plain-HTTP-or-owned-domain case; passkey RP ID still
+requires the owned-domain path.
 
 Escape hatches: private CA (mkcert-style, manual trust), cloudflared
 subprocess with an owned domain. The chosen HTTPS name is the backend's
