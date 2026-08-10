@@ -391,15 +391,17 @@ Two supported paths; others are documented escape hatches, not built:
 2. **tsnet cert** — LE cert for the node's `*.ts.net` name, MagicDNS
    resolution, direct peer connections.
 
-**Domainless TLS for native clients (pinning via pairing).** The
+**Domainless TLS for Go-native clients (pinning via pairing).** The
 backend always mints a self-signed cert, and the pairing payload (QR /
-code exchange) carries its fingerprint; the desktop app, phone app,
-and CLI pin that exact cert. Result: encrypted, authenticated TLS on
-the LAN with no domain, no CA, and no trust prompts — the pairing
-ceremony that already establishes trust also anchors the channel.
-Rotation rides the session: a paired client that holds a valid session
-accepts a signed successor-cert announcement. Browsers cannot pin, so
-they remain the plain-HTTP-or-owned-domain case; passkey RP ID still
+code exchange) carries its fingerprint; the desktop attach client and
+CLI — Go processes that own their TLS config — pin that exact cert.
+Result: encrypted, authenticated TLS on the LAN with no domain, no CA,
+and no trust prompts — the pairing ceremony that already establishes
+trust also anchors the channel. Rotation rides the session: a paired
+client that holds a valid session accepts a signed successor-cert
+announcement. Webview-based clients (browsers *and* the Capacitor
+phone shell — see §9 and constraint 8) cannot pin, so they remain the
+cleartext-LAN / tailnet / owned-domain cases; passkey RP ID still
 requires the owned-domain path.
 
 Escape hatches: private CA (mkcert-style, manual trust), cloudflared
@@ -478,6 +480,46 @@ Prerequisite sweep, valuable standalone:
   Additive-only discipline on frames and channels. An HTTP
   `/healthz`-with-version endpoint doubles as the update watchdog probe
   and the pre-WS compatibility check.
+- **Compatibility policy** (what the hello frame enforces): features
+  gate on capability flags, never version comparison — a client asks
+  "does the server have X", so mismatched pairs degrade instead of
+  guessing. Frames and channels evolve additively. The backend
+  supports clients up to six months behind; older gets a typed
+  `update-required` refusal at hello, not undefined behavior. Phone
+  clients lag by app-store review latency, so the backend never
+  assumes same-day client updates.
+- **The phone app is the same app.** Capacitor shell around the
+  existing SPA: same Svelte code, same TS transport client and
+  generated bindings, same IndexedDB replica — no Swift/Kotlin
+  reimplementation and no second wire schema to drift (native plugins
+  cover push, QR pairing scan, secure storage, biometrics).
+  Consequences owned now: `CapacitorHttp` request interception stays
+  disabled for the transport (it breaks WebSocket paths), and device
+  keys live in webview WebCrypto — the shell serves the app from an
+  app-local secure context, so non-extractable keys work even when
+  the backend is plain-HTTP.
+- **Phone transport security.** WKWebView cannot accept a self-signed
+  cert for WebSocket at all (the auth-challenge hook covers HTTPS
+  only; ATS exceptions are ignored for WS), so §7's pairing-anchored
+  pinning cannot apply to a webview shell. Preferred path: the
+  tailnet, `wss` against the backend's `ts.net` Let's Encrypt cert (or
+  any owned domain) — this covers the home LAN transparently too,
+  since same-LAN tailnet peers connect directly at local speed. The
+  no-tailnet LAN fallback is cleartext `ws` + device-bound auth:
+  credential-safe under replay, content readable on the local network
+  — the same posture already accepted for LAN browsers (needs the
+  Android cleartext flag and iOS local-networking entitlement in our
+  own shell). A native-WS-bridge plugin with real pinning is the
+  documented escape hatch if domainless TLS on phones is ever wanted;
+  not built until wanted.
+- **The client replica is the diff foundation.** The shipped
+  IndexedDB thread replica (cold opens paint locally, then
+  `SyncThreadWindow` reconciles a windowed diff) is the remote story
+  too: over a slow link, attach cost is a diff against the replica,
+  not a full load. Obligations it takes on: keyed by backend UUID
+  before multi-backend UI lands (§10), purged on sign-out and device
+  revocation, and the resume ladder becomes replay-ring → windowed
+  replica diff → full snapshot, in that order.
 - **Ticket primitive generalizes beyond WS** — short-lived signed URLs
   for attachment upload/download and snapshot fetches, designed once in
   phase 2 rather than bolted on later. Attachments ride authenticated
@@ -520,6 +562,8 @@ Decide the **seams** in phase 1, not a speculative store rewrite:
 - `bindings.ts` routes RPCs through a resolvable transport handle
   rather than importing a singleton.
 - Event fan-out carries connection origin (backend UUID).
+- The IndexedDB thread replica keys its stores by backend UUID so two
+  backends' threads can never collide in one browser profile.
 
 The genuinely collision-prone singletons (git status by path, provider
 accounts/usage, settings, sysstat) get keyed when multi-backend UI
@@ -699,6 +743,10 @@ leases) is a net *reduction* in wire and CPU cost, not an addition.
    no LAN-HTTP DPoP path.
 7. A sleeping machine is unreachable; wake-on-LAN is out of scope. The
    app may offer a keep-awake-while-sessions-live inhibitor.
+8. WKWebView cannot validate self-signed certificates for WebSocket
+   connections (HTTPS-only hook; ATS exceptions ignored for WS) —
+   webview-based clients never get domainless TLS, only Go-native
+   clients pin (§7).
 
 ## 16. Phases
 
@@ -753,7 +801,9 @@ leases) is a net *reduction* in wire and CPU cost, not an addition.
    prerequisites for server deployments.
 6. **Phone preparation.** Subscription narrowing, buffered deltas, scope
    leases, reduced snapshots, attachment flows, push senders +
-   notification semantics + deep links.
+   notification semantics + deep links. The Capacitor shell itself
+   (same SPA + native plugins, §9) is scaffolded here; store builds
+   come whenever the app ships.
 7. **Multi-backend UI.** Keying the collision-prone singletons, sidebar
    sections.
 8. **Team sharing.** Hub-first: team-server deployment, shared
