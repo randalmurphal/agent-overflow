@@ -9,6 +9,7 @@ import type {
   AttachmentPreviewCache,
   ImagePreviewItem,
 } from '../utils/attachmentPreview.svelte';
+import { compositeKey } from '../utils/compositeKey';
 import { subagentGroupKeysFor } from '../utils/subagentGrouping';
 import { getSettings } from './settings.svelte';
 
@@ -37,7 +38,22 @@ function liveDiffOverride(stored: boolean | undefined): boolean | undefined {
 
 interface ThreadRowUiStateOptions {
   getItemById(itemId: string): Item | undefined;
-  isPayloadReferenced?(threadId: string, payloadId: string): boolean;
+  /**
+   * The rows still LOADED when a drop is committed — `disposeItems` uses
+   * them to decide whether a dropped row was the last reference to its
+   * payload. Deliberately the whole collection rather than a per-payload
+   * predicate: a prune drops hundreds of rows at once, and answering one
+   * row at a time meant a full window scan per drop.
+   *
+   * REQUIRED, and not because every caller has rows to report: an empty
+   * iterable is a perfectly good answer, and it means "nothing is loaded,
+   * release every payload this batch touches". What it must not be is a
+   * DEFAULT — a caller that forgot to wire the pane's item list would get
+   * that same release-everything behavior silently, disposing payload
+   * expansion state that surviving rows are still reading, and the only
+   * symptom is a reader's expanded row collapsing on remount.
+   */
+  loadedPayloadRefs(): Iterable<Pick<Item, 'threadId' | 'payloadId'>>;
 }
 
 export interface ThreadRowUiState {
@@ -206,10 +222,6 @@ function normalizePayloadExpansionStateOptions(
   return { payloadVersion: optionsOrPayloadVersion };
 }
 
-function expansionRegistryKey(parts: readonly unknown[]): string {
-  return JSON.stringify(parts);
-}
-
 function rowCacheEnabled(
   cacheEnabled: RowExpansionStateOptions['cacheEnabled'],
   item: Item | undefined,
@@ -310,7 +322,7 @@ export function createThreadRowUiState(options: ThreadRowUiStateOptions): Thread
   ): string {
     const loadMode = rowOptions.loadMode ?? 'preview';
     const stateKey = rowOptions.stateKey ?? 'default';
-    return expansionRegistryKey([
+    return compositeKey(
       'i',
       item.threadId,
       item.id,
@@ -321,7 +333,7 @@ export function createThreadRowUiState(options: ThreadRowUiStateOptions): Thread
       rowOptions.chunkBytes ?? 'chunk-default',
       rowOptions.requestTimeoutMs ?? 'timeout-default',
       cacheEnabledRegistryKey(rowOptions.cacheEnabled),
-    ]);
+    );
   }
 
   function getOrCreateItemExpansion(
@@ -392,7 +404,7 @@ export function createThreadRowUiState(options: ThreadRowUiStateOptions): Thread
     payloadOptions: PayloadExpansionStateOptions,
   ): string {
     const loadMode = payloadOptions.loadMode ?? 'preview';
-    return expansionRegistryKey([
+    return compositeKey(
       'p',
       threadId,
       payloadId,
@@ -403,7 +415,7 @@ export function createThreadRowUiState(options: ThreadRowUiStateOptions): Thread
       payloadOptions.chunkBytes ?? 'chunk-default',
       payloadOptions.requestTimeoutMs ?? 'timeout-default',
       cacheEnabledRegistryKey(payloadOptions.cacheEnabled),
-    ]);
+    );
   }
 
   function getOrCreatePayloadExpansion(
@@ -578,7 +590,7 @@ export function createThreadRowUiState(options: ThreadRowUiStateOptions): Thread
   }
 
   function payloadExpansionRegistryKey(threadId: string, payloadId: string): string {
-    return expansionRegistryKey([threadId, payloadId]);
+    return compositeKey(threadId, payloadId);
   }
 
   function disposeItemExpansionStates(itemId: string): void {
@@ -613,13 +625,28 @@ export function createThreadRowUiState(options: ThreadRowUiStateOptions): Thread
     let nextGroupExpanded: Set<string> | null = null;
     let nextUserMessages: Set<string> | null = null;
     let nextDiffOverrides: Map<string, ReadonlyMap<string, boolean>> | null = null;
+    // One snapshot of the surviving rows' payload keys serves the whole
+    // batch. Built lazily: the common case is a one-row drop, often with
+    // no payload at all, and that must not walk the window. Nothing
+    // mutates the loaded set while this loop runs — callers replace the
+    // items array first, then hand the dropped rows here.
+    let loadedPayloadKeys: Set<string> | null = null;
+    function payloadStillLoaded(threadId: string, payloadId: string): boolean {
+      if (loadedPayloadKeys === null) {
+        loadedPayloadKeys = new Set<string>();
+        for (const loaded of options.loadedPayloadRefs()) {
+          if (!loaded.payloadId) continue;
+          loadedPayloadKeys.add(
+            payloadExpansionRegistryKey(loaded.threadId, loaded.payloadId),
+          );
+        }
+      }
+      return loadedPayloadKeys.has(payloadExpansionRegistryKey(threadId, payloadId));
+    }
     for (const item of items) {
       const itemId = item.id;
       disposeItemExpansionStates(itemId);
-      if (
-        item.payloadId
-        && !options.isPayloadReferenced?.(item.threadId, item.payloadId)
-      ) {
+      if (item.payloadId && !payloadStillLoaded(item.threadId, item.payloadId)) {
         disposePayloadExpansionStates(item.threadId, item.payloadId);
       }
       disposeAttachmentBlobsForItem(itemId);

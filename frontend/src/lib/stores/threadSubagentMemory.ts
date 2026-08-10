@@ -26,6 +26,15 @@ export interface ThreadSubagentMemoryOptions {
       exhaustedScope?: ReadonlySet<string>;
     },
   ): boolean;
+  /**
+   * Same chokepoint, for the drops this module already knows the shape
+   * of: one pass splits the window instead of filtering it and then
+   * diffing the result back against the previous array.
+   */
+  dropTimelineItems(
+    shouldDrop: (item: Item) => boolean,
+    options?: { exhaustedScope?: ReadonlySet<string> },
+  ): Item[];
   getThread(): Thread | null;
   /** Pane switch generation — captured at load start, compared after awaits. */
   getSwitchGeneration(): number;
@@ -154,12 +163,12 @@ export function createThreadSubagentMemory(
 
   /**
    * Commit evictions: record each row in the fold registry, then drop
-   * the rows through replaceTimelineItems with disposal so smoothers
-   * and row UI state are cleaned like any other dropped row, and
-   * recompute the reveal gate. Exhausted-hydration markers clear only
-   * for the anchors whose transcripts changed — see
-   * disposeDroppedItemState. Duplicate entries are harmless: the
-   * registry and the drop set both dedupe by id.
+   * the rows through the pane's drop chokepoint so smoothers and row UI
+   * state are cleaned like any other dropped row, and recompute the
+   * reveal gate. Exhausted-hydration markers clear only for the anchors
+   * whose transcripts changed — see disposeDroppedItemState. Duplicate
+   * entries are harmless: the registry and the drop set both dedupe by
+   * id.
    */
   function commitSubagentEvictions(evictions: readonly SubagentEviction[]): void {
     if (evictions.length === 0) return;
@@ -174,10 +183,9 @@ export function createThreadSubagentMemory(
       evictedIds.add(item.id);
       anchorIds.add(anchorId);
     }
-    options.replaceTimelineItems(
-      options.getItems().filter((it) => !evictedIds.has(it.id)),
-      { disposeDropped: true, exhaustedScope: anchorIds },
-    );
+    options.dropTimelineItems((it) => evictedIds.has(it.id), {
+      exhaustedScope: anchorIds,
+    });
     options.recomputeReveal();
   }
 

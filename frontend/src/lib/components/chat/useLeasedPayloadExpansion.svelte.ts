@@ -5,6 +5,7 @@ import type {
   RowExpansionStateOptions,
 } from '../../stores/threadRowUiState.svelte';
 import type { Item } from '../../types/models';
+import { compositeKey } from '../../utils/compositeKey';
 import { payloadVersionKey as cachePayloadVersionKey } from '../../utils/payloadDataCache';
 import type { PayloadExpansionHandle } from '../../utils/payloadExpansion.svelte';
 
@@ -43,7 +44,13 @@ export function useLeasedItemExpansion(
     const itemOptions = options.getOptions?.() ?? {};
     const key = enabled && pane
       ? itemLeaseKey(pane.paneId, item, itemOptions)
-      : stableLeaseKey('fallback-item', enabled, item.threadId, item.id, itemOptionsKey(itemOptions));
+      : compositeKey(
+        'fallback-item',
+        enabled,
+        item.threadId,
+        item.id,
+        ...itemOptionsKeyParts(itemOptions),
+      );
     if (key === leaseKey) return;
 
     releaseLease?.();
@@ -102,7 +109,13 @@ export function useLeasedPayloadExpansion(
     const payloadOptions = options.getOptions?.();
     const key = enabled && pane && payloadId
       ? payloadLeaseKey(pane.paneId, threadId, payloadId, payloadOptions)
-      : stableLeaseKey('fallback-payload', enabled, threadId, payloadId ?? '', payloadOptionsKey(payloadOptions));
+      : compositeKey(
+        'fallback-payload',
+        enabled,
+        threadId,
+        payloadId ?? '',
+        ...payloadOptionsKeyParts(payloadOptions),
+      );
     if (key === leaseKey) return;
 
     releaseLease?.();
@@ -148,8 +161,47 @@ export function useLeasedPayloadExpansion(
   };
 }
 
-function stableLeaseKey(...parts: readonly unknown[]): string {
-  return JSON.stringify(parts);
+/**
+ * The options half of a lease key, as PARTS rather than a joined string.
+ *
+ * Parts, because both the leased key and the fallback key end with these
+ * and a pre-joined sub-key would be nested inside the outer join on the
+ * same separator — which is exactly the ambiguity the separator is there
+ * to avoid (`['a', 'b\u0000c']` and `['a\u0000b', 'c']` are different
+ * tuples with one key). Spreading keeps every tuple flat, and it is what
+ * lets the leased and fallback keys share one description of "the options
+ * that make two handles different".
+ */
+/**
+ * The fields both option shapes contribute to a key. `cacheEnabled` is
+ * widened because the two types disagree on its signature and the key only
+ * cares which of three shapes it is (see `cacheEnabledKey`).
+ */
+type ExpansionKeyOptions = Pick<
+  RowExpansionStateOptions,
+  'loadMode' | 'loadOnMount' | 'stateKey' | 'previewBytes' | 'chunkBytes' | 'requestTimeoutMs'
+> & { cacheEnabled?: unknown };
+
+function itemOptionsKeyParts(options: ExpansionKeyOptions): (string | number)[] {
+  return [
+    options.loadMode ?? 'preview',
+    options.loadOnMount ? 'auto' : 'manual',
+    options.stateKey ?? 'default',
+    options.previewBytes ?? 'preview-default',
+    options.chunkBytes ?? 'chunk-default',
+    options.requestTimeoutMs ?? 'timeout-default',
+    cacheEnabledKey(options.cacheEnabled),
+  ];
+}
+
+function payloadOptionsKeyParts(
+  optionsOrPayloadVersion: PayloadExpansionStateOptions | unknown,
+): (string | number)[] {
+  const options = normalizePayloadOptions(optionsOrPayloadVersion);
+  return [
+    ...itemOptionsKeyParts(options),
+    payloadVersionLeaseKey(options.payloadVersion),
+  ];
 }
 
 function itemLeaseKey(
@@ -157,20 +209,12 @@ function itemLeaseKey(
   item: Item,
   options: RowExpansionStateOptions,
 ): string {
-  const loadMode = options.loadMode ?? 'preview';
-  const stateKey = options.stateKey ?? 'default';
-  return stableLeaseKey(
+  return compositeKey(
     'item',
     paneId,
     item.threadId,
     item.id,
-    loadMode,
-    options.loadOnMount ? 'auto' : 'manual',
-    stateKey,
-    options.previewBytes ?? 'preview-default',
-    options.chunkBytes ?? 'chunk-default',
-    options.requestTimeoutMs ?? 'timeout-default',
-    cacheEnabledKey(options.cacheEnabled),
+    ...itemOptionsKeyParts(options),
   );
 }
 
@@ -180,47 +224,12 @@ function payloadLeaseKey(
   payloadId: string,
   optionsOrPayloadVersion: PayloadExpansionStateOptions | unknown,
 ): string {
-  const options = normalizePayloadOptions(optionsOrPayloadVersion);
-  const loadMode = options.loadMode ?? 'preview';
-  return stableLeaseKey(
+  return compositeKey(
     'payload',
     paneId,
     threadId,
     payloadId,
-    loadMode,
-    options.loadOnMount ? 'auto' : 'manual',
-    options.stateKey ?? 'default',
-    options.previewBytes ?? 'preview-default',
-    options.chunkBytes ?? 'chunk-default',
-    options.requestTimeoutMs ?? 'timeout-default',
-    cacheEnabledKey(options.cacheEnabled),
-    payloadVersionLeaseKey(options.payloadVersion),
-  );
-}
-
-function itemOptionsKey(options: RowExpansionStateOptions): string {
-  return stableLeaseKey(
-    options.loadMode ?? 'preview',
-    options.loadOnMount ? 'auto' : 'manual',
-    options.stateKey ?? 'default',
-    options.previewBytes ?? 'preview-default',
-    options.chunkBytes ?? 'chunk-default',
-    options.requestTimeoutMs ?? 'timeout-default',
-    cacheEnabledKey(options.cacheEnabled),
-  );
-}
-
-function payloadOptionsKey(optionsOrPayloadVersion: PayloadExpansionStateOptions | unknown): string {
-  const options = normalizePayloadOptions(optionsOrPayloadVersion);
-  return stableLeaseKey(
-    options.loadMode ?? 'preview',
-    options.loadOnMount ? 'auto' : 'manual',
-    options.stateKey ?? 'default',
-    options.previewBytes ?? 'preview-default',
-    options.chunkBytes ?? 'chunk-default',
-    options.requestTimeoutMs ?? 'timeout-default',
-    cacheEnabledKey(options.cacheEnabled),
-    payloadVersionLeaseKey(options.payloadVersion),
+    ...payloadOptionsKeyParts(optionsOrPayloadVersion),
   );
 }
 

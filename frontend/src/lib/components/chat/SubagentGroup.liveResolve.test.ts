@@ -1,0 +1,177 @@
+// The subagent card resolves its own live state.
+//
+// `SubagentGroupNode` is a STRUCTURAL snapshot: the timeline rebuilds it
+// when the item window changes shape, not when an item's content moves.
+// Everything on this card that moves inside a turn — anchor status, the
+// entry count, the latest-action preview — is therefore re-read from the
+// pane by the card itself, the same row-boundary resolution `TimelineLeaf`
+// and `ReadGroupRow` use. Before that, the projection patched fresh refs
+// into the node centrally, which made every streaming tick of every group
+// descendant rebuild the whole virtualizer data array.
+//
+// These tests feed the card a deliberately stale node and assert it
+// renders the store's values, over transitions rather than single states.
+
+import { beforeEach, describe, expect, it } from 'vitest';
+import { render } from '@testing-library/svelte';
+import { tick } from 'svelte';
+import { loadSettings } from '../../stores/settings.svelte';
+import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import { buildPane, makeItem } from '../../../test/helpers/chat';
+import type { ThreadPane } from '../../stores/thread.svelte';
+import type { Item } from '../../types/models';
+import {
+  groupItemsBySubagent,
+  type SubagentGroupNode,
+  type TimelineNode,
+} from '../../utils/subagentGrouping';
+import SubagentGroupTestHarness from './SubagentGroupTestHarness.svelte';
+
+function findGroup(nodes: readonly TimelineNode[]): SubagentGroupNode {
+  for (const node of nodes) {
+    if (node.kind === 'group') return node;
+  }
+  throw new Error('fixture produced no subagent group');
+}
+
+function agentLaunch(overrides: Partial<Item> = {}): Item {
+  return makeItem({
+    id: 'agent:1',
+    itemIndex: 0,
+    kind: 'tool_call',
+    toolName: 'Agent',
+    role: 'assistant',
+    status: 'running',
+    summary: 'Agent: exploring',
+    payloadMeta: JSON.stringify({
+      toolName: 'Agent',
+      input: { description: 'Find the bell icon', subagent_type: 'Explore' },
+    }),
+    ...overrides,
+  });
+}
+
+/**
+ * Builds the pane and captures the group node ONCE. The node keeps the
+ * item objects it was built from, so every later store write leaves it
+ * stale — which is precisely the production condition being tested.
+ */
+async function setup(items: Item[]): Promise<{ pane: ThreadPane; group: SubagentGroupNode }> {
+  const pane = await buildPane(undefined, items);
+  return { pane, group: findGroup(groupItemsBySubagent([...pane.items])) };
+}
+
+function indicatorState(container: HTMLElement): string | null {
+  const status = container.querySelector('[data-testid="subagent-group-status"]');
+  return status?.querySelector('[data-testid="indicator"]')?.getAttribute('data-state') ?? null;
+}
+
+describe('<SubagentGroup> live resolution against the pane', () => {
+  beforeEach(async () => {
+    resetBindingMocks();
+    setBindingMock('GetSettings', async () => null);
+    await loadSettings();
+  });
+
+  it('tracks the anchor status through running → errored on a stale node', async () => {
+    const { pane, group } = await setup([
+      agentLaunch(),
+      makeItem({ id: 'child:1', itemIndex: 1, parentId: 'agent:1', status: 'running', summary: 'reading' }),
+    ]);
+    const { container } = render(SubagentGroupTestHarness, { props: { group, pane } });
+    expect(indicatorState(container)).toBe('running');
+
+    pane.applyItemPatch({
+      threadId: 'thread-1', itemId: 'agent:1', kind: 'tool_call',
+      patch: { status: 'errored', updatedAt: 5 },
+    });
+    await tick();
+
+    expect(group.parent.status, 'node must stay stale for this to prove anything').toBe('running');
+    expect(indicatorState(container)).toBe('error');
+  });
+
+  it('tracks the latest-action preview as a child streams', async () => {
+    const { pane, group } = await setup([
+      agentLaunch(),
+      makeItem({
+        id: 'child:1', itemIndex: 1, parentId: 'agent:1',
+        status: 'streaming', summary: 'reading alpha.ts',
+      }),
+    ]);
+    const { getByTestId } = render(SubagentGroupTestHarness, { props: { group, pane } });
+    expect(getByTestId('subagent-group-preview').textContent).toContain('alpha.ts');
+
+    pane.upsertItem(makeItem({
+      id: 'child:1', itemIndex: 1, parentId: 'agent:1',
+      status: 'streaming', summary: 'reading beta.ts', updatedAt: 6,
+    }));
+    await tick();
+
+    expect(getByTestId('subagent-group-preview').textContent).toContain('beta.ts');
+  });
+
+  it('falls back to the node snapshot when a settled child is evicted', async () => {
+    // The other half of the resolver contract. A collapsed card's settled
+    // descendants are evicted from the window, so `getItemById` starts
+    // answering undefined for a row the node still lists. The preview must
+    // land on the snapshot, not blank out.
+    const { pane, group } = await setup([
+      agentLaunch(),
+      makeItem({
+        id: 'child:1', itemIndex: 1, parentId: 'agent:1',
+        status: 'running', summary: 'reading alpha.ts',
+      }),
+    ]);
+    const { getByTestId } = render(SubagentGroupTestHarness, { props: { group, pane } });
+
+    pane.upsertItem(makeItem({
+      id: 'child:1', itemIndex: 1, parentId: 'agent:1',
+      status: 'completed', summary: 'read alpha.ts', updatedAt: 7,
+    }));
+    await tick();
+
+    expect(pane.getItemById('child:1'), 'settled child must be evicted here').toBeUndefined();
+    expect(getByTestId('subagent-group-preview').textContent).toContain('reading alpha.ts');
+  });
+
+  it('picks up an entry-count decoration that lands without a structural rebuild', async () => {
+    const { pane, group } = await setup([
+      agentLaunch(),
+      makeItem({ id: 'child:1', itemIndex: 1, parentId: 'agent:1', status: 'running', summary: 'one' }),
+    ]);
+    const { getByTestId } = render(SubagentGroupTestHarness, { props: { group, pane } });
+    expect(group.descendantCount).toBe(1);
+    expect(getByTestId('subagent-group-count').textContent).toContain('1 entry');
+
+    pane.applyItemMeta({
+      threadId: 'thread-1', itemId: 'agent:1', kind: 'tool_call',
+      meta: JSON.stringify({ subagentDescendantCount: 7 }), updatedAt: 8,
+    });
+    await tick();
+
+    expect(getByTestId('subagent-group-count').textContent).toContain('7 entries');
+  });
+
+  it('holds the entry count when a later write drops the decoration', async () => {
+    // Transition coverage for the card's `Math.max`: decoration present →
+    // absent must land on the node's own count, never on zero. Here the
+    // node was itself built while the decoration existed, so it already
+    // carries 7 — the assertion is that the card does not regress to the
+    // one loaded child, and does not blank the label.
+    const { pane, group } = await setup([
+      agentLaunch({ meta: JSON.stringify({ subagentDescendantCount: 7 }) }),
+      makeItem({ id: 'child:1', itemIndex: 1, parentId: 'agent:1', status: 'running', summary: 'one' }),
+    ]);
+    const { getByTestId } = render(SubagentGroupTestHarness, { props: { group, pane } });
+    expect(group.descendantCount).toBe(7);
+    expect(getByTestId('subagent-group-count').textContent).toContain('7 entries');
+
+    pane.applyItemMeta({
+      threadId: 'thread-1', itemId: 'agent:1', kind: 'tool_call', meta: '', updatedAt: 9,
+    });
+    await tick();
+
+    expect(getByTestId('subagent-group-count').textContent).toContain('7 entries');
+  });
+});

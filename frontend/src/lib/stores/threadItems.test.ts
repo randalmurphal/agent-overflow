@@ -325,6 +325,9 @@ describe('threadItems', () => {
 
     expect(next?.items[0]).toBe(completed);
     expect(next?.structureChanged).toBe(false);
+    // …but the row LEFT the active set, which is a retention change with
+    // no structural change in tow. The two flags are independent.
+    expect(next?.rowUiRetentionChanged).toBe(true);
   });
 
   it('flags a rail-exempting payload as structural, and an ordinary one not', () => {
@@ -496,5 +499,96 @@ describe('threadItems', () => {
       oldestLoadedTurnIndex: 2,
       hasMoreHistory: true,
     })).toBeNull();
+  });
+});
+
+// The offscreen row-UI prune proves a no-op from the revision this flag
+// drives, so a missed `true` leaks retained expansion state and a
+// gratuitous `true` puts the prune's item walk back on the hot path.
+describe('applyItemUpsertsToWindow row-UI retention flag', () => {
+  const streaming = makeItem({
+    id: 'row',
+    threadId: 'thread-1',
+    turnIndex: 3,
+    status: 'streaming',
+    summary: 'par',
+  });
+
+  function applyOver(current: readonly Item[], incoming: readonly Item[]) {
+    return applyWindowUpserts({
+      current,
+      incoming,
+      itemIndexById: new Map(current.map((item, index) => [item.id, index])),
+      currentThreadId: 'thread-1',
+      oldestLoadedTurnIndex: 0,
+    });
+  }
+
+  it('stays false for a text-only delta upsert on a streaming row', () => {
+    const grown = { ...streaming, summary: 'partial plus more', updatedAt: 5 };
+    const next = applyOver([streaming], [grown]);
+    expect(next?.items[0]).toBe(grown);
+    expect(next?.rowUiRetentionChanged).toBe(false);
+  });
+
+  it('flags a payload attaching to a still-streaming row', () => {
+    const next = applyOver([streaming], [{ ...streaming, payloadId: 'payload-1', updatedAt: 5 }]);
+    expect(next?.rowUiRetentionChanged).toBe(true);
+  });
+
+  it('flags a move between the two active statuses', () => {
+    const next = applyOver([streaming], [{ ...streaming, status: 'running', updatedAt: 5 }]);
+    expect(next?.rowUiRetentionChanged).toBe(true);
+  });
+
+  it('flags a settled row going active', () => {
+    const settled = { ...streaming, status: 'completed' as const };
+    const next = applyOver([settled], [{ ...settled, status: 'running', updatedAt: 5 }]);
+    expect(next?.rowUiRetentionChanged).toBe(true);
+  });
+
+  it('flags an appended active row and not an appended settled one', () => {
+    const active = applyOver([streaming], [
+      makeItem({ id: 'appended', threadId: 'thread-1', turnIndex: 4, status: 'running' }),
+    ]);
+    expect(active?.appendedItems.map((item) => item.id)).toEqual(['appended']);
+    expect(active?.rowUiRetentionChanged).toBe(true);
+
+    const settled = applyOver([streaming], [
+      makeItem({ id: 'appended', threadId: 'thread-1', turnIndex: 4, status: 'completed' }),
+    ]);
+    expect(settled?.appendedItems.map((item) => item.id)).toEqual(['appended']);
+    expect(settled?.rowUiRetentionChanged).toBe(false);
+  });
+
+  it('stays false when one row in a batch moves nothing and another only re-sorts', () => {
+    const settledTail = makeItem({
+      id: 'tail',
+      threadId: 'thread-1',
+      turnIndex: 4,
+      status: 'completed',
+    });
+    const next = applyOver([streaming, settledTail], [
+      { ...streaming, summary: 'more text', updatedAt: 5 },
+      { ...settledTail, turnIndex: 2, updatedAt: 5 },
+    ]);
+    expect(next?.indexesNeedRebuild).toBe(true);
+    expect(next?.rowUiRetentionChanged).toBe(false);
+  });
+
+  it('stays false when the only outcome is a dropped newer row', () => {
+    const next = applyWindowUpserts({
+      current: [streaming],
+      incoming: [
+        makeItem({ id: 'beyond', threadId: 'thread-1', turnIndex: 9, status: 'running' }),
+      ],
+      itemIndexById: new Map([['row', 0]]),
+      currentThreadId: 'thread-1',
+      oldestLoadedTurnIndex: 0,
+      newestLoadedTurnIndex: 3,
+      hasMoreNewer: true,
+    });
+    expect(next?.droppedNewerItems).toBe(true);
+    expect(next?.rowUiRetentionChanged).toBe(false);
   });
 });

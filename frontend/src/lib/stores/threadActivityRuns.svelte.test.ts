@@ -8,50 +8,7 @@ import {
 } from './threadActivityRuns.svelte';
 import { installDiagnosticsCapture } from '../../test/helpers/diagnostics';
 import { makeItem } from '../../test/helpers/chat';
-
-function registry(overrides: { defaultCollapsed?: boolean; windowRows?: number } = {}) {
-  return createThreadActivityRuns({
-    defaultCollapsed: () => overrides.defaultCollapsed ?? false,
-    windowRows: () => overrides.windowRows ?? 30,
-  });
-}
-
-/**
- * One run, described row by row. A bare id is a one-item row; an array is a
- * group row carrying several items, which is the case that makes a run's row
- * count differ from its member count.
- */
-type RunSpec = (string | string[])[];
-
-/**
- * One projection pass, resolved in the order `groupActivityRuns` resolves it:
- * identity and window per run, then collapse once liveness is known.
- *
- * `liveIndex` names the run holding the thread's tail — at most one can, and
- * `-1` means the pass has none (a thread whose last row is prose).
- */
-function pass(
-  runs: ReturnType<typeof registry>,
-  specs: RunSpec[],
-  threadId = 'thread-1',
-  liveIndex = -1,
-): (ActivityRunResolution & { collapsed: boolean })[] {
-  runs.beginPass();
-  const resolved = specs.map((spec) =>
-    runs.resolve(spec.map((row) => (typeof row === 'string' ? [row] : row)), threadId),
-  );
-  const out = resolved.map((run, index) => ({
-    ...run,
-    collapsed: runs.collapsedFor(run.runId, index === liveIndex),
-  }));
-  runs.endPass();
-  return out;
-}
-
-/** A run of `n` single-item rows, with ids stable across passes. */
-function rows(n: number): RunSpec {
-  return Array.from({ length: n }, (_, i) => `i${i}`);
-}
+import { pass, registry, rows } from '../../test/helpers/activityRuns';
 
 describe('collapse state', () => {
   it('follows the setting default until explicitly toggled', () => {
@@ -895,6 +852,7 @@ function nodeFor(resolved: ActivityRunResolution, ids: readonly string[]): Activ
     live: false,
     mountedFrom: resolved.mountedFrom,
     mountedRows: resolved.mountedRows,
+    membershipEpoch: resolved.membershipEpoch,
     memberItemIds: [...ids],
   };
 }

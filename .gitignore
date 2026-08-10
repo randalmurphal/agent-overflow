@@ -65,3 +65,12 @@ frontend/wailsjs/
 # frontend/src/lib/markdown/freezeReplay.manual.ts skips its corpus suites
 # when the file is absent, so nothing breaks without it.
 frontend/src/lib/markdown/__fixtures__/freezeReplay.fixture.json
+
+# Freeze-reproduction fixtures + captured renderer evidence, driven by
+# e2e/tests/freeze-repro.manual.spec.ts. Same rule as the corpus above:
+# e2e/scripts/generate-freeze-repro.mjs pulls the verbatim text of one real
+# session (prose, tool inputs, every byte of command output) out of the local
+# SQLite store, and the evidence dirs hold stacks/profiles/console logs captured
+# while replaying it. Never committable, under any circumstances. The spec
+# test.skips itself when the directory is absent, so nothing breaks without it.
+e2e/fixtures/

@@ -16,6 +16,12 @@ import type { Item } from '../../types/models';
 
 const mounted: Array<{ app: object; host: HTMLElement }> = [];
 
+/** No windowed rows to speak of — this suite mounts one message. */
+const NO_ROWS_LOADED = {
+  getItemById: () => undefined,
+  loadedPayloadRefs: () => [],
+};
+
 const SHORT = 'ship it';
 /** Comfortably over the clamp at any width. */
 const LONG = Array.from({ length: 40 }, (_, i) => `line ${i} of a long pasted block`).join('\n');
@@ -49,7 +55,7 @@ interface TestPane {
  * controller that records the anchor each toggle asks it to hold.
  */
 function makePane(): TestPane {
-  const rowUiState = createThreadRowUiState({ getItemById: () => undefined });
+  const rowUiState = createThreadRowUiState(NO_ROWS_LOADED);
   const anchors: HTMLElement[] = [];
   const pane = {
     paneId: 'pane-1',

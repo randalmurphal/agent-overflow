@@ -22,13 +22,30 @@
 // while an animation is actually blocking quiet work; at idle nothing
 // is armed.
 //
-// Two structural rules, both load-bearing:
+// Three structural rules, all load-bearing:
+//   - Callbacks are RATE-BOUND: no run starts within
+//     QUIET_WORK_MIN_INTERVAL_MS of the previous one ENDING, and every
+//     trigger arriving inside that window is coalesced into one trailing
+//     run that reads state at fire time. The triggers are per-streamed-row
+//     (`pane.timelineRevision`, `pane.activityRuns.revision`, the
+//     deferred-prune flag — and the passes themselves write all three, so
+//     a mutating pass re-triggers the effect that schedules it), which
+//     measured ~540 runs/sec on a dense turn and saturated the main
+//     thread: 8634 back-to-back tasks, zero idle for 17s, no single task
+//     over 12.5ms. Nothing here needs sub-100ms latency — the
+//     quiet-deferral path already accepts QUIET_WORK_RECHECK_MS, twice
+//     that — so the bound costs nothing semantically.
 //   - At most ONE geometry-mutating pass runs per callback. The prune
 //     flush and a collapse-release flush are each the expensive kind;
 //     stacking them on one frame doubles the stall. The remainder is
-//     re-scheduled for the next debounced tick.
-//   - Passes are idempotent and cheap when there is no work, because
-//     the scheduler re-runs the whole ordered list on every callback.
+//     re-scheduled, and now lands a rate bound later rather than inside
+//     the same flush cascade.
+//   - Passes re-run from scratch on every callback, so they must be
+//     idempotent. They are NOT required to be cheap when there is no
+//     work: the rate bound, not per-pass frugality, is what keeps an
+//     expensive no-op off the hot path — the engagement survey the
+//     auto-collapse gate runs is O(rendered rows in every held run) and
+//     no amount of care makes that free.
 //
 // Design rationale: docs/architecture/scroll-arbitration-plan.md.
 
@@ -41,16 +58,36 @@ import { reportFrontendDiagnostic } from '../../utils/frontendErrorCapture';
 export const QUIET_WORK_RECHECK_MS = 200;
 
 /**
+ * Minimum gap between one callback ENDING and the next one STARTING.
+ *
+ * A rate bound rather than a debounce: the triggers are genuinely
+ * continuous during a dense turn (see the module header), so a debounce
+ * would starve the passes for as long as the turn ran, while an unbounded
+ * rate saturates the main thread. Measuring from the END is what makes it
+ * a bound on TOTAL occupancy — a callback that takes 80ms is followed by
+ * 100ms of thread, not 20ms.
+ *
+ * Half the recheck interval, which is the latency the quiet-deferral path
+ * already accepts for the same passes. Every trigger inside the window is
+ * still honoured: it coalesces into one trailing run, and that run reads
+ * live state when it fires, so coalescing loses nothing.
+ */
+export const QUIET_WORK_MIN_INTERVAL_MS = 100;
+
+/**
  * Consecutive geometry-mutating callbacks allowed before the scheduler
  * stands down to the timed recheck.
  *
- * A mutating callback re-enters through `schedule()` — `tick()` then
- * `runScheduled` again — and under load `tick()` resolves inside the same
- * `flushSync` cascade that queued it, so N laps are N synchronous flushes
- * with no paint between. Termination today is EMERGENT: the three passes
- * each happen to stop reporting mutation eventually. Nothing makes that a
- * contract a future pass has to honor, and a pass that always reports
- * mutation would wedge the main thread with no error anywhere.
+ * A mutating callback re-enters through the scheduler's own request path,
+ * so consecutive laps are spaced by QUIET_WORK_MIN_INTERVAL_MS with the
+ * thread free (and a paint) between them — this is no longer a wedge in
+ * its own right, which is exactly why the cap can stay a backstop instead
+ * of becoming a tuning knob. What it still guards is NON-CONVERGENCE:
+ * termination today is EMERGENT (the three passes each happen to stop
+ * reporting mutation eventually), nothing makes that a contract a future
+ * pass has to honor, and a pass that always reports mutation would
+ * otherwise re-mutate geometry under the reader ten times a second
+ * forever, with nothing in any log.
  *
  * Deep enough that no real drain reaches it, so tripping it is a bug report
  * rather than a tuning parameter. The argued legitimate depth is ~3 (the
@@ -92,11 +129,18 @@ export interface TimelineQuietWorkOptions {
 }
 
 export interface TimelineQuietWork {
-  /** Schedules a debounced (one-tick) pass over the queue. Called from
-   * the structural trigger effects and from scroll end. */
+  /**
+   * Asks for one pass over the queue. Called from the structural trigger
+   * effects and from scroll end, both of which fire per streamed row.
+   * Runs tick-aligned when the rate bound is already satisfied, otherwise
+   * arms the trailing run at the end of the bound. Every call is
+   * eventually followed by a run; calls inside the bound coalesce into
+   * one.
+   */
   schedule(): void;
   /** Bumps the token so in-flight callbacks from a torn-down instance
-   * no-op, and cancels any armed recheck. Called from `onDestroy`. */
+   * no-op, cancels any armed run, and releases the rate bound so a reused
+   * instance does not inherit a cooldown. Called from `onDestroy`. */
   invalidate(): void;
 }
 
@@ -104,7 +148,16 @@ export function createTimelineQuietWork(
   options: TimelineQuietWorkOptions,
 ): TimelineQuietWork {
   let token = 0;
-  let recheckTimer: ReturnType<typeof setTimeout> | null = null;
+  // ONE timer for every reason a run can be pending — the rate bound's
+  // trailing run and the quiet-deferral recheck are both "no run before
+  // T", so they compose as a single deadline. Two timers would need a
+  // rule for which wins, and the answer would always be "the later one".
+  let runTimer: ReturnType<typeof setTimeout> | null = null;
+  // Absolute time the currently armed run may fire, or null when none is
+  // armed. Only the stand-down path reads it — see `requestRun`.
+  let armedRunAt: number | null = null;
+  // Never run; the first schedule is not owed a wait.
+  let lastRunEndedAt: number | null = null;
   // Counts only SELF-reschedules (a mutating callback re-entering through
   // `schedule()`). A callback that ends without one — nothing deferred, or
   // deferred-but-quiet — is the quiet lap that clears it, and it is the ONLY
@@ -121,24 +174,71 @@ export function createTimelineQuietWork(
   // (the pass converging, or its work going away) restores the full budget.
   let mutatingLaps = 0;
 
-  function clearRecheck(): void {
-    if (recheckTimer !== null) {
-      clearTimeout(recheckTimer);
-      recheckTimer = null;
+  function clearRunTimer(): void {
+    if (runTimer !== null) {
+      clearTimeout(runTimer);
+      runTimer = null;
     }
   }
 
-  function armRecheck(): void {
-    if (recheckTimer !== null) return;
-    const current = token;
-    recheckTimer = setTimeout(() => {
-      recheckTimer = null;
-      runScheduled(current);
-    }, QUIET_WORK_RECHECK_MS);
+  /**
+   * How much of the rate bound is still owed. Clamped at both ends so a
+   * system-clock step can neither let a run start early nor postpone one
+   * past the interval — a backwards jump would otherwise park the next
+   * callback for the size of the jump.
+   */
+  function rateBoundRemainingMs(): number {
+    if (lastRunEndedAt === null) return 0;
+    const elapsed = Math.min(
+      Math.max(Date.now() - lastRunEndedAt, 0),
+      QUIET_WORK_MIN_INTERVAL_MS,
+    );
+    return QUIET_WORK_MIN_INTERVAL_MS - elapsed;
+  }
+
+  /**
+   * Arm exactly one run, no sooner than `minDelayMs` and never inside the
+   * rate bound. Supersedes whatever was armed rather than queueing beside
+   * it: every caller wants ONE next look at current state, and the run
+   * reads that state when it fires, so a request arriving during the wait
+   * is fully served by the pending run — except that it may need to
+   * happen SOONER, which is why the deadline is recomputed rather than
+   * left alone.
+   *
+   * With one exception: while the stand-down is in force, an armed
+   * deadline is a FLOOR rather than a default. Pulling a run forward is
+   * the designed coalescing everywhere else, but the stand-down exists
+   * BECAUSE a pass keeps reporting mutated geometry, and the structural
+   * triggers that call `schedule()` fire on every streamed row — so
+   * without this the very next external trigger would drag the run back
+   * to the rate bound and the promised "third of the rate" would be the
+   * full rate, warning line and all.
+   */
+  function requestRun(minDelayMs: number): void {
+    let wait = Math.max(minDelayMs, rateBoundRemainingMs());
+    if (mutatingLaps >= MAX_CONSECUTIVE_MUTATING_LAPS && armedRunAt !== null) {
+      wait = Math.max(wait, armedRunAt - Date.now());
+    }
+    const current = ++token;
+    clearRunTimer();
+    armedRunAt = Date.now() + Math.max(wait, 0);
+    // Tick-aligned either way: the passes must see the flush their
+    // trigger produced, not the state that queued it.
+    if (wait <= 0) {
+      void tick().then(() => runScheduled(current));
+      return;
+    }
+    runTimer = setTimeout(() => {
+      runTimer = null;
+      void tick().then(() => runScheduled(current));
+    }, wait);
   }
 
   function runScheduled(current: number): void {
     if (current !== token) return;
+    // The armed run is happening; nothing is armed until one of the
+    // re-arm decisions below (or an external trigger) arms the next.
+    armedRunAt = null;
     const quiet = !options.autoScrollInFlight();
     let mutatedBy: string | null = null;
     let deferredQuietPass = false;
@@ -158,17 +258,25 @@ export function createTimelineQuietWork(
       const mutated = pass.run();
       if (mutated && mutatedBy === null) mutatedBy = pass.key;
     }
+    // The callback is over. Stamped BEFORE the re-arm decisions below so
+    // every one of them — including a self-reschedule — is spaced from the
+    // end of this run rather than from the end of the previous one.
+    lastRunEndedAt = Date.now();
     if (!deferredQuietPass) {
       mutatingLaps = 0;
       return;
     }
     if (mutatedBy !== null) {
       if (mutatingLaps >= MAX_CONSECUTIVE_MUTATING_LAPS) {
-        // Not convergence-slow — non-convergent. Each lap so far was a
-        // synchronous flush with no paint between, so continuing would wedge
-        // the main thread inside one macrotask. Stand down to the timed
-        // recheck: the work still retries, just off the hot path. The counter
-        // is deliberately NOT cleared here — see its declaration.
+        // Not convergence-slow — non-convergent. The rate bound keeps the
+        // laps off one macrotask, so this is no longer a wedge; what it is
+        // is geometry moving under the reader on a fixed cadence forever.
+        // Stand down to the slower recheck: the work still retries, just at
+        // a third of the rate and with a record of why. The counter is
+        // deliberately NOT cleared here — see its declaration — and while it
+        // sits at the cap `requestRun` treats this deadline as a floor, so a
+        // structural trigger arriving in the meantime cannot pull the run
+        // back to the rate bound and undo the stand-down.
         //
         // Constant message, variables in `detail`: a pass key and a lap count
         // in the message would mint a signature per pass and per count, which
@@ -185,30 +293,34 @@ export function createTimelineQuietWork(
             'without a quiet lap; standing down to the timed recheck',
           detail,
         );
-        armRecheck();
+        requestRun(QUIET_WORK_RECHECK_MS);
         return;
       }
-      // Geometry changed this callback: re-enter through the normal
-      // debounce so the deferred passes see the flushed state.
+      // Geometry changed this callback: re-enter so the deferred passes
+      // see the flushed state. Through the same rate bound as an external
+      // trigger — a self-reschedule is the one caller that could otherwise
+      // run the queue as fast as the passes can report mutation.
       mutatingLaps += 1;
-      schedule();
+      requestRun(0);
       return;
     }
     mutatingLaps = 0;
-    armRecheck();
+    requestRun(QUIET_WORK_RECHECK_MS);
   }
 
   function schedule(): void {
     if (options.isTest) return;
-    const current = ++token;
-    clearRecheck();
-    void tick().then(() => runScheduled(current));
+    requestRun(0);
   }
 
   function invalidate(): void {
     token += 1;
     mutatingLaps = 0;
-    clearRecheck();
+    // The rate bound is per-instance state; a torn-down scheduler must not
+    // hand its cooldown to whatever schedules next.
+    lastRunEndedAt = null;
+    armedRunAt = null;
+    clearRunTimer();
   }
 
   return { schedule, invalidate };

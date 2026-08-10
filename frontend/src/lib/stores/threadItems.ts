@@ -1,4 +1,6 @@
 import type { Item } from '../types/models';
+import { rowUiRetentionChanged } from '../utils/rowUiRetention';
+import { activityRunSummaryFieldsChanged } from '../utils/activityRunGrouping';
 import { itemTimelineStructureChanged } from '../utils/timelineStructure';
 
 export interface TimelineCursorLike {
@@ -285,7 +287,28 @@ export interface ApplyItemUpsertsToWindowResult {
   indexesNeedRebuild: boolean;
   structureChanged: boolean;
   droppedNewerItems: boolean;
+  /**
+   * Any applied row changed what the offscreen row-UI prune retains
+   * (`utils/rowUiRetention.ts`). Computed here because the merge is the
+   * one place that holds both the previous row and its replacement; the
+   * pane turns it into a revision the prune's no-op bail reads as a
+   * scalar. Structure-independent by construction: a streaming row
+   * settling changes retention without changing structure, and a
+   * regrouping change moves structure without touching retention.
+   */
+  rowUiRetentionChanged: boolean;
+  /**
+   * Ids of REPLACED rows whose activity-run summary fields moved
+   * (`utils/activityRunGrouping.ts`). Same reason as above — the merge is
+   * the one place holding both versions — and replacements only: an
+   * appended row always sets `structureChanged`, which re-projects the
+   * runs and stamps a fresh membership epoch on the node.
+   */
+  summaryFieldsChangedIds: readonly string[];
 }
+
+/** Shared empty list, so the overwhelmingly common "nothing moved" batch allocates none. */
+const NO_CHANGED_IDS: readonly string[] = Object.freeze([]);
 
 /**
  * Apply streamed/upserted items to the currently loaded timeline window.
@@ -315,6 +338,8 @@ export function applyItemUpsertsToWindow({
   let needsSort = false;
   let structureChanged = false;
   let droppedNewerItems = false;
+  let retentionChanged = false;
+  let summaryFieldsChangedIds: string[] | null = null;
   // MIN_SAFE_INTEGER, not 0: head-healed prompts sit at NEGATIVE item
   // indexes, so 0 is not the start of a turn — a fallback floor at 0
   // would misclassify those rows as below the loaded window (mirror of
@@ -352,6 +377,12 @@ export function applyItemUpsertsToWindow({
       changed = true;
       if (itemTimelineStructureChanged(previous, item)) {
         structureChanged = true;
+      }
+      if (rowUiRetentionChanged(previous, item)) {
+        retentionChanged = true;
+      }
+      if (activityRunSummaryFieldsChanged(previous, item)) {
+        (summaryFieldsChangedIds ??= []).push(item.id);
       }
       changedItems.push(item);
       if (appendedIndexById.has(item.id)) {
@@ -391,6 +422,9 @@ export function applyItemUpsertsToWindow({
     target.push(item);
     changed = true;
     structureChanged = true;
+    if (rowUiRetentionChanged(undefined, item)) {
+      retentionChanged = true;
+    }
     appendedItems.push(item);
     changedItems.push(item);
   }
@@ -404,6 +438,8 @@ export function applyItemUpsertsToWindow({
       indexesNeedRebuild: false,
       structureChanged: false,
       droppedNewerItems,
+      rowUiRetentionChanged: false,
+      summaryFieldsChangedIds: NO_CHANGED_IDS,
     };
   }
   const result = next ?? current.slice();
@@ -418,5 +454,7 @@ export function applyItemUpsertsToWindow({
     indexesNeedRebuild: needsSort,
     structureChanged,
     droppedNewerItems,
+    rowUiRetentionChanged: retentionChanged,
+    summaryFieldsChangedIds: summaryFieldsChangedIds ?? NO_CHANGED_IDS,
   };
 }

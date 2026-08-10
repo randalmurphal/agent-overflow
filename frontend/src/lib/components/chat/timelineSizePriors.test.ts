@@ -36,6 +36,7 @@ function run(overrides: Partial<ActivityRunNode> = {}): ActivityRunNode {
     live: false,
     mountedFrom: 0,
     mountedRows: children.length,
+    membershipEpoch: 1,
     memberItemIds: [],
     ...overrides,
   };

@@ -42,6 +42,7 @@ describe('nodeSignature', () => {
       children: [leaf({ id: 'a' })],
       mountedFrom: 0,
       mountedRows: 1,
+      membershipEpoch: 1,
       memberItemIds: ['a'],
       ...over,
     });

@@ -50,6 +50,8 @@ import { errString } from '../utils/errors';
 import type { RevealBoundary } from '../utils/subagentGrouping';
 import type { SubagentFoldAggregate } from '../utils/subagentFold';
 import { evictDiffSpansForThread } from '../utils/diffSpanCache.svelte';
+import { rowUiRetentionChanged } from '../utils/rowUiRetention';
+import { activityRunSummaryFieldsChanged } from '../utils/activityRunGrouping';
 import {
   MAX_CACHED_SNAPSHOT_ITEMS,
   threadItemCache,
@@ -163,6 +165,9 @@ function wireCursor(cursor: TimelineCursorLike | null): TimelineCursor {
 // by construction: nothing writes through this reference.
 const EMPTY_ID_SET: ReadonlySet<string> = new Set<string>();
 
+/** Shared "nothing was dropped" list, so the common replacement allocates none. */
+const NO_ITEMS: readonly Item[] = Object.freeze([]);
+
 // ActiveTurn now lives in threadStatuses.svelte.ts (single source of
 // truth for the global active-turn registry). Re-exported here so
 // downstream importers (events.ts, panes, tests) don't have to rewire
@@ -211,6 +216,21 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
   // summary-only streaming deltas. Bump whenever the item window's array
   // changes shape or identity; `applyItemDelta` intentionally does not bump.
   let timelineRevision = $state(0);
+  // Revision of the item-side inputs to offscreen row-UI-state retention
+  // (`utils/rowUiRetention.ts`): bumped by an items write only when it
+  // changed which rows the prune retains unconditionally, or what it
+  // retains for one. The prune's no-op bail reads it as a scalar instead
+  // of walking `items` per callback — that walk wedged the renderer for
+  // 6-19s mid-turn, because the `$state` array is replaced on every
+  // upsert batch and each walk re-created a proxy source per index.
+  //
+  // Deliberately NOT `$state`, same reason as `lastLiveContentAt`: the
+  // only reader is the quiet scheduler's prune pass, which runs off a
+  // microtask/timer and reads imperatively. Scheduling is a separate
+  // concern and stays on `timelineRevision` + the other structural
+  // triggers; this value only decides whether a scheduled pass is a
+  // no-op.
+  let rowUiRetentionRevision = 0;
   // Non-reactive timestamp of the last LIVE timeline content advance — a
   // smoother reveal, an overwrite patch, a text-like provider row, a
   // visible-field update to an already mounted row (tool output preview,
@@ -237,14 +257,37 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     const index = itemIndexById.get(itemId);
     return index === undefined ? undefined : items[index];
   }
-  function isPayloadReferenced(threadId: string, payloadId: string): boolean {
-    return items.some((item) =>
-      item.threadId === threadId && item.payloadId === payloadId,
-    );
+  /**
+   * The ONE in-place row write. Every path that replaces a single loaded
+   * row (smoother reveal, delta, meta, field patch) goes through here so
+   * the revisions derived from a row's fields cannot be missed by a new
+   * caller: the bump is a property of writing, not something each writer
+   * remembers. Both exist to keep an O(window) walk off a ~50Hz path —
+   * the offscreen row-UI prune's no-op bail, and the activity-run
+   * header's summary signature — so both are decided from the single
+   * comparison this function is already holding.
+   *
+   * Wholesale replacements go through `commitTimelineItems` instead,
+   * which bumps retention unconditionally; a run's membership change
+   * there is re-stamped by the projection's own epoch.
+   */
+  function writeItemAt(index: number, next: Item): void {
+    const previous = items[index];
+    if (rowUiRetentionChanged(previous, next)) rowUiRetentionRevision += 1;
+    // Same chokepoint logic for the activity-run header: it summarises the
+    // rows in a run from five fields, and this is the write that fires at
+    // reveal cadence. Comparing them here is what lets the header key on a
+    // number instead of rebuilding the tuple for every member per tick.
+    if (activityRunSummaryFieldsChanged(previous, next)) {
+      activityRuns.noteMemberContentChanged(next.id);
+    }
+    items[index] = next;
   }
   const rowUiState = createThreadRowUiState({
     getItemById,
-    isPayloadReferenced,
+    // Read at dispose time, after the caller has already replaced `items`
+    // with the surviving window — so this IS the "still loaded" set.
+    loadedPayloadRefs: () => items,
   });
   // Per-item smoother + reveal-gate machinery lives in
   // threadStreamingReveal.svelte.ts. Every items-mutation path that can
@@ -254,9 +297,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     getItemById,
     getItemIndex: (itemId) => itemIndexById.get(itemId),
     getItems: () => items,
-    setItemAt: (index, item) => {
-      items[index] = item;
-    },
+    setItemAt: writeItemAt,
     stampLiveContent,
     armStructuralSpring: armLiveContentAppendSpring,
     appendLivePayloadDeltaForItem: rowUiState.appendLivePayloadDeltaForItem,
@@ -483,6 +524,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     getItems: () => items,
     getItemIndex: (itemId) => itemIndexById.get(itemId),
     replaceTimelineItems,
+    dropTimelineItems,
     getThread: () => thread,
     getSwitchGeneration: () => switchGeneration,
     recomputeReveal: streamingReveal.recomputeReveal,
@@ -674,17 +716,9 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
   }
 
   function disposeDroppedItemState(
-    previous: readonly Item[],
-    nextItems: readonly Item[],
+    droppedItems: readonly Item[],
     exhaustedScope?: ReadonlySet<string>,
   ): void {
-    if (previous.length === 0) return;
-    const keptIds = new Set(nextItems.map((item) => item.id));
-    const droppedItems: Item[] = [];
-    for (const item of previous) {
-      if (keptIds.has(item.id)) continue;
-      droppedItems.push(item);
-    }
     if (droppedItems.length === 0) return;
     // Dropped rows can include hydrated subagent children — re-arm their
     // anchors for hydration. See threadSubagentMemory.ts
@@ -694,15 +728,33 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     rowUiState.disposeItems(droppedItems);
   }
 
-  function replaceTimelineItems(
+  /** Set difference, for the callers that hand over a finished array. */
+  function droppedItemsBetween(
+    previous: readonly Item[],
+    nextItems: readonly Item[],
+  ): readonly Item[] {
+    if (previous.length === 0) return NO_ITEMS;
+    const keptIds = new Set<string>();
+    for (const item of nextItems) keptIds.add(item.id);
+    const dropped: Item[] = [];
+    for (const item of previous) {
+      if (!keptIds.has(item.id)) dropped.push(item);
+    }
+    return dropped;
+  }
+
+  /**
+   * The window-replacement chokepoint. `droppedItems` must be exactly the
+   * rows `nextItems` lost, which is why this is private: the two public
+   * entry points below each derive it, so no caller can supply a pair
+   * that disagrees (a short list leaks row UI state; a long one releases
+   * state a surviving row still reads).
+   */
+  function commitTimelineItems(
     nextItems: Item[],
-    options: {
-      disposeDropped?: boolean;
-      exhaustedScope?: ReadonlySet<string>;
-    } = {},
+    droppedItems: readonly Item[],
+    exhaustedScope?: ReadonlySet<string>,
   ): boolean {
-    if (items === nextItems) return false;
-    const previous = options.disposeDropped ? items : [];
     items = nextItems;
     rebuildItemIndexes(items);
     // Fold↔items chokepoint: folds are only meaningful while their
@@ -715,11 +767,63 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     // Eviction callers record their folds BEFORE replacing, with the
     // anchors still loaded, so those folds are retained.
     subagentMemory.retainFoldAnchors();
-    if (options.disposeDropped) {
-      disposeDroppedItemState(previous, items, options.exhaustedScope);
-    }
+    disposeDroppedItemState(droppedItems, exhaustedScope);
     timelineRevision++;
+    // Unconditional: a wholesale replacement can drop an active row, land
+    // one, or re-link a payload, and proving otherwise would cost the very
+    // walk the revision exists to remove. These paths are rare (prune,
+    // reconcile, revert, cache install, eviction) — one extra prune pass
+    // is cheaper than the proof.
+    rowUiRetentionRevision += 1;
+    // Same reasoning, the other consumer: the per-item revision the
+    // activity-run headers key on is fed by `writeItemAt`, which a
+    // wholesale replacement does not go through. A replace can change
+    // every summary-relevant field on rows whose run membership is
+    // untouched (the cache paint reconciled by `SyncThreadWindow`), and
+    // that is invisible to both of the header's per-run signals.
+    activityRuns.noteWholesaleReplace();
     return true;
+  }
+
+  function replaceTimelineItems(
+    nextItems: Item[],
+    options: {
+      disposeDropped?: boolean;
+      exhaustedScope?: ReadonlySet<string>;
+    } = {},
+  ): boolean {
+    if (items === nextItems) return false;
+    return commitTimelineItems(
+      nextItems,
+      options.disposeDropped ? droppedItemsBetween(items, nextItems) : NO_ITEMS,
+      options.exhaustedScope,
+    );
+  }
+
+  /**
+   * Replace the window by dropping the rows `shouldDrop` selects. ONE
+   * pass yields both the surviving array and the dropped rows, where
+   * `replaceTimelineItems` has to diff the two arrays afterwards — a
+   * second full walk plus a Set of every surviving id. Any caller that
+   * already knows which rows are leaving belongs here; subagent
+   * eviction, which drops a settled subtree on every settling batch, is
+   * why it exists. Returns the dropped rows in their previous order; a
+   * no-op drop leaves the window untouched, so it costs no revision
+   * bump.
+   */
+  function dropTimelineItems(
+    shouldDrop: (item: Item) => boolean,
+    options: { exhaustedScope?: ReadonlySet<string> } = {},
+  ): Item[] {
+    const kept: Item[] = [];
+    const dropped: Item[] = [];
+    for (const item of items) {
+      if (shouldDrop(item)) dropped.push(item);
+      else kept.push(item);
+    }
+    if (dropped.length === 0) return dropped;
+    commitTimelineItems(kept, dropped, options.exhaustedScope);
+    return dropped;
   }
 
   // Subagent eviction policy (evictableAnchorIdFor, collectSettledSubtree,
@@ -783,6 +887,10 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       }
     }
     if (next.structureChanged) timelineRevision++;
+    if (next.rowUiRetentionChanged) rowUiRetentionRevision += 1;
+    for (const id of next.summaryFieldsChangedIds) {
+      activityRuns.noteMemberContentChanged(id);
+    }
     if (next.appendedItems.length > 0) {
       timelineWindow.refreshCursorsAfterTailAppend();
     }
@@ -1021,6 +1129,12 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
   function snapshotOutgoingPane(incomingThreadId: string): void {
     const outgoingThreadId = thread?.id ?? null;
     const sameThreadReswitch = outgoingThreadId === incomingThreadId;
+    // FIRST, before anything below re-points the pane: the mounted timeline
+    // captures its row-size priors while `items` and the engine's measured
+    // sizes still describe the thread we are leaving. Unconditional — the
+    // priors are keyed by thread, so a same-thread reload benefits too, and
+    // the timeline's own gates decide whether there is anything to store.
+    scrollController?.persistSizePriors?.();
     // The pending write-back describes the pane we are leaving; the
     // snapshot below writes the same window synchronously with the
     // stamp it is paired with, so the timer has nothing left to do.
@@ -1039,13 +1153,14 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       l1.rows.length > 0 &&
       l1.rows.length <= MAX_CACHED_SNAPSHOT_ITEMS
     ) {
-      // The timeline's row-size priors are snapshotted, but NOT here: they
-      // live in MessageTimeline (`utils/virtual/priors.ts`), keyed by the
-      // scroll-pane width + structure signature + expansion signature that make
-      // the sizes valid — all component state the store can't see. The store
-      // has no `listRef` to call `takeSnapshot()` on anyway. That keyed replay
-      // is what lets a re-entry skip the estimate→measure cascade safely; here
-      // we cache only the items.
+      // Row-size priors are not stored HERE: they live in MessageTimeline
+      // (`utils/virtual/priors.ts`), keyed by the scroll-pane width +
+      // structure signature + expansion signature that make the sizes
+      // valid — all component state the store can't see, and the store has
+      // no `listRef` to call `takeSnapshot()` on anyway. That is why they
+      // are ASKED for at the top of this function instead. That keyed
+      // replay is what lets a re-entry skip the estimate→measure cascade
+      // safely; here we cache only the items.
       threadItemCache.set(outgoingThreadId, {
         items: l1.rows,
         oldestLoadedCursor: l1.oldestCursor,
@@ -1747,6 +1862,9 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     },
     get timelineRevision() {
       return timelineRevision;
+    },
+    get rowUiRetentionRevision() {
+      return rowUiRetentionRevision;
     },
     getItemById,
     get pendingApprovals() {
@@ -2606,11 +2724,11 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       // should stamp the spring latch here for parity with the upsert
       // path (eventsItemStream.ts providerUpsertAdvancesLiveContent).
       if (!isSmoothLiveContentKind(current.kind)) {
-        items[index] = {
+        writeItemAt(index, {
           ...current,
           summary: current.summary + evt.delta,
           updatedAt: evt.updatedAt,
-        };
+        });
         return;
       }
 
@@ -2645,7 +2763,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       // build. updatedAt is preserved — triage's UpdateItemMeta does
       // not bump updated_at, and we don't want this re-render to look
       // like a content change to the size priors / threadItemCache.
-      items[index] = { ...current, meta: evt.meta };
+      writeItemAt(index, { ...current, meta: evt.meta });
     },
 
     applyItemPatch(evt: ItemPatchEvent): void {
@@ -2703,7 +2821,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       if (evt.patch.updatedAt !== undefined)
         next.updatedAt = evt.patch.updatedAt;
       if (itemsAreEqual(current, next)) return;
-      items[index] = next;
+      writeItemAt(index, next);
       // Streaming children settle through THIS path, not upserts —
       // triage's doSettleStreamingText/Thinking emit field patches.
       // Without this hook, settled text rows under collapsed cards

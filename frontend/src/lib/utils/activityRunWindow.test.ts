@@ -40,6 +40,7 @@ function run(
     live: false,
     mountedFrom: window.from,
     mountedRows: window.rows,
+    membershipEpoch: 1,
     memberItemIds: [],
   };
 }

@@ -48,6 +48,7 @@ const activityRun: ActivityRunNode = {
   live: false,
   mountedFrom: 0,
   mountedRows: 1,
+  membershipEpoch: 1,
   memberItemIds: ['i1'],
 };
 

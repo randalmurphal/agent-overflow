@@ -1,11 +1,17 @@
 import { describe, expect, it } from 'vitest';
 import { makeItem } from '../../../test/helpers/chat';
+import type { Item } from '../../types/models';
 import type { TimelineNode } from '../../utils/subagentGrouping';
 import {
-  activeRowUiRetentionSignature,
   collectTimelineRowUiRetention,
   timelineRowUiPruneSignature,
 } from './timelineRowUiRetention';
+
+/** The pane's `getItemById`, over the rows a case says are loaded. */
+function resolveFrom(items: readonly Item[]): (itemId: string) => Item | undefined {
+  const byId = new Map(items.map((item) => [item.id, item]));
+  return (itemId) => byId.get(itemId);
+}
 
 describe('timeline row UI retention', () => {
   it('retains collapsed subagent group state without retaining hidden child rows', () => {
@@ -29,6 +35,7 @@ describe('timeline row UI retention', () => {
         nodeBuffer: 0,
         tailNodeCount: 0,
         isGroupExpanded: () => false,
+        resolveItem: resolveFrom([parent, hiddenChild]),
       },
     );
 
@@ -60,6 +67,7 @@ describe('timeline row UI retention', () => {
         nodeBuffer: 0,
         tailNodeCount: 0,
         isGroupExpanded: () => true,
+        resolveItem: resolveFrom([parent, child]),
       },
     );
 
@@ -99,6 +107,7 @@ describe('timeline row UI retention', () => {
         nodeBuffer: 0,
         tailNodeCount: 0,
         isGroupExpanded: () => false,
+        resolveItem: resolveFrom([parent, activeChild, visible]),
       },
     );
 
@@ -109,33 +118,97 @@ describe('timeline row UI retention', () => {
     expect(new Set(result.groupKeys)).toEqual(new Set(['group:agent-parent']));
   });
 
-  it('changes active signature when an active row completes', () => {
-    const active = makeItem({
-      id: 'active-row',
-      payloadId: 'payload-active',
+  // Nodes are rebuilt on STRUCTURE only, so the item refs they carry are
+  // frozen at the last structural pass. A payload id that arrives after it
+  // (a tool completing, its output landing in a payload) would otherwise be
+  // retained under the ref's key — releasing the key the mounted row is
+  // actually holding, which collapses the reader's expansion on remount.
+  it('retains the CURRENT payload of a row whose node ref is stale', () => {
+    const stale = makeItem({
+      id: 'tool:1',
       threadId: 'thread-a',
-      status: 'streaming',
+      payloadId: '',
+      status: 'running',
     });
-    const completed = { ...active, status: 'completed' as const };
+    const current = { ...stale, payloadId: 'payload-landed', status: 'completed' as const };
 
-    expect(activeRowUiRetentionSignature([active])).not.toBe(
-      activeRowUiRetentionSignature([completed]),
+    const result = collectTimelineRowUiRetention(
+      [{ kind: 'leaf', item: stale }],
+      [current],
+      { first: 0, last: 0 },
+      {
+        nodeBuffer: 0,
+        tailNodeCount: 0,
+        isGroupExpanded: () => false,
+        resolveItem: resolveFrom([current]),
+      },
     );
-    expect(activeRowUiRetentionSignature([completed])).toBe('');
+
+    expect(new Set(result.itemIds)).toEqual(new Set(['tool:1']));
+    expect([...result.payloads]).toEqual([
+      { threadId: 'thread-a', payloadId: 'payload-landed' },
+    ]);
   });
 
-  // The prune dedupe signature must ignore per-delta summary churn (so
-  // streaming text never re-triggers retention collection) while still
-  // changing on the inputs retention actually depends on: window
-  // position, structure revision, reveal gate, and active-row
-  // membership/payload linkage.
-  it('prune signature ignores streaming summary churn but sees retention inputs', () => {
-    const streaming = makeItem({
-      id: 'row-1',
+  it('retains a group parent and read-group members by their current rows', () => {
+    const staleParent = makeItem({ id: 'agent-parent', threadId: 'thread-a', payloadId: '' });
+    const currentParent = { ...staleParent, payloadId: 'payload-parent' };
+    const staleRead = makeItem({ id: 'read:1', threadId: 'thread-a', payloadId: 'payload-old' });
+    const currentRead = { ...staleRead, payloadId: 'payload-new' };
+    const group = subagentGroup(staleParent, []);
+
+    const result = collectTimelineRowUiRetention(
+      [group, { kind: 'read_group', members: [staleRead], groupKey: 'read:group' } as TimelineNode],
+      [currentParent, currentRead],
+      { first: 0, last: 1 },
+      {
+        nodeBuffer: 0,
+        tailNodeCount: 0,
+        isGroupExpanded: () => false,
+        resolveItem: resolveFrom([currentParent, currentRead]),
+      },
+    );
+
+    expect(new Set([...result.payloads].map((payload) => payload.payloadId))).toEqual(
+      new Set(['payload-parent', 'payload-new']),
+    );
+  });
+
+  // A row that has left the store — folded into a subagent aggregate, or
+  // pruned — has no current answer, and the node's own snapshot is the last
+  // thing known about it. Retaining that keeps the reader's expansion alive
+  // across a fold/unfold round trip; the state is disposed when the row
+  // stops appearing in the node band at all.
+  it('falls back to the node snapshot for a row the store no longer holds', () => {
+    const evicted = makeItem({
+      id: 'agent-child',
       threadId: 'thread-a',
-      status: 'streaming',
-      summary: 'partial',
+      payloadId: 'payload-evicted',
     });
+
+    const result = collectTimelineRowUiRetention(
+      [{ kind: 'leaf', item: evicted }],
+      [],
+      { first: 0, last: 0 },
+      {
+        nodeBuffer: 0,
+        tailNodeCount: 0,
+        isGroupExpanded: () => false,
+        resolveItem: () => undefined,
+      },
+    );
+
+    expect(new Set(result.itemIds)).toEqual(new Set(['agent-child']));
+    expect([...result.payloads]).toEqual([
+      { threadId: 'thread-a', payloadId: 'payload-evicted' },
+    ]);
+  });
+
+  // Every dedupe input is a scalar — nothing here may reach for the item
+  // list, which is the whole point of the store-maintained retention
+  // revision (see utils/rowUiRetention.ts). Active-row membership moving
+  // is proven at write time and arrives here as that revision.
+  it('prune signature covers every retention input as a scalar', () => {
     const base = {
       threadId: 'thread-a',
       timelineRevision: 3,
@@ -144,35 +217,32 @@ describe('timeline row UI retention', () => {
       nodesLength: 10,
       activityRunRevision: 0,
       range: { first: 4, last: 9 },
-      items: [streaming],
+      rowUiRetentionRevision: 11,
     };
 
-    const grown = { ...streaming, summary: 'partial plus more streamed text' };
-    expect(timelineRowUiPruneSignature({ ...base, items: [grown] })).toBe(
+    expect(timelineRowUiPruneSignature({ ...base })).toBe(
       timelineRowUiPruneSignature(base),
     );
 
-    expect(timelineRowUiPruneSignature({ ...base, range: { first: 5, last: 9 } })).not.toBe(
-      timelineRowUiPruneSignature(base),
-    );
-    expect(timelineRowUiPruneSignature({ ...base, timelineRevision: 4 })).not.toBe(
-      timelineRowUiPruneSignature(base),
-    );
-    // A run's mount window moves without touching structure, node count, or
-    // range: same everything, different mounted children. Without this input
-    // the pass would bail as a no-op and keep retaining the window the reader
-    // just left.
-    expect(timelineRowUiPruneSignature({ ...base, activityRunRevision: 1 })).not.toBe(
-      timelineRowUiPruneSignature(base),
-    );
-    const linked = { ...streaming, payloadId: 'payload-1' };
-    expect(timelineRowUiPruneSignature({ ...base, items: [linked] })).not.toBe(
-      timelineRowUiPruneSignature(base),
-    );
-    const settled = { ...streaming, status: 'completed' as const };
-    expect(timelineRowUiPruneSignature({ ...base, items: [settled] })).not.toBe(
-      timelineRowUiPruneSignature(base),
-    );
+    const moved: Array<Partial<typeof base>> = [
+      { threadId: 'thread-b' },
+      { timelineRevision: 4 },
+      { revealTurnIndex: 3 },
+      { revealItemIndex: 8 },
+      { nodesLength: 11 },
+      // A run's mount window moves without touching structure, node count, or
+      // range: same everything, different mounted children. Without this input
+      // the pass would bail as a no-op and keep retaining the window the reader
+      // just left.
+      { activityRunRevision: 1 },
+      { range: { first: 5, last: 9 } },
+      { rowUiRetentionRevision: 12 },
+    ];
+    for (const override of moved) {
+      expect(timelineRowUiPruneSignature({ ...base, ...override })).not.toBe(
+        timelineRowUiPruneSignature(base),
+      );
+    }
   });
 });
 

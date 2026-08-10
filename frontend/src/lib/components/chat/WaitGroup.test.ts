@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { fireEvent, render } from "@testing-library/svelte";
+import { tick } from "svelte";
 import WaitGroup from "./WaitGroup.svelte";
 import { buildPane, makeItem, makeThread } from "../../../test/helpers/chat";
 import type { WaitGroupNode } from "../../utils/subagentGrouping";
@@ -213,5 +214,53 @@ describe("<WaitGroup>", () => {
     view.unmount();
     const remounted = render(WaitGroup, { props: { pane, group } });
     expect(remounted.getByText(/Spawned Agent 29 -> done/)).toBeInTheDocument();
+  });
+
+  it("re-resolves header and child rows against the pane when a wait completes", async () => {
+    // The node is a structural snapshot — the timeline no longer patches
+    // fresh item refs into it, so this group has to reach the store
+    // itself. It does, through `TimelineLeaf`, which resolves by id for
+    // both the header (`group.completion ?? group.parent`) and every
+    // child rail row. Asserted on a child row, whose text is the visible
+    // proof; the header's own fallback is covered above.
+    const pane = await buildPane(makeThread({ id: "thread-1", provider: "codex" }), [
+      makeItem({
+        id: "wait-1", itemIndex: 0, kind: "tool_call", toolName: "wait_agent",
+        status: "running", summary: "wait_agent",
+        meta: JSON.stringify({ input: { tool: "wait_agent" } }),
+      }),
+      makeItem({
+        id: "complete-spawn-1", itemIndex: 1, kind: "tool_completion",
+        toolName: "collab_agent", completionOf: "spawn-1", status: "running",
+        summary: "Spawned Galileo -> running",
+      }),
+    ]);
+    const group: WaitGroupNode = {
+      kind: "wait_group",
+      groupKey: "wait:wait-1",
+      parent: pane.items[0],
+      children: [{ kind: "leaf", item: pane.items[1] }],
+      descendantCount: 1,
+    };
+
+    const view = render(WaitGroup, { props: { pane, group } });
+    expect(view.getByText(/Waiting for agents/)).toBeInTheDocument();
+    expect(view.getByText(/Spawned Galileo -> running/)).toBeInTheDocument();
+
+    // Content-only writes: no structural rebuild, so the node still
+    // describes the pre-completion world.
+    pane.applyItemPatch({
+      threadId: "thread-1", itemId: "wait-1", kind: "tool_call",
+      patch: { status: "completed", updatedAt: 10 },
+    });
+    pane.applyItemPatch({
+      threadId: "thread-1", itemId: "complete-spawn-1", kind: "tool_completion",
+      patch: { summary: "Spawned Galileo -> done", updatedAt: 11 },
+    });
+    await tick();
+
+    expect(group.parent.status, "node must stay stale for this to prove anything").toBe("running");
+    expect(view.getByText(/Spawned Galileo -> done/)).toBeInTheDocument();
+    expect(view.queryByText(/Spawned Galileo -> running/)).not.toBeInTheDocument();
   });
 });

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { groupActivityRuns } from './activityRunGrouping';
+import { activityRunSummaryFieldsChanged, groupActivityRuns } from './activityRunGrouping';
 import {
   createThreadActivityRuns,
   type ThreadActivityRuns,
@@ -414,5 +414,55 @@ describe('identity migration', () => {
       mountedFrom: 10,
       mountedRows: 30,
     });
+  });
+});
+
+describe('activityRunSummaryFieldsChanged', () => {
+  // The predicate is the definition of "the header's summary could differ".
+  // Its false answers are the load-bearing ones: they are what let a reveal
+  // tick — which replaces the item object ~50 times a second — skip the
+  // summary entirely, so a field creeping into `activityRunSummary` without
+  // creeping in here would silently freeze a run's header.
+  const base = makeItem({
+    id: 't1', kind: 'tool_call', toolName: 'Bash', status: 'running',
+    summary: 'Bash: ls', updatedAt: 1,
+  });
+
+  it('is false for a replacement that only grew the row content', () => {
+    expect(activityRunSummaryFieldsChanged(base, {
+      ...base, summary: 'Bash: ls -la', updatedAt: 2,
+    })).toBe(false);
+  });
+
+  it('is false for meta, payload and timestamp churn', () => {
+    expect(activityRunSummaryFieldsChanged(base, {
+      ...base, meta: '{"pathRefs":[]}', payloadId: 'p1', payloadMeta: '{}', updatedAt: 99,
+    })).toBe(false);
+  });
+
+  it('is true for each field the summary reads', () => {
+    const cases: Partial<Item>[] = [
+      { id: 't2' },
+      { kind: 'tool_completion' },
+      { status: 'errored' },
+      { toolName: 'Read' },
+      { completionOf: 't0' },
+    ];
+    for (const patch of cases) {
+      expect(
+        activityRunSummaryFieldsChanged(base, { ...base, ...patch }),
+        `${Object.keys(patch)[0]} must be part of the summary signature`,
+      ).toBe(true);
+    }
+  });
+
+  it('treats an absent optional and an empty string as the same value', () => {
+    // Both shapes reach the pane: the wire omits the field, the store's
+    // own writers normalize it to ''. A difference here would bump a run's
+    // content revision on every such write for nothing.
+    expect(activityRunSummaryFieldsChanged(
+      { ...base, toolName: undefined, completionOf: undefined },
+      { ...base, toolName: '', completionOf: '' },
+    )).toBe(false);
   });
 });

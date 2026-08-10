@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { tick } from 'svelte';
 import type { Item } from '../../types/models';
 import type { ThreadPane } from '../../stores/thread.svelte';
@@ -7,7 +7,7 @@ import type { ActivityRunNode, TimelineNode } from '../../utils/subagentGrouping
 import { makeItem } from '../../../test/helpers/chat';
 import { createThreadActivityRuns } from '../../stores/threadActivityRuns.svelte';
 import { createTimelineActivityRunAutoCollapse } from './timelineActivityRunAutoCollapse';
-import { createTimelineQuietWork } from './timelineQuietWork';
+import { createTimelineQuietWork, QUIET_WORK_MIN_INTERVAL_MS } from './timelineQuietWork';
 
 // The gate over a REAL registry — release semantics are the point — with the
 // pane and engine reduced to exactly what the gate reads, and the pass
@@ -74,6 +74,12 @@ function harness(): Harness {
       self.quietWork.schedule();
       await tick();
       await tick();
+      // The scheduler is rate-bound, so a sweep following a recent one is
+      // served by a trailing run rather than immediately. Fake timers, and
+      // one interval, so the tests keep reading as "sweep, then look".
+      await vi.advanceTimersByTimeAsync(QUIET_WORK_MIN_INTERVAL_MS);
+      await tick();
+      await tick();
     },
   };
 
@@ -129,6 +135,7 @@ function runNode(memberItemIds: string[], threadId = 'thread-1'): ActivityRunNod
     live: false,
     mountedFrom: 0,
     mountedRows: memberItemIds.length,
+    membershipEpoch: 1,
     memberItemIds,
   };
 }
@@ -153,6 +160,14 @@ function pinnedPastSettledRun(h: Harness): ActivityRunNode {
 }
 
 describe('timelineActivityRunAutoCollapse', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it('releases a settled off-screen run, which collapses it to the default', async () => {
     const h = harness();
     const run = pinnedPastSettledRun(h);

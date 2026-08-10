@@ -12,6 +12,17 @@ import { loadSettings, resetSettingsForTest } from './settings.svelte';
 import { makeSettings } from '../../test/helpers/settings';
 import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
 
+/**
+ * "Nothing is loaded" stated explicitly, which is what most of these cases
+ * want: every drop releases the payload it touched. `loadedPayloadRefs` is
+ * REQUIRED precisely so this cannot be expressed by omission — the cases
+ * that exercise the surviving-rows leg pass their own list.
+ */
+const NO_ROWS_LOADED = {
+  getItemById: () => undefined,
+  loadedPayloadRefs: () => [],
+};
+
 // Diff-card overrides are read against the live collapseDiffPreviews default
 // (see `liveDiffOverride`), so a case about a specific default has to state
 // it. Everything else runs on the shipped default: collapseDiffPreviews off,
@@ -31,6 +42,7 @@ describe('createThreadRowUiState', () => {
   it('keeps item-keyed expansion handles stable while reading the latest item reference', () => {
     const items = new Map<string, Item>();
     const rowUiState = createThreadRowUiState({
+      loadedPayloadRefs: () => [],
       getItemById(itemId: string): Item | undefined {
         return items.get(itemId);
       },
@@ -57,6 +69,7 @@ describe('createThreadRowUiState', () => {
     try {
       const items = new Map<string, Item>();
       const rowUiState = createThreadRowUiState({
+        loadedPayloadRefs: () => [],
         getItemById(itemId: string): Item | undefined {
           return items.get(itemId);
         },
@@ -92,6 +105,7 @@ describe('createThreadRowUiState', () => {
   it('lets item-keyed expansion handles use a payload-specific version', () => {
     const items = new Map<string, Item>();
     const rowUiState = createThreadRowUiState({
+      loadedPayloadRefs: () => [],
       getItemById(itemId: string): Item | undefined {
         return items.get(itemId);
       },
@@ -126,7 +140,7 @@ describe('createThreadRowUiState', () => {
   });
 
   it('keeps payload-keyed expansion handles stable and refreshes their version', () => {
-    const rowUiState = createThreadRowUiState({ getItemById: () => undefined });
+    const rowUiState = createThreadRowUiState(NO_ROWS_LOADED);
 
     const first = rowUiState.expansionStateForPayload('payload-a', 'thread-a', 1);
     const second = rowUiState.expansionStateForPayload('payload-a', 'thread-a', 2);
@@ -145,7 +159,7 @@ describe('createThreadRowUiState', () => {
     const preview = setBindingMock('GetPayloadPreview', () => new Promise((resolve) => {
       resolvePreview = resolve;
     }));
-    const rowUiState = createThreadRowUiState({ getItemById: () => undefined });
+    const rowUiState = createThreadRowUiState(NO_ROWS_LOADED);
 
     const first = rowUiState.expansionStateForPayload('payload-a', 'thread-a', 'version-a');
     const expand = first.expand();
@@ -177,6 +191,7 @@ describe('createThreadRowUiState', () => {
     items.set(item.id, item);
     const getPayloadData = setBindingMock('GetPayloadData', async () => ({ data: 'seed' }));
     const rowUiState = createThreadRowUiState({
+      loadedPayloadRefs: () => [],
       getItemById(itemId: string): Item | undefined {
         return items.get(itemId);
       },
@@ -223,6 +238,7 @@ describe('createThreadRowUiState', () => {
     });
     items.set(item.id, item);
     const rowUiState = createThreadRowUiState({
+      loadedPayloadRefs: () => [],
       getItemById(itemId: string): Item | undefined {
         return items.get(itemId);
       },
@@ -263,7 +279,7 @@ describe('createThreadRowUiState', () => {
       loadedBytes: 14,
     });
     const getPayloadData = setBindingMock('GetPayloadData', async () => ({ data: 'fresh payload' }));
-    const rowUiState = createThreadRowUiState({ getItemById: () => undefined });
+    const rowUiState = createThreadRowUiState(NO_ROWS_LOADED);
 
     const cached = rowUiState.expansionStateForPayload(
       'payload-a',
@@ -285,6 +301,7 @@ describe('createThreadRowUiState', () => {
   it('does not collide item-keyed expansion handles when ids contain key delimiters', () => {
     const items = new Map<string, Item>();
     const rowUiState = createThreadRowUiState({
+      loadedPayloadRefs: () => [],
       getItemById(itemId: string): Item | undefined {
         return items.get(itemId);
       },
@@ -308,9 +325,36 @@ describe('createThreadRowUiState', () => {
     expect(second).not.toBe(first);
   });
 
+  it('keeps registry keys distinct across ids carrying JSON metacharacters', () => {
+    // The registry keys used to be `JSON.stringify(parts)`, which escaped
+    // its way out of any id content; they are NUL joins now, which is
+    // injective for every byte an id can actually carry but relies on the
+    // separator being absent. Quotes, backslashes, commas and brackets are
+    // what the old encoder was protecting against, so they are what a
+    // regression would land on first.
+    const items = new Map<string, Item>();
+    const rowUiState = createThreadRowUiState({
+      loadedPayloadRefs: () => [],
+      getItemById: (itemId) => items.get(itemId),
+    });
+    const ids = ['a"b', 'a\\b', 'a,b', '["a"]', 'a]b['];
+    const handles = ids.map((id) => {
+      const item = makeItem({ id, threadId: 'thread-a', payloadId: `payload-${id}` });
+      items.set(id, item);
+      return rowUiState.expansionStateFor(item);
+    });
+
+    expect(new Set(handles).size).toBe(ids.length);
+    expect(rowUiState.debugStats().itemExpansionStates).toBe(ids.length);
+    for (const [index, id] of ids.entries()) {
+      expect(rowUiState.expansionStateFor(items.get(id)!)).toBe(handles[index]);
+    }
+  });
+
   it('does not reuse item-keyed expansion handles across threads with the same item id', () => {
     const items = new Map<string, Item>();
     const rowUiState = createThreadRowUiState({
+      loadedPayloadRefs: () => [],
       getItemById(itemId: string): Item | undefined {
         return items.get(itemId);
       },
@@ -344,7 +388,7 @@ describe('createThreadRowUiState', () => {
       isComplete: true,
       loadedBytes: 14,
     });
-    const rowUiState = createThreadRowUiState({ getItemById: () => undefined });
+    const rowUiState = createThreadRowUiState(NO_ROWS_LOADED);
 
     const dispose = $effect.root(() => {
       const expansion = rowUiState.expansionStateForPayload(
@@ -360,7 +404,7 @@ describe('createThreadRowUiState', () => {
   });
 
   it('does not collide payload-keyed expansion handles when ids contain key delimiters', () => {
-    const rowUiState = createThreadRowUiState({ getItemById: () => undefined });
+    const rowUiState = createThreadRowUiState(NO_ROWS_LOADED);
 
     const first = rowUiState.expansionStateForPayload(
       'payload:preview:manual:default',
@@ -376,7 +420,7 @@ describe('createThreadRowUiState', () => {
   });
 
   it('tracks subagent group expansion by group key', () => {
-    const rowUiState = createThreadRowUiState({ getItemById: () => undefined });
+    const rowUiState = createThreadRowUiState(NO_ROWS_LOADED);
 
     expect(rowUiState.isSubagentGroupExpanded('group-a')).toBe(false);
     expect(rowUiState.toggleSubagentGroupExpanded('group-a')).toBe(true);
@@ -387,7 +431,7 @@ describe('createThreadRowUiState', () => {
   });
 
   it('tracks diff card expanded overrides by item id and file path', () => {
-    const rowUiState = createThreadRowUiState({ getItemById: () => undefined });
+    const rowUiState = createThreadRowUiState(NO_ROWS_LOADED);
 
     // Absent = follow the collapseDiffPreviews setting default, which is
     // expanded here (collapseDiffPreviews defaults off), so a reader's only
@@ -419,7 +463,7 @@ describe('createThreadRowUiState', () => {
   // the reader's pin, because nothing was destroyed.
   it('retires diff overrides the collapseDiffPreviews default catches up with', async () => {
     await seedCollapseDiffPreviews(true);
-    const rowUiState = createThreadRowUiState({ getItemById: () => undefined });
+    const rowUiState = createThreadRowUiState(NO_ROWS_LOADED);
 
     // Default collapsed: expanding is the deviation, and it is engagement.
     rowUiState.setDiffCardExpanded('item-a', 'src/foo.ts', true);
@@ -442,7 +486,7 @@ describe('createThreadRowUiState', () => {
   });
 
   it('keeps attachment cache entries isolated by item and clears them with blob revocation', () => {
-    const rowUiState = createThreadRowUiState({ getItemById: () => undefined });
+    const rowUiState = createThreadRowUiState(NO_ROWS_LOADED);
     const revoke = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {});
 
     const firstItemCache = rowUiState.attachmentCacheFor('item-a');
@@ -472,7 +516,7 @@ describe('createThreadRowUiState', () => {
   });
 
   it('rejects stale attachment cache handles after clear', () => {
-    const rowUiState = createThreadRowUiState({ getItemById: () => undefined });
+    const rowUiState = createThreadRowUiState(NO_ROWS_LOADED);
     const revoke = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {});
     const staleCache = rowUiState.attachmentCacheFor('item-a');
     staleCache.set('before-clear', {
@@ -508,6 +552,7 @@ describe('createThreadRowUiState', () => {
       threadId: 'thread-a',
     });
     const rowUiState = createThreadRowUiState({
+      loadedPayloadRefs: () => [],
       getItemById(itemId: string): Item | undefined {
         return itemId === item.id ? item : undefined;
       },
@@ -562,6 +607,49 @@ describe('createThreadRowUiState', () => {
     revoke.mockRestore();
   });
 
+  it('releases payload state only once the last loaded row stops referencing it', () => {
+    // Two rows share one payload — a tool_call and its completion. The
+    // first drop must keep the payload's UI state alive for the survivor;
+    // the second must release it. `loadedPayloadRefs` is read once per
+    // batch, not once per dropped row: a prune drops hundreds of rows and
+    // the per-row form was a full window scan each time.
+    const rowA = makeItem({ id: 'tool:5:0', kind: 'tool_call', payloadId: 'payload-a', threadId: 'thread-a' });
+    const rowB = makeItem({ id: 'tool:5:1', kind: 'tool_completion', payloadId: 'payload-a', threadId: 'thread-a' });
+    const noise = Array.from({ length: 8 }, (_, i) =>
+      makeItem({ id: `text:${i}`, threadId: 'thread-a' }));
+    let loaded: Item[] = [rowA, rowB, ...noise];
+    const loadedPayloadRefs = vi.fn(() => loaded);
+    const rowUiState = createThreadRowUiState({
+      getItemById: (itemId) => loaded.find((item) => item.id === itemId),
+      loadedPayloadRefs,
+    });
+
+    rowUiState.expansionStateForPayload('payload-a', 'thread-a');
+    expect(rowUiState.debugStats().payloadExpansionStates).toBe(1);
+
+    loaded = [rowB, ...noise];
+    rowUiState.disposeItems([rowA, ...noise.slice(0, 3)]);
+    expect(loadedPayloadRefs).toHaveBeenCalledTimes(1);
+    expect(rowUiState.debugStats().payloadExpansionStates).toBe(1);
+
+    loaded = [];
+    rowUiState.disposeItems([rowB]);
+    expect(loadedPayloadRefs).toHaveBeenCalledTimes(2);
+    expect(rowUiState.debugStats().payloadExpansionStates).toBe(0);
+  });
+
+  it('does not consult the loaded window when no dropped row carries a payload', () => {
+    const loadedPayloadRefs = vi.fn(() => [] as Item[]);
+    const rowUiState = createThreadRowUiState({
+      getItemById: () => undefined,
+      loadedPayloadRefs,
+    });
+
+    rowUiState.disposeItems([makeItem({ id: 'text:0', threadId: 'thread-a' })]);
+
+    expect(loadedPayloadRefs).not.toHaveBeenCalled();
+  });
+
   it('cancels in-flight payload loads when pruning an expansion handle', async () => {
     let resolvePreview: ((value: {
       data: string;
@@ -579,6 +667,7 @@ describe('createThreadRowUiState', () => {
       threadId: 'thread-a',
     });
     const rowUiState = createThreadRowUiState({
+      loadedPayloadRefs: () => [],
       getItemById(itemId: string): Item | undefined {
         return itemId === item.id ? item : undefined;
       },
@@ -622,6 +711,7 @@ describe('createThreadRowUiState', () => {
         threadId: 'thread-a',
       });
       const rowUiState = createThreadRowUiState({
+        loadedPayloadRefs: () => [],
         getItemById(itemId: string): Item | undefined {
           return itemId === item.id ? item : undefined;
         },
@@ -669,6 +759,7 @@ describe('createThreadRowUiState', () => {
       updatedAt: 1,
     });
     const rowUiState = createThreadRowUiState({
+      loadedPayloadRefs: () => [],
       getItemById(itemId: string): Item | undefined {
         return itemId === item.id ? item : undefined;
       },
@@ -724,6 +815,7 @@ describe('createThreadRowUiState', () => {
     items.set(oldItem.id, oldItem);
     items.set(retainedItem.id, retainedItem);
     const rowUiState = createThreadRowUiState({
+      loadedPayloadRefs: () => [],
       getItemById(itemId: string): Item | undefined {
         return items.get(itemId);
       },
@@ -830,6 +922,7 @@ describe('createThreadRowUiState', () => {
       threadId: 'thread-a',
     });
     const rowUiState = createThreadRowUiState({
+      loadedPayloadRefs: () => [],
       getItemById(itemId: string): Item | undefined {
         return itemId === item.id ? item : undefined;
       },
@@ -853,7 +946,7 @@ describe('createThreadRowUiState', () => {
   // to be remembered here or the message re-clamps under the reader.
   describe('user message clamp expansion', () => {
     it('remembers an expanded message and forgets it on collapse', () => {
-      const rowUiState = createThreadRowUiState({ getItemById: () => undefined });
+      const rowUiState = createThreadRowUiState(NO_ROWS_LOADED);
 
       expect(rowUiState.isUserMessageExpanded('user:1')).toBe(false);
       rowUiState.setUserMessageExpanded('user:1', true);
@@ -867,7 +960,7 @@ describe('createThreadRowUiState', () => {
     });
 
     it('keeps messages independent and is idempotent in both directions', () => {
-      const rowUiState = createThreadRowUiState({ getItemById: () => undefined });
+      const rowUiState = createThreadRowUiState(NO_ROWS_LOADED);
 
       rowUiState.setUserMessageExpanded('user:1', true);
       rowUiState.setUserMessageExpanded('user:1', true);
@@ -881,7 +974,7 @@ describe('createThreadRowUiState', () => {
 
     it('drops the expansion when its item is disposed', () => {
       const item = makeItem({ id: 'user:1', kind: 'user_text', threadId: 'thread-a' });
-      const rowUiState = createThreadRowUiState({ getItemById: () => item });
+      const rowUiState = createThreadRowUiState({ getItemById: () => item, loadedPayloadRefs: () => [] });
 
       rowUiState.setUserMessageExpanded(item.id, true);
       rowUiState.disposeItems([item]);
@@ -889,7 +982,7 @@ describe('createThreadRowUiState', () => {
     });
 
     it('stamps the priors signature, since an unclamped message is a taller row', () => {
-      const rowUiState = createThreadRowUiState({ getItemById: () => undefined });
+      const rowUiState = createThreadRowUiState(NO_ROWS_LOADED);
 
       expect(rowUiState.expansionSignature()).toBe('');
       rowUiState.setUserMessageExpanded('user:2', true);
@@ -901,7 +994,7 @@ describe('createThreadRowUiState', () => {
     });
 
     it('counts as a user expansion on the item it belongs to', () => {
-      const rowUiState = createThreadRowUiState({ getItemById: () => undefined });
+      const rowUiState = createThreadRowUiState(NO_ROWS_LOADED);
 
       expect(rowUiState.hasUserExpansionWithin(['user:1'])).toBe(false);
       rowUiState.setUserMessageExpanded('user:1', true);
@@ -918,19 +1011,19 @@ describe('createThreadRowUiState', () => {
   // capture and restore compare equal.
   describe('expansionSignature', () => {
     it('is empty when every row is at default expansion', () => {
-      const rowUiState = createThreadRowUiState({ getItemById: () => undefined });
+      const rowUiState = createThreadRowUiState(NO_ROWS_LOADED);
       expect(rowUiState.expansionSignature()).toBe('');
     });
 
     it('reflects an expanded subagent group', () => {
-      const rowUiState = createThreadRowUiState({ getItemById: () => undefined });
+      const rowUiState = createThreadRowUiState(NO_ROWS_LOADED);
       rowUiState.toggleSubagentGroupExpanded('group-a');
       expect(rowUiState.expansionSignature()).toContain('g:group-a');
     });
 
     it('reflects a diff-card override in either direction', async () => {
       await seedCollapseDiffPreviews(true);
-      const rowUiState = createThreadRowUiState({ getItemById: () => undefined });
+      const rowUiState = createThreadRowUiState(NO_ROWS_LOADED);
       rowUiState.setDiffCardExpanded('item-1', 'src/foo.ts', true);
       expect(rowUiState.expansionSignature()).toContain('d:item-1/src/foo.ts=1');
     });
@@ -944,13 +1037,13 @@ describe('createThreadRowUiState', () => {
       // its non-empty check never proved the `=0` branch.)
       // The two arms need opposite defaults to exist at all: an override only
       // stores as the negation of the default in force when it was written.
-      const collapsed = createThreadRowUiState({ getItemById: () => undefined });
+      const collapsed = createThreadRowUiState(NO_ROWS_LOADED);
       collapsed.setDiffCardExpanded('item-1', 'src/foo.ts', false);
       const collapsedSig = collapsed.expansionSignature();
       expect(collapsedSig).toContain('d:item-1/src/foo.ts=0');
 
       await seedCollapseDiffPreviews(true);
-      const expanded = createThreadRowUiState({ getItemById: () => undefined });
+      const expanded = createThreadRowUiState(NO_ROWS_LOADED);
       expanded.setDiffCardExpanded('item-1', 'src/foo.ts', true);
       expect(expanded.expansionSignature()).toContain('d:item-1/src/foo.ts=1');
       expect(collapsedSig).not.toBe(expanded.expansionSignature());
@@ -958,7 +1051,7 @@ describe('createThreadRowUiState', () => {
 
     it('reflects an expanded payload handle', async () => {
       setBindingMock('GetPayloadData', async () => ({ data: 'x' }));
-      const rowUiState = createThreadRowUiState({ getItemById: () => undefined });
+      const rowUiState = createThreadRowUiState(NO_ROWS_LOADED);
       const handle = rowUiState.expansionStateForPayload('payload-a', 'thread-a', 1);
       await handle.expand();
       expect(handle.expanded).toBe(true);
@@ -969,12 +1062,12 @@ describe('createThreadRowUiState', () => {
       // Each segment (g:/d:/p:) is sorted independently, so insertion order
       // must not change the string — capture and restore visit the same maps in
       // whatever order they were populated. Exercise both the g: and d: sorts.
-      const a = createThreadRowUiState({ getItemById: () => undefined });
+      const a = createThreadRowUiState(NO_ROWS_LOADED);
       a.toggleSubagentGroupExpanded('group-b');
       a.toggleSubagentGroupExpanded('group-a');
       a.setDiffCardExpanded('item-2', 'src/z.ts', false);
       a.setDiffCardExpanded('item-1', 'src/a.ts', false);
-      const b = createThreadRowUiState({ getItemById: () => undefined });
+      const b = createThreadRowUiState(NO_ROWS_LOADED);
       b.setDiffCardExpanded('item-1', 'src/a.ts', false);
       b.toggleSubagentGroupExpanded('group-a');
       b.setDiffCardExpanded('item-2', 'src/z.ts', false);
@@ -983,7 +1076,7 @@ describe('createThreadRowUiState', () => {
     });
 
     it('returns to empty after clear() (the switch-in reset)', () => {
-      const rowUiState = createThreadRowUiState({ getItemById: () => undefined });
+      const rowUiState = createThreadRowUiState(NO_ROWS_LOADED);
       rowUiState.toggleSubagentGroupExpanded('group-a');
       rowUiState.setDiffCardExpanded('item-1', 'src/foo.ts', false);
       expect(rowUiState.expansionSignature()).not.toBe('');
@@ -999,7 +1092,7 @@ describe('createThreadRowUiState', () => {
     // open must not pin every run that contains one.
 
     it('reports nothing for items at their defaults', () => {
-      const rowUiState = createThreadRowUiState({ getItemById: () => undefined });
+      const rowUiState = createThreadRowUiState(NO_ROWS_LOADED);
 
       expect(rowUiState.hasUserExpansionWithin(['item-a', 'item-b'])).toBe(false);
     });
@@ -1009,12 +1102,12 @@ describe('createThreadRowUiState', () => {
       // engagement with the run. Which of the two a reader can even produce
       // follows collapseDiffPreviews, so both arms are exercised under the
       // default that admits them.
-      const openByDefault = createThreadRowUiState({ getItemById: () => undefined });
+      const openByDefault = createThreadRowUiState(NO_ROWS_LOADED);
       openByDefault.setDiffCardExpanded('item-a', 'src/a.ts', false);
       expect(openByDefault.hasUserExpansionWithin(['item-a'])).toBe(false);
 
       await seedCollapseDiffPreviews(true);
-      const rowUiState = createThreadRowUiState({ getItemById: () => undefined });
+      const rowUiState = createThreadRowUiState(NO_ROWS_LOADED);
       rowUiState.setDiffCardExpanded('item-a', 'src/b.ts', true);
       expect(rowUiState.hasUserExpansionWithin(['item-a'])).toBe(true);
 
@@ -1024,7 +1117,7 @@ describe('createThreadRowUiState', () => {
     });
 
     it('counts an expanded subagent card under any of its derived group keys', () => {
-      const rowUiState = createThreadRowUiState({ getItemById: () => undefined });
+      const rowUiState = createThreadRowUiState(NO_ROWS_LOADED);
 
       for (const groupKey of ['item-a', 'wait:item-a', 'reads:item-a']) {
         rowUiState.toggleSubagentGroupExpanded(groupKey);
@@ -1050,6 +1143,7 @@ describe('createThreadRowUiState', () => {
       });
       items.set(item.id, item);
       const rowUiState = createThreadRowUiState({
+        loadedPayloadRefs: () => [],
         getItemById: (itemId) => items.get(itemId),
       });
 
@@ -1084,6 +1178,7 @@ describe('createThreadRowUiState', () => {
       });
       items.set(item.id, item);
       const rowUiState = createThreadRowUiState({
+        loadedPayloadRefs: () => [],
         getItemById: (itemId) => items.get(itemId),
       });
 
@@ -1116,6 +1211,7 @@ describe('createThreadRowUiState', () => {
       });
       items.set(item.id, item);
       const rowUiState = createThreadRowUiState({
+        loadedPayloadRefs: () => [],
         getItemById: (itemId) => items.get(itemId),
       });
 
@@ -1151,6 +1247,7 @@ describe('createThreadRowUiState', () => {
       });
       items.set(item.id, item);
       const rowUiState = createThreadRowUiState({
+        loadedPayloadRefs: () => [],
         getItemById: (itemId) => items.get(itemId),
       });
 

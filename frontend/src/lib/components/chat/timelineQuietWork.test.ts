@@ -3,6 +3,7 @@ import { tick } from 'svelte';
 import {
   createTimelineQuietWork,
   MAX_CONSECUTIVE_MUTATING_LAPS,
+  QUIET_WORK_MIN_INTERVAL_MS,
   QUIET_WORK_RECHECK_MS,
   type QuietPass,
 } from './timelineQuietWork';
@@ -11,9 +12,9 @@ import { installDiagnosticsCapture } from '../../../test/helpers/diagnostics';
 // The scheduler over stub passes. The real passes get their semantics
 // covered in their own suites (timelineActivityRunAutoCollapse.test.ts,
 // thread.svelte.test.ts for the prune); this suite pins the scheduling
-// contract itself: the quiet gate, the recheck timer that bridges the
-// sentinel outliving the last scrollend, the one-geometry-mutation
-// budget per callback, the non-convergence cap, and invalidation.
+// contract itself: the rate bound, the quiet gate, the recheck timer that
+// bridges the sentinel outliving the last scrollend, the one-geometry-
+// mutation budget per callback, the non-convergence cap, and invalidation.
 
 interface StubPass extends QuietPass {
   runs: number;
@@ -68,15 +69,22 @@ describe('createTimelineQuietWork', () => {
     await tick();
   }
 
+  /** Past the rate bound and through the tick the trailing run defers on. */
+  async function drainRateBound(): Promise<void> {
+    await vi.advanceTimersByTimeAsync(QUIET_WORK_MIN_INTERVAL_MS);
+    await drainTick();
+  }
+
   /**
-   * Drains a self-rescheduling chain. One `drainTick` advances at most one
-   * lap, so keep going until `read()` stops moving — and fail loudly rather
-   * than hang if it never does, which is the whole point of the cap.
+   * Drains a self-rescheduling chain. Each lap costs a rate-bound wait plus
+   * its tick, so keep going until `read()` stops moving — and fail loudly
+   * rather than hang if it never does, which is the whole point of the cap.
    */
   async function drainUntilSettled(read: () => number, maxLaps = 200): Promise<void> {
     for (let lap = 0; lap < maxLaps; lap += 1) {
       const before = read();
       await drainTick();
+      await drainRateBound();
       if (read() === before) return;
     }
     throw new Error('quiet-work scheduler never settled');
@@ -94,6 +102,84 @@ describe('createTimelineQuietWork', () => {
 
     expect(a.runs).toBe(1);
     expect(q.runs).toBe(1);
+  });
+
+  it('collapses a burst inside the rate bound into one trailing run', async () => {
+    // The production shape: the trigger effect fires per streamed row, so
+    // schedules arrive continuously. One run leads, everything arriving
+    // during the bound coalesces into ONE trailing run — never a queue of
+    // them, and never a run per trigger.
+    const a = pass('a', 'always');
+    const work = scheduler([a]);
+
+    work.schedule();
+    await drainTick();
+    expect(a.runs).toBe(1);
+
+    // 19 steps of a twentieth: the whole burst lands strictly inside the
+    // bound, the last trigger with 5ms still to go.
+    for (let i = 0; i < 19; i += 1) {
+      await vi.advanceTimersByTimeAsync(QUIET_WORK_MIN_INTERVAL_MS / 20);
+      work.schedule();
+      await drainTick();
+    }
+    expect(a.runs).toBe(1);
+
+    await drainRateBound();
+    expect(a.runs).toBe(2);
+
+    // …and the burst does not leave a backlog behind it.
+    await vi.advanceTimersByTimeAsync(QUIET_WORK_MIN_INTERVAL_MS * 10);
+    await drainTick();
+    expect(a.runs).toBe(2);
+  });
+
+  it('never starts a run inside the rate bound, however often it is asked', async () => {
+    const startedAt: number[] = [];
+    const stamped = pass('stamp', 'always', () => {
+      startedAt.push(Date.now());
+      return false;
+    });
+    const work = scheduler([stamped]);
+
+    for (let i = 0; i < 5; i += 1) {
+      work.schedule();
+      await drainTick();
+      work.schedule();
+      await drainRateBound();
+    }
+
+    expect(startedAt.length).toBeGreaterThanOrEqual(5);
+    for (let i = 1; i < startedAt.length; i += 1) {
+      expect(startedAt[i] - startedAt[i - 1]).toBeGreaterThanOrEqual(
+        QUIET_WORK_MIN_INTERVAL_MS,
+      );
+    }
+  });
+
+  it('reads state at fire time, not at schedule time', async () => {
+    // What makes coalescing lossless: the trailing run is not a replay of
+    // the trigger that armed it, so the ten triggers it swallowed are all
+    // answered by the state it finds.
+    let observed: string[] = [];
+    let current = 'stale';
+    const p = pass('p', 'always', () => {
+      observed.push(current);
+      return false;
+    });
+    const work = scheduler([p]);
+
+    work.schedule();
+    await drainTick();
+    expect(observed).toEqual(['stale']);
+
+    work.schedule();
+    await drainTick();
+    current = 'fresh';
+    await drainRateBound();
+
+    expect(observed).toEqual(['stale', 'fresh']);
+    observed = [];
   });
 
   it("holds 'quiet' passes while a glide is in flight but keeps 'always' passes running", async () => {
@@ -125,22 +211,26 @@ describe('createTimelineQuietWork', () => {
 
     // Still animating at the first recheck: stays deferred, re-arms.
     await vi.advanceTimersByTimeAsync(QUIET_WORK_RECHECK_MS);
+    await drainTick();
     expect(q.runs).toBe(0);
 
     inFlight = false;
     await vi.advanceTimersByTimeAsync(QUIET_WORK_RECHECK_MS);
+    await drainTick();
     expect(q.runs).toBe(1);
 
     // Quiet and drained: no standing timer keeps firing at idle.
     await vi.advanceTimersByTimeAsync(QUIET_WORK_RECHECK_MS * 5);
+    await drainTick();
     expect(q.runs).toBe(1);
   });
 
-  it('spends the geometry-mutation budget on one pass and drains the rest next tick', async () => {
-    // The tick-chained re-entry drains inside the same await, so the
-    // proof is the ORDER: second never runs in the callback where first
-    // mutated — it lands in the re-scheduled one, after first's no-op
-    // re-run. Same-callback execution would read ['first', 'second'].
+  it('spends the geometry-mutation budget on one pass and drains the rest a rate bound later', async () => {
+    // The proof is the ORDER: second never runs in the callback where
+    // first mutated — it lands in the re-scheduled one, after first's
+    // no-op re-run. Same-callback execution would read
+    // ['first', 'second']. The re-entry is now rate-bound rather than
+    // tick-chained, so the second callback needs the timer to fire.
     const order: string[] = [];
     let firstMutates = true;
     const first = pass('first', 'quiet', () => {
@@ -157,15 +247,18 @@ describe('createTimelineQuietWork', () => {
 
     work.schedule();
     await drainTick();
+    expect(order).toEqual(['first']);
+
+    await drainRateBound();
     expect(order).toEqual(['first', 'first', 'second']);
   });
 
   it('caps consecutive mutating callbacks, reports, and stands down to the recheck', async () => {
-    // The wedge this guards: `schedule()` -> `tick()` -> `runScheduled` ->
-    // `schedule()` again, and under load `tick()` resolves inside the same
-    // flushSync cascade — so N laps are N synchronous flushes with no paint
-    // between. A pass that always reports mutated geometry would spin here
-    // forever with nothing in any log. (Without the cap this test hangs.)
+    // What this guards since the rate bound landed: not a wedge (the laps
+    // are spaced, with the thread free between them) but NON-CONVERGENCE —
+    // a pass that always reports mutated geometry would move the page under
+    // the reader ten times a second forever, with nothing in any log.
+    // (Without the cap this test hangs.)
     const first = pass('first', 'quiet', () => true);
     const second = pass('second', 'quiet');
     const work = scheduler([first, second]);
@@ -189,17 +282,93 @@ describe('createTimelineQuietWork', () => {
     // Console fallback: a remote session cannot persist the record at all.
     expect(diagnostics.warnings().join('\n')).toContain('"first"');
 
-    // Stood down to the timer rather than hot-looping — and the stand-down is
-    // STICKY. A recheck on a still-non-convergent pass costs ONE probe, not a
-    // fresh budget of MAX+1 synchronous flushes; otherwise the wedge is merely
-    // time-sliced into a 64-flush burst every 200ms, forever.
+    // Stood down to the slower timer — and the stand-down is STICKY. A
+    // recheck on a still-non-convergent pass costs ONE probe, not a fresh
+    // budget of MAX+1 laps; otherwise the churn is merely time-sliced into
+    // a 64-lap burst every 200ms, forever.
     await vi.advanceTimersByTimeAsync(QUIET_WORK_RECHECK_MS);
-    await drainUntilSettled(() => first.runs);
+    await drainTick();
     expect(first.runs).toBe(MAX_CONSECUTIVE_MUTATING_LAPS + 2);
 
     await vi.advanceTimersByTimeAsync(QUIET_WORK_RECHECK_MS);
-    await drainUntilSettled(() => first.runs);
+    await drainTick();
     expect(first.runs).toBe(MAX_CONSECUTIVE_MUTATING_LAPS + 3);
+  });
+
+  it('holds the stand-down deadline against an external schedule burst', async () => {
+    // The stand-down promises the slower recheck cadence, and the triggers
+    // that call schedule() fire on every streamed row. Without the floor the
+    // very next one pulled the run forward to the rate bound, so a
+    // non-convergent pass kept moving geometry at 10Hz — the stand-down
+    // reduced to a warning line.
+    const first = pass('first', 'quiet', () => true);
+    const second = pass('second', 'quiet');
+    const work = scheduler([first, second]);
+
+    work.schedule();
+    await drainUntilSettled(() => first.runs);
+    const stoodDownAt = first.runs;
+    expect(stoodDownAt).toBe(MAX_CONSECUTIVE_MUTATING_LAPS + 1);
+
+    // `drainUntilSettled` already waited out the rate bound, so each of
+    // these would otherwise re-arm at zero delay and run on the next tick.
+    for (let i = 0; i < 5; i += 1) {
+      work.schedule();
+      await drainTick();
+      expect(first.runs).toBe(stoodDownAt);
+    }
+
+    // The deadline itself still fires — the floor delays, it does not cancel.
+    await vi.advanceTimersByTimeAsync(QUIET_WORK_RECHECK_MS);
+    await drainTick();
+    expect(first.runs).toBe(stoodDownAt + 1);
+  });
+
+  it('still pulls an ordinary recheck forward when the cap is not in force', async () => {
+    // The other direction. A quiet-but-deferred callback also arms the
+    // recheck, and THAT one must stay coalescable — pulling it forward is
+    // the designed behavior for every trigger outside the stand-down.
+    const q = pass('q', 'quiet');
+    const work = scheduler([q]);
+
+    inFlight = true;
+    work.schedule();
+    await drainTick();
+    expect(q.runs).toBe(0);
+
+    // The glide dies and a structural trigger arrives; the run happens at
+    // the rate bound, not at the end of the 200ms recheck.
+    inFlight = false;
+    work.schedule();
+    await drainRateBound();
+    expect(q.runs).toBe(1);
+  });
+
+  it('resumes pulling runs forward once a quiet lap clears the stand-down', async () => {
+    // Transition coverage on the floor itself: it must be tied to the cap
+    // being in force, not latched on for the scheduler's lifetime.
+    let mutating = true;
+    const first = pass('first', 'quiet', () => mutating);
+    const second = pass('second', 'quiet');
+    const work = scheduler([first, second]);
+
+    work.schedule();
+    await drainUntilSettled(() => first.runs);
+    const stoodDownAt = first.runs;
+
+    // The pass converges. Its next run is the recheck, which is a quiet lap
+    // (nothing mutated), so the counter resets.
+    mutating = false;
+    await vi.advanceTimersByTimeAsync(QUIET_WORK_RECHECK_MS);
+    await drainTick();
+    expect(first.runs).toBe(stoodDownAt + 1);
+    expect(second.runs).toBe(1);
+
+    // Back to normal: a schedule arriving inside the armed recheck runs at
+    // the rate bound again.
+    work.schedule();
+    await drainRateBound();
+    expect(first.runs).toBe(stoodDownAt + 2);
   });
 
   it('caps the same way when a glide is what defers every quiet pass', async () => {
@@ -227,11 +396,12 @@ describe('createTimelineQuietWork', () => {
     inFlight = false;
     alwaysMutates = false;
     await vi.advanceTimersByTimeAsync(QUIET_WORK_RECHECK_MS);
-    await drainUntilSettled(() => always.runs);
+    await drainTick();
     expect(quiet.runs).toBe(1);
 
     // Nothing left armed, and a fresh burst gets the whole budget back.
     await vi.advanceTimersByTimeAsync(QUIET_WORK_RECHECK_MS * 3);
+    await drainTick();
     expect(quiet.runs).toBe(1);
   });
 
@@ -316,10 +486,70 @@ describe('createTimelineQuietWork', () => {
     await drainTick();
     inFlight = false;
     work.schedule();
-    await drainTick();
+    // The new schedule lands inside the rate bound, so it arrives as the
+    // trailing run — which is also what replaces the armed recheck.
+    await drainRateBound();
     expect(q.runs).toBe(1);
 
     await vi.advanceTimersByTimeAsync(QUIET_WORK_RECHECK_MS * 2);
+    await drainTick();
     expect(q.runs).toBe(1);
+  });
+
+  it('invalidate clears a trailing run armed by the rate bound', async () => {
+    const a = pass('a', 'always');
+    const work = scheduler([a]);
+
+    work.schedule();
+    await drainTick();
+    expect(a.runs).toBe(1);
+
+    // Armed but not yet due — the state a plain token bump would leave
+    // running on a torn-down instance.
+    work.schedule();
+    work.invalidate();
+    await vi.advanceTimersByTimeAsync(QUIET_WORK_MIN_INTERVAL_MS * 5);
+    await drainTick();
+    expect(a.runs).toBe(1);
+  });
+
+  it('invalidate releases the rate bound so a reused instance runs at once', async () => {
+    // Transition coverage for the cooldown as STATE: schedule -> run ->
+    // invalidate -> schedule must not inherit the torn-down instance's
+    // cooldown, or the first callback after a remount is late for no
+    // reason.
+    const a = pass('a', 'always');
+    const work = scheduler([a]);
+
+    work.schedule();
+    await drainTick();
+    expect(a.runs).toBe(1);
+
+    work.invalidate();
+    work.schedule();
+    await drainTick();
+    expect(a.runs).toBe(2);
+  });
+
+  it('invalidate is inert with nothing pending and idempotent when repeated', async () => {
+    const a = pass('a', 'always');
+    const work = scheduler([a]);
+
+    work.invalidate();
+    work.invalidate();
+    await vi.advanceTimersByTimeAsync(QUIET_WORK_RECHECK_MS * 2);
+    await drainTick();
+    expect(a.runs).toBe(0);
+
+    // Still usable afterwards, and still rate-bound afterwards.
+    work.schedule();
+    await drainTick();
+    expect(a.runs).toBe(1);
+
+    work.invalidate();
+    work.invalidate();
+    work.schedule();
+    await drainTick();
+    expect(a.runs).toBe(2);
   });
 });

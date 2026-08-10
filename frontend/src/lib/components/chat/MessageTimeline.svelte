@@ -367,7 +367,12 @@
     getRevealedNodes: () => revealedNodes,
     getGroupedNodes: () => rows.groupedNodes,
     findTimelineNodeIndex,
-    persistSizePriors: () => sizePriors.maybePersistSizePriors(),
+    // The rate-bounded variant: this reaches the snapshot path, which
+    // fires per scroll frame. The exact capture is the settle edge below,
+    // plus the final edges (unmount here, switch-away through the
+    // controller adapter).
+    persistSizePriors: () => sizePriors.maybePersistSizePriorsInterim(),
+    persistSizePriorsExact: () => sizePriors.maybePersistSizePriors(),
     armWarmupWithReset,
     resetAutoLoadGates: () => paging.resetGates(),
     clearTimelineWindowPruneShift: () => windowAnchor.clearTimelineWindowPruneShift(),
@@ -455,6 +460,9 @@
     stickToLatest: () => {
       void paging.jumpToLatest();
     },
+    // The EXACT capture: a switch-away is a final edge, so it must not be
+    // refused by the scroll cadence's rate bound.
+    persistSizePriors: () => sizePriors.maybePersistSizePriors(),
   };
 
   // Hide contentEl while the virtualizer and async row content settle.

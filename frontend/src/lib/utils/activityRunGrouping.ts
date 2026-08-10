@@ -35,6 +35,34 @@ export interface ActivityRunResolution {
   mountedFrom: number;
   /** How many rows are mounted, from `mountedFrom`. */
   mountedRows: number;
+  /**
+   * Increments whenever this run's ORDERED membership changes — a row
+   * joining, leaving, being replaced by a different id, or the same ids
+   * arriving in a different order. Lets the header stamp membership in
+   * O(1) instead of walking `memberItemIds`; the count alone would miss a
+   * swap, a set comparison would miss a reorder (the running label is the
+   * last active member in order), and re-deriving the sequence per render
+   * is the cost this whole node exists to avoid.
+   */
+  membershipEpoch: number;
+}
+
+/**
+ * Whether a row's replacement can change the activity-run header summary.
+ *
+ * `activityRunSummary` reads exactly these five fields, so anything else
+ * moving on a member row — growing summary text, a payload landing, a
+ * timestamp — leaves the header's output identical. Defined here, beside
+ * the run domain, because both sides need one definition: the pane bumps
+ * a run's content revision from it on every in-place row write, and the
+ * header trusts that revision instead of rebuilding the tuple itself.
+ */
+export function activityRunSummaryFieldsChanged(previous: Item, next: Item): boolean {
+  return previous.id !== next.id
+    || previous.kind !== next.kind
+    || previous.status !== next.status
+    || (previous.toolName ?? '') !== (next.toolName ?? '')
+    || (previous.completionOf ?? '') !== (next.completionOf ?? '');
 }
 
 /**
@@ -190,6 +218,7 @@ function buildRun(
     live: false,
     mountedFrom: resolved.mountedFrom,
     mountedRows: resolved.mountedRows,
+    membershipEpoch: resolved.membershipEpoch,
     memberItemIds,
   };
 }

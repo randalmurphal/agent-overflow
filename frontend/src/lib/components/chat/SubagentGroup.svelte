@@ -40,7 +40,12 @@
     readClaudeSubagentInput,
   } from '../../utils/claudeSubagentLabel';
   import type { ThreadPane } from '../../stores/thread.svelte';
-  import type { SubagentGroupNode, TimelineNode } from '../../utils/subagentGrouping';
+  import {
+    decoratedSubagentAggregates,
+    pickLatestChildSummary,
+    type SubagentGroupNode,
+    type TimelineNode,
+  } from '../../utils/subagentGrouping';
   import TranscriptDisclosureHeader from './TranscriptDisclosureHeader.svelte';
   import ToolRowStatusIndicator from './ToolRowStatusIndicator.svelte';
   import RowError from './RowError.svelte';
@@ -115,13 +120,39 @@
   // re-running on unrelated state is harmless.
   $effect(() => {
     if (!expanded || !pane) return;
-    if (group.loadedDescendantCount >= group.descendantCount) return;
+    if (group.loadedDescendantCount >= descendantCount) return;
     void pane.ensureSubagentChildren(group.parent.id);
   });
 
   // ---- Header content derivations ---------------------------------
 
-  let parent = $derived(group.parent);
+  // Resolve at the row boundary, exactly like `TimelineLeaf` — the node
+  // tree is a STRUCTURAL snapshot rebuilt per `timelineRevision`, so
+  // everything on this card that moves inside a turn (parent status,
+  // entry count, the latest-action preview) is read from the store here
+  // rather than patched into the node upstream. Doing it upstream made
+  // every streaming tick of every group descendant rebuild the whole
+  // projection — grouping, run wrapping and the virtualizer's data array
+  // for ~800 rows, at up to 48Hz.
+  let parent = $derived(pane?.getItemById(group.parent.id) ?? group.parent);
+  let decorated = $derived(decoratedSubagentAggregates(parent));
+  // Max, not replace — the same reconciliation `subagentGroupNode` does,
+  // re-run against the live anchor. The node's count already folds in
+  // loaded children, the eviction fold, and whatever decoration existed
+  // when it was built; only the decoration can move without a structural
+  // bump. Taking the max picks up a decoration that lands mid-turn and
+  // falls back to the structural count (never to zero) if a later upsert
+  // arrives without one.
+  let descendantCount = $derived(Math.max(group.descendantCount, decorated.count));
+  let latestChildSummary = $derived(
+    pickLatestChildSummary(
+      group.children,
+      pane?.subagentLiveAggregate(parent.id),
+      (id) => pane?.getItemById(id),
+    )
+      || decorated.summary
+      || group.latestChildSummary,
+  );
   // One derived id for both halves of the disclosure (utils/chatDomIds.ts):
   // the header's `controls` and the body's `id` must be one string.
   let groupDomId = $derived(chatRowDomId(pane, 'subagent-group', parent.id));
@@ -164,10 +195,10 @@
   // text there is nothing to say, so the placeholder never sticks to
   // finished or failed cards.
   let foregroundConfirmed = $derived(
-    group.descendantCount > 0 || inputObject?.run_in_background === false,
+    descendantCount > 0 || inputObject?.run_in_background === false,
   );
   let previewText = $derived.by<string>(() => {
-    if (group.latestChildSummary) return group.latestChildSummary;
+    if (latestChildSummary) return latestChildSummary;
     return foregroundConfirmed && isRunning ? 'Initializing...' : '';
   });
 
@@ -199,12 +230,12 @@
   });
 
   let entryCountLabel = $derived.by(() => {
-    if (group.descendantCount === 0) return '';
-    return `${group.descendantCount} ${group.descendantCount === 1 ? 'entry' : 'entries'}`;
+    if (descendantCount === 0) return '';
+    return `${descendantCount} ${descendantCount === 1 ? 'entry' : 'entries'}`;
   });
   let entryCountAriaLabel = $derived.by(() => {
-    if (group.descendantCount === 0) return '';
-    return `${group.descendantCount} ${group.descendantCount === 1 ? 'timeline entry' : 'timeline entries'} inside this subagent group`;
+    if (descendantCount === 0) return '';
+    return `${descendantCount} ${descendantCount === 1 ? 'timeline entry' : 'timeline entries'} inside this subagent group`;
   });
 </script>
 
@@ -297,7 +328,7 @@
         data-testid="subagent-group-body"
       >
         {#if group.children.length === 0}
-          {#if group.descendantCount > 0}
+          {#if descendantCount > 0}
             <p class="text-xs text-text-secondary italic" data-testid="subagent-group-loading">
               Loading {entryCountLabel}…
             </p>

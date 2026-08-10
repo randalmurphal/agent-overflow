@@ -147,6 +147,26 @@ headless, isolated data dir, mocked providers. Full harness guide:
   build. All three share their wire shapes, seed/collect driver, and
   trace folds in `tests/probe-wire.ts`. Run one with
   `BOUNDARY_PROBE=1 pnpm exec playwright test <name>`.
+- `tests/freeze-repro.manual.spec.ts` + `tests/freeze-repro-probe.ts` — the
+  renderer main-thread freeze driver. It is a `*.manual.spec.ts`, which the
+  base config `testIgnore`s: it needs a locally generated fixture that is
+  verbatim real session content (gitignored, never committable) and it
+  deliberately loads ~950 items into one pane, so it launches its OWN harness
+  instead of borrowing the worker's. `scripts/generate-freeze-repro.mjs` reads
+  the incident turns out of the local store READ-ONLY and writes
+  `fixtures/freeze-repro/{seed.json,scenario.json,manifest.json}`: the earlier
+  turns become completed `HarnessSeed` history, the dense turns become a
+  Claude mock scenario replaying each item in recorded order with
+  thinking/text deltas cut at the REAL `payload_chunks` boundaries, tool_use +
+  tool_result pairs carrying the recorded output (file-edit results rebuilt as
+  `tool_use_result` so their diff payload comes back byte-identical), and
+  backgrounded Bash launches completed through the
+  `task_started`/`task_updated`/`task_notification` trio. Liveness is measured
+  OUT OF BAND (probes fired on a Node timer, never awaited in sequence) because
+  a wedged main thread stalls every locator and evaluate alike; both CDP
+  capture channels are armed before the replay for the same reason. Run it with
+  `pnpm test:freeze-repro` (`playwright.manual.config.ts`); evidence lands in
+  `fixtures/freeze-repro/evidence-<timestamp>/`.
 
 ## Running
 

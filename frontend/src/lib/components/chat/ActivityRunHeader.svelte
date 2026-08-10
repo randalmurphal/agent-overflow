@@ -17,6 +17,7 @@
 
   import { untrack } from 'svelte';
   import type { ThreadPane } from '../../stores/thread.svelte';
+  import { compositeKey } from '../../utils/compositeKey';
   import type { ActivityRunNode } from '../../utils/subagentGrouping';
   import { activityRunSummary } from './activityRunSummary';
   import { TOOL_KIND_COLOR_CLASS } from './toolCardHeader';
@@ -45,27 +46,31 @@
   // Resolved here, not on the node: counts, failure, and the running label
   // all move on ordinary streaming deltas, and only this header reads them.
   //
-  // Resolved through a signature cutoff, though: while a member row
-  // streams, the per-item smoother replaces its item object on every
-  // reveal tick (~50Hz), which invalidates any derived that reads the
-  // member items — but the summary's output depends only on the fields
-  // below, none of which change on a reveal tick. The signature derived
-  // stays tracked (it is what re-runs on every tick and on every real
-  // transition); string equality then cuts propagation, so the heavy
-  // summary work (Set of ids, presentation map, count buckets, sort)
-  // re-runs only when a member's identity/status/kind/tool actually
-  // changes. `completionOf` is in the key because the orphan-completion
-  // dedup reads it. The summary body runs untracked so its item reads
-  // don't re-subscribe it to per-tick item replacement.
-  let summaryKey = $derived.by(() => {
-    let key = pane.thread?.provider ?? '';
-    for (const id of run.memberItemIds) {
-      const item = pane.getItemById(id);
-      if (!item) continue;
-      key += `\u0000${item.id}\u0001${item.kind}\u0001${item.status}\u0001${item.toolName ?? ''}\u0001${item.completionOf ?? ''}`;
-    }
-    return key;
-  });
+  // Resolved through a signature cutoff, though, and the signature is now
+  // O(1). While a member row streams, the per-item smoother replaces its
+  // item object on every reveal tick (~50Hz), which invalidates any
+  // derived that reads the member items — but the summary's output
+  // depends only on five fields per member, none of which move on a reveal
+  // tick. Both halves of that are counters maintained where the change
+  // happens: `membershipEpoch` is stamped by the projection when the
+  // member SET changes, and `memberContentRevision` is bumped by the pane's
+  // row-write chokepoints when `activityRunSummaryFieldsChanged` says a
+  // member's tuple moved. This derived used to rebuild that tuple for every
+  // member on every tick — an O(members) walk and string build per run, at
+  // reveal cadence, on the longest runs in the thread. The summary body
+  // still runs untracked so its item reads don't re-subscribe it to
+  // per-tick item replacement.
+  // The third signal is pane-global and deliberately so: a wholesale item
+  // replacement rewrites content under identical run membership without
+  // going through the per-item write path, and it happens at settle/prune
+  // cadence rather than per delta.
+  let summaryKey = $derived(compositeKey(
+    pane.thread?.provider ?? '',
+    run.runId,
+    run.membershipEpoch,
+    pane.activityRuns.memberContentRevision(run.runId),
+    pane.activityRuns.wholesaleGeneration,
+  ));
   let summary = $derived.by(() => {
     void summaryKey;
     return untrack(() => {

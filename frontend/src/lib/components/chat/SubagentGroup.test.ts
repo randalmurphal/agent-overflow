@@ -520,6 +520,11 @@ describe('<SubagentGroup>', () => {
     expect(queryByText(/No child entries captured/i)).not.toBeInTheDocument();
   });
 
+  // Records hydration requests without a real pane. `getItemById` /
+  // `subagentLiveAggregate` answer "not loaded" so the card falls back to
+  // the node it was handed — these tests are about the hydration trigger,
+  // and the live-resolution path has its own suite
+  // (SubagentGroup.liveResolve.test.ts) driven by a real pane.
   function paneStub(): { pane: import('../../stores/thread.svelte').ThreadPane; ensured: string[] } {
     const ensured: string[] = [];
     const pane = {
@@ -529,6 +534,8 @@ describe('<SubagentGroup>', () => {
         ensured.push(rootItemId);
         return Promise.resolve(true);
       },
+      getItemById: () => undefined,
+      subagentLiveAggregate: () => undefined,
       scrollController: null,
     } as unknown as import('../../stores/thread.svelte').ThreadPane;
     return { pane, ensured };

@@ -8,7 +8,11 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ThreadPane } from '../../stores/thread.svelte';
 import { makeItem } from '../../../test/helpers/chat';
-import { clearAllThreadSizePriorsForTest, setSizePriorsStorageAdapter } from '../../utils/virtual/priors';
+import {
+  clearAllThreadSizePriorsForTest,
+  getThreadSizePriors,
+  setSizePriorsStorageAdapter,
+} from '../../utils/virtual/priors';
 import {
   __resetSizePriorsStorageForTest,
   installSizePriorsPersistence,
@@ -377,5 +381,120 @@ describe('createTimelineSizePriors', () => {
 
     __resetSizePriorsStorageForTest();
     vi.useRealTimers();
+  });
+  describe('scroll-driven capture rate bound', () => {
+    // `maybePersistSizePriorsInterim` is what the scroll snapshot path
+    // calls, and that path fires per scroll frame. The bound has to hold
+    // in BOTH directions: it must swallow a burst, and it must let the
+    // next real change through once the interval has passed — a bound
+    // that latched would freeze the thread's priors at the first frame of
+    // its cascade, which is exactly the stale-estimate replay this module
+    // exists to prevent.
+    function harness(threadId: string) {
+      let sizes = [100];
+      const pane = fakePane(threadId);
+      const priors = createTimelineSizePriors({
+        getPane: () => pane,
+        getListRef: () => fakeListRef(sizes),
+        getRevealedNodes: () => [leaf('a', { summary: 'hi' })],
+        getScrollSurfaceContentWidth: () => 800,
+        getRestoredThreadId: () => threadId,
+      });
+      return {
+        priors,
+        /** Change the geometry so the O(1) size gate cannot absorb the call. */
+        grow(px: number) {
+          sizes = [sizes[0] + px];
+        },
+        /** The one row's stored height, or null when nothing is stored. */
+        stored(): number | null {
+          const entry = getThreadSizePriors(threadId);
+          if (!entry) return null;
+          const [size] = [...entry.rows.values()];
+          return size ?? null;
+        },
+      };
+    }
+
+    it('captures the first frame and swallows the burst behind it', () => {
+      vi.useFakeTimers();
+      const h = harness('thread-bound-burst');
+      h.priors.maybePersistSizePriorsInterim();
+      expect(h.stored()).toBe(100);
+
+      for (let frame = 0; frame < 15; frame += 1) {
+        h.grow(10);
+        vi.advanceTimersByTime(16);
+        h.priors.maybePersistSizePriorsInterim();
+      }
+
+      // 15 frames x 16ms = 240ms, inside one interval: the stored value is
+      // still the one the first call captured.
+      expect(h.stored()).toBe(100);
+      vi.useRealTimers();
+    });
+
+    it('lets the next change through once the interval has passed', () => {
+      vi.useFakeTimers();
+      const h = harness('thread-bound-release');
+      h.priors.maybePersistSizePriorsInterim();
+      h.grow(50);
+      h.priors.maybePersistSizePriorsInterim();
+      expect(h.stored()).toBe(100);
+
+      vi.advanceTimersByTime(250);
+      h.priors.maybePersistSizePriorsInterim();
+
+      expect(h.stored()).toBe(150);
+      vi.useRealTimers();
+    });
+
+    it('does not make an incoming thread wait out the outgoing cooldown', () => {
+      vi.useFakeTimers();
+      const h = harness('thread-bound-switch');
+      h.priors.maybePersistSizePriorsInterim();
+      h.grow(70);
+
+      // The threadId edge is the switch. It resets the cooldown with the
+      // rest of the per-thread capture state.
+      h.priors.resolveRowEstimateOnThreadEdge('other');
+      h.priors.resolveRowEstimateOnThreadEdge('thread-bound-switch');
+      h.priors.maybePersistSizePriorsInterim();
+
+      expect(h.stored()).toBe(170);
+      vi.useRealTimers();
+    });
+
+    it('never bounds the settle-edge capture', () => {
+      vi.useFakeTimers();
+      const h = harness('thread-bound-warm');
+      h.priors.maybePersistSizePriorsInterim();
+      h.grow(30);
+
+      h.priors.captureOnWarmRisingEdge(true);
+
+      expect(h.stored()).toBe(130);
+      vi.useRealTimers();
+    });
+
+    it('never bounds the final-edge capture', () => {
+      // The switch-away edge (`switchThread` → the controller adapter) and
+      // the unmount edge (`saveSnapshotOnDestroy`) both call the exact
+      // capture. They are the last chance this thread gets, so a cooldown
+      // armed by the reader's last scroll frame must not swallow them —
+      // that was the hole the interim bound opened.
+      vi.useFakeTimers();
+      const h = harness('thread-bound-final');
+      h.priors.maybePersistSizePriorsInterim();
+      h.grow(40);
+      // Inside the cooldown: the interim call is refused.
+      h.priors.maybePersistSizePriorsInterim();
+      expect(h.stored()).toBe(100);
+
+      h.priors.maybePersistSizePriors();
+
+      expect(h.stored()).toBe(140);
+      vi.useRealTimers();
+    });
   });
 });

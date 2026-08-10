@@ -231,6 +231,25 @@ export interface PaneScrollController {
    * that flow.
    */
   stickToLatest?(): void;
+  /**
+   * The pane is about to leave this thread — capture anything only the
+   * mounted timeline can, right now, while its items and its measured
+   * geometry still describe the OUTGOING thread.
+   *
+   * Called from `switchThread`'s outgoing-pane snapshot, which is the last
+   * moment that holds. Everything downstream of it (the timeline's own
+   * `$effect.pre`, the restore effect) runs after `pane.items` has already
+   * been replaced, so a capture there would pair the outgoing engine's
+   * measured sizes with the incoming thread's rows — the same reason the
+   * scroll-position snapshot is not taken there either.
+   *
+   * Today that is the row-size priors (`utils/virtual/priors.ts`), which
+   * are keyed by scroll-pane width and expansion signature — component
+   * state the store cannot see, which is why the store asks rather than
+   * reads. Optional because ChannelView registers a raw controller with no
+   * virtualizer behind it.
+   */
+  persistSizePriors?(): void;
 }
 
 export interface PreserveViewportBottomOptions {

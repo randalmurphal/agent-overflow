@@ -81,6 +81,27 @@ const ACTIVITY_RUN_HEADER_PX = 24;
 const ACTIVITY_RUN_ROW_FLOOR_PX = 20;
 
 /**
+ * Minimum gap between SCROLL-DRIVEN priors captures.
+ *
+ * A capture is O(window): the pane's expansion signature (walks every
+ * expansion registry and sorts up to four arrays), the engine's measured-
+ * size slice, and a content signature per revealed node. Its trigger is
+ * `handleTimelineScroll` → `saveScrollSnapshot`, which fires on every
+ * scroll frame — and while the tail is pinned during streaming the
+ * re-pin fires one per frame with a DIFFERENT total size each time, so
+ * the O(1) size gate in front of the walk does not bite. That put the
+ * whole capture on the streaming path at ~60Hz.
+ *
+ * Bounding it is safe because nothing depends on an interim capture
+ * being current: it is a best-effort refresh of a cache, and the capture
+ * that has to be exact is the settle edge (`captureOnWarmRisingEdge`),
+ * which is not bounded. The worst case is that a switch lands inside a
+ * cooldown and the outgoing thread stores priors up to one interval old
+ * — geometry that, by definition, was still cascading.
+ */
+const INTERIM_PRIORS_MIN_INTERVAL_MS = 250;
+
+/**
  * The clip's real ceiling right now. The cap is a `min()` of a viewport half
  * and a rem height (utils/activityRunClip.ts), so which half wins depends on
  * the window; taking the rem half unconditionally would overestimate every
@@ -151,7 +172,18 @@ export interface SizePriorsReplayStats {
 export interface TimelineSizePriors {
   /** Reactive — the template binds `estimate={sizePriors.rowEstimate}`. */
   readonly rowEstimate: RowEstimate | undefined;
+  /**
+   * Capture now, subject only to the O(1) total-size gate. The exact
+   * capture — used by the settle edge and by tests that want a capture
+   * at a known moment.
+   */
   maybePersistSizePriors(): void;
+  /**
+   * Capture from a scroll-driven trigger, rate-bounded. This is what
+   * `saveScrollSnapshot` calls; see `INTERIM_PRIORS_MIN_INTERVAL_MS` for
+   * why the same call cannot be the exact one.
+   */
+  maybePersistSizePriorsInterim(): void;
   resolveRowEstimateOnThreadEdge(threadId: string | null): void;
   captureOnWarmRisingEdge(warm: boolean): void;
   /** Non-reactive snapshot — see SizePriorsReplayStats. */
@@ -188,6 +220,10 @@ export function createTimelineSizePriors(
   // against the outgoing thread's.
   let lastPersistedTotalSize = -1;
   let lastWarmForCapture = false;
+  // Completion time of the last scroll-driven capture, or null when none
+  // has run for this thread. Reset on the threadId edge so the incoming
+  // thread is never made to wait out the outgoing thread's cooldown.
+  let lastInterimCaptureEndedAt: number | null = null;
 
   // Kind resolver for the estimate fallback. Reads live `revealedNodes`,
   // so it needs no remap across head splices (the per-row prior lookup
@@ -273,6 +309,18 @@ export function createTimelineSizePriors(
     setThreadSizePriors(threadId, { width, expansionSig, rows });
   }
 
+  function maybePersistSizePriorsInterim(): void {
+    if (
+      lastInterimCaptureEndedAt !== null
+      && Date.now() - lastInterimCaptureEndedAt < INTERIM_PRIORS_MIN_INTERVAL_MS
+    ) return;
+    maybePersistSizePriors();
+    // Stamped after the work, so a slow capture spaces itself out rather
+    // than queueing the next one behind its own cost. Stamped even when
+    // the size gate no-ops: the check itself is what was rate-bounded.
+    lastInterimCaptureEndedAt = Date.now();
+  }
+
   // Resolve the row estimate for the INCOMING thread before the
   // {#key pane.threadId} block remounts the <TimelineVirtualizer>. The
   // virtualizer configures its engine once at construction, and
@@ -285,6 +333,7 @@ export function createTimelineSizePriors(
     if (threadId === rowEstimateThreadId) return;
     rowEstimateThreadId = threadId;
     lastPersistedTotalSize = -1;
+    lastInterimCaptureEndedAt = null;
     if (threadId) {
       const build = untrack(() => buildRowEstimate(threadId));
       currentReplayStats = build.stats;
@@ -391,6 +440,7 @@ export function createTimelineSizePriors(
       return rowEstimate;
     },
     maybePersistSizePriors,
+    maybePersistSizePriorsInterim,
     resolveRowEstimateOnThreadEdge,
     captureOnWarmRisingEdge,
     replayStats: () => currentReplayStats,

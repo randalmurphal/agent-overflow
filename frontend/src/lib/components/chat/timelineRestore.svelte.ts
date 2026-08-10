@@ -42,8 +42,16 @@ export interface TimelineRestoreOptions {
   getRevealedNodes(): TimelineNode[];
   getGroupedNodes(): TimelineNode[];
   findTimelineNodeIndex(itemId: string): number;
-  /** Wired to module 2's `maybePersistSizePriors`. */
+  /**
+   * Wired to module 2's `maybePersistSizePriorsInterim` — the RATE-BOUND
+   * capture. This one rides the scroll cadence, which fires per frame.
+   */
   persistSizePriors(): void;
+  /**
+   * Wired to module 2's `maybePersistSizePriors` — the exact capture, for
+   * the final edges that must not be refused by that rate bound.
+   */
+  persistSizePriorsExact(): void;
   armWarmupWithReset(): void;
   /** Wired to module 3's `resetGates` (both auto-load gates' `.reset()`). */
   resetAutoLoadGates(): void;
@@ -97,12 +105,18 @@ export function createTimelineRestore(options: TimelineRestoreOptions): Timeline
     const threadId = snapshotThreadId();
     if (!threadId) return;
     saveScrollSnapshotForThread(threadId);
-    // Refresh the size priors on the same triggers as the scroll
-    // position snapshot — restore, scroll, load-older settle. Size-gated, so
-    // it only re-slices when the cascade actually grew the surface; every
-    // other call is a cheap O(1) no-op. This co-location is why the outgoing
-    // thread's priors are fresh at switch time (its most recent
-    // saveScrollSnapshot IS the capture), mirroring the position snapshot.
+    // Refresh the size priors on the same triggers as the scroll position
+    // snapshot — restore, scroll, load-older settle. Size-gated, so it only
+    // re-slices when the cascade actually grew the surface, and rate-bounded
+    // on top of that because the bottom-pin re-pin fires one of these per
+    // frame while the tail streams.
+    //
+    // Which means this is NOT what makes the outgoing thread's priors fresh
+    // at switch time: a capture landing inside the interim cooldown is
+    // skipped, so the last one before a switch can be. The final edges
+    // capture exactly instead — `switchThread` asks the timeline directly
+    // through the controller adapter, and `saveSnapshotOnDestroy` below
+    // covers unmount.
     options.persistSizePriors();
   }
 
@@ -521,7 +535,13 @@ export function createTimelineRestore(options: TimelineRestoreOptions): Timeline
   }
 
   function saveSnapshotOnDestroy(): void {
-    if (restoredThreadId) saveScrollSnapshotForThread(restoredThreadId);
+    if (!restoredThreadId) return;
+    saveScrollSnapshotForThread(restoredThreadId);
+    // Unmount is a final edge — the pane is closing or being replaced, and
+    // nothing after this will capture. Exact, for the same reason the
+    // switch-away edge is: the rate bound exists to thin a per-frame
+    // cadence, and there is no cadence left here to thin.
+    options.persistSizePriorsExact();
   }
 
   return {

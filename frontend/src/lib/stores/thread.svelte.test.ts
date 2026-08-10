@@ -3885,6 +3885,57 @@ describe('createThreadPane', () => {
       expect(pane.subagentLiveAggregate('anchor')?.evictedCount).toBe(1);
     });
 
+    it('releases only the evicted rows\' UI state, and keeps a shared payload alive', async () => {
+      // The drop chokepoint splits the window in one pass and hands the
+      // dropped rows straight to disposal, so the released set and the
+      // surviving array come from the same walk. This is the transition
+      // that catches a mismatch: two rows share a payload, and its UI
+      // state must survive the first eviction and die with the second.
+      const pane = await paneWithAnchor('fold-shared-payload');
+      const child = (id: string, itemIndex: number, status: Item['status']) =>
+        childItem('fold-shared-payload', {
+          id, itemIndex, status, payloadId: 'payload-p', kind: 'tool_call',
+        });
+      pane.upsertItem(child('child-1', 1, 'streaming'));
+      pane.upsertItem(child('child-2', 2, 'streaming'));
+      pane.expansionStateFor(pane.items.find((it) => it.id === 'child-1')!);
+      pane.expansionStateForPayload('payload-p', 'fold-shared-payload');
+      expect(pane.debugMemoryStats().rowUiState.itemExpansionStates).toBe(1);
+      expect(pane.debugMemoryStats().rowUiState.payloadExpansionStates).toBe(1);
+
+      pane.upsertItem(child('child-2', 2, 'completed'));
+      expect(pane.items.some((it) => it.id === 'child-2')).toBe(false);
+      expect(pane.items.some((it) => it.id === 'child-1')).toBe(true);
+      // child-1 still points at the payload, so neither registry moves.
+      expect(pane.debugMemoryStats().rowUiState.itemExpansionStates).toBe(1);
+      expect(pane.debugMemoryStats().rowUiState.payloadExpansionStates).toBe(1);
+
+      pane.upsertItem(child('child-1', 1, 'completed'));
+      expect(pane.items.some((it) => it.id === 'child-1')).toBe(false);
+      expect(pane.debugMemoryStats().rowUiState.itemExpansionStates).toBe(0);
+      expect(pane.debugMemoryStats().rowUiState.payloadExpansionStates).toBe(0);
+      expect(pane.subagentLiveAggregate('anchor')?.evictedCount).toBe(2);
+    });
+
+    it('does not touch the window when a settling batch evicts nothing', async () => {
+      const pane = await paneWithAnchor('fold-noop');
+      pane.upsertItem(childItem('fold-noop', { id: 'child-1', status: 'streaming' }));
+      const revisionBefore = pane.timelineRevision;
+      const itemsBefore = pane.items;
+
+      // Settled, but not a descendant of the collapsed card — nothing to
+      // evict, so the drop must not replace the array or bump a revision.
+      pane.upsertItem(makeItem({
+        id: 'top-level', threadId: 'fold-noop', turnIndex: 1, itemIndex: 9,
+        status: 'completed',
+      }));
+
+      expect(pane.items.some((it) => it.id === 'child-1')).toBe(true);
+      expect(pane.items).not.toBe(itemsBefore);
+      // One bump for the append itself, none for a no-op drop.
+      expect(pane.timelineRevision).toBe(revisionBefore + 1);
+    });
+
     it('keeps a streaming child in memory and evicts it when it settles', async () => {
       const pane = await paneWithAnchor('fold-streaming');
 
@@ -9466,5 +9517,245 @@ describe('removeRevertedItems', () => {
     const pane = await buildPane(makeThread({ id: 't-rr-idem' }), revertItems('t-rr-idem'));
     pane.removeRevertedItems(1, ['prompt']);
     expect(pane.removeRevertedItems(1, ['prompt'])).toEqual([]);
+  });
+});
+
+// The offscreen row-UI prune bails on an unchanged signature, and this
+// revision is the whole active-row leg of it. A missed bump strands
+// expansion state on rows the prune should have released; a gratuitous
+// one puts the retention collection back on every streamed row, which
+// is what it was extracted from. Transitions, not states — a pane that
+// bumps on entering a status but not on leaving it passes any
+// state-only suite.
+describe('rowUiRetentionRevision', () => {
+  function streamingPane() {
+    const pane = createThreadPane();
+    pane.upsertItem(
+      makeItem({ id: 'text', kind: 'assistant_text', status: 'streaming', summary: 'hel' }),
+    );
+    return pane;
+  }
+
+  it('starts at zero and bumps once for an appended active row', () => {
+    const pane = createThreadPane();
+    expect(pane.rowUiRetentionRevision).toBe(0);
+    pane.upsertItem(makeItem({ id: 'settled', status: 'completed' }));
+    expect(pane.rowUiRetentionRevision).toBe(0);
+    pane.upsertItem(
+      makeItem({ id: 'live', turnIndex: 1, kind: 'tool_call', status: 'running' }),
+    );
+    expect(pane.rowUiRetentionRevision).toBe(1);
+  });
+
+  it('holds still across streamed text on a live row', async () => {
+    const pane = streamingPane();
+    const revision = pane.rowUiRetentionRevision;
+
+    pane.upsertItem(
+      makeItem({
+        id: 'text',
+        kind: 'assistant_text',
+        status: 'streaming',
+        summary: 'hello',
+        updatedAt: 1,
+      }),
+    );
+    pane.applyItemDelta({
+      threadId: 'thread-1',
+      itemId: 'text',
+      kind: 'assistant_text',
+      delta: ' world',
+      updatedAt: 2,
+    });
+    pane.__flushItemSmoothersForTest();
+    await nextFrame();
+    pane.applyItemMeta({
+      threadId: 'thread-1',
+      itemId: 'text',
+      kind: 'assistant_text',
+      meta: JSON.stringify({ pathRefs: [] }),
+      updatedAt: 3,
+    });
+
+    expect(pane.items[0].summary).toContain('world');
+    expect(pane.rowUiRetentionRevision).toBe(revision);
+  });
+
+  it('holds still across a non-smooth streamed delta', () => {
+    const pane = createThreadPane();
+    pane.upsertItem(
+      makeItem({ id: 'out', kind: 'tool_call', status: 'streaming', summary: 'line' }),
+    );
+    const revision = pane.rowUiRetentionRevision;
+
+    pane.applyItemDelta({
+      threadId: 'thread-1',
+      itemId: 'out',
+      kind: 'tool_call',
+      delta: '\nmore',
+      updatedAt: 2,
+    });
+
+    expect(pane.items[0].summary).toBe('line\nmore');
+    expect(pane.rowUiRetentionRevision).toBe(revision);
+  });
+
+  it('bumps when an upsert attaches a payload to a live row, and again when it settles', () => {
+    const pane = createThreadPane();
+    pane.upsertItem(makeItem({ id: 'bash', kind: 'tool_call', status: 'running' }));
+    const revision = pane.rowUiRetentionRevision;
+
+    pane.upsertItem(
+      makeItem({
+        id: 'bash',
+        kind: 'tool_call',
+        status: 'running',
+        payloadId: 'payload-bash',
+        payloadKind: 'command_output',
+        updatedAt: 1,
+      }),
+    );
+    expect(pane.rowUiRetentionRevision).toBe(revision + 1);
+
+    pane.upsertItem(
+      makeItem({
+        id: 'bash',
+        kind: 'tool_call',
+        status: 'completed',
+        payloadId: 'payload-bash',
+        payloadKind: 'command_output',
+        updatedAt: 2,
+      }),
+    );
+    expect(pane.rowUiRetentionRevision).toBe(revision + 2);
+  });
+
+  it('bumps when a field patch settles a live row but not for a summary-only patch', () => {
+    const pane = createThreadPane();
+    pane.upsertItem(makeItem({ id: 'bash', kind: 'tool_call', status: 'running' }));
+    const revision = pane.rowUiRetentionRevision;
+
+    pane.applyItemPatch({
+      threadId: 'thread-1',
+      itemId: 'bash',
+      kind: 'tool_call',
+      patch: { summary: 'Bash: still working', updatedAt: 1 },
+    });
+    expect(pane.rowUiRetentionRevision).toBe(revision);
+
+    pane.applyItemPatch({
+      threadId: 'thread-1',
+      itemId: 'bash',
+      kind: 'tool_call',
+      patch: { status: 'completed', updatedAt: 2 },
+    });
+    expect(pane.items[0].status).toBe('completed');
+    expect(pane.rowUiRetentionRevision).toBe(revision + 1);
+  });
+
+  it('bumps when a settled row goes live again', () => {
+    const pane = createThreadPane();
+    pane.upsertItem(makeItem({ id: 'row', kind: 'tool_call', status: 'completed' }));
+    const revision = pane.rowUiRetentionRevision;
+
+    pane.applyItemPatch({
+      threadId: 'thread-1',
+      itemId: 'row',
+      kind: 'tool_call',
+      patch: { status: 'running', updatedAt: 1 },
+    });
+
+    expect(pane.rowUiRetentionRevision).toBe(revision + 1);
+  });
+
+  it('bumps on a wholesale replacement that evicts a live row', async () => {
+    const pane = await buildPane(makeThread({ id: 't-retention' }), [
+      makeItem({ id: 'u0', threadId: 't-retention', turnIndex: 0, itemIndex: 0, kind: 'user_text', role: 'user' }),
+      makeItem({ id: 'live', threadId: 't-retention', turnIndex: 1, itemIndex: 0, status: 'running' }),
+    ]);
+    const revision = pane.rowUiRetentionRevision;
+
+    expect(pane.removeItemsFromTurn(1).map((it) => it.id)).toEqual(['live']);
+
+    expect(pane.rowUiRetentionRevision).toBeGreaterThan(revision);
+  });
+});
+
+describe('switch-away size-priors capture', () => {
+  // The mounted timeline holds state the store cannot reach — row-size
+  // priors, keyed by scroll-pane width and expansion signature — and the
+  // pane's items are the last thing that makes them capturable. Every
+  // downstream hook (the timeline's own $effect.pre, the restore effect)
+  // runs after `items` has already been replaced, which is why the store
+  // asks at the top of `switchThread` instead.
+  it('asks the controller to capture BEFORE the incoming thread lands', async () => {
+    const pane = await buildPane(makeThread({ id: 'thread-out' }), [
+      makeItem({ id: 'row', threadId: 'thread-out' }),
+    ]);
+    const seenAtCapture: Array<string | null> = [];
+    pane.attachScrollController(
+      stubScrollController({
+        persistSizePriors: () => {
+          seenAtCapture.push(pane.threadId);
+          seenAtCapture.push(pane.items[0]?.threadId ?? null);
+        },
+      }),
+    );
+
+    await pane.switchThread(makeThread({ id: 'thread-in' }));
+
+    // Called once, and with the OUTGOING thread still in place — a capture
+    // taken any later would pair the outgoing engine's measured sizes with
+    // the incoming thread's rows.
+    expect(seenAtCapture).toEqual(['thread-out', 'thread-out']);
+  });
+
+  it('tolerates a pane with no controller attached', async () => {
+    const pane = await buildPane(makeThread({ id: 'thread-out' }), [
+      makeItem({ id: 'row', threadId: 'thread-out' }),
+    ]);
+
+    await expect(pane.switchThread(makeThread({ id: 'thread-in' }))).resolves.toBeUndefined();
+  });
+});
+
+// The activity-run headers' third signal. Same shape as the retention
+// revision above and for the same reason: the per-item write chokepoint
+// cannot see a wholesale replacement, and a replacement can rewrite every
+// summary-relevant field under identical run membership.
+describe('activityRuns.wholesaleGeneration', () => {
+  it('holds across per-item writes and moves on a wholesale replacement', async () => {
+    const pane = await buildPane(makeThread({ id: 't-wholesale' }), [
+      makeItem({
+        id: 'u0',
+        threadId: 't-wholesale',
+        turnIndex: 0,
+        itemIndex: 0,
+        kind: 'user_text',
+        role: 'user',
+      }),
+      makeItem({
+        id: 'tool',
+        threadId: 't-wholesale',
+        turnIndex: 1,
+        itemIndex: 0,
+        kind: 'tool_call',
+        status: 'running',
+      }),
+    ]);
+    const generation = pane.activityRuns.wholesaleGeneration;
+
+    // A per-item write feeds the per-run signal, not this one.
+    pane.applyItemPatch({
+      threadId: 't-wholesale',
+      itemId: 'tool',
+      kind: 'tool_call',
+      patch: { status: 'completed', updatedAt: 1 },
+    });
+    expect(pane.activityRuns.wholesaleGeneration).toBe(generation);
+
+    expect(pane.removeItemsFromTurn(1).map((it) => it.id)).toEqual(['tool']);
+
+    expect(pane.activityRuns.wholesaleGeneration).toBeGreaterThan(generation);
   });
 });

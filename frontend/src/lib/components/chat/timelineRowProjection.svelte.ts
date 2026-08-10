@@ -4,10 +4,10 @@
 // helpers (current leaf item, response-pill duration) that the template
 // calls per rendered node.
 //
-// Run wrapping is last on purpose. The structural patch scans TOP-LEVEL
-// indexes for child-bearing roots, and those roots stop being top-level
-// once a run wraps them; patching the pre-run array and letting the run
-// pass consume the result keeps that untouched.
+// Everything here is invalidated by STRUCTURE ONLY (`timelineRevision`,
+// the run registry, the two run settings). Item content that changes
+// within a turn is resolved by the row components against the store, so a
+// streaming delta never re-enters this file.
 
 import { untrack } from 'svelte';
 import type { ThreadPane } from '../../stores/thread.svelte';
@@ -28,7 +28,6 @@ import { timelineRowDecorations, type TimelineRowDecorationSets } from './timeli
 import { codexSubagentReceiverLabels } from '../../utils/subagentLaunch';
 import { PROVIDER_DEFINITIONS } from '../../providers/catalog';
 import { filterRedundantNotifications } from '../../utils/notificationFilter';
-import { patchStructuralTimelineNodeItemRefs } from '../../utils/timelineNodePatch';
 import { getActiveTurn } from '../../stores/threadStatuses.svelte';
 
 const EMPTY_RECEIVER_LABELS = new Map<string, string>();
@@ -40,7 +39,7 @@ export interface TimelineRowProjectionOptions {
 }
 
 export interface TimelineRowProjection {
-  /** Reactive — patched structural roots (subagent/wait groups only). */
+  /** Reactive — the structural snapshot, before the reveal gate. */
   readonly groupedNodes: TimelineNode[];
   /** Reactive — the reveal-gated set the virtualizer renders. */
   readonly revealedNodes: TimelineNode[];
@@ -58,17 +57,28 @@ export function createTimelineRowProjection(
     return options.getPane().getItemById(node.item.id) ?? node.item;
   }
 
-  // Two-phase derivation: structuralNodes runs the expensive grouping
-  // pipeline only when the item window changes shape (timelineRevision
-  // bump). groupedNodes patches only child-bearing structural roots
-  // (subagent/wait groups); plain leaf rows and read_group rows resolve
-  // their current items inside their row components so ordinary
-  // streaming does not rebuild the virtualizer data array.
-  // Stable identity on purpose: both derivations below receive this and
-  // re-read fold state via the pane on each run (fold mutations always
-  // ride a timelineRevision bump, so no extra reactivity is needed).
+  // ONE structural derivation: the expensive grouping pipeline runs only
+  // when the item window changes shape (a `timelineRevision` bump), and
+  // what it produces is a SNAPSHOT. Every row component resolves its own
+  // current items against the store — `TimelineLeaf` and `ReadGroupRow`
+  // by id, `SubagentGroup` for its parent / entry count / latest-action
+  // preview, `WaitGroup` through the leaves it renders — so ordinary
+  // streaming never rebuilds the virtualizer data array.
+  //
+  // There used to be a second phase here that patched fresh item refs
+  // into the child-bearing roots. It was the last consumer-facing reason
+  // for a group card to read stale node fields, and it was TRACKED: any
+  // write to any group descendant (a smoother reveal tick, up to 48Hz)
+  // invalidated it and therefore the reveal gate, the run wrapping over
+  // every node, and the virtualizer's whole data array. Moving the three
+  // reads it existed for into the card removed the need, not just the
+  // cost — the card is also where the walk is bounded by what is
+  // actually mounted.
+  // Stable identity on purpose: the grouping pass re-reads fold state via
+  // the pane on each run (fold mutations always ride a timelineRevision
+  // bump, so no extra reactivity is needed).
   const subagentAggregates = (anchorId: string) => options.getPane().subagentLiveAggregate(anchorId);
-  let structuralNodes = $derived.by(() => {
+  let groupedNodes = $derived.by(() => {
     options.getPane().timelineRevision;
     return untrack(() =>
       groupConsecutiveReads(
@@ -76,23 +86,6 @@ export function createTimelineRowProjection(
       ),
     );
   });
-  function structuralPatchIndexesFor(nodes: readonly TimelineNode[]): number[] {
-    const indexes: number[] = [];
-    for (let i = 0; i < nodes.length; i += 1) {
-      const node = nodes[i];
-      if (node.kind === 'group' || node.kind === 'wait_group') indexes.push(i);
-    }
-    return indexes;
-  }
-  let structuralPatchIndexes = $derived(structuralPatchIndexesFor(structuralNodes));
-  let groupedNodes = $derived.by(() =>
-    patchStructuralTimelineNodeItemRefs(
-      structuralNodes,
-      structuralPatchIndexes,
-      (id) => options.getPane().getItemById(id),
-      subagentAggregates,
-    ),
-  );
   // Reveal gate: while a turn streams, the pane's sequencer holds the next
   // top-level row back until the current item's smoother drains
   // (`pane.revealBoundary`). `sliceRevealedNodes` returns the SAME array
@@ -103,7 +96,7 @@ export function createTimelineRowProjection(
   // indices line up with what the virtualizer actually renders.
   let gatedNodes = $derived(sliceRevealedNodes(groupedNodes, options.getPane().revealBoundary));
   // Run wrapping is the LAST pass, so `revealedNodes` is what it produces.
-  // It stays untracked for the same reason `structuralNodes` does: it walks
+  // It stays untracked for the same reason `groupedNodes` does: it walks
   // every node in the window, so running it per streaming delta would
   // rebuild the virtualizer's whole data array on every chunk. The reads in
   // the tracked prelude are the complete set of things that can change its

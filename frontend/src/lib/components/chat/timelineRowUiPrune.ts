@@ -65,9 +65,12 @@ export function createTimelineRowUiPrune(
 
     const pane = options.getPane();
     const revealedNodes = options.getRevealedNodes();
-    // Every signature input is available without walking the node tree,
-    // so a no-op prune (same window, same structure, same active rows)
-    // bails before the retention collection allocates anything.
+    // Every signature input is a scalar, so a no-op prune (same window,
+    // same structure, same active rows) bails without walking the node
+    // tree OR the item list and before the retention collection
+    // allocates anything. The pass NEVER proves a no-op by surveying
+    // items: the store bumps `rowUiRetentionRevision` at write time for
+    // the writes that can move the answer.
     const signature = timelineRowUiPruneSignature({
       threadId: pane.threadId,
       timelineRevision: pane.timelineRevision,
@@ -81,7 +84,7 @@ export function createTimelineRowUiPrune(
       revealItemIndex: pane.revealBoundary?.itemIndex ?? '',
       nodesLength: revealedNodes.length,
       range,
-      items: pane.items,
+      rowUiRetentionRevision: pane.rowUiRetentionRevision,
     });
     if (signature === lastRowUiPruneSignature) return;
     lastRowUiPruneSignature = signature;
@@ -94,6 +97,7 @@ export function createTimelineRowUiPrune(
         nodeBuffer: ROW_UI_RETAIN_NODE_BUFFER,
         tailNodeCount: ROW_UI_RETAIN_TAIL_NODE_COUNT,
         isGroupExpanded: pane.isSubagentGroupExpanded,
+        resolveItem: pane.getItemById,
       },
     );
     pane.pruneRowUiState(retention);

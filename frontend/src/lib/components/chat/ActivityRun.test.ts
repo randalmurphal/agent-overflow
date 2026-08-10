@@ -693,6 +693,48 @@ describe('<ActivityRun>', () => {
       expect(getByTestId('activity-run-header-counts').textContent?.trim()).toBe('1 Bash');
       expect(queryByTestId('activity-run-header-running')).toBeNull();
     });
+
+    it('recounts when a member settles through an in-place row write', async () => {
+      // The other write path into a run member. `upsertItem` above lands a
+      // whole row through the batch merge; a wire status patch replaces the
+      // row in place, at the same chokepoint the ~50Hz smoother uses. The
+      // header's signature is a counter now, so BOTH have to bump it — a
+      // signature that only the batch path fed would leave a run streaming
+      // "Bash" forever after its last tool finished.
+      await updateSetting('activityRunDefault', 'collapsed');
+      const pane = await buildPane(undefined, [tool('t0', 0, { status: 'running' })]);
+      const { getByTestId, queryByTestId } = render(MessageTimeline, { props: { pane } });
+      expect(getByTestId('activity-run-header-running').textContent).toContain('Bash');
+
+      pane.applyItemPatch({
+        threadId: 'thread-1', itemId: 't0', kind: 'tool_call',
+        patch: { status: 'errored', updatedAt: Date.now() + 1 },
+      });
+      await tick();
+
+      expect(queryByTestId('activity-run-header-running')).toBeNull();
+      expect(getByTestId('activity-run-header-failure')).toBeInTheDocument();
+    });
+
+    it('leaves the header alone while a member\'s content grows', async () => {
+      // The negative half: a member's summary text growing is what the
+      // reveal tick does thousands of times a turn, and it changes nothing
+      // the header shows. Pinned at the DOM because that is the contract;
+      // `activityRunSummaryFieldsChanged` pins the mechanism.
+      await updateSetting('activityRunDefault', 'collapsed');
+      const pane = await buildPane(undefined, [tool('t0', 0, { status: 'running' })]);
+      const { getByTestId } = render(MessageTimeline, { props: { pane } });
+      const before = getByTestId('activity-run-header-running').textContent;
+
+      pane.applyItemPatch({
+        threadId: 'thread-1', itemId: 't0', kind: 'tool_call',
+        patch: { summary: 'Bash: ls -la /very/long/path', updatedAt: Date.now() + 1 },
+      });
+      await tick();
+
+      expect(pane.getItemById('t0')?.summary).toContain('/very/long/path');
+      expect(getByTestId('activity-run-header-running').textContent).toBe(before);
+    });
   });
 
   describe('jumping to an item inside a run', () => {

@@ -34,6 +34,7 @@ import type {
   ActivityRunFocusRequest,
   ActivityRunMountWindow,
 } from '../utils/activityRunWindow';
+import { SvelteMap } from 'svelte/reactivity';
 import { reportFrontendDiagnostic } from '../utils/frontendErrorCapture';
 
 export interface ActivityRunScrollSnapshot {
@@ -165,6 +166,46 @@ export interface ThreadActivityRuns extends ActivityRunIdentity {
   requestFocus(runId: string, request: ActivityRunFocusRequest): boolean;
   /** Read and clear the pending focus request. */
   takeFocus(runId: string): ActivityRunFocusRequest | null;
+  /**
+   * How many times a member of `runId` has had a summary-relevant field
+   * change (see `activityRunSummaryFieldsChanged`). The header keys its
+   * summary on this, so a reveal tick — which replaces the member's item
+   * object ~50 times a second without touching those fields — costs one
+   * number comparison instead of a walk over every member.
+   *
+   * Per run on purpose. A pane-global revision would move on any row's
+   * every write and drag every run's summary along with it, which is the
+   * cost this replaces, not a smaller version of it.
+   */
+  memberContentRevision(runId: string): number;
+  /**
+   * Record that `itemId`'s summary fields changed. A no-op for an id no
+   * run holds, so the pane's write chokepoints can call it unconditionally
+   * rather than each deciding whether a row is in a run.
+   */
+  noteMemberContentChanged(itemId: string): void;
+  /**
+   * Bumped whenever the pane replaces its item array WHOLESALE (a paged
+   * load, a cache paint reconciled by `SyncThreadWindow`, a window prune).
+   * Folded into the header's summary key alongside the per-run signals.
+   *
+   * A wholesale replace can change every summary-relevant field on rows
+   * whose run membership is identical — the cache paint that shows a tool
+   * as running, reconciled a moment later by the attested answer that says
+   * it completed. `indexMembers` sees the same ordered ids and
+   * `noteMemberContentChanged` never runs (nothing went through the
+   * per-item write path), so without this the header would keep rendering
+   * the stale summary until the run's membership happened to move.
+   *
+   * Deliberately pane-global and O(1): unlike a streaming delta, a
+   * wholesale replace happens at settle/prune cadence, so re-summarizing
+   * every mounted header then is the correct trade — the walk it costs is
+   * bounded by what is on screen and it happens a handful of times per
+   * thread visit.
+   */
+  readonly wholesaleGeneration: number;
+  /** Record a wholesale item-array replacement. See `wholesaleGeneration`. */
+  noteWholesaleReplace(): void;
   /** Drop everything — thread switch. */
   clear(): void;
 }
@@ -179,6 +220,14 @@ interface RunEntry {
    */
   threadId: string;
   members: Set<string>;
+  /**
+   * Bumped by `indexMembers` when the ORDERED membership changes — a join,
+   * a leave, a swap, or a reorder of the same ids. Plain, not `$state`: it
+   * is written during the projection pass (which runs untracked and must
+   * not touch reactive state) and read out of the same pass onto the node,
+   * where consumers pick it up as a prop.
+   */
+  membershipEpoch: number;
   collapsed: boolean | null;
   /**
    * The run currently has a clip on screen to record a position from.
@@ -232,7 +281,14 @@ interface RunEntry {
  * in every thread — so a bare item id would let one thread's first run
  * revive another's state on a switch.
  */
-interface ArchivedRun extends Omit<RunEntry, 'members' | 'focus' | 'clipOpen' | 'openedLive'> {
+// `membershipEpoch` is excluded with the DOM-shaped fields: a revived run
+// has no members yet, so its epoch restarts at 0 and the first `resolve`
+// pass stamps it — carrying the old number would claim a membership the
+// entry cannot describe.
+interface ArchivedRun extends Omit<
+  RunEntry,
+  'members' | 'focus' | 'clipOpen' | 'openedLive' | 'membershipEpoch'
+> {
   keys: string[];
 }
 
@@ -254,6 +310,7 @@ function emptyEntry(threadId: string): RunEntry {
   return {
     threadId,
     members: new Set(),
+    membershipEpoch: 0,
     collapsed: null,
     clipOpen: true,
     openedLive: false,
@@ -356,6 +413,16 @@ export function createThreadActivityRuns(
   // Reverse index so migration is one lookup per member instead of a scan
   // over every entry. Rebuilt incrementally as entries take new members.
   const runIdByMember = new Map<string, string>();
+  // Per-run content revision, keyed by runId. Reactive per KEY (SvelteMap),
+  // so a member changing inside one run does not invalidate the headers of
+  // the other runs on screen. Entries are dropped with their run in
+  // `endPass`/`clear`; a missing key reads as 0, which is also what a run
+  // that has never seen a member change should report.
+  const memberContentRevisions = new SvelteMap<string, number>();
+  // See `wholesaleGeneration` on the interface. Reactive and pane-global,
+  // which the per-run revisions deliberately are not — this one only moves
+  // at settle/prune cadence.
+  let wholesaleGeneration = $state(0);
   // Swept entries, reachable by the first and last member each run had, keyed
   // per thread. Two keys because both edges move independently: the older
   // prune takes a run's first members and the recent prune takes its last, and
@@ -398,16 +465,40 @@ export function createThreadActivityRuns(
     runId: string,
     rowMemberIds: readonly (readonly string[])[],
   ): void {
+    // Built before the old set is torn down so membership can be compared:
+    // the header stamps its summary with `membershipEpoch` rather than
+    // walking the ids, and a swap that preserved the count would otherwise
+    // be invisible to it.
+    //
+    // Compared POSITIONALLY, not as a set. `Set` iterates in insertion
+    // order and insertion here follows row order, so the stored set IS the
+    // ordered membership — and the summary reads it that way: the running
+    // label is the LAST active member in iteration order, so the same ids
+    // arriving in a different order is a different summary. A set-equality
+    // test would have skipped the bump and left the header naming a tool
+    // that is no longer the one in flight.
+    const next = new Set<string>();
+    const previous = entry.members.values();
+    let changed = false;
+    for (const row of rowMemberIds) {
+      for (const id of row) {
+        // Deduped first, so the walk compares the same sequence the set
+        // stores; a repeated id must not advance the old iterator twice.
+        if (next.has(id)) continue;
+        next.add(id);
+        if (!changed && previous.next().value !== id) changed = true;
+      }
+    }
+    // A shrink whose survivors kept their order matches position for
+    // position and would otherwise read as unchanged; anything left in the
+    // old iterator is a member this pass dropped.
+    if (!changed && previous.next().done !== true) changed = true;
     for (const id of entry.members) {
       if (runIdByMember.get(id) === runId) runIdByMember.delete(id);
     }
-    entry.members = new Set();
-    for (const row of rowMemberIds) {
-      for (const id of row) {
-        entry.members.add(id);
-        runIdByMember.set(id, runId);
-      }
-    }
+    entry.members = next;
+    for (const id of next) runIdByMember.set(id, runId);
+    if (changed) entry.membershipEpoch += 1;
   }
 
   function beginPass(): void {
@@ -441,6 +532,7 @@ export function createThreadActivityRuns(
         entries.set(minted, {
           threadId,
           members: new Set(),
+          membershipEpoch: 0,
           collapsed: revived.collapsed,
           clipOpen: true,
           openedLive: false,
@@ -543,6 +635,7 @@ export function createThreadActivityRuns(
       runId,
       mountedFrom,
       mountedRows: rows,
+      membershipEpoch: entry.membershipEpoch,
     };
   }
 
@@ -554,7 +647,25 @@ export function createThreadActivityRuns(
         if (runIdByMember.get(id) === runId) runIdByMember.delete(id);
       }
       entries.delete(runId);
+      // Not archived: the revision only means "something changed since the
+      // last render", and a run coming back from the archive re-renders
+      // from scratch anyway. Keeping it would grow with every swept run.
+      memberContentRevisions.delete(runId);
     }
+  }
+
+  function memberContentRevision(runId: string): number {
+    return memberContentRevisions.get(runId) ?? 0;
+  }
+
+  function noteMemberContentChanged(itemId: string): void {
+    const runId = runIdByMember.get(itemId);
+    if (runId === undefined) return;
+    memberContentRevisions.set(runId, (memberContentRevisions.get(runId) ?? 0) + 1);
+  }
+
+  function noteWholesaleReplace(): void {
+    wholesaleGeneration += 1;
   }
 
   function threadDefaultCollapsed(): boolean {
@@ -650,6 +761,12 @@ export function createThreadActivityRuns(
     resolve,
     collapsedFor,
     endPass,
+    memberContentRevision,
+    noteMemberContentChanged,
+    get wholesaleGeneration() {
+      return wholesaleGeneration;
+    },
+    noteWholesaleReplace,
     setCollapsed,
     get bulkCollapsed() {
       return threadDefaultCollapsed();
@@ -770,6 +887,7 @@ export function createThreadActivityRuns(
       for (const entry of entries.values()) archiveEntry(entry);
       entries.clear();
       runIdByMember.clear();
+      memberContentRevisions.clear();
       claimed = new Set();
       // The bulk override is scoped to the thread it was taken on (see its
       // declaration), so the incoming thread starts from the setting again.

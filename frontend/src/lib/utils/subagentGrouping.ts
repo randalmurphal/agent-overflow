@@ -291,6 +291,13 @@ export interface ActivityRunNode {
   mountedFrom: number;
   mountedRows: number;
   /**
+   * Registry-assigned membership stamp — see `ActivityRunResolution`.
+   * The header pairs it with the pane's per-run content revision and the
+   * registry's wholesale-replace generation to key its summary, so no
+   * change any of the three covers needs a walk over `memberItemIds`.
+   */
+  membershipEpoch: number;
+  /**
    * Every item the run represents, group members included, in timeline
    * order. The chip aggregates its counts from the CURRENT items behind
    * these ids rather than from a snapshot baked in here: counts, failure,
@@ -496,14 +503,22 @@ export function* renderedItemIdsWithin(
  *
  * Comparison key is `(turnIndex, itemIndex)` — the same canonical
  * ordering the timeline uses everywhere else.
+ *
+ * `getItem` re-resolves each descendant against the store, which is how
+ * the mounted card tracks a streaming child: the node tree is a
+ * structural snapshot, so without it the preview would only move when
+ * the timeline's shape changed. Omitting it reads the snapshot as-is,
+ * which is what the pure grouping pass wants.
  */
 export function pickLatestChildSummary(
   children: TimelineNode[],
   fold?: SubagentFoldAggregate,
+  getItem?: (id: string) => Item | undefined,
 ): string {
   let bestActive: { item: Item; preview: string } | null = null;
   let bestTerminal: { item: Item; preview: string } | null = null;
-  for (const item of descendantItems(children)) {
+  for (const snapshot of descendantItems(children)) {
+    const item = getItem?.(snapshot.id) ?? snapshot;
     const preview = itemPreviewText(item);
     if (!preview) continue;
     if (isItemActive(item)) {
