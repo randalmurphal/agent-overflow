@@ -2066,6 +2066,83 @@ on a spent reject budget silently destroyed the gate's still-declared approve.
   filename limit, failing the cut into a `setup-failed` park; bounding the
   fragments would reintroduce the collision class, so it stays.
 
+## A usage limit is a schedule, not an outage (2026-08-10)
+
+- **D71. Quota refusals park with the reset time and resume themselves.**
+  Live-campaign feedback: a dated usage-limit refusal ("try again at Aug
+  15th 7:56 PM") burned the whole transient backoff ladder in seconds,
+  parked generic `retries-exhausted`, and waited days for a human alarm
+  clock. Recognition is a PAIR, typed on both providers, never message
+  prose: a refusal enum (Claude `assistant.error == "rate_limit"`; Codex
+  `usageLimitExceeded`) plus the rate-limit windows the SAME session
+  reported (Claude `rate_limit_event` `status: rejected` + `resetsAt`;
+  Codex `account/rateLimits/updated` — Unix seconds on both, evidenced
+  against both CLIs' sources). A recognized pair skips the remaining
+  ladder and parks `retries-exhausted` immediately; a refusal missing
+  either half falls through to the ordinary ladder unchanged. Along the
+  way a real drop was fixed: AO's Claude parser discarded the rejected
+  snapshot (it gated on `utilization`, which the rejected path never
+  sets), and `observe` recorded snapshots only outside backoff — both
+  would have made the feature silently inert.
+- **The park arms its own return.** `work_items.auto_resume_at` (v54,
+  Unix ms, 0 = unarmed) is the single source of truth; an app-side timer
+  (the engine holds no timers) fires a bare resume — a continuation of
+  the SAME session per D70, not a fresh retry — at the earliest future
+  boundary among windows ≥99%, plus 1–3 min of id-derived jitter so a
+  wave does not burst. The cause is composed AFTER the schedule write and
+  claims only what happened: "resumes itself at <T>" on success, the
+  reset time alone (with "resume it yourself") when the write failed. A
+  boot sweep re-arms after restarts (past-due rows fire on a 30s delay);
+  every transition out of the park clears both column and timer; a failed
+  fire re-arms at 5 min and each fire re-checks resumability, so a
+  since-repaired run clears itself. `run resume --at <time|+dur>` arms
+  the same mechanism manually on any continuable park.
+- **An outcome nobody authored an account for carries the runner's**
+  (`Outcome.Detail`). An execution failure resting with an EMPTY envelope
+  used to leave no cause, no envelope, nothing to diagnose from
+  (live-campaign report: a lens death with a bare `execution-failure`).
+  The runner now fills a bounded per-attempt failure detail at every
+  failure exit, and the engine writes it as the park cause ONLY when the
+  envelope is empty — an envelope with content stays the sole account.
+  A latent deadlock fixed in the same area: `stopAndFinish` called from
+  the provider event pipeline blocked on an interrupt whose response
+  could only arrive through that pipeline; parks from the observe path
+  now stop off-wire.
+
+## The steer and the wake stop trusting luck (2026-08-10)
+
+- **D72. An undecodable guidance slot heals instead of bricking.** The
+  pending-guidance column is engine-written JSON, but a slot that will
+  not decode used to park `wiring-error` at EVERY fresh entry with no
+  clearing verb — an immortal park loop. Now it costs one loud park: the
+  raw bytes are quarantined to the engine log (`guidance-undecodable`,
+  never truncated — that line is the only surviving copy), the column is
+  cleared, and the cause states all three facts plus "re-issue the
+  steer"; the next resume proceeds. A failed clear stays an unhealed
+  error that promises no repair. `Guide` over a corrupt slot heals and
+  KEEPS the caller's entry (the corrupt bytes were unrecoverable either
+  way; the caller's steer is the only one still live) and reports the
+  quarantine on its own result — `GuidanceState.Quarantined`, rendered as
+  a `warning:` line by `run guide` — because a generic error toast on a
+  call that succeeded would be false and invisible to the CLI caller who
+  actually lost the slot.
+- **A wake is recorded as delivered only once it is durable.** The live
+  branch used to persist the coalescing signature at hand-off to an
+  in-memory queue; a session teardown between queue and dispatch lost
+  the message while the signature said delivered — suppressing the
+  identical re-park forever. The hand-off now writes a `queued:` claim
+  and the dispatch callback promotes it by compare-and-set; any clear
+  spends the claim automatically (the invalidation lives in the column,
+  so no future clear site can miss it), and a stranded claim can never
+  suppress — it matches no real signature. Descendant-park wakes also
+  stopped carrying the root's declared workflow outputs (stale
+  carry-forward values re-announced on every park deep in a campaign
+  tree); the descendant's own attempt outputs are the message.
+- Read-path residue from the same round: `scopedRun` and the watch tree
+  walk moved off full-row reads (`GetWorkItemSummary` / a new
+  `WorkItemNode` projection with no snapshot join); the two verbs that
+  genuinely need seeds/budget/snapshot fetch the full row themselves.
+
 ## An API error costs a resume, not a re-run (2026-08-10)
 
 - **D70. `retries-exhausted` joins the continuable parks.** User-reported:

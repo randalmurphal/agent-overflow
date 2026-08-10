@@ -1732,6 +1732,35 @@ CREATE TABLE thread_import_state (
 		// to carry it, like every other column added since v39.
 		SQL: `ALTER TABLE work_items ADD COLUMN pending_guidance TEXT NOT NULL DEFAULT '';`,
 	},
+	{
+		Version: 54,
+		Name:    "work_item_auto_resume_at",
+		// Unix milliseconds at which a parked run resumes ITSELF, or 0 for the
+		// runs that never will — which is almost all of them.
+		//
+		// It is written when a provider refuses a turn because the account's
+		// usage allowance is spent AND says when that allowance comes back: the
+		// transient-retry ladder cannot clear a limit that resets in days, so the
+		// run parks `retries-exhausted` immediately and comes back at the stated
+		// moment instead of waiting for a human to notice. `agent-overflow run
+		// resume --at` arms the same column by hand.
+		//
+		// It is DURABLE rather than an in-memory timer for the reason the wake
+		// signature is: a five-day stall outlives any process, so a restart has
+		// to be able to re-arm what it finds. The app owns the timer — the engine
+		// holds none by boundary — and every path that moves the run out of that
+		// park clears the column, so an opt-out clears what the opt-in stored.
+		//
+		// Deliberately absent from `workItemColumns`, exactly like
+		// `wake_signature` and `pending_guidance`: no listing, overlay, or run
+		// projection reads it, and every row those reads carry would pay for it.
+		// Its own narrow accessors are the only readers and writers.
+		//
+		// A plain ADD COLUMN with no CHECK — the value is engine-adjacent app
+		// state and this table is nobody's FK parent. A future `work_items`
+		// REBUILD has to carry it, like every other column added since v39.
+		SQL: `ALTER TABLE work_items ADD COLUMN auto_resume_at INTEGER NOT NULL DEFAULT 0;`,
+	},
 }
 
 // rebuildWorkItemsSoftStopV44SQL adds `soft_stop` — a standing request to stop

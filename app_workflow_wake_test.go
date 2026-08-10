@@ -24,12 +24,17 @@ import (
 // flush queue — so a test can assert which one a delivery took without a
 // provider process.
 type wakeHarness struct {
-	app        *App
-	mu         sync.Mutex
-	sends      []string
-	queued     []string
-	events     []string
-	errorTexts []string
+	app   *App
+	mu    sync.Mutex
+	sends []string
+	// queued holds the messages that reached the flush queue's dispatcher and
+	// STOPPED there — the harness stands in for a dispatch worker that has not
+	// run yet, which is the state a crash or a session teardown freezes. Nothing
+	// is delivered until dispatchQueued runs their callbacks.
+	queued      []string
+	queuedItems []triage.QueuedFlushItem
+	events      []string
+	errorTexts  []string
 }
 
 func newWakeHarness(t *testing.T) *wakeHarness {
@@ -47,6 +52,7 @@ func newWakeHarness(t *testing.T) *wakeHarness {
 		defer h.mu.Unlock()
 		for _, item := range items {
 			h.queued = append(h.queued, item.Message)
+			h.queuedItems = append(h.queuedItems, item)
 		}
 	})
 	app.testEmitHook = func(name string, data any) {
@@ -71,6 +77,22 @@ func (h *wakeHarness) snapshot() (sends, queued, events, errorTexts []string) {
 // drain waits for the app's wake worker, which runs off the engine's emit
 // goroutine and therefore is not finished when the transition returns.
 func (h *wakeHarness) drain() { h.app.workflowWake.Wait() }
+
+// dispatchQueued completes the queued messages the way the real dispatch worker
+// does once it has written them to the provider: it runs each item's
+// OnDispatched callback (dispatchFlushWithGeneration's success path). Until this
+// runs, a queued wake has been composed and handed off but not delivered.
+func (h *wakeHarness) dispatchQueued() {
+	h.mu.Lock()
+	pending := h.queuedItems
+	h.queuedItems = nil
+	h.mu.Unlock()
+	for _, item := range pending {
+		if item.OnDispatched != nil {
+			item.OnDispatched()
+		}
+	}
+}
 
 func (h *wakeHarness) chatThread(t *testing.T, id string) store.Thread {
 	t.Helper()
@@ -627,5 +649,78 @@ func TestWorkflowDescendantWakeCarriesTheDescendantsParkCause(t *testing.T) {
 	}
 	if !strings.Contains(sends[0], untrustedtext.Quote(cause, wake.MaxCauseRunes)) {
 		t.Fatalf("root wake does not carry the descendant's park cause:\n%s", sends[0])
+	}
+}
+
+// A descendant's park is composed against the root, and the root has NOT
+// finished — so the root's declared outputs have no business on that message.
+// For a recursive campaign they are the previous wave's carry-forward values
+// (`next-wave-number: 3`), restated on every park deep in the tree as though
+// they described the run that just stopped. Same reasoning that already blanks
+// the root's own park reason on a descendant wake; the descendant's real
+// outputs ride the message as AttemptOutputs.
+func TestWorkflowDescendantParkOmitsTheRootsDeclaredOutputs(t *testing.T) {
+	h := newWakeHarness(t)
+	thread := h.chatThread(t, "origin-carryforward")
+	root := h.run(t, "campaign-root", engine.StateRunning, "")
+	if err := h.app.store.UpdateWorkItemOriginThread(root.ID, thread.ID); err != nil {
+		t.Fatal(err)
+	}
+	// A recursive campaign root: the wave that already finished produced the
+	// carry-forward value its workflow declares as an output.
+	snapshot := json.RawMessage(
+		`{"workflow":{"id":"campaign","outputs":{"next-wave-number":{"from":"advance.next"}}}}`)
+	if err := h.app.store.UpdateWorkItemRunStart(root.ID, snapshot, "", "", "", 1); err != nil {
+		t.Fatal(err)
+	}
+	h.phase(t, root.ID, "advance", 1, "completed", "root-thread",
+		json.RawMessage(`{"status":"done","outputs":{"next":3}}`))
+	child := store.WorkItem{
+		ID: "campaign-wave", ProjectID: defaultTestProjectID, Goal: "wave", WorkflowID: "wave",
+		WorkflowScope: "shared", State: string(engine.StateNeedsHuman), Reason: string(engine.ReasonQuestion),
+		Source: "call", ParentItemID: root.ID, ParentPhaseID: "advance", ParentAttempt: 1,
+		CallDepth: 1, CreatedAt: 2,
+	}
+	if err := h.app.store.CreateWorkItem(child); err != nil {
+		t.Fatal(err)
+	}
+	h.phase(t, child.ID, "ask", 1, "parked", "wave-thread",
+		json.RawMessage(`{"status":"question","question":"Which environment?"}`))
+
+	h.app.afterWorkflowStateEvent(engine.StateEvent{
+		ItemID: child.ID, ProjectID: child.ProjectID,
+		From: engine.StateRunning, To: engine.StateNeedsHuman,
+	})
+	h.drain()
+
+	sends, _, _, _ := h.snapshot()
+	if len(sends) != 1 {
+		t.Fatalf("descendant park produced %d wakes, want one", len(sends))
+	}
+	for _, unwanted := range []string{"\n\nOutputs:", "next-wave-number"} {
+		if strings.Contains(sends[0], unwanted) {
+			t.Fatalf("descendant wake carried the root's declared outputs (%q):\n%s", unwanted, sends[0])
+		}
+	}
+
+	// The same outputs on the root's OWN resting wake are exactly right — this
+	// is what proves the fixture declares them at all.
+	if err := h.app.store.UpdateWorkItemState(root.ID, string(engine.StateDone), "", 20); err != nil {
+		t.Fatal(err)
+	}
+	h.app.afterWorkflowStateEvent(engine.StateEvent{
+		ItemID: root.ID, ProjectID: root.ProjectID,
+		From: engine.StateRunning, To: engine.StateDone,
+	})
+	h.drain()
+
+	sends, _, _, _ = h.snapshot()
+	if len(sends) != 2 {
+		t.Fatalf("root resting produced %d wakes in total, want 2", len(sends))
+	}
+	for _, want := range []string{"\n\nOutputs:", `- "next-wave-number": "3"`} {
+		if !strings.Contains(sends[1], want) {
+			t.Fatalf("the root's own resting wake dropped its declared outputs (%q):\n%s", want, sends[1])
+		}
 	}
 }

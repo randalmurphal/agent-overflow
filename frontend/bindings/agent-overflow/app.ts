@@ -4169,6 +4169,22 @@ export function WorkflowRunAutomationNow(automationID: string): $CancellableProm
 }
 
 /**
+ * WorkflowScheduleResume arms a parked run's self-resume by hand — the manual
+ * half of the mechanism a dated usage-limit refusal arms on its own. It resumes
+ * nothing now: the run stays exactly where it is until the moment arrives, and
+ * every action that repairs it in the meantime disarms the schedule.
+ * 
+ * `at` is either an RFC 3339 timestamp or a leading-`+` duration relative to the
+ * APP's clock (`+36h`), which is the clock the timer will actually run on.
+ * 
+ * It returns the armed moment in RFC 3339 so the caller prints the time the app
+ * holds rather than re-deriving one from a duration it sent.
+ */
+export function WorkflowScheduleResume(itemID: string, at: string): $CancellablePromise<string> {
+    return $Call.ByID(658224978, itemID, at);
+}
+
+/**
  * WorkflowSendPRReviewCommentsToThread opens or reuses the run's linked
  * thread, then sends the current unresolved review comments through the
  * normal user-message path.

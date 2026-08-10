@@ -133,6 +133,18 @@ func parseAskUserQuestions(input json.RawMessage) []provider.UserInputQuestion {
 // headers remain a compatibility fallback. Drop wire snapshots that lack
 // `utilization` so the probe's real percentages aren't clobbered by a stale
 // 0%.
+//
+// `status: "rejected"` is the one exception, and it is not a stale reading:
+// it is the envelope the CLI emits when the API refused the request with a
+// 429 (`extractQuotaStatusFromError` → `emitStatusChange`, claude-code
+// `src/services/claudeAiLimits.ts`). That path builds its limits from the
+// response headers, which carry `anthropic-ratelimit-unified-reset` and the
+// representative claim but NOT a utilization — so the refusal, the window it
+// applies to, and the moment it clears would all be dropped by the rule
+// above. A refused window is spent by definition, so it is recorded at 100%,
+// which is a truthful reading and cannot regress the store's per-window
+// maximum. Both the boundary and the window are still required: a rejection
+// carrying neither says only "later", which is what the app already assumes.
 func parseRateLimitEvent(threadID string, raw map[string]json.RawMessage, now time.Time) ([]provider.ProviderEvent, error) {
 	infoRaw, ok := raw["rate_limit_info"]
 	if !ok {
@@ -140,6 +152,7 @@ func parseRateLimitEvent(threadID string, raw map[string]json.RawMessage, now ti
 	}
 
 	var info struct {
+		Status        string   `json:"status"`
 		ResetsAt      int64    `json:"resetsAt"`
 		RateLimitType string   `json:"rateLimitType"`
 		Utilization   *float64 `json:"utilization"`
@@ -148,7 +161,13 @@ func parseRateLimitEvent(threadID string, raw map[string]json.RawMessage, now ti
 		return nil, nil
 	}
 
-	if info.Utilization == nil {
+	usedPercent := 0.0
+	switch {
+	case info.Utilization != nil:
+		usedPercent = *info.Utilization * 100
+	case info.Status == rateLimitStatusRejected && info.ResetsAt > 0:
+		usedPercent = 100
+	default:
 		return nil, nil
 	}
 
@@ -159,7 +178,7 @@ func parseRateLimitEvent(threadID string, raw map[string]json.RawMessage, now ti
 	entry := provider.RateLimitEntry{
 		LimitID:     descriptor.limitID,
 		LimitName:   descriptor.limitName,
-		UsedPercent: *info.Utilization * 100,
+		UsedPercent: usedPercent,
 		WindowMins:  descriptor.windowMins,
 		ResetsAt:    info.ResetsAt,
 	}

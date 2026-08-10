@@ -281,15 +281,23 @@ func TestWorkflowTransientRetryExhaustionCleansAttempt(t *testing.T) {
 	runner.observe(runKey, provider.ProviderEvent{Kind: provider.EventSessionStatus, Content: "error"})
 	runner.observe(runKey, provider.ProviderEvent{Kind: provider.EventSessionStatus, Content: "disconnected"})
 	runner.sessionDisconnected("thread")
+	// The stop runs off the provider event path (`stopAndFinishOffWire`), so the
+	// completion is awaited rather than expected inline: the interrupt inside it
+	// must never be able to block the pipeline that would deliver its own
+	// response. Detach happens before `complete`, so the registry is already
+	// clean by the time the outcome lands.
 	select {
 	case outcome := <-outcomes:
 		if outcome.Kind != engine.OutcomeTransientExhausted {
 			t.Fatalf("outcome = %+v", outcome)
 		}
-	default:
-		t.Fatal("retry exhaustion did not complete synchronously")
+	case <-time.After(2 * time.Second):
+		t.Fatal("retry exhaustion never completed")
 	}
-	if runner.runs[runKey] != nil || runner.workItemForThread("thread") != "" {
+	runner.mu.Lock()
+	leaked := runner.runs[runKey] != nil
+	runner.mu.Unlock()
+	if leaked || runner.workItemForThread("thread") != "" {
 		t.Fatal("retry exhaustion leaked runner state")
 	}
 }

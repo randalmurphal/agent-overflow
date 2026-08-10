@@ -121,6 +121,11 @@ func ContinuableReason(reason Reason) bool {
 	return slices.Contains(continuableReasons, reason)
 }
 
+// ContinuableReasons is ContinuableReason's membership, for a caller OUTSIDE
+// this package whose refusal has to name the set — the same rule the internal
+// refusals follow, so an app-side message cannot fall behind a new member.
+func ContinuableReasons() []Reason { return slices.Clone(continuableReasons) }
+
 // continuableReasonList renders ContinuableReason's membership for a refusal
 // that has to say which parks it applies to.
 func continuableReasonList() string {
@@ -148,9 +153,19 @@ const (
 
 // Outcome is a runner completion. Envelope has already passed provider-facing
 // post-validation; execution failures may omit it.
+//
+// Detail is the RUNNER's account of an outcome the element never authored one
+// for — the provider error a turn died on, the usage limit that stopped the
+// retry ladder, the send that failed. It exists because the envelope is
+// normally the account, and the outcomes that carry none used to reach a park
+// with nothing at all: `execution-failure` with an empty envelope left no
+// cause, no envelope, and nothing to diagnose from. It is used ONLY where the
+// envelope is empty (`outcomeDetailCause`, `fsm.go`); an envelope with content
+// stays the sole account, so nothing is ever double-written.
 type Outcome struct {
 	Kind     OutcomeKind     `json:"kind"`
 	Envelope json.RawMessage `json:"envelope,omitempty"`
+	Detail   string          `json:"detail,omitempty"`
 }
 
 // RunKey uniquely identifies one running piece of work: a phase attempt, or
@@ -290,6 +305,29 @@ type GuidanceState struct {
 	State   State           `json:"state"`
 	Reason  Reason          `json:"reason,omitempty"`
 	PhaseID string          `json:"phaseId,omitempty"`
+	// Quarantined is set when THIS call's read found a slot that would not
+	// decode and healed it (`healGuidanceSlot`). It is a fact about this append
+	// and is stored nowhere: the caller's entry is on the slot, and whatever the
+	// column held before it is not, so the one person who can act on that — the
+	// operator who just wrote here — has to be told in the same answer.
+	Quarantined *GuidanceQuarantine `json:"quarantined,omitempty"`
+}
+
+// GuidanceQuarantine describes a pending-guidance slot the engine discarded
+// because it would not decode. It carries facts rather than a sentence: the
+// surfaces that render it (`run guide`'s block, the desktop) write their own
+// prose, exactly as they do for where a run reads its guidance.
+type GuidanceQuarantine struct {
+	// Bytes is the size of the discarded column. There is deliberately no entry
+	// COUNT: counting them would mean decoding them, which is the thing that
+	// could not be done.
+	Bytes int `json:"bytes"`
+	// Reason is the decode failure, so the record says what was wrong with it.
+	Reason string `json:"reason"`
+	// LogEvent names the engine-log event whose line holds the raw content —
+	// the only surviving copy, and the whole reason the discard is recoverable
+	// by a human even though it is not recoverable by the run.
+	LogEvent string `json:"logEvent"`
 }
 
 // Guidance bounds. Both are refusals rather than trims: guidance is rendered
@@ -422,6 +460,11 @@ const (
 	// steered this run — did it ever read it, and where".
 	LogEventGuide           = "guide"
 	LogEventGuidanceDeliver = "guidance-delivered"
+	// LogEventGuidanceUndecodable is the quarantine record: the raw bytes of a
+	// pending-guidance column that would not decode, written whole because the
+	// heal that follows is what removes them from the run. It is the only
+	// surviving copy, so this line is never truncated.
+	LogEventGuidanceUndecodable = "guidance-undecodable"
 	// LogEventLoopSession is a `session: continue` loop route that could not
 	// continue: the target phase's previous session is gone, so the re-entry
 	// started a cold one. It is a degraded continuation rather than an error —

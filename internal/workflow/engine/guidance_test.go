@@ -75,6 +75,9 @@ func TestGuideAppendsToARunningRunAndStampsTheAuthor(t *testing.T) {
 	if state.State != StateRunning || state.PhaseID != "work" {
 		t.Fatalf("guidance state = %s/%s, want running/work", state.State, state.PhaseID)
 	}
+	if state.Quarantined != nil {
+		t.Fatalf("a healthy slot reported a discard: %+v", *state.Quarantined)
+	}
 	if rows := pendingGuidanceRows(t, h, itemID); len(rows) != 1 {
 		t.Fatalf("persisted pending = %d entries, want 1", len(rows))
 	}
@@ -468,6 +471,210 @@ func TestGuideAcceptsACalledRun(t *testing.T) {
 	// The slot is the CHILD's row; the caller is untouched.
 	if rows := pendingGuidanceRows(t, h, parent); len(rows) != 0 {
 		t.Fatalf("guiding a child wrote %d entries on its caller", len(rows))
+	}
+}
+
+// An undecodable slot: the column is engine-written JSON, so content that will
+// not decode is corruption — and its entries are unrecoverable AS GUIDANCE
+// whatever the engine does next, because nothing can render bytes nothing can
+// decode. What must not happen is the failure outliving the human's response to
+// it: the read used to error on every fresh agent-phase entry, so the run parked
+// `wiring-error`, the resume re-entered the phase, and it parked again forever.
+
+// corruptGuidance is a truncated array — exactly what a half-written column
+// would hold, and undecodable by the whole-value decode the slot goes through.
+const corruptGuidance = `[{"text":"prefer the smaller diff","at":100,"by":"human"`
+
+// The park says all three facts, the raw bytes reach the engine log VERBATIM
+// (that line is the only surviving copy), and the slot is emptied — so the bare
+// resume that follows enters the phase and runs it.
+func TestUndecodableGuidanceParksOnceAndThenTheRunProceeds(t *testing.T) {
+	sink := &recordingLog{}
+	h := newHarness(t, Config{Log: sink},
+		map[string]def.Workflow{"guided": guidanceWorkflow()}, []string{"project"}, nil)
+	if err := h.engine.StartItem(testItem("item", "project", "guided", 0)); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.store.SetWorkItemPendingGuidance("item", json.RawMessage(corruptGuidance)); err != nil {
+		t.Fatal(err)
+	}
+
+	// work completes and the gate advances into verify — the fresh agent-phase
+	// entry that reads the slot.
+	completePhases(t, h, "item", 1)
+	requireItemState(t, h.store, "item", StateNeedsHuman, ReasonWiringError)
+	requireParkCause(t, h.phaseAttempt(t, "item", "verify", 1),
+		"would not decode", "preserved in the engine log", "slot has been cleared")
+
+	quarantine := sink.matching(LogEventGuidanceUndecodable)
+	if len(quarantine) != 1 {
+		t.Fatalf("quarantine log events = %+v, want exactly one", quarantine)
+	}
+	if quarantine[0].ItemID != "item" || !strings.Contains(quarantine[0].Message, corruptGuidance) {
+		t.Fatalf("quarantine event = %+v, want the run id and the raw bytes verbatim", quarantine[0])
+	}
+	raw, err := h.store.WorkItemPendingGuidance("item")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(raw) != 0 {
+		t.Fatalf("slot still holds %q; the park would repeat on every entry", raw)
+	}
+
+	// The heal is what makes this resume ordinary: a wiring-error park re-enters
+	// the phase fresh, and the slot it reads on the way in is empty.
+	if err := h.engine.Resume("item", "", false); err != nil {
+		t.Fatal(err)
+	}
+	requireItemState(t, h.store, "item", StateRunning, "")
+	entry := h.runner.startFor(t, RunKey{ItemID: "item", PhaseID: "verify", Attempt: 2})
+	if len(entry.Guidance) != 0 {
+		t.Fatalf("the resumed attempt was handed %+v, want nothing: the slot was cleared", entry.Guidance)
+	}
+	if quarantine := sink.matching(LogEventGuidanceUndecodable); len(quarantine) != 1 {
+		t.Fatalf("quarantine log events after the resume = %d, want the one park", len(quarantine))
+	}
+}
+
+// `guide` heals and ACCEPTS. Refusing would trade an entry already lost for the
+// caller's — the only one still recoverable, and the only one an operator is
+// holding in their head — so the new entry lands on the healed slot and the
+// discard is surfaced instead.
+func TestGuideHealsAnUndecodableSlotAndKeepsTheCallersEntry(t *testing.T) {
+	h, itemID := startGuidedRun(t, guidanceWorkflow())
+	if err := h.store.SetWorkItemPendingGuidance(itemID, json.RawMessage(corruptGuidance)); err != nil {
+		t.Fatal(err)
+	}
+
+	state, err := h.engine.Guide(itemID, humanGuidance("and skip the changelog"))
+	if err != nil {
+		t.Fatalf("guide over a healed slot was refused, losing the caller's entry: %v", err)
+	}
+	if len(state.Pending) != 1 || state.Pending[0].Text != "and skip the changelog" {
+		t.Fatalf("pending = %+v, want only the caller's entry", state.Pending)
+	}
+	rows := pendingGuidanceRows(t, h, itemID)
+	if len(rows) != 1 || rows[0].Text != "and skip the changelog" {
+		t.Fatalf("persisted slot = %+v, want the caller's entry on a healed column", rows)
+	}
+	// Loud, and loud on the ANSWER: the person who can act on the discard is the
+	// one who just wrote here, so the fact rides the result they are reading.
+	if state.Quarantined == nil {
+		t.Fatal("the result reported no quarantine; the caller was told nothing was lost")
+	}
+	if state.Quarantined.Bytes != len(corruptGuidance) ||
+		state.Quarantined.LogEvent != LogEventGuidanceUndecodable ||
+		state.Quarantined.Reason == "" {
+		t.Fatalf("quarantine = %+v, want the discarded size, the decode failure, and the log event",
+			*state.Quarantined)
+	}
+	// And NOT on the error channel: this call succeeded, and `emitError` reports a
+	// fixed "workflow operation failed" whose real cause never crosses the wire.
+	if events := h.emitter.errorEvents(itemID); len(events) != 0 {
+		t.Fatalf("a successful guide announced a failure: %+v", events)
+	}
+	// And the entry is delivered like any other, which is the whole point of
+	// keeping it.
+	completePhases(t, h, itemID, 1)
+	entry := h.runner.startFor(t, RunKey{ItemID: itemID, PhaseID: "verify", Attempt: 1})
+	if len(entry.Guidance) != 1 || entry.Guidance[0].Text != "and skip the changelog" {
+		t.Fatalf("delivered guidance = %+v, want the entry left on the healed slot", entry.Guidance)
+	}
+}
+
+// The ack reads the slot too, and the heal discharges it rather than failing it:
+// the column is gone, so the entries this attempt rendered are gone from it with
+// everything else. Nothing is owed, so nothing is announced as owed — reporting a
+// redelivery here would promise one the empty column can never make.
+func TestAnUndecodableSlotAtAckIsDischargedRatherThanReported(t *testing.T) {
+	sink := &recordingLog{}
+	h := newHarness(t, Config{Log: sink},
+		map[string]def.Workflow{"guided": guidanceWorkflow()}, []string{"project"}, nil)
+	if err := h.engine.StartItem(testItem("item", "project", "guided", 0)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.engine.Guide("item", humanGuidance("prefer the smaller diff")); err != nil {
+		t.Fatal(err)
+	}
+	// Paused, so verify's attempt is created holding the entry and the ack is
+	// still owed when the column goes bad underneath it.
+	if err := h.engine.Pause(true); err != nil {
+		t.Fatal(err)
+	}
+	completePhases(t, h, "item", 1)
+	if err := h.store.SetWorkItemPendingGuidance("item", json.RawMessage(corruptGuidance)); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.engine.Pause(false); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.engine.Sync(); err != nil {
+		t.Fatal(err)
+	}
+
+	if events := h.emitter.errorEvents("item"); len(events) != 0 {
+		t.Fatalf("the ack announced %+v; the slot it would redeliver from is empty", events)
+	}
+	if quarantine := sink.matching(LogEventGuidanceUndecodable); len(quarantine) != 1 {
+		t.Fatalf("quarantine log events = %d, want the one the ack's read wrote", len(quarantine))
+	}
+	requireItemState(t, h.store, "item", StateRunning, "")
+	if rows := pendingGuidanceRows(t, h, "item"); len(rows) != 0 {
+		t.Fatalf("slot holds %+v after the heal", rows)
+	}
+}
+
+// failingGuidanceWrite fails the one write the heal depends on.
+type failingGuidanceWrite struct {
+	persistence
+	fail atomic.Bool
+}
+
+func (f *failingGuidanceWrite) SetWorkItemPendingGuidance(itemID string, guidance json.RawMessage) error {
+	if f.fail.Load() {
+		return errors.New("slot write failed")
+	}
+	return f.persistence.SetWorkItemPendingGuidance(itemID, guidance)
+}
+
+// A heal whose CLEAR failed is not a heal, and the park must not claim it was:
+// the column still holds what it held, so this park is not the last one, and a
+// cause promising an empty slot would send the operator to a resume that parks
+// again for a reason nothing stated.
+func TestAFailedHealParksSayingTheSlotIsStillBad(t *testing.T) {
+	failing := &failingGuidanceWrite{}
+	h := newHarnessWith(t, harnessOptions{
+		workflows:  map[string]def.Workflow{"guided": guidanceWorkflow()},
+		projectIDs: []string{"project"},
+		wrapStore: func(handle persistence) persistence {
+			failing.persistence = handle
+			return failing
+		},
+	})
+	if err := h.engine.StartItem(testItem("item", "project", "guided", 0)); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.store.SetWorkItemPendingGuidance("item", json.RawMessage(corruptGuidance)); err != nil {
+		t.Fatal(err)
+	}
+	failing.fail.Store(true)
+
+	completePhases(t, h, "item", 1)
+	requireItemState(t, h.store, "item", StateNeedsHuman, ReasonWiringError)
+	cause := h.phaseAttempt(t, "item", "verify", 1).ParkCause
+	if !strings.Contains(cause, "could not be cleared") {
+		t.Fatalf("park cause %q does not say the slot is still bad", cause)
+	}
+	if strings.Contains(cause, "has been cleared") {
+		t.Fatalf("park cause %q claims a repair the store refused to make", cause)
+	}
+	failing.fail.Store(false)
+	raw, err := h.store.WorkItemPendingGuidance("item")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(raw) != corruptGuidance {
+		t.Fatalf("slot = %q, want the untouched column: nothing was repaired", raw)
 	}
 }
 

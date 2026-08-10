@@ -162,7 +162,10 @@ func (a *App) memoryScopedRun(scope transport.CallerScope, itemID, action string
 	// phase of is not one of those, and it is the one tree the phase must always
 	// be able to write.
 	if scope.IsPhase() && (itemID == "" || itemID == scope.ItemID) {
-		item, err := a.store.GetWorkItem(scope.ItemID)
+		// Same projection `scopedRun` reads below, for the same reason: a memory
+		// call resolves the run's tree from its call linkage and depth, never
+		// from anything the frozen snapshot holds.
+		item, err := a.store.GetWorkItemSummary(scope.ItemID)
 		if err != nil {
 			return store.WorkItem{}, fmt.Errorf("%s: %w", action, err)
 		}

@@ -721,6 +721,7 @@ func (p *privilegedApp) ConcludeDiscussion() string            { return "ok" }
 func (p *privilegedApp) WorkflowStartRun() string              { return "ok" }
 func (p *privilegedApp) WorkflowCancelItem() string            { return "ok" }
 func (p *privilegedApp) WorkflowResumeItem() string            { return "ok" }
+func (p *privilegedApp) WorkflowScheduleResume() string        { return "ok" }
 func (p *privilegedApp) WorkflowAnswerQuestion() string        { return "ok" }
 func (p *privilegedApp) WorkflowResolveGate() string           { return "ok" }
 func (p *privilegedApp) WorkflowSetGlobalPause() string        { return "ok" }

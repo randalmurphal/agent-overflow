@@ -791,6 +791,18 @@ func (a *App) dispatchFlushWithGeneration(threadID string, items []triage.Queued
 				Items:    []QueueFlushedItem{flushedItem},
 			})
 		}
+		// The item's completion callback fires HERE and nowhere else: this is
+		// the success return of dispatchFlushItem, past which the message is
+		// either a persisted row, a pending send whose retained copy self-heals
+		// on session death, or bytes the provider has already been handed.
+		// Every earlier point is a queue this process can lose. A failure
+		// requeues the item with its callback intact, so nothing here has to
+		// distinguish "not yet" from "never". The callback runs inline, under
+		// the thread action lock this loop already holds — a store write or an
+		// emit is fine, blocking or re-entering the queue is not.
+		if item.OnDispatched != nil {
+			item.OnDispatched()
+		}
 	}
 	a.emitQueueStateChanged(threadID)
 }
@@ -1188,18 +1200,30 @@ func (a *App) persistFlushDispatchError(threadID string, turnIndex int, dispatch
 // webviews) that may be observing the same thread.
 func (a *App) RegisterQueueItem(threadID string, message string, opts SendMessageOptions) (QueuedItem, error) {
 	// A user queueing a message has just consumed their composer draft, so the
-	// bound entry point clears it.
-	return a.registerQueueItem(threadID, message, opts, false)
+	// bound entry point clears it, and nothing is waiting on the dispatch.
+	return a.registerQueueItem(threadID, message, opts, injectedQueueOptions{})
 }
 
-// registerQueueItem is RegisterQueueItem plus the one axis the wire does not
-// carry: whether the durable composer draft belongs to this message.
-//
-// `preserveDraft` is set by the app-internal injectors (a workflow wake). Their
-// text did not come from the composer, and clearing the draft would destroy
-// text the user typed and has not sent — a silent data loss the user could not
-// have anticipated from a run finishing in the background.
-func (a *App) registerQueueItem(threadID string, message string, opts SendMessageOptions, preserveDraft bool) (QueuedItem, error) {
+// injectedQueueOptions carries the two axes the wire does not, both of them
+// only meaningful for the app-internal injectors (a workflow wake) whose text
+// did not come from a person typing into the composer.
+type injectedQueueOptions struct {
+	// preserveDraft keeps the thread's durable composer draft. Clearing it
+	// would destroy text the user typed and has not sent — a silent data loss
+	// the user could not have anticipated from a run finishing in the
+	// background.
+	preserveDraft bool
+	// onDispatched runs once the message has been written to the provider.
+	// See triage.QueuedFlushItem.OnDispatched: an injector whose bookkeeping
+	// OUTLIVES the message must write it here rather than at register time,
+	// because the queue in between is process memory.
+	onDispatched func()
+}
+
+// registerQueueItem is RegisterQueueItem plus the injected-message axes.
+func (a *App) registerQueueItem(
+	threadID string, message string, opts SendMessageOptions, injected injectedQueueOptions,
+) (QueuedItem, error) {
 	if a.shuttingDown.Load() {
 		return QueuedItem{}, ErrShuttingDown
 	}
@@ -1277,9 +1301,10 @@ func (a *App) registerQueueItem(threadID string, message string, opts SendMessag
 	}
 
 	enqueuedAt := a.triage.RegisterQueueItem(threadID, triage.QueuedFlushItem{
-		ID:      id,
-		Message: message,
-		Payload: payloadBytes,
+		ID:           id,
+		Message:      message,
+		Payload:      payloadBytes,
+		OnDispatched: injected.onDispatched,
 	})
 
 	wireItem := QueuedItem{
@@ -1295,7 +1320,7 @@ func (a *App) registerQueueItem(threadID string, message string, opts SendMessag
 		ProviderCommand:              opts.ProviderCommand,
 		EnqueuedAt:                   enqueuedAt,
 	}
-	if !preserveDraft {
+	if !injected.preserveDraft {
 		if draftErr := a.store.DeleteThreadDraft(threadID); draftErr != nil {
 			log.Printf("register queue item: delete draft for thread %s: %v", threadID, draftErr)
 		}

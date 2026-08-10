@@ -3973,6 +3973,15 @@ export class WorkflowAgentGuideRunResult {
      */
     "callerNote"?: string;
 
+    /**
+     * QuarantineNote is set when this append landed on a slot the engine had to
+     * heal: whatever was pending would not decode, so it was written to the
+     * engine log and discarded. The call SUCCEEDED — the caller's entry is
+     * pending — which is exactly why the fact has to travel on the result rather
+     * than as an error nobody would see.
+     */
+    "quarantineNote"?: string;
+
     /** Creates a new WorkflowAgentGuideRunResult instance. */
     constructor($$source: Partial<WorkflowAgentGuideRunResult> = {}) {
         if (!("itemId" in $$source)) {

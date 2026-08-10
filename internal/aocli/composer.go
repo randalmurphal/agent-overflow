@@ -107,7 +107,7 @@ var composerRepair = []composerRow{
 	{"question → run answer <run-id> <text>", "the answer reaches the phase that asked"},
 	{"unit-failed → run retry-failed-units", "repairs every failed unit, the join included (retry-unit <run-id> <unit-id> repairs one); run resume continues the same attempt without a note"},
 	{"stuck → run resume", "re-enters the parked phase fresh once the blocker the phase named is cleared; --refresh-def re-reads the definition when the fix was an edit to it"},
-	{"retries-exhausted → run resume", "continues the parked attempt on the session its turn died in; --phase <id> goes back further and is the only thing that refills loop budgets"},
+	{"retries-exhausted → run resume", "continues the parked attempt on the session its turn died in; --phase <id> goes back further and is the only thing that refills loop budgets; a park whose cause names a usage limit resumes itself at the stated time"},
 	{"state failed → run rerun", "starts the failed run's last phase again"},
 }
 

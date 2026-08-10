@@ -186,15 +186,16 @@ func workflowWatchHold(requested int64) time.Duration {
 // lists the same children for the same authority, because a wider view of a run
 // the caller may already see is not a wider set of runs.
 //
-// It resolves through the SUMMARY tree read, and that is a requirement rather
-// than a preference: this runs again on every wake of a globally-broadcast
-// loop, and the full-row read would drag one frozen workflow snapshot per tree
-// member across the SQLite boundary each time. Ids are the entire answer here.
+// It resolves through the NODE tree read, and that is a requirement rather than
+// a preference: this runs again on every wake of a globally-broadcast loop, so
+// per tree member it must not drag a frozen workflow snapshot across the SQLite
+// boundary NOR make SQLite parse one to compute a phase ordinal nobody here
+// reads. Ids are the entire answer.
 func (a *App) workflowWatchedRuns(item store.WorkItem, tree bool) (map[string]bool, error) {
 	if !tree {
 		return map[string]bool{item.ID: true}, nil
 	}
-	members, err := a.workflowRunTreeSummaries(item.ID)
+	members, err := a.workflowRunTreeNodes(item.ID)
 	if err != nil {
 		return nil, err
 	}

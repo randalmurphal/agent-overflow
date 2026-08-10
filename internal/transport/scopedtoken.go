@@ -108,6 +108,10 @@ var ScopedTokenMethods = map[string][]string{
 	"WorkflowCancelItem":    {"start-run"},
 	"WorkflowPauseItem":     {"start-run"},
 	"WorkflowResumeItem":    {"start-run"},
+	// Scheduling a run's own later resume is the same authority as resuming it
+	// now, deferred: it starts no work at the moment it is called, and the run
+	// it eventually resumes is the one the caller could already have resumed.
+	"WorkflowScheduleResume": {"start-run"},
 	// Asking a run to stop at its next call boundary is the same authority as
 	// pausing it outright, deferred to a point where nothing is interrupted. A
 	// babysitting session is the one that notices "this campaign has done

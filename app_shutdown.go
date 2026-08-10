@@ -120,6 +120,12 @@ func (a *App) Shutdown(ctx context.Context) error {
 		record("stop workflow scheduler", a.stopWorkflowScheduler(ctx))
 	}
 
+	// Self-resume timers come down with it, and for the same reason: a schedule
+	// firing into the pause sweep below would resume a run this shutdown is
+	// parking. The schedules are durable, so the next boot re-arms every one of
+	// them.
+	a.stopWorkflowAutoResumes()
+
 	// Step 1a: pause every active workflow run. This runs while provider
 	// sessions, the engine's ctx, and SQLite are all still alive, because
 	// pausing is real work: it interrupts each in-flight turn, releases the

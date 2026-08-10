@@ -251,6 +251,73 @@ func (s *Store) GetWorkItemBySourceRef(source, sourceRef string) (WorkItem, bool
 	return item, true, nil
 }
 
+// WorkItemNode is the tree-SHAPE projection of a run record: who it is, who
+// called it, and how deep the call chain runs. Nothing else — deliberately not
+// even the state, which would be a second row-level fact this read would then
+// have to stay honest about.
+//
+// It is a distinct type rather than a sparsely-populated WorkItem because a
+// WorkItem whose Goal, State, and Snapshot are silently blank is a trap: the
+// next caller reads one, gets the zero value, and is wrong without an error.
+// A node cannot be misread — it does not carry the fields it does not know.
+type WorkItemNode struct {
+	ID           string `json:"id"`
+	ParentItemID string `json:"parentItemId,omitempty"`
+	CallDepth    int    `json:"callDepth,omitempty"`
+}
+
+// GetWorkItemNode and ListWorkItemChildNodes are the tree walk's reads: three
+// plain columns, no join, and — the point of them — no `json_each` over the
+// frozen workflow snapshot.
+//
+// The summary projection cannot serve this. Its phase-progress join parses each
+// row's snapshot SQLite-side to locate the current phase's ordinal, which is a
+// real cost per row and a total waste for a caller that only wants membership:
+// `agent-overflow run watch --tree` re-resolves its watched set on every wake of
+// a GLOBALLY broadcast loop, so one transition anywhere in the app would
+// otherwise re-parse a forty-run campaign's forty frozen workflows.
+func (s *Store) GetWorkItemNode(id string) (WorkItemNode, error) {
+	var node WorkItemNode
+	if err := s.reader().QueryRow(
+		`SELECT id, parent_item_id, call_depth FROM work_items WHERE id = ?`, id,
+	).Scan(&node.ID, &node.ParentItemID, &node.CallDepth); err != nil {
+		return WorkItemNode{}, fmt.Errorf("store: get work item node %s: %w", id, err)
+	}
+	return node, nil
+}
+
+// ListWorkItemChildNodes is ListWorkItemChildren through the node projection,
+// and shares its ordering exactly — the two must describe the same tree.
+func (s *Store) ListWorkItemChildNodes(parentItemID string) ([]WorkItemNode, error) {
+	if parentItemID == "" {
+		return nil, fmt.Errorf("store: list work item child nodes: empty parent id")
+	}
+	rows, err := s.reader().Query(
+		// The `<> ''` is what lets SQLite use the partial index, exactly as in
+		// ListWorkItemChildren.
+		`SELECT id, parent_item_id, call_depth FROM work_items
+		 WHERE parent_item_id = ? AND parent_item_id <> ''
+		 ORDER BY created_at ASC, id ASC`,
+		parentItemID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("store: list work item child nodes: %w", err)
+	}
+	defer rows.Close()
+	nodes := make([]WorkItemNode, 0)
+	for rows.Next() {
+		var node WorkItemNode
+		if err := rows.Scan(&node.ID, &node.ParentItemID, &node.CallDepth); err != nil {
+			return nil, fmt.Errorf("store: list work item child nodes: scan: %w", err)
+		}
+		nodes = append(nodes, node)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: list work item child nodes: iterate: %w", err)
+	}
+	return nodes, nil
+}
+
 // ListWorkItemChildren returns the runs one item called, oldest-first. Children
 // are ordinary run records linked by parent id (§3a); the run tree is read
 // through this one edge rather than through a denormalized tree column.
@@ -587,6 +654,35 @@ func (s *Store) WorkItemWakeSignature(id string) (string, error) {
 	return signature, nil
 }
 
+// UpdateWorkItemWakeSignatureIfCurrent moves the record from `expected` to
+// `next` only while the row still holds `expected`, and reports whether it did.
+//
+// It is ONE statement so the guard and the write cannot be separated. This
+// column has two writers that race by construction: a wake whose message went
+// through the flush queue finishes its record on the flush-dispatch worker,
+// while the "somebody acted, so the record is spent" clear runs on the app's
+// wake queue. A read-then-write here would let a clear land between the two and
+// be silently overwritten — which is exactly the state that suppresses a run's
+// wake forever.
+//
+// A row that no longer matches — spent, superseded, or gone — is the ordinary
+// answer and is reported as false, not as an error: the caller asks precisely
+// because it may have been overtaken.
+func (s *Store) UpdateWorkItemWakeSignatureIfCurrent(id, expected, next string) (bool, error) {
+	result, err := s.db.Exec(
+		`UPDATE work_items SET wake_signature = ? WHERE id = ? AND wake_signature = ?`,
+		next, id, expected,
+	)
+	if err != nil {
+		return false, fmt.Errorf("store: update work item wake signature %s if current: %w", id, err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("store: update work item wake signature %s if current: %w", id, err)
+	}
+	return affected > 0, nil
+}
+
 // UpdateWorkItemWakeSignature records what was just delivered, or clears the
 // record with an empty signature when an action on the run makes the next wake
 // new whatever it says.
@@ -636,6 +732,73 @@ func (s *Store) SetWorkItemPendingGuidance(id string, guidance json.RawMessage) 
 		return fmt.Errorf("store: set work item pending guidance %s: %w", id, err)
 	}
 	return requireRowsAffected(result, fmt.Sprintf("store: set work item pending guidance %s", id))
+}
+
+// WorkItemAutoResume is one parked run that will resume itself, and when
+// (migration v54). It is the boot sweep's whole read: a restart re-arms a timer
+// per row, and everything else it needs to decide comes from the run itself.
+type WorkItemAutoResume struct {
+	ItemID string `json:"itemId"`
+	// At is Unix milliseconds. It may already be in the PAST after a restart,
+	// which is the ordinary case for a stall the app was closed through.
+	At int64 `json:"at"`
+}
+
+// WorkItemAutoResumeAt reads the moment this parked run resumes itself, in Unix
+// milliseconds. Zero means it does not — no provider named a reset boundary and
+// nobody scheduled one — which is the state every run starts and ends in.
+//
+// It is a read of its own rather than a column on `workItemColumns` for the
+// reason `wake_signature` is: only the timer that arms it and the fire that
+// re-checks it ever ask, and every listed row would otherwise pay for it.
+func (s *Store) WorkItemAutoResumeAt(id string) (int64, error) {
+	var at int64
+	err := s.reader().QueryRow(`SELECT auto_resume_at FROM work_items WHERE id = ?`, id).Scan(&at)
+	if err != nil {
+		return 0, fmt.Errorf("store: read work item auto resume %s: %w", id, err)
+	}
+	return at, nil
+}
+
+// SetWorkItemAutoResumeAt arms the self-resume moment, or clears it with 0. It
+// is an assignment rather than a one-shot arm because the clear is the half
+// that matters: every action that moves the run out of the park it was waiting
+// through — a manual resume, a cancel, a discard, the fire's own resume — has
+// to be able to take the arming back, and a writer that could only set would
+// leave a timer firing into work somebody already repaired.
+func (s *Store) SetWorkItemAutoResumeAt(id string, at int64) error {
+	result, err := s.db.Exec(`UPDATE work_items SET auto_resume_at = ? WHERE id = ?`, at, id)
+	if err != nil {
+		return fmt.Errorf("store: set work item auto resume %s: %w", id, err)
+	}
+	return requireRowsAffected(result, fmt.Sprintf("store: set work item auto resume %s", id))
+}
+
+// ListWorkItemAutoResumes returns every run holding a self-resume moment,
+// soonest first. It is the startup read that re-arms the timers a restart lost;
+// the caller re-checks each run's state before firing, so this deliberately
+// filters on the column alone rather than joining a state it would have to
+// re-read anyway.
+func (s *Store) ListWorkItemAutoResumes() ([]WorkItemAutoResume, error) {
+	rows, err := s.reader().Query(
+		`SELECT id, auto_resume_at FROM work_items WHERE auto_resume_at > 0 ORDER BY auto_resume_at ASC`,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("store: list work item auto resumes: %w", err)
+	}
+	defer rows.Close()
+	var resumes []WorkItemAutoResume
+	for rows.Next() {
+		var resume WorkItemAutoResume
+		if err := rows.Scan(&resume.ItemID, &resume.At); err != nil {
+			return nil, fmt.Errorf("store: list work item auto resumes: %w", err)
+		}
+		resumes = append(resumes, resume)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: list work item auto resumes: %w", err)
+	}
+	return resumes, nil
 }
 
 // SetWorkItemSoftStop arms or disarms the standing request to stop this run

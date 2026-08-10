@@ -602,3 +602,64 @@ func TestRunStatusRendersTheParkCauseBounded(t *testing.T) {
 		t.Fatalf("the cause was truncated without the visible marker:\n%s", stdout)
 	}
 }
+
+// `run resume --at` is the scheduling half of the same verb: it arms the app's
+// self-resume rather than resuming now, so it calls a different method and
+// prints the moment the app armed rather than the run's current state — which
+// has not changed and must not be reported as though it had.
+func TestRunResumeAtSchedulesInsteadOfResuming(t *testing.T) {
+	backend := newFakeBackend(t)
+	backend.reply("WorkflowScheduleResume", "2026-08-15T19:58:12-04:00")
+	backend.reply("WorkflowAgentRunStatus", map[string]any{"itemId": "run-1", "state": "running"})
+
+	for _, args := range [][]string{
+		{"run", "resume", "run-1", "--at", "+36h"},
+		{"run", "resume", "--at", "+36h", "run-1"},
+	} {
+		backend.reset()
+		code, stdout, stderr := runCLI(args, backend.env())
+		if code != exitOK {
+			t.Fatalf("%v exit = %d (%s)", args, code, stderr)
+		}
+		if !strings.Contains(stdout, "run=run-1") ||
+			!strings.Contains(stdout, "resume-at=2026-08-15T19:58:12-04:00") {
+			t.Fatalf("%v output = %q, want the run and the armed moment", args, stdout)
+		}
+		calls := backend.recorded("WorkflowScheduleResume")
+		if len(calls) != 1 || string(calls[0].Params[0]) != `"run-1"` || string(calls[0].Params[1]) != `"+36h"` {
+			t.Fatalf("%v scheduled with %+v", args, calls)
+		}
+		// Scheduling resumes nothing now, so the resume method is untouched.
+		if resumed := backend.recorded("WorkflowResumeItem"); len(resumed) != 0 {
+			t.Fatalf("%v also resumed the run: %+v", args, resumed)
+		}
+	}
+}
+
+// The two flags --at cannot mean anything alongside are refused rather than
+// silently dropped: --phase names a fresh entry a scheduled bare resume never
+// takes, and --refresh-def is offered only at a fresh entry.
+func TestRunResumeAtRefusesTheFlagsItCannotHonour(t *testing.T) {
+	backend := newFakeBackend(t)
+	backend.reply("WorkflowScheduleResume", "2026-08-15T19:58:12-04:00")
+
+	for _, test := range []struct {
+		args  []string
+		wants string
+	}{
+		{[]string{"run", "resume", "run-1", "--at", "+36h", "--phase", "verify"}, "cannot be combined with --phase"},
+		{[]string{"run", "resume", "run-1", "--at", "+36h", "--refresh-def"}, "never re-reads the definition"},
+	} {
+		backend.reset()
+		code, _, stderr := runCLI(test.args, backend.env())
+		if code != exitError {
+			t.Fatalf("%v exit = %d, want a refusal", test.args, code)
+		}
+		if !strings.Contains(stderr, test.wants) {
+			t.Fatalf("%v stderr = %q, want it to name %q", test.args, stderr, test.wants)
+		}
+		if scheduled := backend.recorded("WorkflowScheduleResume"); len(scheduled) != 0 {
+			t.Fatalf("%v was refused but still armed a schedule: %+v", test.args, scheduled)
+		}
+	}
+}

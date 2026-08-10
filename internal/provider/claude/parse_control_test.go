@@ -159,6 +159,47 @@ func TestParseRateLimitEvent_ExplicitZeroUtilization(t *testing.T) {
 	}
 }
 
+// TestParseRateLimitEvent_RejectedCarriesNoUtilization pins the one exception to
+// the drop-without-utilization rule. `status:"rejected"` is the envelope the CLI
+// emits when the API refused the request with a 429: its limits are built from
+// the response headers, which carry `anthropic-ratelimit-unified-reset` but no
+// utilization at all. Dropping it threw away the only structured statement AO
+// ever gets about WHEN a spent allowance comes back — the fact a workflow run's
+// self-resume is scheduled from. A refused window is spent by definition, so it
+// records as 100%.
+func TestParseRateLimitEvent_RejectedCarriesNoUtilization(t *testing.T) {
+	line := []byte(`{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","resetsAt":1776981600,"rateLimitType":"five_hour"}}`)
+	events, err := ParseLine(testThread, line)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event (a refusal is not a stale reading), got %d", len(events))
+	}
+	var snap provider.RateLimitsSnapshot
+	if err := json.Unmarshal(events[0].Meta, &snap); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if snap.Limits[0].UsedPercent != 100 || snap.Limits[0].ResetsAt != 1776981600 ||
+		snap.Limits[0].WindowMins != 300 {
+		t.Fatalf("limit = %+v, want a spent five-hour window with its reset boundary", snap.Limits[0])
+	}
+}
+
+// A rejection that names no boundary says only "later", which is what every
+// consumer already assumes — and admitting it at 100% would clobber the probe's
+// real percentage with a reading nothing can act on.
+func TestParseRateLimitEvent_RejectedWithoutABoundaryIsDropped(t *testing.T) {
+	line := []byte(`{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","rateLimitType":"five_hour"}}`)
+	events, err := ParseLine(testThread, line)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(events) != 0 {
+		t.Fatalf("expected 0 events (no reset boundary → nothing to act on), got %d", len(events))
+	}
+}
+
 // TestParseRateLimitEvent_UnknownRateLimitType — when the wire emits a
 // rateLimitType we don't recognise, the snapshot is dropped. The
 // frontend rings key off WindowMins (300/10080) so a snapshot with

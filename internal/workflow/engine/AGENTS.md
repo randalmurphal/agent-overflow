@@ -238,6 +238,18 @@ resource semaphores, and startup recovery.
     loop's target, entered from outside the cycle — gives the bound back, which
     is why every surface names it beside the continuation and why `resumeNote`
     is worded for both causes rather than naming one.
+  - **A dated quota refusal parks here without spending the ladder, and comes
+    back on its own.** A provider that refuses the turn because the account's
+    usage allowance is spent — and whose own rate-limit snapshot says when that
+    allowance returns — is the one transient failure retrying cannot fix: the
+    backoffs run out in minutes against a limit that resets in days. The runner
+    stops the ladder where it stands and reports `OutcomeTransientExhausted`
+    with `Outcome.Detail` naming the reset and the moment the run resumes
+    itself, which `outcomeDetailCause` writes to the attempt's `park_cause`;
+    the timer that brings it back is app-side (`app_workflow_autoresume.go`,
+    `work_items.auto_resume_at`), because this package holds no timers.
+    Continuing is the whole point of parking here rather than under a new
+    reason: the session the turn died in is still what the run wants.
   - **A non-transient execution failure is NOT here.** It parks `agent-error`
     (`phaseFailureReason`, `fsm.go`) — spec §12's "not on the allowlist parks
     immediately" — and that reason is a shared bucket: envelope-validation
@@ -565,6 +577,27 @@ resource semaphores, and startup recovery.
     and therefore idempotent — a wave's second agent unit finds nothing left to
     remove — and a failed clear leaves the entries pending (a redelivery, the safe
     direction) with the fact emitted and logged rather than swallowed.
+  - **A slot that will not DECODE parks once and heals** (`healGuidanceSlot`, the
+    one heal every read of the column goes through). Its entries are already
+    unrecoverable as guidance — nothing can render bytes nothing can decode — so
+    the raw column content goes to the engine log verbatim
+    (`LogEventGuidanceUndecodable`, the only surviving copy, never truncated), the
+    column is emptied, and the delivery parks `wiring-error` with a cause stating
+    all three facts, so the bare resume that follows reads an empty slot and runs
+    the phase. Leaving the bytes in place made the failure immortal instead of
+    merely bad: every fresh agent-phase entry re-read them, re-parked, and no verb
+    could clear the column. `Guide` heals and ACCEPTS — the caller's entry is the
+    only one still recoverable, so refusing would trade an entry already lost for
+    it — and reports the discard on its ANSWER (`GuidanceState.Quarantined`:
+    discarded size, decode failure, log event), never through `emitError`, whose
+    fixed "workflow operation failed" string would both misdescribe a call that
+    succeeded and strand its real cause on an unexported field the transport
+    drops; the app turns those facts into `run guide`'s `warning:` line, so the
+    operator who just lost the slot's contents is told in the same breath as
+    their success. The ack has nothing left to owe and discharges; and a clear
+    that FAILS is reported as itself, because a cause promising an empty slot the
+    store refused to write would send the operator to a resume that parks again
+    for a reason nothing stated.
   - **The author is engine-stamped and the slot is bounded.** `GuidanceDraft.By`
     comes from the app's authenticated caller, never from the text, because "a
     human said this" is the one claim in a quoted block worth forging. A

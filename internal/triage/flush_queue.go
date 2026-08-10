@@ -39,7 +39,9 @@ import (
 
 // QueuedFlushItem is one user message awaiting provider dispatch. Lives only
 // in router memory — never persisted to SQLite — and is drained when the app
-// dispatch worker accepts it or cleared on session teardown.
+// dispatch worker accepts it or cleared on session teardown. That is why it
+// carries OnDispatched: "queued" is not "delivered", and an app-layer record
+// that outlives the process has to wait for the write.
 //
 // The Payload is opaque to triage: the app layer (app_flush_queue.go)
 // owns the wire shape (attachments, source-plan refs, revision
@@ -70,6 +72,28 @@ type QueuedFlushItem struct {
 	// the stale row would show the message twice in the timeline.
 	// Empty for normal queue items.
 	StaleUserItemID string
+	// OnDispatched is an app-layer callback triage never invokes and
+	// never inspects — opaque behaviour riding the item exactly as
+	// Payload is opaque data. The app dispatcher runs it once the
+	// message has been written to the provider, which is the first
+	// moment it has stopped being losable: everything before that
+	// (this queue, and the app's own dispatch queue behind it) is
+	// process memory that a crash, a session teardown, or a rollback
+	// discards.
+	//
+	// It rides the ITEM so its lifetime is the item's, with no registry
+	// to sweep and nothing to leak. A requeued failure keeps it, because
+	// that copy is still the same pending message; every path that turns
+	// the item into something else — a composer-draft restore, a wire
+	// snapshot — drops it, because that message was NOT dispatched, and
+	// an injector that had already recorded it as delivered would go
+	// silent about a message nobody received. Dropping costs a duplicate;
+	// keeping costs silence.
+	//
+	// Nil for every user-typed message. The one caller is the workflow
+	// wake (app_workflow_wake_delivery.go), whose delivered-signature
+	// record suppresses an identical future wake forever.
+	OnDispatched func()
 }
 
 type UnconfirmedFlushItem struct {

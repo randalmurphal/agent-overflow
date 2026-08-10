@@ -170,7 +170,10 @@ func (r *workflowAppRunner) timerFired(runKey string) {
 	go func() {
 		sent, err := r.sendIfActive(runKey, message, schema)
 		if sent && err != nil {
-			r.finish(runKey, engine.Outcome{Kind: engine.OutcomeExecutionFailure})
+			r.finish(runKey, engine.Outcome{
+				Kind:   engine.OutcomeExecutionFailure,
+				Detail: workflowFailureDetail("sending the retry turn failed: " + err.Error()),
+			})
 		}
 	}()
 }
@@ -204,6 +207,23 @@ func (r *workflowAppRunner) stopAndFinish(runKey string, outcome engine.Outcome)
 		log.Printf("workflow runner: interrupt %s: %v", runKey, err)
 	}
 	attempt.complete(outcome)
+}
+
+// stopAndFinishOffWire is stopAndFinish for a caller running ON the provider
+// event path — `observe`, which is dispatched synchronously from the session's
+// event consumer.
+//
+// The interrupt inside `stopAndFinish` waits for the CLI's control_response,
+// and that response can only arrive through the very pipeline this callback is
+// blocking. A live process therefore deadlocks the stop against itself until
+// the interrupt times out, and the run sits `running` for the whole of it —
+// which is what a park that decides mid-turn (a spent retry ladder, a dated
+// quota refusal) does every time the provider is still alive to be interrupted.
+// `detach` is single-shot under the runner lock, so handing the rest to a
+// goroutine cannot double-finish: any event arriving in between finds no
+// attempt for this key.
+func (r *workflowAppRunner) stopAndFinishOffWire(runKey string, outcome engine.Outcome) {
+	go r.stopAndFinish(runKey, outcome)
 }
 
 func workflowTransientError(providerName string, event provider.ProviderEvent, claudeRetryable bool) (transient, waitsForCompletion bool) {

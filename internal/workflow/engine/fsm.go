@@ -1,9 +1,11 @@
 package engine
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"unicode/utf8"
 
 	"agent-overflow/internal/store"
@@ -308,12 +310,18 @@ func (e *Engine) completePhaseOutcome(item *runtimeItem, key RunKey, outcome Out
 	case OutcomeStalled:
 		return e.teardown(item, teardownRequest{output: outcome.Envelope, phaseStatus: "parked", nextState: StateNeedsHuman, reason: ReasonStalled})
 	case OutcomeTransientExhausted:
-		return e.teardown(item, teardownRequest{output: outcome.Envelope, phaseStatus: "parked", nextState: StateNeedsHuman, reason: ReasonRetriesExhausted})
+		return e.teardown(item, teardownRequest{
+			output: outcome.Envelope, cause: outcomeDetailCause(outcome), phaseStatus: "parked",
+			nextState: StateNeedsHuman, reason: ReasonRetriesExhausted,
+		})
 	case OutcomeExecutionFailure:
 		if item.takeoverFinalize {
 			return e.teardown(item, teardownRequest{output: outcome.Envelope, phaseStatus: "parked", nextState: StateNeedsHuman, reason: ReasonTakenOver})
 		}
-		return e.teardown(item, teardownRequest{output: outcome.Envelope, phaseStatus: "parked", nextState: StateNeedsHuman, reason: phaseFailureReason(key)})
+		return e.teardown(item, teardownRequest{
+			output: outcome.Envelope, cause: outcomeDetailCause(outcome), phaseStatus: "parked",
+			nextState: StateNeedsHuman, reason: phaseFailureReason(key),
+		})
 	case OutcomeStopped:
 		return e.teardown(item, teardownRequest{output: outcome.Envelope, phaseStatus: "parked", nextState: StateNeedsHuman, reason: ReasonInterrupted})
 	default:
@@ -326,6 +334,26 @@ func (e *Engine) completePhaseOutcome(item *runtimeItem, key RunKey, outcome Out
 			cause,
 		)
 	}
+}
+
+// outcomeDetailCause is the one rule that turns a runner's failure detail into
+// an engine park cause: it applies only where the ENVELOPE IS EMPTY.
+//
+// The typed park causes deliberately omit agent-execution failures because the
+// envelope is the account — but an outcome carrying no envelope accounts for
+// nothing, and a provider process that died mid-turn parked `agent-error` with
+// an empty envelope, an empty cause, and nothing a human could diagnose from.
+// The detail fills exactly that hole and never competes with an envelope that
+// has content, so the two are never both read as the reason.
+func outcomeDetailCause(outcome Outcome) error {
+	if len(bytes.TrimSpace(outcome.Envelope)) > 0 {
+		return nil
+	}
+	detail := strings.TrimSpace(outcome.Detail)
+	if detail == "" {
+		return nil
+	}
+	return errors.New(detail)
 }
 
 // phaseFailureReason classifies an attempt that produced no usable result. Only

@@ -93,12 +93,21 @@ func (a *App) authorizeScopedRunAction(ctx context.Context, itemID, action strin
 // widens the phase case to the whole project when the phase holds `introspect`:
 // reading run state across the project is what introspection is, while acting on
 // a run stays limited to the ones this phase started.
+//
+// It reads the SUMMARY projection. Authorization itself needs four columns —
+// project, source, source ref, id — and every verb on this surface calls this
+// first, several of them per transition of a run a supervising agent is
+// watching; the full row would decode one frozen workflow snapshot each time to
+// answer a question no snapshot bears on. The two verbs that DO need a blob
+// (`run status`/`run inspect` for seeds and the run's own budget envelope,
+// `run output` for the declared-output map) read the full row for themselves,
+// so the cost lands on the callers that incur it rather than on all of them.
 func (a *App) scopedRun(scope transport.CallerScope, itemID, action string, readOnly bool) (store.WorkItem, error) {
 	itemID = strings.TrimSpace(itemID)
 	if itemID == "" {
 		return store.WorkItem{}, fmt.Errorf("%s: run id is required", action)
 	}
-	item, err := a.store.GetWorkItem(itemID)
+	item, err := a.store.GetWorkItemSummary(itemID)
 	if err != nil {
 		return store.WorkItem{}, err
 	}

@@ -2,6 +2,7 @@ package engine
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -82,8 +83,21 @@ func (e *Engine) guide(itemID string, draft GuidanceDraft) (GuidanceState, error
 	}
 
 	pending, err := e.pendingGuidance(itemID)
+	var quarantined *GuidanceQuarantine
 	if err != nil {
-		return GuidanceState{}, err
+		discarded, healed := healedGuidance(err)
+		if !healed {
+			return GuidanceState{}, err
+		}
+		// The slot was undecodable and has just been quarantined and cleared. The
+		// entries it held are unrecoverable AS GUIDANCE either way — nothing can
+		// render bytes nothing can decode — so refusing here would trade an entry
+		// already lost for the caller's, which is the only one still recoverable
+		// and the only one an operator is holding in their head right now. The
+		// entry is kept and the discard is reported on the ANSWER: this call
+		// succeeded, so an error channel would say the wrong thing, and the person
+		// who needs the fact is the one reading this result.
+		quarantined, pending = discarded, nil
 	}
 	if len(pending) >= MaxGuidanceEntries {
 		return GuidanceState{}, fmt.Errorf(
@@ -115,6 +129,7 @@ func (e *Engine) guide(itemID string, draft GuidanceDraft) (GuidanceState, error
 	return GuidanceState{
 		ItemID: itemID, Pending: pending,
 		State: State(row.State), Reason: Reason(row.Reason), PhaseID: phaseID,
+		Quarantined: quarantined,
 	}, nil
 }
 
@@ -138,7 +153,9 @@ func (e *Engine) guidedPhase(itemID string) (string, error) {
 // pendingGuidance decodes the slot. A slot that will not decode is an ERROR
 // rather than an empty one: the column is engine-written JSON, so undecodable
 // content is corruption, and silently reading it as "nothing pending" would drop
-// an operator's instruction and report success.
+// an operator's instruction and report success. It is a HEALED error, though —
+// the bytes are quarantined and the column emptied on the way out, so the fault
+// is stated once rather than re-raised forever (healGuidanceSlot).
 func (e *Engine) pendingGuidance(itemID string) ([]GuidanceEntry, error) {
 	raw, err := e.store.WorkItemPendingGuidance(itemID)
 	if err != nil {
@@ -149,9 +166,73 @@ func (e *Engine) pendingGuidance(itemID string) ([]GuidanceEntry, error) {
 	}
 	var pending []GuidanceEntry
 	if err := decodeJSON(raw, &pending); err != nil {
-		return nil, fmt.Errorf("decode run %q pending guidance: %w", itemID, err)
+		return nil, e.healGuidanceSlot(itemID, raw, err)
 	}
 	return pending, nil
+}
+
+// healedGuidanceError is what every read of a healed slot returns. It is a type
+// rather than a sentinel because the heal produces two things that must not
+// drift apart: the prose a delivery parks with, and the typed facts `guide`
+// hands back to the caller whose entry just landed on an emptied slot. Callers
+// reach the facts through `errors.As` and each decides what an empty slot means
+// to it — the delivery parks ONCE and says so, `guide` keeps the new entry and
+// reports the discard, and an ack has nothing left to owe.
+type healedGuidanceError struct {
+	quarantine GuidanceQuarantine
+	message    string
+}
+
+func (e *healedGuidanceError) Error() string { return e.message }
+
+// healedGuidance answers the quarantine an error carries, if it is one.
+func healedGuidance(err error) (*GuidanceQuarantine, bool) {
+	var healed *healedGuidanceError
+	if !errors.As(err, &healed) {
+		return nil, false
+	}
+	return &healed.quarantine, true
+}
+
+// healGuidanceSlot is what an undecodable slot costs: one loud park, and then
+// the run is well again.
+//
+// The column is engine-written JSON, so content that will not decode is
+// corruption — but its entries are already unrecoverable AS GUIDANCE, because
+// nothing can render bytes nothing can decode. Leaving them in place made the
+// failure immortal instead of merely bad: every fresh agent-phase entry read the
+// slot, parked `wiring-error`, and every resume re-entered that phase and parked
+// again, with no verb anywhere that could clear the column. So the heal preserves
+// what can still be preserved and removes what cannot: the raw bytes go to the
+// engine log VERBATIM — that line is the only surviving copy, which is why it is
+// never truncated — and the column is emptied.
+//
+// The error it returns says all three things, because it is what the operator
+// reads as the attempt's park cause: the guidance would not decode, the raw
+// content is in the log, and the slot is empty so their steer must be re-issued.
+// A clear that FAILS returns an unhealed error instead: the slot is still bad,
+// this park is not the last one, and saying otherwise would be a promise the
+// store just refused to keep.
+func (e *Engine) healGuidanceSlot(itemID string, raw json.RawMessage, decodeErr error) error {
+	e.logEvent(LogEvent{
+		Event: LogEventGuidanceUndecodable, ItemID: itemID,
+		Message: fmt.Sprintf(
+			"pending guidance would not decode (%v); its raw column content is preserved here verbatim and nowhere else: %s",
+			decodeErr, raw),
+	})
+	if err := e.store.SetWorkItemPendingGuidance(itemID, nil); err != nil {
+		return fmt.Errorf(
+			"run %q pending guidance would not decode (%w) and the slot could not be cleared: %w",
+			itemID, decodeErr, err)
+	}
+	return &healedGuidanceError{
+		quarantine: GuidanceQuarantine{
+			Bytes: len(raw), Reason: decodeErr.Error(), LogEvent: LogEventGuidanceUndecodable,
+		},
+		message: fmt.Sprintf(
+			"run %q had pending operator guidance that would not decode (%v); its raw content (%d bytes) is preserved in the engine log under event %q, and the slot has been cleared, so nothing will park on it again — re-issue any steer with `run guide`",
+			itemID, decodeErr, len(raw), LogEventGuidanceUndecodable),
+	}
 }
 
 // deliverGuidance consumes the slot for one phase entry, returning the entries
@@ -172,6 +253,12 @@ func (e *Engine) pendingGuidance(itemID string) ([]GuidanceEntry, error) {
 //
 // A phase that renders no prompt is not a boundary at all (deliversGuidance), so
 // the entries stay pending for one that does.
+//
+// A slot that will not DECODE parks this entry `wiring-error` with the cause
+// healGuidanceSlot composed — once. The heal has already emptied the column by
+// the time the error arrives, so the resume that follows reads an empty slot and
+// runs the phase: the run is told loudly, and exactly as often as a human can act
+// on it.
 func (e *Engine) deliverGuidance(item *runtimeItem, phase def.Phase, entry phaseEntry) ([]GuidanceEntry, error) {
 	if entry != entryFresh || !deliversGuidance(phase) {
 		return nil, nil
@@ -197,6 +284,14 @@ func (e *Engine) ackGuidance(item *runtimeItem) {
 	}
 	pending, err := e.pendingGuidance(item.item.ID)
 	if err != nil {
+		if _, healed := healedGuidance(err); healed {
+			// The heal emptied the column, which includes the entries this attempt
+			// rendered: there is nothing left to remove and nothing left to owe, so
+			// the acknowledgement is discharged rather than failed. The quarantine
+			// line already says what was discarded.
+			item.guidanceUnacked = nil
+			return
+		}
 		e.reportGuidanceAck(item, err)
 		return
 	}

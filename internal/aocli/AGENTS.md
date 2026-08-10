@@ -166,7 +166,7 @@ agent-overflow <command>
   run list [--active] [--json]
   run pause|cancel <run-id> [--json]
   run soft-stop <run-id> [--clear] [--json]
-  run resume <run-id> [--phase <id>] [--refresh-def] [--json]
+  run resume <run-id> [--phase <id>] [--refresh-def] [--at <when>] [--json]
   run rerun <run-id> [--guidance <text>] [--refresh-def] [--json]
   run retry-unit <run-id> <unit-id> [--note <text>] [--json]
   run retry-failed-units <run-id> [--note <text>] [--json]
@@ -200,6 +200,21 @@ needed only for repair: between campaign waves the call edge already resolves
 its target from disk on every invocation. The usage strings and the composer
 repair-map footer both say so, because the freeze is the kind of default a
 caller only learns by being bitten.
+
+`run resume --at <when>` schedules that same bare resume instead of taking it
+now, on any park a bare resume continues. It is the manual half of a mechanism
+the app already runs by itself: a provider that refuses a turn because the
+account's usage allowance is spent AND states when it returns parks the run
+`retries-exhausted` immediately — the transient-retry ladder cannot outlast a
+limit that resets in days — with a cause naming both the reset and the moment
+the run will come back, and a durable schedule that survives a restart. `--at`
+exists for the case where the operator knows the time and the provider did not
+say it. `<when>` is RFC 3339 or a `+`-prefixed duration, resolved against the
+APP's clock because that is the clock the timer runs on, and the command prints
+the moment it armed rather than a run state that has deliberately not changed.
+It refuses `--phase` and `--refresh-def`: both name a fresh entry, and what is
+being scheduled is the continuation. Anything that repairs the run in the
+meantime disarms the schedule.
 
 `run watch` is the verb that replaces the sleep loop. `run wait` polls for one
 run's final state; this one streams every transition as it happens and ends when

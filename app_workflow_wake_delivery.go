@@ -38,15 +38,27 @@ type composedWake struct {
 // thread is gone converges on the unbound surface without recording a delivery
 // that never happened. The signature is compared next, so a suppressed wake
 // costs one indexed read rather than a composed message nobody wanted. The
-// record is written last, after the delivery seam accepted the message, so a
+// record is written last, after the message has stopped being losable, so a
 // failed send leaves the run able to say the same thing again.
 //
-// The two delivery branches are the same two a human gets: a live session takes
-// the message through the flush queue (delivered at the provider's next tool
-// boundary, or straight through when nothing is in flight), and a session-less
-// thread takes an ordinary send, which lazily starts the session and persists
-// the message as a durable row rather than parking it in a queue this process
-// would lose.
+// The two delivery branches are the same two a human gets, and each records its
+// signature at its OWN durability point:
+//
+//   - A live session takes the message through the flush queue. That queue is
+//     process memory until the dispatch worker writes the message to the
+//     provider, so the row is CLAIMED here with a `queued:` marker and the
+//     delivered record itself is deferred to the queue item's OnDispatched
+//     callback. Recording the real signature at register time would let a
+//     crash, a session teardown, or a rollback take the message while the run
+//     row swore it had been delivered — and that record suppresses the
+//     identical wake FOREVER, because the coalescing rule only spends it when
+//     somebody acts on the run. A run nobody is ever told about again is the
+//     failure this ordering exists to prevent; the cost of getting it wrong in
+//     the other direction is one duplicate message, which is the same trade the
+//     guidance slot makes.
+//   - A session-less thread takes an ordinary send, which lazily starts the
+//     session and persists the message as a durable row before it returns — so
+//     its record is written right here, where that durability already is.
 func (a *App) deliverWorkflowWake(item store.WorkItem, composed composedWake) {
 	threadID, ok := a.resolveWakeThread(item)
 	if !ok {
@@ -56,15 +68,36 @@ func (a *App) deliverWorkflowWake(item store.WorkItem, composed composedWake) {
 		return
 	}
 	if _, live := a.sessionManager().get(threadID); live {
-		if _, err := a.registerQueueItem(threadID, composed.message, SendMessageOptions{}, true); err != nil {
-			a.reportWakeFailure(item, threadID, err)
-			return
+		// Claim the row BEFORE handing the message over, with the marker that
+		// says "queued, not delivered" — see wakeQueuedPrefix. The claim is an
+		// ordinary write because this path and the clear both run on the app's
+		// serial wake queue, so they are ordered by the transitions that caused
+		// them; the PROMOTION below is the one that races and is guarded.
+		//
+		// The closure captures ids and strings rather than the row: it outlives
+		// this call by however long the thread stays busy, and the row it came
+		// from carries the run's frozen workflow snapshot.
+		itemID, signature := item.ID, composed.signature
+		claim := wakeQueuedRecord(signature)
+		a.recordWakeDelivery(itemID, claim)
+		injected := injectedQueueOptions{
+			preserveDraft: true,
+			onDispatched:  func() { a.promoteWakeDelivery(itemID, claim, signature) },
 		}
-	} else if _, err := a.sendMessageWithOptions(threadID, composed.message, sendMessageOptions{PreserveDraft: true}); err != nil {
+		if _, err := a.registerQueueItem(threadID, composed.message, SendMessageOptions{}, injected); err != nil {
+			a.reportWakeFailure(item, threadID, err)
+			// Nothing will ever promote this claim — drop it rather than leave
+			// the row marked for a message that was never queued. Guarded, so a
+			// claim already superseded by a later wake is left alone.
+			a.casWakeRecord(itemID, claim, "")
+		}
+		return
+	}
+	if _, err := a.sendMessageWithOptions(threadID, composed.message, sendMessageOptions{PreserveDraft: true}); err != nil {
 		a.reportWakeFailure(item, threadID, err)
 		return
 	}
-	a.recordWakeDelivery(item, composed.signature)
+	a.recordWakeDelivery(item.ID, composed.signature)
 }
 
 // wakeAlreadyDelivered is the coalescing rule itself: a wake whose signature
@@ -103,16 +136,69 @@ func (a *App) wakeAlreadyDelivered(item store.WorkItem, signature string) bool {
 	return true
 }
 
-// recordWakeDelivery remembers what the bound thread was just told.
-func (a *App) recordWakeDelivery(item store.WorkItem, signature string) {
+// wakeQueuedPrefix marks a record whose message has been handed to the flush
+// queue but has NOT yet been written to the provider. It is what closes the gap
+// the deferred record opens: the delivery lands on the flush-dispatch worker,
+// the "somebody acted" clear lands on the wake queue, and nothing orders them —
+// so without a claim, an action taken while the message was still queued would
+// find nothing to spend, the record would land after it, and the next identical
+// park would be suppressed forever. That is exactly the sequence a bare `run
+// resume` of a retries-exhausted run produces: it continues the same attempt,
+// so every field of the signature matches.
+//
+// The invalidation lives WHERE THE CLEAR ALREADY LIVES rather than in a second
+// mechanism beside it: a claim is an ordinary value in the same column, so any
+// code that spends the record — today's clearTreeWakeSignature, tomorrow's
+// third clear site — invalidates a pending promotion for free, because the
+// promotion is a compare-and-set against the claim it wrote.
+//
+// A real signature always begins `kind=rest ` or `kind=progress `
+// (wake.Signature), so a claim can never be mistaken for one, and it never
+// suppresses: `wakeAlreadyDelivered` compares for equality, so a queued claim
+// re-delivers rather than going quiet over a message that may still be lost.
+// A claim stranded by a crash is inert for the same reason and is cleared by
+// the next transition on the run.
+const wakeQueuedPrefix = "queued:"
+
+func wakeQueuedRecord(signature string) string { return wakeQueuedPrefix + signature }
+
+// promoteWakeDelivery turns a queued claim into the delivered record, and says
+// so when it cannot: a claim that is gone means somebody acted on the run while
+// its message was still in the queue, so the ask is live again and the next
+// identical park must deliver.
+func (a *App) promoteWakeDelivery(itemID, claim, signature string) {
+	if a.casWakeRecord(itemID, claim, signature) {
+		return
+	}
+	log.Printf("workflow wake %s: the queued wake record was spent before its message reached the provider "+
+		"(somebody acted on the run); leaving it unrecorded so the next identical park delivers", itemID)
+}
+
+// casWakeRecord moves the record from `expected` to `next` only while the row
+// still holds `expected`. Reports whether it did; a storage failure is reported
+// as "did not" after being logged, because every caller's fallback for an
+// unwritten record is a duplicate wake rather than a missed one.
+func (a *App) casWakeRecord(itemID, expected, next string) bool {
+	written, err := a.store.UpdateWorkItemWakeSignatureIfCurrent(itemID, expected, next)
+	if err != nil {
+		log.Printf("workflow wake %s: settle wake record: %v", itemID, err)
+		return false
+	}
+	return written
+}
+
+// recordWakeDelivery remembers what the bound thread was just told. It takes an
+// id rather than the row because one caller is a callback that outlives its
+// delivery call, and the row carries the run's frozen workflow snapshot.
+func (a *App) recordWakeDelivery(itemID, signature string) {
 	if signature == "" {
 		return
 	}
-	if err := a.store.UpdateWorkItemWakeSignature(item.ID, signature); err != nil {
+	if err := a.store.UpdateWorkItemWakeSignature(itemID, signature); err != nil {
 		// A lost record costs a duplicate wake next time, never a missed one, so
 		// it is reported rather than propagated into the lifecycle transition
 		// that triggered the delivery.
-		log.Printf("workflow wake %s: record delivered signature: %v", item.ID, err)
+		log.Printf("workflow wake %s: record delivered signature: %v", itemID, err)
 	}
 }
 
@@ -153,8 +239,17 @@ func (a *App) clearTreeWakeSignature(itemID string) {
 	if last == "" {
 		return
 	}
-	if err := a.store.UpdateWorkItemWakeSignature(root.ID, ""); err != nil {
-		log.Printf("workflow wake %s: clear wake record: %v", root.ID, err)
+	a.clearWakeRecord(root.ID)
+}
+
+// clearWakeRecord spends a run's wake record: whatever its bound thread was
+// last told no longer stands. It is the ONE write that does this, and every
+// clear site must route through it — an unconditional write is what makes a
+// queued claim's compare-and-set fail, so a message still sitting in the queue
+// when somebody acts is never recorded as delivered.
+func (a *App) clearWakeRecord(itemID string) {
+	if err := a.store.UpdateWorkItemWakeSignature(itemID, ""); err != nil {
+		log.Printf("workflow wake %s: clear wake record: %v", itemID, err)
 	}
 }
 
@@ -184,6 +279,12 @@ func (a *App) clearStaleWakeBinding(item store.WorkItem, reason string) {
 	if err := a.store.UpdateWorkItemOriginThread(item.ID, ""); err != nil {
 		log.Printf("workflow wake %s: clear stale binding: %v", item.ID, err)
 	}
+	// The record describes what a thread that no longer exists was told, so it
+	// is spent — and clearTreeWakeSignature deliberately skips unbound roots
+	// (that transition fires on every phase advance of every run in the app),
+	// which would otherwise strand a queued claim here with nothing left to
+	// invalidate it.
+	a.clearWakeRecord(item.ID)
 	a.emit("workflow:error", engine.ErrorEvent{
 		ItemID: item.ID,
 		Error:  "this run's bound thread is gone; its results now surface in the workflows overlay",

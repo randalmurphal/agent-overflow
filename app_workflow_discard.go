@@ -267,45 +267,62 @@ func (a *App) workflowRunTree(rootID string) ([]store.WorkItem, error) {
 	if err != nil {
 		return nil, fmt.Errorf("workflow run tree %s: %w", rootID, err)
 	}
-	return a.walkWorkflowRunTree(root, a.store.ListWorkItemChildren)
+	return walkWorkflowRunTree(root, workflowRunCoord, a.store.ListWorkItemChildren)
 }
 
-// workflowRunTreeSummaries is the same tree read through the SUMMARY
-// projection: ids, linkage, and state, with no snapshot, seeds, or budget blob.
+// workflowRunTreeNodes is the same tree read through the NODE projection: ids
+// and call linkage, with no snapshot, seeds, budget, or phase-progress join.
 //
 // It exists for the readers that need the SHAPE of a tree rather than its
 // contents, and `agent-overflow run watch --tree` is the one that makes the
 // distinction matter. A watch re-resolves its set on every broadcast, and the
-// broadcast is global — one transition anywhere in the app wakes every watcher
-// — so a supervisor watching a forty-child campaign would otherwise re-read and
-// JSON-decode forty-one frozen workflows, every prompt inlined, per transition.
-// Discard needs the full rows (it inspects each member's workspace); nothing on
-// the watch path reads a field the summary omits.
-func (a *App) workflowRunTreeSummaries(rootID string) ([]store.WorkItem, error) {
-	root, err := a.store.GetWorkItemSummary(rootID)
+// broadcast is global — one transition anywhere in the app wakes every watcher —
+// so a supervisor watching a forty-child campaign would otherwise make SQLite
+// re-parse forty-one frozen workflows, every prompt inlined, per transition
+// (the summary projection's progress join does exactly that; see
+// store.GetWorkItemNode). Discard needs the full rows — it inspects each
+// member's workspace — and the watch path reads nothing but the ids.
+func (a *App) workflowRunTreeNodes(rootID string) ([]store.WorkItemNode, error) {
+	root, err := a.store.GetWorkItemNode(rootID)
 	if err != nil {
 		return nil, fmt.Errorf("workflow run tree %s: %w", rootID, err)
 	}
-	return a.walkWorkflowRunTree(root, func(parentID string) ([]store.WorkItem, error) {
-		return a.store.ListWorkItemSummaries(store.WorkItemListFilter{ParentItemID: parentID})
-	})
+	return walkWorkflowRunTree(root, workflowNodeCoord, a.store.ListWorkItemChildNodes)
+}
+
+// workflowTreeCoord is the only thing the walk needs to know about a row: which
+// run it is, and how deep in a call chain it sits.
+type workflowTreeCoord struct {
+	id        string
+	callDepth int
+}
+
+func workflowRunCoord(item store.WorkItem) workflowTreeCoord {
+	return workflowTreeCoord{id: item.ID, callDepth: item.CallDepth}
+}
+
+func workflowNodeCoord(node store.WorkItemNode) workflowTreeCoord {
+	return workflowTreeCoord{id: node.ID, callDepth: node.CallDepth}
 }
 
 // walkWorkflowRunTree is the breadth-first walk both readings share, so the
 // membership, the ordering, and the depth bound have one definition and the two
-// projections cannot describe different trees.
-func (a *App) walkWorkflowRunTree(
-	root store.WorkItem, children func(parentID string) ([]store.WorkItem, error),
-) ([]store.WorkItem, error) {
-	members := []store.WorkItem{root}
+// projections cannot describe different trees. It is generic over the row shape
+// rather than over-fetching to a common one: the point of the node projection is
+// that it does not carry what a discard needs, and the walk consumes neither.
+func walkWorkflowRunTree[T any](
+	root T, coord func(T) workflowTreeCoord, children func(parentID string) ([]T, error),
+) ([]T, error) {
+	rootCoord := coord(root)
+	members := []T{root}
 	for index := 0; index < len(members); index++ {
-		member := members[index]
-		if member.CallDepth-root.CallDepth >= engine.MaxCallDepth {
-			return nil, fmt.Errorf("workflow run tree %s: deeper than %d calls", root.ID, engine.MaxCallDepth)
+		member := coord(members[index])
+		if member.callDepth-rootCoord.callDepth >= engine.MaxCallDepth {
+			return nil, fmt.Errorf("workflow run tree %s: deeper than %d calls", rootCoord.id, engine.MaxCallDepth)
 		}
-		called, err := children(member.ID)
+		called, err := children(member.id)
 		if err != nil {
-			return nil, fmt.Errorf("workflow run tree %s: list children of %s: %w", root.ID, member.ID, err)
+			return nil, fmt.Errorf("workflow run tree %s: list children of %s: %w", rootCoord.id, member.id, err)
 		}
 		members = append(members, called...)
 	}

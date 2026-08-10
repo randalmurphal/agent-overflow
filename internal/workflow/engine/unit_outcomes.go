@@ -260,11 +260,20 @@ func unitStatusFor(outcome Outcome) string {
 	return store.WorkItemUnitFailed
 }
 
+// unitOutcomeNote is the unit-level half of `outcomeDetailCause`: a unit whose
+// outcome carries no envelope recorded only its outcome KIND, which says
+// nothing a human could act on. The runner's detail is appended under the same
+// rule the phase cause follows — only where the envelope is empty, so a unit
+// that authored one keeps it as the sole account.
 func unitOutcomeNote(outcome Outcome) string {
 	if outcome.Kind == OutcomeDone {
 		return ""
 	}
-	return "unit outcome " + string(outcome.Kind)
+	note := "unit outcome " + string(outcome.Kind)
+	if cause := outcomeDetailCause(outcome); cause != nil {
+		note += ": " + cause.Error()
+	}
+	return note
 }
 
 func interruptedUnitNote(phaseStatus string) string {

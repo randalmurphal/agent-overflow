@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/workflow/engine"
 )
@@ -271,5 +272,135 @@ func TestWorkflowWakeOmitsTheAttemptDigestOutsideAGate(t *testing.T) {
 	}
 	if strings.Contains(sends[0], "What the parked attempt produced") {
 		t.Fatalf("a stuck park carried a gate digest:\n%s", sends[0])
+	}
+}
+
+// A wake recorded as delivered must be either durably queued or actually
+// dispatched — never merely registered. The flush queue lives in process memory
+// until the dispatch worker writes the message to the provider, so a record
+// written at register time survives a message that a crash, a session teardown,
+// or a rollback then discards. That record suppresses the identical wake
+// FOREVER (the coalescing rule spends it only when somebody acts on the run), so
+// the failure it opens is not a late message but a run nobody is told about
+// again.
+//
+// The trade is the one the guidance slot makes: redeliver over lose.
+func TestWorkflowWakeRecordsALiveDeliveryOnlyOnceItDispatches(t *testing.T) {
+	h := newWakeHarness(t)
+	thread := h.chatThread(t, "origin-durable")
+	h.app.sessions[thread.ID] = session{provider: string(provider.Claude), token: "live"}
+	item := h.boundRun(t, "durable-run", thread.ID, engine.StateNeedsHuman, engine.ReasonQuestion)
+	h.phase(t, item.ID, "plan", 1, "parked", "phase-thread",
+		json.RawMessage(`{"status":"question","question":"Which base branch?"}`))
+
+	// One park, queued and never dispatched: the message is gone with the queue,
+	// so the row may hold only a CLAIM — never a delivered signature, which
+	// would suppress the ask from here on.
+	h.park(item.ID, item.ProjectID, engine.StateNeedsHuman)
+	if _, queued, _, _ := h.snapshot(); len(queued) != 1 {
+		t.Fatalf("queued wakes = %d, want 1", len(queued))
+	}
+	claim, err := h.app.store.WorkItemWakeSignature(item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(claim, wakeQueuedPrefix) {
+		t.Fatalf("a message still sitting in the queue was recorded as delivered: %q", claim)
+	}
+
+	// So the same ask composes again rather than being suppressed into silence.
+	h.park(item.ID, item.ProjectID, engine.StateNeedsHuman)
+	if _, queued, _, _ := h.snapshot(); len(queued) != 2 {
+		t.Fatalf("queued wakes = %d, want the undelivered ask re-composed", len(queued))
+	}
+
+	// Once the worker writes them to the provider, the claim is promoted to the
+	// real record — and the coalescing rule takes over from there.
+	h.dispatchQueued()
+	signature, err := h.app.store.WorkItemWakeSignature(item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if signature == "" || strings.HasPrefix(signature, wakeQueuedPrefix) {
+		t.Fatalf("a dispatched wake left no delivered record: %q", signature)
+	}
+	h.park(item.ID, item.ProjectID, engine.StateNeedsHuman)
+	if _, queued, _, _ := h.snapshot(); len(queued) != 2 {
+		t.Fatalf("queued wakes = %d, want the repeat of a DELIVERED ask suppressed", len(queued))
+	}
+}
+
+// The regression the deferred record opened, and the reason the claim exists.
+//
+// The delivery record lands on the flush-dispatch worker; the "somebody acted,
+// so the record is spent" clear lands on the app's wake queue. Nothing orders
+// them. So an action taken while the message was still queued used to find
+// NOTHING to spend — the record had not been written yet — and then the record
+// landed behind it, suppressing the identical park from then on. A bare `run
+// resume` of a retries-exhausted run produces exactly this: it continues the
+// same attempt, so every field of the signature matches.
+//
+// The claim written at hand-off is what the action spends, and the promotion is
+// a compare-and-set against it, so a spent claim can never become a record.
+func TestWorkflowWakeQueuedRecordIsSpentByAnActionBeforeItDispatches(t *testing.T) {
+	h := newWakeHarness(t)
+	thread := h.chatThread(t, "origin-overtaken")
+	h.app.sessions[thread.ID] = session{provider: string(provider.Claude), token: "live"}
+	item := h.boundRun(t, "overtaken-run", thread.ID, engine.StateNeedsHuman, engine.ReasonRetriesExhausted)
+	h.phase(t, item.ID, "build", 1, "parked", "phase-thread", nil)
+
+	// (1) The run parks; the wake is queued into a mid-turn thread and sits.
+	h.park(item.ID, item.ProjectID, engine.StateNeedsHuman)
+	if _, queued, _, _ := h.snapshot(); len(queued) != 1 {
+		t.Fatalf("queued wakes = %d, want 1", len(queued))
+	}
+
+	// (2) Somebody acts before the thread reaches a boundary — an overlay
+	// resolve, a `run resume`, an auto-resume timer: all of them land here.
+	h.act(item.ID, item.ProjectID, engine.StateNeedsHuman)
+	if spent, err := h.app.store.WorkItemWakeSignature(item.ID); err != nil || spent != "" {
+		t.Fatalf("the action did not spend the queued wake record: %q (err %v)", spent, err)
+	}
+
+	// (3) The turn hits a boundary and the queue finally drains. The message
+	// goes out, but it is answering a question that has already been acted on,
+	// so it must not become the record that suppresses the next one.
+	h.dispatchQueued()
+	if recorded, err := h.app.store.WorkItemWakeSignature(item.ID); err != nil || recorded != "" {
+		t.Fatalf("a wake overtaken by an action was recorded as delivered: %q (err %v)", recorded, err)
+	}
+
+	// (4) The run re-parks identically — same phase, same attempt, same reason,
+	// so the same signature. It MUST deliver.
+	h.park(item.ID, item.ProjectID, engine.StateNeedsHuman)
+	if _, queued, _, _ := h.snapshot(); len(queued) != 2 {
+		t.Fatalf("queued wakes = %d, want the re-park after an action to deliver", len(queued))
+	}
+}
+
+// A binding cleared out from under a queued message strands its claim:
+// clearTreeWakeSignature skips unbound roots (it fires on every phase advance of
+// every run in the app), so the one place that unbinds has to spend the record.
+func TestWorkflowWakeStaleBindingSpendsTheRecord(t *testing.T) {
+	h := newWakeHarness(t)
+	thread := h.chatThread(t, "origin-unbound-later")
+	item := h.boundRun(t, "unbound-later-run", thread.ID, engine.StateNeedsHuman, engine.ReasonQuestion)
+	h.phase(t, item.ID, "plan", 1, "parked", "phase-thread",
+		json.RawMessage(`{"status":"question","question":"Which base branch?"}`))
+
+	h.park(item.ID, item.ProjectID, engine.StateNeedsHuman)
+	if signature, err := h.app.store.WorkItemWakeSignature(item.ID); err != nil || signature == "" {
+		t.Fatalf("the first wake left no record: %q (err %v)", signature, err)
+	}
+
+	// The thread is archived, so the next wake falls back to the unbound
+	// surface — and takes the record with it.
+	if err := h.app.store.ArchiveThread(thread.ID); err != nil {
+		t.Fatal(err)
+	}
+	h.park(item.ID, item.ProjectID, engine.StateNeedsHuman)
+
+	if signature, err := h.app.store.WorkItemWakeSignature(item.ID); err != nil || signature != "" {
+		t.Fatalf("a run that lost its binding kept its wake record: %q (err %v)", signature, err)
 	}
 }

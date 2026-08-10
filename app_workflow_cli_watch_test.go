@@ -228,13 +228,15 @@ func TestWorkflowAgentWatchRunTreeFollowsCalledRuns(t *testing.T) {
 
 // A `--tree` watch re-resolves its membership on EVERY wake of a globally
 // broadcast loop, so the read it resolves through may not carry a run's frozen
-// workflow snapshot: one transition anywhere in the app would otherwise cost a
-// campaign supervisor one megabyte-scale JSON decode per tree member.
+// workflow snapshot — nor make SQLite parse one to compute a phase ordinal
+// nobody on this path reads: one transition anywhere in the app would otherwise
+// cost a campaign supervisor that work per tree member.
 //
-// The two assertions are one statement. The summary walk must return the whole
-// tree with none of the frozen blobs, and the full-row walk over the same rows
-// must return those blobs — otherwise the fixture proves nothing and the first
-// assertion would pass over an empty column.
+// The three assertions are one statement. The node walk must return the whole
+// tree in the same order the full-row walk does, carrying nothing but linkage,
+// and the full-row walk over the same rows must carry the frozen blobs —
+// otherwise the fixture proves nothing and the first assertion would pass over
+// an empty column.
 func TestWorkflowWatchTreeResolvesThroughSnapshotFreeRows(t *testing.T) {
 	h := newWatchHarness(t)
 	snapshot := json.RawMessage(`{"workflow":{"id":"campaign","phases":[{"id":"wave"}]}}`)
@@ -242,28 +244,30 @@ func TestWorkflowWatchTreeResolvesThroughSnapshotFreeRows(t *testing.T) {
 		State: string(engine.StateRunning), Snapshot: snapshot,
 		Seeds: json.RawMessage(`{"wave-number":3}`)})
 	wanted := map[string]bool{root.ID: true}
-	for _, child := range []string{"wave-1", "wave-2", "wave-3"} {
+	for index, child := range []string{"wave-1", "wave-2", "wave-3"} {
 		item := h.run(t, store.WorkItem{ID: child, Goal: "wave", WorkflowID: "port",
 			State: string(engine.StateRunning), Source: "call", ParentItemID: root.ID,
-			ParentPhaseID: "wave", ParentAttempt: 1, CallDepth: 1, CreatedAt: 2,
+			ParentPhaseID: "wave", ParentAttempt: 1, CallDepth: 1, CreatedAt: int64(2 + index),
 			Snapshot: snapshot, Seeds: json.RawMessage(`{"task":"x"}`)})
 		wanted[item.ID] = true
 	}
+	// A grandchild: the walk's own recursion, not just one level of children.
+	grandchild := h.run(t, store.WorkItem{ID: "wave-1-unit", Goal: "unit", WorkflowID: "port",
+		State: string(engine.StateRunning), Source: "call", ParentItemID: "wave-1",
+		ParentPhaseID: "fan", ParentAttempt: 1, ParentUnitID: "u1", CallDepth: 2, CreatedAt: 9,
+		Snapshot: snapshot, Seeds: json.RawMessage(`{"task":"y"}`)})
+	wanted[grandchild.ID] = true
 
-	summaries, err := h.app.workflowRunTreeSummaries(root.ID)
+	nodes, err := h.app.workflowRunTreeNodes(root.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(summaries) != len(wanted) {
-		t.Fatalf("summary tree = %d members, want %d", len(summaries), len(wanted))
+	if len(nodes) != len(wanted) {
+		t.Fatalf("node tree = %d members, want %d", len(nodes), len(wanted))
 	}
-	for _, member := range summaries {
+	for _, member := range nodes {
 		if !wanted[member.ID] {
-			t.Fatalf("summary tree carries an unrelated run %q", member.ID)
-		}
-		if len(member.Snapshot) != 0 || len(member.Seeds) != 0 {
-			t.Fatalf("the watch path read run %q with its frozen snapshot (%d bytes) and seeds (%d bytes)",
-				member.ID, len(member.Snapshot), len(member.Seeds))
+			t.Fatalf("node tree carries an unrelated run %q", member.ID)
 		}
 	}
 
@@ -271,9 +275,21 @@ func TestWorkflowWatchTreeResolvesThroughSnapshotFreeRows(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, member := range full {
+	// Membership AND order are identical: the two projections read one tree, so
+	// a narrower read may never be a differently-shaped one.
+	if len(full) != len(nodes) {
+		t.Fatalf("full tree = %d members, node tree = %d", len(full), len(nodes))
+	}
+	for index, member := range full {
+		if member.ID != nodes[index].ID {
+			t.Fatalf("tree member %d: full walk = %q, node walk = %q", index, member.ID, nodes[index].ID)
+		}
+		if member.CallDepth != nodes[index].CallDepth {
+			t.Fatalf("tree member %q: full walk depth %d, node walk depth %d",
+				member.ID, member.CallDepth, nodes[index].CallDepth)
+		}
 		if len(member.Snapshot) == 0 {
-			t.Fatalf("fixture run %q has no snapshot, so the summary assertion above proves nothing", member.ID)
+			t.Fatalf("fixture run %q has no snapshot, so the node assertion above proves nothing", member.ID)
 		}
 	}
 

@@ -92,6 +92,48 @@ type workflowAttempt struct {
 	timer                workflowTimer
 	timerMode            workflowTimerMode
 	timerDeadline        time.Time
+	// rateLimits is the newest quota snapshot this attempt's own session
+	// reported. Both providers push one at the moment they refuse a turn for a
+	// spent allowance, so it is the structured half of a usage-limit refusal —
+	// which window, and when it clears. It is attempt-scoped rather than read
+	// off the App's merged per-provider cache because the answer has to be
+	// about the account this session is authenticated as.
+	rateLimits []provider.RateLimitEntry
+	// lastFailure is the runner's account of the most recent provider failure
+	// this attempt saw, carried onto the outcome so a park with no envelope
+	// still names something. See `Outcome.Detail`.
+	lastFailure string
+}
+
+// noteRateLimits records a quota snapshot the session reported. A snapshot that
+// will not decode is dropped rather than clearing what is held: the last good
+// answer about this account's windows is better than none, and the only thing
+// that reads it is a refusal deciding when to come back.
+func (a *workflowAttempt) noteRateLimits(meta json.RawMessage) {
+	if len(meta) == 0 {
+		return
+	}
+	var snapshot provider.RateLimitsSnapshot
+	if json.Unmarshal(meta, &snapshot) != nil || len(snapshot.Limits) == 0 {
+		return
+	}
+	a.rateLimits = snapshot.Limits
+}
+
+// failureDetail is what this attempt tells the engine about a failure the
+// element authored no envelope for: the last provider error it actually saw,
+// with the fallback naming the shape of the failure when there was none. The
+// fallback is never dropped — a park whose only account is "the session
+// disconnected" is still an account, and it is what the empty envelope left
+// missing.
+func (a *workflowAttempt) failureDetail(fallback string) string {
+	if a.lastFailure == "" {
+		return workflowFailureDetail(fallback)
+	}
+	if fallback == "" {
+		return a.lastFailure
+	}
+	return workflowFailureDetail(fallback + " (" + a.lastFailure + ")")
 }
 
 func newWorkflowAppRunner(app *App, dataRoot string, profiles engine.ProfileSource) *workflowAppRunner {
@@ -290,7 +332,10 @@ func (r *workflowAppRunner) installAttempt(ctx context.Context, attempt *workflo
 
 	schema := append(json.RawMessage(nil), attempt.schema...)
 	if _, err := r.sendIfActive(key, attempt.currentPrompt, schema); err != nil {
-		r.finish(key, engine.Outcome{Kind: engine.OutcomeExecutionFailure})
+		r.finish(key, engine.Outcome{
+			Kind:   engine.OutcomeExecutionFailure,
+			Detail: workflowFailureDetail("sending the opening prompt failed: " + err.Error()),
+		})
 	}
 	return nil
 }

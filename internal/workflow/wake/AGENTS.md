@@ -71,7 +71,15 @@ wakes the same ask (K2). See "Coalescing" below.
   the headline is the root's (still `running` — it is *waiting*) and the
   body names the parked descendant, its depth, and what it is parked on.
   This is what turns "a grandchild is stuck" into one message on the
-  surface a human or agent actually watches. The body also carries the
+  surface a human or agent actually watches. It carries **no
+  `Input.Outputs`**: those are the ROOT's declared outputs and the root
+  has not finished, so for a recursive campaign they are the previous
+  wave's carry-forward values (`next-wave-number: 3`) restated on every
+  park deep in the tree as though they described the run that just
+  stopped. Same rule as the blanked `Run.Reason` — the resolver
+  (`app_workflow_wake.go`) omits both on a descendant wake, and the
+  descendant's own attempt outputs already ride the message as
+  `AttemptOutputs`. The body also carries the
   **call chain** root→park (`Descendant.Chain`, elided in the middle
   past `MaxChainRuns` with the elision stating how many it dropped) and
   a closing naming which run to act on, because a campaign's sixth wave
@@ -155,6 +163,37 @@ wakes the same ask (K2). See "Coalescing" below.
   the record, and the "somebody acted, so the record is spent" clear all
   live app-side in `app_workflow_wake_delivery.go` — this package only
   says what identity means.
+- **A signature is recorded only once the message it identifies has
+  stopped being losable, and each delivery branch records at its own
+  durability point.** A session-less thread's ordinary send persists a
+  durable row before it returns, so that branch records inline; a live
+  session's message goes through the flush queue, which is process
+  memory until the dispatch worker writes it to the provider, so that
+  branch defers the record to the queue item's `OnDispatched` callback
+  (`triage.QueuedFlushItem`). Recording at hand-off would let a crash, a
+  session teardown, or a rollback take the message while the row swore
+  it had been delivered — and because the record is only spent when
+  somebody ACTS on the run, the identical wake would then be suppressed
+  forever. Redeliver over lose, the same trade the guidance slot makes:
+  the cost of erring the other way is one duplicate message.
+- **A deferred record CLAIMS the row at hand-off (`queued:<signature>`)
+  and is promoted by a compare-and-set.** The two writers of this column
+  race by construction — the record lands on the flush-dispatch worker,
+  the clear on the app's serial wake queue — so a deferred record with
+  nothing written yet leaves an action taken while the message was still
+  queued with nothing to spend, and the record then lands *behind* it.
+  A bare `run resume` of a `retries-exhausted` run produces exactly that
+  sequence: it continues the same attempt, so every signature field
+  matches and the re-park would be suppressed forever. The claim is what
+  the action spends, and the promotion is a compare-and-set against it
+  (`UpdateWorkItemWakeSignatureIfCurrent`), so a spent claim can never
+  become a record. **The invalidation therefore lives where the clear
+  already lives** — any code that writes the column spends a pending
+  promotion for free, so a future third clear site cannot miss it; route
+  every clear through `clearWakeRecord`. A claim never suppresses (the
+  comparison is for equality and a real signature always starts
+  `kind=rest ` / `kind=progress `), so one stranded by a crash makes the
+  run more talkative, never silent.
 
 ## Extension points
 

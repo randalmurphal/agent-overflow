@@ -295,6 +295,7 @@ var LocalOnlyMethods = map[string]bool{
 	"WorkflowStartRun":                     true,
 	"WorkflowCancelItem":                   true,
 	"WorkflowResumeItem":                   true,
+	"WorkflowScheduleResume":               true,
 	"WorkflowAnswerQuestion":               true,
 	"WorkflowResolveGate":                  true,
 	"WorkflowSetGlobalPause":               true,

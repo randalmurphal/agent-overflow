@@ -343,6 +343,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "WorkflowRetryFailedUnits", ID: 2846965054},             // main.App.WorkflowRetryFailedUnits
 	{Name: "WorkflowRetryUnit", ID: 1648002260},                    // main.App.WorkflowRetryUnit
 	{Name: "WorkflowRunAutomationNow", ID: 2615697354},             // main.App.WorkflowRunAutomationNow
+	{Name: "WorkflowScheduleResume", ID: 658224978},                // main.App.WorkflowScheduleResume
 	{Name: "WorkflowSendPRReviewCommentsToThread", ID: 1172404443}, // main.App.WorkflowSendPRReviewCommentsToThread
 	{Name: "WorkflowSetAutomationEnabled", ID: 642610548},          // main.App.WorkflowSetAutomationEnabled
 	{Name: "WorkflowSetGlobalPause", ID: 774492663},                // main.App.WorkflowSetGlobalPause

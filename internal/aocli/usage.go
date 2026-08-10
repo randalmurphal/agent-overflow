@@ -250,7 +250,7 @@ const runListUsage = `Usage: agent-overflow run list [--active] [--json]
 const runPauseUsage = `Usage: agent-overflow run pause [--json] <run-id>
 `
 
-const runResumeUsage = `Usage: agent-overflow run resume [--json] [--phase <phase-id>] [--refresh-def] <run-id>
+const runResumeUsage = `Usage: agent-overflow run resume [--json] [--phase <phase-id>] [--refresh-def] [--at <when>] <run-id>
 
 Continues the parked run and preserves what it already finished: a stopped turn
 carries on in its own session, a turn that DIED on a provider failure the
@@ -275,6 +275,16 @@ paused, interrupted, checkpoint, unit-failed, or retries-exhausted continues an
 attempt whose work was launched under the frozen definition, and is refused
 unless --phase says to discard it. Between campaign waves nothing is needed: a
 call reads its target from disk every time it is made.
+
+--at <when> schedules the bare resume above instead of taking it now, on any
+park a bare resume continues. <when> is RFC 3339 (2026-08-15T19:56:00Z) or a
+duration from now (+36h), resolved against the app's clock, and the command
+prints the moment it armed. The run stays exactly where it is until then, and
+anything that repairs it in the meantime — a resume, a cancel, a discard —
+disarms the schedule. It is the manual half of what a dated usage-limit refusal
+already does on its own: a provider that refuses a turn and says when the
+allowance returns parks the run retries-exhausted and comes back by itself, so
+--at is for the case where you know the time and the provider did not say it.
 
 A gate decision is not resume's to take: run resolve settles a human: route, and
 run retry-unit / run retry-failed-units repair one unit or all of them — a failed

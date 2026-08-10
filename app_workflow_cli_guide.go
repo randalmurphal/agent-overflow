@@ -56,6 +56,12 @@ type WorkflowAgentGuideRunResult struct {
 	// CallerNote is set when the guided run was CALLED by another. The entry
 	// reaches this run's own remaining phases and nothing else.
 	CallerNote string `json:"callerNote,omitempty"`
+	// QuarantineNote is set when this append landed on a slot the engine had to
+	// heal: whatever was pending would not decode, so it was written to the
+	// engine log and discarded. The call SUCCEEDED — the caller's entry is
+	// pending — which is exactly why the fact has to travel on the result rather
+	// than as an error nobody would see.
+	QuarantineNote string `json:"quarantineNote,omitempty"`
 }
 
 // WorkflowAgentGuideRun leaves one instruction for a run's next phase entry.
@@ -77,7 +83,8 @@ func (a *App) WorkflowAgentGuideRun(ctx context.Context, input WorkflowAgentGuid
 	result := WorkflowAgentGuideRunResult{
 		ItemID: state.ItemID, Pending: len(state.Pending), MaxPending: engine.MaxGuidanceEntries,
 		State: string(state.State), Reason: string(state.Reason), PhaseID: state.PhaseID,
-		DeliversNote: workflowGuidanceNote(state),
+		DeliversNote:   workflowGuidanceNote(state),
+		QuarantineNote: workflowGuidanceQuarantineNote(state.Quarantined),
 	}
 	if len(state.Pending) > 0 {
 		result.By = string(state.Pending[len(state.Pending)-1].By)
@@ -143,6 +150,25 @@ func workflowGuidanceNote(state engine.GuidanceState) string {
 			"the run is parked %s%s; this is delivered at the fresh phase entry the verb that settles that park produces",
 			state.Reason, workflowGuidancePhaseClause(state.PhaseID))
 	}
+}
+
+// workflowGuidanceQuarantineNote says what this append cost, when it cost
+// anything. The engine hands back facts (how big the discarded column was, why
+// it would not decode, which log event holds it); the sentence is composed here
+// for the same reason `workflowGuidanceNote` is — the caller reads prose, not a
+// struct, and the CLI's job is to print what the app says rather than to know
+// what a quarantine means.
+//
+// It names what the operator has to DO, because the discard is not repairable
+// from the record: whatever was pending is in the log and not in the run, so any
+// earlier steer that has not been delivered has to be left again.
+func workflowGuidanceQuarantineNote(quarantine *engine.GuidanceQuarantine) string {
+	if quarantine == nil {
+		return ""
+	}
+	return fmt.Sprintf(
+		"the guidance already pending on this run (%d bytes) could not be decoded (%s), so it was written to the engine log as %q and the slot was cleared before your entry was added; your entry is safe and is the only one pending, but any earlier steer that had not been delivered is gone — re-issue it",
+		quarantine.Bytes, quarantine.Reason, quarantine.LogEvent)
 }
 
 func workflowGuidancePhaseClause(phaseID string) string {

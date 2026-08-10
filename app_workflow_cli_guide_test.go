@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -89,6 +91,54 @@ func TestWorkflowAgentGuideRunIsVisibleToTheReadVerbs(t *testing.T) {
 	}
 	if entry.At == 0 || entry.AgeSeconds < 0 {
 		t.Fatalf("entry has no usable age: %+v", entry)
+	}
+}
+
+// A slot the engine had to HEAL is reported on the answer. The call succeeds —
+// the caller's entry is pending — so an error would say the wrong thing, and the
+// engine's `emitError` channel carries a fixed "workflow operation failed"
+// string whose real cause never crosses the transport. The one person who can
+// act on the discard is the one reading this result, so the fact travels on it.
+func TestWorkflowAgentGuideRunReportsAHealedSlot(t *testing.T) {
+	fixture, item := newAmendFixture(t)
+	ctx := transport.WithCallerScope(context.Background(), interactiveScope(fixture, "thread-1"))
+
+	corrupt := json.RawMessage(`[{"text":"an earlier steer","at":100,"by":"human"`)
+	if err := fixture.app.store.SetWorkItemPendingGuidance(item.ID, corrupt); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := fixture.app.WorkflowAgentGuideRun(ctx,
+		WorkflowAgentGuideRunInput{ItemID: item.ID, Text: "prefer the smaller diff"})
+	if err != nil {
+		t.Fatalf("a guide over a healed slot was refused, losing the caller's entry: %v", err)
+	}
+	if result.Pending != 1 {
+		t.Fatalf("pending = %d, want the caller's entry alone on the healed slot", result.Pending)
+	}
+	for _, want := range []string{
+		"could not be decoded", "engine log", "guidance-undecodable", "re-issue",
+	} {
+		if !strings.Contains(result.QuarantineNote, want) {
+			t.Fatalf("quarantine note %q does not state %q", result.QuarantineNote, want)
+		}
+	}
+	// The size is stated from the engine's facts, not guessed here.
+	if !strings.Contains(result.QuarantineNote, fmt.Sprintf("(%d bytes)", len(corrupt))) {
+		t.Fatalf("quarantine note %q does not name the discarded size", result.QuarantineNote)
+	}
+
+	// And the second guide, over the now-healthy slot, warns about nothing.
+	again, err := fixture.app.WorkflowAgentGuideRun(ctx,
+		WorkflowAgentGuideRunInput{ItemID: item.ID, Text: "and skip the changelog"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.QuarantineNote != "" {
+		t.Fatalf("a healthy slot reported a quarantine: %q", again.QuarantineNote)
+	}
+	if again.Pending != 2 {
+		t.Fatalf("pending = %d, want both entries", again.Pending)
 	}
 }
 

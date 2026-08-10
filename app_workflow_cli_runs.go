@@ -309,11 +309,17 @@ func (a *App) WorkflowAgentRunStatus(ctx context.Context, itemID string) (Workfl
 
 // workflowAgentRunDetail is the single-run projection `run status` prints and
 // `run inspect` builds on, so the two cannot disagree about what reading one run
-// answers. `item` is the row scopedRun already loaded: the summary projection
-// carries the phase progress GetWorkItem does not compute, and blanks the seeds
-// column that only the full row has.
-func (a *App) workflowAgentRunDetail(ctx context.Context, item store.WorkItem) (WorkflowAgentRunView, error) {
-	summary, err := a.store.GetWorkItemSummary(item.ID)
+// answers.
+//
+// `summary` is the row scopedRun already loaded — the projection that carries
+// the phase progress GetWorkItem does not compute and blanks the heavy columns.
+// This is the one caller on the surface that needs those columns, so it is the
+// one that pays for them: the run's frozen seeds, and its own budget envelope,
+// which engine.TreeRoot returns unchanged for a ROOT run — a blank budget column
+// there would silently resolve the project default in place of the ceiling the
+// run declared.
+func (a *App) workflowAgentRunDetail(ctx context.Context, summary store.WorkItem) (WorkflowAgentRunView, error) {
+	item, err := a.store.GetWorkItem(summary.ID)
 	if err != nil {
 		return WorkflowAgentRunView{}, err
 	}
@@ -389,11 +395,18 @@ func (a *App) WorkflowAgentRunOutput(ctx context.Context, itemID string) (Workfl
 	if err != nil {
 		return WorkflowAgentRunOutputs{}, err
 	}
+	// The declared-output map lives in the frozen snapshot, which the
+	// authorization read deliberately does not carry — so this verb, which is
+	// the one that needs it, reads the full row for itself.
+	full, err := a.store.GetWorkItem(item.ID)
+	if err != nil {
+		return WorkflowAgentRunOutputs{}, err
+	}
 	phases, err := a.store.ListWorkItemPhaseTimeline(item.ID)
 	if err != nil {
 		return WorkflowAgentRunOutputs{}, err
 	}
-	outputs, err := workflowNamedOutputs(item.Snapshot, phases)
+	outputs, err := workflowNamedOutputs(full.Snapshot, phases)
 	if err != nil {
 		return WorkflowAgentRunOutputs{}, fmt.Errorf("workflow run output %s: %w", item.ID, err)
 	}

@@ -39,15 +39,16 @@ var runGuideCommand = execCommand{
 
 // guideView mirrors only the fields the human block prints.
 type guideView struct {
-	ItemID       string `json:"itemId"`
-	Pending      int    `json:"pending"`
-	MaxPending   int    `json:"maxPending"`
-	By           string `json:"by"`
-	State        string `json:"state"`
-	Reason       string `json:"reason"`
-	PhaseID      string `json:"phaseId"`
-	DeliversNote string `json:"deliversNote"`
-	CallerNote   string `json:"callerNote"`
+	ItemID         string `json:"itemId"`
+	Pending        int    `json:"pending"`
+	MaxPending     int    `json:"maxPending"`
+	By             string `json:"by"`
+	State          string `json:"state"`
+	Reason         string `json:"reason"`
+	PhaseID        string `json:"phaseId"`
+	DeliversNote   string `json:"deliversNote"`
+	CallerNote     string `json:"callerNote"`
+	QuarantineNote string `json:"quarantineNote"`
 }
 
 // block prints what is now waiting and the app's own sentence about when it is
@@ -70,6 +71,12 @@ func (v guideView) block() string {
 	fmt.Fprint(&block, fields(row...))
 	if v.DeliversNote != "" {
 		fmt.Fprintf(&block, "\nwhen: %s", v.DeliversNote)
+	}
+	// The quarantine goes above the caller note and reads as a warning, because
+	// it is the one line here about something the caller LOST rather than about
+	// what they just did.
+	if v.QuarantineNote != "" {
+		fmt.Fprintf(&block, "\nwarning: %s", v.QuarantineNote)
 	}
 	if v.CallerNote != "" {
 		fmt.Fprintf(&block, "\nnote: %s", v.CallerNote)

@@ -13,6 +13,12 @@ type rateLimitDescriptor struct {
 	windowMins int
 }
 
+// rateLimitStatusRejected is the one `rate_limit_info.status` value that means
+// the API REFUSED the request rather than reporting headroom. It is emitted
+// from the CLI's 429 handler, which has no `utilization` to report, so it is
+// the discriminator `parseRateLimitEvent` admits a percentage-less snapshot on.
+const rateLimitStatusRejected = "rejected"
+
 var (
 	sessionRateLimit = rateLimitDescriptor{
 		limitID:    "session",

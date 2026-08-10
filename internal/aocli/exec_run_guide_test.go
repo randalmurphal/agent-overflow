@@ -38,6 +38,10 @@ func TestRunGuideSendsTheTextAndPrintsWhenItIsRead(t *testing.T) {
 	if strings.Contains(stdout, "prefer the smaller diff") {
 		t.Fatalf("the block echoed the guidance back: %q", stdout)
 	}
+	// An ordinary guide lost nothing, so it warns about nothing.
+	if strings.Contains(stdout, "warning:") {
+		t.Fatalf("a healthy slot printed a warning: %q", stdout)
+	}
 
 	calls := backend.recorded("WorkflowAgentGuideRun")
 	if len(calls) != 1 {
@@ -52,6 +56,34 @@ func TestRunGuideSendsTheTextAndPrintsWhenItIsRead(t *testing.T) {
 	}
 	if sent.ItemID != "run-1" || sent.Text != "prefer the smaller diff" {
 		t.Fatalf("sent = %#v", sent)
+	}
+}
+
+// A guide that landed on a slot the engine had to heal SUCCEEDED — the caller's
+// entry is pending — but something the operator left earlier is gone. The block
+// has to say so where they are already looking, because the alternative is a
+// clean success page over a discard nobody was told about.
+func TestRunGuidePrintsTheQuarantineWarning(t *testing.T) {
+	backend := newFakeBackend(t)
+	backend.reply("WorkflowAgentGuideRun", map[string]any{
+		"itemId": "run-1", "pending": 1, "maxPending": 8, "by": "human", "state": "running",
+		"deliversNote": "the run is working",
+		"quarantineNote": "the guidance already pending on this run (61 bytes) could not be decoded " +
+			"(unexpected EOF), so it was written to the engine log as \"guidance-undecodable\"",
+	})
+
+	code, stdout, stderr := runCLI([]string{"run", "guide", "run-1", "steer"}, backend.env())
+	if code != exitOK {
+		t.Fatalf("exit = %d (%s)", code, stderr)
+	}
+	if !strings.Contains(stdout, "warning: the guidance already pending on this run (61 bytes)") ||
+		!strings.Contains(stdout, "guidance-undecodable") {
+		t.Fatalf("stdout = %q, want the quarantine warning verbatim", stdout)
+	}
+	// The success is still reported: the entry landed, and the warning is about
+	// what it landed ON.
+	if !strings.Contains(stdout, "pending=1/8") {
+		t.Fatalf("stdout = %q, want the entry's own line too", stdout)
 	}
 }
 

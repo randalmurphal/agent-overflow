@@ -287,12 +287,48 @@ var runCancelCommand = runControl("agent-overflow run cancel", runCancelUsage, "
 // The app refuses it where the entry is a continuation rather than a fresh one.
 const refreshDefUsage = "re-read the workflow definition and its prompt files from disk for this entry"
 
-var runResumeCommand = runControl("agent-overflow run resume", runResumeUsage, "WorkflowResumeItem",
-	func(flags *flag.FlagSet) func() []any {
+// resume is the one control verb outside the runControl family, because --at
+// makes it two commands: taking the resume now, and SCHEDULING the same bare
+// resume for later. The scheduling half acts on a run it deliberately leaves
+// parked, so it reports the moment it armed rather than a state that has not
+// changed. --phase is refused alongside it: naming a phase is the start-over,
+// and a scheduled start-over is a different feature nobody has asked for.
+var runResumeCommand = execCommand{
+	name:  "agent-overflow run resume",
+	usage: runResumeUsage,
+	bind: func(flags *flag.FlagSet) func(*client, []string, io.Writer) (int, error) {
 		phase := flags.String("phase", "", "re-enter this phase instead of continuing where the run parked")
 		refreshDef := flags.Bool("refresh-def", false, refreshDefUsage)
-		return func() []any { return []any{*phase, *refreshDef} }
-	})
+		at := flags.String("at", "", "schedule the resume for this RFC 3339 time or duration from now (+36h)")
+		jsonOutput := flags.Bool("json", false, "write the app's result as JSON")
+		return func(c *client, args []string, stdout io.Writer) (int, error) {
+			if err := requireArgs("agent-overflow run resume", args, 1, "exactly one run id"); err != nil {
+				return exitError, err
+			}
+			if *at == "" {
+				if _, err := c.call("WorkflowResumeItem", args[0], *phase, *refreshDef); err != nil {
+					return exitError, err
+				}
+				return reportRunState(c, args[0], *jsonOutput, stdout)
+			}
+			if *phase != "" {
+				return exitError, usageError("agent-overflow run resume",
+					"--at schedules the bare resume, so it cannot be combined with --phase")
+			}
+			if *refreshDef {
+				return exitError, usageError("agent-overflow run resume",
+					"--at schedules the bare resume, which continues the parked attempt and never re-reads the definition")
+			}
+			var armed string
+			raw, err := c.callInto(&armed, "WorkflowScheduleResume", args[0], *at)
+			if err != nil {
+				return exitError, err
+			}
+			return exitOK, render(stdout, *jsonOutput, raw,
+				fields("run="+args[0], "resume-at="+armed))
+		}
+	},
+}
 
 var runRerunCommand = runControl("agent-overflow run rerun", runRerunUsage, "WorkflowRerunItem",
 	func(flags *flag.FlagSet) func() []any {

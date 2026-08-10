@@ -3225,3 +3225,74 @@ func TestFlushUserMetaHelpers_RejectNullMeta(t *testing.T) {
 		t.Errorf("flushPayloadFromUserMeta(empty) = %v, want nil — absent meta is legitimate", err)
 	}
 }
+
+// TestDispatchFlush_OnDispatchedFiresOnlyAfterTheProviderWrite pins the seam
+// an app-internal injector's durable bookkeeping hangs off
+// (triage.QueuedFlushItem.OnDispatched, used by the workflow wake). The queue
+// in front of the dispatcher is process memory, so the callback must fire on
+// the SUCCESS return of dispatchFlushItem and on nothing earlier: a failed
+// dispatch requeues the message, and an injector that had already recorded it
+// as delivered would go silent about a message nobody ever received.
+func TestDispatchFlush_OnDispatchedFiresOnlyAfterTheProviderWrite(t *testing.T) {
+	t.Run("a successful dispatch fires it", func(t *testing.T) {
+		app, _ := newAppForFlushQueueRPC(t)
+
+		thread := testThread("flush-ondispatched-ok")
+		thread.Provider = string(provider.Codex)
+		thread.WorkspacePath = t.TempDir()
+		if err := app.store.CreateThread(thread); err != nil {
+			t.Fatalf("CreateThread: %v", err)
+		}
+		if err := app.store.InsertTurn(store.Turn{
+			TurnID: "turn-0", ThreadID: thread.ID, TurnIndex: 0,
+			StartedAt: time.Now().UnixMilli(),
+		}); err != nil {
+			t.Fatalf("InsertTurn: %v", err)
+		}
+		sess := installSteerTestSession(t, app, thread, "ok")
+		app.sessions[thread.ID] = session{
+			provider: string(provider.Codex), token: "flush-token", codex: sess,
+		}
+
+		fired := 0
+		app.dispatchFlush(thread.ID, []triage.QueuedFlushItem{{
+			ID: "queue:ok", Message: "wake", Payload: json.RawMessage(`{}`),
+			OnDispatched: func() { fired++ },
+		}})
+
+		if fired != 1 {
+			t.Fatalf("OnDispatched fired %d times, want 1 after the provider write", fired)
+		}
+	})
+
+	t.Run("a failed dispatch leaves it unfired and requeued", func(t *testing.T) {
+		app, _ := newAppForFlushQueueRPC(t)
+
+		thread := testThread("flush-ondispatched-fail")
+		thread.Provider = string(provider.Claude)
+		thread.WorkspacePath = t.TempDir()
+		if err := app.store.CreateThread(thread); err != nil {
+			t.Fatalf("CreateThread: %v", err)
+		}
+
+		fired := 0
+		// No session registered: dispatch fails at session resolution.
+		app.dispatchFlush(thread.ID, []triage.QueuedFlushItem{{
+			ID: "queue:fail", Message: "wake", Payload: json.RawMessage(`{}`),
+			OnDispatched: func() { fired++ },
+		}})
+
+		if fired != 0 {
+			t.Fatalf("OnDispatched fired %d times on a failed dispatch, want 0", fired)
+		}
+		// The requeued copy keeps the callback, so the retry that succeeds is
+		// still the one that records the delivery.
+		requeued := app.triage.QueuedFlushItems(thread.ID)
+		if len(requeued) != 1 {
+			t.Fatalf("requeued items = %d, want 1", len(requeued))
+		}
+		if requeued[0].OnDispatched == nil {
+			t.Fatal("the requeued item lost its dispatch callback — its retry would deliver unrecorded")
+		}
+	})
+}

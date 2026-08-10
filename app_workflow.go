@@ -223,6 +223,10 @@ func (a *App) initWorkflowEngine(dataRoot string) error {
 		a.workflowRunner = nil
 		return fmt.Errorf("start workflow engine: %w", err)
 	}
+	// Self-resume schedules are re-armed over the engine that just rebuilt: a
+	// timer must not be able to fire into a run the rebuild has not decided
+	// about yet, and the rebuild is what parks the runs a crash interrupted.
+	a.sweepWorkflowAutoResumes()
 	// The §11 scheduler starts last and over the running engine: a trigger must
 	// never be able to fire into an engine that does not exist yet.
 	if err := a.initWorkflowScheduler(); err != nil {

@@ -243,6 +243,66 @@ func TestWorkItemWakeSignatureRoundTripsAndClears(t *testing.T) {
 	}
 }
 
+func TestWorkItemAutoResumeArmsListsAndClears(t *testing.T) {
+	s := newTestStore(t)
+	soon := testWorkItem("soon", "project-a", "needs-human", 1)
+	later := testWorkItem("later", "project-a", "needs-human", 2)
+	idle := testWorkItem("idle", "project-a", "needs-human", 3)
+	for _, item := range []WorkItem{soon, later, idle} {
+		if err := s.CreateWorkItem(item); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Nothing armed is the state every run starts in, and it is what the boot
+	// sweep must be able to skip without a second column saying so.
+	if at, err := s.WorkItemAutoResumeAt(idle.ID); err != nil || at != 0 {
+		t.Fatalf("unarmed schedule = %d (err %v), want 0", at, err)
+	}
+	if resumes, err := s.ListWorkItemAutoResumes(); err != nil || len(resumes) != 0 {
+		t.Fatalf("listed %+v (err %v) with nothing armed", resumes, err)
+	}
+
+	const laterAt, soonAt = int64(1_786_400_000_000), int64(1_786_380_000_000)
+	if err := s.SetWorkItemAutoResumeAt(later.ID, laterAt); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetWorkItemAutoResumeAt(soon.ID, soonAt); err != nil {
+		t.Fatal(err)
+	}
+	if at, err := s.WorkItemAutoResumeAt(soon.ID); err != nil || at != soonAt {
+		t.Fatalf("armed schedule = %d (err %v), want %d", at, err, soonAt)
+	}
+	// Soonest first: the sweep arms in the order the moments arrive.
+	resumes, err := s.ListWorkItemAutoResumes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resumes) != 2 ||
+		resumes[0] != (WorkItemAutoResume{ItemID: soon.ID, At: soonAt}) ||
+		resumes[1] != (WorkItemAutoResume{ItemID: later.ID, At: laterAt}) {
+		t.Fatalf("listed %+v, want the two armed runs soonest-first", resumes)
+	}
+
+	// The clear is the half that matters, and it is a plain assignment so
+	// taking an arming back twice still succeeds.
+	for range 2 {
+		if err := s.SetWorkItemAutoResumeAt(soon.ID, 0); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if resumes, err = s.ListWorkItemAutoResumes(); err != nil ||
+		len(resumes) != 1 || resumes[0].ItemID != later.ID {
+		t.Fatalf("listed %+v (err %v) after the clear, want only the later run", resumes, err)
+	}
+
+	if err := s.SetWorkItemAutoResumeAt("missing", soonAt); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("missing-run schedule write error = %v, want sql.ErrNoRows", err)
+	}
+	if _, err := s.WorkItemAutoResumeAt("missing"); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("missing-run schedule read error = %v, want sql.ErrNoRows", err)
+	}
+}
+
 func TestWorkItemSummaryOmitsHeavyPayloads(t *testing.T) {
 	s := newTestStore(t)
 	first := testWorkItem("first", "project-a", "running", 1)
@@ -770,5 +830,121 @@ func TestListWorkItemUnitCallChildrenIsInsertionOrdered(t *testing.T) {
 	}
 	if _, err := s.ListWorkItemUnitCallChildren("parent", "wave", 1, ""); err == nil {
 		t.Fatal("an empty unit id must be refused, not read as a phase call")
+	}
+}
+
+// The node reads are the tree walk's, and they are narrow on purpose: a `run
+// watch --tree` re-resolves its membership on every wake of a globally
+// broadcast loop, so per member it must neither carry a frozen workflow
+// snapshot nor make SQLite parse one for a phase ordinal nobody reads.
+//
+// Membership and order must match ListWorkItemChildren exactly — the two
+// projections read one tree, so a narrower read may never be a
+// differently-shaped one.
+func TestWorkItemNodeReadsCarryLinkageAndMatchTheFullChildListing(t *testing.T) {
+	s := newTestStore(t)
+	root := testWorkItem("root", "project-a", "running", 1)
+	root.Snapshot = json.RawMessage(`{"workflow":{"phases":[{"id":"wave"}],"prompt":"large"}}`)
+	if err := s.CreateWorkItem(root); err != nil {
+		t.Fatalf("create root: %v", err)
+	}
+	for index, id := range []string{"wave-1", "wave-2"} {
+		child := testWorkItem(id, "project-a", "running", int64(2+index))
+		child.Source = "call"
+		child.ParentItemID = root.ID
+		child.ParentPhaseID = "wave"
+		child.ParentAttempt = 1
+		child.CallDepth = 1
+		child.Snapshot = root.Snapshot
+		if err := s.CreateWorkItem(child); err != nil {
+			t.Fatalf("create child %s: %v", id, err)
+		}
+	}
+
+	node, err := s.GetWorkItemNode("wave-2")
+	if err != nil {
+		t.Fatalf("get node: %v", err)
+	}
+	if node != (WorkItemNode{ID: "wave-2", ParentItemID: "root", CallDepth: 1}) {
+		t.Fatalf("node = %#v, want id/linkage/depth only", node)
+	}
+
+	nodes, err := s.ListWorkItemChildNodes(root.ID)
+	if err != nil {
+		t.Fatalf("list child nodes: %v", err)
+	}
+	children, err := s.ListWorkItemChildren(root.ID)
+	if err != nil {
+		t.Fatalf("list children: %v", err)
+	}
+	if len(nodes) != len(children) {
+		t.Fatalf("child nodes = %d, full children = %d", len(nodes), len(children))
+	}
+	for index, child := range children {
+		if nodes[index].ID != child.ID || nodes[index].CallDepth != child.CallDepth ||
+			nodes[index].ParentItemID != child.ParentItemID {
+			t.Fatalf("child %d: node = %#v, full row = id %q depth %d parent %q",
+				index, nodes[index], child.ID, child.CallDepth, child.ParentItemID)
+		}
+		if len(child.Snapshot) == 0 {
+			t.Fatalf("fixture child %q has no snapshot, so this test proves nothing", child.ID)
+		}
+	}
+
+	// A run with no children is an empty listing, never an error; a missing run
+	// is the caller asking about a row that is not there.
+	if childless, err := s.ListWorkItemChildNodes("wave-1"); err != nil || len(childless) != 0 {
+		t.Fatalf("childless listing = %#v (err %v), want an empty slice", childless, err)
+	}
+	if _, err := s.GetWorkItemNode("missing"); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("missing-run node read error = %v, want sql.ErrNoRows", err)
+	}
+	if _, err := s.ListWorkItemChildNodes(""); err == nil {
+		t.Fatal("an empty parent id listed child nodes; it must be refused")
+	}
+}
+
+// The guarded write is what lets a deferred wake record know it was overtaken:
+// the guard and the write are one statement, so a clear that lands between them
+// cannot be silently overwritten.
+func TestUpdateWorkItemWakeSignatureIfCurrentOnlyMovesAMatchingRecord(t *testing.T) {
+	s := newTestStore(t)
+	item := testWorkItem("guarded", "project-a", "needs-human", 1)
+	if err := s.CreateWorkItem(item); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	const claim = "queued:kind=rest run=\"guarded\""
+	const delivered = "kind=rest run=\"guarded\""
+
+	if err := s.UpdateWorkItemWakeSignature(item.ID, claim); err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	moved, err := s.UpdateWorkItemWakeSignatureIfCurrent(item.ID, claim, delivered)
+	if err != nil || !moved {
+		t.Fatalf("promote a matching record: moved=%v err=%v", moved, err)
+	}
+	if signature, err := s.WorkItemWakeSignature(item.ID); err != nil || signature != delivered {
+		t.Fatalf("signature after promote = %q (err %v)", signature, err)
+	}
+
+	// The record moved on (somebody acted): the write must not land, and that is
+	// an ordinary answer rather than an error.
+	if err := s.UpdateWorkItemWakeSignature(item.ID, ""); err != nil {
+		t.Fatalf("clear: %v", err)
+	}
+	moved, err = s.UpdateWorkItemWakeSignatureIfCurrent(item.ID, claim, delivered)
+	if err != nil {
+		t.Fatalf("promote a spent record errored: %v", err)
+	}
+	if moved {
+		t.Fatal("promoted a record that had been spent — the wake it identifies would be suppressed forever")
+	}
+	if signature, err := s.WorkItemWakeSignature(item.ID); err != nil || signature != "" {
+		t.Fatalf("spent record was overwritten: %q (err %v)", signature, err)
+	}
+
+	// A run that is gone is the same ordinary "did not write" answer.
+	if moved, err := s.UpdateWorkItemWakeSignatureIfCurrent("missing", claim, delivered); err != nil || moved {
+		t.Fatalf("missing-run guarded write: moved=%v err=%v", moved, err)
 	}
 }

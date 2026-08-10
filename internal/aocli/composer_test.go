@@ -54,6 +54,10 @@ func TestRenderComposerContextNamesTheSurfaceAndTheLiveState(t *testing.T) {
 		// turn that died continues on its session, and the loop bound that ran out
 		// needs the fresh entry, which is the only thing that refills it.
 		"continues the parked attempt on the session its turn died in; --phase <id> goes back further and is the only thing that refills loop budgets",
+		// The third cause of the same reason, and the one nobody has to act on: a
+		// provider that refused the turn for a spent usage allowance AND said when
+		// it returns parks here with a self-resume already armed.
+		"a park whose cause names a usage limit resumes itself at the stated time",
 		"state failed → run rerun",
 		// The one sentence the whole verb set turns on: what resume preserves and
 		// what --phase throws away.

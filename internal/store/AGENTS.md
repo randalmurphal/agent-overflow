@@ -179,7 +179,15 @@ root `CLAUDE.md` principle 3.
   a run's callees, `ListWorkItemCallChildren` narrows that to the child one call
   *attempt* created, and `WorkItemListFilter.ParentItemID` is the same edge for
   summary listings. All three pair the parameter with `parent_item_id <> ''` so
-  the partial index applies.
+  the partial index applies. `GetWorkItemNode` / `ListWorkItemChildNodes` walk
+  the SAME edge through a third projection — `WorkItemNode`, three plain columns
+  (id, parent, call depth), no join — for the readers that want a tree's SHAPE
+  and nothing else. It is a distinct type rather than a sparsely-filled
+  `WorkItem` because a row whose Goal and State are silently blank is a trap.
+  The summary projection cannot serve them: its phase-progress join makes SQLite
+  parse every row's frozen snapshot to find a phase ordinal, and
+  `agent-overflow run watch --tree` re-resolves its membership on every wake of a
+  globally broadcast loop.
 - `automations.go` — automation definition, continuity-note, and
   per-source cursor CRUD. Cursors are dependent scheduler state and
   cascade when an automation is deleted. Migration v40 adds the fire
@@ -514,6 +522,32 @@ baseline:
   `SetWorkItemPendingGuidance` are the only reader and writer. A plain ADD
   COLUMN with no CHECK, so no rebuild; a future `work_items` rebuild must carry
   it, like every other column added since v39.
+
+## Recent schema changes (v54) — the self-resume moment
+
+- `work_items.auto_resume_at` (`INTEGER NOT NULL DEFAULT 0`, Unix milliseconds)
+  is when a parked run brings itself back. It is written by exactly one park: a
+  provider that refused the turn because the account's usage allowance is spent
+  AND said when it returns (`app_workflow_quota.go`), which parks
+  `retries-exhausted` with the reset stated in the attempt's `park_cause`. The
+  wait is measured in days, so the moment has to outlive the process that
+  learned it — an in-memory timer would mean a five-day stall needing a human
+  alarm clock after any restart, which is the whole failure this column exists
+  to end.
+- `0` means "nothing armed", which is every other run. The column is the single
+  source of truth and the timer is derived from it: `app_workflow_autoresume.go`
+  arms one on the write, re-arms every armed row at boot
+  (`ListWorkItemAutoResumes`, ordered soonest-first, a past-due row firing
+  shortly after boot rather than instantly), and clears BOTH halves the moment
+  the run leaves `needs-human` by any route — the timer's own resume, a manual
+  one, a cancel, a discard, a rerun. Opting out clears what opting in stored,
+  through the one state-transition hook rather than per verb.
+- **Deliberately absent from `workItemColumns`**, like `wake_signature` and
+  `pending_guidance`: no listing, overlay, or CLI projection reads it, and every
+  row those reads carry would pay for it. `WorkItemAutoResumeAt`,
+  `SetWorkItemAutoResumeAt`, and `ListWorkItemAutoResumes` are the only reader
+  and writer. A plain ADD COLUMN with no CHECK, so no rebuild; a future
+  `work_items` rebuild must carry it, like every other column added since v39.
 
 ## Recent schema changes (v52) — the last wake delivered
 

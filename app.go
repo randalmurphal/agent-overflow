@@ -112,6 +112,17 @@ type App struct {
 	// against. Its zero value is usable, so it needs no construction wiring and
 	// an App with no engine still answers a watcher honestly.
 	workflowWatch workflowWatchHub
+	// workflowAutoResumes holds one timer per parked run that will resume
+	// itself (`app_workflow_autoresume.go`). The durable record is
+	// `work_items.auto_resume_at`; this is only the live arming, rebuilt at boot
+	// and disarmed by every transition out of the park. The engine owns no
+	// timers by boundary, which is why the schedule lives here.
+	workflowAutoResumeMu sync.Mutex
+	workflowAutoResumes  map[string]workflowTimer
+	// newWorkflowAutoResumeTimer and workflowAutoResumeNowFn are test-only
+	// injections, mirroring idleReaperNowFn. Production leaves both nil.
+	newWorkflowAutoResumeTimer func(time.Duration, func()) workflowTimer
+	workflowAutoResumeNowFn    func() time.Time
 	// workflowDigestMu guards the lazily allocated digest-generator slots.
 	workflowDigestMu         sync.Mutex
 	workflowDigestSlots      chan struct{}

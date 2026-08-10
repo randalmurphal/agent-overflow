@@ -1455,6 +1455,16 @@ never leave a grandchild running or a sub-worktree stranded.
   reason; `--refresh-def` is refused on the bare resume there like any
   continuable park, since the attempt being continued rendered the frozen
   definition.
+  **A usage-limit refusal skips the ladder and schedules its own return
+  (D71).** When the typed refusal is a provider quota error AND the session
+  reported the limit windows, retrying in seconds against a limit that resets
+  in hours is waste: the run parks `retries-exhausted` immediately, the park
+  cause states the reset moment, and a persisted `auto_resume_at` fires a
+  bare resume (the same continuation) at that moment plus jitter — surviving
+  app restarts via a boot sweep. Any manual action on the park disarms it.
+  `run resume --at <time>` arms the same mechanism by hand on any continuable
+  park. A refusal missing either half (no typed enum, or windows the session
+  never reported) takes the ordinary ladder unchanged.
   **Distinct from this allowlist:** an envelope **absent or invalid after §3
   engine post-validation** gets **feedback-carrying retry turns** ("your
   envelope failed validation: <errors>") up to a **profile-set count (default

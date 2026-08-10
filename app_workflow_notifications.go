@@ -47,6 +47,15 @@ func (a *App) afterWorkflowEngineEvent(name string, payload any) {
 }
 
 func (a *App) afterWorkflowStateEvent(event engine.StateEvent) {
+	// Every transition OUT of a park disarms a self-resume schedule, and this
+	// is the one place that is true of: a manual resume, a cancel, a discard, a
+	// rerun, and an auto-resume's own resume all pass through here. Parking is
+	// the one transition that must not clear — the runner writes the schedule
+	// immediately before the park that carries it — which is exactly what
+	// `To != needs-human` says.
+	if event.To != engine.StateNeedsHuman {
+		a.clearWorkflowAutoResume(event.ItemID)
+	}
 	if event.To == engine.StateRunning {
 		// Somebody acted on this run — a resolve, an answer, a resume, a retry,
 		// a rerun all land here — so whatever its bound thread was last told is

@@ -206,12 +206,19 @@ func (a *App) composeWorkflowWake(item store.WorkItem, descendant *wakeDescendan
 			input.Run.Cause = phase.ParkCause
 			input.AttemptOutputs, input.AttemptOutputOverflow = a.wakeAttemptOutputs(item, phase, phase.OutputEnvelope)
 		}
+		// The run's DECLARED outputs, on the run that rested. A descendant park
+		// deliberately reports none: these are the root's, and the root has not
+		// finished — for a recursive campaign they are last wave's carry-forward
+		// values (`next-wave-number: 3`), which a reader meets on every park deep
+		// in the tree as a statement about a run that is still waiting. Same
+		// reasoning as `input.Run.Reason` two branches up: the descendant's own
+		// attempt outputs are already on the message as AttemptOutputs.
+		outputs, err := workflowNamedOutputs(item.Snapshot, timeline)
+		if err != nil {
+			return composedWake{}, fmt.Errorf("read declared outputs: %w", err)
+		}
+		input.Outputs = wakeOutputs(outputs)
 	}
-	outputs, err := workflowNamedOutputs(item.Snapshot, timeline)
-	if err != nil {
-		return composedWake{}, fmt.Errorf("read declared outputs: %w", err)
-	}
-	input.Outputs = wakeOutputs(outputs)
 	references, err := a.wakeReferences(item, timeline, input.Descendant)
 	if err != nil {
 		return composedWake{}, err
