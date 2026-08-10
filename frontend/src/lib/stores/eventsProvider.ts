@@ -42,6 +42,7 @@ import {
 } from './threadContextWindow';
 import { bumpUsageRefresh } from './usageRefresh.svelte';
 import { patchThreadDurableStatus, syncLatestTurnCompleted, syncThreadActivity, updateThreadUsageCache } from './eventsThreadRows';
+import { adoptEventStamp } from './threadHistoryStamps';
 
 export function applyModelFallback(evt: ModelFallbackEvent): void {
   if (!evt?.threadId) return;
@@ -354,6 +355,11 @@ export function applyTurnCompleted(evt: TurnCompletedEvent): void {
   // the composer chip is thread-scoped and only reacts to its own
   // thread's bump; see usageRefresh.svelte.ts.
   bumpUsageRefresh(evt.threadId);
+  // In-memory only (docs/specs/thread-replica-sync.md §3.4): the pair
+  // lets a thread the user watched stream and then re-opened get a
+  // `fresh` window sync instead of paying a convergence fetch, but it
+  // never reaches the durable replica.
+  adoptEventStamp(evt.threadId, evt.historyEpoch, evt.historyRev);
   const rawAssistantId = evt.assistantMessageId ?? '';
   const settled = {
     turnId: evt.turnId,

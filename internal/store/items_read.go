@@ -199,7 +199,14 @@ func (s *Store) GetThreadItemByPayloadID(threadID, payloadID string) (Item, bool
 }
 
 func (s *Store) GetThreadItem(threadID, id string) (Item, bool, error) {
-	row := s.reader().QueryRow(
+	return s.getThreadItem(s.reader(), threadID, id)
+}
+
+// getThreadItem is GetThreadItem against a caller-chosen queryer, so a
+// window read that must be attested by stamps from the same transaction
+// can resolve its anchor inside that transaction too.
+func (s *Store) getThreadItem(q sqlQueryer, threadID, id string) (Item, bool, error) {
+	row := q.QueryRow(
 		`SELECT `+itemColumns+`
 		   FROM items
 		   LEFT JOIN payloads ON payloads.id = items.payload_id

@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"agent-overflow/internal/aocli"
+	"agent-overflow/internal/wsllauncher"
 )
 
 // Argv handling for the app binary. One executable wears three hats: the GUI /
@@ -98,12 +99,13 @@ func refuseInSessionBoot(args []string) {
 // the flag set has exactly one definition: parseFlags reads the values out of
 // it, and isBootFlag only asks the set what names it knows.
 type bootFlags struct {
-	listen       *string
-	printURLFD   *string
-	connect      *string
-	dataDir      *string
-	harness      *bool
-	mockProvider *string
+	listen             *string
+	printURLFD         *string
+	connect            *string
+	dataDir            *string
+	harness            *bool
+	mockProvider       *string
+	resetTransportPort *bool
 }
 
 // newBootFlagSet declares every flag this binary's boot modes take. The flag
@@ -120,8 +122,17 @@ func newBootFlagSet() (*flag.FlagSet, bootFlags) {
 		dataDir:      flagSet.String("data-dir", "", "data directory root override; app data lives in <data-dir>/agent-overflow. Required by --harness."),
 		harness:      flagSet.Bool("harness", false, "agent test harness mode: headless boot on an isolated --data-dir with mock providers and the Harness RPC surface. See docs/architecture/agent-harness.md."),
 		mockProvider: flagSet.String("mock-provider", "", "harness mode only: path to the ao-mockprovider binary (default: alongside this executable)."),
+		resetTransportPort: flagSet.Bool(resetTransportPortFlag, false,
+			"discard this install's pinned transport port before binding and adopt whatever the OS hands out. The Windows launcher passes it on its one retry when the pinned port turned out to be unreachable from the host (see main_transport_port.go)."),
 	}
 }
+
+// resetTransportPortFlag is the flag name, taken from the package that
+// owns the launcher↔backend argv contract rather than re-spelled here:
+// the Windows launcher passes it to this binary across the WSL boundary
+// (cmd/agent-overflow-windows), so one definition is what keeps a
+// rename from leaving the launcher passing a flag we reject.
+const resetTransportPortFlag = wsllauncher.ResetTransportPortFlag
 
 // cliFlags carries the parsed command-line state. Four modes are
 // mutually exclusive: --connect (Phase F remote-client), --print-url-fd
@@ -143,6 +154,11 @@ type cliFlags struct {
 	// mockProvider optionally overrides where --harness finds the
 	// ao-mockprovider binary (default: next to this executable).
 	mockProvider string
+	// resetTransportPort discards the persisted transport port before
+	// binding, so this boot adopts a fresh one. See
+	// main_transport_port.go for the pin it clears and
+	// cmd/agent-overflow-windows for the retry that passes it.
+	resetTransportPort bool
 }
 
 // parseFlags pulls the command-line flags for a boot.
@@ -157,11 +173,12 @@ func parseFlags(args []string) (cliFlags, error) {
 	}
 
 	out := cliFlags{
-		listenAddr:   *values.listen,
-		connect:      *values.connect,
-		dataDir:      *values.dataDir,
-		harness:      *values.harness,
-		mockProvider: *values.mockProvider,
+		listenAddr:         *values.listen,
+		connect:            *values.connect,
+		dataDir:            *values.dataDir,
+		harness:            *values.harness,
+		mockProvider:       *values.mockProvider,
+		resetTransportPort: *values.resetTransportPort,
 	}
 
 	if out.connect != "" && *values.printURLFD != "" {
@@ -188,6 +205,13 @@ func parseFlags(args []string) (cliFlags, error) {
 	}
 	if out.mockProvider != "" && !out.harness {
 		return cliFlags{}, errors.New("--mock-provider requires --harness")
+	}
+	if out.connect != "" && out.resetTransportPort {
+		// --connect boots no local transport, so there is no pin to
+		// reset. Refuse rather than no-op: an operator reaching for this
+		// flag is trying to fix a bind, and a silent no-op would tell
+		// them it didn't work without telling them why.
+		return cliFlags{}, fmt.Errorf("cannot combine --connect with --%s", resetTransportPortFlag)
 	}
 	if out.connect != "" && out.listenAddr != "" {
 		// --listen configures the *local* transport bind. In --connect

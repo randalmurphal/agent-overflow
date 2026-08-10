@@ -8,9 +8,11 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 )
 
@@ -23,6 +25,17 @@ type Bootstrap struct {
 	WSURL  string `json:"wsUrl"`
 	Token  string `json:"token"`
 	Remote bool   `json:"remote,omitempty"`
+	// BackendID and ReplicaGeneration identify the backend's history
+	// store for the client-side thread replica
+	// (docs/specs/thread-replica-sync.md §3.3): the first keys the
+	// client's replica database per backend, the second invalidates it
+	// wholesale when the backend's history counters lose continuity (a
+	// database restore). Both are empty when the store is not open yet —
+	// the client refetches this manifest on every connect, so an early
+	// connection simply gets them on its next one, and MUST treat empty
+	// as "no replica keying available" rather than as a generation.
+	BackendID         string `json:"backendId,omitempty"`
+	ReplicaGeneration string `json:"replicaGeneration,omitempty"`
 }
 
 // MaxRetainedFormerSrvs caps how many retired http.Servers Rebind keeps
@@ -49,6 +62,20 @@ type Config struct {
 	// Port is the listen port. Zero asks the OS for an ephemeral port —
 	// the resolved port is available via Server.Addr() after Start.
 	Port int
+
+	// EphemeralPortFallback lets Start retry once on an ephemeral port
+	// when the requested Port is unavailable (in use, or privileged).
+	// Only meaningful alongside a non-zero Port, and only for callers
+	// that treat the port as a preference rather than a requirement —
+	// main.go's persisted per-install port (a stable page origin for
+	// origin-scoped browser storage) sets it; an operator's explicit
+	// --listen host:port does not, because silently landing somewhere
+	// else would be a lie.
+	//
+	// The retry is scoped to port-attributable bind failures. A bind
+	// address the host cannot honor still fails loudly, since retrying
+	// it on port 0 would fail identically and only obscure the cause.
+	EphemeralPortFallback bool
 
 	// Token is the auth secret presented as ?token=<value> on WS
 	// upgrade. Empty asks Server.New to generate one (recommended).
@@ -95,6 +122,17 @@ type Config struct {
 	// dirs are unreachable from a hostile rebound DNS origin — the
 	// bytes the agent writes can include user material.
 	DesignHandler func() http.Handler
+
+	// BackendIdentity reports the history store's backend id and replica
+	// generation for the bootstrap manifest. A getter, not a value, for
+	// the same reason as DesignHandler: the store opens during the App's
+	// startup, which runs AFTER New() — a snapshot taken at config time
+	// would always be empty. This package never learns what a store is;
+	// app wiring supplies the two strings.
+	//
+	// Optional — when nil, the manifest carries no identity and the
+	// client keeps its replica disabled.
+	BackendIdentity func() (backendID, replicaGeneration string)
 
 	// ScopedTokens resolves an `ao` CLI credential to the caller scope it
 	// was minted for. The App owns the registry (a token lives exactly as
@@ -239,6 +277,9 @@ func New(cfg Config) (*Server, error) {
 	if cfg.BindAddr == "" {
 		cfg.BindAddr = "127.0.0.1"
 	}
+	if cfg.Port < 0 || cfg.Port > 65535 {
+		return nil, fmt.Errorf("transport: Config.Port %d out of range", cfg.Port)
+	}
 	if cfg.HTTPReadHeaderTimeout == 0 {
 		cfg.HTTPReadHeaderTimeout = 10 * time.Second
 	}
@@ -300,10 +341,9 @@ func (s *Server) Start() error {
 }
 
 func (s *Server) start() error {
-	addr := fmt.Sprintf("%s:%d", s.cfg.BindAddr, s.cfg.Port)
-	listener, err := net.Listen("tcp", addr)
+	listener, err := s.listen()
 	if err != nil {
-		return fmt.Errorf("transport: listen %s: %w", addr, err)
+		return err
 	}
 	s.rootCtx, s.rootCancel = context.WithCancelCause(context.Background())
 
@@ -316,6 +356,66 @@ func (s *Server) start() error {
 
 	s.serve(srv, listener)
 	return nil
+}
+
+// listen binds the configured address. When the caller asked for a
+// specific port as a *preference* (Config.EphemeralPortFallback) and
+// the host refuses that port specifically, it retries exactly once on
+// an ephemeral port and says so in the log. There is no loop: the
+// second bind either succeeds or the whole Start fails carrying both
+// errors. The caller learns where it actually landed from Addr() —
+// main.go uses that to re-persist the pinned port.
+func (s *Server) listen() (net.Listener, error) {
+	addr := net.JoinHostPort(s.cfg.BindAddr, strconv.Itoa(s.cfg.Port))
+	listener, err := net.Listen("tcp", addr)
+	if err == nil {
+		return listener, nil
+	}
+	if !s.cfg.EphemeralPortFallback || s.cfg.Port == 0 || !portUnavailable(err) {
+		return nil, fmt.Errorf("transport: listen %s: %w", addr, err)
+	}
+
+	ephemeral := net.JoinHostPort(s.cfg.BindAddr, "0")
+	log.Printf("transport: listen %s: %v — retrying on an ephemeral port", addr, err)
+	listener, retryErr := net.Listen("tcp", ephemeral)
+	if retryErr != nil {
+		return nil, fmt.Errorf("transport: listen %s: %w (after %s: %v)", ephemeral, retryErr, addr, err)
+	}
+	log.Printf("transport: bound %s instead of %s", listener.Addr(), addr)
+	return listener, nil
+}
+
+// portUnavailable reports whether a bind error is attributable to the
+// port rather than the bind address: the port is held by someone else
+// (EADDRINUSE) or reserved to a privileged process (EACCES). Every
+// other failure — an address this host does not own, a malformed one —
+// would fail the same way on port 0, so retrying it would only bury
+// the real cause. The errno set is per-GOOS (porterr_unix.go /
+// porterr_windows.go): Windows surfaces WSAEADDRINUSE/WSAEACCES, which
+// errors.Is does not match against the POSIX names.
+func portUnavailable(err error) bool {
+	return matchesErrno(err, portUnavailableErrnos)
+}
+
+// addrInUse reports whether a bind error is "somebody already holds this
+// address" (EADDRINUSE / WSAEADDRINUSE) — the strictly narrower half of
+// portUnavailable. It exists for the one decision that must not confuse
+// the two: bindRebindListener cures a bind failure by CLOSING our own
+// live listener and retrying, which can only ever help when the address
+// was in use. A permission/reservation refusal (EACCES, WSAEACCES) is
+// identical after the close, so treating it as recoverable would tear
+// down a working listener for nothing.
+func addrInUse(err error) bool {
+	return matchesErrno(err, addrInUseErrnos)
+}
+
+func matchesErrno(err error, errnos []syscall.Errno) bool {
+	for _, errno := range errnos {
+		if errors.Is(err, errno) {
+			return true
+		}
+	}
+	return false
 }
 
 // buildHTTPServer constructs an http.Server with the same handler /
@@ -655,6 +755,10 @@ func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.Set("Content-Type", "application/json")
+	backendID, replicaGeneration := "", ""
+	if s.cfg.BackendIdentity != nil {
+		backendID, replicaGeneration = s.cfg.BackendIdentity()
+	}
 	_ = json.NewEncoder(w).Encode(Bootstrap{
 		// Build the wsUrl from the request's Host header so a LAN
 		// client gets a LAN-reachable URL even though the server's
@@ -663,7 +767,9 @@ func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
 		Token: s.token,
 		// Use the exact predicate captured by handleWS before upgrade so
 		// the client posture cannot disagree with LocalOnly enforcement.
-		Remote: !remoteAddrIsLoopback(r.RemoteAddr),
+		Remote:            !remoteAddrIsLoopback(r.RemoteAddr),
+		BackendID:         backendID,
+		ReplicaGeneration: replicaGeneration,
 	})
 }
 

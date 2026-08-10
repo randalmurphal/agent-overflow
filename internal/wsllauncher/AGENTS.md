@@ -107,11 +107,20 @@ can disable it in `/etc/wsl.conf` or `%USERPROFILE%/.wslconfig`. When
 disabled the Windows-side WebView2 cannot reach the WSL backend; the
 Wails window would otherwise blank-screen.
 
-`cmd/agent-overflow-windows/main.go::launchAndShow` runs a
+A port Windows has RESERVED breaks the same hop: Hyper-V / WSL2
+excluded port ranges (re-seeded on every Windows reboot, routinely
+covering 49152+) make an otherwise healthy WSL listener unreachable
+from the host. That one is recoverable, and
+`ResetTransportPortFlag` is how: the launcher relaunches the backend
+once with `--reset-transport-port`, which drops the backend's pinned
+listen port so it adopts a reachable one. The flag name lives in this
+package because both binaries need the same spelling.
+
+`cmd/agent-overflow-windows/main.go::launchAndProbe` runs a
 deadline-bounded HTTP probe against `http://localhost:<port>/bootstrap.json`
-after `Launch` returns. On probe failure, it routes the WebView to a
-`/connectivity-error` page that names the actionable mitigation
-explicitly:
+after `Launch` returns, and drives that single retry. If the retry also
+fails, it routes the WebView to a `/connectivity-error` page that names
+the actionable mitigation explicitly:
 
 ```
 [wsl2]

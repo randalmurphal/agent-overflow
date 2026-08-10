@@ -243,7 +243,7 @@ func TestGetTurnEditsDiffAttachesPersistedSpans(t *testing.T) {
 		Lines:      []highlight.EncodedLine{{Runs: []uint16{4, 1}}},
 		Primed:     true,
 	}
-	if ok := app.persistPayloadSpans("pl-edit-2", nil, []PatchSpanSeed{seed}); !ok {
+	if ok := app.persistPayloadSpans(threadID, "pl-edit-2", nil, []PatchSpanSeed{seed}); !ok {
 		t.Fatal("persistPayloadSpans() reported missing payload row")
 	}
 

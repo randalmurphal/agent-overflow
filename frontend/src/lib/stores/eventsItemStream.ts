@@ -13,6 +13,7 @@ import { iterPanes } from './panes.svelte';
 import { confirmFlushedByUserItemId } from './sendQueue.svelte';
 import { itemsRenderEqual } from './threadItems';
 import { threadItemCache } from './threadItemCache';
+import { removeReplicaWindow } from '../replica';
 import { isSmoothLiveContentKind } from './threadPaneShared';
 import { projectThreadItem } from './threadStatuses.svelte';
 import { syncProposedPlanStatus, syncThreadActivity, userTextCountsAsActivity } from './eventsThreadRows';
@@ -227,9 +228,19 @@ function applyItemUpserts(upserts: PendingItemUpsert[]): void {
   // This keeps redundant active-thread echoes from invalidating the warm
   // re-entry cache and rebuilding rows for no visible data change.
   for (const threadId of itemsByThread.keys()) {
-    if (changedThreadIds.has(threadId) || !activeThreadIds.has(threadId)) {
+    const inactive = !activeThreadIds.has(threadId);
+    if (changedThreadIds.has(threadId) || inactive) {
       threadItemCache.evict(threadId);
     }
+    // The durable copy is dropped only for INACTIVE threads, whose
+    // window nobody owns. A mounted thread's replica entry stays: at
+    // ~10 Hz streaming, a readwrite IndexedDB transaction per flush is
+    // exactly the per-frame cost the backend contract was shaped to
+    // avoid (§14), and it buys nothing — the envelope's attested stamp
+    // already trails these writes, so the next open answers `stale`
+    // and replaces the window regardless. The switch-away snapshot and
+    // the debounced write-back own the mounted thread's entry.
+    if (inactive) void removeReplicaWindow(threadId);
   }
   for (const [threadId, updatedAt] of userTextActivityByThread) {
     syncThreadActivity(threadId, updatedAt);

@@ -59,6 +59,15 @@ type UserMessageRevertedEvent struct {
 	// DeleteConversationFromItem's promoted-row predicate — carried here
 	// as data so the frontend never re-derives it.
 	KeptAnchorTurnItemIDs []string `json:"keptAnchorTurnItemIds,omitempty"`
+	// HistoryRev / HistoryEpoch are the thread's history stamps AFTER the
+	// cut, read inside the deleting transaction
+	// (docs/specs/thread-replica-sync.md §3, §4). A client that applies
+	// this event has mirrored the cut exactly, so it may adopt them and
+	// keep its cached window instead of dropping it. Never adopt them on
+	// an event whose removal instruction was not fully applied — an
+	// overstated stamp would show stale content as fresh (§3.4).
+	HistoryRev   int64 `json:"historyRev"`
+	HistoryEpoch int64 `json:"historyEpoch"`
 	// DraftPendingResend marks this revert as the first half of an
 	// edit-and-resend saga (RevertConversationAndResendMessage): the
 	// replacement message is being dispatched right behind this event.
@@ -149,7 +158,7 @@ func (a *App) InterruptAndRevertIfClean(threadID string) (InterruptAndRevertResu
 	// TurnIndex plus the provider ids the item meta already carries.
 	anchor := a.resolveMessageAnchor("interrupt-and-revert", threadID, userItem)
 
-	keptAnchorTurnItemIDs, err := a.rollbackConversationLocked(rollbackConversationLockedArgs{
+	cut, err := a.rollbackConversationLocked(rollbackConversationLockedArgs{
 		thread:       thread,
 		userItem:     userItem,
 		anchor:       anchor,
@@ -168,7 +177,9 @@ func (a *App) InterruptAndRevertIfClean(threadID string) (InterruptAndRevertResu
 		ThreadID:              threadID,
 		UserItemID:            userItem.ID,
 		TurnIndex:             userItem.TurnIndex,
-		KeptAnchorTurnItemIDs: keptAnchorTurnItemIDs,
+		KeptAnchorTurnItemIDs: cut.KeptAnchorTurnItemIDs,
+		HistoryRev:            cut.Stamp.Rev,
+		HistoryEpoch:          cut.Stamp.Epoch,
 	})
 
 	return InterruptAndRevertResult{

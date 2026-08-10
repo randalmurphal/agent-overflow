@@ -91,8 +91,16 @@ type rollbackConversationLockedArgs struct {
 // caller's `user_message:reverted` event can tell the frontend exactly
 // which anchor-turn rows to keep — the item-granular cut is decided by
 // DeleteConversationFromItem's promoted-row predicate, which must not
-// be re-derived in UI code.
-func (a *App) rollbackConversationLocked(args rollbackConversationLockedArgs) (keptAnchorTurnItemIDs []string, err error) {
+// be re-derived in UI code. The post-cut history stamp travels with
+// them, read inside the deleting transaction so the event attests
+// exactly this cut (docs/specs/thread-replica-sync.md §4) — a client
+// that mirrors the cut keeps its replica entry instead of dropping it.
+type revertedConversationCut struct {
+	KeptAnchorTurnItemIDs []string
+	Stamp                 store.HistoryStamp
+}
+
+func (a *App) rollbackConversationLocked(args rollbackConversationLockedArgs) (cut revertedConversationCut, err error) {
 	if args.markReverted && a.triage != nil {
 		a.triage.MarkTurnReverted(args.thread.ID)
 	}
@@ -104,18 +112,18 @@ func (a *App) rollbackConversationLocked(args rollbackConversationLockedArgs) (k
 	// later step fails.
 	if args.clearRunningBackgroundTasks {
 		if err := a.cleanRunningBackgroundTasksBeforeProviderRevert(args.thread, args.errorPrefix); err != nil {
-			return nil, err
+			return revertedConversationCut{}, err
 		}
 	}
 
 	if args.thread.Provider == string(provider.Codex) {
 		if args.clearRunningBackgroundTasks {
 			if err := a.markConfirmedBackgroundTasksInactiveAfterProviderCleanup(args.thread.ID, args.errorPrefix); err != nil {
-				return nil, err
+				return revertedConversationCut{}, err
 			}
 		}
 		if err := a.rollbackCodexThreadToMessage(args.thread, args.anchor); err != nil {
-			return nil, fmt.Errorf("%s: %w", args.errorPrefix, err)
+			return revertedConversationCut{}, fmt.Errorf("%s: %w", args.errorPrefix, err)
 		}
 	} else if args.thread.Provider == string(provider.ClaudeTUI) {
 		// The interactive TUI reverts the just-sent prompt natively when it
@@ -131,15 +139,15 @@ func (a *App) rollbackConversationLocked(args rollbackConversationLockedArgs) (k
 		// restored can't fuse with the re-send.
 	} else {
 		if err := a.stopSession(args.thread.ID); err != nil {
-			return nil, fmt.Errorf("%s: stop session: %w", args.errorPrefix, err)
+			return revertedConversationCut{}, fmt.Errorf("%s: stop session: %w", args.errorPrefix, err)
 		}
 		if args.clearRunningBackgroundTasks {
 			if err := a.markConfirmedBackgroundTasksInactiveAfterProviderCleanup(args.thread.ID, args.errorPrefix); err != nil {
-				return nil, err
+				return revertedConversationCut{}, err
 			}
 		}
 		if err := a.rollbackProviderConversationToMessage(args.thread, args.anchor, args.userItem); err != nil {
-			return nil, fmt.Errorf("%s: %w", args.errorPrefix, err)
+			return revertedConversationCut{}, fmt.Errorf("%s: %w", args.errorPrefix, err)
 		}
 	}
 
@@ -154,7 +162,7 @@ func (a *App) rollbackConversationLocked(args rollbackConversationLockedArgs) (k
 	// that row itself and owns settling it.
 	if args.promptDraft != nil {
 		if err := a.store.UpsertThreadDraft(*args.promptDraft); err != nil {
-			return nil, fmt.Errorf("%s: restore prompt draft: %w", args.errorPrefix, err)
+			return revertedConversationCut{}, fmt.Errorf("%s: restore prompt draft: %w", args.errorPrefix, err)
 		}
 	}
 
@@ -169,16 +177,17 @@ func (a *App) rollbackConversationLocked(args rollbackConversationLockedArgs) (k
 	// codex.Session.ForkAt for what upstream already has and when this
 	// branch can move to a message-granular cut.
 	if args.thread.Provider == string(provider.Codex) {
-		if _, err := a.store.DeleteConversationFromTurn(args.thread.ID, args.userItem.TurnIndex); err != nil {
-			return nil, fmt.Errorf("%s: truncate conversation: %w", args.errorPrefix, err)
+		_, stamp, err := a.store.DeleteConversationFromTurn(args.thread.ID, args.userItem.TurnIndex)
+		if err != nil {
+			return revertedConversationCut{}, fmt.Errorf("%s: truncate conversation: %w", args.errorPrefix, err)
 		}
-		return nil, nil
+		return revertedConversationCut{Stamp: stamp}, nil
 	}
-	keptAnchorTurnItemIDs, err = a.store.DeleteConversationFromItem(args.thread.ID, args.userItem.ID)
+	keptAnchorTurnItemIDs, stamp, err := a.store.DeleteConversationFromItem(args.thread.ID, args.userItem.ID)
 	if err != nil {
-		return nil, fmt.Errorf("%s: truncate conversation: %w", args.errorPrefix, err)
+		return revertedConversationCut{}, fmt.Errorf("%s: truncate conversation: %w", args.errorPrefix, err)
 	}
-	return keptAnchorTurnItemIDs, nil
+	return revertedConversationCut{KeptAnchorTurnItemIDs: keptAnchorTurnItemIDs, Stamp: stamp}, nil
 }
 
 func (a *App) rollbackProviderConversationToMessage(thread store.Thread, anchor store.MessageAnchor, userItem store.Item) error {

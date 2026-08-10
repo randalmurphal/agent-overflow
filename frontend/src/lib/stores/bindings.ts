@@ -714,3 +714,47 @@ export function StartCodexReview(
     new CodexReviewTargetClass(target),
   ) as unknown as Promise<CodexReviewStarted>;
 }
+
+// SyncThreadWindow wrapper. Same plain-object-in / class-wrap pattern as
+// CreateThread: the generated signature types the request as a class
+// instance and every call site wants to hand a literal. The response is
+// re-typed with a narrowed `status` so callers must handle the four
+// answers the store defines rather than an open string
+// (docs/specs/thread-replica-sync.md §5).
+import {
+  SyncThreadWindow as SyncThreadWindowRaw,
+} from '../../../bindings/agent-overflow/app.js';
+import {
+  SyncThreadWindowRequest as SyncThreadWindowRequestClass,
+} from '../../../bindings/agent-overflow/models.js';
+import type { PagedItems } from '../../../bindings/agent-overflow/internal/store/models';
+
+export type SyncThreadWindowStatus = 'fresh' | 'stale' | 'rewritten' | 'gone';
+
+export interface SyncThreadWindowInput {
+  /** Saved scroll anchor; empty resolves to the thread's tail. */
+  anchorItemId: string;
+  itemBudget: number;
+  /** -1 when no cached window backs the stamp. */
+  haveEpoch: number;
+  haveRev: number;
+}
+
+export interface SyncThreadWindowResult {
+  status: SyncThreadWindowStatus | string;
+  epoch: number;
+  rev: number;
+  generation: string;
+  /** Null for `fresh` and `gone`. */
+  page?: PagedItems | null;
+}
+
+export function SyncThreadWindow(
+  threadId: string,
+  req: SyncThreadWindowInput,
+): Promise<SyncThreadWindowResult> {
+  return SyncThreadWindowRaw(
+    threadId,
+    new SyncThreadWindowRequestClass(req),
+  ) as unknown as Promise<SyncThreadWindowResult>;
+}

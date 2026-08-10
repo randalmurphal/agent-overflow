@@ -238,6 +238,15 @@ type App struct {
 	// close. atomic.Pointer matches eventBus — wiring can land any time
 	// without racing Shutdown's reader.
 	transportServer atomic.Pointer[transport.Server]
+	// storeIdentity is the store's backend id + replica generation
+	// (migration v55), captured when the store opens so the transport's
+	// bootstrap manifest can carry them without the transport package
+	// learning about SQLite. atomic.Pointer for the same reason as
+	// eventBus: the manifest handler can be serving before initStores
+	// has run (a webview that connects during ServiceStartup), and an
+	// empty identity there is a correct "not yet known" rather than a
+	// race. See docs/specs/thread-replica-sync.md §3.3.
+	storeIdentity atomic.Pointer[store.Identity]
 	// updater drives in-app self-update (check / download / restart) via the
 	// Wails app.Updater singleton. Set once at desktop boot by initUpdater
 	// (app_updater_desktop.go) before the transport server starts, so the
@@ -861,6 +870,17 @@ func (a *App) SetEventBus(b *transport.EventBus) {
 //wails:ignore
 func (a *App) SetTransportServer(s *transport.Server) {
 	a.transportServer.Store(s)
+}
+
+// backendIdentity reports the store's identity for the transport
+// bootstrap manifest. Zero values mean the store is not open yet; the
+// client treats an empty backend id as "no replica keying available"
+// and refetches the manifest on its next connect.
+func (a *App) backendIdentity() (backendID, replicaGeneration string) {
+	if id := a.storeIdentity.Load(); id != nil {
+		return id.BackendID, id.ReplicaGeneration
+	}
+	return "", ""
 }
 
 // --- Item operations ---

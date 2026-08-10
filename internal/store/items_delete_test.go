@@ -14,7 +14,7 @@ func TestDeleteConversationFromTurnRemovesSelectedAndForwardTurns(t *testing.T) 
 	createDeleteConversationThread(t, s, "t-del", now)
 	insertDeleteConversationRows(t, s, "t-del", 5, now)
 
-	deleted, err := s.DeleteConversationFromTurn("t-del", 2)
+	deleted, _, err := s.DeleteConversationFromTurn("t-del", 2)
 	if err != nil {
 		t.Fatalf("delete: %v", err)
 	}
@@ -45,7 +45,7 @@ func TestDeleteConversationFromTurnScopesToThread(t *testing.T) {
 		insertDeleteConversationRows(t, s, id, 3, now)
 	}
 
-	if _, err := s.DeleteConversationFromTurn("t-a", 1); err != nil {
+	if _, _, err := s.DeleteConversationFromTurn("t-a", 1); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
 
@@ -72,7 +72,7 @@ func TestDeleteConversationFromTurnEmptyIsNoop(t *testing.T) {
 	now := time.Now().UnixMilli()
 	createDeleteConversationThread(t, s, "t-empty", now)
 
-	deleted, err := s.DeleteConversationFromTurn("t-empty", 0)
+	deleted, _, err := s.DeleteConversationFromTurn("t-empty", 0)
 	if err != nil {
 		t.Fatalf("delete: %v", err)
 	}
@@ -96,7 +96,7 @@ func TestDeleteConversationFromTurnDoesNotBumpThreadUpdatedAt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get before: %v", err)
 	}
-	if _, err := s.DeleteConversationFromTurn("t-touch", 0); err != nil {
+	if _, _, err := s.DeleteConversationFromTurn("t-touch", 0); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
 	after, err := s.GetThread("t-touch")
@@ -135,7 +135,7 @@ func TestDeleteConversationFromItemKeepsSameTurnPrefix(t *testing.T) {
 		}
 	}
 
-	kept, err := s.DeleteConversationFromItem("t-item", "t-item-item-2-1")
+	kept, _, err := s.DeleteConversationFromItem("t-item", "t-item-item-2-1")
 	if err != nil {
 		t.Fatalf("delete: %v", err)
 	}
@@ -197,7 +197,7 @@ func TestDeleteConversationFromItemAnchorTurnDrift(t *testing.T) {
 		}
 	}
 
-	if _, err := s.DeleteConversationFromItem("t-drift", "t-drift-item-2-1"); err != nil {
+	if _, _, err := s.DeleteConversationFromItem("t-drift", "t-drift-item-2-1"); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
 	if _, ok, err := s.GetMessageAnchor("t-drift", "t-drift-item-2-0"); err != nil || !ok {
@@ -217,7 +217,7 @@ func TestDeleteConversationFromItemTurnInitialMatchesTurnGranular(t *testing.T) 
 	createDeleteConversationThread(t, s, "t-init", now)
 	insertDeleteConversationRows(t, s, "t-init", 4, now)
 
-	if _, err := s.DeleteConversationFromItem("t-init", "t-init-item-2-0"); err != nil {
+	if _, _, err := s.DeleteConversationFromItem("t-init", "t-init-item-2-0"); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
 
@@ -311,7 +311,7 @@ func TestDeleteConversationFromItemPromotedAnchorKeepsSameTurnTail(t *testing.T)
 		}
 	}
 
-	kept, err := s.DeleteConversationFromItem("t-promo", "t-promo-anchor")
+	kept, _, err := s.DeleteConversationFromItem("t-promo", "t-promo-anchor")
 	if err != nil {
 		t.Fatalf("delete: %v", err)
 	}
@@ -406,7 +406,7 @@ func TestDeleteConversationFromItemTrimsAnchorTurnSettle(t *testing.T) {
 		t.Fatalf("settle turn: %v", err)
 	}
 
-	if _, err := s.DeleteConversationFromItem("t-trim", "t-trim-anchor"); err != nil {
+	if _, _, err := s.DeleteConversationFromItem("t-trim", "t-trim-anchor"); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
 
@@ -454,7 +454,7 @@ func TestDeleteConversationFromItemLeavesActiveAnchorTurnAlone(t *testing.T) {
 		}
 	}
 
-	if _, err := s.DeleteConversationFromItem("t-active", "t-active-anchor"); err != nil {
+	if _, _, err := s.DeleteConversationFromItem("t-active", "t-active-anchor"); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
 
@@ -472,7 +472,7 @@ func TestDeleteConversationFromItemMissingAnchorErrors(t *testing.T) {
 	now := time.Now().UnixMilli()
 	createDeleteConversationThread(t, s, "t-miss", now)
 
-	if _, err := s.DeleteConversationFromItem("t-miss", "no-such-item"); err == nil {
+	if _, _, err := s.DeleteConversationFromItem("t-miss", "no-such-item"); err == nil {
 		t.Fatal("expected error for missing anchor item")
 	}
 }
@@ -580,7 +580,7 @@ func TestDeleteConversationFromItemAtPickupAnchorKeepsSettle(t *testing.T) {
 		t.Fatalf("settle turn 0: %v", err)
 	}
 
-	if _, err := s.DeleteConversationFromItem("t-pickup", "t-pickup-anchor"); err != nil {
+	if _, _, err := s.DeleteConversationFromItem("t-pickup", "t-pickup-anchor"); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
 
@@ -651,7 +651,7 @@ func TestDeleteConversationFromItemPromotedBoundaryCutsResponse(t *testing.T) {
 		t.Fatalf("settle turn: %v", err)
 	}
 
-	if _, err := s.DeleteConversationFromItem("t-bound", "t-bound-anchor"); err != nil {
+	if _, _, err := s.DeleteConversationFromItem("t-bound", "t-bound-anchor"); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
 

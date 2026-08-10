@@ -625,6 +625,15 @@ func (r *Router) buildRoundCompletedEvent(
 	if existing, found, err := r.store.GetTurn(fields.logicalTurnID); err == nil && found {
 		startedAt = existing.StartedAt
 	}
+	// ThreadHistoryStamp returns the zero stamp for both failure shapes —
+	// a read error and a thread row that is gone — so there is nothing to
+	// normalise here. The stamp is an optimization: without it the client
+	// re-fetches its window once, which is why a read error is logged
+	// rather than allowed to fail a turn boundary.
+	stamp, _, err := r.store.ThreadHistoryStamp(evt.ThreadID)
+	if err != nil {
+		log.Printf("triage: read history stamp for %s: %v", evt.ThreadID, err)
+	}
 	return TurnCompletedEvent{
 		ThreadID:            evt.ThreadID,
 		TurnID:              roundID,
@@ -638,6 +647,8 @@ func (r *Router) buildRoundCompletedEvent(
 		Aborted:             meta.Aborted || meta.Truncated,
 		RevertedUserMessage: r.consumeRevertedTurn(evt.ThreadID),
 		CountsAsActivity:    turnCountsAsThreadActivity(evt),
+		HistoryRev:          stamp.Rev,
+		HistoryEpoch:        stamp.Epoch,
 	}
 }
 

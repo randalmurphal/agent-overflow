@@ -158,13 +158,43 @@ func TestSplitListenAddr(t *testing.T) {
 		{"127.0.0.1:0", "127.0.0.1", 0},
 		{"0.0.0.0:8080", "0.0.0.0", 8080},
 		{":0", "127.0.0.1", 0},
-		{"bogus", "127.0.0.1", 0},
-		{"host:nan", "host", 0},
+		{"localhost:65535", "localhost", 65535},
 	}
 	for _, c := range cases {
-		gotHost, gotPort := splitListenAddr(c.in)
+		gotHost, gotPort, err := splitListenAddr(c.in)
+		if err != nil {
+			t.Errorf("splitListenAddr(%q): %v", c.in, err)
+			continue
+		}
 		if gotHost != c.wantHost || gotPort != c.wantPort {
 			t.Errorf("splitListenAddr(%q) = (%q,%d); want (%q,%d)", c.in, gotHost, gotPort, c.wantHost, c.wantPort)
+		}
+	}
+}
+
+// TestSplitListenAddrRejectsMalformed pins the loudness of a bad
+// --listen. Every one of these used to resolve to ("127.0.0.1", 0),
+// which the port pin then turns into a bind on the PINNED port —
+// an address the operator never named and no log line explains.
+func TestSplitListenAddrRejectsMalformed(t *testing.T) {
+	cases := []string{
+		"",
+		"8080",
+		"0.0.0.0",
+		"host:nan",
+		":",
+		"127.0.0.1:-1",
+		"127.0.0.1:70000",
+		"127.0.0.1:8080:9090",
+	}
+	for _, in := range cases {
+		host, port, err := splitListenAddr(in)
+		if err == nil {
+			t.Errorf("splitListenAddr(%q) = (%q,%d), nil; want an error", in, host, port)
+			continue
+		}
+		if !strings.Contains(err.Error(), "host:port") {
+			t.Errorf("splitListenAddr(%q) error %q does not name the expected form", in, err)
 		}
 	}
 }

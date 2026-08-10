@@ -34,6 +34,15 @@ import { isUiRenderTraceEnabled, recordUiTrace } from './uiRenderTrace';
 
 export type ColdLoadSource = 'cache-restore' | 'fetch';
 
+/**
+ * Which cache, if any, put rows on screen before the window sync
+ * answered: the in-memory LRU ('l1'), the IndexedDB replica ('replica'),
+ * or nothing ('none' — the pane waited on the wire). Distinct from
+ * `ColdLoadSource`, which records only whether the LRU hit at switch
+ * time; the replica paint is decided later, inside the load leg.
+ */
+export type ColdLoadPaintSource = 'l1' | 'replica' | 'none';
+
 /** Why a session closed without the warm edge it was waiting for. */
 export type ColdLoadAbandonReason = 'switched-away' | 'thread-changed';
 
@@ -60,6 +69,9 @@ interface ColdLoadSession {
   /** Warm rising edges observed before the items landed. */
   warmBeforeItems: number;
   priors: ColdLoadPriorsStats | null;
+  paintSource: ColdLoadPaintSource;
+  /** `SyncThreadWindow` verdict for this open; null if it never landed. */
+  syncStatus: string | null;
 }
 
 // Keyed by paneId. One in-flight session per pane — a pane can only be
@@ -97,6 +109,8 @@ function emitSession(
     warmBeforeItems: session.warmBeforeItems,
     abandoned: close.abandoned,
     priors: session.priors,
+    paintSource: session.paintSource,
+    syncStatus: session.syncStatus,
   });
 }
 
@@ -121,6 +135,10 @@ export function coldLoadSwitchStart(
     warmupRearmed: false,
     warmBeforeItems: 0,
     priors: null,
+    // An LRU hit paints synchronously inside switchThread, so it is
+    // already true here; anything else is decided by the load leg.
+    paintSource: source === 'cache-restore' ? 'l1' : 'none',
+    syncStatus: null,
   });
 }
 
@@ -133,6 +151,27 @@ export function coldLoadPriors(paneId: string, stats: ColdLoadPriorsStats): void
   const session = sessionsByPane.get(paneId);
   if (!session) return;
   session.priors = stats;
+}
+
+/** Record which cache painted this open, once the load leg knows. Only
+ * an upgrade from 'none' to 'replica' ever needs reporting; the setter
+ * accepts every value so the call site stays unconditional. */
+export function coldLoadPaintSource(paneId: string, paintSource: ColdLoadPaintSource): void {
+  if (!isUiRenderTraceEnabled()) return;
+  const session = sessionsByPane.get(paneId);
+  if (!session) return;
+  session.paintSource = paintSource;
+}
+
+/** Record the window-sync verdict ('fresh' / 'stale' / 'rewritten' /
+ * 'gone'). Reporting only — it never closes or holds a session, because
+ * a `fresh` answer mounts no rows and therefore produces no warm edge of
+ * its own. */
+export function coldLoadSyncStatus(paneId: string, status: string): void {
+  if (!isUiRenderTraceEnabled()) return;
+  const session = sessionsByPane.get(paneId);
+  if (!session) return;
+  session.syncStatus = status;
 }
 
 /** Mark the fetch leg's initial-slice application: how many rows the

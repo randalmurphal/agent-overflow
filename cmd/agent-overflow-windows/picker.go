@@ -107,12 +107,13 @@ const connectivityErrorPage = `<!doctype html>
   <div class="card">
     <div class="title">Backend is running, but Windows can't reach it.</div>
     <div class="body">
-      <p>The agent-overflow backend booted inside WSL successfully, but the Windows host failed to connect to it over <code>localhost</code>. This almost always means WSL2's <code>localhostForwarding</code> is disabled in your config.</p>
-      <p>Fix it by adding the following to <code>%USERPROFILE%\.wslconfig</code> on Windows (create the file if it doesn't exist):</p>
+      <p>The agent-overflow backend booted inside WSL successfully, but the Windows host failed to connect to it over <code>localhost</code>. Agent Overflow already retried once on a fresh port, so the port itself is not the problem — two common causes remain.</p>
+      <p><strong>1. WSL2's <code>localhostForwarding</code> is disabled.</strong> Add the following to <code>%USERPROFILE%\.wslconfig</code> on Windows (create the file if it doesn't exist):</p>
       <pre>[wsl2]
 localhostForwarding=true</pre>
       <p>Then restart WSL with <code>wsl --shutdown</code> in PowerShell, and relaunch Agent Overflow.</p>
-      <p>See the WSL docs on <a href="https://learn.microsoft.com/en-us/windows/wsl/wsl-config">wsl-config</a> for more.</p>
+      <p><strong>2. Windows has reserved the port range.</strong> Hyper-V and WSL2 reserve blocks of ports for themselves, and the blocks are re-picked on every Windows reboot — so a port that worked yesterday can be unreachable today. List them in an elevated PowerShell with <code>netsh interface ipv4 show excludedportrange protocol=tcp</code>. Relaunching picks another port; if it keeps landing inside a reserved block, <code>wsl --shutdown</code> and relaunch, which re-seeds the reservations.</p>
+      <p>See the WSL docs on <a href="https://learn.microsoft.com/en-us/windows/wsl/wsl-config">wsl-config</a> for more. The full log is at <code>%APPDATA%\agent-overflow\launcher.log</code>.</p>
     </div>
   </div>
 </body>

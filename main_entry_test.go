@@ -106,3 +106,36 @@ func TestIsBootFlagTracksTheBootFlagSet(t *testing.T) {
 		}
 	}
 }
+
+// TestParseFlagsResetTransportPort pins the launcher-facing signal: the
+// flag reaches cliFlags, defaults off, and is refused in --connect mode
+// (no local transport means no pin to reset — a silent no-op there would
+// tell an operator the fix failed without saying why).
+func TestParseFlagsResetTransportPort(t *testing.T) {
+	// The Windows launcher spells this on the child's argv; an already
+	// installed backend from an older payload only understands this
+	// spelling, so the wire word is pinned on both sides.
+	if resetTransportPortFlag != "reset-transport-port" {
+		t.Fatalf("resetTransportPortFlag = %q, want %q", resetTransportPortFlag, "reset-transport-port")
+	}
+
+	got, err := parseFlags([]string{"--listen", "127.0.0.1:0", "--print-url-fd", "0", "--" + resetTransportPortFlag})
+	if err != nil {
+		t.Fatalf("parseFlags: %v", err)
+	}
+	if !got.resetTransportPort {
+		t.Error("--" + resetTransportPortFlag + " did not reach cliFlags")
+	}
+
+	got, err = parseFlags([]string{"--listen", "127.0.0.1:0"})
+	if err != nil {
+		t.Fatalf("parseFlags: %v", err)
+	}
+	if got.resetTransportPort {
+		t.Error("resetTransportPort defaulted to true")
+	}
+
+	if _, err := parseFlags([]string{"--connect", "ws://host:1/", "--" + resetTransportPortFlag}); err == nil {
+		t.Error("parseFlags accepted --connect with --" + resetTransportPortFlag)
+	}
+}

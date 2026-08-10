@@ -158,7 +158,7 @@ wakes the same ask (K2). See "Coalescing" below.
   one and swallow every wave after it — the failure this mechanism exists
   to prevent, inverted.
 - A signature is a readable string rather than a hash because it is
-  persisted on the run row (`work_items.wake_signature`, v51+1) and read
+  persisted on the run row (`work_items.wake_signature`, v52) and read
   by a human debugging a wake that did or did not arrive. The comparison,
   the record, and the "somebody acted, so the record is spent" clear all
   live app-side in `app_workflow_wake_delivery.go` — this package only

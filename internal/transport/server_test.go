@@ -3,13 +3,17 @@ package transport
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -1989,5 +1993,162 @@ func TestServer_KeepalivePongTimeoutTearsDownConnection(t *testing.T) {
 			t.Fatalf("server never tore down the unresponsive connection: %v", err)
 		}
 		return // closed by the server — the behavior under test
+	}
+}
+
+// newPortTestServer builds a minimal server for the bind-path tests.
+func newPortTestServer(t *testing.T, cfg Config) *Server {
+	t.Helper()
+	cfg.Dispatcher = NewDispatcher()
+	cfg.EventBus = NewEventBus(10)
+	cfg.Token = "t"
+	srv, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	return srv
+}
+
+// Without EphemeralPortFallback, an unavailable port is a hard failure:
+// an operator who named a port must not silently land somewhere else.
+func TestServer_PortInUseFailsWithoutFallback(t *testing.T) {
+	squatter, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer squatter.Close()
+
+	srv := newPortTestServer(t, Config{BindAddr: "127.0.0.1", Port: squatter.Addr().(*net.TCPAddr).Port})
+	if err := srv.Start(); err == nil {
+		shutCtx, c := context.WithTimeout(context.Background(), 2*time.Second)
+		defer c()
+		_ = srv.Shutdown(shutCtx)
+		t.Fatal("Start succeeded on an occupied port without EphemeralPortFallback")
+	}
+	if srv.Addr() != "" {
+		t.Fatalf("failed Start left an address behind: %q", srv.Addr())
+	}
+}
+
+// With the fallback opted in, an occupied port retries once on an
+// ephemeral one and the caller learns where it landed from Addr().
+func TestServer_PortInUseFallsBackToEphemeral(t *testing.T) {
+	squatter, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer squatter.Close()
+	taken := squatter.Addr().(*net.TCPAddr).Port
+
+	srv := newPortTestServer(t, Config{BindAddr: "127.0.0.1", Port: taken, EphemeralPortFallback: true})
+	if err := srv.Start(); err != nil {
+		t.Fatalf("Start with fallback: %v", err)
+	}
+	t.Cleanup(func() {
+		shutCtx, c := context.WithTimeout(context.Background(), 2*time.Second)
+		defer c()
+		_ = srv.Shutdown(shutCtx)
+	})
+
+	_, portStr, err := net.SplitHostPort(srv.Addr())
+	if err != nil {
+		t.Fatalf("split %q: %v", srv.Addr(), err)
+	}
+	got, err := strconv.Atoi(portStr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got == taken || got == 0 {
+		t.Fatalf("fallback bound port %d (occupied port was %d)", got, taken)
+	}
+}
+
+// The fallback is scoped to port-attributable failures. A bind address
+// this host does not own must still fail loudly — retrying it on port 0
+// would fail identically and only bury the cause.
+func TestServer_UnusableBindAddrFailsDespiteFallback(t *testing.T) {
+	srv := newPortTestServer(t, Config{BindAddr: "203.0.113.1", Port: 45123, EphemeralPortFallback: true})
+	err := srv.Start()
+	if err == nil {
+		shutCtx, c := context.WithTimeout(context.Background(), 2*time.Second)
+		defer c()
+		_ = srv.Shutdown(shutCtx)
+		t.Fatal("Start succeeded on an unassigned bind address")
+	}
+	if !strings.Contains(err.Error(), "203.0.113.1") {
+		t.Fatalf("error should name the bind address, got %v", err)
+	}
+}
+
+// TestAddrInUseIsNarrowerThanPortUnavailable pins the split between the
+// two bind predicates. portUnavailable answers "would port 0 do better?"
+// (the ephemeral fallback's question) and therefore includes EACCES;
+// addrInUse answers "would releasing our own listener help?" (the rebind
+// recovery's question) and therefore must not.
+func TestAddrInUseIsNarrowerThanPortUnavailable(t *testing.T) {
+	bindErr := func(errno syscall.Errno) error {
+		return &net.OpError{Op: "listen", Net: "tcp", Err: os.NewSyscallError("bind", errno)}
+	}
+	cases := []struct {
+		name            string
+		err             error
+		wantInUse       bool
+		wantUnavailable bool
+	}{
+		{"address in use", bindErr(syscall.EADDRINUSE), true, true},
+		{"permission denied", bindErr(syscall.EACCES), false, true},
+		{"address not available", bindErr(syscall.EADDRNOTAVAIL), false, false},
+		{"not a syscall error", errors.New("dial tcp: lookup failed"), false, false},
+		{"nil", nil, false, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := addrInUse(c.err); got != c.wantInUse {
+				t.Errorf("addrInUse(%v) = %v, want %v", c.err, got, c.wantInUse)
+			}
+			if got := portUnavailable(c.err); got != c.wantUnavailable {
+				t.Errorf("portUnavailable(%v) = %v, want %v", c.err, got, c.wantUnavailable)
+			}
+		})
+	}
+}
+
+// TestBindRebindListener_PermissionErrorKeepsOldListener is the reason
+// the two predicates are separate. The rebind recovery cures a bind
+// failure by closing the live listener and retrying; a permission /
+// reservation refusal is identical afterwards, so a rebind that hits one
+// must propagate with the old listener untouched — otherwise the LAN
+// toggle destroys a working server for an error it cannot fix.
+//
+// Both addrs name the same port so samePort() cannot be what stops the
+// recovery: the predicate is the only thing under test.
+func TestBindRebindListener_PermissionErrorKeepsOldListener(t *testing.T) {
+	const privilegedAddr = "127.0.0.1:80"
+	probe, probeErr := net.Listen("tcp", privilegedAddr)
+	if probeErr == nil {
+		_ = probe.Close()
+		t.Skip("this host lets an unprivileged process bind :80; no permission-shaped bind error available")
+	}
+	if !portUnavailable(probeErr) || addrInUse(probeErr) {
+		t.Skipf("binding %s did not produce a permission-shaped error: %v", privilegedAddr, probeErr)
+	}
+
+	f := newServerFixture(t)
+	old, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("stage old listener: %v", err)
+	}
+	defer old.Close()
+
+	listener, err := f.srv.bindRebindListener(privilegedAddr, old, "0.0.0.0:80")
+	if err == nil {
+		_ = listener.Close()
+		t.Fatal("bindRebindListener bound a privileged port")
+	}
+
+	// A second Close on a listener this call already closed returns
+	// net.ErrClosed; on a live one it returns nil.
+	if closeErr := old.Close(); closeErr != nil {
+		t.Fatalf("bindRebindListener closed the live listener for an unrecoverable bind error (%v); close reported %v", err, closeErr)
 	}
 }

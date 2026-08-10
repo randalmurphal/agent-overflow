@@ -81,11 +81,12 @@ const openUpperBound = int64(1 << 31)
 // turn_index) to load the entire thread. Empty threads return a stable
 // empty PagedItems shape with both turn bounds set to -1.
 func (s *Store) ListRecentItems(threadID string, floorTurnIndex int) (PagedItems, error) {
-	items, err := s.queryPagedItems(threadID, int64(floorTurnIndex), openUpperBound)
+	q := s.reader()
+	items, err := s.queryPagedItems(q, threadID, int64(floorTurnIndex), openUpperBound)
 	if err != nil {
 		return PagedItems{}, err
 	}
-	return s.finalizePagedItems(threadID, items)
+	return s.finalizePagedItems(q, threadID, items)
 }
 
 // ListItemsBeforeTurn loads older top-level items strictly below
@@ -119,7 +120,8 @@ func (s *Store) ListItemsBeforeTurn(threadID string, beforeTurnIndex, itemBudget
 		return empty, nil
 	}
 
-	items, err := s.queryPagedItems(threadID, int64(newFloor), int64(beforeTurnIndex))
+	q := s.reader()
+	items, err := s.queryPagedItems(q, threadID, int64(newFloor), int64(beforeTurnIndex))
 	if err != nil {
 		return PagedItems{}, err
 	}
@@ -127,7 +129,7 @@ func (s *Store) ListItemsBeforeTurn(threadID string, beforeTurnIndex, itemBudget
 	// only stops on turns that contribute counts), so items[0].TurnIndex
 	// == newFloor and finalizePagedItems reports the same turn bounds the
 	// explicit newFloor bookkeeping used to.
-	return s.finalizePagedItems(threadID, items)
+	return s.finalizePagedItems(q, threadID, items)
 }
 
 // ListItemsAfterTurn loads newer top-level items strictly above
@@ -147,11 +149,12 @@ func (s *Store) ListItemsAfterTurn(threadID string, afterTurnIndex, itemBudget i
 	}
 
 	floor := afterTurnIndex + 1
-	items, err := s.queryPagedItems(threadID, int64(floor), int64(upper)+1)
+	q := s.reader()
+	items, err := s.queryPagedItems(q, threadID, int64(floor), int64(upper)+1)
 	if err != nil {
 		return PagedItems{}, err
 	}
-	return s.finalizePagedItems(threadID, items)
+	return s.finalizePagedItems(q, threadID, items)
 }
 
 // ListItemsBeforeCursor loads older visible top-level items strictly
@@ -170,7 +173,9 @@ func (s *Store) ListItemsBeforeCursor(threadID string, before TimelineCursor, it
 		 ORDER BY turn_index DESC, item_index DESC
 		 LIMIT ?
 	)`
+	q := s.reader()
 	items, err := s.querySelectedPagedItems(
+		q,
 		threadID,
 		selectedSQL,
 		threadID, before.TurnIndex, before.TurnIndex, before.ItemIndex, itemBudget,
@@ -178,7 +183,7 @@ func (s *Store) ListItemsBeforeCursor(threadID string, before TimelineCursor, it
 	if err != nil {
 		return PagedItems{}, err
 	}
-	return s.finalizePagedItems(threadID, items)
+	return s.finalizePagedItems(q, threadID, items)
 }
 
 // ListItemsAfterCursor loads newer visible top-level items strictly
@@ -198,7 +203,9 @@ func (s *Store) ListItemsAfterCursor(threadID string, after TimelineCursor, item
 		 ORDER BY turn_index ASC, item_index ASC
 		 LIMIT ?
 	)`
+	q := s.reader()
 	items, err := s.querySelectedPagedItems(
+		q,
 		threadID,
 		selectedSQL,
 		threadID, after.TurnIndex, after.TurnIndex, after.ItemIndex, itemBudget,
@@ -206,7 +213,7 @@ func (s *Store) ListItemsAfterCursor(threadID string, after TimelineCursor, item
 	if err != nil {
 		return PagedItems{}, err
 	}
-	return s.finalizePagedItems(threadID, items)
+	return s.finalizePagedItems(q, threadID, items)
 }
 
 // queryPagedItems runs the "top-level items in [floor, upper)" query
@@ -217,8 +224,8 @@ func (s *Store) ListItemsAfterCursor(threadID string, after TimelineCursor, item
 //  1. thread_id
 //  2. floor   (turn_index >= floor)
 //  3. upper   (turn_index < upper)
-func (s *Store) queryPagedItems(threadID string, floor, upper int64) ([]Item, error) {
-	rows, err := s.reader().Query(`
+func (s *Store) queryPagedItems(q sqlQueryer, threadID string, floor, upper int64) ([]Item, error) {
+	rows, err := q.Query(`
 		SELECT `+itemColumns+`
 		  FROM items
 		  LEFT JOIN payloads ON payloads.id = items.payload_id
@@ -245,17 +252,17 @@ func (s *Store) queryPagedItems(threadID string, floor, upper int64) ([]Item, er
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("store: iterate paged items for %s: %w", threadID, err)
 	}
-	return s.decoratePagedItems(threadID, items)
+	return s.decoratePagedItems(q, threadID, items)
 }
 
 // querySelectedPagedItems runs the cursor-based paging shape used by
 // active panes. `selectedSQL` must return a single `id` column
 // containing the page's top-level row ids; the outer query hydrates and
 // orders them for rendering.
-func (s *Store) querySelectedPagedItems(threadID, selectedSQL string, selectedArgs ...any) ([]Item, error) {
+func (s *Store) querySelectedPagedItems(q sqlQueryer, threadID, selectedSQL string, selectedArgs ...any) ([]Item, error) {
 	args := append([]any{}, selectedArgs...)
 	args = append(args, threadID)
-	rows, err := s.reader().Query(`
+	rows, err := q.Query(`
 		WITH selected(id) AS (
 			`+selectedSQL+`
 		)
@@ -283,18 +290,18 @@ func (s *Store) querySelectedPagedItems(threadID, selectedSQL string, selectedAr
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("store: iterate selected paged items for %s: %w", threadID, err)
 	}
-	return s.decoratePagedItems(threadID, items)
+	return s.decoratePagedItems(q, threadID, items)
 }
 
 // decoratePagedItems applies the read-time meta decorations every
 // frontend-bound window needs: proposed-plan state and subagent anchor
 // aggregates (descendant count + collapsed-card preview).
-func (s *Store) decoratePagedItems(threadID string, items []Item) ([]Item, error) {
-	decorated, err := s.decorateProposedPlanItems(threadID, items)
+func (s *Store) decoratePagedItems(q sqlQueryer, threadID string, items []Item) ([]Item, error) {
+	decorated, err := s.decorateProposedPlanItems(q, threadID, items)
 	if err != nil {
 		return nil, fmt.Errorf("store: decorate paged proposed plans for %s: %w", threadID, err)
 	}
-	decorated, err = s.decorateSubagentAnchors(threadID, decorated)
+	decorated, err = s.decorateSubagentAnchors(q, threadID, decorated)
 	if err != nil {
 		return nil, fmt.Errorf("store: decorate paged subagent anchors for %s: %w", threadID, err)
 	}
@@ -334,17 +341,17 @@ func cursorIsValid(cursor TimelineCursor) bool {
 	return cursor.TurnIndex >= 0
 }
 
-func (s *Store) finalizePagedItems(threadID string, items []Item) (PagedItems, error) {
+func (s *Store) finalizePagedItems(q sqlQueryer, threadID string, items []Item) (PagedItems, error) {
 	if len(items) == 0 {
 		return emptyPagedItems(), nil
 	}
 	oldest := cursorFromItem(items[0])
 	newest := cursorFromItem(items[len(items)-1])
-	hasMoreOlder, err := s.hasOlderItems(threadID, oldest)
+	hasMoreOlder, err := s.hasOlderItems(q, threadID, oldest)
 	if err != nil {
 		return PagedItems{}, err
 	}
-	hasMoreNewer, err := s.hasNewerItems(threadID, newest)
+	hasMoreNewer, err := s.hasNewerItems(q, threadID, newest)
 	if err != nil {
 		return PagedItems{}, err
 	}
@@ -387,9 +394,9 @@ func (s *Store) hasOlderTurns(threadID string, floorTurnIndex int) (bool, error)
 	return exists != 0, nil
 }
 
-func (s *Store) hasOlderItems(threadID string, cursor TimelineCursor) (bool, error) {
+func (s *Store) hasOlderItems(q sqlQueryer, threadID string, cursor TimelineCursor) (bool, error) {
 	var exists int
-	err := s.reader().QueryRow(
+	err := q.QueryRow(
 		`SELECT EXISTS(SELECT 1 FROM items
 		   WHERE thread_id = ?
 		     AND `+visibleItemsFilter+`
@@ -403,9 +410,9 @@ func (s *Store) hasOlderItems(threadID string, cursor TimelineCursor) (bool, err
 	return exists != 0, nil
 }
 
-func (s *Store) hasNewerItems(threadID string, cursor TimelineCursor) (bool, error) {
+func (s *Store) hasNewerItems(q sqlQueryer, threadID string, cursor TimelineCursor) (bool, error) {
 	var exists int
-	err := s.reader().QueryRow(
+	err := q.QueryRow(
 		`SELECT EXISTS(SELECT 1 FROM items
 		   WHERE thread_id = ?
 		     AND `+visibleItemsFilter+`
@@ -528,18 +535,25 @@ func (s *Store) ceilingTurnByItemBudget(threadID string, afterTurnIndex int64, i
 // (bottom-snapshot restore, stale snapshot whose anchor has been
 // deleted), the function returns the tail `targetItemCount` items.
 func (s *Store) ListThreadSliceAround(threadID, anchorItemID string, targetItemCount int) (PagedItems, error) {
+	return s.listThreadSliceAround(s.reader(), threadID, anchorItemID, targetItemCount)
+}
+
+// listThreadSliceAround is ListThreadSliceAround against a caller-chosen
+// queryer, so SyncThreadWindow can run the same window inside the
+// transaction its stamps are read in.
+func (s *Store) listThreadSliceAround(q sqlQueryer, threadID, anchorItemID string, targetItemCount int) (PagedItems, error) {
 	if targetItemCount <= 0 {
 		targetItemCount = 50
 	}
 	if anchorItemID == "" {
-		return s.listTailSlice(threadID, targetItemCount)
+		return s.listTailSlice(q, threadID, targetItemCount)
 	}
-	anchor, found, err := s.GetThreadItem(threadID, anchorItemID)
+	anchor, found, err := s.getThreadItem(q, threadID, anchorItemID)
 	if err != nil {
 		return PagedItems{}, fmt.Errorf("store: list thread slice for %s anchor=%s: %w", threadID, anchorItemID, err)
 	}
 	if !found {
-		return s.listTailSlice(threadID, targetItemCount)
+		return s.listTailSlice(q, threadID, targetItemCount)
 	}
 
 	atOrBeforeBudget := targetItemCount / 2
@@ -572,6 +586,7 @@ func (s *Store) ListThreadSliceAround(threadID, anchorItemID string, targetItemC
 		 LIMIT ?
 	)`
 	items, err := s.querySelectedPagedItems(
+		q,
 		threadID,
 		selectedSQL,
 		threadID, anchor.TurnIndex, anchor.TurnIndex, anchor.ItemIndex, atOrBeforeBudget,
@@ -580,13 +595,13 @@ func (s *Store) ListThreadSliceAround(threadID, anchorItemID string, targetItemC
 	if err != nil {
 		return PagedItems{}, err
 	}
-	return s.finalizePagedItems(threadID, items)
+	return s.finalizePagedItems(q, threadID, items)
 }
 
 // listTailSlice returns the newest `targetItemCount` top-level items.
 // Used when the snapshot is a bottom-restore or the anchor item has
 // been deleted.
-func (s *Store) listTailSlice(threadID string, targetItemCount int) (PagedItems, error) {
+func (s *Store) listTailSlice(q sqlQueryer, threadID string, targetItemCount int) (PagedItems, error) {
 	selectedSQL := `SELECT id FROM (
 		SELECT id
 		  FROM items
@@ -596,11 +611,11 @@ func (s *Store) listTailSlice(threadID string, targetItemCount int) (PagedItems,
 		 ORDER BY turn_index DESC, item_index DESC
 		 LIMIT ?
 	)`
-	items, err := s.querySelectedPagedItems(threadID, selectedSQL, threadID, targetItemCount)
+	items, err := s.querySelectedPagedItems(q, threadID, selectedSQL, threadID, targetItemCount)
 	if err != nil {
 		return PagedItems{}, err
 	}
-	return s.finalizePagedItems(threadID, items)
+	return s.finalizePagedItems(q, threadID, items)
 }
 
 // boundedSliceTurnLimit caps the number of turn rows scanned by the legacy

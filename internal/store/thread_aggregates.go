@@ -55,7 +55,7 @@ func (s *Store) ListThreadProposedPlans(threadID string) ([]Item, error) {
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("store: iterate proposed plans for %s: %w", threadID, err)
 	}
-	decorated, err := s.decorateProposedPlanItems(threadID, out)
+	decorated, err := s.decorateProposedPlanItems(s.reader(), threadID, out)
 	if err != nil {
 		return nil, fmt.Errorf("store: decorate proposed plans for %s: %w", threadID, err)
 	}
@@ -81,7 +81,7 @@ func (s *Store) GetThreadProposedPlanItem(threadID, itemID string) (Item, bool, 
 	if err != nil {
 		return Item{}, false, fmt.Errorf("store: get proposed plan item %s/%s: %w", threadID, itemID, err)
 	}
-	decorated, err := s.decorateProposedPlanItems(threadID, []Item{item})
+	decorated, err := s.decorateProposedPlanItems(s.reader(), threadID, []Item{item})
 	if err != nil {
 		return Item{}, false, fmt.Errorf("store: decorate proposed plan item %s/%s: %w", threadID, itemID, err)
 	}

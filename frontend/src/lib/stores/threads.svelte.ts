@@ -6,6 +6,8 @@ import { evictDiffSpansForThread } from '../utils/diffSpanCache.svelte';
 import { ListThreads } from './bindings';
 import { dropActivityRailUiPrefs, dropLiveTodoUiPrefs } from './thread.svelte';
 import { threadItemCache } from './threadItemCache';
+import { removeReplicaWindow } from '../replica';
+import { dropThreadHistoryStamp } from './threadHistoryStamps';
 import { clearLiveUsageSnapshot } from './threadContextWindow';
 import { clearThreadStatus } from './threadStatuses.svelte';
 import { addToast } from './toast.svelte';
@@ -68,6 +70,11 @@ export function removeThread(id: string): void {
   // snapshot wedged in the LRU and so a fork-then-delete-then-fork
   // pattern can't surface stale items if a generated id ever recurs.
   threadItemCache.evict(id);
+  // Durable counterpart of the same eviction: a deleted thread must not
+  // leave a paintable window (or a stamp claiming one) behind in
+  // IndexedDB, where it would outlive the process.
+  void removeReplicaWindow(id);
+  dropThreadHistoryStamp(id);
   clearThreadScrollSnapshot(id);
   clearThreadSizePriors(id);
   evictDiffSpansForThread(id);

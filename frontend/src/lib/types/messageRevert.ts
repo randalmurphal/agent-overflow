@@ -35,4 +35,13 @@ export interface UserMessageRevertedEvent {
    * user's real WIP draft row byte-identically once the resend lands.
    */
   draftPendingResend?: boolean;
+  /**
+   * Post-cut history stamps, read inside the cut transaction
+   * (docs/specs/thread-replica-sync.md §4). In-memory adoption only, for
+   * the same reason `provider:turn_completed`'s stamps are: they are not
+   * a full attestation of any window this client holds. Zero means "no
+   * stamp".
+   */
+  historyRev?: number;
+  historyEpoch?: number;
 }

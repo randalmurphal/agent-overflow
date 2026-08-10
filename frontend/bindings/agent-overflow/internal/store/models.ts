@@ -743,6 +743,13 @@ export class ProjectWithCounts {
 
 /**
  * ProposedPlanComment is one inline review note anchored to a proposed plan.
+ * 
+ * `thread_id` is a FK to `threads(id)` and the table's compound FK
+ * `(thread_id, plan_item_id)` points at `proposed_plans(thread_id,
+ * item_id)`, so a comment's thread is structurally the PLAN's thread —
+ * which is what makes it the right target for the history bump every
+ * mutator here performs. See ProposedPlanState's doc for why they bump at
+ * all.
  */
 export class ProposedPlanComment {
     "id": string;

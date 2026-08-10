@@ -74,6 +74,16 @@ var nativeMode = "prod"
 // the OS default config dir" — the pre-flag behaviour.
 var dataDirRoot string
 
+// resetTransportPortPin mirrors the --reset-transport-port flag for
+// bootTransport, which every boot mode reaches through a different
+// wrapper (runDesktop / runHeadless / runHarness). Same set-once-in-main,
+// read-only-afterwards contract as dataDirRoot; threading it through
+// bootTransportOptions instead would let a mode that forgot the field
+// silently ignore an operator's flag. Meaning: discard the persisted
+// listen port before binding and adopt whatever we land on
+// (main_transport_port.go).
+var resetTransportPortPin bool
+
 func main() {
 	if os.Getenv(externalurl.BrowserHelperEnvironment) == externalurl.BrowserHelperValue && len(os.Args) == 2 {
 		if err := externalurl.Open(context.Background(), os.Args[1]); err != nil {
@@ -124,6 +134,7 @@ func main() {
 		fatalf("%v", err)
 	}
 	dataDirRoot = flags.dataDir
+	resetTransportPortPin = flags.resetTransportPort
 
 	// Move off any Windows drive mount the launcher left us on (the
 	// translated /mnt/c install dir) before any subsystem spawns a child
@@ -269,6 +280,10 @@ func bootTransport(appService *App, listenAddr string, opts bootTransportOptions
 		// and iframe loads falling through to the SPA shell with
 		// X-Frame-Options: DENY.
 		DesignHandler: appService.DesignServer,
+		// Late-bound for the same reason: the store opens during
+		// ServiceStartup, after this config is built. The transport only
+		// ever sees two strings.
+		BackendIdentity: appService.backendIdentity,
 		// The `ao` CLI's scoped-token registry. The App owns it because a
 		// token's lifetime is a provider session's lifetime; the transport
 		// only asks what a presented token is allowed to do.
@@ -282,7 +297,14 @@ func bootTransport(appService *App, listenAddr string, opts bootTransportOptions
 		log.Printf("transport: renderer diag mode — cross-origin isolation headers on (remote subresources will not load)")
 	}
 	if listenAddr != "" {
-		host, port := splitListenAddr(listenAddr)
+		host, port, err := splitListenAddr(listenAddr)
+		if err != nil {
+			// Never a silent default: a malformed --listen used to
+			// collapse to loopback + port 0, which the port pin then
+			// resolves to the PINNED port — a bind the operator never
+			// asked for and could not explain from the logs.
+			fatalf("transport: %v", err)
+		}
 		cfg.BindAddr = host
 		cfg.Port = port
 	} else if opts.LoadPersistedBindAll {
@@ -295,6 +317,12 @@ func bootTransport(appService *App, listenAddr string, opts bootTransportOptions
 		}
 	}
 
+	// Pin the listen port unless the operator named one. Applies to
+	// every bind host: a stable port also stabilises the LAN share URL.
+	// --reset-transport-port drops the existing pin first, which is how
+	// the Windows launcher escapes a pinned port the host cannot reach.
+	portPin := pinTransportPort(&cfg, bootSettingsDir(), resetTransportPortPin)
+
 	phaseStarted = time.Now()
 	srv, err := transport.New(cfg)
 	if err != nil {
@@ -305,8 +333,15 @@ func bootTransport(appService *App, listenAddr string, opts bootTransportOptions
 
 	phaseStarted = time.Now()
 	if err := srv.Start(); err != nil {
+		// The pinned port must never be able to wedge boot twice: the
+		// in-server ephemeral fallback should have absorbed a taken
+		// port, so reaching here with a pin means an error class the
+		// fallback predicate missed. Clear the pin so the next launch
+		// binds ephemeral instead of replaying the same failure.
+		portPin.clearOnFailedBind(err)
 		fatalf("transport: start server: %v", err)
 	}
+	portPin.adopt(srv.Addr())
 	log.Printf("transport: serving on %s", srv.Addr())
 	logBootPhase("transport.start", phaseStarted)
 	return srv
@@ -509,22 +544,38 @@ func portFromAddr(addr string) int {
 	return n
 }
 
+// defaultListenHost is what an omitted host in --listen means: loopback,
+// the same default a bare desktop boot takes.
+const defaultListenHost = "127.0.0.1"
+
 // splitListenAddr parses "host:port" or ":port" into a (host, port)
-// pair. Invalid input returns ("127.0.0.1", 0) so the transport's
-// own defaults kick in.
-func splitListenAddr(addr string) (string, int) {
+// pair. Port 0 keeps its meaning — "let the transport choose", which is
+// what `--listen 127.0.0.1:0` (the Windows WSL launcher) and `:0` ask
+// for, and what pinTransportPort then resolves against the pinned port.
+//
+// Malformed input is an error, never a silent default. A value the
+// operator typed wrong ("8080", "0.0.0.0", "host:nan") used to collapse
+// to ("127.0.0.1", 0) — and since the port pin landed, that resolves to
+// the PINNED port: a bind neither the operator nor the log would
+// explain. The caller turns this into a fatal boot error naming the
+// expected form.
+func splitListenAddr(addr string) (string, int, error) {
+	const form = `expected host:port (e.g. "127.0.0.1:8080", "0.0.0.0:0", ":0")`
 	host, portStr, err := net.SplitHostPort(addr)
 	if err != nil {
-		return "127.0.0.1", 0
-	}
-	if host == "" {
-		host = "127.0.0.1"
+		return "", 0, fmt.Errorf("--listen %q: %v; %s", addr, err, form)
 	}
 	port, err := strconv.Atoi(portStr)
 	if err != nil {
-		return host, 0
+		return "", 0, fmt.Errorf("--listen %q: port %q is not a number; %s", addr, portStr, form)
 	}
-	return host, port
+	if port < 0 || port > 65535 {
+		return "", 0, fmt.Errorf("--listen %q: port %d is outside 0-65535; %s", addr, port, form)
+	}
+	if host == "" {
+		host = defaultListenHost
+	}
+	return host, port, nil
 }
 
 func nativeSingleInstanceMode() string {
@@ -589,9 +640,11 @@ func newApp() *App {
 // ensureClientID loads (or mints and persists) this installation's
 // opaque UI-state client ID — the durable identity behind the
 // per-client ui_state buckets. It lives in a small JSON file next to
-// settings.json because the webview's own storage cannot hold it (the
-// transport's ephemeral port changes the origin, and with it
-// localStorage, every launch). Returns "" when no config dir is
+// settings.json because the webview's own storage cannot be trusted to
+// hold it: the origin is host+port, and while the port is now pinned
+// per install (see pinTransportPort) it still churns whenever the
+// pinned one is taken or reset, which would silently mint a new
+// identity and orphan that client's ui_state. Returns "" when no config dir is
 // resolvable or persistence fails; callers omit the cid URL param and
 // the frontend degrades to a best-effort browser-cached identity.
 func ensureClientID() string {

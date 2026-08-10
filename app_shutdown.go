@@ -252,7 +252,6 @@ func (a *App) Shutdown(ctx context.Context) error {
 	a.stopMarkThreadReads()
 	record("stop thread read stamps", nil)
 
-
 	// Step 4: stop provider sessions. Each session's Close tears down
 	// its own design-thread state as part of the same parallel closer,
 	// so a slow design teardown can't serialize behind an unrelated

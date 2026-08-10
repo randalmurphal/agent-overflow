@@ -2,6 +2,8 @@ import type { Item } from '../types/models';
 import type { SubagentFoldSnapshot } from '../utils/subagentFold';
 import type { TimelineCursorLike } from './threadItems';
 import type { SettledTurn } from './threadTurnProjection';
+import type { ThreadHistoryStamp } from './threadHistoryStamps';
+import { onBackendIdentity } from '../transport/backendIdentity';
 
 /**
  * Snapshot of a thread's hydrated timeline state captured at the moment
@@ -39,6 +41,17 @@ export interface ThreadItemSnapshot {
    * zeroed counts until the next live event or hydration.
    */
   subagentFolds?: SubagentFoldSnapshot | null;
+  /**
+   * The history stamp that described `items` at the moment they were
+   * snapshotted (docs/specs/thread-replica-sync.md §3). Paired here
+   * rather than looked up per open, because a stamp is only safe to send
+   * as `haveEpoch`/`haveRev` alongside the content it describes: a
+   * `fresh` answer obliges the client to keep the rows it already holds,
+   * so a stamp sent without them would resolve to an empty pane, and a
+   * stamp that advanced past them (a revert applied to a thread no pane
+   * was showing) would resurrect cut rows. Null means "ask for a page".
+   */
+  historyStamp?: ThreadHistoryStamp | null;
 }
 
 /**
@@ -76,6 +89,23 @@ export interface ThreadItemCache {
   set(threadId: string, snapshot: ThreadItemSnapshot): void;
   evict(threadId: string): void;
   clear(): void;
+  /**
+   * Transport-gap recovery (docs/specs/thread-replica-sync.md §3.4):
+   * strip the paired stamp from every snapshot whose stamp was NOT
+   * sync-attested, keeping the snapshots themselves.
+   *
+   * A gap means frames were dropped with no way to say which thread's
+   * they were. An UNATTESTED stamp (adopted from `turn_completed` /
+   * `user_message:reverted`) names a rev this client may never have
+   * received the content for, so a warm re-entry could send it, get
+   * `fresh`, and keep a window missing rows — for the rest of the
+   * session. An ATTESTED stamp cannot lie the same way: it describes
+   * rows a sync actually returned, and any mutation since then advanced
+   * the backend's rev past it, so the same `fresh` is impossible.
+   * Dropping the whole cache would work but would also throw away every
+   * warm paint the gap did not endanger.
+   */
+  dropUnattestedStamps(): void;
   /** Test/diagnostic only — exposes current entry count without
    *  unfreezing the LRU contract. */
   readonly size: number;
@@ -130,6 +160,7 @@ export function createThreadItemCache(cap: number = THREAD_ITEM_CACHE_CAP): Thre
         // plain data each call and `restore()` copies out of it, so no
         // caller can mutate a stored fold after set().
         subagentFolds: snapshot.subagentFolds ?? null,
+        historyStamp: snapshot.historyStamp ? { ...snapshot.historyStamp } : null,
       };
       const existing = byThread.get(threadId);
       if (existing) cachedChars -= existing.chars;
@@ -156,6 +187,17 @@ export function createThreadItemCache(cap: number = THREAD_ITEM_CACHE_CAP): Thre
       cachedChars = 0;
     },
 
+    dropUnattestedStamps() {
+      // Safe to mutate in place: `set` stores a private clone of the
+      // stamp, and `get` hands out the stored snapshot only for the
+      // pane to read.
+      for (const entry of byThread.values()) {
+        if (entry.snapshot.historyStamp && !entry.snapshot.historyStamp.attested) {
+          entry.snapshot.historyStamp = null;
+        }
+      }
+    },
+
     get size() {
       return byThread.size;
     },
@@ -174,6 +216,13 @@ function estimateSnapshotChars(snapshot: ThreadItemSnapshot): number {
     chars += item.summary?.length ?? 0;
     chars += item.meta?.length ?? 0;
     chars += item.payloadMeta?.length ?? 0;
+    // Preview spans are a highlight blob that rides the item row on the
+    // wire and can dwarf the summary it decorates. Counted here so the
+    // in-memory snapshot and its durable counterpart (replica
+    // `estimateBodyChars`) are measured on ONE scale — the two tiers
+    // share their per-window caps, so an estimator that skipped this
+    // would let a window the replica refuses sit in the LRU.
+    chars += item.payloadPreviewSpans?.length ?? 0;
   }
   // Folded subagent children ride the snapshot as one id string per
   // evicted row; a subagent-heavy turn can make the fold outweigh the
@@ -192,6 +241,17 @@ function estimateSnapshotChars(snapshot: ThreadItemSnapshot): number {
  * matching usage.
  */
 export const threadItemCache: ThreadItemCache = createThreadItemCache();
+
+// A backend identity change (new backend, or a generation re-mint after
+// a database restore) makes every snapshot's paired `historyStamp` a
+// claim about a history that no longer exists — and the rows themselves
+// may belong to a divergent lineage whose counters coincidentally
+// match, which a later `fresh` echo would never correct. Same rule as
+// the durable replica: drop, never migrate. L1 is not exempt just
+// because it is in memory.
+onBackendIdentity(() => {
+  threadItemCache.clear();
+});
 
 /** Test helper: drop every cached snapshot. Real code should use
  *  `evict(threadId)` for the targeted-eviction path. */

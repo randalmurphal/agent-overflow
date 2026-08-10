@@ -682,3 +682,123 @@ func TestBrowserArgsWebviewSoftwareGate(t *testing.T) {
 		t.Error("prod: --disable-gpu missing despite opt-in")
 	}
 }
+
+// TestProbeBootstrapUnreachableIsRetryable pins the signal the
+// fresh-port retry keys on: a probe that never got a single HTTP
+// response back over Windows localhost. Nothing is listening on the
+// probed port here, which is exactly what a Hyper-V excluded port range
+// looks like from the Windows side while the WSL backend serves
+// happily inside the distro.
+func TestProbeBootstrapUnreachableIsRetryable(t *testing.T) {
+	// Bind and release so the port is almost certainly free, then probe
+	// it: every attempt is refused at the transport layer.
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("probe for a free port: %v", err)
+	}
+	_, portStr, err := net.SplitHostPort(listener.Addr().String())
+	if err != nil {
+		t.Fatalf("split addr: %v", err)
+	}
+	if err := listener.Close(); err != nil {
+		t.Fatalf("release probe listener: %v", err)
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		t.Fatalf("parse port: %v", err)
+	}
+
+	err = probeBootstrapWithConfig(port, "test-token", bootstrapProbeConfig{
+		AttemptTimeout: 100 * time.Millisecond,
+		Deadline:       50 * time.Millisecond,
+		PollInterval:   time.Millisecond,
+	})
+	if err == nil {
+		t.Fatal("probeBootstrapWithConfig succeeded against a dead port")
+	}
+	if !errors.Is(err, errBackendUnreachable) {
+		t.Fatalf("error = %v, want it to carry errBackendUnreachable", err)
+	}
+	if !retryWithFreshTransportPort(err) {
+		t.Fatal("an unreachable backend must be retried on a fresh transport port")
+	}
+}
+
+// TestProbeBootstrapAnsweredFailuresAreNotRetryable is the other half:
+// once the backend has answered ANYTHING over Windows localhost, the
+// port is demonstrably reachable and moving it would churn the webview
+// origin (and every origin-scoped browser store) for nothing.
+func TestProbeBootstrapAnsweredFailuresAreNotRetryable(t *testing.T) {
+	cases := []struct {
+		name    string
+		handler http.HandlerFunc
+	}{
+		{
+			name: "startup failure",
+			handler: func(w http.ResponseWriter, r *http.Request) {
+				http.Error(w, "backend startup failed", http.StatusInternalServerError)
+			},
+		},
+		{
+			name: "credential rejected",
+			handler: func(w http.ResponseWriter, r *http.Request) {
+				http.NotFound(w, r)
+			},
+		},
+		{
+			name: "never becomes ready",
+			handler: func(w http.ResponseWriter, r *http.Request) {
+				http.Error(w, "still booting", http.StatusServiceUnavailable)
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(tc.handler)
+			defer server.Close()
+
+			_, portStr, err := net.SplitHostPort(server.Listener.Addr().String())
+			if err != nil {
+				t.Fatalf("split test server addr: %v", err)
+			}
+			port, err := strconv.Atoi(portStr)
+			if err != nil {
+				t.Fatalf("parse test server port: %v", err)
+			}
+
+			err = probeBootstrapWithConfig(port, "test-token", bootstrapProbeConfig{
+				AttemptTimeout: 100 * time.Millisecond,
+				Deadline:       50 * time.Millisecond,
+				PollInterval:   time.Millisecond,
+			})
+			if err == nil {
+				t.Fatal("probeBootstrapWithConfig succeeded, want failure")
+			}
+			if retryWithFreshTransportPort(err) {
+				t.Fatalf("error %v was classified as unreachable; a fresh port cannot fix an answered failure", err)
+			}
+		})
+	}
+}
+
+// TestRetryWithFreshTransportPortIgnoresUnrelatedErrors keeps the
+// classifier from widening by accident: only the sentinel qualifies.
+func TestRetryWithFreshTransportPortIgnoresUnrelatedErrors(t *testing.T) {
+	for _, err := range []error{nil, errors.New("boom"), errLaunchFailed, bootstrapHTTPError{StatusCode: 500, URL: "u"}} {
+		if retryWithFreshTransportPort(err) {
+			t.Errorf("retryWithFreshTransportPort(%v) = true", err)
+		}
+	}
+}
+
+// TestResetTransportPortArgMatchesTheBackendFlag pins the wire word of
+// the cross-binary contract. Both sides already derive the name from
+// wsllauncher.ResetTransportPortFlag, so they cannot disagree with each
+// other — this pins that neither drifts away from the flag an already
+// installed backend (an older payload in the distro) understands.
+func TestResetTransportPortArgMatchesTheBackendFlag(t *testing.T) {
+	const expected = "--reset-transport-port"
+	if resetTransportPortArg != expected {
+		t.Fatalf("resetTransportPortArg = %q, want %q (keep it in step with the backend flag)", resetTransportPortArg, expected)
+	}
+}

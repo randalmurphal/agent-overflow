@@ -55,17 +55,43 @@ import {
   threadItemCache,
   type ThreadItemSnapshot,
 } from './threadItemCache';
+import type { TimelineCursor } from '../../../bindings/agent-overflow/internal/store/models';
 import {
   type ApplyItemUpsertsToWindowResult,
   applyItemUpsertsToWindow,
+  applySyncPage,
   itemsAreEqual,
   itemsForThread,
   reconcileItemWindow,
+  type TimelineCursorLike,
 } from './threadItems';
 import { getThreadScrollSnapshot } from '../utils/threadScrollSnapshots';
-import { coldLoadItemsApplied, coldLoadSwitchStart } from '../utils/coldLoadTrace';
+import {
+  coldLoadItemsApplied,
+  coldLoadPaintSource,
+  coldLoadSwitchStart,
+  coldLoadSyncStatus,
+  type ColdLoadPaintSource,
+} from '../utils/coldLoadTrace';
 import { clearThreadSizePriors } from '../utils/virtual/priors';
-import { ListThreadSliceAround } from './bindings';
+import { ListThreadSliceAround, SyncThreadWindow, type SyncThreadWindowResult } from './bindings';
+import {
+  getReplicaWindow,
+  putReplicaWindow,
+  removeReplicaWindow,
+  replicaToken,
+  type ReplicaBody,
+} from '../replica';
+import {
+  UNKNOWN_STAMP_VALUE,
+  adoptEventStamp,
+  dropThreadHistoryStamp,
+  getThreadHistoryStamp,
+  recordAttestedStamp,
+  type ThreadHistoryStamp,
+} from './threadHistoryStamps';
+import { reportFrontendDiagnostic } from '../utils/frontendErrorCapture';
+import { getBackendIdentity, observeBackendGeneration } from '../transport/backendIdentity';
 import { sameNormalizedPath } from '../utils/path';
 import {
   clearThreadTerminalState,
@@ -102,6 +128,7 @@ import { createThreadChannelState } from './threadChannelState.svelte';
 import { createThreadDesignState } from './threadDesignState.svelte';
 import {
   ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS,
+  REPLICA_WRITE_BACK_DELAY_MS,
   SLICE_AROUND_ITEM_BUDGET,
   SPINNER_THRESHOLD_MS,
   isSmoothLiveContentKind,
@@ -116,6 +143,25 @@ import {
   type ScrollToItemOptions,
   type ThreadPaneOptions,
 } from './threadPaneShared';
+
+// Cursor sentinel for a replica window that carries none. `turnIndex`
+// below zero fails `cursorIsValid`, so the timeline window falls back to
+// deriving bounds from the painted rows exactly as it does for a paged
+// response that omits them.
+const NO_CURSOR: TimelineCursor = { turnIndex: -1, itemIndex: -1, itemId: '' };
+
+function wireCursor(cursor: TimelineCursorLike | null): TimelineCursor {
+  if (!cursor) return NO_CURSOR;
+  return {
+    turnIndex: cursor.turnIndex,
+    itemIndex: cursor.itemIndex,
+    itemId: cursor.itemId ?? '',
+  };
+}
+
+// Shared empty set for the "no live arrivals" page application. Frozen
+// by construction: nothing writes through this reference.
+const EMPTY_ID_SET: ReadonlySet<string> = new Set<string>();
 
 // ActiveTurn now lives in threadStatuses.svelte.ts (single source of
 // truth for the global active-turn registry). Re-exported here so
@@ -287,6 +333,50 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
    */
   let pastSpinnerThreshold: boolean = $state(false);
   let spinnerThresholdTimer: ReturnType<typeof setTimeout> | null = null;
+  /**
+   * Ids the wire touched while a window sync was in flight. Non-null
+   * only for the duration of the item-load leg, so the ordinary upsert
+   * path pays one branch and nothing more. `applySyncPage` reads it to
+   * keep rows that post-date the page's read snapshot — without it,
+   * opening a thread mid-stream would drop the row it is streaming into.
+   */
+  let liveTouchedDuringSync: Set<string> | null = null;
+  /**
+   * The attestation for the window THIS PANE currently holds
+   * (docs/specs/thread-replica-sync.md §3.4). Attestation is a property
+   * of a window, not of a thread id: a globally-looked-up attested stamp
+   * can describe a page this pane never received (its write-back never
+   * fired, the pane later repainted from an older replica envelope, and
+   * the sync that would have converged them threw). Pairing that stamp
+   * with these rows is exactly the permanent false `fresh` the spec's
+   * understate rule exists to prevent, so the pane carries its own.
+   *
+   * Set when a sync page installs, when a page-less `fresh` confirms the
+   * rows already painted from an attested source, and — critically — to
+   * the ENVELOPE's own stamp the moment a replica window is painted, so
+   * a sync failure leaves the pane holding what its rows actually
+   * descend from. Cleared by anything that changes the window's
+   * provenance (thread install, clear, structural cut). Live upserts
+   * leave it alone: they arrive through the wire for this thread and
+   * only make the rows newer than the stamp, which is the safe
+   * direction.
+   *
+   * `generation` pins it to the backend history lineage it was minted
+   * under. A restored database re-mints the generation and wipes the
+   * stamp registry, the replica and L1; this field is how a pane that
+   * was not syncing at that moment declines to write its dead-lineage
+   * rows into the new replica.
+   */
+  let windowAttestation:
+    | { epoch: number; rev: number; generation: string }
+    | null = null;
+  /**
+   * Pending debounced replica write-back for the OPEN thread. The
+   * switch-away snapshot is the primary write; this one exists so a
+   * crash (or a session that simply never switches away again) still
+   * leaves the thread the user is reading in the replica.
+   */
+  let replicaWriteBackTimer: ReturnType<typeof setTimeout> | null = null;
   // sendInFlight is the optimistic stop-button gate. The composer flips
   // it true the moment the user clicks Send and clears it in `finally`.
   // Used by SendButton to render the stop variant before
@@ -677,10 +767,8 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     if (!next.structureChanged && next.changedItems.length === 0) {
       return next;
     }
-    if (optimisticItemIds.size > 0) {
-      for (const changed of next.changedItems) {
-        optimisticItemIds.delete(changed.id);
-      }
+    if (liveTouchedDuringSync) {
+      for (const changed of next.changedItems) liveTouchedDuringSync.add(changed.id);
     }
     items = next.items;
     if (next.indexesNeedRebuild) {
@@ -765,6 +853,161 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
   // `subagentMemory.hydrateChildren`.
 
   /**
+   * Drop every cached copy of a thread's window: the in-memory
+   * snapshot, the measured-size priors, the durable replica entry, and
+   * the history stamp that described them. Called wherever the pane
+   * mutates history structurally (revert, un-send, same-thread reload)
+   * or learns the thread is gone — one door, so a new call site cannot
+   * evict half of it and leave a stale paint behind the other half.
+   */
+  function dropCachedWindow(threadId: string): void {
+    threadItemCache.evict(threadId);
+    clearThreadSizePriors(threadId);
+    dropThreadHistoryStamp(threadId);
+    // The pane's own attestation describes the window we are dropping,
+    // so it dies with it — a structural cut leaves rows no sync ever
+    // returned, and re-using the pre-cut stamp for them would persist a
+    // window under a stamp that never described it.
+    if (thread?.id === threadId) windowAttestation = null;
+    void removeReplicaWindow(threadId);
+  }
+
+  function cancelReplicaWriteBack(): void {
+    if (replicaWriteBackTimer === null) return;
+    clearTimeout(replicaWriteBackTimer);
+    replicaWriteBackTimer = null;
+  }
+
+  /**
+   * Record that a sync answer attested the window the pane holds RIGHT
+   * NOW. Called after the rows are installed, never before — the
+   * attestation describes them, so it must not outrun them.
+   */
+  function attestCurrentWindow(epoch: number, rev: number): void {
+    windowAttestation = {
+      epoch,
+      rev,
+      generation: getBackendIdentity().generation,
+    };
+  }
+
+  /**
+   * The pane's live window minus the rows that exist only in this pane's
+   * hope, plus whether anything was dropped.
+   *
+   * An optimistic row is a bet on a send: until the wire echoes it,
+   * nothing on the backend corresponds to it, so a window containing one
+   * is not a window any rev ever had. Both stamped tiers refuse it, and
+   * the refusal is the UNDERSTATE side of §3.4 in both directions — the
+   * marker itself can be wrong (a row whose echo arrived under a
+   * different id stays marked), so "filter and keep the stamp" could
+   * just as easily pair a stamp with a window missing a REAL row.
+   * Dropping the stamp costs one window fetch and cannot lie either way.
+   *
+   * The cursors travel with the rows: one naming a dropped row would
+   * anchor the next page fetch at an id the backend has never seen;
+   * nulling it lets the restore re-derive from the rows that survived.
+   */
+  function optimisticFreeWindow(): {
+    rows: Item[];
+    dropped: boolean;
+    oldestCursor: TimelineCursorLike | null;
+    newestCursor: TimelineCursorLike | null;
+  } {
+    const oldestCursor = timelineWindow.oldestLoadedCursor ?? null;
+    const newestCursor = timelineWindow.newestLoadedCursor ?? null;
+    if (optimisticItemIds.size === 0) {
+      return { rows: items, dropped: false, oldestCursor, newestCursor };
+    }
+    const rows = items.filter((item) => !optimisticItemIds.has(item.id));
+    const isOptimisticCursor = (cursor: TimelineCursorLike | null): boolean =>
+      Boolean(cursor?.itemId && optimisticItemIds.has(cursor.itemId));
+    return {
+      rows,
+      dropped: rows.length !== items.length,
+      oldestCursor: isOptimisticCursor(oldestCursor) ? null : oldestCursor,
+      newestCursor: isOptimisticCursor(newestCursor) ? null : newestCursor,
+    };
+  }
+
+  /**
+   * Persist the pane's live window under the attestation that describes
+   * IT (see `windowAttestation`). No attestation, no write: an
+   * event-carried stamp can name a rev whose content never reached this
+   * client, and persisted that would be a permanent false `fresh`
+   * (docs/specs/thread-replica-sync.md §3.4).
+   *
+   * Live events that landed after the attestation only make the rows
+   * NEWER than the stamp, which is the safe direction — the next open
+   * asks with an understated stamp and pays one window fetch.
+   */
+  function persistReplicaWindow(threadId: string): void {
+    if (thread?.id !== threadId) return;
+    const attestation = windowAttestation;
+    if (!attestation) return;
+    // A generation re-mint invalidated every stamp read from the old
+    // lineage, including this one; the rows it names belong to a history
+    // the backend no longer has.
+    if (attestation.generation !== getBackendIdentity().generation) return;
+    // Unlike L1, the replica cannot hold rows without a stamp — the
+    // envelope IS the pairing. A window with an unconfirmed row in it
+    // has nothing to pair, so it simply is not written; the previous
+    // envelope stays valid under its own stamp until the next settled
+    // sync writes over it.
+    const { rows, dropped } = optimisticFreeWindow();
+    if (dropped) return;
+    if (rows.length === 0) return;
+    void putReplicaWindow(threadId, {
+      epoch: attestation.epoch,
+      rev: attestation.rev,
+      savedAt: Date.now(),
+      items: rows,
+      oldestCursor: timelineWindow.oldestLoadedCursor ?? null,
+      newestCursor: timelineWindow.newestLoadedCursor ?? null,
+      hasMoreOlder: timelineWindow.hasMoreHistory,
+      hasMoreNewer: timelineWindow.hasMoreNewer,
+      latestSettledTurn,
+      subagentFolds: subagentMemory.snapshotFolds(),
+    });
+  }
+
+  function scheduleReplicaWriteBack(threadId: string): void {
+    cancelReplicaWriteBack();
+    replicaWriteBackTimer = setTimeout(() => {
+      replicaWriteBackTimer = null;
+      if (thread?.id !== threadId) return;
+      persistReplicaWindow(threadId);
+    }, REPLICA_WRITE_BACK_DELAY_MS);
+  }
+
+  /**
+   * Paint a replica window onto the freshly-reset pane. Goes through the
+   * same `applyInitialSlice` chokepoint a server slice does — these rows
+   * are paint-only and the sync page replaces them, so nothing about the
+   * install may differ from the real thing.
+   */
+  function paintReplicaWindow(body: ReplicaBody, threadId: string): void {
+    timelineWindow.applyInitialSlice(
+      {
+        items: body.items,
+        oldestCursor: wireCursor(body.oldestCursor),
+        newestCursor: wireCursor(body.newestCursor),
+        oldestTurnIndex: body.oldestCursor?.turnIndex ?? -1,
+        newestTurnIndex: body.newestCursor?.turnIndex ?? -1,
+        hasMore: body.hasMoreOlder,
+        hasMoreOlder: body.hasMoreOlder,
+        hasMoreNewer: body.hasMoreNewer,
+      },
+      threadId,
+    );
+    subagentMemory.restoreFolds(body.subagentFolds ?? null);
+    subagentMemory.clearHydrationState();
+    // Only when the envelope has one: the ListRecentTurns leg may
+    // already have landed with the authoritative row.
+    if (body.latestSettledTurn) latestSettledTurn = body.latestSettledTurn;
+  }
+
+  /**
    * Snapshot the outgoing thread into the LRU cache (when worth it),
    * and evict its highlight-span cache entries.
    * Same-thread re-switch skips the
@@ -778,12 +1021,23 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
   function snapshotOutgoingPane(incomingThreadId: string): void {
     const outgoingThreadId = thread?.id ?? null;
     const sameThreadReswitch = outgoingThreadId === incomingThreadId;
+    // The pending write-back describes the pane we are leaving; the
+    // snapshot below writes the same window synchronously with the
+    // stamp it is paired with, so the timer has nothing left to do.
+    cancelReplicaWriteBack();
+    // L1 is a stamped tier too: `resetIncomingPaneState` clears the
+    // optimistic-id ledger, so an optimistic row cached here comes back
+    // on a warm re-entry as an untracked phantom — one the next attested
+    // answer would re-bless and the write-back would then persist
+    // durably. It is dropped from the rows AND costs the snapshot its
+    // stamp (see optimisticFreeWindow).
+    const l1 = optimisticFreeWindow();
     if (
       outgoingThreadId &&
       !sameThreadReswitch &&
       !loading &&
-      items.length > 0 &&
-      items.length <= MAX_CACHED_SNAPSHOT_ITEMS
+      l1.rows.length > 0 &&
+      l1.rows.length <= MAX_CACHED_SNAPSHOT_ITEMS
     ) {
       // The timeline's row-size priors are snapshotted, but NOT here: they
       // live in MessageTimeline (`utils/virtual/priors.ts`), keyed by the
@@ -793,9 +1047,9 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       // is what lets a re-entry skip the estimate→measure cascade safely; here
       // we cache only the items.
       threadItemCache.set(outgoingThreadId, {
-        items,
-        oldestLoadedCursor: timelineWindow.oldestLoadedCursor,
-        newestLoadedCursor: timelineWindow.newestLoadedCursor,
+        items: l1.rows,
+        oldestLoadedCursor: l1.oldestCursor,
+        newestLoadedCursor: l1.newestCursor,
         oldestLoadedTurnIndex: timelineWindow.oldestLoadedTurnIndex,
         newestLoadedTurnIndex: timelineWindow.newestLoadedTurnIndex,
         hasMoreHistory: timelineWindow.hasMoreHistory,
@@ -806,14 +1060,23 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
         // warm re-entry would render collapsed cards with zeroed counts
         // until the next live event or hydration.
         subagentFolds: subagentMemory.snapshotFolds(),
+        // Paired, not looked up on the next open: the stamp is only
+        // usable as `haveEpoch`/`haveRev` for the rows it described when
+        // it was read. See ThreadItemSnapshot#historyStamp. Dropping a
+        // row drops the pairing with it — these rows are no longer the
+        // window any stamp described.
+        historyStamp: l1.dropped ? null : getThreadHistoryStamp(outgoingThreadId),
       });
+      persistReplicaWindow(outgoingThreadId);
     }
     if (sameThreadReswitch) {
-      threadItemCache.evict(incomingThreadId);
-      // A same-thread re-switch mutates this thread's items in place; its
-      // measured-size priors are now stale (the structure/content key would
-      // also refuse them, but evict to free them promptly — same as the item cache).
-      clearThreadSizePriors(incomingThreadId);
+      // A same-thread re-switch mutates this thread's items in place, so
+      // every cached copy of the previous shape is now a lie — including
+      // the durable one, which would otherwise paint the pre-revert rows
+      // on the next cold open. Measured-size priors go for the same
+      // reason (the structure/content key would refuse them anyway;
+      // dropping frees them promptly).
+      dropCachedWindow(incomingThreadId);
     }
     if (outgoingThreadId) {
       // Free highlight spans cached against the outgoing thread. The
@@ -916,12 +1179,20 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       scrollSnapshot?.kind === 'anchor' ? scrollSnapshot.itemId : '';
 
     loading = true;
+    // The incoming window is nothing this pane has had attested yet. An
+    // L1 snapshot carries its own pairing, so it can re-establish the
+    // attestation immediately — but only when the stamp it was cached
+    // with was itself sync-attested.
+    windowAttestation = null;
     if (cached) {
       replaceTimelineItems(cached.items);
       subagentMemory.restoreFolds(cached.subagentFolds);
       subagentMemory.clearHydrationState();
       timelineWindow.installFromSnapshot(cached);
       latestSettledTurn = cached.latestSettledTurn;
+      if (cached.historyStamp?.attested) {
+        attestCurrentWindow(cached.historyStamp.epoch, cached.historyStamp.rev);
+      }
     } else {
       replaceTimelineItems([]);
       subagentMemory.resetForFreshThread();
@@ -938,6 +1209,13 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     // read 'spring' off the stale stamp and chase its settled content.
     // A streaming incoming thread re-stamps on its first reveal/delta.
     lastLiveContentAt = 0;
+    // Arm the live-arrival ledger HERE, not in the load leg: the pane is
+    // already committed to the incoming thread, so a wire upsert can
+    // land before the leg's first await resolves. Rows recorded from
+    // this point survive the attested page that replaces the paint (see
+    // applySyncPage) — without the early arm, a thread opened while it
+    // was streaming would lose the row it was streaming into.
+    liveTouchedDuringSync = new Set();
     return { cached, sliceAnchorId };
   }
 
@@ -980,6 +1258,219 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     if (newThread.mode !== 'design') {
       const preview = companionForSource(paneId, 'design-preview');
       if (preview) closeCompanion(preview.paneId);
+    }
+  }
+
+  /**
+   * Apply a settled `SyncThreadWindow` answer to the pane.
+   *
+   * `fresh` applies nothing: the stamp match itself attests the rows
+   * already painted, and they become the live window as-is. `stale` and
+   * `rewritten` both carry a page, and the page REPLACES the painted
+   * window — no cache-sourced row survives a reconcile, which is what
+   * makes the write-back safe (every persisted row descends from an
+   * attested page). `gone` drops every cached copy and empties the pane.
+   */
+  function applySyncResponse(
+    response: SyncThreadWindowResult,
+    newThread: Thread,
+    paintSource: ColdLoadPaintSource,
+    sentStamp: ThreadHistoryStamp | null,
+    lineageChanged: boolean,
+  ): void {
+    const threadId = newThread.id;
+    coldLoadSyncStatus(paneId, response.status);
+    if (response.status === 'gone') {
+      dropCachedWindow(threadId);
+      replaceTimelineItems([], { disposeDropped: true });
+      timelineWindow.resetAfterLoadError();
+      latestSettledTurn = null;
+      generalError = 'This thread no longer exists.';
+      generalErrorKind = null;
+      return;
+    }
+    const page = response.page;
+    if (page) {
+      const incoming = itemsForThread((page.items ?? []) as Item[], threadId);
+      const next = applySyncPage(
+        incoming,
+        items,
+        liveTouchedDuringSync ?? EMPTY_ID_SET,
+      );
+      replaceTimelineItems(next, { disposeDropped: true });
+      timelineWindow.applyWindowMetadataFromPaged(page);
+      // The warm-gate re-arm belongs to a FIRST content mount only. A
+      // page landing over an already-painted window (L1 or replica) is a
+      // reconcile the reader may already be looking at; re-closing the
+      // gate there would blank content that is on screen.
+      //
+      // A lineage change is the exception that proves it: the painted
+      // rows belong to a history the backend no longer has, so this page
+      // does not reconcile them, it replaces all of them. That is a
+      // first content mount in everything but name, and it re-arms —
+      // synchronously with the mutation, before the flush that mounts
+      // the rows (see armInitialSliceWarmup / frontend-scroll.md).
+      if (paintSource === 'none' || lineageChanged) {
+        const rearmed = armInitialSliceWarmup();
+        coldLoadItemsApplied(paneId, items.length, rearmed);
+      }
+    }
+    // Attested last: the stamp describes the rows now installed, so it
+    // must not be recorded before they are. A page is a full attestation
+    // (the rows arrived with the stamp, one transaction). A page-less
+    // `fresh` only attests as much as the stamp we SENT was worth: an
+    // echo of an event-carried stamp confirms the server's counter, not
+    // that this client received every frame up to it, so upgrading it to
+    // attested here would launder it straight into the replica.
+    if (page || sentStamp?.attested) {
+      recordAttestedStamp(threadId, response.epoch, response.rev);
+      // The pane's own copy: this answer attested the window it is
+      // holding, which is what a write-back may pair rows with.
+      attestCurrentWindow(response.epoch, response.rev);
+    } else {
+      adoptEventStamp(threadId, response.epoch, response.rev);
+      // A page-less answer over an unattested source leaves the pane
+      // with rows nothing has attested — including whatever earlier
+      // attestation the install carried, which this answer did not
+      // confirm.
+      windowAttestation = null;
+    }
+    scheduleReplicaWriteBack(threadId);
+  }
+
+  /**
+   * The cold-open item leg: paint whatever durable copy exists, then
+   * converge it against the backend with one `SyncThreadWindow` call
+   * (docs/specs/thread-replica-sync.md §6.1).
+   *
+   * Ordering, and why it is not a race:
+   *
+   *  - An L1 hit has already painted synchronously in
+   *    `installCacheOrFreshState`, and its snapshot carries the stamp
+   *    that described those rows.
+   *  - On an L1 miss the IndexedDB read runs BEFORE the RPC is issued.
+   *    That is the cache-validator read, not a lost opportunity for
+   *    concurrency: a `fresh` answer obliges the client to keep the rows
+   *    the stamp matched, so a stamp may only be sent once the content
+   *    it describes is in hand. Reading first makes "answered fresh over
+   *    nothing" unrepresentable rather than a case to recover from. The
+   *    read is local, bounded by the replica's own watchdog, and on a
+   *    disabled or failing replica resolves null immediately.
+   *  - Every open fires the sync, cache hit included. The old
+   *    skip-on-cache-hit was a real staleness hole (another attached
+   *    client can rewrite history while a thread sits in the LRU); a
+   *    `fresh` answer closes it for ~100 bytes.
+   */
+  async function runItemWindowSync(
+    newThread: Thread,
+    gen: number,
+    cached: ThreadItemSnapshot | null,
+    sliceAnchorId: string,
+  ): Promise<void> {
+    const threadId = newThread.id;
+    let paintSource: ColdLoadPaintSource = cached ? 'l1' : 'none';
+    let haveStamp: ThreadHistoryStamp | null = cached?.historyStamp ?? null;
+
+    const ask = (stamp: ThreadHistoryStamp | null): Promise<SyncThreadWindowResult> =>
+      SyncThreadWindow(threadId, {
+        anchorItemId: sliceAnchorId,
+        itemBudget: SLICE_AROUND_ITEM_BUDGET,
+        haveEpoch: stamp ? stamp.epoch : UNKNOWN_STAMP_VALUE,
+        haveRev: stamp ? stamp.rev : UNKNOWN_STAMP_VALUE,
+      });
+
+    try {
+      if (!cached) {
+        const body = await getReplicaWindow(threadId, replicaToken());
+        if (gen !== switchGeneration) return;
+        if (body) {
+          paintReplicaWindow(body, threadId);
+          paintSource = 'replica';
+          haveStamp = { epoch: body.epoch, rev: body.rev, attested: true };
+          // The envelope's own stamp, paired with the envelope's own
+          // rows. If the sync below never lands (transport hiccup) the
+          // pane keeps the paint — and must keep the stamp that
+          // describes it, not whatever the registry happens to hold for
+          // this thread from a page this pane never received.
+          attestCurrentWindow(body.epoch, body.rev);
+          // Replica rows are structural content mounting into an empty
+          // pane, so they re-close the warm gate exactly as an initial
+          // slice does — synchronously with the mutation, before the
+          // flush that mounts them.
+          const rearmed = armInitialSliceWarmup();
+          coldLoadItemsApplied(paneId, items.length, rearmed);
+        }
+      }
+      coldLoadPaintSource(paneId, paintSource);
+
+      // The lineage this leg BELIEVES it is talking to, captured before
+      // the ask. `observeBackendGeneration` reports whether the
+      // observation moved the global identity, which is a different
+      // question: with two panes in flight across one flip, only the
+      // first to answer moves it, and the second would be told "no
+      // change" about the very lineage change that invalidates its
+      // painted rows. The global observation still has to happen — it
+      // is what wipes the replica, the stamp registry and L1 — but the
+      // decision this leg makes is per-leg.
+      const believed = getBackendIdentity();
+      let sentStamp = haveStamp;
+      let response = await ask(sentStamp);
+      if (gen !== switchGeneration) return;
+      // The response carries the backend's LIVE generation — the one
+      // channel that observes a mid-session database restore, since the
+      // manifest is only refetched on reconnect. A change here has
+      // already wiped the replica, the stamp registry, and the L1 cache
+      // (subscribers run synchronously); what remains is this leg's own
+      // state: the stamp it sent and the rows it painted belong to the
+      // dead lineage, so a page-less answer — even `fresh`, ESPECIALLY
+      // `fresh`, which can be a coincidental counter match across
+      // lineages — cannot be trusted and is re-asked stampless.
+      const observed = observeBackendGeneration(response.generation);
+      const lineageChanged =
+        observed ||
+        (believed.backendId !== '' &&
+          believed.generation !== '' &&
+          typeof response.generation === 'string' &&
+          response.generation !== '' &&
+          response.generation !== believed.generation);
+      if (response.status !== 'gone' && !response.page && (lineageChanged || paintSource === 'none')) {
+        if (!lineageChanged) {
+          // A page-less answer means "keep what you have" and we have
+          // nothing — the stamp we sent outlived its rows. The pairing
+          // rules are supposed to make this unreachable, so report it
+          // and re-ask without a stamp rather than leaving the pane
+          // empty.
+          console.error(
+            `replica: sync answered "${response.status}" with no page and nothing painted; refetching`,
+          );
+          reportFrontendDiagnostic(
+            'replica: page-less sync answer with nothing painted',
+            `thread=${threadId} status=${response.status}`,
+          );
+        }
+        sentStamp = null;
+        response = await ask(sentStamp);
+        if (gen !== switchGeneration) return;
+      }
+      applySyncResponse(response, newThread, paintSource, sentStamp, lineageChanged);
+    } catch (err) {
+      if (gen !== switchGeneration) return;
+      console.error('Failed to sync thread window:', err);
+      if (paintSource !== 'none') {
+        // A painted window is what the pane had a moment ago and is
+        // strictly better than blanking it; the next open re-converges.
+        return;
+      }
+      replaceTimelineItems([]);
+      timelineWindow.resetAfterLoadError();
+      generalError = `Failed to load thread items: ${errString(err)}`;
+      generalErrorKind = null;
+      addToast('error', 'Failed to load thread items');
+    } finally {
+      // Only when this leg is still the current one: a newer switch has
+      // already armed its own set, and clearing it here would blind that
+      // switch to the arrivals it is about to reconcile against.
+      if (gen === switchGeneration) liveTouchedDuringSync = null;
     }
   }
 
@@ -1059,45 +1550,12 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       }
     })();
 
-    // Single initial slice via `ListThreadSliceAround`. Empty
-    // anchor id resolves to the tail at the backend, so this binding
-    // covers both bottom-snapshot and saved-anchor restores. Skip on
-    // cache hit — the cached items already cover the visible window
-    // and the cache is invalidated on `applyItemUpserts` so it's
-    // never stale. Older items page in lazily via `pane.loadOlder()`
-    // (driven by the auto-load trigger in `MessageTimeline.svelte`
-    // and the manual "Load older" button as fallback).
-    const loadItemsPromise = cached
-      ? Promise.resolve()
-      : withGenGuard(
-          'load items',
-          gen,
-          () =>
-            ListThreadSliceAround(
-              newThread.id,
-              sliceAnchorId,
-              SLICE_AROUND_ITEM_BUDGET,
-            ),
-          (paged) => {
-            timelineWindow.applyInitialSlice(paged, newThread.id);
-            // Only the initial switch load reaches here — loadOlder/loadNewer
-            // paging never calls applyInitialSlice. The re-arm must run
-            // synchronously with the merge above, before the flush that
-            // mounts the merged rows.
-            const rearmed = armInitialSliceWarmup();
-            coldLoadItemsApplied(paneId, items.length, rearmed);
-          },
-          (err) => {
-            // Cache miss + load failure leaves the timeline blank and
-            // raises a hard error. (Cache hits skip the load entirely
-            // so they can't reach this branch.)
-            replaceTimelineItems([]);
-            timelineWindow.resetAfterLoadError();
-            generalError = `Failed to load thread items: ${errString(err)}`;
-            generalErrorKind = null;
-            addToast('error', 'Failed to load thread items');
-          },
-        );
+    // Single initial window via `SyncThreadWindow`. Empty anchor id
+    // resolves to the tail at the backend, so it covers both
+    // bottom-snapshot and saved-anchor restores. Older items page in
+    // lazily via `pane.loadOlder()` (driven by the auto-load trigger in
+    // `MessageTimeline.svelte` and the manual "Load older" button).
+    const loadItemsPromise = runItemWindowSync(newThread, gen, cached, sliceAnchorId);
 
     // Two rows of safety so a crashed-then-completed sequence can skip
     // over the in-flight row and still find the prior settled one.
@@ -1146,10 +1604,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     for (const r of removed) streamingReveal.disposeSmootherFor(r.id);
     rowUiState.disposeItems(removed);
     streamingReveal.recomputeReveal();
-    if (thread) {
-      threadItemCache.evict(thread.id);
-      clearThreadSizePriors(thread.id);
-    }
+    if (thread) dropCachedWindow(thread.id);
     return removed;
   }
 
@@ -1592,6 +2047,14 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
         // supposed to keep the indicator up.
         if (gen === switchGeneration) {
           loading = false;
+          // `runItemWindowSync` clears this in its own finally, so this
+          // is a no-op on every path that reached it. It is the cover
+          // for the paths that did not: a synchronous throw between the
+          // generation bump and the leg starting would otherwise leave
+          // the ledger armed for the pane's lifetime, and every later
+          // upsert would accumulate into a set the next page
+          // application reads as live arrivals it must not drop.
+          liveTouchedDuringSync = null;
         }
         if (liveStateHydrationToken !== 0 && !liveStateHydrationConsumed) {
           finishThreadLiveStateHydration(newThread.id, liveStateHydrationToken);
@@ -1733,6 +2196,18 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
         clearTimeout(spinnerThresholdTimer);
         spinnerThresholdTimer = null;
       }
+      // Same shape for the replica write-back: it would fire against a
+      // pane that no longer holds the thread it was scheduled for.
+      cancelReplicaWriteBack();
+      // The window this attested is gone, and so is the ledger of live
+      // arrivals the in-flight sync leg was collecting: only
+      // `runItemWindowSync`'s finally cleared the latter, so a pane
+      // cleared mid-load (or a leg that threw before reaching it) left
+      // it armed, and every later upsert kept appending to a set the
+      // NEXT page application would then read as "arrived during my
+      // sync" and refuse to drop.
+      windowAttestation = null;
+      liveTouchedDuringSync = null;
       pastSpinnerThreshold = false;
       timelineWindow.resetForFreshThread();
       subagentMemory.clearHydrationState();
@@ -1996,6 +2471,20 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       incoming: Item[],
     ): ApplyItemUpsertsToWindowResult | null {
       const applied = upsertItemsBatch(incoming);
+      // Discharging an optimistic marker belongs HERE, not in
+      // `upsertItemsBatch`: the marker means "this row exists only in
+      // this pane's hope", and only the wire can disprove that. Doing it
+      // in the shared batch untracked the composer's own optimistic
+      // insert on the very call that mounted it (an append lands in
+      // `changedItems` too), which left `isOptimisticItem` permanently
+      // false — the failed-send rollback never fired, and the
+      // cache/replica filters that exist to keep phantoms out of the
+      // durable tiers had nothing to filter.
+      if (applied && optimisticItemIds.size > 0) {
+        for (const changed of applied.changedItems) {
+          optimisticItemIds.delete(changed.id);
+        }
+      }
       // A wire append to the loaded tail arms the structural-append
       // spring, stamps the live-content latch, and schedules the
       // follow-up nudge (see `armLiveContentAppendSpring`;
@@ -2021,8 +2510,17 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
      * re-insert it on rollback. Idempotent: returns null when the row
      * is already gone, so a late `user_message:reverted` event after
      * the optimistic remove is a no-op.
+     *
+     * `expectedThreadId` is required rather than optional because every
+     * caller reaches here across an await or an event hop, and the pane
+     * may have moved on: item ids are per-thread (`user:<n>` collides
+     * across threads by construction), and the removal also drops the
+     * thread's cached window. Naming the thread is the enforcement — a
+     * caller cannot reach the removal without saying which conversation
+     * it believes it is editing, and a mismatch is a no-op.
      */
-    removeItemById(itemId: string): Item | null {
+    removeItemById(itemId: string, expectedThreadId: string): Item | null {
+      if (!thread || thread.id !== expectedThreadId) return null;
       const idx = itemIndexById.get(itemId);
       if (idx === undefined) return null;
       const removed = items[idx];
@@ -2030,10 +2528,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       streamingReveal.disposeSmootherFor(itemId);
       rowUiState.disposeItems([removed]);
       streamingReveal.recomputeReveal();
-      if (thread) {
-        threadItemCache.evict(thread.id);
-        clearThreadSizePriors(thread.id);
-      }
+      if (thread) dropCachedWindow(thread.id);
       return removed;
     },
 
@@ -2098,6 +2593,17 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
      */
     __itemSmootherCountForTest(): number {
       return streamingReveal.__smootherCountForTest();
+    },
+
+    /**
+     * Test-only: is the "ids the wire touched while a window sync was in
+     * flight" ledger still armed? Non-null outside a load leg means a
+     * clear/throw path leaked it, which silently changes how the NEXT
+     * page application classifies pre-existing rows. Not part of the
+     * production surface.
+     */
+    __syncLedgerArmedForTest(): boolean {
+      return liveTouchedDuringSync !== null;
     },
 
     applyItemDelta(evt: ItemDeltaEvent): void {

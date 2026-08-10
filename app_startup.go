@@ -185,6 +185,19 @@ func (a *App) initStores() (string, *store.Store, error) {
 	}
 
 	a.store = st
+	// Published for the transport bootstrap manifest the moment the store
+	// is open. A failure here is fatal to the store: without a backend id
+	// a client cannot key its replica database, and silently serving an
+	// empty identity would look like "not ready yet" forever.
+	identity, err := st.Identity()
+	if err != nil {
+		closeErr := st.Close()
+		return "", nil, errors.Join(
+			fmt.Errorf("failed to read store identity: %w", err),
+			errorsx.WrapLifecycle("close store after store identity failure", closeErr),
+		)
+	}
+	a.storeIdentity.Store(&identity)
 	a.git = gitops.NewCore()
 	a.gitWatch = gitwatch.NewManager(gitwatch.ManagerConfig{
 		StatusFn:     a.git.Status,

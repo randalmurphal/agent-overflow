@@ -1,8 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   coldLoadItemsApplied,
+  coldLoadPaintSource,
   coldLoadPriors,
   coldLoadSwitchStart,
+  coldLoadSyncStatus,
   coldLoadWarmEdge,
   __resetColdLoadTraceForTest,
 } from './coldLoadTrace';
@@ -56,8 +58,41 @@ describe('coldLoadTrace', () => {
         warmupRearmed: true,
         warmBeforeItems: 0,
         abandoned: null,
+        paintSource: 'none',
+        syncStatus: null,
       },
     });
+  });
+
+  it('records the replica paint and the window-sync verdict', () => {
+    coldLoadSwitchStart('pane-1', 'thread-a', 'fetch');
+    coldLoadPaintSource('pane-1', 'replica');
+    mockNow = 8;
+    coldLoadItemsApplied('pane-1', 4, true);
+    coldLoadSyncStatus('pane-1', 'stale');
+    mockNow = 30;
+    coldLoadWarmEdge('pane-1', 'thread-a', true, 'quiet');
+
+    expect(coldLoadRecords()[0]).toMatchObject({
+      data: { source: 'fetch', paintSource: 'replica', syncStatus: 'stale', itemCount: 4 },
+    });
+  });
+
+  it('starts a cache-restore session already painted from L1', () => {
+    coldLoadSwitchStart('pane-1', 'thread-a', 'cache-restore');
+    coldLoadSyncStatus('pane-1', 'fresh');
+    mockNow = 12;
+    coldLoadWarmEdge('pane-1', 'thread-a', true, 'settled');
+
+    expect(coldLoadRecords()[0]).toMatchObject({
+      data: { source: 'cache-restore', paintSource: 'l1', syncStatus: 'fresh' },
+    });
+  });
+
+  it('paint-source and sync-status stamps with no open session no-op', () => {
+    coldLoadPaintSource('pane-nope', 'replica');
+    coldLoadSyncStatus('pane-nope', 'gone');
+    expect(coldLoadRecords()).toHaveLength(0);
   });
 
   it('holds a fetch session through the empty-pane warm edge and closes on the post-items one', () => {

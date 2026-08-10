@@ -515,12 +515,16 @@
       createdAt: now,
       updatedAt: now,
     };
-    pane.trackOptimisticItem(optimisticId);
+    // The pane this send belongs to, captured alongside `threadId`: the
+    // rollback below runs after an await, and both the pane binding and
+    // what the pane is showing can have moved by then.
+    const sendPane = pane;
+    sendPane.trackOptimisticItem(optimisticId);
     // Arm the one-shot structural spring window before the upsert so the
     // just-sent message glides in instead of sync-pinning (the arm must
     // precede the flush that mounts the row; see armStructuralSpring).
-    pane.armStructuralSpring();
-    pane.upsertItems([optimisticItem]);
+    sendPane.armStructuralSpring();
+    sendPane.upsertItems([optimisticItem]);
 
     try {
       const sent = await dispatchSend({
@@ -541,7 +545,7 @@
         currentThread: thread,
         restoreDraft: (tid, snap) => draft.restoreDraftFor(tid, snap),
         draftThreadId: () => draft.threadId,
-        reportError: (msg) => pane.setGeneralError(msg),
+        reportError: (msg) => sendPane.setGeneralError(msg),
         onWorktreePrepareStarted: () => {
           preparingWorktree = true;
         },
@@ -549,9 +553,20 @@
           preparingWorktree = false;
         },
       });
-      if (!sent && pane.isOptimisticItem(optimisticId)) {
-        pane.removeItemById(optimisticId);
-        pane.untrackOptimisticItem(optimisticId);
+      // `dispatchSend` awaits, and the user can switch this pane to
+      // another thread while it does. The optimistic row belongs to
+      // `threadId` — and `user:<n>` ids collide across threads by
+      // construction — so the rollback is gated on the pane still
+      // holding that thread. Without the gate the removal (and the
+      // cached-window drop that rides it) would land on whatever
+      // conversation is mounted now.
+      if (
+        !sent &&
+        sendPane.threadId === threadId &&
+        sendPane.isOptimisticItem(optimisticId)
+      ) {
+        sendPane.removeItemById(optimisticId, threadId);
+        sendPane.untrackOptimisticItem(optimisticId);
       }
       if (diffReviewSourceForSend) {
         await refreshDiffReviewComments(threadId, diffReviewSourceForSend.scope, diffReviewSourceForSend.sourceKey);
@@ -559,7 +574,7 @@
     } finally {
       preparingWorktree = false;
       sending = false;
-      pane.setSendInFlight(false);
+      sendPane.setSendInFlight(false);
     }
   }
 

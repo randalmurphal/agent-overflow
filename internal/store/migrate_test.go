@@ -1733,6 +1733,68 @@ func migrateThrough(t *testing.T, target int) *sql.DB {
 	return db
 }
 
+// TestApplyRebuildMigrationRefusesAFix — applyRebuildMigration used to
+// run the SQL, record the version, and drop the Fix on the floor. A
+// forward-only chain has no second attempt at a skipped data pass, so the
+// combination has to fail loudly and by name at the moment it is written,
+// not silently half-apply on every user's database.
+func TestApplyRebuildMigrationRefusesAFix(t *testing.T) {
+	latest := migrations[len(migrations)-1].Version
+	db := migrateThrough(t, latest)
+	fixRan := false
+	synthetic := Migration{
+		Version: latest + 1,
+		Name:    "synthetic_rebuild_with_fix",
+		SQL:     `CREATE TABLE synthetic_rebuild_probe (id INTEGER PRIMARY KEY);`,
+		Rebuild: true,
+		Fix: func(*sql.Tx) error {
+			fixRan = true
+			return nil
+		},
+	}
+
+	err := applyRebuildMigration(db, synthetic)
+	if err == nil {
+		t.Fatal("applyRebuildMigration accepted a Rebuild migration carrying a Fix")
+	}
+	if !strings.Contains(err.Error(), synthetic.Name) {
+		t.Fatalf("refusal %q does not name the migration %q", err, synthetic.Name)
+	}
+	if fixRan {
+		t.Fatal("the refused migration ran its Fix anyway")
+	}
+
+	// Nothing applied: neither the SQL's table nor the version record.
+	var probe string
+	if err := db.QueryRow(
+		`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'synthetic_rebuild_probe'`,
+	).Scan(&probe); err == nil {
+		t.Fatal("the refused rebuild still created its table")
+	}
+	var recorded int
+	if err := db.QueryRow(
+		`SELECT COUNT(*) FROM migration_versions WHERE version = ?`, synthetic.Version,
+	).Scan(&recorded); err != nil {
+		t.Fatalf("count migration versions: %v", err)
+	}
+	if recorded != 0 {
+		t.Fatal("the refused rebuild recorded itself as applied")
+	}
+}
+
+// TestNoShippedRebuildMigrationCarriesAFix is the standing version of the
+// guard above: applyRebuildMigration would refuse such a migration at
+// boot, which is a runtime failure on a user's database. This catches it
+// at `go test` time instead.
+func TestNoShippedRebuildMigrationCarriesAFix(t *testing.T) {
+	for _, m := range migrations {
+		if m.Rebuild && m.Fix != nil {
+			t.Errorf("migration v%d (%s) is a Rebuild and carries a Fix; split the data fixup into its own migration",
+				m.Version, m.Name)
+		}
+	}
+}
+
 func migrationByVersion(t *testing.T, v int) Migration {
 	t.Helper()
 	for _, m := range migrations {
@@ -3512,6 +3574,106 @@ func TestMigrationV53AddsWorkItemPendingGuidance(t *testing.T) {
 			`SELECT name FROM sqlite_master WHERE type = 'index' AND name = ?`, index,
 		).Scan(&found); err != nil {
 			t.Fatalf("index %s missing after v53: %v", index, err)
+		}
+	}
+}
+
+func TestMigrationV55AddsHistoryStampsAndStoreIdentity(t *testing.T) {
+	db := migrateThrough(t, 54)
+	mustExec(t, db, `
+		INSERT INTO projects (id, path, name, color, sort_position, created_at, updated_at, archived)
+		VALUES ('project-v55', '/tmp/v55', 'V55', 'red', 6, 10, 11, 0)
+	`)
+	mustExec(t, db, `
+		INSERT INTO threads (
+			id, project_id, title, provider, model, workspace_path, worktree_path,
+			branch, pr_ref, session_ref, pending_fork_session_ref, mode, reasoning_effort,
+			fast_mode, context_window, auto_compact_standard_percent,
+			auto_compact_extended_percent, runtime_mode, last_token_usage, last_read_at,
+			pinned_at, created_at, updated_at, archived
+		) VALUES (
+			'thread-v55', 'project-v55', 'Pre-migration row', 'claude', 'claude-opus-4-8', '/tmp/v55', NULL,
+			NULL, '', '', '', 'chat', 'high',
+			0, 1000000, 0, 0, 'full-access', '', 31,
+			NULL, 33, 34, 0
+		)
+	`)
+
+	if err := applyMigration(db, migrationByVersion(t, 55)); err != nil {
+		t.Fatalf("apply migration v55: %v", err)
+	}
+
+	// A row that predates the columns is LIFTED off rev 0. (0, 0) is the
+	// JSON zero value of the wire request's stamp pair, so leaving a
+	// 400-item thread there would answer a client that sent no stamps at
+	// all with a page-less `fresh`. After the migration's trailing UPDATE
+	// only a thread with no item writes since v55 can read (0, 0), and an
+	// empty window is genuinely what that describes.
+	var rev, epoch int64
+	if err := db.QueryRow(
+		`SELECT history_rev, history_epoch FROM threads WHERE id = 'thread-v55'`,
+	).Scan(&rev, &epoch); err != nil {
+		t.Fatalf("read history stamps: %v", err)
+	}
+	if rev != 1 || epoch != 0 {
+		t.Fatalf("pre-migration row stamps = (%d, %d), want (1, 0)", rev, epoch)
+	}
+
+	// store_meta is a one-row table seeded with two distinct uuids.
+	var backendID, generation string
+	if err := db.QueryRow(
+		`SELECT backend_id, replica_generation FROM store_meta WHERE id = 1`,
+	).Scan(&backendID, &generation); err != nil {
+		t.Fatalf("read store_meta: %v", err)
+	}
+	if backendID == "" || generation == "" {
+		t.Fatalf("store_meta = (%q, %q), want two minted uuids", backendID, generation)
+	}
+	if backendID == generation {
+		t.Fatal("backend_id and replica_generation must be independently minted")
+	}
+	if _, err := db.Exec(
+		`INSERT INTO store_meta (id, backend_id, replica_generation) VALUES (2, 'a', 'b')`,
+	); err == nil {
+		t.Error("store_meta accepted a second row")
+	}
+
+	// The three triggers exist and the columns are NOT NULL.
+	for _, trigger := range []string{
+		"trg_items_rev_insert", "trg_items_rev_update", "trg_items_rev_delete",
+	} {
+		var found string
+		if err := db.QueryRow(
+			`SELECT name FROM sqlite_master WHERE type = 'trigger' AND name = ?`, trigger,
+		).Scan(&found); err != nil {
+			t.Fatalf("trigger %s missing after v55: %v", trigger, err)
+		}
+	}
+	if _, err := db.Exec(
+		`UPDATE threads SET history_rev = NULL WHERE id = 'thread-v55'`,
+	); err == nil {
+		t.Error("threads accepted a NULL history_rev after v55")
+	}
+
+	// ADD COLUMN + CREATE TABLE + CREATE TRIGGER, not a rebuild: the
+	// threads indexes and the pre-existing items GC triggers stand.
+	for _, index := range []string{
+		"idx_threads_project", "idx_threads_updated", "idx_threads_parent",
+		"idx_threads_forked_from", "idx_threads_pinned_at",
+	} {
+		var found string
+		if err := db.QueryRow(
+			`SELECT name FROM sqlite_master WHERE type = 'index' AND name = ?`, index,
+		).Scan(&found); err != nil {
+			t.Fatalf("index %s missing after v55: %v", index, err)
+		}
+	}
+	for _, trigger := range []string{"trg_items_gc_payload", "trg_items_gc_input_payload"} {
+		var found string
+		if err := db.QueryRow(
+			`SELECT name FROM sqlite_master WHERE type = 'trigger' AND name = ?`, trigger,
+		).Scan(&found); err != nil {
+			t.Fatalf("trigger %s missing after v55: %v", trigger, err)
 		}
 	}
 }

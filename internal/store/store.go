@@ -52,6 +52,10 @@ func New(dbPath string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("store: run migrations: %w", err)
 	}
+	if err := ensureStoreIdentity(db); err != nil {
+		db.Close()
+		return nil, err
+	}
 
 	s := &Store{db: db}
 

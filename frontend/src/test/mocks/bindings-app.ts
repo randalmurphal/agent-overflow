@@ -463,6 +463,35 @@ export const ListRecentTurns = dispatch('ListRecentTurns');
 // ListRecentThreadItems / turn pagers remain legacy surfaces.
 export const ListRecentThreadItems = dispatch('ListRecentThreadItems');
 export const ListThreadSliceAround = dispatch('ListThreadSliceAround');
+
+/**
+ * Cold-open window sync — what the pane calls where it used to call
+ * ListThreadSliceAround.
+ *
+ * Unlike every other binding here it has a DEFAULT rather than throwing:
+ * with no explicit mock it answers `stale` carrying exactly the page the
+ * ListThreadSliceAround mock returns, which is what the backend does for
+ * an unknown stamp. That keeps every suite that describes its initial
+ * window through the slice mock describing the same window, and it lives
+ * in the registry (not a setup file) so the test files that call
+ * `resetBindingMocks()` themselves cannot lose it. An explicit
+ * `setBindingMock('SyncThreadWindow', …)` wins; with neither mock
+ * installed the call throws like any other.
+ */
+export const SyncThreadWindow = async (
+  threadId: unknown,
+  req: unknown,
+): Promise<unknown> => {
+  const explicit = mocks.get('SyncThreadWindow');
+  if (explicit) return explicit(threadId, req);
+  const request = (req ?? {}) as { anchorItemId?: string; itemBudget?: number };
+  const page = await dispatch('ListThreadSliceAround')(
+    threadId,
+    request.anchorItemId ?? '',
+    request.itemBudget ?? 0,
+  );
+  return { status: 'stale', epoch: 1, rev: 1, generation: 'test-generation', page };
+};
 export const ListItemsBeforeCursor = dispatch('ListItemsBeforeCursor');
 export const ListItemsBeforeTurn = dispatch('ListItemsBeforeTurn');
 export const ListItemsAfterCursor = dispatch('ListItemsAfterCursor');

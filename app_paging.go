@@ -85,22 +85,29 @@ func (a *App) ListRecentThreadItems(threadID string, turnLimit int) (store.Paged
 // the function returns the tail `targetItemCount` items — the bottom-snapshot
 // restore case.
 func (a *App) ListThreadSliceAround(threadID, anchorItemID string, targetItemCount int) (store.PagedItems, error) {
-	if targetItemCount <= 0 {
-		targetItemCount = sliceAroundDefaultItems
-	}
-	// Cap at maxWindowItems so a malicious LAN-attached caller can't
-	// request a slice covering the whole thread and OOM the process.
-	// Active panes should stay on this bounded slice surface and page
-	// older/newer history explicitly.
-	if targetItemCount > maxWindowItems {
-		targetItemCount = maxWindowItems
-	}
-	paged, err := a.store.ListThreadSliceAround(threadID, anchorItemID, targetItemCount)
+	paged, err := a.store.ListThreadSliceAround(threadID, anchorItemID, clampSliceItemBudget(targetItemCount))
 	if err != nil {
 		return store.PagedItems{}, fmt.Errorf("list thread slice around: %w", err)
 	}
 	paged.Items = slicesx.OrEmpty(paged.Items)
 	return paged, nil
+}
+
+// clampSliceItemBudget normalizes a caller-supplied slice-window budget:
+// non-positive takes the pane default, and anything larger than
+// maxWindowItems is capped so a malicious LAN-attached caller can't
+// request a slice covering the whole thread and OOM the process. Active
+// panes stay on this bounded slice surface and page older/newer history
+// explicitly. Shared by ListThreadSliceAround and SyncThreadWindow, which
+// return the same window and must therefore bound it identically.
+func clampSliceItemBudget(targetItemCount int) int {
+	if targetItemCount <= 0 {
+		return sliceAroundDefaultItems
+	}
+	if targetItemCount > maxWindowItems {
+		return maxWindowItems
+	}
+	return targetItemCount
 }
 
 // ListItemsBeforeTurn is the legacy turn-floor pager. Active panes use

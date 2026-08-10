@@ -25,6 +25,23 @@ import { getThreads } from './threads.svelte';
 import { resyncGitStatusAfterGap } from './gitStatusStore.svelte';
 import { resyncPRReviewAfterGap } from './prReviewStore.svelte';
 import { resyncMcpServersAfterGap } from './mcpServers.svelte';
+import { dropAllThreadHistoryStamps } from './threadHistoryStamps';
+import { threadItemCache } from './threadItemCache';
+
+/**
+ * The stamp half of gap recovery (docs/specs/thread-replica-sync.md
+ * §3.4). The registry is dropped wholesale — it holds one entry per
+ * thread and re-earning it costs one window fetch — but the registry is
+ * not the only place a stamp lives: every L1 snapshot carries a COPY
+ * paired with its rows. An unattested copy can name a rev whose frames
+ * this gap dropped, and it would spring a false `fresh` on the next warm
+ * re-entry, permanently. Attested copies describe rows a sync returned
+ * and stay (see `dropUnattestedStamps`).
+ */
+function dropStampsAfterGap(): void {
+  dropAllThreadHistoryStamps();
+  threadItemCache.dropUnattestedStamps();
+}
 
 // The handler matches on the channel name we lost rather than each
 // payload kind because a single gap on `provider:item_event` can
@@ -38,6 +55,12 @@ export function applyTransportGap(gap: { channel: string; seq: number }): void {
     case 'provider:turn_started':
     case 'provider:turn_completed':
     case 'thread:updated': {
+      // The gap carries no entity key, so we cannot say WHICH thread's
+      // history moved without us: every stamp we hold may now be an
+      // overstatement. Dropping them all costs one window fetch per
+      // thread on its next open and is the only answer that cannot
+      // report a stale window as fresh (§3.4).
+      dropStampsAfterGap();
       refreshSidebarProjections();
       // Per-pane on purpose: refreshFromBackend refetches THAT
       // pane's loaded window (two panes on one thread can hold
@@ -185,6 +208,7 @@ export function applyTransportGap(gap: { channel: string; seq: number }): void {
       console.warn(
         `events: transport gap on unknown channel "${gap.channel}" — refreshing active panes`,
       );
+      dropStampsAfterGap();
       refreshSidebarProjections();
       for (const pane of iterPanes()) {
         if (!pane.threadId) continue;

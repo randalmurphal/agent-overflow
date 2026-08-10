@@ -38,6 +38,7 @@ import {
 } from '../../test/mocks/bindings-app';
 import {
   buildPane,
+  installThreadSwitchMocks,
   makeItem,
   makeThread,
   stubScrollController,
@@ -77,6 +78,16 @@ import { MAX_CACHED_SNAPSHOT_CHARS } from './threadItemCache';
 function nextFrame(): Promise<void> {
   return new Promise((resolve) => {
     requestAnimationFrame(() => resolve());
+  });
+}
+
+// Drain the microtask queue. Used where a test has to let an in-flight
+// switch reach a deliberately-hanging binding mock: the cold-open item
+// leg consults the durable replica before it issues its RPC, so the
+// call no longer lands on the switch's own synchronous tick.
+function flushMicrotasks(): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, 0);
   });
 }
 
@@ -1188,7 +1199,11 @@ describe('createThreadPane', () => {
 
     await pane.switchThread(makeThread({ id: 't' }));
 
-    expect(loadCalls).toEqual(['t', 'other']);
+    // Three loads, not two: the cache hit paints synchronously and then
+    // still asks SyncThreadWindow whether the window moved. The old
+    // skip-on-cache-hit was a staleness hole (another attached client can
+    // rewrite history while a thread sits in the LRU).
+    expect(loadCalls).toEqual(['t', 'other', 't']);
     expect(pane.items.map((item) => item.id)).toEqual(['t-row']);
     expect(pane.timelineRevision).toBeGreaterThan(revisionBeforeCacheRestore);
   });
@@ -4843,6 +4858,10 @@ describe('createThreadPane', () => {
       );
 
       const firstSwitch = pane.switchThread(makeThread({ id: 't' }));
+      // The item leg consults the durable replica before it issues the
+      // RPC, so the hanging mock is reached a few microtasks in rather
+      // than on the switch's own tick.
+      await flushMicrotasks();
 
       // Second switch comes in before the first resolves. Backend
       // returns a fresh canonical view.
@@ -5186,6 +5205,9 @@ describe('createThreadPane', () => {
           }),
       );
       const firstSwitch = pane.switchThread(makeThread({ id: 'first' }));
+      // See above: the replica read precedes the RPC, so let the leg
+      // reach the hanging mock before replacing it.
+      await flushMicrotasks();
 
       // Second switch supersedes; populates with real data.
       const secondItems = [
@@ -6720,7 +6742,7 @@ describe('createThreadPane', () => {
         expect(pane.__itemSmootherCountForTest()).toBe(0);
         expect(pane.liveThinkingTailForItem('think:0:0')).not.toBeNull();
 
-        pane.removeItemById('think:0:0');
+        pane.removeItemById('think:0:0', 'thread-remove-tail');
         expect(pane.liveThinkingTailForItem('think:0:0')).toBeNull();
       } finally {
         __setSmoothingClockForTest(undefined);
@@ -8001,7 +8023,7 @@ describe('createThreadPane', () => {
         });
         expect(pane.revealBoundary).toEqual({ turnIndex: 0, itemIndex: 0 });
         // Optimistic revert removes the streaming frontier row.
-        pane.removeItemById('think:0:0');
+        pane.removeItemById('think:0:0', 't');
         // The withheld successor becomes the frontier and resumes from its start.
         expect(pane.revealBoundary).toEqual({ turnIndex: 0, itemIndex: 1 });
         for (let i = 0; i < 60; i++) clock.tickFrame(16);
@@ -8557,7 +8579,7 @@ describe('createThreadPane', () => {
       const switching = pane.switchThread(threadB);
       // Let switchThread reach its awaits; the deferred slice keeps
       // `loading` true (cache miss).
-      await Promise.resolve();
+      await flushMicrotasks();
       expect(pane.loading).toBe(true);
 
       // A streaming upsert arriving mid-load must not arm — and must not
@@ -8963,8 +8985,14 @@ describe('createThreadPane', () => {
       setBindingMock('SwitchThread', async (id: unknown) =>
         id === thread.id ? thread : other,
       );
-      setBindingMock('ListThreadSliceAround', async () => ({
-        items: [],
+      setBindingMock('ListThreadSliceAround', async (threadId: unknown) => ({
+        // The restore still syncs, and the page REPLACES the painted
+        // rows — so the mock has to answer for the thread being asked
+        // about, not with a blanket empty window.
+        items:
+          threadId === thread.id
+            ? [makeItem({ id: 'a', threadId: thread.id, turnIndex: 0, itemIndex: 0 })]
+            : [],
         oldestTurnIndex: 0,
         hasMore: false,
       }));
@@ -9347,8 +9375,31 @@ describe('size-priors eviction on item mutation', () => {
     const pane = await buildPane(makeThread({ id: 't' }), [makeItem({ id: 'x', threadId: 't' })]);
     setThreadSizePriors('t', { ...seedEntry });
     expect(peekThreadSizePriorsForTest('t')).toBeTruthy();
-    pane.removeItemById('x');
+    pane.removeItemById('x', 't');
     expect(peekThreadSizePriorsForTest('t')).toBeUndefined();
+  });
+
+  it('refuses a removal aimed at a thread the pane no longer holds', async () => {
+    // Every caller of removeItemById reaches it across an await or an
+    // event hop (the composer's failed-send rollback, the queue-restored
+    // event), and `user:<n>` ids collide across threads by construction
+    // — the same id names a different row in whatever thread is mounted
+    // now. Without the expected-thread guard the rollback lands on the
+    // wrong conversation and takes that thread's cached window with it.
+    const pane = await buildPane(makeThread({ id: 't' }), [
+      makeItem({ id: 'user:1', threadId: 't' }),
+    ]);
+    installThreadSwitchMocks(makeThread({ id: 'other' }), [
+      makeItem({ id: 'user:1', threadId: 'other' }),
+    ]);
+    await pane.switchThread(makeThread({ id: 'other' }));
+    setThreadSizePriors('other', { ...seedEntry });
+    expect(pane.items.map((it) => it.id)).toEqual(['user:1']);
+
+    expect(pane.removeItemById('user:1', 't')).toBeNull();
+
+    expect(pane.items.map((it) => it.id)).toEqual(['user:1']);
+    expect(peekThreadSizePriorsForTest('other')).toBeTruthy();
   });
 
   it('evicts the priors when a turn is truncated', async () => {

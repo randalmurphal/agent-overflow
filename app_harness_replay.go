@@ -334,9 +334,15 @@ func (h *Harness) HarnessReplayBundle(name string, opts harness.ReplayOptions) (
 			return harness.ReplayStatus{}, fmt.Errorf("stop session %s before restore: %w", t.ID, err)
 		}
 	}
-	if err := h.app.store.RestoreFrom(filepath.Join(dir, "db.snapshot")); err != nil {
+	identity, err := h.app.store.RestoreFrom(filepath.Join(dir, "db.snapshot"))
+	if err != nil {
 		return harness.ReplayStatus{}, err
 	}
+	// Re-publish immediately: the bootstrap manifest and every sync
+	// response serve from this cache, and a client that keeps seeing the
+	// pre-restore generation never drops the replica the restore just
+	// invalidated (docs/specs/thread-replica-sync.md §3.3).
+	h.app.storeIdentity.Store(&identity)
 	return h.replayerEngine().Start(eventsPath, opts)
 }
 

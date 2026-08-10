@@ -67,7 +67,9 @@ type Migration struct {
 	// bump. Use it when the row transformation needs logic SQL can't
 	// express (JSON reshaping, per-row Go helpers). A migration must set
 	// SQL, Fix, or both. Not supported on Rebuild migrations — those are
-	// table-shape changes by definition.
+	// table-shape changes by definition — and applyRebuildMigration
+	// REFUSES the combination by name rather than dropping the Fix on the
+	// floor.
 	Fix func(tx *sql.Tx) error
 	// Rebuild marks a migration whose SQL performs a full table rebuild
 	// (CREATE new / copy / DROP old / RENAME) to change a CHECK or drop a
@@ -1761,6 +1763,67 @@ CREATE TABLE thread_import_state (
 		// REBUILD has to carry it, like every other column added since v39.
 		SQL: `ALTER TABLE work_items ADD COLUMN auto_resume_at INTEGER NOT NULL DEFAULT 0;`,
 	},
+	{
+		Version: 55,
+		Name:    "thread_history_stamps",
+		// The client-replica invalidation contract
+		// (docs/specs/thread-replica-sync.md §3): two counters on every
+		// thread that any persisted item mutation provably advances, plus
+		// the store's identity row.
+		//
+		// `history_rev` advances on every write that can change what a
+		// windowed item read returns; `history_epoch` additionally advances
+		// when a cached ORDERING is no longer safe to paint (a row was
+		// deleted or moved). Every epoch bump also bumps rev, so a rev match
+		// alone means "byte-identical window read".
+		//
+		// The item-side bumps are TRIGGERS, not a helper store functions are
+		// asked to remember: no writer — present or future — can put a row
+		// into `items` without advancing the contract. The payload side
+		// cannot be a trigger (`payloads` has no thread_id, and routing via a
+		// subquery over items.payload_id would put an unindexed scan on the
+		// streaming append path), so those mutators take a threadID and bump
+		// explicitly; the signature is that half's enforcement.
+		//
+		// Cost is one extra dirty page per COMMIT, not per statement — WAL
+		// writes pages per commit — so a 500-row retention delete or a 10 Hz
+		// streaming flush pays one page image on a transaction it already had.
+		//
+		// `store_meta` is the identity half (§3.3). `backend_id` keys the
+		// client's replica database per backend; `replica_generation` is
+		// re-minted whenever rev/epoch continuity breaks for reasons the
+		// counters cannot express (today: RestoreFrom replacing the whole
+		// database), and a mismatch tells a client to drop its replica
+		// wholesale rather than migrate it. Both are minted in Go (see
+		// mintStoreIdentity) because SQLite has no uuid generator worth
+		// spelling in a migration.
+		//
+		// Every pre-existing thread is lifted off rev 0 by the trailing
+		// UPDATE, which makes rev 0 UNREACHABLE for any thread that
+		// predates the contract. That matters because (0, 0) is also the
+		// JSON zero value of the wire request's stamp pair: a client that
+		// omits the fields, or a bug that drops them, asks "is rev 0 still
+		// current?" — and against an untouched pre-migration thread with
+		// 400 items of history that would have matched, answering `fresh`
+		// with no page over a replica the client does not have. After the
+		// lift, (0, 0) can only describe a thread with zero item writes
+		// since v55 — a brand-new row, for which a page-less `fresh` is
+		// the truthful answer to an empty window. The column DEFAULT stays
+		// 0 for exactly that reason.
+		SQL: `ALTER TABLE threads ADD COLUMN history_rev INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE threads ADD COLUMN history_epoch INTEGER NOT NULL DEFAULT 0;
+
+UPDATE threads SET history_rev = 1;
+
+CREATE TABLE store_meta (
+    id                 INTEGER PRIMARY KEY CHECK(id = 1),
+    backend_id         TEXT NOT NULL,
+    replica_generation TEXT NOT NULL
+);
+
+` + historyRevTriggersSQL,
+		Fix: mintStoreIdentity,
+	},
 }
 
 // rebuildWorkItemsSoftStopV44SQL adds `soft_stop` — a standing request to stop
@@ -2283,6 +2346,18 @@ func tableColumnsTx(tx *sql.Tx, table string) (map[string]bool, error) {
 // connection. Sequence: disable FK, run the rebuild + version bump in one
 // transaction, verify integrity with foreign_key_check, commit, re-enable FK.
 func applyRebuildMigration(db *sql.DB, m Migration) error {
+	// Refuse rather than run the Fix: this path used to ignore it
+	// silently, so a rebuild that also needed a Go-side data pass would
+	// record itself as applied with half its work never done — a forward-
+	// only chain has no second chance at that. Running it here instead
+	// would look like the kinder choice, but it would quietly grant
+	// Rebuild migrations a capability the Migration doc says they do not
+	// have, and the fixups this chain carries all reshape ROWS of a table
+	// whose shape a rebuild is concurrently replacing. Split the two into
+	// consecutive migrations, which is what every existing pair does.
+	if m.Fix != nil {
+		return fmt.Errorf("migration v%d (%s): a Rebuild migration cannot carry a Fix; split the data fixup into its own migration", m.Version, m.Name)
+	}
 	log.Printf("store: applying rebuild migration v%d: %s", m.Version, m.Name)
 	ctx := context.Background()
 	conn, err := db.Conn(ctx)

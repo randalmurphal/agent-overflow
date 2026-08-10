@@ -130,7 +130,7 @@ func TestPromotedQuietFlushEcho_StampsProviderOrderBoundary(t *testing.T) {
 	// End to end: reverting at the promoted row keeps the interrupted tail
 	// (provider-order before the attachment) and cuts the response
 	// (provider-order after it).
-	if _, err := st.DeleteConversationFromItem("t1", "user:0:flush:1"); err != nil {
+	if _, _, err := st.DeleteConversationFromItem("t1", "user:0:flush:1"); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
 	items, err := st.ListItems("t1")
@@ -1618,7 +1618,7 @@ func TestPromotedEchoBoundary_CoversRowsDeferredBehindMidSettleStream(t *testing
 	if err := router.persistItem(responseRow, nil); err != nil {
 		t.Fatalf("persist response: %v", err)
 	}
-	if _, err := st.DeleteConversationFromItem("t1", "user:0:flush:1"); err != nil {
+	if _, _, err := st.DeleteConversationFromItem("t1", "user:0:flush:1"); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
 	if _, found, _ := st.GetThreadItem("t1", "tool:0:1"); !found {
@@ -1873,7 +1873,7 @@ func TestSelfHealUnanchoredBumpFailure_MarksBoundary(t *testing.T) {
 
 	// End to end: revert at the healed message keeps the pre-echo output
 	// (provider-order BEFORE the attachment) and cuts the response.
-	if _, err := st.DeleteConversationFromItem("t1", "user:0:flush:1"); err != nil {
+	if _, _, err := st.DeleteConversationFromItem("t1", "user:0:flush:1"); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
 	if _, found, _ := st.GetThreadItem("t1", "tool:0:1"); !found {
@@ -1965,7 +1965,7 @@ func TestRebumpOverDrained_PreservesAnchoredSiblingFIFO(t *testing.T) {
 	// Revert at q1: the drained completion (interrupted tail) survives,
 	// the sibling q2 — consumed after q1 in the provider transcript — is
 	// cut, matching the session slice.
-	if _, err := st.DeleteConversationFromItem("t1", "user:0:flush:1"); err != nil {
+	if _, _, err := st.DeleteConversationFromItem("t1", "user:0:flush:1"); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
 	if _, found, _ := st.GetThreadItem("t1", "tool:0:1"); !found {
@@ -2079,7 +2079,7 @@ func TestFailedSiblingRebump_RepairedBySiblingEcho(t *testing.T) {
 	// The repaired layout restores the revert semantics the failed
 	// re-bump broke: a revert at q1 cuts q2 (consumed later in the
 	// provider transcript) and keeps the drained completion.
-	if _, err := st.DeleteConversationFromItem("t1", "user:0:flush:1"); err != nil {
+	if _, _, err := st.DeleteConversationFromItem("t1", "user:0:flush:1"); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
 	if _, found, _ := st.GetThreadItem("t1", "tool:0:1"); !found {

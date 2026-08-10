@@ -384,7 +384,7 @@ func (r *Router) persistToolCallCompletion(evt provider.ProviderEvent) error {
 	// command — acceptable overhead at turn boundary — and only touches
 	// the payload.meta column (data blob stays put).
 	if launch.PayloadID != "" && launch.PayloadKind == "command_output" {
-		if err := r.rebuildCommandOutputMeta(launch.PayloadID); err != nil {
+		if err := r.rebuildCommandOutputMeta(launch.ThreadID, launch.PayloadID); err != nil {
 			// Meta jitter is a presentation concern; do not fail the
 			// turn because we couldn't fix it. Log and continue so
 			// the tool lifecycle completes cleanly.
@@ -1337,7 +1337,7 @@ func (r *Router) backgroundCompletionTurnIndex(threadID string, launchTurnIndex 
 // rather than the total. Reading the full blob once here and writing
 // fresh meta is cheap compared to the per-delta savings we keep by not
 // reading the blob back on every append.
-func (r *Router) rebuildCommandOutputMeta(payloadID string) error {
+func (r *Router) rebuildCommandOutputMeta(threadID, payloadID string) error {
 	data, err := r.store.GetPayloadData(payloadID)
 	if err != nil {
 		return fmt.Errorf("read payload for command_output meta rebuild: %w", err)
@@ -1360,7 +1360,7 @@ func (r *Router) rebuildCommandOutputMeta(payloadID string) error {
 	if string(cumulativeJSON) == pm.Meta {
 		return nil
 	}
-	return r.store.UpdatePayloadMeta(payloadID, string(cumulativeJSON))
+	return r.store.UpdatePayloadMeta(threadID, payloadID, string(cumulativeJSON))
 }
 
 func (r *Router) turnIndexForEvent(evt provider.ProviderEvent) (int, error) {

@@ -24,6 +24,18 @@ import (
 // match, and tolerant to other startup chatter on stdout.
 const DefaultBootstrapPrefix = "__AO_BOOTSTRAP__:"
 
+// ResetTransportPortFlag is the backend boot flag (no dashes) that tells
+// the WSL-side backend to discard this install's pinned listen port
+// before binding and adopt whatever it lands on.
+//
+// It lives here because it is a contract between two binaries built from
+// this repo: the Windows launcher spells it on the child's argv
+// (LaunchOptions.ExtraArgs) when its connectivity probe proved the
+// pinned port unreachable from the host, and the backend declares it in
+// its own flag set. One definition means a rename cannot leave one side
+// passing a flag the other rejects.
+const ResetTransportPortFlag = "reset-transport-port"
+
 // ErrNotSupported is the sentinel returned by every Windows-only entry
 // point on macOS and Linux hosts. The wsllauncher package compiles on
 // non-Windows so the Wails build for the desktop binary can import
@@ -62,8 +74,9 @@ type LaunchOptions struct {
 	// Required.
 	BinaryPath string
 
-	// ExtraArgs are appended after the bootstrap-mode flags. Mostly
-	// useful for tests injecting a known-good fixture script.
+	// ExtraArgs are appended after the bootstrap-mode flags. Two users:
+	// tests injecting a known-good fixture script, and the launcher's
+	// fresh-port retry passing "--" + ResetTransportPortFlag.
 	ExtraArgs []string
 
 	// StdoutPrefix overrides DefaultBootstrapPrefix. Empty falls back

@@ -87,7 +87,7 @@ func descendantsCTEFromRoots(rootCount int) string {
 // children are returned untouched. Runs one batched recursive query per
 // window load; cost is proportional to the total descendant count of
 // in-window anchors.
-func (s *Store) decorateSubagentAnchors(threadID string, items []Item) ([]Item, error) {
+func (s *Store) decorateSubagentAnchors(q sqlQueryer, threadID string, items []Item) ([]Item, error) {
 	if len(items) == 0 {
 		return items, nil
 	}
@@ -104,7 +104,7 @@ func (s *Store) decorateSubagentAnchors(threadID string, items []Item) ([]Item, 
 		return items, nil
 	}
 
-	aggregates, err := s.subagentAggregatesByRoot(threadID, rootIDs)
+	aggregates, err := s.subagentAggregatesByRoot(q, threadID, rootIDs)
 	if err != nil {
 		return nil, err
 	}
@@ -129,7 +129,7 @@ func (s *Store) decorateSubagentAnchors(threadID string, items []Item) ([]Item, 
 // each class the highest (turn_index, item_index) wins. The trailing
 // i.id key only breaks coordinate ties (corrupt data) so the pick stays
 // deterministic.
-func (s *Store) subagentAggregatesByRoot(threadID string, rootIDs []string) (map[string]subagentAnchorAggregate, error) {
+func (s *Store) subagentAggregatesByRoot(q sqlQueryer, threadID string, rootIDs []string) (map[string]subagentAnchorAggregate, error) {
 	// Placeholder order: CTE base hop (threadID, rootIDs...), CTE
 	// recursive hop (threadID), aggregate join (threadID).
 	args := make([]any, 0, len(rootIDs)+3)
@@ -139,7 +139,7 @@ func (s *Store) subagentAggregatesByRoot(threadID string, rootIDs []string) (map
 	}
 	args = append(args, threadID, threadID)
 
-	rows, err := s.reader().Query(descendantsCTEFromRoots(len(rootIDs))+`
+	rows, err := q.Query(descendantsCTEFromRoots(len(rootIDs))+`
 		SELECT root, total, summary FROM (
 			SELECT rel.root,
 			       COUNT(*) OVER (PARTITION BY rel.root) AS total,
@@ -258,7 +258,7 @@ func (s *Store) ListSubagentDescendants(threadID, rootItemID string) ([]Item, er
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("store: iterate subagent descendants for %s/%s: %w", threadID, rootItemID, err)
 	}
-	decorated, err := s.decorateProposedPlanItems(threadID, items)
+	decorated, err := s.decorateProposedPlanItems(s.reader(), threadID, items)
 	if err != nil {
 		return nil, fmt.Errorf("store: decorate subagent descendants for %s/%s: %w", threadID, rootItemID, err)
 	}

@@ -7,7 +7,6 @@ import (
 	"log"
 	"net"
 	"net/http"
-	"syscall"
 	"time"
 )
 
@@ -66,12 +65,12 @@ type RebindOptions struct {
 // bind while 127.0.0.1:N is still held by the same process; Linux
 // rejects it with EADDRINUSE. The LAN-bind toggle keeps the same port
 // across the host flip, so on Linux the optimistic "bind new before
-// retiring old" pattern fails. We detect EADDRINUSE on the bind, close
-// the old listener to release the kernel slot (hijacked WS connections
-// are owned by their goroutines and survive listener close), and retry.
-// If the retry also fails (the addr is genuinely held by a foreign
-// process) we restore the old listener to satisfy the state-intact
-// contract.
+// retiring old" pattern fails. We detect an address-in-use bind error,
+// close the old listener to release the kernel slot (hijacked WS
+// connections are owned by their goroutines and survive listener
+// close), and retry. If the retry also fails (the addr is genuinely
+// held by a foreign process) we restore the old listener to satisfy the
+// state-intact contract.
 func (s *Server) Rebind(addr string, opts *RebindOptions) error {
 	s.rebindMu.Lock()
 	defer s.rebindMu.Unlock()
@@ -169,31 +168,37 @@ func (s *Server) Rebind(addr string, opts *RebindOptions) error {
 
 // bindRebindListener acquires the listener at addr, falling back to a
 // close-old-then-retry sequence when the kernel rejects the bind because
-// our own existing listener already holds the port (Linux self-overlap).
-// On EADDRINUSE recovery, the old listener is closed via the supplied
-// listener handle. If the retry still fails, we restore the old listener
-// at oldAddr so the state-intact contract holds — both Addr() and the
-// active http.Server stay observably the same as they were on entry.
+// our own existing listener already holds the address (Linux
+// self-overlap). On that recovery path the old listener is closed via
+// the supplied listener handle. If the retry still fails, we restore the
+// old listener at oldAddr so the state-intact contract holds — both
+// Addr() and the active http.Server stay observably the same as they
+// were on entry.
 //
-// The recovery path only fires when the new and old addrs share a port
-// — that's the exact shape of the LAN-bind toggle, and the only shape
-// where Linux's address-family overlap rule would refuse a bind that
-// our own listener is responsible for. EADDRINUSE on a different port
-// is always a foreign holder; closing our own listener wouldn't help,
-// so we propagate the error directly.
+// The recovery path only fires for an address-in-use error whose new and
+// old addrs share a port — that's the exact shape of the LAN-bind
+// toggle, and the only shape where Linux's address-family overlap rule
+// would refuse a bind that our own listener is responsible for.
+// Address-in-use on a different port is always a foreign holder; closing
+// our own listener wouldn't help, so we propagate the error directly.
 //
-// All non-EADDRINUSE errors propagate as-is without touching the old
-// listener; callers (Rebind) keep their state-intact guarantee for
-// invalid / unresolvable addrs.
+// Every other bind error — a permission/reservation refusal (EACCES /
+// WSAEACCES), an address this host does not own, a malformed one —
+// propagates as-is without touching the old listener, because closing a
+// working listener cannot change any of those answers. Callers (Rebind)
+// keep their state-intact guarantee for all of them.
 func (s *Server) bindRebindListener(addr string, oldListener net.Listener, oldAddr string) (net.Listener, error) {
 	listener, err := net.Listen("tcp", addr)
 	if err == nil {
 		return listener, nil
 	}
 	// Self-overlap can only happen when the new and old listeners share
-	// a port. Without that, EADDRINUSE means a foreign holder and our
-	// recovery path can't help.
-	if !errors.Is(err, syscall.EADDRINUSE) || oldListener == nil || !samePort(addr, oldAddr) {
+	// a port. Without that, address-in-use means a foreign holder and
+	// our recovery path can't help. addrInUse rather than a bare
+	// EADDRINUSE check (Windows reports WSAEADDRINUSE, which the POSIX
+	// name does not match) and rather than portUnavailable, whose EACCES
+	// half survives closing our own listener.
+	if !addrInUse(err) || oldListener == nil || !samePort(addr, oldAddr) {
 		return nil, fmt.Errorf("transport: rebind listen %s: %w", addr, err)
 	}
 	// Linux refuses 0.0.0.0:N while 127.0.0.1:N (or vice versa) is held
@@ -226,10 +231,10 @@ func (s *Server) bindRebindListener(addr string, oldListener net.Listener, oldAd
 }
 
 // samePort reports whether two host:port strings name the same port.
-// Used by bindRebindListener to scope the EADDRINUSE recovery path to
-// the only conflict shape it can resolve (self-overlap on the same
+// Used by bindRebindListener to scope the address-in-use recovery path
+// to the only conflict shape it can resolve (self-overlap on the same
 // port). Either addr unparseable yields false — better to propagate
-// the original EADDRINUSE than try a recovery whose preconditions are
+// the original bind error than try a recovery whose preconditions are
 // uncertain.
 func samePort(a, b string) bool {
 	_, pa, errA := net.SplitHostPort(a)

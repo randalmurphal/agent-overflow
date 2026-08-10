@@ -111,6 +111,33 @@ func makeThread(id, provider string) Thread {
 	}
 }
 
+// mustCreateThread seeds a minimal thread row. Payload mutators need one
+// to exist: they advance that thread's history_rev (migration v55) and
+// refuse to write for a thread that isn't there.
+func mustCreateThread(t *testing.T, s *Store, id string) {
+	t.Helper()
+	if err := s.CreateThread(makeThread(id, "claude")); err != nil {
+		t.Fatalf("create thread %s: %v", id, err)
+	}
+}
+
+// seedPayloadRow writes a bare `payloads` row for tests that need the
+// heavy side without an owning item — GC sweeps, orphan probes, chunked
+// read paths. There is deliberately no production equivalent (see
+// payloads.go): every real payload is born beside its item so the item's
+// trigger covers the history contract. Tests that assert the coupled
+// behavior must use the coupled writers, not this.
+func seedPayloadRow(s *Store, p Payload) error {
+	return insertPayloadTx(s.db, p, "test: seed payload row")
+}
+
+func mustSeedPayloadRow(t *testing.T, s *Store, p Payload) {
+	t.Helper()
+	if err := seedPayloadRow(s, p); err != nil {
+		t.Fatalf("seed payload row %s: %v", p.ID, err)
+	}
+}
+
 func TestNewCreatesTablesSuccessfully(t *testing.T) {
 	s := newTestStore(t)
 
@@ -335,7 +362,7 @@ func TestDeleteThreadDrainsItemsAcrossChunks(t *testing.T) {
 	total := deleteThreadItemChunk + 2
 	for i := 0; i < total; i++ {
 		pid := fmt.Sprintf("p%d", i)
-		if err := s.InsertPayload(Payload{
+		if err := seedPayloadRow(s, Payload{
 			ID: pid, Kind: "tool_result", Meta: "{}", Data: []byte("out"), CreatedAt: now,
 		}); err != nil {
 			t.Fatalf("insert payload %d: %v", i, err)
@@ -389,7 +416,7 @@ func TestVacuumIfFragmented(t *testing.T) {
 		t.Fatalf("create thread: %v", err)
 	}
 	now := time.Now().UnixMilli()
-	if err := s.InsertPayload(Payload{
+	if err := seedPayloadRow(s, Payload{
 		ID: "p1", Kind: "tool_result", Meta: "{}", Data: make([]byte, 2<<20), CreatedAt: now,
 	}); err != nil {
 		t.Fatalf("insert payload: %v", err)
@@ -808,7 +835,7 @@ func TestInsertItemWithValidPayloadFK(t *testing.T) {
 		Data:      []byte("diff content"),
 		CreatedAt: now,
 	}
-	if err := s.InsertPayload(payload); err != nil {
+	if err := seedPayloadRow(s, payload); err != nil {
 		t.Fatalf("insert payload: %v", err)
 	}
 
@@ -828,7 +855,7 @@ func TestInsertItemWithValidPayloadFK(t *testing.T) {
 }
 
 // TestInsertItemWithPayloadAtomicHappyPath verifies the combined
-// InsertPayload + InsertItem path writes both rows successfully.
+// payload + item insert writes both rows successfully.
 func TestInsertItemWithPayloadAtomicHappyPath(t *testing.T) {
 	s := newTestStore(t)
 
@@ -949,7 +976,7 @@ func TestInsertItemWithPayloadAtomicRollbackOnPayloadFailure(t *testing.T) {
 	now := time.Now().UnixMilli()
 	// Pre-insert a payload with ID "p-dup" so the call below fails on
 	// the payload half.
-	if err := s.InsertPayload(Payload{
+	if err := seedPayloadRow(s, Payload{
 		ID:        "p-dup",
 		Kind:      "diff",
 		Meta:      "{}",
@@ -1194,7 +1221,7 @@ func TestInsertAndGetPayloadMeta(t *testing.T) {
 		Data:      []byte("--- a/main.go\n+++ b/main.go\n"),
 		CreatedAt: now,
 	}
-	if err := s.InsertPayload(payload); err != nil {
+	if err := seedPayloadRow(s, payload); err != nil {
 		t.Fatalf("insert: %v", err)
 	}
 
@@ -1228,7 +1255,7 @@ func TestGetPayloadData(t *testing.T) {
 		Data:      content,
 		CreatedAt: time.Now().UnixMilli(),
 	}
-	if err := s.InsertPayload(payload); err != nil {
+	if err := seedPayloadRow(s, payload); err != nil {
 		t.Fatalf("insert: %v", err)
 	}
 
@@ -1305,13 +1332,13 @@ func TestDeleteThreadCascadesPayloadGC(t *testing.T) {
 
 	// Two payloads owned by items on t1, plus one owned by an item on
 	// t-survivor. Only the t1 payloads should be swept.
-	if err := s.InsertPayload(Payload{ID: "p1", Kind: "diff", Meta: "{}", Data: []byte("a"), CreatedAt: 1}); err != nil {
+	if err := seedPayloadRow(s, Payload{ID: "p1", Kind: "diff", Meta: "{}", Data: []byte("a"), CreatedAt: 1}); err != nil {
 		t.Fatalf("p1: %v", err)
 	}
-	if err := s.InsertPayload(Payload{ID: "p2", Kind: "diff", Meta: "{}", Data: []byte("b"), CreatedAt: 2}); err != nil {
+	if err := seedPayloadRow(s, Payload{ID: "p2", Kind: "diff", Meta: "{}", Data: []byte("b"), CreatedAt: 2}); err != nil {
 		t.Fatalf("p2: %v", err)
 	}
-	if err := s.InsertPayload(Payload{ID: "p3", Kind: "diff", Meta: "{}", Data: []byte("c"), CreatedAt: 3}); err != nil {
+	if err := seedPayloadRow(s, Payload{ID: "p3", Kind: "diff", Meta: "{}", Data: []byte("c"), CreatedAt: 3}); err != nil {
 		t.Fatalf("p3: %v", err)
 	}
 	if err := s.InsertItem(Item{ID: "i1", ThreadID: "t1", TurnIndex: 0, ItemIndex: 0, Kind: "tool_call", Role: "assistant", PayloadID: "p1", CreatedAt: 1}); err != nil {
@@ -1361,7 +1388,7 @@ func TestDeleteThreadCascadesPayloadGCScale(t *testing.T) {
 	for i := 0; i < n; i++ {
 		pid := fmt.Sprintf("p-%04d", i)
 		iid := fmt.Sprintf("i-%04d", i)
-		if err := s.InsertPayload(Payload{
+		if err := seedPayloadRow(s, Payload{
 			ID: pid, Kind: "diff", Meta: "{}",
 			Data: []byte{byte(i), byte(i >> 8)}, CreatedAt: int64(i),
 		}); err != nil {
@@ -1400,7 +1427,7 @@ func TestPayloadGCIgnoresSharedPayload(t *testing.T) {
 	if err := s.CreateThread(thr); err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	if err := s.InsertPayload(Payload{ID: "shared", Kind: "diff", Meta: "{}", Data: []byte("x"), CreatedAt: 1}); err != nil {
+	if err := seedPayloadRow(s, Payload{ID: "shared", Kind: "diff", Meta: "{}", Data: []byte("x"), CreatedAt: 1}); err != nil {
 		t.Fatalf("payload: %v", err)
 	}
 	if err := s.InsertItem(Item{ID: "a", ThreadID: "t1", TurnIndex: 0, ItemIndex: 0, Kind: "tool_call", Role: "assistant", PayloadID: "shared", CreatedAt: 1}); err != nil {

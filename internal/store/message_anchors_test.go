@@ -120,7 +120,7 @@ func TestDeleteConversationFromTurnScopesAnchors(t *testing.T) {
 		}
 	}
 
-	deleted, err := s.DeleteConversationFromTurn("t1", 1)
+	deleted, _, err := s.DeleteConversationFromTurn("t1", 1)
 	if err != nil {
 		t.Fatalf("delete conversation: %v", err)
 	}
@@ -161,7 +161,7 @@ func TestDeleteConversationFromTurnCoversDriftedAnchors(t *testing.T) {
 		}
 	}
 
-	if _, err := s.DeleteConversationFromTurn("t1", 2); err != nil {
+	if _, _, err := s.DeleteConversationFromTurn("t1", 2); err != nil {
 		t.Fatalf("delete conversation: %v", err)
 	}
 	if _, ok, _ := s.GetMessageAnchor("t1", "t1-user:2"); ok {

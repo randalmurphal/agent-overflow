@@ -4,6 +4,7 @@
 // connection to an arbitrary scheme.
 
 import { setViewOnlySessionFromBootstrap } from './runMode';
+import { setBackendIdentityFromBootstrap } from './backendIdentity';
 import { clampString } from './frames';
 
 // RunMode marks how the SPA is attached to its backend:
@@ -91,6 +92,15 @@ export interface Bootstrap {
    * module init, not by the transport itself.
    */
   clientId?: string;
+  /**
+   * Stable per-store UUID keying the client-side thread replica, plus
+   * the generation that is re-minted whenever the backend's history
+   * counters lose continuity (docs/specs/thread-replica-sync.md §3.3).
+   * Absent from the `--connect` stub's injected manifest — absence
+   * disables the replica rather than sharing another backend's database.
+   */
+  backendId?: string;
+  replicaGeneration?: string;
 }
 
 // Session-scoped stash for the bootstrap token. The token arrives once
@@ -150,6 +160,7 @@ export async function defaultBootstrap(opts?: { revalidate?: boolean }): Promise
     validateWsUrl(injected.wsUrl);
     const normalized = { ...injected, mode: normalizeRunMode(injected.mode), remote: injected.remote === true };
     setViewOnlySessionFromBootstrap(normalized.remote);
+    setBackendIdentityFromBootstrap(normalized.backendId, normalized.replicaGeneration);
     return normalized;
   }
   const search = typeof window !== 'undefined' ? window.location.search : '';
@@ -196,6 +207,10 @@ async function fetchManifest(token: string, urlToken: string): Promise<Bootstrap
   data.mode = normalizeRunMode(data.mode);
   data.remote = data.remote === true;
   setViewOnlySessionFromBootstrap(data.remote);
+  // Re-validated on every manifest resolution, which is what makes a
+  // mid-session generation re-mint (a restored backend) observable on
+  // the reconnect refetch rather than at the next app launch.
+  setBackendIdentityFromBootstrap(data.backendId, data.replicaGeneration);
   // Stash the server-confirmed token so the tab survives reloads once
   // the URL is scrubbed below.
   writeStoredToken(data.token);

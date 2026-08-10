@@ -79,6 +79,8 @@ export {
     SourceProposedPlan,
     StartTerminalOptions,
     SubmitPRReviewResult,
+    SyncThreadWindowRequest,
+    SyncThreadWindowResponse,
     TerminalChip,
     TerminalHandle,
     TerminalOpenOptions,

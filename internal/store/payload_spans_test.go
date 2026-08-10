@@ -48,7 +48,7 @@ func TestUpdatePayloadSpansRoundTrip(t *testing.T) {
 		t.Fatalf("fresh payload spans = %q, want empty", spans)
 	}
 
-	if err := s.UpdatePayloadSpans("p1", `{"hv":"v","files":[1]}`, `{"hv":"v","files":[2]}`); err != nil {
+	if err := s.UpdatePayloadSpans("t1", "p1", `{"hv":"v","files":[1]}`, `{"hv":"v","files":[2]}`); err != nil {
 		t.Fatalf("update payload spans: %v", err)
 	}
 	spans, err = s.GetPayloadSpans("p1")
@@ -70,7 +70,7 @@ func TestUpdatePayloadSpansRoundTrip(t *testing.T) {
 
 	// A missing payload surfaces as wrapped sql.ErrNoRows so the async
 	// span worker can treat a deletion race as a benign drop.
-	err = s.UpdatePayloadSpans("missing", "a", "b")
+	err = s.UpdatePayloadSpans("t1", "missing", "a", "b")
 	if !errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("update missing payload: err = %v, want sql.ErrNoRows", err)
 	}
@@ -93,7 +93,7 @@ func TestPayloadSpanColumnsClearOnRewrite(t *testing.T) {
 
 	seed := func() {
 		t.Helper()
-		if err := s.UpdatePayloadSpans("p1", "preview-blob", "full-blob"); err != nil {
+		if err := s.UpdatePayloadSpans("t1", "p1", "preview-blob", "full-blob"); err != nil {
 			t.Fatalf("seed payload spans: %v", err)
 		}
 	}
@@ -112,20 +112,28 @@ func TestPayloadSpanColumnsClearOnRewrite(t *testing.T) {
 
 	// Replace clears both columns in the same transaction.
 	seed()
-	if err := s.ReplacePayloadData("p1", []byte("new content"), "{}", now); err != nil {
+	if err := s.ReplacePayloadData("t1", "p1", []byte("new content"), "{}", now); err != nil {
 		t.Fatalf("replace payload data: %v", err)
 	}
 	if preview, spans := readBoth(); preview != "" || spans != "" {
 		t.Fatalf("replace must clear spans, got preview=%q spans=%q", preview, spans)
 	}
 
-	// Upsert (INSERT OR REPLACE) resets the row to column defaults.
+	// The item upsert's INSERT OR REPLACE resets the row to column
+	// defaults. This is the only path that reaches upsertPayloadTx: a
+	// bare payload upsert is deliberately not exported, because it would
+	// reset these window-visible columns without naming a thread to
+	// invalidate.
 	seed()
-	if err := s.UpsertPayload(Payload{
+	if _, err := s.UpsertItem(Item{
+		ID: "item-1", ThreadID: "t1", ItemIndex: 0,
+		Kind: "tool_call", Role: "assistant", Status: "completed",
+		Summary: "diff", PayloadID: "p1", CreatedAt: now, UpdatedAt: now,
+	}, &Payload{
 		ID: "p1", Kind: "tool_result", Meta: "{}",
 		Data: []byte("upserted"), CreatedAt: now,
 	}); err != nil {
-		t.Fatalf("upsert payload: %v", err)
+		t.Fatalf("upsert item+payload: %v", err)
 	}
 	if preview, spans := readBoth(); preview != "" || spans != "" {
 		t.Fatalf("upsert must reset spans, got preview=%q spans=%q", preview, spans)
@@ -133,7 +141,7 @@ func TestPayloadSpanColumnsClearOnRewrite(t *testing.T) {
 
 	// Append retains them (content addressing keeps validity per file).
 	seed()
-	if err := s.AppendPayloadData("p1", []byte(" more"), "{}", now); err != nil {
+	if err := s.AppendPayloadData("t1", "p1", []byte(" more"), "{}", now); err != nil {
 		t.Fatalf("append payload data: %v", err)
 	}
 	if preview, spans := readBoth(); preview != "preview-blob" || spans != "full-blob" {

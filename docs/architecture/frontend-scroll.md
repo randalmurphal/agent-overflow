@@ -553,6 +553,27 @@ rather than a missing case:
 - **Chat only.** A discussion pane registers ChannelView's controller
   over an unrelated surface (the same stand-down `armStructuralSpring`
   makes).
+- **First content mount only.** With the IndexedDB replica
+  (`docs/specs/thread-replica-sync.md` §6.1) a cold open can mount rows
+  twice: the durable paint, then the `SyncThreadWindow` page that
+  replaces it. The paint re-arms — it is an initial slice in every way
+  that matters to the gate — and the page does NOT, because by then the
+  reader may already be looking at those rows and re-closing the gate
+  would blank content that is on screen. `runItemWindowSync`'s
+  `paintSource` is the discriminator, and it rides the cold-load trace
+  alongside the sync verdict.
+
+One deliberate behavior change rides the sync-based cold open: a warm
+re-entry to a thread the user had deep-paged (say 800 rows in the L1
+snapshot) collapses back to the slice budget (~200 around the anchor)
+whenever the sync answer is not `fresh` — the page replaces the painted
+window, and rows outside it are re-fetched lazily on scroll like any
+cold open. Keeping them would merge rows from an older attestation
+under a newer stamp, the one composition the replica's understate rule
+forbids (`docs/specs/thread-replica-sync.md` §6.1 step 4), and it
+matches what the transport-gap `refreshFromBackend` path already does.
+A `fresh` answer — the common case for an unchanged thread — keeps the
+full painted window.
 
 The chat adapter maps it to `armWarmupWithReset`, not the bare controller
 call: the incoming rows' markdown has not typeset yet, so the

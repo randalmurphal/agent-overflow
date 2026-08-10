@@ -62,7 +62,7 @@ func TestSnapshotAndRestoreRoundTrip(t *testing.T) {
 		t.Fatalf("CreateThread t2: %v", err)
 	}
 
-	if err := st.RestoreFrom(snap); err != nil {
+	if _, err := st.RestoreFrom(snap); err != nil {
 		t.Fatalf("RestoreFrom: %v", err)
 	}
 
@@ -101,7 +101,7 @@ func TestSnapshotToRefusesOverwrite(t *testing.T) {
 
 func TestRestoreFromMissingFile(t *testing.T) {
 	st := snapshotTestStore(t)
-	if err := st.RestoreFrom(filepath.Join(t.TempDir(), "missing.db")); err == nil {
+	if _, err := st.RestoreFrom(filepath.Join(t.TempDir(), "missing.db")); err == nil {
 		t.Fatal("RestoreFrom accepted a missing snapshot")
 	}
 }
@@ -113,7 +113,7 @@ func TestRestoreFromForeignKeysStayEnforced(t *testing.T) {
 	if err := st.SnapshotTo(snap); err != nil {
 		t.Fatalf("SnapshotTo: %v", err)
 	}
-	if err := st.RestoreFrom(snap); err != nil {
+	if _, err := st.RestoreFrom(snap); err != nil {
 		t.Fatalf("RestoreFrom: %v", err)
 	}
 	// threads.project_id FK must still be enforced after restore.

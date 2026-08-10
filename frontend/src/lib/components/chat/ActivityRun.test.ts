@@ -791,7 +791,7 @@ describe('<ActivityRun>', () => {
       // gets a controller. A fresh controller says "not escaped", and taking
       // that at face value would release the pin and drop the reader at the
       // run's tail without them touching anything.
-      pane.removeItemById('p0');
+      pane.removeItemById('p0', pane.threadId!);
       await tick();
 
       expect(getByTestId('activity-run').dataset.live).toBe('true');

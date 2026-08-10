@@ -249,7 +249,7 @@ func (a *App) observeDiffPayloadPersisted(threadID, payloadID string, previews [
 		// worker) must not push seeds either: the frontend's cleanup
 		// for that thread may already have run, and a late seed would
 		// re-register cache entries for it.
-		persisted := a.persistPayloadSpans(payloadID, previewSeeds, a.computePatchSpanSeeds(patch, prime))
+		persisted := a.persistPayloadSpans(threadID, payloadID, previewSeeds, a.computePatchSpanSeeds(patch, prime))
 		if persisted && len(previewSeeds) > 0 {
 			// Pushed to every client (local included): primed seeds are
 			// strictly better than what the local RPC path computes for
@@ -299,7 +299,7 @@ func (a *App) persistEditFileSnapshots(payloadID, patch string, prime func(path 
 // any other error is logged — the blobs are an optional accelerator,
 // so the persist itself never fails a turn, but a persistent write
 // error should be visible.
-func (a *App) persistPayloadSpans(payloadID string, previewSeeds, fullSeeds []PatchSpanSeed) bool {
+func (a *App) persistPayloadSpans(threadID, payloadID string, previewSeeds, fullSeeds []PatchSpanSeed) bool {
 	previewBlob := marshalPersistedPatchSpans(previewSeeds)
 	fullBlob := marshalPersistedPatchSpans(fullSeeds)
 	if previewBlob == "" && fullBlob == "" {
@@ -307,7 +307,7 @@ func (a *App) persistPayloadSpans(payloadID string, previewSeeds, fullSeeds []Pa
 		// when it rewrote the payload row.
 		return true
 	}
-	if err := a.store.UpdatePayloadSpans(payloadID, previewBlob, fullBlob); err != nil {
+	if err := a.store.UpdatePayloadSpans(threadID, payloadID, previewBlob, fullBlob); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return false
 		}

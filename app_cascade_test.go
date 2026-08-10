@@ -87,9 +87,6 @@ func populateThreadForCascade(t *testing.T, app *App, thread store.Thread) []str
 			Data:      []byte("diff data " + thread.ID),
 			CreatedAt: time.Now().UnixMilli(),
 		}
-		if err := app.store.InsertPayload(payload); err != nil {
-			t.Fatalf("InsertPayload %d: %v", i, err)
-		}
 		item := store.Item{
 			ID:        uuid.NewString(),
 			ThreadID:  thread.ID,
@@ -101,8 +98,8 @@ func populateThreadForCascade(t *testing.T, app *App, thread store.Thread) []str
 			PayloadID: payloadID,
 			CreatedAt: time.Now().UnixMilli(),
 		}
-		if err := app.store.InsertItem(item); err != nil {
-			t.Fatalf("InsertItem %d: %v", i, err)
+		if err := app.store.InsertItemWithPayload(item, payload); err != nil {
+			t.Fatalf("InsertItemWithPayload %d: %v", i, err)
 		}
 	}
 

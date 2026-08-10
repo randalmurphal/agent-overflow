@@ -933,14 +933,15 @@ func strconvItoa(n int) string {
 // payload_chunks so streaming writers do not rewrite the cumulative blob.
 func TestAppendPayloadDataAppendsAsChunks(t *testing.T) {
 	s := newTestStore(t)
-	if err := s.InsertPayload(Payload{
+	mustCreateThread(t, s, "t")
+	if err := seedPayloadRow(s, Payload{
 		ID: "p", Kind: "command_output", Meta: `{"v":1}`,
 		Data: []byte("hello "), CreatedAt: 1000,
 	}); err != nil {
 		t.Fatalf("insert payload: %v", err)
 	}
 
-	if err := s.AppendPayloadData("p", []byte("world"), `{"v":2}`, 2000); err != nil {
+	if err := s.AppendPayloadData("t", "p", []byte("world"), `{"v":2}`, 2000); err != nil {
 		t.Fatalf("append: %v", err)
 	}
 	data, err := s.GetPayloadData("p")
@@ -971,16 +972,17 @@ func TestAppendPayloadDataAppendsAsChunks(t *testing.T) {
 
 func TestPayloadChunkReadsSpanBaseAndAppendedChunks(t *testing.T) {
 	s := newTestStore(t)
-	if err := s.InsertPayload(Payload{
+	mustCreateThread(t, s, "t")
+	if err := seedPayloadRow(s, Payload{
 		ID: "p", Kind: "command_output", Meta: `{"v":1}`,
 		Data: []byte("abcd"), CreatedAt: 1,
 	}); err != nil {
 		t.Fatalf("insert payload: %v", err)
 	}
-	if err := s.AppendPayloadData("p", []byte("efgh"), `{"v":2}`, 2); err != nil {
+	if err := s.AppendPayloadData("t", "p", []byte("efgh"), `{"v":2}`, 2); err != nil {
 		t.Fatalf("append first chunk: %v", err)
 	}
-	if err := s.AppendPayloadData("p", []byte("ijkl"), `{"v":3}`, 3); err != nil {
+	if err := s.AppendPayloadData("t", "p", []byte("ijkl"), `{"v":3}`, 3); err != nil {
 		t.Fatalf("append second chunk: %v", err)
 	}
 
@@ -1012,7 +1014,8 @@ func TestPayloadChunkReadsSpanBaseAndAppendedChunks(t *testing.T) {
 
 func TestAppendPayloadDataErrorsOnMissingPayload(t *testing.T) {
 	s := newTestStore(t)
-	err := s.AppendPayloadData("nope", []byte("x"), "{}", 1)
+	mustCreateThread(t, s, "t")
+	err := s.AppendPayloadData("t", "nope", []byte("x"), "{}", 1)
 	if err == nil {
 		t.Fatal("expected error for missing payload")
 	}
@@ -1020,17 +1023,18 @@ func TestAppendPayloadDataErrorsOnMissingPayload(t *testing.T) {
 
 func TestReplacePayloadDataReplacesInPlace(t *testing.T) {
 	s := newTestStore(t)
-	if err := s.InsertPayload(Payload{
+	mustCreateThread(t, s, "t")
+	if err := seedPayloadRow(s, Payload{
 		ID: "p", Kind: "thinking", Meta: `{"v":1}`,
 		Data: []byte("streamed draft"), CreatedAt: 1000,
 	}); err != nil {
 		t.Fatalf("insert payload: %v", err)
 	}
-	if err := s.AppendPayloadData("p", []byte(" plus chunk"), `{"v":1}`, 1500); err != nil {
+	if err := s.AppendPayloadData("t", "p", []byte(" plus chunk"), `{"v":1}`, 1500); err != nil {
 		t.Fatalf("append chunk before replace: %v", err)
 	}
 
-	if err := s.ReplacePayloadData("p", []byte("final text"), `{"v":2}`, 2000); err != nil {
+	if err := s.ReplacePayloadData("t", "p", []byte("final text"), `{"v":2}`, 2000); err != nil {
 		t.Fatalf("replace: %v", err)
 	}
 	var chunks int
@@ -1071,7 +1075,7 @@ func TestGetPayloadPreviewSliceInsideSQLite(t *testing.T) {
 	for i := range full {
 		full[i] = byte('A' + (i % 26))
 	}
-	if err := s.InsertPayload(Payload{
+	if err := seedPayloadRow(s, Payload{
 		ID: "p-big", Kind: "diff", Meta: "{}",
 		Data: full, CreatedAt: 1,
 	}); err != nil {
@@ -1123,7 +1127,7 @@ func TestGetPayloadChunkSliceInsideSQLite(t *testing.T) {
 	for i := range full {
 		full[i] = byte('a' + (i % 26))
 	}
-	if err := s.InsertPayload(Payload{
+	if err := seedPayloadRow(s, Payload{
 		ID: "p-chunk", Kind: "command_output", Meta: "{}",
 		Data: full, CreatedAt: 1,
 	}); err != nil {
@@ -1221,7 +1225,7 @@ func TestGetThreadItemByPayloadIDScopesLookupToOwnerThread(t *testing.T) {
 			t.Fatalf("create thread %s: %v", threadID, err)
 		}
 	}
-	if err := s.InsertPayload(Payload{
+	if err := seedPayloadRow(s, Payload{
 		ID: "shared-payload", Kind: "command_output", Meta: "{}", Data: []byte("body"), CreatedAt: now,
 	}); err != nil {
 		t.Fatalf("insert payload: %v", err)
@@ -1432,7 +1436,7 @@ func TestGetThreadItemByPayloadIDResolvesInputPayloadID(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("create thread: %v", err)
 	}
-	if err := s.InsertPayload(Payload{
+	if err := seedPayloadRow(s, Payload{
 		ID: "p-input-1", Kind: "tool_call_input", Meta: "{}",
 		Data: []byte(`{"old_string":"a","new_string":"b"}`), CreatedAt: now,
 	}); err != nil {
@@ -2179,7 +2183,7 @@ func seedStreamingItemWithPayload(t *testing.T, s *Store, itemKind, payloadKind 
 	}); err != nil {
 		t.Fatalf("create thread: %v", err)
 	}
-	if err := s.InsertPayload(Payload{
+	if err := seedPayloadRow(s, Payload{
 		ID: "pay", Kind: payloadKind, Meta: `{"rev":1}`, Data: []byte("base"), CreatedAt: 2000,
 	}); err != nil {
 		t.Fatalf("insert payload: %v", err)
@@ -2212,7 +2216,7 @@ func TestAppendItemSummaryAndPayloadDataMatchesSequentialPair(t *testing.T) {
 	if err != nil {
 		t.Fatalf("sequential summary append: %v", err)
 	}
-	if err := sequential.AppendPayloadData("pay", []byte(" delta"), gotSequential.PayloadMeta, 3000); err != nil {
+	if err := sequential.AppendPayloadData("t", "pay", []byte(" delta"), gotSequential.PayloadMeta, 3000); err != nil {
 		t.Fatalf("sequential payload append: %v", err)
 	}
 
@@ -2284,7 +2288,7 @@ func TestAppendItemSummaryTailAndPayloadDataMatchesSequentialPair(t *testing.T) 
 	if err != nil {
 		t.Fatalf("sequential tail append: %v", err)
 	}
-	if err := sequential.AppendPayloadData("pay", []byte(" delta"), gotSequential.PayloadMeta, 3000); err != nil {
+	if err := sequential.AppendPayloadData("t", "pay", []byte(" delta"), gotSequential.PayloadMeta, 3000); err != nil {
 		t.Fatalf("sequential payload append: %v", err)
 	}
 
@@ -2326,7 +2330,7 @@ func TestUpsertItemWithPayloadAppendMatchesSequentialPair(t *testing.T) {
 		t.Fatalf("combined upsert: %v", err)
 	}
 
-	if err := sequential.AppendPayloadData("pay", []byte(" delta"), `{"rev":2}`, 3000); err != nil {
+	if err := sequential.AppendPayloadData("t", "pay", []byte(" delta"), `{"rev":2}`, 3000); err != nil {
 		t.Fatalf("sequential payload append: %v", err)
 	}
 	gotSequential, err := sequential.UpsertItem(update, nil)

@@ -36,9 +36,17 @@ func insertPayloadTx(exec sqlExecutor, payload Payload, label string) error {
 	return nil
 }
 
-func (s *Store) InsertPayload(p Payload) error {
-	return insertPayloadTx(s.db, p, "store: insert payload")
-}
+// There is deliberately no exported bare payload insert or upsert. A
+// payload row is only ever window-visible through the item that
+// references it, and the history contract's payload half is enforced by
+// the threadID parameter every mutator carries (see bumpHistoryRevTx) —
+// an export that wrote `payloads` without naming a thread would be a hole
+// in exactly that enforcement, and the INSERT OR REPLACE flavour also
+// silently reset `preview_spans` / `spans`, which ride the item row on
+// the wire. Every production write goes through an item-coupled writer:
+// InsertItemWithPayload / AppendItemWithPayload create the pair,
+// UpsertItem replaces it (upsertPayloadTx, items_write.go), and the
+// threadID-carrying mutators below change it in place.
 
 // InsertItemWithPayload persists a payload + its matching item atomically
 // in a single transaction. Either both land or neither does, so triage
@@ -100,21 +108,6 @@ func (s *Store) AppendItemWithPayload(item Item, payload Payload) (int, error) {
 		return 0, fmt.Errorf("store: commit append item+payload tx: %w", err)
 	}
 	return next, nil
-}
-
-func (s *Store) UpsertPayload(p Payload) error {
-	tx, err := s.db.Begin()
-	if err != nil {
-		return fmt.Errorf("store: begin upsert payload %s: %w", p.ID, err)
-	}
-	defer tx.Rollback()
-	if err := upsertPayloadTx(tx, p, fmt.Sprintf("store: upsert payload %s", p.ID)); err != nil {
-		return err
-	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("store: commit upsert payload %s: %w", p.ID, err)
-	}
-	return nil
 }
 
 func (s *Store) GetPayloadMeta(id string) (PayloadMeta, error) {
@@ -280,10 +273,16 @@ func (s *Store) payloadLengths(id string) (int, int, error) {
 // live streaming payload writes O(delta) instead of rewriting the cumulative
 // payload blob on every flush.
 //
-// Returns sql.ErrNoRows (wrapped) if no payload matches id. Callers
-// must handle "no row yet" by inserting via InsertPayload first; this
+// threadID is the thread whose history this payload belongs to: payload
+// content rides item rows on the wire, so changing it changes what a
+// windowed read returns, and `payloads` has no thread_id for a trigger to
+// route on. See bumpHistoryRevTx.
+//
+// Returns sql.ErrNoRows (wrapped) if no payload matches id. Callers must
+// handle "no row yet" by creating the item+payload pair first
+// (InsertItemWithPayload / AppendItemWithPayload / UpsertItem); this
 // method only handles the append path.
-func (s *Store) AppendPayloadData(id string, delta []byte, meta string, createdAt int64) error {
+func (s *Store) AppendPayloadData(threadID, id string, delta []byte, meta string, createdAt int64) error {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return fmt.Errorf("store: begin append payload data %s: %w", id, err)
@@ -291,6 +290,9 @@ func (s *Store) AppendPayloadData(id string, delta []byte, meta string, createdA
 	defer tx.Rollback()
 
 	if err := appendPayloadDataTx(tx, id, delta, meta, createdAt); err != nil {
+		return err
+	}
+	if err := bumpHistoryRevTx(tx, threadID, fmt.Sprintf("store: append payload data %s", id)); err != nil {
 		return err
 	}
 	if err := tx.Commit(); err != nil {
@@ -345,7 +347,10 @@ func appendPayloadDataTx(tx *sql.Tx, id string, delta []byte, meta string, creat
 // the same transaction. Streaming paths use this when a provider completion
 // sends an authoritative final payload that should supersede accumulated
 // deltas.
-func (s *Store) ReplacePayloadData(id string, data []byte, meta string, createdAt int64) error {
+//
+// threadID names the thread whose history_rev this advances — see
+// AppendPayloadData.
+func (s *Store) ReplacePayloadData(threadID, id string, data []byte, meta string, createdAt int64) error {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return fmt.Errorf("store: begin replace payload data %s: %w", id, err)
@@ -370,6 +375,9 @@ func (s *Store) ReplacePayloadData(id string, data []byte, meta string, createdA
 	if _, err := tx.Exec(`DELETE FROM payload_chunks WHERE payload_id = ?`, id); err != nil {
 		return fmt.Errorf("store: replace payload data clear chunks %s: %w", id, err)
 	}
+	if err := bumpHistoryRevTx(tx, threadID, fmt.Sprintf("store: replace payload data %s", id)); err != nil {
+		return err
+	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("store: commit replace payload data %s: %w", id, err)
 	}
@@ -382,16 +390,36 @@ func (s *Store) ReplacePayloadData(id string, data []byte, meta string, createdA
 // previously did GetPayloadData + re-insert to update meta now avoid
 // the full-blob round trip.
 //
+// threadID names the thread whose history_rev this advances — see
+// AppendPayloadData. It is what makes the write a transaction rather than
+// a bare statement.
+//
 // Returns sql.ErrNoRows (wrapped) if no payload matches id.
-func (s *Store) UpdatePayloadMeta(id, meta string) error {
-	result, err := s.db.Exec(
+func (s *Store) UpdatePayloadMeta(threadID, id, meta string) error {
+	label := fmt.Sprintf("store: update payload meta %s", id)
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("store: begin update payload meta %s: %w", id, err)
+	}
+	defer tx.Rollback()
+
+	result, err := tx.Exec(
 		`UPDATE payloads SET meta = ? WHERE id = ?`,
 		meta, id,
 	)
 	if err != nil {
-		return fmt.Errorf("store: update payload meta %s: %w", id, err)
+		return fmt.Errorf("%s: %w", label, err)
 	}
-	return requireRowsAffected(result, fmt.Sprintf("store: update payload meta %s", id))
+	if err := requireRowsAffected(result, label); err != nil {
+		return err
+	}
+	if err := bumpHistoryRevTx(tx, threadID, label); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("store: commit update payload meta %s: %w", id, err)
+	}
+	return nil
 }
 
 // UpdatePayloadSpans stores the version-stamped highlight span blobs for
@@ -401,18 +429,38 @@ func (s *Store) UpdatePayloadMeta(id, meta string) error {
 // after payload persistence; both columns are always set together so a
 // recompute can never leave one half stale.
 //
+// threadID names the thread whose history_rev this advances: preview
+// spans ride the item row on the wire (Item.PayloadPreviewSpans), so a
+// backfill genuinely changes what a windowed read returns.
+//
 // Returns sql.ErrNoRows (wrapped) if no payload matches id — the
 // span worker racing a thread deletion hits this and treats it as a
 // benign drop.
-func (s *Store) UpdatePayloadSpans(id, previewSpans, spans string) error {
-	result, err := s.db.Exec(
+func (s *Store) UpdatePayloadSpans(threadID, id, previewSpans, spans string) error {
+	label := fmt.Sprintf("store: update payload spans %s", id)
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("store: begin update payload spans %s: %w", id, err)
+	}
+	defer tx.Rollback()
+
+	result, err := tx.Exec(
 		`UPDATE payloads SET preview_spans = ?, spans = ? WHERE id = ?`,
 		previewSpans, spans, id,
 	)
 	if err != nil {
-		return fmt.Errorf("store: update payload spans %s: %w", id, err)
+		return fmt.Errorf("%s: %w", label, err)
 	}
-	return requireRowsAffected(result, fmt.Sprintf("store: update payload spans %s", id))
+	if err := requireRowsAffected(result, label); err != nil {
+		return err
+	}
+	if err := bumpHistoryRevTx(tx, threadID, label); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("store: commit update payload spans %s: %w", id, err)
+	}
+	return nil
 }
 
 // GetPayloadSpans returns a payload's full-data span blob (the spans

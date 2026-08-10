@@ -2190,6 +2190,12 @@ export function MarkDiffReviewCommentsSent(threadID: string, scope: string, sour
  * completed turn so the sidebar stops showing a Completed pill. The timestamp
  * is owned by the store so the App layer stays free of nowMillis() calls,
  * matching ArchiveThread / UpdateTitle etc.
+ * 
+ * The deadline is the App's to supply, not the caller's: bound methods
+ * are the frontend's wire surface and take no context. Five seconds
+ * matches the store's busy_timeout — a wait past that is a wedged writer,
+ * and the frontend has already patched its own read state optimistically,
+ * so returning the error beats holding the RPC open.
  */
 export function MarkThreadRead(id: string): $CancellablePromise<void> {
     return $Call.ByID(1480646012, id);
@@ -3305,12 +3311,45 @@ export function SwitchProviderAccount(providerName: string, accountID: string): 
 }
 
 /**
- * SwitchThread returns the requested thread and marks it read durably.
- * Provider sessions are started lazily on first send, not on focus.
+ * SwitchThread returns the requested thread. Provider sessions are
+ * started lazily on first send, not on focus.
+ * 
+ * The read-state stamp runs OFF this RPC's critical path. It is a write,
+ * so it queues for the store's single writer connection behind whatever
+ * that connection is already doing — a retention sweep's delete batch, a
+ * streaming flush, a checkpoint — and doing it first put the thread load
+ * the UI is blocked on behind an unrelated write.
+ * 
+ * Nothing downstream depends on the returned row carrying the new stamp.
+ * The sidebar badge is the frontend's own state: ChatView patches
+ * lastReadAt locally the moment the thread is focused and persists it
+ * through the MarkThreadRead binding on a debounce, and it deliberately
+ * re-enters that path when a row arrives carrying an OLDER lastReadAt
+ * than it holds. So a returned row that predates the stamp is a state
+ * the frontend already handles rather than a stale badge. The write
+ * itself cannot lose a race either: MarkThreadReadNow never moves
+ * last_read_at backward, so a late async stamp cannot revert a newer one
+ * the user's own mark-read landed in the meantime.
  */
 export function SwitchThread(threadID: string): $CancellablePromise<store$0.Thread> {
     return $Call.ByID(3897387725, threadID).then(($result: any) => {
         return $$createType1($result);
+    });
+}
+
+/**
+ * SyncThreadWindow is the cold-open replacement for
+ * ListThreadSliceAround: it answers with the window only when the
+ * caller's stamps prove it necessary. Store-read-only — it opens one
+ * read-pool transaction and touches no local FS, process, or credential
+ * state, so it is deliberately NOT in transport.LocalOnlyMethods.
+ * 
+ * The other paging RPCs are unchanged; this one covers the initial
+ * window only.
+ */
+export function SyncThreadWindow(threadID: string, req: $models.SyncThreadWindowRequest): $CancellablePromise<$models.SyncThreadWindowResponse> {
+    return $Call.ByID(3841902986, threadID, req).then(($result: any) => {
+        return $$createType120($result);
     });
 }
 
@@ -3363,7 +3402,7 @@ export function TouchRemoteEndpoint(id: string): $CancellablePromise<void> {
  */
 export function TriggerMcpAuth(threadID: string, name: string): $CancellablePromise<$models.MCPAuthInitResult> {
     return $Call.ByID(1291217507, threadID, name).then(($result: any) => {
-        return $$createType120($result);
+        return $$createType121($result);
     });
 }
 
@@ -3680,7 +3719,7 @@ export function UploadAttachment(threadID: string, filename: string, mimeType: s
  */
 export function VerifyEditDiffs(threadID: string, req: $models.VerifyEditDiffsRequest): $CancellablePromise<$models.VerifyEditDiffsResult> {
     return $Call.ByID(3907724148, threadID, req).then(($result: any) => {
-        return $$createType121($result);
+        return $$createType122($result);
     });
 }
 
@@ -3702,7 +3741,7 @@ export function Version(): $CancellablePromise<string> {
  */
 export function WorkflowAgentAddMemory(input: $models.WorkflowAgentMemoryInput): $CancellablePromise<$models.WorkflowAgentMemoryResult> {
     return $Call.ByID(4000394635, input).then(($result: any) => {
-        return $$createType122($result);
+        return $$createType123($result);
     });
 }
 
@@ -3714,7 +3753,7 @@ export function WorkflowAgentAddMemory(input: $models.WorkflowAgentMemoryInput):
  */
 export function WorkflowAgentAmendSeeds(input: $models.WorkflowAgentAmendSeedsInput): $CancellablePromise<$models.WorkflowAgentAmendSeedsResult> {
     return $Call.ByID(4273669366, input).then(($result: any) => {
-        return $$createType123($result);
+        return $$createType124($result);
     });
 }
 
@@ -3735,7 +3774,7 @@ export function WorkflowAgentGetNotes(automationID: string): $CancellablePromise
  */
 export function WorkflowAgentGuideRun(input: $models.WorkflowAgentGuideRunInput): $CancellablePromise<$models.WorkflowAgentGuideRunResult> {
     return $Call.ByID(76499272, input).then(($result: any) => {
-        return $$createType124($result);
+        return $$createType125($result);
     });
 }
 
@@ -3747,7 +3786,7 @@ export function WorkflowAgentGuideRun(input: $models.WorkflowAgentGuideRunInput)
  */
 export function WorkflowAgentInspectRun(input: $models.WorkflowAgentInspectInput): $CancellablePromise<$models.WorkflowAgentRunInspection> {
     return $Call.ByID(1146143060, input).then(($result: any) => {
-        return $$createType125($result);
+        return $$createType126($result);
     });
 }
 
@@ -3758,7 +3797,7 @@ export function WorkflowAgentInspectRun(input: $models.WorkflowAgentInspectInput
  */
 export function WorkflowAgentListMemory(input: $models.WorkflowAgentMemoryListInput): $CancellablePromise<$models.WorkflowAgentMemoryLog> {
     return $Call.ByID(1978122086, input).then(($result: any) => {
-        return $$createType126($result);
+        return $$createType127($result);
     });
 }
 
@@ -3769,7 +3808,7 @@ export function WorkflowAgentListMemory(input: $models.WorkflowAgentMemoryListIn
  */
 export function WorkflowAgentListRuns(activeOnly: boolean): $CancellablePromise<$models.WorkflowAgentRunView[]> {
     return $Call.ByID(717593283, activeOnly).then(($result: any) => {
-        return $$createType128($result);
+        return $$createType129($result);
     });
 }
 
@@ -3781,7 +3820,7 @@ export function WorkflowAgentListRuns(activeOnly: boolean): $CancellablePromise<
  */
 export function WorkflowAgentRunNarrative(input: $models.WorkflowAgentNarrativeInput): $CancellablePromise<$models.WorkflowAgentNarrative> {
     return $Call.ByID(3748461612, input).then(($result: any) => {
-        return $$createType129($result);
+        return $$createType130($result);
     });
 }
 
@@ -3793,7 +3832,7 @@ export function WorkflowAgentRunNarrative(input: $models.WorkflowAgentNarrativeI
  */
 export function WorkflowAgentRunOutput(itemID: string): $CancellablePromise<$models.WorkflowAgentRunOutputs> {
     return $Call.ByID(315193175, itemID).then(($result: any) => {
-        return $$createType130($result);
+        return $$createType131($result);
     });
 }
 
@@ -3805,7 +3844,7 @@ export function WorkflowAgentRunOutput(itemID: string): $CancellablePromise<$mod
  */
 export function WorkflowAgentRunStatus(itemID: string): $CancellablePromise<$models.WorkflowAgentRunView> {
     return $Call.ByID(49502656, itemID).then(($result: any) => {
-        return $$createType127($result);
+        return $$createType128($result);
     });
 }
 
@@ -3818,7 +3857,7 @@ export function WorkflowAgentRunStatus(itemID: string): $CancellablePromise<$mod
  */
 export function WorkflowAgentSchedule(input: $models.WorkflowAgentScheduleInput): $CancellablePromise<$models.WorkflowAgentScheduleResult> {
     return $Call.ByID(3469145856, input).then(($result: any) => {
-        return $$createType131($result);
+        return $$createType132($result);
     });
 }
 
@@ -3831,7 +3870,7 @@ export function WorkflowAgentSchedule(input: $models.WorkflowAgentScheduleInput)
  */
 export function WorkflowAgentSetNotes(automationID: string, notes: string): $CancellablePromise<$models.WorkflowAgentNotesResult> {
     return $Call.ByID(8517788, automationID, notes).then(($result: any) => {
-        return $$createType132($result);
+        return $$createType133($result);
     });
 }
 
@@ -3846,7 +3885,7 @@ export function WorkflowAgentSetNotes(automationID: string, notes: string): $Can
  */
 export function WorkflowAgentStartRun(input: $models.WorkflowAgentStartInput): $CancellablePromise<$models.WorkflowAgentStartResult> {
     return $Call.ByID(1060823172, input).then(($result: any) => {
-        return $$createType133($result);
+        return $$createType134($result);
     });
 }
 
@@ -3860,7 +3899,7 @@ export function WorkflowAgentStartRun(input: $models.WorkflowAgentStartInput): $
  */
 export function WorkflowAgentWatchRun(input: $models.WorkflowAgentWatchInput): $CancellablePromise<$models.WorkflowAgentWatchResult> {
     return $Call.ByID(2308429865, input).then(($result: any) => {
-        return $$createType134($result);
+        return $$createType135($result);
     });
 }
 
@@ -3887,7 +3926,7 @@ export function WorkflowAnswerQuestion(itemID: string, answer: string): $Cancell
  */
 export function WorkflowBindThread(itemID: string, threadID: string): $CancellablePromise<store$0.WorkItem> {
     return $Call.ByID(1931806823, itemID, threadID).then(($result: any) => {
-        return $$createType135($result);
+        return $$createType136($result);
     });
 }
 
@@ -3909,7 +3948,7 @@ export function WorkflowCompleteTakeover(itemID: string): $CancellablePromise<vo
  */
 export function WorkflowCreateAutomation(input: $models.WorkflowAutomationInput): $CancellablePromise<$models.WorkflowAutomationView> {
     return $Call.ByID(3011758347, input).then(($result: any) => {
-        return $$createType136($result);
+        return $$createType137($result);
     });
 }
 
@@ -3919,7 +3958,7 @@ export function WorkflowCreateAutomation(input: $models.WorkflowAutomationInput)
  */
 export function WorkflowCreateItemPR(itemID: string): $CancellablePromise<$models.WorkflowDispositionReceipt> {
     return $Call.ByID(1792283305, itemID).then(($result: any) => {
-        return $$createType137($result);
+        return $$createType138($result);
     });
 }
 
@@ -3938,7 +3977,7 @@ export function WorkflowDeleteAutomation(automationID: string): $CancellableProm
  */
 export function WorkflowDiscardItem(itemID: string): $CancellablePromise<$models.WorkflowDispositionReceipt> {
     return $Call.ByID(2163033761, itemID).then(($result: any) => {
-        return $$createType137($result);
+        return $$createType138($result);
     });
 }
 
@@ -3950,7 +3989,7 @@ export function WorkflowDiscardItem(itemID: string): $CancellablePromise<$models
  */
 export function WorkflowDiscardPreview(itemID: string): $CancellablePromise<$models.WorkflowDiscardPreview> {
     return $Call.ByID(2659721862, itemID).then(($result: any) => {
-        return $$createType138($result);
+        return $$createType139($result);
     });
 }
 
@@ -3981,7 +4020,7 @@ export function WorkflowDropUnit(itemID: string, unitID: string, note: string): 
  */
 export function WorkflowFetchPRReviewComments(itemID: string): $CancellablePromise<$models.WorkflowPRReviewComments> {
     return $Call.ByID(819019128, itemID).then(($result: any) => {
-        return $$createType139($result);
+        return $$createType140($result);
     });
 }
 
@@ -3991,13 +4030,13 @@ export function WorkflowFetchPRReviewComments(itemID: string): $CancellablePromi
  */
 export function WorkflowGetEngineState(): $CancellablePromise<engine$0.EngineState> {
     return $Call.ByID(2130001947).then(($result: any) => {
-        return $$createType140($result);
+        return $$createType141($result);
     });
 }
 
 export function WorkflowGetItem(itemID: string): $CancellablePromise<$models.WorkflowItemDetailView> {
     return $Call.ByID(70120675, itemID).then(($result: any) => {
-        return $$createType141($result);
+        return $$createType142($result);
     });
 }
 
@@ -4014,7 +4053,7 @@ export function WorkflowGetJobNotes(automationID: string): $CancellablePromise<s
  */
 export function WorkflowListAutomations(projectID: string): $CancellablePromise<$models.WorkflowAutomationView[]> {
     return $Call.ByID(2319799628, projectID).then(($result: any) => {
-        return $$createType142($result);
+        return $$createType143($result);
     });
 }
 
@@ -4024,7 +4063,7 @@ export function WorkflowListAutomations(projectID: string): $CancellablePromise<
  */
 export function WorkflowListDefinitions(projectID: string): $CancellablePromise<$models.WorkflowDefinitionCatalog> {
     return $Call.ByID(2064216126, projectID).then(($result: any) => {
-        return $$createType143($result);
+        return $$createType144($result);
     });
 }
 
@@ -4037,13 +4076,13 @@ export function WorkflowListDefinitions(projectID: string): $CancellablePromise<
  */
 export function WorkflowListItemCosts(projectID: string): $CancellablePromise<{ [_ in string]?: number }> {
     return $Call.ByID(1544440599, projectID).then(($result: any) => {
-        return $$createType144($result);
+        return $$createType145($result);
     });
 }
 
 export function WorkflowListItems(projectID: string): $CancellablePromise<store$0.WorkItem[]> {
     return $Call.ByID(3037887964, projectID).then(($result: any) => {
-        return $$createType145($result);
+        return $$createType146($result);
     });
 }
 
@@ -4054,7 +4093,7 @@ export function WorkflowListItems(projectID: string): $CancellablePromise<store$
  */
 export function WorkflowListUnresolvedItems(projectID: string): $CancellablePromise<store$0.WorkItem[]> {
     return $Call.ByID(3613211765, projectID).then(($result: any) => {
-        return $$createType145($result);
+        return $$createType146($result);
     });
 }
 
@@ -4064,7 +4103,7 @@ export function WorkflowListUnresolvedItems(projectID: string): $CancellableProm
  */
 export function WorkflowMergeItem(itemID: string): $CancellablePromise<$models.WorkflowDispositionReceipt> {
     return $Call.ByID(3006532931, itemID).then(($result: any) => {
-        return $$createType137($result);
+        return $$createType138($result);
     });
 }
 
@@ -4164,7 +4203,7 @@ export function WorkflowRetryUnit(itemID: string, unitID: string, note: string):
  */
 export function WorkflowRunAutomationNow(automationID: string): $CancellablePromise<store$0.WorkItem> {
     return $Call.ByID(2615697354, automationID).then(($result: any) => {
-        return $$createType135($result);
+        return $$createType136($result);
     });
 }
 
@@ -4227,7 +4266,7 @@ export function WorkflowSetJobNotes(automationID: string, notes: string): $Cance
  */
 export function WorkflowStartRun(projectID: string, workflowID: string, workflowScope: string, goal: string, seeds: json$0.RawMessage, budget: profile$0.Budget | null, baseBranch: string, stepMode: boolean): $CancellablePromise<store$0.WorkItem> {
     return $Call.ByID(1009082601, projectID, workflowID, workflowScope, goal, seeds, budget, baseBranch, stepMode).then(($result: any) => {
-        return $$createType135($result);
+        return $$createType136($result);
     });
 }
 
@@ -4249,7 +4288,7 @@ export function WorkflowTakeOverUnit(itemID: string, unitID: string): $Cancellab
  */
 export function WorkflowUnbindThread(itemID: string): $CancellablePromise<store$0.WorkItem> {
     return $Call.ByID(2006703348, itemID).then(($result: any) => {
-        return $$createType135($result);
+        return $$createType136($result);
     });
 }
 
@@ -4259,7 +4298,7 @@ export function WorkflowUnbindThread(itemID: string): $CancellablePromise<store$
  */
 export function WorkflowUpdateAutomation(automationID: string, input: $models.WorkflowAutomationInput): $CancellablePromise<$models.WorkflowAutomationView> {
     return $Call.ByID(536579134, automationID, input).then(($result: any) => {
-        return $$createType136($result);
+        return $$createType137($result);
     });
 }
 
@@ -4402,29 +4441,30 @@ const $$createType116 = $models.WorkspaceFileSearchResult.createFrom;
 const $$createType117 = $models.CodexReviewStarted.createFrom;
 const $$createType118 = $models.SubmitPRReviewResult.createFrom;
 const $$createType119 = $models.PRUpdateSubscriptionResult.createFrom;
-const $$createType120 = $models.MCPAuthInitResult.createFrom;
-const $$createType121 = $models.VerifyEditDiffsResult.createFrom;
-const $$createType122 = $models.WorkflowAgentMemoryResult.createFrom;
-const $$createType123 = $models.WorkflowAgentAmendSeedsResult.createFrom;
-const $$createType124 = $models.WorkflowAgentGuideRunResult.createFrom;
-const $$createType125 = $models.WorkflowAgentRunInspection.createFrom;
-const $$createType126 = $models.WorkflowAgentMemoryLog.createFrom;
-const $$createType127 = $models.WorkflowAgentRunView.createFrom;
-const $$createType128 = $Create.Array($$createType127);
-const $$createType129 = $models.WorkflowAgentNarrative.createFrom;
-const $$createType130 = $models.WorkflowAgentRunOutputs.createFrom;
-const $$createType131 = $models.WorkflowAgentScheduleResult.createFrom;
-const $$createType132 = $models.WorkflowAgentNotesResult.createFrom;
-const $$createType133 = $models.WorkflowAgentStartResult.createFrom;
-const $$createType134 = $models.WorkflowAgentWatchResult.createFrom;
-const $$createType135 = store$0.WorkItem.createFrom;
-const $$createType136 = $models.WorkflowAutomationView.createFrom;
-const $$createType137 = $models.WorkflowDispositionReceipt.createFrom;
-const $$createType138 = $models.WorkflowDiscardPreview.createFrom;
-const $$createType139 = $models.WorkflowPRReviewComments.createFrom;
-const $$createType140 = engine$0.EngineState.createFrom;
-const $$createType141 = $models.WorkflowItemDetailView.createFrom;
-const $$createType142 = $Create.Array($$createType136);
-const $$createType143 = $models.WorkflowDefinitionCatalog.createFrom;
-const $$createType144 = $Create.Map($Create.Any, $Create.Any);
-const $$createType145 = $Create.Array($$createType135);
+const $$createType120 = $models.SyncThreadWindowResponse.createFrom;
+const $$createType121 = $models.MCPAuthInitResult.createFrom;
+const $$createType122 = $models.VerifyEditDiffsResult.createFrom;
+const $$createType123 = $models.WorkflowAgentMemoryResult.createFrom;
+const $$createType124 = $models.WorkflowAgentAmendSeedsResult.createFrom;
+const $$createType125 = $models.WorkflowAgentGuideRunResult.createFrom;
+const $$createType126 = $models.WorkflowAgentRunInspection.createFrom;
+const $$createType127 = $models.WorkflowAgentMemoryLog.createFrom;
+const $$createType128 = $models.WorkflowAgentRunView.createFrom;
+const $$createType129 = $Create.Array($$createType128);
+const $$createType130 = $models.WorkflowAgentNarrative.createFrom;
+const $$createType131 = $models.WorkflowAgentRunOutputs.createFrom;
+const $$createType132 = $models.WorkflowAgentScheduleResult.createFrom;
+const $$createType133 = $models.WorkflowAgentNotesResult.createFrom;
+const $$createType134 = $models.WorkflowAgentStartResult.createFrom;
+const $$createType135 = $models.WorkflowAgentWatchResult.createFrom;
+const $$createType136 = store$0.WorkItem.createFrom;
+const $$createType137 = $models.WorkflowAutomationView.createFrom;
+const $$createType138 = $models.WorkflowDispositionReceipt.createFrom;
+const $$createType139 = $models.WorkflowDiscardPreview.createFrom;
+const $$createType140 = $models.WorkflowPRReviewComments.createFrom;
+const $$createType141 = engine$0.EngineState.createFrom;
+const $$createType142 = $models.WorkflowItemDetailView.createFrom;
+const $$createType143 = $Create.Array($$createType137);
+const $$createType144 = $models.WorkflowDefinitionCatalog.createFrom;
+const $$createType145 = $Create.Map($Create.Any, $Create.Any);
+const $$createType146 = $Create.Array($$createType136);

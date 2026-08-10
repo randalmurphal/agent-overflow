@@ -232,7 +232,25 @@ root `CLAUDE.md` principle 3.
   scan/rewrite helper (v8 trims persisted tool_result echo, v9 trims
   collab agentsStates messages out of `items.meta`, v21 removes encrypted
   MultiAgentV2 prompt blobs and repairs their summaries).
-- `sqlutil.go` — shared SQL helpers.
+- `history_sync.go` / `store_meta.go` — the history invalidation
+  contract (see its own section below): the per-thread `history_rev` /
+  `history_epoch` stamps, the `bumpHistoryRevTx` helper every non-item
+  window-visible write calls, `SyncThreadWindow` (the one-transaction
+  "is the client's window still current?" read), and the store's
+  `backend_id` / `replica_generation` identity.
+- `proposed_plans.go` / `proposed_plan_comments.go` — the per-plan state
+  row (version, revision parent, implemented stamp) and the inline review
+  notes anchored to it. Neither table is read directly by the timeline:
+  `decorateProposedPlanItems` projects both onto `Item.Meta` at window-read
+  time, which is why every mutator in the pair advances `history_rev` —
+  see the history invalidation contract below.
+- `sqlutil.go` — shared SQL helpers. `sqlExecutor` and `sqlQueryer` are
+  what let a private read/write helper run on either pool or inside a
+  caller's transaction; `SyncThreadWindow`'s same-transaction guarantee
+  is built out of the latter. `placeholders` renders an `IN (...)` bind
+  list and `uniqueNonEmptyStrings` is its companion: the wire-supplied id
+  lists that feed one are trimmed and de-duplicated first, because their
+  length doubles as the expected rows-affected count.
 
 ## Responsibility boundary
 
@@ -648,6 +666,118 @@ baseline:
   the time this runs, so the import writer reads `TurnIDsForThread` up
   front and refuses a batch that would re-open a turn id the thread
   already holds.
+
+## History invalidation contract (v55)
+
+The frontend keeps a durable replica of a thread's window so a cold open
+can paint from it before the backend answers. That is only safe if the
+store can answer "is what you have still current?" cheaply and can never
+answer "yes" wrongly. Design: `docs/specs/thread-replica-sync.md` (§3
+counters, §4 event stamps, §5 the sync RPC).
+
+- `threads.history_rev` counts EVERY window-visible mutation of that
+  thread's history. `threads.history_epoch` counts only the mutations a
+  client cannot apply incrementally — a deletion or a reposition. Every
+  epoch bump also bumps rev, so rev alone answers "anything changed?"
+  and epoch answers "throw your copy away".
+- **Rev 0 is unreachable for any thread that predates the contract.**
+  v55's SQL ends with `UPDATE threads SET history_rev = 1;`, because
+  `(0, 0)` is also the JSON zero value of the sync request's stamp pair:
+  a client that omits the fields asks "is rev 0 still current?", and over
+  an untouched 400-item thread that would have matched and returned a
+  page-less `fresh` for a replica the client does not have. After the
+  lift, `(0, 0)` can only describe a thread with no item writes since
+  v55 — an empty window, for which a page-less `fresh` is truthful. The
+  column DEFAULT stays 0 for exactly that reason.
+- The counters are maintained by three AFTER triggers on `items`
+  (`trg_items_rev_insert` / `_update` / `_delete`), not by Go. Structural
+  on purpose: item writes happen from triage, the importer, the rollback
+  paths, and the migration chain, and a Go-side bump would be one
+  forgotten call site away from a client that never re-syncs. Their DDL
+  lives in ONE place — `historyRevTriggersSQL` in `history_sync.go` —
+  because it has two installers: migration v55 concatenates it, and
+  `RestoreFrom` recreates the triggers after dropping them for its row
+  copy (see below). The UPDATE trigger's epoch term is a boolean
+  addition —
+  `+ (OLD.turn_index IS NOT NEW.turn_index OR OLD.item_index IS NOT NEW.item_index OR OLD.thread_id IS NOT NEW.thread_id)`
+  — so a repositioning UPDATE bumps epoch and an in-place content UPDATE
+  does not. `IS NOT` rather than `<>` because a null-valued comparison
+  would add NULL and blank the column. The third disjunct pairs with the
+  trigger's two-row scope, `WHERE id IN (OLD.thread_id, NEW.thread_id)`:
+  no store code moves a row between threads, but if one ever does it is a
+  delete from one ordering and an insert into another, so both threads
+  take rev AND epoch.
+- Writes that change a window WITHOUT touching an `items` row carry a
+  `threadID` parameter and call `bumpHistoryRevTx` inside their own
+  transaction. The parameter IS the enforcement: there is no way to reach
+  the write without naming the thread it belongs to, so a new caller
+  cannot forget. Two classes qualify:
+  - the **payload mutators** (`AppendPayloadData`, `ReplacePayloadData`,
+    `UpdatePayloadMeta`, `UpdatePayloadSpans`) — payload content and
+    preview spans ride the item row on the wire, and `payloads` has no
+    thread_id for a trigger to route on;
+  - the **window-visible decoration sources**: `proposed_plans` and
+    `proposed_plan_comments`, whose rows `decorateProposedPlanItems`
+    projects onto `Item.Meta` on EVERY window read, `SyncThreadWindow`
+    included. `EnsureProposedPlanState(WithParent)`,
+    `MarkProposedPlanImplemented`, `CreateProposedPlanComment`,
+    `UpdateProposedPlanComment`, `DeleteOrResolveProposedPlanComment`,
+    and `MarkProposedPlanCommentsSent` all bump. Both tables reference
+    `threads(id)` directly, so the id they carry is always the PLAN's
+    thread — which matters because `MarkProposedPlanImplemented` is
+    called cross-thread (`app_send.go` passes the source plan's thread
+    while the work starts on another), and only the plan's window
+    changes. Idempotent replays that write nothing bump nothing.
+    **Any future read-time projection of a non-`items` table into a
+    windowed row joins this class**: if a window read can render it, its
+    writers bump.
+  The item-coupled combos (`UpsertItemWithPayloadAppend`,
+  `AppendItemSummaryAndPayloadData`) deliberately do NOT call it — their
+  item write already fired a trigger, and a second bump would only make
+  the counter less useful.
+- There is **no exported bare payload insert or upsert**. A payload is
+  only window-visible through the item that references it, and an export
+  that wrote `payloads` without naming a thread would be a hole in the
+  enforcement above — the `INSERT OR REPLACE` flavour additionally reset
+  `preview_spans` / `spans`, which ride the item row. Production writes
+  go through the item-coupled writers (`InsertItemWithPayload`,
+  `AppendItemWithPayload`, `UpsertItem`) or the threadID-carrying
+  mutators. Tests that need a bare row use `seedPayloadRow` in
+  `store_test.go`.
+- `RestoreFrom` DROPs the three triggers at the start of its transaction
+  and recreates them from `historyRevTriggersSQL` after the copy. A
+  whole-database replace is not a write the contract needs to catch — the
+  counters it must land on are the snapshot's own, copied verbatim — and
+  left installed the DELETE leg fires one `UPDATE threads` per cleared
+  item row while the INSERT leg is a no-op only for as long as `items`
+  keeps sorting before `threads` in `userTables`' `ORDER BY`.
+- `SyncThreadWindow` reads the stamps, the store identity, and the
+  window in ONE read-pool transaction. Under WAL that transaction pins
+  its snapshot at the first statement, which is what makes the returned
+  stamps describe EXACTLY the returned rows. Splitting it into two reads
+  would let a write land between them and hand a client a newer stamp
+  over older rows — a replica that is permanently wrong and never
+  corrects itself, because nothing later contradicts it. Any change here
+  keeps the single transaction.
+- `store_meta` (one row, `CHECK(id = 1)`) holds `backend_id` and
+  `replica_generation`. `backend_id` names the database and is stable for
+  its lifetime — it is what a client keys its on-disk replica by, so
+  re-minting it would orphan every cached window. `replica_generation`
+  names the current history LINEAGE: `RestoreFrom` re-mints it inside the
+  restore transaction because a restore rewinds every counter, so stamps
+  a client holds from the replaced future would compare as "ahead" and
+  read as fresh forever. The counters cannot express that; the generation
+  is what does. `store_meta` is an ordinary user table, so the restore's
+  row copy would otherwise hand this store the SNAPSHOT's backend id
+  (harness recordings come from other databases): `RestoreFrom` reads the
+  live id before the copy and `remintStoreIdentityTx` takes it as a
+  required parameter and writes BOTH columns back.
+- Clients may only ever UNDERSTATE what they hold. `provider:turn_completed`
+  and `user_message:reverted` carry stamps read from the store at build
+  time (`internal/triage/turn_lifecycle.go`, `app_conversation_rollback.go`);
+  `provider:item_event` frames deliberately carry none, because an
+  item-level stamp would be a promise about rows the frame does not
+  contain.
 
 ## WAL hygiene
 

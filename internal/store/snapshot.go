@@ -41,25 +41,45 @@ func (s *Store) SnapshotTo(destPath string) error {
 // delete all rows from every table, then INSERT ... SELECT from the
 // attached snapshot per table. sqlite_sequence is reset so AUTOINCREMENT
 // counters match the snapshot.
-func (s *Store) RestoreFrom(srcPath string) (retErr error) {
+// It returns the post-restore Identity so the caller MUST decide where
+// to publish it — the App caches identity for the bootstrap manifest,
+// and a restore that skipped re-publishing would keep serving the dead
+// generation for the life of the process, leaving every attached
+// client's replica invalidation circuit open (the exact failure the
+// generation exists to prevent).
+func (s *Store) RestoreFrom(srcPath string) (identity Identity, retErr error) {
 	if _, err := os.Stat(srcPath); err != nil {
-		return fmt.Errorf("store: snapshot source: %w", err)
+		return Identity{}, fmt.Errorf("store: snapshot source: %w", err)
 	}
 
 	// Migrate a scratch copy up to this binary's schema version.
 	scratch, err := migratedScratchCopy(srcPath)
 	if err != nil {
-		return err
+		return Identity{}, err
 	}
 	defer os.Remove(scratch)
 
 	tables, err := s.userTables()
 	if err != nil {
-		return err
+		return Identity{}, err
+	}
+
+	// Read the LIVE backend id before anything touches store_meta.
+	// `store_meta` is an ordinary user table, so the copy loop below
+	// replaces its row wholesale with the snapshot's — and the snapshot
+	// was minted by whatever store produced it, which for a harness
+	// recording is not this one. backend_id names THIS database for the
+	// life of the file (store_meta.go); adopting a foreign one would
+	// orphan every client replica keyed to the real id and, worse, make
+	// two stores claim the same identity. The re-mint below writes it
+	// back.
+	liveBackendID, err := s.backendIDForRestore()
+	if err != nil {
+		return Identity{}, err
 	}
 
 	if _, err := s.db.Exec("PRAGMA foreign_keys=OFF"); err != nil {
-		return fmt.Errorf("store: disable foreign keys: %w", err)
+		return Identity{}, fmt.Errorf("store: disable foreign keys: %w", err)
 	}
 	defer func() {
 		if _, err := s.db.Exec("PRAGMA foreign_keys=ON"); err != nil && retErr == nil {
@@ -68,7 +88,7 @@ func (s *Store) RestoreFrom(srcPath string) (retErr error) {
 	}()
 
 	if _, err := s.db.Exec("ATTACH DATABASE ? AS restore_src", scratch); err != nil {
-		return fmt.Errorf("store: attach snapshot: %w", err)
+		return Identity{}, fmt.Errorf("store: attach snapshot: %w", err)
 	}
 	defer func() {
 		if _, err := s.db.Exec("DETACH DATABASE restore_src"); err != nil && retErr == nil {
@@ -78,12 +98,12 @@ func (s *Store) RestoreFrom(srcPath string) (retErr error) {
 
 	srcTables, err := attachedTables(s)
 	if err != nil {
-		return err
+		return Identity{}, err
 	}
 
 	tx, err := s.db.Begin()
 	if err != nil {
-		return fmt.Errorf("store: begin restore: %w", err)
+		return Identity{}, fmt.Errorf("store: begin restore: %w", err)
 	}
 	defer func() {
 		if retErr != nil {
@@ -93,37 +113,75 @@ func (s *Store) RestoreFrom(srcPath string) (retErr error) {
 		}
 	}()
 
+	// Bracket the row copy with the history triggers dropped. They exist
+	// to catch writes nobody remembered to account for; a whole-database
+	// replace is not one of those — the counters it must land on are the
+	// snapshot's own, which the copy carries verbatim. Left installed,
+	// the DELETE leg would fire one `UPDATE threads` per cleared item row
+	// against rows the next statement replaces anyway, and the INSERT leg
+	// would be a no-op only for as long as `items` keeps sorting before
+	// `threads` in userTables' ORDER BY — a correctness argument resting
+	// on a collation accident. Dropping them makes it structural.
+	if _, err := tx.Exec(dropHistoryRevTriggersSQL); err != nil {
+		return Identity{}, fmt.Errorf("store: restore: drop history triggers: %w", err)
+	}
+
 	for _, table := range tables {
 		if _, err := tx.Exec(`DELETE FROM main."` + table + `"`); err != nil {
-			return fmt.Errorf("store: restore: clear %s: %w", table, err)
+			return Identity{}, fmt.Errorf("store: restore: clear %s: %w", table, err)
 		}
 	}
 	for _, table := range tables {
 		if !srcTables[table] {
 			// The migrated snapshot is on the same schema version, so a
 			// missing table means real corruption, not drift.
-			return fmt.Errorf("store: restore: snapshot missing table %s", table)
+			return Identity{}, fmt.Errorf("store: restore: snapshot missing table %s", table)
 		}
 		if _, err := tx.Exec(fmt.Sprintf(`INSERT INTO main.%q SELECT * FROM restore_src.%q`, table, table)); err != nil {
-			return fmt.Errorf("store: restore: copy %s: %w", table, err)
+			return Identity{}, fmt.Errorf("store: restore: copy %s: %w", table, err)
 		}
 	}
 	// Align AUTOINCREMENT counters (usage_ledger uses one). The table
 	// only exists once an AUTOINCREMENT table has been written to, on
 	// either side.
 	if _, err := tx.Exec(`DELETE FROM main.sqlite_sequence`); err != nil && !isNoSuchTable(err) {
-		return fmt.Errorf("store: restore: clear sqlite_sequence: %w", err)
+		return Identity{}, fmt.Errorf("store: restore: clear sqlite_sequence: %w", err)
 	}
 	if srcTables["sqlite_sequence"] {
 		if _, err := tx.Exec(`INSERT INTO main.sqlite_sequence SELECT * FROM restore_src.sqlite_sequence`); err != nil && !isNoSuchTable(err) {
-			return fmt.Errorf("store: restore: copy sqlite_sequence: %w", err)
+			return Identity{}, fmt.Errorf("store: restore: copy sqlite_sequence: %w", err)
 		}
 	}
 
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("store: commit restore: %w", err)
+	// Re-install what the copy ran without, from the same const migration
+	// v55 installs, so the two can never describe different contracts.
+	if _, err := tx.Exec(historyRevTriggersSQL); err != nil {
+		return Identity{}, fmt.Errorf("store: restore: recreate history triggers: %w", err)
 	}
-	return nil
+
+	// A restore rewinds every thread's history_rev / history_epoch to the
+	// snapshot's values while attached clients may hold stamps from the
+	// future that snapshot was taken before — a divergent future the
+	// counters cannot express, because they only ever count up. Re-minting
+	// the replica generation is what invalidates those clients wholesale
+	// (docs/specs/thread-replica-sync.md §3.3); it happens regardless of
+	// what generation the snapshot carried, since the snapshot's own value
+	// is just another stamp from another timeline. The live backend_id
+	// read before the copy is written back in the same statement: it names
+	// the store, not its continuity, and the snapshot's copy of it belongs
+	// to whichever store minted the snapshot.
+	if err := remintStoreIdentityTx(tx, liveBackendID, "store: restore: re-mint replica generation"); err != nil {
+		return Identity{}, err
+	}
+	identity, err = identityFrom(tx)
+	if err != nil {
+		return Identity{}, err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return Identity{}, fmt.Errorf("store: commit restore: %w", err)
+	}
+	return identity, nil
 }
 
 // migratedScratchCopy copies the snapshot beside itself and runs the

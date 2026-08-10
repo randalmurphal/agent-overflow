@@ -20,8 +20,13 @@
 // WSL2 forwards 127.0.0.1:<port> from inside the distro to the Windows
 // host's localhost via vEthernet. localhostForwarding=true must be
 // set in the user's /etc/wsl.conf or %USERPROFILE%/.wslconfig — it's
-// the WSL2 default but a user can disable it. The picker shows a
-// clear error if the connection back to the WSL backend fails.
+// the WSL2 default but a user can disable it. A port Windows has
+// reserved (Hyper-V/WSL2 excluded ranges, re-seeded every reboot)
+// breaks the same hop while the backend binds it happily inside the
+// distro; since the backend pins its listen port per install, that
+// would repeat on every launch, so launchAndProbe relaunches once with
+// --reset-transport-port before giving up. The picker shows a clear
+// error only if the retry fails too.
 //
 // The launcher is split across this file and three siblings:
 //
@@ -524,44 +529,21 @@ func (a *launcherApp) launchAndShow(distro string, transient bool) error {
 		return fmt.Errorf("install payload: %w", err)
 	}
 
-	phaseStarted = time.Now()
-	l, bs, err := wsllauncher.Launch(ctx, wsllauncher.LaunchOptions{
-		Distro:         distro,
-		BinaryPath:     binPath,
-		PassthroughEnv: diagenv.Passthrough(),
-	})
-	logBootPhase("launcher.wsl_launch", phaseStarted)
+	l, bs, err := a.launchAndProbe(ctx, distro, binPath)
 	if err != nil {
-		w.SetURL("/picker")
-		return fmt.Errorf("launch backend: %w", err)
-	}
-
-	a.mu.Lock()
-	a.launcher = l
-	a.mu.Unlock()
-
-	// Connectivity probe: confirm the Windows host can reach the WSL
-	// backend's listener over localhost before flipping the WebView
-	// over. WSL2 forwards 127.0.0.1:<port> from inside the distro to
-	// the Windows host's localhost via vEthernet, but only when
-	// localhostForwarding=true. A user with localhostForwarding=false
-	// in /etc/wsl.conf or %USERPROFILE%/.wslconfig sees the WSL backend
-	// boot fine (it's serving inside the distro) but the Windows
-	// WebView2 silently fails to connect. Without this probe the
-	// WebView would just blank-screen with no actionable feedback.
-	phaseStarted = time.Now()
-	if err := probeBootstrap(bs.Port, bs.Token); err != nil {
-		logBootPhase("launcher.probe_bootstrap", phaseStarted)
-		log.Printf("connectivity probe failed: %v", err)
 		var httpErr bootstrapHTTPError
-		if errors.As(err, &httpErr) && httpErr.StatusCode == http.StatusInternalServerError {
+		switch {
+		case errors.Is(err, errLaunchFailed):
+			w.SetURL("/picker")
+			return err
+		case errors.As(err, &httpErr) && httpErr.StatusCode == http.StatusInternalServerError:
 			w.SetURL("/startup-error")
 			return fmt.Errorf("backend failed during startup: %w", err)
+		default:
+			w.SetURL("/connectivity-error")
+			return fmt.Errorf("backend booted but unreachable from Windows: %w", err)
 		}
-		w.SetURL("/connectivity-error")
-		return fmt.Errorf("backend booted but unreachable from Windows: %w", err)
 	}
-	logBootPhase("launcher.probe_bootstrap", phaseStarted)
 
 	if err := a.startNotificationBridge(bs, l); err != nil {
 		log.Printf("notifications: start launcher bridge: %v", err)
@@ -612,6 +594,122 @@ func (a *launcherApp) launchAndShow(distro string, transient bool) error {
 	w.SetURL(url)
 	logBootPhase("launcher.window_set_url", phaseStarted)
 	return nil
+}
+
+// errLaunchFailed marks "we never got a backend at all" — wsl.exe
+// refused, the child died before its bootstrap line, the distro is
+// broken. launchAndShow routes this class back to the picker, since
+// there is nothing to connect to and possibly another distro to try.
+var errLaunchFailed = errors.New("launch backend")
+
+// resetTransportPortArg is the backend flag that discards this
+// install's pinned listen port before binding (the backend declares the
+// same name from wsllauncher and acts on it in main_transport_port.go).
+// It rides the child's argv rather than an env var deliberately: WSLENV
+// passthrough is for diagnostics, and anything load-bearing across the
+// WSL boundary belongs in explicit launch args
+// (internal/wsllauncher/AGENTS.md).
+const resetTransportPortArg = "--" + wsllauncher.ResetTransportPortFlag
+
+// launchAndProbe spawns the WSL backend and proves the Windows host can
+// reach its listener, which is the whole reason for the probe: WSL2
+// forwards 127.0.0.1:<port> out of the distro over vEthernet, and when
+// that forward is missing the backend serves happily inside WSL while
+// the WebView2 blank-screens with no feedback.
+//
+// It retries EXACTLY ONCE, on a fresh transport port, when the first
+// attempt was unreachable at the transport layer. That case is not
+// hypothetical: the backend pins its listen port per install so the
+// webview origin (and every origin-scoped browser store behind it) is
+// stable, and the pin is adopted from the ephemeral range — the same
+// range Hyper-V/WSL2 excluded port ranges cover, re-seeded on every
+// Windows reboot. Nothing on the WSL side can see that: the bind
+// SUCCEEDS, so the backend's own pin-clearing never fires, and without
+// this retry the app would show /connectivity-error identically on
+// every launch, forever, with the mitigation on that page (turn
+// localhostForwarding on) already true.
+//
+// One retry, not a loop: a fresh port costs the user their origin-scoped
+// browser state, and if a second port is unreachable too the problem is
+// the forwarding path itself, which is exactly what the error page
+// describes.
+func (a *launcherApp) launchAndProbe(ctx context.Context, distro, binPath string) (*wsllauncher.Launcher, *wsllauncher.Bootstrap, error) {
+	l, bs, err := a.launchBackend(ctx, distro, binPath, nil)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	probeErr := probeLaunchedBackend(bs)
+	if probeErr == nil {
+		return l, bs, nil
+	}
+	if !retryWithFreshTransportPort(probeErr) {
+		return nil, nil, probeErr
+	}
+
+	log.Printf("launcher: port %d is unreachable from Windows; relaunching the backend on a fresh transport port", bs.Port)
+	// Retire the unreachable backend first. It is healthy inside the
+	// distro and holds the app's SQLite store; two backends on one data
+	// dir would fight over the writer.
+	a.stopLaunchedBackend(l)
+
+	l, bs, err = a.launchBackend(ctx, distro, binPath, []string{resetTransportPortArg})
+	if err != nil {
+		return nil, nil, err
+	}
+	if retryErr := probeLaunchedBackend(bs); retryErr != nil {
+		// Wrapped, so the caller's bootstrapHTTPError classification
+		// still reads the retry's own failure; the first attempt rides
+		// along as context for launcher.log.
+		return nil, nil, fmt.Errorf("%w (also unreachable on the previous port: %v)", retryErr, probeErr)
+	}
+	return l, bs, nil
+}
+
+// launchBackend spawns the WSL child and records it as the live
+// launcher. extraArgs are appended to the backend's own argv.
+func (a *launcherApp) launchBackend(ctx context.Context, distro, binPath string, extraArgs []string) (*wsllauncher.Launcher, *wsllauncher.Bootstrap, error) {
+	phaseStarted := time.Now()
+	l, bs, err := wsllauncher.Launch(ctx, wsllauncher.LaunchOptions{
+		Distro:         distro,
+		BinaryPath:     binPath,
+		ExtraArgs:      extraArgs,
+		PassthroughEnv: diagenv.Passthrough(),
+	})
+	logBootPhase("launcher.wsl_launch", phaseStarted)
+	if err != nil {
+		return nil, nil, fmt.Errorf("%w: %w", errLaunchFailed, err)
+	}
+
+	a.mu.Lock()
+	a.launcher = l
+	a.mu.Unlock()
+	return l, bs, nil
+}
+
+// stopLaunchedBackend tears down a backend we are abandoning and clears
+// it from the launcher state, so OnShutdown can't later Stop a child
+// that a newer launch has already replaced.
+func (a *launcherApp) stopLaunchedBackend(l *wsllauncher.Launcher) {
+	a.mu.Lock()
+	if a.launcher == l {
+		a.launcher = nil
+	}
+	a.mu.Unlock()
+	if err := l.Stop(); err != nil {
+		log.Printf("launcher: stop unreachable backend: %v", err)
+	}
+}
+
+// probeLaunchedBackend runs the connectivity probe and logs its verdict.
+func probeLaunchedBackend(bs *wsllauncher.Bootstrap) error {
+	phaseStarted := time.Now()
+	err := probeBootstrap(bs.Port, bs.Token)
+	logBootPhase("launcher.probe_bootstrap", phaseStarted)
+	if err != nil {
+		log.Printf("connectivity probe failed: %v", err)
+	}
+	return err
 }
 
 // currentBackendURL returns the URL the WebView2 is currently pointed
@@ -684,6 +782,28 @@ func (e bootstrapHTTPError) Error() string {
 	return fmt.Sprintf("GET %s: status %d", e.URL, e.StatusCode)
 }
 
+// errBackendUnreachable marks a probe that never received a single HTTP
+// response from the WSL backend: every attempt inside the deadline was
+// refused, reset, or timed out at the transport layer. That is the
+// signature of the Windows→WSL localhost path not carrying this port —
+// either localhostForwarding is off, or (the case the retry below
+// exists for) the port sits inside a Hyper-V/WSL2 excluded range, which
+// Windows re-seeds on every reboot and which routinely covers the
+// ephemeral range our pinned port is adopted from.
+//
+// A probe that got ANY HTTP response never carries this: the localhost
+// path demonstrably works, and the failure is server-side.
+var errBackendUnreachable = errors.New("no HTTP response from the WSL backend over Windows localhost")
+
+// retryWithFreshTransportPort decides whether a failed connectivity
+// probe is worth one relaunch on a fresh transport port. Only the
+// unreachable class qualifies — a startup failure, a token mismatch, or
+// a host-guard rejection all prove the port is reachable, and moving it
+// would cost the user their origin-scoped browser state for nothing.
+func retryWithFreshTransportPort(err error) bool {
+	return errors.Is(err, errBackendUnreachable)
+}
+
 func probeBootstrapWithConfig(port int, token string, cfg bootstrapProbeConfig) error {
 	if cfg.AttemptTimeout <= 0 {
 		cfg.AttemptTimeout = bootstrapProbeAttemptTimeout
@@ -729,10 +849,16 @@ func probeBootstrapWithConfig(port int, token string, cfg bootstrapProbeConfig) 
 	deadline := time.Now().Add(cfg.Deadline)
 	var lastErr error
 	attempt := 0
+	// Tracks whether the localhost path ever carried a response at all —
+	// the difference between "Windows cannot reach this port" and "the
+	// backend answered and we didn't like the answer". See
+	// errBackendUnreachable.
+	sawHTTPResponse := false
 	for {
 		attempt++
 		resp, err := client.Get(url)
 		if err == nil {
+			sawHTTPResponse = true
 			body, _ := io.ReadAll(io.LimitReader(resp.Body, 256))
 			_ = resp.Body.Close()
 			if resp.StatusCode == http.StatusOK {
@@ -764,6 +890,9 @@ func probeBootstrapWithConfig(port int, token string, cfg bootstrapProbeConfig) 
 			break
 		}
 		time.Sleep(cfg.PollInterval)
+	}
+	if !sawHTTPResponse {
+		return fmt.Errorf("GET %s: %w after %d attempts: %w", redacted, errBackendUnreachable, attempt, lastErr)
 	}
 	return fmt.Errorf("GET %s: timed out after %d attempts: %w", redacted, attempt, lastErr)
 }

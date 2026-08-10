@@ -246,7 +246,7 @@ func TestCloneThreadItemsPreservesInputPayloadID(t *testing.T) {
 			t.Fatalf("create thread %s: %v", id, err)
 		}
 	}
-	if err := s.InsertPayload(Payload{
+	if err := seedPayloadRow(s, Payload{
 		ID: "p-edit-input", Kind: "tool_call_input", Meta: "{}",
 		Data: []byte(`{"old_string":"a","new_string":"b"}`), CreatedAt: now,
 	}); err != nil {

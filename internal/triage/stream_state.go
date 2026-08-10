@@ -468,7 +468,7 @@ func (r *Router) doSettleStreamingText(threadID, scope, itemID, status, finalCon
 			Content:   finalContent,
 			Timestamp: time.UnixMilli(now),
 		})
-		if err := r.store.ReplacePayloadData(item.PayloadID, []byte(finalContent), metaJSON, now); err != nil {
+		if err := r.store.ReplacePayloadData(threadID, item.PayloadID, []byte(finalContent), metaJSON, now); err != nil {
 			return fmt.Errorf("assistant text replace payload %s: %w", item.PayloadID, err)
 		}
 	}
@@ -939,7 +939,7 @@ func (r *Router) doSettleStreamingThinking(threadID, scope, itemID, status, fina
 		summary := ThinkingSummaryPreview(finalContent)
 		update.Summary = &summary
 		if item.PayloadID != "" {
-			if err := r.store.ReplacePayloadData(item.PayloadID, []byte(finalContent), item.PayloadMeta, now); err != nil {
+			if err := r.store.ReplacePayloadData(threadID, item.PayloadID, []byte(finalContent), item.PayloadMeta, now); err != nil {
 				return fmt.Errorf("thinking final replace payload %s: %w", item.PayloadID, err)
 			}
 		}
@@ -1028,7 +1028,7 @@ func (r *Router) persistOrUpdateCompletedThinkingItem(threadID string, turnIndex
 			item.Status = statusCompleted
 			item.UpdatedAt = time.Now().UnixMilli()
 			if item.PayloadID != "" {
-				if err := r.store.ReplacePayloadData(item.PayloadID, []byte(content), item.PayloadMeta, item.UpdatedAt); err != nil {
+				if err := r.store.ReplacePayloadData(threadID, item.PayloadID, []byte(content), item.PayloadMeta, item.UpdatedAt); err != nil {
 					return fmt.Errorf("thinking final replace payload %s: %w", item.PayloadID, err)
 				}
 			}

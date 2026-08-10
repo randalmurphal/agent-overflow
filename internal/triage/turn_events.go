@@ -55,6 +55,31 @@ type TurnCompletedEvent struct {
 	// into the composer. Always paired with Aborted: true.
 	RevertedUserMessage bool `json:"revertedUserMessage,omitempty"`
 	CountsAsActivity    bool `json:"countsAsActivity"`
+	// HistoryRev / HistoryEpoch are the thread's history invalidation
+	// stamps (docs/specs/thread-replica-sync.md §3) read at the moment
+	// this event was built — BEFORE the settlement writes that follow it
+	// in handleTurnComplete, so settle-time item writes (stranded
+	// streaming rows, force-closed orphan tool_calls) only ever make the
+	// stamps understate, costing one redundant window fetch (§3.4).
+	//
+	// The stamps are NOT a full attestation: writers outside this
+	// goroutine (the async highlight-span worker) can commit a rev bump
+	// before the read here while their frame reaches the client after
+	// this event — or never, across a disconnect. That is why the client
+	// adopts event-carried stamps in memory only, where a missed frame
+	// self-heals through replay/gap handling, and persists to its replica
+	// exclusively the stamps a SyncThreadWindow response attested (§4).
+	//
+	// Zero (or any non-positive value) means "no usable stamp" and the
+	// client ignores it — that rule is the guard, not any inference from
+	// the number. It is what the fields carry when the thread row was
+	// gone by the time the event was built, or the stamp read failed. On
+	// a post-v55 store a real stamp for a thread that has ever persisted
+	// an item is >= 1, so zero cannot collide with a genuine one, but the
+	// client must not lean on that: understating costs one redundant
+	// window fetch, which is always the safe direction (§3.4).
+	HistoryRev   int64 `json:"historyRev"`
+	HistoryEpoch int64 `json:"historyEpoch"`
 }
 
 // SessionDiedEvent is the frontend-facing payload for

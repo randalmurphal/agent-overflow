@@ -147,7 +147,7 @@ func (a *App) RevertConversationAndResendMessage(
 	// markReverted stays false: there is no in-flight turn-complete to
 	// tag (resolveRevertAndResendTarget rejected an active turn), so no
 	// Interrupted pill to suppress.
-	keptAnchorTurnItemIDs, err := a.rollbackConversationLocked(rollbackConversationLockedArgs{
+	cut, err := a.rollbackConversationLocked(rollbackConversationLockedArgs{
 		thread:                      thread,
 		userItem:                    item,
 		anchor:                      anchor,
@@ -168,7 +168,9 @@ func (a *App) RevertConversationAndResendMessage(
 		ThreadID:              threadID,
 		UserItemID:            item.ID,
 		TurnIndex:             item.TurnIndex,
-		KeptAnchorTurnItemIDs: keptAnchorTurnItemIDs,
+		KeptAnchorTurnItemIDs: cut.KeptAnchorTurnItemIDs,
+		HistoryRev:            cut.Stamp.Rev,
+		HistoryEpoch:          cut.Stamp.Epoch,
 		DraftPendingResend:    true,
 	})
 

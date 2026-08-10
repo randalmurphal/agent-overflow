@@ -118,8 +118,13 @@ var wireSafeMethods = map[string]bool{
 	"ListRecentTurns":         true,
 	"ListSubagentDescendants": true,
 	"ListThreadSliceAround":   true,
-	"SearchThreadMessages":    true,
-	"SearchThreadItems":       true,
+	// The stamp-gated form of ListThreadSliceAround: same store read,
+	// same window, plus the two counters that let the caller skip the
+	// rows entirely. Store-read-only — no FS, no process, no credentials
+	// — and it is the RPC remote clients benefit from most.
+	"SyncThreadWindow":     true,
+	"SearchThreadMessages": true,
+	"SearchThreadItems":    true,
 
 	// Payload reads. Authorization via getThreadPayloadMeta's
 	// (threadID, payloadID) linkage check. Moved from LocalOnly

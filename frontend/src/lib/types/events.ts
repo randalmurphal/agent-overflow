@@ -393,6 +393,16 @@ export interface TurnCompletedEvent {
    * `MarkTurnReverted` consumes its one-shot flag.
    */
   revertedUserMessage?: boolean;
+  /**
+   * Thread history invalidation stamps (docs/specs/thread-replica-sync.md
+   * §3) read as this event was built. Adopted IN MEMORY ONLY: a writer
+   * outside the emitting goroutine (the async highlight-span worker) can
+   * commit a rev bump before this read while its own frame arrives later
+   * — or never — so the pair is not a full attestation and must never be
+   * persisted into the replica (§3.4). Zero means "no stamp".
+   */
+  historyRev?: number;
+  historyEpoch?: number;
 }
 
 /**

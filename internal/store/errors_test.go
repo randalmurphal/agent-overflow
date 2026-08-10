@@ -49,8 +49,8 @@ func TestStoreMethodsReturnErrorsAfterClose(t *testing.T) {
 	if _, err := s.UpdateSessionRef(thread.ID, "session-ref"); err == nil {
 		t.Fatal("expected UpdateSessionRef to fail after store close")
 	}
-	if err := s.InsertPayload(payload); err == nil {
-		t.Fatal("expected InsertPayload to fail after store close")
+	if err := seedPayloadRow(s, payload); err == nil {
+		t.Fatal("expected a payload insert to fail after store close")
 	}
 	if _, err := s.GetPayloadMeta(payload.ID); err == nil {
 		t.Fatal("expected GetPayloadMeta to fail after store close")

@@ -17,6 +17,12 @@ import { resetPanesForTest } from './panes.svelte';
 import { resetForTest as resetThreadStatuses } from './threadStatuses.svelte';
 import { buildPane, makeItem, makeThread } from '../../test/helpers/chat';
 import { resetBindingMocks } from '../../test/mocks/bindings-app';
+import {
+  __resetThreadHistoryStampsForTest,
+  getThreadHistoryStamp,
+  recordAttestedStamp,
+} from './threadHistoryStamps';
+import { threadItemCache } from './threadItemCache';
 import type { ThreadPane } from './thread.svelte';
 
 function stubDraft(): { draft: ComposerDraftStore; reloadFromBackend: ReturnType<typeof vi.fn> } {
@@ -43,6 +49,36 @@ describe('applyUserMessageReverted', () => {
     resetThreadStatuses();
     resetComposerDraftRegistryForTest();
     resetResendRevertMarkersForTest();
+    __resetThreadHistoryStampsForTest();
+  });
+
+  it('drops every cached copy of the window and adopts the post-cut stamp', async () => {
+    await seedPane();
+    // A window cached under a PRE-cut stamp plus a POST-cut stamp is the
+    // one shape that could answer `fresh` over rows the backend removed.
+    recordAttestedStamp('thread-a', 1, 5);
+    threadItemCache.set('thread-a', {
+      items: [makeItem({ id: 'u:1', threadId: 'thread-a', turnIndex: 1 })],
+      oldestLoadedTurnIndex: 0,
+      newestLoadedTurnIndex: 1,
+      hasMoreHistory: false,
+      hasMoreNewer: false,
+      latestSettledTurn: null,
+      historyStamp: { epoch: 1, rev: 5, attested: true },
+    });
+
+    applyUserMessageReverted({
+      threadId: 'thread-a',
+      userItemId: 'u:1',
+      turnIndex: 1,
+      historyEpoch: 2,
+      historyRev: 9,
+    });
+
+    expect(threadItemCache.get('thread-a')).toBeNull();
+    // Adopted in memory only — never attested, so it can never be
+    // persisted into the replica.
+    expect(getThreadHistoryStamp('thread-a')).toEqual({ epoch: 2, rev: 9, attested: false });
   });
 
   it('records a consumable marker only for a pending-resend revert', async () => {

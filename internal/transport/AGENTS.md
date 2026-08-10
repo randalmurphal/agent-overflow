@@ -24,6 +24,73 @@ backend.
 - The receiver (App). The dispatcher takes an `any` and reflects.
 - TLS termination. Local binds are always plain `ws://`; real public
   exposure goes behind Tailscale Serve / SSH tunnel / reverse proxy.
+- Where the listen port comes from. `Config.Port` is injected; this
+  package never reads a config file.
+
+## The listen port is pinned per install
+
+An ephemeral port makes the webview's origin (host + port) change every
+launch, which wipes every origin-scoped browser store — localStorage and
+the IndexedDB thread replica (`docs/specs/thread-replica-sync.md` §6.0).
+So whenever the resolved port would be 0 — the desktop default AND an
+explicit `--listen host:0`, which is what the Windows WSL launcher
+passes — `main.go` (`main_transport_port.go`, `pinTransportPort`) reads
+a pinned port from `transport-port.json` in the boot settings dir
+(alongside `client-id.json`, same atomicfile pattern) and injects it as
+`Config.Port`. After `Start` it re-reads `Server.Addr()` and persists
+whatever actually got bound. First boot, a missing file, and an invalid
+one (garbage JSON, port outside 1–65535) are all "no pin": bind
+ephemeral, then record. An explicit non-zero `--listen host:port` wins
+outright and neither reads nor writes the file. Persistence is
+best-effort — an unresolvable settings dir or a failed write logs and
+leaves the run ephemeral, never blocks boot. Port obscurity was never an
+access control here (the bootstrap token and the Host/Origin checks
+are), so pinning costs nothing.
+
+`Config.EphemeralPortFallback` is the transport half: with a non-zero
+`Port`, a bind that fails **because of the port** (`portUnavailable` —
+EADDRINUSE, EACCES, and their WSA spellings) retries exactly once on
+port 0 and logs both the failure and where it landed; any other bind
+error — notably a bind address this host does not own — still fails
+Start loudly, since port 0 would fail identically. `main.go` then adopts
+the new port into the file, so a permanently squatted port churns the
+origin once rather than every launch. Callers who named a port
+explicitly leave the flag off. `Rebind` (the LAN toggle) is untouched by
+all of this: `app_network.go` computes the new addr from the live
+`Server.Addr()` port, so a host flip keeps the pinned port, and Rebind
+never falls back to an ephemeral port — silently moving a live server's
+port would break every connected client's origin. Rebind's own recovery
+uses the strictly narrower `addrInUse` (EADDRINUSE / WSAEADDRINUSE):
+that path cures a bind by CLOSING our live listener and retrying, which
+can only help when the address was in use — a permission/reservation
+refusal survives the close, so widening the predicate there would
+destroy a working listener for an error it cannot fix.
+
+### The pin can be honoured and still be wrong: `--reset-transport-port`
+
+A bind that SUCCEEDS proves nothing about reachability. Under the
+Windows/WSL launcher the backend binds inside the distro while the
+window connects from the Windows host, and Hyper-V/WSL2 excluded port
+ranges — re-seeded on every Windows reboot, routinely covering the
+ephemeral range an adopted pin comes from — silently break that hop. The
+in-server fallback and `clearOnFailedBind` both key on a bind FAILURE,
+so neither can ever see this: the pin is honoured perfectly and the
+launcher's `/connectivity-error` page comes up identically on every
+launch, forever.
+
+Only the launcher can observe it, so the signal is explicit rather than
+inferred. `cmd/agent-overflow-windows` classifies a probe that never got
+a single HTTP response (`errBackendUnreachable`) as unreachable,
+retires that backend, and relaunches it ONCE with
+`--reset-transport-port` (`wsllauncher.ResetTransportPortFlag` — one
+definition, spelled by the launcher's argv and declared by the backend's
+flag set). The backend deletes `transport-port.json` before consulting
+it, logs the removal, and boots normally: ephemeral bind, then adopt. A
+reset with no pin is an ordinary boot, and a reset alongside an explicit
+`--listen host:port` leaves the file alone, because that boot never
+consults it. One retry only — a fresh port costs the user every
+origin-scoped browser store, and a second unreachable port means the
+forwarding path itself is broken, which is what the error page covers.
 
 ## Token refusal is a 404, and the SPA depends on it
 

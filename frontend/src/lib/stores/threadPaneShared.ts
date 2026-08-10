@@ -85,6 +85,16 @@ export const ACTIVE_TIMELINE_WINDOW_HARD_CEILING_ITEMS = 1600;
 export const SLICE_AROUND_ITEM_BUDGET = 200;
 
 /**
+ * Delay before the open thread's window is written back to the durable
+ * replica after a sync response attested it. Long enough that the
+ * switch's own settle (live-state hydration, recent turns, the first
+ * streamed rows) is over before the copy is taken, short enough that a
+ * crash costs at most this much of the session. The switch-away snapshot
+ * is the primary write; this covers the thread the user never leaves.
+ */
+export const REPLICA_WRITE_BACK_DELAY_MS = 2_000;
+
+/**
  * Doherty perception threshold for suppressing spinner flash on fast
  * thread switches.
  */

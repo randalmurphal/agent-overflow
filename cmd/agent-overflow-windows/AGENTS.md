@@ -60,6 +60,28 @@ internal `-Embedding` COM-server switch. The parser accepts it so a click can
 cold-start the launcher and register the notification callback; it is not a
 user-facing option and does not alter distro selection.
 
+## Connectivity probe and the one fresh-port retry
+
+`launchAndProbe` owns the post-`Launch` sequence: probe
+`/bootstrap.json` over Windows localhost, and on the **unreachable**
+class only (`errBackendUnreachable` — the probe never got a single HTTP
+response inside its deadline) stop that backend and relaunch it ONCE
+with `--reset-transport-port` (`wsllauncher.ResetTransportPortFlag`).
+
+The retry exists because the backend pins its listen port per install
+(`internal/transport/AGENTS.md` § the listen port is pinned) and adopts
+it from the ephemeral range — the same range Hyper-V/WSL2 excluded port
+ranges cover, and those are re-seeded on every Windows reboot. The WSL
+side sees a successful bind, so nothing there can clear the pin; without
+the retry the user gets `/connectivity-error` identically on every
+launch. The old backend is stopped first: it is healthy inside the
+distro and holds the SQLite store.
+
+Anything the backend ANSWERED (500 → `/startup-error`, 404, a never-ready
+503) is not retried — the port is demonstrably reachable, and a fresh one
+would churn the webview origin, wiping localStorage and the IndexedDB
+thread replica, for nothing.
+
 ## Self-update: acting on an install directive
 
 The WSL backend downloads and digest-verifies the new launcher `.exe` and

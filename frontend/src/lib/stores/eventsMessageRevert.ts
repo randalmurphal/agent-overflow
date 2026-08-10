@@ -6,6 +6,9 @@ import type { UserMessageRevertedEvent } from '../types/messageRevert';
 import { iterPanes } from './panes.svelte';
 import { getComposerDraftForPane } from './composerDraftRegistry.svelte';
 import { projectThreadReverted } from './threadStatuses.svelte';
+import { adoptEventStamp, dropThreadHistoryStamp } from './threadHistoryStamps';
+import { threadItemCache } from './threadItemCache';
+import { removeReplicaWindow } from '../replica';
 
 // `user_message:reverted` fires after a successful conversation revert
 // (Stop/Esc un-send, or the edit-and-resend saga's committed revert).
@@ -99,6 +102,14 @@ export function applyUserMessageReverted(payload: UserMessageRevertedEvent | nul
   // and so no orphaned Zone 2 chip (whose provider confirm died with
   // the reverted session) lingers under new output.
   projectThreadReverted(payload.threadId);
+  // Every cached copy of this thread's window predates the cut, and the
+  // per-pane patch below only reaches panes that are showing it. Drop
+  // them unconditionally (and the stamp with them): a cached window
+  // under a post-cut stamp is the one shape that would answer `fresh`
+  // over rows the backend removed.
+  dropThreadHistoryStamp(payload.threadId);
+  threadItemCache.evict(payload.threadId);
+  void removeReplicaWindow(payload.threadId);
   for (const pane of iterPanes()) {
     if (pane.threadId !== payload.threadId) continue;
     pane.removeRevertedItems(payload.turnIndex, payload.keptAnchorTurnItemIds ?? []);
@@ -108,4 +119,9 @@ export function applyUserMessageReverted(payload: UserMessageRevertedEvent | nul
       void draft.reloadFromBackend(payload.threadId);
     }
   }
+  // After the cut has been applied everywhere, not before: the stamp
+  // describes post-cut history, and adopting it while a pane still held
+  // pre-cut rows would let the next sync call them fresh. In-memory
+  // only, like every event-carried stamp (§3.4).
+  adoptEventStamp(payload.threadId, payload.historyEpoch, payload.historyRev);
 }

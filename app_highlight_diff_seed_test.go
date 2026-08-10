@@ -374,18 +374,18 @@ func TestGetPayloadDataServesPersistedPatchSpans(t *testing.T) {
 		t.Fatalf("fixture seeds wrong: %#v", seeds)
 	}
 	current := marshalPersistedPatchSpans(seeds)
-	if err := app.store.UpdatePayloadSpans("payload-diff", "", current); err != nil {
+	if err := app.store.UpdatePayloadSpans(thread.ID, "payload-diff", "", current); err != nil {
 		t.Fatalf("UpdatePayloadSpans(payload-diff) error = %v", err)
 	}
 	stale, err := json.Marshal(PersistedPatchSpans{Version: "stale-schema", Files: seeds})
 	if err != nil {
 		t.Fatalf("marshal stale blob: %v", err)
 	}
-	if err := app.store.UpdatePayloadSpans("payload-stale", "", string(stale)); err != nil {
+	if err := app.store.UpdatePayloadSpans(thread.ID, "payload-stale", "", string(stale)); err != nil {
 		t.Fatalf("UpdatePayloadSpans(payload-stale) error = %v", err)
 	}
 	// Non-diff kinds never attach, even with a blob present.
-	if err := app.store.UpdatePayloadSpans("payload-cmd", "", current); err != nil {
+	if err := app.store.UpdatePayloadSpans(thread.ID, "payload-cmd", "", current); err != nil {
 		t.Fatalf("UpdatePayloadSpans(payload-cmd) error = %v", err)
 	}
 

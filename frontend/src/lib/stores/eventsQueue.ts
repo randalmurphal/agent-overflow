@@ -79,7 +79,7 @@ export function applyQueueRestored(evt: QueueRestoredPayload | undefined): void 
     // The backend deleted these rows when it restored their content to
     // the draft (failed Codex resend, session death); drop any mounted
     // timeline rows so the UI matches the store.
-    for (const id of userItemIds) pane.removeItemById(id);
+    for (const id of userItemIds) pane.removeItemById(id, evt.threadId);
     const draft = getComposerDraftForPane(pane.paneId);
     if (draft) {
       void draft.reloadFromBackend(evt.threadId);

@@ -180,6 +180,71 @@ export function reconcileItemWindow(incoming: readonly Item[], current: readonly
 }
 
 /**
+ * Install an attested `SyncThreadWindow` page over a window that was
+ * painted from a cache (L1 snapshot or IndexedDB replica), keeping the
+ * rows the wire delivered while the page was in flight.
+ *
+ * Two rules, and they pull in opposite directions:
+ *
+ *  - **Paint-only rows do not survive.** A cached row the page does not
+ *    contain no longer exists (or no longer sits here) as of the read
+ *    the stamps attest, so it is dropped. That is what makes the
+ *    subsequent write-back safe: everything persisted descends from the
+ *    attested page (docs/specs/thread-replica-sync.md §6.1 step 4).
+ *  - **Live rows are newer than the page.** Anything the wire touched
+ *    since the switch began post-dates the page's read snapshot, so its
+ *    version wins where both have the row, and it is kept where the page
+ *    does not have it at all. Without this a thread opened mid-stream
+ *    would lose the row it was streaming into.
+ *
+ * Unchanged rows keep their existing reference so the reconcile does not
+ * re-render them. Returns `current` itself when nothing moved.
+ */
+export function applySyncPage(
+  page: readonly Item[],
+  current: readonly Item[],
+  liveTouchedIds: ReadonlySet<string>,
+): Item[] {
+  if (page.length === 0 && current.length === 0) return current as Item[];
+
+  const currentById = new Map<string, Item>();
+  for (const item of current) currentById.set(item.id, item);
+
+  const next: Item[] = [];
+  const pageIds = new Set<string>();
+  for (const item of page) {
+    pageIds.add(item.id);
+    const existing = currentById.get(item.id);
+    if (!existing) {
+      next.push(item);
+      continue;
+    }
+    if (liveTouchedIds.has(item.id) || itemsAreEqual(existing, item)) {
+      next.push(existing);
+      continue;
+    }
+    next.push(item);
+  }
+
+  for (const item of current) {
+    if (pageIds.has(item.id)) continue;
+    if (!liveTouchedIds.has(item.id)) continue;
+    next.push(item);
+  }
+  // Always sorted, never "the page was sorted so the result is": the
+  // live arrivals are appended out of position by construction, and the
+  // window's order is a property callers rely on rather than something
+  // the wire is trusted to have got right.
+  next.sort(compareItemsByTimelinePosition);
+
+  if (next.length !== current.length) return next;
+  for (let index = 0; index < current.length; index += 1) {
+    if (current[index] !== next[index]) return next;
+  }
+  return current as Item[];
+}
+
+/**
  * Like `mergeItemsById` but only adds rows not already present. Existing rows
  * keep their current reference so streamed events are not clobbered by a
  * slightly older SQLite row returned by a concurrent load.
