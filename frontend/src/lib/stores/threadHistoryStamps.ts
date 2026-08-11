@@ -33,7 +33,7 @@
 // would have converged them threw — so pairing it with whatever rows a
 // pane happens to hold is a permanent false `fresh`. The write gate is
 // the attestation the pane carries for the rows it is persisting
-// (`windowAttestation` in thread.svelte.ts); a registry slot for it was
+// (`windowAttestation` in threadSwitchLoad.svelte.ts); a registry slot for it was
 // deleted for exactly that reason — do not add one back.
 //
 // The `attested` FLAG on the held stamp is still load-bearing here: it

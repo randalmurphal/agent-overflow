@@ -9,6 +9,7 @@ import { projectThreadReverted } from './threadStatuses.svelte';
 import { adoptEventStamp, dropThreadHistoryStamp } from './threadHistoryStamps';
 import { threadItemCache } from './threadItemCache';
 import { removeReplicaWindow } from '../replica';
+import { compositeKey } from '../utils/compositeKey';
 
 // `user_message:reverted` fires after a successful conversation revert
 // (Stop/Esc un-send, or the edit-and-resend saga's committed revert).
@@ -53,11 +54,10 @@ import { removeReplicaWindow } from '../replica';
 // misreport a committed revert as "nothing happened". The map value is
 // the thread id so the per-thread sweep below compares values instead of
 // parsing keys — no separator can then be confused for one inside an id.
-const MARKER_KEY_SEPARATOR = '\u0000';
 const pendingResendReverts = new Map<string, string>();
 
 function markerKey(threadId: string, userItemId: string): string {
-  return `${threadId}${MARKER_KEY_SEPARATOR}${userItemId}`;
+  return compositeKey(threadId, userItemId);
 }
 
 // Consume-on-read from both saga outcomes, so a stale marker can never

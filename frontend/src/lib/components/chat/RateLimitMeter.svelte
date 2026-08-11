@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { compositeKey } from '../../utils/compositeKey';
   import { formatResetCountdown } from '../../utils/format';
   import { getProviderAccount } from '../../stores/accountInfo.svelte';
   import {
@@ -78,7 +79,7 @@
     // reactive by itself.
     void countdownGeneration;
     return entries.map((limit) => ({
-      key: `${limit.limitId}\u0000${limit.windowMins}`,
+      key: compositeKey(limit.limitId, limit.windowMins),
       name: rateLimitDisplayName(limit),
       percentage: Math.round(normalizedPercentage(limit.usedPercent)),
       countdown: formatResetCountdown(limit.resetsAt),

@@ -203,6 +203,13 @@ restores a bounded cache snapshot when present, and otherwise fetches a
 viewport-sized slice with `App.ListThreadSliceAround(threadID,
 anchorItemID, SLICE_AROUND_ITEM_BUDGET)`.
 
+The pipeline itself — `snapshotOutgoingPane`,
+`installCacheOrFreshState`, `paintReplicaWindow`, `runItemWindowSync`,
+`applySyncResponse`, `runParallelLoad` and `refreshFromBackend` — lives
+in `frontend/src/lib/stores/threadSwitchLoad.svelte.ts`;
+`thread.svelte.ts` keeps the pane state it writes through and exposes
+the two methods as one-line delegations.
+
 The switch runs `SwitchThread`, live-state hydration, recent-turn fetch,
 and the initial slice under one `Promise.allSettled`.
 There is no second wider-window load on switch. Older history pages in
@@ -1143,7 +1150,8 @@ storage cap and 50-thread in-memory cap both evict LRU-oldest — a memory
 eviction never touches the persistent store (the thread's priors are
 still on disk and rehydrate on its next visit); only an explicit
 `clearThreadSizePriors` (thread deletion, item mutation, same-thread
-reswitch — `thread.svelte.ts`, `threads.svelte.ts removeThread`) deletes
+reswitch — `threadSwitchLoad.svelte.ts`'s `dropCachedWindow`,
+`threads.svelte.ts removeThread`) deletes
 from storage too. Storage failures (quota, corrupt JSON from a stale
 schema version or a hand-edited profile) warn once and degrade to
 "priors don't persist this session" rather than throwing. None of this

@@ -19,6 +19,7 @@ import { projectThreadItem } from './threadStatuses.svelte';
 import { syncProposedPlanStatus, syncThreadActivity, userTextCountsAsActivity } from './eventsThreadRows';
 import { lookupDiscussionLiveTail } from './discussionLiveTail';
 import { isBoundedString, isFiniteNumber } from './eventsGuards';
+import { compositeKey } from '../utils/compositeKey';
 
 const itemUpsertSubscribers: Set<(item: Item) => void> = new Set();
 const ITEM_EVENT_FLUSH_MAX_DELAY_MS = 50;
@@ -340,7 +341,7 @@ export function flushItemEventQueue(): void {
   const pendingDeltaItemKeys = new Set<string>();
 
   const itemConflictKey = (threadId: string, itemId: string): string =>
-    `${threadId}\u0000${itemId}`;
+    compositeKey(threadId, itemId);
 
   const flushPendingUpserts = () => {
     if (pendingUpserts.length === 0) return;
@@ -354,7 +355,7 @@ export function flushItemEventQueue(): void {
   const queueDelta = (evt: ItemDeltaEvent) => {
     // Coalescing key includes kind (a row's text and thinking streams
     // coalesce separately); the per-item conflict key does not.
-    const key = `${evt.threadId}\u0000${evt.itemId}\u0000${evt.kind}`;
+    const key = compositeKey(evt.threadId, evt.itemId, evt.kind);
     const existing = pendingDeltas.get(key);
     if (existing) {
       existing.chunks.push(evt.delta);

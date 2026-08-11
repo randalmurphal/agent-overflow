@@ -5,6 +5,7 @@
 import type { RateLimitEntry, RateLimitsSnapshot } from '../types/events';
 import { asProviderID, type ProviderID } from '../types/providers';
 import { getProviderAccount } from './accountInfo.svelte';
+import { compositeKey } from '../utils/compositeKey';
 
 const LEGACY_ACCOUNT = '__active__';
 const MAX_TIMER_DELAY = 2_147_000_000;
@@ -21,7 +22,7 @@ let expiryTimer: ReturnType<typeof setTimeout> | undefined;
 let expiryGeneration = $state(0);
 
 function entryKey(entry: RateLimitEntry): string {
-  return `${entry.limitId.trim().toLowerCase()}\u0000${entry.windowMins}`;
+  return compositeKey(entry.limitId.trim().toLowerCase(), entry.windowMins);
 }
 
 function accountKey(snapshot: RateLimitsSnapshot): string {

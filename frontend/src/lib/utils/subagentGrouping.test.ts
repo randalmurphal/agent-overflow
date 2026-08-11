@@ -1767,6 +1767,46 @@ describe('subagent anchor decoration fallback', () => {
     expect(group.latestChildSummary).toBe('decorated preview');
   });
 
+  // The candidate walk decides "does this row contribute text?" without
+  // building the preview, and normalizes only the winner. These two pin
+  // the halves of that split: the gate must reject exactly what
+  // normalization would have emptied, and the winner must still come out
+  // normalized rather than raw.
+  it('skips a whitespace-only child summary as a preview candidate', () => {
+    const nodes = groupItemsBySubagent([
+      decoratedLaunch('agent-1', 0, { subagentDescendantCount: 2 }),
+      mkItem({ id: 'c1', itemIndex: 1, parentId: 'agent-1', summary: 'real text' }),
+      mkItem({ id: 'c2', itemIndex: 2, parentId: 'agent-1', summary: '  \n\t ' }),
+    ]);
+
+    // c2 is the later row, so a gate that let it through would win and
+    // render an empty preview.
+    expect(expectGroup(nodes[0]).latestChildSummary).toBe('real text');
+  });
+
+  // Both winner branches, because they are separate returns: an active
+  // descendant and a terminal one must come out of the walk equally
+  // normalized.
+  for (const status of ['completed', 'streaming'] as const) {
+    it(`normalizes the winning ${status} child summary, not only the decoration`, () => {
+      const nodes = groupItemsBySubagent([
+        decoratedLaunch('agent-1', 0, { subagentDescendantCount: 1 }),
+        mkItem({
+          id: 'c1',
+          itemIndex: 1,
+          parentId: 'agent-1',
+          status,
+          summary: `\n  ran\n\n  tests ${'x'.repeat(400)}`,
+        }),
+      ]);
+
+      const summary = expectGroup(nodes[0]).latestChildSummary;
+      expect(summary.startsWith('ran tests ')).toBe(true);
+      expect(summary.endsWith('...')).toBe(true);
+      expect(summary.length).toBeLessThanOrEqual(163);
+    });
+  }
+
   it('truncates an oversized decorated preview like child previews', () => {
     const nodes = groupItemsBySubagent([
       decoratedLaunch('agent-1', 0, {

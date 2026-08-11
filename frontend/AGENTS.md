@@ -11,10 +11,21 @@ Svelte 5 + Vite 8 (Rolldown) + Tailwind 4 + TypeScript.
 ## Layout
 
 - `src/lib/stores/` — runes-based reactive stores. `thread.svelte.ts`
-  owns the per-thread `ThreadPane` factory, composed from its
-  `thread*` sub-factory modules (`threadChannelState.svelte.ts`,
-  `threadTimelineWindow.svelte.ts`, `threadStreamingReveal.svelte.ts`,
-  …); `events.ts` is a thin composition root that fans backend events
+  is the composition root for the per-thread `ThreadPane` factory: it
+  owns the pane's `$state` fields, the timeline mutation chokepoints
+  (`writeItemAt`, `commitTimelineItems`/`commitUpsertResult`,
+  `replaceTimelineItems`, `dropTimelineItems` and the dispose/index
+  bookkeeping behind them) and the returned API object, and composes
+  everything else from its `thread*` sub-factory modules —
+  `threadSwitchLoad.svelte.ts` (switch / window-sync / replica
+  pipeline, including `switchThread` and `refreshFromBackend`),
+  `threadItemStreamApply.ts` (the streaming upsert/delta/meta/patch
+  machine), `threadTimelineWindow.svelte.ts`,
+  `threadStreamingReveal.svelte.ts`, `threadSubagentMemory.ts`,
+  `threadChannelState.svelte.ts`, …. Each takes a ctx object of getters
+  and callbacks, so item-array assignment and revision bumps stay at
+  the pane's own chokepoints; `events.ts` is a thin composition root
+  that fans backend events
   out to the `events*` domain modules (`eventsItemStream.ts`,
   `eventsProvider.ts`, `eventsDiscussion.ts`, …); `bindings.ts` wraps
   generated Wails calls.
@@ -254,7 +265,9 @@ diagnostics live in
 [`docs/architecture/frontend-scroll.md`](../docs/architecture/frontend-scroll.md).
 Read that before touching:
 
-- `src/lib/stores/thread.svelte.ts`
+- `src/lib/stores/thread.svelte.ts` +
+  `src/lib/stores/threadSwitchLoad.svelte.ts` (the switch / sync /
+  replica pipeline itself)
 - `src/lib/stores/threadItemCache.ts`
 - `src/lib/stores/threadScrollSnapshots.ts`
 - `src/lib/components/chat/MessageTimeline.svelte`

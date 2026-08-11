@@ -48,6 +48,7 @@
 
 import type { PathRef } from '../types/models';
 import { parseJsonObject } from './parseJsonObject';
+import { compositeKey } from './compositeKey';
 
 // Memo for `getPathRefsFromMeta`, keyed by the exact meta string.
 // Identity stability is the point, not just parse cost: streaming rows
@@ -113,12 +114,16 @@ const pathRefsByContent: Map<string, PathRef[]> = new Map();
 
 function canonicalizePathRefs(refs: PathRef[] | undefined): PathRef[] | undefined {
   if (!refs) return undefined;
-  let key = '';
+  // One flat parts list, three parts per ref: fixed arity is what makes a
+  // single-separator join injective over a SEQUENCE of refs, so no record
+  // terminator is needed on top of it. `compositeKey` also refuses a path
+  // that carries the separator, which the hand-rolled join could only
+  // assume.
+  const parts: (string | number)[] = [];
   for (const ref of refs) {
-    // NUL/SOH separators: paths may contain any printable char, so a
-    // printable-joined key could collide across field/ref boundaries.
-    key += `${ref.path}\u0000${ref.line ?? ''}\u0000${ref.col ?? ''}\u0001`;
+    parts.push(ref.path, ref.line ?? '', ref.col ?? '');
   }
+  const key = compositeKey(...parts);
   const canonical = pathRefsByContent.get(key);
   if (canonical) {
     // Refresh recency (Map iteration order is insertion order).

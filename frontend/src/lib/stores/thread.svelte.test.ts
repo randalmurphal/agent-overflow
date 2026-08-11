@@ -4227,6 +4227,63 @@ describe('createThreadPane', () => {
       expect(pane.items.some((it) => it.id === 'child-1')).toBe(true);
     });
 
+    // Removal paths drop rows the reader asked to destroy, and those rows
+    // can be hydrated subagent children whose launch ANCHOR survives the
+    // same drop — a revert keeps the anchor turn's backend-enumerated
+    // survivors, and a single-row removal keeps everything else by
+    // construction. A surviving anchor still marked exhausted never
+    // re-fetches, so its card wedges on the loading placeholder. These
+    // paths hand-rolled their disposal and skipped the re-arm entirely;
+    // they go through `dropTimelineItems` now. Transition coverage: the
+    // marker has to be SET first, or the assertion passes vacuously.
+    async function paneWithExhaustedAnchor(threadId: string) {
+      const pane = await paneWithAnchor(threadId);
+      let listCalls = 0;
+      setBindingMock('ListSubagentDescendants', async () => {
+        listCalls += 1;
+        return [childItem(threadId)];
+      });
+
+      // First fetch merges the child in; the second finds nothing new and
+      // marks the anchor exhausted; the third proves the marker bites.
+      expect(await pane.ensureSubagentChildren('anchor')).toBe(true);
+      expect(pane.items.some((it) => it.id === 'child-1')).toBe(true);
+      expect(await pane.ensureSubagentChildren('anchor')).toBe(false);
+      expect(await pane.ensureSubagentChildren('anchor')).toBe(false);
+      expect(listCalls).toBe(2);
+
+      return { pane, calls: () => listCalls };
+    }
+
+    it('re-arms a surviving anchor when removeItemById drops its hydrated child', async () => {
+      const { pane, calls } = await paneWithExhaustedAnchor('remove-one-exhaust');
+
+      const removed = pane.removeItemById('child-1', 'remove-one-exhaust');
+      expect(removed?.id).toBe('child-1');
+      expect(pane.items.some((it) => it.id === 'anchor')).toBe(true);
+
+      // The anchor is hydratable again: the fetch goes out and the child
+      // comes back, instead of being suppressed by a marker describing a
+      // window that no longer exists.
+      expect(await pane.ensureSubagentChildren('anchor')).toBe(true);
+      expect(calls()).toBe(3);
+      expect(pane.items.some((it) => it.id === 'child-1')).toBe(true);
+    });
+
+    it('re-arms a surviving anchor when a revert drops its hydrated child', async () => {
+      const { pane, calls } = await paneWithExhaustedAnchor('remove-revert-exhaust');
+
+      // The anchor turn's survivor list names the anchor only — the
+      // hydrated child was never in the backend enumeration, so the
+      // kept-set formulation removes it while the anchor stays.
+      const removed = pane.removeRevertedItems(1, ['anchor']);
+      expect(removed.map((it) => it.id)).toEqual(['child-1']);
+      expect(pane.items.map((it) => it.id)).toEqual(['pre', 'anchor']);
+
+      expect(await pane.ensureSubagentChildren('anchor')).toBe(true);
+      expect(calls()).toBe(3);
+    });
+
     it('keeps unrelated exhausted-hydration markers across evictions', async () => {
       const pane = createThreadPane();
       setBindingMock('ListThreadSliceAround', async () => ({

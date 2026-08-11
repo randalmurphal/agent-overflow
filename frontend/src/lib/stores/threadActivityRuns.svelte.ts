@@ -26,6 +26,7 @@
 // Session-only: the archive is per pane and dies with it. The durable layer
 // is the `activityRunDefault` setting.
 
+import { compositeKey } from '../utils/compositeKey';
 import type {
   ActivityRunIdentity,
   ActivityRunResolution,
@@ -293,9 +294,7 @@ interface ArchivedRun extends Omit<
 }
 
 function archiveKey(threadId: string, itemId: string): string {
-  // NUL separator: provider-issued item ids are opaque, so the one byte
-  // neither a thread id nor an item id can contain is the only safe joiner.
-  return `${threadId}\u0000${itemId}`;
+  return compositeKey(threadId, itemId);
 }
 
 /**
@@ -381,7 +380,7 @@ function resolvableAnchor(
   if (anchorItemId === null || entry.members.has(anchorItemId)) return anchorItemId;
   // Keyed by thread too: `runId`s are minted per registry, so `run-1` in one
   // pane is a different run from `run-1` in another.
-  const key = `${entry.threadId} ${runId}`;
+  const key = compositeKey(entry.threadId, runId);
   if (!reportedAnchorRuns.has(key) && reportedAnchorRuns.size < MAX_REPORTED_ANCHOR_RUNS) {
     reportedAnchorRuns.add(key);
     // Constant message, variables in `detail`: an item id and a member count

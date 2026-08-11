@@ -5,9 +5,9 @@
 // This is measurement plumbing ONLY — it never reads or writes scroll
 // state, and it has no opinion on when the warm-up gate should open
 // (that stays entirely in utils/scroll/observers.ts). It just watches
-// three call sites (`thread.svelte.ts`'s switchThread/runParallelLoad,
-// and MessageTimeline's warm-edge $effect) and folds them into one
-// `timeline.coldload` record per pane per switch.
+// three call sites (`threadSwitchLoad.svelte.ts`'s switchThread and
+// runItemWindowSync, and MessageTimeline's warm-edge $effect) and folds
+// them into one `timeline.coldload` record per pane per switch.
 //
 // Session lifecycle, per pane:
 //   coldLoadSwitchStart  — opens the pane's session, emitting any

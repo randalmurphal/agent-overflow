@@ -125,6 +125,19 @@ export function subagentLaunchKind(item: Item): SubagentLaunchKind | null {
 export const MAX_DEPTH = 3;
 const PREVIEW_MAX_CHARS = 160;
 const PREVIEW_SCAN_CHARS = 512;
+// Not global: `test` on a `/g` regex advances `lastIndex` and would
+// answer differently on alternate calls.
+const NON_WHITESPACE = /\S/;
+
+// The one window both `normalizePreviewText` and `hasPreviewText` look
+// at — sharing it is what keeps "has a preview" structurally equal to
+// "the preview is non-empty" on the window half of that contract (the
+// other half, `\S` ⟺ collapse-to-empty, is asserted by test).
+function previewScanWindow(summary: string): string {
+  return summary.length > PREVIEW_SCAN_CHARS
+    ? summary.slice(0, PREVIEW_SCAN_CHARS)
+    : summary;
+}
 
 /**
  * A node in the timeline tree returned by `groupItemsBySubagent`,
@@ -330,21 +343,25 @@ function compareItems(a: Item, b: Item): number {
  */
 export function normalizePreviewText(summary: string): string {
   if (summary.length === 0) return '';
-  const source = summary.length > PREVIEW_SCAN_CHARS
-    ? summary.slice(0, PREVIEW_SCAN_CHARS)
-    : summary;
-  const normalized = source.replace(/\s+/g, ' ').trim();
+  const normalized = previewScanWindow(summary).replace(/\s+/g, ' ').trim();
   if (normalized.length <= PREVIEW_MAX_CHARS) return normalized;
   return `${normalized.slice(0, PREVIEW_MAX_CHARS).trimEnd()}...`;
 }
 
 /**
- * Extract a short preview string from an item that contributes user-visible
- * text (assistant messages, thinking, tool summaries). Empty for items whose
- * summary is non-text noise.
+ * Whether an item contributes user-visible text (assistant messages,
+ * thinking, tool summaries) — false for items whose summary is non-text
+ * noise, which are not preview candidates.
+ *
+ * Exactly `normalizePreviewText(summary) !== ''` without building the
+ * preview: that function returns empty precisely when its scan window
+ * holds no non-whitespace character, and `\S` finds the first one and
+ * stops. The candidate walk asks this of every descendant on every
+ * streaming tick of any of them, so it must not allocate — normalizing
+ * is deferred to the one item that wins.
  */
-function itemPreviewText(item: Item): string {
-  return normalizePreviewText(item.summary ?? '');
+function hasPreviewText(item: Item): boolean {
+  return NON_WHITESPACE.test(previewScanWindow(item.summary ?? ''));
 }
 
 /**
@@ -515,34 +532,41 @@ export function pickLatestChildSummary(
   fold?: SubagentFoldAggregate,
   getItem?: (id: string) => Item | undefined,
 ): string {
-  let bestActive: { item: Item; preview: string } | null = null;
-  let bestTerminal: { item: Item; preview: string } | null = null;
+  // Candidates are carried as ITEMS, not as items paired with their
+  // rendered preview: only the winner's text is ever used, and building
+  // a preview per candidate meant a whitespace-collapse pass and two
+  // string allocations for every descendant on every re-run. The walk
+  // is O(descendants) and re-runs whenever any descendant's row is
+  // rewritten (this reads each one through `getItem`, which is the
+  // point — that is how a streaming child moves the preview), so the
+  // per-candidate cost is what matters, not the loop.
+  let bestActive: Item | null = null;
+  let bestTerminal: Item | null = null;
   for (const snapshot of descendantItems(children)) {
     const item = getItem?.(snapshot.id) ?? snapshot;
-    const preview = itemPreviewText(item);
-    if (!preview) continue;
+    if (!hasPreviewText(item)) continue;
     if (isItemActive(item)) {
-      if (!bestActive || compareItems(item, bestActive.item) > 0) bestActive = { item, preview };
+      if (!bestActive || compareItems(item, bestActive) > 0) bestActive = item;
     } else if (!bestActive) {
       // Only track terminals while no active descendant is in the
       // running. Once an active candidate appears we stop bothering
       // with terminals — they can't beat an active winner regardless
       // of order.
-      if (!bestTerminal || compareItems(item, bestTerminal.item) > 0) bestTerminal = { item, preview };
+      if (!bestTerminal || compareItems(item, bestTerminal) > 0) bestTerminal = item;
     }
   }
-  if (bestActive) return bestActive.preview;
+  if (bestActive) return normalizePreviewText(bestActive.summary ?? '');
   if (fold && fold.terminalPreview) {
     if (
       !bestTerminal
-      || fold.terminalTurnIndex > bestTerminal.item.turnIndex
-      || (fold.terminalTurnIndex === bestTerminal.item.turnIndex
-        && fold.terminalItemIndex >= bestTerminal.item.itemIndex)
+      || fold.terminalTurnIndex > bestTerminal.turnIndex
+      || (fold.terminalTurnIndex === bestTerminal.turnIndex
+        && fold.terminalItemIndex >= bestTerminal.itemIndex)
     ) {
       return fold.terminalPreview;
     }
   }
-  return bestTerminal?.preview ?? '';
+  return bestTerminal ? normalizePreviewText(bestTerminal.summary ?? '') : '';
 }
 
 /**
