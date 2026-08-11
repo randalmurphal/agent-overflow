@@ -155,6 +155,12 @@ remain a separate, narrower credential class, unchanged.
    before the session activates. Defeats silent-race interception.
 5. Pairing links may carry a scope subset (viewer links, peer
    invitations).
+6. Native clients receive the backend's cert fingerprint inside the
+   pairing payload (§7) and run the redemption exchange over that
+   pinned TLS channel from the first byte — required, not optional.
+   Browser redemptions may ride cleartext LAN; they stay safe through
+   proof-of-possession plus the verification number, not channel
+   secrecy.
 
 ### Sessions
 
@@ -483,11 +489,18 @@ Prerequisite sweep, valuable standalone:
 - **Compatibility policy** (what the hello frame enforces): features
   gate on capability flags, never version comparison — a client asks
   "does the server have X", so mismatched pairs degrade instead of
-  guessing. Frames and channels evolve additively. The backend
-  supports clients up to six months behind; older gets a typed
-  `update-required` refusal at hello, not undefined behavior. Phone
-  clients lag by app-store review latency, so the backend never
-  assumes same-day client updates.
+  guessing. Frames and channels evolve additively. With bundle sync
+  (below), the six-month support window is *not* a promise to lagging
+  everyday clients — they self-update. Its real consumers are old
+  native shells pinning old bundles, and federation peers: backends
+  on other people's machines, updating on other people's schedules,
+  where nobody can push code. Below the window a client gets a typed
+  `update-required` refusal at hello, not undefined behavior. The
+  swap window itself — an old bundle live against a just-updated
+  backend for minutes — requires one-step wire tolerance by
+  construction; the shared client is made and kept forward-tolerant
+  (unknown events, fields, and frame types ignored), tested with a
+  future-dialect fixture.
 - **The phone app is the same app.** Capacitor shell around the
   existing SPA: same Svelte code, same TS transport client and
   generated bindings, same IndexedDB replica — no Swift/Kotlin
@@ -509,14 +522,27 @@ Prerequisite sweep, valuable standalone:
   version (a too-old native shell is the one case that gates on a
   store update); last-known-good is kept with first-boot healthcheck
   and auto-rollback, mirroring the remote-update posture. Trust line:
-  bundles are code — only owner-tier backends may supply them; peer
-  and hub connections never push executable content and are served by
-  capability flags instead. With this, the compatibility window does
-  the heavy lifting only at the shell boundary and against
-  not-yet-updated *backends*; the SPA layer is effectively
+  bundles are code, so transport trust is not enough — the shell
+  verifies every bundle against the **release signing key baked into
+  the shell itself**. A backend can only relay genuine signed
+  releases, never arbitrary script, so one compromised backend cannot
+  reach the phone's device keys or its *other* backends' credentials
+  through an update. Self-built/dev bundles require an explicit
+  per-device "trust dev bundles from this backend" toggle. Only
+  owner-tier backends may supply bundles at all; peer and hub
+  connections never push executable content and are served by
+  capability flags instead. With this, the SPA layer is effectively
   skew-free for the single-backend common case (multi-backend runs
   the newest attached backend's bundle and speaks flags to older
   ones).
+- **Code trust per client class, stated plainly.** Browsers and the
+  desktop attach client load the SPA *from* the backend they connect
+  to — a member using a browser against a team hub executes
+  hub-served code, ordinary web trust, and no trust line pretends
+  otherwise. The phone shell is the only code-isolated client: its
+  bundle comes solely from signed releases via owner-tier backends,
+  and it speaks to hubs and peers with data plus capability flags
+  only.
 - **Phone transport security.** WKWebView cannot accept a self-signed
   cert for WebSocket at all (the auth-challenge hook covers HTTPS
   only; ATS exceptions are ignored for WS), so §7's pairing-anchored
@@ -538,7 +564,12 @@ Prerequisite sweep, valuable standalone:
   not a full load. Obligations it takes on: keyed by backend UUID
   before multi-backend UI lands (§10), purged on sign-out and device
   revocation, and the resume ladder becomes replay-ring → windowed
-  replica diff → full snapshot, in that order.
+  replica diff → full snapshot, in that order. At rest: the phone
+  replica is encrypted with a key held in native secure storage
+  outside the webview (biometric-gateable); browser profiles cannot
+  do this. Revocation is not remote wipe — cutting a device's access
+  does not un-disclose what its replica already held (boundaries
+  doc).
 - **Ticket primitive generalizes beyond WS** — short-lived signed URLs
   for attachment upload/download and snapshot fetches, designed once in
   phase 2 rather than bolted on later. Attachments ride authenticated
