@@ -405,10 +405,10 @@ Result: encrypted, authenticated TLS on the LAN with no domain, no CA,
 and no trust prompts — the pairing ceremony that already establishes
 trust also anchors the channel. Rotation rides the session: a paired
 client that holds a valid session accepts a signed successor-cert
-announcement. Webview-based clients (browsers *and* the Capacitor
-phone shell — see §9 and constraint 8) cannot pin, so they remain the
-cleartext-LAN / tailnet / owned-domain cases; passkey RP ID still
-requires the owned-domain path.
+announcement. The Capacitor phone shell pins too, through its native
+WebSocket bridge (§9, constraint 8). Plain browsers are the one class
+that cannot pin, so they remain the cleartext-LAN / owned-domain
+cases; passkey RP ID still requires the owned-domain path.
 
 Escape hatches: private CA (mkcert-style, manual trust), cloudflared
 subprocess with an owned domain. The chosen HTTPS name is the backend's
@@ -507,10 +507,11 @@ Prerequisite sweep, valuable standalone:
   reimplementation and no second wire schema to drift (native plugins
   cover push, QR pairing scan, secure storage, biometrics).
   Consequences owned now: `CapacitorHttp` request interception stays
-  disabled for the transport (it breaks WebSocket paths), and device
-  keys live in webview WebCrypto — the shell serves the app from an
-  app-local secure context, so non-extractable keys work even when
-  the backend is plain-HTTP.
+  disabled for the transport (it breaks WebSocket paths), and on the
+  phone the device key lives in native secure storage
+  (Keychain/Keystore, biometric-gateable) with signing done on the
+  native side next to the WS bridge — not in webview WebCrypto, which
+  remains the browser-class mechanism.
 - **Bundle sync: the backend is the phone's update server.** The
   backend already embeds its exactly-matching frontend bundle; the
   shell self-updates its web bundle from the attached backend over the
@@ -545,18 +546,16 @@ Prerequisite sweep, valuable standalone:
   only.
 - **Phone transport security.** WKWebView cannot accept a self-signed
   cert for WebSocket at all (the auth-challenge hook covers HTTPS
-  only; ATS exceptions are ignored for WS), so §7's pairing-anchored
-  pinning cannot apply to a webview shell. Preferred path: the
-  tailnet, `wss` against the backend's `ts.net` Let's Encrypt cert (or
-  any owned domain) — this covers the home LAN transparently too,
-  since same-LAN tailnet peers connect directly at local speed. The
-  no-tailnet LAN fallback is cleartext `ws` + device-bound auth:
-  credential-safe under replay, content readable on the local network
-  — the same posture already accepted for LAN browsers (needs the
-  Android cleartext flag and iOS local-networking entitlement in our
-  own shell). A native-WS-bridge plugin with real pinning is the
-  documented escape hatch if domainless TLS on phones is ever wanted;
-  not built until wanted.
+  only; ATS exceptions are ignored for WS) — so the webview never
+  touches the socket. The shell ships a **native WebSocket bridge**
+  (StarScream on iOS / OkHttp on Android) that owns the connection,
+  pins the pairing-payload cert fingerprint exactly as the Go clients
+  do (§7), and hands frames to the same TS transport client. The
+  phone thereby meets the SSH bar: encrypted and pinned on the LAN
+  with no domain and no tailnet, trust anchored by the pairing
+  ceremony. **No cleartext phone path exists.** Tailnet and owned
+  domain remain reachability/browser options, never security
+  prerequisites.
 - **The client replica is the diff foundation.** The shipped
   IndexedDB thread replica (cold opens paint locally, then
   `SyncThreadWindow` reconciles a windowed diff) is the remote story
@@ -795,8 +794,9 @@ leases) is a net *reduction* in wire and CPU cost, not an addition.
    app may offer a keep-awake-while-sessions-live inhibitor.
 8. WKWebView cannot validate self-signed certificates for WebSocket
    connections (HTTPS-only hook; ATS exceptions ignored for WS) —
-   webview-based clients never get domainless TLS, only Go-native
-   clients pin (§7).
+   in-webview transport never gets domainless TLS. This is why the
+   phone shell's socket lives in the native WS bridge (§9); plain
+   browsers remain unpinnable.
 
 ## 16. Phases
 
@@ -852,7 +852,8 @@ leases) is a net *reduction* in wire and CPU cost, not an addition.
 6. **Phone preparation.** Subscription narrowing, buffered deltas, scope
    leases, reduced snapshots, attachment flows, push senders +
    notification semantics + deep links. The Capacitor shell itself
-   (same SPA + native plugins, §9) is scaffolded here, including
+   (same SPA + native plugins, §9) is scaffolded here, including the
+   native WebSocket bridge (the phone's only transport, §9) and
    bundle sync from the backend with rollback (§9); store builds
    come whenever the app ships.
 7. **Multi-backend UI.** Keying the collision-prone singletons, sidebar
