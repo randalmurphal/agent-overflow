@@ -157,10 +157,19 @@ remain a separate, narrower credential class, unchanged.
    invitations).
 6. Native clients receive the backend's cert fingerprint inside the
    pairing payload (§7) and run the redemption exchange over that
-   pinned TLS channel from the first byte — required, not optional.
-   Browser redemptions may ride cleartext LAN; they stay safe through
-   proof-of-possession plus the verification number, not channel
-   secrecy.
+   pinned TLS channel from the first byte — required whenever the
+   payload form can carry it (QR, link). The **typed-code path** (a
+   laptop with no camera enters the short code by hand) cannot carry
+   a fingerprint, so its redemption is trust-on-first-use: safe for
+   the same reason browser redemptions are — proof-of-possession plus
+   the verification number, never channel secrecy — and the
+   redemption response returns the fingerprint over the
+   now-authenticated channel, pinned from then on.
+7. First-ever pairing needs an address before anything is saved: the
+   LAN listener may advertise via mDNS (opt-in, off with the listener)
+   so a new device picks "found *home-server*" instead of typing an
+   IP. Discovery is convenience only — it grants nothing and changes
+   no trust step.
 
 ### Sessions
 
