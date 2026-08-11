@@ -267,8 +267,18 @@
     };
   }
 
-  function updatePosition(): void {
-    if (!anchor || !floatingEl) return;
+  // Where the floating element sits RELATIVE to the anchor, captured each
+  // time a fit runs. Anchor movement re-applies it verbatim (followAnchor),
+  // so the popover stays glued to its trigger between fits.
+  let fitOffset = { dx: 0, dy: 0 };
+
+  // Full placement pass: preferred placement, flip, viewport clamp,
+  // max-height. Runs at open and when GEOMETRY changes — viewport resize,
+  // anchor resize, floating-content growth — never on mere anchor
+  // movement. Returns the anchor rect it measured so callers can seed
+  // movement tracking from the same read.
+  function fitPosition(): DOMRect | undefined {
+    if (!anchor || !floatingEl) return undefined;
     const rect = anchor.getBoundingClientRect();
     const floatRect = {
       width: floatingEl.offsetWidth,
@@ -295,6 +305,19 @@
     left = clamped.left;
     maxHeight = clamped.maxHeight;
     resolvedPlacement = chosen;
+    fitOffset = { dx: clamped.left - rect.left, dy: clamped.top - rect.top };
+    return rect;
+  }
+
+  // The anchor MOVED (pane scroll, drag auto-scroll, transform shift):
+  // re-apply the fitted offset rigidly, no re-clamp. Re-clamping here is
+  // what made popovers "ride the viewport edge" while their trigger
+  // scrolled away — following rigidly, the popover moves with the pane
+  // content and clips at the viewport edge exactly like its trigger does,
+  // until the trigger is fully gone and the tracker closes it.
+  function followAnchor(rect: DOMRect): void {
+    top = rect.top + fitOffset.dy;
+    left = rect.left + fitOffset.dx;
   }
 
   // Whether focus was last seen inside my floating element. Lives out here
@@ -312,8 +335,6 @@
       return;
     }
     if (!anchor || !floatingEl) return;
-
-    updatePosition();
 
     const handleMouseDown = (e: MouseEvent) => {
       const target = e.target as Node | null;
@@ -355,8 +376,13 @@
       e.stopPropagation();
       onClose();
     };
-    const handleScroll = () => updatePosition();
-    const handleResize = () => updatePosition();
+    // Scroll moves the anchor without resizing anything → follow. Resize
+    // changes the clamp bounds themselves → refit. (The per-frame tracker
+    // below would catch both a frame later; these give same-frame response.)
+    const handleScroll = () => {
+      if (anchor) followAnchor(anchor.getBoundingClientRect());
+    };
+    const handleResize = () => refit();
 
     // Feed `focusInside` (see its declaration): by the time the close is
     // observable the floating element is gone and focus has fallen back to
@@ -372,12 +398,22 @@
     // movement that fires no event at the moved element — programmatic
     // scrollLeft writes (PaneHost drag auto-scroll), transform-driven
     // layout shifts — leaving the popover stranded at a stale viewport
-    // position. While open, re-measure the anchor each frame and
-    // reposition only when its rect actually changed (one
-    // getBoundingClientRect per frame; popovers are open briefly and
-    // one at a time, so this is cheap). An anchor that leaves the DOM
-    // closes the popover instead of clamping it to the viewport origin.
-    let lastAnchorRect = '';
+    // position. While open, re-measure the anchor each frame (one
+    // getBoundingClientRect per frame; popovers are open briefly and one
+    // at a time, so this is cheap) and split what changed:
+    //   - size changed → refit (a resize shifts where the popover FITS);
+    //   - position changed → followAnchor (rigid, see its comment);
+    //   - left the DOM, or scrolled fully out of the viewport → close.
+    let lastAnchorPos = '';
+    let lastAnchorSize = '';
+    let anchorWasVisible = false;
+    const refit = () => {
+      const r = fitPosition();
+      if (r) {
+        lastAnchorPos = `${r.top}:${r.left}`;
+        lastAnchorSize = `${r.width}:${r.height}`;
+      }
+    };
     let rafId = 0;
     const trackAnchor = () => {
       if (anchor && floatingEl) {
@@ -386,14 +422,33 @@
           return;
         }
         const r = anchor.getBoundingClientRect();
-        const key = `${r.top}:${r.left}:${r.width}:${r.height}`;
-        if (key !== lastAnchorRect) {
-          lastAnchorRect = key;
-          updatePosition();
+        // An anchor that has SCROLLED fully out of the viewport closes the
+        // popover, same as one that left the DOM — followAnchor has carried
+        // the floating element to the edge with it, and there is nothing
+        // left on screen for it to belong to. Transition-gated on having
+        // been seen visible, because "never visible" is not "scrolled
+        // away": a zero-rect environment (happy-dom) or an anchor whose
+        // geometry hasn't materialized yet must not self-close.
+        const visible =
+          r.right > 0 && r.bottom > 0 && r.left < window.innerWidth && r.top < window.innerHeight;
+        if (visible) {
+          anchorWasVisible = true;
+        } else if (anchorWasVisible) {
+          onClose();
+          return;
+        }
+        const sizeKey = `${r.width}:${r.height}`;
+        const posKey = `${r.top}:${r.left}`;
+        if (sizeKey !== lastAnchorSize) {
+          refit();
+        } else if (posKey !== lastAnchorPos) {
+          lastAnchorPos = posKey;
+          followAnchor(r);
         }
       }
       rafId = requestAnimationFrame(trackAnchor);
     };
+    refit();
     rafId = requestAnimationFrame(trackAnchor);
 
     document.addEventListener('mousedown', handleMouseDown);
@@ -402,12 +457,12 @@
     window.addEventListener('scroll', handleScroll, { passive: true, capture: true });
     window.addEventListener('resize', handleResize, { passive: true });
 
-    const anchorObserver = new ResizeObserver(() => updatePosition());
+    const anchorObserver = new ResizeObserver(() => refit());
     anchorObserver.observe(anchor);
 
     // Observe the floating element too: its content may grow (e.g. async
     // menu items load) and shift the correct flip decision.
-    const floatObserver = new ResizeObserver(() => updatePosition());
+    const floatObserver = new ResizeObserver(() => refit());
     floatObserver.observe(floatingEl);
 
     return () => {
@@ -441,7 +496,7 @@
   // ResizeObserver is bound to the old anchor, so it would miss this.
   $effect(() => {
     if (open && anchor && floatingEl) {
-      updatePosition();
+      fitPosition();
     }
   });
 

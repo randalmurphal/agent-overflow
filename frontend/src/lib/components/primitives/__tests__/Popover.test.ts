@@ -225,6 +225,83 @@ describe('<Popover>', () => {
     expect(popover!.style.top).toBe('12px');
   });
 
+  // Regression: horizontally scrolling a pane carried the anchor out of the
+  // viewport while clampToViewport kept the floating element pinned to the
+  // viewport edge — the popover "rode the edge", visually detached from its
+  // trigger. Fitting (placement, flip, clamp) happens at open and on
+  // geometry changes; anchor MOVEMENT follows rigidly with no re-clamp, and
+  // an anchor that scrolls fully out of view closes the popover, same as an
+  // anchor that left the DOM.
+  describe('anchor scrolled out of the viewport', () => {
+    const nextFrame = () =>
+      new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+
+    it('follows anchor movement rigidly instead of re-clamping to the viewport edge', async () => {
+      setViewport(1000, 800);
+      stubPopoverGeometry({
+        anchor: { top: 100, right: 80, bottom: 120, left: 40 },
+        floating: { width: 200, height: 150 },
+      });
+      const { getByTestId } = render(Harness, {
+        props: { open: true, placement: 'bottom-start' },
+      });
+      await tick();
+      const popover = getByTestId('popover-content').parentElement;
+      expect(popover).not.toBeNull();
+      expect(popover!.style.left).toBe('40px');
+      expect(popover!.style.top).toBe('124px');
+
+      // The pane scrolls left by 70px: the anchor is partially cut off at
+      // the left edge but still visible. The popover moves with it — left
+      // goes negative, clipping like the trigger does — instead of pinning
+      // at the 8px viewport margin. Re-stubbing replaces the existing
+      // spies' implementations in place.
+      stubPopoverGeometry({
+        anchor: { top: 100, right: 10, bottom: 120, left: -30 },
+        floating: { width: 200, height: 150 },
+      });
+      await vi.waitFor(() => expect(popover!.style.left).toBe('-30px'));
+      expect(popover!.style.top).toBe('124px');
+    });
+
+    it('closes once a previously-visible anchor leaves the viewport entirely', async () => {
+      setViewport(1000, 800);
+      stubPopoverGeometry({
+        anchor: { top: 100, right: 440, bottom: 130, left: 400 },
+        floating: { width: 200, height: 150 },
+      });
+      const onClose = vi.fn();
+      render(Harness, { props: { open: true, onClose } });
+      await tick();
+      // Let the per-frame tracker observe the anchor while it is visible.
+      await nextFrame();
+      await nextFrame();
+      expect(onClose).not.toHaveBeenCalled();
+
+      // The pane scrolls: the anchor is now entirely left of the viewport.
+      // Re-stubbing replaces the existing spies' implementations in place.
+      stubPopoverGeometry({
+        anchor: { top: 100, right: -400, bottom: 130, left: -440 },
+        floating: { width: 200, height: 150 },
+      });
+      await vi.waitFor(() => expect(onClose).toHaveBeenCalled());
+    });
+
+    it('does not close an anchor that was never seen visible (zero-rect environments)', async () => {
+      // No geometry stub: happy-dom reports all-zero rects — the shape every
+      // popover in this suite sees. The close is gated on a visible → gone
+      // transition, not on "not visible right now", so a zero-rect anchor
+      // must never self-close.
+      const onClose = vi.fn();
+      render(Harness, { props: { open: true, onClose } });
+      await tick();
+      await nextFrame();
+      await nextFrame();
+      await nextFrame();
+      expect(onClose).not.toHaveBeenCalled();
+    });
+  });
+
   // Regression: the composer card uses `backdrop-filter: blur()` +
   // `overflow: hidden`, which establishes a new containing block for
   // position:fixed descendants AND clips them out of the viewport. Any
