@@ -318,6 +318,37 @@ func (s *Store) ListWorkItemChildNodes(parentItemID string) ([]WorkItemNode, err
 	return nodes, nil
 }
 
+// ListProjectWorkItemNodes returns every run in a project through the node
+// projection — the parent linkage for all of the project's trees in one read.
+// It exists for the overview's cost rollup (WorkflowListItemCosts), which has
+// to resolve each ledger group's run to its ancestors and would otherwise walk
+// the tree one GetWorkItemNode round trip per edge.
+func (s *Store) ListProjectWorkItemNodes(projectID string) ([]WorkItemNode, error) {
+	if projectID == "" {
+		return nil, fmt.Errorf("store: list project work item nodes: empty project id")
+	}
+	rows, err := s.reader().Query(
+		`SELECT id, parent_item_id, call_depth FROM work_items WHERE project_id = ?`,
+		projectID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("store: list project work item nodes: %w", err)
+	}
+	defer rows.Close()
+	nodes := make([]WorkItemNode, 0)
+	for rows.Next() {
+		var node WorkItemNode
+		if err := rows.Scan(&node.ID, &node.ParentItemID, &node.CallDepth); err != nil {
+			return nil, fmt.Errorf("store: list project work item nodes: scan: %w", err)
+		}
+		nodes = append(nodes, node)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: list project work item nodes: iterate: %w", err)
+	}
+	return nodes, nil
+}
+
 // ListWorkItemChildren returns the runs one item called, oldest-first. Children
 // are ordinary run records linked by parent id (§3a); the run tree is read
 // through this one edge rather than through a denormalized tree column.

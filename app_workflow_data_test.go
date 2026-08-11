@@ -165,6 +165,60 @@ func TestWorkflowItemDetailAndListCostsIncludeUsage(t *testing.T) {
 	}
 }
 
+// TestWorkflowListItemCostsRollUpRunTrees — every entry is a TREE total. A
+// recursive campaign's spend lands almost entirely on its call children, and
+// the overview lists only roots: before the rollup, a root's row priced its
+// own coordination rows alone and a $1,500 campaign rendered as $10.
+func TestWorkflowListItemCostsRollUpRunTrees(t *testing.T) {
+	app := newTestAppWithStore(t)
+	runs := []store.WorkItem{
+		{ID: "root", Goal: "campaign"},
+		{ID: "wave", Goal: "wave", ParentItemID: "root", ParentPhaseID: "run", ParentAttempt: 1, CallDepth: 1},
+		{ID: "lane", Goal: "lane", ParentItemID: "wave", ParentPhaseID: "fan", ParentAttempt: 1, CallDepth: 2},
+	}
+	for _, item := range runs {
+		item.ProjectID = defaultTestProjectID
+		item.WorkflowID = "wf"
+		item.WorkflowScope = "shared"
+		item.State = string(engine.StateRunning)
+		item.Source = "manual"
+		item.CreatedAt = 1
+		if err := app.store.CreateWorkItem(item); err != nil {
+			t.Fatal(err)
+		}
+	}
+	claudeRow := func(itemID, threadID string, costUSD float64) store.UsageLedgerRow {
+		return store.UsageLedgerRow{
+			CreatedAt: 2, ProjectID: defaultTestProjectID, WorkItemID: itemID, ThreadID: threadID,
+			Provider: "claude", Model: "claude-opus-5", InputTokens: 10, OutputTokens: 5,
+			CostUSD: costUSD, CostSource: "wire",
+		}
+	}
+	if err := app.store.AppendUsage([]store.UsageLedgerRow{
+		claudeRow("root", "root-phase", 1),
+		claudeRow("wave", "wave-phase", 2),
+		claudeRow("lane", "lane-phase", 4),
+		// A ledger row whose run record no longer exists keeps its own entry:
+		// ledger rows deliberately outlive the runs they attribute.
+		claudeRow("deleted-run", "orphan-phase", 8),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	costs, err := app.WorkflowListItemCosts(defaultTestProjectID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]float64{"root": 7, "wave": 6, "lane": 4, "deleted-run": 8}
+	if len(costs) != len(want) {
+		t.Fatalf("costs = %#v, want %#v", costs, want)
+	}
+	for itemID, total := range want {
+		if costs[itemID] != total {
+			t.Fatalf("costs[%s] = %v, want %v (all: %#v)", itemID, costs[itemID], total, costs)
+		}
+	}
+}
+
 func TestWorkflowStartRunResolvesBaseBranchAndCancelKeepsTheRecord(t *testing.T) {
 	app, _ := setupE2EApp(t)
 	configRoot := t.TempDir()

@@ -904,6 +904,46 @@ func TestWorkItemNodeReadsCarryLinkageAndMatchTheFullChildListing(t *testing.T) 
 	}
 }
 
+// The project-wide node read backs the overview cost rollup, which resolves
+// every ledger group to its ancestors in one pass — so it must carry the whole
+// project's linkage, roots included, and nothing from any other project.
+func TestListProjectWorkItemNodesScopesToTheProject(t *testing.T) {
+	s := newTestStore(t)
+	root := testWorkItem("root", "project-a", "running", 1)
+	if err := s.CreateWorkItem(root); err != nil {
+		t.Fatalf("create root: %v", err)
+	}
+	child := testWorkItem("child", "project-a", "running", 2)
+	child.Source = "call"
+	child.ParentItemID = root.ID
+	child.ParentPhaseID = "wave"
+	child.ParentAttempt = 1
+	child.CallDepth = 1
+	if err := s.CreateWorkItem(child); err != nil {
+		t.Fatalf("create child: %v", err)
+	}
+	if err := s.CreateWorkItem(testWorkItem("other", "project-b", "running", 3)); err != nil {
+		t.Fatalf("create other-project run: %v", err)
+	}
+
+	nodes, err := s.ListProjectWorkItemNodes("project-a")
+	if err != nil {
+		t.Fatalf("list project nodes: %v", err)
+	}
+	byID := make(map[string]WorkItemNode, len(nodes))
+	for _, node := range nodes {
+		byID[node.ID] = node
+	}
+	if len(nodes) != 2 ||
+		byID["root"] != (WorkItemNode{ID: "root"}) ||
+		byID["child"] != (WorkItemNode{ID: "child", ParentItemID: "root", CallDepth: 1}) {
+		t.Fatalf("project nodes = %#v, want root and child linkage only", nodes)
+	}
+	if _, err := s.ListProjectWorkItemNodes(""); err == nil {
+		t.Fatal("an empty project id listed nodes; it must be refused")
+	}
+}
+
 // The guarded write is what lets a deferred wake record know it was overtaken:
 // the guard and the write are one statement, so a clear that lands between them
 // cannot be silently overwritten.

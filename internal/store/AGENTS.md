@@ -157,7 +157,9 @@ root `CLAUDE.md` principle 3.
   A pre-summed dollar figure could only ever be the WIRE half, which is $0 for
   every Codex row ever written, so the overview read a Codex-heavy run as free.
   The group shape is the same one every other pricing consumer takes, so the
-  app prices all of them through one fold.
+  app prices all of them through one fold — and rolls each group up the run's
+  parent chain (via `ListProjectWorkItemNodes`), so an overview entry is the
+  run's TREE total, the same number the detail spend and budget check report.
 - `work_items.go` / `work_item_phases.go` / `work_item_units.go` /
   `work_item_effects.go` — bare workflow run-record CRUD (migration v26;
   units v35; call linkage v38). Project, thread, and item ids are
@@ -195,7 +197,9 @@ root `CLAUDE.md` principle 3.
   a run's callees, `ListWorkItemCallChildren` narrows that to the child one call
   *attempt* created, and `WorkItemListFilter.ParentItemID` is the same edge for
   summary listings. All three pair the parameter with `parent_item_id <> ''` so
-  the partial index applies. `GetWorkItemNode` / `ListWorkItemChildNodes` walk
+  the partial index applies. `GetWorkItemNode` / `ListWorkItemChildNodes` /
+  `ListProjectWorkItemNodes` (the whole project's linkage in one read, for the
+  overview cost rollup) walk
   the SAME edge through a third projection — `WorkItemNode`, three plain columns
   (id, parent, call depth), no join — for the readers that want a tree's SHAPE
   and nothing else. It is a distinct type rather than a sparsely-filled

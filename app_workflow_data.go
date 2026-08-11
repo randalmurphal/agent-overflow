@@ -147,11 +147,21 @@ func (a *App) WorkflowListDefinitions(projectID string) (WorkflowDefinitionCatal
 	return WorkflowDefinitionCatalog{BaseBranch: bindings.BaseBranch, Workflows: listings}, nil
 }
 
-// WorkflowListItemCosts returns per-run costs for overview rows, composed
-// through the one ledger pricing rule (app_usage_pricing.go). A run whose
-// phases ran on Codex has no wire-reported cost at all — every one of its rows
-// carries tokens and a zero `cost_usd` — so summing the column alone reported
-// those runs as free.
+// WorkflowListItemCosts returns per-run TREE costs for overview rows: each
+// entry is the run's own ledger rows plus every run it called, transitively —
+// the same total the detail view's spend and the engine's budget check report
+// for that run, and the number a root's overview row must show for a recursive
+// campaign whose spend lands almost entirely on its call children. Composition
+// goes through the one ledger pricing rule (app_usage_pricing.go); a run whose
+// phases ran on Codex has no wire-reported cost at all, so summing the
+// `cost_usd` column alone would report those runs as free.
+//
+// The rollup folds each (run, model, cost_source) group into the run itself
+// and every ancestor on its parent chain, resolved from one project-wide node
+// read rather than a per-run tree CTE, so the overview stays constant-time in
+// query count. A ledger row whose run record is gone keeps its own entry —
+// ledger rows deliberately outlive the runs they attribute — and a chain is
+// followed only as far as its records still exist.
 func (a *App) WorkflowListItemCosts(projectID string) (map[string]float64, error) {
 	if a.store == nil {
 		return nil, fmt.Errorf("workflow store unavailable")
@@ -164,15 +174,25 @@ func (a *App) WorkflowListItemCosts(projectID string) (map[string]float64, error
 	if err != nil {
 		return nil, err
 	}
+	nodes, err := a.store.ListProjectWorkItemNodes(projectID)
+	if err != nil {
+		return nil, err
+	}
+	parents := make(map[string]string, len(nodes))
+	for _, node := range nodes {
+		parents[node.ID] = node.ParentItemID
+	}
 	spends := make(map[string]*ledgerSpend, len(groups))
 	for _, group := range groups {
-		spend, ok := spends[group.WorkItemID]
-		if !ok {
-			spend = &ledgerSpend{}
-			spends[group.WorkItemID] = spend
-		}
-		if err := spend.add(group.UsageDetailRow); err != nil {
-			return nil, fmt.Errorf("list workflow item costs for project %s: %w", projectID, err)
+		for _, itemID := range workItemAncestryChain(group.WorkItemID, parents) {
+			spend, ok := spends[itemID]
+			if !ok {
+				spend = &ledgerSpend{}
+				spends[itemID] = spend
+			}
+			if err := spend.add(group.UsageDetailRow); err != nil {
+				return nil, fmt.Errorf("list workflow item costs for project %s: %w", projectID, err)
+			}
 		}
 	}
 	costs := make(map[string]float64, len(spends))
@@ -180,6 +200,22 @@ func (a *App) WorkflowListItemCosts(projectID string) (map[string]float64, error
 		costs[itemID] = spend.TotalUSD()
 	}
 	return costs, nil
+}
+
+// workItemAncestryChain returns the run itself followed by its ancestors,
+// nearest first, walking the parent map as far as records exist. The linkage
+// is acyclic by construction (§3a), but the walk is bounded by a visited set
+// anyway: corrupt data must terminate with a short chain, not hang the
+// overview.
+func workItemAncestryChain(itemID string, parents map[string]string) []string {
+	chain := make([]string, 0, 4)
+	visited := make(map[string]bool, 4)
+	for itemID != "" && !visited[itemID] {
+		chain = append(chain, itemID)
+		visited[itemID] = true
+		itemID = parents[itemID]
+	}
+	return chain
 }
 
 // WorkflowRerunItem starts a failed run's last phase again immediately,
