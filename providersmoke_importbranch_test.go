@@ -144,7 +144,11 @@ func TestProviderSmokeClaudeImportedBranchResume(t *testing.T) {
 
 	// THE production call. materializeImportedClaudeBranch does exactly this
 	// with the leaf it read out of thread_import_state.
-	forkID, forkPath, _, err := sessionfork.WriteForkFileThroughUUID(sourcePath, branch.LeafUUID, providerSmokeForkTitle)
+	forkID, forkPath, _, err := sessionfork.WriteForkFileThroughUUID(sessionfork.ForkCut{
+		SourcePath:   sourcePath,
+		LastKeptUUID: branch.LeafUUID,
+		Title:        providerSmokeForkTitle,
+	})
 	if err != nil {
 		driver.fail(t, "IMPORTED-BRANCH RESUME FAILED: cutting %s at leaf %s produced no fork: %v", sourcePath, branch.LeafUUID, err)
 	}

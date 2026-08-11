@@ -40,6 +40,7 @@
     getImportRowResult,
     getImportRows,
     getImportSelection,
+    getImportShowAlreadyRan,
     getSessionImportRun,
     getSessionImportStatus,
     isSessionImportOpen,
@@ -48,10 +49,12 @@
     setProjectFilter,
     setProviderFilter,
     setSelection,
+    setShowAlreadyRan,
     startImport,
     toggleRow,
   } from '../../stores/sessionImport.svelte';
   import {
+    countAlreadyRanRows,
     filterImportRows,
     importSurface,
     selectAllState,
@@ -80,10 +83,15 @@
   let providerFilter = $derived(getImportProviderFilter());
   let projectFilter = $derived(getImportProjectFilter());
   let query = $derived(getImportQuery());
+  let showAlreadyRan = $derived(getImportShowAlreadyRan());
 
-  let filtered = $derived(filterImportRows(rows, { providerFilter, projectFilter, query }));
+  let filters = $derived({ providerFilter, projectFilter, query, showAlreadyRan });
+  let filtered = $derived(filterImportRows(rows, filters));
   let filteredIds = $derived(new Set(filtered.map((row) => row.id)));
   let selectAll = $derived(selectAllState(filtered, selection));
+  // What the toggle is withholding right now. Feeds the toolbar's control,
+  // and tells an empty view whether the filters are the reason it is empty.
+  let alreadyRanCount = $derived(countAlreadyRanRows(rows, filters));
 
   let surface = $derived(
     importSurface({
@@ -91,6 +99,7 @@
       providers,
       rowCount: rows.length,
       filteredCount: filtered.length,
+      hiddenCount: showAlreadyRan ? 0 : alreadyRanCount,
     }),
   );
   let hasCatalog = $derived(surfaceHasCatalog(surface));
@@ -153,6 +162,7 @@
     void providerFilter;
     void projectFilter;
     void query;
+    void showAlreadyRan;
     activeIndex = 0;
   });
 
@@ -257,6 +267,7 @@
           {selectAll}
           {listboxId}
           {activeDescendant}
+          {alreadyRanCount}
           filteredCount={filtered.length}
           disabled={runActive}
           onToggleAll={handleToggleAll}
@@ -269,7 +280,12 @@
       {/if}
 
       <!-- Everything that is not a row, in the one slot they all share. -->
-      <SessionImportBanner {surface} onClearFilters={clearFilters} />
+      <SessionImportBanner
+        {surface}
+        {alreadyRanCount}
+        onClearFilters={clearFilters}
+        onShowAlreadyRan={() => setShowAlreadyRan(true)}
+      />
 
       {#if surface === 'rows'}
         <SessionImportList

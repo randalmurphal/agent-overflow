@@ -38,7 +38,7 @@ func LocateSessionFile(sessionID, workspacePath string) (string, error) {
 		return "", fmt.Errorf("sessionfork: sessionID contains path separator, NUL, or traversal: %q", sessionID)
 	}
 
-	pdir, err := projectsDir()
+	pdir, err := defaultProjectsDir()
 	if err != nil {
 		return "", err
 	}
@@ -83,9 +83,11 @@ func LocateSessionFile(sessionID, workspacePath string) (string, error) {
 	return "", fmt.Errorf("%w: %s", ErrSessionFileNotFound, sessionID)
 }
 
-// projectsDir returns ~/.claude/projects, resolving the user's home dir
-// from $HOME (or os.UserHomeDir as fallback).
-func projectsDir() (string, error) {
+// defaultProjectsDir returns ~/.claude/projects, resolving the user's home
+// dir from $HOME (or os.UserHomeDir as fallback). It is the LIVE-thread
+// answer; a caller writing beside an existing transcript derives the projects
+// dir from that file instead (see WorkspaceProjectDir).
+func defaultProjectsDir() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", fmt.Errorf("sessionfork: resolve home dir: %w", err)
@@ -165,6 +167,32 @@ func exactWorkspaceSlug(workspacePath string) (slug string, ok bool, err error) 
 		return "", false, nil
 	}
 	return s, true, nil
+}
+
+// WorkspaceProjectDir returns the EXACT project directory a session run with
+// cwd == workspacePath is stored under — `<projectsDir>/<slug>` — without
+// requiring the directory to exist.
+//
+// It is what a caller that must WRITE a transcript into the right slug uses:
+// Claude resolves `--resume` against the slug of the current cwd, so a file
+// written under any other slug is invisible to the resume that needs it (see
+// RelocateSession's header). ok is false when the sanitized slug exceeds
+// MaxSanitizedSlugLen, where the CLI appends a `Bun.hash` suffix Go cannot
+// reproduce — there is no dir to name, and callers degrade rather than guess.
+// A hard error means the workspace could not be canonicalized (it is gone).
+//
+// projectsDir is a PARAMETER rather than `~/.claude/projects`: the app can be
+// running against an injected Claude home (the credential-home override, the
+// harness's `AO_HARNESS_KEEP_HOME`), where `$HOME` and the home a transcript
+// was read from are two different directories. A caller cutting a file beside
+// an existing session derives it from that session's own location, and then
+// the write can only ever land in the home it was read from.
+func WorkspaceProjectDir(projectsDir, workspacePath string) (dir string, ok bool, err error) {
+	slug, ok, err := exactWorkspaceSlug(workspacePath)
+	if err != nil || !ok {
+		return "", ok, err
+	}
+	return filepath.Join(projectsDir, slug), true, nil
 }
 
 func fileExists(p string) bool {

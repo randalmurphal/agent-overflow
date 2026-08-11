@@ -3,15 +3,13 @@ package sessionimport
 import (
 	"context"
 	"fmt"
-	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
 
-	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/importir"
+	"agent-overflow/internal/provider"
 	claudesessions "agent-overflow/internal/provider/claude/sessionimport"
 	"agent-overflow/internal/provider/codex/rollout"
 	"agent-overflow/internal/store"
@@ -25,6 +23,15 @@ const (
 	ProviderCodex  = "codex"
 )
 
+// originRuneCap bounds Row.Origin. The marker is provider-file text this
+// package neither writes nor validates, it is cached and pushed over the wire
+// once per row, and the frontend renders it into a DOM title — so a session
+// file carrying a megabyte under `entrypoint` must not become a megabyte in
+// every scan. 64 runes is far past every real marker (`agent-overflow`,
+// `sdk-cli`, `codex_cli`, `forge_desktop`), and the cut is deliberately
+// ellipsis-free: this is an identifier, not prose.
+const originRuneCap = 64
+
 // Deps is everything the orchestrator needs from outside itself.
 //
 // Both provider homes are INJECTED, never resolved here. Which Claude/Codex
@@ -32,8 +39,7 @@ const (
 // relocation) and a library guess would silently list sessions the app
 // cannot resume. See the root AGENTS.md §Permanent invariants.
 type Deps struct {
-	Store   *store.Store
-	GitCore *gitops.Core
+	Store *store.Store
 	// ClaudeProjectsDir is `<claudeHome>/projects`. Empty means "this host
 	// has no Claude home", which Scan reports as an unavailable provider
 	// rather than as an error.
@@ -54,9 +60,11 @@ type Deps struct {
 type Filter struct {
 	// Provider limits the scan to one provider. Empty scans both.
 	Provider string
-	// WorkspacePath limits rows to sessions recorded against exactly that
-	// workspace. It is matched verbatim — a session's cwd is what it is,
-	// and resolving git roots for it would cost one subprocess per row.
+	// WorkspacePath limits rows to sessions whose recorded cwd is exactly
+	// this path, matched verbatim. It asks about the cwd, not about the
+	// project the cwd resolves to: a repository's own root and each of its
+	// worktrees are different answers here, which is the distinction a caller
+	// naming one workspace is making.
 	WorkspacePath string
 }
 
@@ -101,6 +109,19 @@ type Row struct {
 	// KnownProject is true when AO already has a project row covering this
 	// session's workspace, so importing it will not create one.
 	KnownProject bool
+	// Origin is the provider's own origin marker for this session: Claude's
+	// `entrypoint` (`agent-overflow`, `cli`, `sdk-cli`, …) or Codex's
+	// `originator` (`agent_overflow`, `codex_cli`, …). Empty when the file
+	// carries none, and bounded to originRuneCap — the value is the provider
+	// file's text, not ours.
+	Origin string
+	// RanInAgentOverflow is true when Origin is THIS app's marker for the
+	// row's provider (`provider.ClaudeEntrypointOrigin` /
+	// `provider.CodexClientOrigin`). It is decided here so the two wire
+	// spellings never reach a caller, and it is decided BEFORE the cap, so no
+	// length bound can move it. Rows are never filtered on it — the listing
+	// offers them and the frontend hides them behind a toggle.
+	RanInAgentOverflow bool
 	// Warnings are user-facing prose about THIS row, not the scan.
 	Warnings []string
 }
@@ -148,7 +169,7 @@ func Scan(ctx context.Context, d Deps, filter Filter) (ScanResult, error) {
 	if err != nil {
 		return ScanResult{}, err
 	}
-	projects, err := newProjectIndex(d.Store)
+	projects, err := newProjectIndex(ctx, d.Store)
 	if err != nil {
 		return ScanResult{}, err
 	}
@@ -172,16 +193,20 @@ func Scan(ctx context.Context, d Deps, filter Filter) (ScanResult, error) {
 	}
 
 	kept := result.Rows[:0]
-	for _, row := range result.Rows {
+	for i, row := range result.Rows {
+		// The first row naming a given cwd pays for its resolution — a stat
+		// and a repository walk, either of which can be a stale network path.
+		// Same sampling as the session-meta fan-out; ctx.Err() is sticky, so
+		// the sampled check and a later one agree.
+		if i%64 == 0 {
+			if err := ctx.Err(); err != nil {
+				return ScanResult{}, err
+			}
+		}
 		if filter.WorkspacePath != "" && row.ProjectPath != filter.WorkspacePath {
 			continue
 		}
-		projects.decorate(&row)
-		if _, err := os.Stat(row.ProjectPath); err != nil {
-			row.Warnings = append(row.Warnings, fmt.Sprintf(
-				"The workspace %s no longer exists. Importing still works; resuming the session will not.",
-				row.ProjectPath))
-		}
+		projects.stamp(&row)
 		kept = append(kept, row)
 	}
 	result.Rows = kept
@@ -255,19 +280,22 @@ func scanClaude(ctx context.Context, d Deps, known map[string]string) ([]Row, []
 		if _, isAncestor := ancestors[session.SessionID]; isAncestor {
 			continue
 		}
+		origin := session.Entrypoint
 		rows = append(rows, Row{
-			ID:             RowKey(ProviderClaude, session.SessionID),
-			Provider:       ProviderClaude,
-			SessionID:      session.SessionID,
-			Title:          session.Title,
-			ProjectPath:    session.ProjectPath,
-			GitBranch:      session.GitBranch,
-			CreatedAt:      session.CreatedAt,
-			LastActivityAt: session.LastActivityAt,
-			SizeBytes:      session.SizeBytes,
-			BranchCount:    0, // Not determined at list time — see Row.BranchCount.
-			SubagentCount:  session.SubagentCount,
-			SourcePath:     session.Path,
+			ID:                 RowKey(ProviderClaude, session.SessionID),
+			Provider:           ProviderClaude,
+			SessionID:          session.SessionID,
+			Title:              session.Title,
+			ProjectPath:        session.ProjectPath,
+			GitBranch:          session.GitBranch,
+			CreatedAt:          session.CreatedAt,
+			LastActivityAt:     session.LastActivityAt,
+			SizeBytes:          session.SizeBytes,
+			BranchCount:        0, // Not determined at list time — see Row.BranchCount.
+			SubagentCount:      session.SubagentCount,
+			SourcePath:         session.Path,
+			Origin:             capOrigin(origin),
+			RanInAgentOverflow: origin == provider.ClaudeEntrypointOrigin,
 		})
 	}
 	return rows, warnings, nil
@@ -290,52 +318,62 @@ func scanCodex(ctx context.Context, d Deps, known map[string]string) ([]Row, []i
 		}
 		candidates = append(candidates, session)
 	}
-	ancestors, err := codexForkAncestors(ctx, candidates)
+	metas, err := codexSessionMetas(ctx, candidates)
 	if err != nil {
 		return nil, nil, err
 	}
+	ancestors := codexForkAncestors(metas)
 
 	rows := make([]Row, 0, len(candidates))
 	for _, session := range candidates {
 		if _, isAncestor := ancestors[session.ThreadID]; isAncestor {
 			continue
 		}
+		origin := strings.TrimSpace(metas[session.ThreadID].Originator)
 		rows = append(rows, Row{
-			ID:             RowKey(ProviderCodex, session.ThreadID),
-			Provider:       ProviderCodex,
-			SessionID:      session.ThreadID,
-			Title:          session.Title,
-			ProjectPath:    session.Cwd,
-			GitBranch:      session.GitBranch,
-			CreatedAt:      session.CreatedAt,
-			LastActivityAt: session.LastActivityAt,
-			SizeBytes:      session.SizeBytes,
-			BranchCount:    1, // A rollout is one linear conversation.
-			SourcePath:     session.RolloutPath,
+			ID:                 RowKey(ProviderCodex, session.ThreadID),
+			Provider:           ProviderCodex,
+			SessionID:          session.ThreadID,
+			Title:              session.Title,
+			ProjectPath:        session.Cwd,
+			GitBranch:          session.GitBranch,
+			CreatedAt:          session.CreatedAt,
+			LastActivityAt:     session.LastActivityAt,
+			SizeBytes:          session.SizeBytes,
+			BranchCount:        1, // A rollout is one linear conversation.
+			SourcePath:         session.RolloutPath,
+			Origin:             capOrigin(origin),
+			RanInAgentOverflow: origin == provider.CodexClientOrigin,
 		})
 	}
 	return rows, warnings, nil
 }
 
-// codexForkAncestorReaders bounds the fork-provenance fan-out. Each worker
-// does one bounded head read of one rollout; the work is IO-latency bound, so
-// a handful of readers hides the per-file open/seek cost of a home holding
+// codexSessionMetaReaders bounds the session-meta fan-out. Each worker does
+// one bounded head read of one rollout; the work is IO-latency bound, so a
+// handful of readers hides the per-file open/seek cost of a home holding
 // hundreds of sessions without turning a browse into a disk storm.
-const codexForkAncestorReaders = 8
+const codexSessionMetaReaders = 8
 
-// codexForkAncestors reads the fork provenance of every candidate.
+// codexSessionMetas reads the accepted `session_meta` of every candidate,
+// keyed by thread id.
 //
-// Codex records it in the rollout file, not the thread index, so this costs
-// one BOUNDED head read per surviving candidate (ReadSessionMeta stops at the
-// first matching session_meta). A file with no readable meta simply names no
-// ancestor — provenance is an exclusion, and failing to read one can only
-// leave a session listed.
-func codexForkAncestors(ctx context.Context, candidates []rollout.SessionInfo) (map[string]struct{}, error) {
-	ancestors := make(map[string]struct{}, len(candidates))
+// It is ONE bounded head read per surviving candidate (ReadSessionMeta stops
+// at the first matching session_meta), and it is the only read of these files
+// the scan does — both things it answers ride on it: fork provenance (which
+// Codex records in the rollout, not the thread index) and the originator that
+// says whether AO itself ran the session. A file with no readable meta
+// contributes neither, which is the honest degrade for both: provenance is an
+// exclusion, so failing to read one can only leave a session listed, and an
+// unknown originator reads as "not ours".
+func codexSessionMetas(
+	ctx context.Context, candidates []rollout.SessionInfo,
+) (map[string]rollout.SessionMeta, error) {
+	metas := make(map[string]rollout.SessionMeta, len(candidates))
 	if len(candidates) == 0 {
-		return ancestors, nil
+		return metas, nil
 	}
-	workers := min(codexForkAncestorReaders, len(candidates))
+	workers := min(codexSessionMetaReaders, len(candidates))
 
 	var (
 		mu   sync.Mutex
@@ -363,11 +401,7 @@ func codexForkAncestors(ctx context.Context, candidates []rollout.SessionInfo) (
 					continue
 				}
 				mu.Lock()
-				for _, parent := range []string{meta.ForkedFromID, meta.ParentThreadID} {
-					if parent = strings.TrimSpace(parent); parent != "" {
-						ancestors[parent] = struct{}{}
-					}
-				}
+				metas[session.ThreadID] = meta
 				mu.Unlock()
 			}
 		}()
@@ -379,7 +413,35 @@ func codexForkAncestors(ctx context.Context, candidates []rollout.SessionInfo) (
 		// offered for import alongside its fork.
 		return nil, err
 	}
-	return ancestors, nil
+	return metas, nil
+}
+
+// codexForkAncestors is the set of thread ids some candidate was forked from.
+// Computed over the surviving candidates only — a fork that is itself already
+// imported says nothing about its ancestor.
+func codexForkAncestors(metas map[string]rollout.SessionMeta) map[string]struct{} {
+	ancestors := make(map[string]struct{}, len(metas))
+	for _, meta := range metas {
+		for _, parent := range []string{meta.ForkedFromID, meta.ParentThreadID} {
+			if parent = strings.TrimSpace(parent); parent != "" {
+				ancestors[parent] = struct{}{}
+			}
+		}
+	}
+	return ancestors
+}
+
+// capOrigin bounds a provider-authored origin marker at extraction, which is
+// the only place it is guaranteed to happen once: past here the value is
+// cached, wired to the frontend per row, and rendered. Callers derive
+// RanInAgentOverflow from the UNCAPPED value first, so the bound can never
+// change the answer.
+func capOrigin(origin string) string {
+	runes := []rune(origin)
+	if len(runes) <= originRuneCap {
+		return origin
+	}
+	return string(runes[:originRuneCap])
 }
 
 // skippedWarningCodes are the per-provider warning codes that mean "one
@@ -412,65 +474,4 @@ func countSkipped(providerName string, warnings []importir.Warning) int {
 		}
 	}
 	return count
-}
-
-// projectIndex answers "does AO already have a project for this workspace"
-// without running git.
-//
-// EnsureForWorkspace resolves a git repository root before it looks a
-// project up, and that is one subprocess per row — unaffordable across a
-// thousand sessions in a listing a user expects to be instant. So the scan
-// answers the cheaper question: is there a project AT this path, or a
-// project whose root CONTAINS it? Both are true whenever the git-root
-// resolution would have found the same row, and the answer only drives a
-// label; the import itself still goes through EnsureForWorkspace.
-type projectIndex struct {
-	byPath map[string]store.Project
-	// roots is byPath's key set, longest first — the containment probe's
-	// iteration order. The projects themselves are read back out of byPath;
-	// a second path-keyed map would be the same map under another name.
-	roots []string
-}
-
-func newProjectIndex(s *store.Store) (*projectIndex, error) {
-	projects, err := s.ListProjects()
-	if err != nil {
-		return nil, err
-	}
-	index := &projectIndex{
-		byPath: make(map[string]store.Project, len(projects)),
-		roots:  make([]string, 0, len(projects)),
-	}
-	for _, project := range projects {
-		path := filepath.Clean(project.Path)
-		index.byPath[path] = project
-		index.roots = append(index.roots, path)
-	}
-	// Longest first so a nested project wins over the repo containing it.
-	sort.Slice(index.roots, func(i, j int) bool {
-		return len(index.roots[i]) > len(index.roots[j])
-	})
-	return index, nil
-}
-
-func (p *projectIndex) decorate(row *Row) {
-	workspace := filepath.Clean(row.ProjectPath)
-	if project, ok := p.byPath[workspace]; ok {
-		row.ProjectID = project.ID
-		row.ProjectLabel = project.Name
-		row.KnownProject = true
-		return
-	}
-	for _, root := range p.roots {
-		if workspace == root || strings.HasPrefix(workspace, root+string(filepath.Separator)) {
-			project := p.byPath[root]
-			row.ProjectID = project.ID
-			row.ProjectLabel = project.Name
-			row.KnownProject = true
-			return
-		}
-	}
-	// No project yet: the label is what the import will name the one it
-	// creates, so the row reads the same before and after.
-	row.ProjectLabel = filepath.Base(workspace)
 }

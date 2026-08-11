@@ -1732,6 +1732,22 @@ export class ImportableSession {
     "knownProject": boolean;
 
     /**
+     * Origin is the provider's own origin marker, verbatim — Claude's
+     * `entrypoint` (`cli`, `sdk-cli`, `agent-overflow`) or Codex's
+     * `originator` (`codex_cli`, `agent_overflow`) — and "" when the session
+     * file carries none. Display only.
+     */
+    "origin": string;
+
+    /**
+     * RanInAgentOverflow is true when Origin is THIS app's marker for the
+     * row's provider. The backend owns the comparison so the two spellings
+     * never reach the frontend. These rows are still listed: the modal hides
+     * them behind a toggle, which needs both the row and the flag.
+     */
+    "ranInAgentOverflow": boolean;
+
+    /**
      * Warnings are about THIS row, not the scan.
      */
     "warnings"?: string[];
@@ -1780,6 +1796,12 @@ export class ImportableSession {
         if (!("knownProject" in $$source)) {
             this["knownProject"] = false;
         }
+        if (!("origin" in $$source)) {
+            this["origin"] = "";
+        }
+        if (!("ranInAgentOverflow" in $$source)) {
+            this["ranInAgentOverflow"] = false;
+        }
 
         Object.assign(this, $$source);
     }
@@ -1788,10 +1810,10 @@ export class ImportableSession {
      * Creates a new ImportableSession instance from a string or object.
      */
     static createFrom($$source: any = {}): ImportableSession {
-        const $$createField15_0 = $$createType2;
+        const $$createField17_0 = $$createType2;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("warnings" in $$parsedSource) {
-            $$parsedSource["warnings"] = $$createField15_0($$parsedSource["warnings"]);
+            $$parsedSource["warnings"] = $$createField17_0($$parsedSource["warnings"]);
         }
         return new ImportableSession($$parsedSource as Partial<ImportableSession>);
     }

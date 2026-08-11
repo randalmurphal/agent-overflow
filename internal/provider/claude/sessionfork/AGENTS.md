@@ -19,6 +19,23 @@ SDK `fork_session(session_id, up_to_message_id)`:
   branch walk can never drift apart (invariant 28). It also exports the
   four transcript-reading primitives listed under "Shared reading
   surface" below.
+
+  `WriteForkFileThroughUUID` takes a `ForkCut` struct, and it is the one
+  entry point whose destination is NOT the source's own directory:
+  session import cuts an abandoned branch for a thread whose workspace
+  the user may already have changed, and a resume looks under the slug of
+  the workspace it runs in. A blank `DestDir` means "beside the source",
+  which is what every other entry point does and what the
+  destination-unknown fallbacks degrade to. The output is written ONCE
+  into the destination — there is no cut-then-copy-then-purge, and
+  nothing but `RelocateSession` carries the `<sessionID>/` subagent
+  sidecar (a freshly cut fork has none).
+
+  The struct is not decoration. Four adjacent strings, two of them paths,
+  let a transposed `SourcePath`/`DestDir` compile and write the fork into
+  a directory no resume will ever look in — surfacing much later as "No
+  conversation found". Named fields make that mistake unwriteable; a new
+  input goes on the struct rather than onto the end of a parameter list.
 - `rechain.go` — `isDeferredAPIErrorRow`, the predicate behind the
   fork transform's re-chain rule (below).
 - `compact_rewind.go` — `compactCommandSliceAnchor`, the anchor rewind
@@ -40,6 +57,22 @@ SDK `fork_session(session_id, up_to_message_id)`:
   slug; above it Claude appends a `Bun.hash` suffix Go can't reproduce, so
   `exactWorkspaceSlug` reports `ok=false` rather than guess. Falls back to
   scanning every project dir if the primary lookup misses.
+
+  `WorkspaceProjectDir(projectsDir, workspacePath)` is the same slug
+  resolution without a session id: the directory `claude --resume` run in
+  that workspace reads from. `ok=false` is the over-length case, and it is
+  the caller's cue to fall back rather than to guess a hashed name.
+
+  The projects dir is a PARAMETER, and that is load-bearing. `LocateSessionFile`
+  and `RelocateSession` serve live threads and resolve `~/.claude/projects`
+  themselves (`defaultProjectsDir`), but a caller WRITING beside an existing
+  transcript must not: the app can run against an injected Claude home
+  (credential-home override, `AO_HARNESS_KEEP_HOME`) where `$HOME` and the
+  home a transcript was read from are different directories, and resolving
+  through `$HOME` would land the write in the developer's real
+  `~/.claude/projects`. `importedBranchDestDir` derives it from the source
+  file's own path (`<projectsDir>/<slug>/<id>.jsonl`, up two), so the
+  destination cannot leave the home the source came from.
 - `relocate.go` — moves a session's transcript JSONL (+ its
   `<sessionID>/` subagent subdir) between project slugs so `claude
   --resume` run with cwd == destWorkspace resolves it. Claude keys resume

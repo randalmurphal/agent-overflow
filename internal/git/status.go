@@ -259,18 +259,6 @@ func (c *Core) CurrentBranch(cwd string) string {
 	return branch
 }
 
-// RepositoryRoot resolves the canonical git top-level directory for cwd.
-func (c *Core) RepositoryRoot(cwd string) (string, error) {
-	result, err := c.run(cwd, "rev-parse", "--show-toplevel")
-	if err != nil {
-		return "", err
-	}
-	if result.exitCode != 0 {
-		return "", fmt.Errorf("git rev-parse --show-toplevel failed: %s", strings.TrimSpace(result.stderr))
-	}
-	return strings.TrimSpace(result.stdout), nil
-}
-
 // parseStatusOutput derives the porcelain-v2 fields (branch, ahead/behind,
 // changed paths) and folds in the tracked churn from `git diff HEAD --numstat`.
 // FileCount here counts only tracked and staged changes (porcelain paths plus

@@ -9,9 +9,11 @@ import (
 	"path/filepath"
 	"slices"
 	"sort"
+	"strings"
 	"testing"
 
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provider/claude/sessionfork"
 	"agent-overflow/internal/store"
 )
 
@@ -166,6 +168,106 @@ func TestImportedClaudeBranchGetsItsOwnSessionOnFirstStart(t *testing.T) {
 	}
 }
 
+// TestImportedClaudeBranchIsCutUnderTheThreadsCurrentWorkspace is the
+// brick this fixes.
+//
+// Claude resolves `--resume <id>` against the slug of the cwd it is launched
+// in. An imported branch has no session_ref until it is materialized, which
+// is exactly what makes a workspace change before the first send a silent
+// no-op — copyClaudeSessionForWorkspaceChange has no transcript to relocate.
+// Cutting the branch beside its SOURCE would therefore leave it under the
+// original cwd's slug while the resume looks under the new workspace's, and
+// the first send hard-fails with "No conversation found".
+func TestImportedClaudeBranchIsCutUnderTheThreadsCurrentWorkspace(t *testing.T) {
+	app := newTestAppWithStore(t)
+	home := newImportHome(t)
+	home.attach(app)
+	home.claudeBranchedSession(t, importFixtureClaudeBranchy)
+
+	threads := importOneClaudeSession(t, app, home, importFixtureClaudeBranchy)
+	_, abandoned, ok := threadsBySessionRef(threads)
+	if !ok {
+		t.Fatalf("threads = %+v, want exactly one with a session ref", threads)
+	}
+
+	// The user moves the thread to a worktree before ever sending. Nothing
+	// relocates, because there is no transcript for this thread yet.
+	moved := filepath.Join(home.root, "worktrees", "fixture-repo", "BLITZ-188")
+	if err := os.MkdirAll(moved, 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", moved, err)
+	}
+	if err := app.store.UpdateWorkspacePath(abandoned.ID, moved); err != nil {
+		t.Fatalf("UpdateWorkspacePath: %v", err)
+	}
+	abandoned.WorkspacePath = moved
+
+	materialized := app.materializeImportedClaudeBranch(abandoned)
+	if materialized.SessionRef == "" {
+		t.Fatal("abandoned branch got no session ref; it would start a fresh session with no history")
+	}
+	stored, err := app.store.GetThread(abandoned.ID)
+	if err != nil {
+		t.Fatalf("GetThread: %v", err)
+	}
+	if stored.SessionRef != materialized.SessionRef {
+		t.Fatalf("stored sessionRef = %q, want the materialized %q", stored.SessionRef, materialized.SessionRef)
+	}
+
+	destDir, ok, err := sessionfork.WorkspaceProjectDir(home.claudeProjectsDir(), moved)
+	if err != nil || !ok {
+		t.Fatalf("resolve project dir for %s: ok=%v err=%v", moved, ok, err)
+	}
+	cut := filepath.Join(destDir, materialized.SessionRef+".jsonl")
+	if _, err := os.Stat(cut); err != nil {
+		t.Fatalf("cut session is not under the new workspace's slug dir (%s): %v", destDir, err)
+	}
+	// And nowhere else: a copy beside the source would be an orphan
+	// transcript in the user's `claude --resume` picker.
+	beside := home.claudeSessionPath(materialized.SessionRef)
+	if _, err := os.Stat(beside); err == nil {
+		t.Fatalf("cut session also written beside the source at %s", beside)
+	}
+	// It is a real, complete session file, cut at this branch's own leaf.
+	rows := transcriptRows(t, cut)
+	if len(rows) == 0 {
+		t.Fatalf("cut session %s is empty", cut)
+	}
+	if rows[len(rows)-1]["sessionId"] != materialized.SessionRef {
+		t.Fatalf("cut session rows claim session %v, want %q",
+			rows[len(rows)-1]["sessionId"], materialized.SessionRef)
+	}
+}
+
+// When the destination slug cannot be computed the cut still happens beside
+// the source — the behaviour that shipped, and never worse than refusing to
+// write at all. A workspace directory that is GONE is the reachable case: a
+// worktree removed before the thread was ever resumed.
+func TestImportedClaudeBranchFallsBackToTheSourceDirectory(t *testing.T) {
+	app := newTestAppWithStore(t)
+	home := newImportHome(t)
+	home.attach(app)
+	home.claudeBranchedSession(t, importFixtureClaudeBranchy)
+
+	threads := importOneClaudeSession(t, app, home, importFixtureClaudeBranchy)
+	_, abandoned, ok := threadsBySessionRef(threads)
+	if !ok {
+		t.Fatalf("threads = %+v, want exactly one with a session ref", threads)
+	}
+	gone := filepath.Join(home.root, "worktrees", "removed")
+	if err := app.store.UpdateWorkspacePath(abandoned.ID, gone); err != nil {
+		t.Fatalf("UpdateWorkspacePath: %v", err)
+	}
+	abandoned.WorkspacePath = gone
+
+	materialized := app.materializeImportedClaudeBranch(abandoned)
+	if materialized.SessionRef == "" {
+		t.Fatal("sessionRef = \"\", want the cut to still happen beside the source")
+	}
+	if _, err := os.Stat(home.claudeSessionPath(materialized.SessionRef)); err != nil {
+		t.Fatalf("cut session is not beside the source: %v", err)
+	}
+}
+
 // A thread AO created itself must never be touched by the branch materializer
 // — it has no import state, and a stray session file would be worse than the
 // fresh session it is entitled to.
@@ -255,5 +357,40 @@ func TestMaterializeImportedClaudeBranchDegradesWhenTheLeafIsGone(t *testing.T) 
 	}
 	if after := claudeSessionFiles(t, home); !slices.Equal(before, after) {
 		t.Fatalf("transcripts = %v, want %v — a failed cut must leave no orphan session file", after, before)
+	}
+}
+
+// The cut's destination is derived from the SOURCE transcript's own location,
+// never from $HOME. The two agree in production and diverge under
+// AO_HARNESS_KEEP_HOME — the app's Claude home is `<dataRoot>/home` while
+// $HOME is the developer's own — where resolving through $HOME would write an
+// imported branch's transcript into the real `~/.claude/projects` and break
+// the harness's read-only-widening property.
+func TestImportedBranchDestDirStaysUnderTheSourcesOwnHome(t *testing.T) {
+	decoy := t.TempDir()
+	t.Setenv("HOME", decoy)
+	t.Setenv("USERPROFILE", decoy)
+
+	appHome := t.TempDir()
+	projects := filepath.Join(appHome, ".claude", "projects")
+	workspace := filepath.Join(appHome, "repo")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", workspace, err)
+	}
+	// The slug the source sits under is deliberately NOT the workspace's: a
+	// thread that moved workspace is the whole reason the destination is
+	// resolved rather than reused.
+	source := filepath.Join(projects, "-an-older-slug", "11111111.jsonl")
+
+	got := importedBranchDestDir(store.Thread{ID: "thread-1", WorkspacePath: workspace}, source)
+	want, ok, err := sessionfork.WorkspaceProjectDir(projects, workspace)
+	if err != nil || !ok {
+		t.Fatalf("resolve project dir for %s: ok=%v err=%v", workspace, ok, err)
+	}
+	if got != want {
+		t.Fatalf("destDir = %q, want %q — the projects dir the source was read from", got, want)
+	}
+	if strings.HasPrefix(got, decoy) {
+		t.Fatalf("destDir = %q resolved through $HOME (%s) instead of the source's home", got, decoy)
 	}
 }

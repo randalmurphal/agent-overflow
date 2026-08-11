@@ -21,6 +21,7 @@ import {
   getImportProjectFilter,
   getImportRows,
   getImportSelection,
+  getImportShowAlreadyRan,
   getSessionImportError,
   getSessionImportRun,
   getSessionImportStatus,
@@ -30,6 +31,8 @@ import {
   openSessionImport,
   resetSessionImportForTest,
   setProjectFilter,
+  setSelection,
+  setShowAlreadyRan,
   startImport,
   stopImport,
   toggleRow,
@@ -51,6 +54,8 @@ function row(id: string, extra: Partial<ImportableSession> = {}): ImportableSess
     subagentCount: 0,
     sourcePath: `/home/u/.claude/${id}.jsonl`,
     knownProject: true,
+    origin: '',
+    ranInAgentOverflow: false,
     ...extra,
   } as ImportableSession;
 }
@@ -168,14 +173,197 @@ describe('catalog loading', () => {
     await loadImportCatalog();
     toggleRow('claude:a');
     toggleRow('codex:b');
-    setProjectFilter('/repos/alpha');
+    setProjectFilter('p-alpha');
 
     installBindings({
-      list: async () => scanResult([row('codex:b', { projectPath: '/repos/beta' })]),
+      list: async () =>
+        scanResult([row('codex:b', { projectPath: '/repos/beta', projectId: 'p-beta' })]),
     });
     await loadImportCatalog(true);
 
     expect([...getImportSelection()]).toEqual(['codex:b']);
+    expect(getImportProjectFilter()).toBeNull();
+  });
+
+  it('keeps a project filter whose project survives under a different cwd', async () => {
+    installBindings();
+    await loadImportCatalog();
+    setProjectFilter('p-alpha');
+
+    // Same project, a cwd the previous scan never saw: the filter is keyed on
+    // the project, so nothing about it went stale.
+    installBindings({
+      list: async () => scanResult([row('claude:c', { projectPath: '/repos/alpha/frontend' })]),
+    });
+    await loadImportCatalog(true);
+
+    expect(getImportProjectFilter()).toBe('p-alpha');
+  });
+
+  it('retracts a selected row the new catalog reports as already run here', async () => {
+    installBindings();
+    await loadImportCatalog();
+    toggleRow('claude:a');
+    toggleRow('codex:b');
+
+    installBindings({
+      list: async () => scanResult([row('claude:a', { ranInAgentOverflow: true }), row('codex:b')]),
+    });
+    await loadImportCatalog(true);
+
+    // The row is still in the catalog, but it is no longer on offer — and a
+    // selection the user cannot see is a selection they cannot undo.
+    expect([...getImportSelection()]).toEqual(['codex:b']);
+  });
+});
+
+describe('sessions that already ran in Agent Overflow', () => {
+  /** Catalog of one ordinary row and one AO-produced row. */
+  async function loadMixed(): Promise<void> {
+    installBindings({
+      list: async () => scanResult([row('claude:a'), row('codex:b', { ranInAgentOverflow: true })]),
+    });
+    await loadImportCatalog();
+  }
+
+  it('is off by default and survives a close, like the other filters', async () => {
+    await loadMixed();
+    expect(getImportShowAlreadyRan()).toBe(false);
+
+    openSessionImport();
+    setShowAlreadyRan(true);
+    closeSessionImport();
+
+    // Closing drops the run and the selection; the filters are what makes a
+    // reopen cheap, and this is one of them.
+    expect(getImportShowAlreadyRan()).toBe(true);
+  });
+
+  it('refuses to hold a hidden row in the selection, whichever writer asked', async () => {
+    await loadMixed();
+
+    toggleRow('codex:b');
+    expect([...getImportSelection()]).toEqual([]);
+
+    setSelection(['claude:a', 'codex:b']);
+    expect([...getImportSelection()]).toEqual(['claude:a']);
+  });
+
+  it('takes hidden rows back out of the selection when they are hidden again', async () => {
+    await loadMixed();
+    setShowAlreadyRan(true);
+    setSelection(['claude:a', 'codex:b']);
+    expect([...getImportSelection()].sort()).toEqual(['claude:a', 'codex:b']);
+
+    setShowAlreadyRan(false);
+
+    // NOT the posture the other filters take: hiding is exclusion, so an
+    // "Import (2)" over a row the user just excluded — and can no longer see
+    // to deselect — must not survive.
+    expect([...getImportSelection()]).toEqual(['claude:a']);
+  });
+
+  it('leaves the rest of the selection alone', async () => {
+    await loadMixed();
+    setShowAlreadyRan(true);
+    setSelection(['claude:a']);
+    const before = getImportSelection();
+
+    setShowAlreadyRan(false);
+
+    expect([...getImportSelection()]).toEqual(['claude:a']);
+    // Nothing changed, so nothing was rewritten: readers must not be woken.
+    expect(getImportSelection()).toBe(before);
+  });
+
+  it('is a no-op when set to what it already is', async () => {
+    await loadMixed();
+    setShowAlreadyRan(true);
+    setSelection(['claude:a', 'codex:b']);
+
+    setShowAlreadyRan(true);
+
+    expect([...getImportSelection()].sort()).toEqual(['claude:a', 'codex:b']);
+  });
+
+  it('keeps hidden rows out of the retry list too', async () => {
+    installBindings({
+      list: async () => scanResult([row('claude:a'), row('codex:b', { ranInAgentOverflow: true })]),
+    });
+    await loadImportCatalog();
+    setShowAlreadyRan(true);
+    await startImport(['claude:a', 'codex:b']);
+    applyImportProgress(frame({ completed: 1, id: 'claude:a', status: 'failed', error: 'boom' }));
+    applyImportProgress(frame({ completed: 2, id: 'codex:b', status: 'failed', error: 'boom' }));
+    applyImportProgress(frame({ completed: 2, done: true }));
+    expect(getFailedImportIds()).toEqual(['claude:a', 'codex:b']);
+
+    setShowAlreadyRan(false);
+
+    // Same rule the selection follows: "Retry failed (2)" over a row the user
+    // has just excluded — and can no longer see to deselect — would import it
+    // anyway. The other filters deliberately do NOT narrow a retry.
+    expect(getFailedImportIds()).toEqual(['claude:a']);
+  });
+
+  it('clears a project filter whose last offered row it just withdrew', async () => {
+    installBindings({
+      list: async () =>
+        scanResult([
+          row('claude:a'),
+          row('codex:b', {
+            ranInAgentOverflow: true,
+            projectPath: '/repos/beta',
+            projectId: 'p-beta',
+            projectLabel: 'beta',
+          }),
+        ]),
+    });
+    await loadImportCatalog();
+    setShowAlreadyRan(true);
+    setProjectFilter('p-beta');
+
+    setShowAlreadyRan(false);
+
+    // The dropdown drops a project with nothing on offer, so a filter left
+    // pointing at it could not be cleared from the menu it was picked in.
+    expect(getImportProjectFilter()).toBeNull();
+  });
+
+  it('keeps a project filter whose group still has an offered row', async () => {
+    installBindings({
+      list: async () =>
+        scanResult([
+          row('claude:a', { projectPath: '/repos/beta', projectId: 'p-beta', projectLabel: 'beta' }),
+          row('codex:b', {
+            ranInAgentOverflow: true,
+            projectPath: '/repos/beta',
+            projectId: 'p-beta',
+            projectLabel: 'beta',
+          }),
+        ]),
+    });
+    await loadImportCatalog();
+    setShowAlreadyRan(true);
+    setProjectFilter('p-beta');
+
+    setShowAlreadyRan(false);
+
+    expect(getImportProjectFilter()).toBe('p-beta');
+  });
+
+  it('clears a project filter a rescan leaves with nothing but hidden rows', async () => {
+    installBindings();
+    await loadImportCatalog();
+    setProjectFilter('p-alpha');
+
+    installBindings({
+      list: async () => scanResult([row('claude:a', { ranInAgentOverflow: true })]),
+    });
+    await loadImportCatalog(true);
+
+    // The rows survived the rescan, but the offer they were listed under did
+    // not — same stranded filter, reached through the other writer.
     expect(getImportProjectFilter()).toBeNull();
   });
 });

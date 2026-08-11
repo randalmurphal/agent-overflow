@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -112,7 +113,7 @@ func WriteForkFileForLastKeptTurn(
 	if lastKeptTurn < 0 {
 		return "", "", nil, ErrSessionEmpty
 	}
-	return writeForkFileFromTranscript(srcPath, customTitle, func(transcript []map[string]any) (string, error) {
+	return writeForkFileFromTranscript(srcPath, "", customTitle, func(transcript []map[string]any) (string, error) {
 		return sliceUUIDInTranscript(transcript, lastKeptTurn+1)
 	})
 }
@@ -131,7 +132,7 @@ func WriteForkFileFullTranscript(
 	srcPath string,
 	customTitle string,
 ) (newSessionID string, newPath string, uuidMap map[string]string, err error) {
-	return writeForkFileFromTranscript(srcPath, customTitle, func(_ []map[string]any) (string, error) {
+	return writeForkFileFromTranscript(srcPath, "", customTitle, func(_ []map[string]any) (string, error) {
 		// Empty anchor instructs buildLines to skip slicing and clone
 		// the full transcript with fresh UUIDs.
 		return "", nil
@@ -183,7 +184,7 @@ func WriteForkFileForUserMessageUUID(
 	if upToUserMessageUUID == "" {
 		return "", "", nil, fmt.Errorf("sessionfork: empty user message uuid")
 	}
-	return writeForkFileFromTranscript(srcPath, customTitle, func(transcript []map[string]any) (string, error) {
+	return writeForkFileFromTranscript(srcPath, "", customTitle, func(transcript []map[string]any) (string, error) {
 		anchored, err := entryForUserMessageUUIDInTranscript(transcript, upToUserMessageUUID)
 		if err != nil {
 			return "", err
@@ -196,11 +197,40 @@ func WriteForkFileForUserMessageUUID(
 	})
 }
 
-// WriteForkFileThroughUUID opens srcPath ONCE, parses the transcript
-// in memory, and writes a new <newID>.jsonl keeping everything through
-// the entry identified by lastKeptUUID INCLUSIVE. The uuid matches an
-// entry's own uuid or its `forkedFrom.messageUuid` fork provenance
-// (a stored id one remap generation stale — the same healing as
+// ForkCut names the inputs of WriteForkFileThroughUUID.
+//
+// A struct rather than four positional strings because two of them are
+// paths: transposing SourcePath and DestDir compiles, and the fork
+// lands in a directory no resume will ever look in — a failure whose
+// only symptom is "No conversation found" much later. Named fields
+// make that particular mistake unwriteable.
+type ForkCut struct {
+	// SourcePath is the transcript to cut from.
+	SourcePath string
+	// DestDir is the project slug directory the new transcript lands
+	// in; "" means "beside the source", which is where every other fork
+	// entry point writes. It exists because Claude resolves `--resume`
+	// against the slug of the CURRENT cwd (see RelocateSession): a
+	// caller whose thread has moved workspace since the source was
+	// written must land the cut under the DESTINATION workspace's slug,
+	// or the resume looks for it under a slug it will never be written
+	// to and hard-fails with "No conversation found". Use
+	// WorkspaceProjectDir to compute it, and leave it empty when that
+	// is unresolvable — beside the source is the pre-existing behaviour
+	// and never worse than not writing at all.
+	DestDir string
+	// LastKeptUUID is the entry the cut keeps through, INCLUSIVE.
+	LastKeptUUID string
+	// Title is the fork's custom title; empty derives a default.
+	Title string
+}
+
+// WriteForkFileThroughUUID opens cut.SourcePath ONCE, parses the
+// transcript in memory, and writes a new <newID>.jsonl keeping
+// everything through the entry identified by cut.LastKeptUUID
+// INCLUSIVE. The uuid matches an entry's own uuid or its
+// `forkedFrom.messageUuid` fork provenance (a stored id one remap
+// generation stale — the same healing as
 // WriteForkFileForUserMessageUUID); the matched entry's CURRENT uuid
 // is the slice point. The last-kept row may be ANY transcript type —
 // a queued message's parent is usually an assistant entry.
@@ -210,20 +240,20 @@ func WriteForkFileForUserMessageUUID(
 // Keeping through the parent — rather than cloning the file whole —
 // also cuts any rows appended after the failed revert, which a whole
 // clone would silently resurrect into the resumed session (round-5,
-// R5-6).
+// R5-6). It is also how an imported Claude branch is cut its own
+// session file (`app_session_import_branch.go`), which is the caller
+// ForkCut.DestDir exists for.
 //
-// Returns ErrMessageNotFound when lastKeptUUID matches nothing —
+// Returns ErrMessageNotFound when LastKeptUUID matches nothing —
 // callers treat that as remap drift and fail loudly rather than guess.
 func WriteForkFileThroughUUID(
-	srcPath string,
-	lastKeptUUID string,
-	customTitle string,
+	cut ForkCut,
 ) (newSessionID string, newPath string, uuidMap map[string]string, err error) {
-	if lastKeptUUID == "" {
+	if cut.LastKeptUUID == "" {
 		return "", "", nil, fmt.Errorf("sessionfork: empty last-kept uuid")
 	}
-	return writeForkFileFromTranscript(srcPath, customTitle, func(transcript []map[string]any) (string, error) {
-		return currentUUIDForEntryUUID(transcript, lastKeptUUID)
+	return writeForkFileFromTranscript(cut.SourcePath, cut.DestDir, cut.Title, func(transcript []map[string]any) (string, error) {
+		return currentUUIDForEntryUUID(transcript, cut.LastKeptUUID)
 	})
 }
 
@@ -257,8 +287,12 @@ func currentUUIDForEntryUUID(transcript []map[string]any, messageUUID string) (s
 // error returned by computeAnchor propagates verbatim so callers can
 // inspect sentinels like ErrSessionEmpty / ErrMessageNotFound /
 // ErrUserTurnOutOfRange.
+//
+// destDir == "" writes beside the source. See ForkCut.DestDir for when
+// a caller supplies one.
 func writeForkFileFromTranscript(
 	srcPath string,
+	destDir string,
 	customTitle string,
 	computeAnchor func(transcript []map[string]any) (string, error),
 ) (newSessionID string, newPath string, uuidMap map[string]string, err error) {
@@ -285,19 +319,27 @@ func writeForkFileFromTranscript(
 		return "", "", nil, err
 	}
 
-	newID, newPath, err = writeForkOutput(srcPath, newID, lines)
+	newID, newPath, err = writeForkOutput(srcPath, destDir, newID, lines)
 	if err != nil {
 		return "", "", nil, err
 	}
 	return newID, newPath, uuidMap, nil
 }
 
-// writeForkOutput writes the JSONL lines to <srcDir>/<newID>.jsonl
-// atomically (O_EXCL). On any partial-write failure the output file is
-// removed so disk and the caller's notion of the new session stay in
-// lockstep.
-func writeForkOutput(srcPath, newID string, lines []string) (string, string, error) {
-	dir := filepath.Dir(srcPath)
+// writeForkOutput writes the JSONL lines to <destDir>/<newID>.jsonl
+// atomically (O_EXCL), defaulting destDir to the source's own
+// directory. On any partial-write failure the output file is removed so
+// disk and the caller's notion of the new session stay in lockstep.
+func writeForkOutput(srcPath, destDir, newID string, lines []string) (string, string, error) {
+	dir := destDir
+	if strings.TrimSpace(dir) == "" {
+		dir = filepath.Dir(srcPath)
+	}
+	// A destination slug dir need not exist yet: a thread that changed
+	// workspace before its first send has never had Claude write there.
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", "", fmt.Errorf("sessionfork: mkdir %s: %w", dir, err)
+	}
 	out := filepath.Join(dir, newID+".jsonl")
 
 	// O_EXCL: refuse to overwrite an existing file. UUIDv4 collisions are

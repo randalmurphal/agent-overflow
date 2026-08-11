@@ -27,6 +27,7 @@ import type {
   SessionImportProgressEvent,
 } from '../types/sessionImport';
 import { isRowStatus } from '../types/sessionImport';
+import { isHiddenRow, projectGroupKey } from './sessionImportFilter';
 import { countNoun } from '../utils/format';
 import { userFacingError } from '../utils/userFacingError';
 import { refreshSidebarProjections } from './eventsThreadRows';
@@ -122,6 +123,7 @@ let selected = $state<ReadonlySet<string>>(new Set());
 let providerFilter = $state<ImportProviderFilter>('all');
 let projectFilter = $state<string | null>(null);
 let query = $state('');
+let showAlreadyRan = $state(false);
 let run = $state<ImportRunState | null>(null);
 
 let inFlightScan: Promise<void> | null = null;
@@ -175,6 +177,11 @@ export function getImportQuery(): string {
   return query;
 }
 
+/** Whether sessions Agent Overflow itself produced are part of the offer. */
+export function getImportShowAlreadyRan(): boolean {
+  return showAlreadyRan;
+}
+
 export function getSessionImportRun(): ImportRunState | null {
   return run;
 }
@@ -210,6 +217,13 @@ export function getImportRunCounts(): ImportRunCounts {
  * every progress frame is exactly the per-frame fold `counts` exists to
  * avoid.
  *
+ * A failure deliberately survives the provider, project and query filters —
+ * those narrow a view, and a retry the user cannot see the target of is
+ * still the retry they asked for. The already-ran toggle is the exception,
+ * because it is exclusion rather than narrowing: it takes rows out of the
+ * offer, and "Retry failed (2)" over rows the user cannot see OR deselect
+ * would import them anyway.
+ *
  * After a gap the run is inactive without being finished, so this answers
  * from what is known so far and keeps improving as the surviving frames land
  * — a retry started there is refused by the backend (one run at a time),
@@ -218,7 +232,10 @@ export function getImportRunCounts(): ImportRunCounts {
 export function getFailedImportIds(): string[] {
   const current = run;
   if (!current || current.active) return [];
-  return rows.filter((row) => getImportRowResult(row.id)?.status === 'failed').map((row) => row.id);
+  const hiding = { showAlreadyRan };
+  return rows
+    .filter((row) => !isHiddenRow(row, hiding) && getImportRowResult(row.id)?.status === 'failed')
+    .map((row) => row.id);
 }
 
 // --- surface ---------------------------------------------------------------
@@ -289,17 +306,37 @@ async function runScan(force: boolean): Promise<void> {
 
 /** Drop selections and a project filter that the new catalog no longer has. */
 function pruneSelectionAndFilters(): void {
-  const ids = new Set(rows.map((row) => row.id));
   if (selected.size > 0) {
+    const ids = new Set(rows.map((row) => row.id));
     const kept = new Set<string>();
     for (const id of selected) {
       if (ids.has(id)) kept.add(id);
     }
-    if (kept.size !== selected.size) selected = kept;
+    // Through the chokepoint even when nothing was dropped here: the new
+    // catalog decides which rows are hidden, and a row the previous scan
+    // offered may now be one of them.
+    writeSelection(kept);
   }
-  if (projectFilter !== null && !rows.some((row) => row.projectPath === projectFilter)) {
-    projectFilter = null;
-  }
+  clearStrandedProjectFilter();
+}
+
+/**
+ * Clear a project filter whose group has nothing left on offer.
+ *
+ * The dropdown builds its entries from the rows the already-ran toggle does
+ * not withhold, so a filter naming a group that is no longer in it cannot be
+ * cleared from the menu it was picked in — the trigger reads "Project" over
+ * an empty list until something unrelated changes it. Both writers that can
+ * strand one land here: a rescan, and the toggle taking a group's last
+ * offered row away.
+ */
+function clearStrandedProjectFilter(): void {
+  if (projectFilter === null) return;
+  const hiding = { showAlreadyRan };
+  const survives = rows.some(
+    (row) => !isHiddenRow(row, hiding) && projectGroupKey(row) === projectFilter,
+  );
+  if (!survives) projectFilter = null;
 }
 
 // --- filters ---------------------------------------------------------------
@@ -319,17 +356,66 @@ export function setImportQuery(next: string): void {
   query = next;
 }
 
+/**
+ * Show or hide the sessions Agent Overflow itself produced.
+ *
+ * Hiding RETRACTS them from the selection, unlike every other filter here.
+ * The others narrow a view and the selection deliberately survives them; this
+ * one takes rows out of the offer, and a primary button reading "Import (12)"
+ * over rows the user has just said they don't want — and cannot see to
+ * deselect — would import them anyway. The retraction is not this function's
+ * to remember: it writes through the one selection chokepoint, which holds
+ * the invariant for every writer.
+ */
+export function setShowAlreadyRan(next: boolean): void {
+  if (showAlreadyRan === next) return;
+  showAlreadyRan = next;
+  if (next) return;
+  if (selected.size > 0) writeSelection(new Set(selected));
+  // Hiding can withdraw the last offered row of the project the filter names,
+  // which the dropdown then stops listing — see `clearStrandedProjectFilter`.
+  clearStrandedProjectFilter();
+}
+
 // --- selection -------------------------------------------------------------
+
+/**
+ * The ONE selection writer.
+ *
+ * Every write drops rows the already-ran toggle is withholding, so "the
+ * selection never holds a hidden row" is structural rather than a rule each
+ * caller has to observe. Cost is one pass over the catalog per selection
+ * change — a user action, never a frame.
+ */
+function writeSelection(next: Set<string>): void {
+  if (!showAlreadyRan && next.size > 0) {
+    const hiding = { showAlreadyRan };
+    for (const row of rows) {
+      if (isHiddenRow(row, hiding)) next.delete(row.id);
+    }
+  }
+  if (sameSelection(next, selected)) return;
+  selected = next;
+}
+
+/** Sets of ids are equal when they agree on size and membership. */
+function sameSelection(a: ReadonlySet<string>, b: ReadonlySet<string>): boolean {
+  if (a.size !== b.size) return false;
+  for (const id of a) {
+    if (!b.has(id)) return false;
+  }
+  return true;
+}
 
 export function toggleRow(id: string): void {
   const next = new Set(selected);
   if (next.has(id)) next.delete(id);
   else next.add(id);
-  selected = next;
+  writeSelection(next);
 }
 
 export function setSelection(ids: Iterable<string>): void {
-  selected = new Set(ids);
+  writeSelection(new Set(ids));
 }
 
 // --- run -------------------------------------------------------------------
@@ -550,6 +636,7 @@ export function resetSessionImportForTest(): void {
   providerFilter = 'all';
   projectFilter = null;
   query = '';
+  showAlreadyRan = false;
   run = null;
   inFlightScan = null;
   starting = false;

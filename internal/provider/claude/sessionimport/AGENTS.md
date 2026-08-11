@@ -35,8 +35,16 @@ Consumers: `internal/sessionimport` (the neutral writer) via
 - `list.go` — `List(ctx, Options)`: enumerate every importable session
   under a projects directory. Title precedence, sidechain /
   metadata-only / no-workspace skips, subagent counting, fork
-  provenance, dedupe + newest-first sort. Ported from
-  `listSessionsImpl.ts`.
+  provenance, the `entrypoint` marker, dedupe + newest-first sort.
+  Ported from `listSessionsImpl.ts`.
+
+  `SessionInfo.Entrypoint` is the transcript's own `entrypoint` field,
+  raw and unjudged (`agent-overflow` when AO spawned the CLI, `cli` for
+  an interactive run, `sdk-cli`, `""` when the field is absent). Every
+  row carries it, so the FIRST occurrence in the head buffer wins and it
+  costs no extra read. Deciding what counts as "ours" is the
+  orchestrator's call, not this package's — the two providers spell it
+  differently and only one place may own that equality.
 - `rows.go` — `Row`, the decoded-far-enough-to-walk projection of a
   transcript entry, plus the accessors that read the rest back out of
   `Raw`. `Raw` stays the authority for everything else: a transcript

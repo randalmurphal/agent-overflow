@@ -5,6 +5,8 @@
 //     floating element does not.
 //   - `role` prop maps to the floating element's ARIA role; `role="none"`
 //     omits the attribute.
+//   - the opt-in picker-in-dialog focus props: `claimTab` takes Tab, and
+//     `restoreFocusTo` catches focus a close would otherwise strand.
 //
 // happy-dom doesn't report realistic layout geometry, so pixel-position
 // assertions use explicit viewport and element geometry stubs.
@@ -247,6 +249,79 @@ describe('<Popover>', () => {
     await rerender({ open: false });
     await tick();
     expect(queryByTestId('popover-content')).toBeNull();
+  });
+
+  // The picker-in-dialog focus contract (constraint #2 in Popover.svelte).
+  // Portaling puts the floating element outside its host's focus trap, so a
+  // caller inside a Modal opts into both halves through props rather than
+  // re-implementing them per picker.
+  describe('claimTab + restoreFocusTo', () => {
+    it('ignores Tab unless the caller claims it', async () => {
+      const onClose = vi.fn();
+      render(Harness, { props: { open: true, onClose } });
+      await tick();
+      const ev = new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true });
+      document.dispatchEvent(ev);
+      expect(onClose).not.toHaveBeenCalled();
+      expect(ev.defaultPrevented).toBe(false);
+    });
+
+    it('claimTab suppresses the move and closes instead', async () => {
+      const onClose = vi.fn();
+      render(Harness, { props: { open: true, onClose, claimTab: true } });
+      await tick();
+      const ev = new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true });
+      document.dispatchEvent(ev);
+      expect(onClose).toHaveBeenCalledTimes(1);
+      expect(ev.defaultPrevented).toBe(true);
+    });
+
+    it('restores focus on close when the floating element still held it', async () => {
+      const { getByTestId, rerender } = render(Harness, {
+        props: { open: true, restoreFocusToAnchor: true },
+      });
+      await tick();
+      getByTestId('popover-inside-button').focus();
+
+      await rerender({ open: false });
+      await tick();
+
+      // The floating element is gone by the time the close settles, so focus
+      // would have dropped to <body> without the restore.
+      expect(document.activeElement).toBe(getByTestId('popover-anchor'));
+    });
+
+    it('leaves focus alone when the close came from somewhere else', async () => {
+      const { getByTestId, rerender } = render(Harness, {
+        props: { open: true, restoreFocusToAnchor: true },
+      });
+      await tick();
+      const outside = getByTestId('outside-button');
+      outside.focus();
+
+      await rerender({ open: false });
+      await tick();
+
+      // An outside click has already put focus where the user asked for it;
+      // yanking it back to the trigger would fight them.
+      expect(document.activeElement).toBe(outside);
+    });
+
+    it('does not restore focus while the popover stays open', async () => {
+      const { getByTestId, rerender } = render(Harness, {
+        props: { open: true, restoreFocusToAnchor: true, placement: 'bottom-start' },
+      });
+      await tick();
+      const inside = getByTestId('popover-inside-button');
+      inside.focus();
+
+      // A prop change the position effect depends on re-runs it, teardown
+      // included — which must not read as a close.
+      await rerender({ placement: 'top-start' });
+      await tick();
+
+      expect(document.activeElement).toBe(inside);
+    });
   });
 
   // Nested popovers — the composer-model-picker shape (Codex/Claude/

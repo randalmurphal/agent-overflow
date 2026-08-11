@@ -89,17 +89,33 @@ export type ImportUpdateStatusKind =
 export type ImportProviderFilter = 'all' | ImportProvider;
 
 /**
- * One entry of the project dropdown. Built from the FULL row set so the
- * dropdown doesn't shrink as other filters narrow; `count` is the number of
- * rows that survive the current provider + query filters, so a group can
- * legitimately show zero.
+ * One entry of the project dropdown — one AO PROJECT, not one cwd.
+ *
+ * Membership survives the provider, project and query filters — picking a
+ * project must not empty the menu it was picked in — but NOT the already-ran
+ * toggle: a project whose every row is withheld from the offer has nothing to
+ * pick. `count` is the number of rows that survive the current provider +
+ * query filters, so a listed group can still show zero.
  */
 export interface ImportProjectGroup {
-  /** `ImportableSession.projectPath` — the group key. */
+  /**
+   * What the project filter stores: `ImportableSession.projectId` when the
+   * rows resolve to a project AO already has, else the cwd. A repo root and
+   * its subdirectories are one project and therefore one entry — keying on
+   * the raw cwd listed the same project several times over.
+   */
+  key: string;
+  /**
+   * Representative cwd — the shortest member path. The project's own root is
+   * not on the row (only the session's cwd is), so this is the closest thing
+   * to it the catalog knows, and it is display-only.
+   */
   path: string;
-  /** Backend-computed `projectLabel` of the first row in the group. */
+  /** Project name for a known project, else the cwd's base name. */
   label: string;
   count: number;
+  /** The rows resolve to a project AO already has (`key` is its id). */
+  known: boolean;
 }
 
 /** A row's outcome inside a run, folded from progress frames. */

@@ -47,6 +47,15 @@
   // labels here rather than branching inside the template.
   let subagentLabel = $derived(row.subagentCount > 0 ? `${row.subagentCount} subagents` : '');
   let sizeLabel = $derived(row.sizeBytes > 0 ? formatPayloadSize(row.sizeBytes) : '');
+  // These rows are hidden by default and look like any other when shown, so
+  // the answer to "why is this one here?" is a hover away rather than a chip
+  // spending row width. The marker names WHAT recorded the provenance, which
+  // is the follow-up question.
+  let alreadyRanTitle = $derived.by(() => {
+    if (!row.ranInAgentOverflow) return undefined;
+    const base = 'This session already ran in Agent Overflow';
+    return row.origin ? `${base} (${row.origin})` : base;
+  });
 
   function handleClick(): void {
     if (disabled) return;
@@ -68,6 +77,7 @@
   aria-disabled={disabled ? 'true' : undefined}
   data-testid={`session-import-row-${row.id}`}
   data-active={active ? 'true' : undefined}
+  title={alreadyRanTitle}
   onclick={handleClick}
   class={[
     'flex h-full min-w-0 items-center gap-2 border-b border-border-subtle/50 px-3',

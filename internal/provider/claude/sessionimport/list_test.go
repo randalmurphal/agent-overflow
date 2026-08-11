@@ -212,6 +212,69 @@ func TestListExtractsSessionFields(t *testing.T) {
 	}
 }
 
+// TestListReadsTheEntrypointMarker pins the origin marker the scan
+// orchestrator turns into "Agent Overflow already ran this session".
+//
+// It comes out of the SAME head buffer every other listing field does, so
+// listing stays a stat plus two 64 KB reads. FIRST occurrence wins across
+// both spellings: the marker names the client that STARTED the session, and
+// a transcript another client later resumed appends rows carrying its own.
+func TestListReadsTheEntrypointMarker(t *testing.T) {
+	cases := []struct {
+		name string
+		rows []any
+		want string
+	}{
+		{
+			name: "absent",
+			rows: []any{userRow("u1", "", "prompt", "2026-01-01T00:00:00.000Z")},
+		},
+		{
+			name: "agent overflow",
+			rows: []any{userRow("u1", "", "prompt", "2026-01-01T00:00:00.000Z",
+				with("entrypoint", "agent-overflow"))},
+			want: "agent-overflow",
+		},
+		{
+			name: "raw cli",
+			rows: []any{userRow("u1", "", "prompt", "2026-01-01T00:00:00.000Z",
+				with("entrypoint", "cli"))},
+			want: "cli",
+		},
+		{
+			// The spaced spelling is what an older writer emits; the scan
+			// picks by position, not by which pattern it tried first.
+			name: "spaced json spelling",
+			rows: []any{
+				`{"type":"user","uuid":"u1","parentUuid":null,"isSidechain":false,` +
+					`"timestamp":"2026-01-01T00:00:00.000Z","cwd":"/repo","entrypoint": "sdk-cli",` +
+					`"message":{"role":"user","content":"prompt"}}`,
+			},
+			want: "sdk-cli",
+		},
+		{
+			name: "first occurrence wins over a later resume",
+			rows: []any{
+				userRow("u1", "", "prompt", "2026-01-01T00:00:00.000Z",
+					with("entrypoint", "agent-overflow")),
+				assistantRow("a1", "u1", "msg_1", []any{textBlock("ok")}, "2026-01-01T00:00:01.000Z",
+					with("entrypoint", "cli")),
+			},
+			want: "agent-overflow",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := projectsFixture(t)
+			writeJSONL(t, filepath.Join(root, "-repo", sessionA+".jsonl"), tc.rows...)
+			got, _ := listOne(t, root)
+			if got.Entrypoint != tc.want {
+				t.Fatalf("Entrypoint = %q, want %q", got.Entrypoint, tc.want)
+			}
+		})
+	}
+}
+
 func TestListDetectsForkProvenance(t *testing.T) {
 	root := projectsFixture(t)
 	writeJSONL(t, filepath.Join(root, "-repo", sessionB+".jsonl"),

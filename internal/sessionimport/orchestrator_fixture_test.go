@@ -172,6 +172,14 @@ func orNil(s string) any {
 	return s
 }
 
+// withField sets one extra field on a fixture row — the transcript carries
+// far more per row than these builders model, and a test that needs one more
+// key should not need a new builder.
+func withField(row map[string]any, key string, value any) map[string]any {
+	row[key] = value
+	return row
+}
+
 // claudeLinearSession is the common fixture: one prompt, one tool call
 // that completes, one closing assistant message carrying usage.
 func (h providerHomes) claudeLinearSession(t *testing.T, sessionID string) string {
@@ -187,6 +195,27 @@ func (h providerHomes) claudeLinearSession(t *testing.T, sessionID string) strin
 			claudeTextBlock("Done."),
 		}, 3_000, map[string]any{"input_tokens": 120, "output_tokens": 45}),
 		claudeLastPromptRow("a2", "add a test"),
+	)
+}
+
+// claudeShortSession is the smallest listable transcript, with each row
+// carrying the extra fields in `fields`. It backs the tests that vary one
+// listing input (the recorded cwd, the entrypoint marker) rather than the
+// conversation.
+func (h providerHomes) claudeShortSession(
+	t *testing.T, sessionID string, fields map[string]any,
+) string {
+	t.Helper()
+	apply := func(row map[string]any) map[string]any {
+		for key, value := range fields {
+			withField(row, key, value)
+		}
+		return row
+	}
+	return h.writeClaudeSession(t, sessionID,
+		apply(h.claudeUserRow("u1", "", "add a test", 0)),
+		apply(h.claudeAssistantRow("a1", "u1", "msg-1", []any{claudeTextBlock("Done.")}, 1_000, nil)),
+		claudeLastPromptRow("a1", "add a test"),
 	)
 }
 
@@ -357,10 +386,16 @@ func (h providerHomes) codexLinearSession(t *testing.T, threadID string, extra .
 }
 
 func (h providerHomes) codexMetaLine(threadID, forkedFrom string) string {
+	return h.codexMetaLineFrom(threadID, forkedFrom, "codex_cli")
+}
+
+// codexMetaLineFrom is codexMetaLine with an explicit `originator` — the
+// marker naming which client started the thread.
+func (h providerHomes) codexMetaLineFrom(threadID, forkedFrom, originator string) string {
 	payload := map[string]any{
 		"id":          threadID,
 		"cwd":         h.workspace,
-		"originator":  "codex_cli",
+		"originator":  originator,
 		"cli_version": "0.146.0",
 		"git":         map[string]any{"branch": "main"},
 	}

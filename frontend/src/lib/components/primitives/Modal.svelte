@@ -11,6 +11,7 @@
   import type { Snippet } from 'svelte';
   import { fade, scale } from 'svelte/transition';
   import { focusTrap } from '../../utils/focusTrap';
+  import { hasOpenPopoverOwnedBy } from '../../utils/popoverOwnership';
 
   type Width = 'sm' | 'md' | 'lg' | 'xl';
   type Padding = 'none' | 'tight' | 'comfortable' | 'loose';
@@ -86,6 +87,11 @@
     loose: 'px-6 py-5',
   };
 
+  // The dialog panel. Bound because Escape ownership is a question about
+  // which popovers this dialog HOSTS, and after portaling the panel is the
+  // only end of that relationship still reachable from here.
+  let panelEl: HTMLDivElement | undefined = $state(undefined);
+
   // Stable id keeps aria-labelledby wired even if the title prop changes.
   // crypto.randomUUID is available everywhere we run (happy-dom included).
   const titleId = `modal-title-${crypto.randomUUID().slice(0, 8)}`;
@@ -102,10 +108,22 @@
   }
 
   function handleKeydown(e: KeyboardEvent): void {
-    if (e.key === 'Escape') {
-      e.preventDefault();
-      onClose();
-    }
+    if (e.key !== 'Escape') return;
+    // A popover THIS dialog opened is layered over it, and owns the press:
+    // Escape dismisses the topmost surface, and closing the whole dialog out
+    // from under an open picker loses work the user was in the middle of.
+    //
+    // Ownership is the anchor chain rather than the mere presence of a
+    // popover: after portaling every floating element is a body child, so a
+    // picker inside this panel and a menu belonging to a pane behind the
+    // backdrop are indistinguishable by ancestry — and declining for the
+    // second one would leave this dialog unable to close at all.
+    // Ordering makes `stopPropagation` no help here — this handler sits on
+    // the backdrop, which the event reaches BEFORE Popover's document-level
+    // listener — so the dialog has to decline rather than be pre-empted.
+    if (panelEl && hasOpenPopoverOwnedBy(panelEl)) return;
+    e.preventDefault();
+    onClose();
   }
 </script>
 
@@ -123,6 +141,7 @@
     transition:fade={{ duration: 140 }}
   >
     <div
+      bind:this={panelEl}
       use:focusTrap={{ active: open }}
       role="dialog"
       aria-modal="true"

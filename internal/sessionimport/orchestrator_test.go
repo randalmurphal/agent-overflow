@@ -254,6 +254,245 @@ func TestScanLabelsKnownAndUnknownProjects(t *testing.T) {
 	}
 }
 
+// fixtureRepo writes the on-disk shape of a primary checkout: `.git` is a
+// directory.
+func fixtureRepo(t *testing.T, root string) string {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Join(root, ".git"), 0o755); err != nil {
+		t.Fatalf("mkdir %s/.git: %v", root, err)
+	}
+	return root
+}
+
+// fixtureWorktree writes what `git worktree add` leaves on disk: a private
+// gitdir under the repository, a `.git` FILE in the worktree pointing at it,
+// and the registration pointing back. live=false registers the worktree
+// without creating its directory — a worktree the user has since deleted,
+// which is the only case the registration is the ONLY way to place.
+func fixtureWorktree(t *testing.T, repoRoot, name, worktreePath string, live bool) string {
+	t.Helper()
+	private := filepath.Join(repoRoot, ".git", "worktrees", name)
+	if err := os.MkdirAll(private, 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", private, err)
+	}
+	writeFixtureFile(t, filepath.Join(private, "gitdir"), filepath.Join(worktreePath, ".git")+"\n")
+	writeFixtureFile(t, filepath.Join(private, "commondir"), "../..\n")
+	if live {
+		if err := os.MkdirAll(worktreePath, 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", worktreePath, err)
+		}
+		writeFixtureFile(t, filepath.Join(worktreePath, ".git"), "gitdir: "+private+"\n")
+	}
+	return worktreePath
+}
+
+func writeFixtureFile(t *testing.T, path, body string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", filepath.Dir(path), err)
+	}
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatalf("write %s: %v", path, err)
+	}
+}
+
+// A session that ran in a LINKED WORKTREE belongs to the repository the
+// worktree was cut from, not to a project of its own. AO parks its worktrees
+// under `<configDir>/worktrees/<project>/<branch>`, nowhere near the
+// repository, so path containment alone cannot group them — this is what
+// keeps a worktree session from listing (and importing) as a junk project
+// named after the branch.
+func TestScanGroupsWorktreeSessionsUnderTheirRepository(t *testing.T) {
+	st := newTestStore(t)
+	homes := newProviderHomes(t)
+	repo := fixtureRepo(t, homes.workspace)
+	worktree := fixtureWorktree(t, repo, "feature",
+		filepath.Join(filepath.Dir(repo), "worktrees", "fixture-repo", "BLITZ-188"), true)
+
+	homes.claudeShortSession(t, claudeSessionA, map[string]any{"cwd": worktree})
+	project := seedProject(t, st, repo)
+
+	result := scanFixture(t, homes.deps(st), Filter{Provider: ProviderClaude})
+	row := rowByID(t, result, RowKey(ProviderClaude, claudeSessionA))
+	if !row.KnownProject || row.ProjectID != project.ID || row.ProjectLabel != project.Name {
+		t.Fatalf("row = %+v, want the repository's project (%s / %s)", row, project.ID, project.Name)
+	}
+	// The workspace itself is untouched: the thread still runs in the
+	// worktree, only the PROJECT resolves to the repository.
+	if row.ProjectPath != worktree {
+		t.Fatalf("ProjectPath = %q, want the worktree cwd %q", row.ProjectPath, worktree)
+	}
+}
+
+// The listing and the import must agree: a worktree session imports into the
+// REPOSITORY's project, with its own worktree cwd preserved as the thread's
+// workspace. Importing it into a project of its own is what produced junk
+// projects named after a branch.
+func TestImportOneLandsAWorktreeSessionInTheRepositoryProject(t *testing.T) {
+	st := newTestStore(t)
+	homes := newProviderHomes(t)
+	repo := fixtureRepo(t, homes.workspace)
+	worktree := fixtureWorktree(t, repo, "feature",
+		filepath.Join(filepath.Dir(repo), "worktrees", "fixture-repo", "BLITZ-188"), true)
+	homes.claudeShortSession(t, claudeSessionA, map[string]any{"cwd": worktree})
+
+	deps := homes.deps(st)
+	result := scanFixture(t, deps, Filter{Provider: ProviderClaude})
+	outcome := importFixtureRow(t, deps, rowByID(t, result, RowKey(ProviderClaude, claudeSessionA)))
+	if len(outcome.Threads) != 1 {
+		t.Fatalf("threads = %d, want one", len(outcome.Threads))
+	}
+	thread := outcome.Threads[0]
+
+	projects, err := st.ListProjects()
+	if err != nil {
+		t.Fatalf("ListProjects: %v", err)
+	}
+	if len(projects) != 1 {
+		t.Fatalf("projects = %+v, want exactly one (the repository)", projects)
+	}
+	if filepath.Base(projects[0].Path) != filepath.Base(repo) || projects[0].ID != thread.ProjectID {
+		t.Fatalf("project = %+v, want the repository %q holding thread %s", projects[0], repo, thread.ID)
+	}
+	if thread.WorkspacePath != worktree {
+		t.Fatalf("thread WorkspacePath = %q, want the worktree cwd %q", thread.WorkspacePath, worktree)
+	}
+}
+
+// A worktree the user deleted leaves nothing on disk to walk up from, so the
+// grouping has to come from the repository side: the registration git still
+// holds. The row keeps its missing-workspace warning either way.
+func TestScanGroupsDeletedWorktreeSessionsThroughTheirRegistration(t *testing.T) {
+	st := newTestStore(t)
+	homes := newProviderHomes(t)
+	repo := fixtureRepo(t, homes.workspace)
+	gone := fixtureWorktree(t, repo, "gone",
+		filepath.Join(filepath.Dir(repo), "worktrees", "fixture-repo", "removed"), false)
+
+	// A cwd INSIDE the deleted worktree, which is what a session started
+	// from a subdirectory records.
+	cwd := filepath.Join(gone, "internal", "store")
+	homes.claudeShortSession(t, claudeSessionA, map[string]any{"cwd": cwd})
+	project := seedProject(t, st, repo)
+
+	result := scanFixture(t, homes.deps(st), Filter{Provider: ProviderClaude})
+	row := rowByID(t, result, RowKey(ProviderClaude, claudeSessionA))
+	if !row.KnownProject || row.ProjectID != project.ID {
+		t.Fatalf("row = %+v, want the registering project %s", row, project.ID)
+	}
+	if len(row.Warnings) == 0 || !strings.Contains(row.Warnings[0], "no longer exists") {
+		t.Fatalf("warnings = %v, want the missing-workspace warning kept", row.Warnings)
+	}
+}
+
+// A project row sitting ON a worktree path is one the user has been working
+// in, so it wins over the repository the worktree was cut from — the most
+// specific answer, not the resolved one. Probing the repository root first
+// makes the worktree row unreachable in exactly the case it exists for, and
+// every session in that worktree silently moves to the other project.
+//
+// It also pins the registration fold: the repository REGISTERS this worktree,
+// and that registration must not displace the real project row on it.
+func TestScanPrefersAProjectRowOnTheWorktreeItself(t *testing.T) {
+	st := newTestStore(t)
+	homes := newProviderHomes(t)
+	repo := fixtureRepo(t, homes.workspace)
+	worktree := fixtureWorktree(t, repo, "feature",
+		filepath.Join(filepath.Dir(repo), "worktrees", "fixture-repo", "BLITZ-188"), true)
+
+	homes.claudeShortSession(t, claudeSessionA, map[string]any{"cwd": worktree})
+	repository := seedProject(t, st, repo)
+	branch := seedProjectAt(t, st, "project-worktree", "BLITZ-188", worktree)
+
+	result := scanFixture(t, homes.deps(st), Filter{Provider: ProviderClaude})
+	row := rowByID(t, result, RowKey(ProviderClaude, claudeSessionA))
+	if !row.KnownProject || row.ProjectID != branch.ID || row.ProjectLabel != branch.Name {
+		t.Fatalf("row = %+v, want the worktree's own project (%s / %s), not the repository's %s",
+			row, branch.ID, branch.Name, repository.ID)
+	}
+}
+
+// With no project row yet, the label is what the import will name the project
+// it creates — so it has to be the REPOSITORY's name, not the worktree
+// directory's (which is a branch name).
+func TestScanLabelsAnUnknownWorktreeSessionByItsRepository(t *testing.T) {
+	st := newTestStore(t)
+	homes := newProviderHomes(t)
+	repo := fixtureRepo(t, homes.workspace)
+	worktree := fixtureWorktree(t, repo, "feature",
+		filepath.Join(filepath.Dir(repo), "worktrees", "fixture-repo", "BLITZ-188"), true)
+
+	homes.claudeShortSession(t, claudeSessionA, map[string]any{"cwd": worktree})
+
+	result := scanFixture(t, homes.deps(st), Filter{Provider: ProviderClaude})
+	row := rowByID(t, result, RowKey(ProviderClaude, claudeSessionA))
+	if row.KnownProject {
+		t.Fatalf("row = %+v, want no project yet", row)
+	}
+	if row.ProjectLabel != filepath.Base(repo) {
+		t.Fatalf("ProjectLabel = %q, want the repository name %q", row.ProjectLabel, filepath.Base(repo))
+	}
+}
+
+// TestScanReportsTheProviderOriginMarker pins both halves of the "already ran
+// in Agent Overflow" signal: the raw marker passes through verbatim, and the
+// per-provider equality that turns it into a boolean stays in the backend —
+// including the cross-spelling cases, which are what a single shared constant
+// would get wrong.
+func TestScanReportsTheProviderOriginMarker(t *testing.T) {
+	// The same marker string is stamped on BOTH providers' fixtures, so
+	// every case also asserts the provider that must NOT claim it.
+	cases := []struct {
+		name         string
+		marker       string
+		claudeIsOurs bool
+		codexIsOurs  bool
+	}{
+		{name: "no marker at all"},
+		{name: "claude spelling", marker: "agent-overflow", claudeIsOurs: true},
+		{name: "codex spelling", marker: "agent_overflow", codexIsOurs: true},
+		{name: "another client", marker: "cli"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			st := newTestStore(t)
+			homes := newProviderHomes(t)
+
+			claudeFields := map[string]any{}
+			if tc.marker != "" {
+				claudeFields["entrypoint"] = tc.marker
+			}
+			homes.claudeShortSession(t, claudeSessionA, claudeFields)
+
+			homes.writeCodexIndex(t, codexThreadA)
+			homes.writeCodexRollout(t, codexThreadA,
+				homes.codexMetaLineFrom(codexThreadA, "", tc.marker),
+				codexLine(100, "event_msg", map[string]any{"type": "task_started", "turn_id": "turn-1"}),
+				codexLine(200, "event_msg", map[string]any{"type": "user_message", "message": "add a test"}),
+				codexLine(300, "event_msg", map[string]any{"type": "task_complete", "turn_id": "turn-1"}),
+			)
+
+			result := scanFixture(t, homes.deps(st), Filter{})
+			claude := rowByID(t, result, RowKey(ProviderClaude, claudeSessionA))
+			codex := rowByID(t, result, RowKey(ProviderCodex, codexThreadA))
+
+			for _, row := range []Row{claude, codex} {
+				if row.Origin != tc.marker {
+					t.Errorf("%s Origin = %q, want the marker verbatim %q", row.Provider, row.Origin, tc.marker)
+				}
+			}
+			if claude.RanInAgentOverflow != tc.claudeIsOurs {
+				t.Errorf("claude RanInAgentOverflow = %v for %q, want %v",
+					claude.RanInAgentOverflow, tc.marker, tc.claudeIsOurs)
+			}
+			if codex.RanInAgentOverflow != tc.codexIsOurs {
+				t.Errorf("codex RanInAgentOverflow = %v for %q, want %v",
+					codex.RanInAgentOverflow, tc.marker, tc.codexIsOurs)
+			}
+		})
+	}
+}
+
 func TestScanFiltersByProviderAndWorkspace(t *testing.T) {
 	st := newTestStore(t)
 	homes := newProviderHomes(t)
@@ -290,14 +529,22 @@ func TestScanIsCancellable(t *testing.T) {
 // seedProject creates the project row a scan matches a workspace against.
 func seedProject(t *testing.T, st *store.Store, path string) store.Project {
 	t.Helper()
+	return seedProjectAt(t, st, testProjectID, "Fixture Repo", path)
+}
+
+// seedProjectAt creates one project row, or returns the existing row under
+// that id. Callers naming their own id are the ones that need TWO projects at
+// once — a repository and a row sitting on one of its worktrees.
+func seedProjectAt(t *testing.T, st *store.Store, id, name, path string) store.Project {
+	t.Helper()
 	project := store.Project{
-		ID:        testProjectID,
+		ID:        id,
 		Path:      path,
-		Name:      "Fixture Repo",
+		Name:      name,
 		CreatedAt: baseMillis,
 		UpdatedAt: baseMillis,
 	}
-	if _, err := st.GetProject(testProjectID); err != nil {
+	if _, err := st.GetProject(id); err != nil {
 		if err := st.CreateProject(project); err != nil {
 			t.Fatalf("create project: %v", err)
 		}

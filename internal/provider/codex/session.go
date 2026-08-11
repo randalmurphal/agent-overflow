@@ -455,7 +455,7 @@ func NewSession(ctx context.Context, threadID string, cfg Config, onEvent func(p
 	// methods we would otherwise parse, route and drop per app-server
 	// (one per thread).
 	_, err = s.sendRequest(ctx, "initialize",
-		codexInitializeParams("agent_overflow", sessionOptOutNotificationMethods()))
+		codexInitializeParams(provider.CodexClientOrigin, sessionOptOutNotificationMethods()))
 	if err != nil {
 		s.Close()
 		return nil, fmt.Errorf("codex: initialize handshake failed: %w", err)

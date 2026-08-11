@@ -120,6 +120,14 @@ seen would attribute the fork to its parent's cwd, git branch and creation
 time. (`session_id` is accepted as the id only when `id` is absent entirely,
 which is a pre-0.100 file shape.)
 
+`SessionMeta.Originator` is `payload.originator` — which TOOL started the
+thread (`codex_cli`, `agent_overflow` when AO spawned it, `forge_desktop`,
+…). It is the raw wire value; this package does not judge it, and the one
+place that decides what counts as AO's own is `internal/sessionimport` (the
+Claude side spells the same idea `agent-overflow`, and only one owner of
+that equality is correct). It rides the `ReadSessionMeta` head read the
+scan already performs for fork provenance, so it costs no extra file read.
+
 ### Timestamps
 
 Every event carries the envelope's own timestamp, and the converter's

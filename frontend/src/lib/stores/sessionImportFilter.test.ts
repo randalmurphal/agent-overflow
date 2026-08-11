@@ -2,8 +2,10 @@ import { describe, expect, it } from 'vitest';
 import type { ImportProviderStatus, ImportableSession } from '../types/sessionImport';
 import {
   buildProjectGroups,
+  countAlreadyRanRows,
   filterImportRows,
   importSurface,
+  projectGroupKey,
   selectAllState,
   selectionSummary,
   surfaceHasCatalog,
@@ -25,13 +27,31 @@ function row(id: string, extra: Partial<ImportableSession> = {}): ImportableSess
     subagentCount: 0,
     sourcePath: `/home/u/.claude/${id}.jsonl`,
     knownProject: true,
+    origin: '',
+    ranInAgentOverflow: false,
     ...extra,
   };
 }
 
+/** A row with no AO project: keyed and labelled by its own cwd. */
+function unknownProjectRow(id: string, path: string, extra: Partial<ImportableSession> = {}) {
+  return row(id, {
+    projectPath: path,
+    projectId: '',
+    projectLabel: path.slice(path.lastIndexOf('/') + 1),
+    knownProject: false,
+    ...extra,
+  });
+}
+
 const CATALOG: ImportableSession[] = [
   row('claude:a', { title: 'Fix the parser', gitBranch: 'feat/parser' }),
-  row('claude:b', { title: 'Nightly sweep', projectPath: '/repos/beta', projectLabel: 'beta' }),
+  row('claude:b', {
+    title: 'Nightly sweep',
+    projectPath: '/repos/beta',
+    projectId: 'p-beta',
+    projectLabel: 'beta',
+  }),
   row('codex:c', {
     provider: 'codex',
     title: 'Rewrite the router',
@@ -41,11 +61,17 @@ const CATALOG: ImportableSession[] = [
     provider: 'codex',
     title: 'Ship the parser docs',
     projectPath: '/repos/beta',
+    projectId: 'p-beta',
     projectLabel: 'beta',
   }),
 ];
 
-const NO_FILTERS = { providerFilter: 'all', projectFilter: null, query: '' } as const;
+const NO_FILTERS = {
+  providerFilter: 'all',
+  projectFilter: null,
+  query: '',
+  showAlreadyRan: false,
+} as const;
 
 describe('filterImportRows', () => {
   it('passes every row through when nothing is filtered', () => {
@@ -59,11 +85,36 @@ describe('filterImportRows', () => {
 
   it('applies provider, project and query together', () => {
     const got = filterImportRows(CATALOG, {
+      ...NO_FILTERS,
       providerFilter: 'codex',
-      projectFilter: '/repos/beta',
+      projectFilter: 'p-beta',
       query: 'parser',
     });
     expect(got.map((r) => r.id)).toEqual(['codex:d']);
+  });
+
+  it('matches a project filter against every cwd that resolves to it', () => {
+    // A repo root and a subdirectory the agent happened to run in are ONE
+    // project, and picking it has to bring both cwds' rows.
+    const catalog = [
+      row('root', { projectPath: '/repos/alpha' }),
+      row('sub', { projectPath: '/repos/alpha/frontend', projectLabel: 'alpha' }),
+      unknownProjectRow('stranger', '/repos/alpha-ish'),
+    ];
+    const got = filterImportRows(catalog, { ...NO_FILTERS, projectFilter: 'p-alpha' });
+    expect(got.map((r) => r.id)).toEqual(['root', 'sub']);
+  });
+
+  it('keys a project-less row by its path, which is what the filter stores', () => {
+    const orphan = unknownProjectRow('orphan', '/tmp/scratch');
+    expect(projectGroupKey(orphan)).toBe('/tmp/scratch');
+    expect(projectGroupKey(row('known'))).toBe('p-alpha');
+    expect(
+      filterImportRows([...CATALOG, orphan], {
+        ...NO_FILTERS,
+        projectFilter: '/tmp/scratch',
+      }).map((r) => r.id),
+    ).toEqual(['orphan']);
   });
 
   it('matches title, project label and git branch case-insensitively', () => {
@@ -86,49 +137,188 @@ describe('filterImportRows', () => {
     const got = filterImportRows(CATALOG, { ...NO_FILTERS, providerFilter: 'claude' });
     expect(got.map((r) => r.id)).toEqual(['claude:a', 'claude:b']);
   });
+
+  it('withholds rows Agent Overflow itself produced until they are asked for', () => {
+    const catalog = [row('mine'), row('ao', { ranInAgentOverflow: true })];
+    expect(filterImportRows(catalog, NO_FILTERS).map((r) => r.id)).toEqual(['mine']);
+    expect(
+      filterImportRows(catalog, { ...NO_FILTERS, showAlreadyRan: true }).map((r) => r.id),
+    ).toEqual(['mine', 'ao']);
+  });
+
+  it('applies the other filters to the revealed rows like any other row', () => {
+    const catalog = [
+      row('ao:claude', { ranInAgentOverflow: true }),
+      row('ao:codex', { provider: 'codex', ranInAgentOverflow: true }),
+    ];
+    const got = filterImportRows(catalog, {
+      ...NO_FILTERS,
+      showAlreadyRan: true,
+      providerFilter: 'codex',
+    });
+    expect(got.map((r) => r.id)).toEqual(['ao:codex']);
+  });
+});
+
+describe('countAlreadyRanRows', () => {
+  const CATALOG_WITH_AO: ImportableSession[] = [
+    row('mine'),
+    row('ao:a', { ranInAgentOverflow: true, title: 'Fix the parser' }),
+    row('ao:b', { provider: 'codex', ranInAgentOverflow: true, title: 'Nightly sweep' }),
+    row('ao:c', {
+      ranInAgentOverflow: true,
+      projectPath: '/repos/beta',
+      projectId: 'p-beta',
+      projectLabel: 'beta',
+    }),
+  ];
+
+  it('counts the withheld rows under the CURRENT provider, project and query', () => {
+    expect(countAlreadyRanRows(CATALOG_WITH_AO, NO_FILTERS)).toBe(3);
+    expect(countAlreadyRanRows(CATALOG_WITH_AO, { ...NO_FILTERS, providerFilter: 'codex' })).toBe(1);
+    expect(countAlreadyRanRows(CATALOG_WITH_AO, { ...NO_FILTERS, projectFilter: 'p-beta' })).toBe(1);
+    expect(countAlreadyRanRows(CATALOG_WITH_AO, { ...NO_FILTERS, query: 'parser' })).toBe(1);
+  });
+
+  it('answers the same with the toggle on — it is what turning it off would remove', () => {
+    expect(countAlreadyRanRows(CATALOG_WITH_AO, { ...NO_FILTERS, showAlreadyRan: true })).toBe(3);
+  });
+
+  it('is zero for a catalog with nothing to withhold', () => {
+    expect(countAlreadyRanRows(CATALOG, NO_FILTERS)).toBe(0);
+  });
 });
 
 describe('buildProjectGroups', () => {
-  it('lists every project regardless of the provider filter, and sorts by label', () => {
-    const groups = buildProjectGroups(CATALOG, { providerFilter: 'codex', query: '' });
-    expect(groups.map((g) => g.path)).toEqual(['/repos/alpha', '/repos/beta']);
+  const GROUP_FILTERS = { providerFilter: 'all', query: '', showAlreadyRan: false } as const;
+
+  it('lists every project regardless of the provider filter', () => {
+    const groups = buildProjectGroups(CATALOG, { ...GROUP_FILTERS, providerFilter: 'codex' });
+    expect(groups.map((g) => g.key)).toEqual(['p-alpha', 'p-beta']);
     expect(groups.map((g) => g.label)).toEqual(['alpha', 'beta']);
+    expect(groups.every((g) => g.known)).toBe(true);
+  });
+
+  it('merges every cwd of one project into a single entry', () => {
+    // The bug this exists for: /repo and /repo/frontend listed twice under
+    // the same name, with the rows split between them.
+    const catalog = [
+      row('sub', { projectPath: '/repos/alpha/frontend' }),
+      row('root', { projectPath: '/repos/alpha' }),
+      row('deep', { projectPath: '/repos/alpha/internal/store' }),
+    ];
+    const groups = buildProjectGroups(catalog, GROUP_FILTERS);
+    expect(groups).toEqual([
+      // The representative path is the SHORTEST member cwd — the project's
+      // own root is not on any row, and this is the closest stand-in.
+      { key: 'p-alpha', path: '/repos/alpha', label: 'alpha', count: 3, known: true },
+    ]);
+  });
+
+  it('tiebreaks the path only — the label is a property of the group', () => {
+    // Every row of a known project carries that project's own name (the scan
+    // stamps `ProjectLabel = project.Name`) and an unknown group is keyed on
+    // the path itself, so the path is the only field members can disagree on.
+    const groups = buildProjectGroups(
+      [
+        row('sub', { projectPath: '/repos/alpha/frontend' }),
+        row('root', { projectPath: '/repos/alpha' }),
+      ],
+      GROUP_FILTERS,
+    );
+    expect(groups.map((g) => [g.path, g.label])).toEqual([['/repos/alpha', 'alpha']]);
+  });
+
+  it('keeps project-less rows keyed by path, one entry per cwd', () => {
+    const groups = buildProjectGroups(
+      [unknownProjectRow('a', '/tmp/one'), unknownProjectRow('b', '/tmp/two')],
+      GROUP_FILTERS,
+    );
+    expect(groups.map((g) => [g.key, g.label, g.known])).toEqual([
+      ['/tmp/one', 'one', false],
+      ['/tmp/two', 'two', false],
+    ]);
   });
 
   it('counts only rows surviving the provider filter', () => {
-    const all = buildProjectGroups(CATALOG, { providerFilter: 'all', query: '' });
+    const all = buildProjectGroups(CATALOG, GROUP_FILTERS);
     expect(all.map((g) => g.count)).toEqual([2, 2]);
 
-    const claude = buildProjectGroups(CATALOG, { providerFilter: 'claude', query: '' });
-    expect(claude.map((g) => [g.path, g.count])).toEqual([
-      ['/repos/alpha', 1],
-      ['/repos/beta', 1],
+    const claude = buildProjectGroups(CATALOG, { ...GROUP_FILTERS, providerFilter: 'claude' });
+    expect(claude.map((g) => [g.key, g.count])).toEqual([
+      ['p-alpha', 1],
+      ['p-beta', 1],
     ]);
   });
 
   it('keeps a group whose count the filters drove to zero', () => {
-    const groups = buildProjectGroups(CATALOG, { providerFilter: 'claude', query: 'router' });
-    expect(groups.map((g) => [g.path, g.count])).toEqual([
-      ['/repos/alpha', 0],
-      ['/repos/beta', 0],
+    const groups = buildProjectGroups(CATALOG, {
+      ...GROUP_FILTERS,
+      providerFilter: 'claude',
+      query: 'router',
+    });
+    expect(groups.map((g) => [g.key, g.count])).toEqual([
+      ['p-alpha', 0],
+      ['p-beta', 0],
     ]);
   });
 
   it('ignores the project filter entirely — the menu must not shrink to its own pick', () => {
-    const groups = buildProjectGroups(CATALOG, { providerFilter: 'all', query: 'sweep' });
-    expect(groups.map((g) => [g.path, g.count])).toEqual([
-      ['/repos/alpha', 0],
-      ['/repos/beta', 1],
+    const groups = buildProjectGroups(CATALOG, { ...GROUP_FILTERS, query: 'sweep' });
+    expect(groups.map((g) => [g.key, g.count])).toEqual([
+      ['p-beta', 1],
+      ['p-alpha', 0],
     ]);
   });
 
-  it('orders ties by path so scan order cannot reshuffle the menu', () => {
-    const dupes = [
-      row('x', { projectPath: '/repos/z', projectLabel: 'same' }),
-      row('y', { projectPath: '/repos/a', projectLabel: 'Same' }),
+  it('orders by count descending, so the projects a home is made of come first', () => {
+    const catalog = [
+      row('a1', { projectPath: '/repos/a', projectId: 'p-a', projectLabel: 'a' }),
+      row('b1', { projectPath: '/repos/b', projectId: 'p-b', projectLabel: 'b' }),
+      row('b2', { projectPath: '/repos/b', projectId: 'p-b', projectLabel: 'b' }),
+      row('c1', { projectPath: '/repos/c', projectId: 'p-c', projectLabel: 'c' }),
+      row('b3', { projectPath: '/repos/b/sub', projectId: 'p-b', projectLabel: 'b' }),
     ];
-    expect(buildProjectGroups(dupes, { providerFilter: 'all', query: '' }).map((g) => g.path))
-      .toEqual(['/repos/a', '/repos/z']);
+    expect(buildProjectGroups(catalog, GROUP_FILTERS).map((g) => [g.label, g.count])).toEqual([
+      ['b', 3],
+      ['a', 1],
+      ['c', 1],
+    ]);
+  });
+
+  it('orders count ties by label then path, so scan order cannot reshuffle the menu', () => {
+    const dupes = [
+      unknownProjectRow('x', '/repos/z', { projectLabel: 'same' }),
+      unknownProjectRow('y', '/repos/a', { projectLabel: 'Same' }),
+    ];
+    expect(buildProjectGroups(dupes, GROUP_FILTERS).map((g) => g.key)).toEqual([
+      '/repos/a',
+      '/repos/z',
+    ]);
+  });
+
+  it('drops a project whose every row is withheld, and its counts elsewhere', () => {
+    const catalog = [
+      row('mine'),
+      row('ao', {
+        ranInAgentOverflow: true,
+        projectPath: '/repos/beta',
+        projectId: 'p-beta',
+        projectLabel: 'beta',
+      }),
+    ];
+    // A project with nothing on offer is not a choice; showing it as "beta
+    // (0)" would be a menu entry that can only ever produce an empty list.
+    expect(buildProjectGroups(catalog, GROUP_FILTERS).map((g) => g.key)).toEqual(['p-alpha']);
+    expect(
+      buildProjectGroups(catalog, { ...GROUP_FILTERS, showAlreadyRan: true }).map((g) => [
+        g.key,
+        g.count,
+      ]),
+    ).toEqual([
+      ['p-alpha', 1],
+      ['p-beta', 1],
+    ]);
   });
 });
 
@@ -188,6 +378,7 @@ describe('importSurface', () => {
       providers: HEALTHY,
       rowCount: 2,
       filteredCount: 2,
+      hiddenCount: 0,
       ...over,
     });
   }
@@ -223,10 +414,25 @@ describe('importSurface', () => {
     expect(surface({ rowCount: 5, filteredCount: 1 })).toBe('rows');
   });
 
-  it('keeps the toolbar for every catalog-shaped state, so no-matches is escapable', () => {
+  it('separates an empty view the toggle is causing from one the filters are', () => {
+    // Rows exist and are importable, so neither "nothing to import" nor "no
+    // matches" is true — and Clear filters would not bring them back.
+    expect(surface({ rowCount: 5, filteredCount: 0, hiddenCount: 5 })).toBe('hidden-only');
+    expect(surface({ rowCount: 5, filteredCount: 0, hiddenCount: 0 })).toBe('no-matches');
+    // A catalog of nothing but already-ran rows is the same state, not the
+    // "everything is already here" one — those rows can still be imported.
+    expect(surface({ rowCount: 3, filteredCount: 0, hiddenCount: 3 })).toBe('hidden-only');
+  });
+
+  it('never reports hidden-only over a view that has rows', () => {
+    expect(surface({ rowCount: 5, filteredCount: 2, hiddenCount: 3 })).toBe('rows');
+  });
+
+  it('keeps the toolbar for every catalog-shaped state, so each empty one is escapable', () => {
     expect(surfaceHasCatalog('rows')).toBe(true);
     expect(surfaceHasCatalog('empty')).toBe(true);
     expect(surfaceHasCatalog('no-matches')).toBe(true);
+    expect(surfaceHasCatalog('hidden-only')).toBe(true);
     expect(surfaceHasCatalog('loading')).toBe(false);
     expect(surfaceHasCatalog('error')).toBe(false);
     expect(surfaceHasCatalog('unavailable')).toBe(false);

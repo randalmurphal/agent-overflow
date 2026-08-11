@@ -41,9 +41,16 @@ from triage's exported, Router-free shaping helpers — see
   own turn id, settle, and the seal every unfinished turn gets.
 - `usage.go` — `usage_ledger` row projection for a settled turn.
 - `orchestrator.go` — `Scan`: what is importable. Provider availability,
-  the three dedup subtractions, project labelling, per-row warnings.
+  the three dedup subtractions, the origin marker, per-row warnings.
+- `projectindex.go` — `projectIndex`: which project each row is grouped
+  under, and the per-cwd memo that makes answering it once per distinct
+  cwd rather than once per row. See "Which project a row lands under".
 - `import_one.go` — `ImportOne`: one scanned row → thread rows, history,
-  and cursors. Claude branches are converted and applied ONE AT A TIME
+  and cursors. `resolveProject` prefers the `ProjectID` the scan already
+  stamped and falls back to `project.EnsureForWorkspace` — so the project
+  a row was LISTED under is the project it imports into, including for a
+  dead worktree the index could only place from a registration. Claude
+  branches are converted and applied ONE AT A TIME
   (`LoadedSession.ConvertBranch`), so a multi-branch transcript never
   holds every branch's events at once.
 - `import_apply.go` — `sessionImporter`: the per-session accumulator
@@ -143,7 +150,7 @@ ever reaches `items.meta` in its wire spelling:
 ## Scan, import, cursor
 
 ```go
-d := sessionimport.Deps{Store: st, GitCore: core,
+d := sessionimport.Deps{Store: st,
     ClaudeProjectsDir: claudeHome + "/projects", CodexHome: codexHome}
 
 result, err := sessionimport.Scan(ctx, d, sessionimport.Filter{})
@@ -154,6 +161,11 @@ Both provider homes are INJECTED. Nothing here calls `os.UserHomeDir` —
 which home is in play is an app-level decision (credential-home override,
 WSL relocation) and a library guess would list sessions the app cannot
 resume.
+
+`Deps` carries **no git handle**. Resolving a cwd to a project is pure
+filesystem reads (`internal/gitroot`), which is the only reason it can run
+per row: a `git rev-parse` per distinct cwd would be a subprocess storm on
+a real home, and its `--show-toplevel` answer is the wrong one anyway.
 
 `Scan` subtracts three things, and all three are what makes "Import All"
 safe to press twice:
@@ -171,6 +183,88 @@ safe to press twice:
 3. **Subagent / spawned-child sessions** — already excluded inside each
    provider's lister, which is where the provider-specific "is this a
    child" test belongs.
+
+### Which project a row lands under
+
+`projectIndex` (`projectindex.go`) answers it, and a session that ran in a
+WORKTREE has to land in the worktree's repository — not in a project of its
+own named after a branch.
+
+The index is built once per scan and holds ONE path-keyed map. Into it go
+every known project's own root, and then every worktree path those projects
+have REGISTERED (`gitroot.RegisteredWorktrees`, once per project), mapped to
+the project that registered it. Order matters: registrations are folded in
+only after every real project row is placed, and first writer wins — a project
+row sitting on a worktree path is one the user has been working in, and
+another repository's registration of that path must not displace it. Among
+registrations first-wins too: a worktree belongs to exactly one repository, so
+two claims mean one project row is stale.
+
+Then, per DISTINCT cwd (a real home has ~1600 rows over ~120 cwds), the whole
+answer — project, label, and whether the cwd still exists — is resolved once
+and memoized as a unit:
+
+1. One `os.Stat` of the cwd. It decides the row's missing-workspace warning,
+   and whether walking is worth attempting at all: `MainRoot` refuses a path
+   that does not exist, deliberately.
+2. `gitroot.MainRoot(cwd)` — git's `--git-common-dir` semantics, no
+   subprocess. See [`internal/gitroot/AGENTS.md`](../gitroot/AGENTS.md).
+3. Probe, most specific first: a project AT the cwd, then the project covering
+   the resolved repository root, then the project covering the cwd itself.
+
+That order is the load-bearing part. **A project row on the cwd wins
+outright**, even when the cwd resolves to a repository that also has one:
+those sessions have been living in that project, and resolving to the
+repository would move them. Probing the resolved root first makes the more
+specific row unreachable in exactly the case it exists for. The third probe is
+what places a directory INSIDE a deleted worktree, whose registration is
+already in the map — a registration outlives the directory, and it is the only
+thing that can still place a dead worktree's sessions.
+
+A cwd under no known project gets only a `ProjectLabel`: `filepath.Base` of
+the resolved root, so the label names the repository rather than the branch,
+and it is what the import will name the project it creates. (No registration
+can apply there — registrations exist only for projects AO already has.)
+
+A registry that exists but cannot be read is logged and skipped for that
+project — it degrades to exactly the pre-existing behavior (ungrouped, with
+the existing missing-workspace warning), and one project on a stale network
+path must not fail the listing.
+
+`Row.ProjectPath` is the session's own cwd and STAYS that: where the provider
+ran, and where a resume has to run — `import_one.go` hands it straight to the
+thread's `workspace_path`. Resolution decides only which project row the
+session is stamped with (`ProjectID` / `ProjectLabel` / `KnownProject`); it
+never rewrites the path.
+
+### The origin marker
+
+`Row.Origin` is the provider's own raw marker (`""` when the file has none)
+and `Row.RanInAgentOverflow` is the derived boolean. Both come free — Claude's
+`entrypoint` is scanned out of the head buffer the lister already read, and
+Codex's `session_meta.payload.originator` off the `ReadSessionMeta` the fork
+-ancestor pass already performs.
+
+The two spellings differ (`agent-overflow` vs `agent_overflow`) and that is
+exactly why the boolean is derived HERE — neither spelling reaches the wire,
+and no consumer gets to re-derive it and pick one. Nothing else counts as
+ours: `forge_desktop` and every other originator is somebody else's tool.
+
+Both spellings are `internal/provider`'s (`ClaudeEntrypointOrigin` /
+`CodexClientOrigin`), the same constants the two spawn paths WRITE. One owner
+per side is the point: split across writer and reader, renaming a writer would
+leave every test green while making `RanInAgentOverflow` permanently false for
+every session written afterwards.
+
+The marker is **provider-recorded text, and a hint — never a trust decision.**
+A project-scoped settings env block or an originator override can spell
+anything into it, and this package neither writes nor validates it (it is
+capped at extraction, since it is cached, wired per row, and rendered). All it
+decides is which rows sit behind a frontend toggle by default.
+
+Scan does NOT filter these rows out. The user can still want a session AO
+already ran; hiding it is a frontend default with a toggle, and a backend
+filter would make that toggle impossible.
 
 `Row.BranchCount` is **0 for Claude, meaning not determined**. Enumerating
 a transcript's leaves needs a full read of the file, and a real home is
@@ -328,6 +422,15 @@ carries no byte offset — each field takes the later of the two.
   starts a session. Doing it here instead would write one transcript copy
   per abandoned branch across a whole "Import All", and every one of them
   would show up in the user's own `claude --resume` picker.
+
+  It cuts into the slug dir of the thread's CURRENT `workspace_path`, not
+  beside the source file. A workspace changed before the thread's first
+  send relocates nothing (there is no `session_ref` yet to relocate), so
+  writing beside the source would leave the fork under the OLD cwd's slug
+  while `claude --resume` looks under the new one — "No conversation
+  found", on a thread that never ran. Falling back to the source directory
+  is correct only where a destination slug cannot exist (an over-length
+  path, a workspace that is gone).
 
 ## Intentional differences from a live session
 

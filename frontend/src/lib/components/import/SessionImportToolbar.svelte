@@ -3,21 +3,20 @@
   // dropdown, provider segment, search.
   //
   // Filter state is store-owned, so this reads it straight from
-  // sessionImport.svelte.ts rather than having the modal drill four values
-  // down and four setters back. The only things it takes as props are the
-  // two facts it cannot compute — the select-all tri-state (which depends on
-  // the modal's filtered projection) and whether a run has frozen the
-  // surface.
+  // sessionImport.svelte.ts rather than having the modal drill five values
+  // down and five setters back. The only things it takes as props are the
+  // facts it cannot compute — the select-all tri-state and the already-ran
+  // count (both depend on the modal's filtered projection) and whether a run
+  // has frozen the surface.
   //
-  // The project picker is a native <select>, not Popover+Menu: Popover
-  // portals its floating element to <body>, which escapes Modal's focus trap
-  // and duplicates its Escape path (see the caller contract at the top of
-  // Popover.svelte). UsageModal's project filter is the same shape and the
-  // same solution.
+  // The project picker is the shared Popover + Menu composition; what that
+  // costs inside a Modal, and why it is safe here, is in
+  // SessionImportProjectMenu.svelte.
 
   import Search from '@lucide/svelte/icons/search';
   import Icon from '../primitives/Icon.svelte';
   import Segmented from '../primitives/Segmented.svelte';
+  import SessionImportProjectMenu from './SessionImportProjectMenu.svelte';
   import { providerLabel } from '../../providers/catalog';
   import {
     getImportProjectFilter,
@@ -25,9 +24,11 @@
     getImportProviders,
     getImportQuery,
     getImportRows,
+    getImportShowAlreadyRan,
     setImportQuery,
     setProjectFilter,
     setProviderFilter,
+    setShowAlreadyRan,
   } from '../../stores/sessionImport.svelte';
   import { buildProjectGroups, type ImportSelectAllState } from '../../stores/sessionImportFilter';
   import type { ImportProviderFilter } from '../../types/sessionImport';
@@ -36,6 +37,11 @@
     /** Tri-state over the currently visible rows. */
     selectAll: ImportSelectAllState;
     filteredCount: number;
+    /**
+     * Rows that already ran in Agent Overflow and pass the current filters —
+     * what the toggle would add, or (with it on) what it would take away.
+     */
+    alreadyRanCount: number;
     disabled: boolean;
     /**
      * The listbox the search box drives, and the row the roving cursor sits
@@ -51,6 +57,7 @@
   let {
     selectAll,
     filteredCount,
+    alreadyRanCount,
     disabled,
     listboxId,
     activeDescendant,
@@ -63,21 +70,22 @@
     { value: 'codex', label: 'Codex' },
   ];
 
-  const SELECT_CLASS =
-    'max-w-[16rem] shrink-0 truncate rounded-[var(--radius-field)] border border-border-subtle ' +
-    'bg-surface-0 px-2 py-1 text-[0.6875rem] text-fg transition-colors ' +
-    'disabled:cursor-not-allowed disabled:opacity-50 ' +
-    'focus:border-accent focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40';
-
   let query = $derived(getImportQuery());
   let providerFilter = $derived(getImportProviderFilter());
   let projectFilter = $derived(getImportProjectFilter());
+  let showAlreadyRan = $derived(getImportShowAlreadyRan());
 
-  // Groups come from every row (so picking one project doesn't empty the
-  // menu it was picked in) while the counts respect provider + query.
+  // Groups come from every offered row (so picking one project doesn't empty
+  // the menu it was picked in) while the counts respect provider + query.
   let projectGroups = $derived(
-    buildProjectGroups(getImportRows(), { providerFilter, query }),
+    buildProjectGroups(getImportRows(), { providerFilter, query, showAlreadyRan }),
   );
+
+  // The toggle is an affordance for rows that exist: with none of them under
+  // the current filters and the toggle off there is nothing to reveal. It
+  // stays rendered while it is ON, whatever the count, or turning it back off
+  // would need the filters put back first.
+  let showAlreadyRanToggle = $derived(alreadyRanCount > 0 || showAlreadyRan);
 
   // Quiet provenance footnote. Naming the provider costs one word and is the
   // difference between "which files?" and an answer.
@@ -91,11 +99,6 @@
       )
       .join(' · '),
   );
-
-  function handleProject(e: Event): void {
-    const value = (e.currentTarget as HTMLSelectElement).value;
-    setProjectFilter(value === '' ? null : value);
-  }
 </script>
 
 <div
@@ -118,19 +121,12 @@
       <span>shown</span>
     </label>
 
-    <select
-      class={SELECT_CLASS}
-      aria-label="Project filter"
-      data-testid="session-import-project-select"
-      value={projectFilter ?? ''}
+    <SessionImportProjectMenu
+      groups={projectGroups}
+      value={projectFilter}
       {disabled}
-      onchange={handleProject}
-    >
-      <option value="">All projects</option>
-      {#each projectGroups as group (group.path)}
-        <option value={group.path}>{group.label} ({group.count})</option>
-      {/each}
-    </select>
+      onSelect={setProjectFilter}
+    />
 
     <Segmented
       options={PROVIDER_OPTIONS}
@@ -165,7 +161,30 @@
     </div>
   </div>
 
-  {#if skippedNote}
-    <p class="text-[0.625rem] text-fg-hint" data-testid="session-import-skipped">{skippedNote}</p>
+  <!-- Quiet second line: the already-ran toggle and the skipped-file
+       footnote. Both are asides to the controls above, and the toggle's
+       sentence is too long to sit inside that row without squeezing search. -->
+  {#if showAlreadyRanToggle || skippedNote}
+    <div class="flex items-center gap-3 text-[0.625rem] text-fg-hint">
+      {#if showAlreadyRanToggle}
+        <label class="flex shrink-0 items-center gap-1.5">
+          <input
+            type="checkbox"
+            class="accent-accent disabled:cursor-not-allowed"
+            data-testid="session-import-show-already-ran"
+            checked={showAlreadyRan}
+            {disabled}
+            onchange={(e) => setShowAlreadyRan(e.currentTarget.checked)}
+          />
+          <span>
+            Show sessions that already ran in Agent Overflow
+            <span class="tabular-nums">({alreadyRanCount})</span>
+          </span>
+        </label>
+      {/if}
+      {#if skippedNote}
+        <p data-testid="session-import-skipped">{skippedNote}</p>
+      {/if}
+    </div>
   {/if}
 </div>

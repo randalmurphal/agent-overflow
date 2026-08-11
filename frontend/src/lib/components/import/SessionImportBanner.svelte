@@ -19,13 +19,18 @@
   import { providerLabel } from '../../providers/catalog';
   import { getImportProviders, getSessionImportError } from '../../stores/sessionImport.svelte';
   import { surfaceHasCatalog, type ImportSurface } from '../../stores/sessionImportFilter';
+  import { countNoun } from '../../utils/format';
 
   interface Props {
     surface: ImportSurface;
+    /** Rows the already-ran toggle is withholding; only the `hidden-only`
+     *  state reads it, and there it is what the escape offers to reveal. */
+    alreadyRanCount: number;
     onClearFilters: () => void;
+    onShowAlreadyRan: () => void;
   }
 
-  let { surface, onClearFilters }: Props = $props();
+  let { surface, alreadyRanCount, onClearFilters, onShowAlreadyRan }: Props = $props();
 
   let catalogError = $derived(getSessionImportError());
   let providers = $derived(getImportProviders());
@@ -94,6 +99,28 @@
   <p class="px-5 py-8 text-[0.8125rem] text-fg-muted" data-testid="session-import-empty">
     No sessions to import — everything Agent Overflow can see is already here.
   </p>
+{:else if surface === 'hidden-only'}
+  <!-- Everything that matches is a session Agent Overflow itself produced.
+       Saying "nothing to import" would be false — the rows exist and are
+       importable — and "no matches" would point at filters that are not the
+       reason, so this state names the real one and offers the one control
+       that changes it. -->
+  <div class="flex flex-col items-start gap-2 px-5 py-8" data-testid="session-import-hidden-only">
+    <p class="text-[0.8125rem] text-fg-muted">
+      {countNoun(alreadyRanCount, 'session')} here already ran in Agent Overflow, and {alreadyRanCount ===
+      1
+        ? 'it is'
+        : 'they are'} hidden.
+    </p>
+    <Button
+      variant="ghost"
+      size="sm"
+      testId="session-import-show-already-ran-cta"
+      onclick={onShowAlreadyRan}
+    >
+      {#snippet children()}Show them{/snippet}
+    </Button>
+  </div>
 {:else if surface === 'no-matches'}
   <div class="flex flex-col items-start gap-2 px-5 py-8" data-testid="session-import-no-matches">
     <p class="text-[0.8125rem] text-fg-muted">No sessions match these filters.</p>

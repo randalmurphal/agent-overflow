@@ -494,7 +494,15 @@ func writeClaudeSessionSlice(
 		missed := strings.Join(candidates, ", ")
 		if midTurnAnchor {
 			for _, parent := range dedupNonEmpty(anchorParentUUIDs) {
-				newID, newPath, uuidMap, parentErr := sessionfork.WriteForkFileThroughUUID(srcPath, parent, "")
+				// Beside the source: srcPath was located from the thread's
+				// CURRENT workspace, and a workspace change relocates a
+				// ref-carrying transcript before it gets here
+				// (copyClaudeSessionForWorkspaceChange), so the source
+				// directory already IS the current workspace's slug.
+				newID, newPath, uuidMap, parentErr := sessionfork.WriteForkFileThroughUUID(sessionfork.ForkCut{
+					SourcePath:   srcPath,
+					LastKeptUUID: parent,
+				})
 				if parentErr == nil {
 					log.Printf("%s: anchor uuids [%s] absent but the parent %q is present in session %s — a prior slice already cut this transcript at the anchor; re-slicing through the parent", logCtx, missed, parent, srcPath)
 					return newID, newPath, uuidMap, nil

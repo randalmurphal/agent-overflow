@@ -3,6 +3,7 @@ package main
 import (
 	"log"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"agent-overflow/internal/provider"
@@ -38,7 +39,20 @@ import (
 // last transcript row, so it is the new file's active branch) that
 // fork-at-a-past-message has produced in `app_thread_fork.go` since forking
 // existed. Rows of other branches that happen to sit earlier in the file come
-// along off-chain, exactly as they do for a fork.
+// along off-chain, exactly as they do for a fork. It carries no `<sessionID>/`
+// subagent sidecar — no fork ever has, and the cut's session id is new, so
+// there is none to carry in either destination.
+//
+// WHERE IT WRITES. Under the slug of the thread's CURRENT workspace, not
+// beside the source. Claude resolves `--resume` against the slug of the cwd it
+// is launched in, and this thread has no session_ref yet — which is exactly
+// what makes a workspace change before the first send a silent no-op
+// (`copyClaudeSessionForWorkspaceChange` has no transcript to relocate). Cut
+// beside the source, the file would land under the ORIGINAL cwd's slug while
+// the resume looks under the new one, and the first send would brick with "No
+// conversation found". When the destination slug is unresolvable the cut still
+// happens beside the source: that is the behaviour that shipped, and it is
+// never worse than not writing at all.
 //
 // FAILURE IS A DEGRADE, NOT A REFUSAL. When the source transcript is gone or
 // the leaf is no longer in it, the thread starts a fresh provider session —
@@ -72,7 +86,12 @@ func (a *App) materializeImportedClaudeBranch(t store.Thread) store.Thread {
 		return t
 	}
 
-	sessionID, path, _, err := sessionfork.WriteForkFileThroughUUID(state.SourcePath, state.LeafUUID, t.Title)
+	sessionID, path, _, err := sessionfork.WriteForkFileThroughUUID(sessionfork.ForkCut{
+		SourcePath:   state.SourcePath,
+		DestDir:      importedBranchDestDir(t, state.SourcePath),
+		LastKeptUUID: state.LeafUUID,
+		Title:        t.Title,
+	})
 	if err != nil {
 		log.Printf(
 			"start session: imported branch %s could not be cut from %s at leaf %s; starting a fresh session: %v",
@@ -100,4 +119,55 @@ func (a *App) materializeImportedClaudeBranch(t store.Thread) store.Thread {
 	}
 	t.SessionRef = sessionID
 	return t
+}
+
+// importedBranchDestDir resolves the Claude project directory a thread's cut
+// branch must land in: the slug of the thread's CURRENT workspace, under the
+// same Claude home the source transcript was read from.
+//
+// That home comes from sourcePath (`<projectsDir>/<slug>/<id>.jsonl`, recorded
+// by the import out of the injected provider home) rather than from $HOME.
+// The two agree in production and diverge under AO_HARNESS_KEEP_HOME, where
+// the app's Claude home is `<dataRoot>/home/.claude` while $HOME is the
+// developer's own — and a cut resolved from $HOME would write into the real
+// `~/.claude/projects`, which the harness's read-only-widening property
+// forbids. Deriving it from the source makes the destination structurally
+// unable to leave the home the transcript came from.
+//
+// Returns "" — sessionfork's "beside the source" — for three cases. The two
+// resolution FAILURES are logged so a resume that later fails is diagnosable:
+//
+//   - the workspace cannot be canonicalized, i.e. the directory is gone (a
+//     removed worktree the thread has not been reattached from yet),
+//   - the sanitized slug exceeds MaxSanitizedSlugLen, where the CLI appends a
+//     Bun.hash suffix Go cannot reproduce.
+//
+// The third — the thread records no workspace — is silent: there is nothing to
+// resolve, which is not a failure, and every workspace-less thread logging a
+// line about it would be noise.
+//
+// Beside the source is right on its own merits whenever the workspace never
+// moved: the source transcript is already under that workspace's slug, so the
+// resolved directory and the source directory are the same path.
+func importedBranchDestDir(t store.Thread, sourcePath string) string {
+	workspace := strings.TrimSpace(t.WorkspacePath)
+	if workspace == "" {
+		return ""
+	}
+	// `<projectsDir>/<slug>/<sessionID>.jsonl` — up two, to the projects dir.
+	projectsDir := filepath.Dir(filepath.Dir(sourcePath))
+	dir, ok, err := sessionfork.WorkspaceProjectDir(projectsDir, workspace)
+	switch {
+	case err != nil:
+		log.Printf(
+			"start session: imported branch %s could not resolve the project dir of workspace %s; cutting beside the source transcript: %v",
+			t.ID, workspace, err)
+		return ""
+	case !ok:
+		log.Printf(
+			"start session: imported branch %s has a workspace path (%s) too long for an exact Claude project slug; cutting beside the source transcript",
+			t.ID, workspace)
+		return ""
+	}
+	return dir
 }

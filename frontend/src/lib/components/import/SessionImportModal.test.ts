@@ -57,6 +57,8 @@ function row(id: string, extra: Partial<ImportableSession> = {}): ImportableSess
     subagentCount: 0,
     sourcePath: `/home/u/.claude/${id}.jsonl`,
     knownProject: true,
+    origin: '',
+    ranInAgentOverflow: false,
     ...extra,
   };
 }
@@ -213,6 +215,203 @@ describe('empty and error states', () => {
   });
 });
 
+describe('the project filter menu', () => {
+  // Popover portals its floating element to <body>; RTL's queries are bound
+  // to document.body, so the menu is reachable from the render result.
+  async function openMenu(view: Awaited<ReturnType<typeof mountWith>>) {
+    await fireEvent.click(view.getByTestId('session-import-project-trigger'));
+    await settle();
+  }
+
+  const ALPHA_ROOT = row('claude:root');
+  const ALPHA_SUB = row('claude:sub', { projectPath: '/repos/alpha/frontend' });
+  const ORPHAN = row('codex:orphan', {
+    projectPath: '/tmp/one-off',
+    projectId: '',
+    projectLabel: 'one-off',
+    knownProject: false,
+  });
+
+  it('lists one entry per project, whatever cwds its sessions ran in', async () => {
+    const view = await mountWith([ALPHA_ROOT, ALPHA_SUB, ORPHAN]);
+    await openMenu(view);
+
+    // The bug this replaced: "alpha (1)" and "alpha (1)" as separate rows,
+    // one per cwd, indistinguishable in the menu.
+    const alpha = view.getAllByRole('menuitem', { name: /alpha/ });
+    expect(alpha).toHaveLength(1);
+    expect(alpha[0].textContent).toContain('2');
+    expect(view.getByRole('menuitem', { name: /All projects/ })).toBeTruthy();
+  });
+
+  it('shows the path only for a project Agent Overflow does not have yet', async () => {
+    const view = await mountWith([ALPHA_ROOT, ALPHA_SUB, ORPHAN]);
+    await openMenu(view);
+
+    const orphan = view.getByRole('menuitem', { name: /one-off/ });
+    expect(orphan.textContent).toContain('/tmp/one-off');
+    expect(orphan.getAttribute('title')).toBe('/tmp/one-off');
+    // A known project's name is unambiguous, so its path is a tooltip only.
+    const alpha = view.getByRole('menuitem', { name: /alpha/ });
+    expect(alpha.textContent).not.toContain('/repos/alpha');
+    expect(alpha.getAttribute('title')).toBe('/repos/alpha');
+  });
+
+  it('picking a project keeps every cwd that resolves to it', async () => {
+    const view = await mountWith([ALPHA_ROOT, ALPHA_SUB, ORPHAN]);
+    await openMenu(view);
+
+    await fireEvent.click(view.getByRole('menuitem', { name: /alpha/ }));
+    await settle();
+
+    expect(view.getByTestId('session-import-row-claude:root')).toBeTruthy();
+    expect(view.getByTestId('session-import-row-claude:sub')).toBeTruthy();
+    expect(view.queryByTestId('session-import-row-codex:orphan')).toBeNull();
+    expect(view.getByTestId('session-import-project-trigger').textContent).toContain('alpha');
+    // Picking closes the menu, and reopening shows the pick as checked.
+    expect(view.queryByRole('menuitem', { name: /All projects/ })).toBeNull();
+    await openMenu(view);
+    expect(view.getByRole('menuitem', { name: /alpha/ }).textContent).toContain('✓');
+  });
+
+  it('Escape closes the menu and leaves the dialog open — from either surface', async () => {
+    const view = await mountWith([ALPHA_ROOT, ORPHAN]);
+    await openMenu(view);
+
+    // A press that reaches the dialog's own backdrop handler. Modal declines
+    // it while a popover is open — the topmost surface owns Escape, and
+    // losing the whole dialog to a dismissed dropdown would take a selection
+    // with it. The popover's document listener takes the same press.
+    await fireEvent.keyDown(view.container.querySelector('[data-modal-backdrop]')!, {
+      key: 'Escape',
+    });
+    await settle();
+    expect(view.queryByRole('menuitem', { name: /All projects/ })).toBeNull();
+    expect(isSessionImportOpen()).toBe(true);
+
+    // From inside the menu, where focus actually is after opening it.
+    await openMenu(view);
+    await fireEvent.keyDown(view.getByRole('menuitem', { name: /All projects/ }), {
+      key: 'Escape',
+    });
+    await settle();
+    expect(view.queryByRole('menuitem', { name: /All projects/ })).toBeNull();
+    expect(isSessionImportOpen()).toBe(true);
+
+    // With the menu closed the dialog owns Escape again.
+    await fireEvent.keyDown(view.container.querySelector('[data-modal-backdrop]')!, {
+      key: 'Escape',
+    });
+    await settle();
+    expect(isSessionImportOpen()).toBe(false);
+  });
+
+  it('Tab closes the menu and puts focus back inside the dialog', async () => {
+    const view = await mountWith([ALPHA_ROOT, ORPHAN]);
+    await openMenu(view);
+
+    // The floating element is outside the dialog's focus trap, so a Tab that
+    // walked out of it would leave focus on the page behind the modal.
+    await fireEvent.keyDown(view.getByRole('menuitem', { name: /All projects/ }), { key: 'Tab' });
+    await settle();
+
+    expect(view.queryByRole('menuitem', { name: /All projects/ })).toBeNull();
+    expect(document.activeElement).toBe(view.getByTestId('session-import-project-trigger'));
+  });
+});
+
+describe('sessions that already ran in Agent Overflow', () => {
+  const MINE = row('claude:mine');
+  const AO_ONE = row('claude:ao-1', { ranInAgentOverflow: true, origin: 'agent-overflow' });
+  const AO_TWO = row('codex:ao-2', { ranInAgentOverflow: true });
+
+  it('are hidden by default, and out of every count with them', async () => {
+    const view = await mountWith([MINE, AO_ONE, AO_TWO]);
+
+    expect(view.queryByTestId('session-import-row-claude:ao-1')).toBeNull();
+    expect(view.getByTestId('session-import-row-claude:mine')).toBeTruthy();
+    expect(view.getByTestId('session-import-confirm').textContent).toContain('Import all (1)');
+    expect(view.getByTestId('session-import-summary').textContent).toContain('1 of 3 shown');
+
+    const toggle = view.getByTestId('session-import-show-already-ran') as HTMLInputElement;
+    expect(toggle.checked).toBe(false);
+    expect(toggle.closest('label')?.textContent).toContain(
+      'Show sessions that already ran in Agent Overflow',
+    );
+    expect(toggle.closest('label')?.textContent).toContain('(2)');
+  });
+
+  it('come back inline when asked for, and count like any other row', async () => {
+    const view = await mountWith([MINE, AO_ONE, AO_TWO]);
+
+    await fireEvent.click(view.getByTestId('session-import-show-already-ran'));
+    await settle();
+
+    expect(view.getByTestId('session-import-row-claude:ao-1')).toBeTruthy();
+    expect(view.getByTestId('session-import-row-codex:ao-2')).toBeTruthy();
+    expect(view.getByTestId('session-import-confirm').textContent).toContain('Import all (3)');
+    // Provenance is a hover, not a badge: the row spends no width on it.
+    expect(view.getByTestId('session-import-row-claude:ao-1').getAttribute('title')).toBe(
+      'This session already ran in Agent Overflow (agent-overflow)',
+    );
+  });
+
+  it('hiding them again retracts them from the selection', async () => {
+    const view = await mountWith([MINE, AO_ONE, AO_TWO]);
+    const toggle = view.getByTestId('session-import-show-already-ran');
+
+    await fireEvent.click(toggle);
+    await settle();
+    await fireEvent.click(view.getByTestId('session-import-select-all'));
+    await settle();
+    expect(view.getByTestId('session-import-confirm').textContent).toContain('Import (3)');
+
+    await fireEvent.click(toggle);
+    await settle();
+
+    // The primary may never act on a row the user has just excluded and can
+    // no longer see to deselect.
+    expect([...getImportSelection()]).toEqual(['claude:mine']);
+    expect(view.getByTestId('session-import-confirm').textContent).toContain('Import (1)');
+  });
+
+  it('a catalogue of nothing else says so, instead of claiming there is nothing to import', async () => {
+    const view = await mountWith([AO_ONE, AO_TWO]);
+
+    // Not `empty` ("everything is already here" — false, these are
+    // importable) and not `no-matches` (whose Clear filters would do nothing).
+    expect(view.queryByTestId('session-import-empty')).toBeNull();
+    expect(view.queryByTestId('session-import-no-matches')).toBeNull();
+    expect(view.getByTestId('session-import-hidden-only').textContent).toContain(
+      '2 sessions here already ran in Agent Overflow',
+    );
+
+    await fireEvent.click(view.getByTestId('session-import-show-already-ran-cta'));
+    await settle();
+    expect(view.getByTestId('session-import-row-claude:ao-1')).toBeTruthy();
+    expect(view.getByTestId('session-import-confirm').textContent).toContain('Import all (2)');
+  });
+
+  it('the toggle stays out of the way when there is nothing to reveal', async () => {
+    const view = await mountWith([MINE]);
+    expect(view.queryByTestId('session-import-show-already-ran')).toBeNull();
+  });
+
+  it('counts only what the other filters leave, so the number matches the view', async () => {
+    const view = await mountWith([MINE, AO_ONE, AO_TWO]);
+
+    setProviderFilter('codex');
+    await settle();
+
+    expect(
+      view.getByTestId('session-import-show-already-ran').closest('label')?.textContent,
+    ).toContain('(1)');
+    expect(view.getByTestId('session-import-hidden-only').textContent).toContain(
+      '1 session here already ran',
+    );
+  });
+});
+
 describe('select-all', () => {
   it('cycles none → all → none over the visible rows', async () => {
     const { getByTestId } = await mountWith([row('claude:a'), row('claude:b')]);
@@ -288,7 +487,7 @@ describe('an in-flight run', () => {
     const { getByTestId, getByLabelText } = await mountAndStart();
 
     expect(getByTestId('session-import-select-all')).toBeDisabled();
-    expect(getByTestId('session-import-project-select')).toBeDisabled();
+    expect(getByTestId('session-import-project-trigger')).toBeDisabled();
     expect(getByTestId('session-import-search')).toBeDisabled();
     expect(getByTestId('session-import-refresh')).toBeDisabled();
     expect(getByTestId('session-import-cancel')).toBeDisabled();

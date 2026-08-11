@@ -1,7 +1,8 @@
 // Modal primitive contract:
 //   - renders only when `open=true`.
 //   - panel is role=dialog + aria-modal=true + aria-labelledby wired.
-//   - Escape on the backdrop calls onClose.
+//   - Escape on the backdrop calls onClose, unless a popover the dialog
+//     OWNS (anchor chain reaching its panel) is layered over it.
 //   - backdrop click calls onClose; click inside the panel does not.
 //   - focus trap: Shift+Tab from the first focusable wraps to the last.
 //   - width prop maps to the configured max-w-[] class.
@@ -47,6 +48,86 @@ describe('<Modal>', () => {
     expect(backdrop).toBeTruthy();
     await fireEvent.keyDown(backdrop!, { key: 'Escape' });
     expect(onClose).toHaveBeenCalled();
+  });
+
+  // Stand-in for an open Popover: it portals to <body> and carries its
+  // anchor on `__popoverAnchor`, which after portaling is the only trace of
+  // who opened it (the floating element and the backdrop are DOM siblings,
+  // so ancestry answers nothing).
+  function openPopoverAnchoredAt(anchor: HTMLElement): HTMLElement {
+    const popover = document.createElement('div') as HTMLElement & {
+      __popoverAnchor?: HTMLElement;
+    };
+    popover.setAttribute('data-popover', '');
+    popover.__popoverAnchor = anchor;
+    document.body.appendChild(popover);
+    return popover;
+  }
+
+  it('declines Escape while a popover it OWNS is layered over the dialog', async () => {
+    const onClose = vi.fn();
+    const { container, getByTestId } = render(Harness, { props: { onClose } });
+    await flushFocus();
+    const backdrop = container.querySelector('[data-modal-backdrop]');
+
+    const popover = openPopoverAnchoredAt(getByTestId('modal-middle'));
+    try {
+      await fireEvent.keyDown(backdrop!, { key: 'Escape' });
+      // The topmost surface owns the press. Modal's handler runs BEFORE the
+      // popover's document listener, so declining is the only way the
+      // dropdown gets to be the thing that closes.
+      expect(onClose).not.toHaveBeenCalled();
+    } finally {
+      popover.remove();
+    }
+
+    await fireEvent.keyDown(backdrop!, { key: 'Escape' });
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('takes Escape while the only open popover belongs to something else', async () => {
+    const onClose = vi.fn();
+    const { container } = render(Harness, { props: { onClose } });
+    await flushFocus();
+
+    // A picker in another pane, or one left open behind this dialog. Nothing
+    // about it is layered over this panel, and declining for it would leave
+    // the dialog unable to close at all.
+    const stranger = document.createElement('button');
+    document.body.appendChild(stranger);
+    const popover = openPopoverAnchoredAt(stranger);
+    try {
+      await fireEvent.keyDown(container.querySelector('[data-modal-backdrop]')!, {
+        key: 'Escape',
+      });
+      expect(onClose).toHaveBeenCalledTimes(1);
+    } finally {
+      popover.remove();
+      stranger.remove();
+    }
+  });
+
+  it('declines Escape for a popover nested inside a picker it owns', async () => {
+    const onClose = vi.fn();
+    const { container, getByTestId } = render(Harness, { props: { onClose } });
+    await flushFocus();
+
+    // Submenu shape: the outer picker is anchored in the panel, the inner one
+    // is anchored inside the outer's floating element. Ownership has to walk
+    // the whole chain, not just the first hop.
+    const outer = openPopoverAnchoredAt(getByTestId('modal-middle'));
+    const innerAnchor = document.createElement('button');
+    outer.appendChild(innerAnchor);
+    const inner = openPopoverAnchoredAt(innerAnchor);
+    try {
+      await fireEvent.keyDown(container.querySelector('[data-modal-backdrop]')!, {
+        key: 'Escape',
+      });
+      expect(onClose).not.toHaveBeenCalled();
+    } finally {
+      inner.remove();
+      outer.remove();
+    }
   });
 
   it('backdrop click calls onClose', async () => {

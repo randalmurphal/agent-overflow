@@ -10,27 +10,36 @@ import (
 
 	"github.com/google/uuid"
 
-	gitops "agent-overflow/internal/git"
+	"agent-overflow/internal/gitroot"
 	"agent-overflow/internal/store"
 )
 
 // EnsureForWorkspace finds or creates a project row for the given
-// workspace path. Used by flows (CreateThreadFromPR, auto-import) that
-// need a project implicitly before a Thread can be inserted.
+// workspace path. Used by flows (CreateThreadFromPR, session import,
+// worktree/thread creation) that need a project implicitly before a
+// Thread can be inserted.
 //
 // Lookup precedence:
-//  1. Project whose path exactly matches the resolved git repository root.
+//  1. Project whose path exactly matches the MAIN repository root of the
+//     workspace.
 //  2. Project whose path matches the workspace path verbatim.
-//  3. Create a new project at whichever path is a git root, or fall back
-//     to the workspace path.
+//  3. Create a new project at whichever path is a repository root, or fall
+//     back to the workspace path.
 //
-// A nil core is treated as "no git probe available" — the function
-// degrades to a verbatim-path lookup/create rather than failing, so the
-// caller can run before git wiring has landed (a few test fixtures rely
-// on this).
+// "Main repository root" is `gitroot.MainRoot` — git's `--git-common-dir`
+// semantics, not `--show-toplevel`'s. A workspace that is a LINKED WORKTREE
+// resolves to the repository it was cut from, so a thread running in a
+// worktree lands in the real project instead of minting one named after the
+// branch (root AGENTS.md, core principle 7: a project is the repository, a
+// workspace is where the provider operates). The resolution is pure
+// filesystem reads, so it costs no subprocess and is safe to run per row.
+//
+// Only the PROJECT is resolved this way. The caller's own workspace path is
+// what belongs on the thread — a worktree thread keeps working in its
+// worktree.
 //
 // Returns an error when the store is nil or the workspace path is empty.
-func EnsureForWorkspace(s *store.Store, core *gitops.Core, workspacePath string) (store.Project, error) {
+func EnsureForWorkspace(s *store.Store, workspacePath string) (store.Project, error) {
 	if s == nil {
 		return store.Project{}, fmt.Errorf("resolve project: store unavailable")
 	}
@@ -39,15 +48,11 @@ func EnsureForWorkspace(s *store.Store, core *gitops.Core, workspacePath string)
 		return store.Project{}, fmt.Errorf("resolve project: workspace path is required")
 	}
 
-	// Prefer the git repo root when detectable — two threads in sibling
-	// checkouts should share the same project row.
+	// Prefer the repository root when detectable — two threads in sibling
+	// worktrees of one repository should share the same project row.
 	candidatePath := trimmed
-	if core != nil {
-		if root, err := core.RepositoryRoot(trimmed); err == nil {
-			if r := strings.TrimSpace(root); r != "" {
-				candidatePath = r
-			}
-		}
+	if root, ok := gitroot.MainRoot(trimmed); ok {
+		candidatePath = root
 	}
 
 	if existing, err := s.GetProjectByPath(candidatePath); err == nil {

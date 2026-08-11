@@ -309,13 +309,14 @@ func NewSession(ctx context.Context, threadID string, cfg Config, onEvent func(p
 // custom strings) survives the early return. Setting `agent-overflow`
 // keeps the session resumable from a normal `claude --resume` while
 // cleanly identifying our client in telemetry.
-const (
-	claudeCodeEntrypointEnvVar = "CLAUDE_CODE_ENTRYPOINT"
-	claudeCodeEntrypointValue  = "agent-overflow"
-)
+//
+// The value itself is `provider.ClaudeEntrypointOrigin`: the session
+// importer reads it back out of transcripts, so writer and reader share
+// one declaration rather than two literals that can drift apart.
+const claudeCodeEntrypointEnvVar = "CLAUDE_CODE_ENTRYPOINT"
 
 // withClaudeCodeEntrypoint returns a copy of env with
-// CLAUDE_CODE_ENTRYPOINT set to "agent-overflow", unless the caller
+// CLAUDE_CODE_ENTRYPOINT set to AO's entrypoint marker, unless the caller
 // already provided an explicit value (tests can opt out).
 func withClaudeCodeEntrypoint(env map[string]string) map[string]string {
 	if _, ok := env[claudeCodeEntrypointEnvVar]; ok {
@@ -325,7 +326,7 @@ func withClaudeCodeEntrypoint(env map[string]string) map[string]string {
 	for k, v := range env {
 		merged[k] = v
 	}
-	merged[claudeCodeEntrypointEnvVar] = claudeCodeEntrypointValue
+	merged[claudeCodeEntrypointEnvVar] = provider.ClaudeEntrypointOrigin
 	return merged
 }
 

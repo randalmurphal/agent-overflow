@@ -2,6 +2,7 @@ package sessionimport
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -49,11 +50,10 @@ func (o ImportOutcome) ThreadIDs() []string {
 // missing branches from the next scan.
 //
 // Nothing here spawns a process. Import is a file read and a SQLite write.
-// The project row is resolved through project.EnsureForWorkspace: git root
-// first, the recorded workspace path second, create third. A workspace that no
-// longer exists still gets a project at its recorded path — the session is
-// worth importing either way, and refusing would hide history because a
-// directory moved.
+// The project row is the one the SCAN already resolved (resolveProject); a
+// workspace that no longer exists still gets a project at its recorded path —
+// the session is worth importing either way, and refusing would hide history
+// because a directory moved.
 func ImportOne(ctx context.Context, d Deps, row Row) (ImportOutcome, error) {
 	if d.Store == nil {
 		return ImportOutcome{}, fmt.Errorf("sessionimport: import has no store")
@@ -68,7 +68,7 @@ func ImportOne(ctx context.Context, d Deps, row Row) (ImportOutcome, error) {
 		return ImportOutcome{}, fmt.Errorf("sessionimport: %s has no session id", row.ID)
 	}
 
-	proj, err := project.EnsureForWorkspace(d.Store, d.GitCore, row.ProjectPath)
+	proj, err := resolveProject(d.Store, row)
 	if err != nil {
 		return ImportOutcome{}, fmt.Errorf("sessionimport: resolve project for %s: %w", row.ID, err)
 	}
@@ -81,6 +81,31 @@ func ImportOne(ctx context.Context, d Deps, row Row) (ImportOutcome, error) {
 	default:
 		return ImportOutcome{}, fmt.Errorf("sessionimport: %s names unknown provider %q", row.ID, row.Provider)
 	}
+}
+
+// resolveProject picks the project row this import lands in.
+//
+// The SCAN already answered the question: `projectIndex.decorate` resolved
+// the session's cwd to its MAIN repository root, and a cwd whose worktree has
+// since been deleted to the project that still registers it — an answer
+// nothing on the filesystem can reproduce afterwards. Re-deriving it here
+// could only disagree with the project the listing showed the user, so the
+// stamped id wins.
+//
+// EnsureForWorkspace covers the two cases the stamp does not: a row that
+// belongs to no project yet (it creates one at the repository root) and a
+// stamped project that has been deleted between the scan and the import.
+func resolveProject(s *store.Store, row Row) (store.Project, error) {
+	if id := strings.TrimSpace(row.ProjectID); id != "" {
+		proj, err := s.GetProject(id)
+		if err == nil {
+			return proj, nil
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return store.Project{}, err
+		}
+	}
+	return project.EnsureForWorkspace(s, row.ProjectPath)
 }
 
 // branchPlan is one thread-to-be: everything the thread row needs and the

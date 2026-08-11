@@ -88,7 +88,7 @@ func ListModels(ctx context.Context, cfg ModelListConfig) ([]provider.ModelInfo,
 		Binary:       cfg.Binary,
 		WorkDir:      cfg.WorkDir,
 		Env:          cfg.Env,
-		ClientName:   "agent_overflow",
+		ClientName:   provider.CodexClientOrigin,
 		Experimental: true,
 		Label:        "model/list",
 	})

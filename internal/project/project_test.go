@@ -20,7 +20,7 @@ func newTestStore(t *testing.T) *store.Store {
 }
 
 func TestEnsureForWorkspaceRejectsNilStore(t *testing.T) {
-	_, err := EnsureForWorkspace(nil, nil, "/tmp/anywhere")
+	_, err := EnsureForWorkspace(nil, "/tmp/anywhere")
 	if err == nil {
 		t.Fatal("nil store: expected error, got nil")
 	}
@@ -31,7 +31,7 @@ func TestEnsureForWorkspaceRejectsNilStore(t *testing.T) {
 
 func TestEnsureForWorkspaceRejectsEmptyPath(t *testing.T) {
 	s := newTestStore(t)
-	_, err := EnsureForWorkspace(s, nil, "")
+	_, err := EnsureForWorkspace(s, "")
 	if err == nil {
 		t.Fatal("empty path: expected error, got nil")
 	}
@@ -39,7 +39,7 @@ func TestEnsureForWorkspaceRejectsEmptyPath(t *testing.T) {
 		t.Fatalf("empty path: unexpected error: %v", err)
 	}
 
-	_, err = EnsureForWorkspace(s, nil, "   ")
+	_, err = EnsureForWorkspace(s, "   ")
 	if err == nil {
 		t.Fatal("whitespace path: expected error, got nil")
 	}
@@ -47,7 +47,7 @@ func TestEnsureForWorkspaceRejectsEmptyPath(t *testing.T) {
 
 func TestEnsureForWorkspaceCreatesWhenAbsent(t *testing.T) {
 	s := newTestStore(t)
-	got, err := EnsureForWorkspace(s, nil, "/tmp/repo-a")
+	got, err := EnsureForWorkspace(s, "/tmp/repo-a")
 	if err != nil {
 		t.Fatalf("EnsureForWorkspace: %v", err)
 	}
@@ -70,12 +70,12 @@ func TestEnsureForWorkspaceCreatesWhenAbsent(t *testing.T) {
 
 func TestEnsureForWorkspaceReturnsExistingByPath(t *testing.T) {
 	s := newTestStore(t)
-	first, err := EnsureForWorkspace(s, nil, "/tmp/repo-b")
+	first, err := EnsureForWorkspace(s, "/tmp/repo-b")
 	if err != nil {
 		t.Fatalf("first call: %v", err)
 	}
 
-	second, err := EnsureForWorkspace(s, nil, "/tmp/repo-b")
+	second, err := EnsureForWorkspace(s, "/tmp/repo-b")
 	if err != nil {
 		t.Fatalf("second call: %v", err)
 	}
@@ -86,19 +86,78 @@ func TestEnsureForWorkspaceReturnsExistingByPath(t *testing.T) {
 
 func TestEnsureForWorkspaceTrimsWhitespace(t *testing.T) {
 	s := newTestStore(t)
-	first, err := EnsureForWorkspace(s, nil, "/tmp/repo-c")
+	first, err := EnsureForWorkspace(s, "/tmp/repo-c")
 	if err != nil {
 		t.Fatalf("first call: %v", err)
 	}
 
 	// Whitespace around the same path should resolve to the same row,
 	// not create a duplicate.
-	second, err := EnsureForWorkspace(s, nil, "  /tmp/repo-c  ")
+	second, err := EnsureForWorkspace(s, "  /tmp/repo-c  ")
 	if err != nil {
 		t.Fatalf("whitespace call: %v", err)
 	}
 	if second.ID != first.ID {
 		t.Fatalf("whitespace call returned a new project: first.ID=%q second.ID=%q", first.ID, second.ID)
+	}
+}
+
+// A workspace that is a LINKED WORKTREE resolves to the repository it was cut
+// from, so importing (or creating) a thread there lands in the real project
+// instead of minting one named after the branch. The worktree lives OUTSIDE
+// the repository, exactly where AO parks its own, so nothing about this can
+// fall out of path containment.
+func TestEnsureForWorkspaceLandsAWorktreeInItsRepository(t *testing.T) {
+	s := newTestStore(t)
+	tmp := t.TempDir()
+
+	repo := filepath.Join(tmp, "fixture-repo")
+	private := filepath.Join(repo, ".git", "worktrees", "BLITZ-188")
+	worktree := filepath.Join(tmp, "worktrees", "fixture-repo", "BLITZ-188")
+	for _, dir := range []string{private, worktree} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", dir, err)
+		}
+	}
+	for path, body := range map[string]string{
+		filepath.Join(worktree, ".git"):     "gitdir: " + private + "\n",
+		filepath.Join(private, "gitdir"):    filepath.Join(worktree, ".git") + "\n",
+		filepath.Join(private, "commondir"): "../..\n",
+	} {
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatalf("write %s: %v", path, err)
+		}
+	}
+
+	fromRepo, err := EnsureForWorkspace(s, repo)
+	if err != nil {
+		t.Fatalf("EnsureForWorkspace(repo): %v", err)
+	}
+	fromWorktree, err := EnsureForWorkspace(s, worktree)
+	if err != nil {
+		t.Fatalf("EnsureForWorkspace(worktree): %v", err)
+	}
+	if fromWorktree.ID != fromRepo.ID {
+		t.Fatalf("worktree project = %+v, want the repository's row %+v", fromWorktree, fromRepo)
+	}
+
+	// And in the other order: a worktree seen FIRST must create the project
+	// at the repository root, not at its own path — from a subdirectory of
+	// the worktree too, which is what a session started deeper records.
+	other := newTestStore(t)
+	subdir := filepath.Join(worktree, "internal")
+	if err := os.MkdirAll(subdir, 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", subdir, err)
+	}
+	created, err := EnsureForWorkspace(other, subdir)
+	if err != nil {
+		t.Fatalf("EnsureForWorkspace(worktree subdir): %v", err)
+	}
+	if created.Name != filepath.Base(repo) {
+		t.Fatalf("created project = %+v, want one named after the repository %q", created, filepath.Base(repo))
+	}
+	if resolved, err := filepath.EvalSymlinks(repo); err != nil || created.Path != resolved {
+		t.Fatalf("created project path = %q, want the repository root %q (err %v)", created.Path, resolved, err)
 	}
 }
 

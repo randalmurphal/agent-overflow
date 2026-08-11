@@ -11,6 +11,8 @@ import (
 	"time"
 
 	_ "modernc.org/sqlite" // fixture Codex thread index
+
+	"agent-overflow/internal/provider/claude/sessionfork"
 )
 
 // app_session_import_fixture_test.go — hand-written provider homes for the
@@ -36,23 +38,50 @@ const (
 type importHome struct {
 	root      string
 	workspace string
+	// projectDir is the Claude project slug directory of workspace, computed
+	// the way Claude computes it. Storing the REAL slug rather than a made-up
+	// one is what makes the fixture faithful: anything that writes a
+	// transcript for a workspace (a materialized import branch, a relocation)
+	// lands in the directory the sessions already live in, exactly as it does
+	// on a real home.
+	projectDir string
 }
 
+// newImportHome builds a fixture provider home and points HOME at it.
+//
+// HOME matters because sessionfork's live-thread flows (LocateSessionFile,
+// RelocateSession) still resolve `~/.claude/projects` through os.UserHomeDir,
+// while session import resolves its homes through credentialHomeOverride. In
+// production those are the same directory; a fixture that set only the
+// override would leave those writes aimed at the DEVELOPER's real Claude home
+// (root AGENTS.md §Permanent invariants). Setting both is what keeps the two
+// halves consistent and the real home untouched.
 func newImportHome(t *testing.T) importHome {
 	t.Helper()
 	root := t.TempDir()
+	t.Setenv("HOME", root)
+	t.Setenv("USERPROFILE", root)
+
 	home := importHome{root: root, workspace: filepath.Join(root, "repo")}
-	for _, dir := range []string{home.claudeProjectDir(), home.codexHome(), home.workspace} {
+	for _, dir := range []string{home.codexHome(), home.workspace} {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			t.Fatalf("mkdir %s: %v", dir, err)
 		}
 	}
+	projectDir, ok, err := sessionfork.WorkspaceProjectDir(home.claudeProjectsDir(), home.workspace)
+	if err != nil || !ok {
+		t.Fatalf("resolve claude project dir for %s: ok=%v err=%v", home.workspace, ok, err)
+	}
+	home.projectDir = projectDir
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", projectDir, err)
+	}
 	return home
 }
 
-func (h importHome) claudeProjectDir() string {
-	return filepath.Join(h.root, ".claude", "projects", "-fixture-repo")
-}
+func (h importHome) claudeProjectsDir() string { return filepath.Join(h.root, ".claude", "projects") }
+
+func (h importHome) claudeProjectDir() string { return h.projectDir }
 
 func (h importHome) codexHome() string { return filepath.Join(h.root, ".codex") }
 

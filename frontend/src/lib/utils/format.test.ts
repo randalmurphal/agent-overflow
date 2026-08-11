@@ -6,6 +6,7 @@ import {
   formatTimeOfDay,
   formatTurnTokens,
   formatUsd,
+  truncateMiddle,
 } from './format';
 
 describe('formatTimeOfDay', () => {
@@ -174,5 +175,31 @@ describe('formatUsd', () => {
     expect(formatUsd(Number.NaN)).toBe('$0.00');
     expect(formatUsd(Number.POSITIVE_INFINITY)).toBe('$0.00');
     expect(formatUsd(-3)).toBe('$0.00');
+  });
+});
+
+describe('truncateMiddle', () => {
+  it('leaves anything that already fits alone', () => {
+    expect(truncateMiddle('/repos/alpha', 12)).toBe('/repos/alpha');
+    expect(truncateMiddle('', 8)).toBe('');
+  });
+
+  it('drops the middle, keeping both ends of the path', () => {
+    const got = truncateMiddle('/home/u/repos/agent-overflow/frontend', 20);
+    expect(got).toHaveLength(20);
+    expect(got.startsWith('/home/u/re')).toBe(true);
+    expect(got.endsWith('frontend')).toBe(true);
+    expect(got).toContain('\u2026');
+  });
+
+  it('never returns more than max, ellipsis included', () => {
+    for (const max of [4, 5, 6, 7, 12, 33]) {
+      expect(truncateMiddle('x'.repeat(200), max).length).toBe(max);
+    }
+  });
+
+  it('returns the value whole when there is no room to say anything', () => {
+    // Below four characters the result would be punctuation, not a hint.
+    expect(truncateMiddle('/repos/alpha', 3)).toBe('/repos/alpha');
   });
 });

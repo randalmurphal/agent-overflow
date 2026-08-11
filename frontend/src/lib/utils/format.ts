@@ -198,3 +198,22 @@ export function formatGiB(bytes: number): string {
 export function countNoun(count: number, noun: string): string {
   return `${count} ${noun}${count === 1 ? '' : 's'}`;
 }
+
+/**
+ * `/home/u/repos/…/frontend` — drop the MIDDLE of an over-long string.
+ *
+ * For paths, which is what wants this: the head says where in the filesystem
+ * it lives and the tail says which directory it is, so a trailing ellipsis
+ * (what CSS truncation does) removes the only part that identifies it. The
+ * full value belongs in a `title` alongside; this is the readable stand-in.
+ *
+ * `max` counts the RESULT, ellipsis included, so a caller sizing a column can
+ * trust it. Below four characters there is no room to say anything, so the
+ * value comes back whole rather than as punctuation.
+ */
+export function truncateMiddle(value: string, max: number): string {
+  if (max < 4 || value.length <= max) return value;
+  const head = Math.ceil((max - 1) / 2);
+  const tail = max - 1 - head;
+  return `${value.slice(0, head)}…${value.slice(value.length - tail)}`;
+}

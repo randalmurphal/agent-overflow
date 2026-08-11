@@ -53,6 +53,13 @@ type SessionInfo struct {
 	// the transcript carries fork provenance. The scan orchestrator uses it
 	// to keep a fork's ancestor out of the candidate list.
 	ForkedFromSessionID string
+	// Entrypoint is the transcript's own `entrypoint` marker, verbatim:
+	// which client ran the session. Every row carries it, and the values
+	// observed on a real home are `cli`, `sdk-cli` and `agent-overflow` (AO
+	// pins `CLAUDE_CODE_ENTRYPOINT` on every spawn). Empty when the head
+	// window holds none. Interpreting it is the orchestrator's job — this
+	// package reports what the file says.
+	Entrypoint string
 }
 
 // Warning codes emitted by List. Grouped so a caller can dedupe or count
@@ -270,6 +277,11 @@ func parseSessionInfo(c candidate, lite liteFile) (SessionInfo, bool) {
 		SizeBytes:      lite.Size,
 
 		ForkedFromSessionID: extractForkedFromSessionID(lite.Head),
+		// FIRST occurrence, like `cwd` beside it: the marker names the client
+		// that STARTED the session, and a transcript resumed by another
+		// client appends rows carrying that client's own value. Same head
+		// buffer, so this costs no additional read.
+		Entrypoint: extractJSONStringField(lite.Head, "entrypoint"),
 	}
 	info.CreatedAt = parseISOMillis(extractJSONStringField(lite.Head, "timestamp"))
 	if info.CreatedAt == 0 {

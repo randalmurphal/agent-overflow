@@ -305,7 +305,7 @@ func projectThreadLockOrder(threads map[string]store.Thread) []string {
 
 // ensureProjectForWorkspace delegates to project.EnsureForWorkspace.
 // Kept as an *App method so existing callers (and tests in this package)
-// don't need to thread the store + git core through their call sites.
+// don't need to thread the store through their call sites.
 func (a *App) ensureProjectForWorkspace(workspacePath string) (store.Project, error) {
-	return project.EnsureForWorkspace(a.store, a.gitCore(), workspacePath)
+	return project.EnsureForWorkspace(a.store, workspacePath)
 }

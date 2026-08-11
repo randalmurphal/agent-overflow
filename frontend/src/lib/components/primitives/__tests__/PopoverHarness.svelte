@@ -21,6 +21,8 @@
     onClose = () => {},
     role = 'none' as 'dialog' | 'menu' | 'listbox' | 'none',
     matchAnchorWidth = false,
+    claimTab = false,
+    restoreFocusToAnchor = false,
   }: {
     open?: boolean;
     placement?:
@@ -33,13 +35,25 @@
     onClose?: () => void;
     role?: 'dialog' | 'menu' | 'listbox' | 'none';
     matchAnchorWidth?: boolean;
+    /** Opt into the picker-in-dialog focus contract (Popover constraint #2). */
+    claimTab?: boolean;
+    restoreFocusToAnchor?: boolean;
   } = $props();
 
   let anchor: HTMLButtonElement | undefined = $state(undefined);
 </script>
 
 <button bind:this={anchor} data-testid="popover-anchor" type="button">Anchor</button>
-<Popover {anchor} {open} {onClose} {placement} {role} {matchAnchorWidth}>
+<Popover
+  {anchor}
+  {open}
+  {onClose}
+  {placement}
+  {role}
+  {matchAnchorWidth}
+  {claimTab}
+  restoreFocusTo={restoreFocusToAnchor ? anchor : undefined}
+>
   {#snippet children()}
     <div data-testid="popover-content">
       <button type="button" data-testid="popover-inside-button">inside</button>

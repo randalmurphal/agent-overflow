@@ -452,7 +452,7 @@ func TestWriteForkFileThroughUUID(t *testing.T) {
 	// Keep through the assistant entry a1: the shape of the already-cut
 	// retry, where a1 was the cut-away anchor's parent. Rows after a1
 	// (the attachment and both later turns) must NOT survive.
-	_, throughPath, _, err := WriteForkFileThroughUUID(srcPath, "a1", "")
+	_, throughPath, _, err := WriteForkFileThroughUUID(ForkCut{SourcePath: srcPath, LastKeptUUID: "a1"})
 	if err != nil {
 		t.Fatalf("through a1: %v", err)
 	}
@@ -460,10 +460,10 @@ func TestWriteForkFileThroughUUID(t *testing.T) {
 		t.Fatalf("kept entries = %v, want [u1 a1] (inclusive through the parent, later rows cut)", got)
 	}
 
-	if _, _, _, err := WriteForkFileThroughUUID(srcPath, "nope", ""); !errors.Is(err, ErrMessageNotFound) {
+	if _, _, _, err := WriteForkFileThroughUUID(ForkCut{SourcePath: srcPath, LastKeptUUID: "nope"}); !errors.Is(err, ErrMessageNotFound) {
 		t.Fatalf("absent uuid: err=%v, want ErrMessageNotFound", err)
 	}
-	if _, _, _, err := WriteForkFileThroughUUID(srcPath, "", ""); err == nil {
+	if _, _, _, err := WriteForkFileThroughUUID(ForkCut{SourcePath: srcPath}); err == nil {
 		t.Fatal("empty uuid must error")
 	}
 
@@ -476,7 +476,7 @@ func TestWriteForkFileThroughUUID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("fork at u2: %v", err)
 	}
-	_, secondPath, _, err := WriteForkFileThroughUUID(forkPath, "a1", "")
+	_, secondPath, _, err := WriteForkFileThroughUUID(ForkCut{SourcePath: forkPath, LastKeptUUID: "a1"})
 	if err != nil {
 		t.Fatalf("through pre-fork a1 on the fork: %v", err)
 	}
@@ -486,7 +486,7 @@ func TestWriteForkFileThroughUUID(t *testing.T) {
 	}
 	// The cut-away anchor's id maps to nothing on the fork — the
 	// already-cut detector relies on that asymmetry.
-	if _, _, _, err := WriteForkFileThroughUUID(forkPath, "u2", ""); !errors.Is(err, ErrMessageNotFound) {
+	if _, _, _, err := WriteForkFileThroughUUID(ForkCut{SourcePath: forkPath, LastKeptUUID: "u2"}); !errors.Is(err, ErrMessageNotFound) {
 		t.Fatalf("cut-away uuid on fork: err=%v, want ErrMessageNotFound", err)
 	}
 }

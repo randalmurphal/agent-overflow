@@ -23,14 +23,24 @@
   //    consumer binds the anchor once and reuses the reference;
   //    new callers must do the same.
   //
-  // 2. Popovers are NOT rendered inside Modals today. Modal runs its
-  //    own focus trap and Escape handler on the backdrop; a Popover
-  //    inside would duplicate the Escape path and bypass the focus
-  //    trap (the portal to document.body lifts children out of the
-  //    Modal's panel subtree). If a future flow needs a picker-in-
-  //    dialog, coordinate: either route that picker through Modal as
-  //    a sub-dialog, or gate Popover's document Escape with a modal-
-  //    stack check. Do not simply rely on `stopPropagation`.
+  // 2. A Popover inside a Modal costs two things, and both are settled
+  //    in the primitives — `stopPropagation` pays neither.
+  //
+  //    ESCAPE is automatic: Modal declines the press while a popover it
+  //    OWNS is open (the anchor chain reaches its panel — see
+  //    `utils/popoverOwnership.ts`), so the topmost surface handles it.
+  //    That is Modal's guard, not an ordering trick — Modal's handler
+  //    sits on the backdrop and runs BEFORE this component's
+  //    document-level listener, so nothing here could pre-empt it.
+  //
+  //    FOCUS is opt-in via props, because it only applies to a popover
+  //    hosted inside a focus trap. Portaling lifts the floating element
+  //    out of the Modal panel, so it is outside the dialog's trap: Tab
+  //    from inside the popover walks into the page behind, and a close
+  //    that leaves focus on a removed node drops it to <body>. Pass
+  //    `claimTab` and `restoreFocusTo={trigger}` and both are handled
+  //    here; `import/SessionImportProjectMenu.svelte` is the worked
+  //    example.
   //
   // 3. Callers do NOT re-parent the floating element themselves.
   //    Popover moves it to <body> on mount and removes it on
@@ -38,6 +48,11 @@
   //    path and leak nodes between tests.
 
   import type { Snippet } from 'svelte';
+  import {
+    hasOpenPopoverOwnedBy,
+    popoverAnchorChainReaches,
+    type PopoverFloatingEl,
+  } from '../../utils/popoverOwnership';
 
   type Placement =
     | 'bottom-start'
@@ -58,6 +73,19 @@
     matchAnchorWidth?: boolean;
     role?: PopoverRole;
     ariaLabel?: string;
+    /**
+     * Take Tab while open: suppress the move and close instead. For a
+     * popover hosted inside a focus trap this is the one exit that would
+     * otherwise strand focus outside the trap (constraint #2 above).
+     */
+    claimTab?: boolean;
+    /**
+     * Where focus goes when a close would leave it on the removed floating
+     * element — normally the trigger. Only applies when focus was still
+     * inside the popover: a close caused by an outside click has already
+     * put focus where the user asked for it.
+     */
+    restoreFocusTo?: HTMLElement;
     children: Snippet;
   }
 
@@ -70,6 +98,8 @@
     matchAnchorWidth = false,
     role = 'none',
     ariaLabel,
+    claimTab = false,
+    restoreFocusTo,
     children,
   }: Props = $props();
 
@@ -83,14 +113,6 @@
   // means "not yet positioned" — the floating div is kept invisible so
   // there's no first-frame jump at the viewport's origin.
   let resolvedPlacement = $state<Placement | null>(null);
-
-  // Popover-on-floating-element property bag. Holding the anchor
-  // reference here lets other popovers reconstruct the "is this a
-  // descendant popover?" check at mousedown time: after portaling,
-  // DOM ancestry can't answer that question because every popover is
-  // a sibling under <body>, but every popover's anchor is still a DOM
-  // descendant of whichever popover opened it — so we chase the anchor.
-  type PopoverFloatingEl = HTMLDivElement & { __popoverAnchor?: HTMLElement };
 
   // Portal the floating element into `document.body` on mount. Without
   // this, a `position: fixed` popover rendered inside an ancestor that
@@ -117,8 +139,12 @@
   });
 
   // Keep the anchor reference attached to the floating element so
-  // ancestor popovers can walk their way back through the DOM at
-  // click time. Without this, clicking a menu item inside a nested
+  // ancestor popovers (and a hosting Modal) can walk their way back
+  // through the DOM at click time — after portaling, DOM ancestry
+  // can't answer "did I spawn this?" because every popover is a
+  // sibling under <body>, but every popover's anchor is still a DOM
+  // descendant of whatever opened it, so the walk chases anchors.
+  // Without this, clicking a menu item inside a nested
   // submenu would close the parent popover first (both are body
   // children after portaling, so the parent sees the click as
   // "outside"), then the click event would never fire on the now-
@@ -129,45 +155,21 @@
     (floatingEl as PopoverFloatingEl).__popoverAnchor = anchor;
   });
 
-  // Walk the anchor chain upward from a clicked popover to determine
-  // whether it is "my descendant" — i.e. I spawned it directly, or I
-  // spawned an intermediate popover that spawned it, etc. Used by
-  // both outside-mousedown (don't close me when a child swallows the
-  // click) and Escape (let the deepest popover handle the press).
-  //
-  // Max depth guard is defensive against a malformed cycle; real
-  // popover trees are rarely more than 2–3 deep.
-  function isPopoverDescendantOfMe(
-    other: PopoverFloatingEl,
-  ): boolean {
-    if (!floatingEl) return false;
-    if (other === floatingEl) return false;
-    let cur: PopoverFloatingEl | null = other;
-    for (let i = 0; i < 16 && cur; i++) {
-      const curAnchor = cur.__popoverAnchor;
-      if (!curAnchor) return false;
-      if (floatingEl.contains(curAnchor)) return true;
-      const next = curAnchor.closest('[data-popover]') as PopoverFloatingEl | null;
-      if (!next || next === cur) return false;
-      cur = next;
-    }
-    return false;
-  }
-
+  // "Is that popover my descendant?" — I spawned it directly, or I
+  // spawned an intermediate popover that spawned it, etc. Used by both
+  // outside-mousedown (don't close me when a child swallows the click)
+  // and Escape (let the deepest popover handle the press). The walk
+  // itself is shared with Modal, which asks the same question about the
+  // pickers mounted inside its panel.
   function isDescendantPopoverClick(target: Element): boolean {
     const other = target.closest('[data-popover]') as PopoverFloatingEl | null;
-    if (!other) return false;
-    return isPopoverDescendantOfMe(other);
+    if (!other || !floatingEl || other === floatingEl) return false;
+    return popoverAnchorChainReaches(other, floatingEl);
   }
 
   function hasOpenDescendantPopover(): boolean {
     if (!floatingEl) return false;
-    const open = document.querySelectorAll<PopoverFloatingEl>('[data-popover]');
-    for (const p of open) {
-      if (p === floatingEl) continue;
-      if (isPopoverDescendantOfMe(p)) return true;
-    }
-    return false;
+    return hasOpenPopoverOwnedBy(floatingEl);
   }
 
   // Core placement math. Given the anchor rect and the floating rect,
@@ -295,6 +297,11 @@
     resolvedPlacement = chosen;
   }
 
+  // Whether focus was last seen inside my floating element. Lives out here
+  // rather than inside the effect that maintains it, because the restore
+  // below has to read it AFTER that effect has torn down.
+  let focusInside = false;
+
   // Attach positioning + lifecycle listeners when open. Everything
   // unwinds cleanly when `open` flips to false (the {#if} below
   // unmounts the floating div and this effect's cleanup runs).
@@ -326,6 +333,15 @@
       onClose();
     };
     const handleKeydown = (e: KeyboardEvent) => {
+      if (claimTab && e.key === 'Tab') {
+        // Unlike Escape this is NOT gated on being the deepest popover.
+        // Escape dismisses one layer; a Tab claim exists to keep focus
+        // inside the surface hosting me, and collapsing the stack back
+        // onto my trigger is the right answer at every depth.
+        e.preventDefault();
+        onClose();
+        return;
+      }
       if (e.key !== 'Escape') return;
       // Only the topmost open popover responds to Escape. When nested
       // popovers are open (root menu → Codex submenu), both register
@@ -341,6 +357,16 @@
     };
     const handleScroll = () => updatePosition();
     const handleResize = () => updatePosition();
+
+    // Feed `focusInside` (see its declaration): by the time the close is
+    // observable the floating element is gone and focus has fallen back to
+    // <body>, so whether it was ever mine is only answerable from what we
+    // watched while open. Menu taking focus on mount is the first such event.
+    const floating = floatingEl;
+    focusInside = floating.contains(document.activeElement);
+    const handleFocusIn = (e: FocusEvent) => {
+      focusInside = e.target instanceof Node && floating.contains(e.target);
+    };
 
     // Per-frame anchor tracking. Scroll/resize listeners miss anchor
     // movement that fires no event at the moved element — programmatic
@@ -372,6 +398,7 @@
 
     document.addEventListener('mousedown', handleMouseDown);
     document.addEventListener('keydown', handleKeydown);
+    document.addEventListener('focusin', handleFocusIn);
     window.addEventListener('scroll', handleScroll, { passive: true, capture: true });
     window.addEventListener('resize', handleResize, { passive: true });
 
@@ -387,11 +414,26 @@
       cancelAnimationFrame(rafId);
       document.removeEventListener('mousedown', handleMouseDown);
       document.removeEventListener('keydown', handleKeydown);
+      document.removeEventListener('focusin', handleFocusIn);
       window.removeEventListener('scroll', handleScroll, true);
       window.removeEventListener('resize', handleResize);
       anchorObserver.disconnect();
       floatObserver.disconnect();
     };
+  });
+
+  // Put focus back where the caller asked when a close would otherwise
+  // strand it. A separate effect rather than the teardown above: Svelte
+  // serves signal reads inside a teardown from the values that effect last
+  // RAN with, so `open` reads true there and a close is indistinguishable
+  // from a re-subscribe (a placement or anchor change). Keying an effect on
+  // `open` asks the question at the one moment it has an answer — and it
+  // deliberately does not fire on unmount, where the host is tearing down
+  // and owns focus itself.
+  $effect(() => {
+    if (open) return;
+    if (focusInside) restoreFocusTo?.focus();
+    focusInside = false;
   });
 
   // If the `anchor` prop changes while open (e.g. parent re-creates the

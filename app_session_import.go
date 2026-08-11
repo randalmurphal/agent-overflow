@@ -84,6 +84,16 @@ type ImportableSession struct {
 	SubagentCount int    `json:"subagentCount"`
 	SourcePath    string `json:"sourcePath"`
 	KnownProject  bool   `json:"knownProject"`
+	// Origin is the provider's own origin marker, verbatim — Claude's
+	// `entrypoint` (`cli`, `sdk-cli`, `agent-overflow`) or Codex's
+	// `originator` (`codex_cli`, `agent_overflow`) — and "" when the session
+	// file carries none. Display only.
+	Origin string `json:"origin"`
+	// RanInAgentOverflow is true when Origin is THIS app's marker for the
+	// row's provider. The backend owns the comparison so the two spellings
+	// never reach the frontend. These rows are still listed: the modal hides
+	// them behind a toggle, which needs both the row and the flag.
+	RanInAgentOverflow bool `json:"ranInAgentOverflow"`
 	// Warnings are about THIS row, not the scan.
 	Warnings []string `json:"warnings,omitempty"`
 }
@@ -225,7 +235,6 @@ func (a *App) sessionImportDeps() (sessionimport.Deps, error) {
 	}
 	return sessionimport.Deps{
 		Store:             a.store,
-		GitCore:           a.git,
 		ClaudeProjectsDir: providerHomeIfPresent(filepath.Join(home, ".claude", "projects")),
 		CodexHome:         providerHomeIfPresent(filepath.Join(home, ".codex")),
 	}, nil
@@ -276,21 +285,23 @@ func wireImportScanResult(scan sessionImportScan) ImportScanResult {
 	rows := make([]ImportableSession, 0, len(scan.result.Rows))
 	for _, row := range scan.result.Rows {
 		rows = append(rows, ImportableSession{
-			ID:             row.ID,
-			Provider:       row.Provider,
-			SessionID:      row.SessionID,
-			Title:          row.Title,
-			ProjectPath:    row.ProjectPath,
-			ProjectID:      row.ProjectID,
-			ProjectLabel:   row.ProjectLabel,
-			GitBranch:      row.GitBranch,
-			CreatedAt:      row.CreatedAt,
-			LastActivityAt: row.LastActivityAt,
-			SizeBytes:      row.SizeBytes,
-			BranchCount:    row.BranchCount,
-			SubagentCount:  row.SubagentCount,
-			SourcePath:     row.SourcePath,
-			KnownProject:   row.KnownProject,
+			ID:                 row.ID,
+			Provider:           row.Provider,
+			SessionID:          row.SessionID,
+			Title:              row.Title,
+			ProjectPath:        row.ProjectPath,
+			ProjectID:          row.ProjectID,
+			ProjectLabel:       row.ProjectLabel,
+			GitBranch:          row.GitBranch,
+			CreatedAt:          row.CreatedAt,
+			LastActivityAt:     row.LastActivityAt,
+			SizeBytes:          row.SizeBytes,
+			BranchCount:        row.BranchCount,
+			SubagentCount:      row.SubagentCount,
+			SourcePath:         row.SourcePath,
+			KnownProject:       row.KnownProject,
+			Origin:             row.Origin,
+			RanInAgentOverflow: row.RanInAgentOverflow,
 			// Safe to alias: Get returns a deep copy of the cached scan.
 			Warnings: row.Warnings,
 		})

@@ -136,9 +136,9 @@ func TestPruneRemotesUpdatesFetchCache(t *testing.T) {
 }
 
 func TestPruneRemotesErrorLeavesCacheUntouched(t *testing.T) {
-	// A non-git directory fails at RepositoryRoot — the early error
-	// path must NOT stamp the fetch cache, otherwise a subsequent open
-	// against a real repo would inherit the stale entry.
+	// A non-git directory fails at CommonDir — the early error path must
+	// NOT stamp the fetch cache, otherwise a subsequent open against a
+	// real repo would inherit the stale entry.
 	notARepo := t.TempDir()
 
 	core := NewCore()
@@ -402,32 +402,6 @@ func TestSplitUpstreamRef(t *testing.T) {
 	remote, branch, ok = splitUpstreamRef("origin/sub/main", overlapping)
 	if !ok || remote != "origin" || branch != "sub/main" {
 		t.Fatalf("expected first-match win ('origin', 'sub/main', true), got (%q, %q, %v)", remote, branch, ok)
-	}
-}
-
-func TestRepositoryRootReturnsGitTopLevel(t *testing.T) {
-	repo := testutil.InitGitRepo(t)
-	workspace := filepath.Join(repo, "nested", "workspace")
-	if err := os.MkdirAll(workspace, 0o755); err != nil {
-		t.Fatalf("MkdirAll() error = %v", err)
-	}
-
-	root, err := NewCore().RepositoryRoot(workspace)
-	if err != nil {
-		t.Fatalf("RepositoryRoot() error = %v", err)
-	}
-	if testutil.CanonicalPath(t, root) != testutil.CanonicalPath(t, repo) {
-		t.Fatalf("root = %q, want %q", root, repo)
-	}
-}
-
-func TestRepositoryRootReturnsErrorForNonRepo(t *testing.T) {
-	root, err := NewCore().RepositoryRoot(t.TempDir())
-	if err == nil {
-		t.Fatalf("RepositoryRoot() = %q, want error", root)
-	}
-	if !strings.Contains(err.Error(), "git rev-parse --show-toplevel failed") {
-		t.Fatalf("unexpected error: %v", err)
 	}
 }
 

@@ -67,7 +67,7 @@ func RelocateSession(sessionID, fromWorkspace, destWorkspace string) (srcFile, d
 		return src, "", fmt.Errorf("sessionfork: cannot relocate %s: destination %q sanitizes beyond %d chars where Claude appends an unreproducible Bun.hash suffix", sessionID, destWorkspace, MaxSanitizedSlugLen)
 	}
 
-	pdir, err := projectsDir()
+	pdir, err := defaultProjectsDir()
 	if err != nil {
 		return src, "", err
 	}
