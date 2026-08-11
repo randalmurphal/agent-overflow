@@ -455,12 +455,21 @@
     return `position: fixed; top: ${top}px; left: ${left}px; ${widthRule} ${maxHeightRule} ${visibility}`.trim();
   });
 
-  // `role="none"` tells AT consumers to ignore the wrapper; callers who
-  // want AT semantics (Menu, listbox, dialog) opt in via the prop.
+  // `role="none"` tells AT consumers to ignore the wrapper. Opt in ONLY
+  // when the popover's children carry no role element of their own (the
+  // composer listbox popovers render bare `role="option"` rows, so the
+  // wrapper is the listbox). A caller composing the Menu primitive keeps
+  // "none": Menu renders its own `role="menu"`, and a wrapper role there
+  // nests menu-inside-menu — an AT tree where the outer menu's only child
+  // is another menu.
   let appliedRole = $derived(role === 'none' ? undefined : role);
 </script>
 
 {#if open}
+  <!-- z-[80]: the transient-surface layer ContextMenu already sits on, above
+       Modal's z-[60] backdrop. A popover is opened by the topmost surface the
+       user is interacting with, so it must paint above every persistent layer
+       — at z-50 a picker inside a modal rendered BEHIND the backdrop blur. -->
   <div
     bind:this={floatingEl}
     role={appliedRole}
@@ -468,7 +477,7 @@
     style={floatingStyle}
     data-popover
     data-placement={resolvedPlacement ?? placement}
-    class="z-50"
+    class="z-[80]"
   >
     {@render children()}
   </div>

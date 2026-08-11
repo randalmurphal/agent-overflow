@@ -88,8 +88,7 @@
   {open}
   onClose={close}
   placement="bottom-start"
-  role="menu"
-  ariaLabel="Project filter"
+  role="none"
   claimTab
   restoreFocusTo={buttonEl}
 >

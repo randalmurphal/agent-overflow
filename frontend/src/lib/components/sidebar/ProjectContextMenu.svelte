@@ -117,8 +117,7 @@
   {open}
   {onClose}
   placement="bottom-start"
-  role="menu"
-  ariaLabel="Project Actions"
+  role="none"
 >
   {#snippet children()}
     <Menu ariaLabel="Project Actions" {onClose}>

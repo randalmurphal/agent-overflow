@@ -235,8 +235,7 @@
   {open}
   {onClose}
   placement="bottom-start"
-  role="menu"
-  ariaLabel="Thread Actions"
+  role="none"
 >
   {#snippet children()}
     <Menu

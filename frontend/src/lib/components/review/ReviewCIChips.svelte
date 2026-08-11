@@ -90,8 +90,7 @@
   open={openStage !== null}
   onClose={() => { openStageIndex = null; }}
   placement="bottom-start"
-  role="menu"
-  ariaLabel="CI jobs"
+  role="none"
 >
   {#if openStage}
     {@const stageName = openStage.name}

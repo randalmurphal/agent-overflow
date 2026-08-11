@@ -69,8 +69,7 @@
   {open}
   onClose={handleClose}
   placement="bottom-end"
-  role="menu"
-  ariaLabel="Sort Projects"
+  role="none"
 >
   {#snippet children()}
     <Menu ariaLabel="Sort Projects" onClose={handleClose}>

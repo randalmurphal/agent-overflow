@@ -130,6 +130,37 @@ test('lists sessions from both providers and narrows by provider filter and sear
   await expect(page.getByTestId(fx.codex.rowTestId)).toBeVisible();
 });
 
+test('the project dropdown paints above the modal and applies its filter', async ({
+  harness,
+  page,
+}) => {
+  await seedImportFixtures(harness);
+  await page.goto(harness.url);
+  await openImportModal(page);
+
+  // The menu is a Popover portaled to <body>, so it and the modal backdrop
+  // stack in the same root context — this click is the paint-order guard:
+  // with the popover layered below the backdrop (z-50 vs z-[60], the
+  // original defect) the blurred backdrop is the hit target and the click
+  // times out. Only a real-browser hit test can see that; unit tests can't.
+  await page.getByTestId('session-import-project-trigger').click();
+  const group = page.getByRole('menuitem', { name: /import-fixture-repo/ });
+  await expect(group).toContainText('3');
+  await group.click();
+
+  await expect(page.getByTestId('session-import-project-trigger')).toContainText(
+    'import-fixture-repo',
+  );
+  await expect(page.getByTestId('session-import-confirm')).toHaveText('Import all (3)');
+
+  // And Escape while the reopened menu is up closes the MENU, not the modal.
+  await page.getByTestId('session-import-project-trigger').click();
+  await expect(page.locator('[data-popover]')).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(page.locator('[data-popover]')).toHaveCount(0);
+  await expect(page.getByTestId('session-import-body')).toBeVisible();
+});
+
 test('importing a selection creates the threads and renders their history', async ({
   harness,
   page,
