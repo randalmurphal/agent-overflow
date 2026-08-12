@@ -159,6 +159,7 @@ export function pushWorkflowRunDetail(itemId: string, options: { sweep?: boolean
     : [...stack, { level: 'run', itemId }];
   if (options.sweep !== undefined) sweepActive = options.sweep;
   if (options.sweepIndex !== undefined) sweepIndex = options.sweepIndex;
+  touchRunMapExpansion();
   persist();
 }
 
@@ -178,6 +179,7 @@ export function popWorkflowsOverlay(): boolean {
   stack = stack.slice(0, -1);
   sweepActive = false;
   sweepIndex = -1;
+  touchRunMapExpansion();
   persist();
   return true;
 }
@@ -226,6 +228,116 @@ export function setWorkflowArmedAction(next: string | null): void {
   armedAction = next;
 }
 
+// ---------------------------------------------------------------------------
+// Run-map expansion (RUN-MAP §8)
+// ---------------------------------------------------------------------------
+
+/**
+ * Which folded waves the reader opened, and which deep compositions they
+ * expanded past the §6 depth rule — keyed by run id so a detail REMOUNT
+ * (overlay close/reopen, a level round-trip, a sweep step and back) does not
+ * silently re-fold what someone opened. The run tree itself carries no such
+ * bit; this is view state about a run, which is why it lives with the
+ * overlay's other navigation state rather than in the map's data store.
+ *
+ * Deliberately NOT persisted, unlike the stack: the key space is every run
+ * that ever existed, and the persisted row is one small blob the whole overlay
+ * shares. Bounded to the last few runs for the same reason — a session that
+ * sweeps two hundred runs must not accumulate two hundred sets. Follow
+ * engagement is not here at all: §9.4 makes it per-visit by design.
+ */
+export interface WorkflowRunMapExpansion {
+  /** Folded (terminal) waves the reader expanded, by wave item id. */
+  readonly waves: ReadonlySet<string>;
+  /** Compositions expanded past the depth rule, by called-run item id. */
+  readonly compositions: ReadonlySet<string>;
+}
+
+const RUN_MAP_EXPANSION_LIMIT = 8;
+
+// Replaced wholesale on every write (a handful of ids per run), so plain
+// `$state` reactivity covers it without a SvelteMap.
+let runMapExpansion = $state(new Map<string, WorkflowRunMapExpansion>());
+
+/**
+ * A run with nothing expanded. FRESH each time, never a shared singleton: the
+ * sets are typed `ReadonlySet` but nothing at runtime stops a caller adding to
+ * one, and a shared empty would then be every OTHER run's expansion too.
+ */
+function noExpansion(): WorkflowRunMapExpansion {
+  return { waves: new Set(), compositions: new Set() };
+}
+
+/**
+ * Read one run's expansion. A run with no entry gets a FRESH empty pair, never
+ * a shared one — see `noExpansion`.
+ *
+ * Deliberately a pure read: the map calls this from a `$derived`, so a write
+ * here would invalidate the very derivation that made it. Use is recorded by
+ * `touchRunMapExpansion` at the navigation that lands on the run instead, which
+ * is also the more honest definition of "recently used".
+ */
+export function getWorkflowRunMapExpansion(runId: string): WorkflowRunMapExpansion {
+  return runMapExpansion.get(runId) ?? noExpansion();
+}
+
+function toggled(set: ReadonlySet<string>, id: string): Set<string> {
+  const next = new Set(set);
+  if (!next.delete(id)) next.add(id);
+  return next;
+}
+
+/**
+ * Count a VISIT to whatever run the stack now rests on as use of its expansion.
+ *
+ * Eviction is least-recently-USED, and only toggles counted as use — so a run
+ * someone expanded, came back to twice and never re-toggled aged out ahead of
+ * runs they had opened once and left, and its waves silently re-folded on the
+ * next visit. Every stack write calls this; a top that is not a run, or a run
+ * with nothing expanded, has nothing to keep.
+ */
+function touchRunMapExpansion(): void {
+  const top = getWorkflowsOverlayTop();
+  if (top.level !== 'run') return;
+  const entry = runMapExpansion.get(top.itemId);
+  if (!entry) return;
+  const keys = [...runMapExpansion.keys()];
+  // Already the newest — rewriting would wake every reader to say nothing.
+  if (keys[keys.length - 1] === top.itemId) return;
+  const next = new Map(runMapExpansion);
+  next.delete(top.itemId);
+  next.set(top.itemId, entry);
+  runMapExpansion = next;
+}
+
+/** Re-insert so the map orders least- to most-recently touched, then trim. */
+function writeExpansion(runId: string, entry: WorkflowRunMapExpansion): void {
+  const next = new Map(runMapExpansion);
+  next.delete(runId);
+  // A run that expanded something and then collapsed it again holds nothing —
+  // and an entry holding nothing is indistinguishable from having no entry,
+  // except that it occupies a slot and evicts a run that DOES have state.
+  if (entry.waves.size > 0 || entry.compositions.size > 0) next.set(runId, entry);
+  while (next.size > RUN_MAP_EXPANSION_LIMIT) {
+    const oldest = next.keys().next();
+    if (oldest.done) break;
+    next.delete(oldest.value);
+  }
+  runMapExpansion = next;
+}
+
+export function toggleWorkflowRunMapWave(runId: string, waveItemId: string): void {
+  if (!runId || !waveItemId) return;
+  const current = runMapExpansion.get(runId) ?? noExpansion();
+  writeExpansion(runId, { waves: toggled(current.waves, waveItemId), compositions: current.compositions });
+}
+
+export function toggleWorkflowRunMapComposition(runId: string, itemId: string): void {
+  if (!runId || !itemId) return;
+  const current = runMapExpansion.get(runId) ?? noExpansion();
+  writeExpansion(runId, { waves: current.waves, compositions: toggled(current.compositions, itemId) });
+}
+
 /**
  * Esc precedence (§2.2): disarm a confirm → close a dialog → pop → close the
  * overlay. Returns what it consumed so callers can preventDefault only when
@@ -271,6 +383,7 @@ export function pruneWorkflowsOverlayStack(runExists: (itemId: string) => boolea
   sweepActive = false;
   sweepIndex = -1;
   clearTransient();
+  touchRunMapExpansion();
   persist();
 }
 
@@ -283,6 +396,7 @@ export function syncWorkflowsOverlayFromAppStorage(): void {
   projectFilter = parsed.projectFilter;
   sweepActive = parsed.sweepActive;
   sweepIndex = parsed.sweepIndex;
+  touchRunMapExpansion();
 }
 
 // `closeSettingsSurface` is deliberately NOT reset here: it is structural
@@ -297,4 +411,5 @@ export function resetWorkflowsOverlayForTest(): void {
   sweepIndex = fresh.sweepIndex;
   dialog = null;
   armedAction = null;
+  runMapExpansion = new Map();
 }

@@ -4,6 +4,7 @@ import {
   consumeWorkflowsOverlayEscape,
   getWorkflowArmedAction,
   getWorkflowProjectFilter,
+  getWorkflowRunMapExpansion,
   getWorkflowSweepIndex,
   getWorkflowsOverlayDialog,
   getWorkflowsOverlayRunId,
@@ -24,6 +25,8 @@ import {
   setWorkflowSweepCursor,
   setWorkflowsOverlayDialog,
   syncWorkflowsOverlayFromAppStorage,
+  toggleWorkflowRunMapComposition,
+  toggleWorkflowRunMapWave,
   toggleWorkflowsOverlay,
 } from './workflowsOverlay.svelte';
 import { appStorageGet, appStorageSet, resetAppStorageForTest } from './appStorage';
@@ -232,5 +235,122 @@ describe('workflows overlay navigation', () => {
       expect(parsed.projectFilter).toBe('');
       expect(parsed.sweepIndex).toBe(-1);
     });
+  });
+});
+
+describe('run-map expansion (RUN-MAP §8)', () => {
+  beforeEach(() => {
+    resetWorkflowsOverlayForTest();
+  });
+
+  it('remembers what one run expanded without touching another run', () => {
+    toggleWorkflowRunMapWave('run-1', 'wave-2');
+    toggleWorkflowRunMapComposition('run-1', 'child-9');
+    toggleWorkflowRunMapWave('run-2', 'wave-7');
+
+    expect([...getWorkflowRunMapExpansion('run-1').waves]).toEqual(['wave-2']);
+    expect([...getWorkflowRunMapExpansion('run-1').compositions]).toEqual(['child-9']);
+    expect([...getWorkflowRunMapExpansion('run-2').waves]).toEqual(['wave-7']);
+    expect([...getWorkflowRunMapExpansion('run-2').compositions]).toEqual([]);
+  });
+
+  it('toggles off, and stays empty for a run nobody expanded', () => {
+    toggleWorkflowRunMapWave('run-1', 'wave-2');
+    toggleWorkflowRunMapWave('run-1', 'wave-2');
+    expect([...getWorkflowRunMapExpansion('run-1').waves]).toEqual([]);
+    expect([...getWorkflowRunMapExpansion('never-seen').waves]).toEqual([]);
+  });
+
+  // The key space is every run that ever existed, so the memory is bounded and
+  // least-recently-touched goes first — a sweep of two hundred runs must not
+  // accumulate two hundred sets.
+  it('forgets the least recently touched run past its bound', () => {
+    for (let index = 0; index < 12; index += 1) toggleWorkflowRunMapWave(`run-${index}`, 'wave-1');
+    expect([...getWorkflowRunMapExpansion('run-0').waves]).toEqual([]);
+    expect([...getWorkflowRunMapExpansion('run-3').waves]).toEqual([]);
+    expect([...getWorkflowRunMapExpansion('run-4').waves]).toEqual(['wave-1']);
+    expect([...getWorkflowRunMapExpansion('run-11').waves]).toEqual(['wave-1']);
+  });
+
+  it('re-touching a run keeps it alive against the bound', () => {
+    toggleWorkflowRunMapWave('keep-me', 'wave-1');
+    for (let index = 0; index < 7; index += 1) toggleWorkflowRunMapWave(`run-${index}`, 'wave-1');
+    toggleWorkflowRunMapComposition('keep-me', 'child-1');
+    for (let index = 7; index < 12; index += 1) toggleWorkflowRunMapWave(`run-${index}`, 'wave-1');
+    expect([...getWorkflowRunMapExpansion('keep-me').waves]).toEqual(['wave-1']);
+  });
+
+  it('ignores an empty run or entity id rather than storing a phantom key', () => {
+    toggleWorkflowRunMapWave('', 'wave-1');
+    toggleWorkflowRunMapWave('run-1', '');
+    expect([...getWorkflowRunMapExpansion('').waves]).toEqual([]);
+    expect([...getWorkflowRunMapExpansion('run-1').waves]).toEqual([]);
+  });
+
+  // Eviction is least-recently-USED, and a VISIT is use. Counting only toggles
+  // aged out the run someone kept coming back to — its waves silently re-folded
+  // on the next visit — while runs they opened once and abandoned survived.
+  it('a visit counts as use, even when the reader toggles nothing', () => {
+    toggleWorkflowRunMapWave('come-back-to-me', 'wave-1');
+    for (let index = 0; index < 7; index += 1) toggleWorkflowRunMapWave(`run-${index}`, 'wave-1');
+
+    openWorkflowsOverlay();
+    pushWorkflowRunDetail('come-back-to-me');
+
+    for (let index = 7; index < 12; index += 1) toggleWorkflowRunMapWave(`run-${index}`, 'wave-1');
+    expect([...getWorkflowRunMapExpansion('come-back-to-me').waves]).toEqual(['wave-1']);
+    // The runs it outlived are the ones nobody went back to.
+    expect([...getWorkflowRunMapExpansion('run-0').waves]).toEqual([]);
+  });
+
+  // A sweep step REPLACES the run at the top (§3.1), and stepping back onto a
+  // run is exactly the revisit the bound must respect.
+  it('a sweep step back onto a run counts as use', () => {
+    toggleWorkflowRunMapWave('swept', 'wave-1');
+    openWorkflowsOverlay();
+    pushWorkflowRunDetail('swept', { sweep: true, sweepIndex: 0 });
+    for (let index = 0; index < 7; index += 1) {
+      toggleWorkflowRunMapWave(`run-${index}`, 'wave-1');
+      pushWorkflowRunDetail(`run-${index}`, { sweep: true, sweepIndex: index + 1 });
+    }
+    pushWorkflowRunDetail('swept', { sweep: true, sweepIndex: 0 });
+
+    for (let index = 7; index < 12; index += 1) toggleWorkflowRunMapWave(`run-${index}`, 'wave-1');
+    expect([...getWorkflowRunMapExpansion('swept').waves]).toEqual(['wave-1']);
+  });
+
+  // Every stack write records the visit; the ones that land somewhere other
+  // than a run have nothing to record and must not disturb the order.
+  it('a stack write that lands off a run leaves the order alone', () => {
+    for (let index = 0; index < 8; index += 1) toggleWorkflowRunMapWave(`run-${index}`, 'wave-1');
+    openWorkflowsOverlay();
+    pushWorkflowAllClear();
+    popWorkflowsOverlay();
+
+    toggleWorkflowRunMapWave('newcomer', 'wave-1');
+    // run-0 was the oldest before and is still the one evicted.
+    expect([...getWorkflowRunMapExpansion('run-0').waves]).toEqual([]);
+    expect([...getWorkflowRunMapExpansion('run-1').waves]).toEqual(['wave-1']);
+  });
+
+  // An entry holding nothing is indistinguishable from having no entry, except
+  // that it occupies a slot and evicts a run that does have state.
+  it('a run expanded and re-collapsed holds no slot at all', () => {
+    toggleWorkflowRunMapWave('transient', 'wave-1');
+    toggleWorkflowRunMapWave('transient', 'wave-1');
+
+    for (let index = 0; index < 8; index += 1) toggleWorkflowRunMapWave(`run-${index}`, 'wave-1');
+    for (let index = 0; index < 8; index += 1) {
+      expect([...getWorkflowRunMapExpansion(`run-${index}`).waves]).toEqual(['wave-1']);
+    }
+  });
+
+  it('a miss hands back a FRESH pair, never one every other run shares', () => {
+    const miss = getWorkflowRunMapExpansion('nobody');
+    expect(miss).not.toBe(getWorkflowRunMapExpansion('nobody-else'));
+    // Typed ReadonlySet, but nothing at runtime stops a caller writing to it.
+    (miss.waves as Set<string>).add('wave-1');
+    expect([...getWorkflowRunMapExpansion('nobody-else').waves]).toEqual([]);
+    expect([...getWorkflowRunMapExpansion('nobody').waves]).toEqual([]);
   });
 });

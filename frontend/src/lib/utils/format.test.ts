@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  formatCountdownSpan,
   formatElapsedSeconds,
   formatGiB,
   formatResetCountdown,
@@ -7,6 +8,7 @@ import {
   formatTurnTokens,
   formatUsd,
   truncateMiddle,
+  workflowDuration,
 } from './format';
 
 describe('formatTimeOfDay', () => {
@@ -201,5 +203,39 @@ describe('truncateMiddle', () => {
   it('returns the value whole when there is no room to say anything', () => {
     // Below four characters the result would be punctuation, not a hint.
     expect(truncateMiddle('/repos/alpha', 3)).toBe('/repos/alpha');
+  });
+});
+
+describe('formatCountdownSpan', () => {
+  // An explicit clock is the whole point: the run map's `resumes in X` chip
+  // rides the shared 1Hz clock, and a Date.now() read inside a derived would
+  // be a value the reactive graph cannot see change.
+  const NOW = 1_000_000_000;
+
+  it('returns the bare span and leaves the verb to the caller', () => {
+    expect(formatCountdownSpan(NOW + 30_000, NOW)).toBe('<1m');
+    expect(formatCountdownSpan(NOW + 60_000, NOW)).toBe('1m');
+    expect(formatCountdownSpan(NOW + 3_600_000 + 720_000, NOW)).toBe('1h 12m');
+    expect(formatCountdownSpan(NOW + 86_400_000 * 2 + 3_600_000 * 3, NOW)).toBe('2d 3h');
+  });
+
+  it('collapses a passed target to "now" and an unset one to nothing', () => {
+    expect(formatCountdownSpan(NOW, NOW)).toBe('now');
+    expect(formatCountdownSpan(NOW - 5_000, NOW)).toBe('now');
+    expect(formatCountdownSpan(0, NOW)).toBe('');
+    expect(formatCountdownSpan(Number.NaN, NOW)).toBe('');
+    expect(formatCountdownSpan(NOW + 1_000, Number.NaN)).toBe('');
+  });
+});
+
+describe('workflowDuration', () => {
+  it('formats an elapsed span, using the caller clock for a span still open', () => {
+    const now = 1_000_000;
+    expect(workflowDuration(0, 0, now)).toBe('');
+    expect(workflowDuration(now - 48_000, now, now)).toBe('48s');
+    expect(workflowDuration(now - 12 * 60_000, now, now)).toBe('12m');
+    expect(workflowDuration(now - 64 * 60_000, now, now)).toBe('1h 4m');
+    expect(workflowDuration(now - 2 * 3_600_000, now, now)).toBe('2h');
+    expect(workflowDuration(now - 30_000, 0, now)).toBe('30s');
   });
 });

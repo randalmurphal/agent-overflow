@@ -56,8 +56,9 @@ func (e *Engine) startUnitCall(item *runtimeItem, unit *unitRun) error {
 	if unit.feedback != nil {
 		note = unit.feedback.Note
 	}
+	startedAt := e.timestamp()
 	if err := e.store.StartWorkItemUnit(
-		item.item.ID, item.phaseID, item.attempt, unit.id, unit.attempt, note, e.timestamp(),
+		item.item.ID, item.phaseID, item.attempt, unit.id, unit.attempt, note, startedAt,
 	); err != nil {
 		return e.parkUnitCallSetup(item, ReasonSetupFailed, fmt.Errorf(
 			"persist unit call start %s/%s/%d/%s: %w", item.item.ID, item.phaseID, item.attempt, unit.id, err,
@@ -66,7 +67,7 @@ func (e *Engine) startUnitCall(item *runtimeItem, unit *unitRun) error {
 	unit.status = store.WorkItemUnitRunning
 	unit.envelope = nil
 	unit.feedback = nil
-	e.emitUnitState(item, unit)
+	e.emitUnitStateAt(item, unit, startedAt)
 
 	reason, err = e.invokeCall(item, invocation, plan)
 	if reason != "" {

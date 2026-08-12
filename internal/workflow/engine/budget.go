@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -72,7 +73,7 @@ func (e *Engine) budgetView(item *runtimeItem) (*BudgetView, error) {
 	if err != nil {
 		return nil, err
 	}
-	return ResolveBudget(e.ctx, e.profiles, e.spend, root, e.now())
+	return ResolveBudget(e.ctx, e.profiles, e.spend, BudgetSubjectOf(root), e.now())
 }
 
 // BudgetView is one run tree's ceiling and the spend measured against it — the
@@ -147,6 +148,33 @@ func (v BudgetView) Fraction() float64 {
 	return 0
 }
 
+// BudgetSubject is the run a ceiling is resolved FOR, narrowed to the four
+// facts that decide one: which run the tree is rooted at, whose project profile
+// supplies the default it did not declare, the envelope it did declare, and the
+// start a wall clock is measured from.
+//
+// It is a type of its own rather than a `store.WorkItem` because the callers do
+// not all hold one. The run map reads its tree through a narrow projection
+// (`store.WorkItemTreeRun`), and the alternative — handing ResolveBudget a
+// sparsely populated WorkItem — would make every field this function does not
+// read today a silent trap for the day it reads one.
+type BudgetSubject struct {
+	ItemID    string
+	ProjectID string
+	// Budget is the run's own declared envelope, empty when it declared none.
+	Budget json.RawMessage
+	// StartedAt is the run's persisted start, in Unix milliseconds.
+	StartedAt int64
+}
+
+// BudgetSubjectOf narrows a full run row to what a budget is resolved from.
+func BudgetSubjectOf(item store.WorkItem) BudgetSubject {
+	return BudgetSubject{
+		ItemID: item.ID, ProjectID: item.ProjectID,
+		Budget: item.Budget, StartedAt: item.StartedAt,
+	}
+}
+
 // ResolveBudget answers what ceiling a run tree is under and where it stands
 // against it. A nil view with a nil error means no ceiling is in force — the
 // item declared none and the project profile declares none either.
@@ -156,7 +184,7 @@ func (v BudgetView) Fraction() float64 {
 // that is not the one in force and a start time that is not the one measured.
 func ResolveBudget(
 	ctx context.Context, profiles ProfileSource, spend SpendSource,
-	root store.WorkItem, now time.Time,
+	root BudgetSubject, now time.Time,
 ) (*BudgetView, error) {
 	budget, err := EffectiveBudget(ctx, profiles, root)
 	if err != nil || budget == nil {
@@ -169,27 +197,27 @@ func ResolveBudget(
 	if elapsed < 0 {
 		elapsed = 0
 	}
-	view := &BudgetView{RootItemID: root.ID, ElapsedMillis: elapsed.Milliseconds()}
+	view := &BudgetView{RootItemID: root.ItemID, ElapsedMillis: elapsed.Milliseconds()}
 
 	if budget.WallClock != nil {
 		ceiling, err := time.ParseDuration(string(*budget.WallClock))
 		if err != nil || ceiling <= 0 {
-			return nil, fmt.Errorf("check item %q budget: invalid wall_clock %q", root.ID, *budget.WallClock)
+			return nil, fmt.Errorf("check item %q budget: invalid wall_clock %q", root.ItemID, *budget.WallClock)
 		}
 		view.Kind = BudgetKindWallClock
 		view.CeilingMillis = ceiling.Milliseconds()
 		if elapsed > ceiling {
 			view.Exceeded = fmt.Sprintf(
 				"run tree rooted at %s has been going %s, past its wall_clock budget of %s",
-				root.ID, elapsed.Round(time.Second), ceiling,
+				root.ItemID, elapsed.Round(time.Second), ceiling,
 			)
 		}
 		return view, nil
 	}
 
-	view.Spend, err = spend.TreeSpend(ctx, root.ID)
+	view.Spend, err = spend.TreeSpend(ctx, root.ItemID)
 	if err != nil {
-		return nil, fmt.Errorf("check item %q budget spend: %w", root.ID, err)
+		return nil, fmt.Errorf("check item %q budget spend: %w", root.ItemID, err)
 	}
 	switch {
 	case budget.Tokens != nil:
@@ -198,7 +226,7 @@ func ResolveBudget(
 		if view.Spend.Tokens > *budget.Tokens {
 			view.Exceeded = fmt.Sprintf(
 				"run tree rooted at %s has spent %d tokens, past its budget of %d",
-				root.ID, view.Spend.Tokens, *budget.Tokens,
+				root.ItemID, view.Spend.Tokens, *budget.Tokens,
 			)
 		}
 	case budget.USD != nil:
@@ -207,7 +235,7 @@ func ResolveBudget(
 		if view.Spend.USD > *budget.USD {
 			view.Exceeded = fmt.Sprintf(
 				"run tree rooted at %s has spent $%.2f, past its budget of $%.2f",
-				root.ID, view.Spend.USD, *budget.USD,
+				root.ItemID, view.Spend.USD, *budget.USD,
 			)
 		}
 		// A dollar ceiling the tree is INSIDE is only trustworthy if every row
@@ -219,7 +247,7 @@ func ResolveBudget(
 		if view.Exceeded == "" && view.Spend.Unpriced > 0 {
 			view.Unjudged = fmt.Sprintf(
 				"check item %q budget: %d usage rows have no USD rate, so spend against a $%.2f ceiling cannot be judged",
-				root.ID, view.Spend.Unpriced, *budget.USD,
+				root.ItemID, view.Spend.Unpriced, *budget.USD,
 			)
 		}
 	default:
@@ -227,7 +255,7 @@ func ResolveBudget(
 		// and the profile go through it — so this is a budget that passed
 		// validation while declaring nothing, which is a bug in the validator
 		// rather than an authored state to tolerate silently.
-		return nil, fmt.Errorf("check item %q budget: no ceiling is declared", root.ID)
+		return nil, fmt.Errorf("check item %q budget: no ceiling is declared", root.ItemID)
 	}
 	return view, nil
 }
@@ -287,14 +315,19 @@ func TreeRoot(items WorkItemReader, item store.WorkItem) (store.WorkItem, error)
 // EffectiveBudget is the ceiling in force for one run: its own envelope when it
 // declares one, the live project profile's per-item default otherwise. Nil with
 // a nil error means no ceiling, which is most runs.
-func EffectiveBudget(ctx context.Context, profiles ProfileSource, item store.WorkItem) (*profile.Budget, error) {
+//
+// The profile fallback is the half a READ surface most easily forgets: a run
+// started with no `--budget` inside a project whose profile declares
+// `reliability.per_item_budget` IS under a ceiling, and a surface that read the
+// column alone would render it as unbounded right up to the park.
+func EffectiveBudget(ctx context.Context, profiles ProfileSource, item BudgetSubject) (*profile.Budget, error) {
 	if len(item.Budget) > 0 {
 		var budget profile.Budget
 		if err := decodeJSON(item.Budget, &budget); err != nil {
-			return nil, fmt.Errorf("decode item %q budget: %w", item.ID, err)
+			return nil, fmt.Errorf("decode item %q budget: %w", item.ItemID, err)
 		}
 		if validation := profile.ValidateBudget(&budget); !validation.Valid() {
-			return nil, fmt.Errorf("decode item %q budget: %s", item.ID, joinProfileFindings(validation.Findings))
+			return nil, fmt.Errorf("decode item %q budget: %s", item.ItemID, joinProfileFindings(validation.Findings))
 		}
 		return &budget, nil
 	}

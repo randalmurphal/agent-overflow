@@ -12,18 +12,18 @@
   import WorkflowDisposition from './WorkflowDisposition.svelte';
   import type { WorkItem, WorkflowItemDetail } from '../../types/workflow';
   import { parseWorkflowDisposition } from '../../types/workflow';
-  import type { WorkflowResolutionKind } from '../../utils/workflowActionRows';
-  import type { WorkflowUnitRow } from '../../utils/workflowRunTree';
-  import { workflowDuration } from '../../utils/workflowRunTree';
+  import type { WorkflowFailedUnit, WorkflowResolutionKind } from '../../utils/workflowActionRows';
   import { workflowPartialOutputs, workflowQuestionText } from '../../utils/workflowEnvelope';
   import { workflowAge, workflowMetaLine } from '../../stores/workflowData';
+  import { workflowClosedDuration } from '../../utils/format';
+  import { runMapNodeStyle, type RunMapNodeStyle } from '../../utils/workflowRunMapStyle';
 
   interface Props {
     item: WorkItem;
     detail: WorkflowItemDetail;
     kind: WorkflowResolutionKind;
     /** The unit a `needs-human(unit-failed)` park is about. */
-    failedUnit: WorkflowUnitRow | null;
+    failedUnit: WorkflowFailedUnit | null;
     /** Enter on a gate expands the first changed file in place (§8). */
     expandFirstDiff: boolean;
   }
@@ -72,16 +72,21 @@
     return `paused by you · ${ago}`;
   });
 
-  function checkTone(status: string): string {
-    if (status === 'completed') return 'text-success';
-    if (status === 'failed') return 'text-error';
-    return 'text-fg-muted';
-  }
-
-  function checkGlyph(status: string): string {
-    if (status === 'completed') return '✓';
-    if (status === 'failed') return '✗';
-    return '○';
+  /**
+   * The check strip speaks the run map's vocabulary (R1), not a green one of
+   * its own: a passing check is DONE, which is neutral — success is the
+   * expected outcome and carries no attention — and only a failure takes a
+   * hue. Routed through `runMapNodeStyle` so the glyph and the tone are the
+   * same ones the node for that phase draws two blocks up the page.
+   */
+  // Anything not yet decided reads as pending rather than running: the strip is
+  // one glyph per check, and `running`'s glyph is the spinner this row does not
+  // draw. The strip only renders for a run that is NOT unresolved, so a check
+  // still in flight here is the rare interleaving, not the normal case.
+  function checkStyle(status: string): RunMapNodeStyle {
+    if (status === 'completed') return runMapNodeStyle('done');
+    if (status === 'failed') return runMapNodeStyle('failed');
+    return runMapNodeStyle('pending');
   }
 </script>
 
@@ -91,8 +96,9 @@
       <h3 class="mb-1 text-[0.6875rem] font-semibold uppercase tracking-wider text-fg-muted">Checks</h3>
       <div class="flex flex-wrap gap-x-3 gap-y-1 text-xs">
         {#each checkPhases as phase (phase.phaseId + ':' + phase.attempt)}
-          <span class={checkTone(phase.status)} data-testid="workflow-check">
-            {checkGlyph(phase.status)} {phase.phaseId} {workflowDuration(phase.startedAt, phase.endedAt ?? 0)}
+          {@const style = checkStyle(phase.status)}
+          <span class={style.tone} data-testid="workflow-check" data-check-status={phase.status}>
+            {style.glyph} {phase.phaseId} {workflowClosedDuration(phase.startedAt, phase.endedAt ?? 0)}
           </span>
         {/each}
       </div>

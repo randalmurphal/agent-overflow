@@ -142,33 +142,28 @@ func (s *Store) QueryWorkItemUsage(workItemID string) (WorkItemUsage, error) {
 	return usage, nil
 }
 
-// workItemTreeCTE walks one run tree from its root through the call linkage
-// (§3a). Budgets are enforced against the root across the whole tree, so the
-// spend a ceiling is compared against is the sum over every run the root
-// called, transitively. UNION rather than UNION ALL: linkage is acyclic by
-// construction, and the set semantics make that structural rather than assumed.
+// The two tree reads below narrow themselves with `workItemTreeCTE`
+// (`work_item_tree.go`), the one definition of run-tree membership every
+// whole-tree read in this package shares — the run map's rows and the budget
+// check's dollars cannot describe different trees.
 //
-// The anchor is the supplied id itself rather than a work_items lookup, so the
-// root's own ledger rows are always counted. Anchoring on the row would report
-// zero spend for an id with no run record — a budget that silently never fires
-// instead of an error — and ledger rows are deliberately FK-free (they outlive
-// the runs they attribute).
-const workItemTreeCTE = `WITH RECURSIVE tree(id) AS (
-    SELECT ?
-    UNION
-    SELECT child.id FROM work_items AS child JOIN tree
-      ON child.parent_item_id = tree.id AND child.parent_item_id <> ''
-)
-`
+// Each is split into an exported method and a `sqlQueryer` half, so the run
+// map's whole-tree read (`ReadWorkItemTree`) can run the very same statement
+// inside its transaction: the dollars it shows and the runs it draws are then
+// facts about one WAL snapshot rather than two.
 
 // QueryWorkItemTreeUsage sums the ledger rows of a run and every run it called.
 // A root with no children returns exactly what QueryWorkItemUsage does for it.
 func (s *Store) QueryWorkItemTreeUsage(rootItemID string) (WorkItemUsage, error) {
+	return queryWorkItemTreeUsage(s.reader(), rootItemID)
+}
+
+func queryWorkItemTreeUsage(q sqlQueryer, rootItemID string) (WorkItemUsage, error) {
 	if rootItemID == "" {
 		return WorkItemUsage{}, fmt.Errorf("store: query work item tree usage: empty work item id")
 	}
 	var usage WorkItemUsage
-	err := s.reader().QueryRow(
+	err := q.QueryRow(
 		workItemTreeCTE+`SELECT
 		 COALESCE(SUM(input_tokens), 0),
 		 COALESCE(SUM(output_tokens), 0),
@@ -193,10 +188,14 @@ func (s *Store) QueryWorkItemTreeUsage(rootItemID string) (WorkItemUsage, error)
 // tree: the model/cost-source groups a caller needs to price rows the wire
 // reported no cost for.
 func (s *Store) QueryWorkItemTreeUsageDetail(rootItemID string) ([]UsageDetailRow, error) {
+	return queryWorkItemTreeUsageDetail(s.reader(), rootItemID)
+}
+
+func queryWorkItemTreeUsageDetail(q sqlQueryer, rootItemID string) ([]UsageDetailRow, error) {
 	if rootItemID == "" {
 		return nil, fmt.Errorf("store: query work item tree usage detail: empty work item id")
 	}
-	rows, err := s.reader().Query(
+	rows, err := q.Query(
 		workItemTreeCTE+`SELECT model, cost_source,
 		 SUM(input_tokens), SUM(output_tokens), SUM(cache_read_input_tokens),
 		 SUM(cache_creation_input_tokens), SUM(reasoning_output_tokens),

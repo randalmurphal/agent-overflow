@@ -192,11 +192,36 @@ func (a *App) applyWorkflowDisposition(item store.WorkItem, action workflowDispo
 			Error:  "workflow disposition landed but automatic worktree cleanup failed",
 		})
 	}
-	a.emit("workflow:item-state", engine.StateEvent{
-		ItemID: item.ID, ProjectID: item.ProjectID,
-		From: engine.State(item.State), To: engine.State(item.State),
-	})
+	a.emitWorkflowDispositionState(item)
 	return receipt, nil
+}
+
+// emitWorkflowDispositionState announces that this run's disposition record
+// changed, stating the row's ACTUAL state and reason.
+//
+// It re-reads rather than echoing the copy loaded at the top of the call, and
+// that is correctness rather than tidiness: the disposition itself can move the
+// run. A discard cancels the whole tree on its way through
+// (`cancelWorkflowTreeMembers`), so the loaded copy's `needs-human` is stale by
+// the time this runs — and the frontend treats the payload as authoritative,
+// patching the run back to a state it has left and deleting the reason a
+// payload with no `Reason` field appears to clear. The digest upgrade path
+// re-reads for the same reason (`app_workflow_digest.go`).
+func (a *App) emitWorkflowDispositionState(item store.WorkItem) {
+	current, err := a.store.GetWorkItem(item.ID)
+	if err != nil {
+		// Nothing truthful left to say about this row, and a state event is a
+		// statement about a state. Loud in the log rather than emitted wrong:
+		// an event carrying the stale copy is exactly the lie this function
+		// exists to stop telling.
+		log.Printf("workflow disposition %s: reload before state emit: %v", item.ID, err)
+		return
+	}
+	a.emit("workflow:item-state", engine.StateEvent{
+		ItemID: current.ID, ProjectID: current.ProjectID,
+		From: engine.State(current.State), To: engine.State(current.State),
+		Reason: engine.Reason(current.Reason),
+	})
 }
 
 // landWorkflowDisposition performs the git side of the two landing actions and

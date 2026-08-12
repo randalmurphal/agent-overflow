@@ -65,18 +65,34 @@ func (a *App) workflowRunBudget(ctx context.Context, item store.WorkItem) (*Work
 		ctx,
 		workflowProfileSource{store: a.store, configRoot: a.workflowDataRoot()},
 		workflowSpendSource{store: a.store},
-		root, time.Now(),
+		engine.BudgetSubjectOf(root), time.Now(),
 	)
-	if err != nil || view == nil {
+	if err != nil {
 		return nil, err
+	}
+	return workflowBudgetLine(view, item.ID), nil
+}
+
+// workflowBudgetLine projects a resolved view onto the wire shape, for the run
+// the caller is reporting ON — which is not necessarily the run the ceiling
+// belongs to (§12). A nil view is a run under no ceiling and answers nil, which
+// is the ordinary case rather than an error.
+//
+// It is shared by the CLI/status surface and the run map so those two cannot
+// render the same ceiling differently; the resolution itself is
+// `engine.ResolveBudget`'s in both, which is what keeps either from disagreeing
+// with the check that actually parks the run.
+func workflowBudgetLine(view *engine.BudgetView, forItemID string) *WorkflowAgentRunBudget {
+	if view == nil {
+		return nil
 	}
 	budget := &WorkflowAgentRunBudget{
 		Kind:      view.Kind,
 		Percent:   int(math.Round(view.Fraction() * 100)),
 		Exhausted: view.Exceeded != "",
 	}
-	if root.ID != item.ID {
-		budget.RootItemID = root.ID
+	if view.RootItemID != forItemID {
+		budget.RootItemID = view.RootItemID
 	}
 	switch view.Kind {
 	case engine.BudgetKindTokens:
@@ -91,5 +107,5 @@ func (a *App) workflowRunBudget(ctx context.Context, item store.WorkItem) (*Work
 		budget.CeilingMillis = view.CeilingMillis
 		budget.ElapsedMillis = view.ElapsedMillis
 	}
-	return budget, nil
+	return budget
 }

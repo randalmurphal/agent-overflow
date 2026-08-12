@@ -5,6 +5,7 @@ import { test, expect, type HarnessMockEvent } from './fixtures.js';
 import type { HarnessApp } from '../src/harness.js';
 import {
   assistantText,
+  callChildren,
   doneResult,
   seedWorkflow,
   seedWorkflowProject,
@@ -492,8 +493,9 @@ test('a soft stop parks a campaign at its next call boundary and the root hears 
   // interrupts work in flight — this turn finishes before anything stops.
   const secondWave = await heldWave(harness, seen);
   const child = await harness.rpc<WorkflowDetail>('WorkflowGetItem', root.id);
-  expect(child.children).toHaveLength(1);
-  const childId = child.children[0]!.itemId;
+  const rootChildren = await callChildren(harness, root.id);
+  expect(rootChildren).toHaveLength(1);
+  const childId = rootChildren[0]!.itemId;
   expect(child.callPhaseIds).toEqual(['advance']);
 
   await harness.rpc('WorkflowRequestSoftStop', root.id, true);
@@ -511,7 +513,7 @@ test('a soft stop parks a campaign at its next call boundary and the root hears 
   expect(parked.phases.map((phase) => phase.phaseId)).toEqual(['wave', 'advance']);
   expect(parked.phases[0]?.status).toBe('completed');
   expect(parked.phases[1]?.status).toBe('parked');
-  expect(parked.children).toHaveLength(0);
+  expect(await callChildren(harness, childId)).toHaveLength(0);
 
   // The root is still running — it is waiting on the call it made — so the park
   // reaches a human through the root's bound thread, not the child's silence.
@@ -544,12 +546,13 @@ test('a soft stop parks a campaign at its next call boundary and the root hears 
   const resumed = await harness.rpc<WorkflowDetail>('WorkflowGetItem', childId);
   expect(resumed.item.state).toBe('done');
   // Resume took the edge the stop skipped: wave 3 exists and it is the child's.
-  expect(resumed.children).toHaveLength(1);
+  const resumedChildren = await callChildren(harness, childId);
+  expect(resumedChildren).toHaveLength(1);
   const grandchild = await harness.rpc<WorkflowDetail>(
     'WorkflowGetItem',
-    resumed.children[0]!.itemId,
+    resumedChildren[0]!.itemId,
   );
   expect(grandchild.item.state).toBe('done');
   expect(grandchild.item.callDepth).toBe(2);
-  expect(grandchild.children).toHaveLength(0);
+  expect(await callChildren(harness, grandchild.item.id)).toHaveLength(0);
 });

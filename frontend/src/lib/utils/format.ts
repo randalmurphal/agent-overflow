@@ -143,21 +143,80 @@ export function formatDurationMs(ms: number): string {
  * compares it against `Date.now() / 1000`.
  */
 export function formatResetCountdown(resetsAtSeconds: number): string {
-  if (!Number.isFinite(resetsAtSeconds) || resetsAtSeconds <= 0) return '';
-  const nowSec = Math.floor(Date.now() / 1000);
-  const diffSec = resetsAtSeconds - nowSec;
-  if (diffSec <= 0) return 'Resetting now';
-  if (diffSec < 60) return 'Resets in <1m';
+  const span = formatCountdownSpan(resetsAtSeconds * 1000, Date.now());
+  if (span === '') return '';
+  return span === 'now' ? 'Resetting now' : `Resets in ${span}`;
+}
+
+/**
+ * The bare span of a countdown — `<1m`, `12m`, `1h 12m`, `2d 3h` — against an
+ * EXPLICIT clock, so a caller riding the shared 1Hz clock has no `Date.now()`
+ * in its derived path (the run map's `resumes in X` chip, §7).
+ *
+ * `''` for a target that is not set, `'now'` once it has passed: the caller
+ * owns the verb, this owns the collapse rules (sub-minute never counts down
+ * second by second, and a multi-day window never becomes a six-figure hour).
+ */
+export function formatCountdownSpan(targetMs: number, nowMs: number): string {
+  if (!Number.isFinite(targetMs) || targetMs <= 0 || !Number.isFinite(nowMs)) return '';
+  const diffSec = Math.floor(targetMs / 1000) - Math.floor(nowMs / 1000);
+  if (diffSec <= 0) return 'now';
+  if (diffSec < 60) return '<1m';
   const minutes = Math.floor(diffSec / 60);
-  if (minutes < 60) return `Resets in ${minutes}m`;
+  if (minutes < 60) return `${minutes}m`;
   const hours = Math.floor(minutes / 60);
   const remMin = minutes % 60;
-  if (hours < 24) {
-    return remMin > 0 ? `Resets in ${hours}h ${remMin}m` : `Resets in ${hours}h`;
-  }
+  if (hours < 24) return remMin > 0 ? `${hours}h ${remMin}m` : `${hours}h`;
   const days = Math.floor(hours / 24);
   const remHr = hours % 24;
-  return remHr > 0 ? `Resets in ${days}d ${remHr}h` : `Resets in ${days}d`;
+  return remHr > 0 ? `${days}d ${remHr}h` : `${days}d`;
+}
+
+/**
+ * "12m" / "1h 4m" / "48s" — a LENGTH in milliseconds, in the same shapes every
+ * span on the run map uses. Exported because a ceiling is not a span between two
+ * timestamps: a wall-clock budget states a duration outright, and formatting it
+ * with a second set of rules would put "30 min" beside "1h 4m" on one line.
+ */
+export function workflowSpanMs(ms: number): string {
+  const seconds = Math.max(0, Math.round((Number.isFinite(ms) ? ms : 0) / 1000));
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  const remainder = minutes % 60;
+  return remainder > 0 ? `${hours}h ${remainder}m` : `${hours}h`;
+}
+
+function spanLabel(startedAt: number, endMs: number): string {
+  return workflowSpanMs(endMs - startedAt);
+}
+
+/**
+ * "12m" / "1h 4m" / "48s" — elapsed span of one phase attempt, unit or run.
+ * Seconds are deliberately dropped above a minute: the run map's 1Hz clock
+ * feeds this, and a ticking seconds digit on a two-hour phase is noise.
+ *
+ * `endedAt` of 0 means "still going", so `nowMs` closes the span. It is
+ * REQUIRED, with no `Date.now()` default: a default is only correct for a
+ * caller that re-derives against a ticking clock, and the two callers that
+ * silently took it were inside a `$derived` nothing re-ran — so an open span
+ * froze at whatever second the component last happened to render. A caller
+ * with no clock wants `workflowClosedDuration`, which cannot fabricate one.
+ */
+export function workflowDuration(startedAt: number, endedAt: number, nowMs: number): string {
+  if (!startedAt) return '';
+  return spanLabel(startedAt, endedAt || nowMs);
+}
+
+/**
+ * The same span for a caller that has NO clock, and therefore may only render a
+ * span that is already closed. An open one answers `''` rather than freezing an
+ * elapsed value that would then be wrong for as long as the row is on screen.
+ */
+export function workflowClosedDuration(startedAt: number, endedAt: number): string {
+  if (!startedAt || !endedAt) return '';
+  return spanLabel(startedAt, endedAt);
 }
 
 /**

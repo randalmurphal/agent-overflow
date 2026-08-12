@@ -17,6 +17,11 @@ import {
   applyWorkflowPhaseState,
   applyWorkflowSoftStop,
 } from './workflowRuns.svelte';
+import {
+  applyWorkflowRunMapItemState,
+  applyWorkflowRunMapPhaseState,
+  applyWorkflowRunMapSoftStop,
+} from './workflowRunMap.svelte';
 
 const MAX_ERROR_DEDUPE_KEYS = 100;
 const shownErrors = new Set<string>();
@@ -34,16 +39,24 @@ export function applyWorkflowErrorEvent(event: WorkflowErrorEvent): void {
   addToast('error', message);
 }
 
+// The three run-record events feed TWO consumers, deliberately: the overlay's
+// run cache (list rows, badges, the per-run detail) and the run map's tree
+// view, which is entity-keyed and patches in place rather than refetching the
+// whole run per event. They read the same frame and answer different
+// questions, so neither is derivable from the other.
 export function applyWorkflowItemStateEvent(event: WorkflowItemStateEvent): void {
   applyWorkflowItemState(event);
+  applyWorkflowRunMapItemState(event);
 }
 
 export function applyWorkflowPhaseStateEvent(event: WorkflowPhaseStateEvent): void {
   applyWorkflowPhaseState(event);
+  applyWorkflowRunMapPhaseState(event);
 }
 
 export function applyWorkflowSoftStopEvent(event: WorkflowSoftStopEvent): void {
   applyWorkflowSoftStop(event);
+  applyWorkflowRunMapSoftStop(event);
 }
 
 export function applyWorkflowEngineStateEvent(event: WorkflowEngineStateEvent): void {

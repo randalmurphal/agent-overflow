@@ -28,7 +28,7 @@ function detail(): WorkflowItemDetail {
     item: { id: 'run-1' },
     checkPhaseIds: [],
     phases: [{ itemId: 'run-1', phaseId: 'port', attempt: 1, status: 'parked', startedAt: 1, threadId: 'thread-port' }],
-    units: [], children: [], outputs: {}, artifacts: [], usage: { costUsd: 2 },
+    units: [], outputs: {}, artifacts: [], usage: { costUsd: 2 },
   } as unknown as WorkflowItemDetail;
 }
 

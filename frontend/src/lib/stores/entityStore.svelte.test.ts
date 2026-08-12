@@ -1,13 +1,17 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { flushSync } from 'svelte';
 import { createEntityStore, DEFAULT_RETRY } from './entityStore.svelte';
+import {
+  frontendErrorCaptureStateForTest,
+  resetFrontendErrorCaptureForTest,
+} from '../utils/frontendErrorCapture';
 
 // A controllable source. Each call records its args and hands back a
 // deferred so a test can decide when (and whether) the acquire resolves.
-function makeSource() {
+function makeSource<V = string>() {
   const calls: Array<{
     key: string;
-    apply: (value: string) => void;
+    apply: (value: V) => void;
     fail: (err: unknown) => void;
     getCtx: () => { tag: string };
     signal: AbortSignal;
@@ -19,7 +23,7 @@ function makeSource() {
   const source = (args: {
     key: string;
     getCtx: () => { tag: string };
-    apply: (value: string) => void;
+    apply: (value: V) => void;
     fail: (err: unknown) => void;
     signal: AbortSignal;
   }): Promise<() => void | Promise<void>> =>
@@ -1099,5 +1103,106 @@ describe('createEntityStore — reactivity boundary', () => {
     flushSync();
     expect(seen).toEqual([null, null, 'v1', null]);
     cleanup();
+  });
+});
+
+/**
+ * `rawValue` buys one signal per write by not proxying the value. The cost is
+ * that the ONLY thing a reader can observe is the assignment, so a writer that
+ * mutates the held object and applies it back writes a reference the signal
+ * already holds: no reader wakes, the surface freezes on stale content, and
+ * every gate stays green. The contract is enforced here rather than documented.
+ */
+describe('createEntityStore — the rawValue replace contract', () => {
+  beforeEach(() => {
+    resetFrontendErrorCaptureForTest();
+  });
+  afterEach(() => {
+    resetFrontendErrorCaptureForTest();
+  });
+
+  function rawStore() {
+    const { source, calls } = makeSource<{ n: number }>();
+    const store = createEntityStore<{ n: number }, { tag: string }>({
+      name: 'raw', rawValue: true, source,
+    });
+    return { store, calls };
+  }
+
+  it('a replacement wakes the reader', async () => {
+    const { store, calls } = rawStore();
+    const seen: Array<number | null> = [];
+    const cleanup = $effect.root(() => {
+      $effect(() => { seen.push(store.peek('k')?.n ?? null); });
+    });
+    const a = store.attach('k', { tag: 'a' });
+    await flush();
+    flushSync();
+
+    calls[0].apply({ n: 1 });
+    flushSync();
+    calls[0].apply({ n: 2 });
+    flushSync();
+
+    expect(seen.filter((v) => v !== null)).toEqual([1, 2]);
+    a.release();
+    cleanup();
+  });
+
+  it('a mutate-and-reapply is REPORTED, not silently accepted', async () => {
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { store, calls } = rawStore();
+    const a = store.attach('k', { tag: 'a' });
+    await flush();
+
+    const held = { n: 1 };
+    calls[0].apply(held);
+    const before = frontendErrorCaptureStateForTest().pendingCount;
+    expect(errors).not.toHaveBeenCalled();
+
+    held.n = 2;
+    calls[0].apply(held);
+
+    expect(errors).toHaveBeenCalledTimes(1);
+    expect(String(errors.mock.calls[0]?.[0])).toContain('same object reference for k');
+    // And it reaches the persisted diagnostic trail, not just a console
+    // nobody has open: this is a defect whose only symptom is stale pixels.
+    expect(frontendErrorCaptureStateForTest().pendingCount).toBe(before + 1);
+    // The value still lands — it IS current truth; the report is the fix.
+    expect(store.peek('k')).toBe(held);
+
+    a.release();
+    errors.mockRestore();
+  });
+
+  it('says nothing when two DIFFERENT objects happen to be equal', async () => {
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { store, calls } = rawStore();
+    const a = store.attach('k', { tag: 'a' });
+    await flush();
+
+    calls[0].apply({ n: 1 });
+    calls[0].apply({ n: 1 });
+
+    expect(errors).not.toHaveBeenCalled();
+    a.release();
+    errors.mockRestore();
+  });
+
+  it('does not fire for a store that did not opt into rawValue', async () => {
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { source, calls } = makeSource();
+    const store = createEntityStore<string, { tag: string }>({ name: 'proxied', source });
+    const a = store.attach('k', { tag: 'a' });
+    await flush();
+
+    // A proxied entry re-applied by reference is fine: the proxy reports the
+    // field writes underneath it, so readers already woke.
+    calls[0].apply('v1');
+    calls[0].apply('v1');
+
+    expect(errors).not.toHaveBeenCalled();
+    a.release();
+    errors.mockRestore();
   });
 });

@@ -61,6 +61,7 @@ const PR_REVIEW_CI = 'lib/stores/prReviewCI.svelte.ts';
 const PR_REVIEW_CONFLICTS = 'lib/stores/prReviewConflicts.svelte.ts';
 const MCP_SERVERS_STORE = 'lib/stores/mcpServers.svelte.ts';
 const CHAT_BAR_FAVORITES_STORE = 'lib/stores/chatBarFavorites.svelte.ts';
+const WORKFLOW_RUN_MAP_STORE = 'lib/stores/workflowRunMap.svelte.ts';
 
 const ENTITY_OWNED_BINDINGS: Record<string, EntityOwnedBinding> = {
   GetGitStatus: owned(GIT_STATUS_STORE, 'refreshGitStatus()'),
@@ -86,6 +87,7 @@ const ENTITY_OWNED_BINDINGS: Record<string, EntityOwnedBinding> = {
     'ensureChatBarFavorites() + peekChatBarFavorites()',
   ),
   SetChatBarFavorite: owned(CHAT_BAR_FAVORITES_STORE, 'setChatBarFavorite()'),
+  WorkflowGetRunMap: owned(WORKFLOW_RUN_MAP_STORE, 'the run-map entity source'),
 };
 
 // `stores/bindings.ts` is the typed wrapper the whole rule is phrased in terms

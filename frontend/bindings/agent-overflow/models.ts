@@ -5933,71 +5933,6 @@ export class WorkflowDispositionReceipt {
     }
 }
 
-/**
- * WorkflowItemChildView is one run this item called. A child is a real run with
- * a detail page of its own; this is the caller-side summary — enough to render
- * the call phase's progress without loading the child's timeline.
- */
-export class WorkflowItemChildView {
-    "itemId": string;
-    "workflowId": string;
-    "state": string;
-    "reason"?: string;
-    "parentPhaseId": string;
-
-    /**
-     * ParentUnitID is empty for a phase call and names the fan-out unit that
-     * called this run otherwise, which is what lets the run tree hang the child
-     * under its unit row instead of flat under the fan-out phase.
-     */
-    "parentUnitId"?: string;
-    "parentAttempt": number;
-    "callDepth": number;
-    "currentPhaseId"?: string;
-    "currentPhaseOrdinal": number;
-    "phaseCount": number;
-    "startedAt"?: number;
-    "endedAt"?: number;
-
-    /** Creates a new WorkflowItemChildView instance. */
-    constructor($$source: Partial<WorkflowItemChildView> = {}) {
-        if (!("itemId" in $$source)) {
-            this["itemId"] = "";
-        }
-        if (!("workflowId" in $$source)) {
-            this["workflowId"] = "";
-        }
-        if (!("state" in $$source)) {
-            this["state"] = "";
-        }
-        if (!("parentPhaseId" in $$source)) {
-            this["parentPhaseId"] = "";
-        }
-        if (!("parentAttempt" in $$source)) {
-            this["parentAttempt"] = 0;
-        }
-        if (!("callDepth" in $$source)) {
-            this["callDepth"] = 0;
-        }
-        if (!("currentPhaseOrdinal" in $$source)) {
-            this["currentPhaseOrdinal"] = 0;
-        }
-        if (!("phaseCount" in $$source)) {
-            this["phaseCount"] = 0;
-        }
-
-        Object.assign(this, $$source);
-    }
-
-    /**
-     * Creates a new WorkflowItemChildView instance from a string or object.
-     */
-    static createFrom($$source: any = {}): WorkflowItemChildView {
-        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
-        return new WorkflowItemChildView($$parsedSource as Partial<WorkflowItemChildView>);
-    }
-}
-
 export class WorkflowItemDetailView {
     "item": WorkflowItemView;
     "checkPhaseIds": string[];
@@ -6011,7 +5946,14 @@ export class WorkflowItemDetailView {
     "callPhaseIds": string[];
     "phases": WorkflowItemPhaseView[];
     "units": WorkflowItemUnitView[];
-    "children": WorkflowItemChildView[];
+
+    /**
+     * There is deliberately NO child list here. The runs this one called are a
+     * TREE fact, and `WorkflowGetRunMap` is the read that answers for a tree —
+     * with every wave's linkage rather than one level of it, and without the
+     * per-child summary join (which parses each row's frozen snapshot to find a
+     * phase ordinal) that this view was paying for on every detail fetch.
+     */
     "outputs": { [_ in string]?: any };
     "artifacts": WorkflowArtifact[];
 
@@ -6046,9 +5988,6 @@ export class WorkflowItemDetailView {
         if (!("units" in $$source)) {
             this["units"] = [];
         }
-        if (!("children" in $$source)) {
-            this["children"] = [];
-        }
         if (!("outputs" in $$source)) {
             this["outputs"] = {};
         }
@@ -6074,11 +6013,10 @@ export class WorkflowItemDetailView {
         const $$createField2_0 = $$createType2;
         const $$createField3_0 = $$createType103;
         const $$createField4_0 = $$createType105;
-        const $$createField5_0 = $$createType107;
-        const $$createField6_0 = $$createType78;
-        const $$createField7_0 = $$createType109;
-        const $$createField8_0 = $$createType110;
-        const $$createField9_0 = $$createType111;
+        const $$createField5_0 = $$createType78;
+        const $$createField6_0 = $$createType107;
+        const $$createField7_0 = $$createType108;
+        const $$createField8_0 = $$createType109;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("item" in $$parsedSource) {
             $$parsedSource["item"] = $$createField0_0($$parsedSource["item"]);
@@ -6095,20 +6033,17 @@ export class WorkflowItemDetailView {
         if ("units" in $$parsedSource) {
             $$parsedSource["units"] = $$createField4_0($$parsedSource["units"]);
         }
-        if ("children" in $$parsedSource) {
-            $$parsedSource["children"] = $$createField5_0($$parsedSource["children"]);
-        }
         if ("outputs" in $$parsedSource) {
-            $$parsedSource["outputs"] = $$createField6_0($$parsedSource["outputs"]);
+            $$parsedSource["outputs"] = $$createField5_0($$parsedSource["outputs"]);
         }
         if ("artifacts" in $$parsedSource) {
-            $$parsedSource["artifacts"] = $$createField7_0($$parsedSource["artifacts"]);
+            $$parsedSource["artifacts"] = $$createField6_0($$parsedSource["artifacts"]);
         }
         if ("usage" in $$parsedSource) {
-            $$parsedSource["usage"] = $$createField8_0($$parsedSource["usage"]);
+            $$parsedSource["usage"] = $$createField7_0($$parsedSource["usage"]);
         }
         if ("spend" in $$parsedSource) {
-            $$parsedSource["spend"] = $$createField9_0($$parsedSource["spend"]);
+            $$parsedSource["spend"] = $$createField8_0($$parsedSource["spend"]);
         }
         return new WorkflowItemDetailView($$parsedSource as Partial<WorkflowItemDetailView>);
     }
@@ -6359,6 +6294,411 @@ export class WorkflowPRReviewComments {
 }
 
 /**
+ * WorkflowRunMapPhaseAttempt is one recorded phase attempt. Cause is the
+ * ENGINE's diagnosis of a park (the workspace that would not cut, the budget
+ * that ran out); InterventionKind is the `kind` of the intervention persisted on
+ * the attempt, which today is `taken-over` or nothing — a human gate decision
+ * records its decision and note rather than a kind, so it surfaces through the
+ * run's own reason instead.
+ */
+export class WorkflowRunMapPhaseAttempt {
+    "phaseId": string;
+    "attempt": number;
+    "status": string;
+    "cause"?: string;
+    "interventionKind"?: string;
+    "threadId"?: string;
+    "startedAt": number;
+    "endedAt"?: number;
+
+    /** Creates a new WorkflowRunMapPhaseAttempt instance. */
+    constructor($$source: Partial<WorkflowRunMapPhaseAttempt> = {}) {
+        if (!("phaseId" in $$source)) {
+            this["phaseId"] = "";
+        }
+        if (!("attempt" in $$source)) {
+            this["attempt"] = 0;
+        }
+        if (!("status" in $$source)) {
+            this["status"] = "";
+        }
+        if (!("startedAt" in $$source)) {
+            this["startedAt"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new WorkflowRunMapPhaseAttempt instance from a string or object.
+     */
+    static createFrom($$source: any = {}): WorkflowRunMapPhaseAttempt {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new WorkflowRunMapPhaseAttempt($$parsedSource as Partial<WorkflowRunMapPhaseAttempt>);
+    }
+}
+
+/**
+ * WorkflowRunMapRefusal is a map this backend will never answer, said in a
+ * shape a client can act on: a code to branch on and a sentence to render.
+ * 
+ * It rides the RESULT rather than the method's error for two reasons. The
+ * transport strips a method error's text for any non-loopback caller (one
+ * correlation id, no prose — `internal/transport/dispatcher.go`), so an error
+ * return literally cannot carry a user-facing sentence to a remote client;
+ * and every code here is PERMANENT, while the entity store's answer to a
+ * thrown error is a backoff ladder that re-asks the same unanswerable question
+ * forever. An unexpected failure — a store that will not read, a ledger group
+ * that will not price — stays an error, because retrying IS the right response
+ * to those.
+ */
+export class WorkflowRunMapRefusal {
+    /**
+     * Code is the machine-readable class. Every one of them is permanent: the
+     * client must stop re-sourcing the key until something else changes.
+     */
+    "code": string;
+
+    /**
+     * Message is the sentence to show. It names the run, never a path or an
+     * internal type.
+     */
+    "message": string;
+
+    /** Creates a new WorkflowRunMapRefusal instance. */
+    constructor($$source: Partial<WorkflowRunMapRefusal> = {}) {
+        if (!("code" in $$source)) {
+            this["code"] = "";
+        }
+        if (!("message" in $$source)) {
+            this["message"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new WorkflowRunMapRefusal instance from a string or object.
+     */
+    static createFrom($$source: any = {}): WorkflowRunMapRefusal {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new WorkflowRunMapRefusal($$parsedSource as Partial<WorkflowRunMapRefusal>);
+    }
+}
+
+/**
+ * WorkflowRunMapRun is one run of the tree: who it is, where it sits, what its
+ * frozen definition says will happen, and what has.
+ */
+export class WorkflowRunMapRun {
+    "itemId": string;
+    "workflowId": string;
+
+    /**
+     * Parent linkage is present only on a called run (§3a): the caller, its call
+     * phase, and the attempt of it that invoked this run. ParentUnitID narrows
+     * that to one fan-out unit when the call was declared on a unit.
+     * 
+     * The ROOT can carry one too, and that is how an ORPHAN says so: a run whose
+     * named parent's row is gone resolves to itself as the tree root, with the
+     * dangling reference left on the answer. A parent id naming no run in `runs`
+     * is exactly that state and needs no field of its own.
+     */
+    "parentItemId"?: string;
+    "parentPhaseId"?: string;
+    "parentUnitId"?: string;
+    "parentAttempt"?: number;
+    "callDepth"?: number;
+    "state": string;
+    "reason"?: string;
+    "softStop": boolean;
+    "startedAt"?: number;
+    "endedAt"?: number;
+    "autoResumeAt"?: number;
+
+    /**
+     * Skeleton is this run's OWN frozen definition, projected to what the map
+     * draws. It is never the root's: a definition refresh between waves is
+     * reachable, and the waves then legitimately differ.
+     */
+    "skeleton": WorkflowRunMapSkeletonPhase[];
+
+    /**
+     * SkeletonMissing marks records-only mode: the frozen definition could not
+     * supply phases. The map then renders this run's recorded attempts with no
+     * ghosts and no loop affordance — degrading is the contract, since a run's
+     * history is readable whatever its snapshot says.
+     */
+    "skeletonMissing": boolean;
+
+    /**
+     * SkeletonError is why, when the reason was CORRUPTION rather than absence:
+     * the column held bytes that would not decode as a snapshot. An absent
+     * snapshot is ordinary (the run failed before its first phase entry, so it
+     * never froze one) and leaves this empty. The two are one flag and one
+     * sentence rather than one flag alone because a reader who cannot tell them
+     * apart is told a corrupt record is normal history.
+     */
+    "skeletonError"?: string;
+
+    /**
+     * TailSelfCall reports that the last skeleton phase calls this run's own
+     * workflow — the edge a recursive campaign iterates on, and the one call
+     * shape the map flattens into waves rather than nesting as composition.
+     */
+    "tailSelfCall": boolean;
+    "phases": WorkflowRunMapPhaseAttempt[];
+    "units": WorkflowRunMapUnit[];
+
+    /**
+     * Spend and Budget are the ROOT's alone and absent on every called run: a
+     * budget is enforced against the tree (§12), so one pair per tree is the only
+     * one that means anything.
+     * 
+     * Spend is the tree's composed dollars, halves apart, through the one ledger
+     * pricing rule every dollar surface folds through — so the map's number and
+     * `WorkflowGetItem`'s are the same number, and a total carrying unpriced rows
+     * says so instead of presenting a lower bound as exact.
+     */
+    "spend"?: WorkflowRunSpend | null;
+
+    /**
+     * Budget is the ceiling in force, nil when there is none — which is most
+     * runs. It is `engine.ResolveBudget`'s answer, the enforcement's own, so it
+     * includes the ceiling a run inherits from its project profile
+     * (`reliability.per_item_budget`) rather than only the one it declared. A
+     * map that read the column alone rendered a profile-defaulted campaign as
+     * unbounded right up to the moment the engine parked it at its ceiling.
+     */
+    "budget"?: WorkflowAgentRunBudget | null;
+
+    /** Creates a new WorkflowRunMapRun instance. */
+    constructor($$source: Partial<WorkflowRunMapRun> = {}) {
+        if (!("itemId" in $$source)) {
+            this["itemId"] = "";
+        }
+        if (!("workflowId" in $$source)) {
+            this["workflowId"] = "";
+        }
+        if (!("state" in $$source)) {
+            this["state"] = "";
+        }
+        if (!("softStop" in $$source)) {
+            this["softStop"] = false;
+        }
+        if (!("skeleton" in $$source)) {
+            this["skeleton"] = [];
+        }
+        if (!("skeletonMissing" in $$source)) {
+            this["skeletonMissing"] = false;
+        }
+        if (!("tailSelfCall" in $$source)) {
+            this["tailSelfCall"] = false;
+        }
+        if (!("phases" in $$source)) {
+            this["phases"] = [];
+        }
+        if (!("units" in $$source)) {
+            this["units"] = [];
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new WorkflowRunMapRun instance from a string or object.
+     */
+    static createFrom($$source: any = {}): WorkflowRunMapRun {
+        const $$createField13_0 = $$createType111;
+        const $$createField17_0 = $$createType113;
+        const $$createField18_0 = $$createType115;
+        const $$createField19_0 = $$createType116;
+        const $$createField20_0 = $$createType84;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("skeleton" in $$parsedSource) {
+            $$parsedSource["skeleton"] = $$createField13_0($$parsedSource["skeleton"]);
+        }
+        if ("phases" in $$parsedSource) {
+            $$parsedSource["phases"] = $$createField17_0($$parsedSource["phases"]);
+        }
+        if ("units" in $$parsedSource) {
+            $$parsedSource["units"] = $$createField18_0($$parsedSource["units"]);
+        }
+        if ("spend" in $$parsedSource) {
+            $$parsedSource["spend"] = $$createField19_0($$parsedSource["spend"]);
+        }
+        if ("budget" in $$parsedSource) {
+            $$parsedSource["budget"] = $$createField20_0($$parsedSource["budget"]);
+        }
+        return new WorkflowRunMapRun($$parsedSource as Partial<WorkflowRunMapRun>);
+    }
+}
+
+/**
+ * WorkflowRunMapSkeletonPhase is one phase of a frozen definition, projected to
+ * what the map needs to draw a node that has not happened yet. It is a
+ * projection rather than the raw snapshot deliberately: prompts, schemas, and
+ * envelopes are the largest thing a run persists and none of it is drawable.
+ */
+export class WorkflowRunMapSkeletonPhase {
+    "id": string;
+    "name"?: string;
+
+    /**
+     * Shape is the resolved shape — single, fan-out, or call — never the blank
+     * an unannotated phase is authored with.
+     */
+    "shape": string;
+
+    /**
+     * CallTarget is the workflow a call phase invokes, empty for every other
+     * shape.
+     */
+    "callTarget"?: string;
+    "isCheck": boolean;
+
+    /**
+     * MaxDepth is the call edge's authored recursion bound, 0 when it declares
+     * none — which is a real state, not a missing one: the run's budget is then
+     * the only thing bounding the chain.
+     */
+    "maxDepth"?: number;
+
+    /** Creates a new WorkflowRunMapSkeletonPhase instance. */
+    constructor($$source: Partial<WorkflowRunMapSkeletonPhase> = {}) {
+        if (!("id" in $$source)) {
+            this["id"] = "";
+        }
+        if (!("shape" in $$source)) {
+            this["shape"] = "";
+        }
+        if (!("isCheck" in $$source)) {
+            this["isCheck"] = false;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new WorkflowRunMapSkeletonPhase instance from a string or object.
+     */
+    static createFrom($$source: any = {}): WorkflowRunMapSkeletonPhase {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new WorkflowRunMapSkeletonPhase($$parsedSource as Partial<WorkflowRunMapSkeletonPhase>);
+    }
+}
+
+/**
+ * WorkflowRunMapUnit is one fan-out unit (or join) of one phase attempt. A unit
+ * row exists from the moment its attempt expands, so a queued branch is a real
+ * record rather than something the map has to guess at.
+ */
+export class WorkflowRunMapUnit {
+    "phaseId": string;
+    "attempt": number;
+    "unitId": string;
+    "unitIndex": number;
+    "kind": string;
+
+    /**
+     * Provider names the resource a pending unit is waiting capacity on.
+     */
+    "provider"?: string;
+    "status": string;
+    "unitAttempt": number;
+    "threadId"?: string;
+    "startedAt"?: number;
+    "endedAt"?: number;
+
+    /** Creates a new WorkflowRunMapUnit instance. */
+    constructor($$source: Partial<WorkflowRunMapUnit> = {}) {
+        if (!("phaseId" in $$source)) {
+            this["phaseId"] = "";
+        }
+        if (!("attempt" in $$source)) {
+            this["attempt"] = 0;
+        }
+        if (!("unitId" in $$source)) {
+            this["unitId"] = "";
+        }
+        if (!("unitIndex" in $$source)) {
+            this["unitIndex"] = 0;
+        }
+        if (!("kind" in $$source)) {
+            this["kind"] = "";
+        }
+        if (!("status" in $$source)) {
+            this["status"] = "";
+        }
+        if (!("unitAttempt" in $$source)) {
+            this["unitAttempt"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new WorkflowRunMapUnit instance from a string or object.
+     */
+    static createFrom($$source: any = {}): WorkflowRunMapUnit {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new WorkflowRunMapUnit($$parsedSource as Partial<WorkflowRunMapUnit>);
+    }
+}
+
+/**
+ * WorkflowRunMapView is the whole tree, parent-linked. Runs are ordered root
+ * first, then by distance from the root and creation order within a level, so a
+ * consumer can build the tree in one pass without sorting and a parent is
+ * always seen before its children. The distance is derived from the LINKAGE the
+ * read walked, not from the persisted `call_depth`, so the promise does not
+ * rest on a column a corrupt row could make lie.
+ */
+export class WorkflowRunMapView {
+    /**
+     * RootItemID is the tree root this map is FOR, which need not be the id the
+     * caller asked about: any run in the tree resolves to the same map, so a
+     * stale nav entry or a deep link to a child normalises instead of erroring.
+     */
+    "rootItemId": string;
+    "runs": WorkflowRunMapRun[];
+
+    /**
+     * Refusal is set — with Runs empty — when the map cannot be drawn for a
+     * reason RETRYING CANNOT FIX. See WorkflowRunMapRefusal.
+     */
+    "refusal"?: WorkflowRunMapRefusal | null;
+
+    /** Creates a new WorkflowRunMapView instance. */
+    constructor($$source: Partial<WorkflowRunMapView> = {}) {
+        if (!("rootItemId" in $$source)) {
+            this["rootItemId"] = "";
+        }
+        if (!("runs" in $$source)) {
+            this["runs"] = [];
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new WorkflowRunMapView instance from a string or object.
+     */
+    static createFrom($$source: any = {}): WorkflowRunMapView {
+        const $$createField1_0 = $$createType118;
+        const $$createField2_0 = $$createType120;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("runs" in $$parsedSource) {
+            $$parsedSource["runs"] = $$createField1_0($$parsedSource["runs"]);
+        }
+        if ("refusal" in $$parsedSource) {
+            $$parsedSource["refusal"] = $$createField2_0($$parsedSource["refusal"]);
+        }
+        return new WorkflowRunMapView($$parsedSource as Partial<WorkflowRunMapView>);
+    }
+}
+
+/**
  * WorkflowRunSpend is one run tree's dollars, with the halves kept apart so a
  * surface can say which part of the number is an estimate. A Codex phase
  * reports tokens and no cost at all, so a run's `usage.costUsd` alone reported
@@ -6483,7 +6823,7 @@ export class WorkspaceFileSearchResult {
      * Creates a new WorkspaceFileSearchResult instance from a string or object.
      */
     static createFrom($$source: any = {}): WorkspaceFileSearchResult {
-        const $$createField0_0 = $$createType113;
+        const $$createField0_0 = $$createType122;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("files" in $$parsedSource) {
             $$parsedSource["files"] = $$createField0_0($$parsedSource["files"]);
@@ -6561,7 +6901,7 @@ export class WorktreeSetupConfig {
      */
     static createFrom($$source: any = {}): WorktreeSetupConfig {
         const $$createField0_0 = $$createType2;
-        const $$createField1_0 = $$createType114;
+        const $$createField1_0 = $$createType123;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("copy" in $$parsedSource) {
             $$parsedSource["copy"] = $$createField0_0($$parsedSource["copy"]);
@@ -6635,7 +6975,7 @@ export class WorktreeSetupRunState {
      * Creates a new WorktreeSetupRunState instance from a string or object.
      */
     static createFrom($$source: any = {}): WorktreeSetupRunState {
-        const $$createField3_0 = $$createType116;
+        const $$createField3_0 = $$createType125;
         const $$createField4_0 = $$createType2;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("steps" in $$parsedSource) {
@@ -6845,14 +7185,23 @@ const $$createType102 = WorkflowItemPhaseView.createFrom;
 const $$createType103 = $Create.Array($$createType102);
 const $$createType104 = WorkflowItemUnitView.createFrom;
 const $$createType105 = $Create.Array($$createType104);
-const $$createType106 = WorkflowItemChildView.createFrom;
+const $$createType106 = WorkflowArtifact.createFrom;
 const $$createType107 = $Create.Array($$createType106);
-const $$createType108 = WorkflowArtifact.createFrom;
-const $$createType109 = $Create.Array($$createType108);
-const $$createType110 = store$0.WorkItemUsage.createFrom;
-const $$createType111 = WorkflowRunSpend.createFrom;
-const $$createType112 = workspacefiles$0.WorkspaceFile.createFrom;
+const $$createType108 = store$0.WorkItemUsage.createFrom;
+const $$createType109 = WorkflowRunSpend.createFrom;
+const $$createType110 = WorkflowRunMapSkeletonPhase.createFrom;
+const $$createType111 = $Create.Array($$createType110);
+const $$createType112 = WorkflowRunMapPhaseAttempt.createFrom;
 const $$createType113 = $Create.Array($$createType112);
-const $$createType114 = $Create.Array($$createType2);
-const $$createType115 = WorktreeSetupStep.createFrom;
-const $$createType116 = $Create.Array($$createType115);
+const $$createType114 = WorkflowRunMapUnit.createFrom;
+const $$createType115 = $Create.Array($$createType114);
+const $$createType116 = $Create.Nullable($$createType109);
+const $$createType117 = WorkflowRunMapRun.createFrom;
+const $$createType118 = $Create.Array($$createType117);
+const $$createType119 = WorkflowRunMapRefusal.createFrom;
+const $$createType120 = $Create.Nullable($$createType119);
+const $$createType121 = workspacefiles$0.WorkspaceFile.createFrom;
+const $$createType122 = $Create.Array($$createType121);
+const $$createType123 = $Create.Array($$createType2);
+const $$createType124 = WorktreeSetupStep.createFrom;
+const $$createType125 = $Create.Array($$createType124);

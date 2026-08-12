@@ -444,8 +444,9 @@ func (e *Engine) startUnitRunner(item *runtimeItem, unit *unitRun) error {
 	if unit.feedback != nil {
 		note = unit.feedback.Note
 	}
+	startedAt := e.timestamp()
 	if err := e.store.StartWorkItemUnit(
-		item.item.ID, item.phaseID, item.attempt, unit.id, unit.attempt, note, e.timestamp(),
+		item.item.ID, item.phaseID, item.attempt, unit.id, unit.attempt, note, startedAt,
 	); err != nil {
 		cause := fmt.Errorf("persist unit start %s/%s/%d/%s: %w", item.item.ID, item.phaseID, item.attempt, unit.id, err)
 		return errors.Join(
@@ -458,7 +459,7 @@ func (e *Engine) startUnitRunner(item *runtimeItem, unit *unitRun) error {
 	}
 	unit.status = store.WorkItemUnitRunning
 	unit.envelope = nil
-	e.emitUnitState(item, unit)
+	e.emitUnitStateAt(item, unit, startedAt)
 
 	definition := unit.definition
 	request := RunRequest{
@@ -605,9 +606,43 @@ func (e *Engine) startJoin(item *runtimeItem) error {
 	return e.startUnitOrWait(item, fan.join)
 }
 
+// emitUnitState announces a unit transition no row recorded a time for — an
+// expansion that only wrote `pending` rows, a retry that reset one in place.
+// The engine clock IS the answer for those, and it is read HERE rather than
+// left to a sentinel travelling through emitUnitStateAt: that function's whole
+// point is carrying a persisted time, and a mode value meaning "there wasn't
+// one" would make the argument unenforceable for every caller that has one.
 func (e *Engine) emitUnitState(item *runtimeItem, unit *unitRun) {
-	e.emitter.Emit("workflow:phase-state", PhaseEvent{
+	e.emitUnitStateAt(item, unit, e.timestamp())
+}
+
+// emitUnitStateAt is the unit-side mirror of what every phase emit beside a
+// store write does: it passes the very value the write persisted, so the event
+// and the row agree to the millisecond.
+//
+// A non-positive occurredAt is a caller that did not have one — an engine bug,
+// since `timestamp()` is strictly monotonic and every persisted time comes from
+// it. It is reported through the run-lifecycle log and the event still ships
+// with the engine's clock: a status transition the UI never hears about is a
+// node stuck mid-flight forever, which is strictly worse than one whose stamp
+// is a tick late. It is not a panic for the same reason no other engine
+// anomaly is — this loop is a long-running desktop app's scheduler, and a
+// cosmetic stamp must not take it down.
+func (e *Engine) emitUnitStateAt(item *runtimeItem, unit *unitRun, occurredAt int64) {
+	if occurredAt <= 0 {
+		e.logEvent(LogEvent{
+			Event: LogEventEmitTimeMissing, ItemID: item.item.ID, ProjectID: item.item.ProjectID,
+			PhaseID: item.phaseID, Attempt: item.attempt,
+			Message: fmt.Sprintf(
+				"unit %s status %s emitted with occurredAt %d; stamping the engine clock",
+				unit.id, unit.status, occurredAt,
+			),
+		})
+		occurredAt = e.timestamp()
+	}
+	e.emitPhaseState(PhaseEvent{
 		ItemID: item.item.ID, PhaseID: item.phaseID, Attempt: item.attempt,
 		Status: unit.status, UnitID: unit.id, UnitIndex: unit.index, UnitKind: unit.kind,
+		OccurredAt: occurredAt,
 	})
 }

@@ -23,11 +23,25 @@
 // which is a per-key signal and nothing more. Building push-fed state on
 // this one buys a refcount, a source, a retry curve and a transport edge
 // that all have to be no-oped.
+//
+// VALUE GRANULARITY (`rawValue`). By default an entry's value is deep
+// `$state`, so a consumer reading one field of a big object is woken only
+// when that field changes — right for a value the store MUTATES in place.
+// The proxying is not free: Svelte walks and wraps every nested object on
+// first read, and a value that is thousands of objects deep (a whole run
+// tree) pays that walk to buy fine-grained tracking nothing uses, on the
+// main thread, in the shape of the WebView2 saturation incident. A store
+// whose values are REPLACED WHOLESALE — every write produces a new object,
+// nothing is written through — sets `rawValue: true` and gets one signal per
+// entry instead. It is opt-in because the safety condition is a property of
+// the store's writers, not of the primitive: turning it on for a store that
+// mutates in place silently stops waking readers.
 
 import { untrack } from 'svelte';
 import { SvelteMap } from 'svelte/reactivity';
 import { onTransportStatusChange } from './transportStatus.svelte';
 import { errString } from '../utils/errors';
+import { reportFrontendDiagnostic } from '../utils/frontendErrorCapture';
 
 export interface EntityAttachment<T> {
   /** Reactive current value; null before first observation. */
@@ -155,6 +169,23 @@ export interface EntityStoreConfig<T, Ctx> {
     fail: (err: unknown) => void;
     signal: AbortSignal;
   }) => Promise<() => void | Promise<void>>;
+  /**
+   * Store each entry's value as `$state.raw` instead of deep `$state`.
+   *
+   * Legal only when every write REPLACES the value — the store's writers must
+   * never mutate a held value in place, because a raw signal reports the
+   * assignment and nothing below it. Worth it when values are large object
+   * graphs whose consumers re-derive wholesale anyway (the run map's whole run
+   * tree): deep proxying then costs a full walk per read to buy per-field
+   * tracking nobody subscribes to. Default false — existing stores are
+   * unaffected.
+   *
+   * The "must replace" half is CHECKED, not merely stated: an apply whose value
+   * is the reference already held is reported to the console and to
+   * `reportFrontendDiagnostic`, because the alternative failure mode is a
+   * frozen surface with every gate green.
+   */
+  rawValue?: boolean;
   /** Reconciliation hook run on every apply (e.g. persist an observed branch). */
   onApply?: (key: string, value: T, prev: T | null) => void;
   /**
@@ -184,8 +215,30 @@ export const DEFAULT_RETRY = { initialMs: 3_000, maxMs: 30_000 } as const;
 // longer exists and decline to touch the entry. `abort` is that same signal
 // pushed OUT to the running source(), which is the only party that can stop
 // the work still ahead of it.
+interface ValueBox<T> {
+  current: T | null;
+}
+
+// One signal, of whichever granularity the store asked for. A box rather than
+// two fields on the entry so exactly one signal exists per entry and every
+// `entry.value` site stays a plain property access.
+function createValueBox<T>(raw: boolean): ValueBox<T> {
+  if (raw) {
+    let value = $state.raw<T | null>(null);
+    return {
+      get current() { return value; },
+      set current(next: T | null) { value = next; },
+    };
+  }
+  let value = $state<T | null>(null);
+  return {
+    get current() { return value; },
+    set current(next: T | null) { value = next; },
+  };
+}
+
 class EntityEntry<T, Ctx> {
-  value = $state<T | null>(null);
+  readonly #value: ValueBox<T>;
   error = $state<string | null>(null);
 
   readonly key: string;
@@ -198,9 +251,18 @@ class EntityEntry<T, Ctx> {
   retryTimer: ReturnType<typeof setTimeout> | null = null;
   retryDelayMs: number;
 
-  constructor(key: string) {
+  constructor(key: string, rawValue: boolean) {
     this.key = key;
+    this.#value = createValueBox<T>(rawValue);
     this.retryDelayMs = DEFAULT_RETRY.initialMs;
+  }
+
+  get value(): T | null {
+    return this.#value.current;
+  }
+
+  set value(next: T | null) {
+    this.#value.current = next;
   }
 }
 
@@ -293,6 +355,21 @@ export function createEntityStore<T, Ctx = void>(
     // a dependency on `value` there means writing it invalidates the
     // reader — a self-re-entering effect, not a data dependency.
     const prev = untrack(() => entry.value);
+    // The `rawValue` contract, ENFORCED rather than documented. A raw signal
+    // reports the assignment and nothing below it, so a writer that mutated the
+    // held object and applied it back writes the same reference — which wakes
+    // no reader and freezes the UI with every gate green and nothing in any
+    // log. There is no legitimate same-reference apply: an observation that
+    // changed nothing had nothing to apply, and one that changed something
+    // produced a new object. Reported, not thrown: the value IS the current
+    // truth, and taking the surface down over a stale render helps nobody.
+    if (config.rawValue === true && prev !== null && Object.is(prev, value)) {
+      const message = `${config.name}: applied the same object reference for ${entry.key}`;
+      const detail = 'rawValue entries must be REPLACED, never mutated in place —'
+        + ' a same-reference apply wakes no reader.';
+      console.error(`${message}. ${detail}`);
+      reportFrontendDiagnostic(message, detail);
+    }
     entry.value = value;
     if (!preserveError) entry.error = null;
     if (!config.onApply) return;
@@ -430,7 +507,7 @@ export function createEntityStore<T, Ctx = void>(
   function ensureEntry(key: string): EntityEntry<T, Ctx> {
     let entry = lookup(key);
     if (!entry) {
-      entry = new EntityEntry<T, Ctx>(key);
+      entry = new EntityEntry<T, Ctx>(key, config.rawValue === true);
       entries.set(key, entry);
     }
     return entry;

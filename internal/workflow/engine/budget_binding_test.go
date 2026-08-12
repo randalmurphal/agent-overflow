@@ -245,7 +245,7 @@ func TestUnjudgeableUSDBudgetStillResolves(t *testing.T) {
 
 	// ResolveBudget is handed the root row directly, so this is the read exactly
 	// as `run status` performs it — no engine, no resident item.
-	view, err := ResolveBudget(t.Context(), h.profiles, h.spend, item, time.UnixMilli(1_000))
+	view, err := ResolveBudget(t.Context(), h.profiles, h.spend, BudgetSubjectOf(item), time.UnixMilli(1_000))
 	if err != nil {
 		t.Fatalf("a read must answer even when the ceiling cannot be judged: %v", err)
 	}

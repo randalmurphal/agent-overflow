@@ -94,6 +94,17 @@ headless, isolated data dir, mocked providers. Full harness guide:
   loopback only and that bit is computed from the peer's locality — the SPA
   still receives exactly the manifest a LAN browser would, and everything
   downstream of the fetch is production code.
+  Two cases cover the run map's scroll contract (RUN-MAP §9), which only a real
+  engine can prove: a reader who wheels UP disengages follow (escape is
+  event-sourced — a programmatic scroll would not), keeps their position while
+  the frontier advances, and gets it back only by clicking the chip; and a
+  reader parked at the tail of a long map whose EARLIER rows grow under a real
+  engine step — held on the mock's signal, so the growth happens when the spec
+  releases it — stays on the same line to within a pixel while `scrollTop`
+  moves by exactly what the document gained (§9.7 compensation). Both assert
+  their preconditions (the surface really overflows; the growth really is above
+  the viewport top), because a fixture that drifts should fail rather than
+  quietly stop testing anything.
 - `tests/workflows-helpers.ts` — shared workflow seeds, mock-provider scenarios,
   direct start (`WorkflowStartRun`), the global-pause switch, state waits,
   result envelopes, and compact workflow definitions.
@@ -105,6 +116,15 @@ headless, isolated data dir, mocked providers. Full harness guide:
   mock-observation surface: a scenario reaches only the mocks that register
   after it is set, which is how a spec stages one behaviour for a run and a
   different one for the session a recovery action starts.
+  `callChildren` is the call-linkage read (§3a) and goes through
+  `WorkflowGetRunMap`: ONE name — `WorkflowRunMapRun` — for a run of the map,
+  root included, because "child" is what the helper's filter produces and not a
+  kind of run. It costs a whole-tree read per call (root plus every descendant,
+  each frozen definition decoded server-side), so read it once and filter
+  rather than calling it per candidate parent; it normalises the `omitempty`
+  linkage numbers so a spec compares numbers rather than sometimes `undefined`;
+  and it THROWS on a refusal (§4.2) instead of letting an id that names no run
+  satisfy the `toHaveLength(0)` most callers assert.
 - `tests/session-import.spec.ts` — session import through the REAL UI: the
   sidebar trigger opening the lazy modal, rows from BOTH providers with the
   provider segment / search / clear-filters narrowing them, a two-session

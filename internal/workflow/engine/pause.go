@@ -342,7 +342,9 @@ func (e *Engine) resumeCallPhase(item *runtimeItem) error {
 		return err
 	}
 	e.items[itemID] = item
-	e.emitter.Emit("workflow:phase-state", PhaseEvent{
+	// No OccurredAt, for the reason resumeRepairedFanOut states: a reopened
+	// attempt keeps its original `started_at`, so nothing persisted this moment.
+	e.emitPhaseState(PhaseEvent{
 		ItemID: itemID, PhaseID: item.phaseID, Attempt: item.attempt, Status: "running",
 	})
 	switch State(child.State) {

@@ -243,9 +243,10 @@ func (e *Engine) enterPhase(item *runtimeItem, entry phaseEntry) error {
 			phaseStatus: "parked", nextState: StateNeedsHuman, reason: ReasonWiringError,
 		}), err)
 	}
+	startedAt := e.timestamp()
 	if err := e.store.CreateWorkItemPhase(store.WorkItemPhase{
 		ItemID: item.item.ID, PhaseID: phase.ID, Attempt: attempt,
-		InputEnvelope: input, Status: "running", StartedAt: e.timestamp(),
+		InputEnvelope: input, Status: "running", StartedAt: startedAt,
 	}); err != nil {
 		createErr := fmt.Errorf("create phase attempt %s/%s/%d: %w", item.item.ID, phase.ID, attempt, err)
 		return errors.Join(e.teardown(item, teardownRequest{
@@ -260,8 +261,9 @@ func (e *Engine) enterPhase(item *runtimeItem, entry phaseEntry) error {
 	// crash, and a slot cleared against a turn that never ran is the silent loss
 	// the whole ordering rule exists to prevent. `ackGuidance` clears it once a
 	// provider session that renders the block has started.
-	e.emitter.Emit("workflow:phase-state", PhaseEvent{
+	e.emitPhaseState(PhaseEvent{
 		ItemID: item.item.ID, PhaseID: phase.ID, Attempt: attempt, Status: "running",
+		OccurredAt: startedAt,
 	})
 
 	if e.paused {

@@ -1,27 +1,33 @@
 <script lang="ts">
   // Run detail (UI-SPEC §4) — the resolution surface. Header block, the
-  // two-row digest, per-state evidence, the run tree, the outputs block, and
+  // two-row digest, per-state evidence, the run map, the outputs block, and
   // the fixed action-row footer.
   //
-  // Two sources, deliberately: the run RECORD comes from the cached list row
-  // (it carries the bound thread, phase progress, and the live state the
-  // `workflow:item-state` event patches), while the run's STRUCTURE — phases,
-  // units, called runs, artifacts, tree usage — comes from the per-run detail
-  // load, which is evicted when the overlay leaves this run.
+  // THREE sources, deliberately, because they go stale on different clocks:
+  // the run RECORD comes from the cached list row (bound thread, live state,
+  // patched by `workflow:item-state`); the run's EVIDENCE — the attempts this
+  // run recorded, its artifacts, its outputs, its spend — comes from the
+  // per-run detail load, which is root-only and evicted when the overlay
+  // leaves this run; and the run's SHAPE comes from the run-map entity store,
+  // which owns the whole tree and patches itself from the same events
+  // (RUN-MAP §4.2). `WorkflowRunMap` attaches that store itself — this
+  // component hands it the item id and nothing else.
 
   import WorkflowRunHeader from './WorkflowRunHeader.svelte';
   import WorkflowEvidence from './WorkflowEvidence.svelte';
-  import WorkflowRunTree from './WorkflowRunTree.svelte';
+  import WorkflowRunMap from './WorkflowRunMap.svelte';
   import WorkflowOutputs from './WorkflowOutputs.svelte';
   import WorkflowActionRow from './WorkflowActionRow.svelte';
   import { parseWorkflowDigest } from '../../types/workflow';
-  import { workflowDigestFallback, workflowResolutionKind } from '../../utils/workflowActionRows';
-  import { failedWorkflowUnitInDetail } from '../../utils/workflowRunTree';
+  import {
+    failedWorkflowUnitInDetail,
+    workflowDigestFallback,
+    workflowResolutionKind,
+  } from '../../utils/workflowActionRows';
   import { OpenInEditor } from '../../stores/bindings';
   import { addToast } from '../../stores/toast.svelte';
   import { userFacingError } from '../../utils/userFacingError';
   import { isViewOnlySession } from '../../transport/runMode';
-  import { openWorkflowThreadById } from '../../stores/workflowThreads';
   import {
     getWorkflowCatalog,
     getWorkflowCosts,
@@ -105,12 +111,8 @@
       <WorkflowEvidence {item} {detail} {kind} {failedUnit} {expandFirstDiff} />
 
       <section class="px-4">
-        <h3 class="pb-1 text-[0.6875rem] font-semibold uppercase tracking-wider text-fg-muted">Phases</h3>
-        <WorkflowRunTree
-          {detail}
-          highlightUnitId={kind === 'unit-failed' ? failedUnit?.unit.unitId ?? '' : ''}
-          onOpenThread={(threadId) => { void openWorkflowThreadById(threadId); }}
-        />
+        <h3 class="pb-1 text-[0.6875rem] font-semibold uppercase tracking-wider text-fg-muted">Progress</h3>
+        <WorkflowRunMap {itemId} />
       </section>
 
       {#if terminal}

@@ -202,9 +202,19 @@ var wireSafeMethods = map[string]bool{
 	"WorkflowListItems":           true,
 	"WorkflowListUnresolvedItems": true,
 	"WorkflowGetItem":             true,
-	"WorkflowListItemCosts":       true,
-	"WorkflowListDefinitions":     true,
-	"WorkflowGetJobNotes":         true,
+	// The run map is WorkflowGetItem's tree-shaped sibling: the same store rows
+	// projected to metadata (states, timings, the frozen definition's phase
+	// list), with no envelope, narrative, or artifact content. It is NOT
+	// path-free: a phase attempt's `cause` is the engine's own park diagnosis
+	// and can name an absolute host path (the worktree that would not cut).
+	// That is the same exposure WorkflowGetItem already carries for one run —
+	// which is the bar here, since a remote caller can read any run through it
+	// — and the cause is deliberately not scrubbed: it is the whole account of
+	// why the run stopped.
+	"WorkflowGetRunMap":       true,
+	"WorkflowListItemCosts":   true,
+	"WorkflowListDefinitions": true,
+	"WorkflowGetJobNotes":     true,
 	// Automation rows: definition, trigger rendering, next fire, and the fire
 	// record. Read-only, no FS/process reach; every automation mutation
 	// (including Run now) is LocalOnly.

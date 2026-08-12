@@ -327,7 +327,14 @@
 </div>
 
 <style>
-	:global([data-expanded='true']) {
+	/*
+	 * Scoped to the mermaid container this component owns. Upstream wrote
+	 * the selector bare, and `:global` means bare is APP-WIDE: any element
+	 * anywhere carrying `data-expanded="true"` — a perfectly ordinary
+	 * attribute — was yanked out of its layout and pinned fullscreen at
+	 * z-index 2147483647.
+	 */
+	:global([data-streamdown-mermaid] [data-expanded='true']) {
 		position: fixed;
 		top: 16px;
 		left: 16px;

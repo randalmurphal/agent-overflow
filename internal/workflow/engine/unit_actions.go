@@ -157,14 +157,15 @@ func (e *Engine) dropUnit(itemID, unitID, note string) error {
 	if err := droppable(itemID, unitID, "drop unit", unit); err != nil {
 		return err
 	}
+	endedAt := e.timestamp()
 	if err := e.store.CompleteWorkItemUnit(
 		itemID, item.phaseID, item.attempt, unitID, store.WorkItemUnitDropped,
-		unit.envelope, dropNote(note), e.timestamp(),
+		unit.envelope, dropNote(note), endedAt,
 	); err != nil {
 		return fmt.Errorf("drop unit %q of item %q: %w", unitID, itemID, err)
 	}
 	unit.status = store.WorkItemUnitDropped
-	e.emitUnitState(item, unit)
+	e.emitUnitStateAt(item, unit, endedAt)
 	return e.resumeRepairedFanOut(item)
 }
 
@@ -329,7 +330,10 @@ func (e *Engine) resumeRepairedFanOut(item *runtimeItem) error {
 		return err
 	}
 	e.items[item.item.ID] = item
-	e.emitter.Emit("workflow:phase-state", PhaseEvent{
+	// No OccurredAt: a reopen keeps the attempt's original `started_at`, so
+	// there is no persisted time for this transition and the emitter's clock is
+	// the only honest answer for when it happened.
+	e.emitPhaseState(PhaseEvent{
 		ItemID: item.item.ID, PhaseID: item.phaseID, Attempt: item.attempt, Status: "running",
 	})
 	if halted, err := e.enforceBudget(item); halted {

@@ -208,6 +208,76 @@ root `CLAUDE.md` principle 3.
   parse every row's frozen snapshot to find a phase ordinal, and
   `agent-overflow run watch --tree` re-resolves its membership on every wake of a
   globally broadcast loop.
+- `work_item_tree.go` — run-tree SHAPE, resolved in SQLite. Two recursive CTEs
+  over `work_items.parent_item_id`: `workItemTreeCTE` (downward, id-only, the
+  membership subquery every whole-tree read in this package shares — the run
+  map's rows and the budget check's dollars cannot describe different trees)
+  and `workItemTreeDepthCTE` (the same walk carrying each member's distance
+  from the root). `WorkItemTreeRoot` is the UPWARD resolution — any run to its
+  tree's root — and `scanWorkItemTreeRuns` is the downward walk, root-first and
+  parent-before-child, through `WorkItemTreeRun`: linkage, project, state,
+  timing, the frozen snapshot, and the budget, with goal/seeds/digest/
+  disposition dropped because a tree read decodes every member and none of that
+  is drawable. The downward walk STREAMS to a visitor rather than returning a
+  slice, and that is a retention decision: every member carries a frozen
+  snapshot capped at 4MiB, so a materialised 4096-member tree would retain
+  gigabytes for one fetch. Peak retention is one blob, which holds only while
+  the visitor projects each snapshot and keeps no reference to it.
+  Both directions are BOUNDED and REFUSE rather than truncate — the caller
+  supplies the depth cap (`engine.MaxCallDepth`) and the member cap — and every
+  refusal is TYPED so the app can say which one happened and that it is
+  permanent: `ErrWorkItemTreeTooLarge`, `ErrWorkItemTreeTooDeep`, and
+  `ErrWorkItemTreeCyclicLinkage`. The bounds are not paranoia: the schema's
+  CHECKs make a parent reference all-or-nothing, not acyclic, so a cycle is
+  writable and a read that walks one must terminate.
+  The id-only CTE terminates on a cycle structurally (set semantics on a bare
+  id); the depth-carrying one needs the cap, and collapses a cycle's several
+  depths per id with `MIN` so corrupt linkage never duplicates a run.
+  **The parent-before-child promise is CHECKED, not assumed.** MIN(depth) can
+  order a cycle's members only arbitrarily — with `a.parent = b` and
+  `b.parent = a`, anchoring on `a` emits it before its own parent — so the scan
+  tracks which ids it has handed over and refuses
+  (`ErrWorkItemTreeCyclicLinkage`) the moment a parent arrives after its child.
+  A run that names ITSELF is refused on its own row, since the arrival check
+  cannot see a parent that arrives as its own child.
+  A parent that never arrives is the ORPHAN case and stays legitimate. The app
+  never reaches this refusal — its anchor comes from the upward walk, which
+  refuses an in-cycle run first, and `parent_item_id` being one column means no
+  acyclic anchor can walk INTO a cycle — but the promise is made to every
+  caller of an exported read, not to that one.
+  The named run must EXIST for the upward read (an unknown id is
+  `sql.ErrNoRows`, not a one-run tree), while a run whose named parent's row is
+  GONE resolves to itself with the dangling reference left on the answer, which
+  is how the caller tells an orphan from a true root.
+- `work_item_run_map.go` — the batched WHOLE-TREE read behind the run map
+  (`app_workflow_runmap.go`). `ReadWorkItemTree` is the ONE exported entry and
+  the only caller of the pieces: the run scan plus
+  `listWorkItemTreeAutoResumes`, `listWorkItemTreePhaseStatuses`,
+  `listWorkItemTreeUnitStatuses`, and the two tree ledger reads from
+  `usage_ledger.go`. They live together because what they share is the caller's
+  shape — a tree root, one round trip for a whole campaign — rather than a
+  table; each is the `WHERE item_id IN (SELECT id FROM tree)` form of a read
+  whose single-run sibling stays with its CRUD, and each orders by item first
+  so a caller groups without sorting.
+  **All six run in ONE read-pool transaction**, the `SyncThreadWindow` rule
+  applied to a tree: under WAL a read transaction pins its snapshot at the
+  first statement, so the runs, their attempts, their units, their armed
+  resumes and their dollars are facts about one instant. Six independent reads
+  are six snapshots, and a run created between the first and the third
+  contributes attempt rows belonging to no run in the answer — a half-drawn
+  tree the caller can only discard in silence. Sharing the CTE gives shared
+  membership DEFINITION; only the transaction gives snapshot ISOLATION. The
+  caps are checked by the run scan, which is what keeps the other five
+  statements off a tree the read refuses to answer for. The pieces are
+  unexported so a caller cannot reassemble them into six snapshots again.
+  Narrowing through the CTE rather than a bind array is what keeps a forty-wave
+  campaign's id list off the `SQLITE_MAX_VARIABLE_NUMBER` limit nothing here
+  checks. The two status projections carry no envelope, gate
+  trace, or feedback: the map draws a campaign's every attempt and unit at once,
+  and a payload column would make the answer's size a function of how much the
+  models wrote. `intervention` is projected to its `kind` in SQLite for the same
+  reason — a human gate's note is unbounded and the map wants the
+  discriminator.
 - `automations.go` — automation definition, continuity-note, and
   per-source cursor CRUD. Cursors are dependent scheduler state and
   cascade when an automation is deleted. Migration v40 adds the fire

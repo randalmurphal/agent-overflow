@@ -9,9 +9,13 @@
 //   - overlay — the full listing plus per-project catalogs, automations and
 //     costs, loaded when the overlay opens.
 //
-// Run DETAIL (phases, units, children, artifacts) is loaded per run on demand
-// and evicted when the detail level leaves that tree, so frontend memory stays
-// bounded by what is on screen (root CLAUDE.md principle 4).
+// Run DETAIL (phases, units, artifacts, outputs, spend) is loaded for the ONE
+// run the overlay is looking at and evicted the moment it looks at another, so
+// frontend memory stays bounded by what is on screen (root CLAUDE.md principle
+// 4). It is deliberately root-only: a run's SHAPE — the whole called tree, its
+// waves, its frontier — belongs to `stores/workflowRunMap.svelte.ts`, which
+// fetches the tree in one call and patches it from events. Nothing here walks
+// children, and nothing here should start again (RUN-MAP §4.2).
 
 import type {
   WorkItem,
@@ -229,8 +233,10 @@ export function refreshWorkflowRunsSoon(): void {
 }
 
 /**
- * Load one run's detail. Single-flight per run so a tree that expands several
- * child rows at once does not fan out duplicate reads.
+ * Load one run's detail. Single-flight per run, so the mount effect and an
+ * event-driven force reload landing together read once; `force` bypasses the
+ * cache but still joins nothing, because a forced reload exists precisely to
+ * replace what the cache holds.
  */
 export async function loadWorkflowDetail(itemId: string, force = false): Promise<WorkflowItemDetail | null> {
   if (!itemId) return null;
@@ -257,41 +263,24 @@ export async function loadWorkflowDetail(itemId: string, force = false): Promise
 }
 
 /**
- * Drop every cached detail except the given roots and whatever they call.
- * `keep` is the root plus its already-loaded descendants, walked here so a
- * caller only has to name the run it is looking at.
+ * Drop every cached detail but the run the overlay is looking at. No child
+ * walk: only the focused root is ever loaded, so "keep" is one id.
+ *
+ * This runs inside an `$effect` that READS `details`, so a write when nothing
+ * is dropped re-enters the effect forever. The guard is therefore "is the cache
+ * already exactly the root", not a size comparison — `rootItemId` names the run
+ * whether or not its detail has landed yet, and a size check would keep
+ * rewriting an already-minimal cache.
  */
 export function retainWorkflowDetails(rootItemId: string | null): void {
   if (details.size === 0) return;
-  if (!rootItemId) {
+  const kept = rootItemId !== null ? details.get(rootItemId) : undefined;
+  if (rootItemId === null || kept === undefined) {
     details = new Map();
     return;
   }
-  const keep = new Set<string>();
-  const walk = (itemId: string): void => {
-    if (keep.has(itemId)) return;
-    keep.add(itemId);
-    for (const child of details.get(itemId)?.children ?? []) walk(child.itemId);
-  };
-  walk(rootItemId);
-  // The decision is "does the cache hold anything outside `keep`", never a size
-  // comparison: `keep` names the root whether or not its detail has landed yet,
-  // so a size check would keep rewriting an already-minimal cache — and this
-  // runs inside an $effect that reads `details`, which turns a redundant write
-  // into an infinite effect loop.
-  let drops = false;
-  for (const itemId of details.keys()) {
-    if (!keep.has(itemId)) {
-      drops = true;
-      break;
-    }
-  }
-  if (!drops) return;
-  const next = new Map<string, WorkflowItemDetail>();
-  for (const [itemId, detail] of details) {
-    if (keep.has(itemId)) next.set(itemId, detail);
-  }
-  details = next;
+  if (details.size === 1) return;
+  details = new Map([[rootItemId, kept]]);
 }
 
 export function applyWorkflowItemState(event: WorkflowItemStateEvent): void {
@@ -329,6 +318,22 @@ export function applyWorkflowSoftStop(event: WorkflowSoftStopEvent): void {
 export function applyWorkflowEngineState(event: WorkflowEngineStateEvent): void {
   if (!event || typeof event.paused !== 'boolean') return;
   paused = event.paused;
+}
+
+/**
+ * Transport-gap recovery for `workflow:engine-state`. The channel is
+ * edge-triggered — one frame when the engine pauses or resumes, and nothing
+ * afterwards restates it — so a dropped frame leaves the pause banner and every
+ * pause-gated affordance describing the opposite of what the engine is doing,
+ * indefinitely. `WorkflowGetEngineState` is the authority.
+ */
+export async function resyncWorkflowEngineState(): Promise<void> {
+  try {
+    const state = await WorkflowGetEngineState();
+    if (state) paused = state.paused === true;
+  } catch (err) {
+    console.warn('workflows: engine state resync failed:', err);
+  }
 }
 
 /** A definition file was written through the app (studio save path). */

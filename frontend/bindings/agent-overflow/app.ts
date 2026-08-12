@@ -4048,12 +4048,29 @@ export function WorkflowGetJobNotes(automationID: string): $CancellablePromise<s
 }
 
 /**
+ * WorkflowGetRunMap answers for the whole tree the supplied run belongs to. Any
+ * run in the tree is a valid argument — the root is resolved server-side (§5.9).
+ * 
+ * It has a CLASSIFIED error contract. The three refusals a corrupt or oversized
+ * or simply absent tree produces come back as `view.Refusal` with a nil error,
+ * because each is an expected, permanent, user-facing state (see
+ * WorkflowRunMapRefusal). Everything else — a store that will not read, a
+ * ledger group with an unknown cost source — is an error, and the caller is
+ * right to retry those.
+ */
+export function WorkflowGetRunMap(itemID: string): $CancellablePromise<$models.WorkflowRunMapView> {
+    return $Call.ByID(4156752389, itemID).then(($result: any) => {
+        return $$createType143($result);
+    });
+}
+
+/**
  * WorkflowListAutomations returns one project's automations, each enriched with
  * what its stored trigger actually means right now.
  */
 export function WorkflowListAutomations(projectID: string): $CancellablePromise<$models.WorkflowAutomationView[]> {
     return $Call.ByID(2319799628, projectID).then(($result: any) => {
-        return $$createType143($result);
+        return $$createType144($result);
     });
 }
 
@@ -4063,26 +4080,36 @@ export function WorkflowListAutomations(projectID: string): $CancellablePromise<
  */
 export function WorkflowListDefinitions(projectID: string): $CancellablePromise<$models.WorkflowDefinitionCatalog> {
     return $Call.ByID(2064216126, projectID).then(($result: any) => {
-        return $$createType144($result);
+        return $$createType145($result);
     });
 }
 
 /**
- * WorkflowListItemCosts returns per-run costs for overview rows, composed
- * through the one ledger pricing rule (app_usage_pricing.go). A run whose
- * phases ran on Codex has no wire-reported cost at all — every one of its rows
- * carries tokens and a zero `cost_usd` — so summing the column alone reported
- * those runs as free.
+ * WorkflowListItemCosts returns per-run TREE costs for overview rows: each
+ * entry is the run's own ledger rows plus every run it called, transitively —
+ * the same total the detail view's spend and the engine's budget check report
+ * for that run, and the number a root's overview row must show for a recursive
+ * campaign whose spend lands almost entirely on its call children. Composition
+ * goes through the one ledger pricing rule (app_usage_pricing.go); a run whose
+ * phases ran on Codex has no wire-reported cost at all, so summing the
+ * `cost_usd` column alone would report those runs as free.
+ * 
+ * The rollup folds each (run, model, cost_source) group into the run itself
+ * and every ancestor on its parent chain, resolved from one project-wide node
+ * read rather than a per-run tree CTE, so the overview stays constant-time in
+ * query count. A ledger row whose run record is gone keeps its own entry —
+ * ledger rows deliberately outlive the runs they attribute — and a chain is
+ * followed only as far as its records still exist.
  */
 export function WorkflowListItemCosts(projectID: string): $CancellablePromise<{ [_ in string]?: number }> {
     return $Call.ByID(1544440599, projectID).then(($result: any) => {
-        return $$createType145($result);
+        return $$createType146($result);
     });
 }
 
 export function WorkflowListItems(projectID: string): $CancellablePromise<store$0.WorkItem[]> {
     return $Call.ByID(3037887964, projectID).then(($result: any) => {
-        return $$createType146($result);
+        return $$createType147($result);
     });
 }
 
@@ -4093,7 +4120,7 @@ export function WorkflowListItems(projectID: string): $CancellablePromise<store$
  */
 export function WorkflowListUnresolvedItems(projectID: string): $CancellablePromise<store$0.WorkItem[]> {
     return $Call.ByID(3613211765, projectID).then(($result: any) => {
-        return $$createType146($result);
+        return $$createType147($result);
     });
 }
 
@@ -4464,7 +4491,8 @@ const $$createType139 = $models.WorkflowDiscardPreview.createFrom;
 const $$createType140 = $models.WorkflowPRReviewComments.createFrom;
 const $$createType141 = engine$0.EngineState.createFrom;
 const $$createType142 = $models.WorkflowItemDetailView.createFrom;
-const $$createType143 = $Create.Array($$createType137);
-const $$createType144 = $models.WorkflowDefinitionCatalog.createFrom;
-const $$createType145 = $Create.Map($Create.Any, $Create.Any);
-const $$createType146 = $Create.Array($$createType136);
+const $$createType143 = $models.WorkflowRunMapView.createFrom;
+const $$createType144 = $Create.Array($$createType137);
+const $$createType145 = $models.WorkflowDefinitionCatalog.createFrom;
+const $$createType146 = $Create.Map($Create.Any, $Create.Any);
+const $$createType147 = $Create.Array($$createType136);

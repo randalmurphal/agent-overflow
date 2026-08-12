@@ -2,9 +2,9 @@
   // Run-detail header block (UI-SPEC §4.1). Three rows:
   //   1. project chip · state word · sweep counter when parked
   //   2. the run title
-  //   3. hint — `workflow · phase 4/5 · parked 7h · $3.10`, plus `spawned by
-  //      <automation> · <trigger>` on an automation run and `→ <thread>` on a
-  //      bound one.
+  //   3. hint — `workflow · wave 3 · implement · parked 7h · $3.10`, plus
+  //      `spawned by <automation> · <trigger>` on an automation run and
+  //      `→ <thread>` on a bound one.
   //
   // R1: the state word carries the only colour on this block, and only for
   // needs-human (amber) or failed (red).
@@ -12,6 +12,8 @@
   import type { WorkItem } from '../../types/workflow';
   import { formatWorkflowCost, workflowAge, workflowMetaLine } from '../../stores/workflowData';
   import { workflowRunSignal } from '../../utils/workflowRunSignal';
+  import { runMapPosition } from '../../utils/workflowRunMap';
+  import { attachWorkflowRunMap, peekWorkflowRunMap } from '../../stores/workflowRunMap.svelte';
   import { getWorkflowAutomations } from '../../stores/workflowRuns.svelte';
   import { getProject } from '../../stores/projects.svelte';
   import { openWorkflowThreadById } from '../../stores/workflowThreads';
@@ -23,6 +25,26 @@
     costUsd: number;
   }
   let { item, costUsd }: Props = $props();
+
+  // This header READS the run map, so it HOLDS the run map. Attach is
+  // refcounted, so sharing the key with the map mounted below costs one RPC
+  // between them and the last release still tears the entry down — whereas a
+  // peek at a key nobody here attached is a label that works only for as long
+  // as some sibling happens to be mounted, and silently reverts to the stale
+  // SQL ordinal the moment one is reordered, lazily loaded, or laid out away.
+  // Keyed on the entity id alone (getter-ctx rule) — and on a `$derived` of it
+  // rather than on `item.id` read inside the effect. The list cache patches a
+  // run by minting a NEW row object (`patchWorkflowItems`), so the prop changes
+  // on every transition of the run being read; an effect that tracked the
+  // object released and re-attached each time, and an attach landing on a key
+  // in retry backoff resets the curve and re-sources immediately — so a failing
+  // fetch never backed off for exactly as long as the run kept moving. A string
+  // derived stops propagating when the id holds still (the `nowKey` pattern).
+  let mapKey = $derived(item.id);
+  $effect(() => {
+    const attachment = attachWorkflowRunMap(mapKey);
+    return () => attachment.release();
+  });
 
   let signal = $derived(workflowRunSignal(item.state, item.reason));
   let project = $derived(getProject(item.projectId)?.project);
@@ -39,9 +61,34 @@
       : undefined,
   );
 
+  // Where the run actually IS (RUN-MAP §11.4). `phase N/M` is a frozen SQL
+  // ordinal joined by started_at with an alphabetical tiebreak, so a retried or
+  // looped run reads a lower phase than it is on, and a campaign root reads its
+  // own first phase forever while its waves run. The map view knows the answer,
+  // so the position comes off the frontier once the attachment above has one;
+  // the SQL counter is what the first render, before any answer, falls back to.
+  //
+  // The wave part plus the deepest part, never the whole breadcrumb: this is
+  // one short label on a metadata line, and the map's own frontier strip is
+  // where the full path is read. A live run with no frontier is a run that
+  // has finished — the state word already says so, and there is no position
+  // left to name.
+  //
+  // `runMapPosition` rather than the whole model: this header needs one label,
+  // and building waves, summaries, segments and a loop foot to read two path
+  // parts made the map's projection run twice per surface. It is also free of
+  // any clock, so this derived reruns when the store applies — an event patch
+  // or a refetch — and never once a second.
+  let position = $derived.by(() => {
+    const view = peekWorkflowRunMap(item.id);
+    if (view === null) return item.phaseCount ? `phase ${item.currentPhaseOrdinal}/${item.phaseCount}` : '';
+    const where = runMapPosition(view);
+    return where === null ? '' : workflowMetaLine([where.wave, where.leaf]);
+  });
+
   let hint = $derived(workflowMetaLine([
     item.workflowId,
-    item.phaseCount ? `phase ${item.currentPhaseOrdinal}/${item.phaseCount}` : '',
+    position,
     item.state === 'running'
       ? workflowAge(item.startedAt || item.createdAt)
       : `parked ${workflowAge(item.endedAt || item.startedAt || item.createdAt)}`,

@@ -87,6 +87,16 @@
   --ansi-fg-95: oklch(0.82 0.15 320);
   --ansi-fg-96: oklch(0.86 0.11 205);
   --ansi-fg-97: #ffffff;
+
+  /* Run-map fan lane geometry (RUN-MAP §6). Declared here so every `var()` use
+     RESOLVES: an unresolved custom property invalidates its whole declaration
+     at computed-value time, so `min-width: var(--run-map-lane-min)` would
+     silently become `min-width: auto` for anything that ends up outside the fan
+     container. The container itself sets both properties inline from
+     `WorkflowRunMapFan.svelte`'s constants and always wins — these are the
+     floor, not a second source of truth. */
+  --run-map-lane-min: 120px;
+  --run-map-lane-max: 200px;
 }
 
 html {

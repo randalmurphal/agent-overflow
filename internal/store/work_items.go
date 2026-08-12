@@ -95,11 +95,27 @@ w.branch, w.base_branch, '', w.source, w.source_ref, w.triage_thread_id, w.origi
 w.disposition, '', w.parent_item_id, w.parent_phase_id, w.parent_unit_id, w.parent_attempt, w.call_depth,
 w.soft_stop, w.created_at, w.started_at, w.ended_at`
 
+// The list projection's "phase N of M": WHERE the run is, in its frozen
+// definition's declared order.
+//
+// The current attempt is the LAST one written — `started_at DESC` with the
+// row's own insertion order (`rowid DESC`) as the tiebreak, because the engine
+// writes attempt rows in the order it takes them and two attempts can share a
+// millisecond. It used to break the tie on `phase_id DESC`, which is
+// alphabetical: for two same-millisecond attempts that named whichever phase
+// sorted later, which is a fact about the ids an author chose.
+//
+// The ordinal is that phase's index in the frozen snapshot's phase list, so it
+// is a POSITION and never a completion count: a run that looped back to phase 2
+// reads "phase 2 of 5" on its fourth lap, which is where it is. The two fields
+// are named `CurrentPhaseOrdinal` / `PhaseCount` for that reason — nothing here
+// claims progress — and the run DETAIL surface derives its own position from
+// the run map's frontier (RUN-MAP §11.4) rather than from this column.
 const workItemSummaryProgressJoin = `
  LEFT JOIN work_item_phases AS current_phase ON current_phase.rowid = (
      SELECT latest.rowid FROM work_item_phases AS latest
       WHERE latest.item_id = w.id
-      ORDER BY latest.started_at DESC, latest.phase_id DESC, latest.attempt DESC
+      ORDER BY latest.started_at DESC, latest.rowid DESC
       LIMIT 1
  )
  LEFT JOIN json_each(NULLIF(w.snapshot, ''), '$.workflow.phases') AS workflow_phase

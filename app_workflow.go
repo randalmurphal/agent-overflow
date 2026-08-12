@@ -632,28 +632,6 @@ type WorkflowItemView struct {
 	EndedAt   int64 `json:"endedAt,omitempty"`
 }
 
-// WorkflowItemChildView is one run this item called. A child is a real run with
-// a detail page of its own; this is the caller-side summary — enough to render
-// the call phase's progress without loading the child's timeline.
-type WorkflowItemChildView struct {
-	ItemID        string `json:"itemId"`
-	WorkflowID    string `json:"workflowId"`
-	State         string `json:"state"`
-	Reason        string `json:"reason,omitempty"`
-	ParentPhaseID string `json:"parentPhaseId"`
-	// ParentUnitID is empty for a phase call and names the fan-out unit that
-	// called this run otherwise, which is what lets the run tree hang the child
-	// under its unit row instead of flat under the fan-out phase.
-	ParentUnitID        string `json:"parentUnitId,omitempty"`
-	ParentAttempt       int    `json:"parentAttempt"`
-	CallDepth           int    `json:"callDepth"`
-	CurrentPhaseID      string `json:"currentPhaseId,omitempty"`
-	CurrentPhaseOrdinal int    `json:"currentPhaseOrdinal"`
-	PhaseCount          int    `json:"phaseCount"`
-	StartedAt           int64  `json:"startedAt,omitempty"`
-	EndedAt             int64  `json:"endedAt,omitempty"`
-}
-
 // WorkflowItemPhaseView is the timeline projection used by run detail. Input
 // context, gate traces, interventions, and narrative paths remain durable in
 // SQLite but load only through backend diagnostics, not the ordinary UI path.
@@ -709,9 +687,13 @@ type WorkflowItemDetailView struct {
 	CallPhaseIDs []string                `json:"callPhaseIds"`
 	Phases       []WorkflowItemPhaseView `json:"phases"`
 	Units        []WorkflowItemUnitView  `json:"units"`
-	Children     []WorkflowItemChildView `json:"children"`
-	Outputs      map[string]any          `json:"outputs"`
-	Artifacts    []WorkflowArtifact      `json:"artifacts"`
+	// There is deliberately NO child list here. The runs this one called are a
+	// TREE fact, and `WorkflowGetRunMap` is the read that answers for a tree —
+	// with every wave's linkage rather than one level of it, and without the
+	// per-child summary join (which parses each row's frozen snapshot to find a
+	// phase ordinal) that this view was paying for on every detail fetch.
+	Outputs   map[string]any     `json:"outputs"`
+	Artifacts []WorkflowArtifact `json:"artifacts"`
 	// Usage carries the run tree's TOKEN totals and the providers' own reported
 	// cost. Its CostUSD is the wire half alone — read Spend for what the run
 	// actually cost.
@@ -800,21 +782,6 @@ func (a *App) WorkflowGetItem(itemID string) (WorkflowItemDetailView, error) {
 			StartedAt: unit.StartedAt, EndedAt: unit.EndedAt,
 		})
 	}
-	children, err := a.store.ListWorkItemSummaries(store.WorkItemListFilter{ParentItemID: itemID})
-	if err != nil {
-		return WorkflowItemDetailView{}, err
-	}
-	childViews := make([]WorkflowItemChildView, 0, len(children))
-	for _, child := range children {
-		childViews = append(childViews, WorkflowItemChildView{
-			ItemID: child.ID, WorkflowID: child.WorkflowID, State: child.State,
-			Reason: child.Reason, ParentPhaseID: child.ParentPhaseID,
-			ParentUnitID:  child.ParentUnitID,
-			ParentAttempt: child.ParentAttempt, CallDepth: child.CallDepth,
-			CurrentPhaseID: child.CurrentPhaseID, CurrentPhaseOrdinal: child.CurrentPhaseOrdinal,
-			PhaseCount: child.PhaseCount, StartedAt: child.StartedAt, EndedAt: child.EndedAt,
-		})
-	}
 	return WorkflowItemDetailView{
 		Item: WorkflowItemView{
 			ID: item.ID, ProjectID: item.ProjectID, Goal: item.Goal,
@@ -831,7 +798,7 @@ func (a *App) WorkflowGetItem(itemID string) (WorkflowItemDetailView, error) {
 		},
 		CheckPhaseIDs: checkPhaseIDs, CallPhaseIDs: callPhaseIDs,
 		Phases: phaseViews, Units: unitViews,
-		Children: childViews, Outputs: outputs, Artifacts: artifacts, Usage: usage,
+		Outputs: outputs, Artifacts: artifacts, Usage: usage,
 		Spend: WorkflowRunSpend{
 			CostUSD:          priced.TotalUSD(),
 			WireCostUSD:      priced.WireUSD,
@@ -891,15 +858,12 @@ func workflowNamedOutputs(payload json.RawMessage, phases []store.WorkItemPhaseT
 // column in the row and decoding it twice per detail load is pure waste.
 func workflowSnapshotPhaseIDs(payload json.RawMessage) (checks, calls []string, err error) {
 	checks, calls = make([]string, 0), make([]string, 0)
-	if len(payload) == 0 {
-		return checks, calls, nil
-	}
-	var snapshot engine.Snapshot
-	if err := json.Unmarshal(payload, &snapshot); err != nil {
+	phases, err := workflowSnapshotPhases(payload)
+	if err != nil {
 		return nil, nil, err
 	}
-	for _, phase := range snapshot.Workflow.Phases {
-		if phase.Driver == def.DriverTool && phase.Check != "" {
+	for _, phase := range phases {
+		if workflowPhaseIsCheck(phase) {
 			checks = append(checks, phase.ID)
 		}
 		if phase.IsCall() {
@@ -907,4 +871,29 @@ func workflowSnapshotPhaseIDs(payload json.RawMessage) (checks, calls []string, 
 		}
 	}
 	return checks, calls, nil
+}
+
+// workflowSnapshotPhases decodes a run's frozen definition down to its phase
+// list — the one decode every snapshot projection shares, so a caller that
+// wants two facts about the frozen graph pays for one pass over the largest
+// column in the row. An empty column is a run that never froze a definition and
+// yields no phases without an error; a column that will not decode is the
+// caller's to judge.
+func workflowSnapshotPhases(payload json.RawMessage) ([]def.Phase, error) {
+	if len(payload) == 0 {
+		return nil, nil
+	}
+	var snapshot engine.Snapshot
+	if err := json.Unmarshal(payload, &snapshot); err != nil {
+		return nil, err
+	}
+	return snapshot.Workflow.Phases, nil
+}
+
+// workflowPhaseIsCheck is the one definition of a check phase every projection
+// reads: a tool-driver phase bound to a named deterministic check. The gate's
+// evidence block and the run map's skeleton must agree about which phases those
+// are, so neither restates the rule.
+func workflowPhaseIsCheck(phase def.Phase) bool {
+	return phase.Driver == def.DriverTool && phase.Check != ""
 }

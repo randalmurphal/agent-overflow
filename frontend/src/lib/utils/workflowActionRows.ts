@@ -5,7 +5,9 @@
 // Pure: no RPCs, no Svelte. WorkflowRunDetail renders the rows and
 // workflowActions.ts executes the ids.
 
-import type { WorkItem } from '../types/workflow';
+import { compositeKey } from './compositeKey';
+import { workflowClosedDuration } from './format';
+import type { WorkItem, WorkItemPhase, WorkItemUnit, WorkflowItemDetail } from '../types/workflow';
 
 export type WorkflowResolutionKind =
   | 'gate'
@@ -102,6 +104,83 @@ export function workflowResolutionKind(item: Pick<WorkItem, 'state' | 'reason'>)
   if (RESUMABLE_REASONS.has(reason)) return 'paused';
   if (DONE_REASONS.has(reason)) return 'done';
   return 'blocked';
+}
+
+/**
+ * The unit a `needs-human(unit-failed)` park is about — the row §4.3 highlights
+ * and the id §8's unit actions operate on.
+ *
+ * Deliberately narrow. The evidence block reads a label, a meta line and the
+ * unit's own record; the action row reads its id and its thread. Handing either
+ * of them a whole timeline node would give them structure they have no use for
+ * and that would still have to be kept correct.
+ */
+export interface WorkflowFailedUnit {
+  unit: WorkItemUnit;
+  /** `port-b`, or `port-b (join)` when the join itself is what failed. */
+  label: string;
+  /** `×2 · 1m` — retry count and elapsed span, `·`-joined, empty parts dropped. */
+  meta: string;
+  /** The unit's thread, openable as a normal pane (R3). */
+  threadId: string;
+}
+
+/** Phase attempts in the order they ran; id and attempt break a start-time tie. */
+function attemptOrder(left: WorkItemPhase, right: WorkItemPhase): number {
+  return (left.startedAt || 0) - (right.startedAt || 0)
+    || left.phaseId.localeCompare(right.phaseId)
+    || left.attempt - right.attempt;
+}
+
+/** Units in render order: the join is always last, the rest by declared index. */
+function unitOrder(left: WorkItemUnit, right: WorkItemUnit): number {
+  if ((left.kind === 'join') !== (right.kind === 'join')) return left.kind === 'join' ? 1 : -1;
+  return left.unitIndex - right.unitIndex || left.unitId.localeCompare(right.unitId);
+}
+
+function failedUnitRow(unit: WorkItemUnit): WorkflowFailedUnit {
+  return {
+    unit,
+    label: unit.kind === 'join' ? `${unit.unitId} (join)` : unit.unitId,
+    meta: [
+      unit.unitAttempt > 1 ? `×${unit.unitAttempt}` : '',
+      // No clock: the row is only ever built for a `failed` or `taken-over`
+      // unit, both of which the engine writes WITH an `ended_at`, so the span
+      // is closed by the record. A `nowMs` here would exist purely to be
+      // wrong — its one caller read it inside a `$derived` that never re-ran.
+      workflowClosedDuration(unit.startedAt ?? 0, unit.endedAt ?? 0),
+    ].filter((part) => part !== '').join(' · '),
+    threadId: unit.threadId ?? '',
+  };
+}
+
+export function failedWorkflowUnitInDetail(
+  detail: WorkflowItemDetail,
+): WorkflowFailedUnit | null {
+  const attempts = [...(detail.phases ?? [])].sort(attemptOrder);
+  const unitsByAttempt = new Map<string, WorkItemUnit[]>();
+  for (const unit of detail.units ?? []) {
+    const key = compositeKey(unit.phaseId, unit.attempt);
+    const bucket = unitsByAttempt.get(key);
+    if (bucket) bucket.push(unit);
+    else unitsByAttempt.set(key, [unit]);
+  }
+  for (const bucket of unitsByAttempt.values()) bucket.sort(unitOrder);
+  // Newest attempt backwards: a retried fan-out leaves failed units on the
+  // superseded attempt too, and the park is about the attempt the run rests on.
+  const newest = (status: string): WorkItemUnit | null => {
+    for (let index = attempts.length - 1; index >= 0; index -= 1) {
+      const found = unitsByAttempt
+        .get(compositeKey(attempts[index].phaseId, attempts[index].attempt))
+        ?.find((unit) => unit.status === status);
+      if (found) return found;
+    }
+    return null;
+  };
+  // `taken-over` is the fallback and never the preference: a unit under human
+  // control is the answer only when nothing failed outright.
+  const unit = newest('failed') ?? newest('taken-over');
+  return unit === null ? null : failedUnitRow(unit);
 }
 
 export interface WorkflowActionRowInput {

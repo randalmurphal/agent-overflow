@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import type { WorkItem } from '../types/workflow';
+import type { WorkItem, WorkItemPhase, WorkItemUnit, WorkflowItemDetail } from '../types/workflow';
 import {
+  failedWorkflowUnitInDetail,
   workflowActionForKey,
   workflowActionRow,
   workflowDigestFallback,
@@ -182,5 +183,77 @@ describe('workflowDigestFallback', () => {
     }
     expect(workflowDigestFallback('gate', 'check').whatHappened).toContain('check');
     expect(workflowDigestFallback('gate', '').whatHappened).toContain('the run');
+  });
+});
+
+const NOW = 1_000_000;
+
+function phase(phaseId: string, attempt: number, status: string, startedAt: number): WorkItemPhase {
+  return { itemId: 'run', phaseId, attempt, status, startedAt } as WorkItemPhase;
+}
+
+function unit(unitId: string, unitIndex: number, status: string, extra: Partial<WorkItemUnit> = {}): WorkItemUnit {
+  return {
+    itemId: 'run', phaseId: 'port', attempt: 1, unitId, unitIndex,
+    kind: 'unit', status, unitAttempt: 1, ...extra,
+  } as WorkItemUnit;
+}
+
+function detail(over: Partial<WorkflowItemDetail>): WorkflowItemDetail {
+  return {
+    item: { id: 'run' }, checkPhaseIds: [], phases: [], units: [], children: [],
+    outputs: {}, artifacts: [], usage: { costUsd: 0 },
+    ...over,
+  } as unknown as WorkflowItemDetail;
+}
+
+describe('failedWorkflowUnitInDetail', () => {
+  it('picks the lowest-index failed unit of the newest attempt that has one', () => {
+    const found = failedWorkflowUnitInDetail(detail({
+      phases: [phase('port', 1, 'running', 100)],
+      units: [unit('port-a', 0, 'done'), unit('port-c', 2, 'failed'), unit('port-b', 1, 'failed')],
+    }));
+    expect(found?.unit.unitId).toBe('port-b');
+  });
+
+  it('reads the attempt the run rests on, not the one a retry superseded', () => {
+    const found = failedWorkflowUnitInDetail(detail({
+      phases: [phase('port', 1, 'failed', 100), phase('port', 2, 'running', 200)],
+      units: [
+        unit('stale', 0, 'failed'),
+        unit('current', 0, 'failed', { attempt: 2 }),
+      ],
+    }));
+    expect(found?.unit.unitId).toBe('current');
+  });
+
+  it('falls back to a taken-over unit only when nothing failed outright', () => {
+    const takenOver = detail({
+      phases: [phase('port', 1, 'running', 100)],
+      units: [unit('port-a', 0, 'taken-over')],
+    });
+    expect(failedWorkflowUnitInDetail(takenOver)?.unit.unitId).toBe('port-a');
+  });
+
+  it('carries the label, the retry count, the elapsed span and the thread', () => {
+    const found = failedWorkflowUnitInDetail(detail({
+      phases: [phase('port', 1, 'running', 100)],
+      units: [unit('port-b', 1, 'failed', {
+        unitAttempt: 2, startedAt: NOW - 60_000, endedAt: NOW, threadId: 'thread-unit',
+      })],
+    }));
+    expect(found).toMatchObject({ label: 'port-b', meta: '×2 · 1m', threadId: 'thread-unit' });
+  });
+
+  it('names the join when the join itself is what failed', () => {
+    const found = failedWorkflowUnitInDetail(detail({
+      phases: [phase('port', 1, 'running', 100)],
+      units: [unit('port-join', 9, 'failed', { kind: 'join' })],
+    }));
+    expect(found?.label).toBe('port-join (join)');
+  });
+
+  it('returns null for a run with no fan-out', () => {
+    expect(failedWorkflowUnitInDetail(detail({ phases: [phase('plan', 1, 'completed', 1)] }))).toBeNull();
   });
 });

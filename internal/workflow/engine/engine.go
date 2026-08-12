@@ -539,6 +539,27 @@ func (e *Engine) emitItemState(itemID, projectID string, from, to State, reason 
 	})
 }
 
+// emitPhaseState is the single place a phase-attempt or unit status reaches the
+// wire. It exists to guarantee `OccurredAt`: a field every call site had to
+// remember would be one forgotten emit away from a consumer silently falling
+// back to its own clock, so the guarantee lives on the one path instead of in
+// eight constructions.
+//
+// A site that PERSISTED the transition's time passes that same value, so the
+// event and the row it announces agree to the millisecond — which is what lets
+// a consumer patching a live view keep its patch when the row is refetched.
+// The default is only for the transitions no row records a time for (a
+// reopened attempt, an expanded-but-unstarted unit); `timestamp()` is strictly
+// monotonic, so defaulting where a time WAS written would guarantee the two
+// disagree rather than merely risk it. It runs on the command goroutine like
+// every other emit, which is what makes `timestamp()` safe here.
+func (e *Engine) emitPhaseState(event PhaseEvent) {
+	if event.OccurredAt == 0 {
+		event.OccurredAt = e.timestamp()
+	}
+	e.emitter.Emit("workflow:phase-state", event)
+}
+
 // emitItemStateAt is emitItemState for the transitions taken with the run
 // resident, where the phase and attempt being left are known exactly. A park
 // rests on that attempt, so its cause and its narrative are filed under this

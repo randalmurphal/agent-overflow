@@ -29,22 +29,76 @@ export interface WorkflowUnit {
   unitAttempt: number;
 }
 
-// WorkflowChild is one run this run called (spec §3a). A child is a real run
-// with a detail page of its own; this is the caller-side summary.
-export interface WorkflowChild {
+// WorkflowRunMapRun is one run of the map's tree, narrowed to the linkage that
+// identifies an invocation (spec §3a) — ONE name for one concept, root
+// included. "Children" is not a kind of run, it is what `callChildren`'s filter
+// produces from these, and typing the filter's output as its own interface said
+// the root was something else.
+//
+// The wire omits a zero `parentAttempt` / `callDepth` (Go `omitempty`), so both
+// are optional HERE and normalised to numbers by `callChildren` below — a spec
+// comparing `child.callDepth` should be comparing numbers, not sometimes
+// `undefined`.
+export interface WorkflowRunMapRun {
   itemId: string;
   workflowId: string;
   state: string;
   reason?: string;
-  parentPhaseId: string;
+  parentItemId?: string;
+  parentPhaseId?: string;
   // Empty for a phase call; names the fan-out unit that called this run
   // otherwise (§3a at unit scope).
   parentUnitId?: string;
+  parentAttempt?: number;
+  callDepth?: number;
+}
+
+// WorkflowRunMapRunLinkage is what callChildren hands back: the same row with
+// the omitempty numbers filled in.
+export interface WorkflowRunMapRunLinkage extends WorkflowRunMapRun {
   parentAttempt: number;
   callDepth: number;
-  currentPhaseId?: string;
-  currentPhaseOrdinal: number;
-  phaseCount: number;
+}
+
+// WorkflowRunMapRefusal is an answer the backend will never change its mind
+// about (§4.2) — the RPC SUCCEEDS and carries this instead of a tree.
+export interface WorkflowRunMapRefusal {
+  code: string;
+  message: string;
+}
+
+export interface WorkflowRunMap {
+  rootItemId: string;
+  runs: WorkflowRunMapRun[];
+  refusal?: WorkflowRunMapRefusal;
+}
+
+// callChildren reads the runs one run CALLED, through the run map — the tree
+// read that answers for call linkage. Any member resolves the same map, so this
+// works for a root and for a run three waves down alike.
+//
+// It costs a WHOLE-TREE read every call: the RPC's answer is the root plus every
+// descendant, with each run's frozen definition decoded server-side for its
+// skeleton. That is cheap for the fixtures here and wrong to put in a poll —
+// read it once and filter, rather than calling it per candidate parent.
+//
+// A REFUSAL throws rather than reading as "no children". `runs` is empty on a
+// refused answer, so an id that names no run at all (a typo, a discarded run, a
+// stale id) would otherwise satisfy `toHaveLength(0)` — the assertion most
+// callers here make — while proving nothing.
+export async function callChildren(
+  harness: HarnessApp,
+  itemId: string,
+): Promise<WorkflowRunMapRunLinkage[]> {
+  const map = await harness.rpc<WorkflowRunMap>('WorkflowGetRunMap', itemId);
+  if (map.refusal) {
+    throw new Error(
+      `WorkflowGetRunMap(${itemId}) refused (${map.refusal.code}): ${map.refusal.message}`,
+    );
+  }
+  return map.runs
+    .filter((run) => run.parentItemId === itemId)
+    .map((run) => ({ ...run, parentAttempt: run.parentAttempt ?? 0, callDepth: run.callDepth ?? 0 }));
 }
 
 export interface WorkflowDetail {
@@ -64,7 +118,6 @@ export interface WorkflowDetail {
   callPhaseIds?: string[];
   phases: WorkflowPhase[];
   units: WorkflowUnit[];
-  children: WorkflowChild[];
 }
 
 export interface WorkflowStateEvent {

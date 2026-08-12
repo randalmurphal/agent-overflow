@@ -245,3 +245,28 @@ Paths below are relative to `dist/`. Regression-test paths are relative to
     boundary — `Tokenizer.blockquote` cannot be fixed from here.
     Regression: `markdown/alertBlockquote.test.ts` (both found shapes,
     plus the well-formed blockquotes that must stay byte-identical).
+16. **the fullscreen rule is scoped to mermaid** (`Elements/Mermaid.svelte`)
+    — upstream's expand style is `:global([data-expanded='true'])`, with no
+    scope at all. `:global` means app-wide, and `data-expanded` is an
+    ordinary attribute name, so ANY element anywhere in the app that
+    carried `data-expanded="true"` was pulled out of its layout and pinned
+    `position: fixed` over the whole viewport at `z-index: 2147483647`. The
+    workflows run map's expanded wave row hit it: the wave rendered on top
+    of the entire app and its 1248×688 box swallowed every click meant for
+    the run detail's action row underneath. A stylesheet from a markdown
+    renderer must not be able to reach a component that has never rendered
+    markdown. Now `:global([data-streamdown-mermaid] [data-expanded='true'])`
+    — the element upstream meant, and only it; the container carrying the
+    attribute is always a child of that wrapper, so mermaid's own behaviour
+    is unchanged. Upstream bug, upstream-PR candidate. Note that this app
+    never reaches mermaid's fullscreen path anyway: `StreamdownMermaidHost`
+    intercepts "Toggle expand" in the capture phase and routes it to
+    `DiagramModal` (see `markdown/mermaidExpandIntercept.test.ts`), because
+    the library's overlay lands off-screen inside the virtualizer's
+    containment-scoped rows. The run map has since moved off the attribute
+    as well (`data-wave-expanded`): the scoping above is the fix, and a
+    component staying out of a vendored stylesheet's namespace is the belt
+    to its braces — neither alone would have been enough to trust, since
+    `data-expanded` is exactly the name the next component will reach for.
+    Regression: `e2e/tests/workflows-overlay.spec.ts` clicks the action row
+    through a map with an expanded wave — which is the shape that failed.

@@ -10,10 +10,17 @@ import type {
   WorkflowDefinitionListing,
   WorkflowDiscardPreview,
   WorkflowDiscardWorktree,
-  WorkflowItemChildView,
   WorkflowItemDetailView,
   WorkflowItemPhaseView,
   WorkflowItemUnitView,
+  WorkflowAgentRunBudget,
+  WorkflowRunMapPhaseAttempt,
+  WorkflowRunMapRefusal,
+  WorkflowRunMapRun,
+  WorkflowRunMapSkeletonPhase,
+  WorkflowRunMapUnit,
+  WorkflowRunMapView,
+  WorkflowRunSpend,
 } from '../../../bindings/agent-overflow/models';
 import type {
   WorkItem,
@@ -23,7 +30,6 @@ import type {
 export type WorkflowItemDetail = WorkflowItemDetailView;
 export type WorkItemPhase = WorkflowItemPhaseView;
 export type WorkItemUnit = WorkflowItemUnitView;
-export type WorkItemChild = WorkflowItemChildView;
 
 export type WorkflowRunState = 'running' | 'needs-human' | 'done' | 'failed' | 'cancelled';
 export type WorkflowRunReason =
@@ -51,6 +57,14 @@ export interface WorkflowItemStateEvent {
   from: WorkflowRunState;
   to: WorkflowRunState;
   reason?: WorkflowRunReason;
+  /**
+   * Where the run WAS when it transitioned (`engine.StateEvent`) — the attempt
+   * a park rests on, which is the coordinate its cause and its narrative are
+   * filed under. Absent on a run that has not entered a phase yet, and on the
+   * transitions taken with the run non-resident.
+   */
+  phaseId?: string;
+  attempt?: number;
 }
 
 /**
@@ -82,6 +96,15 @@ export interface WorkflowPhaseStateEvent {
   unitId?: string;
   unitIndex?: number;
   unitKind?: string;
+  /**
+   * The engine's own event time in Unix milliseconds, stamped on the single
+   * emit path (`engine.emitPhaseState`) so no site can forget it. A consumer
+   * patching a live view reads it as the transition's moment: a `running`
+   * status starts the attempt or unit, a terminal one ends it. Client time
+   * would drift across reconnects and replay, where an event's ARRIVAL says
+   * nothing about when it happened.
+   */
+  occurredAt: number;
 }
 
 export interface WorkflowErrorEvent {
@@ -137,7 +160,31 @@ export type {
   WorkflowDefinitionListing,
   WorkflowDiscardPreview,
   WorkflowDiscardWorktree,
+  // The run map (RUN-MAP §4.2): one whole run TREE as metadata. Re-exported
+  // here so the store, the projection and the components name these shapes
+  // through the same module as every other workflow type.
+  WorkflowAgentRunBudget,
+  WorkflowRunMapPhaseAttempt,
+  WorkflowRunMapRefusal,
+  WorkflowRunMapRun,
+  WorkflowRunMapSkeletonPhase,
+  WorkflowRunMapUnit,
+  WorkflowRunMapView,
+  WorkflowRunSpend,
 };
+
+/**
+ * Why a run map will never be answered. Every code is PERMANENT: retrying
+ * cannot make a tree smaller, a linkage acyclic, or a deleted run exist, so a
+ * consumer that sees one must stop re-sourcing rather than back off. They
+ * arrive on `WorkflowRunMapView.refusal` with the RPC itself succeeding —
+ * the transport strips a method error's text for remote clients, so a refusal
+ * returned as an error could not carry its own sentence there.
+ *
+ * Mirrors the Go constants in `app_workflow_runmap.go`; the binding generator
+ * emits the struct but not an untyped string const block.
+ */
+export type WorkflowRunMapRefusalCode = 'not-found' | 'too-large' | 'corrupt-linkage';
 
 function parseJSONRecord(value: unknown): Record<string, unknown> | null {
   if (value && typeof value === 'object' && !Array.isArray(value)) {

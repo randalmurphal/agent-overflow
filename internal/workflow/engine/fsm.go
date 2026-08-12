@@ -180,16 +180,17 @@ func (e *Engine) teardown(item *runtimeItem, request teardownRequest) error {
 	phasePersisted := true
 	switch {
 	case item.phaseID != "" && item.attempt > 0:
+		endedAt := e.timestamp()
 		if err := e.store.CompleteWorkItemPhase(
 			item.item.ID, item.phaseID, item.attempt, output, request.gateTrace,
-			request.phaseStatus, cause, e.timestamp(),
+			request.phaseStatus, cause, endedAt,
 		); err != nil {
 			errs = append(errs, fmt.Errorf("persist phase teardown: %w", err))
 			phasePersisted = false
 		} else {
-			e.emitter.Emit("workflow:phase-state", PhaseEvent{
+			e.emitPhaseState(PhaseEvent{
 				ItemID: item.item.ID, PhaseID: item.phaseID,
-				Attempt: item.attempt, Status: request.phaseStatus,
+				Attempt: item.attempt, Status: request.phaseStatus, OccurredAt: endedAt,
 			})
 		}
 	case cause != "" && item.phaseID != "":
@@ -234,8 +235,9 @@ func (e *Engine) parkOnNewAttempt(item *runtimeItem, status, cause string) error
 		return fmt.Errorf("park item %q on phase %q: %w", item.item.ID, item.phaseID, err)
 	}
 	item.attempt = attempt
-	e.emitter.Emit("workflow:phase-state", PhaseEvent{
+	e.emitPhaseState(PhaseEvent{
 		ItemID: item.item.ID, PhaseID: item.phaseID, Attempt: attempt, Status: status,
+		OccurredAt: now,
 	})
 	return nil
 }

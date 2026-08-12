@@ -227,9 +227,10 @@ func (e *Engine) resolveHumanGate(itemID string, choice HumanDecision, note stri
 			if trace.Decision.Kind == def.DecisionFailed {
 				phaseStatus = "failed"
 			}
+			endedAt := e.timestamp()
 			if err := e.store.CompleteWorkItemPhase(
 				itemID, item.phaseID, item.attempt, current.OutputEnvelope,
-				current.GateTrace, phaseStatus, "", e.timestamp(),
+				current.GateTrace, phaseStatus, "", endedAt,
 			); err != nil {
 				return err
 			}
@@ -240,8 +241,9 @@ func (e *Engine) resolveHumanGate(itemID string, choice HumanDecision, note stri
 			if err := e.store.UpdateWorkItemPhaseIntervention(itemID, item.phaseID, item.attempt, intervention); err != nil {
 				return err
 			}
-			e.emitter.Emit("workflow:phase-state", PhaseEvent{
+			e.emitPhaseState(PhaseEvent{
 				ItemID: itemID, PhaseID: item.phaseID, Attempt: item.attempt, Status: phaseStatus,
+				OccurredAt: endedAt,
 			})
 			if err := e.transition(item, StateRunning, ""); err != nil {
 				return err
@@ -324,13 +326,17 @@ func (e *Engine) resolveHumanGate(itemID string, choice HumanDecision, note stri
 	// Both remaining outcomes continue the run: an approve takes its declared
 	// target, a reject inside its bound takes the loop. A decision that could not
 	// be taken returned above, leaving the attempt parked.
+	endedAt := e.timestamp()
 	if err := e.store.CompleteWorkItemPhase(
 		itemID, item.phaseID, item.attempt, current.OutputEnvelope,
-		encodedTrace, "completed", "", e.timestamp(),
+		encodedTrace, "completed", "", endedAt,
 	); err != nil {
 		return err
 	}
-	e.emitter.Emit("workflow:phase-state", PhaseEvent{ItemID: itemID, PhaseID: item.phaseID, Attempt: item.attempt, Status: "completed"})
+	e.emitPhaseState(PhaseEvent{
+		ItemID: itemID, PhaseID: item.phaseID, Attempt: item.attempt, Status: "completed",
+		OccurredAt: endedAt,
+	})
 
 	if err := e.transition(item, StateRunning, ""); err != nil {
 		return err

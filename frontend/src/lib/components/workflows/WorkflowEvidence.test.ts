@@ -13,7 +13,6 @@ function detail(overrides: Partial<WorkflowItemDetail> = {}): WorkflowItemDetail
     checkPhaseIds: [],
     callPhaseIds: [],
     units: [],
-    children: [],
     outputs: {},
     artifacts: [],
     usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0, costUsd: 0 },
@@ -63,6 +62,47 @@ describe('WorkflowEvidence park cause', () => {
     } as unknown as Partial<WorkflowItemDetail>)));
 
     expect(view.queryByTestId('workflow-park-cause')).toBeNull();
+  });
+});
+
+// R1: the surface has two hues and green is not one of them. A passing check
+// is the expected outcome and carries no attention, so it reads neutral —
+// same glyph and tone the run map's node for that phase draws.
+describe('WorkflowEvidence check strip speaks the run map\'s vocabulary', () => {
+  function checks() {
+    const view = detail({
+      checkPhaseIds: ['lint', 'types', 'e2e'],
+      phases: [
+        { phaseId: 'lint', attempt: 1, status: 'completed', startedAt: 1, endedAt: 2 },
+        { phaseId: 'types', attempt: 1, status: 'failed', startedAt: 1, endedAt: 2 },
+        { phaseId: 'e2e', attempt: 1, status: 'running', startedAt: 1, endedAt: 0 },
+      ],
+    } as unknown as Partial<WorkflowItemDetail>);
+    // The strip is suppressed for an unresolved run, so this is a `done` one.
+    view.item.state = 'done';
+    view.item.reason = undefined as unknown as string;
+    return render(WorkflowEvidence, { ...props(view), kind: 'done' as const });
+  }
+
+  it('gives failure the only hue and leaves the rest neutral', () => {
+    const rendered = checks();
+    const rows = rendered.getAllByTestId('workflow-check');
+    expect(rows.map((row) => row.className)).toEqual(['text-fg-muted', 'text-error', 'text-fg-muted']);
+    expect(rendered.container.querySelector('.text-success')).toBeNull();
+  });
+
+  it('draws the map\'s glyphs rather than a set of its own', () => {
+    const rows = checks().getAllByTestId('workflow-check');
+    expect(rows.map((row) => row.textContent?.trim().charAt(0))).toEqual(['✓', '✗', '◌']);
+  });
+
+  // The wire status is on the row so the hue and the glyph above can be read
+  // against WHICH check they describe. Without it both assertions are about an
+  // ordering the fixture happens to have, and a reordered projection would keep
+  // them both passing while the strip said something else.
+  it('carries each check\'s wire status on the row it styled', () => {
+    const rows = checks().getAllByTestId('workflow-check');
+    expect(rows.map((row) => row.dataset.checkStatus)).toEqual(['completed', 'failed', 'running']);
   });
 });
 

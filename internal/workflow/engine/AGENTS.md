@@ -396,7 +396,11 @@ resource semaphores, and startup recovery.
   wall clock uses the engine clock against the persisted item start time.
   `ResolveBudget` (`budget.go`) is the whole answer — which ceiling is in force,
   the tree's spend against it, and whether it is crossed — and `checkBudget` is
-  it with only the last field read. Everything that DISPLAYS a budget (the run's
+  it with only the last field read. It takes a `BudgetSubject` (run id, project,
+  declared envelope, start) rather than a `store.WorkItem` so a caller holding a
+  narrower projection of a run — the run map's tree read — resolves the SAME
+  ceiling instead of inventing a sparsely populated row whose blank fields would
+  read as authored values. Everything that DISPLAYS a budget (the run's
   `budget=` line on `agent-overflow run status` / `run inspect`, the reserved
   `budget` prompt binding) resolves through the same call, so the number an
   operator reads and the number that parks the run cannot differ. A run under no
@@ -626,6 +630,35 @@ resource semaphores, and startup recovery.
   it was doing" true per branch; only a resume that fails while DECIDING logs
   nothing, and it changed nothing either. `ResumeItem` and the cascades into
   parked descendants record themselves the same way for free.
+- **A `workflow:phase-state` event carries the engine's event time, and there is
+  one construction path.** `emitPhaseState` guarantees `PhaseEvent.OccurredAt` —
+  every phase-attempt and unit emission goes through it, `emitUnitState` /
+  `emitUnitStateAt` included — so no site can emit a status transition without
+  saying when it happened. `TestPhaseStateEventsHaveOneConstructionPath` scans
+  the package for a second emitter and fails on one. A consumer patching a live
+  view reads the field as the moment: a `running` status starts the attempt, a
+  terminal one ends it. The alternative is a client stamping its own clock,
+  which is wrong by exactly the transport delay and arbitrarily wrong after a
+  reconnect or a replay, where an event's ARRIVAL says nothing about when the
+  engine took the transition. The guarantee is the emitter's rather than a
+  required parameter for the reason `LogEvent`'s coordinate is on every line: a
+  field eight call sites had to remember is one forgotten emit away from a
+  silent fallback.
+- **An emit beside a store write passes the time that write PERSISTED.**
+  `timestamp()` is strictly monotonic, so a site that let the emitter default
+  would guarantee the event and the row it announces disagree — the patched
+  view would jump the moment the row was refetched. Every persist+emit pair
+  therefore holds the value in a local and passes it (`enterPhase`, `teardown`,
+  `parkOnNewAttempt`, both human-gate completions, unit start, unit call start,
+  unit teardown, unit drop). The default is for the transitions no row records a
+  time for — a REOPENED attempt or unit keeps its original `started_at`, so
+  there is nothing persisted to agree with — and each of those sites says so.
+  On the unit side that default belongs to `emitUnitState` alone, which reads
+  the engine clock itself: `emitUnitStateAt` exists to CARRY a persisted time,
+  so a zero there is a caller that did not have one, and it is reported
+  (`LogEventEmitTimeMissing`) rather than silently corrected. The event still
+  ships stamped — a transition the UI never hears about leaves a node stuck
+  mid-flight forever, which is worse than a stamp one tick late.
 
 ## Fan-out attempts
 

@@ -86,14 +86,15 @@ func (e *Engine) teardownUnit(item *runtimeItem, unit *unitRun, status string, e
 	}
 	unit.status = status
 	unit.envelope = envelope
+	endedAt := e.timestamp()
 	if err := e.store.CompleteWorkItemUnit(
-		item.item.ID, item.phaseID, item.attempt, unit.id, status, envelope, note, e.timestamp(),
+		item.item.ID, item.phaseID, item.attempt, unit.id, status, envelope, note, endedAt,
 	); err != nil {
 		errs = append(errs, fmt.Errorf(
 			"persist unit %s/%s/%d/%s: %w", item.item.ID, item.phaseID, item.attempt, unit.id, err,
 		))
 	} else {
-		e.emitUnitState(item, unit)
+		e.emitUnitStateAt(item, unit, endedAt)
 	}
 	return errors.Join(errs...)
 }

@@ -1,5 +1,6 @@
 import { test, expect } from './fixtures.js';
 import {
+  callChildren,
   doneEnvelope,
   doneResult,
   seedWorkflowProject,
@@ -147,8 +148,9 @@ test('a call phase runs its child in the caller workspace and completes on the c
   expect(audit?.status).toBe('completed');
   expect(audit?.outputEnvelope).toMatchObject({ status: 'done', outputs: { verdict: true } });
 
-  expect(detail.children).toHaveLength(1);
-  const child = detail.children[0];
+  const children = await callChildren(harness, item.id);
+  expect(children).toHaveLength(1);
+  const child = children[0];
   expect(child?.workflowId).toBe('call-child');
   expect(child?.state).toBe('done');
   expect(child?.parentPhaseId).toBe('audit');
@@ -169,7 +171,7 @@ test('a call phase runs its child in the caller workspace and completes on the c
   expect(detail.item.worktreePath).toBeTruthy();
   expect(childDetail.item.worktreePath).toBe(detail.item.worktreePath);
   expect(childDetail.item.branch).toBe(detail.item.branch);
-  expect(childDetail.children).toHaveLength(0);
+  expect(await callChildren(harness, child!.itemId)).toHaveLength(0);
 });
 
 // A self-calling workflow whose recursion terminates on its own, inside the
@@ -247,22 +249,24 @@ test('a bounded self-call recursion completes inside its declared max_depth', as
   const root = await harness.rpc<WorkflowDetail>('WorkflowGetItem', item.id);
   expect(root.phases.map((phase) => phase.phaseId)).toEqual(['count', 'again']);
   expect(root.phases[0]?.outputEnvelope).toMatchObject({ outputs: { depth: 1, more: true } });
-  expect(root.children).toHaveLength(1);
+  const rootChildren = await callChildren(harness, item.id);
+  expect(rootChildren).toHaveLength(1);
 
-  const second = await harness.rpc<WorkflowDetail>('WorkflowGetItem', root.children[0]!.itemId);
+  const second = await harness.rpc<WorkflowDetail>('WorkflowGetItem', rootChildren[0]!.itemId);
   expect(second.item.callDepth).toBe(1);
   expect(second.item.state).toBe('done');
   expect(second.phases[0]?.outputEnvelope).toMatchObject({ outputs: { depth: 2, more: true } });
-  expect(second.children).toHaveLength(1);
+  const secondChildren = await callChildren(harness, second.item.id);
+  expect(secondChildren).toHaveLength(1);
 
-  const third = await harness.rpc<WorkflowDetail>('WorkflowGetItem', second.children[0]!.itemId);
+  const third = await harness.rpc<WorkflowDetail>('WorkflowGetItem', secondChildren[0]!.itemId);
   expect(third.item.callDepth).toBe(2);
   expect(third.item.state).toBe('done');
   // The deepest level never entered its call phase, so the recursion ended
   // because the workflow decided to, not because a bound refused it.
   expect(third.phases.map((phase) => phase.phaseId)).toEqual(['count']);
   expect(third.phases[0]?.outputEnvelope).toMatchObject({ outputs: { depth: 3, more: false } });
-  expect(third.children).toHaveLength(0);
+  expect(await callChildren(harness, third.item.id)).toHaveLength(0);
 
   // Each level's call envelope carries the run it called, and every level saw
   // the same workspace — the counter is one file, incremented three times.
@@ -400,8 +404,9 @@ test('a call-bound fan-out unit runs its child in the unit sub-worktree', async 
   expect(units[0]?.branch).not.toBe(units[1]?.branch);
 
   // One child per unit, each naming the unit that called it.
-  expect(detail.children).toHaveLength(2);
-  const childByUnit = new Map(detail.children.map((child) => [child.parentUnitId, child]));
+  const unitChildren = await callChildren(harness, item.id);
+  expect(unitChildren).toHaveLength(2);
+  const childByUnit = new Map(unitChildren.map((child) => [child.parentUnitId, child]));
   expect([...childByUnit.keys()].sort()).toEqual(['wave-unit-0', 'wave-unit-1']);
 
   const worktrees = new Set<string>();

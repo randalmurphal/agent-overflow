@@ -222,25 +222,81 @@ State ownership:
   filter, sweep cursor, armed confirm, open dialog). Persisted through
   `appStorage`, so it survives a restart; `open` deliberately is not.
 - `stores/workflowRuns.svelte.ts` — the reactive cache (runs, catalogs,
-  automations, costs, per-run detail, session receipts). Run detail is loaded
-  per run and evicted when the detail level leaves that tree, so overlay
-  memory stays bounded by what is on screen. `retainWorkflowDetails` runs
-  inside an `$effect` that reads the same cache: it must not write when
-  nothing is dropped, or the effect re-enters forever.
+  automations, costs, the focused run's detail, session receipts). Run detail
+  is ROOT-ONLY: it is loaded for the one run the overlay is looking at and
+  dropped the moment it looks at another, so overlay memory stays bounded by
+  what is on screen. Nothing here walks a run's children — a run's SHAPE
+  belongs to the run-map store below. `retainWorkflowDetails` runs inside an
+  `$effect` that reads the same cache: it must not write when nothing is
+  dropped, or the effect re-enters forever, so its guard is "is the cache
+  already exactly the root", never a size comparison.
+- `stores/workflowRunMap.svelte.ts` (+ `stores/workflowRunMapPatch.ts`) — the
+  run detail's structure surface, and the workflows area's `createEntityStore`
+  exemplar: keyed by THE ID THE OVERLAY ASKED FOR (the nav-stack run id, which
+  is what a caller can state before any answer exists — the tree root is
+  resolved server-side), while the answer covers that run's whole tree
+  whichever member was named. `source()` is one `WorkflowGetRunMap`, `apply()`
+  is the single write chokepoint that the `workflow:phase-state` /
+  `item-state` / `soft-stop` patchers land on, and any event the patcher cannot
+  place precisely falls back to `invalidate` rather than guessing. Patches are
+  an optimization; correctness is the refetch — a patch that lands but cannot
+  be COMPLETE (a `running` frame, whose thread the runner attaches after the
+  emit with no event of its own) still schedules the debounced refetch behind
+  itself. Values are `rawValue` entries: a run tree is replaced wholesale on
+  every write, so deep proxying it would walk thousands of objects to buy
+  per-field tracking nothing subscribes to. Read
+  `stores/entityStore.svelte.ts`'s header before touching it.
 - `stores/workflowData.ts` and `utils/workflow*.ts` — pure. Grouping, sweep
-  math, action rows, run-tree assembly, signal mapping, intake validation and
+  math, action rows, the run-map projection (`workflowRunMap`, `…Index`,
+  `…Frontier`, `…Types`, `…Style`), signal mapping, intake validation and
   envelope reads live there so they are testable without a Svelte runtime.
-  Keep new logic in these, not in components.
+  Duration/countdown formatting is `utils/format.ts` — a formatter is not a
+  store concern, and the map's pure modules must not import upward into
+  `stores/` for one. Keep new logic in these, not in components: the map's
+  components render a model, they never derive one — `buildRunMap` is ONE walk
+  per tick for the whole surface (expansion sets go in, `wave.segments` comes
+  out), and `runMapPosition` is the one narrow read, for the header's label.
+  A wave's OPENNESS is the model's too: `segments === null` is what "closed"
+  means, read through `runMapWaveIsOpen`. Do not add a second `open` flag
+  beside it — a prop or a field that can disagree renders "Nothing recorded in
+  this wave yet." over a wave full of records.
+  `utils/workflowRunMapStyle.ts` is the map's presentation vocabulary and is
+  deliberately consumed OFF the map too (the evidence block's checks strip): a
+  completed check and a completed node are the same statement, and a second
+  glyph/tone table starts identical and drifts on the first tuning change.
 - `stores/workflowResolve.ts` — the ONE resolution path (dispatch → receipt →
   toast → sweep auto-advance). The action row and the discard dialog both go
   through it; do not add a second.
+- `components/workflows/overlayScroller.ts` — the run map writes `scrollTop` on
+  a scroller it does not own (RUN-MAP §9.9: one scroller serves every level of
+  the overlay). `WorkflowsOverlay.svelte` provides it through context and the
+  map REQUIRES it, throwing when absent. Do not replace that with a walk up the
+  DOM for something that happens to scroll: the walk picks up whatever
+  `overflow-y` a future wrapper introduces, and answers `null` — silently
+  disabling placement, follow, jump and compensation at once — in exactly the
+  case that should be loud. `WorkflowRunMapFold.svelte` requires the same
+  scroller for a related reason: §9.8's "an off-screen fold applies instantly"
+  is a question about the OVERLAY's viewport, not the window's.
+
+  Same rule inside the controller: `attach()` never returns a dead
+  installation. A scroller the getter cannot answer for yet is retried for a
+  few frames and then LATCHES the controller shut — no writes, disengaged, no
+  chip — before it throws. The write chokepoint reaches the element through
+  that same getter whether or not a listener was ever installed, so a throw
+  that changed no state left follow able to glide with nothing listening: that
+  is follow running with no way for the reader to escape it (RUN-MAP §9.2),
+  not a missing feature. A later successful attach clears the latch.
 
 Rules that are not stylistic:
 
 - **R1, two hues.** Amber (`--warning`) means a human is blocked; red
   (`--error`) means failed. Everything else is neutral, including a done run
   awaiting disposition. `utils/workflowRunSignal.ts` is the only place that
-  decides — never inline a colour in a component.
+  decides — run state, node signal and their tones — and
+  `utils/workflowRunMapStyle.ts` is the map's vocabulary over it (glyph,
+  border, glow, spinner). Never inline a colour in a component. The run map's
+  `now ▸` marker is the surface's one `--accent` use and it marks POSITION,
+  not status; R1's hue meanings are untouched by it.
 - **R2, no internals.** No envelopes, JSON, schemas, gate traces or the word
   "variables" on any surface. A workflow's typed inputs render as plain form
   fields named after the field.
@@ -497,7 +553,7 @@ why vendored packages are `workspace:` and never `file:` — pnpm resolves a
 
 ### Vendored svelte-streamdown
 
-`vendor/svelte-streamdown/` is `svelte-streamdown@3.1.2` with 15 permanent
+`vendor/svelte-streamdown/` is `svelte-streamdown@3.1.2` with 16 permanent
 in-tree fixes. The per-entry rationale, drop rules and regression-test names
 live in
 [`vendor/svelte-streamdown/DIVERGENCE.md`](vendor/svelte-streamdown/DIVERGENCE.md);

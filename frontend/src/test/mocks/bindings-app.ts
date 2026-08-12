@@ -185,6 +185,7 @@ export const WorkflowFetchPRReviewComments = dispatch('WorkflowFetchPRReviewComm
 export const WorkflowGetEngineState = dispatch('WorkflowGetEngineState');
 export const WorkflowGetItem = dispatch('WorkflowGetItem');
 export const WorkflowGetJobNotes = dispatch('WorkflowGetJobNotes');
+export const WorkflowGetRunMap = dispatch('WorkflowGetRunMap');
 export const WorkflowListAutomations = dispatch('WorkflowListAutomations');
 export const WorkflowListDefinitions = dispatch('WorkflowListDefinitions');
 export const WorkflowListItemCosts = dispatch('WorkflowListItemCosts');

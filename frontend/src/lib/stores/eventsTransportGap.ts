@@ -25,6 +25,12 @@ import { getThreads } from './threads.svelte';
 import { resyncGitStatusAfterGap } from './gitStatusStore.svelte';
 import { resyncPRReviewAfterGap } from './prReviewStore.svelte';
 import { resyncMcpServersAfterGap } from './mcpServers.svelte';
+import { resyncWorkflowRunMapAfterGap } from './workflowRunMap.svelte';
+import {
+  applyWorkflowDefinitionsChanged,
+  refreshWorkflowRunsSoon,
+  resyncWorkflowEngineState,
+} from './workflowRuns.svelte';
 import { dropAllThreadHistoryStamps } from './threadHistoryStamps';
 import { threadItemCache } from './threadItemCache';
 
@@ -43,6 +49,56 @@ function dropStampsAfterGap(): void {
   threadItemCache.dropUnattestedStamps();
 }
 
+/** The run RECORD channels: a dropped frame means some run's rows moved. */
+function resyncWorkflowRunRecords(): void {
+  // Blanket on purpose: the gap names no run, live maps are bounded by the open
+  // overlay, and both stores keep their last value while refetching.
+  resyncWorkflowRunMapAfterGap();
+  refreshWorkflowRunsSoon();
+}
+
+/**
+ * One dropped workflow frame → the resync for the state that frame carried.
+ *
+ * The prefix branch used to answer every workflow channel with the run-record
+ * resync and return, which left the two channels that carry no run records
+ * unrecovered: a lost `engine-state` frame leaves the pause banner inverted
+ * until something else toggles it, and a lost `definitions-changed` frame
+ * leaves the catalogs — and therefore the start dialog's workflow list — behind
+ * the files on disk. Both are indefinite, both are invisible.
+ */
+function applyWorkflowGap(channel: string): void {
+  switch (channel) {
+    case 'workflow:item-state':
+    case 'workflow:phase-state':
+    case 'workflow:soft-stop':
+      resyncWorkflowRunRecords();
+      return;
+    case 'workflow:engine-state':
+      void resyncWorkflowEngineState();
+      return;
+    case 'workflow:definitions-changed':
+      // The event handler IS the resync: it re-reads every loaded project's
+      // definitions, automations and costs, which is exactly what a dropped
+      // frame cost us.
+      applyWorkflowDefinitionsChanged();
+      return;
+    case 'workflow:error':
+      // The only channel here with nothing to recover. Its frames become
+      // toasts — transient by construction, with no state behind them — so a
+      // dropped one is a notification nobody saw, not a surface that now lies.
+      return;
+    default:
+      // A workflow channel this build does not know. It cannot say which state
+      // was lost, so it recovers all of it: the alternative is silent drift on
+      // exactly the channel nobody has thought about yet.
+      console.warn(`events: transport gap on unknown workflow channel "${channel}" — resyncing every workflow surface`);
+      resyncWorkflowRunRecords();
+      void resyncWorkflowEngineState();
+      applyWorkflowDefinitionsChanged();
+  }
+}
+
 // The handler matches on the channel name we lost rather than each
 // payload kind because a single gap on `provider:item_event` can
 // straddle upserts AND deltas; refreshing the whole pane is the
@@ -50,6 +106,17 @@ function dropStampsAfterGap(): void {
 // wiring site in events.ts.)
 export function applyTransportGap(gap: { channel: string; seq: number }): void {
   if (!gap || typeof gap.channel !== 'string') return;
+  // The workflow channels, caught by PREFIX so a channel added later cannot
+  // reach the unknown-channel default (which refreshes panes and leaves every
+  // workflow surface exactly as stale as it was) — but routed to the
+  // authoritative resync for the STATE each one carries, because they do not
+  // all describe run records. All of them are edge-triggered, so a dropped
+  // frame is terminal for its consumer: no later frame restates it, and the
+  // stale value is indistinguishable from a correct one.
+  if (gap.channel.startsWith('workflow:')) {
+    applyWorkflowGap(gap.channel);
+    return;
+  }
   switch (gap.channel) {
     case 'provider:item_event':
     case 'provider:turn_started':

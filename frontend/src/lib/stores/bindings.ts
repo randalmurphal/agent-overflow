@@ -399,6 +399,7 @@ export {
   WorkflowGetEngineState,
   WorkflowGetItem,
   WorkflowGetJobNotes,
+  WorkflowGetRunMap,
   WorkflowListAutomations,
   WorkflowListDefinitions,
   WorkflowListItemCosts,

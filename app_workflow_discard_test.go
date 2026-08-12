@@ -18,6 +18,7 @@ import (
 // only way to test a flow whose whole job is destroying them.
 type discardFixture struct {
 	app     *App
+	bus     *capturedEventBus
 	repo    string
 	project store.Project
 	root    store.WorkItem
@@ -25,16 +26,40 @@ type discardFixture struct {
 
 func newDiscardFixture(t *testing.T, itemID string) *discardFixture {
 	t.Helper()
-	app, _ := setupE2EApp(t)
+	app, bus := setupE2EApp(t)
+	// Discard is the disposition that MOVES the run it disposes of (it cancels
+	// the tree), so what the app emits about the row afterwards is part of this
+	// flow's contract, not incidental.
+	app.testEmitHook = bus.emit
 	// startWorkflowEngineForTest, not a bare initWorkflowEngine: engine startup
 	// also arms the §11 scheduler, and only this helper stops it again.
 	startWorkflowEngineForTest(t, app, t.TempDir())
 	repo := testutil.InitGitRepo(t)
 	projectRow := testutil.EnsureProject(t, app.store, repo)
 	return &discardFixture{
-		app: app, repo: repo, project: projectRow,
+		app: app, bus: bus, repo: repo, project: projectRow,
 		root: createDoneWorkflowWorktree(t, app, projectRow, itemID),
 	}
+}
+
+// lastItemState returns the final `workflow:item-state` payload emitted for an
+// item, and whether one was emitted at all.
+func (f *discardFixture) lastItemState(t *testing.T, itemID string) (engine.StateEvent, bool) {
+	t.Helper()
+	var last engine.StateEvent
+	found := false
+	for _, event := range f.bus.allEvents() {
+		if event.Name != "workflow:item-state" {
+			continue
+		}
+		state, ok := event.Data.(engine.StateEvent)
+		if !ok || state.ItemID != itemID {
+			continue
+		}
+		last = state
+		found = true
+	}
+	return last, found
 }
 
 // addUnitWorktree gives a run a fan-out unit checkout branched off the run's own
@@ -252,6 +277,42 @@ func TestWorkflowDiscardRemovesEveryCheckoutAndBranchInTheTree(t *testing.T) {
 	}
 	if persisted.Discarded == nil || len(persisted.Discarded.DeletedBranches) != 2 {
 		t.Fatalf("persisted receipt = %+v, want the branch deletions recorded", persisted)
+	}
+}
+
+// The disposition's own state emit is authoritative for the frontend's run-map
+// patcher, which writes the payload's state and reason into the view verbatim.
+// Discard CANCELS the tree on its way through, so echoing the copy loaded at
+// the top of the call republished a state the run had already left — and a
+// payload with no Reason field reads as "the reason was cleared", wiping the
+// live one off the row until an unrelated refetch happened by.
+func TestWorkflowDiscardEmitsTheRowsActualStateAndReason(t *testing.T) {
+	f := newDiscardFixture(t, "discard-parked-item")
+	if err := f.app.store.UpdateWorkItemState(
+		f.root.ID, string(engine.StateNeedsHuman), string(engine.ReasonGate), time.Now().UnixMilli(),
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := f.app.WorkflowDiscardItem(f.root.ID); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := f.app.store.GetWorkItem(f.root.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.State == string(engine.StateNeedsHuman) {
+		t.Fatalf("discard left the run parked (%+v); the case this pins never happened", stored)
+	}
+	state, found := f.lastItemState(t, f.root.ID)
+	if !found {
+		t.Fatal("discard emitted no item-state for the row it disposed of")
+	}
+	if string(state.To) != stored.State || string(state.From) != stored.State {
+		t.Fatalf("emitted state = %s→%s, want the row's own %s", state.From, state.To, stored.State)
+	}
+	if string(state.Reason) != stored.Reason {
+		t.Fatalf("emitted reason = %q, want the row's own %q", state.Reason, stored.Reason)
 	}
 }
 

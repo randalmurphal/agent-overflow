@@ -155,14 +155,20 @@ describe('workflowRuns store', () => {
         itemId === 'root' ? detail('root', ['child']) : detail(itemId));
     });
 
-    it('keeps the root and the children it called, and drops everything else', async () => {
+    it('keeps the focused root alone — a called run is the run map\'s job, not this cache\'s', async () => {
       await loadWorkflowDetail('root');
       await loadWorkflowDetail('child');
       await loadWorkflowDetail('stranger');
 
       retainWorkflowDetails('root');
       expect(getWorkflowDetail('root')).toBeDefined();
-      expect(getWorkflowDetail('child')).toBeDefined();
+      expect(getWorkflowDetail('child')).toBeUndefined();
+      expect(getWorkflowDetail('stranger')).toBeUndefined();
+    });
+
+    it('drops everything when the focused root has no detail of its own', async () => {
+      await loadWorkflowDetail('stranger');
+      retainWorkflowDetails('root');
       expect(getWorkflowDetail('stranger')).toBeUndefined();
     });
 
@@ -202,7 +208,9 @@ describe('workflowRuns store', () => {
     it('refreshes a cached detail in place and forgets the live phase once the run rests', async () => {
       setBindingMock('WorkflowGetItem', async (itemId: string) => detail(itemId));
       await loadWorkflowDetail('run-1');
-      applyWorkflowPhaseState({ itemId: 'run-1', phaseId: 'plan', attempt: 1, status: 'running', unitId: '' });
+      applyWorkflowPhaseState({
+        itemId: 'run-1', phaseId: 'plan', attempt: 1, status: 'running', unitId: '', occurredAt: 1_000,
+      });
       expect(getWorkflowLivePhase('run-1')).toMatchObject({ phaseId: 'plan', status: 'running' });
       expect(getBindingMock('WorkflowGetItem')).toHaveBeenCalledTimes(2);
 

@@ -476,6 +476,13 @@ const (
 	// own path — so this line is the only record that an element rendered
 	// "(not provided)" for a run that does have a ceiling.
 	LogEventBudgetUnread = "budget-unread"
+	// LogEventEmitTimeMissing is an emit site that reached `emitUnitStateAt`
+	// without the time its store write persisted. It is an ENGINE BUG rather than
+	// a runtime condition — every legitimate value comes from `timestamp()` — and
+	// the line exists because the alternatives are both worse: dropping the event
+	// leaves a live view holding a node that never moves again, and silently
+	// stamping the clock lets a wrong stamp look exactly like a right one.
+	LogEventEmitTimeMissing = "emit-time-missing"
 )
 
 // LogEvent is one engine-significant record: a run parked with its cause, a
@@ -591,6 +598,16 @@ type PhaseEvent struct {
 	UnitID    string   `json:"unitId,omitempty"`
 	UnitIndex int      `json:"unitIndex,omitempty"`
 	UnitKind  UnitKind `json:"unitKind,omitempty"`
+	// OccurredAt is the engine's own event time in Unix milliseconds, guaranteed
+	// by `emitPhaseState` — the only construction path — so no emit site can
+	// forget it. Where the transition wrote a row, it is EXACTLY that row's
+	// `started_at` / `ended_at`, so a patched view and a refetched one agree;
+	// where nothing recorded a time, the emitter's clock fills in. A consumer
+	// patching a live view reads it as the transition's moment: a `running`
+	// status starts the attempt, a terminal one ends it. Without it a frontend
+	// has to stamp its own clock, which drifts across reconnects and replay,
+	// where an event's arrival says nothing about when it happened.
+	OccurredAt int64 `json:"occurredAt"`
 }
 
 type ErrorEvent struct {

@@ -330,6 +330,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "WorkflowGetEngineState", ID: 2130001947},               // main.App.WorkflowGetEngineState
 	{Name: "WorkflowGetItem", ID: 70120675},                        // main.App.WorkflowGetItem
 	{Name: "WorkflowGetJobNotes", ID: 3798011060},                  // main.App.WorkflowGetJobNotes
+	{Name: "WorkflowGetRunMap", ID: 4156752389},                    // main.App.WorkflowGetRunMap
 	{Name: "WorkflowListAutomations", ID: 2319799628},              // main.App.WorkflowListAutomations
 	{Name: "WorkflowListDefinitions", ID: 2064216126},              // main.App.WorkflowListDefinitions
 	{Name: "WorkflowListItemCosts", ID: 1544440599},                // main.App.WorkflowListItemCosts
