@@ -45,9 +45,6 @@ export const groupKeyOf = (itemId: string, phaseId: string, attempt: number, kin
 export const compositionKeyOf = (itemId: string) => compositeKey('composition', itemId);
 const decisionKeyOf = (itemId: string) => compositeKey('decision', itemId);
 
-/** Compositions expand to two levels below their wave; deeper collapses. */
-export const RUN_MAP_COMPOSITION_DEPTH = 2;
-
 // ---------------------------------------------------------------- mapping
 
 export const PHASE_SIGNALS: Record<RunMapPhaseStatus['kind'], RunMapSignal> = {
@@ -127,9 +124,40 @@ export function runStatusOf(run: WorkflowRunMapRun): RunMapRunStatus {
   }
 }
 
+/**
+ * The one line a run parked on a person shows, and `''` for every other state
+ * — the amber blocker line a live composition's sub-card carries (§4, V4).
+ *
+ * Precomputed here rather than derived in the component for the same reason
+ * every other string on this surface is: R1's amber has one vocabulary, and a
+ * component that reached for `workflowAttentionLabel` itself would be a second
+ * place the wording lives.
+ */
+export function blockerLabelOf(status: RunMapRunStatus): string {
+  return status.kind === 'needs-human' ? workflowAttentionLabel(status.reason) : '';
+}
+
 /** Live runs are the only ones that draw a future (§5.6). */
 export function isLiveRun(run: WorkflowRunMapRun): boolean {
   return run.state === 'running' || run.state === 'needs-human';
+}
+
+/**
+ * Is this lap DONE WITH, for the purpose of folding it? (§3)
+ *
+ * Not the same question as `isLiveRun`, and the difference is the whole reason
+ * a campaign folds at all. A wave that has called the next one stays `running`
+ * in the engine for as long as its child does — the call phase is still open —
+ * so every ancestor lap of a live campaign reports itself live. Folding on that
+ * left a three-lap run rendering three fully expanded waves, which is exactly
+ * the wall this rule exists to prevent.
+ *
+ * Handing off IS the end of a lap's own story: `waveOutcome` already reads the
+ * same tail children to say "Looped", so the row and the fold agree by
+ * construction rather than by two rules that happen to match.
+ */
+export function waveIsSettled(index: RunIndex, run: WorkflowRunMapRun): boolean {
+  return !isLiveRun(run) || (index.tailChildren.get(run.itemId) ?? []).length > 0;
 }
 
 export function joinParts(parts: readonly string[]): string {
@@ -485,6 +513,33 @@ function unitTotals(index: RunIndex, run: WorkflowRunMapRun): RunMapUnitTotals {
   return totals;
 }
 
+/**
+ * A run of lanes named by WHERE they are rather than by how many: `ports 2–4`.
+ *
+ * The lanes a fan groups away are the ones with nothing under them, and a bare
+ * `·3` left the reader unable to say WHICH three — which matters the moment
+ * some of the fan's lanes are open beside it. The indices are the engine's own
+ * `unitIndex`, so the label names the same coordinate the branch columns do.
+ *
+ * Answers `''` unless the group is exactly one CONTIGUOUS run off one phase:
+ * a gap means the label would claim lanes the group does not hold, and the
+ * caller falls back to a count, which is at least true.
+ */
+export function unitRangeLabel(indices: readonly number[], phaseLabel: string): string {
+  const label = phaseLabel.trim();
+  if (label === '' || indices.length === 0) return '';
+  const unique = new Set(indices);
+  if (unique.size !== indices.length) return '';
+  let low = indices[0];
+  let high = indices[0];
+  for (const index of indices) {
+    if (index < low) low = index;
+    if (index > high) high = index;
+  }
+  if (high - low + 1 !== indices.length) return '';
+  return low === high ? `${label} ${low}` : `${label} ${low}–${high}`;
+}
+
 function unitTotalsLabel(totals: RunMapUnitTotals): string {
   if (totals.total === 0) return '';
   return joinParts([
@@ -506,6 +561,25 @@ function unitTotalsLabel(totals: RunMapUnitTotals): string {
 function waveOutcome(index: RunIndex, run: WorkflowRunMapRun): RunMapWaveOutcome {
   const looped = (index.tailChildren.get(run.itemId) ?? []).length > 0;
   return looped ? { kind: 'looped' } : runStatusOf(run);
+}
+
+/**
+ * The glyph a wave ROW wears, which is deliberately not its raw run state.
+ *
+ * A wave that has called the next lap stays `running` in the engine until its
+ * whole subtree rests — its call phase is still open — so every settled lap of
+ * a campaign rendered a live spinner next to the word "Looped", and the row
+ * contradicted itself. Its own work is over; what is still running is the wave
+ * AFTER it, which has a row of its own directly below.
+ *
+ * Attention still wins: a lap that parked or failed keeps R1's hue even if it
+ * managed to hand off, because that is the row a person has to act on. Only the
+ * `running` case is reinterpreted, and `waveIsSettled` folds on the same fact.
+ */
+export function waveSignalOf(index: RunIndex, run: WorkflowRunMapRun): RunMapSignal {
+  const status = runStatusOf(run);
+  if (status.kind !== 'running') return RUN_SIGNALS[status.kind];
+  return (index.tailChildren.get(run.itemId) ?? []).length > 0 ? 'done' : 'running';
 }
 
 export function waveSummary(

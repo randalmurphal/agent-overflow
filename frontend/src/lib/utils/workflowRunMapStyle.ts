@@ -115,6 +115,46 @@ export function runMapNodeStyle(signal: RunMapSignal, skipped = false): RunMapNo
  */
 export const RUN_MAP_LABEL_MAX = 56;
 
+// ---------------------------------------------------------------- geometry
+//
+// §2's node geometry, in the same module as its hues and for the same reason:
+// the map reads as a FLOW rather than a list only while every node on it is
+// the same kind of box, and a per-component literal is how "the same box"
+// stops being true. Nothing here names a colour — the border WIDTH is
+// geometry, the border hue is `runMapNodeStyle`'s.
+//
+// The classes are structural Tailwind only. The connective tissue between
+// boxes — the spine, the fan's fork and rejoin, the lane drops — is pure CSS
+// in `app.css` under `.run-map-*`, because it is drawn with pseudo-elements
+// that no utility class can express, and because it must stay DECORATION: the
+// boxes themselves are ordinary block-level descendants of the scroller's row
+// flow, which is what keeps §9.7's anchor descent able to find them.
+
+/**
+ * A node on the spine: an intrinsic-width box, centered by its column, capped
+ * so a long label truncates rather than stretching the flow to the card edge.
+ */
+export const RUN_MAP_NODE_BOX =
+  'inline-flex max-w-full items-baseline gap-2 rounded-md border px-2.5 py-1 text-xs';
+
+/**
+ * The frame around a body of flow: the current wave, and a live composition's
+ * sub-card. §2's one structural emphasis — the live path is the thing with a
+ * box around it.
+ */
+export const RUN_MAP_CARD = 'rounded-lg border px-2 py-1.5';
+
+/** A fan lane's name, above its column (§7, lane headers). */
+export const RUN_MAP_LANE_HEADER =
+  'text-[0.625rem] font-semibold uppercase tracking-[0.09em]';
+
+/**
+ * The centered column the whole map lives in. Constrained rather than
+ * full-bleed: the overlay card is 520–950px, and a summary row stretched
+ * across all of it reads as a table row instead of a step on a line.
+ */
+export const RUN_MAP_COLUMN = 'mx-auto w-full max-w-[34rem]';
+
 /**
  * What a refusal (§4.2) IS, in the reader's terms. The backend already ships a
  * user-shaped sentence — it names the run, never a path or an internal type —

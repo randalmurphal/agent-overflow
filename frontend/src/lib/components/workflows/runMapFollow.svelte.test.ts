@@ -21,6 +21,7 @@ import { getSettings } from '../../stores/settings.svelte';
 import {
   BAND_REST_FRACTION,
   createRunMapFollow,
+  MIN_GLIDE_DISTANCE_PX,
   RESIZE_MIN_INTERVAL_MS,
   type RunMapFollow,
   type RunMapScrollWrite,
@@ -346,8 +347,16 @@ describe('escape is event-sourced', () => {
     const h = engagedHarness();
     fire(h.scroller, type, props);
     expect(h.follow.engaged).toBe(false);
-    expect(h.follow.chipVisible).toBe(true);
     expect(h.writes).toEqual([]);
+
+    // The chip is an offer to travel, so it appears once the gesture the
+    // browser reported has actually carried the reader off the rest line. The
+    // input event fires first and the scroll it causes lands after it, which is
+    // why the offer is measured on the scroll frame rather than on the escape.
+    h.setScrollTop(0);
+    fire(h.scroller, 'scroll');
+    runFrame(0);
+    expect(h.follow.chipVisible).toBe(true);
   });
 
   it.each(NON_ESCAPING_INPUTS)('%s does not disengage follow', (_label, type, props) => {
@@ -852,10 +861,12 @@ describe('chipVisible', () => {
   it('appears on escape and clears when the glide lands', () => {
     const h = engagedHarness();
     fire(h.scroller, 'wheel', { deltaY: -10 });
-    expect(h.follow.chipVisible).toBe(true);
-
     // Reader scrolled clear of the target, then clicked the chip.
     h.setScrollTop(0);
+    fire(h.scroller, 'scroll');
+    runFrame(0);
+    expect(h.follow.chipVisible).toBe(true);
+
     h.follow.engage();
     expect(h.follow.chipVisible).toBe(true); // engaged, target still off-screen
     drainFrames();
@@ -900,6 +911,126 @@ describe('chipVisible', () => {
     expect(h.follow.chipVisible).toBe(false);
     fire(h.scroller, 'wheel', { deltaY: -10 });
     expect(h.follow.chipVisible).toBe(false);
+  });
+});
+
+// §9.10, the actionability rule: while disengaged the chip is an OFFER TO
+// TRAVEL, and an offer whose click would land the reader exactly where they
+// already stand is an affordance for nothing.
+describe('chipVisible — the disengaged offer is only rendered when it travels', () => {
+  /** Escaped, then parked at `top` — the state the offer is a statement about. */
+  function disengagedAt(top: number): Harness {
+    const h = engagedHarness();
+    fire(h.scroller, 'wheel', { deltaY: -10 });
+    h.setScrollTop(top);
+    fire(h.scroller, 'scroll');
+    runFrame(0);
+    h.writes.length = 0;
+    return h;
+  }
+
+  // The reported bug, end to end. Every leg is a transition, because the defect
+  // was not a state the chip got wrong — it was the chip never being asked
+  // again once the reader came back on their own.
+  it('hides when the reader scrolls back to the marker and returns when the run moves it away', () => {
+    const h = engagedHarness();
+
+    // (1) The reader goes up for context. Disengaged, off the rest line: the
+    //     offer is real.
+    fire(h.scroller, 'wheel', { deltaY: -10 });
+    h.setScrollTop(0);
+    fire(h.scroller, 'scroll');
+    runFrame(0);
+    expect([h.follow.engaged, h.follow.chipVisible]).toEqual([false, true]);
+
+    // (2) …and back down to where a click would have put them. Nothing would
+    //     travel, so nothing is offered.
+    h.setScrollTop(RESTING_SCROLL_TOP);
+    fire(h.scroller, 'scroll');
+    runFrame(16);
+    expect(h.follow.chipVisible).toBe(false);
+    // Hiding it re-engaged NOTHING (§9.3): a click is the only way back, and
+    // the reader never clicked.
+    expect(h.follow.engaged).toBe(false);
+
+    // (3) The run advances and carries the frontier off-screen. Follow does not
+    //     chase it — that is what still being disengaged means — and the offer
+    //     comes back with somewhere to go.
+    h.rows[2]!.docY = 1600;
+    h.follow.onFollowTargetChanged();
+    expect(h.writes).toEqual([]);
+    expect(frameCount()).toBe(0);
+    expect(h.follow.chipVisible).toBe(true);
+
+    // (4) The click, the one way back, and it travels.
+    h.follow.engage();
+    drainFrames();
+    expect(h.follow.engaged).toBe(true);
+    expect(h.scrollTop()).toBe(1600 - REST_LINE_PX);
+    expect(h.writes.every((w) => w.cause === 'jump')).toBe(true);
+    expect(h.follow.chipVisible).toBe(false);
+  });
+
+  it('offers nothing inside the distance the glide itself refuses to write', () => {
+    const h = disengagedAt(RESTING_SCROLL_TOP - (MIN_GLIDE_DISTANCE_PX - 0.01));
+    expect(h.follow.chipVisible).toBe(false);
+    // The two halves of the claim: the chip declined to offer a click, and the
+    // click it declined to offer would indeed have written nothing.
+    h.follow.engage();
+    expect(h.writes).toEqual([]);
+    expect(frameCount()).toBe(0);
+  });
+
+  it('offers the jump at exactly the distance the glide will write', () => {
+    const h = disengagedAt(RESTING_SCROLL_TOP - MIN_GLIDE_DISTANCE_PX);
+    expect(h.follow.chipVisible).toBe(true);
+    h.follow.engage();
+    drainFrames();
+    expect(h.scrollTop()).toBe(RESTING_SCROLL_TOP);
+  });
+
+  // Not the band: a target sitting visibly BELOW the band still has a rest line
+  // to be glided to, and a band test would hide a chip that had somewhere to go.
+  it('offers the jump for a target that is visible but off the rest line', () => {
+    const h = engagedHarness();
+    fire(h.scroller, 'wheel', { deltaY: -10 });
+    // 340px below the viewport top, inside a 400px viewport and well outside
+    // the 60–280px follow band.
+    h.setScrollTop(TARGET_DOC_Y - 340);
+    fire(h.scroller, 'scroll');
+    runFrame(0);
+    expect(h.follow.chipVisible).toBe(true);
+  });
+
+  // Growth BELOW the fold raises `maxScrollTop`, which unclamps a rest line
+  // that was pinned to the end of the document — with no scroll event, no
+  // frontier move and no resize to report it.
+  it('re-measures the offer when the map grows under a reader parked at the end', () => {
+    const h = makeHarness({
+      rows: [{ docY: 0, height: 200 }, { docY: 200, height: 200 }, { docY: 1900, height: 40 }],
+      followDefault: false,
+    });
+    h.follow.placeOnOpen();
+    h.follow.attach();
+    // Parked at the end of the document, marker on screen: the rest line is
+    // clamped to where they already are, so there is nothing to offer.
+    h.setScrollTop(SCROLL_HEIGHT - CLIENT_HEIGHT);
+    fire(h.scroller, 'scroll');
+    runFrame(0);
+    expect(h.follow.chipVisible).toBe(false);
+    h.writes.length = 0;
+
+    // The run appends below them. Nothing moved above the anchor, so the hold
+    // compensates nothing — and the offer is real again all the same.
+    h.follow.holdAnchor(() => {
+      Object.defineProperty(h.scroller, 'scrollHeight', {
+        get: () => SCROLL_HEIGHT + 400,
+        configurable: true,
+      });
+    });
+    expect(h.writes).toEqual([]);
+    expect(h.follow.chipVisible).toBe(true);
+    expect(h.follow.engaged).toBe(false);
   });
 });
 

@@ -335,6 +335,48 @@ test('scrolling away holds the reader while the run moves, and only the chip bri
   await page.getByTestId('workflow-map-follow').click();
   await expect.poll(() => body.evaluate((el) => el.scrollTop)).toBeGreaterThan(0);
   await expect(marker).toBeInViewport();
+
+  // §9.10, the actionability rule, measured from the position the app itself
+  // chose: where that click parked the reader IS the resting position, so a
+  // second visit to it has nothing to offer. Read once the glide has settled —
+  // two identical samples, because the glide is 250ms of rAF writes.
+  let sample = -1;
+  await expect
+    .poll(async () => {
+      const top = await body.evaluate((el) => el.scrollTop);
+      const settled = top === sample;
+      sample = top;
+      return settled;
+    })
+    .toBe(true);
+  const resting = sample;
+  // A rest line with room above it, so the nudge below is a real journey
+  // rather than a clamp. Asserted so fixture drift fails LOUDLY.
+  expect(resting).toBeGreaterThan(40);
+
+  // The reader leaves again — a real wheel, because escape is event-sourced —
+  // and then comes back to exactly where the click had put them. The return
+  // is a PROGRAMMATIC scroll on purpose: §9.2 makes that the one input which
+  // changes no engagement at all, so it moves the viewport and nothing else.
+  await body.hover();
+  await page.mouse.wheel(0, -2000);
+  await expect(page.getByTestId('workflow-map-follow')).toBeVisible();
+  await expect.poll(() => body.evaluate((el) => el.scrollTop)).toBe(0);
+
+  await body.evaluate((el, top) => { el.scrollTop = top; }, resting);
+  await expect(page.getByTestId('workflow-map-follow')).toHaveCount(0);
+
+  // And hiding it re-engaged nothing (§9.3): 40px off the rest line the offer
+  // is real again while the marker is still on screen — which is exactly the
+  // case an ENGAGED controller keeps the chip hidden for, so the chip coming
+  // back is the reader still being disengaged.
+  await body.evaluate((el, top) => { el.scrollTop = top - 40; }, resting);
+  await expect(page.getByTestId('workflow-map-follow')).toBeVisible();
+  const markerBox = await marker.boundingBox();
+  const bodyBox = await body.boundingBox();
+  if (!markerBox || !bodyBox) throw new Error('the map did not lay out');
+  expect(markerBox.y).toBeGreaterThanOrEqual(bodyBox.y);
+  expect(markerBox.y + markerBox.height).toBeLessThanOrEqual(bodyBox.y + bodyBox.height);
 });
 
 test('the map grows above a reader without moving what they are reading', async ({

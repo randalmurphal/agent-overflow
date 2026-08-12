@@ -35,12 +35,20 @@
     : '');
 </script>
 
+<!--
+  A compact pill centered over the spine, not a full-width bar. The strip is
+  one statement — where the run is, what holds it, what it has spent — and a
+  rule spanning the whole card made it read as a section header over a list.
+  The map is a flow, and its first element should sit on the same line the flow
+  does.
+-->
 <div
-  class="mb-2 flex flex-wrap items-baseline gap-x-2 gap-y-1 border-b border-border-subtle pb-2"
+  class="mx-auto mb-2 flex w-fit max-w-full flex-wrap items-baseline justify-center gap-x-2 gap-y-1
+         rounded-full border border-border-subtle bg-surface-1/40 px-3 py-1"
   data-testid="workflow-map-frontier"
 >
   {#if target !== null}
-    <nav class="min-w-0 flex-1 truncate text-[0.6875rem] text-fg-muted" aria-label="Frontier">
+    <nav class="min-w-0 truncate text-[0.6875rem] text-fg-muted" aria-label="Frontier">
       {#each target.path as part, index (part.key)}
         {#if index > 0}<span class="px-1 text-fg-subtle">›</span>{/if}<span
           class={index === target.path.length - 1 ? 'text-fg' : ''}>{part.label}</span>

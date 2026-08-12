@@ -5,13 +5,24 @@
   // element from first render, so a status change is a class swap and never a
   // DOM insertion (§10).
   //
-  // Composition (a called run that is not a wave) recurses through this
-  // component's own self-import, and the fan borrows that recursion as a
-  // snippet: a branch column's chain is the same chain a phase node draws, so
-  // there is one renderer for it rather than two that drift.
+  // Every row is an INTRINSIC-width box centered on the spine, not a full-width
+  // bar: the map is a flow, and a column of edge-to-edge bars reads as a list
+  // whatever the glyphs say. The connectors between the boxes are pseudo-
+  // elements (`app.css`, `.run-map-*`), so each box stays an ordinary
+  // block-level child of the scroller's row flow and §9.7's anchor descent can
+  // still find it.
+  //
+  // Recursion goes through SNIPPETS rather than imports. A called run renders
+  // through `WorkflowRunMapComposition`, which needs to draw its laps' segments
+  // — which are these nodes. Passing `segmentList` down keeps that a one-way
+  // import instead of a cycle, and the fan borrows the same `chainList` so a
+  // lane's chain and a phase's chain are drawn by one renderer rather than two
+  // that drift.
 
   import Self from './WorkflowRunMapNode.svelte';
+  import WorkflowRunMapComposition from './WorkflowRunMapComposition.svelte';
   import WorkflowRunMapFan from './WorkflowRunMapFan.svelte';
+  import WorkflowRunMapLoopFoot from './WorkflowRunMapLoopFoot.svelte';
   import SteppedSpinner from '../primitives/SteppedSpinner.svelte';
   import { getSettings } from '../../stores/settings.svelte';
   import { truncateMiddle } from '../../utils/format';
@@ -21,16 +32,18 @@
     RunMapCompositionNode,
     RunMapSegmentNode,
   } from '../../utils/workflowRunMap';
-  import { runMapNodeStyle, RUN_MAP_LABEL_MAX } from '../../utils/workflowRunMapStyle';
+  import { runMapNodeStyle, RUN_MAP_LABEL_MAX, RUN_MAP_NODE_BOX } from '../../utils/workflowRunMapStyle';
 
   interface Props {
     node: RunMapSegmentNode;
     /** The follow target's key — the one row that carries the `now ▸` tag. */
     nowKey: string;
     onOpenThread: (threadId: string) => void;
+    onToggleWave: (waveItemId: string) => void;
     onToggleComposition: (itemId: string) => void;
+    onToggleLane: (branchKey: string) => void;
   }
-  let { node, nowKey, onOpenThread, onToggleComposition }: Props = $props();
+  let { node, nowKey, onOpenThread, onToggleWave, onToggleComposition, onToggleLane }: Props = $props();
 
   // A ghost node has no attempt to render from, so the node supplies one — a
   // real `RunMapAttempt` rather than a row shape of this component's own, so
@@ -71,56 +84,27 @@
   }
 </script>
 
-{#snippet chainList(nodes: RunMapCompositionNode[])}
-  <ul class="mt-1 ml-3 space-y-1 border-l border-border-subtle pl-2">
-    {#each nodes as composition (composition.key)}
-      {@const style = runMapNodeStyle(composition.signal)}
-      <!--
-        `data-composition-item-id`, not `data-item-id`: three surfaces already
-        carry the latter with three different referents (the run detail's run,
-        the map's run, a sidebar row's run), and `uiRenderTrace` walks
-        `[data-item-id]` app-wide as "one timeline row". A called run inside a
-        map node is none of those.
-      -->
-      <li data-testid="workflow-map-composition" data-composition-item-id={composition.itemId}>
-        <button
-          type="button"
-          class="flex w-full items-baseline gap-2 rounded px-1 py-0.5 text-left text-xs hover:bg-surface-2/50 disabled:cursor-default disabled:hover:bg-transparent"
-          disabled={!composition.toggleable}
-          aria-expanded={!composition.collapsed}
-          onclick={() => onToggleComposition(composition.itemId)}
-        >
-          <span class={['shrink-0', style.tone].join(' ')}>{style.spinner ? '' : style.glyph}</span>
-          {#if style.spinner}
-            <SteppedSpinner size={10} class="shrink-0 self-center" animate={!getSettings().lowPowerMode} />
-          {/if}
-          <span class="min-w-0 flex-1 truncate text-fg-muted" title={composition.label}>
-            {truncateMiddle(composition.label, RUN_MAP_LABEL_MAX)}
-          </span>
-          <span class="shrink-0 text-[0.6875rem] tabular-nums text-fg-hint">
-            {[composition.collapsed ? composition.summary.label : '', composition.duration]
-              .filter((part) => part !== '').join(' · ')}
-          </span>
-        </button>
-        {#if !composition.collapsed}
-          {#each composition.waves as wave (wave.key)}
-            {#if composition.waves.length > 1}
-              <p class="px-1 pt-1 text-[0.625rem] uppercase tracking-wider text-fg-hint">{wave.summary.label}</p>
-            {/if}
-            <ul class="space-y-1 pl-1">
-              {#each wave.segments as segment (segment.key)}
-                <Self node={segment} {nowKey} {onOpenThread} {onToggleComposition} />
-              {/each}
-            </ul>
-          {/each}
-        {/if}
-      </li>
+{#snippet segmentList(nodes: RunMapSegmentNode[])}
+  <ul class="run-map-spine run-map-spine-wide w-full">
+    {#each nodes as segment (segment.key)}
+      <Self node={segment} {nowKey} {onOpenThread} {onToggleWave} {onToggleComposition} {onToggleLane} />
     {/each}
   </ul>
 {/snippet}
 
+{#snippet chainList(nodes: RunMapCompositionNode[])}
+  {#each nodes as composition (composition.key)}
+    <WorkflowRunMapComposition
+      {composition}
+      {onToggleWave}
+      {onToggleComposition}
+      segments={segmentList}
+    />
+  {/each}
+{/snippet}
+
 <li
-  class="relative"
+  class="run-map-spine"
   data-testid="workflow-map-node"
   data-phase-id={node.phaseId}
   data-node-kind={node.kind}
@@ -132,7 +116,8 @@
     {@const isNow = row.key === nowKey}
     <div
       class={[
-        'rounded-md border px-2 py-1',
+        RUN_MAP_NODE_BOX,
+        'flex-wrap',
         style.border,
         style.glow,
         isNow ? 'bg-surface-1/60' : '',
@@ -140,36 +125,36 @@
       data-run-map-now={isNow ? 'true' : undefined}
       data-attempt-key={row.key}
     >
-      <div class="flex items-baseline gap-2">
-        {#if isNow}
-          <span class="shrink-0 text-[0.625rem] font-semibold tracking-wider text-accent">now ▸</span>
-        {/if}
-        {#if style.spinner}
-          <SteppedSpinner size={11} class="shrink-0 self-center" animate={!getSettings().lowPowerMode} />
-        {:else}
-          <span class={['shrink-0 text-xs', style.tone].join(' ')} aria-hidden="true">{style.glyph}</span>
-        {/if}
-        <button
-          type="button"
-          class={[
-            'min-w-0 flex-1 truncate text-left text-xs hover:underline disabled:cursor-default disabled:no-underline',
-            style.label,
-          ].join(' ')}
-          disabled={!row.threadId}
-          title={row.label}
-          onclick={() => onOpenThread(row.threadId)}
-          data-testid="workflow-map-node-label"
-        >
-          {truncateMiddle(row.label, RUN_MAP_LABEL_MAX)}
-        </button>
+      {#if isNow}
+        <span class="shrink-0 text-[0.625rem] font-semibold tracking-wider text-accent">now ▸</span>
+      {/if}
+      {#if style.spinner}
+        <SteppedSpinner size={11} class="shrink-0 self-center" animate={!getSettings().lowPowerMode} />
+      {:else}
+        <span class={['shrink-0', style.tone].join(' ')} aria-hidden="true">{style.glyph}</span>
+      {/if}
+      <button
+        type="button"
+        class={[
+          'min-w-0 truncate text-left hover:underline disabled:cursor-default disabled:no-underline',
+          style.label,
+        ].join(' ')}
+        disabled={!row.threadId}
+        title={row.label}
+        onclick={() => onOpenThread(row.threadId)}
+        data-testid="workflow-map-node-label"
+      >
+        {truncateMiddle(row.label, RUN_MAP_LABEL_MAX)}
+      </button>
+      {#if metaOf(row)}
         <span class="shrink-0 text-[0.6875rem] tabular-nums text-fg-hint">{metaOf(row)}</span>
-      </div>
+      {/if}
 
       {#if row.cause}
         <button
           type="button"
           class={[
-            'mt-0.5 w-full text-left text-[0.6875rem]',
+            'w-full text-left text-[0.6875rem]',
             expandedCauses.has(row.key) ? '' : 'line-clamp-2',
             style.tone,
           ].filter(Boolean).join(' ')}
@@ -183,7 +168,7 @@
     </div>
 
     {#if row.fan}
-      <WorkflowRunMapFan fan={row.fan} {nowKey} {onOpenThread} chain={chainList} />
+      <WorkflowRunMapFan fan={row.fan} {nowKey} {onOpenThread} {onToggleLane} chain={chainList} />
     {/if}
     {#if row.chain.length > 0}
       {@render chainList(row.chain)}
@@ -191,34 +176,10 @@
   {/each}
 
   {#if note}
-    <p class="px-2 text-[0.625rem] text-fg-hint" data-testid="workflow-map-node-note">{note}</p>
+    <p class="text-[0.625rem] text-fg-hint" data-testid="workflow-map-node-note">{note}</p>
   {/if}
 
   {#if node.kind === 'decision'}
-    {@const loop = node.loop}
-    <div class="mt-1 rounded-md border border-dashed border-border-subtle px-2 py-1" data-testid="workflow-map-decision">
-      <div class="flex items-baseline gap-2 text-xs">
-        <span class="min-w-0 flex-1 truncate text-fg-muted" title={loop.label}>{loop.label}</span>
-        <span class="shrink-0 text-[0.6875rem] tabular-nums text-fg-hint">{loop.lapLabel}</span>
-      </div>
-      {#if loop.softStopNote}
-        <!--
-          Neutral, not amber: R1 reserves `--warning` for a human being BLOCKED.
-          A standing stop request is a fact about what the loop will do next,
-          and nothing is waiting on anyone.
-        -->
-        <p class="text-[0.6875rem] text-fg-muted" data-testid="workflow-map-soft-stop">{loop.softStopNote}</p>
-      {/if}
-      {#if loop.showOutcomeStubs}
-        <ul class="mt-0.5 space-y-0.5 text-[0.6875rem] text-fg-hint">
-          <li>issues → wave {loop.lapCount + 1}</li>
-          <li>clean → done</li>
-        </ul>
-      {:else if loop.decided !== null}
-        <p class="mt-0.5 text-[0.6875rem] text-fg-muted">
-          {loop.decided === 'loop' ? `looped → wave ${loop.lapCount + 1}` : 'clean → done'}
-        </p>
-      {/if}
-    </div>
+    <WorkflowRunMapLoopFoot loop={node.loop} />
   {/if}
 </li>

@@ -221,6 +221,14 @@ State ownership:
 - `stores/workflowsOverlay.svelte.ts` — navigation only (stack, project
   filter, sweep cursor, armed confirm, open dialog). Persisted through
   `appStorage`, so it survives a restart; `open` deliberately is not.
+  It also holds the run map's expansion state, per run id and LRU-bounded:
+  THREE sets — waves, compositions, lanes — because the three things a
+  reader can open are keyed differently (`waveItemId`, a called run's
+  `itemId`, a branch key) and one merged set would let a lane's key open a
+  wave. They survive a detail remount (navigating away and back is not a
+  decision to re-fold) but nothing narrower does: which done group or which
+  cause a reader opened is per-visit component state, deliberately not
+  lifted here.
 - `stores/workflowRuns.svelte.ts` — the reactive cache (runs, catalogs,
   automations, costs, the focused run's detail, session receipts). Run detail
   is ROOT-ONLY: it is loaded for the one run the overlay is looking at and
@@ -259,7 +267,11 @@ State ownership:
   A wave's OPENNESS is the model's too: `segments === null` is what "closed"
   means, read through `runMapWaveIsOpen`. Do not add a second `open` flag
   beside it — a prop or a field that can disagree renders "Nothing recorded in
-  this wave yet." over a wave full of records.
+  this wave yet." over a wave full of records. The same convention runs all
+  the way down: a collapsed composition's laps carry `segments: null` and a
+  folded fan lane carries `chain: []`. Collapsed means NOT BUILT, everywhere.
+  What decides it is never depth — it is whether the node is on the frontier
+  path (RUN-MAP §1, §3): only the live path is open, at every level.
   `utils/workflowRunMapStyle.ts` is the map's presentation vocabulary and is
   deliberately consumed OFF the map too (the evidence block's checks strip): a
   completed check and a completed node are the same statement, and a second

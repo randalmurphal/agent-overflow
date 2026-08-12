@@ -830,6 +830,140 @@ pre, code, kbd, samp, .ansi-body {
 }
 
 /*
+ * Run map connective tissue (RUN-MAP §2 node geometry, §6 layout).
+ *
+ * The map reads as a centered flow rather than a list: nodes are intrinsic
+ * boxes on a vertical spine, a fan-out forks the spine into lanes and rejoins
+ * it, and the loop foot splits it into two dashed outcomes. All of that is one
+ * hairline per relationship, and every one of them is a PSEUDO-ELEMENT on a
+ * box that is still an ordinary block-level child of the scroller's row flow.
+ *
+ * That is load-bearing, not tidiness. §9.7's anchor descent walks real
+ * children looking for the deepest box straddling the viewport top; a
+ * connector drawn as an absolutely-positioned SIBLING would be a child with no
+ * height at an arbitrary offset, and a node lifted out of flow to make room
+ * for one would be invisible to the descent entirely. Decoration draws itself
+ * out of flow; content never does. No SVG, no measurement, no JS.
+ *
+ * The gap and the connector length are ONE number (`--run-map-spine-gap`), so
+ * a line can never be drawn across a distance the layout does not have.
+ */
+.run-map-spine {
+  --run-map-spine-gap: 0.375rem;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--run-map-spine-gap);
+}
+.run-map-spine > * {
+  position: relative;
+  max-width: 100%;
+  min-width: 0;
+}
+/* Rows that carry a whole line of their own (wave summaries, cards) fill the
+   column; plain nodes size to their content and sit centered in it. */
+.run-map-spine-wide > * {
+  width: 100%;
+}
+.run-map-spine > * + *::before {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: calc(var(--run-map-spine-gap) * -1);
+  height: var(--run-map-spine-gap);
+  width: 1px;
+  background: var(--border-subtle);
+  pointer-events: none;
+}
+
+/* The fan's fork and rejoin: a stem along the spine into a bar that spans the
+   lanes, and each lane's own drop off that bar. Mirror images, so one rule. */
+.run-map-fork,
+.run-map-rejoin {
+  position: relative;
+  height: 0.75rem;
+  width: 100%;
+  pointer-events: none;
+}
+.run-map-fork::before,
+.run-map-rejoin::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: var(--border-subtle);
+}
+.run-map-fork::before {
+  bottom: 0;
+}
+.run-map-rejoin::before {
+  top: 0;
+}
+.run-map-fork::after,
+.run-map-rejoin::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  width: 1px;
+  height: 100%;
+  background: var(--border-subtle);
+}
+.run-map-lane {
+  position: relative;
+  padding-top: 0.625rem;
+}
+.run-map-lane::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 50%;
+  width: 1px;
+  height: 0.625rem;
+  background: var(--border-subtle);
+  pointer-events: none;
+}
+
+/* The lane row centers while its lanes fit and scrolls when they do not.
+   `justify-content: center` cannot do both: with NEGATIVE free space it
+   overflows the start edge as well, and overflow before a scroll container's
+   origin is unreachable — a fan wider than the card clipped the first lane's
+   glyph with no way to scroll back to it. Auto margins split the free space
+   when there is some and collapse to zero when there is not, which is the same
+   centering without the unreachable half. */
+.run-map-lane-row > :first-child {
+  margin-inline-start: auto;
+}
+.run-map-lane-row > :last-child {
+  margin-inline-end: auto;
+}
+
+/* The loop foot: one dashed stem forking into the two outcomes. Dashed
+   because both are ghosts until the gate resolves (§2). */
+.run-map-loop-fork {
+  position: relative;
+  height: 0.75rem;
+  width: 100%;
+  pointer-events: none;
+}
+.run-map-loop-fork::before {
+  content: '';
+  position: absolute;
+  bottom: 0;
+  left: 25%;
+  right: 25%;
+  border-top: 1px dashed var(--border-subtle);
+}
+.run-map-loop-fork::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 50%;
+  height: 100%;
+  border-left: 1px dashed var(--border-subtle);
+}
+
+/*
  * Reduced-motion reset. One place to silence every transition /
  * animation so individual components don't have to care. Scroll
  * behavior is also snapped so `scroll-smooth` usages don't fight a

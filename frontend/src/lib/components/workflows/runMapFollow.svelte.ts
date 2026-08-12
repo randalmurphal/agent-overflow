@@ -22,6 +22,11 @@
 //     than the timeline's bottom-restick — the map's follow target sits
 //     mid-content and moves, so an implicit restick would be exactly the
 //     force-grab the requirement forbids.
+//   - The chip is an OFFER TO TRAVEL (§9.10). While disengaged it renders
+//     only when engaging would move the viewport: an affordance whose click
+//     lands the reader exactly where they already are is an affordance for
+//     nothing. Hiding it is not a re-engagement — the offer comes back the
+//     moment the run carries the target away from them.
 //   - `will-change` is never toggled here (§9.11, post-incident doctrine
 //     at `utils/scroll/chokepoint.ts:179-199`): three visible-flicker
 //     incidents traced to promote/demote transitions. If the glide ever
@@ -52,8 +57,16 @@ export { BAND_REST_FRACTION };
 export const GLIDE_DURATION_MS = 250;
 /** §9.12 rate contract: end-to-start spacing for resize recomputation. */
 export const RESIZE_MIN_INTERVAL_MS = 100;
-/** Sub-pixel writes are noise; both thresholds are "would the reader see it". */
-const MIN_GLIDE_DISTANCE_PX = 1;
+/**
+ * Sub-pixel writes are noise; both thresholds are "would the reader see it".
+ *
+ * The glide floor is EXPORTED because it is also the chip's floor — the offer
+ * and the write it promises are the same number by construction — and the
+ * controller's test drives that boundary from both sides. A restated literal
+ * there would keep passing after a tuning change, asserting a threshold neither
+ * the chip nor the glide still uses. Same precedent as `BAND_REST_FRACTION`.
+ */
+export const MIN_GLIDE_DISTANCE_PX = 1;
 const MIN_ANCHOR_DELTA_PX = 0.5;
 
 /**
@@ -73,8 +86,6 @@ const MIN_ANCHOR_DELTA_PX = 0.5;
 const ATTACH_MAX_FRAMES = 3;
 
 const UP_KEYS: ReadonlySet<string> = new Set(['PageUp', 'ArrowUp', 'Home']);
-
-function noop(): void {}
 
 export type RunMapScrollCause = 'place' | 'jump' | 'follow' | 'compensate';
 
@@ -107,7 +118,10 @@ export interface RunMapFollowDeps {
 export interface RunMapFollow {
   /** Reactive: is follow tracking the frontier right now. */
   readonly engaged: boolean;
-  /** Reactive: show the `now ▸` chip (disengaged, or target off-screen). */
+  /**
+   * Reactive: show the `now ▸` chip — while engaged, when the target is
+   * off-screen; while disengaged, only when a click would actually travel.
+   */
   readonly chipVisible: boolean;
   /** Chip click: engage follow and glide the target into view. */
   engage(): void;
@@ -275,6 +289,24 @@ export function createRunMapFollow(deps: RunMapFollowDeps): RunMapFollow {
 
   // ===== Chip =====
 
+  /**
+   * Would engaging actually take the reader anywhere?
+   *
+   * The predicate is TRAVEL, and deliberately neither of the other two rect
+   * questions on this surface: `inBand` is NARROWER than "the click would do
+   * nothing" (a target sitting visibly below the band still has a rest line to
+   * be glided to, so a band test hides a chip that had somewhere to go), and
+   * `isOffscreen` is WIDER (a resting position clamped against the end of the
+   * document leaves an off-screen target with nowhere to travel, and the click
+   * would still do nothing). `restingScrollTop` is the exact number `engage`
+   * hands the glide and `MIN_GLIDE_DISTANCE_PX` is the exact threshold the glide
+   * refuses to write below, so this is true precisely when a chip click would
+   * move the viewport — the affordance and the action cannot drift apart.
+   */
+  function engageWouldTravel(el: HTMLElement, target: HTMLElement): boolean {
+    return Math.abs(restingScrollTop(el, target) - el.scrollTop) >= MIN_GLIDE_DISTANCE_PX;
+  }
+
   function refreshChip(): void {
     // A chip offering to re-engage a follow that cannot write, on a surface
     // with no listeners, is an affordance for nothing.
@@ -282,17 +314,22 @@ export function createRunMapFollow(deps: RunMapFollowDeps): RunMapFollow {
       chipVisible = false;
       return;
     }
+    const el = deps.scroller();
     const target = deps.followTargetEl();
-    if (!target) {
+    if (!el || !target) {
       chipVisible = false;
       return;
     }
-    if (!engaged) {
-      chipVisible = true;
-      return;
-    }
-    const el = deps.scroller();
-    chipVisible = el !== null && isOffscreen(el, target);
+    // Two different questions, deliberately. While ENGAGED the chip is the
+    // recovery from a target that drifted out of sight under a follow that is
+    // already on. While DISENGAGED it is an OFFER TO TRAVEL, and an offer that
+    // would move nothing must not render: the reader who scrolled back down to
+    // the marker is already looking at where a click would put them, and
+    // re-engagement on its own has nothing for them to see (§9.10).
+    //
+    // Hiding it is not a re-engagement (§9.3): `engaged` is untouched here, so
+    // the run advancing off-screen brings the same offer straight back.
+    chipVisible = engaged ? isOffscreen(el, target) : engageWouldTravel(el, target);
   }
 
   // ===== Escape (event-sourced only) =====
@@ -459,21 +496,24 @@ export function createRunMapFollow(deps: RunMapFollowDeps): RunMapFollow {
    * An anchor that left the DOM cannot be restored to anything — the
    * element whose top edge was the reference no longer has one — so the
    * hold is dropped rather than compensated against a stand-in.
+   *
+   * EVERY release re-measures the chip, including the ones that compensate
+   * nothing: a release lands on a layout that is not the one the chip last
+   * measured, and growth below the fold moves what a click would do — it raises
+   * `maxScrollTop`, unclamping a resting position that was pinned to the end of
+   * the document — with no scroll event, no frontier move and no resize to
+   * report it. `refreshChip` is a pure re-read of live geometry, so a release
+   * that wrote nothing, or a stale one, still states nothing false.
    */
   function captureAnchor(): () => void {
     const el = deps.scroller();
-    if (!el || engaged || installFailed) return noop;
+    if (!el || engaged || installFailed) return refreshChip;
     const anchor = pickAnchor(el);
-    if (!anchor) return noop;
+    if (!anchor) return refreshChip;
     const before = anchor.getBoundingClientRect().top;
     const generation = lifecycle;
     let released = false;
-    return () => {
-      // Single-shot: a release is one statement about one delta, and a second
-      // call would compensate whatever happened to move since, with a cause no
-      // reader could name (§9.1).
-      if (released) return;
-      released = true;
+    const compensate = (): void => {
       // The world the measurement described has to still be the one we write
       // into. Follow engaging means the viewport has a different owner; a
       // different scroller or a newer installation means the measurement
@@ -483,6 +523,15 @@ export function createRunMapFollow(deps: RunMapFollowDeps): RunMapFollow {
       const delta = anchor.getBoundingClientRect().top - before;
       if (Number.isFinite(delta) && Math.abs(delta) >= MIN_ANCHOR_DELTA_PX) {
         writeScrollTop(el.scrollTop + delta, 'compensate');
+      }
+    };
+    return () => {
+      // Single-shot for the WRITE: a release is one statement about one delta,
+      // and a second call would compensate whatever happened to move since,
+      // with a cause no reader could name (§9.1).
+      if (!released) {
+        released = true;
+        compensate();
       }
       refreshChip();
     };

@@ -1,5 +1,5 @@
 <script lang="ts">
-  // A wave's row (RUN-MAP §3, §6): `✓ wave N · outcome · units · duration`.
+  // A wave's row (RUN-MAP §3, §6): `✓ wave N · 2h 30m · outcome · units`.
   //
   // It is the wave's header in BOTH states, not only the folded one. A folded
   // wave and an expanded wave then differ by what hangs beneath the same row
@@ -7,26 +7,33 @@
   // animate (§10) instead of swapping one row for another — and what keeps a
   // live wave from carrying two headers saying the same thing.
   //
+  // It takes the ROW's parts rather than a `RunMapWave`, because a lap inside
+  // an open composition folds by exactly the same rule and has to look exactly
+  // the same (§3). A component that took the whole wave could not serve both
+  // without one of them growing a second renderer that starts identical.
+  //
   // One flex line, and the parts yield by CSS priority alone (outcome > unit
   // counts > duration) through shrink order and `min-width: 0` — no JS
   // measurement anywhere near the map.
 
   import SteppedSpinner from '../primitives/SteppedSpinner.svelte';
   import { getSettings } from '../../stores/settings.svelte';
-  import type { RunMapWave } from '../../utils/workflowRunMap';
+  import type { RunMapSignal, RunMapWaveSummary } from '../../utils/workflowRunMap';
   import { runMapNodeStyle } from '../../utils/workflowRunMapStyle';
 
   interface Props {
-    wave: RunMapWave;
+    summary: RunMapWaveSummary;
+    signal: RunMapSignal;
+    ordinal: number;
     expanded: boolean;
     /** A live wave is expanded in place and has nothing to fold back into. */
     toggleable: boolean;
     onToggle: () => void;
   }
-  let { wave, expanded, toggleable, onToggle }: Props = $props();
+  let { summary, signal, ordinal, expanded, toggleable, onToggle }: Props = $props();
 
-  let style = $derived(runMapNodeStyle(wave.signal));
-  let outcome = $derived([wave.summary.outcomeLabel, wave.summary.reasonLabel]
+  let style = $derived(runMapNodeStyle(signal));
+  let outcome = $derived([summary.outcomeLabel, summary.reasonLabel]
     .filter((part) => part !== '')
     .join(' · '));
 </script>
@@ -42,8 +49,8 @@
   aria-expanded={toggleable ? expanded : undefined}
   onclick={onToggle}
   data-testid="workflow-map-summary"
-  data-wave-ordinal={wave.ordinal}
-  data-signal={wave.signal}
+  data-wave-ordinal={ordinal}
+  data-signal={signal}
 >
   {#if style.spinner}
     <SteppedSpinner size={11} class="shrink-0 self-center" animate={!getSettings().lowPowerMode} />
@@ -51,21 +58,21 @@
     <span class={['shrink-0 text-xs', style.tone].join(' ')} aria-hidden="true">{style.glyph}</span>
   {/if}
 
-  <span class={['shrink-0 text-xs', style.label].join(' ')}>{wave.summary.label}</span>
+  <span class={['shrink-0 text-xs', style.label].join(' ')}>{summary.label}</span>
+
+  {#if summary.duration}
+    <span class="min-w-0 shrink-[3] truncate text-[0.6875rem] tabular-nums text-fg-hint">{summary.duration}</span>
+  {/if}
 
   {#if outcome}
     <span class={['shrink-0 text-[0.6875rem]', style.tone].join(' ')}>{outcome}</span>
   {/if}
 
-  {#if wave.summary.unitsLabel}
-    <span class="min-w-0 shrink truncate text-[0.6875rem] text-fg-muted">{wave.summary.unitsLabel}</span>
+  {#if summary.unitsLabel}
+    <span class="min-w-0 shrink truncate text-[0.6875rem] text-fg-muted">{summary.unitsLabel}</span>
   {/if}
 
-  {#if wave.summary.retriesLabel}
-    <span class="min-w-0 shrink-[2] truncate text-[0.6875rem] text-fg-muted">{wave.summary.retriesLabel}</span>
-  {/if}
-
-  {#if wave.summary.duration}
-    <span class="min-w-0 shrink-[3] truncate text-[0.6875rem] tabular-nums text-fg-hint">{wave.summary.duration}</span>
+  {#if summary.retriesLabel}
+    <span class="min-w-0 shrink-[2] truncate text-[0.6875rem] text-fg-muted">{summary.retriesLabel}</span>
   {/if}
 </button>

@@ -10,14 +10,12 @@
 
   import { untrack } from 'svelte';
   import WorkflowRunMapFrontierStrip from './WorkflowRunMapFrontierStrip.svelte';
-  import WorkflowRunMapSummaryRow from './WorkflowRunMapSummaryRow.svelte';
   import WorkflowRunMapWave from './WorkflowRunMapWave.svelte';
   import { createRunMapFollow } from './runMapFollow.svelte';
   import { requireWorkflowsOverlayScroller } from './overlayScroller';
-  import { runMapNodeStyle, runMapRefusalHeadline } from '../../utils/workflowRunMapStyle';
+  import { runMapRefusalHeadline, RUN_MAP_COLUMN } from '../../utils/workflowRunMapStyle';
   import { createSharedNowClock } from '../chat/useRunningElapsed.svelte';
   import { buildRunMap, runMapViewIsLive, runMapWaveIsOpen } from '../../utils/workflowRunMap';
-  import type { RunMapWave } from '../../utils/workflowRunMap';
   import {
     attachWorkflowRunMap,
     peekWorkflowRunMap,
@@ -27,6 +25,7 @@
   import {
     getWorkflowRunMapExpansion,
     toggleWorkflowRunMapComposition,
+    toggleWorkflowRunMapLane,
     toggleWorkflowRunMapWave,
   } from '../../stores/workflowsOverlay.svelte';
 
@@ -62,6 +61,7 @@
     ? buildRunMap(view, clock.now, {
       expandedWaveIds: expansion.waves,
       expandedCompositionIds: expansion.compositions,
+      expandedLaneIds: expansion.lanes,
     })
     : null);
   let followTarget = $derived(model?.followTarget ?? null);
@@ -200,13 +200,19 @@
   });
 
   // Map-initiated height changes ride the anchor hold, so a reader who is not
-  // following never has the page move under them (§9.7).
-  function toggleWave(wave: RunMapWave): void {
-    follow.holdAnchor(() => toggleWorkflowRunMapWave(itemId, wave.itemId));
+  // following never has the page move under them (§9.7). Every fold on the
+  // surface goes through one of these three — a lap, a called run, a fan lane —
+  // so none of them can grow the document outside a hold.
+  function toggleWave(waveItemId: string): void {
+    follow.holdAnchor(() => toggleWorkflowRunMapWave(itemId, waveItemId));
   }
 
   function toggleComposition(compositionItemId: string): void {
     follow.holdAnchor(() => toggleWorkflowRunMapComposition(itemId, compositionItemId));
+  }
+
+  function toggleLane(branchKey: string): void {
+    follow.holdAnchor(() => toggleWorkflowRunMapLane(itemId, branchKey));
   }
 
   function openThread(threadId: string): void {
@@ -241,42 +247,45 @@
       <p class="mt-0.5 text-[0.6875rem] text-fg-muted">{refusal.message}</p>
     </div>
   {:else}
-    {#if followTarget !== null || loop !== null || money !== '' || budget !== ''}
-      <WorkflowRunMapFrontierStrip target={followTarget} {loop} {money} {budget} nowMs={clock.now} />
-    {/if}
+    <!--
+      One centered column for the whole map (§6, width). Constrained rather
+      than full-bleed: the overlay card runs 520–950px, and a wave row stretched
+      across all of it reads as a table row instead of a step on a line.
+    -->
+    <div class={RUN_MAP_COLUMN}>
+      {#if followTarget !== null || loop !== null || money !== '' || budget !== ''}
+        <WorkflowRunMapFrontierStrip target={followTarget} {loop} {money} {budget} nowMs={clock.now} />
+      {/if}
 
-    <ol class="space-y-1" data-testid="workflow-map-waves">
-      {#each model.waves as wave (wave.key)}
-        <!--
-          `data-wave-expanded`, not `data-expanded`: the latter is a namespace
-          the vendored streamdown's fullscreen rule reaches into (DIVERGENCE
-          entry 16), and a run map inside a markdown surface must not inherit a
-          layout rule about mermaid diagrams.
-        -->
-        <li
-          data-testid="workflow-map-wave"
-          data-wave-item-id={wave.itemId}
-          data-wave-expanded={runMapWaveIsOpen(wave)}
-        >
-          <WorkflowRunMapSummaryRow
-            {wave}
-            expanded={runMapWaveIsOpen(wave)}
-            toggleable={wave.folded}
-            onToggle={() => toggleWave(wave)}
-          />
-          <WorkflowRunMapWave
-            {wave}
-            {nowKey}
-            onOpenThread={openThread}
-            onToggleComposition={toggleComposition}
-          />
-        </li>
-      {/each}
-    </ol>
+      <ol class="run-map-spine run-map-spine-wide" data-testid="workflow-map-waves">
+        {#each model.waves as wave (wave.key)}
+          <!--
+            `data-wave-expanded`, not `data-expanded`: the latter is a namespace
+            the vendored streamdown's fullscreen rule reaches into (DIVERGENCE
+            entry 16), and a run map inside a markdown surface must not inherit
+            a layout rule about mermaid diagrams.
+          -->
+          <li
+            data-testid="workflow-map-wave"
+            data-wave-item-id={wave.itemId}
+            data-wave-expanded={runMapWaveIsOpen(wave)}
+          >
+            <WorkflowRunMapWave
+              {wave}
+              {nowKey}
+              onOpenThread={openThread}
+              onToggleWave={toggleWave}
+              onToggleComposition={toggleComposition}
+              onToggleLane={toggleLane}
+            />
+          </li>
+        {/each}
+      </ol>
 
-    {#if model.waves.length === 0}
-      <p class="py-2 text-xs text-fg-muted" data-testid="workflow-map-empty">This run has nothing to show yet.</p>
-    {/if}
+      {#if model.waves.length === 0}
+        <p class="py-2 text-xs text-fg-muted" data-testid="workflow-map-empty">This run has nothing to show yet.</p>
+      {/if}
+    </div>
   {/if}
 
   <!--

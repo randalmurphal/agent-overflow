@@ -39,13 +39,12 @@ import { collectFrontier, frontierKeySet } from './workflowRunMapFrontier';
 import {
   attemptKeyOf,
   attemptsOf,
+  blockerLabelOf,
   branchKeyOf,
   buildIndex,
   chainOf,
   chainSteps,
   compositionKeyOf,
-  countUnit,
-  emptyUnitTotals,
   fanKeyOf,
   groupKeyOf,
   indexDuration,
@@ -60,12 +59,14 @@ import {
   runStatusOf,
   subtreeOf,
   unitKeyOf,
+  unitRangeLabel,
   unitStatusOf,
   unitsOf,
+  waveIsSettled,
   waveKey,
+  waveSignalOf,
   waveSummary,
   PHASE_SIGNALS,
-  RUN_MAP_COMPOSITION_DEPTH,
   RUN_SIGNALS,
   UNIT_SIGNALS,
   type RunIndex,
@@ -91,7 +92,7 @@ import type {
 } from './workflowRunMapTypes';
 
 export * from './workflowRunMapTypes';
-export { runMapTone, RUN_MAP_COMPOSITION_DEPTH } from './workflowRunMapIndex';
+export { runMapTone } from './workflowRunMapIndex';
 
 // ---------------------------------------------------------------- build
 
@@ -117,7 +118,9 @@ export function buildRunMap(
   const expandedWaves = new Set(options.expandedWaveIds ?? []);
   const context: SegmentContext = {
     frontierKeys: keys,
-    expanded: new Set(options.expandedCompositionIds ?? []),
+    expandedWaves,
+    expandedCompositions: new Set(options.expandedCompositionIds ?? []),
+    expandedLanes: new Set(options.expandedLaneIds ?? []),
     depth: 0,
     treeRoot: root,
   };
@@ -125,8 +128,10 @@ export function buildRunMap(
     const status = runStatusOf(run);
     // A live wave is expanded in place and has nothing to fold back into, so
     // its segments are never optional; a folded one is built only when the
-    // reader has opened it.
-    const folded = !isLiveRun(run);
+    // reader has opened it. "Live" here means the run has not yet HANDED OFF —
+    // a lap that called the next one stays `running` while its child works, and
+    // folding on run state alone left every ancestor lap fully expanded.
+    const folded = waveIsSettled(index, run);
     return {
       key: waveKey(run.itemId),
       itemId: run.itemId,
@@ -137,7 +142,7 @@ export function buildRunMap(
       skeletonError: run.skeletonError ?? '',
       folded,
       status,
-      signal: RUN_SIGNALS[status.kind],
+      signal: waveSignalOf(index, run),
       summary: waveSummary(index, run, ordinal, lapSeq),
       segments: !folded || expandedWaves.has(run.itemId) ? runSegments(index, run, context) : null,
       startedAt: run.startedAt ?? 0,
@@ -386,7 +391,12 @@ export function runMapViewIsLive(view: WorkflowRunMapView): boolean {
 
 interface SegmentContext {
   frontierKeys: Set<string>;
-  expanded: Set<string>;
+  /** Wave item ids the reader opened — top-level laps and composition laps alike. */
+  expandedWaves: Set<string>;
+  /** Called-run ids the reader opened; everything off the frontier is folded by default. */
+  expandedCompositions: Set<string>;
+  /** Branch keys of settled fan lanes the reader opened. */
+  expandedLanes: Set<string>;
   /** Composition levels below the owning wave; 0 while inside the wave itself. */
   depth: number;
   /**
@@ -530,7 +540,7 @@ function attemptNode(
     threadId: record.threadId ?? '',
     startedAt: record.startedAt ?? 0,
     endedAt: record.endedAt ?? 0,
-    fan: units.length > 0 ? fanNode(index, run, record, units, context) : null,
+    fan: units.length > 0 ? fanNode(index, run, record, units, phaseLabel, context) : null,
     chain,
     onFrontierPath: context.frontierKeys.has(key),
   };
@@ -579,6 +589,7 @@ function unitChip(
   };
 }
 
+/** Lanes that are still ACTIONABLE: a reader can do something about them now. */
 const COLUMN_STATUSES = new Set<RunMapUnitStatus['kind']>(['running', 'failed', 'taken-over', 'unknown']);
 
 function fanNode(
@@ -586,40 +597,45 @@ function fanNode(
   run: WorkflowRunMapRun,
   record: WorkflowRunMapPhaseAttempt,
   units: readonly WorkflowRunMapUnit[],
+  phaseLabel: string,
   context: SegmentContext,
 ): RunMapFan {
   const coordinate: [string, string, number] = [run.itemId, record.phaseId, record.attempt];
   const columns: RunMapBranch[] = [];
   const queued: RunMapUnitChip[] = [];
   const done: RunMapUnitChip[] = [];
-  const totals = emptyUnitTotals();
   let join: RunMapUnitChip | null = null;
   let droppedCount = 0;
   for (const unit of units) {
     const children = index.childrenByUnit.get(compositeKey(...coordinate, unit.unitId)) ?? [];
     const chip = unitChip(index, run, record, unit, children.length, context);
     const isJoin = unit.kind === 'join';
-    countUnit(totals, chip.status.kind, isJoin);
     if (isJoin) {
       join = chip;
       continue;
     }
     const kind = chip.status.kind;
     // Columns are reserved for branches with STRUCTURE or actionability (§6);
-    // everything scalar becomes arithmetic in a group chip.
+    // everything scalar becomes arithmetic in a group node.
     //
     // A unit that CALLED something has structure whatever its own status now
-    // says, and the group chips render a chip and nothing else. Routing a
+    // says, and the group nodes render a label and nothing else. Routing a
     // finished call-bound unit into the done group therefore deleted the child
-    // run and its whole composition subtree from the map the moment the unit
-    // left the frontier — §7's "unit-bound call ⇒ branch chain" holding only
-    // while the branch happened to still be running.
-    if (COLUMN_STATUSES.has(kind) || chip.onFrontierPath || children.length > 0) {
+    // run and its whole composition subtree from the map — so it keeps its
+    // lane. What it does NOT keep is the painted subtree: a SETTLED lane folds
+    // to its header, which already carries the glyph, the id and the duration,
+    // and one click puts the chain back (§7).
+    const actionable = COLUMN_STATUSES.has(kind) || chip.onFrontierPath;
+    if (actionable || children.length > 0) {
       const branchKey = branchKeyOf(run.itemId, record.phaseId, record.attempt, unit.unitId);
+      const toggleable = !actionable && children.length > 0;
+      const collapsed = toggleable && !context.expandedLanes.has(branchKey);
       columns.push({
         key: branchKey,
         unit: chip,
-        chain: children.map((child) => compositionNode(index, child, context)),
+        chain: collapsed ? [] : children.map((child) => compositionNode(index, child, context)),
+        collapsed,
+        toggleable,
         onFrontierPath: chip.onFrontierPath || context.frontierKeys.has(branchKey),
       });
       continue;
@@ -631,6 +647,7 @@ function fanNode(
     }
   }
   const doneCount = done.length - droppedCount;
+  const queuedRange = unitRangeLabel(queued.map((chip) => chip.unitIndex), phaseLabel);
   return {
     key: fanKeyOf(run.itemId, record.phaseId, record.attempt),
     attempt: record.attempt,
@@ -640,8 +657,13 @@ function fanNode(
       key: groupKeyOf(run.itemId, record.phaseId, record.attempt, 'queued'),
       count: queued.length,
       droppedCount: 0,
-      label: `queued ·${queued.length}`,
-      entries: queued,
+      label: joinParts([
+        queuedRange || `${queued.length} ${queued.length === 1 ? 'unit' : 'units'}`,
+        'queued',
+      ]),
+      // Nothing a click would add: a queued lane has no record, no thread and
+      // no duration, so its chip would repeat the label beside it.
+      entries: [],
     },
     done: {
       kind: 'done',
@@ -652,15 +674,30 @@ function fanNode(
       entries: done,
     },
     join,
-    totals,
   };
 }
 
 /**
- * One called run as a chain inside its caller's node or branch (§3). Beyond two
- * levels below its wave and off the frontier it collapses to a summary row with
- * counts, so a pathological definition cannot paint unbounded detail while
- * "no clicks to see what's running" still holds for the path that matters.
+ * One called run as a chain inside its caller's node or branch (§3), and the
+ * one place the map's reading rule turns into structure: **only the live path
+ * is open.**
+ *
+ * Every composition OFF the frontier path collapses to a single summary row —
+ * glyph, workflow, duration, subtree counts — at every depth, and the reader's
+ * `expandedCompositionIds` is what opens one. A depth rule used to decide this
+ * instead (two levels free, deeper folded), which meant a campaign's three fan
+ * lanes each painted a child workflow's whole adjudication history the moment
+ * it started: sixty rows of settled work with the live step somewhere inside
+ * them. Depth is not the question. Whether this call is where the run IS, is.
+ *
+ * Even an OPEN composition shows only its live lap: its finished laps fold to
+ * the same compact wave rows a top-level lap folds to, off the same
+ * `expandedWaveIds` set, because a lap is a lap wherever it sits.
+ *
+ * Nothing bounds the painted depth any more because nothing needs to: the
+ * frontier is a PATH, so force-opening it costs O(depth) rows, and everything
+ * beside it is one row until someone asks. The old bound existed to stop a
+ * pathological definition painting unboundedly, which the default now does.
  */
 function compositionNode(
   index: RunIndex,
@@ -670,15 +707,20 @@ function compositionNode(
   const depth = context.depth + 1;
   const key = compositionKeyOf(root.itemId);
   const onFrontierPath = context.frontierKeys.has(key);
-  // Past the depth rule and off the frontier, the row owns a collapse the
-  // reader can work: shallower or on the frontier there is nothing to fold.
-  const toggleable = depth > RUN_MAP_COMPOSITION_DEPTH && !onFrontierPath;
-  const collapsed = toggleable && !context.expanded.has(root.itemId);
+  // The frontier path is force-open, so there is nothing there to fold; every
+  // other composition owns a collapse the reader can work.
+  const toggleable = !onFrontierPath;
+  const collapsed = toggleable && !context.expandedCompositions.has(root.itemId);
   const status = runStatusOf(root);
   const signal = RUN_SIGNALS[status.kind];
   const summary = subtreeOf(index, root.itemId);
   const steps = collapsed ? [] : chainSteps(index, root);
   const inner: SegmentContext = { ...context, depth };
+  // A chain of ONE lap has nothing to fold: the composition's own row is
+  // already that lap's summary, and folding it too would put two clicks between
+  // the reader and a single called run. The rule is for CAMPAIGNS — a child
+  // workflow that looped eleven times — which is where the wall was.
+  const multiLap = steps.length > 1;
   return {
     key,
     itemId: root.itemId,
@@ -688,19 +730,28 @@ function compositionNode(
     status,
     signal,
     duration: indexDuration(index, root.startedAt ?? 0, root.endedAt ?? 0),
+    blockerLabel: blockerLabelOf(status),
     collapsed,
     toggleable,
     summary,
-    waves: steps.map(({ run, ordinal, lapSeq }) => ({
-      key: waveKey(run.itemId),
-      itemId: run.itemId,
-      ordinal,
-      lapSeq,
-      status: runStatusOf(run),
-      summary: waveSummary(index, run, ordinal, lapSeq),
-      segments: runSegments(index, run, inner),
-      onFrontierPath: context.frontierKeys.has(waveKey(run.itemId)),
-    } satisfies RunMapCompositionWave)),
+    waves: steps.map(({ run, ordinal, lapSeq }) => {
+      const folded = multiLap && waveIsSettled(index, run);
+      const waveStatus = runStatusOf(run);
+      return {
+        key: waveKey(run.itemId),
+        itemId: run.itemId,
+        ordinal,
+        lapSeq,
+        folded,
+        status: waveStatus,
+        signal: waveSignalOf(index, run),
+        summary: waveSummary(index, run, ordinal, lapSeq),
+        segments: !folded || context.expandedWaves.has(run.itemId)
+          ? runSegments(index, run, inner)
+          : null,
+        onFrontierPath: context.frontierKeys.has(waveKey(run.itemId)),
+      } satisfies RunMapCompositionWave;
+    }),
     onFrontierPath,
   };
 }

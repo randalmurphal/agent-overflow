@@ -249,8 +249,14 @@ export function setWorkflowArmedAction(next: string | null): void {
 export interface WorkflowRunMapExpansion {
   /** Folded (terminal) waves the reader expanded, by wave item id. */
   readonly waves: ReadonlySet<string>;
-  /** Compositions expanded past the depth rule, by called-run item id. */
+  /** Compositions the reader opened, by called-run item id — folded by default (§3). */
   readonly compositions: ReadonlySet<string>;
+  /**
+   * Settled fan lanes the reader opened, by BRANCH key. Kept apart from
+   * `compositions` because a lane is a unit and not a called run: one lane can
+   * hold several called runs, and the click that opens it has to name the lane.
+   */
+  readonly lanes: ReadonlySet<string>;
 }
 
 const RUN_MAP_EXPANSION_LIMIT = 8;
@@ -265,7 +271,7 @@ let runMapExpansion = $state(new Map<string, WorkflowRunMapExpansion>());
  * one, and a shared empty would then be every OTHER run's expansion too.
  */
 function noExpansion(): WorkflowRunMapExpansion {
-  return { waves: new Set(), compositions: new Set() };
+  return { waves: new Set(), compositions: new Set(), lanes: new Set() };
 }
 
 /**
@@ -317,7 +323,7 @@ function writeExpansion(runId: string, entry: WorkflowRunMapExpansion): void {
   // A run that expanded something and then collapsed it again holds nothing —
   // and an entry holding nothing is indistinguishable from having no entry,
   // except that it occupies a slot and evicts a run that DOES have state.
-  if (entry.waves.size > 0 || entry.compositions.size > 0) next.set(runId, entry);
+  if (entry.waves.size > 0 || entry.compositions.size > 0 || entry.lanes.size > 0) next.set(runId, entry);
   while (next.size > RUN_MAP_EXPANSION_LIMIT) {
     const oldest = next.keys().next();
     if (oldest.done) break;
@@ -329,13 +335,19 @@ function writeExpansion(runId: string, entry: WorkflowRunMapExpansion): void {
 export function toggleWorkflowRunMapWave(runId: string, waveItemId: string): void {
   if (!runId || !waveItemId) return;
   const current = runMapExpansion.get(runId) ?? noExpansion();
-  writeExpansion(runId, { waves: toggled(current.waves, waveItemId), compositions: current.compositions });
+  writeExpansion(runId, { ...current, waves: toggled(current.waves, waveItemId) });
 }
 
 export function toggleWorkflowRunMapComposition(runId: string, itemId: string): void {
   if (!runId || !itemId) return;
   const current = runMapExpansion.get(runId) ?? noExpansion();
-  writeExpansion(runId, { waves: current.waves, compositions: toggled(current.compositions, itemId) });
+  writeExpansion(runId, { ...current, compositions: toggled(current.compositions, itemId) });
+}
+
+export function toggleWorkflowRunMapLane(runId: string, branchKey: string): void {
+  if (!runId || !branchKey) return;
+  const current = runMapExpansion.get(runId) ?? noExpansion();
+  writeExpansion(runId, { ...current, lanes: toggled(current.lanes, branchKey) });
 }
 
 /**

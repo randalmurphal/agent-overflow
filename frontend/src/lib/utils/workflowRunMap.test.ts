@@ -38,8 +38,17 @@ const NOW = 10_000_000;
  * whose parent degraded to records-only) is read by building the map AT it —
  * which is what the overlay does when you open that run directly.
  */
-function segmentsOf(view: WorkflowRunMapView, itemId: string, expanded?: string[]): RunMapSegmentNode[] {
-  const options = { expandedWaveIds: [itemId], expandedCompositionIds: expanded ?? [] };
+function segmentsOf(
+  view: WorkflowRunMapView,
+  itemId: string,
+  expanded?: string[],
+  lanes?: string[],
+): RunMapSegmentNode[] {
+  const options = {
+    expandedWaveIds: [itemId],
+    expandedCompositionIds: expanded ?? [],
+    expandedLaneIds: lanes ?? [],
+  };
   const wave = buildRunMap(view, NOW, options).waves.find((candidate) => candidate.itemId === itemId);
   if (wave) return wave.segments ?? [];
   const rerooted = new WorkflowRunMapView({ rootItemId: itemId, runs: view.runs });
@@ -321,10 +330,14 @@ describe('§3 wave chain — what flattens, what nests', () => {
   });
 
   // §7's "unit-bound call ⇒ branch chain" is a fact about the unit, not about
-  // its status. Routing a FINISHED call-bound unit into the done group chip —
-  // which renders a chip and nothing else — deleted the child run and its whole
+  // its status. Routing a FINISHED call-bound unit into the done group — which
+  // renders a label and nothing else — deleted the child run and its whole
   // composition subtree from the map the moment the branch stopped running.
-  it('unit-bound call | a COMPLETED call-bound unit keeps its branch and its subtree', () => {
+  //
+  // What a SETTLED lane does not do is paint that subtree forever: the lane
+  // keeps its column, the column folds to its header, and the chain is one
+  // click away. Reachability is the contract, not always-drawn-ness.
+  it('unit-bound call | a COMPLETED call-bound unit keeps its lane, folded, and its subtree one click away', () => {
     const view = makeView([
       makeRun('root', {
         state: 'running',
@@ -341,15 +354,26 @@ describe('§3 wave chain — what flattens, what nests', () => {
         skeleton: [skeletonPhase('carry')], phases: [makePhase('carry')],
       }),
     ]);
-    const fan = fanOf(segmentsOf(view, 'root'), 'port');
-    const branch = fan.columns.find((column) => column.unit.unitId === 'port-b');
+    const folded = fanOf(segmentsOf(view, 'root'), 'port');
+    const laneKey = folded.columns.find((column) => column.unit.unitId === 'port-b')?.key ?? '';
+    expect(laneKey).not.toBe('');
+    expect(folded.columns.map((column) => [column.unit.unitId, column.collapsed, column.toggleable]))
+      .toEqual([['port-b', true, true]]);
+    // Collapsed means NOT BUILT, the same convention a folded wave uses: there
+    // is one answer to "is this open", not a flag beside a populated chain.
+    expect(folded.columns[0].chain).toEqual([]);
+
+    // The click, and everything the lane was holding comes back.
+    const opened = fanOf(segmentsOf(view, 'root', ['port-b-child'], [laneKey]), 'port');
+    const branch = opened.columns.find((column) => column.unit.unitId === 'port-b');
     expect(branch?.chain.map((entry) => entry.itemId)).toEqual(['port-b-child']);
-    expect(branch?.chain[0].waves.flatMap((wave) => wave.segments.map((node) => node.phaseId)))
+    expect(branch?.chain[0].waves.flatMap((wave) => (wave.segments ?? []).map((node) => node.phaseId)))
       .toEqual(['carry']);
+
     // The childless done unit still becomes arithmetic — structure is the rule,
     // not "every unit gets a column once one of them does".
-    expect(fan.done.entries.map((chip) => chip.unitId)).toEqual(['port-a']);
-    expect(fan.done.label).toBe('done ·1');
+    expect(folded.done.entries.map((chip) => chip.unitId)).toEqual(['port-a']);
+    expect(folded.done.label).toBe('done ·1');
   });
 
   it('a campaign that is itself a callee still flattens internally', () => {
@@ -370,7 +394,8 @@ describe('§3 wave chain — what flattens, what nests', () => {
     ], 'outer');
     const model = buildRunMap(view, NOW);
     expect(model.waves.map((wave) => wave.itemId)).toEqual(['outer']);
-    const composition = nodeById(segmentsOf(view, 'outer'), 'kick').attempts[0].chain[0];
+    // Opened: the inner campaign's laps are laps, numbered from its own root.
+    const composition = nodeById(segmentsOf(view, 'outer', ['inner-1']), 'kick').attempts[0].chain[0];
     expect(composition.waves.map((wave) => [wave.itemId, wave.ordinal]))
       .toEqual([['inner-1', 1], ['inner-2', 2]]);
     expect(composition.summary.waveCount).toBe(2);
@@ -727,21 +752,39 @@ function fanView(options: FanOptions = {}): WorkflowRunMapView {
 }
 
 describe('§6 fan scale', () => {
-  it('fan-out expanded | columns for actionable branches, group chips for the rest', () => {
+  it('fan-out expanded | columns for actionable branches, group nodes for the rest', () => {
     const fan = fanOf(segmentsOf(fanView(), 'root'), 'port');
     expect(fan.columns.map((column) => column.unit.unitId)).toEqual(['port-b', 'port-c', 'port-f']);
-    expect(fan.queued.entries.map((chip) => chip.unitId)).toEqual(['port-d']);
+    // Every actionable lane is open and none of them is toggleable: there is
+    // nothing to fold on the path the reader is watching.
+    expect(fan.columns.every((column) => !column.collapsed && !column.toggleable)).toBe(true);
     expect(fan.done.entries.map((chip) => chip.unitId)).toEqual(['port-a', 'port-e']);
-    expect([fan.queued.label, fan.done.label]).toEqual(['queued ·1', 'done ·1']);
+    expect(fan.done.label).toBe('done ·1');
     expect(fan.done.droppedCount).toBe(1);
+  });
+
+  // §7: a queued group names WHICH lanes it stands for, not just how many. The
+  // range is the engine's own `unitIndex`, so it is the same coordinate the
+  // open columns beside it carry — and it holds no entries, because a queued
+  // lane has no record, no thread and no duration for a click to reveal.
+  it('queued lanes group into ONE node labelled by their contiguous range', () => {
+    const fan = fanOf(segmentsOf(fanView(), 'root'), 'port');
+    expect([fan.queued.label, fan.queued.count, fan.queued.entries]).toEqual(['ports 3 · queued', 1, []]);
+  });
+
+  it('a queued group whose lanes are not contiguous falls back to a count it can prove', () => {
+    // port-d (index 3) plus the even-indexed extras from 10 up: a range label
+    // would claim lanes 4–9 that are not in the group.
+    const fan = fanOf(segmentsOf(fanView({ width: 26 }), 'root'), 'port');
+    expect(fan.queued.label).toBe('14 units · queued');
   });
 
   it('join unit | renders as the merge node, never a column or a chip', () => {
     const fan = fanOf(segmentsOf(fanView(), 'root'), 'port');
     expect(fan.join?.unitId).toBe('port-join');
     expect(fan.join?.isJoin).toBe(true);
-    expect(fan.totals.joins).toBe(1);
     expect(fan.columns.concat().some((column) => column.unit.isJoin)).toBe(false);
+    expect(fan.done.entries.some((chip) => chip.isJoin)).toBe(false);
   });
 
   it('unit `dropped` | struck entry inside the done chip expansion', () => {
@@ -756,24 +799,51 @@ describe('§6 fan scale', () => {
     expect(runMapTone(takenOver?.unit.signal ?? 'done')).toBe('text-warning');
   });
 
+  // The wording rule survives the grouping: a pending unit that EARNS a lane —
+  // here because it called a run, so it has structure — still reads "queued"
+  // rather than borrowing a wait state the engine never reported.
   it('`pending` + provider | meta reads "queued" (D: v1 wording)', () => {
-    const queued = fanOf(segmentsOf(fanView(), 'root'), 'port').queued.entries[0];
+    const view = makeView([
+      makeRun('root', {
+        state: 'running',
+        skeleton: [skeletonPhase('port', { name: 'ports', shape: 'fan-out' })],
+        phases: [makePhase('port', { status: 'running', endedAt: 0, startedAt: 9_880_000 })],
+        units: [makeUnit('port-d', { unitIndex: 3, status: 'pending', provider: 'claude', startedAt: 0, endedAt: 0 })],
+      }),
+      makeRun('port-d-child', {
+        workflowId: 'porter', parentItemId: 'root', parentPhaseId: 'port',
+        parentAttempt: 1, parentUnitId: 'port-d',
+      }),
+    ]);
+    const queued = fanOf(segmentsOf(view, 'root'), 'port').columns[0].unit;
     expect([queued.meta, queued.provider, queued.signal]).toEqual(['queued', 'claude', 'pending']);
   });
 
-  it('unit totals count every unit of the attempt, joins apart', () => {
-    expect(fanOf(segmentsOf(fanView(), 'root'), 'port').totals).toEqual({
-      total: 6, pending: 1, running: 1, done: 1, failed: 1, dropped: 1, takenOver: 1, unknown: 0, joins: 1,
-    });
+  // The fan states no tally of its own any more — the wave's summary row
+  // already carries the unit count, and a second one under the same node was a
+  // number the reader had to reconcile with the first. What still has to hold
+  // is the PARTITION the count was standing in for: every non-join unit is
+  // drawn or counted exactly once, and the join is neither.
+  it('every unit lands in exactly one of column / done / queued, joins apart', () => {
+    const fan = fanOf(segmentsOf(fanView(), 'root'), 'port');
+    const placed = [
+      ...fan.columns.map((column) => column.unit.unitId),
+      ...fan.done.entries.map((chip) => chip.unitId),
+    ].sort();
+    expect(placed).toEqual(['port-a', 'port-b', 'port-c', 'port-e', 'port-f']);
+    // port-d is the sixth: queued, so it is counted rather than drawn.
+    expect([fan.queued.count, placed.length + fan.queued.count]).toEqual([1, 6]);
+    expect(fan.join?.unitId).toBe('port-join');
   });
 
   it('fan-out at the width cap (32) | columns stay bounded, the bulk becomes arithmetic', () => {
     const fan = fanOf(segmentsOf(fanView({ width: 26 }), 'root'), 'port');
-    expect(fan.totals.total).toBe(32);
     expect(fan.columns).toHaveLength(3);
     expect(fan.queued.count).toBe(14);
     expect(fan.done.count).toBe(14);
-    expect(fan.queued.entries.length + fan.done.entries.length + fan.columns.length).toBe(32);
+    expect(fan.done.entries).toHaveLength(15); // the 14 plus the dropped one
+    // Every unit is accounted for exactly once, whether it is drawn or counted.
+    expect(fan.queued.count + fan.done.entries.length + fan.columns.length).toBe(32);
   });
 
   it('fan-out pre-expansion | count-less ghost named from the skeleton phase', () => {
@@ -1225,6 +1295,43 @@ describe('folded wave summaries', () => {
     expect(model.waves[0].summary.outcomeLabel).toBe('Looped');
   });
 
+  // §7: the ROW's glyph follows the same reinterpretation as its word. A lap
+  // that handed off is still `running` in the engine — its call phase is open
+  // until the whole subtree rests — and the row rendered a live spinner beside
+  // the word "Looped", contradicting itself once per settled lap.
+  it('a wave that handed off wears a settled glyph, not the engine’s spinner', () => {
+    // The engine's own shape, not a contrived one: a lap's call phase stays
+    // OPEN while its child works, so every ancestor lap of a live campaign is
+    // reported `running`.
+    const view = makeView([
+      makeRun('wave-1', {
+        state: 'running', tailSelfCall: true, skeleton: campaignSkeleton(),
+        phases: [makePhase('audit'), makePhase('next', { status: 'running', endedAt: 0 })],
+      }),
+      makeRun('wave-2', {
+        state: 'running', tailSelfCall: true, skeleton: campaignSkeleton(),
+        parentItemId: 'wave-1', parentPhaseId: 'next', parentAttempt: 1,
+        phases: [makePhase('audit', { status: 'running', endedAt: 0 })],
+      }),
+    ], 'wave-1');
+    expect(buildRunMap(view, NOW).waves.map((wave) => [wave.status.kind, wave.signal]))
+      .toEqual([['running', 'done'], ['running', 'running']]);
+  });
+
+  it('attention still wins: a lap that parked keeps its hue even though it handed off', () => {
+    const view = makeView([
+      makeRun('wave-1', {
+        state: 'needs-human', reason: 'gate', tailSelfCall: true, skeleton: campaignSkeleton(),
+        phases: [makePhase('next')],
+      }),
+      makeRun('wave-2', {
+        parentItemId: 'wave-1', parentPhaseId: 'next', parentAttempt: 1,
+        tailSelfCall: true, skeleton: campaignSkeleton(),
+      }),
+    ]);
+    expect(buildRunMap(view, NOW).waves[0].signal).toBe('parked');
+  });
+
   it('a needs-human wave summary says the reason ONCE — the outcome word IS it', () => {
     const view = makeView([makeRun('root', { state: 'needs-human', reason: 'gate' })]);
     const summary = buildRunMap(view, NOW).waves[0].summary;
@@ -1265,9 +1372,9 @@ describe('folded wave summaries', () => {
   });
 });
 
-// ---------------------------------------------------------------- §6 depth
+// ------------------------------------------------------- §3 collapse policy
 
-describe('§6 composition depth rules', () => {
+describe('§3 composition collapse — only the live path is open', () => {
   /** root → c1 → c2 → c3, none of them on a frontier path. */
   function nestedView(leafState = 'done'): WorkflowRunMapView {
     const link = (itemId: string, parent: string, workflowId: string, state: string) => makeRun(itemId, {
@@ -1288,38 +1395,81 @@ describe('§6 composition depth rules', () => {
     ], 'root');
   }
 
-  function chainAt(view: WorkflowRunMapView, path: number[]): RunMapCompositionNode {
-    let node = nodeById(segmentsOf(view, 'root'), 'call-out').attempts[0].chain[0];
-    for (const _ of path) {
-      node = node.waves[0].segments[0].attempts[0].chain[0];
+  /** Walk `depth` composition levels down, expanding whatever the path names. */
+  function chainAt(view: WorkflowRunMapView, expanded: string[], levels: number): RunMapCompositionNode {
+    let node = nodeById(segmentsOf(view, 'root', expanded), 'call-out').attempts[0].chain[0];
+    for (let level = 0; level < levels; level += 1) {
+      node = (node.waves[0].segments ?? [])[0].attempts[0].chain[0];
     }
     return node;
   }
 
-  it('expands two levels below the wave and collapses the third', () => {
+  // The inversion (V1): depth is not the question. A composition off the
+  // frontier is one summary row at EVERY depth — including the first, which the
+  // old two-free-levels rule painted in full and which is exactly where a
+  // campaign's fan lanes hang their child workflows.
+  it('collapses every composition off the frontier path, starting at the first level', () => {
     const view = nestedView();
-    expect(chainAt(view, []).depth).toBe(1);
-    expect(chainAt(view, []).collapsed).toBe(false);
-    expect(chainAt(view, [1]).depth).toBe(2);
-    expect(chainAt(view, [1]).collapsed).toBe(false);
-    const deep = chainAt(view, [1, 2]);
-    expect([deep.depth, deep.collapsed, deep.waves]).toEqual([3, true, []]);
-    expect(deep.summary).toMatchObject({ runCount: 1, waveCount: 1, label: '1 run' });
+    const first = chainAt(view, [], 0);
+    expect([first.depth, first.collapsed, first.toggleable, first.waves]).toEqual([1, true, true, []]);
+    expect(first.summary).toMatchObject({ runCount: 3, label: '3 runs' });
   });
 
-  it('the frontier path is always expanded regardless of depth', () => {
+  it('the frontier path is always expanded, and never offers a fold', () => {
     const view = nestedView('running');
-    const deep = chainAt(view, [1, 2]);
-    expect([deep.collapsed, deep.onFrontierPath]).toEqual([false, true]);
-    expect(deep.waves[0].segments.map((node) => node.phaseId)).toEqual(['call-out']);
+    const first = chainAt(view, [], 0);
+    expect([first.collapsed, first.toggleable, first.onFrontierPath]).toEqual([false, false, true]);
+    const deep = chainAt(view, [], 2);
+    expect([deep.itemId, deep.depth, deep.collapsed, deep.onFrontierPath]).toEqual(['c3', 3, false, true]);
+    expect((deep.waves[0].segments ?? []).map((node) => node.phaseId)).toEqual(['call-out']);
   });
 
-  it('an explicitly expanded composition id overrides the depth rule', () => {
+  it('an expanded composition id opens exactly that row, and no other', () => {
     const view = nestedView();
-    let node = nodeById(segmentsOf(view, 'root', ['c3']), 'call-out').attempts[0].chain[0];
-    node = node.waves[0].segments[0].attempts[0].chain[0];
-    node = node.waves[0].segments[0].attempts[0].chain[0];
-    expect([node.itemId, node.collapsed]).toEqual(['c3', false]);
+    const first = chainAt(view, ['c1'], 0);
+    expect([first.itemId, first.collapsed]).toEqual(['c1', false]);
+    const second = chainAt(view, ['c1'], 1);
+    expect([second.itemId, second.collapsed]).toEqual(['c2', true]);
+  });
+
+  // Even an OPEN composition shows only its live lap: its settled laps fold to
+  // the same rows a top-level lap folds to, off the same expansion set.
+  it('an open composition folds its finished laps and opens the one the reader names', () => {
+    const view = makeView([
+      makeRun('root', {
+        state: 'running',
+        skeleton: [skeletonPhase('call-out', { shape: 'call', callTarget: 'inner' })],
+        phases: [makePhase('call-out', { status: 'running', endedAt: 0 })],
+      }),
+      makeRun('lap-1', {
+        workflowId: 'inner', state: 'done', endedAt: 200_000,
+        parentItemId: 'root', parentPhaseId: 'call-out', parentAttempt: 1,
+        tailSelfCall: true, skeleton: campaignSkeleton(),
+        phases: [makePhase('audit'), makePhase('next')],
+      }),
+      makeRun('lap-2', {
+        workflowId: 'inner', state: 'running',
+        parentItemId: 'lap-1', parentPhaseId: 'next', parentAttempt: 1,
+        tailSelfCall: true, skeleton: campaignSkeleton(),
+        phases: [makePhase('audit', { status: 'running', endedAt: 0, startedAt: 9_900_000 })],
+      }),
+    ], 'root');
+
+    const folded = nodeById(segmentsOf(view, 'root', ['lap-1']), 'call-out').attempts[0].chain[0];
+    expect(folded.waves.map((wave) => [wave.itemId, wave.folded, wave.segments === null]))
+      .toEqual([['lap-1', true, true], ['lap-2', false, false]]);
+    expect(folded.waves[0].summary.label).toBe('wave 1');
+
+    // The reader opens lap 1 through the SAME `expandedWaveIds` a top-level lap
+    // uses — a lap is a lap, wherever it sits.
+    const opened = buildRunMap(view, NOW, {
+      expandedWaveIds: ['root', 'lap-1'],
+      expandedCompositionIds: ['lap-1'],
+    }).waves[0].segments ?? [];
+    const composition = nodeById(opened, 'call-out').attempts[0].chain[0];
+    // `next` is the tail self-call, so it renders as the lap's loop foot.
+    expect((composition.waves[0].segments ?? []).map((node) => node.phaseId))
+      .toEqual(['audit', 'fix', 'next']);
   });
 
   it('a collapsed composition still reports its subtree counts', () => {
@@ -1387,7 +1537,6 @@ describe('adversarial shapes', () => {
     const fan = fanOf(segmentsOf(view, 'root'), 'port');
     expect(fan.columns).toHaveLength(1);
     expect(fan.queued.count + fan.done.count + fan.columns.length).toBe(32);
-    expect(fan.totals.total).toBe(32);
   });
 
   it('units sort by unitIndex then id, joins last, whatever order they arrive in', () => {

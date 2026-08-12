@@ -316,7 +316,21 @@ export interface RunMapUnitChip {
 export interface RunMapBranch {
   key: string;
   unit: RunMapUnitChip;
+  /**
+   * The called runs hanging off this lane, or `[]` while the lane is collapsed
+   * — the same "not built" convention `RunMapWave.segments` uses, so there is
+   * one answer to "is this open" rather than a flag a caller could disagree
+   * with.
+   */
   chain: RunMapCompositionNode[];
+  /**
+   * A SETTLED lane folds to its header alone (§7): the header carries the
+   * glyph, the unit id and the duration, which is the whole summary, and the
+   * subtree it finished is one click away rather than painted forever.
+   */
+  collapsed: boolean;
+  /** False for a lane with nothing under it, and for a live one that never folds. */
+  toggleable: boolean;
   onFrontierPath: boolean;
 }
 
@@ -325,10 +339,30 @@ export interface RunMapUnitGroup {
   key: string;
   count: number;
   droppedCount: number;
+  /**
+   * `ports 2–4 · queued` when the group is one contiguous run of lanes off one
+   * phase, else the count (`3 units · queued`). The range is what the reader
+   * can act on — which lanes these are — and a bare `·N` never said it.
+   */
   label: string;
+  /**
+   * The units behind the label, or `[]` when the group has nothing a click
+   * would ADD. A queued lane has no records, no thread and no duration, so its
+   * chip repeats what the group label already said; `count` is what says how
+   * many there are. `done` keeps its entries because the dropped ones live in
+   * there (§6, fan scale) and nothing else states them.
+   */
   entries: RunMapUnitChip[];
 }
 
+/**
+ * A fan-out attempt, partitioned into what gets geometry and what gets
+ * arithmetic (§6). There is deliberately no tally field beside these three: the
+ * fan's width is `columns.length + queued.count + done.entries.length`, the
+ * wave's summary row already states the wave's own unit counts, and a second
+ * number saying the same thing under the same node was noise the reader had to
+ * reconcile.
+ */
 export interface RunMapFan {
   key: string;
   attempt: number;
@@ -336,7 +370,6 @@ export interface RunMapFan {
   queued: RunMapUnitGroup;
   done: RunMapUnitGroup;
   join: RunMapUnitChip | null;
-  totals: RunMapUnitTotals;
 }
 
 export interface RunMapAttempt {
@@ -397,15 +430,26 @@ export interface RunMapCompositionSummary {
   label: string;
 }
 
+/**
+ * One lap of a called run's own wave chain. Identical in kind to a top-level
+ * `RunMapWave` — a lap is a lap — so it folds by the same rule and answers
+ * "open" the same way: `segments === null` is closed, and the reader's
+ * `expandedWaveIds` opens it. An open composition therefore shows its LIVE
+ * lap's flow and nothing more; its finished laps are one row each.
+ */
 export interface RunMapCompositionWave {
   key: string;
   itemId: string;
   ordinal: number;
   /** Which try at this lap; 0 when the lap has a single wave (see RunMapWave). */
   lapSeq: number;
+  /** Terminal: this lap folds to its summary row unless the reader opened it. */
+  folded: boolean;
   status: RunMapRunStatus;
+  signal: RunMapSignal;
   summary: RunMapWaveSummary;
-  segments: RunMapSegmentNode[];
+  /** Null when folded and unopened — the same "not built" rule as RunMapWave. */
+  segments: RunMapSegmentNode[] | null;
   onFrontierPath: boolean;
 }
 
@@ -419,27 +463,48 @@ export interface RunMapCompositionNode {
   status: RunMapRunStatus;
   signal: RunMapSignal;
   duration: string;
-  /** Deeper than two levels and off the frontier ⇒ a summary row with inline expand. */
+  /**
+   * The amber line the sub-card carries while this called run waits on a
+   * person, `''` otherwise (§4, R1). Precomputed like every other string here.
+   */
+  blockerLabel: string;
+  /**
+   * Collapsed to one summary row. TRUE by default for every composition off
+   * the frontier path, at every depth (§3): the map's reading rule is that only
+   * the live path is open, so a settled or not-yet-reached call is one line
+   * with its subtree counts on it and nothing else. The frontier path is never
+   * collapsed — that is the "no clicks to see what is running" half.
+   */
   collapsed: boolean;
   /**
-   * Whether this row's collapse can be toggled at all. The depth rule that
-   * decides it is the projection's (§6), so the component reads the answer
-   * instead of re-deriving it from a depth constant it would have to import.
+   * Whether this row's collapse can be toggled at all — false exactly on the
+   * frontier path, which is force-open. The rule is the projection's, so the
+   * component reads the answer rather than re-deriving it.
    */
   toggleable: boolean;
   summary: RunMapCompositionSummary;
+  /** `[]` while collapsed: a folded composition builds no laps at all. */
   waves: RunMapCompositionWave[];
   onFrontierPath: boolean;
 }
 
 export interface RunMapBuildOptions {
   /**
-   * Folded waves the reader opened. A wave named here gets its `segments`
-   * built; the live wave always does, because it is what the map is for.
+   * Folded waves the reader opened, by wave item id — top-level laps and the
+   * laps inside an open composition alike, because a lap is a lap. A wave named
+   * here gets its `segments` built; the live wave always does, because it is
+   * what the map is for.
    */
   expandedWaveIds?: Iterable<string>;
-  /** Composition ids the user expanded past the §6 depth rule. */
+  /** Called-run ids the reader opened; every composition off the frontier is folded by default. */
   expandedCompositionIds?: Iterable<string>;
+  /**
+   * Fan lanes the reader opened, by BRANCH key. Settled lanes fold to their
+   * header (§7); this is what puts their subtree back on screen. Keyed apart
+   * from `expandedCompositionIds` because a lane is a unit, not a called run —
+   * one lane can hold several called runs, and one click has to open the lane.
+   */
+  expandedLaneIds?: Iterable<string>;
 }
 
 /**

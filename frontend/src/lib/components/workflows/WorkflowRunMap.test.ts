@@ -5,7 +5,7 @@
 // proves the rendered thing is what the projection actually says — the two
 // cannot drift into agreeing with each other about a shape neither produces.
 
-import { fireEvent, render, waitFor } from '@testing-library/svelte';
+import { cleanup, fireEvent, render, waitFor } from '@testing-library/svelte';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { WorkflowRunMapView } from '../../../../bindings/agent-overflow/models';
 import {
@@ -29,6 +29,7 @@ import {
 import { __resetRunningElapsedTickerForTest } from '../chat/useRunningElapsed.svelte';
 import { getSettings } from '../../stores/settings.svelte';
 import { runMapNodeStyle } from '../../utils/workflowRunMapStyle';
+import { branchKeyOf } from '../../utils/workflowRunMapIndex';
 import { getBindingMock, resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
 
 const NOW = 10_000_000;
@@ -107,7 +108,11 @@ function fanView(): WorkflowRunMapView {
  * happy-dom lays nothing out — every rect is 0×0 at the origin — so the
  * stand-in states a viewport that CONTAINS the origin. Without that, every
  * unlaid-out row reads as off-screen and the chip appears in states it never
- * would in a browser. Geometry decisions are proved against a stated layout in
+ * would in a browser. It also states a document TALLER than that viewport: the
+ * disengaged chip is an offer to travel (§9.10), and a surface with nothing to
+ * scroll has no offer to make, so a stand-in that could not scroll would
+ * describe an overlay body that does not exist and hide the chip in every case
+ * below. Geometry decisions are proved against a stated layout in
  * `runMapFollow.svelte.test.ts`; what these tests prove is the wiring.
  */
 function asScroller(el: HTMLElement): HTMLElement {
@@ -115,9 +120,8 @@ function asScroller(el: HTMLElement): HTMLElement {
     x: 0, y: -1000, top: -1000, bottom: 1000, left: 0, right: 1000,
     width: 1000, height: 2000, toJSON: () => ({}),
   }) as DOMRect;
-  for (const key of ['clientHeight', 'scrollHeight']) {
-    Object.defineProperty(el, key, { get: () => 2000, configurable: true });
-  }
+  Object.defineProperty(el, 'clientHeight', { get: () => 2000, configurable: true });
+  Object.defineProperty(el, 'scrollHeight', { get: () => 6000, configurable: true });
   return el;
 }
 
@@ -141,8 +145,16 @@ function mountMap(view: WorkflowRunMapView, itemId = view.rootItemId) {
 }
 
 /** One wave rendered on its own, for the node/fan cases the map only hosts. */
-function mountWave(view: WorkflowRunMapView, waveItemId = view.rootItemId) {
-  const model = buildRunMap(view, NOW, { expandedWaveIds: [waveItemId] });
+function mountWave(
+  view: WorkflowRunMapView,
+  waveItemId = view.rootItemId,
+  options: { compositions?: string[]; lanes?: string[] } = {},
+) {
+  const model = buildRunMap(view, NOW, {
+    expandedWaveIds: [waveItemId],
+    expandedCompositionIds: options.compositions ?? [],
+    expandedLaneIds: options.lanes ?? [],
+  });
   const wave = model.waves.find((candidate) => candidate.itemId === waveItemId);
   if (!wave) throw new Error(`no wave ${waveItemId}`);
   // The scroller context is required here too: a wave's fold asks whether its
@@ -156,7 +168,9 @@ function mountWave(view: WorkflowRunMapView, waveItemId = view.rootItemId) {
       wave,
       nowKey: model.followTarget?.key ?? '',
       onOpenThread: () => {},
+      onToggleWave: () => {},
       onToggleComposition: () => {},
+      onToggleLane: () => {},
     },
     context: new Map<symbol, () => HTMLElement | null>([
       [WORKFLOWS_OVERLAY_SCROLLER_KEY, () => scroller.el],
@@ -199,11 +213,12 @@ describe('WorkflowRunMap — the surface', () => {
     // a wrong number rather than as a label string that happens to still read.
     expect(view.getAllByTestId('workflow-map-summary').map((row) => row.dataset.waveOrdinal))
       .toEqual(['1', '2', '3']);
-    // §2: the wave the run is IN gets the emphasis, and it is the rail's weight
-    // rather than a hue. Only the live wave on the frontier path is current.
-    expect(view.getAllByTestId('workflow-map-wave-body').map((body) => body.dataset.current))
+    // §2: the wave the run is IN gets the emphasis, and it is the CARD's weight
+    // rather than a hue. Only the live wave on the frontier path is current, so
+    // the map reads as one open path with settled laps as single lines above it.
+    expect(view.getAllByTestId('workflow-map-wave-card').map((card) => card.dataset.current))
       .toEqual(['false', 'false', 'true']);
-    expect(view.getAllByTestId('workflow-map-wave-body')[2].className).toContain('border-border-strong');
+    expect(view.getAllByTestId('workflow-map-wave-card')[2].className).toContain('border-border-strong');
     // Only the live wave draws nodes; the folded ones cost nothing.
     expect(view.getAllByTestId('workflow-map-node').length).toBeGreaterThan(0);
     expect(view.getAllByTestId('workflow-map-node').every((node) => node.closest('[data-wave-expanded="true"]') !== null))
@@ -497,7 +512,7 @@ describe('WorkflowRunMapNode — the state table', () => {
       phases: [makePhase('plan', { status: 'failed', cause: 'agent exited 1' })],
     })]);
     const view = mountWave(failed);
-    const node = view.container.querySelector('[data-signal="failed"]');
+    const node = view.container.querySelector('[data-testid="workflow-map-node"][data-signal="failed"]');
     expect(node).not.toBeNull();
     expect(node?.querySelector('.border-error')).not.toBeNull();
   });
@@ -558,9 +573,140 @@ describe('WorkflowRunMapFan', () => {
     const view = mountWave(fanView());
     expect(view.getAllByTestId('workflow-map-branch').map((node) => node.dataset.unitId))
       .toEqual(['port-b', 'port-c']);
-    expect(view.getAllByTestId('workflow-map-group').map((node) => node.textContent?.trim()))
-      .toEqual(['queued ·1', 'done ·1 · 1 dropped']);
+    // §7: the queued lanes become ONE node that names the range it stands for,
+    // not a count the reader cannot place against the columns beside it.
+    expect(view.getAllByTestId('workflow-map-group').map((node) => node.textContent?.trim().replace(/\s+/g, ' ')))
+      .toEqual(['done ·1 · 1 dropped', '◌ ports 3 · queued']);
     expect(view.getByTestId('workflow-map-join').textContent).toContain('port-join');
+  });
+
+  // Lane headers are the mockup's small-caps names above each column, and they
+  // ARE the lane's summary: glyph, name, duration. A collapsed lane draws
+  // nothing else, which is what makes "one summary node per settled lane" true.
+  it('heads every lane with its unit name, in the surface\'s small-caps treatment', () => {
+    const view = mountWave(fanView());
+    const names = view.getAllByTestId('workflow-map-lane-name');
+    expect(names.map((name) => name.textContent?.trim())).toEqual(['port-b', 'port-c']);
+    expect(names[0].className).toContain('uppercase');
+  });
+
+  /** A fan whose FINISHED unit called a run: settled, but with structure under it. */
+  function settledLaneView(): WorkflowRunMapView {
+    return makeView([
+      makeRun('root', {
+        state: 'running',
+        skeleton: [skeletonPhase('port', { name: 'ports', shape: 'fan-out' })],
+        phases: [makePhase('port', { status: 'running', endedAt: 0, startedAt: 9_880_000 })],
+        units: [
+          makeUnit('port-a', { unitIndex: 0, status: 'done' }),
+          makeUnit('port-b', { unitIndex: 1, status: 'running', endedAt: 0, startedAt: 9_970_000 }),
+        ],
+      }),
+      makeRun('port-a-child', {
+        workflowId: 'porter', state: 'done',
+        parentItemId: 'root', parentPhaseId: 'port', parentAttempt: 1, parentUnitId: 'port-a',
+        skeleton: [skeletonPhase('land')],
+        phases: [makePhase('land')],
+      }),
+    ], 'root');
+  }
+
+  // §7: a settled lane with a subtree is ONE line — the header, and a toggle
+  // that says how much is behind it. Painting a finished child workflow's whole
+  // history in a lane is what turned a three-lane campaign into sixty rows.
+  it('folds a settled lane to its header alone, with its subtree one click away', () => {
+    const folded = mountWave(settledLaneView());
+    const lanes = folded.getAllByTestId('workflow-map-branch');
+    expect(lanes.map((lane) => [lane.dataset.unitId, lane.dataset.collapsed]))
+      .toEqual([['port-a', 'true'], ['port-b', 'false']]);
+    expect(folded.getByTestId('workflow-map-lane-toggle').textContent?.trim()).toBe('1 run');
+    // Collapsed is NOT BUILT: the child run's node is nowhere in the DOM.
+    expect(folded.queryAllByTestId('workflow-map-composition')).toHaveLength(0);
+
+    // Queries are bound to the document, so the folded mount has to go before
+    // the opened one is asked about — two mounts of the same wave would
+    // otherwise answer with whichever rendered first.
+    cleanup();
+    const opened = mountWave(settledLaneView(), 'root',
+      { lanes: [branchKeyOf('root', 'port', 1, 'port-a')] });
+    expect(opened.getAllByTestId('workflow-map-branch')[0].dataset.collapsed).toBe('false');
+    expect(opened.getAllByTestId('workflow-map-composition')
+      .map((row) => row.dataset.compositionItemId)).toEqual(['port-a-child']);
+  });
+
+  /** `count` settled call-bound units beside one running lane. */
+  function foldedLanesView(count: number): WorkflowRunMapView {
+    const settled = Array.from({ length: count }, (_, index) => `port-s${index}`);
+    return makeView([
+      makeRun('root', {
+        state: 'running',
+        skeleton: [skeletonPhase('port', { name: 'ports', shape: 'fan-out' })],
+        phases: [makePhase('port', { status: 'running', endedAt: 0, startedAt: 9_880_000 })],
+        units: [
+          ...settled.map((unitId, index) => makeUnit(unitId, { unitIndex: index, status: 'done' })),
+          makeUnit('port-live', { unitIndex: count, status: 'running', endedAt: 0, startedAt: 9_970_000 }),
+        ],
+      }),
+      ...settled.map((unitId) => makeRun(`${unitId}-child`, {
+        workflowId: 'porter', state: 'done',
+        parentItemId: 'root', parentPhaseId: 'port', parentAttempt: 1, parentUnitId: unitId,
+        skeleton: [skeletonPhase('land')],
+        phases: [makePhase('land')],
+      })),
+    ], 'root');
+  }
+
+  // A folded lane is ONE line, so the unit name is the only identity it has
+  // left — it must be the last thing to give, not the first. The open columns
+  // flex (120–200px) and past them the fan region scrolls; a folded lane is
+  // `flex: none` and its label is `whitespace-nowrap`, never ellipsised.
+  // Regression: eight folded lanes beside a live one rendered "✓ POR… 2s".
+  it('a folded lane never eats its own label — the open columns are what flex', () => {
+    const view = mountWave(foldedLanesView(8));
+    const lanes = view.getAllByTestId('workflow-map-branch');
+    const folded = lanes.filter((lane) => lane.dataset.collapsed === 'true');
+    const open = lanes.filter((lane) => lane.dataset.collapsed === 'false');
+    expect([folded.length, open.length]).toEqual([8, 1]);
+
+    for (const lane of folded) {
+      // Intrinsic width: nothing that would let the fan take room back off it.
+      expect(lane.className).toContain('flex-none');
+      expect(lane.className).not.toContain('max-w-[var(--run-map-lane-max)]');
+    }
+    // The open column is the elastic one, and the only one with a floor.
+    expect(open[0].className).toContain('flex-[1_1_var(--run-map-lane-max)]');
+    expect(open[0].className).toContain('min-w-[var(--run-map-lane-min)]');
+
+    const names = view.getAllByTestId('workflow-map-lane-name');
+    const foldedNames = names.slice(0, 8);
+    for (const name of foldedNames) {
+      expect(name.className).toContain('whitespace-nowrap');
+      expect(name.className).not.toContain('truncate');
+      expect(name.textContent?.trim()).toMatch(/^port-s\d$/);
+    }
+    // …and the open column's name still yields, because it has a column's
+    // worth of chain underneath saying what it is.
+    expect(names[8].className).toContain('truncate');
+  });
+
+  // Same rule, same reason: the range IS the group's identity.
+  it('the queued group states its whole range rather than ellipsising it', () => {
+    const view = mountWave(fanView());
+    const queued = view.getAllByTestId('workflow-map-group')
+      .find((node) => node.dataset.groupKind === 'queued');
+    const label = queued?.querySelector('span:last-child');
+    expect(label?.textContent?.trim()).toBe('ports 3 · queued');
+    expect(label?.className).toContain('whitespace-nowrap');
+    expect(label?.className).not.toContain('truncate');
+  });
+
+  // Non-interactive by construction, not by a disabled button: the model holds
+  // no entries for a queued group, so there is nothing a click could reveal.
+  it('offers no affordance on the queued group, because it stands for no records', () => {
+    const view = mountWave(fanView());
+    const queued = view.getAllByTestId('workflow-map-group')
+      .find((node) => node.dataset.groupKind === 'queued');
+    expect(queued?.querySelector('button')).toBeNull();
   });
 
   // The fan's two shapes carry their state on the element that drew it, so a
@@ -569,7 +715,7 @@ describe('WorkflowRunMapFan', () => {
   it('states each unit\'s signal and each group\'s kind on the element that drew it', () => {
     const view = mountWave(fanView());
     expect(view.getAllByTestId('workflow-map-group').map((node) => node.dataset.groupKind))
-      .toEqual(['queued', 'done']);
+      .toEqual(['done', 'queued']);
     // Columns first, then the join; the scalar bulk is inside the closed folds.
     expect([...view.container.querySelectorAll<HTMLElement>('[data-unit-signal]')]
       .map((node) => [node.dataset.unitId, node.dataset.unitSignal]))
@@ -580,12 +726,13 @@ describe('WorkflowRunMapFan', () => {
       ]);
   });
 
-  it('expands a group chip into a wrapping unit grid, dropped entries struck', async () => {
+  it('expands the done group into a wrapping unit grid, dropped entries struck', async () => {
     const view = mountWave(fanView());
-    const done = view.getAllByTestId('workflow-map-group')[1];
+    const done = view.getAllByTestId('workflow-map-group')[0].querySelector('button');
+    expect(done).not.toBeNull();
     expect(view.container.querySelector('[data-unit-id="port-e"]')).toBeNull();
 
-    await fireEvent.click(done);
+    await fireEvent.click(done as HTMLElement);
     await waitFor(() => expect(view.container.querySelector('[data-unit-id="port-e"]')).not.toBeNull());
     const dropped = view.container.querySelector('[data-unit-id="port-e"] button');
     expect(dropped?.className).toContain('line-through');
@@ -614,6 +761,10 @@ describe('WorkflowRunMapFan', () => {
 
     getSettings().lowPowerMode = true;
     try {
+      // Queries are document-scoped, so the lit mount goes before the dark one
+      // is asked about — two mounts of the same wave would otherwise answer
+      // with whichever rendered first.
+      cleanup();
       const dark = mountWave(fanView());
       expect(dark.getAllByTestId('workflow-map-branch')[0].className).not.toContain('run-map-column');
       expect(dark.getAllByTestId('workflow-map-group-fold')[0].className).not.toContain('transition-');
@@ -662,5 +813,71 @@ describe('composition — a called run inside its caller', () => {
     const view = mountWave(compositionView());
     expect(view.getAllByTestId('workflow-map-node').map((node) => node.dataset.phaseId))
       .toEqual(['plan', 'sub', 'build']);
+  });
+
+  /** The same shape, but the call is FINISHED and the run has moved past it. */
+  function settledCompositionView(): WorkflowRunMapView {
+    return makeView([
+      makeRun('root', {
+        state: 'running',
+        skeleton: [
+          skeletonPhase('sub', { shape: 'call', callTarget: 'inner' }),
+          skeletonPhase('ship'),
+        ],
+        phases: [makePhase('sub'), makePhase('ship', { status: 'running', endedAt: 0, startedAt: 9_900_000 })],
+      }),
+      makeRun('child', {
+        workflowId: 'inner', state: 'done',
+        parentItemId: 'root', parentPhaseId: 'sub', parentAttempt: 1, callDepth: 1,
+        skeleton: [skeletonPhase('build')],
+        phases: [makePhase('build')],
+      }),
+    ], 'root');
+  }
+
+  // §3/§7: off the frontier path a composition is ONE row at every depth, and
+  // the depth it sits at has nothing to do with it — "is this where the run IS"
+  // is the whole question. The old rule gave the first two levels away free,
+  // which is exactly the wall a real campaign hits.
+  it('collapses a composition off the frontier path to one row, and opens it on click', () => {
+    const folded = mountWave(settledCompositionView());
+    const row = folded.getByTestId('workflow-map-composition');
+    expect(row.dataset.collapsed).toBe('true');
+    expect(row.textContent).toContain('inner');
+    // Collapsed is NOT BUILT: the child's own phase is nowhere in the DOM.
+    expect(folded.getAllByTestId('workflow-map-node').map((node) => node.dataset.phaseId))
+      .toEqual(['sub', 'ship']);
+    expect(folded.getByTestId('workflow-map-composition-row').getAttribute('aria-expanded')).toBe('false');
+
+    cleanup();
+    const opened = mountWave(settledCompositionView(), 'root', { compositions: ['child'] });
+    expect(opened.getByTestId('workflow-map-composition').dataset.collapsed).toBe('false');
+    expect(opened.getAllByTestId('workflow-map-node').map((node) => node.dataset.phaseId))
+      .toEqual(['sub', 'build', 'ship']);
+  });
+
+  // The frontier composition is a FRAME, not a row: §2's one structural
+  // emphasis, carrying the amber line when a person is what it is waiting on.
+  it('frames the live composition and states its blocker where the reader is looking', () => {
+    const view = makeView([
+      makeRun('root', {
+        state: 'running',
+        skeleton: [skeletonPhase('sub', { shape: 'call', callTarget: 'inner' })],
+        phases: [makePhase('sub', { status: 'running', endedAt: 0, startedAt: 9_900_000 })],
+      }),
+      makeRun('child', {
+        workflowId: 'inner', state: 'needs-human', reason: 'gate',
+        parentItemId: 'root', parentPhaseId: 'sub', parentAttempt: 1, callDepth: 1,
+        skeleton: [skeletonPhase('verdict')],
+        phases: [makePhase('verdict', { status: 'parked', endedAt: 0, startedAt: 9_950_000 })],
+      }),
+    ], 'root');
+    const rendered = mountWave(view);
+    const composition = rendered.getByTestId('workflow-map-composition');
+    expect(composition.dataset.collapsed).toBe('false');
+    expect(composition.className).toContain('rounded-lg');
+    expect(rendered.getByTestId('workflow-map-composition-blocker').textContent).toContain('Review gate');
+    // Nothing to fold on the path the reader is watching.
+    expect(rendered.getByTestId('workflow-map-composition-row')).toBeDisabled();
   });
 });
