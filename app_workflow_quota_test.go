@@ -496,7 +496,7 @@ func TestQuotaWindowsAreRecordedThroughEveryObserveGuard(t *testing.T) {
 			a.timer = &fakeWorkflowTimer{active: true}
 		}},
 		{name: "awaiting a retry's first turn", setup: func(a *workflowAttempt) {
-			a.awaitingRetryStart = true
+			a.awaitingTurnStart = true
 		}},
 		{name: "a turn in flight", setup: func(*workflowAttempt) {}},
 	} {

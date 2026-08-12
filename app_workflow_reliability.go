@@ -128,8 +128,12 @@ func (r *workflowAppRunner) disarmTimerLocked(attempt *workflowAttempt) {
 func (r *workflowAppRunner) scheduleTransientLocked(runKey string, attempt *workflowAttempt) bool {
 	r.disarmTimerLocked(attempt)
 	attempt.turnStarted = false
+	attempt.currentTurnID = ""
 	attempt.pendingTransient = false
 	attempt.claudeTransientRetry = false
+	// Advancing the ladder retires whatever the previous state queued. This is the
+	// only place a rung is armed, so it is the only place the epoch has to move.
+	attempt.sendEpoch++
 	if attempt.transientRetryCount >= len(attempt.backoff) {
 		return true
 	}
@@ -160,15 +164,38 @@ func (r *workflowAppRunner) timerFired(runKey string) {
 		r.stopAndFinish(runKey, engine.Outcome{Kind: engine.OutcomeStalled})
 		return
 	}
+	// The session died while this backoff was pending. `sessionDisconnected` owns
+	// the next rung from here, so the held resend is dropped rather than fired
+	// into a process being reaped — which is how a transient ladder used to turn
+	// into an execution-failure park. The watchdog bounds the wait for a
+	// disconnect that is not guaranteed to arrive.
+	if attempt.pendingSessionDeath {
+		r.armWatchdogLocked(runKey, attempt)
+		r.mu.Unlock()
+		return
+	}
 	// Codex identifies the next sub-attempt with EventTurnStart. Until it
-	// arrives, ignore a delayed terminal event from the preceding turn.
-	attempt.awaitingRetryStart = attempt.provider == string(provider.Codex)
+	// arrives, ignore a delayed terminal event from the preceding turn. This one
+	// is set BEFORE the send is dispatched rather than after it lands, because
+	// the events it guards against are already in flight from the turn that just
+	// failed — the other two Codex sends open their window at the send itself and
+	// are covered at the chokepoint.
+	attempt.awaitingTurnStart = attempt.provider == string(provider.Codex)
+	// The retry's turn is not guaranteed to start: a send that reaches a session
+	// whose turn is somehow still alive is queued into that turn rather than
+	// starting one. The watchdog is the hard deadline on that wait — `observe`
+	// returns above its reset while `awaitingTurnStart` holds, so nothing can
+	// push it out — and a retry that never starts parks `stalled` instead of
+	// leaving the run `running` with no timer. Claude re-arms it on a successful
+	// send, which is the same watchdog disarmed and armed again.
+	r.armWatchdogLocked(runKey, attempt)
 	message := attempt.currentPrompt
 	schema := append(json.RawMessage(nil), attempt.schema...)
+	epoch := attempt.sendEpoch
 	r.mu.Unlock()
 
 	go func() {
-		sent, err := r.sendIfActive(runKey, message, schema)
+		sent, err := r.sendIfActive(runKey, message, schema, epoch)
 		if sent && err != nil {
 			r.finish(runKey, engine.Outcome{
 				Kind:   engine.OutcomeExecutionFailure,
@@ -248,8 +275,14 @@ func workflowTransientError(providerName string, event provider.ProviderEvent, c
 			return true, meta.ExpectTurnComplete
 		}
 	case string(provider.Codex):
+		// A Codex `error` notification is informational: the authoritative
+		// terminal signal is `turn/completed`, which core always emits and marks
+		// `failed` when the turn errored. Waiting for it is what keeps the ladder
+		// from arming while the turn is still alive — a retry sent into a live
+		// turn is absorbed as queued input and mints a turn id nothing ever
+		// starts, which is a permanent hang rather than a retry.
 		if codexTransientErrorInfo(meta.Wire.Error.CodexErrorInfo) {
-			return true, false
+			return true, true
 		}
 	}
 	return false, false

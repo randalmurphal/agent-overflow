@@ -457,6 +457,7 @@ while IFS= read -r line; do
     turn=$((turn+1))
     printf '%%s' "$turn" > %q
     printf '{"jsonrpc":"2.0","id":%%s,"result":{"turn":{"id":"turn-%%s"}}}\n' "$id" "$turn"
+    printf '{"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"takeover-provider-thread","turn":{"id":"turn-%%s"}}}\n' "$turn"
     if [ "$turn" -eq 1 ]; then
       text='{"status":"question","outputs":null,"question":"Take over?","reason":null}'
     elif [ "$turn" -eq 2 ]; then

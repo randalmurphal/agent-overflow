@@ -118,11 +118,14 @@ func TestWorkflowTransientSignalAllowlist(t *testing.T) {
 		{name: "claude rate limit", provider: string(provider.Claude), meta: `{"api_error_enum":"rate_limit","fatal":true,"expect_turn_complete":true}`, transient: true, waits: true},
 		{name: "claude server error without typed precursor excluded", provider: string(provider.Claude), meta: `{"api_error_enum":"server_error","fatal":true,"expect_turn_complete":true}`},
 		{name: "claude signal excluded for codex", provider: string(provider.Codex), meta: `{"api_error_enum":"rate_limit","fatal":true,"expect_turn_complete":true}`},
-		{name: "codex overloaded", provider: string(provider.Codex), meta: `{"fatal":true,"wire":{"error":{"codexErrorInfo":"serverOverloaded"}}}`, transient: true},
-		{name: "codex usage limit", provider: string(provider.Codex), meta: `{"fatal":true,"wire":{"error":{"codexErrorInfo":"usageLimitExceeded"}}}`, transient: true},
-		{name: "codex http connection", provider: string(provider.Codex), meta: `{"fatal":true,"wire":{"error":{"codexErrorInfo":{"httpConnectionFailed":{"httpStatusCode":503}}}}}`, transient: true},
-		{name: "codex stream connection", provider: string(provider.Codex), meta: `{"fatal":true,"wire":{"error":{"codexErrorInfo":{"responseStreamConnectionFailed":{"httpStatusCode":429}}}}}`, transient: true},
-		{name: "codex stream disconnected", provider: string(provider.Codex), meta: `{"fatal":true,"wire":{"error":{"codexErrorInfo":{"responseStreamDisconnected":{"httpStatusCode":null}}}}}`, transient: true},
+		// Every codex signal waits for `turn/completed`: the error notification is
+		// informational and core always terminates the turn, so acting on the
+		// notification arms the ladder while the turn is still alive.
+		{name: "codex overloaded", provider: string(provider.Codex), meta: `{"fatal":true,"wire":{"error":{"codexErrorInfo":"serverOverloaded"}}}`, transient: true, waits: true},
+		{name: "codex usage limit", provider: string(provider.Codex), meta: `{"fatal":true,"wire":{"error":{"codexErrorInfo":"usageLimitExceeded"}}}`, transient: true, waits: true},
+		{name: "codex http connection", provider: string(provider.Codex), meta: `{"fatal":true,"wire":{"error":{"codexErrorInfo":{"httpConnectionFailed":{"httpStatusCode":503}}}}}`, transient: true, waits: true},
+		{name: "codex stream connection", provider: string(provider.Codex), meta: `{"fatal":true,"wire":{"error":{"codexErrorInfo":{"responseStreamConnectionFailed":{"httpStatusCode":429}}}}}`, transient: true, waits: true},
+		{name: "codex stream disconnected", provider: string(provider.Codex), meta: `{"fatal":true,"wire":{"error":{"codexErrorInfo":{"responseStreamDisconnected":{"httpStatusCode":null}}}}}`, transient: true, waits: true},
 		{name: "codex signal excluded for claude", provider: string(provider.Claude), meta: `{"fatal":true,"wire":{"error":{"codexErrorInfo":"serverOverloaded"}}}`},
 		{name: "codex internal server excluded", provider: string(provider.Codex), meta: `{"fatal":true,"wire":{"error":{"codexErrorInfo":"internalServerError"}}}`},
 		{name: "codex unknown excluded", provider: string(provider.Codex), meta: `{"fatal":true,"wire":{"error":{"codexErrorInfo":"other"}}}`},
@@ -234,25 +237,30 @@ func TestWorkflowStopDuringBackoffDisarmsRetry(t *testing.T) {
 	key := engine.RunKey{ItemID: "item", PhaseID: "phase", Attempt: 1}
 	runKey := workflowRunKey(key)
 	completed := false
-	runner.runs[runKey] = &workflowAttempt{
+	attempt := &workflowAttempt{
 		workflowCompletion: workflowCompletion{key: key},
-		threadID:           "thread", backoff: []time.Duration{time.Second},
+		threadID:           "thread", watchdog: time.Hour, backoff: []time.Duration{time.Second},
 		complete: func(engine.Outcome) { completed = true },
 	}
+	runner.runs[runKey] = attempt
 	runner.schemas["thread"] = json.RawMessage(`{}`)
 	runner.workItems["thread"] = key.ItemID
 
+	// A session death is latched, not laddered: the backoff may only start once
+	// the dead session has left App's registry. What the error DOES arm is the
+	// watchdog, so a session that errors and then never reports the disconnect
+	// still ends the attempt instead of waiting forever.
 	runner.observe(runKey, provider.ProviderEvent{Kind: provider.EventSessionStatus, Content: "error"})
-	if timer != nil {
-		t.Fatal("transient death armed backoff before session unregister")
+	if attempt.timerMode != workflowTimerWatchdog {
+		t.Fatalf("transient death armed mode %v before session unregister, want the watchdog", attempt.timerMode)
 	}
 	runner.observe(runKey, provider.ProviderEvent{Kind: provider.EventSessionStatus, Content: "disconnected"})
-	if timer != nil {
-		t.Fatal("disconnected observer armed backoff before session unregister")
+	if attempt.timerMode != workflowTimerWatchdog {
+		t.Fatalf("disconnected observer armed mode %v before session unregister", attempt.timerMode)
 	}
 	runner.sessionDisconnected("thread")
-	if timer == nil || !timer.active {
-		t.Fatal("post-unregister death did not arm backoff")
+	if attempt.timerMode != workflowTimerBackoff || timer == nil || !timer.active {
+		t.Fatalf("post-unregister death armed mode %v, want the backoff", attempt.timerMode)
 	}
 	if _, err := runner.Stop(nil, key); err != nil {
 		t.Fatal(err)
@@ -273,6 +281,7 @@ func TestWorkflowTransientRetryExhaustionCleansAttempt(t *testing.T) {
 	outcomes := make(chan engine.Outcome, 1)
 	runner.runs[runKey] = &workflowAttempt{
 		workflowCompletion: workflowCompletion{key: key}, threadID: "thread",
+		watchdog: time.Hour,
 		complete: func(outcome engine.Outcome) { outcomes <- outcome },
 	}
 	runner.schemas["thread"] = json.RawMessage(`{}`)
@@ -304,11 +313,15 @@ func TestWorkflowTransientRetryExhaustionCleansAttempt(t *testing.T) {
 
 func TestWorkflowCodexRetryIgnoresPriorTerminalUntilTurnStarts(t *testing.T) {
 	runner := newWorkflowAppRunner(&App{}, t.TempDir(), nil)
+	runner.newTimer = func(delay time.Duration, callback func()) workflowTimer {
+		return &fakeWorkflowTimer{callback: callback, delay: delay, active: true}
+	}
 	key := engine.RunKey{ItemID: "item", PhaseID: "phase", Attempt: 1}
 	runKey := workflowRunKey(key)
 	outcomes := make(chan engine.Outcome, 1)
 	runner.runs[runKey] = &workflowAttempt{
-		workflowCompletion: workflowCompletion{key: key}, threadID: "thread", awaitingRetryStart: true,
+		workflowCompletion: workflowCompletion{key: key}, threadID: "thread", awaitingTurnStart: true,
+		provider: string(provider.Codex), watchdog: time.Hour,
 		phase:    def.Phase{ID: "phase", Provider: string(provider.Codex)},
 		complete: func(outcome engine.Outcome) { outcomes <- outcome },
 	}

@@ -38,13 +38,46 @@ func (r *workflowAppRunner) observe(runKey string, event provider.ProviderEvent)
 	if event.Kind == provider.EventRateLimits {
 		attempt.noteRateLimits(event.Meta)
 	}
-	if attempt.timerMode == workflowTimerBackoff {
+	// A child thread's events are the parent turn's ACTIVITY, never its signals.
+	// Both adapters stamp `ParentToolUseID` on everything a subagent or collab
+	// child emits — including the child's own `error`, which the Codex adapter
+	// forwards onto the parent session's stream with the child's `codexErrorInfo`
+	// intact — and a child's turn boundaries never arrive here at all (they are
+	// diverted to EventSubagentStatus). So nothing parented may enter the retry
+	// ladder, park for quota, answer the turn start a retry is waiting on, or be
+	// consumed as this turn's completion.
+	//
+	// The one exception is the parented error that IS the parent turn ending —
+	// see `workflowParentedErrorClosesTurn`. Filtering that one would downgrade a
+	// Claude subagent's rate limit from the ladder and the dated-quota self-resume
+	// into a bare execution failure.
+	//
+	// The watchdog reset is the one thing every other child event keeps, and it is
+	// load-bearing: a delegating turn leaves the parent stream quiet for as long
+	// as its children work, and that quiet is not a stall.
+	if event.ParentToolUseID != "" && !workflowParentedErrorClosesTurn(event) {
+		if attempt.turnStarted {
+			r.resetWatchdogLocked(attempt)
+		}
 		r.mu.Unlock()
 		return
 	}
-	if attempt.awaitingRetryStart {
+	if attempt.timerMode == workflowTimerBackoff {
+		// A session that dies INSIDE the backoff window is latched rather than
+		// dropped. Without the latch `sessionDisconnected` skips this attempt, and
+		// the resend the backoff is holding lands in a session that has already
+		// been reaped — a transient failure converted into an `agent-error` park.
+		// Folding it in costs the next rung, which is the honest account: two
+		// failures happened.
 		if event.Kind == provider.EventSessionStatus && strings.TrimSpace(event.Content) == "error" {
-			attempt.awaitingRetryStart = false
+			attempt.pendingSessionDeath = true
+		}
+		r.mu.Unlock()
+		return
+	}
+	if attempt.awaitingTurnStart {
+		if event.Kind == provider.EventSessionStatus && strings.TrimSpace(event.Content) == "error" {
+			attempt.awaitingTurnStart = false
 			attempt.pendingSessionDeath = true
 			r.mu.Unlock()
 			return
@@ -53,10 +86,27 @@ func (r *workflowAppRunner) observe(runKey string, event provider.ProviderEvent)
 			r.mu.Unlock()
 			return
 		}
-		attempt.awaitingRetryStart = false
+		attempt.awaitingTurnStart = false
 	}
 	if workflowProviderTurnStarted(attempt.provider, event) {
+		// A turn start arriving while a turn is already started is a REPLAY, never
+		// a fresh one: every legitimate start follows a state that set
+		// `turnStarted` false — a consumed completion, the transient ladder, a
+		// session death. The Codex adapter's start-side dedupe drops a turn id at
+		// that turn's completion, so a `thread/read` replay of a COMPLETED turn's
+		// `turn/started` reaches here unclaimed, and adopting it would retarget
+		// the attempt at the dead turn and drop the live one's completion as a
+		// mismatch.
+		if attempt.turnStarted {
+			r.resetWatchdogLocked(attempt)
+			r.mu.Unlock()
+			return
+		}
 		attempt.turnStarted = true
+		// Codex names every turn; Claude names none, which leaves this empty and
+		// the completion filter below inert for it. Assigned rather than merged so
+		// a turn start can never inherit the previous turn's identity.
+		attempt.currentTurnID = event.TurnID
 		attempt.pendingTransient = false
 		attempt.claudeTransientRetry = false
 		r.armWatchdogLocked(runKey, attempt)
@@ -69,7 +119,12 @@ func (r *workflowAppRunner) observe(runKey string, event provider.ProviderEvent)
 	if event.Kind == provider.EventSessionStatus {
 		content := strings.TrimSpace(event.Content)
 		if content == "error" {
-			r.disarmTimerLocked(attempt)
+			// The disconnect that folds this into the retry ladder is not
+			// guaranteed to arrive. Arming rather than disarming makes a session
+			// that errors and then goes quiet park `stalled` — loud and repairable
+			// — instead of sitting `running` with no timer and nothing left to
+			// wake it.
+			r.armWatchdogLocked(runKey, attempt)
 			attempt.turnStarted = false
 			attempt.pendingSessionDeath = true
 			r.mu.Unlock()
@@ -118,6 +173,12 @@ func (r *workflowAppRunner) observe(runKey string, event provider.ProviderEvent)
 		}
 		if transient && waitsForCompletion {
 			attempt.pendingTransient = true
+			// The turn's own terminal event is what acts on this, so a live turn's
+			// watchdog is already the bound. When no turn is live there is no
+			// completion coming and nothing else would ever fire.
+			if attempt.timerMode == workflowTimerNone {
+				r.armWatchdogLocked(runKey, attempt)
+			}
 			r.mu.Unlock()
 			return
 		}
@@ -141,8 +202,17 @@ func (r *workflowAppRunner) observe(runKey string, event provider.ProviderEvent)
 		r.mu.Unlock()
 		return
 	}
+	// A `thread/read` replay re-emits turn lifecycle. The started side is
+	// handled above (a start while a turn is started is a replay); this is the
+	// completed side, without which a replayed completion of an earlier turn
+	// finishes the phase on a stale envelope.
+	if attempt.currentTurnID != "" && event.TurnID != "" && event.TurnID != attempt.currentTurnID {
+		r.mu.Unlock()
+		return
+	}
 	r.disarmTimerLocked(attempt)
 	attempt.turnStarted = false
+	attempt.currentTurnID = ""
 	attempt.claudeTransientRetry = false
 	payload := append(json.RawMessage(nil), event.StructuredOutput...)
 	if len(payload) == 0 && (attempt.pendingTransient || workflowTransientTurnComplete(attempt.provider, event)) {
@@ -190,9 +260,10 @@ func (r *workflowAppRunner) observe(runKey string, event provider.ProviderEvent)
 	schema := append(json.RawMessage(nil), attempt.schema...)
 	attempt.currentPrompt = workflowrunner.RetryMessage(findingsForEnvelopeError(validationErr))
 	message := attempt.currentPrompt
+	epoch := attempt.sendEpoch
 	r.mu.Unlock()
 	go func() {
-		sent, err := r.sendIfActive(runKey, message, schema)
+		sent, err := r.sendIfActive(runKey, message, schema, epoch)
 		if sent && err != nil {
 			r.finish(runKey, engine.Outcome{
 				Kind: engine.OutcomeExecutionFailure, Envelope: payload,
@@ -237,10 +308,16 @@ func workflowProviderTurnStarted(providerName string, event provider.ProviderEve
 	return providerName == string(provider.Claude) && event.Kind == provider.EventInit
 }
 
-// sendIfActive serializes sends with Stop and rechecks ownership after taking
-// the per-attempt lock. A retry queued before cancellation therefore cannot
-// start a new provider turn after Stop has removed the attempt.
-func (r *workflowAppRunner) sendIfActive(runKey, message string, schema json.RawMessage) (bool, error) {
+// sendIfActive is the one door every workflow send goes through. It serializes
+// with Stop and rechecks, after taking the per-attempt lock, that the state
+// which decided to send is still the state that exists: the attempt is still
+// installed, its session is not already known dead, and the ladder has not
+// advanced past the rung this send belongs to. A send decided by a superseded
+// state is dropped rather than delivered late.
+//
+// `epoch` is the caller's `attempt.sendEpoch`, read under the runner lock at the
+// moment the send was decided. See the field.
+func (r *workflowAppRunner) sendIfActive(runKey, message string, schema json.RawMessage, epoch int) (bool, error) {
 	r.mu.Lock()
 	attempt := r.runs[runKey]
 	r.mu.Unlock()
@@ -251,28 +328,88 @@ func (r *workflowAppRunner) sendIfActive(runKey, message string, schema json.Raw
 	attempt.sendMu.Lock()
 	defer attempt.sendMu.Unlock()
 	r.mu.Lock()
-	active := r.runs[runKey] == attempt
+	// A latched session death makes the attempt as inactive as cancellation does:
+	// the session is being reaped and `sessionDisconnected` owns what happens
+	// next. A send queued before the death would otherwise land in the dying
+	// process and convert a transient ladder into an execution-failure park.
+	//
+	// The epoch catches the case the latch cannot: the death was latched AND
+	// already answered, so the flag is clear again and the attempt is installed
+	// and healthy — but it is healthy in a NEW ladder state whose own resend is
+	// pending. Delivering the old one then starts a turn inside somebody else's
+	// backoff window, where the guard drops its events and the next rung's send
+	// lands on a session with a turn already in flight.
+	active := r.runs[runKey] == attempt && !attempt.pendingSessionDeath && attempt.sendEpoch == epoch
 	r.mu.Unlock()
 	if !active {
 		return false, nil
 	}
-	err := r.app.sendWorkflowMessage(attempt.threadID, message, schema)
-	if err != nil || attempt.provider != string(provider.Claude) {
+	if err := r.app.sendWorkflowMessage(attempt.threadID, message, schema); err != nil {
 		return true, err
 	}
 
-	// Claude has no per-turn EventTurnStart. A successful send is therefore
-	// the start signal when an existing session emits no fresh EventInit (for
-	// example, the envelope-feedback turn and a transient sub-attempt).
 	r.mu.Lock()
-	if r.runs[runKey] == attempt && !attempt.turnStarted && !attempt.pendingSessionDeath && attempt.timerMode != workflowTimerBackoff {
-		attempt.turnStarted = true
-		attempt.pendingTransient = false
-		attempt.claudeTransientRetry = false
-		r.armWatchdogLocked(runKey, attempt)
+	if r.runs[runKey] == attempt && !attempt.pendingSessionDeath && attempt.sendEpoch == epoch {
+		if attempt.provider == string(provider.Claude) {
+			// Claude has no per-turn EventTurnStart. A successful send is therefore
+			// the start signal when an existing session emits no fresh EventInit (for
+			// example, the envelope-feedback turn and a transient sub-attempt).
+			if !attempt.turnStarted && attempt.timerMode != workflowTimerBackoff {
+				attempt.turnStarted = true
+				attempt.pendingTransient = false
+				attempt.claudeTransientRetry = false
+				r.armWatchdogLocked(runKey, attempt)
+			}
+		} else {
+			// Every other provider names its own turn, so a send is not a start —
+			// it is the beginning of a wait for one, and both halves of that wait
+			// belong at this chokepoint. The opening send and the envelope-feedback
+			// send were the two doors that had neither: until `turn/started` names
+			// the turn, a replayed lifecycle event from an EARLIER turn passes the
+			// identity filter (an empty `currentTurnID` makes it inert) and can
+			// settle the attempt on a stale envelope.
+			//
+			// The turn start for THIS send may already have arrived — events and
+			// this block serialize on the runner lock, so the ordering is a race —
+			// and setting the flag then would eat the completion of the very turn
+			// it was meant to protect. `turnStarted` is the record of that, so it
+			// is the condition.
+			if !attempt.turnStarted {
+				attempt.awaitingTurnStart = true
+			}
+			// Only the unarmed state is touched, so the retry path's own watchdog
+			// and a live turn's are left exactly as they were.
+			if attempt.timerMode == workflowTimerNone {
+				r.armWatchdogLocked(runKey, attempt)
+			}
+		}
 	}
 	r.mu.Unlock()
 	return true, nil
+}
+
+// workflowParentedErrorClosesTurn reports whether an event carrying a child's
+// `ParentToolUseID` is nonetheless the PARENT turn failing.
+//
+// The two adapters mean different things by the same field. Claude stamps a Task
+// subagent's id on that subagent's `assistant.error`, but the error is the
+// parent's open turn failing — the CLI follows it with the `result{is_error}`
+// that closes that turn, which is exactly what `expect_turn_complete` records
+// (`internal/provider/claude/parse_assistant.go`). Codex forwards a collab
+// child's own `error` with `fatal:false` and no such flag, because the child's
+// failure is the child's alone.
+//
+// So the flag is the whole test, read the same way `workflowTurnErrorIsTerminal`
+// reads it: a parented error that promises a turn completion belongs to the turn
+// that completion will close.
+func workflowParentedErrorClosesTurn(event provider.ProviderEvent) bool {
+	if event.Kind != provider.EventError || len(event.Meta) == 0 {
+		return false
+	}
+	var flags struct {
+		ExpectTurnComplete bool `json:"expect_turn_complete"`
+	}
+	return json.Unmarshal(event.Meta, &flags) == nil && flags.ExpectTurnComplete
 }
 
 func workflowTurnErrorIsTerminal(meta json.RawMessage) bool {

@@ -397,6 +397,7 @@ while IFS= read -r line; do
     printf '%%s\n' "$line" >> %q
     turn=$((turn+1))
     printf '{"jsonrpc":"2.0","id":%%s,"result":{"turn":{"id":"turn-%%s"}}}\n' "$id" "$turn"
+    printf '{"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"workflow-provider-thread","turn":{"id":"turn-%%s"}}}\n' "$turn"
 	if [ "$turn" -eq 1 ]; then
 	  printf '{"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"workflow-provider-thread","turn":{"id":"turn-%%s","status":"completed"}}}\n' "$turn"
 	  continue
@@ -667,7 +668,7 @@ func TestWorkflowRunnerRejectsUnsupportedPhasesAndStopsUnknownRuns(t *testing.T)
 	if !unsubscribed || runner.runs[runKey] != nil || len(runner.schemas["workflow-thread"]) != 0 {
 		t.Fatalf("known run cleanup: unsubscribed=%v runs=%v schemas=%v", unsubscribed, runner.runs, runner.schemas)
 	}
-	if sent, err := runner.sendIfActive(runKey, "late retry", json.RawMessage(`{"type":"object"}`)); err != nil || sent {
+	if sent, err := runner.sendIfActive(runKey, "late retry", json.RawMessage(`{"type":"object"}`), 0); err != nil || sent {
 		t.Fatalf("post-stop retry = sent %v, err %v", sent, err)
 	}
 }

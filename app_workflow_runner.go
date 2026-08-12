@@ -71,23 +71,41 @@ func (c workflowCompletion) producesPhaseEnvelope() bool {
 // its own declaration while a join answers the phase's.
 type workflowAttempt struct {
 	workflowCompletion
-	sendMu               sync.Mutex
-	threadID             string
-	schema               json.RawMessage
-	contract             def.EnvelopeContract
-	provider             string
-	phase                def.Phase
-	complete             func(engine.Outcome)
-	unsubscribe          func()
-	envelopeRetryUsed    bool
-	currentPrompt        string
-	watchdog             time.Duration
-	backoff              []time.Duration
-	transientRetryCount  int
-	turnStarted          bool
-	pendingTransient     bool
-	pendingSessionDeath  bool
-	awaitingRetryStart   bool
+	sendMu              sync.Mutex
+	threadID            string
+	schema              json.RawMessage
+	contract            def.EnvelopeContract
+	provider            string
+	phase               def.Phase
+	complete            func(engine.Outcome)
+	unsubscribe         func()
+	envelopeRetryUsed   bool
+	currentPrompt       string
+	watchdog            time.Duration
+	backoff             []time.Duration
+	transientRetryCount int
+	turnStarted         bool
+	// currentTurnID is the id of the turn this attempt is waiting on, for
+	// providers that name their turns. It is the completion filter's whole basis:
+	// a replayed `turn/completed` for an earlier turn would otherwise finish the
+	// phase on a stale envelope. Empty for Claude, which names no turn — the
+	// filter is then inert rather than wrong.
+	currentTurnID       string
+	pendingTransient    bool
+	pendingSessionDeath bool
+	// awaitingTurnStart holds while a send has been dispatched and the provider
+	// has not yet named the turn it started. Only the next EventTurnStart clears
+	// it, so a terminal event still in flight from the PREVIOUS turn cannot be
+	// mistaken for this one's — the shape that used to settle an attempt on a
+	// stale envelope. Every Codex send sets it (retry, opening, envelope
+	// feedback); Claude names no turn and never does.
+	awaitingTurnStart bool
+	// sendEpoch identifies the ladder state a queued send was decided in. The
+	// send runs on its own goroutine, and by the time it reaches the wire the
+	// attempt may have advanced a rung — a resend for the state that queued it is
+	// then a stale turn landing inside somebody else's backoff window. Every
+	// advance invalidates what the previous state queued.
+	sendEpoch            int
 	claudeTransientRetry bool
 	timer                workflowTimer
 	timerMode            workflowTimerMode
@@ -321,6 +339,7 @@ func (r *workflowAppRunner) installAttempt(ctx context.Context, attempt *workflo
 	r.runs[key] = attempt
 	r.workItems[threadID] = attempt.key.ItemID
 	delete(r.takeovers, threadID)
+	epoch := attempt.sendEpoch
 	r.mu.Unlock()
 	if err := ctx.Err(); err != nil {
 		r.detach(key)
@@ -331,7 +350,7 @@ func (r *workflowAppRunner) installAttempt(ctx context.Context, attempt *workflo
 	}
 
 	schema := append(json.RawMessage(nil), attempt.schema...)
-	if _, err := r.sendIfActive(key, attempt.currentPrompt, schema); err != nil {
+	if _, err := r.sendIfActive(key, attempt.currentPrompt, schema, epoch); err != nil {
 		r.finish(key, engine.Outcome{
 			Kind:   engine.OutcomeExecutionFailure,
 			Detail: workflowFailureDetail("sending the opening prompt failed: " + err.Error()),

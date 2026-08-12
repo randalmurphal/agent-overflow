@@ -2109,6 +2109,75 @@ on a spent reject budget silently destroyed the gate's still-declared approve.
   could only arrive through that pipeline; parks from the observe path
   now stop off-wire.
 
+## The observer stops believing everything it hears (2026-08-12)
+
+Root-caused from a zombied campaign wave: an `audit-fix` phase sat
+`running` for hours after its turn had completed with a valid envelope.
+The chain — a collab CHILD thread's `serverOverloaded` error read as the
+phase turn's own failure, a retry ladder armed against a turn that was
+alive, the retry absorbed by Codex as mid-turn input (minting a turn id
+nothing ever starts), and the real completion dropped by the
+retry-start filter with no timer left armed. Four doctrines fell out,
+each pinned by an incident-replay test:
+
+- **D73. A child's events are the parent turn's activity, never its
+  signals.** Both adapters stamp `ParentToolUseID` on everything a
+  subagent or collab child emits, and the observer now filters on it:
+  nothing parented may enter the retry ladder, trigger the quota park,
+  answer the turn start a retry is waiting on, or be consumed as the
+  turn's completion. The one exception is read off the meta, not the
+  provider: a parented error carrying `expect_turn_complete` IS the
+  parent turn ending (a Claude Task-subagent's `assistant.error` closes
+  the parent's open turn), and filtering it would downgrade a retryable
+  rate limit — and its D71 self-resume — into a bare execution failure.
+  The watchdog reset is the one thing every filtered child event keeps:
+  a delegating turn leaves the parent stream quiet for as long as its
+  children work, and that quiet is not a stall.
+- **A Codex error is information; the completion is the verdict.**
+  Codex core always terminates a turn with `turn/completed` (`failed`
+  when it errored), so the transient ladder now arms from the
+  empty-payload completion, never from the error notification — the
+  same waits-for-completion path Claude's `expect_turn_complete` errors
+  take. The ladder can therefore never arm while a turn is alive, which
+  is what previously let a retry be swallowed as queued input; and a
+  completion that arrives carrying an envelope self-corrects a bogus
+  error instead of being discarded.
+- **A live attempt always holds an armed timer.** Every wait the
+  observer can enter is bounded by the inactivity watchdog now: the
+  retry-start wait (armed at dispatch, before the send can land), the
+  session-error wait for a disconnect that may never come, the
+  waits-for-completion error path, and — at the send chokepoint
+  (`sendIfActive`) — the opening and envelope-feedback sends, which
+  previously left a Codex attempt timerless until `turn/started`. A
+  wait that outlives the watchdog parks `stalled`: loud, resumable,
+  and honest, where the incident's shape was eternal `running`.
+- **Replayed turn lifecycle is identity-checked, in both directions.**
+  A `thread/read` replay re-emits turn lifecycle, and the adapter's
+  start-side dedupe forgets a turn id at that turn's completion. A turn
+  start arriving while a turn is already started is therefore a replay
+  and moves nothing; a completion naming a turn other than the one the
+  attempt started (`currentTurnID`) is a ghost and finishes nothing.
+  The window before any identity exists is covered too: every Codex
+  send — opening, envelope-feedback, retry — enters the
+  `awaitingTurnStart` wait, so no terminal event is consumed until the
+  send's own `turn/started` names the turn it belongs to (unless that
+  start already arrived, which the flag's `turnStarted` condition
+  records). Claude names no turns, so all of it is inert there by
+  construction rather than wrong.
+- **A latched session death owns what happens next, and a queued send
+  is valid only for the ladder state that queued it.** A session error
+  arriving during a backoff window is latched (the window previously
+  swallowed it, converting the ladder into an `agent-error` park), and
+  a latched death suppresses the held resend at both ends — `timerFired`
+  skips the send and keeps the watchdog, and `sendIfActive` treats the
+  attempt as inactive — so `sessionDisconnected` folds the death into
+  the ladder's next rung instead of racing a send into a dying process.
+  The latch alone cannot catch a resend that was queued before the
+  death and dispatched after the disconnect already answered it, so
+  every send also carries the `sendEpoch` it was queued under and
+  `scheduleTransientLocked` — the one place a rung is armed — advances
+  it: a superseded send matches nothing and is dropped.
+
 ## The steer and the wake stop trusting luck (2026-08-10)
 
 - **D72. An undecodable guidance slot heals instead of bricking.** The
