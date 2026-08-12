@@ -153,6 +153,7 @@ func (a *App) deleteThreadTree(threadID string, subtreeLocksHeld bool) error {
 	// nothing left to delete from the store.
 	if !threadFound {
 		a.threadLocks().Forget(threadID)
+		a.configApplyLocks().Forget(threadID)
 		return nil
 	}
 
@@ -160,14 +161,17 @@ func (a *App) deleteThreadTree(threadID string, subtreeLocksHeld bool) error {
 		if errors.Is(err, sql.ErrNoRows) {
 			// Raced with another DeleteThread; treat as success.
 			a.threadLocks().Forget(threadID)
+			a.configApplyLocks().Forget(threadID)
 			return nil
 		}
 		return fmt.Errorf("delete thread %s: drop row: %w", threadID, err)
 	}
-	// Drop the per-thread action lock so a long-lived process
-	// doesn't accumulate dead mutexes for deleted threads. The registry keeps
-	// the entry alive until this delete flow and any stale waiters unlock.
+	// Drop the per-thread action and config-apply locks so a long-lived
+	// process doesn't accumulate dead mutexes for deleted threads. The
+	// registry keeps each entry alive until this delete flow and any stale
+	// waiters unlock.
 	a.threadLocks().Forget(threadID)
+	a.configApplyLocks().Forget(threadID)
 	return nil
 }
 

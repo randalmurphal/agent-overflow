@@ -182,6 +182,7 @@ func (a *App) DeleteEmptyDraftThread(threadID string) (bool, error) {
 	}
 	if deleted {
 		a.threadLocks().Forget(threadID)
+		a.configApplyLocks().Forget(threadID)
 	}
 	return deleted, nil
 }

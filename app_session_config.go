@@ -16,10 +16,12 @@ import (
 // provider process", which aborted in-flight turns and reaped backgrounded
 // tasks. The current policy:
 //
-//  1. Live-apply when the provider supports it — Claude via set_model /
-//     set_permission_mode control_requests (verified on claude 2.1.205),
-//     Codex via the per-turn turn/start overrides it re-reads every Send.
-//     No process restart, in-flight work untouched.
+//  1. Live-apply when the provider supports it — Claude via the set_model /
+//     set_permission_mode control_requests (verified on claude 2.1.205) plus
+//     the /effort and /fast provider-executed commands (verified 2.1.219;
+//     confirmed asynchronously, see app_claude_live_config.go), Codex via
+//     the per-turn turn/start overrides it re-reads every Send. No process
+//     restart, in-flight work untouched.
 //  2. Otherwise restart — but never while the thread is busy. A restart
 //     kills the working turn AND any live backgrounded tasks, so it is
 //     deferred until the thread is fully quiet (no active turn, no queued
@@ -73,7 +75,16 @@ func (a *App) reconcileSessionConfig(threadID string) {
 // the thread row without a restart. Returns true when the session now
 // matches the row (or there is no session to reconcile — the next lazy
 // start reads the row directly); false when only a restart can converge.
+//
+// One apply at a time per thread (configApplyLocks): the body is a
+// read-modify-write over session.launchOpts, and two concurrent reconciles
+// would both plan against the same snapshot and both send the same change
+// — a duplicate zero-cost command at best, an out-of-order launchOpts
+// commit at worst. Serialization also fixes the commit order: whoever
+// sends last also commits last.
 func (a *App) liveApplySessionConfig(threadID string) bool {
+	unlock := a.configApplyLocks().Lock(threadID)
+	defer unlock()
 	// A start already in flight read the thread row at some point before
 	// this change persisted; wait for it so we diff against the session
 	// that actually exists.
@@ -107,17 +118,48 @@ func (a *App) liveApplySessionConfig(threadID string) bool {
 		if !ok {
 			return false
 		}
-		if err := sess.claude.ApplyLiveUpdate(a.lifeCtx(), update); err != nil {
+		// A session that already answered a live-config command with
+		// something other than the expected state change is not asked
+		// again — the watcher would otherwise re-send the same command
+		// on every poll. See app_claude_live_config.go.
+		if a.claudeLiveApplyIsDegraded(sess.token, update) {
+			return false
+		}
+		// The command-channel axes (effort, fast mode) confirm
+		// asynchronously via their EventCommandResult. The preSend hook
+		// fires after validation and before any wire write: registration
+		// and the optimistic launchOpts write must both precede the send,
+		// or a fast confirmation could arrive unmatched — and a fast
+		// REJECTION's revert could then be clobbered by the optimistic
+		// write, leaving launchOpts claiming a config the session refused
+		// (which would also make the restart fallback see "already
+		// converged" and skip the restart).
+		var rollback func()
+		err = sess.claude.ApplyLiveUpdate(a.lifeCtx(), update, func(receipt claude.LiveApplyReceipt) {
+			a.registerClaudeLiveConfigApplies(threadID, sess.token, sess.launchOpts, update, receipt)
+			a.sessionManager().updateLaunchOpts(threadID, sess.token, opts)
+			rollback = func() {
+				a.rollbackClaudeLiveConfigApplies(threadID, sess.token, sess.launchOpts, receipt)
+			}
+		})
+		if err != nil {
+			if rollback != nil {
+				rollback()
+			}
 			// ErrLiveUpdateRequiresRestart is the expected "can't do this
-			// one live" signal (bypassPermissions escalation); anything
-			// else is a wire failure. Either way the restart path is the
-			// convergence fallback — surface unexpected failures first.
+			// one live" signal (bypassPermissions escalation, fast-mode
+			// enable without the spawn opt-in, /effort or /fast not
+			// advertised, transcript pending the resume-at repair);
+			// anything else is a wire failure. Either way the restart path
+			// is the convergence fallback — surface unexpected failures
+			// first.
 			if err != claude.ErrLiveUpdateRequiresRestart {
 				log.Printf("thread %s: claude live config update failed: %v", threadID, err)
 				a.emitErrorToThread(threadID, "live config change failed, restarting session to apply: "+err.Error())
 			}
 			return false
 		}
+		return true
 	case sess.codex != nil:
 		update, ok := codex.PlanLiveUpdate(sess.launchOpts, opts)
 		if !ok {

@@ -1800,19 +1800,31 @@ CLI binary; the subtypes we use or plan to use:
   session was not launched with --dangerously-skip-permissions"; verified
   2.1.205) — AO restarts the session for that transition instead.
 - `subtype: "set_model"` — switch the live session's active model. Takes
-  `model` (the same string `--model` accepts). Verified on 2.1.205: the
-  CLI acks immediately even mid-turn, the in-flight turn finishes on the
-  previous model, and the next turn (plus the fresh `system/init` it
-  emits) runs on the new one. Used by AO's config reconciler
-  (`app_session_config.go`) so a model change never kills a working
-  session. The CLI also echoes a replayed user envelope containing
+  `model` (the same string `--model` accepts) and optionally
+  `system_prompt` — those two are the subtype's whole parameter set in
+  the 2.1.219 dispatcher (binary disassembly, 2026-08-12). Verified on
+  2.1.205: the CLI acks immediately even mid-turn, the in-flight turn
+  finishes on the previous model, and the next turn (plus the fresh
+  `system/init` it emits) runs on the new one. A `[1m]`-suffixed model
+  string is accepted and switches the CONTEXT TIER live too: the
+  `context-1m-2025-08-07` beta header appears on (or disappears from)
+  the next API request (verified 2.1.219 via a local
+  `ANTHROPIC_BASE_URL` capture sink, 2026-08-12). Used by AO's config
+  reconciler (`app_session_config.go`) so a model or context-window
+  change never kills a working session. The CLI also echoes a replayed
+  user envelope containing
   `<local-command-stdout>Set model to ...</local-command-stdout>`.
 - `subtype: "set_max_thinking_tokens"` — set the live session's max
   thinking-token budget. Takes `max_thinking_tokens` (int). Verified
-  accepted on 2.1.205; NOT currently used by AO (our effort tiers map to
-  the spawn-time `--effort` flag, which has no live equivalent — there is
-  no `set_effort`, `set_fast_mode`, or `set_context_window` subtype as of
-  2.1.205, so those changes restart the session).
+  accepted on 2.1.205; NOT currently used by AO. There is still no
+  `set_effort` or `set_fast_mode` control_request as of 2.1.219 (the
+  dispatcher's full subtype list: `interrupt`, `stop_task`, `set_model`,
+  `set_permission_mode`, `set_max_thinking_tokens`, `set_cwd`,
+  `get_context_usage`, `get_usage`, `rename_session`,
+  `file_suggestions`, the four `mcp_*` subtypes) — but effort and fast
+  mode ARE live-settable through the provider-executed `/effort` and
+  `/fast` slash commands; see
+  [§Live config commands](#live-config-commands-effort-and-fast).
 - `subtype: "mcp_set_servers"` — in-process diff-reconcile of the
   live MCP server set against `servers`. Returns
   `{added, removed, errors}`. Used by AO to sync per-thread MCP
@@ -2187,6 +2199,67 @@ key, because the two are different statements.
 AO consumers: `internal/provider/claude/commands_wire.go` (decode),
 `internal/claudecommands` (per-probe-identity cache, replace-only),
 `internal/triage/provider_commands.go` (`provider:commands` live projection).
+
+### Live config commands: `/effort` and `/fast`
+
+Verified on **claude 2.1.219** by a 2026-08-12 spike (AO's exact flag set;
+every command zero-token, plus one minimal real turn through a local
+`ANTHROPIC_BASE_URL` capture sink to prove the request-level effect).
+Sanitized fixture:
+[`fixtures/claude/effort_live_20260812.ndjson`](fixtures/claude/effort_live_20260812.ndjson).
+These are the live path for two axes that have no control_request subtype.
+
+**`/effort <low|medium|high|xhigh|max|ultracode|auto>`** — sets the
+session's reasoning effort, effective from the NEXT API request
+(`output_config.effort` in the captured request body tracks it exactly).
+Facts a client depends on:
+
+- **Session-only.** The success text says so explicitly: `Set effort
+  level to <tier> (this session only): <tier blurb>`. Settings files and
+  the spawn `--effort` flag are untouched; a restart reverts to spawn
+  config.
+- **Survives the rest of the session** — later turns, and a `set_model`
+  control_request, keep the override.
+- **Works mid-turn** like any stdin user message: drained into the
+  running turn per §command_lifecycle's mid-turn semantics (spike run 3
+  wrote it against an active turn). Either way the in-flight API request
+  finishes on the old tier and the next one carries the new tier.
+- **Rejection is not a wire error.** A bad argument answers
+  `is_error:false`, `num_turns:0` with the text `Invalid argument:
+  <arg>. Valid options are: low, medium, high, xhigh, max, ultracode,
+  auto`; bare `/effort` answers `Usage: /effort <…>`; `/effort current`
+  answers `Current effort level: <tier> (<blurb>)`. Only the `Set effort
+  level to ` prefix means a change happened.
+- **Availability gate:** `effort` present in `system/init.slash_commands`
+  (and the other discovery surfaces).
+
+**`/fast [on|off]`** (bare form toggles) — enables/disables fast mode
+live. The failure replies arrive IMMEDIATELY in the command's own result,
+not at the next turn boundary, and they distinguish the two gates:
+
+- `Fast mode unavailable: Fast mode is not available in the Agent SDK` —
+  the process was spawned without the fast-mode settings opt-in
+  (`fast_mode_disabled_reason: "sdk_opt_in_required"`). A restart WITH
+  the opt-in fixes this — it is the one fast-mode transition that stays
+  on the restart path.
+- `Fast mode unavailable: Fast mode requires usage credits …` — account
+  gate (`extra_usage_disabled`). A restart hits the identical gate;
+  never restart for this.
+- Success: text contains `Fast mode ON` / starts with `Fast mode OFF`.
+  ⚠ Provenance: the success texts come from 2.1.219 binary strings, not
+  a wire capture — the spike account had no fast access, so the fixture
+  holds only the failure replies. Enabling can IMPLICITLY switch the
+  model (the reply appends `model set to <fast-capable model>`), which
+  is why ON is a containment match, and why a client applying model +
+  fast changes together must send `set_model` BEFORE `/fast`.
+
+AO consumers: `internal/provider/claude/live_update.go` sends both
+commands (uuid-stamped, slash-guard-exempt);
+`parse_command_lifecycle.go` + `parse_assistant.go` correlate the command
+output back to the send (`CommandResultMeta.CommandUUID`, valid only
+inside the `started`→`completed` lifecycle window);
+`app_claude_live_config.go` confirms the answer text or falls back to a
+restart.
 
 ---
 

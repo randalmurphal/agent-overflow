@@ -28,7 +28,10 @@ func liveUpdateBaseOptions() provider.SessionOptions {
 
 func TestPlanLiveUpdate(t *testing.T) {
 	tests := []struct {
-		name       string
+		name string
+		// mutatePrev shapes the session's launch config; mutate shapes the
+		// thread row's target config. Both start from liveUpdateBaseOptions.
+		mutatePrev func(*provider.SessionOptions)
 		mutate     func(*provider.SessionOptions)
 		wantOK     bool
 		wantUpdate LiveUpdate
@@ -65,23 +68,109 @@ func TestPlanLiveUpdate(t *testing.T) {
 			wantOK: true,
 		},
 		{
-			name:   "effort change needs restart",
-			mutate: func(o *provider.SessionOptions) { o.ReasoningEffort = provider.EffortLow },
-			wantOK: false,
+			name:       "effort change is live",
+			mutate:     func(o *provider.SessionOptions) { o.ReasoningEffort = provider.EffortLow },
+			wantOK:     true,
+			wantUpdate: LiveUpdate{Effort: "low"},
 		},
 		{
-			name: "fast mode change needs restart",
+			name: "effort change round-trips back",
+			mutatePrev: func(o *provider.SessionOptions) {
+				o.ReasoningEffort = provider.EffortLow
+			},
+			mutate:     func(o *provider.SessionOptions) { o.ReasoningEffort = provider.EffortHigh },
+			wantOK:     true,
+			wantUpdate: LiveUpdate{Effort: "high"},
+		},
+		{
+			name: "model and effort together are live",
 			mutate: func(o *provider.SessionOptions) {
-				// claude-opus-4-8 supports fast mode, so the toggle changes
-				// the effective launch config (a non-capable model would
-				// coerce to off on both sides and read as no change).
-				o.FastMode = true
+				o.Model = "claude-fable-5"
+				o.ReasoningEffort = provider.EffortXHigh
+			},
+			wantOK:     true,
+			wantUpdate: LiveUpdate{Model: "claude-fable-5", Effort: "xhigh"},
+		},
+		{
+			name: "switch to an effortless model needs restart",
+			mutate: func(o *provider.SessionOptions) {
+				// Haiku declares no reasoning effort, so the target config
+				// carries no effort flag at all — and there is no /effort
+				// argument that restores "send no effort".
+				o.Model = "claude-haiku-4-5"
 			},
 			wantOK: false,
 		},
 		{
-			name:   "context window change needs restart",
-			mutate: func(o *provider.SessionOptions) { o.ContextWindow = provider.ClaudeExtendedContextWindow },
+			name: "fast mode enable is live with the spawn opt-in question deferred to apply",
+			mutatePrev: func(o *provider.SessionOptions) {
+				// claude-opus-4-8 supports fast mode; a non-capable model
+				// would coerce to off on both sides and read as no change.
+				o.Model = "claude-opus-4-8"
+			},
+			mutate: func(o *provider.SessionOptions) {
+				o.Model = "claude-opus-4-8"
+				o.FastMode = true
+			},
+			wantOK:     true,
+			wantUpdate: LiveUpdate{FastMode: FastModeOn},
+		},
+		{
+			name: "fast mode disable is live",
+			mutatePrev: func(o *provider.SessionOptions) {
+				o.Model = "claude-opus-4-8"
+				o.FastMode = true
+			},
+			mutate: func(o *provider.SessionOptions) {
+				o.Model = "claude-opus-4-8"
+			},
+			wantOK:     true,
+			wantUpdate: LiveUpdate{FastMode: FastModeOff},
+		},
+		{
+			name: "model and fast mode together plan both axes",
+			// The apply-order contract (set_model before /fast) exists for
+			// exactly this bundle — the plan must carry both.
+			mutatePrev: func(o *provider.SessionOptions) {
+				o.Model = "claude-opus-4-8"
+			},
+			mutate: func(o *provider.SessionOptions) {
+				o.Model = "claude-opus-5"
+				o.FastMode = true
+			},
+			wantOK:     true,
+			wantUpdate: LiveUpdate{Model: "claude-opus-5", FastMode: FastModeOn},
+		},
+		{
+			name: "context window change is live absent an autocompact override",
+			mutate: func(o *provider.SessionOptions) {
+				o.ContextWindow = provider.ClaudeExtendedContextWindow
+			},
+			wantOK: true,
+			// The tier rides the model string: set_model accepts
+			// marker-carrying ids (spike-verified 2.1.219 — the
+			// context-1m beta follows on the next request).
+			wantUpdate: LiveUpdate{Model: "claude-sonnet-5[1m]"},
+		},
+		{
+			name: "context window change with an autocompact override needs restart",
+			mutatePrev: func(o *provider.SessionOptions) {
+				o.AutoCompactPercent = 50
+			},
+			mutate: func(o *provider.SessionOptions) {
+				o.AutoCompactPercent = 50
+				o.ContextWindow = provider.ClaudeExtendedContextWindow
+			},
+			// CLAUDE_CODE_AUTO_COMPACT_WINDOW is rendered into the
+			// spawn-only --settings env block when a percent is set, and it
+			// must match the live window.
+			wantOK: false,
+		},
+		{
+			name: "autocompact override change needs restart",
+			mutate: func(o *provider.SessionOptions) {
+				o.AutoCompactPercent = 50
+			},
 			wantOK: false,
 		},
 		{
@@ -95,9 +184,8 @@ func TestPlanLiveUpdate(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			prev := liveUpdateBaseOptions()
 			next := liveUpdateBaseOptions()
-			if tt.name == "fast mode change needs restart" {
-				prev.Model = "claude-opus-4-8"
-				next.Model = "claude-opus-4-8"
+			if tt.mutatePrev != nil {
+				tt.mutatePrev(&prev)
 			}
 			tt.mutate(&next)
 
@@ -155,7 +243,7 @@ func TestApplyLiveUpdateSendsSetModel(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	if err := s.ApplyLiveUpdate(ctx, LiveUpdate{Model: "claude-fable-5"}); err != nil {
+	if err := s.ApplyLiveUpdate(ctx, LiveUpdate{Model: "claude-fable-5"}, nil); err != nil {
 		t.Fatalf("ApplyLiveUpdate: %v", err)
 	}
 
@@ -180,7 +268,7 @@ func TestApplyLiveUpdateAppliesBasePermissionMode(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	if err := s.ApplyLiveUpdate(ctx, LiveUpdate{BasePermissionMode: "acceptEdits"}); err != nil {
+	if err := s.ApplyLiveUpdate(ctx, LiveUpdate{BasePermissionMode: "acceptEdits"}, nil); err != nil {
 		t.Fatalf("ApplyLiveUpdate: %v", err)
 	}
 
@@ -218,7 +306,7 @@ func TestApplyLiveUpdateBypassEscalationRequiresRestart(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	err := s.ApplyLiveUpdate(ctx, LiveUpdate{Model: "claude-fable-5", BasePermissionMode: "bypassPermissions"})
+	err := s.ApplyLiveUpdate(ctx, LiveUpdate{Model: "claude-fable-5", BasePermissionMode: "bypassPermissions"}, nil)
 	if !errors.Is(err, ErrLiveUpdateRequiresRestart) {
 		t.Fatalf("ApplyLiveUpdate error = %v, want ErrLiveUpdateRequiresRestart", err)
 	}
@@ -239,7 +327,7 @@ func TestApplyLiveUpdateBypassAllowedWhenSpawnedWithAllowFlag(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	if err := s.ApplyLiveUpdate(ctx, LiveUpdate{BasePermissionMode: "bypassPermissions"}); err != nil {
+	if err := s.ApplyLiveUpdate(ctx, LiveUpdate{BasePermissionMode: "bypassPermissions"}, nil); err != nil {
 		t.Fatalf("ApplyLiveUpdate: %v", err)
 	}
 
@@ -369,4 +457,280 @@ func TestPlanLiveUpdateAutoTransitions(t *testing.T) {
 			t.Errorf("update = %+v, want zero for an unchanged session", update)
 		}
 	})
+}
+
+// decodeCapturedUserCommand asserts a captured stdin line is a user
+// envelope carrying exactly one text block and returns (text, uuid).
+func decodeCapturedUserCommand(t *testing.T, line string) (string, string) {
+	t.Helper()
+	var captured struct {
+		Type    string `json:"type"`
+		UUID    string `json:"uuid"`
+		Message struct {
+			Role    string `json:"role"`
+			Content []struct {
+				Type string `json:"type"`
+				Text string `json:"text"`
+			} `json:"content"`
+		} `json:"message"`
+	}
+	if err := json.Unmarshal([]byte(line), &captured); err != nil {
+		t.Fatalf("unmarshal captured line %q: %v", line, err)
+	}
+	if captured.Type != "user" || captured.Message.Role != "user" || len(captured.Message.Content) != 1 {
+		t.Fatalf("captured line = %+v, want single-block user envelope", captured)
+	}
+	return captured.Message.Content[0].Text, captured.UUID
+}
+
+// TestApplyLiveUpdateSendsEffortCommand pins the /effort live apply: the
+// command goes out as a slash-guard-exempt user message (no leading
+// newline — the CLI's command router must see "/" first) whose uuid comes
+// back on the receipt for async confirmation.
+func TestApplyLiveUpdateSendsEffortCommand(t *testing.T) {
+	s, capturePath := liveUpdateTestSession(t, Config{BasePermissionMode: "default"})
+	s.replaceAdvertisedCommands([]string{"effort", "fast"})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	var receipt LiveApplyReceipt
+	if err := s.ApplyLiveUpdate(ctx, LiveUpdate{Effort: "xhigh"}, func(r LiveApplyReceipt) {
+		receipt = r
+	}); err != nil {
+		t.Fatalf("ApplyLiveUpdate: %v", err)
+	}
+	if receipt.EffortCommandUUID == "" {
+		t.Fatalf("receipt = %+v, want an effort command uuid", receipt)
+	}
+
+	lines := waitCapturedLines(t, capturePath, 1)
+	text, id := decodeCapturedUserCommand(t, lines[0])
+	if text != "/effort xhigh" {
+		t.Fatalf("command text = %q, want %q", text, "/effort xhigh")
+	}
+	if id != receipt.EffortCommandUUID {
+		t.Fatalf("envelope uuid = %q, want receipt uuid %q", id, receipt.EffortCommandUUID)
+	}
+}
+
+// TestApplyLiveUpdateOrdersModelBeforeCommands pins the full sequence:
+// set_model first (a /fast enable may consult the active model), then
+// /effort, then /fast.
+func TestApplyLiveUpdateOrdersModelBeforeCommands(t *testing.T) {
+	s, capturePath := liveUpdateTestSession(t, Config{
+		BasePermissionMode: "default",
+		FastMode:           true,
+	})
+	s.replaceAdvertisedCommands([]string{"effort", "fast"})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	var receipt LiveApplyReceipt
+	if err := s.ApplyLiveUpdate(ctx, LiveUpdate{
+		Model:    "claude-opus-5[1m]",
+		Effort:   "low",
+		FastMode: FastModeOff,
+	}, func(r LiveApplyReceipt) {
+		receipt = r
+	}); err != nil {
+		t.Fatalf("ApplyLiveUpdate: %v", err)
+	}
+
+	lines := waitCapturedLines(t, capturePath, 3)
+	var first struct {
+		Type    string `json:"type"`
+		Request struct {
+			Subtype string `json:"subtype"`
+			Model   string `json:"model"`
+		} `json:"request"`
+	}
+	if err := json.Unmarshal([]byte(lines[0]), &first); err != nil {
+		t.Fatalf("unmarshal captured line: %v", err)
+	}
+	if first.Request.Subtype != "set_model" || first.Request.Model != "claude-opus-5[1m]" {
+		t.Fatalf("first line = %+v, want set_model claude-opus-5[1m]", first)
+	}
+	effortText, effortID := decodeCapturedUserCommand(t, lines[1])
+	if effortText != "/effort low" || effortID != receipt.EffortCommandUUID {
+		t.Fatalf("second line = %q/%q, want /effort low with receipt uuid", effortText, effortID)
+	}
+	fastText, fastID := decodeCapturedUserCommand(t, lines[2])
+	if fastText != "/fast off" || fastID != receipt.FastCommandUUID {
+		t.Fatalf("third line = %q/%q, want /fast off with receipt uuid", fastText, fastID)
+	}
+}
+
+// TestApplyLiveUpdateEffortNeedsAdvertisedCommand: a session that has not
+// advertised /effort (no init yet, older CLI, or gated account) routes the
+// whole update to the restart path before any side effect.
+func TestApplyLiveUpdateEffortNeedsAdvertisedCommand(t *testing.T) {
+	s, capturePath := liveUpdateTestSession(t, Config{BasePermissionMode: "default"})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	err := s.ApplyLiveUpdate(ctx, LiveUpdate{Model: "claude-fable-5", Effort: "low"}, nil)
+	if !errors.Is(err, ErrLiveUpdateRequiresRestart) {
+		t.Fatalf("ApplyLiveUpdate error = %v, want ErrLiveUpdateRequiresRestart", err)
+	}
+	time.Sleep(100 * time.Millisecond)
+	if data, err := os.ReadFile(capturePath); err == nil && len(data) > 0 {
+		t.Fatalf("expected no stdin writes, captured: %s", data)
+	}
+}
+
+// TestApplyLiveUpdateRejectsUnknownEffortTier: ApplyLiveUpdate is a public
+// API; a tier outside the vocabulary AO validated against the CLI must fail
+// loudly here, because the CLI would answer it with a non-error "Invalid
+// argument" text.
+func TestApplyLiveUpdateRejectsUnknownEffortTier(t *testing.T) {
+	s, _ := liveUpdateTestSession(t, Config{BasePermissionMode: "default"})
+	s.replaceAdvertisedCommands([]string{"effort"})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	err := s.ApplyLiveUpdate(ctx, LiveUpdate{Effort: "ultracode"}, nil)
+	if err == nil || errors.Is(err, ErrLiveUpdateRequiresRestart) {
+		t.Fatalf("ApplyLiveUpdate error = %v, want a validation error", err)
+	}
+}
+
+// TestApplyLiveUpdateFastEnableRequiresSpawnOptIn pins the SDK gate: /fast
+// on a session spawned without the fastMode settings opt-in answers
+// "not available in the Agent SDK", so the enable must take the restart
+// path (the respawn adds the opt-in). Disable has no such gate.
+func TestApplyLiveUpdateFastEnableRequiresSpawnOptIn(t *testing.T) {
+	s, capturePath := liveUpdateTestSession(t, Config{BasePermissionMode: "default"})
+	s.replaceAdvertisedCommands([]string{"effort", "fast"})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	err := s.ApplyLiveUpdate(ctx, LiveUpdate{FastMode: FastModeOn}, nil)
+	if !errors.Is(err, ErrLiveUpdateRequiresRestart) {
+		t.Fatalf("ApplyLiveUpdate error = %v, want ErrLiveUpdateRequiresRestart", err)
+	}
+	time.Sleep(100 * time.Millisecond)
+	if data, err := os.ReadFile(capturePath); err == nil && len(data) > 0 {
+		t.Fatalf("expected no stdin writes, captured: %s", data)
+	}
+}
+
+// TestApplyLiveUpdatePreSendRunsBeforeAnyWrite pins the confirmation-race
+// contract: preSend fires after validation and before any byte reaches the
+// wire, so the caller's pending-apply registration always beats the CLI's
+// answer.
+func TestApplyLiveUpdatePreSendRunsBeforeAnyWrite(t *testing.T) {
+	s, capturePath := liveUpdateTestSession(t, Config{BasePermissionMode: "default"})
+	s.replaceAdvertisedCommands([]string{"effort"})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	var receipt LiveApplyReceipt
+	preSendCalls := 0
+	err := s.ApplyLiveUpdate(ctx, LiveUpdate{Effort: "low"}, func(r LiveApplyReceipt) {
+		preSendCalls++
+		receipt = r
+		if data, err := os.ReadFile(capturePath); err == nil && len(data) > 0 {
+			t.Errorf("preSend ran after wire writes: %s", data)
+		}
+	})
+	if err != nil {
+		t.Fatalf("ApplyLiveUpdate: %v", err)
+	}
+	if preSendCalls != 1 {
+		t.Fatalf("preSend calls = %d, want exactly 1", preSendCalls)
+	}
+	lines := waitCapturedLines(t, capturePath, 1)
+	_, id := decodeCapturedUserCommand(t, lines[0])
+	if id != receipt.EffortCommandUUID {
+		t.Fatalf("wire uuid = %q, want the preSend receipt's %q", id, receipt.EffortCommandUUID)
+	}
+}
+
+// TestApplyLiveUpdateEffortRefusedOnEffortlessModel — the planner never
+// produces this update, but the gate must not live in caller discipline:
+// /effort against a model with no reasoning tiers fails loudly before any
+// side effect.
+func TestApplyLiveUpdateEffortRefusedOnEffortlessModel(t *testing.T) {
+	s, capturePath := liveUpdateTestSession(t, Config{Model: "claude-haiku-4-5", BasePermissionMode: "default"})
+	s.replaceAdvertisedCommands([]string{"effort"})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	err := s.ApplyLiveUpdate(ctx, LiveUpdate{Effort: "low"}, func(LiveApplyReceipt) {
+		t.Error("preSend ran for a rejected update")
+	})
+	if err == nil || errors.Is(err, ErrLiveUpdateRequiresRestart) {
+		t.Fatalf("ApplyLiveUpdate error = %v, want a validation error", err)
+	}
+	time.Sleep(100 * time.Millisecond)
+	if data, err := os.ReadFile(capturePath); err == nil && len(data) > 0 {
+		t.Fatalf("expected no stdin writes, captured: %s", data)
+	}
+}
+
+// TestApplyLiveUpdateRejectsGarbageFastArgument — FastModeChange is an open
+// string type; anything outside on/off must fail before the wire, because
+// the CLI answers `/fast garbage` with a non-error "Usage:" text.
+func TestApplyLiveUpdateRejectsGarbageFastArgument(t *testing.T) {
+	s, capturePath := liveUpdateTestSession(t, Config{BasePermissionMode: "default", FastMode: true})
+	s.replaceAdvertisedCommands([]string{"fast"})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	err := s.ApplyLiveUpdate(ctx, LiveUpdate{FastMode: FastModeChange("toggle")}, nil)
+	if err == nil || errors.Is(err, ErrLiveUpdateRequiresRestart) {
+		t.Fatalf("ApplyLiveUpdate error = %v, want a validation error", err)
+	}
+	time.Sleep(100 * time.Millisecond)
+	if data, err := os.ReadFile(capturePath); err == nil && len(data) > 0 {
+		t.Fatalf("expected no stdin writes, captured: %s", data)
+	}
+}
+
+// TestApplyLiveUpdateCommandAxesRefusedDuringResumeRepair — /effort and
+// /fast are user messages on the wire; a transcript pending the
+// --resume-session-at repair must not receive one. The restart fallback
+// performs the repair.
+func TestApplyLiveUpdateCommandAxesRefusedDuringResumeRepair(t *testing.T) {
+	s, capturePath := liveUpdateTestSession(t, Config{BasePermissionMode: "default"})
+	s.replaceAdvertisedCommands([]string{"effort"})
+	s.leafTracker.ingestLine([]byte(`{"type":"user","uuid":"u1","message":{"role":"user","content":"go"}}`))
+	s.leafTracker.ingestLine([]byte(`{"type":"assistant","uuid":"a-advisor","parentUuid":"u1","message":{"id":"m1","role":"assistant","content":[{"type":"server_tool_use","id":"srvtoolu_1","name":"advisor","input":{}}]}}`))
+	s.leafTracker.markTurnComplete()
+	if !s.RequiresResumeAtBeforeUserSend() {
+		t.Fatal("test setup: session not in the resume-repair state")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	err := s.ApplyLiveUpdate(ctx, LiveUpdate{Effort: "low"}, nil)
+	if !errors.Is(err, ErrLiveUpdateRequiresRestart) {
+		t.Fatalf("ApplyLiveUpdate error = %v, want ErrLiveUpdateRequiresRestart", err)
+	}
+	time.Sleep(100 * time.Millisecond)
+	if data, err := os.ReadFile(capturePath); err == nil && len(data) > 0 {
+		t.Fatalf("expected no stdin writes, captured: %s", data)
+	}
+
+	// A model-only update carries no user message and stays live even in
+	// the repair state.
+	if err := s.ApplyLiveUpdate(ctx, LiveUpdate{Model: "claude-fable-5"}, nil); err != nil {
+		t.Fatalf("model-only ApplyLiveUpdate during repair state: %v", err)
+	}
+}
+
+// TestLiveEffortTiersMatchOptionCoercion pins the /effort vocabulary to the
+// option layer: every claude-legal reasoning tier is live-appliable and
+// nothing else is, so a tier added to one layer cannot silently miss the
+// other.
+func TestLiveEffortTiersMatchOptionCoercion(t *testing.T) {
+	for _, tier := range provider.AllReasoningEfforts {
+		coerced := claudeEffortFromOption(tier)
+		if got := IsLiveEffortTier(string(tier)); got != (coerced == string(tier)) {
+			t.Fatalf("tier %q: IsLiveEffortTier = %v but claudeEffortFromOption maps it to %q", tier, got, coerced)
+		}
+	}
+	if IsLiveEffortTier("ultracode") || IsLiveEffortTier("auto") || IsLiveEffortTier("") {
+		t.Fatal("CLI-only tiers must not be live-appliable as thread config")
+	}
 }

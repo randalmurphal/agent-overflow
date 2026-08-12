@@ -351,6 +351,11 @@ type App struct {
 	// stable thread timeline or workspace while they run.
 	threadActionLocksOnce sync.Once
 	threadActionLocks     *keyedLockRegistry
+	// sessionConfigApplyLocks serializes the live-apply section of the
+	// per-thread config reconciler (app_session_config.go); see
+	// App.configApplyLocks for the lock-order rules.
+	sessionConfigApplyLocksOnce sync.Once
+	sessionConfigApplyLocks     *keyedLockRegistry
 	// flushDispatchQueues serializes queued-message flush batches per
 	// thread. Triage decides whether the drain is boundary or immediate;
 	// App owns the asynchronous provider writes so sequence allocation and
@@ -399,6 +404,15 @@ type App struct {
 	// Zero means the defaults in app_session_config.go.
 	configReconnectPollIntervalOverride time.Duration
 	configReconnectQuietWindowOverride  time.Duration
+	// commandUUID → an in-flight Claude live-config slash-command apply
+	// (/effort, /fast) awaiting its EventCommandResult confirmation.
+	// Guarded by mu; see app_claude_live_config.go.
+	claudeLiveConfigApplies map[string]claudeLiveConfigApply
+	// (sessionToken, axis) → that session answered a live-config command
+	// with something other than the expected state change; the reconciler
+	// must stop retrying the axis live and use the restart path for the
+	// rest of the session's life. Guarded by mu.
+	claudeLiveApplyDegraded map[claudeLiveApplyKey]struct{}
 	// threadID → persisted in-process system prompt overrides used for
 	// discussion participants and other non-default session starts.
 	threadSystemPrompts map[string]string
@@ -831,6 +845,7 @@ func NewApp() *App {
 		sessions:                       make(map[string]session),
 		aoTokens:                       make(map[string]transport.CallerScope),
 		threadActionLocks:              newKeyedLocks(),
+		sessionConfigApplyLocks:        newKeyedLocks(),
 		startingSessions:               make(map[string]*sessionStart),
 		reconnectingThreads:            make(map[string]bool),
 		autoReconnectAttempted:         make(map[string]bool),

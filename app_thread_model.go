@@ -142,13 +142,14 @@ func (a *App) updateThreadFromChatModelProfile(previous store.Thread, profile st
 		return store.Thread{}, err
 	}
 
-	// Reconcile any live session with the new profile: a pure model switch
-	// applies live on both providers (Claude set_model, Codex per-turn
-	// override); profile diffs that touch spawn-only config restart the
-	// session, deferred while the thread is busy. Failures surface as
-	// thread error state from the reconciler rather than rolling back the
-	// row — the persisted selection stays authoritative and the next
-	// (lazy) start converges on it.
+	// Reconcile any live session with the new profile: model, effort, fast
+	// mode, and (absent an autocompact override) context window all apply
+	// live on both providers (Claude set_model + /effort + /fast, Codex
+	// per-turn override); profile diffs that touch spawn-only config
+	// restart the session, deferred while the thread is busy. Failures
+	// surface as thread error state from the reconciler rather than
+	// rolling back the row — the persisted selection stays authoritative
+	// and the next (lazy) start converges on it.
 	a.reconcileSessionConfig(thread.ID)
 
 	updated, err := a.store.GetThread(thread.ID)

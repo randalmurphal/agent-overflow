@@ -746,8 +746,10 @@ func TestVerifyReplayParentFailsRiskyReplayWithoutVerifiableParent(t *testing.T)
 		onEvent: func(evt provider.ProviderEvent) {
 			events = append(events, evt)
 		},
-		expectedReplayParent:   "leaf-expected",
-		expectedReplayWasRisky: true,
+		expectedReplayByUUID: map[string]replayExpectation{
+			"user-wire": {parent: "leaf-expected", wasRisky: true},
+		},
+		expectedReplayOrder: []string{"user-wire"},
 	}
 	meta, _ := json.Marshal(map[string]string{
 		"provider_item_id": "user-wire",

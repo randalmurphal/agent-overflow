@@ -81,6 +81,33 @@ type Session struct {
 	// (verified on 2.1.205), so ApplyLiveUpdate routes that transition to
 	// the restart path instead. Written once at construction.
 	allowsBypassPermissions bool
+	// spawnedWithFastModeOptIn records whether the process was spawned with
+	// the `--settings '{"fastMode":true}'` SDK opt-in. Without it the CLI
+	// answers `/fast` with "Fast mode is not available in the Agent SDK"
+	// (fast_mode_disabled_reason "sdk_opt_in_required", verified 2.1.219),
+	// so ApplyLiveUpdate routes a live fast-mode ENABLE on such a process to
+	// the restart path — the respawn is what adds the opt-in. Written once
+	// at construction, like allowsBypassPermissions.
+	spawnedWithFastModeOptIn bool
+	// configModelMu guards configModel: the model string this session is
+	// currently configured to run — seeded from Config.Model at spawn and
+	// updated by every acked set_model. ApplyLiveUpdate reads it to refuse
+	// an /effort apply against a model that declares no reasoning tiers
+	// (the planner never produces one, but the gate must not live in
+	// caller discipline alone).
+	configModelMu sync.Mutex
+	configModel   string
+	// advertisedCommandsMu guards advertisedCommands: the provider-executed
+	// slash-command NAMES this session most recently advertised — seeded by
+	// `system/init.slash_commands` and REPLACED wholesale by
+	// `system/commands_changed` (the wire contract is replace, never merge).
+	// Written on the read loop; read by ApplyLiveUpdate on binding
+	// goroutines to gate the /effort and /fast live applies. Nil until the
+	// first init lands, and supportsSlashCommand treats nil as "unknown" —
+	// callers fall back to the restart path rather than assuming a command
+	// exists.
+	advertisedCommandsMu sync.Mutex
+	advertisedCommands   map[string]struct{}
 	// basePermissionMode is the runtime/access mode restored after a plan
 	// turn. currentPermissionMode mirrors the last successful
 	// set_permission_mode request so we avoid redundant control round-trips.
@@ -99,13 +126,20 @@ type Session struct {
 	// UUID. Unresolved server-side tool-use rows are kept out of this leaf
 	// so a later user send can be forced back onto the real continuation.
 	leafTracker *claudeLeafTracker
-	// replayMu guards the expected parent for the next AO-authored replay
-	// user echo. Claude stream-json gives us no send-time parent override,
-	// so the replay echo is the earliest confirmation that the live process
-	// attached the user message to the expected transcript leaf.
-	replayMu               sync.Mutex
-	expectedReplayParent   string
-	expectedReplayWasRisky bool
+	// replayMu guards the expected parents for AO-authored replay user
+	// echoes, keyed by the client-minted message uuid the echo carries back
+	// as provider_item_id. Claude stream-json gives us no send-time parent
+	// override, so the replay echo is the earliest confirmation that the
+	// live process attached the user message to the expected transcript
+	// leaf. Keyed rather than a single slot because senders overlap: a
+	// config-command send (live_update.go) can land between a queued user
+	// message and its echo, and a slot would cross the two verifications.
+	// expectedReplayOrder tracks insertion order for the size cap — an
+	// entry whose echo never arrives (the CLI cancelled the queued
+	// message) would otherwise leak.
+	replayMu             sync.Mutex
+	expectedReplayByUUID map[string]replayExpectation
+	expectedReplayOrder  []string
 	// approvalsMu guards pendingApprovals, resolvedApprovals, and
 	// approvalsClosed.
 	approvalsMu sync.Mutex
@@ -272,19 +306,21 @@ func NewSession(ctx context.Context, threadID string, cfg Config, onEvent func(p
 	}
 
 	s := &Session{
-		proc:                    proc,
-		threadID:                threadID,
-		sessionID:               cfg.Resume,
-		workDir:                 cfg.WorkDir,
-		onEvent:                 onEvent,
-		cancel:                  cancel,
-		readDone:                make(chan struct{}),
-		parser:                  NewParser(),
-		leafTracker:             newClaudeLeafTracker(cfg.ResumeAt),
-		allowsBypassPermissions: slices.Contains(cfg.PermissionFlags, "--allow-dangerously-skip-permissions"),
-		basePermissionMode:      normalizeClaudePermissionMode(cfg.BasePermissionMode),
-		currentPermissionMode:   normalizeClaudePermissionMode(cfg.BasePermissionMode),
-		interactionMode:         cfg.InteractionMode,
+		proc:                     proc,
+		threadID:                 threadID,
+		sessionID:                cfg.Resume,
+		workDir:                  cfg.WorkDir,
+		onEvent:                  onEvent,
+		cancel:                   cancel,
+		readDone:                 make(chan struct{}),
+		parser:                   NewParser(),
+		leafTracker:              newClaudeLeafTracker(cfg.ResumeAt),
+		allowsBypassPermissions:  slices.Contains(cfg.PermissionFlags, "--allow-dangerously-skip-permissions"),
+		spawnedWithFastModeOptIn: cfg.FastMode,
+		configModel:              cfg.Model,
+		basePermissionMode:       normalizeClaudePermissionMode(cfg.BasePermissionMode),
+		currentPermissionMode:    normalizeClaudePermissionMode(cfg.BasePermissionMode),
+		interactionMode:          cfg.InteractionMode,
 	}
 	// Seed the parser with the configured model so result usage can be
 	// priced even if the init envelope lands late. The init handler still
@@ -524,7 +560,7 @@ func (s *Session) Send(ctx context.Context, content string, opts provider.SendOp
 	}
 	message["content"] = blocks
 
-	s.recordExpectedReplayParent()
+	s.recordExpectedReplayParent(opts.UserMessageUUID)
 
 	msg := map[string]any{
 		"type":    "user",
@@ -550,7 +586,7 @@ func (s *Session) Send(ctx context.Context, content string, opts provider.SendOp
 		return fmt.Errorf("claude: marshal user message: %w", err)
 	}
 	if err := s.proc.WriteLine(data); err != nil {
-		s.clearExpectedReplayParent()
+		s.clearExpectedReplayParent(opts.UserMessageUUID)
 		return err
 	}
 	return nil
@@ -1050,43 +1086,76 @@ func (s *Session) RequiresResumeAtBeforeUserSend() bool {
 	return s.leafTracker.requiresResumeAtBeforeUserSend()
 }
 
-func (s *Session) recordExpectedReplayParent() {
-	if s == nil {
-		return
-	}
-	var parent string
-	var risky bool
-	if s.leafTracker != nil {
-		parent = s.leafTracker.canonicalLeaf()
-		risky = s.leafTracker.requiresResumeAtBeforeUserSend()
-	}
-	s.replayMu.Lock()
-	s.expectedReplayParent = parent
-	s.expectedReplayWasRisky = risky
-	s.replayMu.Unlock()
+// replayExpectation is the transcript parent recorded at send time for one
+// outbound user message, matched against the replay echo carrying the same
+// client-minted uuid.
+type replayExpectation struct {
+	parent   string
+	wasRisky bool
 }
 
-func (s *Session) takeExpectedReplayParent() (parent string, wasRisky bool) {
-	if s == nil {
-		return "", false
+// maxExpectedReplayEntries bounds the expectation map. Entries are consumed
+// by their echo, but a queued message the CLI cancels never echoes; the cap
+// evicts oldest-first so those cannot accumulate. 64 is far above any real
+// number of unechoed in-flight sends.
+const maxExpectedReplayEntries = 64
+
+// recordExpectedReplayParent stores the current canonical leaf as the
+// expected parent for the echo of the message sent under uuid. A uuid-less
+// send records nothing — with no key there is no way to attribute its echo,
+// and every AO sender stamps a uuid.
+func (s *Session) recordExpectedReplayParent(uuid string) {
+	if s == nil || uuid == "" {
+		return
+	}
+	var expectation replayExpectation
+	if s.leafTracker != nil {
+		expectation.parent = s.leafTracker.canonicalLeaf()
+		expectation.wasRisky = s.leafTracker.requiresResumeAtBeforeUserSend()
 	}
 	s.replayMu.Lock()
 	defer s.replayMu.Unlock()
-	parent = s.expectedReplayParent
-	wasRisky = s.expectedReplayWasRisky
-	s.expectedReplayParent = ""
-	s.expectedReplayWasRisky = false
-	return parent, wasRisky
+	if s.expectedReplayByUUID == nil {
+		s.expectedReplayByUUID = make(map[string]replayExpectation)
+	}
+	if _, exists := s.expectedReplayByUUID[uuid]; !exists {
+		s.expectedReplayOrder = append(s.expectedReplayOrder, uuid)
+	}
+	s.expectedReplayByUUID[uuid] = expectation
+	for len(s.expectedReplayOrder) > maxExpectedReplayEntries {
+		oldest := s.expectedReplayOrder[0]
+		s.expectedReplayOrder = s.expectedReplayOrder[1:]
+		delete(s.expectedReplayByUUID, oldest)
+	}
 }
 
-func (s *Session) clearExpectedReplayParent() {
-	if s == nil {
-		return
+// takeExpectedReplayParent consumes the expectation recorded for uuid.
+func (s *Session) takeExpectedReplayParent(uuid string) (expectation replayExpectation, ok bool) {
+	if s == nil || uuid == "" {
+		return replayExpectation{}, false
 	}
 	s.replayMu.Lock()
-	s.expectedReplayParent = ""
-	s.expectedReplayWasRisky = false
-	s.replayMu.Unlock()
+	defer s.replayMu.Unlock()
+	expectation, ok = s.expectedReplayByUUID[uuid]
+	if ok {
+		delete(s.expectedReplayByUUID, uuid)
+		for i, id := range s.expectedReplayOrder {
+			if id == uuid {
+				s.expectedReplayOrder = append(s.expectedReplayOrder[:i], s.expectedReplayOrder[i+1:]...)
+				break
+			}
+		}
+	}
+	return expectation, ok
+}
+
+// clearExpectedReplayParent drops the expectation for uuid — called when the
+// stdin write failed, so no echo will ever arrive.
+func (s *Session) clearExpectedReplayParent(uuid string) {
+	if s == nil || uuid == "" {
+		return
+	}
+	_, _ = s.takeExpectedReplayParent(uuid)
 }
 
 // PID returns the OS process id (and process-group id) of the Claude
@@ -1239,8 +1308,28 @@ func (s *Session) readLoop() {
 		for _, evt := range events {
 			if evt.Kind == provider.EventInit && evt.Meta != nil {
 				var info provider.SessionInfo
-				if json.Unmarshal(evt.Meta, &info) == nil && info.SessionID != "" {
-					s.sessionID = info.SessionID
+				if json.Unmarshal(evt.Meta, &info) == nil {
+					if info.SessionID != "" {
+						s.sessionID = info.SessionID
+					}
+					// Empty means the envelope said nothing (older CLI),
+					// never "no commands" — leave the set as-is so a
+					// commands_changed replacement isn't undone.
+					if len(info.SlashCommands) > 0 {
+						s.replaceAdvertisedCommands(info.SlashCommands)
+					}
+				}
+			}
+			if evt.Kind == provider.EventCommandsChanged && evt.Meta != nil {
+				var changed provider.CommandsChangedMeta
+				if json.Unmarshal(evt.Meta, &changed) == nil {
+					// Unlike init, an empty commands_changed list is a real
+					// replacement (claude-wire.md: replace, never merge).
+					names := make([]string, 0, len(changed.Commands))
+					for _, cmd := range changed.Commands {
+						names = append(names, cmd.Name)
+					}
+					s.replaceAdvertisedCommands(names)
 				}
 			}
 			if evt.Kind == provider.EventApprovalRequest && evt.ItemID != "" {
@@ -1262,12 +1351,37 @@ func (s *Session) readLoop() {
 	}
 }
 
+// replaceAdvertisedCommands swaps in a new provider-executed command name
+// set. Callers hold no lock; the read loop is the only writer.
+func (s *Session) replaceAdvertisedCommands(names []string) {
+	set := make(map[string]struct{}, len(names))
+	for _, name := range names {
+		set[name] = struct{}{}
+	}
+	s.advertisedCommandsMu.Lock()
+	s.advertisedCommands = set
+	s.advertisedCommandsMu.Unlock()
+}
+
+// supportsSlashCommand reports whether the session has advertised the named
+// provider-executed command. False both for "advertised list lacks it" and
+// for "no list has arrived yet" — callers treat either as "not available"
+// and take the restart path, so a pre-init session is handled conservatively
+// rather than optimistically.
+func (s *Session) supportsSlashCommand(name string) bool {
+	s.advertisedCommandsMu.Lock()
+	defer s.advertisedCommandsMu.Unlock()
+	_, ok := s.advertisedCommands[name]
+	return ok
+}
+
 func (s *Session) verifyReplayParent(evt provider.ProviderEvent) {
-	expectedParent, wasRisky := s.takeExpectedReplayParent()
-	if expectedParent == "" {
+	providerItemID, parentUUID := replayProviderIDs(evt.Meta)
+	expectation, ok := s.takeExpectedReplayParent(providerItemID)
+	if !ok || expectation.parent == "" {
 		return
 	}
-	providerItemID, parentUUID := replayProviderIDs(evt.Meta)
+	expectedParent, wasRisky := expectation.parent, expectation.wasRisky
 	if parentUUID == "" && wasRisky && providerItemID != "" && s.sessionID != "" {
 		if parent, found, err := findReplayUserParent(s.sessionID, s.workDir, providerItemID); err != nil {
 			s.emitReplayParentError(fmt.Sprintf("Claude replay omitted parentUuid and AO could not verify the transcript parent: %v", err))

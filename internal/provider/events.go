@@ -374,6 +374,18 @@ type CommandsChangedMeta struct {
 	Commands []SlashCommand `json:"commands"`
 }
 
+// CommandResultMeta is the typed payload for EventCommandResult.
+type CommandResultMeta struct {
+	// CommandUUID is the client-minted uuid of the stdin user message whose
+	// slash command produced this output, correlated by the parser from the
+	// surrounding command_lifecycle started/completed pair. Empty when the
+	// CLI emitted no lifecycle ack for the command (older CLIs) — consumers
+	// must treat absence as "uncorrelated", never as an error. The app's
+	// live-config reconciler matches it against the uuids it stamped on
+	// /effort and /fast applies to confirm them.
+	CommandUUID string `json:"commandUuid,omitempty"`
+}
+
 // TaskCreateMeta is the typed payload for EventTaskCreate.
 // Triage decodes it from ProviderEvent.Meta via json.Unmarshal.
 type TaskCreateMeta struct {

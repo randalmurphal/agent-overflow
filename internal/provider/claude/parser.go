@@ -169,6 +169,21 @@ type Parser struct {
 	// the interrupt ack before the result line (verified 6/6 runs,
 	// 2.1.170, both mid-stream and pre-output interrupts).
 	interruptAcked bool
+	// activeCommandUUID is the client-minted uuid of the stdin user message
+	// the CLI most recently `started` processing, cleared by the matching
+	// `completed`/`cancelled` (and by Close). Windows can NEST — a message
+	// written mid-turn drains into the running turn, so its `started` fires
+	// inside the outer message's window (claude-wire.md §command_lifecycle)
+	// — which is why this is last-started-wins rather than a stack: only
+	// `<synthetic>` command-output envelopes are ever stamped
+	// (commandResultEvents), a command's synthetic output sits inside its
+	// OWN started/completed pair, and the identity guard on clear keeps an
+	// outer completed from wiping an inner window. commandResultEvents
+	// stamps the value onto CommandResultMeta so consumers can match a
+	// command's output to the send that asked for it. Read-loop-goroutine
+	// state, no lock. A single string, so no bounding is needed; sessions
+	// on CLIs without command_lifecycle simply never set it.
+	activeCommandUUID string
 	// usageTotalsByModel is the cumulative `result.modelUsage` snapshot
 	// as of the last result envelope. The wire reports SESSION-CUMULATIVE
 	// per-model usage/cost; per-turn accounting is the delta between
@@ -268,6 +283,7 @@ func (p *Parser) Close() {
 	p.recoveredBlockSeq = nil
 	p.lastAssistantMessageID = ""
 	p.interruptAcked = false
+	p.activeCommandUUID = ""
 	p.usageTotalsByModel = nil
 	p.usageAccountedCostUSD = 0
 }
@@ -375,9 +391,10 @@ func (p *Parser) ParseLine(threadID string, line []byte) ([]provider.ProviderEve
 		return parseRateLimitEvent(threadID, raw, now)
 	case "command_lifecycle":
 		// Delivery ack for a user message we wrote to stdin, keyed by the
-		// uuid we minted. Stateless: correlation lives in triage, which
-		// owns the pending-send registry these ids belong to.
-		return parseCommandLifecycle(threadID, raw, now, line)
+		// uuid we minted. Send-to-row correlation lives in triage (the
+		// pending-send registry); the parser keeps only the wire-window
+		// correlation documented on the method.
+		return p.parseCommandLifecycle(threadID, raw, now, line)
 	default:
 		// Unknown type — skip gracefully.
 		return nil, nil

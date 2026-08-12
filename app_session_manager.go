@@ -48,6 +48,7 @@ func (m sessionManager) take(threadID string) (session, bool) {
 	if ok {
 		delete(m.app.sessions, threadID)
 		m.app.revokeAOTokenLocked(sess)
+		m.app.purgeClaudeLiveConfigStateLocked(sess.token)
 	}
 	return sess, ok
 }
@@ -96,6 +97,25 @@ func (m sessionManager) updateLaunchOpts(threadID, sessionToken string, opts pro
 	}
 	current.launchOpts = opts
 	m.app.sessions[threadID] = current
+}
+
+// mutateLaunchOpts edits individual fields of the stored launch options
+// under the same token guard as updateLaunchOpts, reporting whether the
+// mutation applied (false: no session, or a newer session replaced the one
+// the caller observed). Used by the async live-config confirmation path,
+// which must touch exactly one axis without clobbering whatever a
+// concurrent reconcile wrote to the others — and must skip its persistent
+// side effects entirely when the session it is confirming is gone.
+func (m sessionManager) mutateLaunchOpts(threadID, sessionToken string, mutate func(*provider.SessionOptions)) bool {
+	m.app.mu.Lock()
+	defer m.app.mu.Unlock()
+	current, ok := m.app.sessions[threadID]
+	if !ok || current.token != sessionToken {
+		return false
+	}
+	mutate(&current.launchOpts)
+	m.app.sessions[threadID] = current
+	return true
 }
 
 func (m sessionManager) updateCredentials(
@@ -161,6 +181,7 @@ func (m sessionManager) unregister(threadID, sessionToken string) (session, bool
 	}
 	delete(m.app.sessions, threadID)
 	m.app.revokeAOTokenLocked(current)
+	m.app.purgeClaudeLiveConfigStateLocked(current.token)
 	return current, true
 }
 
@@ -285,6 +306,7 @@ func (m sessionManager) takeIdle(threadID string, cutoffNano int64) (session, bo
 	}
 	delete(m.app.sessions, threadID)
 	m.app.revokeAOTokenLocked(sess)
+	m.app.purgeClaudeLiveConfigStateLocked(sess.token)
 	return sess, true
 }
 
@@ -296,6 +318,7 @@ func (m sessionManager) snapshotAndClear() map[string]session {
 	for threadID, sess := range m.app.sessions {
 		sessions[threadID] = sess
 		m.app.revokeAOTokenLocked(sess)
+		m.app.purgeClaudeLiveConfigStateLocked(sess.token)
 	}
 	m.app.sessions = make(map[string]session)
 	return sessions

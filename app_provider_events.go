@@ -58,6 +58,19 @@ func (a *App) sessionEventHandler(threadID, sessionToken, providerType string) f
 			}
 		}
 
+		// Claude command output settles live-config applies (/effort,
+		// /fast) and follows user-typed /effort; a cancelled command
+		// lifecycle reverts an apply whose output will never arrive. See
+		// app_claude_live_config.go.
+		if providerType == string(provider.Claude) {
+			switch evt.Kind {
+			case provider.EventCommandResult:
+				a.observeClaudeCommandResult(threadID, sessionToken, evt)
+			case provider.EventCommandLifecycle:
+				a.observeClaudeCommandLifecycle(evt)
+			}
+		}
+
 		// A successful turn start is the wire-level proof that the new
 		// session is alive and serving. Reset the per-thread auto-
 		// reconnect attempt counter so a later (unrelated) death gets a

@@ -61,10 +61,18 @@ owner. The top-level `ParseLine` (in `parser.go`) reads the envelope's
   approvals and the exit_plan_mode signal.
 - `parse_command_lifecycle.go` — `command_lifecycle` envelopes: the
   CLI's delivery ack for a user message we wrote to stdin, keyed by
-  the client-minted `command_uuid`. Stateless — correlation lives in
-  triage, which owns the pending-send registry those ids belong to.
-  Unknown `state` values are dropped, not forwarded. See
-  claude-wire.md §command_lifecycle.
+  the client-minted `command_uuid`. Send-side correlation lives in
+  triage (the pending-send registry those ids belong to); this parser
+  additionally tracks the `started`→`completed`/`cancelled` window as
+  `Parser.activeCommandUUID` so `parse_assistant.go` can stamp a
+  provider-executed command's output (`EventCommandResult`) with the
+  command uuid it answers (`provider.CommandResultMeta`) — the
+  confirmation channel for `/effort` / `/fast` live applies. Windows can
+  nest (a mid-turn message drains into the running turn), so the field
+  is last-started-wins with an identity guard on clear; it is safe
+  because only `<synthetic>` envelopes are stamped and a command's
+  synthetic output sits inside its own window. Unknown `state` values
+  are dropped, not forwarded. See claude-wire.md §command_lifecycle.
 - `fastmode.go` — `fast_mode_state` / `fast_mode_disabled_reason`
   extraction, shared by `parse_result.go` and `parse_system.go`
   (init). Both keys are optional and version-dependent: absence is
@@ -91,6 +99,22 @@ owner. The top-level `ParseLine` (in `parser.go`) reads the envelope's
   row overcounts). See claude-wire.md §`get_context_usage` and the
   `context_usage_control_20260803` fixture.
 - `approvals.go` — approval-response encoding for the SDK.
+- `live_update.go` — `PlanLiveUpdate` / `ApplyLiveUpdate`: the
+  restart-free path for config changes a live session can adopt. Model
+  and permission mode ride control_requests (`set_model`,
+  `set_permission_mode`); effort and fast mode ride the CLI's own
+  `/effort` / `/fast` slash commands (uuid-stamped,
+  `AllowClaudeSlashCommand` sends), whose confirmation arrives later as
+  an `EventCommandResult` carrying the uuid — the app side
+  (`app_claude_live_config.go`) settles those. Context-window changes
+  ride the `[1m]` marker on `set_model`. `PlanLiveUpdate` returns false
+  (restart) for everything else, and `ApplyLiveUpdate` validates every
+  axis before ANY side effect — including refusing the command axes
+  while the transcript needs the resume-at repair — so a restart-bound
+  update never half-applies. Its `preSend` hook fires between
+  validation and the first wire write: the caller registers its
+  pending-confirmation state there, BEFORE the CLI can possibly
+  answer. See claude-wire.md §"Live config commands".
 - `session.go` — process lifecycle + read loop that feeds ParseLine.
   The read loop's control_response pre-handler also flags the parser's
   interrupt-ack state (`pendingControlRequests` entries carry
@@ -429,6 +453,18 @@ start and complete. These are load-bearing rules enforced by
   `command_lifecycle{completed}` → a `system/commands_changed` push.
   Pins the two regressions worth pinning: exactly ONE persisted row for
   the whole sequence, and the metadata echo staying off the timeline.
+- `docs/references/fixtures/claude/effort_live_20260812.ndjson` — three
+  live-config command sequences on 2.1.219 (2026-08-12 spike, sanitized):
+  `/effort low` success, `/effort bogus` rejected as `is_error:false`
+  text ("Invalid argument: …"), and `/fast on` declined immediately with
+  "Fast mode unavailable: Fast mode is not available in the Agent SDK"
+  (`fast_mode_disabled_reason: "sdk_opt_in_required"`). Replayed by
+  `TestEffortLiveFixtureCorrelatesCommandResults` (command-window
+  correlation end to end) and `TestAdvertisedCommandsFromWireInit`.
+  Authoritative for the /effort reply texts and the fast-mode FAILURE
+  replies; the fast-mode SUCCESS texts ("Fast mode ON"/"OFF") are NOT in
+  this capture — the spike account had no fast access — and come from
+  2.1.219 binary strings (claude-wire.md §"Live config commands").
 - `docs/references/fixtures/claude/context_usage_control_20260803.summary.json`
   — sanitized capture of a `get_context_usage` control_response on
   2.1.219: the full key set, the `categories[]` rows, and the

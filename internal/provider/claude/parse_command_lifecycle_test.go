@@ -76,3 +76,55 @@ func TestParseCommandLifecycle_MissingUUIDDropped(t *testing.T) {
 		t.Fatalf("events = %d, want 0 without a command_uuid", len(events))
 	}
 }
+
+// TestCommandResultCarriesActiveCommandUUID pins the correlation window: a
+// synthetic assistant envelope between a command's `started` and `completed`
+// lifecycle marks belongs to that command, so its EventCommandResult carries
+// the command_uuid on Meta. Outside the window (or after a `cancelled`),
+// results stay uncorrelated — Meta absent, never an error.
+func TestCommandResultCarriesActiveCommandUUID(t *testing.T) {
+	parser := NewParser()
+	parse := func(line string) []provider.ProviderEvent {
+		t.Helper()
+		events, err := parser.ParseLine(testThread, []byte(line))
+		if err != nil {
+			t.Fatalf("ParseLine(%s): %v", line, err)
+		}
+		return events
+	}
+	synthetic := func(id, text string) string {
+		return `{"type":"assistant","message":{"id":"` + id + `","model":"<synthetic>","role":"assistant",` +
+			`"content":[{"type":"text","text":"` + text + `"}]}}`
+	}
+	resultMeta := func(events []provider.ProviderEvent) (provider.CommandResultMeta, bool) {
+		t.Helper()
+		if len(events) != 1 || events[0].Kind != provider.EventCommandResult {
+			t.Fatalf("events = %+v, want one command result", events)
+		}
+		if events[0].Meta == nil {
+			return provider.CommandResultMeta{}, false
+		}
+		var meta provider.CommandResultMeta
+		if err := json.Unmarshal(events[0].Meta, &meta); err != nil {
+			t.Fatalf("unmarshal command result meta: %v", err)
+		}
+		return meta, true
+	}
+
+	parse(`{"type":"command_lifecycle","command_uuid":"cmd-1","state":"queued"}`)
+	parse(`{"type":"command_lifecycle","command_uuid":"cmd-1","state":"started"}`)
+	meta, ok := resultMeta(parse(synthetic("m1", "Set effort level to xhigh (this session only)")))
+	if !ok || meta.CommandUUID != "cmd-1" {
+		t.Fatalf("in-window meta = %+v (present=%v), want CommandUUID cmd-1", meta, ok)
+	}
+	parse(`{"type":"command_lifecycle","command_uuid":"cmd-1","state":"completed"}`)
+	if meta, ok = resultMeta(parse(synthetic("m2", "orphan output"))); ok {
+		t.Fatalf("post-completed meta = %+v, want uncorrelated", meta)
+	}
+
+	parse(`{"type":"command_lifecycle","command_uuid":"cmd-2","state":"started"}`)
+	parse(`{"type":"command_lifecycle","command_uuid":"cmd-2","state":"cancelled"}`)
+	if meta, ok = resultMeta(parse(synthetic("m3", "late output"))); ok {
+		t.Fatalf("post-cancelled meta = %+v, want uncorrelated", meta)
+	}
+}

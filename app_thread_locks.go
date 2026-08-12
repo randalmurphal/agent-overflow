@@ -32,6 +32,28 @@ func (a *App) threadLocks() *keyedLockRegistry {
 	return a.threadActionLocks
 }
 
+// configApplyLocks serializes liveApplySessionConfig per thread: the apply
+// is a read-modify-write over session.launchOpts (snapshot → plan → send →
+// commit), and two concurrent reconciles would both plan against the same
+// snapshot and both send the same change. A separate registry rather than
+// the thread action lock because reconcile callers arrive both with and
+// without that lock held (applyRuntimeMode and the deferred watcher hold
+// it; the model-selection bindings do not).
+//
+// Lock-order rules: thread action lock → config-apply lock → a.mu, never
+// any other order. Session-START paths must never acquire a config-apply
+// lock — the serialized section blocks on waitForStartingSession, so a
+// start that waited on this lock would deadlock against a holder waiting
+// on the start.
+func (a *App) configApplyLocks() *keyedLockRegistry {
+	a.sessionConfigApplyLocksOnce.Do(func() {
+		if a.sessionConfigApplyLocks == nil {
+			a.sessionConfigApplyLocks = newKeyedLocks()
+		}
+	})
+	return a.sessionConfigApplyLocks
+}
+
 // Lock returns an unlock function that must be called once the per-key
 // critical section completes.
 func (r *keyedLockRegistry) Lock(key string) func() {

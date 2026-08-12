@@ -37,7 +37,18 @@ import (
 // Older CLIs emit no `command_lifecycle` at all, so no consumer may treat
 // its absence as a failure; see docs/references/claude-wire.md
 // §command_lifecycle.
-func parseCommandLifecycle(threadID string, raw map[string]json.RawMessage, now time.Time, line []byte) ([]provider.ProviderEvent, error) {
+//
+// This is a Parser method for one piece of wire-level correlation the
+// envelope order makes safe: a provider-executed command's `<synthetic>`
+// output envelope arrives inside that command's own `started`→`completed`
+// pair (spike-verified 2.1.219, including a command queued mid-turn).
+// Windows can nest — a mid-turn message's `started` fires inside the
+// running turn's window — so the field is last-started-wins; the identity
+// guard on clear keeps an outer `completed` from wiping an inner window,
+// and non-synthetic envelopes are never stamped. Send-to-row correlation
+// for pending sends still lives in triage; this field never outlives the
+// started→completed window.
+func (p *Parser) parseCommandLifecycle(threadID string, raw map[string]json.RawMessage, now time.Time, line []byte) ([]provider.ProviderEvent, error) {
 	commandUUID := readRawString(raw["command_uuid"])
 	if commandUUID == "" {
 		return nil, nil
@@ -45,6 +56,16 @@ func parseCommandLifecycle(threadID string, raw map[string]json.RawMessage, now 
 	state, ok := commandLifecycleState(readRawString(raw["state"]))
 	if !ok {
 		return nil, nil
+	}
+	switch state {
+	case provider.CommandStarted:
+		p.activeCommandUUID = commandUUID
+	case provider.CommandCompleted, provider.CommandCancelled:
+		// Guard on identity so a late ack for an older message cannot
+		// clear a newer started window.
+		if p.activeCommandUUID == commandUUID {
+			p.activeCommandUUID = ""
+		}
 	}
 	meta, err := json.Marshal(provider.CommandLifecycleMeta{
 		CommandUUID: commandUUID,

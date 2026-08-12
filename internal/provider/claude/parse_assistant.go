@@ -325,12 +325,17 @@ func (p *Parser) commandResultEvents(threadID string, msg assistantMessage, now 
 	if text == "" {
 		return nil
 	}
+	var meta json.RawMessage
+	if p.activeCommandUUID != "" {
+		meta, _ = json.Marshal(provider.CommandResultMeta{CommandUUID: p.activeCommandUUID})
+	}
 	return []provider.ProviderEvent{{
 		Kind:           provider.EventCommandResult,
 		ThreadID:       threadID,
 		ItemID:         strings.TrimSpace(msg.ID),
 		Content:        text,
 		ContentPresent: true,
+		Meta:           meta,
 		Timestamp:      now,
 		Raw:            line,
 	}}
