@@ -41,23 +41,139 @@ func newMultiAgentV2RoutingSession(t *testing.T, onEvent func(provider.ProviderE
 	return s
 }
 
-func v2ActivityLine(threadID, turnID, itemID, kind, childThreadID, agentPath string) []byte {
+// v2ActivityParams is the `params` object codex >= 0.146 sends on BOTH legs of
+// a subAgentActivity item — emit_sub_agent_activity
+// (codex-rs/core/src/tools/handlers/multi_agents_v2.rs) hands the same
+// SubAgentActivityItem to emit_turn_item_started and emit_turn_item_completed,
+// so the two notifications differ only in method.
+func v2ActivityParams(threadID, turnID, itemID, kind, childThreadID, agentPath string) json.RawMessage {
 	encoded, _ := json.Marshal(map[string]any{
-		"jsonrpc": "2.0",
-		"method":  "item/completed",
-		"params": map[string]any{
-			"threadId": threadID,
-			"turnId":   turnID,
-			"item": map[string]any{
-				"id":            itemID,
-				"type":          "subAgentActivity",
-				"kind":          kind,
-				"agentThreadId": childThreadID,
-				"agentPath":     agentPath,
-			},
+		"threadId": threadID,
+		"turnId":   turnID,
+		"item": map[string]any{
+			"id":            itemID,
+			"type":          "subAgentActivity",
+			"kind":          kind,
+			"agentThreadId": childThreadID,
+			"agentPath":     agentPath,
 		},
 	})
 	return encoded
+}
+
+func v2ActivityNotification(method, threadID, turnID, itemID, kind, childThreadID, agentPath string) []byte {
+	encoded, _ := json.Marshal(map[string]any{
+		"jsonrpc": "2.0",
+		"method":  method,
+		"params":  v2ActivityParams(threadID, turnID, itemID, kind, childThreadID, agentPath),
+	})
+	return encoded
+}
+
+func v2ActivityLine(threadID, turnID, itemID, kind, childThreadID, agentPath string) []byte {
+	return v2ActivityNotification("item/completed", threadID, turnID, itemID, kind, childThreadID, agentPath)
+}
+
+// TestMultiAgentV2ActivityStartedLegIsDropped pins that the item/started half
+// of a subAgentActivity pair is consumed silently. Codex >= 0.146 emits both
+// legs for every kind; routing the started leg through the generic tool branch
+// minted a raw tool_call row named "subAgentActivity". For started/interacted
+// the completed leg upserts the same item id so the row was only transient,
+// but interrupted's completed leg is a status event that never settles the
+// row — turn-end reconciliation then flipped it to errored, leaving permanent
+// junk in the timeline.
+func TestMultiAgentV2ActivityStartedLegIsDropped(t *testing.T) {
+	for _, kind := range []string{"started", "interacted", "interrupted"} {
+		t.Run(kind, func(t *testing.T) {
+			params := v2ActivityParams("root-provider-thread", "root-turn", "activity-1", kind, "child-a", "/root/reviewer")
+			events, handled := classifyItemNotification("ao-thread", "item/started", params, time.Unix(0, 0).UTC())
+			if !handled {
+				t.Fatal("item/started subAgentActivity fell through unclaimed")
+			}
+			if len(events) != 0 {
+				t.Fatalf("started leg events = %+v, want none", events)
+			}
+		})
+	}
+}
+
+// TestMultiAgentV2ActivityCompletedLegClassification is the counterpart guard:
+// dropping the started leg is only safe while the completed leg keeps
+// synthesizing the full contract for every kind.
+func TestMultiAgentV2ActivityCompletedLegClassification(t *testing.T) {
+	type wantEvent struct {
+		kind     provider.EventKind
+		itemType string
+	}
+	tests := []struct {
+		kind string
+		want []wantEvent
+	}{
+		{
+			kind: "started",
+			want: []wantEvent{
+				{kind: provider.EventToolStart, itemType: "collab_agent"},
+				{kind: provider.EventToolComplete, itemType: "collab_agent"},
+			},
+		},
+		{
+			kind: "interacted",
+			want: []wantEvent{{kind: provider.EventToolComplete, itemType: "send_input"}},
+		},
+		{
+			// A status event, not a tool completion — which is exactly why the
+			// started leg must not create a tool row for this kind.
+			kind: "interrupted",
+			want: []wantEvent{{kind: provider.EventSubagentStatus}},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.kind, func(t *testing.T) {
+			params := v2ActivityParams("root-provider-thread", "root-turn", "activity-1", tt.kind, "child-a", "/root/reviewer")
+			events, handled := classifyItemNotification("ao-thread", "item/completed", params, time.Unix(0, 0).UTC())
+			if !handled {
+				t.Fatal("item/completed subAgentActivity fell through unclaimed")
+			}
+			if len(events) != len(tt.want) {
+				t.Fatalf("events = %+v, want %d", events, len(tt.want))
+			}
+			for i, want := range tt.want {
+				if events[i].Kind != want.kind || events[i].ItemType != want.itemType {
+					t.Fatalf("event %d = (%q, %q), want (%q, %q)",
+						i, events[i].Kind, events[i].ItemType, want.kind, want.itemType)
+				}
+				if events[i].ItemID != "activity-1" || events[i].TurnID != "root-turn" {
+					t.Fatalf("event %d identity = (%q, %q)", i, events[i].ItemID, events[i].TurnID)
+				}
+			}
+		})
+	}
+}
+
+// TestMultiAgentV2InterruptedActivityPairEmitsOnlyStatus drives the full
+// started+completed wire pair through the session, which is the sequence that
+// left errored `subAgentActivity` tool rows in production thread 4567bd49.
+func TestMultiAgentV2InterruptedActivityPairEmitsOnlyStatus(t *testing.T) {
+	var events []provider.ProviderEvent
+	s := newMultiAgentV2RoutingSession(t, func(event provider.ProviderEvent) {
+		events = append(events, event)
+	})
+	s.dispatchLine(v2ActivityNotification("item/started", "root-provider-thread", "root-turn", "spawn-a", "started", "child-a", "/root/reviewer"))
+	s.dispatchLine(v2ActivityLine("root-provider-thread", "root-turn", "spawn-a", "started", "child-a", "/root/reviewer"))
+	if len(events) != 2 || events[0].Kind != provider.EventToolStart || events[1].Kind != provider.EventToolComplete {
+		t.Fatalf("spawn pair events = %+v, want exactly the synthesized start/complete", events)
+	}
+	events = nil
+
+	s.dispatchLine(v2ActivityNotification("item/started", "root-provider-thread", "root-turn", "interrupt-call", "interrupted", "child-a", "/root/reviewer"))
+	s.dispatchLine(v2ActivityLine("root-provider-thread", "root-turn", "interrupt-call", "interrupted", "child-a", "/root/reviewer"))
+
+	if len(events) != 1 {
+		t.Fatalf("interrupt events = %+v, want only the scoped status event", events)
+	}
+	if events[0].Kind != provider.EventSubagentStatus || events[0].ItemID != "spawn-a" || events[0].ParentToolUseID != "spawn-a" {
+		t.Fatalf("interrupt event = %+v", events[0])
+	}
 }
 
 func TestMultiAgentV2StartedNormalizesAndMapsChild(t *testing.T) {

@@ -99,7 +99,20 @@ func classifyItemNotification(threadID, method string, params json.RawMessage, n
 				Meta:      meta,
 				Timestamp: now,
 			}}, true
-		case "send_input", "close_agent", "exitedReviewMode", "hookPrompt":
+		case "send_input", "close_agent", "exitedReviewMode", "hookPrompt", "subAgentActivity":
+			// subAgentActivity: codex >= 0.146's emit_sub_agent_activity
+			// (codex-rs/core/src/tools/handlers/multi_agents_v2.rs) fires
+			// item/started AND item/completed for the same item, for every
+			// activity kind. The completed leg is the whole story —
+			// classifySubAgentActivityCompleted synthesizes the begin/end
+			// pair for kind "started", a lone completion for "interacted",
+			// and a status event for "interrupted". Letting the started leg
+			// reach the generic tool branch below mints a raw tool_call row
+			// named "subAgentActivity": transient for the two kinds whose
+			// completed leg upserts the same item id, but permanent for
+			// "interrupted", whose completed leg is a status event and never
+			// settles the row — turn-end reconciliation then flips it to
+			// errored.
 			return nil, true
 		}
 		if itemType == "" || isNonToolCodexItemType(itemType) {
@@ -422,11 +435,15 @@ func decodeSubAgentActivityItem(item map[string]json.RawMessage) (subAgentActivi
 
 // classifySubAgentActivityCompleted normalizes MultiAgentV2's canonical
 // activity item onto the same provider contract used by V1
-// collabAgentToolCall items. V2 emits only item/completed for a successful
-// spawn, so Started expands to the begin/end pair the background projector
-// already understands. The typed activity supplies the authoritative child
-// thread and task path; raw function-call metadata can enrich safe fields such
-// as role/model/effort, but V2's encrypted prompt is unavailable to clients.
+// collabAgentToolCall items. Codex emits BOTH item/started and
+// item/completed for every activity item (emit_sub_agent_activity,
+// codex-rs/core/src/tools/handlers/multi_agents_v2.rs); the started leg is
+// deliberately dropped in classifyItemNotification because this function is
+// the one that expands kind "started" into the begin/end pair the background
+// projector already understands. The typed activity supplies the authoritative
+// child thread and task path; raw function-call metadata can enrich safe
+// fields such as role/model/effort, but V2's encrypted prompt is unavailable
+// to clients.
 func classifySubAgentActivityCompleted(threadID string, params json.RawMessage, now time.Time) []provider.ProviderEvent {
 	activity, ok := decodeSubAgentActivity("item/completed", params)
 	if !ok {

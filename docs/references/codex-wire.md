@@ -367,11 +367,16 @@ and normalizes them before triage:
 
 | Operation | MultiAgentV1 typed item | MultiAgentV2 typed item |
 |---|---|---|
-| spawn | `collabAgentToolCall`, `tool:"spawnAgent"`, start + complete | one completed `subAgentActivity`, `kind:"started"` |
-| send/follow-up | `collabAgentToolCall`, `tool:"sendInput"` | one completed `subAgentActivity`, `kind:"interacted"` |
-| interrupt/close | `collabAgentToolCall`, `tool:"closeAgent"` | one completed `subAgentActivity`, `kind:"interrupted"` |
+| spawn | `collabAgentToolCall`, `tool:"spawnAgent"`, start + complete | `subAgentActivity`, `kind:"started"` — the completed leg is the signal |
+| send/follow-up | `collabAgentToolCall`, `tool:"sendInput"` | `subAgentActivity`, `kind:"interacted"` — the completed leg is the signal |
+| interrupt/close | `collabAgentToolCall`, `tool:"closeAgent"` | `subAgentActivity`, `kind:"interrupted"` — the completed leg is the signal |
 | wait | `collabAgentToolCall`, `tool:"wait"`, receivers/statuses | `collabAgentToolCall`, `tool:"wait"`, empty receiver/status maps |
 | list | model-facing raw function call/output only | model-facing raw function call/output only |
+
+Every V2 activity item arrives as a started/completed pair on the wire (see
+[§MultiAgentV2 spawn normalization](#multiagentv2-spawn-normalization)); the
+started leg is dropped, so the completed leg is the only one that produces
+events.
 
 The V2 item is:
 
@@ -463,9 +468,21 @@ items are only an additional typed signal when present, not a prerequisite.
 
 ### MultiAgentV2 spawn normalization
 
-V2 emits no `item/started` for `subAgentActivity`. Agent Overflow expands a
-canonical `kind:"started"` completion into the normalized spawn start +
-completion pair used by the existing projector. The normalized completion
+Core's `emit_sub_agent_activity`
+(`codex-rs/core/src/tools/handlers/multi_agents_v2.rs`) fires BOTH
+`item/started` and `item/completed` for every `subAgentActivity` item — since
+codex 0.146 for all three kinds. (Read at tag `rust-v0.146.0` via `git show`;
+the local reference checkout's working tree may sit on an older tag — 0.142.5
+has no `emit_sub_agent_activity` and emits only `ItemCompleted` from
+`event_mapping.rs`, which is also why dropping the started leg is a no-op
+below 0.146.) Only the completed leg carries meaning here:
+Agent Overflow drops the started leg outright and expands a canonical
+`kind:"started"` completion into the normalized spawn start +
+completion pair used by the existing projector. Routing the started leg as a
+tool row instead would mint a raw `subAgentActivity` tool_call — transient for
+`started` / `interacted` (the completion upserts the same item id) but
+permanent for `interrupted`, whose completion is a status event that never
+settles the row. The normalized completion
 contains the authoritative receiver thread and a running `agentsStates`
 entry, because successful emission occurs only after core has spawned the
 child. This is a typed authorization signal, not an ordering heuristic.
