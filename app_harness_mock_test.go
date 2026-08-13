@@ -6,11 +6,13 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"agent-overflow/internal/harness/control"
+	"agent-overflow/internal/store"
 )
 
 func TestHarnessScenarioRulesResolveAndFallBack(t *testing.T) {
@@ -237,6 +239,39 @@ func TestHarnessMockRPCsWithoutControlServer(t *testing.T) {
 	}
 	if err := h.HarnessMockCommand("mock-1", control.Command{Type: control.CommandAdvance}); err == nil {
 		t.Fatal("HarnessMockCommand succeeded without a control server")
+	}
+}
+
+func TestHarnessClearThreadProviderCursorRequiresAnIdleResumableThread(t *testing.T) {
+	h, app := newHarnessTestApp(t)
+	seedHarnessThread(t, app, "thread-cursor")
+	if _, err := app.store.UpdateSessionRef("thread-cursor", "provider-session"); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.store.InsertTurn(store.Turn{
+		TurnID: "thread-cursor:1", ThreadID: "thread-cursor", TurnIndex: 1,
+		StartedAt: time.Now().UnixMilli(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.HarnessClearThreadProviderCursor("thread-cursor"); err == nil || !strings.Contains(err.Error(), "still in flight") {
+		t.Fatalf("clear active cursor = %v, want an in-flight refusal", err)
+	}
+	if err := app.store.UpdateTurnCompleted("thread-cursor:1", time.Now().UnixMilli(), "end_turn", "", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.HarnessClearThreadProviderCursor("thread-cursor"); err != nil {
+		t.Fatalf("clear idle cursor: %v", err)
+	}
+	thread, err := app.store.GetThread("thread-cursor")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if thread.ResolvedSessionRef() != "" {
+		t.Fatalf("provider cursor survived clear: %+v", thread)
+	}
+	if err := h.HarnessClearThreadProviderCursor("thread-cursor"); err == nil || !strings.Contains(err.Error(), "no provider cursor") {
+		t.Fatalf("second clear = %v, want an already-empty refusal", err)
 	}
 }
 

@@ -136,7 +136,8 @@ func (a *claudeAdapter) handleLine(line []byte) {
 		a.writeCommandLifecycle(commandUUID, "queued")
 		n, vars := a.e.beginTurn()
 		a.e.rep.report(control.Report{
-			Kind: control.ReportUserInput, Turn: n, Input: claudeUserText(line),
+			Kind: control.ReportUserInput, Turn: n,
+			Input: claudeUserText(line), SessionRef: vars["SESSION_ID"],
 		})
 		a.writeInit(vars)
 		a.echoUserEnvelope(line)

@@ -277,7 +277,7 @@ func TestResumeLogNoteStatesWhichResumeHappened(t *testing.T) {
 		{"stuck-park", "fresh entry into the parked phase"},
 		{"warm", "continuing the parked attempt on its own session"},
 		{"tool-park", "fresh entry into the parked phase: the parked attempt held no provider session"},
-		{"lost", "fresh entry into the parked phase: the attempt's provider session no longer exists"},
+		{"lost", "fresh entry into the parked phase: the attempt's provider session is unavailable"},
 	} {
 		if got := notes[want.run]; !strings.Contains(got, want.contains) {
 			// Reported rather than fatal so one run's wording does not hide the

@@ -33,7 +33,12 @@ type runtimeItem struct {
 	waiting           bool
 	acquired          []string
 	feedback          *Feedback
+	parkedVars        map[string]any
 	priorThreadID     string
+	// entry is the current attempt's prompt semantics. It is stored separately
+	// from priorThreadID because warm loop rounds reuse a session but start a new
+	// logical task, while answers and resumes continue the task already there.
+	entry phaseEntry
 	// nextPromptRoute is the loop route a gate decision ARMED for the entry it is
 	// about to make; promptRoute is the one the CURRENT attempt rendered.
 	// `enterPhase` is the only consumer of either, and it consumes exactly one:
@@ -409,6 +414,11 @@ func (e *Engine) resume(itemID, targetPhase string, refreshDefinition bool) erro
 // through — so this is where that fact is recorded, once, for all of them.
 func (e *Engine) enterPhaseFresh(item *runtimeItem, targetPhase string, refreshDefinition bool) error {
 	itemID := item.item.ID
+	// A deliberate start-over does not inherit the parked attempt's control note
+	// (for example, "continue from where the previous turn stopped"). Callers
+	// with real fresh-entry feedback enter through enterPhase directly; the only
+	// feedback authored here is the definition-refresh note below.
+	item.feedback = nil
 	e.noteResume(item, freshEntryNote(targetPhase, refreshDefinition))
 	switch {
 	case len(item.workflow.Phases) == 0:
@@ -493,6 +503,7 @@ func (e *Engine) loadParked(itemID string) (*runtimeItem, error) {
 				return nil, fmt.Errorf("load parked item %q input envelope: %w", itemID, err)
 			}
 			item.feedback = input.Feedback
+			item.parkedVars = input.Vars
 			// The parked attempt's own state, restored so a continuation of this
 			// round runs what the round was running: the loop route's prompt
 			// override (dropped again by enterPhaseFresh, which is the deliberate

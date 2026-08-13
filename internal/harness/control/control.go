@@ -93,6 +93,10 @@ type Report struct {
 	// user typed, which is deliberately not the same string once the send
 	// path expands a composer command.
 	Input string `json:"input,omitempty"`
+	// SessionRef is the provider session that received Input: Claude's
+	// session id or Codex's thread id. A process id cannot answer this for
+	// Codex because one app-server process may host multiple threads.
+	SessionRef string `json:"sessionRef,omitempty"`
 	// SessionConfig is set only on ReportSessionConfig reports.
 	SessionConfig *SessionConfig `json:"sessionConfig,omitempty"`
 }

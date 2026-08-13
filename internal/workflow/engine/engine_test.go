@@ -467,6 +467,7 @@ func TestAnswerQuestionContinuesPriorThread(t *testing.T) {
 	if err := h.engine.StartItem(item); err != nil {
 		t.Fatal(err)
 	}
+	seedThread(t, h.store, "thread-one")
 	if err := h.store.AttachWorkItemPhaseRun(item.ID, "work", 1, "thread-one", "/tmp/narrative.md"); err != nil {
 		t.Fatal(err)
 	}
@@ -479,6 +480,7 @@ func TestAnswerQuestionContinuesPriorThread(t *testing.T) {
 	}
 	starts := h.runner.started()
 	if len(starts) != 2 || starts[1].Key.Attempt != 2 || starts[1].PriorThreadID != "thread-one" ||
+		starts[1].PromptMode != PromptContinue ||
 		starts[1].Feedback == nil || starts[1].Feedback.Note != "Use the safe option" {
 		t.Fatalf("answer runner starts = %+v", starts)
 	}
@@ -527,6 +529,7 @@ func TestAnswerQuestionWaitsForProviderCapacity(t *testing.T) {
 	if err := h.engine.StartItem(question); err != nil {
 		t.Fatal(err)
 	}
+	seedThread(t, h.store, "thread-question")
 	if err := h.store.AttachWorkItemPhaseRun(question.ID, "work", 1, "thread-question", "/tmp/narrative.md"); err != nil {
 		t.Fatal(err)
 	}

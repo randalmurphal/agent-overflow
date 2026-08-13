@@ -260,6 +260,32 @@ func (h *Harness) HarnessListMocks() ([]control.MockInfo, error) {
 	return srv.Mocks(), nil
 }
 
+// HarnessClearThreadProviderCursor simulates AO losing the durable cursor for
+// an idle provider session. The provider process and transcript are left alone:
+// the point of the fault is to prove that workflow recovery starts a fresh
+// thread with a full prompt when AO cannot prove continuation is safe.
+func (h *Harness) HarnessClearThreadProviderCursor(threadID string) error {
+	if threadID == "" {
+		return fmt.Errorf("threadId must be non-empty")
+	}
+	if turn, active, err := h.app.store.GetActiveTurn(threadID); err != nil {
+		return fmt.Errorf("clear provider cursor for thread %s: check active turn: %w", threadID, err)
+	} else if active {
+		return fmt.Errorf("clear provider cursor for thread %s: turn %s is still in flight", threadID, turn.TurnID)
+	}
+	thread, err := h.app.store.GetThread(threadID)
+	if err != nil {
+		return fmt.Errorf("clear provider cursor for thread %s: %w", threadID, err)
+	}
+	if thread.ResolvedSessionRef() == "" {
+		return fmt.Errorf("clear provider cursor for thread %s: no provider cursor is recorded", threadID)
+	}
+	if _, err := h.app.store.UpdateSessionRef(threadID, ""); err != nil {
+		return fmt.Errorf("clear provider cursor for thread %s: %w", threadID, err)
+	}
+	return nil
+}
+
 // HarnessMockCommand queues a live command for a running mock:
 // advance (release a waitSignal/stall gate), emit (inject wire lines),
 // exit (terminate with a code).

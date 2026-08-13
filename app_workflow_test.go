@@ -93,6 +93,20 @@ func TestWorkflowBindingRunsGatesQuestionsAndEnvelopeRetry(t *testing.T) {
 		completed.Phases[2].ThreadID != questionThreadID || completed.Phases[2].Status != "completed" {
 		t.Fatalf("completed phase detail = %+v", completed)
 	}
+	questionThreadItems, err := app.store.ListItems(questionThreadID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var userPrompts []string
+	for _, timelineItem := range questionThreadItems {
+		if timelineItem.Role == "user" && timelineItem.Kind == "user_text" {
+			userPrompts = append(userPrompts, timelineItem.Summary)
+		}
+	}
+	if len(userPrompts) != 2 || !strings.Contains(userPrompts[1], "Resume the current workflow phase") ||
+		strings.Contains(userPrompts[1], "Finish after preparation") {
+		t.Fatalf("question continuation prompts = %#v, want a short second prompt", userPrompts)
+	}
 	persistedItem, err := app.store.GetWorkItem(item.ID)
 	if err != nil {
 		t.Fatal(err)
@@ -497,7 +511,7 @@ while IFS= read -r line; do
       continue
       ;;
   esac
-  if [[ "$line" == *"Finish after preparation"* ]]; then
+  if [[ "$line" == *"Finish after preparation"* || "$line" == *"Resume the current workflow phase"* ]]; then
     if [[ $idx -eq 0 ]]; then
       printf '%s\n' '{"type":"system","subtype":"init","session_id":"phase-two","model":"claude-opus-4-7","cwd":"/tmp","tools":[],"claude_code_version":"1.0"}'
       printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"structured_output":{"status":"question","outputs":null,"question":"Which option?","reason":null}}'
@@ -649,7 +663,9 @@ func TestWorkflowRunnerRejectsUnsupportedPhasesAndStopsUnknownRuns(t *testing.T)
 		{ID: "tool", Driver: def.DriverTool, Shape: def.ShapeSingle},
 		{ID: "fan", Shape: def.ShapeFanOut},
 	} {
-		err := runner.Start(context.Background(), engine.RunRequest{Phase: phase}, func() {}, func(engine.Outcome) {})
+		err := runner.Start(context.Background(), engine.RunRequest{
+			Phase: phase, PromptMode: engine.PromptFull,
+		}, func() {}, func(engine.Outcome) {})
 		if err == nil {
 			t.Fatalf("unsupported phase %+v succeeded", phase)
 		}

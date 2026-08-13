@@ -299,17 +299,21 @@ func workflowClaudeTransientAPIRetry(event provider.ProviderEvent) bool {
 		return false
 	}
 	var wire struct {
-		ErrorStatus int `json:"error_status"`
-		Error       struct {
-			Connection struct {
-				Code string `json:"code"`
-			} `json:"connection"`
-		} `json:"error"`
+		ErrorStatus int             `json:"error_status"`
+		Error       json.RawMessage `json:"error"`
 	}
 	if json.Unmarshal(meta.Wire, &wire) != nil {
 		return false
 	}
-	return wire.ErrorStatus == 529 || wire.Error.Connection.Code == "ECONNRESET"
+	if wire.ErrorStatus == 529 {
+		return true
+	}
+	var detail struct {
+		Connection struct {
+			Code string `json:"code"`
+		} `json:"connection"`
+	}
+	return json.Unmarshal(wire.Error, &detail) == nil && detail.Connection.Code == "ECONNRESET"
 }
 
 func codexTransientErrorInfo(raw json.RawMessage) bool {

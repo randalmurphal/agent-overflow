@@ -377,6 +377,7 @@ func TestAnswerOnFanOutRerunsOnlyTheJoinOnItsThread(t *testing.T) {
 	// The app runner stamps the join's thread onto the phase attempt row the
 	// moment it creates it. Without that, a fan-out that parks on a question has
 	// no thread to answer on and Answer refuses outright.
+	seedThread(t, h.store, "join-thread")
 	if err := h.store.AttachWorkItemPhaseRun(item, "work", 1, "join-thread", ""); err != nil {
 		t.Fatal(err)
 	}

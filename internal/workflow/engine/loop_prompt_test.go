@@ -58,7 +58,8 @@ func TestLoopRouteSessionContinueComposesWithThePromptOverride(t *testing.T) {
 	h, itemID := startLoopRun(t, route, "work-thread", false)
 
 	entry := loopEntry(t, h, itemID)
-	if entry.PriorThreadID != "work-thread" || entry.Phase.Prompt != "the narrower body" {
+	if entry.PriorThreadID != "work-thread" || entry.Phase.Prompt != "the narrower body" ||
+		entry.PromptMode != PromptFull {
 		t.Fatalf("composed loop re-entry = thread %q prompt %q", entry.PriorThreadID, entry.Phase.Prompt)
 	}
 }
@@ -154,8 +155,8 @@ func TestPromptOverrideSurvivesAContinuationOfTheRoundItCreated(t *testing.T) {
 	if continued.Phase.Prompt != "the narrower body" {
 		t.Fatalf("the continuation rendered %q, want the override the round was running", continued.Phase.Prompt)
 	}
-	if continued.PriorThreadID != "loop-thread" {
-		t.Fatalf("the continuation prior thread = %q, want the parked session", continued.PriorThreadID)
+	if continued.PriorThreadID != "loop-thread" || continued.PromptMode != PromptContinue {
+		t.Fatalf("the continuation = %+v, want the parked session with a continuation prompt", continued)
 	}
 }
 

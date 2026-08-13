@@ -44,7 +44,10 @@ func (t *fakeWorkflowTimer) fire() { t.callback() }
 
 func TestWorkflowReliabilityResolutionPrecedenceAndDefaults(t *testing.T) {
 	runner := newWorkflowAppRunner(&App{}, t.TempDir(), staticWorkflowProfileSource{value: &profile.Profile{}})
-	request := engine.RunRequest{Item: store.WorkItem{ProjectID: "project"}, Phase: def.Phase{ID: "phase"}}
+	request := engine.RunRequest{
+		Item: store.WorkItem{ProjectID: "project"}, Phase: def.Phase{ID: "phase"},
+		PromptMode: engine.PromptFull,
+	}
 	watchdog, backoff, err := runner.reliability(t.Context(), request)
 	if err != nil {
 		t.Fatal(err)

@@ -116,7 +116,8 @@ func (a *codexAdapter) handleRequest(id json.RawMessage, method string, params j
 		// stream as notifications from the engine goroutine.
 		n, vars := a.e.beginTurn()
 		a.e.rep.report(control.Report{
-			Kind: control.ReportUserInput, Turn: n, Input: codexInputText(params),
+			Kind: control.ReportUserInput, Turn: n,
+			Input: codexInputText(params), SessionRef: vars["THREAD_ID"],
 		})
 		a.respond(id, method, vars)
 		a.e.enqueueTurn(n)
@@ -127,10 +128,12 @@ func (a *codexAdapter) handleRequest(id json.RawMessage, method string, params j
 		// and carries the already-running turn's number, because a steer
 		// starts no scenario turn of its own. The response template stays the
 		// generic empty result the default branch would have produced.
+		turn, vars := a.e.currentTurn(), a.e.currentVars()
 		a.e.rep.report(control.Report{
-			Kind: control.ReportUserInput, Turn: a.e.currentTurn(), Input: codexInputText(params),
+			Kind: control.ReportUserInput, Turn: turn,
+			Input: codexInputText(params), SessionRef: vars["THREAD_ID"],
 		})
-		a.respond(id, method, a.e.currentVars())
+		a.respond(id, method, vars)
 	case "turn/interrupt":
 		// The real app-server replies when TurnAborted arrives, immediately
 		// before publishing turn/completed{status:interrupted}. Preserve that

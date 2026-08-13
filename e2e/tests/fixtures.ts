@@ -42,6 +42,8 @@ export interface HarnessMockEvent {
     detail?: string;
     /** Set on `user_input`: the text the mock received on the wire. */
     input?: string;
+    /** Set on `user_input`: Claude's session id or Codex's thread id. */
+    sessionRef?: string;
   };
 }
 

@@ -16,7 +16,7 @@ func seedThread(t *testing.T, database *store.Store, threadID string) {
 	if err := database.CreateThread(store.Thread{
 		ID: threadID, ProjectID: "project", ProjectPath: "/tmp/project",
 		Title: threadID, Provider: testProvider, Model: "test-model",
-		Mode: "workflow", CreatedAt: 1, UpdatedAt: 1,
+		Mode: "workflow", SessionRef: threadID, CreatedAt: 1, UpdatedAt: 1,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -129,7 +129,7 @@ func TestResumeInterruptedRunUsesTheSameContinuation(t *testing.T) {
 		if err := database.CreateThread(store.Thread{
 			ID: "crash-thread", ProjectID: "project", ProjectPath: "/tmp/project",
 			Title: "crash", Provider: testProvider, Model: "test-model",
-			Mode: "workflow", CreatedAt: 1, UpdatedAt: 1,
+			Mode: "workflow", SessionRef: "crash-thread", CreatedAt: 1, UpdatedAt: 1,
 		}); err != nil {
 			t.Fatal(err)
 		}
@@ -174,7 +174,7 @@ func TestResumeWithoutASessionStartsAFreshAttemptLoudly(t *testing.T) {
 		t.Fatalf("resume after session loss = %+v, want a fresh attempt", starts)
 	}
 	if starts[1].Feedback == nil ||
-		!strings.Contains(starts[1].Feedback.Note, "provider session no longer exists") {
+		!strings.Contains(starts[1].Feedback.Note, "provider session is unavailable") {
 		t.Fatalf("session-loss feedback = %+v, want the loss recorded", starts[1].Feedback)
 	}
 }

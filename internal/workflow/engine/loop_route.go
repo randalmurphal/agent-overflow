@@ -129,7 +129,7 @@ func (e *Engine) loopContinuationThread(item *runtimeItem, targetPhaseID string)
 	if best == "" {
 		return "", "no previous attempt of that phase holds a session"
 	}
-	exists, err := e.store.ThreadExists(best)
+	exists, err := e.store.ThreadCanResume(best)
 	if err != nil {
 		return "", fmt.Sprintf("thread %s could not be resolved (%v)", best, err)
 	}

@@ -91,6 +91,7 @@ One WebSocket carries everything:
 | `HarnessSetScenario(spec)` | Install/replace a mock scenario rule (library `name` or inline `scenario` JSON, optional `cwd` scope). Validated at set time. |
 | `HarnessClearScenarios()` / `HarnessListScenarios()` | Drop rules / list library + active rules. |
 | `HarnessListMocks()` | Registered mock processes in spawn order. |
+| `HarnessClearThreadProviderCursor(threadId)` | Fault injection for an idle thread: clear AO's durable provider cursor without touching the mock process or transcript, so recovery must choose a fresh thread. Refuses an active turn or an already-empty cursor. |
 | `HarnessMockCommand(mockId, cmd)` | Drive a live mock: `advance` (release a `waitSignal`/`stall` gate), `emit` (inject wire lines, `${VAR}`-substituted), `exit` (code). |
 | `HarnessRecordStart(name, threadId)` / `HarnessRecordStop()` | Capture a replay bundle: DB snapshot at start + the event-log slice recorded until stop. Start requires the thread to be idle (no turn in flight) so the snapshot/event boundary is exact; a failed stop discards the recording and frees the name. |
 | `HarnessReplayBundle(name, opts)` | Restore a bundle's DB snapshot and replay its events with original timing. Refused while another replay is active (checked before the destructive restore). |
@@ -234,10 +235,11 @@ commands and posts progress reports — `registered`, `turn_started`,
 `approval_pending`, `approval_decided`, `turn_interrupted`, `scenario_done`, `exiting` —
 which the harness re-emits as `harness:mock` events
 (`{mockId, protocol, cwd, scenario, report}`). Tests await these
-instead of sleeping. `user_input` additionally carries `report.input`,
-the text the adapter actually received — the only assertion surface for
-what the app put on the wire, which differs from the stored transcript
-whenever the send path expands a composer command (D31). A mock that reported `exiting` refuses further
+instead of sleeping. `user_input` additionally carries `report.input` and
+`report.sessionRef`: the exact text the adapter received and the Claude
+session/Codex thread that received it. This is the assertion surface for both
+prompt selection and session routing; neither can be recovered reliably from
+the stored transcript or a Codex app-server process id. A mock that reported `exiting` refuses further
 `HarnessMockCommand`s (nothing would consume them). Without the env
 vars (or if the harness dies), the mock falls back to scenario-file /
 builtin behaviour and still works standalone.

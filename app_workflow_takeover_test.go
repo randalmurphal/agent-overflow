@@ -24,6 +24,7 @@ func TestFailedFinalizeStartClearsTakeoverTransition(t *testing.T) {
 		Key:              engine.RunKey{ItemID: "item", PhaseID: "phase", Attempt: 2},
 		Phase:            def.Phase{ID: "phase", Driver: def.DriverAgent, Shape: "fan-out"},
 		PriorThreadID:    "thread",
+		PromptMode:       engine.PromptContinue,
 		FinalizeTakeover: true,
 	}
 	if err := runner.Start(t.Context(), request, func() {}, func(engine.Outcome) {}); err == nil {

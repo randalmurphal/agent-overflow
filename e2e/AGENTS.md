@@ -52,6 +52,10 @@ headless, isolated data dir, mocked providers. Full harness guide:
   file before the discard removes every checkout and branch in the tree. The
   discard case reads and writes the run's real worktrees from Node, which is the
   only way to assert on work that exists nowhere else.
+- `tests/workflows-resume.spec.ts` — provider-agnostic prompt/session recovery:
+  Claude and Codex both prove that a valid cursor receives a short continuation
+  on the same provider session, while a deliberately cleared cursor starts a
+  new AO thread/provider session with the full authored prompt.
 - `tests/workflows-automations.spec.ts` — automations (§11) driven entirely
   through RPCs: Run now going through the one start path with the reserved
   `trigger` / `job-notes` seeds reaching the phase's rendered prompt, a second

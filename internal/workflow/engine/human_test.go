@@ -235,6 +235,7 @@ func TestTakeoverDetachesAndCompleteRoutesThroughGate(t *testing.T) {
 	if err := h.engine.StartItem(item); err != nil {
 		t.Fatal(err)
 	}
+	seedThread(t, h.store, "thread-one")
 	if err := h.store.AttachWorkItemPhaseRun(item.ID, "work", 1, "thread-one", "/tmp/narrative.md"); err != nil {
 		t.Fatal(err)
 	}
@@ -321,6 +322,7 @@ func TestTakeoverFinalizeValidationFailureReparksAndResumeIsFresh(t *testing.T) 
 	if err := h.engine.StartItem(item); err != nil {
 		t.Fatal(err)
 	}
+	seedThread(t, h.store, "thread-one")
 	if err := h.store.AttachWorkItemPhaseRun(item.ID, "work", 1, "thread-one", "/tmp/narrative.md"); err != nil {
 		t.Fatal(err)
 	}

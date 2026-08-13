@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -59,6 +60,7 @@ type observeState struct {
 	retryCount          int
 	sendEpoch           int
 	lastFailure         string
+	claudeRetryable     bool
 }
 
 func newObserveHarness(t *testing.T, providerName string) *observeHarness {
@@ -120,6 +122,7 @@ func (h *observeHarness) state() observeState {
 		pendingTransient: h.attempt.pendingTransient, pendingSessionDeath: h.attempt.pendingSessionDeath,
 		awaitingTurnStart: h.attempt.awaitingTurnStart, sendEpoch: h.attempt.sendEpoch,
 		retryCount: h.attempt.transientRetryCount, lastFailure: h.attempt.lastFailure,
+		claudeRetryable: h.attempt.claudeTransientRetry,
 	}
 }
 
@@ -480,6 +483,45 @@ func TestWorkflowSessionErrorWithoutADisconnectParksStalled(t *testing.T) {
 	if outcome := harness.awaitOutcome(); outcome.Kind != engine.OutcomeStalled {
 		t.Fatalf("outcome = %+v, want the stall park", outcome)
 	}
+}
+
+func TestWorkflowClaude529SequenceEntersTheTransientLadder(t *testing.T) {
+	harness := newObserveHarness(t, string(provider.Claude))
+	harness.observe(provider.ProviderEvent{Kind: provider.EventInit})
+	for attempt := 1; attempt <= 10; attempt++ {
+		event := provider.ProviderEvent{
+			Kind: provider.EventAPIRetry,
+			Meta: json.RawMessage(fmt.Sprintf(
+				`{"attempt":%d,"max_retries":10,"wire":{"error_status":529,"error":"rate_limit"}}`, attempt,
+			)),
+		}
+		if !workflowClaudeTransientAPIRetry(event) {
+			t.Fatalf("529 api_retry event %d was not recognized: %s", attempt, event.Meta)
+		}
+		harness.observe(event)
+	}
+	if state := harness.state(); !state.claudeRetryable {
+		t.Fatalf("529 api_retry sequence state = %+v, want the typed retry precursor latched", state)
+	}
+	harness.observe(provider.ProviderEvent{
+		Kind: provider.EventError,
+		Meta: json.RawMessage(`{"api_error_enum":"server_error","fatal":true,"expect_turn_complete":true}`),
+	})
+	if state := harness.state(); !state.pendingTransient {
+		t.Fatalf("529 server_error state = %+v, want the terminal result awaited as transient", state)
+	}
+	harness.observe(provider.ProviderEvent{
+		Kind: provider.EventTurnComplete,
+		Raw:  json.RawMessage(`{"type":"result","is_error":true,"terminal_reason":"api_error","api_error_status":529}`),
+		TurnComplete: &provider.WireTurnCompleteMeta{
+			StopReason: "error", ErrorMessage: "API Error: 529 Overloaded",
+		},
+	})
+	state := harness.state()
+	if state.mode != workflowTimerBackoff || state.retryCount != 1 {
+		t.Fatalf("529 completion state = %+v, want the first transient backoff", state)
+	}
+	harness.refuteOutcome("a 529 was classified as agent-error")
 }
 
 // The backoff guard exists to stop a retrying attempt from ACTING on a delayed

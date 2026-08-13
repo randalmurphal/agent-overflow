@@ -188,6 +188,30 @@ func BuildUnitPrompt(
 	return prompt, nil
 }
 
+// BuildContinuationPrompt advances work already present in the provider
+// session. It intentionally omits the authored task and the stable workflow
+// context; only the human resolution or changed inputs are new. The narrative
+// destination is repeated because it is attempt-specific.
+func BuildContinuationPrompt(context PromptContext) (string, error) {
+	if !filepath.IsAbs(context.NarrativePath) {
+		return "", fmt.Errorf("build workflow continuation prompt: narrative path must be absolute")
+	}
+	var prompt strings.Builder
+	prompt.WriteString("Resume the current workflow phase from where the previous turn stopped. Do not restart the phase or repeat completed work.\n")
+	if err := writeFeedbackSection(&prompt, context.Feedback); err != nil {
+		return "", fmt.Errorf("build workflow continuation prompt: %w", err)
+	}
+	if context.Access == def.AccessWrite {
+		prompt.WriteString("Write this continuation's narrative to:\n")
+		prompt.WriteString(context.NarrativePath)
+		prompt.WriteString("\n")
+	} else {
+		prompt.WriteString("Put this continuation's narrative in the final envelope's `narrative` field.\n")
+	}
+	prompt.WriteString("Finish with the existing workflow control envelope; the attached schema still applies.")
+	return prompt.String(), nil
+}
+
 func buildPrompt(
 	body string, declarations map[string]def.Variable, vars map[string]any, context PromptContext,
 ) (string, error) {
@@ -291,24 +315,8 @@ func PromptSuffix(context PromptContext) (string, error) {
 	}
 	writeGoalChainSection(&prompt, context.Goals)
 	writeMemorySection(&prompt, access, context.Memory)
-	if feedback := context.Feedback; feedback != nil {
-		values := feedback.Values
-		if values == nil {
-			values = map[string]any{}
-		}
-		encoded, err := json.MarshalIndent(values, "", "  ")
-		if err != nil {
-			return "", fmt.Errorf("workflow prompt suffix: encode feedback values: %w", err)
-		}
-		note := feedback.Note
-		if note == "" {
-			note = "(none)"
-		}
-		prompt.WriteString("<workflow-feedback>\nNote:\n")
-		prompt.WriteString(note)
-		prompt.WriteString("\nValues:\n```json\n")
-		prompt.Write(encoded)
-		prompt.WriteString("\n```\n</workflow-feedback>\n")
+	if err := writeFeedbackSection(&prompt, context.Feedback); err != nil {
+		return "", fmt.Errorf("workflow prompt suffix: %w", err)
 	}
 	writeGuidanceSection(&prompt, context.Guidance)
 	// The branch rules below are enforced by def.ValidateEnvelope but cannot be
@@ -342,6 +350,30 @@ func PromptSuffix(context PromptContext) (string, error) {
 	writeUnitAccountingSection(&prompt, context.AccountsForUnits, context.AccountedUnits)
 	prompt.WriteString("</workflow-system-instructions>")
 	return prompt.String(), nil
+}
+
+func writeFeedbackSection(prompt *strings.Builder, feedback *engine.Feedback) error {
+	if feedback == nil {
+		return nil
+	}
+	values := feedback.Values
+	if values == nil {
+		values = map[string]any{}
+	}
+	encoded, err := json.MarshalIndent(values, "", "  ")
+	if err != nil {
+		return fmt.Errorf("encode feedback values: %w", err)
+	}
+	note := feedback.Note
+	if note == "" {
+		note = "(none)"
+	}
+	prompt.WriteString("<workflow-feedback>\nNote:\n")
+	prompt.WriteString(note)
+	prompt.WriteString("\nValues:\n```json\n")
+	prompt.Write(encoded)
+	prompt.WriteString("\n```\n</workflow-feedback>\n")
+	return nil
 }
 
 // writeMemorySection states the campaign-memory contract and appends the

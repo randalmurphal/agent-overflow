@@ -117,6 +117,34 @@ func TestBuildTakeoverFinalizePrompt(t *testing.T) {
 	}
 }
 
+func TestBuildContinuationPromptContainsOnlyTheDelta(t *testing.T) {
+	narrative := filepath.Join(t.TempDir(), "attempt-2.md")
+	prompt, err := BuildContinuationPrompt(PromptContext{
+		NarrativePath: narrative,
+		Access:        def.AccessWrite,
+		Feedback: &engine.Feedback{
+			Note:   "Use the safe option",
+			Values: map[string]any{"fix-budget": float64(4)},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"Resume the current workflow phase", "Use the safe option", `"fix-budget": 4`, narrative,
+		"attached schema still applies",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("continuation prompt missing %q:\n%s", want, prompt)
+		}
+	}
+	for _, replay := range []string{"<workflow-system-instructions>", "Work only in this workspace", "Leave your work committed"} {
+		if strings.Contains(prompt, replay) {
+			t.Fatalf("continuation prompt replayed %q:\n%s", replay, prompt)
+		}
+	}
+}
+
 // A read-only element runs in a session that denies every file write, so the
 // suffix must ask for the narrative in the envelope's `narrative` field.
 // Instructing it to write the file is an instruction it cannot follow — the

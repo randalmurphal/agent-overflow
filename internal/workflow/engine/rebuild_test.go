@@ -196,6 +196,7 @@ func TestStartupRebuildKeepsTakenOverItemParkedAndCompletable(t *testing.T) {
 		if err := database.CreateWorkItem(item); err != nil {
 			t.Fatal(err)
 		}
+		seedThread(t, database, "takeover-thread")
 		if err := database.CreateWorkItemPhase(store.WorkItemPhase{
 			ItemID: item.ID, PhaseID: "work", Attempt: 1, ThreadID: "takeover-thread",
 			InputEnvelope: json.RawMessage(`{"vars":{}}`), Status: "parked", StartedAt: 21, EndedAt: 22,

@@ -186,24 +186,25 @@ func (e *Engine) resumeItem(itemID string) error {
 	if !found {
 		return fmt.Errorf("resume item %q: attempt %s/%d has no row", itemID, item.phaseID, item.attempt)
 	}
-	threadID, err := e.resumableThread(item, current.ThreadID)
+	threadID, err := e.resumableThread(item, current.ThreadID, resumeAction)
 	if err != nil {
 		return err
 	}
-	sessionLost := threadID == "" && current.ThreadID != ""
-	feedback := &Feedback{Note: resumeNote(Reason(item.item.Reason), sessionLost)}
+	sessionUnavailable := threadID == "" && current.ThreadID != ""
+	feedback := &Feedback{Note: resumeNote(Reason(item.item.Reason), sessionUnavailable)}
 	if phase.EffectiveShape() == def.ShapeFanOut {
 		e.noteResume(item, "continuing the parked attempt by repairing its fan-out")
 		return e.resumeFanOutAttempt(item, threadID, feedback)
 	}
 	if threadID == "" {
 		// No session to continue: a tool phase never had one, and an agent
-		// phase whose thread was deleted cannot have one. Re-enter the phase
+		// phase whose provider session is unavailable cannot have one.
+		// Re-enter the phase
 		// from its inputs with the loss recorded in the feedback the next
 		// attempt carries — and in the record, because this is a fresh attempt
 		// reached through the CONTINUATION path, which is precisely the case a
 		// note taken from the request would have described as a continuation.
-		e.noteResume(item, "fresh entry into the parked phase: "+missingSessionReason(sessionLost))
+		e.noteResume(item, "fresh entry into the parked phase: "+missingSessionReason(sessionUnavailable))
 		if err := e.transition(item, StateRunning, ""); err != nil {
 			return err
 		}
@@ -219,11 +220,11 @@ func (e *Engine) resumeItem(itemID string) error {
 // missingSessionReason names why there is no session to continue. The two cases
 // are not the same event: one is a phase that never had a session (every tool
 // phase, and an agent phase that parked before its runner reported), the other
-// is a session the app no longer has — which is a deletion a reader will want to
-// correlate with something.
-func missingSessionReason(sessionLost bool) string {
-	if sessionLost {
-		return "the attempt's provider session no longer exists"
+// is a thread whose provider session is no longer available, whether because
+// the thread was deleted or because no resumable provider cursor was recorded.
+func missingSessionReason(sessionUnavailable bool) string {
+	if sessionUnavailable {
+		return "the attempt's provider session is unavailable"
 	}
 	return "the parked attempt held no provider session to continue"
 }
@@ -270,16 +271,16 @@ func (e *Engine) resumeFanOutAttempt(item *runtimeItem, threadID string, feedbac
 
 // resumableThread resolves the provider session a parked attempt would
 // continue on, reporting empty when there is none to continue. A thread id that
-// no longer resolves is cleared here rather than handed to the runner: the
+// is not resumable is cleared here rather than handed to the runner: the
 // runner would fail startup and the run would park `agent-error`, which reads
-// as an agent problem rather than as the deleted session it is.
-func (e *Engine) resumableThread(item *runtimeItem, threadID string) (string, error) {
+// as an agent problem rather than unavailable continuation context.
+func (e *Engine) resumableThread(item *runtimeItem, threadID, action string) (string, error) {
 	if threadID == "" {
 		return "", nil
 	}
-	exists, err := e.store.ThreadExists(threadID)
+	exists, err := e.store.ThreadCanResume(threadID)
 	if err != nil {
-		return "", fmt.Errorf("resume item %q: resolve parked thread %q: %w", item.item.ID, threadID, err)
+		return "", fmt.Errorf("%s %q: resolve parked thread %q: %w", action, item.item.ID, threadID, err)
 	}
 	if exists {
 		return threadID, nil
@@ -301,7 +302,7 @@ func (e *Engine) resumableThread(item *runtimeItem, threadID string) (string, er
 // provider failure the runner stopped retrying, and a loop bound the gate spent
 // — because the reason does not distinguish them and a note that named the
 // wrong one would tell the next turn something untrue about why it exists.
-func resumeNote(reason Reason, sessionLost bool) string {
+func resumeNote(reason Reason, sessionUnavailable bool) string {
 	note := "resumed after a pause"
 	switch reason {
 	case ReasonInterrupted:
@@ -313,8 +314,8 @@ func resumeNote(reason Reason, sessionLost bool) string {
 	case ReasonRetriesExhausted:
 		note = "resumed after the phase ran out of retries"
 	}
-	if sessionLost {
-		return note + "; the previous attempt's provider session no longer exists, so its context is gone — redo the phase from its inputs"
+	if sessionUnavailable {
+		return note + "; the previous attempt's provider session is unavailable, so its context cannot be continued — redo the phase from its inputs"
 	}
 	return note + "; continue from where the previous turn stopped"
 }

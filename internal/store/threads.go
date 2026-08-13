@@ -305,6 +305,28 @@ func (s *Store) ThreadExists(id string) (bool, error) {
 	return true, nil
 }
 
+// ThreadCanResume reports whether a workflow thread has a provider session
+// cursor. A row by itself is not continuation context: sending a short resume
+// to a row that never reached provider init would start a blank session.
+func (s *Store) ThreadCanResume(id string) (bool, error) {
+	if id == "" {
+		return false, nil
+	}
+	var one int
+	err := s.reader().QueryRow(`
+		SELECT 1 FROM threads
+		WHERE id = ?
+		  AND (COALESCE(session_ref, '') <> '' OR COALESCE(pending_fork_session_ref, '') <> '')
+	`, id).Scan(&one)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("store: thread can resume %s: %w", id, err)
+	}
+	return true, nil
+}
+
 func (s *Store) ListThreads() ([]Thread, error) {
 	rows, err := s.reader().Query(
 		`SELECT ` + threadColumns + ` FROM threads WHERE archived = 0 ORDER BY updated_at DESC`,

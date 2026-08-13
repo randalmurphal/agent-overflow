@@ -88,7 +88,14 @@ func (e *Engine) completeTakeover(itemID string) error {
 	if !ok || current.ThreadID == "" {
 		return fmt.Errorf("complete takeover %q: parked attempt thread is missing", itemID)
 	}
-	return e.continueParkedAttempt(item, current.ThreadID, nil, true, "complete takeover")
+	threadID, err := e.resumableThread(item, current.ThreadID, "complete takeover")
+	if err != nil {
+		return err
+	}
+	if threadID == "" {
+		return fmt.Errorf("complete takeover %q: the provider session used for the takeover is no longer available", itemID)
+	}
+	return e.continueParkedAttempt(item, threadID, nil, true, "complete takeover")
 }
 
 func (e *Engine) answer(itemID, answer string) error {
@@ -113,7 +120,15 @@ func (e *Engine) answer(itemID, answer string) error {
 	if !ok || current.ThreadID == "" {
 		return fmt.Errorf("answer question %q: parked attempt thread is missing", itemID)
 	}
-	return e.continueParkedAttempt(item, current.ThreadID, &Feedback{Note: answer}, false, "answer question")
+	threadID, err := e.resumableThread(item, current.ThreadID, "answer question")
+	if err != nil {
+		return err
+	}
+	feedback := &Feedback{Note: answer}
+	if threadID == "" {
+		feedback.Note += "\nThe previous provider session is no longer available, so this is a fresh attempt from the phase inputs."
+	}
+	return e.continueParkedAttempt(item, threadID, feedback, false, "answer question")
 }
 
 // continueParkedAttempt resumes a parked run on the provider session it parked
@@ -135,6 +150,9 @@ func (e *Engine) continueParkedAttempt(item *runtimeItem, threadID string, feedb
 	if phase.EffectiveShape() == def.ShapeFanOut {
 		return e.continueFanOutJoin(item, threadID, feedback, finalize, action)
 	}
+	if threadID == "" && finalize {
+		return fmt.Errorf("%s %q: the provider session is no longer available", action, item.item.ID)
+	}
 	if err := e.transition(item, StateRunning, ""); err != nil {
 		return err
 	}
@@ -143,7 +161,11 @@ func (e *Engine) continueParkedAttempt(item *runtimeItem, threadID string, feedb
 	item.takeoverFinalize = finalize
 	item.attempt = 0
 	e.items[item.item.ID] = item
-	return e.enterPhase(item, entryContinuation)
+	entry := entryContinuation
+	if threadID == "" {
+		entry = entryFresh
+	}
+	return e.enterPhase(item, entry)
 }
 
 // continueFanOutJoin reopens a parked fan-out attempt and returns its join to
@@ -154,6 +176,9 @@ func (e *Engine) continueParkedAttempt(item *runtimeItem, threadID string, feedb
 // failed or taken over, is refused: there is nothing for a join to consolidate
 // yet, and the units are what a human has to decide about first.
 func (e *Engine) continueFanOutJoin(item *runtimeItem, threadID string, feedback *Feedback, finalize bool, action string) error {
+	if threadID == "" && finalize {
+		return fmt.Errorf("%s %q: the provider session is no longer available", action, item.item.ID)
+	}
 	if err := e.restoreFanOut(item); err != nil {
 		return fmt.Errorf("%s %q: %w", action, item.item.ID, err)
 	}
@@ -177,6 +202,10 @@ func (e *Engine) continueFanOutJoin(item *runtimeItem, threadID string, feedback
 	// startRunner consumes them for a single-shape phase.
 	item.priorThreadID = threadID
 	item.takeoverFinalize = finalize
+	item.entry = entryContinuation
+	if threadID == "" {
+		item.entry = entryFresh
+	}
 	return e.resumeRepairedFanOut(item)
 }
 

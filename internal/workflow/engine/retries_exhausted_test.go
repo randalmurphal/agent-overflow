@@ -2,6 +2,7 @@ package engine
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -50,7 +51,8 @@ func TestResumeAfterRetriesExhaustedContinuesTheParkedSession(t *testing.T) {
 	}
 	requireItemState(t, h.store, item, StateRunning, "")
 	starts := h.runner.started()
-	if len(starts) != 2 || starts[1].Key.Attempt != 2 || starts[1].PriorThreadID != "thread-one" {
+	if len(starts) != 2 || starts[1].Key.Attempt != 2 || starts[1].PriorThreadID != "thread-one" ||
+		starts[1].PromptMode != PromptContinue {
 		t.Fatalf("resume starts = %+v, want a second attempt on the session that died", starts)
 	}
 	if starts[1].Feedback == nil ||
@@ -80,11 +82,11 @@ func TestResumeAfterRetriesExhaustedFallsBackWhenTheSessionIsGone(t *testing.T) 
 		t.Fatal(err)
 	}
 	starts := h.runner.started()
-	if len(starts) != 2 || starts[1].PriorThreadID != "" {
+	if len(starts) != 2 || starts[1].PriorThreadID != "" || starts[1].PromptMode != PromptFull {
 		t.Fatalf("resume after session loss = %+v, want a fresh attempt", starts)
 	}
 	if starts[1].Feedback == nil ||
-		!strings.Contains(starts[1].Feedback.Note, "provider session no longer exists") {
+		!strings.Contains(starts[1].Feedback.Note, "provider session is unavailable") {
 		t.Fatalf("session-loss feedback = %+v, want the loss recorded", starts[1].Feedback)
 	}
 }
@@ -106,8 +108,30 @@ func TestResumeWithAPhaseAfterRetriesExhaustedIsStillTheFreshEntry(t *testing.T)
 		t.Fatal(err)
 	}
 	starts := h.runner.started()
-	if len(starts) != 2 || starts[1].PriorThreadID != "" {
+	if len(starts) != 2 || starts[1].PriorThreadID != "" || starts[1].PromptMode != PromptFull {
 		t.Fatalf("targeted resume = %+v, want a cold attempt", starts)
+	}
+}
+
+func TestFreshEntryDropsThePreviousContinuationsControlNote(t *testing.T) {
+	h := newPauseHarness(t)
+	item := parkRetriesExhausted(t, h, "item", "thread-one")
+	if err := h.engine.Resume(item, "", false); err != nil {
+		t.Fatal(err)
+	}
+	h.runner.complete(t, item, Outcome{Kind: OutcomeExecutionFailure})
+	if err := h.engine.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	requireItemState(t, h.store, item, StateNeedsHuman, ReasonAgentError)
+
+	if err := h.engine.Resume(item, "work", false); err != nil {
+		t.Fatal(err)
+	}
+	starts := h.runner.started()
+	fresh := starts[len(starts)-1]
+	if fresh.PromptMode != PromptFull || fresh.PriorThreadID != "" || fresh.Feedback != nil {
+		t.Fatalf("fresh entry inherited continuation state: %+v", fresh)
 	}
 }
 
@@ -284,8 +308,10 @@ func TestAmendSeedsOnARetriesExhaustedParkIsReadByTheContinuation(t *testing.T) 
 		t.Fatal(err)
 	}
 	starts := h.runner.started()
-	if last := starts[len(starts)-1]; last.PriorThreadID != "work-thread" {
-		t.Fatalf("resumed attempt prior thread = %q, want the continuation", last.PriorThreadID)
+	if last := starts[len(starts)-1]; last.PriorThreadID != "work-thread" ||
+		last.PromptMode != PromptContinue || last.Feedback == nil || len(last.Feedback.Values) != 1 ||
+		fmt.Sprint(last.Feedback.Values["fix-budget"]) != "4" {
+		t.Fatalf("resumed attempt = %+v, want a continuation carrying only the amended input", last)
 	}
 	if got := startedVar(t, h, len(starts)-1, "fix-budget"); got != "4" {
 		t.Fatalf("continued attempt fix-budget = %s, want the amended 4", got)

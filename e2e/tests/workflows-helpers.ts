@@ -128,6 +128,14 @@ export interface WorkflowStateEvent {
   reason?: string;
 }
 
+export interface WorkflowProviderInput {
+  mockId: string;
+  protocol: 'claude' | 'codex';
+  sessionRef: string;
+  turn: number;
+  input: string;
+}
+
 const prompt = 'Complete this workflow phase and return the required envelope.';
 
 export interface WorkflowSeedDefinition {
@@ -261,6 +269,28 @@ export async function waitForWorkflowState(
   );
 }
 
+// waitForWorkflowProviderInput is the reusable workflow wire assertion: it
+// returns both what AO sent and the provider session it targeted. Transcript
+// rows and process ids cannot answer both questions, especially for Codex.
+export async function waitForWorkflowProviderInput(
+  harness: HarnessApp,
+  protocol: 'claude' | 'codex',
+): Promise<WorkflowProviderInput> {
+  const event = await harness.waitForEvent<{
+    mockId: string;
+    protocol: string;
+    report: { kind: string; turn?: number; input?: string; sessionRef?: string };
+  }>(
+    'harness:mock',
+    (candidate) => candidate.protocol === protocol && candidate.report.kind === 'user_input',
+  );
+  const { input, sessionRef, turn } = event.report;
+  if (!input || !sessionRef || !turn) {
+    throw new Error(`incomplete ${protocol} user_input report: ${JSON.stringify(event)}`);
+  }
+  return { mockId: event.mockId, protocol, sessionRef, turn, input };
+}
+
 // setGlobalPause drives the one engine-level kill switch. While paused a
 // started run is admitted and persisted `running` with its first phase held,
 // so a spec can stage scenarios before any provider session exists.
@@ -321,11 +351,17 @@ export function questionResult(question: string): string {
   });
 }
 
+export function questionEnvelope(question: string): Record<string, unknown> {
+  return { status: 'question', outputs: null, question, reason: null };
+}
+
 export function singlePhaseWorkflow(
   id: string,
   gate: string,
   access: 'read-only' | 'write' = 'read-only',
+  provider: 'claude' | 'codex' = 'claude',
 ): string {
+  const model = provider === 'claude' ? 'claude-opus-4-7' : 'gpt-5.5';
   return `id: ${id}
 name: ${id}
 inputs:
@@ -335,8 +371,8 @@ inputs:
 phases:
   - id: run
     driver: agent
-    provider: claude
-    model: claude-opus-4-7
+    provider: ${provider}
+    model: ${model}
     prompt: ${id}.md
     access: ${access}
     inputs:
@@ -454,14 +490,27 @@ export async function setCodexScenario(
   name: string,
   envelope: Record<string, unknown>,
 ): Promise<void> {
-  const text = JSON.stringify(JSON.stringify(envelope));
+  await setCodexTurns(harness, name, [envelope]);
+}
+
+// setCodexTurns is the Codex counterpart of setClaudeScenario. Keeping the
+// multi-turn shape here lets workflow recovery tests use one provider-neutral
+// driver instead of hand-authoring JSON-RPC frames per test.
+export async function setCodexTurns(
+  harness: HarnessApp,
+  name: string,
+  envelopes: Record<string, unknown>[],
+  threadId = 'mock-codex-thread',
+): Promise<void> {
   await harness.rpc('HarnessSetScenario', {
     scenario: {
       version: 1,
       name,
       provider: 'codex',
-      turns: [
-        {
+      codex: { threadId },
+      turns: envelopes.map((envelope) => {
+        const text = JSON.stringify(JSON.stringify(envelope));
+        return {
           steps: [
             {
               emit: {
@@ -473,8 +522,8 @@ export async function setCodexScenario(
               },
             },
           ],
-        },
-      ],
+        };
+      }),
       afterTurns: 'repeatLast',
     },
   });

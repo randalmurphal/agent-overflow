@@ -170,6 +170,18 @@ func newWorkflowAppRunner(app *App, dataRoot string, profiles engine.ProfileSour
 
 func (r *workflowAppRunner) Start(ctx context.Context, request engine.RunRequest, entered func(), complete func(engine.Outcome)) (err error) {
 	entered()
+	switch request.PromptMode {
+	case engine.PromptFull:
+	case engine.PromptContinue:
+		if request.PriorThreadID == "" {
+			return fmt.Errorf("workflow runner: continuation requires a prior thread")
+		}
+	default:
+		return fmt.Errorf("workflow runner: unsupported prompt mode %q", request.PromptMode)
+	}
+	if request.FinalizeTakeover && request.PromptMode != engine.PromptContinue {
+		return fmt.Errorf("workflow runner: takeover finalize must continue its prior session")
+	}
 	if request.FinalizeTakeover {
 		// A failed finalize start must not strand the thread's takeover
 		// registration in transitioning state: steering sends would be
@@ -244,8 +256,14 @@ func (r *workflowAppRunner) Start(ctx context.Context, request engine.RunRequest
 		}
 		threadID = thread.ID
 		createdThread = true
-	} else if err := r.validatePriorThread(spec, threadID); err != nil {
-		return err
+	} else {
+		prior, validateErr := r.validatePriorThread(spec, threadID)
+		if validateErr != nil {
+			return validateErr
+		}
+		if request.PromptMode == engine.PromptContinue && prior.ResolvedSessionRef() == "" {
+			return fmt.Errorf("workflow runner: prior thread %q has no provider session to continue", threadID)
+		}
 	}
 	if err := ctx.Err(); err != nil {
 		if createdThread {
@@ -268,6 +286,9 @@ func (r *workflowAppRunner) Start(ctx context.Context, request engine.RunRequest
 	promptContext.Access = request.Phase.EffectiveAccess()
 	if request.FinalizeTakeover {
 		prompt, err = workflowrunner.BuildTakeoverFinalizePrompt(promptContext)
+	} else if request.PromptMode == engine.PromptContinue {
+		promptContext.Feedback = request.Feedback
+		prompt, err = workflowrunner.BuildContinuationPrompt(promptContext)
 	} else {
 		promptContext.Feedback, promptContext.Guidance = request.Feedback, request.Guidance
 		prompt, err = workflowrunner.BuildPrompt(request.Phase, request.Vars, promptContext)

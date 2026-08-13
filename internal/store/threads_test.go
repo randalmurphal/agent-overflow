@@ -494,6 +494,44 @@ func TestUpdateSessionRefClearsPendingForkRef(t *testing.T) {
 	}
 }
 
+func TestThreadCanResumeRequiresAProviderCursor(t *testing.T) {
+	s := newTestStore(t)
+	proj := newTestProject(t, s, "proj-resumable", "/tmp/resumable")
+
+	create := func(id, sessionRef, pendingForkRef string) {
+		t.Helper()
+		thread := makeThread(id, "claude")
+		thread.ProjectID = proj.ID
+		thread.SessionRef = sessionRef
+		thread.PendingForkRef = pendingForkRef
+		if err := s.CreateThread(thread); err != nil {
+			t.Fatalf("CreateThread(%s): %v", id, err)
+		}
+	}
+	create("blank", "", "")
+	create("live", "session-live", "")
+	create("pending", "", "session-fork")
+
+	for _, test := range []struct {
+		id   string
+		want bool
+	}{
+		{id: ""},
+		{id: "missing"},
+		{id: "blank"},
+		{id: "live", want: true},
+		{id: "pending", want: true},
+	} {
+		got, err := s.ThreadCanResume(test.id)
+		if err != nil {
+			t.Fatalf("ThreadCanResume(%q): %v", test.id, err)
+		}
+		if got != test.want {
+			t.Errorf("ThreadCanResume(%q) = %v, want %v", test.id, got, test.want)
+		}
+	}
+}
+
 func TestListThreadsIncludesNewFields(t *testing.T) {
 	s := newTestStore(t)
 	proj := newTestProject(t, s, "proj-list", "/home/user/proj")

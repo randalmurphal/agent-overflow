@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -184,12 +185,16 @@ func (e *Engine) enterPhase(item *runtimeItem, entry phaseEntry) error {
 	// clears it on every exit path; this keeps that true by construction rather
 	// than by the caller having come through teardown.
 	item.fan = nil
+	item.entry = entry
 	vars, priorPhases, err := e.variableContext(item, attemptRef{})
 	if err != nil {
 		return errors.Join(e.teardown(item, teardownRequest{
 			cause: err, phaseStatus: "parked",
 			nextState: StateNeedsHuman, reason: ReasonWiringError,
 		}), err)
+	}
+	if entry == entryContinuation {
+		item.feedback = continuationFeedback(vars, item.parkedVars, item.feedback)
 	}
 	delivered, err := e.deliverGuidance(item, phase, entry)
 	if err != nil {
@@ -296,6 +301,7 @@ func (e *Engine) startRunner(item *runtimeItem, phase def.Phase, vars map[string
 		Item: item.item, Workflow: item.workflow, WorkspaceNeed: item.workspaceNeed,
 		Phase: phase, Vars: vars, Guidance: item.guidance,
 		Feedback: cloneFeedback(item.feedback), PriorThreadID: item.priorThreadID,
+		PromptMode:       promptMode(item.entry),
 		FinalizeTakeover: item.takeoverFinalize,
 	}
 	startCtx, cancel := context.WithCancel(e.ctx)
@@ -306,6 +312,7 @@ func (e *Engine) startRunner(item *runtimeItem, phase def.Phase, vars map[string
 	e.inflightStarts[future] = struct{}{}
 	item.feedback = nil
 	item.priorThreadID = ""
+	item.entry = entryFresh
 	entered := make(chan struct{})
 	go func() {
 		err := e.runner.Start(startCtx, request, func() { close(entered) }, func(outcome Outcome) {
@@ -328,6 +335,43 @@ func (e *Engine) startRunner(item *runtimeItem, phase def.Phase, vars map[string
 	// other blocking operation happen after this acknowledgement on the worker.
 	<-entered
 	return nil
+}
+
+func promptMode(entry phaseEntry) PromptMode {
+	if entry == entryContinuation {
+		return PromptContinue
+	}
+	return PromptFull
+}
+
+// continuationFeedback carries only variables that changed since the parked
+// attempt. A seed amendment must reach the resumed turn, but replaying the
+// whole rendered prompt to accomplish that would defeat continuation mode.
+func continuationFeedback(vars, previous map[string]any, feedback *Feedback) *Feedback {
+	if previous == nil {
+		return cloneFeedback(feedback)
+	}
+	result := cloneFeedback(feedback)
+	for name, value := range vars {
+		old, existed := previous[name]
+		if existed && sameJSONValue(old, value) {
+			continue
+		}
+		if result == nil {
+			result = &Feedback{}
+		}
+		if result.Values == nil {
+			result.Values = make(map[string]any)
+		}
+		result.Values[name] = value
+	}
+	return result
+}
+
+func sameJSONValue(left, right any) bool {
+	leftJSON, leftErr := json.Marshal(left)
+	rightJSON, rightErr := json.Marshal(right)
+	return leftErr == nil && rightErr == nil && bytes.Equal(leftJSON, rightJSON)
 }
 
 func (e *Engine) finishRunnerStart(command runnerStartCommand) error {

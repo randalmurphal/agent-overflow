@@ -144,17 +144,17 @@ func workflowPhaseRuntimeMode(access def.Access) provider.RuntimeMode {
 // It takes the same spec creation does, so the checks a reused thread is held
 // to cannot drift from the thread a fresh one would have been given — and a
 // phase, a unit, and a join are all held to them.
-func (r *workflowAppRunner) validatePriorThread(spec workflowThreadSpec, threadID string) error {
+func (r *workflowAppRunner) validatePriorThread(spec workflowThreadSpec, threadID string) (store.Thread, error) {
 	thread, err := r.app.store.GetThread(threadID)
 	if err != nil {
-		return fmt.Errorf("workflow runner: load prior thread %q for %s: %w", threadID, spec.label, err)
+		return store.Thread{}, fmt.Errorf("workflow runner: load prior thread %q for %s: %w", threadID, spec.label, err)
 	}
 	if thread.Mode != "workflow" {
-		return fmt.Errorf("workflow runner: prior thread %q has mode %q, want workflow", threadID, thread.Mode)
+		return store.Thread{}, fmt.Errorf("workflow runner: prior thread %q has mode %q, want workflow", threadID, thread.Mode)
 	}
 	if thread.Provider != spec.providerName ||
 		thread.Model != provider.NormalizeModelSlug(spec.providerName, spec.model) {
-		return fmt.Errorf(
+		return store.Thread{}, fmt.Errorf(
 			"workflow runner: prior thread %q provider/model no longer matches %s (%s/%s)",
 			threadID, spec.label, spec.providerName, spec.model,
 		)
@@ -168,10 +168,10 @@ func (r *workflowAppRunner) validatePriorThread(spec workflowThreadSpec, threadI
 	workspace := spec.workspace.path
 	if !filepath.IsAbs(workspace) || !filepath.IsAbs(thread.WorkspacePath) ||
 		!gitops.SameFilesystemPath(thread.WorkspacePath, workspace) {
-		return fmt.Errorf(
+		return store.Thread{}, fmt.Errorf(
 			"workflow runner: prior thread %q workspace %q no longer matches %s workspace %q",
 			threadID, thread.WorkspacePath, spec.label, workspace,
 		)
 	}
-	return nil
+	return thread, nil
 }

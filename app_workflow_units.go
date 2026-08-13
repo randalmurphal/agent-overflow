@@ -273,8 +273,14 @@ func (r *workflowAppRunner) startAgentUnit(
 		}
 		threadID = thread.ID
 		createdThread = true
-	} else if err := r.validatePriorThread(spec, threadID); err != nil {
-		return err
+	} else {
+		prior, validateErr := r.validatePriorThread(spec, threadID)
+		if validateErr != nil {
+			return validateErr
+		}
+		if request.PromptMode == engine.PromptContinue && prior.ResolvedSessionRef() == "" {
+			return fmt.Errorf("workflow runner: prior thread %q has no provider session to continue", threadID)
+		}
 	}
 	discardThread := func(cause error) error {
 		if !createdThread {
@@ -299,6 +305,9 @@ func (r *workflowAppRunner) startAgentUnit(
 	promptContext.AccountsForUnits, promptContext.AccountedUnits = plan.accountsForUnits, plan.accountedUnits
 	if request.FinalizeTakeover {
 		prompt, err = workflowrunner.BuildTakeoverFinalizePrompt(promptContext)
+	} else if request.PromptMode == engine.PromptContinue {
+		promptContext.Feedback = request.Feedback
+		prompt, err = workflowrunner.BuildContinuationPrompt(promptContext)
 	} else {
 		promptContext.Feedback, promptContext.Guidance = request.Feedback, request.Guidance
 		prompt, err = workflowrunner.BuildUnitPrompt(unit, plan.declarations, request.Vars, promptContext)

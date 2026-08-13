@@ -56,11 +56,10 @@ scenarios cannot break the app's turn lifecycle:
   pending send.
 
 Both adapters also post a `user_input` control report carrying the text
-they received (Claude: the user envelope's text blocks; Codex: a
-`turn/start` or `turn/steer` `input` vec). It is the only surface that
-answers "what did the app actually send the provider", which is not the
-same string as the stored transcript whenever the send path expands a
-composer command (D31).
+they received and the provider session that received it (Claude: session id
+plus the user envelope's text blocks; Codex: thread id plus a `turn/start` or
+`turn/steer` `input` vec). It is the only surface that answers both what the
+app actually sent and where it sent it.
 
 Scenario lines own assistant content framing (`message_start` before
 text/thinking, `message_stop` after). When touching either side,

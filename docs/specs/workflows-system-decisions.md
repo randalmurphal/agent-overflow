@@ -2224,7 +2224,11 @@ each pinned by an incident-replay test:
   the parked attempt's thread with a continue message, dead-session
   fallback to a fresh attempt with a note, `--phase <id>` the explicit
   start-over (and the one place `--refresh-def` applies, per the
-  continuable-park contract). Investigation verdicts recorded:
+  continuable-park contract). The continue message carries only the resume or
+  resolution delta (including amended inputs) plus the new attempt's narrative
+  destination; it never replays the authored phase prompt. A fresh entry always
+  renders the full prompt, even when a loop deliberately reuses a session.
+  Investigation verdicts recorded:
   - **Non-allowlisted execution failures park `agent-error`, not
     `retries-exhausted`** — and `agent-error` stays fresh on purpose: it
     is a shared bucket (envelope-validation exhaustion, envelope decode

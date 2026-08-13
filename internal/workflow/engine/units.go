@@ -471,7 +471,7 @@ func (e *Engine) startUnitRunner(item *runtimeItem, unit *unitRun) error {
 		Phase: phase,
 		Unit:  &definition, UnitIndex: unit.index, UnitKind: unit.kind,
 		UnitAttempt: unit.attempt,
-		Vars:        vars, Feedback: cloneFeedback(unit.feedback),
+		Vars:        vars, Feedback: cloneFeedback(unit.feedback), PromptMode: PromptFull,
 		// Every element of the attempt renders the guidance its phase entry
 		// delivered, work units and join alike: the block is part of prompt
 		// assembly, and an instruction meant for the wave that reached only the
@@ -486,8 +486,10 @@ func (e *Engine) startUnitRunner(item *runtimeItem, unit *unitRun) error {
 		// startRunner consumes it, so a continuation can never leak into the
 		// phase that follows.
 		request.PriorThreadID = item.priorThreadID
+		request.PromptMode = promptMode(item.entry)
 		request.FinalizeTakeover = item.takeoverFinalize
 		item.priorThreadID = ""
+		item.entry = entryFresh
 	}
 	startCtx, cancel := context.WithCancel(e.ctx)
 	future := &runnerStartFuture{key: request.Key, done: make(chan response, 1)}

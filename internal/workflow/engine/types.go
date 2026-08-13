@@ -187,6 +187,16 @@ const (
 	UnitJoin UnitKind = "join"
 )
 
+// PromptMode says whether a runner starts a new logical task or continues the
+// task already present in a provider session. It is independent of thread
+// reuse: a warm loop round can reuse a thread while still requiring Full.
+type PromptMode string
+
+const (
+	PromptFull     PromptMode = "full"
+	PromptContinue PromptMode = "continue"
+)
+
 // RunRequest contains the immutable workflow snapshot plus phase-local input.
 // Unit, UnitIndex, UnitKind, and UnitAttempt are set exactly when Key.UnitID
 // is: they carry the stamped unit definition a fan-out attempt expanded and the
@@ -225,6 +235,7 @@ type RunRequest struct {
 	Vars             map[string]any `json:"vars"`
 	Feedback         *Feedback      `json:"feedback,omitempty"`
 	PriorThreadID    string         `json:"priorThreadId,omitempty"`
+	PromptMode       PromptMode     `json:"promptMode"`
 	FinalizeTakeover bool           `json:"finalizeTakeover,omitempty"`
 }
 
@@ -646,9 +657,8 @@ type persistence interface {
 	FailRunningWorkItemUnits(string, string, int, string, int64) (int64, error)
 	ListWorkItemPhaseUnits(string, string, int) ([]store.WorkItemUnit, error)
 	ListProjects() ([]store.Project, error)
-	// ThreadExists tells a resume whether the session its parked attempt would
-	// continue on is still there. Without it the engine would hand the runner a
-	// dead thread id and take an agent-error park instead of the fresh attempt a
-	// deleted session actually calls for.
-	ThreadExists(string) (bool, error)
+	// ThreadCanResume tells the engine whether a parked AO thread has a provider
+	// session cursor. Existence alone is insufficient: a thread that never
+	// reached provider init has no context for a short continuation prompt.
+	ThreadCanResume(string) (bool, error)
 }
