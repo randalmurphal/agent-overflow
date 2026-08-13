@@ -62,7 +62,8 @@ func BuildForkedThread(source Thread) Thread {
 // at the chosen turn. nil means clone every turn (existing fork-at-tail
 // behavior).
 //
-// Rows with `is_background=1 AND status='running'` are SKIPPED: those
+// Rows with `is_background=1 AND status='running'` are SKIPPED, and so
+// is everything hanging off one — see `cloneThreadItems`. Those rows
 // point at PTYs / subagents owned by the source session's provider
 // subprocess, and the fork gets its own subprocess that can never reach
 // them. Copying them would strand the forked thread with ghost rows
@@ -82,8 +83,26 @@ func (s *Store) CloneThreadItems(sourceThreadID, targetThreadID string, throughT
 }
 
 // cloneThreadItems is the shared clone body behind CloneThreadItems and
-// CloneThreadHistoryBeforeItem: keep decides which source rows copy;
-// the background-running skip applies on top of it unconditionally.
+// CloneThreadHistoryBeforeItem: keep decides which source rows copy; the
+// background-running skip applies on top of it unconditionally.
+//
+// A skip is TRANSITIVE. A row is dropped when it is a background-running
+// launch, when keep rejects it, or when the row its `parent_id` /
+// `completion_of` names was itself dropped. Without that closure a
+// child of a dropped launch cloned with its parent_id unremapped — a
+// reference into the SOURCE thread, invisible to every window read and
+// permanent (fork thread d1166194 carried 5901 such rows, all pointing
+// at background-running Agent launches left behind in b44a738d).
+//
+// One forward pass suffices: ListItems orders by (turn_index,
+// item_index), and invariants 10 / 11 put a parent before its children
+// and a tool_call before the completion row that settles it in exactly
+// that order, so every id a row references has already been decided by
+// the time the row is examined.
+//
+// A reference to an id that is not in the source list at all is
+// pre-existing corruption in the SOURCE and copies verbatim — only ids
+// this pass deliberately dropped propagate.
 func (s *Store) cloneThreadItems(sourceThreadID, targetThreadID string, keep func(Item) bool) (map[string]string, error) {
 	items, err := s.ListItems(sourceThreadID)
 	if err != nil {
@@ -92,11 +111,20 @@ func (s *Store) cloneThreadItems(sourceThreadID, targetThreadID string, keep fun
 
 	clonedItems := make([]Item, 0, len(items))
 	idMap := make(map[string]string, len(items))
-	for _, item := range items {
-		if item.IsBackground && item.Status == "running" {
-			continue
+	skipped := make(map[string]struct{})
+	dropped := func(id string) bool {
+		if id == "" {
+			return false
 		}
-		if !keep(item) {
+		_, ok := skipped[id]
+		return ok
+	}
+	for _, item := range items {
+		if (item.IsBackground && item.Status == "running") ||
+			!keep(item) ||
+			dropped(item.ParentID) ||
+			dropped(item.CompletionOf) {
+			skipped[item.ID] = struct{}{}
 			continue
 		}
 		oldID := item.ID
@@ -105,12 +133,25 @@ func (s *Store) cloneThreadItems(sourceThreadID, targetThreadID string, keep fun
 		idMap[oldID] = item.ID
 		clonedItems = append(clonedItems, item)
 	}
+	// A reference to a dropped id surviving to this pass means a writer
+	// broke the parents-precede-children ordering the forward pass rests
+	// on (a hand-authored InsertItem, an import batch) — the transitive
+	// skip above never saw it. Refuse the fork rather than mint the
+	// invisible cross-thread reference this function exists to prevent;
+	// the fork saga rolls the target thread back on error. Unknown ids
+	// (never in the source list) still copy verbatim.
 	for i := range clonedItems {
 		if next, ok := idMap[clonedItems[i].ParentID]; ok {
 			clonedItems[i].ParentID = next
+		} else if dropped(clonedItems[i].ParentID) {
+			return nil, fmt.Errorf("store: clone from thread %s: row %s references dropped parent %s out of source order",
+				sourceThreadID, clonedItems[i].ID, clonedItems[i].ParentID)
 		}
 		if next, ok := idMap[clonedItems[i].CompletionOf]; ok {
 			clonedItems[i].CompletionOf = next
+		} else if dropped(clonedItems[i].CompletionOf) {
+			return nil, fmt.Errorf("store: clone from thread %s: row %s completes dropped call %s out of source order",
+				sourceThreadID, clonedItems[i].ID, clonedItems[i].CompletionOf)
 		}
 	}
 

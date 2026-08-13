@@ -227,6 +227,264 @@ func TestCloneThreadItemsNoBackgroundRowsCopiesEverything(t *testing.T) {
 	}
 }
 
+// seedForkSource creates src+dst threads and inserts rows onto src,
+// stamping the thread id so a fixture only spells out the shape.
+func seedForkSource(t *testing.T, s *Store, src, dst string, rows []Item) {
+	t.Helper()
+	now := int64(1)
+	for _, id := range []string{src, dst} {
+		if err := s.CreateThread(Thread{
+			ID: id, ProjectID: defaultTestProjectID, Title: "T",
+			Provider: "claude", WorkspacePath: "/tmp",
+			CreatedAt: now, UpdatedAt: now,
+		}); err != nil {
+			t.Fatalf("create thread %s: %v", id, err)
+		}
+	}
+	for _, it := range rows {
+		it.ThreadID = src
+		it.CreatedAt, it.UpdatedAt = now, now
+		if err := s.InsertItem(it); err != nil {
+			t.Fatalf("InsertItem %s: %v", it.ID, err)
+		}
+	}
+}
+
+// clonedBySummary indexes a cloned thread's rows by summary — cloned ids
+// are freshly minted, so the summary is the only stable handle.
+func clonedBySummary(t *testing.T, s *Store, threadID string) map[string]Item {
+	t.Helper()
+	rows, err := s.ListItems(threadID)
+	if err != nil {
+		t.Fatalf("ListItems(%s): %v", threadID, err)
+	}
+	bySummary := make(map[string]Item, len(rows))
+	for _, it := range rows {
+		if _, dup := bySummary[it.Summary]; dup {
+			t.Fatalf("fixture summaries must be unique, %q repeats", it.Summary)
+		}
+		bySummary[it.Summary] = it
+	}
+	return bySummary
+}
+
+// assertClonedLinksResolve pins the clone's result invariant: every
+// non-empty parent_id / completion_of on a cloned row names another
+// cloned row. Anything else is a reference into the source thread —
+// invisible to every window read and permanent. `exempt` lists ids the
+// SOURCE already carried dangling (pre-existing corruption, copied
+// verbatim by contract).
+func assertClonedLinksResolve(t *testing.T, s *Store, threadID string, exempt ...string) {
+	t.Helper()
+	rows, err := s.ListItems(threadID)
+	if err != nil {
+		t.Fatalf("ListItems(%s): %v", threadID, err)
+	}
+	known := make(map[string]bool, len(rows)+len(exempt))
+	for _, it := range rows {
+		known[it.ID] = true
+	}
+	for _, id := range exempt {
+		known[id] = true
+	}
+	for _, it := range rows {
+		for _, link := range []struct{ field, id string }{
+			{"parent_id", it.ParentID},
+			{"completion_of", it.CompletionOf},
+		} {
+			if link.id != "" && !known[link.id] {
+				t.Errorf("cloned row %q has dangling %s = %q", it.Summary, link.field, link.id)
+			}
+		}
+	}
+}
+
+// TestCloneThreadItemsSkipsSubtreeOfRunningBackgroundLaunch pins the
+// transitive half of the background-running skip: dropping the launch
+// without dropping what hangs off it left every descendant carrying the
+// SOURCE thread's parent id verbatim. Covers both link kinds — nested
+// children at two depths and the completion row that settles the
+// skipped launch.
+func TestCloneThreadItemsSkipsSubtreeOfRunningBackgroundLaunch(t *testing.T) {
+	s := newTestStore(t)
+	seedForkSource(t, s, "t-bgtree-src", "t-bgtree-dst", []Item{
+		{ID: "user-0", TurnIndex: 1, ItemIndex: 0, Kind: "user_text", Role: "user", Summary: "go audit"},
+		{ID: "bg-launch", TurnIndex: 1, ItemIndex: 1, Kind: "tool_call", Role: "assistant", Status: "running", IsBackground: true, ToolName: "Agent", Summary: "Agent: audit"},
+		{ID: "bg-child", TurnIndex: 1, ItemIndex: 2, Kind: "tool_call", Role: "assistant", Status: "completed", ParentID: "bg-launch", ToolName: "Read", Summary: "Agent > Read: a.go"},
+		{ID: "bg-grandchild", TurnIndex: 1, ItemIndex: 3, Kind: "tool_completion", Role: "assistant", Status: "completed", ParentID: "bg-child", CompletionOf: "bg-child", ToolName: "Read", Summary: "Agent > Read: a.go -> done"},
+		{ID: "bg-launch-done", TurnIndex: 1, ItemIndex: 4, Kind: "tool_completion", Role: "assistant", Status: "completed", CompletionOf: "bg-launch", ToolName: "Agent", Summary: "Agent: audit -> done"},
+		{ID: "asst-tail", TurnIndex: 1, ItemIndex: 5, Kind: "assistant_text", Role: "assistant", Status: "completed", Summary: "meanwhile"},
+	})
+
+	if _, err := s.CloneThreadItems("t-bgtree-src", "t-bgtree-dst", nil); err != nil {
+		t.Fatalf("CloneThreadItems: %v", err)
+	}
+
+	dst := clonedBySummary(t, s, "t-bgtree-dst")
+	for _, gone := range []string{"Agent: audit", "Agent > Read: a.go", "Agent > Read: a.go -> done", "Agent: audit -> done"} {
+		if _, ok := dst[gone]; ok {
+			t.Errorf("row %q cloned, want the whole skipped launch subtree absent", gone)
+		}
+	}
+	if len(dst) != 2 {
+		t.Errorf("cloned rows = %d, want 2 (user-0 + asst-tail)", len(dst))
+	}
+	assertClonedLinksResolve(t, s, "t-bgtree-dst")
+}
+
+// TestCloneThreadItemsSkipsNestedRunningLaunchUnderClonedParent pins the
+// other direction: a background-running launch nested UNDER a normal
+// launch takes only its own subtree with it. The surviving parent and
+// siblings still clone, with parent_id / completion_of remapped onto the
+// freshly minted ids (the regression guard for the remap itself).
+func TestCloneThreadItemsSkipsNestedRunningLaunchUnderClonedParent(t *testing.T) {
+	s := newTestStore(t)
+	seedForkSource(t, s, "t-nested-src", "t-nested-dst", []Item{
+		{ID: "user-0", TurnIndex: 1, ItemIndex: 0, Kind: "user_text", Role: "user", Summary: "review"},
+		{ID: "ok-launch", TurnIndex: 1, ItemIndex: 1, Kind: "tool_call", Role: "assistant", Status: "completed", ToolName: "Agent", Summary: "Agent: review"},
+		{ID: "ok-child", TurnIndex: 1, ItemIndex: 2, Kind: "assistant_text", Role: "assistant", Status: "completed", ParentID: "ok-launch", Summary: "Agent > thinking"},
+		{ID: "nested-bg", TurnIndex: 1, ItemIndex: 3, Kind: "tool_call", Role: "assistant", Status: "running", IsBackground: true, ParentID: "ok-launch", ToolName: "Agent", Summary: "Agent > Agent: deep"},
+		{ID: "nested-bg-child", TurnIndex: 1, ItemIndex: 4, Kind: "assistant_text", Role: "assistant", Status: "completed", ParentID: "nested-bg", Summary: "Agent > Agent > thinking"},
+		{ID: "ok-tool", TurnIndex: 1, ItemIndex: 5, Kind: "tool_call", Role: "assistant", Status: "completed", ParentID: "ok-launch", ToolName: "Read", Summary: "Agent > Read: b.go"},
+		{ID: "ok-tool-done", TurnIndex: 1, ItemIndex: 6, Kind: "tool_completion", Role: "assistant", Status: "completed", ParentID: "ok-launch", CompletionOf: "ok-tool", ToolName: "Read", Summary: "Agent > Read: b.go -> done"},
+		{ID: "ok-launch-done", TurnIndex: 1, ItemIndex: 7, Kind: "tool_completion", Role: "assistant", Status: "completed", CompletionOf: "ok-launch", ToolName: "Agent", Summary: "Agent: review -> done"},
+	})
+
+	if _, err := s.CloneThreadItems("t-nested-src", "t-nested-dst", nil); err != nil {
+		t.Fatalf("CloneThreadItems: %v", err)
+	}
+
+	dst := clonedBySummary(t, s, "t-nested-dst")
+	for _, gone := range []string{"Agent > Agent: deep", "Agent > Agent > thinking"} {
+		if _, ok := dst[gone]; ok {
+			t.Errorf("row %q cloned, want the nested running launch's subtree absent", gone)
+		}
+	}
+	if len(dst) != 6 {
+		t.Errorf("cloned rows = %d, want 6 (everything but the nested subtree)", len(dst))
+	}
+	launch, ok := dst["Agent: review"]
+	if !ok {
+		t.Fatal("the normal launch must still clone")
+	}
+	if launch.ID == "ok-launch" {
+		t.Error("clone leaked the source item id")
+	}
+	for _, child := range []string{"Agent > thinking", "Agent > Read: b.go", "Agent > Read: b.go -> done"} {
+		if got := dst[child].ParentID; got != launch.ID {
+			t.Errorf("cloned %q parent_id = %q, want remapped launch id %q", child, got, launch.ID)
+		}
+	}
+	if got, want := dst["Agent > Read: b.go -> done"].CompletionOf, dst["Agent > Read: b.go"].ID; got != want {
+		t.Errorf("cloned completion_of = %q, want remapped tool id %q", got, want)
+	}
+	if got := dst["Agent: review -> done"].CompletionOf; got != launch.ID {
+		t.Errorf("cloned launch completion_of = %q, want remapped launch id %q", got, launch.ID)
+	}
+	assertClonedLinksResolve(t, s, "t-nested-dst")
+}
+
+// TestCloneThreadItemsPassesThroughUnknownParentReference pins the
+// carve-out: a source row referencing an id that is not in the source
+// thread at all is pre-existing corruption, not something the clone
+// dropped, so it copies verbatim rather than taking the row (and its own
+// descendants) out of the fork.
+func TestCloneThreadItemsPassesThroughUnknownParentReference(t *testing.T) {
+	s := newTestStore(t)
+	seedForkSource(t, s, "t-ghost-src", "t-ghost-dst", []Item{
+		{ID: "user-0", TurnIndex: 1, ItemIndex: 0, Kind: "user_text", Role: "user", Summary: "hi"},
+		{ID: "orphan", TurnIndex: 1, ItemIndex: 1, Kind: "assistant_text", Role: "assistant", Status: "completed", ParentID: "ghost-parent", Summary: "orphaned child"},
+		{ID: "orphan-completion", TurnIndex: 1, ItemIndex: 2, Kind: "tool_completion", Role: "assistant", Status: "completed", CompletionOf: "ghost-call", ToolName: "Read", Summary: "orphaned completion"},
+	})
+
+	if _, err := s.CloneThreadItems("t-ghost-src", "t-ghost-dst", nil); err != nil {
+		t.Fatalf("CloneThreadItems: %v", err)
+	}
+
+	dst := clonedBySummary(t, s, "t-ghost-dst")
+	if len(dst) != 3 {
+		t.Fatalf("cloned rows = %d, want 3 (unknown references must not drop rows)", len(dst))
+	}
+	if got := dst["orphaned child"].ParentID; got != "ghost-parent" {
+		t.Errorf("cloned parent_id = %q, want the source's unknown reference preserved", got)
+	}
+	if got := dst["orphaned completion"].CompletionOf; got != "ghost-call" {
+		t.Errorf("cloned completion_of = %q, want the source's unknown reference preserved", got)
+	}
+	assertClonedLinksResolve(t, s, "t-ghost-dst", "ghost-parent", "ghost-call")
+}
+
+// TestCloneThreadHistoryBeforeItemSkipsDescendantsOfExcludedRows pins
+// that the keep predicate's exclusions are transitive too. A promoted
+// anchor's cut is the one that can split a subtree: it drops the turn's
+// TOP-LEVEL user successors while keeping the content rows below them,
+// so a child parented to a dropped queued message is a row keep() says
+// yes to and whose parent stayed in the source thread.
+func TestCloneThreadHistoryBeforeItemSkipsDescendantsOfExcludedRows(t *testing.T) {
+	s := newTestStore(t)
+	cloneHistoryFixture(t, s, "t-hist-dsrc", "t-hist-ddst", true)
+	// A child of `queued2` — a top-level user row the promoted cut drops
+	// while keeping its own (later, assistant) position.
+	if err := s.InsertItem(Item{
+		ID: "queued2-child", ThreadID: "t-hist-dsrc", TurnIndex: 1, ItemIndex: 5,
+		Kind: "assistant_text", Role: "assistant", ParentID: "queued2", CreatedAt: 1_015,
+	}); err != nil {
+		t.Fatalf("insert queued2-child: %v", err)
+	}
+
+	idMap, err := s.CloneThreadHistoryBeforeItem("t-hist-dsrc", "t-hist-ddst", "anchor")
+	if err != nil {
+		t.Fatalf("clone: %v", err)
+	}
+	if _, ok := idMap["queued2"]; ok {
+		t.Fatal("fixture broken: the promoted cut must drop the queued top-level user row")
+	}
+	if _, ok := idMap["queued2-child"]; ok {
+		t.Error("child of an excluded row cloned; its parent stayed in the source thread")
+	}
+	assertClonedLinksResolve(t, s, "t-hist-ddst")
+}
+
+// TestCloneThreadItemsRefusesOutOfOrderDroppedReference pins the loud
+// failure for the one shape the forward pass cannot repair: a row whose
+// reference names a dropped id that appears LATER in source order. The
+// live write path cannot produce it (parents precede children per
+// invariants 10/11), so surviving to the remap means some writer broke
+// that ordering — the clone refuses rather than minting the invisible
+// cross-thread reference, before anything is inserted.
+func TestCloneThreadItemsRefusesOutOfOrderDroppedReference(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		rows []Item
+	}{
+		{name: "parent", rows: []Item{
+			{ID: "early-child", TurnIndex: 1, ItemIndex: 0, Kind: "assistant_text", Role: "assistant", Status: "completed", ParentID: "bg-launch", Summary: "child before its launch"},
+			{ID: "bg-launch", TurnIndex: 1, ItemIndex: 1, Kind: "tool_call", Role: "assistant", Status: "running", IsBackground: true, ToolName: "Agent", Summary: "Agent: audit"},
+		}},
+		{name: "completion", rows: []Item{
+			{ID: "early-done", TurnIndex: 1, ItemIndex: 0, Kind: "tool_completion", Role: "assistant", Status: "completed", CompletionOf: "bg-launch", ToolName: "Agent", Summary: "done before its launch"},
+			{ID: "bg-launch", TurnIndex: 1, ItemIndex: 1, Kind: "tool_call", Role: "assistant", Status: "running", IsBackground: true, ToolName: "Agent", Summary: "Agent: audit"},
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newTestStore(t)
+			src, dst := "t-ooo-src-"+tc.name, "t-ooo-dst-"+tc.name
+			seedForkSource(t, s, src, dst, tc.rows)
+
+			if _, err := s.CloneThreadItems(src, dst, nil); err == nil {
+				t.Fatal("clone succeeded, want a refusal for the out-of-order dropped reference")
+			}
+			rows, err := s.ListItems(dst)
+			if err != nil {
+				t.Fatalf("ListItems(%s): %v", dst, err)
+			}
+			if len(rows) != 0 {
+				t.Fatalf("target thread has %d rows after refused clone, want none", len(rows))
+			}
+		})
+	}
+}
+
 // TestCloneThreadItemsPreservesInputPayloadID pins that v44's
 // items.input_payload_id propagates through fork-at-point. Without
 // this, expanding the input on a forked Edit row would fail authz
