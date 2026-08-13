@@ -53,6 +53,18 @@ interface SubagentEviction {
 export interface ThreadSubagentMemory {
   /** True when the id is folded under any anchor (upsert replay swallow). */
   isEvicted(itemId: string): boolean;
+  /**
+   * Record a window-admission outcome: rows that `landed` leave the
+   * swallow ledger (a swallowed child re-admitted once its anchor is
+   * back must stream again), rows that were `rejected` enter it. The
+   * admission DECISION itself lives in the window merges
+   * (`applyItemUpsertsToWindow.rejectedParentedItems`,
+   * `applySyncPage.orphanedLiveChildren`) — this module only keeps the
+   * ledger that silences the rejected rows' later deltas.
+   */
+  recordAdmission(landed: readonly Item[], rejected: readonly Item[]): void;
+  /** True when the id was refused window admission (delta swallow). */
+  isSwallowedChild(itemId: string): boolean;
   /** Fold-and-drop settled subagent children from the changed-row set of an upsert batch or status patch. */
   evictSettledChildren(candidates: readonly Item[]): void;
   /** Collapse-time eviction: fold every settled descendant under `anchorId` out of pane memory. */
@@ -71,9 +83,19 @@ export interface ThreadSubagentMemory {
   restoreFolds(snapshot: SubagentFoldSnapshot | null | undefined): void;
   /** Clear the fold registry only. */
   clearFolds(): void;
-  /** Clear the hydration in-flight/exhausted dedupe sets only. */
-  clearHydrationState(): void;
-  /** Fresh-thread reset: fold registry + both hydration sets. */
+  /**
+   * Clear every piece of window-derived bookkeeping except the fold
+   * registry: the hydration in-flight/exhausted dedupe sets and the
+   * admission swallow ledger. Called at window-identity changes (thread
+   * switch, cache restore, replica paint, pane clear) — the fold
+   * registry is the one part that survives via snapshot/restore. This is
+   * hygiene, not the correctness guard: a stale swallow entry cannot
+   * silence a loaded row, because `applyItemDelta` checks the item index
+   * before it ever consults the ledger. Correctness lives in that check
+   * order.
+   */
+  clearWindowDerivedState(): void;
+  /** Fresh-thread reset: fold registry + `clearWindowDerivedState`. */
   resetForFreshThread(): void;
 }
 
@@ -111,6 +133,62 @@ export function createThreadSubagentMemory(
    * grouping derivation that reads these aggregates.
    */
   const subagentFolds = createSubagentFoldRegistry();
+
+  /**
+   * Ids refused window admission because nothing loaded could anchor
+   * them. History windows load top-level rows only, and subagent
+   * children render from the backend-decorated aggregate on their anchor
+   * plus on-demand hydration — so a streamed child whose anchor is not
+   * in the window has nothing that can render it. Admitting it anyway is
+   * what produced the orphan-leaf regression: settled children evict
+   * into their fold, the anchor stops being retained by
+   * `includeAncestorClosure` and prunes away, and from then on every new
+   * child of that anchor lands as a top-level orphan row that no
+   * eviction policy can reach (`evictableAnchorIdFor` needs the parent).
+   * Refusal costs nothing: triage persisted the row before emitting it,
+   * so the anchor's decorated count already includes it and
+   * `hydrateChildren` renders it whenever the anchor is on screen again.
+   * (One narrow exception, shared with the fold registry's replay
+   * swallow: `designState`'s assistant-payload scan only sees rows that
+   * land, so a design fence inside a refused subagent child is never
+   * projected. Design payloads ride top-level assistant rows.)
+   *
+   * The ledger exists to keep the rejected rows' later deltas silent —
+   * the same swallow contract the fold registry provides for evicted
+   * ids. A stale entry is harmless by construction: `applyItemDelta`
+   * consults it only after an index miss, so a LOADED row always
+   * applies whatever this set says. Entries leave per id when the row
+   * lands after all (re-admission, hydration), wholesale on
+   * `clearWindowDerivedState`, and wholesale at the cap below.
+   */
+  const swallowedChildIds = new Set<string>();
+
+  /**
+   * A visit that keeps streaming children under long-pruned anchors adds
+   * entries for the whole visit (the production incident held ~5900);
+   * the cap keeps the ledger from becoming a leak of its own. Clearing
+   * wholesale on overflow mirrors `warnedMissingDeltaIds`: the fallout
+   * is a capped re-warn per still-streaming cleared id, cheaper than
+   * growth.
+   */
+  const MAX_SWALLOWED_CHILD_IDS = 4096;
+
+  function recordAdmission(
+    landed: readonly Item[],
+    rejected: readonly Item[],
+  ): void {
+    if (swallowedChildIds.size > 0) {
+      for (const item of landed) swallowedChildIds.delete(item.id);
+    }
+    if (rejected.length === 0) return;
+    if (
+      swallowedChildIds.size + rejected.length
+      > MAX_SWALLOWED_CHILD_IDS
+    ) {
+      swallowedChildIds.clear();
+    }
+    for (const item of rejected) swallowedChildIds.add(item.id);
+  }
 
   /**
    * Eviction policy for one upserted or patched row. Returns the launch
@@ -260,10 +338,15 @@ export function createThreadSubagentMemory(
       )) as Item[];
       if (gen !== options.getSwitchGeneration()) return false;
       const incoming = itemsForThread(children ?? [], currentThread.id);
+      const hydratedIds = incoming.map((child) => child.id);
       // Rows coming back into memory leave the live-eviction fold first —
       // the invariant is an id is folded XOR loaded, so the card's count
       // (loaded + folded) stays exact through the hydration round-trip.
-      subagentFolds.reclaim(incoming.map((child) => child.id));
+      subagentFolds.reclaim(hydratedIds);
+      // Same reason, other swallow: hydration loads these rows for real,
+      // so their deltas must apply instead of being silenced as
+      // anchorless stream arrivals.
+      for (const id of hydratedIds) swallowedChildIds.delete(id);
       const currentItems = options.getItems();
       const next = mergeMissingItemsById(incoming, currentItems);
       if (next === currentItems) {
@@ -319,13 +402,16 @@ export function createThreadSubagentMemory(
     subagentFolds.clear();
   }
 
-  function clearHydrationState(): void {
+  function clearWindowDerivedState(): void {
     subagentHydrationInFlight.clear();
     subagentHydrationExhausted.clear();
+    swallowedChildIds.clear();
   }
 
   return {
     isEvicted: (itemId) => subagentFolds.isEvicted(itemId),
+    recordAdmission,
+    isSwallowedChild: (itemId) => swallowedChildIds.has(itemId),
     evictSettledChildren,
     evictCollapsedSubtree,
     hydrateChildren,
@@ -335,10 +421,10 @@ export function createThreadSubagentMemory(
     snapshotFolds: () => subagentFolds.snapshot(),
     restoreFolds: (snapshot) => subagentFolds.restore(snapshot),
     clearFolds,
-    clearHydrationState,
+    clearWindowDerivedState,
     resetForFreshThread(): void {
       clearFolds();
-      clearHydrationState();
+      clearWindowDerivedState();
     },
   };
 }

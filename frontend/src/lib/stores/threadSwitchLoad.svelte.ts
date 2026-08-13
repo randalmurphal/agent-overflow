@@ -483,7 +483,7 @@ export function createThreadSwitchLoad(
       threadId,
     );
     options.subagentMemory.restoreFolds(body.subagentFolds ?? null);
-    options.subagentMemory.clearHydrationState();
+    options.subagentMemory.clearWindowDerivedState();
     // Only when the envelope has one: the ListRecentTurns leg may
     // already have landed with the authoritative row.
     if (body.latestSettledTurn) {
@@ -677,7 +677,7 @@ export function createThreadSwitchLoad(
     if (cached) {
       options.replaceTimelineItems(cached.items);
       options.subagentMemory.restoreFolds(cached.subagentFolds);
-      options.subagentMemory.clearHydrationState();
+      options.subagentMemory.clearWindowDerivedState();
       options.timelineWindow.installFromSnapshot(cached);
       options.setLatestSettledTurn(cached.latestSettledTurn);
       if (cached.historyStamp?.attested) {
@@ -787,7 +787,11 @@ export function createThreadSwitchLoad(
         options.getItems(),
         liveTouchedDuringSync ?? EMPTY_ID_SET,
       );
-      options.replaceTimelineItems(next, { disposeDropped: true });
+      // Live children whose anchor survived nowhere are swallowed, not
+      // installed — their later deltas stay silent, and hydration
+      // renders them when the anchor pages back in.
+      options.subagentMemory.recordAdmission([], next.orphanedLiveChildren);
+      options.replaceTimelineItems(next.items, { disposeDropped: true });
       options.timelineWindow.applyWindowMetadataFromPaged(page);
       // The warm-gate re-arm belongs to a FIRST content mount only. A
       // page landing over an already-painted window (L1 or replica) is a

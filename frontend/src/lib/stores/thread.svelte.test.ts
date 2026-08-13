@@ -4071,10 +4071,11 @@ describe('createThreadPane', () => {
       expect(pane.subagentLiveAggregate('anchor')?.evictedCount).toBe(1);
     });
 
-    it('never folds rows whose parent is missing or not a launch', async () => {
+    it('never folds rows whose parent is loaded but not a launch', async () => {
       const pane = await paneWithAnchor('fold-flat');
 
-      // Parent not loaded → orphan leaf, stays.
+      // Parent not loaded → nothing can render it, so it never enters
+      // pane memory at all (see threadSubagentMemory.test.ts).
       pane.upsertItem(
         childItem('fold-flat', { id: 'stray', itemIndex: 5, parentId: 'missing' }),
       );
@@ -4083,7 +4084,7 @@ describe('createThreadPane', () => {
         childItem('fold-flat', { id: 'flat-child', itemIndex: 6, parentId: 'pre' }),
       );
 
-      expect(pane.items.some((it) => it.id === 'stray')).toBe(true);
+      expect(pane.items.some((it) => it.id === 'stray')).toBe(false);
       expect(pane.items.some((it) => it.id === 'flat-child')).toBe(true);
       expect(pane.subagentLiveAggregate('missing')).toBeUndefined();
       expect(pane.subagentLiveAggregate('pre')).toBeUndefined();
@@ -4098,10 +4099,15 @@ describe('createThreadPane', () => {
 
       expect(removed.map((it) => it.id)).toEqual(['anchor']);
       expect(pane.subagentLiveAggregate('anchor')).toBeUndefined();
-      // The backend truncate deleted the child's row too; if the same id
-      // arrives again (rolled-back revert re-inserts the turn) it must
-      // land in pane memory instead of being treated as a folded echo.
-      pane.upsertItem(childItem('fold-revert'));
+      // The backend truncate deleted the child's row too; if the same ids
+      // arrive again (a rolled-back revert re-inserts the turn through
+      // `upsertItems`) they must land in pane memory instead of being
+      // treated as a folded echo. The anchor leads the restore batch, so
+      // the child is admitted with it; the card is expanded so the
+      // settled child is retained rather than immediately re-folded,
+      // making its presence a clean signal that nothing swallowed it.
+      pane.toggleSubagentGroupExpanded('anchor');
+      pane.upsertItems([...removed, childItem('fold-revert')]);
       expect(pane.items.some((it) => it.id === 'child-1')).toBe(true);
     });
 

@@ -3,6 +3,7 @@ import { makeItem } from '../../test/helpers/chat';
 import type { Item } from '../types/models';
 import {
   applyItemUpsertsToWindow,
+  applySyncPage,
   compareItemsByTimelinePosition,
   cursorIsValid,
   itemsForThread,
@@ -590,5 +591,194 @@ describe('applyItemUpsertsToWindow row-UI retention flag', () => {
     });
     expect(next?.droppedNewerItems).toBe(true);
     expect(next?.rowUiRetentionChanged).toBe(false);
+  });
+});
+
+describe('applyItemUpsertsToWindow parented admission', () => {
+  const anchorRow = (overrides: Partial<Item> = {}) => makeItem({
+    id: 'anchor',
+    threadId: 'thread-1',
+    turnIndex: 4,
+    itemIndex: 1,
+    kind: 'tool_call',
+    toolName: 'Task',
+    status: 'running',
+    ...overrides,
+  });
+  const childRow = (overrides: Partial<Item> = {}) => makeItem({
+    id: 'child',
+    threadId: 'thread-1',
+    turnIndex: 4,
+    itemIndex: 2,
+    parentId: 'anchor',
+    ...overrides,
+  });
+  const indexOf = (items: readonly Item[]) =>
+    new Map(items.map((item, index) => [item.id, index]));
+
+  it('lands a child whose anchor is loaded', () => {
+    const current = [anchorRow()];
+    const next = applyWindowUpserts({
+      current,
+      incoming: [childRow()],
+      itemIndexById: indexOf(current),
+      currentThreadId: 'thread-1',
+      oldestLoadedTurnIndex: 4,
+    });
+    expect(next?.items.map((item) => item.id)).toEqual(['anchor', 'child']);
+    expect(next?.rejectedParentedItems).toEqual([]);
+  });
+
+  it('lands a child whose anchor arrives earlier in the same batch', () => {
+    const next = applyWindowUpserts({
+      current: [],
+      incoming: [anchorRow(), childRow()],
+      itemIndexById: new Map(),
+      currentThreadId: 'thread-1',
+      oldestLoadedTurnIndex: null,
+    });
+    expect(next?.items.map((item) => item.id)).toEqual(['anchor', 'child']);
+    expect(next?.rejectedParentedItems).toEqual([]);
+  });
+
+  it('refuses a new child whose anchor is nowhere', () => {
+    const next = applyWindowUpserts({
+      current: [],
+      incoming: [childRow()],
+      itemIndexById: new Map(),
+      currentThreadId: 'thread-1',
+      oldestLoadedTurnIndex: null,
+    });
+    expect(next?.items).toEqual([]);
+    expect(next?.rejectedParentedItems.map((item) => item.id)).toEqual(['child']);
+    expect(next?.structureChanged).toBe(false);
+  });
+
+  it('refuses grandchildren transitively when the top anchor is missing', () => {
+    const mid = childRow({ id: 'mid', kind: 'tool_call', toolName: 'Task' });
+    const leaf = makeItem({
+      id: 'leaf',
+      threadId: 'thread-1',
+      turnIndex: 4,
+      itemIndex: 3,
+      parentId: 'mid',
+    });
+    const next = applyWindowUpserts({
+      current: [],
+      incoming: [mid, leaf],
+      itemIndexById: new Map(),
+      currentThreadId: 'thread-1',
+      oldestLoadedTurnIndex: null,
+    });
+    expect(next?.items).toEqual([]);
+    expect(next?.rejectedParentedItems.map((item) => item.id)).toEqual(['mid', 'leaf']);
+  });
+
+  it('refuses a child whose same-batch anchor fell below the floor', () => {
+    // The disagreement a pre-merge filter could not see: the anchor is
+    // refused by the floor guard, so the child it would have vouched for
+    // must be refused too instead of landing as an unreachable orphan.
+    const current = [
+      makeItem({ id: 'tail', threadId: 'thread-1', turnIndex: 6, itemIndex: 0 }),
+    ];
+    const next = applyWindowUpserts({
+      current,
+      incoming: [
+        anchorRow({ turnIndex: 5, itemIndex: 1 }),
+        childRow({ turnIndex: 5, itemIndex: 9 }),
+      ],
+      itemIndexById: indexOf(current),
+      currentThreadId: 'thread-1',
+      oldestLoadedCursor: { turnIndex: 5, itemIndex: 3 },
+      oldestLoadedTurnIndex: 5,
+      hasMoreHistory: true,
+    });
+    expect(next?.items.map((item) => item.id)).toEqual(['tail']);
+    expect(next?.rejectedParentedItems.map((item) => item.id)).toEqual(['child']);
+  });
+
+  it('updates a loaded child regardless of its parentage', () => {
+    // Hydration installs children whose anchor may later prune away; an
+    // update to a row the pane renders always applies.
+    const current = [childRow()];
+    const next = applyWindowUpserts({
+      current,
+      incoming: [childRow({ summary: 'progress' })],
+      itemIndexById: indexOf(current),
+      currentThreadId: 'thread-1',
+      oldestLoadedTurnIndex: 4,
+    });
+    expect(next?.changedItems.map((item) => item.id)).toEqual(['child']);
+    expect(next?.rejectedParentedItems).toEqual([]);
+  });
+});
+
+describe('applySyncPage subagent admission', () => {
+  it('keeps live children whose anchor survives and reports the orphaned ones', () => {
+    const anchor = makeItem({
+      id: 'anchor',
+      threadId: 'thread-1',
+      turnIndex: 2,
+      itemIndex: 0,
+      kind: 'tool_call',
+      toolName: 'Task',
+      status: 'running',
+    });
+    const child = makeItem({
+      id: 'child',
+      threadId: 'thread-1',
+      turnIndex: 2,
+      itemIndex: 1,
+      parentId: 'anchor',
+    });
+    const stray = makeItem({
+      id: 'stray',
+      threadId: 'thread-1',
+      turnIndex: 2,
+      itemIndex: 5,
+      parentId: 'gone',
+    });
+    const page = [
+      makeItem({ id: 'top', threadId: 'thread-1', turnIndex: 1, itemIndex: 0 }),
+    ];
+    const result = applySyncPage(
+      page,
+      [anchor, child, stray],
+      new Set(['anchor', 'child', 'stray']),
+    );
+    expect(result.items.map((item) => item.id)).toEqual(['top', 'anchor', 'child']);
+    expect(result.orphanedLiveChildren.map((item) => item.id)).toEqual(['stray']);
+  });
+
+  it('drops a live child transitively when its parent does not survive', () => {
+    const anchor = makeItem({
+      id: 'anchor',
+      threadId: 'thread-1',
+      turnIndex: 2,
+      itemIndex: 0,
+      kind: 'tool_call',
+      toolName: 'Task',
+    });
+    const child = makeItem({
+      id: 'child',
+      threadId: 'thread-1',
+      turnIndex: 2,
+      itemIndex: 1,
+      parentId: 'anchor',
+    });
+    // The anchor is neither in the page nor live-touched, so it is a
+    // paint-only row and drops; its live child must not outlive it.
+    const result = applySyncPage([], [anchor, child], new Set(['child']));
+    expect(result.items).toEqual([]);
+    expect(result.orphanedLiveChildren.map((item) => item.id)).toEqual(['child']);
+  });
+
+  it('returns the current reference when nothing moved', () => {
+    const rows = [
+      makeItem({ id: 'a', threadId: 'thread-1', turnIndex: 1, itemIndex: 0 }),
+    ];
+    const result = applySyncPage(rows, rows, new Set());
+    expect(result.items).toBe(rows);
+    expect(result.orphanedLiveChildren).toEqual([]);
   });
 });

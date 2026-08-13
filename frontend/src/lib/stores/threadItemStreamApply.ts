@@ -59,11 +59,14 @@ export interface ThreadItemStreamApplyOptions {
   designState: ThreadDesignState;
 }
 
+/** Distinct itemIds a pane will warn about before the ledger resets. */
+const MAX_WARNED_MISSING_DELTA_IDS = 256;
+
 export interface ThreadItemStreamApply {
   /**
    * Merge a batch of Items into the loaded window. Returns the applied
    * result, or null when nothing reached the window (empty batch, all
-   * rows folded, or the window rejected them).
+   * rows folded or refused admission, or no row changed).
    */
   upsertItemsBatch(incoming: Item[]): ApplyItemUpsertsToWindowResult | null;
   /** `upsertItemsBatch` plus optimistic-marker discharge and the append spring. */
@@ -80,10 +83,10 @@ export interface ThreadItemStreamApply {
 
 /**
  * Owns a thread pane's streaming item-application machine: the batched
- * upsert path (`applyItemUpsertsToWindow` + the fold swallow, live
- * eviction, window prune, reveal reconcile and design side-channel that
- * ride it) and the three single-row wire applications — delta, meta and
- * field patch.
+ * upsert path (`applyItemUpsertsToWindow` + the admission and fold
+ * swallows, live eviction, window prune, reveal reconcile and design
+ * side-channel that ride it) and the three single-row wire applications
+ * — delta, meta and field patch.
  *
  * The pane data layer remains the sole mutator of `items` and of the
  * id→index map: this factory writes rows through
@@ -101,6 +104,15 @@ export function createThreadItemStreamApply(
 ): ThreadItemStreamApply {
   const { itemIndexById, subagentMemory, streamingReveal, timelineWindow } =
     options;
+
+  /**
+   * Ids already reported by `applyItemDelta`'s missing-row warning. A
+   * genuine gap produces a delta storm for one row, and a per-delta warn
+   * buries the first (and only interesting) report; the cap keeps the
+   * ledger from becoming a leak of its own across a long session —
+   * re-warning after a reset is a cheaper failure than growth.
+   */
+  const warnedMissingDeltaIds = new Set<string>();
 
   function upsertItemsBatch(
     incoming: Item[],
@@ -132,11 +144,28 @@ export function createThreadItemStreamApply(
       hasMoreNewer: timelineWindow.hasMoreNewer,
     });
     if (!next) return null;
+    // Admission is decided inside the merge itself (see
+    // `rejectedParentedItems`): a new child lands only when its anchor
+    // is loaded or landed earlier in the same batch, so the
+    // floor/ceiling filters can never strip an anchor out from under a
+    // child that was vouched for separately. This is the LIVE-STREAM
+    // boundary only — cache restore and replica paint install rows
+    // wholesale through `replaceTimelineItems` (server windows are
+    // top-level-only; snapshots hold rows this pane already admitted),
+    // and the window-sync page install enforces the same contract via
+    // `applySyncPage.orphanedLiveChildren`.
+    subagentMemory.recordAdmission(
+      next.appendedItems,
+      next.rejectedParentedItems,
+    );
     if (next.droppedNewerItems) {
       timelineWindow.noteDroppedNewerItems();
     }
     if (!next.structureChanged && next.changedItems.length === 0) {
-      return next;
+      // A merge that produced only admission rejections reads as
+      // "nothing reached the window" to callers — the rejections were
+      // recorded above and are not theirs to see.
+      return next.droppedNewerItems ? next : null;
     }
     const liveTouchedDuringSync = options.getLiveTouchedDuringSync();
     if (liveTouchedDuringSync) {
@@ -217,6 +246,13 @@ export function createThreadItemStreamApply(
     if (thread && evt.threadId !== thread.id) return;
     const index = itemIndexById.get(evt.itemId);
     if (index === undefined) {
+      // Expected miss: the row was refused window admission because its
+      // anchor isn't loadable here, so its deltas have nothing to write
+      // into. SQLite has the streamed text; hydration renders it if the
+      // anchor comes back. Consulted only AFTER the index miss — a
+      // loaded row always applies whatever the ledger says, which is
+      // what makes a stale swallow entry harmless.
+      if (subagentMemory.isSwallowedChild(evt.itemId)) return;
       // The wire contract from triage is: the upsert that creates a
       // streaming row ALWAYS precedes any delta for that row
       // (handleTextDelta in internal/triage/stream_items.go inserts
@@ -226,7 +262,13 @@ export function createThreadItemStreamApply(
       // yet. Log so the regression isn't silent — under the old
       // parallel-slice architecture this case was masked by
       // `liveDeltaChunks` buffering, which we no longer have.
-      console.warn('[thread] applyItemDelta: no row for itemId', evt.itemId);
+      if (!warnedMissingDeltaIds.has(evt.itemId)) {
+        if (warnedMissingDeltaIds.size >= MAX_WARNED_MISSING_DELTA_IDS) {
+          warnedMissingDeltaIds.clear();
+        }
+        warnedMissingDeltaIds.add(evt.itemId);
+        console.warn('[thread] applyItemDelta: no row for itemId', evt.itemId);
+      }
       return;
     }
     const current = options.getItems()[index];

@@ -200,22 +200,30 @@ export function reconcileItemWindow(incoming: readonly Item[], current: readonly
  *    would lose the row it was streaming into.
  *
  * Unchanged rows keep their existing reference so the reconcile does not
- * re-render them. Returns `current` itself when nothing moved.
+ * re-render them. `items` is `current` itself when nothing moved.
+ *
+ * `orphanedLiveChildren` are live-touched subagent children the merge
+ * dropped because their launch anchor survived in neither the page nor
+ * the live set — keeping them would install exactly the unreachable
+ * orphan rows the admission boundary exists to prevent (same contract as
+ * `rejectedParentedItems` on the upsert merge). The caller swallows them.
  */
 export function applySyncPage(
   page: readonly Item[],
   current: readonly Item[],
   liveTouchedIds: ReadonlySet<string>,
-): Item[] {
-  if (page.length === 0 && current.length === 0) return current as Item[];
+): { items: Item[]; orphanedLiveChildren: readonly Item[] } {
+  if (page.length === 0 && current.length === 0) {
+    return { items: current as Item[], orphanedLiveChildren: NO_REJECTED_ITEMS };
+  }
 
   const currentById = new Map<string, Item>();
   for (const item of current) currentById.set(item.id, item);
 
   const next: Item[] = [];
-  const pageIds = new Set<string>();
+  const keptIds = new Set<string>();
   for (const item of page) {
-    pageIds.add(item.id);
+    keptIds.add(item.id);
     const existing = currentById.get(item.id);
     if (!existing) {
       next.push(item);
@@ -228,9 +236,18 @@ export function applySyncPage(
     next.push(item);
   }
 
+  let orphanedLiveChildren: Item[] | null = null;
+  // `current` is window-ordered, so a live parent is decided before its
+  // live children and the anchor check below is transitive.
   for (const item of current) {
-    if (pageIds.has(item.id)) continue;
+    if (keptIds.has(item.id)) continue;
     if (!liveTouchedIds.has(item.id)) continue;
+    const parentId = item.parentId ?? '';
+    if (parentId && !keptIds.has(parentId)) {
+      (orphanedLiveChildren ??= []).push(item);
+      continue;
+    }
+    keptIds.add(item.id);
     next.push(item);
   }
   // Always sorted, never "the page was sorted so the result is": the
@@ -239,11 +256,16 @@ export function applySyncPage(
   // the wire is trusted to have got right.
   next.sort(compareItemsByTimelinePosition);
 
-  if (next.length !== current.length) return next;
-  for (let index = 0; index < current.length; index += 1) {
-    if (current[index] !== next[index]) return next;
+  const orphaned = orphanedLiveChildren ?? NO_REJECTED_ITEMS;
+  if (next.length !== current.length) {
+    return { items: next, orphanedLiveChildren: orphaned };
   }
-  return current as Item[];
+  for (let index = 0; index < current.length; index += 1) {
+    if (current[index] !== next[index]) {
+      return { items: next, orphanedLiveChildren: orphaned };
+    }
+  }
+  return { items: current as Item[], orphanedLiveChildren: orphaned };
 }
 
 /**
@@ -305,10 +327,24 @@ export interface ApplyItemUpsertsToWindowResult {
    * runs and stamps a fresh membership epoch on the node.
    */
   summaryFieldsChangedIds: readonly string[];
+  /**
+   * NEW parented rows refused because their anchor is not loadable in
+   * this window — neither already loaded nor landed earlier in the same
+   * batch. Deciding this inside the merge, after the floor/ceiling
+   * filters, is what makes the no-orphan contract airtight: a pre-filter
+   * that vouched for a same-batch anchor could disagree with the filter
+   * that then strips that anchor (below the floor after a prune),
+   * landing the child as an unreachable orphan row. The caller swallows
+   * these (`threadSubagentMemory.recordAdmission`) — SQLite holds the
+   * canonical rows, and hydration renders them once the anchor is back.
+   */
+  rejectedParentedItems: readonly Item[];
 }
 
 /** Shared empty list, so the overwhelmingly common "nothing moved" batch allocates none. */
 const NO_CHANGED_IDS: readonly string[] = Object.freeze([]);
+/** Shared empty list, so batches with no refused parented rows allocate none. */
+const NO_REJECTED_ITEMS: readonly Item[] = Object.freeze([]);
 
 /**
  * Apply streamed/upserted items to the currently loaded timeline window.
@@ -340,6 +376,7 @@ export function applyItemUpsertsToWindow({
   let droppedNewerItems = false;
   let retentionChanged = false;
   let summaryFieldsChangedIds: string[] | null = null;
+  let rejectedParentedItems: Item[] | null = null;
   // MIN_SAFE_INTEGER, not 0: head-healed prompts sit at NEGATIVE item
   // indexes, so 0 is not the start of a turn — a fallback floor at 0
   // would misclassify those rows as below the loaded window (mirror of
@@ -412,6 +449,21 @@ export function applyItemUpsertsToWindow({
       continue;
     }
 
+    // Admission for new subagent children, checked against what actually
+    // landed (appendedIndexById excludes floor/ceiling-refused rows, and
+    // a rejected anchor never enters it, so grandchildren are refused
+    // transitively). Wire order puts a parent's upsert before its
+    // children's, so a same-batch anchor is always decided first.
+    const parentId = item.parentId ?? '';
+    if (
+      parentId
+      && itemIndexById.get(parentId) === undefined
+      && !appendedIndexById.has(parentId)
+    ) {
+      (rejectedParentedItems ??= []).push(item);
+      continue;
+    }
+
     const source = next ?? current;
     const previousTail = source.at(-1);
     if (previousTail && compareItemsByTimelinePosition(previousTail, item) > 0) {
@@ -429,7 +481,9 @@ export function applyItemUpsertsToWindow({
     changedItems.push(item);
   }
 
-  if (!changed && !droppedNewerItems) return null;
+  if (!changed && !droppedNewerItems && rejectedParentedItems === null) {
+    return null;
+  }
   if (!changed) {
     return {
       items: current as Item[],
@@ -440,6 +494,7 @@ export function applyItemUpsertsToWindow({
       droppedNewerItems,
       rowUiRetentionChanged: false,
       summaryFieldsChangedIds: NO_CHANGED_IDS,
+      rejectedParentedItems: rejectedParentedItems ?? NO_REJECTED_ITEMS,
     };
   }
   const result = next ?? current.slice();
@@ -456,5 +511,6 @@ export function applyItemUpsertsToWindow({
     droppedNewerItems,
     rowUiRetentionChanged: retentionChanged,
     summaryFieldsChangedIds: summaryFieldsChangedIds ?? NO_CHANGED_IDS,
+    rejectedParentedItems: rejectedParentedItems ?? NO_REJECTED_ITEMS,
   };
 }

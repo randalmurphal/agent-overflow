@@ -1300,7 +1300,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       // leak into the next thread.
       switchLoad.resetPipeline();
       timelineWindow.resetForFreshThread();
-      subagentMemory.clearHydrationState();
+      subagentMemory.clearWindowDerivedState();
       // See switchThread: both `timelineWindow`'s internal
       // `pagingGeneration` and `scrollToItemRequest.nonce` stay
       // monotonic for the pane's lifetime so no consumer observes a
