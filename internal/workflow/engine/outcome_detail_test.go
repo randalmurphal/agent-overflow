@@ -113,7 +113,8 @@ func TestExecutionFailureWithAnEnvelopeCarriesNoEngineCause(t *testing.T) {
 	}
 }
 
-// The same rule carries the runner's account onto a `retries-exhausted` park,
+// The same rule carries the runner's account onto a
+// `provider-retries-exhausted` park,
 // which is what a dated quota refusal rides in on: the app states the reset
 // boundary and the moment the run resumes itself, and the engine persists it.
 func TestTransientExhaustionCarriesItsDetailOntoTheParkedAttempt(t *testing.T) {
@@ -128,7 +129,7 @@ func TestTransientExhaustionCarriesItsDetailOntoTheParkedAttempt(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	requireItemState(t, h.store, item, StateNeedsHuman, ReasonRetriesExhausted)
+	requireItemState(t, h.store, item, StateNeedsHuman, ReasonProviderRetriesExhausted)
 	requireParkCause(t, h.phaseAttempt(t, item, "work", 1),
 		"provider usage limit reached", "resumes itself at 2026-08-15T19:58:12Z")
 }

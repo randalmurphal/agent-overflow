@@ -249,7 +249,68 @@ type ProviderEvent struct {
 	ParentToolUseID string           `json:"parentToolUseId,omitempty"`
 	Raw             json.RawMessage  `json:"-"`
 	TurnComplete    TurnCompleteMeta `json:"-"`
+	// Failure is the provider adapter's normalized error disposition. Raw wire
+	// fields remain in Meta/Raw for rendering and forensics; control-flow
+	// consumers must use this typed value rather than decoding provider JSON.
+	Failure *FailureMeta `json:"-"`
 }
+
+type FailureClass string
+
+const (
+	FailureTransient           FailureClass = "transient"
+	FailureTransientAfterRetry FailureClass = "transient-after-retry"
+	FailureFatal               FailureClass = "fatal"
+)
+
+type FailureReason string
+
+const (
+	// FailureReasonUsageLimit means the provider refused the turn because an
+	// account usage allowance is exhausted. Consumers still need a reported
+	// reset window before promising an automatic resume.
+	FailureReasonUsageLimit FailureReason = "usage-limit"
+)
+
+type FailureBoundary uint8
+
+const (
+	// FailureBoundaryUnspecified is used when the event kind itself supplies the
+	// boundary, such as EventAPIRetry and EventTurnComplete.
+	FailureBoundaryUnspecified FailureBoundary = iota
+	// FailureBoundaryTurn means this error is informational until the provider's
+	// authoritative EventTurnComplete arrives.
+	FailureBoundaryTurn
+	// FailureBoundaryEvent means this error event itself closes the turn.
+	FailureBoundaryEvent
+)
+
+type FailureScope uint8
+
+const (
+	FailureScopeEventTurn FailureScope = iota
+	// FailureScopeParentTurn marks the unusual provider event that carries a
+	// child linkage but actually reports failure of the parent turn consuming
+	// that child. Claude Task assistant errors have this shape.
+	FailureScopeParentTurn
+)
+
+// FailureMeta is the provider adapter's complete failure classification. One
+// boundary enum deliberately replaces independent wait/terminal flags: an
+// error cannot both close a turn and promise a later authoritative close.
+type FailureMeta struct {
+	Class    FailureClass
+	Boundary FailureBoundary
+	Reason   FailureReason
+	Scope    FailureScope
+	// Code is the provider's stable typed error name, normalized by the adapter
+	// for diagnostics. Control flow must use Class, Boundary, Reason, and Scope.
+	Code string
+}
+
+func (f FailureMeta) WaitsForTurnComplete() bool { return f.Boundary == FailureBoundaryTurn }
+
+func (f FailureMeta) EndsTurn() bool { return f.Boundary == FailureBoundaryEvent }
 
 // CompactionReasoningScope is the reserved ParentToolUseID the claudetui
 // provider stamps on the compaction summarizer's live thinking deltas. The

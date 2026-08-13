@@ -43,9 +43,11 @@ describe('workflowResolutionKind', () => {
     ['needs-human', 'setup-failed', 'blocked'],
     ['needs-human', 'budget-exhausted', 'blocked'],
     ['needs-human', 'stalled', 'blocked'],
-    // D70: a bare resume CONTINUES a retries-exhausted park's session, so the
-    // `blocked` row's "the phase starts over" would lie about it.
+    // Provider exhaustion continues the dead turn's session. Legacy rows keep
+    // that contract, while a workflow loop limit has no provider turn to keep.
+    ['needs-human', 'provider-retries-exhausted', 'paused'],
     ['needs-human', 'retries-exhausted', 'paused'],
+    ['needs-human', 'loop-limit-exhausted', 'blocked'],
     ['needs-human', '', 'blocked'],
   ])('%s(%s) resolves on the %s row', (state, reason, expected) => {
     expect(workflowResolutionKind(item(state, reason))).toBe(expected);

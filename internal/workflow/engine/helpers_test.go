@@ -194,6 +194,7 @@ type fakeRunner struct {
 	takeoverKeys []RunKey
 	partials     map[string]json.RawMessage
 	startErrs    map[string]error
+	startError   func(RunRequest) error
 	stopErrs     map[string]error
 	startWait    map[string]<-chan struct{}
 }
@@ -230,6 +231,11 @@ func (f *fakeRunner) Start(ctx context.Context, request RunRequest, entered func
 	}
 	wait := lookupByRun(f.startWait, request.Key)
 	err := lookupByRun(f.startErrs, request.Key)
+	if f.startError != nil {
+		if dynamic := f.startError(request); dynamic != nil {
+			err = dynamic
+		}
+	}
 	f.mu.Unlock()
 	entered()
 	if wait != nil {

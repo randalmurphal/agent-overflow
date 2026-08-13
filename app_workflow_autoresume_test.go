@@ -121,7 +121,7 @@ func (h *autoResumeHarness) transition(itemID string, from, to engine.State, rea
 // cause states — not a duration recomputed from a second clock reading.
 func TestWorkflowAutoResumeArmsTheColumnAndTheTimerTogether(t *testing.T) {
 	harness := newAutoResumeHarness(t)
-	item := harness.parkedRun(t, "run-arm", engine.ReasonRetriesExhausted)
+	item := harness.parkedRun(t, "run-arm", engine.ReasonProviderRetriesExhausted)
 	resumeAt := harness.now.Add(3 * time.Hour)
 
 	timer := harness.arm(t, item.ID, resumeAt)
@@ -145,7 +145,7 @@ func TestWorkflowAutoResumeArmsTheColumnAndTheTimerTogether(t *testing.T) {
 // no engine, so what it pins is the bookkeeping either way.)
 func TestWorkflowAutoResumeFiresIntoAResumeAndLeavesTheColumnToTheTransition(t *testing.T) {
 	harness := newAutoResumeHarness(t)
-	item := harness.parkedRun(t, "run-fire", engine.ReasonRetriesExhausted)
+	item := harness.parkedRun(t, "run-fire", engine.ReasonProviderRetriesExhausted)
 	timer := harness.arm(t, item.ID, harness.now.Add(2*time.Hour))
 
 	timer.callback()
@@ -195,12 +195,12 @@ func TestWorkflowAutoResumeTransitionsClearOrPreserveTheSchedule(t *testing.T) {
 		{
 			name: "a park keeps the schedule the runner just wrote",
 			from: engine.StateRunning, to: engine.StateNeedsHuman,
-			reason: engine.ReasonRetriesExhausted,
+			reason: engine.ReasonProviderRetriesExhausted,
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			harness := newAutoResumeHarness(t)
-			item := harness.parkedRun(t, "run-transition", engine.ReasonRetriesExhausted)
+			item := harness.parkedRun(t, "run-transition", engine.ReasonProviderRetriesExhausted)
 			timer := harness.arm(t, item.ID, harness.now.Add(5*time.Hour))
 
 			harness.transition(item.ID, test.from, test.to, test.reason)
@@ -223,6 +223,7 @@ func TestWorkflowAutoResumeTransitionsClearOrPreserveTheSchedule(t *testing.T) {
 // repaired must not resume work somebody already took over.
 func TestWorkflowAutoResumeFireAfterARepairResumesNothing(t *testing.T) {
 	harness := newAutoResumeHarness(t)
+	// A pre-v56 row retains the same timer cleanup contract.
 	item := harness.parkedRun(t, "run-repaired", engine.ReasonRetriesExhausted)
 	timer := harness.arm(t, item.ID, harness.now.Add(4*time.Hour))
 
@@ -247,7 +248,7 @@ func TestWorkflowAutoResumeFireAfterARepairResumesNothing(t *testing.T) {
 // leaving a dead schedule to be re-armed on every restart from here on.
 func TestWorkflowAutoResumeFireOnANonContinuableParkClearsTheSchedule(t *testing.T) {
 	harness := newAutoResumeHarness(t)
-	item := harness.parkedRun(t, "run-moved", engine.ReasonRetriesExhausted)
+	item := harness.parkedRun(t, "run-moved", engine.ReasonProviderRetriesExhausted)
 	timer := harness.arm(t, item.ID, harness.now.Add(6*time.Hour))
 	if err := harness.app.store.UpdateWorkItemState(
 		item.ID, string(engine.StateNeedsHuman), string(engine.ReasonGate), harness.now.UnixMilli(),
@@ -268,8 +269,8 @@ func TestWorkflowAutoResumeFireOnANonContinuableParkClearsTheSchedule(t *testing
 // the crash rebuild that is still deciding what the run is.
 func TestWorkflowAutoResumeSweepReArmsAcrossARestart(t *testing.T) {
 	harness := newAutoResumeHarness(t)
-	future := harness.parkedRun(t, "run-future", engine.ReasonRetriesExhausted)
-	elapsed := harness.parkedRun(t, "run-elapsed", engine.ReasonRetriesExhausted)
+	future := harness.parkedRun(t, "run-future", engine.ReasonProviderRetriesExhausted)
+	elapsed := harness.parkedRun(t, "run-elapsed", engine.ReasonProviderRetriesExhausted)
 	harness.arm(t, future.ID, harness.now.Add(8*time.Hour))
 	harness.arm(t, elapsed.ID, harness.now.Add(30*time.Minute))
 
@@ -331,7 +332,7 @@ func TestParseWorkflowResumeAtAcceptsBothFormsAndRefusesTheRest(t *testing.T) {
 func TestWorkflowScheduleResumeArmsAContinuableParkAndRefusesTheRest(t *testing.T) {
 	harness := newAutoResumeHarness(t)
 	harness.startEngine(t)
-	item := harness.parkedRun(t, "run-scheduled", engine.ReasonRetriesExhausted)
+	item := harness.parkedRun(t, "run-scheduled", engine.ReasonProviderRetriesExhausted)
 
 	armed, err := harness.app.WorkflowScheduleResume(context.Background(), item.ID, "+36h")
 	if err != nil {
@@ -385,7 +386,7 @@ func TestWorkflowScheduleResumeArmsAContinuableParkAndRefusesTheRest(t *testing.
 // mechanism exists to end.
 func TestWorkflowAutoResumeRetriesAFailedResume(t *testing.T) {
 	harness := newAutoResumeHarness(t)
-	item := harness.parkedRun(t, "run-retry", engine.ReasonRetriesExhausted)
+	item := harness.parkedRun(t, "run-retry", engine.ReasonProviderRetriesExhausted)
 	timer := harness.arm(t, item.ID, harness.now.Add(2*time.Hour))
 	// No engine on this app, so WorkflowResumeItem refuses — one instance of the
 	// transient class (an engine still starting, a store that blinked).
@@ -427,7 +428,7 @@ func TestWorkflowAutoResumeRetriesAFailedResume(t *testing.T) {
 // persist it, and fail the resume on this boot and every boot after.
 func TestWorkflowScheduleResumeRefusesWithoutAnEngine(t *testing.T) {
 	harness := newAutoResumeHarness(t)
-	item := harness.parkedRun(t, "run-no-engine", engine.ReasonRetriesExhausted)
+	item := harness.parkedRun(t, "run-no-engine", engine.ReasonProviderRetriesExhausted)
 
 	if _, err := harness.app.WorkflowScheduleResume(context.Background(), item.ID, "+36h"); err == nil {
 		t.Fatal("an engine-less app armed a schedule it could never honour")

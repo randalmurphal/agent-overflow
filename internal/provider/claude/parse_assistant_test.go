@@ -67,6 +67,15 @@ func TestParseAssistant_ErrorEnumEmitsFatalEventError(t *testing.T) {
 			if v, ok := meta["expect_turn_complete"].(bool); !ok || !v {
 				t.Fatalf("meta.expect_turn_complete: got %v, want true", meta["expect_turn_complete"])
 			}
+			wantClass := provider.FailureFatal
+			if tc.enum == "rate_limit" {
+				wantClass = provider.FailureTransient
+			} else if tc.enum == "server_error" {
+				wantClass = provider.FailureTransientAfterRetry
+			}
+			if errEvent.Failure == nil || errEvent.Failure.Class != wantClass || !errEvent.Failure.WaitsForTurnComplete() {
+				t.Fatalf("failure = %+v, want class %q awaiting completion", errEvent.Failure, wantClass)
+			}
 		})
 	}
 }
@@ -262,6 +271,11 @@ func TestParseAssistant_SubagentErrorCarriesParentToolUseID(t *testing.T) {
 	}
 	if errEvent.ParentToolUseID != "parent-1" {
 		t.Fatalf("ParentToolUseID: got %q, want parent-1", errEvent.ParentToolUseID)
+	}
+	if errEvent.Failure == nil || errEvent.Failure.Reason != provider.FailureReasonUsageLimit ||
+		errEvent.Failure.Code != "rate_limit" ||
+		errEvent.Failure.Scope != provider.FailureScopeParentTurn {
+		t.Fatalf("failure = %+v, want a normalized usage limit closing the parent turn", errEvent.Failure)
 	}
 }
 

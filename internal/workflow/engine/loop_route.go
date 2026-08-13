@@ -12,9 +12,10 @@ import (
 // re-entry itself authorable, and both exist because a live campaign's
 // review/fix loops ping-ponged without them.
 //
-//   - `session: continue` runs the new attempt as the next turn of the target
-//     phase's OWN previous session, so a fix round remembers what it just tried
-//     instead of re-deriving it from the rejection note. `fresh` stays the
+//   - `session: continue` reuses the target phase's OWN previous session for a
+//     new logical round, with that round's complete prompt. The agent remembers
+//     what it just tried without mistaking the new task for recovery of the old
+//     one. `fresh` stays the
 //     default, and deliberately so: a review phase re-entered warm is an
 //     adjudicator that remembers arguing for its last verdict, which is the
 //     anchoring the loop exists to break.
@@ -93,10 +94,10 @@ func (e *Engine) applyLoopRoute(item *runtimeItem, decision def.RouteDecision, s
 		})
 		return
 	}
-	// The same field an Answer continuation and a resume-in-place set: one
-	// same-session mechanism, so a warm loop round is the same thing to the
-	// runner as every other continuation, and the shared thread id on the two
-	// attempt rows is the durable evidence that it happened.
+	// A warm loop and a recovery continuation share the thread-selection field
+	// but not prompt semantics: this is a new logical round and therefore sends
+	// the complete prompt. The shared thread id on the two attempt rows is the
+	// durable evidence that provider context was reused.
 	item.priorThreadID = threadID
 }
 
@@ -129,7 +130,7 @@ func (e *Engine) loopContinuationThread(item *runtimeItem, targetPhaseID string)
 	if best == "" {
 		return "", "no previous attempt of that phase holds a session"
 	}
-	exists, err := e.store.ThreadCanResume(best)
+	exists, err := e.store.ThreadExists(best)
 	if err != nil {
 		return "", fmt.Sprintf("thread %s could not be resolved (%v)", best, err)
 	}

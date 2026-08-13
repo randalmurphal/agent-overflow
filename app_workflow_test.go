@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -10,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provider/codex"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/testutil"
 	"agent-overflow/internal/workflow/def"
@@ -603,6 +606,126 @@ func TestWorkflowSessionRequiresRegisteredSchema(t *testing.T) {
 	}
 }
 
+func TestWorkflowContinuationProvesColdProviderContext(t *testing.T) {
+	tests := []struct {
+		name     string
+		provider string
+		start    func(*App)
+	}{
+		{
+			name: "claude transcript missing", provider: string(provider.Claude),
+			start: func(app *App) {
+				app.startSessionFn = func(string) error {
+					return fmt.Errorf("Claude start must not run after the transcript preflight failed")
+				}
+			},
+		},
+		{
+			name: "codex rejects cursor", provider: string(provider.Codex),
+			start: func(app *App) {
+				app.startSessionFn = func(string) error {
+					return fmt.Errorf("spawn Codex: %w", &codex.RPCError{
+						Method: "thread/resume", Code: -32600, Message: "no rollout found for thread id provider-session",
+					})
+				}
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			app := newTestAppWithStore(t)
+			thread := testThread("cold-context-" + strings.ReplaceAll(tc.name, " ", "-"))
+			thread.Mode = "workflow"
+			thread.Provider = tc.provider
+			thread.SessionRef = "provider-session"
+			thread.WorkspacePath = t.TempDir()
+			if err := app.store.CreateThread(thread); err != nil {
+				t.Fatal(err)
+			}
+			runner := newWorkflowAppRunner(app, t.TempDir(), nil)
+			app.workflowRunner = runner
+			tc.start(app)
+
+			started, err := runner.ensureReusableWorkflowSession(
+				t.Context(), thread, json.RawMessage(`{"type":"object"}`),
+			)
+			if started || !errors.Is(err, engine.ErrProviderContextUnavailable) {
+				t.Fatalf("availability = started %v, err %v; want unavailable", started, err)
+			}
+			if schema := runner.schemaForThread(thread.ID); len(schema) != 0 {
+				t.Fatalf("failed preflight retained temporary schema: %s", schema)
+			}
+		})
+	}
+}
+
+func TestWorkflowContinuationAcceptsLiveContextBeforeCursorPersistence(t *testing.T) {
+	app := newTestAppWithStore(t)
+	thread := testThread("live-context-before-cursor")
+	thread.Mode = "workflow"
+	thread.Provider = string(provider.Codex)
+	thread.SessionRef = ""
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatal(err)
+	}
+	app.sessionManager().put(thread.ID, session{})
+	app.startSessionFn = func(string) error {
+		return errors.New("cold resume must not run while the provider process is live")
+	}
+	runner := newWorkflowAppRunner(app, t.TempDir(), nil)
+
+	started, err := runner.ensureReusableWorkflowSession(
+		t.Context(), thread, json.RawMessage(`{"type":"object"}`),
+	)
+	if err != nil || started {
+		t.Fatalf("availability = started %v, err %v; want live context without a cold start", started, err)
+	}
+
+	app.sessionManager().take(thread.ID)
+	started, err = runner.ensureReusableWorkflowSession(
+		t.Context(), thread, json.RawMessage(`{"type":"object"}`),
+	)
+	if started || !errors.Is(err, engine.ErrProviderContextUnavailable) {
+		t.Fatalf("cold cursor-less availability = started %v, err %v; want unavailable", started, err)
+	}
+}
+
+func TestWorkflowThreadDeletionRaceUsesLaunchSemantics(t *testing.T) {
+	app := newTestAppWithStore(t)
+	project, err := app.store.GetProject(defaultTestProjectID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner := newWorkflowAppRunner(app, t.TempDir(), nil)
+	spec := workflowThreadSpec{
+		itemID: "item", label: "phase work", title: "Workflow: work",
+		providerName: string(provider.Codex), model: "gpt-5.5", access: def.AccessReadOnly,
+		workspace: preparedWorkflowWorkspace{path: project.Path, project: project},
+	}
+
+	continuation, err := engine.ContinueThread("deleted-thread")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = runner.prepareAgentTurnThread(t.Context(), workflowAgentTurnPlan{
+		request: engine.RunRequest{Launch: continuation}, thread: spec,
+	})
+	if !errors.Is(err, engine.ErrProviderContextUnavailable) {
+		t.Fatalf("deleted continuation error = %v, want unavailable context", err)
+	}
+
+	reuse, err := engine.ReuseThread("deleted-thread")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = runner.prepareAgentTurnThread(t.Context(), workflowAgentTurnPlan{
+		request: engine.RunRequest{Launch: reuse}, thread: spec,
+	})
+	if !errors.Is(err, engine.ErrProviderContextUnavailable) {
+		t.Fatalf("deleted warm reuse error = %v, want the engine to reconstruct it", err)
+	}
+}
+
 func TestDeadWorkflowSessionCanRegisterSchemaLessTakeover(t *testing.T) {
 	app := newTestAppWithStore(t)
 	thread := testThread("workflow-dead-takeover")
@@ -664,7 +787,7 @@ func TestWorkflowRunnerRejectsUnsupportedPhasesAndStopsUnknownRuns(t *testing.T)
 		{ID: "fan", Shape: def.ShapeFanOut},
 	} {
 		err := runner.Start(context.Background(), engine.RunRequest{
-			Phase: phase, PromptMode: engine.PromptFull,
+			Phase: phase, Launch: engine.FreshTurn(),
 		}, func() {}, func(engine.Outcome) {})
 		if err == nil {
 			t.Fatalf("unsupported phase %+v succeeded", phase)
@@ -690,16 +813,18 @@ func TestWorkflowRunnerRejectsUnsupportedPhasesAndStopsUnknownRuns(t *testing.T)
 }
 
 func TestWorkflowTurnErrorTerminalClassification(t *testing.T) {
-	if !workflowTurnErrorIsTerminal(json.RawMessage(`{"fatal":true}`)) {
+	if !workflowTurnErrorIsTerminal(provider.ProviderEvent{
+		Kind: provider.EventError, Failure: &provider.FailureMeta{Class: provider.FailureFatal, Boundary: provider.FailureBoundaryEvent},
+	}) {
 		t.Fatal("fatal error without a following turn completion was not terminal")
 	}
-	for _, meta := range []json.RawMessage{
-		nil,
-		json.RawMessage(`{"fatal":false}`),
-		json.RawMessage(`{"fatal":true,"expect_turn_complete":true}`),
+	for _, event := range []provider.ProviderEvent{
+		{},
+		{Kind: provider.EventError},
+		{Kind: provider.EventError, Failure: &provider.FailureMeta{Class: provider.FailureFatal, Boundary: provider.FailureBoundaryTurn}},
 	} {
-		if workflowTurnErrorIsTerminal(meta) {
-			t.Fatalf("non-terminal error meta classified terminal: %s", meta)
+		if workflowTurnErrorIsTerminal(event) {
+			t.Fatalf("non-terminal error classified terminal: %+v", event)
 		}
 	}
 }

@@ -126,7 +126,7 @@ func (e *Engine) answer(itemID, answer string) error {
 	}
 	feedback := &Feedback{Note: answer}
 	if threadID == "" {
-		feedback.Note += "\nThe previous provider session is no longer available, so this is a fresh attempt from the phase inputs."
+		feedback = appendFeedbackNote(feedback, continuationUnavailableNote)
 	}
 	return e.continueParkedAttempt(item, threadID, feedback, false, "answer question")
 }
@@ -163,7 +163,7 @@ func (e *Engine) continueParkedAttempt(item *runtimeItem, threadID string, feedb
 	e.items[item.item.ID] = item
 	entry := entryContinuation
 	if threadID == "" {
-		entry = entryFresh
+		entry = entryRestart
 	}
 	return e.enterPhase(item, entry)
 }
@@ -204,7 +204,7 @@ func (e *Engine) continueFanOutJoin(item *runtimeItem, threadID string, feedback
 	item.takeoverFinalize = finalize
 	item.entry = entryContinuation
 	if threadID == "" {
-		item.entry = entryFresh
+		item.entry = entryRestart
 	}
 	return e.resumeRepairedFanOut(item)
 }
@@ -455,7 +455,7 @@ func (e *Engine) continueHumanDecision(item *runtimeItem, decision def.RouteDeci
 	case def.DecisionFailed:
 		return e.transition(item, StateFailed, ReasonCheckFailedGenuine)
 	case def.DecisionRetriesExhausted:
-		return e.transition(item, StateNeedsHuman, ReasonRetriesExhausted)
+		return e.transition(item, StateNeedsHuman, ReasonLoopLimitExhausted)
 	default:
 		return fmt.Errorf("continue human gate %q: unsupported decision %q", item.item.ID, decision.Kind)
 	}

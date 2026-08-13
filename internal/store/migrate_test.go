@@ -3677,3 +3677,51 @@ func TestMigrationV55AddsHistoryStampsAndStoreIdentity(t *testing.T) {
 		}
 	}
 }
+
+func TestMigrationV56SplitsRetryReasonsWithoutGuessingLegacyRows(t *testing.T) {
+	db := migrateThrough(t, 55)
+	mustExec(t, db, `INSERT INTO work_items
+		(id, project_id, goal, workflow_id, workflow_scope, state, reason, source,
+		 created_at, soft_stop, wake_signature, pending_guidance, auto_resume_at)
+		VALUES ('item-v56', 'project', 'ship it', 'build', 'shared', 'needs-human',
+		 'retries-exhausted', 'manual', 56, 1, 'wake-v56', '[{"text":"keep me"}]', 56000)`)
+
+	if _, err := db.Exec(`UPDATE work_items SET reason = 'provider-retries-exhausted' WHERE id = 'item-v56'`); err == nil {
+		t.Fatal("work_items accepted provider-retries-exhausted before v56")
+	}
+	if err := applyRebuildMigration(db, migrationByVersion(t, 56)); err != nil {
+		t.Fatalf("apply migration v56: %v", err)
+	}
+
+	var reason, wakeSignature, pendingGuidance string
+	var softStop, autoResumeAt int64
+	if err := db.QueryRow(`SELECT reason, soft_stop, wake_signature, pending_guidance, auto_resume_at
+		FROM work_items WHERE id = 'item-v56'`).Scan(
+		&reason, &softStop, &wakeSignature, &pendingGuidance, &autoResumeAt,
+	); err != nil {
+		t.Fatalf("read migrated work item: %v", err)
+	}
+	if reason != "retries-exhausted" || softStop != 1 || wakeSignature != "wake-v56" ||
+		pendingGuidance != `[{"text":"keep me"}]` || autoResumeAt != 56000 {
+		t.Fatalf("migrated work item lost data: reason=%q soft_stop=%d wake=%q guidance=%q auto_resume_at=%d",
+			reason, softStop, wakeSignature, pendingGuidance, autoResumeAt)
+	}
+
+	for _, accepted := range []string{
+		"retries-exhausted", "provider-retries-exhausted", "loop-limit-exhausted",
+	} {
+		if _, err := db.Exec(`UPDATE work_items SET reason = ? WHERE id = 'item-v56'`, accepted); err != nil {
+			t.Fatalf("work_items rejected reason %q after v56: %v", accepted, err)
+		}
+	}
+	if _, err := db.Exec(`UPDATE work_items SET reason = 'not-a-reason' WHERE id = 'item-v56'`); err == nil {
+		t.Fatal("work_items accepted an unknown reason after v56")
+	}
+
+	for _, index := range []string{
+		"idx_work_items_project_state_created", "idx_work_items_parent",
+		"idx_work_items_origin_thread", "idx_work_items_automation_source_ref",
+	} {
+		readIndexSQL(t, db, index)
+	}
+}

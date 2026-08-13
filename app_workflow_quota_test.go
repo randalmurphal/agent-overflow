@@ -15,42 +15,30 @@ import (
 	"agent-overflow/internal/workflow/profile"
 )
 
-// Both halves of the recognition are the providers' own typed enums. The test
-// pins the cross-provider exclusions too: the enums are namespaced by provider,
-// and reading one provider's signal off the other's meta would act on an error
-// that never said what this mechanism thinks it said.
-func TestWorkflowQuotaRefusalReadsTypedProviderSignalsOnly(t *testing.T) {
+// The workflow layer reads only the provider-normalized failure reason. Raw
+// provider enums are pinned in their adapter tests and cannot influence this
+// control flow if an adapter did not classify them.
+func TestWorkflowQuotaRefusalReadsNormalizedFailureOnly(t *testing.T) {
 	for _, test := range []struct {
-		name     string
-		provider string
-		kind     provider.EventKind
-		meta     string
-		want     bool
+		name    string
+		kind    provider.EventKind
+		failure *provider.FailureMeta
+		meta    string
+		want    bool
 	}{
-		{name: "claude rate limit", provider: string(provider.Claude), kind: provider.EventError,
-			meta: `{"api_error_enum":"rate_limit","fatal":true,"expect_turn_complete":true}`, want: true},
-		{name: "claude other enum", provider: string(provider.Claude), kind: provider.EventError,
-			meta: `{"api_error_enum":"authentication_failed","fatal":true}`},
-		{name: "codex usage limit", provider: string(provider.Codex), kind: provider.EventError,
-			meta: `{"fatal":true,"wire":{"error":{"codexErrorInfo":"usageLimitExceeded"}}}`, want: true},
-		{name: "codex overloaded", provider: string(provider.Codex), kind: provider.EventError,
-			meta: `{"fatal":true,"wire":{"error":{"codexErrorInfo":"serverOverloaded"}}}`},
-		{name: "codex structured variant is not the scalar", provider: string(provider.Codex), kind: provider.EventError,
-			meta: `{"fatal":true,"wire":{"error":{"codexErrorInfo":{"usageLimitExceeded":{}}}}}`},
-		{name: "claude signal excluded for codex", provider: string(provider.Codex), kind: provider.EventError,
+		{name: "normalized usage limit", kind: provider.EventError,
+			failure: &provider.FailureMeta{Reason: provider.FailureReasonUsageLimit}, want: true},
+		{name: "ordinary transient", kind: provider.EventError,
+			failure: &provider.FailureMeta{Class: provider.FailureTransient}},
+		{name: "raw enum without classification", kind: provider.EventError,
 			meta: `{"api_error_enum":"rate_limit"}`},
-		{name: "codex signal excluded for claude", provider: string(provider.Claude), kind: provider.EventError,
-			meta: `{"fatal":true,"wire":{"error":{"codexErrorInfo":"usageLimitExceeded"}}}`},
-		{name: "unknown provider", provider: "claude-tui", kind: provider.EventError,
-			meta: `{"api_error_enum":"rate_limit"}`},
-		{name: "not an error event", provider: string(provider.Claude), kind: provider.EventTurnComplete,
-			meta: `{"api_error_enum":"rate_limit"}`},
-		{name: "no meta", provider: string(provider.Claude), kind: provider.EventError},
-		{name: "malformed meta", provider: string(provider.Claude), kind: provider.EventError, meta: `{`},
+		{name: "not an error event", kind: provider.EventTurnComplete,
+			failure: &provider.FailureMeta{Reason: provider.FailureReasonUsageLimit}},
+		{name: "no failure", kind: provider.EventError},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			event := provider.ProviderEvent{Kind: test.kind, Meta: json.RawMessage(test.meta)}
-			if got := workflowQuotaRefusal(test.provider, event); got != test.want {
+			event := provider.ProviderEvent{Kind: test.kind, Failure: test.failure, Meta: json.RawMessage(test.meta)}
+			if got := workflowQuotaRefusal(event); got != test.want {
 				t.Fatalf("workflowQuotaRefusal = %v, want %v", got, test.want)
 			}
 		})
@@ -162,6 +150,10 @@ func TestQuotaParkRequiresBothTheRefusalAndABoundary(t *testing.T) {
 	runner.now = func() time.Time { return now }
 	refusal := provider.ProviderEvent{
 		Kind: provider.EventError,
+		Failure: &provider.FailureMeta{
+			Class: provider.FailureTransient, Boundary: provider.FailureBoundaryTurn,
+			Reason: provider.FailureReasonUsageLimit,
+		},
 		Meta: json.RawMessage(`{"api_error_enum":"rate_limit","fatal":true,"expect_turn_complete":true}`),
 	}
 	resetsAt := now.Add(3 * time.Hour)
@@ -192,6 +184,9 @@ func TestQuotaParkRequiresBothTheRefusalAndABoundary(t *testing.T) {
 	overloaded.key.ItemID = "run-1"
 	transient := provider.ProviderEvent{
 		Kind: provider.EventError,
+		Failure: &provider.FailureMeta{
+			Class: provider.FailureTransient, Boundary: provider.FailureBoundaryTurn,
+		},
 		Meta: json.RawMessage(`{"fatal":true,"wire":{"error":{"codexErrorInfo":"serverOverloaded"}}}`),
 	}
 	if _, _, ok := runner.quotaParkLocked(overloaded, transient); ok {
@@ -226,24 +221,24 @@ func TestWorkflowProviderErrorDetailNamesTheProviderError(t *testing.T) {
 	for _, test := range []struct {
 		name    string
 		content string
-		meta    string
+		code    string
 		want    string
 	}{
 		{name: "summary and claude enum", content: "Claude usage limit reached",
-			meta: `{"api_error_enum":"rate_limit"}`,
+			code: "rate_limit",
 			want: "provider error rate_limit: Claude usage limit reached"},
 		{name: "summary and codex code", content: "stream disconnected",
-			meta: `{"wire":{"error":{"codexErrorInfo":"serverOverloaded"}}}`,
+			code: "serverOverloaded",
 			want: "provider error serverOverloaded: stream disconnected"},
 		{name: "summary only", content: "something went wrong", want: "provider error: something went wrong"},
-		{name: "code only", meta: `{"api_error_enum":"authentication_failed"}`,
+		{name: "code only", code: "authentication_failed",
 			want: "provider error authentication_failed"},
-		{name: "nothing to say", meta: `{}`},
-		{name: "malformed meta drops the code", content: "boom", meta: `{`, want: "provider error: boom"},
+		{name: "nothing to say"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			got := workflowProviderErrorDetail(provider.ProviderEvent{
-				Kind: provider.EventError, Content: test.content, Meta: json.RawMessage(test.meta),
+				Kind: provider.EventError, Content: test.content,
+				Failure: &provider.FailureMeta{Code: test.code},
 			})
 			if got != test.want {
 				t.Fatalf("detail = %q, want %q", got, test.want)
@@ -323,7 +318,7 @@ func TestWorkflowQuotaParkResumesItselfWhenTheLimitReturns(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	parked := waitForWorkflowItem(t, app, item.ID, engine.StateNeedsHuman, engine.ReasonRetriesExhausted)
+	parked := waitForWorkflowItem(t, app, item.ID, engine.StateNeedsHuman, engine.ReasonProviderRetriesExhausted)
 
 	wantResumeAt := resetsAt.Add(workflowQuotaResumeJitter(parked.ID))
 	scheduled, err := app.store.WorkItemAutoResumeAt(parked.ID)
@@ -465,7 +460,11 @@ func (h *quotaObserveHarness) refusal() provider.ProviderEvent {
 	return provider.ProviderEvent{
 		Kind:    provider.EventError,
 		Content: "Claude usage limit reached",
-		Meta:    json.RawMessage(`{"api_error_enum":"rate_limit","fatal":true,"expect_turn_complete":true}`),
+		Failure: &provider.FailureMeta{
+			Class: provider.FailureTransient, Boundary: provider.FailureBoundaryTurn,
+			Reason: provider.FailureReasonUsageLimit,
+		},
+		Meta: json.RawMessage(`{"api_error_enum":"rate_limit","fatal":true,"expect_turn_complete":true}`),
 	}
 }
 
@@ -519,7 +518,7 @@ func TestQuotaWindowsAreRecordedThroughEveryObserveGuard(t *testing.T) {
 
 // The consequence of the rule above: a snapshot that arrived while the ladder
 // was armed is still the boundary the next refusal parks on. Without the hoist
-// this is the Claude case that parks generic `retries-exhausted` forever.
+// this is the Claude case that parks `provider-retries-exhausted` forever.
 func TestQuotaParkUsesAWindowRecordedDuringBackoff(t *testing.T) {
 	harness := newQuotaObserveHarness(t, "run-late-window")
 	harness.attempt.timerMode = workflowTimerBackoff

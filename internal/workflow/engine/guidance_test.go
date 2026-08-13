@@ -376,7 +376,7 @@ func TestGuidanceSurvivesAnAttemptThatNeverStarted(t *testing.T) {
 		t.Fatal(err)
 	}
 	// The parked attempt never attached a thread, so this bare resume takes the
-	// fresh-entry branch — the shape that used to lose the guidance entirely.
+	// full-reconstruction branch — the shape that used to lose the guidance entirely.
 	if err := h.engine.Resume(itemID, "", false); err != nil {
 		t.Fatal(err)
 	}

@@ -87,8 +87,8 @@ resource semaphores, and startup recovery.
   re-running them. Parked and terminal items are evicted from memory; resume
   loads a parked item from SQLite on demand.
 - `Answer` is valid only for `needs-human(question)`. It persists a new phase
-  attempt whose feedback carries the answer and sets `RunRequest.PriorThreadID`
-  from the parked attempt so the runner continues the same provider session.
+  attempt whose feedback carries the answer and uses `ContinueThread` with the
+  parked attempt's thread so the runner continues the same provider session.
 - `TakeOver` parks a live or parked attempt as `needs-human(taken-over)` through
   teardown, releasing resources and runner timers without touching its
   worktree/provider history. `CompleteTakeover` creates one finalize attempt on
@@ -120,8 +120,9 @@ resource semaphores, and startup recovery.
 - **Resume continues and preserves; `--phase` starts over.** One rule across
   every surface. `ContinuableReason` is the whole of it: a bare `Resume`
   (`targetPhase == ""`) on `paused`, `interrupted`, `checkpoint`, `unit-failed`,
-  or `retries-exhausted` routes into `resumeItem` and continues the parked
-  attempt, and every other park re-enters the phase with a fresh attempt. The
+  `provider-retries-exhausted`, or legacy `retries-exhausted` routes into
+  `resumeItem` and continues the parked attempt, and every other park —
+  including `loop-limit-exhausted` — re-enters the phase with a fresh attempt. The
   membership is one list (`continuableReasons`, derived from `resumableReasons`)
   that both predicates and the refusal naming them read, so a new member cannot
   join the rule and miss the message. The dispatch lives
@@ -203,9 +204,14 @@ resource semaphores, and startup recovery.
   `checkpoint` park has no session to continue — its call phase never started
   one — so its resume is the call edge the stop skipped. The reasons differ
   for the human reading the run list, not for the recovery. A parked attempt
-  whose thread no longer exists falls back to a fresh attempt whose feedback
-  says so — the `ThreadExists` probe exists so a deleted session parks as
-  itself instead of as an `agent-error` from a failed runner start. A
+  whose provider context no longer exists reconstructs the same round on a new
+  thread with full persisted prompt context and feedback saying so. The store's
+  `ThreadExists` is only a cheap target check; the runner proves a live process
+  or cold Claude/Codex context before sending and reports unavailable context
+  back to the engine instead of parking it as `agent-error`. The same sentinel
+  covers a warm loop whose cursor passes the cheap check but fails provider
+  preflight: the unsent attempt is superseded and reconstructed cold with its
+  full round prompt and an explicit degradation note. A
   `unit-failed` park joins them through the same `resumeFanOutAttempt`: the
   units blocking it are reopened, a failed join is continued on its thread, and
   everything that finished keeps its result. What it does NOT join is the
@@ -213,7 +219,7 @@ resource semaphores, and startup recovery.
   `resumeUnitCallChildren` stay on `ResumableReason`, because a child resting on
   a failed unit needs a human's judgment about that unit, not a silent retry
   ridden in on its parent's resume.
-- **`retries-exhausted` joins them, and it is the one member whose turn DIED.**
+- **`provider-retries-exhausted` joins them, and it is the one member whose turn DIED.**
   The three above stopped a run — a human's pause, a process death, a requested
   checkpoint — and `unit-failed` rests on work that finished. This one rests on
   an attempt the runner gave up on: a provider API failure that outlasted the
@@ -225,19 +231,16 @@ resource semaphores, and startup recovery.
   `interrupted` park continues a session whose process died, which is the
   killed-process case. What a fresh entry bought was nothing: it discarded the
   in-context state of a turn that may have run for many minutes. The same
-  `ThreadExists` fallback covers a session that is genuinely gone.
-  - **The reason is shared, and the continuation does not repair the other
-    half.** A spent loop or reject bound parks under it too
-    (`def.DecisionRetriesExhausted` → `finishDecision`), and no continuation
-    refills a bound. Neither did the fresh entry a bare resume used to take:
-    re-entering the phase that parked is not an entry from OUTSIDE its cycle, so
-    `freshLoopEntry` never refilled it either — both shapes re-park, and the
-    continuation is the cheaper of the two (a fan-out continues its join instead
-    of re-expanding the wave; a call phase re-links its child instead of
-    starting a second one). Only `--phase <id>` naming an EARLIER phase — the
-    loop's target, entered from outside the cycle — gives the bound back, which
-    is why every surface names it beside the continuation and why `resumeNote`
-    is worded for both causes rather than naming one.
+  provider-context fallback covers a session that is genuinely gone.
+  - **A spent workflow loop is a different recovery.** A spent loop bound parks
+    `loop-limit-exhausted` (`def.DecisionRetriesExhausted` remains the internal
+    gate decision). It has no dead provider turn to continue, so it is not a
+    `ContinuableReason`; a bare resume re-enters the parked phase and refills no
+    bound. Only `--phase <id>` naming an EARLIER phase — the loop's target,
+    entered from outside the cycle — gives the bound back. Persisted legacy
+    `retries-exhausted` rows remain continuable because their source cause
+    cannot be reconstructed and changing their shipped recovery would be a
+    migration guess.
   - **A dated quota refusal parks here without spending the ladder, and comes
     back on its own.** A provider that refuses the turn because the account's
     usage allowance is spent — and whose own rate-limit snapshot says when that
@@ -493,10 +496,10 @@ resource semaphores, and startup recovery.
   the park is its own surface.
 - **A loop route may make its re-entry warm, and it degrades rather than parks
   (`loop_route.go`).** `session: continue` sets `item.priorThreadID` from the
-  NEWEST attempt of the loop TARGET that holds a thread which still exists — the
-  same field an `Answer`, a resume-in-place, and a takeover finalize set, so
-  there is one same-session mechanism and a warm loop round is the same thing to
-  the runner as every other continuation. It cannot fail: every reason a session
+  NEWEST attempt of the loop TARGET that holds a provider cursor. It shares
+  thread selection with `Answer`, resume-in-place, and takeover finalize, but
+  not prompt semantics: a warm loop is a new logical round and sends its full
+  resolved prompt; recovery of a parked round sends only its delta. It cannot fail: every reason a session
   is unavailable (a deleted thread, a phase that never ran, a store read that
   would not answer) runs the round COLD with the fact stated in the attempt's
   feedback and in `LogEventLoopSession`, because `applyLoopRoute` runs after the

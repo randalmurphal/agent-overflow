@@ -22,7 +22,7 @@ func TestSemaphoreReleaseOnEveryImplementedExitPath(t *testing.T) {
 		{"question", []def.Route{{To: "done"}}, completeWith(OutcomeQuestion, questionEnvelope()), StateNeedsHuman, ReasonQuestion},
 		{"stuck", []def.Route{{To: "done"}}, completeWith(OutcomeStuck, stuckEnvelope()), StateNeedsHuman, ReasonStuck},
 		{"stalled", []def.Route{{To: "done"}}, completeWith(OutcomeStalled, nil), StateNeedsHuman, ReasonStalled},
-		{"transient retries exhausted", []def.Route{{To: "done"}}, completeWith(OutcomeTransientExhausted, nil), StateNeedsHuman, ReasonRetriesExhausted},
+		{"transient retries exhausted", []def.Route{{To: "done"}}, completeWith(OutcomeTransientExhausted, nil), StateNeedsHuman, ReasonProviderRetriesExhausted},
 		{"execution failure", []def.Route{{To: "done"}}, completeWith(OutcomeExecutionFailure, nil), StateNeedsHuman, ReasonAgentError},
 		{"runner stopped", []def.Route{{To: "done"}}, completeWith(OutcomeStopped, nil), StateNeedsHuman, ReasonInterrupted},
 		{"unknown outcome", []def.Route{{To: "done"}}, completeWith(OutcomeKind("unknown"), nil), StateNeedsHuman, ReasonAgentError},
@@ -273,13 +273,13 @@ func TestLoopPhaseExitReleasesBeforeRetryAndExhaustionParks(t *testing.T) {
 	if err := h.engine.Sync(); err != nil {
 		t.Fatal(err)
 	}
-	requireItemState(t, h.store, "looping", StateNeedsHuman, ReasonRetriesExhausted)
+	requireItemState(t, h.store, "looping", StateNeedsHuman, ReasonLoopLimitExhausted)
 	if err := h.engine.StartItem(testItem("after-exhaustion", "project", "waiter", 2)); err != nil {
 		t.Fatal(err)
 	}
 	starts = h.runner.started()
 	if starts[len(starts)-1].Key.ItemID != "after-exhaustion" {
-		t.Fatalf("retries-exhausted park leaked resource: %+v", starts)
+		t.Fatalf("loop-limit-exhausted park leaked resource: %+v", starts)
 	}
 }
 

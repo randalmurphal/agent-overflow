@@ -66,7 +66,7 @@ func callWorkspaceRequest(item store.WorkItem, need def.WorkspaceNeed) engine.Ru
 		Workflow:      def.Workflow{ID: item.WorkflowID},
 		WorkspaceNeed: need,
 		Phase:         def.Phase{ID: "work", Driver: def.DriverAgent},
-		PromptMode:    engine.PromptFull,
+		Launch:        engine.FreshTurn(),
 	}
 }
 

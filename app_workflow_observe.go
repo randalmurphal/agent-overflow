@@ -31,7 +31,7 @@ func (r *workflowAppRunner) observe(runKey string, event provider.ProviderEvent)
 	// `UsageLimitReached` returns) and verified for NEITHER on Claude: if the CLI
 	// ever emits `rate_limit_event` after `assistant.error`, the snapshot lands
 	// while the ladder is armed, and dropping it here would make the whole
-	// mechanism silently inert on Claude — a generic `retries-exhausted` park
+	// mechanism silently inert on Claude — a `provider-retries-exhausted` park
 	// with no self-resume, indistinguishable from the bug this feature fixes.
 	// The event then continues through the machine exactly as any other
 	// non-terminal event does.
@@ -108,7 +108,7 @@ func (r *workflowAppRunner) observe(runKey string, event provider.ProviderEvent)
 		// a turn start can never inherit the previous turn's identity.
 		attempt.currentTurnID = event.TurnID
 		attempt.pendingTransient = false
-		attempt.claudeTransientRetry = false
+		attempt.providerRetryHint = false
 		r.armWatchdogLocked(runKey, attempt)
 		r.mu.Unlock()
 		return
@@ -141,10 +141,8 @@ func (r *workflowAppRunner) observe(runKey string, event provider.ProviderEvent)
 			return
 		}
 	}
-	if event.Kind == provider.EventAPIRetry && attempt.provider == string(provider.Claude) {
-		if workflowClaudeTransientAPIRetry(event) {
-			attempt.claudeTransientRetry = true
-		}
+	if event.Kind == provider.EventAPIRetry && event.Failure != nil && event.Failure.Class == provider.FailureTransient {
+		attempt.providerRetryHint = true
 		r.mu.Unlock()
 		return
 	}
@@ -152,14 +150,12 @@ func (r *workflowAppRunner) observe(runKey string, event provider.ProviderEvent)
 		if detail := workflowProviderErrorDetail(event); detail != "" {
 			attempt.lastFailure = detail
 		}
-		transient, waitsForCompletion := workflowTransientError(
-			attempt.provider, event, attempt.claudeTransientRetry,
-		)
+		transient, waitsForCompletion := workflowTransientError(event, attempt.providerRetryHint)
 		// A dated quota refusal leaves the retry ladder before it starts: the
 		// backoffs run out in minutes and the allowance comes back in hours or
 		// days, so every retry is waste and the park is the answer. It takes the
 		// exhausted path deliberately — it IS the retries being exhausted, and
-		// `retries-exhausted` is the one park a bare resume continues on the
+		// `provider-retries-exhausted` is the park a bare resume continues on the
 		// session the turn died in.
 		if transient {
 			if resetsAt, resumeAt, ok := r.quotaParkLocked(attempt, event); ok {
@@ -191,7 +187,7 @@ func (r *workflowAppRunner) observe(runKey string, event provider.ProviderEvent)
 			}
 			return
 		}
-		if workflowTurnErrorIsTerminal(event.Meta) {
+		if workflowTurnErrorIsTerminal(event) {
 			detail := attempt.failureDetail("the provider reported a fatal error")
 			r.mu.Unlock()
 			r.finish(runKey, engine.Outcome{Kind: engine.OutcomeExecutionFailure, Detail: detail})
@@ -213,9 +209,9 @@ func (r *workflowAppRunner) observe(runKey string, event provider.ProviderEvent)
 	r.disarmTimerLocked(attempt)
 	attempt.turnStarted = false
 	attempt.currentTurnID = ""
-	attempt.claudeTransientRetry = false
+	attempt.providerRetryHint = false
 	payload := append(json.RawMessage(nil), event.StructuredOutput...)
-	if len(payload) == 0 && (attempt.pendingTransient || workflowTransientTurnComplete(attempt.provider, event)) {
+	if len(payload) == 0 && (attempt.pendingTransient || workflowTransientTurnComplete(event)) {
 		attempt.pendingTransient = false
 		exhausted := r.scheduleTransientLocked(runKey, attempt)
 		detail := attempt.failureDetail("the provider kept failing until the retry schedule ran out")
@@ -357,7 +353,7 @@ func (r *workflowAppRunner) sendIfActive(runKey, message string, schema json.Raw
 			if !attempt.turnStarted && attempt.timerMode != workflowTimerBackoff {
 				attempt.turnStarted = true
 				attempt.pendingTransient = false
-				attempt.claudeTransientRetry = false
+				attempt.providerRetryHint = false
 				r.armWatchdogLocked(runKey, attempt)
 			}
 		} else {
@@ -394,31 +390,18 @@ func (r *workflowAppRunner) sendIfActive(runKey, message string, schema json.Raw
 // The two adapters mean different things by the same field. Claude stamps a Task
 // subagent's id on that subagent's `assistant.error`, but the error is the
 // parent's open turn failing — the CLI follows it with the `result{is_error}`
-// that closes that turn, which is exactly what `expect_turn_complete` records
-// (`internal/provider/claude/parse_assistant.go`). Codex forwards a collab
-// child's own `error` with `fatal:false` and no such flag, because the child's
-// failure is the child's alone.
+// that closes that turn, and the adapter records that as parent-turn scope.
+// Codex forwards a collab child's own error as child-turn scope, because the
+// child's failure is the child's alone.
 //
-// So the flag is the whole test, read the same way `workflowTurnErrorIsTerminal`
-// reads it: a parented error that promises a turn completion belongs to the turn
-// that completion will close.
+// The adapter-normalized scope is the whole test: a completion boundary alone
+// is insufficient because a Codex child's error also waits for that CHILD's
+// completion, which never belongs to this parent machine.
 func workflowParentedErrorClosesTurn(event provider.ProviderEvent) bool {
-	if event.Kind != provider.EventError || len(event.Meta) == 0 {
-		return false
-	}
-	var flags struct {
-		ExpectTurnComplete bool `json:"expect_turn_complete"`
-	}
-	return json.Unmarshal(event.Meta, &flags) == nil && flags.ExpectTurnComplete
+	return event.Kind == provider.EventError && event.Failure != nil &&
+		event.Failure.Scope == provider.FailureScopeParentTurn
 }
 
-func workflowTurnErrorIsTerminal(meta json.RawMessage) bool {
-	if len(meta) == 0 {
-		return false
-	}
-	var flags struct {
-		Fatal              bool `json:"fatal"`
-		ExpectTurnComplete bool `json:"expect_turn_complete"`
-	}
-	return json.Unmarshal(meta, &flags) == nil && flags.Fatal && !flags.ExpectTurnComplete
+func workflowTurnErrorIsTerminal(event provider.ProviderEvent) bool {
+	return event.Kind == provider.EventError && event.Failure != nil && event.Failure.EndsTurn()
 }

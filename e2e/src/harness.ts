@@ -274,17 +274,32 @@ export class HarnessApp {
     this.clearEvents();
   }
 
-  /** Terminate the backend and remove the temp data dir it owned. */
-  async close(): Promise<void> {
+  /** Gracefully stop the backend while preserving its data directory. */
+  async stop(): Promise<void> {
+    await this.terminate('SIGTERM');
+  }
+
+  /** Kill the backend without cleanup, preserving its data for crash recovery. */
+  async crash(): Promise<void> {
+    await this.terminate('SIGKILL');
+  }
+
+  private async terminate(signal: NodeJS.Signals): Promise<void> {
     this.closed = true;
     this.ws?.close();
-    if (this.child.exitCode === null) {
+    if (this.child.exitCode === null && this.child.signalCode === null) {
       const exited = new Promise<void>((resolve) => this.child.once('exit', () => resolve()));
-      this.child.kill('SIGTERM');
-      const killTimer = setTimeout(() => this.child.kill('SIGKILL'), 5_000);
+      this.child.kill(signal);
+      const killTimer =
+        signal === 'SIGKILL' ? undefined : setTimeout(() => this.child.kill('SIGKILL'), 5_000);
       await exited;
-      clearTimeout(killTimer);
+      if (killTimer) clearTimeout(killTimer);
     }
+  }
+
+  /** Terminate the backend and remove the temp data dir it owned. */
+  async close(): Promise<void> {
+    await this.stop();
     if (this.removeDataDir) {
       await rm(this.removeDataDir, { recursive: true, force: true });
     }

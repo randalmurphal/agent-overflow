@@ -15,6 +15,7 @@ import {
   singlePhaseWorkflow,
   start,
   stuckEnvelope,
+  waitForWorkflowProviderInput,
   waitForWorkflowState,
   type WorkflowDetail,
 } from './workflows-helpers.js';
@@ -200,6 +201,7 @@ test('a paused run resumes on the provider session it parked on', async ({ harne
     singlePhaseWorkflow('pause-flow', '        - to: done'),
   );
   const item = await start(harness, project.projectId, 'pause-flow');
+  const firstInput = await waitForWorkflowProviderInput(harness, 'claude');
   const registered = await harness.waitForEvent<HarnessMockEvent>(
     'harness:mock',
     (event) => event.scenario === 'wake-pause' && event.report.kind === 'registered',
@@ -226,6 +228,10 @@ test('a paused run resumes on the provider session it parked on', async ({ harne
   expect(parkedThread).toBeTruthy();
 
   await harness.rpc('WorkflowResumeItem', item.id, '', false);
+  const resumedInput = await waitForWorkflowProviderInput(harness, 'claude');
+  expect(resumedInput.sessionRef).toBe(firstInput.sessionRef);
+  expect(resumedInput.input).toContain('Resume the current workflow phase');
+  expect(resumedInput.input).not.toContain('<workflow-system-instructions>');
   // The continuation is turn 2 of the session that parked — not a new session
   // replaying the phase, which is what keeps the provider's history intact.
   const secondTurn = await harness.waitForEvent<HarnessMockEvent>(

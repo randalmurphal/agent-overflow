@@ -266,6 +266,52 @@ func (e *Engine) deliverGuidance(item *runtimeItem, phase def.Phase, entry phase
 	return e.pendingGuidance(item.item.ID)
 }
 
+// entryGuidance resolves both the guidance belonging to the parked round and
+// what is still owed an acknowledgement.
+//
+// A continuation keeps the round guidance resident for a possible context-loss
+// restart, but its short prompt renders no guidance block. A restart renders
+// the original block into the replacement context. It acknowledges only those
+// original entries that are still in the pending slot: that is the held-start
+// case, where the parked attempt recorded the block but no provider turn ever
+// rendered it. Entries added after the park remain pending for the next fresh
+// phase entry.
+func (e *Engine) entryGuidance(item *runtimeItem, phase def.Phase, entry phaseEntry) ([]GuidanceEntry, []GuidanceEntry, error) {
+	switch entry {
+	case entryContinuation:
+		return nil, nil, nil
+	case entryRestart:
+		pending, err := e.pendingGuidance(item.item.ID)
+		if err != nil {
+			return nil, nil, err
+		}
+		round := append([]GuidanceEntry(nil), item.guidance...)
+		return round, matchingGuidance(pending, round), nil
+	}
+	delivered, err := e.deliverGuidance(item, phase, entry)
+	if err != nil {
+		return nil, nil, err
+	}
+	return delivered, delivered, nil
+}
+
+// matchingGuidance returns the entries recorded on the round that still exist
+// in the pending slot. Equality covers the engine-stamped identity (text,
+// author, run, and timestamp), so guidance added after the park cannot be
+// mistaken for an unacknowledged original entry.
+func matchingGuidance(pending, round []GuidanceEntry) []GuidanceEntry {
+	matched := make([]GuidanceEntry, 0, len(round))
+	for _, entry := range round {
+		for _, candidate := range pending {
+			if candidate == entry {
+				matched = append(matched, entry)
+				break
+			}
+		}
+	}
+	return matched
+}
+
 // ackGuidance clears the entries an attempt has now rendered into a provider
 // session that actually started. It is the second half of deliverGuidance's
 // ordering rule; see there for why the clear waits this long.

@@ -73,7 +73,7 @@ func seedRunMapCampaign(t *testing.T, app *App) map[string]string {
 		{
 			ID: "wave-2", ProjectID: defaultTestProjectID, Goal: "wave 2",
 			WorkflowID: "campaign", WorkflowScope: "project", Snapshot: campaign,
-			State: string(engine.StateNeedsHuman), Reason: string(engine.ReasonRetriesExhausted),
+			State: string(engine.StateNeedsHuman), Reason: string(engine.ReasonProviderRetriesExhausted),
 			Source: "call", ParentItemID: "wave-1", ParentPhaseID: "next", ParentAttempt: 1,
 			CallDepth: 2, CreatedAt: 40, StartedAt: 40,
 		},
@@ -289,7 +289,7 @@ func TestWorkflowGetRunMapProjectsSkeletonRecordsAndMoney(t *testing.T) {
 	}
 
 	wave := runs["wave-2"]
-	if wave.State != string(engine.StateNeedsHuman) || wave.Reason != string(engine.ReasonRetriesExhausted) {
+	if wave.State != string(engine.StateNeedsHuman) || wave.Reason != string(engine.ReasonProviderRetriesExhausted) {
 		t.Fatalf("wave 2 state = %s/%s", wave.State, wave.Reason)
 	}
 	if wave.AutoResumeAt != 9_999 {

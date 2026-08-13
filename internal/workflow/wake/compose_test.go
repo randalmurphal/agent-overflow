@@ -132,12 +132,13 @@ func TestComposeParkedRunNamesTheVerbThatRepairsIt(t *testing.T) {
 		{"gate", "park", "review-unresolved", "This is a park: route (\"review-unresolved\"): it declares no approve or reject, so `run resolve` does not apply."},
 		{"gate", "park", "review-unresolved", "`agent-overflow run resume \"run-11\"` re-enters the phase — an approvable park is authored as a human: route."},
 		{"gate", "", "", "If `agent-overflow run status \"run-11\"` shows the parked attempt's decision as human"},
-		// Two causes rest under this one reason, so the closing names both verbs:
-		// the continuation for the turn that died on the provider, and the fresh
-		// entry for the loop bound that ran out, which is the only form that
-		// refills one.
-		{"retries-exhausted", "", "", "`agent-overflow run resume \"run-11\"` continues the parked attempt on the provider session its last turn died in"},
-		{"retries-exhausted", "", "", "`agent-overflow run resume \"run-11\" --phase <phase-id>` naming an EARLIER phase is what re-enters the loop's target from outside the cycle"},
+		{"provider-retries-exhausted", "", "", "`agent-overflow run resume \"run-11\"` continues the parked attempt on the provider session its last turn died in"},
+		{"loop-limit-exhausted", "", "", "The workflow's loop limit is spent."},
+		{"loop-limit-exhausted", "", "", "`agent-overflow run resume \"run-11\" --phase <phase-id>` naming an EARLIER phase"},
+		// Legacy rows cannot be classified safely, so their repair names both
+		// possibilities and preserves the shipped bare-resume behavior.
+		{"retries-exhausted", "", "", "This run predates the separate provider-retry and loop-limit reasons."},
+		{"retries-exhausted", "", "", "`agent-overflow run resume \"run-11\"` preserves its original behavior and continues the parked attempt."},
 	} {
 		message := Compose(Input{Run: Run{
 			ItemID: "run-11", Goal: "g", WorkflowID: "w", State: "needs-human", Reason: test.reason,

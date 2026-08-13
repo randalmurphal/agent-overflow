@@ -72,7 +72,7 @@ func TestWorkflowReliabilityTransientDeathRetriesThenExhausts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	waitForWorkflowItem(t, app, item.ID, engine.StateNeedsHuman, engine.ReasonRetriesExhausted)
+	waitForWorkflowItem(t, app, item.ID, engine.StateNeedsHuman, engine.ReasonProviderRetriesExhausted)
 	data, err := os.ReadFile(counterPath)
 	if err != nil {
 		t.Fatal(err)

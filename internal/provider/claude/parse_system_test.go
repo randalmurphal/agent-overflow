@@ -95,6 +95,9 @@ func TestParseSystem_APIRetryTopLevelPayload(t *testing.T) {
 	if len(events) != 1 || events[0].Kind != provider.EventAPIRetry {
 		t.Fatalf("events = %+v, want one api_retry", events)
 	}
+	if events[0].Failure == nil || events[0].Failure.Class != provider.FailureTransient {
+		t.Fatalf("failure = %+v, want normalized transient", events[0].Failure)
+	}
 
 	var meta map[string]any
 	if err := json.Unmarshal(events[0].Meta, &meta); err != nil {
@@ -108,6 +111,17 @@ func TestParseSystem_APIRetryTopLevelPayload(t *testing.T) {
 	}
 	if meta["error"] != "rate_limit" {
 		t.Fatalf("error = %v, want rate_limit", meta["error"])
+	}
+}
+
+func TestParseSystem_APIRetryConnectionResetIsTransient(t *testing.T) {
+	line := []byte(`{"type":"system","subtype":"api_retry","data":{"attempt":1,"error":{"connection":{"code":"ECONNRESET"}}}}`)
+	events, err := ParseLine(testThread, line)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(events) != 1 || events[0].Failure == nil || events[0].Failure.Class != provider.FailureTransient {
+		t.Fatalf("events = %+v, want normalized transient", events)
 	}
 }
 

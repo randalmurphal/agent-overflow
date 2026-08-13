@@ -130,7 +130,7 @@ func (r *workflowAppRunner) scheduleTransientLocked(runKey string, attempt *work
 	attempt.turnStarted = false
 	attempt.currentTurnID = ""
 	attempt.pendingTransient = false
-	attempt.claudeTransientRetry = false
+	attempt.providerRetryHint = false
 	// Advancing the ladder retires whatever the previous state queued. This is the
 	// only place a rung is armed, so it is the only place the epoch has to move.
 	attempt.sendEpoch++
@@ -253,103 +253,22 @@ func (r *workflowAppRunner) stopAndFinishOffWire(runKey string, outcome engine.O
 	go r.stopAndFinish(runKey, outcome)
 }
 
-func workflowTransientError(providerName string, event provider.ProviderEvent, claudeRetryable bool) (transient, waitsForCompletion bool) {
-	if event.Kind != provider.EventError || len(event.Meta) == 0 {
+func workflowTransientError(event provider.ProviderEvent, providerRetryHint bool) (transient, waitsForCompletion bool) {
+	if event.Kind != provider.EventError || event.Failure == nil {
 		return false, false
 	}
-	var meta struct {
-		APIErrorEnum       string `json:"api_error_enum"`
-		ExpectTurnComplete bool   `json:"expect_turn_complete"`
-		Wire               struct {
-			Error struct {
-				CodexErrorInfo json.RawMessage `json:"codexErrorInfo"`
-			} `json:"error"`
-		} `json:"wire"`
-	}
-	if json.Unmarshal(event.Meta, &meta) != nil {
-		return false, false
-	}
-	switch providerName {
-	case string(provider.Claude):
-		if meta.APIErrorEnum == "rate_limit" || meta.APIErrorEnum == "server_error" && claudeRetryable {
-			return true, meta.ExpectTurnComplete
-		}
-	case string(provider.Codex):
-		// A Codex `error` notification is informational: the authoritative
-		// terminal signal is `turn/completed`, which core always emits and marks
-		// `failed` when the turn errored. Waiting for it is what keeps the ladder
-		// from arming while the turn is still alive — a retry sent into a live
-		// turn is absorbed as queued input and mints a turn id nothing ever
-		// starts, which is a permanent hang rather than a retry.
-		if codexTransientErrorInfo(meta.Wire.Error.CodexErrorInfo) {
-			return true, true
-		}
+	switch event.Failure.Class {
+	case provider.FailureTransient:
+		return true, event.Failure.WaitsForTurnComplete()
+	case provider.FailureTransientAfterRetry:
+		return providerRetryHint, providerRetryHint && event.Failure.WaitsForTurnComplete()
 	}
 	return false, false
 }
 
-func workflowClaudeTransientAPIRetry(event provider.ProviderEvent) bool {
-	if event.Kind != provider.EventAPIRetry || len(event.Meta) == 0 {
-		return false
-	}
-	var meta struct {
-		Wire json.RawMessage `json:"wire"`
-	}
-	if json.Unmarshal(event.Meta, &meta) != nil || len(meta.Wire) == 0 {
-		return false
-	}
-	var wire struct {
-		ErrorStatus int             `json:"error_status"`
-		Error       json.RawMessage `json:"error"`
-	}
-	if json.Unmarshal(meta.Wire, &wire) != nil {
-		return false
-	}
-	if wire.ErrorStatus == 529 {
-		return true
-	}
-	var detail struct {
-		Connection struct {
-			Code string `json:"code"`
-		} `json:"connection"`
-	}
-	return json.Unmarshal(wire.Error, &detail) == nil && detail.Connection.Code == "ECONNRESET"
-}
-
-func codexTransientErrorInfo(raw json.RawMessage) bool {
-	if len(raw) == 0 {
-		return false
-	}
-	var scalar string
-	if json.Unmarshal(raw, &scalar) == nil {
-		switch scalar {
-		case "serverOverloaded", "usageLimitExceeded":
-			return true
-		default:
-			return false
-		}
-	}
-	var object map[string]json.RawMessage
-	if json.Unmarshal(raw, &object) != nil || len(object) != 1 {
-		return false
-	}
-	for kind := range object {
-		switch kind {
-		case "httpConnectionFailed", "responseStreamConnectionFailed", "responseStreamDisconnected":
-			return true
-		}
-	}
-	return false
-}
-
-func workflowTransientTurnComplete(providerName string, event provider.ProviderEvent) bool {
-	if providerName != string(provider.Claude) || event.Kind != provider.EventTurnComplete || len(event.Raw) == 0 {
-		return false
-	}
-	var result struct {
-		TerminalReason string `json:"terminal_reason"`
-	}
-	return json.Unmarshal(event.Raw, &result) == nil && result.TerminalReason == "network_error"
+func workflowTransientTurnComplete(event provider.ProviderEvent) bool {
+	return event.Kind == provider.EventTurnComplete && event.Failure != nil &&
+		event.Failure.Class == provider.FailureTransient
 }
 
 func workflowTurnCompletedWithError(event provider.ProviderEvent) bool {

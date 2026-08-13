@@ -114,11 +114,14 @@ wakes the same ask (K2). See "Coalescing" below.
   keyed off `run status`'s decision= field), `run answer` for `question`
   (resolve/answer exist since D41; the closing also says a phase session needs
   the `resolve` grant and that the judgment must be the reader's to make), and
-  `run resume` for `retries-exhausted` — the turn died on a provider failure the
+  `run resume` for `provider-retries-exhausted` — the turn died on a provider failure the
   transient retries could not outlast, and the session it died in is where the
-  next one belongs (`retries-exhausted` IS a `ContinuableReason`) — with
-  `run resume --phase <phase-id>` named beside it, because a continuation refills
-  no loop budget and the same reason covers a spent loop bound, and
+  next one belongs (the reason IS a `ContinuableReason`) when that
+  provider context remains available, otherwise the round is reconstructed in
+  a new thread from its full persisted input; `loop-limit-exhausted` instead
+  names `run resume --phase <phase-id>` at an earlier phase because only an
+  outside entry refills its bound; legacy `retries-exhausted` names both
+  possibilities without guessing its source; and
   `run resume` for `stuck` — the phase said what it needs, and once that is
   cleared a bare resume enters the parked phase again as a FRESH attempt
   (`stuck` is not a `ContinuableReason`), with `--refresh-def` named alongside
@@ -182,7 +185,7 @@ wakes the same ask (K2). See "Coalescing" below.
   the clear on the app's serial wake queue — so a deferred record with
   nothing written yet leaves an action taken while the message was still
   queued with nothing to spend, and the record then lands *behind* it.
-  A bare `run resume` of a `retries-exhausted` run produces exactly that
+  A bare `run resume` of a `provider-retries-exhausted` run produces exactly that
   sequence: it continues the same attempt, so every signature field
   matches and the re-park would be suppressed forever. The claim is what
   the action spends, and the promotion is a compare-and-set against it

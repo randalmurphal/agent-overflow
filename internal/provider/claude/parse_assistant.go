@@ -233,12 +233,32 @@ func (p *Parser) parseAssistant(threadID string, raw map[string]json.RawMessage,
 			ThreadID:        threadID,
 			Content:         assistantErrorSummary(msg, errorEnum),
 			Meta:            errMeta,
+			Failure:         claudeAssistantFailure(errorEnum, parentToolUseID != ""),
 			ParentToolUseID: parentToolUseID,
 			Timestamp:       now,
 		})
 	}
 
 	return events, nil
+}
+
+func claudeAssistantFailure(errorEnum string, closesParentTurn bool) *provider.FailureMeta {
+	class := provider.FailureFatal
+	var reason provider.FailureReason
+	switch errorEnum {
+	case "rate_limit":
+		class = provider.FailureTransient
+		reason = provider.FailureReasonUsageLimit
+	case "server_error":
+		class = provider.FailureTransientAfterRetry
+	}
+	failure := &provider.FailureMeta{
+		Class: class, Boundary: provider.FailureBoundaryTurn, Reason: reason, Code: errorEnum,
+	}
+	if closesParentTurn {
+		failure.Scope = provider.FailureScopeParentTurn
+	}
+	return failure
 }
 
 // appendRecoveredBlockEvent emits a completed-block event for a

@@ -78,6 +78,7 @@ func startMock(t *testing.T, args, extraEnv []string, dir string) *mockProc {
 	for _, kv := range os.Environ() {
 		if strings.HasPrefix(kv, control.EnvAddr+"=") ||
 			strings.HasPrefix(kv, control.EnvToken+"=") ||
+			strings.HasPrefix(kv, control.EnvTranscriptHome+"=") ||
 			strings.HasPrefix(kv, envScenarioFile+"=") ||
 			strings.HasPrefix(kv, envFixtureRoot+"=") {
 			continue
@@ -123,6 +124,33 @@ func startMock(t *testing.T, args, extraEnv []string, dir string) *mockProc {
 		}
 	})
 	return p
+}
+
+func TestClaudeHarnessTranscriptIsDurableBeforeTheEcho(t *testing.T) {
+	home := t.TempDir()
+	env := append(writeScenarioFile(t, claudeTwoTurnScenario(), ""),
+		control.EnvTranscriptHome+"="+home)
+	args := append(append([]string(nil), claudeSessionArgs...), "--resume", "sess-durable")
+	p := startMock(t, args, env, t.TempDir())
+
+	p.send(userLine)
+	p.expectLineContaining(`"subtype":"init"`, testTimeout)
+	p.expectLineContaining(`"type":"user"`, testTimeout)
+
+	path := filepath.Join(home, ".claude", "projects", "mock", "sess-durable.jsonl")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read transcript after visible echo: %v", err)
+	}
+	var row map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(data), &row); err != nil {
+		t.Fatalf("decode transcript row: %v", err)
+	}
+	if row["type"] != "user" || row["uuid"] == "" {
+		t.Fatalf("transcript row = %+v, want a resumable user leaf", row)
+	}
+
+	p.closeStdinAndExpectExit(0, testTimeout)
 }
 
 func newTestLineReader(r io.Reader) func() (string, error) {

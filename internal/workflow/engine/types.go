@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 
@@ -24,6 +25,12 @@ var ErrSetupFailed = errors.New("workflow setup failed")
 // reason, the same reason a gate that matched nothing parks with.
 var ErrWiringFailed = errors.New("workflow wiring failed")
 
+// ErrProviderContextUnavailable means a runner proved that a selected prior
+// provider context no longer exists. It is not an agent failure: the engine
+// supersedes the unsent continuation or warm reuse and reconstructs its logical
+// round in a fresh provider session with a full prompt.
+var ErrProviderContextUnavailable = errors.New("workflow provider context unavailable")
+
 type State string
 
 // A run has no queued state: admitting an item starts it. Contention is a
@@ -39,21 +46,28 @@ const (
 type Reason string
 
 const (
-	ReasonGate               Reason = "gate"
-	ReasonQuestion           Reason = "question"
-	ReasonStuck              Reason = "stuck"
-	ReasonStalled            Reason = "stalled"
-	ReasonBudgetExhausted    Reason = "budget-exhausted"
-	ReasonRetriesExhausted   Reason = "retries-exhausted"
-	ReasonCheckFailedGenuine Reason = "check-failed-genuine"
-	ReasonAgentError         Reason = "agent-error"
-	ReasonWiringError        Reason = "wiring-error"
-	ReasonDisposition        Reason = "disposition"
-	ReasonSetupFailed        Reason = "setup-failed"
-	ReasonInterrupted        Reason = "interrupted"
-	ReasonTakenOver          Reason = "taken-over"
-	ReasonUnitFailed         Reason = "unit-failed"
-	ReasonChildFailed        Reason = "child-failed"
+	ReasonGate            Reason = "gate"
+	ReasonQuestion        Reason = "question"
+	ReasonStuck           Reason = "stuck"
+	ReasonStalled         Reason = "stalled"
+	ReasonBudgetExhausted Reason = "budget-exhausted"
+	// ReasonRetriesExhausted is the legacy, ambiguous spelling used before
+	// provider retry exhaustion and workflow loop exhaustion were separated.
+	// Existing persisted runs keep it because their original cause cannot be
+	// reconstructed reliably; new transitions must use one of the two specific
+	// reasons below.
+	ReasonRetriesExhausted         Reason = "retries-exhausted"
+	ReasonProviderRetriesExhausted Reason = "provider-retries-exhausted"
+	ReasonLoopLimitExhausted       Reason = "loop-limit-exhausted"
+	ReasonCheckFailedGenuine       Reason = "check-failed-genuine"
+	ReasonAgentError               Reason = "agent-error"
+	ReasonWiringError              Reason = "wiring-error"
+	ReasonDisposition              Reason = "disposition"
+	ReasonSetupFailed              Reason = "setup-failed"
+	ReasonInterrupted              Reason = "interrupted"
+	ReasonTakenOver                Reason = "taken-over"
+	ReasonUnitFailed               Reason = "unit-failed"
+	ReasonChildFailed              Reason = "child-failed"
 	// ReasonPaused is a deliberate stop — the human pause action or the
 	// graceful-quit path. It resumes exactly like ReasonInterrupted; the
 	// distinct reason is what tells a human whether the run stopped on purpose
@@ -74,7 +88,7 @@ const (
 var (
 	resumableReasons   = []Reason{ReasonPaused, ReasonInterrupted, ReasonCheckpoint}
 	continuableReasons = append(append([]Reason(nil), resumableReasons...),
-		ReasonUnitFailed, ReasonRetriesExhausted)
+		ReasonUnitFailed, ReasonProviderRetriesExhausted, ReasonRetriesExhausted)
 )
 
 // ResumableReason reports whether a park continues where it stopped rather than
@@ -93,8 +107,9 @@ func ResumableReason(reason Reason) bool {
 //
 //   - `unit-failed` rests on a fan-out whose finished units — and the call
 //     children they ran — are exactly what re-expansion would redo.
-//   - `retries-exhausted` rests on a phase whose turn DIED mid-flight, after the
-//     runner's transient-retry layer gave up on a provider API failure. Nothing
+//   - `provider-retries-exhausted` rests on a phase whose turn DIED mid-flight,
+//     after the runner's transient-retry layer gave up on a provider API
+//     failure. Nothing
 //     stopped it on purpose, which is why it reads like a fault and was entered
 //     fresh for so long — but the session it died in is still there, holding the
 //     context of a turn that may have run for many minutes, and both halves of
@@ -106,13 +121,11 @@ func ResumableReason(reason Reason) bool {
 // Naming a phase is always the fresh entry, including when the phase named is
 // the parked one; that is the whole meaning of `run resume --phase <id>`.
 //
-// `retries-exhausted` is also the reason a spent loop or reject bound parks
-// under (`def.DecisionRetriesExhausted`), and a continuation refills no bound.
-// Neither did the fresh entry a bare resume used to take: re-entering the phase
-// that parked is not an entry from OUTSIDE its cycle, so `freshLoopEntry` never
-// refilled it either. Only `--phase <id>` naming an EARLIER phase — the loop's
-// target, entered from outside the cycle — gives a bound back, which is what
-// every repair surface names alongside the continuation.
+// Legacy `retries-exhausted` rows remain continuable because that was their
+// shipped recovery contract and their original cause is not reconstructible.
+// A new `loop-limit-exhausted` park is intentionally not in this set: it has no
+// dead provider turn to continue. Re-entering an earlier phase with `--phase`
+// is what enters the cycle from outside and refills its bound.
 //
 // It is deliberately NOT what decides whether a resume cascades into a parked
 // DESCENDANT. A child resting `unit-failed` needs a human's judgment about its
@@ -187,15 +200,77 @@ const (
 	UnitJoin UnitKind = "join"
 )
 
-// PromptMode says whether a runner starts a new logical task or continues the
-// task already present in a provider session. It is independent of thread
-// reuse: a warm loop round can reuse a thread while still requiring Full.
-type PromptMode string
+type turnLaunchKind uint8
 
 const (
-	PromptFull     PromptMode = "full"
-	PromptContinue PromptMode = "continue"
+	turnLaunchFresh turnLaunchKind = iota
+	turnLaunchReuse
+	turnLaunchContinue
+	turnLaunchFinalize
 )
+
+// TurnLaunch is the complete provider-context decision for one runner start.
+// Its fields are private so a caller cannot express the invalid combinations
+// the former PriorThreadID + PromptMode + FinalizeTakeover fields allowed.
+//
+// The zero value is a fresh provider thread with a full prompt. ReuseThread
+// keeps a provider thread for a new logical task and therefore still sends a
+// full prompt. ContinueThread resumes the task already in that provider thread
+// and sends only the continuation delta. FinalizeThread is the same-context
+// takeover completion whose dedicated prompt and schema reattachment must not
+// be expressible on any other launch.
+type TurnLaunch struct {
+	kind     turnLaunchKind
+	threadID string
+}
+
+func FreshTurn() TurnLaunch { return TurnLaunch{} }
+
+func ReuseThread(threadID string) (TurnLaunch, error) {
+	return turnLaunch(turnLaunchReuse, threadID)
+}
+
+func ContinueThread(threadID string) (TurnLaunch, error) {
+	return turnLaunch(turnLaunchContinue, threadID)
+}
+
+func FinalizeThread(threadID string) (TurnLaunch, error) {
+	return turnLaunch(turnLaunchFinalize, threadID)
+}
+
+func turnLaunch(kind turnLaunchKind, threadID string) (TurnLaunch, error) {
+	threadID = strings.TrimSpace(threadID)
+	if threadID == "" {
+		return TurnLaunch{}, errors.New("workflow turn launch: reused thread id is required")
+	}
+	return TurnLaunch{kind: kind, threadID: threadID}, nil
+}
+
+func (l TurnLaunch) ThreadID() string { return l.threadID }
+
+func (l TurnLaunch) ReusesThread() bool { return l.kind != turnLaunchFresh }
+
+func (l TurnLaunch) ContinuesThread() bool {
+	return l.kind == turnLaunchContinue || l.kind == turnLaunchFinalize
+}
+
+func (l TurnLaunch) FinalizesTakeover() bool { return l.kind == turnLaunchFinalize }
+
+func (l TurnLaunch) Validate() error {
+	switch l.kind {
+	case turnLaunchFresh:
+		if l.threadID != "" {
+			return errors.New("workflow turn launch: a fresh turn cannot name a prior thread")
+		}
+	case turnLaunchReuse, turnLaunchContinue, turnLaunchFinalize:
+		if strings.TrimSpace(l.threadID) == "" {
+			return errors.New("workflow turn launch: reused thread id is required")
+		}
+	default:
+		return fmt.Errorf("workflow turn launch: unknown kind %d", l.kind)
+	}
+	return nil
+}
 
 // RunRequest contains the immutable workflow snapshot plus phase-local input.
 // Unit, UnitIndex, UnitKind, and UnitAttempt are set exactly when Key.UnitID
@@ -206,8 +281,9 @@ type RunRequest struct {
 	Key      RunKey         `json:"key"`
 	Item     store.WorkItem `json:"item"`
 	Workflow def.Workflow   `json:"workflow"`
-	// Guidance is the operator guidance this phase entry delivered, empty on
-	// every attempt that is not a delivery boundary. It rides the request rather
+	// Guidance is the operator guidance this turn must render. It is empty for a
+	// same-context continuation, inherited for a reconstructed round, and newly
+	// delivered on a fresh phase boundary. It rides the request rather
 	// than the feedback because it is a different thing said by a different
 	// author: feedback is the gate's own words to the next round, and this is a
 	// person's, quoted as untrusted data by the prompt that renders it. A
@@ -227,16 +303,14 @@ type RunRequest struct {
 	// a `prompt:` override. The substitution happens here, at the single point
 	// the request is built, so no consumer can render a phase's body while a
 	// route override was in force — and every other field is the snapshot's.
-	Phase            def.Phase      `json:"phase"`
-	Unit             *def.Unit      `json:"unit,omitempty"`
-	UnitIndex        int            `json:"unitIndex,omitempty"`
-	UnitKind         UnitKind       `json:"unitKind,omitempty"`
-	UnitAttempt      int            `json:"unitAttempt,omitempty"`
-	Vars             map[string]any `json:"vars"`
-	Feedback         *Feedback      `json:"feedback,omitempty"`
-	PriorThreadID    string         `json:"priorThreadId,omitempty"`
-	PromptMode       PromptMode     `json:"promptMode"`
-	FinalizeTakeover bool           `json:"finalizeTakeover,omitempty"`
+	Phase       def.Phase      `json:"phase"`
+	Unit        *def.Unit      `json:"unit,omitempty"`
+	UnitIndex   int            `json:"unitIndex,omitempty"`
+	UnitKind    UnitKind       `json:"unitKind,omitempty"`
+	UnitAttempt int            `json:"unitAttempt,omitempty"`
+	Vars        map[string]any `json:"vars"`
+	Feedback    *Feedback      `json:"feedback,omitempty"`
+	Launch      TurnLaunch
 }
 
 type Feedback struct {
@@ -259,11 +333,11 @@ type PhaseInput struct {
 	// human asking what an attempt actually ran — without copying a prompt file
 	// into every attempt row.
 	PromptRoute *PromptRoute `json:"promptRoute,omitempty"`
-	// Guidance is the operator guidance delivered at this attempt's entry. It is
-	// persisted with the attempt because the slot it came from is cleared the
-	// moment it is delivered: this row is then the only record that the round
-	// ran with a person's instruction in it, which is exactly what someone
-	// reading back a surprising attempt needs.
+	// Guidance is the operator guidance belonging to this logical round. A
+	// same-context continuation preserves it here for provenance and possible
+	// reconstruction without rendering the block again; a fresh or reconstructed
+	// turn does render it. Once the pending slot is cleared, this is the durable
+	// record of the instruction the round ran under.
 	Guidance []GuidanceEntry `json:"guidance,omitempty"`
 }
 
@@ -657,8 +731,8 @@ type persistence interface {
 	FailRunningWorkItemUnits(string, string, int, string, int64) (int64, error)
 	ListWorkItemPhaseUnits(string, string, int) ([]store.WorkItemUnit, error)
 	ListProjects() ([]store.Project, error)
-	// ThreadCanResume tells the engine whether a parked AO thread has a provider
-	// session cursor. Existence alone is insufficient: a thread that never
-	// reached provider init has no context for a short continuation prompt.
-	ThreadCanResume(string) (bool, error)
+	// ThreadExists is only the cheap persisted target check for reuse. The runner
+	// proves provider context from either a live process or a durable cursor
+	// before it sends anything.
+	ThreadExists(string) (bool, error)
 }

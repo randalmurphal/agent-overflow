@@ -78,7 +78,7 @@ func (r *workflowAppRunner) startUnit(ctx context.Context, request engine.RunReq
 		return err
 	}
 	if driver == def.DriverTool {
-		if request.FinalizeTakeover {
+		if request.Launch.FinalizesTakeover() {
 			return fmt.Errorf("workflow runner: tool %s cannot finalize a takeover", plan.label)
 		}
 		return r.startToolUnit(ctx, request, unit, plan, complete)
@@ -264,38 +264,6 @@ func (r *workflowAppRunner) startAgentUnit(
 		effort: unit.Effort,
 		access: unit.EffectiveAccess(), workspace: plan.workspace,
 	}
-	threadID := request.PriorThreadID
-	createdThread := false
-	if threadID == "" {
-		thread, createErr := r.app.createWorkflowThread(spec)
-		if createErr != nil {
-			return createErr
-		}
-		threadID = thread.ID
-		createdThread = true
-	} else {
-		prior, validateErr := r.validatePriorThread(spec, threadID)
-		if validateErr != nil {
-			return validateErr
-		}
-		if request.PromptMode == engine.PromptContinue && prior.ResolvedSessionRef() == "" {
-			return fmt.Errorf("workflow runner: prior thread %q has no provider session to continue", threadID)
-		}
-	}
-	discardThread := func(cause error) error {
-		if !createdThread {
-			return cause
-		}
-		return errors.Join(cause, r.app.store.DeleteThread(threadID))
-	}
-	if err := ctx.Err(); err != nil {
-		return discardThread(fmt.Errorf("workflow runner: startup cancelled: %w", err))
-	}
-	if err := r.attachUnitRun(request.Key, plan, threadID); err != nil {
-		return discardThread(err)
-	}
-
-	var prompt string
 	promptContext := r.app.workflowPromptAncestry(request.Key.ItemID, request.Workflow)
 	promptContext.NarrativePath = plan.narrativePath
 	promptContext.Access = unit.EffectiveAccess()
@@ -303,22 +271,23 @@ func (r *workflowAppRunner) startAgentUnit(
 	// post-validated against, and is told it whichever way its turn is entered:
 	// a takeover finalize answers the same contract its first try did.
 	promptContext.AccountsForUnits, promptContext.AccountedUnits = plan.accountsForUnits, plan.accountedUnits
-	if request.FinalizeTakeover {
-		prompt, err = workflowrunner.BuildTakeoverFinalizePrompt(promptContext)
-	} else if request.PromptMode == engine.PromptContinue {
-		promptContext.Feedback = request.Feedback
-		prompt, err = workflowrunner.BuildContinuationPrompt(promptContext)
-	} else {
-		promptContext.Feedback, promptContext.Guidance = request.Feedback, request.Guidance
-		prompt, err = workflowrunner.BuildUnitPrompt(unit, plan.declarations, request.Vars, promptContext)
-	}
+	prepared, err := r.prepareAgentTurn(ctx, workflowAgentTurnPlan{
+		request: request, thread: spec, schema: schema,
+		promptContext: promptContext,
+		buildFull: func(context workflowrunner.PromptContext) (string, error) {
+			return workflowrunner.BuildUnitPrompt(unit, plan.declarations, request.Vars, context)
+		},
+		attach: func(threadID string) error { return r.attachUnitRun(request.Key, plan, threadID) },
+	})
 	if err != nil {
-		return discardThread(err)
+		return err
 	}
-	if request.FinalizeTakeover && unit.Provider == string(provider.Claude) {
-		if err := r.restartClaudeTakeoverWithSchema(threadID, schema); err != nil {
-			return err
+	if request.Launch.FinalizesTakeover() && unit.Provider == string(provider.Claude) && !prepared.startedSession {
+		restarted, err := r.restartClaudeTakeoverWithSchema(prepared.threadID, schema)
+		if err != nil {
+			return prepared.discard(r, err)
 		}
+		prepared.startedSession = restarted
 	}
 	attempt := &workflowAttempt{
 		workflowCompletion: workflowCompletion{
@@ -326,12 +295,12 @@ func (r *workflowAppRunner) startAgentUnit(
 			narrativePath: plan.narrativePath,
 			workspace:     plan.workspace.path, projectPath: plan.workspace.project.Path,
 		},
-		threadID: threadID,
+		threadID: prepared.threadID,
 		schema:   append(json.RawMessage(nil), schema...), contract: plan.contract,
 		provider: unit.Provider, phase: request.Phase, complete: complete,
-		currentPrompt: prompt, watchdog: watchdog, backoff: backoff,
+		currentPrompt: prepared.prompt, watchdog: watchdog, backoff: backoff,
 	}
-	return r.installAttempt(ctx, attempt, createdThread)
+	return r.installAttempt(ctx, attempt, prepared)
 }
 
 // startToolUnit runs one unit as a deterministic command through the same
@@ -386,18 +355,18 @@ func (r *workflowAppRunner) startToolUnit(
 // continuation (Answer, CompleteTakeover) looks for a thread there. Without it a
 // fan-out attempt could park on a question with nothing to answer it on.
 func (r *workflowAppRunner) attachUnitRun(key engine.RunKey, plan workflowUnitPlan, threadID string) error {
-	if err := r.app.store.AttachWorkItemUnitRun(
-		key.ItemID, key.PhaseID, key.Attempt, key.UnitID, threadID, plan.narrativePath,
-	); err != nil {
+	var err error
+	if plan.kind == engine.UnitJoin {
+		err = r.app.store.AttachWorkItemJoinRun(
+			key.ItemID, key.PhaseID, key.Attempt, key.UnitID, threadID, plan.narrativePath,
+		)
+	} else {
+		err = r.app.store.AttachWorkItemUnitRun(
+			key.ItemID, key.PhaseID, key.Attempt, key.UnitID, threadID, plan.narrativePath,
+		)
+	}
+	if err != nil {
 		return fmt.Errorf("workflow runner: attach %s run: %w", plan.label, err)
-	}
-	if plan.kind != engine.UnitJoin {
-		return nil
-	}
-	if err := r.app.store.AttachWorkItemPhaseRun(
-		key.ItemID, key.PhaseID, key.Attempt, threadID, plan.narrativePath,
-	); err != nil {
-		return fmt.Errorf("workflow runner: attach %s to its phase attempt: %w", plan.label, err)
 	}
 	return nil
 }

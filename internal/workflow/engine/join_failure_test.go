@@ -187,8 +187,8 @@ func TestResumeOnAFailedJoinContinuesTheAttempt(t *testing.T) {
 		"wave-join":   store.WorkItemUnitRunning,
 	})
 	rerun := h.runner.startFor(t, unitKey(parent, "wave", 1, "wave-join"))
-	if rerun.PriorThreadID != "join-thread" {
-		t.Fatalf("join prior thread = %q, want the session the attempt parked on", rerun.PriorThreadID)
+	if rerun.Launch.ThreadID() != "join-thread" {
+		t.Fatalf("join prior thread = %q, want the session the attempt parked on", rerun.Launch.ThreadID())
 	}
 	if rerun.Feedback == nil || !strings.Contains(rerun.Feedback.Note, "unit of the fan-out failed") {
 		t.Fatalf("join feedback = %+v, want the resume note naming why it parked", rerun.Feedback)

@@ -1743,7 +1743,7 @@ CREATE TABLE thread_import_state (
 		// It is written when a provider refuses a turn because the account's
 		// usage allowance is spent AND says when that allowance comes back: the
 		// transient-retry ladder cannot clear a limit that resets in days, so the
-		// run parks `retries-exhausted` immediately and comes back at the stated
+		// run parks `provider-retries-exhausted` immediately and comes back at the stated
 		// moment instead of waiting for a human to notice. `agent-overflow run
 		// resume --at` arms the same column by hand.
 		//
@@ -1824,7 +1824,51 @@ CREATE TABLE store_meta (
 ` + historyRevTriggersSQL,
 		Fix: mintStoreIdentity,
 	},
+	{
+		Version: 56,
+		Name:    "work_item_retry_reasons",
+		// The old `retries-exhausted` reason represented two unrelated limits:
+		// the provider retry ladder and a workflow loop/reject bound. They have
+		// different recovery edges, so new runs need distinct persisted reasons.
+		//
+		// Existing rows keep the legacy value. The phase cause is optional and
+		// free-form, so rewriting those rows would guess at their history. Keeping
+		// the old spelling in the CHECK also preserves their shipped bare-resume
+		// behavior while all new engine transitions write a specific reason.
+		//
+		// SQLite cannot widen a CHECK in place. This rebuild is derived from v44,
+		// the latest work_items rebuild, and explicitly carries the four columns
+		// added since that schema text: soft_stop, wake_signature,
+		// pending_guidance, and auto_resume_at.
+		SQL:     rebuildWorkItemRetryReasonsV56SQL,
+		Rebuild: true,
+	},
 }
+
+var rebuildWorkItemRetryReasonsV56SQL = mustReplaceOnce(
+	mustReplaceOnce(
+		mustReplaceOnce(
+			mustReplaceOnce(
+				rebuildWorkItemsSoftStopV44SQL,
+				workItemsReasonCheckV44, workItemsReasonCheckV56,
+			),
+			"    soft_stop        INTEGER NOT NULL DEFAULT 0 CHECK(soft_stop IN (0,1)),",
+			"    soft_stop        INTEGER NOT NULL DEFAULT 0 CHECK(soft_stop IN (0,1)),\n"+
+				"    wake_signature   TEXT    NOT NULL DEFAULT '',\n"+
+				"    pending_guidance  TEXT    NOT NULL DEFAULT '',\n"+
+				"    auto_resume_at    INTEGER NOT NULL DEFAULT 0,",
+		),
+		workItemsCopyColumnsV44+"\n)",
+		workItemsCopyColumnsV56+"\n)",
+	),
+	workItemsCopyColumnsV44+"\nFROM work_items;",
+	workItemsCopyColumnsV56+"\nFROM work_items;",
+)
+
+const workItemsCopyColumnsV56 = workItemsCopyColumnsV44 + `,
+    soft_stop, wake_signature, pending_guidance, auto_resume_at`
+
+const workItemsReasonCheckV56 = `reason           TEXT    NOT NULL DEFAULT '' CHECK(reason IN ('','gate','question','stuck','stalled','budget-exhausted','retries-exhausted','provider-retries-exhausted','loop-limit-exhausted','check-failed-genuine','agent-error','wiring-error','disposition','setup-failed','interrupted','taken-over','unit-failed','child-failed','paused','checkpoint')),`
 
 // rebuildWorkItemsSoftStopV44SQL adds `soft_stop` — a standing request to stop
 // this run tree at its next call boundary — and widens the typed park reason

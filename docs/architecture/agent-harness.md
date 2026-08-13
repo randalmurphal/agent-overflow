@@ -212,6 +212,10 @@ lifecycle:
 2. **User envelopes echo back** with `isReplay: true`
    (`--replay-user-messages`), which resolves the pending send and
    stamps the item's provider id.
+3. **Each accepted user envelope appends a minimal provider transcript** under
+   the harness's redirected `.claude` home. This is durable mock context, not
+   app state: restarting the backend against the same data root exercises the
+   production cold-resume preflight without reading a real provider home.
 
 Scenarios must still frame their own assistant content: a
 `stream_event message_start` carrying the assistant message id before
@@ -281,7 +285,12 @@ with `rpc(method, ...params)`, `waitForEvent(channel, predicate?)`
 (scans history first — a fast backend can't win the race — and
 consumes its match, so two identical waits observe two distinct
 occurrences), `reset()`, and `close()`. `e2e/tests/fixtures.ts` shares one backend per
-Playwright worker and resets between tests. `e2e/tests/harness.spec.ts`
+Playwright worker and resets between tests. The returned client also exposes
+`stop()` (graceful, preserving the data root), `crash()` (SIGKILL, also
+preserving it), and `close()` (stop plus owned-root cleanup). Restart specs can
+therefore launch a second backend over the first one's durable state and prove
+cold provider recovery instead of simulating it inside one process.
+`e2e/tests/harness.spec.ts`
 covers boot, seeded rendering, a full live mock turn, frame-by-frame
 `step-gated` advancement, and reset. `e2e/tests/workflows.spec.ts` covers a
 two-phase chain, human gate approval, same-session question answering,
@@ -289,7 +298,9 @@ watchdog stall, and cancellation; the rest of the workflow surface is split by
 concern across `workflows-rerun`, `workflows-tool`, `workflows-access`,
 `workflows-fanout`, `workflows-call`, `workflows-wake`,
 `workflows-automations`, `workflows-cli`, and
-`workflows-overlay` (see `e2e/AGENTS.md` for what each one pins).
+`workflows-overlay`, and `workflows-resume` (same-context, missing-context, and
+cold-backend-restart behavior for both providers; see `e2e/AGENTS.md` for what
+each one pins).
 `e2e/tests/session-import.spec.ts` drives session import end to end against
 hand-written provider homes written into the harness's redirected `HOME`
 (`session-import-fixtures.ts`) — the seeding pattern for anything that reads

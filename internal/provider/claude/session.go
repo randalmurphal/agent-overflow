@@ -1240,6 +1240,7 @@ func (s *Session) readLoop() {
 					ThreadID:  s.threadID,
 					Content:   fmt.Sprintf("claude: read error: %v", err),
 					Meta:      meta,
+					Failure:   &provider.FailureMeta{Class: provider.FailureFatal, Boundary: provider.FailureBoundaryEvent},
 					Timestamp: time.Now(),
 				})
 			}
@@ -1267,6 +1268,7 @@ func (s *Session) readLoop() {
 							ThreadID:  s.threadID,
 							Content:   fmt.Sprintf("%s: %v", fatalMessage, err),
 							Meta:      meta,
+							Failure:   &provider.FailureMeta{Class: provider.FailureFatal, Boundary: provider.FailureBoundaryEvent},
 							Timestamp: time.Now(),
 						})
 						_ = s.proc.Close()
@@ -1424,6 +1426,7 @@ func (s *Session) emitReplayParentError(message string) {
 		ThreadID:  s.threadID,
 		Content:   message,
 		Meta:      meta,
+		Failure:   &provider.FailureMeta{Class: provider.FailureFatal, Boundary: provider.FailureBoundaryEvent},
 		Timestamp: time.Now(),
 	})
 	if s.proc != nil {

@@ -46,7 +46,7 @@ func TestWorkflowReliabilityResolutionPrecedenceAndDefaults(t *testing.T) {
 	runner := newWorkflowAppRunner(&App{}, t.TempDir(), staticWorkflowProfileSource{value: &profile.Profile{}})
 	request := engine.RunRequest{
 		Item: store.WorkItem{ProjectID: "project"}, Phase: def.Phase{ID: "phase"},
-		PromptMode: engine.PromptFull,
+		Launch: engine.FreshTurn(),
 	}
 	watchdog, backoff, err := runner.reliability(t.Context(), request)
 	if err != nil {
@@ -112,61 +112,37 @@ func TestFailedTakeoverStopRestoresBackoffTimer(t *testing.T) {
 
 func TestWorkflowTransientSignalAllowlist(t *testing.T) {
 	tests := []struct {
-		name      string
-		provider  string
-		meta      string
-		transient bool
-		waits     bool
+		name          string
+		failure       *provider.FailureMeta
+		providerRetry bool
+		transient     bool
+		waits         bool
 	}{
-		{name: "claude rate limit", provider: string(provider.Claude), meta: `{"api_error_enum":"rate_limit","fatal":true,"expect_turn_complete":true}`, transient: true, waits: true},
-		{name: "claude server error without typed precursor excluded", provider: string(provider.Claude), meta: `{"api_error_enum":"server_error","fatal":true,"expect_turn_complete":true}`},
-		{name: "claude signal excluded for codex", provider: string(provider.Codex), meta: `{"api_error_enum":"rate_limit","fatal":true,"expect_turn_complete":true}`},
-		// Every codex signal waits for `turn/completed`: the error notification is
-		// informational and core always terminates the turn, so acting on the
-		// notification arms the ladder while the turn is still alive.
-		{name: "codex overloaded", provider: string(provider.Codex), meta: `{"fatal":true,"wire":{"error":{"codexErrorInfo":"serverOverloaded"}}}`, transient: true, waits: true},
-		{name: "codex usage limit", provider: string(provider.Codex), meta: `{"fatal":true,"wire":{"error":{"codexErrorInfo":"usageLimitExceeded"}}}`, transient: true, waits: true},
-		{name: "codex http connection", provider: string(provider.Codex), meta: `{"fatal":true,"wire":{"error":{"codexErrorInfo":{"httpConnectionFailed":{"httpStatusCode":503}}}}}`, transient: true, waits: true},
-		{name: "codex stream connection", provider: string(provider.Codex), meta: `{"fatal":true,"wire":{"error":{"codexErrorInfo":{"responseStreamConnectionFailed":{"httpStatusCode":429}}}}}`, transient: true, waits: true},
-		{name: "codex stream disconnected", provider: string(provider.Codex), meta: `{"fatal":true,"wire":{"error":{"codexErrorInfo":{"responseStreamDisconnected":{"httpStatusCode":null}}}}}`, transient: true, waits: true},
-		{name: "codex signal excluded for claude", provider: string(provider.Claude), meta: `{"fatal":true,"wire":{"error":{"codexErrorInfo":"serverOverloaded"}}}`},
-		{name: "codex internal server excluded", provider: string(provider.Codex), meta: `{"fatal":true,"wire":{"error":{"codexErrorInfo":"internalServerError"}}}`},
-		{name: "codex unknown excluded", provider: string(provider.Codex), meta: `{"fatal":true,"wire":{"error":{"codexErrorInfo":"other"}}}`},
-		{name: "malformed excluded", provider: string(provider.Claude), meta: `{`},
+		{name: "missing classification"},
+		{name: "fatal", failure: &provider.FailureMeta{Class: provider.FailureFatal, Boundary: provider.FailureBoundaryEvent}},
+		{name: "transient immediate", failure: &provider.FailureMeta{Class: provider.FailureTransient}, transient: true},
+		{name: "transient after turn", failure: &provider.FailureMeta{Class: provider.FailureTransient, Boundary: provider.FailureBoundaryTurn}, transient: true, waits: true},
+		{name: "conditional without retry hint", failure: &provider.FailureMeta{Class: provider.FailureTransientAfterRetry, Boundary: provider.FailureBoundaryTurn}},
+		{name: "conditional with retry hint", failure: &provider.FailureMeta{Class: provider.FailureTransientAfterRetry, Boundary: provider.FailureBoundaryTurn}, providerRetry: true, transient: true, waits: true},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			transient, waits := workflowTransientError(tc.provider, provider.ProviderEvent{Kind: provider.EventError, Meta: json.RawMessage(tc.meta)}, false)
+			transient, waits := workflowTransientError(provider.ProviderEvent{
+				Kind: provider.EventError, Failure: tc.failure,
+			}, tc.providerRetry)
 			if transient != tc.transient || waits != tc.waits {
 				t.Fatalf("classification = (%v, %v), want (%v, %v)", transient, waits, tc.transient, tc.waits)
 			}
 		})
 	}
 
-	serverError := provider.ProviderEvent{Kind: provider.EventError, Meta: json.RawMessage(`{"api_error_enum":"server_error","expect_turn_complete":true}`)}
-	if transient, waits := workflowTransientError(string(provider.Claude), serverError, true); !transient || !waits {
-		t.Fatalf("Claude server error after typed precursor = (%v, %v)", transient, waits)
-	}
-	for _, meta := range []string{
-		`{"wire":{"error_status":529}}`,
-		`{"wire":{"error":{"connection":{"code":"ECONNRESET"}}}}`,
-	} {
-		if !workflowClaudeTransientAPIRetry(provider.ProviderEvent{Kind: provider.EventAPIRetry, Meta: json.RawMessage(meta)}) {
-			t.Fatalf("Claude api_retry %s was not transient", meta)
-		}
-	}
-	if workflowClaudeTransientAPIRetry(provider.ProviderEvent{Kind: provider.EventAPIRetry, Meta: json.RawMessage(`{"wire":{"error_status":500}}`)}) {
-		t.Fatal("ambiguous Claude api_retry was transient")
-	}
-
-	if !workflowTransientTurnComplete(string(provider.Claude), provider.ProviderEvent{Kind: provider.EventTurnComplete, Raw: json.RawMessage(`{"terminal_reason":"network_error"}`)}) {
+	if !workflowTransientTurnComplete(provider.ProviderEvent{
+		Kind: provider.EventTurnComplete, Failure: &provider.FailureMeta{Class: provider.FailureTransient},
+	}) {
 		t.Fatal("Claude network_error terminal reason was not transient")
 	}
-	if workflowTransientTurnComplete(string(provider.Claude), provider.ProviderEvent{Kind: provider.EventTurnComplete, Raw: json.RawMessage(`{"terminal_reason":"timeout"}`)}) {
-		t.Fatal("ambiguous Claude timeout was transient")
-	}
-	if workflowTransientTurnComplete(string(provider.Codex), provider.ProviderEvent{Kind: provider.EventTurnComplete, Raw: json.RawMessage(`{"terminal_reason":"network_error"}`)}) {
-		t.Fatal("Claude terminal shape was accepted for Codex")
+	if workflowTransientTurnComplete(provider.ProviderEvent{Kind: provider.EventTurnComplete}) {
+		t.Fatal("unclassified turn completion was transient")
 	}
 }
 

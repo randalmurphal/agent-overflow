@@ -39,6 +39,8 @@ export type WorkflowRunReason =
   | 'stalled'
   | 'budget-exhausted'
   | 'retries-exhausted'
+  | 'provider-retries-exhausted'
+  | 'loop-limit-exhausted'
   | 'check-failed-genuine'
   | 'agent-error'
   | 'wiring-error'

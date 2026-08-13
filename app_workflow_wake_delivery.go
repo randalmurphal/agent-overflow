@@ -143,7 +143,7 @@ func (a *App) wakeAlreadyDelivered(item store.WorkItem, signature string) bool {
 // so without a claim, an action taken while the message was still queued would
 // find nothing to spend, the record would land after it, and the next identical
 // park would be suppressed forever. That is exactly the sequence a bare `run
-// resume` of a retries-exhausted run produces: it continues the same attempt,
+// resume` of a provider-retries-exhausted run produces: it continues the same attempt,
 // so every field of the signature matches.
 //
 // The invalidation lives WHERE THE CLEAR ALREADY LIVES rather than in a second

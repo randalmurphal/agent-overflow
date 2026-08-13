@@ -69,7 +69,8 @@ waiting in a line.
 
 **Every `failed` / `needs-human` / `cancelled` transition carries a typed
 reason** (gate, question, stuck, stalled, paused, interrupted, checkpoint,
-budget-exhausted, retries-exhausted, check-failed-genuine, agent-error,
+budget-exhausted, provider-retries-exhausted, loop-limit-exhausted,
+check-failed-genuine, agent-error,
 wiring-error, disposition, setup-failed, unit-failed) — recorded in the run
 record (§10) and shown on the run's row, so a stopped item is never a silent
 dead end. `paused` (a human or graceful shutdown chose to stop it, §12),
@@ -78,6 +79,8 @@ reached the call boundary it was asked to stop at, §12) are distinct reasons
 with the identical resume path, so the morning-after view tells you *why* it
 stopped without changing *how* you continue it. `checkpoint` is the only one of
 the three that is not a fault at all — the run did exactly what it was told.
+`retries-exhausted` remains readable only for runs persisted before provider
+retry exhaustion and workflow loop exhaustion received distinct reasons.
 
 ## 3. Phases and the variable system
 
@@ -481,13 +484,15 @@ consume loop budget. (Rev 1 counted per item lifetime, which starves later
 iterations of any retry budget inside outer loops; batch-scale iteration
 belongs to call phases (§3a), whose child runs get fresh counters by
 construction.) An exhausted bound falls through to the next route; exhausting
-everything parks needs-human.
+everything parks `needs-human(loop-limit-exhausted)`. A bare resume re-enters
+the parked phase without refilling the cycle; `run resume --phase <earlier-id>`
+enters the loop target from outside and restores its bound.
 
 **Fall-through is the "on exhausted" hook — author it, don't wish for it.**
 Because an exhausted loop route continues down the route list, the routes
 *after* a loop are its exhaustion policy: they are reachable exactly when the
 loop no longer fires (its predicate stopped matching, or its budget is spent).
-A gate that parks on retries-exhausted is a gate whose author declared no
+A gate that parks on loop-limit-exhausted is a gate whose author declared no
 cheaper exit. The pattern for severity-aware exhaustion — have the deciding
 phase emit a routable output (e.g. `worst-severity`), then:
 
@@ -535,14 +540,19 @@ session of its own — refused statically against tool, call, and fan-out
 targets):
 
 - **`session: continue | fresh`** — `fresh` (the default, unchanged) re-enters
-  cold; `continue` runs the new attempt as the next turn **on the target
-  phase's most recent provider thread**, feedback as the message — the same
-  mechanics as answering a question, not a second mechanism. Anti-anchoring
+  cold; `continue` runs the new logical round **on the target phase's most
+  recent provider thread**. The new round still receives its complete resolved
+  phase prompt (including a route `prompt:` override), because the earlier
+  thread contains a different round's task. Only recovery of the same parked
+  round uses the short continuation message described in D70. Anti-anchoring
   stays the default on purpose: review edges re-enter cold, and starters set
   `continue` on the fix edge, where losing "what I just tried" is the
   measured ping-pong cost. If the prior thread is gone (crash, deletion),
-  the round runs cold with a recorded note — a degraded continuation is
-  never a park. Which mode actually ran is visible in provenance: two
+  the round runs cold with a recorded note. If the cursor exists but provider
+  preflight rejects it, the unsent warm attempt is superseded and the same new
+  round is reconstructed cold, preserving its complete prompt, route override,
+  guidance, and degradation note — a degraded reuse is never a park.
+  Which mode actually ran is visible in provenance: two
   attempts sharing a thread id *is* the record, rendered as
   `session=continued` on `run status`.
 - **`prompt: <file.md>`** — the re-entered attempt renders this file instead
@@ -817,7 +827,10 @@ through the §12 teardown (partial envelope recorded, locks released) and parks
 `needs-human(paused)`. **Resume** creates the next attempt **on the same
 provider thread** with a continue message — the identical mechanics as
 answering a question below, so the agent keeps its session context across the
-pause. Pausing a run with active fan-out units interrupts every in-flight
+pause. If that provider context has disappeared, the unsent continuation is
+superseded and the same parked round is reconstructed on a new thread with its
+complete original prompt, delivered guidance, route override, amended inputs,
+and an explicit context-loss note. Pausing a run with active fan-out units interrupts every in-flight
 unit; each unit resumes on its own thread.
 
 **Stopping after this wave is the deferred half of pause (§12, D36).** Where
@@ -924,7 +937,7 @@ Resolve by:
 |---|---|
 | In-flight (running) | interrupt → yields → steer free-form → **Complete** (finalize turn re-adds schema) or discard + re-run |
 | Parked on a `question` envelope | answer runs the next turn, same session, same schema → envelope |
-| Parked `paused` / `interrupted` / `retries-exhausted` | resume runs the next turn, same session, continue message (D70) |
+| Parked `paused` / `interrupted` / `provider-retries-exhausted` | resume continues the parked round: short message on the same provider context; full reconstructed prompt on a new thread when that context is unavailable (D70) |
 
 **One contract, one schema.** Whether a phase finishes on its own, is
 completed via a finalize turn, or has its fields filled by hand, the result is
@@ -1440,7 +1453,7 @@ never leave a grandchild running or a sub-worktree stranded.
   due to a **conservative allowlist** of transient errors (subprocess exit,
   known provider-overload responses, network errors) retries with **backoff,
   cap ~3** — each retry re-sending into the SAME live session — then parks
-  `needs-human(retries-exhausted)`. Anything **not** on the allowlist parks
+  `needs-human(provider-retries-exhausted)`. Anything **not** on the allowlist parks
   immediately (`agent-error`) — never retried. This is the no-feedback
   sibling of §4's feedback-carrying loop-back: a 529 carries no validation
   signal, it just waits and re-runs.
@@ -1450,7 +1463,8 @@ never leave a grandchild running or a sub-worktree stranded.
   shape: the turn stopped through no fault of the work with the session file
   intact, and the transient layer was already continuing that session between
   retries. A turn that ran for an hour before the provider fell over costs a
-  resume, not a re-run. The dead-session fallback (fresh attempt with a note)
+  resume, not a re-run. The dead-session fallback reconstructs that same round
+  in a new thread with its full original prompt and a context-loss note;
   and `--phase <id>` as the explicit start-over apply as for every continuable
   reason; `--refresh-def` is refused on the bare resume there like any
   continuable park, since the attempt being continued rendered the frozen
@@ -1458,7 +1472,7 @@ never leave a grandchild running or a sub-worktree stranded.
   **A usage-limit refusal skips the ladder and schedules its own return
   (D71).** When the typed refusal is a provider quota error AND the session
   reported the limit windows, retrying in seconds against a limit that resets
-  in hours is waste: the run parks `retries-exhausted` immediately, the park
+  in hours is waste: the run parks `provider-retries-exhausted` immediately, the park
   cause states the reset moment, and a persisted `auto_resume_at` fires a
   bare resume (the same continuation) at that moment plus jitter — surviving
   app restarts via a boot sweep. Any manual action on the park disarms it.

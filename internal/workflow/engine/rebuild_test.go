@@ -212,7 +212,7 @@ func TestStartupRebuildKeepsTakenOverItemParkedAndCompletable(t *testing.T) {
 		t.Fatal(err)
 	}
 	starts := h.runner.started()
-	if len(starts) != 1 || !starts[0].FinalizeTakeover || starts[0].PriorThreadID != "takeover-thread" {
+	if len(starts) != 1 || !starts[0].Launch.FinalizesTakeover() || starts[0].Launch.ThreadID() != "takeover-thread" {
 		t.Fatalf("rebuilt takeover finalize = %+v", starts)
 	}
 }
@@ -230,7 +230,7 @@ func TestStartupCompletesPersistedTeardownWindow(t *testing.T) {
 		{"failed", "failed", def.GateTrace{}, StateFailed, ReasonCheckFailedGenuine},
 		{"human gate", "parked", def.GateTrace{Decision: def.RouteDecision{Kind: def.DecisionHuman, RouteIndex: 0}}, StateNeedsHuman, ReasonGate},
 		{"wiring error", "parked", def.GateTrace{Decision: def.RouteDecision{Kind: def.DecisionNoMatch, RouteIndex: -1}}, StateNeedsHuman, ReasonWiringError},
-		{"retries exhausted", "parked", def.GateTrace{Decision: def.RouteDecision{Kind: def.DecisionRetriesExhausted, RouteIndex: -1}}, StateNeedsHuman, ReasonRetriesExhausted},
+		{"loop limit exhausted", "parked", def.GateTrace{Decision: def.RouteDecision{Kind: def.DecisionRetriesExhausted, RouteIndex: -1}}, StateNeedsHuman, ReasonLoopLimitExhausted},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

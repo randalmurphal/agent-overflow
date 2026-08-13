@@ -631,13 +631,24 @@ baseline:
   COLUMN with no CHECK, so no rebuild; a future `work_items` rebuild must carry
   it, like every other column added since v39.
 
+## Recent schema changes (v56) — distinct exhaustion reasons
+
+- v56 rebuilds `work_items` to widen its typed `reason` CHECK with
+  `provider-retries-exhausted` and `loop-limit-exhausted`. The former is a dead
+  provider turn a bare resume continues; the latter is a workflow bound that
+  needs an earlier phase entry to refill. Existing `retries-exhausted` values
+  are preserved and remain accepted because their source cannot be recovered
+  reliably from the optional free-form park cause.
+- The rebuild derives from v44 and must copy every later column explicitly:
+  `soft_stop`, `wake_signature`, `pending_guidance`, and `auto_resume_at`.
+
 ## Recent schema changes (v54) — the self-resume moment
 
 - `work_items.auto_resume_at` (`INTEGER NOT NULL DEFAULT 0`, Unix milliseconds)
   is when a parked run brings itself back. It is written by exactly one park: a
   provider that refused the turn because the account's usage allowance is spent
   AND said when it returns (`app_workflow_quota.go`), which parks
-  `retries-exhausted` with the reset stated in the attempt's `park_cause`. The
+  `provider-retries-exhausted` with the reset stated in the attempt's `park_cause`. The
   wait is measured in days, so the moment has to outlive the process that
   learned it — an in-memory timer would mean a five-day stall needing a human
   alarm clock after any restart, which is the whole failure this column exists

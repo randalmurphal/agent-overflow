@@ -10,16 +10,16 @@ import (
 	"agent-overflow/internal/workflow/def"
 )
 
-// A `retries-exhausted` park is a turn that DIED — the runner's transient layer
+// A `provider-retries-exhausted` park is a turn that DIED — the runner's transient layer
 // gave up on a provider API failure — and the session it died in is still there.
 // These tests pin that a bare resume continues on it, that the two things a
 // continuation cannot do (refill a loop bound, deliver pending guidance) stay
 // undone, and that `--phase` is still the start-over.
 
-// parkRetriesExhausted drives a single-shape run into the park the runner
+// parkProviderRetriesExhausted drives a single-shape run into the park the runner
 // produces when transient retries run out, with its attempt attached to a live
 // provider session.
-func parkRetriesExhausted(t *testing.T, h *testHarness, itemID, threadID string) string {
+func parkProviderRetriesExhausted(t *testing.T, h *testHarness, itemID, threadID string) string {
 	t.Helper()
 	item := testItem(itemID, "project", "pausable", 0)
 	if err := h.engine.StartItem(item); err != nil {
@@ -35,28 +35,28 @@ func parkRetriesExhausted(t *testing.T, h *testHarness, itemID, threadID string)
 	if err := h.engine.Sync(); err != nil {
 		t.Fatal(err)
 	}
-	requireItemState(t, h.store, item.ID, StateNeedsHuman, ReasonRetriesExhausted)
+	requireItemState(t, h.store, item.ID, StateNeedsHuman, ReasonProviderRetriesExhausted)
 	return item.ID
 }
 
 // The change itself: `run resume` with no phase takes the next turn on the
 // session the dead one ran in, instead of throwing away a turn's context that a
 // phase running for many minutes had built up.
-func TestResumeAfterRetriesExhaustedContinuesTheParkedSession(t *testing.T) {
+func TestResumeAfterProviderRetriesExhaustedContinuesTheParkedSession(t *testing.T) {
 	h := newPauseHarness(t)
-	item := parkRetriesExhausted(t, h, "item", "thread-one")
+	item := parkProviderRetriesExhausted(t, h, "item", "thread-one")
 
 	if err := h.engine.Resume(item, "", false); err != nil {
 		t.Fatal(err)
 	}
 	requireItemState(t, h.store, item, StateRunning, "")
 	starts := h.runner.started()
-	if len(starts) != 2 || starts[1].Key.Attempt != 2 || starts[1].PriorThreadID != "thread-one" ||
-		starts[1].PromptMode != PromptContinue {
+	if len(starts) != 2 || starts[1].Key.Attempt != 2 || starts[1].Launch.ThreadID() != "thread-one" ||
+		!starts[1].Launch.ContinuesThread() {
 		t.Fatalf("resume starts = %+v, want a second attempt on the session that died", starts)
 	}
 	if starts[1].Feedback == nil ||
-		!strings.Contains(starts[1].Feedback.Note, "resumed after the phase ran out of retries") ||
+		!strings.Contains(starts[1].Feedback.Note, "resumed after provider retries were exhausted") ||
 		!strings.Contains(starts[1].Feedback.Note, "continue from where the previous turn stopped") {
 		t.Fatalf("resume feedback = %+v, want the note naming the park", starts[1].Feedback)
 	}
@@ -71,9 +71,9 @@ func TestResumeAfterRetriesExhaustedContinuesTheParkedSession(t *testing.T) {
 // The session can genuinely be gone — a thread deleted while the run was parked
 // — and that falls back to the phase's inputs with the loss stated, rather than
 // handing the runner a dead id and parking `agent-error` from a failed start.
-func TestResumeAfterRetriesExhaustedFallsBackWhenTheSessionIsGone(t *testing.T) {
+func TestResumeAfterProviderRetriesExhaustedFallsBackWhenTheSessionIsGone(t *testing.T) {
 	h := newPauseHarness(t)
-	item := parkRetriesExhausted(t, h, "item", "thread-one")
+	item := parkProviderRetriesExhausted(t, h, "item", "thread-one")
 	if err := h.store.DeleteThread("thread-one"); err != nil {
 		t.Fatal(err)
 	}
@@ -82,7 +82,7 @@ func TestResumeAfterRetriesExhaustedFallsBackWhenTheSessionIsGone(t *testing.T) 
 		t.Fatal(err)
 	}
 	starts := h.runner.started()
-	if len(starts) != 2 || starts[1].PriorThreadID != "" || starts[1].PromptMode != PromptFull {
+	if len(starts) != 2 || starts[1].Launch.ReusesThread() {
 		t.Fatalf("resume after session loss = %+v, want a fresh attempt", starts)
 	}
 	if starts[1].Feedback == nil ||
@@ -94,28 +94,28 @@ func TestResumeAfterRetriesExhaustedFallsBackWhenTheSessionIsGone(t *testing.T) 
 // Naming a phase is still the deliberate start-over, and `--refresh-def` is
 // still offered only there: a bare resume now continues an attempt launched
 // under the frozen definition, so the refusal names the flag's one entry point.
-func TestResumeWithAPhaseAfterRetriesExhaustedIsStillTheFreshEntry(t *testing.T) {
+func TestResumeWithAPhaseAfterProviderRetriesExhaustedIsStillTheFreshEntry(t *testing.T) {
 	h := newPauseHarness(t)
-	item := parkRetriesExhausted(t, h, "item", "thread-one")
+	item := parkProviderRetriesExhausted(t, h, "item", "thread-one")
 
 	err := h.engine.Resume(item, "", true)
 	if err == nil || !strings.Contains(err.Error(), "--phase work") {
 		t.Fatalf("bare --refresh-def resume = %v, want a refusal naming the fresh entry", err)
 	}
-	requireItemState(t, h.store, item, StateNeedsHuman, ReasonRetriesExhausted)
+	requireItemState(t, h.store, item, StateNeedsHuman, ReasonProviderRetriesExhausted)
 
 	if err := h.engine.Resume(item, "work", false); err != nil {
 		t.Fatal(err)
 	}
 	starts := h.runner.started()
-	if len(starts) != 2 || starts[1].PriorThreadID != "" || starts[1].PromptMode != PromptFull {
+	if len(starts) != 2 || starts[1].Launch.ReusesThread() {
 		t.Fatalf("targeted resume = %+v, want a cold attempt", starts)
 	}
 }
 
 func TestFreshEntryDropsThePreviousContinuationsControlNote(t *testing.T) {
 	h := newPauseHarness(t)
-	item := parkRetriesExhausted(t, h, "item", "thread-one")
+	item := parkProviderRetriesExhausted(t, h, "item", "thread-one")
 	if err := h.engine.Resume(item, "", false); err != nil {
 		t.Fatal(err)
 	}
@@ -130,14 +130,14 @@ func TestFreshEntryDropsThePreviousContinuationsControlNote(t *testing.T) {
 	}
 	starts := h.runner.started()
 	fresh := starts[len(starts)-1]
-	if fresh.PromptMode != PromptFull || fresh.PriorThreadID != "" || fresh.Feedback != nil {
+	if fresh.Launch.ReusesThread() || fresh.Feedback != nil {
 		t.Fatalf("fresh entry inherited continuation state: %+v", fresh)
 	}
 }
 
 // loopExhaustionWorkflow spends a loop bound of one: build → review, review
 // loops back to build once and then has no route left, which is the OTHER thing
-// `retries-exhausted` means.
+// the old `retries-exhausted` reason also represented.
 func loopExhaustionWorkflow() def.Workflow {
 	return def.Workflow{ID: "loop", Phases: []def.Phase{
 		agentPhase("build", nil, []def.Route{{To: "review"}}),
@@ -145,12 +145,12 @@ func loopExhaustionWorkflow() def.Workflow {
 	}}
 }
 
-// A continuation refills nothing. It is the same answer the fresh entry gave —
+// A bare resume re-enters the parked gate phase but refills nothing. Re-entering
 // re-entering the phase that parked is not an entry from outside its cycle — so
 // a resumed run whose LOOP bound ran out parks on it again, and only an earlier
 // phase gives the bound back. A continuation that quietly refilled would let a
 // bounded loop iterate forever.
-func TestRetriesExhaustedContinuationRefillsNoLoopBudget(t *testing.T) {
+func TestLoopLimitExhaustedBareResumeRefillsNoLoopBudget(t *testing.T) {
 	h := newHarness(t, Config{}, map[string]def.Workflow{"loop": loopExhaustionWorkflow()},
 		[]string{"project"}, nil)
 	item := testItem("item", "project", "loop", 0)
@@ -168,23 +168,27 @@ func TestRetriesExhaustedContinuationRefillsNoLoopBudget(t *testing.T) {
 	if err := h.engine.Sync(); err != nil {
 		t.Fatal(err)
 	}
-	requireItemState(t, h.store, item.ID, StateNeedsHuman, ReasonRetriesExhausted)
+	requireItemState(t, h.store, item.ID, StateNeedsHuman, ReasonLoopLimitExhausted)
 
 	if err := h.engine.Resume(item.ID, "", false); err != nil {
 		t.Fatal(err)
 	}
-	// The continued round is a second attempt of `review`, not a third lap of the
-	// loop: nothing gave the edge its bound back.
+	// The fresh round is a further attempt of `review`, not a third lap of the
+	// loop: nothing gave the edge its bound back, and no provider session is
+	// continued for a workflow limit.
 	resumed := h.runner.started()
 	last := resumed[len(resumed)-1]
 	if last.Key.PhaseID != "review" || last.Key.Attempt != 3 {
-		t.Fatalf("continued attempt = %s/%d, want a further attempt of review", last.Key.PhaseID, last.Key.Attempt)
+		t.Fatalf("resumed attempt = %s/%d, want a further attempt of review", last.Key.PhaseID, last.Key.Attempt)
+	}
+	if last.Launch.ContinuesThread() {
+		t.Fatalf("loop-limit resume continued a provider session: %+v", last.Launch)
 	}
 	h.runner.complete(t, item.ID, Outcome{Kind: OutcomeDone, Envelope: doneEnvelope(true)})
 	if err := h.engine.Sync(); err != nil {
 		t.Fatal(err)
 	}
-	requireItemState(t, h.store, item.ID, StateNeedsHuman, ReasonRetriesExhausted)
+	requireItemState(t, h.store, item.ID, StateNeedsHuman, ReasonLoopLimitExhausted)
 
 	// The loop's TARGET, entered from outside the cycle, is what refills it.
 	if err := h.engine.Resume(item.ID, "build", false); err != nil {
@@ -228,7 +232,7 @@ func TestResumeAfterAJoinsRetriesExhaustedContinuesTheJoin(t *testing.T) {
 	if err := h.engine.Sync(); err != nil {
 		t.Fatal(err)
 	}
-	requireItemState(t, h.store, item, StateNeedsHuman, ReasonRetriesExhausted)
+	requireItemState(t, h.store, item, StateNeedsHuman, ReasonProviderRetriesExhausted)
 
 	if err := h.engine.Resume(item, "", false); err != nil {
 		t.Fatal(err)
@@ -242,10 +246,10 @@ func TestResumeAfterAJoinsRetriesExhaustedContinuesTheJoin(t *testing.T) {
 		"work-join":   store.WorkItemUnitRunning,
 	})
 	rerun := h.runner.startFor(t, unitKey(item, "work", 1, "work-join"))
-	if rerun.PriorThreadID != "join-thread" {
-		t.Fatalf("join prior thread = %q, want the session the attempt parked on", rerun.PriorThreadID)
+	if rerun.Launch.ThreadID() != "join-thread" {
+		t.Fatalf("join prior thread = %q, want the session the attempt parked on", rerun.Launch.ThreadID())
 	}
-	if rerun.Feedback == nil || !strings.Contains(rerun.Feedback.Note, "ran out of retries") {
+	if rerun.Feedback == nil || !strings.Contains(rerun.Feedback.Note, "provider retries were exhausted") {
 		t.Fatalf("join feedback = %+v, want the resume note naming why it parked", rerun.Feedback)
 	}
 }
@@ -263,7 +267,7 @@ func TestGuidanceIsNotDeliveredByARetriesExhaustedContinuation(t *testing.T) {
 	if err := h.engine.Sync(); err != nil {
 		t.Fatal(err)
 	}
-	requireItemState(t, h.store, itemID, StateNeedsHuman, ReasonRetriesExhausted)
+	requireItemState(t, h.store, itemID, StateNeedsHuman, ReasonProviderRetriesExhausted)
 	if _, err := h.engine.Guide(itemID, humanGuidance("prefer the smaller diff")); err != nil {
 		t.Fatal(err)
 	}
@@ -295,7 +299,7 @@ func TestAmendSeedsOnARetriesExhaustedParkIsReadByTheContinuation(t *testing.T) 
 	if err := h.engine.Sync(); err != nil {
 		t.Fatal(err)
 	}
-	requireItemState(t, h.store, item.ID, StateNeedsHuman, ReasonRetriesExhausted)
+	requireItemState(t, h.store, item.ID, StateNeedsHuman, ReasonProviderRetriesExhausted)
 
 	amendment, err := h.engine.AmendSeeds(item.ID, map[string]any{"fix-budget": float64(4)})
 	if err != nil {
@@ -308,13 +312,37 @@ func TestAmendSeedsOnARetriesExhaustedParkIsReadByTheContinuation(t *testing.T) 
 		t.Fatal(err)
 	}
 	starts := h.runner.started()
-	if last := starts[len(starts)-1]; last.PriorThreadID != "work-thread" ||
-		last.PromptMode != PromptContinue || last.Feedback == nil || len(last.Feedback.Values) != 1 ||
+	if last := starts[len(starts)-1]; last.Launch.ThreadID() != "work-thread" ||
+		!last.Launch.ContinuesThread() || last.Feedback == nil || len(last.Feedback.Values) != 1 ||
 		fmt.Sprint(last.Feedback.Values["fix-budget"]) != "4" {
 		t.Fatalf("resumed attempt = %+v, want a continuation carrying only the amended input", last)
 	}
 	if got := startedVar(t, h, len(starts)-1, "fix-budget"); got != "4" {
 		t.Fatalf("continued attempt fix-budget = %s, want the amended 4", got)
+	}
+}
+
+func TestContinuationFeedbackCarriesOnlyAmendedWorkflowInputs(t *testing.T) {
+	declarations := map[string]def.Variable{
+		"fix-budget": {Schema: def.JSONSchema{Type: "number"}},
+	}
+	feedback := continuationFeedback(
+		declarations,
+		map[string]any{
+			"fix-budget":   float64(4),
+			"budget":       map[string]any{"tokens": float64(90)},
+			"history.work": []any{map[string]any{"attempt": float64(2)}},
+		},
+		map[string]any{
+			"fix-budget":   float64(2),
+			"budget":       map[string]any{"tokens": float64(100)},
+			"history.work": []any{map[string]any{"attempt": float64(1)}},
+		},
+		&Feedback{Note: "resume"},
+	)
+	if feedback == nil || feedback.Note != "resume" || len(feedback.Values) != 1 ||
+		fmt.Sprint(feedback.Values["fix-budget"]) != "4" {
+		t.Fatalf("continuation feedback = %+v, want only the amended declared input", feedback)
 	}
 }
 
@@ -342,7 +370,7 @@ func TestAmendSeedsOnARetriesExhaustedFanOutParkReportsAFreshEntry(t *testing.T)
 	if err := h.engine.Sync(); err != nil {
 		t.Fatal(err)
 	}
-	requireItemState(t, h.store, item.ID, StateNeedsHuman, ReasonRetriesExhausted)
+	requireItemState(t, h.store, item.ID, StateNeedsHuman, ReasonProviderRetriesExhausted)
 
 	amendment, err := h.engine.AmendSeeds(item.ID, map[string]any{"fix-budget": float64(4)})
 	if err != nil {
@@ -378,5 +406,17 @@ func TestResumeRefusalNamesEveryContinuableReason(t *testing.T) {
 		if !strings.Contains(err.Error(), string(reason)) {
 			t.Fatalf("refusal %q does not name %q", err, reason)
 		}
+	}
+}
+
+func TestRetryReasonRecoveryClasses(t *testing.T) {
+	if !ContinuableReason(ReasonProviderRetriesExhausted) {
+		t.Fatal("provider retry exhaustion must continue its dead turn's session")
+	}
+	if !ContinuableReason(ReasonRetriesExhausted) {
+		t.Fatal("legacy retry exhaustion must retain its shipped continuation behavior")
+	}
+	if ContinuableReason(ReasonLoopLimitExhausted) {
+		t.Fatal("workflow loop exhaustion has no dead provider turn to continue")
 	}
 }

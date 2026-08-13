@@ -81,6 +81,8 @@ const attentionLabels: Record<WorkflowRunReason, string> = {
   disposition: 'Disposition',
   'budget-exhausted': 'Budget spent',
   'retries-exhausted': 'Retries spent',
+  'provider-retries-exhausted': 'Provider retries spent',
+  'loop-limit-exhausted': 'Loop limit spent',
   'check-failed-genuine': 'Check failed',
   'agent-error': 'Agent error',
   'wiring-error': 'Wiring error',

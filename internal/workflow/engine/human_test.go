@@ -270,7 +270,7 @@ func TestTakeoverDetachesAndCompleteRoutesThroughGate(t *testing.T) {
 		t.Fatal(err)
 	}
 	starts := h.runner.started()
-	if len(starts) != 2 || !starts[1].FinalizeTakeover || starts[1].PriorThreadID != "thread-one" {
+	if len(starts) != 2 || !starts[1].Launch.FinalizesTakeover() || starts[1].Launch.ThreadID() != "thread-one" {
 		t.Fatalf("finalize start = %+v", starts)
 	}
 	h.runner.complete(t, item.ID, Outcome{Kind: OutcomeDone, Envelope: doneEnvelope(true)})
@@ -278,6 +278,43 @@ func TestTakeoverDetachesAndCompleteRoutesThroughGate(t *testing.T) {
 		t.Fatal(err)
 	}
 	requireItemState(t, h.store, item.ID, StateDone, "")
+}
+
+func TestUnavailableTakeoverFinalizeRemainsTakenOver(t *testing.T) {
+	workflow := onePhaseWorkflow("takeover-unavailable", nil, []def.Route{{To: "done"}})
+	h := newHarness(t, Config{}, map[string]def.Workflow{"takeover-unavailable": workflow}, []string{"project"}, nil)
+	item := testItem("item", "project", "takeover-unavailable", 0)
+	if err := h.engine.StartItem(item); err != nil {
+		t.Fatal(err)
+	}
+	seedThread(t, h.store, "thread-one")
+	if err := h.store.AttachWorkItemPhaseRun(item.ID, "work", 1, "thread-one", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.engine.TakeOver(item.ID); err != nil {
+		t.Fatal(err)
+	}
+	h.runner.startError = func(request RunRequest) error {
+		if request.Launch.FinalizesTakeover() {
+			return errors.Join(ErrProviderContextUnavailable, errors.New("provider thread missing"))
+		}
+		return nil
+	}
+	if err := h.engine.CompleteTakeover(item.ID); !errors.Is(err, ErrProviderContextUnavailable) {
+		t.Fatalf("complete takeover error = %v, want unavailable context", err)
+	}
+	if err := h.engine.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	requireItemState(t, h.store, item.ID, StateNeedsHuman, ReasonTakenOver)
+	phases, err := h.store.ListWorkItemPhases(item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(phases) != 2 || phases[1].Status != "parked" ||
+		!strings.Contains(phases[1].ParkCause, ErrProviderContextUnavailable.Error()) {
+		t.Fatalf("finalize attempts = %+v, want unavailable finalize parked as taken-over", phases)
+	}
 }
 
 type failingInterventionPersistence struct {
@@ -342,7 +379,7 @@ func TestTakeoverFinalizeValidationFailureReparksAndResumeIsFresh(t *testing.T) 
 	}
 	starts := h.runner.started()
 	last := starts[len(starts)-1]
-	if last.FinalizeTakeover || last.PriorThreadID != "" {
+	if last.Launch.FinalizesTakeover() || last.Launch.ReusesThread() {
 		t.Fatalf("fresh resume start = %+v", last)
 	}
 }

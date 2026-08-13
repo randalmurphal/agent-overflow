@@ -125,7 +125,8 @@ func guidanceDraftFor(ctx context.Context, text string) engine.GuidanceDraft {
 // different sentence for each place a run can be resting.
 //
 // The trap it exists to close is the continuable park: a bare `run resume` of a
-// `paused`, `interrupted`, `checkpoint`, `unit-failed`, or `retries-exhausted`
+// `paused`, `interrupted`, `checkpoint`, `unit-failed`,
+// `provider-retries-exhausted`, or legacy `retries-exhausted`
 // park CONTINUES the attempt that parked instead of entering a phase, and a
 // continuation is not a delivery boundary — the guidance would sit pending
 // through a resume the operator reasonably expected to consume it. The verb that

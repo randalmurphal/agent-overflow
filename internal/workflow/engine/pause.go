@@ -34,12 +34,12 @@ const resumeAction = "resume item"
 // `Resume(itemID, phaseID)` is for, and naming the parked phase itself is how a
 // human asks for exactly that.
 //
-// So does a `retries-exhausted` park. Its turn did not stop short of a result —
+// So does a `provider-retries-exhausted` park. Its turn did not stop short of a result —
 // it DIED, on a provider API failure the runner's transient layer retried until
 // it ran out — but the session it died in is alive, and continuing on it is the
 // same move the retry layer was making one backoff earlier. The one thing a
-// continuation cannot do is refill a loop bound, which is why every surface that
-// names this resume names `--phase <id>` beside it.
+// legacy `retries-exhausted` rows keep this shipped continuation behavior
+// because their original cause cannot be reconstructed.
 
 // PauseItem parks a whole run tree `needs-human(paused)`. Members already
 // parked for another reason keep the reason they parked under — a pause never
@@ -59,8 +59,9 @@ func (e *Engine) PauseAllActive() error {
 // phase: a stopped attempt (`paused`, `interrupted`, `checkpoint`) resumes on
 // the provider sessions it parked on and carries its whole tree with it, a
 // `unit-failed` fan-out reopens what is blocking it while every finished unit
-// keeps its result, and a `retries-exhausted` phase takes its next turn on the
-// session its last one died in. Descendants parked for any other reason stay
+// keeps its result, and a `provider-retries-exhausted` phase takes its next turn
+// on the session its last one died in. Legacy `retries-exhausted` rows do the
+// same. Descendants parked for any other reason stay
 // parked and the root returns to waiting on them.
 func (e *Engine) ResumeItem(itemID string) error {
 	return e.request(resumeItemCommand{itemID: itemID})
@@ -190,8 +191,14 @@ func (e *Engine) resumeItem(itemID string) error {
 	if err != nil {
 		return err
 	}
-	sessionUnavailable := threadID == "" && current.ThreadID != ""
-	feedback := &Feedback{Note: resumeNote(Reason(item.item.Reason), sessionUnavailable)}
+	context := resumeContextAvailable
+	if threadID == "" {
+		context = resumeContextNotStarted
+		if current.ThreadID != "" {
+			context = resumeContextUnavailable
+		}
+	}
+	feedback := &Feedback{Note: resumeNote(Reason(item.item.Reason), context)}
 	if phase.EffectiveShape() == def.ShapeFanOut {
 		e.noteResume(item, "continuing the parked attempt by repairing its fan-out")
 		return e.resumeFanOutAttempt(item, threadID, feedback)
@@ -204,14 +211,14 @@ func (e *Engine) resumeItem(itemID string) error {
 		// attempt carries — and in the record, because this is a fresh attempt
 		// reached through the CONTINUATION path, which is precisely the case a
 		// note taken from the request would have described as a continuation.
-		e.noteResume(item, "fresh entry into the parked phase: "+missingSessionReason(sessionUnavailable))
+		e.noteResume(item, "fresh entry into the parked phase: "+missingSessionReason(context))
 		if err := e.transition(item, StateRunning, ""); err != nil {
 			return err
 		}
 		item.feedback = feedback
 		item.attempt = 0
 		e.items[itemID] = item
-		return errors.Join(e.startWaiting(), e.enterPhase(item, entryFresh))
+		return errors.Join(e.startWaiting(), e.enterPhase(item, entryRestart))
 	}
 	e.noteResume(item, "continuing the parked attempt on its own session")
 	return e.continueParkedAttempt(item, threadID, feedback, false, resumeAction)
@@ -222,8 +229,9 @@ func (e *Engine) resumeItem(itemID string) error {
 // phase, and an agent phase that parked before its runner reported), the other
 // is a thread whose provider session is no longer available, whether because
 // the thread was deleted or because no resumable provider cursor was recorded.
-func missingSessionReason(sessionUnavailable bool) string {
-	if sessionUnavailable {
+
+func missingSessionReason(context resumeContext) string {
+	if context == resumeContextUnavailable {
 		return "the attempt's provider session is unavailable"
 	}
 	return "the parked attempt held no provider session to continue"
@@ -269,16 +277,16 @@ func (e *Engine) resumeFanOutAttempt(item *runtimeItem, threadID string, feedbac
 	return e.continueFanOutJoin(item, threadID, feedback, false, resumeAction)
 }
 
-// resumableThread resolves the provider session a parked attempt would
-// continue on, reporting empty when there is none to continue. A thread id that
-// is not resumable is cleared here rather than handed to the runner: the
-// runner would fail startup and the run would park `agent-error`, which reads
-// as an agent problem rather than unavailable continuation context.
+// resumableThread resolves the persisted thread target a parked attempt would
+// continue on, reporting empty when that row is already gone. Thread existence
+// is only the cheap precheck: the runner is authoritative about live or durable
+// provider context, and an unavailable context is reconstructed without ever
+// being misclassified as an agent failure.
 func (e *Engine) resumableThread(item *runtimeItem, threadID, action string) (string, error) {
 	if threadID == "" {
 		return "", nil
 	}
-	exists, err := e.store.ThreadCanResume(threadID)
+	exists, err := e.store.ThreadExists(threadID)
 	if err != nil {
 		return "", fmt.Errorf("%s %q: resolve parked thread %q: %w", action, item.item.ID, threadID, err)
 	}
@@ -298,11 +306,17 @@ func (e *Engine) resumableThread(item *runtimeItem, threadID, action string) (st
 // said "after a pause" for a reason that is not one would be a small lie
 // waiting for the day a second boundary kind exists.
 //
-// `retries-exhausted` is worded for both causes it covers — a transient
-// provider failure the runner stopped retrying, and a loop bound the gate spent
-// — because the reason does not distinguish them and a note that named the
-// wrong one would tell the next turn something untrue about why it exists.
-func resumeNote(reason Reason, sessionUnavailable bool) string {
+// Legacy `retries-exhausted` stays generic because persisted rows do not reveal
+// whether a provider retry ladder or a workflow loop bound produced them.
+type resumeContext uint8
+
+const (
+	resumeContextAvailable resumeContext = iota
+	resumeContextUnavailable
+	resumeContextNotStarted
+)
+
+func resumeNote(reason Reason, context resumeContext) string {
 	note := "resumed after a pause"
 	switch reason {
 	case ReasonInterrupted:
@@ -311,13 +325,21 @@ func resumeNote(reason Reason, sessionUnavailable bool) string {
 		note = "resumed after the run stopped at the requested checkpoint"
 	case ReasonUnitFailed:
 		note = "resumed after a unit of the fan-out failed"
+	case ReasonProviderRetriesExhausted:
+		note = "resumed after provider retries were exhausted"
+	case ReasonLoopLimitExhausted:
+		note = "resumed after the workflow loop limit was exhausted"
 	case ReasonRetriesExhausted:
 		note = "resumed after the phase ran out of retries"
 	}
-	if sessionUnavailable {
-		return note + "; the previous attempt's provider session is unavailable, so its context cannot be continued — redo the phase from its inputs"
+	switch context {
+	case resumeContextUnavailable:
+		return note + "; " + continuationUnavailableNote
+	case resumeContextNotStarted:
+		return note + "; the parked attempt never started a provider turn, so run its full prompt now"
+	default:
+		return note + "; " + continuationAvailableNote
 	}
-	return note + "; continue from where the previous turn stopped"
 }
 
 // resumeCallPhase returns a paused call phase to waiting and resumes the child

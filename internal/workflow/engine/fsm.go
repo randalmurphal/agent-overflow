@@ -58,6 +58,7 @@ func reasonAllowed(reason Reason) bool {
 	switch reason {
 	case ReasonGate, ReasonQuestion, ReasonStuck, ReasonStalled,
 		ReasonBudgetExhausted, ReasonRetriesExhausted,
+		ReasonProviderRetriesExhausted, ReasonLoopLimitExhausted,
 		ReasonCheckFailedGenuine, ReasonAgentError, ReasonWiringError,
 		ReasonDisposition, ReasonSetupFailed, ReasonInterrupted, ReasonTakenOver,
 		ReasonUnitFailed, ReasonChildFailed, ReasonPaused, ReasonCheckpoint:
@@ -314,7 +315,7 @@ func (e *Engine) completePhaseOutcome(item *runtimeItem, key RunKey, outcome Out
 	case OutcomeTransientExhausted:
 		return e.teardown(item, teardownRequest{
 			output: outcome.Envelope, cause: outcomeDetailCause(outcome), phaseStatus: "parked",
-			nextState: StateNeedsHuman, reason: ReasonRetriesExhausted,
+			nextState: StateNeedsHuman, reason: ReasonProviderRetriesExhausted,
 		})
 	case OutcomeExecutionFailure:
 		if item.takeoverFinalize {
@@ -461,7 +462,7 @@ func (e *Engine) finishDecision(item *runtimeItem, decision def.RouteDecision, e
 	case def.DecisionHuman, def.DecisionPark:
 		return e.teardown(item, teardownRequest{output: envelope, gateTrace: gateTrace, phaseStatus: "parked", nextState: StateNeedsHuman, reason: ReasonGate})
 	case def.DecisionRetriesExhausted:
-		return e.teardown(item, teardownRequest{output: envelope, gateTrace: gateTrace, phaseStatus: "parked", nextState: StateNeedsHuman, reason: ReasonRetriesExhausted})
+		return e.teardown(item, teardownRequest{output: envelope, gateTrace: gateTrace, phaseStatus: "parked", nextState: StateNeedsHuman, reason: ReasonLoopLimitExhausted})
 	case def.DecisionNoMatch:
 		return e.teardown(item, teardownRequest{
 			output: envelope, gateTrace: gateTrace,

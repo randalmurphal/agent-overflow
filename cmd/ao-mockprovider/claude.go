@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 
@@ -272,13 +274,49 @@ func (a *claudeAdapter) echoUserEnvelope(line []byte) {
 	if a.lastEchoUUID != "" {
 		env["parentUuid"] = json.RawMessage(mustJSON(a.lastEchoUUID))
 	}
+	transcriptLine := mustJSON(env)
 	if u, ok := env["uuid"]; ok {
 		var s string
 		if json.Unmarshal(u, &s) == nil && s != "" {
 			a.lastEchoUUID = s
 		}
 	}
+	a.persistTranscript(transcriptLine)
+	// Durability precedes visibility, matching the invariant the real provider
+	// transcript gives crash recovery: once AO can observe the user echo, a cold
+	// restart must already be able to find its leaf.
 	a.w.writeLine(mustJSON(env), 0, 0)
+}
+
+// persistTranscript gives the mock the one durable behavior cold workflow
+// resume depends on. The destination comes only from the isolated harness boot;
+// standalone mock invocations and tests without that explicit path write
+// nothing, so this helper can never discover or mutate a real provider home.
+func (a *claudeAdapter) persistTranscript(line string) {
+	home := strings.TrimSpace(os.Getenv(control.EnvTranscriptHome))
+	if home == "" {
+		return
+	}
+	sessionID := a.e.currentVars()["SESSION_ID"]
+	if sessionID == "" || filepath.Base(sessionID) != sessionID || strings.ContainsAny(sessionID, "/\\") || strings.ContainsRune(sessionID, '\x00') {
+		log.Fatalf("claude: unsafe transcript session id %q", sessionID)
+	}
+	dir := filepath.Join(home, ".claude", "projects", "mock")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		log.Fatalf("claude: create mock transcript directory: %v", err)
+	}
+	path := filepath.Join(dir, sessionID+".jsonl")
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		log.Fatalf("claude: open mock transcript: %v", err)
+	}
+	if _, err := f.Write(append([]byte(line), '\n')); err != nil {
+		_ = f.Close()
+		log.Fatalf("claude: append mock transcript: %v", err)
+	}
+	if err := f.Close(); err != nil {
+		log.Fatalf("claude: close mock transcript: %v", err)
+	}
 }
 
 // writeClaudeControlAck answers an inbound control_request with the

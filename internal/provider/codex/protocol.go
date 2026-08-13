@@ -114,6 +114,7 @@ func classifyMiscNotification(threadID, method string, params json.RawMessage, n
 				Kind:      provider.EventAPIRetry,
 				ThreadID:  threadID,
 				Meta:      meta,
+				Failure:   &provider.FailureMeta{Class: provider.FailureTransient},
 				Timestamp: now,
 			}}, true
 		}
@@ -125,11 +126,13 @@ func classifyMiscNotification(threadID, method string, params json.RawMessage, n
 			"error": errorMsg,
 			"wire":  json.RawMessage(params),
 		})
+		failure := codexErrorFailure(params)
 		return []provider.ProviderEvent{{
 			Kind:      provider.EventError,
 			ThreadID:  threadID,
 			Content:   errorMsg,
 			Meta:      fatalMeta,
+			Failure:   failure,
 			Timestamp: now,
 		}}, true
 
@@ -167,6 +170,56 @@ func classifyMiscNotification(threadID, method string, params json.RawMessage, n
 		return []provider.ProviderEvent{codexNotificationEvent(threadID, "deprecation_notice", summary, params, now)}, true
 	}
 	return nil, false
+}
+
+func codexErrorFailure(params json.RawMessage) *provider.FailureMeta {
+	var payload struct {
+		Error struct {
+			Info json.RawMessage `json:"codexErrorInfo"`
+		} `json:"error"`
+	}
+	if json.Unmarshal(params, &payload) == nil {
+		code := codexErrorInfoKind(payload.Error.Info)
+		if code == "usageLimitExceeded" {
+			return &provider.FailureMeta{
+				Class: provider.FailureTransient, Boundary: provider.FailureBoundaryTurn,
+				Reason: provider.FailureReasonUsageLimit, Code: code,
+			}
+		}
+		if codexTransientErrorInfo(payload.Error.Info) {
+			return &provider.FailureMeta{
+				Class: provider.FailureTransient, Boundary: provider.FailureBoundaryTurn, Code: code,
+			}
+		}
+		return &provider.FailureMeta{
+			Class: provider.FailureFatal, Boundary: provider.FailureBoundaryEvent, Code: code,
+		}
+	}
+	return &provider.FailureMeta{Class: provider.FailureFatal, Boundary: provider.FailureBoundaryEvent}
+}
+
+func codexErrorInfoKind(raw json.RawMessage) string {
+	var scalar string
+	if json.Unmarshal(raw, &scalar) == nil {
+		return scalar
+	}
+	var object map[string]json.RawMessage
+	if json.Unmarshal(raw, &object) == nil && len(object) == 1 {
+		for kind := range object {
+			return kind
+		}
+	}
+	return ""
+}
+
+func codexTransientErrorInfo(raw json.RawMessage) bool {
+	switch codexErrorInfoKind(raw) {
+	case "serverOverloaded", "usageLimitExceeded",
+		"httpConnectionFailed", "responseStreamConnectionFailed", "responseStreamDisconnected":
+		return true
+	default:
+		return false
+	}
 }
 
 func codexNotificationEvent(threadID, kind, summary string, params json.RawMessage, now time.Time) provider.ProviderEvent {

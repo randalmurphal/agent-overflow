@@ -187,7 +187,11 @@ func workflowReasonText(reason engine.Reason) string {
 	case engine.ReasonBudgetExhausted:
 		return "the run reached its budget"
 	case engine.ReasonRetriesExhausted:
-		return "transient retries were exhausted"
+		return "provider retries or a workflow loop limit were exhausted"
+	case engine.ReasonProviderRetriesExhausted:
+		return "provider retries were exhausted"
+	case engine.ReasonLoopLimitExhausted:
+		return "the workflow loop limit was exhausted"
 	case engine.ReasonAgentError:
 		return "the agent could not produce a valid result"
 	case engine.ReasonWiringError:

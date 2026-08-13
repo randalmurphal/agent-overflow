@@ -9,6 +9,25 @@ import (
 	"agent-overflow/internal/workflow/def"
 )
 
+func TestResumeNoteNamesProviderContextDisposition(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		context resumeContext
+		want    string
+	}{
+		{name: "same context", context: resumeContextAvailable, want: continuationAvailableNote},
+		{name: "lost context", context: resumeContextUnavailable, want: continuationUnavailableNote},
+		{name: "turn never started", context: resumeContextNotStarted,
+			want: "the parked attempt never started a provider turn, so run its full prompt now"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := resumeNote(ReasonPaused, test.context); !strings.Contains(got, test.want) {
+				t.Fatalf("resume note = %q, want it to contain %q", got, test.want)
+			}
+		})
+	}
+}
+
 // seedThread creates the thread row a parked attempt's session id points at, so
 // resume's existence probe sees a live session rather than a deleted one.
 func seedThread(t *testing.T, database *store.Store, threadID string) {
@@ -93,7 +112,7 @@ func TestResumeContinuesTheParkedProviderThread(t *testing.T) {
 	}
 	requireItemState(t, h.store, item, StateRunning, "")
 	starts := h.runner.started()
-	if len(starts) != 2 || starts[1].Key.Attempt != 2 || starts[1].PriorThreadID != "thread-one" {
+	if len(starts) != 2 || starts[1].Key.Attempt != 2 || starts[1].Launch.ThreadID() != "thread-one" {
 		t.Fatalf("resume runner starts = %+v, want a second attempt on the parked thread", starts)
 	}
 	if starts[1].Feedback == nil || !strings.Contains(starts[1].Feedback.Note, "resumed after a pause") ||
@@ -146,7 +165,7 @@ func TestResumeInterruptedRunUsesTheSameContinuation(t *testing.T) {
 		t.Fatal(err)
 	}
 	starts := h.runner.started()
-	if len(starts) != 1 || starts[0].Key.Attempt != 2 || starts[0].PriorThreadID != "crash-thread" {
+	if len(starts) != 1 || starts[0].Key.Attempt != 2 || starts[0].Launch.ThreadID() != "crash-thread" {
 		t.Fatalf("interrupted resume starts = %+v", starts)
 	}
 	if starts[0].Feedback == nil || !strings.Contains(starts[0].Feedback.Note, "resumed after the run was interrupted") {
@@ -170,7 +189,7 @@ func TestResumeWithoutASessionStartsAFreshAttemptLoudly(t *testing.T) {
 		t.Fatal(err)
 	}
 	starts := h.runner.started()
-	if len(starts) != 2 || starts[1].PriorThreadID != "" {
+	if len(starts) != 2 || starts[1].Launch.ReusesThread() {
 		t.Fatalf("resume after session loss = %+v, want a fresh attempt", starts)
 	}
 	if starts[1].Feedback == nil ||
@@ -248,8 +267,8 @@ func TestResumeWalksTheTreeAndReturnsTheParentToWaiting(t *testing.T) {
 	for _, start := range h.runner.started() {
 		if start.Key.ItemID == child.ID && start.Key.Attempt == 2 {
 			childStarts++
-			if start.PriorThreadID != "child-thread" {
-				t.Fatalf("resumed child prior thread = %q", start.PriorThreadID)
+			if start.Launch.ThreadID() != "child-thread" {
+				t.Fatalf("resumed child prior thread = %q", start.Launch.ThreadID())
 			}
 		}
 		if start.Key.ItemID == parent && start.Key.PhaseID == "audit" {
@@ -399,7 +418,7 @@ func TestResumeContinuesAnInterruptedFanOutJoin(t *testing.T) {
 			t.Fatal("resume re-expanded the units under a join that had already run")
 		}
 	}
-	if len(joinStarts) != 2 || joinStarts[1].PriorThreadID != "join-thread" {
+	if len(joinStarts) != 2 || joinStarts[1].Launch.ThreadID() != "join-thread" {
 		t.Fatalf("join starts = %+v, want a retry on the thread the attempt parked on", joinStarts)
 	}
 }

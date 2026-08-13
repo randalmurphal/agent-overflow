@@ -479,8 +479,8 @@ func TestAnswerQuestionContinuesPriorThread(t *testing.T) {
 		t.Fatal(err)
 	}
 	starts := h.runner.started()
-	if len(starts) != 2 || starts[1].Key.Attempt != 2 || starts[1].PriorThreadID != "thread-one" ||
-		starts[1].PromptMode != PromptContinue ||
+	if len(starts) != 2 || starts[1].Key.Attempt != 2 || starts[1].Launch.ThreadID() != "thread-one" ||
+		!starts[1].Launch.ContinuesThread() ||
 		starts[1].Feedback == nil || starts[1].Feedback.Note != "Use the safe option" {
 		t.Fatalf("answer runner starts = %+v", starts)
 	}
@@ -554,7 +554,7 @@ func TestAnswerQuestionWaitsForProviderCapacity(t *testing.T) {
 	}
 	starts := h.runner.started()
 	if len(starts) != 3 || starts[2].Key.ItemID != question.ID || starts[2].Key.Attempt != 2 ||
-		starts[2].PriorThreadID != "thread-question" {
+		starts[2].Launch.ThreadID() != "thread-question" {
 		t.Fatalf("released answer start = %+v", starts)
 	}
 }

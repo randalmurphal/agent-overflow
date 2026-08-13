@@ -386,6 +386,9 @@ func TestClassifyNotification_ErrorWithWillRetry(t *testing.T) {
 	if evt.Kind != provider.EventAPIRetry {
 		t.Errorf("kind: got %q, want %q", evt.Kind, provider.EventAPIRetry)
 	}
+	if evt.Failure == nil || evt.Failure.Class != provider.FailureTransient {
+		t.Fatalf("failure = %+v, want normalized transient", evt.Failure)
+	}
 	var meta map[string]any
 	if err := json.Unmarshal(evt.Meta, &meta); err != nil {
 		t.Fatalf("unmarshal meta: %v", err)
@@ -437,6 +440,9 @@ func TestClassifyNotification_ErrorWithoutWillRetry(t *testing.T) {
 	if evt.Kind != provider.EventError {
 		t.Errorf("kind: got %q, want %q", evt.Kind, provider.EventError)
 	}
+	if evt.Failure == nil || evt.Failure.Class != provider.FailureFatal || !evt.Failure.EndsTurn() {
+		t.Fatalf("failure = %+v, want terminal fatal", evt.Failure)
+	}
 	if evt.Content != "fatal error" {
 		t.Errorf("content: got %q, want %q", evt.Content, "fatal error")
 	}
@@ -473,6 +479,44 @@ func TestClassifyNotification_ErrorWillRetryFalse(t *testing.T) {
 	}
 	if got, want := meta["error"], "giving up"; got != want {
 		t.Errorf("meta.error: got %q, want %q", got, want)
+	}
+}
+
+func TestClassifyNotification_ErrorNormalizesRetryableCodexInfo(t *testing.T) {
+	params := json.RawMessage(`{"error":{"message":"overloaded","codexErrorInfo":"serverOverloaded"},"willRetry":false}`)
+	events := ClassifyNotification("t1", "error", params)
+	if len(events) != 1 || events[0].Failure == nil ||
+		events[0].Failure.Class != provider.FailureTransient ||
+		!events[0].Failure.WaitsForTurnComplete() || events[0].Failure.EndsTurn() {
+		t.Fatalf("events = %+v, want a transient error awaiting turn completion", events)
+	}
+}
+
+func TestClassifyNotification_ErrorNormalizesStructuredRetryableCodexInfo(t *testing.T) {
+	for _, code := range []string{
+		"httpConnectionFailed", "responseStreamConnectionFailed", "responseStreamDisconnected",
+	} {
+		t.Run(code, func(t *testing.T) {
+			params := json.RawMessage(`{"error":{"message":"network","codexErrorInfo":{"` + code + `":{}}},"willRetry":false}`)
+			events := ClassifyNotification("t1", "error", params)
+			if len(events) != 1 || events[0].Failure == nil ||
+				events[0].Failure.Class != provider.FailureTransient ||
+				events[0].Failure.Code != code || !events[0].Failure.WaitsForTurnComplete() {
+				t.Fatalf("events = %+v, want normalized transient %q", events, code)
+			}
+		})
+	}
+}
+
+func TestClassifyNotification_ErrorNormalizesUsageLimitReason(t *testing.T) {
+	params := json.RawMessage(`{"error":{"message":"usage limit","codexErrorInfo":"usageLimitExceeded"},"willRetry":false}`)
+	events := ClassifyNotification("t1", "error", params)
+	if len(events) != 1 || events[0].Failure == nil ||
+		events[0].Failure.Class != provider.FailureTransient ||
+		events[0].Failure.Reason != provider.FailureReasonUsageLimit ||
+		events[0].Failure.Code != "usageLimitExceeded" ||
+		!events[0].Failure.WaitsForTurnComplete() {
+		t.Fatalf("events = %+v, want a normalized usage-limit transient", events)
 	}
 }
 

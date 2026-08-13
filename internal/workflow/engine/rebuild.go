@@ -298,7 +298,7 @@ func (e *Engine) recoverDecision(item *runtimeItem, decision def.RouteDecision) 
 	case def.DecisionHuman, def.DecisionPark:
 		return e.transition(item, StateNeedsHuman, ReasonGate)
 	case def.DecisionRetriesExhausted:
-		return e.transition(item, StateNeedsHuman, ReasonRetriesExhausted)
+		return e.transition(item, StateNeedsHuman, ReasonLoopLimitExhausted)
 	case def.DecisionNoMatch:
 		return e.transition(item, StateNeedsHuman, ReasonWiringError)
 	default:

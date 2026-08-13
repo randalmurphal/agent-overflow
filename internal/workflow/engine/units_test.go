@@ -2,8 +2,10 @@ package engine
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"reflect"
+	"strings"
 	"testing"
 
 	"agent-overflow/internal/store"
@@ -405,8 +407,8 @@ func TestAnswerOnFanOutRerunsOnlyTheJoinOnItsThread(t *testing.T) {
 		"work-join":   store.WorkItemUnitRunning,
 	})
 	rerun := h.runner.startFor(t, unitKey(item, "work", 1, "work-join"))
-	if rerun.PriorThreadID != "join-thread" {
-		t.Fatalf("join prior thread = %q, want the thread the attempt parked on", rerun.PriorThreadID)
+	if rerun.Launch.ThreadID() != "join-thread" {
+		t.Fatalf("join prior thread = %q, want the thread the attempt parked on", rerun.Launch.ThreadID())
 	}
 	if rerun.Feedback == nil || rerun.Feedback.Note != "use the second one" {
 		t.Fatalf("join feedback = %+v, want the human's answer", rerun.Feedback)
@@ -414,7 +416,7 @@ func TestAnswerOnFanOutRerunsOnlyTheJoinOnItsThread(t *testing.T) {
 	if rerun.UnitAttempt != 2 {
 		t.Fatalf("join try = %d, want a fresh try so its narrative is not overwritten", rerun.UnitAttempt)
 	}
-	if rerun.FinalizeTakeover {
+	if rerun.Launch.FinalizesTakeover() {
 		t.Fatal("an answered question is not a takeover finalize")
 	}
 	units, ok := rerun.Vars[def.UnitsVariable].([]any)
@@ -428,6 +430,68 @@ func TestAnswerOnFanOutRerunsOnlyTheJoinOnItsThread(t *testing.T) {
 	}
 	requireItemState(t, h.store, item, StateDone, "")
 	h.requireNoHeldResources(t)
+}
+
+func TestUnavailableFanOutJoinContinuationRestartsOnlyTheJoin(t *testing.T) {
+	h := newFanOutHarness(t, 1)
+	item := startFanOut(t, h, "fan")
+	h.runner.completeRun(t, unitKey(item, "work", 1, "work-unit-0"),
+		Outcome{Kind: OutcomeDone, Envelope: unitDoneEnvelope("ready")})
+	if err := h.engine.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	seedThread(t, h.store, "join-thread")
+	if err := h.store.AttachWorkItemPhaseRun(item, "work", 1, "join-thread", ""); err != nil {
+		t.Fatal(err)
+	}
+	h.runner.completeRun(t, unitKey(item, "work", 1, "work-join"),
+		Outcome{Kind: OutcomeQuestion, Envelope: questionEnvelope()})
+	if err := h.engine.Sync(); err != nil {
+		t.Fatal(err)
+	}
+
+	h.runner.startError = func(request RunRequest) error {
+		if request.Key.UnitID == "work-join" && request.Launch.ContinuesThread() {
+			return errors.Join(ErrProviderContextUnavailable, errors.New("provider thread missing"))
+		}
+		return nil
+	}
+	if err := h.engine.Answer(item, "use the ready unit"); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.engine.Sync(); err != nil {
+		t.Fatal(err)
+	}
+
+	joins := make([]RunRequest, 0, 3)
+	for _, start := range h.runner.started() {
+		if start.Key.UnitID == "work-join" {
+			joins = append(joins, start)
+		}
+	}
+	if len(joins) != 3 {
+		t.Fatalf("join starts = %d, want original, unavailable continuation, and restart", len(joins))
+	}
+	if !joins[1].Launch.ContinuesThread() || joins[1].Launch.ThreadID() != "join-thread" {
+		t.Fatalf("second join launch = %+v, want continuation on parked thread", joins[1].Launch)
+	}
+	if joins[2].Launch.ReusesThread() || joins[2].UnitAttempt != 3 {
+		t.Fatalf("replacement join = launch %+v try %d, want fresh provider try 3",
+			joins[2].Launch, joins[2].UnitAttempt)
+	}
+	if joins[2].Feedback == nil || !strings.Contains(joins[2].Feedback.Note, "use the ready unit") ||
+		!strings.Contains(joins[2].Feedback.Note, continuationUnavailableNote) {
+		t.Fatalf("replacement feedback = %+v, want answer and context-loss note", joins[2].Feedback)
+	}
+	if got := h.runner.startedUnitIDs(); !reflect.DeepEqual(got, []string{
+		"work-unit-0", "work-join", "work-join", "work-join",
+	}) {
+		t.Fatalf("started units = %v, want no completed work-unit replay", got)
+	}
+	h.requireUnitStatuses(t, item, "work", 1, map[string]string{
+		"work-unit-0": store.WorkItemUnitDone,
+		"work-join":   store.WorkItemUnitRunning,
+	})
 }
 
 // A continuation is refused while the attempt still has units a human has not

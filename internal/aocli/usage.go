@@ -220,7 +220,8 @@ it.
 The turn in flight is NEVER interrupted. There is no mid-turn injection: a run
 that is mid-phase keeps the guidance pending until it advances or loops into the
 next phase. A run parked on a continuable reason (paused, interrupted,
-checkpoint, unit-failed, retries-exhausted) is CONTINUED by a bare "run resume",
+checkpoint, unit-failed, provider-retries-exhausted, or legacy
+retries-exhausted) is CONTINUED by a bare "run resume",
 and a continuation is not a phase entry — the output says so and names
 "run resume <id> --phase <id>" as what enters one now.
 
@@ -261,20 +262,19 @@ its result — including the runs its units called, which are never re-executed.
 --phase <phase-id> is the start-over. It enters that phase fresh, from outside
 every loop through it, so loop budgets refill; a fan-out there expands a new wave
 and calls its child runs again. Naming the parked phase itself is a legitimate
-way to ask for exactly that. Naming an EARLIER one is what a retries-exhausted
-park wants when what ran out was a loop bound rather than the provider: the
-bound refills when the loop's target is entered from outside the cycle, which a
-bare resume — a continuation — never does.
+way to ask for exactly that. A loop-limit-exhausted park needs an EARLIER phase:
+the bound refills when the loop's target is entered from outside the cycle.
 
 --refresh-def is the repair for "I edited the prompt of a parked phase". The
 definition a run froze at start is what it runs, every attempt, so an edit made
 while the run was parked is invisible to it; --refresh-def re-reads the workflow
 and its prompt files from disk for this entry and runs the edited version from
 here on. It applies at a fresh phase entry only — a bare resume on a run parked
-paused, interrupted, checkpoint, unit-failed, or retries-exhausted continues an
-attempt whose work was launched under the frozen definition, and is refused
-unless --phase says to discard it. Between campaign waves nothing is needed: a
-call reads its target from disk every time it is made.
+paused, interrupted, checkpoint, unit-failed, provider-retries-exhausted, or
+legacy retries-exhausted continues an attempt whose work was launched under the
+frozen definition, and is refused unless --phase says to discard it. Between
+campaign waves nothing is needed: a call reads its target from disk every time
+it is made.
 
 --at <when> schedules the bare resume above instead of taking it now, on any
 park a bare resume continues. <when> is RFC 3339 (2026-08-15T19:56:00Z) or a
@@ -283,8 +283,9 @@ prints the moment it armed. The run stays exactly where it is until then, and
 anything that repairs it in the meantime — a resume, a cancel, a discard —
 disarms the schedule. It is the manual half of what a dated usage-limit refusal
 already does on its own: a provider that refuses a turn and says when the
-allowance returns parks the run retries-exhausted and comes back by itself, so
---at is for the case where you know the time and the provider did not say it.
+allowance returns parks the run provider-retries-exhausted and comes back by
+itself, so --at is for the case where you know the time and the provider did not
+say it.
 
 A gate decision is not resume's to take: run resolve settles a human: route, and
 run retry-unit / run retry-failed-units repair one unit or all of them — a failed

@@ -1,7 +1,6 @@
 package engine
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -118,14 +117,16 @@ func (e *Engine) parkUnstartable(item *runtimeItem, cause error) error {
 	)
 }
 
-// phaseEntry says what the attempt about to be created IS: a fresh entry into
-// the phase, or the continuation of a round that already ran.
+// phaseEntry says what the attempt about to be created IS: a fresh phase entry,
+// a continuation of a parked round, or reconstruction of that round after its
+// provider context disappeared.
 //
 // It is a parameter rather than something inferred from the item, because
 // nothing on the item distinguishes the two — a warm loop round and an `Answer`
 // continuation both carry a prior thread id, and both create a new attempt row.
-// What separates them is which caller asked, so the caller says. It decides one
-// thing today: whether pending operator guidance is delivered here. A
+// What separates them is which caller asked, so the caller says. It decides
+// prompt shape, route/guidance preservation, and whether pending operator
+// guidance is delivered here. A
 // continuation continues a turn the operator was already steering; guidance
 // delivered into it would arrive as a second instruction to a round that has
 // already read the first.
@@ -133,13 +134,18 @@ type phaseEntry int
 
 const (
 	// entryFresh starts the phase over: a gate advance or loop, a resume aimed at
-	// a phase, a rerun, the run's first phase, and the resume whose parked
-	// attempt had no session left to continue.
+	// a phase, a rerun, and the run's first phase.
 	entryFresh phaseEntry = iota
 	// entryContinuation continues the round the parked attempt was in, on the
 	// session it parked on: an answered question, a finalized takeover, a bare
 	// resume of a continuable park.
 	entryContinuation
+	// entryRestart rebuilds the parked round after its provider context became
+	// unavailable. It sends a full prompt to a new session, but unlike an
+	// operator-requested fresh entry it preserves the round's prompt route and
+	// delivered guidance. Those are part of the task being reconstructed, not
+	// state belonging to the dead provider process.
+	entryRestart
 )
 
 // entryPromptRoute resolves which loop route's `prompt:` override the attempt
@@ -148,11 +154,11 @@ const (
 // A FRESH entry renders what the decision that produced it armed — and only
 // that: `consumePromptRoute` refuses an arming whose route does not loop to
 // THIS phase, so a coordinate that outlived its entry is inert rather than a
-// body borrowed by the next phase. A CONTINUATION renders what the round it
-// continues rendered, restored from that round's own persisted input, because a
-// continuation is the same round asked the same narrower question.
+// body borrowed by the next phase. A CONTINUATION or RESTART renders what the
+// round it continues rendered, restored from that round's persisted input,
+// because both represent the same round even though only one retains context.
 func entryPromptRoute(item *runtimeItem, entry phaseEntry, phaseID string) *PromptRoute {
-	if entry == entryContinuation {
+	if entry != entryFresh {
 		return item.promptRoute
 	}
 	return consumePromptRoute(item.workflow, item.nextPromptRoute, phaseID)
@@ -167,6 +173,9 @@ func consumesPriorSession(phase def.Phase) bool { return !phase.IsCall() }
 // global pause is clear and its resources are free. A held phase leaves the
 // item running and waiting, never parked.
 func (e *Engine) enterPhase(item *runtimeItem, entry phaseEntry) error {
+	if entry != entryFresh && entry != entryContinuation && entry != entryRestart {
+		return fmt.Errorf("enter workflow phase: unknown entry kind %d", entry)
+	}
 	phase, ok := findPhase(item.workflow, item.phaseID)
 	if !ok {
 		cause := fmt.Errorf("phase %q is absent from item %q snapshot", item.phaseID, item.item.ID)
@@ -193,24 +202,27 @@ func (e *Engine) enterPhase(item *runtimeItem, entry phaseEntry) error {
 			nextState: StateNeedsHuman, reason: ReasonWiringError,
 		}), err)
 	}
-	if entry == entryContinuation {
-		item.feedback = continuationFeedback(vars, item.parkedVars, item.feedback)
+	if entry != entryFresh {
+		item.feedback = continuationFeedback(item.workflow.Inputs, vars, item.parkedVars, item.feedback)
 	}
-	delivered, err := e.deliverGuidance(item, phase, entry)
+	promptGuidance, unacked, err := e.entryGuidance(item, phase, entry)
 	if err != nil {
 		return errors.Join(e.teardown(item, teardownRequest{
 			cause: err, phaseStatus: "parked",
 			nextState: StateNeedsHuman, reason: ReasonWiringError,
 		}), err)
 	}
-	if len(delivered) > 0 {
-		item.feedback = appendFeedbackNote(item.feedback, guidanceNote(delivered))
+	if entry == entryFresh && len(promptGuidance) > 0 {
+		item.feedback = appendFeedbackNote(item.feedback, guidanceNote(promptGuidance))
 	}
-	// Assigned on every entry, delivered or not: they belong to the attempt being
-	// created, so leaving a previous attempt's values in place would render them
-	// again for a round nobody asked for either on. The entries stay owed an
-	// acknowledgement until a session that renders them starts (`ackGuidance`).
-	item.guidance, item.guidanceUnacked = delivered, delivered
+	// Fresh entries establish a new round's guidance. Continuations preserve that
+	// round state without rendering it; restarts render the preserved block into
+	// replacement context. The entries stay owed an acknowledgement until a
+	// session that actually renders them starts (`ackGuidance`).
+	if entry != entryContinuation {
+		item.guidance = promptGuidance
+	}
+	item.guidanceUnacked = unacked
 	// The arming is consumed here and nowhere else, and a fresh entry consumes it
 	// only when the armed route's loop target is the phase being entered.
 	item.promptRoute = entryPromptRoute(item, entry, phase.ID)
@@ -226,7 +238,7 @@ func (e *Engine) enterPhase(item *runtimeItem, entry phaseEntry) error {
 	attempt := nextAttempt(priorPhases, phase.ID)
 	phaseInput := PhaseInput{
 		Vars: vars, Feedback: item.feedback,
-		PromptRoute: item.promptRoute, Guidance: delivered,
+		PromptRoute: item.promptRoute, Guidance: item.guidance,
 	}
 	if phase.IsCall() {
 		// A call phase's input *is* its argument map: it runs no turn, so the args
@@ -296,13 +308,16 @@ func (e *Engine) startRunner(item *runtimeItem, phase def.Phase, vars map[string
 	// without going through here cannot exist: this is the only constructor of a
 	// phase-level RunRequest.
 	phase.Prompt = promptBody(item.workflow, phase, item.promptRoute)
+	launch, err := phaseTurnLaunch(item.entry, item.priorThreadID, item.takeoverFinalize)
+	if err != nil {
+		return e.parkStartFailure(item, errors.Join(ErrWiringFailed, err))
+	}
 	request := RunRequest{
 		Key:  RunKey{ItemID: item.item.ID, PhaseID: item.phaseID, Attempt: item.attempt},
 		Item: item.item, Workflow: item.workflow, WorkspaceNeed: item.workspaceNeed,
-		Phase: phase, Vars: vars, Guidance: item.guidance,
-		Feedback: cloneFeedback(item.feedback), PriorThreadID: item.priorThreadID,
-		PromptMode:       promptMode(item.entry),
-		FinalizeTakeover: item.takeoverFinalize,
+		Phase: phase, Vars: vars, Guidance: promptGuidanceForEntry(item),
+		Feedback: cloneFeedback(item.feedback),
+		Launch:   launch,
 	}
 	startCtx, cancel := context.WithCancel(e.ctx)
 	future := &runnerStartFuture{key: request.Key, done: make(chan response, 1)}
@@ -310,9 +325,6 @@ func (e *Engine) startRunner(item *runtimeItem, phase def.Phase, vars map[string
 	item.runnerStartCancel = cancel
 	e.commandStarts = append(e.commandStarts, future)
 	e.inflightStarts[future] = struct{}{}
-	item.feedback = nil
-	item.priorThreadID = ""
-	item.entry = entryFresh
 	entered := make(chan struct{})
 	go func() {
 		err := e.runner.Start(startCtx, request, func() { close(entered) }, func(outcome Outcome) {
@@ -337,43 +349,6 @@ func (e *Engine) startRunner(item *runtimeItem, phase def.Phase, vars map[string
 	return nil
 }
 
-func promptMode(entry phaseEntry) PromptMode {
-	if entry == entryContinuation {
-		return PromptContinue
-	}
-	return PromptFull
-}
-
-// continuationFeedback carries only variables that changed since the parked
-// attempt. A seed amendment must reach the resumed turn, but replaying the
-// whole rendered prompt to accomplish that would defeat continuation mode.
-func continuationFeedback(vars, previous map[string]any, feedback *Feedback) *Feedback {
-	if previous == nil {
-		return cloneFeedback(feedback)
-	}
-	result := cloneFeedback(feedback)
-	for name, value := range vars {
-		old, existed := previous[name]
-		if existed && sameJSONValue(old, value) {
-			continue
-		}
-		if result == nil {
-			result = &Feedback{}
-		}
-		if result.Values == nil {
-			result.Values = make(map[string]any)
-		}
-		result.Values[name] = value
-	}
-	return result
-}
-
-func sameJSONValue(left, right any) bool {
-	leftJSON, leftErr := json.Marshal(left)
-	rightJSON, rightErr := json.Marshal(right)
-	return leftErr == nil && rightErr == nil && bytes.Equal(leftJSON, rightJSON)
-}
-
 func (e *Engine) finishRunnerStart(command runnerStartCommand) error {
 	item, ok := e.items[command.key.ItemID]
 	if !ok || item.phaseID != command.key.PhaseID || item.attempt != command.key.Attempt ||
@@ -393,13 +368,53 @@ func (e *Engine) finishRunnerStart(command runnerStartCommand) error {
 	item.runnerStartCancel = nil
 	if command.err == nil {
 		item.runnerActive = true
+		item.feedback = nil
+		item.priorThreadID = ""
+		item.entry = entryFresh
 		// The turn that renders this attempt's guidance block now exists, which is
 		// the event the pending slot is cleared against. Only an agent phase is a
 		// delivery boundary, so only one ever has entries owed here.
 		e.ackGuidance(item)
 		return nil
 	}
+	if errors.Is(command.err, ErrProviderContextUnavailable) {
+		if item.takeoverFinalize {
+			return e.parkUnavailableTakeover(item, command.err)
+		}
+		if item.entry == entryContinuation || (item.entry == entryFresh && item.priorThreadID != "") {
+			return e.restartPhaseWithoutProviderContext(item, command.err)
+		}
+	}
 	return e.parkStartFailure(item, command.err)
+}
+
+// restartPhaseWithoutProviderContext settles an attempt whose selected provider
+// context disappeared before any prompt was sent, then reconstructs the same
+// round on a new thread. This covers both a recovery continuation and a warm
+// loop's new logical round. Superseded is the honest status: the attempt existed
+// and recorded its intended thread, but ran no turn and produced no output.
+func (e *Engine) restartPhaseWithoutProviderContext(item *runtimeItem, cause error) error {
+	promptRoute := item.promptRoute
+	guidance := append([]GuidanceEntry(nil), item.guidance...)
+	feedback := item.feedback
+	message := "reconstructing the parked round because its provider context is unavailable"
+	if item.entry == entryContinuation {
+		feedback = continuationUnavailableFeedback(feedback)
+	} else {
+		feedback = appendFeedbackNote(feedback, loopContinuationNote)
+		message = "reconstructing the warm loop round because its provider context is unavailable"
+	}
+	if err := e.teardown(item, teardownRequest{cause: cause, phaseStatus: "superseded"}); err != nil {
+		return errors.Join(err, cause)
+	}
+	item.promptRoute = promptRoute
+	item.guidance = guidance
+	item.feedback = feedback
+	item.priorThreadID = ""
+	item.entry = entryRestart
+	item.attempt = 0
+	e.noteResume(item, message)
+	return errors.Join(e.startWaiting(), e.enterPhase(item, entryRestart))
 }
 
 // finishUnitStart settles one unit's provisioning. A unit that could not start
@@ -417,6 +432,11 @@ func (e *Engine) finishUnitStart(item *runtimeItem, command runnerStartCommand) 
 	clearUnitStart(unit)
 	if command.err == nil {
 		unit.runnerActive = true
+		unit.feedback = nil
+		if unit.kind == UnitJoin {
+			item.priorThreadID = ""
+			item.entry = entryFresh
+		}
 		if driver, runsWork := unit.definition.EffectiveDriver(); runsWork && driver == def.DriverAgent {
 			// The first agent element of the wave — a unit or the join — is the
 			// first turn that renders the phase entry's guidance block. A command
@@ -425,35 +445,47 @@ func (e *Engine) finishUnitStart(item *runtimeItem, command runnerStartCommand) 
 		}
 		return nil
 	}
+	if errors.Is(command.err, ErrProviderContextUnavailable) && unit.kind == UnitJoin &&
+		(item.entry == entryContinuation || (item.entry == entryFresh && item.priorThreadID != "")) {
+		if item.takeoverFinalize {
+			return e.parkUnavailableTakeover(item, command.err)
+		}
+		return e.restartJoinWithoutProviderContext(item, unit, command.err)
+	}
 	return e.parkStartFailure(item, command.err)
 }
 
-// parkStartFailure maps a runner startup failure onto a typed park reason by
-// sentinel, never by string matching.
-func (e *Engine) parkStartFailure(item *runtimeItem, cause error) error {
-	reason := ReasonAgentError
-	switch {
-	case errors.Is(cause, ErrSetupFailed):
-		reason = ReasonSetupFailed
-	case errors.Is(cause, ErrWiringFailed):
-		reason = ReasonWiringError
+func (e *Engine) restartJoinWithoutProviderContext(item *runtimeItem, join *unitRun, cause error) error {
+	if err := e.releaseUnitResources(item, join); err != nil {
+		return errors.Join(e.parkStartFailure(item, errors.Join(cause, err)), cause, err)
 	}
+	feedback := join.feedback
+	message := "reconstructing the fan-out join because its provider context is unavailable"
+	if item.entry == entryContinuation {
+		feedback = continuationUnavailableFeedback(feedback)
+	} else {
+		feedback = appendFeedbackNote(feedback, loopContinuationNote)
+		message = "reconstructing the warm fan-out join because its provider context is unavailable"
+	}
+	if err := e.reopenUnit(item, join, feedback); err != nil {
+		return errors.Join(e.parkStartFailure(item, errors.Join(cause, err)), cause, err)
+	}
+	item.priorThreadID = ""
+	item.entry = entryRestart
+	e.noteResume(item, message)
+	return errors.Join(e.startWaiting(), e.advanceFanOut(item))
+}
+
+// A takeover finalize cannot be reconstructed in a blank provider context: the
+// human's steering exists only in the session being finalized. Keep the typed
+// takeover park and surface the missing context instead of either inventing a
+// full restart or misclassifying the human-owned attempt as an agent error.
+func (e *Engine) parkUnavailableTakeover(item *runtimeItem, cause error) error {
 	return errors.Join(
 		e.teardown(item, teardownRequest{
 			cause: cause, phaseStatus: "parked",
-			nextState: StateNeedsHuman, reason: reason,
+			nextState: StateNeedsHuman, reason: ReasonTakenOver,
 		}),
 		cause,
 	)
-}
-
-func cloneFeedback(feedback *Feedback) *Feedback {
-	if feedback == nil {
-		return nil
-	}
-	copy := &Feedback{Note: feedback.Note, Values: make(map[string]any, len(feedback.Values))}
-	for name, value := range feedback.Values {
-		copy.Values[name] = value
-	}
-	return copy
 }

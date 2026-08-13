@@ -106,18 +106,33 @@ describe('WorkflowEvidence check strip speaks the run map\'s vocabulary', () => 
   });
 });
 
-describe('WorkflowEvidence retries-exhausted (D70)', () => {
-  // The reason resolves on the `paused` row because a bare resume continues
-  // its session — but the run stopped on a failure, so the receipt must not
-  // claim a human paused it, and the diagnosis block must survive the move.
-  it('says the run ran out of retries rather than "paused by you", and keeps the failure evidence', () => {
+describe('WorkflowEvidence exhausted limits', () => {
+  it('names provider retry exhaustion and keeps the failure evidence', () => {
+    const view = detail({ phases: [] });
+    view.item.reason = 'provider-retries-exhausted';
+    const rendered = render(WorkflowEvidence, { ...props(view), kind: 'paused' as const });
+
+    expect(rendered.getByTestId('workflow-paused-receipt')).toHaveTextContent('provider retries exhausted');
+    expect(rendered.getByTestId('workflow-paused-receipt')).not.toHaveTextContent('paused by you');
+    expect(rendered.getByTestId('wf-failure-evidence')).toBeTruthy();
+  });
+
+  it('tells a spent workflow loop from a provider retry failure', () => {
+    const view = detail({ phases: [] });
+    view.item.reason = 'loop-limit-exhausted';
+    const rendered = render(WorkflowEvidence, { ...props(view), kind: 'blocked' as const });
+
+    expect(rendered.getByTestId('workflow-paused-receipt')).toHaveTextContent('workflow loop limit exhausted');
+    expect(rendered.getByTestId('workflow-paused-receipt')).toHaveTextContent('restart from an earlier phase');
+    expect(rendered.getByTestId('wf-failure-evidence')).toBeTruthy();
+  });
+
+  it('does not invent the cause for a legacy retry park', () => {
     const view = detail({ phases: [] });
     view.item.reason = 'retries-exhausted';
     const rendered = render(WorkflowEvidence, { ...props(view), kind: 'paused' as const });
 
-    expect(rendered.getByTestId('workflow-paused-receipt')).toHaveTextContent('ran out of retries');
-    expect(rendered.getByTestId('workflow-paused-receipt')).not.toHaveTextContent('paused by you');
-    expect(rendered.getByTestId('wf-failure-evidence')).toBeTruthy();
+    expect(rendered.getByTestId('workflow-paused-receipt')).toHaveTextContent('retry or loop limit exhausted');
   });
 
   it('still reads a genuine pause as one', () => {

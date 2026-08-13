@@ -2,6 +2,8 @@ package engine
 
 import (
 	"encoding/json"
+	"errors"
+	"strings"
 	"testing"
 
 	"agent-overflow/internal/store"
@@ -48,8 +50,9 @@ func TestLoopRoutePromptOverrideIsNotSticky(t *testing.T) {
 	}
 }
 
-// Both knobs on one route compose: the override becomes the content of the
-// continuation turn rather than replacing the continuation.
+// Both knobs on one route compose: the override becomes the authored body in
+// the warm round's full prompt; provider context reuse does not make it a
+// recovery continuation.
 func TestLoopRouteSessionContinueComposesWithThePromptOverride(t *testing.T) {
 	route := def.Route{
 		Loop: "work", Max: def.LiteralBound(1),
@@ -58,9 +61,153 @@ func TestLoopRouteSessionContinueComposesWithThePromptOverride(t *testing.T) {
 	h, itemID := startLoopRun(t, route, "work-thread", false)
 
 	entry := loopEntry(t, h, itemID)
-	if entry.PriorThreadID != "work-thread" || entry.Phase.Prompt != "the narrower body" ||
-		entry.PromptMode != PromptFull {
-		t.Fatalf("composed loop re-entry = thread %q prompt %q", entry.PriorThreadID, entry.Phase.Prompt)
+	if entry.Launch.ThreadID() != "work-thread" || entry.Phase.Prompt != "the narrower body" ||
+		entry.Launch.ContinuesThread() {
+		t.Fatalf("composed loop re-entry = thread %q prompt %q", entry.Launch.ThreadID(), entry.Phase.Prompt)
+	}
+}
+
+func TestPhaseTurnLaunchRejectsContradictoryState(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		entry    phaseEntry
+		threadID string
+		finalize bool
+	}{
+		{name: "continuation without thread", entry: entryContinuation},
+		{name: "restart with old thread", entry: entryRestart, threadID: "old-thread"},
+		{name: "finalize on fresh entry", entry: entryFresh, threadID: "old-thread", finalize: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := phaseTurnLaunch(test.entry, test.threadID, test.finalize); err == nil {
+				t.Fatal("contradictory launch state was accepted")
+			}
+		})
+	}
+	warm, err := phaseTurnLaunch(entryFresh, "old-thread", false)
+	if err != nil || !warm.ReusesThread() || warm.ContinuesThread() {
+		t.Fatalf("warm fresh entry = %+v, %v", warm, err)
+	}
+}
+
+func TestUnavailableContinuationReconstructsTheSameRound(t *testing.T) {
+	route := def.Route{
+		Loop: "work", Max: def.LiteralBound(1),
+		Session: def.SessionContinue, Prompt: "the narrower body",
+	}
+	h := newHarness(t, Config{}, map[string]def.Workflow{
+		"loops": loopKnobWorkflow(route),
+	}, []string{"project"}, nil)
+	item := testItem("item", "project", "loops", 0)
+	if err := h.engine.StartItem(item); err != nil {
+		t.Fatal(err)
+	}
+	seedThread(t, h.store, "work-thread")
+	if err := h.store.AttachWorkItemPhaseRun(item.ID, "work", 1, "work-thread", "/tmp/work-1.md"); err != nil {
+		t.Fatal(err)
+	}
+	h.runner.complete(t, item.ID, Outcome{Kind: OutcomeDone, Envelope: doneEnvelope(true)})
+	if err := h.engine.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.engine.Guide(item.ID, humanGuidance("keep the compatibility layer")); err != nil {
+		t.Fatal(err)
+	}
+	h.runner.complete(t, item.ID, Outcome{Kind: OutcomeDone, Envelope: doneEnvelope(true)})
+	if err := h.engine.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.store.AttachWorkItemPhaseRun(item.ID, "work", 2, "work-thread", "/tmp/work-2.md"); err != nil {
+		t.Fatal(err)
+	}
+	h.runner.complete(t, item.ID, Outcome{Kind: OutcomeQuestion, Envelope: json.RawMessage(`{"status":"question"}`)})
+	if err := h.engine.Sync(); err != nil {
+		t.Fatal(err)
+	}
+
+	h.runner.startErrs["item/work/3"] = errors.Join(ErrProviderContextUnavailable, errors.New("provider thread missing"))
+	if err := h.engine.Answer(item.ID, "use the safe option"); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.engine.Sync(); err != nil {
+		t.Fatal(err)
+	}
+
+	failedContinuation := h.runner.startFor(t, RunKey{ItemID: item.ID, PhaseID: "work", Attempt: 3})
+	if !failedContinuation.Launch.ContinuesThread() {
+		t.Fatalf("attempt 3 launch = %+v, want the attempted continuation", failedContinuation.Launch)
+	}
+	restarted := h.runner.startFor(t, RunKey{ItemID: item.ID, PhaseID: "work", Attempt: 4})
+	if restarted.Launch.ReusesThread() || restarted.Phase.Prompt != "the narrower body" {
+		t.Fatalf("restart = launch %+v prompt %q, want a fresh session reconstructing the route prompt",
+			restarted.Launch, restarted.Phase.Prompt)
+	}
+	if len(restarted.Guidance) != 1 || restarted.Guidance[0].Text != "keep the compatibility layer" {
+		t.Fatalf("restart guidance = %+v, want the parked round's guidance", restarted.Guidance)
+	}
+	if restarted.Feedback == nil || !strings.Contains(restarted.Feedback.Note, "use the safe option") ||
+		!strings.Contains(restarted.Feedback.Note, continuationUnavailableNote) {
+		t.Fatalf("restart feedback = %+v, want the answer and context-loss note", restarted.Feedback)
+	}
+	phases, err := h.store.ListWorkItemPhases(item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if phase, ok := phaseAttempt(phases, "work", 3); !ok || phase.Status != "superseded" {
+		t.Fatalf("failed continuation row = %+v, found %v; want superseded", phase, ok)
+	}
+}
+
+func TestUnavailableWarmReuseReconstructsTheNewRound(t *testing.T) {
+	route := def.Route{
+		Loop: "work", Max: def.LiteralBound(1),
+		Session: def.SessionContinue, Prompt: "the narrower body",
+	}
+	h := newHarness(t, Config{}, map[string]def.Workflow{
+		"loops": loopKnobWorkflow(route),
+	}, []string{"project"}, nil)
+	item := testItem("item", "project", "loops", 0)
+	if err := h.engine.StartItem(item); err != nil {
+		t.Fatal(err)
+	}
+	seedThread(t, h.store, "work-thread")
+	if err := h.store.AttachWorkItemPhaseRun(item.ID, "work", 1, "work-thread", "/tmp/work-1.md"); err != nil {
+		t.Fatal(err)
+	}
+	h.runner.complete(t, item.ID, Outcome{Kind: OutcomeDone, Envelope: doneEnvelope(true)})
+	if err := h.engine.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.engine.Guide(item.ID, humanGuidance("keep the compatibility layer")); err != nil {
+		t.Fatal(err)
+	}
+	h.runner.startErrs["item/work/2"] = errors.Join(ErrProviderContextUnavailable, errors.New("provider thread missing"))
+	h.runner.complete(t, item.ID, Outcome{Kind: OutcomeDone, Envelope: doneEnvelope(true)})
+	if err := h.engine.Sync(); err != nil {
+		t.Fatal(err)
+	}
+
+	warm := h.runner.startFor(t, RunKey{ItemID: item.ID, PhaseID: "work", Attempt: 2})
+	if !warm.Launch.ReusesThread() || warm.Launch.ContinuesThread() {
+		t.Fatalf("attempt 2 launch = %+v, want the unavailable warm context", warm.Launch)
+	}
+	restarted := h.runner.startFor(t, RunKey{ItemID: item.ID, PhaseID: "work", Attempt: 3})
+	if restarted.Launch.ReusesThread() || restarted.Phase.Prompt != "the narrower body" {
+		t.Fatalf("restart = launch %+v prompt %q, want a cold reconstruction of the warm round",
+			restarted.Launch, restarted.Phase.Prompt)
+	}
+	if len(restarted.Guidance) != 1 || restarted.Guidance[0].Text != "keep the compatibility layer" {
+		t.Fatalf("restart guidance = %+v, want the round's original guidance", restarted.Guidance)
+	}
+	if restarted.Feedback == nil || !strings.Contains(restarted.Feedback.Note, loopContinuationNote) {
+		t.Fatalf("restart feedback = %+v, want the warm-context degradation", restarted.Feedback)
+	}
+	phases, err := h.store.ListWorkItemPhases(item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if phase, ok := phaseAttempt(phases, "work", 2); !ok || phase.Status != "superseded" {
+		t.Fatalf("unavailable warm attempt = %+v, found %v; want superseded", phase, ok)
 	}
 }
 
@@ -155,15 +302,15 @@ func TestPromptOverrideSurvivesAContinuationOfTheRoundItCreated(t *testing.T) {
 	if continued.Phase.Prompt != "the narrower body" {
 		t.Fatalf("the continuation rendered %q, want the override the round was running", continued.Phase.Prompt)
 	}
-	if continued.PriorThreadID != "loop-thread" || continued.PromptMode != PromptContinue {
+	if continued.Launch.ThreadID() != "loop-thread" || !continued.Launch.ContinuesThread() {
 		t.Fatalf("the continuation = %+v, want the parked session with a continuation prompt", continued)
 	}
 }
 
-// A resume whose parked attempt has no session left is a FRESH entry, and a
-// fresh entry renders the phase's own body: the round the override narrowed is
-// being redone from its inputs rather than continued.
-func TestPromptOverrideIsDroppedByASessionLostResume(t *testing.T) {
+// A resume whose parked attempt has no session left reconstructs that same
+// round in a new provider context. The context must receive the full prompt the
+// round originally ran, including the loop route's narrower body.
+func TestPromptOverrideSurvivesASessionLostRestart(t *testing.T) {
 	route := def.Route{Loop: "work", Max: def.LiteralBound(1), Prompt: "the narrower body"}
 	h, itemID := startLoopRun(t, route, "", false)
 	if err := h.engine.PauseItem(itemID); err != nil {
@@ -173,9 +320,9 @@ func TestPromptOverrideIsDroppedByASessionLostResume(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	fresh := h.runner.startFor(t, RunKey{ItemID: itemID, PhaseID: "work", Attempt: 3})
-	if fresh.Phase.Prompt != "the phase's own body" {
-		t.Fatalf("the session-lost re-entry rendered %q, want the phase's own body", fresh.Phase.Prompt)
+	restarted := h.runner.startFor(t, RunKey{ItemID: itemID, PhaseID: "work", Attempt: 3})
+	if restarted.Phase.Prompt != "the narrower body" {
+		t.Fatalf("the session-lost restart rendered %q, want the parked round's route body", restarted.Phase.Prompt)
 	}
 }
 

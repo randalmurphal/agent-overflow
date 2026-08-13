@@ -205,7 +205,7 @@ caller only learns by being bitten.
 now, on any park a bare resume continues. It is the manual half of a mechanism
 the app already runs by itself: a provider that refuses a turn because the
 account's usage allowance is spent AND states when it returns parks the run
-`retries-exhausted` immediately — the transient-retry ladder cannot outlast a
+`provider-retries-exhausted` immediately — the transient-retry ladder cannot outlast a
 limit that resets in days — with a cause naming both the reset and the moment
 the run will come back, and a durable schedule that survives a restart. `--at`
 exists for the case where the operator knows the time and the provider did not
@@ -516,11 +516,12 @@ provider-bound payload (D31, `app_composer_commands.go`).
 
 The block also carries the **reason→verb repair map** (`composerRepair`, D38):
 every park reason a CLI verb settles, the verb, and what taking it does — the
-last part is load-bearing where one reason has two answers, as
-`retries-exhausted` does (`run resume` continues the parked attempt on the
-session its turn died in, `run resume --phase <id>` is the fresh entry and the
-only one that refills the loop budgets) and as
-`stuck` does (`run resume` re-enters the parked phase once the blocker the
+last part is load-bearing where adjacent reasons have different answers:
+`provider-retries-exhausted` continues the parked attempt on the session its
+turn died in, while `loop-limit-exhausted` needs `run resume --phase <id>` at an
+earlier phase because that fresh entry is the only one that refills the loop
+budget. Legacy `retries-exhausted` names both possibilities without guessing.
+`stuck` also needs the effect spelled out (`run resume` re-enters the parked phase once the blocker the
 phase named is cleared; `--refresh-def` re-reads the definition when the fix was
 an edit to it). A reason
 absent from the map is one whose own cause is the instruction, and the line

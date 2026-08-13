@@ -105,11 +105,11 @@ type workflowAttempt struct {
 	// attempt may have advanced a rung — a resend for the state that queued it is
 	// then a stale turn landing inside somebody else's backoff window. Every
 	// advance invalidates what the previous state queued.
-	sendEpoch            int
-	claudeTransientRetry bool
-	timer                workflowTimer
-	timerMode            workflowTimerMode
-	timerDeadline        time.Time
+	sendEpoch         int
+	providerRetryHint bool
+	timer             workflowTimer
+	timerMode         workflowTimerMode
+	timerDeadline     time.Time
 	// rateLimits is the newest quota snapshot this attempt's own session
 	// reported. Both providers push one at the moment they refuse a turn for a
 	// spent allowance, so it is the structured half of a usage-limit refusal —
@@ -170,26 +170,17 @@ func newWorkflowAppRunner(app *App, dataRoot string, profiles engine.ProfileSour
 
 func (r *workflowAppRunner) Start(ctx context.Context, request engine.RunRequest, entered func(), complete func(engine.Outcome)) (err error) {
 	entered()
-	switch request.PromptMode {
-	case engine.PromptFull:
-	case engine.PromptContinue:
-		if request.PriorThreadID == "" {
-			return fmt.Errorf("workflow runner: continuation requires a prior thread")
-		}
-	default:
-		return fmt.Errorf("workflow runner: unsupported prompt mode %q", request.PromptMode)
+	if err := request.Launch.Validate(); err != nil {
+		return fmt.Errorf("workflow runner: %w", err)
 	}
-	if request.FinalizeTakeover && request.PromptMode != engine.PromptContinue {
-		return fmt.Errorf("workflow runner: takeover finalize must continue its prior session")
-	}
-	if request.FinalizeTakeover {
+	if request.Launch.FinalizesTakeover() {
 		// A failed finalize start must not strand the thread's takeover
 		// registration in transitioning state: steering sends would be
 		// rejected until process restart. Success deletes the registration
 		// wholesale when the attempt is installed.
 		defer func() {
 			if err != nil {
-				r.cancelTakeoverTransition(request.Key.ItemID, request.PriorThreadID)
+				r.cancelTakeoverTransition(request.Key.ItemID, request.Launch.ThreadID())
 			}
 		}()
 	}
@@ -207,7 +198,7 @@ func (r *workflowAppRunner) Start(ctx context.Context, request engine.RunRequest
 	}
 	switch request.Phase.Driver {
 	case def.DriverTool:
-		if request.FinalizeTakeover {
+		if request.Launch.FinalizesTakeover() {
 			return fmt.Errorf("workflow runner: tool phase %q cannot finalize a takeover", request.Phase.ID)
 		}
 		return r.startToolPhase(ctx, request, complete)
@@ -247,78 +238,52 @@ func (r *workflowAppRunner) Start(ctx context.Context, request engine.RunRequest
 		effort: request.Phase.Effort,
 		access: request.Phase.EffectiveAccess(), workspace: preparedWorkspace,
 	}
-	threadID := request.PriorThreadID
-	createdThread := false
-	if threadID == "" {
-		thread, createErr := r.app.createWorkflowThread(spec)
-		if createErr != nil {
-			return createErr
-		}
-		threadID = thread.ID
-		createdThread = true
-	} else {
-		prior, validateErr := r.validatePriorThread(spec, threadID)
-		if validateErr != nil {
-			return validateErr
-		}
-		if request.PromptMode == engine.PromptContinue && prior.ResolvedSessionRef() == "" {
-			return fmt.Errorf("workflow runner: prior thread %q has no provider session to continue", threadID)
-		}
-	}
-	if err := ctx.Err(); err != nil {
-		if createdThread {
-			err = errors.Join(err, r.app.store.DeleteThread(threadID))
-		}
-		return fmt.Errorf("workflow runner: startup cancelled: %w", err)
-	}
-	if err := r.app.store.AttachWorkItemPhaseRun(
-		request.Key.ItemID, request.Key.PhaseID, request.Key.Attempt, threadID, narrativePath,
-	); err != nil {
-		if createdThread {
-			err = errors.Join(err, r.app.store.DeleteThread(threadID))
-		}
-		return fmt.Errorf("workflow runner: attach phase run: %w", err)
-	}
-
-	var prompt string
 	promptContext := r.app.workflowPromptAncestry(request.Key.ItemID, request.Workflow)
 	promptContext.NarrativePath = narrativePath
 	promptContext.Access = request.Phase.EffectiveAccess()
-	if request.FinalizeTakeover {
-		prompt, err = workflowrunner.BuildTakeoverFinalizePrompt(promptContext)
-	} else if request.PromptMode == engine.PromptContinue {
-		promptContext.Feedback = request.Feedback
-		prompt, err = workflowrunner.BuildContinuationPrompt(promptContext)
-	} else {
-		promptContext.Feedback, promptContext.Guidance = request.Feedback, request.Guidance
-		prompt, err = workflowrunner.BuildPrompt(request.Phase, request.Vars, promptContext)
-	}
+	prepared, err := r.prepareAgentTurn(ctx, workflowAgentTurnPlan{
+		request: request, thread: spec, schema: schema,
+		promptContext: promptContext,
+		buildFull: func(context workflowrunner.PromptContext) (string, error) {
+			return workflowrunner.BuildPrompt(request.Phase, request.Vars, context)
+		},
+		attach: func(threadID string) error {
+			if err := r.app.store.AttachWorkItemPhaseRun(
+				request.Key.ItemID, request.Key.PhaseID, request.Key.Attempt, threadID, narrativePath,
+			); err != nil {
+				return fmt.Errorf("workflow runner: attach phase run: %w", err)
+			}
+			return nil
+		},
+	})
 	if err != nil {
 		return err
 	}
 
-	if request.FinalizeTakeover && request.Phase.Provider == string(provider.Claude) {
-		if err := r.restartClaudeTakeoverWithSchema(threadID, schema); err != nil {
-			return err
+	if request.Launch.FinalizesTakeover() && request.Phase.Provider == string(provider.Claude) && !prepared.startedSession {
+		restarted, err := r.restartClaudeTakeoverWithSchema(prepared.threadID, schema)
+		if err != nil {
+			return prepared.discard(r, err)
 		}
+		prepared.startedSession = restarted
 	}
 	attempt := &workflowAttempt{
 		workflowCompletion: workflowCompletion{
 			key: request.Key, workflow: request.Workflow, narrativePath: narrativePath,
 			workspace: workspace, projectPath: preparedWorkspace.project.Path,
 		},
-		threadID: threadID,
+		threadID: prepared.threadID,
 		schema:   append(json.RawMessage(nil), schema...), contract: contract,
 		provider: request.Phase.Provider, phase: request.Phase, complete: complete,
-		currentPrompt: prompt, watchdog: watchdog, backoff: backoff,
+		currentPrompt: prepared.prompt, watchdog: watchdog, backoff: backoff,
 	}
-	return r.installAttempt(ctx, attempt, createdThread)
+	return r.installAttempt(ctx, attempt, prepared)
 }
 
 // restartClaudeTakeoverWithSchema re-launches a Claude session that was started
 // for human steering without `--json-schema`. The finalize turn has to produce a
 // validated envelope, and Claude only attaches a schema at process start.
-func (r *workflowAppRunner) restartClaudeTakeoverWithSchema(threadID string, schema json.RawMessage) error {
+func (r *workflowAppRunner) restartClaudeTakeoverWithSchema(threadID string, schema json.RawMessage) (bool, error) {
 	r.mu.Lock()
 	takeover, registered := r.takeovers[threadID]
 	restart := registered && !takeover.schemaAttached
@@ -327,24 +292,24 @@ func (r *workflowAppRunner) restartClaudeTakeoverWithSchema(threadID string, sch
 	}
 	r.mu.Unlock()
 	if !restart {
-		return nil
+		return false, nil
 	}
 	if err := r.app.StopSession(threadID); err != nil {
 		r.removeTemporarySchema(threadID)
-		return fmt.Errorf("workflow runner: stop schema-less takeover session: %w", err)
+		return false, fmt.Errorf("workflow runner: stop schema-less takeover session: %w", err)
 	}
 	if err := r.app.StartSession(threadID); err != nil {
 		r.removeTemporarySchema(threadID)
-		return fmt.Errorf("workflow runner: restart takeover session with schema: %w", err)
+		return false, fmt.Errorf("workflow runner: restart takeover session with schema: %w", err)
 	}
-	return nil
+	return true, nil
 }
 
 // installAttempt registers a fully provisioned attempt and sends its opening
 // prompt. Every agent-backed workflow turn — phase, unit, and join — ends here,
 // so registration, observer wiring, the cancellation window, and the send-failure
 // outcome are written once.
-func (r *workflowAppRunner) installAttempt(ctx context.Context, attempt *workflowAttempt, createdThread bool) error {
+func (r *workflowAppRunner) installAttempt(ctx context.Context, attempt *workflowAttempt, prepared preparedWorkflowAgentTurn) error {
 	key := workflowRunKey(attempt.key)
 	threadID := attempt.threadID
 	attempt.unsubscribe = r.app.subscribeThreadTurnObserver(threadID, func(_ string, event provider.ProviderEvent) {
@@ -354,7 +319,7 @@ func (r *workflowAppRunner) installAttempt(ctx context.Context, attempt *workflo
 	if _, exists := r.runs[key]; exists {
 		r.mu.Unlock()
 		attempt.unsubscribe()
-		return fmt.Errorf("workflow runner: attempt %s is already active", key)
+		return prepared.discard(r, fmt.Errorf("workflow runner: attempt %s is already active", key))
 	}
 	r.schemas[threadID] = append(json.RawMessage(nil), attempt.schema...)
 	r.runs[key] = attempt
@@ -362,12 +327,14 @@ func (r *workflowAppRunner) installAttempt(ctx context.Context, attempt *workflo
 	delete(r.takeovers, threadID)
 	epoch := attempt.sendEpoch
 	r.mu.Unlock()
+	if err := prepared.attach(threadID); err != nil {
+		r.detach(key)
+		return prepared.discard(r, err)
+	}
+	prepared.attached = true
 	if err := ctx.Err(); err != nil {
 		r.detach(key)
-		if createdThread {
-			err = errors.Join(err, r.app.store.DeleteThread(threadID))
-		}
-		return fmt.Errorf("workflow runner: startup cancelled: %w", err)
+		return prepared.discard(r, fmt.Errorf("workflow runner: startup cancelled: %w", err))
 	}
 
 	schema := append(json.RawMessage(nil), attempt.schema...)

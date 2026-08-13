@@ -28,7 +28,9 @@ const (
 	reasonQuestion    = "question"
 	reasonStuck       = "stuck"
 
-	reasonRetriesExhausted = "retries-exhausted"
+	reasonRetriesExhausted         = "retries-exhausted"
+	reasonProviderRetriesExhausted = "provider-retries-exhausted"
+	reasonLoopLimitExhausted       = "loop-limit-exhausted"
 
 	// The two decision kinds a `gate` park can rest under, mirrored from
 	// def.DecisionHuman / def.DecisionPark for the same reason the reasons
@@ -153,9 +155,19 @@ func repairSentence(itemID, state, reason, gateDecision, gateLabel string) strin
 		return fmt.Sprintf(
 			"The phase reported itself stuck rather than failing, so the detail above is its own account of what it needs. Once that is cleared, %s enters the parked phase again as a fresh attempt; if the fix was an edit to the workflow definition or one of its prompt files, `agent-overflow run resume %s --refresh-def` re-reads them at that entry — a run otherwise renders the definition it froze at start.",
 			resumeCommand(itemID), id)
-	case reasonRetriesExhausted:
+	case reasonProviderRetriesExhausted:
 		return fmt.Sprintf(
-			"%s continues the parked attempt on the provider session its last turn died in, which is the move once the cause outside the run is cleared. It refills no loop budget: when what ran out was a loop bound rather than the provider, `agent-overflow run resume %s --phase <phase-id>` naming an EARLIER phase is what re-enters the loop's target from outside the cycle and gives the bound back.",
+			"%s continues the parked attempt on the provider session its last turn died in, which is the move once the provider failure is cleared.",
+			resumeCommand(itemID))
+	case reasonLoopLimitExhausted:
+		return fmt.Sprintf(
+			"The workflow's loop limit is spent. `agent-overflow run resume %s --phase <phase-id>` naming an EARLIER phase re-enters the loop's target from outside the cycle and refills its bound.",
+			id)
+	case reasonRetriesExhausted:
+		// Compatibility copy for rows written before the two causes received
+		// distinct persisted reasons. Their source cannot be reconstructed.
+		return fmt.Sprintf(
+			"This run predates the separate provider-retry and loop-limit reasons. %s preserves its original behavior and continues the parked attempt. If a workflow loop bound was spent, `agent-overflow run resume %s --phase <phase-id>` naming an EARLIER phase re-enters the loop's target from outside the cycle and refills its bound.",
 			resumeCommand(itemID), id)
 	default:
 		// Every other reason names its own cause and is repaired by fixing that

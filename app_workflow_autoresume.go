@@ -133,7 +133,8 @@ func (a *App) clearWorkflowAutoResume(itemID string) {
 }
 
 // fireWorkflowAutoResume is the timer's callback: a bare resume, which is what
-// makes a `retries-exhausted` park continue the very session its turn died in.
+// makes a `provider-retries-exhausted` park continue the very session its turn
+// died in. Legacy `retries-exhausted` rows retain the same behavior.
 //
 // It re-reads the run rather than trusting the timer, because the arm and the
 // clear are two writes: a run repaired between them has already been resumed,

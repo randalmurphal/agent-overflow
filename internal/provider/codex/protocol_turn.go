@@ -77,8 +77,13 @@ func classifyTurnCompleted(threadID string, params json.RawMessage, now time.Tim
 
 	if status == "failed" && errorMsg != "" {
 		events = append(events, provider.ProviderEvent{
-			Kind: provider.EventError, ThreadID: threadID, TurnID: turnID, Content: errorMsg, Timestamp: now,
+			Kind: provider.EventError, ThreadID: threadID, TurnID: turnID, Content: errorMsg,
+			Failure: &provider.FailureMeta{Class: provider.FailureFatal, Boundary: provider.FailureBoundaryTurn}, Timestamp: now,
 		})
+	}
+	var failure *provider.FailureMeta
+	if status == "failed" {
+		failure = &provider.FailureMeta{Class: provider.FailureFatal}
 	}
 
 	events = append(events, provider.ProviderEvent{
@@ -90,6 +95,7 @@ func classifyTurnCompleted(threadID string, params json.RawMessage, now time.Tim
 			Aborted:      aborted,
 			ErrorMessage: errorMsg,
 		},
+		Failure:   failure,
 		Timestamp: now,
 	})
 	return events

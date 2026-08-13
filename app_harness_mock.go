@@ -77,6 +77,9 @@ func (h *Harness) startControl() error {
 		control.EnvAddr:  srv.Addr(),
 		control.EnvToken: srv.Token(),
 	}
+	if h.paths.HomeDir != "" {
+		h.app.providerExtraEnv[control.EnvTranscriptHome] = h.paths.HomeDir
+	}
 	h.mu.Lock()
 	h.control = srv
 	h.mu.Unlock()

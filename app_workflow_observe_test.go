@@ -30,6 +30,28 @@ const (
 	claudeRateLimitedMeta = `{"api_error_enum":"rate_limit","fatal":true,"expect_turn_complete":true}`
 )
 
+func codexOverloadedEvent(parent string) provider.ProviderEvent {
+	return provider.ProviderEvent{
+		Kind: provider.EventError, ParentToolUseID: parent,
+		Content: "server overloaded", Meta: json.RawMessage(codexOverloadedMeta),
+		Failure: &provider.FailureMeta{
+			Class: provider.FailureTransient, Boundary: provider.FailureBoundaryTurn,
+		},
+	}
+}
+
+func claudeRateLimitedEvent(parent string) provider.ProviderEvent {
+	return provider.ProviderEvent{
+		Kind: provider.EventError, ParentToolUseID: parent,
+		Content: "Claude usage limit reached", Meta: json.RawMessage(claudeRateLimitedMeta),
+		Failure: &provider.FailureMeta{
+			Class: provider.FailureTransient, Boundary: provider.FailureBoundaryTurn,
+			Reason: provider.FailureReasonUsageLimit,
+			Scope:  provider.FailureScopeParentTurn,
+		},
+	}
+}
+
 // observeHarness drives `observe` directly against one installed attempt with a
 // deterministic clock, timer factory, and send stub. That is the level these
 // rules live at: which events may move the turn machine, and what is left armed
@@ -122,7 +144,7 @@ func (h *observeHarness) state() observeState {
 		pendingTransient: h.attempt.pendingTransient, pendingSessionDeath: h.attempt.pendingSessionDeath,
 		awaitingTurnStart: h.attempt.awaitingTurnStart, sendEpoch: h.attempt.sendEpoch,
 		retryCount: h.attempt.transientRetryCount, lastFailure: h.attempt.lastFailure,
-		claudeRetryable: h.attempt.claudeTransientRetry,
+		claudeRetryable: h.attempt.providerRetryHint,
 	}
 }
 
@@ -226,6 +248,7 @@ func (h *observeHarness) driveToFirstBackoffRung() {
 	h.observe(provider.ProviderEvent{Kind: provider.EventTurnStart, TurnID: "turn-1"})
 	h.observe(provider.ProviderEvent{
 		Kind: provider.EventError, Content: "server overloaded", Meta: json.RawMessage(codexOverloadedMeta),
+		Failure: &provider.FailureMeta{Class: provider.FailureTransient, Boundary: provider.FailureBoundaryTurn},
 	})
 	h.observe(provider.ProviderEvent{
 		Kind: provider.EventTurnComplete, TurnID: "turn-1",
@@ -262,10 +285,9 @@ func TestWorkflowCollabChildErrorNeverArmsTheParentRetryLadder(t *testing.T) {
 		t.Fatalf("turn start armed %+v, want the inactivity watchdog", armed)
 	}
 
-	harness.observe(provider.ProviderEvent{
-		Kind: provider.EventError, ParentToolUseID: "collab-child",
-		Content: "stream error: server overloaded", Meta: json.RawMessage(codexOverloadedMeta),
-	})
+	childError := codexOverloadedEvent("collab-child")
+	childError.Content = "stream error: server overloaded"
+	harness.observe(childError)
 
 	after := harness.state()
 	if after.mode != workflowTimerWatchdog || after.timer != armed.timer {
@@ -315,9 +337,7 @@ func TestWorkflowChildActivityFeedsTheWatchdogButNotTheRetryWait(t *testing.T) {
 	}
 
 	// Now the same event while the attempt is waiting for a retry's first turn.
-	harness.observe(provider.ProviderEvent{
-		Kind: provider.EventError, Content: "server overloaded", Meta: json.RawMessage(codexOverloadedMeta),
-	})
+	harness.observe(codexOverloadedEvent(""))
 	harness.observe(provider.ProviderEvent{
 		Kind: provider.EventTurnComplete, TurnID: "turn-1",
 		TurnComplete: &provider.WireTurnCompleteMeta{StopReason: "error", ErrorMessage: "server overloaded"},
@@ -371,9 +391,7 @@ func TestWorkflowCodexTransientArmsTheLadderOnlyAtTheTurnBoundary(t *testing.T) 
 	harness.observe(provider.ProviderEvent{Kind: provider.EventTurnStart, TurnID: "turn-1"})
 	live := harness.state()
 
-	harness.observe(provider.ProviderEvent{
-		Kind: provider.EventError, Content: "server overloaded", Meta: json.RawMessage(codexOverloadedMeta),
-	})
+	harness.observe(codexOverloadedEvent(""))
 	held := harness.state()
 	if !held.pendingTransient {
 		t.Fatalf("codex error did not defer to the turn's own completion: %+v", held)
@@ -416,9 +434,7 @@ func TestWorkflowCodexTransientArmsTheLadderOnlyAtTheTurnBoundary(t *testing.T) 
 func TestWorkflowCodexTransientYieldsToACompletionThatCarriesAnEnvelope(t *testing.T) {
 	harness := newObserveHarness(t, string(provider.Codex))
 	harness.observe(provider.ProviderEvent{Kind: provider.EventTurnStart, TurnID: "turn-1"})
-	harness.observe(provider.ProviderEvent{
-		Kind: provider.EventError, Content: "server overloaded", Meta: json.RawMessage(codexOverloadedMeta),
-	})
+	harness.observe(codexOverloadedEvent(""))
 
 	harness.observe(provider.ProviderEvent{
 		Kind: provider.EventTurnComplete, TurnID: "turn-1", StructuredOutput: workflowValidEnvelope,
@@ -490,13 +506,11 @@ func TestWorkflowClaude529SequenceEntersTheTransientLadder(t *testing.T) {
 	harness.observe(provider.ProviderEvent{Kind: provider.EventInit})
 	for attempt := 1; attempt <= 10; attempt++ {
 		event := provider.ProviderEvent{
-			Kind: provider.EventAPIRetry,
+			Kind:    provider.EventAPIRetry,
+			Failure: &provider.FailureMeta{Class: provider.FailureTransient},
 			Meta: json.RawMessage(fmt.Sprintf(
 				`{"attempt":%d,"max_retries":10,"wire":{"error_status":529,"error":"rate_limit"}}`, attempt,
 			)),
-		}
-		if !workflowClaudeTransientAPIRetry(event) {
-			t.Fatalf("529 api_retry event %d was not recognized: %s", attempt, event.Meta)
 		}
 		harness.observe(event)
 	}
@@ -505,6 +519,9 @@ func TestWorkflowClaude529SequenceEntersTheTransientLadder(t *testing.T) {
 	}
 	harness.observe(provider.ProviderEvent{
 		Kind: provider.EventError,
+		Failure: &provider.FailureMeta{
+			Class: provider.FailureTransientAfterRetry, Boundary: provider.FailureBoundaryTurn,
+		},
 		Meta: json.RawMessage(`{"api_error_enum":"server_error","fatal":true,"expect_turn_complete":true}`),
 	})
 	if state := harness.state(); !state.pendingTransient {
@@ -569,14 +586,8 @@ func TestWorkflowParentedErrorGateReadsTheTurnCompletionPromise(t *testing.T) {
 		event provider.ProviderEvent
 		want  bool
 	}{
-		{name: "claude subagent assistant error", want: true, event: provider.ProviderEvent{
-			Kind: provider.EventError, ParentToolUseID: "toolu_subagent",
-			Meta: json.RawMessage(claudeRateLimitedMeta),
-		}},
-		{name: "codex collab child error", event: provider.ProviderEvent{
-			Kind: provider.EventError, ParentToolUseID: "collab-child",
-			Meta: json.RawMessage(codexOverloadedMeta),
-		}},
+		{name: "claude subagent assistant error", want: true, event: claudeRateLimitedEvent("toolu_subagent")},
+		{name: "codex collab child error", event: codexOverloadedEvent("collab-child")},
 		{name: "fatal without the promise", event: provider.ProviderEvent{
 			Kind: provider.EventError, ParentToolUseID: "collab-child",
 			Meta: json.RawMessage(`{"api_error_enum":"rate_limit","fatal":true}`),
@@ -606,10 +617,7 @@ func TestWorkflowClaudeSubagentErrorEntersTheTransientWait(t *testing.T) {
 	harness.observe(provider.ProviderEvent{Kind: provider.EventInit})
 	live := harness.state()
 
-	harness.observe(provider.ProviderEvent{
-		Kind: provider.EventError, ParentToolUseID: "toolu_subagent",
-		Content: "Claude usage limit reached", Meta: json.RawMessage(claudeRateLimitedMeta),
-	})
+	harness.observe(claudeRateLimitedEvent("toolu_subagent"))
 
 	harness.refuteOutcome("a subagent rate limit ended the phase outright")
 	state := harness.state()
@@ -631,10 +639,7 @@ func TestWorkflowClaudeSubagentRateLimitStillReachesTheQuotaPark(t *testing.T) {
 	harness.observe(harness.spentQuotaWindow())
 	harness.observe(provider.ProviderEvent{Kind: provider.EventInit})
 
-	harness.observe(provider.ProviderEvent{
-		Kind: provider.EventError, ParentToolUseID: "toolu_subagent",
-		Content: "Claude usage limit reached", Meta: json.RawMessage(claudeRateLimitedMeta),
-	})
+	harness.observe(claudeRateLimitedEvent("toolu_subagent"))
 
 	outcome := harness.awaitOutcome()
 	if outcome.Kind != engine.OutcomeTransientExhausted ||
@@ -651,9 +656,7 @@ func TestWorkflowReplayedTurnStartDoesNotRetargetTheLiveTurn(t *testing.T) {
 	harness := newObserveHarness(t, string(provider.Codex))
 	harness.observe(provider.ProviderEvent{Kind: provider.EventTurnStart, TurnID: "turn-A"})
 	live := harness.state()
-	harness.observe(provider.ProviderEvent{
-		Kind: provider.EventError, Content: "server overloaded", Meta: json.RawMessage(codexOverloadedMeta),
-	})
+	harness.observe(codexOverloadedEvent(""))
 
 	harness.observe(provider.ProviderEvent{Kind: provider.EventTurnStart, TurnID: "turn-B"})
 

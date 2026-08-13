@@ -152,6 +152,20 @@ func IsMethodUnsupported(err error, method string) bool {
 		strings.Contains(rpcErr.Message, "unknown variant `"+method+"`")
 }
 
+// IsThreadNotFound reports the authoritative thread/resume refusal for a
+// provider cursor that no longer resolves. The JSON-RPC code alone is too broad
+// (every invalid request uses it), so the provider adapter owns the explicit
+// messages emitted by the current thread store and older app-server releases.
+func IsThreadNotFound(err error) bool {
+	var rpcErr *RPCError
+	if !errors.As(err, &rpcErr) || rpcErr.Method != "thread/resume" || rpcErr.Code != -32600 {
+		return false
+	}
+	message := strings.TrimSpace(rpcErr.Message)
+	return strings.HasPrefix(message, "no rollout found for thread id ") ||
+		strings.HasPrefix(message, "thread not found:") || message == "thread not found"
+}
+
 // RequestTimeoutError means a JSON-RPC request was written to Codex but no
 // response arrived before the client-side timeout. Callers should treat this
 // as an ambiguous ACK-missing state, not proof that Codex rejected the request.
@@ -367,6 +381,7 @@ func (s *Session) readLoop() {
 					ThreadID:  s.threadID,
 					Content:   fmt.Sprintf("codex: read error: %v", err),
 					Meta:      meta,
+					Failure:   &provider.FailureMeta{Class: provider.FailureFatal, Boundary: provider.FailureBoundaryEvent},
 					Timestamp: time.Now(),
 				})
 			}

@@ -29,6 +29,32 @@ func TestWorkItemUnitLifecycle(t *testing.T) {
 	if err := s.CreateWorkItemUnits(nil); err != nil {
 		t.Fatalf("empty expansion: %v", err)
 	}
+	if err := s.AttachWorkItemJoinRun("item", "port", 1, "merge", "orphan-thread", "/runs/merge/narrative.md"); err == nil {
+		t.Fatal("join attachment without its phase row succeeded")
+	}
+	join, found, err := s.GetWorkItemUnit("item", "port", 1, "merge")
+	if err != nil || !found {
+		t.Fatalf("get join after rolled-back attachment = %v found=%v", err, found)
+	}
+	if join.ThreadID != "" || join.NarrativePath != "" {
+		t.Fatalf("failed join attachment was partially persisted: %#v", join)
+	}
+	if err := s.CreateWorkItemPhase(WorkItemPhase{
+		ItemID: "item", PhaseID: "port", Attempt: 1, Status: "running", StartedAt: 1,
+	}); err != nil {
+		t.Fatalf("create join phase: %v", err)
+	}
+	if err := s.AttachWorkItemJoinRun("item", "port", 1, "merge", "join-thread", "/runs/merge/narrative.md"); err != nil {
+		t.Fatalf("attach join: %v", err)
+	}
+	join, found, err = s.GetWorkItemUnit("item", "port", 1, "merge")
+	if err != nil || !found || join.ThreadID != "join-thread" || join.NarrativePath != "/runs/merge/narrative.md" {
+		t.Fatalf("attached join = %#v found=%v err=%v", join, found, err)
+	}
+	phases, err := s.ListWorkItemPhases("item")
+	if err != nil || len(phases) != 1 || phases[0].ThreadID != join.ThreadID || phases[0].NarrativePath != join.NarrativePath {
+		t.Fatalf("join phase attachment = %#v err=%v", phases, err)
+	}
 
 	if err := s.StartWorkItemUnit("item", "port", 1, "port-0", 1, "", 100); err != nil {
 		t.Fatalf("start unit: %v", err)

@@ -337,7 +337,7 @@ func TestWorkflowWakeRecordsALiveDeliveryOnlyOnceItDispatches(t *testing.T) {
 // them. So an action taken while the message was still queued used to find
 // NOTHING to spend — the record had not been written yet — and then the record
 // landed behind it, suppressing the identical park from then on. A bare `run
-// resume` of a retries-exhausted run produces exactly this: it continues the
+// resume` of a provider-retries-exhausted run produces exactly this: it continues the
 // same attempt, so every field of the signature matches.
 //
 // The claim written at hand-off is what the action spends, and the promotion is
@@ -346,7 +346,7 @@ func TestWorkflowWakeQueuedRecordIsSpentByAnActionBeforeItDispatches(t *testing.
 	h := newWakeHarness(t)
 	thread := h.chatThread(t, "origin-overtaken")
 	h.app.sessions[thread.ID] = session{provider: string(provider.Claude), token: "live"}
-	item := h.boundRun(t, "overtaken-run", thread.ID, engine.StateNeedsHuman, engine.ReasonRetriesExhausted)
+	item := h.boundRun(t, "overtaken-run", thread.ID, engine.StateNeedsHuman, engine.ReasonProviderRetriesExhausted)
 	h.phase(t, item.ID, "build", 1, "parked", "phase-thread", nil)
 
 	// (1) The run parks; the wake is queued into a mid-turn thread and sits.

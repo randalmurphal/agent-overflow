@@ -55,7 +55,10 @@ headless, isolated data dir, mocked providers. Full harness guide:
 - `tests/workflows-resume.spec.ts` — provider-agnostic prompt/session recovery:
   Claude and Codex both prove that a valid cursor receives a short continuation
   on the same provider session, while a deliberately cleared cursor starts a
-  new AO thread/provider session with the full authored prompt.
+  new AO thread/provider session with the full authored prompt. It also proves
+  a cold backend restart for both providers and Codex's authoritative
+  `thread/resume` rejection after a retained cursor, including the superseded
+  unsent attempt and automatic full-prompt reconstruction.
 - `tests/workflows-automations.spec.ts` — automations (§11) driven entirely
   through RPCs: Run now going through the one start path with the reserved
   `trigger` / `job-notes` seeds reaching the phase's rendered prompt, a second

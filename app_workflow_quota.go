@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
 	"hash/fnv"
 	"log"
@@ -18,7 +17,7 @@ import (
 // an overloaded server, a dropped stream — and it burns its whole schedule in
 // under ten minutes. A spent usage allowance clears when the provider says it
 // does, which is hours or days away, so retrying against it wastes every attempt
-// and then parks a generic `retries-exhausted` that reads like a fault. The run
+// and then parks `provider-retries-exhausted`. The run
 // then sat there until a human noticed, which for a five-day weekly limit meant
 // a five-day stall behind a human alarm clock.
 //
@@ -26,7 +25,7 @@ import (
 // where it stands, parks through the same `OutcomeTransientExhausted` path with
 // a cause that states the boundary and the self-resume, and arms the timer that
 // brings the run back. A refusal that carries NO boundary is left exactly as it
-// was: the ladder runs, and the park is the generic one. There is nothing to
+// was: the ladder runs, and the provider-retry park has no schedule. There is nothing to
 // come back at, and inventing a delay would be a guess dressed as a schedule.
 
 // workflowQuotaExhaustedPercent is the band a rate-limit window has to be in
@@ -65,44 +64,18 @@ const maxWorkflowFailureDetailRunes = 400
 // declining the turn because the account's usage allowance is spent — as
 // opposed to a transient failure a retry can clear.
 //
-// Both signals are the providers' own typed enums, never message text:
-//
-//   - Claude: the `assistant.error` enum `rate_limit`, normalized onto
-//     `api_error_enum` by `internal/provider/claude/parse_assistant.go`. Every
-//     429 branch of claude-code's `src/services/api/errors.ts` sets it,
-//     including the capacity and entitlement 429s that are NOT quota — which is
-//     why the reset boundary, not this predicate, is what decides whether a
-//     refusal is one this mechanism acts on.
-//   - Codex: `codexErrorInfo: "usageLimitExceeded"`
-//     (`codex-rs/protocol/src/protocol.rs` `CodexErrorInfo::UsageLimitExceeded`,
-//     produced from `CodexErr::UsageLimitReached`).
+// Provider adapters normalize their wire enums onto FailureReasonUsageLimit;
+// this workflow layer never decodes provider-specific JSON for control flow.
+// The reset boundary, not this predicate, is what distinguishes a refusal the
+// engine can schedule from a capacity limit or an allowance with no known
+// return time.
 //
 // It deliberately does not widen `workflowTransientError`: both values are
 // already transient there, and a quota refusal that produces no boundary must
 // keep taking exactly the path it takes today.
-func workflowQuotaRefusal(providerName string, event provider.ProviderEvent) bool {
-	if event.Kind != provider.EventError || len(event.Meta) == 0 {
-		return false
-	}
-	var meta struct {
-		APIErrorEnum string `json:"api_error_enum"`
-		Wire         struct {
-			Error struct {
-				CodexErrorInfo json.RawMessage `json:"codexErrorInfo"`
-			} `json:"error"`
-		} `json:"wire"`
-	}
-	if json.Unmarshal(event.Meta, &meta) != nil {
-		return false
-	}
-	switch providerName {
-	case string(provider.Claude):
-		return meta.APIErrorEnum == "rate_limit"
-	case string(provider.Codex):
-		var scalar string
-		return json.Unmarshal(meta.Wire.Error.CodexErrorInfo, &scalar) == nil && scalar == "usageLimitExceeded"
-	}
-	return false
+func workflowQuotaRefusal(event provider.ProviderEvent) bool {
+	return event.Kind == provider.EventError && event.Failure != nil &&
+		event.Failure.Reason == provider.FailureReasonUsageLimit
 }
 
 // workflowQuotaReset picks the moment a refused turn can be retried from the
@@ -195,7 +168,7 @@ func workflowQuotaUnscheduledCause(resetsAt time.Time) string {
 func (r *workflowAppRunner) quotaParkLocked(
 	attempt *workflowAttempt, event provider.ProviderEvent,
 ) (resetsAt, resumeAt time.Time, ok bool) {
-	if !workflowQuotaRefusal(attempt.provider, event) {
+	if !workflowQuotaRefusal(event) {
 		return time.Time{}, time.Time{}, false
 	}
 	resetsAt, found := workflowQuotaReset(attempt.rateLimits, r.now())
@@ -243,27 +216,14 @@ func workflowTurnCompleteFailureDetail(event provider.ProviderEvent) string {
 
 // workflowProviderErrorDetail renders one provider error event as the runner's
 // account of a failure the element authored no envelope for. Content is the
-// provider's own summary line; the typed enum is appended when there is one,
+// provider's own summary line; the normalized typed code is appended when there is one,
 // because "API error" alone does not distinguish an expired login from a
 // refused prompt.
 func workflowProviderErrorDetail(event provider.ProviderEvent) string {
 	summary := strings.TrimSpace(event.Content)
-	var meta struct {
-		APIErrorEnum string `json:"api_error_enum"`
-		Wire         struct {
-			Error struct {
-				CodexErrorInfo json.RawMessage `json:"codexErrorInfo"`
-			} `json:"error"`
-		} `json:"wire"`
-	}
 	code := ""
-	if len(event.Meta) > 0 && json.Unmarshal(event.Meta, &meta) == nil {
-		switch {
-		case meta.APIErrorEnum != "":
-			code = meta.APIErrorEnum
-		case len(meta.Wire.Error.CodexErrorInfo) > 0:
-			code = strings.Trim(string(meta.Wire.Error.CodexErrorInfo), `"`)
-		}
+	if event.Failure != nil {
+		code = strings.TrimSpace(event.Failure.Code)
 	}
 	switch {
 	case summary != "" && code != "":

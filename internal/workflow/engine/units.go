@@ -471,25 +471,25 @@ func (e *Engine) startUnitRunner(item *runtimeItem, unit *unitRun) error {
 		Phase: phase,
 		Unit:  &definition, UnitIndex: unit.index, UnitKind: unit.kind,
 		UnitAttempt: unit.attempt,
-		Vars:        vars, Feedback: cloneFeedback(unit.feedback), PromptMode: PromptFull,
+		Vars:        vars, Feedback: cloneFeedback(unit.feedback), Launch: FreshTurn(),
 		// Every element of the attempt renders the guidance its phase entry
 		// delivered, work units and join alike: the block is part of prompt
 		// assembly, and an instruction meant for the wave that reached only the
 		// join would be steering nothing. The phase's `prompt:` override is NOT
 		// carried here — it replaces a phase's own body, and a fan-out has none;
 		// validation refuses the declaration on a route targeting one.
-		Guidance: item.guidance,
+		Guidance: promptGuidanceForEntry(item),
 	}
 	if unit.kind == UnitJoin {
 		// A fan-out's phase-level continuation is always the join's: it is the
 		// only unit whose envelope is the phase's. Consumed here exactly as
 		// startRunner consumes it, so a continuation can never leak into the
 		// phase that follows.
-		request.PriorThreadID = item.priorThreadID
-		request.PromptMode = promptMode(item.entry)
-		request.FinalizeTakeover = item.takeoverFinalize
-		item.priorThreadID = ""
-		item.entry = entryFresh
+		launch, err := phaseTurnLaunch(item.entry, item.priorThreadID, item.takeoverFinalize)
+		if err != nil {
+			return e.parkStartFailure(item, errors.Join(ErrWiringFailed, err))
+		}
+		request.Launch = launch
 	}
 	startCtx, cancel := context.WithCancel(e.ctx)
 	future := &runnerStartFuture{key: request.Key, done: make(chan response, 1)}
@@ -497,7 +497,6 @@ func (e *Engine) startUnitRunner(item *runtimeItem, unit *unitRun) error {
 	unit.runnerStartCancel = cancel
 	e.commandStarts = append(e.commandStarts, future)
 	e.inflightStarts[future] = struct{}{}
-	unit.feedback = nil
 	entered := make(chan struct{})
 	go func() {
 		err := e.runner.Start(startCtx, request, func() { close(entered) }, func(outcome Outcome) {

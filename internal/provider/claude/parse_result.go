@@ -115,6 +115,12 @@ func (p *Parser) parseResult(threadID string, raw map[string]json.RawMessage, no
 	// report to the frontend and persists nothing.
 	fastMode, _ := extractFastModeStatus(raw)
 
+	var failure *provider.FailureMeta
+	if readRawString(raw["terminal_reason"]) == "network_error" {
+		failure = &provider.FailureMeta{Class: provider.FailureTransient}
+	} else if stopReason == "error" {
+		failure = &provider.FailureMeta{Class: provider.FailureFatal}
+	}
 	events := []provider.ProviderEvent{{
 		Kind:             provider.EventTurnComplete,
 		ThreadID:         threadID,
@@ -130,6 +136,7 @@ func (p *Parser) parseResult(threadID string, raw map[string]json.RawMessage, no
 		},
 		Timestamp: now,
 		Raw:       line,
+		Failure:   failure,
 	}}
 
 	return events, nil

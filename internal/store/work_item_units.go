@@ -196,6 +196,50 @@ func (s *Store) AttachWorkItemUnitRun(itemID, phaseID string, attempt int, unitI
 	return requireRowsAffected(result, fmt.Sprintf("store: attach work item unit run %s/%s/%d/%s", itemID, phaseID, attempt, unitID))
 }
 
+// AttachWorkItemJoinRun atomically records a join on both the unit row that
+// executes it and the phase row whose result it produces. A half-attachment is
+// invalid: phase-level continuation reads the phase row, while unit recovery
+// reads the unit row, and the two must name the same provider context.
+func (s *Store) AttachWorkItemJoinRun(itemID, phaseID string, attempt int, unitID, threadID, narrativePath string) (err error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("store: begin attach work item join run %s/%s/%d/%s: %w", itemID, phaseID, attempt, unitID, err)
+	}
+	defer func() {
+		if err != nil {
+			_ = tx.Rollback()
+		}
+	}()
+
+	result, err := tx.Exec(
+		`UPDATE work_item_units SET thread_id = ?, narrative_path = ?
+		 WHERE item_id = ? AND phase_id = ? AND attempt = ? AND unit_id = ?`,
+		threadID, narrativePath, itemID, phaseID, attempt, unitID,
+	)
+	if err != nil {
+		return fmt.Errorf("store: attach work item join unit %s/%s/%d/%s: %w", itemID, phaseID, attempt, unitID, err)
+	}
+	if err = requireRowsAffected(result, fmt.Sprintf("store: attach work item join unit %s/%s/%d/%s", itemID, phaseID, attempt, unitID)); err != nil {
+		return err
+	}
+
+	result, err = tx.Exec(
+		`UPDATE work_item_phases SET thread_id = ?, narrative_path = ?
+		 WHERE item_id = ? AND phase_id = ? AND attempt = ?`,
+		threadID, narrativePath, itemID, phaseID, attempt,
+	)
+	if err != nil {
+		return fmt.Errorf("store: attach work item join phase %s/%s/%d: %w", itemID, phaseID, attempt, err)
+	}
+	if err = requireRowsAffected(result, fmt.Sprintf("store: attach work item join phase %s/%s/%d", itemID, phaseID, attempt)); err != nil {
+		return err
+	}
+	if err = tx.Commit(); err != nil {
+		return fmt.Errorf("store: commit attach work item join run %s/%s/%d/%s: %w", itemID, phaseID, attempt, unitID, err)
+	}
+	return nil
+}
+
 // CompleteWorkItemUnit records a unit's terminal status for its current
 // attempt, with whatever envelope it produced and the note that explains a
 // non-success.

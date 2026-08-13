@@ -2125,11 +2125,12 @@ each pinned by an incident-replay test:
   subagent or collab child emits, and the observer now filters on it:
   nothing parented may enter the retry ladder, trigger the quota park,
   answer the turn start a retry is waiting on, or be consumed as the
-  turn's completion. The one exception is read off the meta, not the
-  provider: a parented error carrying `expect_turn_complete` IS the
-  parent turn ending (a Claude Task-subagent's `assistant.error` closes
-  the parent's open turn), and filtering it would downgrade a retryable
-  rate limit — and its D71 self-resume — into a bare execution failure.
+  turn's completion. The one exception is adapter-normalized, not decoded
+  from provider metadata here: a parented failure scoped to the parent turn
+  IS the parent turn ending (a Claude Task-subagent's `assistant.error`
+  closes the parent's open turn), and filtering it would downgrade a
+  retryable rate limit — and its D71 self-resume — into a bare execution
+  failure.
   The watchdog reset is the one thing every filtered child event keeps:
   a delegating turn leaves the parent stream quiet for as long as its
   children work, and that quiet is not a stall.
@@ -2137,8 +2138,8 @@ each pinned by an incident-replay test:
   Codex core always terminates a turn with `turn/completed` (`failed`
   when it errored), so the transient ladder now arms from the
   empty-payload completion, never from the error notification — the
-  same waits-for-completion path Claude's `expect_turn_complete` errors
-  take. The ladder can therefore never arm while a turn is alive, which
+  same normalized turn-boundary path Claude errors take. The ladder can
+  therefore never arm while a turn is alive, which
   is what previously let a retry be swallowed as queued input; and a
   completion that arrives carrying an envelope self-corrects a bogus
   error instead of being discarded.
@@ -2221,8 +2222,11 @@ each pinned by an incident-replay test:
   parked session, and the transient retry layer itself was already
   re-sending into that same live session between backoffs. Now a bare
   resume routes it through the existing continuation path: next turn on
-  the parked attempt's thread with a continue message, dead-session
-  fallback to a fresh attempt with a note, `--phase <id>` the explicit
+  the parked attempt's thread with a continue message. If the durable cursor
+  exists but provider context does not, the unsent continuation is superseded
+  and the same parked round is reconstructed on a new thread with its full
+  original prompt, delivered guidance, route override, amended inputs, and a
+  context-loss note. `--phase <id>` remains the explicit
   start-over (and the one place `--refresh-def` applies, per the
   continuable-park contract). The continue message carries only the resume or
   resolution delta (including amended inputs) plus the new attempt's narrative
@@ -2259,8 +2263,25 @@ each pinned by an incident-replay test:
     resolution row — `retries-exhausted` moved from the `blocked` kind
     (whose copy says "the phase starts over") to the `paused` kind, whose
     copy is exactly what is now true. The refusal message enumerates the
-    continuable list programmatically, so a future member cannot join the
-    rule and miss the message.
+  continuable list programmatically, so a future member cannot join the
+  rule and miss the message.
+
+## Provider retries and workflow loops are different limits (2026-08-13)
+
+- **D74. Persist the cause-specific recovery, not an overloaded retry reason.**
+  D70 correctly made provider retry exhaustion continuable, but incorrectly
+  extended that recovery to workflow loop exhaustion because both were stored
+  as `retries-exhausted`. New provider failures park
+  `provider-retries-exhausted` and remain continuable on the session whose turn
+  died. A gate that spends every loop route parks `loop-limit-exhausted`; it has
+  no dead provider turn to continue, so a bare resume re-enters the parked
+  phase fresh and only `--phase <earlier-id>` refills the cycle. The internal
+  evaluator decision remains `DecisionRetriesExhausted` because it describes
+  route evaluation, not provider retry state. Migration v56 widens the reason
+  CHECK and preserves old `retries-exhausted` rows unchanged: their optional,
+  free-form cause cannot classify them reliably, so they retain D70's shipped
+  continuation behavior and every surface labels them as legacy instead of
+  inventing a cause.
 
 ## The budget stops lying (2026-08-10)
 
@@ -2418,11 +2439,11 @@ each pinned by an incident-replay test:
 
 - **D60. `session: continue | fresh` on loop routes.** The measured
   ping-pong: every loop re-entry ran cold, so round N lost what round N−1
-  tried. `continue` runs the re-entered attempt as the next turn on the
-  target phase's newest provider thread, feedback as the message — riding
-  `PriorThreadID`, the exact field `run answer`, resume-in-place, and
-  takeover-finalize already set, consumed by the one runner-start path. No
-  second same-session mechanism. `fresh` stays the default (anti-anchoring:
+  tried. `continue` reuses the target phase's newest provider thread for the
+  new logical round and sends that round's full resolved prompt. Thread
+  selection is shared with `run answer`, resume-in-place, and
+  takeover-finalize, while `TurnLaunch` makes their different prompt semantics
+  explicit. `fresh` stays the default (anti-anchoring:
   review edges re-enter cold by design; starters set `continue` on the fix
   edge). Statically refused on non-loop routes and on loops targeting
   tool/call/fan-out phases (no single session to continue — the finding
@@ -2432,8 +2453,8 @@ each pinned by an incident-replay test:
   an unavailable optimisation must not be an outage. No new column: two
   attempts sharing a thread id IS the provenance, rendered
   `session=continued` on `run status`; it deliberately does not distinguish
-  the loop knob from an answer or a takeover — all three mean "this round
-  remembers the last one", and the definition says which edge asked. The
+  the loop knob from an answer or a takeover — all three reuse provider
+  context, and the definition says which edge asked. The
   knobs are ignored on the loop a `human:` reject synthesizes (scoped out
   explicitly, test-pinned) — a reject edge wanting warmth is a future knob,
   not an accident.
@@ -2448,7 +2469,7 @@ each pinned by an incident-replay test:
   (`validatePromptFile` extracted to share it). Route-scoped, never
   sticky. Refused against fan-out targets rather than silently applying
   to no unit. Composes with `session: continue`: the override becomes the
-  continuation turn's message.
+  authored body inside the warm round's full prompt.
 
 - **D62. `run guide` — the pending-guidance slot.** Steering a
   free-running run previously meant parking it or waiting for a park.

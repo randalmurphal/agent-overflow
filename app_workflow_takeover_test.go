@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -20,12 +21,14 @@ import (
 func TestFailedFinalizeStartClearsTakeoverTransition(t *testing.T) {
 	runner := newWorkflowAppRunner(&App{}, t.TempDir(), nil)
 	runner.takeovers["thread"] = workflowTakeover{itemID: "item", transitioning: true}
+	launch, err := engine.FinalizeThread("thread")
+	if err != nil {
+		t.Fatal(err)
+	}
 	request := engine.RunRequest{
-		Key:              engine.RunKey{ItemID: "item", PhaseID: "phase", Attempt: 2},
-		Phase:            def.Phase{ID: "phase", Driver: def.DriverAgent, Shape: "fan-out"},
-		PriorThreadID:    "thread",
-		PromptMode:       engine.PromptContinue,
-		FinalizeTakeover: true,
+		Key:    engine.RunKey{ItemID: "item", PhaseID: "phase", Attempt: 2},
+		Phase:  def.Phase{ID: "phase", Driver: def.DriverAgent, Shape: "fan-out"},
+		Launch: launch,
 	}
 	if err := runner.Start(t.Context(), request, func() {}, func(engine.Outcome) {}); err == nil {
 		t.Fatal("finalize start with unsupported shape succeeded")
@@ -38,6 +41,48 @@ func TestFailedFinalizeStartClearsTakeoverTransition(t *testing.T) {
 	}
 	if err := runner.registerTakeover("item", "thread"); err != nil {
 		t.Fatalf("steering re-registration after failed finalize start: %v", err)
+	}
+}
+
+func TestSchemaRestartedTakeoverSessionIsOwnedByPreparation(t *testing.T) {
+	app := newTestAppWithStore(t)
+	thread := testThread("schema-restarted-takeover")
+	thread.Mode = threadmode.ModeWorkflow
+	thread.Provider = string(provider.Claude)
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatal(err)
+	}
+	app.sessionManager().put(thread.ID, session{})
+	startCalls := 0
+	app.startSessionFn = func(got string) error {
+		startCalls++
+		if got != thread.ID {
+			t.Fatalf("start thread = %q, want %q", got, thread.ID)
+		}
+		return nil
+	}
+	stopCalls := 0
+	app.stopSessionFn = func(got string) error {
+		stopCalls++
+		if got != thread.ID {
+			t.Fatalf("stop thread = %q, want %q", got, thread.ID)
+		}
+		return nil
+	}
+	runner := newWorkflowAppRunner(app, t.TempDir(), nil)
+	runner.takeovers[thread.ID] = workflowTakeover{itemID: "item", schemaAttached: false}
+
+	restarted, err := runner.restartClaudeTakeoverWithSchema(thread.ID, json.RawMessage(`{"type":"object"}`))
+	if err != nil || !restarted || startCalls != 1 {
+		t.Fatalf("schema restart = restarted %v, starts %d, err %v", restarted, startCalls, err)
+	}
+	prepared := preparedWorkflowAgentTurn{threadID: thread.ID, startedSession: restarted}
+	_ = prepared.discard(runner, errors.New("later preparation failure"))
+	if stopCalls != 1 {
+		t.Fatalf("discard stopped %d sessions, want the restarted session", stopCalls)
+	}
+	if schema := runner.schemaForThread(thread.ID); len(schema) != 0 {
+		t.Fatalf("discard retained temporary schema: %s", schema)
 	}
 }
 

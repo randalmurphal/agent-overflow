@@ -56,11 +56,16 @@ export interface WorkflowActionButton {
 
 // The two reasons that share the paused ROW. `checkpoint` takes the same engine
 // edge back but gets a row of its own, so it is deliberately not here.
-// `retries-exhausted` joined the engine's continuable parks (D70): a bare
-// resume continues the parked session, exactly as for `paused`/`interrupted`,
-// so it takes the same resolution kind — the `blocked` kind's "the phase
-// starts over" would be untrue for it.
-const RESUMABLE_REASONS = new Set(['paused', 'interrupted', 'retries-exhausted']);
+// Provider retry exhaustion continues the parked session, exactly as for
+// `paused`/`interrupted`, so it takes the same resolution kind. The legacy
+// `retries-exhausted` spelling retains that shipped behavior. A spent workflow
+// loop has no dead provider turn to continue and remains blocked.
+const RESUMABLE_REASONS = new Set([
+  'paused',
+  'interrupted',
+  'provider-retries-exhausted',
+  'retries-exhausted',
+]);
 const DONE_REASONS = new Set(['disposition']);
 
 /**

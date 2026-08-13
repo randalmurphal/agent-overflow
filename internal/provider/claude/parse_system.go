@@ -99,11 +99,13 @@ func (p *Parser) parseSystem(threadID string, raw map[string]json.RawMessage, no
 		// string. Triage uses these to render the timeline retry row
 		// (hiding attempts < 4, mirroring Claude Code's TUI). The raw
 		// `data` is preserved under `wire` for forensics.
-		retryMeta := buildClaudeAPIRetryMeta(apiRetryPayload(raw))
+		retryPayload := apiRetryPayload(raw)
+		retryMeta := buildClaudeAPIRetryMeta(retryPayload)
 		return []provider.ProviderEvent{{
 			Kind:      provider.EventAPIRetry,
 			ThreadID:  threadID,
 			Meta:      retryMeta,
+			Failure:   claudeAPIRetryFailure(retryPayload),
 			Timestamp: now,
 		}}, nil
 
@@ -601,6 +603,28 @@ func buildClaudeAPIRetryMeta(rawData json.RawMessage) json.RawMessage {
 		return rawData
 	}
 	return out
+}
+
+func claudeAPIRetryFailure(rawData json.RawMessage) *provider.FailureMeta {
+	var data struct {
+		ErrorStatus int             `json:"error_status"`
+		Error       json.RawMessage `json:"error"`
+	}
+	if json.Unmarshal(rawData, &data) != nil {
+		return nil
+	}
+	if data.ErrorStatus == 529 {
+		return &provider.FailureMeta{Class: provider.FailureTransient}
+	}
+	var detail struct {
+		Connection struct {
+			Code string `json:"code"`
+		} `json:"connection"`
+	}
+	if json.Unmarshal(data.Error, &detail) == nil && detail.Connection.Code == "ECONNRESET" {
+		return &provider.FailureMeta{Class: provider.FailureTransient}
+	}
+	return nil
 }
 
 // readNestedErrorMessage pulls the human copy out of a Claude

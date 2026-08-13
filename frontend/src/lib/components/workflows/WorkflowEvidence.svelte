@@ -33,10 +33,16 @@
   // stopped in — the diagnosis is the same question, and only the way back
   // differs (`failed` reruns, `blocked` resumes). The check strip is suppressed
   // for both because the failure evidence carries the checks that matter.
-  // `retries-exhausted` resolves on the `paused` row (D70: a bare resume
-  // continues its session), but the run still stopped on a failure — a spent
-  // loop bound or a provider error — so it keeps the diagnosis block.
-  let unresolved = $derived(kind === 'failed' || kind === 'blocked' || item.reason === 'retries-exhausted');
+  // Provider retry exhaustion resolves on the `paused` row because a bare
+  // resume continues its session, but it still keeps the diagnosis block.
+  // Loop-limit and legacy retry parks do too, whichever action row they use.
+  let unresolved = $derived(
+    kind === 'failed' ||
+      kind === 'blocked' ||
+      item.reason === 'provider-retries-exhausted' ||
+      item.reason === 'loop-limit-exhausted' ||
+      item.reason === 'retries-exhausted',
+  );
 
   let checkPhases = $derived.by(() => {
     const checks = new Set(detail.checkPhaseIds ?? []);
@@ -65,10 +71,16 @@
     // because it was asked for, and the partial outputs below it are a wave's
     // worth of finished work rather than the wreckage of an unfinished one.
     if (item.reason === 'checkpoint') return `stopped at your checkpoint · ${ago}`;
-    // Worded for both causes the reason covers (a provider failure the runner
-    // stopped retrying, and a spent loop bound) — the diagnosis block above
-    // carries the specifics.
-    if (item.reason === 'retries-exhausted') return `ran out of retries — resume continues where it stopped · ${ago}`;
+    if (item.reason === 'provider-retries-exhausted') {
+      return `provider retries exhausted — resume continues where it stopped · ${ago}`;
+    }
+    if (item.reason === 'loop-limit-exhausted') {
+      return `workflow loop limit exhausted — restart from an earlier phase · ${ago}`;
+    }
+    // Compatibility copy for runs persisted before the causes were split.
+    if (item.reason === 'retries-exhausted') {
+      return `retry or loop limit exhausted — inspect the cause before resuming · ${ago}`;
+    }
     return `paused by you · ${ago}`;
   });
 
@@ -125,7 +137,7 @@
     <WorkflowFailureEvidence {detail} />
   {/if}
 
-  {#if kind === 'paused' || kind === 'checkpoint'}
+  {#if kind === 'paused' || kind === 'checkpoint' || item.reason === 'loop-limit-exhausted'}
     <section class="space-y-1 text-sm" data-testid="workflow-paused-receipt">
       <p class="text-fg-muted">{pausedReceipt}</p>
       {#if partialOutputs.length > 0}

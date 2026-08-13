@@ -501,13 +501,14 @@ export async function setCodexTurns(
   name: string,
   envelopes: Record<string, unknown>[],
   threadId = 'mock-codex-thread',
+  responses: Record<string, string> = {},
 ): Promise<void> {
   await harness.rpc('HarnessSetScenario', {
     scenario: {
       version: 1,
       name,
       provider: 'codex',
-      codex: { threadId },
+      codex: { threadId, responses },
       turns: envelopes.map((envelope) => {
         const text = JSON.stringify(JSON.stringify(envelope));
         return {

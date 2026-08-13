@@ -22,6 +22,11 @@ import "encoding/json"
 const (
 	EnvAddr  = "AO_HARNESS_CONTROL"
 	EnvToken = "AO_HARNESS_CONTROL_TOKEN"
+	// EnvTranscriptHome is set only by a fully isolated harness boot. The mock
+	// Claude adapter writes its synthetic transcript there so a backend restart
+	// can exercise the real cold-resume preflight without ever touching a
+	// developer's provider home.
+	EnvTranscriptHome = "AO_HARNESS_TRANSCRIPT_HOME"
 )
 
 // Registration is what a mock reports about itself at boot.

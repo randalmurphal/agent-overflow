@@ -68,15 +68,15 @@ func loopEntry(t *testing.T, h *testHarness, itemID string) RunRequest {
 }
 
 // `session: continue` re-enters the target phase on the session that phase's own
-// previous attempt ran, through the same PriorThreadID an `Answer` continuation
+// previous attempt ran, through the same launch thread an `Answer` continuation
 // and a resume-in-place use — there is one same-session mechanism, not two.
 func TestLoopRouteSessionContinueRunsOnTheTargetPhasesOwnThread(t *testing.T) {
 	route := def.Route{Loop: "work", Max: def.LiteralBound(1), Session: def.SessionContinue}
 	h, itemID := startLoopRun(t, route, "work-thread", false)
 
 	entry := loopEntry(t, h, itemID)
-	if entry.PriorThreadID != "work-thread" {
-		t.Fatalf("loop re-entry prior thread = %q, want work-thread", entry.PriorThreadID)
+	if entry.Launch.ThreadID() != "work-thread" {
+		t.Fatalf("loop re-entry prior thread = %q, want work-thread", entry.Launch.ThreadID())
 	}
 	if entry.Feedback != nil && strings.Contains(entry.Feedback.Note, "no longer available") {
 		t.Fatalf("a successful continuation reported a degradation: %q", entry.Feedback.Note)
@@ -104,8 +104,8 @@ func TestLoopRouteWithoutSessionReEntersCold(t *testing.T) {
 	route := def.Route{Loop: "work", Max: def.LiteralBound(1)}
 	h, itemID := startLoopRun(t, route, "work-thread", false)
 
-	if entry := loopEntry(t, h, itemID); entry.PriorThreadID != "" {
-		t.Fatalf("default loop re-entry prior thread = %q, want none", entry.PriorThreadID)
+	if entry := loopEntry(t, h, itemID); entry.Launch.ReusesThread() {
+		t.Fatalf("default loop re-entry prior thread = %q, want none", entry.Launch.ThreadID())
 	}
 }
 
@@ -117,8 +117,8 @@ func TestLoopRouteSessionContinueFallsBackToFreshWithANote(t *testing.T) {
 	h, itemID := startLoopRun(t, route, "deleted-thread", true)
 
 	entry := loopEntry(t, h, itemID)
-	if entry.PriorThreadID != "" {
-		t.Fatalf("prior thread = %q, want none for a deleted session", entry.PriorThreadID)
+	if entry.Launch.ReusesThread() {
+		t.Fatalf("prior thread = %q, want none for a deleted session", entry.Launch.ThreadID())
 	}
 	if entry.Feedback == nil || !strings.Contains(entry.Feedback.Note, "no longer available") {
 		t.Fatalf("degraded continuation left no note: %+v", entry.Feedback)
@@ -133,8 +133,8 @@ func TestLoopRouteSessionContinueWithNoPriorSessionRunsCold(t *testing.T) {
 	h, itemID := startLoopRun(t, route, "", false)
 
 	entry := loopEntry(t, h, itemID)
-	if entry.PriorThreadID != "" {
-		t.Fatalf("prior thread = %q, want none", entry.PriorThreadID)
+	if entry.Launch.ReusesThread() {
+		t.Fatalf("prior thread = %q, want none", entry.Launch.ThreadID())
 	}
 	if entry.Feedback == nil || !strings.Contains(entry.Feedback.Note, "starts cold") {
 		t.Fatalf("missing degradation note: %+v", entry.Feedback)
@@ -171,8 +171,8 @@ func TestHumanGateRejectIgnoresLoopKnobsOnItsOwnRoute(t *testing.T) {
 		t.Fatal(err)
 	}
 	entry := loopEntry(t, h, item.ID)
-	if entry.PriorThreadID != "" {
-		t.Fatalf("reject re-entry prior thread = %q, want none", entry.PriorThreadID)
+	if entry.Launch.ReusesThread() {
+		t.Fatalf("reject re-entry prior thread = %q, want none", entry.Launch.ThreadID())
 	}
 	if entry.Phase.Prompt != "the phase's own body" {
 		t.Fatalf("reject re-entry prompt = %q, want the phase's own body", entry.Phase.Prompt)
@@ -232,9 +232,9 @@ func TestLoopRouteSessionContinueIntoACallPhaseLeavesNoIdBehind(t *testing.T) {
 	}
 
 	entry := h.runner.startFor(t, RunKey{ItemID: "parent", PhaseID: "report", Attempt: 2})
-	if entry.PriorThreadID != "" {
+	if entry.Launch.ReusesThread() {
 		t.Fatalf("phase after the call continued session %q, which belongs to a phase it never ran",
-			entry.PriorThreadID)
+			entry.Launch.ThreadID())
 	}
 	refusals := sink.matching(LogEventLoopSession)
 	if len(refusals) != 1 || !strings.Contains(refusals[0].Message, "starts no session of its own") {

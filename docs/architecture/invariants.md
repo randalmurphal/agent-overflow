@@ -1145,9 +1145,16 @@ down without killing the provider process. `workflowAppRunner.Stop`
 (`app_workflow_runner.go`) calls `InterruptTurn(threadID)` for an agent
 attempt — never `StopSession`, never `CleanupThread` — so the CLI
 process, its session file, and the thread's history survive the park.
-Resume carries the parked attempt's thread on
-`RunRequest.PriorThreadID` (`engine/start.go`, `engine/units.go`) and
-the runner continues that session instead of starting a fresh one.
+Resume carries the parked attempt's thread through `ContinueThread`
+(`engine/start.go`, `engine/units.go`) and the runner sends only the recovery
+delta when that provider context is available. The runner proves cold context
+availability before sending. If it has disappeared, the engine supersedes the
+unsent continuation and reconstructs the same round on a new thread with the
+full original prompt and an explicit context-loss note.
+Warm loop reuse goes through the same proof and engine-owned fallback: its
+replacement remains a new logical round with a full prompt, but the unavailable
+reuse attempt is superseded and the cold reconstruction records the degradation
+instead of the runner silently substituting a thread.
 `paused` and `interrupted` are distinct typed reasons that resume
 identically. A tool attempt has no turn to interrupt: teardown kills
 its process group, because a command is re-run from the start.
@@ -1163,8 +1170,9 @@ accumulated session, a tool attempt's is its exit status.
 **Enforcement.** `Stop` is reachable only from `teardown`
 (invariant 30), so there is one place this contract can be broken.
 `Resume` refuses reasons that are not a continuation, and a parked
-attempt with no recorded session starts a fresh attempt *loudly*
-rather than pretending to continue. The one place that *does* stop a
+attempt with no usable provider context reconstructs the round *loudly* rather
+than pretending to continue. Thread existence is only eligibility; a live
+process or the runner's provider-specific cold preflight is authoritative. The one place that *does* stop a
 phase session is the D25 project-deletion cleanup
 (`stopWorkflowTreeSessions`, `app_project_delete_cleanup.go`), and it
 is not a park: the run has already been cancelled and the thread is
