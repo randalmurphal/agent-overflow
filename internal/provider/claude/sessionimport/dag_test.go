@@ -257,6 +257,75 @@ func TestConvertBranchFillsTheTitleFallbackFromTheDecodedChain(t *testing.T) {
 	}
 }
 
+func TestFindReusablePrefixCutsOnlyAtACompleteTurnBoundary(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, sessionA+".jsonl")
+	writeJSONL(t, path,
+		userRow("u1", "", "shared prompt", "2026-01-01T00:00:00.000Z"),
+		assistantRow("a1", "u1", "msg_1", []any{textBlock("shared answer")}, "2026-01-01T00:00:01.000Z"),
+		userRow("u2a", "a1", "branch A", "2026-01-01T00:00:02.000Z"),
+		assistantRow("a2a", "u2a", "msg_2a", []any{textBlock("answer A")}, "2026-01-01T00:00:03.000Z"),
+		userRow("u2b", "a1", "branch B", "2026-01-01T00:00:04.000Z"),
+		assistantRow("a2b", "u2b", "msg_2b", []any{textBlock("answer B")}, "2026-01-01T00:00:05.000Z"),
+	)
+	loaded, err := LoadSession(path)
+	if err != nil {
+		t.Fatalf("LoadSession: %v", err)
+	}
+	defer loaded.Close()
+	if len(loaded.Branches) != 2 {
+		t.Fatalf("branches = %d, want 2", len(loaded.Branches))
+	}
+	if err := loaded.AddReusablePrefixDonor(0); err != nil {
+		t.Fatalf("AddReusablePrefixDonor: %v", err)
+	}
+	prefix, ok, err := loaded.FindReusablePrefix(1)
+	if err != nil {
+		t.Fatalf("FindReusablePrefix: %v", err)
+	}
+	if !ok || prefix.DonorIndex != 0 || prefix.SuffixRow != 2 || prefix.NextTurnIndex != 2 {
+		t.Fatalf("prefix = %+v ok=%v, want donor 0 row 2 turn 2", prefix, ok)
+	}
+	suffix, err := loaded.ConvertBranchFrom(1, prefix.SuffixRow)
+	if err != nil {
+		t.Fatalf("ConvertBranchFrom: %v", err)
+	}
+	for _, event := range suffix.Events {
+		if event.SourceUUID == "u1" || event.SourceUUID == "a1" {
+			t.Fatalf("shared-prefix event %s was converted again", event.SourceUUID)
+		}
+	}
+	foundPrompt, foundAnswer := false, false
+	for _, event := range suffix.Events {
+		foundPrompt = foundPrompt || event.SourceUUID == "u2b"
+		foundAnswer = foundAnswer || event.SourceUUID == "a2b"
+	}
+	if !foundPrompt || !foundAnswer {
+		t.Fatalf("suffix events omitted branch content: %+v", suffix.Events)
+	}
+}
+
+func TestFindReusablePrefixRejectsAMidFirstTurnFork(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, sessionA+".jsonl")
+	writeJSONL(t, path,
+		userRow("u1", "", "prompt", "2026-01-01T00:00:00.000Z"),
+		assistantRow("a1", "u1", "msg_1", []any{textBlock("answer A")}, "2026-01-01T00:00:01.000Z"),
+		assistantRow("a2", "u1", "msg_2", []any{textBlock("answer B")}, "2026-01-01T00:00:02.000Z"),
+	)
+	loaded, err := LoadSession(path)
+	if err != nil {
+		t.Fatalf("LoadSession: %v", err)
+	}
+	defer loaded.Close()
+	if err := loaded.AddReusablePrefixDonor(0); err != nil {
+		t.Fatalf("AddReusablePrefixDonor: %v", err)
+	}
+	if _, ok, err := loaded.FindReusablePrefix(1); err != nil || ok {
+		t.Fatalf("mid-turn prefix = ok:%v err:%v, want no reuse", ok, err)
+	}
+}
+
 func TestLoadSessionMissingFile(t *testing.T) {
 	if _, err := LoadSession(filepath.Join(t.TempDir(), "missing.jsonl")); err == nil {
 		t.Fatal("LoadSession over a missing file: want error, got nil")

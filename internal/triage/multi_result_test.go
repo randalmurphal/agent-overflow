@@ -701,12 +701,13 @@ func TestSyntheticTruncatedTurnCompleteSettlesCodexWireTurnID(t *testing.T) {
 		t.Fatalf("fatal error: %v", err)
 	}
 
-	wireTurn, found, err := st.GetTurn(wireTurnID)
+	logicalTurnID := store.ScopedTurnID("t1", wireTurnID, 0)
+	wireTurn, found, err := st.GetTurn(logicalTurnID)
 	if err != nil {
 		t.Fatalf("get wire turn: %v", err)
 	}
 	if !found {
-		t.Fatalf("expected wire turn row %q", wireTurnID)
+		t.Fatalf("expected scoped wire turn row %q", logicalTurnID)
 	}
 	if wireTurn.CompletedAt == nil {
 		t.Fatalf("wire turn %q was not settled", wireTurnID)

@@ -26,12 +26,13 @@ func (b *builder) toolStart(evt importir.Event) error {
 	if err != nil {
 		return err
 	}
-	meta := triage.DecodeToolStartMeta(evt.Meta)
+	metaObject := b.providerMetaObject(evt)
+	meta := triage.DecodeToolStartMetaObject(metaObject)
+	unavailableReason := importUnavailableReasonObject(metaObject)
 	scope := stringsx.FirstNonEmptyTrimmed(evt.ParentToolUseID, meta.ParentToolUseID)
 	turnIndex := b.turns.currentFor(evt)
 	b.closeStreams(turnIndex, scope)
 
-	cleaned := b.providerMeta(evt)
 	if existing, found := b.byID[itemID]; found {
 		if existing.item.Kind != kindToolCall {
 			b.warn("import.tool-id-collision", fmt.Sprintf(
@@ -49,15 +50,17 @@ func (b *builder) toolStart(evt importir.Event) error {
 			existing.item.ParentID = scope
 		}
 		existing.item.IsBackground = existing.item.IsBackground || meta.IsBackground
-		existing.item.Meta = triage.MergeStoredToolCallMeta(existing.item.Meta, evt.ItemType, cleaned)
+		existing.item.Meta = triage.MergeStoredToolCallMetaObject(
+			existing.item.Meta, evt.ItemType, existing.item.ToolName, metaObject, writerControlMetaKeys[:]...)
 		existing.item.UpdatedAt = now
 		b.shapeToolMeta(existing, now)
-		if err := b.applyFileChangeResult(evt, existing, now); err != nil {
+		if err := b.applyFileChangeResultObject(evt, metaObject, existing, now); err != nil {
 			return err
 		}
-		return b.markUnavailable(evt, existing)
+		return b.markUnavailableReason(unavailableReason, existing)
 	}
 
+	toolName := stringsx.FirstNonEmptyTrimmed(meta.ToolName, evt.ItemType, "tool")
 	item := store.Item{
 		ID:           itemID,
 		TurnIndex:    turnIndex,
@@ -67,8 +70,8 @@ func (b *builder) toolStart(evt importir.Event) error {
 		Summary:      triage.BuildToolCallSummary(meta, evt.ItemType),
 		ParentID:     scope,
 		IsBackground: meta.IsBackground,
-		ToolName:     stringsx.FirstNonEmptyTrimmed(meta.ToolName, evt.ItemType, "tool"),
-		Meta:         triage.StoredToolCallMeta(evt.ItemType, cleaned),
+		ToolName:     toolName,
+		Meta:         triage.StoredToolCallMetaObject(evt.ItemType, toolName, metaObject, writerControlMetaKeys[:]...),
 		CreatedAt:    now,
 		UpdatedAt:    now,
 	}
@@ -77,7 +80,7 @@ func (b *builder) toolStart(evt importir.Event) error {
 	if err != nil {
 		return err
 	}
-	return b.applyFileChangeResult(evt, r, now)
+	return b.applyFileChangeResultObject(evt, metaObject, r, now)
 }
 
 // toolComplete settles the launch row its tool_use id names.
@@ -105,31 +108,33 @@ func (b *builder) toolComplete(evt importir.Event) error {
 	if err != nil {
 		return err
 	}
+	metaObject := b.providerMetaObject(evt)
+	unavailableReason := importUnavailableReasonObject(metaObject)
 	r, found := b.byID[itemID]
 	if !found {
-		if importUnavailableReason(evt.Meta) == "" {
+		if unavailableReason == "" {
 			return fmt.Errorf("tool completion %s has no launch in this session", itemID)
 		}
-		if r, err = b.placeholderToolLaunch(evt, itemID, now); err != nil {
+		if r, err = b.placeholderToolLaunch(evt, metaObject, itemID, now); err != nil {
 			return err
 		}
 	}
 	if r.item.Kind != kindToolCall {
 		return fmt.Errorf("tool completion %s targets a %s row", itemID, r.item.Kind)
 	}
-	meta := triage.DecodeToolCompleteMeta(evt.Meta)
+	meta := triage.DecodeToolCompleteMetaObject(metaObject)
 	b.closeStreams(r.item.TurnIndex, r.item.ParentID)
 
 	// Rich result payload first, so the completion's summary derivation
 	// sees the payload-derived label — the live ordering in
 	// handleToolComplete, and what makes an Edit row read "Edited x.go"
 	// rather than "Edit: /abs/path".
-	if err := b.applyFileChangeResult(evt, r, now); err != nil {
+	if err := b.applyFileChangeResultObject(evt, metaObject, r, now); err != nil {
 		return err
 	}
 
 	if b.splitsCompletion(r.item.ToolName) {
-		return b.splitToolCompletion(evt, r, meta, now)
+		return b.splitToolCompletion(evt, metaObject, r, meta, now)
 	}
 	if found && (r.item.IsBackground || meta.IsBackground) {
 		// A backgrounded launch's tool_result is a placeholder: the real
@@ -148,24 +153,22 @@ func (b *builder) toolComplete(evt importir.Event) error {
 		// care what status it was left in.
 		r.item.IsBackground = true
 		r.item.UpdatedAt = now
-		return b.markUnavailable(evt, r)
+		return b.markUnavailableReason(unavailableReason, r)
 	}
 
-	cleaned := b.providerMeta(evt)
 	r.item.Status = triage.CompletionStatus(meta)
 	r.item.Summary = triage.BuildCompletionSummary(
 		triage.CompletionBaseSummary(r.item, meta, evt.ItemType), meta)
 	if name := strings.TrimSpace(meta.ToolName); name != "" {
 		r.item.ToolName = name
 	}
-	r.item.Meta = triage.MergeStoredToolCallMeta(r.item.Meta, evt.ItemType, cleaned)
+	r.item.Meta = triage.MergeStoredToolCallMetaObject(
+		r.item.Meta, evt.ItemType, r.item.ToolName, metaObject, writerControlMetaKeys[:]...)
 	r.item.UpdatedAt = now
 	b.shapeToolMeta(r, now)
 
-	resultEvt := evt.ProviderEvent
-	resultEvt.Meta = cleaned
-	payload := triage.CompletionPayloadForTool(
-		r.item.ID, r.item.ToolName, triage.CommandFromLaunch(r.item), resultEvt, meta, now)
+	payload := triage.CompletionPayloadForToolObject(
+		r.item.ID, r.item.ToolName, triage.CommandFromLaunch(r.item), evt.Content, metaObject, meta, now)
 	switch {
 	case payload == nil:
 	case r.payload == nil:
@@ -178,7 +181,7 @@ func (b *builder) toolComplete(evt importir.Event) error {
 		// The row already owns a richer payload (a tool_result diff, a
 		// streamed command_output); the generic result blob is redundant.
 	}
-	return b.markUnavailable(evt, r)
+	return b.markUnavailableReason(unavailableReason, r)
 }
 
 // placeholderToolLaunch builds the launch row an `import_unavailable`
@@ -189,8 +192,8 @@ func (b *builder) toolComplete(evt importir.Event) error {
 // rewrites status, summary, meta and payload, so everything here is
 // either overwritten or the honest minimum (the tool's own name, and the
 // completion's clock — the launch's real time is not in the file).
-func (b *builder) placeholderToolLaunch(evt importir.Event, itemID string, now int64) (*row, error) {
-	meta := triage.DecodeToolCompleteMeta(evt.Meta)
+func (b *builder) placeholderToolLaunch(evt importir.Event, metaObject map[string]json.RawMessage, itemID string, now int64) (*row, error) {
+	meta := triage.DecodeToolCompleteMetaObject(metaObject)
 	toolName := stringsx.FirstNonEmptyTrimmed(meta.ToolName, evt.ItemType, "tool")
 	item := store.Item{
 		ID:        itemID,
@@ -218,10 +221,10 @@ func (b *builder) splitsCompletion(toolName string) bool {
 	return b.thread.Provider == "codex" && triage.ShouldSplitCodexToolCompletion(toolName)
 }
 
-func (b *builder) splitToolCompletion(evt importir.Event, launch *row, meta triage.ToolCompleteMeta, now int64) error {
-	cleaned := b.providerMeta(evt)
+func (b *builder) splitToolCompletion(evt importir.Event, metaObject map[string]json.RawMessage, launch *row, meta triage.ToolCompleteMeta, now int64) error {
 	launch.item.Status = statusCompleted
-	launch.item.Meta = triage.MergeStoredToolCallMeta(launch.item.Meta, evt.ItemType, cleaned)
+	launch.item.Meta = triage.MergeStoredToolCallMetaObject(
+		launch.item.Meta, evt.ItemType, launch.item.ToolName, metaObject, writerControlMetaKeys[:]...)
 	launch.item.UpdatedAt = now
 	b.shapeToolMeta(launch, now)
 
@@ -235,14 +238,12 @@ func (b *builder) splitToolCompletion(evt importir.Event, launch *row, meta tria
 		ParentID:     launch.item.ParentID,
 		CompletionOf: launch.item.ID,
 		ToolName:     launch.item.ToolName,
-		Meta:         string(cleaned),
+		Meta:         triage.StoredToolCallMetaObject(evt.ItemType, launch.item.ToolName, metaObject, writerControlMetaKeys[:]...),
 		CreatedAt:    now,
 		UpdatedAt:    now,
 	}
-	resultEvt := evt.ProviderEvent
-	resultEvt.Meta = cleaned
-	payload := triage.CompletionPayloadForTool(
-		completion.ID, completion.ToolName, triage.CommandFromLaunch(launch.item), resultEvt, meta, now)
+	payload := triage.CompletionPayloadForToolObject(
+		completion.ID, completion.ToolName, triage.CommandFromLaunch(launch.item), evt.Content, metaObject, meta, now)
 	inputPayload := b.shapeItemToolMeta(&completion, now)
 	_, err := b.appendRow(evt, completion, payload, inputPayload)
 	return err
@@ -335,7 +336,7 @@ func (b *builder) attachPayload(evt importir.Event, payloadKind string) error {
 // through the same pair of extractors triage uses; a shape that carries
 // no renderable change is a no-op (the common case on a launch event,
 // where no result exists yet).
-func (b *builder) applyFileChangeResult(evt importir.Event, r *row, now int64) error {
+func (b *builder) applyFileChangeResultObject(evt importir.Event, metaObject map[string]json.RawMessage, r *row, now int64) error {
 	toolName := stringsx.FirstNonEmptyTrimmed(evt.ItemType, r.item.ToolName)
 	if !triage.IsFileChangeItemType(toolName) || len(evt.Meta) == 0 {
 		return nil
@@ -346,10 +347,10 @@ func (b *builder) applyFileChangeResult(evt importir.Event, r *row, now int64) e
 		ok   bool
 	)
 	if triage.IsClaudeFilePathTool(toolName) {
-		meta, diff, ok = triage.ExtractClaudeFileChangeToolResult(
-			evt.Meta, toolName, triage.ExtractClaudeLaunchFilePath(r.item.Meta), b.thread.WorkspacePath)
+		meta, diff, ok = triage.ExtractClaudeFileChangeToolResultObject(
+			metaObject, toolName, triage.ExtractClaudeLaunchFilePath(r.item.Meta), b.thread.WorkspacePath)
 	} else {
-		meta, diff, ok = triage.ExtractFileChangeToolResult(evt.Meta, b.thread.WorkspacePath)
+		meta, diff, ok = triage.ExtractFileChangeToolResultObject(metaObject, b.thread.WorkspacePath)
 	}
 	if !ok {
 		return nil

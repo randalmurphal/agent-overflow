@@ -489,9 +489,8 @@ func TestCloneThreadItemsRefusesOutOfOrderDroppedReference(t *testing.T) {
 // items.input_payload_id propagates through fork-at-point. Without
 // this, expanding the input on a forked Edit row would fail authz
 // because the cloned item lost its FK to the tool_call_input payload.
-// The payload row itself is shared (not duplicated); the
-// trg_items_gc_input_payload trigger's NOT EXISTS guard keeps it from
-// being swept while either thread still references it.
+// The payload graph is duplicated into the destination scope. Later source
+// writes must not rewrite the fork's history.
 func TestCloneThreadItemsPreservesInputPayloadID(t *testing.T) {
 	s := newTestStore(t)
 	now := int64(1)
@@ -504,11 +503,19 @@ func TestCloneThreadItemsPreservesInputPayloadID(t *testing.T) {
 			t.Fatalf("create thread %s: %v", id, err)
 		}
 	}
-	if err := seedPayloadRow(s, Payload{
+	if err := seedPayloadRow(s, "t-input-src", Payload{
 		ID: "p-edit-input", Kind: "tool_call_input", Meta: "{}",
-		Data: []byte(`{"old_string":"a","new_string":"b"}`), CreatedAt: now,
+		Data: []byte(`{"old_string":"a",`), CreatedAt: now,
 	}); err != nil {
 		t.Fatalf("insert payload: %v", err)
+	}
+	if err := s.AppendPayloadData(
+		"t-input-src", "p-edit-input", []byte(`"new_string":"b"}`), "{}", now,
+	); err != nil {
+		t.Fatalf("append source payload chunk: %v", err)
+	}
+	if err := s.PutEditFileSnapshot("t-input-src", "p-edit-input", "foo.go", "source at fork", now); err != nil {
+		t.Fatalf("put source snapshot: %v", err)
 	}
 	if err := s.InsertItem(Item{
 		ID: "edit-src", ThreadID: "t-input-src", TurnIndex: 0, ItemIndex: 0,
@@ -545,6 +552,33 @@ func TestCloneThreadItemsPreservesInputPayloadID(t *testing.T) {
 	}
 	if !found || got.ID != cloned.ID {
 		t.Errorf("forked thread lookup returned id=%q found=%v, want cloned id=%q", got.ID, found, cloned.ID)
+	}
+
+	destinationData, err := s.GetPayloadData("t-input-dst", "p-edit-input")
+	if err != nil {
+		t.Fatalf("read cloned payload: %v", err)
+	}
+	if string(destinationData) != `{"old_string":"a","new_string":"b"}` {
+		t.Fatalf("cloned payload = %q", destinationData)
+	}
+	destinationSnapshot, found, err := s.GetEditFileSnapshot("t-input-dst", "p-edit-input", "foo.go")
+	if err != nil || !found || destinationSnapshot != "source at fork" {
+		t.Fatalf("cloned snapshot = %q found=%v err=%v", destinationSnapshot, found, err)
+	}
+
+	if err := s.ReplacePayloadData("t-input-src", "p-edit-input", []byte("source changed"), "{}", now+1); err != nil {
+		t.Fatalf("replace source payload: %v", err)
+	}
+	if err := s.PutEditFileSnapshot("t-input-src", "p-edit-input", "foo.go", "source changed", now+1); err != nil {
+		t.Fatalf("replace source snapshot: %v", err)
+	}
+	destinationData, err = s.GetPayloadData("t-input-dst", "p-edit-input")
+	if err != nil || string(destinationData) != `{"old_string":"a","new_string":"b"}` {
+		t.Fatalf("source mutation leaked into fork payload: data=%q err=%v", destinationData, err)
+	}
+	destinationSnapshot, found, err = s.GetEditFileSnapshot("t-input-dst", "p-edit-input", "foo.go")
+	if err != nil || !found || destinationSnapshot != "source at fork" {
+		t.Fatalf("source mutation leaked into fork snapshot: snapshot=%q found=%v err=%v", destinationSnapshot, found, err)
 	}
 }
 
@@ -633,8 +667,8 @@ func TestBuildForkedThreadCopiesEverythingButSessionState(t *testing.T) {
 
 // TestCloneThreadTurnsSynthesizesIDsAndPreservesProviderTurnID pins the
 // turns-clone contract: cloned rows get `<targetThreadID>:<turn_index>`
-// PKs (turn_id is globally unique; Codex forks keep the source's wire
-// turn ids, so copying them verbatim would collide) while
+// PKs (turn_id is globally unique; a fork needs its own thread-scoped row
+// identity even though Codex keeps the source's wire turn id) while
 // provider_turn_id carries the wire id across — that's what lets a
 // revert inside the fork resolve its lastTurnId anchor after the
 // source thread is gone.

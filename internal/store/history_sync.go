@@ -69,12 +69,14 @@ type ThreadWindowSync struct {
 	Page       *PagedItems
 }
 
-// historyRevTriggersSQL is the DDL for the three AFTER triggers on
+// historyRevTriggersSQL is the latest DDL for the three AFTER triggers on
 // `items` that maintain the contract (docs/specs/thread-replica-sync.md
 // §3.1). It is a const rather than inline migration text because it has
-// two installers: migration v55 concatenates it into its SQL, and
-// RestoreFrom recreates the triggers after dropping them for the row
-// copy. Two hand-kept copies would be free to drift, and the drifted
+// two installers: migration v59 concatenates it into its SQL, and RestoreFrom
+// recreates the triggers after dropping them for the row copy. Migrations v55
+// and v58 use historyRevTriggersLegacySQL because the flag does not exist at
+// those points in a migration replay. Two hand-kept latest copies would be
+// free to drift, and the drifted
 // half would be the one running on a restored database — the state
 // nobody re-reads a migration to check.
 //
@@ -86,6 +88,31 @@ type ThreadWindowSync struct {
 // cross-thread move: it is a delete from one ordering and an insert into
 // another, so both threads take rev AND epoch.
 const historyRevTriggersSQL = `CREATE TRIGGER trg_items_rev_insert AFTER INSERT ON items BEGIN
+  UPDATE threads SET history_rev = history_rev + 1
+   WHERE id = NEW.thread_id AND history_bulk_load = 0;
+END;
+
+CREATE TRIGGER trg_items_rev_update AFTER UPDATE ON items BEGIN
+  UPDATE threads SET
+    history_rev   = history_rev + 1,
+    history_epoch = history_epoch
+      + (OLD.turn_index IS NOT NEW.turn_index OR
+         OLD.item_index IS NOT NEW.item_index OR
+         OLD.thread_id  IS NOT NEW.thread_id)
+  WHERE id IN (OLD.thread_id, NEW.thread_id) AND history_bulk_load = 0;
+END;
+
+CREATE TRIGGER trg_items_rev_delete AFTER DELETE ON items BEGIN
+  UPDATE threads SET
+    history_rev   = history_rev + 1,
+    history_epoch = history_epoch + 1
+  WHERE id = OLD.thread_id AND history_bulk_load = 0;
+END;`
+
+// historyRevTriggersLegacySQL is the v55 trigger body used while replaying the
+// migration chain before v59 adds threads.history_bulk_load. V59 replaces all
+// three with historyRevTriggersSQL before the store opens to callers.
+const historyRevTriggersLegacySQL = `CREATE TRIGGER trg_items_rev_insert AFTER INSERT ON items BEGIN
   UPDATE threads SET history_rev = history_rev + 1 WHERE id = NEW.thread_id;
 END;
 
@@ -106,9 +133,10 @@ CREATE TRIGGER trg_items_rev_delete AFTER DELETE ON items BEGIN
   WHERE id = OLD.thread_id;
 END;`
 
-// dropHistoryRevTriggersSQL removes what historyRevTriggersSQL installs.
-// Only RestoreFrom uses it, and only to bracket the whole-database row
-// copy: every copied item row would otherwise fire a per-row
+// dropHistoryRevTriggersSQL removes either generation of the item-history
+// triggers. Migration v59 uses it before installing the bulk-load-aware
+// generation; RestoreFrom uses it to bracket the whole-database row copy,
+// where every copied item row would otherwise fire a per-row
 // `UPDATE threads`, and every deleted one an entirely useless
 // counter bump on a row that is about to be replaced. Dropping the
 // triggers makes the copy's counter values exactly the snapshot's,
@@ -122,9 +150,8 @@ DROP TRIGGER IF EXISTS trg_items_rev_delete;`
 // windowed read returns WITHOUT touching an `items` row, so the v55
 // triggers cannot see it:
 //
-//   - the payload mutators — `payloads` carries no thread_id, and routing
-//     a trigger through a subquery over items.payload_id would put an
-//     unindexed scan on the streaming append path;
+//   - the payload mutators — their thread-scoped write changes content that
+//     rides an item row without updating the item itself;
 //   - the proposed-plan state and comment mutators — their rows are
 //     projected onto `Item.Meta` at read time by
 //     decorateProposedPlanItems, so a window read genuinely changes when

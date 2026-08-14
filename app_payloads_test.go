@@ -202,7 +202,7 @@ func TestGetPayloadDataIncludesAssistantTextDeltaBeforeWireEmission(t *testing.T
 		if !ok || evt.Action != "delta" || evt.Kind != "assistant_text" {
 			return
 		}
-		payloadID := "assistant-text:" + thread.ID + ":" + evt.ItemID
+		payloadID := triage.AssistantTextPayloadID(evt.ItemID)
 		got, err := app.GetPayloadData(thread.ID, payloadID)
 		if err != nil {
 			t.Fatalf("GetPayloadData during delta emission: %v", err)

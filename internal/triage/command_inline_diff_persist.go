@@ -66,7 +66,7 @@ func (r *Router) persistToolResult(evt provider.ProviderEvent, meta ToolResultMe
 	now := eventTimestampMillis(evt)
 
 	payloadID := ToolResultPayloadID(itemID)
-	meta, diffData = r.mergeToolResultPayload(payloadID, meta, diffData)
+	meta, diffData = r.mergeToolResultPayload(evt.ThreadID, payloadID, meta, diffData)
 	metaJSON, err := json.Marshal(meta)
 	if err != nil {
 		return fmt.Errorf("marshal tool result meta: %w", err)

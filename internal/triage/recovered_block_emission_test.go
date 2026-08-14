@@ -144,7 +144,7 @@ func TestRecoveredTopLevelBlocksEmitStreamingWireShape(t *testing.T) {
 
 	// The thinking payload must hold the FULL recovered reasoning (the
 	// summary is only the tail preview).
-	data, err := st.GetPayloadData(thinkingItems[0].PayloadID)
+	data, err := st.GetPayloadData(thinkingItems[0].ThreadID, thinkingItems[0].PayloadID)
 	if err != nil {
 		t.Fatalf("thinking payload: %v", err)
 	}

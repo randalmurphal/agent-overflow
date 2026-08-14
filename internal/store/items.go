@@ -25,10 +25,12 @@ const itemColumns = `items.id, items.thread_id, items.turn_index, items.item_ind
     items.parent_id, items.is_background, items.completion_of,
     items.tool_name, items.decision, items.meta, items.created_at, items.updated_at`
 
-const itemInsertSQL = `INSERT INTO items (id, thread_id, turn_index, item_index, kind, role, status, summary,
-    payload_id, input_payload_id, parent_id, is_background, completion_of, tool_name, decision, meta,
-    created_at, updated_at)
- VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+const itemInsertPrefix = `INSERT INTO items (id, thread_id, turn_index, item_index, kind, role, status, summary,
+		payload_id, input_payload_id, parent_id, is_background, completion_of, tool_name, decision, meta,
+		created_at, updated_at)`
+
+const itemInsertValues = `(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+const itemInsertSQL = itemInsertPrefix + ` VALUES ` + itemInsertValues
 
 type sqlExecutor interface {
 	Exec(query string, args ...any) (sql.Result, error)
@@ -93,7 +95,7 @@ func applyItemDefaults(item *Item) {
 func nextItemIndexTx(tx *sql.Tx, threadID string, turnIndex int, label string) (int, error) {
 	var maxIndex sql.NullInt64
 	if err := tx.QueryRow(
-		`SELECT MAX(item_index) FROM items WHERE thread_id = ? AND turn_index = ?`,
+		`SELECT MAX(item_index) FROM timeline_items WHERE thread_id = ? AND turn_index = ?`,
 		threadID, turnIndex,
 	).Scan(&maxIndex); err != nil {
 		return 0, fmt.Errorf("%s: %w", label, err)
@@ -114,7 +116,7 @@ func nextItemIndexTx(tx *sql.Tx, threadID string, turnIndex int, label string) (
 func headItemIndexTx(tx *sql.Tx, threadID string, turnIndex int, label string) (int, error) {
 	var minIndex sql.NullInt64
 	if err := tx.QueryRow(
-		`SELECT MIN(item_index) FROM items WHERE thread_id = ? AND turn_index = ?`,
+		`SELECT MIN(item_index) FROM timeline_items WHERE thread_id = ? AND turn_index = ?`,
 		threadID, turnIndex,
 	).Scan(&minIndex); err != nil {
 		return 0, fmt.Errorf("%s: %w", label, err)

@@ -515,7 +515,7 @@ func TestNotebookEditSummaryOnlyUpgradesFromTurnDiff(t *testing.T) {
 	}
 
 	payloadID := ToolResultPayloadID("tu_nb_1")
-	pre := readToolResultMeta(t, st, payloadID)
+	pre := readToolResultMeta(t, st, "t-nb", payloadID)
 	if pre.InlineDiff == nil || pre.InlineDiff.Availability != "summary_only" {
 		t.Fatalf("expected summary_only pre-upgrade, got %+v", pre.InlineDiff)
 	}
@@ -538,7 +538,7 @@ func TestNotebookEditSummaryOnlyUpgradesFromTurnDiff(t *testing.T) {
 		t.Fatalf("turn diff: %v", err)
 	}
 
-	post := readToolResultMeta(t, st, payloadID)
+	post := readToolResultMeta(t, st, "t-nb", payloadID)
 	if post.InlineDiff == nil || post.InlineDiff.Availability != "exact_patch" {
 		t.Fatalf("expected exact_patch after upgrade, got %+v", post.InlineDiff)
 	}
@@ -604,7 +604,7 @@ func TestEndToEndClaudeEditProducesDiffPayload(t *testing.T) {
 
 	// 4. Verify the payload landed with the unified-diff bytes.
 	payloadID := ToolResultPayloadID("tu_edit_e2e")
-	pm, err := st.GetPayloadMeta(payloadID)
+	pm, err := st.GetPayloadMeta("t-e2e", payloadID)
 	if err != nil {
 		t.Fatalf("payload meta: %v (no payload was written — parser→triage composition is broken)", err)
 	}
@@ -626,7 +626,7 @@ func TestEndToEndClaudeEditProducesDiffPayload(t *testing.T) {
 	}
 
 	// 5. The unified-diff bytes must contain the change.
-	data, err := st.GetPayloadData(payloadID)
+	data, err := st.GetPayloadData("t-e2e", payloadID)
 	if err != nil {
 		t.Fatalf("payload data: %v", err)
 	}
@@ -707,7 +707,7 @@ func TestPersistClaudeFileChangeToolResult_RoutesViaLaunchRowToolName(t *testing
 
 	// Verify the tool_result payload landed and carries the rich diff.
 	payloadID := ToolResultPayloadID("tu_edit_1")
-	pm, err := st.GetPayloadMeta(payloadID)
+	pm, err := st.GetPayloadMeta("t1", payloadID)
 	if err != nil {
 		t.Fatalf("payload meta: %v", err)
 	}
@@ -722,7 +722,7 @@ func TestPersistClaudeFileChangeToolResult_RoutesViaLaunchRowToolName(t *testing
 		t.Fatalf("path = %q, want workspace-relative src/app.ts", resultMeta.InlineDiff.Files[0].Path)
 	}
 
-	data, err := st.GetPayloadData(payloadID)
+	data, err := st.GetPayloadData("t1", payloadID)
 	if err != nil {
 		t.Fatalf("payload data: %v", err)
 	}

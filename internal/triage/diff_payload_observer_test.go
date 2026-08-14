@@ -88,12 +88,12 @@ func TestDiffPayloadObserverToolResults(t *testing.T) {
 		!strings.Contains(exact.previews[0], "+    pass") {
 		t.Fatalf("exact preview patch wrong: %q", exact.previews[0])
 	}
-	meta := readToolResultMeta(t, st, ToolResultPayloadID("item-exact"))
+	meta := readToolResultMeta(t, st, "t1", ToolResultPayloadID("item-exact"))
 	if len(meta.InlineDiff.Files) != 1 || meta.InlineDiff.Files[0].PreviewPatch != exact.previews[0] {
 		t.Fatalf("observer preview must equal the persisted meta's PreviewPatch")
 	}
 	// The full patch is exactly the payload's persisted data blob.
-	data, err := st.GetPayloadData(exact.payloadID)
+	data, err := st.GetPayloadData("t1", exact.payloadID)
 	if err != nil {
 		t.Fatalf("get payload data: %v", err)
 	}
@@ -165,7 +165,7 @@ func TestDiffPayloadObserverToolResults(t *testing.T) {
 	if upgrade.payloadID != ToolResultPayloadID("item-summary") {
 		t.Fatalf("upgrade payload id = %q, want %q", upgrade.payloadID, ToolResultPayloadID("item-summary"))
 	}
-	upgraded := readToolResultMeta(t, st, ToolResultPayloadID("item-summary"))
+	upgraded := readToolResultMeta(t, st, "t1", ToolResultPayloadID("item-summary"))
 	if upgraded.InlineDiff.Availability != "exact_patch" {
 		t.Fatalf("upgrade did not land: %+v", upgraded.InlineDiff)
 	}

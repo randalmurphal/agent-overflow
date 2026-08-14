@@ -77,8 +77,8 @@ func TestRefreshRefusesACodexTailThatReopensAnImportedTurn(t *testing.T) {
 
 // The same collision through the other door: a rollout with content before
 // any `task_started` gets a SYNTHETIC turn, whose id is minted from a
-// counter that restarts in every Parse — so a tail refresh mints
-// `import-turn-1` again.
+// deterministic session-local coordinate — so a tail refresh re-mints the
+// same `import-turn:<sessionID>:1` identity.
 func TestRefreshRefusesACodexTailThatReopensASyntheticTurn(t *testing.T) {
 	st := newTestStore(t)
 	homes := newProviderHomes(t)
@@ -97,9 +97,9 @@ func TestRefreshRefusesACodexTailThatReopensASyntheticTurn(t *testing.T) {
 
 	_, err := PlanUpdate(context.Background(), d, threadID)
 	if err == nil {
-		t.Fatal("PlanUpdate over a tail that re-mints import-turn-1: want a refusal, got nil")
+		t.Fatal("PlanUpdate over a tail that re-mints its synthetic turn: want a refusal, got nil")
 	}
-	if !strings.Contains(err.Error(), "import-turn-1") {
+	if !strings.Contains(err.Error(), "import-turn:"+codexThreadA+":1") {
 		t.Errorf("refusal = %q, want it to name the turn that collided", err)
 	}
 	assertTurnCount(t, d, threadID, 1)

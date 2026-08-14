@@ -15,6 +15,7 @@ import (
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude/sessionfork"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/usermessage"
 )
 
 // transcriptRows reads a Claude session file back as decoded rows.
@@ -155,6 +156,25 @@ func TestImportedClaudeBranchGetsItsOwnSessionOnFirstStart(t *testing.T) {
 	for _, row := range rows {
 		if from, _ := row["forkedFrom"].(map[string]any); from != nil && from["messageUuid"] == "a2b" {
 			t.Fatal("the cut session carried the other branch's leaf; a resume would see both")
+		}
+	}
+	cutUUIDs := make(map[string]bool, len(rows))
+	for _, row := range rows {
+		if id, _ := row["uuid"].(string); id != "" {
+			cutUUIDs[id] = true
+		}
+	}
+	items, err := app.store.ListItems(abandoned.ID)
+	if err != nil {
+		t.Fatalf("ListItems after materializing branch: %v", err)
+	}
+	for _, item := range items {
+		if item.Kind != "user_text" || item.Role != "user" {
+			continue
+		}
+		providerID := usermessage.ReadProviderItemID(item.Meta)
+		if providerID == "" || !cutUUIDs[providerID] {
+			t.Fatalf("materialized user item %s points at provider uuid %q absent from its cut transcript", item.ID, providerID)
 		}
 	}
 

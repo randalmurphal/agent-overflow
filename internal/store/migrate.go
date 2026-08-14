@@ -1819,7 +1819,7 @@ CREATE TABLE store_meta (
     replica_generation TEXT NOT NULL
 );
 
-` + historyRevTriggersSQL,
+` + historyRevTriggersLegacySQL,
 		Fix: mintStoreIdentity,
 	},
 	{
@@ -1892,6 +1892,39 @@ CREATE INDEX idx_workflow_provider_usage_attention_thread
   ON workflow_provider_usage_attention(thread_id);
 `,
 		Rebuild: true,
+	},
+	{
+		Version: 58,
+		Name:    "payload_thread_scope",
+		SQL:     payloadThreadScopeMigrationSQL,
+		Rebuild: true,
+	},
+	{
+		Version: 59,
+		Name:    "bulk_import_history_revision",
+		SQL: `ALTER TABLE threads ADD COLUMN history_bulk_load INTEGER NOT NULL DEFAULT 0
+    CHECK(history_bulk_load IN (0, 1));
+
+` + dropHistoryRevTriggersSQL + historyRevTriggersSQL,
+	},
+	{
+		Version: 60,
+		Name:    "drop_redundant_items_timeline_index",
+		// idx_items_thread_turn_item_unique has the exact same key columns in
+		// the exact same order. Keeping both makes every item write maintain two
+		// interchangeable B-trees; the unique one already serves timeline/range
+		// reads and is the invariant that prevents duplicate positions.
+		SQL: `DROP INDEX idx_items_thread;`,
+	},
+	{
+		Version: 61,
+		Name:    "shared_import_history",
+		SQL:     sharedImportHistoryMigrationSQL,
+	},
+	{
+		Version: 62,
+		Name:    "turn_thread_scope",
+		SQL:     turnThreadScopeMigrationSQL,
 	},
 }
 

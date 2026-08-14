@@ -109,7 +109,7 @@
   ],
   "turns": [
     {
-      "turnId": "turn_abc",
+      "turnId": "thread-sessionimport:turn_abc",
       "turnIndex": 1,
       "startedAt": 1700000000000,
       "completedAt": 1700000000007,
@@ -122,7 +122,7 @@
       "createdAt": 1700000000007,
       "threadId": "thread-sessionimport",
       "projectId": "project-sessionimport",
-      "turnId": "turn_abc",
+      "turnId": "thread-sessionimport:turn_abc",
       "provider": "codex",
       "model": "gpt-5-codex",
       "inputTokens": 400,

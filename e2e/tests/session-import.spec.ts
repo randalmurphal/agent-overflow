@@ -25,6 +25,8 @@
 
 import { test, expect } from './fixtures.js';
 import {
+  BRANCH_A_THINKING_PREFIX,
+  BRANCH_B_THINKING_PREFIX,
   CODEX_ANSWER,
   CODEX_PROMPT,
   growLinearClaudeSession,
@@ -46,6 +48,12 @@ interface ImportProgressFrame {
   done?: boolean;
 }
 
+interface ImportedItemIdentity {
+  id: string;
+  kind: string;
+  payloadId?: string;
+}
+
 const openImportModal = async (page: Page) => {
   await page.getByTestId('sidebar-import-sessions-icon').click();
   await expect(page.getByTestId('session-import-body')).toBeVisible();
@@ -58,6 +66,21 @@ const waitForRunDone = (harness: HarnessApp) =>
 /** A sidebar thread row carrying this title. */
 const threadRow = (page: Page, title: string) =>
   page.getByTestId('thread-row').filter({ hasText: title });
+
+/** Expand the sole thinking row and prove its full, thread-owned payload. */
+async function expectThinkingPayload(
+  page: Page,
+  ownPrefix: string,
+  foreignPrefix: string,
+): Promise<void> {
+  const toggle = page.getByTestId('thinking-toggle');
+  const body = page.getByTestId('thinking-body');
+  await expect(toggle).toHaveCount(1);
+  if ((await toggle.getAttribute('aria-expanded')) !== 'true') await toggle.click();
+  await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+  await expect(body).toContainText(ownPrefix);
+  await expect(body).not.toContainText(foreignPrefix);
+}
 
 /**
  * Select rows and press the primary. Returns the terminal frame plus each
@@ -212,8 +235,24 @@ test('a multi-leaf Claude transcript imports as one thread per branch', async ({
   const { rows } = await importRows(page, harness, [fx.claudeBranched]);
   // The row's own frame is where the real branch count lands: the catalogue
   // reports 0 (not determined) for every Claude row.
-  expect(rows.get(fx.claudeBranched.rowId)?.threadIds ?? []).toHaveLength(2);
+  const branchThreadIDs = rows.get(fx.claudeBranched.rowId)?.threadIds ?? [];
+  expect(branchThreadIDs).toHaveLength(2);
   await expect(page.getByText('Imported 1 session (2 threads).')).toBeVisible();
+
+  // Pin the collision precondition instead of trusting fixture comments: both
+  // branches really did mint the same logical item and payload ids. Only the
+  // thread key distinguishes their intentionally different full bodies.
+  const branchThinkingItems = await Promise.all(
+    branchThreadIDs.map(async (threadID) => {
+      const items = await harness.rpc<ImportedItemIdentity[] | null>('ListItems', threadID);
+      const thinking = (items ?? []).filter((item) => item.kind === 'thinking');
+      expect(thinking).toHaveLength(1);
+      return thinking[0]!;
+    }),
+  );
+  expect(branchThinkingItems[0].id).toBe(branchThinkingItems[1].id);
+  expect(branchThinkingItems[0].payloadId).toBe(branchThinkingItems[1].payloadId);
+  expect(branchThinkingItems[0].payloadId).toBe('thinking:think:2:0');
 
   const [abandoned, active] = fx.branchThreadTitles;
   await expect(threadRow(page, abandoned)).toBeVisible();
@@ -225,9 +264,19 @@ test('a multi-leaf Claude transcript imports as one thread per branch', async ({
   await expect(page.getByText('Parsed it.')).toBeVisible();
   await expect(page.getByText('Documented the parser.')).toBeVisible();
   await expect(page.getByText('Benchmarked the parser at 120ns/op.')).toHaveCount(0);
+  await expect(page.getByTestId('thinking-body')).not.toContainText(BRANCH_A_THINKING_PREFIX);
+  await expectThinkingPayload(page, BRANCH_A_THINKING_PREFIX, BRANCH_B_THINKING_PREFIX);
 
   await threadRow(page, active).click();
   await expect(page.getByText('Benchmarked the parser at 120ns/op.')).toBeVisible();
+  await expectThinkingPayload(page, BRANCH_B_THINKING_PREFIX, BRANCH_A_THINKING_PREFIX);
+
+  // Switch back after both payloads occupied the frontend cache. The two rows
+  // intentionally have the same logical payload id, so this catches a cache
+  // keyed by payload alone just as the assertions above catch an unscoped
+  // backend lookup.
+  await threadRow(page, abandoned).click();
+  await expectThinkingPayload(page, BRANCH_A_THINKING_PREFIX, BRANCH_B_THINKING_PREFIX);
 });
 
 test('sessions already imported are gone from the next scan', async ({ harness, page }) => {

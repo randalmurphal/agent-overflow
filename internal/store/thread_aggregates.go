@@ -31,7 +31,7 @@ func (s *Store) ListThreadProposedPlans(threadID string) ([]Item, error) {
 		   JOIN items
 		     ON items.thread_id = proposed_plans.thread_id
 		    AND items.id = proposed_plans.item_id
-		   JOIN payloads ON payloads.id = items.payload_id
+		   JOIN payloads ON payloads.thread_id = items.thread_id AND payloads.id = items.payload_id
 		  WHERE proposed_plans.thread_id = ?
 		    AND items.role = 'assistant'
 		    AND payloads.kind = 'proposed_plan'
@@ -66,7 +66,7 @@ func (s *Store) GetThreadProposedPlanItem(threadID, itemID string) (Item, bool, 
 	row := s.reader().QueryRow(
 		`SELECT `+itemColumns+`
 		   FROM items
-		   JOIN payloads ON payloads.id = items.payload_id
+		   JOIN payloads ON payloads.thread_id = items.thread_id AND payloads.id = items.payload_id
 		  WHERE items.thread_id = ?
 		    AND items.id = ?
 		    AND items.role = 'assistant'
@@ -111,7 +111,7 @@ func (s *Store) ListLiveBackgroundTasks(threadID string, retentionCutoffMillis i
 	rows, err := s.reader().Query(
 		`SELECT `+itemColumns+`
 		   FROM items
-		   LEFT JOIN payloads ON payloads.id = items.payload_id
+		   LEFT JOIN payloads ON payloads.thread_id = items.thread_id AND payloads.id = items.payload_id
 		  WHERE items.thread_id = ?
 		    AND (
 		      (

@@ -47,7 +47,7 @@ func (a *App) GetPayloadPreview(threadID string, payloadID string, maxBytes int)
 	if err != nil {
 		return PayloadPreview{}, err
 	}
-	data, totalSize, isComplete, err := a.store.GetPayloadPreview(payloadID, maxBytes)
+	data, totalSize, isComplete, err := a.store.GetPayloadPreview(threadID, payloadID, maxBytes)
 	if err != nil {
 		return PayloadPreview{}, err
 	}
@@ -56,7 +56,7 @@ func (a *App) GetPayloadPreview(threadID string, payloadID string, maxBytes int)
 		NextOffset: len(data),
 		TotalSize:  totalSize,
 		IsComplete: isComplete,
-		PatchSpans: a.persistedPayloadPatchSpans(meta.Kind, payloadID),
+		PatchSpans: a.persistedPayloadPatchSpans(threadID, meta.Kind, payloadID),
 	}, nil
 }
 
@@ -67,7 +67,7 @@ func (a *App) GetPayloadChunk(threadID string, payloadID string, offset int, max
 	if _, err := a.getThreadPayloadMeta(threadID, payloadID); err != nil {
 		return PayloadChunk{}, err
 	}
-	data, totalSize, isComplete, err := a.store.GetPayloadChunk(payloadID, offset, maxBytes)
+	data, totalSize, isComplete, err := a.store.GetPayloadChunk(threadID, payloadID, offset, maxBytes)
 	if err != nil {
 		return PayloadChunk{}, err
 	}
@@ -92,13 +92,13 @@ func (a *App) GetPayloadData(threadID string, payloadID string) (PayloadContent,
 	if err != nil {
 		return PayloadContent{}, err
 	}
-	data, err := a.store.GetPayloadData(payloadID)
+	data, err := a.store.GetPayloadData(threadID, payloadID)
 	if err != nil {
 		return PayloadContent{}, err
 	}
 	return PayloadContent{
 		Data:       string(data),
-		PatchSpans: a.persistedPayloadPatchSpans(meta.Kind, payloadID),
+		PatchSpans: a.persistedPayloadPatchSpans(threadID, meta.Kind, payloadID),
 	}, nil
 }
 
@@ -152,7 +152,7 @@ func (a *App) SavePayloadToFile(threadID string, payloadID string) (string, erro
 		return "", nil
 	}
 
-	data, err := a.store.GetPayloadData(payloadID)
+	data, err := a.store.GetPayloadData(threadID, payloadID)
 	if err != nil {
 		return "", err
 	}
@@ -186,7 +186,7 @@ func (a *App) getThreadPayloadMeta(threadID string, payloadID string) (store.Pay
 	if _, err := a.findThreadItemByPayloadID(threadID, payloadID); err != nil {
 		return store.PayloadMeta{}, err
 	}
-	meta, err := a.store.GetPayloadMeta(payloadID)
+	meta, err := a.store.GetPayloadMeta(threadID, payloadID)
 	if err != nil {
 		return store.PayloadMeta{}, err
 	}

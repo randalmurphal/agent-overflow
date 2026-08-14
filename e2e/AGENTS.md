@@ -137,8 +137,10 @@ headless, isolated data dir, mocked providers. Full harness guide:
   provider segment / search / clear-filters narrowing them, a two-session
   import settling into threads whose imported history renders (including the
   Bash row's on-demand output payload), a multi-leaf Claude transcript landing
-  as one thread per branch, the dedup that empties the catalogue on the next
-  open, and "Check for Provider Updates" appending what the transcript grew on
+  as one thread per branch whose same-id divergent thinking payloads remain
+  isolated through SQLite, transport, expansion, and repeated frontend-cache
+  thread switches, the dedup that empties the catalogue on the next open, and
+  "Check for Provider Updates" appending what the transcript grew on
   disk. The progress strip, the per-row outcome stamps and the Retry CTA are
   pinned on a run that FAILS a session — a clean run closes its own surface in
   milliseconds, so asserting the strip there would be a race; the happy path

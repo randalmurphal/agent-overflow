@@ -25,8 +25,8 @@ func (s *Store) ListEditDiffItems(threadID string) ([]EditDiffItem, error) {
 	rows, err := s.reader().Query(`
 		SELECT items.id, items.payload_id, items.turn_index, items.item_index,
 		       items.created_at, payloads.kind, payloads.meta
-		  FROM items
-		  JOIN payloads ON payloads.id = items.payload_id
+		  FROM timeline_items AS items
+		  JOIN timeline_payloads AS payloads ON payloads.thread_id = items.thread_id AND payloads.id = items.payload_id
 		 WHERE items.thread_id = ?
 		   AND payloads.kind IN ('tool_result', 'diff')
 		   AND length(payloads.data) > 0
@@ -69,8 +69,8 @@ type TurnEditDiffPatch struct {
 func (s *Store) ListTurnEditDiffPatches(threadID string, turnIndex int) ([]TurnEditDiffPatch, error) {
 	rows, err := s.reader().Query(`
 		SELECT payloads.id, payloads.data
-		  FROM items
-		  JOIN payloads ON payloads.id = items.payload_id
+		  FROM timeline_items AS items
+		  JOIN timeline_payloads AS payloads ON payloads.thread_id = items.thread_id AND payloads.id = items.payload_id
 		 WHERE items.thread_id = ?
 		   AND items.turn_index = ?
 		   AND payloads.kind IN ('tool_result', 'diff')
@@ -112,7 +112,7 @@ func (s *Store) ListTurnUserSummaries(threadID string) ([]TurnUserSummary, error
 	// or queued flush lands later in the same turn).
 	rows, err := s.reader().Query(`
 		SELECT turn_index, summary, MIN(item_index)
-		  FROM items
+		  FROM timeline_items
 		 WHERE thread_id = ? AND kind = 'user_text'
 		 GROUP BY turn_index
 		 ORDER BY turn_index ASC`,

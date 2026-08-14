@@ -1009,8 +1009,8 @@ func TestTrgItemsGCPayloadSweepsOrphans(t *testing.T) {
 		defaultTestProjectID, now, now); err != nil {
 		t.Fatalf("seed thread: %v", err)
 	}
-	if _, err := s.db.Exec(`INSERT INTO payloads (id, kind, meta, data, created_at)
-		VALUES ('p-gc', 'thinking', '{}', x'00', ?)`, now); err != nil {
+	if _, err := s.db.Exec(`INSERT INTO payloads (thread_id, id, kind, meta, data, created_at)
+		VALUES ('t-gc', 'p-gc', 'thinking', '{}', x'00', ?)`, now); err != nil {
 		t.Fatalf("seed payload: %v", err)
 	}
 	if _, err := s.db.Exec(`INSERT INTO items
@@ -1042,8 +1042,8 @@ func TestTrgItemsGCInputPayloadSweepsOrphans(t *testing.T) {
 		defaultTestProjectID, now, now); err != nil {
 		t.Fatalf("seed thread: %v", err)
 	}
-	if _, err := s.db.Exec(`INSERT INTO payloads (id, kind, meta, data, created_at)
-		VALUES ('p-tool-input', 'tool_call_input', '{}', x'00', ?)`, now); err != nil {
+	if _, err := s.db.Exec(`INSERT INTO payloads (thread_id, id, kind, meta, data, created_at)
+		VALUES ('t-gci', 'p-tool-input', 'tool_call_input', '{}', x'00', ?)`, now); err != nil {
 		t.Fatalf("seed payload: %v", err)
 	}
 	if _, err := s.db.Exec(`INSERT INTO items
@@ -3675,6 +3675,380 @@ func TestMigrationV55AddsHistoryStampsAndStoreIdentity(t *testing.T) {
 		).Scan(&found); err != nil {
 			t.Fatalf("trigger %s missing after v55: %v", trigger, err)
 		}
+	}
+}
+
+func TestMigrationV58DuplicatesSharedPayloadGraphPerOwningThread(t *testing.T) {
+	db := migrateThrough(t, 57)
+	mustExec(t, db, `
+		INSERT INTO projects (id, path, name, created_at, updated_at)
+		VALUES ('project-v58', '/tmp/v58', 'V58', 1, 1)
+	`)
+	for _, threadID := range []string{"thread-a", "thread-b"} {
+		mustExec(t, db, `
+			INSERT INTO threads (
+				id, project_id, title, provider, workspace_path, model, created_at, updated_at
+			) VALUES (?, 'project-v58', ?, 'claude', '/tmp/v58', '', 1, 1)
+		`, threadID, threadID)
+	}
+	mustExec(t, db, `
+		INSERT INTO payloads (id, kind, meta, data, created_at, preview_spans, spans)
+		VALUES ('shared', 'thinking', '{"legacy":true}', x'62617365', 2, 'preview', 'full')
+	`)
+	mustExec(t, db, `
+		INSERT INTO payload_chunks (payload_id, chunk_index, start_offset, data, created_at)
+		VALUES ('shared', 0, 4, x'7461696c', 3)
+	`)
+	mustExec(t, db, `
+		INSERT INTO edit_file_snapshots (payload_id, path, content, created_at)
+		VALUES ('shared', 'main.go', x'1f8b', 4)
+	`)
+	for i, threadID := range []string{"thread-a", "thread-b"} {
+		mustExec(t, db, `
+			INSERT INTO items (
+				id, thread_id, turn_index, item_index, kind, role, status, summary,
+				payload_id, created_at, updated_at
+			) VALUES ('think:0:0', ?, 0, ?, 'thinking', 'assistant', 'completed', '', 'shared', 2, 2)
+		`, threadID, i)
+	}
+
+	if err := applyRebuildMigration(db, migrationByVersion(t, 58)); err != nil {
+		t.Fatalf("apply migration v58: %v", err)
+	}
+
+	for table, query := range map[string]string{
+		"payloads":            `SELECT COUNT(*) FROM payloads WHERE id = 'shared'`,
+		"payload_chunks":      `SELECT COUNT(*) FROM payload_chunks WHERE payload_id = 'shared'`,
+		"edit_file_snapshots": `SELECT COUNT(*) FROM edit_file_snapshots WHERE payload_id = 'shared'`,
+	} {
+		var got int
+		if err := db.QueryRow(query).Scan(&got); err != nil {
+			t.Fatalf("count %s: %v", table, err)
+		}
+		if got != 2 {
+			t.Errorf("%s shared rows = %d, want 2", table, got)
+		}
+	}
+
+	mustExec(t, db, `UPDATE payloads SET data = x'41' WHERE thread_id = 'thread-a' AND id = 'shared'`)
+	var a, b []byte
+	if err := db.QueryRow(`SELECT data FROM payloads WHERE thread_id = 'thread-a' AND id = 'shared'`).Scan(&a); err != nil {
+		t.Fatalf("read migrated A: %v", err)
+	}
+	if err := db.QueryRow(`SELECT data FROM payloads WHERE thread_id = 'thread-b' AND id = 'shared'`).Scan(&b); err != nil {
+		t.Fatalf("read migrated B: %v", err)
+	}
+	if string(a) != "A" || string(b) != "base" {
+		t.Fatalf("migrated payloads still alias: A=%q B=%q", a, b)
+	}
+	// Rebuilding items must preserve the two post-v1 partial indexes used on
+	// startup and at every foreground flush boundary. Their absence is a
+	// production performance regression even though row-level behavior stays
+	// correct, so pin the rebuilt schema explicitly.
+	readIndexSQL(t, db, "idx_items_running_bg_tool_calls")
+	readIndexSQL(t, db, "idx_items_running_fg_tool_calls")
+
+	rows, err := db.Query(`PRAGMA foreign_key_check`)
+	if err != nil {
+		t.Fatalf("foreign_key_check: %v", err)
+	}
+	defer rows.Close()
+	if rows.Next() {
+		var table string
+		var rowID int64
+		var parent string
+		var fkID int
+		if err := rows.Scan(&table, &rowID, &parent, &fkID); err != nil {
+			t.Fatalf("scan foreign key violation: %v", err)
+		}
+		t.Fatalf("foreign key violation after v58: table=%s row=%d parent=%s fk=%d", table, rowID, parent, fkID)
+	}
+}
+
+func TestMigrationV59AddsTransactionalBulkHistoryGate(t *testing.T) {
+	db := migrateThrough(t, 58)
+	mustExec(t, db, `
+		INSERT INTO projects (id, path, name, created_at, updated_at)
+		VALUES ('project-v59', '/tmp/v59', 'V59', 1, 1)
+	`)
+	mustExec(t, db, `
+		INSERT INTO threads (id, project_id, title, provider, workspace_path, created_at, updated_at)
+		VALUES ('thread-v59', 'project-v59', 'V59', 'claude', '/tmp/v59', 1, 1)
+	`)
+
+	if err := applyMigration(db, migrationByVersion(t, 59)); err != nil {
+		t.Fatalf("apply migration v59: %v", err)
+	}
+	if _, err := db.Exec(`UPDATE threads SET history_bulk_load = 2 WHERE id = 'thread-v59'`); err == nil {
+		t.Fatal("history_bulk_load accepted a value outside its 0/1 state space")
+	}
+
+	tx, err := db.Begin()
+	if err != nil {
+		t.Fatalf("begin bulk history transaction: %v", err)
+	}
+	mustTxExec := func(query string, args ...any) {
+		t.Helper()
+		if _, err := tx.Exec(query, args...); err != nil {
+			t.Fatalf("exec bulk history SQL: %v", err)
+		}
+	}
+	mustTxExec(`UPDATE threads SET history_bulk_load = 1 WHERE id = 'thread-v59'`)
+	for i := 0; i < 2; i++ {
+		mustTxExec(`INSERT INTO items (
+			id, thread_id, turn_index, item_index, kind, role, status, summary, created_at, updated_at
+		) VALUES (?, 'thread-v59', 0, ?, 'notification', 'system', 'completed', '', 1, 1)`,
+			fmt.Sprintf("v59-item-%d", i), i)
+	}
+	var during int64
+	if err := tx.QueryRow(`SELECT history_rev FROM threads WHERE id = 'thread-v59'`).Scan(&during); err != nil {
+		t.Fatalf("read revision during bulk load: %v", err)
+	}
+	if during != 0 {
+		t.Fatalf("item triggers advanced bulk revision to %d, want 0", during)
+	}
+	mustTxExec(`UPDATE threads SET history_rev = history_rev + 2, history_bulk_load = 0 WHERE id = 'thread-v59'`)
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit bulk history transaction: %v", err)
+	}
+
+	var revision, bulk int64
+	if err := db.QueryRow(
+		`SELECT history_rev, history_bulk_load FROM threads WHERE id = 'thread-v59'`,
+	).Scan(&revision, &bulk); err != nil {
+		t.Fatalf("read committed bulk history state: %v", err)
+	}
+	if revision != 2 || bulk != 0 {
+		t.Fatalf("committed bulk history state = rev %d flag %d, want 2/0", revision, bulk)
+	}
+	mustExec(t, db, `INSERT INTO items (
+		id, thread_id, turn_index, item_index, kind, role, status, summary, created_at, updated_at
+	) VALUES ('v59-item-live', 'thread-v59', 0, 2, 'notification', 'system', 'completed', '', 1, 1)`)
+	if err := db.QueryRow(`SELECT history_rev FROM threads WHERE id = 'thread-v59'`).Scan(&revision); err != nil {
+		t.Fatalf("read revision after ordinary insert: %v", err)
+	}
+	if revision != 3 {
+		t.Fatalf("ordinary insert after bulk load set revision %d, want 3", revision)
+	}
+}
+
+func TestMigrationV60DropsOnlyTheRedundantTimelineIndex(t *testing.T) {
+	db := migrateThrough(t, 59)
+	mustExec(t, db, `
+		INSERT INTO projects (id, path, name, created_at, updated_at)
+		VALUES ('project-v60', '/tmp/v60', 'V60', 1, 1)
+	`)
+	mustExec(t, db, `
+		INSERT INTO threads (id, project_id, title, provider, workspace_path, created_at, updated_at)
+		VALUES ('thread-v60', 'project-v60', 'V60', 'claude', '/tmp/v60', 1, 1)
+	`)
+	mustExec(t, db, `INSERT INTO items (
+		id, thread_id, turn_index, item_index, kind, role, status, summary, created_at, updated_at
+	) VALUES ('v60-item', 'thread-v60', 1, 2, 'notification', 'system', 'completed', '', 1, 1)`)
+
+	readIndexSQL(t, db, "idx_items_thread")
+	readIndexSQL(t, db, "idx_items_thread_turn_item_unique")
+	if err := applyMigration(db, migrationByVersion(t, 60)); err != nil {
+		t.Fatalf("apply migration v60: %v", err)
+	}
+
+	var count int
+	if err := db.QueryRow(
+		`SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'idx_items_thread'`,
+	).Scan(&count); err != nil {
+		t.Fatalf("check removed timeline index: %v", err)
+	}
+	if count != 0 {
+		t.Fatal("idx_items_thread survived v60")
+	}
+	readIndexSQL(t, db, "idx_items_thread_turn_item_unique")
+	assertPlanUses(t, db, "idx_items_thread_turn_item_unique",
+		`EXPLAIN QUERY PLAN SELECT id FROM items
+		  WHERE thread_id = ?
+		  ORDER BY turn_index, item_index
+		  LIMIT 50`, "thread-v60")
+
+	if _, err := db.Exec(`INSERT INTO items (
+		id, thread_id, turn_index, item_index, kind, role, status, summary, created_at, updated_at
+	) VALUES ('v60-duplicate-position', 'thread-v60', 1, 2, 'notification', 'system', 'completed', '', 1, 1)`); err == nil {
+		t.Fatal("timeline position uniqueness disappeared with the redundant index")
+	}
+}
+
+func TestMigrationV61AddsSharedHistoryWithGuardedLogicalViewsAndGC(t *testing.T) {
+	db := migrateThrough(t, 60)
+	mustExec(t, db, `
+		INSERT INTO projects (id, path, name, created_at, updated_at)
+		VALUES ('project-v61', '/tmp/v61', 'V61', 1, 1)
+	`)
+	for _, threadID := range []string{"thread-v61-a", "thread-v61-b"} {
+		mustExec(t, db, `
+			INSERT INTO threads (
+				id, project_id, title, provider, workspace_path, created_at, updated_at, import_source
+			) VALUES (?, 'project-v61', 'V61', 'claude', '/tmp/v61', 1, 1, 'claude')
+		`, threadID)
+	}
+
+	if err := applyMigration(db, migrationByVersion(t, 61)); err != nil {
+		t.Fatalf("apply migration v61: %v", err)
+	}
+	for _, object := range []struct{ kind, name string }{
+		{"table", "import_history_chunks"},
+		{"table", "import_history_payloads"},
+		{"table", "import_history_items"},
+		{"table", "thread_import_chunks"},
+		{"table", "thread_import_item_overrides"},
+		{"view", "timeline_items"},
+		{"view", "timeline_payloads"},
+		{"trigger", "trg_items_require_import_override"},
+		{"trigger", "trg_thread_import_chunks_gc"},
+	} {
+		var found string
+		if err := db.QueryRow(
+			`SELECT name FROM sqlite_master WHERE type = ? AND name = ?`, object.kind, object.name,
+		).Scan(&found); err != nil {
+			t.Fatalf("%s %s missing after v61: %v", object.kind, object.name, err)
+		}
+	}
+
+	mustExec(t, db, `INSERT INTO import_history_chunks
+		(id, item_count, min_turn_index, max_turn_index) VALUES ('chunk-v61', 1, 1, 1)`)
+	mustExec(t, db, `INSERT INTO import_history_payloads
+		(chunk_id, id, kind, data, created_at) VALUES ('chunk-v61', 'payload-v61', 'thinking', x'61', 1)`)
+	mustExec(t, db, `INSERT INTO import_history_items (
+		chunk_id, id, turn_index, item_index, kind, role, status, summary,
+		payload_id, created_at, updated_at
+	) VALUES ('chunk-v61', 'item-v61', 1, 0, 'thinking', 'assistant', 'completed',
+		'shared', 'payload-v61', 1, 1)`)
+	for _, threadID := range []string{"thread-v61-a", "thread-v61-b"} {
+		mustExec(t, db, `INSERT INTO thread_import_chunks
+			(thread_id, chunk_order, chunk_id) VALUES (?, 0, 'chunk-v61')`, threadID)
+		var summary string
+		var data []byte
+		if err := db.QueryRow(
+			`SELECT summary FROM timeline_items WHERE thread_id = ? AND id = 'item-v61'`, threadID,
+		).Scan(&summary); err != nil {
+			t.Fatalf("read logical item for %s: %v", threadID, err)
+		}
+		if err := db.QueryRow(
+			`SELECT data FROM timeline_payloads WHERE thread_id = ? AND id = 'payload-v61'`, threadID,
+		).Scan(&data); err != nil {
+			t.Fatalf("read logical payload for %s: %v", threadID, err)
+		}
+		if summary != "shared" || string(data) != "a" {
+			t.Fatalf("logical history for %s = %q/%q, want shared/a", threadID, summary, data)
+		}
+	}
+
+	if _, err := db.Exec(`INSERT INTO items (
+		id, thread_id, turn_index, item_index, kind, role, status, summary, created_at, updated_at
+	) VALUES ('item-v61', 'thread-v61-a', 1, 0, 'thinking', 'assistant', 'completed', 'shadow', 1, 1)`); err == nil {
+		t.Fatal("v61 allowed a local item to shadow imported history without an override")
+	}
+	if _, err := db.Exec(`INSERT INTO thread_import_chunks
+		(thread_id, chunk_order, chunk_id) VALUES ('thread-v61-a', 2, 'chunk-v61')`); err == nil {
+		t.Fatal("v61 allowed a non-contiguous import chunk order")
+	}
+
+	mustExec(t, db, `DELETE FROM thread_import_chunks WHERE thread_id = 'thread-v61-a'`)
+	var chunks int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM import_history_chunks WHERE id = 'chunk-v61'`).Scan(&chunks); err != nil {
+		t.Fatalf("count still-shared chunk: %v", err)
+	}
+	if chunks != 1 {
+		t.Fatal("v61 collected a chunk that another thread still references")
+	}
+	mustExec(t, db, `DELETE FROM thread_import_chunks WHERE thread_id = 'thread-v61-b'`)
+	if err := db.QueryRow(`SELECT COUNT(*) FROM import_history_chunks WHERE id = 'chunk-v61'`).Scan(&chunks); err != nil {
+		t.Fatalf("count unreferenced chunk: %v", err)
+	}
+	if chunks != 0 {
+		t.Fatal("v61 left an unreferenced imported-history chunk behind")
+	}
+
+	rows, err := db.Query(`PRAGMA foreign_key_check`)
+	if err != nil {
+		t.Fatalf("foreign_key_check: %v", err)
+	}
+	defer rows.Close()
+	if rows.Next() {
+		t.Fatal("foreign key violation after v61")
+	}
+}
+
+func TestMigrationV62ScopesLegacyTurnIDsAndTheirUsage(t *testing.T) {
+	db := migrateThrough(t, 61)
+	mustExec(t, db, `
+		INSERT INTO projects (id, path, name, created_at, updated_at)
+		VALUES ('project-v62', '/tmp/v62', 'V62', 1, 1)
+	`)
+	for _, threadID := range []string{"thread-v62-codex", "thread-v62-claude"} {
+		provider := "codex"
+		if strings.HasSuffix(threadID, "claude") {
+			provider = "claude"
+		}
+		mustExec(t, db, `INSERT INTO threads (
+			id, project_id, title, provider, workspace_path, created_at, updated_at
+		) VALUES (?, 'project-v62', 'V62', ?, '/tmp/v62', 1, 1)`, threadID, provider)
+	}
+	mustExec(t, db, `INSERT INTO turns (
+		turn_id, thread_id, turn_index, started_at, completed_at, provider_turn_id
+	) VALUES ('wire-turn', 'thread-v62-codex', 1, 1, 2, 'wire-turn')`)
+	mustExec(t, db, `INSERT INTO turns (
+		turn_id, thread_id, turn_index, started_at, completed_at, provider_turn_id
+	) VALUES ('thread-v62-claude:1', 'thread-v62-claude', 1, 1, 2, '')`)
+	for _, row := range []struct{ threadID, turnID string }{
+		{"thread-v62-codex", "wire-turn"},
+		{"thread-v62-claude", "thread-v62-claude:1"},
+		// Lifetime usage may outlive its turn. With no matching row there is
+		// no safe identity rewrite, so the attribution stays untouched.
+		{"deleted-thread", "orphan-turn"},
+	} {
+		mustExec(t, db, `INSERT INTO usage_ledger (
+			created_at, thread_id, turn_id, provider, input_tokens
+		) VALUES (1, ?, ?, 'codex', 1)`, row.threadID, row.turnID)
+	}
+
+	if err := applyMigration(db, migrationByVersion(t, 62)); err != nil {
+		t.Fatalf("apply migration v62: %v", err)
+	}
+
+	var turnID, providerTurnID string
+	if err := db.QueryRow(`SELECT turn_id, provider_turn_id FROM turns
+		WHERE thread_id = 'thread-v62-codex'`).Scan(&turnID, &providerTurnID); err != nil {
+		t.Fatalf("read migrated Codex turn: %v", err)
+	}
+	if turnID != "thread-v62-codex:wire-turn" || providerTurnID != "wire-turn" {
+		t.Fatalf("migrated Codex turn = %q/%q, want scoped id and verbatim provider id", turnID, providerTurnID)
+	}
+	if err := db.QueryRow(`SELECT turn_id FROM turns
+		WHERE thread_id = 'thread-v62-claude'`).Scan(&turnID); err != nil {
+		t.Fatalf("read migrated Claude turn: %v", err)
+	}
+	if turnID != "thread-v62-claude:1" {
+		t.Fatalf("already-scoped Claude turn changed to %q", turnID)
+	}
+
+	usage := map[string]string{}
+	rows, err := db.Query(`SELECT thread_id, turn_id FROM usage_ledger`)
+	if err != nil {
+		t.Fatalf("read migrated usage: %v", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var threadID string
+		if err := rows.Scan(&threadID, &turnID); err != nil {
+			t.Fatalf("scan migrated usage: %v", err)
+		}
+		usage[threadID] = turnID
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate migrated usage: %v", err)
+	}
+	if usage["thread-v62-codex"] != "thread-v62-codex:wire-turn" ||
+		usage["thread-v62-claude"] != "thread-v62-claude:1" ||
+		usage["deleted-thread"] != "orphan-turn" {
+		t.Fatalf("migrated usage = %#v", usage)
 	}
 }
 

@@ -38,10 +38,10 @@ const threadColumns = `id, COALESCE(project_id, ''),
     EXISTS (
       SELECT 1
         FROM proposed_plans
-        JOIN items
+		JOIN timeline_items AS items
           ON items.thread_id = proposed_plans.thread_id
          AND items.id = proposed_plans.item_id
-        JOIN payloads ON payloads.id = items.payload_id
+		JOIN timeline_payloads AS payloads ON payloads.thread_id = items.thread_id AND payloads.id = items.payload_id
        WHERE proposed_plans.thread_id = threads.id
          AND proposed_plans.version = (
            SELECT MAX(latest.version)
@@ -66,7 +66,7 @@ const threadColumns = `id, COALESCE(project_id, ''),
        ORDER BY turns.turn_index DESC
        LIMIT 1
     ), 0),
-    NOT EXISTS (SELECT 1 FROM items WHERE items.thread_id = threads.id)`
+    NOT EXISTS (SELECT 1 FROM timeline_items WHERE timeline_items.thread_id = threads.id)`
 
 // -- Validation errors for enum fields. Each binding checks against the
 // -- list before hitting SQLite so the caller sees a typed error instead
@@ -339,7 +339,7 @@ func (s *Store) ListThreadsWithItems() ([]Thread, error) {
 		 WHERE archived = 0 AND `+hiddenClause+`
 		   AND (
 		       threads.mode = 'terminal'
-		    OR EXISTS (SELECT 1 FROM items WHERE items.thread_id = threads.id)
+		    OR EXISTS (SELECT 1 FROM timeline_items WHERE timeline_items.thread_id = threads.id)
 		    OR EXISTS (
 		         SELECT 1 FROM thread_drafts
 		          WHERE thread_drafts.thread_id = threads.id
@@ -688,15 +688,78 @@ func (s *Store) UpdateThreadAndRemapProviderIDs(t Thread, items []ItemMetaUpdate
 	if err := requireRowsAffected(result, fmt.Sprintf("store: update thread %s", t.ID)); err != nil {
 		return err
 	}
+	if err := remapProviderIDsTx(tx, t.ID, items, anchors); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("store: commit update thread %s with provider id remap: %w", t.ID, err)
+	}
+	return nil
+}
+
+// UpdateSessionRefAndRemapProviderIDs is the targeted counterpart to
+// UpdateThreadAndRemapProviderIDs. Materializing an imported Claude branch
+// remints every transcript UUID, so the new session reference and every
+// surviving SQLite correlation id must commit together. Only session_ref and
+// pending_fork_session_ref are changed on the thread row; concurrent title,
+// workspace, model, and activity updates cannot be overwritten by a stale
+// whole-row snapshot.
+func (s *Store) UpdateSessionRefAndRemapProviderIDs(
+	threadID, ref string,
+	items []ItemMetaUpdate,
+	anchors []MessageAnchorProviderIDsUpdate,
+) (changed bool, err error) {
+	if threadID == "" {
+		return false, fmt.Errorf("store: update session ref with provider id remap: thread id is required")
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return false, fmt.Errorf("store: begin update session ref with provider id remap for %s: %w", threadID, err)
+	}
+	defer tx.Rollback()
+
+	var prev sql.NullString
+	if err := tx.QueryRow(`SELECT session_ref FROM threads WHERE id = ?`, threadID).Scan(&prev); err != nil {
+		return false, fmt.Errorf("store: read session ref for provider id remap %s: %w", threadID, err)
+	}
+	result, err := tx.Exec(
+		`UPDATE threads SET session_ref = ?, pending_fork_session_ref = NULL WHERE id = ?`,
+		ref, threadID,
+	)
+	if err != nil {
+		return false, fmt.Errorf("store: update session ref for provider id remap %s: %w", threadID, err)
+	}
+	if err := requireRowsAffected(result, fmt.Sprintf("store: update session ref for provider id remap %s", threadID)); err != nil {
+		return false, err
+	}
+	if err := remapProviderIDsTx(tx, threadID, items, anchors); err != nil {
+		return false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return false, fmt.Errorf("store: commit session ref with provider id remap for %s: %w", threadID, err)
+	}
+	return prev.String != ref, nil
+}
+
+func remapProviderIDsTx(
+	tx *sql.Tx,
+	threadID string,
+	items []ItemMetaUpdate,
+	anchors []MessageAnchorProviderIDsUpdate,
+) error {
 	for _, item := range items {
+		label := fmt.Sprintf("store: remap item meta %s/%s", threadID, item.ItemID)
+		if err := requireMutableItemTx(tx, threadID, item.ItemID, label); err != nil {
+			return err
+		}
 		result, err := tx.Exec(
 			`UPDATE items SET meta = ? WHERE thread_id = ? AND id = ?`,
-			item.Meta, t.ID, item.ItemID,
+			item.Meta, threadID, item.ItemID,
 		)
 		if err != nil {
-			return fmt.Errorf("store: remap item meta %s/%s: %w", t.ID, item.ItemID, err)
+			return fmt.Errorf("%s: %w", label, err)
 		}
-		if err := requireRowsAffected(result, fmt.Sprintf("store: remap item meta %s/%s", t.ID, item.ItemID)); err != nil {
+		if err := requireRowsAffected(result, label); err != nil {
 			return err
 		}
 	}
@@ -708,13 +771,10 @@ func (s *Store) UpdateThreadAndRemapProviderIDs(t Thread, items []ItemMetaUpdate
 			  WHERE thread_id = ? AND user_item_id = ?`,
 			anchor.ProviderUserMessageID, anchor.ProviderUserMessageID,
 			anchor.ProviderParentUUID, anchor.ProviderParentUUID,
-			t.ID, anchor.UserItemID,
+			threadID, anchor.UserItemID,
 		); err != nil {
-			return fmt.Errorf("store: remap message anchor provider ids %s/%s: %w", t.ID, anchor.UserItemID, err)
+			return fmt.Errorf("store: remap message anchor provider ids %s/%s: %w", threadID, anchor.UserItemID, err)
 		}
-	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("store: commit update thread %s with provider id remap: %w", t.ID, err)
 	}
 	return nil
 }
@@ -728,7 +788,7 @@ func (s *Store) UpdateThreadIfProviderSwitchAllowed(t Thread, previousProvider s
 	result, err := s.db.Exec(
 		updateThreadSetSQL+` WHERE id=?
 		 AND provider = ?
-		 AND NOT EXISTS (SELECT 1 FROM items WHERE thread_id = ? LIMIT 1)`,
+		 AND NOT EXISTS (SELECT 1 FROM timeline_items WHERE thread_id = ? LIMIT 1)`,
 		args...,
 	)
 	if err != nil {
@@ -749,7 +809,7 @@ func (s *Store) explainProviderSwitchNoRows(threadID, previousProvider string) e
 	var hasItems int
 	err := s.reader().QueryRow(
 		`SELECT provider,
-		        EXISTS(SELECT 1 FROM items WHERE thread_id = threads.id LIMIT 1)
+		        EXISTS(SELECT 1 FROM timeline_items WHERE thread_id = threads.id LIMIT 1)
 		   FROM threads
 		  WHERE id = ?`,
 		threadID,
@@ -785,17 +845,9 @@ const deleteThreadItemChunk = 500
 // retried delete completes.
 func (s *Store) DeleteThread(id string) error {
 	for {
-		result, err := s.db.Exec(
-			`DELETE FROM items
-			  WHERE rowid IN (SELECT rowid FROM items WHERE thread_id = ? LIMIT ?)`,
-			id, deleteThreadItemChunk,
-		)
+		n, err := s.deleteThreadItemsChunk(id)
 		if err != nil {
-			return fmt.Errorf("store: delete thread %s items: %w", id, err)
-		}
-		n, err := result.RowsAffected()
-		if err != nil {
-			return fmt.Errorf("store: delete thread %s items count: %w", id, err)
+			return err
 		}
 		if n < deleteThreadItemChunk {
 			break
@@ -806,6 +858,62 @@ func (s *Store) DeleteThread(id string) error {
 		return fmt.Errorf("store: delete thread %s: %w", id, err)
 	}
 	return requireRowsAffected(result, fmt.Sprintf("store: delete thread %s", id))
+}
+
+// deleteThreadItemsChunk removes one bounded slice while aggregating the
+// history stamps the per-item delete trigger would otherwise write one at a
+// time. The flag, deletes, exact rev/epoch advance, and flag reset share one
+// transaction: readers either see the prior chunk or the shortened history
+// with its new stamp, and any failure rolls the flag back with the rows.
+func (s *Store) deleteThreadItemsChunk(id string) (int64, error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return 0, fmt.Errorf("store: begin delete thread %s item chunk: %w", id, err)
+	}
+	defer tx.Rollback()
+
+	result, err := tx.Exec(
+		`UPDATE threads SET history_bulk_load = 1
+		  WHERE id = ? AND history_bulk_load = 0`, id,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("store: begin delete thread %s item history: %w", id, err)
+	}
+	if err := requireRowsAffected(result, fmt.Sprintf("store: begin delete thread %s item history", id)); err != nil {
+		return 0, err
+	}
+
+	result, err = tx.Exec(
+		`DELETE FROM items
+		  WHERE rowid IN (SELECT rowid FROM items WHERE thread_id = ? LIMIT ?)`,
+		id, deleteThreadItemChunk,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("store: delete thread %s items: %w", id, err)
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("store: delete thread %s items count: %w", id, err)
+	}
+
+	result, err = tx.Exec(
+		`UPDATE threads
+		    SET history_rev = history_rev + ?,
+		        history_epoch = history_epoch + ?,
+		        history_bulk_load = 0
+		  WHERE id = ? AND history_bulk_load = 1`,
+		n, n, id,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("store: finish delete thread %s item history: %w", id, err)
+	}
+	if err := requireRowsAffected(result, fmt.Sprintf("store: finish delete thread %s item history", id)); err != nil {
+		return 0, err
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("store: commit delete thread %s item chunk: %w", id, err)
+	}
+	return n, nil
 }
 
 func (s *Store) ArchiveThread(id string) error {

@@ -3,12 +3,15 @@ package sessionimport
 import (
 	"context"
 	"os"
+	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"agent-overflow/internal/importir"
 	"agent-overflow/internal/provider"
+	claudesessions "agent-overflow/internal/provider/claude/sessionimport"
 	"agent-overflow/internal/store"
 )
 
@@ -498,13 +501,17 @@ func TestImportClaudeMultiLeafCreatesAThreadPerBranch(t *testing.T) {
 	homes := newProviderHomes(t)
 	homes.writeClaudeSession(t, claudeSessionA,
 		homes.claudeUserRow("u1", "", "add a test", 0),
-		homes.claudeAssistantRow("a1", "u1", "msg-1", []any{claudeTextBlock("First answer.")}, 1_000, nil),
-		homes.claudeUserRow("u2", "a1", "actually, do it differently", 2_000),
-		homes.claudeAssistantRow("a2", "u2", "msg-2", []any{claudeTextBlock("Second answer.")}, 3_000, nil),
-		// A second leaf hanging off the same assistant row: the user
-		// rewound and asked something else.
-		homes.claudeUserRow("u3", "a1", "or maybe this instead", 4_000),
-		homes.claudeAssistantRow("a3", "u3", "msg-3", []any{claudeTextBlock("Third answer.")}, 5_000, nil),
+		homes.claudeAssistantRow("a1", "u1", "msg-1", []any{
+			claudeTextBlock("First answer."),
+			claudeToolUseBlock("toolu_shared", "Read", map[string]any{"file_path": "/tmp/shared.go"}),
+		}, 1_000, nil),
+		homes.claudeToolResultRow("r1", "a1", "toolu_shared", "shared prefix contents", 2_000, nil),
+		homes.claudeUserRow("u2", "r1", "actually, do it differently", 3_000),
+		homes.claudeAssistantRow("a2", "u2", "msg-2", []any{claudeTextBlock("Second answer.")}, 4_000, nil),
+		// A second leaf hanging off the same completed tool prefix: the
+		// user rewound and asked something else.
+		homes.claudeUserRow("u3", "r1", "or maybe this instead", 5_000),
+		homes.claudeAssistantRow("a3", "u3", "msg-3", []any{claudeTextBlock("Third answer.")}, 6_000, nil),
 		claudeLastPromptRow("a2", "actually, do it differently"),
 		claudeLastPromptRow("a3", "or maybe this instead"),
 	)
@@ -541,6 +548,17 @@ func TestImportClaudeMultiLeafCreatesAThreadPerBranch(t *testing.T) {
 		if state.SourceSessionID != claudeSessionA {
 			t.Errorf("SourceSessionID = %q, want the shared session id", state.SourceSessionID)
 		}
+		shared, found, err := st.GetThreadItem(thread.ID, "toolu_shared")
+		if err != nil || !found {
+			t.Fatalf("shared tool row in branch %s: found=%v err=%v", thread.ID, found, err)
+		}
+		data, err := st.GetPayloadData(thread.ID, shared.PayloadID)
+		if err != nil {
+			t.Fatalf("shared tool payload in branch %s: %v", thread.ID, err)
+		}
+		if string(data) != "shared prefix contents" {
+			t.Errorf("shared tool payload in branch %s = %q", thread.ID, data)
+		}
 	}
 	// Exactly one branch may carry the resume reference: `claude --resume`
 	// reopens the file's ACTIVE branch, so handing the ref to both would
@@ -556,6 +574,149 @@ func TestImportClaudeMultiLeafCreatesAThreadPerBranch(t *testing.T) {
 	}
 }
 
+func TestOptimizedClaudeBranchImportMatchesIndependentFullBranchBuilds(t *testing.T) {
+	optimized := newTestStore(t)
+	homes := newProviderHomes(t)
+	sharedBlocks := make([]any, 0, 270)
+	for i := 0; i < cap(sharedBlocks); i++ {
+		sharedBlocks = append(sharedBlocks, claudeTextBlock("shared block "+strconv.Itoa(i)))
+	}
+	homes.writeClaudeSession(t, claudeSessionA,
+		homes.claudeUserRow("u1", "", "shared prompt", 0),
+		homes.claudeAssistantRow("a1", "u1", "msg-1", sharedBlocks, 1_000, map[string]any{
+			"input_tokens": 120, "output_tokens": 270,
+		}),
+		homes.claudeUserRow("u2a", "a1", "branch A", 2_000),
+		homes.claudeAssistantRow("a2a", "u2a", "msg-2a", []any{claudeTextBlock("answer A")}, 3_000, map[string]any{
+			"input_tokens": 130, "output_tokens": 4,
+		}),
+		homes.claudeUserRow("u2b", "a1", "branch B", 4_000),
+		homes.claudeAssistantRow("a2b", "u2b", "msg-2b", []any{claudeTextBlock("answer B")}, 5_000, map[string]any{
+			"input_tokens": 140, "output_tokens": 5,
+		}),
+		claudeLastPromptRow("a2a", "branch A"),
+		claudeLastPromptRow("a2b", "branch B"),
+	)
+	d := homes.deps(optimized)
+	row := scanOne(t, d, ProviderClaude)
+	outcome := importFixtureRow(t, d, row)
+	if len(outcome.Threads) != 2 {
+		t.Fatalf("optimized threads = %d, want 2", len(outcome.Threads))
+	}
+
+	baseline := newTestStore(t)
+	baselineProject, err := resolveProject(baseline, row)
+	if err != nil {
+		t.Fatalf("resolve baseline project: %v", err)
+	}
+	loaded, err := claudesessions.LoadSession(row.SourcePath)
+	if err != nil {
+		t.Fatalf("load baseline session: %v", err)
+	}
+	defer loaded.Close()
+	baselineThreads := make([]store.Thread, 0, len(loaded.Branches))
+	for i := range loaded.Branches {
+		branch, err := loaded.ConvertBranch(i)
+		if err != nil {
+			t.Fatalf("convert baseline branch %d: %v", i, err)
+		}
+		thread := newImportedThread(row, baselineProject, branch.Title, "", branch.Events, branch.LastActivityAt)
+		if err := baseline.CreateThread(thread); err != nil {
+			t.Fatalf("create baseline branch %d: %v", i, err)
+		}
+		batch, _, err := NewWriter(baseline, thread).Build(branch.Events)
+		if err != nil {
+			t.Fatalf("build baseline branch %d: %v", i, err)
+		}
+		if err := baseline.ApplyImportBatch(thread.ID, batch); err != nil {
+			t.Fatalf("apply baseline branch %d: %v", i, err)
+		}
+		baselineThreads = append(baselineThreads, thread)
+	}
+
+	for i := range outcome.Threads {
+		got, err := optimized.ListItems(outcome.Threads[i].ID)
+		if err != nil {
+			t.Fatalf("list optimized branch %d: %v", i, err)
+		}
+		want, err := baseline.ListItems(baselineThreads[i].ID)
+		if err != nil {
+			t.Fatalf("list baseline branch %d: %v", i, err)
+		}
+		if len(got) != len(want) {
+			t.Fatalf("branch %d item count = %d, want %d", i, len(got), len(want))
+		}
+		for j := range got {
+			got[j].ThreadID = ""
+			want[j].ThreadID = ""
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("branch %d logical items differ after prefix reuse", i)
+		}
+		for _, item := range got {
+			for _, payloadID := range []string{item.PayloadID, item.InputPayloadID} {
+				if payloadID == "" {
+					continue
+				}
+				gotData, err := optimized.GetPayloadData(outcome.Threads[i].ID, payloadID)
+				if err != nil {
+					t.Fatalf("read optimized payload %s: %v", payloadID, err)
+				}
+				wantData, err := baseline.GetPayloadData(baselineThreads[i].ID, payloadID)
+				if err != nil {
+					t.Fatalf("read baseline payload %s: %v", payloadID, err)
+				}
+				if !reflect.DeepEqual(gotData, wantData) {
+					t.Fatalf("branch %d payload %s differs", i, payloadID)
+				}
+			}
+		}
+
+		gotTurns, err := optimized.ListRecentTurns(outcome.Threads[i].ID, 100)
+		if err != nil {
+			t.Fatalf("list optimized turns for branch %d: %v", i, err)
+		}
+		wantTurns, err := baseline.ListRecentTurns(baselineThreads[i].ID, 100)
+		if err != nil {
+			t.Fatalf("list baseline turns for branch %d: %v", i, err)
+		}
+		if len(gotTurns) != len(wantTurns) {
+			t.Fatalf("branch %d turn count = %d, want %d", i, len(gotTurns), len(wantTurns))
+		}
+		for j := range gotTurns {
+			if (gotTurns[j].CompletedAt == nil) != (wantTurns[j].CompletedAt == nil) ||
+				(gotTurns[j].CompletedAt != nil && *gotTurns[j].CompletedAt != *wantTurns[j].CompletedAt) {
+				var gotCompleted, wantCompleted int64
+				if gotTurns[j].CompletedAt != nil {
+					gotCompleted = *gotTurns[j].CompletedAt
+				}
+				if wantTurns[j].CompletedAt != nil {
+					wantCompleted = *wantTurns[j].CompletedAt
+				}
+				t.Fatalf("branch %d turn %d completed_at differs: got=%d want=%d", i, j, gotCompleted, wantCompleted)
+			}
+			gotTurns[j].ThreadID, wantTurns[j].ThreadID = "", ""
+			gotTurns[j].TurnID, wantTurns[j].TurnID = "", ""
+			gotTurns[j].CompletedAt, wantTurns[j].CompletedAt = nil, nil
+		}
+		if !reflect.DeepEqual(gotTurns, wantTurns) {
+			t.Fatalf("branch %d turns differ after prefix reuse: got=%+v want=%+v", i, gotTurns, wantTurns)
+		}
+
+		gotUsage, err := optimized.QueryUsage(store.UsageQuery{ThreadID: outcome.Threads[i].ID})
+		if err != nil {
+			t.Fatalf("query optimized usage for branch %d: %v", i, err)
+		}
+		wantUsage, err := baseline.QueryUsage(store.UsageQuery{ThreadID: baselineThreads[i].ID})
+		if err != nil {
+			t.Fatalf("query baseline usage for branch %d: %v", i, err)
+		}
+		if !reflect.DeepEqual(gotUsage, wantUsage) {
+			t.Fatalf("branch %d usage differs after prefix reuse: got=%+v want=%+v", i, gotUsage, wantUsage)
+		}
+	}
+}
+
 // TestImportRollsBackTheWholeSessionOnFailure: a session that half-lands
 // is worse than one that does not land at all, because the dedup set keys
 // on the source session id and would hide the missing branches forever.
@@ -567,7 +728,7 @@ func TestImportRollsBackTheWholeSessionOnFailure(t *testing.T) {
 		homes.claudeAssistantRow("a1", "u1", "msg-1", []any{
 			claudeTextBlock("Reading."),
 			claudeToolUseBlock("toolu_1", "Read", map[string]any{"file_path": "/x"}),
-		}, 1_000, nil),
+		}, 1_000, map[string]any{"input_tokens": 12, "output_tokens": 3}),
 		homes.claudeToolResultRow("r1", "a1", "toolu_1", "contents", 2_000, nil),
 		// Leaf 2: a tool_result whose launch is on no chain at all. The
 		// writer refuses a completion with no launch rather than shaping
@@ -587,6 +748,13 @@ func TestImportRollsBackTheWholeSessionOnFailure(t *testing.T) {
 	}
 	if len(threads) != 0 {
 		t.Fatalf("threads = %d, want none after a rolled-back import", len(threads))
+	}
+	usage, err := st.QueryUsage(store.UsageQuery{})
+	if err != nil {
+		t.Fatalf("query usage after rollback: %v", err)
+	}
+	if len(usage) != 0 {
+		t.Fatalf("usage after rollback = %+v, want none", usage)
 	}
 	// The rollback is what keeps the session importable again.
 	if result := scanFixture(t, d, Filter{Provider: ProviderClaude}); len(result.Rows) != 1 {
@@ -621,6 +789,80 @@ func TestImportIsolatesOneFailureFromTheNextSession(t *testing.T) {
 	}
 	if failures != 1 || imported != 1 {
 		t.Fatalf("failures/imported = %d/%d, want 1/1", failures, imported)
+	}
+}
+
+// Synthetic Codex turns have no provider id to adopt, but their persisted
+// turn_id still lives in the store's global key space. Keeping both sessions
+// in one store is essential: a fixture that deletes the first thread before
+// importing the second cannot detect a cross-session identity collision.
+func TestImportKeepsSyntheticCodexTurnsDistinctAcrossSessions(t *testing.T) {
+	st := newTestStore(t)
+	homes := newProviderHomes(t)
+	homes.writeCodexIndex(t, codexThreadA, codexThreadB)
+	for _, fixture := range []struct {
+		id, prompt, answer string
+	}{
+		{codexThreadA, "question alpha", "answer alpha"},
+		{codexThreadB, "question beta", "answer beta"},
+	} {
+		homes.writeCodexRollout(t, fixture.id,
+			homes.codexMetaLine(fixture.id, ""),
+			codexLine(100, "event_msg", map[string]any{
+				"type": "user_message", "message": fixture.prompt,
+			}),
+			codexLine(200, "event_msg", map[string]any{
+				"type": "agent_message", "message": fixture.answer, "phase": "final_answer",
+			}),
+		)
+	}
+	d := homes.deps(st)
+	rows := scanFixture(t, d, Filter{Provider: ProviderCodex}).Rows
+	if len(rows) != 2 {
+		t.Fatalf("scan rows = %s, want two Codex sessions", rowIDs(ScanResult{Rows: rows}))
+	}
+
+	turnIDs := map[string]struct{}{}
+	answers := map[string]string{codexThreadA: "answer alpha", codexThreadB: "answer beta"}
+	for _, row := range rows {
+		outcome := importFixtureRow(t, d, row)
+		if len(outcome.Threads) != 1 {
+			t.Fatalf("ImportOne(%s) threads = %d, want 1", row.ID, len(outcome.Threads))
+		}
+		thread := outcome.Threads[0]
+		turns, err := st.ListRecentTurns(thread.ID, 10)
+		if err != nil {
+			t.Fatalf("list turns for %s: %v", row.ID, err)
+		}
+		if len(turns) != 1 {
+			t.Fatalf("turns for %s = %+v, want one synthetic turn", row.ID, turns)
+		}
+		if _, duplicate := turnIDs[turns[0].TurnID]; duplicate {
+			t.Fatalf("sessions shared synthetic turn id %q", turns[0].TurnID)
+		}
+		turnIDs[turns[0].TurnID] = struct{}{}
+		if turns[0].ProviderTurnID != "" {
+			t.Fatalf("provider turn id for inferred turn %s = %q, want empty (not a wire anchor)",
+				row.SessionID, turns[0].ProviderTurnID)
+		}
+
+		items, err := st.ListItems(thread.ID)
+		if err != nil {
+			t.Fatalf("list items for %s: %v", row.ID, err)
+		}
+		wantAnswer := answers[row.SessionID]
+		var found bool
+		for _, item := range items {
+			if item.Kind == "assistant_text" && item.Summary == wantAnswer {
+				found = true
+			}
+			if item.ThreadID != thread.ID || item.TurnIndex != turns[0].TurnIndex {
+				t.Fatalf("foreign history in %s: item=%+v turn=%+v", row.ID, item, turns[0])
+			}
+		}
+		if !found {
+			t.Fatalf("thread %s items = %+v, want its own answer %q", row.SessionID, items, wantAnswer)
+		}
 	}
 }
 

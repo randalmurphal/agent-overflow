@@ -43,7 +43,7 @@ func TestEditFileSnapshotRoundTrip(t *testing.T) {
 
 	content := strings.Repeat("package main\n\nfunc main() {}\n", 200)
 	now := time.Now().UnixMilli()
-	if err := s.PutEditFileSnapshot("p1", "main.go", content, now); err != nil {
+	if err := s.PutEditFileSnapshot("t1", "p1", "main.go", content, now); err != nil {
 		t.Fatalf("put snapshot: %v", err)
 	}
 
@@ -81,10 +81,10 @@ func TestEditFileSnapshotOverwriteAndMiss(t *testing.T) {
 	now := time.Now().UnixMilli()
 
 	// Re-persisting the same payload replaces the row.
-	if err := s.PutEditFileSnapshot("p1", "a.txt", "first", now); err != nil {
+	if err := s.PutEditFileSnapshot("t1", "p1", "a.txt", "first", now); err != nil {
 		t.Fatalf("put snapshot: %v", err)
 	}
-	if err := s.PutEditFileSnapshot("p1", "a.txt", "second", now+1); err != nil {
+	if err := s.PutEditFileSnapshot("t1", "p1", "a.txt", "second", now+1); err != nil {
 		t.Fatalf("overwrite snapshot: %v", err)
 	}
 	got, found, err := s.GetEditFileSnapshot("t1", "p1", "a.txt")
@@ -110,7 +110,7 @@ func TestEditFileSnapshotOverwriteAndMiss(t *testing.T) {
 
 	// Writing against a deleted payload is the async-worker deletion
 	// race: wrapped sql.ErrNoRows, never a foreign-key violation.
-	err = s.PutEditFileSnapshot("p-missing", "a.txt", "content", now)
+	err = s.PutEditFileSnapshot("t1", "p-missing", "a.txt", "content", now)
 	if !errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("put for missing payload: err = %v, want sql.ErrNoRows", err)
 	}
@@ -134,7 +134,7 @@ func TestGetLatestTurnEditFileSnapshot(t *testing.T) {
 		{"p3", "b.go", "b v1"},
 		{"p4", "a.go", "a turn4"},
 	} {
-		if err := s.PutEditFileSnapshot(put.payloadID, put.path, put.content, now); err != nil {
+		if err := s.PutEditFileSnapshot("t1", put.payloadID, put.path, put.content, now); err != nil {
 			t.Fatalf("put %s %s: %v", put.payloadID, put.path, err)
 		}
 	}
@@ -166,7 +166,7 @@ func TestEditFileSnapshotCascadesWithPayload(t *testing.T) {
 		t.Fatalf("create thread: %v", err)
 	}
 	insertSnapshotTestPayload(t, s, "t1", "item-1", "p1", 0, 0)
-	if err := s.PutEditFileSnapshot("p1", "a.go", "content", time.Now().UnixMilli()); err != nil {
+	if err := s.PutEditFileSnapshot("t1", "p1", "a.go", "content", time.Now().UnixMilli()); err != nil {
 		t.Fatalf("put snapshot: %v", err)
 	}
 

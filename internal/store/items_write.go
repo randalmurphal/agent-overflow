@@ -49,7 +49,7 @@ func (s *Store) appendStreamingItemSummaryAndPayload(
 		return Item{}, fmt.Errorf("store: %s %s/%s: %w", rereadOperation, threadID, id, err)
 	}
 	if payloadID != "" {
-		if err := appendPayloadDataTx(tx, payloadID, payloadDelta, updated.PayloadMeta, payloadCreatedAt); err != nil {
+		if err := appendPayloadDataTx(tx, threadID, payloadID, payloadDelta, updated.PayloadMeta, payloadCreatedAt); err != nil {
 			return Item{}, err
 		}
 	}
@@ -81,7 +81,7 @@ func readBackItemTx(tx *sql.Tx, threadID string, id string) (Item, error) {
 	row := tx.QueryRow(
 		`SELECT `+itemColumns+`
 		   FROM items
-		   LEFT JOIN payloads ON payloads.id = items.payload_id
+		   LEFT JOIN payloads ON payloads.thread_id = items.thread_id AND payloads.id = items.payload_id
 		  WHERE items.thread_id = ? AND items.id = ?`,
 		threadID, id,
 	)
@@ -317,7 +317,7 @@ func (s *Store) UpsertItemWithPayloadAppend(item Item, payloadID string, delta [
 	}
 	defer tx.Rollback()
 
-	if err := appendPayloadDataTx(tx, payloadID, delta, payloadMeta, createdAt); err != nil {
+	if err := appendPayloadDataTx(tx, item.ThreadID, payloadID, delta, payloadMeta, createdAt); err != nil {
 		return Item{}, err
 	}
 	if err := writeItem(tx, &item); err != nil {
@@ -341,7 +341,7 @@ func upsertPayload(tx *sql.Tx, payload *Payload, item *Item) error {
 	if payload == nil {
 		return nil
 	}
-	if err := upsertPayloadTx(tx, *payload, fmt.Sprintf("store: upsert item payload %s", payload.ID)); err != nil {
+	if err := upsertPayloadTx(tx, item.ThreadID, *payload, fmt.Sprintf("store: upsert item payload %s", payload.ID)); err != nil {
 		return err
 	}
 	item.PayloadID = payload.ID
@@ -358,7 +358,7 @@ func upsertInputPayload(tx *sql.Tx, payload *Payload, item *Item) error {
 	if payload == nil {
 		return nil
 	}
-	if err := upsertPayloadTx(tx, *payload, fmt.Sprintf("store: upsert item input payload %s", payload.ID)); err != nil {
+	if err := upsertPayloadTx(tx, item.ThreadID, *payload, fmt.Sprintf("store: upsert item input payload %s", payload.ID)); err != nil {
 		return err
 	}
 	item.InputPayloadID = payload.ID
@@ -390,6 +390,21 @@ func writeItemWithIndexFn(tx *sql.Tx, item *Item, indexFn func(*sql.Tx, string, 
 		item.CreatedAt = existingCreatedAt
 		return updateExistingItem(tx, *item)
 	case sql.ErrNoRows:
+		localized, err := localizeImportedItemTx(tx, item.ThreadID, item.ID, "store: upsert item")
+		if err != nil {
+			return err
+		}
+		if localized {
+			if err := tx.QueryRow(
+				`SELECT item_index, created_at FROM items WHERE thread_id = ? AND id = ?`,
+				item.ThreadID, item.ID,
+			).Scan(&existingItemIndex, &existingCreatedAt); err != nil {
+				return fmt.Errorf("store: read localized item %s: %w", item.ID, err)
+			}
+			item.ItemIndex = existingItemIndex
+			item.CreatedAt = existingCreatedAt
+			return updateExistingItem(tx, *item)
+		}
 		return insertNewItem(tx, item, indexFn)
 	default:
 		return fmt.Errorf("store: upsert item lookup %s: %w", item.ID, err)
@@ -501,6 +516,9 @@ func (s *Store) BumpItemToTurnEnd(threadID, itemID string, transformMeta func(st
 		return Item{}, fmt.Errorf("store: begin bump item index tx: %w", err)
 	}
 	defer tx.Rollback()
+	if err := requireMutableItemTx(tx, threadID, itemID, "store: bump item index"); err != nil {
+		return Item{}, err
+	}
 
 	var turnIndex int
 	var meta string
@@ -551,6 +569,9 @@ func (s *Store) UpdateItemMetaMerge(threadID, id string, transform func(string) 
 		return Item{}, false, fmt.Errorf("store: begin meta merge tx: %w", err)
 	}
 	defer tx.Rollback()
+	if err := requireMutableItemTx(tx, threadID, id, "store: meta merge"); err != nil {
+		return Item{}, false, err
+	}
 
 	var meta string
 	if err := tx.QueryRow(
@@ -586,17 +607,31 @@ func (s *Store) UpdateItemMetaMerge(threadID, id string, transform func(string) 
 // rows that were reserved internally but never became visible history, such as
 // quietly-persisted queued flush rows whose provider session died before echo.
 func (s *Store) DeleteThreadItem(threadID, itemID string) error {
-	result, err := s.db.Exec(
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("store: begin delete item %s/%s: %w", threadID, itemID, err)
+	}
+	defer tx.Rollback()
+	if err := requireMutableItemTx(tx, threadID, itemID, "store: delete item"); err != nil {
+		return err
+	}
+	result, err := tx.Exec(
 		`DELETE FROM items WHERE thread_id = ? AND id = ?`,
 		threadID, itemID,
 	)
 	if err != nil {
 		return fmt.Errorf("store: delete item %s/%s: %w", threadID, itemID, err)
 	}
-	return requireRowsAffected(
+	if err := requireRowsAffected(
 		result,
 		fmt.Sprintf("store: delete item %s/%s", threadID, itemID),
-	)
+	); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("store: commit delete item %s/%s: %w", threadID, itemID, err)
+	}
+	return nil
 }
 
 // DeleteConversationFromTurn removes items and turn rows with
@@ -612,6 +647,9 @@ func (s *Store) DeleteConversationFromTurn(threadID string, fromTurnIndex int) (
 		return 0, HistoryStamp{}, fmt.Errorf("store: begin delete conversation from turn tx: %w", err)
 	}
 	defer tx.Rollback()
+	if err := materializeSharedHistoryTx(tx, threadID, "store: delete conversation from turn"); err != nil {
+		return 0, HistoryStamp{}, err
+	}
 
 	result, err := tx.Exec(
 		`DELETE FROM items WHERE thread_id = ? AND turn_index >= ?`,
@@ -690,6 +728,9 @@ func (s *Store) DeleteConversationFromItem(threadID, itemID string) ([]string, H
 		return nil, HistoryStamp{}, fmt.Errorf("store: begin delete conversation from item tx: %w", err)
 	}
 	defer tx.Rollback()
+	if err := materializeSharedHistoryTx(tx, threadID, "store: delete conversation from item"); err != nil {
+		return nil, HistoryStamp{}, err
+	}
 
 	var turnIndex, itemIndex int
 	var meta string
@@ -862,17 +903,31 @@ func trimTurnSettleToSurvivorsTx(tx *sql.Tx, threadID string, turnIndex int) err
 // match any row so partial fork cleanups can detect drift before
 // committing.
 func (s *Store) UpdateItemMeta(threadID, id, meta string) error {
-	result, err := s.db.Exec(
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("store: begin update item meta %s/%s: %w", threadID, id, err)
+	}
+	defer tx.Rollback()
+	if err := requireMutableItemTx(tx, threadID, id, "store: update item meta"); err != nil {
+		return err
+	}
+	result, err := tx.Exec(
 		`UPDATE items SET meta = ? WHERE thread_id = ? AND id = ?`,
 		meta, threadID, id,
 	)
 	if err != nil {
 		return fmt.Errorf("store: update item meta %s/%s: %w", threadID, id, err)
 	}
-	return requireRowsAffected(
+	if err := requireRowsAffected(
 		result,
 		fmt.Sprintf("store: update item meta %s/%s", threadID, id),
-	)
+	); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("store: commit update item meta %s/%s: %w", threadID, id, err)
+	}
+	return nil
 }
 
 // ItemPartialUpdate describes a subset of mutable Item fields for a targeted
@@ -914,16 +969,30 @@ func (s *Store) UpdateItemFields(threadID, id string, update ItemPartialUpdate) 
 	if len(setClauses) == 0 {
 		return fmt.Errorf("store: update item fields %s/%s: no fields specified", threadID, id)
 	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("store: begin update item fields %s/%s: %w", threadID, id, err)
+	}
+	defer tx.Rollback()
+	if err := requireMutableItemTx(tx, threadID, id, "store: update item fields"); err != nil {
+		return err
+	}
 	args = append(args, threadID, id)
 	query := "UPDATE items SET " + strings.Join(setClauses, ", ") + " WHERE thread_id = ? AND id = ?"
-	result, err := s.db.Exec(query, args...)
+	result, err := tx.Exec(query, args...)
 	if err != nil {
 		return fmt.Errorf("store: update item fields %s/%s: %w", threadID, id, err)
 	}
-	return requireRowsAffected(
+	if err := requireRowsAffected(
 		result,
 		fmt.Sprintf("store: update item fields %s/%s", threadID, id),
-	)
+	); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("store: commit update item fields %s/%s: %w", threadID, id, err)
+	}
+	return nil
 }
 
 // AppendCompletionItem writes the second row of a backgrounded tool-call
@@ -964,7 +1033,7 @@ func (s *Store) AppendCompletionItem(launch Item, completion Item, completionPay
 	completion.ItemIndex = next
 
 	if completionPayload != nil {
-		if err := insertPayloadTx(tx, *completionPayload, "store: append completion payload"); err != nil {
+		if err := insertPayloadTx(tx, completion.ThreadID, *completionPayload, "store: append completion payload"); err != nil {
 			return 0, err
 		}
 		completion.PayloadID = completionPayload.ID

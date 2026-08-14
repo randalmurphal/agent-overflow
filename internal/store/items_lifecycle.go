@@ -10,7 +10,7 @@ import (
 func (s *Store) HasItems(threadID string) (bool, error) {
 	var exists int
 	if err := s.reader().QueryRow(
-		`SELECT EXISTS(SELECT 1 FROM items WHERE thread_id = ? LIMIT 1)`,
+		`SELECT EXISTS(SELECT 1 FROM timeline_items WHERE thread_id = ? LIMIT 1)`,
 		threadID,
 	).Scan(&exists); err != nil {
 		return false, fmt.Errorf("store: has items for thread %s: %w", threadID, err)
@@ -377,7 +377,7 @@ func (s *Store) ListRunningBackgroundToolCalls(threadID string) ([]Item, error) 
 	rows, err := s.reader().Query(
 		`SELECT `+itemColumns+`
 		   FROM items
-		   LEFT JOIN payloads ON payloads.id = items.payload_id
+		   LEFT JOIN payloads ON payloads.thread_id = items.thread_id AND payloads.id = items.payload_id
 		  WHERE items.thread_id = ?
 		    AND items.kind = 'tool_call'
 		    AND items.status = 'running'
@@ -411,7 +411,7 @@ func (s *Store) ListIncompleteCodexSubagentLaunches(threadID string) ([]Item, er
 	rows, err := s.reader().Query(
 		`SELECT `+itemColumns+`
 		   FROM items
-		   LEFT JOIN payloads ON payloads.id = items.payload_id
+		   LEFT JOIN payloads ON payloads.thread_id = items.thread_id AND payloads.id = items.payload_id
 		  WHERE items.thread_id = ?
 		    AND items.kind = 'tool_call'
 		    AND items.tool_name = 'collab_agent'
@@ -450,7 +450,7 @@ func (s *Store) ListLiveCodexSubagentLaunches(threadID string) ([]Item, error) {
 		`SELECT `+itemColumns+`
 		   FROM items
 		   JOIN threads ON threads.id = items.thread_id
-		   LEFT JOIN payloads ON payloads.id = items.payload_id
+		   LEFT JOIN payloads ON payloads.thread_id = items.thread_id AND payloads.id = items.payload_id
 		  WHERE items.thread_id = ?
 		    AND threads.provider = 'codex'
 		    AND items.kind = 'tool_call'
@@ -491,7 +491,7 @@ func (s *Store) GetIncompleteCodexSubagentLaunch(threadID, itemID string) (Item,
 	row := s.reader().QueryRow(
 		`SELECT `+itemColumns+`
 		   FROM items
-		   LEFT JOIN payloads ON payloads.id = items.payload_id
+		   LEFT JOIN payloads ON payloads.thread_id = items.thread_id AND payloads.id = items.payload_id
 		  WHERE items.thread_id = ?
 		    AND items.id = ?
 		    AND items.kind = 'tool_call'
@@ -553,7 +553,7 @@ func (s *Store) ListRecoverableClaudeBackgroundLaunches() ([]Item, error) {
 		`SELECT ` + itemColumns + `
 		   FROM items
 		   JOIN threads ON threads.id = items.thread_id
-		   LEFT JOIN payloads ON payloads.id = items.payload_id
+		   LEFT JOIN payloads ON payloads.thread_id = items.thread_id AND payloads.id = items.payload_id
 		  WHERE threads.provider IN ('claude', 'claude-tui')
 		    AND items.kind = 'tool_call'
 		    AND items.status = 'running'

@@ -1,6 +1,7 @@
 package store
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -139,14 +140,14 @@ func TestApplyImportBatchWritesEveryRowWithOriginalTimestamps(t *testing.T) {
 		t.Errorf("joined payload kind = %q, want command_output", items[1].PayloadKind)
 	}
 
-	data, err := s.GetPayloadData("payload-out")
+	data, err := s.GetPayloadData("t-batch", "payload-out")
 	if err != nil {
 		t.Fatalf("get payload data: %v", err)
 	}
 	if string(data) != "done\n" {
 		t.Errorf("payload data = %q", data)
 	}
-	input, err := s.GetPayloadMeta("payload-in")
+	input, err := s.GetPayloadMeta("t-batch", "payload-in")
 	if err != nil {
 		t.Fatalf("get input payload meta: %v", err)
 	}
@@ -192,11 +193,20 @@ func TestApplyImportBatchIsOneTransaction(t *testing.T) {
 	newImportTargetThread(t, s, "t-batch-atomic")
 
 	batch := importBatchFixture("t-batch-atomic")
-	// A second row reusing the first row's item id: the insert fails
-	// half-way through, after turns, payloads, and one item have landed.
+	// Push the duplicate into a later SQL chunk. This proves atomicity spans
+	// the bounded multi-row statements, rather than merely one statement.
+	for i := 0; i < importRowsPerInsert; i++ {
+		batch.Rows = append(batch.Rows, ImportRow{Item: Item{
+			ID: fmt.Sprintf("filler-%03d", i), TurnIndex: 1, ItemIndex: i + 2,
+			Kind: "assistant_text", Role: "assistant", Status: "completed",
+			Summary: "filler", CreatedAt: importTurnComplete, UpdatedAt: importTurnComplete,
+		}})
+	}
+	// A final row reuses the first row's id after an earlier item chunk has
+	// successfully executed.
 	batch.Rows = append(batch.Rows, ImportRow{
 		Item: Item{
-			ID: "item-user", TurnIndex: 1, ItemIndex: 2,
+			ID: "item-user", TurnIndex: 1, ItemIndex: importRowsPerInsert + 2,
 			Kind: "assistant_text", Role: "assistant", Status: "completed",
 			Summary: "duplicate", CreatedAt: importTurnComplete, UpdatedAt: importTurnComplete,
 		},
@@ -231,6 +241,87 @@ func TestApplyImportBatchIsOneTransaction(t *testing.T) {
 	}
 	if usage := lifetimeUsage(t, s, "t-batch-atomic"); usage.InputTokens != 0 {
 		t.Errorf("usage survived a failed batch: %+v", usage)
+	}
+	var revision int64
+	if err := s.db.QueryRow(
+		`SELECT history_rev FROM threads WHERE id = 't-batch-atomic'`,
+	).Scan(&revision); err != nil {
+		t.Fatalf("read revision after rollback: %v", err)
+	}
+	if revision != 0 {
+		t.Errorf("failed import left history_rev = %d, want 0", revision)
+	}
+	if err := s.InsertItem(Item{
+		ID: "after-failure", ThreadID: "t-batch-atomic", TurnIndex: 0,
+		Kind: "notification", Role: "system", Summary: "after failure",
+	}); err != nil {
+		t.Fatalf("insert after failed import: %v", err)
+	}
+	if err := s.db.QueryRow(
+		`SELECT history_rev FROM threads WHERE id = 't-batch-atomic'`,
+	).Scan(&revision); err != nil {
+		t.Fatalf("read revision after ordinary insert: %v", err)
+	}
+	if revision != 1 {
+		t.Errorf("ordinary insert after failed import set history_rev = %d, want 1", revision)
+	}
+}
+
+func TestApplyImportBatchWritesAcrossInsertChunks(t *testing.T) {
+	s := newTestStore(t)
+	newImportTargetThread(t, s, "t-batch-chunks")
+
+	batch := ImportBatch{Turns: []Turn{{
+		TurnID: "t-batch-chunks:1", ThreadID: "t-batch-chunks", TurnIndex: 1, StartedAt: importTurnStart,
+	}}}
+	for i := 0; i < importRowsPerInsert+1; i++ {
+		itemID := fmt.Sprintf("item-%03d", i)
+		payloadID := fmt.Sprintf("payload-%03d", i)
+		batch.Rows = append(batch.Rows, ImportRow{
+			Item: Item{
+				ID: itemID, TurnIndex: 1, ItemIndex: i,
+				Kind: "assistant_text", Role: "assistant", Status: "completed",
+				Summary: itemID, PayloadID: payloadID,
+				CreatedAt: importTurnStart + int64(i), UpdatedAt: importTurnStart + int64(i),
+			},
+			Payload: &Payload{
+				ID: payloadID, Kind: "assistant_text", Meta: "{}",
+				Data: []byte(itemID), CreatedAt: importTurnStart + int64(i),
+			},
+		})
+	}
+
+	if err := s.ApplyImportBatch("t-batch-chunks", batch); err != nil {
+		t.Fatalf("apply chunked import: %v", err)
+	}
+	items, err := s.ListItems("t-batch-chunks")
+	if err != nil {
+		t.Fatalf("list imported items: %v", err)
+	}
+	if len(items) != importRowsPerInsert+1 {
+		t.Fatalf("items = %d, want %d", len(items), importRowsPerInsert+1)
+	}
+	for _, index := range []int{0, importRowsPerInsert - 1, importRowsPerInsert} {
+		item := items[index]
+		if item.ItemIndex != index || item.PayloadID != fmt.Sprintf("payload-%03d", index) {
+			t.Errorf("item %d linkage = index %d payload %q", index, item.ItemIndex, item.PayloadID)
+		}
+		data, err := s.GetPayloadData("t-batch-chunks", item.PayloadID)
+		if err != nil {
+			t.Fatalf("read payload at boundary %d: %v", index, err)
+		}
+		if string(data) != fmt.Sprintf("item-%03d", index) {
+			t.Errorf("payload %d data = %q", index, data)
+		}
+	}
+	var revision int64
+	if err := s.db.QueryRow(
+		`SELECT history_rev FROM threads WHERE id = 't-batch-chunks'`,
+	).Scan(&revision); err != nil {
+		t.Fatalf("read chunked import revision: %v", err)
+	}
+	if revision != int64(importRowsPerInsert+1) {
+		t.Errorf("history_rev = %d, want one revision per imported item (%d)", revision, importRowsPerInsert+1)
 	}
 }
 

@@ -60,7 +60,7 @@ func TestCommandOutputBurstBuffersUntilFlush(t *testing.T) {
 	if item.PayloadID == "" {
 		t.Fatal("expected payload linked after flush")
 	}
-	data, err := st.GetPayloadData(item.PayloadID)
+	data, err := st.GetPayloadData(item.ThreadID, item.PayloadID)
 	if err != nil {
 		t.Fatalf("payload data: %v", err)
 	}
@@ -98,7 +98,7 @@ func TestCommandOutputReplaceDiscardsPendingBuffer(t *testing.T) {
 	}
 
 	item, _, _ := st.GetThreadItem("t1", "cmd-1")
-	data, err := st.GetPayloadData(item.PayloadID)
+	data, err := st.GetPayloadData(item.ThreadID, item.PayloadID)
 	if err != nil {
 		t.Fatalf("payload data: %v", err)
 	}
@@ -139,7 +139,7 @@ func TestCommandOutputCompletionFlushesBufferedTail(t *testing.T) {
 	if item.PayloadID == "" {
 		t.Fatal("expected payload after completion flush")
 	}
-	data, err := st.GetPayloadData(item.PayloadID)
+	data, err := st.GetPayloadData(item.ThreadID, item.PayloadID)
 	if err != nil {
 		t.Fatalf("payload data: %v", err)
 	}
@@ -182,7 +182,7 @@ func TestCommandOutputFirstDeltaCreatesRowAndEmits(t *testing.T) {
 	if item.PayloadID == "" {
 		t.Fatal("expected the chunk persisted immediately, not buffered")
 	}
-	data, err := st.GetPayloadData(item.PayloadID)
+	data, err := st.GetPayloadData(item.ThreadID, item.PayloadID)
 	if err != nil {
 		t.Fatalf("payload data: %v", err)
 	}
@@ -209,7 +209,7 @@ func TestCommandOutputReplaceCreatesMissingRow(t *testing.T) {
 	if !found {
 		t.Fatal("expected Replace to create the missing row")
 	}
-	data, err := st.GetPayloadData(item.PayloadID)
+	data, err := st.GetPayloadData(item.ThreadID, item.PayloadID)
 	if err != nil {
 		t.Fatalf("payload data: %v", err)
 	}
@@ -261,7 +261,7 @@ func TestCommandOutputThresholdFlushIsImmediate(t *testing.T) {
 	if item.PayloadID == "" {
 		t.Fatal("expected threshold crossing to flush without lifecycle boundary")
 	}
-	data, err := st.GetPayloadData(item.PayloadID)
+	data, err := st.GetPayloadData(item.ThreadID, item.PayloadID)
 	if err != nil {
 		t.Fatalf("payload data: %v", err)
 	}
@@ -286,7 +286,7 @@ func TestCommandOutputTimerFlushDelivers(t *testing.T) {
 	for {
 		item, _, _ := st.GetThreadItem("t1", "cmd-1")
 		if item.PayloadID != "" {
-			data, err := st.GetPayloadData(item.PayloadID)
+			data, err := st.GetPayloadData(item.ThreadID, item.PayloadID)
 			if err != nil {
 				t.Fatalf("payload data: %v", err)
 			}

@@ -48,24 +48,33 @@ func ExtractClaudeFileChangeToolResult(rawMeta json.RawMessage, toolName, fallba
 		return ToolResultMeta{}, nil, false
 	}
 
-	var envelope struct {
-		IsError       bool            `json:"is_error"`
-		ToolUseResult json.RawMessage `json:"tool_use_result"`
-	}
-	if err := json.Unmarshal(rawMeta, &envelope); err != nil {
+	var envelope map[string]json.RawMessage
+	if err := json.Unmarshal(rawMeta, &envelope); err != nil || envelope == nil {
 		return ToolResultMeta{}, nil, false
+	}
+	return ExtractClaudeFileChangeToolResultObject(envelope, toolName, fallbackFilePath, workspaceRoot)
+}
+
+// ExtractClaudeFileChangeToolResultObject is the decoded-envelope form of
+// ExtractClaudeFileChangeToolResult. Import uses it to avoid parsing the same
+// large completion envelope once for each projection.
+func ExtractClaudeFileChangeToolResultObject(envelope map[string]json.RawMessage, toolName, fallbackFilePath, workspaceRoot string) (ToolResultMeta, []byte, bool) {
+	var isError bool
+	if raw, ok := envelope["is_error"]; ok {
+		_ = json.Unmarshal(raw, &isError)
 	}
 	// Failed edits surface no diff: the file wasn't written. Drop the
 	// row so the timeline shows the tool_call status (errored) without
 	// a misleading file_change payload.
-	if envelope.IsError {
+	if isError {
 		return ToolResultMeta{}, nil, false
 	}
-	if len(envelope.ToolUseResult) == 0 {
+	toolUseResult := envelope["tool_use_result"]
+	if len(toolUseResult) == 0 {
 		return ToolResultMeta{}, nil, false
 	}
 
-	payload, ok := pickClaudeToolUseResultEntry(envelope.ToolUseResult)
+	payload, ok := pickClaudeToolUseResultEntry(toolUseResult)
 	if !ok {
 		return ToolResultMeta{}, nil, false
 	}

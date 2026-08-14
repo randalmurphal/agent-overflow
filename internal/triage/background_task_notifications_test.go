@@ -1421,7 +1421,7 @@ func TestBackgroundTaskNotification_OutputFileFeedsLaterTerminal(t *testing.T) {
 	if notification.PayloadID == "" {
 		t.Fatal("notification should store output_file payload")
 	}
-	notificationData, err := st.GetPayloadData(notification.PayloadID)
+	notificationData, err := st.GetPayloadData(notification.ThreadID, notification.PayloadID)
 	if err != nil {
 		t.Fatalf("read notification payload: %v", err)
 	}
@@ -1460,7 +1460,7 @@ func TestBackgroundTaskNotification_OutputFileFeedsLaterTerminal(t *testing.T) {
 	if notification.PayloadKind != "command_output" {
 		t.Fatalf("notification payload kind = %q, want command_output", notification.PayloadKind)
 	}
-	doneData, err := st.GetPayloadData(done.PayloadID)
+	doneData, err := st.GetPayloadData(done.ThreadID, done.PayloadID)
 	if err != nil {
 		t.Fatalf("read completion payload: %v", err)
 	}

@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -304,6 +305,99 @@ func TestImportSessionsCreatesThreadsAndReportsProgress(t *testing.T) {
 			t.Errorf("thread %s createdAt = %d, want the session's own time near %d",
 				thread.ID, thread.CreatedAt, importFixtureMillis)
 		}
+	}
+}
+
+func TestRunBoundedSessionImportsOverlapsSmallSessionsAndRunsLargeOnesAlone(t *testing.T) {
+	initialStarted := make(chan string, sessionImportWorkers)
+	releaseInitial := make(chan struct{})
+	largeStarted := make(chan struct{}, 1)
+	releaseLarge := make(chan struct{})
+	laterStarted := make(chan string, 2)
+
+	jobs := make([]sessionImportJob, 0, sessionImportWorkers+3)
+	for i := range sessionImportWorkers {
+		id := "initial-" + strconv.Itoa(i)
+		jobs = append(jobs, sessionImportJob{
+			id: id, found: true,
+			row: sessionimport.Row{ID: id, ProjectID: "project", SizeBytes: 1},
+		})
+	}
+	jobs = append(jobs,
+		sessionImportJob{id: "large", found: true, row: sessionimport.Row{
+			ID: "large", ProjectID: "project", SizeBytes: sessionImportSlotBytes * sessionImportWorkers,
+		}},
+		sessionImportJob{id: "later-a", found: true, row: sessionimport.Row{ID: "later-a", ProjectID: "project", SizeBytes: 1}},
+		sessionImportJob{id: "later-b", found: true, row: sessionimport.Row{ID: "later-b", ProjectID: "project", SizeBytes: 1}},
+	)
+	execute := func(
+		_ context.Context, _ sessionimport.Deps, row sessionimport.Row,
+	) (sessionimport.ImportOutcome, error) {
+		switch {
+		case strings.HasPrefix(row.ID, "initial-"):
+			initialStarted <- row.ID
+			<-releaseInitial
+		case row.ID == "large":
+			largeStarted <- struct{}{}
+			<-releaseLarge
+		default:
+			laterStarted <- row.ID
+		}
+		return sessionimport.ImportOutcome{}, nil
+	}
+
+	results := runBoundedSessionImports(context.Background(), sessionimport.Deps{}, jobs, execute)
+	for range sessionImportWorkers {
+		select {
+		case <-initialStarted:
+		case <-time.After(time.Second):
+			t.Fatalf("%d small imports did not overlap", sessionImportWorkers)
+		}
+	}
+	close(releaseInitial)
+	select {
+	case <-largeStarted:
+	case <-time.After(time.Second):
+		t.Fatal("large import did not start after the small imports released their slots")
+	}
+	select {
+	case id := <-laterStarted:
+		t.Fatalf("small import %s overlapped the exclusive large import", id)
+	default:
+	}
+	close(releaseLarge)
+
+	var completed int
+	for result := range results {
+		if result.err != nil {
+			t.Fatalf("job %s: %v", result.job.id, result.err)
+		}
+		completed++
+	}
+	if completed != len(jobs) {
+		t.Fatalf("completed jobs = %d, want %d", completed, len(jobs))
+	}
+}
+
+func TestSessionImportWeightCapsAggregateSourceBytes(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		size int64
+		want int64
+	}{
+		{name: "unknown", size: 0, want: 1},
+		{name: "one byte", size: 1, want: 1},
+		{name: "one slot", size: sessionImportSlotBytes, want: 1},
+		{name: "over one slot", size: sessionImportSlotBytes + 1, want: 2},
+		{name: "three slots", size: 3 * sessionImportSlotBytes, want: 3},
+		{name: "full budget", size: sessionImportWorkers * sessionImportSlotBytes, want: sessionImportWorkers},
+		{name: "oversize", size: 10 * sessionImportWorkers * sessionImportSlotBytes, want: sessionImportWorkers},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := sessionImportWeight(tc.size); got != tc.want {
+				t.Fatalf("sessionImportWeight(%d) = %d, want %d", tc.size, got, tc.want)
+			}
+		})
 	}
 }
 

@@ -93,7 +93,7 @@
         "provider_item_id": "child-msg-1"
       },
       "payload": {
-        "id": "assistant-text:thread-sessionimport:text:1:toolu_task_1:0",
+        "id": "assistant-text:text:1:toolu_task_1:0",
         "kind": "assistant_text",
         "meta": {}
       }

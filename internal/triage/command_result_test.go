@@ -118,7 +118,7 @@ func TestCommandResult_OversizedOutputMovesToAPayload(t *testing.T) {
 	if !meta.Truncated || meta.TotalBytes != len(output) {
 		t.Fatalf("meta = %+v", meta)
 	}
-	data, err := st.GetPayloadData(item.PayloadID)
+	data, err := st.GetPayloadData(item.ThreadID, item.PayloadID)
 	if err != nil {
 		t.Fatalf("get payload: %v", err)
 	}

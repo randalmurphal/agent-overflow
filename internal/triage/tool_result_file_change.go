@@ -91,8 +91,8 @@ func (r *Router) persistFileChangeToolResult(evt provider.ProviderEvent) error {
 	return r.persistToolResult(evt, meta, diffData)
 }
 
-func (r *Router) mergeToolResultPayload(payloadID string, next ToolResultMeta, nextDiff []byte) (ToolResultMeta, []byte) {
-	pm, err := r.store.GetPayloadMeta(payloadID)
+func (r *Router) mergeToolResultPayload(threadID, payloadID string, next ToolResultMeta, nextDiff []byte) (ToolResultMeta, []byte) {
+	pm, err := r.store.GetPayloadMeta(threadID, payloadID)
 	if err != nil || pm.Kind != toolResultPayloadKind {
 		return next, nextDiff
 	}
@@ -105,7 +105,7 @@ func (r *Router) mergeToolResultPayload(payloadID string, next ToolResultMeta, n
 		return next, nextDiff
 	}
 
-	data, dataErr := r.store.GetPayloadData(payloadID)
+	data, dataErr := r.store.GetPayloadData(threadID, payloadID)
 	if dataErr != nil {
 		return existing, nextDiff
 	}
@@ -117,7 +117,13 @@ func ExtractFileChangeToolResult(raw json.RawMessage, workspaceRoot string) (Too
 	if json.Unmarshal(raw, &payload) != nil {
 		return ToolResultMeta{}, nil, false
 	}
+	return ExtractFileChangeToolResultObject(payload, workspaceRoot)
+}
 
+// ExtractFileChangeToolResultObject is the decoded-envelope form of
+// ExtractFileChangeToolResult. Import uses it after decoding a tool event once
+// for status, stored meta, payload selection, and file-change projection.
+func ExtractFileChangeToolResultObject(payload map[string]json.RawMessage, workspaceRoot string) (ToolResultMeta, []byte, bool) {
 	itemRaw, ok := payload["item"]
 	if !ok {
 		return ToolResultMeta{}, nil, false

@@ -577,7 +577,7 @@ func (r *Router) persistOrUpdateCompletedTextItem(threadID string, turnIndex int
 			item.UpdatedAt = time.Now().UnixMilli()
 			r.enrichPathRefsFromTexts(threadID, &item, content)
 			r.enrichCodeSpans(&item)
-			payload := assistantTextPayload(threadID, item.ID, content, item.UpdatedAt)
+			payload := assistantTextPayload(item.ID, content, item.UpdatedAt)
 			return r.persistItem(item, &payload)
 		}
 	}
@@ -595,7 +595,7 @@ func (r *Router) persistCompletedTextItem(threadID string, turnIndex int, scope,
 		Role:      "assistant",
 		Status:    statusCompleted,
 		Summary:   content,
-		PayloadID: AssistantTextPayloadID(threadID, itemID),
+		PayloadID: AssistantTextPayloadID(itemID),
 		ParentID:  scope,
 		Meta:      providerItemMeta(providerItemID),
 		CreatedAt: now,
@@ -603,7 +603,7 @@ func (r *Router) persistCompletedTextItem(threadID string, turnIndex int, scope,
 	}
 	r.enrichPathRefsFromTexts(threadID, &item, content)
 	r.enrichCodeSpans(&item)
-	payload := assistantTextPayload(threadID, item.ID, content, now)
+	payload := assistantTextPayload(item.ID, content, now)
 	if scope == "" {
 		// Top-level recovery lands in the live transcript mid-view;
 		// stream the wire projection so it reveals instead of mounting

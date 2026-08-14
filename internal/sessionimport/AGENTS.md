@@ -50,9 +50,11 @@ from triage's exported, Router-free shaping helpers — see
   stamped and falls back to `project.EnsureForWorkspace` — so the project
   a row was LISTED under is the project it imports into, including for a
   dead worktree the index could only place from a registration. Claude
-  branches are converted and applied ONE AT A TIME
-  (`LoadedSession.ConvertBranch`), so a multi-branch transcript never
-  holds every branch's events at once.
+  branches are converted and applied ONE AT A TIME. After the first branch,
+  `FindReusablePrefix` identifies the longest shared complete-turn prefix;
+  `ConvertBranchFrom` converts only the divergent suffix and the store attaches
+  the already committed immutable prefix. A multi-branch transcript therefore
+  neither holds nor rebuilds every branch's full event history.
 - `import_apply.go` — `sessionImporter`: the per-session accumulator
   `ImportOne` drives — thread creation, warnings, whole-session
   rollback, and `settleBranches` (the sole-survivor retitle and the
@@ -106,7 +108,7 @@ cheap": an absent optional key degrades one field, never the import.
 | `Event.SourceOffset` | Codex only | An OPTIONAL resume position (one byte past the line's newline), not a second spelling of the provenance stamp. Claude leaves it zero. |
 | `Event.ItemID` | yes for tool events | The provider tool_use id. It is the row id and the only thing correlating a completion with its launch. |
 | `Event.ParentToolUseID` | when nested | Becomes `Item.ParentID`, nesting subagent rows under their launching tool_call. A launch may also carry it as `meta.parent_tool_use_id`, which the writer falls back to (triage's metaUpdateOnly path reads the same key). |
-| `Event.TurnID` | Codex only | Adopted as the `turns` row primary key and `provider_turn_id`. Claude readers leave it empty and the writer synthesizes `<threadID>:<turnIndex>`, exactly as triage does. |
+| `Event.TurnID` | Codex only | Preserved as `provider_turn_id` when it came from the wire; the durable primary key is `store.ScopedTurnID(threadID, Event.TurnID, turnIndex)` because provider ids repeat across sessions. Inferred rollout turns carry an internal event id for correlation but leave `provider_turn_id` empty. Claude readers leave it empty and get `<threadID>:<turnIndex>`, exactly as triage does. |
 | `Event.TurnComplete` | on `EventTurnComplete` | One of the typed `provider.*TurnCompleteMeta` payloads. Never a JSON blob in `Meta` — this is the same rule triage enforces. `ModelUsage` is what becomes usage-ledger rows. |
 
 Meta keys the writer reads by name. The first two are CONTROL keys —
@@ -277,7 +279,9 @@ reports it as the number of threads it created.
 session. If any branch fails after its thread row exists, every thread the
 call created is deleted: the dedup set keys on the source session id, so a
 half-imported session would hide its missing branches from the next scan
-forever.
+forever. Rollback also removes the import's usage rows; ordinary thread
+deletion retains usage by design, but a branch the import reports as absent
+must not remain in lifetime totals.
 
 At most ONE thread of a multi-branch Claude transcript carries
 `session_ref` — the thread of the file's ACTIVE branch, which is the last
@@ -389,14 +393,14 @@ carries no byte offset — each field takes the later of the two.
   surfaces from `Build` and lands on `PlanUpdate`'s ordinary refusal
   path. Both providers can produce one: a Codex rollout imported
   mid-turn re-opens its wire `turn_id` on the next read, and a synthetic
-  `import-turn-<n>` is minted from a counter that restarts in every
-  `rollout.Parse`.
-- **A provider's own turn id is what continues a turn.** A user message
-  arriving inside an open turn that NAMES that turn is a steer (Codex),
-  not a new turn — `turnState` tracks the open turn's provider id so the
-  row stays where the provider put it. Closing and re-opening would write
-  a second `turns` row under one wire id, which is the same primary-key
-  failure from the other direction.
+  `import-turn:<sessionID>:<n>` is deterministically re-minted when a tail
+  parse starts from the same inferred turn boundary. The session component is
+  required because `turns.turn_id` is globally keyed.
+- **The reader's turn correlation id is what continues a turn.** A user
+  message arriving inside an open turn that names that turn is a steer
+  (Codex), not a new turn. This is normally the provider id; inferred rollout
+  turns use their deterministic internal id while leaving `provider_turn_id`
+  empty. Closing and re-opening would split one logical turn into two rows.
 - **No turn may reach SQLite with a NULL `completed_at`.** The boot
   sweep (`RecoverCrashedTurns`) would flip it to "interrupted" and
   rewrite imported history as a crash, so `batch()` seals whatever the
@@ -431,6 +435,12 @@ carries no byte offset — each field takes the later of the two.
   found", on a thread that never ran. Falling back to the source directory
   is correct only where a destination slug cannot exist (an over-length
   path, a workspace that is gone).
+
+  `WriteForkFileThroughUUID` remints every transcript UUID. The new session
+  ref and every imported user item's provider-id metadata are therefore
+  committed atomically through copy-on-write; retaining the source UUIDs would
+  make a later rollback or fork search the new transcript for rows it cannot
+  contain.
 
 ## Intentional differences from a live session
 
@@ -479,7 +489,11 @@ the live row for the same wire event. Everything else is a bug and
   transcripts and Codex rollouts (plus a fixture `state_5.sqlite`) driven
   through `Scan` → `ImportOne` → SQLite, asserting the rows, the original
   timestamps end to end, the cursor, subagent nesting, multi-leaf
-  fan-out, and whole-session rollback. `importFixtureRow` fails on an
+  fan-out, and whole-session rollback. The optimized multi-leaf case is also
+  compared against two independent full branch conversions, including ordered
+  items, payload bytes, turn records, and usage totals; this proves prefix
+  reuse changes representation and work, not logical thread history.
+  `importFixtureRow` fails on an
   `import.unmapped-event` warning, and
   `TestWriterHandlesEveryKindTheReadersEmit` lists every kind the two
   readers can emit — that list is hand-maintained because a provider

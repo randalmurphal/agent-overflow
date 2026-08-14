@@ -90,6 +90,25 @@ func TrimToolResultEcho(toolName string, raw []byte) ([]byte, bool) {
 	if err := json.Unmarshal(raw, &top); err != nil || top == nil {
 		return raw, false
 	}
+	if !TrimToolResultEchoObject(toolName, top) {
+		return raw, false
+	}
+
+	out, err := json.Marshal(top)
+	if err != nil {
+		return raw, false
+	}
+	return out, true
+}
+
+// TrimToolResultEchoObject is the decoded-object form of
+// TrimToolResultEcho. It mutates top in place and reports whether it changed.
+// Callers that already decoded a completion envelope should use this form so
+// multi-megabyte result echoes are not parsed again merely to discard them.
+func TrimToolResultEchoObject(toolName string, top map[string]json.RawMessage) bool {
+	if top == nil || toolResultEchoExempt(toolName) {
+		return false
+	}
 
 	keepExcerpt := metaIndicatesFailure(top)
 	changed := false
@@ -115,15 +134,7 @@ func TrimToolResultEcho(toolName string, raw []byte) ([]byte, bool) {
 			}
 		}
 	}
-	if !changed {
-		return raw, false
-	}
-
-	out, err := json.Marshal(top)
-	if err != nil {
-		return raw, false
-	}
-	return out, true
+	return changed
 }
 
 // metaIndicatesFailure reads the failure signals the completion parser

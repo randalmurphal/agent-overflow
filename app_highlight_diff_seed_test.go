@@ -132,11 +132,11 @@ func insertDiffSpanPayload(t *testing.T, app *App, threadID, itemID, payloadID, 
 // waitForPayloadSpans polls until the async persist worker has written
 // the payload's spans column (and, via the deferred counter decrement
 // ordering, until the seed-push decision has also been made).
-func waitForPayloadSpans(t *testing.T, app *App, payloadID string) PersistedPatchSpans {
+func waitForPayloadSpans(t *testing.T, app *App, threadID, payloadID string) PersistedPatchSpans {
 	t.Helper()
 	deadline := time.Now().Add(10 * time.Second)
 	for {
-		blob, err := app.store.GetPayloadSpans(payloadID)
+		blob, err := app.store.GetPayloadSpans(threadID, payloadID)
 		if err != nil {
 			t.Fatalf("GetPayloadSpans() error = %v", err)
 		}
@@ -174,7 +174,7 @@ func TestObserveDiffPayloadPersistedWritesColumnsAndPushes(t *testing.T) {
 
 	app.observeDiffPayloadPersisted(thread.ID, "payload-1", []string{preview}, diffSeedTestPatch)
 
-	full := waitForPayloadSpans(t, app, "payload-1")
+	full := waitForPayloadSpans(t, app, thread.ID, "payload-1")
 	if full.Version != highlight.SchemaVersion() {
 		t.Fatalf("spans version = %q, want %q", full.Version, highlight.SchemaVersion())
 	}
@@ -225,7 +225,7 @@ func TestObserveDiffPayloadPersistedWithoutRemoteStillPersists(t *testing.T) {
 	// persist for everyone even with no remote client attached.
 	app.observeDiffPayloadPersisted(thread.ID, "payload-1", nil, diffSeedTestPatch)
 
-	full := waitForPayloadSpans(t, app, "payload-1")
+	full := waitForPayloadSpans(t, app, thread.ID, "payload-1")
 	if len(full.Files) != 1 || full.Files[0].Path != "src/app.py" {
 		t.Fatalf("full spans wrong: %#v", full.Files)
 	}
@@ -251,7 +251,7 @@ func TestObserveDiffPayloadPersistedDropsPastWorkerCap(t *testing.T) {
 	app.observeDiffPayloadPersisted(thread.ID, "payload-1", nil, diffSeedTestPatch)
 	time.Sleep(50 * time.Millisecond)
 
-	blob, err := app.store.GetPayloadSpans("payload-1")
+	blob, err := app.store.GetPayloadSpans(thread.ID, "payload-1")
 	if err != nil {
 		t.Fatalf("GetPayloadSpans() error = %v", err)
 	}
@@ -281,7 +281,7 @@ func TestObserveDiffPayloadPersistedBoundsAggregateInput(t *testing.T) {
 		strings.Repeat("x", diffSeedMaxTotalBytes)
 	app.observeDiffPayloadPersisted(thread.ID, "payload-1", []string{diffSeedTestPatch, overCap}, diffSeedTestPatch)
 
-	waitForPayloadSpans(t, app, "payload-1")
+	waitForPayloadSpans(t, app, thread.ID, "payload-1")
 	mu.Lock()
 	defer mu.Unlock()
 	if len(*events) != 1 {
@@ -312,7 +312,7 @@ func TestObserveDiffPayloadPersistedSkipsOversizedLeadingPreview(t *testing.T) {
 		strings.Repeat("x", diffSeedMaxTotalBytes)
 	app.observeDiffPayloadPersisted(thread.ID, "payload-1", []string{overCap, diffSeedTestPatch}, diffSeedTestPatch)
 
-	waitForPayloadSpans(t, app, "payload-1")
+	waitForPayloadSpans(t, app, thread.ID, "payload-1")
 	mu.Lock()
 	defer mu.Unlock()
 	if len(*events) != 1 {
@@ -522,7 +522,7 @@ func TestObserveDiffPayloadPersistedCapturesEditFileSnapshots(t *testing.T) {
 	insertDiffSpanPayload(t, app, thread.ID, "item-1", "payload-1", "tool_result", patch)
 
 	app.observeDiffPayloadPersisted(thread.ID, "payload-1", nil, patch)
-	waitForPayloadSpans(t, app, "payload-1")
+	waitForPayloadSpans(t, app, thread.ID, "payload-1")
 
 	// The verified file snapshots with the post-edit workspace content.
 	content, found, err := app.store.GetEditFileSnapshot(thread.ID, "payload-1", "src/app.py")

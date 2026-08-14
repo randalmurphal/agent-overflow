@@ -93,7 +93,8 @@ root `CLAUDE.md` principle 3.
   labels).
 - `edit_file_snapshots.go` — per-edit new-side file snapshots
   (migration v24) behind the Edits scope's snapshot-first expansion
-  and priming. Keyed `(payload_id, path)`, cascade with `payloads`,
+  and priming. Keyed `(thread_id, payload_id, path)`, cascade with the
+  matching thread-owned `payloads` row,
   gzip encode/decode owned by the accessors: `PutEditFileSnapshot`
   (payload-existence guarded in-statement — a deletion race surfaces
   as wrapped `sql.ErrNoRows`, not an FK violation),
@@ -376,9 +377,8 @@ baseline:
   gzip-compressed new-side file content of each edit diff payload,
   captured at the app layer's diff persist tap when the workspace file
   still provably matched the patch. A pure cache riding the payload
-  lifecycle — payload GC cascades here, an upsert that replaces a
-  payload row (INSERT OR REPLACE deletes + re-inserts) drops its
-  snapshots with it, and readers always re-verify content against the
+  lifecycle — payload GC cascades here, a payload upsert explicitly drops
+  its stale snapshots, and readers always re-verify content against the
   request's patch, so a stale row can never serve.
 
 ## Recent schema changes (v22) — persisted highlight spans
@@ -392,7 +392,7 @@ baseline:
   as `Item.PayloadPreviewSpans`; `spans` (full patch spans) is read
   only by explicit payload loads via `GetPayloadSpans`.
 - `UpdatePayloadSpans` writes both columns. `ReplacePayloadData` and
-  item upserts (INSERT OR REPLACE) reset them to `''`;
+  item-coupled payload upserts reset them to `''`;
   `AppendPayloadData` deliberately retains them — blobs are
   content-addressed per file, so still-valid segments stay valid.
 
@@ -663,6 +663,61 @@ baseline:
   parked descendant whose root is still running. Delivery uncertainty therefore
   costs a duplicate rather than a permanently silent park.
 
+## Recent schema changes (v58) — thread-owned payload graphs
+
+`items` and provider transcripts have always treated item IDs as local to a
+thread, but `payloads` used to key on bare `id`. Claude sibling branches reuse
+their shared prefix, and live thinking coordinates repeat in every thread, so
+the mismatch caused import constraint failures and live `INSERT OR REPLACE`
+overwrites. Migration v58 keys `payloads` by `(thread_id, id)`, makes both item
+payload references composite FKs, and carries the same scope into
+`payload_chunks` and `edit_file_snapshots`.
+
+Every payload accessor and mutator takes `threadID`; joins include both key
+columns. Forks copy referenced payloads, chunks, and snapshots into the target
+thread in the same transaction as cloned items, so later writes to either
+timeline cannot alter the other. The migration duplicates legacy payload
+graphs once per referencing thread. It cannot recover bytes that the former
+global live upsert had already overwritten.
+
+## Recent schema changes (v61) — shared immutable import history
+
+Claude branches repeat their full prefix, sometimes across tens or hundreds of
+threads. Imported rows therefore live in content-addressed, complete-turn
+chunks (`import_history_chunks` plus item/payload children) and threads attach
+them through `thread_import_chunks`. The mutable `items` / `payloads` tables
+remain the thread-owned overlay. All logical history reads use
+`timeline_items` / `timeline_payloads`; an explicit item override or local
+payload shadows only that thread's immutable base.
+
+Mutation is copy-on-write. Targeted item and payload changes localize only the
+row graph they touch; structural cuts materialize the active shared base in the
+same transaction before existing delete/FK machinery runs. Representation-only
+copies suppress item triggers and do not change history stamps; the requested
+mutation advances them exactly as it did for a fully local thread. Raw local
+shadowing, chunk-order gaps, and overlapping imported identities/positions are
+rejected by triggers, so safety does not depend on every caller remembering the
+layout.
+
+`ApplyImportBatch` hashes thread-neutral chunk content and reuses an existing
+chunk only after verifying its recorded shape. Claude branch import goes one
+step further: it clones an already committed complete-turn prefix and converts
+only the divergent suffix. Turns and usage stay thread-owned because the final
+shared turn's completion/usage timestamp is the target branch's next prompt,
+not the donor branch's. Deleting the final thread reference collects the chunk.
+
+## Recent schema changes (v62) — thread-scoped turn identity
+
+`turns.turn_id` is a global primary key, but Codex turn ids are only provider
+thread-local in practice: the real import corpus contains the same wire UUID
+in distinct sessions. Every live and imported turn now mints its durable id
+through `ScopedTurnID`, while `provider_turn_id` preserves the exact wire value
+used for provider fork/revert RPCs. Migration v62 prefixes legacy bare Codex
+row ids with their thread id and rewrites matching `usage_ledger.turn_id`
+attribution; already-scoped Claude/fork rows and orphaned lifetime usage remain
+unchanged. Inferred rollout turns are not provider anchors and therefore store
+an empty `provider_turn_id`.
+
 ## Recent schema changes (v54) — the explicitly scheduled resume moment
 
 - `work_items.auto_resume_at` (`INTEGER NOT NULL DEFAULT 0`, Unix milliseconds)
@@ -748,8 +803,9 @@ baseline:
   source's tail would interleave duplicate history under indices the live
   session already claimed. The predicate is spelled
   `turn_index > ? OR (turn_index = ? AND item_index > ?)` rather than a tuple
-  compare so `idx_items_thread` serves it as a range scan. -1 rather than 0 on
-  both halves is what keeps "imported nothing yet" below every real position.
+  compare so `idx_items_thread_turn_item_unique` serves it as a range scan. -1
+  rather than 0 on both halves is what keeps "imported nothing yet" below every
+  real position.
 - `ListImportedSessionRefs` unions `threads.session_ref`,
   `threads.pending_fork_session_ref`, and
   `thread_import_state.source_session_id`. The middle one is load-bearing: a
@@ -769,6 +825,18 @@ baseline:
   the time this runs, so the import writer reads `TurnIDsForThread` up
   front and refuses a batch that would re-open a turn id the thread
   already holds.
+  Payloads and items are emitted in bounded multi-row INSERTs. While those
+  item rows load, the transaction sets the private `history_bulk_load` flag so
+  the item triggers skip their per-row thread UPDATE; the writer adds the
+  number of inserted items to the revision and clears the flag before commit.
+  The flag is never visible outside the writer transaction, and rollback
+  restores it together with the rows.
+- `DeleteThread` keeps its bounded 500-item transactions so a large deletion
+  cannot hold the only SQLite writer past `busy_timeout`. Each chunk uses the
+  same transaction-private flag to replace 500 delete-trigger updates with one
+  exact aggregate `history_rev` / `history_epoch` advance before commit. A
+  reader between chunks therefore still sees a changed stamp, and a failed
+  chunk cannot strand the flag or hide later ordinary writes.
 
 ## History invalidation contract (v55)
 
@@ -798,9 +866,14 @@ counters, §4 event stamps, §5 the sync RPC).
   paths, and the migration chain, and a Go-side bump would be one
   forgotten call site away from a client that never re-syncs. Their DDL
   lives in ONE place — `historyRevTriggersSQL` in `history_sync.go` —
-  because it has two installers: migration v55 concatenates it, and
-  `RestoreFrom` recreates the triggers after dropping them for its row
-  copy (see below). The UPDATE trigger's epoch term is a boolean
+  because it has two latest-schema installers: migration v59 concatenates it,
+  and `RestoreFrom` recreates the triggers after dropping them for its row copy
+  (see below). Migrations v55 and v58 use the pre-flag legacy body while the
+  chain is replayed. Each latest trigger updates only when
+  `history_bulk_load = 0`;
+  that condition is what lets `ApplyImportBatch` preserve one-revision-per-item
+  semantics with two thread updates instead of millions, without weakening
+  ordinary item writes. The UPDATE trigger's epoch term is a boolean
   addition —
   `+ (OLD.turn_index IS NOT NEW.turn_index OR OLD.item_index IS NOT NEW.item_index OR OLD.thread_id IS NOT NEW.thread_id)`
   — so a repositioning UPDATE bumps epoch and an in-place content UPDATE
@@ -817,8 +890,8 @@ counters, §4 event stamps, §5 the sync RPC).
   cannot forget. Two classes qualify:
   - the **payload mutators** (`AppendPayloadData`, `ReplacePayloadData`,
     `UpdatePayloadMeta`, `UpdatePayloadSpans`) — payload content and
-    preview spans ride the item row on the wire, and `payloads` has no
-    thread_id for a trigger to route on;
+    preview spans ride the item row on the wire; their explicit thread-scoped
+    transaction also advances that thread's history revision;
   - the **window-visible decoration sources**: `proposed_plans` and
     `proposed_plan_comments`, whose rows `decorateProposedPlanItems`
     projects onto `Item.Meta` on EVERY window read, `SyncThreadWindow`
@@ -841,8 +914,8 @@ counters, §4 event stamps, §5 the sync RPC).
 - There is **no exported bare payload insert or upsert**. A payload is
   only window-visible through the item that references it, and an export
   that wrote `payloads` without naming a thread would be a hole in the
-  enforcement above — the `INSERT OR REPLACE` flavour additionally reset
-  `preview_spans` / `spans`, which ride the item row. Production writes
+  enforcement above — the private upsert additionally resets the derived
+  chunks, snapshots, and span blobs that ride the item row. Production writes
   go through the item-coupled writers (`InsertItemWithPayload`,
   `AppendItemWithPayload`, `UpsertItem`) or the threadID-carrying
   mutators. Tests that need a bare row use `seedPayloadRow` in

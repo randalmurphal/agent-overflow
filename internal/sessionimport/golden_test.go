@@ -140,19 +140,19 @@ func goldenRows(t *testing.T, st *store.Store, threadID string) []goldenRow {
 			CreatedAt:    item.CreatedAt,
 			UpdatedAt:    item.UpdatedAt,
 			Meta:         normalizeMeta(t, item.Meta),
-			Payload:      goldenPayloadFor(t, st, item.PayloadID),
-			InputPayload: goldenPayloadFor(t, st, item.InputPayloadID),
+			Payload:      goldenPayloadFor(t, st, threadID, item.PayloadID),
+			InputPayload: goldenPayloadFor(t, st, threadID, item.InputPayloadID),
 		})
 	}
 	return rows
 }
 
-func goldenPayloadFor(t *testing.T, st *store.Store, payloadID string) *goldenPayload {
+func goldenPayloadFor(t *testing.T, st *store.Store, threadID, payloadID string) *goldenPayload {
 	t.Helper()
 	if payloadID == "" {
 		return nil
 	}
-	meta, err := st.GetPayloadMeta(payloadID)
+	meta, err := st.GetPayloadMeta(threadID, payloadID)
 	if err != nil {
 		t.Fatalf("payload meta %s: %v", payloadID, err)
 	}

@@ -16,7 +16,12 @@
 // It is manual and env-gated, not tagged, because it has to skip cleanly:
 // `make go-test` compiles it and both legs skip in microseconds when the
 // vars are unset. It spends no tokens and spawns nothing — the whole gate is
-// a file read plus a store-pure Build.
+// a file read plus writes to a throwaway store under the test temp directory.
+// A multi-gigabyte corpus can still take minutes, so the Make target keeps a
+// generous twenty-minute safety ceiling. This is a pre-release/manual gate,
+// not part of the default suite; the app's Import All path additionally uses
+// bounded concurrency, while this diagnostic gate stays sequential so its
+// per-provider timing and peak-memory reports remain reproducible.
 //
 // # Running it
 //
@@ -53,7 +58,7 @@
 //
 // # What fails and what is merely reported
 //
-//   - HARD ERROR — a session that fails to list, load, convert, or Build.
+//   - HARD ERROR — a session that fails to list, load, convert, Build, or apply.
 //     These are contract violations: the reader handed the writer something
 //     it refuses, or the file is shaped in a way the reader cannot walk. The
 //     gate fails, naming the file and the error.

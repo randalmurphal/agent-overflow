@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/importir"
+	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 )
 
@@ -52,12 +53,41 @@ func (im *sessionImporter) outcome() ImportOutcome {
 // transaction, and the cursor a refresh resumes from. Any failure rolls the
 // WHOLE session back and returns the error to report.
 func (im *sessionImporter) add(plan branchPlan) error {
+	suffixModel, _, _ := sessionModelProfile(plan.events)
 	thread := newImportedThread(
 		im.row, im.proj, plan.title, plan.sessionRef, plan.events, plan.lastActivityAt)
 	if err := im.store.CreateThread(thread); err != nil {
 		return im.fail(fmt.Errorf("sessionimport: create thread for %s: %w", im.row.ID, err))
 	}
 	im.created = append(im.created, thread)
+
+	prefix := store.ImportedHistoryPrefix{LastTurnIndex: -1, LastItemIndex: -1}
+	if plan.prefixSourceThreadID != "" {
+		boundaryAt := int64(0)
+		for _, event := range plan.events {
+			if event.Kind == provider.EventTurnStart {
+				boundaryAt = event.Timestamp.UnixMilli()
+				break
+			}
+		}
+		if boundaryAt <= 0 {
+			return im.fail(fmt.Errorf(
+				"sessionimport: shared prefix for %s has no suffix turn boundary", im.row.ID))
+		}
+		var err error
+		prefix, err = im.store.CloneImportedHistoryPrefix(
+			plan.prefixSourceThreadID, thread.ID, plan.prefixBeforeTurn, boundaryAt)
+		if err != nil {
+			return im.fail(fmt.Errorf("sessionimport: share prefix for %s: %w", im.row.ID, err))
+		}
+		if suffixModel == "" && prefix.Model != "" && prefix.Model != thread.Model {
+			if err := im.store.UpdateModel(thread.ID, prefix.Model); err != nil {
+				return im.fail(fmt.Errorf("sessionimport: inherit prefix model for %s: %w", im.row.ID, err))
+			}
+			thread.Model = prefix.Model
+			im.created[len(im.created)-1].Model = prefix.Model
+		}
+	}
 
 	batch, buildWarnings, err := NewWriter(im.store, thread).Build(plan.events)
 	if err != nil {
@@ -69,6 +99,13 @@ func (im *sessionImporter) add(plan branchPlan) error {
 	}
 
 	cursor := NewCursor(batch, plan.events)
+	if cursor.TurnIndex < 0 && prefix.LastTurnIndex >= 0 {
+		cursor.TurnIndex = prefix.LastTurnIndex
+		cursor.ItemIndex = prefix.LastItemIndex
+	}
+	if cursor.SourceUUID == "" {
+		cursor.SourceUUID = prefix.LastSourceUUID
+	}
 	if plan.endOffset > cursor.SourceOffset {
 		cursor.SourceOffset = plan.endOffset
 	}
@@ -132,8 +169,9 @@ func (im *sessionImporter) settleBranches(activeThread int) error {
 // dedup against, which is exactly what the user needs to be told.
 func (im *sessionImporter) fail(err error) error {
 	for i := len(im.created) - 1; i >= 0; i-- {
-		// DeleteThread cascades items, turns and the import cursor.
-		if deleteErr := im.store.DeleteThread(im.created[i].ID); deleteErr != nil {
+		// Import rollback also removes usage. Ordinary DeleteThread keeps the
+		// ledger intentionally, but this thread never successfully existed.
+		if deleteErr := im.store.RollbackImportedThread(im.created[i].ID); deleteErr != nil {
 			err = fmt.Errorf("%w (rollback of thread %s also failed: %v)",
 				err, im.created[i].ID, deleteErr)
 		}

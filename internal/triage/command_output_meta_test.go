@@ -148,7 +148,7 @@ func TestCommandOutputReplaceOverridesEarlierDeltas(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("lookup: ok=%v err=%v", ok, err)
 	}
-	data, err := st.GetPayloadData(item.PayloadID)
+	data, err := st.GetPayloadData(item.ThreadID, item.PayloadID)
 	if err != nil {
 		t.Fatalf("payload: %v", err)
 	}

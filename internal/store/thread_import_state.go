@@ -6,6 +6,50 @@ import (
 	"fmt"
 )
 
+// RollbackImportedThread removes a thread created by a failed session import
+// together with usage rows that deliberately do not cascade during ordinary
+// user deletion. Session import is all-or-nothing across Claude branches; a
+// surviving ledger row from a rolled-back branch would charge usage to a
+// conversation that the import reports as absent.
+//
+// This is intentionally separate from DeleteThread: normal deletion keeps the
+// historical usage ledger by product design, while a failed import never
+// successfully created that history in the first place.
+func (s *Store) RollbackImportedThread(threadID string) error {
+	if threadID == "" {
+		return fmt.Errorf("store: rollback imported thread: thread id is required")
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("store: begin rollback imported thread %s: %w", threadID, err)
+	}
+	defer tx.Rollback()
+
+	var importSource string
+	if err := tx.QueryRow(
+		`SELECT import_source FROM threads WHERE id = ?`, threadID,
+	).Scan(&importSource); err != nil {
+		return fmt.Errorf("store: inspect imported thread %s for rollback: %w", threadID, err)
+	}
+	if importSource == "" {
+		return fmt.Errorf("store: refuse rollback of non-imported thread %s", threadID)
+	}
+	if _, err := tx.Exec(`DELETE FROM usage_ledger WHERE thread_id = ?`, threadID); err != nil {
+		return fmt.Errorf("store: delete rolled-back usage for thread %s: %w", threadID, err)
+	}
+	result, err := tx.Exec(`DELETE FROM threads WHERE id = ?`, threadID)
+	if err != nil {
+		return fmt.Errorf("store: delete rolled-back imported thread %s: %w", threadID, err)
+	}
+	if err := requireRowsAffected(result, fmt.Sprintf("store: rollback imported thread %s", threadID)); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("store: commit rollback imported thread %s: %w", threadID, err)
+	}
+	return nil
+}
+
 // ThreadImportState is the per-thread cursor into the provider session file
 // an import came from (migration v50). It exists so a later refresh can tell
 // what has already been written and where to resume reading, without
@@ -120,8 +164,8 @@ func (s *Store) GetThreadImportState(threadID string) (ThreadImportState, bool, 
 // duplicate history under indices the live session already claimed.
 //
 // The predicate is written as the two-branch comparison rather than a tuple
-// compare so idx_items_thread(thread_id, turn_index, item_index) serves it as
-// a range scan.
+// compare so idx_items_thread_turn_item_unique(thread_id, turn_index,
+// item_index) serves it as a range scan.
 func (s *Store) HasItemsAfterCursor(threadID string, turnIndex, itemIndex int) (bool, error) {
 	if threadID == "" {
 		return false, fmt.Errorf("store: has items after cursor: thread id is required")
@@ -129,7 +173,7 @@ func (s *Store) HasItemsAfterCursor(threadID string, turnIndex, itemIndex int) (
 	var found int
 	err := s.reader().QueryRow(
 		`SELECT EXISTS(
-		     SELECT 1 FROM items
+		     SELECT 1 FROM timeline_items
 		      WHERE thread_id = ?
 		        AND (turn_index > ? OR (turn_index = ? AND item_index > ?))
 		 )`,

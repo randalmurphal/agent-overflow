@@ -24,7 +24,7 @@ func (s *Store) IsEmptyDraftThread(threadID string) (bool, error) {
 		    	SELECT 1 FROM threads child WHERE child.parent_thread_id = threads.id
 		    )
 		    AND NOT EXISTS (
-		    	SELECT 1 FROM items WHERE items.thread_id = threads.id
+		      SELECT 1 FROM timeline_items WHERE timeline_items.thread_id = threads.id
 		    )
 		    AND NOT EXISTS (
 		    	SELECT 1 FROM turns WHERE turns.thread_id = threads.id
@@ -61,7 +61,7 @@ func (s *Store) DeleteEmptyDraftThread(threadID string) (bool, error) {
 		    	SELECT 1 FROM threads child WHERE child.parent_thread_id = threads.id
 		    )
 		    AND NOT EXISTS (
-		    	SELECT 1 FROM items WHERE items.thread_id = threads.id
+		      SELECT 1 FROM timeline_items WHERE timeline_items.thread_id = threads.id
 		    )
 		    AND NOT EXISTS (
 		    	SELECT 1 FROM turns WHERE turns.thread_id = threads.id

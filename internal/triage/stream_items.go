@@ -48,7 +48,7 @@ func (r *Router) handleTextDelta(evt provider.ProviderEvent) error {
 		now = time.Now().UnixMilli()
 	}
 
-	payloadID := AssistantTextPayloadID(evt.ThreadID, itemID)
+	payloadID := AssistantTextPayloadID(itemID)
 
 	if firstBlock {
 		item := store.Item{
@@ -272,9 +272,9 @@ func ThinkingSummaryPreview(content string) string {
 	return string(runes[len(runes)-thinkingPreviewRunes:])
 }
 
-func assistantTextPayload(threadID, itemID, content string, now int64) store.Payload {
+func assistantTextPayload(itemID, content string, now int64) store.Payload {
 	return store.Payload{
-		ID:        AssistantTextPayloadID(threadID, itemID),
+		ID:        AssistantTextPayloadID(itemID),
 		Kind:      itemKindAssistantText,
 		Meta:      BuildPayloadMeta(itemKindAssistantText, provider.ProviderEvent{Content: content, Timestamp: time.UnixMilli(now)}),
 		Data:      []byte(content),

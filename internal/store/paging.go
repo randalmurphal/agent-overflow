@@ -165,7 +165,7 @@ func (s *Store) ListItemsBeforeCursor(threadID string, before TimelineCursor, it
 	}
 	selectedSQL := `SELECT id FROM (
 		SELECT id
-		  FROM items
+		  FROM timeline_items
 		 WHERE thread_id = ?
 		   AND ` + visibleItemsFilter + `
 		   AND ` + topLevelItemsFilter + `
@@ -195,7 +195,7 @@ func (s *Store) ListItemsAfterCursor(threadID string, after TimelineCursor, item
 	}
 	selectedSQL := `SELECT id FROM (
 		SELECT id
-		  FROM items
+		  FROM timeline_items
 		 WHERE thread_id = ?
 		   AND ` + visibleItemsFilter + `
 		   AND ` + topLevelItemsFilter + `
@@ -227,8 +227,8 @@ func (s *Store) ListItemsAfterCursor(threadID string, after TimelineCursor, item
 func (s *Store) queryPagedItems(q sqlQueryer, threadID string, floor, upper int64) ([]Item, error) {
 	rows, err := q.Query(`
 		SELECT `+itemColumns+`
-		  FROM items
-		  LEFT JOIN payloads ON payloads.id = items.payload_id
+		  FROM timeline_items AS items
+		  LEFT JOIN timeline_payloads AS payloads ON payloads.thread_id = items.thread_id AND payloads.id = items.payload_id
 		 WHERE items.thread_id = ?
 		   AND `+visibleItemsFilterQualified+`
 		   AND `+topLevelItemsFilterQualified+`
@@ -267,9 +267,9 @@ func (s *Store) querySelectedPagedItems(q sqlQueryer, threadID, selectedSQL stri
 			`+selectedSQL+`
 		)
 		SELECT `+itemColumns+`
-		  FROM items
+		  FROM timeline_items AS items
 		  JOIN selected ON selected.id = items.id
-		  LEFT JOIN payloads ON payloads.id = items.payload_id
+		  LEFT JOIN timeline_payloads AS payloads ON payloads.thread_id = items.thread_id AND payloads.id = items.payload_id
 		 WHERE items.thread_id = ?
 		 ORDER BY items.turn_index, items.item_index`,
 		args...,
@@ -369,8 +369,8 @@ func (s *Store) finalizePagedItems(q sqlQueryer, threadID string, items []Item) 
 
 // hasOlderTurns answers "does the thread have any visible top-level item
 // with turn_index < floor?" in one probe, used by PickInitialFloorTurn's
-// hasMore report. Uses the idx_items_thread composite index so the
-// EXISTS probe is an index lookup.
+// hasMore report. Uses the idx_items_thread_turn_item_unique composite index
+// so the EXISTS probe is an index lookup.
 //
 // Filters match every other loader (`queryPagedItems`,
 // `floorTurnByItemBudget`, cursor pagers): plan_update notifications and
@@ -382,7 +382,7 @@ func (s *Store) finalizePagedItems(q sqlQueryer, threadID string, items []Item) 
 func (s *Store) hasOlderTurns(threadID string, floorTurnIndex int) (bool, error) {
 	var exists int
 	err := s.reader().QueryRow(
-		`SELECT EXISTS(SELECT 1 FROM items
+		`SELECT EXISTS(SELECT 1 FROM timeline_items
 		   WHERE thread_id = ? AND turn_index < ?
 		     AND `+visibleItemsFilter+`
 		     AND `+topLevelItemsFilter+`)`,
@@ -397,7 +397,7 @@ func (s *Store) hasOlderTurns(threadID string, floorTurnIndex int) (bool, error)
 func (s *Store) hasOlderItems(q sqlQueryer, threadID string, cursor TimelineCursor) (bool, error) {
 	var exists int
 	err := q.QueryRow(
-		`SELECT EXISTS(SELECT 1 FROM items
+		`SELECT EXISTS(SELECT 1 FROM timeline_items
 		   WHERE thread_id = ?
 		     AND `+visibleItemsFilter+`
 		     AND `+topLevelItemsFilter+`
@@ -413,7 +413,7 @@ func (s *Store) hasOlderItems(q sqlQueryer, threadID string, cursor TimelineCurs
 func (s *Store) hasNewerItems(q sqlQueryer, threadID string, cursor TimelineCursor) (bool, error) {
 	var exists int
 	err := q.QueryRow(
-		`SELECT EXISTS(SELECT 1 FROM items
+		`SELECT EXISTS(SELECT 1 FROM timeline_items
 		   WHERE thread_id = ?
 		     AND `+visibleItemsFilter+`
 		     AND `+topLevelItemsFilter+`
@@ -444,7 +444,7 @@ func (s *Store) floorTurnByItemBudget(threadID string, beforeTurnIndex int64, it
 	limit := boundedSliceTurnLimit(itemBudget)
 	rows, err := s.reader().Query(
 		`SELECT turn_index, COUNT(*) AS item_count
-		   FROM items
+		   FROM timeline_items
 		  WHERE thread_id = ? AND turn_index < ?
 		    AND `+visibleItemsFilter+`
 		    AND `+topLevelItemsFilter+`
@@ -489,7 +489,7 @@ func (s *Store) ceilingTurnByItemBudget(threadID string, afterTurnIndex int64, i
 	limit := boundedSliceTurnLimit(itemBudget)
 	rows, err := s.reader().Query(
 		`SELECT turn_index, COUNT(*) AS item_count
-		   FROM items
+		   FROM timeline_items
 		  WHERE thread_id = ? AND turn_index > ?
 		    AND `+visibleItemsFilter+`
 		    AND `+topLevelItemsFilter+`
@@ -566,7 +566,7 @@ func (s *Store) listThreadSliceAround(q sqlQueryer, threadID, anchorItemID strin
 	}
 	selectedSQL := `SELECT id FROM (
 		SELECT id
-		  FROM items
+		  FROM timeline_items
 		 WHERE thread_id = ?
 		   AND ` + visibleItemsFilter + `
 		   AND ` + topLevelItemsFilter + `
@@ -577,7 +577,7 @@ func (s *Store) listThreadSliceAround(q sqlQueryer, threadID, anchorItemID strin
 	UNION
 	SELECT id FROM (
 		SELECT id
-		  FROM items
+		  FROM timeline_items
 		 WHERE thread_id = ?
 		   AND ` + visibleItemsFilter + `
 		   AND ` + topLevelItemsFilter + `
@@ -604,7 +604,7 @@ func (s *Store) listThreadSliceAround(q sqlQueryer, threadID, anchorItemID strin
 func (s *Store) listTailSlice(q sqlQueryer, threadID string, targetItemCount int) (PagedItems, error) {
 	selectedSQL := `SELECT id FROM (
 		SELECT id
-		  FROM items
+		  FROM timeline_items
 		 WHERE thread_id = ?
 		   AND ` + visibleItemsFilter + `
 		   AND ` + topLevelItemsFilter + `

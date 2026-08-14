@@ -990,7 +990,7 @@ func TestProviderItemCompletionCanCreateCompletedThinking(t *testing.T) {
 	if item.Summary != "final-only thought" {
 		t.Fatalf("summary = %q, want final-only thought", item.Summary)
 	}
-	data, err := st.GetPayloadData(item.PayloadID)
+	data, err := st.GetPayloadData(item.ThreadID, item.PayloadID)
 	if err != nil {
 		t.Fatalf("get payload: %v", err)
 	}
@@ -1040,7 +1040,7 @@ func TestSubagentProviderItemCompletionUpdatesSettledThinkingWithoutTopLevelDupl
 	if item.Summary != "final thought" {
 		t.Fatalf("summary = %q, want final thought", item.Summary)
 	}
-	data, err := st.GetPayloadData(item.PayloadID)
+	data, err := st.GetPayloadData(item.ThreadID, item.PayloadID)
 	if err != nil {
 		t.Fatalf("get payload: %v", err)
 	}
@@ -1078,7 +1078,7 @@ func TestProviderItemCompletionCanReplaceThinkingWithEmptyFinal(t *testing.T) {
 	if item.Summary != "" {
 		t.Fatalf("summary = %q, want empty authoritative final content", item.Summary)
 	}
-	data, err := st.GetPayloadData(item.PayloadID)
+	data, err := st.GetPayloadData(item.ThreadID, item.PayloadID)
 	if err != nil {
 		t.Fatalf("get payload: %v", err)
 	}
@@ -1217,7 +1217,7 @@ func TestAssistantTextPayloadKeepsStreamingSummaryFull(t *testing.T) {
 	if item.Summary != first+second {
 		t.Fatalf("summary length/content mismatch: got %d bytes, want full assistant text", len(item.Summary))
 	}
-	data, err := st.GetPayloadData(item.PayloadID)
+	data, err := st.GetPayloadData(item.ThreadID, item.PayloadID)
 	if err != nil {
 		t.Fatalf("get payload: %v", err)
 	}
@@ -1245,7 +1245,7 @@ func TestAssistantTextPayloadKeepsStreamingSummaryFull(t *testing.T) {
 	if settled.Summary != final {
 		t.Fatalf("settled summary length/content mismatch: got %d bytes, want authoritative final content", len(settled.Summary))
 	}
-	data, err = st.GetPayloadData(settled.PayloadID)
+	data, err = st.GetPayloadData(settled.ThreadID, settled.PayloadID)
 	if err != nil {
 		t.Fatalf("get settled payload: %v", err)
 	}
@@ -1254,7 +1254,7 @@ func TestAssistantTextPayloadKeepsStreamingSummaryFull(t *testing.T) {
 	}
 }
 
-func TestAssistantTextPayloadIDsAreThreadScoped(t *testing.T) {
+func TestAssistantTextPayloadStorageIsThreadScopedWhenLogicalIDsMatch(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "thread-a")
 	createTestThread(t, st, "thread-b")
@@ -1281,15 +1281,15 @@ func TestAssistantTextPayloadIDsAreThreadScoped(t *testing.T) {
 	if itemA.ID != itemB.ID {
 		t.Fatalf("test setup expected matching item ids, got %q and %q", itemA.ID, itemB.ID)
 	}
-	if itemA.PayloadID == itemB.PayloadID {
-		t.Fatalf("payload ids should be thread-scoped, both were %q", itemA.PayloadID)
+	if itemA.PayloadID != itemB.PayloadID {
+		t.Fatalf("test setup expected matching logical payload ids, got %q and %q", itemA.PayloadID, itemB.PayloadID)
 	}
 
-	dataA, err := st.GetPayloadData(itemA.PayloadID)
+	dataA, err := st.GetPayloadData(itemA.ThreadID, itemA.PayloadID)
 	if err != nil {
 		t.Fatalf("payload A: %v", err)
 	}
-	dataB, err := st.GetPayloadData(itemB.PayloadID)
+	dataB, err := st.GetPayloadData(itemB.ThreadID, itemB.PayloadID)
 	if err != nil {
 		t.Fatalf("payload B: %v", err)
 	}
@@ -1298,5 +1298,44 @@ func TestAssistantTextPayloadIDsAreThreadScoped(t *testing.T) {
 	}
 	if string(dataB) != "assistant body for B" {
 		t.Fatalf("payload B = %q", dataB)
+	}
+}
+
+func TestThinkingPayloadsWithSameTurnCoordinatesAreThreadIsolated(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "thread-a")
+	createTestThread(t, st, "thread-b")
+
+	for _, tc := range []struct {
+		threadID string
+		content  string
+	}{
+		{threadID: "thread-a", content: "reasoning authored by A"},
+		{threadID: "thread-b", content: "reasoning authored by B"},
+	} {
+		if err := router.Handle(provider.ProviderEvent{
+			Kind: provider.EventThinking, ThreadID: tc.threadID,
+			Content: tc.content, Timestamp: time.Now(),
+		}); err != nil {
+			t.Fatalf("thinking delta for %s: %v", tc.threadID, err)
+		}
+	}
+
+	itemA := firstItemByKind(t, st, "thread-a", itemKindThinking)
+	itemB := firstItemByKind(t, st, "thread-b", itemKindThinking)
+	if itemA.ID != itemB.ID || itemA.PayloadID != itemB.PayloadID {
+		t.Fatalf("test requires identical local coordinates: A=(%q,%q) B=(%q,%q)",
+			itemA.ID, itemA.PayloadID, itemB.ID, itemB.PayloadID)
+	}
+	dataA, err := st.GetPayloadData(itemA.ThreadID, itemA.PayloadID)
+	if err != nil {
+		t.Fatalf("payload A: %v", err)
+	}
+	dataB, err := st.GetPayloadData(itemB.ThreadID, itemB.PayloadID)
+	if err != nil {
+		t.Fatalf("payload B: %v", err)
+	}
+	if string(dataA) != "reasoning authored by A" || string(dataB) != "reasoning authored by B" {
+		t.Fatalf("thinking payloads crossed threads: A=%q B=%q", dataA, dataB)
 	}
 }

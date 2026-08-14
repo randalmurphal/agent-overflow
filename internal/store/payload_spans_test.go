@@ -40,7 +40,7 @@ func TestUpdatePayloadSpansRoundTrip(t *testing.T) {
 	insertSpanTestPayload(t, s, "t1", "item-1", "p1")
 
 	// Fresh rows read as "not computed".
-	spans, err := s.GetPayloadSpans("p1")
+	spans, err := s.GetPayloadSpans("t1", "p1")
 	if err != nil {
 		t.Fatalf("get payload spans: %v", err)
 	}
@@ -51,7 +51,7 @@ func TestUpdatePayloadSpansRoundTrip(t *testing.T) {
 	if err := s.UpdatePayloadSpans("t1", "p1", `{"hv":"v","files":[1]}`, `{"hv":"v","files":[2]}`); err != nil {
 		t.Fatalf("update payload spans: %v", err)
 	}
-	spans, err = s.GetPayloadSpans("p1")
+	spans, err = s.GetPayloadSpans("t1", "p1")
 	if err != nil {
 		t.Fatalf("get payload spans: %v", err)
 	}
@@ -78,7 +78,7 @@ func TestUpdatePayloadSpansRoundTrip(t *testing.T) {
 
 // TestPayloadSpanColumnsClearOnRewrite covers the two rewrite paths a
 // payload row takes after spans landed: the in-place authoritative
-// replace and the INSERT OR REPLACE upsert. Both must reset the span
+// replace and the item-coupled payload upsert. Both must reset the span
 // columns — the persist tap recomputes them for the new content.
 // AppendPayloadData deliberately does NOT clear: per-file content
 // addressing keeps blobs for still-identical file segments valid and
@@ -99,7 +99,7 @@ func TestPayloadSpanColumnsClearOnRewrite(t *testing.T) {
 	}
 	readBoth := func() (string, string) {
 		t.Helper()
-		spans, err := s.GetPayloadSpans("p1")
+		spans, err := s.GetPayloadSpans("t1", "p1")
 		if err != nil {
 			t.Fatalf("get payload spans: %v", err)
 		}
@@ -119,7 +119,7 @@ func TestPayloadSpanColumnsClearOnRewrite(t *testing.T) {
 		t.Fatalf("replace must clear spans, got preview=%q spans=%q", preview, spans)
 	}
 
-	// The item upsert's INSERT OR REPLACE resets the row to column
+	// The item upsert resets both derived columns to their empty
 	// defaults. This is the only path that reaches upsertPayloadTx: a
 	// bare payload upsert is deliberately not exported, because it would
 	// reset these window-visible columns without naming a thread to

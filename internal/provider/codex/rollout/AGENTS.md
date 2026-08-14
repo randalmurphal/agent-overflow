@@ -209,18 +209,16 @@ import writer.
 `import_synthetic_turn` and `import_unresolved` are additions to the plan's
 key list; both exist so a gap is visible rather than fabricated.
 
-A synthetic turn's id (`import-turn-<n>`) is minted from a counter scoped
-to ONE `Parse` call — it restarts at 1 on every call, tail refreshes
-included, and it is not unique across the imports of one file. The same
-is true of a wire `turn_id` this reader re-opens: a rollout imported
-mid-turn has no idea the id already landed. Neither is fixed here,
-because a reader that has read a suffix of a file cannot know what a
-previous read committed. The writer owns the collision: it loads the
-thread's existing turn ids and refuses the batch (see
+A synthetic turn's id (`import-turn:<sessionID>:<n>`) combines the
+authoritative rollout id with a counter scoped to one `Parse` call. The
+session component prevents different rollouts from colliding in the store;
+the counter deliberately restarts on a tail parse so the same inferred turn
+re-mints the same identity. A wire `turn_id` can likewise be re-opened when a
+rollout was imported mid-turn. The writer owns both same-thread collisions: it
+loads the thread's existing scoped turn ids and refuses the batch (see
 [`internal/sessionimport/AGENTS.md`](../../../sessionimport/AGENTS.md)
-§"A turn id the thread already holds"). Do not "fix" it here by seeding
-the counter from anything — that would make the id depend on state this
-package must not read.
+§"A turn id the thread already holds"). Do not seed the counter from store
+state; that would make the reader depend on persistence it must not read.
 
 WITHIN one `Parse`, though, reuse is knowable and is the converter's
 job: `usedTurnIDs` tracks every id a turn opened under, so the trailing

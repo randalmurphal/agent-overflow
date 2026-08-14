@@ -67,7 +67,7 @@ func descendantsCTEFromRoots(rootCount int) string {
 	visible := visibleItemsFilterFor("i.")
 	return `WITH RECURSIVE rel(root, id) AS (
 		SELECT i.parent_id, i.id
-		  FROM items i
+		  FROM timeline_items i
 		 WHERE i.thread_id = ?
 		   AND i.parent_id IN (` + placeholders(rootCount) + `)
 		   AND i.parent_id <> ''
@@ -75,7 +75,7 @@ func descendantsCTEFromRoots(rootCount int) string {
 		UNION
 		SELECT rel.root, i.id
 		  FROM rel
-		  CROSS JOIN items i ON i.parent_id = rel.id
+		  CROSS JOIN timeline_items i ON i.parent_id = rel.id
 		 WHERE i.thread_id = ?
 		   AND i.parent_id <> ''
 		   AND ` + visible + `
@@ -152,7 +152,7 @@ func (s *Store) subagentAggregatesByRoot(q sqlQueryer, threadID string, rootIDs 
 			                    i.id
 			       ) AS rn
 			  FROM rel
-			  CROSS JOIN items i ON i.thread_id = ? AND i.id = rel.id
+			  CROSS JOIN timeline_items i ON i.thread_id = ? AND i.id = rel.id
 		) WHERE rn = 1`,
 		args...,
 	)
@@ -230,15 +230,15 @@ func (s *Store) ListSubagentDescendants(threadID, rootItemID string) ([]Item, er
 			SELECT id FROM (
 				SELECT items.id AS id
 				  FROM rel
-				  CROSS JOIN items ON items.thread_id = ? AND items.id = rel.id
+				  CROSS JOIN timeline_items AS items ON items.thread_id = ? AND items.id = rel.id
 				 ORDER BY items.turn_index DESC, items.item_index DESC
 				 LIMIT ?
 			)
 		)
 		SELECT `+itemColumns+`
 		  FROM selected
-		  CROSS JOIN items ON items.thread_id = ? AND items.id = selected.id
-		  LEFT JOIN payloads ON payloads.id = items.payload_id
+		  CROSS JOIN timeline_items AS items ON items.thread_id = ? AND items.id = selected.id
+		  LEFT JOIN timeline_payloads AS payloads ON payloads.thread_id = items.thread_id AND payloads.id = items.payload_id
 		 ORDER BY items.turn_index, items.item_index`,
 		threadID, rootItemID, threadID, threadID, maxSubagentDescendants, threadID,
 	)

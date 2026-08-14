@@ -107,17 +107,11 @@ func (r *Router) resolveTurnIndexOnStart(evt provider.ProviderEvent) int {
 	return turnIndex
 }
 
-// resolveTurnID builds the `turns` table primary key for the incoming
-// turn. Codex fills evt.TurnID directly from `turn/started`; Claude
-// has no wire-level turn_id so triage synthesizes one from
-// `<threadID>:<turnIndex>`. Both forms are deterministic so a re-sent
-// EventTurnStart for the same (thread, turn) maps back to the same row
-// (the store upsert path then skips a redundant insert).
+// resolveTurnID builds the thread-scoped `turns` primary key for the incoming
+// turn. The provider's wire id remains separate in provider_turn_id; provider
+// ids are not globally unique across sessions, while turns.turn_id is.
 func resolveTurnID(evt provider.ProviderEvent, turnIndex int) string {
-	if id := strings.TrimSpace(evt.TurnID); id != "" {
-		return id
-	}
-	return fmt.Sprintf("%s:%d", evt.ThreadID, turnIndex)
+	return store.ScopedTurnID(evt.ThreadID, evt.TurnID, turnIndex)
 }
 
 // upsertTurnRow inserts the turns row for a freshly-opened turn or
@@ -547,9 +541,6 @@ func decodeTurnCompleteFields(evt provider.ProviderEvent, logicalTurnID string, 
 }
 
 func (r *Router) persistedTurnID(evt provider.ProviderEvent, turnIndex int) string {
-	if id := strings.TrimSpace(evt.TurnID); id != "" {
-		return id
-	}
 	if existing, found, err := r.store.GetTurnByThreadIndex(evt.ThreadID, turnIndex); err == nil && found {
 		return existing.TurnID
 	} else if err != nil {

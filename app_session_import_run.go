@@ -5,11 +5,14 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"sync"
 
 	"agent-overflow/internal/importir"
+	"agent-overflow/internal/project"
 	"agent-overflow/internal/sessionimport"
 
 	"github.com/google/uuid"
+	"golang.org/x/sync/semaphore"
 )
 
 // sessionImportProgressChannel carries one frame per session an import run
@@ -69,6 +72,29 @@ type sessionImportRun struct {
 	id     string
 	total  int
 	cancel context.CancelFunc
+}
+
+const (
+	// Eight workers overlap small provider-file decodes while a weighted
+	// semaphore caps aggregate source bytes admitted at about 128 MiB. Decode
+	// amplification is substantial, so a 128 MiB+ transcript takes every slot
+	// and runs alone; medium inputs consume proportionally more capacity.
+	// Unknown projects are resolved once before dispatch.
+	sessionImportWorkers   = 8
+	sessionImportSlotBytes = 16 << 20
+)
+
+type sessionImportJob struct {
+	id         string
+	row        sessionimport.Row
+	found      bool
+	prepareErr error
+}
+
+type sessionImportJobResult struct {
+	job     sessionImportJob
+	outcome sessionimport.ImportOutcome
+	err     error
 }
 
 // ImportSessions starts an import run and returns immediately. Progress
@@ -135,7 +161,9 @@ func (a *App) CancelSessionImport(importID string) error {
 	return nil
 }
 
-// runSessionImport imports each selected session in request order.
+// runSessionImport prepares selected sessions in request order and reports
+// each import as it completes; independent small sessions may finish out of
+// order because their provider reads and conversion overlap.
 //
 // Every session is isolated: one that fails is reported and the run carries
 // on, because ImportOne already rolls its own session back whole and an
@@ -163,13 +191,46 @@ func (a *App) runSessionImport(ctx context.Context, run *sessionImportRun, ids [
 	}
 
 	rows := a.resolveImportRows(ctx, ids)
-	imported := 0
+	jobs := make([]sessionImportJob, 0, len(ids))
+	type projectResolution struct {
+		id  string
+		err error
+	}
+	projectsByPath := make(map[string]projectResolution)
 	for _, id := range ids {
 		if ctx.Err() != nil {
 			break
 		}
 		row, found := rows[id]
-		if !found {
+		job := sessionImportJob{id: id, row: row, found: found}
+		// Resolve unknown projects before workers start. Besides avoiding a
+		// lookup/create race between two sessions from the same repository,
+		// this means project creation is not treated as a reason to serialize
+		// every import into a fresh store. ImportOne sees the stamped id and
+		// retains its normal fallback if a project is deleted meanwhile.
+		if found && strings.TrimSpace(row.ProjectID) == "" {
+			path := strings.TrimSpace(row.ProjectPath)
+			resolved, ok := projectsByPath[path]
+			if !ok {
+				proj, err := project.EnsureForWorkspace(deps.Store, row.ProjectPath)
+				resolved = projectResolution{err: err}
+				if err == nil {
+					resolved.id = proj.ID
+				}
+				projectsByPath[path] = resolved
+			}
+			if resolved.err != nil {
+				job.prepareErr = fmt.Errorf("sessionimport: resolve project for %s: %w", row.ID, resolved.err)
+			} else {
+				job.row.ProjectID = resolved.id
+			}
+		}
+		jobs = append(jobs, job)
+	}
+	imported := 0
+	for result := range runBoundedSessionImports(ctx, deps, jobs, sessionimport.ImportOne) {
+		id := result.job.id
+		if !result.job.found {
 			report(SessionImportProgressEvent{
 				ID:     id,
 				Status: sessionImportStatusSkipped,
@@ -178,21 +239,20 @@ func (a *App) runSessionImport(ctx context.Context, run *sessionImportRun, ids [
 			})
 			continue
 		}
-		outcome, importErr := sessionimport.ImportOne(ctx, deps, row)
 		switch {
-		case importErr != nil && ctx.Err() != nil:
+		case result.err != nil && ctx.Err() != nil:
 			// Cancelled mid-session. ImportOne rolled the session back, so
 			// there is nothing to report about it; the terminal frame below
 			// tells the caller the run stopped early.
-		case importErr != nil:
+		case result.err != nil:
 			report(SessionImportProgressEvent{
-				ID: id, Status: sessionImportStatusFailed, Error: importErr.Error(),
+				ID: id, Status: sessionImportStatusFailed, Error: result.err.Error(),
 			})
 		default:
 			imported++
-			logImportWarnings(id, outcome.Warnings)
+			logImportWarnings(id, result.outcome.Warnings)
 			report(SessionImportProgressEvent{
-				ID: id, Status: sessionImportStatusImported, ThreadIDs: outcome.ThreadIDs(),
+				ID: id, Status: sessionImportStatusImported, ThreadIDs: result.outcome.ThreadIDs(),
 			})
 		}
 	}
@@ -203,6 +263,77 @@ func (a *App) runSessionImport(ctx context.Context, run *sessionImportRun, ids [
 		a.sessionImportScanCache().Reset()
 	}
 	a.emitSessionImportDone(run, completed)
+}
+
+// runBoundedSessionImports overlaps the read/build half of independent
+// sessions while the Store's single writer connection serializes commits.
+// Results arrive in completion order so a small session can advance progress
+// while an earlier large transcript is still converting.
+//
+// The executor argument is the test seam for the scheduler itself; production
+// always passes sessionimport.ImportOne.
+func runBoundedSessionImports(
+	ctx context.Context,
+	deps sessionimport.Deps,
+	jobs []sessionImportJob,
+	execute func(context.Context, sessionimport.Deps, sessionimport.Row) (sessionimport.ImportOutcome, error),
+) <-chan sessionImportJobResult {
+	results := make(chan sessionImportJobResult, sessionImportWorkers)
+	work := make(chan sessionImportJob)
+	gate := semaphore.NewWeighted(sessionImportWorkers)
+
+	var workers sync.WaitGroup
+	workers.Add(sessionImportWorkers)
+	for range sessionImportWorkers {
+		go func() {
+			defer workers.Done()
+			for job := range work {
+				if !job.found {
+					results <- sessionImportJobResult{job: job}
+					continue
+				}
+				if job.prepareErr != nil {
+					results <- sessionImportJobResult{job: job, err: job.prepareErr}
+					continue
+				}
+				weight := sessionImportWeight(job.row.SizeBytes)
+				if err := gate.Acquire(ctx, weight); err != nil {
+					results <- sessionImportJobResult{job: job, err: err}
+					continue
+				}
+				outcome, err := execute(ctx, deps, job.row)
+				gate.Release(weight)
+				results <- sessionImportJobResult{job: job, outcome: outcome, err: err}
+			}
+		}()
+	}
+
+	go func() {
+		defer close(work)
+		for _, job := range jobs {
+			select {
+			case work <- job:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+	go func() {
+		workers.Wait()
+		close(results)
+	}()
+	return results
+}
+
+func sessionImportWeight(sizeBytes int64) int64 {
+	weight := (sizeBytes + sessionImportSlotBytes - 1) / sessionImportSlotBytes
+	if weight < 1 {
+		return 1
+	}
+	if weight > sessionImportWorkers {
+		return sessionImportWorkers
+	}
+	return weight
 }
 
 // resolveImportRows maps the requested ids back to scanned rows.

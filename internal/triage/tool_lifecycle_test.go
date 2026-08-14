@@ -793,7 +793,7 @@ func TestInlineCompletionAttachesPayloadWhenNoneExists(t *testing.T) {
 	if item.PayloadKind != "command_output" {
 		t.Fatalf("payloadKind = %q, want command_output", item.PayloadKind)
 	}
-	data, err := st.GetPayloadData(item.PayloadID)
+	data, err := st.GetPayloadData(item.ThreadID, item.PayloadID)
 	if err != nil {
 		t.Fatalf("read payload: %v", err)
 	}
@@ -1232,7 +1232,7 @@ func TestMcpCompletionContentAttachesPayload(t *testing.T) {
 	if item.PayloadID == "" {
 		t.Fatal("expected MCP result payload")
 	}
-	data, err := st.GetPayloadData(item.PayloadID)
+	data, err := st.GetPayloadData(item.ThreadID, item.PayloadID)
 	if err != nil {
 		t.Fatalf("read payload: %v", err)
 	}
@@ -2201,14 +2201,14 @@ func TestHandleEventBackgroundTaskTerminal_Enriches(t *testing.T) {
 	if done.PayloadID == "" {
 		t.Fatal("expected enriched sibling to carry a payload")
 	}
-	meta, err := st.GetPayloadMeta(done.PayloadID)
+	meta, err := st.GetPayloadMeta(done.ThreadID, done.PayloadID)
 	if err != nil {
 		t.Fatalf("read enriched payload meta: %v", err)
 	}
 	if strings.Contains(meta.Meta, "/tmp/bg-output.txt") || strings.Contains(meta.Meta, "outputFile") {
 		t.Errorf("command output payload meta leaked output file path: %q", meta.Meta)
 	}
-	data, err := st.GetPayloadData(done.PayloadID)
+	data, err := st.GetPayloadData(done.ThreadID, done.PayloadID)
 	if err != nil {
 		t.Fatalf("read enriched payload data: %v", err)
 	}

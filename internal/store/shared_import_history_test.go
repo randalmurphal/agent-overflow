@@ -1,0 +1,248 @@
+package store
+
+import (
+	"fmt"
+	"reflect"
+	"testing"
+)
+
+func TestSharedImportHistoryDeduplicatesWithoutAliasingLogicalThreads(t *testing.T) {
+	s := newTestStore(t)
+	for _, threadID := range []string{"shared-a", "shared-b"} {
+		newImportTargetThread(t, s, threadID)
+		if err := s.ApplyImportBatch(threadID, importBatchFixture(threadID)); err != nil {
+			t.Fatalf("apply import to %s: %v", threadID, err)
+		}
+	}
+
+	assertCount := func(name, query string, want int) {
+		t.Helper()
+		var got int
+		if err := s.db.QueryRow(query).Scan(&got); err != nil {
+			t.Fatalf("count %s: %v", name, err)
+		}
+		if got != want {
+			t.Fatalf("%s count = %d, want %d", name, got, want)
+		}
+	}
+	assertCount("shared chunks", `SELECT COUNT(*) FROM import_history_chunks`, 1)
+	assertCount("shared items", `SELECT COUNT(*) FROM import_history_items`, 2)
+	assertCount("shared payloads", `SELECT COUNT(*) FROM import_history_payloads`, 2)
+	assertCount("thread mappings", `SELECT COUNT(*) FROM thread_import_chunks`, 2)
+	assertCount("local items", `SELECT COUNT(*) FROM items`, 0)
+	assertCount("local payloads", `SELECT COUNT(*) FROM payloads`, 0)
+
+	a, err := s.ListItems("shared-a")
+	if err != nil {
+		t.Fatalf("list A: %v", err)
+	}
+	b, err := s.ListItems("shared-b")
+	if err != nil {
+		t.Fatalf("list B: %v", err)
+	}
+	if len(a) != len(b) || len(a) != 2 {
+		t.Fatalf("logical lengths A/B = %d/%d, want 2/2", len(a), len(b))
+	}
+	for i := range a {
+		a[i].ThreadID = ""
+		b[i].ThreadID = ""
+	}
+	if !reflect.DeepEqual(a, b) {
+		t.Fatalf("shared branches render differently:\nA=%+v\nB=%+v", a, b)
+	}
+
+	if err := s.UpdatePayloadMeta("shared-a", "payload-out", `{"branch":"a"}`); err != nil {
+		t.Fatalf("update A payload: %v", err)
+	}
+	aMeta, err := s.GetPayloadMeta("shared-a", "payload-out")
+	if err != nil {
+		t.Fatalf("read A payload: %v", err)
+	}
+	bMeta, err := s.GetPayloadMeta("shared-b", "payload-out")
+	if err != nil {
+		t.Fatalf("read B payload: %v", err)
+	}
+	if aMeta.Meta != `{"branch":"a"}` || bMeta.Meta != `{"exitCode":0}` {
+		t.Fatalf("payload copy-on-write leaked: A=%s B=%s", aMeta.Meta, bMeta.Meta)
+	}
+	assertCount("A payload overlay", `SELECT COUNT(*) FROM payloads WHERE thread_id = 'shared-a'`, 1)
+
+	changed := "changed only in A"
+	if err := s.UpdateItemFields("shared-a", "item-tool", ItemPartialUpdate{Summary: &changed}); err != nil {
+		t.Fatalf("update A item: %v", err)
+	}
+	aItem, found, err := s.GetThreadItem("shared-a", "item-tool")
+	if err != nil || !found {
+		t.Fatalf("read A item: %v", err)
+	}
+	bItem, found, err := s.GetThreadItem("shared-b", "item-tool")
+	if err != nil || !found {
+		t.Fatalf("read B item: %v", err)
+	}
+	if aItem.Summary != changed || bItem.Summary != "Bash" {
+		t.Fatalf("item copy-on-write leaked: A=%q B=%q", aItem.Summary, bItem.Summary)
+	}
+
+	var revA, revB, epochA, epochB int64
+	if err := s.db.QueryRow(
+		`SELECT history_rev, history_epoch FROM threads WHERE id = 'shared-a'`,
+	).Scan(&revA, &epochA); err != nil {
+		t.Fatalf("read A stamps: %v", err)
+	}
+	if err := s.db.QueryRow(
+		`SELECT history_rev, history_epoch FROM threads WHERE id = 'shared-b'`,
+	).Scan(&revB, &epochB); err != nil {
+		t.Fatalf("read B stamps: %v", err)
+	}
+	if revA != 4 || epochA != 0 || revB != 2 || epochB != 0 {
+		t.Fatalf("copy-on-write stamps A=%d/%d B=%d/%d, want 4/0 2/0", revA, epochA, revB, epochB)
+	}
+}
+
+func TestSharedImportHistoryStructuralCutMaterializesOnlyTargetThread(t *testing.T) {
+	s := newTestStore(t)
+	for _, threadID := range []string{"cut-a", "cut-b"} {
+		newImportTargetThread(t, s, threadID)
+		if err := s.ApplyImportBatch(threadID, importBatchFixture(threadID)); err != nil {
+			t.Fatalf("apply import to %s: %v", threadID, err)
+		}
+	}
+
+	deleted, stamp, err := s.DeleteConversationFromTurn("cut-a", 1)
+	if err != nil {
+		t.Fatalf("cut A: %v", err)
+	}
+	if deleted != 2 || stamp.Rev != 4 || stamp.Epoch != 2 {
+		t.Fatalf("cut result deleted=%d stamp=%+v, want 2 and 4/2", deleted, stamp)
+	}
+	a, err := s.ListItems("cut-a")
+	if err != nil {
+		t.Fatalf("list cut A: %v", err)
+	}
+	b, err := s.ListItems("cut-b")
+	if err != nil {
+		t.Fatalf("list intact B: %v", err)
+	}
+	if len(a) != 0 || len(b) != 2 {
+		t.Fatalf("post-cut logical lengths A/B = %d/%d, want 0/2", len(a), len(b))
+	}
+	var mappingsA, mappingsB, chunks int
+	if err := s.db.QueryRow(
+		`SELECT
+		   (SELECT COUNT(*) FROM thread_import_chunks WHERE thread_id = 'cut-a'),
+		   (SELECT COUNT(*) FROM thread_import_chunks WHERE thread_id = 'cut-b'),
+		   (SELECT COUNT(*) FROM import_history_chunks)`,
+	).Scan(&mappingsA, &mappingsB, &chunks); err != nil {
+		t.Fatalf("read mapping state: %v", err)
+	}
+	if mappingsA != 0 || mappingsB != 1 || chunks != 1 {
+		t.Fatalf("mapping state A/B/chunks = %d/%d/%d, want 0/1/1", mappingsA, mappingsB, chunks)
+	}
+}
+
+func TestSharedImportHistoryPagingAndSubagentExpansionUseLogicalTimeline(t *testing.T) {
+	s := newTestStore(t)
+	newImportTargetThread(t, s, "shared-window")
+	batch := importBatchFixture("shared-window")
+	batch.Rows[1].Item.ParentID = "item-user"
+	if err := s.ApplyImportBatch("shared-window", batch); err != nil {
+		t.Fatalf("apply import: %v", err)
+	}
+
+	page, err := s.ListRecentItems("shared-window", 0)
+	if err != nil {
+		t.Fatalf("list recent items: %v", err)
+	}
+	if len(page.Items) != 1 || page.Items[0].ID != "item-user" {
+		t.Fatalf("top-level page = %+v, want only item-user", page.Items)
+	}
+	descendants, err := s.ListSubagentDescendants("shared-window", "item-user")
+	if err != nil {
+		t.Fatalf("list descendants: %v", err)
+	}
+	if len(descendants) != 1 || descendants[0].ID != "item-tool" || descendants[0].PayloadKind != "command_output" {
+		t.Fatalf("descendants = %+v", descendants)
+	}
+}
+
+func TestCloneImportedHistoryPrefixSharesWholeChunksAndCopiesOnlyBoundaryTail(t *testing.T) {
+	s := newTestStore(t)
+	for _, threadID := range []string{"prefix-source", "prefix-target"} {
+		newImportTargetThread(t, s, threadID)
+	}
+
+	batchFor := func(threadID string, throughTurn int) ImportBatch {
+		batch := ImportBatch{}
+		for turnIndex := 1; turnIndex <= throughTurn; turnIndex++ {
+			turnID := fmt.Sprintf("%s:%d", threadID, turnIndex)
+			batch.Turns = append(batch.Turns, Turn{
+				TurnID: turnID, ThreadID: threadID,
+				TurnIndex: turnIndex, StartedAt: importTurnStart + int64(turnIndex),
+			})
+			batch.TurnCompletions = append(batch.TurnCompletions, TurnCompletion{
+				TurnID:      turnID,
+				CompletedAt: importTurnComplete + int64(turnIndex), StopReason: "end_turn",
+			})
+			rows := 1
+			if turnIndex == 1 {
+				rows = importHistoryTargetRows + 44
+			}
+			for itemIndex := 0; itemIndex < rows; itemIndex++ {
+				id := fmt.Sprintf("turn-%d-item-%d", turnIndex, itemIndex)
+				batch.Rows = append(batch.Rows, ImportRow{Item: Item{
+					ID: id, TurnIndex: turnIndex, ItemIndex: itemIndex,
+					Kind: "assistant_text", Role: "assistant", Status: "completed",
+					Summary: id, Meta: fmt.Sprintf(`{"import_source_uuid":"source-%s"}`, id),
+					CreatedAt: importTurnStart + int64(turnIndex*1000+itemIndex),
+					UpdatedAt: importTurnStart + int64(turnIndex*1000+itemIndex),
+				}})
+			}
+		}
+		return batch
+	}
+
+	if err := s.ApplyImportBatch("prefix-source", batchFor("prefix-source", 3)); err != nil {
+		t.Fatalf("apply source: %v", err)
+	}
+	prefix, err := s.CloneImportedHistoryPrefix("prefix-source", "prefix-target", 3, 9_000)
+	if err != nil {
+		t.Fatalf("clone prefix: %v", err)
+	}
+	if prefix.ItemCount != importHistoryTargetRows+45 || prefix.LastTurnIndex != 2 || prefix.LastItemIndex != 0 {
+		t.Fatalf("prefix result = %+v", prefix)
+	}
+	var mapped, local int
+	if err := s.db.QueryRow(
+		`SELECT
+		   (SELECT COUNT(*) FROM thread_import_chunks WHERE thread_id = 'prefix-target'),
+		   (SELECT COUNT(*) FROM items WHERE thread_id = 'prefix-target')`,
+	).Scan(&mapped, &local); err != nil {
+		t.Fatalf("read target representation: %v", err)
+	}
+	if mapped != 1 || local != 1 {
+		t.Fatalf("target representation mappings/local = %d/%d, want 1/1", mapped, local)
+	}
+
+	suffix := batchFor("prefix-target", 3)
+	suffix.Turns = suffix.Turns[2:]
+	suffix.TurnCompletions = suffix.TurnCompletions[2:]
+	suffix.Rows = suffix.Rows[len(suffix.Rows)-1:]
+	if err := s.ApplyImportBatch("prefix-target", suffix); err != nil {
+		t.Fatalf("apply target suffix: %v", err)
+	}
+	source, err := s.ListItems("prefix-source")
+	if err != nil {
+		t.Fatalf("list source: %v", err)
+	}
+	target, err := s.ListItems("prefix-target")
+	if err != nil {
+		t.Fatalf("list target: %v", err)
+	}
+	for i := range source {
+		source[i].ThreadID = ""
+		target[i].ThreadID = ""
+	}
+	if !reflect.DeepEqual(source, target) {
+		t.Fatal("prefix plus suffix does not reconstruct the source logical history")
+	}
+}

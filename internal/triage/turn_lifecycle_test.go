@@ -759,16 +759,13 @@ func TestMarkUserInterrupt_ExemptsBackgroundedLaunches(t *testing.T) {
 	}
 }
 
-// TestHandleEventTurnStart_UsesWireTurnIDForCodex pins the
-// resolveTurnID branch that prefers the provider-supplied `evt.TurnID`
-// over the synthetic `<threadID>:<turnIndex>` fallback. Codex fills
-// evt.TurnID from `turn/started.turn.id`; Claude has no wire-level
-// turn_id and leaves the field empty, so the synthetic path kicks in
-// (see TestHandleEventTurnStart_InsertsTurnRow which exercises that
-// branch). This test exercises the Codex branch end-to-end:
+// TestHandleEventTurnStartScopesCodexTurnIDAndPreservesWireID pins both
+// identities Codex needs. evt.TurnID comes from `turn/started.turn.id`; AO
+// scopes the durable row id to the thread and preserves that wire id in
+// provider_turn_id. Claude has no wire-level turn_id and falls back to the
+// turn index (see TestHandleEventTurnStart_InsertsTurnRow). End to end:
 //   - EventTurnStart with evt.TurnID="turn-codex-1" inserts a turns
-//     row keyed by "turn-codex-1" (NOT "t1:0"). PERSISTED row id is
-//     the logical-turn id from resolveTurnID.
+//     row keyed by "t1:turn-codex-1" with provider_turn_id unchanged.
 //   - A follow-up EventTurnComplete with the SAME evt.TurnID updates
 //     that row rather than creating or touching a sibling.
 //   - The frontend payload (TurnStartedEvent / TurnCompletedEvent)
@@ -779,14 +776,12 @@ func TestMarkUserInterrupt_ExemptsBackgroundedLaunches(t *testing.T) {
 //     keeps the same logical id. See internal/triage/AGENTS.md
 //     "Wire-round vs logical-turn" for the cadence rules.
 //
-// Regression-guard rationale: the resolveTurnID helper is a single
-// `if id != "" return id` branch. If someone swaps the condition or
-// adds a provider check that falls through to the synthetic path,
-// the turns table's primary key would flip between turn_index=0 and
-// whatever Codex sent, splitting one logical turn into two rows.
+// Regression-guard rationale: the durable id and the provider RPC anchor are
+// intentionally different. Losing either the thread scope or the verbatim
+// provider_turn_id causes cross-session collisions or broken fork anchors.
 // See docs/architecture/turn-lifecycle.md §Participants and
 // turn_lifecycle.go resolveTurnID.
-func TestHandleEventTurnStart_UsesWireTurnIDForCodex(t *testing.T) {
+func TestHandleEventTurnStartScopesCodexTurnIDAndPreservesWireID(t *testing.T) {
 	router, st, emissions := newTestRouter(t)
 	createTestThread(t, st, "t1")
 
@@ -804,19 +799,27 @@ func TestHandleEventTurnStart_UsesWireTurnIDForCodex(t *testing.T) {
 		t.Fatalf("turn start: %v", err)
 	}
 
-	// The turns row is keyed by the WIRE id, not the synthetic one.
-	turn, found, err := st.GetTurn(wireTurnID)
+	logicalTurnID := store.ScopedTurnID("t1", wireTurnID, 0)
+	turn, found, err := st.GetTurn(logicalTurnID)
 	if err != nil {
-		t.Fatalf("get turn by wire id: %v", err)
+		t.Fatalf("get turn by scoped id: %v", err)
 	}
 	if !found {
-		t.Fatalf("expected turn row keyed by wire id %q", wireTurnID)
+		t.Fatalf("expected turn row keyed by scoped id %q", logicalTurnID)
 	}
 	if turn.ThreadID != "t1" {
 		t.Errorf("turn.ThreadID = %q, want t1", turn.ThreadID)
 	}
 	if turn.StartedAt != startedAt.UnixMilli() {
 		t.Errorf("turn.StartedAt = %d, want %d", turn.StartedAt, startedAt.UnixMilli())
+	}
+	if turn.ProviderTurnID != wireTurnID {
+		t.Errorf("turn.ProviderTurnID = %q, want verbatim wire id %q", turn.ProviderTurnID, wireTurnID)
+	}
+	if _, bareFound, err := st.GetTurn(wireTurnID); err != nil {
+		t.Fatalf("look up bare wire id: %v", err)
+	} else if bareFound {
+		t.Fatalf("bare provider id %q leaked into the global turn key space", wireTurnID)
 	}
 
 	// The synthetic id ("t1:0") MUST NOT have produced a separate row.
@@ -829,7 +832,7 @@ func TestHandleEventTurnStart_UsesWireTurnIDForCodex(t *testing.T) {
 	}
 
 	// provider:turn_started payload carries a per-round uuid. The wire
-	// id ("turn-codex-1") survives on the persisted row (asserted
+	// id ("turn-codex-1") survives in provider_turn_id (asserted
 	// above) but does NOT appear on the frontend payload — the
 	// frontend uses its own per-round identity for indicator /
 	// composer / Stop-button gating, decoupled from whatever the
@@ -869,7 +872,7 @@ func TestHandleEventTurnStart_UsesWireTurnIDForCodex(t *testing.T) {
 		t.Fatalf("turn complete: %v", err)
 	}
 
-	settled, found, err := st.GetTurn(wireTurnID)
+	settled, found, err := st.GetTurn(logicalTurnID)
 	if err != nil || !found {
 		t.Fatalf("get settled turn: found=%v err=%v", found, err)
 	}

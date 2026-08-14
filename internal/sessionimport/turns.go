@@ -32,14 +32,14 @@ type turnState struct {
 
 	openIndex  int
 	openTurnID string
-	// openProviderTurnID is the PROVIDER's own id for the open turn, empty
-	// when the turn was synthesized. It is what keeps a mid-turn user
-	// message — Codex's steer — inside the turn the provider says it is in
-	// rather than opening a second `turns` row under one wire turn id.
-	openProviderTurnID string
-	openSettled        bool
-	lastActivity       map[int]int64
-	turnIDByIdx        map[int]string
+	// openEventTurnID is the reader's correlation id for the open turn. It
+	// is normally Codex's wire id, but inferred rollout turns also receive an
+	// internal id even though provider_turn_id stays empty. This is what keeps
+	// a mid-turn user message inside the turn the reader says it belongs to.
+	openEventTurnID string
+	openSettled     bool
+	lastActivity    map[int]int64
+	turnIDByIdx     map[int]string
 
 	// taken is every turn id that is already on the thread, plus every one
 	// this batch has claimed. `turns.turn_id` is a primary key and
@@ -94,7 +94,7 @@ func (t *turnState) currentFor(evt importir.Event) int {
 		return t.openIndex
 	}
 	now := evt.Timestamp.UnixMilli()
-	return t.open(evt.TurnID, now)
+	return t.open(evt, now)
 }
 
 // continuesOpenTurn reports whether an event names the turn that is
@@ -103,7 +103,7 @@ func (t *turnState) currentFor(evt importir.Event) int {
 // and the two rows would split one turn's history in the UI.
 func (t *turnState) continuesOpenTurn(evt importir.Event) bool {
 	id := strings.TrimSpace(evt.TurnID)
-	return id != "" && id == t.openProviderTurnID
+	return id != "" && id == t.openEventTurnID
 }
 
 // startTurnForUserText opens the turn a top-level user prompt drives.
@@ -117,7 +117,7 @@ func (t *turnState) startTurnForUserText(evt importir.Event, now int64, openHasR
 		return t.openIndex
 	}
 	t.closeOpen(now)
-	return t.open(evt.TurnID, now)
+	return t.open(evt, now)
 }
 
 // startExplicit opens the turn an explicit provider turn-start names.
@@ -133,24 +133,25 @@ func (t *turnState) startExplicit(evt importir.Event, now int64, openHasRows boo
 		return t.openIndex
 	}
 	t.closeOpen(now)
-	return t.open(evt.TurnID, now)
+	return t.open(evt, now)
 }
 
-func (t *turnState) open(providerTurnID string, startedAt int64) int {
+func (t *turnState) open(evt importir.Event, startedAt int64) int {
 	index := t.nextIndex
 	t.nextIndex++
-	turnID := resolveTurnID(t.thread.ID, providerTurnID, index)
+	eventTurnID := strings.TrimSpace(evt.TurnID)
+	turnID := resolveTurnID(t.thread.ID, eventTurnID, index)
 	t.claim(turnID)
 	t.turns = append(t.turns, store.Turn{
 		TurnID:         turnID,
 		ThreadID:       t.thread.ID,
 		TurnIndex:      index,
 		StartedAt:      startedAt,
-		ProviderTurnID: strings.TrimSpace(providerTurnID),
+		ProviderTurnID: providerTurnID(evt),
 	})
 	t.openIndex = index
 	t.openTurnID = turnID
-	t.openProviderTurnID = strings.TrimSpace(providerTurnID)
+	t.openEventTurnID = eventTurnID
 	t.openSettled = false
 	t.turnIDByIdx[index] = turnID
 	t.lastActivity[index] = startedAt
@@ -161,10 +162,11 @@ func (t *turnState) open(providerTurnID string, startedAt int64) int {
 // names it. The row has not been written yet, so this is a fix-up of the
 // pending batch, not an update.
 func (t *turnState) adoptTurnID(evt importir.Event, index int) string {
-	providerTurnID := strings.TrimSpace(evt.TurnID)
-	if providerTurnID == "" {
+	eventTurnID := strings.TrimSpace(evt.TurnID)
+	if eventTurnID == "" {
 		return t.turnIDByIdx[index]
 	}
+	turnID := resolveTurnID(t.thread.ID, eventTurnID, index)
 	for i := range t.turns {
 		if t.turns[i].TurnIndex != index {
 			continue
@@ -173,12 +175,12 @@ func (t *turnState) adoptTurnID(evt importir.Event, index int) string {
 		// provider's own id claimed in its place — an adopt is a rename of
 		// a row that has not been written yet, not a second turn.
 		delete(t.taken, t.turns[i].TurnID)
-		t.claim(providerTurnID)
-		t.turns[i].TurnID = providerTurnID
-		t.turns[i].ProviderTurnID = providerTurnID
-		t.openTurnID = providerTurnID
-		t.openProviderTurnID = providerTurnID
-		return providerTurnID
+		t.claim(turnID)
+		t.turns[i].TurnID = turnID
+		t.turns[i].ProviderTurnID = providerTurnID(evt)
+		t.openTurnID = turnID
+		t.openEventTurnID = eventTurnID
+		return turnID
 	}
 	return t.turnIDByIdx[index]
 }
@@ -232,14 +234,29 @@ func (t *turnState) settle(evt importir.Event, now int64, meta turnCompletion) {
 	t.openIndex = 0
 }
 
-// resolveTurnID mirrors triage's rule: the provider's own turn id when
-// it has one (Codex), otherwise the synthesized `<threadID>:<turnIndex>`
-// Claude turns take.
+// resolveTurnID mirrors triage's rule: the durable row id is always scoped to
+// its thread, while turns.provider_turn_id preserves the provider's wire id.
 func resolveTurnID(threadID, providerTurnID string, turnIndex int) string {
-	if id := strings.TrimSpace(providerTurnID); id != "" {
+	return store.ScopedTurnID(threadID, providerTurnID, turnIndex)
+}
+
+// providerTurnID returns only an id the provider can accept again. The Codex
+// rollout reader assigns an internal id to inferred turns so later events can
+// correlate with them, but marks those starts explicitly; persisting that
+// invented id as a provider fork/revert anchor would promise an RPC identity
+// Codex never issued.
+func providerTurnID(evt importir.Event) string {
+	id := strings.TrimSpace(evt.TurnID)
+	if id == "" || len(evt.Meta) == 0 {
 		return id
 	}
-	return fmt.Sprintf("%s:%d", threadID, turnIndex)
+	var meta struct {
+		Synthetic bool `json:"import_synthetic_turn"`
+	}
+	if err := json.Unmarshal(evt.Meta, &meta); err == nil && meta.Synthetic {
+		return ""
+	}
+	return id
 }
 
 // turnCompletion is the decoded slice of an EventTurnComplete the turn

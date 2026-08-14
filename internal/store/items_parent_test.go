@@ -358,7 +358,7 @@ func TestConcurrentAppendItemWithPayloadAssignsUniqueIndex(t *testing.T) {
 			t.Errorf("item %s missing PayloadID", it.ID)
 			continue
 		}
-		meta, err := s.GetPayloadMeta(it.PayloadID)
+		meta, err := s.GetPayloadMeta("t-race-pl", it.PayloadID)
 		if err != nil {
 			t.Errorf("payload %s missing: %v", it.PayloadID, err)
 		}

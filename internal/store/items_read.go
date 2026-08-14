@@ -13,8 +13,8 @@ import (
 func (s *Store) FindStreamItemByProviderItemID(threadID string, turnIndex int, kind, parentID, providerItemID string) (Item, bool, error) {
 	row := s.reader().QueryRow(`
 		SELECT `+itemColumns+`
-		  FROM items
-		  LEFT JOIN payloads ON payloads.id = items.payload_id
+		  FROM timeline_items AS items
+		  LEFT JOIN timeline_payloads AS payloads ON payloads.thread_id = items.thread_id AND payloads.id = items.payload_id
 		 WHERE items.thread_id = ?
 		   AND items.turn_index = ?
 		   AND items.kind = ?
@@ -37,8 +37,8 @@ func (s *Store) FindStreamItemByProviderItemID(threadID string, turnIndex int, k
 func (s *Store) ListItems(threadID string) ([]Item, error) {
 	rows, err := s.reader().Query(
 		`SELECT `+itemColumns+`
-		   FROM items
-		   LEFT JOIN payloads ON payloads.id = items.payload_id
+		   FROM timeline_items AS items
+		   LEFT JOIN timeline_payloads AS payloads ON payloads.thread_id = items.thread_id AND payloads.id = items.payload_id
 		  WHERE items.thread_id = ?
 		  ORDER BY items.turn_index, items.item_index`,
 		threadID,
@@ -62,8 +62,8 @@ func (s *Store) ListItems(threadID string) ([]Item, error) {
 func (s *Store) ListItemsForTurn(threadID string, turnIndex int) ([]Item, error) {
 	rows, err := s.reader().Query(
 		`SELECT `+itemColumns+`
-		   FROM items
-		   LEFT JOIN payloads ON payloads.id = items.payload_id
+		   FROM timeline_items AS items
+		   LEFT JOIN timeline_payloads AS payloads ON payloads.thread_id = items.thread_id AND payloads.id = items.payload_id
 		  WHERE items.thread_id = ? AND items.turn_index = ?
 		  ORDER BY items.item_index`,
 		threadID, turnIndex,
@@ -89,7 +89,7 @@ func (s *Store) LastTurnIndex(threadID string) (int, error) {
 	err := s.reader().QueryRow(
 		`SELECT MAX(turn_index)
 		   FROM (
-		         SELECT turn_index FROM items WHERE thread_id = ?
+		         SELECT turn_index FROM timeline_items WHERE thread_id = ?
 		         UNION ALL
 		         SELECT turn_index FROM turns WHERE thread_id = ?
 		        )`,
@@ -107,8 +107,8 @@ func (s *Store) LastTurnIndex(threadID string) (int, error) {
 func (s *Store) FindTurnItem(threadID string, turnIndex int, kind string) (Item, bool, error) {
 	row := s.reader().QueryRow(
 		`SELECT `+itemColumns+`
-		   FROM items
-		   LEFT JOIN payloads ON payloads.id = items.payload_id
+		   FROM timeline_items AS items
+		   LEFT JOIN timeline_payloads AS payloads ON payloads.thread_id = items.thread_id AND payloads.id = items.payload_id
 		  WHERE items.thread_id = ? AND items.turn_index = ? AND items.kind = ?
 		 ORDER BY items.item_index DESC
 		 LIMIT 1`,
@@ -148,8 +148,8 @@ func (s *Store) FindToolCallItemByTaskID(threadID, taskID string) (Item, bool, e
 	}
 	row := s.reader().QueryRow(
 		`SELECT `+itemColumns+`
-		   FROM items
-		   LEFT JOIN payloads ON payloads.id = items.payload_id
+		   FROM timeline_items AS items
+		   LEFT JOIN timeline_payloads AS payloads ON payloads.thread_id = items.thread_id AND payloads.id = items.payload_id
 		  WHERE items.thread_id = ?
 		    AND json_extract(items.meta, '$.task_id') = ?
 		  ORDER BY items.updated_at DESC
@@ -177,13 +177,13 @@ func (s *Store) GetThreadItemByPayloadID(threadID, payloadID string) (Item, bool
 	row := s.reader().QueryRow(
 		`SELECT `+itemColumns+`
 		   FROM (
-		         SELECT items.* FROM items
+		         SELECT items.* FROM timeline_items AS items
 		          WHERE items.thread_id = ? AND items.payload_id = ?
 		         UNION ALL
-		         SELECT items.* FROM items
+		         SELECT items.* FROM timeline_items AS items
 		          WHERE items.thread_id = ? AND items.input_payload_id = ?
 		   ) AS items
-		   LEFT JOIN payloads ON payloads.id = items.payload_id
+		   LEFT JOIN timeline_payloads AS payloads ON payloads.thread_id = items.thread_id AND payloads.id = items.payload_id
 		  ORDER BY items.updated_at DESC
 		  LIMIT 1`,
 		threadID, payloadID, threadID, payloadID,
@@ -208,8 +208,8 @@ func (s *Store) GetThreadItem(threadID, id string) (Item, bool, error) {
 func (s *Store) getThreadItem(q sqlQueryer, threadID, id string) (Item, bool, error) {
 	row := q.QueryRow(
 		`SELECT `+itemColumns+`
-		   FROM items
-		   LEFT JOIN payloads ON payloads.id = items.payload_id
+		   FROM timeline_items AS items
+		   LEFT JOIN timeline_payloads AS payloads ON payloads.thread_id = items.thread_id AND payloads.id = items.payload_id
 		  WHERE items.thread_id = ? AND items.id = ?`,
 		threadID, id,
 	)
@@ -237,8 +237,8 @@ func (s *Store) FindNotificationItemByTaskID(threadID, taskID string) (Item, boo
 	// partial expression index (13ms vs 0.04ms on a 38k-item thread).
 	row := s.reader().QueryRow(
 		`SELECT `+itemColumns+`
-		   FROM items INDEXED BY idx_items_meta_task_id
-		   LEFT JOIN payloads ON payloads.id = items.payload_id
+		   FROM timeline_items AS items
+		   LEFT JOIN timeline_payloads AS payloads ON payloads.thread_id = items.thread_id AND payloads.id = items.payload_id
 		  WHERE items.thread_id = ?
 		    AND items.kind = 'notification'
 		    AND json_extract(items.meta, '$.task_id') = ?
@@ -259,8 +259,8 @@ func (s *Store) FindNotificationItemByTaskID(threadID, taskID string) (Item, boo
 func (s *Store) ListTurnItems(threadID string, turnIndex int) ([]Item, error) {
 	rows, err := s.reader().Query(
 		`SELECT `+itemColumns+`
-		   FROM items
-		   LEFT JOIN payloads ON payloads.id = items.payload_id
+		   FROM timeline_items AS items
+		   LEFT JOIN timeline_payloads AS payloads ON payloads.thread_id = items.thread_id AND payloads.id = items.payload_id
 		  WHERE items.thread_id = ? AND items.turn_index = ?
 		 ORDER BY items.item_index`,
 		threadID, turnIndex,
@@ -291,7 +291,7 @@ func (s *Store) ListTurnItems(threadID string, turnIndex int) ([]Item, error) {
 func (s *Store) ListTurnItemsSansPayload(threadID string, turnIndex int) ([]Item, error) {
 	rows, err := s.reader().Query(
 		`SELECT `+itemColumnsSansPayload+`
-		   FROM items
+		   FROM timeline_items AS items
 		  WHERE items.thread_id = ? AND items.turn_index = ?
 		 ORDER BY items.item_index`,
 		threadID, turnIndex,
@@ -317,7 +317,7 @@ func (s *Store) HasMatchingSystemItem(threadID string, turnIndex int, kind, pare
 	err := s.reader().QueryRow(
 		`SELECT EXISTS(
 			SELECT 1
-			  FROM items
+			  FROM timeline_items
 			 WHERE thread_id = ?
 			   AND turn_index = ?
 			   AND kind = ?
@@ -365,8 +365,8 @@ func (s *Store) LatestToolCallByName(threadID string, turnIndex int, toolNames [
 	args = append(args, threadID, turnIndex)
 
 	query := `SELECT ` + itemColumns + `
-		   FROM items
-		   LEFT JOIN payloads ON payloads.id = items.payload_id
+		   FROM timeline_items AS items
+		   LEFT JOIN timeline_payloads AS payloads ON payloads.thread_id = items.thread_id AND payloads.id = items.payload_id
 		  WHERE items.kind = 'tool_call'
 		    AND lower(items.tool_name) IN (` + placeholders + `)
 		    AND items.thread_id = ? AND items.turn_index = ?
@@ -392,7 +392,7 @@ func (s *Store) LatestToolCallByName(threadID string, turnIndex int, toolNames [
 func (s *Store) MaxItemIndexForTurn(threadID string, turnIndex int) (int, bool, error) {
 	var maxIndex sql.NullInt64
 	if err := s.reader().QueryRow(
-		`SELECT MAX(item_index) FROM items WHERE thread_id = ? AND turn_index = ?`,
+		`SELECT MAX(item_index) FROM timeline_items WHERE thread_id = ? AND turn_index = ?`,
 		threadID, turnIndex,
 	).Scan(&maxIndex); err != nil {
 		return 0, false, fmt.Errorf("store: max item index for %s/%d: %w", threadID, turnIndex, err)

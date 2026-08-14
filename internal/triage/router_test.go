@@ -346,6 +346,18 @@ func TestExtractThinkingMetaTokenEstimate(t *testing.T) {
 	}
 }
 
+func TestBuildThinkingPayloadMetaMatchesEventProjection(t *testing.T) {
+	content := "思考 with unicode and ASCII"
+	signature := "sig-1"
+	want := BuildPayloadMeta("thinking", provider.ProviderEvent{
+		Content: content,
+		Meta:    json.RawMessage(`{"signature":"sig-1"}`),
+	})
+	if got := BuildThinkingPayloadMeta(content, signature); got != want {
+		t.Fatalf("decoded-object thinking meta drifted\n got: %s\nwant: %s", got, want)
+	}
+}
+
 // -- Router tests --
 
 // TestRouterWaitReturnsImmediatelyWhenIdle is the happy-path contract
@@ -726,7 +738,7 @@ func TestCompactBoundaryRoutesSummaryToPayload(t *testing.T) {
 
 	// Payload data (heavy, on-demand) is the raw summary text — same shape as a
 	// thinking payload, not a JSON wrapper.
-	data, err := st.GetPayloadData(item.PayloadID)
+	data, err := st.GetPayloadData(item.ThreadID, item.PayloadID)
 	if err != nil {
 		t.Fatalf("get payload data: %v", err)
 	}
@@ -2100,7 +2112,7 @@ func TestDiffPersistsHeavy(t *testing.T) {
 	if items[0].PayloadKind != "diff" {
 		t.Fatalf("payload kind: got %q, want diff", items[0].PayloadKind)
 	}
-	data, err := st.GetPayloadData(items[0].PayloadID)
+	data, err := st.GetPayloadData(items[0].ThreadID, items[0].PayloadID)
 	if err != nil {
 		t.Fatalf("get payload data: %v", err)
 	}
@@ -2147,7 +2159,7 @@ func TestDiffReplaceUpsertsExistingPayload(t *testing.T) {
 	if items[0].PayloadKind != "diff" {
 		t.Fatalf("payload kind: got %q, want diff", items[0].PayloadKind)
 	}
-	data, err := st.GetPayloadData(items[0].PayloadID)
+	data, err := st.GetPayloadData(items[0].ThreadID, items[0].PayloadID)
 	if err != nil {
 		t.Fatalf("get payload data: %v", err)
 	}
@@ -2193,7 +2205,7 @@ func TestDiffWithoutReplaceAppendsPayloads(t *testing.T) {
 	if len(items) != 1 {
 		t.Fatalf("expected 1 tool_call item without replace, got %d", len(items))
 	}
-	data, err := st.GetPayloadData(items[0].PayloadID)
+	data, err := st.GetPayloadData(items[0].ThreadID, items[0].PayloadID)
 	if err != nil {
 		t.Fatalf("get payload data: %v", err)
 	}
@@ -2340,7 +2352,7 @@ func TestCommandOutputMultipleDeltasAppend(t *testing.T) {
 	if items[0].PayloadID != payloadID {
 		t.Errorf("payload id changed across deltas: %q vs %q", items[0].PayloadID, payloadID)
 	}
-	data, err := st.GetPayloadData(payloadID)
+	data, err := st.GetPayloadData("t1", payloadID)
 	if err != nil {
 		t.Fatalf("get payload data: %v", err)
 	}
@@ -2650,7 +2662,7 @@ func TestReasoningSummaryIsBoundedButPayloadKeepsFullContent(t *testing.T) {
 	if items[0].Summary != wantSummary {
 		t.Fatalf("summary = %q, want %q (tail of accumulated reasoning)", items[0].Summary, wantSummary)
 	}
-	data, err := st.GetPayloadData(items[0].PayloadID)
+	data, err := st.GetPayloadData(items[0].ThreadID, items[0].PayloadID)
 	if err != nil {
 		t.Fatalf("get payload: %v", err)
 	}
@@ -2706,7 +2718,7 @@ func TestThinkingDeltaEmitsSemanticDeltasWithoutSnapshotSpam(t *testing.T) {
 	if len(items) != 1 {
 		t.Fatalf("items = %d, want 1", len(items))
 	}
-	data, err := st.GetPayloadData(items[0].PayloadID)
+	data, err := st.GetPayloadData(items[0].ThreadID, items[0].PayloadID)
 	if err != nil {
 		t.Fatalf("get payload: %v", err)
 	}
@@ -2802,7 +2814,7 @@ func TestLateThinkingDeltaDoesNotResurrectSettledRowOrPayload(t *testing.T) {
 	if settled.Summary != "first" {
 		t.Fatalf("late delta mutated summary: %q", settled.Summary)
 	}
-	data, err := st.GetPayloadData(item.PayloadID)
+	data, err := st.GetPayloadData(item.ThreadID, item.PayloadID)
 	if err != nil {
 		t.Fatalf("get thinking payload: %v", err)
 	}

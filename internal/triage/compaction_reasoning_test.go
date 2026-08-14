@@ -103,14 +103,14 @@ func TestCompactionReasoningStreamsAsTopLevelRow(t *testing.T) {
 	if settled.PayloadID == "" {
 		t.Fatal("settled reasoning linked no payload")
 	}
-	data, err := st.GetPayloadData(settled.PayloadID)
+	data, err := st.GetPayloadData(settled.ThreadID, settled.PayloadID)
 	if err != nil {
 		t.Fatalf("get payload data: %v", err)
 	}
 	if string(data) != "Reviewing the conversation so far." {
 		t.Errorf("payload data = %q, want the full concatenated reasoning", data)
 	}
-	metaRow, err := st.GetPayloadMeta(settled.PayloadID)
+	metaRow, err := st.GetPayloadMeta(settled.ThreadID, settled.PayloadID)
 	if err != nil {
 		t.Fatalf("get payload meta: %v", err)
 	}
@@ -236,7 +236,7 @@ func TestCompactionReasoningAbortedAttemptReusesRow(t *testing.T) {
 	// The payload holds both attempts' reasoning concatenated in arrival order:
 	// the aborted partial already streamed live and cannot be un-sent, so the
 	// retry appends to it (documented minor limitation, not a correctness bug).
-	data, err := st.GetPayloadData(got.PayloadID)
+	data, err := st.GetPayloadData(got.ThreadID, got.PayloadID)
 	if err != nil {
 		t.Fatalf("get payload data: %v", err)
 	}

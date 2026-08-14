@@ -296,7 +296,7 @@ func (r *Router) findMatchingProposedPlanItemInCurrentTurn(evt provider.Provider
 		if item.PayloadKind != "proposed_plan" || item.PayloadID == "" {
 			continue
 		}
-		data, err := r.store.GetPayloadData(item.PayloadID)
+		data, err := r.store.GetPayloadData(evt.ThreadID, item.PayloadID)
 		if err != nil {
 			return store.Item{}, false, fmt.Errorf("plan matching payload %s: %w", item.PayloadID, err)
 		}
@@ -517,17 +517,9 @@ func BuildPayloadMeta(payloadKind string, evt provider.ProviderEvent) string {
 		}
 		return string(data)
 	case "command_output":
-		parsed := commandOutputPayloadMetaFields(evt.Meta)
-		cm := ExtractCommandOutputMetaWithError(evt.Content, parsed.Command, parsed.ExitCode, parsed.ErrorMessage)
-		if cm.ErrorMessage == "" && parsed.IsError {
-			cm.ErrorMessage = compactCommandErrorMessage(evt.Content)
-		}
-		data, err := json.Marshal(cm)
-		if err != nil {
-			log.Printf("triage: marshal command output meta: %v", err)
-			return "{}"
-		}
-		return string(data)
+		var obj map[string]json.RawMessage
+		_ = json.Unmarshal(evt.Meta, &obj)
+		return buildCommandOutputPayloadMeta(evt.Content, obj)
 	case itemKindThinking, itemKindCompactionReasoning:
 		// Compaction reasoning shares the thinking payload shape (preview +
 		// optional signature); both render as a tail-clipped reasoning body.
@@ -552,6 +544,20 @@ func BuildPayloadMeta(payloadKind string, evt provider.ProviderEvent) string {
 	}
 }
 
+func buildCommandOutputPayloadMeta(content string, obj map[string]json.RawMessage) string {
+	parsed := commandOutputPayloadMetaFieldsObject(obj)
+	cm := ExtractCommandOutputMetaWithError(content, parsed.Command, parsed.ExitCode, parsed.ErrorMessage)
+	if cm.ErrorMessage == "" && parsed.IsError {
+		cm.ErrorMessage = compactCommandErrorMessage(content)
+	}
+	data, err := json.Marshal(cm)
+	if err != nil {
+		log.Printf("triage: marshal command output meta: %v", err)
+		return "{}"
+	}
+	return string(data)
+}
+
 type commandOutputPayloadMeta struct {
 	Command      string
 	ExitCode     int
@@ -565,6 +571,13 @@ func commandOutputPayloadMetaFields(raw json.RawMessage) commandOutputPayloadMet
 	}
 	var obj map[string]json.RawMessage
 	if json.Unmarshal(raw, &obj) != nil || obj == nil {
+		return commandOutputPayloadMeta{}
+	}
+	return commandOutputPayloadMetaFieldsObject(obj)
+}
+
+func commandOutputPayloadMetaFieldsObject(obj map[string]json.RawMessage) commandOutputPayloadMeta {
+	if obj == nil {
 		return commandOutputPayloadMeta{}
 	}
 	return commandOutputPayloadMeta{
@@ -694,6 +707,20 @@ func buildThinkingPayloadMeta(preview string, totalBytes int, signature string) 
 		Signature:  signature,
 	}
 	data, err := json.Marshal(tm)
+	if err != nil {
+		log.Printf("triage: marshal thinking meta: %v", err)
+		return "{}"
+	}
+	return string(data)
+}
+
+// BuildThinkingPayloadMeta builds the persisted thinking payload header when
+// the caller already has the signature. It avoids decoding an entire provider
+// envelope merely to read that one field.
+func BuildThinkingPayloadMeta(content, signature string) string {
+	meta := ExtractThinkingMeta(content)
+	meta.Signature = signature
+	data, err := json.Marshal(meta)
 	if err != nil {
 		log.Printf("triage: marshal thinking meta: %v", err)
 		return "{}"

@@ -147,7 +147,7 @@ func (a *App) proposedPlanSelectedTextForRange(item store.Item, startLine, endLi
 	if err := store.ValidateProposedPlanCommentRangeForApp(startLine, endLine); err != nil {
 		return "", err
 	}
-	data, err := a.store.GetPayloadData(item.PayloadID)
+	data, err := a.store.GetPayloadData(item.ThreadID, item.PayloadID)
 	if err != nil {
 		return "", fmt.Errorf("load proposed plan payload: %w", err)
 	}

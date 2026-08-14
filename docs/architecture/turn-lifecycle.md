@@ -17,7 +17,7 @@ never complete).
 |---|---|---|---|
 | **Tool** | `tool_use_id` | provider `tool_result` / `item/completed` | `items` row, `kind="tool_call"` |
 | **Task** | `task_id` (Claude only) | `task_updated` terminal; TaskOutput can enrich/fallback | `items` row, `kind="tool_completion"`, `completion_of=<launch_id>` |
-| **Turn** | `turn_id` | provider `result` / `turn/completed` | `turns` row |
+| **Turn** | thread-scoped AO `turn_id` (`provider_turn_id` retains Codex's wire id) | provider `result` / `turn/completed` | `turns` row |
 
 The rules below say when each lifecycle fires, what owns its state,
 and how the signals interact.
@@ -505,7 +505,9 @@ Cascade shapes pinned by fixtures/tests:
 ### Turn-level projections
 
 The `turns` row carries:
-- `turn_id` (provider-assigned)
+- `turn_id` (AO's thread-scoped durable id)
+- `provider_turn_id` (the verbatim provider id when one exists; empty for
+  Claude and inferred import turns)
 - `thread_id` FK
 - `turn_index` (incrementing per-thread counter)
 - `started_at` (ms)

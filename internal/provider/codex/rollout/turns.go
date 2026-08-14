@@ -127,16 +127,13 @@ func (c *converter) ensureTurn() {
 func (c *converter) openTurnWith(turnID string, startedAt time.Time, synthetic bool) {
 	c.turnIndex++
 	if turnID == "" {
-		// Scoped to ONE Parse, not to the file: c.turnIndex restarts at 0 in
-		// every call, so a tail refresh that opens a synthetic turn mints
-		// `import-turn-1` again — the same id the first import already used.
-		// So can a real wire id: a refresh that resumes before a
-		// `task_complete` re-opens the turn that record names. Neither is
-		// resolvable here (this package has no idea what was imported), and
-		// both are refused by the writer, which loads the thread's existing
-		// turn ids and fails the batch store-pure rather than on the INSERT.
-		// See internal/sessionimport/AGENTS.md §Writer contract.
-		turnID = fmt.Sprintf("import-turn-%d", c.turnIndex)
+		// Synthetic ids enter turns.turn_id, whose key space is global. The
+		// parse-local index alone would make every rollout's first inferred
+		// turn collide at `import-turn-1`; include the authoritative session
+		// id so independent imports remain independent while a tail parse of
+		// this same rollout deterministically re-mints the same identity and
+		// can be rejected as a re-open by the writer.
+		turnID = fmt.Sprintf("import-turn:%s:%d", c.opts.SessionID, c.turnIndex)
 	}
 	c.usedTurnIDs[turnID] = struct{}{}
 	if startedAt.IsZero() {

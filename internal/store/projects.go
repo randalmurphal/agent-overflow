@@ -166,7 +166,7 @@ func (s *Store) ListProjectsWithThreadCounts() ([]ProjectWithCounts, error) {
 		        COALESCE(COUNT(t.id), 0) AS thread_count,
 		        COALESCE(
 		          MAX(CASE
-		            WHEN EXISTS (SELECT 1 FROM items i WHERE i.thread_id = t.id)
+		            WHEN EXISTS (SELECT 1 FROM timeline_items i WHERE i.thread_id = t.id)
 		            THEN t.updated_at
 		          END),
 		          0

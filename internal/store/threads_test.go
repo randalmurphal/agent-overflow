@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -1899,6 +1900,72 @@ func mustListSingleThreadWithItems(t *testing.T, s *Store) Thread {
 		t.Fatalf("ListThreadsWithItems() returned %d rows, want 1", len(got))
 	}
 	return got[0]
+}
+
+func TestDeleteThreadItemsChunkAggregatesHistoryAndRestoresOrdinaryTriggers(t *testing.T) {
+	s := newTestStore(t)
+	thread := makeThread("thread-delete-chunk", "claude")
+	if err := s.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+	for i := 0; i < deleteThreadItemChunk+1; i++ {
+		if _, err := s.db.Exec(`INSERT INTO items (
+			id, thread_id, turn_index, item_index, kind, role, status, summary, created_at, updated_at
+		) VALUES (?, ?, 0, ?, 'notification', 'system', 'completed', '', 1, 1)`,
+			fmt.Sprintf("delete-chunk-%d", i), thread.ID, i); err != nil {
+			t.Fatalf("seed item %d: %v", i, err)
+		}
+	}
+
+	var beforeRev, beforeEpoch int64
+	if err := s.db.QueryRow(
+		`SELECT history_rev, history_epoch FROM threads WHERE id = ?`, thread.ID,
+	).Scan(&beforeRev, &beforeEpoch); err != nil {
+		t.Fatalf("read stamps before chunk: %v", err)
+	}
+	deleted, err := s.deleteThreadItemsChunk(thread.ID)
+	if err != nil {
+		t.Fatalf("deleteThreadItemsChunk: %v", err)
+	}
+	if deleted != deleteThreadItemChunk {
+		t.Fatalf("deleted %d rows, want %d", deleted, deleteThreadItemChunk)
+	}
+
+	var remaining int
+	var afterRev, afterEpoch int64
+	var bulk int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM items WHERE thread_id = ?`, thread.ID).Scan(&remaining); err != nil {
+		t.Fatalf("count remaining items: %v", err)
+	}
+	if err := s.db.QueryRow(
+		`SELECT history_rev, history_epoch, history_bulk_load FROM threads WHERE id = ?`, thread.ID,
+	).Scan(&afterRev, &afterEpoch, &bulk); err != nil {
+		t.Fatalf("read stamps after chunk: %v", err)
+	}
+	if remaining != 1 {
+		t.Fatalf("remaining items = %d, want 1", remaining)
+	}
+	if afterRev != beforeRev+deleteThreadItemChunk || afterEpoch != beforeEpoch+deleteThreadItemChunk || bulk != 0 {
+		t.Fatalf("post-chunk state = rev %d epoch %d bulk %d, want %d/%d/0",
+			afterRev, afterEpoch, bulk,
+			beforeRev+deleteThreadItemChunk, beforeEpoch+deleteThreadItemChunk)
+	}
+
+	if _, err := s.db.Exec(`INSERT INTO items (
+		id, thread_id, turn_index, item_index, kind, role, status, summary, created_at, updated_at
+	) VALUES ('delete-chunk-after', ?, 0, 1000, 'notification', 'system', 'completed', '', 1, 1)`, thread.ID); err != nil {
+		t.Fatalf("ordinary insert after chunk: %v", err)
+	}
+	var finalRev, finalEpoch int64
+	if err := s.db.QueryRow(
+		`SELECT history_rev, history_epoch FROM threads WHERE id = ?`, thread.ID,
+	).Scan(&finalRev, &finalEpoch); err != nil {
+		t.Fatalf("read stamps after ordinary insert: %v", err)
+	}
+	if finalRev != afterRev+1 || finalEpoch != afterEpoch {
+		t.Fatalf("ordinary insert stamps = %d/%d, want %d/%d",
+			finalRev, finalEpoch, afterRev+1, afterEpoch)
+	}
 }
 
 func TestThreadMutationsReturnNotFoundForMissingRows(t *testing.T) {

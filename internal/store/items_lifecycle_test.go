@@ -312,7 +312,7 @@ func TestAppendCompletionItemWithPayloadPersistsAtomically(t *testing.T) {
 	if got.PayloadID != "p" {
 		t.Errorf("completion PayloadID = %q, want p", got.PayloadID)
 	}
-	meta, err := s.GetPayloadMeta("p")
+	meta, err := s.GetPayloadMeta("t", "p")
 	if err != nil {
 		t.Fatalf("get payload meta: %v", err)
 	}
@@ -543,7 +543,7 @@ func TestUpsertItemIdempotentPreservesItemIndex(t *testing.T) {
 	}
 
 	// Payload landed atomically — its data column matches the second call.
-	data, err := s.GetPayloadData("streaming-p")
+	data, err := s.GetPayloadData("t", "streaming-p")
 	if err != nil {
 		t.Fatalf("get payload data: %v", err)
 	}
@@ -934,7 +934,7 @@ func strconvItoa(n int) string {
 func TestAppendPayloadDataAppendsAsChunks(t *testing.T) {
 	s := newTestStore(t)
 	mustCreateThread(t, s, "t")
-	if err := seedPayloadRow(s, Payload{
+	if err := seedPayloadRow(s, "t", Payload{
 		ID: "p", Kind: "command_output", Meta: `{"v":1}`,
 		Data: []byte("hello "), CreatedAt: 1000,
 	}); err != nil {
@@ -944,7 +944,7 @@ func TestAppendPayloadDataAppendsAsChunks(t *testing.T) {
 	if err := s.AppendPayloadData("t", "p", []byte("world"), `{"v":2}`, 2000); err != nil {
 		t.Fatalf("append: %v", err)
 	}
-	data, err := s.GetPayloadData("p")
+	data, err := s.GetPayloadData("t", "p")
 	if err != nil {
 		t.Fatalf("get data: %v", err)
 	}
@@ -958,7 +958,7 @@ func TestAppendPayloadDataAppendsAsChunks(t *testing.T) {
 	if chunks != 1 {
 		t.Errorf("chunks = %d, want 1", chunks)
 	}
-	meta, err := s.GetPayloadMeta("p")
+	meta, err := s.GetPayloadMeta("t", "p")
 	if err != nil {
 		t.Fatalf("get meta: %v", err)
 	}
@@ -973,7 +973,7 @@ func TestAppendPayloadDataAppendsAsChunks(t *testing.T) {
 func TestPayloadChunkReadsSpanBaseAndAppendedChunks(t *testing.T) {
 	s := newTestStore(t)
 	mustCreateThread(t, s, "t")
-	if err := seedPayloadRow(s, Payload{
+	if err := seedPayloadRow(s, "t", Payload{
 		ID: "p", Kind: "command_output", Meta: `{"v":1}`,
 		Data: []byte("abcd"), CreatedAt: 1,
 	}); err != nil {
@@ -986,7 +986,7 @@ func TestPayloadChunkReadsSpanBaseAndAppendedChunks(t *testing.T) {
 		t.Fatalf("append second chunk: %v", err)
 	}
 
-	chunk, total, complete, err := s.GetPayloadChunk("p", 2, 7)
+	chunk, total, complete, err := s.GetPayloadChunk("t", "p", 2, 7)
 	if err != nil {
 		t.Fatalf("chunk: %v", err)
 	}
@@ -1000,7 +1000,7 @@ func TestPayloadChunkReadsSpanBaseAndAppendedChunks(t *testing.T) {
 		t.Fatal("chunk should not complete payload")
 	}
 
-	tail, total, complete, err := s.GetPayloadChunk("p", 9, 99)
+	tail, total, complete, err := s.GetPayloadChunk("t", "p", 9, 99)
 	if err != nil {
 		t.Fatalf("tail chunk: %v", err)
 	}
@@ -1024,7 +1024,7 @@ func TestAppendPayloadDataErrorsOnMissingPayload(t *testing.T) {
 func TestReplacePayloadDataReplacesInPlace(t *testing.T) {
 	s := newTestStore(t)
 	mustCreateThread(t, s, "t")
-	if err := seedPayloadRow(s, Payload{
+	if err := seedPayloadRow(s, "t", Payload{
 		ID: "p", Kind: "thinking", Meta: `{"v":1}`,
 		Data: []byte("streamed draft"), CreatedAt: 1000,
 	}); err != nil {
@@ -1044,14 +1044,14 @@ func TestReplacePayloadDataReplacesInPlace(t *testing.T) {
 	if chunks != 0 {
 		t.Fatalf("chunks = %d, want 0 after replace", chunks)
 	}
-	data, err := s.GetPayloadData("p")
+	data, err := s.GetPayloadData("t", "p")
 	if err != nil {
 		t.Fatalf("get data: %v", err)
 	}
 	if string(data) != "final text" {
 		t.Errorf("data = %q, want final text", data)
 	}
-	meta, err := s.GetPayloadMeta("p")
+	meta, err := s.GetPayloadMeta("t", "p")
 	if err != nil {
 		t.Fatalf("get meta: %v", err)
 	}
@@ -1068,6 +1068,7 @@ func TestReplacePayloadDataReplacesInPlace(t *testing.T) {
 // the requested head size.
 func TestGetPayloadPreviewSliceInsideSQLite(t *testing.T) {
 	s := newTestStore(t)
+	mustCreateThread(t, s, "t")
 	// 64 KiB payload; preview should only pull the first 4 KiB.
 	const total = 64 * 1024
 	const maxBytes = 4 * 1024
@@ -1075,14 +1076,14 @@ func TestGetPayloadPreviewSliceInsideSQLite(t *testing.T) {
 	for i := range full {
 		full[i] = byte('A' + (i % 26))
 	}
-	if err := seedPayloadRow(s, Payload{
+	if err := seedPayloadRow(s, "t", Payload{
 		ID: "p-big", Kind: "diff", Meta: "{}",
 		Data: full, CreatedAt: 1,
 	}); err != nil {
 		t.Fatalf("insert: %v", err)
 	}
 
-	head, totalSize, complete, err := s.GetPayloadPreview("p-big", maxBytes)
+	head, totalSize, complete, err := s.GetPayloadPreview("t", "p-big", maxBytes)
 	if err != nil {
 		t.Fatalf("preview: %v", err)
 	}
@@ -1102,7 +1103,7 @@ func TestGetPayloadPreviewSliceInsideSQLite(t *testing.T) {
 	}
 
 	// Fully-contained request returns the whole blob and complete=true.
-	head2, total2, complete2, err := s.GetPayloadPreview("p-big", total*2)
+	head2, total2, complete2, err := s.GetPayloadPreview("t", "p-big", total*2)
 	if err != nil {
 		t.Fatalf("preview2: %v", err)
 	}
@@ -1119,6 +1120,7 @@ func TestGetPayloadPreviewSliceInsideSQLite(t *testing.T) {
 
 func TestGetPayloadChunkSliceInsideSQLite(t *testing.T) {
 	s := newTestStore(t)
+	mustCreateThread(t, s, "t")
 	const total = 32 * 1024
 	const first = 3 * 1024
 	const second = 5 * 1024
@@ -1127,14 +1129,14 @@ func TestGetPayloadChunkSliceInsideSQLite(t *testing.T) {
 	for i := range full {
 		full[i] = byte('a' + (i % 26))
 	}
-	if err := seedPayloadRow(s, Payload{
+	if err := seedPayloadRow(s, "t", Payload{
 		ID: "p-chunk", Kind: "command_output", Meta: "{}",
 		Data: full, CreatedAt: 1,
 	}); err != nil {
 		t.Fatalf("insert: %v", err)
 	}
 
-	chunk1, total1, complete1, err := s.GetPayloadChunk("p-chunk", 0, first)
+	chunk1, total1, complete1, err := s.GetPayloadChunk("t", "p-chunk", 0, first)
 	if err != nil {
 		t.Fatalf("chunk1: %v", err)
 	}
@@ -1153,7 +1155,7 @@ func TestGetPayloadChunkSliceInsideSQLite(t *testing.T) {
 		}
 	}
 
-	chunk2, total2, complete2, err := s.GetPayloadChunk("p-chunk", len(chunk1), second)
+	chunk2, total2, complete2, err := s.GetPayloadChunk("t", "p-chunk", len(chunk1), second)
 	if err != nil {
 		t.Fatalf("chunk2: %v", err)
 	}
@@ -1225,10 +1227,15 @@ func TestGetThreadItemByPayloadIDScopesLookupToOwnerThread(t *testing.T) {
 			t.Fatalf("create thread %s: %v", threadID, err)
 		}
 	}
-	if err := seedPayloadRow(s, Payload{
+	if err := seedPayloadRow(s, "t-a", Payload{
 		ID: "shared-payload", Kind: "command_output", Meta: "{}", Data: []byte("body"), CreatedAt: now,
 	}); err != nil {
 		t.Fatalf("insert payload: %v", err)
+	}
+	if err := seedPayloadRow(s, "t-b", Payload{
+		ID: "shared-payload", Kind: "command_output", Meta: "{}", Data: []byte("other body"), CreatedAt: now,
+	}); err != nil {
+		t.Fatalf("insert second thread payload: %v", err)
 	}
 	if err := s.InsertItem(Item{
 		ID: "owner-a", ThreadID: "t-a", TurnIndex: 0, ItemIndex: 0,
@@ -1412,7 +1419,7 @@ func TestUpsertItemWithInputPayloadRoundTrip(t *testing.T) {
 
 	// Payload bytes survive the second upsert — the input payload row
 	// is not rewritten because the second call passed nil.
-	data, err := s.GetPayloadData("p-edit-input")
+	data, err := s.GetPayloadData("t", "p-edit-input")
 	if err != nil {
 		t.Fatalf("GetPayloadData: %v", err)
 	}
@@ -1436,7 +1443,7 @@ func TestGetThreadItemByPayloadIDResolvesInputPayloadID(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("create thread: %v", err)
 	}
-	if err := seedPayloadRow(s, Payload{
+	if err := seedPayloadRow(s, "t", Payload{
 		ID: "p-input-1", Kind: "tool_call_input", Meta: "{}",
 		Data: []byte(`{"old_string":"a","new_string":"b"}`), CreatedAt: now,
 	}); err != nil {
@@ -2183,7 +2190,7 @@ func seedStreamingItemWithPayload(t *testing.T, s *Store, itemKind, payloadKind 
 	}); err != nil {
 		t.Fatalf("create thread: %v", err)
 	}
-	if err := seedPayloadRow(s, Payload{
+	if err := seedPayloadRow(s, "t", Payload{
 		ID: "pay", Kind: payloadKind, Meta: `{"rev":1}`, Data: []byte("base"), CreatedAt: 2000,
 	}); err != nil {
 		t.Fatalf("insert payload: %v", err)
@@ -2224,14 +2231,14 @@ func TestAppendItemSummaryAndPayloadDataMatchesSequentialPair(t *testing.T) {
 		t.Errorf("returned item diverged:\ncombined  = %#v\nsequential = %#v", gotCombined, gotSequential)
 	}
 	for name, s := range map[string]*Store{"combined": combined, "sequential": sequential} {
-		data, err := s.GetPayloadData("pay")
+		data, err := s.GetPayloadData("t", "pay")
 		if err != nil {
 			t.Fatalf("%s payload data: %v", name, err)
 		}
 		if string(data) != "base delta" {
 			t.Errorf("%s payload data = %q, want %q", name, data, "base delta")
 		}
-		meta, err := s.GetPayloadMeta("pay")
+		meta, err := s.GetPayloadMeta("t", "pay")
 		if err != nil {
 			t.Fatalf("%s payload meta: %v", name, err)
 		}
@@ -2299,7 +2306,7 @@ func TestAppendItemSummaryTailAndPayloadDataMatchesSequentialPair(t *testing.T) 
 	if gotCombined.Summary != "ad world" {
 		t.Errorf("tail summary = %q, want %q", gotCombined.Summary, "ad world")
 	}
-	data, err := combined.GetPayloadData("pay")
+	data, err := combined.GetPayloadData("t", "pay")
 	if err != nil {
 		t.Fatalf("payload data: %v", err)
 	}
@@ -2342,14 +2349,14 @@ func TestUpsertItemWithPayloadAppendMatchesSequentialPair(t *testing.T) {
 		t.Errorf("returned item diverged:\ncombined  = %#v\nsequential = %#v", gotCombined, gotSequential)
 	}
 	for name, s := range map[string]*Store{"combined": combined, "sequential": sequential} {
-		data, err := s.GetPayloadData("pay")
+		data, err := s.GetPayloadData("t", "pay")
 		if err != nil {
 			t.Fatalf("%s payload data: %v", name, err)
 		}
 		if string(data) != "base delta" {
 			t.Errorf("%s payload data = %q, want %q", name, data, "base delta")
 		}
-		meta, err := s.GetPayloadMeta("pay")
+		meta, err := s.GetPayloadMeta("t", "pay")
 		if err != nil {
 			t.Fatalf("%s payload meta: %v", name, err)
 		}

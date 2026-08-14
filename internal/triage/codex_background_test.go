@@ -257,7 +257,7 @@ func TestCodexUnifiedExecQuickCompletionPersistsNormalCommand(t *testing.T) {
 	if len(live) != 0 {
 		t.Fatalf("quick command should leave running tray after completion: %+v", live)
 	}
-	data, err := st.GetPayloadData(row.PayloadID)
+	data, err := st.GetPayloadData(row.ThreadID, row.PayloadID)
 	if err != nil {
 		t.Fatalf("payload data: %v", err)
 	}
@@ -309,7 +309,7 @@ func TestCodexLiveCommandOutputIsBounded(t *testing.T) {
 	if err != nil || !found {
 		t.Fatalf("command completion missing: found=%v err=%v", found, err)
 	}
-	data, err := st.GetPayloadData(completion.PayloadID)
+	data, err := st.GetPayloadData(completion.ThreadID, completion.PayloadID)
 	if err != nil {
 		t.Fatalf("payload data: %v", err)
 	}
@@ -701,7 +701,7 @@ func TestCodexTerminalInteractionAfterCompletionDoesNotCreateDetachedWait(t *tes
 	if completion.PayloadKind != "command_output" {
 		t.Fatalf("completion payload kind = %q, want command_output", completion.PayloadKind)
 	}
-	data, err := st.GetPayloadData(completion.PayloadID)
+	data, err := st.GetPayloadData(completion.ThreadID, completion.PayloadID)
 	if err != nil {
 		t.Fatalf("completion payload data: %v", err)
 	}
@@ -777,7 +777,7 @@ func TestCodexTerminalInteractionWhileRunningAttachesCompletionBeforeNextText(t 
 	if completion.PayloadKind != "command_output" {
 		t.Fatalf("completion payload kind = %q, want command_output", completion.PayloadKind)
 	}
-	data, err := st.GetPayloadData(completion.PayloadID)
+	data, err := st.GetPayloadData(completion.ThreadID, completion.PayloadID)
 	if err != nil {
 		t.Fatalf("completion payload data: %v", err)
 	}
@@ -981,7 +981,7 @@ func TestCodexTerminalInteractionKeepsWaitOpenAcrossLaterToolStart(t *testing.T)
 	if _, ok := completionMeta["wait_carrier_id"]; ok {
 		t.Fatalf("completion wait_carrier_id = %v, want original command row without wait carrier", completionMeta["wait_carrier_id"])
 	}
-	data, err := st.GetPayloadData(completion.PayloadID)
+	data, err := st.GetPayloadData(completion.ThreadID, completion.PayloadID)
 	if err != nil {
 		t.Fatalf("completion payload data: %v", err)
 	}
@@ -1050,7 +1050,7 @@ func TestCodexTerminalInteractionAttachesWhenProcessIDArrivesOnCompletion(t *tes
 	if completion.PayloadKind != "command_output" {
 		t.Fatalf("completion payload kind = %q, want command_output", completion.PayloadKind)
 	}
-	data, err := st.GetPayloadData(completion.PayloadID)
+	data, err := st.GetPayloadData(completion.ThreadID, completion.PayloadID)
 	if err != nil {
 		t.Fatalf("completion payload data: %v", err)
 	}
@@ -1943,7 +1943,7 @@ func TestCodexSubagentNotificationAfterLifecycleStatusCarriesFinalOutput(t *test
 	if completion.Status != statusErrored {
 		t.Fatalf("completion status = %q, want preserved lifecycle status %q", completion.Status, statusErrored)
 	}
-	data, err := st.GetPayloadData(completion.PayloadID)
+	data, err := st.GetPayloadData(completion.ThreadID, completion.PayloadID)
 	if err != nil {
 		t.Fatalf("payload data: %v", err)
 	}
@@ -2093,7 +2093,7 @@ func TestCodexSubagentWaitCompletionCarriesFinalOutputPayload(t *testing.T) {
 	if subagentSibling.PayloadID != waitRow.PayloadID {
 		t.Fatalf("sibling payload id = %q, want shared wait payload %q", subagentSibling.PayloadID, waitRow.PayloadID)
 	}
-	data, err := st.GetPayloadData(subagentSibling.PayloadID)
+	data, err := st.GetPayloadData(subagentSibling.ThreadID, subagentSibling.PayloadID)
 	if err != nil {
 		t.Fatalf("payload data: %v", err)
 	}
@@ -2218,7 +2218,7 @@ func TestCodexSubagentDuplicateBlankCompletionPreservesPayload(t *testing.T) {
 	if afterMeta["wait_carrier_id"] != "wait-blank-dup" {
 		t.Fatalf("wait_carrier_id after duplicate = %v, want wait-blank-dup", afterMeta["wait_carrier_id"])
 	}
-	data, err := st.GetPayloadData(after.PayloadID)
+	data, err := st.GetPayloadData(after.ThreadID, after.PayloadID)
 	if err != nil {
 		t.Fatalf("payload data after duplicate: %v", err)
 	}
@@ -2361,7 +2361,7 @@ func TestCodexSubagentWaitCompletionReusesPayloadForOutOfOrderChildren(t *testin
 	if siblingMeta["wait_carrier_id"] != "wait-multi" {
 		t.Fatalf("wait_carrier_id = %v, want wait-multi", siblingMeta["wait_carrier_id"])
 	}
-	data, err := st.GetPayloadData(subagentSibling.PayloadID)
+	data, err := st.GetPayloadData(subagentSibling.ThreadID, subagentSibling.PayloadID)
 	if err != nil {
 		t.Fatalf("payload data: %v", err)
 	}
@@ -2413,7 +2413,7 @@ func TestCodexSubagentNotificationCarriesFinalOutputPayload(t *testing.T) {
 	if siblings[0].PayloadKind != payloadKindToolCallResult {
 		t.Fatalf("payload kind = %q, want %s", siblings[0].PayloadKind, payloadKindToolCallResult)
 	}
-	data, err := st.GetPayloadData(siblings[0].PayloadID)
+	data, err := st.GetPayloadData(siblings[0].ThreadID, siblings[0].PayloadID)
 	if err != nil {
 		t.Fatalf("payload data: %v", err)
 	}
@@ -2479,7 +2479,7 @@ func TestCodexSubagentNotificationWaitsForAllChildren(t *testing.T) {
 	if completion.CompletionOf != "spawn-notify-multi" {
 		t.Fatalf("completion_of = %q, want spawn-notify-multi", completion.CompletionOf)
 	}
-	data, err := st.GetPayloadData(completion.PayloadID)
+	data, err := st.GetPayloadData(completion.ThreadID, completion.PayloadID)
 	if err != nil {
 		t.Fatalf("payload data: %v", err)
 	}

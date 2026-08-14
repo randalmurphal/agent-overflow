@@ -48,6 +48,18 @@ const CLAUDE_PROJECT_SLUG = '-import-fixture-repo';
  */
 const BRANCHED_TITLE = 'Parser work';
 
+// Both divergent branches open their second turn with one thinking block, so
+// the importer deliberately gives them the same logical item/payload ids
+// (`think:2:0` / `thinking:think:2:0`). The bodies must remain thread-owned
+// all the way through SQLite, the transport, and the frontend payload cache.
+// Keep the identifying prefix outside the 400-rune summary tail: seeing it in
+// the browser proves the disclosure loaded the full payload on demand.
+export const BRANCH_A_THINKING_PREFIX = 'BRANCH A PRIVATE REASONING PREFIX';
+export const BRANCH_B_THINKING_PREFIX = 'BRANCH B PRIVATE REASONING PREFIX';
+
+const branchThinking = (prefix: string, detail: string): string =>
+  `${prefix}\n${`${detail} `.repeat(32)}\n${detail} conclusion.`;
+
 export interface FixtureSession {
   /** The opaque scan row id (`<provider>:<session id>`). */
   rowId: string;
@@ -194,6 +206,29 @@ const assistantTextRow = (
   },
 });
 
+const assistantThinkingRow = (
+  workspace: string,
+  uuid: string,
+  parent: string,
+  messageId: string,
+  thinking: string,
+  offset: number,
+): Record<string, unknown> => ({
+  type: 'assistant',
+  uuid,
+  parentUuid: parent,
+  isSidechain: false,
+  timestamp: iso(offset),
+  cwd: workspace,
+  message: {
+    role: 'assistant',
+    id: messageId,
+    model: 'claude-sonnet-4-5',
+    content: [{ type: 'thinking', thinking, signature: `sig-${uuid}` }],
+    usage: { input_tokens: 90, output_tokens: 12 },
+  },
+});
+
 const assistantToolRow = (
   workspace: string,
   uuid: string,
@@ -293,12 +328,28 @@ async function writeBranchedClaudeSession(dir: string, workspace: string): Promi
       userRow(workspace, 'br-u1', null, 'Parse the config file', 0),
       assistantTextRow(workspace, 'br-a1', 'br-u1', 'msg-br-1', 'Parsed it.', 1_000),
       userRow(workspace, 'br-u2a', 'br-a1', 'Document the parser', 2_000),
-      assistantTextRow(workspace, 'br-a2a', 'br-u2a', 'msg-br-2a', 'Documented the parser.', 3_000),
+      assistantThinkingRow(
+        workspace,
+        'br-t2a',
+        'br-u2a',
+        'msg-br-think-a',
+        branchThinking(BRANCH_A_THINKING_PREFIX, 'Document branch reasoning'),
+        2_500,
+      ),
+      assistantTextRow(workspace, 'br-a2a', 'br-t2a', 'msg-br-2a', 'Documented the parser.', 3_000),
       userRow(workspace, 'br-u2b', 'br-a1', 'Benchmark the parser', 4_000),
+      assistantThinkingRow(
+        workspace,
+        'br-t2b',
+        'br-u2b',
+        'msg-br-think-b',
+        branchThinking(BRANCH_B_THINKING_PREFIX, 'Benchmark branch reasoning'),
+        4_500,
+      ),
       assistantToolRow(
         workspace,
         'br-a2b',
-        'br-u2b',
+        'br-t2b',
         'msg-br-2b',
         'toolu_br_task',
         'Task',

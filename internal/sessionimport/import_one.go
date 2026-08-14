@@ -124,6 +124,12 @@ type branchPlan struct {
 	// consumed — a refresh that re-read them would re-decide them the same
 	// way, but at the cost of re-reading the tail on every check.
 	endOffset int64
+	// prefixSourceThreadID / prefixBeforeTurn describe a complete-turn
+	// history prefix already committed for an earlier Claude branch. The
+	// store attaches its immutable chunks before the writer builds events
+	// from this branch's suffix.
+	prefixSourceThreadID string
+	prefixBeforeTurn     int
 }
 
 // importClaude imports every branch of one transcript, ONE AT A TIME.
@@ -154,23 +160,32 @@ func importClaude(
 	// activeThread is the surviving thread cut from the transcript's LAST
 	// branch, or -1 when that branch produced nothing. See settleBranches.
 	activeThread := -1
+	donorThreads := make(map[int]string, len(loaded.Branches))
 	for i := range loaded.Branches {
 		if err := ctx.Err(); err != nil {
 			return ImportOutcome{}, im.fail(err)
 		}
-		branch, err := loaded.ConvertBranch(i)
+		prefix, hasPrefix, err := loaded.FindReusablePrefix(i)
+		if err != nil {
+			return ImportOutcome{}, im.fail(err)
+		}
+		start := 0
+		if hasPrefix {
+			start = prefix.SuffixRow
+		}
+		branch, err := loaded.ConvertBranchFrom(i, start)
 		if err != nil {
 			return ImportOutcome{}, im.fail(err)
 		}
 		im.warn(branch.Warnings...)
-		if len(branch.Events) == 0 {
+		if len(branch.Events) == 0 && !hasPrefix {
 			// A branch whose every row was metadata. Producing no thread is
 			// a real answer — and it is why the title and resume-ref rules
 			// below are computed over the branches that SURVIVED rather than
 			// over the transcript's leaf count.
 			continue
 		}
-		if err := im.add(branchPlan{
+		plan := branchPlan{
 			// Provisional: the disambiguating suffix only belongs on a
 			// session that really did import as more than one thread, which
 			// is not known until the last branch has been converted.
@@ -178,9 +193,18 @@ func importClaude(
 			events:         branch.Events,
 			leafUUID:       branch.LeafUUID,
 			lastActivityAt: branch.LastActivityAt,
-		}); err != nil {
+		}
+		if hasPrefix {
+			plan.prefixSourceThreadID = donorThreads[prefix.DonorIndex]
+			plan.prefixBeforeTurn = prefix.NextTurnIndex
+		}
+		if err := im.add(plan); err != nil {
 			return ImportOutcome{}, err
 		}
+		if err := loaded.AddReusablePrefixDonor(i); err != nil {
+			return ImportOutcome{}, im.fail(err)
+		}
+		donorThreads[i] = im.created[len(im.created)-1].ID
 		if i == len(loaded.Branches)-1 {
 			activeThread = len(im.created) - 1
 		}

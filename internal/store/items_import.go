@@ -3,6 +3,7 @@ package store
 import (
 	"database/sql"
 	"fmt"
+	"strings"
 )
 
 // ImportRow is one timeline row an import produces: the item plus the
@@ -70,17 +71,22 @@ func (s *Store) ApplyImportBatch(threadID string, batch ImportBatch) error {
 	}
 	defer tx.Rollback()
 
-	// One prepared statement per shape, reused across the batch. A real
-	// session is hundreds of rows and each is the same INSERT; re-parsing
-	// the SQL per row is the cost this avoids, and it is the same shape
-	// appendUsageTx already uses for the usage rows below.
+	// Turns and usage are small prepared-statement loops. Payloads and items
+	// use bounded multi-row INSERTs below: large branched transcripts can carry
+	// millions of rows, where one driver round trip per row is material.
 	if err := importTurnsTx(tx, threadID, turns); err != nil {
 		return err
 	}
 	if err := importTurnCompletionsTx(tx, threadID, batch.TurnCompletions); err != nil {
 		return err
 	}
-	if err := importRowsTx(tx, rows); err != nil {
+	if err := beginImportItemHistoryTx(tx, threadID, len(rows)); err != nil {
+		return err
+	}
+	if err := importRowsSharedTx(tx, threadID, rows); err != nil {
+		return err
+	}
+	if err := finishImportItemHistoryTx(tx, threadID, len(rows)); err != nil {
 		return err
 	}
 	if err := appendUsageTx(tx, usage); err != nil {
@@ -91,6 +97,42 @@ func (s *Store) ApplyImportBatch(threadID string, batch ImportBatch) error {
 		return fmt.Errorf("store: commit import batch tx for thread %s: %w", threadID, err)
 	}
 	return nil
+}
+
+// beginImportItemHistoryTx raises the thread's private bulk-load flag. The
+// item triggers then suppress their otherwise-per-row UPDATE while this
+// transaction loads immutable imported history. Readers cannot observe the
+// flag: it exists only in the uncommitted writer transaction. A rollback
+// restores it together with every other batch write.
+func beginImportItemHistoryTx(tx *sql.Tx, threadID string, rowCount int) error {
+	if rowCount == 0 {
+		return nil
+	}
+	result, err := tx.Exec(
+		`UPDATE threads SET history_bulk_load = 1
+		  WHERE id = ? AND history_bulk_load = 0`,
+		threadID,
+	)
+	if err != nil {
+		return fmt.Errorf("store: begin import history revision for thread %s: %w", threadID, err)
+	}
+	return requireRowsAffected(result, fmt.Sprintf("store: begin import history revision for thread %s", threadID))
+}
+
+func finishImportItemHistoryTx(tx *sql.Tx, threadID string, rowCount int) error {
+	if rowCount == 0 {
+		return nil
+	}
+	result, err := tx.Exec(
+		`UPDATE threads
+		    SET history_rev = history_rev + ?, history_bulk_load = 0
+		  WHERE id = ? AND history_bulk_load = 1`,
+		rowCount, threadID,
+	)
+	if err != nil {
+		return fmt.Errorf("store: finish import history revision for thread %s: %w", threadID, err)
+	}
+	return requireRowsAffected(result, fmt.Sprintf("store: finish import history revision for thread %s", threadID))
 }
 
 // importTurnsTx inserts the batch's turns. Turns are born with a NULL
@@ -163,37 +205,107 @@ func importTurnCompletionsTx(tx *sql.Tx, threadID string, completions []TurnComp
 	return nil
 }
 
-// importRowsTx writes each row's payloads before the item that references
-// them, so the FK is satisfied without deferring it.
-func importRowsTx(tx *sql.Tx, rows []ImportRow) error {
+const importRowsPerInsert = 256
+
+type importPayloadRow struct {
+	itemID  string
+	payload Payload
+}
+
+// importRowsTx writes all payloads before their referencing items, in bounded
+// multi-row INSERTs. The dependency order satisfies the immediate FKs, while
+// reducing a million-row import from millions of database/driver round trips
+// to a few thousand. The surrounding transaction retains the exact same
+// all-or-nothing contract.
+func importRowsTx(tx *sql.Tx, threadID string, rows []ImportRow) error {
 	if len(rows) == 0 {
 		return nil
 	}
-	payloadStmt, err := tx.Prepare(payloadInsertSQL)
-	if err != nil {
-		return fmt.Errorf("store: import payload prepare: %w", err)
-	}
-	defer payloadStmt.Close()
-	itemStmt, err := tx.Prepare(itemInsertSQL)
-	if err != nil {
-		return fmt.Errorf("store: import item prepare: %w", err)
-	}
-	defer itemStmt.Close()
 
+	payloads := make([]importPayloadRow, 0, len(rows))
 	for _, row := range rows {
 		for _, payload := range []*Payload{row.InputPayload, row.Payload} {
 			if payload == nil {
 				continue
 			}
-			if _, err := payloadStmt.Exec(payloadInsertArgs(*payload)...); err != nil {
-				return fmt.Errorf("store: import payload for item %s: %w", row.Item.ID, err)
-			}
+			payloads = append(payloads, importPayloadRow{itemID: row.Item.ID, payload: *payload})
 		}
-		if _, err := itemStmt.Exec(itemInsertArgs(row.Item)...); err != nil {
-			return fmt.Errorf("store: import item %s: %w", row.Item.ID, err)
+	}
+	if err := execImportInsertChunks(
+		tx, payloadInsertPrefix, payloadInsertValues, payloads,
+		func(row importPayloadRow) []any { return payloadInsertArgs(threadID, row.payload) },
+		func(row importPayloadRow) string { return row.itemID },
+		"payload",
+	); err != nil {
+		return err
+	}
+	return execImportInsertChunks(
+		tx, itemInsertPrefix, itemInsertValues, rows,
+		func(row ImportRow) []any { return itemInsertArgs(row.Item) },
+		func(row ImportRow) string { return row.Item.ID },
+		"item",
+	)
+}
+
+func execImportInsertChunks[T any](
+	tx *sql.Tx,
+	prefix string,
+	values string,
+	rows []T,
+	argsFor func(T) []any,
+	labelFor func(T) string,
+	kind string,
+) error {
+	if len(rows) == 0 {
+		return nil
+	}
+	argsPerRow := len(argsFor(rows[0]))
+	fullChunkRows := min(importRowsPerInsert, len(rows))
+	fullQuery := importInsertQuery(prefix, values, fullChunkRows)
+	var fullStmt *sql.Stmt
+	if len(rows) > importRowsPerInsert {
+		var err error
+		fullStmt, err = tx.Prepare(fullQuery)
+		if err != nil {
+			return fmt.Errorf("store: prepare import %s chunks: %w", kind, err)
+		}
+		defer fullStmt.Close()
+	}
+
+	for start := 0; start < len(rows); start += importRowsPerInsert {
+		end := min(start+importRowsPerInsert, len(rows))
+		args := make([]any, 0, (end-start)*argsPerRow)
+		for i := start; i < end; i++ {
+			args = append(args, argsFor(rows[i])...)
+		}
+		var err error
+		if end-start == fullChunkRows && fullStmt != nil {
+			_, err = fullStmt.Exec(args...)
+		} else {
+			_, err = tx.Exec(importInsertQuery(prefix, values, end-start), args...)
+		}
+		if err != nil {
+			return fmt.Errorf(
+				"store: import %s chunk for items %s..%s: %w",
+				kind, labelFor(rows[start]), labelFor(rows[end-1]), err,
+			)
 		}
 	}
 	return nil
+}
+
+func importInsertQuery(prefix, values string, rows int) string {
+	var query strings.Builder
+	query.Grow(len(prefix) + len(" VALUES ") + (len(values)+1)*rows)
+	query.WriteString(prefix)
+	query.WriteString(" VALUES ")
+	for i := 0; i < rows; i++ {
+		if i > 0 {
+			query.WriteByte(',')
+		}
+		query.WriteString(values)
+	}
+	return query.String()
 }
 
 // scopeImportBatch stamps threadID onto every row that carries one and

@@ -221,7 +221,7 @@ func (a *App) observeDiffPayloadPersisted(threadID, payloadID string, previews [
 		// file snapshots that keep this edit expandable after the
 		// workspace drifts. The primer memoizes, so the span computes
 		// below reuse these reads.
-		a.persistEditFileSnapshots(payloadID, patch, prime)
+		a.persistEditFileSnapshots(threadID, payloadID, patch, prime)
 		var previewSeeds []PatchSpanSeed
 		total := 0
 		for _, preview := range previews {
@@ -268,7 +268,7 @@ func (a *App) observeDiffPayloadPersisted(threadID, payloadID string, previews [
 // Content is stored gzipped per (payload, path); the store call guards
 // the payload-deletion race itself (wrapped sql.ErrNoRows = benign
 // drop, and every later file of the same payload would drop too).
-func (a *App) persistEditFileSnapshots(payloadID, patch string, prime func(path string) string) {
+func (a *App) persistEditFileSnapshots(threadID, payloadID, patch string, prime func(path string) string) {
 	if prime == nil || patch == "" || len(patch) > diffSeedMaxScanBytes {
 		return
 	}
@@ -282,7 +282,7 @@ func (a *App) persistEditFileSnapshots(payloadID, patch string, prime func(path 
 			continue
 		}
 		captured++
-		if err := a.store.PutEditFileSnapshot(payloadID, seg.Path, content, time.Now().UnixMilli()); err != nil {
+		if err := a.store.PutEditFileSnapshot(threadID, payloadID, seg.Path, content, time.Now().UnixMilli()); err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				return
 			}
@@ -357,18 +357,18 @@ func capPatchSpanSeedBytes(seeds []PatchSpanSeed, budget int) []PatchSpanSeed {
 // frontend's RPC path recomputes. Truncated previews are covered by
 // per-file content addressing — files fully inside the served prefix
 // key identically; a boundary-truncated file misses and RPCs alone.
-func (a *App) persistedPayloadPatchSpans(payloadKind, payloadID string) []PatchSpanSeed {
+func (a *App) persistedPayloadPatchSpans(threadID, payloadKind, payloadID string) []PatchSpanSeed {
 	if !diffPayloadKind(payloadKind) {
 		return nil
 	}
-	return a.loadPersistedPatchSpans(payloadID)
+	return a.loadPersistedPatchSpans(threadID, payloadID)
 }
 
 // loadPersistedPatchSpans is the kind-free variant for callers whose
 // query already filtered to diff-bearing payload kinds (the turn edits
 // read).
-func (a *App) loadPersistedPatchSpans(payloadID string) []PatchSpanSeed {
-	blob, err := a.store.GetPayloadSpans(payloadID)
+func (a *App) loadPersistedPatchSpans(threadID, payloadID string) []PatchSpanSeed {
+	blob, err := a.store.GetPayloadSpans(threadID, payloadID)
 	if err != nil {
 		log.Printf("app: read payload spans %s: %v", payloadID, err)
 		return nil

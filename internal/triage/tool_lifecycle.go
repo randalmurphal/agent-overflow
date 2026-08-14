@@ -8,6 +8,7 @@ import (
 	"time"
 	"unicode"
 
+	"agent-overflow/internal/itemmeta"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/stringsx"
@@ -175,7 +176,7 @@ func (r *Router) persistToolCallLaunch(evt provider.ProviderEvent) error {
 		ParentID:     eventParentID(evt),
 		IsBackground: meta.IsBackground,
 		ToolName:     toolName,
-		Meta:         StoredToolCallMeta(evt.ItemType, evt.Meta),
+		Meta:         StoredToolCallMeta(evt.ItemType, toolName, evt.Meta),
 		CreatedAt:    now,
 		UpdatedAt:    now,
 	}
@@ -186,7 +187,7 @@ func (r *Router) persistToolCallLaunch(evt provider.ProviderEvent) error {
 		item.ParentID = stringsx.FirstNonEmptyTrimmed(eventParentID(evt), existing.ParentID)
 		item.ToolName = toolName
 		item.IsBackground = existing.IsBackground || meta.IsBackground
-		item.Meta = MergeStoredToolCallMeta(existing.Meta, evt.ItemType, evt.Meta)
+		item.Meta = MergeStoredToolCallMeta(existing.Meta, evt.ItemType, toolName, evt.Meta)
 		if existing.Status == "" {
 			item.Status = statusRunning
 		}
@@ -365,7 +366,7 @@ func (r *Router) persistToolCallCompletion(evt provider.ProviderEvent) error {
 	if strings.TrimSpace(meta.ToolName) != "" {
 		launch.ToolName = strings.TrimSpace(meta.ToolName)
 	}
-	launch.Meta = MergeStoredToolCallMeta(launch.Meta, evt.ItemType, evt.Meta)
+	launch.Meta = MergeStoredToolCallMeta(launch.Meta, evt.ItemType, launch.ToolName, evt.Meta)
 	launch.UpdatedAt = now
 	// Re-shape the merged meta so a completion event whose meta still
 	// carries heavy input bytes (Codex curated input) doesn't re-bloat
@@ -433,7 +434,7 @@ func (r *Router) persistToolCallCompletedWithoutLaunch(evt provider.ProviderEven
 		Summary:   BuildCompletionSummary(BuildToolCallSummary(ToolStartMeta{ToolName: toolName, Input: meta.Input}, evt.ItemType), meta),
 		ParentID:  eventParentID(evt),
 		ToolName:  toolName,
-		Meta:      StoredToolCallMeta(evt.ItemType, evt.Meta),
+		Meta:      StoredToolCallMeta(evt.ItemType, toolName, evt.Meta),
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
@@ -1338,11 +1339,11 @@ func (r *Router) backgroundCompletionTurnIndex(threadID string, launchTurnIndex 
 // fresh meta is cheap compared to the per-delta savings we keep by not
 // reading the blob back on every append.
 func (r *Router) rebuildCommandOutputMeta(threadID, payloadID string) error {
-	data, err := r.store.GetPayloadData(payloadID)
+	data, err := r.store.GetPayloadData(threadID, payloadID)
 	if err != nil {
 		return fmt.Errorf("read payload for command_output meta rebuild: %w", err)
 	}
-	pm, err := r.store.GetPayloadMeta(payloadID)
+	pm, err := r.store.GetPayloadMeta(threadID, payloadID)
 	if err != nil {
 		return fmt.Errorf("read existing command_output meta: %w", err)
 	}
@@ -1410,26 +1411,56 @@ func validJSONObjectString(raw json.RawMessage) string {
 	return string(encoded)
 }
 
-func MergeStoredToolCallMeta(existing string, itemType string, incoming json.RawMessage) string {
-	incoming = stripStoredToolCallMeta(itemType, incoming)
-	merged := mergeItemMetaJSON(existing, incoming)
-	return StoredToolCallMeta(itemType, json.RawMessage(merged))
+func MergeStoredToolCallMeta(existing string, itemType string, toolName string, incoming json.RawMessage) string {
+	var obj map[string]json.RawMessage
+	if json.Unmarshal(incoming, &obj) != nil || obj == nil {
+		return existing
+	}
+	return MergeStoredToolCallMetaObject(existing, itemType, toolName, obj)
 }
 
-func stripStoredToolCallMeta(itemType string, raw json.RawMessage) json.RawMessage {
-	if !isCodexFileChangeItem(itemType) || len(raw) == 0 {
-		return raw
+// StoredToolCallMetaObject returns the persisted representation of an
+// already-decoded tool-event meta object. The input map is never mutated.
+// omitKeys names importer-only routing fields that must not reach storage.
+func StoredToolCallMetaObject(itemType string, toolName string, incoming map[string]json.RawMessage, omitKeys ...string) string {
+	if incoming == nil {
+		return ""
 	}
-	var parsed map[string]json.RawMessage
-	if json.Unmarshal(raw, &parsed) != nil || parsed == nil {
-		return raw
+	obj := cloneRawMessageMap(incoming)
+	for _, key := range omitKeys {
+		delete(obj, key)
 	}
-	delete(parsed, "item")
-	encoded, err := json.Marshal(parsed)
+	if isCodexFileChangeItem(itemType) {
+		delete(obj, "item")
+	}
+	itemmeta.TrimToolResultEchoObject(toolName, obj)
+	encoded, err := json.Marshal(obj)
 	if err != nil {
-		return raw
+		return ""
 	}
-	return encoded
+	return string(encoded)
+}
+
+// MergeStoredToolCallMetaObject is the decoded-object form of
+// MergeStoredToolCallMeta. Shaping happens before encoding, so large provider
+// result echoes are decoded once and discarded before the merge scans bytes.
+func MergeStoredToolCallMetaObject(existing string, itemType string, toolName string, incoming map[string]json.RawMessage, omitKeys ...string) string {
+	shaped := StoredToolCallMetaObject(itemType, toolName, incoming, omitKeys...)
+	if shaped == "" {
+		return existing
+	}
+	return mergeItemMetaJSON(existing, json.RawMessage(shaped))
+}
+
+func cloneRawMessageMap(src map[string]json.RawMessage) map[string]json.RawMessage {
+	if src == nil {
+		return nil
+	}
+	dst := make(map[string]json.RawMessage, len(src))
+	for key, value := range src {
+		dst[key] = value
+	}
+	return dst
 }
 
 func mergeItemMetaJSON(existing string, incoming json.RawMessage) string {

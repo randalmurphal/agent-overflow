@@ -63,7 +63,7 @@ func TestParseTrailingRecordsAfterAbortDoNotReuseTheTurnID(t *testing.T) {
 	if ids[0] != "turn-1" || ids[2] != "turn-2" {
 		t.Fatalf("wire turns lost their ids: %v", ids)
 	}
-	if !strings.HasPrefix(ids[1], "import-turn-") {
+	if !strings.HasPrefix(ids[1], "import-turn:"+testSessionID+":") {
 		t.Fatalf("post-abort trailing records reused id %q instead of minting a synthetic turn", ids[1])
 	}
 	// The synthetic turn says so, and carries the rolled-back notification.
@@ -78,6 +78,26 @@ func TestParseTrailingRecordsAfterAbortDoNotReuseTheTurnID(t *testing.T) {
 				t.Fatalf("rolled-back notification landed on turn %q, want the synthetic %q", e.TurnID, ids[1])
 			}
 		}
+	}
+}
+
+func TestParseSyntheticTurnIDsAreStableWithinAndUniqueAcrossSessions(t *testing.T) {
+	const otherSessionID = "019f1111-2222-7333-8444-555555555555"
+	firstPath := writeRollout(t, testSessionID, metaLine, userMsgLine)
+	otherPath := writeRollout(t, otherSessionID, metaLine, userMsgLine)
+
+	first := parseFixture(t, firstPath)
+	firstAgain := parseFixture(t, firstPath)
+	other := parseFixture(t, otherPath)
+	firstID := turnStartIDs(first.Events)[0]
+	if againID := turnStartIDs(firstAgain.Events)[0]; againID != firstID {
+		t.Fatalf("same session minted unstable synthetic ids: %q then %q", firstID, againID)
+	}
+	if otherID := turnStartIDs(other.Events)[0]; otherID == firstID {
+		t.Fatalf("different sessions shared synthetic turn id %q", firstID)
+	}
+	if want := "import-turn:" + testSessionID + ":1"; firstID != want {
+		t.Fatalf("synthetic turn id = %q, want %q", firstID, want)
 	}
 }
 

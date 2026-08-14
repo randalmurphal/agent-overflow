@@ -300,7 +300,7 @@ func TestVerifyEditDiffs(t *testing.T) {
 	// gone.txt only survives as a snapshot; drifted.txt has neither a
 	// matching workspace file nor a snapshot.
 	insertDiffSpanPayload(t, app, thread.ID, "item-v", "payload-v", "tool_result", patchFor("gone.txt"))
-	if err := app.store.PutEditFileSnapshot("payload-v", "gone.txt", "line 1\nline 2\nline 3\n", time.Now().UnixMilli()); err != nil {
+	if err := app.store.PutEditFileSnapshot(thread.ID, "payload-v", "gone.txt", "line 1\nline 2\nline 3\n", time.Now().UnixMilli()); err != nil {
 		t.Fatalf("PutEditFileSnapshot() error = %v", err)
 	}
 
@@ -357,10 +357,10 @@ func TestGetDiffContextLinesEditsScopeSnapshotFirst(t *testing.T) {
 	insertDiffSpanPayload(t, app, thread.ID, "item-late", "payload-late", "tool_result", verifyPatch)
 	now := time.Now().UnixMilli()
 	stale := strings.Join(lines[:10], "\n") + "\nsuperseded eleven\n" + strings.Join(lines[11:], "\n") + "\n"
-	if err := app.store.PutEditFileSnapshot("payload-early", "notes.txt", stale, now); err != nil {
+	if err := app.store.PutEditFileSnapshot(thread.ID, "payload-early", "notes.txt", stale, now); err != nil {
 		t.Fatalf("PutEditFileSnapshot(early) error = %v", err)
 	}
-	if err := app.store.PutEditFileSnapshot("payload-late", "notes.txt", historical, now); err != nil {
+	if err := app.store.PutEditFileSnapshot(thread.ID, "payload-late", "notes.txt", historical, now); err != nil {
 		t.Fatalf("PutEditFileSnapshot(late) error = %v", err)
 	}
 

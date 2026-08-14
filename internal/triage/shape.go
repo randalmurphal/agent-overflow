@@ -40,6 +40,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"unicode"
 
@@ -106,6 +107,27 @@ func DecodeToolStartMeta(raw json.RawMessage) ToolStartMeta {
 	return m
 }
 
+// DecodeToolStartMetaObject is DecodeToolStartMeta for an already-decoded
+// top-level event meta object.
+func DecodeToolStartMetaObject(obj map[string]json.RawMessage) ToolStartMeta {
+	if obj == nil {
+		return ToolStartMeta{}
+	}
+	var m ToolStartMeta
+	decodeRawField(obj, "toolName", &m.ToolName)
+	if input, ok := obj["input"]; ok {
+		m.Input = input
+	}
+	decodeRawField(obj, "meta_update_only", &m.MetaUpdateOnly)
+	decodeRawField(obj, "is_background", &m.IsBackground)
+	decodeRawField(obj, "task_id", &m.TaskID)
+	decodeRawField(obj, "subagent_model", &m.SubagentModel)
+	decodeRawField(obj, "parent_tool_use_id", &m.ParentToolUseID)
+	decodeRawField(obj, "resumes_tool_use_id", &m.ResumesToolUseID)
+	decodeRawField(obj, "description", &m.Description)
+	return m
+}
+
 // DecodeToolCompleteMeta decodes raw into a ToolCompleteMeta, with the
 // same zero-value-on-garbage rule as DecodeToolStartMeta.
 func DecodeToolCompleteMeta(raw json.RawMessage) ToolCompleteMeta {
@@ -119,12 +141,43 @@ func DecodeToolCompleteMeta(raw json.RawMessage) ToolCompleteMeta {
 	return m
 }
 
+// DecodeToolCompleteMetaObject is DecodeToolCompleteMeta for callers that
+// already decoded the completion's top-level JSON object. Decoding the small
+// typed fields individually avoids re-scanning large tool_result echoes.
+func DecodeToolCompleteMetaObject(obj map[string]json.RawMessage) ToolCompleteMeta {
+	if obj == nil {
+		return ToolCompleteMeta{}
+	}
+	var m ToolCompleteMeta
+	decodeRawField(obj, "is_background", &m.IsBackground)
+	decodeRawField(obj, "watch_task", &m.WatchTask)
+	decodeRawField(obj, "is_error", &m.IsError)
+	decodeRawField(obj, "exit_code", &m.ExitCode)
+	decodeRawField(obj, "item_status", &m.ItemStatus)
+	decodeRawField(obj, "task_id", &m.TaskID)
+	decodeRawField(obj, "toolName", &m.ToolName)
+	if input, ok := obj["input"]; ok {
+		m.Input = input
+	}
+	return m
+}
+
+func decodeRawField(obj map[string]json.RawMessage, key string, dst any) {
+	if raw, ok := obj[key]; ok {
+		_ = json.Unmarshal(raw, dst)
+	}
+}
+
 // StoredToolCallMeta returns the `items.meta` string for a tool_call
 // row: the event meta re-encoded as a canonical JSON object, minus the
 // Codex `item` echo (a file_change row's changes already live in the
 // diff payload). Non-object or undecodable meta stores as "".
-func StoredToolCallMeta(itemType string, raw json.RawMessage) string {
-	return validJSONObjectString(stripStoredToolCallMeta(itemType, raw))
+func StoredToolCallMeta(itemType string, toolName string, raw json.RawMessage) string {
+	var obj map[string]json.RawMessage
+	if json.Unmarshal(raw, &obj) != nil || obj == nil {
+		return ""
+	}
+	return StoredToolCallMetaObject(itemType, toolName, obj)
 }
 
 // BuildToolCallSummary is the launch-time summary of a tool_call row:
@@ -212,10 +265,20 @@ func CompletionStatus(meta ToolCompleteMeta) string {
 // generic tool_call_result otherwise. Returns nil when the completion
 // carried no content worth storing.
 func CompletionPayloadForTool(itemID string, toolName string, command string, evt provider.ProviderEvent, meta ToolCompleteMeta, now int64) *store.Payload {
-	if isCommandOutputToolName(toolName) {
-		return CommandCompletionPayload(itemID, command, evt, meta, now)
+	var obj map[string]json.RawMessage
+	if len(evt.Meta) > 0 {
+		_ = json.Unmarshal(evt.Meta, &obj)
 	}
-	return completionPayload(itemID, evt, meta, now)
+	return CompletionPayloadForToolObject(itemID, toolName, command, evt.Content, obj, meta, now)
+}
+
+// CompletionPayloadForToolObject is CompletionPayloadForTool for a caller
+// that already decoded the completion envelope.
+func CompletionPayloadForToolObject(itemID string, toolName string, command string, content string, obj map[string]json.RawMessage, meta ToolCompleteMeta, now int64) *store.Payload {
+	if isCommandOutputToolName(toolName) {
+		return CommandCompletionPayloadObject(itemID, command, content, obj, meta, now)
+	}
+	return completionPayload(itemID, provider.ProviderEvent{Content: content}, meta, now)
 }
 
 // CommandCompletionPayload builds the `command_output` payload for a
@@ -223,51 +286,56 @@ func CompletionPayloadForTool(itemID string, toolName string, command string, ev
 // error flags folded into the payload meta header (meta is cheap, data
 // is heavy). Returns nil for empty output.
 func CommandCompletionPayload(itemID string, command string, evt provider.ProviderEvent, meta ToolCompleteMeta, now int64) *store.Payload {
-	if evt.Content == "" {
+	var obj map[string]json.RawMessage
+	if len(evt.Meta) > 0 {
+		_ = json.Unmarshal(evt.Meta, &obj)
+	}
+	return CommandCompletionPayloadObject(itemID, command, evt.Content, obj, meta, now)
+}
+
+// CommandCompletionPayloadObject is CommandCompletionPayload for an
+// already-decoded completion envelope.
+func CommandCompletionPayloadObject(itemID string, command string, content string, obj map[string]json.RawMessage, meta ToolCompleteMeta, now int64) *store.Payload {
+	if content == "" {
 		return nil
 	}
-	header := map[string]any{}
+	fields := cloneRawMessageMap(obj)
+	if fields == nil {
+		fields = make(map[string]json.RawMessage)
+	}
 	if strings.TrimSpace(command) != "" {
-		header["command"] = strings.TrimSpace(command)
+		setRawStringDefault(fields, "command", strings.TrimSpace(command))
 	}
 	if meta.ExitCode != nil {
-		header["exitCode"] = *meta.ExitCode
-		header["exit_code"] = *meta.ExitCode
+		setRawIntDefault(fields, "exitCode", *meta.ExitCode)
+		setRawIntDefault(fields, "exit_code", *meta.ExitCode)
 	}
 	if meta.IsError {
-		header["is_error"] = true
-	}
-	if meta.ItemStatus != "" {
-		header["itemStatus"] = meta.ItemStatus
-	}
-	if len(evt.Meta) > 0 {
-		if merged, ok := mergeJSONObjectBytes(marshalJSONObjectOrEmpty(header), evt.Meta); ok {
-			headerJSON := BuildPayloadMeta("command_output", provider.ProviderEvent{
-				Content: evt.Content,
-				Meta:    merged,
-			})
-			return &store.Payload{
-				ID:        "command-output:" + itemID,
-				Kind:      "command_output",
-				Meta:      headerJSON,
-				Data:      []byte(evt.Content),
-				CreatedAt: now,
-			}
+		if _, ok := fields["is_error"]; !ok {
+			fields["is_error"] = json.RawMessage("true")
 		}
 	}
-	headerJSONBytes, err := json.Marshal(header)
-	if err != nil {
-		headerJSONBytes = []byte("{}")
+	if meta.ItemStatus != "" {
+		setRawStringDefault(fields, "itemStatus", meta.ItemStatus)
 	}
 	return &store.Payload{
-		ID:   "command-output:" + itemID,
-		Kind: "command_output",
-		Meta: BuildPayloadMeta("command_output", provider.ProviderEvent{
-			Content: evt.Content,
-			Meta:    headerJSONBytes,
-		}),
-		Data:      []byte(evt.Content),
+		ID:        "command-output:" + itemID,
+		Kind:      "command_output",
+		Meta:      buildCommandOutputPayloadMeta(content, fields),
+		Data:      []byte(content),
 		CreatedAt: now,
+	}
+}
+
+func setRawStringDefault(fields map[string]json.RawMessage, key, value string) {
+	if _, exists := fields[key]; !exists {
+		fields[key] = json.RawMessage(strconv.Quote(value))
+	}
+}
+
+func setRawIntDefault(fields map[string]json.RawMessage, key string, value int) {
+	if _, exists := fields[key]; !exists {
+		fields[key] = json.RawMessage(strconv.Itoa(value))
 	}
 }
 
@@ -346,9 +414,11 @@ func ToolCompletionID(launchID string) string {
 }
 
 // AssistantTextPayloadID is the deterministic payload id for an
-// assistant_text row's full text blob.
-func AssistantTextPayloadID(threadID, itemID string) string {
-	return "assistant-text:" + threadID + ":" + itemID
+// assistant_text row's full text blob. Payload identity is thread-scoped by
+// the store schema, so including the thread again here would make identical
+// imported branch prefixes hash differently and defeat physical sharing.
+func AssistantTextPayloadID(itemID string) string {
+	return "assistant-text:" + itemID
 }
 
 // ThinkingPayloadID is the deterministic payload id for a streaming

@@ -21,23 +21,38 @@ const maxEditFileSnapshotBytes = 32 << 20
 // deleted under the async persist worker surfaces as wrapped
 // sql.ErrNoRows (a benign drop for the caller) instead of a foreign-key
 // violation. Re-persisting the same payload overwrites the row.
-func (s *Store) PutEditFileSnapshot(payloadID, path, content string, createdAt int64) error {
+func (s *Store) PutEditFileSnapshot(threadID, payloadID, path, content string, createdAt int64) error {
 	blob, err := gzipSnapshotContent(content)
 	if err != nil {
 		return fmt.Errorf("store: compress edit file snapshot %s %s: %w", payloadID, path, err)
 	}
-	result, err := s.db.Exec(
-		`INSERT INTO edit_file_snapshots (payload_id, path, content, created_at)
-		 SELECT ?, ?, ?, ?
-		  WHERE EXISTS (SELECT 1 FROM payloads WHERE id = ?)
-		 ON CONFLICT(payload_id, path) DO UPDATE
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("store: begin put edit file snapshot %s %s: %w", payloadID, path, err)
+	}
+	defer tx.Rollback()
+	label := fmt.Sprintf("store: put edit file snapshot %s %s", payloadID, path)
+	if err := ensureLocalPayloadTx(tx, threadID, payloadID, label); err != nil {
+		return err
+	}
+	result, err := tx.Exec(
+		`INSERT INTO edit_file_snapshots (thread_id, payload_id, path, content, created_at)
+		 SELECT ?, ?, ?, ?, ?
+		  WHERE EXISTS (SELECT 1 FROM payloads WHERE thread_id = ? AND id = ?)
+		 ON CONFLICT(thread_id, payload_id, path) DO UPDATE
 		    SET content = excluded.content, created_at = excluded.created_at`,
-		payloadID, path, blob, createdAt, payloadID,
+		threadID, payloadID, path, blob, createdAt, threadID, payloadID,
 	)
 	if err != nil {
-		return fmt.Errorf("store: put edit file snapshot %s %s: %w", payloadID, path, err)
+		return fmt.Errorf("%s: %w", label, err)
 	}
-	return requireRowsAffected(result, fmt.Sprintf("store: put edit file snapshot %s %s", payloadID, path))
+	if err := requireRowsAffected(result, label); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("store: commit put edit file snapshot %s %s: %w", payloadID, path, err)
+	}
+	return nil
 }
 
 // GetEditFileSnapshot returns the decompressed snapshot content for one
@@ -49,10 +64,9 @@ func (s *Store) PutEditFileSnapshot(payloadID, path, content string, createdAt i
 func (s *Store) GetEditFileSnapshot(threadID, payloadID, path string) (string, bool, error) {
 	var blob []byte
 	err := s.reader().QueryRow(
-		`SELECT s.content
-		   FROM edit_file_snapshots s
-		   JOIN items i ON i.payload_id = s.payload_id
-		  WHERE i.thread_id = ? AND s.payload_id = ? AND s.path = ?`,
+		`SELECT content
+		   FROM edit_file_snapshots
+		  WHERE thread_id = ? AND payload_id = ? AND path = ?`,
 		threadID, payloadID, path,
 	).Scan(&blob)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -77,7 +91,7 @@ func (s *Store) GetLatestTurnEditFileSnapshot(threadID string, turnIndex int, pa
 	err := s.reader().QueryRow(
 		`SELECT s.content
 		   FROM edit_file_snapshots s
-		   JOIN items i ON i.payload_id = s.payload_id
+		   JOIN timeline_items i ON i.thread_id = s.thread_id AND i.payload_id = s.payload_id
 		  WHERE i.thread_id = ? AND i.turn_index = ? AND s.path = ?
 		  ORDER BY i.item_index DESC
 		  LIMIT 1`,

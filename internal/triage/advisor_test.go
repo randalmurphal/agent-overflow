@@ -153,7 +153,7 @@ func TestAdvisorEndToEndProducesToolCallRowAndPayload(t *testing.T) {
 		t.Fatalf("completed meta.assistant_message_id: got %v, want msg-adv (mergeItemMetaJSON must preserve every launch-side unknown key, not just advisor_model)", completedMeta["assistant_message_id"])
 	}
 
-	data, err := st.GetPayloadData(completed.PayloadID)
+	data, err := st.GetPayloadData(completed.ThreadID, completed.PayloadID)
 	if err != nil {
 		t.Fatalf("get payload data: %v", err)
 	}
@@ -165,7 +165,7 @@ func TestAdvisorEndToEndProducesToolCallRowAndPayload(t *testing.T) {
 	// collapsed-row rendering reads. completionPayload writes at most
 	// 240 chars; the advisor body fits inside that cap so we expect
 	// the full text in the preview header.
-	pm, err := st.GetPayloadMeta(completed.PayloadID)
+	pm, err := st.GetPayloadMeta(completed.ThreadID, completed.PayloadID)
 	if err != nil {
 		t.Fatalf("get payload meta: %v", err)
 	}

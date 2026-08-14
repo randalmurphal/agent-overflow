@@ -62,23 +62,23 @@ func readParityRows(t *testing.T, st *store.Store, threadID string) []parityRow 
 			Decision:     item.Decision,
 			IsBackground: item.IsBackground,
 			Meta:         normalizeMeta(t, stripImportProvenance(t, item.Meta)),
-			Payload:      readParityPayload(t, st, item.PayloadID),
-			InputPayload: readParityPayload(t, st, item.InputPayloadID),
+			Payload:      readParityPayload(t, st, threadID, item.PayloadID),
+			InputPayload: readParityPayload(t, st, threadID, item.InputPayloadID),
 		})
 	}
 	return rows
 }
 
-func readParityPayload(t *testing.T, st *store.Store, payloadID string) *parityPayload {
+func readParityPayload(t *testing.T, st *store.Store, threadID, payloadID string) *parityPayload {
 	t.Helper()
 	if payloadID == "" {
 		return nil
 	}
-	meta, err := st.GetPayloadMeta(payloadID)
+	meta, err := st.GetPayloadMeta(threadID, payloadID)
 	if err != nil {
 		t.Fatalf("payload meta %s: %v", payloadID, err)
 	}
-	data, err := st.GetPayloadData(payloadID)
+	data, err := st.GetPayloadData(threadID, payloadID)
 	if err != nil {
 		t.Fatalf("payload data %s: %v", payloadID, err)
 	}

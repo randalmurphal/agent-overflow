@@ -34,7 +34,7 @@ type Turn struct {
 	ErrorMessage       string `json:"errorMessage,omitempty"`
 	// ProviderTurnID is the provider-assigned wire turn id (Codex
 	// `turn/started`), or "" when the provider has none on the wire
-	// (Claude — TurnID is then a synthesized `<threadID>:<turnIndex>`).
+	// (Claude). TurnID is always thread-scoped; this field remains verbatim.
 	// Kept separate from the TurnID PRIMARY KEY because forked threads
 	// carry cloned copies of their source's turns under fresh row ids
 	// while preserving this value — it is the `thread/fork` lastTurnId
@@ -504,7 +504,7 @@ func (s *Store) PickInitialFloorTurn(
 
 	rows, err := s.reader().Query(
 		`SELECT turn_index, COUNT(*) AS item_count
-		   FROM items
+		   FROM timeline_items
 		  WHERE thread_id = ?
 		    AND `+visibleItemsFilter+`
 		    AND `+topLevelItemsFilter+`

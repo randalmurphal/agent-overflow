@@ -169,7 +169,7 @@ func (a *App) GetTurnEditsDiff(threadID string, turnIndex int) (TurnEditsDiff, e
 		if combined.Len() > maxTurnEditsDiffBytes {
 			return TurnEditsDiff{}, fmt.Errorf("%s: turn %d exceeds %d bytes — open its edits individually", action, turnIndex, maxTurnEditsDiffBytes)
 		}
-		spans = append(spans, a.loadPersistedPatchSpans(patch.PayloadID)...)
+		spans = append(spans, a.loadPersistedPatchSpans(threadID, patch.PayloadID)...)
 	}
 	return TurnEditsDiff{Data: combined.String(), PatchSpans: spans}, nil
 }

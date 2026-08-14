@@ -133,10 +133,11 @@ provider-smoke:
 # shapes whoever wrote them knew about; this is what catches real-world format
 # drift.
 #
-# It spends no tokens and spawns nothing — it is a file read plus a store-pure
-# Build — but it must never be pointed at the live homes: the gate FAILS when a
-# corpus root overlaps ~/.claude or ~/.codex. Copy them first, and repoint the
-# Codex thread index at the copy (its rollout_path column is absolute):
+# It spends no tokens and spawns nothing — it reads each file, builds the
+# imported rows, and applies them to a throwaway SQLite store — but it must
+# never be pointed at the live homes: the gate FAILS when a corpus root overlaps
+# ~/.claude or ~/.codex. Copy them first, and repoint the Codex thread index at
+# the copy (its rollout_path column is absolute):
 #
 #   cp -a ~/.claude /tmp/claude-corpus
 #   cp -a ~/.codex  /tmp/codex-corpus
@@ -152,7 +153,7 @@ provider-smoke:
 # importcorpussmoke_test.go.
 import-corpus-smoke:
 	AO_IMPORT_CORPUS_CLAUDE="$(AO_IMPORT_CORPUS_CLAUDE)" AO_IMPORT_CORPUS_CODEX="$(AO_IMPORT_CORPUS_CODEX)" \
-		go test -run 'TestImportCorpusSmoke' -v -count=1 -timeout 30m .
+		go test -run 'TestImportCorpusSmoke' -v -count=1 -timeout 20m .
 
 # playwright install is idempotent and cached (~/.cache/ms-playwright);
 # the Chromium binary backs the frontend browser test project

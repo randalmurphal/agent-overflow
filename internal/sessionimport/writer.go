@@ -1,6 +1,7 @@
 package sessionimport
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -342,7 +343,10 @@ func (b *builder) appendRow(evt importir.Event, item store.Item, payload, inputP
 // longer holds, and that event updates the launch row rather than
 // creating one — stamping only on row creation would drop it.
 func (b *builder) markUnavailable(evt importir.Event, r *row) error {
-	reason := importUnavailableReason(evt.Meta)
+	return b.markUnavailableReason(importUnavailableReason(evt.Meta), r)
+}
+
+func (b *builder) markUnavailableReason(reason string, r *row) error {
 	if reason == "" {
 		return nil
 	}
@@ -392,13 +396,17 @@ func sourceCoordinate(evt importir.Event) (string, error) {
 // importUnavailableReason reads the reader-supplied marker naming a
 // payload the session file no longer holds.
 func importUnavailableReason(raw json.RawMessage) string {
-	if len(raw) == 0 {
+	if len(raw) == 0 || !bytes.Contains(raw, []byte(importUnavailableMetaKey)) {
 		return ""
 	}
 	var obj map[string]json.RawMessage
 	if json.Unmarshal(raw, &obj) != nil || obj == nil {
 		return ""
 	}
+	return importUnavailableReasonObject(obj)
+}
+
+func importUnavailableReasonObject(obj map[string]json.RawMessage) string {
 	var reason string
 	if json.Unmarshal(obj[importUnavailableMetaKey], &reason) != nil {
 		return ""
@@ -423,16 +431,31 @@ func (b *builder) providerMeta(evt importir.Event) json.RawMessage {
 	if len(evt.Meta) == 0 {
 		return nil
 	}
-	var obj map[string]json.RawMessage
-	if err := json.Unmarshal(evt.Meta, &obj); err != nil || obj == nil {
-		b.warn("import.unreadable-meta", fmt.Sprintf(
-			"a %s event carried metadata that is not a JSON object; the row imported without it", evt.Kind))
+	obj := b.providerMetaObject(evt)
+	if obj == nil {
 		return nil
 	}
-	for _, key := range writerControlMetaKeys {
-		delete(obj, key)
+	return b.encodeProviderMetaObject(evt, obj, nil)
+}
+
+func (b *builder) encodeProviderMetaObject(evt importir.Event, obj map[string]json.RawMessage, extra map[string]string) json.RawMessage {
+	shaped := make(map[string]json.RawMessage, len(obj)+len(extra))
+	for key, value := range obj {
+		shaped[key] = value
 	}
-	encoded, err := json.Marshal(obj)
+	for _, key := range writerControlMetaKeys {
+		delete(shaped, key)
+	}
+	for key, value := range extra {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			encoded, err := json.Marshal(trimmed)
+			if err != nil {
+				continue
+			}
+			shaped[key] = encoded
+		}
+	}
+	encoded, err := json.Marshal(shaped)
 	if err != nil {
 		// Unreachable by construction — every value came out of the decode
 		// above and is therefore valid JSON — which is exactly why it must
@@ -442,6 +465,23 @@ func (b *builder) providerMeta(evt importir.Event) json.RawMessage {
 		return nil
 	}
 	return encoded
+}
+
+// providerMetaObject decodes a provider envelope without modifying it.
+// Completion builders reuse this one object for every projection; some Claude
+// results are megabytes, so reparsing it for status, diff, payload, and stored
+// meta is material work rather than a convenience.
+func (b *builder) providerMetaObject(evt importir.Event) map[string]json.RawMessage {
+	if len(evt.Meta) == 0 {
+		return nil
+	}
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(evt.Meta, &obj); err != nil || obj == nil {
+		b.warn("import.unreadable-meta", fmt.Sprintf(
+			"a %s event carried metadata that is not a JSON object; the row imported without it", evt.Kind))
+		return nil
+	}
+	return obj
 }
 
 // metaString reads one top-level string key off an event meta, returning
@@ -455,6 +495,10 @@ func metaString(raw json.RawMessage, key string) string {
 	if json.Unmarshal(raw, &obj) != nil || obj == nil {
 		return ""
 	}
+	return metaStringObject(obj, key)
+}
+
+func metaStringObject(obj map[string]json.RawMessage, key string) string {
 	var value string
 	if json.Unmarshal(obj[key], &value) != nil {
 		return ""

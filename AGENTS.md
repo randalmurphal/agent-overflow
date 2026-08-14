@@ -50,7 +50,8 @@ Ubuntu 23.04+ / Debian 13+).
   reader, the Codex rollout reader, and the store writer over a real corpus
   and reports what it found (warnings by code, unknown wire types, corrupt
   lines, peak heap). Format drift shows up as a new code or a new unknown
-  type; only a session that fails to load, convert, or Build fails the gate.
+  type; only a session that fails to load, convert, Build, or apply its batch
+  to the throwaway store fails the gate.
   Point it at copies via `AO_IMPORT_CORPUS_CLAUDE` /
   `AO_IMPORT_CORPUS_CODEX` — a root that overlaps the live `~/.claude` or
   `~/.codex` is refused outright, and there is no fallback to a real home.

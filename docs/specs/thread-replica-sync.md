@@ -108,7 +108,8 @@ future — can write an item row without advancing the contract:
 
 ```sql
 CREATE TRIGGER trg_items_rev_insert AFTER INSERT ON items BEGIN
-  UPDATE threads SET history_rev = history_rev + 1 WHERE id = NEW.thread_id;
+  UPDATE threads SET history_rev = history_rev + 1
+   WHERE id = NEW.thread_id AND history_bulk_load = 0;
 END;
 
 CREATE TRIGGER trg_items_rev_update AFTER UPDATE ON items BEGIN
@@ -118,14 +119,14 @@ CREATE TRIGGER trg_items_rev_update AFTER UPDATE ON items BEGIN
       + (OLD.turn_index IS NOT NEW.turn_index OR
          OLD.item_index IS NOT NEW.item_index OR
          OLD.thread_id  IS NOT NEW.thread_id)
-  WHERE id IN (OLD.thread_id, NEW.thread_id);
+  WHERE id IN (OLD.thread_id, NEW.thread_id) AND history_bulk_load = 0;
 END;
 
 CREATE TRIGGER trg_items_rev_delete AFTER DELETE ON items BEGIN
   UPDATE threads SET
     history_rev   = history_rev + 1,
     history_epoch = history_epoch + 1
-  WHERE id = OLD.thread_id;
+  WHERE id = OLD.thread_id AND history_bulk_load = 0;
 END;
 ```
 
@@ -136,10 +137,18 @@ image per commit. This satisfies the remote-access budget rule that
 streaming must not gain per-frame work (§14) — the bump rides commits
 that already exist.
 
-Payload-side bumps cannot be triggers (`payloads` has no `thread_id`,
-and routing via a subquery over `items.payload_id` would put an
-unindexed scan on the streaming append path). Instead the payload
-mutators that run *outside* an item-row transaction —
+`ApplyImportBatch` is the bulk-load exception without being a contract
+exception. Inside its uncommitted transaction it sets the private
+`threads.history_bulk_load` flag; the trigger predicates therefore skip their
+per-row updates. After inserting the batch, the writer adds exactly the number
+of inserted item rows to the revision and clears the flag. Readers cannot
+observe it, a rollback restores it automatically, and committed revision
+values remain identical to the ordinary trigger path.
+
+Payload-side bumps stay explicit in the payload mutators rather than adding a
+second trigger path. Since migration v58 payload rows carry `thread_id`, the
+same scope selects the row and advances its owner's revision in one
+transaction. The payload mutators that run *outside* an item-row transaction —
 `ReplacePayloadData`, `UpdatePayloadMeta`, `UpdatePayloadSpans`, and
 any bare `AppendPayloadData` — change signature to take `threadID` and
 bump `history_rev` inside their own transaction. The signature is the
@@ -149,8 +158,8 @@ naming the thread. (Their callers — triage stream finalize,
 thread already.) For the signature to *be* the enforcement there must be
 no way around it, so the bare `InsertPayload` / `UpsertPayload` exports
 are removed: a payload is window-visible only through the item that
-references it, and the `INSERT OR REPLACE` flavour additionally reset the
-`preview_spans` / `spans` columns that ride the item row. Production
+references it, and the private item-coupled upsert additionally resets
+derived chunks, snapshots, and span blobs. Production
 payload creation goes through the item-coupled writers
 (`InsertItemWithPayload`, `AppendItemWithPayload`, `UpsertItem`).
 The item-coupled combos

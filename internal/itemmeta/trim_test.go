@@ -268,6 +268,38 @@ func TestTrimToolResultEcho_UserInputToolsExempt(t *testing.T) {
 	}
 }
 
+func TestTrimToolResultEchoObjectMatchesByteAPI(t *testing.T) {
+	raw := mustMarshal(t, map[string]any{
+		"toolName":  "Bash",
+		"is_error":  true,
+		"exit_code": 1,
+		"input":     map[string]any{"command": "make test"},
+		"tool_result": map[string]any{
+			"content":  strings.Repeat("result\n", 2_000) + "final result",
+			"is_error": true,
+		},
+		"tool_use_result": map[string]any{
+			"stderr": strings.Repeat("stderr\n", 2_000) + "final stderr",
+			"stdout": "partial output",
+		},
+	})
+	want, changed := TrimToolResultEcho("Bash", raw)
+	if !changed {
+		t.Fatal("byte API did not trim fixture")
+	}
+	obj := decodeObject(t, raw)
+	if !TrimToolResultEchoObject("Bash", obj) {
+		t.Fatal("object API did not trim fixture")
+	}
+	got, err := json.Marshal(obj)
+	if err != nil {
+		t.Fatalf("marshal object API result: %v", err)
+	}
+	if string(got) != string(want) {
+		t.Fatalf("object API drifted from byte API\n got: %s\nwant: %s", got, want)
+	}
+}
+
 func TestTrimToolResultEcho_FixedPoint(t *testing.T) {
 	cases := map[string][]byte{
 		"success": mustMarshal(t, map[string]any{

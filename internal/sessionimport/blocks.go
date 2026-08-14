@@ -114,21 +114,21 @@ func (b *builder) streamBlock(evt importir.Event, kind string) error {
 		seq := b.segmentSeq[counter]
 		b.segmentSeq[counter] = seq + 1
 		itemID = triage.TextItemID(turnIndex, scope, seq)
-		payloadID = triage.AssistantTextPayloadID(b.thread.ID, itemID)
+		payloadID = triage.AssistantTextPayloadID(itemID)
 	}
 
 	summary := evt.Content
 	if kind == kindThinking {
 		summary = triage.ThinkingSummaryPreview(evt.Content)
 	}
-	meta, err := mergeMetaKeys(b.providerMetaString(evt), map[string]string{
+	metaObject := b.providerMetaObject(evt)
+	meta := string(b.encodeProviderMetaObject(evt, metaObject, map[string]string{
 		"provider_item_id": strings.TrimSpace(evt.ItemID),
-	})
-	if err != nil {
-		return fmt.Errorf("%s meta %s: %w", kind, itemID, err)
+	}))
+	payloadMeta := "{}"
+	if kind == kindThinking {
+		payloadMeta = triage.BuildThinkingPayloadMeta(evt.Content, metaStringObject(metaObject, "signature"))
 	}
-	payloadEvt := evt.ProviderEvent
-	payloadEvt.Meta = b.providerMeta(evt)
 	if _, err := b.appendRow(evt, store.Item{
 		ID:        itemID,
 		TurnIndex: turnIndex,
@@ -143,7 +143,7 @@ func (b *builder) streamBlock(evt importir.Event, kind string) error {
 	}, &store.Payload{
 		ID:        payloadID,
 		Kind:      kind,
-		Meta:      triage.BuildPayloadMeta(kind, payloadEvt),
+		Meta:      payloadMeta,
 		Data:      []byte(evt.Content),
 		CreatedAt: now,
 	}, nil); err != nil {

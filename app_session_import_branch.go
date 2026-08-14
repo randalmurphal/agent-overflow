@@ -41,7 +41,9 @@ import (
 // existed. Rows of other branches that happen to sit earlier in the file come
 // along off-chain, exactly as they do for a fork. It carries no `<sessionID>/`
 // subagent sidecar — no fork ever has, and the cut's session id is new, so
-// there is none to carry in either destination.
+// there is none to carry in either destination. Because the cut remints UUIDs,
+// the session-ref move and SQLite's provider-id correlations commit together;
+// otherwise a later rollback or fork would search the new file for old UUIDs.
 //
 // WHERE IT WRITES. Under the slug of the thread's CURRENT workspace, not
 // beside the source. Claude resolves `--resume` against the slug of the cwd it
@@ -86,7 +88,7 @@ func (a *App) materializeImportedClaudeBranch(t store.Thread) store.Thread {
 		return t
 	}
 
-	sessionID, path, _, err := sessionfork.WriteForkFileThroughUUID(sessionfork.ForkCut{
+	sessionID, path, uuidMap, err := sessionfork.WriteForkFileThroughUUID(sessionfork.ForkCut{
 		SourcePath:   state.SourcePath,
 		DestDir:      importedBranchDestDir(t, state.SourcePath),
 		LastKeptUUID: state.LeafUUID,
@@ -98,16 +100,26 @@ func (a *App) materializeImportedClaudeBranch(t store.Thread) store.Thread {
 			t.ID, state.SourcePath, state.LeafUUID, err)
 		return t
 	}
+	itemUpdates, anchorUpdates, err := a.computeClaudeProviderIDRemap(t.ID, uuidMap)
+	if err != nil {
+		if removeErr := os.Remove(path); removeErr != nil && !os.IsNotExist(removeErr) {
+			log.Printf("start session: remove orphaned branch session %s: %v", path, removeErr)
+		}
+		log.Printf("start session: compute imported branch id remap for thread %s: %v", t.ID, err)
+		return t
+	}
 
 	// A TARGETED write, not a whole-row UpdateThread. `t` was read at the top
 	// of startSessionNowWithClaudeResumeAt and everything else about the row is
 	// unread here; writing it back would revert any column another writer moved
 	// since — an auto-generated title (which lands from a detached goroutine
 	// through its own compare-and-swap), an observed branch, a token-usage
-	// refresh. UpdateSessionRef writes session_ref, clears the pending fork
-	// ref, and leaves updated_at alone, which is the same posture every other
-	// session-ref writer takes.
-	if _, err := a.store.UpdateSessionRef(t.ID, sessionID); err != nil {
+	// refresh. UpdateSessionRefAndRemapProviderIDs writes session_ref, clears
+	// the pending fork ref, remaps correlations in the same transaction, and
+	// leaves updated_at alone.
+	if _, err := a.store.UpdateSessionRefAndRemapProviderIDs(
+		t.ID, sessionID, itemUpdates, anchorUpdates,
+	); err != nil {
 		// The file is written but the row does not point at it. Remove it
 		// rather than leave an orphan transcript in the user's Claude home;
 		// the next start tries again from the same source.

@@ -110,7 +110,7 @@ func TestPersistedCompletionMetaSizeBound(t *testing.T) {
 		if got.PayloadID == "" {
 			t.Fatalf("[%d] %s has no completion payload", i, c.name)
 		}
-		data, err := st.GetPayloadData(got.PayloadID)
+		data, err := st.GetPayloadData(got.ThreadID, got.PayloadID)
 		if err != nil {
 			t.Fatalf("[%d] get payload data: %v", i, err)
 		}

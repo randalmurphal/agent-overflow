@@ -640,7 +640,7 @@ func TestHistoryTriggersFireOnRawSQL(t *testing.T) {
 func TestBumpHistoryRevRefusesUnknownThread(t *testing.T) {
 	s := newTestStore(t)
 	mustCreateThread(t, s, "t")
-	if err := seedPayloadRow(s, Payload{ID: "p1", Kind: "command_output", Meta: "{}", Data: []byte("x"), CreatedAt: 1}); err != nil {
+	if err := seedPayloadRow(s, "t", Payload{ID: "p1", Kind: "command_output", Meta: "{}", Data: []byte("x"), CreatedAt: 1}); err != nil {
 		t.Fatalf("insert payload: %v", err)
 	}
 
@@ -652,7 +652,7 @@ func TestBumpHistoryRevRefusesUnknownThread(t *testing.T) {
 		t.Fatalf("UpdatePayloadMeta(unknown thread) err = %v, want wrapped sql.ErrNoRows", err)
 	}
 	// The refusal is a rollback, not a partial write.
-	meta, err := s.GetPayloadMeta("p1")
+	meta, err := s.GetPayloadMeta("t", "p1")
 	if err != nil {
 		t.Fatalf("get payload meta: %v", err)
 	}

@@ -341,7 +341,7 @@ func TestPersistedItemMetaPromotesInputPayload(t *testing.T) {
 		t.Fatalf("expected items.input_payload_id to be set")
 	}
 
-	data, err := st.GetPayloadData(item.InputPayloadID)
+	data, err := st.GetPayloadData(item.ThreadID, item.InputPayloadID)
 	if err != nil {
 		t.Fatalf("get payload data: %v", err)
 	}

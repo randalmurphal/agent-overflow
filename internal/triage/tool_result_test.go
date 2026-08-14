@@ -49,7 +49,7 @@ func TestFileChangeToolResultUpgradesFromTurnDiff(t *testing.T) {
 		t.Fatalf("handle tool start: %v", err)
 	}
 
-	meta := readToolResultMeta(t, st, payloadID)
+	meta := readToolResultMeta(t, st, "t1", payloadID)
 	if meta.InlineDiff == nil || meta.InlineDiff.Availability != "summary_only" {
 		t.Fatalf("expected summary_only inline diff, got %+v", meta.InlineDiff)
 	}
@@ -79,7 +79,7 @@ func TestFileChangeToolResultUpgradesFromTurnDiff(t *testing.T) {
 		t.Fatalf("handle diff: %v", err)
 	}
 
-	upgraded := readToolResultMeta(t, st, payloadID)
+	upgraded := readToolResultMeta(t, st, "t1", payloadID)
 	if upgraded.InlineDiff == nil || upgraded.InlineDiff.Availability != "exact_patch" {
 		t.Fatalf("expected exact_patch inline diff, got %+v", upgraded.InlineDiff)
 	}
@@ -87,7 +87,7 @@ func TestFileChangeToolResultUpgradesFromTurnDiff(t *testing.T) {
 		t.Fatalf("unexpected upgraded files: %+v", upgraded.InlineDiff.Files)
 	}
 
-	data, err := st.GetPayloadData(payloadID)
+	data, err := st.GetPayloadData("t1", payloadID)
 	if err != nil {
 		t.Fatalf("get payload data: %v", err)
 	}
@@ -157,7 +157,7 @@ func TestFileChangeToolResultDoesNotOverwriteExistingExactPatch(t *testing.T) {
 		t.Fatalf("handle tool start: %v", err)
 	}
 
-	initial, err := st.GetPayloadData(payloadID)
+	initial, err := st.GetPayloadData("t1", payloadID)
 	if err != nil {
 		t.Fatalf("get initial payload data: %v", err)
 	}
@@ -184,7 +184,7 @@ func TestFileChangeToolResultDoesNotOverwriteExistingExactPatch(t *testing.T) {
 		t.Fatalf("handle diff: %v", err)
 	}
 
-	after, err := st.GetPayloadData(payloadID)
+	after, err := st.GetPayloadData("t1", payloadID)
 	if err != nil {
 		t.Fatalf("get payload data after diff: %v", err)
 	}
@@ -751,7 +751,7 @@ func TestCommandExecutionToolResultPersistsExactDeletePatch(t *testing.T) {
 		t.Fatalf("handle tool complete: %v", err)
 	}
 
-	meta := readToolResultMeta(t, st, payloadID)
+	meta := readToolResultMeta(t, st, "t1", payloadID)
 	if meta.InlineDiff == nil || meta.InlineDiff.Availability != "exact_patch" {
 		t.Fatalf("expected exact_patch inline diff, got %+v", meta.InlineDiff)
 	}
@@ -759,7 +759,7 @@ func TestCommandExecutionToolResultPersistsExactDeletePatch(t *testing.T) {
 		t.Fatalf("unexpected inline diff files: %+v", meta.InlineDiff.Files)
 	}
 
-	data, err := st.GetPayloadData(payloadID)
+	data, err := st.GetPayloadData("t1", payloadID)
 	if err != nil {
 		t.Fatalf("get payload data: %v", err)
 	}
@@ -850,10 +850,10 @@ func TestCommandExecutionToolResultSkipsDependentAndFailedCommands(t *testing.T)
 		t.Fatalf("handle failed complete: %v", err)
 	}
 
-	if _, err := st.GetPayloadMeta(ToolResultPayloadID("item-command-dependent")); err == nil {
+	if _, err := st.GetPayloadMeta("t1", ToolResultPayloadID("item-command-dependent")); err == nil {
 		t.Fatal("expected no payload for dependent command")
 	}
-	if _, err := st.GetPayloadMeta(ToolResultPayloadID("item-command-failed")); err == nil {
+	if _, err := st.GetPayloadMeta("t1", ToolResultPayloadID("item-command-failed")); err == nil {
 		t.Fatal("expected no payload for failed command")
 	}
 }
@@ -876,9 +876,9 @@ func createToolResultThread(t *testing.T, st *store.Store, id, workspace string)
 	}
 }
 
-func readToolResultMeta(t *testing.T, st *store.Store, payloadID string) ToolResultMeta {
+func readToolResultMeta(t *testing.T, st *store.Store, threadID, payloadID string) ToolResultMeta {
 	t.Helper()
-	pm, err := st.GetPayloadMeta(payloadID)
+	pm, err := st.GetPayloadMeta(threadID, payloadID)
 	if err != nil {
 		t.Fatalf("get payload meta: %v", err)
 	}

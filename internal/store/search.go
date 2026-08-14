@@ -90,7 +90,7 @@ func (s *Store) SearchThreadItems(threadID, query string, limit int) ([]ThreadMe
 	rows, err := s.reader().Query(`
 		SELECT t.id, t.title, t.provider,
 			i.id, i.turn_index, i.kind, i.role, i.summary
-		FROM items i
+		FROM timeline_items i
 		JOIN threads t ON t.id = i.thread_id
 		WHERE i.thread_id = ?
 			AND LOWER(i.summary) LIKE ? ESCAPE '\'
@@ -168,7 +168,7 @@ func (s *Store) searchGlobalItemHits(pattern string, limit int) ([]ThreadMessage
 	rows, err := s.reader().Query(`
 		SELECT t.id, t.title, t.provider,
 			i.id, i.turn_index, i.kind, i.role, i.summary
-		FROM items i
+		FROM timeline_items i
 		JOIN threads t ON t.id = i.thread_id
 		WHERE LOWER(i.summary) LIKE ? ESCAPE '\' AND `+hiddenClause+`
 		ORDER BY i.created_at DESC

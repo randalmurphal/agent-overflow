@@ -230,7 +230,7 @@ func TestE2E_Codex_YieldingCommand_ProjectsAsBackgrounded(t *testing.T) {
 	if completion.PayloadKind != "command_output" {
 		t.Fatalf("completion payload kind = %q, want command_output", completion.PayloadKind)
 	}
-	data, err := app.store.GetPayloadData(completion.PayloadID)
+	data, err := app.store.GetPayloadData(completion.ThreadID, completion.PayloadID)
 	if err != nil {
 		t.Fatalf("completion payload: %v", err)
 	}
