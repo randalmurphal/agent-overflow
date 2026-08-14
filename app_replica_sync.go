@@ -2,11 +2,13 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
 	"agent-overflow/internal/slicesx"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/transport"
 )
 
 // syncThreadWindowTimeout bounds the read transaction SyncThreadWindow
@@ -73,7 +75,7 @@ func (a *App) SyncThreadWindow(threadID string, req SyncThreadWindowRequest) (Sy
 		Epoch: req.HaveEpoch,
 	})
 	if err != nil {
-		return SyncThreadWindowResponse{}, fmt.Errorf("sync thread window: %w", err)
+		return SyncThreadWindowResponse{}, normalizeThreadWindowSyncError(ctx, err)
 	}
 
 	out := SyncThreadWindowResponse{
@@ -88,4 +90,16 @@ func (a *App) SyncThreadWindow(threadID string, req SyncThreadWindowRequest) (Sy
 		out.Page = &page
 	}
 	return out, nil
+}
+
+func normalizeThreadWindowSyncError(ctx context.Context, err error) error {
+	if ctxErr := ctx.Err(); errors.Is(ctxErr, context.DeadlineExceeded) {
+		return fmt.Errorf(
+			"%w: thread history read timed out after %s: %w",
+			transport.ErrTemporarilyUnavailable,
+			syncThreadWindowTimeout,
+			ctxErr,
+		)
+	}
+	return fmt.Errorf("sync thread window: %w", err)
 }

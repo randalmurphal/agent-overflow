@@ -23,15 +23,34 @@ type EditDiffItem struct {
 // as real as the parent's.
 func (s *Store) ListEditDiffItems(threadID string) ([]EditDiffItem, error) {
 	rows, err := s.reader().Query(`
-		SELECT items.id, items.payload_id, items.turn_index, items.item_index,
-		       items.created_at, payloads.kind, payloads.meta
-		  FROM timeline_items AS items
-		  JOIN timeline_payloads AS payloads ON payloads.thread_id = items.thread_id AND payloads.id = items.payload_id
-		 WHERE items.thread_id = ?
-		   AND payloads.kind IN ('tool_result', 'diff')
-		   AND length(payloads.data) > 0
-		 ORDER BY items.turn_index ASC, items.item_index ASC`,
-		threadID,
+		WITH edit_items AS (
+			SELECT items.id, items.payload_id, items.turn_index, items.item_index,
+			       items.created_at, payloads.kind, payloads.meta, payloads.data
+			  FROM items AS items
+			  JOIN payloads AS payloads
+			    ON payloads.thread_id = items.thread_id AND payloads.id = items.payload_id
+			 WHERE items.thread_id = ?
+			UNION ALL
+			SELECT items.id, items.payload_id, items.turn_index, items.item_index,
+			       items.created_at,
+			       COALESCE(local_payloads.kind, imported_payloads.kind),
+			       COALESCE(local_payloads.meta, imported_payloads.meta),
+			       COALESCE(local_payloads.data, imported_payloads.data)
+			  FROM thread_import_chunks AS refs
+			  JOIN import_history_items AS items ON items.chunk_id = refs.chunk_id
+			  LEFT JOIN payloads AS local_payloads
+			    ON local_payloads.thread_id = refs.thread_id AND local_payloads.id = items.payload_id
+			  LEFT JOIN import_history_payloads AS imported_payloads
+			    ON imported_payloads.chunk_id = items.chunk_id AND imported_payloads.id = items.payload_id
+			  LEFT JOIN thread_import_item_overrides AS overrides
+			    ON overrides.thread_id = refs.thread_id AND overrides.item_id = items.id
+			 WHERE refs.thread_id = ? AND overrides.item_id IS NULL
+		)
+		SELECT id, payload_id, turn_index, item_index, created_at, kind, meta
+		  FROM edit_items
+		 WHERE kind IN ('tool_result', 'diff') AND length(data) > 0
+		 ORDER BY turn_index ASC, item_index ASC`,
+		threadID, threadID,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("store: list edit diff items for %s: %w", threadID, err)
@@ -68,15 +87,31 @@ type TurnEditDiffPatch struct {
 // deduplicated (the same file edited twice yields two patch sections).
 func (s *Store) ListTurnEditDiffPatches(threadID string, turnIndex int) ([]TurnEditDiffPatch, error) {
 	rows, err := s.reader().Query(`
-		SELECT payloads.id, payloads.data
-		  FROM timeline_items AS items
-		  JOIN timeline_payloads AS payloads ON payloads.thread_id = items.thread_id AND payloads.id = items.payload_id
-		 WHERE items.thread_id = ?
-		   AND items.turn_index = ?
-		   AND payloads.kind IN ('tool_result', 'diff')
-		   AND length(payloads.data) > 0
-		 ORDER BY items.item_index ASC`,
-		threadID, turnIndex,
+		WITH edit_items AS (
+			SELECT items.payload_id, items.item_index, payloads.kind, payloads.data
+			  FROM items AS items
+			  JOIN payloads AS payloads
+			    ON payloads.thread_id = items.thread_id AND payloads.id = items.payload_id
+			 WHERE items.thread_id = ? AND items.turn_index = ?
+			UNION ALL
+			SELECT items.payload_id, items.item_index,
+			       COALESCE(local_payloads.kind, imported_payloads.kind),
+			       COALESCE(local_payloads.data, imported_payloads.data)
+			  FROM thread_import_chunks AS refs
+			  JOIN import_history_items AS items ON items.chunk_id = refs.chunk_id
+			  LEFT JOIN payloads AS local_payloads
+			    ON local_payloads.thread_id = refs.thread_id AND local_payloads.id = items.payload_id
+			  LEFT JOIN import_history_payloads AS imported_payloads
+			    ON imported_payloads.chunk_id = items.chunk_id AND imported_payloads.id = items.payload_id
+			  LEFT JOIN thread_import_item_overrides AS overrides
+			    ON overrides.thread_id = refs.thread_id AND overrides.item_id = items.id
+			 WHERE refs.thread_id = ? AND items.turn_index = ? AND overrides.item_id IS NULL
+		)
+		SELECT payload_id, data
+		  FROM edit_items
+		 WHERE kind IN ('tool_result', 'diff') AND length(data) > 0
+		 ORDER BY item_index ASC`,
+		threadID, turnIndex, threadID, turnIndex,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("store: list turn edit diff patches for %s/%d: %w", threadID, turnIndex, err)

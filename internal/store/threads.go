@@ -35,13 +35,12 @@ const threadColumns = `id, COALESCE(project_id, ''),
       WHERE turns.thread_id = threads.id AND completed_at IS NOT NULL),
     archived, last_read_at, pinned_at,
     worktree_setup_state, import_source,
-    EXISTS (
+	EXISTS (
       SELECT 1
         FROM proposed_plans
 		JOIN timeline_items AS items
           ON items.thread_id = proposed_plans.thread_id
          AND items.id = proposed_plans.item_id
-		JOIN timeline_payloads AS payloads ON payloads.thread_id = items.thread_id AND payloads.id = items.payload_id
        WHERE proposed_plans.thread_id = threads.id
          AND proposed_plans.version = (
            SELECT MAX(latest.version)
@@ -51,7 +50,18 @@ const threadColumns = `id, COALESCE(project_id, ''),
          AND proposed_plans.implemented_at = 0
          AND items.role = 'assistant'
          AND items.status = 'completed'
-         AND payloads.kind = 'proposed_plan'
+         AND COALESCE(
+           (SELECT local_payload.kind
+              FROM payloads AS local_payload
+             WHERE local_payload.thread_id = items.thread_id
+               AND local_payload.id = items.payload_id),
+           (SELECT imported_payload.kind
+              FROM thread_import_chunks AS refs
+              JOIN import_history_payloads AS imported_payload
+                ON imported_payload.chunk_id = refs.chunk_id
+               AND imported_payload.id = items.payload_id
+             WHERE refs.thread_id = items.thread_id)
+         ) = 'proposed_plan'
     ),
     COALESCE((
       SELECT CASE

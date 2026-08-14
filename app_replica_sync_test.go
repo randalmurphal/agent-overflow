@@ -1,11 +1,46 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"testing"
+	"time"
 
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/transport"
 	"agent-overflow/internal/triage"
 )
+
+func TestNormalizeThreadWindowSyncErrorClassifiesOnlyExpiredContexts(t *testing.T) {
+	storeErr := errors.New("sql: Rows are closed")
+
+	ordinary := normalizeThreadWindowSyncError(context.Background(), storeErr)
+	if errors.Is(ordinary, transport.ErrTemporarilyUnavailable) {
+		t.Fatalf("ordinary store error was mislabeled transient: %v", ordinary)
+	}
+	if !errors.Is(ordinary, storeErr) {
+		t.Fatalf("ordinary store error lost its cause: %v", ordinary)
+	}
+	canceled, cancelCanceled := context.WithCancel(context.Background())
+	cancelCanceled()
+	canceledErr := normalizeThreadWindowSyncError(canceled, storeErr)
+	if errors.Is(canceledErr, transport.ErrTemporarilyUnavailable) {
+		t.Fatalf("canceled sync error was mislabeled as a timeout: %v", canceledErr)
+	}
+
+	expired, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	cancel()
+	transient := normalizeThreadWindowSyncError(expired, storeErr)
+	if !errors.Is(transient, transport.ErrTemporarilyUnavailable) {
+		t.Fatalf("expired sync error = %v, want transient classification", transient)
+	}
+	if !errors.Is(transient, context.DeadlineExceeded) {
+		t.Fatalf("expired sync error lost its context cause: %v", transient)
+	}
+	if errors.Is(transient, storeErr) {
+		t.Fatal("driver artifact survived after the context cause explained the failure")
+	}
+}
 
 func appHistoryStamp(t *testing.T, a *App, threadID string) store.HistoryStamp {
 	t.Helper()

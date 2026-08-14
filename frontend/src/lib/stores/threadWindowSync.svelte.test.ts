@@ -37,6 +37,7 @@ import type { Item } from '../types/models';
 import type { SyncThreadWindowResult } from './bindings';
 import type { PaneScrollController } from './threadPaneShared';
 import type { PagedItems } from '../../../bindings/agent-overflow/internal/store/models';
+import { TransportError } from '../transport/wsClient';
 
 type SyncRequest = { anchorItemId: string; itemBudget: number; haveEpoch: number; haveRev: number };
 
@@ -274,6 +275,60 @@ describe('cold-open window sync', () => {
     expect(pane.items).toEqual([]);
     expect(pane.generalError).toContain('no longer exists');
     expect(await getReplicaWindow(THREAD_ID)).toBeNull();
+  });
+
+  it('classifies a transient empty-window failure and retries it in place', async () => {
+    const pane = createThreadPane();
+    let attempts = 0;
+    setBindingMock('SyncThreadWindow', async () => {
+      attempts += 1;
+      if (attempts === 1) {
+        throw new TransportError('temporarily_unavailable', 'thread history read timed out');
+      }
+      return {
+        status: 'stale',
+        epoch: 1,
+        rev: 2,
+        generation: 'gen-1',
+        page: page([row('i0')]),
+      };
+    });
+
+    await pane.switchThread(makeThread({ id: THREAD_ID }));
+    expect(pane.items).toEqual([]);
+    expect(pane.generalErrorKind).toBe('history-load');
+    expect(pane.generalError).toBe('Thread history took too long to load.');
+
+    await Promise.all([pane.retryHistoryLoad(), pane.retryHistoryLoad()]);
+    expect(attempts).toBe(2);
+    expect(pane.items.map((item) => item.id)).toEqual(['i0']);
+    expect(pane.generalError).toBeNull();
+    expect(pane.generalErrorKind).toBeNull();
+  });
+
+  it('does not clear a newer unrelated error when a history retry succeeds', async () => {
+    const pane = createThreadPane();
+    let attempts = 0;
+    setBindingMock('SyncThreadWindow', async () => {
+      attempts += 1;
+      if (attempts === 1) throw new Error('database busy');
+      return {
+        status: 'stale',
+        epoch: 1,
+        rev: 2,
+        generation: 'gen-1',
+        page: page([row('i0')]),
+      };
+    });
+
+    await pane.switchThread(makeThread({ id: THREAD_ID }));
+    expect(pane.generalErrorKind).toBe('history-load');
+    pane.setGeneralError('Rename failed');
+
+    await pane.retryHistoryLoad();
+    expect(pane.items.map((item) => item.id)).toEqual(['i0']);
+    expect(pane.generalError).toBe('Rename failed');
+    expect(pane.generalErrorKind).toBeNull();
   });
 
   it('discards a replica read superseded by a newer switch', async () => {

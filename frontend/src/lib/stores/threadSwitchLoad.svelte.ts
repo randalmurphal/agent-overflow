@@ -69,6 +69,7 @@ import {
   beginThreadLiveStateHydration,
   finishThreadLiveStateHydration,
 } from './threadStatuses.svelte';
+import { isTemporarilyUnavailableError } from './transportStatus.svelte';
 import {
   normalizeContextWindowForThread,
   seedContextWindow,
@@ -138,6 +139,8 @@ export interface ThreadSwitchLoadOptions {
   setContextWindow(next: ContextWindow | null): void;
   /** The pane's untagged general-error slot write (clears `generalErrorKind`). */
   setGeneralError(message: string | null): void;
+  /** Set or conditionally clear the retryable thread-history error slot. */
+  setHistoryLoadError(message: string | null): void;
   setProviderBanner(status: ProviderStatusEvent | null | undefined): void;
   setProviderSessionAccount(account: ProviderSessionAccountEvent | null): void;
   setSendInFlight(value: boolean): void;
@@ -178,6 +181,8 @@ export interface ThreadSwitchLoad {
   switchThread(newThread: Thread): Promise<void>;
   /** Re-fetch the visible window after a transport gap, without resetting pane UI state. */
   refreshFromBackend(): Promise<void>;
+  /** Retry the failed initial history window without resetting the pane. */
+  retryHistoryLoad(): Promise<void>;
   /** Drop every cached copy of a thread's window (L1, priors, replica, stamp). */
   dropCachedWindow(threadId: string): void;
   /** Tear down the terminals a draft placeholder opened. */
@@ -266,6 +271,12 @@ export function createThreadSwitchLoad(
    * opening a thread mid-stream would drop the row it is streaming into.
    */
   let liveTouchedDuringSync: Set<string> | null = null;
+  let failedHistoryLoad: {
+    threadId: string;
+    generation: number;
+    anchorItemId: string;
+  } | null = null;
+  let historyRetryPromise: Promise<void> | null = null;
   /**
    * The attestation for the window THIS PANE currently holds
    * (docs/specs/thread-replica-sync.md §3.4). Attestation is a property
@@ -584,6 +595,8 @@ export function createThreadSwitchLoad(
    * side effects.
    */
   function resetIncomingPaneState(newThread: Thread): void {
+    failedHistoryLoad = null;
+    historyRetryPromise = null;
     options.pendingInteractiveState.clear();
     options.setContextWindow(seedContextWindow(newThread));
     options.setProviderBanner(undefined);
@@ -947,6 +960,10 @@ export function createThreadSwitchLoad(
         if (gen !== options.getSwitchGeneration()) return;
       }
       applySyncResponse(response, newThread, paintSource, sentStamp, lineageChanged);
+      if (gen === options.getSwitchGeneration()) {
+        failedHistoryLoad = null;
+        options.setHistoryLoadError(null);
+      }
     } catch (err) {
       if (gen !== options.getSwitchGeneration()) return;
       console.error('Failed to sync thread window:', err);
@@ -957,8 +974,16 @@ export function createThreadSwitchLoad(
       }
       options.replaceTimelineItems([]);
       options.timelineWindow.resetAfterLoadError();
-      options.setGeneralError(`Failed to load thread items: ${errString(err)}`);
-      addToast('error', 'Failed to load thread items');
+      failedHistoryLoad = {
+        threadId,
+        generation: gen,
+        anchorItemId: sliceAnchorId,
+      };
+      options.setHistoryLoadError(
+        isTemporarilyUnavailableError(err)
+          ? 'Thread history took too long to load.'
+          : `Failed to load thread items: ${errString(err)}`,
+      );
     } finally {
       // Only when this leg is still the current one: a newer switch has
       // already armed its own set, and clearing it here would blind that
@@ -1223,6 +1248,41 @@ export function createThreadSwitchLoad(
     }
   }
 
+  function retryHistoryLoad(): Promise<void> {
+    if (historyRetryPromise) return historyRetryPromise;
+    const failed = failedHistoryLoad;
+    const currentThread = options.getThread();
+    if (
+      !failed
+      || !currentThread
+      || currentThread.id !== failed.threadId
+      || options.getSwitchGeneration() !== failed.generation
+    ) return Promise.resolve();
+
+    const retry = (async () => {
+      options.setLoading(true);
+      liveTouchedDuringSync = new Set();
+      try {
+        await runItemWindowSync(
+          currentThread,
+          failed.generation,
+          null,
+          failed.anchorItemId,
+        );
+      } finally {
+        if (options.getSwitchGeneration() === failed.generation) {
+          options.setLoading(false);
+        }
+      }
+    })();
+    historyRetryPromise = retry;
+    const releaseRetry = () => {
+      if (historyRetryPromise === retry) historyRetryPromise = null;
+    };
+    void retry.then(releaseRetry, releaseRetry);
+    return retry;
+  }
+
   function resetPipeline(): void {
     // A switchThread that ran clear() mid-flight could otherwise leave
     // the spinner-threshold timer pending. When it fires it would flip
@@ -1246,6 +1306,8 @@ export function createThreadSwitchLoad(
     // sync" and refuse to drop.
     windowAttestation = null;
     liveTouchedDuringSync = null;
+    failedHistoryLoad = null;
+    historyRetryPromise = null;
     pastSpinnerThreshold = false;
   }
 
@@ -1255,6 +1317,7 @@ export function createThreadSwitchLoad(
     },
     switchThread,
     refreshFromBackend,
+    retryHistoryLoad,
     dropCachedWindow,
     closeDraftPlaceholderTerminals,
     migrateDraftPlaceholderTerminals,

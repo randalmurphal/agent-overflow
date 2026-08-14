@@ -90,6 +90,11 @@ export function isTransportClassError(err: unknown): boolean {
     || (err instanceof TransportError && err.code === 'timeout');
 }
 
+/** Whether the backend completed the RPC with a safe-to-retry transient error. */
+export function isTemporarilyUnavailableError(err: unknown): boolean {
+  return err instanceof TransportError && err.code === 'temporarily_unavailable';
+}
+
 /**
  * Whether an RPC rejection means "this backend exposes no such method to
  * this caller".

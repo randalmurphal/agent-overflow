@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"hash/fnv"
 	"log"
@@ -288,6 +289,7 @@ func (d *Dispatcher) ResolveForOrigin(id uint32, name string, isLoopback bool) (
 //   - ErrCodeMethodNotFound: caller used the wrong ID/name (handled by Resolve).
 //   - ErrCodeBadParams:      wire input failed to decode for a declared type.
 //   - ErrCodeMethodError:    the method itself returned a non-nil error.
+//   - ErrCodeTemporarilyUnavailable: the method hit a retryable deadline.
 //   - ErrCodeInternal:       reflection panicked or marshaling failed.
 //
 // Wire messages for ErrCodeMethodError and ErrCodeInternal are
@@ -457,8 +459,12 @@ func (d *Dispatcher) processResults(m *Method, results []reflect.Value, exposeEr
 				// output for the cid.
 				message = methodErr.Error()
 			}
+			code := ErrCodeMethodError
+			if errors.Is(methodErr, ErrTemporarilyUnavailable) {
+				code = ErrCodeTemporarilyUnavailable
+			}
 			return nil, &FrameError{
-				Code:    ErrCodeMethodError,
+				Code:    code,
 				Message: message,
 			}
 		}

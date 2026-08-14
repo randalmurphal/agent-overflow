@@ -406,6 +406,10 @@ Stamps and page MUST be read in one read-pool transaction (WAL
 snapshot isolation) so the stamps attest exactly the returned rows.
 The handler is read-only and runs on the read pool — it never touches
 the single writer, so it stays fast even mid-turn (the wave 1 lesson).
+Item ids are selected first and hydrated through indexed local/imported
+physical branches. Joining the compound `timeline_payloads` view here is
+forbidden: SQLite materializes that view before applying the selected item
+window, turning a bounded open into a database-wide payload scan.
 
 ## 6. IndexedDB replica
 
@@ -573,6 +577,7 @@ the freshly returned window, so there is nothing stale to page into.
 | Client stamp lost (gap, missed events) | Understated rev ⇒ `stale` ⇒ one redundant fetch. Never a false `fresh` |
 | Backend DB replaced (`RestoreFrom`, future restore paths) | Generation mismatch on manifest ⇒ replica cleared wholesale |
 | Thread deleted while cached | The deleting client drops the entry on the spot; any other client drops it on the `gone` answer (§4 — there is no deletion event) |
+| Initial history read exceeds its bounded deadline | Backend returns `temporarily_unavailable`; an existing paint remains visible, while an empty pane shows an in-place Retry action that re-runs only the history window sync |
 | IndexedDB unavailable/quota/corrupt | Logged loudly, replica disabled for the session, behavior = today's cold open |
 | Commit rejected without saying whether it landed (watchdog fires on a transaction that then commits) | The page marks its accounting mirror in doubt and re-reads the stored record before the next use of it; the stored record is authoritative and was already consistent, so nothing is stranded |
 | Two pages on ONE origin (a `--connect` window, a second browser tab) | Envelopes are per thread, so the last writer of a thread wins it; the accounting record is merged inside each commit's transaction, so neither page unaccounts the other's envelopes and the caps hold over the union |

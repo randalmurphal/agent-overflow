@@ -165,6 +165,73 @@ func TestSharedImportHistoryPagingAndSubagentExpansionUseLogicalTimeline(t *test
 	}
 }
 
+func TestSharedImportHistoryEditDiffReadsHonorPayloadOverlays(t *testing.T) {
+	s := newTestStore(t)
+	newImportTargetThread(t, s, "shared-edits")
+	batch := importBatchFixture("shared-edits")
+	batch.Rows[1].Payload.Kind = "tool_result"
+	batch.Rows[1].Payload.Meta = `{"source":"import"}`
+	batch.Rows[1].Payload.Data = []byte("--- a/file\n+++ b/file\n")
+	if err := s.ApplyImportBatch("shared-edits", batch); err != nil {
+		t.Fatalf("apply import: %v", err)
+	}
+
+	assertEdit := func(wantMeta, wantData string) {
+		t.Helper()
+		items, err := s.ListEditDiffItems("shared-edits")
+		if err != nil {
+			t.Fatalf("list edit diff items: %v", err)
+		}
+		if len(items) != 1 || items[0].ItemID != "item-tool" || items[0].PayloadMeta != wantMeta {
+			t.Fatalf("edit items = %+v, want imported item with meta %s", items, wantMeta)
+		}
+		patches, err := s.ListTurnEditDiffPatches("shared-edits", 1)
+		if err != nil {
+			t.Fatalf("list turn edit patches: %v", err)
+		}
+		if len(patches) != 1 || patches[0].PayloadID != "payload-out" || string(patches[0].Data) != wantData {
+			t.Fatalf("edit patches = %+v, want payload-out %q", patches, wantData)
+		}
+	}
+
+	assertEdit(`{"source":"import"}`, "--- a/file\n+++ b/file\n")
+	if err := s.ReplacePayloadData(
+		"shared-edits",
+		"payload-out",
+		[]byte("--- a/new\n+++ b/new\n"),
+		`{"source":"overlay"}`,
+		importTurnComplete+1,
+	); err != nil {
+		t.Fatalf("replace imported payload through local overlay: %v", err)
+	}
+	assertEdit(`{"source":"overlay"}`, "--- a/new\n+++ b/new\n")
+}
+
+func TestSharedImportHistoryActionablePlanProbeUsesImportedPayload(t *testing.T) {
+	s := newTestStore(t)
+	newImportTargetThread(t, s, "shared-plan")
+	batch := importBatchFixture("shared-plan")
+	batch.Rows = batch.Rows[1:]
+	batch.Rows[0].Item.ID = "plan-1"
+	batch.Rows[0].Item.PayloadID = "plan-payload"
+	batch.Rows[0].Payload.ID = "plan-payload"
+	batch.Rows[0].Payload.Kind = "proposed_plan"
+	if err := s.ApplyImportBatch("shared-plan", batch); err != nil {
+		t.Fatalf("apply import: %v", err)
+	}
+	if _, err := s.EnsureProposedPlanState("shared-plan", "plan-1", importTurnComplete+1); err != nil {
+		t.Fatalf("ensure proposed plan state: %v", err)
+	}
+
+	threads, err := s.ListThreadsWithItems()
+	if err != nil {
+		t.Fatalf("list threads with items: %v", err)
+	}
+	if len(threads) != 1 || !threads[0].HasActionableProposedPlan {
+		t.Fatalf("threads = %+v, want imported actionable plan", threads)
+	}
+}
+
 func TestCloneImportedHistoryPrefixSharesWholeChunksAndCopiesOnlyBoundaryTail(t *testing.T) {
 	s := newTestStore(t)
 	for _, threadID := range []string{"prefix-source", "prefix-target"} {

@@ -7,11 +7,13 @@ package store
 // mutable through aliases.
 //
 // The existing items/payloads tables remain the mutable, thread-owned overlay.
-// timeline_items and timeline_payloads are the only read surfaces: a local
-// override explicitly hides its imported item, and a local payload shadows an
-// imported payload of the same logical id. The overlap triggers make a thread
-// with two conflicting imported chunks unconstructible even for a future raw
-// SQL caller.
+// timeline_items and timeline_payloads define the logical read semantics: a
+// local override explicitly hides its imported item, and a local payload
+// shadows an imported payload of the same logical id. Hot item hydration may
+// implement those semantics with indexed physical-branch probes rather than
+// joining the compound views. The overlap triggers make a thread with two
+// conflicting imported chunks unconstructible even for a future raw SQL
+// caller.
 const sharedImportHistoryMigrationSQL = `
 CREATE TABLE import_history_chunks (
     id             TEXT    PRIMARY KEY,

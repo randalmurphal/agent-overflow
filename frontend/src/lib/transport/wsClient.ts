@@ -131,7 +131,8 @@ export class DisconnectedError extends Error {
 
 // TransportError wraps a server-side FrameError. The `code` is exposed
 // so callers can branch on the stable token strings declared in
-// internal/transport/frame.go (method_not_found, bad_params, etc).
+// internal/transport/frame.go (method_not_found, bad_params,
+// temporarily_unavailable, etc).
 export class TransportError extends Error {
   code: string;
   constructor(code: string, message: string) {

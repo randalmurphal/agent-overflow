@@ -221,42 +221,24 @@ func (s *Store) ListSubagentDescendants(threadID, rootItemID string) ([]Item, er
 	if rootItemID == "" {
 		return []Item{}, nil
 	}
-	// Placeholder order: CTE base hop (threadID, rootItemID), CTE
-	// recursive hop (threadID), selected ranking join (threadID, cap),
-	// outer hydrate join (threadID). CROSS JOINs are PK probes per rel /
-	// selected row — see descendantsCTEFromRoots plan notes.
-	rows, err := s.reader().Query(descendantsCTEFromRoots(1)+`,
-		selected(id) AS (
-			SELECT id FROM (
-				SELECT items.id AS id
-				  FROM rel
-				  CROSS JOIN timeline_items AS items ON items.thread_id = ? AND items.id = rel.id
-				 ORDER BY items.turn_index DESC, items.item_index DESC
-				 LIMIT ?
-			)
-		)
-		SELECT `+itemColumns+`
-		  FROM selected
-		  CROSS JOIN timeline_items AS items ON items.thread_id = ? AND items.id = selected.id
-		  LEFT JOIN timeline_payloads AS payloads ON payloads.thread_id = items.thread_id AND payloads.id = items.payload_id
-		 ORDER BY items.turn_index, items.item_index`,
-		threadID, rootItemID, threadID, threadID, maxSubagentDescendants, threadID,
+	// Placeholder order: recursive base hop (threadID, rootItemID),
+	// recursive hop (threadID), then the ranked logical-item lookup
+	// (threadID, cap). queryHydratedTimelineItems appends the two physical
+	// source probes and keeps all of them on the same read pool.
+	items, err := queryHydratedTimelineItems(
+		s.reader(), threadID,
+		descendantsCTEFromRoots(1)+`
+		SELECT id FROM (
+			SELECT items.id AS id
+			  FROM rel
+			  CROSS JOIN timeline_items AS items ON items.thread_id = ? AND items.id = rel.id
+			 ORDER BY items.turn_index DESC, items.item_index DESC
+			 LIMIT ?
+		)`,
+		threadID, rootItemID, threadID, threadID, maxSubagentDescendants,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("store: list subagent descendants for %s/%s: %w", threadID, rootItemID, err)
-	}
-	defer rows.Close()
-
-	items := []Item{}
-	for rows.Next() {
-		item, err := scanItemRow(rows)
-		if err != nil {
-			return nil, fmt.Errorf("store: scan subagent descendant row: %w", err)
-		}
-		items = append(items, item)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("store: iterate subagent descendants for %s/%s: %w", threadID, rootItemID, err)
 	}
 	decorated, err := s.decorateProposedPlanItems(s.reader(), threadID, items)
 	if err != nil {

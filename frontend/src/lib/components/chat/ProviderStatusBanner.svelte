@@ -24,6 +24,7 @@
   let { pane }: { pane: ThreadPane } = $props();
 
   let reconnecting = $state(false);
+  let retryingHistory = $state(false);
   let rechecking = $state(false);
 
   // Provider-level status is keyed by the pane's current provider. When
@@ -41,14 +42,20 @@
     return evt.status === 'ready' ? null : evt;
   });
 
-  let sessionBannerVisible = $derived(!!pane.thread && (reconnecting || !!pane.generalError));
+  let sessionBannerVisible = $derived(
+    !!pane.thread && (reconnecting || retryingHistory || !!pane.generalError),
+  );
   let sessionBannerClasses = $derived(
-    reconnecting
+    reconnecting || retryingHistory
       ? 'bg-warning/15 border-warning/30 text-warning'
       : 'bg-error/15 border-error/30 text-error',
   );
   let sessionMessage = $derived(
-    reconnecting ? 'Reconnecting…' : (pane.generalError ?? 'Provider error'),
+    reconnecting
+      ? 'Reconnecting…'
+      : retryingHistory
+        ? 'Retrying thread history…'
+        : (pane.generalError ?? 'Provider error'),
   );
 
   // Status-level banner (install / version / auth) — colour + copy are
@@ -124,6 +131,16 @@
       pane.setGeneralError(userFacingError(err));
     } finally {
       reconnecting = false;
+    }
+  }
+
+  async function handleHistoryRetry() {
+    if (retryingHistory || pane.generalErrorKind !== 'history-load') return;
+    retryingHistory = true;
+    try {
+      await pane.retryHistoryLoad();
+    } finally {
+      retryingHistory = false;
     }
   }
 
@@ -236,13 +253,21 @@
   {#if sessionBannerVisible && pane.thread}
     <div transition:fade={{ duration: 150 }} role="alert" aria-live="assertive" class="border-b {sessionBannerClasses} px-4 py-2 flex items-center gap-2">
       <p class="text-xs flex-1 line-clamp-2" title={sessionMessage}>{sessionMessage}</p>
-      {#if !reconnecting}
+      {#if pane.generalErrorKind === 'session'}
         <button
           onclick={handleReconnect}
           disabled={reconnecting}
           class="text-xs px-2 py-0.5 rounded border border-current/30 hover:bg-fg/10 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
         >
           {reconnecting ? 'Reconnecting...' : 'Reconnect'}
+        </button>
+      {:else if pane.generalErrorKind === 'history-load'}
+        <button
+          onclick={handleHistoryRetry}
+          disabled={retryingHistory}
+          class="text-xs px-2 py-0.5 rounded border border-current/30 hover:bg-fg/10 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+        >
+          {retryingHistory ? 'Retrying…' : 'Retry'}
         </button>
       {/if}
       <button

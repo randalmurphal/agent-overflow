@@ -1,6 +1,9 @@
 package transport
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"errors"
+)
 
 // FrameType discriminates the wire frames. Encoded as the "type" field
 // in every frame so the decoder can route without sniffing other fields.
@@ -99,17 +102,26 @@ type FrameError struct {
 //   - method_error:     the registered method returned a non-nil error.
 //     Wire message contains a generic prose; the full
 //     error is logged server-side under a correlation id.
+//   - temporarily_unavailable: the method could not complete before its
+//     bounded deadline. Retrying is safe and may succeed.
 //   - internal:         dispatcher panicked or hit an internal failure.
 //     Wire message is generic; full panic + stack is
 //     logged server-side under a correlation id.
 //   - shutting_down:    server is mid-shutdown; this RPC was dropped.
 const (
-	ErrCodeMethodNotFound = "method_not_found"
-	ErrCodeBadParams      = "bad_params"
-	ErrCodeMethodError    = "method_error"
-	ErrCodeInternal       = "internal"
-	ErrCodeShuttingDown   = "shutting_down"
+	ErrCodeMethodNotFound         = "method_not_found"
+	ErrCodeBadParams              = "bad_params"
+	ErrCodeMethodError            = "method_error"
+	ErrCodeTemporarilyUnavailable = "temporarily_unavailable"
+	ErrCodeInternal               = "internal"
+	ErrCodeShuttingDown           = "shutting_down"
 )
+
+// ErrTemporarilyUnavailable marks a method failure as transient at the RPC
+// boundary. Methods wrap this sentinel together with their concrete cause;
+// the dispatcher preserves the usual loopback/LAN message-redaction policy
+// while exposing the stable code clients need to offer a truthful retry.
+var ErrTemporarilyUnavailable = errors.New("temporarily unavailable")
 
 // batchEventEntry is one event inside a batch frame. It carries the
 // subset of Event fields the client needs to dispatch: channel, seq,

@@ -276,8 +276,18 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
   // turn-start clear path can target session-death banners specifically
   // without wiping orthogonal errors (rename failed, git status, thread
   // load) that happen to be visible. `null` ≡ "any kind" or "no error";
-  // `'session'` ≡ the message came from a provider session_died event.
-  let generalErrorKind: 'session' | null = $state(null);
+  // `'session'` ≡ a provider session_died event; `'history-load'` ≡
+  // the initial history window failed and can be retried in place.
+  let generalErrorKind: 'session' | 'history-load' | null = $state(null);
+  function updateHistoryLoadError(message: string | null): void {
+    if (message !== null) {
+      generalError = message;
+      generalErrorKind = 'history-load';
+    } else if (generalErrorKind === 'history-load') {
+      generalError = null;
+      generalErrorKind = null;
+    }
+  }
   let loading: boolean = $state(false);
   // The spinner-flash gate (`pastSpinnerThreshold` + its timer), the
   // in-flight live-arrival ledger, the window attestation and the
@@ -820,6 +830,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       generalError = message;
       generalErrorKind = null;
     },
+    setHistoryLoadError: updateHistoryLoadError,
     setProviderBanner: (status) => {
       providerBanner = status;
     },
@@ -1242,6 +1253,10 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
      */
     refreshFromBackend(): Promise<void> {
       return switchLoad.refreshFromBackend();
+    },
+
+    retryHistoryLoad(): Promise<void> {
+      return switchLoad.retryHistoryLoad();
     },
 
     clear(): void {
@@ -1776,6 +1791,10 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     setSessionError(message: string): void {
       generalError = message;
       generalErrorKind = 'session';
+    },
+
+    setHistoryLoadError(message: string | null): void {
+      updateHistoryLoadError(message);
     },
 
     clearGeneralError(): void {

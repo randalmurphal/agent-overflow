@@ -59,9 +59,18 @@ describe('<ProviderStatusBanner>', () => {
     expect(queryByText('session exploded')).toBeNull();
   });
 
+  it('does not offer provider reconnect for an unrelated pane error', async () => {
+    const pane = await buildPane();
+    pane.setGeneralError('rename failed');
+
+    const { queryByText } = render(ProviderStatusBanner, { props: { pane } });
+    expect(queryByText('Reconnect')).toBeNull();
+    expect(queryByText('Retry')).toBeNull();
+  });
+
   it('reconnects through the binding from the session banner', async () => {
     const pane = await buildPane();
-    pane.setGeneralError('session exploded');
+    pane.setSessionError('session exploded');
     const reconnect = setBindingMock('ReconnectSession', async () => {});
 
     const { getByText } = render(ProviderStatusBanner, { props: { pane } });
@@ -78,7 +87,7 @@ describe('<ProviderStatusBanner>', () => {
   // still see stale activeTurn / streaming flags afterward.
   it('refreshes pane state from backend after a successful reconnect', async () => {
     const pane = await buildPane();
-    pane.setGeneralError('session exploded');
+    pane.setSessionError('session exploded');
     setBindingMock('ReconnectSession', async () => {});
     const refresh = vi.spyOn(pane, 'refreshFromBackend').mockResolvedValue();
 
@@ -88,6 +97,18 @@ describe('<ProviderStatusBanner>', () => {
     await waitFor(() => {
       expect(refresh).toHaveBeenCalledOnce();
     });
+  });
+
+  it('offers an in-place retry for a history-load error', async () => {
+    const pane = await buildPane();
+    pane.setHistoryLoadError('Thread history took too long to load.');
+    const retry = vi.spyOn(pane, 'retryHistoryLoad').mockResolvedValue();
+
+    const { getByText, queryByText } = render(ProviderStatusBanner, { props: { pane } });
+    expect(queryByText('Reconnect')).toBeNull();
+    await fireEvent.click(getByText('Retry'));
+
+    expect(retry).toHaveBeenCalledOnce();
   });
 
   // Regression: when the backend emits `status='not_found'` without an

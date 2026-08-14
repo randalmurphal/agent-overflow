@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"regexp"
 	"strings"
 	"sync"
@@ -54,6 +55,13 @@ func (a *fakeApp) Save(payload string) error {
 		return errors.New("save refused")
 	}
 	return nil
+}
+
+// Transient returns a retryable method error so the dispatcher can pin the
+// stable code independently of its origin-sensitive message redaction.
+func (a *fakeApp) Transient() error {
+	a.record("Transient")
+	return fmt.Errorf("%w: read deadline exceeded", ErrTemporarilyUnavailable)
 }
 
 // WithCtx exercises context injection.
@@ -321,6 +329,27 @@ func TestDispatcher_Invoke_MethodNoErrorReturn(t *testing.T) {
 	}
 	if string(result) != `null` {
 		t.Fatalf("expected null result for void return, got %s", string(result))
+	}
+}
+
+func TestDispatcher_Invoke_TemporarilyUnavailablePreservesCodeAndRedaction(t *testing.T) {
+	d, _ := newTestDispatcher(t, RegisterOptions{Package: "main", TypeName: "App"})
+	m, _ := d.Resolve(0, "Transient")
+
+	_, remoteErr := d.InvokeForOrigin(context.Background(), m, nil, false)
+	if remoteErr == nil || remoteErr.Code != ErrCodeTemporarilyUnavailable {
+		t.Fatalf("remote transient error = %+v, want code %q", remoteErr, ErrCodeTemporarilyUnavailable)
+	}
+	if strings.Contains(remoteErr.Message, "read deadline exceeded") {
+		t.Fatalf("remote transient error leaked method prose: %q", remoteErr.Message)
+	}
+
+	_, loopbackErr := d.InvokeForOrigin(context.Background(), m, nil, true)
+	if loopbackErr == nil || loopbackErr.Code != ErrCodeTemporarilyUnavailable {
+		t.Fatalf("loopback transient error = %+v, want code %q", loopbackErr, ErrCodeTemporarilyUnavailable)
+	}
+	if !strings.Contains(loopbackErr.Message, "read deadline exceeded") {
+		t.Fatalf("loopback transient error hid actionable prose: %q", loopbackErr.Message)
 	}
 }
 

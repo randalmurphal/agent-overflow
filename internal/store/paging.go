@@ -19,7 +19,6 @@ func visibleItemsFilterFor(alias string) string {
 }
 
 var visibleItemsFilter = visibleItemsFilterFor("")
-var visibleItemsFilterQualified = visibleItemsFilterFor("items.")
 
 // topLevelItemsFilter restricts a timeline read to top-level rows.
 // Subagent children (rows with a non-empty parent_id) are deliberately
@@ -31,7 +30,6 @@ var visibleItemsFilterQualified = visibleItemsFilterFor("items.")
 // budget and flash "Load older messages" for rows that would never
 // render as timeline rows.
 const topLevelItemsFilter = "parent_id = ''"
-const topLevelItemsFilterQualified = "items.parent_id = ''"
 
 // TimelineCursor is a stable position in a thread timeline. The item id is
 // carried for diagnostics/snapshot readability; ordering is by
@@ -225,32 +223,19 @@ func (s *Store) ListItemsAfterCursor(threadID string, after TimelineCursor, item
 //  2. floor   (turn_index >= floor)
 //  3. upper   (turn_index < upper)
 func (s *Store) queryPagedItems(q sqlQueryer, threadID string, floor, upper int64) ([]Item, error) {
-	rows, err := q.Query(`
-		SELECT `+itemColumns+`
-		  FROM timeline_items AS items
-		  LEFT JOIN timeline_payloads AS payloads ON payloads.thread_id = items.thread_id AND payloads.id = items.payload_id
-		 WHERE items.thread_id = ?
-		   AND `+visibleItemsFilterQualified+`
-		   AND `+topLevelItemsFilterQualified+`
-		   AND items.turn_index >= ? AND items.turn_index < ?
-		 ORDER BY items.turn_index, items.item_index`,
+	items, err := queryHydratedTimelineItems(
+		q,
+		threadID,
+		`SELECT id
+		   FROM timeline_items
+		  WHERE thread_id = ?
+		    AND `+visibleItemsFilter+`
+		    AND `+topLevelItemsFilter+`
+		    AND turn_index >= ? AND turn_index < ?`,
 		threadID, floor, upper,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("store: query paged items for %s: %w", threadID, err)
-	}
-	defer rows.Close()
-
-	items := []Item{}
-	for rows.Next() {
-		it, err := scanItemRow(rows)
-		if err != nil {
-			return nil, fmt.Errorf("store: scan paged item row: %w", err)
-		}
-		items = append(items, it)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("store: iterate paged items for %s: %w", threadID, err)
 	}
 	return s.decoratePagedItems(q, threadID, items)
 }
@@ -260,35 +245,9 @@ func (s *Store) queryPagedItems(q sqlQueryer, threadID string, floor, upper int6
 // containing the page's top-level row ids; the outer query hydrates and
 // orders them for rendering.
 func (s *Store) querySelectedPagedItems(q sqlQueryer, threadID, selectedSQL string, selectedArgs ...any) ([]Item, error) {
-	args := append([]any{}, selectedArgs...)
-	args = append(args, threadID)
-	rows, err := q.Query(`
-		WITH selected(id) AS (
-			`+selectedSQL+`
-		)
-		SELECT `+itemColumns+`
-		  FROM timeline_items AS items
-		  JOIN selected ON selected.id = items.id
-		  LEFT JOIN timeline_payloads AS payloads ON payloads.thread_id = items.thread_id AND payloads.id = items.payload_id
-		 WHERE items.thread_id = ?
-		 ORDER BY items.turn_index, items.item_index`,
-		args...,
-	)
+	items, err := queryHydratedTimelineItems(q, threadID, selectedSQL, selectedArgs...)
 	if err != nil {
 		return nil, fmt.Errorf("store: query selected paged items for %s: %w", threadID, err)
-	}
-	defer rows.Close()
-
-	items := []Item{}
-	for rows.Next() {
-		item, err := scanItemRow(rows)
-		if err != nil {
-			return nil, fmt.Errorf("store: scan selected paged item row: %w", err)
-		}
-		items = append(items, item)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("store: iterate selected paged items for %s: %w", threadID, err)
 	}
 	return s.decoratePagedItems(q, threadID, items)
 }

@@ -14,9 +14,11 @@ import (
 // means the row is genuinely absent.
 var ErrItemSettled = errors.New("store: item is no longer streaming")
 
-// itemColumns is the canonical SELECT projection for scanItemRow. Keep in sync
-// with the Item struct; adding a column means updating this list,
-// insertItemTx, and scanItemRow together.
+// itemColumns is the canonical physical-local SELECT projection for
+// scanItemRow. Logical timeline reads use itemHydrationColumns so local and
+// imported branches can share this same scan order without joining the
+// compound timeline_payloads view. Keep both in sync with the Item struct;
+// adding a column means updating these lists, insertItemTx, and scanItemRow.
 const itemColumns = `items.id, items.thread_id, items.turn_index, items.item_index,
     items.kind, items.role, items.status, items.summary,
     COALESCE(items.payload_id, ''), COALESCE(payloads.kind, ''), COALESCE(payloads.meta, ''),
