@@ -76,6 +76,8 @@ type workflowAttempt struct {
 	schema              json.RawMessage
 	contract            def.EnvelopeContract
 	provider            string
+	dispatchIdentity    providerDispatchIdentity
+	dispatchIdentitySet bool
 	phase               def.Phase
 	complete            func(engine.Outcome)
 	unsubscribe         func()
@@ -110,32 +112,10 @@ type workflowAttempt struct {
 	timer             workflowTimer
 	timerMode         workflowTimerMode
 	timerDeadline     time.Time
-	// rateLimits is the newest quota snapshot this attempt's own session
-	// reported. Both providers push one at the moment they refuse a turn for a
-	// spent allowance, so it is the structured half of a usage-limit refusal —
-	// which window, and when it clears. It is attempt-scoped rather than read
-	// off the App's merged per-provider cache because the answer has to be
-	// about the account this session is authenticated as.
-	rateLimits []provider.RateLimitEntry
 	// lastFailure is the runner's account of the most recent provider failure
 	// this attempt saw, carried onto the outcome so a park with no envelope
 	// still names something. See `Outcome.Detail`.
 	lastFailure string
-}
-
-// noteRateLimits records a quota snapshot the session reported. A snapshot that
-// will not decode is dropped rather than clearing what is held: the last good
-// answer about this account's windows is better than none, and the only thing
-// that reads it is a refusal deciding when to come back.
-func (a *workflowAttempt) noteRateLimits(meta json.RawMessage) {
-	if len(meta) == 0 {
-		return
-	}
-	var snapshot provider.RateLimitsSnapshot
-	if json.Unmarshal(meta, &snapshot) != nil || len(snapshot.Limits) == 0 {
-		return
-	}
-	a.rateLimits = snapshot.Limits
 }
 
 // failureDetail is what this attempt tells the engine about a failure the

@@ -132,6 +132,18 @@ func TestWorkflowTemplateDigestUsesCheckAndStuckInputs(t *testing.T) {
 	}
 }
 
+func TestWorkflowTemplateDigestExplainsProviderUsageRecovery(t *testing.T) {
+	digest := workflowTemplateDigest(store.WorkItem{
+		State: string(engine.StateNeedsHuman), Reason: string(engine.ReasonProviderUsageLimited),
+	}, "implement", nil, "")
+	if digest.WhatHappened != "The run paused in implement because the provider account reached its usage limit." {
+		t.Fatalf("usage-limit digest happened = %q", digest.WhatHappened)
+	}
+	if digest.WhatItNeeds != "Wait for the provider usage limit to reset or switch provider accounts, then resume the run." {
+		t.Fatalf("usage-limit digest need = %q", digest.WhatItNeeds)
+	}
+}
+
 func TestWorkflowDigestAsyncUpgradePersistsAndReemits(t *testing.T) {
 	app, events := setupE2EApp(t)
 	app.testEmitHook = events.emit

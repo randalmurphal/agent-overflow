@@ -66,7 +66,7 @@ func TestWorkItemUnitLifecycle(t *testing.T) {
 		t.Fatalf("attach unit run: %v", err)
 	}
 	envelope := json.RawMessage(`{"status":"done","outputs":{"ok":true}}`)
-	if err := s.CompleteWorkItemUnit("item", "port", 1, "port-0", WorkItemUnitDone, envelope, "", 110); err != nil {
+	if err := s.CompleteWorkItemUnit("item", "port", 1, "port-0", WorkItemUnitDone, envelope, "", 0, 110); err != nil {
 		t.Fatalf("complete unit: %v", err)
 	}
 
@@ -86,7 +86,7 @@ func TestWorkItemUnitLifecycle(t *testing.T) {
 	for _, missing := range []func() error{
 		func() error { return s.StartWorkItemUnit("item", "port", 1, "absent", 1, "", 1) },
 		func() error {
-			return s.CompleteWorkItemUnit("item", "port", 1, "absent", WorkItemUnitDone, nil, "", 1)
+			return s.CompleteWorkItemUnit("item", "port", 1, "absent", WorkItemUnitDone, nil, "", 0, 1)
 		},
 		func() error { return s.AttachWorkItemUnitRun("item", "port", 1, "absent", "t", "n") },
 		func() error { return s.AttachWorkItemUnitWorkspace("item", "port", 1, "absent", "b", "w") },
@@ -127,7 +127,7 @@ func TestWorkItemUnitRetryReusesTheRowLineage(t *testing.T) {
 		t.Fatal(err)
 	}
 	partial := json.RawMessage(`{"status":"stuck","outputs":null}`)
-	if err := s.CompleteWorkItemUnit("item", "port", 1, "port-0", WorkItemUnitFailed, partial, "unit outcome stuck", 110); err != nil {
+	if err := s.CompleteWorkItemUnit("item", "port", 1, "port-0", WorkItemUnitFailed, partial, "unit outcome stuck", 0, 110); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.StartWorkItemUnit("item", "port", 1, "port-0", 2, "retry after: unit outcome stuck", 120); err != nil {
@@ -157,7 +157,7 @@ func TestRetryWorkItemUnitPersistsTheTryAndItsFeedback(t *testing.T) {
 	}
 	failed := json.RawMessage(`{"status":"stuck","outputs":null}`)
 	if err := s.CompleteWorkItemUnit(
-		"item", "port", 1, "port-0", WorkItemUnitFailed, failed, "unit outcome execution-failure", 110,
+		"item", "port", 1, "port-0", WorkItemUnitFailed, failed, "unit outcome execution-failure", 0, 110,
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -219,7 +219,7 @@ func TestFailRunningWorkItemUnitsLeavesPendingLaunchable(t *testing.T) {
 	if err := s.StartWorkItemUnit("item", "port", 1, "port-1", 1, "", 101); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.CompleteWorkItemUnit("item", "port", 1, "port-1", WorkItemUnitDone, nil, "", 105); err != nil {
+	if err := s.CompleteWorkItemUnit("item", "port", 1, "port-1", WorkItemUnitDone, nil, "", 0, 105); err != nil {
 		t.Fatal(err)
 	}
 	affected, err := s.FailRunningWorkItemUnits("item", "port", 1, "interrupted", 200)

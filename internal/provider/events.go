@@ -267,8 +267,8 @@ type FailureReason string
 
 const (
 	// FailureReasonUsageLimit means the provider refused the turn because an
-	// account usage allowance is exhausted. Consumers still need a reported
-	// reset window before promising an automatic resume.
+	// account usage allowance is exhausted. Reset windows remain advisory:
+	// consumers must not infer narrower model/bucket availability from them.
 	FailureReasonUsageLimit FailureReason = "usage-limit"
 )
 

@@ -40,6 +40,7 @@
     kind === 'failed' ||
       kind === 'blocked' ||
       item.reason === 'provider-retries-exhausted' ||
+      item.reason === 'provider-usage-limited' ||
       item.reason === 'loop-limit-exhausted' ||
       item.reason === 'retries-exhausted',
   );
@@ -73,6 +74,9 @@
     if (item.reason === 'checkpoint') return `stopped at your checkpoint · ${ago}`;
     if (item.reason === 'provider-retries-exhausted') {
       return `provider retries exhausted — resume continues where it stopped · ${ago}`;
+    }
+    if (item.reason === 'provider-usage-limited') {
+      return `provider usage limit reached — resume attempts again immediately, after the limit resets or after switching accounts · ${ago}`;
     }
     if (item.reason === 'loop-limit-exhausted') {
       return `workflow loop limit exhausted — restart from an earlier phase · ${ago}`;

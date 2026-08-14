@@ -349,7 +349,7 @@ func TestHistoryDecodeFailureAtGateTimeParksWiringError(t *testing.T) {
 	}
 	corrupt := json.RawMessage(`{"status":"done","outputs":{"note":"round-1"},"question":5}`)
 	if err := h.store.CompleteWorkItemPhase(
-		item.ID, "fix", 1, corrupt, first.GateTrace, "completed", "", first.EndedAt,
+		item.ID, "fix", 1, corrupt, first.GateTrace, "completed", "", 0, first.EndedAt,
 	); err != nil {
 		t.Fatal(err)
 	}

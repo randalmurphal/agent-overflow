@@ -27,7 +27,7 @@ func TestWorkItemPhaseAttemptsAndEffects(t *testing.T) {
 
 	output := json.RawMessage(`{"status":"done"}`)
 	trace := json.RawMessage(`{"route":"review"}`)
-	if err := s.CompleteWorkItemPhase("item", "build", 2, output, trace, "completed", "", 25); err != nil {
+	if err := s.CompleteWorkItemPhase("item", "build", 2, output, trace, "completed", "", 0, 25); err != nil {
 		t.Fatalf("complete phase: %v", err)
 	}
 	intervention := json.RawMessage(`{"kind":"takeover"}`)
@@ -93,7 +93,7 @@ func TestWorkItemPhaseAttemptsAndEffects(t *testing.T) {
 	if _, found, err := s.GetWorkItemEffect("item", "build", "report", "other-hash"); err != nil || found {
 		t.Fatalf("unrecorded effect = found:%t err:%v, want false/nil", found, err)
 	}
-	if err := s.CompleteWorkItemPhase("missing", "build", 1, output, trace, "completed", "", 1); !errors.Is(err, sql.ErrNoRows) {
+	if err := s.CompleteWorkItemPhase("missing", "build", 1, output, trace, "completed", "", 0, 1); !errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("missing phase completion error = %v, want sql.ErrNoRows", err)
 	}
 	if err := s.UpdateWorkItemPhaseIntervention("missing", "build", 1, intervention); !errors.Is(err, sql.ErrNoRows) {

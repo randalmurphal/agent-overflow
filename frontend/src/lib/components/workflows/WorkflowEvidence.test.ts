@@ -117,6 +117,16 @@ describe('WorkflowEvidence exhausted limits', () => {
     expect(rendered.getByTestId('wf-failure-evidence')).toBeTruthy();
   });
 
+  it('explains that a usage-limited resume is an immediate real retry', () => {
+    const view = detail({ phases: [] });
+    view.item.reason = 'provider-usage-limited';
+    const rendered = render(WorkflowEvidence, { ...props(view), kind: 'paused' as const });
+
+    expect(rendered.getByTestId('workflow-paused-receipt')).toHaveTextContent('provider usage limit reached');
+    expect(rendered.getByTestId('workflow-paused-receipt')).toHaveTextContent('resume attempts again immediately');
+    expect(rendered.getByTestId('wf-failure-evidence')).toBeTruthy();
+  });
+
   it('tells a spent workflow loop from a provider retry failure', () => {
     const view = detail({ phases: [] });
     view.item.reason = 'loop-limit-exhausted';

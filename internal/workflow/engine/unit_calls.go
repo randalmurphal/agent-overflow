@@ -142,12 +142,12 @@ func (e *Engine) settleUnitCallChild(parent *runtimeItem, child store.WorkItem) 
 			// here would be read downstream as something the unit's run produced.
 			note := unitChildNote(child, "completed without its declared outputs") + ": " + outputErr.Error()
 			return errors.Join(
-				e.teardownUnit(parent, unit, store.WorkItemUnitFailed, nil, note),
+				e.teardownUnit(parent, unit, store.WorkItemUnitFailed, nil, note, 0),
 				e.advanceFanOut(parent),
 				outputErr,
 			)
 		}
-		if err := e.teardownUnit(parent, unit, store.WorkItemUnitDone, envelope, ""); err != nil {
+		if err := e.teardownUnit(parent, unit, store.WorkItemUnitDone, envelope, "", 0); err != nil {
 			return err
 		}
 		return e.advanceFanOut(parent)
@@ -158,7 +158,7 @@ func (e *Engine) settleUnitCallChild(parent *runtimeItem, child store.WorkItem) 
 		}
 		if err := e.teardownUnit(
 			parent, unit, store.WorkItemUnitFailed,
-			childOutcomeEnvelope(child, outcome), unitChildNote(child, outcome),
+			childOutcomeEnvelope(child, outcome), unitChildNote(child, outcome), 0,
 		); err != nil {
 			return err
 		}
@@ -291,7 +291,7 @@ func (e *Engine) failInterruptedUnitRows(item *runtimeItem, phase def.Phase, att
 		}
 		if err := e.store.CompleteWorkItemUnit(
 			item.item.ID, attempt.PhaseID, attempt.Attempt, row.UnitID,
-			store.WorkItemUnitFailed, row.Envelope, note, e.timestamp(),
+			store.WorkItemUnitFailed, row.Envelope, note, 0, e.timestamp(),
 		); err != nil {
 			errs = append(errs, fmt.Errorf(
 				"fail interrupted unit %s/%s/%d/%s: %w",

@@ -241,16 +241,16 @@ resource semaphores, and startup recovery.
     `retries-exhausted` rows remain continuable because their source cause
     cannot be reconstructed and changing their shipped recovery would be a
     migration guess.
-  - **A dated quota refusal parks here without spending the ladder, and comes
-    back on its own.** A provider that refuses the turn because the account's
-    usage allowance is spent — and whose own rate-limit snapshot says when that
-    allowance returns — is the one transient failure retrying cannot fix: the
-    backoffs run out in minutes against a limit that resets in days. The runner
-    stops the ladder where it stands and reports `OutcomeTransientExhausted`
-    with `Outcome.Detail` naming the reset and the moment the run resumes
-    itself, which `outcomeDetailCause` writes to the attempt's `park_cause`;
-    the timer that brings it back is app-side (`app_workflow_autoresume.go`,
-    `work_items.auto_resume_at`), because this package holds no timers.
+  - **A typed usage refusal is its own continuable park and never spends the
+    ladder.** Provider adapters normalize Claude `rate_limit` and Codex
+    `usageLimitExceeded` to one failure reason; the app runner reports
+    `OutcomeProviderUsageLimited`, the engine persists
+    `provider-usage-limited`, and the failed phase/unit carries the durable
+    provider-account scope used only for wake correlation. No reset window or
+    model/bucket label participates in control flow. A bare resume continues
+    the parked session and always makes a real provider attempt; nothing in the
+    engine consults the recorded scope for admission, auto-resumes it, or
+    interrupts sibling work already running (D75).
     Continuing is the whole point of parking here rather than under a new
     reason: the session the turn died in is still what the run wants.
   - **A non-transient execution failure is NOT here.** It parks `agent-error`

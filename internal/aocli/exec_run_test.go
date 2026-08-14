@@ -536,7 +536,8 @@ func TestRunUsageStatesTheDefinitionFreezeAndItsRepair(t *testing.T) {
 			"a call reads its target from disk every time it is made",
 			// Every continuable park, because this is the page that says which
 			// resumes --refresh-def is refused on.
-			"paused, interrupted, checkpoint, unit-failed, provider-retries-exhausted, or legacy retries-exhausted continues an attempt whose work was launched under the frozen definition",
+			"paused, interrupted, checkpoint, unit-failed, provider-retries-exhausted, provider-usage-limited, or legacy retries-exhausted continues an attempt whose work was launched under the frozen definition",
+			"provider usage refusal parks provider-usage-limited immediately without creating a schedule",
 		}},
 		{[]string{"run", "rerun", "--help"}, []string{
 			"[--refresh-def]",

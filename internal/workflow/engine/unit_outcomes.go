@@ -26,13 +26,13 @@ func (e *Engine) completeUnit(item *runtimeItem, key RunKey, outcome Outcome) er
 	if unit.kind == UnitJoin {
 		// The join reported for itself, so its row settles first; then its
 		// envelope is evaluated as the phase's, gate and all.
-		if err := e.teardownUnit(item, unit, unitStatusFor(outcome), outcome.Envelope, unitOutcomeNote(outcome)); err != nil {
+		if err := e.teardownUnit(item, unit, unitStatusFor(outcome), outcome.Envelope, unitOutcomeNote(outcome), providerUsageScopeForOutcome(outcome)); err != nil {
 			return err
 		}
 		return e.completePhaseOutcome(item, key, outcome)
 	}
 	if outcome.Kind == OutcomeDone {
-		if err := e.teardownUnit(item, unit, store.WorkItemUnitDone, outcome.Envelope, ""); err != nil {
+		if err := e.teardownUnit(item, unit, store.WorkItemUnitDone, outcome.Envelope, "", 0); err != nil {
 			return err
 		}
 		return e.advanceFanOut(item)
@@ -41,10 +41,21 @@ func (e *Engine) completeUnit(item *runtimeItem, key RunKey, outcome Outcome) er
 	// derives that from the unit statuses. In-flight units keep running — the
 	// park happens once they rest, and every failure recorded before then is in
 	// the record, so a run with three failures parks once and lists three.
-	if err := e.teardownUnit(item, unit, store.WorkItemUnitFailed, outcome.Envelope, unitOutcomeNote(outcome)); err != nil {
+	if err := e.teardownUnit(item, unit, store.WorkItemUnitFailed, outcome.Envelope, unitOutcomeNote(outcome), providerUsageScopeForOutcome(outcome)); err != nil {
 		return err
 	}
 	return e.advanceFanOut(item)
+}
+
+// providerUsageScopeForOutcome is the persistence boundary for usage-limit
+// provenance. Outcome is a wire-shaped runner result and can carry stale or
+// future metadata; no non-usage outcome is allowed to turn that metadata into
+// a durable outage classification.
+func providerUsageScopeForOutcome(outcome Outcome) store.WorkflowProviderUsageScopeID {
+	if outcome.Kind != OutcomeProviderUsageLimited {
+		return 0
+	}
+	return outcome.ProviderUsageScopeID
 }
 
 // dequeuePendingUnits drops queued units from the wait FIFO once the attempt
@@ -62,7 +73,7 @@ func (e *Engine) dequeuePendingUnits(item *runtimeItem) {
 // caller of Runner.Stop for a unit key — the per-unit half of the teardown
 // contract, including the runnerStarting window where a unit that has not
 // reported yet is still stopped by key.
-func (e *Engine) teardownUnit(item *runtimeItem, unit *unitRun, status string, envelope json.RawMessage, note string) error {
+func (e *Engine) teardownUnit(item *runtimeItem, unit *unitRun, status string, envelope json.RawMessage, note string, providerUsageScopeID store.WorkflowProviderUsageScopeID) error {
 	var errs []error
 	key := RunKey{ItemID: item.item.ID, PhaseID: item.phaseID, Attempt: item.attempt, UnitID: unit.id}
 	if unit.runnerStarting {
@@ -88,7 +99,7 @@ func (e *Engine) teardownUnit(item *runtimeItem, unit *unitRun, status string, e
 	unit.envelope = envelope
 	endedAt := e.timestamp()
 	if err := e.store.CompleteWorkItemUnit(
-		item.item.ID, item.phaseID, item.attempt, unit.id, status, envelope, note, endedAt,
+		item.item.ID, item.phaseID, item.attempt, unit.id, status, envelope, note, providerUsageScopeID, endedAt,
 	); err != nil {
 		errs = append(errs, fmt.Errorf(
 			"persist unit %s/%s/%d/%s: %w", item.item.ID, item.phaseID, item.attempt, unit.id, err,
@@ -124,7 +135,7 @@ func (e *Engine) teardownUnits(item *runtimeItem, phaseStatus string, retainCall
 			errs = append(errs, e.releaseUnitResources(item, unit))
 			continue
 		}
-		errs = append(errs, e.teardownUnit(item, unit, store.WorkItemUnitFailed, unit.envelope, note))
+		errs = append(errs, e.teardownUnit(item, unit, store.WorkItemUnitFailed, unit.envelope, note, 0))
 	}
 	return errors.Join(errs...)
 }

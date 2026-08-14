@@ -3,6 +3,7 @@ package triage
 import (
 	"encoding/json"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -458,4 +459,32 @@ func TestTryFlushQueue_BatchStaysCountedAcrossHandoff(t *testing.T) {
 	if after := router.QueuedFlushItemCount("t1"); after != 0 {
 		t.Fatalf("QueuedFlushItemCount after handoff = %d, want 0 — the claim must drop once the dispatcher returns", after)
 	}
+}
+
+func TestFlushSettlementIsExactlyOnceAndCombinationPreservesBoth(t *testing.T) {
+	var leftCount, rightCount atomic.Int32
+	left := NewFlushSettlement(func() { leftCount.Add(1) })
+	right := NewFlushSettlement(func() { rightCount.Add(1) })
+	combined := CombineFlushSettlements(left, right)
+
+	var callers sync.WaitGroup
+	for range 32 {
+		callers.Add(1)
+		go func() {
+			defer callers.Done()
+			combined.Settle()
+		}()
+	}
+	callers.Wait()
+	if got := leftCount.Load(); got != 1 {
+		t.Fatalf("left settlement fired %d times, want 1", got)
+	}
+	if got := rightCount.Load(); got != 1 {
+		t.Fatalf("right settlement fired %d times, want 1", got)
+	}
+
+	// Nil and zero values are legitimate for ordinary user-authored queue
+	// items and must remain safe at unconditional settlement call sites.
+	(*FlushSettlement)(nil).Settle()
+	new(FlushSettlement).Settle()
 }

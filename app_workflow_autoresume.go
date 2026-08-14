@@ -10,9 +10,10 @@ import (
 	"agent-overflow/internal/workflow/engine"
 )
 
-// Auto-resume is the app-side half of a limit-aware park: the engine holds no
-// timers by boundary, so the moment a parked run comes back lives here, and the
-// only durable record is `work_items.auto_resume_at` (store v54).
+// Auto-resume is the app-side half of an explicitly scheduled resume: the
+// engine holds no timers by boundary, so the moment a parked run comes back
+// lives here, and the only durable record is `work_items.auto_resume_at`
+// (store v54). Provider usage-limit parks do not arm it (D75).
 //
 // The column is the single source of truth and the timer registry is armed from
 // it, in both directions:
@@ -73,10 +74,10 @@ func (a *App) workflowAutoResumeNow() time.Time {
 	return time.Now()
 }
 
-// setWorkflowAutoResume persists the moment this parked run resumes itself and
-// arms the timer that does it. The write comes first: a timer armed over a
-// column that was not written would not survive a restart, which is the exact
-// failure the column exists to prevent.
+// setWorkflowAutoResume persists the explicitly requested moment this parked
+// run resumes and arms the timer that does it. The write comes first: a timer
+// armed over a column that was not written would not survive a restart, which
+// is the exact failure the column exists to prevent.
 func (a *App) setWorkflowAutoResume(itemID string, at time.Time) error {
 	if err := a.store.SetWorkItemAutoResumeAt(itemID, at.UnixMilli()); err != nil {
 		return err
@@ -132,9 +133,9 @@ func (a *App) clearWorkflowAutoResume(itemID string) {
 	}
 }
 
-// fireWorkflowAutoResume is the timer's callback: a bare resume, which is what
-// makes a `provider-retries-exhausted` park continue the very session its turn
-// died in. Legacy `retries-exhausted` rows retain the same behavior.
+// fireWorkflowAutoResume is the timer's callback: the bare resume explicitly
+// requested by `run resume --at`, preserving whichever continuable attempt the
+// schedule was armed on.
 //
 // It re-reads the run rather than trusting the timer, because the arm and the
 // clear are two writes: a run repaired between them has already been resumed,
@@ -224,10 +225,11 @@ func workflowAutoResumable(state, reason string) bool {
 		engine.ContinuableReason(engine.Reason(reason))
 }
 
-// WorkflowScheduleResume arms a parked run's self-resume by hand — the manual
-// half of the mechanism a dated usage-limit refusal arms on its own. It resumes
-// nothing now: the run stays exactly where it is until the moment arrives, and
-// every action that repairs it in the meantime disarms the schedule.
+// WorkflowScheduleResume arms a parked run's resume at an explicit time. This
+// is always an operator-authored schedule; provider usage limits never create
+// one automatically. It resumes nothing now: the run stays exactly where it is
+// until the moment arrives, and every action that repairs it in the meantime
+// disarms the schedule.
 //
 // `at` is either an RFC 3339 timestamp or a leading-`+` duration relative to the
 // APP's clock (`+36h`), which is the clock the timer will actually run on.

@@ -270,22 +270,21 @@ definition a run froze at start is what it runs, every attempt, so an edit made
 while the run was parked is invisible to it; --refresh-def re-reads the workflow
 and its prompt files from disk for this entry and runs the edited version from
 here on. It applies at a fresh phase entry only — a bare resume on a run parked
-paused, interrupted, checkpoint, unit-failed, provider-retries-exhausted, or
-legacy retries-exhausted continues an attempt whose work was launched under the
-frozen definition, and is refused unless --phase says to discard it. Between
-campaign waves nothing is needed: a call reads its target from disk every time
-it is made.
+paused, interrupted, checkpoint, unit-failed, provider-retries-exhausted,
+provider-usage-limited, or legacy retries-exhausted continues an attempt whose
+work was launched under the frozen definition, and is refused unless --phase
+says to discard it. Between campaign waves nothing is needed: a call reads its
+target from disk every time it is made.
 
 --at <when> schedules the bare resume above instead of taking it now, on any
 park a bare resume continues. <when> is RFC 3339 (2026-08-15T19:56:00Z) or a
 duration from now (+36h), resolved against the app's clock, and the command
 prints the moment it armed. The run stays exactly where it is until then, and
 anything that repairs it in the meantime — a resume, a cancel, a discard —
-disarms the schedule. It is the manual half of what a dated usage-limit refusal
-already does on its own: a provider that refuses a turn and says when the
-allowance returns parks the run provider-retries-exhausted and comes back by
-itself, so --at is for the case where you know the time and the provider did not
-say it.
+disarms the schedule. It is always explicit: a provider usage refusal parks
+provider-usage-limited immediately without creating a schedule, and an ordinary
+resume is always allowed to try again. Use --at only when you want the
+continuation delayed.
 
 A gate decision is not resume's to take: run resolve settles a human: route, and
 run retry-unit / run retry-failed-units repair one unit or all of them — a failed

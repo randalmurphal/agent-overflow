@@ -2066,9 +2066,12 @@ on a spent reject budget silently destroyed the gate's still-declared approve.
   filename limit, failing the cut into a `setup-failed` park; bounding the
   fragments would reintroduce the collision class, so it stays.
 
-## A usage limit is a schedule, not an outage (2026-08-10)
+## A usage limit was initially treated as a schedule (2026-08-10; superseded by D75)
 
 - **D71. Quota refusals park with the reset time and resume themselves.**
+	**Superseded by D75.** This records the earlier implementation and the
+	provider evidence it was based on; reset-window scheduling is no longer the
+	workflow control rule.
   Live-campaign feedback: a dated usage-limit refusal ("try again at Aug
   15th 7:56 PM") burned the whole transient backoff ladder in seconds,
   parked generic `retries-exhausted`, and waited days for a human alarm
@@ -2123,14 +2126,13 @@ each pinned by an incident-replay test:
 - **D73. A child's events are the parent turn's activity, never its
   signals.** Both adapters stamp `ParentToolUseID` on everything a
   subagent or collab child emits, and the observer now filters on it:
-  nothing parented may enter the retry ladder, trigger the quota park,
+  nothing parented may enter the retry ladder, trigger the usage-limit park,
   answer the turn start a retry is waiting on, or be consumed as the
   turn's completion. The one exception is adapter-normalized, not decoded
   from provider metadata here: a parented failure scoped to the parent turn
   IS the parent turn ending (a Claude Task-subagent's `assistant.error`
   closes the parent's open turn), and filtering it would downgrade a
-  retryable rate limit — and its D71 self-resume — into a bare execution
-  failure.
+  typed provider usage-limit park (D75) into a bare execution failure.
   The watchdog reset is the one thing every filtered child event keeps:
   a delegating turn leaves the parent stream quiet for as long as its
   children work, and that quiet is not a stall.
@@ -2282,6 +2284,43 @@ each pinned by an incident-replay test:
   free-form cause cannot classify them reliably, so they retain D70's shipped
   continuation behavior and every surface labels them as legacy instead of
   inventing a cause.
+
+## Provider usage limits are correlated attention, never admission (2026-08-13)
+
+- **D75. A typed usage refusal skips retries, parks, and coalesces attention by
+  provider account.** Claude `rate_limit` and Codex `usageLimitExceeded` are
+  normalized by their adapters to the shared `FailureReasonUsageLimit`; only
+  that typed metadata drives the workflow path. Provider prose, rate-limit
+  window names, and model ids do not: neither provider exposes stable enough
+  bucket/model semantics to make a narrower block trustworthy. A recognized
+  refusal therefore parks immediately as `provider-usage-limited`, even when
+  no reset window was reported, and never spends the app retry ladder.
+- The failed phase or fan-out unit records the provider, account id, and
+  credential generation held stable by the normal send/account-switch lock.
+  Bound runs under the same scope and watching conversation share one durable
+  attention generation, so a wide asynchronous failure storm injects one
+  message rather than one per unit or run. A mixed fan-out failure is never
+  coalesced as usage-limit-only. Queued delivery is compare-and-set settled at
+  either provider write or durable composer recovery; a restart reclaims and
+  re-surfaces a claim still confined to the prior process by its durable scope
+  and watching conversation. The claim transfers in place before the new
+  engine emits, leaving no second-crash reset gap and never stealing a claim
+  owned by the new process. Its recorded source is preferred but replaceable:
+  if that run resolved before restart, another currently affected run is
+  selected so a suppressed sibling cannot be stranded. Storage or attribution
+  failure falls back to ordinary per-run attention rather than silence.
+- **The record is not an availability lock.** Starting, scheduled-triggering,
+  or resuming work never consults it and never interrupts work already running.
+  A long tool call may finish and its next inference may succeed or produce its
+  own typed park. Any transition back to `running` re-arms attention for that
+  watching conversation, invalidating a still-queued older alert; a later
+  failure then notifies once in the new generation. Manual resume and failed-
+  unit retry always make a real provider attempt immediately, so a random
+  reset or account switch cannot leave a session bricked. An internally called
+  child's birth is engine progress, not watcher action, and does not re-arm the
+  generation. There is no automatic quota resume and no resolution message.
+  The independent, explicitly requested
+  `run resume --at` schedule remains available for continuable parks.
 
 ## The budget stops lying (2026-08-10)
 

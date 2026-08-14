@@ -114,16 +114,15 @@ func TestExecutionFailureWithAnEnvelopeCarriesNoEngineCause(t *testing.T) {
 }
 
 // The same rule carries the runner's account onto a
-// `provider-retries-exhausted` park,
-// which is what a dated quota refusal rides in on: the app states the reset
-// boundary and the moment the run resumes itself, and the engine persists it.
+// `provider-retries-exhausted` park: the transient ladder's terminal diagnosis
+// is persisted even though no agent authored an envelope.
 func TestTransientExhaustionCarriesItsDetailOntoTheParkedAttempt(t *testing.T) {
 	h := newPauseHarness(t)
 	item := startPausableItem(t, h, "item", "thread-one")
 
 	h.runner.complete(t, item, Outcome{
 		Kind:   OutcomeTransientExhausted,
-		Detail: "provider usage limit reached; the limit resets 2026-08-15T19:56:00Z, and this run resumes itself at 2026-08-15T19:58:12Z",
+		Detail: "the provider stayed overloaded through every retry",
 	})
 	if err := h.engine.Sync(); err != nil {
 		t.Fatal(err)
@@ -131,7 +130,7 @@ func TestTransientExhaustionCarriesItsDetailOntoTheParkedAttempt(t *testing.T) {
 
 	requireItemState(t, h.store, item, StateNeedsHuman, ReasonProviderRetriesExhausted)
 	requireParkCause(t, h.phaseAttempt(t, item, "work", 1),
-		"provider usage limit reached", "resumes itself at 2026-08-15T19:58:12Z")
+		"provider stayed overloaded", "every retry")
 }
 
 // A unit's note follows the same rule, for the same reason: the wave's record of

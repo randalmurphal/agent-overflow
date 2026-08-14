@@ -228,6 +228,14 @@ func (r *workflowAppRunner) stopAndFinish(runKey string, outcome engine.Outcome)
 	if !ok {
 		return
 	}
+	r.stopDetachedAttempt(runKey, attempt, outcome)
+}
+
+// stopDetachedAttempt performs the blocking half of a stop after the attempt
+// has been made unreachable to provider events. Keeping detach outside this
+// helper lets an on-wire caller establish that invariant synchronously and move
+// only the interrupt wait to another goroutine.
+func (r *workflowAppRunner) stopDetachedAttempt(runKey string, attempt *workflowAttempt, outcome engine.Outcome) {
 	attempt.sendMu.Lock()
 	attempt.sendMu.Unlock()
 	if err := r.app.InterruptTurn(attempt.threadID); err != nil {
@@ -244,13 +252,18 @@ func (r *workflowAppRunner) stopAndFinish(runKey string, outcome engine.Outcome)
 // and that response can only arrive through the very pipeline this callback is
 // blocking. A live process therefore deadlocks the stop against itself until
 // the interrupt times out, and the run sits `running` for the whole of it —
-// which is what a park that decides mid-turn (a spent retry ladder, a dated
-// quota refusal) does every time the provider is still alive to be interrupted.
-// `detach` is single-shot under the runner lock, so handing the rest to a
-// goroutine cannot double-finish: any event arriving in between finds no
-// attempt for this key.
+// which is what a park that decides mid-turn (a spent retry ladder or a typed
+// usage-limit refusal) does every time the provider is still alive to be
+// interrupted.
+// `detach` is single-shot under the runner lock and happens before this method
+// returns to the event pipeline. Any later event therefore finds no attempt for
+// this key; only the interrupt wait and completion callback move off-wire.
 func (r *workflowAppRunner) stopAndFinishOffWire(runKey string, outcome engine.Outcome) {
-	go r.stopAndFinish(runKey, outcome)
+	attempt, ok := r.detach(runKey)
+	if !ok {
+		return
+	}
+	go r.stopDetachedAttempt(runKey, attempt, outcome)
 }
 
 func workflowTransientError(event provider.ProviderEvent, providerRetryHint bool) (transient, waitsForCompletion bool) {

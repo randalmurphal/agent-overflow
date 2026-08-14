@@ -160,7 +160,7 @@ func (e *Engine) dropUnit(itemID, unitID, note string) error {
 	endedAt := e.timestamp()
 	if err := e.store.CompleteWorkItemUnit(
 		itemID, item.phaseID, item.attempt, unitID, store.WorkItemUnitDropped,
-		unit.envelope, dropNote(note), endedAt,
+		unit.envelope, dropNote(note), 0, endedAt,
 	); err != nil {
 		return fmt.Errorf("drop unit %q of item %q: %w", unitID, itemID, err)
 	}
@@ -207,7 +207,7 @@ func (e *Engine) takeOverUnit(itemID, unitID string) error {
 	// The unit is now the human's. StopForTakeover left its session alive, so
 	// teardownUnit must not stop it again.
 	unit.runnerActive = false
-	if err := e.teardownUnit(item, unit, store.WorkItemUnitTakenOver, partial, "taken over for human steering"); err != nil {
+	if err := e.teardownUnit(item, unit, store.WorkItemUnitTakenOver, partial, "taken over for human steering", 0); err != nil {
 		return err
 	}
 	return e.advanceFanOut(item)

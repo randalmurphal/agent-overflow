@@ -1740,12 +1740,10 @@ CREATE TABLE thread_import_state (
 		// Unix milliseconds at which a parked run resumes ITSELF, or 0 for the
 		// runs that never will — which is almost all of them.
 		//
-		// It is written when a provider refuses a turn because the account's
-		// usage allowance is spent AND says when that allowance comes back: the
-		// transient-retry ladder cannot clear a limit that resets in days, so the
-		// run parks `provider-retries-exhausted` immediately and comes back at the stated
-		// moment instead of waiting for a human to notice. `agent-overflow run
-		// resume --at` arms the same column by hand.
+		// It is written by `agent-overflow run resume --at`, an explicit request
+		// to continue a parked attempt at a future moment. Provider usage-limit
+		// handling no longer arms it (D75): a typed refusal parks and waits for an
+		// ordinary explicit action.
 		//
 		// It is DURABLE rather than an in-memory timer for the reason the wake
 		// signature is: a five-day stall outlives any process, so a restart has
@@ -1843,7 +1841,66 @@ CREATE TABLE store_meta (
 		SQL:     rebuildWorkItemRetryReasonsV56SQL,
 		Rebuild: true,
 	},
+	{
+		Version: 57,
+		Name:    "workflow_provider_usage_limits",
+		// A provider usage refusal is neither an exhausted retry ladder nor a
+		// model-specific fact the workflow layer can safely infer. The run keeps
+		// a distinct typed reason, while the phase/unit that actually failed
+		// records a durable provider-account scope. Cross-run attention state is
+		// keyed by that scope and the thread watching the runs; it coalesces an
+		// outage storm without becoming an admission gate.
+		//
+		// The scope intentionally includes the credential generation. A managed
+		// account switch (and the equivalent unmanaged credential replacement)
+		// therefore starts a fresh scope through the same identity boundary normal
+		// sends already use. The attention generation is separate: starting or
+		// resuming work re-arms notification delivery without claiming the provider
+		// is healthy, and a real send is always still attempted.
+		SQL: rebuildWorkItemProviderUsageLimitedV57SQL + `
+
+ALTER TABLE work_item_phases ADD COLUMN provider_usage_scope_id INTEGER NOT NULL DEFAULT 0 CHECK(provider_usage_scope_id >= 0);
+ALTER TABLE work_item_units ADD COLUMN provider_usage_scope_id INTEGER NOT NULL DEFAULT 0 CHECK(provider_usage_scope_id >= 0);
+
+CREATE TABLE workflow_provider_usage_scopes (
+    id                    INTEGER PRIMARY KEY,
+    provider              TEXT    NOT NULL CHECK(provider <> ''),
+    account_id            TEXT    NOT NULL DEFAULT '',
+    credential_generation INTEGER NOT NULL CHECK(credential_generation >= 0),
+    first_seen_at         INTEGER NOT NULL,
+    last_seen_at          INTEGER NOT NULL,
+    UNIQUE(provider, account_id, credential_generation)
+);
+
+CREATE TABLE workflow_provider_usage_attention (
+    scope_id             INTEGER NOT NULL CHECK(scope_id > 0),
+    thread_id            TEXT    NOT NULL CHECK(thread_id <> ''),
+    generation           INTEGER NOT NULL DEFAULT 1 CHECK(generation >= 1),
+    delivered_generation INTEGER NOT NULL DEFAULT 0 CHECK(delivered_generation >= 0),
+    queued_generation    INTEGER NOT NULL DEFAULT 0 CHECK(queued_generation >= 0),
+    queued_token         TEXT    NOT NULL DEFAULT '',
+    source_item_id       TEXT    NOT NULL DEFAULT '',
+    updated_at           INTEGER NOT NULL,
+    UNIQUE(scope_id, thread_id),
+    CHECK((queued_generation = 0) = (queued_token = '')),
+    CHECK((queued_generation = 0) = (source_item_id = '')),
+    CHECK(queued_generation = 0 OR queued_generation = generation),
+    CHECK(delivered_generation <= generation)
+);
+
+CREATE INDEX idx_workflow_provider_usage_attention_thread
+  ON workflow_provider_usage_attention(thread_id);
+`,
+		Rebuild: true,
+	},
 }
+
+var rebuildWorkItemProviderUsageLimitedV57SQL = mustReplaceOnce(
+	rebuildWorkItemRetryReasonsV56SQL,
+	workItemsReasonCheckV56, workItemsReasonCheckV57,
+)
+
+const workItemsReasonCheckV57 = `reason           TEXT    NOT NULL DEFAULT '' CHECK(reason IN ('','gate','question','stuck','stalled','budget-exhausted','retries-exhausted','provider-retries-exhausted','provider-usage-limited','loop-limit-exhausted','check-failed-genuine','agent-error','wiring-error','disposition','setup-failed','interrupted','taken-over','unit-failed','child-failed','paused','checkpoint')),`
 
 var rebuildWorkItemRetryReasonsV56SQL = mustReplaceOnce(
 	mustReplaceOnce(

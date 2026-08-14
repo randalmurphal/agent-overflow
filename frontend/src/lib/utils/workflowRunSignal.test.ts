@@ -38,7 +38,7 @@ describe('workflowRunSignal', () => {
 
   it.each([
     'gate', 'question', 'stuck', 'stalled', 'budget-exhausted', 'retries-exhausted',
-    'provider-retries-exhausted', 'loop-limit-exhausted',
+    'provider-retries-exhausted', 'provider-usage-limited', 'loop-limit-exhausted',
     'check-failed-genuine', 'agent-error', 'wiring-error', 'disposition', 'setup-failed',
     'interrupted', 'paused', 'unit-failed', 'child-failed', 'taken-over',
   ])('uses the sole amber signal for needs-human(%s)', (reason) => {
@@ -69,7 +69,7 @@ describe('the label vocabulary is total over its unions', () => {
   // not to this list is a COMPILE error here as well as in the table.
   const EVERY_REASON: Record<WorkflowRunReason, true> = {
     gate: true, question: true, stuck: true, stalled: true, 'budget-exhausted': true,
-    'retries-exhausted': true, 'provider-retries-exhausted': true,
+    'retries-exhausted': true, 'provider-retries-exhausted': true, 'provider-usage-limited': true,
     'loop-limit-exhausted': true, 'check-failed-genuine': true, 'agent-error': true,
     'wiring-error': true, disposition: true, 'setup-failed': true, interrupted: true,
     paused: true, 'unit-failed': true, 'child-failed': true, checkpoint: true,

@@ -4235,10 +4235,11 @@ export function WorkflowRunAutomationNow(automationID: string): $CancellableProm
 }
 
 /**
- * WorkflowScheduleResume arms a parked run's self-resume by hand — the manual
- * half of the mechanism a dated usage-limit refusal arms on its own. It resumes
- * nothing now: the run stays exactly where it is until the moment arrives, and
- * every action that repairs it in the meantime disarms the schedule.
+ * WorkflowScheduleResume arms a parked run's resume at an explicit time. This
+ * is always an operator-authored schedule; provider usage limits never create
+ * one automatically. It resumes nothing now: the run stays exactly where it is
+ * until the moment arrives, and every action that repairs it in the meantime
+ * disarms the schedule.
  * 
  * `at` is either an RFC 3339 timestamp or a leading-`+` duration relative to the
  * APP's clock (`+36h`), which is the clock the timer will actually run on.

@@ -163,10 +163,10 @@ func TestParseRateLimitEvent_ExplicitZeroUtilization(t *testing.T) {
 // the drop-without-utilization rule. `status:"rejected"` is the envelope the CLI
 // emits when the API refused the request with a 429: its limits are built from
 // the response headers, which carry `anthropic-ratelimit-unified-reset` but no
-// utilization at all. Dropping it threw away the only structured statement AO
-// ever gets about WHEN a spent allowance comes back — the fact a workflow run's
-// self-resume is scheduled from. A refused window is spent by definition, so it
-// records as 100%.
+// utilization at all. Dropping it would erase the structured reset boundary
+// from account-usage surfaces. A refused window is spent by definition, so it
+// records as 100%; workflow control flow uses the separately normalized typed
+// refusal and treats this boundary as advisory.
 func TestParseRateLimitEvent_RejectedCarriesNoUtilization(t *testing.T) {
 	line := []byte(`{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","resetsAt":1776981600,"rateLimitType":"five_hour"}}`)
 	events, err := ParseLine(testThread, line)

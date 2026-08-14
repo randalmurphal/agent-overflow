@@ -57,13 +57,16 @@ export interface WorkflowActionButton {
 // The two reasons that share the paused ROW. `checkpoint` takes the same engine
 // edge back but gets a row of its own, so it is deliberately not here.
 // Provider retry exhaustion continues the parked session, exactly as for
-// `paused`/`interrupted`, so it takes the same resolution kind. The legacy
-// `retries-exhausted` spelling retains that shipped behavior. A spent workflow
-// loop has no dead provider turn to continue and remains blocked.
+// `paused`/`interrupted`, so it takes the same resolution kind. A typed provider
+// usage refusal does too, but no availability record gates the resume: the
+// action always makes a real attempt. The legacy `retries-exhausted` spelling
+// retains its shipped behavior. A spent workflow loop has no dead provider
+// turn to continue and remains blocked.
 const RESUMABLE_REASONS = new Set([
   'paused',
   'interrupted',
   'provider-retries-exhausted',
+  'provider-usage-limited',
   'retries-exhausted',
 ]);
 const DONE_REASONS = new Set(['disposition']);

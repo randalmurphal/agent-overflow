@@ -22,10 +22,11 @@ type teardownRequest struct {
 	// typed reason and one a human can act on. Sites whose reason names its own
 	// cause — `interrupted`, `paused`, `taken-over`, a gate a human is deciding
 	// — deliberately leave it nil; a restatement there would be noise.
-	cause       error
-	phaseStatus string
-	nextState   State
-	reason      Reason
+	cause                error
+	providerUsageScopeID store.WorkflowProviderUsageScopeID
+	phaseStatus          string
+	nextState            State
+	reason               Reason
 	// retainCallChildren keeps a waiting call phase's child subtree alive
 	// instead of cancelling it. Pause is the only trigger that sets it, and it
 	// is correct for exactly one reason: pause does not abandon the phase. The
@@ -58,7 +59,7 @@ func reasonAllowed(reason Reason) bool {
 	switch reason {
 	case ReasonGate, ReasonQuestion, ReasonStuck, ReasonStalled,
 		ReasonBudgetExhausted, ReasonRetriesExhausted,
-		ReasonProviderRetriesExhausted, ReasonLoopLimitExhausted,
+		ReasonProviderRetriesExhausted, ReasonProviderUsageLimited, ReasonLoopLimitExhausted,
 		ReasonCheckFailedGenuine, ReasonAgentError, ReasonWiringError,
 		ReasonDisposition, ReasonSetupFailed, ReasonInterrupted, ReasonTakenOver,
 		ReasonUnitFailed, ReasonChildFailed, ReasonPaused, ReasonCheckpoint:
@@ -184,7 +185,7 @@ func (e *Engine) teardown(item *runtimeItem, request teardownRequest) error {
 		endedAt := e.timestamp()
 		if err := e.store.CompleteWorkItemPhase(
 			item.item.ID, item.phaseID, item.attempt, output, request.gateTrace,
-			request.phaseStatus, cause, endedAt,
+			request.phaseStatus, cause, request.providerUsageScopeID, endedAt,
 		); err != nil {
 			errs = append(errs, fmt.Errorf("persist phase teardown: %w", err))
 			phasePersisted = false
@@ -316,6 +317,12 @@ func (e *Engine) completePhaseOutcome(item *runtimeItem, key RunKey, outcome Out
 		return e.teardown(item, teardownRequest{
 			output: outcome.Envelope, cause: outcomeDetailCause(outcome), phaseStatus: "parked",
 			nextState: StateNeedsHuman, reason: ReasonProviderRetriesExhausted,
+		})
+	case OutcomeProviderUsageLimited:
+		return e.teardown(item, teardownRequest{
+			output: outcome.Envelope, cause: outcomeDetailCause(outcome),
+			providerUsageScopeID: providerUsageScopeForOutcome(outcome), phaseStatus: "parked",
+			nextState: StateNeedsHuman, reason: ReasonProviderUsageLimited,
 		})
 	case OutcomeExecutionFailure:
 		if item.takeoverFinalize {

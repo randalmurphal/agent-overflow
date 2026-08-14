@@ -642,17 +642,35 @@ baseline:
 - The rebuild derives from v44 and must copy every later column explicitly:
   `soft_stop`, `wake_signature`, `pending_guidance`, and `auto_resume_at`.
 
-## Recent schema changes (v54) — the self-resume moment
+## Recent schema changes (v57) — provider usage provenance and attention
+
+- `provider-usage-limited` is the typed, continuable reason for a provider
+  refusal normalized as `FailureReasonUsageLimit`. The phase or unit that
+  failed records `provider_usage_scope_id`; zero is every other failure, and a
+  retry/reopen clears it so stale provenance cannot make a later mixed park
+  look usage-limit-only.
+- `workflow_provider_usage_scopes` keys provider + account id + credential
+  generation. It is failure provenance and correlation, not an availability
+  cache: no send/admission path reads it. `workflow_provider_usage_attention`
+  keys a scope + watching conversation and tracks action, queued, and delivered
+  generations. Claim/promote/release are compare-and-set shaped; returning a
+  run tree to `running` advances the generation. Queued claims lost at process
+  restart are transferred in place before the new engine starts emitting, then
+  re-surfaced after its rows are rebuilt by scope + watching conversation; the
+  durable claim is never absent, even across a second crash during recovery.
+  The recorded source is preferred but is not authoritative: if it resolved
+  before restart, recovery selects another currently affected run, including a
+  parked descendant whose root is still running. Delivery uncertainty therefore
+  costs a duplicate rather than a permanently silent park.
+
+## Recent schema changes (v54) — the explicitly scheduled resume moment
 
 - `work_items.auto_resume_at` (`INTEGER NOT NULL DEFAULT 0`, Unix milliseconds)
-  is when a parked run brings itself back. It is written by exactly one park: a
-  provider that refused the turn because the account's usage allowance is spent
-  AND said when it returns (`app_workflow_quota.go`), which parks
-  `provider-retries-exhausted` with the reset stated in the attempt's `park_cause`. The
-  wait is measured in days, so the moment has to outlive the process that
-  learned it — an in-memory timer would mean a five-day stall needing a human
-  alarm clock after any restart, which is the whole failure this column exists
-  to end.
+  is when a parked run explicitly scheduled with `run resume --at` brings
+  itself back. Provider usage-limit handling does not write it (D75): a typed
+  refusal parks immediately and waits for an ordinary explicit action. The
+  requested schedule is durable because it may outlive the process that armed
+  it; an in-memory-only timer would silently lose the operator's command.
 - `0` means "nothing armed", which is every other run. The column is the single
   source of truth and the timer is derived from it: `app_workflow_autoresume.go`
   arms one on the write, re-arms every armed row at boot

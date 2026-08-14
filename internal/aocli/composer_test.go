@@ -50,12 +50,14 @@ func TestRenderComposerContextNamesTheSurfaceAndTheLiveState(t *testing.T) {
 		"repairs every failed unit, the join included",
 		"run resume continues the same attempt without a note",
 		"provider-retries-exhausted → run resume",
+		"provider-usage-limited → run resume",
 		"loop-limit-exhausted → run resume --phase <id>",
 		"retries-exhausted (legacy) → inspect cause",
 		"continues the parked attempt on the session its turn died in",
+		"tries the parked attempt immediately",
+		"no recorded limit blocks the attempt",
 		"naming an earlier phase re-enters the cycle from outside and refills its bound",
 		"run resume preserves the old continuation behavior; use --phase <id> for a spent loop bound",
-		"a park whose cause names a usage limit resumes itself at the stated time",
 		"state failed → run rerun",
 		// The one sentence the whole verb set turns on: what resume preserves and
 		// what --phase throws away.

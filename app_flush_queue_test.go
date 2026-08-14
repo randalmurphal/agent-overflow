@@ -1972,11 +1972,14 @@ func TestSessionDeathRestoresQueuedFlushItemsToDraft(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("turn start: %v", err)
 	}
+	settled := 0
+	settlement := triage.NewFlushSettlement(func() { settled++ })
 	app.triage.RegisterQueueItem(thread.ID, triage.QueuedFlushItem{
 		ID:         "queue:first",
 		Message:    "first queued",
 		Payload:    json.RawMessage(`{}`),
 		EnqueuedAt: 10,
+		Settlement: settlement,
 	})
 	app.triage.RegisterQueueItem(thread.ID, triage.QueuedFlushItem{
 		ID:         "queue:second",
@@ -2007,6 +2010,46 @@ func TestSessionDeathRestoresQueuedFlushItemsToDraft(t *testing.T) {
 	}
 	if strings.Join(restored[0].QueueItemIDs, ",") != "queue:first,queue:second" {
 		t.Fatalf("restored queue ids = %+v", restored[0].QueueItemIDs)
+	}
+	if settled != 1 {
+		t.Fatalf("durable composer recovery settled the injected message %d times, want 1", settled)
+	}
+	settlement.Settle()
+	if settled != 1 {
+		t.Fatalf("settlement fired again after recovery: %d", settled)
+	}
+}
+
+func TestSessionDeathDraftFailureRequeuesWithoutSettling(t *testing.T) {
+	app, _ := newAppForFlushQueueRPC(t)
+
+	thread := testThread("restore-draft-failure")
+	thread.Provider = string(provider.Claude)
+	thread.WorkspacePath = t.TempDir()
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+	settled := 0
+	settlement := triage.NewFlushSettlement(func() { settled++ })
+	app.triage.RegisterQueueItem(thread.ID, triage.QueuedFlushItem{
+		ID: "queue:retry", Message: "still pending", Payload: json.RawMessage(`{}`),
+		EnqueuedAt: 10, Settlement: settlement,
+	})
+	if err := app.store.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+
+	requeued := app.restoreUnconfirmedQueueOnSessionDeath(thread.ID)
+
+	if settled != 0 {
+		t.Fatalf("failed draft recovery settled the message %d times, want 0", settled)
+	}
+	if len(requeued) != 1 || requeued[0].Settlement != settlement {
+		t.Fatalf("requeued recovery = %+v, want the original pending settlement", requeued)
+	}
+	queued := app.triage.QueuedFlushItems(thread.ID)
+	if len(queued) != 1 || queued[0].Settlement != settlement {
+		t.Fatalf("live requeue = %+v, want the original pending settlement", queued)
 	}
 }
 
@@ -2715,6 +2758,8 @@ func TestSessionDeathDedupeDispatchCurrentAndPendingFlush(t *testing.T) {
 	if err := app.store.CreateThread(thread); err != nil {
 		t.Fatalf("CreateThread: %v", err)
 	}
+	settled := 0
+	settlement := triage.NewFlushSettlement(func() { settled++ })
 	app.flushDispatchMu.Lock()
 	app.ensureFlushDispatchMapsLocked()
 	app.flushDispatchCurrent[thread.ID] = flushDispatchBatch{
@@ -2723,6 +2768,7 @@ func TestSessionDeathDedupeDispatchCurrentAndPendingFlush(t *testing.T) {
 			Message:    "queued payload copy",
 			Payload:    json.RawMessage(`{}`),
 			EnqueuedAt: 10,
+			Settlement: settlement,
 		}},
 		generation: app.flushDispatchGeneration[thread.ID],
 	}
@@ -2758,6 +2804,9 @@ func TestSessionDeathDedupeDispatchCurrentAndPendingFlush(t *testing.T) {
 	}
 	if strings.Join(restored[0].UserItemIDs, ",") != "user:1:flush:1" {
 		t.Fatalf("restored user ids = %+v", restored[0].UserItemIDs)
+	}
+	if settled != 1 {
+		t.Fatalf("dedupe dropped or repeated the dispatch copy's settlement: got %d, want 1", settled)
 	}
 }
 
@@ -3226,14 +3275,14 @@ func TestFlushUserMetaHelpers_RejectNullMeta(t *testing.T) {
 	}
 }
 
-// TestDispatchFlush_OnDispatchedFiresOnlyAfterTheProviderWrite pins the seam
+// TestDispatchFlush_SettlesOnlyAfterTheProviderWrite pins the seam
 // an app-internal injector's durable bookkeeping hangs off
-// (triage.QueuedFlushItem.OnDispatched, used by the workflow wake). The queue
+// (triage.QueuedFlushItem.Settlement, used by the workflow wake). The queue
 // in front of the dispatcher is process memory, so the callback must fire on
 // the SUCCESS return of dispatchFlushItem and on nothing earlier: a failed
 // dispatch requeues the message, and an injector that had already recorded it
 // as delivered would go silent about a message nobody ever received.
-func TestDispatchFlush_OnDispatchedFiresOnlyAfterTheProviderWrite(t *testing.T) {
+func TestDispatchFlush_SettlesOnlyAfterTheProviderWrite(t *testing.T) {
 	t.Run("a successful dispatch fires it", func(t *testing.T) {
 		app, _ := newAppForFlushQueueRPC(t)
 
@@ -3257,11 +3306,11 @@ func TestDispatchFlush_OnDispatchedFiresOnlyAfterTheProviderWrite(t *testing.T) 
 		fired := 0
 		app.dispatchFlush(thread.ID, []triage.QueuedFlushItem{{
 			ID: "queue:ok", Message: "wake", Payload: json.RawMessage(`{}`),
-			OnDispatched: func() { fired++ },
+			Settlement: triage.NewFlushSettlement(func() { fired++ }),
 		}})
 
 		if fired != 1 {
-			t.Fatalf("OnDispatched fired %d times, want 1 after the provider write", fired)
+			t.Fatalf("settlement fired %d times, want 1 after the provider write", fired)
 		}
 	})
 
@@ -3279,11 +3328,11 @@ func TestDispatchFlush_OnDispatchedFiresOnlyAfterTheProviderWrite(t *testing.T) 
 		// No session registered: dispatch fails at session resolution.
 		app.dispatchFlush(thread.ID, []triage.QueuedFlushItem{{
 			ID: "queue:fail", Message: "wake", Payload: json.RawMessage(`{}`),
-			OnDispatched: func() { fired++ },
+			Settlement: triage.NewFlushSettlement(func() { fired++ }),
 		}})
 
 		if fired != 0 {
-			t.Fatalf("OnDispatched fired %d times on a failed dispatch, want 0", fired)
+			t.Fatalf("settlement fired %d times on a failed dispatch, want 0", fired)
 		}
 		// The requeued copy keeps the callback, so the retry that succeeds is
 		// still the one that records the delivery.
@@ -3291,8 +3340,8 @@ func TestDispatchFlush_OnDispatchedFiresOnlyAfterTheProviderWrite(t *testing.T) 
 		if len(requeued) != 1 {
 			t.Fatalf("requeued items = %d, want 1", len(requeued))
 		}
-		if requeued[0].OnDispatched == nil {
-			t.Fatal("the requeued item lost its dispatch callback — its retry would deliver unrecorded")
+		if requeued[0].Settlement == nil {
+			t.Fatal("the requeued item lost its settlement — its retry would deliver unrecorded")
 		}
 	})
 }

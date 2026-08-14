@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"log"
+	"time"
 
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadmode"
@@ -27,8 +28,9 @@ const maxWakeMessageBytes = 24 * 1024
 // The two travel together so no delivery path can record a signature for a
 // message it did not send, or send a message whose signature nobody computed.
 type composedWake struct {
-	signature string
-	message   string
+	signature      string
+	message        string
+	usageAttention *store.WorkflowProviderUsageAttentionClaim
 }
 
 // deliverWorkflowWake injects the composed message into the bound thread, unless
@@ -46,9 +48,10 @@ type composedWake struct {
 //
 //   - A live session takes the message through the flush queue. That queue is
 //     process memory until the dispatch worker writes the message to the
-//     provider, so the row is CLAIMED here with a `queued:` marker and the
-//     delivered record itself is deferred to the queue item's OnDispatched
-//     callback. Recording the real signature at register time would let a
+//     provider or session-death recovery persists it in the composer, so the
+//     row is CLAIMED here with a `queued:` marker and the delivered record is
+//     deferred to the queue item's durability settlement. Recording the real
+//     signature at register time would let a
 //     crash, a session teardown, or a rollback take the message while the run
 //     row swore it had been delivered — and that record suppresses the
 //     identical wake FOREVER, because the coalescing rule only spends it when
@@ -59,17 +62,19 @@ type composedWake struct {
 //   - A session-less thread takes an ordinary send, which lazily starts the
 //     session and persists the message as a durable row before it returns — so
 //     its record is written right here, where that durability already is.
-func (a *App) deliverWorkflowWake(item store.WorkItem, composed composedWake) {
+func (a *App) deliverWorkflowWake(item store.WorkItem, composed composedWake) bool {
 	threadID, ok := a.resolveWakeThread(item)
 	if !ok {
-		return
+		a.releaseWorkflowUsageAttention(composed.usageAttention)
+		return false
 	}
 	if a.wakeAlreadyDelivered(item, composed.signature) {
-		return
+		a.releaseWorkflowUsageAttention(composed.usageAttention)
+		return false
 	}
 	if _, live := a.sessionManager().get(threadID); live {
 		// Claim the row BEFORE handing the message over, with the marker that
-		// says "queued, not delivered" — see wakeQueuedPrefix. The claim is an
+		// says "queued, not durable" — see wakeQueuedPrefix. The claim is an
 		// ordinary write because this path and the clear both run on the app's
 		// serial wake queue, so they are ordered by the transitions that caused
 		// them; the PROMOTION below is the one that races and is guarded.
@@ -82,22 +87,34 @@ func (a *App) deliverWorkflowWake(item store.WorkItem, composed composedWake) {
 		a.recordWakeDelivery(itemID, claim)
 		injected := injectedQueueOptions{
 			preserveDraft: true,
-			onDispatched:  func() { a.promoteWakeDelivery(itemID, claim, signature) },
+			onDurable: func() {
+				a.promoteWakeDelivery(itemID, claim, signature)
+				if composed.usageAttention != nil {
+					a.promoteWorkflowUsageAttention(*composed.usageAttention)
+				}
+			},
 		}
 		if _, err := a.registerQueueItem(threadID, composed.message, SendMessageOptions{}, injected); err != nil {
 			a.reportWakeFailure(item, threadID, err)
+			a.releaseWorkflowUsageAttention(composed.usageAttention)
 			// Nothing will ever promote this claim — drop it rather than leave
 			// the row marked for a message that was never queued. Guarded, so a
 			// claim already superseded by a later wake is left alone.
 			a.casWakeRecord(itemID, claim, "")
+			return false
 		}
-		return
+		return true
 	}
 	if _, err := a.sendMessageWithOptions(threadID, composed.message, sendMessageOptions{PreserveDraft: true}); err != nil {
 		a.reportWakeFailure(item, threadID, err)
-		return
+		a.releaseWorkflowUsageAttention(composed.usageAttention)
+		return false
 	}
 	a.recordWakeDelivery(item.ID, composed.signature)
+	if composed.usageAttention != nil {
+		a.promoteWorkflowUsageAttention(*composed.usageAttention)
+	}
+	return true
 }
 
 // wakeAlreadyDelivered is the coalescing rule itself: a wake whose signature
@@ -137,9 +154,10 @@ func (a *App) wakeAlreadyDelivered(item store.WorkItem, signature string) bool {
 }
 
 // wakeQueuedPrefix marks a record whose message has been handed to the flush
-// queue but has NOT yet been written to the provider. It is what closes the gap
-// the deferred record opens: the delivery lands on the flush-dispatch worker,
-// the "somebody acted" clear lands on the wake queue, and nothing orders them —
+// queue but has NOT yet reached a durable endpoint. It is what closes the gap
+// the deferred record opens: settlement can land on the flush-dispatch worker
+// or session-death recovery, while the "somebody acted" clear lands on the wake
+// queue, and nothing orders them —
 // so without a claim, an action taken while the message was still queued would
 // find nothing to spend, the record would land after it, and the next identical
 // park would be suppressed forever. That is exactly the sequence a bare `run
@@ -170,7 +188,7 @@ func (a *App) promoteWakeDelivery(itemID, claim, signature string) {
 	if a.casWakeRecord(itemID, claim, signature) {
 		return
 	}
-	log.Printf("workflow wake %s: the queued wake record was spent before its message reached the provider "+
+	log.Printf("workflow wake %s: the queued wake record was spent before its message reached a durable endpoint "+
 		"(somebody acted on the run); leaving it unrecorded so the next identical park delivers", itemID)
 }
 
@@ -225,6 +243,13 @@ func (a *App) clearTreeWakeSignature(itemID string) {
 		}
 		root = chain[0]
 	}
+	a.clearRootWakeSignature(root)
+}
+
+// clearRootWakeSignature spends a root whose caller has already resolved the
+// run tree. Keeping the read/write half here prevents a transition that also
+// rearms provider attention from walking the same ancestry twice.
+func (a *App) clearRootWakeSignature(root store.WorkItem) {
 	if root.OriginThreadID == "" {
 		// An unbound root has never had a wake delivered, so there is nothing to
 		// spend — and this transition happens on every phase advance of every
@@ -240,6 +265,42 @@ func (a *App) clearTreeWakeSignature(itemID string) {
 		return
 	}
 	a.clearWakeRecord(root.ID)
+}
+
+// clearTreeWorkflowAttentionForTransition spends both records attached to
+// action on a run: the root's content wake and every provider-usage scope
+// watched by the same conversation. A called child's birth is engine progress,
+// not a new action by the watcher, so it must not re-arm an unresolved outage.
+// Root births remain explicit starts, while every non-birth transition to
+// running is a resume, retry, answer, resolve, or rerun.
+//
+// Rearming is notification metadata only; no provider send ever reads it, so
+// an immediate resume remains an unconditional real attempt.
+func (a *App) clearTreeWorkflowAttentionForTransition(itemID string, from engine.State) {
+	item, err := a.store.GetWorkItem(itemID)
+	if err != nil {
+		log.Printf("workflow wake %s: load run to rearm attention: %v", itemID, err)
+		return
+	}
+	if from == "" && item.ParentItemID != "" {
+		return
+	}
+	root := item
+	if item.ParentItemID != "" {
+		chain, err := a.workflowAncestry(item)
+		if err != nil {
+			log.Printf("workflow wake %s: resolve root to rearm attention: %v", itemID, err)
+			return
+		}
+		root = chain[0]
+	}
+	a.clearRootWakeSignature(root)
+	if root.OriginThreadID == "" {
+		return
+	}
+	if err := a.store.RearmWorkflowProviderUsageAttention(root.OriginThreadID, time.Now().UnixMilli()); err != nil {
+		log.Printf("workflow usage attention %s: rearm watcher %s: %v", root.ID, root.OriginThreadID, err)
+	}
 }
 
 // clearWakeRecord spends a run's wake record: whatever its bound thread was

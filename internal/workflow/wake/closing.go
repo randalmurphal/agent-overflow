@@ -30,6 +30,7 @@ const (
 
 	reasonRetriesExhausted         = "retries-exhausted"
 	reasonProviderRetriesExhausted = "provider-retries-exhausted"
+	reasonProviderUsageLimited     = "provider-usage-limited"
 	reasonLoopLimitExhausted       = "loop-limit-exhausted"
 
 	// The two decision kinds a `gate` park can rest under, mirrored from
@@ -158,6 +159,10 @@ func repairSentence(itemID, state, reason, gateDecision, gateLabel string) strin
 	case reasonProviderRetriesExhausted:
 		return fmt.Sprintf(
 			"%s continues the parked attempt on the provider session its last turn died in, which is the move once the provider failure is cleared.",
+			resumeCommand(itemID))
+	case reasonProviderUsageLimited:
+		return fmt.Sprintf(
+			"%s tries the parked attempt immediately; use it after usage resets or after switching accounts. Recorded limit state never blocks the attempt, so an early resume simply receives another provider refusal if usage is still unavailable.",
 			resumeCommand(itemID))
 	case reasonLoopLimitExhausted:
 		return fmt.Sprintf(

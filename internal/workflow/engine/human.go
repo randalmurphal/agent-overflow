@@ -259,7 +259,7 @@ func (e *Engine) resolveHumanGate(itemID string, choice HumanDecision, note stri
 			endedAt := e.timestamp()
 			if err := e.store.CompleteWorkItemPhase(
 				itemID, item.phaseID, item.attempt, current.OutputEnvelope,
-				current.GateTrace, phaseStatus, "", endedAt,
+				current.GateTrace, phaseStatus, "", 0, endedAt,
 			); err != nil {
 				return err
 			}
@@ -358,7 +358,7 @@ func (e *Engine) resolveHumanGate(itemID string, choice HumanDecision, note stri
 	endedAt := e.timestamp()
 	if err := e.store.CompleteWorkItemPhase(
 		itemID, item.phaseID, item.attempt, current.OutputEnvelope,
-		encodedTrace, "completed", "", endedAt,
+		encodedTrace, "completed", "", 0, endedAt,
 	); err != nil {
 		return err
 	}

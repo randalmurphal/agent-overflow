@@ -33,16 +33,18 @@ import (
 // afterWorkflowResting runs the wake half of a lifecycle transition. It is
 // called from the one app-side item-state listener, so a wake and a
 // notification are always decided from the same event.
-func (a *App) afterWorkflowResting(item store.WorkItem) {
+func (a *App) afterWorkflowResting(item store.WorkItem, usageClaim *store.WorkflowProviderUsageAttentionClaim) bool {
 	if item.OriginThreadID == "" {
-		return
+		return false
 	}
 	composed, err := a.composeWorkflowWake(item, nil)
 	if err != nil {
 		log.Printf("workflow wake %s: compose: %v", item.ID, err)
-		return
+		a.releaseWorkflowUsageAttention(usageClaim)
+		return false
 	}
-	a.deliverWorkflowWake(item, composed)
+	composed.usageAttention = usageClaim
+	return a.deliverWorkflowWake(item, composed)
 }
 
 // surfaceDescendantPark is the root-side surface for a descendant that parked
@@ -53,16 +55,26 @@ func (a *App) afterWorkflowResting(item store.WorkItem) {
 // It fires only while the root is still running: once the root has rested for a
 // reason of its own, that transition is the surface and this one would be a
 // duplicate.
-func (a *App) surfaceDescendantPark(child store.WorkItem) {
+func (a *App) surfaceDescendantPark(child store.WorkItem) workflowUsageAttentionSurface {
 	chain, err := a.workflowAncestry(child)
 	if err != nil {
 		log.Printf("workflow wake %s: resolve root: %v", child.ID, err)
-		return
+		return workflowUsageAttentionSurface{}
 	}
 	root := chain[0]
 	if root.ID == child.ID || root.State != string(engine.StateRunning) {
-		return
+		return workflowUsageAttentionSurface{}
 	}
+	usage := a.workflowUsageAttentionForRest(root, child)
+	return a.surfaceResolvedDescendantPark(child, chain, usage)
+}
+
+func (a *App) surfaceResolvedDescendantPark(
+	child store.WorkItem,
+	chain []store.WorkItem,
+	usage workflowUsageAttentionDecision,
+) workflowUsageAttentionSurface {
+	root := chain[0]
 	ids := make([]string, 0, len(chain))
 	for _, ancestor := range chain {
 		ids = append(ids, ancestor.ID)
@@ -106,17 +118,32 @@ func (a *App) surfaceDescendantPark(child store.WorkItem) {
 			WhatHappened: "The run stopped at the checkpoint you asked for, before starting the next call.",
 			WhatItNeeds:  fmt.Sprintf("Resume called run %s to continue, or leave it stopped.", child.ID),
 		}
+	} else if engine.Reason(child.Reason) == engine.ReasonProviderUsageLimited {
+		digest = WorkflowDigest{
+			WhatHappened: "A called run paused because the provider account reached its usage limit.",
+			WhatItNeeds: fmt.Sprintf(
+				"Wait for the provider usage limit to reset or switch provider accounts, then resume called run %s.", child.ID,
+			),
+		}
+	}
+	if usage.Suppress {
+		return usage.Surface
 	}
 	go a.sendWorkflowItemNotification(root, digest)
 	if root.OriginThreadID == "" {
-		return
+		return usage.Surface
 	}
 	composed, err := a.composeWorkflowWake(root, descendant)
 	if err != nil {
 		log.Printf("workflow wake %s: compose descendant park: %v", root.ID, err)
-		return
+		a.releaseWorkflowUsageAttention(usage.Claim)
+		return workflowUsageAttentionSurface{}
 	}
-	a.deliverWorkflowWake(root, composed)
+	composed.usageAttention = usage.Claim
+	if !a.deliverWorkflowWake(root, composed) && usage.Claim != nil {
+		return workflowUsageAttentionSurface{}
+	}
+	return usage.Surface
 }
 
 // workflowAncestry walks call linkage to the tree's root and returns the path

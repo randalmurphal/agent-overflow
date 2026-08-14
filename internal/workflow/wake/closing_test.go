@@ -32,6 +32,9 @@ var parkedReasons = []struct {
 	{reasonGate, gateDecisionPark},
 	{reasonQuestion, ""},
 	{reasonStuck, ""},
+	{reasonProviderRetriesExhausted, ""},
+	{reasonProviderUsageLimited, ""},
+	{reasonLoopLimitExhausted, ""},
 	{reasonRetriesExhausted, ""},
 }
 

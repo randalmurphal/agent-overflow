@@ -80,7 +80,7 @@ func (h *wakeHarness) drain() { h.app.workflowWake.Wait() }
 
 // dispatchQueued completes the queued messages the way the real dispatch worker
 // does once it has written them to the provider: it runs each item's
-// OnDispatched callback (dispatchFlushWithGeneration's success path). Until this
+// durability settlement (dispatchFlushWithGeneration's success path). Until this
 // runs, a queued wake has been composed and handed off but not delivered.
 func (h *wakeHarness) dispatchQueued() {
 	h.mu.Lock()
@@ -88,9 +88,7 @@ func (h *wakeHarness) dispatchQueued() {
 	h.queuedItems = nil
 	h.mu.Unlock()
 	for _, item := range pending {
-		if item.OnDispatched != nil {
-			item.OnDispatched()
-		}
+		item.Settlement.Settle()
 	}
 }
 
@@ -137,9 +135,28 @@ func (h *wakeHarness) phase(t *testing.T, itemID, phaseID string, attempt int, s
 func (h *wakeHarness) parkedPhase(t *testing.T, itemID, phaseID string, attempt int, cause string) {
 	t.Helper()
 	h.phase(t, itemID, phaseID, attempt, "running", "", nil)
-	if err := h.app.store.CompleteWorkItemPhase(itemID, phaseID, attempt, nil, nil, "parked", cause, 11); err != nil {
+	if err := h.app.store.CompleteWorkItemPhase(itemID, phaseID, attempt, nil, nil, "parked", cause, 0, 11); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func (h *wakeHarness) usageLimitedPhase(t *testing.T, itemID string, scopeID store.WorkflowProviderUsageScopeID) {
+	t.Helper()
+	h.phase(t, itemID, "work", 1, "running", "", nil)
+	if err := h.app.store.CompleteWorkItemPhase(
+		itemID, "work", 1, nil, nil, "parked", "provider usage limit reached", scopeID, 11,
+	); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func (h *wakeHarness) usageScope(t *testing.T, providerName, accountID string, generation uint64) store.WorkflowProviderUsageScopeID {
+	t.Helper()
+	id, err := h.app.store.OpenWorkflowProviderUsageScope(providerName, accountID, generation, time.Now().UnixMilli())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return id
 }
 
 func TestWorkflowWakeDeliversToAnIdleBoundThread(t *testing.T) {
@@ -205,6 +222,370 @@ func TestWorkflowWakeQueuesIntoABusyBoundThread(t *testing.T) {
 		if !strings.Contains(queued[0], want) {
 			t.Fatalf("queued wake missing %q:\n%s", want, queued[0])
 		}
+	}
+}
+
+func TestWorkflowUsageLimitStormNotifiesOncePerAccountAndWatcher(t *testing.T) {
+	h := newWakeHarness(t)
+	thread := h.chatThread(t, "origin-usage")
+	scope := h.usageScope(t, string(provider.Claude), "acct-a", 4)
+	park := func(id string, scopeID store.WorkflowProviderUsageScopeID) store.WorkItem {
+		item := h.run(t, id, engine.StateNeedsHuman, engine.ReasonProviderUsageLimited)
+		if err := h.app.store.UpdateWorkItemOriginThread(item.ID, thread.ID); err != nil {
+			t.Fatal(err)
+		}
+		h.usageLimitedPhase(t, item.ID, scopeID)
+		h.app.afterWorkflowStateEvent(engine.StateEvent{
+			ItemID: item.ID, ProjectID: item.ProjectID,
+			From: engine.StateRunning, To: engine.StateNeedsHuman,
+		})
+		h.drain()
+		return item
+	}
+
+	first := park("usage-a", scope)
+	park("usage-b", scope)
+	if sends, _, _, _ := h.snapshot(); len(sends) != 1 {
+		t.Fatalf("two same-account parks produced %d messages, want one", len(sends))
+	}
+
+	// An explicit recovery action re-arms attention but does not check or clear
+	// provider availability. A failure arriving after that action is actionable
+	// new work and gets one new message.
+	h.app.afterWorkflowStateEvent(engine.StateEvent{
+		ItemID: first.ID, ProjectID: first.ProjectID,
+		From: engine.StateNeedsHuman, To: engine.StateRunning,
+	})
+	h.drain()
+	park("usage-late", scope)
+	if sends, _, _, _ := h.snapshot(); len(sends) != 2 {
+		t.Fatalf("late post-resume park produced %d total messages, want two", len(sends))
+	}
+
+	// Account identity is part of the correlation key. A different account's
+	// refusal cannot be hidden behind the first account's notification.
+	other := h.usageScope(t, string(provider.Claude), "acct-b", 5)
+	park("usage-other-account", other)
+	if sends, _, _, _ := h.snapshot(); len(sends) != 3 {
+		t.Fatalf("different-account park produced %d total messages, want three", len(sends))
+	}
+}
+
+func TestWorkflowUsageAttentionQueuedResumeRaceCannotSilenceLateFailure(t *testing.T) {
+	h := newWakeHarness(t)
+	thread := h.chatThread(t, "origin-usage-busy")
+	h.app.sessions[thread.ID] = session{provider: string(provider.Claude), token: "live"}
+	scope := h.usageScope(t, string(provider.Claude), "acct", 9)
+	park := func(id string) store.WorkItem {
+		item := h.run(t, id, engine.StateNeedsHuman, engine.ReasonProviderUsageLimited)
+		if err := h.app.store.UpdateWorkItemOriginThread(item.ID, thread.ID); err != nil {
+			t.Fatal(err)
+		}
+		h.usageLimitedPhase(t, item.ID, scope)
+		h.app.afterWorkflowStateEvent(engine.StateEvent{
+			ItemID: item.ID, ProjectID: item.ProjectID,
+			From: engine.StateRunning, To: engine.StateNeedsHuman,
+		})
+		h.drain()
+		return item
+	}
+
+	first := park("queued-usage-a")
+	park("queued-usage-b")
+	if _, queued, _, _ := h.snapshot(); len(queued) != 1 {
+		t.Fatalf("same outage queued %d messages before delivery, want one", len(queued))
+	}
+
+	// Resume lands while the first alert is still waiting behind the watcher’s
+	// active turn. Rearming invalidates that claim before a later long-running
+	// phase reports the same limit.
+	h.app.afterWorkflowStateEvent(engine.StateEvent{
+		ItemID: first.ID, ProjectID: first.ProjectID,
+		From: engine.StateNeedsHuman, To: engine.StateRunning,
+	})
+	h.drain()
+	park("queued-usage-late")
+	if _, queued, _, _ := h.snapshot(); len(queued) != 2 {
+		t.Fatalf("late failure queued %d total messages, want a new generation", len(queued))
+	}
+
+	// The stale callback runs first but cannot promote across the resume. The
+	// second callback records the current generation, which suppresses another
+	// same-outage park until the next action.
+	h.dispatchQueued()
+	park("queued-usage-after-delivery")
+	if _, queued, _, _ := h.snapshot(); len(queued) != 2 {
+		t.Fatalf("delivered current generation failed to suppress: queued=%d", len(queued))
+	}
+}
+
+func TestWorkflowUsageAttentionBootSweepRedeliversAnUnsettledClaim(t *testing.T) {
+	h := newWakeHarness(t)
+	thread := h.chatThread(t, "origin-usage-restart")
+	scope := h.usageScope(t, string(provider.Codex), "acct", 12)
+	makePark := func(id string) store.WorkItem {
+		item := h.run(t, id, engine.StateNeedsHuman, engine.ReasonProviderUsageLimited)
+		if err := h.app.store.UpdateWorkItemOriginThread(item.ID, thread.ID); err != nil {
+			t.Fatal(err)
+		}
+		h.usageLimitedPhase(t, item.ID, scope)
+		return item
+	}
+	stranded := makePark("usage-before-restart")
+	later := makePark("usage-after-restart")
+
+	if _, claimed, err := h.app.store.ClaimWorkflowProviderUsageAttention(
+		scope, thread.ID, stranded.ID, "lost-process-token", time.Now().UnixMilli(),
+	); err != nil {
+		t.Fatal(err)
+	} else if !claimed {
+		t.Fatal("initial delivery claim was unexpectedly suppressed")
+	}
+
+	// The in-memory delivery disappeared with the old process. Startup clears
+	// that reservation and re-surfaces its source run; failing closed here would
+	// leave every same-scope park permanently quiet.
+	h.app.sweepWorkflowUsageAttention()
+	h.drain()
+	if sends, _, _, _ := h.snapshot(); len(sends) != 1 || !strings.Contains(sends[0], stranded.ID) {
+		t.Fatalf("boot sweep sends = %v, want one redelivery for %s", sends, stranded.ID)
+	}
+
+	// Redelivery settles the current generation, so another run that reports
+	// the same provider-account outage stays coalesced until an explicit action.
+	h.app.afterWorkflowStateEvent(engine.StateEvent{
+		ItemID: later.ID, ProjectID: later.ProjectID,
+		From: engine.StateRunning, To: engine.StateNeedsHuman,
+	})
+	h.drain()
+	if sends, _, _, _ := h.snapshot(); len(sends) != 1 {
+		t.Fatalf("same outage after boot redelivery produced %d messages, want one", len(sends))
+	}
+}
+
+func TestWorkflowUsageAttentionBootSweepReselectsAnAffectedRunWhenSourceResolved(t *testing.T) {
+	h := newWakeHarness(t)
+	thread := h.chatThread(t, "origin-usage-reselect")
+	scope := h.usageScope(t, string(provider.Codex), "acct", 16)
+	makePark := func(id string) store.WorkItem {
+		item := h.run(t, id, engine.StateNeedsHuman, engine.ReasonProviderUsageLimited)
+		if err := h.app.store.UpdateWorkItemOriginThread(item.ID, thread.ID); err != nil {
+			t.Fatal(err)
+		}
+		h.usageLimitedPhase(t, item.ID, scope)
+		return item
+	}
+	original := makePark("usage-recovery-original")
+	mixed := h.run(t, "usage-recovery-a-mixed", engine.StateNeedsHuman, engine.ReasonUnitFailed)
+	if err := h.app.store.UpdateWorkItemOriginThread(mixed.ID, thread.ID); err != nil {
+		t.Fatal(err)
+	}
+	h.phase(t, mixed.ID, "fan", 1, "parked", "", nil)
+	if err := h.app.store.CreateWorkItemUnits([]store.WorkItemUnit{
+		{ItemID: mixed.ID, PhaseID: "fan", Attempt: 1, UnitID: "limited", UnitIndex: 0,
+			Kind: store.WorkItemUnitKindUnit, Status: store.WorkItemUnitFailed, ProviderUsageScopeID: scope},
+		{ItemID: mixed.ID, PhaseID: "fan", Attempt: 1, UnitID: "agent-failure", UnitIndex: 1,
+			Kind: store.WorkItemUnitKindUnit, Status: store.WorkItemUnitFailed},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	stillParked := makePark("usage-recovery-z-still-parked")
+	if _, claimed, err := h.app.store.ClaimWorkflowProviderUsageAttention(
+		scope, thread.ID, original.ID, "lost-source-token", time.Now().UnixMilli(),
+	); err != nil || !claimed {
+		t.Fatalf("initial claim claimed=%v err=%v", claimed, err)
+	}
+	if _, claimed, err := h.app.store.ClaimWorkflowProviderUsageAttention(
+		scope, thread.ID, stillParked.ID, "suppressed-token", time.Now().UnixMilli(),
+	); err != nil || claimed {
+		t.Fatalf("second run was not suppressed by the original claim: claimed=%v err=%v", claimed, err)
+	}
+	if err := h.app.store.UpdateWorkItemState(
+		original.ID, string(engine.StateCancelled), "", time.Now().UnixMilli(),
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	h.app.sweepWorkflowUsageAttention()
+	h.drain()
+	sends, _, _, _ := h.snapshot()
+	if len(sends) != 1 || !strings.Contains(sends[0], stillParked.ID) ||
+		strings.Contains(sends[0], original.ID) || strings.Contains(sends[0], mixed.ID) {
+		t.Fatalf("boot recovery sends = %v, want the still-parked run %s", sends, stillParked.ID)
+	}
+}
+
+func TestWorkflowUsageAttentionComposerRecoverySettlesTheBootClaim(t *testing.T) {
+	h := newWakeHarness(t)
+	thread := h.chatThread(t, "origin-usage-draft")
+	h.app.sessions[thread.ID] = session{provider: string(provider.Claude), token: "live"}
+	scope := h.usageScope(t, string(provider.Claude), "acct", 13)
+	item := h.run(t, "usage-restored-to-draft", engine.StateNeedsHuman, engine.ReasonProviderUsageLimited)
+	if err := h.app.store.UpdateWorkItemOriginThread(item.ID, thread.ID); err != nil {
+		t.Fatal(err)
+	}
+	h.usageLimitedPhase(t, item.ID, scope)
+
+	h.app.afterWorkflowStateEvent(engine.StateEvent{
+		ItemID: item.ID, ProjectID: item.ProjectID,
+		From: engine.StateRunning, To: engine.StateNeedsHuman,
+	})
+	h.drain()
+	h.mu.Lock()
+	if len(h.queuedItems) != 1 {
+		h.mu.Unlock()
+		t.Fatalf("usage wake queue items = %d, want 1", len(h.queuedItems))
+	}
+	queued := h.queuedItems[0]
+	h.mu.Unlock()
+
+	// The harness dispatcher took ownership of the in-memory item. Put that
+	// exact item back at the session-death boundary so the production recovery
+	// path persists its text and settles both durable workflow records.
+	h.app.triage.RegisterQueueItem(thread.ID, queued)
+	h.app.restoreUnconfirmedQueueOnSessionDeath(thread.ID)
+	draft, found, err := h.app.store.GetThreadDraft(thread.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !found || !strings.Contains(draft.Content, item.ID) {
+		t.Fatalf("composer recovery did not persist the wake: found=%v draft=%+v", found, draft)
+	}
+	signature, err := h.app.store.WorkItemWakeSignature(item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if signature == "" || strings.HasPrefix(signature, wakeQueuedPrefix) {
+		t.Fatalf("composer recovery left wake signature pending: %q", signature)
+	}
+
+	h.app.sweepWorkflowUsageAttention()
+	h.drain()
+	if _, queuedMessages, _, _ := h.snapshot(); len(queuedMessages) != 1 {
+		t.Fatalf("boot sweep redelivered a composer-restored alert: queued=%d, want the original one only", len(queuedMessages))
+	}
+}
+
+func TestWorkflowUsageAttentionBootSweepResurfacesTheParkedDescendant(t *testing.T) {
+	h := newWakeHarness(t)
+	thread := h.chatThread(t, "origin-usage-descendant-restart")
+	scope := h.usageScope(t, string(provider.Codex), "acct", 14)
+	root := h.run(t, "usage-root-running", engine.StateRunning, "")
+	if err := h.app.store.UpdateWorkItemOriginThread(root.ID, thread.ID); err != nil {
+		t.Fatal(err)
+	}
+	root.OriginThreadID = thread.ID
+	child := store.WorkItem{
+		ID: "usage-child-parked", ProjectID: defaultTestProjectID, Goal: "child",
+		WorkflowID: "child", WorkflowScope: "shared", State: string(engine.StateNeedsHuman),
+		Reason: string(engine.ReasonProviderUsageLimited), Source: "call",
+		ParentItemID: root.ID, ParentPhaseID: "call-child", ParentAttempt: 1,
+		CallDepth: 1, CreatedAt: 2,
+	}
+	if err := h.app.store.CreateWorkItem(child); err != nil {
+		t.Fatal(err)
+	}
+	h.usageLimitedPhase(t, child.ID, scope)
+	usage := h.app.workflowUsageAttentionForRest(root, child)
+	if usage.Suppress || usage.Claim == nil {
+		t.Fatalf("descendant attention decision = %+v", usage)
+	}
+
+	h.app.sweepWorkflowUsageAttention()
+	h.drain()
+	sends, _, _, _ := h.snapshot()
+	if len(sends) != 1 || !strings.Contains(sends[0], `called run "usage-child-parked"`) {
+		t.Fatalf("boot recovery did not surface the parked descendant:\n%v", sends)
+	}
+}
+
+func TestWorkflowCalledChildBirthDoesNotRearmProviderUsageAttention(t *testing.T) {
+	h := newWakeHarness(t)
+	thread := h.chatThread(t, "origin-usage-child-birth")
+	scope := h.usageScope(t, string(provider.Claude), "acct", 15)
+	park := func(id string) {
+		item := h.run(t, id, engine.StateNeedsHuman, engine.ReasonProviderUsageLimited)
+		if err := h.app.store.UpdateWorkItemOriginThread(item.ID, thread.ID); err != nil {
+			t.Fatal(err)
+		}
+		h.usageLimitedPhase(t, item.ID, scope)
+		h.app.afterWorkflowStateEvent(engine.StateEvent{
+			ItemID: item.ID, ProjectID: item.ProjectID,
+			From: engine.StateRunning, To: engine.StateNeedsHuman,
+		})
+		h.drain()
+	}
+	park("usage-before-child")
+
+	root := h.run(t, "running-caller", engine.StateRunning, "")
+	if err := h.app.store.UpdateWorkItemOriginThread(root.ID, thread.ID); err != nil {
+		t.Fatal(err)
+	}
+	child := store.WorkItem{
+		ID: "automatic-called-child", ProjectID: defaultTestProjectID, Goal: "child",
+		WorkflowID: "child", WorkflowScope: "shared", State: string(engine.StateRunning),
+		Source: "call", ParentItemID: root.ID, ParentPhaseID: "call-child",
+		ParentAttempt: 1, CallDepth: 1, CreatedAt: 2,
+	}
+	if err := h.app.store.CreateWorkItem(child); err != nil {
+		t.Fatal(err)
+	}
+	h.app.afterWorkflowStateEvent(engine.StateEvent{
+		ItemID: child.ID, ProjectID: child.ProjectID, From: "", To: engine.StateRunning,
+	})
+	h.drain()
+	park("usage-after-child")
+	if sends, _, _, _ := h.snapshot(); len(sends) != 1 {
+		t.Fatalf("automatic child birth rearmed the unresolved outage: sends=%d, want 1", len(sends))
+	}
+
+	// A top-level birth is an explicit new start and remains a re-arm boundary.
+	started := h.run(t, "explicit-root-start", engine.StateRunning, "")
+	if err := h.app.store.UpdateWorkItemOriginThread(started.ID, thread.ID); err != nil {
+		t.Fatal(err)
+	}
+	h.app.afterWorkflowStateEvent(engine.StateEvent{
+		ItemID: started.ID, ProjectID: started.ProjectID, From: "", To: engine.StateRunning,
+	})
+	h.drain()
+	park("usage-after-root-start")
+	if sends, _, _, _ := h.snapshot(); len(sends) != 2 {
+		t.Fatalf("explicit root start did not rearm attention: sends=%d, want 2", len(sends))
+	}
+}
+
+func TestWorkflowMixedFanOutFailureIsNeverHiddenByUsageCoalescing(t *testing.T) {
+	h := newWakeHarness(t)
+	thread := h.chatThread(t, "origin-mixed")
+	scope := h.usageScope(t, string(provider.Codex), "acct", 3)
+
+	usageOnly := h.run(t, "fan-usage-only", engine.StateNeedsHuman, engine.ReasonUnitFailed)
+	mixed := h.run(t, "fan-mixed", engine.StateNeedsHuman, engine.ReasonUnitFailed)
+	for _, item := range []*store.WorkItem{&usageOnly, &mixed} {
+		if err := h.app.store.UpdateWorkItemOriginThread(item.ID, thread.ID); err != nil {
+			t.Fatal(err)
+		}
+		h.phase(t, item.ID, "fan", 1, "parked", "", nil)
+	}
+	if err := h.app.store.CreateWorkItemUnits([]store.WorkItemUnit{
+		{ItemID: usageOnly.ID, PhaseID: "fan", Attempt: 1, UnitID: "limited", UnitIndex: 0,
+			Kind: store.WorkItemUnitKindUnit, Status: store.WorkItemUnitFailed, ProviderUsageScopeID: scope},
+		{ItemID: mixed.ID, PhaseID: "fan", Attempt: 1, UnitID: "limited", UnitIndex: 0,
+			Kind: store.WorkItemUnitKindUnit, Status: store.WorkItemUnitFailed, ProviderUsageScopeID: scope},
+		{ItemID: mixed.ID, PhaseID: "fan", Attempt: 1, UnitID: "real-failure", UnitIndex: 1,
+			Kind: store.WorkItemUnitKindUnit, Status: store.WorkItemUnitFailed},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range []store.WorkItem{usageOnly, mixed} {
+		h.app.afterWorkflowStateEvent(engine.StateEvent{
+			ItemID: item.ID, ProjectID: item.ProjectID,
+			From: engine.StateRunning, To: engine.StateNeedsHuman,
+		})
+		h.drain()
+	}
+	if sends, _, _, _ := h.snapshot(); len(sends) != 2 {
+		t.Fatalf("usage-only plus mixed failure produced %d messages, want both surfaced", len(sends))
 	}
 }
 

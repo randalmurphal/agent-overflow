@@ -592,7 +592,7 @@ func TestAgentRunStatusReportsPerAttemptProvenance(t *testing.T) {
 		}
 		if err := fixture.app.store.CompleteWorkItemPhase(
 			item.ID, attempt.phaseID, attempt.attempt, nil, attempt.trace,
-			attempt.status, attempt.cause, attempt.started+1,
+			attempt.status, attempt.cause, 0, attempt.started+1,
 		); err != nil {
 			t.Fatal(err)
 		}

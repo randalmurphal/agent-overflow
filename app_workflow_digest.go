@@ -141,6 +141,8 @@ func workflowTemplateDigest(
 		digest.WhatItNeeds = "Finish the human takeover or return the phase to the workflow."
 	case engine.ReasonAgentError:
 		digest.WhatItNeeds = "Review the agent failure and decide whether to retry or take over."
+	case engine.ReasonProviderUsageLimited:
+		digest.WhatItNeeds = "Wait for the provider usage limit to reset or switch provider accounts, then resume the run."
 	case engine.ReasonCheckpoint:
 		digest.WhatItNeeds = "Resume the run to continue, or leave it stopped."
 	default:
@@ -190,6 +192,8 @@ func workflowReasonText(reason engine.Reason) string {
 		return "provider retries or a workflow loop limit were exhausted"
 	case engine.ReasonProviderRetriesExhausted:
 		return "provider retries were exhausted"
+	case engine.ReasonProviderUsageLimited:
+		return "the provider account reached its usage limit"
 	case engine.ReasonLoopLimitExhausted:
 		return "the workflow loop limit was exhausted"
 	case engine.ReasonAgentError:

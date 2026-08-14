@@ -30,6 +30,15 @@ type userMessageAttachmentMeta = usermessage.AttachmentMeta
 type SourceProposedPlan = store.ProposedPlanSourceRef
 type SourceDiffReview = store.DiffReviewSourceRef
 
+// providerDispatchIdentity is the credential identity held stable across one
+// provider write. Workflow usage-limit attribution consumes it at the same
+// boundary as the send; it is not exposed on the wire and never gates a send.
+type providerDispatchIdentity struct {
+	Provider             string
+	AccountID            string
+	CredentialGeneration uint64
+}
+
 type sendMessageOptions struct {
 	AttachmentIDs                []string
 	RuntimeMode                  string
@@ -73,6 +82,11 @@ type sendMessageOptions struct {
 	// model never sees it. Every way of losing the flag therefore degrades
 	// to "delivered as prose", never to "silently dropped".
 	ProviderCommand bool
+	// onProviderDispatch runs under the provider-account read lock immediately
+	// before the provider write. It exists so an observer can attribute an error
+	// emitted as soon as stdin is written to the exact account generation that
+	// sent the turn; reading the session after Send returns is already too late.
+	onProviderDispatch func(providerDispatchIdentity)
 }
 
 // userMessageInputs is the projection of fields shared by every
@@ -504,6 +518,12 @@ func (a *App) sendMessageLocked(
 	// echo carrying this exact uuid consumes the entry, so a
 	// provider-injected user envelope can never mispair with it.
 	a.triage.RegisterPendingSendExpecting(threadID, userItem.ID, turnIndex, sendUUID)
+	if opts.onProviderDispatch != nil {
+		opts.onProviderDispatch(providerDispatchIdentity{
+			Provider: sess.provider, AccountID: sess.credentialAccountID,
+			CredentialGeneration: sess.credentialGeneration,
+		})
+	}
 
 	if err := sendToProvider(sess, threadID, providerContent, provider.SendOptions{
 		InteractionMode:         provider.NormalizeInteractionMode(thread.Mode),
@@ -970,10 +990,12 @@ func sendToProvider(sess session, threadID string, content string, opts provider
 	return providerSess.Send(context.Background(), content, opts)
 }
 
-func (a *App) sendWorkflowMessage(threadID, content string, outputSchema json.RawMessage) error {
+func (a *App) sendWorkflowMessage(threadID, content string, outputSchema json.RawMessage, onDispatch func(providerDispatchIdentity)) error {
 	if len(outputSchema) == 0 {
 		return fmt.Errorf("workflow send: output schema is required")
 	}
-	_, err := a.sendMessageWithOptions(threadID, content, sendMessageOptions{OutputSchema: outputSchema})
+	_, err := a.sendMessageWithOptions(threadID, content, sendMessageOptions{
+		OutputSchema: outputSchema, onProviderDispatch: onDispatch,
+	})
 	return err
 }

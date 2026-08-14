@@ -133,6 +133,8 @@ func TestComposeParkedRunNamesTheVerbThatRepairsIt(t *testing.T) {
 		{"gate", "park", "review-unresolved", "`agent-overflow run resume \"run-11\"` re-enters the phase — an approvable park is authored as a human: route."},
 		{"gate", "", "", "If `agent-overflow run status \"run-11\"` shows the parked attempt's decision as human"},
 		{"provider-retries-exhausted", "", "", "`agent-overflow run resume \"run-11\"` continues the parked attempt on the provider session its last turn died in"},
+		{"provider-usage-limited", "", "", "`agent-overflow run resume \"run-11\"` tries the parked attempt immediately"},
+		{"provider-usage-limited", "", "", "Recorded limit state never blocks the attempt"},
 		{"loop-limit-exhausted", "", "", "The workflow's loop limit is spent."},
 		{"loop-limit-exhausted", "", "", "`agent-overflow run resume \"run-11\" --phase <phase-id>` naming an EARLIER phase"},
 		// Legacy rows cannot be classified safely, so their repair names both

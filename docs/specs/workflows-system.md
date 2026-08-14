@@ -69,7 +69,7 @@ waiting in a line.
 
 **Every `failed` / `needs-human` / `cancelled` transition carries a typed
 reason** (gate, question, stuck, stalled, paused, interrupted, checkpoint,
-budget-exhausted, provider-retries-exhausted, loop-limit-exhausted,
+budget-exhausted, provider-retries-exhausted, provider-usage-limited, loop-limit-exhausted,
 check-failed-genuine, agent-error,
 wiring-error, disposition, setup-failed, unit-failed) — recorded in the run
 record (§10) and shown on the run's row, so a stopped item is never a silent
@@ -937,7 +937,7 @@ Resolve by:
 |---|---|
 | In-flight (running) | interrupt → yields → steer free-form → **Complete** (finalize turn re-adds schema) or discard + re-run |
 | Parked on a `question` envelope | answer runs the next turn, same session, same schema → envelope |
-| Parked `paused` / `interrupted` / `provider-retries-exhausted` | resume continues the parked round: short message on the same provider context; full reconstructed prompt on a new thread when that context is unavailable (D70) |
+| Parked `paused` / `interrupted` / `provider-retries-exhausted` / `provider-usage-limited` | resume continues the parked round: short message on the same provider context; full reconstructed prompt on a new thread when that context is unavailable (D70/D75) |
 
 **One contract, one schema.** Whether a phase finishes on its own, is
 completed via a finalize turn, or has its fields filled by hand, the result is
@@ -1469,16 +1469,18 @@ never leave a grandchild running or a sub-worktree stranded.
   reason; `--refresh-def` is refused on the bare resume there like any
   continuable park, since the attempt being continued rendered the frozen
   definition.
-  **A usage-limit refusal skips the ladder and schedules its own return
-  (D71).** When the typed refusal is a provider quota error AND the session
-  reported the limit windows, retrying in seconds against a limit that resets
-  in hours is waste: the run parks `provider-retries-exhausted` immediately, the park
-  cause states the reset moment, and a persisted `auto_resume_at` fires a
-  bare resume (the same continuation) at that moment plus jitter — surviving
-  app restarts via a boot sweep. Any manual action on the park disarms it.
-  `run resume --at <time>` arms the same mechanism by hand on any continuable
-  park. A refusal missing either half (no typed enum, or windows the session
-  never reported) takes the ordinary ladder unchanged.
+  **A typed usage-limit refusal always skips the ladder (D75).** The run parks
+  `provider-usage-limited` immediately whether or not the provider reported a
+  reset window. Provider/account provenance coalesces one notification per
+  watching conversation and attention generation; it never blocks admission,
+  interrupts other running work, or infers a model/bucket from unstable limit
+  labels. A queued alert lost on restart is recovered by provider/account scope
+  and watching conversation, so recovery selects another currently affected
+  run if the original source resolved. Start, scheduled trigger, and explicit
+  resume always make a real provider attempt. Returning to `running` re-arms
+  attention so a delayed post-resume failure notifies once; there is no
+  automatic quota resume or resolution message. `run resume --at <time>`
+  remains an independent manual schedule for any continuable park.
   **Distinct from this allowlist:** an envelope **absent or invalid after §3
   engine post-validation** gets **feedback-carrying retry turns** ("your
   envelope failed validation: <errors>") up to a **profile-set count (default

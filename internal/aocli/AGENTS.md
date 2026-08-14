@@ -202,16 +202,12 @@ repair-map footer both say so, because the freeze is the kind of default a
 caller only learns by being bitten.
 
 `run resume --at <when>` schedules that same bare resume instead of taking it
-now, on any park a bare resume continues. It is the manual half of a mechanism
-the app already runs by itself: a provider that refuses a turn because the
-account's usage allowance is spent AND states when it returns parks the run
-`provider-retries-exhausted` immediately — the transient-retry ladder cannot outlast a
-limit that resets in days — with a cause naming both the reset and the moment
-the run will come back, and a durable schedule that survives a restart. `--at`
-exists for the case where the operator knows the time and the provider did not
-say it. `<when>` is RFC 3339 or a `+`-prefixed duration, resolved against the
-APP's clock because that is the clock the timer runs on, and the command prints
-the moment it armed rather than a run state that has deliberately not changed.
+now, on any park a bare resume continues. It is strictly operator-authored: a
+typed provider usage refusal parks `provider-usage-limited` without retries or
+an automatic schedule, and a normal resume remains free to make a real attempt
+at any time. `<when>` is RFC 3339 or a `+`-prefixed duration, resolved against
+the APP's clock because that is the clock the timer runs on, and the command
+prints the moment it armed rather than a run state that has deliberately not changed.
 It refuses `--phase` and `--refresh-def`: both name a fresh entry, and what is
 being scheduled is the continuation. Anything that repairs the run in the
 meantime disarms the schedule.

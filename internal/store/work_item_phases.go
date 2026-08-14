@@ -25,9 +25,13 @@ type WorkItemPhase struct {
 	// turn ran has none. Empty for every attempt whose reason names its own
 	// cause.
 	ParkCause string `json:"parkCause,omitempty"`
-	Status    string `json:"status"`
-	StartedAt int64  `json:"startedAt"`
-	EndedAt   int64  `json:"endedAt,omitempty"`
+	// ProviderUsageScopeID identifies the provider/account credential scope
+	// whose typed usage refusal parked this attempt. Zero means this attempt did
+	// not park on a recognized usage limit (or predates that provenance).
+	ProviderUsageScopeID WorkflowProviderUsageScopeID `json:"providerUsageScopeId,omitempty"`
+	Status               string                       `json:"status"`
+	StartedAt            int64                        `json:"startedAt"`
+	EndedAt              int64                        `json:"endedAt,omitempty"`
 }
 
 // WorkItemPhaseContext is the narrow phase-history projection used to rebuild
@@ -54,10 +58,11 @@ type WorkItemPhaseTimeline struct {
 	// ParkCause rides along because the wake composes from this projection: a
 	// park the engine diagnosed has no envelope to draw a detail line from, and
 	// the cause is the whole of what the woken reader needs.
-	ParkCause string
-	Status    string
-	StartedAt int64
-	EndedAt   int64
+	ParkCause            string
+	ProviderUsageScopeID WorkflowProviderUsageScopeID
+	Status               string
+	StartedAt            int64
+	EndedAt              int64
 }
 
 // WorkItemPhaseProvenance is one phase attempt narrowed to what produced it:
@@ -82,7 +87,7 @@ type WorkItemPhaseProvenance struct {
 
 const workItemPhaseColumns = `item_id, phase_id, attempt, thread_id,
 input_envelope, output_envelope, gate_trace, intervention, narrative_path,
-park_cause, status, started_at, ended_at`
+park_cause, provider_usage_scope_id, status, started_at, ended_at`
 
 func scanWorkItemPhase(scanner interface{ Scan(...any) error }) (WorkItemPhase, error) {
 	var phase WorkItemPhase
@@ -90,7 +95,7 @@ func scanWorkItemPhase(scanner interface{ Scan(...any) error }) (WorkItemPhase, 
 	if err := scanner.Scan(
 		&phase.ItemID, &phase.PhaseID, &phase.Attempt, &phase.ThreadID,
 		&input, &output, &gateTrace, &intervention, &phase.NarrativePath,
-		&phase.ParkCause, &phase.Status, &phase.StartedAt, &phase.EndedAt,
+		&phase.ParkCause, &phase.ProviderUsageScopeID, &phase.Status, &phase.StartedAt, &phase.EndedAt,
 	); err != nil {
 		return WorkItemPhase{}, err
 	}
@@ -104,11 +109,11 @@ func scanWorkItemPhase(scanner interface{ Scan(...any) error }) (WorkItemPhase, 
 func (s *Store) CreateWorkItemPhase(phase WorkItemPhase) error {
 	_, err := s.db.Exec(
 		`INSERT INTO work_item_phases (`+workItemPhaseColumns+`)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		phase.ItemID, phase.PhaseID, phase.Attempt, phase.ThreadID,
 		jsonText(phase.InputEnvelope), jsonText(phase.OutputEnvelope),
 		jsonText(phase.GateTrace), jsonText(phase.Intervention), phase.NarrativePath,
-		phase.ParkCause, phase.Status, phase.StartedAt, phase.EndedAt,
+		phase.ParkCause, phase.ProviderUsageScopeID, phase.Status, phase.StartedAt, phase.EndedAt,
 	)
 	if err != nil {
 		return fmt.Errorf("store: create work item phase %s/%s/%d: %w", phase.ItemID, phase.PhaseID, phase.Attempt, err)
@@ -134,12 +139,12 @@ func (s *Store) AttachWorkItemPhaseRun(itemID, phaseID string, attempt int, thre
 // account of an engine-diagnosed park and is empty for every other settlement —
 // it is written unconditionally rather than only when non-empty, so a reopened
 // attempt that settles a second time cannot inherit the first park's cause.
-func (s *Store) CompleteWorkItemPhase(itemID, phaseID string, attempt int, outputEnvelope, gateTrace json.RawMessage, status, parkCause string, endedAt int64) error {
+func (s *Store) CompleteWorkItemPhase(itemID, phaseID string, attempt int, outputEnvelope, gateTrace json.RawMessage, status, parkCause string, providerUsageScopeID WorkflowProviderUsageScopeID, endedAt int64) error {
 	result, err := s.db.Exec(
 		`UPDATE work_item_phases
-		 SET output_envelope = ?, gate_trace = ?, park_cause = ?, status = ?, ended_at = ?
+		 SET output_envelope = ?, gate_trace = ?, park_cause = ?, provider_usage_scope_id = ?, status = ?, ended_at = ?
 		 WHERE item_id = ? AND phase_id = ? AND attempt = ?`,
-		jsonText(outputEnvelope), jsonText(gateTrace), parkCause, status, endedAt,
+		jsonText(outputEnvelope), jsonText(gateTrace), parkCause, providerUsageScopeID, status, endedAt,
 		itemID, phaseID, attempt,
 	)
 	if err != nil {
@@ -160,7 +165,7 @@ func (s *Store) ReopenWorkItemPhase(itemID, phaseID string, attempt int) error {
 	result, err := s.db.Exec(
 		`UPDATE work_item_phases
 		 SET status = 'running', output_envelope = '', gate_trace = '',
-		     park_cause = '', ended_at = 0
+		     park_cause = '', provider_usage_scope_id = 0, ended_at = 0
 		 WHERE item_id = ? AND phase_id = ? AND attempt = ?`,
 		itemID, phaseID, attempt,
 	)
@@ -196,7 +201,7 @@ func (s *Store) ListWorkItemPhases(itemID string) ([]WorkItemPhase, error) {
 func (s *Store) ListWorkItemPhaseTimeline(itemID string) ([]WorkItemPhaseTimeline, error) {
 	rows, err := s.reader().Query(
 		`SELECT item_id, phase_id, attempt, thread_id, output_envelope,
-		 park_cause, status, started_at, ended_at
+		 park_cause, provider_usage_scope_id, status, started_at, ended_at
 		 FROM work_item_phases
 		 WHERE item_id = ? ORDER BY started_at ASC, phase_id ASC, attempt ASC`, itemID,
 	)
@@ -210,7 +215,7 @@ func (s *Store) ListWorkItemPhaseTimeline(itemID string) ([]WorkItemPhaseTimelin
 		var output string
 		if err := rows.Scan(
 			&phase.ItemID, &phase.PhaseID, &phase.Attempt, &phase.ThreadID,
-			&output, &phase.ParkCause, &phase.Status, &phase.StartedAt, &phase.EndedAt,
+			&output, &phase.ParkCause, &phase.ProviderUsageScopeID, &phase.Status, &phase.StartedAt, &phase.EndedAt,
 		); err != nil {
 			return nil, fmt.Errorf("store: list work item phase timeline %s: scan: %w", itemID, err)
 		}

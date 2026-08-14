@@ -971,15 +971,21 @@ func (a *App) teardownDeadPreInitSession(threadID, sessionToken string) {
 		}
 		if !a.triage.CleanupThreadIfEpoch(threadID, epoch) {
 			log.Printf("app: skipped triage cleanup for thread %s — a replacement session reactivated it mid-teardown", threadID)
-		} else if len(requeued) > 0 {
-			// The restore REQUEUED these (failed stale-row cleanup or
-			// failed draft restore) and the cleanup just wiped the queue
-			// they re-entered — re-register them so the next start's
-			// funnel flush still finds them (round-13, D13-1). When the
-			// cleanup was skipped, the queue was never wiped and they
-			// are still registered.
-			a.requeueUnconfirmedFlushItems(threadID, requeued)
-			a.emitQueueStateChanged(threadID)
+		} else {
+			// Successful draft restores already settled injected workflow wakes;
+			// failed restores requeued the same still-pending settlement below.
+			// Releasing all usage claims here would detach those survivors from
+			// their durable storm-suppression record.
+			if len(requeued) > 0 {
+				// The restore REQUEUED these (failed stale-row cleanup or
+				// failed draft restore) and the cleanup just wiped the queue
+				// they re-entered — re-register them so the next start's
+				// funnel flush still finds them (round-13, D13-1). When the
+				// cleanup was skipped, the queue was never wiped and they
+				// are still registered.
+				a.requeueUnconfirmedFlushItems(threadID, requeued)
+				a.emitQueueStateChanged(threadID)
+			}
 		}
 	}
 	if err := a.closeProviderSession(threadID, sess); err != nil {
@@ -1008,6 +1014,7 @@ func (a *App) teardownDeadPreInitSession(threadID, sessionToken string) {
 // triage state alone so the final wire frames have somewhere to land.
 func (a *App) teardownAndCloseSession(threadID string, sess session) error {
 	a.teardownDesignThread(threadID)
+	a.releaseWorkflowUsageAttentionForThread(threadID)
 	if a.triage != nil {
 		a.triage.CleanupThread(threadID)
 	}

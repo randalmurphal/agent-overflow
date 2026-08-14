@@ -58,6 +58,7 @@ const (
 	// reasons below.
 	ReasonRetriesExhausted         Reason = "retries-exhausted"
 	ReasonProviderRetriesExhausted Reason = "provider-retries-exhausted"
+	ReasonProviderUsageLimited     Reason = "provider-usage-limited"
 	ReasonLoopLimitExhausted       Reason = "loop-limit-exhausted"
 	ReasonCheckFailedGenuine       Reason = "check-failed-genuine"
 	ReasonAgentError               Reason = "agent-error"
@@ -88,7 +89,7 @@ const (
 var (
 	resumableReasons   = []Reason{ReasonPaused, ReasonInterrupted, ReasonCheckpoint}
 	continuableReasons = append(append([]Reason(nil), resumableReasons...),
-		ReasonUnitFailed, ReasonProviderRetriesExhausted, ReasonRetriesExhausted)
+		ReasonUnitFailed, ReasonProviderRetriesExhausted, ReasonProviderUsageLimited, ReasonRetriesExhausted)
 )
 
 // ResumableReason reports whether a park continues where it stopped rather than
@@ -155,13 +156,14 @@ func continuableReasonList() string {
 type OutcomeKind string
 
 const (
-	OutcomeDone               OutcomeKind = "done"
-	OutcomeQuestion           OutcomeKind = "question"
-	OutcomeStuck              OutcomeKind = "stuck"
-	OutcomeStalled            OutcomeKind = "stalled"
-	OutcomeTransientExhausted OutcomeKind = "transient-exhausted"
-	OutcomeExecutionFailure   OutcomeKind = "execution-failure"
-	OutcomeStopped            OutcomeKind = "stopped"
+	OutcomeDone                 OutcomeKind = "done"
+	OutcomeQuestion             OutcomeKind = "question"
+	OutcomeStuck                OutcomeKind = "stuck"
+	OutcomeStalled              OutcomeKind = "stalled"
+	OutcomeTransientExhausted   OutcomeKind = "transient-exhausted"
+	OutcomeProviderUsageLimited OutcomeKind = "provider-usage-limited"
+	OutcomeExecutionFailure     OutcomeKind = "execution-failure"
+	OutcomeStopped              OutcomeKind = "stopped"
 )
 
 // Outcome is a runner completion. Envelope has already passed provider-facing
@@ -176,9 +178,10 @@ const (
 // envelope is empty (`outcomeDetailCause`, `fsm.go`); an envelope with content
 // stays the sole account, so nothing is ever double-written.
 type Outcome struct {
-	Kind     OutcomeKind     `json:"kind"`
-	Envelope json.RawMessage `json:"envelope,omitempty"`
-	Detail   string          `json:"detail,omitempty"`
+	Kind                 OutcomeKind                        `json:"kind"`
+	Envelope             json.RawMessage                    `json:"envelope,omitempty"`
+	Detail               string                             `json:"detail,omitempty"`
+	ProviderUsageScopeID store.WorkflowProviderUsageScopeID `json:"providerUsageScopeId,omitempty"`
 }
 
 // RunKey uniquely identifies one running piece of work: a phase attempt, or
@@ -716,7 +719,7 @@ type persistence interface {
 	WorkItemPendingGuidance(string) (json.RawMessage, error)
 	SetWorkItemPendingGuidance(string, json.RawMessage) error
 	CreateWorkItemPhase(store.WorkItemPhase) error
-	CompleteWorkItemPhase(string, string, int, json.RawMessage, json.RawMessage, string, string, int64) error
+	CompleteWorkItemPhase(string, string, int, json.RawMessage, json.RawMessage, string, string, store.WorkflowProviderUsageScopeID, int64) error
 	ReopenWorkItemPhase(string, string, int) error
 	ListWorkItemPhases(string) ([]store.WorkItemPhase, error)
 	ListWorkItemPhaseContexts(string) ([]store.WorkItemPhaseContext, error)
@@ -726,7 +729,7 @@ type persistence interface {
 	ListWorkItemUnitCallChildren(string, string, int, string) ([]store.WorkItem, error)
 	CreateWorkItemUnits([]store.WorkItemUnit) error
 	StartWorkItemUnit(string, string, int, string, int, string, int64) error
-	CompleteWorkItemUnit(string, string, int, string, string, json.RawMessage, string, int64) error
+	CompleteWorkItemUnit(string, string, int, string, string, json.RawMessage, string, store.WorkflowProviderUsageScopeID, int64) error
 	RetryWorkItemUnit(string, string, int, string, int, string) error
 	FailRunningWorkItemUnits(string, string, int, string, int64) (int64, error)
 	ListWorkItemPhaseUnits(string, string, int) ([]store.WorkItemUnit, error)

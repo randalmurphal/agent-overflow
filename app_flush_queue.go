@@ -281,6 +281,7 @@ func (a *App) restoreUnconfirmedQueueOnSessionDeath(threadID string) []triage.Un
 			Payload:         payload,
 			EnqueuedAt:      item.EnqueuedAt,
 			StaleUserItemID: item.StaleUserItemID,
+			Settlement:      item.Settlement,
 		})
 	}
 	drained = dedupeUnconfirmedFlushItems(drained)
@@ -349,10 +350,12 @@ func (a *App) restoreUnconfirmedQueueOnSessionDeath(threadID string) []triage.Un
 	}
 
 	parts := make([]composerdraft.Part, 0, len(restorable))
+	settlements := make([]*triage.FlushSettlement, 0, len(restorable))
 	for _, item := range restorable {
 		part := a.restoredFlushDraftPart(threadID, item)
 		if strings.TrimSpace(part.Content) != "" || len(part.AttachmentIDs) > 0 || part.SourceProposedPlan != nil {
 			parts = append(parts, part)
+			settlements = append(settlements, item.Settlement)
 		}
 	}
 	if len(parts) > 0 {
@@ -366,6 +369,9 @@ func (a *App) restoreUnconfirmedQueueOnSessionDeath(threadID string) []triage.Un
 			a.emitQueueStateChanged(threadID)
 			return append(requeued, restorable...)
 		}
+	}
+	for _, settlement := range settlements {
+		settlement.Settle()
 	}
 
 	a.emitQueueStateChanged(threadID)
@@ -593,8 +599,14 @@ func dedupeUnconfirmedFlushItems(items []triage.UnconfirmedFlushItem) []triage.U
 			out = append(out, item)
 			continue
 		}
-		if unconfirmedFlushRestoreScore(item) > unconfirmedFlushRestoreScore(out[index]) {
+		existing := out[index]
+		settlement := triage.CombineFlushSettlements(existing.Settlement, item.Settlement)
+		if unconfirmedFlushRestoreScore(item) > unconfirmedFlushRestoreScore(existing) {
+			item.Settlement = settlement
 			out[index] = item
+		} else {
+			existing.Settlement = settlement
+			out[index] = existing
 		}
 	}
 	return out
@@ -651,6 +663,7 @@ func queuedFlushItemFromUnconfirmed(item triage.UnconfirmedFlushItem) (triage.Qu
 		Payload:         payload,
 		EnqueuedAt:      item.EnqueuedAt,
 		StaleUserItemID: item.StaleUserItemID,
+		Settlement:      item.Settlement,
 	}, true
 }
 
@@ -791,18 +804,10 @@ func (a *App) dispatchFlushWithGeneration(threadID string, items []triage.Queued
 				Items:    []QueueFlushedItem{flushedItem},
 			})
 		}
-		// The item's completion callback fires HERE and nowhere else: this is
-		// the success return of dispatchFlushItem, past which the message is
-		// either a persisted row, a pending send whose retained copy self-heals
-		// on session death, or bytes the provider has already been handed.
-		// Every earlier point is a queue this process can lose. A failure
-		// requeues the item with its callback intact, so nothing here has to
-		// distinguish "not yet" from "never". The callback runs inline, under
-		// the thread action lock this loop already holds — a store write or an
-		// emit is fine, blocking or re-entering the queue is not.
-		if item.OnDispatched != nil {
-			item.OnDispatched()
-		}
+		// A successful provider write is one of the two durable endpoints for
+		// an injected message; session-death recovery into the composer is the
+		// other. The shared settlement is exactly-once if those paths race.
+		item.Settlement.Settle()
 	}
 	a.emitQueueStateChanged(threadID)
 }
@@ -1213,11 +1218,11 @@ type injectedQueueOptions struct {
 	// the user could not have anticipated from a run finishing in the
 	// background.
 	preserveDraft bool
-	// onDispatched runs once the message has been written to the provider.
-	// See triage.QueuedFlushItem.OnDispatched: an injector whose bookkeeping
-	// OUTLIVES the message must write it here rather than at register time,
-	// because the queue in between is process memory.
-	onDispatched func()
+	// onDurable runs once the message has either been written to the provider
+	// or restored into the durable composer after a session death. An
+	// injector whose bookkeeping outlives the message must settle here rather
+	// than at register time because the queues in between are process memory.
+	onDurable func()
 }
 
 // registerQueueItem is RegisterQueueItem plus the injected-message axes.
@@ -1301,10 +1306,10 @@ func (a *App) registerQueueItem(
 	}
 
 	enqueuedAt := a.triage.RegisterQueueItem(threadID, triage.QueuedFlushItem{
-		ID:           id,
-		Message:      message,
-		Payload:      payloadBytes,
-		OnDispatched: injected.onDispatched,
+		ID:         id,
+		Message:    message,
+		Payload:    payloadBytes,
+		Settlement: triage.NewFlushSettlement(injected.onDurable),
 	})
 
 	wireItem := QueuedItem{

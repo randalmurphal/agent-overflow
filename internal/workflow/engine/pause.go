@@ -327,6 +327,8 @@ func resumeNote(reason Reason, context resumeContext) string {
 		note = "resumed after a unit of the fan-out failed"
 	case ReasonProviderRetriesExhausted:
 		note = "resumed after provider retries were exhausted"
+	case ReasonProviderUsageLimited:
+		note = "resumed after the provider usage limit was reached"
 	case ReasonLoopLimitExhausted:
 		note = "resumed after the workflow loop limit was exhausted"
 	case ReasonRetriesExhausted:

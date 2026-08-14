@@ -38,6 +38,26 @@ it disagrees with the migrations, the migrations win.
 | `automation_cursors` | Per-automation source watermarks keyed by `(automation_id, source_key)`. Cursors cascade with their owning automation; they are scheduler state, not run history. |
 | `store_meta` | The store's own identity, exactly one row (`CHECK(id = 1)`, migration v55). `backend_id` names this database and never changes — a client keys its on-disk thread replica by it, so re-minting would orphan every cached window. `replica_generation` names the current history LINEAGE and IS re-minted, inside the transaction, by `RestoreFrom`: a restore rewinds every thread's counters, so stamps a client holds from the replaced future would compare as "ahead" and read as fresh forever. Both are UUIDs minted by the migration's `Fix`. Read by `Store.Identity`, published in the transport bootstrap manifest and on every `SyncThreadWindow` answer. |
 
+Schema amendment (v57, superseding v54's earlier automatic-quota use):
+`provider-usage-limited` is a continuable `work_items.reason`; the resting
+`work_item_phases` or `work_item_units` row carries a
+`provider_usage_scope_id`. `workflow_provider_usage_scopes` identifies the
+exact provider, account id, and credential generation that made the refused
+send. `workflow_provider_usage_attention` correlates pending and durably
+surfaced notification generations by that scope plus watching thread, with
+tokenized compare-and-set settlement across resume and delivery races.
+Provider dispatch and successful session-death recovery into the composer are
+both durable surface points; only a claim still confined to process memory is
+reclaimed on boot. Ownership is transferred in place before the new engine can
+emit claims of its own, so a second crash cannot land in a cleared-claim gap.
+Recovery then uses the durable scope and watching thread, prefers the recorded
+source while it is still affected, and otherwise selects another currently
+parked run under that scope; resolving the source before restart therefore
+cannot strand a suppressed sibling. These tables are
+attention provenance only: provider admission, start, retry, and resume never
+read them. Usage-limit parks do not write `auto_resume_at`; that column remains
+the durable implementation of an explicitly requested `run resume --at`.
+
 Plan implementation and revision source references are stored on the user
 message `items.meta` as `sourceProposedPlan` and
 `revisionSourceProposedPlan`. The proposed-plan tables stay as durable

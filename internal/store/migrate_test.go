@@ -3725,3 +3725,61 @@ func TestMigrationV56SplitsRetryReasonsWithoutGuessingLegacyRows(t *testing.T) {
 		readIndexSQL(t, db, index)
 	}
 }
+
+func TestMigrationV57AddsProviderUsageProvenanceAndAttention(t *testing.T) {
+	db := migrateThrough(t, 56)
+	mustExec(t, db, `INSERT INTO work_items
+		(id, project_id, goal, workflow_id, workflow_scope, state, reason, source, created_at)
+		VALUES ('item-v57', 'project', 'ship it', 'build', 'shared', 'needs-human',
+			'provider-retries-exhausted', 'manual', 57)`)
+	mustExec(t, db, `INSERT INTO work_item_phases
+		(item_id, phase_id, attempt, status, started_at, park_cause)
+		VALUES ('item-v57', 'work', 1, 'parked', 57, 'keep this cause')`)
+	mustExec(t, db, `INSERT INTO work_item_units
+		(item_id, phase_id, attempt, unit_id, unit_index, kind, status)
+		VALUES ('item-v57', 'work', 1, 'unit-0', 0, 'unit', 'failed')`)
+
+	if _, err := db.Exec(`UPDATE work_items SET reason = 'provider-usage-limited' WHERE id = 'item-v57'`); err == nil {
+		t.Fatal("work_items accepted provider-usage-limited before v57")
+	}
+	if err := applyRebuildMigration(db, migrationByVersion(t, 57)); err != nil {
+		t.Fatalf("apply migration v57: %v", err)
+	}
+	if _, err := db.Exec(`UPDATE work_items SET reason = 'provider-usage-limited' WHERE id = 'item-v57'`); err != nil {
+		t.Fatalf("work_items rejected provider-usage-limited after v57: %v", err)
+	}
+	var cause string
+	var phaseScope, unitScope int64
+	if err := db.QueryRow(`SELECT park_cause, provider_usage_scope_id FROM work_item_phases
+		WHERE item_id = 'item-v57'`).Scan(&cause, &phaseScope); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT provider_usage_scope_id FROM work_item_units
+		WHERE item_id = 'item-v57'`).Scan(&unitScope); err != nil {
+		t.Fatal(err)
+	}
+	if cause != "keep this cause" || phaseScope != 0 || unitScope != 0 {
+		t.Fatalf("migrated provenance = cause %q phase %d unit %d", cause, phaseScope, unitScope)
+	}
+	for _, table := range []string{"workflow_provider_usage_scopes", "workflow_provider_usage_attention"} {
+		var found string
+		if err := db.QueryRow(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?`, table).Scan(&found); err != nil {
+			t.Fatalf("table %s missing after v57: %v", table, err)
+		}
+	}
+	mustExec(t, db, `INSERT INTO workflow_provider_usage_scopes
+		(id, provider, account_id, credential_generation, first_seen_at, last_seen_at)
+		VALUES (1, 'claude', 'acct', 1, 57, 57)`)
+	if _, err := db.Exec(`INSERT INTO workflow_provider_usage_attention
+		(scope_id, thread_id, generation, delivered_generation, queued_generation,
+		 queued_token, source_item_id, updated_at)
+		VALUES (1, 'thread', 1, 0, 1, 'token', '', 57)`); err == nil {
+		t.Fatal("workflow_provider_usage_attention accepted a queued claim without a restart source")
+	}
+	if _, err := db.Exec(`UPDATE work_item_phases SET provider_usage_scope_id = -1 WHERE item_id = 'item-v57'`); err == nil {
+		t.Fatal("work_item_phases accepted a negative provider usage scope")
+	}
+	if _, err := db.Exec(`UPDATE work_item_units SET provider_usage_scope_id = -1 WHERE item_id = 'item-v57'`); err == nil {
+		t.Fatal("work_item_units accepted a negative provider usage scope")
+	}
+}

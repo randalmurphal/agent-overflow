@@ -20,24 +20,6 @@ func (r *workflowAppRunner) observe(runKey string, event provider.ProviderEvent)
 		r.mu.Unlock()
 		return
 	}
-	// The quota windows this session's account is under, recorded ABOVE every
-	// early return below and without one of its own.
-	//
-	// Recording has no state-machine effect — nothing downstream reads it except
-	// a usage-limit refusal deciding when the run can come back — so the guards
-	// that exist to stop a dead or retrying attempt from ACTING must not also
-	// stop it from listening. The ordering between a provider's snapshot and its
-	// refusal is verified for Codex (`update_rate_limits` runs before
-	// `UsageLimitReached` returns) and verified for NEITHER on Claude: if the CLI
-	// ever emits `rate_limit_event` after `assistant.error`, the snapshot lands
-	// while the ladder is armed, and dropping it here would make the whole
-	// mechanism silently inert on Claude — a `provider-retries-exhausted` park
-	// with no self-resume, indistinguishable from the bug this feature fixes.
-	// The event then continues through the machine exactly as any other
-	// non-terminal event does.
-	if event.Kind == provider.EventRateLimits {
-		attempt.noteRateLimits(event.Meta)
-	}
 	// A child thread's events are the parent turn's ACTIVITY, never its signals.
 	// Both adapters stamp `ParentToolUseID` on everything a subagent or collab
 	// child emits — including the child's own `error`, which the Codex adapter
@@ -49,8 +31,8 @@ func (r *workflowAppRunner) observe(runKey string, event provider.ProviderEvent)
 	//
 	// The one exception is the parented error that IS the parent turn ending —
 	// see `workflowParentedErrorClosesTurn`. Filtering that one would downgrade a
-	// Claude subagent's rate limit from the ladder and the dated-quota self-resume
-	// into a bare execution failure.
+	// Claude subagent's rate limit from the typed provider-usage park into a bare
+	// execution failure.
 	//
 	// The watchdog reset is the one thing every other child event keeps, and it is
 	// load-bearing: a delegating turn leaves the parent stream quiet for as long
@@ -151,21 +133,18 @@ func (r *workflowAppRunner) observe(runKey string, event provider.ProviderEvent)
 			attempt.lastFailure = detail
 		}
 		transient, waitsForCompletion := workflowTransientError(event, attempt.providerRetryHint)
-		// A dated quota refusal leaves the retry ladder before it starts: the
-		// backoffs run out in minutes and the allowance comes back in hours or
-		// days, so every retry is waste and the park is the answer. It takes the
-		// exhausted path deliberately — it IS the retries being exhausted, and
-		// `provider-retries-exhausted` is the park a bare resume continues on the
-		// session the turn died in.
-		if transient {
-			if resetsAt, resumeAt, ok := r.quotaParkLocked(attempt, event); ok {
-				r.disarmTimerLocked(attempt)
-				attempt.pendingTransient = false
-				itemID := attempt.key.ItemID
-				r.mu.Unlock()
-				r.parkForQuotaLimit(runKey, itemID, resetsAt, resumeAt)
-				return
-			}
+		// A typed usage refusal leaves the retry ladder before it starts. Reset
+		// windows are advisory and model/bucket granularity is not reliable across
+		// providers, so neither is used for control flow: the real refusal is the
+		// proof, and an explicit resume always gets another real attempt.
+		if workflowUsageLimitRefusal(event) {
+			r.disarmTimerLocked(attempt)
+			attempt.pendingTransient = false
+			identity, identified := attempt.dispatchIdentity, attempt.dispatchIdentitySet
+			detail := attempt.failureDetail("provider usage limit reached; resume after changing accounts or when usage is available")
+			r.mu.Unlock()
+			r.parkForUsageLimit(runKey, attempt.key.ItemID, identity, identified, detail)
+			return
 		}
 		if transient && waitsForCompletion {
 			attempt.pendingTransient = true
@@ -340,7 +319,14 @@ func (r *workflowAppRunner) sendIfActive(runKey, message string, schema json.Raw
 	if !active {
 		return false, nil
 	}
-	if err := r.app.sendWorkflowMessage(attempt.threadID, message, schema); err != nil {
+	if err := r.app.sendWorkflowMessage(attempt.threadID, message, schema, func(identity providerDispatchIdentity) {
+		r.mu.Lock()
+		if r.runs[runKey] == attempt && attempt.sendEpoch == epoch {
+			attempt.dispatchIdentity = identity
+			attempt.dispatchIdentitySet = true
+		}
+		r.mu.Unlock()
+	}); err != nil {
 		return true, err
 	}
 

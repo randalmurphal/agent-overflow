@@ -365,6 +365,10 @@ binding never hides a thread.
 - `done` / `running` never notify. Rev 1's coalesced drain summary is
   **deleted** with the queue.
 - Child runs never notify (D18) — the root run carries the tree's attention.
+- Provider usage-limit parks are the one cross-run exception to per-run OS
+  attention (D75): bound runs for the same provider account and watching
+  thread notify and inject once until somebody starts or resumes work. Mixed
+  fan-out failures and attribution failures keep ordinary per-run attention.
 
 ---
 
@@ -379,7 +383,7 @@ open overlay; suppressed while a text field has focus.
 | `Esc` | home | close the overlay |
 | `Backspace` | run detail | back to home |
 | `j`/`→`/`↓` · `k`/`←`/`↑` | run detail, parked set | next / previous needs-attention run (wraps) |
-| `a` | gate / question / failed / blocked / paused / unit-failed / taken-over / done | primary action (approve / focus answer / rerun / resume / retry unit / finish takeover / merge) |
+| `a` | gate / question / failed / blocked / paused (including provider-usage-limited) / unit-failed / taken-over / done | primary action (approve / focus answer / rerun / resume / retry unit / finish takeover / merge) |
 | `r` | gate / failed / blocked / paused / unit-failed / taken-over / done / cancelled | request changes / discard (opens the §4.5 preview) |
 | `t` | unit-failed | take over the failed unit — the only `t` binding left (D32) |
 | `u` | unit-failed | retry every failed unit of the attempt at once (D33) — the usage-limit recovery, where pressing `a` once per unit is the same repair typed N times |

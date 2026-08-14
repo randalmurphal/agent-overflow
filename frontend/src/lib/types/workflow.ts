@@ -40,6 +40,7 @@ export type WorkflowRunReason =
   | 'budget-exhausted'
   | 'retries-exhausted'
   | 'provider-retries-exhausted'
+  | 'provider-usage-limited'
   | 'loop-limit-exhausted'
   | 'check-failed-genuine'
   | 'agent-error'

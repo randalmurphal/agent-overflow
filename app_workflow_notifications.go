@@ -62,8 +62,8 @@ func (a *App) afterWorkflowStateEvent(event engine.StateEvent) {
 		// spent, and the next wake delivers however familiar it looks. This is
 		// the record half of the coalescing rule; the comparison half lives in
 		// wakeAlreadyDelivered.
-		itemID := event.ItemID
-		a.workflowWake.Go(func() { a.clearTreeWakeSignature(itemID) })
+		itemID, from := event.ItemID, event.From
+		a.workflowWake.Go(func() { a.clearTreeWorkflowAttentionForTransition(itemID, from) })
 		return
 	}
 	if !restingWorkflowState(event.To) {
@@ -94,28 +94,43 @@ func restingWorkflowState(state engine.State) bool {
 // surfaceRestingWorkflowItem is the single decision point for "a run rested —
 // who is told, and how". Keeping the wake and the notification on one path is
 // what makes them consistent: a run cannot notify without waking its bound
-// thread, and a called run cannot do either as itself.
-func (a *App) surfaceRestingWorkflowItem(itemID string) {
+// thread, and a called run cannot do either as itself. Its return value is used
+// only by restart recovery to confirm that a replacement usage alert was
+// accepted by the delivery path or suppressed by a concurrent claim.
+func (a *App) surfaceRestingWorkflowItem(itemID string) workflowUsageAttentionSurface {
 	item, err := a.store.GetWorkItem(itemID)
 	if err != nil {
 		log.Printf("workflow surface %s: load run: %v", itemID, err)
-		return
+		return workflowUsageAttentionSurface{}
 	}
 	if item.ParentItemID != "" {
 		// A called run does not surface as itself (§5). A park still needs a
 		// human, so it is announced at the root, which is the unit of attention
 		// the overlay lists and a notification can be acted on from.
 		if engine.State(item.State) == engine.StateNeedsHuman {
-			a.surfaceDescendantPark(item)
+			return a.surfaceDescendantPark(item)
 		}
-		return
+		return workflowUsageAttentionSurface{}
 	}
 	// Every resting transition wakes the bound thread; only the ones that need
-	// a human interrupt them through the OS.
-	a.afterWorkflowResting(item)
+	// a human interrupt them through the OS. A usage-limited storm shares one
+	// attention generation across all affected runs watched by this thread.
+	usage := a.workflowUsageAttentionForRest(item, item)
+	return a.surfaceRootRestingWorkflowItem(item, usage)
+}
+
+func (a *App) surfaceRootRestingWorkflowItem(item store.WorkItem, usage workflowUsageAttentionDecision) workflowUsageAttentionSurface {
+	if usage.Suppress {
+		return usage.Surface
+	}
+	delivered := a.afterWorkflowResting(item, usage.Claim)
 	if engine.State(item.State) == engine.StateNeedsHuman || engine.State(item.State) == engine.StateFailed {
 		a.notifyWorkflowItemNeedsHuman(item)
 	}
+	if usage.Claim != nil && !delivered {
+		return workflowUsageAttentionSurface{}
+	}
+	return usage.Surface
 }
 
 func (a *App) notifyWorkflowItemNeedsHuman(item store.WorkItem) {

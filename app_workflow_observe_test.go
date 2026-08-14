@@ -87,7 +87,7 @@ type observeState struct {
 
 func newObserveHarness(t *testing.T, providerName string) *observeHarness {
 	t.Helper()
-	// A real store, because a quota park is one of the outcomes under test here:
+	// A real store, because a typed usage-limit park is one of the outcomes under test here:
 	// with a bare App the park panics on the schedule write, and a panic reports
 	// as a crashed binary rather than as the assertion that caught the
 	// regression. Nothing in this file wants the schedule to succeed.
@@ -259,20 +259,6 @@ func (h *observeHarness) driveToFirstBackoffRung() {
 	}
 }
 
-func (h *observeHarness) spentQuotaWindow() provider.ProviderEvent {
-	h.t.Helper()
-	meta, err := json.Marshal(provider.RateLimitsSnapshot{
-		Provider: h.attempt.provider,
-		Limits: []provider.RateLimitEntry{
-			{LimitID: "session", UsedPercent: 100, ResetsAt: h.now.Add(3 * time.Hour).Unix()},
-		},
-	})
-	if err != nil {
-		h.t.Fatal(err)
-	}
-	return provider.ProviderEvent{Kind: provider.EventRateLimits, Meta: meta}
-}
-
 // The incident, replayed. A collab child's own error may not be read as the
 // parent turn's failure — the child's turn boundaries never reach this machine
 // at all, so nothing parented can be answering for the parent — and the real
@@ -367,7 +353,6 @@ func TestWorkflowChildActivityFeedsTheWatchdogButNotTheRetryWait(t *testing.T) {
 // turn that is still working.
 func TestWorkflowChildQuotaRefusalDoesNotParkTheRun(t *testing.T) {
 	harness := newObserveHarness(t, string(provider.Codex))
-	harness.observe(harness.spentQuotaWindow())
 	harness.observe(provider.ProviderEvent{Kind: provider.EventTurnStart, TurnID: "turn-1"})
 
 	harness.observe(provider.ProviderEvent{
@@ -609,17 +594,25 @@ func TestWorkflowParentedErrorGateReadsTheTurnCompletionPromise(t *testing.T) {
 	}
 }
 
-// A Claude subagent's rate limit closes the phase turn, so it belongs to the
-// phase turn: it takes the ordinary waits-for-completion transient path. Gating
-// it out downgrades a retryable rate limit into a hard execution failure.
-func TestWorkflowClaudeSubagentErrorEntersTheTransientWait(t *testing.T) {
+// A Claude subagent error scoped to the parent turn belongs to the phase turn:
+// an ordinary transient still waits for the provider's completion boundary.
+// Gating it out would downgrade a retryable parent failure into a hard
+// execution failure.
+func TestWorkflowClaudeSubagentParentTurnTransientEntersTheWait(t *testing.T) {
 	harness := newObserveHarness(t, string(provider.Claude))
 	harness.observe(provider.ProviderEvent{Kind: provider.EventInit})
 	live := harness.state()
 
-	harness.observe(claudeRateLimitedEvent("toolu_subagent"))
+	harness.observe(provider.ProviderEvent{
+		Kind: provider.EventError, ParentToolUseID: "toolu_subagent",
+		Content: "provider overloaded",
+		Failure: &provider.FailureMeta{
+			Class: provider.FailureTransient, Boundary: provider.FailureBoundaryTurn,
+			Scope: provider.FailureScopeParentTurn, Code: "overloaded",
+		},
+	})
 
-	harness.refuteOutcome("a subagent rate limit ended the phase outright")
+	harness.refuteOutcome("a parent-turn transient ended the phase before its completion boundary")
 	state := harness.state()
 	if !state.pendingTransient {
 		t.Fatalf("state after a subagent error = %+v, want the wait for the turn's own completion", state)
@@ -632,19 +625,18 @@ func TestWorkflowClaudeSubagentErrorEntersTheTransientWait(t *testing.T) {
 	}
 }
 
-// And the dated-quota self-resume keys off the same enum, so gating the error
-// out would silently disable D71 for every delegating Claude phase.
+// The typed usage-limit park keys off the same normalized enum, so gating the
+// error out would silently spend retries for every delegating Claude phase.
 func TestWorkflowClaudeSubagentRateLimitStillReachesTheQuotaPark(t *testing.T) {
 	harness := newObserveHarness(t, string(provider.Claude))
-	harness.observe(harness.spentQuotaWindow())
 	harness.observe(provider.ProviderEvent{Kind: provider.EventInit})
 
 	harness.observe(claudeRateLimitedEvent("toolu_subagent"))
 
 	outcome := harness.awaitOutcome()
-	if outcome.Kind != engine.OutcomeTransientExhausted ||
+	if outcome.Kind != engine.OutcomeProviderUsageLimited ||
 		!strings.Contains(outcome.Detail, "provider usage limit reached") {
-		t.Fatalf("outcome = %+v, want the dated-quota park rather than the generic ladder", outcome)
+		t.Fatalf("outcome = %+v, want the typed usage-limit park rather than the generic ladder", outcome)
 	}
 }
 

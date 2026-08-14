@@ -46,6 +46,7 @@ describe('workflowResolutionKind', () => {
     // Provider exhaustion continues the dead turn's session. Legacy rows keep
     // that contract, while a workflow loop limit has no provider turn to keep.
     ['needs-human', 'provider-retries-exhausted', 'paused'],
+    ['needs-human', 'provider-usage-limited', 'paused'],
     ['needs-human', 'retries-exhausted', 'paused'],
     ['needs-human', 'loop-limit-exhausted', 'blocked'],
     ['needs-human', '', 'blocked'],

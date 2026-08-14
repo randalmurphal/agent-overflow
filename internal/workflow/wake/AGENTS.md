@@ -118,7 +118,10 @@ wakes the same ask (K2). See "Coalescing" below.
   transient retries could not outlast, and the session it died in is where the
   next one belongs (the reason IS a `ContinuableReason`) when that
   provider context remains available, otherwise the round is reconstructed in
-  a new thread from its full persisted input; `loop-limit-exhausted` instead
+  a new thread from its full persisted input; `provider-usage-limited` also
+  names `run resume`, but states the stronger D75 contract: it makes an
+  immediate real attempt after a reset or account switch, and no recorded
+  availability state may block it; `loop-limit-exhausted` instead
   names `run resume --phase <phase-id>` at an earlier phase because only an
   outside entry refills its bound; legacy `retries-exhausted` names both
   possibilities without guessing its source; and
@@ -171,9 +174,10 @@ wakes the same ask (K2). See "Coalescing" below.
   durability point.** A session-less thread's ordinary send persists a
   durable row before it returns, so that branch records inline; a live
   session's message goes through the flush queue, which is process
-  memory until the dispatch worker writes it to the provider, so that
-  branch defers the record to the queue item's `OnDispatched` callback
-  (`triage.QueuedFlushItem`). Recording at hand-off would let a crash, a
+  memory until the dispatch worker writes it to the provider or session
+  recovery persists it in the composer, so that branch defers the record to
+  the queue item's durability settlement (`triage.QueuedFlushItem`). Recording
+  at hand-off would let a crash, a
   session teardown, or a rollback take the message while the row swore
   it had been delivered — and because the record is only spent when
   somebody ACTS on the run, the identical wake would then be suppressed
@@ -197,6 +201,15 @@ wakes the same ask (K2). See "Coalescing" below.
   comparison is for equality and a real signature always starts
   `kind=rest ` / `kind=progress `), so one stranded by a crash makes the
   run more talkative, never silent.
+- **Provider usage storms add one app-side correlation layer above content
+  identity (D75).** A typed usage-limit park's phase or failed units point at a
+  durable provider/account/credential scope. Bound roots sharing that scope
+  and watching thread claim one notification generation in
+  `app_workflow_usage_attention.go`; a transition back to `running` advances
+  it, and queued delivery settles by tokenized compare-and-set. This package
+  remains unaware of that state: it composes the one message the winning claim
+  delivers, while mixed failures and attribution/storage errors deliberately
+  fall back to ordinary per-run wakes.
 
 ## Extension points
 

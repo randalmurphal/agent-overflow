@@ -44,13 +44,16 @@ type WorkItemUnit struct {
 	UnitAttempt   int             `json:"unitAttempt"`
 	Envelope      json.RawMessage `json:"envelope,omitempty"`
 	Feedback      string          `json:"feedback,omitempty"`
-	StartedAt     int64           `json:"startedAt,omitempty"`
-	EndedAt       int64           `json:"endedAt,omitempty"`
+	// ProviderUsageScopeID identifies the provider/account credential scope
+	// whose typed usage refusal failed this unit. Zero is every other failure.
+	ProviderUsageScopeID WorkflowProviderUsageScopeID `json:"providerUsageScopeId,omitempty"`
+	StartedAt            int64                        `json:"startedAt,omitempty"`
+	EndedAt              int64                        `json:"endedAt,omitempty"`
 }
 
 const workItemUnitColumns = `item_id, phase_id, attempt, unit_id, unit_index, kind,
 provider, model, thread_id, branch, worktree_path, narrative_path, status,
-unit_attempt, envelope, feedback, started_at, ended_at`
+unit_attempt, envelope, feedback, provider_usage_scope_id, started_at, ended_at`
 
 func scanWorkItemUnit(scanner interface{ Scan(...any) error }) (WorkItemUnit, error) {
 	var unit WorkItemUnit
@@ -59,7 +62,7 @@ func scanWorkItemUnit(scanner interface{ Scan(...any) error }) (WorkItemUnit, er
 		&unit.ItemID, &unit.PhaseID, &unit.Attempt, &unit.UnitID, &unit.UnitIndex, &unit.Kind,
 		&unit.Provider, &unit.Model, &unit.ThreadID, &unit.Branch, &unit.WorktreePath,
 		&unit.NarrativePath, &unit.Status, &unit.UnitAttempt, &envelope, &unit.Feedback,
-		&unit.StartedAt, &unit.EndedAt,
+		&unit.ProviderUsageScopeID, &unit.StartedAt, &unit.EndedAt,
 	); err != nil {
 		return WorkItemUnit{}, err
 	}
@@ -82,7 +85,7 @@ func (s *Store) CreateWorkItemUnits(units []WorkItemUnit) error {
 	defer func() { _ = tx.Rollback() }()
 	statement, err := tx.Prepare(
 		`INSERT INTO work_item_units (` + workItemUnitColumns + `)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 	)
 	if err != nil {
 		return fmt.Errorf("store: create work item units: prepare: %w", err)
@@ -96,7 +99,7 @@ func (s *Store) CreateWorkItemUnits(units []WorkItemUnit) error {
 			unit.ItemID, unit.PhaseID, unit.Attempt, unit.UnitID, unit.UnitIndex, unit.Kind,
 			unit.Provider, unit.Model, unit.ThreadID, unit.Branch, unit.WorktreePath,
 			unit.NarrativePath, unit.Status, unit.UnitAttempt, jsonText(unit.Envelope),
-			unit.Feedback, unit.StartedAt, unit.EndedAt,
+			unit.Feedback, unit.ProviderUsageScopeID, unit.StartedAt, unit.EndedAt,
 		); err != nil {
 			return fmt.Errorf("store: create work item unit %s/%s/%d/%s: %w", unit.ItemID, unit.PhaseID, unit.Attempt, unit.UnitID, err)
 		}
@@ -118,7 +121,7 @@ func (s *Store) StartWorkItemUnit(itemID, phaseID string, attempt int, unitID st
 	result, err := s.db.Exec(
 		`UPDATE work_item_units
 		 SET status = 'running', unit_attempt = ?, feedback = ?, envelope = '',
-		     started_at = ?, ended_at = 0
+		     provider_usage_scope_id = 0, started_at = ?, ended_at = 0
 		 WHERE item_id = ? AND phase_id = ? AND attempt = ? AND unit_id = ?`,
 		unitAttempt, feedback, startedAt, itemID, phaseID, attempt, unitID,
 	)
@@ -153,7 +156,7 @@ func (s *Store) RetryWorkItemUnit(itemID, phaseID string, attempt int, unitID st
 	result, err := s.db.Exec(
 		`UPDATE work_item_units
 		 SET status = 'pending', unit_attempt = ?, feedback = ?, envelope = '',
-		     started_at = 0, ended_at = 0
+		     provider_usage_scope_id = 0, started_at = 0, ended_at = 0
 		 WHERE item_id = ? AND phase_id = ? AND attempt = ? AND unit_id = ?`,
 		unitAttempt, feedback, itemID, phaseID, attempt, unitID,
 	)
@@ -243,12 +246,12 @@ func (s *Store) AttachWorkItemJoinRun(itemID, phaseID string, attempt int, unitI
 // CompleteWorkItemUnit records a unit's terminal status for its current
 // attempt, with whatever envelope it produced and the note that explains a
 // non-success.
-func (s *Store) CompleteWorkItemUnit(itemID, phaseID string, attempt int, unitID, status string, envelope json.RawMessage, feedback string, endedAt int64) error {
+func (s *Store) CompleteWorkItemUnit(itemID, phaseID string, attempt int, unitID, status string, envelope json.RawMessage, feedback string, providerUsageScopeID WorkflowProviderUsageScopeID, endedAt int64) error {
 	result, err := s.db.Exec(
 		`UPDATE work_item_units
-		 SET status = ?, envelope = ?, feedback = ?, ended_at = ?
+		 SET status = ?, envelope = ?, feedback = ?, provider_usage_scope_id = ?, ended_at = ?
 		 WHERE item_id = ? AND phase_id = ? AND attempt = ? AND unit_id = ?`,
-		status, jsonText(envelope), feedback, endedAt, itemID, phaseID, attempt, unitID,
+		status, jsonText(envelope), feedback, providerUsageScopeID, endedAt, itemID, phaseID, attempt, unitID,
 	)
 	if err != nil {
 		return fmt.Errorf("store: complete work item unit %s/%s/%d/%s: %w", itemID, phaseID, attempt, unitID, err)
@@ -264,7 +267,7 @@ func (s *Store) CompleteWorkItemUnit(itemID, phaseID string, attempt int, unitID
 func (s *Store) FailRunningWorkItemUnits(itemID, phaseID string, attempt int, feedback string, endedAt int64) (int64, error) {
 	result, err := s.db.Exec(
 		`UPDATE work_item_units
-		 SET status = 'failed', feedback = ?, ended_at = ?
+		 SET status = 'failed', feedback = ?, provider_usage_scope_id = 0, ended_at = ?
 		 WHERE item_id = ? AND phase_id = ? AND attempt = ? AND status = 'running'`,
 		feedback, endedAt, itemID, phaseID, attempt,
 	)

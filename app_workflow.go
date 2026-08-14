@@ -202,6 +202,11 @@ func (a *App) initWorkflowEngine(dataRoot string) error {
 		a.triage.SetUsageWorkItemResolver(runner.workItemForThread)
 	}
 	definitions := workflowDefinitionSource{store: a.store, configRoot: dataRoot, profiles: profiles}
+	// Transfer prior-process usage-attention claims before Engine.Start can emit
+	// recovery transitions and create claims owned by this process's in-memory
+	// delivery queue. The rows they describe are surfaced only after Start has
+	// rebuilt workflow state below.
+	usageAttentionRecoveries := a.reclaimWorkflowUsageAttention()
 	workflowEngine, err := engine.New(
 		a.store, runner, workflowEmitter{app: a, emit: a.emitWithReplay()}, definitions, profiles,
 		workflowSpendSource{store: a.store},
@@ -227,6 +232,9 @@ func (a *App) initWorkflowEngine(dataRoot string) error {
 	// timer must not be able to fire into a run the rebuild has not decided
 	// about yet, and the rebuild is what parks the runs a crash interrupted.
 	a.sweepWorkflowAutoResumes()
+	// A queued workflow wake is process memory. Re-surface the prior process's
+	// transferred claims only after the engine has rebuilt their item rows.
+	a.surfaceReclaimedWorkflowUsageAttention(usageAttentionRecoveries)
 	// The §11 scheduler starts last and over the running engine: a trigger must
 	// never be able to fire into an engine that does not exist yet.
 	if err := a.initWorkflowScheduler(); err != nil {
