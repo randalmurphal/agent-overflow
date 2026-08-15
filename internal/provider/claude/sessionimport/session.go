@@ -10,8 +10,8 @@ import (
 	"agent-overflow/internal/provider/claude/sessionfork"
 )
 
-// LoadedBranch is one importable thread: the branch, the events the writer
-// will turn into rows, and whatever converting it warned about.
+// LoadedBranch is one decoded conversation branch: its skeleton, the events
+// the writer can turn into rows, and whatever converting it warned about.
 //
 // Its Chain is the SKELETON chain — the decoded line bodies live only for
 // the duration of ConvertBranch. A caller that holds every branch of a
@@ -20,6 +20,7 @@ type LoadedBranch struct {
 	Branch
 	Events   []importir.Event
 	Warnings []importir.Warning
+	Profile  importir.ModelProfile
 }
 
 // LoadedSession is an OPEN transcript: every branch in it, plus the file
@@ -46,24 +47,28 @@ type LoadedSession struct {
 	// branch's own conversion warnings ride on its LoadedBranch.
 	Warnings []importir.Warning
 
-	file        *os.File
-	promptCache map[string]bool
-	// prefixDonorByUUID indexes rows that belong to successfully imported
-	// branches. A transcript row UUID uniquely identifies its ancestor chain,
-	// so the deepest target UUID in this map identifies the longest reusable
-	// prefix without comparing the target against every prior branch from the
-	// root (quadratic on 100-leaf transcripts).
-	prefixDonorByUUID map[string]int
+	file *os.File
 }
 
-// ReusablePrefix describes the complete-turn prefix branch Index can inherit
-// from an earlier imported branch. SuffixRow is the first skeleton row that
-// must still be converted; NextTurnIndex is the target writer's first suffix
-// turn (Claude imports are 1-based).
-type ReusablePrefix struct {
-	DonorIndex    int
-	SuffixRow     int
-	NextTurnIndex int
+// ConvertActiveBranch decodes the one branch Claude resumes for this session.
+//
+// A transcript is a DAG, but a provider session has one current conversation:
+// the root-to-leaf chain ending at the last leaf in file order. BuildBranches
+// guarantees that ordering. Keeping the selection here gives production
+// import and the real-corpus gate one API for the contract instead of making
+// each caller remember which end of Branches is active.
+//
+// found is false when the transcript contains no conversation branch. That is
+// a valid empty-session result, not an out-of-range conversion error.
+func (s *LoadedSession) ConvertActiveBranch() (branch LoadedBranch, found bool, err error) {
+	if s == nil || s.file == nil {
+		return LoadedBranch{}, false, fmt.Errorf("sessionimport: transcript is not open")
+	}
+	if len(s.Branches) == 0 {
+		return LoadedBranch{}, false, nil
+	}
+	branch, err = s.ConvertBranch(len(s.Branches) - 1)
+	return branch, true, err
 }
 
 // LoadSession opens one Claude transcript and enumerates its branches.
@@ -101,13 +106,11 @@ func LoadSession(path string) (*LoadedSession, error) {
 
 	sessionID := sessionfork.SessionIDFromPath(path)
 	loaded := &LoadedSession{
-		SessionID:         sessionID,
-		Path:              path,
-		SessionDir:        filepath.Join(filepath.Dir(path), sessionID),
-		Warnings:          skeleton.Warnings,
-		file:              f,
-		promptCache:       make(map[string]bool),
-		prefixDonorByUUID: make(map[string]int),
+		SessionID:  sessionID,
+		Path:       path,
+		SessionDir: filepath.Join(filepath.Dir(path), sessionID),
+		Warnings:   skeleton.Warnings,
+		file:       f,
 	}
 
 	branches, warnings := BuildBranches(skeleton.Rows, skeleton.LeafTitles)
@@ -135,18 +138,9 @@ func (s *LoadedSession) Close() error {
 // their byte ranges came off the same read that built the skeleton — joins
 // the subagent transcripts those rows launched, converts, and drops every
 // decoded body before returning. Subagent transcripts are read per branch
-// rather than once per file: branches share a prefix, so a Task launch can
-// appear on several, and each of them is its own thread that should nest
-// the agent's rows under its own launch row.
+// rather than once per file so an explicit branch consumer sees the Task
+// rows belonging to that chain.
 func (s *LoadedSession) ConvertBranch(index int) (LoadedBranch, error) {
-	return s.ConvertBranchFrom(index, 0)
-}
-
-// ConvertBranchFrom is ConvertBranch with a complete-turn prefix omitted.
-// Callers obtain start from FindReusablePrefix; arbitrary mid-turn starts are
-// intentionally not accepted by that API because converter correlation state
-// cannot be reconstructed safely there.
-func (s *LoadedSession) ConvertBranchFrom(index, start int) (LoadedBranch, error) {
 	if s == nil || s.file == nil {
 		return LoadedBranch{}, fmt.Errorf("sessionimport: transcript is not open")
 	}
@@ -156,12 +150,7 @@ func (s *LoadedSession) ConvertBranchFrom(index, start int) (LoadedBranch, error
 			index, s.Path, len(s.Branches))
 	}
 	branch := s.Branches[index]
-	if start < 0 || start > len(branch.Chain) {
-		return LoadedBranch{}, fmt.Errorf(
-			"sessionimport: branch %d start %d is out of range for %s (%d rows)",
-			index, start, s.Path, len(branch.Chain))
-	}
-	chain, err := s.decodeChain(branch.Chain[start:])
+	chain, err := s.decodeChain(branch.Chain)
 	if err != nil {
 		return LoadedBranch{}, err
 	}
@@ -173,138 +162,16 @@ func (s *LoadedSession) ConvertBranchFrom(index, start int) (LoadedBranch, error
 	decoded.Chain = chain
 	subagents, warnings := LoadSubagents(s.SessionDir, []Branch{decoded})
 
-	events, convertWarnings := Convert(chain, ConvertOptions{
+	converted := Convert(chain, ConvertOptions{
 		SessionDir: s.SessionDir,
 		Subagents:  subagents,
 	})
 	return LoadedBranch{
 		Branch:   branch,
-		Events:   events,
-		Warnings: append(warnings, convertWarnings...),
+		Events:   converted.Events,
+		Warnings: append(warnings, converted.Warnings...),
+		Profile:  converted.Profile,
 	}, nil
-}
-
-// AddReusablePrefixDonor makes one successfully imported branch available to
-// later FindReusablePrefix calls. Register only after the branch commits: a
-// donor names store history that must exist before another thread can attach
-// it. Shared UUIDs keep their earliest donor; every such donor contains the
-// identical ancestor chain through that row.
-func (s *LoadedSession) AddReusablePrefixDonor(index int) error {
-	if s == nil || s.file == nil {
-		return fmt.Errorf("sessionimport: transcript is not open")
-	}
-	if index < 0 || index >= len(s.Branches) {
-		return fmt.Errorf("sessionimport: prefix donor %d is out of range", index)
-	}
-	if s.prefixDonorByUUID == nil {
-		s.prefixDonorByUUID = make(map[string]int)
-	}
-	for _, row := range s.Branches[index].Chain {
-		if _, exists := s.prefixDonorByUUID[row.UUID]; !exists {
-			s.prefixDonorByUUID[row.UUID] = index
-		}
-	}
-	return nil
-}
-
-// FindReusablePrefix chooses the registered donor with the longest shared
-// complete-turn prefix. A UUID identifies its full ancestor chain, so scanning
-// the target backwards finds the deepest shared row directly. Branches can
-// diverge midway through a turn, so the boundary deliberately backs up to that
-// turn's real user prompt; if the first divergent row is itself a prompt, the
-// prior turn is complete and can remain shared.
-func (s *LoadedSession) FindReusablePrefix(index int) (ReusablePrefix, bool, error) {
-	if s == nil || s.file == nil {
-		return ReusablePrefix{}, false, fmt.Errorf("sessionimport: transcript is not open")
-	}
-	if index < 0 || index >= len(s.Branches) {
-		return ReusablePrefix{}, false, fmt.Errorf("sessionimport: branch %d is out of range", index)
-	}
-	target := s.Branches[index].Chain
-	common, donorIndex := 0, -1
-	for i := len(target) - 1; i >= 0; i-- {
-		candidate, found := s.prefixDonorByUUID[target[i].UUID]
-		if !found {
-			continue
-		}
-		if candidate < 0 || candidate >= index {
-			return ReusablePrefix{}, false, fmt.Errorf(
-				"sessionimport: invalid prefix donor %d for branch %d", candidate, index)
-		}
-		common, donorIndex = i+1, candidate
-		break
-	}
-	if donorIndex < 0 {
-		return ReusablePrefix{}, false, nil
-	}
-	suffix, turns, err := s.completeTurnPrefixBoundary(target, common)
-	if err != nil {
-		return ReusablePrefix{}, false, err
-	}
-	if turns == 0 {
-		return ReusablePrefix{}, false, nil
-	}
-	return ReusablePrefix{
-		DonorIndex: donorIndex, SuffixRow: suffix, NextTurnIndex: turns + 1,
-	}, true, nil
-}
-
-func (s *LoadedSession) completeTurnPrefixBoundary(chain []Row, common int) (int, int, error) {
-	start := -1
-	if common < len(chain) {
-		isPrompt, err := s.isUserPrompt(chain[common])
-		if err != nil {
-			return 0, 0, err
-		}
-		if isPrompt {
-			start = common
-		}
-	}
-	if start < 0 {
-		for i := common - 1; i >= 0; i-- {
-			isPrompt, err := s.isUserPrompt(chain[i])
-			if err != nil {
-				return 0, 0, err
-			}
-			if isPrompt {
-				start = i
-				break
-			}
-		}
-	}
-	if start <= 0 {
-		return 0, 0, nil
-	}
-	turns := 0
-	for i := 0; i < start; i++ {
-		isPrompt, err := s.isUserPrompt(chain[i])
-		if err != nil {
-			return 0, 0, err
-		}
-		if isPrompt {
-			turns++
-		}
-	}
-	return start, turns, nil
-}
-
-func (s *LoadedSession) isUserPrompt(row Row) (bool, error) {
-	if row.Type != "user" || row.IsMeta || row.IsCompactSummary {
-		return false, nil
-	}
-	if value, ok := s.promptCache[row.UUID]; ok {
-		return value, nil
-	}
-	decoded, err := s.decodeChain([]Row{row})
-	if err != nil {
-		return false, err
-	}
-	_, isPrompt := userPromptText(decoded[0])
-	if s.promptCache == nil {
-		s.promptCache = make(map[string]bool)
-	}
-	s.promptCache[row.UUID] = isPrompt
-	return isPrompt, nil
 }
 
 // decodeChain reads each skeleton row's own line back and decodes it,

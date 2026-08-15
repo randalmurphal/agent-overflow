@@ -555,8 +555,8 @@ function tally(counts: ImportRunCounts, result: ImportRowResult, sign: 1 | -1): 
  * Decide what a finished run leaves on screen.
  *
  * A clean full run has nothing left to say, so it closes itself and reports
- * in a toast — the thread counts in it are the only place a Claude session's
- * real branch count is ever known (the catalog reports 0 = undetermined).
+ * in a toast. The thread count comes from actual outcomes, so a session with
+ * no importable history is never guessed from the catalogue.
  * Anything the user still has to look at — a failure to retry, a run they
  * stopped early, a run whose frames were gapped — keeps the surface open
  * with the rows stamped.

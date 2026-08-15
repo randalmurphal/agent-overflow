@@ -121,6 +121,9 @@ func TestParseEnvelopeHappyPath(t *testing.T) {
 	if startMeta.Model != "gpt-5.6-sol" || startMeta.Effort != "high" || startMeta.ContextWindow != 258400 {
 		t.Fatalf("turn_context did not seed the turn: %+v", startMeta)
 	}
+	if res.Profile.Model != "gpt-5.6-sol" || res.Profile.ReasoningEffort != "high" || res.Profile.ContextWindow != 258400 {
+		t.Fatalf("profile = %+v, want the latest turn settings", res.Profile)
+	}
 	if res.Events[1].Content != "do the thing" {
 		t.Fatalf("user text = %q", res.Events[1].Content)
 	}
@@ -133,6 +136,63 @@ func TestParseEnvelopeHappyPath(t *testing.T) {
 	}
 	if _, ok := res.Events[3].TurnComplete.(*provider.WireTurnCompleteMeta); !ok {
 		t.Fatalf("turn complete meta = %T, want wire", res.Events[3].TurnComplete)
+	}
+}
+
+// Current Codex writes task_started before turn_context. The profile and the
+// already-emitted turn event must both learn the late context, even when the
+// turn aborts without a token_count that could accidentally recover it.
+func TestParseLateTurnContextProfilesAnAbortedTurn(t *testing.T) {
+	aborted := `{"timestamp":"2026-08-07T19:08:00.000Z","type":"event_msg","payload":{"type":"turn_aborted","turn_id":"turn-1","reason":"interrupted","completed_at":1786133880}}`
+	path := writeRollout(t, testSessionID,
+		metaLine, taskStartedLine, turnContextLine, userMsgLine, aborted)
+	res := parseFixture(t, path)
+
+	if res.Profile.Model != "gpt-5.6-sol" || res.Profile.ReasoningEffort != "high" || res.Profile.ContextWindow != 258400 {
+		t.Fatalf("late profile = %+v", res.Profile)
+	}
+	start := firstOfKind(t, res.Events, provider.EventTurnStart)
+	var meta struct {
+		Model         string `json:"model"`
+		Effort        string `json:"effort"`
+		ContextWindow int    `json:"contextWindow"`
+	}
+	if err := json.Unmarshal(start.Meta, &meta); err != nil {
+		t.Fatalf("decode turn start meta: %v", err)
+	}
+	if meta.Model != res.Profile.Model || meta.Effort != res.Profile.ReasoningEffort || meta.ContextWindow != res.Profile.ContextWindow {
+		t.Fatalf("turn start meta = %+v, profile = %+v", meta, res.Profile)
+	}
+
+	recovered, err := ReadLatestProfile(context.Background(), path)
+	if err != nil {
+		t.Fatalf("ReadLatestProfile: %v", err)
+	}
+	if recovered != res.Profile {
+		t.Fatalf("recovered profile = %+v, parse profile = %+v", recovered, res.Profile)
+	}
+}
+
+func TestParseProfileKeepsContextWindowWithoutUsageAccounting(t *testing.T) {
+	tokenWindowOnly := `{"timestamp":"2026-08-07T19:07:58.000Z","type":"event_msg","payload":{"type":"token_count","info":{"model_context_window":300000}}}`
+	aborted := `{"timestamp":"2026-08-07T19:08:00.000Z","type":"event_msg","payload":{"type":"turn_aborted","turn_id":"turn-1","reason":"interrupted","completed_at":1786133880}}`
+	path := writeRollout(t, testSessionID,
+		metaLine,
+		`{"timestamp":"2026-08-07T19:07:45.000Z","type":"event_msg","payload":{"type":"task_started","turn_id":"turn-1"}}`,
+		turnContextLine,
+		tokenWindowOnly,
+		aborted,
+	)
+	res := parseFixture(t, path)
+	if res.Profile.ContextWindow != 300000 {
+		t.Fatalf("profile context window = %d, want 300000", res.Profile.ContextWindow)
+	}
+	recovered, err := ReadLatestProfile(context.Background(), path)
+	if err != nil {
+		t.Fatalf("ReadLatestProfile: %v", err)
+	}
+	if recovered != res.Profile {
+		t.Fatalf("recovered profile = %+v, parse profile = %+v", recovered, res.Profile)
 	}
 }
 

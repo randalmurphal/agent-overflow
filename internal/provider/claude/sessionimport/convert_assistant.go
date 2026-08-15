@@ -19,6 +19,15 @@ func (c *converter) convertAssistant(row Row) {
 	}
 	c.ensureTurn(row)
 
+	// The message envelope is the authority for which model authored this
+	// branch. Capture it independently of usage: some valid assistant rows
+	// omit usage or report a zero delta, and subagent messages name the child
+	// model rather than the model selected for the parent conversation.
+	model := strings.TrimSpace(rawString(msg, "model"))
+	if c.subagentScope == "" && model != "" && model != syntheticCLIModel {
+		c.profile.Model = model
+	}
+
 	if enum, summary, ok := assistantAPIError(row, msg); ok {
 		meta, _ := json.Marshal(map[string]any{
 			"api_error_enum": enum,
@@ -39,7 +48,7 @@ func (c *converter) convertAssistant(row Row) {
 	// without an API call (a provider-executed slash command). It is not
 	// model output and must never render as an assistant bubble — same
 	// routing the live parser applies.
-	if strings.TrimSpace(rawString(msg, "model")) == syntheticCLIModel {
+	if model == syntheticCLIModel {
 		if text := joinTextBlocks(blocks); text != "" {
 			c.emit(provider.ProviderEvent{
 				Kind:           provider.EventCommandResult,

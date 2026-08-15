@@ -35,11 +35,11 @@ type ListOptions struct {
 // RolloutPath is always inside the ListOptions.CodexHome it was read under —
 // see PathInHome for why that is checked rather than trusted.
 //
-// The index's `model` / `reasoning_effort` / `tokens_used` columns are
-// deliberately NOT projected here: Codex only backfills them for some sources,
-// the authoritative per-turn values live in the rollout's `turn_context` lines
-// (see Parse), and no caller ever read them. A field nothing reads is a field
-// that drifts.
+// Model and ReasoningEffort are index-level fallbacks only. Codex leaves them
+// NULL for some sources, while the authoritative per-turn values live in the
+// rollout's `turn_context` lines (see Parse). Carrying the values through the
+// scan is free and lets an import whose rollout lacks turn_context still make
+// the best provider-recorded choice without a second database query.
 type SessionInfo struct {
 	ThreadID         string
 	RolloutPath      string
@@ -50,6 +50,8 @@ type SessionInfo struct {
 	CreatedAt        int64 // epoch ms
 	LastActivityAt   int64 // epoch ms
 	SizeBytes        int64
+	Model            string
+	ReasoningEffort  string
 }
 
 // listQuery selects the threads a user would recognise as their own sessions.
@@ -79,7 +81,9 @@ SELECT t.id,
        t.created_at,
        t.updated_at,
        t.created_at_ms,
-       t.updated_at_ms
+       t.updated_at_ms,
+       t.model,
+       t.reasoning_effort
   FROM threads t
  WHERE t.archived = 0
    AND t.preview <> ''
@@ -194,6 +198,7 @@ func scanSessionRow(rows *sql.Rows) (SessionInfo, error) {
 		info                     SessionInfo
 		cwd, title, firstMessage sql.NullString
 		branch, rolloutPath      sql.NullString
+		model, reasoningEffort   sql.NullString
 		createdSec, updatedSec   sql.NullInt64
 		createdMS, updatedMS     sql.NullInt64
 	)
@@ -208,6 +213,8 @@ func scanSessionRow(rows *sql.Rows) (SessionInfo, error) {
 		&updatedSec,
 		&createdMS,
 		&updatedMS,
+		&model,
+		&reasoningEffort,
 	); err != nil {
 		return SessionInfo{}, err
 	}
@@ -218,6 +225,8 @@ func scanSessionRow(rows *sql.Rows) (SessionInfo, error) {
 	info.GitBranch = strings.TrimSpace(branch.String)
 	info.CreatedAt = millis(createdMS, createdSec)
 	info.LastActivityAt = millis(updatedMS, updatedSec)
+	info.Model = strings.TrimSpace(model.String)
+	info.ReasoningEffort = strings.TrimSpace(reasoningEffort.String)
 	if info.Title == "" {
 		info.Title = info.FirstUserMessage
 	}

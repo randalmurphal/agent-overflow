@@ -133,6 +133,9 @@
     const across = turns > 0 ? ` across ${countNoun(turns, 'turn')}` : '';
     return `${items}${across} since this thread was imported.`;
   });
+  let profileOnlyUpdate = $derived(
+    Boolean(pendingUpdate?.restoresModelProfile) && (pendingUpdate?.newItems ?? 0) === 0,
+  );
 
   // Discussion children (threads with a parentThreadId) cannot be
   // deleted in isolation — the parent thread owns the subtree's
@@ -345,13 +348,13 @@
   }}
 />
 
-<!-- Non-destructive, so Enter accepts: appending the session file's newer
-     messages adds history, it never rewrites what is already there. -->
+<!-- Non-destructive, so Enter accepts: new history is appended, and a profile
+     repair uses compare-and-swap so it cannot replace a newer user choice. -->
 <ConfirmDialog
   open={pendingUpdate !== null}
-  title="Import New Items"
+  title={profileOnlyUpdate ? 'Restore Model Settings' : 'Import Provider Updates'}
   description={pendingUpdateDescription}
-  confirmLabel="Import"
+  confirmLabel={profileOnlyUpdate ? 'Restore' : 'Import'}
   onConfirm={() => {
     pendingUpdate = null;
     void applyThreadImportUpdatesAction(ctx());

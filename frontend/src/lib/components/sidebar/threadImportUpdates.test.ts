@@ -165,6 +165,30 @@ describe('applyThreadImportUpdatesAction', () => {
     expect(toasts()[0].message).toBe('Imported 4 new items.');
   });
 
+  it('reports a profile-only repair without claiming it imported zero items', async () => {
+    setBindingMock('ImportThreadUpdates', async () => ({
+      appliedItems: 0,
+      appliedTurns: 0,
+      restoredModelProfile: true,
+    }));
+    await applyThreadImportUpdatesAction(makeCtx());
+    expect(toasts()[0].message).toBe(
+      'Restored the model settings recorded in the provider session.',
+    );
+  });
+
+  it('reports both effects when history and its newer model profile land together', async () => {
+    setBindingMock('ImportThreadUpdates', async () => ({
+      appliedItems: 4,
+      appliedTurns: 1,
+      restoredModelProfile: true,
+    }));
+    await applyThreadImportUpdatesAction(makeCtx());
+    expect(toasts()[0].message).toBe(
+      'Imported 4 new items across 1 turn. Restored its recorded model settings.',
+    );
+  });
+
   it('surfaces a refusal — the backend re-plans, so an earlier check is not a promise', async () => {
     const listThreads = setBindingMock('ListThreads', async () => []);
     setBindingMock('ImportThreadUpdates', async () => {

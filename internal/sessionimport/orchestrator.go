@@ -87,25 +87,23 @@ type ProviderStatus struct {
 type Row struct {
 	// ID is the opaque row key the import accepts back. Minted here so a
 	// caller never has to compose one out of provider + session id.
-	ID             string
-	Provider       string
-	SessionID      string
-	Title          string
-	ProjectPath    string
-	ProjectID      string
-	ProjectLabel   string
-	GitBranch      string
-	CreatedAt      int64
-	LastActivityAt int64
-	SizeBytes      int64
-	// BranchCount is how many AO threads importing this row will create.
-	// Codex is always 1. Claude is 0, meaning NOT DETERMINED: enumerating a
-	// transcript's leaves needs a full read of the file, and a real home is
-	// gigabytes across a thousand-plus transcripts — the list would take
-	// minutes. The true count is known at import and reported per row then.
-	BranchCount   int
-	SubagentCount int
-	SourcePath    string
+	ID        string
+	Provider  string
+	SessionID string
+	// ParentSessionID is the provider session this session was explicitly
+	// forked from. It is provenance, not a reason to suppress either row:
+	// both ids are independently resumable conversations.
+	ParentSessionID string
+	Title           string
+	ProjectPath     string
+	ProjectID       string
+	ProjectLabel    string
+	GitBranch       string
+	CreatedAt       int64
+	LastActivityAt  int64
+	SizeBytes       int64
+	SubagentCount   int
+	SourcePath      string
 	// KnownProject is true when AO already has a project row covering this
 	// session's workspace, so importing it will not create one.
 	KnownProject bool
@@ -124,6 +122,9 @@ type Row struct {
 	RanInAgentOverflow bool
 	// Warnings are user-facing prose about THIS row, not the scan.
 	Warnings []string
+	// IndexedProfile is a provider-index fallback carried only for import.
+	// Codex's rollout profile remains authoritative when present.
+	IndexedProfile importir.ModelProfile
 }
 
 // ScanResult is one scan.
@@ -139,18 +140,21 @@ func RowKey(providerName, sessionID string) string {
 
 // Scan enumerates every provider session AO does not already have.
 //
-// Three subtractions make the result safe to import wholesale, which is what
+// Two subtractions make the result safe to import wholesale, which is what
 // an "Import All" button needs:
 //
 //  1. Sessions AO already knows (`ListImportedSessionRefs` — a live
 //     session_ref, an unresumed fork's pending ref, or an earlier import's
 //     recorded source). This is what makes pressing Import All twice a
 //     no-op instead of a duplicate.
-//  2. Fork ancestors. A forked session's file contains its parent's history,
-//     so importing both would import that history twice, as two threads.
-//  3. Subagent / spawned-child sessions. Those are already excluded inside
+//  2. Subagent / spawned-child sessions. Those are already excluded inside
 //     each provider's lister, which is where the provider-specific test for
 //     "is this a child" belongs.
+//
+// Explicit provider forks are NOT subtracted. A fork is a new provider
+// session with its own resume id and a shared historical prefix; suppressing
+// its ancestor loses an independently continuable conversation. Row carries
+// the provider parent id so import can reproduce that lineage in AO.
 //
 // A provider that cannot be read is reported in Providers and does not fail
 // the scan: a broken Codex home must not take Claude's sessions away.
@@ -235,7 +239,7 @@ func scanProviders(filtered string) []string {
 }
 
 func scanProvider(
-	ctx context.Context, d Deps, providerName string, known map[string]string,
+	ctx context.Context, d Deps, providerName string, known map[store.ProviderSessionRef]string,
 ) ([]Row, []importir.Warning, error) {
 	switch providerName {
 	case ProviderClaude:
@@ -247,7 +251,7 @@ func scanProvider(
 	}
 }
 
-func scanClaude(ctx context.Context, d Deps, known map[string]string) ([]Row, []importir.Warning, error) {
+func scanClaude(ctx context.Context, d Deps, known map[store.ProviderSessionRef]string) ([]Row, []importir.Warning, error) {
 	home := strings.TrimSpace(d.ClaudeProjectsDir)
 	if home == "" {
 		return nil, nil, fmt.Errorf("no Claude home was found on this machine")
@@ -257,27 +261,10 @@ func scanClaude(ctx context.Context, d Deps, known map[string]string) ([]Row, []
 		return nil, nil, fmt.Errorf("Claude sessions could not be read: %w", err)
 	}
 
-	candidates := make([]claudesessions.SessionInfo, 0, len(sessions))
+	rows := make([]Row, 0, len(sessions))
 	for _, session := range sessions {
-		if _, taken := known[session.SessionID]; taken {
-			continue
-		}
-		candidates = append(candidates, session)
-	}
-	// Fork ancestry is read off the surviving candidates only: a fork whose
-	// ancestor is already imported has nothing to say about that ancestor,
-	// and the whole point of the exclusion is to avoid importing one
-	// conversation twice in one pass.
-	ancestors := make(map[string]struct{}, len(candidates))
-	for _, session := range candidates {
-		if parent := strings.TrimSpace(session.ForkedFromSessionID); parent != "" {
-			ancestors[parent] = struct{}{}
-		}
-	}
-
-	rows := make([]Row, 0, len(candidates))
-	for _, session := range candidates {
-		if _, isAncestor := ancestors[session.SessionID]; isAncestor {
+		key := store.ProviderSessionRef{Provider: ProviderClaude, SessionID: session.SessionID}
+		if _, taken := known[key]; taken {
 			continue
 		}
 		origin := session.Entrypoint
@@ -285,13 +272,13 @@ func scanClaude(ctx context.Context, d Deps, known map[string]string) ([]Row, []
 			ID:                 RowKey(ProviderClaude, session.SessionID),
 			Provider:           ProviderClaude,
 			SessionID:          session.SessionID,
+			ParentSessionID:    strings.TrimSpace(session.ForkedFromSessionID),
 			Title:              session.Title,
 			ProjectPath:        session.ProjectPath,
 			GitBranch:          session.GitBranch,
 			CreatedAt:          session.CreatedAt,
 			LastActivityAt:     session.LastActivityAt,
 			SizeBytes:          session.SizeBytes,
-			BranchCount:        0, // Not determined at list time — see Row.BranchCount.
 			SubagentCount:      session.SubagentCount,
 			SourcePath:         session.Path,
 			Origin:             capOrigin(origin),
@@ -301,7 +288,7 @@ func scanClaude(ctx context.Context, d Deps, known map[string]string) ([]Row, []
 	return rows, warnings, nil
 }
 
-func scanCodex(ctx context.Context, d Deps, known map[string]string) ([]Row, []importir.Warning, error) {
+func scanCodex(ctx context.Context, d Deps, known map[store.ProviderSessionRef]string) ([]Row, []importir.Warning, error) {
 	home := strings.TrimSpace(d.CodexHome)
 	if home == "" {
 		return nil, nil, fmt.Errorf("no Codex home was found on this machine")
@@ -313,7 +300,8 @@ func scanCodex(ctx context.Context, d Deps, known map[string]string) ([]Row, []i
 
 	candidates := make([]rollout.SessionInfo, 0, len(sessions))
 	for _, session := range sessions {
-		if _, taken := known[session.ThreadID]; taken {
+		key := store.ProviderSessionRef{Provider: ProviderCodex, SessionID: session.ThreadID}
+		if _, taken := known[key]; taken {
 			continue
 		}
 		candidates = append(candidates, session)
@@ -322,28 +310,27 @@ func scanCodex(ctx context.Context, d Deps, known map[string]string) ([]Row, []i
 	if err != nil {
 		return nil, nil, err
 	}
-	ancestors := codexForkAncestors(metas)
-
 	rows := make([]Row, 0, len(candidates))
 	for _, session := range candidates {
-		if _, isAncestor := ancestors[session.ThreadID]; isAncestor {
-			continue
-		}
 		origin := strings.TrimSpace(metas[session.ThreadID].Originator)
 		rows = append(rows, Row{
 			ID:                 RowKey(ProviderCodex, session.ThreadID),
 			Provider:           ProviderCodex,
 			SessionID:          session.ThreadID,
+			ParentSessionID:    strings.TrimSpace(metas[session.ThreadID].ForkedFromID),
 			Title:              session.Title,
 			ProjectPath:        session.Cwd,
 			GitBranch:          session.GitBranch,
 			CreatedAt:          session.CreatedAt,
 			LastActivityAt:     session.LastActivityAt,
 			SizeBytes:          session.SizeBytes,
-			BranchCount:        1, // A rollout is one linear conversation.
 			SourcePath:         session.RolloutPath,
 			Origin:             capOrigin(origin),
 			RanInAgentOverflow: origin == provider.CodexClientOrigin,
+			IndexedProfile: importir.ModelProfile{
+				Model:           session.Model,
+				ReasoningEffort: session.ReasoningEffort,
+			},
 		})
 	}
 	return rows, warnings, nil
@@ -363,9 +350,11 @@ const codexSessionMetaReaders = 8
 // the scan does — both things it answers ride on it: fork provenance (which
 // Codex records in the rollout, not the thread index) and the originator that
 // says whether AO itself ran the session. A file with no readable meta
-// contributes neither, which is the honest degrade for both: provenance is an
-// exclusion, so failing to read one can only leave a session listed, and an
-// unknown originator reads as "not ours".
+// contributes neither, which is the honest degrade for both: the session is
+// still offered but its unresolved lineage stays absent, and an unknown
+// originator reads as "not ours". ParentThreadID is deliberately not
+// used as fork provenance: Codex uses it for spawned/subagent relationships,
+// while ForkedFromID identifies an explicit user fork.
 func codexSessionMetas(
 	ctx context.Context, candidates []rollout.SessionInfo,
 ) (map[string]rollout.SessionMeta, error) {
@@ -408,27 +397,11 @@ func codexSessionMetas(
 	}
 	wg.Wait()
 	if err := ctx.Err(); err != nil {
-		// A cancelled fan-out has an INCOMPLETE ancestor set, and an
-		// incomplete one is worse than none: every unread parent would be
-		// offered for import alongside its fork.
+		// A cancelled fan-out has incomplete origin and lineage metadata; do
+		// not publish a partially decorated scan as if it were complete.
 		return nil, err
 	}
 	return metas, nil
-}
-
-// codexForkAncestors is the set of thread ids some candidate was forked from.
-// Computed over the surviving candidates only — a fork that is itself already
-// imported says nothing about its ancestor.
-func codexForkAncestors(metas map[string]rollout.SessionMeta) map[string]struct{} {
-	ancestors := make(map[string]struct{}, len(metas))
-	for _, meta := range metas {
-		for _, parent := range []string{meta.ForkedFromID, meta.ParentThreadID} {
-			if parent = strings.TrimSpace(parent); parent != "" {
-				ancestors[parent] = struct{}{}
-			}
-		}
-	}
-	return ancestors
 }
 
 // capOrigin bounds a provider-authored origin marker at extraction, which is

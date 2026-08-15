@@ -73,17 +73,12 @@ type ImportableSession struct {
 	ProjectLabel string `json:"projectLabel"`
 	GitBranch    string `json:"gitBranch,omitempty"`
 	// CreatedAt / LastActivityAt are epoch ms, like every AO wire timestamp.
-	CreatedAt      int64 `json:"createdAt"`
-	LastActivityAt int64 `json:"lastActivityAt"`
-	SizeBytes      int64 `json:"sizeBytes"`
-	// BranchCount is how many threads importing this row creates. Codex is
-	// always 1. Claude is 0, meaning NOT DETERMINED: counting a transcript's
-	// branches costs a full read of the file, and a real home is gigabytes,
-	// so the true count arrives on the progress event instead.
-	BranchCount   int    `json:"branchCount"`
-	SubagentCount int    `json:"subagentCount"`
-	SourcePath    string `json:"sourcePath"`
-	KnownProject  bool   `json:"knownProject"`
+	CreatedAt      int64  `json:"createdAt"`
+	LastActivityAt int64  `json:"lastActivityAt"`
+	SizeBytes      int64  `json:"sizeBytes"`
+	SubagentCount  int    `json:"subagentCount"`
+	SourcePath     string `json:"sourcePath"`
+	KnownProject   bool   `json:"knownProject"`
 	// Origin is the provider's own origin marker, verbatim — Claude's
 	// `entrypoint` (`cli`, `sdk-cli`, `agent-overflow`) or Codex's
 	// `originator` (`codex_cli`, `agent_overflow`) — and "" when the session
@@ -107,14 +102,18 @@ type ImportUpdateStatus struct {
 	Status   string `json:"status"`
 	NewItems int    `json:"newItems"`
 	NewTurns int    `json:"newTurns"`
+	// RestoresModelProfile is true when apply will restore the model settings
+	// recorded in the provider session, with or without new history rows.
+	RestoresModelProfile bool `json:"restoresModelProfile"`
 	// Detail is user-facing prose.
 	Detail string `json:"detail,omitempty"`
 }
 
 // ImportUpdateResult is what a refresh actually wrote.
 type ImportUpdateResult struct {
-	AppliedItems int `json:"appliedItems"`
-	AppliedTurns int `json:"appliedTurns"`
+	AppliedItems         int  `json:"appliedItems"`
+	AppliedTurns         int  `json:"appliedTurns"`
+	RestoredModelProfile bool `json:"restoredModelProfile"`
 }
 
 // ListImportableSessions scans the provider homes for sessions AO does not
@@ -132,7 +131,7 @@ func (a *App) ListImportableSessions(req ImportScanRequest) (ImportScanResult, e
 }
 
 // CheckThreadImportUpdates reports whether the provider session behind an
-// imported thread has grown since the import.
+// imported thread has new history or model settings that can be restored.
 //
 // Read-only: it builds the rows a refresh WOULD write (the writer is
 // store-pure) so the counts it reports are exact rather than estimated, and
@@ -158,16 +157,18 @@ func (a *App) CheckThreadImportUpdates(threadID string) (ImportUpdateStatus, err
 		return ImportUpdateStatus{}, err
 	}
 	return ImportUpdateStatus{
-		ThreadID: update.ThreadID,
-		Status:   update.Status,
-		NewItems: update.NewItems,
-		NewTurns: update.NewTurns,
-		Detail:   update.Detail,
+		ThreadID:             update.ThreadID,
+		Status:               update.Status,
+		NewItems:             update.NewItems,
+		NewTurns:             update.NewTurns,
+		RestoresModelProfile: update.RestoresModelProfile(),
+		Detail:               update.Detail,
 	}, nil
 }
 
-// ImportThreadUpdates appends the source session's newer messages to an
-// imported thread and advances its cursor.
+// ImportThreadUpdates applies newer source history and/or restores recorded
+// model settings. A history append advances the source cursor; a profile-only
+// repair leaves it exactly where it was.
 //
 // It re-plans rather than trusting a status the caller checked earlier: the
 // file and the thread can both have moved since, and a stale plan would
@@ -189,12 +190,16 @@ func (a *App) ImportThreadUpdates(threadID string) (ImportUpdateResult, error) {
 	if err != nil {
 		return ImportUpdateResult{}, err
 	}
-	items, turns, err := sessionimport.ApplyUpdate(deps, update)
+	result, err := sessionimport.ApplyUpdate(deps, update)
 	if err != nil {
 		return ImportUpdateResult{}, err
 	}
 	logImportWarnings(threadID, update.Warnings)
-	return ImportUpdateResult{AppliedItems: items, AppliedTurns: turns}, nil
+	return ImportUpdateResult{
+		AppliedItems:         result.Items,
+		AppliedTurns:         result.Turns,
+		RestoredModelProfile: result.RestoredModelProfile,
+	}, nil
 }
 
 // sessionImportDeps resolves the provider homes ONCE and hands them down.
@@ -296,7 +301,6 @@ func wireImportScanResult(scan sessionImportScan) ImportScanResult {
 			CreatedAt:          row.CreatedAt,
 			LastActivityAt:     row.LastActivityAt,
 			SizeBytes:          row.SizeBytes,
-			BranchCount:        row.BranchCount,
 			SubagentCount:      row.SubagentCount,
 			SourcePath:         row.SourcePath,
 			KnownProject:       row.KnownProject,

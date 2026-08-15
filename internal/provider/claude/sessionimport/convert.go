@@ -50,6 +50,14 @@ type ConvertOptions struct {
 	Subagents map[string][]Row
 }
 
+// ConvertResult is one decoded branch projected into import events together
+// with branch-level metadata that is not itself a timeline event.
+type ConvertResult struct {
+	Events   []importir.Event
+	Warnings []importir.Warning
+	Profile  importir.ModelProfile
+}
+
 // Convert projects one branch chain into the provider-event vocabulary a
 // live session speaks, so the neutral writer builds the same rows for an
 // imported thread that triage builds for a live one.
@@ -72,7 +80,7 @@ type ConvertOptions struct {
 //   - `progress`, mode/permission-mode/queue-operation/agent-name/
 //     file-history/tag records never reach here: they are not transcript
 //     types, or the DAG dropped them.
-func Convert(chain []Row, opts ConvertOptions) ([]importir.Event, []importir.Warning) {
+func Convert(chain []Row, opts ConvertOptions) ConvertResult {
 	c := &converter{
 		opts:          opts,
 		usageByModel:  map[string]*provider.TokenUsage{},
@@ -86,7 +94,11 @@ func Convert(chain []Row, opts ConvertOptions) ([]importir.Event, []importir.War
 	}
 	c.closeTurn()
 	c.appendDeferredWarnings()
-	return c.events, c.warnings
+	return ConvertResult{
+		Events:   c.events,
+		Warnings: c.warnings,
+		Profile:  c.profile,
+	}
 }
 
 type converter struct {
@@ -107,6 +119,10 @@ type converter struct {
 	assistantMessageID string
 	usageByModel       map[string]*provider.TokenUsage
 	usageOrder         []string
+	// profile is the latest model named by a top-level assistant message.
+	// Subagent models are usage contributors, not the model selected for the
+	// parent conversation.
+	profile importir.ModelProfile
 
 	// subagentScope is the Task/Agent tool_use id whose transcript is
 	// being converted right now. Non-empty suppresses turn management and

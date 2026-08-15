@@ -100,20 +100,10 @@ func TestImportKeepsAnOrphanCodexToolOutputAsAPlaceholder(t *testing.T) {
 	}
 }
 
-// TestImportLeavesNoSessionRefWhenTheActiveClaudeBranchImportsNothing pins
-// the two rules that are decided over the SURVIVING branches rather than
-// over the transcript's leaf count.
-//
-// A trailing branch whose every row is metadata produces no thread. Keying
-// the title and the resume ref on the leaf count there gave a sole survivor
-// a "— branch 1" suffix and handed the ref to nobody. Both are wrong; and
-// so is the obvious fix of handing the ref to the last SURVIVING thread —
-// `claude --resume <id>` reopens the file's active branch, which is the one
-// that imported nothing, so that thread would silently continue a different
-// conversation. A thread with no ref is fully continuable:
-// materializeImportedClaudeBranch cuts it a transcript at its own recorded
-// leaf the first time it runs.
-func TestImportLeavesNoSessionRefWhenTheActiveClaudeBranchImportsNothing(t *testing.T) {
+// An inactive conversational leaf is not a substitute for an active branch
+// containing only metadata. Importing the former and attaching no resume ref
+// would turn one selected provider session into a different conversation.
+func TestImportClaudeDoesNotSubstituteAnInactiveBranchForEmptyActiveHistory(t *testing.T) {
 	st := newTestStore(t)
 	homes := newProviderHomes(t)
 	homes.writeClaudeSession(t, claudeSessionA,
@@ -132,29 +122,22 @@ func TestImportLeavesNoSessionRefWhenTheActiveClaudeBranchImportsNothing(t *test
 	)
 	d := homes.deps(st)
 
-	outcome := importFixtureRow(t, d, scanOne(t, d, ProviderClaude))
-	if len(outcome.Threads) != 1 {
-		t.Fatalf("threads = %d, want 1 (the attachment branch converts to nothing)", len(outcome.Threads))
+	row := scanOne(t, d, ProviderClaude)
+	outcome := importFixtureRow(t, d, row)
+	if len(outcome.Threads) != 0 {
+		t.Fatalf("threads = %d, want none for metadata-only active history", len(outcome.Threads))
 	}
-	thread, err := st.GetThread(outcome.Threads[0].ID)
+	threads, err := st.ListThreads()
 	if err != nil {
-		t.Fatalf("get thread: %v", err)
+		t.Fatalf("ListThreads: %v", err)
 	}
-	if thread.SessionRef != "" {
-		t.Errorf("SessionRef = %q, want empty — the active branch imported nothing, "+
-			"so resuming the session id would continue a different conversation",
-			thread.SessionRef)
+	if len(threads) != 0 {
+		t.Fatalf("stored threads = %d, want none", len(threads))
 	}
-	if strings.Contains(thread.Title, "branch") {
-		t.Errorf("title = %q, want no disambiguator on a sole surviving branch", thread.Title)
-	}
-	// The leaf is what makes the ref-less thread continuable.
-	state, found, err := st.GetThreadImportState(thread.ID)
-	if err != nil || !found {
-		t.Fatalf("import state: found=%v err=%v", found, err)
-	}
-	if state.LeafUUID != "a1" {
-		t.Errorf("leaf_uuid = %q, want the surviving branch's own leaf", state.LeafUUID)
+	// No thread means no dedup marker: the source remains visible instead of
+	// being silently consumed by an import that produced nothing.
+	if result := scanFixture(t, d, Filter{Provider: ProviderClaude}); len(result.Rows) != 1 {
+		t.Errorf("rescan rows = %s, want the empty session to remain available", rowIDs(result))
 	}
 }
 
@@ -328,6 +311,10 @@ func TestImportCodexSessionEndToEnd(t *testing.T) {
 		t.Errorf("model profile = %q/%q, want the turn_context values",
 			thread.Model, thread.ReasoningEffort)
 	}
+	opts := provider.SessionOptionsFromThread(thread, provider.AutoCompactDefaults{}, "", false)
+	if opts.Model != "gpt-5.6-sol" || opts.ReasoningEffort != provider.EffortHigh {
+		t.Fatalf("session start profile = %q/%q, want the imported rollout profile", opts.Model, opts.ReasoningEffort)
+	}
 
 	items, err := st.ListItems(thread.ID)
 	if err != nil {
@@ -368,6 +355,34 @@ func TestImportCodexSessionEndToEnd(t *testing.T) {
 		t.Errorf("LastSourceUUID = %q, want a line coordinate", state.LastSourceUUID)
 	}
 	assertCursorLandsOnTheLastRow(t, st, thread, items)
+}
+
+func TestImportCodexFallsBackToTheIndexedProfile(t *testing.T) {
+	st := newTestStore(t)
+	homes := newProviderHomes(t)
+	homes.writeCodexIndex(t, codexThreadA)
+	homes.writeCodexRollout(t, codexThreadA,
+		homes.codexMetaLine(codexThreadA, ""),
+		codexLine(0, "event_msg", map[string]any{
+			"type": "task_started", "turn_id": "turn-1",
+		}),
+		codexLine(100, "event_msg", map[string]any{
+			"type": "user_message", "message": "legacy rollout without turn context",
+		}),
+		codexLine(200, "event_msg", map[string]any{
+			"type": "task_complete", "turn_id": "turn-1",
+		}),
+	)
+	d := homes.deps(st)
+
+	outcome := importFixtureRow(t, d, scanOne(t, d, ProviderCodex))
+	thread, err := st.GetThread(outcome.Threads[0].ID)
+	if err != nil {
+		t.Fatalf("GetThread: %v", err)
+	}
+	if thread.Model != "gpt-5.6-sol" || thread.ReasoningEffort != "high" {
+		t.Fatalf("indexed fallback profile = %q/%q", thread.Model, thread.ReasoningEffort)
+	}
 }
 
 // TestImportCodexKeepsReadableThinkingAndPlans covers the two remaining
@@ -457,7 +472,8 @@ func TestImportClaudeNestsSubagentRowsUnderTheirTask(t *testing.T) {
 	)
 	d := homes.deps(st)
 
-	outcome := importFixtureRow(t, d, scanOne(t, d, ProviderClaude))
+	row := scanOne(t, d, ProviderClaude)
+	outcome := importFixtureRow(t, d, row)
 	threadID := outcome.Threads[0].ID
 
 	descendants, err := st.ListSubagentDescendants(threadID, "toolu_task")
@@ -494,9 +510,11 @@ func TestImportClaudeNestsSubagentRowsUnderTheirTask(t *testing.T) {
 	}
 }
 
-// TestImportClaudeMultiLeafCreatesAThreadPerBranch pins the whole reason
-// Claude import enumerates leaves rather than picking the active chain.
-func TestImportClaudeMultiLeafCreatesAThreadPerBranch(t *testing.T) {
+// A Claude transcript can retain several alternative continuations after a
+// rewind or retry. One selected provider session must still become one AO
+// thread, and that thread must contain exactly the active root-to-leaf chain:
+// shared ancestry plus the file-order-last continuation, never its sibling.
+func TestImportClaudeMultiLeafSelectsOneCoherentActiveHistory(t *testing.T) {
 	st := newTestStore(t)
 	homes := newProviderHomes(t)
 	homes.writeClaudeSession(t, claudeSessionA,
@@ -517,64 +535,267 @@ func TestImportClaudeMultiLeafCreatesAThreadPerBranch(t *testing.T) {
 	)
 	d := homes.deps(st)
 
-	outcome := importFixtureRow(t, d, scanOne(t, d, ProviderClaude))
-	if len(outcome.Threads) != 2 {
-		t.Fatalf("threads = %d, want one per leaf", len(outcome.Threads))
+	importRow := scanOne(t, d, ProviderClaude)
+	outcome := importFixtureRow(t, d, importRow)
+	if len(outcome.Threads) != 1 {
+		t.Fatalf("threads = %d, want one active session thread", len(outcome.Threads))
+	}
+	thread, err := st.GetThread(outcome.Threads[0].ID)
+	if err != nil {
+		t.Fatalf("GetThread: %v", err)
+	}
+	if thread.Title != importRow.Title || strings.Contains(thread.Title, " — ") {
+		t.Errorf("title = %q, want provider session title %q without a branch suffix", thread.Title, importRow.Title)
+	}
+	if thread.SessionRef != claudeSessionA {
+		t.Errorf("SessionRef = %q, want the active provider session", thread.SessionRef)
+	}
+	state, ok, err := st.GetThreadImportState(thread.ID)
+	if err != nil || !ok {
+		t.Fatalf("GetThreadImportState = ok:%v err:%v", ok, err)
+	}
+	if state.LeafUUID != "a3" || state.SourceSessionID != claudeSessionA {
+		t.Errorf("import state = %+v, want active leaf a3 in session %s", state, claudeSessionA)
 	}
 
-	titles := map[string]bool{}
-	refs := 0
-	leaves := map[string]bool{}
-	for _, created := range outcome.Threads {
-		thread, err := st.GetThread(created.ID)
-		if err != nil {
-			t.Fatalf("get thread: %v", err)
-		}
-		if titles[thread.Title] {
-			t.Errorf("two branches share the title %q", thread.Title)
-		}
-		titles[thread.Title] = true
-		if thread.SessionRef != "" {
-			refs++
-		}
-		state, ok, err := st.GetThreadImportState(thread.ID)
-		if err != nil || !ok {
-			t.Fatalf("GetThreadImportState = ok:%v err:%v", ok, err)
-		}
-		if state.LeafUUID == "" || leaves[state.LeafUUID] {
-			t.Errorf("leaf uuid %q is missing or shared", state.LeafUUID)
-		}
-		leaves[state.LeafUUID] = true
-		if state.SourceSessionID != claudeSessionA {
-			t.Errorf("SourceSessionID = %q, want the shared session id", state.SourceSessionID)
-		}
-		shared, found, err := st.GetThreadItem(thread.ID, "toolu_shared")
-		if err != nil || !found {
-			t.Fatalf("shared tool row in branch %s: found=%v err=%v", thread.ID, found, err)
-		}
-		data, err := st.GetPayloadData(thread.ID, shared.PayloadID)
-		if err != nil {
-			t.Fatalf("shared tool payload in branch %s: %v", thread.ID, err)
-		}
-		if string(data) != "shared prefix contents" {
-			t.Errorf("shared tool payload in branch %s = %q", thread.ID, data)
+	items, err := st.ListItems(thread.ID)
+	if err != nil {
+		t.Fatalf("ListItems: %v", err)
+	}
+	var summaries []string
+	for _, item := range items {
+		if item.Kind == "user_text" || item.Kind == "assistant_text" {
+			summaries = append(summaries, item.Summary)
 		}
 	}
-	// Exactly one branch may carry the resume reference: `claude --resume`
-	// reopens the file's ACTIVE branch, so handing the ref to both would
-	// make resuming the abandoned one silently continue the other.
-	if refs != 1 {
-		t.Errorf("threads carrying a session_ref = %d, want exactly 1", refs)
+	joined := strings.Join(summaries, "\n")
+	for _, want := range []string{"add a test", "First answer.", "or maybe this instead", "Third answer."} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("active history omitted %q: %q", want, joined)
+		}
+	}
+	for _, excluded := range []string{"actually, do it differently", "Second answer."} {
+		if strings.Contains(joined, excluded) {
+			t.Errorf("inactive sibling %q leaked into active history: %q", excluded, joined)
+		}
+	}
+	shared, found, err := st.GetThreadItem(thread.ID, "toolu_shared")
+	if err != nil || !found {
+		t.Fatalf("shared tool row: found=%v err=%v", found, err)
+	}
+	data, err := st.GetPayloadData(thread.ID, shared.PayloadID)
+	if err != nil {
+		t.Fatalf("shared tool payload: %v", err)
+	}
+	if string(data) != "shared prefix contents" {
+		t.Errorf("shared tool payload = %q", data)
 	}
 
-	// Every branch is deduped by the shared source session id, so a second
-	// scan offers nothing.
+	// The source session is consumed once even though its file retains several
+	// leaves, so a second scan cannot offer or duplicate it.
 	if result := scanFixture(t, d, Filter{Provider: ProviderClaude}); len(result.Rows) != 0 {
 		t.Errorf("rescan rows = %s, want none", rowIDs(result))
 	}
 }
 
-func TestOptimizedClaudeBranchImportMatchesIndependentFullBranchBuilds(t *testing.T) {
+// An explicit provider fork is not the same thing as another leaf inside one
+// transcript. It has a new resumable session id, so both conversations must
+// import exactly once. Their shared prefix belongs in both coherent histories;
+// only the post-fork continuations differ.
+func TestImportClaudeExplicitForkKeepsBothCoherentHistoriesAndLineage(t *testing.T) {
+	st := newTestStore(t)
+	homes := newProviderHomes(t)
+	homes.writeClaudeSession(t, claudeSessionA,
+		homes.claudeUserRow("shared-u", "", "shared prompt", 0),
+		homes.claudeAssistantRow("shared-a", "shared-u", "shared-msg", []any{
+			claudeTextBlock("shared answer"),
+		}, 1_000, nil),
+		homes.claudeUserRow("parent-u", "shared-a", "parent continuation", 2_000),
+		homes.claudeAssistantRow("parent-a", "parent-u", "parent-msg", []any{
+			claudeTextBlock("parent answer"),
+		}, 3_000, nil),
+		claudeLastPromptRow("parent-a", "parent continuation"),
+	)
+	childRoot := homes.claudeUserRow("shared-u", "", "shared prompt", 0)
+	withField(childRoot, "forkedFrom", map[string]any{
+		"sessionId": claudeSessionA, "messageUuid": "shared-a",
+	})
+	homes.writeClaudeSession(t, claudeSessionB,
+		childRoot,
+		homes.claudeAssistantRow("shared-a", "shared-u", "shared-msg", []any{
+			claudeTextBlock("shared answer"),
+		}, 1_000, nil),
+		homes.claudeUserRow("child-u", "shared-a", "child continuation", 2_500),
+		homes.claudeAssistantRow("child-a", "child-u", "child-msg", []any{
+			claudeTextBlock("child answer"),
+		}, 3_500, nil),
+		claudeLastPromptRow("child-a", "child continuation"),
+	)
+	d := homes.deps(st)
+
+	scan := scanFixture(t, d, Filter{Provider: ProviderClaude})
+	if len(scan.Rows) != 2 {
+		t.Fatalf("scan rows = %s, want parent and explicit fork", rowIDs(scan))
+	}
+	rows := make(map[string]Row, len(scan.Rows))
+	for _, row := range scan.Rows {
+		rows[row.SessionID] = row
+	}
+	if rows[claudeSessionB].ParentSessionID != claudeSessionA {
+		t.Fatalf("child parent session = %q, want %q",
+			rows[claudeSessionB].ParentSessionID, claudeSessionA)
+	}
+
+	// Deliberately import child first to pin order-independent reconciliation.
+	childOutcome := importFixtureRow(t, d, rows[claudeSessionB])
+	if len(childOutcome.Threads) != 1 {
+		t.Fatalf("child threads = %d, want 1", len(childOutcome.Threads))
+	}
+	childID := childOutcome.Threads[0].ID
+	childBeforeParent, err := st.GetThread(childID)
+	if err != nil {
+		t.Fatalf("get child before parent: %v", err)
+	}
+	if childBeforeParent.ForkedFromThreadID != "" {
+		t.Fatalf("child linked to absent parent %q", childBeforeParent.ForkedFromThreadID)
+	}
+
+	parentOutcome := importFixtureRow(t, d, rows[claudeSessionA])
+	if len(parentOutcome.Threads) != 1 {
+		t.Fatalf("parent threads = %d, want 1", len(parentOutcome.Threads))
+	}
+	parentID := parentOutcome.Threads[0].ID
+	child, err := st.GetThread(childID)
+	if err != nil {
+		t.Fatalf("get reconciled child: %v", err)
+	}
+	if child.ForkedFromThreadID != parentID {
+		t.Fatalf("child fork link = %q, want imported parent %q", child.ForkedFromThreadID, parentID)
+	}
+	state, ok, err := st.GetThreadImportState(childID)
+	if err != nil || !ok {
+		t.Fatalf("get child import state = ok:%v err:%v", ok, err)
+	}
+	if state.SourceSessionID != claudeSessionB || state.SourceParentSessionID != claudeSessionA {
+		t.Fatalf("child provenance = %+v", state)
+	}
+
+	requireConversation := func(threadID string, included, excluded []string) {
+		t.Helper()
+		items, err := st.ListItems(threadID)
+		if err != nil {
+			t.Fatalf("list items for %s: %v", threadID, err)
+		}
+		var summaries []string
+		for _, item := range items {
+			if item.Kind == "user_text" || item.Kind == "assistant_text" {
+				summaries = append(summaries, item.Summary)
+			}
+		}
+		joined := strings.Join(summaries, "\n")
+		for _, want := range included {
+			if !strings.Contains(joined, want) {
+				t.Errorf("thread %s omitted %q: %q", threadID, want, joined)
+			}
+		}
+		for _, unwanted := range excluded {
+			if strings.Contains(joined, unwanted) {
+				t.Errorf("thread %s leaked %q: %q", threadID, unwanted, joined)
+			}
+		}
+	}
+	requireConversation(parentID,
+		[]string{"shared prompt", "shared answer", "parent continuation", "parent answer"},
+		[]string{"child continuation", "child answer"})
+	requireConversation(childID,
+		[]string{"shared prompt", "shared answer", "child continuation", "child answer"},
+		[]string{"parent continuation", "parent answer"})
+
+	threads, err := st.ListThreads()
+	if err != nil {
+		t.Fatalf("list imported threads: %v", err)
+	}
+	if len(threads) != 2 {
+		t.Fatalf("stored threads = %d, want exactly parent and child", len(threads))
+	}
+	if rescanned := scanFixture(t, d, Filter{Provider: ProviderClaude}); len(rescanned.Rows) != 0 {
+		t.Fatalf("rescan rows = %s, want no duplicate candidates", rowIDs(rescanned))
+	}
+}
+
+func TestImportClaudeProfilesTheActiveBranchFromItsOwnAncestry(t *testing.T) {
+	st := newTestStore(t)
+	homes := newProviderHomes(t)
+	shared := homes.claudeAssistantRow("a1", "u1", "msg-1", []any{claudeTextBlock("shared")}, 1_000, nil)
+	shared["message"].(map[string]any)["model"] = "claude-shared"
+	branchB := homes.claudeAssistantRow("a2b", "u2b", "msg-2b", []any{claudeTextBlock("branch B")}, 4_000, nil)
+	branchB["message"].(map[string]any)["model"] = "claude-branch-b"
+	homes.writeClaudeSession(t, claudeSessionA,
+		homes.claudeUserRow("u1", "", "shared prompt", 0),
+		shared,
+		// Branch A records no newer assistant model, but it is inactive and
+		// cannot contribute state to the imported thread.
+		homes.claudeUserRow("u2a", "a1", "branch A", 2_000),
+		homes.claudeUserRow("u2b", "a1", "branch B", 3_000),
+		branchB,
+		claudeLastPromptRow("u2a", "branch A"),
+		claudeLastPromptRow("a2b", "branch B"),
+	)
+	d := homes.deps(st)
+	outcome := importFixtureRow(t, d, scanOne(t, d, ProviderClaude))
+	if len(outcome.Threads) != 1 {
+		t.Fatalf("threads = %d, want 1", len(outcome.Threads))
+	}
+	thread, err := st.GetThread(outcome.Threads[0].ID)
+	if err != nil {
+		t.Fatalf("GetThread: %v", err)
+	}
+	if thread.Model != "claude-branch-b" {
+		t.Fatalf("active branch model = %q, want claude-branch-b", thread.Model)
+	}
+}
+
+// The one-session/one-thread rule is enforced by the write chokepoint as well
+// as by today's Claude caller. A future provider loop must fail and roll back
+// instead of silently restoring sidebar fan-out.
+func TestSessionImporterRefusesASecondThreadForOneSession(t *testing.T) {
+	st := newTestStore(t)
+	proj := store.Project{
+		ID: "project-one-thread", Path: t.TempDir(), Name: "One thread",
+		CreatedAt: 1, UpdatedAt: 1,
+	}
+	if err := st.CreateProject(proj); err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	row := Row{
+		ID: RowKey(ProviderClaude, claudeSessionA), Provider: ProviderClaude,
+		SessionID: claudeSessionA, SourcePath: "/copied/session.jsonl",
+		ProjectPath: proj.Path, CreatedAt: 1, LastActivityAt: 2,
+	}
+	events := []importir.Event{{
+		ProviderEvent: provider.ProviderEvent{
+			Kind: provider.EventUserText, Content: "one history", Timestamp: time.UnixMilli(1),
+		},
+		SourceUUID: "u1",
+	}}
+	im := newSessionImporter(st, row, proj)
+	if err := im.add(branchPlan{title: "one", events: events}); err != nil {
+		t.Fatalf("first add: %v", err)
+	}
+	if err := im.add(branchPlan{title: "two", events: events}); err == nil ||
+		!strings.Contains(err.Error(), "more than one thread") {
+		t.Fatalf("second add error = %v, want the one-thread invariant", err)
+	}
+	threads, err := st.ListThreads()
+	if err != nil {
+		t.Fatalf("ListThreads: %v", err)
+	}
+	if len(threads) != 0 {
+		t.Fatalf("threads after refused fan-out = %d, want rollback to none", len(threads))
+	}
+}
+
+func TestImportedClaudeActiveHistoryMatchesIndependentFullActiveBranchBuild(t *testing.T) {
 	optimized := newTestStore(t)
 	homes := newProviderHomes(t)
 	sharedBlocks := make([]any, 0, 270)
@@ -600,8 +821,8 @@ func TestOptimizedClaudeBranchImportMatchesIndependentFullBranchBuilds(t *testin
 	d := homes.deps(optimized)
 	row := scanOne(t, d, ProviderClaude)
 	outcome := importFixtureRow(t, d, row)
-	if len(outcome.Threads) != 2 {
-		t.Fatalf("optimized threads = %d, want 2", len(outcome.Threads))
+	if len(outcome.Threads) != 1 {
+		t.Fatalf("imported threads = %d, want 1", len(outcome.Threads))
 	}
 
 	baseline := newTestStore(t)
@@ -614,25 +835,28 @@ func TestOptimizedClaudeBranchImportMatchesIndependentFullBranchBuilds(t *testin
 		t.Fatalf("load baseline session: %v", err)
 	}
 	defer loaded.Close()
-	baselineThreads := make([]store.Thread, 0, len(loaded.Branches))
-	for i := range loaded.Branches {
-		branch, err := loaded.ConvertBranch(i)
-		if err != nil {
-			t.Fatalf("convert baseline branch %d: %v", i, err)
-		}
-		thread := newImportedThread(row, baselineProject, branch.Title, "", branch.Events, branch.LastActivityAt)
-		if err := baseline.CreateThread(thread); err != nil {
-			t.Fatalf("create baseline branch %d: %v", i, err)
-		}
-		batch, _, err := NewWriter(baseline, thread).Build(branch.Events)
-		if err != nil {
-			t.Fatalf("build baseline branch %d: %v", i, err)
-		}
-		if err := baseline.ApplyImportBatch(thread.ID, batch); err != nil {
-			t.Fatalf("apply baseline branch %d: %v", i, err)
-		}
-		baselineThreads = append(baselineThreads, thread)
+	if len(loaded.Branches) != 2 {
+		t.Fatalf("baseline branches = %d, want the two source alternatives", len(loaded.Branches))
 	}
+	branch, err := loaded.ConvertBranch(len(loaded.Branches) - 1)
+	if err != nil {
+		t.Fatalf("convert baseline active branch: %v", err)
+	}
+	baselineThread := newImportedThread(
+		row, baselineProject, importedTitle(row.Title), row.SessionID,
+		branch.Events, branch.Profile, branch.LastActivityAt,
+	)
+	if err := baseline.CreateThread(baselineThread); err != nil {
+		t.Fatalf("create baseline active branch: %v", err)
+	}
+	batch, _, err := NewWriter(baseline, baselineThread).Build(branch.Events)
+	if err != nil {
+		t.Fatalf("build baseline active branch: %v", err)
+	}
+	if err := baseline.ApplyImportBatch(baselineThread.ID, batch); err != nil {
+		t.Fatalf("apply baseline active branch: %v", err)
+	}
+	baselineThreads := []store.Thread{baselineThread}
 
 	for i := range outcome.Threads {
 		got, err := optimized.ListItems(outcome.Threads[i].ID)
@@ -651,7 +875,7 @@ func TestOptimizedClaudeBranchImportMatchesIndependentFullBranchBuilds(t *testin
 			want[j].ThreadID = ""
 		}
 		if !reflect.DeepEqual(got, want) {
-			t.Fatalf("branch %d logical items differ after prefix reuse", i)
+			t.Fatalf("active branch %d logical items differ from the independent build", i)
 		}
 		for _, item := range got {
 			for _, payloadID := range []string{item.PayloadID, item.InputPayloadID} {
@@ -700,7 +924,7 @@ func TestOptimizedClaudeBranchImportMatchesIndependentFullBranchBuilds(t *testin
 			gotTurns[j].CompletedAt, wantTurns[j].CompletedAt = nil, nil
 		}
 		if !reflect.DeepEqual(gotTurns, wantTurns) {
-			t.Fatalf("branch %d turns differ after prefix reuse: got=%+v want=%+v", i, gotTurns, wantTurns)
+			t.Fatalf("active branch %d turns differ from the independent build: got=%+v want=%+v", i, gotTurns, wantTurns)
 		}
 
 		gotUsage, err := optimized.QueryUsage(store.UsageQuery{ThreadID: outcome.Threads[i].ID})
@@ -712,7 +936,7 @@ func TestOptimizedClaudeBranchImportMatchesIndependentFullBranchBuilds(t *testin
 			t.Fatalf("query baseline usage for branch %d: %v", i, err)
 		}
 		if !reflect.DeepEqual(gotUsage, wantUsage) {
-			t.Fatalf("branch %d usage differs after prefix reuse: got=%+v want=%+v", i, gotUsage, wantUsage)
+			t.Fatalf("active branch %d usage differs from the independent build: got=%+v want=%+v", i, gotUsage, wantUsage)
 		}
 	}
 }

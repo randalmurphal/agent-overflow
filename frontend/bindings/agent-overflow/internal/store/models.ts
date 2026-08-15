@@ -1235,7 +1235,7 @@ export class Turn {
     /**
      * ProviderTurnID is the provider-assigned wire turn id (Codex
      * `turn/started`), or "" when the provider has none on the wire
-     * (Claude — TurnID is then a synthesized `<threadID>:<turnIndex>`).
+     * (Claude). TurnID is always thread-scoped; this field remains verbatim.
      * Kept separate from the TurnID PRIMARY KEY because forked threads
      * carry cloned copies of their source's turns under fresh row ids
      * while preserving this value — it is the `thread/fork` lastTurnId

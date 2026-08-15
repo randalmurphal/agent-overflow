@@ -77,16 +77,7 @@ func TestScanListsBothProviders(t *testing.T) {
 	if claude.SourcePath == "" || claude.SizeBytes == 0 {
 		t.Errorf("claude row source = %q/%d", claude.SourcePath, claude.SizeBytes)
 	}
-	// Claude branch enumeration needs a full transcript read, so listing
-	// reports 0 = "not determined" rather than a number it did not count.
-	if claude.BranchCount != 0 {
-		t.Errorf("claude BranchCount = %d, want 0 (not determined at list time)", claude.BranchCount)
-	}
-
 	codex := rowByID(t, result, RowKey(ProviderCodex, codexThreadA))
-	if codex.BranchCount != 1 {
-		t.Errorf("codex BranchCount = %d, want 1 (a rollout is one conversation)", codex.BranchCount)
-	}
 	if codex.ProjectPath != homes.workspace {
 		t.Errorf("codex ProjectPath = %q, want %q", codex.ProjectPath, homes.workspace)
 	}
@@ -145,11 +136,12 @@ func TestScanDedupsAgainstEveryKnownRef(t *testing.T) {
 	}
 }
 
-func TestScanExcludesForkAncestors(t *testing.T) {
+func TestScanIncludesEveryExplicitForkAndItsAncestor(t *testing.T) {
 	st := newTestStore(t)
 	homes := newProviderHomes(t)
 
-	// Claude: B was forked from A, so A's history lives inside B.
+	// Claude: B was forked from A and shares its historical prefix, but both
+	// remain independently resumable provider sessions.
 	homes.claudeLinearSession(t, claudeSessionA)
 	homes.writeClaudeSession(t, claudeSessionB,
 		map[string]any{
@@ -161,7 +153,7 @@ func TestScanExcludesForkAncestors(t *testing.T) {
 		claudeLastPromptRow("ba1", "continue from the fork"),
 	)
 
-	// Codex: B declares A as its source in its own session_meta.
+	// Codex: B declares A as its explicit fork source in its own session_meta.
 	homes.writeCodexIndex(t, codexThreadA, codexThreadB)
 	homes.codexLinearSession(t, codexThreadA)
 	homes.writeCodexRollout(t, codexThreadB,
@@ -173,13 +165,23 @@ func TestScanExcludesForkAncestors(t *testing.T) {
 	)
 
 	result := scanFixture(t, homes.deps(st), Filter{})
-	for _, row := range result.Rows {
-		if row.SessionID == claudeSessionA || row.SessionID == codexThreadA {
-			t.Errorf("scan offered fork ancestor %s", row.ID)
-		}
+	if len(result.Rows) != 4 {
+		t.Fatalf("rows = %s, want both parents and both forks", rowIDs(result))
 	}
-	if len(result.Rows) != 2 {
-		t.Fatalf("rows = %s, want the two forks only", rowIDs(result))
+	for _, tc := range []struct {
+		provider, child, parent string
+	}{
+		{ProviderClaude, claudeSessionB, claudeSessionA},
+		{ProviderCodex, codexThreadB, codexThreadA},
+	} {
+		child := rowByID(t, result, RowKey(tc.provider, tc.child))
+		if child.ParentSessionID != tc.parent {
+			t.Errorf("%s parent = %q, want %q", child.ID, child.ParentSessionID, tc.parent)
+		}
+		parent := rowByID(t, result, RowKey(tc.provider, tc.parent))
+		if parent.ParentSessionID != "" {
+			t.Errorf("%s parent = %q, want root", parent.ID, parent.ParentSessionID)
+		}
 	}
 }
 

@@ -60,11 +60,12 @@ Consumers: `internal/sessionimport` (the neutral writer) via
   Runs on SKELETON rows — it needs uuids, parents and types, none of
   which require the row body.
 - `subagents.go` — `LoadSubagents`: joins Task/Agent calls to
-  `subagents/agent-<agentId>.jsonl`. Called per branch, so each thread
-  nests a shared Task launch under its OWN launch row.
+  `subagents/agent-<agentId>.jsonl`. Called for the branch being converted,
+  so its Task rows nest under that chain's launch row.
 - `convert.go` — `Convert`: branch chain → `[]importir.Event`. Owns the
   `converter` state, the row dispatch, `user` rows, subagent nesting,
-  turn open/close, and the one `emit` every event goes through.
+  turn open/close, the branch's model profile, and the one `emit` every event
+  goes through.
 - `convert_assistant.go` / `convert_system.go` — the two remaining row
   types, split out because each carries its own subtype table.
 - `toolresult.go` — `tool_result` decoding: content flattening, exit
@@ -72,15 +73,12 @@ Consumers: `internal/sessionimport` (the neutral writer) via
 - `session.go` — `LoadSession` / `LoadedSession.ConvertBranch` /
   `Close`: the two-pass load below. This is what the orchestrator calls.
 
-## Loading a session is TWO passes, and the second one is per branch
+## Loading a session is TWO passes, and the second decodes only one branch
 
 ```go
 loaded, err := sessionimport.LoadSession(path)   // pass 1
 defer loaded.Close()
-for i := range loaded.Branches {
-    branch, err := loaded.ConvertBranch(i)       // pass 2, one branch
-    // … use branch.Events, then let it go
-}
+branch, found, err := loaded.ConvertActiveBranch() // pass 2, active branch
 ```
 
 `LoadedSession` holds the OPEN FILE and the skeleton; it does not hold
@@ -94,16 +92,15 @@ any branch's events. `Close` is mandatory — the file handle is what pass
   enumeration and the branch ordering all run on this.
 - **Pass 2 (`ConvertBranch`)** `ReadAt`s only the lines of the ONE branch
   it was asked for, decodes them, joins that branch's subagents, and
-  converts. Nothing else in the file is decoded, and the caller controls
-  when each branch's events are released.
+  converts. Nothing else in the file is decoded. `ConvertActiveBranch` owns
+  the production import selection; indexed conversion remains available to
+  refresh legacy branch threads and to explicit branch tools.
 
 This shape is the difference between "a 220 MB transcript costs 220 MB"
 and "it costs 0.5–0.9 GB". Decoding every line into `map[string]any` up
-front retains 2.2–4.2× the source size, and converting every branch
-eagerly holds all of them at once — a multi-branch import of one real
-session was enough to run a machine out of memory. **A change that
-reintroduces a whole-file decode, or that converts every branch before
-returning, undoes this.**
+front retains 2.2–4.2× the source size. **A change that reintroduces a
+whole-file decode, or converts every branch when the caller needs one,
+undoes this.**
 
 Two ceilings, both of which fail the ONE session rather than the import:
 
@@ -118,14 +115,13 @@ Two ceilings, both of which fail the ONE session rather than the import:
 transcript's parent chain, and this package deliberately does not reuse
 it.
 
-`claudeBranchIndex` answers a different question — *which single chain
-will `claude --resume` accept* — and its `activeChain` walk returns
-exactly ONE chain by construction (it starts at the file's last
-transcript row and walks up). It then runs that chain through a mirror
-of the CLI's resume deserialization filters and REPAIRS the pick. Import
-needs the opposite: every leaf, unfiltered, because an abandoned branch
-is still a conversation worth importing, and nothing here is going to be
-resumed by the CLI at the moment it is read.
+`claudeBranchIndex` answers a resume-safety question: which rows on the
+active chain survive Claude's deserialization filters and are valid explicit
+`--resume-session-at` cursors. Import needs a content projection and refresh
+needs to locate the descendant of a previously recorded leaf, including
+inactive branches stored by older releases. `BuildBranches` therefore keeps
+the full unfiltered DAG and deterministic leaf ordering; production import
+selects its last leaf through `ConvertActiveBranch`.
 
 Bending the live path to answer both questions would put an import
 concern inside the code that decides whether a user's resume succeeds —
@@ -179,6 +175,13 @@ differ, this is the mapping:
 | `attachment` | nothing | See below. |
 | `progress`, `mode`, `queue-operation`, `last-prompt`, `custom-title`, … | nothing | Either not a transcript type, or dropped by the DAG. `last-prompt` is read separately for branch titles. |
 | subagent rows | same mappings with `ParentToolUseID` set | Emitted BETWEEN the Task launch and its completion — the order a live session streams them in. The subagent's own opening prompt is skipped: it is the Task tool's input, which the launch row already carries. |
+
+`ConvertResult.Profile.Model` is the newest non-empty, non-`<synthetic>`
+`assistant.message.model` on the TOP-LEVEL branch. It is captured independently
+of usage because valid messages can omit usage or report a zero delta. Joined
+subagent messages never update it: their model is the child's selection, not
+the parent thread's. A suffix-only conversion can therefore return an empty
+profile; production import converts the complete active ancestry.
 
 ### Meta keys this package introduces
 

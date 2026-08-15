@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/chatmodel"
 	"agent-overflow/internal/importir"
 	"agent-overflow/internal/provider"
 	claudesessions "agent-overflow/internal/provider/claude/sessionimport"
@@ -41,11 +42,19 @@ func scanClaudeCorpus(t *testing.T, projectsDir string) *corpusReport {
 	if len(sessions) == 0 {
 		t.Fatalf("import corpus (claude): %s listed no importable sessions — that is a corpus problem, not a result", projectsDir)
 	}
+	expectedParents := make(map[string]string, len(sessions))
+	for _, session := range sessions {
+		expectedParents[session.SessionID] = session.ForkedFromSessionID
+	}
+	scanParents := report.verifyProductionScan(t, importwriter.Deps{
+		Store: writer.store, ClaudeProjectsDir: projectsDir,
+	}, expectedParents)
 
 	for _, session := range sessions {
 		report.bytes += session.SizeBytes
 		report.session(func() { scanOneClaudeSession(t, writer, report, session) })
 	}
+	report.verifyImportedLineage(t, writer, scanParents)
 	return report
 }
 
@@ -80,46 +89,27 @@ func scanOneClaudeSession(
 
 	report.countWarnings(loaded.Warnings)
 	report.branches += len(loaded.Branches)
-	donorThreads := make(map[int]string, len(loaded.Branches))
-	for i := range loaded.Branches {
-		started := time.Now()
-		prefix, hasPrefix, err := loaded.FindReusablePrefix(i)
-		if err != nil {
-			report.convertDuration += time.Since(started)
-			report.fail(t, session.Path, fmt.Errorf("find reusable prefix for branch %d/%d: %w", i, len(loaded.Branches), err))
-			return
-		}
-		startRow := 0
-		if hasPrefix {
-			startRow = prefix.SuffixRow
-		}
-		branch, err := loaded.ConvertBranchFrom(i, startRow)
-		report.convertDuration += time.Since(started)
-		if err != nil {
-			report.fail(t, session.Path, fmt.Errorf("convert branch %d/%d: %w", i, len(loaded.Branches), err))
-			return
-		}
+	started = time.Now()
+	branch, found, err := loaded.ConvertActiveBranch()
+	report.convertDuration += time.Since(started)
+	if err != nil {
+		report.fail(t, session.Path, fmt.Errorf("convert active branch: %w", err))
+		return
+	}
+	if found {
 		report.countWarnings(branch.Warnings)
-		if len(branch.Events) == 0 && !hasPrefix {
-			continue
+		if len(branch.Events) > 0 {
+			profileSource := "transcript"
+			if branch.Profile.Model == "" {
+				profileSource = "provider-default"
+			}
+			report.observeProfile(branch.Profile, profileSource)
+			if _, ok := report.build(
+				t, writer, session.Path, "active branch", branch.Events, branch.Profile,
+			); !ok {
+				return
+			}
 		}
-		prefixThreadID, prefixBeforeTurn := "", 0
-		if hasPrefix {
-			prefixThreadID = donorThreads[prefix.DonorIndex]
-			prefixBeforeTurn = prefix.NextTurnIndex
-		}
-		threadID, ok := report.build(
-			t, writer, session.Path, fmt.Sprintf("branch %d", i), branch.Events,
-			prefixThreadID, prefixBeforeTurn,
-		)
-		if !ok {
-			return
-		}
-		if err := loaded.AddReusablePrefixDonor(i); err != nil {
-			report.fail(t, session.Path, fmt.Errorf("register prefix donor branch %d/%d: %w", i, len(loaded.Branches), err))
-			return
-		}
-		donorThreads[i] = threadID
 	}
 	report.observeSession(session.Path, session.SizeBytes, len(loaded.Branches),
 		report.events-eventsBefore, report.rows-rowsBefore)
@@ -143,11 +133,25 @@ func scanCodexCorpus(t *testing.T, codexHome string) *corpusReport {
 		t.Fatalf("import corpus (codex): %s listed no importable sessions.%s",
 			codexHome, codexCorpusDiagnosis(codexHome, report))
 	}
+	expectedSessions := make(map[string]string, len(sessions))
+	for _, session := range sessions {
+		// Codex keeps explicit-fork provenance in the rollout rather than its
+		// state index. An empty expected value asks verifyProductionScan to
+		// prove membership now; scan-vs-rollout provenance is checked after
+		// Parse below.
+		expectedSessions[session.ThreadID] = ""
+	}
+	scanParents := report.verifyProductionScan(t, importwriter.Deps{
+		Store: writer.store, CodexHome: codexHome,
+	}, expectedSessions)
 
 	for _, session := range sessions {
 		report.bytes += session.SizeBytes
-		report.session(func() { scanOneCodexSession(t, writer, report, session) })
+		report.session(func() {
+			scanOneCodexSession(t, writer, report, session, scanParents[session.ThreadID])
+		})
 	}
+	report.verifyImportedLineage(t, writer, scanParents)
 	return report
 }
 
@@ -169,6 +173,7 @@ func codexCorpusDiagnosis(codexHome string, report *corpusReport) string {
 
 func scanOneCodexSession(
 	t *testing.T, writer *corpusWriter, report *corpusReport, session rollout.SessionInfo,
+	scannedParentSessionID string,
 ) {
 	t.Helper()
 	eventsBefore, rowsBefore := report.events, report.rows
@@ -193,12 +198,31 @@ func scanOneCodexSession(
 		report.fail(t, session.RolloutPath, fmt.Errorf("parse: %w", err))
 		return
 	}
+	if parsed.Meta.ForkedFromID != scannedParentSessionID {
+		report.fail(t, session.RolloutPath, fmt.Errorf(
+			"production scan recorded fork parent %q, full rollout parse recorded %q",
+			scannedParentSessionID, parsed.Meta.ForkedFromID))
+		return
+	}
 	report.countWarnings(parsed.Warnings)
 	report.corruptLines += parsed.CorruptLines
 	for name, count := range parsed.UnknownTypes {
 		report.unknownTypes[name] += count
 	}
-	if _, ok := report.build(t, writer, session.RolloutPath, "rollout", parsed.Events, "", 0); !ok {
+	profile := parsed.Profile
+	profileSource := "rollout"
+	if profile.Model == "" {
+		profile.Model = session.Model
+		profile.ReasoningEffort = session.ReasoningEffort
+		profileSource = "index-fallback"
+	} else if profile.Model == session.Model && profile.ReasoningEffort == "" {
+		profile.ReasoningEffort = session.ReasoningEffort
+	}
+	if profile.Model == "" {
+		profileSource = "provider-default"
+	}
+	report.observeProfile(profile, profileSource)
+	if _, ok := report.build(t, writer, session.RolloutPath, "rollout", parsed.Events, profile); !ok {
 		return
 	}
 	report.observeSession(session.RolloutPath, session.SizeBytes, 1,
@@ -208,12 +232,10 @@ func scanOneCodexSession(
 
 // --- the throwaway writer ---
 
-// corpusWriter owns the throwaway store used by the gate. Each converted unit
-// gets a fresh thread, then Build and ApplyImportBatch run exactly as they do
-// in production. Claude branch threads remain alive until the whole source
-// session has been applied, which is essential: shared-prefix payload IDs can
-// only collide while sibling branches coexist. endSession deletes those
-// threads so the file-backed store stays bounded to one source session.
+// corpusWriter owns the throwaway store used by the gate. Each provider
+// session gets a fresh thread, then Build and ApplyImportBatch run exactly as
+// they do in production. endSession deletes it so the file-backed store stays
+// bounded to one source session.
 type corpusWriter struct {
 	store          *store.Store
 	project        store.Project
@@ -260,65 +282,47 @@ func (w *corpusWriter) endSession() error {
 }
 
 func (w *corpusWriter) buildAndApply(
-	events []importir.Event, prefixSourceThreadID string, prefixBeforeTurn int,
-) (store.ImportBatch, []importir.Warning, string, int, time.Duration, time.Duration, error) {
+	events []importir.Event, profile importir.ModelProfile,
+) (store.ImportBatch, []importir.Warning, string, time.Duration, time.Duration, error) {
+	if len(w.sessionThreads) != 0 {
+		return store.ImportBatch{}, nil, "", 0, 0,
+			fmt.Errorf("one provider session attempted to materialize more than one thread")
+	}
 	w.nextThread++
 	thread := store.Thread{
-		ID:            fmt.Sprintf("import-corpus-%s-%d", w.provider, w.nextThread),
-		ProjectID:     w.project.ID,
-		Title:         "Import corpus smoke",
-		Provider:      w.provider,
-		WorkspacePath: w.project.Path,
-		CreatedAt:     1,
-		UpdatedAt:     1,
-		ImportSource:  w.provider,
+		ID:              fmt.Sprintf("import-corpus-%s-%d", w.provider, w.nextThread),
+		ProjectID:       w.project.ID,
+		Title:           "Import corpus smoke",
+		Provider:        w.provider,
+		WorkspacePath:   w.project.Path,
+		CreatedAt:       1,
+		UpdatedAt:       1,
+		ImportSource:    w.provider,
+		Model:           profile.Model,
+		ReasoningEffort: profile.ReasoningEffort,
+		ContextWindow:   profile.ContextWindow,
 	}
+	thread = chatmodel.SanitizeThread(thread)
 	if err := w.store.CreateThread(thread); err != nil {
-		return store.ImportBatch{}, nil, "", 0, 0, 0, fmt.Errorf("create throwaway thread: %w", err)
+		return store.ImportBatch{}, nil, "", 0, 0, fmt.Errorf("create throwaway thread: %w", err)
 	}
 	w.sessionThreads = append(w.sessionThreads, thread.ID)
 
-	logicalPrefixRows := 0
 	applyDuration := time.Duration(0)
-	if prefixSourceThreadID != "" {
-		boundaryAt := int64(0)
-		for _, event := range events {
-			if event.Kind == provider.EventTurnStart {
-				boundaryAt = event.Timestamp.UnixMilli()
-				break
-			}
-		}
-		if boundaryAt <= 0 {
-			return store.ImportBatch{}, nil, thread.ID, 0, 0, 0,
-				fmt.Errorf("shared prefix has no suffix turn boundary")
-		}
-		started := time.Now()
-		prefix, err := w.store.CloneImportedHistoryPrefix(
-			prefixSourceThreadID, thread.ID, prefixBeforeTurn, boundaryAt)
-		applyDuration += time.Since(started)
-		if err != nil {
-			return store.ImportBatch{}, nil, thread.ID, 0, 0, applyDuration,
-				fmt.Errorf("clone imported prefix: %w", err)
-		}
-		logicalPrefixRows = prefix.ItemCount
-	}
-
 	started := time.Now()
 	batch, warnings, err := importwriter.NewWriter(w.store, thread).Build(events)
 	buildDuration := time.Since(started)
 	if err != nil {
-		return store.ImportBatch{}, warnings, thread.ID, logicalPrefixRows,
-			buildDuration, applyDuration, err
+		return store.ImportBatch{}, warnings, thread.ID, buildDuration, applyDuration, err
 	}
 	started = time.Now()
 	if err := w.store.ApplyImportBatch(thread.ID, batch); err != nil {
 		applyDuration += time.Since(started)
-		return store.ImportBatch{}, warnings, thread.ID, logicalPrefixRows,
+		return store.ImportBatch{}, warnings, thread.ID,
 			buildDuration, applyDuration, fmt.Errorf("apply import batch: %w", err)
 	}
 	applyDuration += time.Since(started)
-	return batch, warnings, thread.ID, logicalPrefixRows + len(batch.Rows),
-		buildDuration, applyDuration, nil
+	return batch, warnings, thread.ID, buildDuration, applyDuration, nil
 }
 
 // --- the report ---
@@ -335,13 +339,24 @@ type corpusReport struct {
 	ok       int
 	refused  int
 	branches int
-	events   int
-	rows     int
-	bytes    int64
+	forks    int
+	// lineageResolved is the number of explicit provider-fork edges whose
+	// parent is present in this corpus and was mapped to the exact AO thread.
+	// lineageUnresolved counts honest dangling provenance: the provider names
+	// a parent session whose source is absent from the copied corpus.
+	lineageResolved   int
+	lineageUnresolved int
+	lineageUnsafe     int
+	threads           int
+	events            int
+	rows              int
+	bytes             int64
 
-	corruptLines int
-	unknownTypes map[string]int
-	warnings     map[string]int
+	corruptLines   int
+	unknownTypes   map[string]int
+	warnings       map[string]int
+	profileSources map[string]int
+	profileModels  map[string]int
 	// warningTotal is the running sum of the histogram, and warnedSessions
 	// counts sessions that contributed at least one. The two answer
 	// different questions — "how much drift" and "how widespread" — and one
@@ -352,20 +367,184 @@ type corpusReport struct {
 	failures     int
 	peakHeapByte uint64
 
-	providerReadDuration time.Duration
-	convertDuration      time.Duration
-	buildDuration        time.Duration
-	applyDuration        time.Duration
-	cleanupDuration      time.Duration
+	providerReadDuration   time.Duration
+	productionScanDuration time.Duration
+	lineageDuration        time.Duration
+	convertDuration        time.Duration
+	buildDuration          time.Duration
+	applyDuration          time.Duration
+	cleanupDuration        time.Duration
 
 	mostBranches corpusSessionMaterialization
 	mostRows     corpusSessionMaterialization
 }
 
+// verifyProductionScan proves the real orchestrator offers every top-level
+// session the provider lister accepted. This is deliberately in addition to
+// the reader/writer loop: the historical fork bug lived only in Scan's
+// candidate subtraction, so parsing and applying every file directly could
+// report a clean corpus while Import All silently omitted ancestors.
+//
+// The return value is the parent id production attached to each row. For
+// Claude, expectedParents also carries the lister's parent and is compared
+// here. Codex's index has no parent column, so its full Parse compares the
+// returned value to authoritative rollout metadata later.
+func (r *corpusReport) verifyProductionScan(
+	t *testing.T,
+	deps importwriter.Deps,
+	expectedParents map[string]string,
+) map[string]string {
+	t.Helper()
+	started := time.Now()
+	result, err := importwriter.Scan(t.Context(), deps, importwriter.Filter{Provider: r.provider})
+	r.productionScanDuration += time.Since(started)
+	if err != nil {
+		t.Fatalf("import corpus (%s): production scan: %v", r.provider, err)
+	}
+	if len(result.Providers) != 1 || !result.Providers[0].Available {
+		t.Fatalf("import corpus (%s): production provider status = %+v", r.provider, result.Providers)
+	}
+	parents := make(map[string]string, len(result.Rows))
+	for _, row := range result.Rows {
+		if row.Provider != r.provider {
+			t.Fatalf("import corpus (%s): production scan returned foreign row %s", r.provider, row.ID)
+		}
+		if _, duplicate := parents[row.SessionID]; duplicate {
+			t.Fatalf("import corpus (%s): production scan returned session %s twice", r.provider, row.SessionID)
+		}
+		parents[row.SessionID] = row.ParentSessionID
+		if row.ParentSessionID != "" {
+			r.forks++
+		}
+	}
+	if len(parents) != len(expectedParents) {
+		t.Fatalf("import corpus (%s): production scan returned %d of %d listed top-level sessions",
+			r.provider, len(parents), len(expectedParents))
+	}
+	for sessionID, expectedParent := range expectedParents {
+		gotParent, found := parents[sessionID]
+		if !found {
+			t.Fatalf("IMPORT CORPUS FAILURE (%s): production scan suppressed listed session %s",
+				r.provider, sessionID)
+		}
+		if r.provider == string(provider.Claude) && gotParent != expectedParent {
+			t.Errorf("IMPORT CORPUS FAILURE (%s): session %s parent = %q, lister recorded %q",
+				r.provider, sessionID, gotParent, expectedParent)
+		}
+	}
+	return parents
+}
+
+// verifyImportedLineage materializes the corpus's real provider-fork graph in
+// the throwaway store. The per-session loop above proves each history in
+// isolation; this pass proves those independently valid histories are joined
+// without collapsing a session, inventing a parent, or depending on import
+// order. Histories are not replayed a second time, so the cost is proportional
+// to the small thread/import-state rows rather than corpus bytes.
+func (r *corpusReport) verifyImportedLineage(
+	t *testing.T,
+	writer *corpusWriter,
+	parents map[string]string,
+) {
+	t.Helper()
+	started := time.Now()
+	defer func() { r.lineageDuration += time.Since(started) }()
+
+	sessionIDs := make([]string, 0, len(parents))
+	for sessionID := range parents {
+		sessionIDs = append(sessionIDs, sessionID)
+	}
+	sort.Strings(sessionIDs)
+
+	threadBySession := make(map[string]string, len(sessionIDs))
+	created := make([]string, 0, len(sessionIDs))
+	for i, sessionID := range sessionIDs {
+		threadID := fmt.Sprintf("import-corpus-lineage-%s-%d", r.provider, i+1)
+		thread := store.Thread{
+			ID:            threadID,
+			ProjectID:     writer.project.ID,
+			Title:         "Import corpus lineage",
+			Provider:      r.provider,
+			WorkspacePath: writer.project.Path,
+			SessionRef:    sessionID,
+			CreatedAt:     1,
+			UpdatedAt:     1,
+			ImportSource:  r.provider,
+		}
+		if err := writer.store.CreateThread(thread); err != nil {
+			t.Fatalf("import corpus (%s): create lineage thread for %s: %v", r.provider, sessionID, err)
+		}
+		created = append(created, threadID)
+		threadBySession[sessionID] = threadID
+		if err := writer.store.SetThreadImportState(store.ThreadImportState{
+			ThreadID:              threadID,
+			Provider:              r.provider,
+			SourceSessionID:       sessionID,
+			SourceParentSessionID: parents[sessionID],
+			LastTurnIndex:         -1,
+			LastItemIndex:         -1,
+			ImportedAt:            1,
+		}); err != nil {
+			t.Fatalf("import corpus (%s): record lineage for %s: %v", r.provider, sessionID, err)
+		}
+	}
+
+	unsafe := make(map[string]bool)
+	seenWarnings := make(map[string]bool)
+	for _, sessionID := range sessionIDs {
+		warnings, err := writer.store.ReconcileImportedForkLineage(r.provider, sessionID)
+		if err != nil {
+			t.Fatalf("import corpus (%s): reconcile lineage for %s: %v", r.provider, sessionID, err)
+		}
+		for _, warning := range warnings {
+			unsafe[warning.ThreadID] = true
+			key := warning.ThreadID + "\x00" + warning.Code
+			if !seenWarnings[key] {
+				seenWarnings[key] = true
+				r.warnings[warning.Code]++
+				r.warningTotal++
+				r.lineageUnsafe++
+			}
+		}
+	}
+
+	for _, sessionID := range sessionIDs {
+		threadID := threadBySession[sessionID]
+		thread, err := writer.store.GetThread(threadID)
+		if err != nil {
+			t.Fatalf("import corpus (%s): read lineage thread for %s: %v", r.provider, sessionID, err)
+		}
+		parentSessionID := parents[sessionID]
+		expectedParent := ""
+		if !unsafe[threadID] && parentSessionID != "" {
+			if resolved, found := threadBySession[parentSessionID]; found {
+				expectedParent = resolved
+				r.lineageResolved++
+			} else {
+				r.lineageUnresolved++
+			}
+		}
+		if thread.ForkedFromThreadID != expectedParent {
+			t.Fatalf(
+				"IMPORT CORPUS FAILURE (%s): session %s resolved parent thread %q, want %q for provider parent %q",
+				r.provider, sessionID, thread.ForkedFromThreadID, expectedParent, parentSessionID)
+		}
+	}
+
+	cleanupStarted := time.Now()
+	for _, threadID := range created {
+		if err := writer.store.RollbackImportedThread(threadID); err != nil {
+			t.Fatalf("import corpus (%s): clean lineage thread %s: %v", r.provider, threadID, err)
+		}
+	}
+	r.cleanupDuration += time.Since(cleanupStarted)
+}
+
 // corpusSessionMaterialization explains why a small-looking source corpus can
-// still be expensive to import. Claude stores a branch DAG once, while AO
-// materializes one complete thread per leaf; the materialized event and row
-// counts therefore matter at least as much as the source file's byte size.
+// still be expensive to import. Claude stores a branch DAG once and can
+// retain many leaves, while AO materializes only its active history; the
+// active event and row counts therefore matter at least as much as source
+// file size.
 type corpusSessionMaterialization struct {
 	path        string
 	sourceBytes int64
@@ -376,11 +555,20 @@ type corpusSessionMaterialization struct {
 
 func newCorpusReport(providerName, root string) *corpusReport {
 	return &corpusReport{
-		provider:     providerName,
-		root:         root,
-		started:      time.Now(),
-		unknownTypes: map[string]int{},
-		warnings:     map[string]int{},
+		provider:       providerName,
+		root:           root,
+		started:        time.Now(),
+		unknownTypes:   map[string]int{},
+		warnings:       map[string]int{},
+		profileSources: map[string]int{},
+		profileModels:  map[string]int{},
+	}
+}
+
+func (r *corpusReport) observeProfile(profile importir.ModelProfile, source string) {
+	r.profileSources[source]++
+	if profile.Model != "" {
+		r.profileModels[profile.Model]++
 	}
 }
 
@@ -437,13 +625,12 @@ func (r *corpusReport) build(
 	writer *corpusWriter,
 	path, unit string,
 	events []importir.Event,
-	prefixSourceThreadID string,
-	prefixBeforeTurn int,
+	profile importir.ModelProfile,
 ) (string, bool) {
 	t.Helper()
 	r.events += len(events)
-	_, warnings, threadID, logicalRows, buildDuration, applyDuration, err :=
-		writer.buildAndApply(events, prefixSourceThreadID, prefixBeforeTurn)
+	batch, warnings, threadID, buildDuration, applyDuration, err :=
+		writer.buildAndApply(events, profile)
 	r.buildDuration += buildDuration
 	r.applyDuration += applyDuration
 	if err != nil {
@@ -451,7 +638,8 @@ func (r *corpusReport) build(
 		return "", false
 	}
 	r.countWarnings(warnings)
-	r.rows += logicalRows
+	r.threads++
+	r.rows += len(batch.Rows)
 	return threadID, true
 }
 
@@ -478,6 +666,10 @@ func (r *corpusReport) log(t *testing.T) {
 	if r.branches > 0 {
 		t.Logf("import corpus (%s): branches=%d", r.provider, r.branches)
 	}
+	t.Logf("import corpus (%s): explicit-provider-forks=%d", r.provider, r.forks)
+	t.Logf("import corpus (%s): fork-lineage resolved=%d unresolved-parent-source=%d unsafe-edges-omitted=%d",
+		r.provider, r.lineageResolved, r.lineageUnresolved, r.lineageUnsafe)
+	t.Logf("import corpus (%s): materialized-threads=%d", r.provider, r.threads)
 	t.Logf("import corpus (%s): converted-events=%d logical-rows=%d source=%s",
 		r.provider, r.events, r.rows, humanBytes(r.bytes))
 	if r.mostBranches.branches > 1 {
@@ -491,12 +683,16 @@ func (r *corpusReport) log(t *testing.T) {
 	}
 	logHistogram(t, r.provider, "warnings by code", r.warnings)
 	logHistogram(t, r.provider, "unknown wire types", r.unknownTypes)
-	t.Logf("import corpus (%s): stage wall: provider-read=%s branch-convert=%s writer-build=%s store-apply=%s cleanup=%s",
+	logHistogram(t, r.provider, "model profiles by source", r.profileSources)
+	logHistogram(t, r.provider, "recorded models", r.profileModels)
+	t.Logf("import corpus (%s): stage wall: production-scan=%s provider-read=%s branch-convert=%s writer-build=%s store-apply=%s lineage=%s cleanup=%s",
 		r.provider,
+		r.productionScanDuration.Round(time.Millisecond),
 		r.providerReadDuration.Round(time.Millisecond),
 		r.convertDuration.Round(time.Millisecond),
 		r.buildDuration.Round(time.Millisecond),
 		r.applyDuration.Round(time.Millisecond),
+		r.lineageDuration.Round(time.Millisecond),
 		r.cleanupDuration.Round(time.Millisecond))
 	t.Logf("import corpus (%s): wall=%s peak-heap=%s",
 		r.provider, elapsed.Round(time.Millisecond), humanBytes(int64(r.peakHeapByte)))

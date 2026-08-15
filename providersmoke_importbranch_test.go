@@ -2,16 +2,15 @@
 
 // Dimension 4 of the real-provider gate: IMPORTED-BRANCH RESUME (Claude only).
 //
-// WHAT IS UNPROVEN WITHOUT THIS. A Claude transcript is a DAG, and session
-// import makes one AO thread per branch. Only the file's ACTIVE branch can
-// carry the session ref, so every other branch is materialised LAZILY: the
-// first time such a thread starts a session, `materializeImportedClaudeBranch`
-// (app_session_import_branch.go) cuts the source transcript at that branch's
-// leaf through `sessionfork.WriteForkFileThroughUUID` and points the thread at
-// the new file. Unit tests assert the file's shape and the row state. Nothing
-// in the mocked suites can assert the only thing that actually matters: that a
-// REAL `claude` accepts that file for `--resume` and carries on the branch's
-// conversation. A mock accepts any JSONL.
+// WHAT IS UNPROVEN WITHOUT THIS. Older releases imported one AO thread per
+// Claude DAG leaf. Their inactive threads have no session ref, so the first
+// start still passes through `materializeImportedClaudeBranch`: it cuts the
+// source transcript at that stored leaf through
+// `sessionfork.WriteForkFileThroughUUID` and points the legacy thread at the
+// new file. Unit tests assert the file's shape and row state. Only a REAL
+// `claude` can prove that file resumes the intended conversation; a mock
+// accepts any JSONL. Current imports create only the active thread, but this
+// upgrade path must keep existing histories usable.
 //
 // WHAT THIS SCENARIO DOES. It builds a genuinely multi-leaf transcript with
 // the real CLI — a shared prefix turn, one turn that becomes the abandoned
@@ -136,7 +135,7 @@ func TestProviderSmokeClaudeImportedBranchResume(t *testing.T) {
 	if !found {
 		driver.fail(t,
 			"IMPORTED-BRANCH RESUME FAILED: %s enumerated %d branch(es) %v and none of the non-active ones carries the abandoned turn's leaf %s.\n"+
-				"A single branch means `--resume-session-at` no longer rewinds in place — the whole one-thread-per-branch import model rests on it (see internal/provider/claude/sessionimport).",
+				"A single branch means `--resume-session-at` no longer rewinds in place, so the legacy inactive-branch compatibility path cannot be exercised.",
 			sourcePath, len(loaded.Branches), providerSmokeBranchLeaves(loaded.Branches), abandoned.leafUUID)
 	}
 	t.Logf("provider smoke (claude): transcript %s has %d branches; forking the non-active leaf %s",
@@ -359,8 +358,9 @@ func (d *providerSmokeClaudeDriver) runTurn(t *testing.T, turn providerSmokeClau
 
 // requireSameSession fails when a resume minted a new session id. Production
 // tolerates the change (triage adopts whatever `system/init` reports), but the
-// imported-branch model does not: it assumes a resume APPENDS to the transcript
-// it resumed, which is what lets one file hold several branches at all.
+// legacy imported-branch compatibility path does not: it assumes a resume
+// APPENDS to the transcript it resumed, which is what lets one file retain
+// several branches at all.
 func (d *providerSmokeClaudeDriver) requireSameSession(
 	t *testing.T, flag, want string, result providerSmokeClaudeTurnResult,
 ) {
@@ -370,7 +370,7 @@ func (d *providerSmokeClaudeDriver) requireSameSession(
 	}
 	d.fail(t,
 		"IMPORTED-BRANCH RESUME FAILED: `%s` moved the conversation from session %s to %s instead of appending to it.\n"+
-			"One transcript per resume means a file can no longer hold several branches, which is the premise of both the importer's branch enumeration and materializeImportedClaudeBranch.",
+			"One transcript per resume means a file can no longer hold several branches, which breaks the legacy materializeImportedClaudeBranch path.",
 		flag, want, result.sessionID)
 }
 

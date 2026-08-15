@@ -26,7 +26,8 @@ func renderEvents(events []importir.Event) string {
 func convertFixture(t *testing.T, opts ConvertOptions, lines ...any) ([]importir.Event, []importir.Warning) {
 	t.Helper()
 	branch := buildChain(t, lines...)
-	return Convert(branch.Chain, opts)
+	result := Convert(branch.Chain, opts)
+	return result.Events, result.Warnings
 }
 
 func eventsOfKind(events []importir.Event, kind provider.EventKind) []importir.Event {
@@ -112,6 +113,67 @@ func TestConvertFullTurn(t *testing.T) {
 	}
 	if want := parseISOMillis("2026-01-01T00:00:03.000Z"); complete.Timestamp.UnixMilli() != want {
 		t.Errorf("turn completed at %d, want the last source row's time %d", complete.Timestamp.UnixMilli(), want)
+	}
+}
+
+func TestConvertProfileDoesNotDependOnUsage(t *testing.T) {
+	branch := buildChain(t,
+		userRow("u1", "", "do it", "2026-01-01T00:00:00.000Z"),
+		assistantRow("a1", "u1", "msg_1", []any{textBlock("done")}, "2026-01-01T00:00:01.000Z",
+			with("message", map[string]any{
+				"role": "assistant", "id": "msg_1", "model": "claude-zero-usage",
+				"content": []any{textBlock("done")},
+				"usage":   map[string]any{"input_tokens": 0, "output_tokens": 0},
+			})),
+	)
+	result := Convert(branch.Chain, ConvertOptions{})
+	if result.Profile.Model != "claude-zero-usage" {
+		t.Fatalf("profile = %+v, want the assistant envelope model", result.Profile)
+	}
+	complete := eventsOfKind(result.Events, provider.EventTurnComplete)[0]
+	wire := complete.TurnComplete.(*provider.WireTurnCompleteMeta)
+	if len(wire.ModelUsage) != 0 {
+		t.Fatalf("zero usage should remain absent from accounting: %+v", wire.ModelUsage)
+	}
+}
+
+func TestConvertProfileIgnoresSyntheticAndSubagentModels(t *testing.T) {
+	parentAssistant := assistantRow("a1", "u1", "msg_parent", []any{
+		toolUseBlock("toolu_1", "Agent", map[string]any{"prompt": "delegate"}),
+	}, "2026-01-01T00:00:01.000Z",
+		with("message", map[string]any{
+			"role": "assistant", "id": "msg_parent", "model": "claude-parent",
+			"content": []any{toolUseBlock("toolu_1", "Agent", map[string]any{"prompt": "delegate"})},
+		}))
+	chain := buildChain(t,
+		userRow("u1", "", "delegate", "2026-01-01T00:00:00.000Z"),
+		parentAssistant,
+		toolResultRow("r1", "a1", "toolu_1", "done", "2026-01-01T00:00:03.000Z"),
+	)
+	result := Convert(chain.Chain, ConvertOptions{Subagents: map[string][]Row{
+		"toolu_1": decodeBranchRows(t,
+			userRow("su1", "", "child prompt", "2026-01-01T00:00:01.100Z"),
+			assistantRow("sa1", "su1", "msg_child", []any{textBlock("child")}, "2026-01-01T00:00:02.000Z",
+				with("message", map[string]any{
+					"role": "assistant", "id": "msg_child", "model": "claude-child",
+					"content": []any{textBlock("child")},
+				})),
+		),
+	}})
+	if result.Profile.Model != "claude-parent" {
+		t.Fatalf("profile = %+v, want the top-level model", result.Profile)
+	}
+
+	synthetic := buildChain(t,
+		userRow("u2", "", "/status", "2026-01-01T00:00:04.000Z"),
+		assistantRow("a2", "u2", "msg_synthetic", []any{textBlock("status")}, "2026-01-01T00:00:05.000Z",
+			with("message", map[string]any{
+				"role": "assistant", "id": "msg_synthetic", "model": syntheticCLIModel,
+				"content": []any{textBlock("status")},
+			})),
+	)
+	if got := Convert(synthetic.Chain, ConvertOptions{}).Profile.Model; got != "" {
+		t.Fatalf("synthetic profile model = %q, want unknown/provider default", got)
 	}
 }
 

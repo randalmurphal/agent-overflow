@@ -3,7 +3,6 @@ package sessionimport
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -20,15 +19,15 @@ import (
 	"agent-overflow/internal/threadmode"
 )
 
-// ImportOutcome is one session's import. Threads is empty when the session
-// held nothing importable, which is a real answer rather than a failure —
-// a transcript can be all metadata.
+// ImportOutcome is one provider session's import. Threads contains at most
+// one row and is empty when the session held nothing importable — a transcript
+// can be all metadata.
 type ImportOutcome struct {
 	Threads  []store.Thread
 	Warnings []importir.Warning
 }
 
-// ThreadIDs is the outcome's threads, in creation order.
+// ThreadIDs returns the imported thread id, or an empty slice.
 func (o ImportOutcome) ThreadIDs() []string {
 	ids := make([]string, 0, len(o.Threads))
 	for _, thread := range o.Threads {
@@ -39,15 +38,14 @@ func (o ImportOutcome) ThreadIDs() []string {
 
 // ImportOne imports one scanned session.
 //
-// A Claude transcript becomes one thread PER BRANCH: its conversation is a
-// DAG, and an abandoned branch is still a conversation worth keeping. A
-// Codex rollout is linear and always becomes exactly one.
+// One provider session becomes at most one AO thread. A Codex rollout is
+// linear. A Claude transcript is a DAG, so import selects the active branch —
+// the coherent root-to-leaf history `claude --resume` continues — and does
+// not merge or promote abandoned sibling alternatives.
 //
 // Failure is all-or-nothing for the session and isolated from every other
-// session. If any branch fails after its thread row exists, every thread this
-// call created is deleted — a half-imported session is worse than none,
-// because the dedup set keys on the source session id and would hide the
-// missing branches from the next scan.
+// session. If a write fails after its thread row exists, that thread is
+// deleted so the source session remains importable on the next scan.
 //
 // Nothing here spawns a process. Import is a file read and a SQLite write.
 // The project row is the one the SCAN already resolved (resolveProject); a
@@ -114,6 +112,7 @@ type branchPlan struct {
 	title      string
 	sessionRef string
 	events     []importir.Event
+	profile    importir.ModelProfile
 	leafUUID   string
 	// lastActivityAt is the branch's own newest timestamp, which becomes
 	// the thread's updated_at.
@@ -124,22 +123,14 @@ type branchPlan struct {
 	// consumed — a refresh that re-read them would re-decide them the same
 	// way, but at the cost of re-reading the tail on every check.
 	endOffset int64
-	// prefixSourceThreadID / prefixBeforeTurn describe a complete-turn
-	// history prefix already committed for an earlier Claude branch. The
-	// store attaches its immutable chunks before the writer builds events
-	// from this branch's suffix.
-	prefixSourceThreadID string
-	prefixBeforeTurn     int
 }
 
-// importClaude imports every branch of one transcript, ONE AT A TIME.
+// importClaude imports the transcript's active branch as one thread.
 //
-// Converting the whole file first and applying afterwards is what the
-// memory ceiling forbids: a real transcript reaches hundreds of megabytes
-// and a four-leaf session would hold four branches' events at once, on top
-// of the decoded file. So each branch is converted, committed, and released
-// before the next is read — LoadSession hands back skeletons and
-// ConvertBranch decodes only the rows of the branch it is asked for.
+// LoadSession keeps a lightweight DAG skeleton, then ConvertActiveBranch
+// decodes only the coherent ancestry Claude itself resumes. Sibling leaves
+// are alternate histories, not extra sessions and not rows that can be
+// merged into the active timeline without corrupting its causal order.
 func importClaude(
 	ctx context.Context, s *store.Store, row Row, proj store.Project,
 ) (ImportOutcome, error) {
@@ -156,60 +147,29 @@ func importClaude(
 
 	im := newSessionImporter(s, row, proj)
 	im.warn(loaded.Warnings...)
-
-	// activeThread is the surviving thread cut from the transcript's LAST
-	// branch, or -1 when that branch produced nothing. See settleBranches.
-	activeThread := -1
-	donorThreads := make(map[int]string, len(loaded.Branches))
-	for i := range loaded.Branches {
-		if err := ctx.Err(); err != nil {
-			return ImportOutcome{}, im.fail(err)
-		}
-		prefix, hasPrefix, err := loaded.FindReusablePrefix(i)
-		if err != nil {
-			return ImportOutcome{}, im.fail(err)
-		}
-		start := 0
-		if hasPrefix {
-			start = prefix.SuffixRow
-		}
-		branch, err := loaded.ConvertBranchFrom(i, start)
-		if err != nil {
-			return ImportOutcome{}, im.fail(err)
-		}
-		im.warn(branch.Warnings...)
-		if len(branch.Events) == 0 && !hasPrefix {
-			// A branch whose every row was metadata. Producing no thread is
-			// a real answer — and it is why the title and resume-ref rules
-			// below are computed over the branches that SURVIVED rather than
-			// over the transcript's leaf count.
-			continue
-		}
-		plan := branchPlan{
-			// Provisional: the disambiguating suffix only belongs on a
-			// session that really did import as more than one thread, which
-			// is not known until the last branch has been converted.
-			title:          branchTitle(row.Title, branch.Title, len(im.created)),
-			events:         branch.Events,
-			leafUUID:       branch.LeafUUID,
-			lastActivityAt: branch.LastActivityAt,
-		}
-		if hasPrefix {
-			plan.prefixSourceThreadID = donorThreads[prefix.DonorIndex]
-			plan.prefixBeforeTurn = prefix.NextTurnIndex
-		}
-		if err := im.add(plan); err != nil {
-			return ImportOutcome{}, err
-		}
-		if err := loaded.AddReusablePrefixDonor(i); err != nil {
-			return ImportOutcome{}, im.fail(err)
-		}
-		donorThreads[i] = im.created[len(im.created)-1].ID
-		if i == len(loaded.Branches)-1 {
-			activeThread = len(im.created) - 1
-		}
+	if err := ctx.Err(); err != nil {
+		return ImportOutcome{}, err
 	}
-	if err := im.settleBranches(activeThread); err != nil {
+	branch, found, err := loaded.ConvertActiveBranch()
+	if err != nil {
+		return ImportOutcome{}, fmt.Errorf(
+			"sessionimport: convert active branch of %s: %w", row.SourcePath, err)
+	}
+	if !found {
+		return im.outcome(), nil
+	}
+	im.warn(branch.Warnings...)
+	if len(branch.Events) == 0 {
+		return im.outcome(), nil
+	}
+	if err := im.add(branchPlan{
+		title:          importedTitle(row.Title),
+		sessionRef:     row.SessionID,
+		events:         branch.Events,
+		profile:        branch.Profile,
+		leafUUID:       branch.LeafUUID,
+		lastActivityAt: branch.LastActivityAt,
+	}); err != nil {
 		return ImportOutcome{}, err
 	}
 	return im.outcome(), nil
@@ -247,6 +207,7 @@ func importCodex(
 		title:          importedTitle(row.Title),
 		sessionRef:     row.SessionID,
 		events:         parsed.Events,
+		profile:        preferParsedProfile(parsed.Profile, row.IndexedProfile),
 		lastActivityAt: row.LastActivityAt,
 		endOffset:      parsed.EndOffset,
 	}); err != nil {
@@ -259,10 +220,8 @@ func importCodex(
 func newImportedThread(
 	row Row, proj store.Project,
 	title, sessionRef string,
-	events []importir.Event, lastActivityAt int64,
+	events []importir.Event, profile importir.ModelProfile, lastActivityAt int64,
 ) store.Thread {
-	model, effort, contextWindow := sessionModelProfile(events)
-
 	createdAt := row.CreatedAt
 	if createdAt <= 0 {
 		createdAt = firstEventMillis(events)
@@ -284,12 +243,12 @@ func newImportedThread(
 		ProjectPath:     proj.Path,
 		Title:           importedTitle(title),
 		Provider:        row.Provider,
-		Model:           model,
+		Model:           profile.Model,
 		WorkspacePath:   row.ProjectPath,
 		Branch:          row.GitBranch,
 		Mode:            threadmode.DefaultCreateMode,
-		ReasoningEffort: effort,
-		ContextWindow:   contextWindow,
+		ReasoningEffort: profile.ReasoningEffort,
+		ContextWindow:   profile.ContextWindow,
 		RuntimeMode:     string(provider.DefaultRuntimeMode),
 		SessionRef:      sessionRef,
 		ImportSource:    row.Provider,
@@ -297,50 +256,6 @@ func newImportedThread(
 		UpdatedAt:       updatedAt,
 		LastReadAt:      &lastReadAt,
 	})
-}
-
-// unknownModelPlaceholder is what the Claude reader records for an assistant
-// message whose envelope carried no model. It is a marker, not a model, and
-// must never reach the thread row — chatmodel would then clamp effort and
-// context window against a model the registry has never heard of.
-const unknownModelPlaceholder = "unknown"
-
-// sessionModelProfile reads the model setup a session actually ran with off
-// its own events, newest wins.
-//
-// The two providers say it in different places and both are authoritative
-// for their own file: Codex stamps model / effort / context window onto every
-// turn start (from `turn_context`), while a Claude transcript names the model
-// only on the per-message usage the reader folds into each turn's completion.
-// Empty results are fine — chatmodel.SanitizeThread substitutes the
-// provider's own defaults, which is exactly what a session with no recorded
-// model ran on.
-func sessionModelProfile(events []importir.Event) (model, effort string, contextWindow int) {
-	for _, evt := range events {
-		switch evt.Kind {
-		case provider.EventTurnStart:
-			if value := metaString(evt.Meta, "model"); value != "" {
-				model = value
-			}
-			if value := metaString(evt.Meta, "effort"); value != "" {
-				effort = value
-			}
-			if value := metaInt(evt.Meta, "contextWindow"); value > 0 {
-				contextWindow = value
-			}
-		case provider.EventTurnComplete:
-			wire, ok := evt.TurnComplete.(*provider.WireTurnCompleteMeta)
-			if !ok || wire == nil {
-				continue
-			}
-			for _, usage := range wire.ModelUsage {
-				if name := strings.TrimSpace(usage.Model); name != "" && name != unknownModelPlaceholder {
-					model = name
-				}
-			}
-		}
-	}
-	return model, effort, contextWindow
 }
 
 // firstEventMillis is the fallback thread creation time for a session whose
@@ -354,20 +269,22 @@ func firstEventMillis(events []importir.Event) int64 {
 	return 0
 }
 
-// metaInt reads one top-level integer key off an event meta.
-func metaInt(raw json.RawMessage, key string) int {
-	if len(raw) == 0 {
-		return 0
+// preferParsedProfile keeps the rollout as the authority and fills only
+// fields it did not record from Codex's index-level fallback. The index is
+// incomplete for some sources, but reading columns already in the scan costs
+// nothing and is better than discarding provider-recorded state.
+func preferParsedProfile(parsed, indexed importir.ModelProfile) importir.ModelProfile {
+	if parsed.Model == "" {
+		parsed.Model = indexed.Model
+		if parsed.ReasoningEffort == "" {
+			parsed.ReasoningEffort = indexed.ReasoningEffort
+		}
+		return parsed
 	}
-	var obj map[string]json.RawMessage
-	if json.Unmarshal(raw, &obj) != nil || obj == nil {
-		return 0
+	if parsed.Model == indexed.Model && parsed.ReasoningEffort == "" {
+		parsed.ReasoningEffort = indexed.ReasoningEffort
 	}
-	var value int
-	if json.Unmarshal(obj[key], &value) != nil {
-		return 0
-	}
-	return value
+	return parsed
 }
 
 // importedTitleFallback is what a session with no recoverable title gets.
@@ -375,53 +292,9 @@ func metaInt(raw json.RawMessage, key string) int {
 // silent-empty option.
 const importedTitleFallback = "Imported session"
 
-// branchTitleSuffixRunes bounds the branch disambiguator. The suffix is a
-// user prompt and can be a whole paragraph.
-const branchTitleSuffixRunes = 60
-
 func importedTitle(title string) string {
 	if trimmed := strings.TrimSpace(title); trimmed != "" {
 		return trimmed
 	}
 	return importedTitleFallback
-}
-
-// branchTitle names one branch of a transcript that imports as more than
-// one thread.
-//
-// Sibling branches would otherwise land in the sidebar as identical rows,
-// so each takes its leaf's last prompt as a suffix — the one thing that
-// actually distinguishes them — and falls back to an ordinal when the
-// transcript recorded no prompt for that leaf.
-//
-// Whether a suffix is wanted at all is NOT decided here: a branch can
-// convert to zero events, so how many threads a session really produced is
-// only known once the last one has been converted. settleBranches strips
-// the suffix back off when exactly one branch survived.
-func branchTitle(sessionTitle, leafTitle string, index int) string {
-	base := strings.TrimSpace(sessionTitle)
-	suffix := capRunes(strings.TrimSpace(leafTitle), branchTitleSuffixRunes)
-	switch {
-	case base == "":
-		base = importedTitleFallback
-	case suffix == base:
-		suffix = ""
-	}
-	if suffix == "" {
-		suffix = fmt.Sprintf("branch %d", index+1)
-	}
-	return base + " — " + suffix
-}
-
-// capRunes truncates on a rune boundary, marking the cut so a clipped title
-// does not read as the whole prompt.
-func capRunes(s string, max int) string {
-	if max <= 0 {
-		return ""
-	}
-	runes := []rune(s)
-	if len(runes) <= max {
-		return s
-	}
-	return strings.TrimRight(string(runes[:max]), " \t") + "…"
 }

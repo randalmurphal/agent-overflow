@@ -194,7 +194,7 @@ export function CheckForUpdate(): $CancellablePromise<$models.UpdateAvailability
 
 /**
  * CheckThreadImportUpdates reports whether the provider session behind an
- * imported thread has grown since the import.
+ * imported thread has new history or model settings that can be restored.
  * 
  * Read-only: it builds the rows a refresh WOULD write (the writer is
  * store-pure) so the counts it reports are exact rather than estimated, and
@@ -1636,8 +1636,9 @@ export function ImportSessions(req: $models.ImportSessionsRequest): $Cancellable
 }
 
 /**
- * ImportThreadUpdates appends the source session's newer messages to an
- * imported thread and advances its cursor.
+ * ImportThreadUpdates applies newer source history and/or restores recorded
+ * model settings. A history append advances the source cursor; a profile-only
+ * repair leaves it exactly where it was.
  * 
  * It re-plans rather than trusting a status the caller checked earlier: the
  * file and the thread can both have moved since, and a stale plan would

@@ -344,12 +344,12 @@ func (h providerHomes) codexLinearSession(t *testing.T, threadID string, extra .
 	t.Helper()
 	lines := []string{
 		h.codexMetaLine(threadID, ""),
-		codexLine(0, "turn_context", map[string]any{
+		codexLine(0, "event_msg", map[string]any{
+			"type": "task_started", "turn_id": "turn-1", "model_context_window": 258400,
+		}),
+		codexLine(100, "turn_context", map[string]any{
 			"turn_id": "turn-1", "cwd": h.workspace,
 			"model": "gpt-5.6-sol", "effort": "high",
-		}),
-		codexLine(100, "event_msg", map[string]any{
-			"type": "task_started", "turn_id": "turn-1", "model_context_window": 258400,
 		}),
 		codexLine(200, "event_msg", map[string]any{
 			"type": "user_message", "message": "add a test",

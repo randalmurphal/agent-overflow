@@ -32,6 +32,19 @@ type Event struct {
 	SourceOffset int64  `json:"sourceOffset,omitempty"`
 }
 
+// ModelProfile is the latest provider-recorded model configuration in the
+// source region a reader converted. Empty fields mean the provider did not
+// record that value; they are not permission to invent historical metadata.
+//
+// It is deliberately separate from Event. A profile is session/branch state,
+// not a timeline row, and deriving it back out of turn or usage events couples
+// import correctness to incidental event ordering and token accounting.
+type ModelProfile struct {
+	Model           string
+	ReasoningEffort string
+	ContextWindow   int
+}
+
 // Warning is a non-fatal finding from reading a session: something was
 // skipped, could not be matched, or no longer exists. Warnings surface to
 // the user next to the row they concern, so Message is prose, not a log

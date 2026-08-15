@@ -26,6 +26,8 @@ import (
 // importCorpusSecondCodexThread gives the fixture corpus two Codex sessions,
 // so the per-session loop is exercised as a loop rather than as a single call.
 const importCorpusSecondCodexThread = "dddddddd-4444-4444-8444-dddddddddddd"
+const importCorpusClaudeFork = "eeeeeeee-5555-4555-8555-eeeeeeeeeeee"
+const importCorpusCodexFork = "ffffffff-6666-4666-8666-ffffffffffff"
 
 // TestImportCorpusRunnerReadsAFixtureCorpus drives both legs over a corpus
 // with known contents: two Claude transcripts (one linear, one two-leaf) and
@@ -35,9 +37,29 @@ func TestImportCorpusRunnerReadsAFixtureCorpus(t *testing.T) {
 	home := newImportHome(t)
 	home.claudeLinearSession(t, importFixtureClaudeSession)
 	home.claudeBranchedSession(t, importFixtureClaudeBranchy)
+	forkRoot := home.claudeUserRow("fork-u1", "", "shared fork history", 0)
+	forkRoot["forkedFrom"] = map[string]any{
+		"sessionId": importFixtureClaudeSession, "messageUuid": "a1",
+	}
+	home.writeClaudeSession(t, importCorpusClaudeFork,
+		forkRoot,
+		home.claudeAssistantRow("fork-a1", "fork-u1", "fork-msg-1", "Fork continued.", 1_000),
+		claudeLastPrompt("fork-a1", "shared fork history"),
+	)
 	home.codexLinearSession(t, importFixtureCodexThread)
 	home.codexLinearSession(t, importCorpusSecondCodexThread)
-	home.writeCodexIndex(t, importFixtureCodexThread, importCorpusSecondCodexThread)
+	forkLines := []string{
+		codexFixtureLine(t, 0, "session_meta", map[string]any{
+			"id": importFixtureCodexThread, "cwd": home.workspace, "originator": "codex_cli",
+		}),
+		codexFixtureLine(t, 1, "session_meta", map[string]any{
+			"id": importCorpusCodexFork, "cwd": home.workspace, "originator": "codex_cli",
+			"forked_from_id": importFixtureCodexThread,
+		}),
+	}
+	forkLines = append(forkLines, codexFixtureTurn(t, "fork-turn", "fork prompt", "fork answer", 100)...)
+	home.writeCodexRollout(t, importCorpusCodexFork, forkLines...)
+	home.writeCodexIndex(t, importFixtureCodexThread, importCorpusSecondCodexThread, importCorpusCodexFork)
 	// One unknown envelope type and one undecodable line, so the report's
 	// drift tables are asserted against something rather than assumed.
 	home.appendCodexRollout(t, importCorpusSecondCodexThread,
@@ -59,14 +81,22 @@ func TestImportCorpusRunnerReadsAFixtureCorpus(t *testing.T) {
 		if report.failures != 0 {
 			t.Fatalf("fixture corpus produced %d hard errors, want 0", report.failures)
 		}
-		if report.listed != 2 || report.ok != 2 {
-			t.Fatalf("listed=%d ok=%d, want 2/2", report.listed, report.ok)
+		if report.listed != 3 || report.ok != 3 {
+			t.Fatalf("listed=%d ok=%d, want 3/3", report.listed, report.ok)
 		}
-		// One leaf in the linear session, two in the branched one. Converting
-		// per branch is the memory contract; a runner that only converted the
-		// active branch would report 2 here.
-		if report.branches != 3 {
-			t.Fatalf("branches = %d, want 3", report.branches)
+		// One leaf in the linear and explicit-fork sessions, two in the
+		// internally branched one. The gate observes all four in the skeleton,
+		// but materializes exactly
+		// one active thread per source session.
+		if report.branches != 4 {
+			t.Fatalf("branches = %d, want 4", report.branches)
+		}
+		if report.threads != 3 || report.forks != 1 {
+			t.Fatalf("materialized threads/forks = %d/%d, want 3/1", report.threads, report.forks)
+		}
+		if report.lineageResolved != 1 || report.lineageUnresolved != 0 || report.lineageUnsafe != 0 {
+			t.Fatalf("fork lineage = resolved:%d unresolved:%d unsafe:%d, want 1/0/0",
+				report.lineageResolved, report.lineageUnresolved, report.lineageUnsafe)
 		}
 		if report.events == 0 || report.rows == 0 {
 			t.Fatalf("events=%d rows=%d, want both non-zero — Build must not be skipped",
@@ -83,8 +113,15 @@ func TestImportCorpusRunnerReadsAFixtureCorpus(t *testing.T) {
 		if report.failures != 0 {
 			t.Fatalf("fixture corpus produced %d hard errors, want 0", report.failures)
 		}
-		if report.listed != 2 || report.ok != 2 {
-			t.Fatalf("listed=%d ok=%d, want 2/2", report.listed, report.ok)
+		if report.listed != 3 || report.ok != 3 {
+			t.Fatalf("listed=%d ok=%d, want 3/3", report.listed, report.ok)
+		}
+		if report.threads != 3 || report.forks != 1 {
+			t.Fatalf("materialized threads/forks = %d/%d, want 3/1", report.threads, report.forks)
+		}
+		if report.lineageResolved != 1 || report.lineageUnresolved != 0 || report.lineageUnsafe != 0 {
+			t.Fatalf("fork lineage = resolved:%d unresolved:%d unsafe:%d, want 1/0/0",
+				report.lineageResolved, report.lineageUnresolved, report.lineageUnsafe)
 		}
 		if report.events == 0 || report.rows == 0 {
 			t.Fatalf("events=%d rows=%d, want both non-zero — Build must not be skipped",

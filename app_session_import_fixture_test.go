@@ -157,9 +157,9 @@ func (h importHome) claudeLinearSession(t *testing.T, sessionID string) string {
 	)
 }
 
-// claudeBranchedSession forks after the first answer: two leaves, so the
-// import produces two threads and only the file-order-last one carries the
-// session ref.
+// claudeBranchedSession forks after the first answer. Import must select the
+// file-order-last active leaf and produce one thread; branch-compatibility
+// tests use the inactive leaf to recreate rows written by older releases.
 func (h importHome) claudeBranchedSession(t *testing.T, sessionID string) string {
 	t.Helper()
 	return h.writeClaudeSession(t, sessionID,
@@ -270,16 +270,16 @@ func (h importHome) codexLinearSession(t *testing.T, threadID string) string {
 	return h.writeCodexRollout(t, threadID, lines...)
 }
 
-// codexFixtureTurn renders one complete turn: context, start, prompt, answer,
-// completion.
+// codexFixtureTurn renders one complete turn in current Codex order: start,
+// context, prompt, answer, completion.
 func codexFixtureTurn(t *testing.T, turnID, prompt, answer string, offset int64) []string {
 	t.Helper()
 	return []string{
-		codexFixtureLine(t, offset, "turn_context", map[string]any{
-			"turn_id": turnID, "model": "gpt-5.6-sol", "effort": "high",
-		}),
-		codexFixtureLine(t, offset+10, "event_msg", map[string]any{
+		codexFixtureLine(t, offset, "event_msg", map[string]any{
 			"type": "task_started", "turn_id": turnID, "model_context_window": 258400,
+		}),
+		codexFixtureLine(t, offset+10, "turn_context", map[string]any{
+			"turn_id": turnID, "model": "gpt-5.6-sol", "effort": "high",
 		}),
 		codexFixtureLine(t, offset+20, "event_msg", map[string]any{
 			"type": "user_message", "message": prompt,

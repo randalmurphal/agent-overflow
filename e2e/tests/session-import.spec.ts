@@ -29,6 +29,9 @@ import {
   BRANCH_B_THINKING_PREFIX,
   CODEX_ANSWER,
   CODEX_PROMPT,
+  FORK_CHILD_ANSWER,
+  FORK_CHILD_PROMPT,
+  FORK_SHARED_ANSWER,
   growLinearClaudeSession,
   seedImportFixtures,
   type FixtureSession,
@@ -52,6 +55,11 @@ interface ImportedItemIdentity {
   id: string;
   kind: string;
   payloadId?: string;
+}
+
+interface ImportedThreadLineage {
+  id: string;
+  forkedFromThreadId?: string;
 }
 
 const openImportModal = async (page: Page) => {
@@ -198,9 +206,8 @@ test('importing a selection creates the threads and renders their history', asyn
   expect(rows.get(fx.claudeLinear.rowId)?.status).toBe('imported');
   expect(rows.get(fx.codex.rowId)?.status).toBe('imported');
 
-  // A clean run closes its own surface and reports in a toast; the thread
-  // count in it is the run's, not the catalogue's (a Claude row cannot know
-  // its branch count before the import reads the file).
+  // A clean run closes its own surface and reports the threads actually
+  // created rather than inferring success from the selected-row count.
   await expect(page.getByTestId('session-import-body')).toHaveCount(0);
   await expect(page.getByText('Imported 2 sessions (2 threads).')).toBeVisible();
 
@@ -224,7 +231,7 @@ test('importing a selection creates the threads and renders their history', asyn
   await expect(page.getByText(CODEX_ANSWER)).toBeVisible();
 });
 
-test('a multi-leaf Claude transcript imports as one thread per branch', async ({
+test('a multi-leaf Claude transcript imports one coherent active thread', async ({
   harness,
   page,
 }) => {
@@ -233,50 +240,85 @@ test('a multi-leaf Claude transcript imports as one thread per branch', async ({
   await openImportModal(page);
 
   const { rows } = await importRows(page, harness, [fx.claudeBranched]);
-  // The row's own frame is where the real branch count lands: the catalogue
-  // reports 0 (not determined) for every Claude row.
-  const branchThreadIDs = rows.get(fx.claudeBranched.rowId)?.threadIds ?? [];
-  expect(branchThreadIDs).toHaveLength(2);
-  await expect(page.getByText('Imported 1 session (2 threads).')).toBeVisible();
+  const threadIDs = rows.get(fx.claudeBranched.rowId)?.threadIds ?? [];
+  expect(threadIDs).toHaveLength(1);
+  await expect(page.getByText('Imported 1 session (1 thread).')).toBeVisible();
 
-  // Pin the collision precondition instead of trusting fixture comments: both
-  // branches really did mint the same logical item and payload ids. Only the
-  // thread key distinguishes their intentionally different full bodies.
-  const branchThinkingItems = await Promise.all(
-    branchThreadIDs.map(async (threadID) => {
-      const items = await harness.rpc<ImportedItemIdentity[] | null>('ListItems', threadID);
-      const thinking = (items ?? []).filter((item) => item.kind === 'thinking');
-      expect(thinking).toHaveLength(1);
-      return thinking[0]!;
-    }),
-  );
-  expect(branchThinkingItems[0].id).toBe(branchThinkingItems[1].id);
-  expect(branchThinkingItems[0].payloadId).toBe(branchThinkingItems[1].payloadId);
-  expect(branchThinkingItems[0].payloadId).toBe('thinking:think:2:0');
+  const items = await harness.rpc<ImportedItemIdentity[] | null>('ListItems', threadIDs[0]);
+  const thinking = (items ?? []).filter((item) => item.kind === 'thinking');
+  expect(thinking).toHaveLength(1);
+  expect(thinking[0]?.payloadId).toBe('thinking:think:2:0');
 
-  const [abandoned, active] = fx.branchThreadTitles;
-  await expect(threadRow(page, abandoned)).toBeVisible();
-  await expect(threadRow(page, active)).toBeVisible();
+  // A provider session has one stable AO identity regardless of how many
+  // abandoned leaves its transcript retains. Branch prompts never become
+  // sibling sidebar rows or leak into the imported thread's title.
+  await expect(page.getByTestId('thread-row')).toHaveCount(1);
+  await expect(threadRow(page, fx.claudeBranched.title)).toBeVisible();
+  await expect(page.getByTestId('thread-row')).not.toContainText('Document the parser');
+  await expect(page.getByTestId('thread-row')).not.toContainText('Benchmark the parser');
 
-  // Each branch is its own conversation: the shared prefix is in both, the
-  // divergent answer only in its own.
-  await threadRow(page, abandoned).click();
+  // The active chain is coherent: shared ancestry and the current continuation
+  // render, while the abandoned sibling never enters the timeline.
+  await threadRow(page, fx.claudeBranched.title).click();
   await expect(page.getByText('Parsed it.')).toBeVisible();
-  await expect(page.getByText('Documented the parser.')).toBeVisible();
-  await expect(page.getByText('Benchmarked the parser at 120ns/op.')).toHaveCount(0);
-  await expect(page.getByTestId('thinking-body')).not.toContainText(BRANCH_A_THINKING_PREFIX);
-  await expectThinkingPayload(page, BRANCH_A_THINKING_PREFIX, BRANCH_B_THINKING_PREFIX);
-
-  await threadRow(page, active).click();
   await expect(page.getByText('Benchmarked the parser at 120ns/op.')).toBeVisible();
+  await expect(page.getByText('Documented the parser.')).toHaveCount(0);
   await expectThinkingPayload(page, BRANCH_B_THINKING_PREFIX, BRANCH_A_THINKING_PREFIX);
+});
 
-  // Switch back after both payloads occupied the frontend cache. The two rows
-  // intentionally have the same logical payload id, so this catches a cache
-  // keyed by payload alone just as the assertions above catch an unscoped
-  // backend lookup.
-  await threadRow(page, abandoned).click();
-  await expectThinkingPayload(page, BRANCH_A_THINKING_PREFIX, BRANCH_B_THINKING_PREFIX);
+test('an explicit Claude fork imports both histories and exposes navigable lineage', async ({
+  harness,
+  page,
+}) => {
+  const fx = await seedImportFixtures(harness, { withForkedSession: true });
+  const fork = fx.claudeFork;
+  if (!fork) throw new Error('fixture did not write the explicit fork session');
+  await page.goto(harness.url);
+  await openImportModal(page);
+
+  await expect(page.getByTestId(fx.claudeLinear.rowTestId)).toBeVisible();
+  await expect(page.getByTestId(fork.rowTestId)).toBeVisible();
+  const { rows } = await importRows(page, harness, [fork, fx.claudeLinear]);
+  const parentIDs = rows.get(fx.claudeLinear.rowId)?.threadIds ?? [];
+  const childIDs = rows.get(fork.rowId)?.threadIds ?? [];
+  expect(parentIDs).toHaveLength(1);
+  expect(childIDs).toHaveLength(1);
+
+  // The backend relation is exact even though the concurrent import run may
+  // finish parent or child first.
+  const stored = await harness.rpc<ImportedThreadLineage[]>('ListThreads');
+  const child = stored.find((thread) => thread.id === childIDs[0]);
+  expect(child?.forkedFromThreadId).toBe(parentIDs[0]);
+
+  const parentRow = threadRow(page, fx.claudeLinear.title);
+  const childRow = threadRow(page, fork.title);
+  await expect(parentRow).toBeVisible();
+  await expect(childRow).toBeVisible();
+  const lineage = childRow.getByTestId('thread-row-fork-lineage');
+  await expect(lineage).toBeEnabled();
+  await expect(lineage).toHaveAttribute(
+    'aria-label',
+    `Open fork parent ${fx.claudeLinear.title}`,
+  );
+  const history = page.getByRole('log', { name: 'Message History' });
+
+  await parentRow.click();
+  await expect(history.getByText(FORK_SHARED_ANSWER)).toBeVisible();
+  await expect(history.getByText(FORK_CHILD_PROMPT)).toHaveCount(0);
+  await expect(history.getByText(FORK_CHILD_ANSWER)).toHaveCount(0);
+
+  await childRow.click();
+  await expect(history.getByText(FORK_SHARED_ANSWER)).toBeVisible();
+  await expect(history.getByText(FORK_CHILD_PROMPT)).toBeVisible();
+  await expect(history.getByText(FORK_CHILD_ANSWER)).toBeVisible();
+
+  // The sidebar affordance must use the imported relation, not merely draw
+  // an icon: clicking it opens the parent and removes the child's divergent
+  // continuation from the visible timeline.
+  await lineage.click();
+  await expect(history.getByText(FORK_SHARED_ANSWER)).toBeVisible();
+  await expect(history.getByText(FORK_CHILD_PROMPT)).toHaveCount(0);
+  await expect(history.getByText(FORK_CHILD_ANSWER)).toHaveCount(0);
 });
 
 test('sessions already imported are gone from the next scan', async ({ harness, page }) => {
@@ -289,7 +331,7 @@ test('sessions already imported are gone from the next scan', async ({ harness, 
   await page.getByTestId('session-import-confirm').click();
   expect((await done).completed).toBe(3);
   await expect(page.getByTestId('session-import-body')).toHaveCount(0);
-  await expect(page.getByText('Imported 3 sessions (4 threads).')).toBeVisible();
+  await expect(page.getByText('Imported 3 sessions (3 threads).')).toBeVisible();
 
   // Reopening rescans (a run invalidates both caches), and the dedup set —
   // the source session ids the import recorded — subtracts every row.
@@ -351,7 +393,7 @@ test('Check for Provider Updates appends what the session file grew', async ({
 
   // The check builds the rows an apply WOULD write, so the dialog's counts
   // are exact rather than estimated.
-  const dialog = page.getByRole('dialog').filter({ hasText: 'Import New Items' });
+  const dialog = page.getByRole('dialog', { name: 'Import Provider Updates' });
   await expect(dialog).toContainText('2 new messages and 1 turn can be added from the session file.');
   await dialog.getByRole('button', { name: 'Import', exact: true }).click();
 

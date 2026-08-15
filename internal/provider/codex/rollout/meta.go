@@ -49,12 +49,11 @@ const (
 // ReadSessionMeta reads ONLY the accepted session_meta from the head of a
 // rollout, without parsing the file.
 //
-// This is what the import orchestrator uses to exclude fork ancestors: a
-// candidate whose `forked_from_id` names another candidate means the two are
-// the same conversation, and importing both would duplicate it. Answering
-// that for every candidate must not cost a full parse of every rollout, so
-// this stops at the first matching meta line and never reads past the head
-// bound.
+// This is what the import orchestrator uses to recover explicit-fork lineage
+// and the session origin marker without fully parsing every candidate.
+// A `forked_from_id` does not make either session disposable: both ids are
+// independently resumable even though their files share history. This stops
+// at the first matching meta line and never reads past the head bound.
 //
 // sessionID is the uuid from the file name — the meta authority. A file
 // carrying a meta line for some OTHER session (the source's meta, embedded by

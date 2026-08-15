@@ -45,12 +45,15 @@ root `CLAUDE.md` principle 3.
   co-located — split by responsibility, not visibility.
 - `threads.go` / `thread_view.go` / `thread_forks.go` — threads table
   plus the `ThreadView` translation layer that hydrates `SessionOptions`
-  for the provider packages. Two writers here are reached by callers
+  for the provider packages. Three writers here are reached by callers
   that hold no lock and can land after someone else rewrote the row,
   and each carries its own guard rather than erroring — a lost race is
   a normal outcome:
   - `UpdateTitleIfCurrent` (auto-title vs. a manual rename) is a
     compare-and-swap on the title and returns "applied".
+  - `CompareAndSwapModelProfile` (an import-profile repair vs. a newer user
+    selection) guards all four model fields and returns "applied". A lost
+    race is success with no write: the user's current choice owns the row.
   - `UpdateBranchForWorkspace` (an async observed-branch persist vs. a
     worktree switch, which rewrites `workspace_path` and `branch`
     together under `threadLocks`) is keyed on the WORKSPACE, and that
@@ -682,8 +685,8 @@ global live upsert had already overwritten.
 
 ## Recent schema changes (v61) — shared immutable import history
 
-Claude branches repeat their full prefix, sometimes across tens or hundreds of
-threads. Imported rows therefore live in content-addressed, complete-turn
+Provider forks and copied sessions can repeat large stretches of history.
+Imported rows therefore live in content-addressed, complete-turn
 chunks (`import_history_chunks` plus item/payload children) and threads attach
 them through `thread_import_chunks`. The mutable `items` / `payloads` tables
 remain the thread-owned overlay. All logical history reads use
@@ -700,11 +703,8 @@ rejected by triggers, so safety does not depend on every caller remembering the
 layout.
 
 `ApplyImportBatch` hashes thread-neutral chunk content and reuses an existing
-chunk only after verifying its recorded shape. Claude branch import goes one
-step further: it clones an already committed complete-turn prefix and converts
-only the divergent suffix. Turns and usage stay thread-owned because the final
-shared turn's completion/usage timestamp is the target branch's next prompt,
-not the donor branch's. Deleting the final thread reference collects the chunk.
+chunk only after verifying its recorded shape. Turns and usage stay
+thread-owned. Deleting the final thread reference collects the chunk.
 
 ## Recent schema changes (v62) — thread-scoped turn identity
 
@@ -790,9 +790,15 @@ an empty `provider_turn_id`.
   where a byte offset says nothing about conversation position.
   `last_source_offset` is Codex's anchor and stays 0 for Claude
   (append-only JSONL, so a tail read is the cheap refresh and a SHRUNK file
-  is the diverged-source signal). `leaf_uuid` records which Claude branch a
-  thread was cut from, because one session file can produce several
-  threads.
+  is the diverged-source signal). `leaf_uuid` records the active Claude
+  branch selected for the provider session; one transcript may retain many
+  inactive alternatives, but current import materializes only the branch
+  Claude resumes. `source_parent_session_id` (v63) is the provider's durable
+  explicit-fork parent id. `ReconcileImportedForkLineage` resolves it to
+  `threads.forked_from_thread_id` independently of import order; unresolved
+  parents remain durable, deletion clears the FK, and re-import relinks it.
+  Only explicit Claude `forkedFrom.sessionId` / Codex `forked_from_id` values
+  land here — Codex `parent_thread_id` is spawned-child provenance.
 - `last_turn_index` + `last_item_index` are ONE cursor, and both default to
   **-1**, not 0. They are a pair because `items.item_index` restarts at 0 in
   every turn (that is what `nextItemIndexTx` allocates), so a lone item index
@@ -812,7 +818,12 @@ an empty `provider_turn_id`.
   fork that has never been resumed has a session file on disk and no
   `session_ref` at all, so a `session_ref`-only check would offer it for
   import. Deleting a thread drops its entry, which is what makes the source
-  session importable again.
+  session importable again. Keys are `(normalized provider, session id)`, so
+  the same id under Claude and Codex remains two independent conversations;
+  `claude-tui` normalizes to `claude` because it drives Claude's session files.
+  Migration v63 prevents NEW duplicate imported source claims with triggers
+  while preserving legacy duplicates so an upgrade cannot make the store
+  unopenable.
 - `ApplyImportBatch` writes turns → completions → payloads → items → usage in
   ONE transaction, and deliberately does not touch `threads.updated_at` or
   thread activity: an import replays history that already happened, and

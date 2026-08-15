@@ -199,8 +199,165 @@ func TestRefreshAppendsACodexTailThatOpensANewTurn(t *testing.T) {
 	if !update.Appliable() {
 		t.Fatalf("status = %q (%s), want updates-available", update.Status, update.Detail)
 	}
-	if _, _, err := ApplyUpdate(d, update); err != nil {
+	if _, err := ApplyUpdate(d, update); err != nil {
 		t.Fatalf("ApplyUpdate: %v", err)
 	}
 	assertTurnCount(t, d, threadID, 2)
+}
+
+func TestRefreshRepairsAnOlderCodexImportWithoutReplayingHistory(t *testing.T) {
+	st := newTestStore(t)
+	homes := newProviderHomes(t)
+	homes.writeCodexIndex(t, codexThreadA)
+	homes.codexLinearSession(t, codexThreadA)
+	d := homes.deps(st)
+	threadID := importOneCodexFixture(t, d)
+	before, found, err := st.GetThreadImportState(threadID)
+	if err != nil || !found {
+		t.Fatalf("GetThreadImportState before repair: found=%v err=%v", found, err)
+	}
+	if err := st.UpdateModel(threadID, ""); err != nil {
+		t.Fatalf("clear model to simulate an older import: %v", err)
+	}
+
+	update, err := PlanUpdate(context.Background(), d, threadID)
+	if err != nil {
+		t.Fatalf("PlanUpdate: %v", err)
+	}
+	if !update.Appliable() || update.NewItems != 0 || update.NewTurns != 0 {
+		t.Fatalf("repair plan = status:%q items:%d turns:%d detail:%q",
+			update.Status, update.NewItems, update.NewTurns, update.Detail)
+	}
+	result, err := ApplyUpdate(d, update)
+	if err != nil {
+		t.Fatalf("ApplyUpdate: %v", err)
+	}
+	if !result.RestoredModelProfile {
+		t.Fatal("ApplyUpdate did not report the model-profile repair")
+	}
+	thread, err := st.GetThread(threadID)
+	if err != nil {
+		t.Fatalf("GetThread: %v", err)
+	}
+	if thread.Model != "gpt-5.6-sol" || thread.ReasoningEffort != "high" {
+		t.Fatalf("repaired profile = %q/%q", thread.Model, thread.ReasoningEffort)
+	}
+	after, found, err := st.GetThreadImportState(threadID)
+	if err != nil || !found {
+		t.Fatalf("GetThreadImportState after repair: found=%v err=%v", found, err)
+	}
+	if after.LastTurnIndex != before.LastTurnIndex || after.LastItemIndex != before.LastItemIndex ||
+		after.LastSourceUUID != before.LastSourceUUID || after.LastSourceOffset != before.LastSourceOffset {
+		t.Fatalf("profile-only repair moved the import cursor: before=%+v after=%+v", before, after)
+	}
+	assertTurnCount(t, d, threadID, 1)
+}
+
+func TestRefreshProfileRepairDoesNotOverwriteANewerUserSelection(t *testing.T) {
+	st := newTestStore(t)
+	homes := newProviderHomes(t)
+	homes.writeCodexIndex(t, codexThreadA)
+	homes.codexLinearSession(t, codexThreadA)
+	d := homes.deps(st)
+	threadID := importOneCodexFixture(t, d)
+	if err := st.UpdateModel(threadID, ""); err != nil {
+		t.Fatalf("clear model: %v", err)
+	}
+	update, err := PlanUpdate(context.Background(), d, threadID)
+	if err != nil {
+		t.Fatalf("PlanUpdate: %v", err)
+	}
+	if err := st.UpdateModel(threadID, "gpt-user-choice"); err != nil {
+		t.Fatalf("record newer user choice: %v", err)
+	}
+	result, err := ApplyUpdate(d, update)
+	if err != nil {
+		t.Fatalf("ApplyUpdate: %v", err)
+	}
+	if result.RestoredModelProfile {
+		t.Fatal("stale repair reported a profile change after compare-and-swap lost")
+	}
+	thread, err := st.GetThread(threadID)
+	if err != nil {
+		t.Fatalf("GetThread: %v", err)
+	}
+	if thread.Model != "gpt-user-choice" {
+		t.Fatalf("model = %q, want the newer user selection", thread.Model)
+	}
+}
+
+func TestRefreshWithNewHistoryPreservesAnExistingModelSelection(t *testing.T) {
+	st := newTestStore(t)
+	homes := newProviderHomes(t)
+	homes.writeCodexIndex(t, codexThreadA)
+	path := homes.codexLinearSession(t, codexThreadA)
+	d := homes.deps(st)
+	threadID := importOneCodexFixture(t, d)
+	if err := st.UpdateModel(threadID, "gpt-user-choice"); err != nil {
+		t.Fatalf("record user model selection: %v", err)
+	}
+
+	appendRolloutLines(t, path,
+		codexLine(900, "event_msg", map[string]any{
+			"type": "task_started", "turn_id": "turn-2", "model_context_window": 200000,
+		}),
+		codexLine(1_000, "turn_context", map[string]any{
+			"turn_id": "turn-2", "model": "gpt-5.4", "effort": "xhigh",
+		}),
+		codexLine(1_100, "event_msg", map[string]any{
+			"type": "user_message", "message": "continued outside AO",
+		}),
+		codexLine(1_200, "event_msg", map[string]any{
+			"type": "task_complete", "turn_id": "turn-2", "last_agent_message": "done",
+		}),
+	)
+	update, err := PlanUpdate(context.Background(), d, threadID)
+	if err != nil {
+		t.Fatalf("PlanUpdate: %v", err)
+	}
+	if !update.Appliable() || update.RestoresModelProfile() {
+		t.Fatalf("update = status:%q restore-profile:%v", update.Status, update.RestoresModelProfile())
+	}
+	result, err := ApplyUpdate(d, update)
+	if err != nil {
+		t.Fatalf("ApplyUpdate: %v", err)
+	}
+	if result.RestoredModelProfile {
+		t.Fatal("history refresh reported an unrequested profile change")
+	}
+	thread, err := st.GetThread(threadID)
+	if err != nil {
+		t.Fatalf("GetThread: %v", err)
+	}
+	if thread.Model != "gpt-user-choice" {
+		t.Fatalf("model = %q, want the existing selection", thread.Model)
+	}
+	assertTurnCount(t, d, threadID, 2)
+}
+
+func TestClaudeRefreshDoesNotMistakeTheHistoricalProfileForARepair(t *testing.T) {
+	st := newTestStore(t)
+	homes := newProviderHomes(t)
+	homes.claudeLinearSession(t, claudeSessionA)
+	d := homes.deps(st)
+	outcome := importFixtureRow(t, d, scanOne(t, d, ProviderClaude))
+	threadID := outcome.Threads[0].ID
+	if err := st.UpdateModel(threadID, "claude-user-choice"); err != nil {
+		t.Fatalf("record user model selection: %v", err)
+	}
+
+	update, err := PlanUpdate(context.Background(), d, threadID)
+	if err != nil {
+		t.Fatalf("PlanUpdate: %v", err)
+	}
+	if update.Status != UpdateUpToDate {
+		t.Fatalf("status = %q (%s), want up-to-date", update.Status, update.Detail)
+	}
+	thread, err := st.GetThread(threadID)
+	if err != nil {
+		t.Fatalf("GetThread: %v", err)
+	}
+	if thread.Model != "claude-user-choice" {
+		t.Fatalf("model = %q, want the user's selection", thread.Model)
+	}
 }

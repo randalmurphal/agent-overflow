@@ -20,7 +20,8 @@ itself — the home is always injected by the caller.
 | `parse.go` | `Parse` — the two-pass orchestration and the resume-offset contract. |
 | `convert.go` | Converter state, `emit`/`lineUUID`, content-row emitters, compaction. |
 | `dispatch.go` | `event_msg` / `response_item` payload dispatch. |
-| `turns.go` | Turn lifecycle, synthetic turns, cumulative→per-turn usage. |
+| `turns.go` | Turn lifecycle, synthetic turns, model profile, cumulative→per-turn usage. |
+| `profile.go` | Constant-memory latest-profile scan used only to repair older imports. |
 | `tools.go` | Tool-call open/settle correlation by `call_id`. |
 | `tool_ends.go` | `*_end` records: enrichment, self-contained rows, orphan markers. |
 | `collab.go` | Sub-agent activity, inter-agent delivery, MultiAgentV1 `collab_*_end`. |
@@ -114,6 +115,19 @@ and counted in `CorruptLines`.
    (`TestParseTailRefreshDoesNotDuplicateADividerAcrossTheCursor`).
 2. **Convert** — seeks to `FromOffset` and emits.
 
+`ParseResult.Profile` is session state beside that event stream: the newest
+model / effort / context window the converted region recorded. It is updated
+directly from `turn_context`, `task_started`, and `token_count`, never inferred
+from usage. Released Codex versions have written `turn_context` both BEFORE
+and AFTER `task_started`; the late form patches the already-emitted turn-start
+meta as well as the profile. An aborted turn with no token count therefore
+still keeps its model.
+
+`ReadLatestProfile` is the constant-memory full-file variant used only when a
+refresh encounters an older imported thread whose model is empty. Ordinary
+imports get the same answer during their existing Parse pass and must not pay
+for a second scan.
+
 Only the `session_meta` whose `payload.id` equals `ParseOptions.SessionID` is
 accepted. A fork embeds its source's meta line, so accepting the first one
 seen would attribute the fork to its parent's cwd, git branch and creation
@@ -201,7 +215,7 @@ import writer.
 | `status`, `title` | notification | Thread-goal status; review-status title. |
 | `source`, `files`, `mcpServer`, `mcpTool`, `query` | tool complete | End-record detail per tool family. |
 | `codexErrorInfo` | error | Codex's structured error detail alongside the message. |
-| `model`, `effort`, `cwd`, `contextWindow` | turn start | Seeded from `turn_context`. |
+| `model`, `effort`, `cwd`, `contextWindow` | turn start | Seeded or backfilled from `turn_context`, regardless of its order relative to `task_started`. |
 | **`import_synthetic_turn`** | turn start | This turn has no `task_started` line; the parser opened it so content outside a turn is not dropped. |
 | **`import_unresolved`** | tool complete | The call never got an output line and the file gave no terminal status. No status is invented. |
 | `import_unavailable: "exec-detail"` | tool complete | Contract key: an end record named a call outside the imported range. |

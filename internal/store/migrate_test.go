@@ -4052,6 +4052,62 @@ func TestMigrationV62ScopesLegacyTurnIDsAndTheirUsage(t *testing.T) {
 	}
 }
 
+func TestMigrationV63AddsForkProvenanceWithoutRejectingLegacyDuplicates(t *testing.T) {
+	db := migrateThrough(t, 62)
+	mustExec(t, db, `INSERT INTO projects (id, path, name, created_at, updated_at)
+		VALUES ('project-v63', '/tmp/v63', 'V63', 1, 1)`)
+	for _, threadID := range []string{"legacy-a", "legacy-b", "new-thread"} {
+		mustExec(t, db, `INSERT INTO threads (
+			id, project_id, title, provider, workspace_path, created_at, updated_at, import_source
+		) VALUES (?, 'project-v63', 'V63', 'claude', '/tmp/v63', 1, 1, 'claude')`, threadID)
+	}
+	// Old Claude branch fan-out could legitimately leave this duplicate pair.
+	// Forward migration must not make the application unbootable because of it.
+	for _, threadID := range []string{"legacy-a", "legacy-b"} {
+		mustExec(t, db, `INSERT INTO thread_import_state (
+			thread_id, provider, source_path, source_session_id, imported_at
+		) VALUES (?, 'claude', '/tmp/v63/session.jsonl', 'legacy-session', 1)`, threadID)
+	}
+
+	if err := applyMigration(db, migrationByVersion(t, 63)); err != nil {
+		t.Fatalf("apply migration v63 over legacy duplicates: %v", err)
+	}
+
+	var parent string
+	if err := db.QueryRow(`SELECT source_parent_session_id FROM thread_import_state
+		WHERE thread_id = 'legacy-a'`).Scan(&parent); err != nil {
+		t.Fatalf("read backfilled parent provenance: %v", err)
+	}
+	if parent != "" {
+		t.Fatalf("backfilled parent provenance = %q, want empty", parent)
+	}
+	// Ordinary refresh uses the production INSERT ... ON CONFLICT shape. Its
+	// BEFORE INSERT trigger must recognize the thread's existing identical
+	// claim before SQLite reaches conflict handling, or legacy rows would be
+	// readable after migration but impossible to refresh.
+	if _, err := db.Exec(`INSERT INTO thread_import_state (
+		thread_id, provider, source_path, source_session_id, imported_at, refreshed_at
+	) VALUES ('legacy-a', 'claude', '/tmp/v63/session.jsonl', 'legacy-session', 1, 2)
+	ON CONFLICT(thread_id) DO UPDATE SET refreshed_at = excluded.refreshed_at`); err != nil {
+		t.Fatalf("upsert refresh legacy duplicate: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO thread_import_state (
+		thread_id, provider, source_path, source_session_id, imported_at
+	) VALUES ('new-thread', 'claude', '/tmp/v63/new.jsonl', 'legacy-session', 2)`); err == nil {
+		t.Fatal("v63 accepted a new duplicate provider session claim")
+	}
+	for _, index := range []string{"idx_thread_import_state_parent", "idx_thread_import_state_source"} {
+		var indexes int
+		if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master
+			WHERE type = 'index' AND name = ?`, index).Scan(&indexes); err != nil {
+			t.Fatalf("probe index %s: %v", index, err)
+		}
+		if indexes != 1 {
+			t.Fatalf("index %s count = %d, want 1", index, indexes)
+		}
+	}
+}
+
 func TestMigrationV56SplitsRetryReasonsWithoutGuessingLegacyRows(t *testing.T) {
 	db := migrateThrough(t, 55)
 	mustExec(t, db, `INSERT INTO work_items

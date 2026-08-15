@@ -93,12 +93,20 @@ export async function applyThreadImportUpdatesAction(ctx: ThreadActionCtx): Prom
   const threadId = ctx.thread.id;
   try {
     const result = await ImportThreadUpdates(threadId);
-    // Both halves of what landed: items are what the timeline gains, turns
-    // are how many exchanges they came from. Reporting only the item count
-    // discards a number the backend already computed and the user can see
-    // in the thread a moment later.
-    const across = result.appliedTurns > 0 ? ` across ${countNoun(result.appliedTurns, 'turn')}` : '';
-    addToast('info', `Imported ${countNoun(result.appliedItems, 'new item')}${across}.`);
+    if (result.restoredModelProfile && result.appliedItems === 0) {
+      addToast('info', 'Restored the model settings recorded in the provider session.');
+    } else {
+      // Both halves of what landed: items are what the timeline gains, turns
+      // are how many exchanges they came from. Reporting only the item count
+      // discards a number the backend already computed and the user can see
+      // in the thread a moment later.
+      const across =
+        result.appliedTurns > 0
+          ? ` across ${countNoun(result.appliedTurns, 'turn')}`
+          : '';
+      const restored = result.restoredModelProfile ? ' Restored its recorded model settings.' : '';
+      addToast('info', `Imported ${countNoun(result.appliedItems, 'new item')}${across}.${restored}`);
+    }
   } catch (err) {
     console.error('Failed to import provider updates:', err);
     addToast('error', userFacingError(err));

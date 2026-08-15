@@ -112,12 +112,6 @@ func TestListImportableSessionsReportsBothProviders(t *testing.T) {
 	if !ok {
 		t.Fatalf("rows = %+v, want the codex row keyed provider:sessionID", result.Rows)
 	}
-	if claudeRow.BranchCount != 0 {
-		t.Errorf("claude branchCount = %d, want 0 (not determined at list time)", claudeRow.BranchCount)
-	}
-	if codexRow.BranchCount != 1 {
-		t.Errorf("codex branchCount = %d, want 1 (a rollout is one conversation)", codexRow.BranchCount)
-	}
 	for _, row := range []ImportableSession{claudeRow, codexRow} {
 		if row.ProjectPath != home.workspace {
 			t.Errorf("%s projectPath = %q, want the session cwd %q", row.ID, row.ProjectPath, home.workspace)
@@ -428,6 +422,43 @@ func TestImportSessionsSkipsAlreadyImportedSessions(t *testing.T) {
 	}
 	if len(threads) != 1 {
 		t.Fatalf("threads = %d, want the second run to create nothing", len(threads))
+	}
+}
+
+func TestImportSessionsReportsMetadataOnlyActiveHistoryAsSkipped(t *testing.T) {
+	app := newTestAppWithStore(t)
+	home := newImportHome(t)
+	home.attach(app)
+	const sessionID = "dddddddd-4444-4444-8444-dddddddddddd"
+	home.writeClaudeSession(t, sessionID,
+		home.claudeUserRow("u1", "", "inactive conversation", 0),
+		home.claudeAssistantRow("a1", "u1", "msg-1", "Inactive answer.", 1_000),
+		// The last leaf is the session's active chain and contains no event the
+		// importer can render. The inactive conversation must not substitute.
+		map[string]any{
+			"type": "attachment", "uuid": "att1", "parentUuid": nil,
+			"isSidechain": false, "timestamp": importFixtureISO(2_000),
+			"cwd":        home.workspace,
+			"attachment": map[string]any{"type": "file_history", "content": "…"},
+		},
+	)
+
+	if _, err := app.ListImportableSessions(ImportScanRequest{}); err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	frames := runImport(t, app, "claude:"+sessionID)
+	if frames[0].Status != sessionImportStatusSkipped || frames[0].Error == "" {
+		t.Fatalf("frame = %+v, want a user-visible skipped outcome", frames[0])
+	}
+	if len(frames[0].ThreadIDs) != 0 {
+		t.Fatalf("thread ids = %v, want none", frames[0].ThreadIDs)
+	}
+	threads, err := app.store.ListThreads()
+	if err != nil {
+		t.Fatalf("ListThreads: %v", err)
+	}
+	if len(threads) != 0 {
+		t.Fatalf("threads = %d, want none", len(threads))
 	}
 }
 

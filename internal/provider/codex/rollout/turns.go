@@ -32,13 +32,16 @@ type openTurn struct {
 	// synthetic marks a turn opened because content arrived with no
 	// `task_started` — see ensureTurn.
 	synthetic bool
+	// startEvent is the emitted EventTurnStart index. Codex has shipped both
+	// task_started→turn_context and turn_context→task_started orderings, so a
+	// later context record must be able to enrich the already-emitted event.
+	startEvent int
 }
 
-// applyTurnContext records the per-turn configuration Codex persists just
-// before each real user turn. It arrives BEFORE the matching `task_started`
-// and carries the same `turn_id`, so it is held as pending state and applied
-// when the turn opens. The last one seen before the first turn also seeds the
-// thread's model and effort.
+// applyTurnContext records the per-turn configuration Codex persists around
+// each real user turn. Released CLIs have written it on both sides of the
+// matching `task_started`, so it both seeds a future turn and enriches an
+// already-open one. The latest value also becomes ParseResult.Profile.
 func (c *converter) applyTurnContext(env envelope) {
 	var p turnContextPayload
 	if json.Unmarshal(env.Payload, &p) != nil {
@@ -46,8 +49,10 @@ func (c *converter) applyTurnContext(env envelope) {
 		return
 	}
 	c.pendingCtx = p
+	c.profile.observeTurnContext(p)
 	if c.turn != nil && (c.turn.id == "" || c.turn.id == strings.TrimSpace(p.TurnID)) {
 		applyContextToTurn(c.turn, p)
+		c.refreshTurnStartMeta()
 	}
 }
 
@@ -70,6 +75,7 @@ func (c *converter) startTurn(env envelope) {
 		c.corrupt++
 		return
 	}
+	c.profile.observeTaskStarted(p)
 	turnID := strings.TrimSpace(p.TurnID)
 	if c.turn != nil {
 		if c.turn.id == turnID {
@@ -86,6 +92,7 @@ func (c *converter) startTurn(env envelope) {
 				c.turn.contextWindow = p.ModelContextWindow
 			}
 			applyContextToTurn(c.turn, c.pendingCtx)
+			c.refreshTurnStartMeta()
 			return
 		}
 		// A previous turn never reported its completion. Close it
@@ -140,13 +147,14 @@ func (c *converter) openTurnWith(turnID string, startedAt time.Time, synthetic b
 		startedAt = c.lastTimestamp
 	}
 	c.turn = &openTurn{
-		id:        turnID,
-		index:     c.turnIndex,
-		startedAt: startedAt,
-		model:     c.pendingCtx.Model,
-		effort:    c.pendingCtx.Effort,
-		cwd:       c.pendingCtx.Cwd,
-		synthetic: synthetic,
+		id:         turnID,
+		index:      c.turnIndex,
+		startedAt:  startedAt,
+		model:      c.pendingCtx.Model,
+		effort:     c.pendingCtx.Effort,
+		cwd:        c.pendingCtx.Cwd,
+		synthetic:  synthetic,
+		startEvent: -1,
 	}
 }
 
@@ -155,6 +163,17 @@ func (c *converter) openTurnWith(turnID string, startedAt time.Time, synthetic b
 // session handshake, not from the turn), so it rides in Meta — see the Meta
 // key table in this package's AGENTS.md.
 func (c *converter) emitTurnStart() {
+	c.turn.startEvent = len(c.events)
+	c.emit(provider.ProviderEvent{
+		Kind:      provider.EventTurnStart,
+		TurnID:    c.turn.id,
+		TurnIndex: c.turn.index,
+		Meta:      c.turnStartMeta(),
+		Timestamp: c.turn.startedAt,
+	})
+}
+
+func (c *converter) turnStartMeta() json.RawMessage {
 	meta := map[string]any{}
 	if c.turn.model != "" {
 		meta["model"] = c.turn.model
@@ -171,13 +190,14 @@ func (c *converter) emitTurnStart() {
 	if c.turn.synthetic {
 		meta["import_synthetic_turn"] = true
 	}
-	c.emit(provider.ProviderEvent{
-		Kind:      provider.EventTurnStart,
-		TurnID:    c.turn.id,
-		TurnIndex: c.turn.index,
-		Meta:      metaJSON(meta),
-		Timestamp: c.turn.startedAt,
-	})
+	return metaJSON(meta)
+}
+
+func (c *converter) refreshTurnStartMeta() {
+	if c.turn == nil || c.turn.startEvent < 0 || c.turn.startEvent >= len(c.events) {
+		return
+	}
+	c.events[c.turn.startEvent].Meta = c.turnStartMeta()
 }
 
 // completeTurn settles the open turn on `task_complete`.
@@ -293,6 +313,7 @@ func (c *converter) applyTokenCount(env envelope) {
 		c.corrupt++
 		return
 	}
+	c.profile.observeTokenCount(p)
 	if p.Info == nil || p.Info.TotalTokenUsage == nil {
 		return
 	}
@@ -301,6 +322,7 @@ func (c *converter) applyTokenCount(env envelope) {
 	c.turn.cumulative = &snapshot
 	if p.Info.ModelContextWindow > 0 && c.turn.contextWindow == 0 {
 		c.turn.contextWindow = p.Info.ModelContextWindow
+		c.refreshTurnStartMeta()
 	}
 }
 

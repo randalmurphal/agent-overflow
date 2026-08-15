@@ -267,6 +267,28 @@ describe('<ThreadContextMenu> Check for Provider Updates', () => {
     );
   });
 
+  it('presents a profile-only repair as a restore, not an empty import', async () => {
+    setBindingMock('CheckThreadImportUpdates', async () => ({
+      threadId: 'thread-1',
+      status: 'updates-available',
+      newItems: 0,
+      newTurns: 0,
+      restoresModelProfile: true,
+      detail: 'The model settings recorded in the session file can be restored.',
+    }));
+
+    const { getByRole, queryByRole } = renderMenu(makeThread({ importSource: 'codex' }));
+    await fireEvent.click(getByRole('menuitem', { name: 'Check for Provider Updates' }));
+    for (let i = 0; i < 5; i += 1) await Promise.resolve();
+    await tick();
+
+    expect(queryByRole('dialog')?.textContent).toContain('Restore Model Settings');
+    expect(queryByRole('dialog')?.textContent).toContain(
+      'The model settings recorded in the session file can be restored.',
+    );
+    expect(getByRole('button', { name: 'Restore' })).toBeInTheDocument();
+  });
+
   it('is disabled with a Local only tooltip in a view-only session', async () => {
     setViewOnlySessionFromBootstrap(true);
     const check = setBindingMock('CheckThreadImportUpdates', async () => ({

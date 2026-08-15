@@ -128,10 +128,9 @@
     }),
   );
 
-  // No thread figure: `branchCount` is 0 = undetermined for every Claude row
-  // (see sessionImportFilter.ts), and the real count is only knowable once
-  // the run reports it. The summary reads over the whole catalogue when a
-  // selection exists, because a selection survives filter changes.
+  // No separate thread figure: one selected provider session maps to one AO
+  // thread. The summary reads over the whole catalogue when a selection
+  // exists, because a selection survives filter changes.
   let summary = $derived(
     selection.size > 0 ? selectionSummary(rows, selection) : selectionSummary(filtered, filteredIds),
   );

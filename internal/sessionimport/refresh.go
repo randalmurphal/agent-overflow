@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"agent-overflow/internal/chatmodel"
 	"agent-overflow/internal/importir"
 	claudesessions "agent-overflow/internal/provider/claude/sessionimport"
 	"agent-overflow/internal/provider/codex/rollout"
@@ -22,7 +23,7 @@ const (
 	UpdateNotImported = "not-imported"
 	// UpdateUpToDate: the source file holds nothing this thread does not.
 	UpdateUpToDate = "up-to-date"
-	// UpdateAvailable: the source grew and the tail can be appended.
+	// UpdateAvailable: new history and/or a model-profile repair can be applied.
 	UpdateAvailable = "updates-available"
 	// UpdateDivergedLocal: the thread was resumed inside AO after it was
 	// imported, so its timeline and the file's are two different futures.
@@ -52,11 +53,13 @@ type Update struct {
 	NewTurns int
 	Warnings []importir.Warning
 
-	thread   store.Thread
-	state    store.ThreadImportState
-	batch    store.ImportBatch
-	cursor   Cursor
-	leafUUID string
+	thread         store.Thread
+	state          store.ThreadImportState
+	batch          store.ImportBatch
+	cursor         Cursor
+	leafUUID       string
+	targetProfile  store.Thread
+	profileChanged bool
 }
 
 // refusalError carries user-facing prose while still answering
@@ -93,8 +96,22 @@ func missingf(sourcePath string) error {
 	}
 }
 
-// Appliable reports whether ApplyUpdate would write anything.
+// Appliable reports whether ApplyUpdate would write history or restore the
+// provider-recorded model profile.
 func (u Update) Appliable() bool { return u.Status == UpdateAvailable }
+
+// RestoresModelProfile reports whether applying this plan would restore model,
+// effort, fast-mode, or context-window fields from the provider session.
+func (u Update) RestoresModelProfile() bool { return u.profileChanged }
+
+// ApplyResult reports what an update actually changed. RestoredModelProfile
+// can be false even when the plan offered a repair: the compare-and-swap
+// deliberately loses to a newer model selection made after planning.
+type ApplyResult struct {
+	Items                int
+	Turns                int
+	RestoredModelProfile bool
+}
 
 // PlanUpdate reads the source file behind an imported thread and works out
 // what a refresh would append.
@@ -144,10 +161,14 @@ func PlanUpdate(ctx context.Context, d Deps, threadID string) (Update, error) {
 				"Appending the session's newer messages would interleave two different conversations, so the refresh was refused.",
 		}, nil
 	}
+	thread, err := d.Store.GetThread(threadID)
+	if err != nil {
+		return Update{}, fmt.Errorf("sessionimport: load thread %s: %w", threadID, err)
+	}
 
-	// The tail runs BEFORE the thread row is loaded, and each provider owns
-	// its own path resolution: a Codex `source_path` has to pass the
-	// containment proof before it is stat'd at all (rollout/AGENTS.md — the
+	// Each provider owns its own path resolution: a Codex `source_path` has
+	// to pass the containment proof before it is stat'd at all
+	// (rollout/AGENTS.md — the
 	// check is lexical precisely so it runs before the file is touched), so
 	// there is no shared pre-stat to hoist up here.
 	var (
@@ -155,12 +176,13 @@ func PlanUpdate(ctx context.Context, d Deps, threadID string) (Update, error) {
 		warnings  []importir.Warning
 		leafUUID  string
 		endOffset int64
+		profile   importir.ModelProfile
 	)
 	switch state.Provider {
 	case ProviderClaude:
-		events, warnings, leafUUID, err = claudeTail(state)
+		events, warnings, leafUUID, profile, err = claudeTail(state)
 	case ProviderCodex:
-		events, warnings, endOffset, err = codexTail(ctx, d, state)
+		events, warnings, endOffset, profile, err = codexTail(ctx, d, state, thread.Model == "")
 	default:
 		err = fmt.Errorf("sessionimport: thread %s records unknown import provider %q", threadID, state.Provider)
 	}
@@ -181,11 +203,6 @@ func PlanUpdate(ctx context.Context, d Deps, threadID string) (Update, error) {
 		return Update{}, err
 	}
 
-	thread, err := d.Store.GetThread(threadID)
-	if err != nil {
-		return Update{}, fmt.Errorf("sessionimport: load thread %s: %w", threadID, err)
-	}
-
 	update := Update{
 		ThreadID: threadID,
 		Status:   UpdateUpToDate,
@@ -193,8 +210,17 @@ func PlanUpdate(ctx context.Context, d Deps, threadID string) (Update, error) {
 		thread:   thread,
 		state:    state,
 		leafUUID: leafUUID,
+		cursor:   CursorOf(state),
+	}
+	if thread.Model == "" {
+		update.targetProfile = applyRecordedProfile(thread, profile)
+		update.profileChanged = profile.Model != "" && !chatmodel.SameModelFields(thread, update.targetProfile)
 	}
 	if len(events) == 0 {
+		if update.profileChanged {
+			update.Status = UpdateAvailable
+			update.Detail = "The model settings recorded in the session file can be restored."
+		}
 		return update, nil
 	}
 
@@ -222,6 +248,11 @@ func PlanUpdate(ctx context.Context, d Deps, threadID string) (Update, error) {
 		// The tail was real but produced no rows (skipped reasoning blocks,
 		// unknown envelope types). There is nothing for the user to apply;
 		// the next check re-reads the same few lines and decides the same way.
+		if !update.profileChanged {
+			return update, nil
+		}
+		update.Status = UpdateAvailable
+		update.Detail = "The model settings recorded in the session file can be restored."
 		return update, nil
 	}
 	update.Status = UpdateAvailable
@@ -235,19 +266,29 @@ func PlanUpdate(ctx context.Context, d Deps, threadID string) (Update, error) {
 // It refuses anything but an appliable plan rather than silently doing
 // nothing: every other status is a condition the caller has to show the user,
 // and a no-op return would read as "refreshed" in the UI.
-func ApplyUpdate(d Deps, update Update) (int, int, error) {
+func ApplyUpdate(d Deps, update Update) (ApplyResult, error) {
 	if d.Store == nil {
-		return 0, 0, fmt.Errorf("sessionimport: update apply has no store")
+		return ApplyResult{}, fmt.Errorf("sessionimport: update apply has no store")
 	}
 	if !update.Appliable() {
 		detail := update.Detail
 		if detail == "" {
 			detail = "There is nothing new in the session file."
 		}
-		return 0, 0, errors.New(detail)
+		return ApplyResult{}, errors.New(detail)
 	}
-	if err := d.Store.ApplyImportBatch(update.thread.ID, update.batch); err != nil {
-		return 0, 0, err
+	if update.NewItems > 0 || update.NewTurns > 0 {
+		if err := d.Store.ApplyImportBatch(update.thread.ID, update.batch); err != nil {
+			return ApplyResult{}, err
+		}
+	}
+	result := ApplyResult{Items: update.NewItems, Turns: update.NewTurns}
+	if update.profileChanged {
+		applied, err := d.Store.CompareAndSwapModelProfile(update.thread, update.targetProfile)
+		if err != nil {
+			return ApplyResult{}, fmt.Errorf("sessionimport: restore model profile for %s: %w", update.thread.ID, err)
+		}
+		result.RestoredModelProfile = applied
 	}
 
 	state := update.state
@@ -262,9 +303,9 @@ func ApplyUpdate(d Deps, update Update) (int, int, error) {
 	// and the same allowed exception ImportedAt is.
 	state.RefreshedAt = time.Now().UnixMilli()
 	if err := d.Store.SetThreadImportState(state); err != nil {
-		return 0, 0, fmt.Errorf("sessionimport: advance cursor for %s: %w", update.thread.ID, err)
+		return ApplyResult{}, fmt.Errorf("sessionimport: advance cursor for %s: %w", update.thread.ID, err)
 	}
-	return update.NewItems, update.NewTurns, nil
+	return result, nil
 }
 
 // claudeTail re-reads a transcript and returns the events that follow this
@@ -282,35 +323,35 @@ func ApplyUpdate(d Deps, update Update) (int, int, error) {
 // property of the skeleton chains alone, and a check that converted every
 // branch would pay a whole import to answer "did anything change" — on a
 // file that is routinely hundreds of megabytes, on every context-menu open.
-func claudeTail(state store.ThreadImportState) ([]importir.Event, []importir.Warning, string, error) {
+func claudeTail(state store.ThreadImportState) ([]importir.Event, []importir.Warning, string, importir.ModelProfile, error) {
 	// A deleted transcript is a STATUS the user can act on, not the raw open
 	// error LoadSession would return, so it is asked about first.
 	if _, err := os.Stat(state.SourcePath); err != nil {
-		return nil, nil, "", missingf(state.SourcePath)
+		return nil, nil, "", importir.ModelProfile{}, missingf(state.SourcePath)
 	}
 	loaded, err := claudesessions.LoadSession(state.SourcePath)
 	if err != nil {
-		return nil, nil, "", fmt.Errorf("sessionimport: re-read %s: %w", state.SourcePath, err)
+		return nil, nil, "", importir.ModelProfile{}, fmt.Errorf("sessionimport: re-read %s: %w", state.SourcePath, err)
 	}
 	defer loaded.Close()
 
 	anchor := strings.TrimSpace(state.LeafUUID)
 	index, ok := claudeBranchFor(loaded.Branches, anchor)
 	if !ok {
-		return nil, nil, "", divergedf(
+		return nil, nil, "", importir.ModelProfile{}, divergedf(
 			"The imported branch is no longer in %s — the session file has been rewritten since the import.",
 			state.SourcePath)
 	}
 	branch, err := loaded.ConvertBranch(index)
 	if err != nil {
-		return nil, nil, "", fmt.Errorf("sessionimport: re-read %s: %w", state.SourcePath, err)
+		return nil, nil, "", importir.ModelProfile{}, fmt.Errorf("sessionimport: re-read %s: %w", state.SourcePath, err)
 	}
 	warnings := append(append([]importir.Warning(nil), loaded.Warnings...), branch.Warnings...)
 
 	cursor := strings.TrimSpace(state.LastSourceUUID)
 	if cursor == "" {
 		// Nothing was imported from this branch, so everything on it is new.
-		return branch.Events, warnings, branch.LeafUUID, nil
+		return branch.Events, warnings, branch.LeafUUID, branch.Profile, nil
 	}
 	last := -1
 	for i := range branch.Events {
@@ -319,11 +360,11 @@ func claudeTail(state store.ThreadImportState) ([]importir.Event, []importir.War
 		}
 	}
 	if last < 0 {
-		return nil, nil, "", divergedf(
+		return nil, nil, "", importir.ModelProfile{}, divergedf(
 			"The last imported message is no longer in %s — the session file has been rewritten since the import.",
 			state.SourcePath)
 	}
-	return branch.Events[last+1:], warnings, branch.LeafUUID, nil
+	return branch.Events[last+1:], warnings, branch.LeafUUID, branch.Profile, nil
 }
 
 // claudeBranchFor picks the branch a thread's refresh follows: the LAST
@@ -366,18 +407,26 @@ func claudeBranchFor(branches []claudesessions.Branch, anchorUUID string) (int, 
 // source-diverged, which is the honest answer: the file this thread was
 // imported from is not one this app can see.
 func codexTail(
-	ctx context.Context, d Deps, state store.ThreadImportState,
-) ([]importir.Event, []importir.Warning, int64, error) {
+	ctx context.Context, d Deps, state store.ThreadImportState, repairProfile bool,
+) ([]importir.Event, []importir.Warning, int64, importir.ModelProfile, error) {
 	sourcePath, err := rollout.PathInHome(d.CodexHome, state.SourcePath)
 	if err != nil {
-		return nil, nil, 0, divergedf(
+		return nil, nil, 0, importir.ModelProfile{}, divergedf(
 			"%s is not inside this machine's Codex home, so its history can no longer be read for this thread.",
 			state.SourcePath)
 	}
 	// Contained, so it may be stat'd: a deleted rollout is source-missing
 	// rather than the raw open error Parse would return.
-	if _, err := os.Stat(sourcePath); err != nil {
-		return nil, nil, 0, missingf(state.SourcePath)
+	stat, err := os.Stat(sourcePath)
+	if err != nil {
+		return nil, nil, 0, importir.ModelProfile{}, missingf(state.SourcePath)
+	}
+	if repairProfile && state.LastSourceOffset == stat.Size() {
+		profile, err := rollout.ReadLatestProfile(ctx, sourcePath)
+		if err != nil {
+			return nil, nil, 0, importir.ModelProfile{}, fmt.Errorf("sessionimport: recover model profile from %s: %w", state.SourcePath, err)
+		}
+		return nil, nil, state.LastSourceOffset, profile, nil
 	}
 	parsed, err := rollout.Parse(ctx, rollout.ParseOptions{
 		Path:       sourcePath,
@@ -385,14 +434,35 @@ func codexTail(
 		FromOffset: state.LastSourceOffset,
 	})
 	if errors.Is(err, rollout.ErrSourceShrank) {
-		return nil, nil, 0, divergedf(
+		return nil, nil, 0, importir.ModelProfile{}, divergedf(
 			"%s is smaller than it was at import — the rollout was replaced or truncated, so its history no longer continues this thread.",
 			state.SourcePath)
 	}
 	if err != nil {
-		return nil, nil, 0, fmt.Errorf("sessionimport: re-read %s: %w", state.SourcePath, err)
+		return nil, nil, 0, importir.ModelProfile{}, fmt.Errorf("sessionimport: re-read %s: %w", state.SourcePath, err)
 	}
-	return parsed.Events, parsed.Warnings, parsed.EndOffset, nil
+	profile := parsed.Profile
+	if repairProfile && profile.Model == "" {
+		profile, err = rollout.ReadLatestProfile(ctx, sourcePath)
+		if err != nil {
+			return nil, nil, 0, importir.ModelProfile{}, fmt.Errorf("sessionimport: recover model profile from %s: %w", state.SourcePath, err)
+		}
+	}
+	return parsed.Events, parsed.Warnings, parsed.EndOffset, profile, nil
+}
+
+func applyRecordedProfile(thread store.Thread, profile importir.ModelProfile) store.Thread {
+	if profile.Model == "" {
+		return thread
+	}
+	thread.Model = profile.Model
+	if profile.ReasoningEffort != "" {
+		thread.ReasoningEffort = profile.ReasoningEffort
+	}
+	if profile.ContextWindow > 0 {
+		thread.ContextWindow = profile.ContextWindow
+	}
+	return chatmodel.SanitizeThread(thread)
 }
 
 // countNoun renders "1 new message" / "3 new messages".

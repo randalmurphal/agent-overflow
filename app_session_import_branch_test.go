@@ -12,8 +12,12 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/google/uuid"
+
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude/sessionfork"
+	claudesessions "agent-overflow/internal/provider/claude/sessionimport"
+	importwriter "agent-overflow/internal/sessionimport"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/usermessage"
 )
@@ -53,35 +57,99 @@ func threadsBySessionRef(threads []store.Thread) (active store.Thread, abandoned
 	return active, abandoned, active.ID != "" && abandoned.ID != ""
 }
 
-// A multi-branch Claude transcript imports as one thread per branch, and only
-// the file's active branch can carry the session id — `claude --resume`
-// reopens that branch and nothing else. This pins the other half of the
-// locked decision: the abandoned branches stay continuable, by cutting their
-// own session file out of the source on first start.
-func TestImportedClaudeBranchesSplitTheSessionRef(t *testing.T) {
+// importClaudeSessionWithLegacyAbandonedBranch recreates the persisted shape
+// produced by releases that imported every Claude DAG leaf. New imports only
+// create the active thread; the branch materializer remains as an upgrade
+// compatibility path for ref-less inactive threads already in user stores.
+func importClaudeSessionWithLegacyAbandonedBranch(
+	t *testing.T, app *App, home importHome, sessionID string,
+) []store.Thread {
+	t.Helper()
+	current := importOneClaudeSession(t, app, home, sessionID)
+	if len(current) != 1 {
+		t.Fatalf("current import threads = %d, want one active thread", len(current))
+	}
+	active := current[0]
+
+	loaded, err := claudesessions.LoadSession(home.claudeSessionPath(sessionID))
+	if err != nil {
+		t.Fatalf("LoadSession for legacy fixture: %v", err)
+	}
+	defer loaded.Close()
+	if len(loaded.Branches) < 2 {
+		t.Fatalf("legacy fixture branches = %d, want an inactive sibling", len(loaded.Branches))
+	}
+	branch, err := loaded.ConvertBranch(0)
+	if err != nil {
+		t.Fatalf("convert legacy inactive branch: %v", err)
+	}
+
+	abandoned := active
+	abandoned.ID = uuid.NewString()
+	abandoned.Title = "Legacy imported inactive branch"
+	abandoned.SessionRef = ""
+	abandoned.Model = branch.Profile.Model
+	abandoned.ReasoningEffort = branch.Profile.ReasoningEffort
+	abandoned.ContextWindow = branch.Profile.ContextWindow
+	abandoned.UpdatedAt = branch.LastActivityAt
+	abandoned.LastReadAt = &abandoned.UpdatedAt
+	if err := app.store.CreateThread(abandoned); err != nil {
+		t.Fatalf("CreateThread legacy inactive branch: %v", err)
+	}
+	batch, warnings, err := importwriter.NewWriter(app.store, abandoned).Build(branch.Events)
+	if err != nil {
+		t.Fatalf("Build legacy inactive branch: %v", err)
+	}
+	for _, warning := range warnings {
+		if warning.Code == "import.unmapped-event" {
+			t.Fatalf("legacy inactive branch writer drift: %s", warning.Message)
+		}
+	}
+	if err := app.store.ApplyImportBatch(abandoned.ID, batch); err != nil {
+		t.Fatalf("ApplyImportBatch legacy inactive branch: %v", err)
+	}
+	state := store.ThreadImportState{
+		ThreadID: abandoned.ID, Provider: importwriter.ProviderClaude,
+		SourcePath: home.claudeSessionPath(sessionID),
+		// The pre-v63 importer recorded sessionID on every leaf. Migration tests
+		// prove those duplicate identities survive v63 and remain refreshable;
+		// this App fixture is created after v63, where NEW duplicates are
+		// deliberately refused. Branch materialization reads the source path and
+		// leaf only, so give this synthetic compatibility row its own identity
+		// instead of weakening the production invariant to manufacture old data.
+		SourceSessionID: "legacy-branch:" + abandoned.ID,
+		LeafUUID:        branch.LeafUUID,
+	}
+	importwriter.NewCursor(batch, branch.Events).Apply(&state)
+	if err := app.store.SetThreadImportState(state); err != nil {
+		t.Fatalf("SetThreadImportState legacy inactive branch: %v", err)
+	}
+	return []store.Thread{abandoned, active}
+}
+
+// The App-level progress contract must agree with the importer: one selected
+// Claude session emits one thread id even when its transcript has two leaves.
+func TestImportedClaudeSessionCreatesOnlyTheActiveThread(t *testing.T) {
 	app := newTestAppWithStore(t)
 	home := newImportHome(t)
 	home.attach(app)
 	home.claudeBranchedSession(t, importFixtureClaudeBranchy)
 
 	threads := importOneClaudeSession(t, app, home, importFixtureClaudeBranchy)
-	if len(threads) != 2 {
-		t.Fatalf("threads = %d, want one per branch", len(threads))
+	if len(threads) != 1 {
+		t.Fatalf("threads = %d, want one active provider session", len(threads))
 	}
-	active, abandoned, ok := threadsBySessionRef(threads)
-	if !ok {
-		t.Fatalf("threads = %+v, want exactly one with a session ref", threads)
-	}
+	active := threads[0]
 	if active.SessionRef != importFixtureClaudeBranchy {
 		t.Fatalf("active branch sessionRef = %q, want the source session %q",
 			active.SessionRef, importFixtureClaudeBranchy)
 	}
-	state, found, err := app.store.GetThreadImportState(abandoned.ID)
+	state, found, err := app.store.GetThreadImportState(active.ID)
 	if err != nil || !found {
-		t.Fatalf("GetThreadImportState(%s) = %v, %v", abandoned.ID, found, err)
+		t.Fatalf("GetThreadImportState(%s) = %v, %v", active.ID, found, err)
 	}
-	if state.LeafUUID != "a2a" {
-		t.Fatalf("abandoned branch leaf = %q, want the first branch's leaf a2a", state.LeafUUID)
+	if state.LeafUUID != "a2b" {
+		t.Fatalf("active branch leaf = %q, want file-order-last leaf a2b", state.LeafUUID)
 	}
 }
 
@@ -91,7 +159,7 @@ func TestImportedClaudeBranchGetsItsOwnSessionOnFirstStart(t *testing.T) {
 	home.attach(app)
 	home.claudeBranchedSession(t, importFixtureClaudeBranchy)
 
-	threads := importOneClaudeSession(t, app, home, importFixtureClaudeBranchy)
+	threads := importClaudeSessionWithLegacyAbandonedBranch(t, app, home, importFixtureClaudeBranchy)
 	active, abandoned, ok := threadsBySessionRef(threads)
 	if !ok {
 		t.Fatalf("threads = %+v, want exactly one with a session ref", threads)
@@ -204,7 +272,7 @@ func TestImportedClaudeBranchIsCutUnderTheThreadsCurrentWorkspace(t *testing.T) 
 	home.attach(app)
 	home.claudeBranchedSession(t, importFixtureClaudeBranchy)
 
-	threads := importOneClaudeSession(t, app, home, importFixtureClaudeBranchy)
+	threads := importClaudeSessionWithLegacyAbandonedBranch(t, app, home, importFixtureClaudeBranchy)
 	_, abandoned, ok := threadsBySessionRef(threads)
 	if !ok {
 		t.Fatalf("threads = %+v, want exactly one with a session ref", threads)
@@ -268,7 +336,7 @@ func TestImportedClaudeBranchFallsBackToTheSourceDirectory(t *testing.T) {
 	home.attach(app)
 	home.claudeBranchedSession(t, importFixtureClaudeBranchy)
 
-	threads := importOneClaudeSession(t, app, home, importFixtureClaudeBranchy)
+	threads := importClaudeSessionWithLegacyAbandonedBranch(t, app, home, importFixtureClaudeBranchy)
 	_, abandoned, ok := threadsBySessionRef(threads)
 	if !ok {
 		t.Fatalf("threads = %+v, want exactly one with a session ref", threads)
@@ -312,7 +380,7 @@ func TestMaterializeImportedClaudeBranchDegradesWhenTheSourceIsGone(t *testing.T
 	home.attach(app)
 	home.claudeBranchedSession(t, importFixtureClaudeBranchy)
 
-	threads := importOneClaudeSession(t, app, home, importFixtureClaudeBranchy)
+	threads := importClaudeSessionWithLegacyAbandonedBranch(t, app, home, importFixtureClaudeBranchy)
 	_, abandoned, ok := threadsBySessionRef(threads)
 	if !ok {
 		t.Fatalf("threads = %+v, want exactly one with a session ref", threads)
@@ -347,7 +415,7 @@ func TestMaterializeImportedClaudeBranchDegradesWhenTheLeafIsGone(t *testing.T) 
 	home.attach(app)
 	home.claudeBranchedSession(t, importFixtureClaudeBranchy)
 
-	threads := importOneClaudeSession(t, app, home, importFixtureClaudeBranchy)
+	threads := importClaudeSessionWithLegacyAbandonedBranch(t, app, home, importFixtureClaudeBranchy)
 	_, abandoned, ok := threadsBySessionRef(threads)
 	if !ok {
 		t.Fatalf("threads = %+v, want exactly one with a session ref", threads)

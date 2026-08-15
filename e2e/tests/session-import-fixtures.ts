@@ -30,6 +30,7 @@ import type { HarnessApp } from '../src/harness.js';
 const CLAUDE_LINEAR_SESSION = 'aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa';
 const CLAUDE_BRANCHED_SESSION = 'bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb';
 const CLAUDE_BROKEN_SESSION = 'dddddddd-4444-4444-8444-dddddddddddd';
+const CLAUDE_FORK_SESSION = 'eeeeeeee-5555-4555-8555-eeeeeeeeeeee';
 const CODEX_THREAD = 'cccccccc-3333-4333-8333-cccccccccccc';
 
 /** A fixed wall time in the past, so a row restamped with now() is off by
@@ -56,6 +57,9 @@ const BRANCHED_TITLE = 'Parser work';
 // the browser proves the disclosure loaded the full payload on demand.
 export const BRANCH_A_THINKING_PREFIX = 'BRANCH A PRIVATE REASONING PREFIX';
 export const BRANCH_B_THINKING_PREFIX = 'BRANCH B PRIVATE REASONING PREFIX';
+export const FORK_SHARED_ANSWER = 'Added the retry helper with a backoff test.';
+export const FORK_CHILD_PROMPT = 'Adapt the retry helper for jitter';
+export const FORK_CHILD_ANSWER = 'Added bounded jitter to the imported fork.';
 
 const branchThinking = (prefix: string, detail: string): string =>
   `${prefix}\n${`${detail} `.repeat(32)}\n${detail} conclusion.`;
@@ -78,9 +82,9 @@ export interface ImportFixtures {
   claudeBranched: FixtureSession;
   /** Present only when `seedImportFixtures` was asked for it. */
   claudeBroken?: FixtureSession;
+  /** Present only when `seedImportFixtures` was asked for an explicit fork. */
+  claudeFork?: FixtureSession;
   codex: FixtureSession;
-  /** Titles of the two threads the branched transcript imports as. */
-  branchThreadTitles: [string, string];
 }
 
 export interface SeedImportOptions {
@@ -93,6 +97,9 @@ export interface SeedImportOptions {
    * outcome stamps and the Retry CTA can be asserted without a race.
    */
   withFailingSession?: boolean;
+  /** Also write a second Claude provider session explicitly forked from the
+   * linear session, including the shared prefix and its own continuation. */
+  withForkedSession?: boolean;
 }
 
 function session(provider: 'claude' | 'codex', id: string, title: string): FixtureSession {
@@ -144,17 +151,14 @@ export async function seedImportFixtures(
     claudeLinear: session('claude', CLAUDE_LINEAR_SESSION, 'Add the retry helper'),
     claudeBranched: session('claude', CLAUDE_BRANCHED_SESSION, BRANCHED_TITLE),
     codex: session('codex', CODEX_THREAD, 'Wire up the Codex client'),
-    // One thread per leaf, each named `<session title> — <leaf's last prompt>`
-    // (sessionimport.branchTitle). Ordered by leaf file position, so the
-    // second is the file's ACTIVE branch.
-    branchThreadTitles: [
-      `${BRANCHED_TITLE} — Document the parser`,
-      `${BRANCHED_TITLE} — Benchmark the parser`,
-    ],
   };
 
   await writeLinearClaudeSession(claudeDir, workspace);
   await writeBranchedClaudeSession(claudeDir, workspace);
+  if (opts.withForkedSession) {
+    await writeForkedClaudeSession(claudeDir, workspace);
+    fixtures.claudeFork = session('claude', CLAUDE_FORK_SESSION, FORK_CHILD_PROMPT);
+  }
   if (opts.withFailingSession) {
     await writeBrokenClaudeSession(claudeDir, workspace);
     fixtures.claudeBroken = session('claude', CLAUDE_BROKEN_SESSION, 'Refuse to import');
@@ -288,29 +292,55 @@ const lastPrompt = (leafUuid: string, prompt: string): Record<string, unknown> =
 async function writeLinearClaudeSession(dir: string, workspace: string): Promise<void> {
   await writeFile(
     path.join(dir, `${CLAUDE_LINEAR_SESSION}.jsonl`),
+    jsonl(linearClaudeRows(workspace)),
+  );
+}
+
+const linearClaudeRows = (workspace: string): Array<Record<string, unknown>> => [
+  userRow(workspace, 'lin-u1', null, 'Add the retry helper', 0),
+  assistantTextRow(workspace, 'lin-a1', 'lin-u1', 'msg-lin-1', 'Running the suite first.', 1_000),
+  assistantToolRow(
+    workspace,
+    'lin-a2',
+    'lin-a1',
+    'msg-lin-2',
+    'toolu_lin_bash',
+    'Bash',
+    { command: 'go test ./internal/retry', description: 'Run the retry tests' },
+    2_000,
+  ),
+  toolResultRow(workspace, 'lin-r1', 'lin-a2', 'toolu_lin_bash', 'ok  internal/retry 0.02s', 3_000),
+  assistantTextRow(
+    workspace,
+    'lin-a3',
+    'lin-r1',
+    'msg-lin-3',
+    FORK_SHARED_ANSWER,
+    4_000,
+  ),
+  lastPrompt('lin-a3', 'Add the retry helper'),
+];
+
+async function writeForkedClaudeSession(dir: string, workspace: string): Promise<void> {
+  const shared = linearClaudeRows(workspace);
+  shared[0] = {
+    ...shared[0],
+    forkedFrom: { sessionId: CLAUDE_LINEAR_SESSION, messageUuid: 'lin-a3' },
+  };
+  await writeFile(
+    path.join(dir, `${CLAUDE_FORK_SESSION}.jsonl`),
     jsonl([
-      userRow(workspace, 'lin-u1', null, 'Add the retry helper', 0),
-      assistantTextRow(workspace, 'lin-a1', 'lin-u1', 'msg-lin-1', 'Running the suite first.', 1_000),
-      assistantToolRow(
-        workspace,
-        'lin-a2',
-        'lin-a1',
-        'msg-lin-2',
-        'toolu_lin_bash',
-        'Bash',
-        { command: 'go test ./internal/retry', description: 'Run the retry tests' },
-        2_000,
-      ),
-      toolResultRow(workspace, 'lin-r1', 'lin-a2', 'toolu_lin_bash', 'ok  internal/retry 0.02s', 3_000),
+      ...shared,
+      userRow(workspace, 'fork-u2', 'lin-a3', FORK_CHILD_PROMPT, 5_000),
       assistantTextRow(
         workspace,
-        'lin-a3',
-        'lin-r1',
-        'msg-lin-3',
-        'Added the retry helper with a backoff test.',
-        4_000,
+        'fork-a2',
+        'fork-u2',
+        'msg-fork-2',
+        FORK_CHILD_ANSWER,
+        6_000,
       ),
-      lastPrompt('lin-a3', 'Add the retry helper'),
+      lastPrompt('fork-a2', FORK_CHILD_PROMPT),
     ]),
   );
 }
@@ -318,8 +348,8 @@ async function writeLinearClaudeSession(dir: string, workspace: string): Promise
 /**
  * Two leaves off one answer, the second of which runs a subagent.
  *
- * Importing it produces one thread per leaf, and the catalogue row's title is
- * the LAST `last-prompt` record in the file (the tail wins).
+ * Importing it selects the second, file-order-last leaf as the active history.
+ * The catalogue row's title is the LAST `last-prompt` record (the tail wins).
  */
 async function writeBranchedClaudeSession(dir: string, workspace: string): Promise<void> {
   await writeFile(

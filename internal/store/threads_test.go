@@ -793,6 +793,67 @@ func TestUpdateReasoningEffortRejectsUnknown(t *testing.T) {
 	}
 }
 
+func TestCompareAndSwapModelProfileHonorsTheWholeExpectedProfile(t *testing.T) {
+	s := newTestStore(t)
+	proj := newTestProject(t, s, "proj-model-profile-cas", "/tmp/model-profile-cas")
+
+	thread := makeThread("thread-model-profile-cas", "codex")
+	thread.ProjectID = proj.ID
+	thread.Model = ""
+	thread.ReasoningEffort = "medium"
+	thread.ContextWindow = 200_000
+	if err := s.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+	before, err := s.GetThread(thread.ID)
+	if err != nil {
+		t.Fatalf("GetThread before CAS: %v", err)
+	}
+	after := before
+	after.Model = "gpt-5.6-sol"
+	after.ReasoningEffort = "high"
+	after.ContextWindow = 258_400
+
+	applied, err := s.CompareAndSwapModelProfile(before, after)
+	if err != nil || !applied {
+		t.Fatalf("first CompareAndSwapModelProfile = applied:%v err:%v", applied, err)
+	}
+	got, err := s.GetThread(thread.ID)
+	if err != nil {
+		t.Fatalf("GetThread after CAS: %v", err)
+	}
+	if got.Model != after.Model || got.ReasoningEffort != after.ReasoningEffort || got.ContextWindow != after.ContextWindow {
+		t.Fatalf("profile after CAS = %q/%q/%d, want %q/%q/%d",
+			got.Model, got.ReasoningEffort, got.ContextWindow,
+			after.Model, after.ReasoningEffort, after.ContextWindow)
+	}
+
+	// Replaying a stale plan must lose cleanly after any one profile field
+	// moves. This is the import-refresh race: a user choice made after check
+	// owns the row when apply arrives.
+	newer := got
+	newer.ReasoningEffort = "xhigh"
+	if err := s.UpdateThread(newer); err != nil {
+		t.Fatalf("write newer user profile: %v", err)
+	}
+	staleTarget := after
+	staleTarget.Model = "gpt-5.4"
+	applied, err = s.CompareAndSwapModelProfile(got, staleTarget)
+	if err != nil {
+		t.Fatalf("stale CompareAndSwapModelProfile: %v", err)
+	}
+	if applied {
+		t.Fatal("stale CompareAndSwapModelProfile applied after effort changed")
+	}
+	got, err = s.GetThread(thread.ID)
+	if err != nil {
+		t.Fatalf("GetThread after stale CAS: %v", err)
+	}
+	if got.ReasoningEffort != "xhigh" || got.Model != after.Model {
+		t.Fatalf("stale CAS overwrote newer profile: %q/%q", got.Model, got.ReasoningEffort)
+	}
+}
+
 func TestUpdateFastModePersists(t *testing.T) {
 	s := newTestStore(t)
 	proj := newTestProject(t, s, "proj-fast", "/tmp/fast")

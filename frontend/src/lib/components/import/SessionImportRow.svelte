@@ -37,11 +37,8 @@
 
   let provider = $derived(getProviderDefinition(row.provider));
   let warnings = $derived(row.warnings ?? []);
-  // No branch chip: `branchCount` is 1 for Codex (a rollout is one linear
-  // conversation) and 0 for Claude meaning NOT DETERMINED — enumerating a
-  // transcript's leaves costs a full read of a file in a home that runs to
-  // gigabytes. A chip fed from it could only ever say "1 thread" or lie, so
-  // the real count is reported after the fact, by the run.
+  // No thread-count chip: one selected provider session maps to one AO
+  // thread, so repeating "1 thread" on every row adds no information.
   //
   // Every other chip and stamp reads from the row/result, so derive the
   // labels here rather than branching inside the template.

@@ -12,26 +12,22 @@ import (
 	"agent-overflow/internal/store"
 )
 
-// materializeImportedClaudeBranch gives an imported, non-active Claude branch
-// the resume reference it needs the first time it starts a session.
+// materializeImportedClaudeBranch keeps inactive Claude branches imported by
+// older Agent Overflow releases continuable. Current imports create only the
+// active provider-session thread, which already carries its resume reference.
 //
-// WHY THE THREAD HAS NONE. A Claude transcript is a DAG, and the importer
-// makes one thread per branch. Only one of those threads can carry the
-// session id: `claude --resume <id>` reopens the file's ACTIVE branch — the
-// chain ending at its last transcript row — so handing the same id to every
-// branch would mean continuing an abandoned branch silently appends to a
-// different conversation, with two AO threads writing one file. The importer
-// therefore gives the ref to the active branch only — and to nothing at all
-// when that branch imported no rows (see sessionimport's settleBranches) —
-// and records every branch's leaf uuid in thread_import_state.
+// WHY THE LEGACY THREAD HAS NONE. Releases that imported one thread per DAG
+// leaf could give the source session id only to the active branch:
+// `claude --resume <id>` reopens that chain and nothing else. Inactive threads
+// therefore stored their source leaf in thread_import_state with no ref.
 //
 // WHY IT HAPPENS HERE AND NOT AT IMPORT. Cutting a branch out costs a new
 // transcript file on disk, and that file shows up in the user's own
-// `claude --resume` picker. Doing it at import time would write one per
-// abandoned branch across a whole "Import All" — hundreds of phantom sessions
-// and a duplicate copy of every transcript prefix — for threads the user may
-// never continue. Doing it on first session start costs the same write for
-// the branches that are actually used, and nothing for the rest.
+// `claude --resume` picker. The old importer deliberately deferred that write
+// rather than create hundreds of phantom provider sessions and duplicate
+// transcript prefixes for threads the user might never continue. Doing it on
+// first session start costs the same write for
+// legacy branches that are actually used, and nothing for the rest.
 //
 // WHAT IT WRITES. sessionfork.WriteForkFileThroughUUID keeps everything
 // through the branch's leaf in file order and remints every uuid, which is the

@@ -8,15 +8,14 @@ import (
 	"agent-overflow/internal/provider/claude/sessionfork"
 )
 
-// Branch is one root-to-leaf path through a transcript's conversation
-// DAG — i.e. one importable AO thread. A transcript with N leaves
-// produces N threads, which is why enumeration (rather than picking the
-// active chain) is the whole job of this file.
+// Branch is one root-to-leaf path through a transcript's conversation DAG.
+// Production import selects the file-order-last active branch; enumeration is
+// still required for deterministic selection and for refreshing legacy
+// threads anchored on inactive leaves.
 type Branch struct {
 	LeafUUID string
 	// Title is the leaf's `last-prompt` record when the transcript wrote
-	// one, else the branch's own last user prompt. Used to disambiguate
-	// sibling threads when a session imports as more than one.
+	// one, else the branch's own last user prompt.
 	Title string
 	// Chain is the branch in causal order, root first.
 	Chain          []Row
@@ -49,11 +48,11 @@ const (
 // directly, which is what sessionfork.ResolveLogicalParent does for a
 // plain string value; there is no walk to share.
 //
-// Why this does not reuse claudeBranchIndex (sessionleaf_branch.go):
-// that index answers "which single chain will `claude --resume` accept",
-// and its activeChain walk returns exactly one chain by construction.
-// Import needs every leaf, and it must not perturb the live resume path
-// — so it builds its own index and keeps its own semantics.
+// Why this does not reuse claudeBranchIndex (sessionleaf_branch.go): that
+// index answers which cursor Claude will accept after resume deserialization
+// filters. This DAG is a content and refresh index: it retains every leaf so
+// an older imported thread can keep following its own descendants. Production
+// import chooses the active last leaf without perturbing the live resume path.
 func BuildBranches(rows []Row, leafTitles map[string]string) ([]Branch, []importir.Warning) {
 	var warnings []importir.Warning
 

@@ -50,8 +50,8 @@ type SessionInfo struct {
 
 	SubagentCount int
 	// ForkedFromSessionID names the session this one was forked from, when
-	// the transcript carries fork provenance. The scan orchestrator uses it
-	// to keep a fork's ancestor out of the candidate list.
+	// the transcript carries fork provenance. The scan orchestrator preserves
+	// both sessions and uses this id to connect their imported AO threads.
 	ForkedFromSessionID string
 	// Entrypoint is the transcript's own `entrypoint` marker, verbatim:
 	// which client ran the session. Every row carries it, and the values

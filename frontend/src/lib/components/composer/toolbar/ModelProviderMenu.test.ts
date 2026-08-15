@@ -73,6 +73,14 @@ describe('<ModelProviderMenu>', () => {
     expect(trigger.textContent ?? '').not.toMatch(/\bCodex\b/);
   });
 
+  it('labels an unrecorded model as the provider default', async () => {
+    const pane = await buildPane(makeThread({ provider: 'claude', model: '' }));
+    const { getByTestId } = render(ModelProviderMenu, { props: { pane } });
+    const trigger = getByTestId('composer-model-menu-trigger');
+    expect(trigger.textContent).toContain('Provider default');
+    expect(trigger.textContent).not.toContain('No model');
+  });
+
   it('shows the effective fallback model and retries the requested model when reselected', async () => {
     const pane = await buildPane(makeThread({ provider: 'claude', model: 'claude-fable-5' }));
     pane.setEffectiveModel('claude-opus-4-8');

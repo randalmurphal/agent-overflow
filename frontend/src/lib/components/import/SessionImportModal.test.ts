@@ -53,7 +53,6 @@ function row(id: string, extra: Partial<ImportableSession> = {}): ImportableSess
     createdAt: 1,
     lastActivityAt: Date.now(),
     sizeBytes: 2048,
-    branchCount: 1,
     subagentCount: 0,
     sourcePath: `/home/u/.claude/${id}.jsonl`,
     knownProject: true,

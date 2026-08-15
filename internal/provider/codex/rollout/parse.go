@@ -40,6 +40,11 @@ type ParseResult struct {
 	// each came from. See importir.Event and the "Source coordinates"
 	// section of this package's AGENTS.md.
 	Events []importir.Event
+	// Profile is the newest model configuration recorded in the converted
+	// region. It is separate from Events because turn_context may arrive
+	// after task_started and may be the only configuration record in an
+	// otherwise aborted turn.
+	Profile importir.ModelProfile
 	// EndOffset is the first byte after the last COMPLETE line consumed.
 	// Feeding it back as FromOffset resumes exactly where this call
 	// stopped, including across a rollout that was mid-write.

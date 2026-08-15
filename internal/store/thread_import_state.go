@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 )
 
 // RollbackImportedThread removes a thread created by a failed session import
@@ -55,14 +56,14 @@ func (s *Store) RollbackImportedThread(threadID string) error {
 // what has already been written and where to resume reading, without
 // re-deriving either from the timeline.
 //
-// LeafUUID records which Claude branch this thread was cut from — one session
-// file can produce several threads.
+// LeafUUID records the active Claude branch this thread was cut from.
 type ThreadImportState struct {
-	ThreadID        string `json:"threadId"`
-	Provider        string `json:"provider"`
-	SourcePath      string `json:"sourcePath"`
-	SourceSessionID string `json:"sourceSessionId"`
-	LeafUUID        string `json:"leafUuid"`
+	ThreadID              string `json:"threadId"`
+	Provider              string `json:"provider"`
+	SourcePath            string `json:"sourcePath"`
+	SourceSessionID       string `json:"sourceSessionId"`
+	SourceParentSessionID string `json:"sourceParentSessionId"`
+	LeafUUID              string `json:"leafUuid"`
 	// LastSourceUUID is the provenance stamp of the last event consumed —
 	// a transcript uuid for Claude, `line:<byte offset>` for Codex, and
 	// written by both. Only CLAUDE anchors on it: its transcript is a uuid
@@ -89,6 +90,7 @@ type ThreadImportState struct {
 var ErrInvalidImportProvider = errors.New("store: invalid import provider")
 
 const threadImportStateColumns = `thread_id, provider, source_path, source_session_id,
+    source_parent_session_id,
     leaf_uuid, last_source_uuid, last_source_offset, last_turn_index, last_item_index,
     imported_at, refreshed_at`
 
@@ -97,22 +99,25 @@ const threadImportStateColumns = `thread_id, provider, source_path, source_sessi
 // a refresh is the same row with the cursor advanced and RefreshedAt
 // stamped, so there is one writer and one shape.
 func (s *Store) SetThreadImportState(state ThreadImportState) error {
-	if state.ThreadID == "" {
+	if strings.TrimSpace(state.ThreadID) == "" {
 		return fmt.Errorf("store: set thread import state: thread id is required")
 	}
 	if state.Provider != "claude" && state.Provider != "codex" {
 		return fmt.Errorf("%w: %q", ErrInvalidImportProvider, state.Provider)
 	}
+	state.SourceSessionID = strings.TrimSpace(state.SourceSessionID)
+	state.SourceParentSessionID = strings.TrimSpace(state.SourceParentSessionID)
 	if state.SourceSessionID == "" {
 		return fmt.Errorf("store: set thread import state %s: source session id is required", state.ThreadID)
 	}
 	_, err := s.db.Exec(
 		`INSERT INTO thread_import_state (`+threadImportStateColumns+`)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(thread_id) DO UPDATE SET
 		     provider = excluded.provider,
 		     source_path = excluded.source_path,
 		     source_session_id = excluded.source_session_id,
+		     source_parent_session_id = excluded.source_parent_session_id,
 		     leaf_uuid = excluded.leaf_uuid,
 		     last_source_uuid = excluded.last_source_uuid,
 		     last_source_offset = excluded.last_source_offset,
@@ -121,6 +126,7 @@ func (s *Store) SetThreadImportState(state ThreadImportState) error {
 		     imported_at = excluded.imported_at,
 		     refreshed_at = excluded.refreshed_at`,
 		state.ThreadID, state.Provider, state.SourcePath, state.SourceSessionID,
+		state.SourceParentSessionID,
 		state.LeafUUID, state.LastSourceUUID, state.LastSourceOffset,
 		state.LastTurnIndex, state.LastItemIndex,
 		state.ImportedAt, state.RefreshedAt,
@@ -140,6 +146,7 @@ func (s *Store) GetThreadImportState(threadID string) (ThreadImportState, bool, 
 		threadID,
 	).Scan(
 		&state.ThreadID, &state.Provider, &state.SourcePath, &state.SourceSessionID,
+		&state.SourceParentSessionID,
 		&state.LeafUUID, &state.LastSourceUUID, &state.LastSourceOffset,
 		&state.LastTurnIndex, &state.LastItemIndex,
 		&state.ImportedAt, &state.RefreshedAt,
@@ -196,33 +203,41 @@ func (s *Store) HasItemsAfterCursor(threadID string, turnIndex, itemIndex int) (
 // source. When several threads claim one ref the lowest thread id wins; the
 // caller only asks whether the ref is taken, and a stable answer keeps the
 // scan reproducible.
-func (s *Store) ListImportedSessionRefs() (map[string]string, error) {
+type ProviderSessionRef struct {
+	Provider  string
+	SessionID string
+}
+
+func (s *Store) ListImportedSessionRefs() (map[ProviderSessionRef]string, error) {
 	rows, err := s.reader().Query(
-		`SELECT ref, thread_id FROM (
-		     SELECT session_ref AS ref, id AS thread_id FROM threads
+		`SELECT provider, ref, thread_id FROM (
+		     SELECT CASE provider WHEN 'claude-tui' THEN 'claude' ELSE provider END AS provider,
+		            session_ref AS ref, id AS thread_id FROM threads
 		      WHERE COALESCE(session_ref, '') <> ''
 		     UNION ALL
-		     SELECT pending_fork_session_ref, id FROM threads
+		     SELECT CASE provider WHEN 'claude-tui' THEN 'claude' ELSE provider END,
+		            pending_fork_session_ref, id FROM threads
 		      WHERE COALESCE(pending_fork_session_ref, '') <> ''
 		     UNION ALL
-		     SELECT source_session_id, thread_id FROM thread_import_state
+		     SELECT provider, source_session_id, thread_id FROM thread_import_state
 		      WHERE source_session_id <> ''
 		 )
-		 ORDER BY ref, thread_id`,
+		 ORDER BY provider, ref, thread_id`,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("store: list imported session refs: %w", err)
 	}
 	defer rows.Close()
 
-	refs := make(map[string]string)
+	refs := make(map[ProviderSessionRef]string)
 	for rows.Next() {
-		var ref, threadID string
-		if err := rows.Scan(&ref, &threadID); err != nil {
+		var providerName, ref, threadID string
+		if err := rows.Scan(&providerName, &ref, &threadID); err != nil {
 			return nil, fmt.Errorf("store: scan imported session ref: %w", err)
 		}
-		if _, seen := refs[ref]; !seen {
-			refs[ref] = threadID
+		key := ProviderSessionRef{Provider: providerName, SessionID: ref}
+		if _, seen := refs[key]; !seen {
+			refs[key] = threadID
 		}
 	}
 	if err := rows.Err(); err != nil {

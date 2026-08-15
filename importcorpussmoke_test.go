@@ -11,7 +11,13 @@
 // three versions back, tool results that were garbage-collected out from
 // under their launch. This gate is the check that closes that gap. It runs
 // the two provider readers and the store writer over a COPY of a developer's
-// real `~/.claude` / `~/.codex` and reports what the corpus contains.
+// real `~/.claude` / `~/.codex` and reports what the corpus contains,
+// including whether each materialized thread got its model from provider
+// history, the Codex index fallback, or the provider default. It also runs
+// the production catalogue scan over an empty throwaway store and requires
+// every top-level provider session to survive it; explicit fork counts and
+// parent provenance are checked so a scan-only suppression bug cannot hide
+// behind successful direct reader/writer calls.
 //
 // It is manual and env-gated, not tagged, because it has to skip cleanly:
 // `make go-test` compiles it and both legs skip in microseconds when the

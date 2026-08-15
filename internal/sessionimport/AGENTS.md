@@ -45,20 +45,17 @@ from triage's exported, Router-free shaping helpers — see
 - `projectindex.go` — `projectIndex`: which project each row is grouped
   under, and the per-cwd memo that makes answering it once per distinct
   cwd rather than once per row. See "Which project a row lands under".
-- `import_one.go` — `ImportOne`: one scanned row → thread rows, history,
+- `import_one.go` — `ImportOne`: one scanned row → at most one thread, history,
   and cursors. `resolveProject` prefers the `ProjectID` the scan already
   stamped and falls back to `project.EnsureForWorkspace` — so the project
   a row was LISTED under is the project it imports into, including for a
-  dead worktree the index could only place from a registration. Claude
-  branches are converted and applied ONE AT A TIME. After the first branch,
-  `FindReusablePrefix` identifies the longest shared complete-turn prefix;
-  `ConvertBranchFrom` converts only the divergent suffix and the store attaches
-  the already committed immutable prefix. A multi-branch transcript therefore
-  neither holds nor rebuilds every branch's full event history.
+  dead worktree the index could only place from a registration. Claude uses
+  `ConvertActiveBranch`: one transcript may retain alternate DAG leaves, but
+  only the coherent active ancestry that `claude --resume` continues becomes
+  the selected provider session's thread.
 - `import_apply.go` — `sessionImporter`: the per-session accumulator
-  `ImportOne` drives — thread creation, warnings, whole-session
-  rollback, and `settleBranches` (the sole-survivor retitle and the
-  session-ref stamp).
+  `ImportOne` drives — single-thread creation, warnings, cursor persistence,
+  and rollback.
 - `cursor.go` — `Cursor` + `Diverged` + `Advance`: where an import
   stopped, in the thread and in the source file.
 - `refresh.go` — `PlanUpdate` / `ApplyUpdate`: what a re-read of the
@@ -169,22 +166,27 @@ filesystem reads (`internal/gitroot`), which is the only reason it can run
 per row: a `git rev-parse` per distinct cwd would be a subprocess storm on
 a real home, and its `--show-toplevel` answer is the wrong one anyway.
 
-`Scan` subtracts three things, and all three are what makes "Import All"
+`Scan` subtracts two things, and both are what makes "Import All"
 safe to press twice:
 
 1. **Sessions AO already knows** — `ListImportedSessionRefs`, the union of
    `session_ref`, `pending_fork_session_ref`, and an earlier import's
    `source_session_id`. A failure to read it fails the whole scan: offering
    an already-imported session again would duplicate the user's history.
-2. **Fork ancestors** — a fork's file contains its parent's history, so
-   importing both imports that history twice, as two threads. Claude reads
-   the provenance out of the head buffer at list time; Codex needs one
-   BOUNDED head read (`ReadSessionMeta`) per surviving candidate. Computed
-   over the SURVIVING candidates only: a fork that is itself already
-   imported says nothing about its ancestor.
-3. **Subagent / spawned-child sessions** — already excluded inside each
+2. **Subagent / spawned-child sessions** — already excluded inside each
    provider's lister, which is where the provider-specific "is this a
    child" test belongs.
+
+Explicit provider forks are deliberately retained. They share a historical
+prefix, but each has a distinct provider session id and can be resumed and
+continued independently. `Row.ParentSessionID` carries Claude's
+`forkedFrom.sessionId` or Codex's explicit `forked_from_id`; Codex
+`parent_thread_id` is spawned-child provenance and is never treated as a
+user fork. Import persists that raw parent id, then globally reconciles it to
+`threads.forked_from_thread_id`, so parent-first, child-first, sibling, and
+multi-generation imports produce the same lineage. Missing parents stay
+unlinked until a later import. Ambiguous, self, or cyclic metadata keeps all
+history and omits only the unsafe edge with a surfaced warning.
 
 ### Which project a row lands under
 
@@ -244,8 +246,8 @@ never rewrites the path.
 `Row.Origin` is the provider's own raw marker (`""` when the file has none)
 and `Row.RanInAgentOverflow` is the derived boolean. Both come free — Claude's
 `entrypoint` is scanned out of the head buffer the lister already read, and
-Codex's `session_meta.payload.originator` off the `ReadSessionMeta` the fork
--ancestor pass already performs.
+Codex's `session_meta.payload.originator` off the same bounded
+`ReadSessionMeta` that recovers explicit-fork provenance.
 
 The two spellings differ (`agent-overflow` vs `agent_overflow`) and that is
 exactly why the boolean is derived HERE — neither spelling reaches the wire,
@@ -268,38 +270,40 @@ Scan does NOT filter these rows out. The user can still want a session AO
 already ran; hiding it is a frontend default with a toggle, and a backend
 filter would make that toggle impossible.
 
-`Row.BranchCount` is **0 for Claude, meaning not determined**. Enumerating
-a transcript's leaves needs a full read of the file, and a real home is
-several GB across a thousand-plus transcripts — the list would take
-minutes for a hint. Codex is always 1 (a rollout is one linear
-conversation). The true Claude count is known at import, and `ImportOne`
-reports it as the number of threads it created.
+One selected provider session maps to one AO thread; an empty or metadata-only
+active history can still produce none. Claude's retained alternate leaves are
+not independent sessions and are not merged into the active timeline. There
+is no branch-count field in the catalogue because import never fans a row out.
 
 `ImportOne` is all-or-nothing per session and isolated from every other
-session. If any branch fails after its thread row exists, every thread the
-call created is deleted: the dedup set keys on the source session id, so a
-half-imported session would hide its missing branches from the next scan
-forever. Rollback also removes the import's usage rows; ordinary thread
-deletion retains usage by design, but a branch the import reports as absent
-must not remain in lifetime totals.
+session. If history fails after the thread row exists, the thread is deleted:
+the dedup set keys on the source session id, so a partial import would hide the
+source from the next scan. Rollback also removes the import's usage rows;
+ordinary thread deletion retains usage by design.
 
-At most ONE thread of a multi-branch Claude transcript carries
-`session_ref` — the thread of the file's ACTIVE branch, which is the last
-one (`BuildBranches` orders by leaf file position). `claude --resume <id>`
-reopens the active branch, so handing the ref to every branch would make
-resuming an abandoned one silently continue a different conversation,
-with two AO threads appending to one file. The others keep their
-provenance in `thread_import_state`, so a refresh still finds them.
+The provider readers return `importir.ModelProfile` beside their events. That
+separation is load-bearing: a model is branch/session state, not a timeline
+row, and deriving it from usage made zero-usage Claude messages invisible
+while deriving it from Codex turn starts lost a `turn_context` written after
+`task_started`. Claude reads the newest model on the complete active ancestry.
+Codex rollout values are
+authoritative, with the already-read state-index columns used only when the
+rollout recorded none. A genuinely empty profile stays empty and therefore
+means provider default; import never fabricates a historical model.
 
-"At most" is load-bearing: a branch that produced zero events gets no
-thread, and when THAT is the active branch, no thread gets the ref. The
-ref belongs to a position in the file, not to a rank among the survivors
-— giving it to the last SURVIVING thread would hand it to a thread whose
-own leaf is not where a resume lands, which is the exact silent
-wrong-conversation failure the rule exists to prevent. Ref-less threads
-are not stranded: `materializeImportedClaudeBranch` cuts them their own
-session file from `thread_import_state.leaf_uuid` the first time they
-start a session (see the last "easy to get wrong" rule below).
+The Claude thread carries `session_ref` for the source session and records the
+active leaf in `thread_import_state`. `BuildBranches` orders leaves by file
+position and `ConvertActiveBranch` owns the last-leaf selection so callers
+cannot accidentally fan one catalogue row out into sibling threads. If that
+active chain produces no events, no thread or dedup marker is written.
+
+Import identity is `(provider, source_session_id)`, never the bare session id
+and never content equality. The provider scope matters because unrelated
+homes can mint the same string; content equality cannot identify forks because
+their shared prefix is expected. Migration v63's insert/identity-change
+triggers reject every new duplicate claim while allowing cursor updates and
+legacy duplicate rows created by the pre-active-branch importer to remain
+readable.
 
 The **cursor** is two positions, and both are needed:
 
@@ -335,6 +339,15 @@ it lands. `ApplyUpdate` refuses anything but an appliable plan rather
 than returning a silent no-op — every other status is something the user
 has to be shown.
 
+A refresh may also carry a model-profile repair with zero new timeline rows.
+That is how imports written by the older event-derived reader recover without
+replaying their history. The update uses a model-field compare-and-swap, so a
+selection the user makes after planning always wins. Codex's EOF repair uses a
+constant-memory profile scan; ordinary tail refreshes keep their offset-bounded
+Parse path. Only an EMPTY stored model is repairable: once a thread has a model,
+that row is the user's selection and importing newer provider history never
+replaces it.
+
 The six statuses:
 
 | Status | Meaning |
@@ -343,8 +356,8 @@ The six statuses:
 | `diverged-local` | `Diverged` says the thread grew past its cursor — the user resumed it inside AO, so the timeline and the file are two different futures. |
 | `source-missing` | The recorded `source_path` is gone. |
 | `source-diverged` | The file is there but no longer contains the position this thread stopped at. |
-| `up-to-date` | The tail produced no rows. |
-| `updates-available` | Rows are built and waiting. |
+| `up-to-date` | The tail produced no rows and no model repair. |
+| `updates-available` | Rows and/or a model-profile repair are built and waiting. |
 
 These six strings are declared HERE and passed through the app layer verbatim,
 even though the wire DTOs beside them (`ImportScanResult`, `ImportableSession`,
@@ -414,18 +427,17 @@ carries no byte offset — each field takes the later of the two.
   instead of reading a zero as a real total.
 - **A tool_call is ONE row across its whole life.** Sibling
   `tool_completion` rows exist only where triage produces them.
-- **Only the active Claude branch gets `session_ref`, and the others get
-  theirs LATER.** `settleBranches` (`import_apply.go`) explains the first
-  half — including the case where the active branch produced no thread
-  and NOBODY gets the ref. The second half lives in the app layer,
-  because it writes a file:
-  `materializeImportedClaudeBranch` (`app_session_import_branch.go`) cuts
-  an abandoned branch out of the source transcript into a session file of
-  its own — through `sessionfork.WriteForkFileThroughUUID`, anchored on
-  the `leaf_uuid` this package recorded — the first time that thread
-  starts a session. Doing it here instead would write one transcript copy
-  per abandoned branch across a whole "Import All", and every one of them
-  would show up in the user's own `claude --resume` picker.
+- **One Claude session imports only its active branch.** Sibling leaves are
+  alternate histories, not independent provider sessions and not timelines
+  that can be merged coherently. The imported thread gets the source
+  `session_ref` directly. `sessionImporter.add` also refuses a second thread,
+  so future callers cannot silently restore fan-out by looping.
+
+  `materializeImportedClaudeBranch` (`app_session_import_branch.go`) remains
+  for upgrade compatibility with inactive, ref-less threads created by older
+  releases. It cuts such a branch into its own session file through
+  `sessionfork.WriteForkFileThroughUUID`, anchored on the stored `leaf_uuid`,
+  the first time that legacy thread starts.
 
   It cuts into the slug dir of the thread's CURRENT `workspace_path`, not
   beside the source file. A workspace changed before the thread's first
@@ -488,11 +500,11 @@ the live row for the same wire event. Everything else is a bug and
 - `integration_test.go` is the reader↔writer gate: hand-written Claude
   transcripts and Codex rollouts (plus a fixture `state_5.sqlite`) driven
   through `Scan` → `ImportOne` → SQLite, asserting the rows, the original
-  timestamps end to end, the cursor, subagent nesting, multi-leaf
-  fan-out, and whole-session rollback. The optimized multi-leaf case is also
-  compared against two independent full branch conversions, including ordered
-  items, payload bytes, turn records, and usage totals; this proves prefix
-  reuse changes representation and work, not logical thread history.
+  timestamps end to end, the cursor, subagent nesting, multi-leaf active-chain
+  selection, and rollback. The multi-leaf case proves shared ancestry and the
+  active continuation land while the inactive sibling does not, then compares
+  the stored active history against an independent full active-branch build,
+  including ordered items, payload bytes, turn records, and usage totals.
   `importFixtureRow` fails on an
   `import.unmapped-event` warning, and
   `TestWriterHandlesEveryKindTheReadersEmit` lists every kind the two

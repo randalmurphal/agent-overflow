@@ -92,15 +92,9 @@ export type ImportSelectAllState = 'none' | 'some' | 'all';
 /**
  * Footer roll-up for the current selection.
  *
- * Deliberately no "threads" figure. `ImportableSession.branchCount` is 0 for
- * every Claude row — not zero threads, NOT DETERMINED: counting a
- * transcript's branches costs a full read and a real Claude home is
- * gigabytes. Anything derived from it would be a lower bound that equals the
- * session count on the provider that dominates the list, i.e. a second
- * number saying what "12 selected" already said, and wrong the moment a
- * session actually branched. The true count is known exactly once the run
- * reports its `threadIds`, and that is where it is shown (the completion
- * toast).
+ * Deliberately no "threads" figure. One provider session maps to one AO
+ * thread, so it would only repeat the selected-session count. Empty sessions
+ * are reported precisely by the run instead of guessed in the catalogue.
  */
 export interface ImportSelectionSummary {
   count: number;

@@ -1627,6 +1627,7 @@ export class ImportSessionsRequest {
 export class ImportUpdateResult {
     "appliedItems": number;
     "appliedTurns": number;
+    "restoredModelProfile": boolean;
 
     /** Creates a new ImportUpdateResult instance. */
     constructor($$source: Partial<ImportUpdateResult> = {}) {
@@ -1635,6 +1636,9 @@ export class ImportUpdateResult {
         }
         if (!("appliedTurns" in $$source)) {
             this["appliedTurns"] = 0;
+        }
+        if (!("restoredModelProfile" in $$source)) {
+            this["restoredModelProfile"] = false;
         }
 
         Object.assign(this, $$source);
@@ -1665,6 +1669,12 @@ export class ImportUpdateStatus {
     "newTurns": number;
 
     /**
+     * RestoresModelProfile is true when apply will restore the model settings
+     * recorded in the provider session, with or without new history rows.
+     */
+    "restoresModelProfile": boolean;
+
+    /**
      * Detail is user-facing prose.
      */
     "detail"?: string;
@@ -1682,6 +1692,9 @@ export class ImportUpdateStatus {
         }
         if (!("newTurns" in $$source)) {
             this["newTurns"] = 0;
+        }
+        if (!("restoresModelProfile" in $$source)) {
+            this["restoresModelProfile"] = false;
         }
 
         Object.assign(this, $$source);
@@ -1719,14 +1732,6 @@ export class ImportableSession {
     "createdAt": number;
     "lastActivityAt": number;
     "sizeBytes": number;
-
-    /**
-     * BranchCount is how many threads importing this row creates. Codex is
-     * always 1. Claude is 0, meaning NOT DETERMINED: counting a transcript's
-     * branches costs a full read of the file, and a real home is gigabytes,
-     * so the true count arrives on the progress event instead.
-     */
-    "branchCount": number;
     "subagentCount": number;
     "sourcePath": string;
     "knownProject": boolean;
@@ -1784,9 +1789,6 @@ export class ImportableSession {
         if (!("sizeBytes" in $$source)) {
             this["sizeBytes"] = 0;
         }
-        if (!("branchCount" in $$source)) {
-            this["branchCount"] = 0;
-        }
         if (!("subagentCount" in $$source)) {
             this["subagentCount"] = 0;
         }
@@ -1810,10 +1812,10 @@ export class ImportableSession {
      * Creates a new ImportableSession instance from a string or object.
      */
     static createFrom($$source: any = {}): ImportableSession {
-        const $$createField17_0 = $$createType2;
+        const $$createField16_0 = $$createType2;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("warnings" in $$parsedSource) {
-            $$parsedSource["warnings"] = $$createField17_0($$parsedSource["warnings"]);
+            $$parsedSource["warnings"] = $$createField16_0($$parsedSource["warnings"]);
         }
         return new ImportableSession($$parsedSource as Partial<ImportableSession>);
     }

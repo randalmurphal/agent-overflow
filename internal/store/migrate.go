@@ -1926,6 +1926,79 @@ CREATE INDEX idx_workflow_provider_usage_attention_thread
 		Name:    "turn_thread_scope",
 		SQL:     turnThreadScopeMigrationSQL,
 	},
+	{
+		Version: 63,
+		Name:    "imported_session_lineage",
+		// Provider forks are separate resumable sessions even though their
+		// histories share a prefix. Keep the provider parent id alongside the
+		// import cursor so the AO thread link can be resolved after either side
+		// arrives (and restored after a parent is deleted and re-imported).
+		//
+		// Existing installations may contain duplicate source identities from
+		// the old one-thread-per-Claude-leaf importer. A UNIQUE index would make
+		// this forward migration fail and strand those users, so the triggers
+		// preserve legacy rows while making every NEW claim structurally unique.
+		// The UPDATE trigger permits cursor refreshes and rejects only an actual
+		// identity change to a source another thread already owns.
+		SQL: `ALTER TABLE thread_import_state
+    ADD COLUMN source_parent_session_id TEXT NOT NULL DEFAULT '';
+
+CREATE INDEX idx_thread_import_state_parent
+    ON thread_import_state(provider, source_parent_session_id)
+    WHERE source_parent_session_id <> '';
+
+CREATE INDEX idx_thread_import_state_source
+    ON thread_import_state(provider, source_session_id);
+
+CREATE TRIGGER thread_import_state_unique_source_insert
+BEFORE INSERT ON thread_import_state
+WHEN NOT EXISTS (
+    SELECT 1 FROM thread_import_state AS own
+     WHERE own.thread_id = NEW.thread_id
+       AND own.provider = NEW.provider
+       AND own.source_session_id = NEW.source_session_id
+)
+ AND (EXISTS (
+    SELECT 1 FROM thread_import_state AS existing
+     WHERE existing.provider = NEW.provider
+       AND existing.source_session_id = NEW.source_session_id
+       AND existing.thread_id <> NEW.thread_id
+) OR EXISTS (
+    SELECT 1 FROM threads AS existing
+     WHERE existing.id <> NEW.thread_id
+       AND CASE existing.provider
+             WHEN 'claude-tui' THEN 'claude'
+             ELSE existing.provider
+           END = NEW.provider
+       AND (existing.session_ref = NEW.source_session_id
+            OR existing.pending_fork_session_ref = NEW.source_session_id)
+))
+BEGIN
+    SELECT RAISE(ABORT, 'provider session is already claimed by another thread');
+END;
+
+CREATE TRIGGER thread_import_state_unique_source_update
+BEFORE UPDATE OF provider, source_session_id ON thread_import_state
+WHEN (OLD.provider <> NEW.provider OR OLD.source_session_id <> NEW.source_session_id)
+ AND (EXISTS (
+    SELECT 1 FROM thread_import_state AS existing
+     WHERE existing.provider = NEW.provider
+       AND existing.source_session_id = NEW.source_session_id
+       AND existing.thread_id <> NEW.thread_id
+) OR EXISTS (
+    SELECT 1 FROM threads AS existing
+     WHERE existing.id <> NEW.thread_id
+       AND CASE existing.provider
+             WHEN 'claude-tui' THEN 'claude'
+             ELSE existing.provider
+           END = NEW.provider
+       AND (existing.session_ref = NEW.source_session_id
+            OR existing.pending_fork_session_ref = NEW.source_session_id)
+))
+BEGIN
+    SELECT RAISE(ABORT, 'provider session is already claimed by another thread');
+END;`,
+	},
 }
 
 var rebuildWorkItemProviderUsageLimitedV57SQL = mustReplaceOnce(

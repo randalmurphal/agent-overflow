@@ -55,9 +55,9 @@ type SessionImportProgressEvent struct {
 	ID string `json:"id,omitempty"`
 	// Status is imported | failed | skipped; absent on the terminal frame.
 	Status string `json:"status,omitempty"`
-	// ThreadIDs is what the session actually created — the real answer to
-	// "how many threads is this session", which the scan cannot know for
-	// Claude without reading every transcript.
+	// ThreadIDs names the thread the session created. It is a slice because
+	// the UI applies row additions in one shape; the importer enforces at most
+	// one id per provider session.
 	ThreadIDs []string `json:"threadIds,omitempty"`
 	// Error is user-facing prose.
 	Error string `json:"error,omitempty"`
@@ -247,6 +247,12 @@ func (a *App) runSessionImport(ctx context.Context, run *sessionImportRun, ids [
 		case result.err != nil:
 			report(SessionImportProgressEvent{
 				ID: id, Status: sessionImportStatusFailed, Error: result.err.Error(),
+			})
+		case len(result.outcome.Threads) == 0:
+			logImportWarnings(id, result.outcome.Warnings)
+			report(SessionImportProgressEvent{
+				ID: id, Status: sessionImportStatusSkipped,
+				Error: "This session contains no importable conversation history.",
 			})
 		default:
 			imported++

@@ -23,7 +23,6 @@ function row(id: string, extra: Partial<ImportableSession> = {}): ImportableSess
     createdAt: 1,
     lastActivityAt: 2,
     sizeBytes: 100,
-    branchCount: 1,
     subagentCount: 0,
     sourcePath: `/home/u/.claude/${id}.jsonl`,
     knownProject: true,
@@ -332,10 +331,10 @@ describe('selectionSummary', () => {
     expect(selectionSummary(catalog, new Set(['a', 'b']))).toEqual({ count: 2, bytes: 35 });
   });
 
-  // branchCount is 0 on every Claude row (NOT DETERMINED, not "no threads"),
-  // so nothing derived from it may reach the footer — see the type's comment.
-  it('reports no thread figure, whatever branchCount says', () => {
-    const catalog = [row('a', { branchCount: 0 }), row('b', { branchCount: 1 })];
+  // One session maps to one thread, so a thread figure would only repeat the
+  // selection count and does not belong in the footer.
+  it('does not repeat the one-thread-per-session count', () => {
+    const catalog = [row('a'), row('b')];
     expect(Object.keys(selectionSummary(catalog, new Set(['a', 'b']))).sort()).toEqual([
       'bytes',
       'count',

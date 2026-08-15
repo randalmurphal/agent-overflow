@@ -137,9 +137,11 @@ headless, isolated data dir, mocked providers. Full harness guide:
   provider segment / search / clear-filters narrowing them, a two-session
   import settling into threads whose imported history renders (including the
   Bash row's on-demand output payload), a multi-leaf Claude transcript landing
-  as one thread per branch whose same-id divergent thinking payloads remain
-  isolated through SQLite, transport, expansion, and repeated frontend-cache
-  thread switches, the dedup that empties the catalogue on the next open, and
+  as one coherent active thread whose shared prefix and active continuation
+  render while the inactive sibling is absent, an explicit provider fork
+  importing beside its parent with the shared prefix plus only its own
+  continuation and a clickable sidebar lineage link, the dedup that empties
+  the catalogue on the next open, and
   "Check for Provider Updates" appending what the transcript grew on
   disk. The progress strip, the per-row outcome stamps and the Retry CTA are
   pinned on a run that FAILS a session — a clean run closes its own surface in
@@ -153,8 +155,9 @@ headless, isolated data dir, mocked providers. Full harness guide:
   resolves its homes through that override, so seeding is just writing files
   under `harness.bootstrap.homeDir` — a harness process cannot reach the
   developer's real `~/.claude` / `~/.codex`. Claude transcripts are JSONL
-  rows (linear + tool call, multi-leaf + subagent join, and one that lists
-  cleanly but fails the writer); the Codex thread index is a `state_5.sqlite`
+  rows (linear + tool call, multi-leaf + subagent join, an optional explicit
+  fork, and one that lists cleanly but fails the writer); the Codex thread
+  index is a `state_5.sqlite`
   built with `node:sqlite` in the same schema subset the Go fixtures use, in
   `journal_mode=DELETE` because the reader opens it `immutable=1` and would
   not see a WAL. The workspace the sessions record is a `HarnessSeed`'d git

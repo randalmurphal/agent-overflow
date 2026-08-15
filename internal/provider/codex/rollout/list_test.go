@@ -136,6 +136,9 @@ func TestListExcludesArchivedSubagentAndEmptyThreads(t *testing.T) {
 	if got[0].SizeBytes == 0 {
 		t.Fatalf("rollout size not stat'ed: %+v", got[0])
 	}
+	if got[0].Model != "gpt-5.6-sol" || got[0].ReasoningEffort != "high" {
+		t.Fatalf("indexed fallback profile not carried: %+v", got[0])
+	}
 }
 
 // The legacy `has_user_event` column is 0 on every row current Codex writes.

@@ -5,21 +5,12 @@ import (
 	"time"
 
 	"agent-overflow/internal/importir"
-	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 )
 
-// sessionImporter commits one scanned session's branches, one at a time.
-//
-// One at a time is the whole point: a Claude transcript is converted branch
-// by branch and each branch's events are released once its rows are
-// committed, so peak memory is one branch rather than the whole file. The
-// importer is what makes that safe — it owns the whole-session rollback, so
-// a branch that fails after three succeeded still leaves nothing behind.
-//
-// Rollback is not an optimisation. The dedup set the scan subtracts keys on
-// the source session id, so a half-imported session would hide its missing
-// branches from every future scan.
+// sessionImporter commits one scanned provider session as at most one thread.
+// It owns rollback so a failed write cannot leave a thread that causes the
+// source session to disappear from future scans.
 type sessionImporter struct {
 	store *store.Store
 	row   Row
@@ -49,45 +40,20 @@ func (im *sessionImporter) outcome() ImportOutcome {
 	return ImportOutcome{Threads: im.created, Warnings: im.warnings}
 }
 
-// add commits one branch: its thread row, its whole history in one
+// add commits one session: its thread row, its whole history in one
 // transaction, and the cursor a refresh resumes from. Any failure rolls the
-// WHOLE session back and returns the error to report.
+// session back and returns the error to report.
 func (im *sessionImporter) add(plan branchPlan) error {
-	suffixModel, _, _ := sessionModelProfile(plan.events)
+	if len(im.created) != 0 {
+		return im.fail(fmt.Errorf(
+			"sessionimport: %s attempted to create more than one thread", im.row.ID))
+	}
 	thread := newImportedThread(
-		im.row, im.proj, plan.title, plan.sessionRef, plan.events, plan.lastActivityAt)
+		im.row, im.proj, plan.title, plan.sessionRef, plan.events, plan.profile, plan.lastActivityAt)
 	if err := im.store.CreateThread(thread); err != nil {
 		return im.fail(fmt.Errorf("sessionimport: create thread for %s: %w", im.row.ID, err))
 	}
 	im.created = append(im.created, thread)
-
-	prefix := store.ImportedHistoryPrefix{LastTurnIndex: -1, LastItemIndex: -1}
-	if plan.prefixSourceThreadID != "" {
-		boundaryAt := int64(0)
-		for _, event := range plan.events {
-			if event.Kind == provider.EventTurnStart {
-				boundaryAt = event.Timestamp.UnixMilli()
-				break
-			}
-		}
-		if boundaryAt <= 0 {
-			return im.fail(fmt.Errorf(
-				"sessionimport: shared prefix for %s has no suffix turn boundary", im.row.ID))
-		}
-		var err error
-		prefix, err = im.store.CloneImportedHistoryPrefix(
-			plan.prefixSourceThreadID, thread.ID, plan.prefixBeforeTurn, boundaryAt)
-		if err != nil {
-			return im.fail(fmt.Errorf("sessionimport: share prefix for %s: %w", im.row.ID, err))
-		}
-		if suffixModel == "" && prefix.Model != "" && prefix.Model != thread.Model {
-			if err := im.store.UpdateModel(thread.ID, prefix.Model); err != nil {
-				return im.fail(fmt.Errorf("sessionimport: inherit prefix model for %s: %w", im.row.ID, err))
-			}
-			thread.Model = prefix.Model
-			im.created[len(im.created)-1].Model = prefix.Model
-		}
-	}
 
 	batch, buildWarnings, err := NewWriter(im.store, thread).Build(plan.events)
 	if err != nil {
@@ -99,67 +65,39 @@ func (im *sessionImporter) add(plan branchPlan) error {
 	}
 
 	cursor := NewCursor(batch, plan.events)
-	if cursor.TurnIndex < 0 && prefix.LastTurnIndex >= 0 {
-		cursor.TurnIndex = prefix.LastTurnIndex
-		cursor.ItemIndex = prefix.LastItemIndex
-	}
-	if cursor.SourceUUID == "" {
-		cursor.SourceUUID = prefix.LastSourceUUID
-	}
 	if plan.endOffset > cursor.SourceOffset {
 		cursor.SourceOffset = plan.endOffset
 	}
 	state := store.ThreadImportState{
-		ThreadID:        thread.ID,
-		Provider:        im.row.Provider,
-		SourcePath:      im.row.SourcePath,
-		SourceSessionID: im.row.SessionID,
-		LeafUUID:        plan.leafUUID,
-		ImportedAt:      im.importedAt,
+		ThreadID:              thread.ID,
+		Provider:              im.row.Provider,
+		SourcePath:            im.row.SourcePath,
+		SourceSessionID:       im.row.SessionID,
+		SourceParentSessionID: im.row.ParentSessionID,
+		LeafUUID:              plan.leafUUID,
+		ImportedAt:            im.importedAt,
 	}
 	cursor.Apply(&state)
 	if err := im.store.SetThreadImportState(state); err != nil {
 		return im.fail(fmt.Errorf("sessionimport: record cursor for %s: %w", im.row.ID, err))
 	}
-	return nil
-}
-
-// settleBranches decides the two things that can only be known once every
-// branch of a transcript has been converted.
-//
-// Both are computed over the threads that SURVIVED, never over the
-// transcript's leaf count — a branch whose rows were all metadata produces
-// no thread, and counting leaves would put a "— branch 2" suffix on a sole
-// survivor.
-//
-// activeThread is the index of the thread cut from the transcript's LAST
-// branch, or -1 when that branch produced none. Only that thread may carry
-// the session ref: `claude --resume <id>` reopens the file's ACTIVE branch,
-// so giving the ref to any other thread would silently continue a different
-// conversation, with two AO threads appending to one file. When the active
-// branch produced no thread, NOTHING gets the ref — every imported thread
-// then materialises a transcript of its own at its recorded leaf the first
-// time it runs (app_session_import_branch.go), which is correct rather than
-// merely cheap.
-func (im *sessionImporter) settleBranches(activeThread int) error {
-	if len(im.created) == 0 {
-		return nil
+	lineageWarnings, err := im.store.ReconcileImportedForkLineage(im.row.Provider, im.row.SessionID)
+	if err != nil {
+		return im.fail(fmt.Errorf("sessionimport: reconcile fork lineage for %s: %w", im.row.ID, err))
 	}
-	if len(im.created) == 1 {
-		if plain := importedTitle(im.row.Title); plain != im.created[0].Title {
-			if err := im.store.UpdateTitle(im.created[0].ID, plain); err != nil {
-				return im.fail(fmt.Errorf("sessionimport: title thread for %s: %w", im.row.ID, err))
-			}
-			im.created[0].Title = plain
+	for _, warning := range lineageWarnings {
+		// Reconciliation is global because parent and child can arrive in
+		// either order. Surface every new observation even when importing the
+		// parent is what finally made an older child's invalid cycle visible.
+		im.warn(importir.Warning{Code: warning.Code, Message: warning.Message})
+	}
+	if im.row.ParentSessionID != "" {
+		resolved, err := im.store.GetThread(thread.ID)
+		if err != nil {
+			return im.fail(fmt.Errorf("sessionimport: read reconciled fork %s: %w", im.row.ID, err))
 		}
+		im.created[len(im.created)-1] = resolved
 	}
-	if activeThread < 0 || activeThread >= len(im.created) {
-		return nil
-	}
-	if _, err := im.store.UpdateSessionRef(im.created[activeThread].ID, im.row.SessionID); err != nil {
-		return im.fail(fmt.Errorf("sessionimport: record session ref for %s: %w", im.row.ID, err))
-	}
-	im.created[activeThread].SessionRef = im.row.SessionID
 	return nil
 }
 

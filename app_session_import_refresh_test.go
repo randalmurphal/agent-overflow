@@ -128,6 +128,45 @@ func TestThreadImportUpdatesAppendsACodexTail(t *testing.T) {
 	}
 }
 
+func TestThreadImportUpdatesReportsAndAppliesAProfileOnlyRepair(t *testing.T) {
+	app := newTestAppWithStore(t)
+	home := newImportHome(t)
+	home.attach(app)
+	home.writeCodexIndex(t, importFixtureCodexThread)
+	home.codexLinearSession(t, importFixtureCodexThread)
+
+	if _, err := app.ListImportableSessions(ImportScanRequest{}); err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	threadID := runImport(t, app, "codex:"+importFixtureCodexThread)[0].ThreadIDs[0]
+	if err := app.store.UpdateModel(threadID, ""); err != nil {
+		t.Fatalf("clear imported model: %v", err)
+	}
+
+	status, err := app.CheckThreadImportUpdates(threadID)
+	if err != nil {
+		t.Fatalf("CheckThreadImportUpdates: %v", err)
+	}
+	if status.Status != sessionimport.UpdateAvailable || status.NewItems != 0 || status.NewTurns != 0 ||
+		!status.RestoresModelProfile || status.Detail == "" {
+		t.Fatalf("profile repair status = %+v", status)
+	}
+	result, err := app.ImportThreadUpdates(threadID)
+	if err != nil {
+		t.Fatalf("ImportThreadUpdates: %v", err)
+	}
+	if result.AppliedItems != 0 || result.AppliedTurns != 0 || !result.RestoredModelProfile {
+		t.Fatalf("profile repair result = %+v", result)
+	}
+	thread, err := app.store.GetThread(threadID)
+	if err != nil {
+		t.Fatalf("GetThread: %v", err)
+	}
+	if thread.Model != "gpt-5.6-sol" || thread.ReasoningEffort != "high" {
+		t.Fatalf("restored profile = %q/%q", thread.Model, thread.ReasoningEffort)
+	}
+}
+
 // A thread the user continued inside AO has a future of its own. Appending
 // the file's tail would interleave two conversations, so the refresh refuses
 // instead of repairing.

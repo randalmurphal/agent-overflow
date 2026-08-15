@@ -60,7 +60,7 @@ export interface SessionImportProgressEvent {
   /** Row id this frame reports on; absent on the terminal frame. */
   id?: string;
   status?: ImportRowStatus;
-  /** Threads the row actually created — the real branch count. */
+  /** Thread the row created; empty when the session had no importable history. */
   threadIds?: string[];
   /** User-facing prose; set on `failed` AND on `skipped`. */
   error?: string;

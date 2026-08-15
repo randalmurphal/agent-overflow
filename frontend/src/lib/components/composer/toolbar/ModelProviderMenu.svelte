@@ -228,7 +228,11 @@
     }
   }
 
-  let modelLabel = $derived(displayModelLabel(pane.thread?.provider ?? '', pane.activeModel || 'No model'));
+  let modelLabel = $derived(
+    pane.activeModel
+      ? displayModelLabel(pane.thread?.provider ?? '', pane.activeModel)
+      : 'Provider default',
+  );
 
   let isLocked = $derived(pane.isLocked);
   let isDiscussion = $derived(pane.thread?.mode === 'discussion');

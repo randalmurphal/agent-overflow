@@ -25,6 +25,7 @@ type converter struct {
 	endOffset           int64
 	lineStart, lineNext int64
 	lastTimestamp       time.Time
+	profile             profileAccumulator
 
 	// sawCompacted records that a durable `compacted` record has been read.
 	// It is what suppresses the lightweight `event_msg/context_compacted`
@@ -100,6 +101,7 @@ func (c *converter) result() ParseResult {
 	res := ParseResult{
 		Meta:         c.pre.meta,
 		Events:       c.events,
+		Profile:      c.profile.value,
 		EndOffset:    c.endOffset,
 		CorruptLines: c.corrupt,
 		UnknownTypes: c.unknown,

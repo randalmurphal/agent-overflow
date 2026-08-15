@@ -291,6 +291,11 @@ func TestListImportedSessionRefsUnionsEverySource(t *testing.T) {
 	if err := s.CreateThread(live); err != nil {
 		t.Fatalf("create live thread: %v", err)
 	}
+	codexSameID := makeThread("t-codex-same-id", "codex")
+	codexSameID.SessionRef = "sess-live"
+	if err := s.CreateThread(codexSameID); err != nil {
+		t.Fatalf("create cross-provider live thread: %v", err)
+	}
 
 	// A fork whose session file exists but has never been resumed: it has
 	// no session_ref at all, which is exactly the row a session_ref-only
@@ -324,10 +329,11 @@ func TestListImportedSessionRefsUnionsEverySource(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list imported session refs: %v", err)
 	}
-	want := map[string]string{
-		"sess-live":     "t-live",
-		"sess-fork":     "t-fork",
-		"sess-imported": "t-imported",
+	want := map[ProviderSessionRef]string{
+		{Provider: "claude", SessionID: "sess-live"}:    "t-live",
+		{Provider: "codex", SessionID: "sess-live"}:     "t-codex-same-id",
+		{Provider: "claude", SessionID: "sess-fork"}:    "t-fork",
+		{Provider: "codex", SessionID: "sess-imported"}: "t-imported",
 	}
 	if len(refs) != len(want) {
 		t.Fatalf("refs = %v, want %v", refs, want)
@@ -362,7 +368,8 @@ func TestListImportedSessionRefsDropsDeletedThreads(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list imported session refs: %v", err)
 	}
-	if _, found := refs["sess-gone"]; found {
+	key := ProviderSessionRef{Provider: "claude", SessionID: "sess-gone"}
+	if _, found := refs[key]; found {
 		t.Errorf("refs still carry a deleted thread's session: %v", refs)
 	}
 }

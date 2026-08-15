@@ -1,7 +1,6 @@
 package store
 
 import (
-	"fmt"
 	"reflect"
 	"testing"
 )
@@ -229,87 +228,5 @@ func TestSharedImportHistoryActionablePlanProbeUsesImportedPayload(t *testing.T)
 	}
 	if len(threads) != 1 || !threads[0].HasActionableProposedPlan {
 		t.Fatalf("threads = %+v, want imported actionable plan", threads)
-	}
-}
-
-func TestCloneImportedHistoryPrefixSharesWholeChunksAndCopiesOnlyBoundaryTail(t *testing.T) {
-	s := newTestStore(t)
-	for _, threadID := range []string{"prefix-source", "prefix-target"} {
-		newImportTargetThread(t, s, threadID)
-	}
-
-	batchFor := func(threadID string, throughTurn int) ImportBatch {
-		batch := ImportBatch{}
-		for turnIndex := 1; turnIndex <= throughTurn; turnIndex++ {
-			turnID := fmt.Sprintf("%s:%d", threadID, turnIndex)
-			batch.Turns = append(batch.Turns, Turn{
-				TurnID: turnID, ThreadID: threadID,
-				TurnIndex: turnIndex, StartedAt: importTurnStart + int64(turnIndex),
-			})
-			batch.TurnCompletions = append(batch.TurnCompletions, TurnCompletion{
-				TurnID:      turnID,
-				CompletedAt: importTurnComplete + int64(turnIndex), StopReason: "end_turn",
-			})
-			rows := 1
-			if turnIndex == 1 {
-				rows = importHistoryTargetRows + 44
-			}
-			for itemIndex := 0; itemIndex < rows; itemIndex++ {
-				id := fmt.Sprintf("turn-%d-item-%d", turnIndex, itemIndex)
-				batch.Rows = append(batch.Rows, ImportRow{Item: Item{
-					ID: id, TurnIndex: turnIndex, ItemIndex: itemIndex,
-					Kind: "assistant_text", Role: "assistant", Status: "completed",
-					Summary: id, Meta: fmt.Sprintf(`{"import_source_uuid":"source-%s"}`, id),
-					CreatedAt: importTurnStart + int64(turnIndex*1000+itemIndex),
-					UpdatedAt: importTurnStart + int64(turnIndex*1000+itemIndex),
-				}})
-			}
-		}
-		return batch
-	}
-
-	if err := s.ApplyImportBatch("prefix-source", batchFor("prefix-source", 3)); err != nil {
-		t.Fatalf("apply source: %v", err)
-	}
-	prefix, err := s.CloneImportedHistoryPrefix("prefix-source", "prefix-target", 3, 9_000)
-	if err != nil {
-		t.Fatalf("clone prefix: %v", err)
-	}
-	if prefix.ItemCount != importHistoryTargetRows+45 || prefix.LastTurnIndex != 2 || prefix.LastItemIndex != 0 {
-		t.Fatalf("prefix result = %+v", prefix)
-	}
-	var mapped, local int
-	if err := s.db.QueryRow(
-		`SELECT
-		   (SELECT COUNT(*) FROM thread_import_chunks WHERE thread_id = 'prefix-target'),
-		   (SELECT COUNT(*) FROM items WHERE thread_id = 'prefix-target')`,
-	).Scan(&mapped, &local); err != nil {
-		t.Fatalf("read target representation: %v", err)
-	}
-	if mapped != 1 || local != 1 {
-		t.Fatalf("target representation mappings/local = %d/%d, want 1/1", mapped, local)
-	}
-
-	suffix := batchFor("prefix-target", 3)
-	suffix.Turns = suffix.Turns[2:]
-	suffix.TurnCompletions = suffix.TurnCompletions[2:]
-	suffix.Rows = suffix.Rows[len(suffix.Rows)-1:]
-	if err := s.ApplyImportBatch("prefix-target", suffix); err != nil {
-		t.Fatalf("apply target suffix: %v", err)
-	}
-	source, err := s.ListItems("prefix-source")
-	if err != nil {
-		t.Fatalf("list source: %v", err)
-	}
-	target, err := s.ListItems("prefix-target")
-	if err != nil {
-		t.Fatalf("list target: %v", err)
-	}
-	for i := range source {
-		source[i].ThreadID = ""
-		target[i].ThreadID = ""
-	}
-	if !reflect.DeepEqual(source, target) {
-		t.Fatal("prefix plus suffix does not reconstruct the source logical history")
 	}
 }
