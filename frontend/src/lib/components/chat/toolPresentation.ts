@@ -10,7 +10,7 @@ import { parseJsonObject } from '../../utils/parseJsonObject';
 import { parsePatchFilesCached, type PatchFile, type PatchLine } from '../../utils/patchFiles';
 import { isCodexCollabControlToolName } from './codexCollabControls';
 import { commandTextForItem, isCommandToolName } from './commandDisplay';
-import { structuredFileEditPathTarget } from './toolCardPreview';
+import { structuredFileEditPathTargets } from './toolCardPreview';
 
 export type ToolPresentationSurface = 'timeline' | 'tray';
 
@@ -48,6 +48,11 @@ export type ToolPresentation =
       kind: 'file-edit-placeholder';
       item: Item;
       file: PatchFile;
+    }
+  | {
+      kind: 'file-edit-placeholders';
+      item: Item;
+      files: PatchFile[];
     }
   | {
       kind: 'diff-stack';
@@ -94,6 +99,7 @@ export type TimelineToolPresentation = Extract<
   | { kind: 'proposed-plan' }
   | { kind: 'single-file-diff' }
   | { kind: 'file-edit-placeholder' }
+  | { kind: 'file-edit-placeholders' }
   | { kind: 'diff-stack' }
   | { kind: 'tool-result' }
   | { kind: 'command' }
@@ -175,12 +181,19 @@ function resolveTimelineToolPresentation(input: ToolPresentationInput): ToolPres
     };
   }
 
-  const fileEditPlaceholder = fileEditPlaceholderPatchFile(item, input.workspacePath ?? '');
-  if (fileEditPlaceholder) {
+  const fileEditPlaceholders = fileEditPlaceholderPatchFiles(item, input.workspacePath ?? '');
+  if (fileEditPlaceholders.length === 1) {
     return {
       kind: 'file-edit-placeholder',
       item,
-      file: fileEditPlaceholder,
+      file: fileEditPlaceholders[0],
+    };
+  }
+  if (fileEditPlaceholders.length > 1) {
+    return {
+      kind: 'file-edit-placeholders',
+      item,
+      files: fileEditPlaceholders,
     };
   }
 
@@ -339,17 +352,15 @@ function isCollabControlTool(provider: string | null | undefined, item: Item): b
   );
 }
 
-function fileEditPlaceholderPatchFile(item: Item, workspacePath: string): PatchFile | null {
+function fileEditPlaceholderPatchFiles(item: Item, workspacePath: string): PatchFile[] {
   const itemMeta = parseJsonObject(item.meta);
-  const path = structuredFileEditPathTarget(item, itemMeta, workspacePath).trim();
-  if (!path) return null;
-  return {
+  return structuredFileEditPathTargets(item, itemMeta, workspacePath).map((path) => ({
     path,
     kind: 'modified',
     additions: 0,
     deletions: 0,
     lines: [] as PatchLine[],
-  };
+  }));
 }
 
 function collapsedCommandPreview(item: Item, meta: CommandOutputMeta): string {

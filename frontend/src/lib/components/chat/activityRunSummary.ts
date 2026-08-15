@@ -10,6 +10,7 @@
 
 import type { Item } from '../../types/models';
 import type { ProviderID } from '../../types/providers';
+import { fileChangeDisplayRowCount } from '../../utils/fileChangeRows';
 import { classifyToolName, type ToolKindIcon } from './toolCardHeader';
 
 const THINKING_LABEL = 'thinking';
@@ -188,11 +189,12 @@ export function activityRunSummary(
       const callId = item.completionOf;
       if (callId && presentIds.has(callId)) continue;
     }
-    total += 1;
+    const displayRowCount = fileChangeDisplayRowCount(item);
+    total += displayRowCount;
     const presentation = activityRunPresentation(item, provider, presentationCache);
     const bucket = buckets.get(presentation.key);
-    if (bucket) bucket.count += 1;
-    else buckets.set(presentation.key, { ...presentation, count: 1 });
+    if (bucket) bucket.count += displayRowCount;
+    else buckets.set(presentation.key, { ...presentation, count: displayRowCount });
   }
 
   const entries = [...buckets.values()]

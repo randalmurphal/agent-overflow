@@ -140,6 +140,36 @@ describe('counts', () => {
     ]);
   });
 
+  it('counts projected file rows rather than Codex fileChange envelopes', () => {
+    const { counts } = activityRunSummary([
+      tool('multi-rich', 'file_change', {
+        payloadKind: 'tool_result',
+        payloadMeta: JSON.stringify({
+          inlineDiff: {
+            totalFiles: 4,
+            files: [
+              { path: '/repo/a' },
+              { path: '/repo/b' },
+              { path: '/repo/c' },
+              { path: '/repo/d' },
+            ],
+          },
+        }),
+      }),
+      tool('single', 'file_change'),
+      tool('multi-fallback', 'file_change', {
+        meta: JSON.stringify({ input: { files: ['/repo/e', '/repo/f'] } }),
+      }),
+      tool('command', 'command_execution'),
+    ], 'codex');
+
+    expect(counts.entries.map(({ label, count }) => ({ label, count }))).toEqual([
+      { label: 'Edit', count: 7 },
+      { label: 'Bash', count: 1 },
+    ]);
+    expect(counts.total).toBe(8);
+  });
+
   it('keeps MCP uppercase in a Codex header', () => {
     const { counts } = activityRunSummary([tool('mcp', 'MCP/lookup')], 'codex');
 

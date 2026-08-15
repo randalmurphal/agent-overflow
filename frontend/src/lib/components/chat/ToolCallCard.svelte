@@ -81,6 +81,22 @@
     createdAt={item.createdAt}
     statusItem={item}
   />
+{:else if presentation.kind === 'file-edit-placeholders'}
+  <!-- A summary-only Codex multi-file event still projects one independent
+       row per reported path. Rich events resolve to the diff-stack branch;
+       this is the stable fallback while/when no patch payload is available. -->
+  {#each presentation.files as file (file.path)}
+    <DiffFileBlock
+      {pane}
+      {file}
+      threadId={item.threadId}
+      itemId={item.id}
+      workspacePath={paneWorkspacePath(pane)}
+      toolName={item.toolName}
+      createdAt={item.createdAt}
+      statusItem={item}
+    />
+  {/each}
 {:else if presentation.kind === 'diff-stack'}
   <!-- Multi-file diff (Claude Edit/Write/MultiEdit/NotebookEdit;
        Codex apply_patch with N files). One DiffFileBlock per file,

@@ -228,6 +228,38 @@ describe("<ToolCallCard> header dispatcher", () => {
     expect(queryByTestId("diff-file-body")).toBeNull();
   });
 
+  it("renders one independent placeholder row per file in a summary-only Codex edit", async () => {
+    const pane = await buildPane(
+      makeThread({ provider: "codex", workspacePath: "/home/me/repo" }),
+    );
+    const item = makeItem({
+      id: "codex-multi-file-fallback",
+      kind: "tool_call",
+      status: "completed",
+      toolName: "file_change",
+      summary: "file_change",
+      meta: JSON.stringify({
+        toolName: "file_change",
+        input: {
+          files: [
+            "/home/me/dotfiles/install.sh",
+            "/home/me/dotfiles/setup/packages.sh",
+          ],
+        },
+      }),
+    });
+
+    const { getAllByTestId, queryByTestId } = render(ToolCallCard, {
+      props: { pane, item },
+    });
+
+    expect(queryByTestId("tool-call-card")).toBeNull();
+    const blocks = getAllByTestId("diff-file-block");
+    expect(blocks).toHaveLength(2);
+    expect(blocks[0]).toHaveAttribute("data-file-path", "/home/me/dotfiles/install.sh");
+    expect(blocks[1]).toHaveAttribute("data-file-path", "/home/me/dotfiles/setup/packages.sh");
+  });
+
   it("renders an eye icon for Read", async () => {
     const pane = await buildPane();
     const item = makeItem({

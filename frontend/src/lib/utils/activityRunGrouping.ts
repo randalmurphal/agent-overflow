@@ -25,6 +25,7 @@
 // it cannot derive alone — see `ActivityRunIdentity`.
 
 import type { Item } from '../types/models';
+import { fileChangeDisplayRowCount } from './fileChangeRows';
 import { type ActivityRunNode, type TimelineNode } from './subagentGrouping';
 import { timelineNodeHasRail } from './timelineRail';
 
@@ -50,7 +51,8 @@ export interface ActivityRunResolution {
 /**
  * Whether a row's replacement can change the activity-run header summary.
  *
- * `activityRunSummary` reads exactly these five fields, so anything else
+ * `activityRunSummary` reads these five fields plus a file-change item's
+ * projected file-row count, so anything else
  * moving on a member row — growing summary text, a payload landing, a
  * timestamp — leaves the header's output identical. Defined here, beside
  * the run domain, because both sides need one definition: the pane bumps
@@ -62,7 +64,8 @@ export function activityRunSummaryFieldsChanged(previous: Item, next: Item): boo
     || previous.kind !== next.kind
     || previous.status !== next.status
     || (previous.toolName ?? '') !== (next.toolName ?? '')
-    || (previous.completionOf ?? '') !== (next.completionOf ?? '');
+    || (previous.completionOf ?? '') !== (next.completionOf ?? '')
+    || fileChangeDisplayRowCount(previous) !== fileChangeDisplayRowCount(next);
 }
 
 /**

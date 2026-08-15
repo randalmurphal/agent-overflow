@@ -456,6 +456,36 @@ describe('activityRunSummaryFieldsChanged', () => {
     }
   });
 
+  it('is true when a file-change item projects a different number of file rows', () => {
+    const fileChange = makeItem({
+      id: 'edit',
+      kind: 'tool_call',
+      toolName: 'file_change',
+      meta: JSON.stringify({ input: { files: ['/repo/a', '/repo/b'] } }),
+    });
+    expect(activityRunSummaryFieldsChanged(fileChange, {
+      ...fileChange,
+      payloadKind: 'tool_result',
+      payloadMeta: JSON.stringify({ inlineDiff: { totalFiles: 3, files: [] } }),
+    })).toBe(true);
+  });
+
+  it('is false when richer file-change metadata preserves the projected row count', () => {
+    const fileChange = makeItem({
+      id: 'edit',
+      kind: 'tool_call',
+      toolName: 'file_change',
+      meta: JSON.stringify({ input: { files: ['/repo/a', '/repo/b'] } }),
+    });
+    expect(activityRunSummaryFieldsChanged(fileChange, {
+      ...fileChange,
+      payloadKind: 'tool_result',
+      payloadMeta: JSON.stringify({
+        inlineDiff: { totalFiles: 2, files: [{ path: '/repo/a' }, { path: '/repo/b' }] },
+      }),
+    })).toBe(false);
+  });
+
   it('treats an absent optional and an empty string as the same value', () => {
     // Both shapes reach the pane: the wire omits the field, the store's
     // own writers normalize it to ''. A difference here would bump a run's

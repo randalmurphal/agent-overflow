@@ -129,13 +129,38 @@ export function structuredToolPathTarget(
   return displayPathForTarget(path, workspacePath).target;
 }
 
-export function structuredFileEditPathTarget(
+/**
+ * Every path carried by a structured file-edit launch. Codex uses the
+ * singular `file_path` shape for one-file changes and `files` for a
+ * multi-file change; both project to the same independent file rows.
+ */
+export function structuredFileEditPathTargets(
   item: Item,
   itemMeta: Record<string, unknown> | null,
   workspacePath: string,
-): string {
-  if (!STRUCTURED_FILE_EDIT_TOOLS.has((item.toolName ?? '').trim())) return '';
-  return structuredToolPathTarget(item, itemMeta, workspacePath);
+): string[] {
+  if (!STRUCTURED_FILE_EDIT_TOOLS.has((item.toolName ?? '').trim())) return [];
+
+  const singular = structuredToolPathTarget(item, itemMeta, workspacePath);
+  if (singular) return [singular];
+
+  const input = itemMeta?.input;
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return [];
+  const files = (input as Record<string, unknown>).files;
+  if (!Array.isArray(files)) return [];
+
+  const seen = new Set<string>();
+  const paths: string[] = [];
+  for (const value of files) {
+    if (typeof value !== 'string' || !value.trim()) continue;
+    const decoded = decodeToolCardPreview(value.trim());
+    const path = decoded.path?.path ?? value.trim();
+    const target = displayPathForTarget(path, workspacePath).target;
+    if (!target || seen.has(target)) continue;
+    seen.add(target);
+    paths.push(target);
+  }
+  return paths;
 }
 
 function basenameOf(path: string): string {

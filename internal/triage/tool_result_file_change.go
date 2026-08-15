@@ -173,12 +173,12 @@ func extractFileChanges(item map[string]json.RawMessage, workspaceRoot string) [
 
 	changes := make([]fileChange, 0, len(rawChanges))
 	for _, change := range rawChanges {
-		path := normalizeToolPath(rawString(change, "path"), workspaceRoot)
+		path := normalizeFileChangeDisplayPath(rawString(change, "path"), workspaceRoot)
 		if path == "" {
 			continue
 		}
 		kind, movePath := normalizeChangeKind(change["kind"])
-		movePath = normalizeToolPath(movePath, workspaceRoot)
+		movePath = normalizeFileChangeDisplayPath(movePath, workspaceRoot)
 		previousPath := ""
 		if movePath != "" {
 			previousPath = path
@@ -568,7 +568,11 @@ func appendStrictDiffPath(paths []string, raw string) ([]string, bool) {
 	}
 	raw = strings.TrimPrefix(raw, "a/")
 	raw = strings.TrimPrefix(raw, "b/")
-	path := normalizeToolPath(raw, "")
+	// "Strict" here means a single well-formed header token that must match
+	// the fileChange entry exactly; it is not a workspace authorization gate.
+	// The patch is persisted for display, so legitimate absolute sibling-repo
+	// paths follow the same display normalizer as the entry they are matched to.
+	path := normalizeFileChangeDisplayPath(raw, "")
 	if path == "" {
 		return nil, false
 	}
@@ -750,8 +754,8 @@ func hasExactToolInlineDiff(inlineDiff *ToolInlineDiff) bool {
 	return inlineDiff != nil && inlineDiff.Availability == "exact_patch"
 }
 
-func normalizeToolPath(rawPath, workspaceRoot string) string {
-	return normalizeWorkspaceRelativePath(rawPath, workspaceRoot)
+func normalizeFileChangeDisplayPath(rawPath, workspaceRoot string) string {
+	return normalizeDisplayPath(rawPath, workspaceRoot)
 }
 
 func uniqueNonEmpty(values []string) []string {

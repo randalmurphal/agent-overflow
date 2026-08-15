@@ -214,7 +214,7 @@ func filterUnifiedDiffByPaths(diff string, files []ToolInlineDiffFile, workspace
 
 	allowed := make(map[string]struct{}, len(files))
 	for _, file := range files {
-		path := normalizeToolPath(file.Path, workspaceRoot)
+		path := normalizeFileChangeDisplayPath(file.Path, workspaceRoot)
 		if path != "" {
 			allowed[path] = struct{}{}
 		}
@@ -243,13 +243,13 @@ func diffSectionPaths(section string, workspaceRoot string) []string {
 	for _, line := range strings.Split(section, "\n") {
 		switch {
 		case strings.HasPrefix(line, "+++ b/"):
-			paths = append(paths, normalizeToolPath(strings.TrimPrefix(line, "+++ b/"), workspaceRoot))
+			paths = append(paths, normalizeFileChangeDisplayPath(strings.TrimPrefix(line, "+++ b/"), workspaceRoot))
 		case strings.HasPrefix(line, "rename to "):
-			paths = append(paths, normalizeToolPath(strings.TrimPrefix(line, "rename to "), workspaceRoot))
+			paths = append(paths, normalizeFileChangeDisplayPath(strings.TrimPrefix(line, "rename to "), workspaceRoot))
 		case strings.HasPrefix(line, "diff --git "):
 			fields := strings.Fields(line)
 			if len(fields) >= 4 {
-				paths = append(paths, normalizeToolPath(strings.TrimPrefix(fields[3], "b/"), workspaceRoot))
+				paths = append(paths, normalizeFileChangeDisplayPath(strings.TrimPrefix(fields[3], "b/"), workspaceRoot))
 			}
 		}
 	}
@@ -259,7 +259,7 @@ func diffSectionPaths(section string, workspaceRoot string) []string {
 func inlineDiffPathSignature(files []ToolInlineDiffFile, workspaceRoot string) string {
 	paths := make([]string, 0, len(files))
 	for _, file := range files {
-		path := normalizeToolPath(file.Path, workspaceRoot)
+		path := normalizeFileChangeDisplayPath(file.Path, workspaceRoot)
 		if path != "" {
 			paths = append(paths, path)
 		}

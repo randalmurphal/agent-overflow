@@ -325,6 +325,37 @@ describe('resolveToolPresentation', () => {
     });
   });
 
+  it('routes a summary-only multi-file edit to one placeholder per file', () => {
+    const item = makeItem({
+      kind: 'tool_call',
+      status: 'completed',
+      toolName: 'file_change',
+      summary: 'file_change',
+      meta: JSON.stringify({
+        toolName: 'file_change',
+        input: {
+          files: [
+            '/home/me/dotfiles/install.sh',
+            '/home/me/dotfiles/setup/packages.sh',
+          ],
+        },
+      }),
+    });
+
+    const presentation = resolveToolPresentation({
+      item,
+      provider: 'codex',
+      workspacePath: '/home/me/repo',
+    });
+
+    expect(presentation.kind).toBe('file-edit-placeholders');
+    if (presentation.kind !== 'file-edit-placeholders') return;
+    expect(presentation.files.map((file) => file.path)).toEqual([
+      '/home/me/dotfiles/install.sh',
+      '/home/me/dotfiles/setup/packages.sh',
+    ]);
+  });
+
   it('uses tray launch and completion items for command presentation', () => {
     const launch = makeItem({
       id: 'tool:0:0',

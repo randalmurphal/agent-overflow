@@ -230,7 +230,7 @@ func TestExtractFileChangeToolResultNormalizesAbsoluteWorkspacePaths(t *testing.
 	}
 }
 
-func TestExtractFileChangeToolResultDropsUnsafePaths(t *testing.T) {
+func TestExtractFileChangeToolResultPreservesDisplayPathsAndDropsControlPaths(t *testing.T) {
 	workspace := t.TempDir()
 	outside := filepath.Join(t.TempDir(), "escape.ts")
 
@@ -255,11 +255,127 @@ func TestExtractFileChangeToolResultDropsUnsafePaths(t *testing.T) {
 	if !ok {
 		t.Fatal("expected valid fileChange entry to extract")
 	}
-	if meta.InlineDiff == nil || len(meta.InlineDiff.Files) != 1 {
+	if meta.InlineDiff == nil || len(meta.InlineDiff.Files) != 5 {
 		t.Fatalf("unexpected inline diff meta: %+v", meta.InlineDiff)
 	}
-	if meta.InlineDiff.Files[0].Path != "src/app.ts" {
-		t.Fatalf("files = %+v, want only src/app.ts", meta.InlineDiff.Files)
+	want := []string{"src/app.ts", "../escape.ts", filepath.ToSlash(outside), ".git/config", ":(top)src/app.ts"}
+	for i, path := range want {
+		if meta.InlineDiff.Files[i].Path != path {
+			t.Fatalf("files[%d].Path = %q, want %q; files=%+v", i, meta.InlineDiff.Files[i].Path, path, meta.InlineDiff.Files)
+		}
+	}
+}
+
+func TestExtractFileChangeToolResultPreservesMultiFileAbsolutePathsOutsideWorkspace(t *testing.T) {
+	workspace := "/home/rmurphy/repos/agent-overflow"
+	raw := json.RawMessage(`{
+		"item": {
+			"type": "fileChange",
+			"changes": [
+				{
+					"path": "/home/rmurphy/repos/dotfiles/install.sh",
+					"kind": {"type": "update", "move_path": null},
+					"diff": "@@ -1 +1 @@\n-old\n+new"
+				},
+				{
+					"path": "/home/rmurphy/repos/dotfiles/setup/packages.sh",
+					"kind": {"type": "update", "move_path": null},
+					"diff": "@@ -1 +1,2 @@\n keep\n+added"
+				}
+			]
+		}
+	}`)
+
+	meta, diffData, ok := ExtractFileChangeToolResult(raw, workspace)
+	if !ok {
+		t.Fatal("expected sibling-repository fileChange extraction to succeed")
+	}
+	if meta.InlineDiff == nil || meta.InlineDiff.Availability != "exact_patch" {
+		t.Fatalf("inline diff = %+v, want exact_patch", meta.InlineDiff)
+	}
+	wantPaths := []string{
+		"/home/rmurphy/repos/dotfiles/install.sh",
+		"/home/rmurphy/repos/dotfiles/setup/packages.sh",
+	}
+	if len(meta.InlineDiff.Files) != len(wantPaths) {
+		t.Fatalf("files = %+v, want %d", meta.InlineDiff.Files, len(wantPaths))
+	}
+	for i, path := range wantPaths {
+		if got := meta.InlineDiff.Files[i].Path; got != path {
+			t.Fatalf("files[%d].Path = %q, want %q", i, got, path)
+		}
+	}
+	if meta.Title != "Edited 2 files (+2 -1)" {
+		t.Fatalf("title = %q, want %q", meta.Title, "Edited 2 files (+2 -1)")
+	}
+	if diff := string(diffData); !strings.Contains(diff, "a//home/rmurphy/repos/dotfiles/install.sh") ||
+		!strings.Contains(diff, "a//home/rmurphy/repos/dotfiles/setup/packages.sh") {
+		t.Fatalf("combined diff does not preserve both absolute paths: %q", diff)
+	}
+}
+
+func TestFileChangeToolResultPersistsMultiFilePayloadOutsideWorkspace(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	workspace := t.TempDir()
+	outsideRoot := t.TempDir()
+	createToolResultThread(t, st, "t1", workspace)
+
+	paths := []string{
+		filepath.Join(outsideRoot, "install.sh"),
+		filepath.Join(outsideRoot, "setup", "packages.sh"),
+	}
+	meta, err := json.Marshal(map[string]any{
+		"toolName": "file_change",
+		"item": map[string]any{
+			"id":   "external-multi-edit",
+			"type": "fileChange",
+			"changes": []map[string]any{
+				{
+					"path": paths[0],
+					"kind": map[string]any{"type": "update", "move_path": nil},
+					"diff": "@@ -1 +1 @@\n-old\n+new",
+				},
+				{
+					"path": paths[1],
+					"kind": map[string]any{"type": "update", "move_path": nil},
+					"diff": "@@ -1 +1,2 @@\n keep\n+added",
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal event meta: %v", err)
+	}
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventToolStart,
+		ThreadID:  "t1",
+		ItemID:    "external-multi-edit",
+		ItemType:  "file_change",
+		Meta:      meta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("handle file change: %v", err)
+	}
+
+	item, found, err := st.GetThreadItem("t1", "external-multi-edit")
+	if err != nil {
+		t.Fatalf("get persisted item: %v", err)
+	}
+	if !found {
+		t.Fatal("persisted file-change item not found")
+	}
+	if item.PayloadID == "" {
+		t.Fatal("outside-workspace file change lost its rich payload")
+	}
+	persisted := readToolResultMeta(t, st, "t1", item.PayloadID)
+	if persisted.InlineDiff == nil || len(persisted.InlineDiff.Files) != len(paths) {
+		t.Fatalf("persisted inline diff = %+v, want %d files", persisted.InlineDiff, len(paths))
+	}
+	for i, path := range paths {
+		if got := persisted.InlineDiff.Files[i].Path; got != filepath.ToSlash(path) {
+			t.Fatalf("files[%d].Path = %q, want %q", i, got, filepath.ToSlash(path))
+		}
 	}
 }
 
@@ -342,6 +458,34 @@ func TestExtractFileChangeToolResultAcceptsMatchingFullPatch(t *testing.T) {
 	}
 	if !strings.Contains(string(diffData), "diff --git a/src/app.ts b/src/app.ts") {
 		t.Fatalf("expected full patch in payload, got %q", string(diffData))
+	}
+}
+
+func TestExtractFileChangeToolResultAcceptsMatchingExternalFullPatch(t *testing.T) {
+	workspace := "/home/rmurphy/repos/agent-overflow"
+	raw := json.RawMessage(`{
+		"item": {
+			"type": "fileChange",
+			"changes": [{
+				"path": "/home/rmurphy/repos/dotfiles/install.sh",
+				"kind": {"type": "update", "move_path": null},
+				"diff": "diff --git a//home/rmurphy/repos/dotfiles/install.sh b//home/rmurphy/repos/dotfiles/install.sh\n--- a//home/rmurphy/repos/dotfiles/install.sh\n+++ b//home/rmurphy/repos/dotfiles/install.sh\n@@ -1 +1 @@\n-old\n+new"
+			}]
+		}
+	}`)
+
+	meta, diffData, ok := ExtractFileChangeToolResult(raw, workspace)
+	if !ok {
+		t.Fatal("expected matching external full patch to extract")
+	}
+	if meta.InlineDiff == nil || meta.InlineDiff.Availability != "exact_patch" {
+		t.Fatalf("inline diff = %+v, want exact_patch", meta.InlineDiff)
+	}
+	if got := meta.InlineDiff.Files[0].Path; got != "/home/rmurphy/repos/dotfiles/install.sh" {
+		t.Fatalf("path = %q, want preserved external absolute path", got)
+	}
+	if !strings.Contains(string(diffData), "a//home/rmurphy/repos/dotfiles/install.sh") {
+		t.Fatalf("diff = %q, want external absolute header", string(diffData))
 	}
 }
 
