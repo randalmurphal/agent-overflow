@@ -28,8 +28,8 @@ one closest to what you're touching.
 | `attachment/` | Message attachment storage (metadata in store, bytes on disk). |
 | `settings/` | Persistent settings JSON with validation. |
 | `atomicfile/` | Crash-safe private state files: byte-oriented `Write`, JSON `WriteJSON`, and `ReadJSON` (temp + fsync + rename, 0600/0700). Backs provider-account credentials/metadata, `wsldistro`, and launcher window state. Stdlib-only. |
-| `logging/` | Structured NDJSON provider-event logging. |
-| `observability/` | Opt-in OpenTelemetry tracing + NDJSON replay writer. |
+| `logging/` | Structured NDJSON provider-event logging, plus the age-based retention sweep over that directory — which prunes goroutine dumps alongside its own logs, since they land in the same place. |
+| `observability/` | Opt-in OpenTelemetry tracing + NDJSON replay writer, plus `goroutinedump` — the one always-armed piece: a SIGUSR1 handler writing a pprof debug=2 goroutine dump into the logging directory, throttled to one per 10s. It answers "where is this stripped, already-wedged binary parked", which the opt-in pprof listener cannot. |
 | `diagenv/` | Names of the opt-in diagnostic env vars (`AGENT_OVERFLOW_PPROF`, `AGENT_OVERFLOW_RENDERER_DIAG`) plus the `Passthrough()` list the WSL-boundary launchers forward via WSLENV. Names only, stdlib-only; the behaviors live in `observability/pprofserve` and the transport server. |
 | `platform/` | Runtime-environment probes shared by host-specific packages, such as WSL detection. |
 | `sysstat/` | Host CPU + memory sampler (gopsutil wrapper) backing the sidebar system-stats footer. Pure read-only; cadence + emission owned by `app_sysstat.go`. |

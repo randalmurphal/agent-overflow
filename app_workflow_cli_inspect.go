@@ -99,10 +99,17 @@ type WorkflowAgentPhaseDetail struct {
 // attempt. Branch and worktree are on it for the same reason they are on the
 // run: they are where that unit's work is, and nothing else names them.
 type WorkflowAgentUnitView struct {
-	UnitID       string `json:"unitId"`
-	Kind         string `json:"kind"`
-	Status       string `json:"status"`
-	UnitAttempt  int    `json:"unitAttempt"`
+	UnitID      string `json:"unitId"`
+	Kind        string `json:"kind"`
+	Status      string `json:"status"`
+	UnitAttempt int    `json:"unitAttempt"`
+	// Note is the note the unit row carries: for a settled unit, how it ended;
+	// for one a repair reopened, what that repair told its next try. It is here
+	// because `failed` alone is ambiguous — a pause tears its in-flight units
+	// down `failed` with an interrupted note, since there is no interrupted unit
+	// status and `failed` is what the repair verbs recover — so a drill-down
+	// without it reports the operator's own pause as a wave of agent failures.
+	Note         string `json:"note,omitempty"`
 	Branch       string `json:"branch,omitempty"`
 	WorktreePath string `json:"worktreePath,omitempty"`
 	ThreadID     string `json:"threadId,omitempty"`
@@ -219,6 +226,7 @@ func (a *App) workflowAgentPhaseDetail(
 	for _, unit := range units {
 		detail.Units = append(detail.Units, WorkflowAgentUnitView{
 			UnitID: unit.UnitID, Kind: unit.Kind, Status: unit.Status, UnitAttempt: unit.UnitAttempt,
+			Note:   strings.TrimSpace(unit.Feedback),
 			Branch: unit.Branch, WorktreePath: unit.WorktreePath, ThreadID: unit.ThreadID,
 		})
 	}

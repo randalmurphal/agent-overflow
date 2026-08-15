@@ -909,6 +909,61 @@ func TestWorkflowWakeCarriesNarrativeArtifactAndFailedUnitReferences(t *testing.
 	}
 }
 
+// A pause takes its in-flight units down `failed` with an interrupted note —
+// there is no interrupted unit status, and `failed` is exactly what the repair
+// verbs recover — so the STATUS alone tells an operator who paused a healthy run
+// that their own units failed. The note is what keeps the report truthful, and
+// it never displaces the id or the thread a repair verb takes.
+func TestWorkflowWakeSaysWhyEachFailedUnitRests(t *testing.T) {
+	h := newWakeHarness(t)
+	thread := h.chatThread(t, "origin-paused")
+	item := h.run(t, "wake-paused", engine.StateNeedsHuman, engine.ReasonPaused)
+	if err := h.app.store.UpdateWorkItemOriginThread(item.ID, thread.ID); err != nil {
+		t.Fatal(err)
+	}
+	h.phase(t, item.ID, "fan", 1, "parked", "join-thread", nil)
+	// What the engine's `interruptedUnitNote` writes when a pause tears an
+	// attempt down: the phase attempt's status, not the run's reason.
+	const interrupted = "interrupted with its phase attempt (parked)"
+	// A note far past the reference budget still leaves the id and the thread
+	// whole, because those are what `run retry-unit` and a thread read take.
+	long := "unit outcome error: " + strings.Repeat("stack frame; ", 200)
+	if err := h.app.store.CreateWorkItemUnits([]store.WorkItemUnit{
+		{ItemID: item.ID, PhaseID: "fan", Attempt: 1, UnitID: "adjudicate", UnitIndex: 0,
+			Kind: store.WorkItemUnitKindUnit, Status: store.WorkItemUnitFailed,
+			ThreadID: "adjudicate-thread", Provider: string(provider.Claude), Model: "sonnet",
+			Feedback: interrupted},
+		{ItemID: item.ID, PhaseID: "fan", Attempt: 1, UnitID: "codex-lens", UnitIndex: 1,
+			Kind: store.WorkItemUnitKindUnit, Status: store.WorkItemUnitFailed,
+			ThreadID: "codex-lens-thread", Provider: string(provider.Claude), Model: "sonnet",
+			Feedback: long},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	h.app.afterWorkflowStateEvent(engine.StateEvent{
+		ItemID: item.ID, ProjectID: item.ProjectID, From: engine.StateRunning, To: engine.StateNeedsHuman,
+	})
+	h.drain()
+
+	sends, _, _, _ := h.snapshot()
+	if len(sends) != 1 {
+		t.Fatalf("wakes = %d, want one", len(sends))
+	}
+	want := `- "failed unit": ` + untrustedtext.Field(
+		"adjudicate (thread adjudicate-thread): "+interrupted)
+	if !strings.Contains(sends[0], want) {
+		t.Fatalf("wake missing %q:\n%s", want, sends[0])
+	}
+	// The rendered form carries the truncation marker, so a match on it is proof
+	// the note was cut rather than passed through whole.
+	bounded := untrustedtext.Field("codex-lens (thread codex-lens-thread): " +
+		untrustedtext.Truncate(long, maxFailedUnitNoteRunes))
+	if !strings.Contains(sends[0], bounded) {
+		t.Fatalf("wake did not bound a long unit note:\n%s", sends[0])
+	}
+}
+
 // A reference is a pointer an agent opens, so one that does not resolve is worse
 // than none: the agent spends a tool call learning that. An attempt with no
 // narrative on disk therefore carries no narrative reference — while everything

@@ -19,10 +19,27 @@ per logger; up to three backups (`.1` / `.2` / `.3`).
   action, a fan-out wider than the capacity it will contend on. Unlike
   the provider log it takes **no env gate**: a run parks once, and
   there is no second chance to have turned the log on beforehand.
-- `prune.go` — `logKinds` (every daily-file prefix this package mints),
-  `dailyLogPath`, and `PruneOlderThan`. A kind is minted and pruned
-  through the same list, so a new stream cannot ship with retention
-  that silently ignores it.
+- `prune.go` — `Dir` (the one spelling of `<baseDir>/logs`), `logKinds`
+  (every daily-file prefix this package mints), `dailyLogPath`, and
+  `PruneOlderThan`. A kind is minted and pruned through the same list, so
+  a new stream cannot ship with retention that silently ignores it.
+  - **The directory holds TWO streams and the sweep covers both.** The
+    second is not this package's: `internal/observability/goroutinedump`
+    writes its SIGUSR1 dumps here (it asks `Dir` where "here" is), one
+    file per signal, named by the moment it was taken. They have no kind
+    stub, no rotation suffix, and no open handle to protect, so they are
+    matched by `goroutinedump.FilePrefix` — imported, never re-spelled —
+    and judged on mtime alone with no active-file guard. Retention has to
+    reach them for the reason it reaches anything: a dump is a full stack
+    listing of a wedged process, taken exactly when that listing is
+    largest, and the one directory this package prunes must not be the one
+    place that accumulates forever. The import direction is one-way by
+    design (`goroutinedump` is stdlib-only and knows nothing about this
+    package), which is what keeps the prefix from drifting.
+  - Anything ELSE that lands in this directory must join the sweep in the
+    same change — as a `logKinds` entry if it is a daily log, or as its
+    own matcher if it is not. A file shape the sweep does not recognise is
+    skipped silently, which is retention that lies.
 
 ## Responsibility boundary
 

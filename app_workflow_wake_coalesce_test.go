@@ -1,9 +1,7 @@
 package main
 
 import (
-	"bytes"
 	"encoding/json"
-	"log"
 	"strings"
 	"testing"
 
@@ -45,10 +43,7 @@ func (h *wakeHarness) boundRun(t *testing.T, id, threadID string, state engine.S
 }
 
 func TestWorkflowWakeSuppressesTheSameAskAndSaysSo(t *testing.T) {
-	var logs bytes.Buffer
-	previous := log.Writer()
-	log.SetOutput(&logs)
-	t.Cleanup(func() { log.SetOutput(previous) })
+	logs := captureLogOutput(t)
 
 	h := newWakeHarness(t)
 	thread := h.chatThread(t, "origin-coalesce")

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -94,7 +95,7 @@ func (a *App) workflowOpenTriageThread(itemID string) (store.Thread, error) {
 			return store.Thread{}, err
 		}
 	}
-	if _, err := a.sendMessageWithOptions(thread.ID, seed, sendMessageOptions{}); err != nil {
+	if _, err := a.sendMessageWithOptions(context.Background(), thread.ID, seed, sendMessageOptions{}); err != nil {
 		cleanupErr := a.deleteFailedItemTriageThread(item.ID, thread.ID)
 		return store.Thread{}, errors.Join(fmt.Errorf("open workflow triage thread: kick off agent: %w", err), cleanupErr)
 	}

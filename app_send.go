@@ -254,7 +254,9 @@ func (a *App) resolveUserMessageEnvelope(
 }
 
 func (a *App) sendMessage(threadID string, content string, attachmentIDs []string) error {
-	_, err := a.sendMessageWithOptions(threadID, content, sendMessageOptions{AttachmentIDs: attachmentIDs})
+	_, err := a.sendMessageWithOptions(
+		context.Background(), threadID, content, sendMessageOptions{AttachmentIDs: attachmentIDs},
+	)
 	return err
 }
 
@@ -279,7 +281,14 @@ type sendMessagePrepared struct {
 	takeoverItemID string
 }
 
-func (a *App) sendMessageWithOptions(threadID string, content string, opts sendMessageOptions) (store.Item, error) {
+// ctx bounds the per-thread action lock wait and, downstream, a lazy start's
+// join on an in-flight start — the two waits that have performed no side
+// effects when they are abandoned. It never reaches the provider write: a
+// cancelled send would be indistinguishable from a delivered one. Interactive
+// callers pass context.Background() and behave exactly as before.
+func (a *App) sendMessageWithOptions(
+	ctx context.Context, threadID string, content string, opts sendMessageOptions,
+) (store.Item, error) {
 	if a.shuttingDown.Load() {
 		return store.Item{}, ErrShuttingDown
 	}
@@ -304,7 +313,7 @@ func (a *App) sendMessageWithOptions(threadID string, content string, opts sendM
 			return store.Item{}, fmt.Errorf("send message: load thread: %w", err)
 		}
 		if peek.Mode == threadmode.ModeWorkflow {
-			itemID, err := a.prepareWorkflowTakeoverSend(peek)
+			itemID, err := a.prepareWorkflowTakeoverSend(ctx, peek)
 			if err != nil {
 				return store.Item{}, fmt.Errorf("send message: %w", err)
 			}
@@ -317,10 +326,13 @@ func (a *App) sendMessageWithOptions(threadID string, content string, opts sendM
 	// user-item persist, lazy session start, pending-send registration, and
 	// provider dispatch sequence atomic for a single thread while letting
 	// different threads proceed in parallel.
-	unlock := a.threadLocks().Lock(threadID)
+	unlock, err := a.threadLocks().LockCtx(ctx, threadID)
+	if err != nil {
+		return store.Item{}, fmt.Errorf("send message: thread %s: %w", threadID, err)
+	}
 	defer unlock()
 
-	return a.sendMessageLocked(threadID, content, opts, prepared)
+	return a.sendMessageLocked(ctx, threadID, content, opts, prepared)
 }
 
 // sendMessageLocked is the send pipe's critical section: runtime-mode
@@ -331,7 +343,8 @@ func (a *App) sendMessageWithOptions(threadID string, content string, opts sendM
 // edit-and-resend revert) can dispatch the send inside its own critical
 // section instead of dropping the lock and racing the window.
 func (a *App) sendMessageLocked(
-	threadID string, content string, opts sendMessageOptions, prepared sendMessagePrepared,
+	ctx context.Context, threadID string, content string,
+	opts sendMessageOptions, prepared sendMessagePrepared,
 ) (item store.Item, err error) {
 	// The test seam lives at the narrowest waist every send path passes
 	// through, not at the outer entry point: a saga that dispatches its
@@ -355,7 +368,7 @@ func (a *App) sendMessageLocked(
 		if prepared.takeoverItemID == "" {
 			return store.Item{}, fmt.Errorf("send message: workflow takeover: thread entered workflow mode mid-send; retry")
 		}
-		if err := a.workflowRunner.registerTakeover(prepared.takeoverItemID, threadID); err != nil {
+		if err := a.workflowRunner.registerTakeover(ctx, prepared.takeoverItemID, threadID); err != nil {
 			return store.Item{}, fmt.Errorf("send message: workflow takeover: %w", err)
 		}
 	}
@@ -485,7 +498,7 @@ func (a *App) sendMessageLocked(
 	// SwitchThread auto-resume.
 	sess, ok := a.sessionManager().get(threadID)
 	if !ok {
-		if startErr := a.startSession(threadID); startErr != nil {
+		if startErr := a.startSession(ctx, threadID); startErr != nil {
 			err = fmt.Errorf("start session: %w", startErr)
 			a.recordSendFailureAndCompleteTurn(threadID, turnIndex, err)
 			return store.Item{}, fmt.Errorf("send message: %w", err)
@@ -557,7 +570,7 @@ func (a *App) sendMessageLocked(
 // It MUST NOT run while holding the thread's action lock: TakeOver
 // round-trips the engine command loop, whose teardown interrupts the
 // live phase turn via InterruptTurn — which acquires that same lock.
-func (a *App) prepareWorkflowTakeoverSend(thread store.Thread) (string, error) {
+func (a *App) prepareWorkflowTakeoverSend(ctx context.Context, thread store.Thread) (string, error) {
 	workflowEngine, err := a.requireWorkflowEngine()
 	if err != nil {
 		return "", err
@@ -571,7 +584,7 @@ func (a *App) prepareWorkflowTakeoverSend(thread store.Thread) (string, error) {
 		return "", fmt.Errorf("workflow takeover: %w", err)
 	}
 	if isUnit {
-		return a.prepareWorkflowUnitTakeoverSend(workflowEngine, thread, unit)
+		return a.prepareWorkflowUnitTakeoverSend(ctx, workflowEngine, thread, unit)
 	}
 	item, err := a.store.GetWorkItemByPhaseThread(thread.ID)
 	if err != nil {
@@ -594,7 +607,7 @@ func (a *App) prepareWorkflowTakeoverSend(thread store.Thread) (string, error) {
 		} else if active {
 			return "", fmt.Errorf("workflow takeover: the prior turn must yield before steering again")
 		}
-		if err := a.workflowRunner.registerTakeover(item.ID, thread.ID); err != nil {
+		if err := a.workflowRunner.registerTakeover(ctx, item.ID, thread.ID); err != nil {
 			return "", err
 		}
 		return item.ID, nil
@@ -602,7 +615,7 @@ func (a *App) prepareWorkflowTakeoverSend(thread store.Thread) (string, error) {
 	if err := workflowEngine.TakeOver(item.ID); err != nil {
 		return "", fmt.Errorf("workflow takeover: detach item: %w", err)
 	}
-	if err := a.workflowRunner.registerTakeover(item.ID, thread.ID); err != nil {
+	if err := a.workflowRunner.registerTakeover(ctx, item.ID, thread.ID); err != nil {
 		return "", fmt.Errorf("workflow takeover: register schema-less steering: %w", err)
 	}
 	return item.ID, nil
@@ -613,7 +626,7 @@ func (a *App) prepareWorkflowTakeoverSend(thread store.Thread) (string, error) {
 // a send into an already-detached one re-registers it. The unit's siblings are
 // untouched — they keep running, and the attempt parks once they rest.
 func (a *App) prepareWorkflowUnitTakeoverSend(
-	workflowEngine *engine.Engine, thread store.Thread, unit store.WorkItemUnit,
+	ctx context.Context, workflowEngine *engine.Engine, thread store.Thread, unit store.WorkItemUnit,
 ) (string, error) {
 	item, err := a.store.GetWorkItem(unit.ItemID)
 	if err != nil {
@@ -625,7 +638,7 @@ func (a *App) prepareWorkflowUnitTakeoverSend(
 		} else if active {
 			return "", fmt.Errorf("workflow takeover: the prior turn must yield before steering again")
 		}
-		if err := a.workflowRunner.registerTakeover(item.ID, thread.ID); err != nil {
+		if err := a.workflowRunner.registerTakeover(ctx, item.ID, thread.ID); err != nil {
 			return "", err
 		}
 		return item.ID, nil
@@ -639,7 +652,7 @@ func (a *App) prepareWorkflowUnitTakeoverSend(
 	if err := workflowEngine.TakeOverUnit(item.ID, unit.UnitID); err != nil {
 		return "", fmt.Errorf("workflow takeover: detach unit %q: %w", unit.UnitID, err)
 	}
-	if err := a.workflowRunner.registerTakeover(item.ID, thread.ID); err != nil {
+	if err := a.workflowRunner.registerTakeover(ctx, item.ID, thread.ID); err != nil {
 		return "", fmt.Errorf("workflow takeover: register schema-less steering: %w", err)
 	}
 	return item.ID, nil
@@ -990,11 +1003,14 @@ func sendToProvider(sess session, threadID string, content string, opts provider
 	return providerSess.Send(context.Background(), content, opts)
 }
 
-func (a *App) sendWorkflowMessage(threadID, content string, outputSchema json.RawMessage, onDispatch func(providerDispatchIdentity)) error {
+func (a *App) sendWorkflowMessage(
+	ctx context.Context, threadID, content string,
+	outputSchema json.RawMessage, onDispatch func(providerDispatchIdentity),
+) error {
 	if len(outputSchema) == 0 {
 		return fmt.Errorf("workflow send: output schema is required")
 	}
-	_, err := a.sendMessageWithOptions(threadID, content, sendMessageOptions{
+	_, err := a.sendMessageWithOptions(ctx, threadID, content, sendMessageOptions{
 		OutputSchema: outputSchema, onProviderDispatch: onDispatch,
 	})
 	return err

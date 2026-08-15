@@ -25,7 +25,12 @@ type EngineEventEntry struct {
 	Attempt   int    `json:"attempt,omitempty"`
 	State     string `json:"state,omitempty"`
 	Reason    string `json:"reason,omitempty"`
-	Message   string `json:"message,omitempty"`
+	// ThreadID is the provider session a line is about, where it has one — the
+	// thread an answered question, a takeover finalize, or a warm runner start
+	// continued. It is present only on those lines; a phase that started its own
+	// session records the thread on its attempt row.
+	ThreadID string `json:"threadId,omitempty"`
+	Message  string `json:"message,omitempty"`
 }
 
 // LogEngineEvent writes one run-lifecycle record as an NDJSON line.

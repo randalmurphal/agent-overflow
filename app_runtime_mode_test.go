@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"sync"
@@ -196,7 +197,7 @@ func TestSendRuntimeModeChangeReconnectsAfterInflightStart(t *testing.T) {
 
 	startErr := make(chan error, 1)
 	go func() {
-		startErr <- app.startSession(id)
+		startErr <- app.startSession(context.Background(), id)
 	}()
 	<-firstStartEntered
 

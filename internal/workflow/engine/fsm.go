@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"unicode/utf8"
 
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/workflow/def"
@@ -139,6 +138,7 @@ func (e *Engine) teardown(item *runtimeItem, request teardownRequest) error {
 			item.runnerStartCancel()
 		}
 		item.runnerStarting = false
+		item.runnerStart = nil
 		item.runnerStartCancel = nil
 		if _, err := e.runner.Stop(e.ctx, RunKey{ItemID: item.item.ID, PhaseID: item.phaseID, Attempt: item.attempt}); err != nil {
 			errs = append(errs, fmt.Errorf("stop starting runner: %w", err))
@@ -167,14 +167,19 @@ func (e *Engine) teardown(item *runtimeItem, request teardownRequest) error {
 	// The attempt's own state dies with the attempt, here rather than in each
 	// caller: the fan-out it expanded, the guidance block its elements rendered
 	// (and the acknowledgement it still owed the pending slot, so entries no turn
-	// read stay pending), and both halves of the prompt-route override — what this
-	// attempt rendered, and any arming for an entry this teardown means will never
-	// happen. Leaving them for the next `enterPhase` to reassign put the safety in
-	// caller discipline, and one caller that entered a phase without going through
-	// that reassignment leaked a loop route's body into an unrelated round.
+	// read stay pending), the fact that its feedback is still owed a turn (the
+	// DURABLE half stays 0 on the row, which is what makes the phase's next
+	// attempt redeliver it), and both halves of the prompt-route override — what
+	// this attempt rendered, and any arming for an entry this teardown means will
+	// never happen. Leaving them for the next `enterPhase` to reassign put the
+	// safety in caller discipline, and one caller that entered a phase without
+	// going through that reassignment leaked a loop route's body into an unrelated
+	// round.
 	item.fan = nil
 	item.guidance = nil
 	item.guidanceUnacked = nil
+	item.feedbackOwed = false
+	item.feedbackCarriedFrom = 0
 	item.promptRoute = nil
 	item.nextPromptRoute = nil
 
@@ -251,18 +256,9 @@ func parkCauseText(cause error) string {
 	if cause == nil {
 		return ""
 	}
-	text := cause.Error()
-	if len(text) <= MaxParkCauseBytes {
-		return text
-	}
-	// Cut on a rune boundary. The column is TEXT and the cause can carry a path,
-	// a branch name, or a model's own words; half a rune would be invalid UTF-8
-	// in the store before any reader got the chance to quote it.
-	cut := MaxParkCauseBytes
-	for cut > 0 && !utf8.RuneStart(text[cut]) {
-		cut--
-	}
-	return text[:cut] + " …(cause truncated)"
+	// The cut lands on a rune boundary and states itself; both rules live in
+	// `truncateWithNote`, shared with the redelivered feedback block.
+	return truncateWithNote(cause.Error(), MaxParkCauseBytes, " …(cause truncated)")
 }
 
 // logTeardown records the lifecycle transition a teardown just made. It runs
@@ -292,6 +288,7 @@ func (e *Engine) complete(key RunKey, outcome Outcome) error {
 		item.runnerStartCancel()
 	}
 	item.runnerStarting = false
+	item.runnerStart = nil
 	item.runnerStartCancel = nil
 	item.runnerActive = false
 	return e.completePhaseOutcome(item, key, outcome)
@@ -326,11 +323,28 @@ func (e *Engine) completePhaseOutcome(item *runtimeItem, key RunKey, outcome Out
 		})
 	case OutcomeExecutionFailure:
 		if item.takeoverFinalize {
-			return e.teardown(item, teardownRequest{output: outcome.Envelope, phaseStatus: "parked", nextState: StateNeedsHuman, reason: ReasonTakenOver})
+			// Re-parking under taken-over keeps the human in charge, but the
+			// failure detail still rides along: a finalize that died with an
+			// empty envelope (a wedged start, a killed process) is otherwise a
+			// park with nothing a human could diagnose from.
+			return e.teardown(item, teardownRequest{
+				output: outcome.Envelope, cause: outcomeDetailCause(outcome), phaseStatus: "parked",
+				nextState: StateNeedsHuman, reason: ReasonTakenOver,
+			})
 		}
 		return e.teardown(item, teardownRequest{
 			output: outcome.Envelope, cause: outcomeDetailCause(outcome), phaseStatus: "parked",
 			nextState: StateNeedsHuman, reason: phaseFailureReason(key),
+		})
+	case OutcomeSetupFailure:
+		// The completion twin of the `ErrSetupFailed` sentinel `parkStartFailure`
+		// maps: work that never became runnable parks `setup-failed` whether the
+		// start reported it or a watchdog did, so the reason does not depend on
+		// which side noticed. The detail rides along under the ordinary
+		// empty-envelope rule — an attempt that never ran authored none.
+		return e.teardown(item, teardownRequest{
+			output: outcome.Envelope, cause: outcomeDetailCause(outcome), phaseStatus: "parked",
+			nextState: StateNeedsHuman, reason: ReasonSetupFailed,
 		})
 	case OutcomeStopped:
 		return e.teardown(item, teardownRequest{output: outcome.Envelope, phaseStatus: "parked", nextState: StateNeedsHuman, reason: ReasonInterrupted})

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -52,7 +53,7 @@ func (a *App) WorkflowSendPRReviewCommentsToThread(itemID string) (store.Thread,
 		return store.Thread{}, err
 	}
 	message := workflowPRReviewCommentsMessage(coordinates.Receipt.PRRef, coordinates.Ref, comments.Threads)
-	if _, err := a.sendMessageWithOptions(thread.ID, message, sendMessageOptions{}); err != nil {
+	if _, err := a.sendMessageWithOptions(context.Background(), thread.ID, message, sendMessageOptions{}); err != nil {
 		return store.Thread{}, fmt.Errorf("send workflow PR review comments: %w", err)
 	}
 	return a.store.GetThread(thread.ID)
@@ -83,7 +84,7 @@ func (a *App) WorkflowDiscussPR(itemID string) (store.Thread, error) {
 		return store.Thread{}, err
 	}
 	message := workflowPRDiscussionMessage(coordinates.Receipt.PRRef, coordinates.Ref, detail, coordinates.Item.Goal, digest)
-	if _, err := a.sendMessageWithOptions(thread.ID, message, sendMessageOptions{}); err != nil {
+	if _, err := a.sendMessageWithOptions(context.Background(), thread.ID, message, sendMessageOptions{}); err != nil {
 		return store.Thread{}, fmt.Errorf("discuss workflow PR: send context: %w", err)
 	}
 	return a.store.GetThread(thread.ID)

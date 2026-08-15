@@ -104,6 +104,15 @@ func SessionFromEnv(lookup func(string) (string, bool)) (Session, error) {
 // rpcTimeout bounds one call. Every method behind the scoped surface is a
 // SQLite read or a run start that detaches its provisioning, so a call that
 // takes this long is a wedged backend rather than slow work.
+//
+// It is paired with `runnerStartReplyBudget` (20s,
+// `internal/workflow/engine/reply_budget.go`), which bounds how long the engine's
+// own reply waits on a runner start, and with `maxWorkflowWatchHold` (25s) for
+// `run watch`. Both sit UNDER this number on purpose: the backend must be the
+// side that answers first, or a verb that committed server-side comes back to
+// the operator as `context deadline exceeded` and their retry meets an FSM
+// refusal for the state their first call already produced. Lowering this, or
+// raising either of those, breaks that ordering — change them together.
 const rpcTimeout = 30 * time.Second
 
 // client speaks the scoped HTTP RPC route. It is deliberately built on the

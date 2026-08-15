@@ -725,3 +725,44 @@ func TestARefusedGuideLeavesTheSlotUntouched(t *testing.T) {
 		t.Fatalf("a refused guide left %+v pending; the operator was told nothing landed", rows)
 	}
 }
+
+// The drop case for guidance, mirroring the feedback C2 drop: a runner start
+// returns nil for an opening send that never reached a model. Nothing acks —
+// the clear waits on the send door, not the start's success — so the slot keeps
+// its entries and the next fresh entry delivers them again. Clearing at start
+// success was the same silent loss the feedback stamp had, one block over.
+func TestAStartWhoseSendWasDroppedLeavesTheGuidancePending(t *testing.T) {
+	h, itemID := startGuidedRun(t, guidanceWorkflow())
+	if _, err := h.engine.Guide(itemID, humanGuidance("prefer the smaller diff")); err != nil {
+		t.Fatal(err)
+	}
+
+	h.runner.dropSend["item/verify/1"] = true
+	completePhases(t, h, itemID, 1)
+	entry := h.runner.startFor(t, RunKey{ItemID: itemID, PhaseID: "verify", Attempt: 1})
+	if len(entry.Guidance) != 1 {
+		t.Fatalf("delivered guidance = %+v, want the entry rendered into the attempt", entry.Guidance)
+	}
+	if rows := pendingGuidanceRows(t, h, itemID); len(rows) != 1 {
+		t.Fatalf("slot holds %d entries after a dropped send, want the entry still pending", len(rows))
+	}
+
+	// The wave dies unrendered; the fresh entry that follows redelivers.
+	h.runner.complete(t, itemID, Outcome{Kind: OutcomeStuck, Envelope: stuckEnvelope()})
+	if err := h.engine.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.engine.Resume(itemID, "verify", false); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.engine.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	redelivered := h.runner.startFor(t, RunKey{ItemID: itemID, PhaseID: "verify", Attempt: 2})
+	if len(redelivered.Guidance) != 1 || redelivered.Guidance[0].Text != "prefer the smaller diff" {
+		t.Fatalf("redelivered guidance = %+v", redelivered.Guidance)
+	}
+	if rows := pendingGuidanceRows(t, h, itemID); len(rows) != 0 {
+		t.Fatalf("slot still holds %d entries after the redelivering send dispatched", len(rows))
+	}
+}

@@ -76,6 +76,19 @@ resource semaphores, and startup recovery.
   and parks `wiring-error`. A new runner failure mode picks one of these
   sentinels or adds one here; it does not fall through to `agent-error` by
   accident.
+  - **A start failure the runner can only report ASYNCHRONOUSLY has an outcome
+    twin, `OutcomeSetupFailure`.** The sentinel path needs a `Start` that
+    RETURNED; the start watchdog's grace fallback is the case where it did not
+    — the goroutine is wedged past its deadline and the attempt is declared
+    dead through the ordinary outcome channel instead. That outcome parks
+    `setup-failed` carrying its envelope's cause, which is the same reason,
+    cause, and park shape `ErrSetupFailed` produces, so a wedged start and a
+    refused one are one entry in a run's history rather than two. The unit path
+    maps it identically (`completeUnit` routes it to `completePhaseOutcome`),
+    because a unit that never started produced no unit outcome to record. It
+    exists so the fallback does not have to reach for `OutcomeFailed` and park
+    a start failure under `agent-error`, the shared bucket no repair verb
+    reaches.
 - Global pause is one engine-level flag (`Pause`, persisted by the app in
   settings and restored through `Config.Paused`). While paused no phase starts
   anywhere; in-flight turns run to completion and their items rest at the next
@@ -434,6 +447,33 @@ resource semaphores, and startup recovery.
 - `Runner.Start` runs on a worker goroutine. Its keyed result re-enters the
   command loop before mutating FSM state, while the initiating API caller waits
   outside the owner loop so cancellation and unrelated commands remain live.
+  - **That wait is BOUNDED, by one deadline across every future the command
+    produced** (`runnerStartReplyBudget`, 20s, `reply_budget.go`). It is a pair with
+    `internal/aocli`'s 30s `rpcTimeout`: a reply held past that reaches the
+    operator as `context deadline exceeded` for a verb the engine had already
+    COMMITTED, and their retry then meets an FSM refusal for the state their
+    first call produced. Neither constant moves without the other.
+    **Expiry answers SUCCESS**, because the committed command-loop transition is
+    what the verb asked for; the runner start is the run's own next step and its
+    outcome arrives the way every asynchronous outcome does — a
+    `workflow:phase-state` transition, a park, and the engine log. A start that
+    fails inside the budget still fails the verb, unchanged. Abandoning a future
+    is safe by construction and must stay so: `done` is buffered and
+    `settleRunnerStart` sends non-blockingly, so the worker settles and exits
+    with no reader, and the command loop — not the caller — is what removes the
+    future from `inflightStarts` and applies its outcome. The deadline is a
+    CLOSED channel rather than a timer value, because every level of the wait
+    selects on it and a single delivered value would hang the ones that follow.
+  - **The start itself is bounded too, app-side** (`app_workflow_start_watchdog.go`):
+    the runner arms a deadline over its internal steps once user-owned work
+    (workspace provisioning, setup hooks) has completed, cancels the wrapped
+    start ctx on expiry so the ctx-aware waits unwind and `Start` returns
+    `ErrSetupFailed` naming the wedged step, and a grace fallback reports the
+    attempt dead if the goroutine still will not return. The engine's side of
+    the contract is what this package already guarantees: `complete()` is valid
+    during `runnerStarting`, and a late `finishRunnerStart` for an attempt no
+    longer running settles its future and mutates nothing. A worker-less
+    `running` attempt must never again be a state only a root pause can leave.
 - Cleanup policy is plumbing only until disposition lands: read-only workflows
   have no worktree, and writing workflows retain theirs in every terminal state.
 - A phase's `access` declaration is enforced at the provider session, not only
@@ -543,8 +583,9 @@ resource semaphores, and startup recovery.
   pending-guidance slot (`store` v53); the next FRESH phase entry of that run
   delivers every pending entry into the attempt it creates — on
   `RunRequest.Guidance`, in the persisted `PhaseInput`, and as one feedback note
-  saying where the block came from — and clears the slot once a provider session
-  that renders them has actually started. It is the thread→run
+  saying where the block came from — and clears the slot once the send door
+  reports a prompt that renders them dispatched to a live provider session
+  (`AckFeedbackRendered` → `ackGuidance`). It is the thread→run
   direction of `notify:`, and it exists because steering a free-running campaign
   otherwise cost a pause, an edit, and a resume.
   - **There is no mid-turn injection, by design.** Correcting a turn already in
@@ -566,9 +607,11 @@ resource semaphores, and startup recovery.
     prevent. The entries wait for a phase somebody can read them in.
   - **The two writes are deliberately NOT atomic, and the order is the whole
     contract.** The attempt row carrying the entries is persisted first, and the
-    slot is cleared not when that row lands but when a provider session that
-    RENDERS the block has started (`ackGuidance`, off the runner's own start
-    result). Everything between those two points is a window in which the entries
+    slot is cleared not when that row lands but when a prompt that RENDERS the
+    block has actually been dispatched to a live provider session (`ackGuidance`,
+    settled from the same send-door `AckFeedbackRendered` that stamps the
+    attempt's feedback — a start result alone proves a session exists, not that
+    the opening send survived). Everything between those two points is a window in which the entries
     are still pending, so every way an attempt can end without a turn — a pause
     taking its held start down, a failed acquisition parking it, a crash — is a
     REDELIVERY rather than a loss. The reverse order, a single transaction, and a
@@ -613,6 +656,120 @@ resource semaphores, and startup recovery.
     `MaxGuidanceEntries` is refused rather than rotating one out: a run that has
     not reached a boundary cannot have read what is already waiting, so a ninth
     entry would bury the eight it joins.
+- **FEEDBACK obeys the same ordering rule, one level down: it is owed by the
+  ATTEMPT, not by the run (`feedback.go`, `store` v64).** An attempt persists its
+  feedback — an answered question's answer, a reject's note, a gate's declared
+  values, the engine's own "your definition was re-read" sentences — on the row's
+  `input_envelope` the moment it is created, and until v64 that was the only
+  thing that ever happened to it: nothing re-read a parked or superseded
+  attempt's feedback, so an operator whose answered continuation then failed to
+  start had their answer durably recorded and effectively destroyed, with
+  `run guide` the only channel left to say it again by hand. The ordering is
+  guidance's: the attempt row is persisted FIRST with
+  `feedback_delivered_at = 0`, and the stamp lands only when the note has
+  actually been SENT. Everything between the two is a window in which a pause,
+  a failed acquisition, a wedged start, or a crash ends the attempt with no
+  turn, and a stamp written at the row would convert every one of those into a
+  silent loss.
+  - **The trigger is the send door, not the start result** (`AckFeedbackRendered`,
+    the engine's one public ack). A successful `Runner.Start` means a session
+    EXISTS; it does not mean a prompt carrying this note reached it, and the two
+    are separated by exactly the failures worth surviving — a session that
+    starts and whose opening send fails discharged a debt nothing rendered. The
+    app calls the ack from the send path once the prompt is away; the command
+    loop stamps the CURRENT attempt's owed feedback iff the key names the live
+    phase attempt — a unit key included, when that unit belongs to the live
+    attempt's fan (every element renders the phase note, so any element's send
+    is delivery; a unit id the fan never expanded settles nothing) — and is a
+    silent no-op otherwise, so a late, stale, or duplicate ack cannot settle a
+    debt belonging to a round that has moved on. A late ack can also arrive
+    after the attempt itself is torn down; the same liveness check makes it a
+    no-op rather than a stamp on a superseded row.
+    `ackGuidance` settles from the SAME ack: the two blocks share one prompt,
+    so they share one delivery proof, and the runner-start result — which a
+    dropped opening send can make a lie — settles neither.
+  - **The window a later entry collects is every prior attempt of THAT PHASE
+    still owing, and it is kept accurate by the marking rather than by
+    arithmetic.** The sources are settled the instant the attempt that carries
+    them is persisted — not one statement earlier, because the create can still
+    fail — so the window a following entry sees holds only what is genuinely
+    still owed, which is zero rows or one. More than one means a marking write
+    failed, and collecting all of them is then the right answer: the failure left
+    the notes owed, and a duplicate is the direction this whole contract errs in.
+    Every entry kind participates — a continuation, a fresh entry, and a
+    reconstruction all produce a turn that should read what the last one never
+    did — and only the NOTE travels: `Feedback.Values` are bindings the entry has
+    just rebuilt from the live run record, so carrying stale copies forward would
+    hand the round two answers to one name. The block is prepended, because it
+    belongs to an earlier round than whatever the entry itself is saying, and it
+    is bounded by `MaxRedeliveredFeedbackBytes` with the truncation stated
+    (`MaxParkCauseBytes`'s rule). Successive redeliveries NEST their provenance
+    rather than duplicating the instruction, which is what makes that bound
+    load-bearing.
+  - **A repair in place is not an entry, and it must not need one.** A bare
+    resume of a `unit-failed` wave, `RetryUnit`/`RetryFailedUnits`, and a join
+    continuation relaunch elements of the PARKED attempt without `enterPhase`,
+    so no redelivery read runs for them — the parked attempt's own note is the
+    only copy in play. `loadParked` therefore restores the attempt's in-memory
+    debt from the durable record (`feedbackOwed` from the row's stamp,
+    `guidanceUnacked` from the pending slot), so a relaunched element still
+    renders a note whose original sends were all dropped, and its send still
+    settles the row. The other direction is `unitRequestFeedback`'s: a join
+    continuation whose debt IS settled carries the answer alone, because the
+    phase note was already read by the try it continues — re-prepending it
+    would hand the round the same instruction twice under two provenances.
+  - **`restartPhaseWithoutProviderContext` is the one carry-forward that does not
+    go through the read**, because it moves the feedback itself into the
+    reconstruction (with the context-loss sentence edited into it) — the whole
+    `Feedback`, `Values` included, which a redelivery could not carry. It obeys
+    the ordering rule the same way everything else does: it ARMS the carry
+    (`item.feedbackCarriedFrom`, consumed by the next `enterPhase` before it
+    builds anything and cleared by `teardown`, so neither a failed entry nor a
+    park can leave it armed for a round it does not belong to), and the
+    superseded source is settled only AFTER the reconstruction row exists.
+    Settling first — which is what it used to do — meant a create that failed
+    in between destroyed the note: the source read settled and the row that was
+    to carry it was never written. The reconstruction's own redelivery read
+    EXCLUDES the source attempt (`collectOwedFeedback`'s `exclude`), so the note
+    it already carries verbatim is not also prepended to itself. One delivery in
+    the happy path; a crash or a failed create inside the window leaves the
+    source still owed, so the next entry redelivers it — loss is the one
+    direction this contract will not take.
+  - **A phase attempt that owes nothing is born settled** — stamped at attempt
+    creation instead of accumulating a debt no entry could discharge. Two
+    things make an attempt owe nothing, and `phaseOwesFeedback` is the single
+    predicate both the create stamp and the discharge read, so the row's birth
+    state and what the ack settles cannot disagree: the phase renders no
+    feedback at all, or the feedback it carries has no NOTE. The second is not a
+    corner case — a gate's declared `values` with no prose, and every entry
+    whose feedback is nil, land there — and it is where the two halves used to
+    disagree: the create stamped every feedback-rendering phase at 0 while the
+    discharge only settled attempts that actually carried a note, so a
+    noteless attempt was born owing a debt nothing could ever discharge and
+    every later entry of that phase collected it forever (and re-decoded every
+    prior input envelope to find it, once per lap of a looping phase).
+    Which phases render feedback at all IS `deliversGuidance`'s answer
+    (`deliversFeedback` delegates to it): the two blocks travel together in
+    prompt assembly, so a phase that can read one can read the other. A
+    single-shape agent phase reads it from `RunRequest.Feedback`, and every
+    agent element of a fan-out — work units and the join alike — renders the
+    phase note prepended to its own unit feedback (`unitRequestFeedback`; the
+    repair verbs and `continueFanOutJoin` still own the unit half). Only the
+    phase NOTE travels to elements, never `Feedback.Values` — those are already
+    in every element's variable context. What still never owes: a `driver:
+    tool` phase (argv interpolation reads no feedback), a `shape: call` phase
+    (no prompt), and a fan-out whose every element is a command. It used to be
+    narrower — a fan-out's phase-level feedback reached no element, so a gate
+    reject looping back into one recorded the operator's reasoning and rendered
+    it to nobody.
+  - **The backfill is why v64 has a second statement.** A bare `ADD COLUMN`
+    leaves every historical row at 0, which reads as "still owed" — so the next
+    attempt of every phase any run ever entered would prepend feedback from a
+    round that finished months ago. Existing rows are stamped with their own time
+    (`ended_at` for a settled attempt, `started_at` for a running one, and a
+    trailing `1` so the stamp is non-zero even for a row whose clocks were never
+    written): "delivered" has to be structural there, not conditional on data the
+    migration cannot verify.
 - **Run-lifecycle logging goes through an injected sink, not `log.Printf`**
   (`log.go`). `Config.Log` is a `LogSink` taking a typed `LogEvent` (park, cancel, resume,
   definition-refresh, rebuild, capacity); the app wires it to the NDJSON
@@ -633,6 +790,40 @@ resource semaphores, and startup recovery.
   it was doing" true per branch; only a resume that fails while DECIDING logs
   nothing, and it changed nothing either. `ResumeItem` and the cascades into
   parked descendants record themselves the same way for free.
+  - **Emitting before the work makes the WORDING part of the contract: a note
+    that names a live provider session says it is DISPATCHING onto it, never
+    that a turn is running on it.** "continuing the parked attempt on its own
+    session" was true as an intent and false as a report, and an operator whose
+    run then wedged had a log line stating the opposite of what happened. The
+    rule binds every branch that NAMES A SESSION or a run it is handing work
+    to: each ends its note with what it is dispatching and where — `:
+    dispatching to the runner` for the branches that continue the parked
+    attempt on its own session (a bare resume, an answer, a takeover finalize), `:
+    dispatching the reconstructed round to the runner` where the session is
+    gone and the round is rebuilt, `: dispatching its repaired units` for a
+    fan-out repair, and `: dispatching to that run` for a call re-link, because
+    those two hand the work to units and to a child run rather than to a
+    session. A FRESH phase entry names nothing and needs no such clause — it
+    claims no continuity to be wrong about. `LogEventRunnerStart` is the other
+    half of the pair: the dispatch states the intent, the start states the
+    outcome, and SILENCE between the two is itself the finding.
+  - **Every human verb that continues a parked attempt logs, not just resume.**
+    `Answer` (`LogEventAnswer`) and `CompleteTakeover` (`LogEventTakeoverComplete`)
+    go through the same `noteHumanVerb` construction — the parked attempt's
+    coordinate, the park reason being acted on, the session being continued —
+    because they leave no durable record of their own beyond the attempt the
+    continuation creates, and an engine log that goes quiet from the moment an
+    operator acts makes a run somebody answered indistinguishable from one
+    nobody touched (incident 2026-08-15, an hour-long zombie run).
+  - **A runner start that SUCCEEDS is logged** (`LogEventRunnerStart`,
+    `finishRunnerStart`). Failures were always recorded — they park through
+    teardown, which logs the cause — so success saying nothing meant a start
+    that never reported and a start that worked produced the same log. It
+    carries the continued session when there is one (`LogEvent.ThreadID`,
+    which is why it is emitted before `priorThreadID` is cleared), so a
+    dispatch line and its outcome correlate by thread. Unit starts are
+    deliberately not logged here: a wide wave would write one line per unit,
+    and the units' transitions already ship on `workflow:phase-state`.
 - **A `workflow:phase-state` event carries the engine's event time, and there is
   one construction path.** `emitPhaseState` guarantees `PhaseEvent.OccurredAt` —
   every phase-attempt and unit emission goes through it, `emitUnitState` /
@@ -940,6 +1131,14 @@ resource semaphores, and startup recovery.
 - No timers, watchdogs, retry backoff, worktree setup, or transport/app wiring
   belongs in this package. Reliability timers and sub-attempt retries are
   runner-owned; the engine only checks phase-boundary budgets and maps outcomes.
+  - **One carve-out, and it is a reply deadline rather than a policy timer**:
+    `runnerStartReplyBudget` (`reply_budget.go`) bounds how long an API CALLER
+    already inside `request` waits for the runner starts its own command
+    produced. It schedules nothing, retries nothing, and cannot change a run's
+    state — expiry answers the caller SUCCESS and leaves the start running — so
+    it is the wait's bound, not the work's. A timer that would decide anything
+    about the run (a start deadline, a backoff, a scheduled resume) still lives
+    app-side; `app_workflow_start_watchdog.go` is the start's own bound.
 - Persisting the pause flag and emitting it to the frontend is app wiring. The
   engine owns the live flag and the `workflow:engine-state` payload shape.
 - Waking a bound thread is app wiring too. The engine's contribution is two

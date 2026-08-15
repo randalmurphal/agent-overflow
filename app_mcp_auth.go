@@ -23,7 +23,7 @@ func (a *App) triggerMcpAuth(threadID, name string) (MCPAuthInitResult, error) {
 		return MCPAuthInitResult{}, err
 	}
 	if !a.hasActiveSession(threadID) {
-		if err := a.startSession(threadID); err != nil {
+		if err := a.startSession(context.Background(), threadID); err != nil {
 			return MCPAuthInitResult{}, fmt.Errorf("auto-start session: %w", err)
 		}
 	}

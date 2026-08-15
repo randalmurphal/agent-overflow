@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"time"
@@ -84,7 +85,7 @@ func (a *App) SendDiffReviewComments(threadID, scope, sourceKey string, commentI
 	if len(store.UniqueNonEmptyStringsForApp(commentIDs)) > store.MaxDiffReviewCommentIDs {
 		return store.Thread{}, fmt.Errorf("send diff review comments: too many comments selected")
 	}
-	if _, err := a.sendMessageWithOptions(threadID, "", sendMessageOptions{
+	if _, err := a.sendMessageWithOptions(context.Background(), threadID, "", sendMessageOptions{
 		RevisionSourceDiffReview:     &SourceDiffReview{ThreadID: threadID, Scope: scope, SourceKey: sourceKey, PR: input.PR},
 		RevisionSourceDiffCommentIDs: commentIDs,
 	}); err != nil {

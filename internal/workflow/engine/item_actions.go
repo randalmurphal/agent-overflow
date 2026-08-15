@@ -146,10 +146,24 @@ func (e *Engine) resolveDisposition(itemID string) error {
 	return nil
 }
 
+// failedDiagnosisTruncated is appended to an envelope-derived diagnosis the
+// bound cut; the whole text stays readable on the failed attempt's row.
+const failedDiagnosisTruncated = " …(diagnosis truncated; the full envelope is on the failed attempt)"
+
 // failedAttemptFeedback distils the failed attempt's diagnosis into the note the
 // next attempt reads, then appends the guidance whoever asked for the rerun
 // supplied. Guidance comes last so it reads as a correction to the diagnosis
 // above it rather than as part of it.
+//
+// The envelope-derived text is BOUNDED at `MaxHumanNoteBytes` before it joins
+// the note. It is model-authored and otherwise limited only by the envelope
+// size cap — four times this bound — and it lands at the HEAD of the note, with
+// the operator's rerun guidance after it and, for a fan-out phase, every
+// element's own instruction after that (`unitRequestFeedback`). Downstream
+// render truncation cuts the TAIL, so an unbounded diagnosis would push the
+// newest instruction off the end; capping it here is what keeps the render
+// bound's arithmetic honest. The full envelope stays durable on the failed
+// attempt's row — nothing is lost, only the convenience copy is trimmed.
 func failedAttemptFeedback(reason Reason, phaseID string, payload []byte, guidance string) (*Feedback, error) {
 	note := string(reason)
 	var envelope struct {
@@ -169,12 +183,12 @@ func failedAttemptFeedback(reason Reason, phaseID string, payload []byte, guidan
 		}
 		feedback.Values[phaseID+"."+name] = value
 		if text, ok := value.(string); ok && strings.TrimSpace(text) != "" && note == string(reason) {
-			note += ": " + strings.TrimSpace(text)
+			note += ": " + truncateWithNote(strings.TrimSpace(text), MaxHumanNoteBytes, failedDiagnosisTruncated)
 		}
 	}
 	if envelope.Reason != nil && note == string(reason) {
 		if diagnosis := strings.TrimSpace(*envelope.Reason); diagnosis != "" {
-			note += ": " + diagnosis
+			note += ": " + truncateWithNote(diagnosis, MaxHumanNoteBytes, failedDiagnosisTruncated)
 		}
 	}
 	if trimmed := strings.TrimSpace(guidance); trimmed != "" {

@@ -696,3 +696,55 @@ func TestUnitWorktreesOfSeparateFanOutsShareOneItemBranch(t *testing.T) {
 		t.Fatalf("re-entered try moved to %q, want its own checkout %q", again.path, provisioned[again.branch])
 	}
 }
+
+// A queued sibling cancelled while waiting for the item's workspace lock has
+// done no work, so its abandonment must read as a setup failure that still
+// carries the cancellation cause — losing `context.Canceled` from the chain
+// would make the engine treat an operator's cancel as a provisioning defect,
+// and losing `ErrSetupFailed` would park it as an agent error. Both sentinels
+// and the item's name ride one error.
+func TestWorkflowWorkspaceLockCancelKeepsBothSentinels(t *testing.T) {
+	app, _ := setupE2EApp(t)
+	runner := newWorkflowAppRunner(app, t.TempDir(), staticWorkflowProfileSource{})
+	request := engine.RunRequest{Key: engine.RunKey{ItemID: "item-wedge", PhaseID: "work", Attempt: 1}}
+
+	requireBothSentinels := func(t *testing.T, err error) {
+		t.Helper()
+		if !errors.Is(err, engine.ErrSetupFailed) {
+			t.Fatalf("error = %v, want engine.ErrSetupFailed in chain", err)
+		}
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("error = %v, want context.Canceled in chain", err)
+		}
+		if !strings.Contains(err.Error(), "item-wedge") {
+			t.Fatalf("error = %v, want the item named", err)
+		}
+	}
+
+	t.Run("already cancelled", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		_, err := runner.prepareWorkspace(ctx, request)
+		requireBothSentinels(t, err)
+	})
+
+	t.Run("cancelled while queued behind the holder", func(t *testing.T) {
+		unlock := runner.workspaceLocks.Lock(request.Key.ItemID)
+		defer unlock()
+		ctx, cancel := context.WithCancel(context.Background())
+		errCh := make(chan error, 1)
+		go func() {
+			_, err := runner.prepareWorkspace(ctx, request)
+			errCh <- err
+		}()
+		// The waiter must be parked on the lock, not failed fast: give it no way
+		// to have returned before the cancel is what releases it.
+		select {
+		case err := <-errCh:
+			t.Fatalf("prepareWorkspace returned %v before cancel while the lock was held", err)
+		case <-time.After(50 * time.Millisecond):
+		}
+		cancel()
+		requireBothSentinels(t, <-errCh)
+	})
+}

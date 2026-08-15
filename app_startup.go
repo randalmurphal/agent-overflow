@@ -349,7 +349,7 @@ func (a *App) initStores() (string, *store.Store, error) {
 
 func repairStartupOwnedPaths(dbDir string) error {
 	for _, dir := range []string{
-		filepath.Join(dbDir, "logs"),
+		logging.Dir(dbDir),
 		filepath.Join(dbDir, "attachments"),
 		filepath.Join(dbDir, "replay"),
 		filepath.Join(dbDir, uitrace.DirName),

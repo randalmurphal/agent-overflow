@@ -82,6 +82,7 @@ type workflowToolAttempt struct {
 // startToolPhase resolves a phase's profile-bound command and runs it.
 func (r *workflowAppRunner) startToolPhase(ctx context.Context, request engine.RunRequest, complete func(engine.Outcome)) error {
 	label := fmt.Sprintf("phase %q", request.Phase.ID)
+	r.markStartStep(request.Key, workflowStartStepReliability)
 	projectProfile, err := r.projectProfile(ctx, request.Item.ProjectID)
 	if err != nil {
 		return err
@@ -90,6 +91,7 @@ func (r *workflowAppRunner) startToolPhase(ctx context.Context, request engine.R
 	if err != nil {
 		return err
 	}
+	r.markStartStep(request.Key, workflowStartStepToolResolve)
 	binding, argv, err := workflowToolCommand(projectProfile, request.Phase, request.Vars)
 	if err != nil {
 		return errors.Join(engine.ErrWiringFailed, fmt.Errorf("workflow runner: resolve tool %s command: %w", label, err))
@@ -98,10 +100,14 @@ func (r *workflowAppRunner) startToolPhase(ctx context.Context, request engine.R
 	if err != nil {
 		return errors.Join(engine.ErrSetupFailed, fmt.Errorf("workflow runner: resolve tool %s secrets: %w", label, err))
 	}
+	r.markStartStep(request.Key, workflowStartStepWorkspace)
 	prepared, err := r.prepareWorkspace(ctx, request)
 	if err != nil {
 		return errors.Join(engine.ErrSetupFailed, err)
 	}
+	// Provisioning and setup hooks are behind us; the rest of the start is bounded.
+	r.armStartDeadline(request.Key)
+	r.markStartStep(request.Key, workflowStartStepNarrative)
 	narrativePath, err := workflowrunner.NarrativePath(r.dataRoot, request.Key.ItemID, request.Key.PhaseID, request.Key.Attempt)
 	if err != nil {
 		return errors.Join(engine.ErrSetupFailed, err)
@@ -134,6 +140,7 @@ func (r *workflowAppRunner) startToolPhase(ctx context.Context, request engine.R
 // fan-out units share it, so process supervision — the watchdog, the kill path,
 // the narrative on a failed start — is written exactly once.
 func (r *workflowAppRunner) startToolRun(ctx context.Context, run workflowToolRun, complete func(engine.Outcome)) error {
+	r.markStartStep(run.key, workflowStartStepToolSpawn)
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("workflow runner: startup cancelled: %w", err)
 	}
@@ -163,6 +170,17 @@ func (r *workflowAppRunner) startToolRun(ctx context.Context, run workflowToolRu
 		r.mu.Unlock()
 		cancel()
 		return fmt.Errorf("workflow runner: attempt %s is already active", runKey)
+	}
+	// The same refusal `installAttempt` makes for an agent turn (see
+	// startReportedDeadLocked). The stake is higher on this path — the registry
+	// is what the fallback's `stopToolAttemptLocked` claims a process through,
+	// so a registration made after it looked would leave a spawned process
+	// nothing ever reaps.
+	if r.startReportedDeadLocked(runKey) {
+		r.mu.Unlock()
+		cancel()
+		return fmt.Errorf(
+			"workflow runner: attempt %s was reported dead before its tool process could be started", runKey)
 	}
 	r.tools[runKey] = attempt
 	r.mu.Unlock()
@@ -480,17 +498,29 @@ func (r *workflowAppRunner) toolWatchdogFired(runKey string) {
 // one kill path: teardown, the watchdog, and a cancelled startup all use it.
 func (r *workflowAppRunner) stopToolAttempt(runKey string, stop workflowToolStop) (*workflowToolAttempt, bool) {
 	r.mu.Lock()
-	attempt, ok := r.tools[runKey]
-	if ok {
-		attempt.stop = stop
-		delete(r.tools, runKey)
-		r.disarmToolTimerLocked(attempt)
-	}
+	attempt, ok := r.stopToolAttemptLocked(runKey, stop)
 	r.mu.Unlock()
 	if ok {
 		attempt.cancel()
 	}
 	return attempt, ok
+}
+
+// stopToolAttemptLocked is stopToolAttempt's registry half, for the one caller
+// that has to decide to stop inside a wider critical section — the start
+// watchdog's fallback, which must claim the attempt in the same breath it claims
+// the right to report, so a reaper racing it cannot report the same work twice.
+// The process cancellation stays with the caller: it runs outside the runner
+// lock.
+func (r *workflowAppRunner) stopToolAttemptLocked(runKey string, stop workflowToolStop) (*workflowToolAttempt, bool) {
+	attempt, ok := r.tools[runKey]
+	if !ok {
+		return nil, false
+	}
+	attempt.stop = stop
+	delete(r.tools, runKey)
+	r.disarmToolTimerLocked(attempt)
+	return attempt, true
 }
 
 // detachToolAttempt removes a finished attempt and reports why it stopped.

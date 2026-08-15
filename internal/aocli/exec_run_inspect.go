@@ -85,10 +85,15 @@ type runPhaseDetail struct {
 }
 
 type runUnit struct {
-	UnitID       string `json:"unitId"`
-	Kind         string `json:"kind"`
-	Status       string `json:"status"`
-	UnitAttempt  int    `json:"unitAttempt"`
+	UnitID      string `json:"unitId"`
+	Kind        string `json:"kind"`
+	Status      string `json:"status"`
+	UnitAttempt int    `json:"unitAttempt"`
+	// Note is what the unit rests with: how it ended, or what a repair told its
+	// next try. It prints because the status alone is ambiguous where it matters
+	// most — a paused run's in-flight units rest `failed` with an interrupted
+	// note, since there is no interrupted unit status.
+	Note         string `json:"note"`
 	Branch       string `json:"branch"`
 	WorktreePath string `json:"worktreePath"`
 }
@@ -146,6 +151,7 @@ func (i runInspection) block() string {
 	var block strings.Builder
 	block.WriteString(i.Run.line())
 	i.Run.writeBudgetLine(&block)
+	i.Run.writeFailedUnitLines(&block)
 	if line := fields(
 		optionalField("worktree", i.WorktreePath),
 		optionalField("branch", i.Branch),
@@ -233,6 +239,9 @@ func (p runPhaseDetail) block() string {
 			optionalField("kind", unit.Kind),
 			"status="+unit.Status,
 			fmt.Sprintf("try=%d", unit.UnitAttempt),
+			// 0 runes = unbounded: naming an attempt is how a caller says the
+			// bounded form on the status block was not enough.
+			optionalField("note", unitNoteText(unit.Note, 0)),
 			optionalField("branch", unit.Branch),
 			optionalField("worktree", unit.WorktreePath),
 		))

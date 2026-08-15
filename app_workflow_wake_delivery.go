@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"time"
@@ -105,7 +106,7 @@ func (a *App) deliverWorkflowWake(item store.WorkItem, composed composedWake) bo
 		}
 		return true
 	}
-	if _, err := a.sendMessageWithOptions(threadID, composed.message, sendMessageOptions{PreserveDraft: true}); err != nil {
+	if _, err := a.sendMessageWithOptions(context.Background(), threadID, composed.message, sendMessageOptions{PreserveDraft: true}); err != nil {
 		a.reportWakeFailure(item, threadID, err)
 		a.releaseWorkflowUsageAttention(composed.usageAttention)
 		return false

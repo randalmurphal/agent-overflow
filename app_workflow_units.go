@@ -120,6 +120,7 @@ func (r *workflowAppRunner) planUnit(ctx context.Context, request engine.RunRequ
 		plan.contract = def.UnitEnvelope(unit)
 		plan.declarations = def.ResolveUnitDeclarations(request.Workflow, request.Phase)
 	}
+	r.markStartStep(request.Key, workflowStartStepWorkspace)
 	primary, err := r.prepareWorkspace(ctx, request)
 	if err != nil {
 		return workflowUnitPlan{}, errors.Join(engine.ErrSetupFailed, err)
@@ -145,6 +146,12 @@ func (r *workflowAppRunner) planUnit(ctx context.Context, request engine.RunRequ
 		// the agent join and the tool join see the same facts.
 		r.enrichJoinUnits(request, primary)
 	}
+	// Everything above is arbitrary-length work on the repository — provisioning a
+	// sub-worktree, and one `git` enumeration per unit branch on a join, which on a
+	// large history is not fast. Only bounded internal work is left from here, so
+	// this is the same boundary the phase path arms at, for the same reason.
+	r.armStartDeadline(request.Key)
+	r.markStartStep(request.Key, workflowStartStepNarrative)
 	plan.narrativePath, err = workflowrunner.UnitNarrativePath(
 		r.dataRoot, request.Key.ItemID, request.Key.PhaseID, request.Key.Attempt,
 		request.Key.UnitID, plan.unitAttempt,
@@ -246,6 +253,7 @@ func (r *workflowAppRunner) startAgentUnit(
 	if err != nil {
 		return fmt.Errorf("workflow runner: build %s envelope schema: %w", plan.label, err)
 	}
+	r.markStartStep(request.Key, workflowStartStepReliability)
 	watchdog, backoff, err := r.reliability(ctx, request)
 	if err != nil {
 		return err
@@ -271,6 +279,7 @@ func (r *workflowAppRunner) startAgentUnit(
 	// post-validated against, and is told it whichever way its turn is entered:
 	// a takeover finalize answers the same contract its first try did.
 	promptContext.AccountsForUnits, promptContext.AccountedUnits = plan.accountsForUnits, plan.accountedUnits
+	r.markStartStep(request.Key, workflowStartStepSessionProof)
 	prepared, err := r.prepareAgentTurn(ctx, workflowAgentTurnPlan{
 		request: request, thread: spec, schema: schema,
 		promptContext: promptContext,
@@ -283,7 +292,7 @@ func (r *workflowAppRunner) startAgentUnit(
 		return err
 	}
 	if request.Launch.FinalizesTakeover() && unit.Provider == string(provider.Claude) && !prepared.startedSession {
-		restarted, err := r.restartClaudeTakeoverWithSchema(prepared.threadID, schema)
+		restarted, err := r.restartClaudeTakeoverWithSchema(ctx, prepared.threadID, schema)
 		if err != nil {
 			return prepared.discard(r, err)
 		}
@@ -309,6 +318,7 @@ func (r *workflowAppRunner) startToolUnit(
 	ctx context.Context, request engine.RunRequest, unit def.Unit,
 	plan workflowUnitPlan, complete func(engine.Outcome),
 ) error {
+	r.markStartStep(request.Key, workflowStartStepReliability)
 	projectProfile, err := r.projectProfile(ctx, request.Item.ProjectID)
 	if err != nil {
 		return err
@@ -319,6 +329,7 @@ func (r *workflowAppRunner) startToolUnit(
 	if err != nil {
 		return err
 	}
+	r.markStartStep(request.Key, workflowStartStepToolResolve)
 	binding, argv, err := workflowUnitToolCommand(projectProfile, unit, plan.declarations, request.Vars)
 	if err != nil {
 		return errors.Join(engine.ErrWiringFailed, fmt.Errorf(

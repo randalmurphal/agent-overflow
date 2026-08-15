@@ -197,6 +197,14 @@ type fakeRunner struct {
 	startError   func(RunRequest) error
 	stopErrs     map[string]error
 	startWait    map[string]<-chan struct{}
+	// ack stands in for the app runner's send door: a successful start hands the
+	// prompt to a live provider session and reports the dispatch, which is what
+	// settles the attempt's owed feedback. The engine no longer infers it from the
+	// start's success — a start can return nil having DROPPED its send.
+	ack func(RunKey) error
+	// dropSend names the keys whose start succeeds but whose send never reached a
+	// model. Nothing acks for those, which is the case C2 exists for.
+	dropSend map[string]bool
 }
 
 func newFakeRunner() *fakeRunner {
@@ -205,6 +213,7 @@ func newFakeRunner() *fakeRunner {
 		partials:  make(map[string]json.RawMessage),
 		startErrs: make(map[string]error), stopErrs: make(map[string]error),
 		startWait: make(map[string]<-chan struct{}),
+		dropSend:  make(map[string]bool),
 	}
 }
 
@@ -236,6 +245,7 @@ func (f *fakeRunner) Start(ctx context.Context, request RunRequest, entered func
 			err = dynamic
 		}
 	}
+	ack, dropped := f.ack, f.dropSend[runMapKey(request.Key)]
 	f.mu.Unlock()
 	entered()
 	if wait != nil {
@@ -245,7 +255,29 @@ func (f *fakeRunner) Start(ctx context.Context, request RunRequest, entered func
 			return ctx.Err()
 		}
 	}
+	if err == nil && !dropped && ack != nil && sendsPrompt(request) {
+		// The real send door acks from INSIDE the start, before it returns: the
+		// opening send is what a start is for. Acking here keeps that ordering.
+		_ = ack(request.Key)
+	}
 	return err
+}
+
+// sendsPrompt mirrors where the real runner's send door actually acks: only an
+// agent element's start dispatches a prompt to a provider session. A tool
+// phase's process and a command unit's argv render nothing, so the fake must
+// not ack for them either — an ack there would let a mixed wave's command unit
+// settle a feedback debt only its agent siblings can render.
+func sendsPrompt(request RunRequest) bool {
+	if request.Key.UnitID == "" {
+		return request.Phase.Driver == def.DriverAgent
+	}
+	unit := def.Unit{}
+	if request.Unit != nil {
+		unit = *request.Unit
+	}
+	driver, ok := unit.EffectiveDriver()
+	return ok && driver == def.DriverAgent
 }
 
 func (f *fakeRunner) Stop(_ context.Context, key RunKey) (json.RawMessage, error) {
@@ -347,6 +379,20 @@ func (f *fakeRunner) startFor(t *testing.T, key RunKey) RunRequest {
 	return RunRequest{}
 }
 
+// lastStartFor is the most recent PHASE-level start for one run. It exists for
+// assertions whose attempt number depends on how an intervening park landed
+// rather than on anything the test is asserting.
+func (f *fakeRunner) lastStartFor(t *testing.T, itemID string) RunRequest {
+	t.Helper()
+	f.mu.Lock()
+	key, ok := f.lastItemRun[itemID]
+	f.mu.Unlock()
+	if !ok {
+		t.Fatalf("item %q has no phase-level runner start", itemID)
+	}
+	return f.startFor(t, key)
+}
+
 type emittedEvent struct {
 	name    string
 	payload any
@@ -438,6 +484,10 @@ type harnessOptions struct {
 	// and still read what the run record actually holds.
 	wrapStore   func(persistence) persistence
 	beforeStart func(*store.Store)
+	// replyBudget shortens the bound on how long an API call's reply waits for
+	// the runner starts it produced. It is applied before Start, so nothing ever
+	// reads the field while a test writes it.
+	replyBudget time.Duration
 }
 
 func newHarness(t *testing.T, config Config, workflows map[string]def.Workflow, projectIDs []string, beforeStart func(*store.Store)) *testHarness {
@@ -487,6 +537,10 @@ func newHarnessWith(t *testing.T, options harnessOptions) *testHarness {
 		t.Fatal(err)
 	}
 	engine.now = func() time.Time { return time.UnixMilli(100) }
+	if options.replyBudget > 0 {
+		engine.startReplyBudget = options.replyBudget
+	}
+	runner.ack = engine.AckFeedbackRendered
 	if err := engine.Start(context.Background()); err != nil {
 		database.Close()
 		t.Fatal(err)

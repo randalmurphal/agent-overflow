@@ -164,6 +164,14 @@ const (
 	OutcomeProviderUsageLimited OutcomeKind = "provider-usage-limited"
 	OutcomeExecutionFailure     OutcomeKind = "execution-failure"
 	OutcomeStopped              OutcomeKind = "stopped"
+	// OutcomeSetupFailure is the completion twin of the `ErrSetupFailed` start
+	// sentinel: work that never became runnable, reported after the start's own
+	// reply is already gone. The runner's start watchdog is what needs it — when
+	// a wedged start will not return even after its context is cancelled, the
+	// attempt is reported dead through this path instead, and a deadline and its
+	// grace fallback must park a run the SAME way rather than leaving the reason
+	// to depend on which of the two noticed.
+	OutcomeSetupFailure OutcomeKind = "setup-failure"
 )
 
 // Outcome is a runner completion. Envelope has already passed provider-facing
@@ -312,8 +320,16 @@ type RunRequest struct {
 	UnitKind    UnitKind       `json:"unitKind,omitempty"`
 	UnitAttempt int            `json:"unitAttempt,omitempty"`
 	Vars        map[string]any `json:"vars"`
-	Feedback    *Feedback      `json:"feedback,omitempty"`
-	Launch      TurnLaunch
+	// Feedback is the prior round's words to this one — an answered question's
+	// answer, a gate reject's note with its declared values, a reopened unit's
+	// retry diagnosis, the engine's own provenance sentences. It rides beside
+	// Guidance because it has a different author: the gate's (or the engine's)
+	// words rather than a person's. The note half is a durable debt: persisted
+	// on the attempt row before this request is built, and owed until the send
+	// door acks a prompt that rendered it (`AckFeedbackRendered`), so a start
+	// whose opening send is dropped leaves it to be redelivered, never lost.
+	Feedback *Feedback `json:"feedback,omitempty"`
+	Launch   TurnLaunch
 }
 
 type Feedback struct {
@@ -457,7 +473,10 @@ type TakeoverIntervention struct {
 // call entered exactly once, immediately on entry and before any blocking work.
 // Start may then block while provisioning; its result is serialized back
 // through the engine command loop. Stop is idempotent and returns any partial
-// control envelope.
+// control envelope. Both stops are called ON that command loop — the sole
+// owner of every run's FSM state — so an implementation must bound any wait it
+// takes there: a send wedged on provider IO must not hold the loop, and work
+// that outlives the bound belongs to a goroutine of the implementation's own.
 type Runner interface {
 	Start(context.Context, RunRequest, func(), func(Outcome)) error
 	Stop(context.Context, RunKey) (json.RawMessage, error)
@@ -548,6 +567,14 @@ const (
 	// steered this run — did it ever read it, and where".
 	LogEventGuide           = "guide"
 	LogEventGuidanceDeliver = "guidance-delivered"
+	// LogEventFeedbackRedeliver is a phase entry that carried feedback forward
+	// from an attempt no provider session ever rendered — an answered question
+	// whose continuation never started, a gate note whose round was parked before
+	// its turn. It is logged for the same reason the guidance pair is: an operator
+	// who answered a question and then sees the run ask a second time needs the
+	// record to say whether their answer was ever read, and this line is the only
+	// place that fact is stated outside the attempt's own input envelope.
+	LogEventFeedbackRedeliver = "feedback-redelivered"
 	// LogEventGuidanceUndecodable is the quarantine record: the raw bytes of a
 	// pending-guidance column that would not decode, written whole because the
 	// heal that follows is what removes them from the run. It is the only
@@ -571,6 +598,23 @@ const (
 	// leaves a live view holding a node that never moves again, and silently
 	// stamping the clock lets a wrong stamp look exactly like a right one.
 	LogEventEmitTimeMissing = "emit-time-missing"
+	// LogEventAnswer is one accepted `Answer`, and LogEventTakeoverComplete one
+	// accepted `CompleteTakeover`. They are logged for the reason a resume is:
+	// each continues a parked attempt, each leaves no durable record of its own
+	// beyond the attempt the continuation creates, and the operator who just
+	// acted is the reader most likely to ask what happened next. An engine log
+	// that goes silent from the moment a human answers a question is one a wedged
+	// run cannot be diagnosed from — the run looks identical to one nobody
+	// touched.
+	LogEventAnswer           = "answer"
+	LogEventTakeoverComplete = "takeover-complete"
+	// LogEventRunnerStart is a runner start that reported SUCCESS. Every failure
+	// already parks through teardown, which logs; success said nothing at all, so
+	// the dispatch line above it was the last word about a turn that might never
+	// have begun. That is what makes it worth a line of its own: it turns silence
+	// into a fact. A dispatch with no start after it is a start that never
+	// reported, not a start nobody logged.
+	LogEventRunnerStart = "runner-start"
 )
 
 // LogEvent is one engine-significant record: a run parked with its cause, a
@@ -588,7 +632,15 @@ type LogEvent struct {
 	Attempt   int    `json:"attempt,omitempty"`
 	State     State  `json:"state,omitempty"`
 	Reason    Reason `json:"reason,omitempty"`
-	Message   string `json:"message,omitempty"`
+	// ThreadID is the provider session a continuation was dispatched ONTO, on the
+	// lines that have one: the thread an answer, a takeover finalize, or a warm
+	// runner start is continuing. It is a field rather than prose because
+	// correlating "the operator answered on this session" with "the runner
+	// started on this session" is the whole question a stalled continuation
+	// raises. A cold start carries none — its thread is created by the runner and
+	// recorded on the attempt row, which is the authority for it either way.
+	ThreadID string `json:"threadId,omitempty"`
+	Message  string `json:"message,omitempty"`
 }
 
 // NotifyEvent announces that a gate took a route its author decorated with
@@ -721,6 +773,8 @@ type persistence interface {
 	CreateWorkItemPhase(store.WorkItemPhase) error
 	CompleteWorkItemPhase(string, string, int, json.RawMessage, json.RawMessage, string, string, store.WorkflowProviderUsageScopeID, int64) error
 	ReopenWorkItemPhase(string, string, int) error
+	MarkWorkItemPhaseFeedbackDelivered(string, string, int, int64) error
+	ListUndeliveredWorkItemPhaseFeedback(string, string, int) ([]store.WorkItemPhaseFeedback, error)
 	ListWorkItemPhases(string) ([]store.WorkItemPhase, error)
 	ListWorkItemPhaseContexts(string) ([]store.WorkItemPhaseContext, error)
 	UpdateWorkItemPhaseIntervention(string, string, int, json.RawMessage) error

@@ -217,8 +217,9 @@ func (e *Engine) enterPhase(item *runtimeItem, entry phaseEntry) error {
 	}
 	// Fresh entries establish a new round's guidance. Continuations preserve that
 	// round state without rendering it; restarts render the preserved block into
-	// replacement context. The entries stay owed an acknowledgement until a
-	// session that actually renders them starts (`ackGuidance`).
+	// replacement context. The entries stay owed an acknowledgement until the
+	// send door reports a prompt that renders them dispatched
+	// (`AckFeedbackRendered` → `ackGuidance`).
 	if entry != entryContinuation {
 		item.guidance = promptGuidance
 	}
@@ -236,6 +237,24 @@ func (e *Engine) enterPhase(item *runtimeItem, entry phaseEntry) error {
 		item.priorThreadID = ""
 	}
 	attempt := nextAttempt(priorPhases, phase.ID)
+	// A provider-context restart hands this entry one source's note directly, and
+	// names it here. The arming is consumed whether or not the entry succeeds: a
+	// failed entry leaves the source owed, which is the phase's next entry
+	// redelivering it through the ordinary read.
+	carriedFrom := item.feedbackCarriedFrom
+	item.feedbackCarriedFrom = 0
+	// Anything a PRIOR attempt of this phase persisted as feedback and no provider
+	// session ever rendered is folded in here, before the input envelope is built,
+	// so the row this entry writes is the record of what the turn actually reads.
+	// Every entry kind participates: an answer stays relevant however the phase is
+	// re-entered. See feedback.go for why the window is what it is.
+	owedFeedback, err := e.redeliverFeedback(item, phase, attempt, carriedFrom)
+	if err != nil {
+		return errors.Join(e.teardown(item, teardownRequest{
+			cause: err, phaseStatus: "parked",
+			nextState: StateNeedsHuman, reason: ReasonWiringError,
+		}), err)
+	}
 	phaseInput := PhaseInput{
 		Vars: vars, Feedback: item.feedback,
 		PromptRoute: item.promptRoute, Guidance: item.guidance,
@@ -264,6 +283,7 @@ func (e *Engine) enterPhase(item *runtimeItem, entry phaseEntry) error {
 	if err := e.store.CreateWorkItemPhase(store.WorkItemPhase{
 		ItemID: item.item.ID, PhaseID: phase.ID, Attempt: attempt,
 		InputEnvelope: input, Status: "running", StartedAt: startedAt,
+		FeedbackDeliveredAt: phaseFeedbackCreateStamp(phase, item.feedback, startedAt),
 	}); err != nil {
 		createErr := fmt.Errorf("create phase attempt %s/%s/%d: %w", item.item.ID, phase.ID, attempt, err)
 		return errors.Join(e.teardown(item, teardownRequest{
@@ -272,12 +292,25 @@ func (e *Engine) enterPhase(item *runtimeItem, entry phaseEntry) error {
 		}), createErr)
 	}
 	item.attempt = attempt
-	// The pending slot is deliberately NOT cleared here. The row carrying the
-	// entries now exists, but nothing has rendered them yet: this attempt may
-	// still be held by a pause, parked by a failed acquisition, or lost to a
-	// crash, and a slot cleared against a turn that never ran is the silent loss
-	// the whole ordering rule exists to prevent. `ackGuidance` clears it once a
-	// provider session that renders the block has started.
+	item.feedbackOwed = phaseOwesFeedback(phase, item.feedback)
+	// The row that now carries the redelivered notes exists, so the attempts they
+	// came from are settled — and not one statement earlier: a source stamped
+	// before its carrier landed would be a note nothing holds, and the create
+	// above can still fail. The restart's own carry-forward settles here for
+	// exactly the same reason, under the provenance describing what happened to it
+	// rather than a redelivery sentence.
+	e.dischargeCarriedFeedback(item, phase.ID, owedFeedback, attempt)
+	if carriedFrom > 0 {
+		e.dischargeRestartedFeedback(item, phase.ID, carriedFrom)
+	}
+	// The pending slot is deliberately NOT cleared here, and neither is this
+	// attempt's own feedback settled. The row carrying them now exists, but
+	// nothing has rendered them yet: this attempt may still be held by a pause,
+	// parked by a failed acquisition, or lost to a crash, and a slot cleared —
+	// or a stamp written — against a turn that never ran is the silent loss the
+	// whole ordering rule exists to prevent. `ackGuidance` and
+	// `dischargeRenderedFeedback` both wait for the send door to report a prompt
+	// that renders the blocks dispatched (`AckFeedbackRendered`).
 	e.emitPhaseState(PhaseEvent{
 		ItemID: item.item.ID, PhaseID: phase.ID, Attempt: attempt, Status: "running",
 		OccurredAt: startedAt,
@@ -322,6 +355,7 @@ func (e *Engine) startRunner(item *runtimeItem, phase def.Phase, vars map[string
 	startCtx, cancel := context.WithCancel(e.ctx)
 	future := &runnerStartFuture{key: request.Key, done: make(chan response, 1)}
 	item.runnerStarting = true
+	item.runnerStart = future
 	item.runnerStartCancel = cancel
 	e.commandStarts = append(e.commandStarts, future)
 	e.inflightStarts[future] = struct{}{}
@@ -358,23 +392,40 @@ func (e *Engine) finishRunnerStart(command runnerStartCommand) error {
 	if command.key.UnitID != "" {
 		return e.finishUnitStart(item, command)
 	}
-	if !item.runnerStarting {
+	// Identity, not just presence: only the start that armed the flag may settle
+	// it. See `runtimeItem.runnerStart`.
+	if !item.runnerStarting || item.runnerStart != command.future {
 		return nil
 	}
 	if item.runnerStartCancel != nil {
 		item.runnerStartCancel()
 	}
 	item.runnerStarting = false
+	item.runnerStart = nil
 	item.runnerStartCancel = nil
 	if command.err == nil {
 		item.runnerActive = true
+		// The one line that says a dispatch became a running turn. Every FAILURE
+		// here parks through teardown, which logs its cause; success said nothing,
+		// so a start that never reported and a start that succeeded produced the
+		// same log — silence — and telling them apart meant reading the database.
+		// It is emitted before priorThreadID is cleared, because the session a
+		// continuation landed on is exactly what correlates this line with the
+		// `answer` / `resume` / `takeover-complete` line that dispatched it.
+		e.logEvent(LogEvent{
+			Event: LogEventRunnerStart, ItemID: item.item.ID, ProjectID: item.item.ProjectID,
+			PhaseID: command.key.PhaseID, Attempt: command.key.Attempt,
+			ThreadID: item.priorThreadID, Message: runnerStartNote(item.priorThreadID),
+		})
+		// Neither the attempt's feedback nor its guidance is settled here. A start
+		// can return nil having dropped its opening send, and a stamp or a slot
+		// clear written against that would record blocks no turn ever rendered.
+		// The send door reports the dispatch itself through `AckFeedbackRendered`,
+		// the earliest event that proves either block reached a model, and the
+		// command loop settles both from it (`ackFeedbackRendered`).
 		item.feedback = nil
 		item.priorThreadID = ""
 		item.entry = entryFresh
-		// The turn that renders this attempt's guidance block now exists, which is
-		// the event the pending slot is cleared against. Only an agent phase is a
-		// delivery boundary, so only one ever has entries owed here.
-		e.ackGuidance(item)
 		return nil
 	}
 	if errors.Is(command.err, ErrProviderContextUnavailable) {
@@ -388,6 +439,16 @@ func (e *Engine) finishRunnerStart(command runnerStartCommand) error {
 	return e.parkStartFailure(item, command.err)
 }
 
+// runnerStartNote distinguishes the two starts a reader cares about telling
+// apart: a phase that began a turn of its own, and one that took its turn on a
+// session an earlier attempt started.
+func runnerStartNote(priorThreadID string) string {
+	if priorThreadID != "" {
+		return "the runner started the attempt on the session it continued"
+	}
+	return "the runner started the attempt"
+}
+
 // restartPhaseWithoutProviderContext settles an attempt whose selected provider
 // context disappeared before any prompt was sent, then reconstructs the same
 // round on a new thread. This covers both a recovery continuation and a warm
@@ -397,6 +458,8 @@ func (e *Engine) restartPhaseWithoutProviderContext(item *runtimeItem, cause err
 	promptRoute := item.promptRoute
 	guidance := append([]GuidanceEntry(nil), item.guidance...)
 	feedback := item.feedback
+	// Captured before the teardown, which clears the in-memory half of both.
+	superseded, supersededOwed := item.attempt, item.feedbackOwed
 	message := "reconstructing the parked round because its provider context is unavailable"
 	if item.entry == entryContinuation {
 		feedback = continuationUnavailableFeedback(feedback)
@@ -406,6 +469,18 @@ func (e *Engine) restartPhaseWithoutProviderContext(item *runtimeItem, cause err
 	}
 	if err := e.teardown(item, teardownRequest{cause: cause, phaseStatus: "superseded"}); err != nil {
 		return errors.Join(err, cause)
+	}
+	// This restart is a carry-forward of its own: the superseded attempt's
+	// feedback rides `feedback` into the reconstruction verbatim (with the
+	// context-loss sentence edited into it). Naming the source rather than
+	// settling it here is the whole ordering: `enterPhase` excludes it from the
+	// redelivery read (so the two mechanisms cannot both deliver it) and settles
+	// it only once the reconstruction's row EXISTS. Settling it here would open a
+	// window — a crash, or an `enterPhase` that parks before its create — in which
+	// the source reads as delivered and the only surviving copy of the note is
+	// this in-memory value.
+	if supersededOwed {
+		item.feedbackCarriedFrom = superseded
 	}
 	item.promptRoute = promptRoute
 	item.guidance = guidance
@@ -426,7 +501,10 @@ func (e *Engine) finishUnitStart(item *runtimeItem, command runnerStartCommand) 
 		return nil
 	}
 	unit := item.fan.find(command.key.UnitID)
-	if unit == nil || !unit.runnerStarting {
+	// Identity, not just presence: a repaired unit reuses its whole key, so only
+	// the future that armed `runnerStarting` may settle it. See
+	// `unitRun.runnerStart`.
+	if unit == nil || !unit.runnerStarting || unit.runnerStart != command.future {
 		return nil
 	}
 	clearUnitStart(unit)
@@ -437,12 +515,10 @@ func (e *Engine) finishUnitStart(item *runtimeItem, command runnerStartCommand) 
 			item.priorThreadID = ""
 			item.entry = entryFresh
 		}
-		if driver, runsWork := unit.definition.EffectiveDriver(); runsWork && driver == def.DriverAgent {
-			// The first agent element of the wave — a unit or the join — is the
-			// first turn that renders the phase entry's guidance block. A command
-			// unit renders no prompt, so its start acknowledges nothing.
-			e.ackGuidance(item)
-		}
+		// The phase entry's guidance and feedback blocks are NOT settled here, for
+		// the reason the phase-level start does not settle them: a unit start can
+		// succeed having dropped its opening send. The first agent element whose
+		// send actually dispatches settles both through `AckFeedbackRendered`.
 		return nil
 	}
 	if errors.Is(command.err, ErrProviderContextUnavailable) && unit.kind == UnitJoin &&

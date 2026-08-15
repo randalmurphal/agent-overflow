@@ -148,7 +148,7 @@ func (a *App) ReconnectSession(threadID string) error {
 	if err := a.stopSession(threadID); err != nil {
 		return err
 	}
-	return a.startSession(threadID)
+	return a.startSession(context.Background(), threadID)
 }
 
 // reconnectSessionLocked is the reconnect body for callers that already
@@ -156,7 +156,7 @@ func (a *App) ReconnectSession(threadID string) error {
 // ReconnectSession; when an unlocked reconnect holds the gate while
 // waiting on this caller's lock, the no-op answer here matches the old
 // ReconnectSession-vs-ReconnectSession behavior.
-func (a *App) reconnectSessionLocked(threadID string) error {
+func (a *App) reconnectSessionLocked(ctx context.Context, threadID string) error {
 	if a.shuttingDown.Load() {
 		return ErrShuttingDown
 	}
@@ -164,10 +164,12 @@ func (a *App) reconnectSessionLocked(threadID string) error {
 		return nil
 	}
 	defer a.releaseReconnect(threadID)
+	// The stop half stays uncancellable on purpose: it is provider IO, and it
+	// has already run by the time the start half's join could be abandoned.
 	if err := a.stopSession(threadID); err != nil {
 		return err
 	}
-	return a.startSession(threadID)
+	return a.startSession(ctx, threadID)
 }
 
 func (a *App) acquireReconnect(threadID string) bool {
@@ -189,11 +191,16 @@ func (a *App) releaseReconnect(threadID string) {
 	a.mu.Unlock()
 }
 
-func (a *App) startSession(threadID string) error {
+// startSession brings the thread's provider subprocess up, sharing an
+// in-flight start with any concurrent caller. ctx bounds only the JOIN — the
+// wait for somebody else's start — never the spawn itself; see
+// runSessionStart. Callers with no cancellation of their own pass
+// context.Background().
+func (a *App) startSession(ctx context.Context, threadID string) error {
 	if a.shuttingDown.Load() {
 		return ErrShuttingDown
 	}
-	return a.runSessionStart(threadID, func() error {
+	return a.runSessionStart(ctx, threadID, func() error {
 		if a.startSessionFn != nil {
 			return a.startSessionFn(threadID)
 		}

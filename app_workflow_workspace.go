@@ -39,7 +39,19 @@ type preparedWorkflowWorkspace struct {
 // it. Serializing here rather than at the call sites means a future caller
 // cannot forget.
 func (r *workflowAppRunner) prepareWorkspace(ctx context.Context, request engine.RunRequest) (preparedWorkflowWorkspace, error) {
-	unlock := r.workspaceLocks.Lock(request.Key.ItemID)
+	// The wait is cancellable because a sibling unit parked here has done no
+	// work yet: if the holder wedges mid-provision (a stuck git subprocess),
+	// cancelling the run releases every queued sibling instead of leaving them
+	// blocked for the life of the process. The holder itself stays
+	// uncancellable past this point — an interrupted worktree cut is exactly
+	// the orphaned-checkout state this serialization exists to prevent.
+	unlock, err := r.workspaceLocks.LockCtx(ctx, request.Key.ItemID)
+	if err != nil {
+		return preparedWorkflowWorkspace{}, errors.Join(engine.ErrSetupFailed, fmt.Errorf(
+			"workflow runner: waiting to provision the workspace of item %s: %w",
+			request.Key.ItemID, err,
+		))
+	}
 	defer unlock()
 	return r.resolveWorkspace(ctx, request)
 }

@@ -3956,10 +3956,17 @@ export class WorkflowAgentChildRun {
  * WorkflowAgentFailedUnit is one unit of a parked fan-out that is resting
  * failed. The attempt count rides along because "this unit has already been
  * retried twice" is what decides between retrying it again and reading it.
+ * 
+ * Note is the note the unit rests with, and it is what keeps the status
+ * honest: a pause tears its in-flight units down `failed` with an interrupted
+ * note, because there is no interrupted unit status and `failed` is exactly
+ * what the repair verbs recover. Without the note a run the operator paused
+ * reports a wave of "failed units" that never failed at anything.
  */
 export class WorkflowAgentFailedUnit {
     "unitId": string;
     "unitAttempt": number;
+    "note"?: string;
 
     /** Creates a new WorkflowAgentFailedUnit instance. */
     constructor($$source: Partial<WorkflowAgentFailedUnit> = {}) {
@@ -5163,6 +5170,16 @@ export class WorkflowAgentUnitView {
     "kind": string;
     "status": string;
     "unitAttempt": number;
+
+    /**
+     * Note is the note the unit row carries: for a settled unit, how it ended;
+     * for one a repair reopened, what that repair told its next try. It is here
+     * because `failed` alone is ambiguous — a pause tears its in-flight units
+     * down `failed` with an interrupted note, since there is no interrupted unit
+     * status and `failed` is what the repair verbs recover — so a drill-down
+     * without it reports the operator's own pause as a wave of agent failures.
+     */
+    "note"?: string;
     "branch"?: string;
     "worktreePath"?: string;
     "threadId"?: string;

@@ -209,7 +209,9 @@ const runGuideUsage = `Usage: agent-overflow run guide [--json] <run-id> <text>
 
 Leaves one instruction for a run WITHOUT parking it. The run keeps working; the
 text is delivered at its next FRESH phase entry, rendered into that attempt's
-prompt as a clearly labelled block of operator guidance, and the slot is cleared.
+prompt as a clearly labelled block of operator guidance. The slot is cleared
+only once that prompt actually reaches the provider session; an attempt that
+dies before its opening send redelivers the block rather than losing it.
 
 It is the opposite direction of a "notify:" gate: that tells the watching thread
 what the run decided, this tells the run what the watcher wants next. Before it

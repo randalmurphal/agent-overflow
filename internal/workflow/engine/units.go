@@ -41,8 +41,15 @@ type unitRun struct {
 	// record already carries.
 	feedback *Feedback
 
-	runnerActive      bool
-	runnerStarting    bool
+	runnerActive   bool
+	runnerStarting bool
+	// runnerStart identifies WHICH start is in flight, not just that one is.
+	// `runnerStarting` alone cannot tell a live start's report from a wedged
+	// predecessor's: a unit the watchdog parked and an operator repaired reuses
+	// the same item/phase/attempt/unitID, so the dead start's late return would
+	// pass a bool guard and park the repaired run. `finishUnitStart` acts only
+	// for the future that armed the flag.
+	runnerStart       *runnerStartFuture
 	runnerStartCancel context.CancelFunc
 	acquired          []string
 	waiting           bool
@@ -471,7 +478,11 @@ func (e *Engine) startUnitRunner(item *runtimeItem, unit *unitRun) error {
 		Phase: phase,
 		Unit:  &definition, UnitIndex: unit.index, UnitKind: unit.kind,
 		UnitAttempt: unit.attempt,
-		Vars:        vars, Feedback: cloneFeedback(unit.feedback), Launch: FreshTurn(),
+		// Every element renders the attempt's phase-level feedback note on top of
+		// its own — see `unitRequestFeedback`. Before the composition, a gate
+		// reject looping into a fan-out phase recorded the operator's reasoning on
+		// the attempt row and rendered it to nobody.
+		Vars: vars, Feedback: unitRequestFeedback(item, unit), Launch: FreshTurn(),
 		// Every element of the attempt renders the guidance its phase entry
 		// delivered, work units and join alike: the block is part of prompt
 		// assembly, and an instruction meant for the wave that reached only the
@@ -494,6 +505,7 @@ func (e *Engine) startUnitRunner(item *runtimeItem, unit *unitRun) error {
 	startCtx, cancel := context.WithCancel(e.ctx)
 	future := &runnerStartFuture{key: request.Key, done: make(chan response, 1)}
 	unit.runnerStarting = true
+	unit.runnerStart = future
 	unit.runnerStartCancel = cancel
 	e.commandStarts = append(e.commandStarts, future)
 	e.inflightStarts[future] = struct{}{}

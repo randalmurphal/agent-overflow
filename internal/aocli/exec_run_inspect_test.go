@@ -86,7 +86,10 @@ func TestRunInspectPhaseRendersTheAttemptWhole(t *testing.T) {
 			"units": []map[string]any{
 				{"unitId": "unit-a", "kind": "unit", "status": "done", "unitAttempt": 1,
 					"branch": "campaign/unit-a", "worktreePath": "/w/unit-a"},
-				{"unitId": "join", "kind": "join", "status": "failed", "unitAttempt": 2},
+				// The status alone would read as an agent failure; the note is what
+				// says this unit was torn down by the operator's own pause.
+				{"unitId": "join", "kind": "join", "status": "failed", "unitAttempt": 2,
+					"note": "interrupted with its phase attempt (parked)"},
 			},
 		},
 	})
@@ -103,7 +106,7 @@ func TestRunInspectPhaseRendersTheAttemptWhole(t *testing.T) {
 		"  output findings=\"[{\\\"note\\\":\\\"unchecked error\\\",\\\"severity\\\":\\\"P1\\\"}]\"\n",
 		"  output verdict=\"changes-requested\"\n",
 		"  unit=unit-a kind=unit status=done try=1 branch=campaign/unit-a worktree=/w/unit-a\n",
-		"  unit=join kind=join status=failed try=2\n",
+		"  unit=join kind=join status=failed try=2 note=\"interrupted with its phase attempt (parked)\"\n",
 	} {
 		if !strings.Contains(stdout, want) {
 			t.Fatalf("drill-down output is missing %q:\n%s", want, stdout)

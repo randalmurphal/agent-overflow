@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/untrustedtext"
 	"agent-overflow/internal/workflow/def"
 	"agent-overflow/internal/workflow/engine"
 	"agent-overflow/internal/workflow/wake"
@@ -367,10 +368,26 @@ func (a *App) wakeReferences(
 	return references, nil
 }
 
+// maxFailedUnitNoteRunes bounds the note carried on a failed-unit reference. A
+// unit's note is a runner's account of how the unit ended and can be a wrapped
+// chain of errors; the reference exists to say WHICH failure this is, and the
+// whole text is on the unit row for a reader who wants it. It is bounded here
+// rather than left to the composer's field budget so the id and the thread —
+// the two things a repair verb takes — can never be the part that is cut.
+// `aocli`'s `maxUnitNoteRunes` bounds the same value for its own surface;
+// the two are deliberately independent display budgets, not one contract.
+const maxFailedUnitNoteRunes = 300
+
 // workflowFailedUnitReferences renders one run's failed units as pointers a
 // repair verb takes. `label` names whose units they are, because a descendant
 // park carries the descendant's rather than the root's and a reader must never
 // mistake one for the other.
+//
+// The unit's persisted note rides along because the status alone is ambiguous
+// in the one case an operator causes themselves: a pause tears its in-flight
+// units down `failed` with an interrupted note (there is no interrupted unit
+// status, and `failed` is what the repair verbs recover), so a run somebody
+// paused reads as a wave of agent failures until the note says otherwise.
 func (a *App) workflowFailedUnitReferences(itemID, label string) ([]wake.Reference, error) {
 	units, err := a.workflowFailedUnits(itemID)
 	if err != nil {
@@ -381,6 +398,9 @@ func (a *App) workflowFailedUnitReferences(itemID, label string) ([]wake.Referen
 		value := unit.UnitID
 		if unit.ThreadID != "" {
 			value += " (thread " + unit.ThreadID + ")"
+		}
+		if note := strings.TrimSpace(unit.Feedback); note != "" {
+			value += ": " + untrustedtext.Truncate(note, maxFailedUnitNoteRunes)
 		}
 		references = append(references, wake.Reference{Label: label, Value: value})
 	}

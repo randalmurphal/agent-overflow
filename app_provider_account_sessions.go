@@ -1,12 +1,25 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"time"
 
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 )
+
+// providerSessionMatchesAccount reports whether a live session is already
+// running under the account a new turn would be sent as.
+//
+// Both fields are load-bearing. The generation moves on every credential write
+// (a re-login, a refreshed slot) even when the account id does not, and the
+// account id changes without the generation ever going backwards, so either one
+// alone admits a session serving the wrong credentials.
+func providerSessionMatchesAccount(sess session, selection providerAccountSelection) bool {
+	return sess.credentialGeneration == selection.Generation &&
+		sess.credentialAccountID == selection.AccountID
+}
 
 // ensureProviderAccountReadyForSendLocked applies a provider account switch
 // at the last safe moment before a new user turn. The caller holds the
@@ -25,9 +38,7 @@ func (a *App) ensureProviderAccountSelectionReadyForSendLocked(
 ) error {
 	generation := selection.Generation
 	sess, ok := a.sessionManager().get(thread.ID)
-	if !ok ||
-		(sess.credentialGeneration == generation &&
-			sess.credentialAccountID == selection.AccountID) {
+	if !ok || providerSessionMatchesAccount(sess, selection) {
 		return nil
 	}
 
@@ -56,13 +67,11 @@ func (a *App) ensureProviderAccountSelectionReadyForSendLocked(
 		if len(running) > 0 {
 			return fmt.Errorf("Codex account switch is pending for this thread until its background work finishes")
 		}
-		if err := a.reconnectSessionLocked(thread.ID); err != nil {
+		if err := a.reconnectSessionLocked(context.Background(), thread.ID); err != nil {
 			return fmt.Errorf("switch Codex account for this thread: %w", err)
 		}
 		current, exists := a.sessionManager().get(thread.ID)
-		if !exists ||
-			current.credentialGeneration != selection.Generation ||
-			current.credentialAccountID != selection.AccountID {
+		if !exists || !providerSessionMatchesAccount(current, selection) {
 			return fmt.Errorf("Codex account did not switch for this thread; retry after its reconnect finishes")
 		}
 		return nil
@@ -122,8 +131,7 @@ func (a *App) lockProviderAccountForSendLocked(thread store.Thread) (session, fu
 			a.providerAccountMu.RUnlock()
 			return session{}, nil, fmt.Errorf("no active session for thread %s", thread.ID)
 		}
-		if sess.credentialGeneration == selection.Generation &&
-			sess.credentialAccountID == selection.AccountID {
+		if providerSessionMatchesAccount(sess, selection) {
 			return sess, a.providerAccountMu.RUnlock, nil
 		}
 		// A switch landed between the readiness check and the read lock.

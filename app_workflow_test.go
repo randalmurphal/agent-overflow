@@ -88,6 +88,7 @@ func TestWorkflowBindingRunsGatesQuestionsAndEnvelopeRetry(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitForWorkflowItem(t, app, item.ID, engine.StateDone, "")
+	requireWorkspaceLockForgotten(t, app, item.ID)
 	completed, err := app.WorkflowGetItem(item.ID)
 	if err != nil {
 		t.Fatal(err)
@@ -558,6 +559,29 @@ func waitForWorkflowItem(t *testing.T, app *App, itemID string, state engine.Sta
 	return store.WorkItem{}
 }
 
+// requireWorkspaceLockForgotten asserts a finished run left no workspace-lock
+// entry behind. The registry self-cleans when the last holder or waiter
+// releases; before that, it grew one entry per run for the life of the
+// process. The wait is for provisioning's final release, which runs on the
+// start worker rather than strictly before the store write the state poller
+// reads.
+func requireWorkspaceLockForgotten(t *testing.T, app *App, itemID string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		app.workflowRunner.workspaceLocks.mu.Lock()
+		_, held := app.workflowRunner.workspaceLocks.locks[itemID]
+		app.workflowRunner.workspaceLocks.mu.Unlock()
+		if !held {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("workspace lock entry for %s still registered after the run ended", itemID)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 func assertWorkflowEmissions(t *testing.T, bus *capturedEventBus, itemID string) {
 	t.Helper()
 	bus.mu.Lock()
@@ -758,7 +782,7 @@ func TestDeadWorkflowSessionCanRegisterSchemaLessTakeover(t *testing.T) {
 	}
 	runner := newWorkflowAppRunner(app, t.TempDir(), nil)
 	app.workflowRunner = runner
-	if err := runner.registerTakeover(item.ID, thread.ID); err != nil {
+	if err := runner.registerTakeover(context.Background(), item.ID, thread.ID); err != nil {
 		t.Fatal(err)
 	}
 	schema, err := app.workflowSchemaForSession(thread)
@@ -769,7 +793,7 @@ func TestDeadWorkflowSessionCanRegisterSchemaLessTakeover(t *testing.T) {
 		t.Fatalf("schema/item registration = %s/%q, want schema-less/%q", schema, runner.workItemForThread(thread.ID), item.ID)
 	}
 	app.sessionManager().put(thread.ID, session{})
-	if err := runner.registerTakeover(item.ID, thread.ID); err != nil {
+	if err := runner.registerTakeover(context.Background(), item.ID, thread.ID); err != nil {
 		t.Fatal(err)
 	}
 	if runner.takeovers[thread.ID].schemaAttached {
@@ -807,8 +831,10 @@ func TestWorkflowRunnerRejectsUnsupportedPhasesAndStopsUnknownRuns(t *testing.T)
 	if !unsubscribed || runner.runs[runKey] != nil || len(runner.schemas["workflow-thread"]) != 0 {
 		t.Fatalf("known run cleanup: unsubscribed=%v runs=%v schemas=%v", unsubscribed, runner.runs, runner.schemas)
 	}
-	if sent, err := runner.sendIfActive(runKey, "late retry", json.RawMessage(`{"type":"object"}`), 0); err != nil || sent {
-		t.Fatalf("post-stop retry = sent %v, err %v", sent, err)
+	if drop, err := runner.sendIfActive(
+		context.Background(), runKey, "the late retry", "late retry", json.RawMessage(`{"type":"object"}`), 0,
+	); err != nil || drop != workflowSendDropUnregistered {
+		t.Fatalf("post-stop retry = drop %q, err %v", drop, err)
 	}
 }
 

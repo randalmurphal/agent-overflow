@@ -622,9 +622,9 @@ type App struct {
 	turnActivityMu         sync.Mutex
 	turnActivityByProvider map[string]time.Time
 	// Test-only injection points for binding helpers that need to observe start/stop.
-	startSessionFn        func(string) error
-	stopSessionFn         func(string) error
-	sendMessageFn         func(string, string, []string) error
+	startSessionFn func(string) error
+	stopSessionFn  func(string) error
+	sendMessageFn  func(string, string, []string) error
 	generateBranchNameFn  func(store.Thread, string) (string, error)
 	generateThreadTitleFn func(store.Thread, string, []store.Attachment) (string, error)
 	// textGenerationExecutor stubs the provider-CLI invocation used by short

@@ -36,6 +36,18 @@ func (l *recordingLog) matching(event string) []LogEvent {
 	return found
 }
 
+// matchingItem narrows to one run, which is what an assertion about "exactly
+// one line" means in a harness where several runs share a sink.
+func (l *recordingLog) matchingItem(event, itemID string) []LogEvent {
+	var found []LogEvent
+	for _, candidate := range l.matching(event) {
+		if candidate.ItemID == itemID {
+			found = append(found, candidate)
+		}
+	}
+	return found
+}
+
 // A resource the project never sized is an engine-diagnosed park, and the phase
 // attempt already exists when it happens — so the cause lands on that row rather
 // than on a new one, and the envelope stays empty because no turn ran.
@@ -275,7 +287,10 @@ func TestResumeLogNoteStatesWhichResumeHappened(t *testing.T) {
 	}
 	for _, want := range []struct{ run, contains string }{
 		{"stuck-park", "fresh entry into the parked phase"},
-		{"warm", "continuing the parked attempt on its own session"},
+		// The continuation branch names a live session, so its note has to read as
+		// the dispatch it is: the turn's own outcome is a later line
+		// (`LogEventRunnerStart`, or a park), never this one.
+		{"warm", "continuing the parked attempt on its own session: dispatching to the runner"},
 		{"tool-park", "fresh entry into the parked phase: the parked attempt held no provider session"},
 		{"lost", "fresh entry into the parked phase: the attempt's provider session is unavailable"},
 	} {
@@ -284,5 +299,110 @@ func TestResumeLogNoteStatesWhichResumeHappened(t *testing.T) {
 			// others: the branches fail independently.
 			t.Errorf("run %s logged %q, want the resume it actually took (%q)", want.run, got, want.contains)
 		}
+	}
+}
+
+// The two human verbs that CONTINUE a parked attempt used to log nothing at all.
+// An operator answered a question, the engine did exactly what it was asked, and
+// the engine log stayed silent for the next hour while the run sat there — the
+// record of a run somebody acted on was indistinguishable from the record of one
+// nobody had touched (incident 2026-08-15). Each now emits one line, before it
+// dispatches, carrying the parked coordinate and the session it is continuing.
+//
+// The runner-start line is the other half and is asserted here with them: a
+// dispatch states an intent, and the start is the only thing that says the turn
+// began. Silence between the two is the finding the incident had no way to make.
+func TestAnswerAndTakeoverFinalizeAreLoggedWithTheirRunnerStart(t *testing.T) {
+	sink := &recordingLog{}
+	h := newHarness(t, Config{Log: sink}, map[string]def.Workflow{
+		"flow": onePhaseWorkflow("flow", nil, []def.Route{{To: "done"}}),
+	}, []string{"project"}, nil)
+
+	if err := h.engine.StartItem(testItem("answered", "project", "flow", 0)); err != nil {
+		t.Fatal(err)
+	}
+	seedThread(t, h.store, "answer-thread")
+	if err := h.store.AttachWorkItemPhaseRun("answered", "work", 1, "answer-thread", ""); err != nil {
+		t.Fatal(err)
+	}
+	h.runner.complete(t, "answered", Outcome{Kind: OutcomeQuestion, Envelope: questionEnvelope()})
+	if err := h.engine.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	requireItemState(t, h.store, "answered", StateNeedsHuman, ReasonQuestion)
+	if err := h.engine.Answer("answered", "use the safe option"); err != nil {
+		t.Fatal(err)
+	}
+
+	answers := sink.matchingItem(LogEventAnswer, "answered")
+	if len(answers) != 1 {
+		t.Fatalf("answer log events = %+v, want exactly one", answers)
+	}
+	requireVerbCoordinate(t, answers[0], "project", "work", 1, "answer-thread")
+	if Reason(answers[0].Reason) != ReasonQuestion {
+		t.Fatalf("answer log reason = %q, want the park it acted on", answers[0].Reason)
+	}
+	if !strings.Contains(answers[0].Message, "dispatching to the runner") {
+		t.Fatalf("answer log message = %q, want a dispatch rather than a completed continuation", answers[0].Message)
+	}
+	// The answer text is the human's prose and belongs to the attempt row, not to
+	// the engine's own record.
+	if strings.Contains(answers[0].Message, "use the safe option") {
+		t.Fatalf("answer log message carried the answer text: %q", answers[0].Message)
+	}
+
+	starts := sink.matchingItem(LogEventRunnerStart, "answered")
+	if len(starts) != 2 {
+		t.Fatalf("runner-start log events = %+v, want the cold start and the continuation", starts)
+	}
+	if starts[0].Attempt != 1 || starts[0].ThreadID != "" {
+		t.Fatalf("cold runner start = %+v, want attempt 1 on no continued session", starts[0])
+	}
+	if starts[1].Attempt != 2 || starts[1].ThreadID != "answer-thread" {
+		t.Fatalf("continued runner start = %+v, want the answered session named", starts[1])
+	}
+
+	if err := h.engine.StartItem(testItem("steered", "project", "flow", 1)); err != nil {
+		t.Fatal(err)
+	}
+	seedThread(t, h.store, "takeover-thread")
+	if err := h.store.AttachWorkItemPhaseRun("steered", "work", 1, "takeover-thread", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.engine.TakeOver("steered"); err != nil {
+		t.Fatal(err)
+	}
+	requireItemState(t, h.store, "steered", StateNeedsHuman, ReasonTakenOver)
+	if err := h.engine.CompleteTakeover("steered"); err != nil {
+		t.Fatal(err)
+	}
+
+	finalizes := sink.matchingItem(LogEventTakeoverComplete, "steered")
+	if len(finalizes) != 1 {
+		t.Fatalf("takeover-complete log events = %+v, want exactly one", finalizes)
+	}
+	requireVerbCoordinate(t, finalizes[0], "project", "work", 1, "takeover-thread")
+	if Reason(finalizes[0].Reason) != ReasonTakenOver {
+		t.Fatalf("takeover-complete log reason = %q, want the park it acted on", finalizes[0].Reason)
+	}
+	if !strings.Contains(finalizes[0].Message, "dispatching to the runner") {
+		t.Fatalf("takeover-complete message = %q, want a dispatch rather than a finished finalize", finalizes[0].Message)
+	}
+	if last := sink.matchingItem(LogEventRunnerStart, "steered"); len(last) != 2 ||
+		last[1].ThreadID != "takeover-thread" {
+		t.Fatalf("takeover finalize runner starts = %+v, want the steered session started", last)
+	}
+}
+
+// requireVerbCoordinate asserts the coordinate every operator-verb line carries:
+// the PARKED attempt it acted on, and the session it dispatched onto.
+func requireVerbCoordinate(t *testing.T, event LogEvent, projectID, phaseID string, attempt int, threadID string) {
+	t.Helper()
+	if event.ProjectID != projectID || event.PhaseID != phaseID ||
+		event.Attempt != attempt || event.ThreadID != threadID {
+		t.Fatalf(
+			"log event = %+v, want project %q phase %q attempt %d on thread %q",
+			event, projectID, phaseID, attempt, threadID,
+		)
 	}
 }

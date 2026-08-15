@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"strings"
@@ -111,7 +112,7 @@ func (a *App) SendPlanRevisionComments(threadID, planItemID string, commentIDs [
 		}
 	}
 
-	if _, err := a.sendMessageWithOptions(threadID, "", sendMessageOptions{
+	if _, err := a.sendMessageWithOptions(context.Background(), threadID, "", sendMessageOptions{
 		RevisionSourceProposedPlan: &SourceProposedPlan{
 			ThreadID: threadID,
 			ItemID:   planItemID,

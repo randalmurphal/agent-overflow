@@ -230,7 +230,7 @@ func TestSendMessageSkipsExpansionForInjectedText(t *testing.T) {
 	app.sessions[thread.ID] = session{provider: string(provider.Claude), token: "tok", claude: sess}
 
 	const injected = "/workflow was mentioned by a run that woke this thread"
-	if _, err := app.sendMessageWithOptions(thread.ID, injected, sendMessageOptions{PreserveDraft: true}); err != nil {
+	if _, err := app.sendMessageWithOptions(context.Background(), thread.ID, injected, sendMessageOptions{PreserveDraft: true}); err != nil {
 		t.Fatalf("sendMessageWithOptions: %v", err)
 	}
 	_ = sess.Close()

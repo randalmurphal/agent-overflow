@@ -140,11 +140,16 @@ func exhaustedField(exhausted bool) string {
 	return "exhausted=true"
 }
 
-// runFailedUnit is the one field of a failed unit the human line prints. The
-// app's document carries more (the unit's try count); `--json` forwards that
-// one verbatim, as it does for every other field this CLI does not model.
+// runFailedUnit is what a failed unit reads as. The id is the argument `run
+// retry-unit` takes; the note is why the unit is resting failed at all, which
+// the status cannot say on its own — a pause tears its in-flight units down
+// `failed` carrying an interrupted note, and a reader told only the status
+// reads their own pause as a wave of agent failures. The app's document carries
+// the try count too; `--json` forwards that one verbatim, as it does for every
+// other field this CLI does not model.
 type runFailedUnit struct {
 	UnitID string `json:"unitId"`
+	Note   string `json:"note"`
 }
 
 // runPhaseAttempt is one attempt of one phase: what ran it and how its gate
@@ -259,6 +264,7 @@ func (v runView) statusBlock() string {
 	var block strings.Builder
 	block.WriteString(v.line())
 	v.writeBudgetLine(&block)
+	v.writeFailedUnitLines(&block)
 	writeSeedLines(&block, v.Seeds)
 	v.writeAttemptLines(&block)
 	return block.String()
@@ -274,6 +280,56 @@ func (v runView) writeBudgetLine(block *strings.Builder) {
 	}
 	block.WriteString("\n")
 	block.WriteString(v.Budget.line())
+}
+
+// maxUnitNoteRunes bounds a unit's note on a status block, for the reason
+// maxCauseRunes bounds a park cause: the note is a runner's account of how the
+// unit ended and can be a wrapped chain of errors, while this block carries one
+// line per failed unit. `run inspect --phase <id>` prints it whole.
+// The app's wake composer bounds the same value with its own
+// `maxFailedUnitNoteRunes`; the two are deliberately independent display
+// budgets, not one contract.
+const maxUnitNoteRunes = 300
+
+// writeFailedUnitLines prints the account behind each failed unit, under the
+// `failed-units=` list on the run line that already names the ids. The status is
+// what the ids arrive with and it is not the whole answer: a pause tears its
+// in-flight units down `failed` with an interrupted note — there is no
+// interrupted unit status, and `failed` is exactly what `run retry-unit`
+// recovers — so a reader given only the status reads their own pause as a wave
+// of agent failures.
+//
+// A unit with no note contributes no line: the run line already named it, and a
+// line restating the id alone would be the noise this one exists to avoid.
+func (v runView) writeFailedUnitLines(block *strings.Builder) {
+	for _, unit := range v.FailedUnits {
+		note := unitNoteText(unit.Note, maxUnitNoteRunes)
+		if note == "" {
+			continue
+		}
+		fmt.Fprintf(block, "\n%s", fields("failed-unit="+unit.UnitID, "note="+note))
+	}
+}
+
+// unitNoteText is the ONE rendering of a unit's note, shared by the bounded
+// `run status` line and `run inspect`'s whole-note field.
+//
+// It trims once and quotes the TRIMMED value. Both halves matter and both used
+// to differ between the two surfaces: `run status` tested a trimmed note for
+// emptiness and then quoted the raw one, so a note that was mostly whitespace
+// rendered as a wall of `\n` escapes there and as its content in `run inspect`
+// — two readings of one record, from the surface a reader reaches for first.
+//
+// The note is a runner's error text or a repair instruction a human or another
+// agent typed, so it is quoted as untrusted data at both. `maxRunes` is the only
+// thing the two are allowed to disagree about: naming an attempt is how a caller
+// says the bounded form was not enough.
+func unitNoteText(note string, maxRunes int) string {
+	note = strings.TrimSpace(note)
+	if note == "" {
+		return ""
+	}
+	return untrustedtext.Quote(note, maxRunes)
 }
 
 // writeAttemptLines is the per-attempt half of both single-run blocks, shared so

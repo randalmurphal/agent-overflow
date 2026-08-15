@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"sort"
 	"sync"
@@ -403,7 +404,7 @@ func TestConcurrent_StartSessionCoalesces(t *testing.T) {
 	// Launch the leader first.
 	leaderDone := make(chan error, 1)
 	go func() {
-		leaderDone <- app.startSession(thread.ID)
+		leaderDone <- app.startSession(context.Background(), thread.ID)
 	}()
 
 	// Wait until the leader has registered its inflight entry. This is
@@ -434,7 +435,7 @@ func TestConcurrent_StartSessionCoalesces(t *testing.T) {
 	for i := 0; i < followers; i++ {
 		go func(i int) {
 			defer wg.Done()
-			errs[i] = app.startSession(thread.ID)
+			errs[i] = app.startSession(context.Background(), thread.ID)
 		}(i)
 	}
 

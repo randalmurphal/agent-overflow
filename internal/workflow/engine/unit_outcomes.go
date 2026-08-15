@@ -23,6 +23,14 @@ func (e *Engine) completeUnit(item *runtimeItem, key RunKey, outcome Outcome) er
 	}
 	clearUnitStart(unit)
 	unit.runnerActive = false
+	if outcome.Kind == OutcomeSetupFailure {
+		// A unit that never became runnable is not a unit FAILURE — the same rule
+		// `finishUnitStart` applies to the `ErrSetupFailed` sentinel: nothing
+		// runnable was ever produced, so the attempt parks under the phase-level
+		// reason a single-shape phase would take. The row this unit is resting on
+		// is settled with its siblings by the teardown that park runs.
+		return e.completePhaseOutcome(item, key, outcome)
+	}
 	if unit.kind == UnitJoin {
 		// The join reported for itself, so its row settles first; then its
 		// envelope is evaluated as the phase's, gate and all.
@@ -262,6 +270,7 @@ func clearUnitStart(unit *unitRun) {
 		unit.runnerStartCancel()
 	}
 	unit.runnerStarting = false
+	unit.runnerStart = nil
 	unit.runnerStartCancel = nil
 }
 

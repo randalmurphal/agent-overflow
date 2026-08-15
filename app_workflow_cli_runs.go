@@ -97,9 +97,16 @@ type WorkflowAgentRunView struct {
 // WorkflowAgentFailedUnit is one unit of a parked fan-out that is resting
 // failed. The attempt count rides along because "this unit has already been
 // retried twice" is what decides between retrying it again and reading it.
+//
+// Note is the note the unit rests with, and it is what keeps the status
+// honest: a pause tears its in-flight units down `failed` with an interrupted
+// note, because there is no interrupted unit status and `failed` is exactly
+// what the repair verbs recover. Without the note a run the operator paused
+// reports a wave of "failed units" that never failed at anything.
 type WorkflowAgentFailedUnit struct {
 	UnitID      string `json:"unitId"`
 	UnitAttempt int    `json:"unitAttempt"`
+	Note        string `json:"note,omitempty"`
 }
 
 // WorkflowAgentRunOutputs is `ao run output`: the run's declared outputs plus
@@ -346,8 +353,10 @@ func (a *App) workflowAgentRunDetail(ctx context.Context, summary store.WorkItem
 			return WorkflowAgentRunView{}, err
 		}
 		for _, unit := range units {
-			view.FailedUnits = append(view.FailedUnits,
-				WorkflowAgentFailedUnit{UnitID: unit.UnitID, UnitAttempt: unit.UnitAttempt})
+			view.FailedUnits = append(view.FailedUnits, WorkflowAgentFailedUnit{
+				UnitID: unit.UnitID, UnitAttempt: unit.UnitAttempt,
+				Note: strings.TrimSpace(unit.Feedback),
+			})
 		}
 	}
 	return view, nil

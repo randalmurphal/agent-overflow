@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -131,6 +132,14 @@ func newObserveHarness(t *testing.T, providerName string) *observeHarness {
 
 func (h *observeHarness) observe(event provider.ProviderEvent) {
 	h.runner.observe(h.runKey, event)
+}
+
+// send drives the one send chokepoint the way every POST-START producer does:
+// the start's context is long gone by then, so the bound on these sends is the
+// attempt's own watchdog rather than the start deadline.
+func (h *observeHarness) send(message string, epoch int) (workflowSendDropReason, error) {
+	h.t.Helper()
+	return h.runner.sendIfActive(context.Background(), h.runKey, "the test turn", message, h.attempt.schema, epoch)
 }
 
 func (h *observeHarness) state() observeState {
@@ -677,10 +686,8 @@ func TestWorkflowReplayedTurnStartDoesNotRetargetTheLiveTurn(t *testing.T) {
 func TestWorkflowCodexOpeningSendArmsTheWatchdogUntilTheTurnAnnouncesItself(t *testing.T) {
 	harness := newObserveHarness(t, string(provider.Codex))
 
-	sent, err := harness.runner.sendIfActive(
-		harness.runKey, harness.attempt.currentPrompt, harness.attempt.schema, harness.epoch())
-	if !sent || err != nil {
-		t.Fatalf("sendIfActive = (%v, %v)", sent, err)
+	if drop, err := harness.send(harness.attempt.currentPrompt, harness.epoch()); drop != workflowSendNotDropped || err != nil {
+		t.Fatalf("sendIfActive = (%q, %v)", drop, err)
 	}
 	harness.awaitSend()
 
@@ -704,10 +711,8 @@ func TestWorkflowCodexOpeningSendArmsTheWatchdogUntilTheTurnAnnouncesItself(t *t
 // that answers a prompt nobody sent.
 func TestWorkflowOpeningSendWaitsForItsOwnTurnBeforeConsumingACompletion(t *testing.T) {
 	harness := newObserveHarness(t, string(provider.Codex))
-	if sent, err := harness.runner.sendIfActive(
-		harness.runKey, harness.attempt.currentPrompt, harness.attempt.schema, harness.epoch(),
-	); !sent || err != nil {
-		t.Fatalf("sendIfActive = (%v, %v)", sent, err)
+	if drop, err := harness.send(harness.attempt.currentPrompt, harness.epoch()); drop != workflowSendNotDropped || err != nil {
+		t.Fatalf("sendIfActive = (%q, %v)", drop, err)
 	}
 	harness.awaitSend()
 	harness.waitForMode(workflowTimerWatchdog)
@@ -742,10 +747,8 @@ func TestWorkflowSendDoesNotWaitForATurnThatAlreadyStarted(t *testing.T) {
 		return nil
 	}
 
-	if sent, err := harness.runner.sendIfActive(
-		harness.runKey, harness.attempt.currentPrompt, harness.attempt.schema, harness.epoch(),
-	); !sent || err != nil {
-		t.Fatalf("sendIfActive = (%v, %v)", sent, err)
+	if drop, err := harness.send(harness.attempt.currentPrompt, harness.epoch()); drop != workflowSendNotDropped || err != nil {
+		t.Fatalf("sendIfActive = (%q, %v)", drop, err)
 	}
 	harness.awaitSend()
 
@@ -770,10 +773,8 @@ func TestWorkflowSendDoesNotWaitForATurnThatAlreadyStarted(t *testing.T) {
 func TestWorkflowClaudeSendNeverWaitsForATurnItCannotName(t *testing.T) {
 	harness := newObserveHarness(t, string(provider.Claude))
 
-	if sent, err := harness.runner.sendIfActive(
-		harness.runKey, harness.attempt.currentPrompt, harness.attempt.schema, harness.epoch(),
-	); !sent || err != nil {
-		t.Fatalf("sendIfActive = (%v, %v)", sent, err)
+	if drop, err := harness.send(harness.attempt.currentPrompt, harness.epoch()); drop != workflowSendNotDropped || err != nil {
+		t.Fatalf("sendIfActive = (%q, %v)", drop, err)
 	}
 	harness.awaitSend()
 
@@ -792,10 +793,8 @@ func TestWorkflowClaudeSendNeverWaitsForATurnItCannotName(t *testing.T) {
 // by the same sub-branch whichever producer set it.
 func TestWorkflowSessionErrorClearsTheWaitASendOpened(t *testing.T) {
 	harness := newObserveHarness(t, string(provider.Codex))
-	if sent, err := harness.runner.sendIfActive(
-		harness.runKey, harness.attempt.currentPrompt, harness.attempt.schema, harness.epoch(),
-	); !sent || err != nil {
-		t.Fatalf("sendIfActive = (%v, %v)", sent, err)
+	if drop, err := harness.send(harness.attempt.currentPrompt, harness.epoch()); drop != workflowSendNotDropped || err != nil {
+		t.Fatalf("sendIfActive = (%q, %v)", drop, err)
 	}
 	harness.awaitSend()
 	harness.waitForMode(workflowTimerWatchdog)
@@ -927,10 +926,10 @@ func TestWorkflowSendIsInactiveOnceASessionDeathIsLatched(t *testing.T) {
 	harness.attempt.pendingSessionDeath = true
 	harness.runner.mu.Unlock()
 
-	sent, err := harness.runner.sendIfActive(harness.runKey, "retry", harness.attempt.schema, harness.epoch())
+	drop, err := harness.send("retry", harness.epoch())
 
-	if sent || err != nil {
-		t.Fatalf("sendIfActive = (%v, %v), want the send treated as inactive", sent, err)
+	if drop != workflowSendDropSessionDeath || err != nil {
+		t.Fatalf("sendIfActive = (%q, %v), want the latched session death named", drop, err)
 	}
 	harness.refuteSend("a queued send reached a session already known dead")
 }
@@ -977,5 +976,46 @@ func TestWorkflowUnnamedTurnCompletionIsNeverFiltered(t *testing.T) {
 
 	if outcome := harness.awaitOutcome(); outcome.Kind != engine.OutcomeDone {
 		t.Fatalf("outcome = %+v, want the envelope outcome", outcome)
+	}
+}
+
+// The disconnected branch used to call `finish` synchronously on the provider
+// read-loop goroutine, and `finish` barriers on the attempt's send lock. A send
+// can hold that lock while it WAITS on the read loop — an in-send reconnect
+// blocks in `Session.Close` until the read loop exits, and a dispatched send
+// waits for a JSON-RPC reply only the read loop can deliver — so the two
+// deadlocked each other permanently, with the thread action lock held under
+// them (the incident class of 2026-08-15). `observe` must return without
+// taking the send lock; the completion lands off-wire once the send drains.
+func TestObserveDisconnectReturnsWhileASendHoldsTheSendLock(t *testing.T) {
+	h := newObserveHarness(t, string(provider.Codex))
+	h.attempt.sendMu.Lock() // an in-flight send, from observe's point of view
+
+	returned := make(chan struct{})
+	go func() {
+		h.observe(provider.ProviderEvent{Kind: provider.EventSessionStatus, Content: "disconnected"})
+		close(returned)
+	}()
+	select {
+	case <-returned:
+	case <-time.After(5 * time.Second):
+		t.Fatal("observe blocked on the send lock; the read loop would never exit and the send would never drain")
+	}
+
+	// The claim is synchronous even though the completion is not: an event
+	// behind the disconnect finds no attempt.
+	h.runner.mu.Lock()
+	_, still := h.runner.runs[h.runKey]
+	h.runner.mu.Unlock()
+	if still {
+		t.Fatal("the disconnect did not detach the attempt on the wire")
+	}
+	// The completion waits for the send to drain; it must not land under it.
+	h.refuteOutcome("a completion landed while the send still held the send lock")
+
+	h.attempt.sendMu.Unlock()
+	outcome := h.awaitOutcome()
+	if outcome.Kind != engine.OutcomeExecutionFailure {
+		t.Fatalf("outcome = %+v, want the execution failure a disconnect parks as", outcome)
 	}
 }

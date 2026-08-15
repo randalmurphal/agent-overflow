@@ -28,7 +28,7 @@ func (e *Engine) logEvent(event LogEvent) {
 // renderLogEvent is the one-line form the fallback logger writes. Fields are
 // omitted when empty so a rebuild note does not carry three empty coordinates.
 func renderLogEvent(event LogEvent) string {
-	parts := make([]string, 0, 7)
+	parts := make([]string, 0, 8)
 	if event.ItemID != "" {
 		parts = append(parts, "run="+event.ItemID)
 	}
@@ -44,6 +44,9 @@ func renderLogEvent(event LogEvent) string {
 	}
 	if event.Reason != "" {
 		parts = append(parts, "reason="+string(event.Reason))
+	}
+	if event.ThreadID != "" {
+		parts = append(parts, "thread="+event.ThreadID)
 	}
 	if event.Message != "" {
 		parts = append(parts, event.Message)
@@ -69,13 +72,32 @@ func renderLogEvent(event LogEvent) string {
 // a resume that fails while DECIDING (a store read, a missing attempt row) logs
 // nothing, and it changed nothing either.
 //
+// Emitting before the work is what makes the WORDING part of the contract: a
+// note that names a live provider session says it is DISPATCHING onto it, never
+// that a turn is running on it. "continuing the parked attempt on its own
+// session" read as a completed fact for work that had not started yet, and an
+// operator watching a run that then wedged had a log line saying the opposite of
+// what happened (incident 2026-08-15). `LogEventRunnerStart` is the other half:
+// the dispatch states the intent, and the start states the outcome, so silence
+// between the two is itself the finding.
+//
 // The coordinates are the PARKED attempt's: they are what the note is about, and
 // a fresh entry has not created its own row yet.
 func (e *Engine) noteResume(item *runtimeItem, note string) {
+	e.noteHumanVerb(LogEventResume, item, "", note)
+}
+
+// noteHumanVerb is the one construction of an operator-verb line — a resume, an
+// answer, a takeover finalize. It exists so the coordinate rule above holds for
+// every verb rather than for the one that happened to be written first: the
+// PARKED attempt's phase and try, the park reason the verb is acting on, and
+// (where the verb resolved one) the provider session it is about to dispatch
+// onto.
+func (e *Engine) noteHumanVerb(event string, item *runtimeItem, threadID, note string) {
 	e.logEvent(LogEvent{
-		Event: LogEventResume, ItemID: item.item.ID, ProjectID: item.item.ProjectID,
+		Event: event, ItemID: item.item.ID, ProjectID: item.item.ProjectID,
 		PhaseID: item.phaseID, Attempt: item.attempt, Reason: Reason(item.item.Reason),
-		Message: note,
+		ThreadID: threadID, Message: note,
 	})
 }
 

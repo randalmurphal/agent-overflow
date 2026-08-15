@@ -11,7 +11,9 @@ import (
 
 // deleteProjectCleanupTimeout bounds the deadlock this test exists to catch. A
 // correct DeleteProject finishes in well under a second here; a lock-first one
-// never finishes at all.
+// blocks on the thread lock its own caller holds — for `workflowStopSendWait`
+// per stop, which the fixture below pins far above this timeout so the
+// regression still reads as a hang rather than a survivable stall.
 const deleteProjectCleanupTimeout = 30 * time.Second
 
 // The load-bearing ordering: DeleteProject runs the workflow cleanup BEFORE it
@@ -46,6 +48,13 @@ func TestDeleteProjectCancelsLiveWorkflowRunBeforeTakingThreadLocks(t *testing.T
 	projectRow = mustReloadProject(t, app.store, projectRow.ID)
 	writeReliabilityProfile(t, configRoot, projectRow.Slug, "watchdog: 1h\n  backoff: [5ms]\n")
 	startWorkflowEngineForTest(t, app, configRoot)
+	// The stop bound would otherwise mask the regression: a lock-first cleanup
+	// blocks the interrupt on the caller's own thread lock, but `Runner.Stop`
+	// abandons that wait after `stopSendWait` and the deletion then finishes
+	// anyway — inside this test's timeout, hiding the reintroduced bug. Pinning
+	// the bound far above the timeout keeps the lock-order violation observable
+	// as the hang it really is; the correct ordering never touches the bound.
+	app.workflowRunner.stopSendWait = time.Hour
 
 	item, err := app.WorkflowStartRun(
 		projectRow.ID, "reliability-flow", "shared", "live run",

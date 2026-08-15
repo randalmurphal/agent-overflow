@@ -200,7 +200,7 @@ func (e *Engine) resumeItem(itemID string) error {
 	}
 	feedback := &Feedback{Note: resumeNote(Reason(item.item.Reason), context)}
 	if phase.EffectiveShape() == def.ShapeFanOut {
-		e.noteResume(item, "continuing the parked attempt by repairing its fan-out")
+		e.noteResume(item, "continuing the parked attempt by repairing its fan-out: dispatching its repaired units")
 		return e.resumeFanOutAttempt(item, threadID, feedback)
 	}
 	if threadID == "" {
@@ -220,7 +220,12 @@ func (e *Engine) resumeItem(itemID string) error {
 		e.items[itemID] = item
 		return errors.Join(e.startWaiting(), e.enterPhase(item, entryRestart))
 	}
-	e.noteResume(item, "continuing the parked attempt on its own session")
+	// Dispatch intent, not a completed continuation: what follows is a phase entry
+	// and an asynchronous runner start, and `LogEventRunnerStart` is what says the
+	// turn actually began. The bare "continuing the parked attempt on its own
+	// session" read as the latter and was the last line an hour-long zombie run
+	// wrote.
+	e.noteResume(item, "continuing the parked attempt on its own session: dispatching to the runner")
 	return e.continueParkedAttempt(item, threadID, feedback, false, resumeAction)
 }
 
@@ -359,7 +364,7 @@ func (e *Engine) resumeCallPhase(item *runtimeItem) error {
 		// crash recovery does with the same gap.
 		return e.enterPhaseFresh(item, "", false)
 	}
-	e.noteResume(item, "continuing the parked attempt by re-linking the child run it was waiting on")
+	e.noteResume(item, "continuing the parked attempt by re-linking the child run it was waiting on: dispatching to that run")
 	if err := e.store.ReopenWorkItemPhase(itemID, item.phaseID, item.attempt); err != nil {
 		return fmt.Errorf("resume item %q: reopen call attempt %s/%d: %w", itemID, item.phaseID, item.attempt, err)
 	}

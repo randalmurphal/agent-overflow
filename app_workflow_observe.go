@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 
@@ -119,7 +120,7 @@ func (r *workflowAppRunner) observe(runKey string, event provider.ProviderEvent)
 			}
 			detail := attempt.failureDetail("the provider session disconnected before the phase produced an envelope")
 			r.mu.Unlock()
-			r.finish(runKey, engine.Outcome{Kind: engine.OutcomeExecutionFailure, Detail: detail})
+			r.finishOffWire(runKey, engine.Outcome{Kind: engine.OutcomeExecutionFailure, Detail: detail})
 			return
 		}
 	}
@@ -169,7 +170,7 @@ func (r *workflowAppRunner) observe(runKey string, event provider.ProviderEvent)
 		if workflowTurnErrorIsTerminal(event) {
 			detail := attempt.failureDetail("the provider reported a fatal error")
 			r.mu.Unlock()
-			r.finish(runKey, engine.Outcome{Kind: engine.OutcomeExecutionFailure, Detail: detail})
+			r.finishOffWire(runKey, engine.Outcome{Kind: engine.OutcomeExecutionFailure, Detail: detail})
 			return
 		}
 	}
@@ -204,7 +205,7 @@ func (r *workflowAppRunner) observe(runKey string, event provider.ProviderEvent)
 	if len(payload) == 0 && workflowTurnCompletedWithError(event) {
 		detail := attempt.failureDetail(workflowTurnCompleteFailureDetail(event))
 		r.mu.Unlock()
-		r.finish(runKey, engine.Outcome{Kind: engine.OutcomeExecutionFailure, Detail: detail})
+		r.finishOffWire(runKey, engine.Outcome{Kind: engine.OutcomeExecutionFailure, Detail: detail})
 		return
 	}
 	validationErr := attempt.contract.Validate(payload)
@@ -212,13 +213,13 @@ func (r *workflowAppRunner) observe(runKey string, event provider.ProviderEvent)
 		r.mu.Unlock()
 		outcome, err := workflowrunner.OutcomeFromEnvelope(payload)
 		if err != nil {
-			r.finish(runKey, engine.Outcome{
+			r.finishOffWire(runKey, engine.Outcome{
 				Kind: engine.OutcomeExecutionFailure, Envelope: payload,
 				Detail: workflowFailureDetail("the envelope validated but named no outcome: " + err.Error()),
 			})
 			return
 		}
-		r.finish(runKey, outcome)
+		r.finishOffWire(runKey, outcome)
 		return
 	}
 	if attempt.envelopeRetryUsed {
@@ -228,7 +229,7 @@ func (r *workflowAppRunner) observe(runKey string, event provider.ProviderEvent)
 		// has content, so a rejected envelope stays its own account.
 		detail := workflowFailureDetail("the turn produced no valid envelope after a retry: " + validationErr.Error())
 		r.mu.Unlock()
-		r.finish(runKey, engine.Outcome{Kind: engine.OutcomeExecutionFailure, Envelope: payload, Detail: detail})
+		r.finishOffWire(runKey, engine.Outcome{Kind: engine.OutcomeExecutionFailure, Envelope: payload, Detail: detail})
 		return
 	}
 	attempt.envelopeRetryUsed = true
@@ -238,8 +239,10 @@ func (r *workflowAppRunner) observe(runKey string, event provider.ProviderEvent)
 	epoch := attempt.sendEpoch
 	r.mu.Unlock()
 	go func() {
-		sent, err := r.sendIfActive(runKey, message, schema, epoch)
-		if sent && err != nil {
+		// Post-start, on a session that has already run a turn: the start's context
+		// is gone by now, and the bound on this send is the attempt's own watchdog.
+		// A drop is owned and logged by the door; only an error is this caller's.
+		if _, err := r.sendIfActive(context.Background(), runKey, "the envelope-feedback turn", message, schema, epoch); err != nil {
 			r.finish(runKey, engine.Outcome{
 				Kind: engine.OutcomeExecutionFailure, Envelope: payload,
 				Detail: workflowFailureDetail("sending the envelope-feedback turn failed: " + err.Error()),
@@ -251,29 +254,26 @@ func (r *workflowAppRunner) observe(runKey string, event provider.ProviderEvent)
 // sessionDisconnected advances subprocess-death retry only after the dead
 // session has been removed from App's registry. That ordering prevents a
 // millisecond harness backoff from sending into the session being reaped.
+//
+// The latch this looks for is claimed inside `foldSessionDeathIntoLadder`
+// under the runner lock, so one death advances the ladder exactly once however
+// many times it is reported.
 func (r *workflowAppRunner) sessionDisconnected(threadID string) {
-	var exhaustedKey, exhaustedDetail string
+	var deadKey string
+	var dead *workflowAttempt
 	r.mu.Lock()
 	for runKey, attempt := range r.runs {
 		if attempt.threadID != threadID || !attempt.pendingSessionDeath {
 			continue
 		}
-		attempt.pendingSessionDeath = false
-		if r.scheduleTransientLocked(runKey, attempt) {
-			exhaustedKey = runKey
-			exhaustedDetail = attempt.failureDetail("the provider process kept dying until the retry schedule ran out")
-		}
+		deadKey, dead = runKey, attempt
 		break
 	}
 	r.mu.Unlock()
-	if exhaustedKey != "" {
-		// Off the wire like every other mid-turn park. This one is safe to block
-		// today only because the session was unregistered a moment ago, which
-		// makes the interrupt a no-op — safety that lives in the caller's
-		// ordering rather than in the call, and the next caller does not inherit
-		// it. The same helper removes the question.
-		r.stopAndFinishOffWire(exhaustedKey, engine.Outcome{Kind: engine.OutcomeTransientExhausted, Detail: exhaustedDetail})
+	if dead == nil {
+		return
 	}
+	r.foldSessionDeathIntoLadder(deadKey, dead)
 }
 
 func workflowProviderTurnStarted(providerName string, event provider.ProviderEvent) bool {
@@ -281,93 +281,6 @@ func workflowProviderTurnStarted(providerName string, event provider.ProviderEve
 		return true
 	}
 	return providerName == string(provider.Claude) && event.Kind == provider.EventInit
-}
-
-// sendIfActive is the one door every workflow send goes through. It serializes
-// with Stop and rechecks, after taking the per-attempt lock, that the state
-// which decided to send is still the state that exists: the attempt is still
-// installed, its session is not already known dead, and the ladder has not
-// advanced past the rung this send belongs to. A send decided by a superseded
-// state is dropped rather than delivered late.
-//
-// `epoch` is the caller's `attempt.sendEpoch`, read under the runner lock at the
-// moment the send was decided. See the field.
-func (r *workflowAppRunner) sendIfActive(runKey, message string, schema json.RawMessage, epoch int) (bool, error) {
-	r.mu.Lock()
-	attempt := r.runs[runKey]
-	r.mu.Unlock()
-	if attempt == nil {
-		return false, nil
-	}
-
-	attempt.sendMu.Lock()
-	defer attempt.sendMu.Unlock()
-	r.mu.Lock()
-	// A latched session death makes the attempt as inactive as cancellation does:
-	// the session is being reaped and `sessionDisconnected` owns what happens
-	// next. A send queued before the death would otherwise land in the dying
-	// process and convert a transient ladder into an execution-failure park.
-	//
-	// The epoch catches the case the latch cannot: the death was latched AND
-	// already answered, so the flag is clear again and the attempt is installed
-	// and healthy — but it is healthy in a NEW ladder state whose own resend is
-	// pending. Delivering the old one then starts a turn inside somebody else's
-	// backoff window, where the guard drops its events and the next rung's send
-	// lands on a session with a turn already in flight.
-	active := r.runs[runKey] == attempt && !attempt.pendingSessionDeath && attempt.sendEpoch == epoch
-	r.mu.Unlock()
-	if !active {
-		return false, nil
-	}
-	if err := r.app.sendWorkflowMessage(attempt.threadID, message, schema, func(identity providerDispatchIdentity) {
-		r.mu.Lock()
-		if r.runs[runKey] == attempt && attempt.sendEpoch == epoch {
-			attempt.dispatchIdentity = identity
-			attempt.dispatchIdentitySet = true
-		}
-		r.mu.Unlock()
-	}); err != nil {
-		return true, err
-	}
-
-	r.mu.Lock()
-	if r.runs[runKey] == attempt && !attempt.pendingSessionDeath && attempt.sendEpoch == epoch {
-		if attempt.provider == string(provider.Claude) {
-			// Claude has no per-turn EventTurnStart. A successful send is therefore
-			// the start signal when an existing session emits no fresh EventInit (for
-			// example, the envelope-feedback turn and a transient sub-attempt).
-			if !attempt.turnStarted && attempt.timerMode != workflowTimerBackoff {
-				attempt.turnStarted = true
-				attempt.pendingTransient = false
-				attempt.providerRetryHint = false
-				r.armWatchdogLocked(runKey, attempt)
-			}
-		} else {
-			// Every other provider names its own turn, so a send is not a start —
-			// it is the beginning of a wait for one, and both halves of that wait
-			// belong at this chokepoint. The opening send and the envelope-feedback
-			// send were the two doors that had neither: until `turn/started` names
-			// the turn, a replayed lifecycle event from an EARLIER turn passes the
-			// identity filter (an empty `currentTurnID` makes it inert) and can
-			// settle the attempt on a stale envelope.
-			//
-			// The turn start for THIS send may already have arrived — events and
-			// this block serialize on the runner lock, so the ordering is a race —
-			// and setting the flag then would eat the completion of the very turn
-			// it was meant to protect. `turnStarted` is the record of that, so it
-			// is the condition.
-			if !attempt.turnStarted {
-				attempt.awaitingTurnStart = true
-			}
-			// Only the unarmed state is touched, so the retry path's own watchdog
-			// and a live turn's are left exactly as they were.
-			if attempt.timerMode == workflowTimerNone {
-				r.armWatchdogLocked(runKey, attempt)
-			}
-		}
-	}
-	r.mu.Unlock()
-	return true, nil
 }
 
 // workflowParentedErrorClosesTurn reports whether an event carrying a child's

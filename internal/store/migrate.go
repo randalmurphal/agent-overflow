@@ -1999,6 +1999,41 @@ BEGIN
     SELECT RAISE(ABORT, 'provider session is already claimed by another thread');
 END;`,
 	},
+	{
+		Version: 64,
+		Name:    "work_item_phase_feedback_delivered",
+		// When this attempt's persisted `input_envelope.feedback` stopped being
+		// owed to a turn — either a provider session that renders it started, or a
+		// later attempt of the same phase took the note over. 0 means "still owed".
+		//
+		// It exists because feedback was write-only durable state: an operator
+		// answered a parked question, the engine persisted the answer as the new
+		// attempt's feedback, the runner start wedged, and nothing ever read a
+		// superseded attempt's feedback again. The answer was on disk and lost all
+		// the same. This column is what a later attempt of the same phase consults
+		// to redeliver it (see `internal/workflow/engine/feedback.go`), and it is
+		// the exact mirror of `work_items.pending_guidance`'s ordering rule: the
+		// attempt row carrying the note is written first and the stamp lands only
+		// when a session that renders it has actually started, so every way an
+		// attempt can end without a turn is a redelivery rather than a loss.
+		//
+		// THE BACKFILL IS THE POINT OF THE SECOND STATEMENT. A bare ADD COLUMN
+		// leaves every historical row at 0, which reads as "owed" — so the next
+		// attempt of every phase any run ever entered would prepend feedback from
+		// a round that finished months ago. Existing rows are stamped with their
+		// own time (ended_at for a settled attempt, started_at for one still
+		// running), and the trailing `1` guarantees the stamp is non-zero even for
+		// a row whose timestamps were never written: "delivered" has to be
+		// structural here, not conditional on data this migration cannot verify.
+		//
+		// 0-means-unset rather than NULL, matching `ended_at`, `auto_resume_at`,
+		// and `provider_usage_scope_id`: NULL and 0 would be two spellings of one
+		// state that every reader would have to agree about. A plain ADD COLUMN
+		// with no CHECK — this table is nobody's FK parent, so no rebuild.
+		SQL: `ALTER TABLE work_item_phases ADD COLUMN feedback_delivered_at INTEGER NOT NULL DEFAULT 0;
+
+UPDATE work_item_phases SET feedback_delivered_at = MAX(started_at, ended_at, 1);`,
+	},
 }
 
 var rebuildWorkItemProviderUsageLimitedV57SQL = mustReplaceOnce(

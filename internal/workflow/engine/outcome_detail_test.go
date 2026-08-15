@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"agent-overflow/internal/workflow/def"
 )
 
 // A failure the element authored no envelope for used to park with no account
@@ -86,6 +88,87 @@ func TestExecutionFailureWithNoEnvelopeParksWithTheProviderErrorNamed(t *testing
 	requireItemState(t, h.store, item, StateNeedsHuman, ReasonAgentError)
 	requireParkCause(t, h.phaseAttempt(t, item, "work", 1),
 		"provider error rate_limit", "Claude usage limit reached")
+}
+
+// `setup-failure` is the completion twin of the `ErrSetupFailed` START sentinel,
+// and it exists so a run parks the SAME way whichever of the two noticed. The
+// runner's start watchdog cancels a wedged start and gets `ErrSetupFailed`; when
+// the goroutine will not return even then, its grace fallback reports the
+// attempt dead through this path instead, and the reason must not depend on
+// which one won the race.
+func TestSetupFailureOutcomeParksTheSameWayTheStartSentinelDoes(t *testing.T) {
+	h := newPauseHarness(t)
+	item := startPausableItem(t, h, "item", "thread-one")
+
+	h.runner.complete(t, item, Outcome{
+		Kind:   OutcomeSetupFailure,
+		Detail: "workspace provisioning never returned; the start goroutine is still wedged",
+	})
+	if err := h.engine.Sync(); err != nil {
+		t.Fatal(err)
+	}
+
+	requireItemState(t, h.store, item, StateNeedsHuman, ReasonSetupFailed)
+	requireParkCause(t, h.phaseAttempt(t, item, "work", 1), "workspace provisioning never returned")
+	h.requireNoHeldResources(t)
+}
+
+// A UNIT reported dead the same way is not a unit failure: nothing runnable was
+// ever produced, so the whole attempt parks under the phase-level reason — which
+// is exactly what `finishUnitStart` does with the sentinel. Recording it as one
+// failed lane would leave the wave's repair verbs pointed at a lane that never
+// ran, under a reason (`unit-failed`) that says its siblings' work is intact.
+func TestSetupFailureOnAUnitParksTheAttemptRatherThanFailingTheLane(t *testing.T) {
+	h := newFanOutHarness(t, 2)
+	item := startFanOut(t, h, "fan")
+
+	h.runner.completeRun(t, unitKey(item, "work", 1, "work-unit-0"), Outcome{
+		Kind: OutcomeSetupFailure, Detail: "unit worktree never provisioned",
+	})
+	if err := h.engine.Sync(); err != nil {
+		t.Fatal(err)
+	}
+
+	requireItemState(t, h.store, item, StateNeedsHuman, ReasonSetupFailed)
+	requireParkCause(t, h.phaseAttempt(t, item, "work", 1), "unit worktree never provisioned")
+	h.requireNoHeldResources(t)
+}
+
+// The takeover finalize keeps the human in charge — it re-parks `taken-over`
+// rather than reclassifying — but the failure DETAIL still has to ride along: a
+// finalize that died with an empty envelope (a wedged start, a killed process)
+// is otherwise a park with nothing a human could diagnose from.
+func TestTakeoverFinalizeFailurePersistsTheRunnersAccount(t *testing.T) {
+	workflow := onePhaseWorkflow("takeover-detail", nil, []def.Route{{To: "done"}})
+	h := newHarness(t, Config{}, map[string]def.Workflow{"takeover-detail": workflow}, []string{"project"}, nil)
+	item := testItem("item", "project", "takeover-detail", 0)
+	if err := h.engine.StartItem(item); err != nil {
+		t.Fatal(err)
+	}
+	seedThread(t, h.store, "thread-one")
+	if err := h.store.AttachWorkItemPhaseRun(item.ID, "work", 1, "thread-one", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.engine.TakeOver(item.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.engine.CompleteTakeover(item.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	h.runner.complete(t, item.ID, Outcome{
+		Kind:   OutcomeExecutionFailure,
+		Detail: "the steered session died before it could produce an envelope",
+	})
+	if err := h.engine.Sync(); err != nil {
+		t.Fatal(err)
+	}
+
+	requireItemState(t, h.store, item.ID, StateNeedsHuman, ReasonTakenOver)
+	// The FINALIZE attempt is the row the cause rests on — the one the human's
+	// verb created — not the attempt the takeover parked.
+	requireParkCause(t, h.phaseAttempt(t, item.ID, "work", 2),
+		"the steered session died before it could produce an envelope")
 }
 
 // The other side of it: a failure the element DID author an envelope for keeps

@@ -28,11 +28,15 @@ type workflowTakeover struct {
 	transitioning  bool
 }
 
-// workflowTakeoverTimer preserves a detached attempt's reliability timer so a
-// refused takeover restores the deadline it was already running against.
-type workflowTakeoverTimer struct {
-	mode     workflowTimerMode
-	deadline time.Time
+// workflowTakeoverRestore preserves what `detachForTakeover` removed beyond the
+// registry entries, so a refused takeover restores the attempt exactly as it
+// found it: the reliability deadline it was running against, and whether the
+// thread's usage attribution belonged to this attempt at detach time — restoring
+// one that did not would silently reassign another item's thread.
+type workflowTakeoverRestore struct {
+	mode       workflowTimerMode
+	deadline   time.Time
+	attributed bool
 }
 
 func (r *workflowAppRunner) StopForTakeover(ctx context.Context, key engine.RunKey) (json.RawMessage, error) {
@@ -43,59 +47,80 @@ func (r *workflowAppRunner) StopForTakeover(ctx context.Context, key engine.RunK
 	if isTool {
 		return nil, fmt.Errorf("workflow runner: attempt %s runs a deterministic command and has no session to take over", runKey)
 	}
-	attempt, timerState, ok := r.detachForTakeover(runKey)
+	attempt, restore, ok := r.detachForTakeover(runKey)
 	if !ok {
 		return nil, fmt.Errorf("workflow runner: live takeover attempt %s is not registered", runKey)
 	}
-	attempt.sendMu.Lock()
-	attempt.sendMu.Unlock()
+	// Bounded for the same reason `Stop` is: this runs on the engine's
+	// command-loop goroutine, and a send wedged on provider IO would freeze every
+	// run in the process rather than only refusing this takeover. Refusing is the
+	// honest answer anyway — the human cannot steer a thread whose previous turn
+	// is still mid-dispatch — so the attempt goes back exactly as it was and the
+	// verb fails with a cause the operator can act on.
+	if !r.runBoundedBySendWait(func() { r.awaitInFlightSend(attempt) }) {
+		r.restoreTakeoverAttempt(runKey, attempt, restore)
+		return nil, fmt.Errorf(
+			"workflow runner: attempt %s has a send on thread %s that has not reached the wire in %s; "+
+				"the attempt is still running and the takeover was refused",
+			runKey, attempt.threadID, r.stopSendWait,
+		)
+	}
 	partial, err := r.interruptAndWaitForYield(ctx, runKey, attempt.threadID)
 	if err == nil {
 		return partial, nil
 	}
+	r.restoreTakeoverAttempt(runKey, attempt, restore)
+	return nil, err
+}
+
+// restoreTakeoverAttempt puts a detached attempt back the way
+// `detachForTakeover` found it, for a takeover that was refused: observer,
+// registry, schema, work-item attribution, and the reliability deadline it was
+// already running against.
+func (r *workflowAppRunner) restoreTakeoverAttempt(
+	runKey string, attempt *workflowAttempt, restore workflowTakeoverRestore,
+) {
 	attempt.unsubscribe = r.app.subscribeThreadTurnObserver(attempt.threadID, func(_ string, event provider.ProviderEvent) {
 		r.observe(runKey, event)
 	})
 	r.mu.Lock()
 	r.runs[runKey] = attempt
 	r.schemas[attempt.threadID] = append(json.RawMessage(nil), attempt.schema...)
-	r.workItems[attempt.threadID] = attempt.key.ItemID
-	r.restoreTakeoverTimerLocked(runKey, attempt, timerState)
+	if restore.attributed {
+		r.workItems[attempt.threadID] = attempt.key.ItemID
+	}
+	r.restoreTakeoverTimerLocked(runKey, attempt, restore)
 	r.mu.Unlock()
-	return nil, err
 }
 
-func (r *workflowAppRunner) detachForTakeover(runKey string) (*workflowAttempt, workflowTakeoverTimer, bool) {
+func (r *workflowAppRunner) detachForTakeover(runKey string) (*workflowAttempt, workflowTakeoverRestore, bool) {
 	r.mu.Lock()
-	attempt, ok := r.runs[runKey]
-	state := workflowTakeoverTimer{}
-	if ok {
-		state.mode = attempt.timerMode
-		state.deadline = attempt.timerDeadline
-		delete(r.runs, runKey)
-		delete(r.schemas, attempt.threadID)
-		if r.workItems[attempt.threadID] == attempt.key.ItemID {
-			delete(r.workItems, attempt.threadID)
-		}
-		r.disarmTimerLocked(attempt)
+	restore := workflowTakeoverRestore{}
+	// The timer state and the attribution are captured before `detachLocked`
+	// disarms the one and conditionally deletes the other.
+	if attempt, ok := r.runs[runKey]; ok {
+		restore.mode = attempt.timerMode
+		restore.deadline = attempt.timerDeadline
+		restore.attributed = r.workItems[attempt.threadID] == attempt.key.ItemID
 	}
+	attempt, ok := r.detachLocked(runKey)
 	r.mu.Unlock()
 	if ok && attempt.unsubscribe != nil {
 		attempt.unsubscribe()
 	}
-	return attempt, state, ok
+	return attempt, restore, ok
 }
 
-func (r *workflowAppRunner) restoreTakeoverTimerLocked(runKey string, attempt *workflowAttempt, state workflowTakeoverTimer) {
-	if state.mode == workflowTimerNone {
+func (r *workflowAppRunner) restoreTakeoverTimerLocked(runKey string, attempt *workflowAttempt, restore workflowTakeoverRestore) {
+	if restore.mode == workflowTimerNone {
 		return
 	}
-	delay := state.deadline.Sub(r.now())
+	delay := restore.deadline.Sub(r.now())
 	if delay < 0 {
 		delay = 0
 	}
-	attempt.timerMode = state.mode
-	attempt.timerDeadline = state.deadline
+	attempt.timerMode = restore.mode
+	attempt.timerDeadline = restore.deadline
 	attempt.timer = r.newTimer(delay, func() { r.timerFired(runKey) })
 }
 
@@ -110,7 +135,17 @@ func (r *workflowAppRunner) interruptAndWaitForYield(ctx context.Context, runKey
 		}
 	})
 	defer unsubscribe()
-	if err := r.app.InterruptTurn(threadID); err != nil {
+	// The interrupt's thread-action-lock acquisition is the one wait here with
+	// no bound of its own — the yield select below has the timer and ctx — and
+	// it is exactly where the incident wedged (a session restart holding the
+	// lock mid-start). This still runs on the engine's command loop, so the
+	// acquisition gets the same bound the send barrier above got; expiring it
+	// abandons nothing but the wait (`LockCtx` admits no one after refusal),
+	// and the caller's error path restores the attempt and refuses the
+	// takeover.
+	lockCtx, cancel := context.WithTimeout(ctx, r.stopSendWait)
+	defer cancel()
+	if err := r.interrupt(lockCtx, threadID); err != nil {
 		return nil, fmt.Errorf("workflow runner: interrupt %s: %w", runKey, err)
 	}
 	if _, active, err := r.app.store.GetActiveTurn(threadID); err != nil {
@@ -140,7 +175,15 @@ type workflowTakeoverElement struct {
 	contract    def.EnvelopeContract
 }
 
-func (r *workflowAppRunner) registerTakeover(itemID, threadID string) error {
+// registerTakeover marks a thread as human-steered and, for Claude, restarts its
+// session without the phase schema so the human's turns are not held to it.
+//
+// ctx bounds that restart's start half — the join on somebody else's in-flight
+// start — which is why it is threaded from the send that triggered the takeover
+// rather than invented here. The bound methods that also reach this have no
+// context of their own to give and pass `context.Background()`, which is what
+// they mean: a user action with no deadline behind it.
+func (r *workflowAppRunner) registerTakeover(ctx context.Context, itemID, threadID string) error {
 	r.mu.Lock()
 	if existing, ok := r.takeovers[threadID]; ok && existing.itemID == itemID {
 		if existing.transitioning {
@@ -182,7 +225,7 @@ func (r *workflowAppRunner) registerTakeover(itemID, threadID string) error {
 		if err := r.app.stopSession(threadID); err != nil {
 			return fmt.Errorf("workflow runner: stop schema-attached takeover session: %w", err)
 		}
-		if err := r.app.startSession(threadID); err != nil {
+		if err := r.app.startSession(ctx, threadID); err != nil {
 			return fmt.Errorf("workflow runner: restart takeover session without schema: %w", err)
 		}
 	}
@@ -270,8 +313,8 @@ func findWorkflowPhase(workflow def.Workflow, phaseID string) (def.Phase, bool) 
 	return def.Phase{}, false
 }
 
-func (r *workflowAppRunner) beginTakeoverTransition(itemID, threadID string) error {
-	if err := r.registerTakeover(itemID, threadID); err != nil {
+func (r *workflowAppRunner) beginTakeoverTransition(ctx context.Context, itemID, threadID string) error {
+	if err := r.registerTakeover(ctx, itemID, threadID); err != nil {
 		return err
 	}
 	r.mu.Lock()

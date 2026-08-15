@@ -84,8 +84,13 @@ func (r *workflowAppRunner) prepareAgentTurn(ctx context.Context, plan workflowA
 func (r *workflowAppRunner) prepareAgentTurnThread(ctx context.Context, plan workflowAgentTurnPlan) (preparedWorkflowAgentTurn, error) {
 	threadID := plan.request.Launch.ThreadID()
 	if threadID == "" {
-		return r.createPreparedWorkflowThread(plan.thread)
+		prepared, err := r.createPreparedWorkflowThread(plan.thread)
+		// The start watchdog names the thread its deadline expired on, and a fresh
+		// draft is that thread from the moment it exists.
+		r.noteStartThread(plan.request.Key, prepared.threadID)
+		return prepared, err
 	}
+	r.noteStartThread(plan.request.Key, threadID)
 	prior, err := r.validatePriorThread(plan.thread, threadID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -117,9 +122,9 @@ func (r *workflowAppRunner) createPreparedWorkflowThread(spec workflowThreadSpec
 }
 
 // ensureReusableWorkflowSession makes provider-context availability a fact,
-// not an inference from a non-empty database cursor. A live process is already
-// proof. Cold Claude resumes are preflighted against the transcript; cold Codex
-// resumes are proven by its synchronous thread/resume handshake.
+// not an inference from a non-empty database cursor. A live process is proof
+// on its own. Cold Claude resumes are preflighted against the transcript; cold
+// Codex resumes are proven by its synchronous thread/resume handshake.
 func (r *workflowAppRunner) ensureReusableWorkflowSession(ctx context.Context, thread store.Thread, schema json.RawMessage) (bool, error) {
 	if _, active := r.app.sessionManager().get(thread.ID); active {
 		return false, nil
@@ -149,7 +154,7 @@ func (r *workflowAppRunner) ensureReusableWorkflowSession(ctx context.Context, t
 	if err := r.registerTemporarySchema(thread.ID, schema); err != nil {
 		return false, err
 	}
-	if err := r.app.StartSession(thread.ID); err != nil {
+	if err := r.app.startSessionTakingLock(ctx, thread.ID); err != nil {
 		r.removeTemporarySchema(thread.ID)
 		if codex.IsThreadNotFound(err) || errors.Is(err, sql.ErrNoRows) {
 			return false, errors.Join(engine.ErrProviderContextUnavailable, err)

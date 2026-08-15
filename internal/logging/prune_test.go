@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"agent-overflow/internal/observability/goroutinedump"
 )
 
 func TestPruneOlderThanRemovesAgedFiles(t *testing.T) {
@@ -94,6 +96,27 @@ func TestPruneOlderThanRemovesAgedFiles(t *testing.T) {
 			mtime:    now.Add(-30 * 24 * time.Hour),
 			wantGone: false,
 			describe: "malformed date stub: doesn't match pattern, untouched",
+		},
+		{
+			// The second stream in this directory. A dump is written once and
+			// never appended to, so mtime alone decides — there is no active file
+			// to guard and no date stub in the name to read.
+			name:     goroutinedump.FilePrefix + "2026-04-01T09-13-22.104.txt",
+			mtime:    now.Add(-30 * 24 * time.Hour),
+			wantGone: true,
+			describe: "aged goroutine dump: swept with the logs it sits beside",
+		},
+		{
+			name:     goroutinedump.FilePrefix + "2026-04-01T09-13-23.550.txt",
+			mtime:    now.Add(-1 * time.Hour),
+			wantGone: false,
+			describe: "recent goroutine dump: kept, however old its filename reads",
+		},
+		{
+			name:     "goroutines.txt",
+			mtime:    now.Add(-30 * 24 * time.Hour),
+			wantGone: false,
+			describe: "a name that merely resembles a dump: untouched",
 		},
 	}
 

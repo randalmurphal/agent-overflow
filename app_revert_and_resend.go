@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log"
@@ -186,7 +187,7 @@ func (a *App) RevertConversationAndResendMessage(
 	// command reaches the CLI's command router instead of being guarded
 	// as prose. PreserveDraft keeps the send from consuming the crash
 	// copy — this saga settles that row itself, below.
-	if _, err := a.sendMessageLocked(threadID, opts.Content, sendMessageOptions{
+	if _, err := a.sendMessageLocked(context.Background(), threadID, opts.Content, sendMessageOptions{
 		AttachmentIDs:          opts.AttachmentIDs,
 		ExpandComposerCommands: true,
 		ProviderCommand:        opts.ProviderCommand,

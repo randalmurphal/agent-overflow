@@ -309,7 +309,7 @@ func (a *App) fireDeferredConfigReconnectLocked(threadID string) bool {
 	if a.liveApplySessionConfig(threadID) {
 		return true
 	}
-	if err := a.startSession(threadID); err != nil {
+	if err := a.startSession(context.Background(), threadID); err != nil {
 		log.Printf("thread %s: deferred config reconnect failed: %v", threadID, err)
 		a.emitErrorToThread(threadID, "config change failed to apply on session restart: "+err.Error())
 	}

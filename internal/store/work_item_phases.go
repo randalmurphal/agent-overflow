@@ -29,9 +29,24 @@ type WorkItemPhase struct {
 	// whose typed usage refusal parked this attempt. Zero means this attempt did
 	// not park on a recognized usage limit (or predates that provenance).
 	ProviderUsageScopeID WorkflowProviderUsageScopeID `json:"providerUsageScopeId,omitempty"`
-	Status               string                       `json:"status"`
-	StartedAt            int64                        `json:"startedAt"`
-	EndedAt              int64                        `json:"endedAt,omitempty"`
+	// FeedbackDeliveredAt is when this attempt's `input_envelope.feedback`
+	// stopped being owed to a turn: a provider session that renders it started,
+	// or a later attempt of the same phase took the note over. 0 means still
+	// owed, which is what makes an operator answer that never reached a provider
+	// recoverable by the next attempt of that phase (migration v64).
+	FeedbackDeliveredAt int64  `json:"feedbackDeliveredAt,omitempty"`
+	Status              string `json:"status"`
+	StartedAt           int64  `json:"startedAt"`
+	EndedAt             int64  `json:"endedAt,omitempty"`
+}
+
+// WorkItemPhaseFeedback is one attempt narrowed to the feedback it persisted.
+// It is a projection of its own because the redelivery read runs at every phase
+// entry and wants the input envelope — the heaviest column on the table, and
+// the one every other narrow projection was written to avoid.
+type WorkItemPhaseFeedback struct {
+	Attempt       int
+	InputEnvelope json.RawMessage
 }
 
 // WorkItemPhaseContext is the narrow phase-history projection used to rebuild
@@ -87,7 +102,7 @@ type WorkItemPhaseProvenance struct {
 
 const workItemPhaseColumns = `item_id, phase_id, attempt, thread_id,
 input_envelope, output_envelope, gate_trace, intervention, narrative_path,
-park_cause, provider_usage_scope_id, status, started_at, ended_at`
+park_cause, provider_usage_scope_id, feedback_delivered_at, status, started_at, ended_at`
 
 func scanWorkItemPhase(scanner interface{ Scan(...any) error }) (WorkItemPhase, error) {
 	var phase WorkItemPhase
@@ -95,7 +110,8 @@ func scanWorkItemPhase(scanner interface{ Scan(...any) error }) (WorkItemPhase, 
 	if err := scanner.Scan(
 		&phase.ItemID, &phase.PhaseID, &phase.Attempt, &phase.ThreadID,
 		&input, &output, &gateTrace, &intervention, &phase.NarrativePath,
-		&phase.ParkCause, &phase.ProviderUsageScopeID, &phase.Status, &phase.StartedAt, &phase.EndedAt,
+		&phase.ParkCause, &phase.ProviderUsageScopeID, &phase.FeedbackDeliveredAt,
+		&phase.Status, &phase.StartedAt, &phase.EndedAt,
 	); err != nil {
 		return WorkItemPhase{}, err
 	}
@@ -109,11 +125,12 @@ func scanWorkItemPhase(scanner interface{ Scan(...any) error }) (WorkItemPhase, 
 func (s *Store) CreateWorkItemPhase(phase WorkItemPhase) error {
 	_, err := s.db.Exec(
 		`INSERT INTO work_item_phases (`+workItemPhaseColumns+`)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		phase.ItemID, phase.PhaseID, phase.Attempt, phase.ThreadID,
 		jsonText(phase.InputEnvelope), jsonText(phase.OutputEnvelope),
 		jsonText(phase.GateTrace), jsonText(phase.Intervention), phase.NarrativePath,
-		phase.ParkCause, phase.ProviderUsageScopeID, phase.Status, phase.StartedAt, phase.EndedAt,
+		phase.ParkCause, phase.ProviderUsageScopeID, phase.FeedbackDeliveredAt,
+		phase.Status, phase.StartedAt, phase.EndedAt,
 	)
 	if err != nil {
 		return fmt.Errorf("store: create work item phase %s/%s/%d: %w", phase.ItemID, phase.PhaseID, phase.Attempt, err)
@@ -161,6 +178,9 @@ func (s *Store) CompleteWorkItemPhase(itemID, phaseID string, attempt int, outpu
 // The park cause goes with them for the same reason: the attempt is running
 // again, so the last park is no longer why it rests. started_at is untouched: it
 // is the same attempt, and attempt ordering is how phase history is read back.
+// So is `feedback_delivered_at`: reopening does not rewrite the attempt's input,
+// so the note on the row is the same one, and re-owing feedback a session
+// already rendered would deliver it a second time to the very turn that read it.
 func (s *Store) ReopenWorkItemPhase(itemID, phaseID string, attempt int) error {
 	result, err := s.db.Exec(
 		`UPDATE work_item_phases
@@ -173,6 +193,75 @@ func (s *Store) ReopenWorkItemPhase(itemID, phaseID string, attempt int) error {
 		return fmt.Errorf("store: reopen work item phase %s/%s/%d: %w", itemID, phaseID, attempt, err)
 	}
 	return requireRowsAffected(result, fmt.Sprintf("store: reopen work item phase %s/%s/%d", itemID, phaseID, attempt))
+}
+
+// MarkWorkItemPhaseFeedbackDelivered stamps the moment this attempt's feedback
+// stopped being owed to a turn. There are exactly two discharges and both are
+// the engine's (`internal/workflow/engine/feedback.go`): a provider session that
+// renders the note started, or a later attempt of the same phase took the note
+// over. The write is deliberately unconditional — the ack path is allowed to
+// fire more than once for one attempt (a ladder resend re-acks), and a
+// duplicate stamp overwrites one timestamp with a later equally true one, which
+// must not error a send. `requireRowsAffected` keeps a stamp aimed at a row
+// that does not exist loud, which is the failure that would actually mean lost
+// bookkeeping.
+//
+// It deliberately does not touch the input envelope: the note stays on the row
+// as the record of what that attempt ran with. Only the obligation is settled.
+func (s *Store) MarkWorkItemPhaseFeedbackDelivered(itemID, phaseID string, attempt int, deliveredAt int64) error {
+	if deliveredAt <= 0 {
+		// 0 is the column's "still owed" value, so a caller passing an unset clock
+		// would settle nothing while reporting success.
+		return fmt.Errorf("store: mark work item phase feedback delivered %s/%s/%d: delivered_at must be positive, got %d", itemID, phaseID, attempt, deliveredAt)
+	}
+	result, err := s.db.Exec(
+		`UPDATE work_item_phases SET feedback_delivered_at = ?
+		 WHERE item_id = ? AND phase_id = ? AND attempt = ?`,
+		deliveredAt, itemID, phaseID, attempt,
+	)
+	if err != nil {
+		return fmt.Errorf("store: mark work item phase feedback delivered %s/%s/%d: %w", itemID, phaseID, attempt, err)
+	}
+	return requireRowsAffected(result, fmt.Sprintf("store: mark work item phase feedback delivered %s/%s/%d", itemID, phaseID, attempt))
+}
+
+// ListUndeliveredWorkItemPhaseFeedback returns the attempts of one phase whose
+// persisted feedback is still owed to a turn — below `belowAttempt`, oldest
+// first.
+//
+// The attempt bound is a parameter rather than "every row", because the caller
+// is composing the attempt that is about to be created and a read that could
+// include it would let an attempt redeliver its own note to itself. Rows with an
+// empty input envelope are excluded in SQL: a park recorded before its attempt
+// had any input (`parkOnNewAttempt`) carries no feedback to owe, and shipping it
+// to the caller only to be dropped there would put the heaviest column on the
+// table on a read that runs at every phase entry.
+func (s *Store) ListUndeliveredWorkItemPhaseFeedback(itemID, phaseID string, belowAttempt int) ([]WorkItemPhaseFeedback, error) {
+	rows, err := s.reader().Query(
+		`SELECT attempt, input_envelope FROM work_item_phases
+		 WHERE item_id = ? AND phase_id = ? AND attempt < ?
+		   AND feedback_delivered_at = 0 AND input_envelope <> ''
+		 ORDER BY attempt ASC`,
+		itemID, phaseID, belowAttempt,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("store: list undelivered work item phase feedback %s/%s: %w", itemID, phaseID, err)
+	}
+	defer rows.Close()
+	owed := make([]WorkItemPhaseFeedback, 0)
+	for rows.Next() {
+		var row WorkItemPhaseFeedback
+		var input string
+		if err := rows.Scan(&row.Attempt, &input); err != nil {
+			return nil, fmt.Errorf("store: list undelivered work item phase feedback %s/%s: scan: %w", itemID, phaseID, err)
+		}
+		row.InputEnvelope = json.RawMessage(input)
+		owed = append(owed, row)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: list undelivered work item phase feedback %s/%s: iterate: %w", itemID, phaseID, err)
+	}
+	return owed, nil
 }
 
 func (s *Store) ListWorkItemPhases(itemID string) ([]WorkItemPhase, error) {

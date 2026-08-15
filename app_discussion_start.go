@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"time"
@@ -132,7 +133,7 @@ func (a *App) startDiscussionParticipantSessions(plans []discussion.ParticipantP
 	started := make([]string, 0, len(plans))
 	for _, plan := range plans {
 		a.setThreadSystemPrompt(plan.Thread.ID, plan.SystemPrompt)
-		if err := a.startSession(plan.Thread.ID); err != nil {
+		if err := a.startSession(context.Background(), plan.Thread.ID); err != nil {
 			a.clearThreadSystemPrompt(plan.Thread.ID)
 			return started, fmt.Errorf("start discussion participant %s: %w", plan.Thread.ID, err)
 		}

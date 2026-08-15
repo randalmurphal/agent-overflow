@@ -329,13 +329,15 @@ func TestAgentRunStatusNamesTheParentAndTheFailedUnits(t *testing.T) {
 	}
 	if err := fixture.app.store.CreateWorkItemUnits([]store.WorkItemUnit{
 		{ItemID: child.ID, PhaseID: "fan", Attempt: 1, UnitID: "lane-1", UnitIndex: 0,
-			Kind: store.WorkItemUnitKindUnit, Status: store.WorkItemUnitFailed, UnitAttempt: 2},
+			Kind: store.WorkItemUnitKindUnit, Status: store.WorkItemUnitFailed, UnitAttempt: 2,
+			Feedback: "unit outcome error: the tool exited 1"},
 		{ItemID: child.ID, PhaseID: "fan", Attempt: 1, UnitID: "lane-2", UnitIndex: 1,
 			Kind: store.WorkItemUnitKindUnit, Status: store.WorkItemUnitDone, UnitAttempt: 1},
 		// A failed join is a failed unit of the attempt, so it is named here for
 		// the same reason every other one is: `run retry-unit` takes its id.
 		{ItemID: child.ID, PhaseID: "fan", Attempt: 1, UnitID: "merge", UnitIndex: 2,
-			Kind: store.WorkItemUnitKindJoin, Status: store.WorkItemUnitFailed, UnitAttempt: 1},
+			Kind: store.WorkItemUnitKindJoin, Status: store.WorkItemUnitFailed, UnitAttempt: 1,
+			Feedback: "interrupted with its phase attempt (parked)"},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -358,6 +360,14 @@ func TestAgentRunStatusNamesTheParentAndTheFailedUnits(t *testing.T) {
 		view.FailedUnits[0].UnitID != "lane-1" || view.FailedUnits[0].UnitAttempt != 2 ||
 		view.FailedUnits[1].UnitID != "merge" {
 		t.Fatalf("status failed units = %#v, want lane-1 on its second try and the failed join", view.FailedUnits)
+	}
+	// The note is what tells the two failures apart: one unit failed at its work,
+	// and the join was torn down `failed` by a pause because there is no
+	// interrupted unit status. Reporting the status alone makes the second one
+	// read as an agent failure that never happened.
+	if view.FailedUnits[0].Note != "unit outcome error: the tool exited 1" ||
+		view.FailedUnits[1].Note != "interrupted with its phase attempt (parked)" {
+		t.Fatalf("status failed units lost their notes: %#v", view.FailedUnits)
 	}
 
 	// A run that is not parked on a failed fan-out carries none, and neither

@@ -441,7 +441,7 @@ func TestShutdownBlocksNewWork(t *testing.T) {
 	if err := app.ReconnectSession("thread-x"); !errors.Is(err, ErrShuttingDown) {
 		t.Fatalf("ReconnectSession after shutdown = %v, want ErrShuttingDown", err)
 	}
-	if err := app.startSession("thread-x"); !errors.Is(err, ErrShuttingDown) {
+	if err := app.startSession(context.Background(), "thread-x"); !errors.Is(err, ErrShuttingDown) {
 		t.Fatalf("startSession after shutdown = %v, want ErrShuttingDown", err)
 	}
 }

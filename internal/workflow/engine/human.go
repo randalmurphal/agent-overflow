@@ -10,7 +10,11 @@ import (
 	"agent-overflow/internal/workflow/def"
 )
 
-const maxHumanNoteBytes = 16 * 1024
+// MaxHumanNoteBytes bounds one operator-authored note (an answer, a gate
+// note, a repair instruction) at its write. Exported because the prompt
+// renderer's own ceiling is derived from it — see
+// `workflowrunner.MaxFeedbackNoteRunes`.
+const MaxHumanNoteBytes = 16 * 1024
 
 func (e *Engine) takeOver(itemID string) error {
 	item, tracked := e.items[itemID]
@@ -95,15 +99,20 @@ func (e *Engine) completeTakeover(itemID string) error {
 	if threadID == "" {
 		return fmt.Errorf("complete takeover %q: the provider session used for the takeover is no longer available", itemID)
 	}
+	e.noteHumanVerb(LogEventTakeoverComplete, item, threadID, takeoverFinalizeNote)
 	return e.continueParkedAttempt(item, threadID, nil, true, "complete takeover")
 }
+
+// takeoverFinalizeNote is the whole of what a finalize can be about to do: a
+// takeover with no session left is refused above, so this branch always has one.
+const takeoverFinalizeNote = "finalizing the takeover on the session it was steered in: dispatching to the runner"
 
 func (e *Engine) answer(itemID, answer string) error {
 	if strings.TrimSpace(answer) == "" {
 		return fmt.Errorf("answer question %q: answer cannot be empty", itemID)
 	}
-	if len(answer) > maxHumanNoteBytes {
-		return fmt.Errorf("answer question %q: answer is %d bytes; maximum is %d", itemID, len(answer), maxHumanNoteBytes)
+	if len(answer) > MaxHumanNoteBytes {
+		return fmt.Errorf("answer question %q: answer is %d bytes; maximum is %d", itemID, len(answer), MaxHumanNoteBytes)
 	}
 	item, err := e.loadParked(itemID)
 	if err != nil {
@@ -128,7 +137,24 @@ func (e *Engine) answer(itemID, answer string) error {
 	if threadID == "" {
 		feedback = appendFeedbackNote(feedback, continuationUnavailableNote)
 	}
+	// Emitted here for the reason noteResume is: the answer has been accepted and
+	// the session it will run on is resolved, so this line states what the verb is
+	// about to do, before it does any of it. The answer TEXT is deliberately not
+	// in it — it is model-facing prose a human authored, it is already persisted
+	// as the attempt's feedback, and the engine log carries engine prose only.
+	e.noteHumanVerb(LogEventAnswer, item, threadID, answerNote(threadID))
 	return e.continueParkedAttempt(item, threadID, feedback, false, "answer question")
+}
+
+// answerNote states which of the two continuations the answer is dispatching:
+// the parked session's next turn, or the same round reconstructed cold because
+// that session is gone. Both are honest about being a dispatch — the runner's
+// own outcome is `LogEventRunnerStart`, or a park.
+func answerNote(threadID string) string {
+	if threadID == "" {
+		return "the parked attempt's provider session is unavailable: dispatching the reconstructed round to the runner"
+	}
+	return "continuing the parked attempt on its own session: dispatching to the runner"
 }
 
 // continueParkedAttempt resumes a parked run on the provider session it parked
@@ -213,8 +239,8 @@ func (e *Engine) resolveHumanGate(itemID string, choice HumanDecision, note stri
 	if choice != HumanApprove && choice != HumanReject {
 		return fmt.Errorf("resolve human gate %q: decision must be approve or reject", itemID)
 	}
-	if len(note) > maxHumanNoteBytes {
-		return fmt.Errorf("resolve human gate %q: note is %d bytes; maximum is %d", itemID, len(note), maxHumanNoteBytes)
+	if len(note) > MaxHumanNoteBytes {
+		return fmt.Errorf("resolve human gate %q: note is %d bytes; maximum is %d", itemID, len(note), MaxHumanNoteBytes)
 	}
 	item, err := e.loadParked(itemID)
 	if err != nil {

@@ -500,7 +500,7 @@ func TestAnswerQuestionRejections(t *testing.T) {
 	if err := h.engine.Answer("missing", ""); err == nil {
 		t.Fatal("empty answer succeeded")
 	}
-	if err := h.engine.Answer("missing", string(make([]byte, maxHumanNoteBytes+1))); err == nil {
+	if err := h.engine.Answer("missing", string(make([]byte, MaxHumanNoteBytes+1))); err == nil {
 		t.Fatal("oversized answer succeeded")
 	}
 

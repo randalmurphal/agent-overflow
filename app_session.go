@@ -50,12 +50,27 @@ const codexAccountReadTimeout = 8 * time.Second
 // callers that already hold the lock (sends, deferred config restarts)
 // go through a.startSession / runSessionStart directly.
 func (a *App) StartSession(threadID string) error {
+	return a.startSessionTakingLock(context.Background(), threadID)
+}
+
+// startSessionTakingLock is StartSession's body with a caller-supplied context.
+// The bound method cannot take one — Wails generates the TS wrapper from its
+// signature — so internal callers that DO have a cancellable context (the
+// workflow runner's start path) come through here instead.
+//
+// ctx bounds the two waits that have performed no side effects yet: the
+// per-thread action lock and the join on somebody else's in-flight start.
+// Once the spawn itself begins it runs to completion.
+func (a *App) startSessionTakingLock(ctx context.Context, threadID string) error {
 	if a.shuttingDown.Load() {
 		return ErrShuttingDown
 	}
-	unlock := a.threadLocks().Lock(threadID)
+	unlock, err := a.threadLocks().LockCtx(ctx, threadID)
+	if err != nil {
+		return fmt.Errorf("start session for thread %s: %w", threadID, err)
+	}
 	defer unlock()
-	return a.startSession(threadID)
+	return a.startSession(ctx, threadID)
 }
 
 // startSessionNow builds the provider-specific launch config, stops
@@ -643,7 +658,7 @@ func (a *App) SendMessage(threadID string, content string, attachmentIDs []strin
 	if a.shuttingDown.Load() {
 		return ErrShuttingDown
 	}
-	_, err := a.sendMessageWithOptions(threadID, content, sendMessageOptions{
+	_, err := a.sendMessageWithOptions(context.Background(), threadID, content, sendMessageOptions{
 		AttachmentIDs: attachmentIDs,
 		// Wire entry: this text was typed into a composer (D31). The internal
 		// a.sendMessage helper deliberately does NOT set this — its other
@@ -660,7 +675,7 @@ func (a *App) SendMessageWithOptions(threadID string, content string, opts SendM
 	if a.shuttingDown.Load() {
 		return store.Thread{}, ErrShuttingDown
 	}
-	if _, err := a.sendMessageWithOptions(threadID, content, sendMessageOptions{
+	if _, err := a.sendMessageWithOptions(context.Background(), threadID, content, sendMessageOptions{
 		AttachmentIDs:                opts.AttachmentIDs,
 		RuntimeMode:                  opts.RuntimeMode,
 		SourceProposedPlan:           opts.SourceProposedPlan,
@@ -693,6 +708,20 @@ func (a *App) SendMessageWithOptions(threadID string, content string, opts SendM
 // bookkeeping fails we log — the provider interrupt already fired, so
 // the session state is correct even if the timeline marker is missing.
 func (a *App) InterruptTurn(threadID string) error {
+	return a.interruptTurnCtx(context.Background(), threadID)
+}
+
+// interruptTurnCtx is InterruptTurn with a bounded entry: ctx limits ONLY the
+// thread-action-lock acquisition, which is the one wait here that can be
+// abandoned with no side effects (`LockCtx`'s contract). The workflow runner's
+// takeover stop uses that bound so a wedged holder of this lock — a session
+// restart mid-start, the incident shape — refuses the takeover instead of
+// freezing the engine's command loop under an uncancellable acquisition.
+// Everything past the acquisition, the provider interrupt ack included, runs
+// exactly as an unbounded call would: provider IO in flight is never wired to
+// a cancellation, because "cancelled" there is indistinguishable from
+// "delivered".
+func (a *App) interruptTurnCtx(ctx context.Context, threadID string) error {
 	if a.shuttingDown.Load() {
 		return ErrShuttingDown
 	}
@@ -709,7 +738,10 @@ func (a *App) InterruptTurn(threadID string) error {
 	// precedent that the provider read loop never blocks on this lock.
 	// The in-triage epoch fences stay as defense for an interrupt that
 	// acquires this lock only after a replacement completed.
-	unlock := a.threadLocks().Lock(threadID)
+	unlock, err := a.threadLocks().LockCtx(ctx, threadID)
+	if err != nil {
+		return fmt.Errorf("interrupt turn %s: thread action lock: %w", threadID, err)
+	}
 	defer unlock()
 	sess, ok := a.sessionManager().get(threadID)
 	if !ok {

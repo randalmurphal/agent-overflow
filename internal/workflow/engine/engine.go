@@ -30,11 +30,16 @@ type runtimeItem struct {
 	runnerActive      bool
 	runnerStarting    bool
 	runnerStartCancel context.CancelFunc
-	waiting           bool
-	acquired          []string
-	feedback          *Feedback
-	parkedVars        map[string]any
-	priorThreadID     string
+	// runnerStart is the identity of the in-flight start, compared by
+	// `finishRunnerStart` so a superseded start's late return cannot settle a
+	// newer one. See `unitRun.runnerStart` for the shape that made this
+	// necessary; the phase copy exists so the two guards cannot drift.
+	runnerStart   *runnerStartFuture
+	waiting       bool
+	acquired      []string
+	feedback      *Feedback
+	parkedVars    map[string]any
+	priorThreadID string
 	// entry is the current attempt's prompt semantics. It is stored separately
 	// from priorThreadID because warm loop rounds reuse a session but start a new
 	// logical task, while answers and resumes continue the task already there.
@@ -61,14 +66,41 @@ type runtimeItem struct {
 	// with the rest of the attempt's state.
 	guidance []GuidanceEntry
 	// guidanceUnacked is the part of `guidance` whose pending-slot entries have
-	// not been cleared yet. The slot is cleared only once a provider session that
-	// renders them has actually STARTED (`ackGuidance`), so an attempt that never
+	// not been cleared yet. The slot is cleared only once the send door reports a
+	// prompt that renders them dispatched (`ackGuidance`), so an attempt that never
 	// reached one — held by a pause and then torn down, parked by a failed
 	// acquisition, killed by a crash — leaves the entries pending for the next
 	// entry to deliver again. Teardown clears it, which is what turns every one
 	// of those into a redelivery instead of a loss.
-	guidanceUnacked  []GuidanceEntry
-	takeoverFinalize bool
+	guidanceUnacked []GuidanceEntry
+	// feedbackOwed says the CURRENT attempt persisted a feedback note that no
+	// provider session has rendered yet. It is the in-memory half of
+	// `work_item_phases.feedback_delivered_at`, kept for the reason
+	// `guidanceUnacked` is kept: the durable stamp lands only when the send door
+	// reports the prompt reached a live session (`AckFeedbackRendered`), and the
+	// ordinary attempt — one carrying no feedback at all — must not pay a store
+	// write to settle nothing. Teardown clears it, which is what turns a wedged
+	// start, a pause, and a failed acquisition into a redelivery into the
+	// phase's next attempt instead of a lost instruction. Like `guidanceUnacked`
+	// it is assigned at `enterPhase` and RESTORED by `loadParked` from the row's
+	// stamp, because the fan-out repair paths relaunch elements of the parked
+	// attempt without a new entry and their sends must still settle the debt.
+	feedbackOwed bool
+	// feedbackCarriedFrom is the attempt whose still-owed note the NEXT phase
+	// entry carries verbatim rather than through the redelivery read — set by
+	// `restartPhaseWithoutProviderContext` and consumed by the one `enterPhase`
+	// that follows it. It does two things there: it excludes that source from the
+	// redelivery window (the entry already holds the note, so collecting it would
+	// prepend it to itself), and it is what `enterPhase` settles once the
+	// reconstruction's row EXISTS. Settling it any earlier is a window in which a
+	// crash destroys the note; settling it after is a window in which the note is
+	// redelivered, which is the direction this contract errs in.
+	//
+	// Zero means "nothing carried" and matches no attempt. `enterPhase` clears it
+	// on read and `teardown` clears it with the rest of the attempt's state, so it
+	// cannot outlive the entry it was written for.
+	feedbackCarriedFrom int
+	takeoverFinalize    bool
 	// fan is the live fan-out state of the current attempt, or nil for a
 	// single-shape phase. It never outlives its attempt: teardown clears it.
 	fan *fanOutRun
@@ -89,6 +121,11 @@ type Engine struct {
 	spend       SpendSource
 	log         LogSink
 	now         func() time.Time
+	// startReplyBudget bounds how long one API call's reply waits on the runner
+	// starts its command produced. It is a field rather than a bare constant read
+	// for the reason `now` is: the behaviour is a timeout, and a test that had to
+	// spend the real one to prove it exists would not be run.
+	startReplyBudget time.Duration
 
 	commands chan any
 	done     chan struct{}
@@ -130,7 +167,7 @@ func New(store persistence, runner Runner, emitter Emitter, definitions Definiti
 	return &Engine{
 		store: store, runner: runner, emitter: emitter, definitions: definitions,
 		profiles: profiles, spend: spend, log: config.Log,
-		paused: config.Paused, now: time.Now,
+		paused: config.Paused, now: time.Now, startReplyBudget: runnerStartReplyBudget,
 		commands: make(chan any, commandBuffer), done: make(chan struct{}),
 		items: make(map[string]*runtimeItem), holders: make(map[resourceKey]int),
 		waitingKeys:    make(map[waitKey]struct{}),
@@ -520,6 +557,27 @@ func (e *Engine) loadParked(itemID string) (*runtimeItem, error) {
 			// recovery and step-mode path), so nothing needs it here.
 			item.promptRoute = input.PromptRoute
 			item.guidance = input.Guidance
+			// Both delivery debts are restored from their durable halves, because
+			// the repair paths (`resumeFanOutAttempt`, `continueFanOutJoin`,
+			// `RetryUnit`) relaunch elements of THIS attempt without ever passing
+			// through `enterPhase` — the only other assigner of either flag. Without
+			// this, a repaired element rendered both blocks and its send's ack
+			// settled neither: the row stayed at 0 forever and the phase's next
+			// entry redelivered a note a session had demonstrably rendered, under a
+			// provenance sentence claiming it never was.
+			item.feedbackOwed = current.FeedbackDeliveredAt == 0
+			if len(input.Guidance) > 0 {
+				pending, err := e.pendingGuidance(itemID)
+				if err != nil {
+					if _, healed := healedGuidance(err); !healed {
+						return nil, fmt.Errorf("load parked item %q pending guidance: %w", itemID, err)
+					}
+					// The heal emptied the slot: nothing is left for an ack to
+					// clear, so the attempt owes it nothing.
+					pending = nil
+				}
+				item.guidanceUnacked = matchingGuidance(pending, input.Guidance)
+			}
 		}
 	} else if len(item.workflow.Phases) > 0 {
 		item.phaseID = item.workflow.Phases[0].ID

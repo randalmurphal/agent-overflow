@@ -215,6 +215,16 @@ wakes the same ask (K2). See "Coalescing" below.
 
 - A new reference kind is a new `Reference{Label, Value}` at the call
   site — the composer does not enumerate kinds.
+- **A failed-unit reference says WHY that unit rests, not only which one
+  it is.** The resolver (`app_workflow_wake.go` →
+  `workflowFailedUnitReferences`) renders
+  `<unit-id> (thread <id>): <note>`, bounded at
+  `maxFailedUnitNoteRunes` so the id and the thread — the two things a
+  repair verb takes — can never be the part that is cut. A pause tears
+  its in-flight units down `failed` carrying an interrupted note (there
+  is no interrupted unit status, and `failed` is what the repair verbs
+  recover), so a reference naming the status alone told an operator who
+  paused a healthy run that their own units had failed.
 - **A new field that changes the ask goes in the signature too.** The
   two are one decision: if a reader would act differently on the new
   value, two wakes differing only in it are not duplicates. If they

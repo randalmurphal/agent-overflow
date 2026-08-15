@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -621,7 +622,7 @@ func TestPrepareThreadWorktreeRestartsAfterInFlightSessionStart(t *testing.T) {
 
 	startDone := make(chan error, 1)
 	go func() {
-		startDone <- app.startSession(thread.ID)
+		startDone <- app.startSession(context.Background(), thread.ID)
 	}()
 	select {
 	case workspace := <-firstStartWorkspace:

@@ -242,23 +242,63 @@ func TestRunListSaysSoWhenThereAreNoRuns(t *testing.T) {
 }
 
 // The reason says a fan-out needs repair; the ids are what `run retry-unit`
-// takes, and an agent holding only a CLI has no other way to learn them.
-func TestRunStatusNamesTheFailedUnits(t *testing.T) {
+// takes, and an agent holding only a CLI has no other way to learn them. The
+// note is what says which kind of repair each one is: a unit that failed at its
+// work and one the operator's own pause tore down rest under the same status.
+func TestRunStatusNamesTheFailedUnitsAndWhyEachRests(t *testing.T) {
 	backend := newFakeBackend(t)
 	backend.reply("WorkflowAgentRunStatus", map[string]any{
 		"itemId": "run-1", "workflowId": "flow", "state": "needs-human", "reason": "unit-failed",
 		"resting": true,
 		"failedUnits": []map[string]any{
-			{"unitId": "lane-3", "unitAttempt": 2},
-			{"unitId": "lane-7", "unitAttempt": 1},
+			{"unitId": "lane-3", "unitAttempt": 2, "note": "unit outcome error: the tool exited 1"},
+			{"unitId": "lane-7", "unitAttempt": 1, "note": "interrupted with its phase attempt (parked)"},
+			// A unit with no note keeps its place on the run line and contributes
+			// no line of its own.
+			{"unitId": "lane-9", "unitAttempt": 1},
 		},
 	})
 	code, stdout, stderr := runCLI([]string{"run", "status", "run-1"}, backend.env())
 	if code != exitOK {
 		t.Fatalf("exit = %d (%s)", code, stderr)
 	}
-	if !strings.Contains(stdout, "failed-units=lane-3,lane-7") {
+	if !strings.Contains(stdout, "failed-units=lane-3,lane-7,lane-9") {
 		t.Fatalf("status output did not name the failed units:\n%s", stdout)
+	}
+	for _, want := range []string{
+		`failed-unit=lane-3 note="unit outcome error: the tool exited 1"`,
+		`failed-unit=lane-7 note="interrupted with its phase attempt (parked)"`,
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("status output missing %q:\n%s", want, stdout)
+		}
+	}
+	if strings.Contains(stdout, "failed-unit=lane-9") {
+		t.Fatalf("a unit with no note printed a line of its own:\n%s", stdout)
+	}
+}
+
+// One record, two surfaces, one reading. `run status` used to test a TRIMMED
+// note for emptiness and then quote the RAW one, so a note carrying leading
+// whitespace rendered as a wall of escapes there and as its content under `run
+// inspect` — and the surface a reader reaches for first was the disfigured one.
+func TestUnitNoteRendersIdenticallyOnBothSurfaces(t *testing.T) {
+	const padded = "\n\n  the tool exited 1  \n"
+	statusView := runView{FailedUnits: []runFailedUnit{{UnitID: "lane-3", Note: padded}}}
+	var status strings.Builder
+	statusView.writeFailedUnitLines(&status)
+
+	const want = `"the tool exited 1"`
+	if !strings.Contains(status.String(), "note="+want) {
+		t.Fatalf("run status rendered %q, want the trimmed note quoted once", status.String())
+	}
+	if got := unitNoteText(padded, 0); got != want {
+		t.Fatalf("run inspect rendered %q, want %q — the same record, read the same way", got, want)
+	}
+	// A note that is only whitespace is no note: it contributes nothing on either
+	// surface rather than an empty pair of quotes.
+	if got := unitNoteText("  \n\t ", 0); got != "" {
+		t.Fatalf("a whitespace-only note rendered %q, want nothing", got)
 	}
 }
 

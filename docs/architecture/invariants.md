@@ -1316,15 +1316,20 @@ cleanup runs **first**, before the first lock is taken
 (`cleanUpProjectWorkflowWork`, `app_project_delete_cleanup.go`).
 
 **Rationale.** Cancel is synchronous through the engine's command
-goroutine (invariant 30), and teardown calls `Runner.Stop`, which calls
-`App.InterruptTurn` for an agent attempt (invariant 31).
-`InterruptTurn` takes the phase thread's action lock and holds it
-across the provider's interrupt ack. A caller already holding that lock
-therefore blocks on itself, with the engine's single command goroutine
-blocked behind it — the whole workflow system stops, not just the
-caller. It is a hard deadlock, not a slow path, and it only appears
-when a run happens to be live, which is exactly the case a happy-path
-test misses.
+goroutine (invariant 30), and teardown calls `Runner.Stop`, which
+interrupts the turn via the runner's interrupt seam (invariant 31).
+The interrupt takes the phase thread's action lock and holds it across
+the provider's interrupt ack, so a caller already holding that lock is
+asking the stop to wait on itself. Since the stop bound
+(`workflowStopSendWait`) that wait is no longer an unbounded hard
+deadlock — `Runner.Stop` abandons it at the bound and a background
+goroutine fires the interrupt once the caller finally releases the
+lock — but the rule stands unchanged. The violation still freezes the
+engine's single command goroutine for the bound, still pushes the
+interrupt to an arbitrarily later moment, and a bounded stall that
+squeaks under most timeouts is harder to notice than the hang it
+replaced, not safer. It only appears when a run happens to be live,
+which is exactly the case a happy-path test misses.
 
 **Enforcement.** The cleanup runs before the lock acquisition and the
 locked section re-reads what it cleaned up, refusing with a retry
@@ -1337,7 +1342,9 @@ thread-scoped operation belongs on the same side of the locks.
 (`app_project_delete_live_run_test.go`) drives a live run on a provider
 that acks an interrupt and then says nothing, and bounds the deletion
 with a timeout so the reordered version fails loudly instead of hanging
-the suite.
+the suite. The fixture pins `stopSendWait` far above that timeout,
+because the stop bound would otherwise mask the reintroduced violation
+as a survivable stall inside it.
 
 ---
 

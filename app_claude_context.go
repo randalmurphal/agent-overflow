@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 
 	"agent-overflow/internal/provider"
@@ -46,7 +47,7 @@ func (a *App) ensureClaudeContextReadyForUserSendLocked(thread store.Thread) err
 			})
 		}
 	}
-	if err := a.runSessionStart(thread.ID, func() error {
+	if err := a.runSessionStart(context.Background(), thread.ID, func() error {
 		return a.startSessionNowWithClaudeResumeAt(thread.ID, resumeAt)
 	}); err != nil {
 		return fmt.Errorf("repair Claude session context: %w", err)

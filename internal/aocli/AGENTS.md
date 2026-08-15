@@ -128,6 +128,17 @@ always the one still waiting when the server answers; the same bound is the
 worst case for noticing a revoked credential, which arrives as the route's 401
 and ends the watch with the message rather than a hang.
 
+**Every backend hold sits under `rpcTimeout` (30 s), and that ordering is a
+contract rather than a coincidence.** The watch hold is 25 s; the workflow
+engine's reply budget — how long a run verb's answer waits for the runner start
+it dispatched — is 20 s (`runnerStartReplyBudget`,
+`internal/workflow/engine/reply_budget.go`). A backend that answers second turns a
+verb it has ALREADY COMMITTED into `context deadline exceeded` here, and the
+operator's retry then meets an FSM refusal for the state their first call
+produced — a wedged runner start read as a failed answer and an unanswerable
+question (incident 2026-08-15). Lowering `rpcTimeout`, or raising either hold,
+breaks it; change them together.
+
 `--json` prints the app's own result document verbatim. Human rendering decodes
 only the fields it prints into narrow local structs, so the CLI never becomes a
 second definition of what a run status looks like.
@@ -290,7 +301,17 @@ every listed method already.
 The human lines carry what the next verb needs (D38): `runView.line()` renders
 `parent=<run-id>` so a campaign's flat `run list` shows its tree, and
 `failed-units=<ids>` on `run status` so `run retry-unit`'s second argument is
-readable from the CLI. `run status` alone additionally renders one
+readable from the CLI. Both single-run reads then print one
+`failed-unit=<id> note=<quoted>` line per failed unit that carries a note
+(`runView.writeFailedUnitLines`, shared by `run status` and `run inspect`),
+because the status is not the whole answer: **a pause tears its in-flight units
+down `failed` with an interrupted note** — there is no interrupted unit status,
+and `failed` is exactly what the repair verbs recover — so a reader given only
+the ids and the status reads their own pause as a wave of agent failures. The
+note is quoted as untrusted data (a runner's error text lands in it) and bounded
+at `maxUnitNoteRunes`, like the park cause beside it; `run inspect --phase <id>`
+prints it whole on the unit's own line. A unit with no note contributes no line —
+the run line already named it. `run status` alone additionally renders one
 `phase=<id> attempt=N status=… provider=… model=… effort=… cause=… session=… decision=<kind>->…`
 line per phase attempt (`runView.statusBlock`), because a gate consumed exactly
 one attempt's outputs and a reader deciding between `run resolve`, `run resume
@@ -386,7 +407,7 @@ run inspect  { run: <run status document, incl. seeds>,
                           cause?,
                           outputs?: {<name>: <raw JSON value>},
                           decision?, decisionTarget?, exhaustedLoops?,
-                          units: [{unitId, kind, status, unitAttempt,
+                          units: [{unitId, kind, status, unitAttempt, note?,
                                    branch?, worktreePath?, threadId?}]} }
 run narrative { itemId, phaseId, attempt, unitId?, unitAttempt?,
                 path, present, bytes?, truncated?, content? }
@@ -401,7 +422,10 @@ on `run inspect`'s nested `run` document the same way. It also gains
 phase entry, absent at zero; `run inspect` carries the entries themselves under
 `guidance`, bounded and aged); each entry of
 `phases` carries `cause` (the engine's park diagnosis, absent when there is
-none) and `session` (`"continued"`, absent for a cold attempt) on both verbs, and gains `outputs` / `outputOverflow` — populated by `run
+none) and `session` (`"continued"`, absent for a cold attempt) on both verbs;
+each entry of `failedUnits` carries `note` (what the unit rests with — how it
+ended, or what a repair told its next try — absent when the row carries none),
+as does each `phase.units` entry on `run inspect`; and `phases` gains `outputs` / `outputOverflow` — populated by `run
 inspect` alone, absent on `run status`, whose projection stays envelope-free. Seeds print
 on the human block too, one `seed <name>=<json>` line each, exactly as `run
 output` prints a declared output; they stay off `runView.line()` because the

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -39,7 +40,7 @@ func TestFailedFinalizeStartClearsTakeoverTransition(t *testing.T) {
 	if takeover.itemID != "item" || takeover.transitioning {
 		t.Fatalf("takeover after failed finalize start = %+v, want transition cleared", takeover)
 	}
-	if err := runner.registerTakeover("item", "thread"); err != nil {
+	if err := runner.registerTakeover(context.Background(), "item", "thread"); err != nil {
 		t.Fatalf("steering re-registration after failed finalize start: %v", err)
 	}
 }
@@ -72,7 +73,7 @@ func TestSchemaRestartedTakeoverSessionIsOwnedByPreparation(t *testing.T) {
 	runner := newWorkflowAppRunner(app, t.TempDir(), nil)
 	runner.takeovers[thread.ID] = workflowTakeover{itemID: "item", schemaAttached: false}
 
-	restarted, err := runner.restartClaudeTakeoverWithSchema(thread.ID, json.RawMessage(`{"type":"object"}`))
+	restarted, err := runner.restartClaudeTakeoverWithSchema(t.Context(), thread.ID, json.RawMessage(`{"type":"object"}`))
 	if err != nil || !restarted || startCalls != 1 {
 		t.Fatalf("schema restart = restarted %v, starts %d, err %v", restarted, startCalls, err)
 	}
@@ -128,7 +129,7 @@ func TestWorkflowTakeoverRejectsHistoricalPhaseThread(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := app.prepareWorkflowTakeoverSend(old); err == nil || !strings.Contains(err.Error(), "not the current attempt") {
+	if _, err := app.prepareWorkflowTakeoverSend(context.Background(), old); err == nil || !strings.Contains(err.Error(), "not the current attempt") {
 		t.Fatalf("historical takeover error = %v", err)
 	}
 }

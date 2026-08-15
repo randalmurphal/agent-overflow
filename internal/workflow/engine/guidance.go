@@ -240,8 +240,9 @@ func (e *Engine) healGuidanceSlot(itemID string, raw json.RawMessage, decodeErr 
 //
 // ORDER IS THE WHOLE CONTRACT HERE, and it is deliberately not atomic. The
 // attempt row carrying the guidance is persisted FIRST (by the caller) and the
-// slot cleared afterwards — not when the row lands, but when a provider session
-// that renders the block has STARTED (`ackGuidance`). Everything between those
+// slot cleared afterwards — not when the row lands, but when the send door
+// reports a prompt that renders the block dispatched to a live provider
+// session (`AckFeedbackRendered` → `ackGuidance`). Everything between those
 // two points is a window in which the entries are still pending, so every way an
 // attempt can end without a turn — a pause taking the held start down, a failed
 // acquisition parking it, a crash — redelivers rather than loses. The reverse
@@ -312,9 +313,12 @@ func matchingGuidance(pending, round []GuidanceEntry) []GuidanceEntry {
 	return matched
 }
 
-// ackGuidance clears the entries an attempt has now rendered into a provider
-// session that actually started. It is the second half of deliverGuidance's
-// ordering rule; see there for why the clear waits this long.
+// ackGuidance clears the entries a dispatched prompt has now rendered into a
+// live provider session. It is the second half of deliverGuidance's ordering
+// rule, settled from the send door's `AckFeedbackRendered` alongside the
+// attempt's owed feedback; see deliverGuidance for why the clear waits this
+// long, and `ackFeedbackRendered` for why the send — not the runner start's
+// success — is the proof.
 //
 // It removes the delivered entries rather than emptying the slot, because the
 // slot is live between the delivery and this call: an operator who guided the
@@ -371,8 +375,8 @@ func (e *Engine) ackGuidance(item *runtimeItem) {
 // reportGuidanceAck surfaces a slot write that did not happen. The run is fine —
 // it is already running the guidance — so this never parks it; what it must not
 // do is stay silent about a redelivery the operator will otherwise read as the
-// engine ignoring their retraction. The entries stay owed, so the next start of
-// this attempt's wave tries again.
+// engine ignoring their retraction. The entries stay owed, so the next element
+// send of this attempt (`AckFeedbackRendered`) tries again.
 func (e *Engine) reportGuidanceAck(item *runtimeItem, err error) {
 	wrapped := fmt.Errorf("clear delivered guidance for run %q: %w", item.item.ID, err)
 	e.emitError(item.item.ID, wrapped)

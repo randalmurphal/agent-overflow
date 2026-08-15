@@ -718,6 +718,44 @@ attribution; already-scoped Claude/fork rows and orphaned lifetime usage remain
 unchanged. Inferred rollout turns are not provider anchors and therefore store
 an empty `provider_turn_id`.
 
+## Recent schema changes (v64) — feedback that is still owed a turn
+
+- `work_item_phases.feedback_delivered_at` (`INTEGER NOT NULL DEFAULT 0`) is when
+  this attempt's persisted `input_envelope.feedback` stopped being owed to a
+  turn: a prompt rendering the note was dispatched to a live provider session
+  (the app's send door acks it back through `AckFeedbackRendered` — a session
+  merely starting proves nothing about its opening send), or a later attempt of
+  the same phase took the note over. `0` means still owed, and it is the state
+  an attempt is born in exactly when it carries a feedback NOTE for a phase
+  that renders prompts; a noteless or promptless attempt is born settled, so it
+  can never accumulate a debt nothing could discharge.
+- It exists because feedback was write-only durable state. An operator answered a
+  parked question, the engine persisted the answer as the new attempt's feedback
+  and dispatched the continuation, the runner start wedged — and nothing ever
+  re-read a parked or superseded attempt's feedback, so the fresh entry the
+  operator recovered with carried none of it. The answer was on disk and lost all
+  the same.
+- **The backfill is the point of the migration's second statement.** A bare `ADD
+  COLUMN` leaves every historical row at 0, which reads as "owed", so the next
+  attempt of every phase any run ever entered would redeliver ancient feedback.
+  Existing rows are stamped `MAX(started_at, ended_at, 1)` — their own time, with
+  the trailing `1` making "delivered" structural for a row whose clocks were
+  never written.
+- `MarkWorkItemPhaseFeedbackDelivered` and `ListUndeliveredWorkItemPhaseFeedback`
+  are the only writer and reader; the ordering rule they serve lives in
+  `internal/workflow/engine/feedback.go`. The read carries `input_envelope` —
+  the heaviest column on the table, which is why it is a projection of its own
+  rather than a field on an existing one — and narrows in SQL to rows below a
+  caller-supplied attempt with a non-empty envelope, so an attempt cannot
+  redeliver its own note to itself and a `parkOnNewAttempt` row with no input
+  never crosses the boundary. `ReopenWorkItemPhase` deliberately leaves the stamp
+  alone: reopening does not rewrite the attempt's input, so re-owing feedback a
+  session already rendered would deliver it twice to the turn that read it.
+- A plain `ADD COLUMN` with no CHECK, so no rebuild. It rides
+  `workItemPhaseColumns` (one integer) rather than a narrow projection of its
+  own, because "is this attempt's instruction still owed" is diagnosable state a
+  reader of a whole attempt row wants.
+
 ## Recent schema changes (v54) — the explicitly scheduled resume moment
 
 - `work_items.auto_resume_at` (`INTEGER NOT NULL DEFAULT 0`, Unix milliseconds)

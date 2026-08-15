@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 )
 
@@ -9,15 +10,43 @@ type sessionStart struct {
 	err  error
 }
 
-func (a *App) runSessionStart(threadID string, start func() error) error {
+// runSessionStart single-flights session starts per thread: the first caller
+// leads and runs start(), everybody else joins its result.
+//
+// Two properties are load-bearing and were both learned the hard way:
+//
+//   - The leader's teardown is DEFERRED. A panic inside start() would
+//     otherwise leave the in-flight entry registered and its `done` channel
+//     open forever, so every later start of that thread — and every joiner
+//     already parked — blocks for the life of the process.
+//   - A joiner's wait is cancellable. It has performed no side effects, so
+//     abandoning it costs nothing; the leader is unaffected and its start
+//     runs to completion either way. (The leader's own wait is the provider
+//     IO inside start(), which deliberately stays uncancellable — a
+//     cancelled spawn/send is indistinguishable from a delivered one.)
+func (a *App) runSessionStart(ctx context.Context, threadID string, start func() error) error {
 	startState, leader := a.sessionManager().beginStart(threadID)
 	if !leader {
-		<-startState.done
-		return startState.err
+		select {
+		case <-startState.done:
+			return startState.err
+		case <-ctx.Done():
+			return fmt.Errorf("waiting for in-flight session start of thread %s: %w", threadID, ctx.Err())
+		}
 	}
 
+	completed := false
+	defer func() {
+		if !completed && startState.err == nil {
+			// The leader is unwinding through a panic. Joiners are released
+			// with a real cause instead of a nil error plus a thread that
+			// mysteriously has no session.
+			startState.err = fmt.Errorf("session start for thread %s panicked", threadID)
+		}
+		a.sessionManager().finishStart(threadID, startState)
+	}()
 	startState.err = start()
-	a.sessionManager().finishStart(threadID, startState)
+	completed = true
 	return startState.err
 }
 

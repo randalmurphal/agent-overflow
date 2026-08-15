@@ -53,6 +53,7 @@ func (l workflowEngineLog) LogEngineEvent(event engine.LogEvent) {
 		Attempt:   event.Attempt,
 		State:     string(event.State),
 		Reason:    string(event.Reason),
+		ThreadID:  event.ThreadID,
 		Message:   event.Message,
 	}); err != nil {
 		log.Printf("workflow engine log: %v (dropped %s for item %s)", err, event.Event, event.ItemID)
@@ -431,7 +432,7 @@ func (a *App) WorkflowResumeItem(ctx context.Context, itemID, targetPhase string
 			unlock()
 			return fmt.Errorf("resume workflow takeover %s: the steering turn must yield first", itemID)
 		}
-		if err := a.workflowRunner.beginTakeoverTransition(itemID, phase.ThreadID); err != nil {
+		if err := a.workflowRunner.beginTakeoverTransition(context.Background(), itemID, phase.ThreadID); err != nil {
 			unlock()
 			return err
 		}
@@ -480,7 +481,7 @@ func (a *App) WorkflowCompleteTakeover(itemID string) error {
 		unlock()
 		return fmt.Errorf("complete workflow takeover %s: runner unavailable", itemID)
 	}
-	if err := a.workflowRunner.beginTakeoverTransition(itemID, threadID); err != nil {
+	if err := a.workflowRunner.beginTakeoverTransition(context.Background(), itemID, threadID); err != nil {
 		unlock()
 		return err
 	}

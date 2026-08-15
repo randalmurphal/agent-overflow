@@ -180,10 +180,6 @@ func (a *App) DeleteEmptyDraftThread(threadID string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	if deleted {
-		a.threadLocks().Forget(threadID)
-		a.configApplyLocks().Forget(threadID)
-	}
 	return deleted, nil
 }
 

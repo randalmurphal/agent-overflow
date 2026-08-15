@@ -24,6 +24,8 @@ import (
 	"agent-overflow/internal/atomicfile"
 	"agent-overflow/internal/diagenv"
 	"agent-overflow/internal/externalurl"
+	"agent-overflow/internal/logging"
+	"agent-overflow/internal/observability/goroutinedump"
 	"agent-overflow/internal/observability/pprofserve"
 	"agent-overflow/internal/orphanreaper"
 	"agent-overflow/internal/provider/claudetui"
@@ -156,6 +158,13 @@ func main() {
 	} else if pprofAddr != "" {
 		log.Printf("pprof: serving on http://%s/debug/pprof/", pprofAddr)
 	}
+
+	// Always-armed goroutine dump (`kill -USR1 <pid>`), landing next to the
+	// engine log. Deliberately NOT behind the pprof gate above: the process
+	// you need stacks from is the one already wedged, which is precisely the
+	// one nobody thought to enable profiling on. The shipped binary is
+	// stripped, so this is the only way in. No-op on Windows.
+	goroutinedump.Install(bootLogsDir(), log.Printf)
 
 	switch {
 	case flags.connect != "":
@@ -626,6 +635,21 @@ func bootSettingsDir() string {
 		return ""
 	}
 	return root
+}
+
+// bootLogsDir resolves the directory the App's loggers write into — the
+// one holding engine-YYYY-MM-DD.ndjson — for the boot-time diagnostics
+// that arm before App.ServiceStartup runs. It composes bootSettingsDir
+// (which resolves the same root initStores does) with logging.Dir, so a
+// dump always lands beside the logs rather than beside a copy of the
+// path rule. Returns "" when no base dir is resolvable, which the
+// goroutine dumper reports as an error the first time it is signalled.
+func bootLogsDir() string {
+	dir := bootSettingsDir()
+	if dir == "" {
+		return ""
+	}
+	return logging.Dir(dir)
 }
 
 // newApp constructs the App for a local-backend boot, threading the

@@ -17,10 +17,6 @@ type response struct {
 	starts []*runnerStartFuture
 }
 
-type runnerStartFuture struct {
-	key  RunKey
-	done chan response
-}
 type initCommand struct{ reply chan response }
 type closeCommand struct{ reply chan response }
 type syncCommand struct{ reply chan response }
@@ -142,6 +138,15 @@ type completionCommand struct {
 	key     RunKey
 	outcome Outcome
 }
+
+// ackFeedbackCommand carries the send door's report that a prompt reached a live
+// provider session. It has a reply like every other public verb so a caller
+// learns the engine refused it (not started, closing) rather than assuming the
+// stamp landed.
+type ackFeedbackCommand struct {
+	key   RunKey
+	reply chan response
+}
 type runnerStartCommand struct {
 	key    RunKey
 	future *runnerStartFuture
@@ -236,20 +241,15 @@ func (e *Engine) request(command any) error {
 	case takeoverUnitCommand:
 		command.reply = reply
 		e.commands <- command
+	case ackFeedbackCommand:
+		command.reply = reply
+		e.commands <- command
 	default:
 		e.lifeMu.Unlock()
 		return fmt.Errorf("workflow engine: unsupported command %T", command)
 	}
 	e.lifeMu.Unlock()
-	return waitEngineResponse(<-reply)
-}
-
-func waitEngineResponse(result response) error {
-	errs := []error{result.err}
-	for _, start := range result.starts {
-		errs = append(errs, waitEngineResponse(<-start.done))
-	}
-	return errors.Join(errs...)
+	return e.waitEngineResponse(<-reply)
 }
 
 func (e *Engine) commandResponse(err error) response {
@@ -275,13 +275,6 @@ func (e *Engine) syncResponse() response {
 		starts = append(starts, start)
 	}
 	return response{starts: starts}
-}
-
-func settleRunnerStart(start *runnerStartFuture, result response) {
-	select {
-	case start.done <- result:
-	default:
-	}
 }
 
 // drainDeferred runs the follow-up work transitions queued during the command
@@ -433,6 +426,14 @@ func (e *Engine) loop() {
 			err = errors.Join(e.takeOverUnit(command.itemID, command.unitID), e.startWaiting())
 			e.commandStarts = nil
 			command.reply <- response{err: err}
+		case ackFeedbackCommand:
+			// Acknowledging a dispatch starts nothing and can fail nothing: it
+			// stamps a column, and a stamp that will not write is reported on its
+			// own channel (`reportFeedbackDischarge`) because the run is already
+			// running the feedback.
+			e.ackFeedbackRendered(command.key)
+			e.commandStarts = nil
+			command.reply <- response{}
 		case runnerStartCommand:
 			err = e.finishRunnerStart(command)
 			if err != nil {
