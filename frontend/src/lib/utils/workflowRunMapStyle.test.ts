@@ -1,6 +1,9 @@
 // R1 is a rule about the whole app, so it is asserted as a rule here rather
 // than re-checked per component: exactly one signal may be amber, exactly one
-// may be red, and nothing may pulse.
+// may be red, and nothing may pulse. The 2026-08-15 amendment (§13 fourth
+// pass) adds exactly two clarity hints on top — the done GLYPH is green and
+// the now-marker is accent — without touching the attention hues, and the
+// hints are pinned here as exactly-one rules for the same drift reason.
 
 import { describe, expect, it } from 'vitest';
 import { runMapTone } from './workflowRunMap';
@@ -22,6 +25,31 @@ describe('runMapNodeStyle', () => {
   it('puts the only glow on the only human-blocked signal', () => {
     expect(SIGNALS.filter((signal) => runMapNodeStyle(signal).glow !== '')).toEqual(['parked']);
     expect(runMapNodeStyle('parked').glow).toBe('status-glow-warning');
+  });
+
+  it('greens exactly the done GLYPH — the label beside it stays neutral', () => {
+    const tinted = SIGNALS.filter((signal) => runMapNodeStyle(signal).glyphTone === 'text-success');
+    expect(tinted).toEqual(['done']);
+    expect(runMapNodeStyle('done').label).not.toContain('text-success');
+    // Every other glyph restates its tone: attention hues arrive through ONE
+    // mapping, and a second green would be a second place "done" is decided.
+    for (const signal of SIGNALS) {
+      if (signal === 'done') continue;
+      expect(runMapNodeStyle(signal).glyphTone).toBe(runMapNodeStyle(signal).tone);
+    }
+  });
+
+  it('fills what happened and leaves unboxed signals fill-less', () => {
+    // Reality is a surface (§2): every signal that renders as a box carries a
+    // fill; ghost is not boxed at all, and unknown keeps its dotted hairline
+    // alone so it cannot read as a settled record.
+    const fillless = SIGNALS.filter((signal) => runMapNodeStyle(signal).fill === '');
+    expect(fillless).toEqual(['ghost', 'unknown']);
+    // Settled work is fill WITHOUT visible border ink; live and attention
+    // signals keep a real border on top of their fill.
+    expect(runMapNodeStyle('done').border).toBe('border-transparent');
+    expect(runMapNodeStyle('running').border).toBe('border-border-strong');
+    expect(runMapNodeStyle('failed').border).toBe('border-error');
   });
 
   it('gives running the spinner and no glyph — weight, never a new hue', () => {

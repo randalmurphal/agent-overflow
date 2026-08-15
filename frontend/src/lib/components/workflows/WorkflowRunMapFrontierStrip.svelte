@@ -48,7 +48,10 @@
   data-testid="workflow-map-frontier"
 >
   {#if target !== null}
-    <nav class="min-w-0 truncate text-[0.6875rem] text-fg-muted" aria-label="Frontier">
+    <!-- Wraps like everything else on the surface (§2, no CSS ellipsis): the
+         path's segments are workflow and phase names, and a breadcrumb that
+         reads `campaign › Impl…` points at nothing. -->
+    <nav class="min-w-0 break-words text-[0.6875rem] text-fg-muted" aria-label="Frontier">
       {#each target.path as part, index (part.key)}
         {#if index > 0}<span class="px-1 text-fg-subtle">›</span>{/if}<span
           class={index === target.path.length - 1 ? 'text-fg' : ''}>{part.label}</span>
@@ -64,7 +67,7 @@
       {@const blocker = runMapNodeStyle('parked')}
       <span
         class={['shrink-0 rounded border px-1.5 py-0.5 text-[0.6875rem]',
-          blocker.border, blocker.glow, blocker.tone].join(' ')}
+          blocker.border, blocker.fill, blocker.glow, blocker.tone].join(' ')}
         data-testid="workflow-map-blocker"
       >
         {target.reasonLabel || 'Needs you'}

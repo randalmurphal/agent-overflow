@@ -32,7 +32,12 @@
     RunMapCompositionNode,
     RunMapSegmentNode,
   } from '../../utils/workflowRunMap';
-  import { runMapNodeStyle, RUN_MAP_LABEL_MAX, RUN_MAP_NODE_BOX } from '../../utils/workflowRunMapStyle';
+  import {
+    runMapNodeStyle,
+    RUN_MAP_GHOST_ROW,
+    RUN_MAP_LABEL_MAX,
+    RUN_MAP_NODE_BOX,
+  } from '../../utils/workflowRunMapStyle';
 
   interface Props {
     node: RunMapSegmentNode;
@@ -114,47 +119,61 @@
   {#each rows as row (row.key)}
     {@const style = runMapNodeStyle(row.signal, skipped)}
     {@const isNow = row.key === nowKey}
+    {@const boxed = row.signal !== 'ghost'}
+    <!--
+      A record is a BOX — a quiet fill for what happened, fill + border for
+      what is live or wrong — and a ghost is a bare line on the spine (§2):
+      surface encodes reality, so border style stops being the only signal.
+      The `now ▸` row swaps its fill for the accent tint: position is the
+      surface's one accent, and it should be findable at a glance.
+    -->
     <div
       class={[
-        RUN_MAP_NODE_BOX,
-        'flex-wrap',
-        style.border,
-        style.glow,
-        isNow ? 'bg-surface-1/60' : '',
+        boxed ? RUN_MAP_NODE_BOX : RUN_MAP_GHOST_ROW,
+        boxed ? `${style.border} ${style.glow}` : '',
+        isNow ? 'rounded-md bg-accent/10' : boxed ? style.fill : '',
       ].filter(Boolean).join(' ')}
       data-run-map-now={isNow ? 'true' : undefined}
       data-attempt-key={row.key}
     >
-      {#if isNow}
-        <span class="shrink-0 text-[0.625rem] font-semibold tracking-wider text-accent">now ▸</span>
-      {/if}
-      {#if style.spinner}
-        <SteppedSpinner size={11} class="shrink-0 self-center" animate={!getSettings().lowPowerMode} />
-      {:else}
-        <span class={['shrink-0', style.tone].join(' ')} aria-hidden="true">{style.glyph}</span>
-      {/if}
+      <!--
+        ONE button holding glyph, label and meta as inline content: the row
+        reads as a sentence that wraps mid-text wherever it must. Anything
+        atomic beside the label (a separate glyph box, a separate button)
+        wraps as a UNIT when space runs out, stranding a lone `·` or spinner
+        on the first line — which reads as a rendering bug. The glyph and
+        meta are `inline-block` so the hover underline stays on the words.
+      -->
       <button
         type="button"
-        class={[
-          'min-w-0 truncate text-left hover:underline disabled:cursor-default disabled:no-underline',
-          style.label,
-        ].join(' ')}
+        class="max-w-full break-words text-left hover:underline disabled:cursor-default disabled:no-underline"
         disabled={!row.threadId}
         title={row.label}
         onclick={() => onOpenThread(row.threadId)}
         data-testid="workflow-map-node-label"
       >
-        {truncateMiddle(row.label, RUN_MAP_LABEL_MAX)}
+        {#if isNow}
+          <span class="mr-1 inline-block text-[0.625rem] font-semibold tracking-wider text-accent">now ▸</span>
+        {/if}
+        {#if style.spinner}
+          <SteppedSpinner size={11} class="mr-1 inline-block align-middle" animate={!getSettings().lowPowerMode} />
+        {:else}
+          <span class={['mr-1 inline-block', style.glyphTone].join(' ')} aria-hidden="true">{style.glyph}</span>
+        {/if}
+        <!-- Labels WRAP (§2): a phase name is the node's whole meaning, and a
+             map of `Implement …` rows says nothing. `RUN_MAP_LABEL_MAX` is
+             the runaway guard, not a line budget. -->
+        <span class={style.label}>{truncateMiddle(row.label, RUN_MAP_LABEL_MAX)}</span>
+        {#if metaOf(row)}
+          <span class="ml-1 inline-block text-[0.6875rem] tabular-nums text-fg-hint">{metaOf(row)}</span>
+        {/if}
       </button>
-      {#if metaOf(row)}
-        <span class="shrink-0 text-[0.6875rem] tabular-nums text-fg-hint">{metaOf(row)}</span>
-      {/if}
 
       {#if row.cause}
         <button
           type="button"
           class={[
-            'w-full text-left text-[0.6875rem]',
+            'block w-full text-left text-[0.6875rem]',
             expandedCauses.has(row.key) ? '' : 'line-clamp-2',
             style.tone,
           ].filter(Boolean).join(' ')}

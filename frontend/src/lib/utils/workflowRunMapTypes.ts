@@ -317,6 +317,14 @@ export interface RunMapBranch {
   key: string;
   unit: RunMapUnitChip;
   /**
+   * What the lane header prints. Usually the unit id; a lane whose sole child
+   * run is merged into it (or folded away) also carries the child's workflow
+   * name — `PORT-0 · port-subsystem` — because the header is then the only
+   * line that can say what the lane ran. Composed here, not in the component:
+   * components render the model, they don't derive one.
+   */
+  title: string;
+  /**
    * The called runs hanging off this lane, or `[]` while the lane is collapsed
    * — the same "not built" convention `RunMapWave.segments` uses, so there is
    * one answer to "is this open" rather than a flag a caller could disagree
@@ -353,6 +361,14 @@ export interface RunMapUnitGroup {
    * there (§6, fan scale) and nothing else states them.
    */
   entries: RunMapUnitChip[];
+  /**
+   * Render the entries directly in the flow, no click. True for a done group
+   * of at most eight units: "what completed" is the first thing a reader asks
+   * of a finished fan, and a count chip made them click for the answer — per
+   * lap, per composition. Past eight the group folds behind its labelled
+   * count, because a forty-unit sweep as forty chips is the wall again.
+   */
+  inline: boolean;
 }
 
 /**
@@ -366,6 +382,15 @@ export interface RunMapUnitGroup {
 export interface RunMapFan {
   key: string;
   attempt: number;
+  /**
+   * How the fan draws. `columns` is the top-level idiom: side-by-side lanes
+   * under a fork bar, each wide enough to read. `stacked` is every fan BELOW
+   * that — a fan inside a lane's composition renders its branches as
+   * full-width blocks in its parent's flow, because columns inside a column
+   * can only divide a width that was already the minimum: the nested fan is
+   * what put a horizontal scrollbar inside a 200px lane.
+   */
+  layout: 'columns' | 'stacked';
   columns: RunMapBranch[];
   queued: RunMapUnitGroup;
   done: RunMapUnitGroup;
@@ -443,7 +468,12 @@ export interface RunMapCompositionWave {
   ordinal: number;
   /** Which try at this lap; 0 when the lap has a single wave (see RunMapWave). */
   lapSeq: number;
-  /** Terminal: this lap folds to its summary row unless the reader opened it. */
+  /**
+   * Terminal: this lap owns a working fold. Whether it is currently open is
+   * `segments !== null`, not this flag — the final lap (the one that called
+   * no successor) is folded AND open by default, since it is the lap the
+   * composition's own status quotes; a click inverts either default.
+   */
   folded: boolean;
   status: RunMapRunStatus;
   signal: RunMapSignal;
@@ -477,11 +507,21 @@ export interface RunMapCompositionNode {
    */
   collapsed: boolean;
   /**
-   * Whether this row's collapse can be toggled at all — false exactly on the
-   * frontier path, which is force-open. The rule is the projection's, so the
-   * component reads the answer rather than re-deriving it.
+   * Whether this row's collapse can be toggled at all — false on the frontier
+   * path, which is force-open, and on a run merged into its fan lane, whose
+   * fold is the lane's toggle. The rule is the projection's, so the component
+   * reads the answer rather than re-deriving it.
    */
   toggleable: boolean;
+  /**
+   * Skip the composition's own header row. True when this run is MERGED into
+   * its fan lane as the sole child: the lane header already names the lane,
+   * the workflow name moves up onto it, and repeating glyph + duration one
+   * line apart was the `PORT-0 14h 37m` / `go… 14h 37m` stutter. Only ever
+   * true on an OPEN composition — merging clears `toggleable`, which pins
+   * `collapsed` false.
+   */
+  headerless: boolean;
   summary: RunMapCompositionSummary;
   /** `[]` while collapsed: a folded composition builds no laps at all. */
   waves: RunMapCompositionWave[];

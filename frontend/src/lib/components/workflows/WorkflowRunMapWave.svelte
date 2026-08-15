@@ -71,7 +71,7 @@
 -->
 {#if wave.skeletonError}
   <p
-    class={['mb-1 rounded border px-2 py-1 text-[0.6875rem]', corrupt.border, corrupt.tone].join(' ')}
+    class={['mb-1 rounded border px-2 py-1 text-[0.6875rem]', corrupt.border, corrupt.fill, corrupt.tone].join(' ')}
     data-testid="workflow-map-wave-skeleton-error"
   >
     This wave’s stored definition could not be read, so only what it recorded is shown.

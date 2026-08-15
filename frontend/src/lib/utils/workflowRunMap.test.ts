@@ -8,6 +8,7 @@ import { describe, expect, it } from 'vitest';
 import { WorkflowRunMapRun, WorkflowRunMapView } from '../../../bindings/agent-overflow/models';
 import {
   campaignSkeleton,
+  nestedFanView,
   refusedView,
   mapRun as makeRun,
   mapUnit as makeUnit,
@@ -23,9 +24,11 @@ import {
   runMapPosition,
   runMapTone,
   runMapViewIsLive,
+  RUN_MAP_INLINE_DONE_MAX,
   type RunMapCompositionNode,
   type RunMapSegmentNode,
 } from './workflowRunMap';
+import { branchKeyOf } from './workflowRunMapIndex';
 
 const NOW = 10_000_000;
 
@@ -43,9 +46,10 @@ function segmentsOf(
   itemId: string,
   expanded?: string[],
   lanes?: string[],
+  waves?: string[],
 ): RunMapSegmentNode[] {
   const options = {
-    expandedWaveIds: [itemId],
+    expandedWaveIds: [itemId, ...(waves ?? [])],
     expandedCompositionIds: expanded ?? [],
     expandedLaneIds: lanes ?? [],
   };
@@ -891,6 +895,188 @@ describe('§6 fan scale', () => {
     expect(node.attempts.map((attempt) => attempt.fan?.columns.map((column) => column.unit.unitId)))
       .toEqual([['old-1'], ['new-1']]);
   });
+
+  // §7: "what completed" is not behind a click for a small fan — the done
+  // group renders inline up to `RUN_MAP_INLINE_DONE_MAX` and folds past it.
+  // Queued never inlines: its entries are empty by construction, so inline
+  // rendering would draw nothing.
+  it('a done group inlines at the bound and folds past it; queued never inlines', () => {
+    const doneFan = (count: number) => fanOf(segmentsOf(makeView([makeRun('root', {
+      state: 'running',
+      skeleton: [skeletonPhase('port', { shape: 'fan-out' })],
+      phases: [makePhase('port', { status: 'running', endedAt: 0 })],
+      units: Array.from({ length: count }, (_, index) =>
+        makeUnit(`bulk-${String(index).padStart(2, '0')}`, { unitIndex: index, status: 'done' })),
+    })]), 'root'), 'port');
+    // The bound is exact: AT the constant the chips stay in the flow, one past
+    // it the group folds — pinned against the constant so tuning it cannot
+    // silently strand this test at the old number.
+    const atBound = doneFan(RUN_MAP_INLINE_DONE_MAX);
+    expect([atBound.done.entries.length, atBound.done.inline])
+      .toEqual([RUN_MAP_INLINE_DONE_MAX, true]);
+    const pastBound = doneFan(RUN_MAP_INLINE_DONE_MAX + 1);
+    expect([pastBound.done.entries.length, pastBound.done.inline])
+      .toEqual([RUN_MAP_INLINE_DONE_MAX + 1, false]);
+    expect(fanOf(segmentsOf(fanView(), 'root'), 'port').queued.inline).toBe(false);
+  });
+
+  // How a fan DRAWS is the model's call, keyed by lane containment: columns
+  // wherever the card's full width is available, stacked once inside a lane —
+  // columns inside a column can only subdivide a width that was already
+  // minimal. Depth alone is NOT the key: a spine sub-card sits below the wave
+  // with the full card width and keeps columns.
+  it('the top-level fan is columns, and a fan inside a lane is stacked', () => {
+    const top = fanOf(segmentsOf(nestedFanView(), 'root'), 'port');
+    expect(top.layout).toBe('columns');
+    const lap = top.columns[0].chain[0].waves[0];
+    expect(fanOf(lap.segments ?? [], 'review').layout).toBe('stacked');
+  });
+
+  it('a fan on a spine sub-card keeps columns — only a lane forces stacking', () => {
+    const view = makeView([
+      makeRun('root', {
+        state: 'running',
+        skeleton: [skeletonPhase('sub', { shape: 'call', callTarget: 'porter' })],
+        phases: [makePhase('sub', { status: 'running', endedAt: 0, startedAt: 9_880_000 })],
+      }),
+      makeRun('child', {
+        workflowId: 'porter', state: 'running',
+        parentItemId: 'root', parentPhaseId: 'sub', parentAttempt: 1, callDepth: 1,
+        skeleton: [skeletonPhase('review', { name: 'reviews', shape: 'fan-out' })],
+        phases: [makePhase('review', { status: 'running', endedAt: 0, startedAt: 9_900_000 })],
+        units: [makeUnit('rev-1', {
+          phaseId: 'review', unitIndex: 0, status: 'running', endedAt: 0, startedAt: 9_960_000,
+        })],
+      }),
+    ], 'root');
+    const call = nodeById(segmentsOf(view, 'root'), 'sub');
+    const lap = call.attempts[0].chain[0].waves[0];
+    expect(fanOf(lap.segments ?? [], 'review').layout).toBe('columns');
+  });
+
+  // §7, sole-child merge: a lane's ONE call renders headerless (its name moves
+  // onto the lane header) and arrives open — the lane toggle is the one fold
+  // control, so the composition offers no second one.
+  it('a sole child composition is headerless and opened by its lane', () => {
+    const fan = fanOf(segmentsOf(nestedFanView(), 'root'), 'port');
+    const sole = fan.columns[0].chain[0];
+    expect([sole.headerless, sole.collapsed, sole.toggleable]).toEqual([true, false, false]);
+    // The lane's title carries the merged workflow's name — the header is the
+    // only line that can say what the lane ran.
+    expect(fan.columns[0].title).toBe('port-a · porter');
+  });
+
+  it('a settled sole child still opens with the lane click alone', () => {
+    const view = makeView([
+      makeRun('root', {
+        state: 'running',
+        skeleton: [skeletonPhase('port', { name: 'ports', shape: 'fan-out' })],
+        phases: [makePhase('port', { status: 'running', endedAt: 0, startedAt: 9_880_000 })],
+        units: [
+          makeUnit('port-a', { unitIndex: 0, status: 'done' }),
+          makeUnit('port-live', { unitIndex: 1, status: 'running', endedAt: 0, startedAt: 9_970_000 }),
+        ],
+      }),
+      makeRun('port-a-child', {
+        workflowId: 'porter', state: 'done',
+        parentItemId: 'root', parentPhaseId: 'port', parentAttempt: 1, parentUnitId: 'port-a',
+        skeleton: [skeletonPhase('land')],
+        phases: [makePhase('land')],
+      }),
+    ], 'root');
+    const lane = branchKeyOf('root', 'port', 1, 'port-a');
+    // FOLDED, the lane already titles itself with the child it ran — the
+    // chain is not built, and the title is the only line left to say it.
+    const folded = fanOf(segmentsOf(view, 'root'), 'port').columns[0];
+    expect([folded.collapsed, folded.chain.length, folded.title])
+      .toEqual([true, 0, 'port-a · porter']);
+    const chain = fanOf(segmentsOf(view, 'root', [], [lane]), 'port').columns[0].chain;
+    expect(chain.map((node) => [node.itemId, node.headerless, node.collapsed, node.waves[0].segments !== null]))
+      .toEqual([['port-a-child', true, false, true]]);
+  });
+
+  // The merge's guards, each a reviewed defect when absent: a FAILED child
+  // keeps its own header row (that row carries its red glyph, and the lane
+  // header carries the UNIT's signal, which need not agree)…
+  it('a failed sole child keeps its own row instead of merging', () => {
+    const view = makeView([
+      makeRun('root', {
+        state: 'running',
+        skeleton: [skeletonPhase('port', { name: 'ports', shape: 'fan-out' })],
+        phases: [makePhase('port', { status: 'running', endedAt: 0, startedAt: 9_880_000 })],
+        units: [
+          makeUnit('port-a', { unitIndex: 0, status: 'done' }),
+          makeUnit('port-live', { unitIndex: 1, status: 'running', endedAt: 0, startedAt: 9_970_000 }),
+        ],
+      }),
+      makeRun('port-a-child', {
+        workflowId: 'porter', state: 'failed', reason: 'agent-error',
+        parentItemId: 'root', parentPhaseId: 'port', parentAttempt: 1, parentUnitId: 'port-a',
+        skeleton: [skeletonPhase('land')],
+        phases: [makePhase('land', { status: 'failed' })],
+      }),
+    ], 'root');
+    const lane = branchKeyOf('root', 'port', 1, 'port-a');
+    const column = fanOf(segmentsOf(view, 'root', [], [lane]), 'port').columns[0];
+    expect(column.chain.map((node) => [node.itemId, node.headerless]))
+      .toEqual([['port-a-child', false]]);
+  });
+
+  // …and an ACTIONABLE lane (failed, taken-over — always open, no fold)
+  // never merges a settled child: merging force-opens, and force-opening a
+  // settled subtree under a lane with no toggle leaves no collapse anywhere
+  // on it.
+  it('an actionable lane leaves its settled sole child its own fold', () => {
+    const view = makeView([
+      makeRun('root', {
+        state: 'running',
+        skeleton: [skeletonPhase('port', { name: 'ports', shape: 'fan-out' })],
+        phases: [makePhase('port', { status: 'running', endedAt: 0, startedAt: 9_880_000 })],
+        units: [
+          makeUnit('port-a', { unitIndex: 0, status: 'failed' }),
+          makeUnit('port-live', { unitIndex: 1, status: 'running', endedAt: 0, startedAt: 9_970_000 }),
+        ],
+      }),
+      makeRun('port-a-child', {
+        workflowId: 'porter', state: 'done',
+        parentItemId: 'root', parentPhaseId: 'port', parentAttempt: 1, parentUnitId: 'port-a',
+        skeleton: [skeletonPhase('land')],
+        phases: [makePhase('land')],
+      }),
+    ], 'root');
+    const column = fanOf(segmentsOf(view, 'root'), 'port').columns[0];
+    // The lane is open (actionable), the child keeps its row and its collapse.
+    expect([column.collapsed, column.toggleable]).toEqual([false, false]);
+    expect(column.chain.map((node) => [node.itemId, node.headerless, node.collapsed, node.toggleable]))
+      .toEqual([['port-a-child', false, true, true]]);
+  });
+
+  // …and a lane with SIBLING children keeps a row per child: the merge only
+  // exists because a sole child's header repeated the lane's, which is not
+  // true of two.
+  it('sibling child compositions keep their own rows and folds', () => {
+    const view = makeView([
+      makeRun('root', {
+        state: 'running',
+        skeleton: [skeletonPhase('port', { name: 'ports', shape: 'fan-out' })],
+        phases: [makePhase('port', { status: 'running', endedAt: 0, startedAt: 9_880_000 })],
+        units: [
+          makeUnit('port-a', { unitIndex: 0, status: 'done' }),
+          makeUnit('port-live', { unitIndex: 1, status: 'running', endedAt: 0, startedAt: 9_970_000 }),
+        ],
+      }),
+      ...['c1', 'c2'].map((itemId) => makeRun(itemId, {
+        workflowId: 'porter', state: 'done',
+        parentItemId: 'root', parentPhaseId: 'port', parentAttempt: 1, parentUnitId: 'port-a',
+        skeleton: [skeletonPhase('land')],
+        phases: [makePhase('land')],
+      })),
+    ], 'root');
+    const lane = branchKeyOf('root', 'port', 1, 'port-a');
+    const chain = fanOf(segmentsOf(view, 'root', [], [lane]), 'port').columns[0].chain;
+    expect(chain.map((node) => [node.itemId, node.headerless, node.collapsed, node.toggleable]))
+      .toEqual([['c1', false, true, true], ['c2', false, true, true]]);
+  });
 });
 
 // ---------------------------------------------------------------- §3 loop
@@ -1470,6 +1656,79 @@ describe('§3 composition collapse — only the live path is open', () => {
     // `next` is the tail self-call, so it renders as the lap's loop foot.
     expect((composition.waves[0].segments ?? []).map((node) => node.phaseId))
       .toEqual(['audit', 'fix', 'next']);
+  });
+
+  // A composition the reader OPENED answers with content, not another fold: a
+  // settled multi-lap chain defaults its LAST lap open — the ending is the
+  // summary — with the earlier laps one click away. This is the "I have to
+  // click MULTIPLE times to even see what completed" complaint, fixed at the
+  // model.
+  it('an opened settled composition defaults its final lap open, and a click closes it again', () => {
+    const view = makeView([
+      makeRun('root', {
+        state: 'running',
+        skeleton: [skeletonPhase('call-out', { shape: 'call', callTarget: 'inner' })],
+        phases: [makePhase('call-out', { status: 'completed' })],
+      }),
+      makeRun('lap-1', {
+        workflowId: 'inner', state: 'done', endedAt: 200_000,
+        parentItemId: 'root', parentPhaseId: 'call-out', parentAttempt: 1,
+        tailSelfCall: true, skeleton: campaignSkeleton(),
+        phases: [makePhase('audit'), makePhase('next')],
+      }),
+      makeRun('lap-2', {
+        workflowId: 'inner', state: 'done', endedAt: 400_000,
+        parentItemId: 'lap-1', parentPhaseId: 'next', parentAttempt: 1,
+        tailSelfCall: true, skeleton: campaignSkeleton(),
+        phases: [makePhase('audit'), makePhase('fix')],
+      }),
+    ], 'root');
+    // Both settled laps own a fold (`folded`); the FINAL lap — the one whose
+    // outcome the composition's row quotes — arrives with its segments built.
+    const opened = nodeById(segmentsOf(view, 'root', ['lap-1']), 'call-out').attempts[0].chain[0];
+    expect(opened.waves.map((wave) => [wave.itemId, wave.folded, wave.segments !== null]))
+      .toEqual([['lap-1', true, false], ['lap-2', true, true]]);
+    // A click INVERTS a lap's default off the same expansion set: naming the
+    // final lap closes it, naming a history lap opens it.
+    const clicked = nodeById(segmentsOf(view, 'root', ['lap-1'], [], ['lap-2']), 'call-out')
+      .attempts[0].chain[0];
+    expect(clicked.waves.map((wave) => [wave.itemId, wave.segments !== null]))
+      .toEqual([['lap-1', false], ['lap-2', false]]);
+  });
+
+  it('the final lap is the tail LEAF, not the last chain position', () => {
+    // lap-2a is a settled dead-end (its tail call was retried as lap-2b, which
+    // carried the run to completion). Both are leaves and both default open;
+    // lap-1, which handed off, stays folded shut — position in the chain
+    // decides nothing.
+    const view = makeView([
+      makeRun('root', {
+        state: 'running',
+        skeleton: [skeletonPhase('call-out', { shape: 'call', callTarget: 'inner' })],
+        phases: [makePhase('call-out', { status: 'completed' })],
+      }),
+      makeRun('lap-1', {
+        workflowId: 'inner', state: 'done', endedAt: 200_000,
+        parentItemId: 'root', parentPhaseId: 'call-out', parentAttempt: 1,
+        tailSelfCall: true, skeleton: campaignSkeleton(),
+        phases: [makePhase('audit'), makePhase('next')],
+      }),
+      makeRun('lap-2a', {
+        workflowId: 'inner', state: 'failed', reason: 'agent-error', endedAt: 300_000,
+        parentItemId: 'lap-1', parentPhaseId: 'next', parentAttempt: 1,
+        tailSelfCall: true, skeleton: campaignSkeleton(),
+        phases: [makePhase('audit')],
+      }),
+      makeRun('lap-2b', {
+        workflowId: 'inner', state: 'done', endedAt: 400_000,
+        parentItemId: 'lap-1', parentPhaseId: 'next', parentAttempt: 2,
+        tailSelfCall: true, skeleton: campaignSkeleton(),
+        phases: [makePhase('audit'), makePhase('fix')],
+      }),
+    ], 'root');
+    const opened = nodeById(segmentsOf(view, 'root', ['lap-1']), 'call-out').attempts[0].chain[0];
+    expect(opened.waves.map((wave) => [wave.itemId, wave.segments !== null]))
+      .toEqual([['lap-1', false], ['lap-2a', true], ['lap-2b', true]]);
   });
 
   it('a collapsed composition still reports its subtree counts', () => {

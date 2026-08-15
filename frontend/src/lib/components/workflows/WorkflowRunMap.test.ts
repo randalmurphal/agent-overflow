@@ -10,6 +10,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { WorkflowRunMapView } from '../../../../bindings/agent-overflow/models';
 import {
   campaignSkeleton,
+  nestedFanView,
   mapRun as makeRun,
   mapUnit as makeUnit,
   mapView as makeView,
@@ -20,7 +21,14 @@ import {
 import WorkflowRunMap from './WorkflowRunMap.svelte';
 import WorkflowRunMapWave from './WorkflowRunMapWave.svelte';
 import { WORKFLOWS_OVERLAY_SCROLLER_KEY } from './overlayScroller';
-import { buildRunMap } from '../../utils/workflowRunMap';
+import { buildRunMap, RUN_MAP_INLINE_DONE_MAX } from '../../utils/workflowRunMap';
+// Read as text, not imported: the CSS pipeline resolves a `.css` import to a
+// (deliberately empty) style module under vitest, and an empty string would
+// pass a `toContain` audit's negation while failing its assertion — the file's
+// bytes are what the cross-check is about.
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+const appCss = readFileSync(join(process.cwd(), 'src/app.css'), 'utf8');
 import { __resetWorkflowRunMapStoreForTest } from '../../stores/workflowRunMap.svelte';
 import {
   getWorkflowRunMapExpansion,
@@ -28,7 +36,13 @@ import {
 } from '../../stores/workflowsOverlay.svelte';
 import { __resetRunningElapsedTickerForTest } from '../chat/useRunningElapsed.svelte';
 import { getSettings } from '../../stores/settings.svelte';
-import { runMapNodeStyle } from '../../utils/workflowRunMapStyle';
+import {
+  runMapNodeStyle,
+  RUN_MAP_FOLDED_LABEL_MAX,
+  RUN_MAP_LABEL_MAX,
+  RUN_MAP_LANE_MAX,
+  RUN_MAP_LANE_MIN,
+} from '../../utils/workflowRunMapStyle';
 import { branchKeyOf } from '../../utils/workflowRunMapIndex';
 import { getBindingMock, resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
 
@@ -482,11 +496,27 @@ describe('WorkflowRunMapNode — the state table', () => {
     expect(marked[0].querySelector('.text-accent')).not.toBeNull();
   });
 
-  it('draws what has not happened yet as a dashed ghost', () => {
+  // §2's surface hierarchy: the future is a bare quiet line on the spine —
+  // no box, no border — where a record is a filled box. Boxing the future at
+  // record weight buried the live minority of a real campaign under a wall
+  // of dashed rectangles.
+  it('draws what has not happened yet as a bare unboxed line', () => {
     const view = mountWave(campaignView(), 'wave-3');
     const ghost = view.container.querySelector('[data-testid="workflow-map-node"][data-ghost="true"]');
     expect(ghost).not.toBeNull();
-    expect(ghost?.querySelector('.border-dashed')).not.toBeNull();
+    expect(ghost?.querySelector('[class*="border"]')).toBeNull();
+    expect(ghost?.querySelector('.text-fg-hint')).not.toBeNull();
+  });
+
+  // The colour hints (R1 amendment, §13 fourth pass): a done ✓ is green — the
+  // glyph only, never the label beside it — and a record's box carries a fill.
+  it('tints the done glyph green and fills the record boxes', () => {
+    const view = mountWave(campaignView(), 'wave-3');
+    const done = view.container.querySelector('[data-testid="workflow-map-node"][data-signal="done"]');
+    expect(done?.querySelector('.text-success')).not.toBeNull();
+    expect(done?.querySelector('[data-testid="workflow-map-node-label"]')?.className)
+      .not.toContain('text-success');
+    expect(done?.querySelector('[class*="bg-surface"]')).not.toBeNull();
   });
 
   it('parks amber, clamps the cause to two lines, and expands it inline', async () => {
@@ -576,7 +606,13 @@ describe('WorkflowRunMapFan', () => {
     // §7: the queued lanes become ONE node that names the range it stands for,
     // not a count the reader cannot place against the columns beside it.
     expect(view.getAllByTestId('workflow-map-group').map((node) => node.textContent?.trim().replace(/\s+/g, ' ')))
-      .toEqual(['done ·1 · 1 dropped', '◌ ports 3 · queued']);
+      .toEqual(['◌ ports 3 · queued']);
+    // §7: a small done group (≤ RUN_MAP_INLINE_DONE_MAX) is IN the flow — no
+    // click between the reader and "what completed" — dropped entries riding
+    // inside it as struck chips.
+    const chips = view.getByTestId('workflow-map-done-chips');
+    expect([...chips.querySelectorAll<HTMLElement>('[data-unit-id]')].map((node) => node.dataset.unitId))
+      .toEqual(['port-a', 'port-e']);
     expect(view.getByTestId('workflow-map-join').textContent).toContain('port-join');
   });
 
@@ -658,7 +694,7 @@ describe('WorkflowRunMapFan', () => {
 
   // A folded lane is ONE line, so the unit name is the only identity it has
   // left — it must be the last thing to give, not the first. The open columns
-  // flex (120–200px) and past them the fan region scrolls; a folded lane is
+  // flex between the container's readable floor and its cap; a folded lane is
   // `flex: none` and its label is `whitespace-nowrap`, never ellipsised.
   // Regression: eight folded lanes beside a live one rendered "✓ POR… 2s".
   it('a folded lane never eats its own label — the open columns are what flex', () => {
@@ -674,7 +710,7 @@ describe('WorkflowRunMapFan', () => {
       expect(lane.className).not.toContain('max-w-[var(--run-map-lane-max)]');
     }
     // The open column is the elastic one, and the only one with a floor.
-    expect(open[0].className).toContain('flex-[1_1_var(--run-map-lane-max)]');
+    expect(open[0].className).toContain('flex-[1_1_var(--run-map-lane-min)]');
     expect(open[0].className).toContain('min-w-[var(--run-map-lane-min)]');
 
     const names = view.getAllByTestId('workflow-map-lane-name');
@@ -682,21 +718,26 @@ describe('WorkflowRunMapFan', () => {
     for (const name of foldedNames) {
       expect(name.className).toContain('whitespace-nowrap');
       expect(name.className).not.toContain('truncate');
-      expect(name.textContent?.trim()).toMatch(/^port-s\d$/);
+      // The folded title carries the sole child's workflow name too — the
+      // header is the only line left that can say what the lane ran.
+      expect(name.textContent?.trim()).toMatch(/^port-s\d · porter$/);
     }
-    // …and the open column's name still yields, because it has a column's
-    // worth of chain underneath saying what it is.
-    expect(names[8].className).toContain('truncate');
+    // …and the open column's name WRAPS in its column — never ellipsises (§2):
+    // the name is the lane's identity in both states.
+    expect(names[8].className).toContain('break-words');
+    expect(names[8].className).not.toContain('truncate');
   });
 
-  // Same rule, same reason: the range IS the group's identity.
+  // Same rule, same reason: the range IS the group's identity — it wraps
+  // rather than clipping, because it is built from the phase's display name
+  // and a real phase name is a sentence.
   it('the queued group states its whole range rather than ellipsising it', () => {
     const view = mountWave(fanView());
     const queued = view.getAllByTestId('workflow-map-group')
       .find((node) => node.dataset.groupKind === 'queued');
     const label = queued?.querySelector('span:last-child');
     expect(label?.textContent?.trim()).toBe('ports 3 · queued');
-    expect(label?.className).toContain('whitespace-nowrap');
+    expect(label?.className).toContain('break-words');
     expect(label?.className).not.toContain('truncate');
   });
 
@@ -715,47 +756,86 @@ describe('WorkflowRunMapFan', () => {
   it('states each unit\'s signal and each group\'s kind on the element that drew it', () => {
     const view = mountWave(fanView());
     expect(view.getAllByTestId('workflow-map-group').map((node) => node.dataset.groupKind))
-      .toEqual(['done', 'queued']);
-    // Columns first, then the join; the scalar bulk is inside the closed folds.
+      .toEqual(['queued']);
+    // Columns first, then the inline done chips, then the join — the small
+    // done group rides in the flow rather than inside a closed fold.
     expect([...view.container.querySelectorAll<HTMLElement>('[data-unit-signal]')]
       .map((node) => [node.dataset.unitId, node.dataset.unitSignal]))
       .toEqual([
         ['port-b', 'running'],
         ['port-c', 'failed'],
+        ['port-a', 'done'],
+        ['port-e', 'dropped'],
         ['port-join', 'pending'],
       ]);
   });
 
-  it('expands the done group into a wrapping unit grid, dropped entries struck', async () => {
+  // §7: at most `RUN_MAP_INLINE_DONE_MAX` done units render as chips in the
+  // flow — no button, nothing to click — and a dropped entry rides among them
+  // struck, because nothing else states it.
+  it('renders a small done group inline, dropped entries struck, no affordance', () => {
     const view = mountWave(fanView());
-    const done = view.getAllByTestId('workflow-map-group')[0].querySelector('button');
-    expect(done).not.toBeNull();
-    expect(view.container.querySelector('[data-unit-id="port-e"]')).toBeNull();
+    const chips = view.getByTestId('workflow-map-done-chips');
+    expect(chips.parentElement?.querySelector('[data-testid="workflow-map-group"][data-group-kind="done"]'))
+      .toBeNull();
+    // The strike sits on the LABEL span, not the whole button: the glyph and
+    // meta beside it state their own facts and must not read as crossed out.
+    const dropped = chips.querySelector('[data-unit-id="port-e"] .line-through');
+    expect(dropped?.textContent).toContain('port-e');
+  });
+
+  /** `count` settled SCALAR units (no calls — a done group, not lanes) + one live. */
+  function scalarDoneView(count: number): WorkflowRunMapView {
+    return makeView([makeRun('root', {
+      state: 'running',
+      skeleton: [skeletonPhase('port', { name: 'ports', shape: 'fan-out' })],
+      phases: [makePhase('port', { status: 'running', endedAt: 0, startedAt: 9_880_000 })],
+      units: [
+        ...Array.from({ length: count }, (_, index) =>
+          makeUnit(`port-s${index}`, { unitIndex: index, status: 'done' })),
+        makeUnit('port-live', { unitIndex: count, status: 'running', endedAt: 0, startedAt: 9_970_000 }),
+      ],
+    })], 'root');
+  }
+
+  // …and past the inline bound the group folds behind its labelled count:
+  // forty chips is the wall the fold exists to prevent.
+  it('folds an oversized done group behind its count, and expands it on click', async () => {
+    const view = mountWave(scalarDoneView(9));
+    const done = view.getAllByTestId('workflow-map-group')
+      .find((node) => node.dataset.groupKind === 'done');
+    expect(done?.textContent).toContain('9');
+    expect(view.container.querySelector('[data-unit-id="port-s0"]')).toBeNull();
 
     await fireEvent.click(done as HTMLElement);
-    await waitFor(() => expect(view.container.querySelector('[data-unit-id="port-e"]')).not.toBeNull());
-    const dropped = view.container.querySelector('[data-unit-id="port-e"] button');
-    expect(dropped?.className).toContain('line-through');
+    await waitFor(() => expect(view.container.querySelector('[data-unit-id="port-s0"]')).not.toBeNull());
   });
 
   // §6: a column's resting width, its enter animation and its leaving
   // transition are three renderings of two numbers, so the numbers live in one
-  // place and the markup reads them.
+  // place (`workflowRunMapStyle.ts`) and the markup reads them.
   it('declares the lane geometry once, on the fan container', () => {
     const view = mountWave(fanView());
     const fan = view.getByTestId('workflow-map-fan');
-    expect(fan.style.getPropertyValue('--run-map-lane-min')).toBe('120px');
-    expect(fan.style.getPropertyValue('--run-map-lane-max')).toBe('200px');
+    expect(fan.style.getPropertyValue('--run-map-lane-min')).toBe(RUN_MAP_LANE_MIN);
+    expect(fan.style.getPropertyValue('--run-map-lane-max')).toBe(RUN_MAP_LANE_MAX);
 
     const column = view.getAllByTestId('workflow-map-branch')[0];
     expect(column.className).toContain('min-w-[var(--run-map-lane-min)]');
     expect(column.className).not.toMatch(/\[\d+px\]/);
+
+    // app.css declares the same values on `:root` as the resolution floor (an
+    // unresolved custom property silently invalidates its whole declaration),
+    // so the two sources must agree — this is the cross-check that keeps the
+    // floor from becoming a second opinion.
+    expect(appCss).toContain(`--run-map-lane-min: ${RUN_MAP_LANE_MIN};`);
+    expect(appCss).toContain(`--run-map-lane-max: ${RUN_MAP_LANE_MAX};`);
   });
 
   // §10: every structural motion gates on `motionReduced()`, whose second half
   // — the app's low-power setting — no CSS reset can see.
   it('drops the column animation and the fold transition under low power', () => {
-    const lit = mountWave(fanView());
+    const lit = mountWave(scalarDoneView(9));
     expect(lit.getAllByTestId('workflow-map-branch')[0].className).toContain('run-map-column');
     expect(lit.getAllByTestId('workflow-map-group-fold')[0].className).toContain('transition-');
 
@@ -765,7 +845,7 @@ describe('WorkflowRunMapFan', () => {
       // is asked about — two mounts of the same wave would otherwise answer
       // with whichever rendered first.
       cleanup();
-      const dark = mountWave(fanView());
+      const dark = mountWave(scalarDoneView(9));
       expect(dark.getAllByTestId('workflow-map-branch')[0].className).not.toContain('run-map-column');
       expect(dark.getAllByTestId('workflow-map-group-fold')[0].className).not.toContain('transition-');
     } finally {
@@ -773,11 +853,167 @@ describe('WorkflowRunMapFan', () => {
     }
   });
 
-  it('scrolls the fan region alone — the spine never goes sideways', () => {
+  // NOTHING on the map scrolls sideways: the lane row WRAPS (`.run-map-lane-row`
+  // in app.css) when its lanes outgrow the card, because a horizontal scrollbar
+  // hid whole lanes off the right edge of a real campaign.
+  it('wraps the lane row rather than scrolling it — nothing goes sideways', () => {
     const view = mountWave(fanView());
-    const fan = view.getByTestId('workflow-map-fan');
-    expect(fan.querySelector('.overflow-x-auto')).not.toBeNull();
-    expect(view.container.querySelector('[data-testid="workflow-map-wave-body"].overflow-x-auto')).toBeNull();
+    expect(view.container.querySelector('.overflow-x-auto')).toBeNull();
+    expect(view.getByTestId('workflow-map-fan').querySelector('.run-map-lane-row')).not.toBeNull();
+  });
+
+  // A fan inside a lane renders STACKED — full-width branch blocks, no fork
+  // bar, no lane row — because columns inside a column can only subdivide a
+  // width that was already minimal: the nested fan is what put a horizontal
+  // scrollbar inside a 200px lane. The scalar groups and the join render in
+  // the same block flow.
+  it('stacks a nested fan instead of nesting columns', () => {
+    const view = mountWave(nestedFanView());
+    const fans = view.getAllByTestId('workflow-map-fan');
+    expect(fans.map((fan) => fan.dataset.fanLayout)).toEqual(['columns', 'stacked']);
+    const stacked = fans[1];
+    expect(stacked.querySelector('.run-map-fork')).toBeNull();
+    expect(stacked.querySelector('.run-map-lane-row')).toBeNull();
+    expect([...stacked.querySelectorAll<HTMLElement>('[data-testid="workflow-map-branch"]')]
+      .map((branch) => branch.dataset.unitId)).toEqual(['rev-1']);
+    expect(stacked.querySelector('[data-testid="workflow-map-done-chips"] [data-unit-id]'))
+      .toHaveProperty('dataset.unitId', 'rev-2');
+    expect(stacked.querySelector('[data-testid="workflow-map-group"][data-group-kind="queued"]'))
+      .not.toBeNull();
+    expect(stacked.querySelector('[data-testid="workflow-map-join"]')?.textContent)
+      .toContain('rev-join');
+  });
+
+  // §7, sole-child merge: a lane whose unit made exactly one call carries the
+  // workflow's name on the lane header, and the composition renders headerless
+  // — the alternative was the same duration twice, one line apart, with the
+  // workflow name truncated in between.
+  it('merges a sole child workflow into its lane header instead of repeating it', () => {
+    const view = mountWave(nestedFanView());
+    const composition = view.getAllByTestId('workflow-map-composition')[0];
+    expect(composition.dataset.collapsed).toBe('false');
+    expect(composition.querySelector('[data-testid="workflow-map-composition-row"]')).toBeNull();
+    expect(view.getAllByTestId('workflow-map-lane-name')[0].textContent?.trim())
+      .toBe('port-a · porter');
+  });
+
+  // §2's wrap rule, audited mechanically: CSS ellipsis is banned on the map —
+  // a surface whose every node reads "Implement …" says nothing. The one
+  // deliberate clamp left is a failure cause's two-line preview, which is
+  // `line-clamp-2` with an expander, not `truncate`. Every fan shape gets the
+  // sweep, and so does the FULL surface — the frontier strip, the loop foot's
+  // stubs and the parked blocker render outside any wave mount, which is
+  // exactly where a vacuous audit would miss them.
+  it('nothing on the map carries a CSS ellipsis', async () => {
+    for (const view of [fanView(), nestedFanView(), foldedLanesView(8), scalarDoneView(9), settledLaneView()]) {
+      const rendered = mountWave(view);
+      expect(rendered.container.querySelector('.truncate')).toBeNull();
+      cleanup();
+    }
+    const campaign = mountMap(campaignView());
+    await waitFor(() => expect(campaign.getAllByTestId('workflow-map-wave')).toHaveLength(3));
+    expect(campaign.container.querySelector('.truncate')).toBeNull();
+    cleanup();
+    const parked = mountMap(parkedView());
+    await waitFor(() => expect(parked.getAllByTestId('workflow-map-wave')).toHaveLength(1));
+    expect(parked.container.querySelector('.truncate')).toBeNull();
+  });
+
+  // The merge's other half: opening a settled lane is ONE click to the whole
+  // subtree — its sole composition arrives open, with no second folded row
+  // inside (the multiple-clicks complaint, one level down).
+  it('opens a settled lane\'s sole composition with the lane click alone', () => {
+    const view = mountWave(settledLaneView(), 'root',
+      { lanes: [branchKeyOf('root', 'port', 1, 'port-a')] });
+    const composition = view.getAllByTestId('workflow-map-composition')[0];
+    expect(composition.dataset.collapsed).toBe('false');
+    // The child's own phase node is already in the DOM — nothing left to click.
+    expect(view.container.querySelector('[data-phase-id="land"]')).not.toBeNull();
+  });
+
+  // The oversized done group's BUTTON rides the lane row; its chips do NOT —
+  // they land beneath it as a full-width block. Chips inside the row's
+  // `flex-none` wrapper set the lane's intrinsic width to the whole chip-row,
+  // which dragged the row past the card edge (measured 1200px in a 700px
+  // card) — the exact overflow the wrap rule exists to prevent.
+  it('lands the oversized done chips below the lane row, not inside it', async () => {
+    const view = mountWave(scalarDoneView(9));
+    const button = view.getAllByTestId('workflow-map-group')
+      .find((node) => node.dataset.groupKind === 'done') as HTMLElement;
+    expect(button.closest('.run-map-lane-row')).not.toBeNull();
+    expect(view.getAllByTestId('workflow-map-group-fold')[0].closest('.run-map-lane-row')).toBeNull();
+  });
+
+  // A done group that outgrows the inline bound mid-run folds — but the chips
+  // the reader was just looking at must not vanish behind a closed count: the
+  // flip seeds the fold open. (A fan that MOUNTS oversized still folds closed
+  // — that is the resting default the previous test pins.)
+  it('seeds the fold open when an inline done group outgrows the bound', async () => {
+    const waveOf = (count: number) => {
+      const model = buildRunMap(scalarDoneView(count), NOW, { expandedWaveIds: ['root'] });
+      const wave = model.waves.find((candidate) => candidate.itemId === 'root');
+      if (!wave) throw new Error('no root wave');
+      return wave;
+    };
+    const view = mountWave(scalarDoneView(RUN_MAP_INLINE_DONE_MAX));
+    expect(view.container.querySelector('[data-unit-id="port-s0"]')).not.toBeNull();
+    await view.rerender({ wave: waveOf(RUN_MAP_INLINE_DONE_MAX + 1) });
+    // The chips are still on screen — behind an OPEN fold now, no click taken.
+    await waitFor(() => expect(view.container.querySelector('[data-unit-id="port-s0"]')).not.toBeNull());
+    const button = view.getAllByTestId('workflow-map-group')
+      .find((node) => node.dataset.groupKind === 'done');
+    expect(button?.getAttribute('aria-expanded')).toBe('true');
+  });
+
+  // A folded lane is the map's ONE deliberately single-line text: it is
+  // `flex: none`, so it takes a hard summary budget
+  // (`RUN_MAP_FOLDED_LABEL_MAX`) instead of the wrap rule's runaway guard —
+  // a rigid line is the only place left where sheer length can push the row
+  // past the card edge. The full text rides in the tooltip.
+  it('budgets a folded lane\'s title, full text in the tooltip', () => {
+    const longId = 'port-the-subsystem-with-an-unreasonably-descriptive-engine-stamped-name';
+    const view = mountWave(makeView([
+      makeRun('root', {
+        state: 'running',
+        skeleton: [skeletonPhase('port', { name: 'ports', shape: 'fan-out' })],
+        phases: [makePhase('port', { status: 'running', endedAt: 0, startedAt: 9_880_000 })],
+        units: [
+          makeUnit(longId, { unitIndex: 0, status: 'done' }),
+          makeUnit('port-live', { unitIndex: 1, status: 'running', endedAt: 0, startedAt: 9_970_000 }),
+        ],
+      }),
+      makeRun('long-child', {
+        workflowId: 'porter', state: 'done',
+        parentItemId: 'root', parentPhaseId: 'port', parentAttempt: 1, parentUnitId: longId,
+        skeleton: [skeletonPhase('land')],
+        phases: [makePhase('land')],
+      }),
+    ], 'root'));
+    const name = view.getAllByTestId('workflow-map-lane-name')[0];
+    const text = name.textContent?.trim() ?? '';
+    expect(text.length).toBeLessThanOrEqual(RUN_MAP_FOLDED_LABEL_MAX);
+    expect(text).toContain('…');
+    expect(name.title).toBe(`${longId} · porter`);
+  });
+
+  // An OPEN lane's title WRAPS — length is not its problem — so its bound is
+  // the shared runaway guard, far past any real name, and the guard is
+  // middle-truncation (the head and the tail both survive), never CSS.
+  it('middle-truncates an open lane\'s title only at the runaway guard', () => {
+    const longId = `port-${'x'.repeat(RUN_MAP_LABEL_MAX * 2)}`;
+    const view = mountWave(makeView([makeRun('root', {
+      state: 'running',
+      skeleton: [skeletonPhase('port', { name: 'ports', shape: 'fan-out' })],
+      phases: [makePhase('port', { status: 'running', endedAt: 0, startedAt: 9_880_000 })],
+      units: [makeUnit(longId, {
+        unitIndex: 0, status: 'running', endedAt: 0, startedAt: 9_970_000,
+      })],
+    })], 'root'));
+    const name = view.getAllByTestId('workflow-map-lane-name')[0];
+    const text = name.textContent?.trim() ?? '';
+    expect(text.length).toBe(RUN_MAP_LABEL_MAX);
+    expect(text).toContain('…');
+    expect(name.className).toContain('break-words');
   });
 });
 

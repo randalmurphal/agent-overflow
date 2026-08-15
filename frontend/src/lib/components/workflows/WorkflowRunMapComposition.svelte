@@ -14,6 +14,14 @@
   // "here is what is happening now", nested inside the frame around "here is
   // the wave that is happening now".
   //
+  // A HEADERLESS composition (§7, sole-child merge) is the third rendering:
+  // a lane whose unit made exactly one call has already put this workflow's
+  // name on the lane header, so repeating it one line down — same duration,
+  // name truncated between two copies of the same number — was pure stutter.
+  // The header row AND the card frame both drop (the lane is the frame);
+  // the blocker line and the waves render directly. The model only marks an
+  // OPEN composition headerless, so the collapsed shape never loses its row.
+  //
   // Recursion arrives as a SNIPPET (`segments`) rather than an import: a lap's
   // segments are run-map nodes, and a node is what renders this component. One
   // direction of import, no cycle.
@@ -58,45 +66,67 @@
   those.
 -->
 <div
-  class={composition.collapsed ? 'max-w-full' : `${RUN_MAP_CARD} w-full border-border-subtle bg-surface-1/30`}
+  class={composition.collapsed
+    ? 'max-w-full'
+    : composition.headerless
+      ? 'w-full'
+      : `${RUN_MAP_CARD} w-full border-border-subtle bg-surface-1/30`}
   data-testid="workflow-map-composition"
   data-composition-item-id={composition.itemId}
   data-collapsed={composition.collapsed}
 >
-  <button
-    type="button"
-    class={[
-      composition.collapsed ? RUN_MAP_NODE_BOX : 'flex w-full items-baseline gap-2 px-0.5 text-xs',
-      // Border and glow belong to the COLLAPSED row, which is a node on the
-      // spine and has to read as one. Open, the row is the sub-card's title:
-      // the card is already the frame, and an amber glow on a borderless line
-      // drew a phantom box that duplicated the blocker line right beneath it.
-      composition.collapsed ? `${style.border} ${style.glow}` : '',
-      composition.toggleable ? 'hover:bg-surface-2/50' : 'cursor-default',
-    ].filter(Boolean).join(' ')}
-    disabled={!composition.toggleable}
-    aria-expanded={!composition.collapsed}
-    onclick={() => onToggleComposition(composition.itemId)}
-    data-testid="workflow-map-composition-row"
-  >
-    {#if style.spinner}
-      <SteppedSpinner size={10} class="shrink-0 self-center" animate={!getSettings().lowPowerMode} />
-    {:else}
-      <span class={['shrink-0', style.tone].join(' ')} aria-hidden="true">{style.glyph}</span>
-    {/if}
-    <span class="min-w-0 truncate text-fg-muted" title={composition.label}>
-      {truncateMiddle(composition.label, RUN_MAP_LABEL_MAX)}
-    </span>
-    {#if meta}
-      <span class="shrink-0 text-[0.6875rem] tabular-nums text-fg-hint">{meta}</span>
-    {/if}
-  </button>
+  {#if !composition.headerless}
+    <button
+      type="button"
+      class={[
+        composition.collapsed ? RUN_MAP_NODE_BOX : 'flex w-full items-baseline gap-2 px-0.5 text-xs',
+        // Border, fill and glow belong to the COLLAPSED row, which is a node on
+        // the spine and has to read as one. Open, the row is the sub-card's
+        // title: the card is already the frame, and an amber glow on a
+        // borderless line drew a phantom box that duplicated the blocker line
+        // right beneath it.
+        composition.collapsed ? `${style.border} ${style.fill} ${style.glow}` : '',
+        composition.toggleable ? 'hover:bg-surface-2/50' : 'cursor-default',
+      ].filter(Boolean).join(' ')}
+      disabled={!composition.toggleable}
+      aria-expanded={!composition.collapsed}
+      onclick={() => onToggleComposition(composition.itemId)}
+      data-testid="workflow-map-composition-row"
+    >
+      {#if style.spinner}
+        <SteppedSpinner
+          size={10}
+          class={composition.collapsed ? 'mr-1.5 inline-block align-middle' : 'shrink-0 self-center'}
+          animate={!getSettings().lowPowerMode}
+        />
+      {:else}
+        <span
+          class={[composition.collapsed ? 'mr-1.5' : 'shrink-0', style.glyphTone].join(' ')}
+          aria-hidden="true"
+        >{style.glyph}</span>
+      {/if}
+      <!-- Wraps, never ellipsizes (§2): the workflow name is the row's whole
+           meaning, and `RUN_MAP_LABEL_MAX` is the runaway guard, not a line
+           budget. -->
+      <span class="min-w-0 break-words text-fg-muted" title={composition.label}>
+        {truncateMiddle(composition.label, RUN_MAP_LABEL_MAX)}
+      </span>
+      {#if meta}
+        <span
+          class={[
+            composition.collapsed ? 'ml-1.5' : 'shrink-0',
+            'text-[0.6875rem] tabular-nums whitespace-nowrap text-fg-hint',
+          ].join(' ')}
+        >{meta}</span>
+      {/if}
+    </button>
+  {/if}
 
   {#if composition.blockerLabel && !composition.collapsed}
     <!-- R1's one hue on this surface: a person is blocked, and the sub-card
          says so where the reader is already looking. -->
     <p
-      class={['mt-1 rounded border px-1.5 py-0.5 text-[0.6875rem]', blocker.border, blocker.glow, blocker.tone]
+      class={['mt-1 rounded border px-1.5 py-0.5 text-[0.6875rem]', blocker.border, blocker.fill, blocker.glow, blocker.tone]
         .join(' ')}
       data-testid="workflow-map-composition-blocker"
     >

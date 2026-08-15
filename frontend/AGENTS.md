@@ -271,7 +271,16 @@ State ownership:
   the way down: a collapsed composition's laps carry `segments: null` and a
   folded fan lane carries `chain: []`. Collapsed means NOT BUILT, everywhere.
   What decides it is never depth — it is whether the node is on the frontier
-  path (RUN-MAP §1, §3): only the live path is open, at every level.
+  path (RUN-MAP §1, §3): only the live path is open, at every level. The
+  reader's clicks are the other opener, and a click answers with CONTENT,
+  not another fold (RUN-MAP §6): a lane's sole child composition arrives
+  open with the lane click (`merged`, guarded — never for a failed child or
+  under an actionable lane), and an opened settled multi-lap chain defaults
+  its FINAL lap — the tail leaf — open, with a click inverting any settled
+  lap's default. One PRESENTATION fact rides the walk, not depth: a fan
+  renders columns until the walk enters a lane (`RunMapFan.layout`); every
+  fan inside one stacks, and labels on this surface wrap — CSS ellipsis is
+  banned.
   `utils/workflowRunMapStyle.ts` is the map's presentation vocabulary and is
   deliberately consumed OFF the map too (the evidence block's checks strip): a
   completed check and a completed node are the same statement, and a second
@@ -306,9 +315,13 @@ Rules that are not stylistic:
   awaiting disposition. `utils/workflowRunSignal.ts` is the only place that
   decides — run state, node signal and their tones — and
   `utils/workflowRunMapStyle.ts` is the map's vocabulary over it (glyph,
-  border, glow, spinner). Never inline a colour in a component. The run map's
-  `now ▸` marker is the surface's one `--accent` use and it marks POSITION,
-  not status; R1's hue meanings are untouched by it.
+  glyph tone, border, fill, glow, spinner). Never inline a colour in a
+  component. Two amended clarity hints (RUN-MAP §13 fourth pass,
+  user-approved 2026-08-15) sit on top without touching the attention hues:
+  the done GLYPH is `--success` — the glyph only, never the label, an
+  exactly-one rule pinned in `workflowRunMapStyle.test.ts` — and the run
+  map's `now ▸` marker plus its row tint are the surface's one `--accent`
+  use, marking POSITION, not status.
 - **R2, no internals.** No envelopes, JSON, schemas, gate traces or the word
   "variables" on any surface. A workflow's typed inputs render as plain form
   fields named after the field.

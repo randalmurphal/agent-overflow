@@ -1,8 +1,8 @@
 # Run Map — spec and implementation plan
 
 Replaces the recursive run-detail tree (`WorkflowRunTree.svelte`) with a
-vertical **run map**: time flows down, solid is done, one marked "now",
-dashed is not-yet. Ground-up on the data plane where the current shape
+vertical **run map**: time flows down, filled is done, one marked "now",
+a bare line is not-yet. Ground-up on the data plane where the current shape
 can't carry a live view; surgical where existing machinery is already
 right (action rows, evidence, sweep, thread links all stay).
 
@@ -20,10 +20,11 @@ campaign are one solid summary row each. The current wave is expanded in
 place: its phases as nodes on the line, a fan-out phase as parallel
 branch columns that split and rejoin, composition calls as chains inside
 their branch. Everything the frozen definition says will happen but
-hasn't yet is pre-rendered as dashed ghosts below the action, ending in
-the loop decision ("issues → wave N+1" / "clean → done") when the
+hasn't yet is pre-rendered as quiet ghost lines below the action, ending
+in the loop decision ("issues → wave N+1" / "clean → done") when the
 definition tail-self-calls. The reading rule is the whole UI: **position
-= progress, solid = happened, marked node = now, dashed = not yet.**
+= progress, filled box = happened, marked node = now, bare line = not
+yet.**
 A workflow with no self-call is simply a map with one segment and no
 loop affordance — that is the base case, not a special case.
 
@@ -46,18 +47,24 @@ outputs, disposition, and the action row are untouched.
 The interactive mockup used cyan glow + pulse for "running". The app's
 R1 rule (frontend/CLAUDE.md, `utils/workflowRunSignal.ts`) reserves
 amber for human-blocked, red for failed, pulse/glow for amber only.
-The map adopts R1 rather than extending it:
+The map adopts R1 and adds two CLARITY HINTS on top (§13 fourth pass,
+2026-08-15): the done GLYPH is `text-success` (glyph only — the label
+beside it stays neutral, so amber/red keep their monopoly on label
+hues), and the `now ▸` row swaps its fill for a `bg-accent/10` tint.
+Hierarchy comes from SURFACE, not border taxonomy: what happened is a
+FILLED box, what has not happened is a bare line — border style stops
+being the only signal.
 
 | Map state | Treatment |
 |---|---|
-| done (phase/unit/wave) | solid border, glyph `✓`, tone `text-fg-muted` — neutral, per `workflowNodeTone`. Green is not one of this surface's hues |
-| running | solid border `border-border-strong`, `text-fg`, glyph = `SteppedSpinner` (the app's standing-spinner primitive). **No pulse, no new hue.** |
-| the **now marker** | position + weight, plus a left-gutter `now ▸` tag in `--accent` — the one deliberate accent use on the surface (decided: it marks position, not status; R1's hue meanings stay untouched) |
-| pending / queued unit | solid border, `text-fg-subtle`, glyph `◌`, meta `queued` |
-| ghost (not yet reached) | dashed `border` at `--fg-hint` weight, `text-fg-hint` |
-| parked / needs-human cause | amber chip/border via `workflowRunSignal` tones + existing `status-glow-warning` ring — the only glow on the surface |
-| failed node / failed wave row | `text-error` / `border-error` per `workflowNodeTone` |
-| retry attempt | `·N` suffix on the label. That is the whole convention: the row keeps its own status's border, because a retried attempt is not a ghost and a second border vocabulary for "again" would collide with the dashed one that means "not yet" |
+| done (phase/unit/wave) | borderless fill `bg-surface-2/50`, glyph `✓` in `text-success` (the glyph, never the label), label `text-fg-muted` per `workflowNodeTone`. Settled work is quiet surface, not border ink |
+| running | `border-border-strong` over `bg-surface-2/60`, `text-fg`, glyph = `SteppedSpinner` (the app's standing-spinner primitive). **No pulse, no new hue.** |
+| the **now marker** | position + weight, plus an inline `now ▸` tag in `--accent` and a `bg-accent/10` fill on the row — the surface's one deliberate accent (decided: it marks position, not status; R1's hue meanings stay untouched) |
+| pending / queued unit | hairline `border-border-subtle` over `bg-surface-1/40`, `text-fg-subtle`, glyph `◌`, meta `queued` |
+| ghost (not yet reached) | **no box at all** — a bare `text-fg-hint` line on the spine (`RUN_MAP_GHOST_ROW`). The future is quiet text; boxing it at full geometry made it weigh what the past weighs |
+| parked / needs-human cause | amber chip/border over `bg-warning/10` via `workflowRunSignal` tones + existing `status-glow-warning` ring — the only glow on the surface |
+| failed node / failed wave row | `text-error` / `border-error` over `bg-error/10` per `workflowNodeTone` |
+| retry attempt | `·N` suffix on the label. That is the whole convention: the row keeps its own status's treatment, because a retried attempt is not a ghost and a second vocabulary for "again" would collide with the unboxed one that means "not yet" |
 | soft-stop armed | note on the loop decision node: "stops after this wave" |
 
 Colour decisions stay in `workflowRunSignal.ts` / `workflowNodeTone` —
@@ -72,8 +79,10 @@ being true.
 
 | Element | Treatment |
 |---|---|
-| a node on the spine | `RUN_MAP_NODE_BOX` — an INTRINSIC-width bordered box, centered in its row, capped so a long label truncates rather than stretching to the card edge. Never a full-width bar: a column of edge-to-edge bars reads as a list whatever the glyphs say |
-| the map's column | `RUN_MAP_COLUMN` — one centered, max-width-constrained column for the whole surface, not the full overlay width |
+| a node on the spine | `RUN_MAP_NODE_BOX` — an INTRINSIC-width box, centered in its row, capped at the card edge with its label WRAPPING inside it. **CSS ellipsis is banned on this surface**: a map whose every node reads `Implement …` says nothing, so labels wrap and `RUN_MAP_LABEL_MAX` (96, applied with `truncateMiddle` in each label's renderer) is the runaway guard for a label that is effectively a paragraph, not a line budget. Never a full-width bar: a column of edge-to-edge bars reads as a list whatever the glyphs say. The box is `inline-block` TEXT FLOW, and a row's glyph + label + meta live inside ONE button as inline content: atomic siblings beside a label wrap as units when space runs out, stranding a lone glyph on the first line (§13 fourth pass) |
+| a ghost row | `RUN_MAP_GHOST_ROW` — same intrinsic-width text flow, no border, no fill, one type step down. A ghost is a line, not a box (§2 table above) |
+| the map's column | the overlay card's full width — no wrapper, no cap. A 34rem column existed once for the look of the single-file mockup, and a real campaign paid for it twice (§6, width) |
+| lane geometry | `RUN_MAP_LANE_MIN` / `RUN_MAP_LANE_MAX` (15rem / 26rem) — an open lane's width band — and `RUN_MAP_FOLDED_LABEL_MAX` (40), the folded lane title's hard budget, the one deliberately single-line text on the map. `app.css` re-declares the band on `:root` as the `var()` resolution floor; a test pins the two sources together |
 | a frame around live flow | `RUN_MAP_CARD` — the current wave, and a live composition's sub-card. **The surface's one structural emphasis**: the live path is the thing with a box around it, and that contrast is what folds buy |
 | a fan lane's name | `RUN_MAP_LANE_HEADER` — small caps above its column |
 | connective tissue | pure CSS in `app.css` under `.run-map-*`: the spine between sequential nodes (`.run-map-spine`, whose gap and connector length are ONE custom property so a line can never be drawn across a distance the layout does not have), the fan's `.run-map-fork` / `.run-map-rejoin` bars and per-lane `.run-map-lane` drops, and the loop foot's dashed `.run-map-loop-fork`. **All of it is pseudo-elements**, so every box stays an ordinary block-level descendant of the scroller's row flow — which is what keeps §9.7's anchor descent able to find it. No SVG, no measurement JS, nothing absolutely positioned out of flow |
@@ -405,28 +414,52 @@ Projection rules (each a table-test group):
 The map must be correct at every reachable size and content shape. These
 rules are deterministic — **there is no measurement-driven JS layout on
 this surface at all**, and the "fan-tier decision" this section first
-imagined does not exist: the fan is `overflow-x: auto` and CSS decides,
-per frame, whether the columns need to scroll. Nothing measures a column
-to pick a tier. Each rule below is testable without a layout engine.
+imagined does not exist: lanes wrap by flex rules and CSS decides, per
+frame, how many ranks the row needs. Nothing measures a column to pick a
+tier. Each rule below is testable without a layout engine.
 
 **Width.**
 
+- The map owns the **full card width** — no wrapping column element at
+  all. An earlier pass capped one at 34rem for the look of the
+  single-file mockup, and a real campaign paid for the look twice — four
+  fan lanes squeezed into half the card while the other half sat empty.
+  Long phase names and parallel lanes are what the width is FOR; a
+  single-file run centers its nodes inside the same span and loses
+  nothing.
 - The spine — wave summary rows, phase nodes, the loop foot — is a
-  single centered column that owns 100% of the map width and **never
-  scrolls horizontally**. The overlay card yields roughly 520–950px
-  depending on window size; the spine stays legible across that whole
-  range because nodes size to content with truncation, never fixed
-  widths.
-- The **fan region is the only horizontally elastic element**. Branch
-  columns have a 120px floor / 200px preference, declared once as
-  `--run-map-lane-min` / `--run-map-lane-max` (the resting width, the
-  enter keyframes and the leaving transition are three renderings of the
-  same two numbers). When active columns exceed the available width, the
-  fan region alone gets `overflow-x: auto` (the app-wide wide-content
-  rule) — the page and spine never scroll sideways. **Nothing writes the
-  fan's `scrollLeft`**: §9's chokepoint owns exactly one number, the
-  overlay body's `scrollTop`, and a second automatic scroll axis would be
-  a write with no cause the reader could name (§9.1).
+  single centered column that **never scrolls horizontally**. Nodes size
+  to content and their labels wrap; nothing is fixed-width.
+- **NOTHING on the map scrolls sideways** — not the fan either. Branch
+  columns have a readable floor and a cap (`RUN_MAP_LANE_MIN` /
+  `RUN_MAP_LANE_MAX`, 15rem / 26rem, declared once in
+  `workflowRunMapStyle.ts` and set on the fan container as
+  `--run-map-lane-min` / `--run-map-lane-max`; the resting width and
+  the enter keyframes are renderings of the same numbers, and `app.css`
+  declares both on `:root` so a `var()` outside the fan container still
+  resolves — a test pins the two declarations together). When open
+  lanes exceed the available width, the lane row **wraps into a second
+  rank** (`.run-map-lane-row { flex-wrap: wrap }`) — a horizontal
+  scrollbar hid whole lanes off the right edge of a real campaign; a
+  second rank hides nothing. A second-rank lane's drop line dangles
+  from no fork bar; that is decoration degrading, and it beats content
+  hiding. The row centers with **`justify-content: safe center`**: a
+  rank that still overflows — one rigid folded lane wider than a narrow
+  card — falls back to start alignment, so overflow is at worst a
+  clipped tail, never an unreachable head bleeding out of both edges.
+  **Nothing writes any `scrollLeft`**: §9's chokepoint owns exactly one
+  number, the overlay body's `scrollTop` (§9.1).
+- **Fans inside a lane render STACKED, never as columns**
+  (`RunMapFan.layout`, decided by the model at build time: `stacked`
+  once the walk has entered a lane, `columns` anywhere the card's full
+  width is available — a spine sub-card's own fan keeps columns, so
+  depth alone is not the key). Columns inside a column can only
+  subdivide a width that was already minimal — a nested fan is what put
+  a horizontal scrollbar inside a 200px lane. A stacked fan draws no
+  fork/rejoin bars and no lane row: each branch is a full-width block —
+  header line, then its chain behind an indent guide — and the scalar
+  groups (inline done chips, the oversized-done fold, the queued range
+  node) and the join are wrapping rows in the same flow.
 
 **Fan scale.** Fan width is engine-capped at `EffectiveMaxFanOutWidth`
 (default 32); 32 uniform columns communicate nothing. A lane takes one
@@ -438,21 +471,42 @@ of three shapes, and the difference is **what the reader can DO**:
 - **Settled with structure under it** — a completed unit that CALLED a
   run: a column too, but COLLAPSED to its header alone (glyph, name,
   duration), with an inline toggle stating how much is behind it. One
-  click puts the subtree back. Structure is a fact about the unit and
-  not about its status: a group node renders a node and nothing else, so
-  routing a finished call-bound unit into `done` deleted the child run
-  and its whole composition subtree from the map (§7, "unit-bound
-  call") — but painting that subtree unconditionally is what turned a
-  three-lane campaign into sixty rows, so it is reachable rather than
-  always-drawn.
-- **Scalar** — nothing under it: arithmetic. Queued lanes become ONE
-  node named by the CONTIGUOUS RANGE they cover (`ports 2–4 · queued`,
-  falling back to `14 units · queued` when a range label would claim
-  lanes the group does not hold), and it is **non-interactive by
-  construction** — the model carries no entries for it, because a queued
-  lane has no record, no thread and no duration a click could reveal.
-  Finished ones become the `done ·N` node, which still expands, because
-  `dropped` units live in its expansion (struck styling) and nothing
+  click puts the WHOLE subtree back: a lane whose unit made exactly one
+  call **merges** with it (`merged` — the lane toggle is the one fold
+  control, so the composition offers no second one), and that
+  composition renders **headerless** with the workflow's name composed
+  onto the lane's `title` in the model (`PORT-0 · go-port-slice`, shown
+  folded and open alike) — the alternative was the same duration twice,
+  one line apart, with the workflow name truncated in between. The merge
+  has guards: an ACTIONABLE lane (failed, taken-over — always open,
+  no fold) never merges a settled child, because merging force-opens
+  and that subtree would have no collapse anywhere on it; and a FAILED
+  child keeps its own header row, because that row carries its red
+  glyph and the lane header carries the UNIT's signal, which need not
+  agree. A LIVE child merges under any lane — live content is bounded,
+  and unpainting a running run is what the frontier rule exists to
+  prevent. Sibling children keep their
+  own rows: the merge exists because a sole child's header repeated the
+  lane's, which is not true of two. Structure is a fact about the unit
+  and not about its status: a group node renders a node and nothing
+  else, so routing a finished call-bound unit into `done` deleted the
+  child run and its whole composition subtree from the map (§7,
+  "unit-bound call") — but painting that subtree unconditionally is what
+  turned a three-lane campaign into sixty rows, so it is reachable
+  rather than always-drawn.
+- **Scalar** — nothing under it: arithmetic, and for the done side,
+  chips. Queued lanes become ONE node named by the CONTIGUOUS RANGE they
+  cover (`ports 2–4 · queued`, falling back to `14 units · queued` when
+  a range label would claim lanes the group does not hold), and it is
+  **non-interactive by construction** — the model carries no entries for
+  it, because a queued lane has no record, no thread and no duration a
+  click could reveal. Finished scalar units render **inline as chips, no
+  click, up to `RUN_MAP_INLINE_DONE_MAX` (8)** — "what completed" is the
+  first thing a reader asks of a finished fan, and a `done ·N` count
+  chip made them click for the answer per lap, per composition. Past
+  eight the group folds behind its labelled count (forty chips is the
+  wall the fold exists to prevent), and it still expands, because
+  `dropped` units live among the entries (struck styling) and nothing
   else states them.
 
 A collapsed lane is `flex: none`: EXACTLY its header's content, and it
@@ -462,14 +516,22 @@ the LAST thing to yield rather than the first — an earlier pass let
 folded lanes shrink first on the theory that a finished lane costs the
 reader nothing, and what it actually cost them was `✓ POR… 2s` sitting
 beside a fully-named open column. The **open columns are what flexes**
-(120px floor, 200px preference), and past that the fan region's own
-horizontal scroll takes over — §6's declared escape for fan width, and
-the right one, because a live column pushed into a scroll is still a
-column the reader can read. The same rule governs the queued group's
-range label: `ports 2–4` is that node's whole identity, so it does not
-truncate either. Label length is bounded by `truncateMiddle`'s 56-char
-cap at the model layer, which is what keeps "never truncates" from
-meaning "unbounded".
+(15rem floor, 26rem cap, growing to share the row), and past that the
+lane row wraps into a second rank — §6's declared escape for fan width,
+and the right one, because a wrapped lane is still a lane the reader
+can read; a scrolled-away one is not. An OPEN lane's name wraps in its
+column for the same reason the folded one refuses to shrink: the name
+is the lane's identity in BOTH states. The folded line takes a HARD
+budget instead of the runaway guard (`RUN_MAP_FOLDED_LABEL_MAX`, 40,
+middle-truncated with full text in `title`): it is `flex: none` under
+the one deliberate `whitespace-nowrap`, so sheer length is the one way
+it could still push the row past the card edge, and a folded lane is a
+summary by definition. The queued group's range label
+wraps too — it is built from the phase's display name, and a real phase
+name is a sentence. Elsewhere label length is bounded by
+`truncateMiddle`'s 96-char cap (`RUN_MAP_LABEL_MAX`), applied in each
+label's renderer, which is what
+keeps "never ellipsizes" from meaning "unbounded".
 
 A finishing branch folds into the done node; a starting queued unit
 slides out into a column (§10 motion). The fan states **no tally of its
@@ -480,16 +542,27 @@ PARTITION — every non-join unit is drawn or counted exactly once, and
 the join is neither. This is information design, not just space: the
 interesting subset gets geometry, the bulk gets arithmetic.
 
-**Text.** No text length reachable from the engine may break layout:
+**Text.** No text length reachable from the engine may break layout,
+and none of it ellipsizes — labels WRAP, because a phase name is the
+node's whole meaning:
 
-- Node labels: phase `name` (fallback `id`), one line, middle-truncated
-  (`truncateMiddle`) with full text in `title`.
+- Node labels: phase `name` (fallback `id`), wrapping in the node box,
+  middle-truncated only at `RUN_MAP_LABEL_MAX` (96 — the runaway guard,
+  far past any real phase name) with full text in `title`.
 - Unit ids are engine-stamped slugs but unbounded in principle — same
-  truncation rule.
-- Park causes / cause chips clamp to two lines with inline expand.
-- Wave summary rows are one flex line; parts yield by priority
-  (outcome > unit counts > duration) via CSS `min-width: 0` truncation
-  order — no JS measurement.
+  rule. A FOLDED lane's one-line header is the single deliberate
+  `whitespace-nowrap` (its intrinsic width is what makes it a summary
+  node); `RUN_MAP_FOLDED_LABEL_MAX` (40) is what bounds it.
+- Park causes / cause chips clamp to two lines with inline expand — the
+  one deliberate clamp, and it is `line-clamp-2` with an expander, never
+  `truncate`. Pinned by `WorkflowRunMap.test.ts` "parks amber, clamps
+  the cause to two lines, and expands it inline"; the no-`truncate` half
+  by "nothing on the map carries a CSS ellipsis", which sweeps every fan
+  shape and the full surface (frontier strip, loop foot, blocker).
+- Wave summary rows are one WRAPPING flex row; every part renders in
+  full, each part is atomic (`whitespace-nowrap`) so the wrap point
+  falls between facts, and only the outcome — the one part that can be
+  a sentence — wraps internally. No JS measurement.
 - Numerics use `tabular-nums`; durations keep `workflowDuration`'s
   shapes.
 
@@ -509,6 +582,18 @@ interesting subset gets geometry, the bulk gets arithmetic.
   away free, which is exactly the wall a real campaign hits); it is only
   a runaway bound, and `RUN_MAP_COMPOSITION_DEPTH` is deleted rather than
   left steering anything.
+- **A composition the reader OPENED answers with content, not another
+  fold.** An opened settled multi-lap chain defaults its FINAL lap open
+  — the ending is the summary, and "final" is the lap that called no
+  successor (a tail LEAF, not the last chain position: a retried tail
+  puts a settled dead-end after the lap that carried the run forward,
+  and every leaf defaults open). A click on any settled lap INVERTS its
+  default, on the same `expandedWaveIds` a top-level lap uses — so the
+  final lap can be re-closed and history reopened, one click each. A
+  single-lap composition never folds its lap. Same doctrine one level
+  down: a lane's sole composition arrives open with the lane click
+  (`merged`). These are what killed "I have to click MULTIPLE times to
+  even see that there were items in a phase that completed".
 - **Collapsed means NOT BUILT**, everywhere, and it is the same
   convention throughout: `RunMapWave.segments === null`,
   `RunMapCompositionNode.waves[].segments === null`, and
@@ -550,14 +635,19 @@ with no test behind it is a claim, not a contract.
 | single-shape phase, agent driver | plain node; thread link when `threadId` set |
 | single-shape phase, tool driver | node with tool glyph; no thread link (none exists) |
 | fan-out pre-expansion (static `fanOut` **or** dynamic `over`/`as`) | ONE rule, not two: a count-less ghost named from the skeleton phase — "units — declared by ports". The skeleton carries SHAPE and never a width, so a static list is no more countable here than a dynamic one, and a count "known from the skeleton" was never available to know. Pinned by `workflowRunMap.test.ts` "fan-out pre-expansion \| count-less ghost named from the skeleton phase" and "names a pre-expansion fan by where its units come from, never by a count" |
-| fan-out expanded | three lane shapes per §6 — open columns for the actionable, folded header-only columns for the settled-with-structure, group nodes for the scalar; join unit = merge node. Pinned by `workflowRunMap.test.ts` "fan-out expanded \| columns for actionable branches, group nodes for the rest" and `WorkflowRunMap.test.ts` "gives columns to the actionable branches and arithmetic to the rest" |
+| fan-out expanded | three lane shapes per §6 — open columns for the actionable, folded header-only columns for the settled-with-structure, inline chips or group nodes for the scalar; join unit = merge node. Pinned by `workflowRunMap.test.ts` "fan-out expanded \| columns for actionable branches, group nodes for the rest" and `WorkflowRunMap.test.ts` "gives columns to the actionable branches and arithmetic to the rest" |
+| nested fan (any fan inside a lane) | STACKED, never columns (§6): `RunMapFan.layout` is the model's call by lane containment — a spine sub-card's fan keeps columns — and the component draws no fork/rejoin/lane-row for it: each branch is a full-width block in its parent's flow, scalar groups and join in the same flow. Pinned by `workflowRunMap.test.ts` "the top-level fan is columns, and a fan inside a lane is stacked" / "a fan on a spine sub-card keeps columns — only a lane forces stacking" and `WorkflowRunMap.test.ts` "stacks a nested fan instead of nesting columns" |
+| lane whose unit made exactly ONE call | the lane MERGES with it (`merged`): the sole composition arrives OPEN with the lane click (the lane toggle is the one fold control) and renders headerless, the workflow name composed onto the lane's model-side `title` (`PORT-0 · go-port-slice`) folded and open alike. Sibling children keep their own rows. Pinned by `workflowRunMap.test.ts` "a sole child composition is headerless and opened by its lane", "a settled sole child still opens with the lane click alone", "sibling child compositions keep their own rows and folds", and `WorkflowRunMap.test.ts` "merges a sole child workflow into its lane header instead of repeating it" and "opens a settled lane's sole composition with the lane click alone" |
+| sole child that FAILED, or a settled sole child under an ACTIONABLE lane | NOT merged (§6, merge guards): a failed child keeps the header row its red glyph lives on, and an actionable lane (no fold of its own) merging a settled child would force-paint a subtree with no collapse anywhere on it. Pinned by `workflowRunMap.test.ts` "a failed sole child keeps its own row instead of merging" and "an actionable lane leaves its settled sole child its own fold" |
+| small done group (≤ `RUN_MAP_INLINE_DONE_MAX`, 8) | chips IN the flow, no click — "what completed" is not behind an affordance — with dropped entries struck among them. Queued never inlines: its entries are empty by construction. Pinned by `workflowRunMap.test.ts` "a done group inlines at the bound and folds past it; queued never inlines" and `WorkflowRunMap.test.ts` "renders a small done group inline, dropped entries struck, no affordance" |
+| oversized done group (> 8) | folds behind its labelled count and expands on click — forty chips is the wall the fold exists to prevent. The BUTTON rides the lane row; the chips land beneath it as a full-width block, because chips inside a `flex-none` lane set the lane's intrinsic width to the whole chip-row and dragged the row past the card edge. A group that outgrows the bound mid-run seeds its fold OPEN, so the chips the reader was watching don't vanish behind a closed count. Pinned by `WorkflowRunMap.test.ts` "folds an oversized done group behind its count, and expands it on click", "lands the oversized done chips below the lane row, not inside it" and "seeds the fold open when an inline done group outgrows the bound" |
 | unit-bound call | branch chain (composition), recursing per §5 — **at every unit status, including terminal ones**, but REACHABLE rather than always-painted once the unit settles. Structure earns the lane (§6): a unit that called a run keeps its lane after it finishes, because the group node it would otherwise fold into renders a node and nothing else and the child run would vanish from the map. What changed is that a settled lane is FOLDED to its header, with the subtree one click away — painting a finished child workflow's whole history in every lane is what turned a three-lane campaign into sixty rows. Pinned by `workflowRunMap.test.ts` "unit-bound call \| a COMPLETED call-bound unit keeps its lane, folded, and its subtree one click away" and `WorkflowRunMap.test.ts` "folds a settled lane to its header alone, with its subtree one click away" |
-| settled lane's header | IS the summary: glyph, unit name in small caps, duration, and an inline toggle stating how much is behind it (`1 run` / `N runs`). One line, and `chain === []` while folded — collapsed means not built. **`flex: none`, and its label never truncates**: one line leaves the name as the lane's only identity, so the open columns flex and the fan scrolls instead (§6). Pinned by `WorkflowRunMap.test.ts` "heads every lane with its unit name, in the surface's small-caps treatment" and "a folded lane never eats its own label — the open columns are what flex" |
-| queued lanes | ONE group node labelled by the contiguous `unitIndex` range and the shared phase name (`ports 2–4 · queued`), falling back to a count when the group is not contiguous (`14 units · queued`). **Non-interactive by construction** — the model carries no entries, because a queued lane has no record, thread or duration a click could reveal. Its label does not truncate, for the same reason a folded lane's does not: the range IS the node's identity. Pinned by `workflowRunMap.test.ts` "queued lanes group into ONE node labelled by their contiguous range" and "a queued group whose lanes are not contiguous falls back to a count it can prove", and `WorkflowRunMap.test.ts` "offers no affordance on the queued group, because it stands for no records" |
+| settled lane's header | IS the summary: glyph, lane title in small caps (the sole child's workflow name composed in — `PORT-0 · porter`), duration, and an inline toggle stating how much is behind it (`1 run` / `N runs`). One line, and `chain === []` while folded — collapsed means not built. **`flex: none`, and its label never CSS-truncates**: one line leaves the title as the lane's only identity, so the open columns flex and the row wraps instead (§6); the title's own bound is `RUN_MAP_FOLDED_LABEL_MAX` (40, middle-truncated, full text in the tooltip), because a rigid line is the one place sheer length can still overflow the row. Pinned by `WorkflowRunMap.test.ts` "heads every lane with its unit name, in the surface's small-caps treatment", "a folded lane never eats its own label — the open columns are what flex" and "budgets a folded lane's title, full text in the tooltip" |
+| queued lanes | ONE group node labelled by the contiguous `unitIndex` range and the shared phase name (`ports 2–4 · queued`), falling back to a count when the group is not contiguous (`14 units · queued`). **Non-interactive by construction** — the model carries no entries, because a queued lane has no record, thread or duration a click could reveal. Its label WRAPS rather than clipping — it is built from the phase's display name, and a real phase name is a sentence. Pinned by `workflowRunMap.test.ts` "queued lanes group into ONE node labelled by their contiguous range" and "a queued group whose lanes are not contiguous falls back to a count it can prove", and `WorkflowRunMap.test.ts` "offers no affordance on the queued group, because it stands for no records" and "the queued group states its whole range rather than ellipsising it" |
 | fan unit accounting | the fan states no tally of its own; what holds is the partition — every non-join unit is drawn or counted exactly once across columns / `done.entries` / `queued.count`, and the join is neither. Pinned by `workflowRunMap.test.ts` "every unit lands in exactly one of column / done / queued, joins apart" |
 | composition OFF the frontier path | one summary node — glyph, workflow, duration, subtree counts — with a click that opens it, **at every depth**. Depth is not the question; "is this where the run IS" is. Pinned by `workflowRunMap.test.ts` §3 "composition collapse — only the live path is open" ("collapses every composition off the frontier path, starting at the first level", "an expanded composition id opens exactly that row, and no other") and `WorkflowRunMap.test.ts` "collapses a composition off the frontier path to one row, and opens it on click" |
 | composition ON the frontier path | a compact bordered sub-card (`RUN_MAP_CARD`) holding the flow, with an amber blocker line when it is waiting on a person, and NO fold affordance — there is nothing to fold on the path the reader is watching. Pinned by `workflowRunMap.test.ts` "the frontier path is always expanded, and never offers a fold" and `WorkflowRunMap.test.ts` "frames the live composition and states its blocker where the reader is looking" |
-| past laps INSIDE an open composition | folded to the same summary rows a top-level lap folds to, off the same expansion set — an open composition shows only its live lap's flow. A composition with a SINGLE lap is the exception: there is nothing to fold, and folding it hid the only content the sub-card exists to show. Pinned by `workflowRunMap.test.ts` "an open composition folds its finished laps and opens the one the reader names" |
+| past laps INSIDE an open composition | folded to the same summary rows a top-level lap folds to, off the same expansion set — an open composition shows its live lap's flow, or its FINAL lap's when the chain is settled (the ending is the summary; an opened composition answers with content, not another fold). "Final" is the tail LEAF — the lap that called no successor, every one of them on a retried tail — not the last chain position. A click on a settled lap INVERTS its default: the final lap re-closes, history reopens, one click each. A composition with a SINGLE lap never folds it: there is nothing to fold, and folding it hid the only content the sub-card exists to show. Pinned by `workflowRunMap.test.ts` "an open composition folds its finished laps and opens the one the reader names", "an opened settled composition defaults its final lap open, and a click closes it again" and "the final lap is the tail LEAF, not the last chain position" |
 | wave that handed off (called the next lap) | folded, and its row wears a settled glyph rather than the engine's spinner — the lap's own work is over and what is running is the wave below it. Attention still wins for a lap that parked or failed. Pinned by `workflowRunMap.test.ts` "a wave that handed off wears a settled glyph, not the engine's spinner" and "attention still wins: a lap that parked keeps its hue even though it handed off" |
 | call phase, other workflow | composition chain (CallNode) |
 | self-call, **not** tail | composition — explicitly never flattened |
@@ -588,7 +678,7 @@ with no test behind it is a claim, not a contract.
 | terminal run (done / failed / cancelled) | no ghosts, no undecided loop stubs (§5.6) |
 | done awaiting disposition | fully solid map, loop decided "done"; disposition UI unchanged below |
 | stale nav entry / deep link to a child id | server root-resolution (§5.9) |
-| fan-out at the width cap (32) | group nodes for the scalar bulk, folded headers for settled lanes with structure, and the fan region's own horizontal scroll for whatever is left (§6). Pinned by `workflowRunMap.test.ts` "fan-out at the width cap (32) \| columns stay bounded, the bulk becomes arithmetic" |
+| fan-out at the width cap (32) | group nodes for the scalar bulk, folded headers for settled lanes with structure, and the lane row's wrap for whatever is left (§6) — nothing scrolls sideways. Pinned by `workflowRunMap.test.ts` "fan-out at the width cap (32) \| columns stay bounded, the bulk becomes arithmetic" and `WorkflowRunMap.test.ts` "wraps the lane row rather than scrolling it — nothing goes sideways" |
 | parallel parked leaves | all amber; follow priority per §13 |
 | view-only (remote) session | map renders fully; follow chip active; mutating affordances elsewhere already disabled |
 | reduced motion / low power | instant placement, no glides, no fold animation |
@@ -611,10 +701,11 @@ stated where it lives.
 | `WorkflowRunMap.svelte` | orchestration: attach store, shared clock, refusal state, wave list, follow chip |
 | `WorkflowRunMapFrontierStrip.svelte` | the strip above the spine: breadcrumb, blocker chip, resume countdown, lap + money |
 | `WorkflowRunMapWave.svelte` | one wave: the corrupt-definition notice, its summary row, and — when open — the card that frames its flow. The row lives INSIDE the card, because a card that wrapped the body but not the header would put the wave's name outside its own frame |
-| `WorkflowRunMapFan.svelte` | fork bar / lane columns (open, or folded to their header) / queued+done group nodes / rejoin bar / the fan's own `overflow-x` |
+| `WorkflowRunMapFan.svelte` | both fan layouts (§6): `columns` — fork bar, wrapping `safe center` lane row, rejoin bar — and `stacked` for every fan inside a lane; inline done chips, the oversized-done fold (button in the row, chips below it), the queued group node |
+| `WorkflowRunMapLaneHeader.svelte` | a fan lane's header line in both layouts — glyph/spinner, the model-composed lane `title` (folded: rigid, `RUN_MAP_FOLDED_LABEL_MAX`; open: wrapping, `RUN_MAP_LABEL_MAX`), duration, the `N runs` disclosure — and the WHOLE render of a folded lane |
 | `WorkflowRunMapNode.svelte` | single node: glyph, name, duration, meta, thread-open click. Composition chains and lane chains both recurse through it, passed DOWN as snippets so the node ↔ composition relationship stays one import instead of a cycle |
 | `WorkflowRunMapUnitChip.svelte` | one fan unit drawn as a node — the join, and every entry in the done group's expansion. A lane HEADER is deliberately not this: a header is a borderless summary line on top of a column, a chip is a box that stands for the unit itself |
-| `WorkflowRunMapComposition.svelte` | a called run inside its caller: one summary node when collapsed, the framed sub-card with its blocker line and its folded laps when open |
+| `WorkflowRunMapComposition.svelte` | a called run inside its caller: one summary node when collapsed, the framed sub-card with its blocker line and its folded laps when open, and the HEADERLESS shape for a lane's sole child — no header row, no card frame (the lane is the frame), blocker and waves directly |
 | `WorkflowRunMapLoopFoot.svelte` | the loop decision at a wave's foot: lap label, soft-stop note, and the dashed fork into the two outcome stubs (or the single decided one) |
 | `WorkflowRunMapSummaryRow.svelte` | ONE folded row renderer, shared by top-level waves and a composition's laps — a lap is a lap, and two renderers for it drift |
 | `WorkflowRunMapFold.svelte` | the `grid-template-rows` 0fr⇄1fr reveal both folds use, plus the §9.8 in-view decision that turns the transition off for a region the reader cannot see (§9.8, §10) |
@@ -985,6 +1076,100 @@ approved mockup):
 - **No legend.** The mockup carried one; frontend/CLAUDE.md forbids
   in-app explanatory text for internal mechanics, and the mockup does not
   override the app's rules.
+
+Resolved 2026-08-14, third pass (legibility rework, against a real
+campaign — "collapsed items where it shouldn't collapse, basically all
+text is cut off, multiple clicks to see completed items, the width isn't
+used, horizontal scrolling everywhere"):
+
+- **Labels wrap; CSS ellipsis is banned on the map.** A phase name is
+  the node's whole meaning. `RUN_MAP_LABEL_MAX` went 56 → 96 and is a
+  runaway guard, not a line budget. The one deliberate nowrap is a
+  folded lane's one-line header; the one deliberate clamp is a cause's
+  two-line preview with an expander. Audited by "nothing on the map
+  carries a CSS ellipsis".
+- **The map owns the full card width.** The 34rem `RUN_MAP_COLUMN` cap
+  is gone — it squeezed four lanes into half the card while the other
+  half sat empty.
+- **Lanes are readable or they are not lanes.** 15rem floor / 26rem cap
+  (was 120px/200px), and the lane row WRAPS instead of scrolling —
+  a scrollbar hid whole lanes; a second rank hides nothing.
+- **Nested fans stack.** `RunMapFan.layout` is the model's call by
+  lane containment: `columns` anywhere the card's full width is
+  available, `stacked` once inside a lane. Columns inside a column can
+  only subdivide a width that was already minimal.
+- **A sole child merges into its lane.** Headerless composition (no
+  header row, no card frame), name composed onto the lane's `title` in
+  the model, opened by the lane click — the one-call lane is the
+  campaign's dominant shape and it was paying a full sub-card of chrome
+  per lane for a repeated name and duration.
+- **Small done groups render inline.** ≤ `RUN_MAP_INLINE_DONE_MAX` (8)
+  done units are chips in the flow, no click; past that the labelled
+  fold returns. Queued never inlines — it has no entries by
+  construction.
+- **An opened composition answers with content.** A settled multi-lap
+  chain defaults its FINAL lap open; earlier laps stay one click away.
+
+Riders from the third pass's own review round (2026-08-15) — the fix
+wave to the seven decisions above, reviewed as new code:
+
+- **The merge earned guards.** `merged` requires the lane to own the
+  fold (`toggleable`) or the child to be LIVE, and never fires for a
+  failed child — an actionable lane merging a settled child
+  force-painted a subtree with no collapse anywhere on it, and a failed
+  child's own row is where its red glyph lives (§6, merge guards).
+- **"Final lap" is the tail leaf, and its default inverts on click.**
+  Chain position broke on retried tails; a one-way default could not be
+  re-closed. `expandedWaveIds` now INVERTS a settled lap's default
+  (§6, vertical scale).
+- **The lane row centers with `safe center`.** Plain centering made an
+  overflowing rank bleed out of BOTH edges with the head unreachable;
+  and the folded lane title took a hard 40-char budget
+  (`RUN_MAP_FOLDED_LABEL_MAX`) because a rigid line was the one place
+  sheer length still overflowed (§6, width/text).
+- **The oversized done fold split.** Button in the lane row, chips
+  below as a block — the chip-row's intrinsic width inside a
+  `flex-none` lane dragged the whole row past the card edge; and a
+  group outgrowing the bound mid-run seeds its fold open (§7 rows).
+- **Lane geometry moved to `workflowRunMapStyle.ts`.**
+  `RUN_MAP_LANE_MIN`/`MAX` exported beside the label bounds; `app.css`
+  re-declares them only as the `var()` resolution floor, pinned
+  together by test (§2).
+
+Resolved 2026-08-15, fourth pass (polish, after "doesn't feel
+production grade" against the same real-shaped campaign; brief: "hints
+of color to bring clarity", "clean apple type of UI vibes"):
+
+- **Hierarchy moved from borders to SURFACE.** Every signal that
+  happened is a FILLED box (`FILLS` in `workflowRunMapStyle.ts`);
+  settled work drops its border ink entirely (`border-transparent`
+  over `bg-surface-2/50`); live and attention signals keep a real
+  border on top of their fill. A wall of equal-weight bordered boxes
+  read as a form, not a flow — the border taxonomy carried all the
+  meaning and none of the weight.
+- **Ghosts are bare lines, not boxes.** `RUN_MAP_GHOST_ROW` replaces
+  the dashed box: the future rendered at full box geometry weighed
+  what the past weighs, and a screen of it was half the wall. The
+  dashed border vocabulary survives only on the loop-foot's fork
+  connector and the `unknown` hairline.
+- **R1 amended with two clarity hints** (user-approved): the done
+  glyph is `text-success` — the GLYPH, never the label, pinned as an
+  exactly-one rule in `workflowRunMapStyle.test.ts` — and the `now ▸`
+  row carries a `bg-accent/10` tint. Amber and red keep their monopoly
+  on label hues. The evidence checks strip reads `.tone`, not
+  `.glyphTone`, so it stays neutral by construction.
+- **A row is ONE button in text flow.** `RUN_MAP_NODE_BOX` became
+  `inline-block` text flow, and glyph + label + meta moved INSIDE the
+  single label button as inline content (glyph/meta `inline-block` so
+  the hover underline stays on the words; the strike for a dropped
+  unit sits on the label span alone). Root cause of the orphan-glyph
+  bug seen in the field: any atomic sibling beside a label —
+  a flex item, a separate button — wraps as a UNIT when space runs
+  out, stranding a lone `·` or spinner on the line above. The whole
+  row is also a bigger click target.
+- **The loop stubs de-boxed.** Undecided outcome stubs are centered
+  hint text over the dashed fork, not two full-width bordered bars —
+  they are futures, and the fork connector already draws the shape.
 
 Standing defaults (not blocking; surface before changing):
 

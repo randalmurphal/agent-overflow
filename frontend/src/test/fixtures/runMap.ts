@@ -102,6 +102,46 @@ export function campaignSkeleton(maxDepth = 5): WorkflowRunMapSkeletonPhase[] {
   ];
 }
 
+/**
+ * A live lane whose sole child workflow fans out again, live — the canonical
+ * nested-fan shape (§6/§7): the `port-a` lane merges with its sole `porter`
+ * child, and the child's own review fan carries every scalar case a stacked
+ * fan has to draw (a live branch, an inline done chip, a queued range, a
+ * join). Shared between the projection suite and the component suite so the
+ * two cannot drift into testing different trees.
+ */
+export function nestedFanView(): WorkflowRunMapView {
+  return mapView([
+    mapRun('root', {
+      state: 'running',
+      skeleton: [skeletonPhase('port', { name: 'ports', shape: 'fan-out' })],
+      phases: [phaseAttempt('port', { status: 'running', endedAt: undefined, startedAt: 9_880_000 })],
+      units: [mapUnit('port-a', {
+        unitIndex: 0, status: 'running', endedAt: undefined, startedAt: 9_970_000,
+      })],
+    }),
+    mapRun('port-a-child', {
+      workflowId: 'porter', state: 'running',
+      parentItemId: 'root', parentPhaseId: 'port', parentAttempt: 1, parentUnitId: 'port-a',
+      skeleton: [skeletonPhase('review', { name: 'reviews', shape: 'fan-out' })],
+      phases: [phaseAttempt('review', { status: 'running', endedAt: undefined, startedAt: 9_900_000 })],
+      units: [
+        mapUnit('rev-1', {
+          phaseId: 'review', unitIndex: 0, status: 'running', endedAt: undefined, startedAt: 9_960_000,
+        }),
+        mapUnit('rev-2', { phaseId: 'review', unitIndex: 1, status: 'done' }),
+        mapUnit('rev-3', {
+          phaseId: 'review', unitIndex: 2, status: 'pending', startedAt: undefined, endedAt: undefined,
+        }),
+        mapUnit('rev-join', {
+          phaseId: 'review', unitIndex: 99, kind: 'join', status: 'pending',
+          startedAt: undefined, endedAt: undefined,
+        }),
+      ],
+    }),
+  ], 'root');
+}
+
 export function runSpend(over: Partial<WorkflowRunSpend> = {}): WorkflowRunSpend {
   return new WorkflowRunSpend({
     costUsd: 0, wireCostUsd: 0, estimatedCostUsd: 0, unpricedRows: 0, ...over,

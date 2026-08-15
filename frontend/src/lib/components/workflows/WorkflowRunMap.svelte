@@ -13,7 +13,7 @@
   import WorkflowRunMapWave from './WorkflowRunMapWave.svelte';
   import { createRunMapFollow } from './runMapFollow.svelte';
   import { requireWorkflowsOverlayScroller } from './overlayScroller';
-  import { runMapRefusalHeadline, RUN_MAP_COLUMN } from '../../utils/workflowRunMapStyle';
+  import { runMapRefusalHeadline } from '../../utils/workflowRunMapStyle';
   import { createSharedNowClock } from '../chat/useRunningElapsed.svelte';
   import { buildRunMap, runMapViewIsLive, runMapWaveIsOpen } from '../../utils/workflowRunMap';
   import {
@@ -247,45 +247,38 @@
       <p class="mt-0.5 text-[0.6875rem] text-fg-muted">{refusal.message}</p>
     </div>
   {:else}
-    <!--
-      One centered column for the whole map (§6, width). Constrained rather
-      than full-bleed: the overlay card runs 520–950px, and a wave row stretched
-      across all of it reads as a table row instead of a step on a line.
-    -->
-    <div class={RUN_MAP_COLUMN}>
-      {#if followTarget !== null || loop !== null || money !== '' || budget !== ''}
-        <WorkflowRunMapFrontierStrip target={followTarget} {loop} {money} {budget} nowMs={clock.now} />
-      {/if}
+    {#if followTarget !== null || loop !== null || money !== '' || budget !== ''}
+      <WorkflowRunMapFrontierStrip target={followTarget} {loop} {money} {budget} nowMs={clock.now} />
+    {/if}
 
-      <ol class="run-map-spine run-map-spine-wide" data-testid="workflow-map-waves">
-        {#each model.waves as wave (wave.key)}
-          <!--
-            `data-wave-expanded`, not `data-expanded`: the latter is a namespace
-            the vendored streamdown's fullscreen rule reaches into (DIVERGENCE
-            entry 16), and a run map inside a markdown surface must not inherit
-            a layout rule about mermaid diagrams.
-          -->
-          <li
-            data-testid="workflow-map-wave"
-            data-wave-item-id={wave.itemId}
-            data-wave-expanded={runMapWaveIsOpen(wave)}
-          >
-            <WorkflowRunMapWave
-              {wave}
-              {nowKey}
-              onOpenThread={openThread}
-              onToggleWave={toggleWave}
-              onToggleComposition={toggleComposition}
-              onToggleLane={toggleLane}
-            />
-          </li>
-        {/each}
-      </ol>
+    <ol class="run-map-spine run-map-spine-wide" data-testid="workflow-map-waves">
+      {#each model.waves as wave (wave.key)}
+        <!--
+          `data-wave-expanded`, not `data-expanded`: the latter is a namespace
+          the vendored streamdown's fullscreen rule reaches into (DIVERGENCE
+          entry 16), and a run map inside a markdown surface must not inherit
+          a layout rule about mermaid diagrams.
+        -->
+        <li
+          data-testid="workflow-map-wave"
+          data-wave-item-id={wave.itemId}
+          data-wave-expanded={runMapWaveIsOpen(wave)}
+        >
+          <WorkflowRunMapWave
+            {wave}
+            {nowKey}
+            onOpenThread={openThread}
+            onToggleWave={toggleWave}
+            onToggleComposition={toggleComposition}
+            onToggleLane={toggleLane}
+          />
+        </li>
+      {/each}
+    </ol>
 
-      {#if model.waves.length === 0}
-        <p class="py-2 text-xs text-fg-muted" data-testid="workflow-map-empty">This run has nothing to show yet.</p>
-      {/if}
-    </div>
+    {#if model.waves.length === 0}
+      <p class="py-2 text-xs text-fg-muted" data-testid="workflow-map-empty">This run has nothing to show yet.</p>
+    {/if}
   {/if}
 
   <!--

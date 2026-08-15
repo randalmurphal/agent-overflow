@@ -9,14 +9,11 @@
   // was taken is drawn — there is no longer an alternative to show.
 
   import type { RunMapLoop } from '../../utils/workflowRunMap';
-  import { runMapNodeStyle, RUN_MAP_NODE_BOX } from '../../utils/workflowRunMapStyle';
 
   interface Props {
     loop: RunMapLoop;
   }
   let { loop }: Props = $props();
-
-  let ghost = $derived(runMapNodeStyle('ghost'));
 </script>
 
 <!--
@@ -38,11 +35,18 @@
 
   {#if loop.showOutcomeStubs}
     <div class="run-map-loop-fork"></div>
-    <div class="flex w-full items-stretch justify-center gap-2">
+    <!--
+      The stubs are ghosts and render like every other ghost (§2): bare quiet
+      text under the fork's two branches, no boxes. Two full-width dashed
+      bars made a footnote about the future the biggest elements on the map.
+      Each stub sits centered under its branch (the fork spans 25%–75%, so
+      the branch tips are at 25% and 75% — two half-width columns center
+      the stubs on exactly those tips).
+    -->
+    <div class="flex w-full items-baseline" data-testid="workflow-map-decision-stubs">
       {#each [`↺ issues → wave ${loop.lapCount + 1}`, '✓ clean → done'] as stub (stub)}
         <span
-          class="min-w-0 flex-1 truncate rounded-md border border-dashed border-border-subtle px-2 py-1
-                 text-center text-[0.6875rem] text-fg-hint"
+          class="min-w-0 flex-1 break-words px-2 text-center text-[0.6875rem] text-fg-hint"
           data-testid="workflow-map-decision-stub"
         >
           {stub}
@@ -50,7 +54,7 @@
       {/each}
     </div>
   {:else if loop.decided !== null}
-    <span class={[RUN_MAP_NODE_BOX, ghost.border, 'text-[0.6875rem] text-fg-muted'].join(' ')}>
+    <span class="text-[0.6875rem] text-fg-muted">
       {loop.decided === 'loop' ? `↺ looped → wave ${loop.lapCount + 1}` : '✓ clean → done'}
     </span>
   {/if}

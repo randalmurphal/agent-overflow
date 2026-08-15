@@ -31,31 +31,39 @@
 </script>
 
 <div
-  class={[RUN_MAP_NODE_BOX, 'bg-surface-1/30', style.border, style.glow].filter(Boolean).join(' ')}
+  class={[
+    RUN_MAP_NODE_BOX,
+    style.border,
+    style.glow,
+    isNow ? 'bg-accent/10' : style.fill,
+  ].filter(Boolean).join(' ')}
   data-run-map-now={isNow ? 'true' : undefined}
   data-unit-id={chip.unitId}
   data-unit-signal={chip.signal}
 >
-  {#if isNow}
-    <span class="shrink-0 text-[0.625rem] font-semibold tracking-wider text-accent">now ▸</span>
-  {/if}
-  {#if style.spinner}
-    <SteppedSpinner size={10} class="shrink-0 self-center" animate={!getSettings().lowPowerMode} />
-  {:else}
-    <span class={['shrink-0 text-[0.6875rem]', style.tone].join(' ')} aria-hidden="true">{style.glyph}</span>
-  {/if}
+  <!-- ONE button holding glyph, label and meta as inline content, same shape
+       as the node row: separate atomic siblings wrap as UNITS when space runs
+       out, stranding a lone glyph on the first line. The glyph and meta are
+       `inline-block` so the hover underline stays on the words. -->
   <button
     type="button"
-    class={[
-      'min-w-0 truncate text-left text-[0.6875rem] hover:underline disabled:cursor-default disabled:no-underline',
-      style.label,
-      chip.struck ? 'line-through' : '',
-    ].filter(Boolean).join(' ')}
+    class="max-w-full break-words text-left hover:underline disabled:cursor-default disabled:no-underline"
     disabled={!chip.threadId}
     title={chip.label}
     onclick={() => onOpenThread(chip.threadId)}
   >
-    {truncateMiddle(chip.label, RUN_MAP_LABEL_MAX)}
+    {#if isNow}
+      <span class="mr-1 inline-block text-[0.625rem] font-semibold tracking-wider text-accent">now ▸</span>
+    {/if}
+    {#if style.spinner}
+      <SteppedSpinner size={10} class="mr-1 inline-block align-middle" animate={!getSettings().lowPowerMode} />
+    {:else}
+      <span class={['mr-1 inline-block text-[0.6875rem]', style.glyphTone].join(' ')} aria-hidden="true">{style.glyph}</span>
+    {/if}
+    <!-- Wraps, never ellipsizes (§2): the unit id is the chip's whole meaning. -->
+    <span
+      class={['text-[0.6875rem]', style.label, chip.struck ? 'line-through' : ''].filter(Boolean).join(' ')}
+    >{truncateMiddle(chip.label, RUN_MAP_LABEL_MAX)}</span>
+    <span class="ml-1 inline-block text-[0.625rem] tabular-nums text-fg-hint">{chip.meta}</span>
   </button>
-  <span class="shrink-0 text-[0.625rem] tabular-nums text-fg-hint">{chip.meta}</span>
 </div>

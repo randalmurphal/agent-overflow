@@ -93,10 +93,11 @@
      at computed-value time, so `min-width: var(--run-map-lane-min)` would
      silently become `min-width: auto` for anything that ends up outside the fan
      container. The container itself sets both properties inline from
-     `WorkflowRunMapFan.svelte`'s constants and always wins — these are the
-     floor, not a second source of truth. */
-  --run-map-lane-min: 120px;
-  --run-map-lane-max: 200px;
+     `workflowRunMapStyle.ts`'s `RUN_MAP_LANE_MIN`/`MAX` and always wins — these
+     are the floor, not a second source of truth, and a unit test pins the two
+     declarations to the same values. */
+  --run-map-lane-min: 15rem;
+  --run-map-lane-max: 26rem;
 }
 
 html {
@@ -924,18 +925,28 @@ pre, code, kbd, samp, .ansi-body {
   pointer-events: none;
 }
 
-/* The lane row centers while its lanes fit and scrolls when they do not.
-   `justify-content: center` cannot do both: with NEGATIVE free space it
-   overflows the start edge as well, and overflow before a scroll container's
-   origin is unreachable — a fan wider than the card clipped the first lane's
-   glyph with no way to scroll back to it. Auto margins split the free space
-   when there is some and collapse to zero when there is not, which is the same
-   centering without the unreachable half. */
-.run-map-lane-row > :first-child {
-  margin-inline-start: auto;
+/* The lane row WRAPS when its lanes outgrow the card. Lanes carry real prose
+   — sentence-length phase names, sub-cards, chip rows — so their floor is a
+   readable width (`--run-map-lane-min`) and the row takes a second rank of
+   lanes instead of a horizontal scrollbar, which hid whole lanes off the
+   right edge. A second-rank lane's drop line dangles from no bar; that is
+   decoration degrading, and it beats content hiding.
+
+   `safe center`: a centered row that still overflows — one flex-none folded
+   lane wider than a narrow card — bleeds out of BOTH edges, and the start
+   side of an ancestor scroller is unreachable. `safe` falls back to start
+   alignment exactly then, so overflow is at worst a clipped tail, never a
+   clipped head. */
+.run-map-lane-row {
+  flex-wrap: wrap;
+  justify-content: safe center;
 }
-.run-map-lane-row > :last-child {
-  margin-inline-end: auto;
+
+/* A stacked fan's chain, indented behind a guide line instead of forked into
+   columns: inside a lane there is no width to divide (RUN-MAP §6). */
+.run-map-indent {
+  border-left: 1px solid var(--border-subtle);
+  padding-left: 0.625rem;
 }
 
 /* The loop foot: one dashed stem forking into the two outcomes. Dashed

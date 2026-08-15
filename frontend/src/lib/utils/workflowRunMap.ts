@@ -122,6 +122,7 @@ export function buildRunMap(
     expandedCompositions: new Set(options.expandedCompositionIds ?? []),
     expandedLanes: new Set(options.expandedLaneIds ?? []),
     depth: 0,
+    inLane: false,
     treeRoot: root,
   };
   const waves = steps.map(({ run, ordinal, lapSeq }) => {
@@ -400,6 +401,14 @@ interface SegmentContext {
   /** Composition levels below the owning wave; 0 while inside the wave itself. */
   depth: number;
   /**
+   * True once the walk has entered a fan lane. A fan renders columns only
+   * OUTSIDE a lane — inside one it stacks, because columns there could only
+   * subdivide a width that is already minimal (§6). Depth is not the test: a
+   * spine sub-card sits below the wave without being inside any lane, and its
+   * fan still has the full card width to spend.
+   */
+  inLane: boolean;
+  /**
    * The tree's root run. Soft stop is armed on it and on it alone
    * (`engine/soft_stop.go` refuses a called run), and every loop foot anywhere
    * in the tree draws the note from that one row.
@@ -601,6 +610,8 @@ function fanNode(
   context: SegmentContext,
 ): RunMapFan {
   const coordinate: [string, string, number] = [run.itemId, record.phaseId, record.attempt];
+  // Everything under a lane is lane-width for the rest of the walk.
+  const laneContext: SegmentContext = context.inLane ? context : { ...context, inLane: true };
   const columns: RunMapBranch[] = [];
   const queued: RunMapUnitChip[] = [];
   const done: RunMapUnitChip[] = [];
@@ -630,10 +641,36 @@ function fanNode(
       const branchKey = branchKeyOf(run.itemId, record.phaseId, record.attempt, unit.unitId);
       const toggleable = !actionable && children.length > 0;
       const collapsed = toggleable && !context.expandedLanes.has(branchKey);
+      // A lane with exactly ONE child run merges with it: the child renders
+      // headerless (its name moves onto the lane header) and arrives open —
+      // opening the lane IS opening the call, and a second fold under the
+      // first was a second click for the same intent. Three guards, each a
+      // reviewed defect when absent:
+      //   - the lane must be the fold control (`toggleable`) or the child
+      //     LIVE — an actionable lane (failed, taken-over) offers no fold, so
+      //     merging there force-painted a settled forty-lap subtree with no
+      //     collapse anywhere on it;
+      //   - a FAILED child keeps its own header row: that row is where its
+      //     red glyph lives, and the merged lane header carries the UNIT's
+      //     signal, which need not agree.
+      const sole = children.length === 1 ? children[0] : null;
+      const merged = sole !== null
+        && (toggleable || isLiveRun(sole))
+        && RUN_SIGNALS[runStatusOf(sole).kind] !== 'failed';
       columns.push({
         key: branchKey,
         unit: chip,
-        chain: collapsed ? [] : children.map((child) => compositionNode(index, child, context)),
+        // The merged workflow name rides on the lane title even while the
+        // lane is folded: the child is known whether or not its chain is
+        // built, and `PORT-0 · port-subsystem` is a better one-line summary
+        // than the unit id alone.
+        title: sole !== null && (merged || collapsed) && sole.workflowId !== chip.label
+          ? `${chip.label} · ${sole.workflowId}`
+          : chip.label,
+        chain: collapsed
+          ? []
+          : children.map((child) =>
+            compositionNode(index, child, laneContext, { merged: merged && child === sole })),
         collapsed,
         toggleable,
         onFrontierPath: chip.onFrontierPath || context.frontierKeys.has(branchKey),
@@ -651,6 +688,11 @@ function fanNode(
   return {
     key: fanKeyOf(run.itemId, record.phaseId, record.attempt),
     attempt: record.attempt,
+    // Columns wherever the card's full width is available, stacked once
+    // inside a lane: a nested fan's columns could only subdivide a width that
+    // was already minimal — the horizontal scrollbar inside a lane came from
+    // exactly this.
+    layout: context.inLane ? 'stacked' : 'columns',
     columns,
     queued: {
       kind: 'queued',
@@ -664,6 +706,7 @@ function fanNode(
       // Nothing a click would add: a queued lane has no record, no thread and
       // no duration, so its chip would repeat the label beside it.
       entries: [],
+      inline: false,
     },
     done: {
       kind: 'done',
@@ -672,10 +715,20 @@ function fanNode(
       droppedCount,
       label: `done ·${doneCount}`,
       entries: done,
+      inline: done.length > 0 && done.length <= RUN_MAP_INLINE_DONE_MAX,
     },
     join,
   };
 }
+
+/**
+ * A done group at most this large renders its chips in the flow, no click.
+ * "What completed" is the first thing a reader asks of a finished fan, and a
+ * count chip made them click for it — per lap, per composition. Past this the
+ * group folds behind its labelled count, because a forty-unit sweep drawn as
+ * forty chips is the wall the fold exists to prevent.
+ */
+export const RUN_MAP_INLINE_DONE_MAX = 8;
 
 /**
  * One called run as a chain inside its caller's node or branch (§3), and the
@@ -703,13 +756,18 @@ function compositionNode(
   index: RunIndex,
   root: WorkflowRunMapRun,
   context: SegmentContext,
+  options: { merged?: boolean } = {},
 ): RunMapCompositionNode {
   const depth = context.depth + 1;
   const key = compositionKeyOf(root.itemId);
   const onFrontierPath = context.frontierKeys.has(key);
   // The frontier path is force-open, so there is nothing there to fold; every
-  // other composition owns a collapse the reader can work.
-  const toggleable = !onFrontierPath;
+  // other composition owns a collapse the reader can work. A fan lane's sole
+  // child is `merged` into it: headerless, and opened BY the lane — the lane
+  // toggle is the one collapse both of them need, and without it "open the
+  // lane" answered with a second folded row — the multiple-clicks complaint,
+  // one level down.
+  const toggleable = !onFrontierPath && !options.merged;
   const collapsed = toggleable && !context.expandedCompositions.has(root.itemId);
   const status = runStatusOf(root);
   const signal = RUN_SIGNALS[status.kind];
@@ -733,9 +791,23 @@ function compositionNode(
     blockerLabel: blockerLabelOf(status),
     collapsed,
     toggleable,
+    // `merged` never coexists with `collapsed`: merging clears `toggleable`
+    // above, which pins `collapsed` false.
+    headerless: options.merged === true,
     summary,
     waves: steps.map(({ run, ordinal, lapSeq }) => {
+      // The FINAL lap defaults open alongside the composition: it is the lap
+      // the row's own status is quoting — the live one on a live run, the
+      // outcome on a settled one — and folding it made "open this call" show
+      // a list of closed doors. Earlier laps are history and stay one line.
+      // "Final" is the lap that called no successor (a leaf in the tail
+      // chain), not the last chain position: a retried tail can put a settled
+      // dead-end after the lap that actually carried the run forward. A click
+      // on any settled lap INVERTS its default — so the leaf can be re-closed
+      // and history reopened with one click each, off the same set.
+      const leaf = (index.tailChildren.get(run.itemId) ?? []).length === 0;
       const folded = multiLap && waveIsSettled(index, run);
+      const open = !folded || leaf !== context.expandedWaves.has(run.itemId);
       const waveStatus = runStatusOf(run);
       return {
         key: waveKey(run.itemId),
@@ -746,9 +818,7 @@ function compositionNode(
         status: waveStatus,
         signal: waveSignalOf(index, run),
         summary: waveSummary(index, run, ordinal, lapSeq),
-        segments: !folded || context.expandedWaves.has(run.itemId)
-          ? runSegments(index, run, inner)
-          : null,
+        segments: open ? runSegments(index, run, inner) : null,
         onFrontierPath: context.frontierKeys.has(waveKey(run.itemId)),
       } satisfies RunMapCompositionWave;
     }),
