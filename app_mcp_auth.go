@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"agent-overflow/internal/ctxutil"
 	"agent-overflow/internal/mcpstatus"
@@ -78,25 +79,31 @@ func (a *App) triggerMcpAuth(threadID, name string) (MCPAuthInitResult, error) {
 // sanitizeMCPError bounds an error string surfaced by a provider's
 // MCP channel before it lands on the wire (mcp:status,
 // mcp:oauth-completed, provider:item_event) or in a user-facing
-// toast. Neither channel is loopback-only, so a LAN-attached
-// subscriber sees the verbatim string. The Claude CLI and Codex
-// app-server both inherit AO's `os.Environ()` (intentionally — env
-// vars resolve MCP bearer-token indirection), so a future provider
-// panic that dumped its env could otherwise channel a token through
-// to remote subscribers verbatim. 256B + newline collapse matches
-// the equivalent defense `internal/provider/claude/mcpstatus.go`
-// applies to child-process stderr; keeping a second copy here is
-// deliberate so the wire-facing handlers don't depend on a private
-// claude helper.
+// toast. mcp:status and mcp:oauth-completed are loopback-only
+// (internal/transport/event_visibility.go — every MCP RPC is LocalOnly,
+// so the push side is the third door), but provider:item_event and
+// toasts are not, and the bound also keeps a provider's stderr dump out
+// of the UI wholesale. The Claude CLI and Codex app-server both inherit
+// AO's `os.Environ()` (intentionally — env vars resolve MCP
+// bearer-token indirection), so a future provider panic that dumped its
+// env could otherwise channel a token through verbatim. 256B + newline
+// collapse matches the equivalent defense
+// `internal/provider/claude/mcpstatus.go` applies to child-process
+// stderr; keeping a second copy here is deliberate so the wire-facing
+// handlers don't depend on a private claude helper. The truncation cut
+// backs off to a rune boundary so it never manufactures U+FFFD.
 func sanitizeMCPError(s string) string {
 	s = strings.TrimSpace(s)
 	s = strings.ReplaceAll(s, "\n", " ")
 	s = strings.ReplaceAll(s, "\r", " ")
-	const limit = 256
-	if len(s) > limit {
-		return s[:limit] + "…(truncated)"
+	limit := 256
+	if len(s) <= limit {
+		return s
 	}
-	return s
+	for limit > 0 && !utf8.RuneStart(s[limit]) {
+		limit--
+	}
+	return s[:limit] + "…(truncated)"
 }
 
 // claudeMCPOAuthPoll is the dedup identity stored in
@@ -275,14 +282,27 @@ func (a *App) pollClaudeMCPAfterOAuth(
 
 // handleCodexMCPOAuthCompleted is the side-channel callback Codex
 // fires after the user's browser hop completes the OAuth handshake.
-// AO's job is small but load-bearing: invalidate the status cache
-// so the next read reflects the freshly-credentialed session, and
-// surface a `mcp:oauth-completed` event for any popup listening.
+// AO invalidates the status cache so the next read reflects the
+// freshly-credentialed session, surfaces a `mcp:oauth-completed` event
+// for any popup listening, and — on success — hot-reloads the thread's
+// live Codex session.
 //
-// We deliberately do NOT trigger a refetch here — the next thread
-// session start (or the next user-triggered refresh) will repopulate
-// the entry. Firing a fetch from a notification handler risks
-// stacking processes if the user OAuths several servers quickly.
+// The reload is what makes the sign-in take effect. A loaded thread
+// keeps the MCP manager it started with, so a server that failed
+// startup with an expired grant stays failed for the rest of the
+// session no matter how the OAuth went; the user's only other recovery
+// is a manual toggle or an app restart. `config/mcpServer/reload`
+// spawns nothing of AO's — it is one RPC on the session that is already
+// running, telling Codex to re-read config and mark loaded threads' MCP
+// runtime dirty. Codex applies it at the next turn boundary and emits a
+// fresh `startupStatus` round, which flows back through the retained
+// session state and the status cache. (The older "don't refetch here"
+// rule was about spawning ephemeral fetch processes per notification —
+// that still holds, and this is not that.)
+//
+// Accepted side effect: the reload re-reads the WHOLE config, so an
+// unrelated hand-edit to `~/.codex/config.toml` also lands at the next
+// turn. That is the same bargain the MCP toggle path already makes.
 func (a *App) handleCodexMCPOAuthCompleted(threadID, serverName string, success bool, errMsg string) {
 	sanitizedErr := sanitizeMCPError(errMsg)
 	a.mcpStatus().Invalidate(mcpstatus.Key{Provider: mcpstatus.ProviderCodex, Name: serverName})
@@ -298,8 +318,21 @@ func (a *App) handleCodexMCPOAuthCompleted(threadID, serverName string, success 
 		if msg == "" {
 			msg = "sign-in did not complete"
 		}
-		a.emitErrorToThread(threadID, fmt.Sprintf("mcp: %s: %s", serverName, msg))
+		// serverName is provider-supplied too — same bound as the error
+		// beside it before it reaches a persisted thread item.
+		a.emitErrorToThread(threadID, fmt.Sprintf("mcp: %s: %s", sanitizeMCPError(serverName), msg))
+		return
 	}
+	sess, ok := a.sessionManager().get(threadID)
+	if !ok || sess.codex == nil {
+		return
+	}
+	// The retained startup failure describes the run this sign-in just
+	// invalidated; without the forget it would outrank the settled list
+	// until Codex's next startupStatus round (the next turn boundary),
+	// rendering "Failed / Sign in again" over a sign-in that succeeded.
+	sess.codex.ForgetMCPStartupState(serverName)
+	a.requestCodexMCPReload(threadID)
 }
 
 // handleCodexMCPStartupUpdate is the per-thread side-channel

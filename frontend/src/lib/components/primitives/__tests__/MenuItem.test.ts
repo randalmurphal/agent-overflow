@@ -93,6 +93,54 @@ describe('<MenuItem>', () => {
     expect(onAction).not.toHaveBeenCalled();
   });
 
+  it('renders a labeled text action button and routes its click to onAction only', async () => {
+    const onSelect = vi.fn();
+    const onAction = vi.fn();
+    const { getByLabelText, getByRole } = render(Harness, {
+      props: { label: 'atlassian', actionText: 'Sign in again', onSelect, onAction },
+    });
+    const action = getByLabelText('Row action');
+    expect(action.textContent).toBe('Sign in again');
+    // The labeled variant sizes to its text instead of the icon square.
+    expect(action.className).toContain('px-1.5');
+    expect(action.className).not.toContain('w-5');
+    await fireEvent.click(action);
+    expect(onAction).toHaveBeenCalledTimes(1);
+    // The action click must not bubble into the row select.
+    expect(onSelect).not.toHaveBeenCalled();
+    // A row hosting a nested action button cannot itself be a <button>.
+    expect(getByRole('menuitem').tagName).toBe('DIV');
+  });
+
+  it('renders the text action at the start position when asked', () => {
+    const { getByRole, getByLabelText } = render(Harness, {
+      props: { label: 'atlassian', actionText: 'Sign in', actionPosition: 'start', onAction: vi.fn() },
+    });
+    const item = getByRole('menuitem');
+    const action = getByLabelText('Row action');
+    // Start-positioned action renders before the label content.
+    expect(item.firstElementChild).toBe(action);
+  });
+
+  it('an actionText without onAction renders no button and keeps the row a <button>', () => {
+    const { getByRole, queryByLabelText } = render(Harness, {
+      props: { label: 'atlassian', actionText: 'Sign in' },
+    });
+    expect(queryByLabelText('Row action')).toBeNull();
+    expect(getByRole('menuitem').tagName).toBe('BUTTON');
+  });
+
+  it('actionDisabled blocks a text action too', async () => {
+    const onAction = vi.fn();
+    const { getByLabelText } = render(Harness, {
+      props: { label: 'atlassian', actionText: 'Sign in', onAction, actionDisabled: true },
+    });
+    const action = getByLabelText('Row action');
+    expect(action).toBeDisabled();
+    await fireEvent.click(action);
+    expect(onAction).not.toHaveBeenCalled();
+  });
+
   it('renders the check glyph when checked=true', () => {
     const { container } = render(Harness, { props: { label: 'Apple', checked: true } });
     // 10003 is U+2713 CHECK MARK.

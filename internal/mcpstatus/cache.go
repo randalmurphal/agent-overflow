@@ -32,6 +32,13 @@ type Cache struct {
 type cacheEntry struct {
 	status   ServerStatus
 	storedAt time.Time
+	// errorFrom is the Source that PRODUCED status.Error, which can
+	// differ from status.Source after a carry-forward: an error-less
+	// probe that re-stores a notification's error keeps errorFrom =
+	// notification, so the retention rule chains across any number of
+	// consecutive probes instead of evaporating on the second one.
+	// Zero when status.Error is empty.
+	errorFrom Source
 }
 
 type inflight struct {
@@ -87,18 +94,64 @@ func (c *Cache) Get(k Key) (ServerStatus, bool) {
 	return entry.status, true
 }
 
-// Put writes the status into the cache and emits it on the bus.
-// Callers (live-session and notification handlers, ephemeral fetcher)
-// invoke Put with their own Source value so the UI can disclose how
-// fresh the data is.
-func (c *Cache) Put(s ServerStatus) {
+// Put writes the status into the cache, emits it on the bus, and
+// returns the status as stored — callers that hand their input onward
+// (the single-flight fetch paths) must return Put's result, not their
+// input, or the wire answer and the cache disagree about the same
+// entry. Callers (live-session and notification handlers, ephemeral
+// fetcher) invoke Put with their own Source value so the UI can
+// disclose how fresh the data is.
+//
+// One narrow carry-forward: an ephemeral probe carries no error string
+// at all (a status list answers what state a server is in, never why),
+// so a probe that merely AGREES a server is still failed would otherwise
+// erase the cause a live provider reported — "failed: invalid_grant"
+// collapsing into a bare "failed" the user cannot act on. When an
+// error-less fetch lands on an entry whose error a notification or live
+// session produced (errorFrom — carry-forwards preserve it, so the
+// retention chains across any number of consecutive probes) with the
+// SAME status, that error carries onto both the stored and the emitted
+// status. Everything else stores verbatim: a status change, an incoming
+// error, or an incoming source that is not a fetch.
+//
+// The retention is deliberately event-bounded, not time-bounded: it
+// ends when a provider speaks again or the status changes, never by
+// clock. The probe just CONFIRMED the failed state is current; aging
+// the explanation out while the state persists would reintroduce the
+// bare unactionable "failed" this rule exists to prevent. The residual
+// risk — the cause changed while the status didn't — is bounded by the
+// same events.
+func (c *Cache) Put(s ServerStatus) ServerStatus {
 	if s.CheckedAt.IsZero() {
 		s.CheckedAt = c.now()
 	}
+	entry := cacheEntry{status: s}
+	if s.Error != "" {
+		entry.errorFrom = s.Source
+	}
 	c.mu.Lock()
-	c.entries[s.Key] = cacheEntry{status: s, storedAt: c.now()}
+	if prior, ok := c.entries[s.Key]; ok && retainsPriorError(prior, s) {
+		entry.status.Error = prior.status.Error
+		entry.errorFrom = prior.errorFrom
+	}
+	entry.storedAt = c.now()
+	c.entries[s.Key] = entry
 	c.mu.Unlock()
-	c.bus.Emit(s)
+	c.bus.Emit(entry.status)
+	return entry.status
+}
+
+// retainsPriorError reports whether incoming is an error-less probe of a
+// state a provider already explained. See Put for why this is scoped to
+// fetch-over-provider-explanation with an unchanged status.
+func retainsPriorError(prior cacheEntry, incoming ServerStatus) bool {
+	if incoming.Source != SourceEphemeralFetch || incoming.Error != "" {
+		return false
+	}
+	if prior.status.Error == "" || prior.status.Status != incoming.Status {
+		return false
+	}
+	return prior.errorFrom == SourceNotification || prior.errorFrom == SourceLiveSession
 }
 
 // Invalidate drops the entry for k and emits a sentinel
@@ -246,13 +299,13 @@ func (c *Cache) GetOrFetch(ctx context.Context, k Key, fetcher Fetcher, force bo
 	results, err := fetcher.Fetch(ctx, k.Provider)
 	for i := range results {
 		// Stamp source so callers can't accidentally Put a Source-less
-		// fetch result. In-place so the slice we hand back (and the
-		// one stored on the flight for waiters) matches what landed in
-		// the cache.
+		// fetch result. Written back in place — including Put's
+		// carry-forward — so the slice we hand back (and the one stored
+		// on the flight for waiters) matches what landed in the cache.
 		if results[i].Source == "" {
 			results[i].Source = SourceEphemeralFetch
 		}
-		c.Put(results[i])
+		results[i] = c.Put(results[i])
 	}
 	flight.results = results
 	flight.err = err
@@ -293,7 +346,7 @@ func (c *Cache) RefreshProvider(ctx context.Context, p Provider, fetcher Fetcher
 		if results[i].Source == "" {
 			results[i].Source = SourceEphemeralFetch
 		}
-		c.Put(results[i])
+		results[i] = c.Put(results[i])
 	}
 	flight.results = results
 	flight.err = err
@@ -306,17 +359,23 @@ func (c *Cache) RefreshProvider(ctx context.Context, p Provider, fetcher Fetcher
 	return cloneStatuses(results), err
 }
 
-// cloneStatuses returns a shallow copy of in. ServerStatus is all
-// value-typed fields (no slices or maps), so shallow copy is enough
-// to give every single-flight caller a slice they can sort/mutate
-// without racing peers reading from the same flight.results backing
-// array.
+// cloneStatuses copies in so every single-flight caller gets a slice it
+// can sort/mutate without racing peers on the same flight.results
+// backing array. Tools is the one reference field on ServerStatus, so
+// it gets its own copy per entry — a shallow copy would hand every
+// caller the same backing array, exactly the shared state the clone
+// exists to prevent.
 func cloneStatuses(in []ServerStatus) []ServerStatus {
 	if in == nil {
 		return nil
 	}
 	out := make([]ServerStatus, len(in))
 	copy(out, in)
+	for i := range out {
+		if len(out[i].Tools) > 0 {
+			out[i].Tools = append([]string(nil), out[i].Tools...)
+		}
+	}
 	return out
 }
 

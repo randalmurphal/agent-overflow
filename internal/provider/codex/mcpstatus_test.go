@@ -3,6 +3,7 @@ package codex
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -64,27 +65,85 @@ func TestParseCodexMCPList_NotLoggedIn(t *testing.T) {
 	}
 }
 
-func TestParseCodexMCPList_EmptyToolsWithBearerToken(t *testing.T) {
+// TestParseCodexMCPList_ServerInfoWithZeroTools pins the primary
+// liveness signal: a server that initialized but exposes no tools (a
+// resources-only server, or one whose tool list is empty) is connected.
+// The old tool-count-only rule called this "starting" forever.
+func TestParseCodexMCPList_ServerInfoWithZeroTools(t *testing.T) {
 	body, _ := json.Marshal(map[string]any{
 		"data": []map[string]any{
-			{"name": "still-starting", "authStatus": "bearerToken", "tools": map[string]any{}},
+			{
+				"name":       "resources-only",
+				"authStatus": "oAuth",
+				"serverInfo": map[string]any{"name": "resources-only", "version": "1.2.3"},
+				"tools":      map[string]any{},
+			},
 		},
 	})
-	results, _ := parseMCPList(body, time.Now())
-	if results[0].Status != mcpstatus.StatusStarting {
-		t.Errorf("status = %q, want %q", results[0].Status, mcpstatus.StatusStarting)
+	results, err := parseMCPList(body, time.Now())
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if results[0].Status != mcpstatus.StatusConnected {
+		t.Errorf("status = %q, want %q", results[0].Status, mcpstatus.StatusConnected)
 	}
 }
 
-func TestParseCodexMCPList_UnsupportedNoTools(t *testing.T) {
+// TestParseCodexMCPList_NoServerInfoZeroToolsIsFailed is the headline
+// regression: the list response describes a SETTLED connection attempt,
+// so an oAuth server that came back with neither serverInfo nor tools
+// failed to initialize. It used to render as "starting" indefinitely.
+func TestParseCodexMCPList_NoServerInfoZeroToolsIsFailed(t *testing.T) {
 	body, _ := json.Marshal(map[string]any{
 		"data": []map[string]any{
+			{"name": "atlassian", "authStatus": "oAuth", "tools": map[string]any{}},
+			{"name": "bearer-dead", "authStatus": "bearerToken", "tools": map[string]any{}},
 			{"name": "mystery", "authStatus": "unsupported", "tools": map[string]any{}},
 		},
 	})
+	results, err := parseMCPList(body, time.Now())
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	for _, r := range results {
+		if r.Status != mcpstatus.StatusFailed {
+			t.Errorf("%s: status = %q, want %q", r.Name, r.Status, mcpstatus.StatusFailed)
+		}
+	}
+}
+
+func TestParseCodexMCPList_ServerInfoAbsentButToolsPresent(t *testing.T) {
+	// Safety net: tools can only exist past a completed initialize, so a
+	// response that somehow omits serverInfo while listing tools is still
+	// connected.
+	body, _ := json.Marshal(map[string]any{
+		"data": []map[string]any{
+			{"name": "toolsy", "authStatus": "unsupported", "tools": map[string]any{"ping": map[string]any{}}},
+		},
+	})
 	results, _ := parseMCPList(body, time.Now())
-	if results[0].Status != mcpstatus.StatusUnknown {
-		t.Errorf("status = %q, want %q", results[0].Status, mcpstatus.StatusUnknown)
+	if results[0].Status != mcpstatus.StatusConnected {
+		t.Errorf("status = %q, want %q", results[0].Status, mcpstatus.StatusConnected)
+	}
+}
+
+// TestParseCodexMCPList_NotLoggedInIgnoresServerInfo: a login
+// requirement outranks any liveness evidence — the row's action is a
+// sign-in either way.
+func TestParseCodexMCPList_NotLoggedInIgnoresServerInfo(t *testing.T) {
+	body, _ := json.Marshal(map[string]any{
+		"data": []map[string]any{
+			{
+				"name":       "linear",
+				"authStatus": "notLoggedIn",
+				"serverInfo": map[string]any{"name": "linear", "version": "1"},
+				"tools":      map[string]any{"issue_read": map[string]any{}},
+			},
+		},
+	})
+	results, _ := parseMCPList(body, time.Now())
+	if results[0].Status != mcpstatus.StatusNeedsAuth {
+		t.Errorf("status = %q, want %q", results[0].Status, mcpstatus.StatusNeedsAuth)
 	}
 }
 
@@ -260,26 +319,74 @@ sleep 5
 	}
 }
 
+// TestMCPStatusFromList walks the whole matrix. StatusStarting must not
+// appear anywhere in it: a list response only describes settled
+// connection attempts, so "still booting" is not an answer this
+// projector can give — only a startup notification can.
 func TestMCPStatusFromList(t *testing.T) {
 	cases := []struct {
-		auth      string
-		toolCount int
-		want      mcpstatus.Status
+		auth          string
+		hasServerInfo bool
+		toolCount     int
+		want          mcpstatus.Status
 	}{
-		{"notLoggedIn", 0, mcpstatus.StatusNeedsAuth},
-		{"notLoggedIn", 5, mcpstatus.StatusNeedsAuth}, // login required wins over tools
-		{"unsupported", 3, mcpstatus.StatusConnected},
-		{"unsupported", 0, mcpstatus.StatusUnknown}, // configured but never observed
-		{"bearerToken", 4, mcpstatus.StatusConnected},
-		{"bearerToken", 0, mcpstatus.StatusStarting}, // auth configured, tools pending
-		{"oAuth", 7, mcpstatus.StatusConnected},
-		{"oAuth", 0, mcpstatus.StatusStarting},
-		{"future-state", 0, mcpstatus.StatusUnknown},
-		{"", 0, mcpstatus.StatusUnknown},
+		{"notLoggedIn", false, 0, mcpstatus.StatusNeedsAuth},
+		{"notLoggedIn", true, 5, mcpstatus.StatusNeedsAuth}, // login required wins over liveness
+		{"unsupported", true, 0, mcpstatus.StatusConnected},
+		{"unsupported", false, 3, mcpstatus.StatusConnected}, // tools also prove initialize
+		{"unsupported", false, 0, mcpstatus.StatusFailed},
+		{"bearerToken", true, 0, mcpstatus.StatusConnected},
+		{"bearerToken", false, 4, mcpstatus.StatusConnected},
+		{"bearerToken", false, 0, mcpstatus.StatusFailed},
+		{"oAuth", true, 7, mcpstatus.StatusConnected},
+		{"oAuth", true, 0, mcpstatus.StatusConnected},
+		{"oAuth", false, 0, mcpstatus.StatusFailed},   // the invalid_grant incident shape
+		{" oAuth ", false, 0, mcpstatus.StatusFailed}, // auth enum is trimmed before matching
+		{"future-state", true, 9, mcpstatus.StatusUnknown},
+		{"", false, 0, mcpstatus.StatusUnknown},
 	}
 	for _, tc := range cases {
-		if got := MCPStatusFromList(tc.auth, tc.toolCount); got != tc.want {
-			t.Errorf("MCPStatusFromList(%q, %d) = %q, want %q", tc.auth, tc.toolCount, got, tc.want)
+		entry := MCPServerStatus{Name: "srv", AuthStatus: tc.auth}
+		if tc.hasServerInfo {
+			entry.ServerInfo = &MCPServerInfo{Name: "srv", Version: "1.0"}
+		}
+		if tc.toolCount > 0 {
+			entry.Tools = map[string]json.RawMessage{}
+			for i := 0; i < tc.toolCount; i++ {
+				entry.Tools[fmt.Sprintf("tool-%d", i)] = json.RawMessage(`{}`)
+			}
+		}
+		got := MCPStatusFromList(entry)
+		if got != tc.want {
+			t.Errorf("MCPStatusFromList(%q, %v, %d) = %q, want %q", tc.auth, tc.hasServerInfo, tc.toolCount, got, tc.want)
+		}
+		if got == mcpstatus.StatusStarting {
+			t.Errorf("MCPStatusFromList(%q, %v, %d) returned StatusStarting; a settled probe can never report it", tc.auth, tc.hasServerInfo, tc.toolCount)
+		}
+	}
+}
+
+// TestMCPStartupUpdateTerminalFailure pins which retained states may
+// outrank a settled list answer in the app-layer merge: terminal,
+// unrecovered outcomes only. "starting" defers — a settled probe is by
+// construction newer, and letting a retained starting win would latch
+// "Starting…" whenever the terminal notification was lost.
+func TestMCPStartupUpdateTerminalFailure(t *testing.T) {
+	cases := []struct {
+		state string
+		want  bool
+	}{
+		{"failed", true},
+		{"cancelled", true},
+		{" failed ", true}, // wire strings are trimmed
+		{"starting", false},
+		{"ready", false},
+		{"", false},
+		{"some-future-state", false},
+	}
+	for _, tc := range cases {
+		if got := (MCPStartupUpdate{State: tc.state}).TerminalFailure(); got != tc.want {
+			t.Errorf("TerminalFailure(%q) = %v, want %v", tc.state, got, tc.want)
 		}
 	}
 }

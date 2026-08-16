@@ -121,10 +121,30 @@ func (s *Session) WriteMCPServerToUserConfig(ctx context.Context, name string, s
 // `resources` / `resourceTemplates` are not decoded. AuthStatus is one
 // of `"unsupported" | "notLoggedIn" | "bearerToken" | "oAuth"` per the
 // Codex enum.
+//
+// ServerInfo is non-nil exactly when the server's `initialize`
+// succeeded — MCP makes the field mandatory in a successful initialize
+// response and codex fills it at every detail level. Since a list
+// response only describes settled connection attempts, its absence is
+// what proves a failure (see MCPStatusFromList). Only presence-safe
+// identity fields are decoded; server config never enters this shape.
 type MCPServerStatus struct {
 	Name       string                     `json:"name"`
 	AuthStatus string                     `json:"authStatus"`
+	ServerInfo *MCPServerInfo             `json:"serverInfo"`
 	Tools      map[string]json.RawMessage `json:"tools"`
+}
+
+// MCPServerInfo is the identity block an MCP server returns from a
+// successful `initialize`, as `mcpServerStatus/list` echoes it back.
+// Only presence is load-bearing (see MCPStatusFromList); the decoded
+// fields are for forensics. The wire's remaining per-server payload —
+// command, args, env, headers — is deliberately NOT decoded anywhere in
+// this package: it can hold live tokens and these shapes feed
+// wire-facing status rows (see mcpstatus.ServerStatus's own rationale).
+type MCPServerInfo struct {
+	Name    string `json:"name"`
+	Version string `json:"version"`
 }
 
 // ToolNames returns the entry's tool names, sorted.

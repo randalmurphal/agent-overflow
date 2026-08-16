@@ -12,7 +12,7 @@
 
   import type { Snippet } from 'svelte';
 
-  interface Props {
+  interface BaseProps {
     label: string;
     description?: string;
     icon?: Snippet;
@@ -23,7 +23,6 @@
     disabled?: boolean;
     title?: string;
     onSelect?: () => void;
-    action?: Snippet;
     actionLabel?: string;
     actionPressed?: boolean;
     actionPosition?: 'start' | 'end';
@@ -32,6 +31,15 @@
     onAction?: () => void;
     variant?: 'default' | 'danger';
   }
+
+  /**
+   * The trailing action renders one of two ways — an icon snippet in the
+   * w-5 square, or a compact labeled text button (`actionText`). They fill
+   * the same slot, so the union makes passing both a type error rather
+   * than a precedence rule a caller has to know.
+   */
+  type Props = BaseProps &
+    ({ action?: Snippet; actionText?: never } | { actionText?: string; action?: never });
 
   let {
     label,
@@ -46,6 +54,7 @@
     onSelect,
     action,
     actionLabel,
+    actionText,
     actionPressed,
     actionPosition = 'end',
     actionDisabled = false,
@@ -103,13 +112,40 @@
     default: 'text-fg',
     danger: 'text-error',
   };
+
+  let hasAction = $derived(!!onAction && (!!action || !!actionText));
 </script>
+
+{#snippet actionButton(positionClass: string)}
+  <button
+    type="button"
+    aria-label={actionLabel}
+    aria-pressed={actionPressed}
+    aria-disabled={actionDisabled ? 'true' : 'false'}
+    disabled={actionDisabled}
+    title={actionTitle}
+    tabindex={-1}
+    onclick={handleActionClick}
+    class={[
+      positionClass,
+      'inline-flex h-5 items-center justify-center rounded-[var(--radius-field)]',
+      actionText ? 'px-1.5 text-[0.625rem] font-medium whitespace-nowrap' : 'w-5',
+      'text-fg-hint transition-colors',
+      actionDisabled
+        ? 'opacity-50 cursor-not-allowed'
+        : 'hover:bg-surface-2/70 hover:text-fg',
+      actionPressed ? 'text-warning' : '',
+    ].join(' ')}
+  >
+    {#if actionText}{actionText}{:else if action}{@render action()}{/if}
+  </button>
+{/snippet}
 
 <!-- svelte-ignore a11y_click_events_have_key_events — onkeydown is handled -->
 <svelte:element
-  this={action && onAction ? 'div' : 'button'}
+  this={hasAction ? 'div' : 'button'}
   bind:this={buttonEl}
-  type={action && onAction ? undefined : 'button'}
+  type={hasAction ? undefined : 'button'}
   role="menuitem"
   aria-disabled={disabled ? 'true' : undefined}
   data-menuitem
@@ -127,27 +163,8 @@
     disabled ? 'cursor-not-allowed hover:bg-transparent focus:bg-transparent' : '',
   ].join(' ')}
 >
-  {#if action && onAction && actionPosition === 'start'}
-    <button
-      type="button"
-      aria-label={actionLabel}
-      aria-pressed={actionPressed}
-      aria-disabled={actionDisabled ? 'true' : 'false'}
-      disabled={actionDisabled}
-      title={actionTitle}
-      tabindex={-1}
-      onclick={handleActionClick}
-      class={[
-        'inline-flex h-5 w-5 items-center justify-center rounded-[var(--radius-field)]',
-        'text-fg-hint transition-colors',
-        actionDisabled
-          ? 'opacity-50 cursor-not-allowed'
-          : 'hover:bg-surface-2/70 hover:text-fg',
-        actionPressed ? 'text-warning' : '',
-      ].join(' ')}
-    >
-      {@render action()}
-    </button>
+  {#if hasAction && actionPosition === 'start'}
+    {@render actionButton('')}
   {/if}
   <!-- Row-disabled dimming lives on this wrapper (not the container) so an
        enabled action button keeps full contrast — CSS opacity on a parent
@@ -183,26 +200,7 @@
       </span>
     {/if}
   </span>
-  {#if action && onAction && actionPosition === 'end'}
-    <button
-      type="button"
-      aria-label={actionLabel}
-      aria-pressed={actionPressed}
-      aria-disabled={actionDisabled ? 'true' : 'false'}
-      disabled={actionDisabled}
-      title={actionTitle}
-      tabindex={-1}
-      onclick={handleActionClick}
-      class={[
-        'ml-1 inline-flex h-5 w-5 items-center justify-center rounded-[var(--radius-field)]',
-        'text-fg-hint transition-colors',
-        actionDisabled
-          ? 'opacity-50 cursor-not-allowed'
-          : 'hover:bg-surface-2/70 hover:text-fg',
-        actionPressed ? 'text-warning' : '',
-      ].join(' ')}
-    >
-      {@render action()}
-    </button>
+  {#if hasAction && actionPosition === 'end'}
+    {@render actionButton('ml-1')}
   {/if}
 </svelte:element>

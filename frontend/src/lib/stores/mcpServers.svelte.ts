@@ -257,6 +257,13 @@ function patchStatus(status: MCPServerStatus): void {
       (r) => r.provider === status.provider && r.name === status.name && !r.disabled,
     );
     if (idx < 0) continue;
+    // A session row is the thread's own lifecycle truth (the backend
+    // merges retained startup state into it — see codexSessionMCPRows).
+    // An ephemeral probe is app-global, keyed only (provider, name), and
+    // can be fired from any pane; folding it onto a session row would
+    // overwrite that merge client-side with the weaker observation.
+    // Provider-sourced pushes (notification / live-session) still land.
+    if (rows[idx].source === 'session' && status.source === 'ephemeral-fetch') continue;
     const next = rows.slice();
     next[idx] = new ThreadMCPServer({
       ...next[idx],

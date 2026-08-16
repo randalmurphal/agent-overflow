@@ -17,6 +17,8 @@
     showIcon = false,
     showIndicator = false,
     showAction = false,
+    actionText = undefined as string | undefined,
+    actionPosition = 'end' as 'start' | 'end',
     actionDisabled = false,
     onAction = undefined as (() => void) | undefined,
   }: {
@@ -31,17 +33,31 @@
     showIcon?: boolean;
     showIndicator?: boolean;
     showAction?: boolean;
+    actionText?: string;
+    actionPosition?: 'start' | 'end';
     actionDisabled?: boolean;
     onAction?: () => void;
   } = $props();
 </script>
 
-{#if showAction}
+{#if actionText !== undefined}
   <MenuItem
     {label}
     {disabled}
     {onSelect}
     actionLabel="Row action"
+    {actionText}
+    {actionPosition}
+    {actionDisabled}
+    {onAction}
+  />
+{:else if showAction}
+  <MenuItem
+    {label}
+    {disabled}
+    {onSelect}
+    actionLabel="Row action"
+    {actionPosition}
     {actionDisabled}
     {onAction}
   >

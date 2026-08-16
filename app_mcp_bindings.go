@@ -96,6 +96,9 @@ func (a *App) ReconnectMcpServer(threadID, name string) error {
 		if sess.codex == nil {
 			return ErrMCPSessionUnavailable
 		}
+		// The user is explicitly re-running this server's startup, so the
+		// retained failure describes a run they just invalidated.
+		sess.codex.ForgetMCPStartupState(name)
 		if err := sess.codex.RefreshMCPServers(ctx); err != nil {
 			return err
 		}

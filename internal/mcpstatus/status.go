@@ -28,9 +28,9 @@ type Status string
 const (
 	StatusUnknown   Status = "unknown"    // never observed, or ambiguous wire state
 	StatusStarting  Status = "starting"   // Codex notification "starting" / Claude "pending"
-	StatusConnected Status = "connected"  // Codex authStatus∈{unsupported,bearerToken,oAuth} ∧ len(tools)>0 OR notif "ready" / Claude "connected"
+	StatusConnected Status = "connected"  // Codex authStatus∈{unsupported,bearerToken,oAuth} ∧ initialize proven (serverInfo or tools) OR notif "ready" / Claude "connected"
 	StatusNeedsAuth Status = "needs-auth" // Codex "notLoggedIn" / Claude "needs-auth"
-	StatusFailed    Status = "failed"     // Codex notif "failed"|"cancelled" / Claude "failed"
+	StatusFailed    Status = "failed"     // Codex notif "failed"|"cancelled", or a settled list probe with no initialize evidence / Claude "failed"
 	StatusDisabled  Status = "disabled"   // Claude "disabled" (toggled off; the CLI keeps the row and reports it)
 )
 

@@ -122,7 +122,7 @@ export enum Status {
     StatusStarting = "starting",
 
     /**
-     * Codex authStatus∈{unsupported,bearerToken,oAuth} ∧ len(tools)>0 OR notif "ready" / Claude "connected"
+     * Codex authStatus∈{unsupported,bearerToken,oAuth} ∧ initialize proven (serverInfo or tools) OR notif "ready" / Claude "connected"
      */
     StatusConnected = "connected",
 
@@ -132,7 +132,7 @@ export enum Status {
     StatusNeedsAuth = "needs-auth",
 
     /**
-     * Codex notif "failed"|"cancelled" / Claude "failed"
+     * Codex notif "failed"|"cancelled", or a settled list probe with no initialize evidence / Claude "failed"
      */
     StatusFailed = "failed",
 

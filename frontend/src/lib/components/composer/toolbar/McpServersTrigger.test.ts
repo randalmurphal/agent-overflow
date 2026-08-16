@@ -135,6 +135,75 @@ describe('<McpServersTrigger>', () => {
     });
   });
 
+  it('offers Sign in again on a failed OAuth-credentialed row and shows the real error', async () => {
+    // The incident shape end to end: a Codex server whose startup failed
+    // with a revoked refresh token lists as failed + authStatus oAuth
+    // (Codex deterministically omits failureReason for this case). The row
+    // must show the provider's error and offer the sign-in, never
+    // "Starting…".
+    setBindingMock('ListThreadMcpServers', async () => [
+      row({
+        provider: 'codex',
+        name: 'atlassian',
+        status: 'failed',
+        authStatus: 'oAuth',
+        error: 'invalid_grant: Invalid refresh token',
+        source: 'session',
+      }),
+    ]);
+    const auth = setBindingMock('TriggerMcpAuth', async () => ({
+      authUrl: 'https://example.test/oauth',
+      provider: 'codex',
+      requiresUserAction: true,
+    }));
+    const openURL = setBindingMock('OpenExternalURL', async () => {});
+    const pane = await buildPane(makeThread({ provider: 'codex' }));
+
+    const { getByTestId, findByRole, getByText } = render(McpServersTrigger, { props: { pane } });
+    await fireEvent.click(getByTestId('composer-mcp-trigger'));
+
+    // The accessible name carries the server; the visible text is the
+    // short label.
+    const signIn = await findByRole('button', { name: 'Sign in to atlassian again' });
+    expect(signIn.textContent).toBe('Sign in again');
+    getByText(/invalid_grant: Invalid refresh token/);
+    await fireEvent.click(signIn);
+
+    await waitFor(() => expect(auth).toHaveBeenCalledWith('thread-1', 'atlassian'));
+    await waitFor(() => expect(openURL).toHaveBeenCalledWith('https://example.test/oauth'));
+  });
+
+  it('offers Sign in again on a failed OAuth-credentialed CONFIG row too', async () => {
+    // The inactive-thread path: no live session, so the row comes from
+    // config + the status cache — which records authStatus from the
+    // ephemeral probe. The remedy must not depend on the thread being
+    // live.
+    setBindingMock('ListThreadMcpServers', async () => [
+      row({
+        provider: 'codex',
+        name: 'atlassian',
+        status: 'failed',
+        authStatus: 'oAuth',
+        error: 'invalid_grant: Invalid refresh token',
+        source: 'config',
+      }),
+    ]);
+    const auth = setBindingMock('TriggerMcpAuth', async () => ({
+      authUrl: 'https://example.test/oauth',
+      provider: 'codex',
+      requiresUserAction: true,
+    }));
+    setBindingMock('OpenExternalURL', async () => {});
+    const pane = await buildPane(makeThread({ provider: 'codex' }));
+
+    const { getByTestId, findByRole } = render(McpServersTrigger, { props: { pane } });
+    await fireEvent.click(getByTestId('composer-mcp-trigger'));
+
+    const signIn = await findByRole('button', { name: 'Sign in to atlassian again' });
+    await fireEvent.click(signIn);
+    await waitFor(() => expect(auth).toHaveBeenCalledWith('thread-1', 'atlassian'));
+  });
+
   it('surfaces a failed listing in the menu instead of an empty state', async () => {
     setBindingMock('ListThreadMcpServers', async () => {
       throw new Error('mcp listing unavailable');

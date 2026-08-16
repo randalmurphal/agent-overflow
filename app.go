@@ -535,6 +535,13 @@ type App struct {
 	// poller's entry on its way out.
 	claudeMCPOAuthPollsMu sync.Mutex
 	claudeMCPOAuthPolls   map[string]*claudeMCPOAuthPoll
+	// codexMCPReloads coalesces async `config/mcpServer/reload` requests
+	// per thread (requestCodexMCPReload): the RPC is a level trigger, so
+	// requests landing while one is in flight collapse into a single
+	// follow-up run. Codex-only; Claude reconnects are per-server RPCs
+	// with no whole-config semantics to coalesce.
+	codexMCPReloadsMu sync.Mutex
+	codexMCPReloads   map[string]*codexMCPReloadState
 	// idleReaperStop signals the idle-session reaper goroutine to exit.
 	// Set by startIdleSessionReaper during ServiceStartup; closed exactly
 	// once by Shutdown before the parallel session close so the reaper

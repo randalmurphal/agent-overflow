@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -257,6 +258,14 @@ type Session struct {
 	// a refetch. Per-thread-only emission — there's no app-server-wide
 	// stream. Guarded by mu; nil when no observer is registered.
 	mcpStartupUpdateHandler MCPStartupUpdateHandler
+	// mcpStartupStates retains the last `mcpServer/startupStatus/updated`
+	// seen per server name for this session's lifetime, so a caller
+	// listing MCP rows can consult the thread's own startup lifecycle
+	// instead of re-deriving it from a probe. Retention is independent of
+	// mcpStartupUpdateHandler — a session whose observer is not yet
+	// registered still has a startup history. Guarded by mu; lazily
+	// allocated.
+	mcpStartupStates map[string]MCPStartupUpdate
 	// skillsChangedHandler fires when Codex emits `skills/changed` — the
 	// app-server's own signal that its watched skill files moved. The App
 	// layer drops the skills cache so the next composer render re-reads
@@ -319,6 +328,24 @@ type MCPStartupUpdate struct {
 	State         string
 	Error         string
 	FailureReason string
+}
+
+// TerminalFailure reports whether this update is a settled, unrecovered
+// outcome — "failed" or "cancelled". These are the only retained states
+// that outrank a fresh `mcpServerStatus/list` answer when a thread's MCP
+// rows are merged (app_mcp_thread.go): the list describes settled
+// attempts, so a retained "starting" is by definition an OLDER
+// observation than a settled probe, and letting it win would pin a row
+// at "Starting…" forever whenever the terminal notification was lost —
+// the exact incident the merge exists to prevent. Unrecognized states
+// defer to the probe for the same reason: an unknown observation must
+// not outrank a settled one.
+func (u MCPStartupUpdate) TerminalFailure() bool {
+	switch strings.TrimSpace(u.State) {
+	case "failed", "cancelled":
+		return true
+	}
+	return false
 }
 
 // MCPStartupUpdateHandler observes `mcpServer/startupStatus/updated`
@@ -760,6 +787,42 @@ func (s *Session) SetMCPStartupUpdateHandler(h MCPStartupUpdateHandler) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.mcpStartupUpdateHandler = h
+}
+
+// MCPStartupStates returns a copy of the last startup update seen per
+// MCP server name on this session. Last-write-wins for the session's
+// lifetime: Codex's startup notifications are lossy by upstream's own
+// account (its TUI treats them as such — a stale update from a finished
+// round can arrive late, and a terminal one can be missed), so this map
+// must never latch a state it can't be talked out of, and it is not a
+// membership answer. Callers merge it against the current
+// `mcpServerStatus/list` membership, which neutralizes entries for
+// servers no longer in config and remains the reconciler of record.
+func (s *Session) MCPStartupStates() map[string]MCPStartupUpdate {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.mcpStartupStates) == 0 {
+		return nil
+	}
+	out := make(map[string]MCPStartupUpdate, len(s.mcpStartupStates))
+	for name, update := range s.mcpStartupStates {
+		out[name] = update
+	}
+	return out
+}
+
+// ForgetMCPStartupState drops the retained startup update for one
+// server. Called when AO itself asks Codex to re-run the server's
+// startup — the post-OAuth reload, the enable toggle, a manual
+// reconnect. The retained state describes a run the caller just
+// invalidated, and Codex's fresh startupStatus round only arrives at
+// the next turn boundary; keeping the entry would outrank the settled
+// list until then, rendering "Failed · invalid_grant / Sign in again"
+// over a sign-in that just succeeded.
+func (s *Session) ForgetMCPStartupState(name string) {
+	s.mu.Lock()
+	delete(s.mcpStartupStates, name)
+	s.mu.Unlock()
 }
 
 // PID returns the OS process id (and process-group id) of the Codex

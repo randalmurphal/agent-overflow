@@ -385,6 +385,45 @@ describe('mcpServers store — mcp:status routing', () => {
     expect(peekMcpServers('claude:/other')[0]?.status).toBe('connected');
   });
 
+  it('does not fold an ephemeral probe onto a session row', async () => {
+    // A session row carries the thread's own lifecycle truth (the backend
+    // merges retained startup state into it). The probe is app-global and
+    // can be fired from any pane; it must not overwrite that merge.
+    setBindingMock('ListThreadMcpServers', async () => [
+      row({
+        provider: 'codex',
+        name: 'a',
+        status: 'failed',
+        error: 'invalid_grant: Invalid refresh token',
+        source: 'session',
+      }),
+    ]);
+    attach(target('codex', 't1', '/repo'));
+    await flush();
+
+    emitWailsEvent('mcp:status', {
+      provider: 'codex',
+      name: 'a',
+      status: 'connected',
+      source: 'ephemeral-fetch',
+    });
+    await flush();
+
+    const patched = peekMcpServers(MCP_CODEX_KEY)[0];
+    expect(patched?.status).toBe('failed');
+    expect(patched?.error).toContain('invalid_grant');
+
+    // A provider-sourced push is the thread speaking — that still lands.
+    emitWailsEvent('mcp:status', {
+      provider: 'codex',
+      name: 'a',
+      status: 'connected',
+      source: 'notification',
+    });
+    await flush();
+    expect(peekMcpServers(MCP_CODEX_KEY)[0]?.status).toBe('connected');
+  });
+
   it('re-lists the entities carrying a server whose OAuth just completed', async () => {
     let calls = 0;
     setBindingMock('ListThreadMcpServers', async () => {

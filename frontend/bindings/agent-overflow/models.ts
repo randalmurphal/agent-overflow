@@ -3611,6 +3611,17 @@ export class ThreadMCPServer {
      * scope.
      */
     "scope"?: string;
+
+    /**
+     * AuthStatus is Codex's own auth enum for the row —
+     * "unsupported" | "notLoggedIn" | "bearerToken" | "oAuth" — carried
+     * through so the UI can tell a failed server that HAS an OAuth grant
+     * (offer "Sign in again") from one that never needed credentials.
+     * Session rows carry it from the live list; config rows carry the
+     * cache's copy (the ephemeral fetch records it). Empty on Claude
+     * rows and on config rows the cache has never seen.
+     */
+    "authStatus"?: string;
     "disabled": boolean;
 
     /**

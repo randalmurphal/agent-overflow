@@ -35,8 +35,16 @@ type ThreadMCPServer struct {
 	// plugin servers), config rows report the claudeconfig source
 	// ("user", "local", "plugin", "project"). Codex rows carry no
 	// scope.
-	Scope    string `json:"scope,omitempty"`
-	Disabled bool   `json:"disabled"`
+	Scope string `json:"scope,omitempty"`
+	// AuthStatus is Codex's own auth enum for the row —
+	// "unsupported" | "notLoggedIn" | "bearerToken" | "oAuth" — carried
+	// through so the UI can tell a failed server that HAS an OAuth grant
+	// (offer "Sign in again") from one that never needed credentials.
+	// Session rows carry it from the live list; config rows carry the
+	// cache's copy (the ephemeral fetch records it). Empty on Claude
+	// rows and on config rows the cache has never seen.
+	AuthStatus string `json:"authStatus,omitempty"`
+	Disabled   bool   `json:"disabled"`
 	// Source is "session" when the row is live provider truth for this
 	// thread, "config" when it is the config+cache fallback.
 	Source string `json:"source"`
@@ -261,8 +269,7 @@ func (a *App) claudeConfigMCPRows(workspacePath string) ([]ThreadMCPServer, erro
 // reloadThreadID names a thread with a live Codex session, hot-reloads
 // that session so the toggle applies without a restart (pass "" for the
 // no-thread workspace toggle). The reload is async: enabling can mean a
-// cold server spawn, and the menu click shouldn't block on it — a
-// reload failure surfaces as a thread error.
+// cold server spawn, and the menu click shouldn't block on it.
 func (a *App) setCodexMCPEnabled(reloadThreadID, name string, enabled bool) error {
 	st, err := a.codexConfig()
 	if err != nil {
@@ -279,37 +286,127 @@ func (a *App) setCodexMCPEnabled(reloadThreadID, name string, enabled bool) erro
 	if !ok || sess.codex == nil {
 		return nil
 	}
-	go func() {
-		ctx, cancel := context.WithTimeout(a.lifeCtx(), mcpLiveApplyTimeout)
-		defer cancel()
-		err := sess.codex.RefreshMCPServers(ctx)
-		if err == nil || ctx.Err() != nil {
-			return
-		}
-		a.emitErrorToThread(reloadThreadID, fmt.Sprintf("mcp: live reload failed: %s", sanitizeMCPError(err.Error())))
-	}()
+	sess.codex.ForgetMCPStartupState(name)
+	a.requestCodexMCPReload(reloadThreadID)
 	return nil
+}
+
+// codexMCPReloadState coalesces concurrent live-reload requests for one
+// thread's Codex session. Present in App.codexMCPReloads exactly while a
+// reload runner is live for the thread.
+type codexMCPReloadState struct {
+	rerun bool
+}
+
+// requestCodexMCPReload schedules an async `config/mcpServer/reload` on
+// the thread's live Codex session. The RPC is a level trigger — it
+// re-reads the whole config — so N requests while one is in flight
+// (several OAuth completions landing together, a fast toggle run)
+// collapse into a single follow-up run instead of N stacked round-trips;
+// the follow-up re-reads config written by every request it absorbed.
+//
+// A reload failure surfaces through emitWireErrorToThread: by the time
+// the RPC settles the triggering call has long returned, and the
+// stopped-thread gate is what should decide whether an error for a
+// since-closed thread still matters (Bug B5 / invariant 29). The one
+// silent path is app shutdown — a timeout is a real failure the user
+// sees.
+func (a *App) requestCodexMCPReload(threadID string) {
+	a.codexMCPReloadsMu.Lock()
+	if st, ok := a.codexMCPReloads[threadID]; ok {
+		st.rerun = true
+		a.codexMCPReloadsMu.Unlock()
+		return
+	}
+	if a.codexMCPReloads == nil {
+		a.codexMCPReloads = map[string]*codexMCPReloadState{}
+	}
+	st := &codexMCPReloadState{}
+	a.codexMCPReloads[threadID] = st
+	a.codexMCPReloadsMu.Unlock()
+
+	go func() {
+		for {
+			err := a.runCodexMCPReload(threadID)
+
+			a.codexMCPReloadsMu.Lock()
+			rerun := st.rerun
+			st.rerun = false
+			if !rerun {
+				delete(a.codexMCPReloads, threadID)
+			}
+			a.codexMCPReloadsMu.Unlock()
+
+			if err != nil && a.lifeCtx().Err() == nil {
+				a.emitWireErrorToThread(threadID, fmt.Sprintf("mcp: live reload failed: %s", sanitizeMCPError(err.Error())))
+			}
+			if !rerun {
+				return
+			}
+		}
+	}()
+}
+
+// runCodexMCPReload performs one bounded reload RPC. A session that is
+// gone by now is a no-op, not an error: the next session start loads
+// the current config anyway, so there is nothing left to reload and
+// nothing to report.
+func (a *App) runCodexMCPReload(threadID string) error {
+	sess, ok := a.sessionManager().get(threadID)
+	if !ok || sess.codex == nil {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(a.lifeCtx(), mcpLiveApplyTimeout)
+	defer cancel()
+	return sess.codex.RefreshMCPServers(ctx)
 }
 
 // codexSessionMCPRows merges the live session's thread-scoped
 // `mcpServerStatus/list` (every server the thread actually loaded,
 // including plugin/project layers) with the config file's disabled
 // entries, which the session never loads and therefore never reports.
+//
+// The list answers for a FRESH connection attempt, not for the manager
+// this thread is running, so a TERMINAL retained
+// `mcpServer/startupStatus/updated` state (failed/cancelled — see
+// MCPStartupUpdate.TerminalFailure) is the lifecycle authority where
+// the two disagree: a server this thread watched fail is reported that
+// way, with the cause string the probe cannot carry, even when a fresh
+// attempt would now succeed — the thread still holds the manager that
+// failed. Everything else defers to the list: it describes settled
+// attempts, so a retained "starting" (or an unrecognized state) is an
+// older observation than the probe by construction, and letting it win
+// would latch "Starting…" whenever the terminal notification was lost.
+// The list also stays the membership answer, so a startup state for a
+// server since removed from config simply has no row to land on. The
+// retained state's other exit is ForgetMCPStartupState, taken whenever
+// AO itself asks Codex to re-run a server's startup.
 func (a *App) codexSessionMCPRows(ctx context.Context, sess *codex.Session) ([]ThreadMCPServer, error) {
 	list, err := sess.ListMCPServerStatuses(ctx)
 	if err != nil {
 		return nil, err
 	}
+	startupStates := sess.MCPStartupStates()
 	rows := make([]ThreadMCPServer, 0, len(list.Data))
 	seen := make(map[string]struct{}, len(list.Data))
 	for _, entry := range list.Data {
-		rows = append(rows, ThreadMCPServer{
-			Provider: mcpProviderCodex,
-			Name:     entry.Name,
-			Status:   string(codex.MCPStatusFromList(entry.AuthStatus, len(entry.Tools))),
-			Tools:    entry.ToolNames(),
-			Source:   mcpRowSourceSession,
-		})
+		row := ThreadMCPServer{
+			Provider:   mcpProviderCodex,
+			Name:       entry.Name,
+			AuthStatus: entry.AuthStatus,
+			Tools:      entry.ToolNames(),
+			Source:     mcpRowSourceSession,
+		}
+		if u, ok := startupStates[entry.Name]; ok && u.TerminalFailure() {
+			row.Status = string(codex.MCPStatusFromNotif(u))
+			row.Error = sanitizeMCPError(u.Error)
+			// The tool list came from the probe's fresh attempt; a row
+			// reporting the thread's failed manager must not claim them.
+			row.Tools = nil
+		} else {
+			row.Status = string(codex.MCPStatusFromList(entry))
+		}
+		rows = append(rows, row)
 		seen[entry.Name] = struct{}{}
 	}
 	st, err := a.codexConfig()
@@ -386,6 +483,10 @@ func configMCPRow(providerName, name, scope string, disabled bool, cached map[st
 		row.Status = string(cs.Status)
 		row.Error = cs.Error
 		row.Tools = cs.Tools
+		// Without this an inactive thread's failed-oAuth row could never
+		// offer "Sign in again" — the exact dead end the auth enum exists
+		// to remove, on the most common (no live session) path.
+		row.AuthStatus = cs.AuthStatus
 		row.Stale = !cs.Fresh
 	}
 	return row

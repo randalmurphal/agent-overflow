@@ -4,9 +4,9 @@
   // session truth when the thread has one, config + status cache
   // otherwise) and render instantly from the last load while a
   // background reload runs. The row's primary onSelect toggles the
-  // server; the trailing action is the most useful next step for the
-  // row's state: Sign in for needs-auth, Reconnect for live-session
-  // rows, Refresh (ephemeral status re-check) for config rows.
+  // server; the trailing action is a labeled button offering the
+  // remedy that fits the row's state (utils/mcpRowAction owns the
+  // precedence — Sign in / Sign in again / Reconnect / Refresh).
   //
   // The entity is HELD by McpServersTrigger, which outlives this popup;
   // opening only asks for a fresh listing and permits that listing to
@@ -15,10 +15,8 @@
   import Popover from '../../primitives/Popover.svelte';
   import Menu from '../../primitives/Menu.svelte';
   import MenuItem from '../../primitives/MenuItem.svelte';
-  import RefreshCw from '@lucide/svelte/icons/refresh-cw';
-  import LogIn from '@lucide/svelte/icons/log-in';
-  import Icon from '../../primitives/Icon.svelte';
   import type { ThreadPane } from '../../../stores/thread.svelte';
+  import { mcpRowAction } from '../../../utils/mcpRowAction';
   import {
     isMcpServersLoading,
     mcpRowKey,
@@ -199,32 +197,20 @@
       {#each rows as row (mcpRowKey(row.provider, row.name))}
         {@const key = statusKey(row)}
         {@const inSet = !row.disabled}
-        {@const needsAuth = key === 'needs-auth'}
         {@const canReconnect = row.source === 'session' && rowsFromOwnSession}
-        {#snippet rowAction()}
-          <Icon
-            icon={needsAuth ? LogIn : RefreshCw}
-            size={12}
-            strokeWidth={1.75}
-            class={loading ? 'animate-spin' : ''}
-          />
-        {/snippet}
+        {@const act = mcpRowAction(row, canReconnect)}
         <MenuItem
           label={row.name}
           description={describe(row, key)}
           onSelect={() => void toggleServer(row, !inSet)}
-          action={inSet ? rowAction : undefined}
-          actionLabel={needsAuth ? 'Sign in' : canReconnect ? 'Reconnect' : 'Refresh'}
-          actionTitle={needsAuth
-            ? `Sign in to ${row.name}`
-            : canReconnect
-              ? `Reconnect ${row.name}`
-              : `Re-check ${row.name}`}
+          actionText={inSet ? act.label : undefined}
+          actionLabel={act.title}
+          actionTitle={act.title}
           actionDisabled={loading}
           onAction={inSet
             ? () => {
-                if (needsAuth) void signIn(row);
-                else if (canReconnect) void reconnect(row);
+                if (act.kind === 'sign-in') void signIn(row);
+                else if (act.kind === 'reconnect') void reconnect(row);
                 else void refresh(row);
               }
             : undefined}

@@ -281,9 +281,10 @@ Summary of what `ParseLine` dispatches:
   backgrounded Bash / Task subagent by `task_id` —
   `Session.StopTask`), `set_permission_mode`, `set_model` (live model
   switch, `live_update.go` — acked mid-turn, applies from the next
-  turn; verified 2.1.205), the four MCP control
-  subtypes (`mcp_set_servers` / `mcp_authenticate` /
-  `mcp_oauth_callback_url` / `mcp_status`, all in `mcp.go`),
+  turn; verified 2.1.205), the five MCP control
+  subtypes AO wraps (`mcp_toggle` / `mcp_reconnect` /
+  `mcp_authenticate` / `mcp_oauth_callback_url` / `mcp_status`, all in
+  `mcp.go`),
   `get_context_usage` (the canonical `/context` breakdown,
   `context_usage.go` — answered out of band, consumes no turn and makes
   no API call), and

@@ -164,7 +164,7 @@ command = "gh-mcp"
 	}
 
 	captureDir := t.TempDir()
-	binary := writeCodexRefreshCaptureBinary(t, captureDir, "codex-thread-mcp")
+	binary := writeCodexRefreshCaptureBinary(t, captureDir, "codex-thread-mcp", "")
 	sess, err := codex.NewSession(
 		context.Background(),
 		thread.ID,
@@ -347,11 +347,18 @@ done
 	return path
 }
 
-func writeCodexRefreshCaptureBinary(t *testing.T, captureDir, threadID string) string {
+func writeCodexRefreshCaptureBinary(t *testing.T, captureDir, threadID, gateFile string) string {
 	t.Helper()
 	// Captures every JSON-RPC request whose method matches the live-
 	// reload path. initialize / thread/start get the canonical-shape
-	// success responses Codex's NewSession expects.
+	// success responses Codex's NewSession expects. A non-empty gateFile
+	// makes the reload arm BLOCK (after capturing) until that file
+	// exists, so a test can hold a reload deterministically in flight.
+	gateWait := ""
+	if gateFile != "" {
+		gateWait = `        while [ ! -f ` + shellQuote(gateFile) + ` ]; do sleep 0.02; done
+`
+	}
 	script := `#!/bin/sh
 set -u
 while IFS= read -r line; do
@@ -361,7 +368,7 @@ while IFS= read -r line; do
     fi
     if /bin/echo "$line" | /usr/bin/grep -q '"method":"config/mcpServer/reload"'; then
         printf '%s\n' "$line" >> ` + shellQuote(filepath.Join(captureDir, "capture.jsonl")) + `
-        printf '{"jsonrpc":"2.0","id":%s,"result":{}}\n' "$id"
+` + gateWait + `        printf '{"jsonrpc":"2.0","id":%s,"result":{}}\n' "$id"
         continue
     fi
     if /bin/echo "$line" | /usr/bin/grep -q '"method":"initialize"'; then

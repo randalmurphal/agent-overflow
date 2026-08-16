@@ -891,6 +891,79 @@ internal protocol). It means the stored OAuth grant is no longer usable —
 the remedy is a sign-in, not a retry, so it must not be flattened into a
 generic failure.
 
+**`failureReason` is deterministically `null` for a revoked refresh
+token.** `mcp_startup_failure_reason`
+([`codex-rs/codex-mcp/src/connection_manager/startup.rs`](/home/rmurphy/repos/codex/codex-rs/codex-mcp/src/connection_manager/startup.rs),
+read at `rust-v0.147.0`) returns the variant only when the stored token
+already reads `AuthorizationRequired` — structurally unusable. A refresh
+token that is intact on disk but revoked server-side reads `Usable`, so
+the attempt fails with `invalid_grant`, `authStatus: "oAuth"` and
+`failureReason: null`. Absence of the reason is therefore not drift and
+not evidence that a sign-in would not help: a plain `failed` has to be
+actionable on its own.
+
+Upstream's own TUI treats these notifications as lossy — a stale update
+from a finished round can arrive late and a terminal one can be missed —
+so retained state must be last-write-wins and self-correcting, with
+`mcpServerStatus/list` as the reconciler.
+
+---
+
+## `mcpServerStatus/list`
+
+```json
+{"method": "mcpServerStatus/list",
+ "params": {"threadId": "...", "detail": "toolsAndAuthOnly"}}
+→ {"data": [{"name": "atlassian", "authStatus": "oAuth",
+             "serverInfo": {"name": "atlassian", "version": "1.4.0"},
+             "tools": {"fetchTicket": {...}}}],
+   "nextCursor": null}
+```
+
+`authStatus` ∈ `unsupported | notLoggedIn | bearerToken | oAuth`.
+
+**This is a fresh, settled connection probe — not a read of a loaded
+thread's MCP manager.** `list_mcp_server_status`
+([`codex-rs/app-server/src/request_processors/mcp_processor.rs`](/home/rmurphy/repos/codex/codex-rs/app-server/src/request_processors/mcp_processor.rs))
+builds a new `McpConnectionSet` on every call, `threadId` only selecting
+which config applies; `collect_mcp_server_status_snapshot_with_detail`
+([`codex-rs/codex-mcp/src/mcp/mod.rs`](/home/rmurphy/repos/codex/codex-rs/codex-mcp/src/mcp/mod.rs))
+answers through `list_available_server_infos`
+([`connection_manager.rs`](/home/rmurphy/repos/codex/codex-rs/codex-mcp/src/connection_manager.rs)),
+which **awaits** every pending client's startup first. By response time
+each server's attempt has settled, so "no evidence" means failed, never
+"still starting".
+
+- `serverInfo` (`Option<McpServerInfo>`: name / title / version, no
+  secrets) is populated whenever `initialize` succeeded, at ALL detail
+  levels including `toolsAndAuthOnly`, on every version from
+  `rust-v0.143.0` (AO's floor). MCP makes `serverInfo` mandatory in a
+  successful `initialize` response, so its presence proves
+  initialization and its absence on a settled attempt proves failure.
+- **Tool count proves nothing on its own.** Zero tools is a legitimate
+  answer for a resources-only server; a non-zero count is only a
+  secondary confirmation that initialize completed.
+- Two consequences for a client: a live thread's own `startupStatus`
+  history is the better answer for *that thread's* runtime, and the list
+  is the better answer for membership and for a re-checked attempt.
+
+## `config/mcpServer/reload`
+
+```json
+{"method": "config/mcpServer/reload", "params": null} → {}
+```
+
+Re-reads the on-disk config and marks loaded threads' MCP runtime dirty;
+the reload is applied at the next turn boundary and emits a fresh
+`mcpServer/startupStatus/updated` round. Spawns no new app-server — it is
+one RPC on the connection already running. It re-reads the WHOLE config,
+so unrelated hand-edits to `config.toml` land with it.
+
+Without it, a thread that loaded with a failed MCP server (expired OAuth
+grant, say) keeps that failed manager for the rest of its life — a
+successful `mcpServer/oauth/login` round-trip alone changes nothing for
+the running thread.
+
 ---
 
 ## Background terminals

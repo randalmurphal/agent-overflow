@@ -6,6 +6,7 @@ import (
 	"log"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"agent-overflow/internal/provider"
 )
@@ -399,19 +400,30 @@ func hasProviderEventKind(events []provider.ProviderEvent, kind provider.EventKi
 	return false
 }
 
-// dispatchMCPStartupUpdate decodes `mcpServer/startupStatus/updated`
-// and forwards to the registered handler. Per-thread-only emission;
-// AO routes these into the app-level mcpstatus cache so the popup
-// reflects the live provider state without a refetch. Missing
-// serverName is logged and dropped (defensive — Codex source
-// guarantees the field is set).
+// dispatchMCPStartupUpdate decodes `mcpServer/startupStatus/updated`,
+// retains it as this session's startup state for the server, and
+// forwards it to the registered handler. Per-thread-only emission; AO
+// routes these into the app-level mcpstatus cache so the popup reflects
+// the live provider state without a refetch, and reads the retained map
+// back (MCPStartupStates) when listing the thread's MCP rows. Missing
+// serverName is logged and dropped (defensive — Codex source guarantees
+// the field is set).
+//
+// Retention deliberately runs before the handler lookup: whether an
+// observer happens to be registered is an app-wiring detail, and a
+// session that dropped its own startup history because of it would
+// answer a later listing with an inference instead of the truth it saw.
+//
+// The retained map lives for the session and is keyed by a
+// provider-supplied name, so both dimensions are bounded here at the
+// chokepoint rather than by trusting the peer: a name beyond
+// mcpStartupNameMaxBytes drops the whole update (no real server name
+// approaches it), the error string is clamped to
+// mcpStartupErrorMaxBytes before it touches the heap (display paths
+// re-clamp harder), and a full map stops admitting NEW names — updates
+// for already-retained servers still land, so a chatty peer cannot
+// freeze real lifecycle state out.
 func (s *Session) dispatchMCPStartupUpdate(params json.RawMessage) {
-	s.mu.Lock()
-	handler := s.mcpStartupUpdateHandler
-	s.mu.Unlock()
-	if handler == nil {
-		return
-	}
 	var parsed struct {
 		Name          string `json:"name"`
 		Status        string `json:"status"`
@@ -426,12 +438,60 @@ func (s *Session) dispatchMCPStartupUpdate(params json.RawMessage) {
 		log.Printf("codex: mcpServer/startupStatus/updated: missing name")
 		return
 	}
-	handler(MCPStartupUpdate{
+	if len(parsed.Name) > mcpStartupNameMaxBytes {
+		log.Printf("codex: mcpServer/startupStatus/updated: dropping update for %d-byte server name", len(parsed.Name))
+		return
+	}
+	update := MCPStartupUpdate{
 		Name:          parsed.Name,
 		State:         parsed.Status,
-		Error:         parsed.Error,
+		Error:         truncateRuneSafe(parsed.Error, mcpStartupErrorMaxBytes),
 		FailureReason: strings.TrimSpace(parsed.FailureReason),
-	})
+	}
+
+	s.mu.Lock()
+	if s.mcpStartupStates == nil {
+		s.mcpStartupStates = make(map[string]MCPStartupUpdate)
+	}
+	_, known := s.mcpStartupStates[update.Name]
+	if known || len(s.mcpStartupStates) < mcpStartupStateMaxEntries {
+		s.mcpStartupStates[update.Name] = update
+	} else {
+		log.Printf("codex: mcpServer/startupStatus/updated: retention full (%d servers), not retaining %q", mcpStartupStateMaxEntries, update.Name)
+	}
+	handler := s.mcpStartupUpdateHandler
+	s.mu.Unlock()
+
+	if handler == nil {
+		return
+	}
+	handler(update)
+}
+
+const (
+	// mcpStartupNameMaxBytes bounds a retained server name. Names come
+	// off the provider wire; real config keys are tens of bytes.
+	mcpStartupNameMaxBytes = 256
+	// mcpStartupErrorMaxBytes clamps a retained error string's heap
+	// footprint. User-facing paths re-clamp to 256B (sanitizeMCPError);
+	// this only bounds what a session retains.
+	mcpStartupErrorMaxBytes = 2048
+	// mcpStartupStateMaxEntries caps the retained map. Real configs hold
+	// a handful of servers; the cap exists so a buggy peer cannot grow
+	// the session heap through invented names.
+	mcpStartupStateMaxEntries = 128
+)
+
+// truncateRuneSafe cuts s at limit bytes, backing off to the previous
+// rune boundary so the cut never manufactures U+FFFD.
+func truncateRuneSafe(s string, limit int) string {
+	if len(s) <= limit {
+		return s
+	}
+	for limit > 0 && !utf8.RuneStart(s[limit]) {
+		limit--
+	}
+	return s[:limit]
 }
 
 func (s *Session) dispatchMCPOAuthCompletion(params json.RawMessage) {

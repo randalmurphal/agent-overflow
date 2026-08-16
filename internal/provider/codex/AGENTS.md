@@ -162,11 +162,51 @@ over stdio.
   `MCPStatusFromNotif`) consumed by `internal/mcpstatus` via the
   shared `Fetcher` interface. Backs both the inactive-thread fallback
   and the `mcpServer/startupStatus/updated` /
-  `mcpServer/oauthLogin/completed` notification paths.
-  `MCPStatusFromNotif` takes the whole `MCPStartupUpdate` so a failure
-  carrying `failureReason: "reauthenticationRequired"` resolves to
-  needs-auth (which surfaces the existing Sign in action) instead of a
-  dead error string.
+  `mcpServer/oauthLogin/completed` notification paths. Three rules:
+  - **A list response describes SETTLED attempts.** Every call builds a
+    fresh connection set (threadId only selects config, it never reads a
+    loaded thread's manager) and awaits each pending client's startup
+    before answering, so `MCPStatusFromList` can never return
+    `StatusStarting` — only a startup notification can. Its liveness
+    signal is `serverInfo` presence, which MCP makes mandatory in a
+    successful `initialize` and codex echoes at every detail level;
+    tool count is the safety net, not the signal. No config-shaped
+    field (command/args/env/headers) is decoded here — only
+    `MCPServerInfo`'s name/version.
+  - **`MCPStatusFromNotif` takes the whole `MCPStartupUpdate`** so a
+    failure carrying `failureReason: "reauthenticationRequired"`
+    resolves to needs-auth (which surfaces the existing Sign in action)
+    instead of a dead error string. It must never be *depended* on: a
+    revoked-but-structurally-intact refresh token fails with
+    `failureReason: null` deterministically (see
+    [`codex-wire.md`](../../../docs/references/codex-wire.md)), so the
+    plain failed state has to be actionable on its own.
+  - **Startup updates are retained per session.**
+    `Session.MCPStartupStates` (state on `session.go`, written in
+    `session_notifications.go`) keeps the last update per server name,
+    last-write-wins, independent of whether an observer is registered.
+    `app_mcp_thread.go` merges it over the list so a thread reports the
+    lifecycle it watched — with the cause string a probe cannot carry —
+    while the list stays the membership answer and the reconciler,
+    because delivery is lossy. Two rules bound the merge:
+    - **Only TERMINAL retained states (`TerminalFailure`: failed /
+      cancelled) outrank the settled list.** The list awaits pending
+      startups before answering, so it is always the newer observation
+      for a non-terminal retained state — a retained "starting" latching
+      over a connected probe is exactly the incident shape this exists
+      to prevent. Unrecognized future states defer to the list too.
+    - **AO-initiated restarts forget first.** Every path that asks Codex
+      to restart a server (OAuth success, enable/disable toggle,
+      Reconnect) calls `ForgetMCPStartupState(name)` before the reload:
+      the retained failure describes a run AO just invalidated, and a
+      fresh startup round only arrives at the next turn boundary — so
+      without the forget, a fixed server would keep reporting the dead
+      run's failure until then.
+    Retention itself is bounded (`session_notifications.go`): names over
+    256 bytes drop the whole update loudly, error strings clamp
+    rune-safe at 2 KiB, and the map caps at 128 names (known names still
+    update at cap; new ones log and skip retention but still reach the
+    live handler).
 - `rollout/` — subpackage. Read-only reader for Codex's own on-disk state:
   the `state_5.sqlite` thread index (session listing) and rollout JSONL
   (parse → `internal/importir` events) behind session import. Spawns

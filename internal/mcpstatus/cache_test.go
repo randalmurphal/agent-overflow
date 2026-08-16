@@ -3,6 +3,7 @@ package mcpstatus
 import (
 	"context"
 	"errors"
+	"reflect"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -64,6 +65,157 @@ func TestCache_PutThenGetAfterTTL(t *testing.T) {
 	if _, ok := c.Get(k); ok {
 		t.Fatal("expected stale miss after TTL elapsed")
 	}
+}
+
+// TestCache_Put_ErrorRetentionTransitions drives Put over ORDERED PAIRS,
+// not states: the carry-forward rule only exists at a transition, so a
+// per-state assertion would pass while the rule was inverted. An
+// ephemeral probe never carries an error string, so it must not erase a
+// live provider's explanation of a state it merely agrees with — and it
+// must erase nothing else.
+func TestCache_Put_ErrorRetentionTransitions(t *testing.T) {
+	k := Key{Provider: ProviderCodex, Name: "atlassian"}
+	cases := []struct {
+		name      string
+		prior     ServerStatus
+		incoming  ServerStatus
+		wantError string
+	}{
+		{
+			name:      "notification failure explains a later error-less probe of the same state",
+			prior:     ServerStatus{Key: k, Status: StatusFailed, Error: "invalid_grant: Invalid refresh token", Source: SourceNotification},
+			incoming:  ServerStatus{Key: k, Status: StatusFailed, Source: SourceEphemeralFetch},
+			wantError: "invalid_grant: Invalid refresh token",
+		},
+		{
+			name:      "a probe that reports a DIFFERENT state drops the old cause",
+			prior:     ServerStatus{Key: k, Status: StatusFailed, Error: "invalid_grant: Invalid refresh token", Source: SourceNotification},
+			incoming:  ServerStatus{Key: k, Status: StatusConnected, Source: SourceEphemeralFetch},
+			wantError: "",
+		},
+		{
+			name:      "a newer notification error wins outright",
+			prior:     ServerStatus{Key: k, Status: StatusFailed, Error: "invalid_grant: Invalid refresh token", Source: SourceNotification},
+			incoming:  ServerStatus{Key: k, Status: StatusFailed, Error: "connection refused", Source: SourceNotification},
+			wantError: "connection refused",
+		},
+		{
+			name:      "probe over probe retains nothing - only a provider source is worth preserving",
+			prior:     ServerStatus{Key: k, Status: StatusFailed, Error: "stale probe error", Source: SourceEphemeralFetch},
+			incoming:  ServerStatus{Key: k, Status: StatusFailed, Source: SourceEphemeralFetch},
+			wantError: "",
+		},
+		{
+			name:      "a live session speaking for itself is stored verbatim",
+			prior:     ServerStatus{Key: k, Status: StatusFailed, Error: "invalid_grant: Invalid refresh token", Source: SourceNotification},
+			incoming:  ServerStatus{Key: k, Status: StatusFailed, Source: SourceLiveSession},
+			wantError: "",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			bus := &recordingBus{}
+			c := NewCache(time.Minute, bus)
+			c.Put(tc.prior)
+			c.Put(tc.incoming)
+
+			got, ok := c.Get(k)
+			if !ok {
+				t.Fatal("expected the entry to be cached")
+			}
+			if got.Error != tc.wantError {
+				t.Errorf("cached error = %q, want %q", got.Error, tc.wantError)
+			}
+			if got.Source != tc.incoming.Source || got.Status != tc.incoming.Status {
+				t.Errorf("cached status/source = %q/%q, want %q/%q", got.Status, got.Source, tc.incoming.Status, tc.incoming.Source)
+			}
+			// The bus emission is what the popup renders — retention that
+			// only reached the cache would leave the live UI blank.
+			events := bus.snapshot()
+			if len(events) != 2 {
+				t.Fatalf("expected two emissions, got %d", len(events))
+			}
+			if events[1].Error != tc.wantError {
+				t.Errorf("emitted error = %q, want %q", events[1].Error, tc.wantError)
+			}
+		})
+	}
+}
+
+// TestCache_Put_ErrorRetentionChainsAcrossProbes drives the ordered
+// TRIPLE the pair table cannot see: after a carry-forward the stored
+// entry's Source is ephemeral-fetch, so a rule keyed on entry Source
+// (rather than error provenance) would retain across exactly one probe
+// and collapse "failed: invalid_grant" to a bare "failed" on the second
+// menu open with no provider having spoken. Retention must chain until
+// a provider speaks or the status changes — never expire by count or
+// clock.
+func TestCache_Put_ErrorRetentionChainsAcrossProbes(t *testing.T) {
+	k := Key{Provider: ProviderCodex, Name: "atlassian"}
+	const cause = "invalid_grant: Invalid refresh token"
+	c := NewCache(time.Minute, nil)
+	c.Put(ServerStatus{Key: k, Status: StatusFailed, Error: cause, Source: SourceNotification})
+
+	for i := 0; i < 3; i++ {
+		got := c.Put(ServerStatus{Key: k, Status: StatusFailed, Source: SourceEphemeralFetch})
+		if got.Error != cause {
+			t.Fatalf("probe %d: effective error = %q, want the notification's cause to keep chaining", i+1, got.Error)
+		}
+	}
+	// The chain still ends the moment the status changes.
+	if got := c.Put(ServerStatus{Key: k, Status: StatusConnected, Source: SourceEphemeralFetch}); got.Error != "" {
+		t.Fatalf("status change carried error %q, want the chain broken", got.Error)
+	}
+}
+
+// TestCache_Put_ReturnsEffectiveStatus: the single-flight fetch paths
+// hand Put's result onward (GetOrFetch's pickResult, RefreshProvider's
+// clones), so Put must return the status AS STORED — a caller returning
+// its own input would disagree with the cache about the same entry.
+func TestCache_Put_ReturnsEffectiveStatus(t *testing.T) {
+	k := Key{Provider: ProviderCodex, Name: "atlassian"}
+	const cause = "invalid_grant: Invalid refresh token"
+	c := NewCache(time.Minute, nil)
+	c.Put(ServerStatus{Key: k, Status: StatusFailed, Error: cause, Source: SourceNotification})
+
+	got := c.Put(ServerStatus{Key: k, Status: StatusFailed, Source: SourceEphemeralFetch})
+	cached, ok := c.Get(k)
+	if !ok {
+		t.Fatal("expected the entry to be cached")
+	}
+	if !reflect.DeepEqual(got, cached) {
+		t.Fatalf("Put returned %+v but stored %+v — the two must match", got, cached)
+	}
+	if got.Error != cause {
+		t.Fatalf("returned error = %q, want the carried cause", got.Error)
+	}
+}
+
+// TestCache_GetOrFetch_ResultCarriesRetainedError closes the loop at
+// the fetch layer: the slice a fetch resolves from must reflect the
+// carry-forward, or GetMcpServerStatus answers the wire with a bare
+// "failed" while the cache and the bus say "failed: invalid_grant".
+func TestCache_GetOrFetch_ResultCarriesRetainedError(t *testing.T) {
+	k := Key{Provider: ProviderCodex, Name: "atlassian"}
+	const cause = "invalid_grant: Invalid refresh token"
+	c := NewCache(time.Minute, nil)
+	c.Put(ServerStatus{Key: k, Status: StatusFailed, Error: cause, Source: SourceNotification})
+
+	got, err := c.GetOrFetch(context.Background(), k, fetcherFunc(func(context.Context, Provider) ([]ServerStatus, error) {
+		return []ServerStatus{{Key: k, Status: StatusFailed}}, nil
+	}), true)
+	if err != nil {
+		t.Fatalf("GetOrFetch: %v", err)
+	}
+	if got.Error != cause {
+		t.Fatalf("fetched result error = %q, want the carried cause", got.Error)
+	}
+}
+
+type fetcherFunc func(ctx context.Context, p Provider) ([]ServerStatus, error)
+
+func (f fetcherFunc) Fetch(ctx context.Context, p Provider) ([]ServerStatus, error) {
+	return f(ctx, p)
 }
 
 func TestCache_SnapshotProviderWithFreshness_KeepsExpiredEntries(t *testing.T) {

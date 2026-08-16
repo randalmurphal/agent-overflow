@@ -68,6 +68,17 @@ var loopbackOnlyEventChannels = map[string]bool{
 	// same reasoning as worktree:setup above.
 	"session-import:progress": true,
 
+	// mcp:status and mcp:oauth-completed carry provider-reported MCP error
+	// strings verbatim (sanitizeMCPError bounds length and collapses
+	// newlines — it does not redact, and an `invalid_grant` body can quote
+	// token material). Every MCP RPC (ListThreadMcpServers, TriggerMcpAuth,
+	// GetMcpServerStatus, …) is LocalOnly, so a LAN peer can neither list
+	// nor act on MCP servers and these frames buy it nothing; keeping the
+	// push side loopback-only closes the third door, same reasoning as
+	// git:status above.
+	"mcp:status":          true,
+	"mcp:oauth-completed": true,
+
 	// provider:usage (token counts, context %, rate limits) and
 	// provider:session_died are open to remote clients — essential
 	// feedback for understanding resource consumption and provider

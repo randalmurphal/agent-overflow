@@ -31,7 +31,9 @@ The `Cache` is per-App (lazy-init through `(*App).mcpStatus()`); see
   renders expired entries with their last-known status marked stale
   while a background refresh runs. The cache is status-only, never
   membership: a cached name the config can't derive is another
-  workspace's server and must not create a row.
+  workspace's server and must not create a row. `Put` stores the
+  incoming status verbatim with one narrow exception — see the
+  error-retention invariant below.
 - `events.go` — `EventBus` seam so the App can hook the cache's
   Put/Invalidate emissions onto the `mcp:status` Wails channel without
   this package importing `*App`.
@@ -76,6 +78,28 @@ implement.
   caller — including concurrent waiters that collapse onto one
   fetcher invocation — receives an independent slice clone so
   caller-side `sort.Slice` cannot race peers.
+- **An error-less probe cannot erase a provider's explanation.**
+  A status list answers what state a server is in, never why, so an
+  ephemeral fetch always Puts an empty `Error`. When such a Put lands
+  on an entry whose `Error` a notification or live session produced
+  **and the `Status` is unchanged**, `Put` carries that error onto both
+  the stored and the emitted status — otherwise "failed: invalid_grant"
+  would collapse into a bare "failed" the user cannot act on. Every
+  other transition stores verbatim: a changed status, a non-empty
+  incoming error, or an incoming source that is not a fetch. Provenance
+  lives in `cacheEntry.errorFrom` (the Source that PRODUCED the error),
+  which carry-forwards preserve — so the retention chains across any
+  number of consecutive probes instead of evaporating after the first
+  one relabels the entry. The retention is deliberately event-bounded,
+  never time-bounded: it ends when a provider speaks again or the
+  status changes. A probe that agrees the state is current is
+  confirmation, not staleness — aging the cause out by clock would
+  reintroduce the bare unactionable "failed" this rule exists to
+  prevent. `Put` returns the EFFECTIVE stored status, and
+  `GetOrFetch`/`RefreshProvider` results are re-read through it, so
+  fetch callers see the retained error too. `cache_test.go` covers this
+  over ORDERED PAIRS (including probe chains), not states; a per-state
+  test passes with the rule inverted.
 - **Source stamping happens inside the cache.** Fetchers may omit
   `Source`; the cache stamps `SourceEphemeralFetch` in place so the
   slice returned to callers and the slice stored on the inflight both

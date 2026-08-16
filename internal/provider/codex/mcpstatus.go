@@ -121,34 +121,43 @@ func (f *MCPStatusFetcher) Fetch(ctx context.Context, _ mcpstatus.Provider) ([]m
 	return parseMCPList(respBody, time.Now())
 }
 
-// MCPStatusFromList projects the `mcpServerStatus/list` response fields
-// onto the unified mcpstatus.Status. The ephemeral fetcher only sees
-// authStatus and toolCount — it does NOT receive startup state, which
-// only fires post-thread/start. Rules:
+// MCPStatusFromList projects an `mcpServerStatus/list` entry onto the
+// unified mcpstatus.Status.
 //
-//   - authStatus = "notLoggedIn"   → StatusNeedsAuth
-//   - authStatus ∈ {"unsupported","bearerToken","oAuth"} ∧ toolCount > 0
-//     → StatusConnected
-//   - authStatus = "unsupported"   ∧ toolCount = 0 → StatusUnknown
-//     (could be "configured but never started"; we don't guess)
-//   - anything else                → StatusUnknown
-func MCPStatusFromList(authStatus string, toolCount int) mcpstatus.Status {
-	switch strings.TrimSpace(authStatus) {
+// A list response describes SETTLED connection attempts, never
+// in-flight ones. Every call builds a fresh McpConnectionSet — threadId
+// only selects which config applies, it does not read a loaded thread's
+// running manager — and `list_available_server_infos` awaits each
+// pending client's startup before the response is assembled
+// (codex-rs/app-server/src/request_processors/mcp_processor.rs
+// `list_mcp_server_status`; codex-rs/codex-mcp/src/mcp/mod.rs
+// `collect_mcp_server_status_snapshot_with_detail`;
+// connection_manager.rs `list_available_server_infos`). So "no tools and
+// no serverInfo" is a failed attempt, not a booting server, and
+// StatusStarting is deliberately NOT derivable here — only a
+// `mcpServer/startupStatus/updated` notification can report it.
+//
+// ServerInfo presence is the primary liveness signal: MCP requires a
+// successful `initialize` response to carry serverInfo, and codex
+// populates the field at every detail level (toolsAndAuthOnly included)
+// on every version from AO's 0.143 floor. A non-empty tools map is the
+// safety net — tools also can only exist past a completed initialize.
+// It takes the whole entry, like MCPStatusFromNotif, so a caller cannot
+// destructure the record and lose a signal. Rules:
+//
+//   - authStatus = "notLoggedIn" → StatusNeedsAuth
+//   - authStatus ∈ {"unsupported","bearerToken","oAuth"}:
+//     serverInfo present ∨ tools non-empty → StatusConnected, else StatusFailed
+//   - unrecognized authStatus → StatusUnknown
+func MCPStatusFromList(entry MCPServerStatus) mcpstatus.Status {
+	switch strings.TrimSpace(entry.AuthStatus) {
 	case "notLoggedIn":
 		return mcpstatus.StatusNeedsAuth
-	case "unsupported":
-		if toolCount > 0 {
+	case "unsupported", "bearerToken", "oAuth":
+		if entry.ServerInfo != nil || len(entry.Tools) > 0 {
 			return mcpstatus.StatusConnected
 		}
-		return mcpstatus.StatusUnknown
-	case "bearerToken", "oAuth":
-		if toolCount > 0 {
-			return mcpstatus.StatusConnected
-		}
-		// Auth is configured but no tools yet — usually means the
-		// server is still booting; mark starting so the UI doesn't
-		// claim "connected" prematurely.
-		return mcpstatus.StatusStarting
+		return mcpstatus.StatusFailed
 	default:
 		return mcpstatus.StatusUnknown
 	}
@@ -156,11 +165,20 @@ func MCPStatusFromList(authStatus string, toolCount int) mcpstatus.Status {
 
 // MCPFailureReasonReauthRequired is the sole variant of upstream's
 // McpStartupFailureReason enum (camelCase on the v2 wire; the internal
-// protocol spells it `reauthentication_required`). Verified present in
-// the codex-cli 0.146.0 binary's schema table and observed as
-// `"failureReason": null` on every healthy update in the 2026-08-02
-// spike capture. It means the server's stored OAuth grant is no longer
-// usable — the fix is a sign-in, not a retry.
+// protocol spells it `reauthentication_required`). It means the server's
+// stored OAuth grant is no longer usable — the fix is a sign-in, not a
+// retry.
+//
+// A failure that needs a sign-in usually does NOT carry it. Codex's
+// `mcp_startup_failure_reason`
+// (codex-rs/codex-mcp/src/connection_manager/startup.rs, read at
+// rust-v0.147.0) returns this variant only when the stored token already
+// reads AuthorizationRequired — structurally unusable. A refresh token
+// that is structurally intact but revoked server-side reads Usable, so
+// the attempt fails with `invalid_grant`, authStatus `oAuth`, and
+// `failureReason: null`. That null is deterministic, not drift: the
+// mapping below stays because it is correct when it does arrive, but the
+// plain failed state has to be actionable on its own.
 const MCPFailureReasonReauthRequired = "reauthenticationRequired"
 
 // MCPStatusFromNotif projects a `mcpServer/startupStatus/updated`
@@ -196,16 +214,12 @@ func MCPStatusFromNotif(update MCPStartupUpdate) mcpstatus.Status {
 	}
 }
 
-// mcpListResponse is the wire shape for mcpServerStatus/list. We
-// only project authStatus and tool count into the cache; resources
-// and resourceTemplates are skipped (detail=toolsAndAuthOnly omits
-// them anyway).
+// mcpListResponse is the wire shape for mcpServerStatus/list —
+// MCPServerStatus entries (mcp.go), which decode only auth/identity/
+// tool-name fields; resources and resourceTemplates are skipped
+// (detail=toolsAndAuthOnly omits them anyway).
 type mcpListResponse struct {
-	Data []struct {
-		Name       string                     `json:"name"`
-		AuthStatus string                     `json:"authStatus"`
-		Tools      map[string]json.RawMessage `json:"tools"`
-	} `json:"data"`
+	Data []MCPServerStatus `json:"data"`
 }
 
 func parseMCPList(body []byte, now time.Time) ([]mcpstatus.ServerStatus, error) {
@@ -224,10 +238,10 @@ func parseMCPList(body []byte, now time.Time) ([]mcpstatus.ServerStatus, error) 
 		}
 		out = append(out, mcpstatus.ServerStatus{
 			Key:        mcpstatus.Key{Provider: mcpstatus.ProviderCodex, Name: name},
-			Status:     MCPStatusFromList(entry.AuthStatus, len(entry.Tools)),
+			Status:     MCPStatusFromList(entry),
 			AuthStatus: entry.AuthStatus,
 			ToolCount:  len(entry.Tools),
-			Tools:      sortedToolNames(entry.Tools),
+			Tools:      entry.ToolNames(),
 			Source:     mcpstatus.SourceEphemeralFetch,
 			CheckedAt:  now,
 		})
