@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/store"
 )
 
 func TestTimelineNotificationsUseTurnWideIDs(t *testing.T) {
@@ -50,11 +51,11 @@ func TestTimelineNotificationsUseTurnWideIDs(t *testing.T) {
 	}
 }
 
-// TestTodoUpdateEmitsWithoutPersistence pins the new contract:
-// EventTodoUpdate produces a provider:todo_update emission for the
-// frontend live panel and writes nothing to the items table — the
-// snapshot lives only in pane state.
-func TestTodoUpdateEmitsWithoutPersistence(t *testing.T) {
+// TestTodoUpdateEmitsWithoutTimelineRow pins the contract: EventTodoUpdate
+// produces a provider:todo_update emission for the frontend live panel and
+// writes no timeline row — a todo list is state about the conversation, not
+// an entry in it. It IS persisted, on the thread row.
+func TestTodoUpdateEmitsWithoutTimelineRow(t *testing.T) {
 	router, st, emissions := newTestRouter(t)
 	createTestThread(t, st, "t1")
 	seedOpenTurn(t, router, st, "t1", 0)
@@ -97,25 +98,16 @@ func TestTodoUpdateEmitsWithoutPersistence(t *testing.T) {
 		t.Fatalf("expected exactly 1 provider:todo_update emit, got %d", todoEmits)
 	}
 
-	snapshot, ok := router.LiveTodoSnapshot("t1")
+	stored, ok := storedTodo(t, st, "t1")
 	if !ok {
-		t.Fatalf("expected live todo snapshot")
+		t.Fatalf("expected a persisted todo list")
 	}
-	want := []TodoStep{
+	wantStored := []store.ThreadLiveTodoStep{
 		{Step: "one", Status: "inProgress"},
 		{Step: "two", Status: "pending"},
 	}
-	if snapshot.ThreadID != "t1" || snapshot.UpdatedAt != 1_700_000_000_000 || !reflect.DeepEqual(snapshot.Steps, want) {
-		t.Fatalf("live todo snapshot = %+v, want thread=t1 updatedAt=1700000000000 steps=%+v", snapshot, want)
-	}
-
-	snapshot.Steps[0].Step = "mutated"
-	again, ok := router.LiveTodoSnapshot("t1")
-	if !ok {
-		t.Fatalf("expected live todo snapshot after copy mutation")
-	}
-	if again.Steps[0].Step != "one" {
-		t.Fatalf("LiveTodoSnapshot returned map-owned steps slice; got %+v", again.Steps)
+	if stored.UpdatedAt != 1_700_000_000_000 || !reflect.DeepEqual(stored.Steps, wantStored) {
+		t.Fatalf("stored todo = %+v, want updatedAt=1700000000000 steps=%+v", stored, wantStored)
 	}
 }
 
@@ -148,12 +140,12 @@ func TestTodoUpdateEmptyDropsSilently(t *testing.T) {
 			t.Fatalf("empty todos must not emit; got %+v", e)
 		}
 	}
-	if snapshot, ok := router.LiveTodoSnapshot("t1"); ok {
-		t.Fatalf("empty todos must not store live snapshot; got %+v", snapshot)
+	if stored, ok := storedTodo(t, st, "t1"); ok {
+		t.Fatalf("empty todos must not persist a list; got %+v", stored)
 	}
 }
 
-func TestTodoUpdateEmptyClearsPriorLiveSnapshot(t *testing.T) {
+func TestTodoUpdateEmptyClearsPersistedTodo(t *testing.T) {
 	router, st, emissions := newTestRouter(t)
 	createTestThread(t, st, "t1")
 	seedOpenTurn(t, router, st, "t1", 0)
@@ -166,8 +158,8 @@ func TestTodoUpdateEmptyClearsPriorLiveSnapshot(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("todo update: %v", err)
 	}
-	if _, ok := router.LiveTodoSnapshot("t1"); !ok {
-		t.Fatalf("expected live todo snapshot before clear")
+	if _, ok := storedTodo(t, st, "t1"); !ok {
+		t.Fatalf("expected a persisted todo list before the clear")
 	}
 	countBefore := todoEmissionCount(emissions)
 	if err := router.Handle(provider.ProviderEvent{
@@ -178,8 +170,8 @@ func TestTodoUpdateEmptyClearsPriorLiveSnapshot(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("empty todo update: %v", err)
 	}
-	if snapshot, ok := router.LiveTodoSnapshot("t1"); ok {
-		t.Fatalf("empty todo update did not clear live snapshot: %+v", snapshot)
+	if stored, ok := storedTodo(t, st, "t1"); ok {
+		t.Fatalf("empty todo update did not clear the persisted list: %+v", stored)
 	}
 	// Clearing a prior live snapshot must reach live panes too, not just the
 	// backend refresh copy — an in-memory pane only re-reads the backend on
@@ -192,28 +184,58 @@ func TestTodoUpdateEmptyClearsPriorLiveSnapshot(t *testing.T) {
 	}
 }
 
-func TestLiveTodoSnapshotExpiresCompletedSnapshot(t *testing.T) {
+// Triage stores what the provider reported and nothing else: the age filter
+// that hides a finished list belongs to the reader (app_live_state.go), so a
+// stale all-completed list must still be on the row. Persisting it is what
+// lets the reader decide — and what makes a list the provider merely finished
+// distinguishable from one it cleared.
+func TestTodoUpdateStoresCompletedListVerbatim(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")
 	seedOpenTurn(t, router, st, "t1", 0)
 
+	reportedAt := time.Now().Add(-10 * time.Second)
 	if err := router.Handle(provider.ProviderEvent{
 		Kind:      provider.EventTodoUpdate,
 		ThreadID:  "t1",
 		Meta:      json.RawMessage(`{"plan":[{"step":"done","status":"completed"}]}`),
-		Timestamp: time.Now().Add(-10 * time.Second),
+		Timestamp: reportedAt,
 	}); err != nil {
 		t.Fatalf("todo update: %v", err)
 	}
-	if snapshot, ok := router.LiveTodoSnapshot("t1"); ok {
-		t.Fatalf("completed live todo snapshot should expire: %+v", snapshot)
+	stored, ok := storedTodo(t, st, "t1")
+	if !ok {
+		t.Fatalf("a completed list must still be stored; triage does not age lists out")
 	}
-	if snapshot := router.LiveStateSnapshotForThread("t1"); snapshot.Todo != nil {
-		t.Fatalf("live state returned expired todo snapshot: %+v", snapshot.Todo)
+	if stored.UpdatedAt != reportedAt.UnixMilli() {
+		t.Fatalf("UpdatedAt = %d, want the reporting event's time %d", stored.UpdatedAt, reportedAt.UnixMilli())
 	}
 }
 
-func TestCleanupThreadClearsLiveTodoSnapshot(t *testing.T) {
+// A persistence failure must not cost the user the live update they are
+// looking at — but it must be reported. The failure is forced with a thread
+// that has no row, which is what a deletion racing the write looks like.
+func TestTodoUpdateStillEmitsWhenThePersistFails(t *testing.T) {
+	router, _, emissions := newTestRouter(t)
+
+	err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventTodoUpdate,
+		ThreadID:  "no-such-thread",
+		Meta:      json.RawMessage(`{"plan":[{"step":"one","status":"pending"}]}`),
+		Timestamp: time.Now(),
+	})
+	if err == nil {
+		t.Fatalf("a failed todo persist must be reported, got nil error")
+	}
+	last := lastTodoEmission(emissions)
+	if last == nil || last.ThreadID != "no-such-thread" || len(last.Steps) != 1 {
+		t.Fatalf("the live update must still be emitted after a persist failure; got %+v", last)
+	}
+}
+
+// Surviving teardown is the point of v65: a session ending is not the user
+// finishing their list.
+func TestCleanupThreadPreservesPersistedTodo(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")
 	seedOpenTurn(t, router, st, "t1", 0)
@@ -226,12 +248,10 @@ func TestCleanupThreadClearsLiveTodoSnapshot(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("todo update: %v", err)
 	}
-	if _, ok := router.LiveTodoSnapshot("t1"); !ok {
-		t.Fatalf("expected live todo snapshot before cleanup")
-	}
 	router.CleanupThread("t1")
-	if snapshot, ok := router.LiveTodoSnapshot("t1"); ok {
-		t.Fatalf("live todo snapshot leaked after cleanup: %+v", snapshot)
+	stored, ok := storedTodo(t, st, "t1")
+	if !ok || len(stored.Steps) != 1 || stored.Steps[0].Step != "one" {
+		t.Fatalf("todo list did not survive CleanupThread: found=%v stored=%+v", ok, stored)
 	}
 }
 
@@ -304,5 +324,50 @@ func TestTimelineNotificationMetaIsAllowlisted(t *testing.T) {
 	}
 	if !strings.Contains(meta, "visible hook output") {
 		t.Fatalf("meta dropped rendered hook entry: %s", meta)
+	}
+}
+
+// The clear's emit gate answers "is a pane showing something", and the
+// store's "was anything stored" is only a proxy for it — a proxy a failed
+// call cannot supply. A SET that failed just before may have left a pane
+// showing a list over an empty column; a clear gated on the store would then
+// never take it down. So a failed clear emits: the eager-clear residue heals
+// on the next refresh, the gated-clear residue never does.
+func TestTodoClearStillEmitsWhenTheClearFails(t *testing.T) {
+	router, st, emissions := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	seedOpenTurn(t, router, st, "t1", 0)
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventTodoUpdate,
+		ThreadID:  "t1",
+		Meta:      json.RawMessage(`{"plan":[{"step":"one","status":"pending"}]}`),
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("todo update: %v", err)
+	}
+	// Closing under the fixture's own t.Cleanup(st.Close) is deliberate and
+	// benign: sql.DB.Close is idempotent, and the cleanup's second close only
+	// logs its failed WAL checkpoint. The closed store is what forces the
+	// clear to fail.
+	if err := st.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+
+	countBefore := todoEmissionCount(emissions)
+	err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventTodoUpdate,
+		ThreadID:  "t1",
+		Meta:      json.RawMessage(`{"plan":[]}`),
+		Timestamp: time.Now(),
+	})
+	if err == nil {
+		t.Fatalf("a failed clear must be reported, got nil error")
+	}
+	if got := todoEmissionCount(emissions) - countBefore; got != 1 {
+		t.Fatalf("a failed clear must still emit the live clear; got %d new emissions", got)
+	}
+	last := lastTodoEmission(emissions)
+	if last == nil || last.ThreadID != "t1" || len(last.Steps) != 0 {
+		t.Fatalf("the failed clear's frame must be the empty list; got %+v", last)
 	}
 }

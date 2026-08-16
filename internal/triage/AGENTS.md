@@ -32,9 +32,21 @@ none fits.
   (open turns, interrupt queue, stopped-thread markers, turn span
   bookkeeping, cleanup paths).
 - `live_state.go` — refresh/reconnect snapshot of backend-owned live
-  session state (active wire round, queue, interactive prompts, live todo,
+  session state (active wire round, queue, interactive prompts,
   effective fallback model)
-  copied under one router lock for the App transport DTO.
+  copied under one router lock for the App transport DTO. The todo list is
+  deliberately NOT here: it is durable thread state
+  (`threads.live_todo`, migration v65) that `GetThreadLiveState` reads
+  straight from the store.
+- `timeline_notifications.go` — notification rows plus the todo write path.
+  `projectTodoSnapshot` is the one funnel every producer of the activity-rail
+  list goes through (`handleTodoUpdate`, `handleTaskCreate`,
+  `handleTaskUpdate`): it persists to `threads.live_todo` BEFORE emitting
+  `provider:todo_update`, so a refresh racing the push can never read older
+  state than the frame it just saw. A failed persist still emits — the live
+  pane is what the user is looking at — and returns the error. Empty steps
+  clear the column and emit the empty-steps clear only when something was
+  stored.
 - `model_fallback.go` — provider classifier/safety fallback handling:
   persists the bounded warning reason, projects the session-scoped effective
   model without overwriting the requested thread model, and clears that live
@@ -200,6 +212,7 @@ none fits.
 | Fast-mode report (Claude) | Live-only `provider:fast_mode` from `system/init` and the wire `result`; nothing persists. Absence is unknown, never "off". See `fast_mode.go`. |
 | Compaction status | Live-only `provider:compacting` window per thread (open on Active frames, closed by close frame / compact boundary / turn completion); nothing persists. Snapshot-carried for reconnect. See `compaction_status.go`. |
 | Slash-command list (Claude) | Live-only `provider:commands` from `system/init` and `commands_changed`; nothing persists. Absence is silence, never an empty palette. See `provider_commands.go`. |
+| Todo list (Claude TodoWrite / Task\*, Codex update_plan) | `provider:todo_update` to the frontend + the whole list onto `threads.live_todo` (v65); no timeline row ever. SQLite is its source of truth — it survives session teardown and app restart, and `GetThreadLiveState` reads it from the store, not from triage. Empty steps clear the column and emit a clear only when something was stored. See `timeline_notifications.go`. |
 | Command result (Claude local command) | `command_result` item (role `system`, status `completed`) + on-demand payload above the inline bound. Idempotent on the provider message id so the `result` echo does not duplicate it. See `command_result.go`. |
 | Session wakeup (Claude) | Per-thread pending-wakeup fire time in router state only — nothing persists, nothing emits. Consumed by the idle reaper via `PendingWakeupAt`. See `session_wakeup.go`. |
 | Codex unifiedExec / spawn_agent | unifiedExec starts are transient running-tray state; typed command completions clear live state and persist normal command rows using the original item id only while a Codex wire round is active. Spawn-agent starts are pending-only; terminal spawn completions persist the visible row and use sibling `tool_completion` rows. See `codex_background.go` + invariant 25. |
@@ -372,7 +385,24 @@ Use these categories when adding or moving state:
 - **Logical-turn settlement** (`settledTurns`): survives wire-round
   boundaries and is reset by a fresh `setOpenTurn`.
 - **Durable user-visible state**: persist it as soon as it becomes
-  known instead of keeping it in a router map.
+  known instead of keeping it in a router map. The activity-rail todo
+  list is the worked example — it spent a while as `latestTodoByThread`
+  and was erased by every restart and every `CleanupThread` until v65 put
+  it on the thread row. The `tasksByThread` map beside it stays in memory
+  on purpose: that one is Claude Task\* id correlation, which the durable
+  projection is derived FROM, not the durable state itself. But because
+  the projection — and the PROVIDER's own task list, which a plain
+  `--resume` keeps alive — both outlive the map, a cold map must be
+  re-seeded from the column before a Task\* event applies
+  (`seedTasksFromStoredTodo`): a resumed session updates and deletes ids
+  minted before the restart, and a nil map would drop those events and
+  freeze the durable list in a state the provider has moved past, with
+  no event that could ever clear it. The seed is a one-shot re-derivation
+  at the session boundary, not a store cache — the store is read only
+  while the map is nil. Its soundness leans on an app-side contract:
+  paths that start a thread's next session from scratch on the SAME row
+  (rollback, provider switch) call `ResetThreadTodo` so a dead list's
+  ids can never seed against a session that will mint them again.
 
 If a new map represents user-blocking live state, add it to
 `HasPendingWork` in `interactive_requests.go` and cover it in

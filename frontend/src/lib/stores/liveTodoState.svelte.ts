@@ -17,6 +17,12 @@ export interface LiveTodo {
  * step is `completed` before the auto-hide timer clears it. Long
  * enough for the user to see the satisfying all-done state, short
  * enough that the segment doesn't squat on the rail indefinitely.
+ *
+ * It MUST agree with the backend's `liveTodoAutoHideMillis`
+ * (`app_live_state.go`): the list is durable now
+ * (`threads.live_todo`), so `GetThreadLiveState` applies the same age
+ * filter on hydration — if the two disagreed, a refresh after the
+ * timer would resurrect a list this pane had already hidden.
  */
 export const LIVE_TODO_AUTOHIDE_MS = 5_000;
 

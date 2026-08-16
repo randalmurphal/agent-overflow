@@ -4213,3 +4213,77 @@ func TestMigrationV57AddsProviderUsageProvenanceAndAttention(t *testing.T) {
 		t.Fatal("work_item_units accepted a negative provider usage scope")
 	}
 }
+
+func TestMigrationV65AddsThreadLiveTodo(t *testing.T) {
+	db := migrateThrough(t, 64)
+	mustExec(t, db, `
+		INSERT INTO projects (id, path, name, color, sort_position, created_at, updated_at, archived)
+		VALUES ('project-v65', '/tmp/v65', 'V65', 'green', 4, 10, 11, 0)
+	`)
+	mustExec(t, db, `
+		INSERT INTO threads (
+			id, project_id, title, provider, model, workspace_path, worktree_path,
+			branch, pr_ref, session_ref, pending_fork_session_ref, mode, reasoning_effort,
+			fast_mode, context_window, auto_compact_standard_percent,
+			auto_compact_extended_percent, runtime_mode, last_token_usage, last_read_at,
+			pinned_at, created_at, updated_at, archived
+		) VALUES (
+			'thread-v65', 'project-v65', 'Pre-migration row', 'codex', 'gpt-5.5-codex', '/tmp/v65', '/tmp/v65-wt',
+			'feature/v65', '', '', '', 'chat', 'xhigh',
+			0, 400000, 0, 0, 'auto', '', 31,
+			NULL, 33, 34, 0
+		)
+	`)
+
+	if err := applyMigration(db, migrationByVersion(t, 65)); err != nil {
+		t.Fatalf("apply migration v65: %v", err)
+	}
+
+	// A row that predates the column reads as "no list", never NULL: the
+	// column is NOT NULL so every reader has one spelling of absence.
+	var stored string
+	if err := db.QueryRow(
+		`SELECT live_todo FROM threads WHERE id = 'thread-v65'`,
+	).Scan(&stored); err != nil {
+		t.Fatalf("read live_todo: %v", err)
+	}
+	if stored != "" {
+		t.Fatalf("backfilled live_todo = %q, want empty", stored)
+	}
+
+	for _, good := range []string{`{"steps":[{"step":"one","status":"pending"}],"updatedAt":1}`, `[]`, ``} {
+		if _, err := db.Exec(
+			`UPDATE threads SET live_todo = ? WHERE id = 'thread-v65'`, good,
+		); err != nil {
+			t.Fatalf("threads rejected live_todo %q: %v", good, err)
+		}
+	}
+	// A half-written blob is exactly what the CHECK exists to refuse: it
+	// would otherwise be discovered by a reader that can only report it as
+	// an error, long after whatever wrote it is gone.
+	for _, bad := range []string{`{"steps":`, `not json`, `{`} {
+		if _, err := db.Exec(
+			`UPDATE threads SET live_todo = ? WHERE id = 'thread-v65'`, bad,
+		); err == nil {
+			t.Errorf("threads accepted non-JSON live_todo %q after v65", bad)
+		}
+	}
+	if _, err := db.Exec(
+		`UPDATE threads SET live_todo = NULL WHERE id = 'thread-v65'`,
+	); err == nil {
+		t.Error("threads accepted a NULL live_todo after v65")
+	}
+
+	// ADD COLUMN, not a rebuild: the threads indexes are untouched.
+	for _, index := range []string{
+		"idx_threads_project", "idx_threads_updated", "idx_threads_parent",
+		"idx_threads_forked_from", "idx_threads_pinned_at",
+	} {
+		var found string
+		if err := db.QueryRow(
+			`SELECT name FROM sqlite_master WHERE type = 'index' AND name = ?`, index,
+		).Scan(&found); err != nil {
+			t.Fatalf("index %s missing after v65: %v", index, err)
+		}
+	}
+}

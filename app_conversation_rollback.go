@@ -151,6 +151,21 @@ func (a *App) rollbackConversationLocked(args rollbackConversationLockedArgs) (c
 		}
 	}
 
+	// The rollback discards the conversation tail the activity-rail todo
+	// list was minted in, and the provider's own task state does not follow
+	// the thread back: the turn-0 branch starts the next session from
+	// scratch and the deeper branches fork, which starts provider task
+	// state from scratch all the same. The dead list must not stay in
+	// threads.live_todo where the next session's per-session task ids would
+	// collide with it (triage.seedTasksFromStoredTodo). claude-tui is the
+	// carve-out — its session and task list stay live across the native
+	// Esc-revert, so its still-warm projection remains correct.
+	if args.thread.Provider != string(provider.ClaudeTUI) && a.triage != nil {
+		if err := a.triage.ResetThreadTodo(args.thread.ID); err != nil {
+			return revertedConversationCut{}, fmt.Errorf("%s: reset todo list: %w", args.errorPrefix, err)
+		}
+	}
+
 	// The prompt draft is restored BEFORE the destructive truncation: the
 	// provider slice above already removed the message from provider
 	// history, so from here on the composer draft is the user's only copy.

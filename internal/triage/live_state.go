@@ -2,7 +2,6 @@ package triage
 
 import (
 	"strings"
-	"time"
 
 	"agent-overflow/internal/provider"
 )
@@ -10,12 +9,15 @@ import (
 // LiveStateSnapshot is triage's in-memory live projection for one thread.
 // It is not persisted history; App converts it to transport DTOs for
 // refresh/reconnect hydration.
+//
+// Everything here dies with the provider session. The todo list deliberately
+// does NOT live here: it is durable thread state (threads.live_todo,
+// migration v65) that GetThreadLiveState reads straight from the store.
 type LiveStateSnapshot struct {
 	ActiveTurn             *ActiveTurnSnapshot
 	QueueItems             []QueuedFlushItem
 	FlushedItems           []PendingFlushItemSnapshot
 	Interactive            provider.PendingInteractiveRequests
-	Todo                   *LiveTodoSnapshot
 	EffectiveModel         string
 	EffectiveModelRevision uint64
 	// CompactingSinceUnixMs is the open compacting window's start (epoch
@@ -90,8 +92,6 @@ func (r *Router) LiveStateSnapshotForThread(threadID string) LiveStateSnapshot {
 		}
 		snapshot.Interactive.UserInputs = append(snapshot.Interactive.UserInputs, request)
 	}
-
-	snapshot.Todo = r.liveTodoSnapshotLocked(threadID, time.Now().UnixMilli())
 
 	return snapshot
 }

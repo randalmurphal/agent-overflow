@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 
 	"agent-overflow/internal/chatmodel"
@@ -140,6 +141,18 @@ func (a *App) updateThreadFromChatModelProfile(previous store.Thread, profile st
 			return store.Thread{}, fmt.Errorf("update provider: thread is locked to %s (start a new thread to use %s)", previous.Provider, thread.Provider)
 		}
 		return store.Thread{}, err
+	}
+
+	// A provider switch dropped SessionRef above: the next session starts
+	// from scratch, so the old provider's todo list must not survive into
+	// it — a stale threads.live_todo would collide with the new session's
+	// per-session task ids (triage.seedTasksFromStoredTodo). Same posture
+	// as the reconciler below: the persisted selection is authoritative, a
+	// failed cleanup is reported, never a rollback of the switch.
+	if previous.Provider != thread.Provider && a.triage != nil {
+		if err := a.triage.ResetThreadTodo(thread.ID); err != nil {
+			log.Printf("thread %s: reset todo list on provider switch: %v", thread.ID, err)
+		}
 	}
 
 	// Reconcile any live session with the new profile: model, effort, fast

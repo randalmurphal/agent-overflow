@@ -2034,6 +2034,30 @@ END;`,
 
 UPDATE work_item_phases SET feedback_delivered_at = MAX(started_at, ended_at, 1);`,
 	},
+	{
+		Version: 65,
+		Name:    "thread_live_todo",
+		// The activity rail's todo list (Claude TodoWrite / the Task* family,
+		// Codex update_plan) as the provider last reported it. It used to live
+		// only in a triage map, so an app restart or a session teardown erased
+		// a list the user was still working through — the work was not finished,
+		// only the process that happened to be holding the note.
+		//
+		// It is durable state about the conversation rather than history: the
+		// column is rewritten in place by each report and cleared when the
+		// provider empties the list, so there is exactly one row per thread and
+		// no timeline row is ever written for a todo tick.
+		//
+		// `''` is the only spelling of "no list" — the writer refuses an empty
+		// step array so a cleared list cannot also be stored as `[]`. The CHECK
+		// admits `''` or valid JSON, which is what stops a half-written blob
+		// from being discovered later by a reader that can only report it as an
+		// error. A plain ADD COLUMN: SQLite permits a CHECK on one, and nothing
+		// here changes a column list, so the FK-parent threads table is not
+		// rebuilt.
+		SQL: `ALTER TABLE threads ADD COLUMN live_todo TEXT NOT NULL DEFAULT ''
+    CHECK(live_todo = '' OR json_valid(live_todo));`,
+	},
 }
 
 var rebuildWorkItemProviderUsageLimitedV57SQL = mustReplaceOnce(

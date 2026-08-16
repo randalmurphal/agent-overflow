@@ -107,27 +107,17 @@ type SessionDiedEvent struct {
 }
 
 // TodoUpdateEvent is the frontend-facing payload for provider:todo_update.
-// Carries the latest live-todo snapshot from either Claude TodoWrite or
-// Codex update_plan. Both providers normalise to a shared step shape
-// before this point. The frontend renders this in the activity rail and
-// intentionally does
-// NOT add a row to the chat timeline — todos are session state, not
-// history. Persistence is deliberately NOT a triage concern for this
-// kind; triage keeps the backend-owned refresh/reconnect snapshot in
-// memory while ThreadPane remains only the visible projection.
+// Carries the latest live-todo list from either Claude TodoWrite / the Task*
+// family or Codex update_plan. Both providers normalise to a shared step
+// shape before this point. The frontend renders this in the activity rail and
+// intentionally does NOT add a row to the chat timeline — a todo list is
+// state about the conversation, not an entry in it. It is nonetheless
+// persisted, on the thread row (threads.live_todo, migration v65), so it
+// survives the session and the process that reported it; ThreadPane remains
+// only the visible projection.
 type TodoUpdateEvent struct {
 	ThreadID string     `json:"threadId"`
 	Steps    []TodoStep `json:"steps"`
-}
-
-// LiveTodoSnapshot is the server-owned copy of the latest live todo panel
-// state for a thread. SQLite remains history-only; this in-memory snapshot
-// exists so refresh / reconnect sees the same live panel as the original
-// frontend process.
-type LiveTodoSnapshot struct {
-	ThreadID  string     `json:"threadId"`
-	Steps     []TodoStep `json:"steps"`
-	UpdatedAt int64      `json:"updatedAt"`
 }
 
 // TodoStep is one item in a live todo list. Status uses the camelCase

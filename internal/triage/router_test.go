@@ -501,6 +501,18 @@ func newTestRouter(t *testing.T) (*Router, *store.Store, *emissionLog) {
 	return router, st, emissions
 }
 
+// storedTodo reads the thread's durable todo list straight from the column
+// triage now writes (threads.live_todo, migration v65). It replaces the old
+// (*Router).LiveTodoSnapshot getter: there is no in-memory copy to ask.
+func storedTodo(t *testing.T, st *store.Store, threadID string) (store.ThreadLiveTodo, bool) {
+	t.Helper()
+	todo, found, err := st.ThreadLiveTodo(threadID)
+	if err != nil {
+		t.Fatalf("read stored todo for %s: %v", threadID, err)
+	}
+	return todo, found
+}
+
 func createTestThread(t *testing.T, st *store.Store, id string) {
 	t.Helper()
 	ensureTriageProject(t, st)

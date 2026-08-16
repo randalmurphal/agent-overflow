@@ -1537,7 +1537,9 @@ func (r *Router) cleanupThread(threadID string, requireEpoch *uint64) bool {
 	// a final wire turn-complete (clean stdout EOF, host-side
 	// StopSession during a round).
 	delete(r.currentRoundByThread, threadID)
-	delete(r.latestTodoByThread, threadID)
+	// The todo list is NOT cleaned up here: it lives on the thread row
+	// (threads.live_todo, migration v65) precisely so it survives the session
+	// that reported it. Only the provider emptying the list clears it.
 	// The harness wakeup timer is in-process CLI state — it dies with the
 	// session, so its record must not outlive it and shield a future
 	// session from the idle reaper.

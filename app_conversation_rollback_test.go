@@ -1129,3 +1129,44 @@ func TestClaudeMidTurnAnchor(t *testing.T) {
 		})
 	}
 }
+
+// A rollback discards the conversation the activity-rail todo list was minted
+// in, and the next session starts from scratch with per-session task ids that
+// would collide with the dead list's (triage.seedTasksFromStoredTodo). The
+// saga must clear threads.live_todo alongside the rows.
+func TestConversationRollbackClearsPersistedTodo(t *testing.T) {
+	app, cleanup := newTestApp(t)
+	defer cleanup()
+	// The reset runs through triage (rollbackConversationLocked guards on
+	// a.triage != nil), which the light fixture leaves unwired.
+	app.ensureTriageRouter()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	workspace := t.TempDir()
+	const sessionID = "todo-session"
+	writeClaudeProjectSession(t, home, workspace, sessionID, `{"type":"user","uuid":"u0","parentUuid":null,"sessionId":"todo-session","message":{"role":"user","content":"first"}}
+{"type":"assistant","uuid":"a0","parentUuid":"u0","sessionId":"todo-session","message":{"role":"assistant","content":[{"type":"text","text":"reply 0"}]}}
+{"type":"user","uuid":"u1","parentUuid":"a0","sessionId":"todo-session","message":{"role":"user","content":"second"}}
+`)
+	thread := createAppTestThread(t, app, "t-todo-rollback", "claude", workspace)
+	thread.SessionRef = sessionID
+	if err := app.store.UpdateThread(thread); err != nil {
+		t.Fatalf("update thread: %v", err)
+	}
+	insertUserItem(t, app.store, thread.ID, "user:0", 0, "first")
+	insertUserItem(t, app.store, thread.ID, "user:1", 1, "second")
+	seedMessageAnchor(t, app.store, thread.ID, "user:1", 1, "provider-user-1", "")
+	if err := app.store.SetThreadLiveTodo(thread.ID, store.ThreadLiveTodo{
+		Steps:     []store.ThreadLiveTodoStep{{Step: "minted in the discarded tail", Status: "inProgress", ID: "1"}},
+		UpdatedAt: 1,
+	}); err != nil {
+		t.Fatalf("seed todo: %v", err)
+	}
+
+	if err := rollbackToMessage(app, thread.ID, "user:1"); err != nil {
+		t.Fatalf("rollback: %v", err)
+	}
+	if _, found, err := app.store.ThreadLiveTodo(thread.ID); err != nil || found {
+		t.Fatalf("rollback must clear the persisted todo; found=%v err=%v", found, err)
+	}
+}

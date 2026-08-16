@@ -223,10 +223,6 @@ type Router struct {
 	// "user-typed prompt is in flight." Key = threadID. Cleared by
 	// takeOpenRound (every wire complete) and CleanupThread.
 	currentRoundByThread map[string]ActiveTurnSnapshot
-	// latestTodoByThread carries the latest live todo/update_plan snapshot
-	// per thread for frontend refresh / reconnect. Todo state is session
-	// state, not history; this map is the backend-owned live projection.
-	latestTodoByThread map[string]LiveTodoSnapshot
 	// effectiveModelByThread is the session-scoped model actually serving a
 	// thread after a provider fallback. The durable threads.model remains the
 	// user's requested model; this live projection is cleared with the provider
@@ -547,7 +543,6 @@ func NewRouter(st *store.Store, emit func(eventName string, data any)) *Router {
 		streamPersistBuffers:       make(map[string]*streamPersistBuffer),
 		settledTurns:               make(map[string]bool),
 		currentRoundByThread:       make(map[string]ActiveTurnSnapshot),
-		latestTodoByThread:         make(map[string]LiveTodoSnapshot),
 		effectiveModelByThread:     make(map[string]string),
 		effectiveModelRevisions:    make(map[string]uint64),
 		tasksByThread:              make(map[string]*threadTasks),

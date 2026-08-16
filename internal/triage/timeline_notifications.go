@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
-	"time"
 
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
@@ -17,122 +16,129 @@ type timelineNotificationMeta struct {
 }
 
 // handleTodoUpdate routes EventTodoUpdate (Claude TodoWrite reroute,
-// Codex turn/plan/updated) directly to the frontend without
-// persisting a timeline notification row. The live todo list is session
-// state owned by triage for refresh/reconnect; SQLite is not its source of
-// truth, and ThreadPane is only the visible projection. See TodoUpdateEvent
-// / ActivityRailTodosBody.svelte for the rendering side.
+// Codex turn/plan/updated) to the frontend and to the thread's own
+// `live_todo` column, without persisting a timeline notification row —
+// a todo list is state about the conversation, not an entry in it. SQLite
+// IS its source of truth (migration v65): the list outlives the provider
+// session that reported it and the app process that received it, which is
+// what a user working through an unfinished list expects. ThreadPane
+// remains only the visible projection. See TodoUpdateEvent /
+// ActivityRailTodosBody.svelte for the rendering side.
 //
-// Clearing is delegated to projectTodoSnapshot: an empty list drops the
-// backend snapshot AND emits an empty provider:todo_update when a snapshot
-// existed, so a live pane (which holds the last list in memory and only
-// re-reads the backend copy on refresh) drops it too. See that function for
-// the gating rationale.
+// Clearing is delegated to projectTodoSnapshot: an empty list clears the
+// column AND emits an empty provider:todo_update when something was stored,
+// so a live pane (which holds the last list in memory and only re-reads the
+// backend copy on refresh) drops it too. See that function for the gating
+// rationale.
 func (r *Router) handleTodoUpdate(evt provider.ProviderEvent) error {
 	steps := decodeTodoSteps(evt.Meta)
-	r.projectTodoSnapshot(evt.ThreadID, steps, eventTimestampMillis(evt))
-	return nil
+	return r.projectTodoSnapshot(evt.ThreadID, steps, eventTimestampMillis(evt))
 }
 
 // projectTodoSnapshot is the shared write-path for all producers of the
 // activity-rail todo list (Codex update_plan, legacy Claude TodoWrite,
-// new Claude Task* family). Empty steps clears the snapshot AND emits an
-// empty provider:todo_update so a live pane drops the list — but only when
-// a snapshot actually existed. A pane holds the last non-empty list in
-// process memory and only re-reads the backend snapshot on refresh, so
+// new Claude Task* family). Empty steps clears the stored list AND emits an
+// empty provider:todo_update so a live pane drops it — but only when
+// something was actually stored. A pane holds the last non-empty list in
+// process memory and only re-reads the backend copy on refresh, so
 // "absence" alone leaves a cleared list frozen on screen until reload
 // (the 2026-06-14 Task* delete-to-empty incident: deletes arrive one at a
-// time and the final one empties the map). Gating the emit on a prior
-// snapshot keeps a malformed/empty wire payload from spawning a no-op
-// clear when nothing was showing. Callers do NOT re-dispatch a synthetic
+// time and the final one empties the map). Gating the emit on a stored list
+// keeps a malformed/empty wire payload from spawning a no-op clear when
+// nothing was showing. Callers do NOT re-dispatch a synthetic
 // EventTodoUpdate through Handle; that would re-fire the stopped-thread
 // check, api-retry forward-progress check, and the test-only eventHook.
-func (r *Router) projectTodoSnapshot(threadID string, steps []TodoStep, updatedAt int64) {
+//
+// The store write happens BEFORE the emit so a refresh racing the push can
+// never read a list older than the frame it just saw — except when the write
+// itself failed, in which case the pane briefly shows a list a refresh would
+// roll back; the error is returned so the caller reports it. A failed SET
+// still emits because the live pane is the thing the user is looking at, and
+// stalling it on a persistence failure trades a visible feature for an
+// invisible one. A failed CLEAR emits too: the gate's question is really "is
+// a pane showing something", the store's "was anything stored" is only a
+// proxy for it, and a call that failed answered nothing — dropping the
+// pane's list is the recoverable guess (a refresh restores whatever the
+// column really holds), while staying silent over a stored list would leave
+// the pane showing it until a refresh. Store failures leave exactly one
+// residue each way, both bounded by the next refresh or report: a failed SET
+// can leave a pane showing a list over an empty column (and a later
+// trivially-successful clear of that empty column stays silent — the
+// refresh, not the gate, is what heals that pane), and a failed CLEAR
+// leaves the column holding a list the provider deleted, which refreshes
+// re-serve until the next report overwrites it. Neither residue is silent:
+// the error reaches the caller both times.
+func (r *Router) projectTodoSnapshot(threadID string, steps []TodoStep, updatedAt int64) error {
+	if r == nil || threadID == "" {
+		return nil
+	}
+	if r.store == nil {
+		// Storeless routers exist only in tests (same guard as the other
+		// store-touching triage paths). Nothing can persist and nothing can
+		// answer "was anything stored", so a list still reaches live panes
+		// and a clear stays silent.
+		if len(steps) > 0 {
+			r.emit("provider:todo_update", TodoUpdateEvent{ThreadID: threadID, Steps: steps})
+		}
+		return nil
+	}
 	if len(steps) == 0 {
-		if r.clearLiveTodoSnapshot(threadID) {
+		existed, err := r.store.ClearThreadLiveTodo(threadID)
+		if existed || err != nil {
 			// Explicit empty slice (not nil) so the wire carries [] and honors
 			// the non-nullable TodoUpdateEvent.steps type the frontend declares.
 			r.emit("provider:todo_update", TodoUpdateEvent{ThreadID: threadID, Steps: []TodoStep{}})
 		}
-		return
+		return err
 	}
-	r.setLiveTodoSnapshot(LiveTodoSnapshot{
-		ThreadID:  threadID,
-		Steps:     steps,
-		UpdatedAt: updatedAt,
-	})
+	storeErr := r.store.SetThreadLiveTodo(threadID, storeLiveTodo(steps, updatedAt))
 	r.emit("provider:todo_update", TodoUpdateEvent{
 		ThreadID: threadID,
 		Steps:    steps,
 	})
+	return storeErr
 }
 
-func (r *Router) setLiveTodoSnapshot(snapshot LiveTodoSnapshot) {
-	if r == nil || snapshot.ThreadID == "" || len(snapshot.Steps) == 0 {
-		return
-	}
-	r.mu.Lock()
-	r.latestTodoByThread[snapshot.ThreadID] = snapshot
-	r.mu.Unlock()
-}
-
-// clearLiveTodoSnapshot drops the thread's backend refresh snapshot and
-// reports whether one existed. The caller (projectTodoSnapshot) uses the
-// return to decide whether a live clear is worth emitting — a clear is only
-// meaningful when there was a list to clear. CleanupThread deletes the map
-// entry directly (not through here) so teardown never emits.
-func (r *Router) clearLiveTodoSnapshot(threadID string) bool {
+// ResetThreadTodo drops the thread's Task* correlation map and clears the
+// persisted todo list, emitting the live clear when something was stored.
+//
+// For the app paths that discard the conversation a list was minted in —
+// rollback to an earlier message, switching the thread's provider. Those
+// paths start the next provider session from scratch (or fork it, which
+// starts provider task state from scratch all the same), and Claude task ids
+// are per-session small integers: leaving the dead list in the column would
+// hand seedTasksFromStoredTodo entries the new session's ids collide with,
+// resurrecting discarded tasks with stale statuses. Opting out clears what
+// opting in stored. claude-tui reverts deliberately do NOT call this: the
+// TUI's session (and its task list) stays live across its native Esc-revert,
+// and the still-warm map keeps projecting the provider's real state.
+func (r *Router) ResetThreadTodo(threadID string) error {
 	if r == nil || threadID == "" {
-		return false
-	}
-	r.mu.Lock()
-	_, existed := r.latestTodoByThread[threadID]
-	delete(r.latestTodoByThread, threadID)
-	r.mu.Unlock()
-	return existed
-}
-
-// LiveTodoSnapshot returns the latest per-thread live todo/update_plan
-// snapshot without handing callers the map-owned steps slice.
-func (r *Router) LiveTodoSnapshot(threadID string) (LiveTodoSnapshot, bool) {
-	if r == nil || threadID == "" {
-		return LiveTodoSnapshot{}, false
-	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if snapshot := r.liveTodoSnapshotLocked(threadID, time.Now().UnixMilli()); snapshot != nil {
-		return *snapshot, true
-	}
-	return LiveTodoSnapshot{}, false
-}
-
-const liveTodoCompletedSnapshotTTLMillis int64 = 5_000
-
-func (r *Router) liveTodoSnapshotLocked(threadID string, nowMillis int64) *LiveTodoSnapshot {
-	snapshot, ok := r.latestTodoByThread[threadID]
-	if !ok {
 		return nil
 	}
-	if liveTodoSnapshotExpired(snapshot, nowMillis) {
-		delete(r.latestTodoByThread, threadID)
-		return nil
-	}
-	steps := make([]TodoStep, len(snapshot.Steps))
-	copy(steps, snapshot.Steps)
-	snapshot.Steps = steps
-	return &snapshot
+	r.mu.Lock()
+	delete(r.tasksByThread, threadID)
+	r.mu.Unlock()
+	return r.projectTodoSnapshot(threadID, nil, 0)
 }
 
-func liveTodoSnapshotExpired(snapshot LiveTodoSnapshot, nowMillis int64) bool {
-	if len(snapshot.Steps) == 0 {
-		return true
+// storeLiveTodo converts the wire step shape into the persisted one. The
+// fields map 1:1 — the two types exist separately only because the wire shape
+// is triage's and the column shape is the store's.
+func storeLiveTodo(steps []TodoStep, updatedAt int64) store.ThreadLiveTodo {
+	stored := store.ThreadLiveTodo{
+		Steps:     make([]store.ThreadLiveTodoStep, 0, len(steps)),
+		UpdatedAt: updatedAt,
 	}
-	for _, step := range snapshot.Steps {
-		if step.Status != "completed" {
-			return false
-		}
+	for _, step := range steps {
+		stored.Steps = append(stored.Steps, store.ThreadLiveTodoStep{
+			Step:   step.Step,
+			Status: step.Status,
+			ID:     step.ID,
+			Owner:  step.Owner,
+		})
 	}
-	return nowMillis-snapshot.UpdatedAt > liveTodoCompletedSnapshotTTLMillis
+	return stored
 }
 
 // decodeTodoSteps reads the wire-shaped {plan: [{step, status}]}
@@ -169,8 +175,12 @@ func decodeTodoSteps(raw json.RawMessage) []TodoStep {
 			continue
 		}
 		steps = append(steps, TodoStep{
-			Step:   step,
-			Status: strings.TrimSpace(item.Status),
+			Step: step,
+			// Status is an enum on every known wire (pending / inProgress /
+			// completed), but it arrives provider-controlled like the other
+			// fields and the cap is what makes that a fact about the blob
+			// rather than about the provider's good behavior.
+			Status: truncateRunes(strings.TrimSpace(item.Status), maxTodoStatusRunes),
 			ID:     truncateRunes(strings.TrimSpace(item.ID), maxTodoIDRunes),
 			Owner:  truncateRunes(strings.TrimSpace(item.Owner), maxTodoOwnerRunes),
 		})
@@ -416,10 +426,11 @@ const (
 	// rendered list to 5 with a Show-more reveal; these caps are the
 	// outer safety net so a provider that ships a multi-MB plan can't
 	// blow up the WS payload or the pane snapshot.
-	maxTodoSteps      = 256
-	maxTodoStepRunes  = 300
-	maxTodoOwnerRunes = 64
-	maxTodoIDRunes    = 64
+	maxTodoSteps       = 256
+	maxTodoStepRunes   = 300
+	maxTodoOwnerRunes  = 64
+	maxTodoIDRunes     = 64
+	maxTodoStatusRunes = 32
 )
 
 func truncateRunes(value string, maxRunes int) string {

@@ -108,6 +108,11 @@ root `CLAUDE.md` principle 3.
 - `thread_worktree_setup_state.go` — the `threads.worktree_setup_state`
   column (migration v47): the enum constants, the validating writer, and the
   startup sweep. See "Recent schema changes (v47)" below.
+- `thread_live_todo.go` — the `threads.live_todo` column (migration v65): the
+  `ThreadLiveTodo` blob shape and its three accessors. Read and written whole,
+  like `project_worktree_setup.go`, and refusing an empty list for the same
+  reason it clears the column for an asks-for-nothing recipe — "cleared" gets
+  one representation. See "Recent schema changes (v65)" below.
 - `thread_import_state.go` / `items_import.go` — the session-import surface
   (migration v50). The first owns `thread_import_state` CRUD and
   `ListImportedSessionRefs` (the dedup set a scan subtracts from); the
@@ -755,6 +760,62 @@ an empty `provider_turn_id`.
   `workItemPhaseColumns` (one integer) rather than a narrow projection of its
   own, because "is this attempt's instruction still owed" is diagnosable state a
   reader of a whole attempt row wants.
+
+## Recent schema changes (v65) — the thread's todo list
+
+- `threads.live_todo` (`TEXT NOT NULL DEFAULT '' CHECK(live_todo = '' OR
+  json_valid(live_todo))`) is the activity rail's todo list as the provider last
+  reported it — Claude TodoWrite and the Task\* family, Codex update_plan — as
+  `{steps:[{step,status,id?,owner?}],updatedAt}`, where `updatedAt` is the
+  producing event's time rather than the write's, because the reader ages the
+  list against it.
+- It exists because the list used to live only in a triage map, cleared by
+  `CleanupThread`. An app restart or a session teardown therefore erased a list
+  the user was still working through: the work was not finished, only the
+  process holding the note. SQLite is now its single source of truth — triage
+  keeps no copy, which is also what its own area guide requires ("do NOT cache
+  store data here").
+- `SetThreadLiveTodo` REFUSES an empty step array (`ErrEmptyThreadLiveTodo`);
+  `ClearThreadLiveTodo` is the one way to express a clear, so `''` is the only
+  spelling of "no list" and no reader has to treat `{"steps":[]}` as a second
+  one. The clear returns whether it cleared anything, and that return is
+  load-bearing: it gates the live `provider:todo_update` push, which is only
+  meaningful when a pane has a list to drop (the 2026-06-14 delete-to-empty
+  incident). Zero rows affected on a SET is an error naming the thread — a
+  write that silently matched nothing is indistinguishable from a stored list.
+- `ThreadLiveTodo` decodes STRICTLY and reports a corrupt blob as an error, the
+  same refusal as `ProjectWorktreeSetup`: substituting "no todos" for an
+  unreadable blob would hide the corruption for the thread's lifetime. The one
+  caller (`app_live_state.go`) logs it and hydrates without the todo leg,
+  because a corrupt list must not take the queue and pending approvals down
+  with it.
+- Neither writer touches `updated_at` (a todo tick is the provider narrating
+  its own work, not user activity, and the sidebar sorts by it — the
+  `SetThreadWorktreeSetupState` rule) nor `history_rev` (the column is not
+  window-visible; it rides `GetThreadLiveState`, not `SyncThreadWindow`).
+- `SetThreadLiveTodo` also refuses a blob over `maxThreadLiveTodoBytes`
+  (`ErrThreadLiveTodoTooLarge`) — the triage producers bound step count
+  (`maxTodoSteps` on both the TodoWrite decode and the Task\* projection) and
+  every per-field rune count, so the cap is the accessor-owned backstop that
+  keeps the row's size out of caller discipline. Refused, never truncated.
+- Retention is deliberately lazy: an all-completed list the reader ages out
+  (the 5s filter in `app_live_state.go`) stays on the row until the next
+  report overwrites or clears it — and the app paths that discard the
+  conversation a list came from (rollback, provider switch) clear it through
+  `triage.ResetThreadTodo`, so a lingering list always describes the thread's
+  live conversation. Reads are cheap by construction: `live_todo` is the last
+  column in the record, listings select explicit `threadColumns`, and SQLite
+  never reads past the selected prefix into a trailing column's overflow
+  pages. Writes are not free the same way — SQLite rewrites the whole record
+  on ANY `UPDATE threads`, lingering blob included — which is one more reason
+  the producers' step caps, not just the 1 MiB backstop, bound the blob.
+- **Deliberately absent from `threadColumns`, `updateThreadSetSQL`, and the
+  `Thread` struct**, like `projects.worktree_setup` is from `projectColumns`:
+  every sidebar row would otherwise carry a list only one screen reads, and a
+  whole-row `UpdateThread` from a rename or a workspace switch could clobber a
+  live session's list. Pinned by `TestUpdateThreadPreservesLiveTodo`. A plain
+  ADD COLUMN with a CHECK — SQLite permits one on an added column — so the
+  FK-parent `threads` table is not rebuilt.
 
 ## Recent schema changes (v54) — the explicitly scheduled resume moment
 
