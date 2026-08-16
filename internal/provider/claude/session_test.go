@@ -3198,44 +3198,85 @@ func TestSession_StopTask_ConcurrentSameTaskIDDistinctRequestIDs(t *testing.T) {
 	}
 }
 
-// TestWithClaudeCodeEntrypoint pins the env-merge helper that tags every
-// spawned `claude` subprocess with `CLAUDE_CODE_ENTRYPOINT=agent-overflow`.
+// TestWithClaudeSessionEnvDefaults pins the env-merge helper that tags
+// every spawned `claude` subprocess with
+// `CLAUDE_CODE_ENTRYPOINT=agent-overflow` and opts it into the todo
+// tool surface with `CLAUDE_CODE_ENABLE_TODO_TOOLS=true`.
 //
 // The CLI's resume picker filters sessions whose entrypoint is `sdk-cli`
 // (the auto-detected default for stream-json invocations); setting our
 // own value keeps agent-overflow's threads resumable from a normal
 // `claude --resume`. See docs/references/claude.md and the `Ka8(H)`
 // override in the binary that rewrites the literal string `"cli"` to
-// `"sdk-cli"` — any other preset value survives.
-func TestWithClaudeCodeEntrypoint(t *testing.T) {
-	t.Run("nil env gets entrypoint set", func(t *testing.T) {
-		got := withClaudeCodeEntrypoint(nil)
+// `"sdk-cli"` — any other preset value survives. The todo opt-in exists
+// because claude ≥2.1.233 removes TodoWrite/Task* for modern models
+// unless the session opts back in (claudeTodoToolsEnvVar's comment has
+// the gate details).
+func TestWithClaudeSessionEnvDefaults(t *testing.T) {
+	t.Run("nil env gets both defaults set", func(t *testing.T) {
+		got := withClaudeSessionEnvDefaults(nil)
 		if got["CLAUDE_CODE_ENTRYPOINT"] != "agent-overflow" {
 			t.Fatalf("CLAUDE_CODE_ENTRYPOINT = %q, want agent-overflow", got["CLAUDE_CODE_ENTRYPOINT"])
+		}
+		if got["CLAUDE_CODE_ENABLE_TODO_TOOLS"] != "true" {
+			t.Fatalf("CLAUDE_CODE_ENABLE_TODO_TOOLS = %q, want true", got["CLAUDE_CODE_ENABLE_TODO_TOOLS"])
 		}
 	})
 
 	t.Run("preserves caller-provided keys", func(t *testing.T) {
-		got := withClaudeCodeEntrypoint(map[string]string{"FOO": "bar"})
+		got := withClaudeSessionEnvDefaults(map[string]string{"FOO": "bar"})
 		if got["FOO"] != "bar" {
 			t.Errorf("FOO clobbered: got %q, want bar", got["FOO"])
 		}
 		if got["CLAUDE_CODE_ENTRYPOINT"] != "agent-overflow" {
 			t.Errorf("CLAUDE_CODE_ENTRYPOINT not added: got %q", got["CLAUDE_CODE_ENTRYPOINT"])
 		}
+		if got["CLAUDE_CODE_ENABLE_TODO_TOOLS"] != "true" {
+			t.Errorf("CLAUDE_CODE_ENABLE_TODO_TOOLS not added: got %q", got["CLAUDE_CODE_ENABLE_TODO_TOOLS"])
+		}
 	})
 
-	t.Run("respects caller-provided entrypoint override", func(t *testing.T) {
-		got := withClaudeCodeEntrypoint(map[string]string{"CLAUDE_CODE_ENTRYPOINT": "test-override"})
+	t.Run("respects caller-provided overrides per variable", func(t *testing.T) {
+		got := withClaudeSessionEnvDefaults(map[string]string{
+			"CLAUDE_CODE_ENTRYPOINT": "test-override",
+		})
 		if got["CLAUDE_CODE_ENTRYPOINT"] != "test-override" {
-			t.Errorf("override clobbered: got %q, want test-override", got["CLAUDE_CODE_ENTRYPOINT"])
+			t.Errorf("entrypoint override clobbered: got %q, want test-override", got["CLAUDE_CODE_ENTRYPOINT"])
+		}
+		// The other default still applies — opting out of one variable
+		// must not opt out of the rest.
+		if got["CLAUDE_CODE_ENABLE_TODO_TOOLS"] != "true" {
+			t.Errorf("CLAUDE_CODE_ENABLE_TODO_TOOLS not added alongside an entrypoint override: got %q", got["CLAUDE_CODE_ENABLE_TODO_TOOLS"])
+		}
+	})
+
+	t.Run("user can disable the todo opt-in", func(t *testing.T) {
+		got := withClaudeSessionEnvDefaults(map[string]string{
+			"CLAUDE_CODE_ENABLE_TODO_TOOLS": "false",
+		})
+		if got["CLAUDE_CODE_ENABLE_TODO_TOOLS"] != "false" {
+			t.Errorf("todo opt-out clobbered: got %q, want false", got["CLAUDE_CODE_ENABLE_TODO_TOOLS"])
+		}
+	})
+
+	t.Run("returns the same map when every default is present", func(t *testing.T) {
+		input := map[string]string{
+			"CLAUDE_CODE_ENTRYPOINT":        "x",
+			"CLAUDE_CODE_ENABLE_TODO_TOOLS": "false",
+		}
+		got := withClaudeSessionEnvDefaults(input)
+		// Maps are reference types: a write through the return proves it
+		// is the caller's map, not a pointless copy.
+		got["PROBE"] = "1"
+		if input["PROBE"] != "1" {
+			t.Errorf("expected the input map back unchanged when nothing is missing")
 		}
 	})
 
 	t.Run("does not mutate caller's map", func(t *testing.T) {
 		input := map[string]string{"FOO": "bar"}
-		_ = withClaudeCodeEntrypoint(input)
-		if _, ok := input["CLAUDE_CODE_ENTRYPOINT"]; ok {
+		_ = withClaudeSessionEnvDefaults(input)
+		if len(input) != 1 {
 			t.Errorf("input map was mutated; helper must return a copy")
 		}
 	})

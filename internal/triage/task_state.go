@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/store"
 )
 
 const maxTasksPerThread = 1024
@@ -71,6 +72,18 @@ func (r *Router) handleTaskUpdate(evt provider.ProviderEvent) error {
 // installed so the miss is not re-read per event, and so a TaskCreate over it
 // starts a fresh list exactly as it would over a never-seeded thread.
 //
+// An ALL-completed stored list also seeds the empty map. The CLI
+// (≥2.1.233) deletes a fully-completed list's task files 5s after the
+// last completion — the same 5s our reader ages such a list out of view
+// with — while its high-water mark keeps later ids monotonic, so those
+// ids name tasks the provider no longer has. Seeding them would let the
+// next TaskCreate append onto steps the provider already discarded,
+// resurrecting a finished list into the fresh one. The narrow cost is a
+// session killed inside the CLI's 5s window whose resume then updates a
+// completed task: that update applies to nothing and the (hidden,
+// finished) projection misses it — until the list's next create
+// replaces it wholesale.
+//
 // The seed is only sound because a stored list implies a resumable session
 // whose ids it reflects. The app paths that break that implication — a
 // rollback, a provider switch: same thread row, next session from scratch,
@@ -104,7 +117,7 @@ func (r *Router) seedTasksFromStoredTodo(threadID string) error {
 		return fmt.Errorf("seed task state for thread %s: %w", threadID, err)
 	}
 	tt := &threadTasks{byID: make(map[string]triageTask)}
-	if found {
+	if found && !allStepsCompleted(stored.Steps) {
 		for _, step := range stored.Steps {
 			if step.ID == "" || len(tt.byID) >= maxTasksPerThread {
 				continue
@@ -129,6 +142,18 @@ func (r *Router) seedTasksFromStoredTodo(threadID string) error {
 	}
 	r.mu.Unlock()
 	return nil
+}
+
+// allStepsCompleted reports whether every step of a stored list is
+// completed — the state the CLI deletes a task list in, and therefore
+// the state the seed must not resurrect (see seedTasksFromStoredTodo).
+func allStepsCompleted(steps []store.ThreadLiveTodoStep) bool {
+	for _, step := range steps {
+		if step.Status != "completed" {
+			return false
+		}
+	}
+	return true
 }
 
 func (r *Router) upsertTaskCreateLocked(threadID, id, subject string) bool {

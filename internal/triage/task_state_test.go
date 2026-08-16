@@ -551,6 +551,41 @@ func TestTaskCreateOnColdRouterAppendsToSeededList(t *testing.T) {
 	}
 }
 
+// An all-completed stored list must NOT seed: the CLI (≥2.1.233) deletes a
+// fully-completed list's task files 5s after the last completion while its
+// high-water mark keeps later ids monotonic — but a FRESH list after a
+// rollback-free restart still starts at "1" only when the old list is gone,
+// and either way the old steps name tasks the provider discarded. Without the
+// skip, the cold create below would find the old id in the seeded map and
+// merge the finished list into the new one.
+func TestColdSeedSkipsAnAllCompletedList(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	seedOpenTurn(t, router, st, "t1", 0)
+	_ = router.Handle(taskCreateEvent("t1", "1", "old work"))
+	_ = router.Handle(taskCreateEvent("t1", "2", "more old work"))
+	for _, id := range []string{"1", "2"} {
+		if err := router.Handle(taskUpdateEvent("t1", provider.TaskUpdateMeta{
+			TaskID: id, Status: "completed",
+		})); err != nil {
+			t.Fatalf("complete task %s: %v", id, err)
+		}
+	}
+
+	cold := NewRouter(st, func(string, any) {})
+	if err := cold.Handle(taskCreateEvent("t1", "1", "next list")); err != nil {
+		t.Fatalf("cold task create: %v", err)
+	}
+
+	stored, ok := storedTodo(t, st, "t1")
+	if !ok || len(stored.Steps) != 1 {
+		t.Fatalf("stored = %+v (ok=%v), want ONLY the fresh list — completed steps must not resurrect", stored, ok)
+	}
+	if stored.Steps[0].ID != "1" || stored.Steps[0].Step != "next list" || stored.Steps[0].Status != "pending" {
+		t.Fatalf("Steps[0] = %+v, want the new pending task, not the finished one it shares an id with", stored.Steps[0])
+	}
+}
+
 // The seed runs only while the map is nil; once warm, the MAP is the truth
 // and later column writes by the other producer family do not re-enter it.
 // Observable end to end: a TodoWrite list overwrites the column, and the next

@@ -399,7 +399,11 @@ Use these categories when adding or moving state:
   freeze the durable list in a state the provider has moved past, with
   no event that could ever clear it. The seed is a one-shot re-derivation
   at the session boundary, not a store cache — the store is read only
-  while the map is nil. Its soundness leans on an app-side contract:
+  while the map is nil. An all-completed stored list seeds nothing: the
+  CLI (≥2.1.233) deletes a fully-completed list's task files shortly
+  after completion, so those ids name tasks the provider no longer has,
+  and seeding them would resurrect a finished list into the next one.
+  Its soundness otherwise leans on an app-side contract:
   paths that start a thread's next session from scratch on the SAME row
   (rollback, provider switch) call `ResetThreadTodo` so a dead list's
   ids can never seed against a session that will mint them again.

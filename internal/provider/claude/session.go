@@ -253,11 +253,11 @@ type Config struct {
 	// inlineSettingsForCLI). Zero omits the var.
 	ContextWindow int
 	// Env carries per-session environment variables Claude Code does NOT
-	// override at startup — currently just CLAUDE_CODE_ENTRYPOINT (the
-	// CLI's `initializeEntrypoint` skips the rewrite when the value is
-	// anything other than the literal `"cli"`). Anything Claude exposes
-	// via `settings.env` should go through AutoCompactPercent's inline
-	// settings path instead.
+	// override at startup. NewSession fills in AO's defaults for names
+	// the caller left unset (withClaudeSessionEnvDefaults: the
+	// CLAUDE_CODE_ENTRYPOINT marker and the CLAUDE_CODE_ENABLE_TODO_TOOLS
+	// opt-in). Anything Claude exposes via `settings.env` should go
+	// through AutoCompactPercent's inline settings path instead.
 	Env         map[string]string
 	EventLogger *logging.Logger
 	// MCPServers carries optional MCP server configs to register for
@@ -294,7 +294,7 @@ func NewSession(ctx context.Context, threadID string, cfg Config, onEvent func(p
 		Binary:      binary,
 		Args:        args,
 		Dir:         cfg.WorkDir,
-		Env:         withClaudeCodeEntrypoint(cfg.Env),
+		Env:         withClaudeSessionEnvDefaults(cfg.Env),
 		UnsetEnv:    []string{"CLAUDE_CONFIG_DIR", "CLAUDE_SECURESTORAGE_CONFIG_DIR"},
 		EventLogger: cfg.EventLogger,
 		ThreadID:    threadID,
@@ -351,18 +351,51 @@ func NewSession(ctx context.Context, threadID string, cfg Config, onEvent func(p
 // one declaration rather than two literals that can drift apart.
 const claudeCodeEntrypointEnvVar = "CLAUDE_CODE_ENTRYPOINT"
 
-// withClaudeCodeEntrypoint returns a copy of env with
-// CLAUDE_CODE_ENTRYPOINT set to AO's entrypoint marker, unless the caller
-// already provided an explicit value (tests can opt out).
-func withClaudeCodeEntrypoint(env map[string]string) map[string]string {
-	if _, ok := env[claudeCodeEntrypointEnvVar]; ok {
+// claudeTodoToolsEnvVar opts the session into the TodoWrite / Task*
+// tool surface. Claude ≥2.1.233 removes those tools for modern models
+// (opus ≥4.8; sonnet/fable/mythos ≥5 — older families keep them
+// unconditionally) unless the session opts back in: this variable
+// (truthy: 1/true/yes/on), naming one of the five tools in
+// --allowedTools, or a remote feature gate AO cannot depend on
+// (spike-verified on 2.1.233: sonnet-5 init listed no
+// TaskCreate/TaskUpdate/TaskGet/TaskList without the var, all four
+// with it). AO's activity-rail todo list is built on the events those
+// tools produce, so a session spawned without the opt-in silently
+// loses the feature.
+//
+// Deliberately NOT in provider.ReservedEnvNames: it is a default, not
+// a pin — a user who wants the vendor's stock tool surface can set it
+// to "false" in the provider's custom environment, which lands in
+// cfg.Env before withClaudeSessionEnvDefaults applies.
+const claudeTodoToolsEnvVar = "CLAUDE_CODE_ENABLE_TODO_TOOLS"
+
+// withClaudeSessionEnvDefaults returns a copy of env with AO's
+// session-environment defaults applied — each only when the caller did
+// not already provide the name, so user custom env (and tests) can opt
+// out per variable.
+func withClaudeSessionEnvDefaults(env map[string]string) map[string]string {
+	defaults := [...]struct{ name, value string }{
+		{claudeCodeEntrypointEnvVar, provider.ClaudeEntrypointOrigin},
+		{claudeTodoToolsEnvVar, "true"},
+	}
+	missing := 0
+	for _, d := range defaults {
+		if _, ok := env[d.name]; !ok {
+			missing++
+		}
+	}
+	if missing == 0 {
 		return env
 	}
-	merged := make(map[string]string, len(env)+1)
+	merged := make(map[string]string, len(env)+missing)
 	for k, v := range env {
 		merged[k] = v
 	}
-	merged[claudeCodeEntrypointEnvVar] = provider.ClaudeEntrypointOrigin
+	for _, d := range defaults {
+		if _, ok := merged[d.name]; !ok {
+			merged[d.name] = d.value
+		}
+	}
 	return merged
 }
 

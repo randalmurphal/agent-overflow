@@ -44,3 +44,28 @@ our own code.
    strings if the area is one where drift has been observed.
 4. If both sources disagree or are silent, follow
    `docs/references/spike-policy.md` and write an isolated spike.
+
+## Version-gated behaviors worth knowing
+
+- **Todo/task tool surface (≥2.1.233)** — the CLI removes
+  `TodoWrite` and the `TaskCreate`/`TaskUpdate`/`TaskGet`/`TaskList`
+  tools for modern models (opus ≥4.8; sonnet/fable/mythos ≥5 — older
+  families keep them) unless the session opts in: a truthy
+  `CLAUDE_CODE_ENABLE_TODO_TOOLS` (1/true/yes/on), one of the five
+  names in `--allowedTools`, background/job mode, or a remote statsig
+  gate (`tengu_rosy_wren`) that must never be depended on. Modern
+  models get only the Task\* family even when opted in — `TodoWrite`
+  stays absent. AO opts every headless session in via
+  `claude.withClaudeSessionEnvDefaults` (a user-overridable default,
+  deliberately not a reserved pin; see `internal/provider/pinnedenv.go`).
+  Spike-verified on 2.1.233: sonnet-5 `system/init` listed none of the
+  four Task\* tools bare and all four with the env var.
+  `CLAUDE_CODE_ENABLE_TASKS=false` is the separate whole-feature
+  opt-OUT (default on).
+- **Completed task lists self-delete (≥2.1.233)** — once every task in
+  a list is `completed`, the CLI arms a 5s timer and then deletes the
+  list's `~/.claude/tasks/<list-id>/*.json` files, bumping the
+  high-water mark first so later ids stay monotonic. Nothing is
+  emitted on the wire for it. AO mirrors the 5s constant in its
+  read-side auto-hide (`app_live_state.go`) and refuses to cold-seed
+  an all-completed stored list (`triage.seedTasksFromStoredTodo`).
