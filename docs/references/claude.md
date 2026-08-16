@@ -55,9 +55,10 @@ our own code.
   names in `--allowedTools`, background/job mode, or a remote statsig
   gate (`tengu_rosy_wren`) that must never be depended on. Modern
   models get only the Task\* family even when opted in — `TodoWrite`
-  stays absent. AO opts every headless session in via
-  `claude.withClaudeSessionEnvDefaults` (a user-overridable default,
-  deliberately not a reserved pin; see `internal/provider/pinnedenv.go`).
+  stays absent. AO opts every session in — headless via
+  `claude.withClaudeSessionEnvDefaults`, the TUI via `claudetui.buildEnv`
+  (a user-overridable default on both paths, deliberately not a
+  reserved pin; see `internal/provider/pinnedenv.go`).
   Spike-verified on 2.1.233: sonnet-5 `system/init` listed none of the
   four Task\* tools bare and all four with the env var.
   `CLAUDE_CODE_ENABLE_TASKS=false` is the separate whole-feature

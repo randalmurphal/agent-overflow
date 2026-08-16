@@ -141,9 +141,20 @@ func hookCommand(cfg Config) (string, error) {
 // layer names the same variable this package strips.
 const BaseURLEnv = "ANTHROPIC_BASE_URL"
 
+// todoToolsEnvVar opts the TUI session into the TodoWrite / Task* tool
+// surface that claude ≥2.1.233 removes for modern models. Same rationale
+// and same posture as the headless provider's claudeTodoToolsEnvVar
+// (internal/provider/claude/session.go): AO's activity-rail todo list
+// rides those tools' events, so the session defaults in — but as a
+// DEFAULT, not an owned key. A user value in the custom environment
+// (which lands in Config.Env before buildEnv runs) survives, so setting
+// it to "false" restores the vendor's stock TUI tool surface.
+const todoToolsEnvVar = "CLAUDE_CODE_ENABLE_TODO_TOOLS"
+
 // buildEnv layers the per-session gateway + relay env onto the base
 // environment, stripping any inherited values for the keys we own so a dirty
-// parent env can't redirect Claude away from our gateway.
+// parent env can't redirect Claude away from our gateway, and fills in the
+// todo-tools default when the base carries no value of its own.
 func buildEnv(base []string, gatewayURL, hookURL, hookToken string) []string {
 	if len(base) == 0 {
 		// Honor the documented "empty means inherit" Config.Env contract for an
@@ -155,20 +166,28 @@ func buildEnv(base []string, gatewayURL, hookURL, hookToken string) []string {
 		envHookURL:   {},
 		envHookToken: {},
 	}
-	out := make([]string, 0, len(base)+3)
+	out := make([]string, 0, len(base)+4)
+	haveTodoOptIn := false
 	for _, kv := range base {
 		if key, _, ok := strings.Cut(kv, "="); ok {
 			if _, isOwned := owned[key]; isOwned {
 				continue
 			}
+			if key == todoToolsEnvVar {
+				haveTodoOptIn = true
+			}
 		}
 		out = append(out, kv)
 	}
-	return append(out,
+	out = append(out,
 		BaseURLEnv+"="+gatewayURL,
 		envHookURL+"="+hookURL,
 		envHookToken+"="+hookToken,
 	)
+	if !haveTodoOptIn {
+		out = append(out, todoToolsEnvVar+"=true")
+	}
+	return out
 }
 
 // shellQuote wraps s in single quotes, escaping any embedded single quotes,

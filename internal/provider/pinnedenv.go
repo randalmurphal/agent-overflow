@@ -41,12 +41,13 @@ import "strings"
 //	                      inactive-account probes.
 //
 // CLAUDE_CODE_ENABLE_TODO_TOOLS is set WITHOUT being reserved, on purpose:
-// claude.NewSession defaults it to "true" (claude ≥2.1.233 removes the
-// TodoWrite/Task* tools for modern models unless the session opts in, and
-// AO's activity-rail todo list rides those events) but only when the
-// merged environment does not already carry the name — so a user's custom
-// environment can restore the vendor's stock tool surface by setting it
-// to "false". Reserving it would turn a default into a mandate.
+// claude.NewSession and claudetui's buildEnv default it to "true" (claude
+// ≥2.1.233 removes the TodoWrite/Task* tools for modern models unless the
+// session opts in, and AO's activity-rail todo list rides those events)
+// but only when the merged environment does not already carry the name —
+// so a user's custom environment can restore the vendor's stock tool
+// surface by setting it to "false". Reserving it would turn a default
+// into a mandate.
 //
 // ANTHROPIC_BASE_URL is the one variable Agent Overflow pins WITHOUT reserving
 // it. claudetui's buildEnv (claudetui/launch.go) owns the child's copy because
