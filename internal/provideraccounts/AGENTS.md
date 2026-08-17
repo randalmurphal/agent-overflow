@@ -93,12 +93,15 @@ having no credential, so a rollback removes the husk instead of rewriting it,
 and `CredentialUsable` is the "can this account be selected" question the UI
 asks — present AND not signed out.
 
-The husk shape is provider-specific, so it arrives through the
-`SetSignedOutDetector` seam; the app fills it once, in
-`installProviderSignedOutDetector`. A `Credentials` built without it accepts
-bytes production refuses, which is why fixtures construct theirs through the
-same helper. The one deliberate bypass is `WriteNativeCredentialForTest`,
-which impersonates the CLI — the actor that legitimately writes a husk.
+The husk shape is provider-specific, so it arrives as the
+`SignedOutDetector` constructor argument every `NewCredentials` /
+`NewCredentialsWithFileKeychain` call must supply; the app names the
+predicate once (`providerSignedOutDetector`). Requiring it at construction
+is what makes a store that silently accepts production-refused bytes
+impossible to build by omission — nil is the choice made explicit, for
+focused tests that exercise something other than the refusal. The one
+deliberate bypass is `WriteNativeCredentialForTest`, which impersonates the
+CLI — the actor that legitimately writes a husk.
 
 Never point a canonical-home run at `CLAUDE_CONFIG_DIR`, not even at the
 default path. Claude keys "is this the default home" off the variable being
@@ -137,10 +140,10 @@ announced through the app's `auditAccountEvent` — durable at
 
 - `store.go` — thread-safe metadata and last-known quota persistence.
 - `credentials.go` — credential-slot layout, the read/write primitives (with
-  the sign-out refusal at the one write chokepoint), the
-  `SetSignedOutDetector` seam, and the two "can this account be selected"
-  queries: `CredentialPresent` (the file is there) and `CredentialUsable`
-  (…and it is not a sign-out).
+  the sign-out refusal at the one write chokepoint), the required
+  `SignedOutDetector` constructor argument, and the two "can this account be
+  selected" queries: `CredentialPresent` (the file is there) and
+  `CredentialUsable` (…and it is not a sign-out).
 - `activation.go` — the mutations that move a credential between the
   canonical native store and a saved slot: `Activate` /
   `ActivateWithSnapshot`, `RemoveActive`, `RemoveAccount`, and

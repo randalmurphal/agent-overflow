@@ -103,15 +103,14 @@ func errProviderAccountNeedsLogin(providerName string, account provideraccounts.
 	)
 }
 
-// installProviderSignedOutDetector fills the credential store's
-// provider-agnostic "these bytes are a sign-out, not a login" seam. It is the
-// ONE place the provider-specific predicate is named, so every construction of
-// a Credentials — boot, harness, or fixture — refuses husks the same way. A
-// store built without it would silently accept the bytes that destroy a slot.
-func installProviderSignedOutDetector(credentials *provideraccounts.Credentials) {
-	credentials.SetSignedOutDetector(func(providerName string, data []byte) bool {
-		return providerName == string(provider.Claude) && claude.CredentialsSignedOut(data)
-	})
+// providerSignedOutDetector is the provider-aware "these bytes are a
+// sign-out, not a login" predicate every Credentials store is constructed
+// with. It is the ONE place the provider-specific shape is named, so boot,
+// harness, and fixtures all refuse husks the same way; the constructor
+// requiring it is what makes a store that silently accepts the bytes that
+// destroy a slot impossible to build by omission.
+func providerSignedOutDetector(providerName string, data []byte) bool {
+	return providerName == string(provider.Claude) && claude.CredentialsSignedOut(data)
 }
 
 // mapProviderAccountLoginError restates a provider-level "this login no longer

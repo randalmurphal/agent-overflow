@@ -11,7 +11,10 @@ import (
 
 func sweepFixture(t *testing.T) *Credentials {
 	t.Helper()
-	credentials, err := NewCredentials(t.TempDir())
+	// The sweep's husk rules ("never adopt a husk orphan", "adopt over a
+	// husked slot") consult the detector, so the fixture carries it the way
+	// production does.
+	credentials, err := NewCredentials(t.TempDir(), literalHuskDetector)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -151,9 +154,6 @@ func TestSweepAdoptsOrphanIntoADeadSlot(t *testing.T) {
 // bytes must still win.
 func TestSweepAdoptsOverASignedOutHusk(t *testing.T) {
 	credentials := sweepFixture(t)
-	credentials.SetSignedOutDetector(func(providerName string, data []byte) bool {
-		return string(data) == "husk"
-	})
 	writeProviderAuthoredCredential(t, makeSlotDir(t, credentials, "acct-1"), []byte("husk"))
 	crashEphemeralClaudeHome(t, credentials, []byte("rotated-chain"), "acct-1")
 
@@ -172,9 +172,6 @@ func TestSweepAdoptsOverASignedOutHusk(t *testing.T) {
 // orphan itself, when it is a husk, is never adopted anywhere.
 func TestSweepNeverOverwritesAHealthySlotAndNeverAdoptsAHusk(t *testing.T) {
 	credentials := sweepFixture(t)
-	credentials.SetSignedOutDetector(func(providerName string, data []byte) bool {
-		return string(data) == "husk"
-	})
 
 	makeSlotDir(t, credentials, "healthy")
 	if err := credentials.WriteAccountCredential("claude", "healthy", []byte("fresh-relogin")); err != nil {

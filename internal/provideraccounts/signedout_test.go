@@ -11,18 +11,21 @@ import (
 	"testing"
 )
 
-// newHuskAwareCredentials builds a Credentials whose sign-out detector treats
-// the literal bytes "husk" as the provider's sign-out marker, standing in for
-// claude.CredentialsSignedOut without importing a provider package.
+// literalHuskDetector treats the literal bytes "husk" as Claude's sign-out
+// marker, standing in for claude.CredentialsSignedOut without importing a
+// provider package. Shared by every package test that exercises the refusal.
+func literalHuskDetector(providerName string, data []byte) bool {
+	return providerName == "claude" && string(data) == "husk"
+}
+
+// newHuskAwareCredentials builds a Credentials constructed with
+// literalHuskDetector, the way production constructs with the real one.
 func newHuskAwareCredentials(t *testing.T) *Credentials {
 	t.Helper()
-	credentials, err := NewCredentials(t.TempDir())
+	credentials, err := NewCredentials(t.TempDir(), literalHuskDetector)
 	if err != nil {
 		t.Fatal(err)
 	}
-	credentials.SetSignedOutDetector(func(providerName string, data []byte) bool {
-		return providerName == "claude" && string(data) == "husk"
-	})
 	return credentials
 }
 
@@ -336,7 +339,7 @@ func TestCredentialUsableSeparatesAliveFromHuskedAndMissing(t *testing.T) {
 // Without a detector installed no provider claims a sign-out shape, so the
 // wrapper must answer false rather than panic on the nil hook.
 func TestCredentialSignedOutWithoutADetector(t *testing.T) {
-	credentials, err := NewCredentials(t.TempDir())
+	credentials, err := NewCredentials(t.TempDir(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}

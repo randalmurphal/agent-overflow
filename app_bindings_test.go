@@ -1139,16 +1139,14 @@ func newTestAppWithStorePath(t *testing.T) (*App, string) {
 }
 
 // newTestProviderCredentials builds a credential store the way boot does —
-// including the sign-out detector. Constructing one with provideraccounts.
-// NewCredentials directly leaves the husk-refusal seam empty, so a fixture
-// would exercise a store that accepts bytes production refuses.
+// with the real sign-out detector — so fixtures exercise the same husk
+// refusal production enforces.
 func newTestProviderCredentials(t *testing.T, userHome string) *provideraccounts.Credentials {
 	t.Helper()
-	credentials, err := provideraccounts.NewCredentials(userHome)
+	credentials, err := provideraccounts.NewCredentials(userHome, providerSignedOutDetector)
 	if err != nil {
 		t.Fatal(err)
 	}
-	installProviderSignedOutDetector(credentials)
 	return credentials
 }
 

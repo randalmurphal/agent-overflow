@@ -37,6 +37,15 @@ type ProviderPaths struct {
 	GlobalConfig   string
 }
 
+// SignedOutDetector reports that provider-authored credential bytes are the
+// provider's own post-refresh-failure sign-out marker (for Claude, the
+// blanked husk >= 2.1.219 writes on invalid_grant) rather than a usable
+// credential. A true verdict refuses every durable write of those bytes and
+// surfaces the account as needing login, so the predicate must never misfire
+// on a real credential — a false positive drops a rotation at the write
+// layer, which is itself a bricked login.
+type SignedOutDetector func(providerName string, data []byte) bool
+
 // Credentials owns Agent Overflow's opaque copies of provider-native
 // credentials. Provider processes always run against SharedHome; saved account
 // directories receive only the provider's credential file from Agent Overflow
@@ -45,14 +54,11 @@ type ProviderPaths struct {
 type Credentials struct {
 	userHome string
 	keychain claudeKeychain
-	// signedOut reports that provider-authored credential bytes are the
-	// provider's own post-refresh-failure sign-out marker (for Claude,
-	// the blanked husk >= 2.1.219 writes on invalid_grant) rather than a
-	// usable credential. Activation uses it to refuse to preserve such
-	// bytes into an account slot, where they would overwrite the slot's
-	// last saved pair. Nil means "never signed out"; the app wires the
-	// provider-specific detector so this package stays provider-agnostic.
-	signedOut func(providerName string, data []byte) bool
+	// signedOut is the SignedOutDetector this store was constructed with.
+	// The app wires the provider-specific predicate so this package stays
+	// provider-agnostic; activation, slot writes, and ephemeral seeding all
+	// consult it through credentialSignedOut.
+	signedOut SignedOutDetector
 }
 
 // CredentialSnapshot is one stable read from a provider-native credential
@@ -61,13 +67,20 @@ type CredentialSnapshot struct {
 	Data []byte
 }
 
-func NewCredentials(userHome string) (*Credentials, error) {
+// NewCredentials builds the credential store. The detector is a constructor
+// argument rather than a setter so a store that silently accepts sign-out
+// husks cannot be built by forgetting a wiring call: every construction site
+// states its choice, and nil is that choice made explicit — "no provider
+// claims a sign-out shape here", acceptable only for focused tests that
+// exercise something other than the refusal.
+func NewCredentials(userHome string, signedOut SignedOutDetector) (*Credentials, error) {
 	if strings.TrimSpace(userHome) == "" {
 		return nil, errors.New("provideraccounts: empty user home")
 	}
 	return &Credentials{
-		userHome: filepath.Clean(userHome),
-		keychain: defaultClaudeKeychain(),
+		userHome:  filepath.Clean(userHome),
+		keychain:  defaultClaudeKeychain(),
+		signedOut: signedOut,
 	}, nil
 }
 
@@ -80,19 +93,13 @@ func NewCredentials(userHome string) (*Credentials, error) {
 // harness run would read and write the developer's real Claude Code
 // login. Harness runs use mock providers only, so no real credential
 // is ever needed.
-func NewCredentialsWithFileKeychain(userHome string) (*Credentials, error) {
-	credentials, err := NewCredentials(userHome)
+func NewCredentialsWithFileKeychain(userHome string, signedOut SignedOutDetector) (*Credentials, error) {
+	credentials, err := NewCredentials(userHome, signedOut)
 	if err != nil {
 		return nil, err
 	}
 	credentials.keychain = fileClaudeKeychain{}
 	return credentials, nil
-}
-
-// SetSignedOutDetector installs the provider-aware predicate for "these
-// credential bytes are the provider's own sign-out marker, not a login".
-func (c *Credentials) SetSignedOutDetector(detector func(providerName string, data []byte) bool) {
-	c.signedOut = detector
 }
 
 func (c *Credentials) credentialSignedOut(providerName string, data []byte) bool {

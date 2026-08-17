@@ -20,7 +20,7 @@ import (
 // fixture bytes. This pins the guard: under `go test`, NewCredentials
 // must install the file-backed stand-in.
 func TestNewCredentialsInstallsFileKeychainUnderGoTest(t *testing.T) {
-	credentials, err := NewCredentials(t.TempDir())
+	credentials, err := NewCredentials(t.TempDir(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -35,7 +35,7 @@ func TestNewCredentialsInstallsFileKeychainUnderGoTest(t *testing.T) {
 // NewCredentialsWithFileKeychain is the harness's explicit opt-in to
 // the same stand-in for processes that are not test binaries.
 func TestNewCredentialsWithFileKeychainInstallsTheStandIn(t *testing.T) {
-	credentials, err := NewCredentialsWithFileKeychain(t.TempDir())
+	credentials, err := NewCredentialsWithFileKeychain(t.TempDir(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -151,11 +151,11 @@ func TestFileClaudeKeychainRejectsSymlinkedCredentialPaths(t *testing.T) {
 // coverage) — while separate t.TempDir() homes stay isolated.
 func TestFileKeychainStateFollowsTheHomeNotTheInstance(t *testing.T) {
 	sharedHome := t.TempDir()
-	first, err := NewCredentials(sharedHome)
+	first, err := NewCredentials(sharedHome, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := NewCredentials(sharedHome)
+	second, err := NewCredentials(sharedHome, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -167,7 +167,7 @@ func TestFileKeychainStateFollowsTheHomeNotTheInstance(t *testing.T) {
 		t.Fatalf("second instance over the same home read = %q, %v; want shared-active", data, err)
 	}
 
-	other, err := NewCredentials(t.TempDir())
+	other, err := NewCredentials(t.TempDir(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}

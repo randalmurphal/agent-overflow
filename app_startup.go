@@ -227,7 +227,7 @@ func (a *App) initStores() (string, *store.Store, error) {
 	if a.fileKeychainOverride {
 		newCredentials = provideraccounts.NewCredentialsWithFileKeychain
 	}
-	a.providerCredentials, err = newCredentials(userHome)
+	a.providerCredentials, err = newCredentials(userHome, providerSignedOutDetector)
 	if err != nil {
 		closeErr := st.Close()
 		return "", nil, errors.Join(
@@ -235,7 +235,6 @@ func (a *App) initStores() (string, *store.Store, error) {
 			errorsx.WrapLifecycle("close store after provider credential initialization failure", closeErr),
 		)
 	}
-	installProviderSignedOutDetector(a.providerCredentials)
 	a.accountAuditPath = filepath.Join(dbDir, "account-audit.log")
 	// The prune deletes credential slots, and a metadata store paired with
 	// the WRONG provider home deletes slots that were never its to manage

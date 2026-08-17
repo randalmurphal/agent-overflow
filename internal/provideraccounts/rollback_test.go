@@ -13,7 +13,7 @@ func rollbackFixture(t *testing.T) (*Credentials, string) {
 		t.Skip("darwin stores Claude credentials in the Keychain, not the config home")
 	}
 	userHome := t.TempDir()
-	credentials, err := NewCredentials(userHome)
+	credentials, err := NewCredentials(userHome, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
