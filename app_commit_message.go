@@ -28,7 +28,7 @@ type GeneratedCommitMessage struct {
 // Layer 2 fallback is handled by runTextGenWithFallback: if the configured
 // provider's CLI fails for any reason other than context cancellation,
 // the call retries once with the alternate provider provided its binary
-// resolves and there's time left in the shared deadline. The user sees
+// resolves, on its own fresh commitmsg.Timeout budget. The user sees
 // Codex's structured `{subject, body}` even if Codex is down — silently —
 // as long as Claude is installed.
 //
@@ -60,9 +60,8 @@ func (a *App) GenerateCommitMessage(threadID string) (GeneratedCommitMessage, er
 	}
 
 	prompt := commitmsg.BuildPrompt(summary, patch, branch, a.commitMessageStyleGuidance(workspace))
-	deadline := time.Now().Add(commitmsg.Timeout)
 	primary := a.resolveTextGenerationConfig()
-	return runTextGenWithFallback(a, primary, deadline, func(cfg textgen.Config) (GeneratedCommitMessage, error) {
+	return runTextGenWithFallback(a, primary, commitmsg.Timeout, func(cfg textgen.Config, deadline time.Time) (GeneratedCommitMessage, error) {
 		return a.runCommitMessageOnce(cfg, workspace, prompt, deadline)
 	})
 }
@@ -85,10 +84,10 @@ func (a *App) commitMessageStyleGuidance(workspace string) commitmsg.StyleGuidan
 }
 
 // runCommitMessageOnce dispatches a single commit-message attempt to the
-// provider named in cfg, deriving the per-attempt context from the shared
-// deadline so two attempts together stay within commitmsg.Timeout. Parents
-// on a.lifeCtx() so commit-message subprocesses cancel on app shutdown
-// instead of orphaning past the binding return — matches runThreadTitleOnce.
+// provider named in cfg. The deadline is the per-attempt budget supplied by
+// runTextGenWithFallback. Parents on a.lifeCtx() so commit-message
+// subprocesses cancel on app shutdown instead of orphaning past the binding
+// return — matches runThreadTitleOnce.
 func (a *App) runCommitMessageOnce(
 	cfg textgen.Config,
 	workspace string,
@@ -150,7 +149,10 @@ func (a *App) generateCodexCommitMessage(
 	workspace string,
 	prompt string,
 ) (GeneratedCommitMessage, error) {
-	raw, err := textgen.RunCodex(ctx, cfg, workspace, commitmsg.CodexSchemaJSON, nil, prompt, remainingBudget(ctx, commitmsg.Timeout))
+	// The timeout arg only formats the "timed out after X" message;
+	// cancellation rides on ctx. Each attempt owns a full commitmsg.Timeout,
+	// so the constant is exactly the budget this attempt got.
+	raw, err := textgen.RunCodex(ctx, cfg, workspace, commitmsg.CodexSchemaJSON, nil, prompt, commitmsg.Timeout)
 	if err != nil {
 		return GeneratedCommitMessage{}, err
 	}
@@ -185,7 +187,7 @@ func (a *App) generateClaudeCommitMessage(
 	// thread-title and workflow-digest generation get the same flag.
 	extra := []string{"--dangerously-skip-permissions"}
 
-	stdout, err := textgen.RunClaude(ctx, cfg, workspace, commitmsg.ClaudeSchemaJSON, extra, prompt, remainingBudget(ctx, commitmsg.Timeout))
+	stdout, err := textgen.RunClaude(ctx, cfg, workspace, commitmsg.ClaudeSchemaJSON, extra, prompt, commitmsg.Timeout)
 	if err != nil {
 		return GeneratedCommitMessage{}, err
 	}

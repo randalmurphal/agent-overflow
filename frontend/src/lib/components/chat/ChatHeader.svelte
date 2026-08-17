@@ -9,6 +9,7 @@
   import { resolvePaneAttentionDot } from '../panes/paneAttention';
   import PaneTitleHandle from '../panes/PaneTitleHandle.svelte';
   import PaneCloseButton from '../panes/PaneCloseButton.svelte';
+  import ThreadTitleRegenerateButton from './ThreadTitleRegenerateButton.svelte';
   import ChatHeaderActions from './ChatHeaderActions.svelte';
 
   interface Props {
@@ -48,6 +49,7 @@
       titleTestId="chat-header-title"
       inputTestId="chat-header-title-input"
     />
+    <ThreadTitleRegenerateButton {pane} />
     <PaneCloseButton paneId={pane.paneId} testId="pane-close" />
 
     <ChatHeaderActions {pane} />

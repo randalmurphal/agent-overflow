@@ -5,11 +5,13 @@ package owns the CLI shell-out, scratch-file scaffolding, output cap, and
 JSON post-processing so callers only assemble the per-task argv, schema,
 and decoder.
 
-Backs:
-- `app_commit_message.go` → `GenerateCommitMessage` (180s budget, structured
+Backs (budgets are PER ATTEMPT — `runTextGenWithFallback` hands each
+provider attempt its own):
+- `app_commit_message.go` → `GenerateCommitMessage` (180s, structured
   `{subject, body}`).
-- `app_thread_title.go` → `generatedThreadTitle` (3-min budget, structured
-  `{title}` with optional image attachments).
+- `app_thread_title.go` → `generatedThreadTitle` (3-min, structured
+  `{title}` with optional image attachments) and `RegenerateThreadTitle`
+  (same budget, no images).
 
 The App-coupled config resolver (`app_text_generation.go`'s
 `resolveTextGenerationConfig`) is the single boundary that depends on
@@ -19,10 +21,30 @@ The App-coupled config resolver (`app_text_generation.go`'s
 
 - `textgen.go` — `Config`, `CLISpec`, `CLIResult`, `CLIExecutor`, the
   default `ExecCLI` shell-out, `CreateScratchFiles`, `ReadOutputFile`,
-  `TranslateCLINotFound`, `FirstNonEmptyMessage`, `RunCodex`,
-  `RunClaude`, and the post-processing helpers
+  `TranslateCLINotFound`, `RedactError`, `FirstNonEmptyMessage`,
+  `RunCodex`, `RunClaude`, and the post-processing helpers
   (`DecodeClaudeStructuredLastLine`, `NormalizeStructuredOutputLine`,
   `CapRunesWithEllipsis`, `LimitPromptSection`).
+
+## Three rules worth knowing before you touch them
+
+- **`TranslateCLINotFound`'s timeout keeps its sentinel.** It returns a
+  typed error whose `Unwrap` is `context.DeadlineExceeded`, not a
+  formatted string, because `runTextGenWithFallback` decides whether to
+  try the alternate provider from `errors.Is` — a timeout must retry,
+  only `context.Canceled` (shutdown) must not. Wrapping with `%w`
+  instead would append "(context deadline exceeded)" to a message that
+  already says which CLI timed out and after how long.
+- **`RedactError` is the one redaction rule, and it lives here** because
+  this package builds the `"codex CLI failed: <stderr>"` strings out of
+  a subprocess's own output, which can carry the prompt, the workspace,
+  or the environment. A CLI failure collapses to `provider CLI failed`;
+  everything else — the timeout included — passes through, since its
+  message repeats nothing the subprocess wrote.
+- **`LimitPromptSection` cuts on a rune boundary**
+  (`stringsx.ClipRunes`). The budget is bytes, but a torn UTF-8 sequence
+  handed to a model is not a rounding error, and every prompt builder
+  budgets its data sections through this function.
 
 ## Responsibility boundary
 

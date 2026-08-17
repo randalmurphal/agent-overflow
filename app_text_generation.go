@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"log"
 	"os/exec"
 	"strings"
 	"testing"
@@ -159,23 +160,29 @@ func (a *App) availableTextGenerationProviders() []string {
 
 // runTextGenWithFallback executes runOnce against primary; on any non-
 // context-canceled error retries once with the alternate provider when
-// its binary resolves and the shared deadline hasn't elapsed. Both
-// attempts must use the SAME deadline (managed by the caller's
-// derived contexts inside runOnce) so the total wall-clock budget
-// stays bounded regardless of how many providers we try.
+// its binary resolves.
+//
+// Each attempt gets its OWN full budget, handed to runOnce as a fresh
+// deadline. A shared deadline used to bound both attempts together,
+// which meant a primary that failed by TIMING OUT left the fallback no
+// time at all — the 2026-08-16 incident, where a usage-limited Codex
+// was followed by a Claude leg killed on arrival. context.DeadlineExceeded
+// therefore must NOT short-circuit the retry; only context.Canceled
+// (app shutdown / caller gone) does.
 //
 // When both attempts fail, the PRIMARY error is surfaced — the user-
 // visible signal should be about the configured provider rather than
 // the silent fallback path that the user didn't ask for. This keeps
 // the Settings UI's red status pill and the returned error message
-// pointing at the same root cause.
+// pointing at the same root cause. The alternate's failure is logged
+// rather than discarded: it is the only record that the fallback ran.
 func runTextGenWithFallback[T any](
 	a *App,
 	primary textgen.Config,
-	deadline time.Time,
-	runOnce func(cfg textgen.Config) (T, error),
+	budget time.Duration,
+	runOnce func(cfg textgen.Config, deadline time.Time) (T, error),
 ) (T, error) {
-	result, err := runOnce(primary)
+	result, err := runOnce(primary, time.Now().Add(budget))
 	if err == nil {
 		return result, nil
 	}
@@ -183,37 +190,32 @@ func runTextGenWithFallback[T any](
 		// App shutdown or user navigated away — don't retry.
 		return result, err
 	}
+	if a.lifeCtx().Err() != nil {
+		// The app is going down. The primary's error may not be spelled
+		// context.Canceled (a killed CLI reports its own failure), and
+		// spawning a second provider CLI into a teardown is exactly the
+		// shape that leaves orphans behind.
+		return result, err
+	}
 	altName := otherProvider(primary.Provider)
-	if altName == "" || !time.Now().Before(deadline) {
+	if altName == "" {
 		return result, err
 	}
 	altCfg, ok := a.resolveTextGenerationConfigFor(altName)
 	if !ok {
 		return result, err
 	}
-	altResult, altErr := runOnce(altCfg)
+	altResult, altErr := runOnce(altCfg, time.Now().Add(budget))
 	if altErr != nil {
+		// No budget in the line: a timeout error from textgen already
+		// names the CLI and the duration it was given.
+		log.Printf(
+			"textgen: fallback %s failed after primary %s error: %s",
+			altCfg.Provider, primary.Provider, textgen.RedactError(altErr),
+		)
 		return result, err
 	}
 	return altResult, nil
-}
-
-// remainingBudget returns the time left before ctx's deadline, clamped to
-// `fallback` when ctx has no deadline (the test seam path bypasses
-// context.WithDeadline entirely) and to zero when the deadline has
-// already elapsed. Used to format honest "timed out after X" errors in
-// the Layer 2 retry path: the per-attempt budget is the remaining
-// shared deadline, not the full per-task constant.
-func remainingBudget(ctx context.Context, fallback time.Duration) time.Duration {
-	deadline, ok := ctx.Deadline()
-	if !ok {
-		return fallback
-	}
-	remaining := time.Until(deadline)
-	if remaining < 0 {
-		return 0
-	}
-	return remaining
 }
 
 // otherProvider returns the two-provider universe's complement. Trivial,

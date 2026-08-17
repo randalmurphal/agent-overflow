@@ -20,6 +20,7 @@ export {
   PinThread,
   UnpinThread,
   RenameThread,
+  RegenerateThreadTitle,
   SwitchThread,
   UpdateThreadModel,
   UpdateThreadProvider,

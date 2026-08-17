@@ -236,6 +236,12 @@ var LocalOnlyMethods = map[string]bool{
 	// invocation under user-attacker control (the workspace path is
 	// derived from the thread); same class as the Git*/CLI surface.
 	"GenerateCommitMessage": true,
+	// RegenerateThreadTitle runs `claude` / `codex` in the thread's
+	// workspace cwd to re-title it from its own history. Same
+	// local-process invocation under user-attacker control as
+	// GenerateCommitMessage — the workspace path comes off the thread
+	// record — so it takes the same classification.
+	"RegenerateThreadTitle": true,
 	// SearchWorkspaceFiles shells `git ls-files` inside the thread's
 	// workspace cwd. The argv is fixed but the cwd is user-supplied
 	// through the thread record — keep with the rest of the local-CLI

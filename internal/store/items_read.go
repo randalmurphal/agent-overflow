@@ -1,8 +1,11 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
+	"slices"
+	"strconv"
 )
 
 // FindStreamItemByProviderItemID resolves a streamed assistant row from the
@@ -237,6 +240,166 @@ func (s *Store) ListTurnItemsSansPayload(threadID string, turnIndex int) ([]Item
 		items = append(items, it)
 	}
 	return items, rows.Err()
+}
+
+// threadTitleContextSummaryTail / threadTitleContextSummaryHead bound
+// the TEXT the two statements below hydrate, so a thread of 200 rows ×
+// 100KB summaries cannot pull tens of megabytes through the read pool
+// to render an 8k prompt.
+//
+// Both are character counts (SQLite's `substr` counts characters, so a
+// slice of N characters is at least N bytes) measured against the
+// formatter's BYTE budgets, which is what makes them safe over-reads
+// rather than silent truncation:
+//   - the window rows keep their TAIL, because the formatter windows
+//     newest-first inside an 8_000-byte budget, so the last 8192
+//     characters always cover everything it can reach;
+//   - the earliest-user row keeps its HEAD, because the pin keeps a
+//     message's PREFIX under a 2_000-byte cap.
+const (
+	threadTitleContextSummaryTail = 8192
+	threadTitleContextSummaryHead = 2048
+)
+
+// ThreadTitleContextItems returns the conversation rows a thread-title
+// regeneration reads: top-level (`parent_id = ''`) `user_text` and
+// `assistant_text` items, oldest-first, hydrated WITHOUT the payload
+// join — Summary carries the text for both kinds, and the caller
+// renders nothing else.
+//
+// The read is bounded in BOTH dimensions. Rows: the window is the
+// NEWEST `limit`, because where a thread ended up is what a re-title is
+// asking about, and the thread's EARLIEST top-level user row is added
+// back when it fell outside that window (a long thread whose first ask
+// scrolled out would be re-titled after its latest tangent). Bytes:
+// every summary is sliced in SQL to the span the formatter can reach,
+// and only USER rows carry their meta — attachment names are the one
+// thing read out of it, while an assistant row's meta can carry large
+// derived blobs.
+//
+// The second return reports whether the row window EXCLUDED at least
+// one matching row. The formatter needs it: a 201-message thread of
+// short messages fits the character budget whole, and rendering it as a
+// seamless transcript would tell the model nothing was dropped.
+//
+// A non-positive limit returns no rows.
+func (s *Store) ThreadTitleContextItems(threadID string, limit int) ([]Item, bool, error) {
+	if limit <= 0 {
+		return nil, false, nil
+	}
+	// One read-pool transaction for both statements: under WAL a read
+	// transaction pins its snapshot at the first statement, so the window
+	// and the earliest-user row describe one instant. Two reads could
+	// otherwise disagree about which rows exist.
+	tx, err := s.reader().BeginTx(context.Background(), nil)
+	if err != nil {
+		return nil, false, fmt.Errorf("store: begin thread title context for %s: %w", threadID, err)
+	}
+	// Read-only: the read pool's connections carry query_only(1), and
+	// nothing here writes. Rollback is the whole cleanup.
+	defer tx.Rollback()
+
+	// The select lists below follow itemColumnsSansPayload's column ORDER
+	// because scanItemRowSansPayload scans positionally — a column added
+	// there must be added here too, in the same place.
+	windowRows, err := tx.Query(
+		`SELECT items.id, items.thread_id, items.turn_index, items.item_index,
+		        items.kind, items.role, items.status,
+		        substr(items.summary, -`+strconv.Itoa(threadTitleContextSummaryTail)+`),
+		        COALESCE(items.payload_id, ''),
+		        items.parent_id, items.is_background, items.completion_of,
+		        items.tool_name, items.decision,
+		        CASE WHEN items.kind = 'user_text' THEN items.meta ELSE '' END,
+		        items.created_at, items.updated_at
+		   FROM timeline_items AS items
+		  WHERE items.thread_id = ?
+		    AND items.parent_id = ''
+		    AND items.kind IN ('user_text', 'assistant_text')
+		  ORDER BY items.turn_index DESC, items.item_index DESC
+		  LIMIT ?`,
+		// One row past the window: its arrival is what proves rows were
+		// dropped, and it is discarded immediately after.
+		threadID, limit+1,
+	)
+	if err != nil {
+		return nil, false, fmt.Errorf("store: thread title context items for %s: %w", threadID, err)
+	}
+	items, err := scanThreadTitleContextItems(windowRows)
+	if err != nil {
+		return nil, false, fmt.Errorf("store: thread title context items for %s: %w", threadID, err)
+	}
+	dropped := false
+	if len(items) > limit {
+		dropped = true
+		items = items[:limit]
+	}
+	slices.Reverse(items)
+
+	// Known accepted edge: a FIRST user message longer than the window's
+	// summary slice that sits INSIDE the row window is served from its
+	// tail rather than its head. The formatter tail-cuts that shape
+	// itself once it overruns, so the pin is the only place the
+	// difference could show, and it only shows for a thread whose opening
+	// message is both enormous and still in the newest-N rows.
+	earliestRows, err := tx.Query(
+		`SELECT items.id, items.thread_id, items.turn_index, items.item_index,
+		        items.kind, items.role, items.status,
+		        substr(items.summary, 1, `+strconv.Itoa(threadTitleContextSummaryHead)+`),
+		        COALESCE(items.payload_id, ''),
+		        items.parent_id, items.is_background, items.completion_of,
+		        items.tool_name, items.decision, items.meta,
+		        items.created_at, items.updated_at
+		   FROM timeline_items AS items
+		  WHERE items.thread_id = ?
+		    AND items.parent_id = ''
+		    AND items.kind = 'user_text'
+		  ORDER BY items.turn_index ASC, items.item_index ASC
+		  LIMIT 1`,
+		threadID,
+	)
+	if err != nil {
+		return nil, false, fmt.Errorf("store: earliest thread title context item for %s: %w", threadID, err)
+	}
+	earliest, err := scanThreadTitleContextItems(earliestRows)
+	if err != nil {
+		return nil, false, fmt.Errorf("store: earliest thread title context item for %s: %w", threadID, err)
+	}
+	if len(earliest) == 0 || threadTitleContextWindowHolds(items, earliest[0]) {
+		return items, dropped, nil
+	}
+	return append(earliest, items...), dropped, nil
+}
+
+// scanThreadTitleContextItems drains one of the two statements above.
+// The scan loop is all they share — the statements themselves are
+// written out in full, because their projections differ.
+func scanThreadTitleContextItems(rows *sql.Rows) ([]Item, error) {
+	defer rows.Close()
+
+	var items []Item
+	for rows.Next() {
+		item, err := scanItemRowSansPayload(rows)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+// threadTitleContextWindowHolds reports whether the newest-rows window
+// already contains the row at candidate's position. The window is every
+// matching row at or after its oldest member, so the position compare
+// is exact.
+func threadTitleContextWindowHolds(window []Item, candidate Item) bool {
+	if len(window) == 0 {
+		return false
+	}
+	oldest := window[0]
+	if candidate.TurnIndex != oldest.TurnIndex {
+		return candidate.TurnIndex > oldest.TurnIndex
+	}
+	return candidate.ItemIndex >= oldest.ItemIndex
 }
 
 func (s *Store) HasMatchingSystemItem(threadID string, turnIndex int, kind, parentID, summary string) (bool, error) {

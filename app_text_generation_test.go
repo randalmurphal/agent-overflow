@@ -1,8 +1,15 @@
 package main
 
 import (
+	"bytes"
+	"context"
+	"errors"
+	"fmt"
+	"log"
 	"os/exec"
+	"strings"
 	"testing"
+	"time"
 
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/settings"
@@ -223,6 +230,118 @@ func TestResolveTextGenerationConfigFor_UnknownProviderReturnsFalse(t *testing.T
 	app.lookPathFn = fakeLookPath("claude", "codex")
 	if _, ok := app.resolveTextGenerationConfigFor("phantom"); ok {
 		t.Fatalf("unknown provider should return ok=false")
+	}
+}
+
+// TestRunTextGenWithFallback_PerAttemptBudgets is the incident fix
+// (2026-08-16): a primary that fails by TIMING OUT must still reach the
+// alternate, and the alternate must get its own full budget rather than
+// the primary's exhausted remainder.
+func TestRunTextGenWithFallback_PerAttemptBudgets(t *testing.T) {
+	app := newTestAppWithStore(t)
+	resetProviderBinarySettings(t, app)
+	app.lookPathFn = fakeLookPath("claude", "codex")
+
+	const budget = 90 * time.Second
+	var deadlines []time.Time
+	var providers []string
+
+	start := time.Now()
+	got, err := runTextGenWithFallback(app, app.resolveTextGenerationConfig(), budget,
+		func(cfg textgen.Config, deadline time.Time) (string, error) {
+			providers = append(providers, cfg.Provider)
+			deadlines = append(deadlines, deadline)
+			if len(providers) == 1 {
+				return "", fmt.Errorf("primary: %w", context.DeadlineExceeded)
+			}
+			return "alternate result", nil
+		},
+	)
+	if err != nil {
+		t.Fatalf("runTextGenWithFallback() error = %v", err)
+	}
+	if got != "alternate result" {
+		t.Fatalf("result = %q, want the alternate's", got)
+	}
+	if len(providers) != 2 {
+		t.Fatalf("attempts = %v, want primary + alternate (DeadlineExceeded must not short-circuit)", providers)
+	}
+	if providers[0] == providers[1] {
+		t.Fatalf("both attempts used %q", providers[0])
+	}
+	// Each attempt's deadline is ~now+budget. The second must be a FRESH
+	// budget, not the first's remainder — and the tolerance is tight
+	// enough to notice a shared one: two in-process attempts take
+	// microseconds, so seconds of slack is all the wall clock needs.
+	for i, deadline := range deadlines {
+		if delta := deadline.Sub(start); delta < budget || delta > budget+5*time.Second {
+			t.Fatalf("attempt %d deadline is %s past start, want ~%s", i+1, delta, budget)
+		}
+	}
+	if !deadlines[1].After(deadlines[0]) {
+		t.Fatal("alternate deadline is not later than the primary's — the budget was shared, not fresh")
+	}
+}
+
+// TestRunTextGenWithFallback_AlternateFailureIsLoggedAndPrimarySurfaces
+// pins the other half of the incident: the fallback's failure used to be
+// discarded silently, leaving one opaque log line about the primary.
+func TestRunTextGenWithFallback_AlternateFailureIsLoggedAndPrimarySurfaces(t *testing.T) {
+	app := newTestAppWithStore(t)
+	resetProviderBinarySettings(t, app)
+	app.lookPathFn = fakeLookPath("claude", "codex")
+
+	var logged bytes.Buffer
+	prev := log.Writer()
+	log.SetOutput(&logged)
+	t.Cleanup(func() { log.SetOutput(prev) })
+
+	attempts := 0
+	_, err := runTextGenWithFallback(app, app.resolveTextGenerationConfig(), 30*time.Second,
+		func(cfg textgen.Config, _ time.Time) (string, error) {
+			attempts++
+			if attempts == 1 {
+				return "", errors.New("primary exploded")
+			}
+			// What a real CLI timeout looks like after textgen translates
+			// it: the message names the CLI and the budget it had.
+			return "", textgen.TranslateCLINotFound(cfg.Provider, 30*time.Second, context.DeadlineExceeded)
+		},
+	)
+	if err == nil || !strings.Contains(err.Error(), "primary exploded") {
+		t.Fatalf("err = %v, want the primary's error surfaced", err)
+	}
+	line := logged.String()
+	if !strings.Contains(line, "textgen: fallback") {
+		t.Fatalf("fallback failure not logged: %q", line)
+	}
+	if !strings.Contains(line, "CLI timed out after 30s") {
+		t.Fatalf("log line should report the alternate's timeout: %q", line)
+	}
+}
+
+// TestRunTextGenWithFallback_NoAlternateSpawnDuringShutdown: a CLI
+// killed by teardown reports its own failure rather than
+// context.Canceled, and starting a second provider subprocess into a
+// shutdown is how orphans are made.
+func TestRunTextGenWithFallback_NoAlternateSpawnDuringShutdown(t *testing.T) {
+	app := newTestAppWithStore(t)
+	resetProviderBinarySettings(t, app)
+	app.lookPathFn = fakeLookPath("claude", "codex")
+
+	attempts := 0
+	_, err := runTextGenWithFallback(app, app.resolveTextGenerationConfig(), time.Minute,
+		func(textgen.Config, time.Time) (string, error) {
+			attempts++
+			app.appCancel()
+			return "", errors.New("codex CLI failed: signal: killed")
+		},
+	)
+	if err == nil {
+		t.Fatal("expected the primary error")
+	}
+	if attempts != 1 {
+		t.Fatalf("executor called %d times, want 1 (no fallback spawn during shutdown)", attempts)
 	}
 }
 

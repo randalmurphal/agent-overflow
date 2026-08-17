@@ -22,6 +22,11 @@ import {
 } from './workflowRunMap.svelte';
 import { mapRun, mapView } from '../../test/fixtures/runMap';
 import { makeItem } from '../../test/helpers/chat';
+import {
+  regenerateThreadTitle,
+  resetThreadTitleGenerationForTest,
+  titleGenerationPending,
+} from './threadTitleGeneration.svelte';
 import type { ThreadItemSnapshot } from './threadItemCache';
 import type { ThreadHistoryStamp } from './threadHistoryStamps';
 
@@ -44,6 +49,7 @@ describe('transport gap', () => {
   beforeEach(() => {
     __resetThreadHistoryStampsForTest();
     threadItemCache.clear();
+    resetThreadTitleGenerationForTest();
     // The gap handler resyncs the sidebar; both legs swallow their own
     // errors, but an unmocked binding would still log and toast.
     setBindingMock('ListThreads', async () => []);
@@ -79,6 +85,25 @@ describe('transport gap', () => {
     applyTransportGap({ channel: 'future:channel', seq: 1 });
 
     expect(threadItemCache.get('t-event')?.historyStamp).toBeNull();
+  });
+
+  it('thread:title_generation releases pending flags and leaves stamps alone', async () => {
+    threadItemCache.set('t-event', snapshot('t-event', { epoch: 1, rev: 30, attested: false }));
+    setBindingMock('RegenerateThreadTitle', async () => undefined);
+    await regenerateThreadTitle('t-title');
+    expect(titleGenerationPending('t-title')).toBe(true);
+
+    // A gap on this channel means a completion frame may be lost — the flag
+    // must release or the affordance spins forever. No window data rides the
+    // channel, so the stamp discipline does not apply to it.
+    applyTransportGap({ channel: 'thread:title_generation', seq: 2 });
+
+    expect(titleGenerationPending('t-title')).toBe(false);
+    expect(threadItemCache.get('t-event')?.historyStamp).toEqual({
+      epoch: 1,
+      rev: 30,
+      attested: false,
+    });
   });
 
   it('leaves stamps alone on the self-repairing channels', () => {

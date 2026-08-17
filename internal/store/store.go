@@ -123,9 +123,13 @@ func openReadPool(db *sql.DB, dbPath string) (*sql.DB, error) {
 
 // reader returns the pool read-only accessors run their queries on:
 // the read pool when it exists and reads aren't quiesced, the writer
-// otherwise. Callers must not hold connections across calls — each
-// query independently picks its pool, which is what lets quiesceReads
-// drain the read pool without coordinating with in-flight accessors.
+// otherwise. Each call independently picks its pool, which is what lets
+// quiesceReads drain the read pool without coordinating with in-flight
+// accessors. Most reads are single statements; the multi-statement
+// reads whose parts must describe ONE WAL snapshot (SyncThreadWindow,
+// ReadWorkItemTree, ThreadTitleContextItems) hold a short read-only
+// BeginTx instead — quiesceReads' drain wait covers those the same way,
+// with its deadline as the backstop.
 func (s *Store) reader() *sql.DB {
 	if s.read == nil || s.readsQuiesced.Load() {
 		return s.db
@@ -145,10 +149,11 @@ func (s *Store) quiesceReads(fn func() error) error {
 	}
 	s.readsQuiesced.Store(true)
 	defer s.readsQuiesced.Store(false)
-	// In-flight read-pool queries are short (single statements, no
-	// transactions); poll until they drain. The deadline is a backstop —
-	// if something wedges, fn still runs and the writer's busy_timeout
-	// takes over, matching the pre-read-pool worst case.
+	// In-flight read-pool work is short — single statements, plus the
+	// few bounded read-only transactions reader()'s doc lists; poll
+	// until it drains. The deadline is a backstop — if something wedges,
+	// fn still runs and the writer's busy_timeout takes over, matching
+	// the pre-read-pool worst case.
 	deadline := time.Now().Add(5 * time.Second)
 	for s.read.Stats().InUse > 0 && time.Now().Before(deadline) {
 		time.Sleep(5 * time.Millisecond)

@@ -2,21 +2,17 @@
   // The pane-header close affordance: an X that destroys the pane. The
   // underlying session keeps running — closing removes the pane, it never
   // calls CloseTerminal / StopSession, so reopening the thread reattaches.
-  // Shared by ChatHeader and the terminal pane header so both get identical
-  // markup, sizing, and the propagation stops that keep pane-level handlers
-  // from reacting to a click on the X:
-  //   - pointerdown: stops a header drag from starting on the button, and
-  //     keeps PaneHost's pointer-focus handler from treating the click as a
-  //     focus transition — closing an unfocused, partially-scrolled pane
-  //     must destroy it in place, not smooth-scroll it on-screen first.
-  //   - focusin: Chromium-engine webviews focus buttons on mousedown, so
-  //     without this stop the X's focusin would move LOGICAL focus onto the
-  //     pane being destroyed, and destroyPane's dangling-focus fixup would
-  //     then focus + reveal its neighbor — stealing focus from the pane the
-  //     user was actually working in. (focusin no longer scrolls anywhere;
-  //     this stop is purely about keeping logical focus off the dying pane.)
+  // Shared by ChatHeader and the terminal pane header. Chrome and the
+  // pointerdown stop live in PaneHeaderIconButton; the focusin stop is this
+  // button's own: Chromium-engine webviews focus buttons on mousedown, so
+  // without it the X's focusin would move LOGICAL focus onto the pane being
+  // destroyed, and destroyPane's dangling-focus fixup would then focus +
+  // reveal its neighbor — stealing focus from the pane the user was actually
+  // working in. (focusin no longer scrolls anywhere; the stop is purely about
+  // keeping logical focus off the dying pane.)
   import X from '@lucide/svelte/icons/x';
   import Icon from '../primitives/Icon.svelte';
+  import PaneHeaderIconButton from './PaneHeaderIconButton.svelte';
   import { destroyPane } from '../../stores/panes.svelte';
 
   let {
@@ -28,18 +24,11 @@
   } = $props();
 </script>
 
-<button
-  type="button"
-  aria-label="Close Pane"
-  title="Close Pane"
-  onpointerdown={(event) => event.stopPropagation()}
+<PaneHeaderIconButton
+  label="Close Pane"
+  {testId}
+  onclick={() => destroyPane(paneId)}
   onfocusin={(event) => event.stopPropagation()}
-  onclick={(event) => {
-    event.stopPropagation();
-    destroyPane(paneId);
-  }}
-  data-testid={testId}
-  class="flex h-5 w-5 shrink-0 items-center justify-center rounded-[var(--radius-field)] text-fg-hint opacity-70 transition-colors hover:bg-surface-2/70 hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
 >
   <Icon icon={X} size={12} strokeWidth={2} />
-</button>
+</PaneHeaderIconButton>

@@ -221,6 +221,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "RefreshMcpServerStatus", ID: 2215279661},               // main.App.RefreshMcpServerStatus
 	{Name: "RefreshProviderAccountUsage", ID: 2539237007},          // main.App.RefreshProviderAccountUsage
 	{Name: "RefreshTerminal", ID: 2618043580},                      // main.App.RefreshTerminal
+	{Name: "RegenerateThreadTitle", ID: 3682640111},                // main.App.RegenerateThreadTitle
 	{Name: "RegisterQueueItem", ID: 1034543696},                    // main.App.RegisterQueueItem
 	{Name: "RemoveOtherWorktree", ID: 2899196344},                  // main.App.RemoveOtherWorktree
 	{Name: "RemoveOtherWorktreeForProject", ID: 574548500},         // main.App.RemoveOtherWorktreeForProject

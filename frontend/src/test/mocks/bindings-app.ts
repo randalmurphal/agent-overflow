@@ -76,6 +76,7 @@ export const ListThreads = dispatch('ListThreads');
 export const MarkThreadRead = dispatch('MarkThreadRead');
 export const MarkThreadUnread = dispatch('MarkThreadUnread');
 export const RenameThread = dispatch('RenameThread');
+export const RegenerateThreadTitle = dispatch('RegenerateThreadTitle');
 export const SwitchThread = dispatch('SwitchThread');
 
 // Terminal operations (ThreadTerminalDrawer, TerminalBody, etc).

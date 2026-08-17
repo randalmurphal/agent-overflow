@@ -21,6 +21,7 @@ import { hydrateProviderAccounts } from './eventsProvider';
 import { hydrateRateLimitsSnapshots } from './eventsRateLimits';
 import { resyncWorktreeSetups } from './eventsWorktreeSetup';
 import { markImportConnectionLost } from './sessionImport.svelte';
+import { releaseThreadTitleGenerationPending } from './threadTitleGeneration.svelte';
 import { getThreads } from './threads.svelte';
 import { resyncGitStatusAfterGap } from './gitStatusStore.svelte';
 import { resyncPRReviewAfterGap } from './prReviewStore.svelte';
@@ -240,6 +241,15 @@ export function applyTransportGap(gap: { channel: string; seq: number }): void {
       // rather than leaving a progress bar frozen forever. A gap with no run
       // in flight is a no-op there.
       markImportConnectionLost();
+      return;
+    }
+    case 'thread:title_generation': {
+      // The channel carries only completion frames that release pending
+      // flags — no window data rides it, so the default's stamp drop and
+      // per-pane refresh would be pure noise. A lost frame orphans a
+      // spinner; release every raised flag instead (re-clicking a run that
+      // is still live just joins its backend claim).
+      releaseThreadTitleGenerationPending();
       return;
     }
     case 'discussion:message':

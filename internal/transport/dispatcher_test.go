@@ -720,6 +720,7 @@ func (p *privilegedApp) GetClaudeSkills() string                { return "ok" }
 func (p *privilegedApp) CreateProject() string                  { return "ok" }
 func (p *privilegedApp) ListAvailableEditors() string           { return "ok" }
 func (p *privilegedApp) GenerateCommitMessage() string          { return "ok" }
+func (p *privilegedApp) RegenerateThreadTitle() string          { return "ok" }
 func (p *privilegedApp) SearchWorkspaceFiles() string           { return "ok" }
 func (p *privilegedApp) GetPayloadPreview() string              { return "ok" }
 func (p *privilegedApp) GetPayloadChunk() string                { return "ok" }

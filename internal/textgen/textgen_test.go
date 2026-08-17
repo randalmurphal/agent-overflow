@@ -3,12 +3,14 @@ package textgen
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 func TestLimitPromptSection_NoopBelowBudget(t *testing.T) {
@@ -26,6 +28,21 @@ func TestLimitPromptSection_AppendsTruncatedMarker(t *testing.T) {
 	}
 	if !strings.HasPrefix(got, strings.Repeat("x", 100)) {
 		t.Error("expected first maxChars bytes preserved")
+	}
+}
+
+// TestLimitPromptSection_CutsOnARuneBoundary: the budget is bytes, but a
+// torn UTF-8 sequence in a prompt is not a rounding error — every prompt
+// builder budgets its data sections through this function.
+func TestLimitPromptSection_CutsOnARuneBoundary(t *testing.T) {
+	in := strings.Repeat("é", 100) // two bytes per rune
+	got := LimitPromptSection(in, 101)
+	if !utf8.ValidString(got) {
+		t.Fatalf("LimitPromptSection tore a rune: %q", got)
+	}
+	body := strings.TrimSuffix(got, "\n\n[truncated]")
+	if len(body) != 100 {
+		t.Fatalf("body = %d bytes, want the cut backed off to 100", len(body))
 	}
 }
 
@@ -249,8 +266,50 @@ func TestTranslateCLINotFound_NotFoundMessage(t *testing.T) {
 
 func TestTranslateCLINotFound_TimeoutMessage(t *testing.T) {
 	err := TranslateCLINotFound("claude", time.Second, context.DeadlineExceeded)
-	if err == nil || !strings.Contains(err.Error(), "claude CLI timed out after 1s") {
+	if err == nil || err.Error() != "claude CLI timed out after 1s" {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// TestTranslateCLINotFound_TimeoutKeepsDeadlineSentinel is the reason the
+// timeout translation is a type: runTextGenWithFallback decides whether
+// to try the alternate provider from the sentinel, and a wrapped CLI
+// error whose deadline was flattened into prose reads as an ordinary
+// failure.
+func TestTranslateCLINotFound_TimeoutKeepsDeadlineSentinel(t *testing.T) {
+	err := TranslateCLINotFound("codex", 3*time.Minute, fmt.Errorf("run: %w", context.DeadlineExceeded))
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("errors.Is(%v, context.DeadlineExceeded) = false", err)
+	}
+	if errors.Is(err, context.Canceled) {
+		t.Fatalf("timeout must not read as a cancellation: %v", err)
+	}
+	if got := err.Error(); got != "codex CLI timed out after 3m0s" {
+		t.Fatalf("message = %q, want no wrapping noise", got)
+	}
+}
+
+func TestRedactError_ReplacesCLIFailure(t *testing.T) {
+	err := errors.New("codex CLI failed: exit status 1")
+	if got := RedactError(err); got != "provider CLI failed" {
+		t.Fatalf("RedactError(%q) = %q, want %q", err, got, "provider CLI failed")
+	}
+}
+
+func TestRedactError_PassesNonCLIErrorsThrough(t *testing.T) {
+	err := errors.New("decode claude structured output: unexpected EOF")
+	if got := RedactError(err); got != err.Error() {
+		t.Fatalf("RedactError(%q) = %q, want passthrough", err, got)
+	}
+}
+
+// TestRedactError_KeepsTheTimeoutMessage: the timeout names the CLI and
+// the budget it had and repeats nothing the subprocess wrote, so
+// collapsing it would only lose information.
+func TestRedactError_KeepsTheTimeoutMessage(t *testing.T) {
+	err := TranslateCLINotFound("codex", 3*time.Minute, context.DeadlineExceeded)
+	if got := RedactError(err); got != "codex CLI timed out after 3m0s" {
+		t.Fatalf("RedactError(timeout) = %q", got)
 	}
 }
 

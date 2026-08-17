@@ -571,7 +571,7 @@ export function ForkThreadFromMessage(sourceThreadID: string, userItemID: string
  * Layer 2 fallback is handled by runTextGenWithFallback: if the configured
  * provider's CLI fails for any reason other than context cancellation,
  * the call retries once with the alternate provider provided its binary
- * resolves and there's time left in the shared deadline. The user sees
+ * resolves, on its own fresh commitmsg.Timeout budget. The user sees
  * Codex's structured `{subject, body}` even if Codex is down — silently —
  * as long as Claude is installed.
  * 
@@ -2601,11 +2601,13 @@ export function RefreshMcpServerStatus(providerName: string, workspacePath: stri
  * RefreshProviderAccountUsage probes one saved account without changing the
  * provider-wide selection.
  * 
- * An inactive account is probed from a short-lived home seeded with only its
- * credential; a rotation there reaches the canonical home only after selection
- * and fingerprint validation. The selected Claude account is probed in the
- * canonical home instead, because a refresh must not fork its rotation chain —
- * see probeSelectedClaudeRateLimits.
+ * An inactive Codex account is probed from a short-lived home seeded with only
+ * its credential; a rotation there reaches the canonical home only after
+ * selection and fingerprint validation. Claude never uses a temporary home
+ * here: the selected account is probed in the canonical home (the only place
+ * its single-use rotation may happen — see probeSelectedClaudeRateLimits) and
+ * an inactive one is read over HTTP without refreshing at all — see
+ * probeInactiveClaudeRateLimits.
  * 
  * This manual path deliberately bypasses the usage gate's cooldown — a user
  * demand should not silently coalesce away. Server-imposed 429 backoffs are
@@ -2625,6 +2627,29 @@ export function RefreshProviderAccountUsage(providerName: string, accountID: str
  */
 export function RefreshTerminal(terminalID: string): $CancellablePromise<void> {
     return $Call.ByID(2618043580, terminalID);
+}
+
+/**
+ * RegenerateThreadTitle starts a re-title of an existing thread from its
+ * conversation so far. It acknowledges as soon as the run is under way;
+ * the outcome arrives on `thread:title_generation`, and the new title
+ * itself on `thread:updated` when the swap lands.
+ * 
+ * Asynchronous on purpose. A generation is up to two provider attempts
+ * of threadtitle.Timeout each, against a transport client timeout of
+ * 60s: the synchronous form was guaranteed to be abandoned by the caller
+ * while the backend kept running, and the abandoned caller re-enabled
+ * its button and stacked retries on top.
+ * 
+ * An unknown thread is the only synchronous failure. Everything else —
+ * an empty thread, a model that produced nothing better, a rename that
+ * won the compare-and-swap, a provider failure — is reported on the
+ * completion event. A regeneration asked for while one is already
+ * running for this thread joins it: the running generation's completion
+ * event is the answer for both callers.
+ */
+export function RegenerateThreadTitle(threadID: string): $CancellablePromise<void> {
+    return $Call.ByID(3682640111, threadID);
 }
 
 /**

@@ -3509,8 +3509,10 @@ export class ThreadDefaults {
 /**
  * ThreadLiveState is the backend-owned live projection a freshly loaded
  * frontend needs after refresh/reconnect. SQLite remains the history cache;
- * this shape carries only in-memory session state that should mirror what
- * active provider processes are doing right now.
+ * every field here mirrors what an active provider process is doing right
+ * now — with one deliberate durable exception, Todo, which is read from
+ * threads.live_todo (migration v65) because a todo list outlives the session
+ * that reported it and the process that received it.
  */
 export class ThreadLiveState {
     "threadId": string;

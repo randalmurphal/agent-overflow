@@ -33,6 +33,11 @@ import {
 import { resetSidebarForTest } from '../../stores/sidebar.svelte';
 import { resetEditorsForTest } from '../../stores/editors.svelte';
 import { openTerminalThread } from '../../stores/threadCreation.svelte';
+import { setViewOnlySessionFromBootstrap } from '../../transport/runMode';
+import {
+  applyThreadTitleGeneration,
+  resetThreadTitleGenerationForTest,
+} from '../../stores/threadTitleGeneration.svelte';
 import type { Project, Thread } from '../../types/models';
 import { buildPane as buildRegisteredPane, makeThread as makeBaseThread } from '../../../test/helpers/chat';
 
@@ -96,6 +101,7 @@ describe('<ChatHeader>', () => {
     resetCompanionPanesForTest();
     resetPaneLayoutForTest();
     resetEditorsForTest();
+    resetThreadTitleGenerationForTest();
     // The header's Open-in-editor control loads this catalog on mount.
     // An empty catalog keeps the primary button working (the backend
     // still resolves the default) while rendering no dropdown, which is
@@ -518,5 +524,96 @@ describe('<ChatHeader>', () => {
     expect(create).not.toHaveBeenCalled();
     expect(pane.threadId).toBeNull();
     expect(pane.showTerminal).toBe(true);
+  });
+
+  it('acks the regeneration RPC and spins until the completion event clears it', async () => {
+    const pane = await buildPane(makeThread({ title: 'New Thread' }));
+    const regenerate = setBindingMock('RegenerateThreadTitle', async () => undefined);
+
+    const { getByTestId } = render(ChatHeader, { props: { pane } });
+    await tick();
+
+    const button = getByTestId('thread-title-regenerate') as HTMLButtonElement;
+    await fireEvent.click(button);
+
+    // Pending is set before the ack resolves and held after it: the run keeps
+    // going server-side, and only the completion event may clear the flag.
+    expect(button.disabled).toBe(true);
+    expect(button.dataset.pending).toBe('true');
+    await vi.waitFor(() => expect(regenerate).toHaveBeenCalledWith('thread-1'));
+    expect(button.dataset.pending).toBe('true');
+
+    applyThreadTitleGeneration({ threadId: 'thread-1', error: '' });
+    await vi.waitFor(() => expect(button.disabled).toBe(false));
+    expect(button.dataset.pending).toBe('false');
+    expect(pane.generalError).toBeNull();
+  });
+
+  it('ignores a second click while a regeneration is pending', async () => {
+    const pane = await buildPane(makeThread({ title: 'New Thread' }));
+    const regenerate = setBindingMock('RegenerateThreadTitle', async () => undefined);
+
+    const { getByTestId } = render(ChatHeader, { props: { pane } });
+    await tick();
+
+    const button = getByTestId('thread-title-regenerate') as HTMLButtonElement;
+    await fireEvent.click(button);
+    // The button disables on pending, but the store's own guard must hold
+    // even if a stale handler fires (disabled rendering races the click).
+    await fireEvent.click(button);
+    await vi.waitFor(() => expect(regenerate).toHaveBeenCalledTimes(1));
+  });
+
+  it('surfaces the error on the pane when the regeneration ack rejects', async () => {
+    const pane = await buildPane();
+    setBindingMock('RegenerateThreadTitle', async () => {
+      throw new Error('provider exploded');
+    });
+
+    const { getByTestId } = render(ChatHeader, { props: { pane } });
+    await tick();
+
+    const button = getByTestId('thread-title-regenerate') as HTMLButtonElement;
+    await fireEvent.click(button);
+
+    await vi.waitFor(() => {
+      expect(pane.generalError).toContain('Failed to regenerate title');
+    });
+    // A rejected ack means no run started, so pending must release.
+    expect(button.disabled).toBe(false);
+  });
+
+  it('surfaces a failed run on the pane when its completion event carries an error', async () => {
+    const pane = await buildPane();
+    setBindingMock('RegenerateThreadTitle', async () => undefined);
+
+    const { getByTestId } = render(ChatHeader, { props: { pane } });
+    await tick();
+
+    await fireEvent.click(getByTestId('thread-title-regenerate'));
+    await vi.waitFor(() => {
+      expect((getByTestId('thread-title-regenerate') as HTMLButtonElement).disabled).toBe(true);
+    });
+
+    applyThreadTitleGeneration({ threadId: 'thread-1', error: 'provider CLI failed' });
+    await vi.waitFor(() => {
+      expect(pane.generalError).toBe('Failed to regenerate title: provider CLI failed');
+    });
+    expect((getByTestId('thread-title-regenerate') as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('disables the regenerate button in a view-only session (LocalOnly RPC)', async () => {
+    setViewOnlySessionFromBootstrap(true);
+    try {
+      const pane = await buildPane();
+      const { getByTestId } = render(ChatHeader, { props: { pane } });
+      await tick();
+
+      const button = getByTestId('thread-title-regenerate') as HTMLButtonElement;
+      expect(button.disabled).toBe(true);
+      expect(button.title).toBe('Local only');
+    } finally {
+      setViewOnlySessionFromBootstrap(false);
+    }
   });
 });

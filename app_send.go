@@ -561,7 +561,7 @@ func (a *App) sendMessageLocked(
 	// emission here.
 
 	if !threadmode.IsSagaOwned(thread.Mode) {
-		a.maybeGenerateThreadTitleWithAttachments(thread, content, hasPriorItems, persistedAttachments)
+		a.maybeGenerateThreadTitleWithAttachments(thread, content, persistedAttachments, hasPriorItems)
 	}
 	return userItem, nil
 }

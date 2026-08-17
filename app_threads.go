@@ -473,7 +473,7 @@ func (a *App) UnarchiveThread(id string) (store.Thread, error) {
 // RenameThread updates the thread title and emits a thread:updated
 // event so any other observer (chat header, multi-tab clients, future
 // remote viewers) re-renders with the new title without a follow-up
-// poll. Mirrors the emit shape used by applyGeneratedThreadTitle.
+// poll. Mirrors the emit shape used by applyThreadTitleIfCurrent.
 func (a *App) RenameThread(id string, title string) error {
 	if err := a.store.UpdateTitle(id, title); err != nil {
 		return err

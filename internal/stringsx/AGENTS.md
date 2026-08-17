@@ -12,7 +12,12 @@ package can depend on it without introducing a cycle.
   empty.
 - `clip.go` — `Clip(s, max)` truncates by bytes for hard UI-field
   ceilings (diagnostics payloads, log redaction). Returns `""` for
-  non-positive `max`.
+  non-positive `max`. `ClipRunes(s, maxBytes)` and `TailRunes(s,
+  maxBytes)` are its rune-safe siblings — same byte budget, cut backed
+  off (head) or advanced (tail) to a rune boundary — for text that still
+  has to decode after the cut: prompt sections handed to a provider CLI,
+  anything a terminal renders. All three return `""` for a non-positive
+  budget.
 - `joinnonempty.go` — `JoinNonEmpty(sep, parts...)` trims each part and
   joins the non-blank survivors with `sep`. Used for composing system
   prompts where any section may be empty.

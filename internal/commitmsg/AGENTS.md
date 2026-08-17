@@ -12,7 +12,7 @@ and trim the model's response into a well-formed subject + body.
 
 | Symbol | Purpose |
 |---|---|
-| `Timeout` | 180s budget for a CLI invocation. Callers wrap their `context.WithTimeout` and pass the same value to `textgen.RunCodex` / `textgen.RunClaude`. |
+| `Timeout` | 180s budget for ONE CLI invocation. Per-attempt, not shared: `runTextGenWithFallback` hands each provider attempt a fresh one. Callers wrap their `context.WithTimeout` and pass the same value to `textgen.RunCodex` / `textgen.RunClaude`. |
 | `PromptStagedSummaryLimit`, `PromptStagedPatchLimit`, `PromptCustomStyleLimit` | Prompt-layer caps (6k / 40k / 2k) applied to the staged summary, patch, and custom-style sections. Mirrors t3-code's Prompts.ts. |
 | `StyleConventional` / `StyleCustom` / `StyleRepo`, `StyleGuidance`, `RepoStyleSubjectCount` | Writing-style guidance embedded in the prompt. Kinds mirror `settings.CommitMessageStyle`; an unrecognized kind or an empty payload (blank custom instructions, no repo history) falls back to the Conventional Commits rule so the prompt is never guidance-free. The repo style embeds at most `RepoStyleSubjectCount` (20) recent subjects, gathered by the caller via `git.Core.RecentCommitSubjects`. |
 | `CodexSchemaJSON` | The `--output-schema` JSON the Codex CLI gets. Validated by `commitmsg_test.go` so a typo can't reach prod. |

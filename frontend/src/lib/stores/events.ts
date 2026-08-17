@@ -119,6 +119,10 @@ import { applyUserMessageReverted } from './eventsMessageRevert';
 import { applyTransportGap } from './eventsTransportGap';
 import { applyWorktreeSetup } from './eventsWorktreeSetup';
 import {
+  applyThreadTitleGeneration,
+  type ThreadTitleGenerationEvent,
+} from './threadTitleGeneration.svelte';
+import {
   applyDiscussionMessage,
   applyDiscussionState,
   type DiscussionMessageEvent,
@@ -357,6 +361,15 @@ export function setupEventListeners(): () => void {
 
   const cancelThreadUpdated = wailsEventOn<ThreadUpdateEvent>('thread:updated', applyThreadUpdated);
 
+  // thread:title_generation — the completion frame of one title-generation
+  // run (auto first-turn, heal, or user-triggered regeneration). Clears the
+  // pending flag the regenerate affordance renders from; the redacted error
+  // is surfaced only when a user-triggered regeneration was awaiting it.
+  const cancelThreadTitleGeneration = wailsEventOn<ThreadTitleGenerationEvent | null>(
+    'thread:title_generation',
+    applyThreadTitleGeneration,
+  );
+
   // worktree:setup — the per-project setup recipe streaming over a worktree a
   // chat thread just had cut. Its own channel because only the setup panel
   // consumes it and its frames carry local command output (transport keeps it
@@ -516,6 +529,7 @@ export function setupEventListeners(): () => void {
     cancelProviderCommands();
     cancelUserMessageReverted();
     cancelThreadUpdated();
+    cancelThreadTitleGeneration();
     cancelWorktreeSetup();
     cancelDefaultSwapped();
     cancelTransportGap();

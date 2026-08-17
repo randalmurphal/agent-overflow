@@ -267,9 +267,8 @@ func (a *App) generateWorkflowDigest(item store.WorkItem, template WorkflowDiges
 	if a.generateWorkflowDigestFn != nil {
 		return a.generateWorkflowDigestFn(a.lifeCtx(), item, template)
 	}
-	deadline := time.Now().Add(workflowDigestTimeout)
 	primary := a.resolveTextGenerationConfig()
-	return runTextGenWithFallback(a, primary, deadline, func(cfg textgen.Config) (WorkflowDigest, error) {
+	return runTextGenWithFallback(a, primary, workflowDigestTimeout, func(cfg textgen.Config, deadline time.Time) (WorkflowDigest, error) {
 		return a.runWorkflowDigestOnce(cfg, item, template, deadline)
 	})
 }
@@ -298,9 +297,9 @@ Template WHAT IT NEEDS: %s`, workflowDigestMaxRunes, item.Goal, item.State, item
 	var raw []byte
 	switch cfg.Provider {
 	case string(provider.Codex):
-		raw, err = textgen.RunCodex(ctx, cfg, workspace, workflowDigestSchemaJSON, nil, prompt, remainingBudget(ctx, workflowDigestTimeout))
+		raw, err = textgen.RunCodex(ctx, cfg, workspace, workflowDigestSchemaJSON, nil, prompt, workflowDigestTimeout)
 	case string(provider.Claude):
-		raw, err = textgen.RunClaude(ctx, cfg, workspace, workflowDigestSchemaJSON, nil, prompt, remainingBudget(ctx, workflowDigestTimeout))
+		raw, err = textgen.RunClaude(ctx, cfg, workspace, workflowDigestSchemaJSON, nil, prompt, workflowDigestTimeout)
 		if err == nil {
 			decoded, decodeErr := textgen.DecodeClaudeStructuredLastLine[WorkflowDigest](raw)
 			if decodeErr != nil {

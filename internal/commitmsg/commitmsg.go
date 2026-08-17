@@ -15,11 +15,13 @@ import (
 	"agent-overflow/internal/textgen"
 )
 
-// Timeout bounds how long the caller should wait for a provider CLI to
-// draft a message. Matches t3-code's 180s — commit-message generation
-// is a small, structured JSON request; anything slower than three
-// minutes is a misconfiguration the user should see as an error, not a
-// hang.
+// Timeout bounds how long the caller should wait for ONE provider CLI
+// attempt to draft a message. Matches t3-code's 180s — commit-message
+// generation is a small, structured JSON request; anything slower than
+// three minutes is a misconfiguration the user should see as an error,
+// not a hang. It is a PER-ATTEMPT budget: runTextGenWithFallback hands
+// each attempt a fresh one, so a fallback to the alternate provider is
+// not left with the remainder of a primary that timed out.
 const Timeout = 180 * time.Second
 
 // Per-section caps applied at the prompt-construction layer. Mirrors

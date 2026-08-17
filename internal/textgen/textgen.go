@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/stringsx"
 )
 
 const (
@@ -274,12 +275,48 @@ func TranslateCLINotFound(cliName string, timeout time.Duration, err error) erro
 		return fmt.Errorf("%s CLI not found on PATH", cliName)
 	}
 	if errors.Is(err, context.DeadlineExceeded) {
-		return fmt.Errorf("%s CLI timed out after %s", cliName, timeout)
+		return cliTimeoutError{cliName: cliName, timeout: timeout}
 	}
 	if pathErr, ok := errors.AsType[*os.PathError](err); ok {
 		return fmt.Errorf("%s CLI not found: %s", cliName, pathErr.Path)
 	}
 	return err
+}
+
+// cliTimeoutError is the timeout translation above. It is a type rather
+// than a `fmt.Errorf` because the sentinel has to survive the rewrite:
+// runTextGenWithFallback decides whether to try the alternate provider
+// from errors.Is(err, context.Canceled) vs DeadlineExceeded, and a
+// flattened message severs that. Wrapping with %w instead would append
+// "(context deadline exceeded)" to a message that already says which CLI
+// timed out and after how long.
+type cliTimeoutError struct {
+	cliName string
+	timeout time.Duration
+}
+
+func (e cliTimeoutError) Error() string {
+	return fmt.Sprintf("%s CLI timed out after %s", e.cliName, e.timeout)
+}
+
+func (e cliTimeoutError) Unwrap() error { return context.DeadlineExceeded }
+
+// RedactError renders a text-generation error for a log line. A CLI
+// failure collapses to a stable opaque string because THIS package
+// builds those messages out of the subprocess's own output
+// ("codex CLI failed: <stderr>"), which can carry the prompt, the
+// workspace, or the environment the run was given. Everything else
+// passes through — including the timeout, whose message names the CLI
+// and the budget it had and repeats nothing the subprocess wrote.
+func RedactError(err error) string {
+	if err == nil {
+		return ""
+	}
+	message := err.Error()
+	if strings.Contains(message, "CLI failed") {
+		return "provider CLI failed"
+	}
+	return message
 }
 
 // FirstNonEmptyMessage picks the first non-blank candidate after
@@ -470,9 +507,12 @@ func CapRunesWithEllipsis(s string, maxRunes int) string {
 // `\n\n[truncated]` marker. Shared by every prompt builder that
 // composes context for a structured-output CLI run, so the marker
 // stays identical across commit-message, thread-title, etc.
+//
+// The cut backs off to a rune boundary: the budgets are byte counts, but
+// a torn UTF-8 sequence handed to a model is not a rounding error.
 func LimitPromptSection(s string, maxChars int) string {
 	if len(s) <= maxChars {
 		return s
 	}
-	return s[:maxChars] + "\n\n[truncated]"
+	return stringsx.ClipRunes(s, maxChars) + "\n\n[truncated]"
 }

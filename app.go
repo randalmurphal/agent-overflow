@@ -628,12 +628,23 @@ type App struct {
 	// app — open threads, no turns — sends zero usage-endpoint requests.
 	turnActivityMu         sync.Mutex
 	turnActivityByProvider map[string]time.Time
+	// threadTitleGenActive is the set of threads with a title generation
+	// in flight (app_thread_title_generation.go). Auto, heal, and
+	// user-triggered regeneration all claim through it, so N sends on a
+	// still-default thread — or N impatient clicks — cost one run of up
+	// to two 3-minute CLI attempts instead of N. Lazily built.
+	threadTitleGenMu     sync.Mutex
+	threadTitleGenActive map[string]struct{}
 	// Test-only injection points for binding helpers that need to observe start/stop.
 	startSessionFn func(string) error
 	stopSessionFn  func(string) error
 	sendMessageFn  func(string, string, []string) error
 	generateBranchNameFn  func(store.Thread, string) (string, error)
 	generateThreadTitleFn func(store.Thread, string, []store.Attachment) (string, error)
+	// regenerateThreadTitleFn is generateThreadTitleFn's counterpart for
+	// RegenerateThreadTitle: it takes the formatted thread context the
+	// store read produced, so CAS / flow tests need no fake executor.
+	regenerateThreadTitleFn func(thread store.Thread, threadContext string) (string, error)
 	// textGenerationExecutor stubs the provider-CLI invocation used by short
 	// text-generation helpers. Production leaves it nil — call sites use
 	// textgen.ExecCLI directly. Tests install a fake that returns a
