@@ -2727,7 +2727,7 @@ export function RenameProject(id: string, name: string): $CancellablePromise<sto
  * RenameThread updates the thread title and emits a thread:updated
  * event so any other observer (chat header, multi-tab clients, future
  * remote viewers) re-renders with the new title without a follow-up
- * poll. Mirrors the emit shape used by applyGeneratedThreadTitle.
+ * poll. Mirrors the emit shape used by applyThreadTitleIfCurrent.
  */
 export function RenameThread(id: string, title: string): $CancellablePromise<void> {
     return $Call.ByID(727416435, id, title);
