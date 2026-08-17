@@ -370,6 +370,14 @@ pre, code, kbd, samp, .ansi-body {
 }
 
 /*
+ * Search inputs draw their own clear affordance (or none); WebKit's native
+ * cancel "x" would double it up next to ours.
+ */
+input[type="search"]::-webkit-search-cancel-button {
+  display: none;
+}
+
+/*
  * Markdown rendering. Rows project raw text into sanitized HTML on the
  * client; these rules keep that projection visually stable inside any
  * chat surface.
