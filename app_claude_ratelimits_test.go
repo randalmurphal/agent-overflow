@@ -2,17 +2,20 @@ package main
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/settings"
 )
 
@@ -137,6 +140,54 @@ func TestProbeClaudeRateLimits_SwallowsMissingCredentials(t *testing.T) {
 
 	if emitted.Load() != 0 {
 		t.Errorf("expected 0 emits on missing credentials, got %d", emitted.Load())
+	}
+}
+
+// Before the first account is saved, the canonical login is probed directly
+// and its 429s are keyed in the backoff ledger under the empty account ID.
+// The hold must be recorded AND enforced: the usage endpoint's throttle is
+// per-bearer and shared across every machine on the account, so a fresh
+// install that retries into a live window extends the penalty for all of
+// them — the "rate limits never update anymore" symptom.
+func TestProbeClaudeRateLimits_UnmanagedProbe429RecordsAndEnforcesItsHold(t *testing.T) {
+	app := newTestAppWithStore(t)
+	// Seed the canonical credential AFTER the fixture's HOME detach so the
+	// probe finds it under the home this test controls.
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("USERPROFILE", tmpHome)
+	credsDir := filepath.Join(tmpHome, ".claude")
+	if err := os.MkdirAll(credsDir, 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(credsDir, ".credentials.json"),
+		[]byte(`{"claudeAiOauth":{"accessToken":"bearer-test"}}`),
+		0o600,
+	); err != nil {
+		t.Fatalf("write creds: %v", err)
+	}
+	app.rateLimitProbeClientOverride = rateLimitedUsageClient(t, "45")
+
+	err := app.probeClaudeRateLimits(context.Background())
+	var limited *claude.RateLimitedError
+	if !errors.As(err, &limited) {
+		t.Fatalf("probe error = %v, want the 429 surfaced", err)
+	}
+	remaining := app.usageBackoff.Remaining(string(provider.Claude), "")
+	if remaining <= 0 || remaining > 45*time.Second {
+		t.Fatalf("Remaining(\"\") = %v, want the Retry-After hold recorded", remaining)
+	}
+	// The hold is scoped to the unmanaged key, not smeared across accounts.
+	if got := app.usageBackoff.Remaining(string(provider.Claude), "some-account"); got != 0 {
+		t.Fatalf("Remaining(some-account) = %v, want the hold scoped to the unmanaged key", got)
+	}
+
+	// While the hold runs, the next tick is refused before anything is sent.
+	app.rateLimitProbeClientOverride = &http.Client{Transport: tripwireRoundTripper{t: t}}
+	err = app.probeClaudeRateLimits(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "rate limited this login") {
+		t.Fatalf("probe error during hold = %v, want the backoff refusal", err)
 	}
 }
 
