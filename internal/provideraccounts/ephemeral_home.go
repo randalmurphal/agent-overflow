@@ -44,6 +44,13 @@ func (c *Credentials) NewEphemeralHomeWithCredential(
 	if len(credential) == 0 {
 		return nil, errors.New("provideraccounts: empty temporary credential snapshot")
 	}
+	// Refused before the home exists rather than at the seeding write: a
+	// temporary home holding a sign-out is a CLI run that can only fail, and
+	// its registry entry would then invite the boot sweep to reason about an
+	// orphan that was never a login.
+	if c.credentialSignedOut(providerName, credential) {
+		return nil, fmt.Errorf("%w (%s)", ErrSignedOutCredential, providerName)
+	}
 	return c.newEphemeralHome(providerName, credential, ownerAccountID)
 }
 

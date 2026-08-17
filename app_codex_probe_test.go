@@ -50,10 +50,7 @@ func TestProbeCodexAccountReturnsInfo(t *testing.T) {
 		t.Fatal(err)
 	}
 	nativeHome := t.TempDir()
-	credentials, err := provideraccounts.NewCredentials(nativeHome)
-	if err != nil {
-		t.Fatal(err)
-	}
+	credentials := newTestProviderCredentials(t, nativeHome)
 	activeCredential, err := credentials.ActiveCredentialPath(string(provider.Codex))
 	if err != nil {
 		t.Fatal(err)
@@ -156,10 +153,7 @@ func TestProbeCodexAccountEmitsRateLimitsOnCacheMiss(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	credentials, err := provideraccounts.NewCredentials(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
+	credentials := newTestProviderCredentials(t, t.TempDir())
 	activeCredential, err := credentials.ActiveCredentialPath(string(provider.Codex))
 	if err != nil {
 		t.Fatal(err)

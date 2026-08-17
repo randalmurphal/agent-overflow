@@ -2,7 +2,6 @@ package claude
 
 import (
 	"context"
-	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -226,10 +225,14 @@ sleep 5
 	if err == nil {
 		t.Fatal("expected timeout error")
 	}
-	if elapsed > 2*time.Second {
-		t.Errorf("timeout took too long: %v (expected <2s)", elapsed)
+	// The bound is Timeout + WaitDelay plus scheduling slack: the mock's
+	// grandchild `sleep` ignores the deadline TERM and holds the stdout pipe,
+	// so WaitDelay (2s, the credential-write grace — see Fetch) is what
+	// unblocks Wait. The property under test is that a hung fetch stays
+	// bounded by that composition rather than by the grandchild's lifetime.
+	if elapsed > 4*time.Second {
+		t.Errorf("timeout took too long: %v (expected <4s)", elapsed)
 	}
-	_ = fmt.Sprintf("ok") // silence unused import warning when adjusting
 }
 
 func TestMCPStatusFromRaw(t *testing.T) {

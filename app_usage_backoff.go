@@ -2,9 +2,11 @@ package main
 
 import (
 	"errors"
+	"log"
 	"sync"
 	"time"
 
+	"agent-overflow/internal/atomicfile"
 	"agent-overflow/internal/provider/claude"
 )
 
@@ -32,10 +34,20 @@ const maxUsageProbeBackoff = time.Hour
 // every outcome back through Note, so a held account costs zero requests until
 // its backoff expires. The zero value is ready to use. accountID "" keys the
 // unmanaged canonical-credential probe that runs before any account is saved.
+//
+// The holds outlive the process. A server throttle runs for about an hour and
+// app restarts are frequent, so an in-memory-only ledger handed every restart
+// a clean slate and walked the user straight back into the live window —
+// re-earning the throttle each time, which is the "rate limits never update
+// anymore" symptom. Load binds the ledger to a file; every state change writes
+// it back.
 type usageBackoffLedger struct {
 	mu sync.Mutex
 	// now is a test seam; nil means the wall clock.
-	now   func() time.Time
+	now func() time.Time
+	// path is the durable copy. Empty means memory-only — the zero value, and
+	// what unit tests that never call Load get.
+	path  string
 	until map[usageBackoffKey]time.Time
 	// headerlessStrikes counts consecutive 429s that carried no usable
 	// Retry-After, per account, driving the exponential default backoff.
@@ -75,8 +87,14 @@ func (l *usageBackoffLedger) Note(providerName, accountID string, err error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if err == nil {
+		if _, held := l.until[key]; !held {
+			if _, struck := l.headerlessStrikes[key]; !struck {
+				return
+			}
+		}
 		delete(l.until, key)
 		delete(l.headerlessStrikes, key)
+		l.saveLocked()
 		return
 	}
 	var limited *claude.RateLimitedError
@@ -103,6 +121,102 @@ func (l *usageBackoffLedger) Note(providerName, accountID string, err error) {
 		l.until = make(map[usageBackoffKey]time.Time)
 	}
 	l.until[key] = l.clock().Add(retry)
+	l.saveLocked()
+}
+
+// usageBackoffEntry is one persisted account hold. The wire shape is the
+// ledger's own file format; nothing else reads it.
+type usageBackoffEntry struct {
+	Provider          string    `json:"provider"`
+	AccountID         string    `json:"accountId"`
+	Until             time.Time `json:"until"`
+	HeaderlessStrikes int       `json:"headerlessStrikes,omitempty"`
+}
+
+type usageBackoffFile struct {
+	Entries []usageBackoffEntry `json:"entries"`
+}
+
+// Load binds the ledger to path and adopts whatever holds are still running.
+// Expired entries that carry no strike count are dropped on the way in — a
+// hold that has served its time is not state worth keeping.
+//
+// A file that cannot be read is not fatal: the ledger starts empty and says
+// so. The cost of losing the holds is one throttled request per account; the
+// cost of refusing to boot is the whole app.
+func (l *usageBackoffLedger) Load(path string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.path = path
+	var file usageBackoffFile
+	found, err := atomicfile.ReadJSON(path, &file)
+	if err != nil {
+		log.Printf("usage backoff: read %s: %v; starting with no holds", path, err)
+		return
+	}
+	if !found {
+		return
+	}
+	now := l.clock()
+	for _, entry := range file.Entries {
+		key := usageBackoffKey{entry.Provider, entry.AccountID}
+		if entry.HeaderlessStrikes > 0 {
+			if l.headerlessStrikes == nil {
+				l.headerlessStrikes = make(map[usageBackoffKey]int)
+			}
+			l.headerlessStrikes[key] = entry.HeaderlessStrikes
+		}
+		if !entry.Until.After(now) {
+			continue
+		}
+		if l.until == nil {
+			l.until = make(map[usageBackoffKey]time.Time)
+		}
+		l.until[key] = entry.Until
+	}
+}
+
+// saveLocked writes the current holds back to the bound file. Called from
+// every mutation so a crash costs at most the change in flight.
+//
+// A failed write is announced, not swallowed: it means the next restart walks
+// back into a live throttle, which is precisely the symptom this file exists
+// to prevent, and a silent version of it would be undiagnosable.
+func (l *usageBackoffLedger) saveLocked() {
+	if l.path == "" {
+		return
+	}
+	now := l.clock()
+	file := usageBackoffFile{Entries: make([]usageBackoffEntry, 0, len(l.until))}
+	seen := make(map[usageBackoffKey]struct{}, len(l.until)+len(l.headerlessStrikes))
+	for key, until := range l.until {
+		strikes := l.headerlessStrikes[key]
+		if !until.After(now) && strikes == 0 {
+			continue
+		}
+		seen[key] = struct{}{}
+		file.Entries = append(file.Entries, usageBackoffEntry{
+			Provider:          key.provider,
+			AccountID:         key.accountID,
+			Until:             until,
+			HeaderlessStrikes: strikes,
+		})
+	}
+	// A strike count with no live hold still drives the next escalation, so it
+	// has to persist on its own.
+	for key, strikes := range l.headerlessStrikes {
+		if _, ok := seen[key]; ok || strikes == 0 {
+			continue
+		}
+		file.Entries = append(file.Entries, usageBackoffEntry{
+			Provider:          key.provider,
+			AccountID:         key.accountID,
+			HeaderlessStrikes: strikes,
+		})
+	}
+	if err := atomicfile.WriteJSON(l.path, file); err != nil {
+		log.Printf("usage backoff: write %s: %v; holds will not survive a restart", l.path, err)
+	}
 }
 
 func (l *usageBackoffLedger) clock() time.Time {

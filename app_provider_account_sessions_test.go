@@ -208,10 +208,7 @@ func installTestProviderAccounts(t *testing.T, app *App, providerName string) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	credentials, err := provideraccounts.NewCredentials(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
+	credentials := newTestProviderCredentials(t, t.TempDir())
 	app.providerAccounts = accounts
 	app.providerCredentials = credentials
 }

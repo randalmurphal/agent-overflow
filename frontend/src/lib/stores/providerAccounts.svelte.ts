@@ -274,6 +274,11 @@ export async function switchProviderAccount(
       'error',
       `${label} account did not switch. ${userFacingError(error, 'Try again.')}`,
     );
+    // A refusal is often a verdict about the account itself — a slot the
+    // provider signed out. Re-read the listing so the card shows that state
+    // instead of continuing to advertise a switch that cannot work. After the
+    // toast: the reason for the failure must not wait on another round trip.
+    await reloadProviderAccounts();
     return false;
   } finally {
     action.switchingID = '';

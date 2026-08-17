@@ -226,6 +226,30 @@ describe('switchProviderAccount', () => {
     expect(getProviderAccountActions('claude').switchingID).toBe('');
   });
 
+  it('re-reads the listing when a switch is refused, so a dead slot stops looking switchable', async () => {
+    // The backend refuses a switch into a slot the provider signed out. That
+    // refusal is a verdict about the account, so the card has to stop offering
+    // the switch instead of waiting for the next unrelated reload.
+    let listed: ManagedProviderAccount[] = [
+      account({ id: 'claude-a', active: true }),
+      account({ id: 'claude-b' }),
+    ];
+    setBindingMock('ListProviderAccounts', async () => listed);
+    setBindingMock('SwitchProviderAccount', async () => {
+      listed = [
+        account({ id: 'claude-a', active: true }),
+        account({ id: 'claude-b', needsLogin: true }),
+      ];
+      throw new Error('sign in to this account again to reconnect it');
+    });
+    await loadProviderAccounts();
+
+    const target = getProviderAccountsFor('claude')[1];
+    await expect(switchProviderAccount('claude', target)).resolves.toBe(false);
+
+    expect(getProviderAccountsFor('claude')[1].needsLogin).toBe(true);
+  });
+
   it('refuses a second switch while one is in flight', async () => {
     setBindingMock('ListProviderAccounts', async () => [
       account({ id: 'claude-a', active: true }),

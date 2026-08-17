@@ -19,7 +19,6 @@ import (
 	obsotel "agent-overflow/internal/observability/otel"
 	"agent-overflow/internal/observability/replay"
 	"agent-overflow/internal/provider"
-	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/provideraccounts"
 	"agent-overflow/internal/screenshot"
 	"agent-overflow/internal/settings"
@@ -236,9 +235,7 @@ func (a *App) initStores() (string, *store.Store, error) {
 			errorsx.WrapLifecycle("close store after provider credential initialization failure", closeErr),
 		)
 	}
-	a.providerCredentials.SetSignedOutDetector(func(providerName string, data []byte) bool {
-		return providerName == string(provider.Claude) && claude.CredentialsSignedOut(data)
-	})
+	installProviderSignedOutDetector(a.providerCredentials)
 	a.accountAuditPath = filepath.Join(dbDir, "account-audit.log")
 	// The prune deletes credential slots, and a metadata store paired with
 	// the WRONG provider home deletes slots that were never its to manage
@@ -309,6 +306,9 @@ func (a *App) initStores() (string, *store.Store, error) {
 	if sweepErr != nil {
 		a.auditAccountEvent("ephemeral claude sweep errors: %v", sweepErr)
 	}
+	// Server-imposed usage holds are per-bearer and run about an hour, far
+	// longer than the interval between app restarts, so they persist.
+	a.usageBackoff.Load(filepath.Join(dbDir, "usage-backoff.json"))
 	a.hydratePersistedAccountRateLimits()
 	// Seed the git Core's GitLab self-hosted host snapshot from the
 	// persisted settings before any Status / DetectForge call sees a

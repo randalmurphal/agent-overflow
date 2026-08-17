@@ -15,11 +15,13 @@ import (
 // RefreshProviderAccountUsage probes one saved account without changing the
 // provider-wide selection.
 //
-// An inactive account is probed from a short-lived home seeded with only its
-// credential; a rotation there reaches the canonical home only after selection
-// and fingerprint validation. The selected Claude account is probed in the
-// canonical home instead, because a refresh must not fork its rotation chain —
-// see probeSelectedClaudeRateLimits.
+// An inactive Codex account is probed from a short-lived home seeded with only
+// its credential; a rotation there reaches the canonical home only after
+// selection and fingerprint validation. Claude never uses a temporary home
+// here: the selected account is probed in the canonical home (the only place
+// its single-use rotation may happen — see probeSelectedClaudeRateLimits) and
+// an inactive one is read over HTTP without refreshing at all — see
+// probeInactiveClaudeRateLimits.
 //
 // This manual path deliberately bypasses the usage gate's cooldown — a user
 // demand should not silently coalesce away. Server-imposed 429 backoffs are
@@ -39,21 +41,35 @@ func (a *App) refreshProviderAccountUsage(
 		return err
 	}
 	// Refuse up front while this account's 429 backoff holds — retrying into
-	// one only extends the penalty — and record the outcome on the way out so
-	// every later caller, manual or automatic, is held the same way.
-	if remaining := a.usageBackoff.Remaining(providerName, accountID); remaining > 0 {
-		return fmt.Errorf(
-			"the usage endpoint rate limited this account; try again in %s",
-			remaining.Round(time.Second),
-		)
+	// one only extends the penalty. The outcome of the probe (and only the
+	// probe: a request has to have been sent for its result to say anything
+	// about the throttle) is recorded on the way out so every later caller,
+	// manual or automatic, is held the same way.
+	backoffHold := func() error {
+		if remaining := a.usageBackoff.Remaining(providerName, accountID); remaining > 0 {
+			return fmt.Errorf(
+				"the usage endpoint rate limited this account; try again in %s",
+				remaining.Round(time.Second),
+			)
+		}
+		return nil
 	}
-	defer func() { a.usageBackoff.Note(providerName, accountID, retErr) }()
+	if err := backoffHold(); err != nil {
+		return err
+	}
 	if a.providerAccounts == nil || a.providerCredentials == nil {
 		return errors.New("provider account storage is unavailable")
 	}
 	refreshMu := a.providerCredentialReconcileMutex(providerName)
 	refreshMu.Lock()
 	defer refreshMu.Unlock()
+	// Re-checked now that this call holds the mutex: the manual path and the
+	// automatic poll gate independently, so both can pass the pre-lock check,
+	// serialize here, and the second would otherwise send a request straight
+	// into the hold the first just earned.
+	if err := backoffHold(); err != nil {
+		return err
+	}
 
 	a.providerAccountMu.RLock()
 	account, exists := a.providerAccounts.Get(providerName, accountID, time.Now())
@@ -100,11 +116,25 @@ func (a *App) refreshProviderAccountUsage(
 	}
 
 	var (
-		snapshot  provider.RateLimitsSnapshot
-		ephemeral *provideraccounts.EphemeralHome
-		probeErr  error
+		snapshot provider.RateLimitsSnapshot
+		probeErr error
+		probeRan bool
 	)
-	if !refresh.refreshesInCanonicalHome() {
+	// The ledger hears about the probe's own outcome, nothing else: a success
+	// proves the throttle lifted even if the bookkeeping after it fails, and
+	// an operation that never probed (a backoff refusal, an unreadable
+	// credential) proved nothing in either direction.
+	defer func() {
+		if probeRan {
+			a.usageBackoff.Note(providerName, accountID, probeErr)
+		}
+	}()
+	// Only Codex probes from a temporary home now: its app-server has to run
+	// to answer at all, so it needs a home to run in, and its rotation is
+	// captured out of that home below. Claude reads its usage over HTTP from
+	// the credential bytes directly — selected or not, no home, no CLI.
+	var ephemeral *provideraccounts.EphemeralHome
+	if providerName == string(provider.Codex) {
 		ephemeral, err = a.providerCredentials.NewEphemeralHomeWithCredential(
 			providerName,
 			credential.Data,
@@ -122,33 +152,27 @@ func (a *App) refreshProviderAccountUsage(
 
 	switch providerName {
 	case string(provider.Claude):
+		probeRan = true
 		if refresh.refreshesInCanonicalHome() {
 			snapshot, refresh.refreshed, probeErr = a.probeSelectedClaudeRateLimits(
 				ctx,
 				selection,
 				credential.Data,
 			)
+			// The canonical refresh can rotate the credential and still fail:
+			// the usage retry after a successful token rotation can be
+			// throttled even though the token endpoint was not. Claude refresh
+			// tokens are single-use, so a rotation must reach the commit even
+			// when the probe's answer is an error — dropping it here would
+			// leave the slot on a consumed token.
+			if probeErr != nil && len(refresh.refreshed) == 0 {
+				return mapProviderAccountLoginError(providerName, account, probeErr)
+			}
 		} else {
-			snapshot, refresh.refreshed, probeErr = a.probeClaudeRateLimitsForSelection(
-				ctx,
-				claudeRateLimitSelection{
-					providerAccountSelection: selection,
-					EphemeralHome:            ephemeral,
-					Env: map[string]string{
-						"CLAUDE_CONFIG_DIR": ephemeral.Path,
-					},
-				},
-			)
-		}
-		// A probe can rotate the credential and still fail: its usage retry
-		// after a successful native refresh can be throttled even though the
-		// token endpoint was not. Claude refresh tokens are single-use and an
-		// inactive account's rotation lives only in the ephemeral home deleted
-		// on return, so a rotation must reach the commit even when the probe's
-		// answer is an error — dropping it here retires the slot's only
-		// working refresh chain.
-		if probeErr != nil && len(refresh.refreshed) == 0 {
-			return probeErr
+			snapshot, probeErr = a.probeInactiveClaudeRateLimits(ctx, credential.Data)
+			if probeErr != nil {
+				return mapProviderAccountLoginError(providerName, account, probeErr)
+			}
 		}
 	case string(provider.Codex):
 		probeCfg := a.codexProbeConfig(
@@ -158,12 +182,15 @@ func (a *App) refreshProviderAccountUsage(
 		probeCfg.OnSnapshot = func(value provider.RateLimitsSnapshot) {
 			snapshot = value
 		}
+		probeRan = true
 		info, codexErr := codex.ProbeAccount(ctx, probeCfg)
 		if codexErr != nil {
+			probeErr = codexErr
 			return codexErr
 		}
 		if len(snapshot.Limits) == 0 {
-			return errors.New("Codex did not return usage limits")
+			probeErr = errors.New("Codex did not return usage limits")
+			return probeErr
 		}
 		refreshed, readErr := a.providerCredentials.ReadEphemeralCredential(ephemeral)
 		if readErr != nil {
@@ -173,7 +200,7 @@ func (a *App) refreshProviderAccountUsage(
 		refresh.observed = info
 	}
 
-	// A rotation for a non-selected account is durable NOWHERE once the
+	// A Codex rotation for a non-selected account is durable NOWHERE once the
 	// deferred ephemeral cleanup runs — its slot is the only holder of the
 	// chain. Persist it before the commit's selection re-validation gets a
 	// chance to refuse (a metadata generation bump is no reason to discard
@@ -183,7 +210,8 @@ func (a *App) refreshProviderAccountUsage(
 	// the commit's own slot write below is the retry.
 	// (Selected accounts stay out of this: their commit goes canonical-first
 	// through CommitSelectedCredential, and a slot-ahead-of-canonical write
-	// would invert that ordering.)
+	// would invert that ordering. Inactive CLAUDE accounts never reach here
+	// with anything: they no longer refresh, so their probe returns no bytes.)
 	if !refresh.isSelected &&
 		len(refresh.refreshed) > 0 &&
 		!bytes.Equal(refresh.refreshed, refresh.probed) {
@@ -230,6 +258,9 @@ type providerUsageRefresh struct {
 	// probed is the credential the probe started from.
 	probed []byte
 	// refreshed is the rotated credential, empty when nothing rotated.
+	// Only two probes can fill it: the selected Claude account's canonical
+	// refresh, and any Codex probe (which rotates inside its temporary home).
+	// An inactive Claude account never rotates, so its refresh is always empty.
 	refreshed []byte
 	// observed is the identity the provider reported during the probe, when
 	// it reports one at all. Stays zero otherwise.
@@ -241,10 +272,13 @@ type providerUsageRefresh struct {
 }
 
 // refreshesInCanonicalHome reports that this account's token refresh, if the
-// probe turns out to need one, must happen in the canonical home rather than a
-// copy of it. Only the selected Claude account holds the canonical credential,
-// and Claude's single-use rotation is serialized on a lockfile scoped to the
-// config home — see probeSelectedClaudeRateLimits.
+// probe turns out to need one, happens in the canonical home. Only the
+// selected Claude account holds the canonical credential, and it is the only
+// Claude account AO refreshes at all: an inactive one is read-only, because a
+// rotation whose response is lost cannot be recovered from anywhere — see
+// probeInactiveClaudeRateLimits. Claude's single-use rotation is serialized on
+// a lockfile scoped to the config home, so the selected account's refresh must
+// happen there and nowhere else — see probeSelectedClaudeRateLimits.
 func (r providerUsageRefresh) refreshesInCanonicalHome() bool {
 	return r.isSelected && r.providerName == string(provider.Claude)
 }

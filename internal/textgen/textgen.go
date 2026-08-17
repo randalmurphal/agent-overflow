@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"agent-overflow/internal/provider"
@@ -140,6 +141,20 @@ func ExecCLI(ctx context.Context, spec CLISpec) (CLIResult, error) {
 	cmd := exec.CommandContext(ctx, spec.Binary, spec.Args...)
 	cmd.Dir = spec.Cwd
 	cmd.Stdin = strings.NewReader(spec.Stdin)
+	// TERM first, KILL only after a grace window — never exec's default
+	// instant SIGKILL. This CLI runs a real turn in the provider's canonical
+	// home, so it can be driving the CLI's own OAuth refresh when the budget
+	// expires or the user cancels; Anthropic retires the previous refresh
+	// token the moment the token endpoint answers, so a SIGKILL landing
+	// between that answer and the CLI's write to disk destroys the login with
+	// no copy anywhere. SIGTERM lets it finish the write and exit.
+	cmd.Cancel = func() error {
+		// Best-effort: a platform that cannot deliver SIGTERM still gets the
+		// WaitDelay kill below.
+		_ = cmd.Process.Signal(syscall.SIGTERM)
+		return nil
+	}
+	cmd.WaitDelay = 2 * time.Second
 	// Unconditional: with no overrides this is the inherited environment
 	// scrubbed of the AppImage launch artifacts, which a provider CLI must not
 	// resolve its own runtime against. Gating it on len(spec.Env) would leave

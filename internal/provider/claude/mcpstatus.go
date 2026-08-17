@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"regexp"
 	"strings"
+	"syscall"
 	"time"
 
 	"agent-overflow/internal/mcpstatus"
@@ -56,13 +57,25 @@ func (f *MCPStatusFetcher) Fetch(ctx context.Context, _ mcpstatus.Provider) ([]m
 		cmd.Dir = f.Cwd
 	}
 	cmd.Env = provider.FilterEnvironment(f.Env, "CLAUDE_CONFIG_DIR", "CLAUDE_SECURESTORAGE_CONFIG_DIR")
-	// WaitDelay bounds the time `cmd.Wait` will spend after ctx expires
+	// TERM at the deadline, KILL only after WaitDelay — never exec's default
+	// instant SIGKILL. This runs in the canonical home under a tight timeout,
+	// and the CLI may be mid OAuth refresh when the deadline lands; Anthropic
+	// retires the previous refresh token the moment the token endpoint
+	// answers, so a SIGKILL between that answer and the CLI's credential
+	// write destroys the login with no copy anywhere.
+	cmd.Cancel = func() error {
+		_ = cmd.Process.Signal(syscall.SIGTERM)
+		return nil
+	}
+	// WaitDelay also bounds the time `cmd.Wait` will spend after ctx expires
 	// waiting for grandchild processes that inherit our stdout pipe
 	// (e.g., a `sleep` inside a bash script) to close their fds. Without
 	// it, a hung mcp-list invocation can keep Run() blocked long past
 	// the context deadline because Wait blocks on the I/O-copy
-	// goroutines, which block on the pipe staying open.
-	cmd.WaitDelay = 500 * time.Millisecond
+	// goroutines, which block on the pipe staying open. Two seconds matches
+	// the probes' kill grace: long enough for a credential write, short
+	// enough that a hung fetch still returns promptly.
+	cmd.WaitDelay = 2 * time.Second
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr

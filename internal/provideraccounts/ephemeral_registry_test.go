@@ -55,6 +55,16 @@ func crashEphemeralClaudeHome(t *testing.T, c *Credentials, credential []byte, o
 	return home.Path
 }
 
+// writeProviderAuthoredCredential puts bytes into a store the way the CLI
+// does, bypassing the sign-out refusal Agent Overflow's own writes carry. It
+// is how a fixture reproduces a husk, which only the provider ever authors.
+func writeProviderAuthoredCredential(t *testing.T, home string, data []byte) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(home, claudeCredentialFileName), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func makeSlotDir(t *testing.T, c *Credentials, accountID string) string {
 	t.Helper()
 	accountDir, err := c.accountDirectory("claude", accountID)
@@ -144,10 +154,7 @@ func TestSweepAdoptsOverASignedOutHusk(t *testing.T) {
 	credentials.SetSignedOutDetector(func(providerName string, data []byte) bool {
 		return string(data) == "husk"
 	})
-	makeSlotDir(t, credentials, "acct-1")
-	if err := credentials.WriteAccountCredential("claude", "acct-1", []byte("husk")); err != nil {
-		t.Fatal(err)
-	}
+	writeProviderAuthoredCredential(t, makeSlotDir(t, credentials, "acct-1"), []byte("husk"))
 	crashEphemeralClaudeHome(t, credentials, []byte("rotated-chain"), "acct-1")
 
 	results, err := credentials.SweepEphemeralClaudeCredentials(time.Now())
@@ -176,7 +183,10 @@ func TestSweepNeverOverwritesAHealthySlotAndNeverAdoptsAHusk(t *testing.T) {
 	crashEphemeralClaudeHome(t, credentials, []byte("stale-orphan"), "healthy")
 
 	makeSlotDir(t, credentials, "empty")
-	crashEphemeralClaudeHome(t, credentials, []byte("husk"), "empty")
+	// The husk arrives the way it does in life: the CLI blanks the credential
+	// inside the temporary home when its refresh comes back invalid_grant.
+	huskHome := crashEphemeralClaudeHome(t, credentials, []byte("live-seed"), "empty")
+	writeProviderAuthoredCredential(t, huskHome, []byte("husk"))
 
 	results, err := credentials.SweepEphemeralClaudeCredentials(time.Now())
 	if err != nil {

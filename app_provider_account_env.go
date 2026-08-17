@@ -8,19 +8,12 @@ import (
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/provider/codex"
-	"agent-overflow/internal/provideraccounts"
 )
 
 type providerAccountSelection struct {
 	Generation uint64
 	AccountID  string
 	Account    provider.AccountInfo
-}
-
-type claudeRateLimitSelection struct {
-	providerAccountSelection
-	EphemeralHome *provideraccounts.EphemeralHome
-	Env           map[string]string
 }
 
 func (a *App) captureProviderAccountSelection(providerName string) providerAccountSelection {

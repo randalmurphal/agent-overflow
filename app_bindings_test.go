@@ -14,6 +14,7 @@ import (
 
 	"agent-overflow/internal/discussion"
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provideraccounts"
 	"agent-overflow/internal/settings"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/testutil"
@@ -1135,6 +1136,20 @@ func newTestAppWithStorePath(t *testing.T) (*App, string) {
 	t.Cleanup(app.appCancel)
 	ensureDefaultTestProject(t, app)
 	return app, dbPath
+}
+
+// newTestProviderCredentials builds a credential store the way boot does —
+// including the sign-out detector. Constructing one with provideraccounts.
+// NewCredentials directly leaves the husk-refusal seam empty, so a fixture
+// would exercise a store that accepts bytes production refuses.
+func newTestProviderCredentials(t *testing.T, userHome string) *provideraccounts.Credentials {
+	t.Helper()
+	credentials, err := provideraccounts.NewCredentials(userHome)
+	if err != nil {
+		t.Fatal(err)
+	}
+	installProviderSignedOutDetector(credentials)
+	return credentials
 }
 
 // resetProviderBinarySettings restores the bare-name binary defaults that

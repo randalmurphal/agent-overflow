@@ -109,6 +109,10 @@ func ProbeAccount(ctx context.Context, cfg ProbeConfig) (provider.AccountInfo, e
 		Dir:      cfg.WorkDir,
 		Env:      cfg.Env,
 		UnsetEnv: []string{"CODEX_HOME"},
+		// The probe runs under a deadline and drives the CLI's own token
+		// refresh; a SIGKILL between the token endpoint answering and the
+		// credential write ends the account's chain (see GracefulCancel).
+		GracefulCancel: true,
 	})
 	if err != nil {
 		return provider.AccountInfo{}, fmt.Errorf("codex: probe spawn: %w", err)

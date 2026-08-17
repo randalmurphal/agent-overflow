@@ -17,9 +17,9 @@ to activate provider-native credentials.
 - Treat credential bytes as opaque. Reads reject symlinks and non-regular
   files; writes use `atomicfile.Write` (0600 + fsync + rename).
 - Normal provider processes always run from the canonical native home. Account
-  switching atomically replaces only its credential. New logins and inactive
-  account probes use short-lived 0700 temporary homes; retain only the
-  resulting credential and delete all other temporary provider state.
+  switching atomically replaces only its credential. New logins and Codex
+  inactive-account probes use short-lived 0700 temporary homes; retain only
+  the resulting credential and delete all other temporary provider state.
 - Account IDs are path components. Validate them before joining.
 
 ## The account tuple
@@ -62,10 +62,43 @@ token, and the loser's home is left holding a credential the server will
 never accept again. That is a login the user cannot recover without signing
 in.
 
-So **the selected account refreshes in the canonical home, never a copy of
-it** (`probeSelectedClaudeRateLimits`). An inactive account has no canonical
-copy — its slot is the only holder of its chain — so probing it from a
-temporary home forks nothing and stays the right call.
+Worse, a rotation is not even safe when nothing races it. Anthropic's token
+endpoint commits the rotation the moment it processes the request — before
+the client sees the response, with no grace window on the retired token — so
+a dropped connection or a killed CLI mid-exchange ends the chain with no copy
+anywhere (spike-verified 2026-08-16).
+
+Two rules follow, and both are about who ASKED for the refresh:
+
+- **The selected account refreshes in the canonical home, never a copy of it**
+  (`probeSelectedClaudeRateLimits`). Its refresh is one the user's own work
+  needs anyway, and the canonical home is where the CLI would do it.
+- **Inactive accounts are never refreshed at all.** Usage for a non-selected
+  Claude account is read-only: `probeInactiveClaudeRateLimits` reads the saved
+  bytes over HTTP and, when they are expired or the server rejects them,
+  reports stale usage rather than spending the account's one-shot chain on a
+  background poll. Selecting the account is what signs it back in. Codex still
+  probes from a temporary home — it has no single-use rotation to lose, and
+  its app-server has to run to answer at all.
+
+## Structural husk refusal
+
+The provider's sign-out husk (blank tokens, other fields retained) is not a
+credential, and no caller may persist one. The refusal lives in the write
+layer rather than in caller discipline: `writeCredentialAt` and
+`writeActiveCredential` return `ErrSignedOutCredential`, so every slot write,
+canonical activation, and ephemeral seed refuses the same way and a forgotten
+guard cannot cost a login. `CaptureAccountCredential` records a husked slot as
+having no credential, so a rollback removes the husk instead of rewriting it,
+and `CredentialUsable` is the "can this account be selected" question the UI
+asks — present AND not signed out.
+
+The husk shape is provider-specific, so it arrives through the
+`SetSignedOutDetector` seam; the app fills it once, in
+`installProviderSignedOutDetector`. A `Credentials` built without it accepts
+bytes production refuses, which is why fixtures construct theirs through the
+same helper. The one deliberate bypass is `WriteNativeCredentialForTest`,
+which impersonates the CLI — the actor that legitimately writes a husk.
 
 Never point a canonical-home run at `CLAUDE_CONFIG_DIR`, not even at the
 default path. Claude keys "is this the default home" off the variable being
@@ -81,17 +114,16 @@ Because a rotation legitimately changes the credential bytes, the guard that
 the canonical home still belongs to the selected account is the identity the
 CLI reports, not a byte comparison.
 
-Rotations must survive every failure path. The inactive-account probe reads
-the temporary home back on EVERY exit after the CLI ran (a rotation lands on
-disk before the CLI answers initialize), and the app persists a non-selected
-rotation to its slot before any selection re-validation can refuse.
-Activation re-reads canonical immediately before the final overwrite and,
-if it moved since the caller's snapshot, preserves the newer bytes into the
-outgoing slot — a mid-switch move is a rotation of a single-use chain far
-more often than anything else, and a preserved pre-rotation snapshot is a
-bricked login. The one thing never preserved anywhere is the provider's
-sign-out husk, recognized through the `SetSignedOutDetector` seam (the app
-wires `claude.CredentialsSignedOut`; this package stays provider-agnostic).
+Rotations that do happen must survive every failure path. The Codex
+inactive-account probe reads its temporary home back on EVERY exit after the
+CLI ran (a rotation lands on disk before the CLI answers), and the app
+persists a non-selected rotation to its slot before any selection
+re-validation can refuse. Activation re-reads canonical immediately before
+the final overwrite and, if it moved since the caller's snapshot, preserves
+the newer bytes into the outgoing slot — a mid-switch move is a rotation of a
+single-use chain far more often than anything else, and a preserved
+pre-rotation snapshot is a bricked login. The one thing never preserved
+anywhere is the provider's sign-out husk (see above).
 
 The metadata store carries a `providerHome` stamp (`ClaimProviderHome`,
 first claim wins). `PruneOrphanedAccounts` is only run when the stamp
@@ -104,28 +136,41 @@ announced through the app's `auditAccountEvent` — durable at
 ## Layout
 
 - `store.go` — thread-safe metadata and last-known quota persistence.
-- `credentials.go` — credential-slot layout, atomic active-credential
-  switching, and `CredentialPresent` (can this account be selected at all).
+- `credentials.go` — credential-slot layout, the read/write primitives (with
+  the sign-out refusal at the one write chokepoint), the
+  `SetSignedOutDetector` seam, and the two "can this account be selected"
+  queries: `CredentialPresent` (the file is there) and `CredentialUsable`
+  (…and it is not a sign-out).
+- `activation.go` — the mutations that move a credential between the
+  canonical native store and a saved slot: `Activate` /
+  `ActivateWithSnapshot`, `RemoveActive`, `RemoveAccount`, and
+  `PruneOrphanedAccounts`.
 - `identity.go` — retiring the provider-side identity record that lives
   outside the credential file.
 - `rollback.go` — capture/restore of one account slot, used to unwind a
   failed login or adoption without deleting a slot it did not create.
-- `ephemeral_home.go` — short-lived homes for native login and inactive-account
-  probes.
+- `ephemeral_home.go` — short-lived homes for native login and Codex
+  inactive-account probes. Claude no longer probes from one: an inactive
+  Claude account is read over HTTP without any CLI run at all.
 - `ephemeral_registry.go` — the crash net under ephemeral Claude homes.
   Every such home is recorded (one file per entry under
   `<claudeHome>/agent-overflow-ephemerals/`) BEFORE any credential can
   exist in it and unrecorded only by a fully successful cleanup; the
   boot sweep (`SweepEphemeralClaudeCredentials`, wired in
-  `app_startup.go` after the orphan-slot prune) recovers what a crash
-  left behind — a probe can rotate the single-use chain and die before
-  the read-back, leaving the only live copy in a hash-named Keychain
-  item nothing references. Adoption restores those bytes into the
-  owning slot only when the slot still exists and is dead (missing or
-  husk); a healthy slot is never overwritten, a husk orphan is never
-  adopted, entries younger than an hour are skipped (another live
-  instance may own them), and the sweep refuses any recorded path that
-  is not provably an ephemeral temp home.
+  `app_startup.go` after the orphan-slot prune) cleans up what a crash
+  left behind. Adoption — restoring a stranded credential into its
+  owning slot — requires an owner account ID on the entry, which only
+  the retired inactive-usage-probe path ever recorded; since Claude
+  stopped probing from temporary homes, the one remaining producer is
+  the login flow, whose homes are ownerless (a crashed login has no
+  slot to restore into) and are therefore discarded, not adopted. The
+  adoption path stays because pre-existing entries from older builds
+  can still surface at boot: it restores bytes only when the slot
+  still exists and is dead (missing or husk); a healthy slot is never
+  overwritten, a husk orphan is never adopted, entries younger than an
+  hour are skipped (another live instance may own them), and the sweep
+  refuses any recorded path that is not provably an ephemeral temp
+  home.
 - `claude_keychain.go` — the `claudeKeychain` seam: every `security(1)`
   invocation in the codebase lives here (pinned by
   `TestNoSecurityCallsOutsideTheKeychainSeam`). Holds the production

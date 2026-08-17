@@ -109,10 +109,13 @@ const claudeFirstPartyAPIProvider = "firstParty"
 // for the other seven enum members (gateway, bedrock, foundry,
 // anthropicAws, anthropicGoogleCloud, mantle, vertex) a fully working
 // account surfaces `apiProvider` and nothing else. Within firstParty, a
-// profile-sourced token populates neither `subscriptionType` nor
-// `tokenSource` — `email` is the only field that comes back. Requiring
-// subscription-or-token would therefore report every external-credential
-// backend, and every profile login, as logged out.
+// profile-sourced token populates no `tokenSource` — `email` is the only
+// field that comes back. Requiring a token source would therefore report
+// every external-credential backend, and every profile login, as logged
+// out.
+//
+// Evidence is `email`, `displayName`, or a real `tokenSource`. Three
+// fields that look like evidence are not:
 //
 // A bare `apiProvider:"firstParty"` is NOT evidence: that is the one
 // value the builder emits before deciding it has nothing to add, so it
@@ -127,6 +130,17 @@ const claudeFirstPartyAPIProvider = "firstParty"
 // just-destroyed login as authenticated, which let the destructive
 // refresh failure surface only as downstream 401s.
 //
+// `subscriptionType` is NOT evidence: it is a storage echo, not identity.
+// Spike-verified on 2.1.232 (2026-08-16): the husk the CLI writes on
+// invalid_grant blanks the tokens but RETAINS the other credential
+// fields, and the zero-turn probe then answers initialize with
+// `{subscriptionType:"Claude Max", apiProvider:"firstParty"}` — a plan
+// label for a login that no longer exists. Counting it defeated this
+// predicate at the one moment it matters: app code read "authenticated",
+// committed the husk over the account's credential slot, and destroyed
+// it. A real subscription login also reports `email`, so nothing that
+// was authenticated by this rule stops being so.
+//
 // Claude-only by contract. Codex hardcodes `apiProvider:"openai"` even
 // when it knows nothing about the account, so a Codex AccountInfo would
 // always read as authenticated here — `app_codex_probe.go` deliberately
@@ -140,8 +154,7 @@ func ClaudeUnauthenticated(info provider.AccountInfo) bool {
 	if strings.EqualFold(tokenSource, "none") {
 		tokenSource = ""
 	}
-	if strings.TrimSpace(info.SubscriptionType) != "" ||
-		tokenSource != "" ||
+	if tokenSource != "" ||
 		strings.TrimSpace(info.Email) != "" ||
 		strings.TrimSpace(info.DisplayName) != "" {
 		return false

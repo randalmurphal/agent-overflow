@@ -31,10 +31,30 @@ import (
 // credential to a different Keychain service.
 func writeClaudeRefreshMockBinary(t *testing.T, credentialPath, rotated, email string) string {
 	t.Helper()
+	return writeClaudeRefreshMockBinaryReporting(
+		t,
+		credentialPath,
+		rotated,
+		`{"email":"`+email+`","subscriptionType":"max","tokenSource":"oauth"}`,
+	)
+}
+
+// writeClaudeRefreshMockBinaryReporting is the same mock with the reported
+// account object supplied verbatim. Fixtures need it because WHICH fields the
+// probe echoes is the variable under test: a refresh the server answered with
+// invalid_grant leaves the CLI reporting only what the husk still holds, which
+// can be as little as a plan label and a backend name.
+func writeClaudeRefreshMockBinaryReporting(
+	t *testing.T,
+	credentialPath,
+	rotated,
+	account string,
+) string {
+	t.Helper()
 	path := filepath.Join(t.TempDir(), "mock-claude")
 	response := `{"type":"control_response","response":{"subtype":"success",` +
 		`"request_id":"ao-probe-init","response":{"account":` +
-		`{"email":"` + email + `","subscriptionType":"max","tokenSource":"oauth"}}}}`
+		account + `}}}`
 	script := "#!/bin/bash\n" +
 		"if [ -n \"$CLAUDE_CONFIG_DIR\" ]; then\n" +
 		"  echo 'refresh ran outside the canonical home' >&2\n" +
@@ -443,32 +463,6 @@ func rateLimitedUsageClient(t *testing.T, retryAfter string) *http.Client {
 	}
 }
 
-// writeEphemeralRotatingClaudeBinary stands in for the CLI refreshing an
-// INACTIVE account: it rotates the credential inside the probe's own config
-// home ($CLAUDE_CONFIG_DIR, the ephemeral copy) and reports the account it
-// authenticated as. It refuses to run without the override — an inactive
-// account's refresh must never touch the canonical home.
-func writeEphemeralRotatingClaudeBinary(t *testing.T, rotated, email string) string {
-	t.Helper()
-	path := filepath.Join(t.TempDir(), "mock-claude")
-	response := `{"type":"control_response","response":{"subtype":"success",` +
-		`"request_id":"ao-probe-init","response":{"account":` +
-		`{"email":"` + email + `","subscriptionType":"max","tokenSource":"oauth"}}}}`
-	script := "#!/bin/bash\n" +
-		"if [ -z \"$CLAUDE_CONFIG_DIR\" ]; then\n" +
-		"  echo 'inactive refresh must not touch the canonical home' >&2\n" +
-		"  exit 1\n" +
-		"fi\n" +
-		"read -r _ || true\n" +
-		"printf '%s' '" + rotated + "' > \"$CLAUDE_CONFIG_DIR/.credentials.json\"\n" +
-		"printf '%s\\n' '" + response + "'\n" +
-		"exit 0\n"
-	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	return path
-}
-
 // rotatedThrottledUsageClient answers 401 for the stale bearer — sending the
 // probe into its native-refresh heal — and 429 for the rotated bearer, the
 // shape of a usage endpoint that throttles while the token endpoint stays
@@ -499,69 +493,6 @@ func rotatedThrottledUsageClient(
 	}
 	return &http.Client{
 		Transport: redirectRoundTripper{target: target, inner: http.DefaultTransport},
-	}
-}
-
-// A heal cycle can rotate the token and still fail: the usage retry after a
-// successful native refresh can be throttled even though the token endpoint
-// was not. The rotation must reach the saved slot anyway — Claude refresh
-// tokens are single-use and an inactive account's rotation lives only in the
-// ephemeral home deleted on return, so dropping it with the error would
-// retire the slot's only working refresh chain.
-func TestInactiveClaudeUsageRefreshCommitsRotationWhenRetryIsThrottled(t *testing.T) {
-	app := newTestAppWithStore(t)
-	app.settings = settings.NewService(t.TempDir())
-	rotated := `{"claudeAiOauth":{"accessToken":"rotated","refreshToken":"rotated-refresh"}}`
-	installUsageTestAccounts(
-		t,
-		app,
-		usageTestAccount{
-			"inactive",
-			[]byte(`{"claudeAiOauth":{"accessToken":"stale","refreshToken":"stale-refresh"}}`),
-		},
-		usageTestAccount{
-			"selected",
-			[]byte(`{"claudeAiOauth":{"accessToken":"active"}}`),
-		},
-	)
-	binary := writeEphemeralRotatingClaudeBinary(t, rotated, "inactive@example.com")
-	if _, err := app.settings.Update(map[string]any{"claudeBinaryPath": binary}); err != nil {
-		t.Fatal(err)
-	}
-	app.rateLimitProbeClientOverride = rotatedThrottledUsageClient(t, "stale", "rotated", "45")
-
-	var published int
-	app.testEmitHook = func(name string, _ any) {
-		if name == "provider:usage" {
-			published++
-		}
-	}
-
-	err := app.refreshProviderAccountUsage(
-		context.Background(),
-		string(provider.Claude),
-		"inactive",
-	)
-	var limited *claude.RateLimitedError
-	if !errors.As(err, &limited) {
-		t.Fatalf("refresh error = %v, want the 429 surfaced", err)
-	}
-	saved, readErr := app.providerCredentials.ReadCredential(
-		string(provider.Claude),
-		"inactive",
-		false,
-	)
-	if readErr != nil {
-		t.Fatal(readErr)
-	}
-	if string(saved) != rotated {
-		t.Fatalf("saved slot = %s, want the rotation committed despite the throttled retry", saved)
-	}
-	if published != 0 {
-		t.Fatalf("published %d snapshots, want none for a failed probe", published)
-	}
-	if remaining := app.usageBackoff.Remaining(string(provider.Claude), "inactive"); remaining <= 0 {
-		t.Fatalf("Remaining(inactive) = %v, want the 429 recorded for this account", remaining)
 	}
 }
 

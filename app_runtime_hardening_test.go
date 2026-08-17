@@ -118,10 +118,7 @@ func TestInitStoresKeepsCredentialSlotsWhenMetadataIsEmpty(t *testing.T) {
 	t.Setenv("HOME", homeDir)
 	t.Setenv("USERPROFILE", homeDir)
 
-	seeded, err := provideraccounts.NewCredentials(homeDir)
-	if err != nil {
-		t.Fatal(err)
-	}
+	seeded := newTestProviderCredentials(t, homeDir)
 	for _, providerName := range []string{"claude", "codex"} {
 		if err := seeded.WriteAccountCredential(
 			providerName,
@@ -191,10 +188,7 @@ func TestInitStoresSkipsPruneWhenMetadataBelongsToAnotherHome(t *testing.T) {
 	t.Setenv("HOME", homeDir)
 	t.Setenv("USERPROFILE", homeDir)
 
-	seeded, err := provideraccounts.NewCredentials(homeDir)
-	if err != nil {
-		t.Fatal(err)
-	}
+	seeded := newTestProviderCredentials(t, homeDir)
 	if err := seeded.WriteAccountCredential(
 		"claude",
 		"saved-login",

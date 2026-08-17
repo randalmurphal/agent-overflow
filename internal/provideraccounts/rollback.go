@@ -37,6 +37,11 @@ type SavedCredential struct {
 // account slot. A slot with no credential, and a slot that does not
 // exist at all, are both valid captures — the distinction is what makes
 // the matching restore safe.
+//
+// A slot holding the provider's sign-out husk captures as "no credential":
+// the husk is not a login, so the restore removes it rather than rewriting
+// it. Both states put the account in the same place — needing a fresh
+// sign-in — and the removal is the honest one.
 func (c *Credentials) CaptureAccountCredential(providerName, accountID string) (SavedCredential, error) {
 	accountDir, err := c.accountDirectory(providerName, accountID)
 	if err != nil {
@@ -62,6 +67,9 @@ func (c *Credentials) CaptureAccountCredential(providerName, accountID string) (
 	snapshot, readErr := c.ReadCredentialSnapshot(providerName, accountID, false)
 	switch {
 	case readErr == nil:
+		if c.credentialSignedOut(providerName, snapshot.Data) {
+			break
+		}
 		saved.hadCredential = true
 		saved.data = snapshot.Data
 	case IsCredentialMissing(readErr):
@@ -75,9 +83,10 @@ func (c *Credentials) CaptureAccountCredential(providerName, accountID string) (
 	return saved, nil
 }
 
-// HadCredential reports whether the slot held a credential at capture
-// time. Callers use it to distinguish "this account already existed"
-// from "this operation is introducing it".
+// HadCredential reports whether the slot held a usable credential at
+// capture time. Callers use it to distinguish "this account already
+// existed" from "this operation is introducing it"; a husked slot counts
+// as the latter, because there was no login there to return to.
 func (s SavedCredential) HadCredential() bool {
 	return s.hadCredential
 }

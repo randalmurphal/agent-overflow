@@ -1,7 +1,6 @@
 package provideraccounts
 
 import (
-	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -21,6 +20,16 @@ const (
 )
 
 var safeAccountID = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
+
+// ErrSignedOutCredential reports a refusal to store the provider's own
+// sign-out marker as if it were a credential. A husk is what the provider
+// writes when it gives up on a token chain, so persisting one destroys
+// whatever the destination held and leaves an account that looks logged in
+// until the next request fails. The refusal lives in the write layer, not in
+// caller discipline: every path that could reach a husk (a probe read-back, a
+// rollback restore, a switch, an ephemeral seed) would otherwise need its own
+// guard, and one forgotten guard is one unrecoverable login.
+var ErrSignedOutCredential = errors.New("provideraccounts: credential is a provider sign-out, not a login")
 
 type ProviderPaths struct {
 	SharedHome     string
@@ -88,6 +97,14 @@ func (c *Credentials) SetSignedOutDetector(detector func(providerName string, da
 
 func (c *Credentials) credentialSignedOut(providerName string, data []byte) bool {
 	return c.signedOut != nil && c.signedOut(providerName, data)
+}
+
+// CredentialSignedOut reports that these bytes are the provider's own
+// sign-out marker rather than a login, for callers that must answer the
+// question before they have anywhere to write. No detector installed means
+// no provider claims a sign-out shape, which answers false.
+func (c *Credentials) CredentialSignedOut(providerName string, data []byte) bool {
+	return c.credentialSignedOut(providerName, data)
 }
 
 func (c *Credentials) Paths(providerName string) (ProviderPaths, error) {
@@ -227,6 +244,34 @@ func (c *Credentials) CredentialPresent(providerName, accountID string, active b
 	return info.Mode()&os.ModeSymlink == 0 && info.Mode().IsRegular() && info.Size() > 0, nil
 }
 
+// CredentialUsable reports whether this account could be activated right now:
+// its credential is present AND is not the provider's sign-out husk. A husked
+// slot and an empty one are the same state to the user — sign in again — so
+// callers surfacing "needs login" must ask this rather than CredentialPresent,
+// which only sees the file.
+//
+// One read answers both questions. Account listings ask this per account after
+// every switch, refresh, and removal, and on macOS each credential access is a
+// security(1) subprocess — a separate presence probe would double that for no
+// extra information.
+//
+// A missing credential answers false with no error; a read that fails for any
+// other reason propagates, so a caller can tell "definitely unusable" from
+// "could not find out".
+func (c *Credentials) CredentialUsable(providerName, accountID string, active bool) (bool, error) {
+	snapshot, err := c.ReadCredentialSnapshot(providerName, accountID, active)
+	if IsCredentialMissing(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if len(snapshot.Data) == 0 {
+		return false, nil
+	}
+	return !c.credentialSignedOut(providerName, snapshot.Data), nil
+}
+
 // ReadCredential returns opaque bytes from the canonical native store when
 // active is true, or from one saved account slot otherwise.
 func (c *Credentials) ReadCredential(providerName, accountID string, active bool) ([]byte, error) {
@@ -281,7 +326,24 @@ func (c *Credentials) credentialLocation(
 	return home, nil
 }
 
+// writeCredentialAt is the ONE place opaque credential bytes become durable,
+// and therefore the one place the sign-out refusal has to live.
 func (c *Credentials) writeCredentialAt(
+	providerName string,
+	home string,
+	active bool,
+	data []byte,
+) error {
+	if c.credentialSignedOut(providerName, data) {
+		return fmt.Errorf("%w (%s)", ErrSignedOutCredential, providerName)
+	}
+	return c.storeCredentialAt(providerName, home, active, data)
+}
+
+// storeCredentialAt performs the write itself. It is separate from
+// writeCredentialAt for exactly one caller: the test helper that impersonates
+// the provider CLI, which is the actor that legitimately writes a husk.
+func (c *Credentials) storeCredentialAt(
 	providerName string,
 	home string,
 	active bool,
@@ -349,235 +411,28 @@ func (c *Credentials) CommitSelectedCredential(
 }
 
 func (c *Credentials) writeActiveCredential(providerName string, data []byte) error {
-	if runtime.GOOS == "darwin" && providerName == "claude" {
-		return c.writeCredential(providerName, "", true, data)
+	if c.credentialSignedOut(providerName, data) {
+		return fmt.Errorf("%w (%s)", ErrSignedOutCredential, providerName)
 	}
-	activePath, err := c.ActiveCredentialPath(providerName)
-	if err != nil {
-		return err
-	}
-	if info, statErr := os.Lstat(activePath); statErr == nil && info.Mode()&os.ModeSymlink != 0 {
-		return fmt.Errorf("provideraccounts: active credential path %s must not be a symlink", activePath)
-	} else if statErr != nil && !errors.Is(statErr, os.ErrNotExist) {
-		return fmt.Errorf("provideraccounts: inspect active credential path: %w", statErr)
-	}
-	return atomicfile.Write(activePath, data)
+	return c.storeActiveCredential(providerName, data)
 }
 
-// Activate atomically replaces the canonical provider credential with the
-// selected account. When switching away from currentAccountID, the current
-// canonical bytes are first preserved in that account slot so native refresh
-// token rotations are not lost. A canonical credential that is missing or is
-// the provider's own sign-out husk carries nothing worth preserving; the
-// activation proceeds without touching currentAccountID's slot.
-func (c *Credentials) Activate(providerName, currentAccountID, targetAccountID string) error {
-	var current *CredentialSnapshot
-	if currentAccountID != "" && currentAccountID != targetAccountID {
-		snapshot, err := c.ReadCredentialSnapshot(providerName, "", true)
-		switch {
-		case IsCredentialMissing(err):
-			currentAccountID = ""
-		case err != nil:
-			return fmt.Errorf("provideraccounts: read current account before switch: %w", err)
-		case c.credentialSignedOut(providerName, snapshot.Data):
-			currentAccountID = ""
-		default:
-			current = &snapshot
-		}
-	}
-	return c.ActivateWithSnapshot(providerName, currentAccountID, targetAccountID, current)
-}
-
-// ActivateWithSnapshot is Activate with a caller-verified current credential.
-// The snapshot is the caller's claim of what the outgoing account held when
-// it validated the switch; if the canonical store has moved by the time the
-// final overwrite happens, the newer bytes win the preservation (see the
-// re-preserve below) — a mid-switch move is a provider rotation of a
-// single-use chain far more often than anything else, and a preserved
-// pre-rotation snapshot is a bricked login.
-func (c *Credentials) ActivateWithSnapshot(
-	providerName string,
-	currentAccountID string,
-	targetAccountID string,
-	current *CredentialSnapshot,
-) error {
-	if currentAccountID != "" && currentAccountID != targetAccountID {
-		if current == nil {
-			return errors.New("provideraccounts: current credential snapshot is required")
-		}
-		if err := c.WriteAccountCredential(providerName, currentAccountID, current.Data); err != nil {
-			return fmt.Errorf("provideraccounts: preserve current account before switch: %w", err)
-		}
-	}
-	data, err := c.ReadCredential(providerName, targetAccountID, false)
-	if err != nil {
-		return fmt.Errorf("provideraccounts: read selected credentials: %w", err)
-	}
-	// Retire the outgoing identity before the incoming credential lands.
-	// Ordered this way every outcome converges on a consistent pair: if
-	// the clear fails nothing has moved, and if the credential write
-	// fails the provider re-derives the identity it already had. The
-	// reverse order has a failure mode that does not self-heal — new
-	// tokens described by the previous account's identity.
-	if currentAccountID != targetAccountID {
-		if err := c.retireProviderIdentity(providerName); err != nil {
-			return err
-		}
-	}
-	// Last-moment re-preserve: a provider process running against the
-	// canonical home (a live session, the user's own CLI in a terminal)
-	// can rotate the credential between the caller's snapshot and this
-	// overwrite. Claude refresh tokens are single-use, so saving the
-	// pre-rotation snapshot while discarding the rotation bricks the
-	// outgoing account. Re-read canonical now and, if it moved, preserve
-	// the newer bytes instead — unless they are the provider's sign-out
-	// husk, which must never overwrite a slot's last saved pair. The
-	// read is best-effort: a missing canonical means nothing rotated
-	// worth keeping beyond the snapshot already preserved above.
-	if currentAccountID != "" && currentAccountID != targetAccountID && current != nil {
-		if latest, err := c.ReadCredentialSnapshot(providerName, "", true); err == nil &&
-			!bytes.Equal(latest.Data, current.Data) &&
-			!c.credentialSignedOut(providerName, latest.Data) {
-			if err := c.WriteAccountCredential(providerName, currentAccountID, latest.Data); err != nil {
-				return fmt.Errorf(
-					"provideraccounts: preserve rotated current account before switch: %w",
-					err,
-				)
-			}
-		}
-	}
-	if err := c.writeActiveCredential(providerName, data); err != nil {
-		return fmt.Errorf("provideraccounts: activate %s credentials: %w", providerName, err)
-	}
-	return nil
-}
-
-// RemoveActive signs the provider out of its canonical home. The
-// identity record goes with the credential — leaving it behind would
-// describe a login that no longer exists, which is the same split-state
-// bug a switch avoids and exactly what the provider's own logout
-// clears.
-func (c *Credentials) RemoveActive(providerName string) error {
-	if err := c.retireProviderIdentity(providerName); err != nil {
-		return err
-	}
-	if runtime.GOOS == "darwin" && providerName == "claude" {
-		paths, err := c.Paths(providerName)
-		if err != nil {
-			return err
-		}
-		return c.keychain.remove(paths.SharedHome, true)
-	}
-	activePath, err := c.ActiveCredentialPath(providerName)
-	if err != nil {
-		return err
-	}
-	info, err := os.Lstat(activePath)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
-	}
-	if err != nil {
-		return fmt.Errorf("provideraccounts: inspect active credentials: %w", err)
-	}
-	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
-		return fmt.Errorf("provideraccounts: active credential path %s is not a regular file", activePath)
-	}
-	if err := os.Remove(activePath); err != nil {
-		return fmt.Errorf("provideraccounts: remove active credentials: %w", err)
-	}
-	return nil
-}
-
-// RemoveAccount deletes one saved credential slot. The validated account ID
-// and non-symlink managed root confine removal to Agent Overflow's own storage.
-func (c *Credentials) RemoveAccount(providerName, accountID string) error {
+// storeActiveCredential is writeActiveCredential without the sign-out refusal,
+// for the provider-impersonating test helper only.
+func (c *Credentials) storeActiveCredential(providerName string, data []byte) error {
 	paths, err := c.Paths(providerName)
 	if err != nil {
 		return err
 	}
-	accountDir, err := c.accountDirectory(providerName, accountID)
-	if err != nil {
-		return err
-	}
-	if runtime.GOOS == "darwin" && providerName == "claude" {
-		if err := c.keychain.remove(accountDir, false); err != nil {
-			return err
+	if runtime.GOOS != "darwin" || providerName != "claude" {
+		activePath := filepath.Join(paths.SharedHome, paths.CredentialFile)
+		if info, statErr := os.Lstat(activePath); statErr == nil && info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("provideraccounts: active credential path %s must not be a symlink", activePath)
+		} else if statErr != nil && !errors.Is(statErr, os.ErrNotExist) {
+			return fmt.Errorf("provideraccounts: inspect active credential path: %w", statErr)
 		}
 	}
-	root, err := os.OpenRoot(paths.SharedHome)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
-	}
-	if err != nil {
-		return fmt.Errorf("provideraccounts: open %s home for account removal: %w", providerName, err)
-	}
-	defer root.Close()
-	if err := root.RemoveAll(filepath.Join(accountDirectoryName, accountID)); err != nil {
-		return fmt.Errorf("provideraccounts: remove saved account credentials: %w", err)
-	}
-	return nil
-}
-
-// PruneOrphanedAccounts removes credential slots that have no corresponding
-// metadata account and returns the IDs it removed, so the caller can record
-// each destruction. A crash can leave one slot behind between credential
-// creation and metadata commit; registered account directories are never
-// inspected or modified by this sweep.
-//
-// An empty keep-set prunes nothing. Zero registered accounts cannot be told
-// apart from a process reading a different metadata store than the one these
-// slots belong to — a fresh --data-dir, a test overriding the config root
-// but not the home — and the slots hold logins whose refresh tokens are
-// single-use and unrecoverable, so the sweep refuses to guess. The crash
-// orphan it exists for is cleaned on the first sweep after any account is
-// registered again.
-func (c *Credentials) PruneOrphanedAccounts(
-	providerName string,
-	keepAccountIDs map[string]bool,
-) ([]string, error) {
-	paths, err := c.Paths(providerName)
-	if err != nil {
-		return nil, err
-	}
-	rootPath := filepath.Join(paths.SharedHome, accountDirectoryName)
-	info, err := os.Lstat(rootPath)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, fmt.Errorf("provideraccounts: inspect managed account root: %w", err)
-	}
-	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
-		return nil, fmt.Errorf("provideraccounts: managed account root %s is not a directory", rootPath)
-	}
-	if len(keepAccountIDs) == 0 {
-		return nil, nil
-	}
-	entries, err := os.ReadDir(rootPath)
-	if err != nil {
-		return nil, fmt.Errorf("provideraccounts: list managed accounts: %w", err)
-	}
-	var pruned []string
-	var pruneErrs []error
-	for _, entry := range entries {
-		accountID := entry.Name()
-		if !safeAccountID.MatchString(accountID) {
-			pruneErrs = append(pruneErrs, fmt.Errorf(
-				"provideraccounts: invalid managed account entry %q",
-				accountID,
-			))
-			continue
-		}
-		if keepAccountIDs[accountID] {
-			continue
-		}
-		if err := c.RemoveAccount(providerName, accountID); err != nil {
-			pruneErrs = append(pruneErrs, err)
-			continue
-		}
-		pruned = append(pruned, accountID)
-	}
-	return pruned, errors.Join(pruneErrs...)
+	return c.storeCredentialAt(providerName, paths.SharedHome, true, data)
 }
 
 func readCredentialSnapshot(path string) (CredentialSnapshot, error) {

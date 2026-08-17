@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -85,17 +84,36 @@ func (a *App) probeClaudeRateLimits(ctx context.Context) error {
 	return nil
 }
 
+// errClaudeUsageStale reports a usage refresh that was declined rather than
+// attempted, because the account's own OAuth session is over. It is a sentinel
+// so callers can tell it apart from a failed request: nothing was sent, so
+// there is no throttle to record and no credential to commit.
+//
+// Its text is what the user reads on the account card.
+var errClaudeUsageStale = errors.New(
+	"usage was not refreshed because this account's sign-in has expired; " +
+		"the last known usage is shown until you switch to this account, " +
+		"which signs it back in on its next use",
+)
+
+// errClaudeCredentialSignedOut reports credential bytes that are the CLI's
+// sign-out husk: the provider gave up on this token chain, and only a fresh
+// login replaces it. Callers with account metadata map it onto
+// errProviderAccountNeedsLogin so the user is told which account to repair.
+var errClaudeCredentialSignedOut = errors.New("the Claude CLI signed this login out; sign in again")
+
 // probeSelectedClaudeRateLimits probes the account Agent Overflow currently
 // has selected, refreshing in the canonical home when the token has expired.
 //
-// The selected account's credential IS the canonical one, so its refresh must
+// This is the ONE path in the app that may rotate a Claude refresh token. The
+// selected account's credential IS the canonical one, so its refresh must
 // happen there. Claude serializes refresh-token rotation on a lockfile scoped
 // to the config home and its refresh tokens are single-use: rotating a copy in
 // a temporary home takes a different lock, and the winner's rotation retires
 // the token the canonical home still holds. That is a login the user cannot
 // recover without signing in again — the exact failure this whole path exists
-// to avoid. An inactive account has no canonical copy to fork, which is why
-// probeClaudeRateLimitsForSelection can keep using a temporary home.
+// to avoid. Inactive accounts do not refresh at all; see
+// probeInactiveClaudeRateLimits.
 //
 // Returns the canonical credential as it stands after a refresh, or nil when
 // no refresh was needed.
@@ -104,6 +122,18 @@ func (a *App) probeSelectedClaudeRateLimits(
 	selection providerAccountSelection,
 	credential []byte,
 ) (provider.RateLimitsSnapshot, []byte, error) {
+	// A canonical credential that is already the husk means the CLI ended this
+	// login before we got here (a failed refresh during a session, or a boot
+	// that inherited the brick). Without this check the HTTP probe reports the
+	// blank token as ErrNoCredentials — "run claude login" — instead of naming
+	// the account that needs repair, and nothing reaches the audit log.
+	if claude.CredentialsSignedOut(credential) {
+		a.auditAccountEvent(
+			"claude account %s found signed out: the canonical credential is the CLI's sign-out marker",
+			selection.AccountID,
+		)
+		return provider.RateLimitsSnapshot{}, nil, errClaudeCredentialSignedOut
+	}
 	snapshot, err := claude.ProbeRateLimitsFromCredentialData(
 		ctx,
 		a.rateLimitProbeClient(),
@@ -131,12 +161,14 @@ func (a *App) probeSelectedClaudeRateLimits(
 	if refreshErr != nil {
 		return provider.RateLimitsSnapshot{}, nil, fmt.Errorf("refresh Claude credentials: %w", refreshErr)
 	}
-	if providerstatus.ClaudeUnauthenticated(info) {
-		return provider.RateLimitsSnapshot{}, nil, errors.New("Claude credentials expired; log in again")
-	}
-	if err := a.assertSelectedClaudeIdentity(selection, info); err != nil {
-		return provider.RateLimitsSnapshot{}, nil, err
-	}
+	// The bytes are the verdict, not the probe's account object — so read them
+	// BEFORE weighing what the probe reported. A refresh the server answered
+	// with invalid_grant leaves the CLI blanking the credential in place while
+	// its probe still answers success, echoing the husk's residual fields
+	// (subscriptionType always, email when the canonical home's oauthAccount
+	// record survives). Whatever shape that echo takes, the blank tokens
+	// underneath must reach neither ClaudeUnauthenticated's generic verdict,
+	// nor the retry below, nor the caller's commit.
 	refreshed, readErr := a.providerCredentials.ReadCredentialSnapshot(
 		string(provider.Claude),
 		"",
@@ -147,6 +179,19 @@ func (a *App) probeSelectedClaudeRateLimits(
 			"read refreshed Claude credentials: %w",
 			readErr,
 		)
+	}
+	if claude.CredentialsSignedOut(refreshed.Data) {
+		a.auditAccountEvent(
+			"claude account %s found signed out: the CLI blanked the canonical credential during a usage refresh",
+			selection.AccountID,
+		)
+		return provider.RateLimitsSnapshot{}, nil, errClaudeCredentialSignedOut
+	}
+	if providerstatus.ClaudeUnauthenticated(info) {
+		return provider.RateLimitsSnapshot{}, nil, errors.New("Claude credentials expired; log in again")
+	}
+	if err := a.assertSelectedClaudeIdentity(selection, info); err != nil {
+		return provider.RateLimitsSnapshot{}, nil, err
 	}
 	snapshot, retryErr := claude.ProbeRateLimitsFromCredentialData(
 		ctx,
@@ -176,91 +221,45 @@ func (a *App) assertSelectedClaudeIdentity(
 	)
 }
 
-// probeClaudeRateLimitsForSelection probes an account that is NOT selected,
-// from a temporary home seeded with only its credential. That account has no
-// canonical copy, so it is the only holder of its refresh chain and a
-// temporary home cannot fork anything — see probeSelectedClaudeRateLimits for
-// why the selected account must not take this path.
-func (a *App) probeClaudeRateLimitsForSelection(
+// probeInactiveClaudeRateLimits reads usage for an account that is NOT
+// selected, using its saved credential and nothing else. It never spawns the
+// CLI, never rotates a token, and never returns credential bytes to commit.
+//
+// Refreshing an inactive account was the destructive path. Anthropic's token
+// endpoint commits a refresh-token rotation the moment it processes the
+// request — before the client sees the response, with no grace window on the
+// retired token — so a dropped connection or a killed CLI during a refresh AO
+// asked for on the user's behalf ends that account's chain for good. The next
+// attempt gets invalid_grant, the CLI blanks the credential in place, and its
+// probe still answers success with the husk's residual plan label. Nothing
+// downstream can undo that, so the refresh does not happen: an expired
+// inactive account reports stale usage and waits for the user to select it,
+// where the CLI owns the rotation in the canonical home as it always has.
+func (a *App) probeInactiveClaudeRateLimits(
 	ctx context.Context,
-	selection claudeRateLimitSelection,
-) (provider.RateLimitsSnapshot, []byte, error) {
-	if a.providerCredentials == nil || selection.EphemeralHome == nil {
-		return provider.RateLimitsSnapshot{}, nil, errors.New(
-			"Claude rate-limit probe requires temporary credentials",
-		)
+	credential []byte,
+) (provider.RateLimitsSnapshot, error) {
+	if claude.CredentialsSignedOut(credential) {
+		return provider.RateLimitsSnapshot{}, errClaudeCredentialSignedOut
 	}
-	data, err := a.readClaudeSelectionCredential(selection)
-	if err != nil {
-		return provider.RateLimitsSnapshot{}, nil, err
+	// Checked before the request, not after: an expired bearer earns a 401
+	// that says nothing, and the usage endpoint's 429 throttle is per-bearer
+	// and shared across every machine on the account. Spending one of those
+	// on a token we can already read as dead is pure cost.
+	if claude.CredentialExpired(credential, time.Now()) {
+		return provider.RateLimitsSnapshot{}, errClaudeUsageStale
 	}
 	snapshot, err := claude.ProbeRateLimitsFromCredentialData(
 		ctx,
 		a.rateLimitProbeClient(),
-		data,
+		credential,
 	)
-	if !errors.Is(err, claude.ErrOAuthUnauthorized) {
-		return snapshot, nil, err
+	if errors.Is(err, claude.ErrOAuthUnauthorized) {
+		// The server disagrees with the stored expiry — same outcome, and
+		// still not ours to heal.
+		return provider.RateLimitsSnapshot{}, errClaudeUsageStale
 	}
-
-	// Let Claude own refresh-token rotation exactly as it does before a
-	// normal turn. The zero-turn account probe initializes the CLI without
-	// inference and writes refreshed credentials back to the temporary home.
-	// Retry the usage endpoint only after that native path completes.
-	info, refreshErr := claude.ProbeAccount(ctx, a.claudeProbeConfig(
-		a.providerBinaryPath(string(provider.Claude)),
-		selection.Env,
-	))
-	// The CLI writes a rotated credential to the temporary home BEFORE it
-	// answers initialize, and the server retires the slot's previous
-	// refresh token the moment the rotation happens. From here on, every
-	// exit — a probe timeout that killed the CLI after the write, an
-	// unauthenticated verdict, a throttled usage retry — must surface
-	// whatever the temporary home now holds, or the deferred home cleanup
-	// discards the only working copy of this account's chain and the slot
-	// is left on a consumed token (a login the user cannot recover). The
-	// sign-out husk is the one exception: it is not a credential, and
-	// committing it would overwrite the slot for no gain.
-	rotated := a.claudeSelectionRotation(selection, data)
-	if refreshErr != nil {
-		return provider.RateLimitsSnapshot{}, rotated, fmt.Errorf("refresh Claude credentials: %w", refreshErr)
-	}
-	if providerstatus.ClaudeUnauthenticated(info) {
-		return provider.RateLimitsSnapshot{}, rotated, errors.New("Claude credentials expired; log in again")
-	}
-	data, readErr := a.readClaudeSelectionCredential(selection)
-	if readErr != nil {
-		return provider.RateLimitsSnapshot{}, rotated, readErr
-	}
-	snapshot, retryErr := claude.ProbeRateLimitsFromCredentialData(
-		ctx,
-		a.rateLimitProbeClient(),
-		data,
-	)
-	return snapshot, data, retryErr
-}
-
-// claudeSelectionRotation reports the credential the probe's temporary home
-// holds after a native CLI run, when it differs from the bytes the probe
-// started from and is not the provider's sign-out husk. Best-effort by
-// design: it runs on failure paths whose primary error is already decided,
-// and a nil return simply means "nothing rotated worth committing".
-func (a *App) claudeSelectionRotation(
-	selection claudeRateLimitSelection,
-	before []byte,
-) []byte {
-	after, err := a.readClaudeSelectionCredential(selection)
-	if err != nil || bytes.Equal(after, before) || claude.CredentialsSignedOut(after) {
-		return nil
-	}
-	return after
-}
-
-func (a *App) readClaudeSelectionCredential(
-	selection claudeRateLimitSelection,
-) ([]byte, error) {
-	snapshot, err := a.providerCredentials.ReadEphemeralCredential(selection.EphemeralHome)
-	return snapshot.Data, err
+	return snapshot, err
 }
 
 // rateLimitProbeClient returns the HTTP client used by the probe.

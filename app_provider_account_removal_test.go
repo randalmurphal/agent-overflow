@@ -213,10 +213,7 @@ func installRemovalTestAccounts(
 	if err != nil {
 		t.Fatal(err)
 	}
-	credentials, err := provideraccounts.NewCredentials(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
+	credentials := newTestProviderCredentials(t, t.TempDir())
 	for _, accountID := range accountIDs {
 		if err := credentials.WriteAccountCredential(
 			providerName,

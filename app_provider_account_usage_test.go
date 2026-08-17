@@ -305,10 +305,7 @@ func installUsageTestAccounts(t *testing.T, app *App, values ...usageTestAccount
 	if err != nil {
 		t.Fatal(err)
 	}
-	credentials, err := provideraccounts.NewCredentials(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
+	credentials := newTestProviderCredentials(t, t.TempDir())
 	var activeCredential []byte
 	for _, value := range values {
 		if err := credentials.WriteAccountCredential(
@@ -366,122 +363,5 @@ func blockingUsageClient(
 	}
 	return &http.Client{
 		Transport: redirectRoundTripper{target: target, inner: http.DefaultTransport},
-	}
-}
-
-// A native refresh rotates an inactive account's single-use chain inside the
-// probe's temporary home BEFORE the probe's outcome is known, and the
-// temporary home is deleted on return. Every probe failure after that point
-// — the CLI dying before its initialize answer, an unauthenticated verdict,
-// a throttled usage retry — must still deliver the rotation to the slot;
-// before this guard the slot kept the consumed token, which is an
-// unrecoverable "sign in again" for that account.
-func TestInactiveClaudeUsageProbeFailureStillCommitsRotation(t *testing.T) {
-	app := newTestAppWithStore(t)
-	installUsageTestAccounts(
-		t,
-		app,
-		usageTestAccount{
-			"inactive",
-			[]byte(`{"claudeAiOauth":{"accessToken":"old","refreshToken":"old-rt"}}`),
-		},
-		usageTestAccount{
-			"active",
-			[]byte(`{"claudeAiOauth":{"accessToken":"active"}}`),
-		},
-	)
-
-	// The mock CLI performs the rotation write and then dies without ever
-	// answering initialize — the shape of a probe timeout or mid-probe kill.
-	rotated := `{"claudeAiOauth":{"accessToken":"rotated","refreshToken":"rotated-rt"}}`
-	script := filepath.Join(t.TempDir(), "mock-claude")
-	body := "#!/bin/sh\n" +
-		"printf '%s' '" + rotated + "' > \"$CLAUDE_CONFIG_DIR/.credentials.json\"\n" +
-		"exit 1\n"
-	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := app.settings.Update(map[string]any{"claudeBinaryPath": script}); err != nil {
-		t.Fatal(err)
-	}
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusUnauthorized)
-	}))
-	defer server.Close()
-	target, err := url.Parse(server.URL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	app.rateLimitProbeClientOverride = &http.Client{
-		Transport: redirectRoundTripper{target: target, inner: http.DefaultTransport},
-	}
-
-	err = app.refreshProviderAccountUsage(
-		context.Background(),
-		string(provider.Claude),
-		"inactive",
-	)
-	if err == nil {
-		t.Fatal("refresh succeeded, want the probe failure surfaced")
-	}
-	got, readErr := app.providerCredentials.ReadCredential(string(provider.Claude), "inactive", false)
-	if readErr != nil {
-		t.Fatal(readErr)
-	}
-	if string(got) != rotated {
-		t.Fatalf("slot credential after failed probe = %s, want the rotated pair", got)
-	}
-}
-
-// The sign-out husk the CLI leaves after a dead-chain refresh is not a
-// rotation: committing it would overwrite the slot for no gain.
-func TestInactiveClaudeUsageProbeDoesNotCommitSignedOutHusk(t *testing.T) {
-	app := newTestAppWithStore(t)
-	original := `{"claudeAiOauth":{"accessToken":"old","refreshToken":"old-rt"}}`
-	installUsageTestAccounts(
-		t,
-		app,
-		usageTestAccount{"inactive", []byte(original)},
-		usageTestAccount{"active", []byte(`{"claudeAiOauth":{"accessToken":"active"}}`)},
-	)
-
-	husk := `{"claudeAiOauth":{"accessToken":"","refreshToken":"","expiresAt":0}}`
-	script := filepath.Join(t.TempDir(), "mock-claude")
-	body := "#!/bin/sh\n" +
-		"printf '%s' '" + husk + "' > \"$CLAUDE_CONFIG_DIR/.credentials.json\"\n" +
-		"exit 1\n"
-	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := app.settings.Update(map[string]any{"claudeBinaryPath": script}); err != nil {
-		t.Fatal(err)
-	}
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusUnauthorized)
-	}))
-	defer server.Close()
-	target, err := url.Parse(server.URL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	app.rateLimitProbeClientOverride = &http.Client{
-		Transport: redirectRoundTripper{target: target, inner: http.DefaultTransport},
-	}
-
-	if err := app.refreshProviderAccountUsage(
-		context.Background(),
-		string(provider.Claude),
-		"inactive",
-	); err == nil {
-		t.Fatal("refresh succeeded, want the probe failure surfaced")
-	}
-	got, readErr := app.providerCredentials.ReadCredential(string(provider.Claude), "inactive", false)
-	if readErr != nil {
-		t.Fatal(readErr)
-	}
-	if string(got) != original {
-		t.Fatalf("slot credential = %s, want the original pair kept over the husk", got)
 	}
 }

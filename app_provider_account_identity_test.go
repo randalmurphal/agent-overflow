@@ -27,10 +27,7 @@ func installIdentityTestAccount(
 		t.Fatal(err)
 	}
 	home := t.TempDir()
-	credentials, err := provideraccounts.NewCredentials(home)
-	if err != nil {
-		t.Fatal(err)
-	}
+	credentials := newTestProviderCredentials(t, home)
 	if err := credentials.WriteAccountCredential(providerName, accountID, credential); err != nil {
 		t.Fatal(err)
 	}

@@ -1,21 +1,17 @@
 package main
 
 import (
-	"context"
 	"crypto/sha256"
 	"errors"
 	"fmt"
 	"log"
-	"os"
 	"strings"
 	"time"
 
-	"agent-overflow/internal/externalurl"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/provider/codex"
 	"agent-overflow/internal/provideraccounts"
-	"agent-overflow/internal/providerstatus"
 
 	"github.com/google/uuid"
 )
@@ -70,19 +66,23 @@ func (a *App) ListProviderAccounts() ([]ManagedProviderAccount, error) {
 
 // providerAccountCredentialUsable reports whether this account could be
 // activated right now. The selected account is backed by the canonical
-// store; every other account is backed by its saved slot. A presence
-// check that itself fails is reported as usable so a transient
-// filesystem error cannot make every account look signed out — the
-// activation path still validates for real.
+// store; every other account is backed by its saved slot. A check that
+// itself fails is reported as usable so a transient filesystem error
+// cannot make every account look signed out — the activation path still
+// validates for real.
+//
+// A slot holding the provider's sign-out husk is unusable: it is a file
+// where a login used to be, and treating it as present is what let the
+// card advertise a dead account as switchable.
 func (a *App) providerAccountCredentialUsable(providerName, accountID string, isActive bool) bool {
 	if a.providerCredentials == nil {
 		return true
 	}
-	present, err := a.providerCredentials.CredentialPresent(providerName, accountID, isActive)
+	usable, err := a.providerCredentials.CredentialUsable(providerName, accountID, isActive)
 	if err != nil {
 		return true
 	}
-	return present
+	return usable
 }
 
 // errProviderAccountNeedsLogin describes the one recovery available when an
@@ -103,214 +103,30 @@ func errProviderAccountNeedsLogin(providerName string, account provideraccounts.
 	)
 }
 
-// LoginProviderAccount runs the provider's native browser login in a
-// short-lived isolated home, retains only the resulting native credential,
-// atomically activates it, and registers non-secret metadata.
-func (a *App) LoginProviderAccount(
+// installProviderSignedOutDetector fills the credential store's
+// provider-agnostic "these bytes are a sign-out, not a login" seam. It is the
+// ONE place the provider-specific predicate is named, so every construction of
+// a Credentials — boot, harness, or fixture — refuses husks the same way. A
+// store built without it would silently accept the bytes that destroy a slot.
+func installProviderSignedOutDetector(credentials *provideraccounts.Credentials) {
+	credentials.SetSignedOutDetector(func(providerName string, data []byte) bool {
+		return providerName == string(provider.Claude) && claude.CredentialsSignedOut(data)
+	})
+}
+
+// mapProviderAccountLoginError restates a provider-level "this login no longer
+// exists" verdict as the account-scoped instruction the card can act on. Every
+// other error passes through unchanged — only the one sentinel has a known
+// recovery.
+func mapProviderAccountLoginError(
 	providerName string,
-) (_ ManagedProviderAccount, retErr error) {
-	if a.shuttingDown.Load() {
-		return ManagedProviderAccount{}, ErrShuttingDown
+	account provideraccounts.Account,
+	err error,
+) error {
+	if !errors.Is(err, errClaudeCredentialSignedOut) {
+		return err
 	}
-	if err := validateManagedProvider(providerName); err != nil {
-		return ManagedProviderAccount{}, err
-	}
-	if a.providerAccounts == nil || a.providerCredentials == nil {
-		return ManagedProviderAccount{}, errors.New("provider account storage is unavailable")
-	}
-
-	binary := a.providerBinaryPath(providerName)
-	reconcileMu := a.providerCredentialReconcileMutex(providerName)
-	reconcileMu.Lock()
-	a.providerAccountMu.Lock()
-	if err := a.adoptCanonicalProviderAccountLocked(providerName, binary); err != nil {
-		a.providerAccountMu.Unlock()
-		reconcileMu.Unlock()
-		return ManagedProviderAccount{}, fmt.Errorf("preserve current %s account: %w", providerName, err)
-	}
-	a.providerAccountMu.Unlock()
-	reconcileMu.Unlock()
-
-	loginHome, err := a.providerCredentials.NewEphemeralHome(providerName)
-	if err != nil {
-		return ManagedProviderAccount{}, fmt.Errorf("prepare %s login: %w", providerName, err)
-	}
-	defer func() {
-		if cleanupErr := loginHome.Cleanup(); cleanupErr != nil {
-			retErr = errors.Join(
-				retErr,
-				fmt.Errorf("clean temporary %s login home: %w", providerName, cleanupErr),
-			)
-		}
-	}()
-
-	switch providerName {
-	case string(provider.Claude):
-		executable, err := os.Executable()
-		if err != nil {
-			return ManagedProviderAccount{}, fmt.Errorf("locate browser bridge: %w", err)
-		}
-		if err := claude.Login(a.lifeCtx(), claude.LoginConfig{
-			Binary:            binary,
-			ConfigDir:         loginHome.Path,
-			BrowserExecutable: executable,
-		}); err != nil {
-			return ManagedProviderAccount{}, err
-		}
-	case string(provider.Codex):
-		if err := codex.Login(a.lifeCtx(), codex.LoginConfig{
-			Binary: binary,
-			Env:    map[string]string{"CODEX_HOME": loginHome.Path},
-			OpenURL: func(rawURL string) error {
-				return externalurl.Open(context.Background(), rawURL)
-			},
-		}); err != nil {
-			return ManagedProviderAccount{}, err
-		}
-	}
-
-	info, err := a.probeProviderAccountAtHome(providerName, binary, loginHome.Path)
-	if err != nil {
-		return ManagedProviderAccount{}, fmt.Errorf("verify %s login: %w", providerName, err)
-	}
-	if providerName == string(provider.Claude) && providerstatus.ClaudeUnauthenticated(info) {
-		return ManagedProviderAccount{}, errors.New("Claude login completed without an authenticated account")
-	}
-	loginCredential, err := a.providerCredentials.ReadEphemeralCredential(loginHome)
-	if err != nil {
-		return ManagedProviderAccount{}, fmt.Errorf("capture %s login credentials: %w", providerName, err)
-	}
-	if err := loginHome.Cleanup(); err != nil {
-		return ManagedProviderAccount{}, fmt.Errorf("clean temporary %s login home: %w", providerName, err)
-	}
-	reconcileMu.Lock()
-	reconcileLocked := true
-	defer func() {
-		if reconcileLocked {
-			reconcileMu.Unlock()
-		}
-	}()
-	if err := a.reconcileExternalProviderAccountWithMutexHeld(providerName); err != nil {
-		return ManagedProviderAccount{}, fmt.Errorf(
-			"check current %s account before activation: %w",
-			providerName,
-			err,
-		)
-	}
-
-	a.providerAccountMu.Lock()
-	accountLocked := true
-	defer func() {
-		if accountLocked {
-			a.providerAccountMu.Unlock()
-		}
-	}()
-
-	targetID := uuid.NewString()
-	if existing, ok := a.providerAccounts.FindByEmail(providerName, info.Email); ok {
-		targetID = existing.ID
-	}
-	// Capture before the write so a failure downstream restores exactly
-	// what was here — including the case where re-logging into a saved
-	// account finds its slot momentarily unreadable. Rolling that back by
-	// deletion would cost the user the very account they were repairing.
-	savedTarget, err := a.providerCredentials.CaptureAccountCredential(providerName, targetID)
-	if err != nil {
-		return ManagedProviderAccount{}, err
-	}
-	if err := a.providerCredentials.WriteAccountCredential(
-		providerName,
-		targetID,
-		loginCredential.Data,
-	); err != nil {
-		return ManagedProviderAccount{}, fmt.Errorf("save %s login credentials: %w", providerName, err)
-	}
-	restoreTarget := func() error {
-		return a.providerCredentials.RestoreAccountCredential(savedTarget)
-	}
-
-	current, hasCurrent := a.providerAccounts.Active(providerName, time.Now())
-	currentID := ""
-	if hasCurrent {
-		currentID = current.ID
-	}
-	preserveID, currentCredential, err := a.reconciledActiveCredentialLocked(
-		providerName,
-		currentID,
-		targetID,
-	)
-	if err != nil {
-		if restoreErr := restoreTarget(); restoreErr != nil {
-			return ManagedProviderAccount{}, fmt.Errorf(
-				"%w (saved credential rollback also failed: %v)",
-				err,
-				restoreErr,
-			)
-		}
-		return ManagedProviderAccount{}, err
-	}
-	if err := a.providerCredentials.ActivateWithSnapshot(
-		providerName,
-		preserveID,
-		targetID,
-		currentCredential,
-	); err != nil {
-		if restoreErr := restoreTarget(); restoreErr != nil {
-			return ManagedProviderAccount{}, fmt.Errorf(
-				"activate %s account: %w (saved credential rollback also failed: %v)",
-				providerName,
-				err,
-				restoreErr,
-			)
-		}
-		return ManagedProviderAccount{}, fmt.Errorf("activate %s account: %w", providerName, err)
-	}
-	if err := a.verifyCanonicalProviderCredentialLocked(
-		providerName,
-		loginCredential.Data,
-	); err != nil {
-		if restoreErr := restoreTarget(); restoreErr != nil {
-			return ManagedProviderAccount{}, errors.Join(err, restoreErr)
-		}
-		return ManagedProviderAccount{}, err
-	}
-
-	account, err := a.providerAccounts.UpsertAndActivateCredential(
-		accountFromInfo(targetID, providerName, info),
-	)
-	if err != nil {
-		var rollbackErrs []error
-		if restoreErr := restoreTarget(); restoreErr != nil {
-			rollbackErrs = append(rollbackErrs, restoreErr)
-		}
-		if rollbackErr := a.rollbackProviderAccountActivation(providerName, targetID, currentID); rollbackErr != nil {
-			rollbackErrs = append(rollbackErrs, rollbackErr)
-		}
-		if len(rollbackErrs) > 0 {
-			return ManagedProviderAccount{}, fmt.Errorf(
-				"%w (credential rollback also failed: %v)",
-				err,
-				errors.Join(rollbackErrs...),
-			)
-		}
-		return ManagedProviderAccount{}, err
-	}
-
-	a.invalidateProviderAccountProbe(providerName, binary)
-	a.rememberProviderCredentialFingerprintLocked(providerName, loginCredential.Data)
-	generation := a.providerAccounts.Generation(providerName)
-	a.providerAccountMu.Unlock()
-	accountLocked = false
-	reconcileMu.Unlock()
-	reconcileLocked = false
-	a.emitProviderAccount(providerName, account, info, generation)
-	a.applyProviderAccountSelectionToSessions(providerName, generation, account.ID)
-	if err := a.RefreshProviderAccountUsage(providerName, account.ID); err != nil {
-		// Login and activation succeeded. Quota refresh is independently
-		// retryable from Settings and must not roll the account back.
-		a.emitProviderAccountUsageRefreshError(providerName, account.ID, err)
-	}
-	return ManagedProviderAccount{Account: account, Active: true, Generation: generation}, nil
+	return errProviderAccountNeedsLogin(providerName, account)
 }
 
 func (a *App) SwitchProviderAccount(providerName, accountID string) (ManagedProviderAccount, error) {
@@ -369,6 +185,17 @@ func (a *App) SwitchProviderAccount(providerName, accountID string) (ManagedProv
 			err,
 		)
 	}
+	// A husked slot is a login the provider already ended. Installing it into
+	// the canonical store would retire the working account for a dead one and
+	// leave the app looking signed in until the next request failed.
+	if a.providerCredentials.CredentialSignedOut(providerName, targetCredential.Data) {
+		a.auditAccountEvent(
+			"refused to switch to %s account %s: its saved credential is the provider's sign-out marker",
+			providerName,
+			accountID,
+		)
+		return ManagedProviderAccount{}, errProviderAccountNeedsLogin(providerName, target)
+	}
 	currentID := ""
 	if hasCurrent {
 		currentID = current.ID
@@ -387,6 +214,12 @@ func (a *App) SwitchProviderAccount(providerName, accountID string) (ManagedProv
 		accountID,
 		currentCredential,
 	); err != nil {
+		// The write layer re-reads the target slot, so it can meet a husk the
+		// pre-check above did not see. Same verdict, same instruction — not a
+		// raw internal error.
+		if errors.Is(err, provideraccounts.ErrSignedOutCredential) {
+			return ManagedProviderAccount{}, errProviderAccountNeedsLogin(providerName, target)
+		}
 		return ManagedProviderAccount{}, fmt.Errorf("switch %s account: %w", providerName, err)
 	}
 	if err := a.verifyCanonicalProviderCredentialLocked(

@@ -98,8 +98,8 @@ func TestClaudeUnauthenticated(t *testing.T) {
 		{"anthropicGoogleCloud", provider.AccountInfo{APIProvider: "anthropicGoogleCloud"}, false},
 		{"mantle", provider.AccountInfo{APIProvider: "mantle"}, false},
 
-		// firstParty with a profile-sourced token: neither subscription nor
-		// tokenSource is populated, email is. Also false-flagged before.
+		// firstParty with a profile-sourced token: tokenSource is not
+		// populated, email is. Also false-flagged before.
 		{"firstParty profile", provider.AccountInfo{Email: "user@example.com", APIProvider: "firstParty"}, false},
 
 		// firstParty, fully populated — the case the old rule got right.
@@ -111,10 +111,26 @@ func TestClaudeUnauthenticated(t *testing.T) {
 		}, false},
 
 		// Individual evidence fields, each sufficient on its own.
-		{"subscription only", provider.AccountInfo{SubscriptionType: "pro"}, false},
 		{"token source only", provider.AccountInfo{TokenSource: "oauth"}, false},
 		{"email only", provider.AccountInfo{Email: "user@example.com"}, false},
 		{"display name only", provider.AccountInfo{DisplayName: "Ada"}, false},
+
+		// subscriptionType is a storage echo, not identity. Spike-verified on
+		// 2.1.232 (2026-08-16): the husk left by a failed refresh retains the
+		// field, and the probe echoes the plan label of a login that no longer
+		// exists. Counting it let app code commit the husk over the account's
+		// credential slot and destroy it.
+		{"husk echo", provider.AccountInfo{
+			SubscriptionType: "Claude Max",
+			APIProvider:      "firstParty",
+		}, true},
+		{"subscription only", provider.AccountInfo{SubscriptionType: "pro"}, true},
+		// A real subscription login reports its email alongside the plan.
+		{"subscription with email", provider.AccountInfo{
+			SubscriptionType: "Claude Max",
+			Email:            "user@example.com",
+			APIProvider:      "firstParty",
+		}, false},
 
 		// `tokenSource:"none"` is the CLI's explicit no-token marker, not a
 		// token source. Spike-verified on 2.1.219 (2026-08-03): after a failed
@@ -124,6 +140,16 @@ func TestClaudeUnauthenticated(t *testing.T) {
 		{"blanked login", provider.AccountInfo{
 			TokenSource: "none",
 			APIProvider: "firstParty",
+		}, true},
+		// The union of what both spikes saw on a destroyed login: 2.1.219
+		// reported the explicit no-token marker, 2.1.232 the retained plan
+		// label. A build that reports both at once must still read as logged
+		// out — neither field is identity, and the pair is what the CLI has
+		// left after blanking the tokens.
+		{"blanked login with a retained plan label", provider.AccountInfo{
+			SubscriptionType: "Claude Max",
+			TokenSource:      "none",
+			APIProvider:      "firstParty",
 		}, true},
 		{"token source none only", provider.AccountInfo{TokenSource: "none"}, true},
 		{"token source none padded", provider.AccountInfo{TokenSource: " None "}, true},

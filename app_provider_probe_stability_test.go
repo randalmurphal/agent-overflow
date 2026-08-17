@@ -110,10 +110,7 @@ func newStableProbeTestApp(
 	if err != nil {
 		t.Fatal(err)
 	}
-	credentials, err := provideraccounts.NewCredentials(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
+	credentials := newTestProviderCredentials(t, t.TempDir())
 	activePath, err := credentials.ActiveCredentialPath(string(provider.Codex))
 	if err != nil {
 		t.Fatal(err)

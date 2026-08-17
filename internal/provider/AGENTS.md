@@ -48,7 +48,7 @@ bug fix — see `t3-improvements.md` §2.3.
 
 ## Child environment
 
-`BuildEnvironment` and `FilterEnvironment` (`process.go`) are the two
+`BuildEnvironment` and `FilterEnvironment` (`env.go`) are the two
 entry points every provider child environment is assembled through —
 `Spawn`, `claude.Login`, both MCP-status fetchers, `claudetui`'s full
 `[]string` environment, and `textgen.ExecCLI`. Both apply `appimage.Scrub`

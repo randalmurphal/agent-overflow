@@ -16,9 +16,14 @@ import (
 // It refuses to run outside a test binary: it exists to seed
 // credentials for tests, and keeping it inert elsewhere means no
 // production path can grow to depend on it.
+//
+// It deliberately bypasses the sign-out refusal in writeActiveCredential.
+// That refusal binds Agent Overflow's own commits; this helper impersonates
+// the provider CLI, which is precisely the actor that writes a husk over the
+// canonical credential — the state several fixtures exist to reproduce.
 func (c *Credentials) WriteNativeCredentialForTest(providerName string, data []byte) error {
 	if !testing.Testing() {
 		return errors.New("provideraccounts: WriteNativeCredentialForTest is only available inside a test binary")
 	}
-	return c.writeActiveCredential(providerName, data)
+	return c.storeActiveCredential(providerName, data)
 }

@@ -36,6 +36,11 @@ func Login(ctx context.Context, cfg LoginConfig) error {
 	loginCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
+	// Plain CommandContext (instant SIGKILL on timeout) is fine here, unlike
+	// the account probes' GracefulCancel: the login home is always a fresh
+	// ephemeral directory, so no existing refresh chain is ever at stake — a
+	// kill mid-exchange abandons a brand-new grant, it cannot brick a saved
+	// account.
 	cmd := exec.CommandContext(loginCtx, binary, "auth", "login", "--claudeai")
 	env := map[string]string{"CLAUDE_CONFIG_DIR": cfg.ConfigDir}
 	if cfg.BrowserExecutable != "" {

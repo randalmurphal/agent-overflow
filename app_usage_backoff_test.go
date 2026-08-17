@@ -3,6 +3,9 @@ package main
 import (
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -117,5 +120,162 @@ func TestUsageBackoffLedgerOutcomeTransitions(t *testing.T) {
 	ledger.Note(key, "a", nil)
 	if got := ledger.Remaining(key, "a"); got != 0 {
 		t.Fatalf("Remaining after success = %v, want the hold cleared", got)
+	}
+}
+
+// A server throttle runs for about an hour; app restarts are far more frequent
+// than that. A hold that does not survive one hands the next boot a clean
+// slate and walks straight back into the live window.
+func TestUsageBackoffLedgerHoldsSurviveARestart(t *testing.T) {
+	now := time.Date(2026, 8, 16, 12, 0, 0, 0, time.UTC)
+	path := filepath.Join(t.TempDir(), "usage-backoff.json")
+
+	ledger := newBackoffLedgerForTest(&now)
+	ledger.Load(path)
+	ledger.Note(
+		string(provider.Claude),
+		"selected",
+		&claude.RateLimitedError{RetryAfter: time.Hour},
+	)
+
+	reloadedNow := now.Add(10 * time.Minute)
+	reloaded := newBackoffLedgerForTest(&reloadedNow)
+	reloaded.Load(path)
+	if got := reloaded.Remaining(string(provider.Claude), "selected"); got != 50*time.Minute {
+		t.Fatalf("Remaining after restart = %v, want the 50m left of the hold", got)
+	}
+	if got := reloaded.Remaining(string(provider.Claude), "other"); got != 0 {
+		t.Fatalf("Remaining(other) = %v, want the per-account scope preserved", got)
+	}
+
+	// A success clears the hold, and that clearing persists too.
+	reloaded.Note(string(provider.Claude), "selected", nil)
+	clearedNow := reloadedNow
+	cleared := newBackoffLedgerForTest(&clearedNow)
+	cleared.Load(path)
+	if got := cleared.Remaining(string(provider.Claude), "selected"); got != 0 {
+		t.Fatalf("Remaining after a successful probe = %v, want 0", got)
+	}
+}
+
+// The headerless escalation is what keeps a 429 with no Retry-After from
+// retrying into the same window, so the strike count has to outlive a restart
+// even once its own hold has expired.
+func TestUsageBackoffLedgerHeadlessStrikesSurviveARestart(t *testing.T) {
+	now := time.Date(2026, 8, 16, 12, 0, 0, 0, time.UTC)
+	path := filepath.Join(t.TempDir(), "usage-backoff.json")
+
+	ledger := newBackoffLedgerForTest(&now)
+	ledger.Load(path)
+	ledger.Note(string(provider.Claude), "selected", &claude.RateLimitedError{})
+	if got := ledger.Remaining(string(provider.Claude), "selected"); got != initialUsageProbeBackoff {
+		t.Fatalf("first headerless hold = %v, want %v", got, initialUsageProbeBackoff)
+	}
+
+	// Restart well past the first hold: it is gone, the strike is not.
+	restartNow := now.Add(2 * initialUsageProbeBackoff)
+	restarted := newBackoffLedgerForTest(&restartNow)
+	restarted.Load(path)
+	if got := restarted.Remaining(string(provider.Claude), "selected"); got != 0 {
+		t.Fatalf("expired hold = %v, want it pruned on load", got)
+	}
+	restarted.Note(string(provider.Claude), "selected", &claude.RateLimitedError{})
+	if got := restarted.Remaining(string(provider.Claude), "selected"); got != 2*initialUsageProbeBackoff {
+		t.Fatalf("second headerless hold = %v, want the escalation preserved", got)
+	}
+}
+
+// A strike count whose own hold has already expired is the only surviving
+// record of how deep the escalation had gone, and every Note rewrites the
+// WHOLE file — including for other accounts. A save that walked only the live
+// holds would drop the strike-only account on the next unrelated write, so its
+// following headerless 429 would restart at 10m instead of the 20m it earned
+// and retry back into the same server window.
+func TestUsageBackoffLedgerKeepsStrikeOnlyEntriesThroughAnotherAccountsWrite(t *testing.T) {
+	base := time.Date(2026, 8, 16, 12, 0, 0, 0, time.UTC)
+	path := filepath.Join(t.TempDir(), "usage-backoff.json")
+	key := string(provider.Claude)
+
+	now := base
+	first := newBackoffLedgerForTest(&now)
+	first.Load(path)
+	first.Note(key, "a", &claude.RateLimitedError{})
+
+	// Past a's hold: it loads as a strike with no live hold, which is the
+	// state only another account's write can now carry forward.
+	later := base.Add(2 * initialUsageProbeBackoff)
+	second := newBackoffLedgerForTest(&later)
+	second.Load(path)
+	if got := second.Remaining(key, "a"); got != 0 {
+		t.Fatalf("Remaining(a) after its hold expired = %v, want 0", got)
+	}
+	second.Note(key, "b", &claude.RateLimitedError{})
+
+	third := newBackoffLedgerForTest(&later)
+	third.Load(path)
+	third.Note(key, "a", &claude.RateLimitedError{})
+	if got := third.Remaining(key, "a"); got != 2*initialUsageProbeBackoff {
+		t.Fatalf(
+			"Remaining(a) = %v, want %v — a's escalation survived b's write",
+			got,
+			2*initialUsageProbeBackoff,
+		)
+	}
+	if got := third.Remaining(key, "b"); got != initialUsageProbeBackoff {
+		t.Fatalf("Remaining(b) = %v, want %v", got, initialUsageProbeBackoff)
+	}
+}
+
+// The holds are worth persisting only because they outlive the process, so a
+// write that cannot land silently demotes the ledger to memory-only — exactly
+// the "rate limits never update anymore" state this file exists to prevent,
+// minus any way to diagnose it. It must be announced.
+func TestUsageBackoffLedgerAnnouncesAFailedWrite(t *testing.T) {
+	blocker := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(blocker, []byte("regular file"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 8, 16, 12, 0, 0, 0, time.UTC)
+	ledger := newBackoffLedgerForTest(&now)
+	// Load first, and only capture afterwards: an unreadable path announces
+	// itself too, so the assertion below can only be satisfied by the write.
+	ledger.Load(filepath.Join(blocker, "usage-backoff.json"))
+	logs := captureLogOutput(t)
+
+	ledger.Note(string(provider.Claude), "selected", &claude.RateLimitedError{RetryAfter: time.Hour})
+
+	if !strings.Contains(logs.String(), "usage backoff") {
+		t.Fatal("a backoff write that could not land was swallowed")
+	}
+	// The hold still applies for this process; only its durability was lost.
+	if got := ledger.Remaining(string(provider.Claude), "selected"); got != time.Hour {
+		t.Fatalf("Remaining after a failed write = %v, want the hold still enforced", got)
+	}
+}
+
+// A corrupt file must cost the holds, never the boot.
+func TestUsageBackoffLedgerToleratesACorruptFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "usage-backoff.json")
+	if err := os.WriteFile(path, []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	logs := captureLogOutput(t)
+
+	now := time.Date(2026, 8, 16, 12, 0, 0, 0, time.UTC)
+	ledger := newBackoffLedgerForTest(&now)
+	ledger.Load(path)
+
+	if got := ledger.Remaining(string(provider.Claude), "selected"); got != 0 {
+		t.Fatalf("Remaining after a corrupt load = %v, want 0", got)
+	}
+	if !strings.Contains(logs.String(), "usage backoff") {
+		t.Fatal("a corrupt backoff file was discarded silently")
+	}
+	// The ledger still works, and repairs the file on its next write.
+	ledger.Note(string(provider.Claude), "selected", &claude.RateLimitedError{RetryAfter: time.Hour})
+	repaired := newBackoffLedgerForTest(&now)
+	repaired.Load(path)
+	if got := repaired.Remaining(string(provider.Claude), "selected"); got != time.Hour {
+		t.Fatalf("Remaining after repair = %v, want the new hold", got)
 	}
 }

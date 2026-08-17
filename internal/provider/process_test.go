@@ -938,3 +938,159 @@ func TestReadBoundedLineEOFPartialOverCap(t *testing.T) {
 		t.Fatalf("expected ErrLineTooLong, got %v", err)
 	}
 }
+
+// writeSignalTrapScript writes a shell script that records the signal it was
+// asked to stop with. It stands in for a provider CLI holding a credential it
+// has not written yet: SIGTERM leaves the marker, SIGKILL cannot.
+func writeSignalTrapScript(t *testing.T, marker string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "trap.sh")
+	script := "#!/bin/sh\n" +
+		"trap 'printf term > \"" + marker + "\"; exit 0' TERM\n" +
+		"echo ready\n" +
+		"while true; do sleep 0.05; done\n"
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// writeSignalIgnoringScript writes the same loop with SIGTERM ignored
+// outright: a provider CLI that is wedged rather than merely busy. It writes
+// no marker under any signal, which is the property the escalation test
+// asserts — a future edit that gave this script a handler would silently turn
+// that test into another graceful-exit test.
+func writeSignalIgnoringScript(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "ignore-term.sh")
+	script := "#!/bin/sh\n" +
+		"trap '' TERM\n" +
+		"echo ready\n" +
+		"while true; do sleep 0.05; done\n"
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// A probe runs under a deadline while the CLI may be mid credential write, so
+// context cancellation must arrive as SIGTERM the child can act on. exec's
+// default cancel is an instant SIGKILL, which is what could end an account's
+// refresh chain between the token endpoint answering and the write to disk.
+func TestGracefulCancelSignalsTermBeforeKilling(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "signal")
+	binary := writeSignalTrapScript(t, marker)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	p, err := Spawn(ctx, SpawnConfig{Binary: binary, GracefulCancel: true})
+	if err != nil {
+		cancel()
+		t.Fatalf("spawn: %v", err)
+	}
+	defer p.Kill()
+	waitForScriptReady(t, p)
+
+	cancel()
+	select {
+	case <-p.Done():
+	case <-time.After(5 * time.Second):
+		t.Fatal("process did not exit after context cancellation")
+	}
+
+	got, err := os.ReadFile(marker)
+	if err != nil {
+		t.Fatalf("the child was killed without a chance to handle SIGTERM: %v", err)
+	}
+	if string(got) != "term" {
+		t.Fatalf("signal marker = %q, want term", got)
+	}
+	// The child exits 0, but the cancellation is still the reason it stopped —
+	// exec keeps that accounting because the Cancel hook returns nil rather
+	// than an error. Callers distinguish "the deadline ended this probe" from
+	// "the CLI answered and exited" through Err(), so a clean exit code must
+	// not read as a clean run.
+	if !errors.Is(p.Err(), context.Canceled) {
+		t.Fatalf("Err() = %v, want the context cancellation reported", p.Err())
+	}
+}
+
+// A child that ignores SIGTERM must not be able to outlive its context: the
+// grace is a courtesy for a CLI mid credential write, not permission to stay.
+// Without the WaitDelay escalation a wedged provider would hold its process
+// group — and whatever it was writing — for as long as it liked, and the
+// probe's deadline would guarantee nothing.
+func TestGracefulCancelEscalatesToKillWhenTermIsIgnored(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "signal")
+	binary := writeSignalIgnoringScript(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	p, err := Spawn(ctx, SpawnConfig{Binary: binary, GracefulCancel: true})
+	if err != nil {
+		cancel()
+		t.Fatalf("spawn: %v", err)
+	}
+	defer p.Kill()
+	waitForScriptReady(t, p)
+
+	cancel()
+	start := time.Now()
+	select {
+	case <-p.Done():
+	case <-time.After(5 * time.Second):
+		t.Fatal("a child ignoring SIGTERM was never escalated to SIGKILL")
+	}
+	// The lower bound is loose on purpose: what matters is that the child was
+	// given its grace rather than killed outright, not the exact killGrace.
+	if elapsed := time.Since(start); elapsed < time.Second {
+		t.Fatalf("exited %v after cancel, want the SIGTERM grace served first", elapsed)
+	}
+	if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("a graceful-exit marker appeared for a child that ignores SIGTERM: %v", err)
+	}
+}
+
+// The opt-in is real: without it the default instant SIGKILL still applies,
+// which is what session teardown wants.
+func TestSpawnWithoutGracefulCancelKillsImmediately(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "signal")
+	binary := writeSignalTrapScript(t, marker)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	p, err := Spawn(ctx, SpawnConfig{Binary: binary})
+	if err != nil {
+		cancel()
+		t.Fatalf("spawn: %v", err)
+	}
+	defer p.Kill()
+	waitForScriptReady(t, p)
+
+	cancel()
+	select {
+	case <-p.Done():
+	case <-time.After(5 * time.Second):
+		t.Fatal("process did not exit after context cancellation")
+	}
+
+	if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("SIGTERM handler ran without GracefulCancel: %v", err)
+	}
+}
+
+// waitForScriptReady blocks until the trap script has installed its handler,
+// so a cancellation cannot race the trap being registered.
+func waitForScriptReady(t *testing.T, p *Process) {
+	t.Helper()
+	ready := make(chan error, 1)
+	go func() {
+		_, err := p.ReadLine()
+		ready <- err
+	}()
+	select {
+	case err := <-ready:
+		if err != nil {
+			t.Errorf("read from trap script: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("trap script never reported ready")
+	}
+}

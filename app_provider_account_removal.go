@@ -53,7 +53,29 @@ func (a *App) RemoveProviderAccount(providerName, accountID string) error {
 
 	var replacement provideraccounts.Account
 	if removingActive && len(accounts) > 1 {
-		replacement = accounts[(removeIndex+1)%len(accounts)]
+		// The next card in display order inherits the selection — skipping any
+		// slot the provider signed out. Activating a husk can only be refused,
+		// and refusing here is a lockout: the user could not remove the active
+		// account until they first repaired an unrelated dead one. When no
+		// usable replacement exists, removal signs the provider out, exactly
+		// as removing the final account does.
+		for offset := 1; offset < len(accounts); offset++ {
+			candidate := accounts[(removeIndex+offset)%len(accounts)]
+			usable, usableErr := a.providerCredentials.CredentialUsable(
+				providerName,
+				candidate.ID,
+				false,
+			)
+			if usableErr != nil {
+				// A read that failed is not a verdict — the activation below
+				// still validates for real.
+				usable = true
+			}
+			if usable {
+				replacement = candidate
+				break
+			}
+		}
 	}
 	var replacementCredential provideraccounts.CredentialSnapshot
 	if replacement.ID != "" {
@@ -73,10 +95,15 @@ func (a *App) RemoveProviderAccount(providerName, accountID string) error {
 		accountID,
 		false,
 	)
-	hasSavedSnapshot := savedErr == nil
 	if savedErr != nil && !provideraccounts.IsCredentialMissing(savedErr) {
 		return fmt.Errorf("read saved %s account before removal: %w", providerName, savedErr)
 	}
+	// A husked slot counts as holding nothing: the write layer refuses to
+	// persist a husk, so treating it as restorable would turn a clean unwind
+	// into a rollback error that buries the real cause. Skipping the rewrite
+	// leaves the same state either way — an account that needs a fresh login.
+	hasSavedSnapshot := savedErr == nil &&
+		!a.providerCredentials.CredentialSignedOut(providerName, savedSnapshot.Data)
 
 	var activeSnapshot provideraccounts.CredentialSnapshot
 	hasActiveSnapshot := false
