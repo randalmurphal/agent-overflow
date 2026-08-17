@@ -1338,6 +1338,19 @@ Useful trace records:
   for a different thread). Every session emits on exactly one of these
   paths, so a switch that produced no record at all is itself a signal.
   Needs a `make dev DEBUG=1` build (`VITE_AGENT_OVERFLOW_UI_TRACE=1`).
+- `frame.loaf` — one record per long animation frame (>50ms, the spec's
+  fixed threshold), session-wide (`utils/loafTrace.ts`, light-tier —
+  the browser only delivers entries for frames that exceeded the
+  threshold, so there is no steady-state cost). Whole-frame duration,
+  `blockingMs`, rendering-phase timestamps, and top-3 script
+  attribution — this covers what the chase telemetry can't: slow frames
+  outside any chase, and frames whose scripts were fine but whose
+  style/layout phase blew the budget (invisible to `longtask`). One
+  `frame.loaf.install` record per session states whether the observer
+  is live, so a capture with the install record and no `frame.loaf`
+  records is positive evidence no frame exceeded 50ms — for a visible
+  jump, that plus clean chase cadence points post-commit
+  (WebView2/DWM presentation), not at the renderer.
 
 Work backward from the visible symptom to the last relevant
 `scroll.contentRO`. The record carries the resolver's decision

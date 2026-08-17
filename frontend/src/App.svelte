@@ -64,6 +64,7 @@
   import { clearCommandRegistry, listCommands, type CommandContext } from './lib/stores/commandRegistry.svelte';
   import { registerBuiltinCommands, makeCommandContext } from './lib/stores/builtinCommands.svelte';
   import { installUiRenderTraceApi } from './lib/utils/uiRenderTrace';
+  import { installLoafTrace } from './lib/utils/loafTrace';
   import { warmHighlightTables } from './lib/utils/syntaxSpans';
   import { dispatchTextEditing } from './lib/utils/textEditingKeymap';
   import { installExternalLinkDelegate } from './lib/utils/externalLinks';
@@ -330,6 +331,7 @@
     void hydrateWorkflowAttention();
     void loadSettingsAndWarmModelCatalogs();
     installUiRenderTraceApi();
+    const cleanupLoafTrace = installLoafTrace();
     const cleanupExternalLinks = installExternalLinkDelegate();
     const cleanupZoomKeys = installZoomKeybindings();
 
@@ -397,6 +399,7 @@
       cleanupUpdates();
       cleanupExternalLinks();
       cleanupZoomKeys();
+      cleanupLoafTrace();
       window.removeEventListener('pagehide', flushPaneLayout);
       window.removeEventListener('beforeunload', flushPaneLayout);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
