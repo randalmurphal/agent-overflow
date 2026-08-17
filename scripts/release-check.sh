@@ -8,6 +8,13 @@ run() {
 	"$@"
 }
 
+# The checks below regenerate derived files (Wails bindings, icons). If any
+# regenerated output differs from what's committed, the release workflow's
+# clean-tree guard will fail in CI — catch the drift here instead. Uncommitted
+# work you started with is fine; only changes the checks themselves introduce
+# fail.
+STATUS_BEFORE=$(git -C "$ROOT_DIR" status --porcelain)
+
 run sh -c "cd '$ROOT_DIR/frontend' && pnpm run build"
 run make -C "$ROOT_DIR" go-build
 run make -C "$ROOT_DIR" go-test
@@ -24,3 +31,15 @@ case "$(uname -s)" in
 		printf '\n==> Skipping make build-wsl on %s; run it from Linux/WSL for Windows release artifacts.\n' "$(uname -s)"
 		;;
 esac
+
+STATUS_AFTER=$(git -C "$ROOT_DIR" status --porcelain)
+if [ "$STATUS_AFTER" != "$STATUS_BEFORE" ]; then
+	echo "ERROR: the checks changed tracked files — regenerated output differs from what's committed." >&2
+	echo "Commit the changes below or the release workflow's clean-tree guard will fail in CI:" >&2
+	tmpdir=$(mktemp -d)
+	trap 'rm -rf "$tmpdir"' EXIT
+	printf '%s\n' "$STATUS_BEFORE" | sort > "$tmpdir/before"
+	printf '%s\n' "$STATUS_AFTER" | sort > "$tmpdir/after"
+	comm -13 "$tmpdir/before" "$tmpdir/after" >&2
+	exit 1
+fi
