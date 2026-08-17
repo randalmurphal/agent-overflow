@@ -39,11 +39,12 @@ import (
 //     a restart still shows the sidebar pill and keeps Retry reachable.
 //
 // It runs on worktrees THIS app cut for a chat thread: CreateThread's
-// worktree-branch option and PrepareThreadWorktree. Adopting a sibling's
-// worktree, attaching an existing branch's checkout, forks, and PR threads all
-// skip it — setup either already ran there or the provisioning state is
-// unknowable, and re-running an arbitrary argv recipe over someone else's
-// checkout is not a safe default.
+// worktree-branch option, PrepareThreadWorktree, and AttachThreadWorktree —
+// the recipe is a project convention about a freshly created checkout, so
+// whether the branch is new (the first two) or pre-existing (attach) does not
+// matter. Adopting a sibling's worktree, forks, and PR threads skip it: no
+// worktree is created there, and running an arbitrary argv recipe over a
+// checkout someone else provisioned is not a safe default.
 //
 // Lifecycle mirrors startBackgroundGitFetch: run contexts derive from
 // lifeCtx() so cancellation kills the process group in flight, and a WaitGroup

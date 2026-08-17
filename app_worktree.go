@@ -227,6 +227,14 @@ func (a *App) PrepareThreadWorktree(threadID, baseBranch, requestedBranch string
 // flipping to the existing worktree before calling here.
 func (a *App) AttachThreadWorktree(threadID, branch string) (store.Thread, error) {
 	unlock := a.threadLocks().Lock(threadID)
+	// Registered BEFORE the unlock defer so LIFO runs it AFTER the lock is
+	// released — same rationale as PrepareThreadWorktree's kickoff.
+	var provisioned *store.Thread
+	defer func() {
+		if provisioned != nil {
+			a.startThreadWorktreeSetup(*provisioned)
+		}
+	}()
 	defer unlock()
 
 	// Read under the lock — see PrepareThreadWorktree for why a pre-lock read
@@ -280,15 +288,18 @@ func (a *App) AttachThreadWorktree(threadID, branch string) (store.Thread, error
 		return store.Thread{}, err
 	}
 	a.purgeRelocatedClaudeSessions(threadID, purge)
-	// Attaching an existing branch's checkout deliberately does NOT run the
-	// project's setup recipe: the branch already exists and its checkout may
-	// be one a sibling thread provisioned. Only the run for the workspace the
-	// thread just left is released.
+	// The thread just left whatever workspace it was in; a setup run still
+	// going for that one describes a worktree it no longer occupies.
 	a.releaseThreadWorktreeSetup(threadID, thread.WorkspacePath)
 	refreshed, err := a.restartSessionIfAffected(threadID, "workspace")
 	if err != nil {
 		return store.Thread{}, fmt.Errorf("attach worktree: refresh thread after workspace switch: %w", err)
 	}
+	// This call cut the worktree. The branch already existed, but the checkout
+	// is freshly created (attach refuses a branch checked out anywhere else),
+	// so the project's recipe runs over it like any other fresh cut — the
+	// recipe is a convention about the directory, not the branch.
+	provisioned = &refreshed
 	return refreshed, nil
 }
 

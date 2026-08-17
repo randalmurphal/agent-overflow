@@ -16,6 +16,7 @@ import (
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/testutil"
 	"agent-overflow/internal/triage"
+	"agent-overflow/internal/worktreesetup"
 )
 
 func TestGitCreateAndRemoveWorktree(t *testing.T) {
@@ -125,6 +126,89 @@ func TestAttachThreadWorktreeKeepsMessageAnchors(t *testing.T) {
 		t.Fatalf("updated workspace/worktree = %q/%q, want attached worktree", updated.WorkspacePath, updated.WorktreePath)
 	}
 	assertThreadMessageAnchorCount(t, app, thread.ID, 1)
+}
+
+// seedWorktreeSetupRecipe registers repo as a project, writes a marker file at
+// its root, and configures a copy-only recipe naming it. The marker landing in
+// a worktree is proof the recipe ran there.
+func seedWorktreeSetupRecipe(t *testing.T, app *App, repo string) store.Project {
+	t.Helper()
+	project, err := app.ensureProjectForWorkspace(repo)
+	if err != nil {
+		t.Fatalf("ensureProjectForWorkspace() error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "setup-marker.txt"), []byte("project convention\n"), 0o644); err != nil {
+		t.Fatalf("write setup marker: %v", err)
+	}
+	if err := app.store.UpdateProjectWorktreeSetup(project.ID, &worktreesetup.Config{Copy: []string{"setup-marker.txt"}}); err != nil {
+		t.Fatalf("UpdateProjectWorktreeSetup() error = %v", err)
+	}
+	return project
+}
+
+// assertSetupRecipeRanIn joins any in-flight setup run for the thread and
+// requires the marker the recipe copies to exist in the worktree — proof the
+// recipe ran there, since the durable state spells success and never-ran the
+// same way (both are "").
+func assertSetupRecipeRanIn(t *testing.T, app *App, threadID, worktreePath string) {
+	t.Helper()
+	joinSetupRun(t, app, threadID)
+	if _, err := os.Stat(filepath.Join(worktreePath, "setup-marker.txt")); err != nil {
+		state, snapErr := app.GetThreadWorktreeSetup(threadID)
+		t.Fatalf("setup recipe did not copy the marker into %s: %v (run state %+v, snapshot err %v)",
+			worktreePath, err, state, snapErr)
+	}
+}
+
+// Cutting a worktree for a NEW branch runs the project's setup recipe over it.
+func TestPrepareThreadWorktreeRunsProjectSetupRecipe(t *testing.T) {
+	app := newTestAppWithStore(t)
+	repo := testutil.InitGitRepo(t)
+	project := seedWorktreeSetupRecipe(t, app, repo)
+
+	thread := testThread("thread-prepare-runs-setup")
+	thread.ProjectID = project.ID
+	thread.WorkspacePath = repo
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread() error = %v", err)
+	}
+
+	updated, err := app.PrepareThreadWorktree(thread.ID, "", "feature/setup-prepare", false)
+	if err != nil {
+		t.Fatalf("PrepareThreadWorktree() error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = app.gitCore().RemoveWorktreeForce(repo, updated.WorktreePath, true)
+	})
+	assertSetupRecipeRanIn(t, app, thread.ID, updated.WorktreePath)
+}
+
+// Attaching a worktree to an EXISTING branch runs the recipe too: the branch
+// pre-exists, but the checkout is freshly created, and the recipe is a project
+// convention about the directory, not the branch. Regression — attach used to
+// skip setup entirely, leaving an MR-review worktree without the files the
+// project declared.
+func TestAttachThreadWorktreeRunsProjectSetupRecipe(t *testing.T) {
+	app := newTestAppWithStore(t)
+	repo := testutil.InitGitRepo(t)
+	testutil.RunGit(t, repo, "branch", "feature/setup-attach")
+	project := seedWorktreeSetupRecipe(t, app, repo)
+
+	thread := testThread("thread-attach-runs-setup")
+	thread.ProjectID = project.ID
+	thread.WorkspacePath = repo
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread() error = %v", err)
+	}
+
+	updated, err := app.AttachThreadWorktree(thread.ID, "feature/setup-attach")
+	if err != nil {
+		t.Fatalf("AttachThreadWorktree() error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = app.gitCore().RemoveWorktreeForce(repo, updated.WorktreePath, true)
+	})
+	assertSetupRecipeRanIn(t, app, thread.ID, updated.WorktreePath)
 }
 
 // Regression: the empty-draft cleanup can delete a freshly materialized
