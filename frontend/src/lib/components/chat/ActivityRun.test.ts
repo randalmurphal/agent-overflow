@@ -744,7 +744,7 @@ describe('<ActivityRun>', () => {
       await updateSetting('activityRunWindowRows', 10);
       const pane = await buildPane(undefined, items);
       const view = render(MessageTimeline, { props: { pane } });
-      pane.requestScrollToItem(itemId, { flash: true });
+      pane.requestScrollToItem(itemId);
       await flushJump();
       return { ...view, pane };
     }
@@ -826,7 +826,7 @@ describe('<ActivityRun>', () => {
       const { container, getByTestId, queryByTestId } = render(MessageTimeline, {
         props: { pane },
       });
-      pane.requestScrollToItem('t20', { flash: true });
+      pane.requestScrollToItem('t20');
       await flushJump();
 
       // Prose closed this run, so the jump pinned its window with no

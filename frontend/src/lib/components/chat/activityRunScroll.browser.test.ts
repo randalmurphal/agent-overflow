@@ -394,7 +394,7 @@ describe('activity run — jump lands on the target', () => {
     // relocate the window AND scroll — not merely scroll.
     expect(clip.querySelector(`[data-item-id="${TARGET}"]`)).toBeNull();
 
-    pane.requestScrollToItem(TARGET, { flash: true });
+    pane.requestScrollToItem(TARGET);
     await waitFor(
       () => clip.querySelector(`[data-item-id="${TARGET}"]`) !== null,
       'jump target to mount inside the run',

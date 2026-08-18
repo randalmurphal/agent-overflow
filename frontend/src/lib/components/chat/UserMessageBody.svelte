@@ -10,10 +10,10 @@
    * guarantee), so that branch cannot hide a clipped message.
    *
    * The fade is a MASK, not a gradient overlay. The bubble is
-   * `bg-surface-2/60` — a translucent fill over the pane background, and over
-   * the target-flash glow while a jump animates it — so an opaque overlay
-   * would have to reproduce `color-mix(surface-2 60%, whatever is behind)`
-   * and would still be wrong in one theme, wrong mid-flash, and wrong again
+   * `bg-surface-2/60` — a translucent fill over the pane background — so an
+   * opaque overlay would have to reproduce
+   * `color-mix(surface-2 60%, whatever is behind)`
+   * and would still be wrong in one theme, and wrong again
    * the next time either token moves. Masking fades the TEXT to transparent
    * and lets the real bubble background through untouched, which is correct
    * by construction in both themes with no colour duplicated from the bubble.

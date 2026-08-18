@@ -29,7 +29,6 @@
   import type { ExpandedImagePreview } from '../../utils/attachmentPreview.svelte';
   import type { UserMessageActions } from './userMessageActions';
   import { resolveVisibleTimelineNodeIndex } from './timelineScroll';
-  import { createTimelineTargetFlash } from './timelineTargetFlash.svelte';
   import { observeScrollSurfaceContentWidth } from './scrollSurfaceWidth';
   import { createTimelineRestore } from './timelineRestore.svelte';
   import { createTimelineSizePriors } from './timelineSizePriors.svelte';
@@ -95,7 +94,6 @@
   // content never reaches anyway. Tune either number to taste.
   const TOP_FADE_PX = 32;
   const SCROLLBAR_SAFE_PX = 16;
-  const TARGET_FLASH_MS = 900;
   // happy-dom returns 0 for clientHeight/clientWidth, which makes the
   // windowing engine mount zero rows. In happy-dom test runs we mount
   // everything via the virtualizer's renderAll seam so test assertions
@@ -163,8 +161,6 @@
   // Imperative handle into the virtualizer. Set once it mounts.
   let listRef: TimelineVirtualizerHandle | undefined = $state(undefined);
   let scrollSurfaceContentWidth = $state(0);
-
-  const targetFlash = createTimelineTargetFlash(TARGET_FLASH_MS);
 
   // Node-derivation pipeline (structural grouping, the reveal gate, rail
   // classification, response-pill duration) lives in
@@ -376,7 +372,6 @@
     armWarmupWithReset,
     resetAutoLoadGates: () => paging.resetGates(),
     clearTimelineWindowPruneShift: () => windowAnchor.clearTimelineWindowPruneShift(),
-    targetFlash,
   });
 
   const diag = createTimelineDiagnostics({
@@ -694,14 +689,13 @@
     if (req.nonce === 0) return;
     if (req.nonce === lastHandledScrollNonce) return;
     lastHandledScrollNonce = req.nonce;
-    void restore.scrollToItem(req.itemId, { flash: req.flash });
+    void restore.scrollToItem(req.itemId);
   });
 
   onDestroy(() => {
     quietWork.invalidate();
     restore.invalidateRestore();
     restore.saveSnapshotOnDestroy();
-    targetFlash.clear();
     paging.resetGates();
     stick.detach();
   });
@@ -790,8 +784,6 @@
             {onImageExpand}
             {userMessageActions}
             codexSubagentReceiverLabels={rows.codexReceiverLabels}
-            targetFlash={targetFlash.itemId === node.item.id}
-            targetFlashNonce={targetFlash.itemId === node.item.id ? targetFlash.nonce : 0}
           />
         {:else if node.kind === 'group'}
           <SubagentGroup {pane} group={node} {depth} {renderNode} />

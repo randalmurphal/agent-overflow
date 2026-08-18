@@ -10,7 +10,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { ThreadPane } from '../../stores/thread.svelte';
 import type { UseStickToBottomController } from '../../utils/scroll/index.svelte';
-import type { TimelineTargetFlash } from './timelineTargetFlash.svelte';
 import { createTimelineRestore } from './timelineRestore.svelte';
 
 function makeHarness(threadId: string) {
@@ -45,7 +44,6 @@ function makeHarness(threadId: string) {
     armWarmupWithReset: () => {},
     resetAutoLoadGates: () => {},
     clearTimelineWindowPruneShift: () => {},
-    targetFlash: { flash: () => {} } as unknown as TimelineTargetFlash,
   });
 
   return { restore, persistSizePriors, persistSizePriorsExact };

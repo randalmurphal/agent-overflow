@@ -295,14 +295,9 @@ export function withViewportBottomHeld(
   hold.call(controller, change, opts);
 }
 
-export interface ScrollToItemOptions {
-  flash?: boolean;
-}
-
 export interface ScrollToItemRequest {
   itemId: string;
   nonce: number;
-  flash: boolean;
 }
 
 export function loadOlderResult(

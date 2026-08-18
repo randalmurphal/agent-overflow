@@ -137,8 +137,7 @@ describe('user message clamp', () => {
   it('fades the glyphs rather than painting a colour over the bubble', async () => {
     // A gradient overlay would have to reproduce the bubble's translucent
     // `bg-surface-2/60` composited over whatever is behind it; a mask lets
-    // the real background through, so it is right in both themes and while
-    // the target-flash glow is animating.
+    // the real background through, so it is right in both themes.
     const host = await mountMessage(LONG);
     expect(getComputedStyle(clip(host)).maskImage).toContain('linear-gradient');
   });

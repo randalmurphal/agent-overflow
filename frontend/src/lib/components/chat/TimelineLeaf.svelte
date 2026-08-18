@@ -24,8 +24,6 @@
     onImageExpand,
     userMessageActions,
     codexSubagentReceiverLabels = new Map<string, string>(),
-    targetFlash = false,
-    targetFlashNonce = 0,
   }: {
     pane: ThreadPane;
     item: Item;
@@ -33,8 +31,6 @@
     onImageExpand?: (preview: ExpandedImagePreview) => void;
     userMessageActions?: UserMessageActions;
     codexSubagentReceiverLabels?: ReadonlyMap<string, string>;
-    targetFlash?: boolean;
-    targetFlashNonce?: number;
   } = $props();
 
   // Resolve by id at the row boundary so ordinary leaf streams can update
@@ -78,8 +74,6 @@
       item={displayItem}
       {onImageExpand}
       actions={userMessageActions}
-      {targetFlash}
-      {targetFlashNonce}
     />
   {:else if displayItem.kind === 'tool_call' || displayItem.kind === 'tool_completion'}
     <ToolCallCard {pane} item={displayItem} {codexSubagentReceiverLabels} />

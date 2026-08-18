@@ -31,18 +31,9 @@
     pane?: ThreadPane;
     onImageExpand?: (preview: ExpandedImagePreview) => void;
     actions?: UserMessageActions;
-    targetFlash?: boolean;
-    targetFlashNonce?: number;
   }
 
-  let {
-    item,
-    pane,
-    onImageExpand,
-    actions,
-    targetFlash = false,
-    targetFlashNonce = 0,
-  }: Props = $props();
+  let { item, pane, onImageExpand, actions }: Props = $props();
 
   const userMeta = $derived(parseUserMessageMeta(item.meta));
   const isWireOnlyUserMessage = $derived(userMeta?.wire_only === true);
@@ -202,11 +193,8 @@
       bind:this={bubbleEl}
       class="rounded-[18px] rounded-br-[8px] border border-border-subtle bg-surface-2/60
              px-4 py-2.5 text-[0.8125rem] leading-[1.55] text-fg shadow-sheet"
-      class:user-message-target-flash-a={targetFlash && targetFlashNonce % 2 === 0}
-      class:user-message-target-flash-b={targetFlash && targetFlashNonce % 2 === 1}
       class:w-[46rem]={editSession !== null}
       class:max-w-full={editSession !== null}
-      data-target-flash={targetFlash ? 'true' : undefined}
       data-testid="user-message-bubble"
     >
       {#if editSession && pane}
@@ -268,62 +256,3 @@
     </div>
   </div>
 </div>
-
-<style>
-  @keyframes user-message-target-glow-a {
-    0% {
-      border-color: color-mix(in oklab, var(--accent) 88%, var(--text-primary) 12%);
-      box-shadow:
-        0 0 0 1px color-mix(in oklab, var(--accent) 72%, transparent),
-        0 0 26px color-mix(in oklab, var(--accent) 34%, transparent);
-    }
-    58% {
-      border-color: color-mix(in oklab, var(--accent) 66%, var(--border-subtle));
-      box-shadow:
-        0 0 0 1px color-mix(in oklab, var(--accent) 38%, transparent),
-        0 0 18px color-mix(in oklab, var(--accent) 20%, transparent);
-    }
-    100% {
-      border-color: var(--border-subtle);
-      box-shadow: var(--shadow-sheet);
-    }
-  }
-
-  @keyframes user-message-target-glow-b {
-    0% {
-      border-color: color-mix(in oklab, var(--accent) 88%, var(--text-primary) 12%);
-      box-shadow:
-        0 0 0 1px color-mix(in oklab, var(--accent) 72%, transparent),
-        0 0 26px color-mix(in oklab, var(--accent) 34%, transparent);
-    }
-    58% {
-      border-color: color-mix(in oklab, var(--accent) 66%, var(--border-subtle));
-      box-shadow:
-        0 0 0 1px color-mix(in oklab, var(--accent) 38%, transparent),
-        0 0 18px color-mix(in oklab, var(--accent) 20%, transparent);
-    }
-    100% {
-      border-color: var(--border-subtle);
-      box-shadow: var(--shadow-sheet);
-    }
-  }
-
-  .user-message-target-flash-a {
-    animation: user-message-target-glow-a 900ms ease-out;
-  }
-
-  .user-message-target-flash-b {
-    animation: user-message-target-glow-b 900ms ease-out;
-  }
-
-  @media (prefers-reduced-motion: reduce) {
-    .user-message-target-flash-a,
-    .user-message-target-flash-b {
-      animation: none;
-      border-color: color-mix(in oklab, var(--accent) 70%, var(--border-subtle));
-      box-shadow:
-        0 0 0 1px color-mix(in oklab, var(--accent) 42%, transparent),
-        0 0 16px color-mix(in oklab, var(--accent) 18%, transparent);
-    }
-  }
-</style>

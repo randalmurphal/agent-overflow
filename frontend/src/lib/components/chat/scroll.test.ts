@@ -882,22 +882,6 @@ describe('scroll integration — scroll to item', () => {
     });
   });
 
-  it('flashes a user message after an animated scroll request lands', async () => {
-    const pane = await buildPane(undefined, [
-      makeItem({ id: 'user:target', kind: 'user_text', role: 'user', summary: 'jump target' }),
-    ]);
-    vi.spyOn(pane, 'loadUntilItem').mockResolvedValue(true);
-
-    const { container } = render(MessageTimeline, { props: { pane } });
-    pane.requestScrollToItem('user:target', { flash: true });
-
-    await waitFor(() => {
-      const target = container.querySelector('[data-target-flash="true"]');
-      expect(target).not.toBeNull();
-      expect(target?.textContent).toContain('jump target');
-    });
-  });
-
 });
 
 describe('scroll integration — composer height + layout invariance', () => {

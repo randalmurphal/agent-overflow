@@ -32,7 +32,6 @@ import {
 import { revealActivityRunItem } from '../../utils/activityRunWindow';
 import { captureTimelineAnchor } from './timelineScroll';
 import { isUiRenderTraceEnabled, recordUiTrace } from '../../utils/uiRenderTrace';
-import type { TimelineTargetFlash } from './timelineTargetFlash.svelte';
 
 export interface TimelineRestoreOptions {
   getPane(): ThreadPane;
@@ -57,7 +56,6 @@ export interface TimelineRestoreOptions {
   resetAutoLoadGates(): void;
   /** Wired to module 4's `clearTimelineWindowPruneShift`. */
   clearTimelineWindowPruneShift(): void;
-  targetFlash: TimelineTargetFlash;
 }
 
 export interface TimelineRestore {
@@ -69,7 +67,7 @@ export interface TimelineRestore {
   saveScrollSnapshot(): void;
   handleSwitchEdgePre(nextThreadId: string | null, nextSwitchGeneration: number): void;
   maybeRestoreAfterFlush(): void;
-  scrollToItem(id: string, opts: { flash: boolean }): Promise<void>;
+  scrollToItem(id: string): Promise<void>;
   saveSnapshotOnDestroy(): void;
 }
 
@@ -483,7 +481,7 @@ export function createTimelineRestore(options: TimelineRestoreOptions): Timeline
   // Scroll-to-item (search hits, plan rows, tray rows)
   // ============================================================
 
-  async function scrollToItem(id: string, opts: { flash: boolean }): Promise<void> {
+  async function scrollToItem(id: string): Promise<void> {
     const listRef = options.getListRef();
     if (!listRef || !id) return;
     const myToken = ++restoreToken;
@@ -514,12 +512,10 @@ export function createTimelineRestore(options: TimelineRestoreOptions): Timeline
       if (idx < 0) return;
       targetNode = options.getRevealedNodes()[idx];
     }
-    const targetItemId = targetNode?.kind === 'leaf' ? targetNode.item.id : id;
     // Explicit navigation: escape bottom follow, then jump (the write is
     // chokepoint-tagged via applyScrollTarget).
     options.stick.setEscapedFromLock(true);
     options.getListRef()?.scrollToIndex(idx, { align: 'center' });
-    if (opts.flash) options.targetFlash.flash(targetItemId);
   }
 
   function nextRestoreToken(): number {

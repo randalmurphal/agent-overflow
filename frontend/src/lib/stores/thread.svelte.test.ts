@@ -2623,18 +2623,9 @@ describe('createThreadPane', () => {
       const second = pane.scrollToItemRequest.nonce;
       expect(second).toBeGreaterThan(first);
       expect(pane.scrollToItemRequest.itemId).toBe('a');
-      expect(pane.scrollToItemRequest.flash).toBe(false);
       pane.requestScrollToItem('b');
       expect(pane.scrollToItemRequest.nonce).toBeGreaterThan(second);
       expect(pane.scrollToItemRequest.itemId).toBe('b');
-    });
-
-    it('requestScrollToItem carries flash option', () => {
-      const pane = createThreadPane();
-      pane.requestScrollToItem('revert-target-user-message', { flash: true });
-
-      expect(pane.scrollToItemRequest.itemId).toBe('revert-target-user-message');
-      expect(pane.scrollToItemRequest.flash).toBe(true);
     });
 
     it('scrollToItemRequest nonce stays monotonic across switchThread', async () => {

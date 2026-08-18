@@ -78,7 +78,6 @@ import {
   type LoadOlderResult,
   type PaneScrollController,
   type ScrollToItemRequest,
-  type ScrollToItemOptions,
   type ThreadPaneOptions,
 } from './threadPaneShared';
 
@@ -105,7 +104,6 @@ export type {
   LoadOlderResult,
   PaneScrollController,
   PreserveViewportBottomOptions,
-  ScrollToItemOptions,
   TimelineWindowAnchorOperation,
 } from './threadPaneShared';
 
@@ -423,7 +421,6 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
   let scrollToItemRequest: ScrollToItemRequest = $state({
     itemId: '',
     nonce: 0,
-    flash: false,
   });
 
   /**
@@ -1497,15 +1494,11 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
      * if the target isn't visible yet. The timeline handler is
      * responsible for awaiting `loadUntilItem` before scrolling.
      */
-    requestScrollToItem(
-      itemID: string,
-      options: ScrollToItemOptions = {},
-    ): void {
+    requestScrollToItem(itemID: string): void {
       if (!itemID) return;
       scrollToItemRequest = {
         itemId: itemID,
         nonce: scrollToItemRequest.nonce + 1,
-        flash: options.flash ?? false,
       };
     },
 
