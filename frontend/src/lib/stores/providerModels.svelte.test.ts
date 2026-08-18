@@ -77,6 +77,7 @@ describe('provider model catalog', () => {
     await preloadProviderModelsForSettings({
       claudeEnabled: true,
       codexEnabled: false,
+      claudeTuiEnabled: true,
     });
 
     expect(getModels).toHaveBeenCalledOnce();
@@ -85,6 +86,25 @@ describe('provider model catalog', () => {
       { slug: 'claude-model', name: '', provider: 'claude' },
     ]);
     expect(getProviderModels('codex')).toEqual([]);
+    // claude-tui shares claude's catalog, so it is never a preload target —
+    // enabling it must not buy a second round trip for the same list.
+    expect(getProviderModels('claude-tui')).toEqual([]);
+  });
+
+  it('does not preload a provider whose parent is disabled', async () => {
+    const getModels = setBindingMock('GetModelsForProvider', async (provider) => [
+      { slug: `${provider}-model`, name: '', provider: String(provider) },
+    ]);
+
+    await preloadProviderModelsForSettings({
+      claudeEnabled: false,
+      codexEnabled: false,
+      claudeTuiEnabled: true,
+    });
+
+    expect(getModels).not.toHaveBeenCalled();
+    expect(getProviderModels('claude')).toEqual([]);
+    expect(getProviderModels('claude-tui')).toEqual([]);
   });
 
   it('preload coalesces with in-flight provider loads', async () => {
@@ -98,6 +118,7 @@ describe('provider model catalog', () => {
     const preloadPromise = preloadProviderModelsForSettings({
       claudeEnabled: false,
       codexEnabled: true,
+      claudeTuiEnabled: false,
     });
 
     expect(getModels).toHaveBeenCalledOnce();
@@ -144,6 +165,7 @@ describe('provider model catalog', () => {
     await expect(preloadProviderModelsForSettings({
       claudeEnabled: false,
       codexEnabled: true,
+      claudeTuiEnabled: false,
     })).resolves.toBeUndefined();
 
     expect(warn).toHaveBeenCalledWith(

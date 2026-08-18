@@ -1,13 +1,14 @@
 import { GetModelsForProvider } from './bindings';
-import type { ModelInfo, Settings } from '../types/settings';
+import type { ModelInfo } from '../types/settings';
 import {
   asProviderID,
   PROVIDER_IDS,
   type ProviderID,
 } from '../types/providers';
 import {
-  getProviderDefinition,
+  providerIsEnabled,
   PROVIDER_SETTINGS_ORDER,
+  type ProviderEnablementSettings,
 } from '../providers/catalog';
 
 let modelsByProvider = $state(new Map<ProviderID, ModelInfo[]>());
@@ -59,13 +60,16 @@ export async function refreshProviderModels(provider: ProviderID): Promise<Model
   return request;
 }
 
+// Warms the catalogs the Settings and composer surfaces read on first paint.
+// Scoped to PROVIDER_SETTINGS_ORDER: claude-tui shares claude's catalog, so
+// preloading it would spend a second round trip on the same list — its
+// submenu warms itself lazily through ensureProviderModels on open.
 export async function preloadProviderModelsForSettings(
-  settings: Pick<Settings, 'claudeEnabled' | 'codexEnabled'>,
+  settings: ProviderEnablementSettings,
 ): Promise<void> {
-  const providers = PROVIDER_SETTINGS_ORDER.filter((provider) => {
-    const definition = getProviderDefinition(provider);
-    return settings[definition.settings.enabledKey];
-  });
+  const providers = PROVIDER_SETTINGS_ORDER.filter((provider) =>
+    providerIsEnabled(settings, provider),
+  );
 
   const results = await Promise.allSettled(
     providers.map((provider) => ensureProviderModels(provider)),

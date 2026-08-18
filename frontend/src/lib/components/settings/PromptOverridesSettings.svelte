@@ -15,6 +15,7 @@
   import { getSettings } from '../../stores/settings.svelte';
   import {
     getProviderDefinition,
+    providerIsEnabled,
     PROVIDER_SETTINGS_ORDER,
     type ProviderDefinition,
   } from '../../providers/catalog';
@@ -28,7 +29,7 @@
 
   let settings = $derived(getSettings());
   let enabledProviders = $derived(
-    PROVIDERS.filter((provider) => settings[provider.settings.enabledKey]),
+    PROVIDERS.filter((provider) => providerIsEnabled(settings, provider.id)),
   );
 </script>
 

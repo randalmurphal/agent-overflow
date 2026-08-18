@@ -328,6 +328,73 @@ func TestLowPowerModeRoundTripAndSparseDefault(t *testing.T) {
 	}
 }
 
+// ClaudeTUIEnabled is the one enable flag whose default is FALSE (see the
+// field comment). This pins the inversion from both ends: a settings file
+// written before the field existed must load as hidden, and an explicit
+// enable must survive a reload rather than being sparsed away.
+func TestClaudeTUIEnabledDefaultsOffAndRoundTrips(t *testing.T) {
+	dir := t.TempDir()
+
+	// A file that predates the field — every existing user's file — must
+	// leave claude-tui hidden.
+	path := filepath.Join(dir, "settings.json")
+	if err := os.WriteFile(path, []byte(`{"claudeEnabled":true,"codexEnabled":true}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	svc := NewService(dir)
+	if svc.Get().ClaudeTUIEnabled {
+		t.Fatal("ClaudeTUIEnabled = true for a file without the key, want false")
+	}
+	if !DefaultSettings.ClaudeEnabled || !DefaultSettings.CodexEnabled {
+		t.Fatal("ClaudeEnabled/CodexEnabled defaults changed; the claude-tui inversion comment assumes they stay true")
+	}
+	if DefaultSettings.ClaudeTUIEnabled {
+		t.Fatal("DefaultSettings.ClaudeTUIEnabled = true, want false (2026-08-18 user decision)")
+	}
+
+	updated, err := svc.Update(map[string]any{"claudeTuiEnabled": true})
+	if err != nil {
+		t.Fatalf("Update(claudeTuiEnabled=true) error = %v", err)
+	}
+	if !updated.ClaudeTUIEnabled {
+		t.Fatal("ClaudeTUIEnabled = false after enabling, want true")
+	}
+
+	// The enable is the non-default value, so writeSparse must persist it.
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	var fileMap map[string]any
+	if err := json.Unmarshal(data, &fileMap); err != nil {
+		t.Fatalf("unmarshal settings file: %v", err)
+	}
+	if fileMap["claudeTuiEnabled"] != true {
+		t.Fatalf("settings file = %s, want claudeTuiEnabled:true persisted", string(data))
+	}
+	if !NewService(dir).Get().ClaudeTUIEnabled {
+		t.Fatal("reloaded ClaudeTUIEnabled = false, want true")
+	}
+
+	if _, err := svc.Update(map[string]any{"claudeTuiEnabled": false}); err != nil {
+		t.Fatalf("Update(claudeTuiEnabled=false) error = %v", err)
+	}
+	data, err = os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	fileMap = nil
+	if err := json.Unmarshal(data, &fileMap); err != nil {
+		t.Fatalf("unmarshal settings file: %v", err)
+	}
+	if _, ok := fileMap["claudeTuiEnabled"]; ok {
+		t.Fatalf("settings file = %s, want claudeTuiEnabled omitted when back at its default", string(data))
+	}
+	if NewService(dir).Get().ClaudeTUIEnabled {
+		t.Fatal("reloaded ClaudeTUIEnabled = true after disabling, want false")
+	}
+}
+
 func TestUpdateMergesOverDefaults(t *testing.T) {
 	dir := t.TempDir()
 	svc := NewService(dir)

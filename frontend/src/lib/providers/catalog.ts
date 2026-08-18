@@ -1,6 +1,7 @@
-import type { ReasoningEffort } from '../types/settings';
+import type { ReasoningEffort, Settings } from '../types/settings';
 import {
   asProviderID,
+  PROVIDER_IDS,
   type ProviderID,
 } from '../types/providers';
 export {
@@ -81,8 +82,22 @@ export interface ProviderDefinition {
     standard: string;
     extended: string;
   };
+  // Another provider this one is spawned through — same binary, same auth,
+  // same model catalog. A dependent provider is only available when its
+  // parent is too (`providerIsEnabled`), and its enable toggle renders
+  // inside the parent's settings section rather than as a section of its
+  // own (`dependentProviders`). Absent for a provider that stands alone.
+  dependsOnProvider?: ProviderID;
+  // Row hint for that enable toggle. Only set where the generic
+  // "allow new threads to use this provider" line would not explain what
+  // turning the provider on actually adds; ProviderSettings falls back to
+  // the generic wording.
+  enableHint?: string;
   settings: {
-    enabledKey: 'claudeEnabled' | 'codexEnabled';
+    // The provider's OWN enable flag — the key its Settings toggle writes.
+    // Reads go through `providerIsEnabled`, never this key directly, so a
+    // dependent provider's parent flag cannot be forgotten at a call site.
+    enabledKey: 'claudeEnabled' | 'codexEnabled' | 'claudeTuiEnabled';
     pathKey: 'claudeBinaryPath' | 'codexBinaryPath';
     standardCompactKey:
       | 'claudeAutoCompactStandardPercent'
@@ -165,6 +180,11 @@ export const PROVIDER_DEFINITIONS: Record<ProviderID, ProviderDefinition> = {
   // is gated to claude + codex, but the type requires the fields). It has no
   // AO-managed background tasks — background work lives inside the TUI, reached
   // through take-control — so backgroundStop is 'none'.
+  //
+  // Its ONE key of its own is the enable flag, which defaults off (see
+  // internal/settings.Settings.ClaudeTUIEnabled): the TUI surface is opt-in,
+  // and `dependsOnProvider` ties it to claude so disabling Claude takes the
+  // TUI with it.
   'claude-tui': {
     id: 'claude-tui',
     label: 'Claude TUI',
@@ -172,6 +192,9 @@ export const PROVIDER_DEFINITIONS: Record<ProviderID, ProviderDefinition> = {
     shortLabel: 'T',
     badgeClass: 'bg-provider-claude-tui/10 text-provider-claude-tui',
     installActionLabel: 'Install Claude CLI',
+    dependsOnProvider: 'claude',
+    enableHint:
+      'Interactive terminal sessions driven through the real Claude TUI. Hidden from pickers when off.',
     textGenerationDefaultModel: 'claude-haiku-4-5',
     textGenerationEffortOptions: [
       { value: 'low', label: 'Low' },
@@ -185,7 +208,7 @@ export const PROVIDER_DEFINITIONS: Record<ProviderID, ProviderDefinition> = {
       extended: '1m',
     },
     settings: {
-      enabledKey: 'claudeEnabled',
+      enabledKey: 'claudeTuiEnabled',
       pathKey: 'claudeBinaryPath',
       standardCompactKey: 'claudeAutoCompactStandardPercent',
       extendedCompactKey: 'claudeAutoCompactExtendedPercent',
@@ -196,10 +219,14 @@ export const PROVIDER_DEFINITIONS: Record<ProviderID, ProviderDefinition> = {
   },
 };
 
+// The providers that get a settings SECTION of their own — binary path, model
+// catalog, accounts, context budgets. claude-tui is intentionally absent: it
+// has none of those (it reuses claude's), and its one setting, the enable
+// flag, renders inside claude's section via `dependentProviders`.
 export const PROVIDER_SETTINGS_ORDER: ProviderID[] = ['claude', 'codex'];
 // claude-tui follows claude in the model picker so the two Claude surfaces read
-// as a pair. It is intentionally absent from PROVIDER_SETTINGS_ORDER (it has no
-// binary/enable settings of its own — it reuses claude's).
+// as a pair. Membership here is layout only — whether an entry is actually
+// OFFERED is `providerIsEnabled`.
 export const PROVIDER_MODEL_MENU_ORDER: ProviderID[] = ['codex', 'claude', 'claude-tui'];
 
 export function getProviderDefinition(provider: ProviderID): ProviderDefinition;
@@ -219,6 +246,70 @@ export function providerLabel(provider: string | null | undefined): string {
 
 export function providerCliLabel(provider: string | null | undefined): string {
   return getProviderDefinition(provider)?.cliLabel ?? providerLabel(provider);
+}
+
+// The enable flags a settings object must carry to answer `providerIsEnabled`.
+// Derived from the definitions rather than spelled out, so adding a provider
+// with a new flag can't leave a caller's type behind.
+export type ProviderEnablementSettings = Pick<
+  Settings,
+  ProviderDefinition['settings']['enabledKey']
+>;
+
+// Whether a provider is currently offered — the ONE read of the enable flags.
+// Every picker, menu and settings filter asks this instead of indexing
+// `settings[definition.settings.enabledKey]`, because that read is wrong for a
+// dependent provider: claude-tui runs claude's binary under claude's auth, so
+// a disabled Claude has to take the TUI with it whatever the TUI's own flag
+// says. Hand-ANDing that at each call site is exactly the rule a fourth caller
+// forgets.
+//
+// Unknown / absent providers answer false, the opposite of `providerSupports`
+// above, and deliberately: that function asks "does this EXISTING thread's
+// provider withhold an affordance", where an unrecognised id must not subtract
+// anything; this one asks "may we OFFER this provider", and there is nothing to
+// offer for an id the catalog cannot describe.
+//
+// Availability is not permission to render history. A disabled provider's
+// threads keep rendering, resuming and sending — nothing on the timeline or
+// send path consults this; it gates the affordances that would start NEW work
+// on the provider.
+export function providerIsEnabled(
+  settings: ProviderEnablementSettings,
+  provider: string | null | undefined,
+): boolean {
+  let definition = getProviderDefinition(provider);
+  // Walk the dependency chain iteratively, bounded by the catalog size: a
+  // cycle introduced by a future edit answers "not offered" instead of
+  // recursing until the stack gives out.
+  for (let hops = 0; hops <= PROVIDER_IDS.length; hops += 1) {
+    if (!definition) return false;
+    if (!settings[definition.settings.enabledKey]) return false;
+    const parent = definition.dependsOnProvider;
+    if (parent === undefined) return true;
+    definition = PROVIDER_DEFINITIONS[parent];
+  }
+  return false;
+}
+
+// Inverted once at module init: the catalog is static, and the settings
+// template asks per provider on every recompute, so the answer has to be a
+// lookup with a stable array identity, not a fresh filter+map each time.
+const DEPENDENT_PROVIDERS = new Map<ProviderID, ProviderDefinition[]>();
+const NO_DEPENDENTS: readonly ProviderDefinition[] = [];
+for (const id of PROVIDER_IDS) {
+  const parent = PROVIDER_DEFINITIONS[id].dependsOnProvider;
+  if (parent === undefined) continue;
+  const existing = DEPENDENT_PROVIDERS.get(parent);
+  if (existing) existing.push(PROVIDER_DEFINITIONS[id]);
+  else DEPENDENT_PROVIDERS.set(parent, [PROVIDER_DEFINITIONS[id]]);
+}
+
+// The providers whose enable toggle belongs inside `parent`'s settings section
+// — those spawned through its binary. Data-driven so a second dependent
+// provider surfaces without ProviderSettings learning any provider id.
+export function dependentProviders(parent: ProviderID): readonly ProviderDefinition[] {
+  return DEPENDENT_PROVIDERS.get(parent) ?? NO_DEPENDENTS;
 }
 
 // Whether a provider supports a given affordance. Unknown providers default to

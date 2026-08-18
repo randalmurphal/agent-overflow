@@ -18,6 +18,9 @@ export function makeSettings(overrides: Partial<Settings> = {}): Settings {
     codexBinaryPath: 'codex',
     claudeEnabled: true,
     codexEnabled: true,
+    // Matches the shipped default: claude-tui is opt-in, so a test that wants
+    // the TUI offered has to say so.
+    claudeTuiEnabled: false,
     defaultThreadEnvMode: 'local',
     worktreeBranchPrefix: 'ao-',
     paneDensity: 'compact',

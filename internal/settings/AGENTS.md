@@ -67,6 +67,15 @@ forward-compatible).
 
 - To add a new setting: add the field + a default + (if enum) an
   allow-list + a `Validate` branch + a test that asserts round-trip.
+  A field whose intended default is the Go zero value stays OUT of
+  `DefaultSettings` — that is what makes an absent key read as the
+  default for every settings file written before the field existed.
+  `ClaudeTUIEnabled` is the deliberate example (opt-in claude-tui
+  visibility, 2026-08-18): `ClaudeEnabled` / `CodexEnabled` beside it
+  default true, so the inversion is documented at the field and pinned
+  by `TestClaudeTUIEnabledDefaultsOffAndRoundTrips`. Do not "fix" it by
+  adding it to `DefaultSettings` — `writeSparse` persists what differs
+  from the defaults, so that would drop the user's `true` on write.
 - To change allowed values for an existing enum: update the map in
   `validate.go` and the migration note; old values are normalized on
   load, never at write time.

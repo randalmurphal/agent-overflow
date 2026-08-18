@@ -19,6 +19,7 @@
     ReasoningEffort,
   } from '../../types/settings';
   import {
+    dependentProviders,
     getProviderDefinition,
     PROVIDER_SETTINGS_ORDER,
     type ProviderDefinition,
@@ -162,7 +163,7 @@
       <div class="flex flex-col gap-1">
         <SettingsField
           label="Enabled"
-          hint="Allow new threads to use this provider."
+          hint={provider.enableHint ?? 'Allow new threads to use this provider.'}
         >
           <ToggleSwitch
             checked={settings[provider.settings.enabledKey]}
@@ -170,6 +171,28 @@
             onToggle={(value) => updateSetting(provider.settings.enabledKey, value)}
           />
         </SettingsField>
+
+        <!--
+          Providers spawned through this one's binary (today: Claude TUI)
+          have no section of their own, so their enable flag rides here.
+          The toggle WRITES its own key — the parent dependency is a read
+          rule, owned by providerIsEnabled — and goes inert while the parent
+          is off, because the value cannot change what any picker shows
+          until the parent comes back.
+        -->
+        {#each dependentProviders(provider.id) as dependent (dependent.id)}
+          <SettingsField
+            label={dependent.label}
+            hint={dependent.enableHint ?? `Allow new threads to use ${dependent.label}.`}
+          >
+            <ToggleSwitch
+              checked={settings[dependent.settings.enabledKey]}
+              disabled={!settings[provider.settings.enabledKey]}
+              ariaLabel={`Toggle ${dependent.label}`}
+              onToggle={(value) => updateSetting(dependent.settings.enabledKey, value)}
+            />
+          </SettingsField>
+        {/each}
 
         <SettingsField
           label="Binary path"

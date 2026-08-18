@@ -262,7 +262,7 @@ describe('<ModelProviderMenu>', () => {
   it('claude-tui submenu shares the claude hide-list', async () => {
     const pane = await buildPane(makeThread({ provider: 'claude', model: 'claude-sonnet-4-6' }));
     setBindingMock('GetSettings', async () =>
-      makeSettings({ claudeHiddenModels: ['claude-opus-4-7'] }));
+      makeSettings({ claudeTuiEnabled: true, claudeHiddenModels: ['claude-opus-4-7'] }));
     await loadSettings();
     setBindingMock('GetModelsForProvider', async () => [
       { slug: 'claude-opus-4-8', name: 'Claude Opus 4.8', provider: 'claude-tui', capabilities: [] },
@@ -493,10 +493,12 @@ describe('<ModelProviderMenu>', () => {
     expect(queryByRole('menuitem', { name: /Discussions/i })).toBeNull();
   });
 
-  it('on a fresh (empty) thread, shows every provider AND Discussions', async () => {
+  it('on a fresh (empty) thread, shows every enabled provider AND Discussions', async () => {
     const pane = await buildPane(
       makeThread({ provider: 'claude', model: 'claude-sonnet-4-6' }),
     );
+    setBindingMock('GetSettings', async () => makeSettings({ claudeTuiEnabled: true }));
+    await loadSettings();
     setBindingMock('GetModelsForProvider', async () => []);
     setBindingMock('ListDiscussionsForThread', async () => [architects]);
 
@@ -512,6 +514,101 @@ describe('<ModelProviderMenu>', () => {
     await findByRole('menuitem', { name: 'Claude TUI' });
     await findByRole('menuitem', { name: /Codex/i });
     await findByRole('menuitem', { name: /Discussions/i });
+  });
+
+  // The claude-tui visibility toggle. Default-off, so the shipped default is
+  // the interesting case: the picker must NOT offer the TUI until the user
+  // turns it on under Settings → Providers → Claude.
+  it('omits Claude TUI from a fresh thread while its toggle is off (the default)', async () => {
+    const pane = await buildPane(
+      makeThread({ provider: 'claude', model: 'claude-sonnet-4-6' }),
+    );
+    setBindingMock('GetSettings', async () => makeSettings());
+    await loadSettings();
+    setBindingMock('GetModelsForProvider', async () => []);
+
+    const { getByTestId, findByRole, queryByRole } = render(ModelProviderMenu, {
+      props: { pane },
+    });
+    await fireEvent.click(getByTestId('composer-model-menu-trigger'));
+
+    // Wait for the menu to settle before asserting absence.
+    await findByRole('menuitem', { name: /^Claude$/ });
+    await findByRole('menuitem', { name: /Codex/i });
+    expect(queryByRole('menuitem', { name: 'Claude TUI' })).toBeNull();
+  });
+
+  it('hides Claude TUI when Claude itself is off, whatever the TUI toggle says', async () => {
+    const pane = await buildPane(
+      makeThread({ provider: 'codex', model: 'gpt-5.4' }),
+    );
+    setBindingMock('GetSettings', async () =>
+      makeSettings({ claudeEnabled: false, claudeTuiEnabled: true }));
+    await loadSettings();
+    setBindingMock('GetModelsForProvider', async () => []);
+
+    const { getByTestId, findByRole, queryByRole } = render(ModelProviderMenu, {
+      props: { pane },
+    });
+    await fireEvent.click(getByTestId('composer-model-menu-trigger'));
+
+    await findByRole('menuitem', { name: /Codex/i });
+    expect(queryByRole('menuitem', { name: 'Claude TUI' })).toBeNull();
+    expect(queryByRole('menuitem', { name: /^Claude$/ })).toBeNull();
+  });
+
+  // The existing-thread guarantee: disabling a provider is a statement about
+  // NEW work. A thread already running on claude-tui keeps its own submenu, so
+  // in-provider model swaps still work — the same posture claudeEnabled=false
+  // has always had for a claude thread.
+  it('keeps a mounted claude-tui thread its own submenu while the toggle is off', async () => {
+    const pane = await buildPane(
+      makeThread({ provider: 'claude-tui', model: 'claude-sonnet-4-6' }),
+    );
+    setBindingMock('GetSettings', async () => makeSettings());
+    await loadSettings();
+    setBindingMock('GetModelsForProvider', async () => [
+      { slug: 'claude-opus-4-8', name: 'Claude Opus 4.8', provider: 'claude-tui', capabilities: [] },
+    ]);
+
+    const { getByTestId, findByRole } = render(ModelProviderMenu, {
+      props: { pane },
+    });
+    await fireEvent.click(getByTestId('composer-model-menu-trigger'));
+
+    const tuiRow = await findByRole('menuitem', { name: 'Claude TUI' });
+    await fireEvent.click(tuiRow);
+    await findByRole('menuitem', { name: /Opus 4\.8/i });
+  });
+
+  it('filters a claude-tui favorite while the toggle is off, and restores it when enabled', async () => {
+    const pane = await buildPane(makeThread({ provider: 'claude', model: 'claude-sonnet-4-6' }));
+    setBindingMock('GetSettings', async () => makeSettings());
+    await loadSettings();
+    setBindingMock('GetModelsForProvider', async () => []);
+    setBindingMock('ListChatBarFavorites', async () => [
+      {
+        kind: 'model',
+        provider: 'claude-tui',
+        value: 'claude-opus-4-8',
+        label: 'Claude Opus 4.8',
+        createdAt: 1,
+      },
+    ]);
+
+    const { getByTestId, findByRole, queryByRole } = render(ModelProviderMenu, {
+      props: { pane },
+    });
+    await fireEvent.click(getByTestId('composer-model-menu-trigger'));
+
+    await findByRole('menuitem', { name: /^Claude$/ });
+    // A starred model must not be a back door onto a provider the picker is
+    // not offering.
+    expect(queryByRole('menuitem', { name: /Opus 4\.8/i })).toBeNull();
+
+    setBindingMock('GetSettings', async () => makeSettings({ claudeTuiEnabled: true }));
+    await loadSettings();
+    await findByRole('menuitem', { name: /Opus 4\.8/i });
   });
 
   // Headline regression: the Discussions entry must not render at all

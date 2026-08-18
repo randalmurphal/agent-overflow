@@ -106,6 +106,77 @@ describe("<ProviderSettings> — model visibility toggles", () => {
   });
 });
 
+describe("<ProviderSettings> — Claude TUI visibility toggle", () => {
+  // claude-tui has no settings section of its own (it reuses claude's binary,
+  // auth and catalog), so its one flag rides inside the Claude section.
+  function tuiToggle(container: HTMLElement): HTMLButtonElement {
+    return container.querySelector<HTMLButtonElement>(
+      '[data-testid="settings-provider-claude"] button[aria-label="Toggle Claude TUI"]',
+    )!;
+  }
+
+  it("renders under Claude, off by default, and never under Codex", async () => {
+    await seed();
+    const { container } = render(ProviderSettings);
+
+    const toggle = tuiToggle(container);
+    expect(toggle).not.toBeNull();
+    expect(toggle.getAttribute("aria-checked")).toBe("false");
+    expect(
+      container.querySelector(
+        '[data-testid="settings-provider-codex"] button[aria-label="Toggle Claude TUI"]',
+      ),
+    ).toBeNull();
+    // And it must not have grown a section of its own.
+    expect(container.querySelector('[data-testid="settings-provider-claude-tui"]')).toBeNull();
+  });
+
+  it("writes claudeTuiEnabled — and only that key — when switched on", async () => {
+    await seed();
+    const { container } = render(ProviderSettings);
+    await fireEvent.click(tuiToggle(container));
+
+    const mock = getBindingMock("UpdateSettings");
+    expect(mock!.mock.calls.at(-1)![0]).toEqual({ claudeTuiEnabled: true });
+  });
+
+  it("reflects an enabled flag and writes false to turn it back off", async () => {
+    await seed({ claudeTuiEnabled: true });
+    const { container } = render(ProviderSettings);
+
+    const toggle = tuiToggle(container);
+    expect(toggle.getAttribute("aria-checked")).toBe("true");
+    await fireEvent.click(toggle);
+    expect(getBindingMock("UpdateSettings")!.mock.calls.at(-1)![0]).toEqual({
+      claudeTuiEnabled: false,
+    });
+  });
+
+  it("goes inert while Claude is disabled, because the value cannot change any picker", async () => {
+    await seed({ claudeEnabled: false, claudeTuiEnabled: true });
+    const { container } = render(ProviderSettings);
+
+    const toggle = tuiToggle(container);
+    expect(toggle.disabled).toBe(true);
+    await fireEvent.click(toggle);
+    expect(getBindingMock("UpdateSettings")?.mock.calls.length ?? 0).toBe(0);
+
+    // Claude's own toggle stays live — it is how the user gets back.
+    const claudeToggle = container.querySelector<HTMLButtonElement>(
+      '[data-testid="settings-provider-claude"] button[aria-label="Toggle Claude"]',
+    )!;
+    expect(claudeToggle.disabled).toBe(false);
+  });
+
+  it("explains what enabling it turns on", async () => {
+    await seed();
+    const { getByText } = render(ProviderSettings);
+    expect(
+      getByText(/Interactive terminal sessions driven through the real Claude TUI/i),
+    ).toBeTruthy();
+  });
+});
+
 describe("<ProviderSettings> — provider accounts", () => {
   it("renders dynamic account-scoped usage buckets", async () => {
     await seed();

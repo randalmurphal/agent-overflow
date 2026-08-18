@@ -368,6 +368,30 @@ export class Settings {
     "codexEnabled": boolean;
 
     /**
+     * ClaudeTUIEnabled surfaces the claude-tui provider — the real
+     * interactive Claude TUI driven inside a PTY — in the model/provider
+     * pickers. It runs Claude's binary under Claude's auth, so
+     * ClaudeEnabled gates it too: the frontend offers claude-tui only
+     * when BOTH are on (frontend/src/lib/providers/catalog.ts,
+     * providerIsEnabled).
+     * 
+     * Deliberately absent from DefaultSettings, unlike the two fields
+     * above: its default is the Go zero value, false (user decision,
+     * 2026-08-18). The inversion is the point. Every settings file that
+     * exists today predates this key, and an absent key must read as
+     * "hidden" so upgrading users get the requested default instead of a
+     * provider appearing in their pickers unasked. Defaulting it true
+     * would also invert writeSparse — which persists only what differs
+     * from DefaultSettings — and make `false` the value that survives a
+     * write while `true` was dropped.
+     * 
+     * Visibility only: an existing claude-tui thread keeps rendering,
+     * resuming and sending with this off, exactly as a claude thread does
+     * under ClaudeEnabled=false. Nothing in Go reads any of the three.
+     */
+    "claudeTuiEnabled": boolean;
+
+    /**
      * ClaudeHiddenModels / CodexHiddenModels list catalog model slugs
      * the user has hidden from model pickers. Hide-list semantics:
      * slugs absent from the list — including models a later app update
@@ -699,6 +723,9 @@ export class Settings {
         if (!("codexEnabled" in $$source)) {
             this["codexEnabled"] = false;
         }
+        if (!("claudeTuiEnabled" in $$source)) {
+            this["claudeTuiEnabled"] = false;
+        }
         if (!("defaultThreadEnvMode" in $$source)) {
             this["defaultThreadEnvMode"] = "";
         }
@@ -783,65 +810,65 @@ export class Settings {
      */
     static createFrom($$source: any = {}): Settings {
         const $$createField6_0 = $$createType0;
-        const $$createField17_0 = $$createType0;
         const $$createField18_0 = $$createType0;
-        const $$createField19_0 = $$createType2;
+        const $$createField19_0 = $$createType0;
         const $$createField20_0 = $$createType2;
-        const $$createField21_0 = $$createType4;
+        const $$createField21_0 = $$createType2;
         const $$createField22_0 = $$createType4;
-        const $$createField23_0 = $$createType0;
+        const $$createField23_0 = $$createType4;
         const $$createField24_0 = $$createType0;
-        const $$createField42_0 = $$createType5;
-        const $$createField43_0 = $$createType6;
-        const $$createField44_0 = $$createType7;
-        const $$createField46_0 = $$createType0;
-        const $$createField47_0 = $$createType9;
-        const $$createField51_0 = $$createType10;
+        const $$createField25_0 = $$createType0;
+        const $$createField43_0 = $$createType5;
+        const $$createField44_0 = $$createType6;
+        const $$createField45_0 = $$createType7;
+        const $$createField47_0 = $$createType0;
+        const $$createField48_0 = $$createType9;
+        const $$createField52_0 = $$createType10;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("recentWorkspaces" in $$parsedSource) {
             $$parsedSource["recentWorkspaces"] = $$createField6_0($$parsedSource["recentWorkspaces"]);
         }
         if ("claudeHiddenModels" in $$parsedSource) {
-            $$parsedSource["claudeHiddenModels"] = $$createField17_0($$parsedSource["claudeHiddenModels"]);
+            $$parsedSource["claudeHiddenModels"] = $$createField18_0($$parsedSource["claudeHiddenModels"]);
         }
         if ("codexHiddenModels" in $$parsedSource) {
-            $$parsedSource["codexHiddenModels"] = $$createField18_0($$parsedSource["codexHiddenModels"]);
+            $$parsedSource["codexHiddenModels"] = $$createField19_0($$parsedSource["codexHiddenModels"]);
         }
         if ("claudeCustomEnv" in $$parsedSource) {
-            $$parsedSource["claudeCustomEnv"] = $$createField19_0($$parsedSource["claudeCustomEnv"]);
+            $$parsedSource["claudeCustomEnv"] = $$createField20_0($$parsedSource["claudeCustomEnv"]);
         }
         if ("codexCustomEnv" in $$parsedSource) {
-            $$parsedSource["codexCustomEnv"] = $$createField20_0($$parsedSource["codexCustomEnv"]);
+            $$parsedSource["codexCustomEnv"] = $$createField21_0($$parsedSource["codexCustomEnv"]);
         }
         if ("claudePromptOverrides" in $$parsedSource) {
-            $$parsedSource["claudePromptOverrides"] = $$createField21_0($$parsedSource["claudePromptOverrides"]);
+            $$parsedSource["claudePromptOverrides"] = $$createField22_0($$parsedSource["claudePromptOverrides"]);
         }
         if ("codexPromptOverrides" in $$parsedSource) {
-            $$parsedSource["codexPromptOverrides"] = $$createField22_0($$parsedSource["codexPromptOverrides"]);
+            $$parsedSource["codexPromptOverrides"] = $$createField23_0($$parsedSource["codexPromptOverrides"]);
         }
         if ("claudeDisabledTools" in $$parsedSource) {
-            $$parsedSource["claudeDisabledTools"] = $$createField23_0($$parsedSource["claudeDisabledTools"]);
+            $$parsedSource["claudeDisabledTools"] = $$createField24_0($$parsedSource["claudeDisabledTools"]);
         }
         if ("codexDisabledTools" in $$parsedSource) {
-            $$parsedSource["codexDisabledTools"] = $$createField24_0($$parsedSource["codexDisabledTools"]);
+            $$parsedSource["codexDisabledTools"] = $$createField25_0($$parsedSource["codexDisabledTools"]);
         }
         if ("network" in $$parsedSource) {
-            $$parsedSource["network"] = $$createField42_0($$parsedSource["network"]);
+            $$parsedSource["network"] = $$createField43_0($$parsedSource["network"]);
         }
         if ("editor" in $$parsedSource) {
-            $$parsedSource["editor"] = $$createField43_0($$parsedSource["editor"]);
+            $$parsedSource["editor"] = $$createField44_0($$parsedSource["editor"]);
         }
         if ("retention" in $$parsedSource) {
-            $$parsedSource["retention"] = $$createField44_0($$parsedSource["retention"]);
+            $$parsedSource["retention"] = $$createField45_0($$parsedSource["retention"]);
         }
         if ("gitlabSelfHostedHosts" in $$parsedSource) {
-            $$parsedSource["gitlabSelfHostedHosts"] = $$createField46_0($$parsedSource["gitlabSelfHostedHosts"]);
+            $$parsedSource["gitlabSelfHostedHosts"] = $$createField47_0($$parsedSource["gitlabSelfHostedHosts"]);
         }
         if ("remoteEndpoints" in $$parsedSource) {
-            $$parsedSource["remoteEndpoints"] = $$createField47_0($$parsedSource["remoteEndpoints"]);
+            $$parsedSource["remoteEndpoints"] = $$createField48_0($$parsedSource["remoteEndpoints"]);
         }
         if ("window" in $$parsedSource) {
-            $$parsedSource["window"] = $$createField51_0($$parsedSource["window"]);
+            $$parsedSource["window"] = $$createField52_0($$parsedSource["window"]);
         }
         return new Settings($$parsedSource as Partial<Settings>);
     }

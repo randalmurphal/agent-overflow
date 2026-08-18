@@ -102,6 +102,28 @@ type Settings struct {
 	ClaudeEnabled    bool   `json:"claudeEnabled"`
 	CodexEnabled     bool   `json:"codexEnabled"`
 
+	// ClaudeTUIEnabled surfaces the claude-tui provider — the real
+	// interactive Claude TUI driven inside a PTY — in the model/provider
+	// pickers. It runs Claude's binary under Claude's auth, so
+	// ClaudeEnabled gates it too: the frontend offers claude-tui only
+	// when BOTH are on (frontend/src/lib/providers/catalog.ts,
+	// providerIsEnabled).
+	//
+	// Deliberately absent from DefaultSettings, unlike the two fields
+	// above: its default is the Go zero value, false (user decision,
+	// 2026-08-18). The inversion is the point. Every settings file that
+	// exists today predates this key, and an absent key must read as
+	// "hidden" so upgrading users get the requested default instead of a
+	// provider appearing in their pickers unasked. Defaulting it true
+	// would also invert writeSparse — which persists only what differs
+	// from DefaultSettings — and make `false` the value that survives a
+	// write while `true` was dropped.
+	//
+	// Visibility only: an existing claude-tui thread keeps rendering,
+	// resuming and sending with this off, exactly as a claude thread does
+	// under ClaudeEnabled=false. Nothing in Go reads any of the three.
+	ClaudeTUIEnabled bool `json:"claudeTuiEnabled"`
+
 	// ClaudeHiddenModels / CodexHiddenModels list catalog model slugs
 	// the user has hidden from model pickers. Hide-list semantics:
 	// slugs absent from the list — including models a later app update

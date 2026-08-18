@@ -125,6 +125,15 @@ export interface Settings {
   claudeEnabled: boolean;
   codexEnabled: boolean;
   /**
+   * Surfaces the `claude-tui` provider (the real interactive Claude TUI) in
+   * the model/provider pickers. Unlike the two flags above this one defaults
+   * to FALSE — the TUI surface is opt-in — and it is ANDed with
+   * `claudeEnabled`, since claude-tui runs Claude's binary under Claude's
+   * auth. Never read it directly: ask `providerIsEnabled` in
+   * providers/catalog.ts, which owns that rule.
+   */
+  claudeTuiEnabled: boolean;
+  /**
    * Model slugs hidden from model pickers (hide-list: absent slugs —
    * including newly added catalog models — stay visible). Display-only:
    * existing threads on a hidden model keep working. The Claude list

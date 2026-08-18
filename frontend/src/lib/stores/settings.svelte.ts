@@ -19,6 +19,10 @@ const DEFAULT_SETTINGS: Settings = {
   codexBinaryPath: "codex",
   claudeEnabled: true,
   codexEnabled: true,
+  // Off by default, mirroring internal/settings.Settings.ClaudeTUIEnabled's
+  // deliberate zero-value default: an unloaded store must not flash the TUI
+  // into the pickers before GetSettings answers.
+  claudeTuiEnabled: false,
   claudeHiddenModels: [],
   codexHiddenModels: [],
   defaultThreadEnvMode: "local",

@@ -19,6 +19,7 @@
   import {
     asProviderID,
     getProviderDefinition,
+    providerIsEnabled,
     PROVIDER_MODEL_MENU_ORDER,
     type ProviderID,
   } from '../../../providers/catalog';
@@ -230,6 +231,7 @@
       : 'Provider default',
   );
 
+  let settings = $derived(getSettings());
   let isLocked = $derived(pane.isLocked);
   let isDiscussion = $derived(pane.thread?.mode === 'discussion');
   let activeProvider = $derived(asProviderID(pane.thread?.provider));
@@ -241,7 +243,6 @@
     !isDiscussion && !isLocked && (discussionDefs.length > 0 || discussionDefsError !== null),
   );
   let visibleFavorites = $derived.by(() => {
-    const settings = getSettings();
     // Hidden sets built once per provider per recompute, not per
     // favorite (the list holds up to 30 entries).
     const hiddenByProvider = new Map<ProviderID, ReadonlySet<string>>();
@@ -257,12 +258,22 @@
         hiddenByProvider.set(provider, hidden);
       }
       if (hidden.has(fav.value)) return false;
-      return !isDiscussion && (!isLocked || activeProvider === provider);
+      // A starred model is reachable exactly when its provider's own
+      // submenu is — one rule, so a favorite can never be the back door
+      // onto a provider the picker is not offering.
+      return showProviderSubmenu(provider);
     });
   });
 
+  // This menu is where a new thread picks its provider, so it is where a
+  // provider disabled in Settings has to disappear. The pane's OWN provider
+  // is exempt: turning a provider off is a statement about new work, and
+  // must never strand a live thread without a model picker (an existing
+  // claude-tui thread keeps every affordance it had).
   function showProviderSubmenu(provider: ProviderID): boolean {
-    return !isDiscussion && (!isLocked || activeProvider === provider);
+    if (isDiscussion) return false;
+    if (activeProvider === provider) return true;
+    return !isLocked && providerIsEnabled(settings, provider);
   }
 </script>
 
