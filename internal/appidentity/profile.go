@@ -91,6 +91,24 @@ func WebviewProfileDir(mode string) string {
 	}
 }
 
+// RenderForensicsDir names the directory (relative to the app's
+// %APPDATA% directory) where the WebView2 host writes render-hang
+// evidence — renderer minidumps and the breadcrumb JSONL the wails
+// fork's render watchdog captures at the moment it declares a hang.
+// Split three ways for the same reason as WebviewProfileDir: a dump is
+// evidence, and evidence must be attributable to the instance that
+// produced it (a soak-rig hang and a real one are different findings).
+func RenderForensicsDir(mode string) string {
+	switch mode {
+	case ModeDev:
+		return "render-forensics-dev"
+	case ModeSoak:
+		return "render-forensics-soak"
+	default:
+		return "render-forensics"
+	}
+}
+
 // DevToolsPort is the loopback CDP port the WebView2 exposes for a mode,
 // or 0 when it must not expose one at all (production — the protocol is
 // unauthenticated). Dev and soak get DIFFERENT ports on purpose: both

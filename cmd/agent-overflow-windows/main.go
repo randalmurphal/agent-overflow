@@ -1070,6 +1070,15 @@ func buildApp(distros []wsllauncher.Distro, initialURL, chosen string, transient
 	// session's WebView2 environment truncates it — see rotateChromeDebugLog.
 	rotateChromeDebugLog(webviewDataDir(mode))
 
+	forensicsDir := renderForensicsDir(mode)
+	if forensicsDir == "" {
+		log.Printf("webview2: render-hang forensics disabled: %%APPDATA%% is unresolvable")
+	} else {
+		// One startup line so launcher.log always names the evidence
+		// path — a hang report's first grep is this, then the dir.
+		log.Printf("webview2: render-hang forensics dir: %s", forensicsDir)
+	}
+
 	app := application.New(application.Options{
 		Name:           title,
 		SingleInstance: wslSingleInstanceOptions(a.win),
@@ -1101,6 +1110,10 @@ func buildApp(distros []wsllauncher.Distro, initialURL, chosen string, transient
 			// Empty string (unresolvable %APPDATA%) falls back to the Wails
 			// default rather than failing the launch.
 			WebviewUserDataPath: webviewDataDir(mode),
+			// Where a render-hang's renderer minidump + breadcrumbs land
+			// (see renderForensicsDir). Logged at startup so an operator —
+			// or a bug-report scrape — knows where to look.
+			RenderForensicsDir: forensicsDir,
 		},
 		// Cancel app shutdown until the user explicitly closes the
 		// window. Without this, a transient WSL hiccup during launch
@@ -1548,6 +1561,24 @@ func webviewDataDir(mode string) string {
 		return ""
 	}
 	return filepath.Join(dir, appidentity.WebviewProfileDir(mode))
+}
+
+// renderForensicsDir is where the wails fork's render watchdog drops a
+// renderer minidump + breadcrumb the moment it declares a hang — BEFORE
+// recovery reaps the wedged process tree, which is the only instant the
+// evidence exists (incident 2026-08-18: third renderer-hang episode with
+// zero artifact; Crashpad writes nothing for a hang). Always on, in every
+// mode: a production user's hang report is only fixable if the dump was
+// already taken when they hit it. The fork caps the directory at three
+// dumps, so it never needs tending. Empty (unresolvable %APPDATA%)
+// disables capture rather than failing the launch, matching
+// webviewDataDir.
+func renderForensicsDir(mode string) string {
+	dir, ok := wsldistro.WSLConfigDir()
+	if !ok {
+		return ""
+	}
+	return filepath.Join(dir, appidentity.RenderForensicsDir(mode))
 }
 
 // run drives the Wails app loop. Errors are logged but don't take

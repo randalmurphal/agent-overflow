@@ -209,7 +209,7 @@ require (
 
 tool github.com/wailsapp/wails/v3/cmd/wails3
 
-// Fork pin: branch ao-beta-memory-trim, four patches on top of the
+// Fork pin: branch ao-beta-memory-trim, six patches on top of the
 // upstream v3.0.0-beta.4 tag. Only ONE replace is needed now: upstream
 // folded the separate wails/webview2 module into v3/internal/webview2
 // (#5711, alpha2.114), so the second pin that used to carry the suspend
@@ -241,8 +241,21 @@ tool github.com/wailsapp/wails/v3/cmd/wails3
 //     upstream as-is from branch fix/linux-notification-dismiss-vs-click;
 //     PR pending user approval.
 //
+//  5. WebView2 error policy (d3839b395): edge.Chromium.errorCallback no
+//     longer os.Exit(1)s; the host classifies (teardown -> ignore, failed
+//     rebuild -> one retry, else fatal behind a native MessageBox) and a
+//     GDI "rebuilding the view" indicator paints during recovery. Fixes
+//     the 2026-08-18 silent vanish (user close mid-rebuild -> E_ABORT ->
+//     exit). Upstream-PR candidate alongside 1/4.
+//
+//  6. Render-hang forensics (ee8cff7be): at watchdog-fire, minidump the
+//     wedged renderer (ICoreWebView2Environment8.GetProcessInfos + dbghelp)
+//     plus breadcrumb JSONL, before recovery reaps the tree. Opt-in via
+//     WindowsOptions.RenderForensicsDir; cmd/agent-overflow-windows sets
+//     it always-on (renderForensicsDir). Depends on 1/4's episode model.
+//
 // Dropped at the beta.4 rebase — both landed upstream: the mixed-DPI
 // monitor-scale-detection re-enable (#5732 -> PR #5734) and the host
 // rasterization-scale stand-down (PR #5761, which generalised it to
 // visual hosting). Do not re-add them.
-replace github.com/wailsapp/wails/v3 => github.com/randalmurphal/wails/v3 v3.0.0-beta.4.0.20260807223251-3f2d4fc38366
+replace github.com/wailsapp/wails/v3 => github.com/randalmurphal/wails/v3 v3.0.0-beta.4.0.20260818184928-ee8cff7be33b
