@@ -983,6 +983,59 @@ input[type="search"]::-webkit-search-cancel-button {
 }
 
 /*
+ * Timeline transition kill. Nothing inside the conversation scroller may
+ * run a CSS transition — every element gets transition-duration 0s, so no
+ * transition object is ever created (per spec a transition only starts
+ * when duration + delay > 0).
+ *
+ * Why (activity-run expand flicker, 2026-08-17): a bottom-held toggle
+ * moves every row below the toggled run inside the scroller's content
+ * space while scroll compensation keeps it screen-stationary, so all of
+ * that text's compositor tiles invalidate and re-raster in one commit.
+ * Normally cc waits for those tiles before presenting. But an ACTIVE
+ * ANIMATION flips the scheduler to smoothness-priority, which licenses
+ * presenting with tiles missing — background where the text was, i.e.
+ * "the text below blinks out on expand". The animations doing the
+ * licensing were pure decoration starting in that same commit: the
+ * disclosure chevron's rotate, the run fade's ease, the clip scrollbar's
+ * activity fade, and the hover transitions the browser starts by
+ * re-dispatching mouseover when new content appears under the cursor.
+ * On a 165Hz panel the raster deadline is ~6ms; expand (new clip content
+ * + the moved region, ~2x collapse's raster load) missed it, collapse
+ * didn't — hence flicker on expand only.
+ *
+ * A surface rule instead of per-component discipline: any transition on
+ * any current or future row component is reachable from a toggle commit
+ * (hover re-targeting alone reaches most of them), so allowing "safe"
+ * ones back is what regressing looks like. Components keep their
+ * transition-* classes where the idiom is shared with non-timeline
+ * surfaces; inside the scroller those classes are inert by this rule.
+ * WAAPI animations (TailClampedText's line-slide FLIP) are deliberately
+ * untouched: they are the wanted motion, applied during streaming where
+ * content repaints anyway.
+ *
+ * Carve-out: the [data-row-index] wrapper itself keeps its transition —
+ * that is the edit-and-resend dim (`chat-row-pending-cut`), a deliberate
+ * fade that never starts inside a toggle commit (see MessageTimeline's
+ * wrapper comment). The :not() exempts only the wrapper ELEMENT: its
+ * descendants and its own ::before/::after stay killed, and the scroller
+ * element itself is included, so the exemption is exactly the one
+ * declared fade and nothing adjacent to it.
+ *
+ * Coupled regression test: timelineTransitionSuppression.browser.test.ts
+ * (real Chromium; asserts the kill, the !important-over-inline win, the
+ * carve-out, and that a property flip inside the scroller creates no
+ * CSSTransition).
+ */
+[data-testid='message-timeline-scroll'],
+[data-testid='message-timeline-scroll'] :not([data-row-index]),
+[data-testid='message-timeline-scroll'] ::before,
+[data-testid='message-timeline-scroll'] ::after {
+  transition-duration: 0s !important;
+  transition-delay: 0s !important;
+}
+
+/*
  * Reduced-motion reset. One place to silence every transition /
  * animation so individual components don't have to care. Scroll
  * behavior is also snapped so `scroll-smooth` usages don't fight a

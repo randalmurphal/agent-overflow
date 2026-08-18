@@ -50,7 +50,7 @@
 
 <div
   class={[
-    'flex w-full items-center gap-2 text-left transition-colors',
+    'flex w-full items-center gap-2 text-left',
     className,
   ].join(' ')}
   data-testid={headerTestId}
@@ -72,8 +72,16 @@
     aria-label={ariaLabel}
     data-testid={testId}
   >
+    <!-- The chevron SNAPS between states — no transition-transform. A CSS
+         transition starting in the same commit as a bottom-held toggle puts
+         the compositor in animation-priority mode, licensing it to present
+         the frame before the toggle's re-rastered tiles are ready (the
+         expand "text blinks out below the run" incident, 2026-08-17). The
+         timeline-wide kill rule in app.css enforces this for everything in
+         the scroller; the class is removed here too so the component tells
+         the truth. -->
     <span
-      class="flex size-3 shrink-0 items-center justify-center text-fg-subtle select-none transition-transform duration-150"
+      class="flex size-3 shrink-0 items-center justify-center text-fg-subtle select-none"
       class:rotate-90={expandable && expanded}
       class:opacity-30={!expandable}
       aria-hidden="true"

@@ -83,11 +83,13 @@
         aria-expanded={expanded}
         aria-controls={detailDomId}
         aria-label="Toggle compaction summary"
-        class="flex cursor-pointer items-center gap-1.5 bg-transparent uppercase tracking-[0.18em] text-fg-subtle transition-colors hover:text-fg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+        class="flex cursor-pointer items-center gap-1.5 bg-transparent uppercase tracking-[0.18em] text-fg-subtle hover:text-fg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
         onclick={(event) => preservePaneScrollAnchor(pane, event, handleToggle)}
       >
+        <!-- Snaps, no transition-transform: the toggle is an anchored height
+             change and the timeline runs no CSS transitions (app.css kill
+             rule; see TranscriptDisclosureHeader's chevron). -->
         <span
-          class="transition-transform duration-150"
           class:rotate-90={expanded}
           aria-hidden="true"
         >

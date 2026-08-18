@@ -759,10 +759,16 @@
                rows, and a third of one is enough to read as a dissolve without
                dimming the row behind it. It needs no scrollbar-safe inset:
                `right-0` is the clip's own right edge, and the overlay bar hangs
-               outside it. -->
+               outside it.
+
+               The fade SNAPS in and out — no transition-opacity. It flips in
+               the same commit as expand (the clip mounts scrolled to its tail),
+               and a transition starting there licenses the compositor to
+               present before the toggle's re-raster finishes (see the timeline
+               transition kill rule in app.css). -->
           <div
             aria-hidden="true"
-            class="pointer-events-none absolute top-0 right-0 left-0 h-6 transition-opacity duration-150"
+            class="pointer-events-none absolute top-0 right-0 left-0 h-6"
             class:opacity-0={!fadedTop}
             style:background="linear-gradient(to bottom, var(--surface-0), transparent)"
             data-testid="activity-run-top-fade"
