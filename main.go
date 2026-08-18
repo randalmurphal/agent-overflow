@@ -171,6 +171,11 @@ func main() {
 		runClient(flags.connect)
 	case flags.harness:
 		runHarness(flags)
+	case flags.soak:
+		// Before flags.headless: --soak uses the headless bootstrap
+		// channel (the launcher passes --print-url-fd 0 alongside it) but
+		// needs its own isolated boot, not the ordinary one.
+		runSoak(flags)
 	case flags.headless:
 		runHeadless(flags.listenAddr, flags.printURLFD)
 	default:
@@ -180,10 +185,11 @@ func main() {
 
 func shouldSyncShellEnv(flags cliFlags) bool {
 	// --connect has no local backend, so no subprocess ever resolves a
-	// binary. Harness mode spawns only the mock provider (an absolute
-	// path) and git (system PATH); skipping the probe keeps boot fast
-	// and deterministic.
-	return flags.connect == "" && !flags.harness
+	// binary. Harness and soak modes spawn only the mock provider (an
+	// absolute path) and git (system PATH); skipping the probe keeps boot
+	// fast and deterministic — and keeps a login-shell probe out of a
+	// mode whose whole promise is that it resolves no real tooling.
+	return flags.connect == "" && !flags.harness && !flags.soak
 }
 
 func syncShellEnvForBoot() {

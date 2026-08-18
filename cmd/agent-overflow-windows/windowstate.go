@@ -15,6 +15,7 @@ import (
 	"log"
 	"path/filepath"
 
+	"agent-overflow/internal/appidentity"
 	"agent-overflow/internal/atomicfile"
 	"agent-overflow/internal/windowgeom"
 	"agent-overflow/internal/wsldistro"
@@ -22,12 +23,18 @@ import (
 
 const windowStateFileName = "window.json"
 
+// windowStatePath resolves the placement file for THIS instance. The
+// soak profile gets its own (window-soak.json): a soak window is
+// deliberately small and parked wherever it does not bother the
+// developer, and letting it write the shared file would move the real
+// app there on the next launch.
 func windowStatePath() (string, bool) {
 	dir, ok := wsldistro.WSLConfigDir()
 	if !ok {
 		return "", false
 	}
-	return filepath.Join(dir, windowStateFileName), true
+	name := appidentity.StateFileName(windowStateFileName, launcherRuntimeMode())
+	return filepath.Join(dir, name), true
 }
 
 // loadWindowGeometry reads the saved launcher window placement. Returns the

@@ -104,6 +104,7 @@ type bootFlags struct {
 	connect            *string
 	dataDir            *string
 	harness            *bool
+	soak               *bool
 	mockProvider       *string
 	resetTransportPort *bool
 }
@@ -121,7 +122,8 @@ func newBootFlagSet() (*flag.FlagSet, bootFlags) {
 		connect:      flagSet.String("connect", "", "Phase F remote client mode: attach the desktop window to a remote backend at ws://host:port/?token=<value>. Skips local transport boot."),
 		dataDir:      flagSet.String("data-dir", "", "data directory root override; app data lives in <data-dir>/agent-overflow. Required by --harness."),
 		harness:      flagSet.Bool("harness", false, "agent test harness mode: headless boot on an isolated --data-dir with mock providers and the Harness RPC surface. See docs/architecture/agent-harness.md."),
-		mockProvider: flagSet.String("mock-provider", "", "harness mode only: path to the ao-mockprovider binary (default: alongside this executable)."),
+		soak:         flagSet.Bool("soak", false, "soak rig backend: harness-grade isolation (mock providers, isolated data dir + HOME) behind the ORDINARY headless bootstrap, so the Windows launcher can host it in a real WebView2 window. Defaults --data-dir to ~/.agent-overflow-soak. See docs/architecture/soak-rig.md."),
+		mockProvider: flagSet.String("mock-provider", "", "harness/soak mode only: path to the ao-mockprovider binary (default: alongside this executable)."),
 		resetTransportPort: flagSet.Bool(resetTransportPortFlag, false,
 			"discard this install's pinned transport port before binding and adopt whatever the OS hands out. The Windows launcher passes it on its one retry when the pinned port turned out to be unreachable from the host (see main_transport_port.go)."),
 	}
@@ -151,6 +153,12 @@ type cliFlags struct {
 	// harness boots the agent test harness: headless transport, isolated
 	// data dir + HOME, mock providers, and the Harness RPC surface.
 	harness bool
+	// soak boots the soak rig backend: the same isolation as harness,
+	// but speaking the headless {port, token} bootstrap so the Windows
+	// launcher can point a real WebView2 window at it. dataDir defaults
+	// to soakDefaultDataRoot() when the operator (or the launcher, which
+	// cannot know a Linux path) leaves it off.
+	soak bool
 	// mockProvider optionally overrides where --harness finds the
 	// ao-mockprovider binary (default: next to this executable).
 	mockProvider string
@@ -177,6 +185,7 @@ func parseFlags(args []string) (cliFlags, error) {
 		connect:            *values.connect,
 		dataDir:            *values.dataDir,
 		harness:            *values.harness,
+		soak:               *values.soak,
 		mockProvider:       *values.mockProvider,
 		resetTransportPort: *values.resetTransportPort,
 	}
@@ -198,13 +207,32 @@ func parseFlags(args []string) (cliFlags, error) {
 			return cliFlags{}, errors.New("--harness requires --data-dir (the harness refuses to run against real app data)")
 		}
 	}
+	if out.soak {
+		if out.harness {
+			// Both mock providers on an isolated data dir, but they are
+			// different shells with different bootstrap contracts. Picking
+			// one silently would hand the Windows launcher a bootstrap line
+			// it cannot parse.
+			return cliFlags{}, errors.New("cannot combine --soak with --harness (--soak is the launcher-hosted variant)")
+		}
+		if out.connect != "" {
+			return cliFlags{}, errors.New("cannot combine --soak with --connect")
+		}
+		if out.dataDir == "" {
+			// Unlike --harness, an omitted --data-dir is normal here: the
+			// Windows launcher spells only `--soak` on the WSL child's argv.
+			// The default is still an isolated, non-config-root path, and
+			// prepareHarness re-checks it.
+			out.dataDir = soakDefaultDataRoot()
+		}
+	}
 	if out.dataDir != "" && out.connect != "" {
 		// --connect has no local backend, so a --data-dir would be
 		// silently ignored. Reject so the operator notices.
 		return cliFlags{}, errors.New("cannot combine --data-dir with --connect")
 	}
-	if out.mockProvider != "" && !out.harness {
-		return cliFlags{}, errors.New("--mock-provider requires --harness")
+	if out.mockProvider != "" && !out.harness && !out.soak {
+		return cliFlags{}, errors.New("--mock-provider requires --harness or --soak")
 	}
 	if out.connect != "" && out.resetTransportPort {
 		// --connect boots no local transport, so there is no pin to

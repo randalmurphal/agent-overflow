@@ -112,6 +112,9 @@ type Step struct {
 	// Exit terminates the mock process mid-scenario — models a crash
 	// (non-zero) or a clean provider shutdown (zero).
 	Exit *ExitStep `json:"exit,omitempty"`
+	// Repeat re-runs a nested step list, optionally forever — the
+	// primitive behind indefinite steady-state streaming (the soak rig).
+	Repeat *RepeatStep `json:"repeat,omitempty"`
 }
 
 // EmitStep writes one or more wire lines. Lines support ${VAR}
@@ -185,6 +188,25 @@ type ExitStep struct {
 	FlushDelayMs int `json:"flushDelayMs,omitempty"`
 }
 
+// RepeatStep re-runs Steps. Count > 0 runs that many iterations; Count
+// <= 0 loops until the turn is interrupted or the process dies — which
+// is how a scenario models a turn that never completes (background
+// agents streaming indefinitely) rather than a long finite script.
+//
+// Inside the body, ${ITER} carries the 1-based iteration number, so
+// emitted message / tool ids stay unique across iterations. A nested
+// repeat re-binds ${ITER} for its own body.
+//
+// An infinite repeat must pace itself: Validate requires a direct child
+// that waits (delayMs, stall, waitSignal, approval, or an emit with
+// delayBetweenMs). Without one, a scenario silently becomes an
+// unthrottled writer that saturates the app's reader — a mistake worth
+// catching at set time, not hours into a soak.
+type RepeatStep struct {
+	Count int    `json:"count,omitempty"`
+	Steps []Step `json:"steps"`
+}
+
 // Vars is the substitution context for ${VAR} tokens in emit lines and
 // Codex response templates. The mock populates it at runtime:
 //
@@ -194,6 +216,7 @@ type ExitStep struct {
 //	${TURN_ID}     — Codex turn id ("turn-<TURN>")
 //	${REQUEST_ID}  — Codex only: the JSON-RPC id being answered
 //	${CWD}         — the mock's working directory (the workspace)
+//	${ITER}        — inside a repeat body: the 1-based iteration number
 type Vars map[string]string
 
 // Substitute replaces ${VAR} tokens for every key present in v.
@@ -321,10 +344,46 @@ func (st *Step) validate() error {
 	if st.Exit != nil {
 		set++
 	}
+	if st.Repeat != nil {
+		set++
+		if len(st.Repeat.Steps) == 0 {
+			return fmt.Errorf("repeat: steps must be non-empty")
+		}
+		for i, sub := range st.Repeat.Steps {
+			if err := sub.validate(); err != nil {
+				return fmt.Errorf("repeat step %d: %w", i+1, err)
+			}
+		}
+		if st.Repeat.Count <= 0 && !stepsPace(st.Repeat.Steps) {
+			return fmt.Errorf(
+				"repeat: an unbounded repeat (count %d) needs a pacing step among its direct children "+
+					"(delayMs, stall, waitSignal, approval, or an emit with delayBetweenMs) — "+
+					"otherwise it writes wire lines as fast as the pipe accepts them",
+				st.Repeat.Count)
+		}
+	}
 	if set != 1 {
 		return fmt.Errorf("step must set exactly one action, got %d", set)
 	}
 	return nil
+}
+
+// stepsPace reports whether a step list contains something that waits.
+// Direct children only: a pacing step buried inside a nested repeat or
+// approval branch is not a guarantee the outer loop ever yields, and a
+// shallow rule is one an author can check by eye.
+func stepsPace(steps []Step) bool {
+	for _, st := range steps {
+		switch {
+		case st.DelayMs > 0,
+			st.Stall != nil,
+			st.WaitSignal != nil,
+			st.Approval != nil,
+			st.Emit != nil && st.Emit.DelayBetweenMs > 0:
+			return true
+		}
+	}
+	return false
 }
 
 // FixturePaths collects every fixture path the scenario references —
@@ -349,6 +408,9 @@ func appendFixturePaths(out []string, steps []Step) []string {
 		if st.Approval != nil {
 			out = appendFixturePaths(out, st.Approval.OnAllow)
 			out = appendFixturePaths(out, st.Approval.OnDeny)
+		}
+		if st.Repeat != nil {
+			out = appendFixturePaths(out, st.Repeat.Steps)
 		}
 	}
 	return out

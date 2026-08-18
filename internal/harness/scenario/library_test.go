@@ -25,6 +25,7 @@ func TestLibraryIntegrity(t *testing.T) {
 		"TURN_ID":    "turn-1",
 		"REQUEST_ID": "7",
 		"CWD":        "/tmp/workspace",
+		"ITER":       "1",
 	}
 	for _, entry := range entries {
 		raw, s, err := LoadLibrary(entry.Name)
@@ -65,6 +66,9 @@ func checkStepLines(t *testing.T, name string, step Step, vars Vars) {
 			checkStepLines(t, name, sub, vars)
 		}
 	}
+	for _, sub := range repeatBody(step) {
+		checkStepLines(t, name, sub, vars)
+	}
 	for _, line := range lines {
 		substituted := vars.Substitute(line)
 		if strings.Contains(substituted, "${") {
@@ -96,6 +100,7 @@ func checkClaudeFraming(t *testing.T, name string, steps []Step, vars Vars) {
 				walk(step.Approval.OnAllow)
 				walk(step.Approval.OnDeny)
 			}
+			walk(repeatBody(step))
 			if step.Emit == nil {
 				continue
 			}
@@ -137,6 +142,16 @@ func checkClaudeFraming(t *testing.T, name string, steps []Step, vars Vars) {
 		}
 	}
 	walk(steps)
+}
+
+// repeatBody returns a repeat step's body (nil for every other step), so
+// the library walkers reach lines nested inside a loop. A scenario whose
+// only emits live in a repeat must not slip past these invariants.
+func repeatBody(step Step) []Step {
+	if step.Repeat == nil {
+		return nil
+	}
+	return step.Repeat.Steps
 }
 
 func codexResponses(s *Scenario) map[string]string {

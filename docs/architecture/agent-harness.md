@@ -14,6 +14,11 @@ Everything below is reachable two ways, by design:
   Playwright MCP (or any browser), and drive the backend over the same
   WebSocket RPCs the specs use.
 
+A third consumer reuses the same isolation with a different shell: the
+**soak rig** (`--soak`, `make soak`) runs the real Windows launcher and
+WebView2 window against mocked providers for hours.
+See [soak-rig.md](soak-rig.md).
+
 ## Boot
 
 ```
@@ -178,10 +183,20 @@ list consumed per user message), and `afterTurns`
 - `approval` — raise a permission request, branch `onAllow`/`onDeny`,
 - `waitSignal` — block until a named `advance`,
 - `stall` — hang until `advance` (or `durationMs`),
+- `repeat` — run a nested step list `count` times, or forever when
+  `count <= 0`,
 - `exit` — die with a code mid-turn.
 
 Lines substitute `${SESSION_ID}`, `${THREAD_ID}`, `${TURN}`,
-`${TURN_ID}`, `${REQUEST_ID}`, `${CWD}`.
+`${TURN_ID}`, `${REQUEST_ID}`, `${CWD}`, and inside a `repeat` body
+`${ITER}` (1-based iteration).
+
+An unbounded `repeat` must contain a pacing step among its direct
+children (`delayMs > 0`, `stall`, `waitSignal`, `approval`, or an `emit`
+with `delayBetweenMs > 0`) — validation rejects a hot loop. Its body runs
+**unreported**, so a forever-loop cannot flood the control channel or the
+event bus with per-step reports; an interrupt still aborts it at the next
+step boundary.
 
 An inbound provider interrupt aborts the active scenario in the shared engine.
 It releases a blocked `waitSignal`/indefinite `stall`, skips all remaining
@@ -195,7 +210,9 @@ or dispatching turn is a no-op and cannot poison the next turn.
 The embedded library (`internal/harness/scenario/library/*.json`)
 ships ready-made scripts — `streaming-text` (Claude default),
 `thinking-then-text`, `tool-call`, `tool-approval`, `file-edit`,
-`session-death`, `stall-forever`, `step-gated`, `codex-basic` (Codex
+`session-death`, `stall-forever`, `step-gated`,
+`soak-background-agents` (three async `local_agent` subagents streaming
+forever; see [soak-rig.md](soak-rig.md)), `codex-basic` (Codex
 default), `codex-approval`. `HarnessListScenarios` returns the current
 list. With no rules set, every mock gets its provider's default — a
 zero-config harness still streams a sensible reply.

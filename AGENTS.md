@@ -39,6 +39,12 @@ Ubuntu 23.04+ / Debian 13+).
 - `make harness` — boots the agent test harness (real app, isolated data
   dir, mocked providers); `make e2e` runs the Playwright suite against it.
   See [docs/architecture/agent-harness.md](docs/architecture/agent-harness.md).
+- `make soak` — boots a SECOND, fully isolated instance of the real
+  Windows app (own profile: instance id, window, WebView2 dir, log, data
+  dir) with harness-grade provider mocking, streaming background-subagent
+  activity indefinitely. For hours-long renderer/hang reproductions
+  beside your own running app; `make soak-check` summarizes it.
+  See [docs/architecture/soak-rig.md](docs/architecture/soak-rig.md).
 - `make provider-smoke` — manual real-provider gate; **spends real model
   tokens** and needs authenticated `claude` + `codex` CLIs on PATH. Run it
   before a release and after upgrading either provider CLI.

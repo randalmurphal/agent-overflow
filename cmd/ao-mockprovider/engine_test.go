@@ -423,3 +423,86 @@ func TestExitStepUsesConfiguredCode(t *testing.T) {
 		t.Fatalf("exit code = %d, want 3", code)
 	}
 }
+
+// TestRepeatStepBoundedIterations pins the two things a bounded repeat
+// owes its author: the body runs exactly Count times, and ${ITER} is
+// rebound per iteration so emitted ids stay unique.
+func TestRepeatStepBoundedIterations(t *testing.T) {
+	var buf bytes.Buffer
+	e := newUnitEngine(t, &buf)
+	e.runSteps(e.varsForTurn(2), 2, []scenario.Step{{Repeat: &scenario.RepeatStep{
+		Count: 3,
+		Steps: []scenario.Step{{Emit: &scenario.EmitStep{Lines: []string{
+			`{"turn":${TURN},"iter":${ITER},"cwd":"${CWD}"}`,
+		}}}},
+	}}}, true)
+
+	got := outputLines(&buf)
+	want := []string{
+		`{"turn":2,"iter":1,"cwd":"/ws"}`,
+		`{"turn":2,"iter":2,"cwd":"/ws"}`,
+		`{"turn":2,"iter":3,"cwd":"/ws"}`,
+	}
+	if len(got) != len(want) {
+		t.Fatalf("repeat emitted %d lines, want %d: %q", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("line %d = %q, want %q", i+1, got[i], want[i])
+		}
+	}
+}
+
+// TestRepeatStepLeavesCallerVarsUnchanged guards the map copy: the
+// caller's vars are shared with concurrent readers (control "emit"
+// commands snapshot them), so an in-place ${ITER} write would be a data
+// race and would leak a stale iteration number after the loop.
+func TestRepeatStepLeavesCallerVarsUnchanged(t *testing.T) {
+	var buf bytes.Buffer
+	e := newUnitEngine(t, &buf)
+	vars := e.varsForTurn(1)
+	e.runRepeat(vars, 1, &scenario.RepeatStep{
+		Count: 2,
+		Steps: []scenario.Step{{Emit: &scenario.EmitStep{Lines: []string{`{"i":${ITER}}`}}}},
+	})
+	if _, ok := vars["ITER"]; ok {
+		t.Fatalf("runRepeat mutated the caller's vars: %v", vars)
+	}
+}
+
+// TestRepeatStepUnboundedStopsOnInterrupt is what makes an infinite
+// repeat safe to ship: a scenario that never completes must still end
+// the moment the app interrupts the turn.
+func TestRepeatStepUnboundedStopsOnInterrupt(t *testing.T) {
+	var buf bytes.Buffer
+	e := newUnitEngine(t, &buf)
+	e.adapter = &stubAdapter{}
+	e.startTurn(1)
+	defer e.finishTurn(1)
+
+	done := make(chan struct{})
+	go func() {
+		e.runRepeat(e.varsForTurn(1), 1, &scenario.RepeatStep{
+			Count: 0,
+			Steps: []scenario.Step{
+				{DelayMs: 5},
+				{Emit: &scenario.EmitStep{Lines: []string{`{"i":${ITER}}`}}},
+			},
+		})
+		close(done)
+	}()
+	// Let a few iterations land so the interrupt lands mid-loop rather
+	// than before it starts.
+	time.Sleep(30 * time.Millisecond)
+	if !e.interruptTurn("") {
+		t.Fatal("active turn was not interrupted")
+	}
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("unbounded repeat kept running after the turn was interrupted")
+	}
+	if len(outputLines(&buf)) == 0 {
+		t.Fatal("unbounded repeat emitted nothing before the interrupt")
+	}
+}

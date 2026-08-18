@@ -12,6 +12,8 @@ import (
 	"fmt"
 	"os"
 	"strings"
+
+	"agent-overflow/internal/appidentity"
 )
 
 // launcherFlags carries the parsed CLI state. Today only --distro is
@@ -30,7 +32,22 @@ type launcherFlags struct {
 	// normal boot still runs so Wails can register the toast callback while
 	// the WSL backend and bridge come online.
 	Embedding bool
+	// Profile selects a launch profile: "" (the normal instance) or
+	// "soak" (appidentity.ProfileSoak — the isolated second instance the
+	// soak rig runs; see docs/architecture/soak-rig.md). It is the ONE
+	// axis behind every piece of per-instance state the launcher owns:
+	// single-instance id, window title, WebView2 user-data dir, CDP port,
+	// launcher log, window placement, and the backend's own isolation
+	// flag. A single axis is deliberate — three ad-hoc flags would let a
+	// soak run share one of them and quietly reach into the developer's
+	// real instance.
+	Profile string
 }
+
+// profileEnv is the environment fallback for --profile, so the axis can
+// be set by whatever launches the .exe (make soak forwards it across the
+// WSL→Windows interop hop) without editing an argv.
+const profileEnv = "AGENT_OVERFLOW_PROFILE"
 
 // parseLauncherFlags parses the CLI args and returns the launcher's
 // flag state. We use flag.ContinueOnError so callers see typed errors
@@ -45,11 +62,25 @@ func parseLauncherFlags(args []string) (launcherFlags, error) {
 		"skip the picker and launch directly in this WSL distro (used by `make dev-wsl`)",
 	)
 	embedding := fs.Bool("Embedding", false, "internal Windows toast activation mode")
+	profile := fs.String(
+		"profile",
+		os.Getenv(profileEnv),
+		"launch profile: empty for the normal instance, `soak` for the isolated soak-rig instance (docs/architecture/soak-rig.md)",
+	)
 	if err := fs.Parse(args); err != nil {
 		return launcherFlags{}, fmt.Errorf("parse flags: %w", err)
+	}
+	// An unknown profile is an error, never a silent fall-back to the
+	// default instance: a typo that resolved to "" would run the soak
+	// against the developer's own launcher.log, WebView2 profile, and
+	// single-instance identity.
+	normalizedProfile, err := appidentity.NormalizeProfile(*profile)
+	if err != nil {
+		return launcherFlags{}, err
 	}
 	return launcherFlags{
 		Distro:    strings.TrimSpace(*distro),
 		Embedding: *embedding,
+		Profile:   normalizedProfile,
 	}, nil
 }

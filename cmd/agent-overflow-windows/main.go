@@ -97,6 +97,34 @@ var payloadVersion = "dev"
 // version string, but they still need the production single-instance ID.
 var launcherMode = "prod"
 
+// activeProfile is the runtime launch profile (--profile / the
+// AGENT_OVERFLOW_PROFILE env var), set once in main() right after flag
+// parsing and read-only afterwards. Empty is the normal instance;
+// appidentity.ProfileSoak is the soak rig's isolated second instance.
+//
+// It is a package variable for the same reason launcherMode is: every
+// per-instance name (single-instance id, title, WebView2 profile, CDP
+// port, log file, window state) is derived from the folded mode, and
+// those derivations are reached from Wails callbacks that take no
+// arguments of ours.
+var activeProfile = ""
+
+// launcherRuntimeMode folds the build stamp with the runtime profile.
+// This is THE function every per-instance name goes through — a soak run
+// launched from the dev build is "soak", never "dev".
+func launcherRuntimeMode() string {
+	return appidentity.LauncherMode(launcherMode, activeProfile)
+}
+
+// soakWindowSize is the soak instance's initial window. Small on
+// purpose: a soak sits visible on a real monitor for hours next to the
+// developer's actual work, and it only has to be big enough to keep the
+// renderer compositing a live thread.
+const (
+	soakWindowWidth  = 800
+	soakWindowHeight = 600
+)
+
 // webviewLogEnv opts in to Chromium's chrome_debug.log (see browserArgs).
 // dev-wsl forwards it across the WSL→Windows interop hop via WSLENV.
 const webviewLogEnv = "AGENT_OVERFLOW_WEBVIEW_LOG"
@@ -156,7 +184,16 @@ func main() {
 	updater.HandleHelperMode()
 
 	bootStarted := time.Now()
-	logFile, err := openLog()
+
+	// Flags first, before logging: the profile decides WHICH log file
+	// this process appends to, and a soak run's evidence has to be
+	// attributable to that run. A parse failure still gets a log — the
+	// default one — so the reason is not lost to a GUI subsystem's
+	// discarded stderr.
+	flags, flagErr := parseLauncherFlags(os.Args[1:])
+	activeProfile = flags.Profile
+
+	logFile, err := openLog(activeProfile)
 	if err == nil {
 		// io.MultiWriter aborts the whole chain on the first writer's
 		// error, and stderr in a `-H windowsgui` app is connected to
@@ -182,16 +219,18 @@ func main() {
 		log.Printf("launcher: pprof listening on %s (Windows loopback)", pprofAddr)
 	}
 
-	flags, err := parseLauncherFlags(os.Args[1:])
-	if err != nil {
+	if flagErr != nil {
 		// flag.ErrHelp means the user passed -h/-help and the flag
 		// package already wrote the usage to stderr. Exit cleanly so
 		// the launcher doesn't log a phantom "flags: flag: help requested"
 		// to launcher.log on every help invocation.
-		if errors.Is(err, flag.ErrHelp) {
+		if errors.Is(flagErr, flag.ErrHelp) {
 			os.Exit(0)
 		}
-		log.Fatalf("flags: %v", err)
+		log.Fatalf("flags: %v", flagErr)
+	}
+	if activeProfile != "" {
+		log.Printf("launcher: profile=%s (isolated instance: id/title/webview/log/window-state/data-dir)", activeProfile)
 	}
 
 	cfg, err := loadConfig()
@@ -371,15 +410,23 @@ func resolveChosenDistro(flags launcherFlags, cfg *wsldistro.Config, distros []w
 	return "", false
 }
 
-// openLog opens %APPDATA%\agent-overflow\launcher.log for append. The
-// file is best-effort; if AppData isn't writable we fall back to
-// stderr only. Logging is essential here because the Windows binary
-// has no console UI for surfacing errors before the WebView opens.
-func openLog() (*os.File, error) {
+// openLog opens %APPDATA%\agent-overflow\launcher.log for append (or
+// launcher-soak.log under the soak profile — see
+// appidentity.StateFileName). The file is best-effort; if AppData isn't
+// writable we fall back to stderr only. Logging is essential here
+// because the Windows binary has no console UI for surfacing errors
+// before the WebView opens.
+//
+// The soak profile splitting off its own file is what makes watchdog
+// evidence attributable: `grep 'render recovery' launcher-soak.log`
+// answers a question about one soak run, not about every dev launch
+// interleaved with it.
+func openLog(profile string) (*os.File, error) {
 	dir, ok := wsldistro.WSLConfigDir()
 	if !ok {
 		return nil, fmt.Errorf("openLog: AppData unresolvable")
 	}
+	name := appidentity.StateFileName("launcher.log", appidentity.LauncherMode(launcherMode, profile))
 	if err := os.MkdirAll(dir, launcherPrivateDirPerm); err != nil {
 		return nil, err
 	}
@@ -387,7 +434,7 @@ func openLog() (*os.File, error) {
 		return nil, err
 	}
 	f, err := os.OpenFile(
-		filepath.Join(dir, "launcher.log"),
+		filepath.Join(dir, name),
 		os.O_APPEND|os.O_CREATE|os.O_WRONLY,
 		launcherLogFilePerm,
 	)
@@ -666,14 +713,35 @@ func (a *launcherApp) launchAndProbe(ctx context.Context, distro, binPath string
 	return l, bs, nil
 }
 
+// profileBackendArgs returns the backend flags this launch profile
+// implies. The soak profile passes `--soak`, which is what makes the WSL
+// backend rewrite both provider binaries to ao-mockprovider, redirect
+// HOME, and open its own data dir — the isolation cannot be left to the
+// operator remembering a second flag.
+//
+// It rides the child's argv rather than an env var deliberately: WSLENV
+// passthrough is for diagnostics, and anything load-bearing across the
+// WSL boundary belongs in explicit launch args
+// (internal/wsllauncher/AGENTS.md). --data-dir is deliberately NOT
+// spelled here: the launcher runs on the Windows side and has no Linux
+// path to offer, so the backend resolves its own default.
+func profileBackendArgs() []string {
+	if activeProfile == appidentity.ProfileSoak {
+		return []string{"--soak"}
+	}
+	return nil
+}
+
 // launchBackend spawns the WSL child and records it as the live
-// launcher. extraArgs are appended to the backend's own argv.
+// launcher. extraArgs are appended to the backend's own argv, after the
+// profile's own flags.
 func (a *launcherApp) launchBackend(ctx context.Context, distro, binPath string, extraArgs []string) (*wsllauncher.Launcher, *wsllauncher.Bootstrap, error) {
 	phaseStarted := time.Now()
+	args := append(profileBackendArgs(), extraArgs...)
 	l, bs, err := wsllauncher.Launch(ctx, wsllauncher.LaunchOptions{
 		Distro:         distro,
 		BinaryPath:     binPath,
-		ExtraArgs:      extraArgs,
+		ExtraArgs:      args,
 		PassthroughEnv: diagenv.Passthrough(),
 	})
 	logBootPhase("launcher.wsl_launch", phaseStarted)
@@ -939,6 +1007,16 @@ func validateBootstrapResponse(body []byte, port int, token string) error {
 // owns InstalledVer + InstalledDistro; the backend owns Distro from
 // the moment the user picks a different one.
 func (a *launcherApp) persistSuccessfulLaunch(distro string) error {
+	if activeProfile != "" {
+		// wsl.json is shared with the real instance (and co-written by
+		// the WSL backend's Settings distro switch). A profiled launch
+		// reads it but never writes it: its InstalledVer would make the
+		// developer's next real launch skip a payload reinstall it
+		// actually needed. This is the choke point rather than the
+		// transient flag because the picker path passes transient=false.
+		log.Printf("launcher: profile=%s — not persisting the distro choice to wsl.json", activeProfile)
+		return nil
+	}
 	cfg, _ := loadConfig()
 	if cfg == nil {
 		cfg = &wsldistro.Config{}
@@ -987,7 +1065,6 @@ func buildApp(distros []wsllauncher.Distro, initialURL, chosen string, transient
 	a.notificationService = notificationService
 	mode := wslSingleInstanceMode()
 	title := appidentity.AppTitle(mode)
-	enableDevBrowserArgs := mode == "dev"
 
 	// Preserve the previous browser session's Chromium log before this
 	// session's WebView2 environment truncates it — see rotateChromeDebugLog.
@@ -1011,7 +1088,7 @@ func buildApp(distros []wsllauncher.Distro, initialURL, chosen string, transient
 			Handler: pickerAssetHandler(distros),
 		},
 		Windows: application.WindowsOptions{
-			AdditionalBrowserArgs: browserArgs(enableDevBrowserArgs),
+			AdditionalBrowserArgs: browserArgs(mode),
 			DisabledFeatures:      browserDisabledFeatures(),
 			EnabledFeatures:       browserEnabledFeatures(),
 			// Stable per-mode WebView2 profile. Without this the profile
@@ -1079,10 +1156,14 @@ func buildApp(distros []wsllauncher.Distro, initialURL, chosen string, transient
 	// the allowed menus below the JS layer. (The picker/loading pages
 	// keep their native menu; they're plain trusted HTML with nothing
 	// to hide.)
+	width, height := 1280, 800
+	if mode == appidentity.ModeSoak {
+		width, height = soakWindowWidth, soakWindowHeight
+	}
 	opts := application.WebviewWindowOptions{
 		Title:            title,
-		Width:            1280,
-		Height:           800,
+		Width:            width,
+		Height:           height,
 		MinWidth:         800,
 		MinHeight:        600,
 		BackgroundColour: application.NewRGBA(22, 22, 30, 255),
@@ -1226,11 +1307,12 @@ func wslSingleInstanceOptions(window func() *application.WebviewWindow) *applica
 	}
 }
 
+// wslSingleInstanceMode is the folded (build stamp + runtime profile)
+// mode every per-instance name is derived from. Named for its oldest
+// caller; it is the same string that picks the title, WebView2 profile,
+// CDP port, log file, and window-state file.
 func wslSingleInstanceMode() string {
-	if launcherMode == "dev" {
-		return "dev"
-	}
-	return "prod"
+	return launcherRuntimeMode()
 }
 
 // browserArgs returns the Chromium command-line flags forwarded to
@@ -1270,9 +1352,11 @@ func wslSingleInstanceMode() string {
 // stack. Revisit only if a real memory measurement justifies switching
 // the terminal to the (CPU) canvas renderer instead.
 //
-// enableDevArgs adds the loopback CDP attach point so a developer can
-// talk Chrome DevTools / wsjson to the WebView2 from inside WSL. The
-// protocol is unauthenticated, so it never ships.
+// mode adds the loopback CDP attach point so a developer can talk
+// Chrome DevTools / wsjson to the WebView2 from inside WSL, on a
+// per-mode port (appidentity.DevToolsPort — dev and soak differ so both
+// can be attached at once). The protocol is unauthenticated, so
+// production gets no port at all.
 //
 // Memory experiments tried and pulled back: --single-process (~290 MB
 // savings, but couples all rendering work onto one thread pool and
@@ -1283,7 +1367,7 @@ func wslSingleInstanceMode() string {
 // single-process turns any future big-memory feature — large diffs,
 // terminal log dumps — into a whole-window crash). Revisit if memory
 // becomes a real constraint.
-func browserArgs(enableDevArgs bool) []string {
+func browserArgs(mode string) []string {
 	args := []string{
 		"--disable-background-networking",
 		"--disable-component-update",
@@ -1313,9 +1397,9 @@ func browserArgs(enableDevArgs bool) []string {
 		// every scroller gets eagerly composited (see that comment).
 		"--disable-lcd-text",
 	}
-	if enableDevArgs {
+	if port := appidentity.DevToolsPort(mode); port > 0 {
 		args = append(args,
-			"--remote-debugging-port=9223",
+			fmt.Sprintf("--remote-debugging-port=%d", port),
 			"--remote-debugging-address=127.0.0.1",
 		)
 	}
@@ -1431,29 +1515,39 @@ func rotateChromeDebugLog(dataDir string) {
 }
 
 // wailsLogLevel picks how much of Wails' internal slog reaches launcher.log:
-// info in dev (WebView2 recovery narration, window lifecycle), warn+ in
-// production so user logs only carry actionable problems.
+// debug in a soak run, info in dev (WebView2 recovery narration, window
+// lifecycle), warn+ in production so user logs only carry actionable
+// problems.
+//
+// Soak takes debug because the whole point of the run is the render
+// watchdog's narrative, and half of it — "render watchdog armed",
+// "standing down", "render recovery re-navigating" — is logged at debug
+// by the pinned wails fork. Losing those leaves an episode with a start
+// line and no story.
 func wailsLogLevel(mode string) slog.Level {
-	if mode == "dev" {
+	switch mode {
+	case appidentity.ModeSoak:
+		return slog.LevelDebug
+	case appidentity.ModeDev:
 		return slog.LevelInfo
+	default:
+		return slog.LevelWarn
 	}
-	return slog.LevelWarn
 }
 
 // webviewDataDir returns the stable WebView2 user-data folder for this
 // launcher mode, or "" when %APPDATA% is unresolvable (Wails then falls back
-// to its default). Dev and prod use separate profiles so a dev session never
-// pollutes the production cache/cookies, mirroring the single-instance and
-// window-title mode split.
+// to its default). Dev, prod, and soak use separate profiles so a dev session
+// never pollutes the production cache/cookies — and so a soak run's
+// localStorage, IndexedDB thread replica, and Crashpad/chrome_debug.log
+// evidence are its own — mirroring the single-instance and window-title
+// mode split.
 func webviewDataDir(mode string) string {
 	dir, ok := wsldistro.WSLConfigDir()
 	if !ok {
 		return ""
 	}
-	if mode == "dev" {
-		return filepath.Join(dir, "webview2-dev")
-	}
-	return filepath.Join(dir, "webview2")
+	return filepath.Join(dir, appidentity.WebviewProfileDir(mode))
 }
 
 // run drives the Wails app loop. Errors are logged but don't take

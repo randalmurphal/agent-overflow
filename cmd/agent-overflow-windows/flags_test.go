@@ -6,6 +6,8 @@ import (
 	"errors"
 	"flag"
 	"testing"
+
+	"agent-overflow/internal/appidentity"
 )
 
 func TestParseLauncherFlags_Empty(t *testing.T) {
@@ -66,5 +68,45 @@ func TestParseLauncherFlags_HelpReturnsErrHelp(t *testing.T) {
 	_, err := parseLauncherFlags([]string{"-h"})
 	if !errors.Is(err, flag.ErrHelp) {
 		t.Fatalf("err = %v, want flag.ErrHelp", err)
+	}
+}
+
+func TestParseLauncherFlags_Profile(t *testing.T) {
+	cases := []struct {
+		name string
+		args []string
+		env  string
+		want string
+	}{
+		{"default", nil, "", ""},
+		{"flag", []string{"--profile", "soak"}, "", appidentity.ProfileSoak},
+		{"flag equals", []string{"--profile=SOAK"}, "", appidentity.ProfileSoak},
+		{"env fallback", nil, "soak", appidentity.ProfileSoak},
+		{"flag beats env", []string{"--profile", ""}, "soak", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv(profileEnv, tc.env)
+			got, err := parseLauncherFlags(tc.args)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got.Profile != tc.want {
+				t.Fatalf("Profile = %q, want %q", got.Profile, tc.want)
+			}
+		})
+	}
+}
+
+// TestParseLauncherFlags_UnknownProfileErrors: a typo must never fall
+// back to the default instance — that would point a soak run at the
+// developer's own launcher.log, WebView2 profile, and instance identity.
+func TestParseLauncherFlags_UnknownProfileErrors(t *testing.T) {
+	if _, err := parseLauncherFlags([]string{"--profile", "sokk"}); err == nil {
+		t.Fatal("expected error for an unknown profile")
+	}
+	t.Setenv(profileEnv, "sokk")
+	if _, err := parseLauncherFlags(nil); err == nil {
+		t.Fatal("expected error for an unknown profile from the environment")
 	}
 }

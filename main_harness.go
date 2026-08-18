@@ -69,26 +69,7 @@ func runHarness(flags cliFlags) {
 		fatalf("harness: %v", err)
 	}
 
-	appService := newApp()
-	appService.configureUnavailableNotifications("the agent test harness has no OS notification presenter")
-	// Pin provider spawns to the mock at resolution time, not just via
-	// the seeded settings — UpdateSettings stays callable in harness
-	// mode, but it can never repoint a spawn at a real provider binary.
-	appService.providerBinaryOverride = paths.MockProvider
-	// The redirected harness $HOME isolates every file store but not the
-	// macOS Keychain (the active Claude slot's service name ignores the
-	// home), so credential storage is pinned to the file-backed stand-in.
-	appService.fileKeychainOverride = true
-	// Pin the credential surface under the harness-owned home
-	// unconditionally: AO_HARNESS_KEEP_HOME keeps the real $HOME for
-	// provider session-file reads, and this pin is what keeps that flag
-	// read-only — slots, canonical credential, and the orphan prune must
-	// never resolve against the developer's real provider homes.
-	appService.credentialHomeOverride = paths.CredentialHome
-	// No timer may run `git fetch` against the fixture repositories: e2e
-	// assertions read ahead/behind counts as fixed state, and a harness
-	// run must never reach a network.
-	appService.backgroundFetchDisabled = true
+	appService := newIsolatedProviderApp(paths, "the agent test harness has no OS notification presenter")
 	h := newHarness(appService, paths)
 	// The control server must listen before App.Start: it publishes its
 	// address/token through App.providerExtraEnv (write-once before
@@ -133,11 +114,49 @@ func runHarness(flags cliFlags) {
 	waitForHeadlessShutdown(appService, srv)
 }
 
+// newIsolatedProviderApp builds the App for a boot mode whose providers
+// are mocked: the agent test harness (--harness) and the soak rig
+// (--soak). It is the ONE place these pins are applied, so a second
+// mocked boot mode cannot ship with three of the four — enforced by
+// TestMockedBootModesShareOneIsolationHelper.
+//
+// Every pin here is structural, not advisory: settings stay editable at
+// runtime in both modes, and only the spawn-time override makes "this
+// process can never reach a real provider binary" true regardless of
+// what a later UpdateSettings writes.
+func newIsolatedProviderApp(paths harnessPaths, notificationReason string) *App {
+	appService := newApp()
+	appService.configureUnavailableNotifications(notificationReason)
+	// Pin provider spawns to the mock at resolution time, not just via
+	// the seeded settings — UpdateSettings stays callable in these modes,
+	// but it can never repoint a spawn at a real provider binary.
+	appService.providerBinaryOverride = paths.MockProvider
+	// The redirected $HOME isolates every file store but not the macOS
+	// Keychain (the active Claude slot's service name ignores the home),
+	// so credential storage is pinned to the file-backed stand-in.
+	appService.fileKeychainOverride = true
+	// Pin the credential surface under the mode-owned home
+	// unconditionally: AO_HARNESS_KEEP_HOME keeps the real $HOME for
+	// provider session-file reads, and this pin is what keeps that flag
+	// read-only — slots, canonical credential, and the orphan prune must
+	// never resolve against the developer's real provider homes.
+	appService.credentialHomeOverride = paths.CredentialHome
+	// No timer may run `git fetch` against the fixture repositories: e2e
+	// assertions read ahead/behind counts as fixed state, and neither a
+	// harness run nor an hours-long soak may reach a network.
+	appService.backgroundFetchDisabled = true
+	return appService
+}
+
 // prepareHarness makes every filesystem decision the harness boot
 // needs, in dependency order: validate + create the data root, redirect
 // HOME under it, resolve the mock provider binary, and seed the
 // harness settings. Fails loudly on the first problem — a harness that
 // half-boots against ambiguous state is worse than no harness.
+//
+// The soak rig (main_soak.go) runs the same preparation: same data-dir
+// refusals, same HOME redirect, same mock resolution, same settings
+// seed. Only the boot shell around it differs.
 func prepareHarness(flags cliFlags) (harnessPaths, error) {
 	dataRoot, err := filepath.Abs(flags.dataDir)
 	if err != nil {
@@ -200,10 +219,10 @@ func refuseRealDataDir(dataRoot string) error {
 		return nil
 	}
 	if sameCanonicalPath(dataRoot, defaultRoot) {
-		return fmt.Errorf("--data-dir %s is the OS config root; the harness refuses to run against real app data (pick a scratch dir)", dataRoot)
+		return fmt.Errorf("--data-dir %s is the OS config root; an isolated boot (--harness / --soak) refuses to run against real app data (pick a scratch dir)", dataRoot)
 	}
 	if sameCanonicalPath(dataRoot, filepath.Join(defaultRoot, "agent-overflow")) {
-		return fmt.Errorf("--data-dir %s is the real app data dir; the harness refuses to run against real app data (pick a scratch dir)", dataRoot)
+		return fmt.Errorf("--data-dir %s is the real app data dir; an isolated boot (--harness / --soak) refuses to run against real app data (pick a scratch dir)", dataRoot)
 	}
 	return nil
 }
@@ -220,7 +239,7 @@ func refuseSymlink(path string) error {
 		return fmt.Errorf("inspect %s: %w", path, err)
 	}
 	if info.Mode()&os.ModeSymlink != 0 {
-		return fmt.Errorf("%s is a symlink; the harness refuses to operate through links (it seeds and wipes this directory wholesale)", path)
+		return fmt.Errorf("%s is a symlink; an isolated boot (--harness / --soak) refuses to operate through links (it seeds and wipes this directory wholesale)", path)
 	}
 	return nil
 }

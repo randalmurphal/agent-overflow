@@ -5,6 +5,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -143,7 +144,7 @@ func TestOpenLogCreatesLogUnderAppData(t *testing.T) {
 	appData := t.TempDir()
 	t.Setenv("APPDATA", appData)
 
-	f, err := openLog()
+	f, err := openLog("")
 	if err != nil {
 		t.Fatalf("openLog: %v", err)
 	}
@@ -155,6 +156,25 @@ func TestOpenLogCreatesLogUnderAppData(t *testing.T) {
 	}
 	if _, err := f.WriteString("hello\n"); err != nil {
 		t.Fatalf("write log: %v", err)
+	}
+}
+
+// TestOpenLogSoakProfileWritesItsOwnFile is the evidence-attribution
+// gate: a soak run's watchdog lines have to be greppable on their own,
+// not interleaved with every dev launch that shares %APPDATA%.
+func TestOpenLogSoakProfileWritesItsOwnFile(t *testing.T) {
+	appData := t.TempDir()
+	t.Setenv("APPDATA", appData)
+
+	f, err := openLog(appidentity.ProfileSoak)
+	if err != nil {
+		t.Fatalf("openLog(soak): %v", err)
+	}
+	defer f.Close()
+
+	want := filepath.Join(appData, "agent-overflow", "launcher-soak.log")
+	if f.Name() != want {
+		t.Fatalf("soak log path = %q, want %q", f.Name(), want)
 	}
 }
 
@@ -172,8 +192,8 @@ func TestOpenLogCreatesLogUnderAppData(t *testing.T) {
 //     Wails' list. Feature toggles go through browserDisabledFeatures /
 //     browserEnabledFeatures, which Wails merges into its single switch.
 func TestBrowserArgs(t *testing.T) {
-	prod := browserArgs(false)
-	dev := browserArgs(true)
+	prod := browserArgs("prod")
+	dev := browserArgs("dev")
 
 	devSet := make(map[string]struct{}, len(dev))
 	for _, a := range dev {
@@ -258,7 +278,9 @@ func TestBrowserFeatures(t *testing.T) {
 
 func TestWSLSingleInstanceModeUsesLauncherMode(t *testing.T) {
 	orig := launcherMode
-	t.Cleanup(func() { launcherMode = orig })
+	origProfile := activeProfile
+	t.Cleanup(func() { launcherMode = orig; activeProfile = origProfile })
+	activeProfile = ""
 
 	launcherMode = "dev"
 	if got := wslSingleInstanceMode(); got != "dev" {
@@ -578,6 +600,89 @@ func TestWebviewDataDir(t *testing.T) {
 	if got, want := webviewDataDir("prod"), filepath.Join(base, "webview2"); got != want {
 		t.Errorf("prod dir = %q, want %q", got, want)
 	}
+	if got, want := webviewDataDir(appidentity.ModeSoak), filepath.Join(base, "webview2-soak"); got != want {
+		t.Errorf("soak dir = %q, want %q", got, want)
+	}
+}
+
+// TestSoakProfileFoldsEveryPerInstanceName is the launcher half of the
+// isolation guard: with --profile soak set, every name the launcher
+// derives must differ from what the same build would use without it.
+// One of them sharing would put the soak instance inside the
+// developer's live app (same single-instance id → the soak URL opens in
+// their window; same WebView2 dir → same localStorage/IndexedDB).
+func TestSoakProfileFoldsEveryPerInstanceName(t *testing.T) {
+	appData := t.TempDir()
+	t.Setenv("APPDATA", appData)
+	origMode, origProfile := launcherMode, activeProfile
+	t.Cleanup(func() { launcherMode, activeProfile = origMode, origProfile })
+	launcherMode = "dev"
+
+	activeProfile = ""
+	devMode := launcherRuntimeMode()
+	devState, _ := windowStatePath()
+	devWebview := webviewDataDir(devMode)
+	devInstance := wslSingleInstanceMode()
+
+	activeProfile = appidentity.ProfileSoak
+	soakMode := launcherRuntimeMode()
+	soakState, _ := windowStatePath()
+	soakWebview := webviewDataDir(soakMode)
+	soakInstance := wslSingleInstanceMode()
+
+	if soakMode != appidentity.ModeSoak {
+		t.Fatalf("runtime mode = %q, want %q (a soak launched from the dev build is soak)", soakMode, appidentity.ModeSoak)
+	}
+	for _, pair := range []struct {
+		name       string
+		dev, soaky string
+	}{
+		{"window state path", devState, soakState},
+		{"webview data dir", devWebview, soakWebview},
+		{"single-instance mode", devInstance, soakInstance},
+	} {
+		if pair.dev == pair.soaky {
+			t.Errorf("%s is shared between the dev instance and the soak instance (%q)", pair.name, pair.dev)
+		}
+	}
+}
+
+// TestProfileBackendArgs: the soak profile must spell --soak on the WSL
+// backend's argv. Without it the launcher would point at a backend
+// running with the developer's real data dir and real provider binaries
+// — the exact failure the profile axis exists to make impossible.
+func TestProfileBackendArgs(t *testing.T) {
+	orig := activeProfile
+	t.Cleanup(func() { activeProfile = orig })
+
+	activeProfile = ""
+	if got := profileBackendArgs(); len(got) != 0 {
+		t.Errorf("default profile backend args = %v, want none", got)
+	}
+
+	activeProfile = appidentity.ProfileSoak
+	got := profileBackendArgs()
+	if len(got) != 1 || got[0] != "--soak" {
+		t.Fatalf("soak backend args = %v, want [--soak]", got)
+	}
+}
+
+// TestSoakWindowIsSmallEnoughToParkBesideRealWork guards the ergonomic
+// contract in docs/architecture/soak-rig.md: the soak window sits
+// visible for hours next to the developer's actual app.
+func TestSoakWindowIsSmallEnoughToParkBesideRealWork(t *testing.T) {
+	if soakWindowWidth != 800 || soakWindowHeight != 600 {
+		t.Fatalf("soak window = %dx%d, want 800x600", soakWindowWidth, soakWindowHeight)
+	}
+}
+
+// TestWailsLogLevelSoakIsDebug: the fork logs half the render-watchdog
+// narrative ("armed", "standing down", "re-navigating") at debug. A soak
+// that drops those has episode starts with no story.
+func TestWailsLogLevelSoakIsDebug(t *testing.T) {
+	if got := wailsLogLevel(appidentity.ModeSoak); got != slog.LevelDebug {
+		t.Fatalf("soak wails log level = %v, want debug", got)
+	}
 }
 
 // TestRotateChromeDebugLog covers the pre-launch log rotation: the live
@@ -642,15 +747,15 @@ func TestBrowserArgsWebviewLogGate(t *testing.T) {
 	}
 
 	t.Setenv(webviewLogEnv, "")
-	if hasLogging(browserArgs(true)) || hasLogging(browserArgs(false)) {
+	if hasLogging(browserArgs("dev")) || hasLogging(browserArgs("prod")) {
 		t.Error("logging flags present without opt-in")
 	}
 
 	t.Setenv(webviewLogEnv, "1")
-	if !hasLogging(browserArgs(true)) {
+	if !hasLogging(browserArgs("dev")) {
 		t.Error("dev: logging flags missing despite opt-in")
 	}
-	if !hasLogging(browserArgs(false)) {
+	if !hasLogging(browserArgs("prod")) {
 		t.Error("prod: logging flags missing despite opt-in")
 	}
 }
@@ -670,15 +775,15 @@ func TestBrowserArgsWebviewSoftwareGate(t *testing.T) {
 	}
 
 	t.Setenv(webviewSoftwareEnv, "")
-	if hasDisableGpu(browserArgs(true)) || hasDisableGpu(browserArgs(false)) {
+	if hasDisableGpu(browserArgs("dev")) || hasDisableGpu(browserArgs("prod")) {
 		t.Error("--disable-gpu present without opt-in")
 	}
 
 	t.Setenv(webviewSoftwareEnv, "1")
-	if !hasDisableGpu(browserArgs(true)) {
+	if !hasDisableGpu(browserArgs("dev")) {
 		t.Error("dev: --disable-gpu missing despite opt-in")
 	}
-	if !hasDisableGpu(browserArgs(false)) {
+	if !hasDisableGpu(browserArgs("prod")) {
 		t.Error("prod: --disable-gpu missing despite opt-in")
 	}
 }

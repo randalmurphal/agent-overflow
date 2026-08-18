@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -54,6 +55,8 @@ func (e *engine) runStep(vars scenario.Vars, turn int, step scenario.Step) {
 		e.runStall(turn, step.Stall)
 	case step.Exit != nil:
 		e.runExit(step.Exit)
+	case step.Repeat != nil:
+		e.runRepeat(vars, turn, step.Repeat)
 	default:
 		// Parse-time Validate guarantees exactly one action; an empty
 		// step here means the schema grew without this switch.
@@ -79,8 +82,36 @@ func stepName(step scenario.Step) string {
 		return "stall"
 	case step.Exit != nil:
 		return "exit"
+	case step.Repeat != nil:
+		return "repeat"
 	}
 	return "unknown"
+}
+
+// runRepeat re-runs a step body Count times, or until the turn is
+// interrupted when Count <= 0. Body steps run UNREPORTED (like approval
+// branches): an unbounded loop would otherwise post two control reports
+// per step forever, and the harness re-emits every one of them onto the
+// event bus. The step_started/step_completed pair for the repeat itself
+// still marks the boundary.
+//
+// ${ITER} is rebound per iteration on a COPY of the caller's vars, so
+// emitted ids stay unique across iterations without mutating the map the
+// enclosing turn (and any concurrent control "emit") reads.
+func (e *engine) runRepeat(vars scenario.Vars, turn int, rp *scenario.RepeatStep) {
+	for i := 1; rp.Count <= 0 || i <= rp.Count; i++ {
+		if e.turnAborted(turn) {
+			return
+		}
+		iter := make(scenario.Vars, len(vars)+1)
+		for k, v := range vars {
+			iter[k] = v
+		}
+		iter["ITER"] = strconv.Itoa(i)
+		if e.runSteps(iter, turn, rp.Steps, false) {
+			return
+		}
+	}
 }
 
 func (e *engine) runEmit(vars scenario.Vars, em *scenario.EmitStep) {

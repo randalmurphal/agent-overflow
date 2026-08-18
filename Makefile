@@ -1,4 +1,4 @@
-.PHONY: install dev dev-wsl build build-wsl test check verify release go-build go-test test-race provider-smoke import-corpus-smoke mockprovider harness-build harness e2e
+.PHONY: install dev dev-wsl launch-wsl soak soak-check build build-wsl test check verify release go-build go-test test-race provider-smoke import-corpus-smoke mockprovider harness-build harness e2e
 
 # `make dev DEBUG=1` / `make dev-wsl DEBUG=1` enables every debug surface
 # wired through this Makefile: frontend UI render tracing and raw provider
@@ -217,14 +217,44 @@ dev:
 # AGENT_OVERFLOW_RENDERER_DIAG (internal/diagenv) ride both hops to
 # reach the WSL backend.
 DEV_WSL_FWD_VARS := AGENT_OVERFLOW_DEBUG AGENT_OVERFLOW_WEBVIEW_LOG AGENT_OVERFLOW_WEBVIEW_SOFTWARE AGENT_OVERFLOW_PPROF AGENT_OVERFLOW_RENDERER_DIAG
+
+# LAUNCH_PROFILE selects which instance launch-wsl builds and runs:
+# empty is the developer's normal dev instance, `soak` is the isolated
+# soak rig (docs/architecture/soak-rig.md). It is forwarded verbatim to
+# the launcher's --profile flag, which is THE axis behind every piece of
+# per-instance state (single-instance id, window title, WebView2 profile,
+# CDP port, launcher log, window placement, backend data dir).
+LAUNCH_PROFILE ?=
+
 dev-wsl:
+	@$(MAKE) launch-wsl LAUNCH_PROFILE= UI_TRACE=$(UI_TRACE) UI_ORACLES=$(UI_ORACLES)
+
+# soak: a SECOND, fully isolated instance of the real Windows app, meant
+# to sit visible and untouched for hours reproducing the WebView2
+# renderer-hang steady state (docs/architecture/soak-rig.md). Same build
+# path as dev-wsl; everything that could collide with the developer's own
+# instance is switched by --profile soak, and the backend runs --soak, so
+# it can only ever see ao-mockprovider and its own ~/.agent-overflow-soak
+# data dir. Check on it with `make soak-check`.
+soak:
+	@$(MAKE) launch-wsl LAUNCH_PROFILE=soak UI_TRACE=$(UI_TRACE) UI_ORACLES=$(UI_ORACLES)
+
+launch-wsl:
 	@if [ -z "$$WSL_DISTRO_NAME" ]; then \
 		echo "ERROR: WSL_DISTRO_NAME is unset. Run this target from inside a WSL shell."; \
 		exit 1; \
 	fi
+	@case "$(LAUNCH_PROFILE)" in ""|soak) ;; *) echo "ERROR: LAUNCH_PROFILE must be empty or 'soak', got '$(LAUNCH_PROFILE)'" >&2; exit 1;; esac
 	@set -e; \
 	DEV_VERSION=dev-$$(date +%Y%m%d%H%M%S)-$$$$; \
 	$(MAKE) build-wsl WSL_VERSION=$$DEV_VERSION WSL_FORCE_RELINK=1 UI_TRACE=$(UI_TRACE) UI_ORACLES=$(UI_ORACLES) WSL_BUILD_MODE=build:dev; \
+	if [ "$(LAUNCH_PROFILE)" = "soak" ]; then \
+		$(MAKE) mockprovider; \
+		mkdir -p "$$HOME/.local/bin"; \
+		cp bin/ao-mockprovider "$$HOME/.local/bin/ao-mockprovider.tmp.$$$$"; \
+		mv -f "$$HOME/.local/bin/ao-mockprovider.tmp.$$$$" "$$HOME/.local/bin/ao-mockprovider"; \
+		echo "Installed mock provider at $$HOME/.local/bin/ao-mockprovider (the --soak backend resolves it beside its own binary)"; \
+	fi; \
 	WIN_LAD=$$(/mnt/c/Windows/System32/cmd.exe /c 'echo %LOCALAPPDATA%' 2>/dev/null | tr -d '\r\n'); \
 	if [ -z "$$WIN_LAD" ]; then \
 		echo "ERROR: could not resolve %LOCALAPPDATA% via cmd.exe interop."; \
@@ -235,7 +265,17 @@ dev-wsl:
 	mkdir -p "$$WIN_DEV_DIR_LINUX"; \
 	find "$$WIN_DEV_DIR_LINUX" -maxdepth 1 -name 'agent-overflow-dev-*.exe' ! -name "agent-overflow-$$DEV_VERSION.exe" -delete 2>/dev/null || true; \
 	cp bin/agent-overflow.exe "$$WIN_DEV_EXE_LINUX"; \
-	echo "Launching $$WIN_DEV_EXE_LINUX --distro $$WSL_DISTRO_NAME"; \
+	PROFILE_ARGS=""; \
+	if [ -n "$(LAUNCH_PROFILE)" ]; then \
+		PROFILE_ARGS="--profile $(LAUNCH_PROFILE)"; \
+		SOAK_LOG=$$(scripts/soak-check.sh --print-log-path); \
+		echo ""; \
+		echo "Soak launcher log: $$SOAK_LOG"; \
+		echo "Watchdog one-liner: grep -nE 'render(er ran no script| recovery)|rebuilding controller' \"$$SOAK_LOG\""; \
+		echo "Summary:            make soak-check"; \
+		echo ""; \
+	fi; \
+	echo "Launching $$WIN_DEV_EXE_LINUX --distro $$WSL_DISTRO_NAME $$PROFILE_ARGS"; \
 	FWD_WSLENV="$$WSLENV"; \
 	for spec in $(foreach v,$(DEV_WSL_FWD_VARS),"$(v)=$($(v))"); do \
 		name=$${spec%%=*}; \
@@ -245,7 +285,13 @@ dev-wsl:
 			*) FWD_WSLENV="$$name$${FWD_WSLENV:+:$$FWD_WSLENV}" ;; \
 		esac; \
 	done; \
-	WSLENV="$$FWD_WSLENV" $(foreach v,$(DEV_WSL_FWD_VARS),$(v)="$($(v))") "$$WIN_DEV_EXE_LINUX" --distro "$$WSL_DISTRO_NAME"
+	WSLENV="$$FWD_WSLENV" $(foreach v,$(DEV_WSL_FWD_VARS),$(v)="$($(v))") "$$WIN_DEV_EXE_LINUX" --distro "$$WSL_DISTRO_NAME" $$PROFILE_ARGS
+
+# soak-check: read-only summary of the running (or last) soak — uptime,
+# render-recovery episodes, controller rebuilds. Safe to run at any time;
+# it only reads launcher-soak.log.
+soak-check:
+	@scripts/soak-check.sh
 
 # build-wsl: cross-compiles the Linux ELF backend + Windows .exe launcher
 # without running. Use this when you want to hand the .exe off (e.g.

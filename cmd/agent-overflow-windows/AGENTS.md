@@ -37,7 +37,7 @@ killing the `.exe` always tears down the WSL-side child too.
 ## CLI flags
 
 The launcher is GUI-only in production (Start Menu / Desktop double-click).
-The only user-facing flag is for the dev path:
+The user-facing flags are for the dev path:
 
 - `--distro <name>` — skip the picker and launch directly in this WSL
   distro. Used by `make dev-wsl` from inside a WSL shell, where
@@ -49,6 +49,18 @@ The only user-facing flag is for the dev path:
   warning to `launcher.log` and falls through to the picker; we
   deliberately do not fall back to saved config so the dev mismatch is
   surfaced rather than silently masked.
+- `--profile soak` (or `AGENT_OVERFLOW_PROFILE=soak`) — run as the
+  isolated **soak** instance: `make soak`, [the soak
+  rig](../../docs/architecture/soak-rig.md). This one flag is THE axis
+  behind every piece of per-instance state — single-instance id, window
+  title, WebView2 user-data dir, CDP port, `launcher-soak.log`,
+  `window-soak.json`, the small 800x600 window, debug-level Wails
+  logging, a refusal to persist `wsl.json`, and `--soak` on the WSL
+  backend's argv (`profileBackendArgs`). Everything folds through
+  `launcherRuntimeMode()` → `internal/appidentity`, so a soak launched
+  from the dev build is `soak`, never `dev`. An unknown profile string is
+  an error, never a silent fall-back to the default instance: that would
+  point a soak at the developer's own log, profile, and window.
 
 `parseLauncherFlags` (in `flags.go`) is the single source of truth for
 the CLI shape; `resolveChosenDistro` in `main.go` is where the

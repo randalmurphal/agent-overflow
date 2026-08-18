@@ -1,0 +1,100 @@
+{
+  "version": 1,
+  "name": "soak-background-agents",
+  "description": "Claude turn that launches three async local_agent subagents and streams their activity indefinitely (repeat, count 0) without ever emitting `result`. The steady state behind the soak rig (docs/architecture/soak-rig.md): a visible, idle-input window whose WebSocket keeps carrying small subagent bursts. Tune the cadence with the delayMs steps in the repeat body.",
+  "provider": "claude",
+  "turns": [
+    {
+      "label": "launch-three-background-agents",
+      "steps": [
+        {
+          "emit": {
+            "delayBetweenMs": 60,
+            "lines": [
+              "{\"type\":\"stream_event\",\"event\":\"message_start\",\"data\":{\"type\":\"message_start\",\"message\":{\"id\":\"msg-soak-parent-${TURN}\",\"role\":\"assistant\"}}}",
+              "{\"type\":\"stream_event\",\"event\":\"content_block_start\",\"data\":{\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}}",
+              "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"Launching three background agents; they will keep reporting while I wait.\"}}}",
+              "{\"type\":\"stream_event\",\"event\":\"content_block_stop\",\"data\":{\"type\":\"content_block_stop\",\"index\":0}}",
+              "{\"type\":\"stream_event\",\"event\":\"message_stop\",\"data\":{\"type\":\"message_stop\"}}",
+              "{\"type\":\"assistant\",\"message\":{\"id\":\"msg-soak-parent-${TURN}\",\"role\":\"assistant\",\"model\":\"claude-fable-5\",\"content\":[{\"type\":\"text\",\"text\":\"Launching three background agents; they will keep reporting while I wait.\"}]}}",
+              "{\"type\":\"assistant\",\"message\":{\"id\":\"msg-soak-launch1-${TURN}\",\"role\":\"assistant\",\"model\":\"claude-fable-5\",\"content\":[{\"type\":\"tool_use\",\"id\":\"tu-soak-agent1-${TURN}\",\"name\":\"Agent\",\"input\":{\"description\":\"Soak lens 1: perf/memory\",\"subagent_type\":\"general-purpose\",\"model\":\"fable\",\"prompt\":\"You are a read-only reviewer; report findings for the Soak lens 1: perf/memory lens.\"}}]}}",
+              "{\"type\":\"system\",\"subtype\":\"task_started\",\"task_id\":\"soak-agent1-${TURN}\",\"tool_use_id\":\"tu-soak-agent1-${TURN}\",\"description\":\"Soak lens 1: perf/memory\",\"subagent_type\":\"general-purpose\",\"task_type\":\"local_agent\",\"prompt\":\"You are a read-only reviewer; report findings for the Soak lens 1: perf/memory lens.\"}",
+              "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":[{\"tool_use_id\":\"tu-soak-agent1-${TURN}\",\"type\":\"tool_result\",\"content\":[{\"type\":\"text\",\"text\":\"Async agent launched successfully.\\nagentId: soak-agent1-${TURN}\"}]}]},\"tool_use_result\":{\"isAsync\":true,\"status\":\"async_launched\",\"agentId\":\"soak-agent1-${TURN}\",\"description\":\"Soak lens 1: perf/memory\",\"resolvedModel\":\"claude-fable-5\",\"prompt\":\"You are a read-only reviewer; report findings for the Soak lens 1: perf/memory lens.\",\"outputFile\":\"${CWD}/.soak/soak-agent1-${TURN}.output\",\"canReadOutputFile\":true}}",
+              "{\"type\":\"assistant\",\"message\":{\"id\":\"msg-soak-launch2-${TURN}\",\"role\":\"assistant\",\"model\":\"claude-fable-5\",\"content\":[{\"type\":\"tool_use\",\"id\":\"tu-soak-agent2-${TURN}\",\"name\":\"Agent\",\"input\":{\"description\":\"Soak lens 2: correctness\",\"subagent_type\":\"general-purpose\",\"model\":\"fable\",\"prompt\":\"You are a read-only reviewer; report findings for the Soak lens 2: correctness lens.\"}}]}}",
+              "{\"type\":\"system\",\"subtype\":\"task_started\",\"task_id\":\"soak-agent2-${TURN}\",\"tool_use_id\":\"tu-soak-agent2-${TURN}\",\"description\":\"Soak lens 2: correctness\",\"subagent_type\":\"general-purpose\",\"task_type\":\"local_agent\",\"prompt\":\"You are a read-only reviewer; report findings for the Soak lens 2: correctness lens.\"}",
+              "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":[{\"tool_use_id\":\"tu-soak-agent2-${TURN}\",\"type\":\"tool_result\",\"content\":[{\"type\":\"text\",\"text\":\"Async agent launched successfully.\\nagentId: soak-agent2-${TURN}\"}]}]},\"tool_use_result\":{\"isAsync\":true,\"status\":\"async_launched\",\"agentId\":\"soak-agent2-${TURN}\",\"description\":\"Soak lens 2: correctness\",\"resolvedModel\":\"claude-fable-5\",\"prompt\":\"You are a read-only reviewer; report findings for the Soak lens 2: correctness lens.\",\"outputFile\":\"${CWD}/.soak/soak-agent2-${TURN}.output\",\"canReadOutputFile\":true}}",
+              "{\"type\":\"assistant\",\"message\":{\"id\":\"msg-soak-launch3-${TURN}\",\"role\":\"assistant\",\"model\":\"claude-fable-5\",\"content\":[{\"type\":\"tool_use\",\"id\":\"tu-soak-agent3-${TURN}\",\"name\":\"Agent\",\"input\":{\"description\":\"Soak lens 3: consistency\",\"subagent_type\":\"general-purpose\",\"model\":\"fable\",\"prompt\":\"You are a read-only reviewer; report findings for the Soak lens 3: consistency lens.\"}}]}}",
+              "{\"type\":\"system\",\"subtype\":\"task_started\",\"task_id\":\"soak-agent3-${TURN}\",\"tool_use_id\":\"tu-soak-agent3-${TURN}\",\"description\":\"Soak lens 3: consistency\",\"subagent_type\":\"general-purpose\",\"task_type\":\"local_agent\",\"prompt\":\"You are a read-only reviewer; report findings for the Soak lens 3: consistency lens.\"}",
+              "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":[{\"tool_use_id\":\"tu-soak-agent3-${TURN}\",\"type\":\"tool_result\",\"content\":[{\"type\":\"text\",\"text\":\"Async agent launched successfully.\\nagentId: soak-agent3-${TURN}\"}]}]},\"tool_use_result\":{\"isAsync\":true,\"status\":\"async_launched\",\"agentId\":\"soak-agent3-${TURN}\",\"description\":\"Soak lens 3: consistency\",\"resolvedModel\":\"claude-fable-5\",\"prompt\":\"You are a read-only reviewer; report findings for the Soak lens 3: consistency lens.\",\"outputFile\":\"${CWD}/.soak/soak-agent3-${TURN}.output\",\"canReadOutputFile\":true}}"
+            ]
+          }
+        },
+        {
+          "repeat": {
+            "count": 0,
+            "steps": [
+              {
+                "delayMs": 5000
+              },
+              {
+                "emit": {
+                  "delayBetweenMs": 120,
+                  "lines": [
+                    "{\"type\":\"stream_event\",\"event\":\"message_start\",\"parent_tool_use_id\":\"tu-soak-agent1-${TURN}\",\"data\":{\"type\":\"message_start\",\"message\":{\"id\":\"msg-soak-a1-${TURN}-${ITER}\",\"role\":\"assistant\"}}}",
+                    "{\"type\":\"stream_event\",\"event\":\"content_block_start\",\"parent_tool_use_id\":\"tu-soak-agent1-${TURN}\",\"data\":{\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}}",
+                    "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"parent_tool_use_id\":\"tu-soak-agent1-${TURN}\",\"data\":{\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"Sampling the perf lens (pass ${ITER}): walking the scroll chokepoint for allocation churn.\"}}}",
+                    "{\"type\":\"stream_event\",\"event\":\"content_block_stop\",\"parent_tool_use_id\":\"tu-soak-agent1-${TURN}\",\"data\":{\"type\":\"content_block_stop\",\"index\":0}}",
+                    "{\"type\":\"stream_event\",\"event\":\"message_stop\",\"parent_tool_use_id\":\"tu-soak-agent1-${TURN}\",\"data\":{\"type\":\"message_stop\"}}",
+                    "{\"type\":\"assistant\",\"parent_tool_use_id\":\"tu-soak-agent1-${TURN}\",\"message\":{\"id\":\"msg-soak-a1-${TURN}-${ITER}\",\"role\":\"assistant\",\"model\":\"claude-fable-5\",\"content\":[{\"type\":\"text\",\"text\":\"Sampling the perf lens (pass ${ITER}): walking the scroll chokepoint for allocation churn.\"}]}}",
+                    "{\"type\":\"assistant\",\"parent_tool_use_id\":\"tu-soak-agent1-${TURN}\",\"message\":{\"id\":\"msg-soak-a1t-${TURN}-${ITER}\",\"role\":\"assistant\",\"model\":\"claude-fable-5\",\"content\":[{\"type\":\"tool_use\",\"id\":\"tu-soak-a1-${TURN}-${ITER}\",\"name\":\"Bash\",\"input\":{\"command\":\"rg -n 'useMemo' frontend/src\",\"description\":\"scan for memo hotspots\"}}]}}",
+                    "{\"type\":\"user\",\"parent_tool_use_id\":\"tu-soak-agent1-${TURN}\",\"message\":{\"role\":\"user\",\"content\":[{\"tool_use_id\":\"tu-soak-a1-${TURN}-${ITER}\",\"type\":\"tool_result\",\"content\":\"frontend/src/lib/utils/scroll/chokepoint.ts:41:  const budget = useMemo(...)\"}]}}",
+                    "{\"type\":\"system\",\"subtype\":\"task_progress\",\"task_id\":\"soak-agent1-${TURN}\",\"tool_use_id\":\"tu-soak-agent1-${TURN}\",\"description\":\"Running perf/memory sweep (pass ${ITER})\",\"subagent_type\":\"general-purpose\",\"last_tool_name\":\"Bash\"}"
+                  ]
+                }
+              },
+              {
+                "delayMs": 5000
+              },
+              {
+                "emit": {
+                  "delayBetweenMs": 120,
+                  "lines": [
+                    "{\"type\":\"stream_event\",\"event\":\"message_start\",\"parent_tool_use_id\":\"tu-soak-agent2-${TURN}\",\"data\":{\"type\":\"message_start\",\"message\":{\"id\":\"msg-soak-a2-${TURN}-${ITER}\",\"role\":\"assistant\"}}}",
+                    "{\"type\":\"stream_event\",\"event\":\"content_block_start\",\"parent_tool_use_id\":\"tu-soak-agent2-${TURN}\",\"data\":{\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}}",
+                    "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"parent_tool_use_id\":\"tu-soak-agent2-${TURN}\",\"data\":{\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"Correctness lens (pass ${ITER}): re-reading the changed files and re-checking the turn lifecycle claims.\"}}}",
+                    "{\"type\":\"stream_event\",\"event\":\"content_block_stop\",\"parent_tool_use_id\":\"tu-soak-agent2-${TURN}\",\"data\":{\"type\":\"content_block_stop\",\"index\":0}}",
+                    "{\"type\":\"stream_event\",\"event\":\"message_stop\",\"parent_tool_use_id\":\"tu-soak-agent2-${TURN}\",\"data\":{\"type\":\"message_stop\"}}",
+                    "{\"type\":\"assistant\",\"parent_tool_use_id\":\"tu-soak-agent2-${TURN}\",\"message\":{\"id\":\"msg-soak-a2-${TURN}-${ITER}\",\"role\":\"assistant\",\"model\":\"claude-fable-5\",\"content\":[{\"type\":\"text\",\"text\":\"Correctness lens (pass ${ITER}): re-reading the changed files and re-checking the turn lifecycle claims.\"}]}}",
+                    "{\"type\":\"assistant\",\"parent_tool_use_id\":\"tu-soak-agent2-${TURN}\",\"message\":{\"id\":\"msg-soak-a2t-${TURN}-${ITER}\",\"role\":\"assistant\",\"model\":\"claude-fable-5\",\"content\":[{\"type\":\"tool_use\",\"id\":\"tu-soak-a2-${TURN}-${ITER}\",\"name\":\"Read\",\"input\":{\"file_path\":\"${CWD}/README.md\"}}]}}",
+                    "{\"type\":\"user\",\"parent_tool_use_id\":\"tu-soak-agent2-${TURN}\",\"message\":{\"role\":\"user\",\"content\":[{\"tool_use_id\":\"tu-soak-a2-${TURN}-${ITER}\",\"type\":\"tool_result\",\"content\":\"# soak workspace\\\\nGenerated by the soak rig.\"}]}}",
+                    "{\"type\":\"system\",\"subtype\":\"task_progress\",\"task_id\":\"soak-agent2-${TURN}\",\"tool_use_id\":\"tu-soak-agent2-${TURN}\",\"description\":\"Running correctness review (pass ${ITER})\",\"subagent_type\":\"general-purpose\",\"last_tool_name\":\"Read\"}"
+                  ]
+                }
+              },
+              {
+                "delayMs": 5000
+              },
+              {
+                "emit": {
+                  "delayBetweenMs": 120,
+                  "lines": [
+                    "{\"type\":\"stream_event\",\"event\":\"message_start\",\"parent_tool_use_id\":\"tu-soak-agent3-${TURN}\",\"data\":{\"type\":\"message_start\",\"message\":{\"id\":\"msg-soak-a3-${TURN}-${ITER}\",\"role\":\"assistant\"}}}",
+                    "{\"type\":\"stream_event\",\"event\":\"content_block_start\",\"parent_tool_use_id\":\"tu-soak-agent3-${TURN}\",\"data\":{\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}}",
+                    "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"parent_tool_use_id\":\"tu-soak-agent3-${TURN}\",\"data\":{\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"Consistency lens (pass ${ITER}): comparing the new helper against the neighbouring conventions.\"}}}",
+                    "{\"type\":\"stream_event\",\"event\":\"content_block_stop\",\"parent_tool_use_id\":\"tu-soak-agent3-${TURN}\",\"data\":{\"type\":\"content_block_stop\",\"index\":0}}",
+                    "{\"type\":\"stream_event\",\"event\":\"message_stop\",\"parent_tool_use_id\":\"tu-soak-agent3-${TURN}\",\"data\":{\"type\":\"message_stop\"}}",
+                    "{\"type\":\"assistant\",\"parent_tool_use_id\":\"tu-soak-agent3-${TURN}\",\"message\":{\"id\":\"msg-soak-a3-${TURN}-${ITER}\",\"role\":\"assistant\",\"model\":\"claude-fable-5\",\"content\":[{\"type\":\"text\",\"text\":\"Consistency lens (pass ${ITER}): comparing the new helper against the neighbouring conventions.\"}]}}",
+                    "{\"type\":\"assistant\",\"parent_tool_use_id\":\"tu-soak-agent3-${TURN}\",\"message\":{\"id\":\"msg-soak-a3t-${TURN}-${ITER}\",\"role\":\"assistant\",\"model\":\"claude-fable-5\",\"content\":[{\"type\":\"tool_use\",\"id\":\"tu-soak-a3-${TURN}-${ITER}\",\"name\":\"Grep\",\"input\":{\"pattern\":\"TODO\",\"path\":\"${CWD}\"}}]}}",
+                    "{\"type\":\"user\",\"parent_tool_use_id\":\"tu-soak-agent3-${TURN}\",\"message\":{\"role\":\"user\",\"content\":[{\"tool_use_id\":\"tu-soak-a3-${TURN}-${ITER}\",\"type\":\"tool_result\",\"content\":\"no matches\"}]}}",
+                    "{\"type\":\"system\",\"subtype\":\"task_progress\",\"task_id\":\"soak-agent3-${TURN}\",\"tool_use_id\":\"tu-soak-agent3-${TURN}\",\"description\":\"Running consistency review (pass ${ITER})\",\"subagent_type\":\"general-purpose\",\"last_tool_name\":\"Grep\"}"
+                  ]
+                }
+              }
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "afterTurns": "repeatLast"
+}

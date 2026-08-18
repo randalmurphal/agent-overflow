@@ -30,6 +30,7 @@ func TestLibraryAgainstRealParsers(t *testing.T) {
 		"TURN_ID":    "turn-1",
 		"REQUEST_ID": "7",
 		"CWD":        "/tmp/workspace",
+		"ITER":       "1",
 	}
 	for _, entry := range entries {
 		_, s, err := scenario.LoadLibrary(entry.Name)
@@ -62,6 +63,9 @@ func collectEmitLines(s *scenario.Scenario, vars scenario.Vars) []string {
 			if step.Approval != nil {
 				walk(step.Approval.OnAllow)
 				walk(step.Approval.OnDeny)
+			}
+			if step.Repeat != nil {
+				walk(step.Repeat.Steps)
 			}
 		}
 	}
