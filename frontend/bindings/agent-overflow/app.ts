@@ -2250,9 +2250,15 @@ export function OpenExternalURL(rawURL: string): $CancellablePromise<void> {
  * repo-relative paths (diff cards, tool-result file paths, markdown
  * path links inside chat) pass the active thread's workspace so the
  * path round-trips correctly. Empty workspacePath + relative path is
- * an error — see editor.ResolvePath for the full contract, including
- * the traversal-escape guard that keeps a token-holder over the
- * network from opening files outside the workspace.
+ * an error, and empty workspacePath + absolute path is the deliberate
+ * project-open trust path (no stat, folder opens allowed) — reserved
+ * for app affordances; the markdown pipeline never emits a
+ * workspace-less link. See editor.ResolvePath for the full contract:
+ * `~/` expansion pinned under home, UNC refusal, and the openability
+ * rule (existing regular files open from anywhere, folder opens are
+ * refused everywhere, new files only inside the workspace). This
+ * method is classified LocalOnly in internal/transport, so remote
+ * token-holders cannot call it.
  * 
  * `editorID` selects which editor to launch:
  *   - Empty → resolve via settings.Editor.Preference → catalog priority

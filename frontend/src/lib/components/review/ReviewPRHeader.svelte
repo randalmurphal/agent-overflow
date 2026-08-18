@@ -1,6 +1,7 @@
 <script lang="ts">
   import RefreshCw from '@lucide/svelte/icons/refresh-cw';
   import ChatMarkdown from '../chat/ChatMarkdown.svelte';
+  import { EMPTY_PATH_REFS } from '../../utils/pathLinkify';
   import ReviewCIChips from './ReviewCIChips.svelte';
   import Icon from '../primitives/Icon.svelte';
   import { OpenExternalURL } from '../../stores/bindings';
@@ -89,7 +90,7 @@
     <details class="mt-3 text-xs">
       <summary class="cursor-pointer text-fg-muted">Description</summary>
       <div class="mt-2 max-h-96 overflow-auto text-fg">
-        <ChatMarkdown source={detail.body} pathRefs={[]} />
+        <ChatMarkdown source={detail.body} pathRefs={EMPTY_PATH_REFS} />
       </div>
     </details>
   {/if}

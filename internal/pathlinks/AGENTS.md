@@ -54,8 +54,11 @@ old client-side regex that produced false positives for any
   out of the workspace and absolute paths outside it are rejected at
   validation time — agent prose is untrusted, and without this guard
   `os.Stat` would expose an existence oracle for arbitrary host
-  paths. The check mirrors `internal/editor.ResolvePath` so the
-  click handler and the validator agree.
+  paths. Deliberately STRICTER than click-time
+  `internal/editor.ResolvePath` (which opens existing regular files
+  outside the workspace too, since 2026-08-18): prose linkification
+  decorates text without user intent, while the click gate's looser
+  reach is reserved for explicit markdown-link hrefs the user clicks.
 - Empty / non-canonical / non-absolute `workspacePath` drops every
   candidate. Without a usable root the boundary check can't run, so
   refusing is the only safe behavior.
@@ -87,5 +90,5 @@ sub-frame at message-complete boundary.
 - Frontend allowlist consumer: `frontend/src/lib/utils/markdownEnhance.ts`.
 - Triage integration point:
   `internal/triage/stream_state.go` `settleStreamingText`.
-- Click-time boundary check mirrored from
-  `internal/editor.ResolvePath`.
+- Click-time gate (deliberately looser than this package — see the
+  safety-floor note above): `internal/editor.ResolvePath`.

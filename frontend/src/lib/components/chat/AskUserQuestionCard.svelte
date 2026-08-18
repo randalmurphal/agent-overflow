@@ -49,7 +49,7 @@
     type AskQuestion,
   } from './askUserQuestionData';
   import { preservePaneScrollAnchor } from './preserveScrollAnchor';
-  import { getPathRefsFromMeta } from '../../utils/pathLinkify';
+  import { EMPTY_PATH_REFS, getPathRefsFromMeta } from '../../utils/pathLinkify';
   import { useLeasedItemExpansion } from './useLeasedPayloadExpansion.svelte';
   import { nestedScroll } from '../../utils/scroll/wheelAttribution';
 
@@ -92,7 +92,7 @@
   // item.meta at persistToolCallLaunch time. The same allowlist applies
   // to every question/option body the card renders through ChatMarkdown
   // — they all flowed through the validator off the same workspace.
-  const pathRefs = $derived(getPathRefsFromMeta(item.meta) ?? []);
+  const pathRefs = $derived(getPathRefsFromMeta(item.meta) ?? EMPTY_PATH_REFS);
 
   const questions = $derived.by<AskQuestion[]>(() => {
     return extractQuestions(itemMeta);

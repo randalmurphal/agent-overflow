@@ -230,6 +230,94 @@ describe('<ChatMarkdown> path-link rendering', () => {
     expect(container.querySelector('a')).toBeNull();
   });
 
+  it('rewrites an absolute-path markdown link into an editor path link', async () => {
+    // `[~/.claude/x.md](/home/user/.claude/x.md)` — an agent linking a
+    // file outside the repo. The path-link extension rewrites the
+    // path-shaped href to the nonce'd editor scheme; the click
+    // delegate forwards it to OpenInEditor, and the backend gates the
+    // open (existing regular file when outside the workspace).
+    const { container } = render(ChatMarkdown, {
+      props: {
+        source: '[~/.claude/x.md](/home/user/.claude/x.md)',
+        workspacePath: '/repo',
+        pathRefs: [],
+      },
+    });
+
+    await waitFor(() => {
+      const anchor = container.querySelector('a[href^="agent-overflow:open"]');
+      expect(anchor).not.toBeNull();
+      expect(anchor?.getAttribute('href')).toContain('path=%2Fhome%2Fuser%2F.claude%2Fx.md');
+    });
+    expect(container.querySelector('a[href="/home/user/.claude/x.md"]')).toBeNull();
+  });
+
+  it('never rewrites an absolute href into an editor link on a workspace-less surface', async () => {
+    // PR bodies and review comments render with pathRefs=[] and NO
+    // workspacePath, and third parties author them: GitHub
+    // root-relative links (`/owner/repo/...`) are routine there. An
+    // editor affordance for those would hand a stat-free
+    // ResolvePath pass-through to anyone who can comment on a PR —
+    // href rewriting requires a workspace for EVERY shape.
+    const { container } = render(ChatMarkdown, {
+      props: {
+        source: '[the fix](/owner/repo/blob/main/x.md) and [home](~/.ssh/id_ed25519)',
+        pathRefs: [],
+      },
+    });
+
+    await waitFor(() => {
+      expect(container.textContent).toContain('the fix');
+    });
+
+    expect(container.querySelector('a[href^="agent-overflow:open"]')).toBeNull();
+    expect(container.querySelector('a[href="/owner/repo/blob/main/x.md"]')).toBeNull();
+  });
+
+  it('never renders a raw same-origin img for a /-leading image src', async () => {
+    // Image.svelte carried the same isPathRelativeUrl bypass Link.svelte
+    // lost (DIVERGENCE.md entry 17 follow-up): `![x](/api/whatever)`
+    // rendered a raw <img> issuing a model-authored same-origin GET.
+    const { container } = render(ChatMarkdown, {
+      props: {
+        source: '![beacon](/api/whatever) and ![off](//evil.example/x.png)',
+        workspacePath: '/repo',
+        pathRefs: [],
+      },
+    });
+
+    await waitFor(() => {
+      expect(container.querySelector('[data-streamdown-image-blocked]')).not.toBeNull();
+    });
+
+    expect(container.querySelector('img')).toBeNull();
+  });
+
+  it('never renders a raw same-origin anchor for a /-leading href (no extension installed)', async () => {
+    // pathRefs: undefined → no marked extension at all. Upstream
+    // streamdown would render `[x](/home/user/x.md)` as a RAW anchor
+    // (its isPathRelativeUrl branch bypasses transformUrl) — a same-tab
+    // top-level navigation onto the SPA origin: a 404 at best, an
+    // origin-isolation escape at worst. The vendored Link.svelte drops
+    // that branch (DIVERGENCE.md entry 17); the href renders as a
+    // non-navigable schemeless reference instead.
+    const { container } = render(ChatMarkdown, {
+      props: {
+        source: 'see [my notes](/home/user/x.md) here',
+      },
+    });
+
+    await waitFor(() => {
+      const span = container.querySelector('[data-streamdown-link-blocked]');
+      expect(span).not.toBeNull();
+      expect(span?.textContent).toContain('my notes');
+      expect(span?.getAttribute('title')).toBe('/home/user/x.md');
+    });
+
+    expect(container.textContent).not.toContain('[blocked]');
+    expect(container.querySelector('a')).toBeNull();
+  });
+
   it('keeps the [blocked] tag on a disallowed absolute URL', async () => {
     const { container } = render(ChatMarkdown, {
       props: {

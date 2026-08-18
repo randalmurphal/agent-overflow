@@ -244,9 +244,10 @@ func TestExtractAndValidate(t *testing.T) {
 	t.Run("rejects `../` traversal that escapes workspace", func(t *testing.T) {
 		// Workspace-escape guard: a real file outside the workspace
 		// must not validate, even when the regex captures the path
-		// shape and the file exists on disk. Same rule click-time
-		// `editor.ResolvePath` enforces, applied at validation time
-		// so the link never gets emitted.
+		// shape and the file exists on disk. Deliberately stricter
+		// than click-time `editor.ResolvePath` (which would open this
+		// existing file): prose validation stats without a click, so
+		// it never reaches outside the workspace.
 		root := t.TempDir()
 		ws := filepath.Join(root, "ws")
 		if err := os.MkdirAll(ws, 0o755); err != nil {

@@ -394,8 +394,10 @@ Assistant text, discussion messages, and proposed plans render through
 [`vendor/svelte-streamdown/DIVERGENCE.md`](vendor/svelte-streamdown/DIVERGENCE.md)).
 Path linkification happens
 inside marked parsing using server-validated `PathRef[]` metadata and a
-per-page-load nonce; click/copy behavior is delegated by
-`markdownEnhance.ts`.
+per-page-load nonce; explicit markdown-link hrefs are additionally
+rewritten into the same editor scheme on workspace-carrying surfaces
+only (click-time gate: `editor.ResolvePath`); click/copy behavior is
+delegated by `markdownEnhance.ts`.
 
 ANSI-like payloads render through `AnsiText.svelte`, which diffs into a
 stable `<pre>` with Idiomorph so selection survives streaming updates.
@@ -584,7 +586,7 @@ why vendored packages are `workspace:` and never `file:` — pnpm resolves a
 
 ### Vendored svelte-streamdown
 
-`vendor/svelte-streamdown/` is `svelte-streamdown@3.1.2` with 16 permanent
+`vendor/svelte-streamdown/` is `svelte-streamdown@3.1.2` with 17 permanent
 in-tree fixes. The per-entry rationale, drop rules and regression-test names
 live in
 [`vendor/svelte-streamdown/DIVERGENCE.md`](vendor/svelte-streamdown/DIVERGENCE.md);

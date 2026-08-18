@@ -1,6 +1,7 @@
 package editor
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -9,8 +10,13 @@ import (
 // coverage independent of Open's spawn pipeline. Open-driven tests
 // only verify the spawn-side argv shape; this table pins the resolver
 // contract so future Open callers can rely on the documented behavior.
+//
+// The workspace is a real (existing) directory: the openability rule
+// stats the resolved target, so a fabricated workspace path would
+// silently route every case through the missing-target branch and pin
+// nothing about the existing-target rules.
 func TestResolvePath(t *testing.T) {
-	const ws = "/home/user/repo"
+	ws := t.TempDir()
 
 	cases := []struct {
 		name      string
@@ -33,7 +39,7 @@ func TestResolvePath(t *testing.T) {
 			name:      "relative joined against workspace",
 			path:      "subdir/file.go",
 			workspace: ws,
-			want:      ws + "/subdir/file.go",
+			want:      filepath.Join(ws, "subdir", "file.go"),
 		},
 		{
 			name:    "relative without workspace rejected",
@@ -49,8 +55,14 @@ func TestResolvePath(t *testing.T) {
 		{
 			name:      "trailing-slash workspace rejected as non-canonical",
 			path:      "file.go",
-			workspace: "/home/user/repo/",
+			workspace: ws + string(filepath.Separator),
 			wantErr:   "workspacePath must be canonical",
+		},
+		{
+			name:      "UNC workspace rejected before any stat",
+			path:      "file.go",
+			workspace: `\\evil-host\share`,
+			wantErr:   "network share",
 		},
 		{
 			name:    "empty path rejected",
@@ -58,28 +70,34 @@ func TestResolvePath(t *testing.T) {
 			wantErr: "path is required",
 		},
 		{
-			name:      "traversal escape rejected",
-			path:      "../../../etc/passwd",
+			// Escaping the workspace is allowed only onto an existing
+			// regular file (the 2026-08-18 file-only carve-out); an
+			// escape to a nonexistent target stays refused.
+			name:      "traversal escape to missing target rejected",
+			path:      "../../../no-such-dir-xq/passwd",
 			workspace: ws,
-			wantErr:   "escapes workspace",
+			wantErr:   "outside the workspace",
 		},
 		{
 			name:      "traversal that resolves inside is allowed",
 			path:      "subdir/../other.go",
 			workspace: ws,
-			want:      ws + "/other.go",
+			want:      filepath.Join(ws, "other.go"),
 		},
 		{
-			name:      "dot resolves to workspace root",
+			// The workspace root itself is a directory, and directory
+			// opens are refused even inside the workspace — a folder
+			// open can execute workspace config the model authored.
+			name:      "dot refused as a directory open",
 			path:      ".",
 			workspace: ws,
-			want:      ws,
+			wantErr:   "not a regular file",
 		},
 		{
 			name:      "filename starting with dots is not a parent reference",
 			path:      "..foo",
 			workspace: ws,
-			want:      ws + "/..foo",
+			want:      filepath.Join(ws, "..foo"),
 		},
 	}
 

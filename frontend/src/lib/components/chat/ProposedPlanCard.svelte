@@ -8,7 +8,7 @@
     shouldCapProposedPlanBody,
   } from '../../utils/proposedPlan';
   import { createPlanSaveDialog } from '../../utils/planSaveDialog.svelte';
-  import { getPathRefsFromMeta } from '../../utils/pathLinkify';
+  import { EMPTY_PATH_REFS, getPathRefsFromMeta } from '../../utils/pathLinkify';
   import ProposedPlanActions from './ProposedPlanActions.svelte';
   import ProposedPlanBody from './ProposedPlanBody.svelte';
   import ProposedPlanSaveModal from './ProposedPlanSaveModal.svelte';
@@ -55,7 +55,7 @@
   // (internal/triage/payload_items.go#handleProposedPlan). The body is
   // the same plan markdown the validator saw, so the allowlist applies
   // to both the inline card body and the review surface.
-  const pathRefs = $derived(getPathRefsFromMeta(item.meta) ?? []);
+  const pathRefs = $derived(getPathRefsFromMeta(item.meta) ?? EMPTY_PATH_REFS);
 
   const planExport = createPlanSaveDialog(ensurePlanMarkdown, () => pane.threadId);
 

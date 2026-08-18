@@ -430,7 +430,14 @@ stamp original source on `data-code-source`, `data-mermaid-source`, and
 Path linkification runs inside marked parsing from the server-validated
 `PathRef[]` allowlist on item metadata. The generated href includes a
 per-page-load nonce and is the only `agent-overflow:open` form admitted
-by Streamdown's `transformUrl`.
+by Streamdown's `transformUrl`. Explicit markdown-link HREFS
+(`[label](/abs/file.md)`, `~/`, workspace-relative) are the deliberate
+second half with a different trust model: rewritten without
+render-time validation, but ONLY on surfaces that pass a
+`workspacePath` (never PR/review bodies), and gated at click time by
+`editor.ResolvePath` — existing regular files open from anywhere,
+folder opens are refused everywhere, new files only inside the
+workspace.
 
 Copying markdown content puts TWO flavors on the clipboard, and
 `utils/markdownClipboard.ts` is the only place that decides what goes

@@ -34,7 +34,7 @@
   import { preservePaneScrollAnchor } from './preserveScrollAnchor';
   import { createRunningElapsed } from './useRunningElapsed.svelte';
   import ExpandablePayloadBody from './ExpandablePayloadBody.svelte';
-  import { getPathRefsFromMeta } from '../../utils/pathLinkify';
+  import { EMPTY_PATH_REFS, getPathRefsFromMeta } from '../../utils/pathLinkify';
   import { useLeasedItemExpansion } from './useLeasedPayloadExpansion.svelte';
 
   // Server-side preview is capped at 240 chars in
@@ -118,7 +118,7 @@ let hasExpandableBody = $derived(Boolean(item.payloadId));
   // Advisor body text is validated at persistToolCallCompletion time
   // (see internal/triage/tool_lifecycle.go). The validated allowlist
   // lives on item.meta.pathRefs alongside item.meta.advisor_model.
-  const pathRefs = $derived(getPathRefsFromMeta(item.meta) ?? []);
+  const pathRefs = $derived(getPathRefsFromMeta(item.meta) ?? EMPTY_PATH_REFS);
 </script>
 
 <div class="group/tool overflow-hidden" data-testid="advisor-row" data-tool-kind="brain">

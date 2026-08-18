@@ -66,17 +66,23 @@
   }: {
     source: string;
     streaming?: boolean;
-    /** Absolute base directory for resolving relative file paths the
-     *  linkifier finds in prose text. Pass `pane.thread.workspacePath`
-     *  from per-thread surfaces; non-thread surfaces (design previews,
-     *  notebook cells) leave empty and accept that relative-path click-
-     *  to-open will surface a clear "requires workspacePath" error. */
+    /** Absolute base directory the path-link pipeline resolves against.
+     *  Pass `pane.thread.workspacePath` from per-thread surfaces. It
+     *  gates BOTH halves of the extension: relative prose paths resolve
+     *  against it at click time, and markdown-link href rewriting
+     *  (`[x](/abs/file.md)` → editor affordance) requires it for every
+     *  shape — a surface with no workspace (PR bodies, review comments,
+     *  design previews) gets no href rewriting at all, so third-party
+     *  root-relative links can never become editor links there. */
     workspacePath?: string;
     /** Server-validated allowlist of file paths to linkify in prose.
-     *  When defined, only paths in this list get the `agent-overflow:`
-     *  link treatment. Pass `[]` (not `undefined`) on surfaces that
-     *  haven't been wired to a validation pipeline yet, so the marked
-     *  extension is skipped entirely rather than fabricating links. */
+     *  Only paths in this list get the prose `agent-overflow:` link
+     *  treatment — this component never invents prose links. Choosing
+     *  a value on a new surface: `undefined` disables the extension
+     *  outright; `[]` (use EMPTY_PATH_REFS, not a fresh literal — the
+     *  extension identity feeds streamdown's lex cache) enables
+     *  markdown-link href rewriting alone, which still needs
+     *  `workspacePath` to do anything. */
     pathRefs?: PathRef[];
     class?: string;
   } = $props();
@@ -116,15 +122,21 @@
   });
 
   // Marked inline extension derived from the validated allowlist. The
-  // extension is rebuilt on every change to `pathRefs` / `workspacePath`
-  // — both should be stable across streaming chunks, so the rebuild
-  // cost is negligible. When the allowlist is empty (or undefined), the
-  // primitive returns undefined and we pass no extensions array, leaving
-  // Streamdown to render unenriched markdown.
+  // extension is rebuilt when `pathRefs` / `workspacePath` change —
+  // both must be IDENTITY-stable across streaming chunks (see
+  // EMPTY_PATH_REFS in pathLinkify.ts): the extension array's identity
+  // is streamdown's lex-cache key, so a fresh extension per frame
+  // re-lexes every mounted block. It is built whenever `pathRefs` is
+  // DEFINED, including `[]`: the allowlist only feeds prose
+  // linkification, while the markdown-link half rewrites path-shaped
+  // hrefs (`[x](/abs/file.md)`) into editor affordances whenever a
+  // workspace is present — without the rewrite those hrefs render as
+  // dead text (the vendored Link element refuses raw `/`-leading
+  // anchors). buildPathLinkExtension returns undefined when both
+  // halves would be inert; surfaces passing `undefined` stay
+  // unenriched entirely.
   const pathLinkExtension = $derived(
-    pathRefs && pathRefs.length > 0
-      ? buildPathLinkExtension(pathRefs, workspacePath)
-      : undefined,
+    pathRefs ? buildPathLinkExtension(pathRefs, workspacePath) : undefined,
   );
   const extensions = $derived(pathLinkExtension ? [pathLinkExtension] : undefined);
 
@@ -137,6 +149,14 @@
   // the nonce-prefixed form and is rejected before any anchor is
   // rendered.
   const allowedLinkPrefixes = ['*', PATH_LINK_HREF_PREFIX];
+
+  // LOAD-BEARING ABSENCE: no `defaultOrigin` is ever passed to
+  // Streamdown. With no origin, streamdown's `parseUrl` returns null
+  // for every schemeless href, so the `*` wildcard can never resurrect
+  // a raw relative anchor (url.js's `inputWasRelative` return).
+  // Passing a defaultOrigin here would reopen origin-isolation defect
+  // A (docs/specs/remote-access-boundaries.md) through transformUrl
+  // itself, bypassing the vendored Link/Image fixes.
 
   const processedSource = $derived(unwrapMarkdownFence(source));
 

@@ -14,7 +14,7 @@
   import ChannelHeader from './ChannelHeader.svelte';
   import ChannelMessageCard from './ChannelMessageCard.svelte';
   import ScrollToBottomButton from '../chat/ScrollToBottomButton.svelte';
-  import { getPathRefsFromMeta } from '../../utils/pathLinkify';
+  import { EMPTY_PATH_REFS, getPathRefsFromMeta } from '../../utils/pathLinkify';
   import { isImeComposingEvent } from '../../utils/imeComposition';
 
   let {
@@ -328,7 +328,7 @@
               sequenceLabel={`#${msg.sequence}`}
               timestampLabel={relativeTime(msg.createdAt, getSettings().timestampFormat)}
               content={msg.content}
-              pathRefs={getPathRefsFromMeta(msg.meta) ?? []}
+              pathRefs={getPathRefsFromMeta(msg.meta) ?? EMPTY_PATH_REFS}
             />
           {/each}
           {#if showLiveTail && liveTail}

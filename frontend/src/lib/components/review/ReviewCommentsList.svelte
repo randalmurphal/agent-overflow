@@ -3,6 +3,7 @@
   import FileText from '@lucide/svelte/icons/file-text';
   import MessageSquare from '@lucide/svelte/icons/message-square';
   import ChatMarkdown from '../chat/ChatMarkdown.svelte';
+  import { EMPTY_PATH_REFS } from '../../utils/pathLinkify';
   import Icon from '../primitives/Icon.svelte';
   import type { ReviewVerdict } from '../../types/models';
   import type { CommentFileGroup, CommentItemState, CommentListItem } from '../../utils/reviewComments';
@@ -140,7 +141,7 @@
           {#each item.comments as comment, index (index)}
             <div>
               <div class="text-[0.625rem] font-medium text-fg-muted">{comment.author}</div>
-              <ChatMarkdown source={comment.body} pathRefs={[]} />
+              <ChatMarkdown source={comment.body} pathRefs={EMPTY_PATH_REFS} />
             </div>
           {/each}
         </div>

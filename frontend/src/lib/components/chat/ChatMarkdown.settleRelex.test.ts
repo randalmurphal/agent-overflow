@@ -107,4 +107,36 @@ describe('<ChatMarkdown> lexing across pathRefs meta enrichment', () => {
 
     r.unmount();
   });
+
+  it('the shared EMPTY_PATH_REFS instance costs zero rebuilds; a fresh [] per frame would not', async () => {
+    // getPathRefsFromMeta returns undefined for rows with no validated
+    // paths — the MAJORITY — so every call site coalesces with
+    // `?? EMPTY_PATH_REFS`. A fresh `[]` there would mint a new array
+    // identity per reveal frame: a new extension, a new `extensions`
+    // array, and a full re-lex of every mounted block, every frame.
+    const { EMPTY_PATH_REFS } = await import('../../utils/pathLinkify');
+
+    counters.builds = 0;
+    const r = render(ChatMarkdownRelexHarness, {
+      props: { source: SOURCE, initialRefs: EMPTY_PATH_REFS },
+    });
+    await waitFor(() => {
+      expect(r.container.textContent).toContain('Paragraph 5');
+    });
+    const mountBuilds = counters.builds;
+
+    // Reveal-frame shape: the same shared instance arrives again and
+    // again. The $derived chain must stop — zero extension rebuilds.
+    for (let i = 0; i < 3; i += 1) {
+      flushSync(() => r.component.setRefs(EMPTY_PATH_REFS));
+    }
+    expect(counters.builds).toBe(mountBuilds);
+
+    // Sanity inverse: a fresh [] IS a new identity and rebuilds — which
+    // is exactly why call sites must use the shared constant.
+    flushSync(() => r.component.setRefs([]));
+    expect(counters.builds).toBe(mountBuilds + 1);
+
+    r.unmount();
+  });
 });

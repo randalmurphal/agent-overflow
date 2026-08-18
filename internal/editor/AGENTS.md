@@ -26,11 +26,18 @@ editor reachable via the vendor's WSL Remote integration.
   every other launch shape so `exec.Cmd` inherits directly; an editor
   outlives us, so a mount-local `PATH`/`LD_LIBRARY_PATH` would break
   it the moment Agent Overflow exits), and `ResolvePath` — the
-  path-shape contract `Open`
-  enforces (absolute-canonical pass-through when no workspace is
-  supplied; absolute-with-workspace must be inside the workspace;
-  relative-against-workspace joining with traversal-escape and
-  symlink-escape rejection).
+  path-shape contract `Open` enforces: leading-`~/` expansion (pinned
+  under home — `~/../…` is refused), absolute-canonical pass-through
+  when no workspace is supplied, relative-against-workspace joining,
+  UNC (`\\`) rejection up front for path AND workspace, and the
+  openability rule — an existing REGULAR FILE opens from anywhere
+  (the deliberate 2026-08-18 carve-out that makes out-of-repo file
+  links like `~/.claude/notes.md` openable), anything that exists but
+  is not a regular file is refused everywhere (a folder open can
+  execute `.vscode/` tasks the model authored, so in-workspace
+  directories are refused too), and a not-yet-existing target opens
+  only inside the workspace (the new-file flow; symlink escape closed
+  by ancestor resolution).
 
 ## Responsibility boundary
 
@@ -40,10 +47,15 @@ editor reachable via the vendor's WSL Remote integration.
     available editor when running inside WSL, even if it is on PATH.
   - argv assembly for each launch style and the spawn primitives.
   - The path-shape contract enforced before spawn: `ResolvePath` is
-    the LAN-bind safety floor — relative-input resolution against an
-    absolute, canonical `workspacePath` plus the traversal-escape
-    guard. Frontend callers supply the workspace; this package owns
-    the validation.
+    the click-surface safety floor — the inputs that reach it from
+    rendered markdown are model- or third-party-authored with no
+    render-time validation (the `OpenInEditor` binding itself is
+    LocalOnly, so remote token-holders never reach it). Relative
+    inputs resolve against an absolute, canonical `workspacePath`,
+    and the openability rule holds everywhere: existing regular
+    files open, folder opens and UNC probes never, new files only
+    inside the workspace. Frontend callers supply the workspace;
+    this package owns the validation.
 - What does NOT belong here:
   - Settings persistence — `internal/settings` owns that.
   - Frontend toasts / error rendering — `app_editor.go` returns the
@@ -130,7 +142,7 @@ the bridge logic, the shim-content sniff, or the install-path walk.
 ## Global state (intentional)
 
 `internal/AGENTS.md` forbids global mutable state by default; this
-package keeps three globals deliberately. Each is documented here so
+package keeps four globals deliberately. Each is documented here so
 the carve-out is traceable.
 
 - `detectionCache` (`detect.go`) — bounded by `detectionCacheTTL`
@@ -149,16 +161,24 @@ the carve-out is traceable.
   without spawning real processes. Production never overrides
   these; they are package-level vars so test code can rebind them
   for a single test under `t.Cleanup`.
+- `userHomeDir` (`spawn.go`) — os.UserHomeDir indirection seam for
+  `~/` expansion, same pattern and same rules as `lookPath` /
+  `startCmd`: tests pin a fixture home under `t.Cleanup`, production
+  never overrides.
 
-If you add a new editor, do not add additional globals. The three
+If you add a new editor, do not add additional globals. The four
 above are the package's full carve-out — extend the catalog and the
 WSL install table instead.
 
 ## Anti-patterns
 
-- Do NOT call `os.LookPath` or `os.Stat` directly from package code
+- Do NOT call `os.LookPath` or `os.Stat` directly from DETECTION code
   — go through the `detectEnv` indirection so tests can swap in
   fixtures. Production assembles the live env via `liveDetectEnv`.
+  (`ResolvePath`'s openability stat in `spawn.go` is the deliberate
+  exception: it asks about the CLICKED TARGET, not about editor
+  installs, and its tests exercise real `t.TempDir()` filesystems —
+  a fixture seam there would test the fixture, not the rule.)
 - Do NOT hard-code file paths to user binaries inside the package
   body. The /mnt/c table in `wsl.go` is the canonical list; new
   editors get added there or skipped on WSL.

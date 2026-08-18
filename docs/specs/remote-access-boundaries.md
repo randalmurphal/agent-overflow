@@ -8,11 +8,31 @@ does not, and the specific cases the design has to handle. It is the
 reference for reviewing changes that touch listeners, routes, event
 channels, or credentials.
 
-## Confirmed defects (2026-08-04, open at time of writing)
+## Confirmed defects (2026-08-04; A and B FIXED 2026-08-18)
 
-Found by audit, each step verified in code. All three are reachable
+Found by audit, each step verified in code. All three were reachable
 **today in the desktop webview**, with no remote feature enabled. Fixes
 are spec §16 phase 0.
+
+> **Status 2026-08-18: A and B are fixed at their shared root cause.**
+> The vendored `Link.svelte` no longer has the `isPathRelativeUrl`
+> raw-anchor branch, and `Image.svelte` no longer has its raw-`src`
+> twin (DIVERGENCE.md entry 17): an anchor or `<img>` renders only for
+> a `transformUrl`-approved URL, so neither a `/`-leading nor a
+> `//host` href can top-level-navigate the window — or issue a raw
+> same-origin fetch — from model output. Path-shaped markdown hrefs
+> are instead rewritten during parsing to the nonce'd
+> `agent-overflow:open` editor scheme (`pathLinkExtension.ts`) — only
+> on surfaces that carry a workspace, so third-party PR/review text
+> never grows editor affordances — and the click-time gate is
+> `editor.ResolvePath`: existing regular files open from anywhere (a
+> deliberate 2026-08-18 loosening), folder opens are refused
+> everywhere (`.vscode/` tasks execute on folder open), UNC paths and
+> out-of-workspace scaffolding stay refused. The bodies of A and B
+> below are kept in their original present-tense form as the record
+> of what was reachable. **C remains open**, as do the `/design/`
+> hardening items (CSP/nosniff/XFO/token) that defense-in-depth still
+> wants even with the navigation path closed.
 
 **A. Model-authored content can reach the full method surface.**
 `svelte-streamdown`'s `Link.svelte` renders any href where

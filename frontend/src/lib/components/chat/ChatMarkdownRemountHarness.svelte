@@ -10,10 +10,11 @@
   // the mount transition.
 
   import ChatMarkdown from './ChatMarkdown.svelte';
+  import { EMPTY_PATH_REFS } from '../../utils/pathLinkify';
 
   let { source, show }: { source: string; show: boolean } = $props();
 </script>
 
 {#if show}
-  <ChatMarkdown {source} pathRefs={[]} />
+  <ChatMarkdown {source} pathRefs={EMPTY_PATH_REFS} />
 {/if}

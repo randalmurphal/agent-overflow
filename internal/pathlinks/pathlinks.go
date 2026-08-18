@@ -20,10 +20,13 @@
 // The workspace-boundary check is the load-bearing safety floor.
 // Agent prose is untrusted input; a hostile message containing
 // `../../etc/passwd` or `/etc/shadow` would otherwise turn `os.Stat`
-// into a filesystem existence oracle (and ultimately a click-to-open
-// gadget against host-sensitive paths). The check mirrors
-// `internal/editor.ResolvePath` so validation and the eventual
-// open-in-editor call agree.
+// into a filesystem existence oracle. Deliberately STRICTER than the
+// click-time gate (`internal/editor.ResolvePath`, which since
+// 2026-08-18 opens existing regular files outside the workspace too):
+// prose linkification decorates text the user never wrote a link
+// into, so it stays scoped to the project, while an explicit markdown
+// link is a destination the user must click — the click gate is where
+// that looser rule lives.
 //
 // One pass per assistant message at content_block_stop. Sub-5ms for
 // a 200-path/50KB pathological case; ~100µs for a typical 5-path
@@ -184,11 +187,13 @@ const maxCandidates = 256
 // Absolute candidates are accepted only when they sit inside
 // workspacePath. This is deliberate: the linkifier exists to surface
 // files an agent is reasoning about in the user's project, not to
-// probe arbitrary host filesystems. Click-time
-// `internal/editor.ResolvePath` enforces the same rule; validation
-// agreeing with it is what closes the existence-oracle vector
-// (`/etc/shadow`, etc. would otherwise stat at validation time even
-// though click would reject).
+// probe arbitrary host filesystems — statting an out-of-workspace
+// candidate at validation time would be an existence oracle over
+// prose the user never clicked. Click-time
+// `internal/editor.ResolvePath` is deliberately LOOSER (existing
+// regular files open from anywhere since 2026-08-18); the extra reach
+// is reserved for explicit markdown-link hrefs, which cost a stat
+// only when the user actually clicks.
 func ExtractAndValidate(workspacePath, text string) []PathRef {
 	return extractAndValidate(workspacePath, text, defaultStat)
 }

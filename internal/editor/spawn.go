@@ -3,6 +3,7 @@ package editor
 import (
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
@@ -38,9 +39,8 @@ const fastExitWindow = 750 * time.Millisecond
 // WorkspacePath, when non-empty, is the absolute base directory used
 // to resolve a relative Path. The frontend passes the active thread's
 // workspace so click sites that hand us a repo-relative path (diff
-// cards, tool result paths) round-trip correctly. Resolution must
-// stay below WorkspacePath — see ResolvePath for the traversal-escape
-// guard.
+// cards, tool result paths) round-trip correctly. See ResolvePath for
+// the openability rule the resolved target must satisfy.
 type SpawnOptions struct {
 	Editor        *Editor
 	Path          string
@@ -53,36 +53,55 @@ type SpawnOptions struct {
 // returns the absolute path to spawn the editor against.
 //
 // Rules:
-//   - Absolute path + WorkspacePath supplied → must be canonical AND
-//     remain a sub-path of WorkspacePath after symlink resolution.
-//     This mirrors the relative-path branch and closes the gap an
-//     attacker would otherwise exploit by passing
-//     path = "/etc/passwd" alongside any workspace.
+//   - A leading `~/` (or a bare `~`) expands to the backend process's
+//     home directory before any other rule runs, so agent-written
+//     links like `~/.claude/notes.md` resolve the way a shell would.
+//     The expansion must stay under home — `~/../…` is refused rather
+//     than silently arriving at the canonicality check pre-cleaned.
+//   - Absolute path + WorkspacePath supplied → must be canonical, then
+//     the openability rule (resolveAgainstWorkspace): an existing
+//     regular file opens from anywhere; a target that exists but is
+//     not a regular file is refused everywhere; a target that does not
+//     exist yet opens only inside the workspace (the new-file flow).
 //   - Absolute path + no WorkspacePath → must be canonical, returned
-//     unchanged. Used by project-open affordances that hand us a
-//     project root directly; the trust boundary above this is the
-//     OpenInEditor binding's authz.
+//     unchanged, no stat. This is the deliberate project-open trust
+//     path — the header "Open workspace" affordances hand us a project
+//     root to folder-open. It is safe to leave untyped because the
+//     rendered-markdown pipeline never produces a workspace-less link
+//     (pathLinkExtension.ts refuses every href shape without a
+//     workspace), and the OpenInEditor binding itself is classified
+//     LocalOnly in internal/transport — a remote token-holder cannot
+//     call it at all.
 //   - Relative path → WorkspacePath must be supplied, absolute, and
-//     canonical. The result is filepath.Join(workspacePath, path).
-//     The joined result must remain a sub-path of WorkspacePath
-//     after symlink resolution; a `..`-traversal that escapes (or a
-//     workspace-internal symlink whose target sits outside) is
-//     rejected.
+//     canonical. The result is filepath.Join(workspacePath, path),
+//     then the same openability rule as the absolute branch.
 //
-// Why the escape guard is the load-bearing check: the LAN-bind threat
-// model lets a token-holder over the network call OpenInEditor. Without
-// the sub-path check, path = "../../../../etc/passwd" + workspace =
-// "/home/user/repo" Joins to "/etc/passwd" cleanly and the canonical
-// check passes. filepath.Rel surfaces the escape unambiguously.
-//
-// Symlink resolution is best-effort — when the joined path does not
-// exist yet (the user is opening a new file), EvalSymlinks fails and
-// we fall back to the lexical Rel check on the unresolved form. The
-// validator (internal/pathlinks) catches symlink-escape candidates
-// before they ever reach this code, so this is defense-in-depth.
+// Threat model, in caller-visible terms: the inputs that reach this
+// function from rendered markdown are model-authored or third-party
+// (PR bodies, review comments) with NO render-time validation — the
+// user's click plus this gate are the entire control. The rule keeps a
+// click at "show the local user an existing file in their own editor",
+// plus in-workspace new-file creation. Directory opens are refused
+// even inside the workspace: VS Code folder-opens execute workspace
+// config (`.vscode/` tasks), and model output can author both the
+// link and the tasks file. UNC (`\\`) input is refused before any
+// stat — on Windows the stat itself performs SMB authentication
+// against the named host.
 func ResolvePath(path, workspacePath string) (string, error) {
 	if path == "" {
 		return "", fmt.Errorf("editor: open: path is required")
+	}
+	// UNC shapes are refused up front, on every platform: on Windows
+	// even a stat of `\\host\share` performs SMB authentication against
+	// the named host (the NetNTLM leak vector), and no click surface
+	// legitimately produces a backslash-backslash path on POSIX either
+	// (there it would be a bizarre relative filename, not a share).
+	if strings.HasPrefix(path, `\\`) {
+		return "", fmt.Errorf("editor: open: network share paths are not supported, got %q", path)
+	}
+	path, err := expandHome(path)
+	if err != nil {
+		return "", err
 	}
 	if filepath.IsAbs(path) {
 		if filepath.Clean(path) != path {
@@ -91,60 +110,153 @@ func ResolvePath(path, workspacePath string) (string, error) {
 		if workspacePath == "" {
 			return path, nil
 		}
-		if !filepath.IsAbs(workspacePath) {
-			return "", fmt.Errorf("editor: open: workspacePath must be absolute, got %q", workspacePath)
-		}
-		if filepath.Clean(workspacePath) != workspacePath {
-			return "", fmt.Errorf("editor: open: workspacePath must be canonical, got %q", workspacePath)
-		}
-		if err := ensureInsideWorkspace(path, workspacePath); err != nil {
+		if err := validateWorkspacePath(workspacePath); err != nil {
 			return "", err
 		}
-		return path, nil
+		return resolveAgainstWorkspace(path, workspacePath)
 	}
 	if workspacePath == "" {
 		return "", fmt.Errorf("editor: open: relative path %q requires workspacePath", path)
 	}
+	if err := validateWorkspacePath(workspacePath); err != nil {
+		return "", err
+	}
+	return resolveAgainstWorkspace(filepath.Join(workspacePath, path), workspacePath)
+}
+
+func validateWorkspacePath(workspacePath string) error {
+	// Same UNC refusal as the path input: a `\\host\share` workspace
+	// would reach EvalSymlinks below, and on Windows that stat performs
+	// SMB authentication against the named host.
+	if strings.HasPrefix(workspacePath, `\\`) {
+		return fmt.Errorf("editor: open: network share workspace paths are not supported, got %q", workspacePath)
+	}
 	if !filepath.IsAbs(workspacePath) {
-		return "", fmt.Errorf("editor: open: workspacePath must be absolute, got %q", workspacePath)
+		return fmt.Errorf("editor: open: workspacePath must be absolute, got %q", workspacePath)
 	}
 	if filepath.Clean(workspacePath) != workspacePath {
-		return "", fmt.Errorf("editor: open: workspacePath must be canonical, got %q", workspacePath)
+		return fmt.Errorf("editor: open: workspacePath must be canonical, got %q", workspacePath)
 	}
-	joined := filepath.Join(workspacePath, path)
-	if err := ensureInsideWorkspace(joined, workspacePath); err != nil {
-		return "", err
+	return nil
+}
+
+// userHomeDir is the indirection seam home expansion flows through so
+// tests can pin a fixture home; production leaves it on os.UserHomeDir.
+var userHomeDir = os.UserHomeDir
+
+// expandHome rewrites a leading `~/` (or a bare `~`) to the current
+// user's home directory. `~user/...` forms are NOT supported — they
+// would need passwd lookups and no click surface produces them; they
+// fall through unchanged and are treated as workspace-relative names
+// downstream (real files with `~`-leading names exist, e.g. Office's
+// `~$doc.docx` lock files, so refusing outright would break those).
+func expandHome(path string) (string, error) {
+	if path != "~" && !strings.HasPrefix(path, "~/") {
+		return path, nil
+	}
+	home, err := userHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("editor: open: expand %q: %w", path, err)
+	}
+	if path == "~" {
+		return home, nil
+	}
+	joined := filepath.Join(home, path[2:])
+	// Join cleans, so `~/../etc/passwd` would otherwise hop out of home
+	// and arrive at the canonicality check already clean. The tilde form
+	// must stay under home; anything else has an honest absolute
+	// spelling that passes the same gates. Guard consistency, not a
+	// privilege boundary.
+	if rel, err := filepath.Rel(home, joined); err != nil ||
+		rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("editor: open: %q escapes the home directory", path)
 	}
 	return joined, nil
 }
 
-// ensureInsideWorkspace returns nil if `target` resolves to a path
-// inside `workspacePath` after symlink resolution, an error otherwise.
+// resolveAgainstWorkspace applies the openability rule to a resolved
+// absolute target (see the ResolvePath doc for the threat model):
+//   - An existing REGULAR FILE is openable anywhere, inside or outside
+//     the workspace. Showing a file in an editor executes nothing.
+//   - A target that exists but is not a regular file (directories,
+//     sockets, devices) is refused everywhere — including inside the
+//     workspace, where model output can author both a `[src](src)`
+//     link and the `.vscode/tasks.json` a folder-open would execute.
+//     The project-open affordances that legitimately folder-open pass
+//     no WorkspacePath and take the absolute pass-through instead.
+//   - A target that does not exist opens only INSIDE the workspace
+//     (the new-file flow); outside it the affordance stays "show me
+//     this file", never "scaffold files anywhere on the host".
 //
-// When either side cannot be EvalSymlinks'd (most often because the
-// target file does not exist yet), the check falls back to the lexical
-// Rel comparison so the new-file flow keeps working. The validator
-// (internal/pathlinks) already runs the symlink check at extraction
-// time for agent-supplied paths, so this layer is the LAN-bind
-// safety floor for direct OpenInEditor callers.
-func ensureInsideWorkspace(target, workspacePath string) error {
-	realTarget, errTarget := filepath.EvalSymlinks(target)
-	realWorkspace, errWs := filepath.EvalSymlinks(workspacePath)
-	useReal := errTarget == nil && errWs == nil
-	cmpTarget := target
-	cmpWorkspace := workspacePath
-	if useReal {
-		cmpTarget = realTarget
-		cmpWorkspace = realWorkspace
+// The error strings stay diagnostic (missing vs directory) on purpose:
+// they surface as user-facing toasts on a dead link, and the only
+// caller that could abuse them as a filesystem oracle is a loopback
+// peer that already holds BrowseDirectory.
+func resolveAgainstWorkspace(target, workspacePath string) (string, error) {
+	info, statErr := os.Stat(target)
+	if statErr == nil {
+		if info.Mode().IsRegular() {
+			return target, nil
+		}
+		return "", fmt.Errorf("editor: open: %q is not a regular file; links open files only (a folder open can execute workspace config)", target)
 	}
-	rel, err := filepath.Rel(cmpWorkspace, cmpTarget)
+	if insideWorkspace(target, workspacePath) {
+		// New-file flow: a not-yet-existing target inside the workspace
+		// is handed to the editor to create. Stat failures other than
+		// not-exist (permission, I/O) land here too — the editor
+		// surfaces its own error if the path truly can't be opened.
+		return target, nil
+	}
+	return "", fmt.Errorf("editor: open: %q is outside the workspace and does not exist: %v", target, statErr)
+}
+
+// insideWorkspace reports whether target resolves under workspacePath.
+// Only consulted for targets that do NOT exist (existing targets are
+// decided by the regular-file rule alone), so symlink resolution walks
+// up to the nearest existing ancestor: a not-yet-created file under
+// `ws/link/…` where `link` is a symlink out of the workspace must not
+// count as inside — that would re-open the out-of-tree scaffolding
+// door through a workspace-internal symlink. Rendered-markdown hrefs
+// have no upstream validator, so this check is the only symlink gate
+// on that path. Failures degrade to "outside", which the caller turns
+// into a refusal — never into scaffolding.
+func insideWorkspace(target, workspacePath string) bool {
+	// Both sides go through the same ancestor-resolving walk: resolving
+	// only the target would misclassify a workspace that itself sits
+	// under a symlinked root (macOS /var → /private/var) as "outside"
+	// its own contents.
+	rel, err := filepath.Rel(
+		resolveThroughExistingAncestor(workspacePath),
+		resolveThroughExistingAncestor(target),
+	)
 	if err != nil {
-		return fmt.Errorf("editor: open: resolve %q against %q: %w", target, workspacePath, err)
+		return false
 	}
-	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return fmt.Errorf("editor: open: path %q escapes workspace %q", target, workspacePath)
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+// resolveThroughExistingAncestor EvalSymlinks the deepest existing
+// ancestor of target and lexically re-joins the not-yet-existing
+// remainder. For a target that exists it is exactly EvalSymlinks; for
+// one that doesn't, the remainder can't contain `..` segments because
+// ResolvePath already required the canonical form.
+func resolveThroughExistingAncestor(target string) string {
+	remainder := ""
+	dir := target
+	for {
+		resolved, err := filepath.EvalSymlinks(dir)
+		if err == nil {
+			return filepath.Join(resolved, remainder)
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			// Walked to the root without an existing ancestor; fall
+			// back to the lexical form.
+			return filepath.Join(dir, remainder)
+		}
+		remainder = filepath.Join(filepath.Base(dir), remainder)
+		dir = parent
 	}
-	return nil
 }
 
 // lookPath is the indirection seam exec.LookPath flows through. Tests
@@ -199,12 +311,13 @@ func Open(ctx context.Context, opts SpawnOptions) error {
 	if opts.Editor == nil || !opts.Editor.Available || opts.Editor.ResolvedPath == "" {
 		return ErrNoEditor
 	}
-	// LAN-bind safety: a token-holder over the network can call
-	// OpenInEditor on the host. ResolvePath enforces the floor — the
-	// final path must be absolute, canonical, and (when joined from a
-	// relative input) must not escape WorkspacePath. The trust boundary
-	// above this is the token holder; anything stricter (allow-list of
-	// workspace roots) belongs in app-level authz.
+	// ResolvePath enforces the click-surface floor: the final path must
+	// be absolute and canonical, and must satisfy the openability rule
+	// (existing regular file anywhere, new files only inside the
+	// workspace, folder opens never). The inputs that reach here from
+	// rendered markdown are model- or third-party-authored with no
+	// render-time validation; the OpenInEditor binding itself is
+	// LocalOnly, so a remote token-holder can't call it at all.
 	resolvedPath, err := ResolvePath(opts.Path, opts.WorkspacePath)
 	if err != nil {
 		return err

@@ -4,7 +4,7 @@
   import ChatMarkdown from './ChatMarkdown.svelte';
   import CopyButton from '../primitives/CopyButton.svelte';
   import { addToast } from '../../stores/toast.svelte';
-  import { getPathRefsFromMeta } from '../../utils/pathLinkify';
+  import { EMPTY_PATH_REFS, getPathRefsFromMeta } from '../../utils/pathLinkify';
   import { formatTimeOfDay } from '../../utils/format';
   import { getSettings } from '../../stores/settings.svelte';
   import { copyMarkdownToClipboard } from '../../utils/markdownClipboard';
@@ -89,7 +89,7 @@
   // derived keeps a stable array identity across the per-frame item
   // replacements of a streaming row — a fresh identity per frame would
   // rebuild ChatMarkdown's marked extension and re-lex every block.
-  const pathRefs = $derived(getPathRefsFromMeta(item.meta) ?? []);
+  const pathRefs = $derived(getPathRefsFromMeta(item.meta) ?? EMPTY_PATH_REFS);
 </script>
 
 <div class="group" data-item-kind={item.kind}>

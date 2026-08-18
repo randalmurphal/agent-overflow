@@ -1,12 +1,16 @@
 // Marked inline extension that turns server-validated path tokens
 // into clickable links DURING the initial markdown parse — replacing
-// the legacy post-render DOM walker.
+// the legacy post-render DOM walker — and rewrites path-shaped
+// markdown-link hrefs to the same editor scheme.
 //
-// The Go side (`internal/pathlinks`) is the only thing that decides
-// whether a token is really a path on disk. This file ONLY consumes
-// that allowlist; it never invents matches on its own. When the
-// allowlist is empty, the extension returns `undefined` so callers can
-// skip wiring it into Streamdown entirely.
+// For PROSE tokens, the Go side (`internal/pathlinks`) is the only
+// thing that decides whether a token is really a path on disk. This
+// file never invents prose matches on its own. Markdown-link HREFS
+// (`[label](/abs/file.md)`) are the deliberate exception: they are
+// explicit link destinations the user must click, so they become
+// editor affordances without render-time validation and the backend
+// (`editor.ResolvePath`) is the gate at click time — see
+// `parsePathShapedHref`.
 //
 // Token shape: emits a marked `link` token whose `href` is
 // `agent-overflow:open?path=…&line=…&col=…&workspace=…`. Streamdown's
@@ -85,6 +89,15 @@ const BOUNDARY_CHARS = new Set<string>([
 const PATH_SUFFIX_SOURCE = `:(\\d+)(?:-\\d+|:(\\d+))?`;
 const OPTIONAL_PATH_SUFFIX_SOURCE = `(?:${PATH_SUFFIX_SOURCE})?`;
 const PATH_SUFFIX_RE = new RegExp(`^${PATH_SUFFIX_SOURCE}$`);
+// Greedy TRAILING RUN of colon-digit groups, validated as a whole by
+// parsePathSuffix afterwards. Matching just one suffix at the end would
+// split `a.md:1:2:3` as path `a.md:1` + suffix `:2:3`; matching the run
+// and letting the anchored validator reject it keeps the whole string
+// as the path instead.
+const PATH_SUFFIX_RUN_AT_END_RE = /(?::\d+(?:-\d+)?)+$/;
+// URI scheme shape (RFC 3986). Hoisted so it isn't re-allocated per
+// markdown link per lex pass.
+const SCHEME_RE = /^[a-zA-Z][a-zA-Z0-9+.-]*:/;
 
 function isBoundary(ch: string | undefined): boolean {
   return ch === undefined || BOUNDARY_CHARS.has(ch);
@@ -123,8 +136,34 @@ interface ParsedPathTarget {
 
 /**
  * Build a marked inline extension that linkifies the allowlisted
- * paths. Returns `undefined` when the allowlist is empty so callers
- * can skip wiring it in entirely.
+ * paths in PROSE, and rewrites path-shaped markdown-link HREFS
+ * (`[label](/abs/file.md)`, `[x](~/notes.md)`, `[x](docs/foo.md)`)
+ * to the same nonce'd editor scheme.
+ *
+ * The two halves have different trust models, on purpose:
+ *   - Prose linkification only ever consumes the server-validated
+ *     allowlist — this file never invents prose matches on its own.
+ *   - Markdown-link hrefs are agent- or third-party-authored
+ *     destinations the user must CLICK; the rewrite makes them an
+ *     editor affordance and the backend (`editor.ResolvePath`)
+ *     enforces openability at click time — an existing regular file
+ *     anywhere, new files only inside the workspace, folder opens
+ *     never. A refused click surfaces as a toast. Without the rewrite
+ *     these hrefs are worse than useless: a raw `/`-leading href is a
+ *     same-tab navigation onto the SPA origin (a 404), so the
+ *     vendored streamdown Link element refuses to render raw anchors
+ *     for them at all.
+ *
+ * Href rewriting requires a non-empty `workspacePath` for EVERY shape
+ * (see parsePathShapedHref); a surface with no workspace gets href
+ * rewriting disabled entirely, so PR bodies / review comments —
+ * third-party text full of `/owner/repo/...` root-relative links —
+ * never grow editor affordances.
+ *
+ * Returns undefined when BOTH halves would be inert (empty allowlist
+ * and no workspace): callers hand marked no extension at all then,
+ * which keeps streamdown's extension-identity lex cache on its fast
+ * path for those surfaces.
  *
  * `workspacePath` is encoded into each emitted href so a click after
  * the surface unmounts can still resolve relative paths — same trick
@@ -134,8 +173,6 @@ export function buildPathLinkExtension(
   pathRefs: readonly PathRef[],
   workspacePath: string,
 ): PathLinkExtension | undefined {
-  if (pathRefs.length === 0) return undefined;
-
   // Dedupe by path (multiple refs for the same file may exist when
   // the same file is mentioned with different :line:col suffixes —
   // the suffix is extracted from the matched text, not the allowlist,
@@ -144,11 +181,16 @@ export function buildPathLinkExtension(
   for (const ref of pathRefs) {
     if (ref?.path) allowed.add(ref.path);
   }
-  if (allowed.size === 0) return undefined;
 
   // Longest-first ordering ensures `src/lib/foo.ts` matches before the
   // nested `foo.ts` when both happen to be in the allowlist.
   const paths = Array.from(allowed).sort((a, b) => b.length - a.length);
+
+  if (paths.length === 0 && workspacePath === '') {
+    // No prose allowlist and no workspace to anchor href rewriting:
+    // the extension would match nothing. Hand marked nothing instead.
+    return undefined;
+  }
 
   // Two anchored regexes used by the tokenizer:
   //   bareRe    — `^(@)?<path>(?::\d+(?:-\d+|:\d+)?)?`
@@ -167,18 +209,26 @@ export function buildPathLinkExtension(
   // `<a><code>…</code></a>` — keeping the monospace pill UX users
   // expect for paths in prose while still routing the click to the
   // OpenInEditor binding.
-  const alternation = paths.map(escapeRegex).join('|');
+  // All three prose regexes are null when the allowlist is empty: an
+  // empty alternation matches the empty string at every position,
+  // which would send the tokenizer into a zero-width loop. The
+  // markdown-link branch below needs none of them.
+  const alternation = paths.length > 0 ? paths.map(escapeRegex).join('|') : null;
   // Keep the supported suffix shapes in lockstep with
   // `pathLinkify.ts#PATH_PATTERN` — both files must accept the same
   // `:line` / `:line:col` / `:line-endLine` variants so an agent
   // referencing a range gets the same treatment from the prose
   // tokenizer and the tool-card preview matcher.
-  const bareRe = new RegExp(`^(@)?(${alternation})${OPTIONAL_PATH_SUFFIX_SOURCE}`);
-  const wrappedRe = new RegExp(`^\`(@)?(${alternation})${OPTIONAL_PATH_SUFFIX_SOURCE}\``);
+  const bareRe = alternation
+    ? new RegExp(`^(@)?(${alternation})${OPTIONAL_PATH_SUFFIX_SOURCE}`)
+    : null;
+  const wrappedRe = alternation
+    ? new RegExp(`^\`(@)?(${alternation})${OPTIONAL_PATH_SUFFIX_SOURCE}\``)
+    : null;
   // Unanchored scanner for `start` — the whole allowlist as ONE pass. See
   // `earliestPathLinkHit`. Its `lastIndex` is reset on entry there, never
   // carried between calls.
-  const scanRe = new RegExp(`(?:${alternation})`, 'g');
+  const scanRe = alternation ? new RegExp(`(?:${alternation})`, 'g') : null;
 
   // Build a link token from a successful regex match. `childKind`
   // selects the marked token type that wraps the visible text inside
@@ -224,6 +274,7 @@ export function buildPathLinkExtension(
       if (src.startsWith('[')) {
         return markdownPathLinkToken(src, this, parseAllowlistedTarget, workspacePath);
       }
+      if (!bareRe || !wrappedRe) return undefined;
 
       // Boundary check: marked invokes inline extensions at every
       // position it advances to — including positions reached by
@@ -358,53 +409,36 @@ export function parsePathLinkHref(href: string | null | undefined): {
  * past the whole match) because a shorter allowlisted path may still begin
  * inside it — the same overlap rule the per-path loop had.
  */
-function earliestPathLinkHit(src: string, scanRe: RegExp): number | undefined {
+function earliestPathLinkHit(src: string, scanRe: RegExp | null): number | undefined {
   let earliest = -1;
-  scanRe.lastIndex = 0;
-  for (let match = scanRe.exec(src); match !== null; match = scanRe.exec(src)) {
-    const idx = match.index;
-    const prev = idx === 0 ? undefined : src[idx - 1];
-    if (isBoundary(prev)) {
-      earliest = idx;
-      break; // Scan order is document order — nothing earlier can follow.
-    }
-    if (prev === '@') {
-      const prev2 = idx >= 2 ? src[idx - 2] : undefined;
-      if (isBoundary(prev2)) {
-        earliest = idx - 1;
-        break;
+  if (scanRe) {
+    scanRe.lastIndex = 0;
+    for (let match = scanRe.exec(src); match !== null; match = scanRe.exec(src)) {
+      const idx = match.index;
+      const prev = idx === 0 ? undefined : src[idx - 1];
+      if (isBoundary(prev)) {
+        earliest = idx;
+        break; // Scan order is document order — nothing earlier can follow.
       }
-    }
-    scanRe.lastIndex = idx + 1;
-  }
-  // A markdown link's hit is its label's `[`, which sits BEFORE the `](`
-  // that identifies it — so it can beat a path hit that the scan above
-  // already found, and cannot be folded into that scan.
-  //
-  // The `firstBracket` guard is a filter, not a speedup in general: a
-  // markdown-link hit can never precede the source's first `[`, so a
-  // source with no `[` at all skips the `](` search outright (the win —
-  // most agent prose in a streaming tail has no brackets), while a source
-  // that DOES contain one has paid an extra `indexOf` on top of the search
-  // it was going to run anyway (a wash). The second clause is the part
-  // that matters for bracket-heavy sources: when the scan already found a
-  // hit earlier than the first `[`, no label can beat it, so the `](`
-  // search is skipped even though brackets exist.
-  const firstBracket = src.indexOf('[');
-  if (firstBracket !== -1 && (earliest === -1 || firstBracket < earliest)) {
-    const markdownHit = earliestMarkdownLinkHit(src);
-    if (markdownHit !== undefined && (earliest === -1 || markdownHit < earliest)) {
-      earliest = markdownHit;
+      if (prev === '@') {
+        const prev2 = idx >= 2 ? src[idx - 2] : undefined;
+        if (isBoundary(prev2)) {
+          earliest = idx - 1;
+          break;
+        }
+      }
+      scanRe.lastIndex = idx + 1;
     }
   }
+  // No bracket handling here on purpose: `start` only bounds how far
+  // marked's inlineText run may consume, and marked's own text rules
+  // (both `normal` and `gfm`) already stop unconditionally at `[` — so
+  // the tokenizer is invoked at every bracket position regardless, and
+  // scanning for `[`/`](` in `start` was pure cost. (The one shape a
+  // bracket-start could not rescue either: a `[` glued inside an
+  // autolinked URL is swallowed by marked's `url` tokenizer before
+  // extension starts are consulted.)
   return earliest === -1 ? undefined : earliest;
-}
-
-function earliestMarkdownLinkHit(src: string): number | undefined {
-  const idx = src.indexOf('](');
-  if (idx <= 0) return undefined;
-  const open = src.lastIndexOf('[', idx);
-  return open === -1 ? undefined : open;
 }
 
 function markdownPathLinkToken(
@@ -416,12 +450,81 @@ function markdownPathLinkToken(
   const tokenizerContext = ctx as PathLinkTokenizerContext;
   const token = tokenizerContext.lexer?.tokenizer?.link?.(src);
   if (!token || token.type !== 'link') return undefined;
-  const parsed = parseAllowlistedTarget(token.href);
+  const parsed = parseAllowlistedTarget(token.href) ?? parsePathShapedHref(token.href, workspacePath);
   if (!parsed) return token;
   return {
     ...token,
     href: buildPathLinkHref(parsed.path, parsed.line, parsed.col, workspacePath),
   };
+}
+
+/**
+ * Decide whether a markdown link's href is a local filesystem path and
+ * split off an optional `:line[:col]` suffix. Returns null for
+ * anything that is not path-shaped:
+ *   - EVERY shape when no workspace is available. This is a security
+ *     boundary, not just a UX call: surfaces without a workspace are
+ *     the third-party ones (PR bodies, review comments, full of
+ *     GitHub root-relative `/owner/repo/...` links), and a
+ *     workspace-less href would reach `editor.ResolvePath`'s
+ *     stat-free project-open pass-through. Requiring a workspace
+ *     guarantees every click lands on the stat-gated branch.
+ *   - hrefs with a scheme (`https:`, `mailto:`, forged
+ *     `agent-overflow:` — the nonce check rejects those downstream)
+ *   - network-path references (`//host/x`) and UNC shapes (`\\host\x`)
+ *   - in-page fragments (`#…`) and bare queries (`?…`)
+ *
+ * A trailing `#fragment` / `?query` is stripped (`[x](docs/a.md#install)`
+ * opens `docs/a.md`), and the path is percent-decoded — the standard
+ * markdown spelling of a path with a space is `/a%20b.md`.
+ *
+ * Everything path-shaped becomes an editor affordance. Existence is
+ * deliberately NOT checked here — the backend stats at click time and
+ * a refused open surfaces as a toast, so a hallucinated path costs one
+ * click, not a render-time stat per link.
+ */
+function parsePathShapedHref(href: unknown, workspacePath: string): ParsedPathTarget | null {
+  if (typeof href !== 'string' || href.length === 0) return null;
+  if (workspacePath === '') return null;
+  // Any leading backslash is refused, not just literal `\\`: markdown
+  // escaping halves backslashes before the href reaches us, so a UNC
+  // source `[x](\\host\share)` arrives as `\host\share`.
+  if (href.startsWith('//') || href.startsWith('\\')) return null;
+  if (href.startsWith('#') || href.startsWith('?')) return null;
+  const cut = href.search(/[#?]/);
+  const target = cut === -1 ? href : href.slice(0, cut);
+  if (target === '') return null;
+
+  // Suffix split runs BEFORE the scheme check so `[x](Makefile:12)`
+  // reads as path + line rather than as a `Makefile:` URI scheme. Port
+  // shapes still land right: `http://host:8080` strips `:8080`, then
+  // the remainder fails the scheme check anyway.
+  let path = target;
+  let line: number | undefined;
+  let col: number | undefined;
+  const suffixMatch = PATH_SUFFIX_RUN_AT_END_RE.exec(target);
+  if (suffixMatch && suffixMatch.index > 0) {
+    const suffix = parsePathSuffix(target.slice(suffixMatch.index));
+    if (suffix) {
+      path = target.slice(0, suffixMatch.index);
+      line = suffix.line;
+      col = suffix.col;
+    }
+  }
+  if (SCHEME_RE.test(path)) return null;
+  return { path: decodePathComponent(path), line, col };
+}
+
+// Percent-decode a path-shaped href component; a malformed escape
+// (`%GZ`, lone `%`) falls through as the literal text rather than
+// throwing away the link.
+function decodePathComponent(raw: string): string {
+  if (!raw.includes('%')) return raw;
+  try {
+    return decodeURIComponent(raw);
+  } catch {
+    return raw;
+  }
 }
 
 function parsePathSuffix(suffix: string): {

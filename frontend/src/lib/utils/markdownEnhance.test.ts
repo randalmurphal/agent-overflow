@@ -64,6 +64,30 @@ describe('ensurePathLinkClickDelegate', () => {
     expect(allowed).toBe(false);
   });
 
+  it('suppresses middle-click auxclick without invoking the editor', () => {
+    // A middle-click "open in new tab" on the unregistered custom
+    // scheme would become an external-protocol-handler request; the
+    // auxclick delegate must eat it, and it must NOT open the editor.
+    const mock = setBindingMock('OpenInEditor', vi.fn(async () => undefined));
+    ensurePathLinkClickDelegate();
+    const link = mountAnchor(buildPathLinkHref('src/foo.ts', undefined, undefined, ''));
+
+    const event = new MouseEvent('auxclick', { bubbles: true, cancelable: true, button: 1 });
+    const allowed = link.dispatchEvent(event);
+
+    expect(allowed).toBe(false);
+    expect(mock).not.toHaveBeenCalled();
+  });
+
+  it('leaves auxclick alone on ordinary anchors', () => {
+    setBindingMock('OpenInEditor', vi.fn(async () => undefined));
+    ensurePathLinkClickDelegate();
+    const link = mountAnchor('https://example.com/foo.ts');
+
+    const event = new MouseEvent('auxclick', { bubbles: true, cancelable: true, button: 1 });
+    expect(link.dispatchEvent(event)).toBe(true);
+  });
+
   it('ignores anchors that do NOT use the agent-overflow: scheme', () => {
     const mock = setBindingMock('OpenInEditor', vi.fn(async () => undefined));
     ensurePathLinkClickDelegate();

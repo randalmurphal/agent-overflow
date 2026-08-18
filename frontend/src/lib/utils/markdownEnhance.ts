@@ -37,6 +37,7 @@ export function ensurePathLinkClickDelegate(): void {
   if (typeof document === 'undefined') return;
   pathLinkDelegateInstalled = true;
   document.addEventListener('click', handlePathLinkClick);
+  document.addEventListener('auxclick', suppressPathLinkAuxClick);
 }
 
 function handlePathLinkClick(event: MouseEvent): void {
@@ -52,6 +53,22 @@ function handlePathLinkClick(event: MouseEvent): void {
   if (!parsed) return;
   event.preventDefault();
   void invokePathLink(parsed.path, parsed.line, parsed.col, parsed.workspacePath);
+}
+
+// Middle/right-button flows on a path-link anchor must not reach the
+// browser: the href is an unregistered custom scheme on an
+// `<a target="_blank">`, so a middle-click "open in new tab" becomes an
+// external-protocol-handler request carrying the link's query if
+// anything on the host ever claims `agent-overflow:`. Only the primary
+// click (above) activates the editor open.
+function suppressPathLinkAuxClick(event: MouseEvent): void {
+  const target = event.target;
+  if (!(target instanceof Element)) return;
+  const link = target.closest<HTMLAnchorElement>('a[href]');
+  if (!link) return;
+  const href = link.getAttribute('href');
+  if (!href || !href.startsWith(PATH_LINK_HREF_PREFIX)) return;
+  event.preventDefault();
 }
 
 async function invokePathLink(
@@ -74,6 +91,7 @@ async function invokePathLink(
 export function __resetPathLinkDelegateForTest(): void {
   if (pathLinkDelegateInstalled && typeof document !== 'undefined') {
     document.removeEventListener('click', handlePathLinkClick);
+    document.removeEventListener('auxclick', suppressPathLinkAuxClick);
   }
   pathLinkDelegateInstalled = false;
 }

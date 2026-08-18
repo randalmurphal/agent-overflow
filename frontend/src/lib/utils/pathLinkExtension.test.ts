@@ -72,10 +72,29 @@ function findCodespans(tokens: ReturnType<typeof lex>): string[] {
 }
 
 describe('buildPathLinkExtension', () => {
-  it('returns undefined for empty allowlist (no extension needed)', () => {
+  it('builds an extension for an empty allowlist when a workspace exists (markdown-link half stays active)', () => {
+    // Refs without `path` are filtered out, so an array of those
+    // collapses to an empty allowlist — same as `[]`.
+    for (const ext of [
+      buildPathLinkExtension([], '/workspace'),
+      buildPathLinkExtension([{ path: '' }], '/workspace'),
+    ]) {
+      expect(ext).toBeDefined();
+      // Prose paths are never invented without the server allowlist…
+      expect(findLinks(lex('see src/foo.ts here', ext))).toHaveLength(0);
+      // …but a path-shaped markdown-link href is still rewritten.
+      const links = findLinks(lex('[notes](/home/user/notes.md)', ext));
+      expect(links).toHaveLength(1);
+      expect(links[0].href.startsWith(PATH_LINK_HREF_PREFIX)).toBe(true);
+    }
+  });
+
+  it('returns undefined when both halves would be inert (empty allowlist, no workspace)', () => {
+    // No prose to linkify and no workspace to anchor href rewriting:
+    // callers hand marked no extension at all, which keeps streamdown's
+    // extension-identity lex cache on its fast path for those surfaces
+    // (PR bodies, review comments).
     expect(buildPathLinkExtension([], '')).toBeUndefined();
-    // Defensive — refs without `path` are filtered out, so an array of
-    // those collapses to an empty allowlist.
     expect(buildPathLinkExtension([{ path: '' }], '')).toBeUndefined();
   });
 
@@ -335,13 +354,137 @@ describe('buildPathLinkExtension', () => {
     expect(links[0].href).toContain('line=42');
   });
 
-  it('preserves a normal markdown link when the href path is not allowlisted', () => {
+  it('rewrites a path-shaped markdown link even when the href is not allowlisted', () => {
+    // The allowlist gates PROSE linkification only. A markdown link's
+    // href is an explicit destination the user must click, so it
+    // becomes an editor affordance and the backend gates the open at
+    // click time (editor.ResolvePath).
     const ext = buildPathLinkExtension([{ path: '/workspace/src/external_jwt.py' }], '/workspace');
-    const href = '/workspace/src/other.py:636';
-    const links = findLinks(lex(`[other.py](${href})`, ext));
+    const links = findLinks(lex('[other.py](/workspace/src/other.py:636)', ext));
 
     expect(links).toHaveLength(1);
-    expect(links[0].href).toBe(href);
+    expect(links[0].href.startsWith(PATH_LINK_HREF_PREFIX)).toBe(true);
+    expect(links[0].href).toContain('path=%2Fworkspace%2Fsrc%2Fother.py');
+    expect(links[0].href).toContain('line=636');
+  });
+
+  describe('path-shaped markdown-link hrefs (no allowlist entry)', () => {
+    const ext = () => buildPathLinkExtension([], '/workspace');
+
+    it('rewrites an absolute href', () => {
+      const links = findLinks(lex('[prompt](/home/user/.claude/prompt.md)', ext()));
+      expect(links).toHaveLength(1);
+      expect(links[0].href.startsWith(PATH_LINK_HREF_PREFIX)).toBe(true);
+      expect(links[0].href).toContain('path=%2Fhome%2Fuser%2F.claude%2Fprompt.md');
+    });
+
+    it('rewrites a ~/ href (expansion happens backend-side)', () => {
+      const links = findLinks(lex('[prompt](~/.claude/prompt.md)', ext()));
+      expect(links).toHaveLength(1);
+      // URLSearchParams percent-encodes `~` (unlike encodeURIComponent).
+      expect(links[0].href).toContain('path=%7E%2F.claude%2Fprompt.md');
+    });
+
+    it('rewrites a workspace-relative href when a workspace is present', () => {
+      const links = findLinks(lex('[doc](docs/specs/theme-system.md)', ext()));
+      expect(links).toHaveLength(1);
+      expect(links[0].href).toContain('path=docs%2Fspecs%2Ftheme-system.md');
+      expect(links[0].href).toContain('workspace=%2Fworkspace');
+    });
+
+    it('rewrites NO shape when no workspace is available — absolute and ~/ included', () => {
+      // Security boundary, not just UX: workspace-less surfaces are the
+      // third-party ones (PR bodies, review comments), and a
+      // workspace-less href would land on editor.ResolvePath's
+      // stat-free project-open pass-through. The extension here is
+      // alive (non-empty allowlist) but its href half must stay off.
+      const noWorkspace = buildPathLinkExtension([{ path: 'src/foo.ts' }], '');
+      for (const href of ['/etc', '/home/user/notes.md', '~/.ssh', '~', 'docs/foo.md']) {
+        const links = findLinks(lex(`[label](${href})`, noWorkspace));
+        expect(links).toHaveLength(1);
+        expect(links[0].href.startsWith(PATH_LINK_HREF_PREFIX), href).toBe(false);
+      }
+    });
+
+    it('strips a trailing #fragment or ?query from a rewritten href', () => {
+      const withFragment = findLinks(lex('[install](docs/guide.md#install)', ext()));
+      expect(withFragment).toHaveLength(1);
+      expect(withFragment[0].href).toContain('path=docs%2Fguide.md');
+      expect(withFragment[0].href).not.toContain('install');
+
+      const withQuery = findLinks(lex('[doc](/workspace/a.md?x=1)', ext()));
+      expect(withQuery).toHaveLength(1);
+      expect(withQuery[0].href).toContain('path=%2Fworkspace%2Fa.md');
+      expect(withQuery[0].href).not.toContain('x%3D1');
+    });
+
+    it('percent-decodes the path (the standard markdown spelling of a space)', () => {
+      const links = findLinks(lex('[doc](/workspace/my%20file.md)', ext()));
+      expect(links).toHaveLength(1);
+      // URLSearchParams re-encodes the decoded space as `+`.
+      expect(links[0].href).toContain('path=%2Fworkspace%2Fmy+file.md');
+    });
+
+    it('keeps a malformed percent-escape as literal text instead of dropping the link', () => {
+      const links = findLinks(lex('[doc](/workspace/100%.md)', ext()));
+      expect(links).toHaveLength(1);
+      expect(links[0].href).toContain('path=%2Fworkspace%2F100%25.md');
+    });
+
+    it('treats a single-segment name with :line as a path, not a URI scheme', () => {
+      const links = findLinks(lex('[build](Makefile:12)', ext()));
+      expect(links).toHaveLength(1);
+      expect(links[0].href).toContain('path=Makefile');
+      expect(links[0].href).toContain('line=12');
+    });
+
+    it('keeps a multi-colon tail on the path rather than mis-splitting it', () => {
+      // `:1:2:3` is not a valid `:line[:col]` suffix. Taking the LAST
+      // valid-looking pair would split as path `/workspace/a.md:1`,
+      // line 2, col 3 — the whole string must stay the path instead.
+      const links = findLinks(lex('[x](/workspace/a.md:1:2:3)', ext()));
+      expect(links).toHaveLength(1);
+      expect(links[0].href).toContain('path=%2Fworkspace%2Fa.md%3A1%3A2%3A3');
+      expect(links[0].href).not.toContain('line=');
+    });
+
+    it('extracts the start line from a rewritten href range suffix', () => {
+      const links = findLinks(lex('[x](/workspace/a.md:10-20)', ext()));
+      expect(links).toHaveLength(1);
+      expect(links[0].href).toContain('path=%2Fworkspace%2Fa.md');
+      expect(links[0].href).toContain('line=10');
+      expect(links[0].href).not.toContain('col=');
+    });
+
+    it('splits a :line:col suffix off a rewritten href', () => {
+      const links = findLinks(lex('[spot](/workspace/src/a.go:42:7)', ext()));
+      expect(links).toHaveLength(1);
+      expect(links[0].href).toContain('path=%2Fworkspace%2Fsrc%2Fa.go');
+      expect(links[0].href).toContain('line=42');
+      expect(links[0].href).toContain('col=7');
+    });
+
+    it('never rewrites scheme, fragment, query, network-path, or UNC hrefs', () => {
+      const cases = [
+        'https://example.com/x',
+        // Port shapes: the trailing `:8080` parses like a line suffix,
+        // but the remainder still carries the scheme and is refused.
+        'http://example.com:8080',
+        'mailto:a@b.c',
+        'agent-overflow:open?path=/etc/passwd',
+        '#section',
+        '?q=1',
+        '//host/share/x',
+        '\\\\host\\share\\x',
+      ];
+      for (const href of cases) {
+        const links = findLinks(lex(`[label](${href})`, ext()));
+        expect(links).toHaveLength(1);
+        // Not exact-equality: marked unescapes backslashes in the UNC
+        // case. The contract is "never becomes an editor link".
+        expect(links[0].href.startsWith(PATH_LINK_HREF_PREFIX), href).toBe(false);
+      }
+    });
   });
 
   it('widens to include a leading @ when preceded by a boundary', () => {

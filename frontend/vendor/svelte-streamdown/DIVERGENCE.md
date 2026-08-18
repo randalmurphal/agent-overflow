@@ -270,3 +270,33 @@ Paths below are relative to `dist/`. Regression-test paths are relative to
     `data-expanded` is exactly the name the next component will reach for.
     Regression: `e2e/tests/workflows-overlay.spec.ts` clicks the action row
     through a map with an expanded wave — which is the shape that failed.
+17. **path-relative hrefs never render raw anchors** (`Elements/Link.svelte`)
+    — upstream renders any `/`-leading href (`isPathRelativeUrl`, literally
+    `startsWith('/')`) through a branch that BYPASSES `transformUrl` and
+    emits the raw href with no `target`/`rel`. In an SPA host that anchor
+    is a same-tab top-level navigation onto the app origin: for a chat
+    message carrying `[x](/home/user/file.md)` that's a 404 against the
+    transport server; for a crafted `[x](/design/...)` it was a confirmed
+    origin-isolation escape (agent-authored HTML served same-origin could
+    read the bootstrap token — `docs/specs/remote-access-boundaries.md`
+    §Confirmed defects), and `//host/x` counted as "relative" too, giving
+    protocol-relative navigation off-origin. The branch is removed: an
+    anchor renders only for a `transformUrl`-approved href (which includes
+    the app's nonce'd `agent-overflow:open` scheme), and everything else
+    falls to the non-navigable reference span from entry 10. Hosts that
+    want path-shaped hrefs to DO something rewrite them during parsing —
+    the app's `pathLinkExtension.ts` turns them into editor path links.
+    Deliberate deviation for this host, not an upstream-PR candidate as-is
+    (upstream's browser-page use case may genuinely want relative
+    navigation; an upstream fix would be opt-in). Regression:
+    `ChatMarkdown.test.ts` ("never renders a raw same-origin anchor…").
+    Same fix in `Elements/Image.svelte` (2026-08-18 follow-up): upstream's
+    image element had the identical `isPathRelativeUrl` bypass on `src` —
+    `![x](/anything)` issued a raw same-origin GET against the transport
+    server and `![x](//host/x.png)` a protocol-relative off-origin fetch,
+    both without consulting `transformUrl`. An `<img>` now renders only
+    for a `transformUrl`-approved src; path-relative image srcs fall to
+    the blocked-image span (no AO surface produces them — chat
+    attachments render through dedicated components, not markdown).
+    Regression: `ChatMarkdown.test.ts` ("never renders a raw
+    same-origin img…").

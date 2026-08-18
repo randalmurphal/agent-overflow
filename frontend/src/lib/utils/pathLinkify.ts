@@ -9,8 +9,12 @@
 // `internal/pathlinks.MetaKey`); the frontend reads it via
 // `getPathRefsFromMeta` and hands it to `pathLinkExtension.ts`, which
 // builds a marked inline extension that emits link tokens during the
-// initial parse. That is the only path that produces clickable path
-// anchors — agent prose can no longer linkify itself.
+// initial parse. PROSE can only become a path anchor through that
+// allowlist — agent prose can never linkify itself. Explicit
+// markdown-link HREFS (`[label](/abs/file.md)`) are the deliberate
+// exception: `pathLinkExtension.ts#parsePathShapedHref` rewrites them
+// without render-time validation (workspace required; the backend
+// stats at click time).
 //
 // `findPathRanges` below is the local matcher; it has exactly one
 // consumer left: `toolCardPreview.ts` uses it for trusted-source
@@ -62,6 +66,18 @@ import { compositeKey } from './compositeKey';
 // small (a handful of validated paths per row).
 const PATH_REFS_MEMO_CAP = 128;
 const pathRefsMemo: Map<string, PathRef[] | undefined> = new Map();
+
+/**
+ * THE empty allowlist. Every `getPathRefsFromMeta(...) ?? []` site and
+ * every `pathRefs={[]}` prop must use this instead of a fresh literal:
+ * `getPathRefsFromMeta` returns `undefined` for rows with no validated
+ * paths (the majority), so a fresh `[]` per derivation would mint a new
+ * array identity every reveal frame — a new marked extension, a new
+ * `extensions` array, and a full re-lex of every mounted block (the
+ * exact regression the memos above exist to prevent, on the MAJORITY
+ * path). Regression: ChatMarkdown.settleRelex.test.ts.
+ */
+export const EMPTY_PATH_REFS: PathRef[] = [];
 
 /**
  * Read the Go-validated `pathRefs` allowlist out of an item's meta

@@ -330,12 +330,14 @@ func TestOpen_AppliesTheAppImageScrub(t *testing.T) {
 	})
 }
 
-// TestOpen_RejectsWorkspaceEscape pins the traversal-escape guard: a
-// caller that supplies a workspacePath plus a `..`-laden relative path
-// must not be able to navigate outside the workspace. Without this,
-// "../../../etc/passwd" + "/home/user/repo" would Join to "/etc/passwd"
-// cleanly and pass the canonical check.
-func TestOpen_RejectsWorkspaceEscape(t *testing.T) {
+// TestOpen_RejectsWorkspaceEscapeToMissingTarget pins the residual
+// traversal guard: a `..`-laden relative path that escapes the
+// workspace is only openable when it lands on an EXISTING REGULAR
+// FILE. An escape to a nonexistent target must not spawn anything —
+// the out-of-workspace affordance is "show me this file", never
+// "scaffold files anywhere on the host".
+func TestOpen_RejectsWorkspaceEscapeToMissingTarget(t *testing.T) {
+	ws := t.TempDir()
 	ed := &Editor{
 		ID: "code", Name: "VS Code",
 		Available: true, ResolvedPath: "/usr/bin/code",
@@ -343,14 +345,14 @@ func TestOpen_RejectsWorkspaceEscape(t *testing.T) {
 	}
 	err := Open(context.Background(), SpawnOptions{
 		Editor:        ed,
-		Path:          "../../../etc/passwd",
-		WorkspacePath: "/home/user/repo",
+		Path:          "../does-not-exist-anywhere/passwd",
+		WorkspacePath: ws,
 	})
 	if err == nil {
-		t.Fatal("expected error for path that escapes workspace")
+		t.Fatal("expected error for escape to nonexistent target")
 	}
-	if !strings.Contains(err.Error(), "escapes workspace") {
-		t.Fatalf("expected error to mention 'escapes workspace', got %q", err.Error())
+	if !strings.Contains(err.Error(), "outside the workspace") {
+		t.Fatalf("expected error to mention 'outside the workspace', got %q", err.Error())
 	}
 }
 
@@ -503,19 +505,231 @@ func TestOpen_RejectsTraversalPath(t *testing.T) {
 	}
 }
 
-// TestResolvePath_AbsoluteWithWorkspaceRejectsOutsidePath pins the
-// defense-in-depth gap closed for absolute paths: a network token
-// holder calling OpenInEditor with path="/etc/passwd" alongside ANY
-// workspacePath must not get an editor pointed at /etc/passwd. The
-// pre-fix branch returned the canonical absolute path unchanged.
-func TestResolvePath_AbsoluteWithWorkspaceRejectsOutsidePath(t *testing.T) {
+// TestResolvePath_AbsoluteOutsideWorkspaceFileAllowed pins the
+// deliberate 2026-08-18 loosening: an absolute path outside the
+// workspace IS openable when it names an existing regular file.
+// Opening a file in the local user's editor is harmless by
+// construction (folder-opens and UNC probes stay refused); the agent
+// regularly references files like ~/.claude/notes.md that live
+// outside the repo, and those links must work.
+func TestResolvePath_AbsoluteOutsideWorkspaceFileAllowed(t *testing.T) {
 	ws := t.TempDir()
-	_, err := ResolvePath("/etc/passwd", ws)
-	if err == nil {
-		t.Fatalf("expected error for absolute path outside workspace, got nil")
+	outside := filepath.Join(t.TempDir(), "notes.md")
+	if err := os.WriteFile(outside, []byte("x"), 0o644); err != nil {
+		t.Fatalf("seed: %v", err)
 	}
-	if !strings.Contains(err.Error(), "escapes workspace") {
-		t.Fatalf("expected error to mention 'escapes workspace', got %q", err.Error())
+	got, err := ResolvePath(outside, ws)
+	if err != nil {
+		t.Fatalf("ResolvePath: %v", err)
+	}
+	if got != outside {
+		t.Fatalf("expected %q, got %q", outside, got)
+	}
+}
+
+// TestResolvePath_AbsoluteOutsideWorkspaceMissingRejected: the
+// file-only carve-out requires the target to exist — a nonexistent
+// absolute path outside the workspace is refused with a message the
+// toast can show verbatim.
+func TestResolvePath_AbsoluteOutsideWorkspaceMissingRejected(t *testing.T) {
+	ws := t.TempDir()
+	missing := filepath.Join(t.TempDir(), "never-written.md")
+	_, err := ResolvePath(missing, ws)
+	if err == nil {
+		t.Fatalf("expected error for missing outside-workspace file, got nil")
+	}
+	if !strings.Contains(err.Error(), "does not exist") {
+		t.Fatalf("expected 'does not exist' error, got %q", err.Error())
+	}
+}
+
+// TestResolvePath_AbsoluteOutsideWorkspaceDirectoryRejected: only
+// FILES ride the carve-out. Editor folder-opens are a different
+// primitive (VS Code folder-opens can execute `.vscode/` tasks), so a
+// directory outside the workspace stays refused.
+func TestResolvePath_AbsoluteOutsideWorkspaceDirectoryRejected(t *testing.T) {
+	ws := t.TempDir()
+	dir := t.TempDir()
+	_, err := ResolvePath(dir, ws)
+	if err == nil {
+		t.Fatalf("expected error for outside-workspace directory, got nil")
+	}
+	if !strings.Contains(err.Error(), "not a regular file") {
+		t.Fatalf("expected 'not a regular file' error, got %q", err.Error())
+	}
+}
+
+// TestResolvePath_RejectsUNCOutsideWorkspace: UNC shapes are refused
+// BEFORE any stat — on Windows the stat itself performs SMB
+// authentication against the named host (the NetNTLM leak vector).
+func TestResolvePath_RejectsUNCOutsideWorkspace(t *testing.T) {
+	if _, err := ResolvePath(`\\evil-host\share\x.md`, t.TempDir()); err == nil {
+		t.Fatalf("expected error for UNC path, got nil")
+	} else if !strings.Contains(err.Error(), "network share") {
+		t.Fatalf("expected 'network share' error, got %q", err.Error())
+	}
+}
+
+// TestResolvePath_ExpandsHome: a leading `~/` resolves against the
+// user's home directory (the seam-injected fixture here), then flows
+// through the ordinary outside-workspace file rule.
+func TestResolvePath_ExpandsHome(t *testing.T) {
+	home := t.TempDir()
+	original := userHomeDir
+	t.Cleanup(func() { userHomeDir = original })
+	userHomeDir = func() (string, error) { return home, nil }
+
+	target := filepath.Join(home, ".claude", "prompt.md")
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(target, []byte("x"), 0o644); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	got, err := ResolvePath("~/.claude/prompt.md", t.TempDir())
+	if err != nil {
+		t.Fatalf("ResolvePath: %v", err)
+	}
+	if got != target {
+		t.Fatalf("expected %q, got %q", target, got)
+	}
+}
+
+// TestResolvePath_InsideWorkspaceDirectoryRejected pins the folder-open
+// refusal INSIDE the workspace: model output can author both a
+// `[src](src)` link and the `.vscode/tasks.json` a folder-open would
+// execute, so directories are refused everywhere — the file-only rule
+// is not an outside-only rule.
+func TestResolvePath_InsideWorkspaceDirectoryRejected(t *testing.T) {
+	ws := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(ws, "src"), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	_, err := ResolvePath("src", ws)
+	if err == nil {
+		t.Fatalf("expected error for in-workspace directory, got nil")
+	}
+	if !strings.Contains(err.Error(), "not a regular file") {
+		t.Fatalf("expected 'not a regular file' error, got %q", err.Error())
+	}
+}
+
+// TestResolvePath_TraversalEscapeToExistingFileAllowed is the positive
+// half that pins the 2026-08-18 loosening for the relative form: a
+// `..`-traversal that lands on an existing regular file outside the
+// workspace IS openable. Without this case, deleting the escape check
+// entirely would still pass the missing-target refusal test.
+func TestResolvePath_TraversalEscapeToExistingFileAllowed(t *testing.T) {
+	root := t.TempDir()
+	ws := filepath.Join(root, "ws")
+	if err := os.MkdirAll(ws, 0o755); err != nil {
+		t.Fatalf("mkdir ws: %v", err)
+	}
+	outside := filepath.Join(root, "notes.md")
+	if err := os.WriteFile(outside, []byte("x"), 0o644); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	got, err := ResolvePath("../notes.md", ws)
+	if err != nil {
+		t.Fatalf("ResolvePath: %v", err)
+	}
+	if got != outside {
+		t.Fatalf("expected %q, got %q", outside, got)
+	}
+}
+
+// TestResolvePath_SymlinkedDirScaffoldRefused closes the scaffolding
+// door through a workspace-internal symlink: a NOT-yet-existing target
+// under `ws/link/…` where `link` points outside the workspace must be
+// judged outside (the ancestor-resolving walk), not inside via the
+// lexical fallback — otherwise the new-file flow would scaffold files
+// anywhere a planted symlink points.
+func TestResolvePath_SymlinkedDirScaffoldRefused(t *testing.T) {
+	root := t.TempDir()
+	ws := filepath.Join(root, "ws")
+	outside := filepath.Join(root, "elsewhere")
+	for _, dir := range []string{ws, outside} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", dir, err)
+		}
+	}
+	if err := os.Symlink(outside, filepath.Join(ws, "link")); err != nil {
+		t.Skipf("symlink unsupported in this test env: %v", err)
+	}
+	_, err := ResolvePath("link/new-file.md", ws)
+	if err == nil {
+		t.Fatalf("expected error for scaffold through escaping symlink, got nil")
+	}
+	if !strings.Contains(err.Error(), "outside the workspace") {
+		t.Fatalf("expected 'outside the workspace' error, got %q", err.Error())
+	}
+}
+
+// TestResolvePath_TildeTraversalRejected: the `~/` form must stay under
+// home. Join cleans, so without the explicit guard `~/../../etc/passwd`
+// would arrive at the canonicality check already clean and sail through.
+func TestResolvePath_TildeTraversalRejected(t *testing.T) {
+	home := t.TempDir()
+	original := userHomeDir
+	t.Cleanup(func() { userHomeDir = original })
+	userHomeDir = func() (string, error) { return home, nil }
+
+	_, err := ResolvePath("~/../../etc/passwd", t.TempDir())
+	if err == nil {
+		t.Fatalf("expected error for ~/ traversal, got nil")
+	}
+	if !strings.Contains(err.Error(), "escapes the home directory") {
+		t.Fatalf("expected home-escape error, got %q", err.Error())
+	}
+}
+
+// TestResolvePath_BareTildeRefusedAsDirectory: `~` expands to the home
+// DIRECTORY, and directories are refused by the openability rule.
+func TestResolvePath_BareTildeRefusedAsDirectory(t *testing.T) {
+	home := t.TempDir()
+	original := userHomeDir
+	t.Cleanup(func() { userHomeDir = original })
+	userHomeDir = func() (string, error) { return home, nil }
+
+	_, err := ResolvePath("~", t.TempDir())
+	if err == nil {
+		t.Fatalf("expected error for bare ~, got nil")
+	}
+	if !strings.Contains(err.Error(), "not a regular file") {
+		t.Fatalf("expected 'not a regular file' error, got %q", err.Error())
+	}
+}
+
+// TestResolvePath_HomeLookupFailureSurfaces: a userHomeDir failure must
+// surface as an error, not degrade into treating `~/x` as relative.
+func TestResolvePath_HomeLookupFailureSurfaces(t *testing.T) {
+	original := userHomeDir
+	t.Cleanup(func() { userHomeDir = original })
+	userHomeDir = func() (string, error) { return "", errors.New("no home in this env") }
+
+	_, err := ResolvePath("~/notes.md", t.TempDir())
+	if err == nil {
+		t.Fatalf("expected error when home lookup fails, got nil")
+	}
+	if !strings.Contains(err.Error(), "no home in this env") {
+		t.Fatalf("expected wrapped home-lookup error, got %q", err.Error())
+	}
+}
+
+// TestResolvePath_TildeUserFormJoinsAsWorkspaceRelative: `~user/...`
+// gets no passwd lookup — it falls through as an ordinary
+// workspace-relative name (real `~`-leading filenames exist, e.g.
+// Office `~$doc.docx` lock files).
+func TestResolvePath_TildeUserFormJoinsAsWorkspaceRelative(t *testing.T) {
+	ws := t.TempDir()
+	got, err := ResolvePath("~user/x.md", ws)
+	if err != nil {
+		t.Fatalf("ResolvePath: %v", err)
+	}
+	want := filepath.Join(ws, "~user", "x.md")
+	if got != want {
+		t.Fatalf("expected %q, got %q", want, got)
 	}
 }
 
@@ -555,31 +769,38 @@ func TestResolvePath_AbsoluteWithoutWorkspaceStillTrusted(t *testing.T) {
 	}
 }
 
-// TestResolvePath_RejectsSymlinkEscape covers the defense-in-depth
-// symlink check at the click-time editor boundary. The validator
-// already runs this check at extraction time; the click-time mirror
-// catches future bypasses where a path reaches OpenInEditor without
-// having gone through pathlinks.ExtractAndValidate.
-func TestResolvePath_RejectsSymlinkEscape(t *testing.T) {
+// TestResolvePath_SymlinkEscapeFollowsFileRule covers the symlink
+// interaction with the 2026-08-18 file-only carve-out: a
+// workspace-internal symlink whose target sits outside the workspace
+// no longer fails outright — it follows the same rule as any other
+// out-of-workspace target. Pointing at an existing regular file is
+// openable; pointing at a directory is refused.
+func TestResolvePath_SymlinkEscapeFollowsFileRule(t *testing.T) {
 	root := t.TempDir()
 	ws := filepath.Join(root, "ws")
 	if err := os.MkdirAll(ws, 0o755); err != nil {
 		t.Fatalf("mkdir ws: %v", err)
 	}
-	outside := filepath.Join(root, "outside.txt")
-	if err := os.WriteFile(outside, nil, 0o644); err != nil {
+	outsideFile := filepath.Join(root, "outside.txt")
+	if err := os.WriteFile(outsideFile, nil, 0o644); err != nil {
 		t.Fatalf("seed outside: %v", err)
 	}
-	link := filepath.Join(ws, "evil.md")
-	if err := os.Symlink(outside, link); err != nil {
+	fileLink := filepath.Join(ws, "to-file.md")
+	if err := os.Symlink(outsideFile, fileLink); err != nil {
 		t.Skipf("symlink unsupported in this test env: %v", err)
 	}
-	_, err := ResolvePath("evil.md", ws)
-	if err == nil {
-		t.Fatalf("expected symlink-escape rejection, got nil")
+	if _, err := ResolvePath("to-file.md", ws); err != nil {
+		t.Fatalf("symlink to outside regular file should be openable, got %v", err)
 	}
-	if !strings.Contains(err.Error(), "escapes workspace") {
-		t.Fatalf("expected 'escapes workspace' error, got %q", err.Error())
+
+	dirLink := filepath.Join(ws, "to-dir")
+	if err := os.Symlink(root, dirLink); err != nil {
+		t.Skipf("symlink unsupported in this test env: %v", err)
+	}
+	if _, err := ResolvePath("to-dir", ws); err == nil {
+		t.Fatalf("symlink to outside directory must be refused")
+	} else if !strings.Contains(err.Error(), "not a regular file") {
+		t.Fatalf("expected 'not a regular file' error, got %q", err.Error())
 	}
 }
 

@@ -16,7 +16,7 @@
 // source. If exact round-trip ever becomes a requirement, that is the
 // point to revisit (with a markdown library that exposes positions).
 
-import { PATH_LINK_HREF_PREFIX } from './pathLinkExtension';
+import { PATH_LINK_HREF_PREFIX, parsePathLinkHref } from './pathLinkExtension';
 
 type ListContext = {
   kind: 'ol' | 'ul';
@@ -191,11 +191,26 @@ function formatInlineCode(text: string): string {
 function serializeAnchor(el: HTMLElement, ctx: SerializeContext): string {
   const text = serializeChildren(el, ctx);
   const href = el.getAttribute('href');
-  // Path-link anchors emit `agent-overflow:open?path=...`. The visible
-  // text already IS the path; emitting `[path](agent-overflow:open?…)`
-  // would smuggle our internal scheme into the clipboard. Plain text
-  // is the truthful result for editor-open affordances.
-  if (href && href.startsWith(PATH_LINK_HREF_PREFIX)) return text;
+  // Path-link anchors emit `agent-overflow:open?path=...`. The internal
+  // scheme must never reach the clipboard, but the DESTINATION should:
+  // prose-linkified paths have visible text that already IS the path
+  // (plain text round-trips), while a rewritten markdown link
+  // (`[the sol draft](~/notes.md)`) has a label — dropping the href
+  // there would silently lose the destination on copy, so it re-emits
+  // as a markdown link whose target is the plain path.
+  if (href && href.startsWith(PATH_LINK_HREF_PREFIX)) {
+    const parsed = parsePathLinkHref(href);
+    if (!parsed) return text;
+    let dest = parsed.path;
+    if (parsed.line > 0) {
+      dest += `:${parsed.line}`;
+      if (parsed.col > 0) dest += `:${parsed.col}`;
+    }
+    // Both prose forms serialize their own destination as the visible
+    // text: bare as-is, backtick-wrapped through the code fence.
+    if (text === dest || text === formatInlineCode(dest)) return text;
+    return `[${escapeLinkText(text)}](${escapeLinkHref(dest)})`;
+  }
   if (!href || href === '#') return text;
   return `[${escapeLinkText(text)}](${escapeLinkHref(href)})`;
 }

@@ -71,6 +71,18 @@ describe('serializeRangeToMarkdown — inline', () => {
     expect(serializeRangeToMarkdown(selectAll(host))).toBe('see src/x.ts');
   });
 
+  it('re-emits a LABELED path-link anchor as [label](path) so copy keeps the destination', () => {
+    // A rewritten markdown link ([the draft](~/notes.md)) has visible
+    // text that is NOT the path. Collapsing it to plain text (the prose
+    // rule above) would silently lose the destination on copy; the
+    // serializer re-emits it as a markdown link targeting the PLAIN
+    // path — never the internal scheme.
+    const host = asMarkdownBody(
+      `<p>see <a href="${PATH_LINK_HREF_PREFIX}path=%7E%2Fnotes.md&line=12">the draft</a></p>`,
+    );
+    expect(serializeRangeToMarkdown(selectAll(host))).toBe('see [the draft](~/notes.md:12)');
+  });
+
   it('round-trips a path-link anchor wrapping a codespan back to `path` markdown', () => {
     // Wrapped-form path links render as `<a><code>src/x.ts</code></a>`.
     // The serializer must walk into the `<code>` child via

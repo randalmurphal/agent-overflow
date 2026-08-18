@@ -1,5 +1,6 @@
 <script lang="ts">
   import ChatMarkdown from '../chat/ChatMarkdown.svelte';
+  import { EMPTY_PATH_REFS } from '../../utils/pathLinkify';
   import type { ReviewThread } from '../../types/models';
   import type { CommentAnchor } from '../../stores/reviewPane.svelte';
   import { isImeComposingEvent } from '../../utils/imeComposition';
@@ -87,7 +88,7 @@
       {#each thread.comments as comment (`${comment.databaseID}:${comment.createdAt}`)}
         <div class="rounded border border-border-subtle bg-surface-1 px-2 py-1.5">
           <div class="mb-1 text-[0.6875rem] text-fg-muted">{comment.authorLogin} · {comment.createdAt}</div>
-          <ChatMarkdown source={comment.body} pathRefs={[]} />
+          <ChatMarkdown source={comment.body} pathRefs={EMPTY_PATH_REFS} />
         </div>
       {/each}
     </div>

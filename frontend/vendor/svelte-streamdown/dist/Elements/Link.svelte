@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { useStreamdown } from '../context.svelte.js';
-	import { isPathRelativeUrl, transformUrl } from '../utils/url.js';
+	import { transformUrl } from '../utils/url.js';
 	import Slot from './Slot.svelte';
 	import type { Tokens } from 'marked';
 	import type { Snippet } from 'svelte';
@@ -17,19 +17,26 @@
 		id: string;
 	} = $props();
 
-	const isRelativeUrl = $derived(isPathRelativeUrl(token.href));
-
 	const transformedUrl = $derived(
 		transformUrl(token.href, streamdown.allowedLinkPrefixes ?? [], streamdown.defaultOrigin)
 	);
 
-	// A schemeless relative reference (`docs/guide.md`, `../x`, `#frag`)
-	// is not a *blocked URL* — it is simply not navigable from here
-	// (common in PR/issue bodies, where such links are repo-relative).
-	// Render its text without the " [blocked]" tag; keep the tag for
-	// absolute URLs that were actually rejected (disallowed scheme or
-	// prefix). Network-path references (`//host/x`) name a real host,
-	// so they stay tagged.
+	// A schemeless reference (`docs/guide.md`, `../x`, `#frag`, and
+	// `/`-leading filesystem paths) is not a *blocked URL* — it is
+	// simply not navigable from here (common in PR/issue bodies, where
+	// such links are repo-relative). Render its text without the
+	// " [blocked]" tag; keep the tag for absolute URLs that were
+	// actually rejected (disallowed scheme or prefix). Network-path
+	// references (`//host/x`) name a real host, so they stay tagged.
+	//
+	// Upstream renders any `/`-leading href (isPathRelativeUrl) as a
+	// RAW anchor that bypasses transformUrl. That branch is removed
+	// here deliberately: in an SPA host a raw `/`-href is a same-tab
+	// top-level navigation onto the app origin — a 404 at best, an
+	// origin-isolation escape at worst. Hosts that want path-shaped
+	// hrefs to do something rewrite them to an allowlisted scheme
+	// during parsing (see the app's pathLinkExtension); anything still
+	// arriving here un-navigable renders as text.
 	const isSchemelessReference = $derived(
 		typeof token.href === 'string' &&
 			!/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(token.href) &&
@@ -37,7 +44,7 @@
 	);
 </script>
 
-{#if transformedUrl || token.href === 'streamdown:incomplete-link' || isRelativeUrl}
+{#if transformedUrl || token.href === 'streamdown:incomplete-link'}
 	<Slot
 		props={{
 			href: transformedUrl,
@@ -52,9 +59,9 @@
 		<a
 			data-streamdown-link={id}
 			class={streamdown.theme.link.base}
-			{...isRelativeUrl
-				? { href: token.href }
-				: { href: transformedUrl, target: '_blank', rel: 'noopener noreferrer' }}
+			href={transformedUrl}
+			target="_blank"
+			rel="noopener noreferrer"
 		>
 			{@render children()}
 		</a>
