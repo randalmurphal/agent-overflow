@@ -289,21 +289,32 @@ named `thinking` cannot inherit reasoning's hue or sort position.
 
 Collapsing a thread should compress its history, not blind the reader to the
 work in front of them. So a run whose collapse comes from a DEFAULT renders open
-while it is `live`: the default — the `activityRunDefault` setting, or the
-thread's collapse-all state — says how a run should sit once it has settled, and
-one still filling has not settled into anything yet.
+while it is the timeline's newest revealed run: the default — the
+`activityRunDefault` setting, or the thread's collapse-all state — says how a
+run should sit once the reader has moved past it, and the newest run is the one
+in front of them.
 
 Four facts, ranked once, in the registry
-(`ActivityRunIdentity.collapsedFor(runId, live)`):
+(`ActivityRunIdentity.collapsedFor(runId, atTail)`):
 
 1. **The reader's answer for this run** wins outright. Including against
-   liveness: somebody who collapses the run they are watching means now, and the
-   clip going away is the only evidence the click landed at all.
-2. **Liveness**: live renders open when nobody has answered — and rendering
-   open is RECORDED (`openedLive` on the entry), because it is a commitment
-   that outlives the turn.
-3. **The recorded hold.** A run that opened because it was live keeps
-   rendering open after it settles, until the timeline's auto-collapse gate
+   tail-ness: somebody who collapses the run they are watching means now, and
+   the clip going away is the only evidence the click landed at all.
+2. **Tail-ness**: the timeline's newest revealed run renders open when nobody
+   has answered — and rendering open is RECORDED (`openedLive` on the entry),
+   because it is a commitment that outlives the moment. Tail-ness rather than
+   the node's `live`, deliberately (2026-08-18): `live` goes false as soon as
+   the run's closing prose EXISTS, revealed or not, so a fast run whose next
+   section arrived behind the reveal gate before the run's first projection
+   pass was never once seen live — no hold was ever recorded, and the run was
+   born collapsed in front of the reader who watched it stream (the
+   sampled-liveness race). The revealed tail run is what the reader is
+   watching whether or not the wire has raced ahead, and the live run is
+   always the tail run, so the widening only ADDS holds. `node.live` itself
+   keeps the strict withheld-aware definition — the scroll controller and the
+   auto-collapse gate key on it, and widening IT is what flapped.
+3. **The recorded hold.** A run that opened as the newest keeps rendering
+   open after prose displaces it, until the timeline's auto-collapse gate
    releases it (below) or the reader answers directly.
 4. **The thread's collapse-all state**, then the setting behind it. Both are
    defaults — `setAllCollapsed` sets the thread's and DROPS per-run overrides,
@@ -349,10 +360,12 @@ applying the default is provably invisible and provably unwanted by nobody:
   window or scrolled up inside it (`windowAnchor`, the snapshot's `escaped`
   flag — registry facts precisely because the rows unmount), and has not
   explicitly expanded anything within it (`hasUserExpansionWithin`, below).
-- **No unaddressed failure.** A run holding an errored or killed tool call is
-  exempt until the reader deals with it — collapsing it would hide exactly
-  what the header's failure marker exists to keep visible. The exemption is
-  permanent-until-answered: an explicit collapse still wins.
+
+A failed member deliberately does NOT hold the run open (an earlier exemption,
+removed 2026-08-18): the collapsed chip's failure marker (`activityRunSummary`)
+keeps the failure visible either way, so pinning a whole run of history open
+because one command errored restated the chip at the cost of the compression
+the collapse exists for.
 
 Released, the run takes the defaults instantly — no animation, because by
 construction nobody can see it happen — and its inner position is forgotten
@@ -1004,7 +1017,7 @@ default window are feel-tuned on the 165Hz setup as with prior scroll work.
    states — and made the reader's collapse of the live run do nothing at all
    except rotate the chevron, because the clip they were trying to close was held
    open by the same rule that had drawn a collapsed chevron over it. The facts
-   are now ranked once, in the registry (`collapsedFor(runId, live)`), with the
+   are now ranked once, in the registry (`collapsedFor`), with the
    reader's answer for this run outranking liveness — the full current order,
    which delta 12 later extended with the recorded hold, is under "Four facts"
    above. That makes `collapsed` mean "renders without its clip" everywhere

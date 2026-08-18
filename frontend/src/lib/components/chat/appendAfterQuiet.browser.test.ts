@@ -377,10 +377,15 @@ describe('append after a quiet gap — the growth glides', () => {
  * The REAL auto-collapse gate runs in this project (IS_TEST keys on the
  * happy-dom marker, absent here), and left alone it would release the hold
  * itself the moment the run settles off-screen — quietly, before the staged
- * race. The errored bash pins it down: an unaddressed failure makes
- * `readerEngagedWith` refuse the run forever, while a staged transaction's
+ * race. A user expansion inside the run pins it down: an expanded member
+ * makes `readerEngagedWith` refuse the run, while a staged transaction's
  * DIRECT `releaseOpenedLive` still folds it — the engagement checks are
- * gate-side eligibility, not resolution inputs.
+ * gate-side eligibility, not resolution inputs. The expansion specifically,
+ * because the row OWNS the other two engagement facts while mounted: its
+ * anchor effect re-nulls an un-escaped window pin and its snapshot saves
+ * overwrite `escaped` every follow write, so neither survives the prose
+ * flush. (A failed member used to be the pin here, but failure no longer
+ * holds a run open — 2026-08-18.)
  */
 async function mountHeldRunFixture(
   threadId: string,
@@ -405,6 +410,12 @@ async function mountHeldRunFixture(
   const held = pane.activityRuns.openedLiveRunIds();
   expect(held, 'the live run must hold itself open').toHaveLength(1);
   const heldRunId = held[0];
+
+  // Engage the reader inside the run so the real gate refuses to release
+  // the hold on its own before the staged race (see the fixture doc above).
+  const pinItem = pane.getItemById('race-run-b');
+  expect(pinItem, 'the errored bash must be loaded to pin the hold').toBeDefined();
+  await pane.expansionStateFor(pinItem!).expand().catch(() => {});
 
   // One wire flush settles the run and grows prose past it, pushing the
   // run fully above the viewport (still mounted — the window buffer

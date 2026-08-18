@@ -236,19 +236,25 @@ Operational rules for this directory:
   registry-assigned `runId` — never by a member item id, which changes at
   both window edges.
 - **Collapse is resolved ONCE, by the registry, and `node.collapsed` is the whole
-  answer.** `ActivityRunIdentity.collapsedFor(runId, live)` ranks four facts:
-  a per-run answer from the reader wins outright; then liveness — a working run
-  renders open, and rendering open is RECORDED (`openedLive`); then that
-  recorded hold, which keeps a settled run open until the gate releases it;
-  then the thread's bulk state and the setting. Downstream, `collapsed` means
-  exactly "renders without its clip": the row's template, the structure
-  signature and
+  answer.** `ActivityRunIdentity.collapsedFor(runId, atTail)` ranks four facts:
+  a per-run answer from the reader wins outright; then tail-ness — the newest
+  revealed run renders open, and rendering open is RECORDED (`openedLive`);
+  then that recorded hold, which keeps a displaced run open until the gate
+  releases it; then the thread's bulk state and the setting. Tail-ness, NOT
+  liveness, on purpose: `live` goes false the moment the run's closing prose
+  exists behind the reveal gate, so a fast run whose next section arrived
+  before its first projection pass was never once seen live, recorded no hold,
+  and was born collapsed (the sampled-liveness race, 2026-08-18). The tail run
+  is what the reader watched stream whether or not the wire has raced ahead,
+  and it is a superset of the live run by construction. Downstream,
+  `collapsed` means exactly "renders without its clip": the row's template,
+  the structure signature and
   the row estimate all read that one field, and none of them looks at `live`.
   Do not re-introduce a `!collapsed || live` predicate at a consumer — that is
   what made the reader's collapse of the live run inert, moving the chevron and
-  nothing else, and it is why the registry now takes liveness as an input to the
-  FALLBACK instead of consumers treating it as an override.
-- **A collapse set by the reader is instant and beats liveness AND the hold.**
+  nothing else, and it is why the registry now takes tail-ness as an input to
+  the FALLBACK instead of consumers treating it as an override.
+- **A collapse set by the reader is instant and beats tail-ness AND the hold.**
   `setCollapsed(runId, target)` takes
   the target state rather than toggling, because only the row knows the state on
   screen — a registry-side toggle would invert its own settled answer and hand
@@ -264,7 +270,9 @@ Operational rules for this directory:
   releases a hold only when the run is fully outside the viewport by a margin,
   more than a viewport behind the TAIL (distance from the tail, not
   viewport-exit — a reader who scrolls up and back must find the latest runs
-  as they left them), with nothing inside engaged and no unaddressed failure.
+  as they left them), with nothing inside engaged. A failed member does NOT
+  hold the run open (removed 2026-08-18) — the collapsed chip's failure
+  marker already carries it.
   Releases batch through the registry's `releaseOpenedLive(runIds)`, whose
   ONE `withViewportBottomHeld` transaction wraps the whole batch — and the
   gate must NEVER run while `autoScrollInFlight()` (spring active or a

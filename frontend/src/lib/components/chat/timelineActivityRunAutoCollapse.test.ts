@@ -297,7 +297,10 @@ describe('timelineActivityRunAutoCollapse', () => {
     expect(run.collapsed).toBe(true);
   });
 
-  it('never hides a failure the reader has not addressed', async () => {
+  it('releases a run holding a failure — the chip carries the failure marker', async () => {
+    // The failure hold was removed (2026-08-18): the collapsed chip's summary
+    // already renders a failure marker (`activityRunSummary`), so one errored
+    // command must not pin a viewport of history open in normal operation.
     const h = harness();
     const run = pinnedPastSettledRun(h);
     h.items.set('t1', makeItem({ id: 't1', kind: 'tool_call', status: 'errored' }));
@@ -305,7 +308,7 @@ describe('timelineActivityRunAutoCollapse', () => {
     await h.sweep();
     h.project();
 
-    expect(run.collapsed).toBe(false);
+    expect(run.collapsed).toBe(true);
   });
 
   it('does nothing while the scroller is unmeasured', async () => {

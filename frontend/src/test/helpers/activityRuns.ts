@@ -2,7 +2,7 @@
 // identity/collapse suite and the summary-signal suite drive the registry
 // through ONE description of a projection pass — two copies would drift,
 // and the pass order (identity and window per run, then collapse once
-// liveness is known) is exactly what these tests are pinning.
+// the tail is known) is exactly what these tests are pinning.
 
 import type { ActivityRunResolution } from '../../lib/utils/activityRunGrouping';
 import { createThreadActivityRuns } from '../../lib/stores/threadActivityRuns.svelte';
@@ -38,16 +38,16 @@ export type RunSpec = (string | string[])[];
 
 /**
  * One projection pass, resolved in the order `groupActivityRuns` resolves it:
- * identity and window per run, then collapse once liveness is known.
+ * identity and window per run, then collapse once the tail is known.
  *
- * `liveIndex` names the run holding the thread's tail — at most one can, and
- * `-1` means the pass has none (a thread whose last row is prose).
+ * `tailIndex` names the run at the window's revealed tail — at most one can
+ * be, and `-1` means the pass has none (a window whose last row is prose).
  */
 export function pass(
   runs: ActivityRunRegistry,
   specs: RunSpec[],
   threadId = 'thread-1',
-  liveIndex = -1,
+  tailIndex = -1,
 ): (ActivityRunResolution & { collapsed: boolean })[] {
   runs.beginPass();
   const resolved = specs.map((spec) =>
@@ -55,7 +55,7 @@ export function pass(
   );
   const out = resolved.map((run, index) => ({
     ...run,
-    collapsed: runs.collapsedFor(run.runId, index === liveIndex),
+    collapsed: runs.collapsedFor(run.runId, index === tailIndex),
   }));
   runs.endPass();
   return out;

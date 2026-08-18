@@ -1,5 +1,6 @@
-// Auto-collapse for settled activity runs. A run that opened because it was
-// live keeps rendering open after it settles (`openedLive` in the pane's run
+// Auto-collapse for settled activity runs. A run that opened as the
+// timeline's newest activity keeps rendering open after prose displaces it
+// (`openedLive` in the pane's run
 // registry); this gate releases that hold once doing so is invisible and
 // unwanted by nobody — off-screen, well behind the tail, nothing the reader
 // engaged with inside. Released, the run takes the thread's defaults, which
@@ -33,7 +34,6 @@ import {
   type TimelineNode,
 } from '../../utils/subagentGrouping';
 import { activityRunOutOfSight } from '../../utils/activityRunAutoCollapse';
-import { activityRunHasFailure } from './activityRunSummary';
 
 export interface TimelineActivityRunAutoCollapseOptions {
   getPane(): ThreadPane;
@@ -44,10 +44,14 @@ export interface TimelineActivityRunAutoCollapseOptions {
 /**
  * The reader is engaged with this run's inside, so it must not close under
  * them wherever it sits: they pinned its window or scrolled up within it
- * (facts the registry keeps precisely because rows unmount), they expanded
- * something in it, or it holds a failure they have not addressed. Failure is
- * permanent-until-answered by design (the Buildkite rule): an errored run
- * the reader never saw must still be open when they scroll back to it.
+ * (facts the registry keeps precisely because rows unmount), or they expanded
+ * something in it.
+ *
+ * A failed member deliberately does NOT hold the run open (removed
+ * 2026-08-18): the collapsed chip's failure marker (`activityRunSummary`)
+ * already keeps the failure visible, so pinning a whole viewport of history
+ * open because one command errored punished ordinary operation to restate
+ * what the chip says.
  */
 function readerEngagedWith(pane: ThreadPane, run: ActivityRunNode): boolean {
   const runs = pane.activityRuns;
@@ -56,10 +60,8 @@ function readerEngagedWith(pane: ThreadPane, run: ActivityRunNode): boolean {
   // Rendered scope, not `memberItemIds`: identity membership deliberately
   // stops at group parents, but a reader's expansion can sit on any row a
   // group renders — a wait group's children, an opened subagent card's
-  // transcript. Failure keeps the membership scope on purpose; it matches
-  // what the collapsed chip summarizes (`activityRunSummary`).
-  if (pane.hasUserExpansionWithin(renderedItemIdsWithin(run.children))) return true;
-  return activityRunHasFailure(run.memberItemIds, pane.getItemById);
+  // transcript.
+  return pane.hasUserExpansionWithin(renderedItemIdsWithin(run.children));
 }
 
 export function createTimelineActivityRunAutoCollapse(

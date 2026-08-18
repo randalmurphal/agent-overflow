@@ -365,12 +365,13 @@ describe('identity migration', () => {
     expect(run(project([tool('t1', 'Bash')], { identity: id }), 0).collapsed).toBe(true);
   });
 
-  it('resolves collapse AFTER liveness, so a working run can render open', () => {
-    // Ordering, not just ranking. The registry needs `live` to answer for a run
-    // nobody has collapsed, and a run cannot tell from its own members whether
-    // anything follows it — so collapse is stamped in a second sweep, once the
-    // tail is known. Resolved in the first sweep instead, every run would look
-    // settled: the live one would close on the spot and nothing would ever fold.
+  it('resolves collapse AFTER the tail is known, so a working run can render open', () => {
+    // Ordering, not just ranking. The registry needs tail-ness to answer for a
+    // run nobody has collapsed, and a run cannot tell from its own members
+    // whether anything follows it — so collapse is stamped in a second sweep,
+    // once the tail is known. Resolved in the first sweep instead, every run
+    // would look settled: the working one would close on the spot and nothing
+    // would ever fold.
     const id = createThreadActivityRuns({
       defaultCollapsed: () => true,
       windowRows: () => 30,
@@ -382,6 +383,29 @@ describe('identity migration', () => {
     expect(run(nodes, 0).collapsed).toBe(true);
     expect(run(nodes, 2).live).toBe(true);
     expect(run(nodes, 2).collapsed).toBe(false);
+  });
+
+  it('opens and holds the tail run even when withheld prose has ended its liveness', () => {
+    // The sampled-liveness race (2026-08-18): the wire can race the reveal
+    // gate, so a fast run's next section exists behind the gate before the
+    // run's FIRST projection pass — no pass ever sees the run live, and a
+    // hold keyed on `live` was never recorded, so the run was born collapsed
+    // in front of the reader who watched it stream. The hold is keyed on
+    // tail-ness instead: the newest revealed run shows its work.
+    const id = createThreadActivityRuns({
+      defaultCollapsed: () => true,
+      windowRows: () => 30,
+      scrollController: () => null,
+    });
+    const first = project([tool('t1', 'Bash')], { identity: id, withheld: [prose('p1')] });
+    expect(run(first, 0).live).toBe(false);
+    expect(run(first, 0).collapsed).toBe(false);
+    expect(id.openedLiveRunIds()).toEqual([run(first, 0).runId]);
+
+    // The prose reveals and displaces the run from the tail; the recorded
+    // hold keeps it open until the auto-collapse gate releases it.
+    const revealed = project([tool('t1', 'Bash'), prose('p1')], { identity: id });
+    expect(run(revealed, 0).collapsed).toBe(false);
   });
 
   it('carries a collapse override across a backfill that re-keys nothing', () => {

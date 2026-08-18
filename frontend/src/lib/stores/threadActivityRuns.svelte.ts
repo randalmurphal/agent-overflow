@@ -77,9 +77,9 @@ export interface ThreadActivityRuns extends ActivityRunIdentity {
    *
    * Takes the target state rather than toggling, because the caller is the only
    * one who knows the state being toggled FROM: a run with no override renders
-   * expanded while it is live regardless of the defaults (see `collapsedFor`),
-   * so a registry-side toggle would read the settled answer and hand back the
-   * state the reader is already looking at.
+   * expanded while it is the newest revealed run regardless of the defaults
+   * (see `collapsedFor`), so a registry-side toggle would read the settled
+   * answer and hand back the state the reader is already looking at.
    *
    * The write runs inside `withViewportBottomHeld` (the reader ASKED for this
    * height change, so the delta opens upward, instantly, over rows they are
@@ -295,11 +295,13 @@ interface RunEntry {
    */
   clipOpen: boolean;
   /**
-   * The run rendered open because it was LIVE, with nobody having answered
-   * for it — recorded by `collapsedFor` at the moment it resolves that way.
+   * The run rendered open because it was the timeline's newest revealed
+   * activity — live, or with its closing prose still behind the reveal gate —
+   * with nobody having answered for it. Recorded by `collapsedFor` at the
+   * moment it resolves that way.
    *
    * This is what keeps a settled run from snapping shut the instant its
-   * closing prose arrives: the flag outlives liveness, so the run keeps
+   * closing prose arrives: the flag outlives tail-ness, so the run keeps
    * rendering open until the timeline's auto-collapse gate releases it
    * (`releaseOpenedLive`) once the reader is provably elsewhere — or until
    * the reader answers directly (`setCollapsed` / `setAllCollapsed`), which
@@ -716,9 +718,9 @@ export function createThreadActivityRuns(
     return bulkCollapsed ?? options.defaultCollapsed();
   }
 
-  function collapsedFor(runId: string, live: boolean): boolean {
+  function collapsedFor(runId: string, atTail: boolean): boolean {
     const entry = entries.get(runId);
-    const collapsed = resolveCollapsed(entry, live);
+    const collapsed = resolveCollapsed(entry, atTail);
     // The resolved answer IS clip presence — the row renders its clip from
     // exactly this — and only this resolution sees all three inputs, so it
     // records its own answer rather than having the row report back what it
@@ -727,20 +729,24 @@ export function createThreadActivityRuns(
     return collapsed;
   }
 
-  function resolveCollapsed(entry: RunEntry | undefined, live: boolean): boolean {
-    // An answer about THIS run beats everything, including liveness. A reader
+  function resolveCollapsed(entry: RunEntry | undefined, atTail: boolean): boolean {
+    // An answer about THIS run beats everything, including tail-ness. A reader
     // who collapses the run they are watching means now, not when it finishes —
     // the clip closing is the only evidence the click did anything.
     const override = entry?.collapsed;
     if (override !== null && override !== undefined) return override;
-    // Nobody has answered for it, so a working run shows its work — recorded,
-    // because rendering open is a commitment that outlives the turn: snapping
-    // shut on the exact frame the run settles would remove a viewport of
-    // content in front of whoever was watching it stream. This is the whole
-    // reason the parameter exists: the registry cannot know liveness, which is
-    // a claim about items it never reads, and it is deliberately an input to
-    // the FALLBACK only.
-    if (live) {
+    // Nobody has answered for it, and this is the timeline's newest revealed
+    // run — it shows its work, recorded, because rendering open is a
+    // commitment that outlives the moment: snapping shut on the exact frame
+    // the run settles (or on its very FIRST render, when the wire raced the
+    // reveal and the closing prose arrived before the run's first projection
+    // pass — the sampled-liveness race, 2026-08-18) would hide a viewport of
+    // content the reader was watching stream. This is the whole reason the
+    // parameter exists: the registry cannot know where the run sits, which is
+    // a claim about nodes it never reads, and it is deliberately an input to
+    // the FALLBACK only. The caller states tail-ness rather than liveness on
+    // purpose — see `ActivityRunIdentity.collapsedFor`.
+    if (atTail) {
       if (entry) entry.openedLive = true;
       return false;
     }

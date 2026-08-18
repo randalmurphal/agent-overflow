@@ -1,15 +1,16 @@
 // The geometric half of activity-run auto-collapse: is this settled run far
 // enough from the reader that collapsing it instantly cannot be seen?
 //
-// A run that opened because it was live keeps rendering open after it
-// settles (`openedLive` in stores/threadActivityRuns.svelte.ts) — snapping
+// A run that opened as the timeline's newest activity keeps rendering open
+// after prose displaces it (`openedLive` in
+// stores/threadActivityRuns.svelte.ts) — snapping
 // shut on the settle frame would remove a viewport of content in front of
 // whoever watched it stream, and animating the removal was tried and
 // rejected: no physics makes a full-viewport height change pleasant while
 // the reader is looking at it. So the collapse is not softened, it is
 // SCHEDULED — deferred until it is provably invisible, then applied
 // instantly. This predicate is the "provably invisible" part; the reader
-// half (nothing expanded inside, nothing pinned, no failure to address)
+// half (nothing expanded inside, nothing pinned)
 // lives with the gate in components/chat/timelineActivityRunAutoCollapse.ts,
 // because it reads registries a pure function should not.
 //

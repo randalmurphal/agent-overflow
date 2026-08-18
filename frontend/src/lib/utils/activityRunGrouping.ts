@@ -105,13 +105,24 @@ export interface ActivityRunIdentity {
   /**
    * Whether the run renders without its clip.
    *
-   * Separate from `resolve` because it needs `live`, and liveness is only known
+   * Separate from `resolve` because it needs `atTail`, which is only known
    * once every run in the pass exists — a run cannot tell from its own members
    * whether anything follows it. The registry owns the rule (a per-run answer,
-   * then the thread's defaults, with a live run showing its work when nobody has
-   * answered); this pass owns the fact it needs.
+   * then the thread's defaults, with the newest run showing its work when
+   * nobody has answered); this pass owns the fact it needs.
+   *
+   * `atTail` is deliberately WIDER than the node's `live`. The open-hold the
+   * registry records from it (`openedLive`) is a claim about the READER — the
+   * newest revealed run is the one they watched stream — and that stays true
+   * while the run's closing prose is still behind the reveal gate, which is
+   * exactly when `live` goes false. Keying the hold on `live` lost runs to a
+   * sampling race: a fast run whose next section arrived before the run's
+   * first projection pass was never once seen live, recorded no hold, and was
+   * born collapsed (2026-08-18). Tail-ness is a superset of liveness by
+   * construction (the live run is always the tail run), so nothing that
+   * opened under the old rule closes under this one.
    */
-  collapsedFor(runId: string, live: boolean): boolean;
+  collapsedFor(runId: string, atTail: boolean): boolean;
   endPass(): void;
 }
 
@@ -273,12 +284,18 @@ export function groupActivityRuns(
     tail.live = options.withheld.every((node) => isRunMember(node, options.getItem));
   }
 
-  // Then collapse, which reads the liveness just stamped. Every run rather than
-  // only the tail: the rule is one rule, and a second path for the runs where
-  // `live` is false would be a copy of it that could disagree.
+  // Then collapse. Its input is TAIL-NESS, not the liveness just stamped: the
+  // open-hold `collapsedFor` records is about the reader, and the newest
+  // revealed run is what they watched stream whether or not its closing prose
+  // has already arrived behind the gate (see `collapsedFor`'s declaration for
+  // the sampling race that keying on `live` caused). `node.live` itself stays
+  // strict — the scroll controller and the auto-collapse gate key on it, and
+  // widening IT is what flapped (see `withheld`). Every run is resolved
+  // rather than only the tail: the rule is one rule, and a second path for
+  // the runs that are not the tail would be a copy of it that could disagree.
   for (const node of out) {
     if (node.kind !== 'activity_run') continue;
-    node.collapsed = options.identity.collapsedFor(node.runId, node.live);
+    node.collapsed = options.identity.collapsedFor(node.runId, node === tail);
   }
 
   options.identity.endPass();
