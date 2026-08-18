@@ -257,6 +257,23 @@ func validateSettings(current Settings) (Settings, error) {
 		return Settings{}, err
 	}
 
+	current.ClaudePromptOverrides, err = validatePromptOverrides("claudePromptOverrides", current.ClaudePromptOverrides)
+	if err != nil {
+		return Settings{}, err
+	}
+	current.CodexPromptOverrides, err = validatePromptOverrides("codexPromptOverrides", current.CodexPromptOverrides)
+	if err != nil {
+		return Settings{}, err
+	}
+	current.ClaudeDisabledTools, err = validateDisabledTools("claudeDisabledTools", current.ClaudeDisabledTools)
+	if err != nil {
+		return Settings{}, err
+	}
+	current.CodexDisabledTools, err = validateDisabledTools("codexDisabledTools", current.CodexDisabledTools)
+	if err != nil {
+		return Settings{}, err
+	}
+
 	return current, nil
 }
 
@@ -385,6 +402,10 @@ func sanitizeLoadedSettings(current Settings) Settings {
 	)
 	current.ClaudeCustomEnv = sanitizeProviderEnvVars("claude", current.ClaudeCustomEnv)
 	current.CodexCustomEnv = sanitizeProviderEnvVars("codex", current.CodexCustomEnv)
+	current.ClaudePromptOverrides = sanitizePromptOverrides("claudePromptOverrides", current.ClaudePromptOverrides)
+	current.CodexPromptOverrides = sanitizePromptOverrides("codexPromptOverrides", current.CodexPromptOverrides)
+	current.ClaudeDisabledTools = sanitizeDisabledTools("claudeDisabledTools", current.ClaudeDisabledTools)
+	current.CodexDisabledTools = sanitizeDisabledTools("codexDisabledTools", current.CodexDisabledTools)
 	return current
 }
 
@@ -555,11 +576,7 @@ func sanitizeCommitMessageStyleCustom(value string) string {
 		"settings: commitMessageStyleCustom over %d bytes, truncating",
 		maxCommitMessageStyleCustomLen,
 	)
-	cut := trimmed[:maxCommitMessageStyleCustomLen]
-	for len(cut) > 0 && !utf8.ValidString(cut) {
-		cut = cut[:len(cut)-1]
-	}
-	return cut
+	return truncateRuneSafe(trimmed, maxCommitMessageStyleCustomLen)
 }
 
 func allowedTextGenerationEfforts(provider string) map[string]struct{} {
@@ -841,6 +858,34 @@ func dedupeTrimmed(values []string, limit int) []string {
 		return nil
 	}
 	return out
+}
+
+// truncateRuneSafe cuts s to at most maxBytes, never through the middle of
+// a rune AT THE CUT POINT. It is a length bound, not a sanitizer: bytes
+// before the cut are passed through exactly as stored, including invalid
+// ones. Validating the whole prefix instead would let a single stray byte
+// anywhere in a hand-edited value collapse it to nothing.
+func truncateRuneSafe(s string, maxBytes int) string {
+	if len(s) <= maxBytes {
+		return s
+	}
+	cut := s[:maxBytes]
+	if utf8.RuneStart(s[maxBytes]) {
+		// The next byte begins a rune, so the cut already fell on a
+		// boundary — the common case, and the only one for ASCII.
+		return cut
+	}
+	// s[maxBytes] continues a rune that started inside cut. Drop back past
+	// this rune's continuation bytes AND its start byte; a rune is at most
+	// utf8.UTFMax bytes, so that is a bounded walk, not a search.
+	for i := 0; i < utf8.UTFMax-1 && len(cut) > 0; i++ {
+		last := cut[len(cut)-1]
+		cut = cut[:len(cut)-1]
+		if utf8.RuneStart(last) {
+			break
+		}
+	}
+	return cut
 }
 
 func joinAllowedValues(values map[string]struct{}) string {

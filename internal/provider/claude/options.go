@@ -3,7 +3,10 @@ package claude
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"strconv"
+	"strings"
+	"unicode"
 
 	"agent-overflow/internal/provider"
 )
@@ -85,7 +88,7 @@ func ConfigFromOptions(opts provider.SessionOptions) Config {
 		ReasoningEffort:    claudeEffortForModel(model, opts.ReasoningEffort),
 		FastMode:           claudeFastMode(model, opts.FastMode),
 		PermissionFlags:    claudePermissionFlags(opts.RuntimeMode),
-		DisallowedTools:    claudeDisallowedTools(opts.RuntimeMode),
+		DisallowedTools:    mergeDisallowedTools(claudeDisallowedTools(opts.RuntimeMode), opts.DisabledTools),
 		BasePermissionMode: claudeBasePermissionMode(opts.RuntimeMode),
 		InteractionMode:    opts.Mode,
 		AutoCompactPercent: autoCompactPercent,
@@ -138,6 +141,73 @@ func claudeDisallowedTools(mode provider.RuntimeMode) []string {
 		return nil
 	}
 	return append([]string(nil), claudeReadOnlyDisallowedTools...)
+}
+
+// mergeDisallowedTools unions the runtime-mode strips with the user's
+// settings-level list. Mode entries come first and the user's follow in
+// their configured order, deduped — the CLI takes one `--disallowedTools`
+// flag per name, and a stable order is what keeps PlanLiveUpdate's
+// equality check (and the argv it produces) from flapping between two
+// spellings of the same set.
+//
+// Only the headless transport has a mode strip to union in; claudetui
+// runs the settings list alone through SanitizeDisallowedTools, because
+// Capabilities.EnforcesRuntimeMode is false there and every tier must stay
+// inert by construction.
+func mergeDisallowedTools(modeTools, settingsTools []string) []string {
+	if len(settingsTools) == 0 {
+		return modeTools
+	}
+	return SanitizeDisallowedTools(append(append([]string(nil), modeTools...), settingsTools...))
+}
+
+// SanitizeDisallowedTools is the argv boundary for `--disallowedTools`
+// names: it trims, drops anything that is not ONE safe CLI argument (with
+// a log line naming the reason), and dedupes while preserving order.
+// Returns nil when nothing survives, so callers can compare against a nil
+// Config field without a length special-case.
+//
+// Names are re-validated here rather than trusted. Settings validation is
+// the primary gate and the one that reports the problem to the user, but
+// this is where the value becomes argv: a name with whitespace becomes two
+// flag arguments and a name starting with `-` is parsed as a FLAG, which
+// turns a bad tool name into an unpredictable CLI invocation. Doing it here
+// makes that structurally impossible for any caller — a future one that
+// builds Config directly included — instead of leaving the guarantee in
+// caller discipline.
+//
+// Exported because both Claude transports need exactly this pass and a
+// second copy would be one edit away from disagreeing: headless folds it
+// into mergeDisallowedTools, and claudetui.ConfigFromOptions calls it
+// directly on the settings list.
+func SanitizeDisallowedTools(tools []string) []string {
+	if len(tools) == 0 {
+		return nil
+	}
+	kept := make([]string, 0, len(tools))
+	seen := make(map[string]struct{}, len(tools))
+	for _, tool := range tools {
+		trimmed := strings.TrimSpace(tool)
+		switch {
+		case trimmed == "":
+			continue
+		case strings.ContainsFunc(trimmed, unicode.IsSpace):
+			log.Printf("claude: dropping disallowed-tool name %q — a name containing whitespace is not one CLI argument", tool)
+			continue
+		case strings.HasPrefix(trimmed, "-"):
+			log.Printf("claude: dropping disallowed-tool name %q — a leading dash parses as a CLI flag", tool)
+			continue
+		}
+		if _, dup := seen[trimmed]; dup {
+			continue
+		}
+		seen[trimmed] = struct{}{}
+		kept = append(kept, trimmed)
+	}
+	if len(kept) == 0 {
+		return nil
+	}
+	return kept
 }
 
 // claudeBasePermissionMode maps a RuntimeMode to Claude's permission-mode

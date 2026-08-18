@@ -74,6 +74,57 @@ export class NetworkSettings {
 }
 
 /**
+ * PromptOverride replaces a provider's built-in system prompt for the
+ * models it names. Zero value is inert: a disabled entry, or one with no
+ * models, never matches.
+ */
+export class PromptOverride {
+    /**
+     * Enabled gates the entry without the user having to delete it.
+     */
+    "enabled": boolean;
+
+    /**
+     * Models holds normalized model slugs WITHOUT a context-tier marker
+     * (`claude-opus-5`, not `claude-opus-5[1m]`). Matching normalizes both
+     * sides, so a marker that slips in still compares equal.
+     */
+    "models": string[];
+
+    /**
+     * Prompt is the replacement text, placeholders unrendered.
+     */
+    "prompt": string;
+
+    /** Creates a new PromptOverride instance. */
+    constructor($$source: Partial<PromptOverride> = {}) {
+        if (!("enabled" in $$source)) {
+            this["enabled"] = false;
+        }
+        if (!("models" in $$source)) {
+            this["models"] = [];
+        }
+        if (!("prompt" in $$source)) {
+            this["prompt"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new PromptOverride instance from a string or object.
+     */
+    static createFrom($$source: any = {}): PromptOverride {
+        const $$createField1_0 = $$createType0;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("models" in $$parsedSource) {
+            $$parsedSource["models"] = $$createField1_0($$parsedSource["models"]);
+        }
+        return new PromptOverride($$parsedSource as Partial<PromptOverride>);
+    }
+}
+
+/**
  * ProviderEnvVar is one user-defined environment variable applied to the
  * provider subprocesses Agent Overflow spawns for that provider — the chat
  * session, the account/identity/rate-limit probes, and the text-generation
@@ -346,6 +397,41 @@ export class Settings {
      */
     "claudeCustomEnv"?: ProviderEnvVar[];
     "codexCustomEnv"?: ProviderEnvVar[];
+
+    /**
+     * ClaudePromptOverrides / CodexPromptOverrides replace the provider's
+     * own system prompt for the models each entry names — Claude via
+     * `--system-prompt`, Codex via `baseInstructions`. Read at session
+     * spawn, so an edit reaches the next session started and never
+     * disturbs a running one. First ENABLED entry whose Models contains
+     * the session's normalized model slug wins; the list is per provider
+     * because the default prompt is model-shaped on both sides.
+     * 
+     * Prompt text may carry `{{...}}` placeholders (workdir, git snapshot,
+     * platform, model, Claude memory dir) rendered at spawn — see
+     * internal/promptoverride, which owns both the match and the render.
+     */
+    "claudePromptOverrides"?: PromptOverride[];
+    "codexPromptOverrides"?: PromptOverride[];
+
+    /**
+     * ClaudeDisabledTools / CodexDisabledTools remove built-in tool
+     * schemas from the model's context. Provider-wide (not model-scoped)
+     * and spawn-only on both sides.
+     * 
+     * The two lists speak different vocabularies on purpose. Claude has a
+     * flat `--disallowedTools` deny list, so entries are RAW TOOL NAMES
+     * ("Workflow", "WebSearch") and an unknown name is harmless. Codex has
+     * no deny list at all — each entry is a CURATED TOGGLE ID that maps to
+     * one or more per-thread config keys (see
+     * internal/provider/codex.DisabledToolConfigOverrides, which owns the
+     * table and skips ids it does not know). Neither list is enum-validated
+     * here: Claude's vocabulary is the CLI's, and duplicating Codex's
+     * toggle table into this package (which must not import
+     * internal/provider) would give it a second place to drift.
+     */
+    "claudeDisabledTools"?: string[];
+    "codexDisabledTools"?: string[];
 
     /**
      * DefaultThreadEnvMode seeds the workspace mode for new draft threads.
@@ -701,12 +787,16 @@ export class Settings {
         const $$createField18_0 = $$createType0;
         const $$createField19_0 = $$createType2;
         const $$createField20_0 = $$createType2;
-        const $$createField38_0 = $$createType3;
-        const $$createField39_0 = $$createType4;
-        const $$createField40_0 = $$createType5;
-        const $$createField42_0 = $$createType0;
-        const $$createField43_0 = $$createType7;
-        const $$createField47_0 = $$createType8;
+        const $$createField21_0 = $$createType4;
+        const $$createField22_0 = $$createType4;
+        const $$createField23_0 = $$createType0;
+        const $$createField24_0 = $$createType0;
+        const $$createField42_0 = $$createType5;
+        const $$createField43_0 = $$createType6;
+        const $$createField44_0 = $$createType7;
+        const $$createField46_0 = $$createType0;
+        const $$createField47_0 = $$createType9;
+        const $$createField51_0 = $$createType10;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("recentWorkspaces" in $$parsedSource) {
             $$parsedSource["recentWorkspaces"] = $$createField6_0($$parsedSource["recentWorkspaces"]);
@@ -723,23 +813,35 @@ export class Settings {
         if ("codexCustomEnv" in $$parsedSource) {
             $$parsedSource["codexCustomEnv"] = $$createField20_0($$parsedSource["codexCustomEnv"]);
         }
+        if ("claudePromptOverrides" in $$parsedSource) {
+            $$parsedSource["claudePromptOverrides"] = $$createField21_0($$parsedSource["claudePromptOverrides"]);
+        }
+        if ("codexPromptOverrides" in $$parsedSource) {
+            $$parsedSource["codexPromptOverrides"] = $$createField22_0($$parsedSource["codexPromptOverrides"]);
+        }
+        if ("claudeDisabledTools" in $$parsedSource) {
+            $$parsedSource["claudeDisabledTools"] = $$createField23_0($$parsedSource["claudeDisabledTools"]);
+        }
+        if ("codexDisabledTools" in $$parsedSource) {
+            $$parsedSource["codexDisabledTools"] = $$createField24_0($$parsedSource["codexDisabledTools"]);
+        }
         if ("network" in $$parsedSource) {
-            $$parsedSource["network"] = $$createField38_0($$parsedSource["network"]);
+            $$parsedSource["network"] = $$createField42_0($$parsedSource["network"]);
         }
         if ("editor" in $$parsedSource) {
-            $$parsedSource["editor"] = $$createField39_0($$parsedSource["editor"]);
+            $$parsedSource["editor"] = $$createField43_0($$parsedSource["editor"]);
         }
         if ("retention" in $$parsedSource) {
-            $$parsedSource["retention"] = $$createField40_0($$parsedSource["retention"]);
+            $$parsedSource["retention"] = $$createField44_0($$parsedSource["retention"]);
         }
         if ("gitlabSelfHostedHosts" in $$parsedSource) {
-            $$parsedSource["gitlabSelfHostedHosts"] = $$createField42_0($$parsedSource["gitlabSelfHostedHosts"]);
+            $$parsedSource["gitlabSelfHostedHosts"] = $$createField46_0($$parsedSource["gitlabSelfHostedHosts"]);
         }
         if ("remoteEndpoints" in $$parsedSource) {
-            $$parsedSource["remoteEndpoints"] = $$createField43_0($$parsedSource["remoteEndpoints"]);
+            $$parsedSource["remoteEndpoints"] = $$createField47_0($$parsedSource["remoteEndpoints"]);
         }
         if ("window" in $$parsedSource) {
-            $$parsedSource["window"] = $$createField47_0($$parsedSource["window"]);
+            $$parsedSource["window"] = $$createField51_0($$parsedSource["window"]);
         }
         return new Settings($$parsedSource as Partial<Settings>);
     }
@@ -749,9 +851,11 @@ export class Settings {
 const $$createType0 = $Create.Array($Create.Any);
 const $$createType1 = ProviderEnvVar.createFrom;
 const $$createType2 = $Create.Array($$createType1);
-const $$createType3 = NetworkSettings.createFrom;
-const $$createType4 = EditorSettings.createFrom;
-const $$createType5 = RetentionSettings.createFrom;
-const $$createType6 = RemoteEndpoint.createFrom;
-const $$createType7 = $Create.Array($$createType6);
-const $$createType8 = windowgeom$0.Geometry.createFrom;
+const $$createType3 = PromptOverride.createFrom;
+const $$createType4 = $Create.Array($$createType3);
+const $$createType5 = NetworkSettings.createFrom;
+const $$createType6 = EditorSettings.createFrom;
+const $$createType7 = RetentionSettings.createFrom;
+const $$createType8 = RemoteEndpoint.createFrom;
+const $$createType9 = $Create.Array($$createType8);
+const $$createType10 = windowgeom$0.Geometry.createFrom;

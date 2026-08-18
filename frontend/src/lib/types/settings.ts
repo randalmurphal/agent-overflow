@@ -72,6 +72,21 @@ export interface ProviderEnvVar {
   sensitive?: boolean;
 }
 
+/**
+ * One system-prompt replacement entry, mirroring settings.PromptOverride.
+ *
+ * `models` holds normalized model slugs (no context-tier marker) the entry
+ * applies to; the backend picks the FIRST enabled entry whose `models`
+ * contains the session's model, so order is meaningful. `prompt` may embed
+ * the `{{TOKEN}}` placeholders the backend renders at spawn — unknown text
+ * inside braces stays literal.
+ */
+export interface PromptOverride {
+  enabled: boolean;
+  models: string[];
+  prompt: string;
+}
+
 export interface Settings {
   theme: "system" | "light" | "dark";
   timestampFormat: "locale" | "12-hour" | "24-hour";
@@ -132,6 +147,33 @@ export interface Settings {
    */
   claudeCustomEnv?: ProviderEnvVar[];
   codexCustomEnv?: ProviderEnvVar[];
+  /**
+   * System-prompt replacements, in precedence order: the first enabled
+   * entry whose `models` contains the session's model replaces the
+   * provider's default prompt (Claude `--system-prompt`, Codex
+   * `baseInstructions`). Read at spawn, so edits reach new sessions only.
+   * Like claudeHiddenModels, the Claude list covers claude-tui too: the
+   * interactive TUI is the same binary and honors `--system-prompt-file`
+   * exactly as headless does (spike-verified on 2.1.234 — full body
+   * replacement, only the TUI's own fixed identity line differs). Go
+   * persists with `omitempty`, so treat undefined as [].
+   */
+  claudePromptOverrides?: PromptOverride[];
+  codexPromptOverrides?: PromptOverride[];
+  /**
+   * Built-in tools kept out of the model's context, provider-wide (not
+   * model-scoped). Claude holds raw CLI tool names — passed to
+   * `--disallowedTools` verbatim, unknown names are harmless. Codex holds
+   * curated toggle ids (see utils/promptOverrides.ts), each of which the
+   * backend maps to per-thread config keys; Codex has no flat disallow
+   * list. Spawn-only, and the Claude list covers claude-tui too, like the
+   * prompt overrides above — the interactive TUI honors repeated
+   * `--disallowedTools <name>` and the named tools' schemas are absent
+   * from its requests (same 2.1.234 spike). Go persists with `omitempty`,
+   * so treat undefined as [].
+   */
+  claudeDisabledTools?: string[];
+  codexDisabledTools?: string[];
   /** Seeds whether new draft threads start on the current checkout or a new worktree. */
   defaultThreadEnvMode: ThreadEnvMode;
   /** Prefix used for auto-generated worktree branch names. */

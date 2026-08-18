@@ -71,6 +71,14 @@ type Session struct {
 	term       *terminal.Manager
 	terminalID string
 
+	// systemPromptPath is the temp file cfg.SystemPrompt was written to for
+	// `--system-prompt-file`, or "" for a session with no override. Removed by
+	// Close — which the NewSession failure path also runs, so every
+	// failed-launch path drops it too. Written once during NewSession before
+	// any concurrent reader exists; Close reads it under mu with the rest of
+	// the teardown state.
+	systemPromptPath string
+
 	// emitMu serializes every onEvent call so the parser goroutine, the proxy
 	// error path, and the PTY-exit path can't interleave events into triage —
 	// preserving the headless single-goroutine emission contract.
@@ -177,7 +185,19 @@ func NewSession(ctx context.Context, threadID string, cfg Config, onEvent func(p
 
 	go s.feedLoop()
 
-	launchOpts, err := buildLaunchOptions(cfg, gw.baseURL(), relay.url(), relay.authToken())
+	// Materialize the system-prompt override before the launch and record the
+	// path on the session in the same breath, so the deferred Close above
+	// removes it on every remaining failure path — a launch that never
+	// happened must not leave a 0600 prompt in the temp directory.
+	systemPromptPath, err := claude.WriteSystemPromptFile(cfg.SystemPrompt)
+	if err != nil {
+		return nil, fmt.Errorf("claudetui: %w", err)
+	}
+	s.mu.Lock()
+	s.systemPromptPath = systemPromptPath
+	s.mu.Unlock()
+
+	launchOpts, err := buildLaunchOptions(cfg, systemPromptPath, gw.baseURL(), relay.url(), relay.authToken())
 	if err != nil {
 		return nil, err
 	}
@@ -421,6 +441,7 @@ func (s *Session) Close() error {
 	}
 	s.closing = true
 	terminalID := s.terminalID
+	systemPromptPath := s.systemPromptPath
 	s.mu.Unlock()
 
 	// Stop the parser loop and release any producer parked on feed before
@@ -447,6 +468,9 @@ func (s *Session) Close() error {
 	if s.parser != nil {
 		s.parser.Close()
 	}
+	// After the PTY is down, so the file outlives every read the CLI could
+	// still make of it. Best-effort with a log line, same as headless.
+	claude.RemoveSystemPromptFile(systemPromptPath)
 	return errors.Join(errs...)
 }
 

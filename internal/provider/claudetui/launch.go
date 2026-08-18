@@ -11,8 +11,11 @@ import (
 
 // launch.go assembles the PTY launch for the interactive claude: the
 // full-access flag set, the --settings hook registration that points Claude at
-// the AO relay subcommand, and the env that injects the gateway base URL and
-// the per-session relay url + capability token.
+// the AO relay subcommand, the two settings-owned override flags
+// (--system-prompt-file / --disallowedTools, both spike-verified to work
+// interactively on 2.1.234 — see AGENTS.md §Prompt + tool overrides), and the
+// env that injects the gateway base URL and the per-session relay url +
+// capability token.
 //
 // Clean-launch pre-seeds (hasTrustDialogAccepted / bypassPermissionsModeAccepted)
 // are NOT written here — they live in the user's real config (present for any
@@ -23,7 +26,12 @@ import (
 
 // buildLaunchOptions produces the terminal.SessionOptions that spawn the
 // interactive claude under the session's gateway + relay.
-func buildLaunchOptions(cfg Config, gatewayURL, hookURL, hookToken string) (terminal.SessionOptions, error) {
+//
+// systemPromptPath is the file claude.WriteSystemPromptFile produced for
+// cfg.SystemPrompt (empty when the session carries no override) — the prompt
+// reaches the CLI by path, never as an argv value, so this function never
+// reads cfg.SystemPrompt itself. Same split as the headless buildArgs.
+func buildLaunchOptions(cfg Config, systemPromptPath, gatewayURL, hookURL, hookToken string) (terminal.SessionOptions, error) {
 	if cfg.Binary == "" {
 		return terminal.SessionOptions{}, fmt.Errorf("claudetui: no claude binary configured")
 	}
@@ -66,6 +74,30 @@ func buildLaunchOptions(cfg Config, gatewayURL, hookURL, hookToken string) (term
 	}
 	if cfg.Resume != "" {
 		args = append(args, "--resume", cfg.Resume)
+	}
+	if systemPromptPath != "" {
+		// The settings-level system-prompt override
+		// (docs/specs/prompt-tool-overrides.md). The interactive TUI honors
+		// the same flag headless does — the request's `system` array becomes
+		// [billing header, the TUI's fixed identity line "You are Claude
+		// Code, Anthropic's official CLI for Claude.", the file's content],
+		// i.e. full body replacement (spike-verified 2.1.234 via PTY + wire
+		// capture; see docs/references/claude-wire.md §"System prompt
+		// assembly"). The prompt itself never reaches argv — see
+		// claude.WriteSystemPromptFile.
+		args = append(args, "--system-prompt-file", systemPromptPath)
+	}
+	for _, tool := range cfg.DisallowedTools {
+		// One flag per name; the named tools' schemas are absent from the
+		// TUI's requests (same 2.1.234 capture). Worth knowing when reading a
+		// user's list: the CLI aliases Task and Agent, so disallowing "Task"
+		// removes the "Agent" tool too.
+		//
+		// The field's contract is "already through
+		// claude.SanitizeDisallowedTools" (ConfigFromOptions runs it), which
+		// is what makes appending each name verbatim safe here — same split
+		// as the headless buildArgs.
+		args = append(args, "--disallowedTools", tool)
 	}
 
 	return terminal.SessionOptions{

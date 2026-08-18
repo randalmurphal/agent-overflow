@@ -379,6 +379,12 @@ type Config struct {
 	// every turn/start call under the `effort` parameter so per-thread
 	// tuning takes effect without a session restart.
 	ReasoningEffort string
+	// DisabledTools holds curated toggle ids (DisabledToolToggleIDs) for
+	// built-in tools this session must not be given. Rendered into the
+	// thread/start|resume `config` map by DisabledToolConfigOverrides.
+	// Start-time only — the config map is not re-read per turn — which is
+	// why PlanLiveUpdate's whole-Config comparison must see this field.
+	DisabledTools []string
 	// ServiceTier is Codex's native speed tier. "priority" is sent as
 	// serviceTier on thread/start|resume and turn/start. It must not rewrite
 	// Model; fast mode does not change the selected model.

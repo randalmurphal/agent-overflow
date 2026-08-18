@@ -38,6 +38,41 @@ func TestConfigFromOptionsCarriesEffort(t *testing.T) {
 	}
 }
 
+// The two settings-owned axes (docs/specs/prompt-tool-overrides.md) reach the
+// TUI launch Config: the interactive CLI honors `--system-prompt-file` and
+// `--disallowedTools` exactly as headless does (spike-verified 2.1.234), so
+// settings.PromptOverridesForProvider / DisabledToolsForProvider route
+// claude-tui onto the Claude lists and this is where they land.
+//
+// The list is taken RAW rather than off claude.ConfigFromOptions's merged
+// field, but it still goes through the shared argv-safety pass: a name that
+// is not ONE safe CLI argument must be impossible to reach argv on either
+// transport.
+func TestConfigFromOptionsCarriesTheSettingsOwnedAxes(t *testing.T) {
+	cfg := ConfigFromOptions(provider.SessionOptions{
+		Provider:     string(provider.ClaudeTUI),
+		Model:        "claude-opus-5",
+		WorkDir:      "/tmp/work",
+		SystemPrompt: "You are the agent.",
+		DisabledTools: []string{
+			"Workflow",
+			"  WebSearch  ", // trimmed
+			"",              // dropped
+			"   ",           // dropped
+			"two words",     // dropped: not one CLI argument
+			"-rf",           // dropped: parses as a flag
+			"Workflow",      // deduped
+		},
+	})
+	if cfg.SystemPrompt != "You are the agent." {
+		t.Fatalf("SystemPrompt = %q, want the override to pass through", cfg.SystemPrompt)
+	}
+	want := []string{"Workflow", "WebSearch"}
+	if !reflect.DeepEqual(cfg.DisallowedTools, want) {
+		t.Fatalf("DisallowedTools = %v, want %v", cfg.DisallowedTools, want)
+	}
+}
+
 // TestConfigFromOptionsIgnoresEveryRuntimeMode is the behavioural proof behind
 // Capabilities.EnforcesRuntimeMode == false for claude-tui: approvals live
 // inside the real TUI, so no runtime mode may reach the launch Config. Every
@@ -56,6 +91,11 @@ func TestConfigFromOptionsIgnoresEveryRuntimeMode(t *testing.T) {
 		Model:           "claude-sonnet-5",
 		WorkDir:         "/tmp/work",
 		ReasoningEffort: provider.EffortHigh,
+		// A non-empty settings list is what makes the read-only tier's
+		// union path reachable at all on the headless side, so seeding it
+		// here is what turns "the mode strip leaked in" into a failure
+		// rather than a coincidence of an empty list.
+		DisabledTools: []string{"Workflow"},
 	}
 	base.RuntimeMode = provider.AllRuntimeModes[0]
 	want := ConfigFromOptions(base)

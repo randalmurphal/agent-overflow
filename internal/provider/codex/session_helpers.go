@@ -42,8 +42,11 @@ func buildThreadParams(cfg Config) map[string]any {
 	// `config` is the free-form override bag on ThreadStartParams. We set
 	// mcp_servers (app-owned per-thread wiring) and model_reasoning_effort (the
 	// thread-level reasoning_effort default, mirrored by the per-turn
-	// `effort` override on turn/start). Keys documented in codex-source:
-	// app-server/src/codex_message_processor.rs (search "model_reasoning_effort").
+	// `effort` override on turn/start). Handling in codex-source (0.147):
+	// app-server/src/request_processors/thread_processor.rs and
+	// app-server/src/config_manager.rs — request overrides merge into the
+	// CLI-override layer with dotted keys expanded into nested TOML. See
+	// docs/references/codex-instructions-tools.md.
 	configOverrides := map[string]any{}
 	if len(cfg.MCPServers) > 0 {
 		configOverrides["mcp_servers"] = cfg.MCPServers
@@ -56,6 +59,13 @@ func buildThreadParams(cfg Config) map[string]any {
 	}
 	if cfg.AutoCompactTokenLimit > 0 {
 		configOverrides["model_auto_compact_token_limit"] = cfg.AutoCompactTokenLimit
+	}
+	// Tool disabling rides the same bag. It lands here rather than on
+	// thread/start alone because this map is shared with thread/resume: a
+	// cold resume that omitted the keys would rebuild the thread with the
+	// tools back in the request.
+	for key, value := range DisabledToolConfigOverrides(cfg.DisabledTools) {
+		configOverrides[key] = value
 	}
 	if len(configOverrides) > 0 {
 		params["config"] = configOverrides

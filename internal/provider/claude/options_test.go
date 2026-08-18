@@ -194,7 +194,7 @@ func TestBuildArgsAutoCompactRendersThroughSettingsFlag(t *testing.T) {
 		ContextWindow:              provider.ClaudeStandardContextWindow,
 		AutoCompactStandardPercent: 50,
 	})
-	args := buildArgs(cfg)
+	args := buildArgs(cfg, "")
 	joined := strings.Join(args, " ")
 	want := `--settings {"env":{"CLAUDE_AUTOCOMPACT_PCT_OVERRIDE":"50","CLAUDE_CODE_AUTO_COMPACT_WINDOW":"200000"}}`
 	if !strings.Contains(joined, want) {
@@ -214,7 +214,7 @@ func TestBuildArgsAutoCompactSendsWindowForExtendedTier(t *testing.T) {
 		ContextWindow:              provider.ClaudeExtendedContextWindow,
 		AutoCompactExtendedPercent: 40,
 	})
-	args := buildArgs(cfg)
+	args := buildArgs(cfg, "")
 	joined := strings.Join(args, " ")
 	want := `--settings {"env":{"CLAUDE_AUTOCOMPACT_PCT_OVERRIDE":"40","CLAUDE_CODE_AUTO_COMPACT_WINDOW":"1000000"}}`
 	if !strings.Contains(joined, want) {
@@ -227,7 +227,7 @@ func TestBuildArgsAutoCompactSendsWindowForExtendedTier(t *testing.T) {
 // still renders the pct override but must not invent a window value.
 func TestBuildArgsAutoCompactOmitsWindowWhenUnresolved(t *testing.T) {
 	cfg := Config{AutoCompactPercent: 50}
-	args := buildArgs(cfg)
+	args := buildArgs(cfg, "")
 	joined := strings.Join(args, " ")
 	if !strings.Contains(joined, `"CLAUDE_AUTOCOMPACT_PCT_OVERRIDE":"50"`) {
 		t.Fatalf("args missing pct override: %v", args)
@@ -245,7 +245,7 @@ func TestBuildArgsCombinesFastModeAndAutoCompactInOneSettingsFlag(t *testing.T) 
 		FastMode:                   true,
 		AutoCompactStandardPercent: 50,
 	})
-	args := buildArgs(cfg)
+	args := buildArgs(cfg, "")
 	joined := strings.Join(args, " ")
 	want := `--settings {"fastMode":true,"env":{"CLAUDE_AUTOCOMPACT_PCT_OVERRIDE":"50","CLAUDE_CODE_AUTO_COMPACT_WINDOW":"200000"}}`
 	if !strings.Contains(joined, want) {
@@ -261,7 +261,7 @@ func TestBuildArgsOmitsSettingsFlagWhenNothingSet(t *testing.T) {
 		Provider: "claude",
 		Model:    "claude-opus-4-7",
 	})
-	args := buildArgs(cfg)
+	args := buildArgs(cfg, "")
 	joined := strings.Join(args, " ")
 	if strings.Contains(joined, "--settings") {
 		t.Fatalf("expected no --settings flag when fastMode/autocompact unset, got %v", args)
@@ -343,7 +343,7 @@ func TestBuildArgsRendersAutoPermissionMode(t *testing.T) {
 	args := buildArgs(ConfigFromOptions(provider.SessionOptions{
 		Provider:    "claude",
 		RuntimeMode: provider.RuntimeAuto,
-	}))
+	}), "")
 	idx := slices.Index(args, "auto")
 	if idx <= 0 || args[idx-1] != "--permission-mode" {
 		t.Errorf("args missing --permission-mode auto: %v", args)
@@ -381,7 +381,7 @@ func TestConfigFromOptionsThreadsIntoBuildArgs(t *testing.T) {
 		ContextWindow:   provider.ClaudeExtendedContextWindow,
 		FastMode:        true,
 	})
-	args := buildArgs(cfg)
+	args := buildArgs(cfg, "")
 	joined := strings.Join(args, " ")
 	if !strings.Contains(joined, "--model claude-opus-4-6[1m]") {
 		t.Fatalf("args missing suffixed model: %v", args)
@@ -447,7 +447,7 @@ func TestBuildArgsCanMergeFirstPartyMCPWithNativeDiscovery(t *testing.T) {
 		},
 		MergeMCPServers: true,
 	}
-	args := buildArgs(cfg)
+	args := buildArgs(cfg, "")
 	joined := strings.Join(args, " ")
 	if !strings.Contains(joined, "--mcp-config") {
 		t.Fatalf("args missing --mcp-config: %v", args)
@@ -508,7 +508,7 @@ func TestBuildArgsAutoCompactClampsAbove90(t *testing.T) {
 	// directly. A future regression that drops the clamp (or changes
 	// the upper bound) would show up here.
 	cfg := Config{AutoCompactPercent: 150}
-	args := buildArgs(cfg)
+	args := buildArgs(cfg, "")
 	joined := strings.Join(args, " ")
 	want := `"CLAUDE_AUTOCOMPACT_PCT_OVERRIDE":"90"`
 	if !strings.Contains(joined, want) {
@@ -604,7 +604,7 @@ func TestBuildArgsRendersDisallowedTools(t *testing.T) {
 		Provider:    "claude",
 		RuntimeMode: provider.RuntimeReadOnly,
 	})
-	args := buildArgs(cfg)
+	args := buildArgs(cfg, "")
 	for _, tool := range []string{"Write", "Edit", "NotebookEdit"} {
 		idx := slices.Index(args, tool)
 		if idx <= 0 || args[idx-1] != "--disallowedTools" {

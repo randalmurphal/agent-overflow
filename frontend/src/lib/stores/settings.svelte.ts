@@ -140,11 +140,61 @@ export async function updateSetting<K extends keyof Settings>(
   await updateSettingsPatch({ [key]: value } as Partial<Settings>);
 }
 
+/**
+ * Serializes the UpdateSettings round trips. The transport dispatches RPCs
+ * concurrently per connection, and a single gesture can issue two DEPENDENT
+ * whole-list writes — Settings → Prompts & Tools commits a textarea on blur
+ * and then handles the click of the button that took the focus, each sending
+ * the entire override list. Landed out of order, the earlier list is what
+ * persists AND its full-snapshot answer overwrites the store, so the typing
+ * disappears with no error anywhere. Only the RPC and the merge of its answer
+ * are ordered; the optimistic write stays synchronous at call time.
+ *
+ * Null means idle, and an idle queue dispatches STRAIGHT AWAY rather than off
+ * a microtask: a lone settings write is the overwhelmingly common case and
+ * has nothing to be ordered against, so it should not start a turn later than
+ * it used to.
+ */
+let updateQueue: Promise<void> | null = null;
+
+function pickKeys(
+  source: Settings,
+  keys: readonly (keyof Settings)[],
+): Partial<Settings> {
+  const picked: Record<string, unknown> = {};
+  // An absent optional key is picked as undefined ON PURPOSE: restoring it
+  // has to re-erase the field, not leave the failed patch's value behind.
+  for (const key of keys) picked[key] = source[key];
+  return picked as Partial<Settings>;
+}
+
 export async function updateSettingsPatch(
   patch: Partial<Settings>,
 ): Promise<void> {
-  const previous = { ...settings };
+  // Captured against what this gesture actually replaced, before the RPC is
+  // queued — the store's state when the answer arrives may include another
+  // gesture's optimistic write, which is not ours to undo.
+  const replaced = pickKeys(settings, Object.keys(patch) as (keyof Settings)[]);
   settings = { ...settings, ...patch };
+
+  // sendSettingsPatch handles its own failure and never rejects, so a failed
+  // write cannot poison the queue for every later one — which is also why the
+  // idle reset below can be a plain `then`.
+  const ahead = updateQueue;
+  const run: Promise<void> = ahead
+    ? ahead.then(() => sendSettingsPatch(patch, replaced))
+    : sendSettingsPatch(patch, replaced);
+  updateQueue = run;
+  void run.then(() => {
+    if (updateQueue === run) updateQueue = null;
+  });
+  return run;
+}
+
+async function sendSettingsPatch(
+  patch: Partial<Settings>,
+  replaced: Partial<Settings>,
+): Promise<void> {
   try {
     const result = await UpdateSettings(patch);
     if (result) {
@@ -152,7 +202,10 @@ export async function updateSettingsPatch(
     }
   } catch (err) {
     console.error("Failed to update setting:", err);
-    settings = previous;
+    // Only the keys this patch wrote. Restoring the whole pre-patch snapshot
+    // reverts every optimistic write made since, including ones whose own
+    // RPC is still queued behind this one.
+    settings = { ...settings, ...replaced };
     addToast("error", "Failed to save setting");
   }
 }
@@ -171,4 +224,7 @@ export function applySettingsSnapshot(result: Partial<Settings>): void {
 
 export function resetSettingsForTest(): void {
   settings = defaultSettings();
+  // The queue is module state too: a test whose RPC never settles would
+  // otherwise wedge every write in every test that follows it.
+  updateQueue = null;
 }

@@ -177,6 +177,7 @@ func ConfigFromOptions(opts provider.SessionOptions) Config {
 		ApprovalsReviewer:     runtime.ApprovalsReviewer,
 		ResumeThreadID:        opts.Resume,
 		SystemPrompt:          opts.SystemPrompt,
+		DisabledTools:         opts.DisabledTools,
 		ReasoningEffort:       codexEffortFromOption(opts.ReasoningEffort),
 		ServiceTier:           codexServiceTier(opts.FastMode, opts.FastModeTierID),
 		ContextWindow:         contextWindow,

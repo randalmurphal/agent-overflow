@@ -10,6 +10,12 @@
   import { displayModelLabel } from '../../utils/modelLabels';
   import type { ModelInfo } from '../../types/settings';
   import type { ProviderID } from '../../providers/catalog';
+  import {
+    CHIP_BASE_CLASS,
+    CHIP_EMPTY_PROSE_CLASS,
+    CHIP_EXCLUDED_CLASS,
+    CHIP_RESTING_CLASS,
+  } from './styles';
 
   interface Props {
     provider: ProviderID;
@@ -48,9 +54,7 @@
       {@const isHidden = hidden.has(model.slug)}
       <button
         type="button"
-        class="rounded-[var(--radius-field)] border px-2 py-0.5 text-[0.6875rem] transition-colors cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 {isHidden
-          ? 'border-border-subtle/60 bg-surface-0/50 text-fg-hint line-through'
-          : 'border-border-subtle bg-surface-0 text-fg-muted hover:border-border'}"
+        class="{CHIP_BASE_CLASS} {isHidden ? CHIP_EXCLUDED_CLASS : CHIP_RESTING_CLASS}"
         aria-pressed={!isHidden}
         title={isHidden ? 'Hidden from pickers — click to show' : 'Shown in pickers — click to hide'}
         data-testid="settings-model-toggle-{provider}-{model.slug}"
@@ -62,5 +66,5 @@
     {/each}
   </div>
 {:else}
-  <span class="text-[0.75rem] text-fg-muted">No models available.</span>
+  <span class={CHIP_EMPTY_PROSE_CLASS}>No models available.</span>
 {/if}

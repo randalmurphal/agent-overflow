@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"os"
 	"slices"
 	"strings"
 	"sync"
@@ -656,6 +657,40 @@ func TestSessionCloseIdempotent(t *testing.T) {
 
 	if err := s.Close(); err != nil {
 		t.Fatalf("first Close: %v", err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("second Close should be a no-op: %v", err)
+	}
+}
+
+// The system-prompt temp file is the session's to clean up: it holds the
+// user's prompt (workspace paths, git state) at 0600 and nothing else removes
+// it. Close is the one removal point, which is also what covers every
+// failed-launch path — NewSession's deferred cleanup calls Close. Removal is
+// idempotent, so the second Close must not turn a gone file into an error.
+func TestSessionCloseRemovesTheSystemPromptFile(t *testing.T) {
+	path, err := claude.WriteSystemPromptFile("You are the agent.")
+	if err != nil {
+		t.Fatalf("WriteSystemPromptFile() error = %v", err)
+	}
+	t.Cleanup(func() { claude.RemoveSystemPromptFile(path) })
+
+	s := &Session{
+		threadID:         testThread,
+		parser:           claude.NewParser(),
+		feed:             make(chan json.RawMessage, 1),
+		done:             make(chan struct{}),
+		logf:             func(string, ...any) {},
+		onEvent:          func(provider.ProviderEvent) {},
+		systemPromptPath: path,
+	}
+	s.rec = newReconstructor(s.feedEnvelope)
+
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("os.Stat(%s) = %v, want the file removed", path, err)
 	}
 	if err := s.Close(); err != nil {
 		t.Fatalf("second Close should be a no-op: %v", err)

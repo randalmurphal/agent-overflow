@@ -4,6 +4,7 @@
 export {
     EditorSettings,
     NetworkSettings,
+    PromptOverride,
     ProviderEnvVar,
     RemoteEndpoint,
     RemoteEndpointSummary,

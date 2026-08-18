@@ -7,6 +7,7 @@
   import RemoteEndpointsSection from './RemoteEndpointsSection.svelte';
   import WSLSection from './WSLSection.svelte';
   import ProviderSettings from './ProviderSettings.svelte';
+  import PromptOverridesSettings from './PromptOverridesSettings.svelte';
   import GitSettings from './GitSettings.svelte';
   import StorageSettings from './StorageSettings.svelte';
   import DiscussionsSettings from './DiscussionsSettings.svelte';
@@ -149,6 +150,8 @@
           <UpdatesSettings />
         {:else if activeSection === 'providers'}
           <ProviderSettings />
+        {:else if activeSection === 'prompts'}
+          <PromptOverridesSettings />
         {:else if activeSection === 'discussions'}
           <DiscussionsSettings />
         {:else if activeSection === 'projects'}

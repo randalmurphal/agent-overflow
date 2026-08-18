@@ -229,6 +229,26 @@ hand those options to the provider-specific `Config.From(opts)`.
 Provider-specific knobs (context window, reasoning effort, fast mode)
 live in the options; the provider packages stay free of SQLite types.
 
+`SessionOptions.DisabledTools` does not come from the thread row at all:
+the app layer stamps it from Settings on the SPAWN path only
+(`app_session_prompt_override.go applySettingsOwnedAxes`), and each
+provider package interprets it in its own
+vocabulary — raw Claude tool names, which `claude/options.go` UNIONS with
+the read-only mode strip (neither list may displace the other); the same
+raw Claude names on `claude-tui`, which `claudetui/options.go` takes
+ALONE with no mode strip (`EnforcesRuntimeMode` is false there, so every
+tier must stay inert) while still running them through the shared
+`claude.SanitizeDisallowedTools` argv-safety pass; and curated
+Codex toggle ids, which `codex/disabled_tools.go` expands into `config`
+override keys. It is spawn-only on every provider, so `PlanLiveUpdate` must
+report a change to it as a restart (claudetui has no live-update surface
+at all — every diff is one). Because the value comes from Settings
+rather than the row, the reconcile path PINS it (alongside `SystemPrompt`)
+to what the live session launched with — `pinSettingsOwnedAxes`, the
+other half of the pair — otherwise every reconcile would diff today's
+Settings against a session started earlier and queue a restart the user
+never asked for.
+
 ## Interactive Requests
 
 The two providers disagree about the wire format for interactive prompts,

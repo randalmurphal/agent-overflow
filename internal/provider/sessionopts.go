@@ -118,6 +118,20 @@ type SessionOptions struct {
 	RuntimeMode                RuntimeMode
 	SystemPrompt               string
 
+	// DisabledTools names built-in tools the session must not be given.
+	// PROVIDER-INTERPRETED, and the two providers read it differently:
+	// Claude takes RAW TOOL NAMES ("Workflow") and unions them into
+	// `--disallowedTools`; Codex takes CURATED TOGGLE IDS ("web_search")
+	// because it has no deny list, and each id maps to per-thread config
+	// keys. Spawn-only on both sides — a change here forces a restart,
+	// which is what each provider's PlanLiveUpdate reports by comparing
+	// the Config field this lands on.
+	//
+	// SessionOptionsFromThread cannot fill this in: it is a settings-level
+	// preference, not thread state, so the app layer stamps it at its
+	// single construction site (buildSessionOptions) alongside SystemPrompt.
+	DisabledTools []string
+
 	// Resume carries the provider's resume reference. Claude: prior
 	// session uuid. Codex: prior thread id. Empty for brand-new starts.
 	Resume string

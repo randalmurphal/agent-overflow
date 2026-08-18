@@ -2824,6 +2824,118 @@ without a fresh spike.**
 
 ---
 
+## System prompt assembly + `--system-prompt` replacement (verified 2.1.234)
+
+Captured via a local `ANTHROPIC_BASE_URL` sink with an isolated fake
+`HOME` and a dummy `ANTHROPIC_API_KEY`, running the CLI with AO's exact
+spawn flags and env (`CLAUDE_CODE_ENTRYPOINT=agent-overflow`,
+`CLAUDE_CODE_ENABLE_TODO_TOOLS=true`, stream-json in/out). The sink
+returns a non-retryable 400, so the capture spends zero tokens and
+never touches real credentials.
+
+### Request shape
+
+The `/v1/messages` request carries `system` as three text blocks:
+
+1. **Billing header** (~81 chars): `x-anthropic-billing-header:
+   cc_version=…; cc_entrypoint=…;`. Internal, immutable.
+2. **SDK identity line** (62 chars): `"You are a Claude agent, built
+   on Anthropic's Claude Agent SDK."` — **not replaceable**; survives
+   `--system-prompt` verbatim.
+3. **The body** (~10.5k chars / ~2.6k tokens on Fable 5). This is the
+   entire surface `--system-prompt` replaces: with the flag, block 3
+   is exactly the given text and nothing else.
+
+The body is **assembled conditionally per model and mode**. Observed on
+2.1.234: Fable 5 gets "Communicating with the user", the Fable/Mythos
+identity paragraph, and an "operating autonomously" section; Opus 5
+under plain `-p` instead gets "Delivering work", "Corrections", and
+"Do not call the AgentTool unless the user requested it" lines.
+Dynamic sections include Environment (cwd, git flag, platform, model
+id, cutoff), the Memory path, a gitStatus snapshot when cwd is a repo,
+and a feature-gated Scratchpad section. Any pinned replacement is a
+snapshot of one (model, mode) variant.
+
+### What survives replacement (verified with a marker prompt)
+
+- **The `tools` array** — untouched. This is the real context mass
+  (~92KB of schemas with AO's flag set; the `Workflow` description
+  alone is ~5k tokens).
+- **Agent-types + skills listing** — injected as a separate
+  `role: "system"` message in the `messages` array, not in `system`.
+- **CLAUDE.md contents, auto-memory `MEMORY.md` index, current date**
+  — all arrive inside the `<system-reminder>` block of the first user
+  message.
+- Hooks, the `can_use_tool` control protocol, and mid-conversation
+  system reminders.
+
+### What replacement kills (memory feature, dynamic sections)
+
+- The Memory *instructions* section and the CLI's mkdir of
+  `~/.claude/projects/<slug>/memory/` — verified with a fresh cwd:
+  under `--system-prompt` the project dir gets only the transcript
+  jsonl, no `memory/`. Memory **recall** still works (a seeded
+  sentinel `MEMORY.md` was injected into the first-user-message
+  system-reminder identically with and without the flag), and memory
+  bodies are read on demand via the Read tool. A client that wants
+  the write side must mkdir the directory itself and carry its own
+  instructions text. The slug is the workdir with non-alphanumerics
+  mapped to `-` (same layout `internal/sessionimport` walks).
+- The Environment block — the model no longer knows cwd/platform/git
+  state unless the replacement prompt carries them.
+
+### Related flags (verified 2.1.234)
+
+- `--exclude-dynamic-system-prompt-sections` is genuinely **ignored**
+  when combined with `--system-prompt` (help says so; wire confirms —
+  no dynamic sections appear anywhere in the request).
+- `--append-system-prompt` appends **after the entire default body**,
+  including the CLI-injected `<total_tokens>` footer. It cannot remove
+  default behavioral text, only argue with it.
+- `--system-prompt-file` / `--append-system-prompt-file` exist as
+  file-based variants. **`--system-prompt-file <path>` is wire-identical
+  to `--system-prompt <text>`** — the same capture run both ways
+  produced byte-identical `/v1/messages` requests (same three `system`
+  blocks, block 3 exactly the file's content). AO spawns with the FILE
+  form for two reasons that have nothing to do with the wire:
+  - **`MAX_ARG_STRLEN`.** Linux caps a single argv string at 128KB and
+    the limit is not tunable. A rendered system-prompt override
+    (`docs/specs/prompt-tool-overrides.md` — `{{GIT_BLOCK}}` expands to
+    a repository snapshot) can cross it, and then EVERY spawn fails with
+    E2BIG, which the user sees as a session that refuses to start.
+  - **`/proc` exposure.** argv is world-readable via
+    `/proc/<pid>/cmdline`; the temp file is 0600. A system prompt
+    carries workspace paths, git state, and whatever the user wrote.
+
+  `internal/provider/claude/session.go` writes the file at spawn
+  (`WriteSystemPromptFile`) and removes it in `Close` and on every
+  failed-spawn path.
+
+  **The INTERACTIVE TUI honors the flag too** (verified 2.1.234 by
+  running the real TUI under a PTY against the same sink). The
+  replacement is total exactly as it is headless; the one difference is
+  block 2, which is the TUI's own fixed identity line — `"You are
+  Claude Code, Anthropic's official CLI for Claude."` — rather than the
+  SDK's `"You are a Claude agent, built on Anthropic's Claude Agent
+  SDK."`. Neither is replaceable. So the TUI's `system` array under the
+  flag is [billing header, that identity line, the file's content].
+  `internal/provider/claudetui/launch.go` passes
+  `--system-prompt-file` on the PTY launch and shares the headless
+  writer; `claudetui.Session.Close` removes the file, which the
+  `NewSession` failure path also runs.
+- `--disallowedTools <name>` removes the tool's schema from the
+  request `tools` array entirely (verified: `Workflow`,
+  `EnterPlanMode`, `ExitPlanMode` absent from the capture) and
+  composes with `--system-prompt`. Consistent with §"Permission modes
+  for read-only sessions": removal is spawn-only; no control_request
+  adds or drops a tool mid-session. **The interactive TUI honors
+  repeated `--disallowedTools` identically** (same 2.1.234 PTY spike);
+  `claudetui` passes one flag per settings entry. One aliasing quirk:
+  the CLI treats `Task` and `Agent` as the same tool, so disallowing
+  `Task` removes `Agent` from the request too.
+
+---
+
 ## When this doc is wrong
 
 Capture fresh NDJSON (`AGENT_OVERFLOW_DEBUG=provider`), compare

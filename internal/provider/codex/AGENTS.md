@@ -139,6 +139,21 @@ over stdio.
   (`model/list`, `skills/list`). `oneshotSpec.Experimental` and
   `KeepNotifications` are per-caller because a throwaway process asking
   for more than it uses changes what the server emits.
+- `disabled_tools.go` — the curated tool-toggle vocabulary the settings
+  UI offers (`ToggleWebSearch` … `ToggleToolSuggest`) and the table
+  mapping each id onto the `config` override keys that turn the tool off
+  (`web_search: "disabled"`, `tools.update_plan.enabled: false`, …).
+  Keys stay DOTTED and flat — codex expands them into nested TOML itself
+  (`config/src/overrides.rs`), so pre-nesting them here would be a second
+  encoding of the same thing. `buildThreadParams` merges the result, which
+  is what makes `thread/resume` carry the toggles too: a cold resume that
+  omitted them rebuilds the thread with the tools back in the request. An
+  id this build does not know is skipped with a log line — the list is
+  settings data that outlives any one AO version — never a fatal. The id
+  set is mirrored by the frontend's toggle switches
+  (`frontend/src/lib/utils/promptOverrides.ts`), and
+  `TestDisabledToolTogglesMatchTheFrontendMirror` parses that file —
+  renaming an id here without the frontend fails the test, not the user.
 - `options.go` — `SessionOptions → Config` hydration, binary probe.
 - `models.go` — `model/list` paging plus the `codexModel → provider.ModelInfo`
   projection. **`serviceTiers` is the model's whole tier menu, not a fast-tier

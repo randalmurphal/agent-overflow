@@ -22,6 +22,10 @@ own code.
 ## Docs
 
 - Codex App Server: https://developers.openai.com/codex/sdk/#app-server
+- [codex-instructions-tools.md](codex-instructions-tools.md) —
+  source-verified facts on `baseInstructions` replacement, the per-model
+  catalog instruction templates, and the per-thread config keys that
+  remove tool schemas from the request.
 
 ## Workflow
 

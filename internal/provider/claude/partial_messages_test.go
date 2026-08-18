@@ -30,7 +30,7 @@ func requireSoftRoundClose(t *testing.T, evt provider.ProviderEvent) provider.So
 //   - parent_tool_use_id on stream_event → propagated to emitted events
 
 func TestBuildArgsIncludesPartialMessagesFlag(t *testing.T) {
-	args := buildArgs(Config{})
+	args := buildArgs(Config{}, "")
 
 	for _, arg := range args {
 		if arg == "--include-partial-messages" {

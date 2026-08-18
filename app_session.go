@@ -16,7 +16,6 @@ import (
 	"agent-overflow/internal/provider/codex"
 	"agent-overflow/internal/provideraccounts"
 	"agent-overflow/internal/store"
-	"agent-overflow/internal/stringsx"
 	"agent-overflow/internal/triage"
 
 	"github.com/google/uuid"
@@ -91,12 +90,22 @@ func (a *App) startSessionNow(threadID string) error {
 // design or discussion. We compose the final system prompt here, then
 // hand a provider-agnostic SessionOptions bundle to each provider's
 // ConfigFromOptions translator.
+//
+// What this function does NOT do is stamp the settings-owned axes
+// (SystemPrompt when no feature owns it, DisabledTools). Those are read
+// from Settings rather than projected from the thread row, so the two
+// callers need opposite treatment — the spawn path applies today's values
+// (applySettingsOwnedAxes), the reconcile path pins the live session's
+// (pinSettingsOwnedAxes). Both live in app_session_prompt_override.go.
+// Leaving them out here is what keeps the reconciler from composing an
+// override — up to two git subprocesses under the per-thread config lock —
+// only to throw it away.
 func (a *App) buildSessionOptions(t store.Thread) (provider.SessionOptions, designSessionConfig, error) {
 	designCfg, err := a.designSessionConfig(t)
 	if err != nil {
 		return provider.SessionOptions{}, designSessionConfig{}, err
 	}
-	systemPrompt := stringsx.JoinNonEmpty("\n\n", designCfg.Prompt, a.threadSystemPrompt(t.ID))
+	systemPrompt := a.featureOwnedSystemPrompt(t, designCfg)
 
 	// Pending-fork intent is a one-shot. SessionOptionsFromThread reads
 	// either PendingForkRef or SessionRef into opts.Resume based on this
@@ -130,6 +139,7 @@ func (a *App) buildSessionOptions(t store.Thread) (provider.SessionOptions, desi
 	} else if dir != "" {
 		opts.WorkDir = dir
 	}
+
 	return opts, designCfg, nil
 }
 
@@ -156,6 +166,15 @@ func (a *App) startSessionNowWithClaudeResumeAt(threadID, claudeResumeAt string)
 	onEvent := a.sessionEventHandler(threadID, sessionToken, t.Provider)
 
 	opts, designCfg, err := a.buildSessionOptions(t)
+	if err != nil {
+		return fmt.Errorf("start session: %w", err)
+	}
+	// Spawn-only, and the one place the settings-level override is decided
+	// for this session. The resolution travels to ensureClaudeMemoryDir
+	// below so the directory we create and the prompt we rendered come from
+	// the same settings snapshot — a save landing mid-spawn cannot make them
+	// disagree.
+	promptOverride, err := a.applySettingsOwnedAxes(t, &opts)
 	if err != nil {
 		return fmt.Errorf("start session: %w", err)
 	}
@@ -194,6 +213,11 @@ func (a *App) startSessionNowWithClaudeResumeAt(threadID, claudeResumeAt string)
 	if err != nil {
 		return fmt.Errorf("start session: %w", err)
 	}
+
+	// The one side effect a rendered system-prompt override carries. Gated
+	// on the resolution above (which already knows whether the override won
+	// the prompt) and never fatal to the spawn.
+	a.ensureClaudeMemoryDir(t, opts.WorkDir, promptOverride)
 	// designServers is non-nil only for design threads. Chat/plan
 	// sessions on both providers use native MCP discovery from the
 	// provider's own config (Claude's per-workspace disabledMcpServers,

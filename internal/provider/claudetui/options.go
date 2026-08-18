@@ -30,6 +30,28 @@ type Config struct {
 	WorkDir string
 	// Resume, when set, is the provider session ref to resume (--resume).
 	Resume string
+	// SystemPrompt REPLACES the CLI's default system prompt for this
+	// session. It reaches the TUI as `--system-prompt-file <path>`, never as
+	// an argv value — same MAX_ARG_STRLEN / /proc reasoning as the headless
+	// provider, and the same writer (claude.WriteSystemPromptFile). The
+	// interactive TUI honors the flag exactly as headless does: the
+	// request's `system` array becomes [billing header, the TUI's fixed
+	// identity line, this text] (spike-verified 2.1.234 via PTY + wire
+	// capture). Empty means "the CLI keeps its own prompt".
+	SystemPrompt string
+	// DisallowedTools are the tool names removed from the session outright
+	// via one `--disallowedTools <name>` flag each; their schemas never
+	// reach the request (spike-verified 2.1.234, same capture).
+	//
+	// Unlike the headless provider's field this is EXACTLY the settings
+	// list, with no runtime-mode strip unioned in: Capabilities.
+	// EnforcesRuntimeMode is false for claude-tui because the real TUI owns
+	// approvals, so every tier must stay inert here by construction.
+	//
+	// Contract: the names here have already been through
+	// claude.SanitizeDisallowedTools, so the launch appends each one
+	// verbatim. Build this through ConfigFromOptions rather than by hand.
+	DisallowedTools []string
 	// ReasoningEffort is the resolved `--effort` value (low/medium/high/xhigh/
 	// max), already mapped from SessionOptions by claude.ConfigFromOptions.
 	// Empty means "omit the flag" so the CLI keeps its own default. The
@@ -53,6 +75,17 @@ type Config struct {
 // the TUI launch Config, reusing the headless provider's model / workdir /
 // resume resolution so the two Claude transports never drift on those.
 // Full-access is implied — the TUI provider is full-access only.
+//
+// The two settings-owned axes (docs/specs/prompt-tool-overrides.md) ride
+// along, because the interactive TUI honors both flags:
+//
+//   - SystemPrompt passes through unchanged; launch.go writes it to the
+//     temp file `--system-prompt-file` names.
+//   - DisabledTools is taken RAW from the options rather than off
+//     base.DisallowedTools, which unions in the read-only mode strip that
+//     must never reach this provider. It still goes through the headless
+//     provider's argv-safety pass so a name that is not one safe CLI
+//     argument cannot reach argv here either, however Config was built.
 func ConfigFromOptions(opts provider.SessionOptions) Config {
 	base := claude.ConfigFromOptions(opts)
 	return Config{
@@ -60,6 +93,8 @@ func ConfigFromOptions(opts provider.SessionOptions) Config {
 		WorkDir:         base.WorkDir,
 		Resume:          base.Resume,
 		ReasoningEffort: base.ReasoningEffort,
+		SystemPrompt:    base.SystemPrompt,
+		DisallowedTools: claude.SanitizeDisallowedTools(opts.DisabledTools),
 	}
 }
 

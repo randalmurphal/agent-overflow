@@ -37,6 +37,30 @@ export const SECONDARY_BUTTON_CLASS =
 export const SECTION_PROSE_CLASS =
   'max-w-2xl text-[0.71875rem] leading-snug text-fg-muted';
 
+// Model chips. Two sections render them with opposite polarity — Providers
+// as a hide-list, Prompts & Tools as a selection — so the vocabulary lives
+// here rather than being copied between them. It was copied once, and the
+// two had already drifted (the empty-state prose) by the time the second
+// section shipped.
+export const CHIP_BASE_CLASS =
+  'rounded-[var(--radius-field)] border px-2 py-0.5 text-[0.6875rem] ' +
+  'transition-colors cursor-pointer focus:outline-none focus-visible:ring-2 ' +
+  'focus-visible:ring-accent/40';
+
+/** Resting chip: on, visible, unselected — whatever the section's neutral is. */
+export const CHIP_RESTING_CLASS =
+  'border-border-subtle bg-surface-0 text-fg-muted hover:border-border';
+
+/** Chip the user has picked. */
+export const CHIP_SELECTED_CLASS = 'border-accent/50 bg-accent/15 text-fg';
+
+/** Chip switched off — struck through rather than merely dimmed. */
+export const CHIP_EXCLUDED_CLASS =
+  'border-border-subtle/60 bg-surface-0/50 text-fg-hint line-through';
+
+/** Prose shown in place of the chip row when there is nothing to render. */
+export const CHIP_EMPTY_PROSE_CLASS = 'text-[0.75rem] text-fg-muted';
+
 export const GHOST_BUTTON_CLASS =
   'rounded-[var(--radius-field)] px-2 py-1 text-[0.71875rem] text-fg-hint ' +
   'hover:text-fg-muted hover:bg-surface-2/40 cursor-pointer transition-colors ' +

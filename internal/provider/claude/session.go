@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
+	"os"
 	"slices"
 	"strconv"
 	"strings"
@@ -75,6 +77,11 @@ type Session struct {
 	cancel    context.CancelFunc
 	closing   atomic.Bool
 	readDone  chan struct{}
+	// systemPromptPath is the temp file cfg.SystemPrompt was written to for
+	// `--system-prompt-file`, or "" when the session carries no override.
+	// Removed by Close; see WriteSystemPromptFile for why the prompt does
+	// not travel in argv.
+	systemPromptPath string
 	// allowsBypassPermissions records whether the process was spawned with
 	// --allow-dangerously-skip-permissions. The CLI rejects a live
 	// set_permission_mode escalation to bypassPermissions without it
@@ -208,12 +215,17 @@ type pendingApproval struct {
 
 // Config for creating a Claude session.
 type Config struct {
-	Binary       string // default: "claude"
-	Model        string
-	WorkDir      string
-	Resume       string // session ID to resume, empty for new
-	ResumeAt     string // transcript UUID to resume at inside Resume
-	ForkSession  bool
+	Binary      string // default: "claude"
+	Model       string
+	WorkDir     string
+	Resume      string // session ID to resume, empty for new
+	ResumeAt    string // transcript UUID to resume at inside Resume
+	ForkSession bool
+	// SystemPrompt REPLACES the CLI's default system prompt. It reaches the
+	// process as `--system-prompt-file <path>` (a 0600 temp file written at
+	// spawn and removed on Close) rather than as an argv value — the two
+	// flags are wire-identical, and the file avoids both MAX_ARG_STRLEN and
+	// /proc exposure. See WriteSystemPromptFile.
 	SystemPrompt string
 	// OutputSchema is the inline JSON schema passed to --json-schema when
 	// the session process starts. It is sticky for every turn in the session.
@@ -286,7 +298,11 @@ func NewSession(ctx context.Context, threadID string, cfg Config, onEvent func(p
 		binary = "claude"
 	}
 
-	args := buildArgs(cfg)
+	systemPromptPath, err := WriteSystemPromptFile(cfg.SystemPrompt)
+	if err != nil {
+		return nil, fmt.Errorf("claude: %w", err)
+	}
+	args := buildArgs(cfg, systemPromptPath)
 
 	childCtx, cancel := context.WithCancel(ctx)
 
@@ -302,11 +318,13 @@ func NewSession(ctx context.Context, threadID string, cfg Config, onEvent func(p
 	})
 	if err != nil {
 		cancel()
+		RemoveSystemPromptFile(systemPromptPath)
 		return nil, fmt.Errorf("claude: spawn: %w", err)
 	}
 
 	s := &Session{
 		proc:                     proc,
+		systemPromptPath:         systemPromptPath,
 		threadID:                 threadID,
 		sessionID:                cfg.Resume,
 		workDir:                  cfg.WorkDir,
@@ -399,8 +417,68 @@ func withClaudeSessionEnvDefaults(env map[string]string) map[string]string {
 	return merged
 }
 
-// buildArgs constructs CLI flags from Config.
-func buildArgs(cfg Config) []string {
+// WriteSystemPromptFile materializes cfg.SystemPrompt for
+// `--system-prompt-file`, returning "" for a session with no override.
+//
+// The two flags are wire-equivalent — `--system-prompt <text>` and
+// `--system-prompt-file <path>` produce byte-identical API requests
+// (verified on claude 2.1.234, docs/references/claude-wire.md
+// §"System prompt assembly") — so this is purely about what argv can
+// safely carry, and argv is the wrong channel for it twice over:
+//
+//   - Linux caps a single argv string at MAX_ARG_STRLEN (128KB, not
+//     tunable). A rendered override that crosses it makes EVERY spawn fail
+//     with E2BIG, which the user would see as a session that simply refuses
+//     to start. The file has no such ceiling.
+//   - argv is world-readable through /proc/<pid>/cmdline. A system prompt
+//     carries workspace paths, git state, and whatever the user wrote into
+//     it; the file is 0600 (os.CreateTemp's mode) and readable only by the
+//     user running AO.
+//
+// The caller owns removal: Close for a live session, RemoveSystemPromptFile
+// on every failed-spawn path.
+//
+// Exported for internal/provider/claudetui, which passes the same flag on
+// the PTY launch (the interactive TUI honors `--system-prompt-file`
+// identically — spike-verified 2.1.234). One writer means one temp-file
+// name, one mode, and one removal contract for both Claude transports.
+func WriteSystemPromptFile(prompt string) (string, error) {
+	if prompt == "" {
+		return "", nil
+	}
+	f, err := os.CreateTemp("", "ao-claude-system-prompt-*.txt")
+	if err != nil {
+		return "", fmt.Errorf("create system prompt file: %w", err)
+	}
+	path := f.Name()
+	_, writeErr := f.WriteString(prompt)
+	closeErr := f.Close()
+	if err := errors.Join(writeErr, closeErr); err != nil {
+		RemoveSystemPromptFile(path)
+		return "", fmt.Errorf("write system prompt file %s: %w", path, err)
+	}
+	return path, nil
+}
+
+// RemoveSystemPromptFile drops the temp file a session spawned with.
+// Best-effort: the CLI has already read it, so a failure costs a stray file
+// in the temp directory, not correctness — but it is logged rather than
+// swallowed, because a removal that keeps failing means the temp directory
+// is accumulating prompts.
+func RemoveSystemPromptFile(path string) {
+	if path == "" {
+		return
+	}
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		log.Printf("claude: remove system prompt file %s: %v", path, err)
+	}
+}
+
+// buildArgs constructs CLI flags from Config. systemPromptPath is the file
+// WriteSystemPromptFile produced for cfg.SystemPrompt (empty when the
+// session carries no override) — the prompt reaches the CLI by path, never
+// as an argv value.
+func buildArgs(cfg Config, systemPromptPath string) []string {
 	args := []string{
 		"--input-format", "stream-json",
 		"--output-format", "stream-json",
@@ -444,8 +522,9 @@ func buildArgs(cfg Config) []string {
 	if cfg.ForkSession {
 		args = append(args, "--fork-session")
 	}
-	if cfg.SystemPrompt != "" {
-		args = append(args, "--system-prompt", cfg.SystemPrompt)
+	// The prompt itself never reaches argv — see WriteSystemPromptFile.
+	if systemPromptPath != "" {
+		args = append(args, "--system-prompt-file", systemPromptPath)
 	}
 	if cfg.OutputSchema != "" {
 		args = append(args, "--json-schema", cfg.OutputSchema)
@@ -1211,6 +1290,10 @@ func (s *Session) Close() error {
 	if s.readDone != nil {
 		<-s.readDone
 	}
+	// After the process is gone: the CLI reads the file at startup, but
+	// removing it while a wedged process might still be starting up would
+	// turn a slow spawn into a missing system prompt.
+	RemoveSystemPromptFile(s.systemPromptPath)
 	// Release parser-owned state so the dedup sets
 	// (completedToolUseIDs, completedTasks, backgroundToolUses, etc.)
 	// don't linger after the readLoop exits.

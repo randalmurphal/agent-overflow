@@ -167,10 +167,12 @@ seconds; it is cold-resume history only. Tool results come from
   interfere"). `main.go` short-circuits to it before any other startup,
   exactly like the orphan reaper.
 - `options.go` — `provider.SessionOptions` → launch `Config` (reuses
-  `claude.ConfigFromOptions` for model/workdir/resume).
+  `claude.ConfigFromOptions` for model/workdir/resume, and carries the
+  two settings-owned axes — see §Prompt + tool overrides).
 - `launch.go` — the PTY launch posture: full-access flags, the
-  `--settings` hook registration, and the env that injects the gateway
-  base URL + relay url/token.
+  `--settings` hook registration, `--system-prompt-file` /
+  `--disallowedTools`, and the env that injects the gateway base URL +
+  relay url/token.
 - `session.go` — the `provider.Session` impl. Owns the PTY (via
   `internal/terminal`), gateway, relay, and the single `claude.Parser`
   fed off one serialized channel.
@@ -338,6 +340,42 @@ summary via `CompactionDivider.svelte`. Headless `claude` and Codex emit a
 boundary with no summary and stream no reasoning, so they render the plain
 divider. All binary behavior — re-probe with `spike/claude-mitm/` on
 version bump.
+
+## Prompt + tool overrides
+
+The two settings-owned axes of
+[`docs/specs/prompt-tool-overrides.md`](../../../docs/specs/prompt-tool-overrides.md)
+apply here, not just to headless (user decision 2026-08-18, superseding
+the original exclusion). Both are ordinary PTY launch flags, the same
+class as `--model` / `--effort` / `--resume`, and both were spike-verified
+against claude 2.1.234 by running the real TUI under a PTY with a wire
+capture:
+
+- **`Config.SystemPrompt` → `--system-prompt-file <path>`.** Full body
+  replacement, exactly as headless: the request's `system` array becomes
+  [billing header, the TUI's fixed identity line "You are Claude Code,
+  Anthropic's official CLI for Claude.", the file's content]. The file is
+  written by the shared `claude.WriteSystemPromptFile` (0600; the prompt
+  never reaches argv — `MAX_ARG_STRLEN` and `/proc/<pid>/cmdline`) and
+  removed by `Session.Close`, which `NewSession`'s deferred cleanup also
+  runs, so every failed-launch path drops it.
+- **`Config.DisallowedTools` → one `--disallowedTools <name>` per
+  entry.** The named tools' schemas are absent from the request. Note the
+  CLI aliases `Task` and `Agent`: disallowing one removes both.
+
+`ConfigFromOptions` takes the tool list RAW from `opts.DisabledTools`
+rather than off `claude.ConfigFromOptions`'s merged field — that field
+unions in the read-only runtime-mode strip, and `EnforcesRuntimeMode` is
+false here, so every tier must stay inert (pinned by
+`TestConfigFromOptionsIgnoresEveryRuntimeMode`). It still runs the shared
+`claude.SanitizeDisallowedTools` argv-safety pass, so a name that is not
+ONE safe CLI argument cannot reach argv on either transport.
+
+Settings routing is provider-generic: `settings.PromptOverridesForProvider`
+/ `DisabledToolsForProvider` map `claude-tui` onto the Claude lists (same
+binary, like `HiddenModelsForProvider`), so the app's spawn path stamps
+both axes with no provider branch and `pinSettingsOwnedAxes` keeps a
+settings edit from restarting a live TUI session.
 
 ## Security boundary (load-bearing)
 

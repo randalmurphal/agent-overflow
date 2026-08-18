@@ -730,3 +730,40 @@ func TestActivityRunDefaultSanitizesOnLoad(t *testing.T) {
 		t.Fatalf("ActivityRunDefault = %q, want %q", got.ActivityRunDefault, DefaultSettings.ActivityRunDefault)
 	}
 }
+
+// truncateRuneSafe is a length bound, not a UTF-8 repair pass. The rune
+// boundary it protects is the CUT POINT; everything before it is stored
+// bytes and has to survive, invalid or not — an earlier version stripped
+// byte by byte until the whole prefix validated, which emptied any value
+// carrying a single stray byte anywhere in it.
+func TestTruncateRuneSafeCutsOnlyAtTheBoundary(t *testing.T) {
+	cases := []struct {
+		name     string
+		in       string
+		maxBytes int
+		want     string
+	}{
+		{name: "under the cap", in: "hello", maxBytes: 8, want: "hello"},
+		{name: "ascii at the cap", in: "hello", maxBytes: 5, want: "hello"},
+		{name: "ascii cut", in: "hello", maxBytes: 3, want: "hel"},
+		// "é" is two bytes: cutting at 3 splits it, at 4 it is whole.
+		{name: "two-byte rune split", in: "abé", maxBytes: 3, want: "ab"},
+		{name: "two-byte rune whole", in: "abéc", maxBytes: 4, want: "abé"},
+		// "😀" is four bytes — the widest split this has to back out of.
+		{name: "four-byte rune split", in: "ab😀", maxBytes: 5, want: "ab"},
+		{name: "four-byte rune whole", in: "ab😀c", maxBytes: 6, want: "ab😀"},
+		{name: "cut lands on the next rune", in: "é😀", maxBytes: 2, want: "é"},
+		// A stored value that is already invalid keeps its bytes: the cut
+		// is a byte boundary here, so nothing is split by making it.
+		{name: "invalid bytes survive", in: "a\xffb\xffc", maxBytes: 4, want: "a\xffb\xff"},
+		{name: "invalid prefix, split tail", in: "\xffé", maxBytes: 2, want: "\xff"},
+		{name: "empty", in: "", maxBytes: 4, want: ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := truncateRuneSafe(tc.in, tc.maxBytes); got != tc.want {
+				t.Fatalf("truncateRuneSafe(%q, %d) = %q, want %q", tc.in, tc.maxBytes, got, tc.want)
+			}
+		})
+	}
+}

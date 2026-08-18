@@ -129,6 +129,37 @@ type Settings struct {
 	ClaudeCustomEnv []ProviderEnvVar `json:"claudeCustomEnv,omitempty"`
 	CodexCustomEnv  []ProviderEnvVar `json:"codexCustomEnv,omitempty"`
 
+	// ClaudePromptOverrides / CodexPromptOverrides replace the provider's
+	// own system prompt for the models each entry names — Claude via
+	// `--system-prompt`, Codex via `baseInstructions`. Read at session
+	// spawn, so an edit reaches the next session started and never
+	// disturbs a running one. First ENABLED entry whose Models contains
+	// the session's normalized model slug wins; the list is per provider
+	// because the default prompt is model-shaped on both sides.
+	//
+	// Prompt text may carry `{{...}}` placeholders (workdir, git snapshot,
+	// platform, model, Claude memory dir) rendered at spawn — see
+	// internal/promptoverride, which owns both the match and the render.
+	ClaudePromptOverrides []PromptOverride `json:"claudePromptOverrides,omitempty"`
+	CodexPromptOverrides  []PromptOverride `json:"codexPromptOverrides,omitempty"`
+
+	// ClaudeDisabledTools / CodexDisabledTools remove built-in tool
+	// schemas from the model's context. Provider-wide (not model-scoped)
+	// and spawn-only on both sides.
+	//
+	// The two lists speak different vocabularies on purpose. Claude has a
+	// flat `--disallowedTools` deny list, so entries are RAW TOOL NAMES
+	// ("Workflow", "WebSearch") and an unknown name is harmless. Codex has
+	// no deny list at all — each entry is a CURATED TOGGLE ID that maps to
+	// one or more per-thread config keys (see
+	// internal/provider/codex.DisabledToolConfigOverrides, which owns the
+	// table and skips ids it does not know). Neither list is enum-validated
+	// here: Claude's vocabulary is the CLI's, and duplicating Codex's
+	// toggle table into this package (which must not import
+	// internal/provider) would give it a second place to drift.
+	ClaudeDisabledTools []string `json:"claudeDisabledTools,omitempty"`
+	CodexDisabledTools  []string `json:"codexDisabledTools,omitempty"`
+
 	// DefaultThreadEnvMode seeds the workspace mode for new draft threads.
 	// Accepts "local" or "worktree"; unknown values fall back to "local"
 	// when settings are loaded.

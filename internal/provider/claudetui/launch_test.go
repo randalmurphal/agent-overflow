@@ -1,8 +1,12 @@
 package claudetui
 
 import (
+	"os"
+	"slices"
 	"strings"
 	"testing"
+
+	"agent-overflow/internal/provider/claude"
 )
 
 // hasArgPair reports whether args contains flag immediately followed by value.
@@ -23,7 +27,7 @@ func hasArgPair(args []string, flag, value string) bool {
 // is LIVE-confirmed against 2.1.170 in spike/claude-mitm/probe_thinking_title.py.
 func TestBuildLaunchOptionsEnablesThinkingDisplay(t *testing.T) {
 	cfg := Config{Binary: "claude", WorkDir: t.TempDir(), HookCmd: "/tmp/ao-exe"}
-	opts, err := buildLaunchOptions(cfg, "http://127.0.0.1:1", "http://127.0.0.1:2/hook", "tok")
+	opts, err := buildLaunchOptions(cfg, "", "http://127.0.0.1:1", "http://127.0.0.1:2/hook", "tok")
 	if err != nil {
 		t.Fatalf("buildLaunchOptions: %v", err)
 	}
@@ -39,7 +43,7 @@ func TestBuildLaunchOptionsEnablesThinkingDisplay(t *testing.T) {
 // reported bug. Same global flag headless passes (provider/claude/session.go).
 func TestBuildLaunchOptionsPassesEffort(t *testing.T) {
 	cfg := Config{Binary: "claude", WorkDir: t.TempDir(), HookCmd: "/tmp/ao-exe", ReasoningEffort: "high"}
-	opts, err := buildLaunchOptions(cfg, "http://127.0.0.1:1", "http://127.0.0.1:2/hook", "tok")
+	opts, err := buildLaunchOptions(cfg, "", "http://127.0.0.1:1", "http://127.0.0.1:2/hook", "tok")
 	if err != nil {
 		t.Fatalf("buildLaunchOptions: %v", err)
 	}
@@ -53,7 +57,7 @@ func TestBuildLaunchOptionsPassesEffort(t *testing.T) {
 // an empty value.
 func TestBuildLaunchOptionsOmitsEffortWhenUnset(t *testing.T) {
 	cfg := Config{Binary: "claude", WorkDir: t.TempDir(), HookCmd: "/tmp/ao-exe"}
-	opts, err := buildLaunchOptions(cfg, "http://127.0.0.1:1", "http://127.0.0.1:2/hook", "tok")
+	opts, err := buildLaunchOptions(cfg, "", "http://127.0.0.1:1", "http://127.0.0.1:2/hook", "tok")
 	if err != nil {
 		t.Fatalf("buildLaunchOptions: %v", err)
 	}
@@ -61,6 +65,76 @@ func TestBuildLaunchOptionsOmitsEffortWhenUnset(t *testing.T) {
 		if a == "--effort" {
 			t.Errorf("launch args unexpectedly contain --effort (at index %d); got %v", i, opts.Args)
 		}
+	}
+}
+
+// The system-prompt override reaches the interactive TUI as
+// `--system-prompt-file <path>` — the flag the 2.1.234 PTY spike proved the
+// TUI honors — and the file, not argv, is what carries the text. Both halves
+// are asserted: a flag pointing at a file with the wrong content replaces the
+// prompt with the wrong prompt, which no flag-only test would catch.
+func TestBuildLaunchOptionsPassesTheSystemPromptFile(t *testing.T) {
+	const prompt = "You are the agent.\nWork in the repo."
+	path, err := claude.WriteSystemPromptFile(prompt)
+	if err != nil {
+		t.Fatalf("WriteSystemPromptFile() error = %v", err)
+	}
+	t.Cleanup(func() { claude.RemoveSystemPromptFile(path) })
+
+	cfg := Config{Binary: "claude", WorkDir: t.TempDir(), HookCmd: "/tmp/ao-exe", SystemPrompt: prompt}
+	opts, err := buildLaunchOptions(cfg, path, "http://127.0.0.1:1", "http://127.0.0.1:2/hook", "tok")
+	if err != nil {
+		t.Fatalf("buildLaunchOptions: %v", err)
+	}
+	if !hasArgPair(opts.Args, "--system-prompt-file", path) {
+		t.Fatalf("launch args missing --system-prompt-file %s; got %v", path, opts.Args)
+	}
+	if slices.Contains(opts.Args, prompt) {
+		t.Fatalf("the prompt text reached argv; got %v", opts.Args)
+	}
+	written, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile(%s) error = %v", path, err)
+	}
+	if string(written) != prompt {
+		t.Fatalf("system prompt file = %q, want %q", written, prompt)
+	}
+}
+
+// A session with no override must pass no flag at all, so the CLI keeps its
+// own prompt rather than being handed an empty file path.
+func TestBuildLaunchOptionsOmitsTheSystemPromptFlagWithoutAnOverride(t *testing.T) {
+	cfg := Config{Binary: "claude", WorkDir: t.TempDir(), HookCmd: "/tmp/ao-exe"}
+	opts, err := buildLaunchOptions(cfg, "", "http://127.0.0.1:1", "http://127.0.0.1:2/hook", "tok")
+	if err != nil {
+		t.Fatalf("buildLaunchOptions: %v", err)
+	}
+	if slices.Contains(opts.Args, "--system-prompt-file") {
+		t.Fatalf("launch args unexpectedly contain --system-prompt-file; got %v", opts.Args)
+	}
+}
+
+// One `--disallowedTools <name>` flag per entry, in the configured order.
+// The TUI honors the flag the same way headless does (2.1.234 spike): the
+// named tools' schemas are absent from the request.
+func TestBuildLaunchOptionsPassesOneDisallowedToolsFlagPerName(t *testing.T) {
+	cfg := Config{
+		Binary:          "claude",
+		WorkDir:         t.TempDir(),
+		HookCmd:         "/tmp/ao-exe",
+		DisallowedTools: []string{"Workflow", "WebSearch"},
+	}
+	opts, err := buildLaunchOptions(cfg, "", "http://127.0.0.1:1", "http://127.0.0.1:2/hook", "tok")
+	if err != nil {
+		t.Fatalf("buildLaunchOptions: %v", err)
+	}
+	for _, tool := range cfg.DisallowedTools {
+		if !hasArgPair(opts.Args, "--disallowedTools", tool) {
+			t.Fatalf("launch args missing --disallowedTools %s; got %v", tool, opts.Args)
+		}
+	}
+	if got := strings.Count(strings.Join(opts.Args, "\x00"), "--disallowedTools"); got != 2 {
+		t.Fatalf("--disallowedTools appears %d times, want one per name; got %v", got, opts.Args)
 	}
 }
 

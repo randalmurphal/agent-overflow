@@ -112,6 +112,19 @@ func (a *App) liveApplySessionConfig(threadID string) bool {
 		return true
 	}
 
+	// Adopt the settings-owned axes (SystemPrompt when no feature owns it,
+	// DisabledTools) from what this session actually launched with. They
+	// live in Settings rather than on the thread row, so applying today's
+	// values here would report a spawn-only difference and queue a deferred
+	// restart the user never asked for — every time they saved a Settings
+	// edit, and every time the workspace's git state moved under a rendered
+	// {{GIT_BLOCK}}. "Next sessions only" is the contract
+	// (docs/specs/prompt-tool-overrides.md); a restart that happens for some
+	// other reason rebuilds from scratch and adopts the new value, which is
+	// a new session and intended. See applySettingsOwnedAxes for the spawn
+	// half of the pair.
+	pinSettingsOwnedAxes(&opts, sess.launchOpts)
+
 	switch {
 	case sess.claude != nil:
 		update, ok := claude.PlanLiveUpdate(sess.launchOpts, opts)

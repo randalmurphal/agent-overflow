@@ -38,7 +38,7 @@ describe('settings section map', () => {
     ]);
     expect(SETTINGS_SECTION_GROUPS.map((g) => g.sections.map((s) => s.id))).toEqual([
       ['general', 'keybindings', 'updates'],
-      ['providers', 'discussions'],
+      ['providers', 'prompts', 'discussions'],
       ['projects', 'git', 'editor', 'network'],
       ['observability', 'storage'],
     ]);

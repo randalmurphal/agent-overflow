@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -707,7 +708,7 @@ func TestParseRealCLIFixture(t *testing.T) {
 // -- Session unit tests (wire format verification) --
 
 func TestBuildArgsDefault(t *testing.T) {
-	args := buildArgs(Config{})
+	args := buildArgs(Config{}, "")
 
 	// Baseline flags that every spawn must include. Adding a new flag to
 	// buildArgs should extend this list intentionally.
@@ -731,7 +732,7 @@ func TestBuildArgsDefault(t *testing.T) {
 }
 
 func TestBuildArgsOmitsResumeAtWithoutResume(t *testing.T) {
-	args := buildArgs(Config{ResumeAt: "leaf-456"})
+	args := buildArgs(Config{ResumeAt: "leaf-456"}, "")
 	for _, arg := range args {
 		if arg == "--resume-session-at" {
 			t.Fatalf("args include --resume-session-at without --resume: %v", args)
@@ -772,7 +773,7 @@ func TestVerifyReplayParentFailsRiskyReplayWithoutVerifiableParent(t *testing.T)
 }
 
 func TestBuildArgsWithAllOptions(t *testing.T) {
-	args := buildArgs(Config{
+	cfg := Config{
 		Model:           "opus",
 		Resume:          "session-123",
 		ResumeAt:        "leaf-456",
@@ -782,7 +783,13 @@ func TestBuildArgsWithAllOptions(t *testing.T) {
 		PermissionFlags: []string{"--permission-mode", "acceptEdits"},
 		MaxTurns:        5,
 		AllowedTools:    []string{"Bash", "Edit"},
-	})
+	}
+	systemPromptPath, err := WriteSystemPromptFile(cfg.SystemPrompt)
+	if err != nil {
+		t.Fatalf("WriteSystemPromptFile() error = %v", err)
+	}
+	t.Cleanup(func() { RemoveSystemPromptFile(systemPromptPath) })
+	args := buildArgs(cfg, systemPromptPath)
 
 	// Check that all flags are present.
 	findFlag := func(flag, value string) bool {
@@ -813,8 +820,21 @@ func TestBuildArgsWithAllOptions(t *testing.T) {
 	if !foundForkFlag {
 		t.Error("missing --fork-session")
 	}
-	if !findFlag("--system-prompt", "Be helpful") {
-		t.Error("missing --system-prompt")
+	// The prompt travels by path, never in argv (MAX_ARG_STRLEN + /proc —
+	// see WriteSystemPromptFile), so the flag is only half the assertion:
+	// what the CLI will actually read is the file's content.
+	if !findFlag("--system-prompt-file", systemPromptPath) {
+		t.Errorf("missing --system-prompt-file %s: %v", systemPromptPath, args)
+	}
+	if slices.Contains(args, "--system-prompt") {
+		t.Errorf("argv still carries --system-prompt: %v", args)
+	}
+	written, err := os.ReadFile(systemPromptPath)
+	if err != nil {
+		t.Fatalf("read system prompt file: %v", err)
+	}
+	if string(written) != "Be helpful" {
+		t.Errorf("system prompt file content = %q, want %q", written, "Be helpful")
 	}
 	if !findFlag("--json-schema", `{"type":"object"}`) {
 		t.Error("missing --json-schema inline JSON")
@@ -833,8 +853,46 @@ func TestBuildArgsWithAllOptions(t *testing.T) {
 	}
 }
 
+// The system-prompt file is the one spawn artifact AO leaves on disk, so
+// its two properties are pinned: a session without an override writes
+// nothing at all, and the file a session DOES write is readable only by the
+// user running AO (the prompt carries workspace paths and git state).
+func TestWriteSystemPromptFile(t *testing.T) {
+	path, err := WriteSystemPromptFile("")
+	if err != nil {
+		t.Fatalf("WriteSystemPromptFile(\"\") error = %v", err)
+	}
+	if path != "" {
+		RemoveSystemPromptFile(path)
+		t.Fatalf("WriteSystemPromptFile(\"\") = %q, want no file for a session with no override", path)
+	}
+	if args := buildArgs(Config{}, ""); slices.Contains(args, "--system-prompt-file") {
+		t.Errorf("argv carries --system-prompt-file without a prompt: %v", args)
+	}
+
+	path, err = WriteSystemPromptFile("secret prompt")
+	if err != nil {
+		t.Fatalf("WriteSystemPromptFile() error = %v", err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat system prompt file: %v", err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Errorf("system prompt file mode = %o, want 0600", perm)
+	}
+
+	RemoveSystemPromptFile(path)
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Errorf("system prompt file still present after removal: %v", err)
+	}
+	// Removal is idempotent: Close runs after a failed-spawn path may
+	// already have cleaned up.
+	RemoveSystemPromptFile(path)
+}
+
 func TestBuildArgsNoPermissionFlagsOmitsAll(t *testing.T) {
-	args := buildArgs(Config{PermissionFlags: nil})
+	args := buildArgs(Config{PermissionFlags: nil}, "")
 
 	for _, a := range args {
 		if a == "--permission-mode" || a == "--allow-dangerously-skip-permissions" {
@@ -846,7 +904,7 @@ func TestBuildArgsNoPermissionFlagsOmitsAll(t *testing.T) {
 // TestBuildArgsDangerousSkipPermissions confirms the full-access flow emits
 // the bypass permission mode plus the bare dangerous-skip allow flag.
 func TestBuildArgsDangerousSkipPermissions(t *testing.T) {
-	args := buildArgs(Config{PermissionFlags: []string{"--permission-mode", "bypassPermissions", "--allow-dangerously-skip-permissions"}})
+	args := buildArgs(Config{PermissionFlags: []string{"--permission-mode", "bypassPermissions", "--allow-dangerously-skip-permissions"}}, "")
 	found := false
 	for i, a := range args {
 		if a != "--allow-dangerously-skip-permissions" {

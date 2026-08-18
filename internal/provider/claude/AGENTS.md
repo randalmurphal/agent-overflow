@@ -24,6 +24,24 @@ Structured output is session-sticky: `Config.OutputSchema` is passed as
 inline JSON through `--json-schema` when the process starts. Per-turn
 `provider.SendOptions.OutputSchema` is deliberately ignored by Claude.
 
+`Config.SystemPrompt` goes out as `--system-prompt-file <path>`, never as
+an argv value: the two flags are wire-identical (2.1.234), and the file
+avoids both `MAX_ARG_STRLEN` (a long rendered prompt would make every
+spawn fail E2BIG) and `/proc/<pid>/cmdline` exposure. `NewSession` writes
+the 0600 temp file (`WriteSystemPromptFile`); `Close` and every
+failed-spawn path remove it. `buildArgs` therefore takes the PATH — it
+never reads `cfg.SystemPrompt` itself.
+
+`WriteSystemPromptFile` / `RemoveSystemPromptFile` and
+`SanitizeDisallowedTools` are exported for `internal/provider/claudetui`,
+which passes the same two flags on its PTY launch (the interactive TUI
+honors both identically — spike-verified 2.1.234). One writer and one
+argv-safety pass mean the two Claude transports cannot drift on the temp
+file's mode/removal contract or on what counts as one safe CLI argument.
+`mergeDisallowedTools` stays unexported: the read-only mode strip it
+unions in is headless-only, because `EnforcesRuntimeMode` is false on
+claude-tui.
+
 ## Layout
 
 The parser is split by wire-envelope type so each NDJSON shape has one

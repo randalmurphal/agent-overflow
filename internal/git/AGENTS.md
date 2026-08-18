@@ -148,6 +148,22 @@ status, diff, branches, commits, worktrees, and PR/MR creation.
   assisted commits: staged summary/patch reads plus
   `RecentCommitSubjects` (best-effort `git log --no-merges` subjects
   backing the "match repo history" commit-message style).
+- `prompt_context.go` — `PromptSnapshot`, the two-subprocess (status +
+  `log -n 5`) workspace summary behind the `{{GIT_BLOCK}}` placeholder of
+  the system-prompt override, plus `PromptSnapshot.PromptBlock()`, the
+  branch/status/recent-commits rendering that placeholder substitutes
+  (sections with nothing to say are omitted, and the result carries no
+  trailing newline — the user's prompt owns the surrounding spacing). Kept
+  apart from `Status` / `StatusFast` deliberately: this runs on the session
+  spawn path and needs neither the six-probe fan-out nor the network PR
+  lookup, and it must answer for a NON-repository without erroring — "not a
+  repo" is one of the two facts it exists to report. The status section is
+  capped (`PromptStatusLimit`) and `splitShortStatus` stops accumulating
+  once it is past that cap, so a working tree with tens of thousands of
+  dirty paths cannot build a multi-megabyte intermediate for a 4KB answer.
+  A caller that needs ONLY `{{IS_GIT_REPO}}` must not come here at all —
+  `gitroot.MainRoot` answers that from git's on-disk layout with no
+  subprocess (see `app_session_prompt_override.go`).
 - `forge.go` — `Forge` interface + `PRReference` / `PRMetadata` /
   `PRFile` types; `SplitProjectForForge` per-forge namespace splitter;
   `ValidateProjectSegment` safe-name check; `BuildPRAnchor` /

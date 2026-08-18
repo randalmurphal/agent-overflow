@@ -17,7 +17,7 @@ import (
 //   - buildApprovalResponse emits updatedInput / updatedPermissions when provided
 
 func TestBuildArgsIncludesPermissionPromptTool(t *testing.T) {
-	args := buildArgs(Config{})
+	args := buildArgs(Config{}, "")
 
 	for i, arg := range args {
 		if arg == "--permission-prompt-tool" {
