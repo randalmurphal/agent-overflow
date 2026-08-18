@@ -38,6 +38,7 @@ function harness(): Harness {
   const runs = createThreadActivityRuns({
     defaultCollapsed: () => true,
     windowRows: () => 30,
+    scrollController: () => null,
   });
   const items = new Map<string, Item>();
   const expandedItemIds = new Set<string>();

@@ -32,7 +32,6 @@
   import type { Snippet } from 'svelte';
   import { tick } from 'svelte';
   import type { ThreadPane } from '../../stores/thread.svelte';
-  import { withViewportBottomHeld } from '../../stores/threadPaneShared';
   import type { ActivityRunNode, TimelineNode } from '../../utils/subagentGrouping';
   import { timelineNodeItemId, timelineNodeKey } from '../../utils/subagentGrouping';
   import {
@@ -165,19 +164,13 @@
   let clipId = $derived(chatRowDomId(pane, 'activity-run', run.runId));
   let maxHeight = $derived(activityRunClipMaxHeight(expandedPx));
 
-  // Held at the viewport's bottom edge: a run the reader just expanded opens
-  // UPWARD, above the rows they are already reading, instead of shoving those
-  // rows down the page — and collapsing gives that height back the same way.
-  // The transaction also keeps the spring out of it, so an expand while stuck
-  // at the bottom is instant rather than an animated ride across the delta.
   function toggle(): void {
-    withViewportBottomHeld(pane.scrollController, () => {
-      // The state on screen, not the registry's idea of it: a run with no
-      // override renders open while it is live whatever the defaults say, so
-      // asking the registry to invert its own answer would hand back the state
-      // the reader is already looking at.
-      pane.activityRuns.setCollapsed(run.runId, !collapsed);
-    });
+    // The state on screen, not the registry's idea of it: a run with no
+    // override renders open while it is live whatever the defaults say, so
+    // asking the registry to invert its own answer would hand back the state
+    // the reader is already looking at. The viewport-bottom hold is the
+    // registry's own (see `ThreadActivityRuns.setCollapsed`) — do not wrap.
+    pane.activityRuns.setCollapsed(run.runId, !collapsed);
   }
 
   // Guards `mountEarlier` against overlap. Deliberately a plain local, not

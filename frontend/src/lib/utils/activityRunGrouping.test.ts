@@ -14,6 +14,7 @@ function identity(): ThreadActivityRuns {
   return createThreadActivityRuns({
     defaultCollapsed: () => false,
     windowRows: () => 30,
+    scrollController: () => null,
   });
 }
 
@@ -373,6 +374,7 @@ describe('identity migration', () => {
     const id = createThreadActivityRuns({
       defaultCollapsed: () => true,
       windowRows: () => 30,
+      scrollController: () => null,
     });
     const nodes = project([tool('t1', 'Bash'), prose('p1'), tool('t2', 'Bash')], { identity: id });
 

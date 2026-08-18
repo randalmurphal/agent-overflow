@@ -24,7 +24,6 @@ import {
   userScrollTo,
   type QuietBottomOptions,
 } from '../../../test/helpers/timelineBrowserHarness';
-import { withViewportBottomHeld } from '../../stores/threadPaneShared';
 import { ACTIVITY_RUN_WINDOW_ROWS_DEFAULT as WINDOW_ROWS } from '../../utils/activityRunWindow';
 import type { Item } from '../../types/models';
 
@@ -507,18 +506,14 @@ describe('activity run — a toggle opens upward', () => {
     expect(bottomGap()).toBeLessThanOrEqual(2);
     const heightBefore = scrollEl.scrollHeight;
 
-    withViewportBottomHeld(pane.scrollController, () => {
-      pane.activityRuns.setAllCollapsed(true);
-    });
+    pane.activityRuns.setAllCollapsed(true);
     await tick();
     await raf();
     await raf();
     expect(scrollEl.scrollHeight).toBeLessThan(heightBefore);
     expect(bottomGap()).toBeLessThanOrEqual(2);
 
-    withViewportBottomHeld(pane.scrollController, () => {
-      pane.activityRuns.setAllCollapsed(false);
-    });
+    pane.activityRuns.setAllCollapsed(false);
     await tick();
     await raf();
     await raf();

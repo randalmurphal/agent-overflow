@@ -131,6 +131,7 @@ function capturingIdentity(): {
   const real = createThreadActivityRuns({
     defaultCollapsed: () => false,
     windowRows: () => 30,
+    scrollController: () => null,
   });
   let captured: readonly (readonly string[])[] = [];
   const registry: ThreadActivityRuns = {

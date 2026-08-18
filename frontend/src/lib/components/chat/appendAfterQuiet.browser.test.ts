@@ -46,7 +46,6 @@ import {
   setUiRenderTraceEnabled,
 } from '../../utils/uiRenderTrace';
 import type { ThreadPane } from '../../stores/thread.svelte';
-import { withViewportBottomHeld } from '../../stores/threadPaneShared';
 import type { Item } from '../../types/models';
 
 setupTimelineHarness();
@@ -465,16 +464,13 @@ describe('auto-collapse release vs streaming appends', () => {
     const THREAD_ID = 'thread-collapse-append-race';
     const { pane, scrollEl, heldRunId } = await mountHeldRunFixture(THREAD_ID);
 
-    // The incident interleaving in one synchronous task: the gate's anchored
-    // transaction releases the hold, and the next tool call lands before the
-    // transaction's post-flush restore runs.
+    // The incident interleaving in one synchronous task: the release's
+    // anchored transaction (the registry's own — `releaseOpenedLive` runs
+    // the batch inside a yield-takeover hold) frees the hold, and the next
+    // tool call lands before the transaction's post-flush restore runs.
     const since = lastTraceSeq();
     const heightBefore = scrollEl.scrollHeight;
-    withViewportBottomHeld(
-      pane.scrollController,
-      () => pane.activityRuns.releaseOpenedLive(heldRunId),
-      { takeover: 'yield' },
-    );
+    pane.activityRuns.releaseOpenedLive([heldRunId]);
     pane.applyProviderItemUpserts([bash('race-tail', 110, THREAD_ID)]);
     await tick();
     await raf();
@@ -557,14 +553,11 @@ describe('auto-collapse release vs streaming appends', () => {
     await sleep(SILENT_GAP_MS);
     expect(distanceToBottom(scrollEl)).toBeLessThanOrEqual(2);
 
-    // The gate's transaction alone this time: no append in flight, so the
-    // bottom restore runs (no yield) and plants its navigation.
+    // The release's transaction alone this time (the registry's own hold):
+    // no append in flight, so the bottom restore runs (no yield) and plants
+    // its navigation.
     const heightBefore = scrollEl.scrollHeight;
-    withViewportBottomHeld(
-      pane.scrollController,
-      () => pane.activityRuns.releaseOpenedLive(heldRunId),
-      { takeover: 'yield' },
-    );
+    pane.activityRuns.releaseOpenedLive([heldRunId]);
     await tick();
     // Two frames: the restore's write has landed AND the fold's RO shrink
     // has delivered (the incident had ~75ms between them), so the

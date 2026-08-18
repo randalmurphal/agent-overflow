@@ -37,7 +37,6 @@ import {
   setUiRenderTraceEnabled,
 } from '../../utils/uiRenderTrace';
 import type { ThreadPane } from '../../stores/thread.svelte';
-import { withViewportBottomHeld } from '../../stores/threadPaneShared';
 import type { Item } from '../../types/models';
 
 setupTimelineHarness();
@@ -159,9 +158,7 @@ describe('reader-asked expand while a turn streams', () => {
 
     // The reader collapses the run (idle — this direction shrinks and was
     // never the problem), and the pane settles.
-    withViewportBottomHeld(pane.scrollController, () =>
-      pane.activityRuns.setCollapsed(runId, true),
-    );
+    pane.activityRuns.setCollapsed(runId, true);
     await tick();
     await waitForQuietBottom(scrollEl, 'collapse settle', QUIET_BOTTOM);
     const collapsedHeight = scrollEl.scrollHeight;
@@ -188,9 +185,7 @@ describe('reader-asked expand while a turn streams', () => {
     await sleep(200);
 
     const since = lastTraceSeq();
-    withViewportBottomHeld(pane.scrollController, () =>
-      pane.activityRuns.setCollapsed(runId, false),
-    );
+    pane.activityRuns.setCollapsed(runId, false);
     await tick();
 
     // Sample the bottom gap per frame across the expand and beyond. The

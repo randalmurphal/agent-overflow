@@ -37,6 +37,8 @@ import type {
 } from '../utils/activityRunWindow';
 import { SvelteMap } from 'svelte/reactivity';
 import { reportFrontendDiagnostic } from '../utils/frontendErrorCapture';
+import { withViewportBottomHeld } from './threadPaneShared';
+import type { PaneScrollController } from './threadPaneShared';
 
 export interface ActivityRunScrollSnapshot {
   scrollTop: number;
@@ -49,6 +51,16 @@ export interface ThreadActivityRunsOptions {
   defaultCollapsed(): boolean;
   /** `activityRunWindowRows` — how many tail rows a run mounts by default. */
   windowRows(): number;
+  /**
+   * The pane's scroll controller, read per mutation (it registers after this
+   * factory runs and churns on thread switches — same "declared later" closure
+   * as the pane's other getters). The collapse mutators below run their writes
+   * inside `withViewportBottomHeld` on whatever this answers, so holding the
+   * viewport is the registry's job, not a convention its callers remember —
+   * the reason the hold moved in here from three call sites (chat/AGENTS.md
+   * "Every collapse/expand", incident 2026-08-17).
+   */
+  scrollController(): PaneScrollController | null;
 }
 
 export interface ThreadActivityRuns extends ActivityRunIdentity {
@@ -68,8 +80,29 @@ export interface ThreadActivityRuns extends ActivityRunIdentity {
    * expanded while it is live regardless of the defaults (see `collapsedFor`),
    * so a registry-side toggle would read the settled answer and hand back the
    * state the reader is already looking at.
+   *
+   * The write runs inside `withViewportBottomHeld` (the reader ASKED for this
+   * height change, so the delta opens upward, instantly, over rows they are
+   * already reading). Callers therefore must NOT wrap this in a hold of their
+   * own — nesting issues a second restore token for nothing. The one expand
+   * that owns its viewport instead is the jump's, `expandForReveal`.
    */
   setCollapsed(runId: string, collapsed: boolean): void;
+  /**
+   * Expand for a jump into the run — same write as
+   * `setCollapsed(runId, false)` but with NO viewport hold, and the absence
+   * is load-bearing, not a preference: `scrollToItem`
+   * (`timelineRestore.svelte.ts`) takes a restore token before revealing and
+   * aborts if the token has moved when it resumes, and a hold ISSUES a token
+   * (`nextRestoreToken`, via `preserveViewportBottom`) — so routing this
+   * through `setCollapsed` would cancel every jump into a collapsed run at
+   * its own guard. Even without that, a bottom restore would fight the
+   * viewport the jump is about to claim. Only `revealActivityRunItem`
+   * (utils/activityRunWindow.ts) should call this — it is the one door for
+   * jumps, and this verb can only expand, so the hold-free path cannot be
+   * borrowed for a collapse.
+   */
+  expandForReveal(runId: string): void;
   /**
    * What a run with no explicit state does in this thread: the bulk override
    * if one has been taken, otherwise the `activityRunDefault` setting.
@@ -110,8 +143,19 @@ export interface ThreadActivityRuns extends ActivityRunIdentity {
    * forgotten the same way a clicked collapse forgets it. When they say
    * expanded, nothing visible changes — the hold is simply retired, so a
    * later default flip treats the run like any other settled one.
+   *
+   * Takes the batch because the gate releases everything eligible at once,
+   * and the whole batch runs inside ONE `withViewportBottomHeld` with
+   * `takeover: 'yield'`: the change is UNASKED, so when a structural append
+   * lands in the flushes between the change and its restore, the restore
+   * stands down and the armed spring glides the new row in instead of a
+   * bottom write landing it instantly (bug-report-20260731T141600Z;
+   * regression: appendAfterQuiet.browser.test.ts). The transaction only
+   * opens when the batch actually collapses something: a batch with no
+   * releasable id, or one whose releases change no geometry (defaults say
+   * expanded), pauses no spring and burns no restore token.
    */
-  releaseOpenedLive(runId: string): void;
+  releaseOpenedLive(runIds: readonly string[]): void;
   /**
    * RESIZE the run's mounted window, recording the size as an explicit
    * override that no longer tracks the `activityRunWindowRows` setting. Set by
@@ -709,7 +753,7 @@ export function createThreadActivityRuns(
     return threadDefaultCollapsed();
   }
 
-  function setCollapsed(runId: string, collapsed: boolean): void {
+  function writeCollapsed(runId: string, collapsed: boolean): void {
     const entry = entries.get(runId);
     if (!entry) return;
     // An explicit answer retires the open-because-live hold even when the
@@ -722,6 +766,12 @@ export function createThreadActivityRuns(
     if (collapsed) forgetInnerPosition(entry);
     else entry.clipOpen = true;
     revision += 1;
+  }
+
+  function setCollapsed(runId: string, collapsed: boolean): void {
+    withViewportBottomHeld(options.scrollController(), () => {
+      writeCollapsed(runId, collapsed);
+    });
   }
 
   /**
@@ -767,10 +817,13 @@ export function createThreadActivityRuns(
     },
     noteWholesaleReplace,
     setCollapsed,
+    expandForReveal: (runId) => {
+      writeCollapsed(runId, false);
+    },
     get bulkCollapsed() {
       return threadDefaultCollapsed();
     },
-    setAllCollapsed: (collapsed) => {
+    setAllCollapsed: (collapsed) => withViewportBottomHeld(options.scrollController(), () => {
       bulkCollapsed = collapsed;
       // Per-run overrides are dropped rather than overwritten so the runs go
       // back to following the thread, which is what makes a later flip apply
@@ -797,7 +850,7 @@ export function createThreadActivityRuns(
         }
       }
       revision += 1;
-    },
+    }),
     scrollSnapshot: (runId) => entries.get(runId)?.scroll ?? null,
     saveScrollSnapshot: (runId, snapshot) => {
       // A row torn down AFTER its registry was cleared has nothing to save
@@ -826,21 +879,44 @@ export function createThreadActivityRuns(
       }
       return held;
     },
-    releaseOpenedLive: (runId) => {
-      const entry = entries.get(runId);
-      if (!entry?.openedLive) return;
-      entry.openedLive = false;
+    releaseOpenedLive: (runIds) => {
+      // The gate can hand over ids whose entries a projection pass swept
+      // between capture and release; filtering here (rather than trusting
+      // callers to) is what keeps "a batch with nothing to do never opens a
+      // transaction" a property of the API. The transaction is not free even
+      // when its change moves nothing: it pauses the spring for two frames
+      // and burns a restore token — the counter thread-switch restores guard
+      // on — so it must only run when pixels actually move.
+      const releasable = runIds.filter((runId) => entries.get(runId)?.openedLive);
+      if (releasable.length === 0) return;
       // No override check: a hold only exists while nobody has answered —
       // `resolveCollapsed` records it under a null override and every
       // `setCollapsed` write retires it — so the defaults alone decide here.
       // Only an actual auto-collapse rebuilds and forgets. With the defaults
       // saying expanded the run keeps rendering exactly as it was — dropping
-      // its inner position then would yank a still-open clip to its tail, and
-      // a revision bump would rebuild the projection to change nothing.
-      if (threadDefaultCollapsed()) {
-        forgetInnerPosition(entry);
-        revision += 1;
+      // its inner position then would yank a still-open clip to its tail, a
+      // revision bump would rebuild the projection to change nothing, and a
+      // viewport transaction would guard a change with no geometry in it.
+      if (!threadDefaultCollapsed()) {
+        for (const runId of releasable) entries.get(runId)!.openedLive = false;
+        return;
       }
+      withViewportBottomHeld(
+        options.scrollController(),
+        () => {
+          for (const runId of releasable) {
+            const entry = entries.get(runId)!;
+            entry.openedLive = false;
+            forgetInnerPosition(entry);
+            revision += 1;
+          }
+        },
+        // 'yield': nobody asked for this collapse, so a wire append landing
+        // between the release and its restore hands the trip to the
+        // structural spring instead of writing a bottom that already contains
+        // the new row (regression: appendAfterQuiet.browser.test.ts).
+        { takeover: 'yield' },
+      );
     },
     setMountWindow: (runId, window) => {
       const entry = entries.get(runId);

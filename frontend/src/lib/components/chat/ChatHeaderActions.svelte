@@ -20,7 +20,6 @@
   import ChevronsDownUp from '@lucide/svelte/icons/chevrons-down-up';
   import ChevronsUpDown from '@lucide/svelte/icons/chevrons-up-down';
   import type { ThreadPane } from '../../stores/thread.svelte';
-  import { withViewportBottomHeld } from '../../stores/threadPaneShared';
   import { getProject } from '../../stores/projects.svelte';
   import { addToast } from '../../stores/toast.svelte';
   import { chordHintForCommand, chordHintSuffix } from '../../stores/keybindings.svelte';
@@ -124,13 +123,10 @@
     runsCollapsed ? 'Expand all activity runs' : 'Collapse all activity runs',
   );
 
-  // Held at the viewport's bottom edge, exactly as a single run's rail is —
-  // more so, since this moves every run in the window at once and would
-  // otherwise be the largest unannounced height change in the app.
   function toggleAllRuns(): void {
-    withViewportBottomHeld(pane.scrollController, () => {
-      pane.activityRuns.setAllCollapsed(!runsCollapsed);
-    });
+    // The viewport-bottom hold is the registry's own (see
+    // `ThreadActivityRuns.setAllCollapsed`) — do not wrap.
+    pane.activityRuns.setAllCollapsed(!runsCollapsed);
   }
 
   function toggleWorkspaceReview(): void {

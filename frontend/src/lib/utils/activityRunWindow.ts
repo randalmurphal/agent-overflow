@@ -130,7 +130,7 @@ function clampWindowStart(run: ActivityRunNode, from: number, rows: number): num
 
 /** The registry surface `revealActivityRunItem` drives. */
 export interface ActivityRunReveal {
-  setCollapsed(runId: string, collapsed: boolean): void;
+  expandForReveal(runId: string): void;
   setWindowAnchor(runId: string, anchorItemId: string | null): void;
   /** Whether the run holds the item now; see `ThreadActivityRuns`. */
   containsMember(runId: string, itemId: string): boolean;
@@ -160,7 +160,13 @@ export function revealActivityRunItem(
 ): boolean {
   const window = activityRunFocusWindow(run, itemId);
   if (!window) return false;
-  registry.setCollapsed(run.runId, false);
+  // `expandForReveal`, not `setCollapsed`: the jump that called this holds a
+  // restore token and aborts if the token moves before it resumes, and
+  // `setCollapsed`'s viewport-bottom hold issues one — going through it would
+  // cancel the jump at its own guard (see the verb's doc in
+  // threadActivityRuns.svelte.ts). The bottom restore fighting the jump's
+  // destination is the second reason.
+  registry.expandForReveal(run.runId);
   // The anchor, not a whole window: a jump moves the window and never resizes
   // it, and asking for the size it already has would record that size as an
   // explicit override — pinning a short run at its current length so it stops

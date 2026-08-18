@@ -21,10 +21,10 @@
 // and its bottom restore (structural triggers make gate passes
 // inherently append-adjacent) arms the structural spring, and the
 // restore hands the trip to it instead of writing a bottom that already
-// contains the new row — see the `takeover: 'yield'` at the call site.
+// contains the new row. The transaction is the registry's own — see
+// `ThreadActivityRuns.releaseOpenedLive` for its `takeover: 'yield'`.
 
 import type { ThreadPane } from '../../stores/thread.svelte';
-import { withViewportBottomHeld } from '../../stores/threadPaneShared';
 import type { QuietPass } from './timelineQuietWork';
 import type { TimelineVirtualizerHandle } from '../../utils/virtual/types';
 import {
@@ -117,32 +117,11 @@ export function createTimelineActivityRunAutoCollapse(
     // no-ops on unknown ids. Nothing here may create entries.
     if (eligible.length === 0) return false;
 
-    // One anchored transaction around the whole batch — the rule every
-    // mutator of run collapse state follows (chat/AGENTS.md). The runs are
-    // off-screen, so for a pinned reader the browser's own clamp would
-    // already cancel the shrink; the transaction is what makes zero motion
-    // DETERMINISTIC for the rest: a reader parked mid-list below a released
-    // run gets their anchor row put back after the flush instead of trusting
-    // the engine to compensate an estimate-driven height change above them.
-    // Collected first so a pass with nothing to do never pauses the spring.
-    //
-    // takeover 'yield': the scheduler's quiet gate can only see motion
-    // that exists when the pass RUNS — a streamed append can land in
-    // the flushes between this change and its bottom restore (the gate
-    // re-runs on tail advances, so its passes are inherently correlated
-    // with arrivals). The transaction's restore then yields and the
-    // append's armed spring glides the new row in, instead of the
-    // restore claiming a bottom that already contains it
-    // (bug-report-20260731T141600Z: an off-screen release merged with a
-    // same-frame tool-call arrival into one net-negative delivery, and
-    // every bottom write landed the row as a teleport).
-    withViewportBottomHeld(
-      pane.scrollController,
-      () => {
-        for (const runId of eligible) pane.activityRuns.releaseOpenedLive(runId);
-      },
-      { takeover: 'yield' },
-    );
+    // Collected first so a pass with nothing to do never pauses the spring:
+    // the registry runs the batch inside ONE yield-takeover viewport-bottom
+    // hold (`ThreadActivityRuns.releaseOpenedLive` carries the full
+    // rationale, incl. the collapse-vs-append race its 'yield' answers).
+    pane.activityRuns.releaseOpenedLive(eligible);
     return true;
   }
 

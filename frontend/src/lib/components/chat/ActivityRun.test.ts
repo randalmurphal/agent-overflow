@@ -494,7 +494,7 @@ describe('<ActivityRun>', () => {
       expect(getByTestId('activity-run-clip')).toBeInTheDocument();
 
       // What the gate does when the run is out of sight and untouched.
-      pane.activityRuns.releaseOpenedLive(runId);
+      pane.activityRuns.releaseOpenedLive([runId]);
       await tick();
 
       expect(queryByTestId('activity-run-clip')).toBeNull();

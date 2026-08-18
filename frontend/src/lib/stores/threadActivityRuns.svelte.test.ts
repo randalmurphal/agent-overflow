@@ -6,6 +6,7 @@ import {
   createThreadActivityRuns,
   resetActivityRunAnchorReportsForTest,
 } from './threadActivityRuns.svelte';
+import type { PaneScrollController } from './threadPaneShared';
 import { installDiagnosticsCapture } from '../../test/helpers/diagnostics';
 import { makeItem } from '../../test/helpers/chat';
 import { pass, registry, rows } from '../../test/helpers/activityRuns';
@@ -31,6 +32,7 @@ describe('collapse state', () => {
     const runs = createThreadActivityRuns({
       defaultCollapsed: () => collapsedDefault,
       windowRows: () => 30,
+      scrollController: () => null,
     });
     const [run] = pass(runs, [['a']]);
     runs.setCollapsed(run.runId, true);
@@ -59,7 +61,7 @@ describe('collapse state while a run is still working', () => {
     const [settled] = pass(runs, [['a']]);
     expect(settled.collapsed).toBe(false);
 
-    runs.releaseOpenedLive(settled.runId);
+    runs.releaseOpenedLive([settled.runId]);
     expect(pass(runs, [['a']])[0].collapsed).toBe(true);
   });
 
@@ -112,7 +114,7 @@ describe('collapse state while a run is still working', () => {
     const [settled] = pass(runs, [['a']]);
     expect(settled.collapsed).toBe(false);
 
-    runs.releaseOpenedLive(settled.runId);
+    runs.releaseOpenedLive([settled.runId]);
     expect(pass(runs, [['a']])[0].collapsed).toBe(true);
   });
 });
@@ -133,7 +135,7 @@ describe('the open-because-live hold', () => {
     pass(runs, [['a']]);
     expect(runs.openedLiveRunIds()).toEqual([run.runId]);
 
-    runs.releaseOpenedLive(run.runId);
+    runs.releaseOpenedLive([run.runId]);
     expect(runs.openedLiveRunIds()).toEqual([]);
   });
 
@@ -146,7 +148,7 @@ describe('the open-because-live hold', () => {
     expect(runs.scrollSnapshot(run.runId)).toEqual({ scrollTop: 240, escaped: false });
     const before = runs.revision;
 
-    runs.releaseOpenedLive(run.runId);
+    runs.releaseOpenedLive([run.runId]);
 
     // The run became a chip: same forgetting as a clicked collapse, and a
     // revision bump so the projection actually renders the change.
@@ -166,7 +168,7 @@ describe('the open-because-live hold', () => {
     runs.saveScrollSnapshot(run.runId, { scrollTop: 240, escaped: true });
     const before = runs.revision;
 
-    runs.releaseOpenedLive(run.runId);
+    runs.releaseOpenedLive([run.runId]);
 
     expect(runs.revision).toBe(before);
     expect(runs.scrollSnapshot(run.runId)).toEqual({ scrollTop: 240, escaped: true });
@@ -183,10 +185,10 @@ describe('the open-because-live hold', () => {
     const [run] = pass(runs, [['a']], 'thread-1', 0);
     pass(runs, [['a']]);
 
-    runs.releaseOpenedLive(run.runId);
+    runs.releaseOpenedLive([run.runId]);
     const after = runs.revision;
-    runs.releaseOpenedLive(run.runId);
-    runs.releaseOpenedLive('r99');
+    runs.releaseOpenedLive([run.runId]);
+    runs.releaseOpenedLive(['r99']);
 
     expect(runs.revision).toBe(after);
   });
@@ -224,7 +226,7 @@ describe('the open-because-live hold', () => {
     const runs = registry({ defaultCollapsed: true });
     const [run] = pass(runs, [['a']], 'thread-1', 0);
     pass(runs, [['a']]);
-    runs.releaseOpenedLive(run.runId);
+    runs.releaseOpenedLive([run.runId]);
     expect(pass(runs, [['a']])[0].collapsed).toBe(true);
 
     expect(pass(runs, [['a']], 'thread-1', 0)[0].collapsed).toBe(false);
@@ -432,6 +434,7 @@ describe('mount window', () => {
     const runs = createThreadActivityRuns({
       defaultCollapsed: () => false,
       windowRows: () => windowRows,
+      scrollController: () => null,
     });
     pass(runs, [rows(100)]);
 
@@ -517,6 +520,7 @@ describe('mount window', () => {
     const runs = createThreadActivityRuns({
       defaultCollapsed: () => false,
       windowRows: () => windowRows,
+      scrollController: () => null,
     });
     const [run] = pass(runs, [rows(100)]);
 
@@ -999,5 +1003,117 @@ describe('window-anchor guard', () => {
 
     expect(runs.windowAnchor(resolved.runId)).toBeNull();
     expect((await diagnostics.messages()).length).toBe(1);
+  });
+});
+
+describe('viewport hold ownership', () => {
+  // The hold moved INTO the mutators (incident 2026-08-17, chat/AGENTS.md
+  // "Every collapse/expand"): a call site cannot forget it, and the one
+  // hold-free verb cannot collapse. These pin which writes ride the
+  // transaction and with which takeover, against a controller stub that
+  // records the calls.
+  function heldRegistry(overrides: { defaultCollapsed?: boolean } = {}) {
+    const holds: { takeover: string; ranInside: boolean }[] = [];
+    const controller: PaneScrollController = {
+      pauseAutoScroll: () => () => {},
+      autoScrollInFlight: () => false,
+      observe: () => {},
+      markStructuralContentPending: () => {},
+      armWarmup: () => {},
+      preserveScrollAnchor: async (_anchor, action) => {
+        await action();
+      },
+      preserveViewportBottom: (change, opts) => {
+        const record = { takeover: opts?.takeover ?? 'claim', ranInside: false };
+        holds.push(record);
+        change();
+        record.ranInside = true;
+      },
+    };
+    const runs = createThreadActivityRuns({
+      defaultCollapsed: () => overrides.defaultCollapsed ?? false,
+      windowRows: () => 30,
+      scrollController: () => controller,
+    });
+    return { runs, holds };
+  }
+
+  it('setCollapsed writes inside a claim-takeover hold', () => {
+    const { runs, holds } = heldRegistry();
+    const [run] = pass(runs, [['a']]);
+    const revisionBefore = runs.revision;
+
+    runs.setCollapsed(run.runId, true);
+
+    expect(holds).toEqual([{ takeover: 'claim', ranInside: true }]);
+    expect(runs.revision, 'the write must land inside the hold').toBe(revisionBefore + 1);
+  });
+
+  it('setAllCollapsed writes inside a claim-takeover hold', () => {
+    const { runs, holds } = heldRegistry();
+    pass(runs, [['a']]);
+
+    runs.setAllCollapsed(true);
+
+    expect(holds).toEqual([{ takeover: 'claim', ranInside: true }]);
+    expect(runs.bulkCollapsed).toBe(true);
+  });
+
+  it('releaseOpenedLive runs the whole batch inside ONE yield-takeover hold', () => {
+    const { runs, holds } = heldRegistry({ defaultCollapsed: true });
+    // Both runs held open: each streamed as the tail once, so each recorded
+    // an open-because-live hold that outlives its liveness.
+    pass(runs, [['a']], 'thread-1', 0);
+    pass(runs, [['a'], ['b']], 'thread-1', 1);
+    const [first, second] = pass(runs, [['a'], ['b']]);
+    expect(runs.openedLiveRunIds().sort()).toEqual(
+      [first.runId, second.runId].sort(),
+    );
+
+    runs.releaseOpenedLive([first.runId, second.runId]);
+
+    expect(holds).toEqual([{ takeover: 'yield', ranInside: true }]);
+    expect(runs.openedLiveRunIds()).toEqual([]);
+  });
+
+  it('releaseOpenedLive with nothing releasable opens no transaction', () => {
+    // The transaction pauses the spring and burns a restore token — the
+    // counter thread-switch restores guard on — so a batch that changes
+    // nothing must not run one. The gate pre-filters too, but the property
+    // belongs to the API: entries can be swept between capture and release.
+    const { runs, holds } = heldRegistry({ defaultCollapsed: true });
+    const [run] = pass(runs, [['a']]);
+    expect(runs.openedLiveRunIds()).toEqual([]);
+
+    runs.releaseOpenedLive([]);
+    runs.releaseOpenedLive([run.runId, 'r99']);
+
+    expect(holds).toEqual([]);
+  });
+
+  it('releaseOpenedLive with expanded defaults retires holds without a transaction', () => {
+    // Nothing visible changes on this path — the run keeps rendering exactly
+    // as it was — so there is no geometry for a viewport hold to guard.
+    const { runs, holds } = heldRegistry({ defaultCollapsed: false });
+    pass(runs, [['a']], 'thread-1', 0);
+    const [run] = pass(runs, [['a']]);
+    expect(runs.openedLiveRunIds()).toEqual([run.runId]);
+
+    runs.releaseOpenedLive([run.runId]);
+
+    expect(holds).toEqual([]);
+    expect(runs.openedLiveRunIds()).toEqual([]);
+    expect(pass(runs, [['a']])[0].collapsed).toBe(false);
+  });
+
+  it('expandForReveal writes with NO hold — the jump owns the viewport', () => {
+    const { runs, holds } = heldRegistry({ defaultCollapsed: true });
+    const [run] = pass(runs, [['a']]);
+    expect(run.collapsed).toBe(true);
+
+    runs.expandForReveal(run.runId);
+
+    expect(holds).toEqual([]);
+    expect(pass(runs, [['a']])[0].collapsed).toBe(false);
   });
 });

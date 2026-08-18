@@ -141,7 +141,7 @@ describe('revealActivityRunItem', () => {
   /** `members` defaults to "the registry still holds everything the node says". */
   function registry(runExists = true, members: (id: string) => boolean = () => true): ActivityRunReveal {
     return {
-      setCollapsed: vi.fn(),
+      expandForReveal: vi.fn(),
       setWindowAnchor: vi.fn(),
       containsMember: vi.fn((_runId: string, itemId: string) => members(itemId)),
       requestFocus: vi.fn(() => runExists),
@@ -153,7 +153,9 @@ describe('revealActivityRunItem', () => {
     const node = run(rows(100), { from: 90, rows: 10 });
 
     expect(revealActivityRunItem(reveal, node, 'i40')).toBe(true);
-    expect(reveal.setCollapsed).toHaveBeenCalledWith('r1', false);
+    // The hold-free expand verb: a jump retargets the viewport itself, so
+    // going through `setCollapsed`'s viewport-bottom hold would fight it.
+    expect(reveal.expandForReveal).toHaveBeenCalledWith('r1');
     // The anchor alone. A jump moves the window; asking for a size would
     // record the size the run already has as an explicit override.
     expect(reveal.setWindowAnchor).toHaveBeenCalledWith('r1', 'i35');
@@ -203,7 +205,7 @@ describe('revealActivityRunItem', () => {
     const node = run(rows(10), { from: 0, rows: 10 });
 
     expect(revealActivityRunItem(reveal, node, 'zz')).toBe(false);
-    expect(reveal.setCollapsed).not.toHaveBeenCalled();
+    expect(reveal.expandForReveal).not.toHaveBeenCalled();
     expect(reveal.setWindowAnchor).not.toHaveBeenCalled();
     expect(reveal.requestFocus).not.toHaveBeenCalled();
   });

@@ -6,15 +6,26 @@
 
 import type { ActivityRunResolution } from '../../lib/utils/activityRunGrouping';
 import { createThreadActivityRuns } from '../../lib/stores/threadActivityRuns.svelte';
+import type { PaneScrollController } from '../../lib/stores/threadPaneShared';
 
 export type ActivityRunRegistry = ReturnType<typeof createThreadActivityRuns>;
 
 export function registry(
-  overrides: { defaultCollapsed?: boolean; windowRows?: number } = {},
+  overrides: {
+    defaultCollapsed?: boolean;
+    windowRows?: number;
+    /**
+     * Default null: `withViewportBottomHeld` falls back to running the change
+     * bare, so registry logic tests need no controller. Pass one to assert
+     * the mutators' viewport hold itself.
+     */
+    scrollController?: PaneScrollController;
+  } = {},
 ): ActivityRunRegistry {
   return createThreadActivityRuns({
     defaultCollapsed: () => overrides.defaultCollapsed ?? false,
     windowRows: () => overrides.windowRows ?? 30,
+    scrollController: () => overrides.scrollController ?? null,
   });
 }
 

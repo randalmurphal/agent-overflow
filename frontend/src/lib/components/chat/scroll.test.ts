@@ -815,6 +815,73 @@ describe('scroll integration — scroll to item', () => {
     expect(newToasts.some((t) => t.type === 'warning')).toBe(true);
   });
 
+  it('a jump into a collapsed activity run expands it and lands (the hold-free reveal path)', async () => {
+    // `expandForReveal` must stay hold-free: `scrollToItem` guards its
+    // post-reveal resume on the restore token, and a viewport hold issues one
+    // (`nextRestoreToken` via `preserveViewportBottom`) — routed through
+    // `setCollapsed`, this jump would abort at its own guard without ever
+    // scrolling. See `ThreadActivityRuns.expandForReveal`.
+    const pane = await buildPane(undefined, [
+      makeItem({
+        id: 'prose-before',
+        turnIndex: 0,
+        itemIndex: 0,
+        kind: 'assistant_text',
+        role: 'assistant',
+        summary: 'before the run',
+      }),
+      ...[0, 1, 2].map((i) =>
+        makeItem({
+          id: `run-tool-${i}`,
+          turnIndex: 1,
+          itemIndex: i,
+          kind: 'tool_call',
+          role: 'assistant',
+          status: 'completed',
+          toolName: 'Bash',
+          summary: `Bash: step ${i}`,
+        }),
+      ),
+      makeItem({
+        id: 'prose-after',
+        turnIndex: 2,
+        itemIndex: 0,
+        kind: 'assistant_text',
+        role: 'assistant',
+        summary: 'after the run',
+      }),
+    ]);
+    vi.spyOn(pane, 'loadUntilItem').mockResolvedValue(true);
+
+    const { container } = render(MessageTimeline, { props: { pane } });
+    await tick();
+    const runRow = container.querySelector<HTMLElement>('[data-testid="activity-run"]');
+    expect(runRow, 'the tool rows must group into a run').not.toBeNull();
+    const runId = runRow!.dataset.runId!;
+    pane.activityRuns.setCollapsed(runId, true);
+    await tick();
+    expect(
+      container.querySelector('[data-item-id="run-tool-1"]'),
+      'the collapsed run must not render its children',
+    ).toBeNull();
+
+    // The jump's own completion marker: `scrollToItem` escapes bottom-follow
+    // right before its `scrollToIndex` write, strictly AFTER every restore
+    // token guard. The expansion alone cannot witness the jump landing — the
+    // reveal writes it before the guards run — so a hold sneaking back into
+    // `expandForReveal` shows up here as an expanded run nobody scrolled to.
+    const escaped = vi.spyOn(timelineStick(), 'setEscapedFromLock');
+    pane.requestScrollToItem('run-tool-1');
+
+    await waitFor(() => {
+      expect(
+        container.querySelector('[data-item-id="run-tool-1"]'),
+        'the jump must expand the run and mount the target',
+      ).not.toBeNull();
+      expect(escaped, 'the jump must survive its token guards and land').toHaveBeenCalledWith(true);
+    });
+  });
+
   it('flashes a user message after an animated scroll request lands', async () => {
     const pane = await buildPane(undefined, [
       makeItem({ id: 'user:target', kind: 'user_text', role: 'user', summary: 'jump target' }),
@@ -830,6 +897,7 @@ describe('scroll integration — scroll to item', () => {
       expect(target?.textContent).toContain('jump target');
     });
   });
+
 });
 
 describe('scroll integration — composer height + layout invariance', () => {

@@ -247,6 +247,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
   const activityRuns = createThreadActivityRuns({
     defaultCollapsed: () => activityRunDefaultCollapsed(),
     windowRows: () => activityRunWindowRows(),
+    scrollController: () => scrollController,
   });
   let contextWindow: ContextWindow | null = $state(null);
   // Rate-limit snapshots live in the global `rateLimitsInfo.svelte.ts`
