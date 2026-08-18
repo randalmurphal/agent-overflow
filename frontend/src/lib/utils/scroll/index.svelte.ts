@@ -72,7 +72,8 @@ import {
   type ResolverState,
 } from './resolver';
 import { createWriteChokepoint } from './chokepoint';
-import { createSpringChase } from './spring';
+import { createSpringChase, type SpringWriteRefusalEvent } from './spring';
+import { nowMs } from './time';
 import { trace } from './trace';
 import type {
   RequestBottomOptions,
@@ -118,6 +119,14 @@ const STICK_TO_BOTTOM_OFFSET_PX = 70;
 // windows live in scroll/spring.ts. The write chokepoint and its
 // satellites (provenance ledger, arrival readback, spring-tick trace
 // sampling, glide residue) live in scroll/chokepoint.ts.
+
+// Frontend-errors rate limit for the spring's write-refusal guard
+// escalation: the first latch per window files a persisted diagnostic
+// (plus that latch's matching bookend); later episodes inside the
+// window still trace. Per controller, deliberately — the forensic
+// question is "which SURFACE is wedged", and a second controller's
+// first latch is new evidence, not a duplicate.
+const WRITE_REFUSAL_DIAGNOSTIC_COOLDOWN_MS = 10_000;
 
 export function createUseStickToBottomController(
   options: UseStickToBottomOptions = {},
@@ -244,6 +253,99 @@ export function createUseStickToBottomController(
     return options.liveContentActive?.() === true;
   }
 
+  // Write-refusal escalation (spring.ts, "Write-refusal guard"). The
+  // spring reports the kinematic facts; this handler owns the element
+  // forensics — computed overflow and connectedness are exactly the
+  // discriminating facts bug-report-20260818T003129Z could not answer,
+  // so a recurrence of the wedge becomes its own root-cause capture.
+  // The dev trace records every transition; the frontend-errors
+  // diagnostic (which persists in production) is rate-limited per
+  // controller so a hypothetical accept/refuse flapping element cannot
+  // flood the error log — episodes inside the cooldown still trace.
+  let lastRefusalDiagnosticAt = -Infinity;
+  let refusalLatchDiagnosed = false;
+  function reportWriteRefusal(event: SpringWriteRefusalEvent): void {
+    const el = scrollEl;
+    const at = nowMs();
+    // Which transitions file a persisted diagnostic: the first latch
+    // per cooldown window, and that latch's matching bookend ('healed'
+    // or 'abandoned'). A cooldown-suppressed latch leaves the pairing
+    // flag ALONE — the flag pairs the DIAGNOSED latch with its
+    // bookend, and clearing it here would swallow that bookend.
+    const wantDiagnostic =
+      event.phase === 'latched'
+        ? at - lastRefusalDiagnosticAt >= WRITE_REFUSAL_DIAGNOSTIC_COOLDOWN_MS
+        : refusalLatchDiagnosed;
+    const traceEnabled = isUiRenderTraceEnabled();
+    if (!traceEnabled && !wantDiagnostic) return;
+    // DOM forensics (computed style is a forced style recompute) only
+    // when something below will actually record them.
+    const surface = el ? (el.dataset.testid || el.id || 'unknown') : 'detached';
+    let overflowY = '';
+    let scrollBehavior = '';
+    let display = '';
+    let position = '';
+    let connected = false;
+    if (el) {
+      connected = el.isConnected;
+      try {
+        const cs = getComputedStyle(el);
+        overflowY = cs.overflowY;
+        scrollBehavior = cs.scrollBehavior;
+        display = cs.display;
+        position = cs.position;
+      } catch {
+        overflowY = 'unreadable';
+      }
+    }
+    if (traceEnabled) trace('scroll.writeRefusal', () => ({
+      phase: event.phase,
+      consecutiveRefusals: event.consecutiveRefusals,
+      requested: Math.round(event.requested),
+      scrollTop: Math.round(event.scrollTop),
+      target: Math.round(event.target),
+      wedgeMs: event.wedgeMs,
+      scrollHeight: el ? Math.round(el.scrollHeight) : null,
+      clientHeight: el ? Math.round(el.clientHeight) : null,
+      overflowY,
+      scrollBehavior,
+      display,
+      position,
+      connected,
+      surface,
+    }));
+    if (!wantDiagnostic) return;
+    // reportFrontendDiagnostic contract: the message is CONSTANT (it is
+    // the dedupe signature) and every variable rides in `detail`, paired
+    // with a console.warn carrying the same facts — a non-loopback
+    // session cannot persist the record, so the console line is then the
+    // only surviving evidence (utils/frontendErrorCapture.ts).
+    const detail =
+      `surface ${surface}; refused ${event.consecutiveRefusals}; `
+      + `wrote ${Math.round(event.requested)}; stayed ${Math.round(event.scrollTop)}; `
+      + `target ${Math.round(event.target)}; overflow-y "${overflowY}"; `
+      + `behavior "${scrollBehavior}"; display "${display}"; position "${position}"; `
+      + `connected ${connected}; wedgeMs ${event.wedgeMs}`;
+    let message: string;
+    if (event.phase === 'latched') {
+      lastRefusalDiagnosticAt = at;
+      refusalLatchDiagnosed = true;
+      message =
+        'scroll: element is refusing scrollTop writes — spring re-anchored and backed off '
+        + 'to probe cadence (utils/scroll/spring.ts write-refusal guard)';
+    } else if (event.phase === 'healed') {
+      refusalLatchDiagnosed = false;
+      message =
+        'scroll: write-refusing element healed — chase resumed as a bounded glide';
+    } else {
+      refusalLatchDiagnosed = false;
+      message =
+        'scroll: chase cancelled while element was still refusing writes — no heal observed';
+    }
+    console.warn(`[scroll] ${message} — ${detail}`);
+    reportFrontendDiagnostic(message, detail);
+  }
+
   const spring = createSpringChase({
     getScrollEl: () => scrollEl,
     isPaused: () => pauseDepth > 0,
@@ -268,6 +370,7 @@ export function createUseStickToBottomController(
         ? window.devicePixelRatio
         : 1,
     scrollTopUnexplained,
+    reportWriteRefusal,
   });
 
   // ===== Content observation pipeline =====
@@ -855,6 +958,7 @@ export function createUseStickToBottomController(
         warm,
         springStopRequested: spring.stopRequested(),
         springToken: spring.token(),
+        springWriteRefusalLatched: spring.refusalLatched(),
         // Intent windows + restore-snap consent (consumed by
         // forceStick({reason:'restore'})).
         ...intent.debugState(),

@@ -1357,11 +1357,44 @@ Useful trace records:
   `spring.catchupJump` write that, after an observed rAF discontinuity,
   re-enters the glide one viewport from the target instead of animating
   the whole frozen-tab backlog), target changes, sentinel entries
-  (stop/restart cycles), and long-task count/duration during the chase
-  (Chromium `longtask` observer; absent under WebKit). This — not the 1-in-12 sampled `spring.tick` spacing —
+  (stop/restart cycles), long-task count/duration during the chase
+  (Chromium `longtask` observer; absent under WebKit), and
+  `refusedWrites` (write attempts the element swallowed outright, a
+  subset of `writeTicks` — nonzero means the write-refusal guard below
+  was in play). This — not the 1-in-12 sampled `spring.tick` spacing —
   is how to judge whether a chase actually dropped frames; see the
   telemetry footgun note in
   [`settle-flicker-analysis.md`](settle-flicker-analysis.md).
+- `scroll.writeRefusal` — the spring's write-refusal guard latched,
+  healed, or was abandoned (`phase` — 'abandoned' means the chase was
+  cancelled while still latched, so no heal was ever observed), with
+  element forensics (computed `overflowY` / `scrollBehavior` /
+  `display` / `position`, `connected`, `surface`, geometry) and the
+  wedge's shape (`consecutiveRefusals`, `wedgeMs`). Background
+  (bug-report-20260818T003129Z): an ActivityRun clip spent 227s as a
+  non-scroll-container — real geometry, every scrollTop write read back
+  0 — while its content streamed; the spring's simulated position
+  coasted to the target, so it busy-wrote the FULL target at display
+  rate for 37k ticks and the first accepted write after the element
+  healed teleported the clip 940px. The guard (spring.ts, "Write-refusal
+  guard") classifies every write three ways from a same-tick
+  write+readback: MOVED (heals a latch), REFUSED (no motion on a ≥1.5px
+  request — re-anchors the model to the element's true position, so a
+  heal can only be a bounded glide, never a teleport), and INCONCLUSIVE
+  (no motion, sub-threshold — evidence of nothing; deliberately does
+  NOT heal, so a still-wedged sliver can't silently unlatch). Five
+  consecutive refusals latch the whole tick body — forced-layout reads
+  included — to ~4Hz probes with a parked-style velocity decay. The
+  guard covers spring writes only, deliberately: one-shot placement
+  writers fail once and bounded during a wedge, and any sustained wedge
+  during bottom-follow reaches the spring, the only writer that can
+  busy-loop or teleport. Transitions land here plus a `frontend-errors`
+  diagnostic that persists in production, rate-limited to the first
+  latch per 10s window and its matching bookend (per controller). The
+  trigger for the wedge itself sits below the app (renderer state;
+  nothing in the codebase mutates overflow) — if it recurs, this
+  record's forensics are the root-cause capture the original incident
+  lacked.
 - `scroll.contentRO` — content-geometry delta, width-reflow state, and pin
   decisions (in chat the delivery is engine-sourced, not an RO fire; the
   record name stays for trace continuity, and `settleEvidence` reports

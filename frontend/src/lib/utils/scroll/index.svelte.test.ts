@@ -14,6 +14,7 @@ import {
   stubGeometry,
   type Geometry,
 } from './testGeometry';
+import { installDiagnosticsCapture } from '../../../test/helpers/diagnostics';
 
 // Stub the geometry that `handlePointerDown` reads to classify a
 // pointerdown as "in the scrollbar gutter": offsetWidth (200) wider
@@ -6406,7 +6407,7 @@ describe('createUseStickToBottomController — spring chase', () => {
 
       expect(handled).toBe(true);
       expect(geom.scrollTop).toBe(500);
-      const writes = getUiRenderTraceRecords().filter((r) => r.label.startsWith('scroll.write'));
+      const writes = getUiRenderTraceRecords().filter((r) => r.label === 'scroll.write');
       expect(writes).toHaveLength(1);
       expect((writes[0].data as { caller: string }).caller).toBe('engine.compensation');
 
@@ -6436,7 +6437,7 @@ describe('createUseStickToBottomController — spring chase', () => {
       controller.applyScrollTarget(120);
 
       expect(geom.scrollTop).toBe(120);
-      const writes = getUiRenderTraceRecords().filter((r) => r.label.startsWith('scroll.write'));
+      const writes = getUiRenderTraceRecords().filter((r) => r.label === 'scroll.write');
       expect(writes).toHaveLength(1);
       expect((writes[0].data as { caller: string }).caller).toBe('virtualizer.scrollTarget');
       expect(controller.escapedFromLock).toBe(false);
@@ -6495,7 +6496,7 @@ describe('createUseStickToBottomController — spring chase', () => {
 
       expect(handled).toBe(true);
       expect(geom.scrollTop).toBe(400); // stayed at the bottom
-      const writes = getUiRenderTraceRecords().filter((r) => r.label.startsWith('scroll.write'));
+      const writes = getUiRenderTraceRecords().filter((r) => r.label === 'scroll.write');
       expect(writes).toHaveLength(1);
       expect((writes[0].data as { caller: string; requested: number }).caller).toBe('engine.anchorRedirect');
       expect((writes[0].data as { caller: string; requested: number }).requested).toBe(400);
@@ -7190,5 +7191,184 @@ describe('createUseStickToBottomController — two instances', () => {
     ro(0).fire(outerContent, 1800);
 
     expect(outerGeom.scrollTop).toBe(2000 - 600);
+  });
+});
+
+describe('createUseStickToBottomController — write-refusal forensics wiring', () => {
+  // Controller-level pin for the spring's write-refusal guard
+  // (spring.ts, bug-report-20260818T003129Z): the controller's
+  // reportWriteRefusal dep must attach element forensics (computed
+  // overflow, connectedness, surface id) to the trace record — those
+  // are exactly the discriminating facts the original capture lacked —
+  // and the heal must arrive as bounded per-frame motion, never a
+  // teleport. The kinematic contract itself is pinned in spring.test.ts.
+  let scrollEl: HTMLDivElement;
+  let contentEl: HTMLDivElement;
+  let geom: Geometry;
+  let controller: UseStickToBottomController;
+  let originalRO: typeof ResizeObserver | undefined;
+  let refusing = true;
+
+  beforeEach(() => {
+    resetScrollIntentModuleStateForTest();
+    setUiRenderTraceEnabled(true);
+    clearUiRenderTrace();
+    MockResizeObserver.instances = [];
+    originalRO = globalThis.ResizeObserver;
+    (globalThis as unknown as { ResizeObserver: typeof MockResizeObserver }).ResizeObserver = MockResizeObserver;
+    mockNow = 0;
+    vi.spyOn(performance, 'now').mockImplementation(() => mockNow);
+
+    scrollEl = document.createElement('div');
+    scrollEl.dataset.testid = 'wedged-clip';
+    contentEl = document.createElement('div');
+    contentEl.className = 'will-change-transform';
+    scrollEl.appendChild(contentEl);
+    document.body.appendChild(scrollEl);
+
+    refusing = true;
+    geom = { scrollHeight: 1500, clientHeight: 600, scrollTop: 0, contentHeight: 1400 };
+    stubGeometry(scrollEl, contentEl, geom, {
+      // The wedged non-scroll-container: writes are swallowed whole
+      // while geometry stays real. Flipping `refusing` restores the
+      // engine's normal clamped-store behavior (the heal).
+      setScrollTop: (value, g) => {
+        if (refusing) return;
+        g.scrollTop = Math.max(0, Math.min(value, g.scrollHeight - g.clientHeight));
+      },
+    });
+
+    controller = createUseStickToBottomController({ liveContentActive: () => true });
+    controller.attach(scrollEl, contentEl);
+    controller.skipWarmup();
+  });
+
+  afterEach(() => {
+    controller.detach();
+    setUiRenderTraceEnabled(false);
+    clearUiRenderTrace();
+    scrollEl.remove();
+    if (originalRO) {
+      (globalThis as unknown as { ResizeObserver: typeof ResizeObserver }).ResizeObserver = originalRO;
+    }
+    vi.restoreAllMocks();
+    resetSettingsForTest();
+  });
+
+  function refusalRecords(phase: string): Record<string, unknown>[] {
+    return getUiRenderTraceRecords()
+      .filter((r) => r.label === 'scroll.writeRefusal')
+      .map((r) => r.data as Record<string, unknown>)
+      .filter((d) => d.phase === phase);
+  }
+
+  it('latch carries element forensics; heal glides bounded per-frame motion', async () => {
+    controller.observe('live-content'); // starts the chase toward 900
+
+    for (let i = 0; i < 30; i++) await nextFrame();
+
+    const latched = refusalRecords('latched');
+    expect(latched).toHaveLength(1);
+    expect(latched[0].surface).toBe('wedged-clip');
+    expect(latched[0].connected).toBe(true);
+    // The forensic reads must come from a live getComputedStyle, not
+    // the catch fallback — 'unreadable' here means the capture is dead
+    // exactly when the wedge recurs.
+    expect(latched[0].overflowY).not.toBe('unreadable');
+    expect(typeof latched[0].overflowY).toBe('string');
+    expect(typeof latched[0].scrollBehavior).toBe('string');
+    expect(typeof latched[0].display).toBe('string');
+    expect(typeof latched[0].position).toBe('string');
+    expect(latched[0].scrollTop).toBe(0);
+    expect(latched[0].scrollHeight).toBe(1500);
+    expect(latched[0].clientHeight).toBe(600);
+    expect(geom.scrollTop).toBe(0);
+
+    // Re-anchoring bounds every wedge-era write to one velocity-capped
+    // step from the element's true position (the sampled spring-tick
+    // trace records a subset of them).
+    const wedgeWrites = getUiRenderTraceRecords()
+      .filter((r) => r.label === 'scroll.write')
+      .map((r) => r.data as { requested: number });
+    expect(wedgeWrites.length).toBeGreaterThan(0);
+    for (const w of wedgeWrites) {
+      expect(w.requested).toBeLessThanOrEqual(28);
+    }
+
+    // Element becomes a scroll container again.
+    refusing = false;
+    let maxMove = 0;
+    for (let i = 0; i < 90; i++) {
+      const before = geom.scrollTop;
+      await nextFrame();
+      maxMove = Math.max(maxMove, geom.scrollTop - before);
+    }
+
+    // The heal is a bounded glide from the element's true position —
+    // never the pre-guard full-target teleport (900px in one frame).
+    expect(maxMove).toBeLessThanOrEqual(28);
+    expect(geom.scrollTop).toBeGreaterThan(850);
+    const healed = refusalRecords('healed');
+    expect(healed).toHaveLength(1);
+    expect(healed[0].surface).toBe('wedged-clip');
+    expect(healed[0].wedgeMs as number).toBeGreaterThan(0);
+  });
+
+  describe('frontend-errors diagnostics', () => {
+    // Asserts through the REAL capture pipeline (dedupe → serialize →
+    // batch → binding mock) — see test/helpers/diagnostics.ts for why a
+    // spy on reportFrontendDiagnostic would prove too little.
+    const diagnostics = installDiagnosticsCapture();
+
+    const LATCHED_MARK = 'refusing scrollTop writes';
+    const HEALED_MARK = 'write-refusing element healed';
+
+    async function wedgeEpisode(): Promise<void> {
+      refusing = true;
+      // Grow content so a fresh chase target exists beyond the current
+      // position, then nudge the controller the way streaming does.
+      geom.scrollHeight += 900;
+      geom.contentHeight += 900;
+      controller.observe('live-content');
+      for (let i = 0; i < 30; i++) await nextFrame(); // latch
+      refusing = false;
+      for (let i = 0; i < 150; i++) await nextFrame(); // heal + glide out
+    }
+
+    it('rate-limits to the first latch per window plus its matching bookend', async () => {
+      await wedgeEpisode();
+      let records = await diagnostics.all();
+      expect(records.filter((r) => r.message.includes(LATCHED_MARK))).toHaveLength(1);
+      expect(records.filter((r) => r.message.includes(HEALED_MARK))).toHaveLength(1);
+      const first = records.find((r) => r.message.includes(LATCHED_MARK))!;
+      // Constant message; every variable rides in detail.
+      expect(first.message).not.toContain('wedged-clip');
+      expect(first.detail).toContain('surface wedged-clip');
+      expect(first.detail).toContain('overflow-y');
+      expect(first.detail).toContain('behavior');
+      // The paired console.warn carries the same facts — the only
+      // surviving evidence in a non-loopback session.
+      expect(diagnostics.warnings().some((w) => w.includes(LATCHED_MARK))).toBe(true);
+
+      // Second episode inside the 10s cooldown: latch suppressed, and
+      // its heal files no orphan bookend (the pairing flag belongs to
+      // the DIAGNOSED latch — the cooldown must not touch it).
+      await wedgeEpisode();
+      records = await diagnostics.all();
+      expect(records.filter((r) => r.message.includes(LATCHED_MARK))).toHaveLength(1);
+      expect(records.filter((r) => r.message.includes(HEALED_MARK))).toHaveLength(1);
+
+      // Past the cooldown, a new episode files again — with the SAME
+      // constant message (the dedupe signature).
+      await nextFrameAfter(10_001);
+      await wedgeEpisode();
+      records = await diagnostics.all();
+      const latchedMsgs = records
+        .filter((r) => r.message.includes(LATCHED_MARK))
+        .map((r) => r.message);
+      expect(latchedMsgs).toHaveLength(2);
+      expect(latchedMsgs[0]).toBe(latchedMsgs[1]);
+      expect(records.filter((r) => r.message.includes(HEALED_MARK))).toHaveLength(2);
+    });
   });
 });

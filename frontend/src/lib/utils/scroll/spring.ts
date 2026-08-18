@@ -374,6 +374,88 @@ const FRAME_INTERVAL_EMA_ALPHA = 0.15;
 const FRAME_INTERVAL_SAMPLE_MIN_MS = 3;
 const FRAME_INTERVAL_SAMPLE_MAX_MS = 21;
 
+// ===== Write-refusal guard =====
+// bug-report-20260818T003129Z: an ActivityRun clip spent 227 seconds
+// refusing every scrollTop write — real scrollHeight/clientHeight, all
+// writes read back 0 — while its content streamed 410→1228px. The only
+// browser state that reproduces that signature is the element not being
+// a scroll container (overflow computed to clip/visible); nothing in
+// this codebase sets that, so the trigger sits below our floor
+// (renderer state, likely WebView2-specific). Two defects were ours
+// regardless, and this guard closes both:
+//   - The spring's simulated position (`accumulated`) coasted to the
+//     target while the element stayed put, so every subsequent tick
+//     wrote the FULL target ('spring.overshoot') — 37,565 failed writes
+//     at display rate, and the first accepted write after the element
+//     healed was a 940px instant teleport.
+//   - All of it was silent: no diagnostic, and the 165Hz trace flood
+//     evicted its own onset evidence from the bookmark ring.
+// The guard classifies every main tick write THREE ways, same-tick
+// synchronous (write + readback in one call sequence, so a user wheel
+// or an engine compensation between frames can never be misread):
+//   - MOVED (post-write scrollTop ≠ pre-write): the element accepted
+//     the write. Resets the refusal count; if latched, this is the
+//     HEAL — reported as the latch's bookend.
+//   - REFUSED (no movement AND the write requested ≥ the motion
+//     threshold): re-anchor the model to reality (accumulated → 0)
+//     and count it. Re-anchoring is what bounds every write to one
+//     velocity-capped step of the element's true position, so a heal
+//     can only ever be an ordinary bounded glide — never a teleport.
+//   - INCONCLUSIVE (no movement, sub-threshold request): engine
+//     rounding at fractional DPR legitimately swallows sub-pixel
+//     writes, so this is evidence of nothing — latch, count, and
+//     `accumulated` all stay untouched. Healing deliberately requires
+//     MOVED, not merely not-refused: per-tick steps shrink with
+//     refresh rate (velocity × stepFraction), so a ramp onset or a
+//     near-target sliver writes sub-threshold values for a while, and
+//     treating those as heals would silently unlatch a still-wedged
+//     element back into the display-rate write loop.
+//
+// After SPRING_WRITE_REFUSAL_LATCH_TICKS consecutive refusals the
+// guard latches. A latched chase keeps its rAF loop but gates the
+// WHOLE tick body — geometry reads included — behind the probe
+// interval: skipped ticks pay only the bail checks and a parked-style
+// velocity decay toward the slew ramp base (the incident's real cost
+// was 227s × 165Hz of forced layout, not just the writes; and the
+// decay means a heal after a long wedge ramps up like every other
+// onset instead of launching at cruise — the slew doctrine). One tick
+// per SPRING_WRITE_REFUSAL_PROBE_INTERVAL_MS runs in full — the probe
+// — and consumes the probe slot at the gate regardless of how its
+// write classifies, so even an inconclusive probe backs off. Arrival /
+// caught-up transitions and flag flips are honored within one probe
+// interval while latched; nothing visible can move on a wedged
+// element in that window, so the deferral costs nothing.
+// `springActive` deliberately stays true for the whole latch: the
+// resolver keeps yielding deliveries to the chase, which is exactly
+// what lets the heal arrive as the chase's own bounded glide.
+//
+// Transitions are reported through deps.reportWriteRefusal — 'latched'
+// (the controller attaches DOM forensics: computed overflow and
+// scroll-behavior, connectedness; if the wedge ever recurs, that
+// record IS the root-cause capture), 'healed' (the bookend), and
+// 'abandoned' (cancel() ended the chase while still latched — a wedge
+// that never heals must not end silently). The latch survives a
+// caught-up excursion (target collapsing onto the wedged position)
+// uncleared: a stale latch costs nothing — the first chase tick after
+// it probes immediately (the probe stamp is long stale) and a MOVED
+// probe unlatches on the spot — while clearing it would re-earn five
+// refusals per excursion. cancel() resets the guard with the rest of
+// the kinematic state: a fresh chase starts with fresh evidence.
+//
+// Scope: the guard covers SPRING writes only — deliberately. One-shot
+// placement writers (requestBottom, engine compensation, forceStick,
+// the virtualizer target) share the chokepoint and fail silently
+// during a wedge, but each fails ONCE and bounded, and any sustained
+// wedge during bottom-follow reaches the spring — the only writer
+// that can busy-loop or teleport. The un-latched corner this leaves:
+// an element wedged with the target inside (arrival band, threshold)
+// of it ticks at display rate writing sub-threshold values —
+// amplitude too small to teleport, which is the harm the guard exists
+// to bound.
+const SPRING_WRITE_REFUSAL_MIN_MOTION_PX = 1.5;
+export const SPRING_WRITE_REFUSAL_LATCH_TICKS = 5;
+export const SPRING_WRITE_REFUSAL_PROBE_INTERVAL_MS = 250;
+
 // How long a structural-append mark (markStructuralAppend, the
 // controller's markStructuralContentPending) counts as evidence that
 // more content is imminent — liveness only, alongside
@@ -415,6 +497,36 @@ interface ChaseTelemetry {
   sentinelEntries: number;
   longTasks: number;
   longTaskMs: number;
+  /**
+   * Writes the element refused outright (see the write-refusal guard).
+   * A subset of writeTicks: every refused write was still an attempt.
+   */
+  refusedWrites: number;
+}
+
+// Payload for deps.reportWriteRefusal — the write-refusal guard's
+// episodic transitions. Kinematic facts only; the controller owns the
+// DOM forensics (computed overflow, connectedness, surface id) because
+// they are element concerns, not spring concerns.
+export interface SpringWriteRefusalEvent {
+  /**
+   * 'latched' — refusals crossed the latch threshold; 'healed' — a
+   * latched element accepted (MOVED on) a write, the latch's bookend;
+   * 'abandoned' — cancel() ended the chase while still latched, so no
+   * heal was ever observed (a wedge that outlives its chase must not
+   * end silently).
+   */
+  phase: 'latched' | 'healed' | 'abandoned';
+  /** Consecutive refused writes at this transition (the wedge total on 'healed'/'abandoned'). */
+  consecutiveRefusals: number;
+  /** The write that triggered the transition; -1 on 'abandoned' (no write involved). */
+  requested: number;
+  /** The element's actual post-write scrollTop (-1 on 'abandoned' with no element). */
+  scrollTop: number;
+  /** The chase target at the transition (-1 on 'abandoned' with no element). */
+  target: number;
+  /** 0 on 'latched'; ms since the latch on 'healed'/'abandoned'. */
+  wedgeMs: number;
 }
 
 function requestFrame(callback: FrameRequestCallback): number {
@@ -518,6 +630,15 @@ export interface SpringChaseDeps {
    * the same one (bug-report-20260801T213259Z).
    */
   scrollTopUnexplained(): boolean;
+  /**
+   * Write-refusal guard escalation (see the guard's constant block).
+   * Called exactly once per latch and once per heal — episodic by
+   * construction, never per-tick. The controller attaches DOM
+   * forensics and files the frontend-errors diagnostic; a silent
+   * implementation would recreate the incident this guard exists to
+   * make loud, so the dep is required, not optional.
+   */
+  reportWriteRefusal(event: SpringWriteRefusalEvent): void;
 }
 
 export interface SpringChase {
@@ -570,6 +691,12 @@ export interface SpringChase {
    * clip snapped the new row in).
    */
   sentinelClampWitnessed(): boolean;
+  /**
+   * The write-refusal latch is set (see the guard's constant block).
+   * Observability only — the dev hook and tests read it; nothing
+   * outside the spring makes decisions on it.
+   */
+  refusalLatched(): boolean;
 }
 
 export function createSpringChase(deps: SpringChaseDeps): SpringChase {
@@ -638,6 +765,14 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
   // compensation ratifying the clamped position) cannot launder a
   // strand the guard still needs to rescue.
   let sentinelClampWitnessed = false;
+  // ===== Write-refusal guard state (see the guard's constant block) =====
+  // Consecutive refused writes; a MOVED write resets it (inconclusive
+  // sub-threshold writes touch nothing). Latch + probe timestamps are
+  // on the rAF clock (`now`).
+  let consecutiveRefusedWrites = 0;
+  let writeRefusalLatched = false;
+  let refusalLatchedAt = 0;
+  let lastRefusalProbeAt = 0;
 
   function witnessClampIfUnexplained(): boolean {
     if (sentinelEntryTarget < 0) return false;
@@ -676,6 +811,7 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
       sentinelEntries: 0,
       longTasks: 0,
       longTaskMs: 0,
+      refusedWrites: 0,
     };
     if (
       typeof PerformanceObserver !== 'undefined'
@@ -753,6 +889,7 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
       sentinelEntries: stats.sentinelEntries,
       longTasks: stats.longTasks,
       longTaskMs: Math.round(stats.longTaskMs),
+      refusedWrites: stats.refusedWrites,
     }));
   }
 
@@ -774,6 +911,28 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
     lastTargetChangedAt = 0;
     sentinelEntryTarget = -1;
     sentinelClampWitnessed = false;
+    // A chase ending while still latched never observed the element
+    // accept anything — report 'abandoned' (not 'healed': there was no
+    // heal) so a wedge that outlives its chase doesn't end silently.
+    // Emitted before the guard reset below so the event carries the
+    // wedge's true duration and count.
+    if (writeRefusalLatched) {
+      const el = deps.getScrollEl();
+      deps.reportWriteRefusal({
+        phase: 'abandoned',
+        consecutiveRefusals: consecutiveRefusedWrites,
+        requested: -1,
+        scrollTop: el ? el.scrollTop : -1,
+        target: el ? deps.targetScrollTop() : -1,
+        wedgeMs: Math.round(nowMs() - refusalLatchedAt),
+      });
+    }
+    // Guard state resets with the rest of the kinematics — a fresh
+    // chase starts with fresh refusal evidence.
+    consecutiveRefusedWrites = 0;
+    writeRefusalLatched = false;
+    refusalLatchedAt = 0;
+    lastRefusalProbeAt = 0;
     lastChaseTarget = -1;
     deps.settleGlideResidue();
     endChaseTelemetry();
@@ -891,6 +1050,36 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
       }
       if (chaseTelemetry) recordChaseFrame(now, previousTickAt, dtFrames);
       const integrationFrames = Math.min(dtFrames, SPRING_MAX_CATCHUP_STEPS);
+
+      // Wedged-element backoff: while the write-refusal latch is set,
+      // the WHOLE tick body below — including the geometry reads, each
+      // a forced layout — runs only on probe-cadence ticks. The
+      // incident's real cost was 227s of 165Hz forced layout, not just
+      // the writes, so a skipped tick pays only the bail checks above
+      // plus a parked-style velocity decay toward the slew ramp base
+      // (mirrors the caught-up branch's parked decay; a heal after a
+      // long wedge then ramps up like any other onset instead of
+      // launching at carried cruise). Arrival / caught-up transitions
+      // are deferred at most one probe interval — nothing visible can
+      // move on a wedged element in that window. The probe slot is
+      // consumed HERE, unconditionally: even a probe whose write
+      // classifies inconclusive (sub-threshold) backs off, so the
+      // latch can never re-enter a display-rate loop.
+      if (writeRefusalLatched) {
+        if (now - lastRefusalProbeAt < SPRING_WRITE_REFUSAL_PROBE_INTERVAL_MS) {
+          const floor = fusionFloorPxPerFrame(deps.devicePixelRatio(), frameIntervalEmaMs);
+          const base = Math.max(SPRING_ACCEL_SLEW_BASE_PX_PER_FRAME, floor);
+          const speed = Math.abs(velocity);
+          if (speed > base) {
+            velocity =
+              Math.sign(velocity)
+              * Math.max(base, speed / Math.pow(SPRING_ACCEL_SLEW_FACTOR_PER_FRAME, dtFrames));
+          }
+          springFrameHandle = requestFrame(tick);
+          return;
+        }
+        lastRefusalProbeAt = now;
+      }
 
       // Cache per-tick. `targetScrollTop()` reads `scrollHeight` /
       // `clientHeight` — both force layout. Compute once per frame.
@@ -1011,13 +1200,22 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
             const chasingDown = target > current;
             const entry = chasingDown ? target - chaseLimitPx : target + chaseLimitPx;
             deps.writeScrollTop('spring.catchupJump', entry);
-            // Re-read: the engine may round the written value.
-            current = el.scrollTop;
-            accumulated = 0;
-            velocity = chasingDown
-              ? SPRING_MAX_VELOCITY_PX_PER_FRAME
-              : -SPRING_MAX_VELOCITY_PX_PER_FRAME;
-            if (chaseTelemetry) chaseTelemetry.distanceJumps += 1;
+            // Re-read: the engine may round the written value. Seed the
+            // cruise entry only if the element actually MOVED — a
+            // refused jump (write-refusal wedge) that seeded cap
+            // velocity would hand the main write below a full-speed
+            // step computed off a position the element never took, and
+            // the guard's refusal arm would then bank that velocity
+            // into the eventual heal. A refused jump falls through to
+            // the main write, whose classification counts it.
+            if (el.scrollTop !== current) {
+              current = el.scrollTop;
+              accumulated = 0;
+              velocity = chasingDown
+                ? SPRING_MAX_VELOCITY_PX_PER_FRAME
+                : -SPRING_MAX_VELOCITY_PX_PER_FRAME;
+              if (chaseTelemetry) chaseTelemetry.distanceJumps += 1;
+            }
           }
           if (integrationFrames > 0) {
             let remainingFrames = integrationFrames;
@@ -1145,7 +1343,30 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
             if (clamped === target) {
               deps.arrival.record(target);
             }
-            if (el.scrollTop !== current) {
+            // Three-way write classification (see the write-refusal
+            // guard's constant block): MOVED heals, REFUSED counts,
+            // INCONCLUSIVE (no motion, sub-threshold request) is
+            // evidence of nothing and touches nothing.
+            const postWriteTop = el.scrollTop;
+            if (postWriteTop !== current) {
+              // MOVED: the element accepted the write. Healing requires
+              // observed MOTION — not merely "not refused" — because a
+              // sub-threshold no-motion write (ramp onset, near-target
+              // sliver) proves nothing about a wedge.
+              if (writeRefusalLatched) {
+                deps.reportWriteRefusal({
+                  phase: 'healed',
+                  consecutiveRefusals: consecutiveRefusedWrites,
+                  requested: clamped,
+                  scrollTop: postWriteTop,
+                  target,
+                  wedgeMs: Math.round(now - refusalLatchedAt),
+                });
+                writeRefusalLatched = false;
+                refusalLatchedAt = 0;
+                lastRefusalProbeAt = 0;
+              }
+              consecutiveRefusedWrites = 0;
               // Carry the browser's integer-rounding remainder instead of
               // dropping it, so consecutive written values stay continuous
               // (the controller renders the remainder via the glide
@@ -1154,9 +1375,38 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
               // write (engine max-scrollTop race) — resync from the
               // readback rather than fighting it. Cross-target landings
               // start the next segment clean.
-              const remainder = clamped - el.scrollTop;
+              const remainder = clamped - postWriteTop;
               accumulated =
                 !crossedTarget && remainder > -1 && remainder < 1 ? remainder : 0;
+            } else if (Math.abs(clamped - current) >= SPRING_WRITE_REFUSAL_MIN_MOTION_PX) {
+              // REFUSED WRITE: a real motion request moved the element
+              // by nothing. Re-anchor the model to reality — dropping
+              // `accumulated` pins the simulated position back to the
+              // element's true one, so the next write stays within one
+              // velocity-capped step of it and a heal can only ever be
+              // a bounded glide, never a teleport. Velocity is kept:
+              // it carries the ramped probe speed and seeds the heal
+              // glide's cruise. Probe pacing is NOT stamped here — the
+              // gate above the geometry reads owns the probe slot.
+              accumulated = 0;
+              consecutiveRefusedWrites += 1;
+              if (chaseTelemetry) chaseTelemetry.refusedWrites += 1;
+              if (
+                !writeRefusalLatched
+                && consecutiveRefusedWrites >= SPRING_WRITE_REFUSAL_LATCH_TICKS
+              ) {
+                writeRefusalLatched = true;
+                refusalLatchedAt = now;
+                lastRefusalProbeAt = now;
+                deps.reportWriteRefusal({
+                  phase: 'latched',
+                  consecutiveRefusals: consecutiveRefusedWrites,
+                  requested: clamped,
+                  scrollTop: postWriteTop,
+                  target,
+                  wedgeMs: 0,
+                });
+              }
             }
           }
         }
@@ -1336,5 +1586,6 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
     // Lazy latch on read: a delivery sampling the snapshot between the
     // clamp and the next sentinel tick still sees the evidence.
     sentinelClampWitnessed: () => witnessClampIfUnexplained(),
+    refusalLatched: () => writeRefusalLatched,
   };
 }
