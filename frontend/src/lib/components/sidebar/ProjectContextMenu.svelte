@@ -22,6 +22,7 @@
   import ConfirmDialog from '../shared/ConfirmDialog.svelte';
   import ProjectDeleteDialog from './ProjectDeleteDialog.svelte';
   import Popover from '../primitives/Popover.svelte';
+  import type { PopoverCloseReason } from '../../utils/popoverOwnership';
   import Menu from '../primitives/Menu.svelte';
   import MenuItem from '../primitives/MenuItem.svelte';
   import MenuDivider from '../primitives/MenuDivider.svelte';
@@ -31,7 +32,7 @@
     pane?: ThreadPane;
     anchor: HTMLElement | undefined;
     open: boolean;
-    onClose: () => void;
+    onClose: (reason?: PopoverCloseReason) => void;
     /** Fires when the user selects Rename from the menu — the parent row
      * owns the inline rename UI so the input can render in place of the
      * project name. */

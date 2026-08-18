@@ -8,27 +8,39 @@
       outer popover (descendant-click detection).
     - Escape inside the inner closes ONLY the inner (hasOpenDescendant
       gate on the outer's document keydown listener).
+    - With `withClipBoundary`, the INNER popover inherits the clip
+      boundary of the chain's real trigger across the portal hop.
 -->
 <script lang="ts">
   import Popover from '../Popover.svelte';
+  import type { PopoverCloseReason } from '../../../utils/popoverOwnership';
 
   let {
     outerOpen = true,
     innerOpen = true,
     onOuterClose = () => {},
     onInnerClose = () => {},
+    withClipBoundary = false,
   }: {
     outerOpen?: boolean;
     innerOpen?: boolean;
-    onOuterClose?: () => void;
-    onInnerClose?: () => void;
+    onOuterClose?: (reason?: PopoverCloseReason) => void;
+    onInnerClose?: (reason?: PopoverCloseReason) => void;
+    /** Wrap the OUTER anchor in a `[data-popover-clip-boundary]` container. */
+    withClipBoundary?: boolean;
   } = $props();
 
   let outerAnchor: HTMLButtonElement | undefined = $state(undefined);
   let innerAnchor: HTMLButtonElement | undefined = $state(undefined);
 </script>
 
-<button bind:this={outerAnchor} data-testid="outer-anchor" type="button">Outer</button>
+{#if withClipBoundary}
+  <div data-popover-clip-boundary data-testid="clip-boundary">
+    <button bind:this={outerAnchor} data-testid="outer-anchor" type="button">Outer</button>
+  </div>
+{:else}
+  <button bind:this={outerAnchor} data-testid="outer-anchor" type="button">Outer</button>
+{/if}
 <Popover anchor={outerAnchor} open={outerOpen} onClose={onOuterClose} placement="bottom-start" role="menu">
   {#snippet children()}
     <div data-testid="outer-content">

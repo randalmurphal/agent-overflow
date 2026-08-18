@@ -148,6 +148,7 @@
       aria-labelledby={hasTitle ? titleId : undefined}
       aria-label={!hasTitle ? ariaLabel : undefined}
       data-modal-panel
+      data-popover-clip-boundary="none"
       class={[
         'w-full mx-4 bg-surface-1 border border-border-subtle rounded-[var(--radius-card)] shadow-modal',
         'flex flex-col max-h-[calc(100vh-2rem)]',

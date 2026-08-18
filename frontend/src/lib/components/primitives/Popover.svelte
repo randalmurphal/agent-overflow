@@ -46,28 +46,55 @@
   //    Popover moves it to <body> on mount and removes it on
   //    teardown; a third party moving it would desync the cleanup
   //    path and leak nodes between tests.
+  //
+  // 4. `data-popover-clip-boundary` belongs ONLY on an element whose
+  //    overflowing content is occluded by a SIBLING surface (the pane
+  //    strip sliding under the sidebar) — it makes every popover
+  //    anchored inside clip and auto-close at that edge, so declaring
+  //    it on an ordinary container silently cuts popovers that are
+  //    legitimately allowed to overflow it. A surface that sits inside
+  //    such a subtree but escapes its scrolling (Modal's fixed panel)
+  //    opts back out with `data-popover-clip-boundary="none"`.
+  //    Division of labour on close: this component's `restoreFocusTo`
+  //    only catches focus that would be STRANDED on the removed
+  //    floating element (dialog focus-trap repair); the caller-side
+  //    `restorePickerFocus` decides where focus should GO on a close,
+  //    gated by the close reason.
 
   import type { Snippet } from 'svelte';
   import {
     hasOpenPopoverOwnedBy,
     popoverAnchorChainReaches,
+    resolvePopoverClipBoundary,
+    type PopoverCloseReason,
     type PopoverFloatingEl,
   } from '../../utils/popoverOwnership';
-
-  type Placement =
-    | 'bottom-start'
-    | 'bottom-end'
-    | 'top-start'
-    | 'top-end'
-    | 'right-start'
-    | 'left-start';
+  import {
+    clampPopoverPosition,
+    clipPathRule,
+    intersectClipBoundary,
+    oppositeOf,
+    overflowsPrimaryAxis,
+    placePopover,
+    type EdgeRect,
+    type PopoverPlacement as Placement,
+  } from '../../utils/popoverGeometry';
 
   type PopoverRole = 'dialog' | 'menu' | 'listbox' | 'none';
 
   interface Props {
     anchor: HTMLElement | undefined;
     open: boolean;
-    onClose: () => void;
+    /**
+     * Close request, with WHY it happened. Callers that restore focus on
+     * close must skip the restore for 'outside-click' and 'anchor-gone'
+     * (see PopoverCloseReason) — and must never let that restore scroll:
+     * a bare `.focus()` on a trigger scrolled out of the pane strip
+     * snaps the strip back to it, hijacking whatever navigation caused
+     * the close. `restorePickerFocus` in panes/paneComposerFocus.ts is
+     * the canonical implementation.
+     */
+    onClose: (reason: PopoverCloseReason) => void;
     placement?: Placement;
     offset?: number;
     matchAnchorWidth?: boolean;
@@ -113,6 +140,42 @@
   // means "not yet positioned" — the floating div is kept invisible so
   // there's no first-frame jump at the viewport's origin.
   let resolvedPlacement = $state<Placement | null>(null);
+
+  // The anchor's clip boundary (see resolvePopoverClipBoundary), as the
+  // viewport-intersected rect the floating element must stay inside. The
+  // popover belongs to the boundary's content plane, so it is cut at the
+  // plane's edge (clip-path below) instead of painting over whatever
+  // surface sits beside it — a composer picker following its trigger
+  // behind the sidebar slides under the sidebar, not in front of it.
+  //
+  // Two representations on purpose, and the split is a reactivity hazard,
+  // not a style choice: `clipRectUntracked` is the plain mirror the
+  // open-effect, `fitPosition`, and the rAF tracker read, so those
+  // imperative reads never register the clip as a dependency of the
+  // effect that WRITES it (which would re-run the effect off its own
+  // write); `clipRect` is the $state the style derived consumes.
+  // `setClipRect` is the one writer and keeps them identical
+  // (field-compared, so per-frame refreshes of an unchanged boundary
+  // write nothing and allocate nothing).
+  let clipRect = $state<EdgeRect | null>(null);
+  let clipRectUntracked: EdgeRect | null = null;
+  function setClipRect(next: EdgeRect | null): void {
+    const cur = clipRectUntracked;
+    if (cur === next) return;
+    if (
+      cur !== null && next !== null
+      && cur.top === next.top && cur.left === next.left
+      && cur.right === next.right && cur.bottom === next.bottom
+    ) return;
+    clipRectUntracked = next;
+    clipRect = next;
+  }
+
+  // Painted size of the floating element, captured at each fit — the clip
+  // insets need the box, and reading offsetWidth/Height per frame would
+  // force layout for a value that only changes on refit anyway.
+  let floatingWidth = $state(0);
+  let floatingHeight = $state(0);
 
   // Portal the floating element into `document.body` on mount. Without
   // this, a `position: fixed` popover rendered inside an ancestor that
@@ -172,101 +235,6 @@
     return hasOpenPopoverOwnedBy(floatingEl);
   }
 
-  // Core placement math. Given the anchor rect and the floating rect,
-  // return {top,left} for each placement. Written as a pure function so
-  // flip can retry with a different placement without mutating state.
-  function placePopover(
-    rect: DOMRect,
-    floatRect: { width: number; height: number },
-    p: Placement,
-  ): { top: number; left: number } {
-    switch (p) {
-      case 'bottom-start':
-        return { top: rect.bottom + offset, left: rect.left };
-      case 'bottom-end':
-        return { top: rect.bottom + offset, left: rect.right - floatRect.width };
-      case 'top-start':
-        return { top: rect.top - floatRect.height - offset, left: rect.left };
-      case 'top-end':
-        return { top: rect.top - floatRect.height - offset, left: rect.right - floatRect.width };
-      case 'right-start':
-        return { top: rect.top, left: rect.right + offset };
-      case 'left-start':
-        return { top: rect.top, left: rect.left - floatRect.width - offset };
-    }
-  }
-
-  // Flip rules: if the preferred placement overflows the viewport, try
-  // its natural opposite. We keep this intentionally simple — two
-  // candidates per axis. If both overflow we stick with preferred rather
-  // than cascading through every direction (keeps behaviour predictable
-  // in tiny viewports).
-  function oppositeOf(p: Placement): Placement {
-    switch (p) {
-      case 'bottom-start': return 'top-start';
-      case 'bottom-end':   return 'top-end';
-      case 'top-start':    return 'bottom-start';
-      case 'top-end':      return 'bottom-end';
-      case 'right-start':  return 'left-start';
-      case 'left-start':   return 'right-start';
-    }
-  }
-
-  function overflowsPrimaryAxis(
-    pos: { top: number; left: number },
-    floatRect: { width: number; height: number },
-    p: Placement,
-  ): boolean {
-    if (typeof window === 'undefined') return false;
-    const vw = window.innerWidth;
-    const vh = window.innerHeight;
-    switch (p) {
-      case 'bottom-start':
-      case 'bottom-end':
-        return pos.top + floatRect.height > vh;
-      case 'top-start':
-      case 'top-end':
-        return pos.top < 0;
-      case 'right-start':
-        return pos.left + floatRect.width > vw;
-      case 'left-start':
-        return pos.left < 0;
-    }
-  }
-
-  const VIEWPORT_MARGIN = 8;
-
-  function clamp(value: number, min: number, max: number): number {
-    if (max < min) return min;
-    return Math.min(Math.max(value, min), max);
-  }
-
-  function clampToViewport(
-    pos: { top: number; left: number },
-    floatRect: { width: number; height: number },
-  ): { top: number; left: number; maxHeight: number | undefined } {
-    if (typeof window === 'undefined') {
-      return { ...pos, maxHeight: undefined };
-    }
-
-    const vw = window.innerWidth;
-    const vh = window.innerHeight;
-    const minLeft = VIEWPORT_MARGIN;
-    const minTop = VIEWPORT_MARGIN;
-    const maxLeft = vw - floatRect.width - VIEWPORT_MARGIN;
-    const maxTop = vh - floatRect.height - VIEWPORT_MARGIN;
-    const clampedTop = clamp(pos.top, minTop, maxTop);
-    const clampedLeft = clamp(pos.left, minLeft, maxLeft);
-    const availableHeight = Math.max(0, vh - (VIEWPORT_MARGIN * 2));
-    const needsHeightLimit = floatRect.height > availableHeight || pos.top !== clampedTop;
-
-    return {
-      top: clampedTop,
-      left: clampedLeft,
-      maxHeight: needsHeightLimit ? availableHeight : undefined,
-    };
-  }
-
   // Where the floating element sits RELATIVE to the anchor, captured each
   // time a fit runs. Anchor movement re-applies it verbatim (followAnchor),
   // so the popover stays glued to its trigger between fits.
@@ -279,6 +247,8 @@
   // movement tracking from the same read.
   function fitPosition(): DOMRect | undefined {
     if (!anchor || !floatingEl) return undefined;
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
     const rect = anchor.getBoundingClientRect();
     const floatRect = {
       width: floatingEl.offsetWidth,
@@ -291,19 +261,29 @@
     }
 
     let chosen: Placement = placement;
-    let pos = placePopover(rect, floatRect, chosen);
-    if (overflowsPrimaryAxis(pos, floatRect, chosen)) {
+    let pos = placePopover(rect, floatRect, chosen, offset);
+    if (overflowsPrimaryAxis(pos, floatRect, chosen, vw, vh)) {
       const alt = oppositeOf(chosen);
-      const altPos = placePopover(rect, floatRect, alt);
-      if (!overflowsPrimaryAxis(altPos, floatRect, alt)) {
+      const altPos = placePopover(rect, floatRect, alt, offset);
+      if (!overflowsPrimaryAxis(altPos, floatRect, alt, vw, vh)) {
         chosen = alt;
         pos = altPos;
       }
     }
-    const clamped = clampToViewport(pos, floatRect);
+    // The clamp bounds fold in the clip boundary (a frame stale at worst —
+    // refit() refreshes it first), so an open lands the popover inside the
+    // plane it will be clipped to instead of opening pre-cut.
+    const clamped = clampPopoverPosition(pos, floatRect, vw, vh, clipRectUntracked);
     top = clamped.top;
     left = clamped.left;
     maxHeight = clamped.maxHeight;
+    // Clip wants the box as PAINTED: content height capped by the
+    // maxHeight just computed — offsetHeight still measures the
+    // pre-cap box until that style lands, a frame too tall.
+    floatingWidth = floatRect.width;
+    floatingHeight = clamped.maxHeight !== undefined
+      ? Math.min(floatRect.height, clamped.maxHeight)
+      : floatRect.height;
     resolvedPlacement = chosen;
     fitOffset = { dx: clamped.left - rect.left, dy: clamped.top - rect.top };
     return rect;
@@ -313,8 +293,9 @@
   // re-apply the fitted offset rigidly, no re-clamp. Re-clamping here is
   // what made popovers "ride the viewport edge" while their trigger
   // scrolled away — following rigidly, the popover moves with the pane
-  // content and clips at the viewport edge exactly like its trigger does,
-  // until the trigger is fully gone and the tracker closes it.
+  // content and is cut at the clip boundary (or viewport edge) exactly
+  // like its trigger is, until the trigger is fully gone and the tracker
+  // closes it.
   function followAnchor(rect: DOMRect): void {
     top = rect.top + fitOffset.dy;
     left = rect.left + fitOffset.dx;
@@ -332,9 +313,33 @@
     if (!open) {
       resolvedPlacement = null;
       maxHeight = undefined;
+      setClipRect(null);
       return;
     }
-    if (!anchor || !floatingEl) return;
+    if (!anchor || !floatingEl) {
+      // A re-run that lost its anchor mid-open must not leave the last
+      // clip frozen on a floating element that no longer tracks anything.
+      setClipRect(null);
+      return;
+    }
+
+    const updateClipRect = (): void => {
+      // Re-resolved per call rather than once per open, deliberately: a
+      // nested popover's chain link (`__popoverAnchor` on the hosting
+      // floating element) is stamped by the HOST's own effect, and a
+      // popover opening in the same tick as its host runs this effect
+      // BEFORE that stamp lands — a one-time resolution here saw an
+      // unstamped chain and froze "no boundary" for the popover's whole
+      // lifetime. The walk is a couple of closest() calls on a shallow
+      // chain, noise next to the per-frame rect reads around it.
+      const boundaryEl = anchor !== undefined ? resolvePopoverClipBoundary(anchor) : null;
+      if (!boundaryEl) {
+        setClipRect(null);
+        return;
+      }
+      const b = boundaryEl.getBoundingClientRect();
+      setClipRect(intersectClipBoundary(b, window.innerWidth, window.innerHeight));
+    };
 
     const handleMouseDown = (e: MouseEvent) => {
       const target = e.target as Node | null;
@@ -351,7 +356,7 @@
       // pointer; if the anchor lives inside me, the clicked popover
       // is my descendant (maybe transitively).
       if (target instanceof Element && isDescendantPopoverClick(target)) return;
-      onClose();
+      onClose('outside-click');
     };
     const handleKeydown = (e: KeyboardEvent) => {
       if (claimTab && e.key === 'Tab') {
@@ -360,7 +365,7 @@
         // inside the surface hosting me, and collapsing the stack back
         // onto my trigger is the right answer at every depth.
         e.preventDefault();
-        onClose();
+        onClose('tab');
         return;
       }
       if (e.key !== 'Escape') return;
@@ -374,7 +379,7 @@
       // next one after it closes.
       if (hasOpenDescendantPopover()) return;
       e.stopPropagation();
-      onClose();
+      onClose('escape');
     };
     // Scroll moves the anchor without resizing anything → follow. Resize
     // changes the clamp bounds themselves → refit. (The per-frame tracker
@@ -408,6 +413,7 @@
     let lastAnchorSize = '';
     let anchorWasVisible = false;
     const refit = () => {
+      updateClipRect();
       const r = fitPosition();
       if (r) {
         lastAnchorPos = `${r.top}:${r.left}`;
@@ -418,23 +424,36 @@
     const trackAnchor = () => {
       if (anchor && floatingEl) {
         if (!anchor.isConnected) {
-          onClose();
+          onClose('anchor-gone');
           return;
         }
+        // The boundary's rect only moves on layout changes (sidebar
+        // resize, window resize), but those don't all reach the refit
+        // listeners — refresh it on the same per-frame cadence as the
+        // anchor. setClipRect no-ops when nothing changed.
+        updateClipRect();
         const r = anchor.getBoundingClientRect();
-        // An anchor that has SCROLLED fully out of the viewport closes the
+        // An anchor that has SCROLLED fully out of view closes the
         // popover, same as one that left the DOM — followAnchor has carried
         // the floating element to the edge with it, and there is nothing
-        // left on screen for it to belong to. Transition-gated on having
-        // been seen visible, because "never visible" is not "scrolled
-        // away": a zero-rect environment (happy-dom) or an anchor whose
-        // geometry hasn't materialized yet must not self-close.
-        const visible =
-          r.right > 0 && r.bottom > 0 && r.left < window.innerWidth && r.top < window.innerHeight;
+        // left on screen for it to belong to. "Out of view" is judged
+        // against the clip boundary when the anchor has one (a composer
+        // trigger fully behind the sidebar is gone, even though its rect
+        // still intersects the window), else against the viewport.
+        // Transition-gated on having been seen visible, because "never
+        // visible" is not "scrolled away": a zero-rect environment
+        // (happy-dom) or an anchor whose geometry hasn't materialized yet
+        // must not self-close.
+        const bounds = clipRectUntracked;
+        const visible = bounds !== null
+          ? r.right > bounds.left && r.bottom > bounds.top
+            && r.left < bounds.right && r.top < bounds.bottom
+          : r.right > 0 && r.bottom > 0
+            && r.left < window.innerWidth && r.top < window.innerHeight;
         if (visible) {
           anchorWasVisible = true;
         } else if (anchorWasVisible) {
-          onClose();
+          onClose('anchor-gone');
           return;
         }
         const sizeKey = `${r.width}:${r.height}`;
@@ -487,7 +506,10 @@
   // and owns focus itself.
   $effect(() => {
     if (open) return;
-    if (focusInside) restoreFocusTo?.focus();
+    // preventScroll: the restore target can sit inside a scrolled-away
+    // region (the pane strip); putting the caret back must not yank the
+    // viewport to it.
+    if (focusInside) restoreFocusTo?.focus({ preventScroll: true });
     focusInside = false;
   });
 
@@ -507,7 +529,20 @@
     const widthRule = width !== undefined ? `width: ${width}px;` : '';
     const maxHeightRule = maxHeight !== undefined ? `max-height: ${maxHeight}px; overflow-y: auto;` : '';
     const visibility = resolvedPlacement === null ? 'visibility: hidden;' : '';
-    return `position: fixed; top: ${top}px; left: ${left}px; ${widthRule} ${maxHeightRule} ${visibility}`.trim();
+    // Cut the floating element at its clip boundary (see clipRect): the
+    // strip content plane ends where the sidebar begins, and a popover
+    // riding a scrolled anchor must be occluded there like its trigger
+    // is, not painted over the neighbouring surface. Width is the wider
+    // of the requested and measured box — a matchAnchorWidth menu can
+    // overflow the request via its own min-width, and under-counting
+    // the box under-clips its right edge.
+    let clipRule = '';
+    if (clipRect !== null && resolvedPlacement !== null) {
+      clipRule = clipPathRule(
+        clipRect, top, left, Math.max(width ?? 0, floatingWidth), floatingHeight,
+      );
+    }
+    return `position: fixed; top: ${top}px; left: ${left}px; ${widthRule} ${maxHeightRule} ${clipRule} ${visibility}`.trim();
   });
 
   // `role="none"` tells AT consumers to ignore the wrapper. Opt in ONLY

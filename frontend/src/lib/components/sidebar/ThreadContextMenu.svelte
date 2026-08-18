@@ -17,6 +17,7 @@
   import type { ThreadPane } from '../../stores/thread.svelte';
   import ConfirmDialog from '../shared/ConfirmDialog.svelte';
   import Popover from '../primitives/Popover.svelte';
+  import type { PopoverCloseReason } from '../../utils/popoverOwnership';
   import Menu from '../primitives/Menu.svelte';
   import MenuItem from '../primitives/MenuItem.svelte';
   import MenuDivider from '../primitives/MenuDivider.svelte';
@@ -52,7 +53,7 @@
     pane: ThreadPane | null;
     anchor: HTMLElement | undefined;
     open: boolean;
-    onClose: () => void;
+    onClose: (reason?: PopoverCloseReason) => void;
     /** Fires when the user selects Rename — the parent row owns the
      *  inline input so focus + blur save happen in place. */
     onRename: () => void;

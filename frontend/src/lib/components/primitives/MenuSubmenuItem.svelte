@@ -11,6 +11,10 @@
   import type { Snippet } from 'svelte';
   import Popover from './Popover.svelte';
   import Menu from './Menu.svelte';
+  import {
+    popoverCloseRestoresFocus,
+    type PopoverCloseReason,
+  } from '../../utils/popoverOwnership';
 
   interface Props {
     label: string;
@@ -97,7 +101,7 @@
           e.preventDefault();
           e.stopPropagation();
           closeImmediate();
-          buttonEl?.focus();
+          buttonEl?.focus({ preventScroll: true });
         }
         return;
     }
@@ -113,11 +117,17 @@
     scheduleClose();
   }
 
-  function handlePopoverClose(): void {
+  function handlePopoverClose(reason?: PopoverCloseReason): void {
     closeImmediate();
-    // Return focus to the trigger so parent Menu's roving tabindex
-    // picks up where the user left off.
-    buttonEl?.focus();
+    // On explicit dismissals, return focus to the trigger so parent
+    // Menu's roving tabindex picks up where the user left off. A close
+    // the user caused by engaging something else (outside click, the
+    // trigger scrolling away) leaves focus where they put it — and the
+    // restore never scrolls, so a trigger carried out of the pane strip
+    // can't snap the strip back. (This lives in primitives/, so it can't
+    // use panes/' restorePickerFocus; the gate is the shared predicate.)
+    if (!popoverCloseRestoresFocus(reason)) return;
+    buttonEl?.focus({ preventScroll: true });
   }
 
   // Bubbled menuitem-select from a descendant item inside the submenu

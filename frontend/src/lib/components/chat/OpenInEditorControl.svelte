@@ -23,6 +23,8 @@
   } from '../../stores/editors.svelte';
   import { SPLIT_BTN_BASE } from '../primitives/splitButton';
   import Popover from '../primitives/Popover.svelte';
+  import { restorePickerFocus } from '../panes/paneComposerFocus';
+  import type { PopoverCloseReason } from '../../utils/popoverOwnership';
   import Menu from '../primitives/Menu.svelte';
   import MenuItem from '../primitives/MenuItem.svelte';
   import Icon from '../primitives/Icon.svelte';
@@ -52,9 +54,9 @@
     }
   }
 
-  function closeMenu(): void {
+  function closeMenu(reason?: PopoverCloseReason): void {
     showDropdown = false;
-    menuTriggerEl?.focus();
+    restorePickerFocus(reason, { triggerEl: menuTriggerEl });
   }
 
   function selectEditor(editorID: string): void {

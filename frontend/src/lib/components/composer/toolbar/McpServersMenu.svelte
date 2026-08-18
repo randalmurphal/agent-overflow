@@ -35,12 +35,15 @@
   import { OpenExternalURL } from '../../../stores/bindings';
   import { addToast } from '../../../stores/toast.svelte';
   import { errString } from '../../../utils/errors';
+  import type { PopoverCloseReason } from '../../../utils/popoverOwnership';
 
   interface Props {
     anchor: HTMLElement | undefined;
     open: boolean;
     pane: ThreadPane;
-    onClose: () => void;
+    // Forwarded to Popover/Menu verbatim so the close reason reaches the
+    // trigger's focus-restore gating.
+    onClose: (reason?: PopoverCloseReason) => void;
   }
 
   let { anchor, open, pane, onClose }: Props = $props();

@@ -17,6 +17,7 @@
   } from './composerCommandEntries';
   import { createActiveOptionReveal } from './popoverOptionReveal';
   import Popover from '../primitives/Popover.svelte';
+  import type { PopoverCloseReason } from '../../utils/popoverOwnership';
 
   interface Props {
     anchor?: HTMLElement | undefined;
@@ -25,7 +26,7 @@
     activeIndex: number;
     onSelect: (entry: ComposerCommandEntry) => void;
     onHover?: (index: number) => void;
-    onClose?: () => void;
+    onClose?: (reason?: PopoverCloseReason) => void;
   }
 
   let {

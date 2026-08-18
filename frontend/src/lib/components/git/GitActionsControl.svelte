@@ -19,6 +19,8 @@
   import { handleExternalURL, safeExternalURL } from '../../utils/externalLinks';
   import { OPEN_SHIP_CHANGES_EVENT } from '../../stores/events';
   import ConfirmDialog from '../shared/ConfirmDialog.svelte';
+  import { restorePickerFocus } from '../panes/paneComposerFocus';
+  import type { PopoverCloseReason } from '../../utils/popoverOwnership';
   import LazyOverlay from '../primitives/LazyOverlay.svelte';
   import Popover from '../primitives/Popover.svelte';
   import Menu from '../primitives/Menu.svelte';
@@ -139,9 +141,9 @@
     }
   }
 
-  function closeMenu(): void {
+  function closeMenu(reason?: PopoverCloseReason): void {
     showDropdown = false;
-    menuTriggerEl?.focus();
+    restorePickerFocus(reason, { triggerEl: menuTriggerEl });
   }
 
   function handleCommitClose() {

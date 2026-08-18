@@ -42,6 +42,8 @@
   import { wailsEventOn } from '../../../stores/wailsEvents';
   import { debounce } from '../../../utils/debounce';
   import Popover from '../../primitives/Popover.svelte';
+  import { restorePickerFocus } from '../../panes/paneComposerFocus';
+  import type { PopoverCloseReason } from '../../../utils/popoverOwnership';
   import Menu from '../../primitives/Menu.svelte';
   import MenuItem from '../../primitives/MenuItem.svelte';
   import MenuDivider from '../../primitives/MenuDivider.svelte';
@@ -168,10 +170,10 @@
     };
   });
 
-  function closeMenu(): void {
+  function closeMenu(reason?: PopoverCloseReason): void {
     open = false;
     confirm = null;
-    triggerEl?.focus();
+    restorePickerFocus(reason, { triggerEl });
   }
 
   async function selectPath(path: string): Promise<void> {

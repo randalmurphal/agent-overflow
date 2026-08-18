@@ -48,6 +48,7 @@
       role="dialog"
       aria-modal="true"
       aria-label={ariaLabel}
+      data-popover-clip-boundary="none"
       data-testid={testId}
     >
       {@render children()}

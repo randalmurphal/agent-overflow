@@ -20,7 +20,8 @@
     peekMcpServers,
   } from '../../../stores/mcpServers.svelte';
   import { registerComposerPicker } from '../../../stores/composerPickerRegistry.svelte';
-  import { focusPaneComposer } from '../../panes/paneComposerFocus';
+  import { restorePickerFocus } from '../../panes/paneComposerFocus';
+  import type { PopoverCloseReason } from '../../../utils/popoverOwnership';
   import McpServersMenu from './McpServersMenu.svelte';
 
   interface Props {
@@ -37,9 +38,9 @@
     open = true;
   }
 
-  function closeMenu(): void {
+  function closeMenu(reason?: PopoverCloseReason): void {
     open = false;
-    if (!focusPaneComposer(pane.paneId)) triggerEl?.focus();
+    restorePickerFocus(reason, { paneId: pane.paneId, triggerEl });
   }
 
   function handleTrigger(): void {

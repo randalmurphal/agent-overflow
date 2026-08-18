@@ -8,42 +8,41 @@
 -->
 <script lang="ts">
   import Popover from '../Popover.svelte';
+  import type { PopoverCloseReason } from '../../../utils/popoverOwnership';
+  import type { PopoverPlacement } from '../../../utils/popoverGeometry';
 
   let {
     open = false,
-    placement = 'bottom-start' as
-      | 'bottom-start'
-      | 'bottom-end'
-      | 'top-start'
-      | 'top-end'
-      | 'right-start'
-      | 'left-start',
+    placement = 'bottom-start' as PopoverPlacement,
     onClose = () => {},
     role = 'none' as 'dialog' | 'menu' | 'listbox' | 'none',
     matchAnchorWidth = false,
     claimTab = false,
     restoreFocusToAnchor = false,
+    withClipBoundary = false,
   }: {
     open?: boolean;
-    placement?:
-      | 'bottom-start'
-      | 'bottom-end'
-      | 'top-start'
-      | 'top-end'
-      | 'right-start'
-      | 'left-start';
-    onClose?: () => void;
+    placement?: PopoverPlacement;
+    onClose?: (reason?: PopoverCloseReason) => void;
     role?: 'dialog' | 'menu' | 'listbox' | 'none';
     matchAnchorWidth?: boolean;
     /** Opt into the picker-in-dialog focus contract (Popover constraint #2). */
     claimTab?: boolean;
     restoreFocusToAnchor?: boolean;
+    /** Wrap the anchor in a `[data-popover-clip-boundary]` container. */
+    withClipBoundary?: boolean;
   } = $props();
 
   let anchor: HTMLButtonElement | undefined = $state(undefined);
 </script>
 
-<button bind:this={anchor} data-testid="popover-anchor" type="button">Anchor</button>
+{#if withClipBoundary}
+  <div data-popover-clip-boundary data-testid="clip-boundary">
+    <button bind:this={anchor} data-testid="popover-anchor" type="button">Anchor</button>
+  </div>
+{:else}
+  <button bind:this={anchor} data-testid="popover-anchor" type="button">Anchor</button>
+{/if}
 <Popover
   {anchor}
   {open}

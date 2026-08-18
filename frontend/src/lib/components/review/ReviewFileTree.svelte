@@ -7,6 +7,8 @@
   import Search from '@lucide/svelte/icons/search';
   import Icon from '../primitives/Icon.svelte';
   import Menu from '../primitives/Menu.svelte';
+  import { restorePickerFocus } from '../panes/paneComposerFocus';
+  import type { PopoverCloseReason } from '../../utils/popoverOwnership';
   import MenuDivider from '../primitives/MenuDivider.svelte';
   import MenuItem from '../primitives/MenuItem.svelte';
   import Popover from '../primitives/Popover.svelte';
@@ -90,9 +92,9 @@
     closeExtMenu();
   }
 
-  function closeExtMenu(): void {
+  function closeExtMenu(reason?: PopoverCloseReason): void {
     extMenuOpen = false;
-    extTriggerEl?.focus();
+    restorePickerFocus(reason, { triggerEl: extTriggerEl });
   }
 
   function isActive(node: ReviewTreeNode): boolean {

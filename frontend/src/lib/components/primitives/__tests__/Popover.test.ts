@@ -43,39 +43,34 @@ function setViewport(width: number, height: number): void {
   Object.defineProperty(window, 'innerHeight', { value: height, configurable: true });
 }
 
+function rectFrom(partial: Partial<DOMRect>): DOMRect {
+  return {
+    x: partial.left ?? 0,
+    y: partial.top ?? 0,
+    top: partial.top ?? 0,
+    right: partial.right ?? 0,
+    bottom: partial.bottom ?? 0,
+    left: partial.left ?? 0,
+    width: partial.width ?? Math.max(0, (partial.right ?? 0) - (partial.left ?? 0)),
+    height: partial.height ?? Math.max(0, (partial.bottom ?? 0) - (partial.top ?? 0)),
+    toJSON: () => ({}),
+  } as DOMRect;
+}
+
 function stubPopoverGeometry({
   anchor,
   floating,
+  boundary,
 }: {
   anchor: Partial<DOMRect>;
   floating: { width: number; height: number; scrollHeight?: number };
+  boundary?: Partial<DOMRect>;
 }): void {
   vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function getRect(this: HTMLElement) {
     const el = this as HTMLElement;
-    if (el.dataset.testid === 'popover-anchor') {
-      return {
-        x: anchor.left ?? 0,
-        y: anchor.top ?? 0,
-        top: anchor.top ?? 0,
-        right: anchor.right ?? 0,
-        bottom: anchor.bottom ?? 0,
-        left: anchor.left ?? 0,
-        width: anchor.width ?? Math.max(0, (anchor.right ?? 0) - (anchor.left ?? 0)),
-        height: anchor.height ?? Math.max(0, (anchor.bottom ?? 0) - (anchor.top ?? 0)),
-        toJSON: () => ({}),
-      } as DOMRect;
-    }
-    return {
-      x: 0,
-      y: 0,
-      top: 0,
-      right: 0,
-      bottom: 0,
-      left: 0,
-      width: 0,
-      height: 0,
-      toJSON: () => ({}),
-    } as DOMRect;
+    if (el.dataset.testid === 'popover-anchor') return rectFrom(anchor);
+    if (boundary && el.dataset.testid === 'clip-boundary') return rectFrom(boundary);
+    return rectFrom({});
   });
   vi.spyOn(HTMLElement.prototype, 'offsetWidth', 'get').mockImplementation(function getWidth(this: HTMLElement) {
     const el = this as HTMLElement;
@@ -103,21 +98,21 @@ describe('<Popover>', () => {
     expect(getByTestId('popover-content')).toBeInTheDocument();
   });
 
-  it('Escape on the document calls onClose', async () => {
+  it('Escape on the document calls onClose with reason "escape"', async () => {
     const onClose = vi.fn();
     render(Harness, { props: { open: true, onClose } });
     await tick();
     const ev = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true });
     document.dispatchEvent(ev);
-    expect(onClose).toHaveBeenCalled();
+    expect(onClose).toHaveBeenCalledWith('escape');
   });
 
-  it('outside mousedown calls onClose', async () => {
+  it('outside mousedown calls onClose with reason "outside-click"', async () => {
     const onClose = vi.fn();
     const { getByTestId } = render(Harness, { props: { open: true, onClose } });
     await tick();
     await fireEvent.mouseDown(getByTestId('outside-button'));
-    expect(onClose).toHaveBeenCalled();
+    expect(onClose).toHaveBeenCalledWith('outside-click');
   });
 
   it('mousedown on the anchor does NOT close (anchor toggling is caller-owned)', async () => {
@@ -284,7 +279,25 @@ describe('<Popover>', () => {
         anchor: { top: 100, right: -400, bottom: 130, left: -440 },
         floating: { width: 200, height: 150 },
       });
-      await vi.waitFor(() => expect(onClose).toHaveBeenCalled());
+      await vi.waitFor(() => expect(onClose).toHaveBeenCalledWith('anchor-gone'));
+    });
+
+    it('closes with "anchor-gone" when the anchor leaves the DOM', async () => {
+      setViewport(1000, 800);
+      stubPopoverGeometry({
+        anchor: { top: 100, right: 440, bottom: 130, left: 400 },
+        floating: { width: 200, height: 150 },
+      });
+      const onClose = vi.fn();
+      const { getByTestId } = render(Harness, { props: { open: true, onClose } });
+      await tick();
+      await nextFrame();
+      expect(onClose).not.toHaveBeenCalled();
+
+      // A pane teardown removes the trigger without the caller flipping
+      // `open` first — the tracker notices the disconnect.
+      getByTestId('popover-anchor').remove();
+      await vi.waitFor(() => expect(onClose).toHaveBeenCalledWith('anchor-gone'));
     });
 
     it('does not close an anchor that was never seen visible (zero-rect environments)', async () => {
@@ -299,6 +312,192 @@ describe('<Popover>', () => {
       await nextFrame();
       await nextFrame();
       expect(onClose).not.toHaveBeenCalled();
+    });
+  });
+
+  // Regression: with the sidebar on the left, horizontally scrolling the
+  // pane strip carried a composer picker's trigger behind the sidebar while
+  // the portaled (z-80) popup kept painting OVER the sidebar's threads. The
+  // strip declares `data-popover-clip-boundary`; the popover clips itself at
+  // the boundary's edge like its trigger is clipped, and closes once the
+  // trigger is fully occluded — even though its rect still intersects the
+  // window viewport.
+  describe('clip boundary', () => {
+    const nextFrame = () =>
+      new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+
+    // Sidebar occupies x < 300; the strip (boundary) is the rest.
+    const BOUNDARY = { top: 0, left: 300, right: 1000, bottom: 800 };
+
+    it('applies no clip while the popover sits fully inside the boundary', async () => {
+      setViewport(1000, 800);
+      stubPopoverGeometry({
+        anchor: { top: 100, right: 440, bottom: 120, left: 400 },
+        floating: { width: 200, height: 150 },
+        boundary: BOUNDARY,
+      });
+      const { getByTestId } = render(Harness, {
+        props: { open: true, placement: 'bottom-start', withClipBoundary: true },
+      });
+      await tick();
+      const popover = getByTestId('popover-content').parentElement;
+      expect(popover).not.toBeNull();
+      expect(popover!.getAttribute('style')).not.toContain('clip-path');
+    });
+
+    it('clips the floating element at the boundary edge as the anchor scrolls behind it', async () => {
+      setViewport(1000, 800);
+      stubPopoverGeometry({
+        anchor: { top: 100, right: 440, bottom: 120, left: 400 },
+        floating: { width: 200, height: 150 },
+        boundary: BOUNDARY,
+      });
+      const { getByTestId } = render(Harness, {
+        props: { open: true, placement: 'bottom-start', withClipBoundary: true },
+      });
+      await tick();
+      const popover = getByTestId('popover-content').parentElement;
+      expect(popover).not.toBeNull();
+      expect(popover!.style.left).toBe('400px');
+
+      // The strip scrolls right by 120px: the anchor pokes 20px under the
+      // sidebar but stays partially visible. The popover follows and is cut
+      // at the boundary's left edge instead of painting over the sidebar.
+      stubPopoverGeometry({
+        anchor: { top: 100, right: 320, bottom: 120, left: 280 },
+        floating: { width: 200, height: 150 },
+        boundary: BOUNDARY,
+      });
+      await vi.waitFor(() => expect(popover!.style.left).toBe('280px'));
+      expect(popover!.getAttribute('style')).toContain('clip-path: inset(0px 0px 0px 20px)');
+    });
+
+    it('closes once the anchor is fully occluded by the boundary, viewport intersection notwithstanding', async () => {
+      setViewport(1000, 800);
+      stubPopoverGeometry({
+        anchor: { top: 100, right: 440, bottom: 120, left: 400 },
+        floating: { width: 200, height: 150 },
+        boundary: BOUNDARY,
+      });
+      const onClose = vi.fn();
+      render(Harness, {
+        props: { open: true, placement: 'bottom-start', withClipBoundary: true, onClose },
+      });
+      await tick();
+      await nextFrame();
+      await nextFrame();
+      expect(onClose).not.toHaveBeenCalled();
+
+      // Fully behind the sidebar: inside the window viewport, outside the
+      // boundary. Pre-clip-boundary this stayed open and floated over the
+      // sidebar's thread list.
+      stubPopoverGeometry({
+        anchor: { top: 100, right: 140, bottom: 120, left: 100 },
+        floating: { width: 200, height: 150 },
+        boundary: BOUNDARY,
+      });
+      await vi.waitFor(() => expect(onClose).toHaveBeenCalledWith('anchor-gone'));
+    });
+
+    // The blocking review finding: the open-time fit must clamp into the
+    // SAME bounds the clip uses. An end-aligned popover whose natural
+    // position starts left of the boundary would otherwise open with its
+    // leading columns already cut off behind the sidebar — permanently,
+    // since nothing scrolls a freshly-opened popover into view.
+    it('opens clamped inside the clip boundary instead of opening pre-cut', async () => {
+      setViewport(1000, 800);
+      stubPopoverGeometry({
+        // Narrow trigger near the strip's left edge; bottom-end places the
+        // 200px menu at left = 350 - 200 = 150, past the boundary at 300.
+        anchor: { top: 100, right: 350, bottom: 120, left: 310 },
+        floating: { width: 200, height: 150 },
+        boundary: BOUNDARY,
+      });
+      const { getByTestId } = render(Harness, {
+        props: { open: true, placement: 'bottom-end', withClipBoundary: true },
+      });
+      await tick();
+      const popover = getByTestId('popover-content').parentElement;
+      expect(popover).not.toBeNull();
+      expect(popover!.style.left).toBe('300px');
+      expect(popover!.getAttribute('style')).not.toContain('clip-path');
+    });
+
+    it('re-clips when the boundary narrows while the anchor holds still (sidebar resize)', async () => {
+      setViewport(1000, 800);
+      stubPopoverGeometry({
+        anchor: { top: 100, right: 540, bottom: 120, left: 500 },
+        floating: { width: 200, height: 150 },
+        boundary: BOUNDARY,
+      });
+      const { getByTestId } = render(Harness, {
+        props: { open: true, placement: 'bottom-end', withClipBoundary: true },
+      });
+      await tick();
+      const popover = getByTestId('popover-content').parentElement;
+      expect(popover).not.toBeNull();
+      expect(popover!.style.left).toBe('340px');
+      expect(popover!.getAttribute('style')).not.toContain('clip-path');
+
+      // The sidebar grows: the boundary's left edge moves to 380 with the
+      // anchor untouched. No scroll/resize event reaches the popover — the
+      // per-frame tracker must pick the boundary change up on its own.
+      stubPopoverGeometry({
+        anchor: { top: 100, right: 540, bottom: 120, left: 500 },
+        floating: { width: 200, height: 150 },
+        boundary: { top: 0, left: 380, right: 1000, bottom: 800 },
+      });
+      await vi.waitFor(() =>
+        expect(popover!.getAttribute('style')).toContain('clip-path: inset(0px 0px 0px 40px)'),
+      );
+    });
+
+    it('clips against the measured box when a menu overflows its matchAnchorWidth request', async () => {
+      setViewport(1000, 800);
+      stubPopoverGeometry({
+        // Requested width is the 40px anchor; the menu's own min-width
+        // makes the measured box 200px. Clipping against the requested
+        // width would under-clip the overflowing right edge.
+        anchor: { top: 100, right: 440, bottom: 120, left: 400 },
+        floating: { width: 200, height: 150 },
+        boundary: BOUNDARY,
+      });
+      const { getByTestId } = render(Harness, {
+        props: { open: true, placement: 'bottom-start', matchAnchorWidth: true, withClipBoundary: true },
+      });
+      await tick();
+      const popover = getByTestId('popover-content').parentElement;
+      expect(popover).not.toBeNull();
+      expect(popover!.style.width).toBe('40px');
+
+      // The boundary's right edge moves to 520: the measured 200px box
+      // (400..600) overhangs it by 80px even though the requested 40px
+      // box (400..440) does not.
+      stubPopoverGeometry({
+        anchor: { top: 100, right: 440, bottom: 120, left: 400 },
+        floating: { width: 200, height: 150 },
+        boundary: { top: 0, left: 300, right: 520, bottom: 800 },
+      });
+      await vi.waitFor(() =>
+        expect(popover!.getAttribute('style')).toContain('clip-path: inset(0px 80px 0px 0px)'),
+      );
+    });
+
+    it('treats a zero-rect boundary as "no clip" and never self-closes (zero-rect environments)', async () => {
+      // No geometry stub: happy-dom reports all-zero rects for the anchor
+      // AND the boundary. An empty boundary must not read as "clip
+      // everything" or as "anchor scrolled away".
+      const onClose = vi.fn();
+      const { getByTestId } = render(Harness, {
+        props: { open: true, withClipBoundary: true, onClose },
+      });
+      await tick();
+      await nextFrame();
+      await nextFrame();
+      await nextFrame();
+      expect(onClose).not.toHaveBeenCalled();
+      const popover = getByTestId('popover-content').parentElement;
+      expect(popover!.getAttribute('style')).not.toContain('clip-path');
     });
   });
 
@@ -343,13 +542,14 @@ describe('<Popover>', () => {
       expect(ev.defaultPrevented).toBe(false);
     });
 
-    it('claimTab suppresses the move and closes instead', async () => {
+    it('claimTab suppresses the move and closes instead (reason "tab")', async () => {
       const onClose = vi.fn();
       render(Harness, { props: { open: true, onClose, claimTab: true } });
       await tick();
       const ev = new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true });
       document.dispatchEvent(ev);
       expect(onClose).toHaveBeenCalledTimes(1);
+      expect(onClose).toHaveBeenCalledWith('tab');
       expect(ev.defaultPrevented).toBe(true);
     });
 
@@ -359,13 +559,17 @@ describe('<Popover>', () => {
       });
       await tick();
       getByTestId('popover-inside-button').focus();
+      const focusSpy = vi.spyOn(getByTestId('popover-anchor'), 'focus');
 
       await rerender({ open: false });
       await tick();
 
       // The floating element is gone by the time the close settles, so focus
-      // would have dropped to <body> without the restore.
+      // would have dropped to <body> without the restore. The restore must
+      // never scroll: a trigger scrolled out of the pane strip would
+      // otherwise snap the strip back to it.
       expect(document.activeElement).toBe(getByTestId('popover-anchor'));
+      expect(focusSpy).toHaveBeenCalledWith({ preventScroll: true });
     });
 
     it('leaves focus alone when the close came from somewhere else', async () => {
@@ -460,6 +664,50 @@ describe('<Popover>', () => {
       // correct via DOM ancestry; after the fix it must still be
       // correct via portal preservation.
       await fireEvent.mouseDown(getByTestId('inner-anchor'));
+      expect(onOuterClose).not.toHaveBeenCalled();
+    });
+
+    it('a submenu inherits the clip boundary of the chain\'s real trigger across the portal hop', async () => {
+      const nextFrame = () =>
+        new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+      setViewport(1000, 800);
+      const rects: Record<string, Partial<DOMRect>> = {
+        'clip-boundary': { top: 0, left: 300, right: 1000, bottom: 800 },
+        'outer-anchor': { top: 100, right: 440, bottom: 120, left: 400 },
+        'inner-anchor': { top: 130, right: 460, bottom: 150, left: 420 },
+      };
+      vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(
+        function getRect(this: HTMLElement) {
+          return rectFrom(rects[this.dataset.testid ?? ''] ?? {});
+        },
+      );
+      vi.spyOn(HTMLElement.prototype, 'offsetWidth', 'get').mockImplementation(function getW(this: HTMLElement) {
+        return this.dataset.popover !== undefined ? 200 : 0;
+      });
+      vi.spyOn(HTMLElement.prototype, 'offsetHeight', 'get').mockImplementation(function getH(this: HTMLElement) {
+        return this.dataset.popover !== undefined ? 150 : 0;
+      });
+      vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockImplementation(function getSH(this: HTMLElement) {
+        return this.dataset.popover !== undefined ? 150 : 0;
+      });
+
+      const onOuterClose = vi.fn();
+      const onInnerClose = vi.fn();
+      render(NestedHarness, {
+        props: { onOuterClose, onInnerClose, withClipBoundary: true },
+      });
+      await tick();
+      await nextFrame();
+      await nextFrame();
+      expect(onInnerClose).not.toHaveBeenCalled();
+
+      // The strip scrolls: the submenu's trigger row rides its portaled
+      // parent behind the sidebar. It has NO boundary ancestor by DOM
+      // ancestry (it lives in a body-portaled floating element) — only the
+      // anchor-chain walk can see that its plane ends at x=300, and the
+      // rect (inside the window viewport) must not keep it open.
+      rects['inner-anchor'] = { top: 130, right: 140, bottom: 150, left: 100 };
+      await vi.waitFor(() => expect(onInnerClose).toHaveBeenCalledWith('anchor-gone'));
       expect(onOuterClose).not.toHaveBeenCalled();
     });
   });

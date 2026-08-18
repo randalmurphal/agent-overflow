@@ -7,6 +7,7 @@
   import type { WorkspaceFile } from '../../types/workspaceFile';
   import { createActiveOptionReveal } from './popoverOptionReveal';
   import Popover from '../primitives/Popover.svelte';
+  import type { PopoverCloseReason } from '../../utils/popoverOwnership';
   import EditorLink from '../common/EditorLink.svelte';
 
   interface Props {
@@ -21,7 +22,7 @@
     workspacePath?: string;
     onSelect: (file: WorkspaceFile) => void;
     onHover?: (index: number) => void;
-    onClose?: () => void;
+    onClose?: (reason?: PopoverCloseReason) => void;
   }
 
   let {

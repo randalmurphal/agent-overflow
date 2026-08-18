@@ -416,9 +416,14 @@
 </script>
 
 <!-- svelte-ignore a11y_no_static_element_interactions -->
+<!-- data-popover-clip-boundary: popups anchored in strip content (composer
+     pickers, header menus) clip at this element's edge as the strip scrolls,
+     so they slide behind the sidebar with their trigger instead of painting
+     over it. See utils/popoverOwnership.ts#resolvePopoverClipBoundary. -->
 <div
   bind:this={hostEl}
   class="relative flex-1 flex min-w-0 min-h-0 overflow-x-auto overflow-y-hidden"
+  data-popover-clip-boundary
   data-testid="pane-host"
   ondragover={drag.onHostDragOver}
   ondrop={drag.onHostDrop}

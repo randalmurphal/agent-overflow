@@ -44,7 +44,13 @@ Svelte 5 + Vite 8 (Rolldown) + Tailwind 4 + TypeScript.
 - `src/lib/components/sidebar/` — projects + thread list.
 - `src/lib/components/primitives/` — reusable Menu / Popover / Modal /
   dropdown shells. Pickers compose these rather than rolling their own
-  positioning, focus-trap, or keyboard behavior.
+  positioning, focus-trap, or keyboard behavior. Popovers fit, clip, and
+  auto-close at the nearest `data-popover-clip-boundary` ancestor of
+  their anchor (the pane strip declares it; fixed surfaces inside such a
+  subtree opt out with `="none"`) — contract in
+  `utils/popoverOwnership.ts`, math in `utils/popoverGeometry.ts`; a
+  close's focus restore is reason-gated through
+  `panes/paneComposerFocus.ts#restorePickerFocus`.
 - `src/lib/components/workflows/` — the workflows overlay. See "Workflows
   Overlay" below before touching it.
 - `src/lib/components/{accounts,design,discussion,git,palette,settings,terminal,usage,shared}/` —
