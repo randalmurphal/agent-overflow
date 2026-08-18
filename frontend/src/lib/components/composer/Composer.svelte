@@ -623,7 +623,9 @@
       const lastOption = optionButtons?.[optionButtons.length - 1];
       if (lastOption) {
         e.preventDefault();
-        lastOption.focus();
+        // preventScroll, matching the panel's own focusOption: DOM focus
+        // must never scroll the pane strip (see paneComposerFocus.ts).
+        lastOption.focus({ preventScroll: true });
         return true;
       }
     }

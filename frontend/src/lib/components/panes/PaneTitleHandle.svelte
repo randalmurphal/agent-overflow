@@ -77,7 +77,9 @@
     draftTitle = pane.thread.title;
     editing = true;
     void tick().then(() => {
-      inputEl?.focus();
+      // preventScroll: DOM focus must never scroll the pane strip (see
+      // paneComposerFocus.ts) — reveal belongs to revealPane alone.
+      inputEl?.focus({ preventScroll: true });
       inputEl?.select();
     });
   }

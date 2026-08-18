@@ -3,7 +3,7 @@
 // restoration to the triggering element, and nested traps shadowing
 // outer ones.
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { focusTrap } from './focusTrap';
 
 function dispatchTab(target: EventTarget, shift = false): KeyboardEvent {
@@ -110,8 +110,12 @@ describe('focusTrap', () => {
     await Promise.resolve();
     expect(document.activeElement?.id).toBe('a');
 
+    const restoreSpy = vi.spyOn(trigger, 'focus');
     handle!.destroy!();
     expect(document.activeElement).toBe(trigger);
+    // The opener can sit in the horizontally-scrolled pane strip, which may
+    // have moved while the trap was up — the restore must never scroll it.
+    expect(restoreSpy).toHaveBeenCalledWith({ preventScroll: true });
 
     trigger.remove();
     host.remove();

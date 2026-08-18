@@ -189,7 +189,13 @@ export const focusTrap: Action<HTMLElement, FocusTrapOptions | undefined> = (nod
 
     const restoreFocus = opts?.restoreFocus ?? true;
     if (restoreFocus && instance.previousFocus instanceof HTMLElement) {
-      instance.previousFocus.focus();
+      // preventScroll: the opener can live in the horizontally-scrolled
+      // pane strip, and the strip may have moved while the trap was up —
+      // a bare focus() would snap it back. DOM focus must never scroll
+      // (see panes/paneComposerFocus.ts); the in-trap moves above stay
+      // bare on purpose, because scrolling the trap container's own body
+      // to the Tab target IS the desired reveal.
+      instance.previousFocus.focus({ preventScroll: true });
     }
     instance = null;
     removeListenerIfIdle();
