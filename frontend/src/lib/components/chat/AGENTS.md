@@ -96,6 +96,29 @@ Every row rendered inside `<TimelineVirtualizer>`:
   unconditional on purpose — a CSS transition needs the property present
   BEFORE the value changes, so gating the class on `pendingCutAfter` would
   make the dim snap in and out instead of fading.
+- **Runs no CSS transitions.** The timeline transition kill rule in
+  `app.css` zeroes `transition-duration` for everything inside the
+  scroller: an active animation licenses the compositor to present a
+  frame whose tiles have not finished rastering, and a bottom-held toggle
+  invalidates the tiles of every screen-stationary row below the toggled
+  run — the decorative transitions that started in that same commit
+  (chevron rotate, fades, hover re-target) were what made the text below
+  blank on expand (2026-08-17). New row polish must not rely on a CSS
+  transition; it will be inert here and animate anywhere else the
+  component is reused. The one carve-out is the `[data-row-index]`
+  wrapper itself, which is what keeps the pending-cut dim above fading.
+  Svelte `transition:`/`in:`/`out:`/`animate:` directives are the same
+  hazard through a door the CSS rule cannot reach (WAAPI/inline styles),
+  so they are banned in this directory outside a verified
+  outside-the-scroller allowlist. The hazard is really the scroller's DOM
+  subtree, not the directory — components rendered into rows from
+  elsewhere (the vendored streamdown popovers) carry directives the walk
+  cannot see, so a new external row dependency needs the same check by
+  hand. Guards:
+  `timelineTransitionSuppression.browser.test.ts` (the CSS rule),
+  `timelineAnimationDirectives.test.ts` (the directive ban). The why —
+  which two motion owners exist and why everything else renders as print
+  — is `docs/architecture/frontend-scroll.md` §The Print Doctrine.
 
 The user row's body swap to a live editor (`UserMessageEditor.svelte`) is
 the one deliberate exception to "keep the outer shell stable", and it is
@@ -242,19 +265,19 @@ Operational rules for this directory:
   more than a viewport behind the TAIL (distance from the tail, not
   viewport-exit — a reader who scrolls up and back must find the latest runs
   as they left them), with nothing inside engaged and no unaddressed failure.
-  Releases batch through `withViewportBottomHeld` like every other collapse —
-  and NEVER while `autoScrollInFlight()` (spring active or a structural arm
-  pending): the transaction's bottom-pinned restore is a direct write, so a
-  release landing mid-glide snaps the animation. That stand-down is the quiet
-  scheduler's (`timelineQuietWork.ts` — the gate is one of its 'quiet'
-  passes; the scheduler's recheck timer re-runs a blocked pass once the
-  glide dies). The gate can only see motion that
-  exists when the pass runs, so the transaction also passes
-  `takeover: 'yield'`: a wire append landing between the release and its
-  restore arms the structural spring, and the restore's `requestBottom`
-  hands the trip to it instead of writing a bottom that already contains
-  the new row (regression: appendAfterQuiet.browser.test.ts, the
-  collapse-vs-append race).
+  Releases batch through the registry's `releaseOpenedLive(runIds)`, whose
+  ONE `withViewportBottomHeld` transaction wraps the whole batch — and the
+  gate must NEVER run while `autoScrollInFlight()` (spring active or a
+  structural arm pending): the transaction's bottom-pinned restore is a
+  direct write, so a release landing mid-glide snaps the animation. That
+  stand-down is the quiet scheduler's (`timelineQuietWork.ts` — the gate is
+  one of its 'quiet' passes; the scheduler's recheck timer re-runs a blocked
+  pass once the glide dies). The gate can only see motion that exists when
+  the pass runs, so the registry's transaction passes `takeover: 'yield'`:
+  a wire append landing between the release and its restore arms the
+  structural spring, and the restore's `requestBottom` hands the trip to it
+  instead of writing a bottom that already contains the new row (regression:
+  appendAfterQuiet.browser.test.ts, the collapse-vs-append race).
 - **Engagement is deviation-based, never pixel-based.** The gate's "reader
   opened something in here" check is `pane.hasUserExpansionWithin` — diff
   overrides that say expanded, subagent / wait / read groups, payload bodies
@@ -293,12 +316,20 @@ Operational rules for this directory:
   and window anchor both), so it reopens on its newest row. `saveScrollSnapshot`
   refuses a save for a run with no clip because the closing clip's own teardown
   routes through it — do not "fix" that by moving the check to the call site.
-- **Every collapse/expand runs inside `withViewportBottomHeld`** (header, rail,
-  and the header bar's bulk toggle). It holds the viewport's BOTTOM edge, so the run
-  opens upward over rows the reader is already reading rather than pushing them
-  down the page, and it pauses the spring so a toggle while bottom-pinned is
-  instant instead of an animated ride across the delta. A new caller that
-  mutates run collapse state must go through it —
+- **Every collapse/expand runs inside `withViewportBottomHeld`, and the hold
+  lives INSIDE the registry mutators** — `setCollapsed`, `setAllCollapsed`,
+  and `releaseOpenedLive` each run their write inside the transaction, so a
+  caller (header, rail, the header bar's bulk toggle, the auto-collapse
+  gate) just calls the mutator and must NOT wrap a hold of its own. The
+  hold keeps the viewport's BOTTOM edge, so the run opens upward over rows
+  the reader is already reading rather than pushing them down the page, and
+  it pauses the spring so a toggle while bottom-pinned is instant instead
+  of an animated ride across the delta. The one hold-free expand is
+  `expandForReveal`, called only by `revealActivityRunItem`, and the missing
+  hold is load-bearing: `scrollToItem` aborts its jump if the restore token
+  moves during the reveal, and a hold issues one — held, every jump into a
+  collapsed run would cancel at its own guard. The verb can only expand, so
+  the hold-free path cannot be borrowed for a collapse.
   `docs/architecture/frontend-scroll.md` §Run Height Changes.
 - **The run's header is present in BOTH states and is the per-run control.**
   It used to render only while collapsed, so expanding removed the element the

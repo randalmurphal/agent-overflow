@@ -395,8 +395,11 @@ expansion can sit on any row a group renders — a wait group's children or
 its folded completion, an opened subagent card's transcript. Failure keeps
 the membership scope, matching what the collapsed chip summarizes.
 
-The release itself is batched through `withViewportBottomHeld`, the same
-anchored transaction every reader-clicked collapse uses. For a bottom-pinned
+The release itself is batched: the gate hands the whole eligible set to
+`releaseOpenedLive(runIds)`, and the registry runs it inside ONE
+`withViewportBottomHeld` — the same anchored transaction every
+reader-clicked collapse uses, owned by the registry's mutators rather than
+their callers. For a bottom-pinned
 reader the browser's own `scrollTop` clamp already cancels a shrink above the
 viewport; the transaction is what makes zero motion deterministic for
 everyone else — a reader parked mid-list below a released run gets their
@@ -445,8 +448,10 @@ its own header, and that click is instant.
 
 Every path that flips collapse state — the header, the rail, the chat header's
 bulk toggle, and the auto-collapse gate's batch release — runs inside
-`withViewportBottomHeld`, which holds the viewport's
-BOTTOM edge across the change (see
+`withViewportBottomHeld`, which holds the viewport's BOTTOM edge across the
+change. The hold lives inside the registry's mutators, not at the call
+sites; the one hold-free write is `expandForReveal`, for jumps that retarget
+the viewport themselves (see
 [frontend-scroll.md §Run Height Changes](frontend-scroll.md#run-height-changes)).
 
 Two things follow, and both are the reason it exists. A run expands over the

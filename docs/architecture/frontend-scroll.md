@@ -370,10 +370,20 @@ cap counts only renderable rows.
 
 A deliberate change to a run's height goes through
 `PaneScrollController.preserveViewportBottom` (`timelineWindowAnchor.svelte.ts`,
-the same module as the prune transaction, reached from components via
+the same module as the prune transaction, reached via
 `withViewportBottomHeld`). Today that is every activity-run collapse or
 expand: the ones the reader asked for (a toggle, the header's collapse-all)
-and the auto-collapse gate's batched off-screen releases. The releases are
+and the auto-collapse gate's batched off-screen releases. The hold is not a
+call-site convention — it lives inside the registry's own mutators
+(`ThreadActivityRuns.setCollapsed` / `setAllCollapsed` /
+`releaseOpenedLive`), so a new caller cannot forget it and must not wrap a
+hold of its own. The one hold-free write is `expandForReveal`, reachable
+only through `revealActivityRunItem`, and the missing hold is load-bearing:
+`scrollToItem` guards its post-reveal resume on a restore token, and a hold
+issues one (`nextRestoreToken`) — held, the jump would abort at its own
+guard before scrolling anywhere. A bottom restore racing the jump's
+destination is the second reason. The verb can only expand, so the
+hold-free path cannot be borrowed for a collapse. The releases are
 not reader-requested — the gate fires precisely because the reader is
 provably elsewhere — but they ride the same transaction: the runs they
 change are out of sight by construction, and the anchor restore is what
@@ -944,6 +954,68 @@ capture it was root-caused from:
 [`settle-flicker-analysis.md`](settle-flicker-analysis.md). Coverage: the
 net-zero `±2px` oscillation test (≤2 `scrollTop` writes with the gate, 24
 without).
+
+## The Print Doctrine
+
+The transcript renders like print: rows are static ink, and the only
+things that move are the page under the reader and the text still being
+written. Concretely, exactly two motion owners exist inside the timeline
+scroller:
+
+1. **The scroll controller's glide** (`utils/scroll/`) — animation of the
+   scroll offset only. Rows never move relative to the content; the
+   viewport moves over them.
+2. **The streaming line-slide** (`TailClampedText`'s FLIP via
+   `Element.animate()`) — the one in-content animation, on the one region
+   that is genuinely in motion: the line being streamed.
+
+Everything else is still ink. No CSS transitions (the app.css timeline
+kill rule zeroes them — see `components/chat/AGENTS.md` §Row Contract),
+no Svelte `transition:`/`in:`/`out:`/`animate:` directives
+(`timelineAnimationDirectives.test.ts`), no decorative keyframes on row
+content — `animate-pulse` is disarmed app-wide (`--animate-pulse: none`
+in the theme; the ambient ticker drives those opacities with inline
+style writes, which create no animation objects and so never flip the
+present policy). The guards make the wrong thing inert or loud rather
+than relying on review memory.
+
+The guards do not yet cover everything the doctrine claims. Known
+in-scroller animations outside them, kept deliberately pending a
+product call: the `animate-spin` loading ring on `primitives/Button`
+(load-older/newer, the message editor's working state, plan-card
+expansion — a keyframe animation active during exactly the head-splice
+compensation commits load paging performs), and the vendored streamdown
+popovers' `transition:scale|global` dialogs (click-gated, outside the
+directive tripwire's `components/chat` walk). Removing or converting
+these (e.g. to the ticker-driven `SteppedSpinner`) changes visible
+behavior, so they are a decision, not a cleanup. (A third exception, the
+user-message jump-target glow, turned out to be dead code — its only
+producer died with `DiffPanelDrawer` in the review-pane redesign — and
+the whole flash mechanism was removed rather than left dormant.)
+
+This is not an aesthetic preference; it is a present-policy constraint.
+The compositor presents a frame whose tiles have finished rastering —
+*unless an animation is active*, which flips its scheduler to
+smoothness-priority and licenses presenting with tiles missing. The
+timeline's core moves are compensated layer-space moves (bottom-held
+toggles, prune shifts, head splices): rows that stay screen-stationary
+while their tiles all invalidate at once. Under the default policy that
+is invisible; with any animation active in the same commit it is a
+checkerboard where text used to be (the 2026-08-17 expand flicker: a
+chevron rotate, a fade, and browser-re-dispatched hover transitions were
+enough). The two permitted owners are safe by construction: a scroll
+glide invalidates nothing (the compositor scrolls prepainted tiles), and
+the line-slide animates a small clip whose tiles the same commit just
+painted.
+
+The doctrine also explains this document's recurring shape: every
+mechanism above (bottom-held transactions, engine compensation routing,
+the reveal queue's paced drain, the idle re-pin deadband) exists to make
+discrete content changes land as either *zero visible motion* or *one
+controller-owned glide*. When adding polish to a row, the question is
+never "does this animation look nice" but "which of the two owners does
+this motion belong to" — and if the answer is neither, it renders as
+print: instant, settled, already there.
 
 ## Layout Rules
 
