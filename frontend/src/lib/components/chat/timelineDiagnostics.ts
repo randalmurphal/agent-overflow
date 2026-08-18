@@ -170,15 +170,41 @@ export function createTimelineDiagnostics(
   // defined when the {#key pane.threadId} block remounts the
   // virtualizer. A stale scrollTop from the outgoing thread can be
   // visible here until the restore effect lands.
+  //
+  // Emits on TRANSITIONS only (listRef identity / threadId /
+  // restoredThreadId). The method's reactive deps come from whichever
+  // $effect calls it, and reading revealedNodes unconditionally made
+  // that effect re-run on every streamed projection pass — ~100
+  // identical records/minute that diluted the record's meaning and
+  // crowded the trace ring (bug-report-20260818T163100Z: 5% of the
+  // whole capture). The early return also drops revealedNodes from the
+  // effect's dep set on non-transition runs, so the effect itself
+  // stops waking per pass.
+  let lastListRefBind: {
+    listRef: TimelineVirtualizerHandle | undefined;
+    threadId: string | null;
+    restoredThreadId: string | null;
+  } | null = null;
   function recordListRefBindTrace(): void {
     if (!isUiRenderTraceEnabled()) return;
     const listRef = options.getListRef();
+    const threadId = options.getPane().threadId;
+    const restoredThreadId = options.getRestoredThreadId();
+    const last = lastListRefBind;
+    if (
+      last
+      && last.listRef === listRef
+      && last.threadId === threadId
+      && last.restoredThreadId === restoredThreadId
+    ) {
+      return;
+    }
+    lastListRefBind = { listRef, threadId, restoredThreadId };
     const scrollEl = options.getScrollEl();
-    const bound = listRef !== undefined;
     recordUiTrace('timeline.listRef.bind', {
-      bound,
-      threadId: options.getPane().threadId,
-      restoredThreadId: options.getRestoredThreadId(),
+      bound: listRef !== undefined,
+      threadId,
+      restoredThreadId,
       scrollTop: scrollEl ? Math.round(scrollEl.scrollTop) : null,
       scrollHeight: scrollEl ? Math.round(scrollEl.scrollHeight) : null,
       clientHeight: scrollEl ? Math.round(scrollEl.clientHeight) : null,
