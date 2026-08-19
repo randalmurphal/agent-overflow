@@ -53,7 +53,7 @@
     {#each attachments as attachment, index (attachment.id)}
       {@const preview = attachmentPreviews.previewFor(attachment.id)}
       <div
-        class="group relative h-16 w-16 overflow-hidden rounded-lg border border-border bg-surface-1 shadow-sm"
+        class="group relative h-16 w-16 overflow-hidden rounded-lg border border-border bg-surface-1 shadow-sheet"
         data-testid="attachment-thumb"
         title={`${attachment.filename} (${formatAttachmentSize(attachment.size)})`}
       >
@@ -78,13 +78,13 @@
         <button
           type="button"
           aria-label={`Remove ${attachment.filename}`}
-          class="absolute right-1 top-1 rounded-full bg-black/65 p-0.5 text-white opacity-90 transition hover:bg-black/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/70"
+          class="absolute right-1 top-1 rounded-full bg-scrim/65 p-0.5 text-scrim-fg opacity-90 transition hover:bg-scrim/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-scrim-fg/70"
           onclick={() => onRemove(attachment.id)}
         >
           <Icon icon={X} size={12} strokeWidth={2.5} class="opacity-100" />
         </button>
         <span
-          class="absolute bottom-1 left-1 rounded bg-black/70 px-1 py-0.5 text-[0.625rem] font-medium leading-none text-white"
+          class="absolute bottom-1 left-1 rounded bg-scrim/70 px-1 py-0.5 text-[0.625rem] font-medium leading-none text-scrim-fg"
           aria-label={`Image ${index + 1}`}
         >
           #{index + 1}

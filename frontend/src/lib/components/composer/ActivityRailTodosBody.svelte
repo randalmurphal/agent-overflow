@@ -72,7 +72,7 @@
 
   function statusClass(status: TodoStepStatus): string {
     if (status === 'completed') return 'text-fg-hint/55 line-through decoration-fg-hint/40';
-    if (status === 'inProgress') return 'font-medium text-fg-default';
+    if (status === 'inProgress') return 'font-medium text-fg';
     return 'text-fg-muted';
   }
 

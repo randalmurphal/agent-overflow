@@ -167,7 +167,7 @@
             </span>
           {/if}
           <span
-            class="absolute bottom-1 left-1 rounded bg-black/70 px-1 py-0.5 text-[0.625rem] font-medium leading-none text-white"
+            class="absolute bottom-1 left-1 rounded bg-scrim/70 px-1 py-0.5 text-[0.625rem] font-medium leading-none text-scrim-fg"
             aria-label={`Image ${index + 1}`}
           >
             #{index + 1}

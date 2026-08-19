@@ -192,6 +192,23 @@ RPCs stay inside `stores/`, and `wailsEventOn` does not appear outside it.
 Both rules carry shrink-only allowlists — an exception that has been fixed
 must be deleted from the list, not left to grandfather the next one.
 
+`src/lib/themeTokens.test.ts` enforces the token layer the same way and
+with the same allowlist discipline. Its rules cover the whole of `src/`:
+no raw Tailwind palette classes (the blue-500 text scale and kin), no raw
+black/white utilities (a black scrim at 45%), no default Tailwind shadow
+scale (the small/medium/large sizes), no arbitrary-value color functions,
+no dead token utilities, and no hex literals outside the theme layer
+itself. (Class names are deliberately not spelled verbatim here:
+Tailwind's source scanner reads this file and compiles a quoted utility
+into the production bundle as a dead rule.) Its raw-class
+allowlist is EMPTY, which is the claim that every leak is closed. The fix for a failure is adding or using a TOKEN — never
+extending the list; if the role you need does not exist yet, define it
+(see [`docs/specs/theme-system.md`](../docs/specs/theme-system.md) for
+the vocabulary and the file-placement rule: app.css owns colors,
+`styles/tokens.css` owns non-color scales and derived roles). Both
+directions are checked, so an entry that no longer offends fails too —
+delete it when you fix its file.
+
 ## Workflows Overlay
 
 Spec: [`docs/specs/workflows-system-ui/UI-SPEC.md`](../docs/specs/workflows-system-ui/UI-SPEC.md)
@@ -586,7 +603,7 @@ why vendored packages are `workspace:` and never `file:` — pnpm resolves a
 
 ### Vendored svelte-streamdown
 
-`vendor/svelte-streamdown/` is `svelte-streamdown@3.1.2` with 17 permanent
+`vendor/svelte-streamdown/` is `svelte-streamdown@3.1.2` with 18 permanent
 in-tree fixes. The per-entry rationale, drop rules and regression-test names
 live in
 [`vendor/svelte-streamdown/DIVERGENCE.md`](vendor/svelte-streamdown/DIVERGENCE.md);

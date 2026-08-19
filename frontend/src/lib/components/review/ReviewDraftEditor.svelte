@@ -76,7 +76,7 @@
     </button>
     <button
       type="button"
-      class="rounded bg-accent px-2 py-1 text-[0.6875rem] font-medium text-accent-contrast disabled:opacity-45"
+      class="rounded bg-accent px-2 py-1 text-[0.6875rem] font-medium text-accent-fg disabled:opacity-45"
       disabled={!canSubmit}
       onclick={() => { void submit(); }}
     >

@@ -88,7 +88,7 @@
     class="pointer-events-none absolute right-1 top-1 z-10 opacity-0 transition-opacity duration-150 group-hover/proposed-plan:pointer-events-auto group-hover/proposed-plan:opacity-100 focus-within:pointer-events-auto focus-within:opacity-100"
     data-testid="proposed-plan-actions"
   >
-    <div class="rounded-[var(--radius-control)] border border-border-subtle bg-surface-0/95 px-1 py-0.5 shadow-sm backdrop-blur">
+    <div class="rounded-[var(--radius-control)] border border-border-subtle bg-surface-0/95 px-1 py-0.5 shadow-sheet backdrop-blur">
       <ProposedPlanActions
         getCopyText={planExport.getCopyableMarkdown}
         onSave={planExport.openSaveDialog}

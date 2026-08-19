@@ -7,6 +7,16 @@
  * `--radius-md` / `--spacing-*` tokens so existing utility classes keep
  * working. New tokens introduce named roles (card/composer/hero) that
  * compose with those defaults rather than replacing them.
+ *
+ * FILE-PLACEMENT RULE. app.css's `:root` / `html.light` own COLORS —
+ * mode-varying palettes and theme-invariant color roles alike, so every
+ * literal color value in the app is readable in one place against its
+ * light-mode counterpart. This file owns non-color scales (typography,
+ * radius, shadow) and DERIVED or COMPOSED roles — values written as
+ * `var(...)` / `color-mix(...)` over what app.css defined, which have no
+ * light-mode override of their own because they inherit one. A new token
+ * with a literal color belongs in app.css; a new token computed from an
+ * existing one belongs here.
  */
 
 :root {
@@ -34,6 +44,11 @@
   --shadow-sheet: 0 1px 2px color-mix(in oklab, black 20%, transparent);
   --shadow-menu: 0 8px 24px -12px color-mix(in oklab, black 40%, transparent);
   --shadow-modal: 0 40px 80px -30px color-mix(in oklab, black 60%, transparent);
+  /* Accent hairline lit along a panel's top edge (pending-approval and
+     pending-input composer panels). An inset shadow rather than a border
+     so it adds no height and shifts nothing. Derived from --accent, so it
+     follows the theme's accent without a second value to keep in sync. */
+  --shadow-accent-inset: inset 0 2px 0 oklch(from var(--accent) l c h / 0.18);
 
   /* Foreground opacity hierarchy. Four levels mean "this is the focal
      text," "this is supporting," "this is de-emphasized," "this is
@@ -52,4 +67,15 @@
      this at low opacities (bg-card/25 etc.) so the ground color is one
      named thing instead of surface-1 everywhere. */
   --card: var(--surface-1);
+
+  /* Code-block ground. Aliases the surface-1 elevation tier today, but
+     gets a name of its own so a future code theme can restyle code blocks
+     without moving the general elevation tier that cards, inputs and
+     panels also sit on. Same shape as --card directly above — a derived
+     role over surface-1, which is why both live here rather than in
+     app.css's palette. Two consumers, one value: `.markdown-body pre`
+     reads the var directly and the Streamdown override
+     (chat/markdown/streamdownTheme.ts `code.base`) uses `bg-code-block`.
+     Token name and utility name are the same string on purpose. */
+  --code-block: var(--surface-1);
 }

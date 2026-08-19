@@ -104,7 +104,8 @@ Paths below are relative to `dist/`. Regression-test paths are relative to
    each settled block once — the caches make that migration free.
    (Code blocks get the same treatment from our own
    `markdown/codeSpanCache.ts`, in app code.) Perf-only: each can be
-   dropped independently if upstream grows an equivalent.
+   dropped independently if upstream grows an equivalent. The mermaid
+   key has since been widened past `theme` — see entry 18.
 10. **relative-reference links** (`Elements/Link.svelte`) — the
     blocked-link branch drops its " [blocked]" suffix for schemeless
     relative references (`docs/guide.md`, `../x`, `#frag` — common
@@ -300,3 +301,34 @@ Paths below are relative to `dist/`. Regression-test paths are relative to
     attachments render through dedicated components, not markdown).
     Regression: `ChatMarkdown.test.ts` ("never renders a raw
     same-origin img…").
+18. **the mermaid SVG cache is keyed on the PALETTE, not on `theme`**
+    (`Elements/Mermaid.svelte`) — entry 9's cache keyed on
+    `(mermaidConfig.theme, sanitized source)`, with an explicit note that
+    other config fields were the caller's problem. That holds only while
+    `theme` NAMES the palette. A host that drives mermaid from its own
+    design tokens pins `theme: 'base'` permanently — it is the one
+    mermaid theme that derives every color from `themeVariables` — and
+    varies `themeVariables` instead, so light and dark collapse onto the
+    same `base:<source>` key: the first diagram rendered after boot wins
+    for the rest of the page, and a theme flip re-serves the old colors
+    under a remount that exists precisely to repaint them. The key now
+    carries a `JSON.stringify` of `themeVariables`' sorted entries
+    alongside `theme` — stringified rather than joined because the values
+    are font stacks and color functions full of commas, and a `k=v` join
+    is delimiter-ambiguous (`{a: 'x,b=y'}` and `{a: 'x', b: 'y'}` collide,
+    serving one palette's SVG for another). Cheap by construction (a flat
+    object of ~12 entries, rebuilt only when the palette changes), and it
+    gives the SAME PARTITIONING as upstream's key when no `themeVariables`
+    are passed, where the palette segment is empty; the exact
+    serialization differs by a constant separator, which is irrelevant to
+    a per-page cache that nothing outside this file reads.
+    Fields that are neither `theme` nor `themeVariables`
+    (flowchart curve, `securityLevel`, …) stay out of the key, exactly as
+    entry 9 left them. The app-side producer of the variables is
+    `components/chat/markdown/mermaidTokens.ts`, handed down as
+    `ChatMarkdown`'s `mermaidConfig` prop. Upstream bug once
+    `themeVariables` are in play, upstream-PR candidate. **Drop rule:**
+    if upstream ever folds `themeVariables` (or any whole-config hash)
+    into its own cache key, delete this hunk and take upstream's — the
+    regression below asserts the observable property, not our exact
+    serialization. Regression: `markdown/mermaidCacheKey.test.ts`.

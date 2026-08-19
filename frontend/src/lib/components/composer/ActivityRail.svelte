@@ -176,7 +176,7 @@
         {#if activeTurn}
           <span class="text-fg-muted">
             {workingLabel} <span
-              class="tabular-nums text-fg-default"
+              class="tabular-nums text-fg"
               data-testid="activity-rail-working-elapsed"
             >{elapsedLabel}</span>
           </span>
@@ -196,7 +196,7 @@
            label/badge can't fit, instead of bleeding over the next chip. -->
       <button
         type="button"
-        class="{activityRailChipClasses} min-w-0 overflow-hidden text-fg-muted transition-colors hover:bg-surface-2/45 hover:text-fg-default focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/35 {todosOpen ? 'bg-accent/10 text-accent' : ''}"
+        class="{activityRailChipClasses} min-w-0 overflow-hidden text-fg-muted transition-colors hover:bg-surface-2/45 hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/35 {todosOpen ? 'bg-accent/10 text-accent' : ''}"
         onclick={() => pane.toggleActivityRailTodos()}
         aria-controls="activity-rail-todos-body"
         aria-expanded={todosOpen}
@@ -228,7 +228,7 @@
       {/if}
       <button
         type="button"
-        class="{activityRailChipClasses} shrink-0 text-fg-muted transition-colors hover:bg-surface-2/45 hover:text-fg-default focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/35 {backgroundOpen ? 'bg-accent/10 text-accent' : ''}"
+        class="{activityRailChipClasses} shrink-0 text-fg-muted transition-colors hover:bg-surface-2/45 hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/35 {backgroundOpen ? 'bg-accent/10 text-accent' : ''}"
         onclick={() => pane.toggleActivityRailBackground()}
         aria-controls="activity-rail-background-body"
         aria-expanded={backgroundOpen}

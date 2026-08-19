@@ -7,13 +7,15 @@
 // offender fails, and so does an allowlist entry that no longer offends. An
 // exception that has been fixed must be deleted, or the list stops describing
 // the tree and starts hiding it.
+//
+// The walk, the exclusion set and the allowlist comparison are shared with
+// `themeTokens.test.ts` through `test/sourceScan.ts`.
 
-import { readdirSync, readFileSync } from 'node:fs';
-import { dirname, join, relative, resolve, sep } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { dirname, join, resolve, sep } from 'node:path';
+import { describe, it } from 'vitest';
+import { SRC_ROOT, expectAllowlistExact, repoPath, scannedSources } from '../test/sourceScan';
 
-const SRC_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const STORES_DIR = join(SRC_ROOT, 'lib', 'stores');
 const BINDINGS_MODULE = join(STORES_DIR, 'bindings');
 // The Wails-generated tree, one level up from src/. Importing an RPC straight
@@ -138,35 +140,11 @@ interface ParsedImport {
   readonly wholeModule: boolean;
 }
 
-function* walkSources(dir: string): Generator<string> {
-  for (const entry of readdirSync(dir, { withFileTypes: true })) {
-    if (entry.name === 'node_modules') continue;
-    const full = join(dir, entry.name);
-    if (entry.isDirectory()) {
-      yield* walkSources(full);
-      continue;
-    }
-    if (/\.(ts|svelte)$/.test(entry.name)) yield full;
-  }
-}
-
 /**
- * Source files the rules apply to: everything under `src/` except the test
- * tree. Tests exist to drive and mock the very seams these rules protect — a
- * test importing `GetGitStatus` is doing its job, not breaking the doctrine.
- *
+ * The rules are about imports, so the walk is `.ts` / `.svelte` only.
  * `stores/` IS included; rule 1 scopes per owner and rule 2 filters it out.
  */
-function ruledSources(): string[] {
-  const files: string[] = [];
-  for (const file of walkSources(SRC_ROOT)) {
-    if (/\.(test|spec)\.[a-z]+$|\.manual\.ts$/.test(file)) continue;
-    if (file.startsWith(join(SRC_ROOT, 'test') + sep)) continue;
-    files.push(file);
-  }
-  if (files.length === 0) throw new Error('no source files found; the rules would pass vacuously');
-  return files;
-}
+const SOURCE_EXTENSIONS = /\.(ts|svelte)$/;
 
 /** Whether a specifier resolves to a module that re-exports generated RPCs. */
 function isBindingsModule(fromFile: string, specifier: string): boolean {
@@ -226,45 +204,21 @@ function resolveLocalModule(fromFile: string, specifier: string): string | null 
   return path.replace(/\.(ts|js|svelte)$/, '');
 }
 
-function repoPath(file: string): string {
-  return relative(SRC_ROOT, file).split(sep).join('/');
-}
-
-/**
- * Compare offenders against an allowlist in both directions. New offenders are
- * a regression; allowlisted files that stopped offending are a stale exception
- * that would silently grandfather the next one.
- */
-function expectAllowlistExact(
-  offenders: Map<string, string[]>,
-  allowlist: Record<string, string>,
-  fixHint: string,
-): void {
-  const unexpected = [...offenders.entries()]
-    .filter(([file]) => !(file in allowlist))
-    .map(([file, why]) => `${file}\n    ${why.join('\n    ')}`);
-  expect(unexpected, `New violations. ${fixHint}`).toEqual([]);
-
-  const stale = Object.keys(allowlist).filter((file) => !offenders.has(file));
-  expect(
-    stale,
-    'Allowlist entries that no longer offend. The list is shrink-only: delete them.',
-  ).toEqual([]);
-}
-
 // A call, not the words: the comments in lib/transport/ discuss `Events.On`
 // by name and must not read as subscriptions.
 const EVENTS_ON_CALL = /\bEvents\s*\.\s*On\s*\(/;
 
 describe('architecture', () => {
-  const sources = ruledSources().map((file) => {
+  // Each file's text is read, reduced to the two facts the rules need, and
+  // dropped — holding ~800 whole sources for the lifetime of the suite bought
+  // nothing but resident bytes.
+  const sources = scannedSources(SOURCE_EXTENSIONS).map((file) => {
     const text = readFileSync(file, 'utf8');
-    const path = repoPath(file);
     return {
       file,
-      path,
-      text,
+      path: repoPath(file),
       imports: parseImports(text),
+      callsEventsOn: EVENTS_ON_CALL.test(text),
       inStores: file.startsWith(STORES_DIR + sep),
     };
   });
@@ -297,6 +251,7 @@ describe('architecture', () => {
     expectAllowlistExact(
       offenders,
       ENTITY_BINDING_ALLOWLIST,
+      'New violations.',
       'Read the entity through its store instead of re-fetching it; see frontend/CLAUDE.md → State Boundaries.',
     );
   });
@@ -312,7 +267,7 @@ describe('architecture', () => {
         if (parsed.specifier !== '@wailsio/runtime') continue;
         reasons.push('imports @wailsio/runtime directly, which carries the raw Events surface');
       }
-      if (EVENTS_ON_CALL.test(source.text)) {
+      if (source.callsEventsOn) {
         reasons.push('calls Events.On, the raw subscription behind wailsEventOn');
       }
       if (reasons.length > 0) offenders.set(source.path, reasons);
@@ -320,6 +275,7 @@ describe('architecture', () => {
     expectAllowlistExact(
       offenders,
       WAILS_EVENT_ALLOWLIST,
+      'New violations.',
       'Route the event through the store that owns the entity it describes; see frontend/CLAUDE.md → State Boundaries.',
     );
   });

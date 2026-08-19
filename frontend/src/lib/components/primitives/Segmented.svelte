@@ -49,7 +49,7 @@
       onclick={() => onChange(option.value)}
       class="rounded-[calc(var(--radius-field)-2px)] cursor-pointer transition-colors {sizeClass}
         {active
-          ? 'bg-accent/15 text-fg shadow-[var(--shadow-sheet)]'
+          ? 'bg-accent/15 text-fg shadow-sheet'
           : 'text-fg-muted hover:text-fg'}
         disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:text-fg-muted
         focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"

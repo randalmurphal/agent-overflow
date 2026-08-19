@@ -108,7 +108,7 @@
     {#if onAddComment}
       <button
         type="button"
-        class="flex size-4 items-center justify-center rounded-[3px] bg-accent text-[0.6875rem] font-semibold leading-none text-white opacity-0 transition-opacity duration-75 group-hover:opacity-100 focus-visible:opacity-100 hover:brightness-110 focus:outline-none"
+        class="flex size-4 items-center justify-center rounded-[3px] bg-accent text-[0.6875rem] font-semibold leading-none text-accent-fg opacity-0 transition-opacity duration-75 group-hover:opacity-100 focus-visible:opacity-100 hover:brightness-110 focus:outline-none"
         aria-label={`Add ${side} comment`}
         data-testid="review-add-comment"
         onclick={() => onAddComment?.(anchor)}

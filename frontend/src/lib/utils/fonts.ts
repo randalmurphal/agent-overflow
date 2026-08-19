@@ -39,7 +39,7 @@ let lastSans: SansFont | null = null;
 let lastMono: MonoFont | null = null;
 
 /**
- * Apply font choices to the document. Mirrors applyTheme() but writes
+ * Apply font choices to the document. Mirrors applyThemeClass() but writes
  * CSS variables instead of toggling classes — fonts are a single
  * string per family, so there's no peer set of variables to swap like
  * there is for the light/dark `:root` blocks in app.css.

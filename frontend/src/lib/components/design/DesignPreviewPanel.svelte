@@ -342,7 +342,7 @@
         src={iframeSrc}
         sandbox="allow-scripts"
         referrerpolicy="no-referrer"
-        class="h-full rounded-[var(--radius-field)] border border-border-subtle bg-white"
+        class="h-full rounded-[var(--radius-field)] border border-border-subtle bg-design-paper"
         style="width: {viewportWidthPx ? `${viewportWidthPx}px` : '100%'}; max-width: 100%;"
         data-testid="design-preview-iframe"
       ></iframe>

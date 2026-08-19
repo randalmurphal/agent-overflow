@@ -131,7 +131,7 @@
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div
     class={[
-      'fixed inset-0 z-[60] flex justify-center bg-black/45 backdrop-blur-md',
+      'fixed inset-0 z-[60] flex justify-center bg-overlay backdrop-blur-md',
       align === 'top' ? 'items-start pt-[10vh]' : 'items-center',
     ].join(' ')}
     data-modal-backdrop

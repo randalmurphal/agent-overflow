@@ -129,11 +129,14 @@ describe('<ModelProviderMenu>', () => {
     expect(trigger.querySelector('svg.lucide-claude')).toBeNull();
   });
 
-  it('Claude mark is painted in the Anthropic coral (#d97757)', async () => {
+  it('Claude mark is painted in the Anthropic coral (--provider-claude)', async () => {
     const pane = await buildPane(makeThread({ provider: 'claude' }));
     const { getByTestId } = render(ModelProviderMenu, { props: { pane } });
     const svg = getByTestId('composer-model-menu-trigger').querySelector('svg.lucide-claude')!;
-    expect(svg.getAttribute('class')).toContain('text-[#d97757]');
+    // Class tokens, not a substring: `text-provider-claude` is a prefix of
+    // `text-provider-claude-tui`, so a substring match would accept the
+    // terminal-green tint as the Anthropic coral.
+    expect((svg.getAttribute('class') ?? '').split(/\s+/)).toContain('text-provider-claude');
   });
 
   it('OpenAI mark inherits the trigger foreground (no bespoke tint)', async () => {
@@ -142,7 +145,9 @@ describe('<ModelProviderMenu>', () => {
     const svg = getByTestId('composer-model-menu-trigger').querySelector('svg.lucide-openai')!;
     // Must NOT carry the Anthropic coral — it should read as one piece
     // with the label's muted foreground instead.
-    expect(svg.getAttribute('class') ?? '').not.toContain('text-[#d97757]');
+    // Split into class tokens: `text-provider-claude` is a prefix of
+    // `text-provider-claude-tui`, so a substring match is the wrong test.
+    expect((svg.getAttribute('class') ?? '').split(/\s+/)).not.toContain('text-provider-claude');
   });
 
   it('warms the active provider cache on open', async () => {

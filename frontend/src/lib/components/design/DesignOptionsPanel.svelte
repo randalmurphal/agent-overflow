@@ -166,7 +166,7 @@
                 src={iframeSrcFor(threadId, set.setId, optionId, iframeReloadKey)}
                 sandbox="allow-scripts"
                 referrerpolicy="no-referrer"
-                class="w-full aspect-[4/3] bg-white border-b border-border-subtle"
+                class="w-full aspect-[4/3] bg-design-paper border-b border-border-subtle"
               ></iframe>
               <div class="flex items-center justify-between px-2 py-1.5">
                 <span class="text-[0.75rem] text-fg truncate font-medium">{optionId}</span>

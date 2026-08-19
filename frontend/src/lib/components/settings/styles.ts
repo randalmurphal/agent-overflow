@@ -20,7 +20,7 @@ export const NUMBER_CLASS =
 
 export const PRIMARY_BUTTON_CLASS =
   'rounded-[var(--radius-field)] bg-accent px-3 py-1.5 text-[0.75rem] font-medium ' +
-  'text-accent-foreground hover:brightness-105 disabled:opacity-50 ' +
+  'text-accent-fg hover:brightness-105 disabled:opacity-50 ' +
   'disabled:cursor-not-allowed cursor-pointer transition focus:outline-none ' +
   'focus-visible:ring-2 focus-visible:ring-accent/50';
 

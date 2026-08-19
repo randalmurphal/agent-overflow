@@ -1,15 +1,29 @@
-// Resolves the active light/dark mode from `settings.theme` plus the
-// system color-scheme preference for `'system'`. Exposes a pure read
-// so consumers can call it from `$derived` blocks without triggering
-// Svelte 5's `state_unsafe_mutation` guard.
+// THE resolver for the active light/dark mode: `settings.theme` plus the
+// system color-scheme preference for `'system'`. Exposes a pure read so
+// consumers can call it from `$derived` blocks without triggering Svelte
+// 5's `state_unsafe_mutation` guard.
 //
-// The matchMedia listener is attached lazily on first `'system'` read
-// and survives until `teardownThemeModeForTest()` is called. The
-// terminal and mermaid theme reads share this one listener.
+// This module owns the app's ONLY `matchMedia(prefers-color-scheme)`
+// subscription. `utils/theme.ts` used to carry a second, independent one
+// for the html class stamp, so an OS flip travelled two unrelated paths
+// with no ordering relationship between them; that file is now a pure
+// applier fed from here (App.svelte: an `$effect.pre` calling
+// `applyThemeClass(getResolvedTheme())`, so the stamp lands before any
+// descendant user effect reads the cascade), alongside the xterm and
+// mermaid consumers. Do not add another listener —
+// read this instead.
+//
+// The listener is attached lazily on first `'system'` read and survives
+// until `teardownThemeModeForTest()` is called. In practice that first read
+// is App.svelte's theme effect at mount (default `theme: 'system'`), i.e.
+// boot, a few ticks after `detectSystemModeOnce()` seeded the cache.
 
 import { getSettings } from './settings.svelte';
+import type { ResolvedTheme } from '../utils/theme';
 
-export type ResolvedTheme = 'light' | 'dark';
+// Defined in `utils/theme.ts` (a pure util must not import from `stores/`)
+// and re-exported here, which is where consumers already reach for it.
+export type { ResolvedTheme };
 
 type SystemSubscription = {
   query: MediaQueryList;

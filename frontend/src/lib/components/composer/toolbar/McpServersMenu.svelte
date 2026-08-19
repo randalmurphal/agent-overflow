@@ -225,7 +225,7 @@
               aria-hidden="true"
             >
               <span
-                class="block h-3 w-3 rounded-full bg-text-primary shadow-sm transition-transform duration-200
+                class="block h-3 w-3 rounded-full bg-text-primary shadow-sheet transition-transform duration-200
                   {inSet ? 'translate-x-[13px]' : 'translate-x-[1px]'}"
               ></span>
             </span>

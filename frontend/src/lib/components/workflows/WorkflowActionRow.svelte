@@ -192,7 +192,7 @@
   }
 
   const variantClass: Record<WorkflowActionButton['variant'], string> = {
-    primary: 'bg-accent text-white hover:bg-accent/90',
+    primary: 'bg-accent text-accent-fg hover:bg-accent/90',
     secondary: 'border border-border-subtle text-fg hover:bg-surface-2',
     ghost: 'text-fg-muted hover:text-fg',
     'danger-outline': 'border border-error/40 text-error hover:bg-error/10',
@@ -226,7 +226,7 @@
           data-testid="workflow-answer-input"
         />
         <button
-          class="shrink-0 rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-white disabled:cursor-not-allowed disabled:opacity-50"
+          class="shrink-0 rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-accent-fg disabled:cursor-not-allowed disabled:opacity-50"
           disabled={viewOnly || busy || !answer.trim()}
           title={localOnly}
           data-testid="workflow-answer-send"
@@ -250,7 +250,7 @@
           data-testid="workflow-note-input"
         />
         <button
-          class="shrink-0 rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-white disabled:cursor-not-allowed disabled:opacity-50"
+          class="shrink-0 rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-accent-fg disabled:cursor-not-allowed disabled:opacity-50"
           disabled={viewOnly || busy}
           title={localOnly}
           data-testid="workflow-note-send"

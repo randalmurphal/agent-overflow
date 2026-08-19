@@ -273,7 +273,7 @@
     e.dataTransfer.setData('text/plain', thread.id);
 
     const ghost = document.createElement('div');
-    ghost.className = 'fixed -top-96 left-0 flex items-center gap-2 rounded-[var(--radius-field)] border border-border-subtle bg-surface-1 px-2 py-1 text-xs text-fg shadow-lg';
+    ghost.className = 'fixed -top-96 left-0 flex items-center gap-2 rounded-[var(--radius-field)] border border-border-subtle bg-surface-1 px-2 py-1 text-xs text-fg shadow-menu';
     if (pill) {
       const dot = document.createElement('span');
       dot.className = `h-2 w-2 rounded-full ${pill.dotClass}`;
@@ -463,7 +463,7 @@
           this row when active.
         -->
         <span
-          class="inline-flex h-5 items-center rounded-[var(--radius-field)] border border-border-subtle bg-surface-1/90 px-1.5 font-mono text-[0.625rem] font-medium text-fg shadow-sm pointer-events-none"
+          class="inline-flex h-5 items-center rounded-[var(--radius-field)] border border-border-subtle bg-surface-1/90 px-1.5 font-mono text-[0.625rem] font-medium text-fg shadow-sheet pointer-events-none"
           aria-hidden="true"
           data-testid="thread-row-jump-hint"
         >

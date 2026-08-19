@@ -292,7 +292,7 @@
     {#if follow.chipVisible}
       <button
         type="button"
-        class="pointer-events-auto -translate-y-full rounded-full border border-border-subtle bg-surface-2 px-2.5 py-1 text-[0.6875rem] font-medium text-accent shadow-sm"
+        class="pointer-events-auto -translate-y-full rounded-full border border-border-subtle bg-surface-2 px-2.5 py-1 text-[0.6875rem] font-medium text-accent shadow-sheet"
         onclick={() => follow.engage()}
         data-testid="workflow-map-follow"
       >

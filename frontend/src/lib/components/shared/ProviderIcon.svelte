@@ -25,5 +25,5 @@
        so the solid green starburst is cleaner and unmistakably Claude. -->
   <ClaudeIcon {size} class="text-provider-claude-tui opacity-95 {className}" />
 {:else}
-  <ClaudeIcon {size} class="text-[#d97757] opacity-95 {className}" />
+  <ClaudeIcon {size} class="text-provider-claude opacity-95 {className}" />
 {/if}

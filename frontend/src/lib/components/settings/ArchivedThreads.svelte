@@ -101,7 +101,7 @@
     {#if loading}
       <p class="text-[0.8125rem] text-fg-subtle">Loading...</p>
     {:else if loadError}
-      <p class="text-[0.8125rem] text-red-400">Failed to load archived threads: {loadError}</p>
+      <p class="text-[0.8125rem] text-error">Failed to load archived threads: {loadError}</p>
     {:else if archivedThreads.length === 0}
       <p class="text-[0.8125rem] text-fg-subtle">No archived threads.</p>
     {:else}
@@ -133,7 +133,7 @@
               <button
                 type="button"
                 onclick={() => confirmDelete(thread)}
-                class="{rowBtnClass} hover:!text-red-400"
+                class="{rowBtnClass} hover:!text-error"
                 aria-label="Delete permanently"
                 title="Delete permanently"
               >

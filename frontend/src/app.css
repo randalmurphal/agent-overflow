@@ -16,6 +16,10 @@
   --surface-0: oklch(0.145 0.014 285.82);
   --surface-1: oklch(0.178 0.014 285.82);
   --surface-2: oklch(0.215 0.014 285.82);
+  /* Next elevation step above --surface-2: progress-bar tracks, hover
+     fills on chrome that already sits on surface-2. Continues the dark
+     ladder (0.145 / 0.178 / 0.215) at the same chroma and hue. */
+  --surface-3: oklch(0.25 0.014 285.82);
   --terminal-bg: #000000;
   --code-inline-bg: oklch(0.275 0.014 285.82);
   --border: oklch(0.3 0.014 285.82);
@@ -29,17 +33,49 @@
   /* Cobalt-violet primary. Replaces the prior generic dev-tool blue so
      the app reads as a chosen color, not the default Tailwind accent. */
   --accent: oklch(0.58 0.19 276);
+  /* Readable foreground on an --accent fill (filled buttons, selected
+     rows). Static white for now; phase 2 derives it by contrast so a
+     custom accent can't strand its own label. Same in both themes —
+     the accent it sits on is dark enough in either. */
+  --accent-fg: #ffffff;
   --info: oklch(0.62 0.17 250);
   --success: oklch(0.7 0.17 150);
   --error: oklch(0.63 0.2 25);
   --warning: oklch(0.75 0.15 75);
   --provider-codex: oklch(0.72 0.15 55);
+  /* Anthropic brand coral, completing the --provider-* family. Brand-locked:
+     identical in both themes and deliberately given no light override — a
+     brand mark that shifts with the theme stops being the brand mark. */
+  --provider-claude: #d97757;
   /* Terminal-green identity for the claude-tui provider — the phosphor green of
      a CRT terminal. Drives the provider badge, the take-control button glyph,
      and the shared pairing border. Bright here so it reads against dark
      surfaces. */
   --provider-claude-tui: oklch(0.82 0.2 145);
+  /* VOCABULARY, and the two are not interchangeable: --overlay is the
+     backdrop that dims APP CHROME behind a modal or sheet, so it varies
+     with the theme (60% black here, a lighter 28% wash in light mode).
+     --scrim / --scrim-fg below are chrome painted OVER USER MEDIA, and are
+     theme-invariant for the reason stated there. */
   --overlay: oklch(0 0 0 / 60%);
+
+  /* Media-overlay pair: chrome painted ON TOP of user media (image
+     lightbox scrims, attachment badges and controls over a thumbnail) —
+     contrast --overlay above, which dims app chrome behind a modal.
+     Deliberately THEME-INVARIANT — no light-mode override — because what
+     they sit on is the image, not the app surface, and a photo does not
+     get lighter when the UI does. Consumed with Tailwind opacity
+     modifiers (bg-scrim/88, text-scrim-fg/78, ring-scrim-fg/70), which is
+     why they are opaque black/white here rather than pre-diluted. */
+  --scrim: oklch(0 0 0);
+  --scrim-fg: oklch(1 0 0);
+
+  /* The design canvas' paper. Sandboxed user-authored HTML is written
+     against a white page — it brings its own colors and cannot be assumed
+     to survive a dark ground — so the iframe paper is deliberately white
+     rather than a surface tier. Theme-invariant like the scrim pair, and
+     themeable in principle (it is a token), default-locked in practice. */
+  --design-paper: #ffffff;
 
   /* Per-tool-kind icon colors. Cooler tones in the cobalt-violet
      family so categories read distinct without clashing with --accent.
@@ -65,12 +101,13 @@
      palette, keeping the dark/light pair in sync automatically. */
   --ico-generic: var(--text-secondary);
 
-  /* ANSI 16-color palette. Consumed by `.ansi-body .ansi-fg-N` rules
-     below and read at theme-flip time by the xterm.js terminal theme
-     (see terminal/terminalTheme.ts) so chat ANSI output and the
-     terminal stay aesthetically twinned. The light-mode block below
-     re-defines the same names with hex values tuned for ≥4.5:1
-     contrast on --surface-0. */
+  /* ANSI 16-color palette. Consumed by the `.ansi-body .ansi-fg-N` rules
+     below — chat ANSI output only. The xterm.js terminal does NOT read
+     these: an ITheme takes plain color strings and can't consume oklch,
+     so terminal/terminalTheme.ts carries a hand-maintained hex duplicate.
+     The two palettes are kept aesthetically twinned BY HAND — change one
+     and change the other. The light-mode block below re-defines the same
+     names with hex values tuned for ≥4.5:1 contrast on --surface-0. */
   --ansi-fg-30: #4b5563;
   --ansi-fg-31: oklch(0.7 0.17 27);
   --ansi-fg-32: oklch(0.75 0.15 150);
@@ -113,6 +150,9 @@ html.light {
   --surface-0: oklch(0.985 0.004 255);
   --surface-1: oklch(0.955 0.008 255);
   --surface-2: oklch(0.915 0.012 255);
+  /* See the dark block: same elevation role, continuing the light
+     ladder (0.985 / 0.955 / 0.915). */
+  --surface-3: oklch(0.875 0.016 255);
   --terminal-bg: #fafafb;
   --code-inline-bg: oklch(0.9 0.012 255);
   --border: oklch(0.84 0.014 255);
@@ -161,9 +201,9 @@ html.light {
   /* ANSI 16-color palette — light variant. GitHub Light Modern hex
      values; each verified ≥4.5:1 contrast on --surface-0 except
      --ansi-fg-96 (cyan, 4.0:1 — decorative use). The dark palette
-     above stays in oklch; the light variant uses hex so the xterm.js
-     theme reader (terminalTheme.ts) gets a value it can pass to
-     ITheme directly. */
+     above stays in oklch; hex here is simply what the GitHub source
+     values are. terminalTheme.ts duplicates both palettes by hand —
+     see the note on the dark block. */
   --ansi-fg-30: #24292f;
   --ansi-fg-31: #cf222e;
   --ansi-fg-32: #116329;
@@ -221,18 +261,31 @@ html.light {
   --color-surface-0: var(--surface-0);
   --color-surface-1: var(--surface-1);
   --color-surface-2: var(--surface-2);
+  --color-surface-3: var(--surface-3);
   --color-terminal-bg: var(--terminal-bg);
   --color-border: var(--border);
   --color-text-primary: var(--text-primary);
   --color-text-secondary: var(--text-secondary);
   --color-accent: var(--accent);
+  --color-accent-fg: var(--accent-fg);
   --color-info: var(--info);
   --color-success: var(--success);
   --color-error: var(--error);
   --color-warning: var(--warning);
   --color-provider-codex: var(--provider-codex);
+  --color-provider-claude: var(--provider-claude);
   --color-provider-claude-tui: var(--provider-claude-tui);
   --color-overlay: var(--overlay);
+  /* Media-overlay pair — see the :root note. Used with opacity
+     modifiers: bg-scrim/88, text-scrim-fg, ring-scrim-fg/70. */
+  --color-scrim: var(--scrim);
+  --color-scrim-fg: var(--scrim-fg);
+  /* Code-block ground, named apart from the elevation tier it currently
+     aliases — see tokens.css. */
+  --color-code-block: var(--code-block);
+  /* Deliberate white paper for sandboxed user-authored HTML — see the
+     :root definition. */
+  --color-design-paper: var(--design-paper);
 
   /* New semantic colors — the opacity-driven hierarchy layer. `fg` is
      the focal text, `fg-muted` is body copy, `fg-subtle` is labels,
@@ -250,6 +303,7 @@ html.light {
   --shadow-sheet: var(--shadow-sheet);
   --shadow-menu: var(--shadow-menu);
   --shadow-modal: var(--shadow-modal);
+  --shadow-accent-inset: var(--shadow-accent-inset);
 
   /* Per-tool-kind icon colors, exposed so `text-ico-terminal` etc.
      compile as Tailwind utilities. Token names match the
@@ -522,10 +576,13 @@ input[type="search"]::-webkit-search-cancel-button {
 .markdown-body pre {
   font-family: var(--font-mono);
   font-size: 0.8125rem;
-  /* Aligns with the Streamdown override in chatMarkdownTheme.code.base —
-     code blocks must contrast against the chat surface (--surface-0), so
-     they sit on the surface-1 elevation tier. */
-  background: var(--surface-1);
+  /* Same ground as the Streamdown override in chatMarkdownTheme.code.base
+     (`bg-code-block`) — code blocks must contrast against the chat surface
+     (--surface-0).
+     --code-block currently aliases the surface-1 elevation tier; it is
+     named separately so a future code theme can restyle blocks without
+     moving that tier for everything else on it (see tokens.css). */
+  background: var(--code-block);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-field);
   padding: 0.75rem;

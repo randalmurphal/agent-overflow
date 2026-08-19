@@ -427,6 +427,18 @@ comment drafts. Inline diff affordances should route there through
 stamp original source on `data-code-source`, `data-mermaid-source`, and
 `data-math-source` so markdown copy and diagram actions keep working.
 
+Diagram palettes come from `markdown/mermaidTokens.ts` — mermaid runs as
+`theme: 'base'` with `themeVariables` resolved from the app's own tokens
+through `utils/cssColorProbe.ts`, so a diagram is themed by the same
+vocabulary as everything around it rather than by mermaid's built-in
+`dark`/`default`. It is owned by `ChatMarkdown` because the Streamdown
+context is created there. The resolved-config memo and the host's
+`{#key}` wrapper both key on `mermaidPaletteIdentity()` (resolved mode +
+sans font today); any future palette source — phase-2 theme files, per
+docs/specs/theme-system.md — must widen that ONE identity, because a
+second key that can disagree with it means either a stale diagram or a
+remount on every tick.
+
 Path linkification runs inside marked parsing from the server-validated
 `PathRef[]` allowlist on item metadata. The generated href includes a
 per-page-load nonce and is the only `agent-overflow:open` form admitted

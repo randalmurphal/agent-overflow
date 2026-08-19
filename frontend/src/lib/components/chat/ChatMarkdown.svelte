@@ -39,6 +39,8 @@
     CHAT_MARKDOWN_SETTLED_CONTEXT,
   } from './markdownSettledContext';
   import { chatMarkdownTheme } from './markdown/streamdownTheme';
+  import { resolveMermaidThemeConfig } from './markdown/mermaidTokens';
+  import { getResolvedTheme } from '../../stores/themeMode.svelte';
   import {
     STREAMDOWN_ALLOWED_IMAGE_PREFIXES,
     STREAMDOWN_CONTROLS,
@@ -158,6 +160,30 @@
   // A (docs/specs/remote-access-boundaries.md) through transformUrl
   // itself, bypassing the vendored Link/Image fixes.
 
+  // Diagram palette. Without a `mermaidConfig` the vendored Streamdown
+  // falls back to mermaid's built-in `'dark'`/`'default'` themes, which
+  // are the only colors in the app that come from nowhere near the token
+  // layer. `markdown/mermaidTokens.ts` resolves our tokens to concrete
+  // sRGB and pins `theme: 'base'` so mermaid derives everything from
+  // them. Streamdown's context exposes this to the vendored
+  // `Mermaid.svelte`; ChatMarkdown owns it because the CONTEXT is
+  // created here — `StreamdownMermaidHost` is a child of it and has no
+  // door back up.
+  //
+  // Deliberately a `$derived`, not an `$effect`: evaluation is pulled by
+  // the first read, which is mermaid's own render (after its async
+  // `import('mermaid')` resolves). The document class it reads against is
+  // stamped by App.svelte's `$effect.pre`, a root render effect that runs
+  // ahead of every descendant user effect in the flush.
+  //
+  // This invalidates on EVERY settings write (`getResolvedTheme` and the
+  // font read inside the resolver both go through the wholesale-replaced
+  // settings object). That is fine and load-bearing: the resolver's memo
+  // returns the SAME object for an unchanged palette identity, which is
+  // what stops the vendored `Mermaid.svelte`'s `{@attach}` from
+  // re-rendering every visible diagram on an unrelated save.
+  const mermaidConfig = $derived(resolveMermaidThemeConfig(getResolvedTheme()));
+
   const processedSource = $derived(unwrapMarkdownFence(source));
 
   // Streaming-only block-boundary memoization. When `streaming === true`,
@@ -235,6 +261,7 @@
     {parseIncompleteMarkdown}
     baseTheme="tailwind"
     theme={chatMarkdownTheme}
+    {mermaidConfig}
     {allowedLinkPrefixes}
     allowedImagePrefixes={STREAMDOWN_ALLOWED_IMAGE_PREFIXES}
     renderHtml={false}

@@ -10,7 +10,10 @@ describe('<ProviderIcon>', () => {
     const { container } = render(ProviderIcon, { props: { provider: 'claude' } });
     const glyph = container.querySelector('svg.lucide-claude');
     expect(glyph).not.toBeNull();
-    expect(glyph?.getAttribute('class')).toContain('text-[#d97757]');
+    // Split into class tokens, same as the negative assertion below: on a
+    // whole class string `toContain` is a substring match, so this would pass
+    // on the claude-tui tint — the one wrong answer it exists to rule out.
+    expect((glyph?.getAttribute('class') ?? '').split(/\s+/)).toContain('text-provider-claude');
     // No green terminal chip wrapper for plain claude.
     expect(container.querySelector('span')).toBeNull();
   });
@@ -23,11 +26,14 @@ describe('<ProviderIcon>', () => {
     const { container } = render(ProviderIcon, { props: { provider: 'claude-tui' } });
     const glyph = container.querySelector('svg.lucide-claude');
     expect(glyph).not.toBeNull();
-    const glyphClass = glyph?.getAttribute('class') ?? '';
-    expect(glyphClass).toContain('text-provider-claude-tui');
-    // No square chip wrapper, and not claude's orange tint.
+    const glyphClasses = (glyph?.getAttribute('class') ?? '').split(/\s+/);
+    expect(glyphClasses).toContain('text-provider-claude-tui');
+    // No square chip wrapper, and not claude's coral tint. Split into class
+    // tokens rather than substring-matched: `text-provider-claude` is a
+    // PREFIX of `text-provider-claude-tui`, so `toContain` on the whole class
+    // string would pass on the very class this asserts against.
     expect(container.querySelector('span')).toBeNull();
-    expect(glyphClass).not.toContain('text-[#d97757]');
+    expect(glyphClasses).not.toContain('text-provider-claude');
   });
 
   it('renders the OpenAI mark (not the Claude glyph) for codex', () => {

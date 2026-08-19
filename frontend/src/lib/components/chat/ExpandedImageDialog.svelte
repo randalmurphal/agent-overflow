@@ -50,7 +50,7 @@
 
 <div
   bind:this={dialogRoot}
-  class="fixed inset-0 z-[90] flex items-center justify-center bg-black/88 p-4"
+  class="fixed inset-0 z-[90] flex items-center justify-center bg-scrim/88 p-4"
   role="dialog"
   aria-modal="true"
   aria-label={image?.filename ?? 'Image Preview'}
@@ -67,7 +67,7 @@
     <button
       type="button"
       aria-label="Close Image Preview"
-      class="absolute right-4 top-4 rounded-full bg-white/10 p-2 text-white transition hover:bg-white/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/70"
+      class="absolute right-4 top-4 rounded-full bg-scrim-fg/10 p-2 text-scrim-fg transition hover:bg-scrim-fg/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-scrim-fg/70"
       onclick={(event) => {
         event.stopPropagation();
         onClose();
@@ -80,7 +80,7 @@
       <button
         type="button"
         aria-label="Previous Image"
-        class="absolute left-4 top-1/2 -translate-y-1/2 rounded-full bg-white/10 p-2 text-white transition hover:bg-white/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/70"
+        class="absolute left-4 top-1/2 -translate-y-1/2 rounded-full bg-scrim-fg/10 p-2 text-scrim-fg transition hover:bg-scrim-fg/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-scrim-fg/70"
         onclick={(event) => {
           event.stopPropagation();
           move(-1);
@@ -91,7 +91,7 @@
       <button
         type="button"
         aria-label="Next Image"
-        class="absolute right-4 top-1/2 -translate-y-1/2 rounded-full bg-white/10 p-2 text-white transition hover:bg-white/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/70"
+        class="absolute right-4 top-1/2 -translate-y-1/2 rounded-full bg-scrim-fg/10 p-2 text-scrim-fg transition hover:bg-scrim-fg/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-scrim-fg/70"
         onclick={(event) => {
           event.stopPropagation();
           move(1);
@@ -111,7 +111,7 @@
         alt={image.filename}
         class="max-h-[86vh] max-w-[92vw] object-contain"
       />
-      <div class="max-w-[92vw] truncate text-xs text-white/78">
+      <div class="max-w-[92vw] truncate text-xs text-scrim-fg/78">
         {image.filename}{hasMultiple ? ` (${index + 1}/${preview.images.length})` : ''}
       </div>
     </div>

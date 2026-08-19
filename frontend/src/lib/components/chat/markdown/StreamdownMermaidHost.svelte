@@ -13,12 +13,26 @@
   // host is a `<div>` rather than a `<pre>`).
   //
   // The `{#key}` wrapper on `<Mermaid>` forces a re-mount when the
-  // app theme flips. svelte-streamdown reads its mermaid theme
-  // (`'default'`/`'dark'`) from a MutationObserver on `html.light` /
-  // `html.dark`, but the inner Mermaid component only calls
-  // `mermaid.initialize(...)` at render time — already-rendered SVGs
-  // stay in the prior palette until a remount. Theme toggles are
-  // rare so the per-diagram re-render cost is acceptable.
+  // app theme flips. The inner Mermaid component only calls
+  // `mermaid.initialize(...)` at render time and mermaid BAKES the
+  // palette into the SVG it emits, so an already-rendered diagram stays
+  // in the prior palette until it remounts. Theme toggles are rare so
+  // the per-diagram re-render cost is acceptable.
+  //
+  // Which palette it re-renders INTO comes from
+  // `markdown/mermaidTokens.ts` via `ChatMarkdown`'s `mermaidConfig`
+  // prop (`theme: 'base'` + `themeVariables` resolved from app tokens),
+  // not from svelte-streamdown's `html.dark` MutationObserver — that
+  // fallback only applies when no `mermaidConfig.theme` is passed.
+  //
+  // The `{#key}` input is `mermaidPaletteIdentity()`, the SAME string the
+  // resolver memoizes on, so a remount happens exactly when the palette
+  // actually changed. It is deliberately not the resolved mode: the label
+  // font comes from `--font-sans`, which a settings change rewrites live,
+  // and a mode-keyed remount left every rendered diagram in the old font
+  // forever. Phase-2 theme files widen that one identity string; nothing
+  // here has to learn about them (and the vendored SVG cache already keys
+  // on the variables themselves).
   //
   // Same source-text fallback story as `StreamdownMathHost`: the
   // inner Mermaid component imports `mermaid` async on mount and
@@ -37,7 +51,7 @@
   import { untrack } from 'svelte';
   import Mermaid from 'svelte-streamdown/mermaid';
   import type { Tokens } from 'marked';
-  import { getResolvedTheme } from '../../../stores/themeMode.svelte';
+  import { mermaidPaletteIdentity } from './mermaidTokens';
   import {
     readMermaidRenderedHeight,
     writeMermaidRenderedHeight,
@@ -79,15 +93,15 @@
   // viewport-width bucket to the cache key if user feedback
   // shows the stale-pin is visible.
   //
-  // Cache key is the diagram source alone. Theme is intentionally
-  // excluded — a theme flip remounts the inner Mermaid via the
-  // `{#key themeKey}` wrapper, and the wrapper sizes don't shift
-  // visibly between themes (same diagram layout, different
-  // palette). Cache lives in a sibling `.ts` module — see
+  // Cache key is the diagram source alone. The palette is intentionally
+  // excluded — a palette change remounts the inner Mermaid via the
+  // `{#key paletteIdentity}` wrapper, and the wrapper sizes don't shift
+  // visibly between palettes (same diagram layout, different
+  // colors). Cache lives in a sibling `.ts` module — see
   // `renderedHeightCache.ts`.
 
   let { token, id }: { token: Tokens.Code; id: string } = $props();
-  const themeKey = $derived(getResolvedTheme());
+  const paletteIdentity = $derived(mermaidPaletteIdentity());
 
   // SVG-presence tracking. Mermaid renders into `<svg data-mermaid-svg>`
   // via `svgTarget.innerHTML = svgString` — once the svg has children
@@ -177,7 +191,7 @@
   }}
 >
   <pre class="mermaid-source-fallback" aria-hidden="true">{token.text}</pre>
-  {#key themeKey}
+  {#key paletteIdentity}
     <Mermaid {token} {id} />
   {/key}
 </div>

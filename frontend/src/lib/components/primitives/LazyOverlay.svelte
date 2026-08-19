@@ -41,7 +41,7 @@
          panes sideways. -->
     <div class="pointer-events-none fixed inset-0 z-50 flex items-center justify-center p-6">
       <div
-        class="pointer-events-auto max-w-md rounded-[var(--radius-card)] border border-error/40 bg-surface-1 px-4 py-3 text-xs text-error shadow-lg"
+        class="pointer-events-auto max-w-md rounded-[var(--radius-card)] border border-error/40 bg-surface-1 px-4 py-3 text-xs text-error shadow-menu"
         role="alert"
         data-testid="lazy-overlay-load-error"
       >

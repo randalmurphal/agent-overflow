@@ -387,7 +387,7 @@
 <div class="relative h-full min-h-0 min-w-0 flex-1" data-testid="review-diff-body">
   {#if stickyFile}
     <div
-      class="absolute left-0 top-0 z-10 shadow-[0_1px_4px_rgba(0,0,0,0.25)]"
+      class="absolute left-0 top-0 z-10 shadow-sheet"
       style:right="{scrollbarInset}px"
       data-testid="review-sticky-header"
     >

@@ -32,7 +32,8 @@
   import { syncSidebarLayoutFromAppStorage } from './lib/stores/sidebarLayout.svelte';
   import { syncUsagePeriodFromSettings } from './lib/stores/usagePeriod.svelte';
   import { preloadProviderModelsForSettings } from './lib/stores/providerModels.svelte';
-  import { applyTheme } from './lib/utils/theme';
+  import { applyThemeClass } from './lib/utils/theme';
+  import { getResolvedTheme } from './lib/stores/themeMode.svelte';
   import { applyFonts } from './lib/utils/fonts';
   import { startAmbientTicker } from './lib/utils/ambientTicker';
   import { applyFontScale, installZoomKeybindings } from './lib/utils/zoom';
@@ -252,8 +253,23 @@
     void preloadProviderModelsForSettings(getSettings());
   }
 
-  $effect(() => {
-    applyTheme(getSettings().theme);
+  // One resolver: `getResolvedTheme()` reads `settings.theme` and, for
+  // 'system', the single shared prefers-color-scheme subscription. Both are
+  // `$state`, so this re-runs on a settings flip AND on an OS flip, and the
+  // html class lands from the same source the xterm/mermaid consumers read.
+  //
+  // `$effect.pre` rather than `$effect`, and that is ordering, not style: a
+  // pre-effect is a RENDER effect, and a render effect on the ROOT component
+  // runs before every descendant user effect in the flush by construction.
+  // That is what guarantees the document class is stamped for the new mode
+  // before any consumer resolves a palette off the cascade — the mermaid
+  // bridge resolves inside the vendored `Mermaid.svelte`'s `{@attach}`,
+  // which Svelte builds as a user effect. Anything reading computed styles
+  // for the current theme depends on this; a plain `$effect` here would put
+  // the stamp in the same class as its readers, with no ordering guarantee
+  // between them.
+  $effect.pre(() => {
+    applyThemeClass(getResolvedTheme());
   });
 
   $effect(() => {

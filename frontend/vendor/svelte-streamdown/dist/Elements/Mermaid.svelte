@@ -189,15 +189,43 @@
 
 			const uniqueId = `mermaid-${Math.abs(chartHash)}-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
 
-			// Cache key includes theme because the same source under a
-			// different theme produces different SVG output (mermaid bakes
-			// the palette into the rendered SVG). Custom `streamdown.mermaidConfig`
-			// fields beyond theme are not part of the key — callers that
-			// override flowchart curves / fontFamily for the same diagram
-			// across instances should bust the cache themselves by varying
-			// the source text.
-			const themeKey = (streamdown.mermaidConfig?.theme as string | undefined) || 'base';
-			const cacheKey = `${themeKey}:${sanitizedCode}`;
+			// Cache key includes the palette because the same source under a
+			// different palette produces different SVG output (mermaid bakes
+			// the colors into the rendered SVG).
+			//
+			// `theme` alone is NOT the palette. A host that drives mermaid
+			// from its own design tokens pins `theme: 'base'` permanently and
+			// varies `themeVariables` instead (that is the only mermaid theme
+			// that derives everything from them) — so a theme-only key
+			// collapses every palette onto `base:<source>` and the first
+			// diagram rendered wins for the rest of the page, which is
+			// precisely a light/dark flip serving back the old colors.
+			// Serialization is `JSON.stringify` over the sorted entries, NOT a
+			// `k=v` join: a joined key is delimiter-ambiguous, and these values
+			// are font stacks and color functions that contain commas —
+			// `{a: 'x,b=y'}` and `{a: 'x', b: 'y'}` produce the same joined
+			// string and would serve each other's SVG. Cheap either way: these
+			// objects are small, flat, and rebuilt only on a palette change.
+			//
+			// Fields that are neither theme nor themeVariables (flowchart
+			// curve, securityLevel, …) remain out of the key — a caller
+			// varying those for the same source across instances should bust
+			// the cache by varying the source text.
+			//
+			// `streamdown.mermaidConfig` is a context GETTER; read it once.
+			const mermaidConfig = streamdown.mermaidConfig;
+			const themeKey = (mermaidConfig?.theme as string | undefined) || 'base';
+			const themeVariables = mermaidConfig?.themeVariables as
+				| Record<string, unknown>
+				| undefined;
+			const paletteKey = themeVariables
+				? JSON.stringify(
+						Object.keys(themeVariables)
+							.sort()
+							.map((k) => [k, String(themeVariables[k])])
+					)
+				: '';
+			const cacheKey = `${themeKey}|${paletteKey}:${sanitizedCode}`;
 
 			let svgString: string;
 			const cached = _mermaidSvgCache.get(cacheKey);
@@ -229,7 +257,7 @@
 						htmlLabels: true,
 						curve: 'basis'
 					},
-					...(streamdown.mermaidConfig || {})
+					...(mermaidConfig || {})
 				};
 
 				// Initialize mermaid with merged config

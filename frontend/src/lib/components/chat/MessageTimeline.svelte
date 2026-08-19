@@ -966,7 +966,7 @@
         </TimelineVirtualizer>
         {#if pane.hasMoreNewer}
           <div class="mx-auto flex w-full max-w-[62rem] justify-center px-6 pb-6 pt-2">
-            <div class="flex items-center gap-2 rounded-[var(--radius-control)] border border-border-subtle bg-surface-0/80 px-2 py-1.5 shadow-sm">
+            <div class="flex items-center gap-2 rounded-[var(--radius-control)] border border-border-subtle bg-surface-0/80 px-2 py-1.5 shadow-sheet">
               <Button
                 variant="secondary"
                 size="xs"

@@ -229,7 +229,7 @@ describe('<Modal>', () => {
     const { container } = render(Harness);
     await flushFocus();
     const backdrop = container.querySelector('[data-modal-backdrop]')!;
-    expect(backdrop.className).toContain('bg-black/45');
+    expect(backdrop.className).toContain('bg-overlay');
     expect(backdrop.className).toContain('backdrop-blur-md');
   });
 
