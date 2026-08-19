@@ -137,6 +137,7 @@ Guardrails:
 /frontend/                    Svelte 5 app (see frontend/AGENTS.md)
 /e2e/                         Playwright suite for the agent test harness (see e2e/AGENTS.md)
 /docs/architecture/           deep-dive design docs
+/docs/GLOSSARY.md             coined vocabulary + terms with conflicting meanings across subsystems (wave, lane, spine, ghost, envelope, ...)
 /docs/references/             external reference repos + spike policy
 /docs/archive/                historical specs + ralph-loop artifacts
 ```
