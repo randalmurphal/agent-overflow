@@ -46,26 +46,48 @@ func CredentialsSignedOut(data []byte) bool {
 		strings.TrimSpace(oauth.RefreshToken) == ""
 }
 
-// CredentialExpired reports whether native credential bytes carry an access
-// token whose lifetime has already elapsed. `claudeAiOauth.expiresAt` is epoch
-// MILLISECONDS and Claude issues 8h access tokens (`expires_in` 28800), so this
-// answers "the usage endpoint would reject this bearer" without sending it.
+// CredentialExpiresAt reads `claudeAiOauth.expiresAt` — epoch MILLISECONDS —
+// out of native credential bytes. ok is false when the bytes do not parse,
+// carry no claudeAiOauth object, or carry no positive expiry (an API-key
+// setup, a foreign shape, the sign-out husk).
 //
-// Callers use it to skip a request that can only fail, never as a claim about
-// the credential's health: an absent, zero, or unparseable expiry answers
-// false and falls through to the HTTP probe, which is authoritative either way.
-func CredentialExpired(data []byte, now time.Time) bool {
+// It doubles as this provider's ROTATION-CHAIN ORDER. Claude issues fixed-TTL
+// access tokens (`expires_in` 28800 — 8h) and only ever refreshes within five
+// minutes of expiry, so every mint lands strictly further out than the one it
+// replaces: a larger expiresAt means later in the same account's chain. That
+// makes it the signal a saved slot uses to refuse moving backwards onto a
+// refresh token the server has already retired.
+func CredentialExpiresAt(data []byte) (int64, bool) {
 	var credentials struct {
 		ClaudeAIOauth *struct {
 			ExpiresAt int64 `json:"expiresAt"`
 		} `json:"claudeAiOauth"`
 	}
 	if err := json.Unmarshal(data, &credentials); err != nil {
-		return false
+		return 0, false
 	}
 	oauth := credentials.ClaudeAIOauth
 	if oauth == nil || oauth.ExpiresAt <= 0 {
+		return 0, false
+	}
+	return oauth.ExpiresAt, true
+}
+
+// CredentialExpired reports whether native credential bytes carry an access
+// token whose lifetime has already elapsed, answering "the usage endpoint
+// would reject this bearer" without sending it.
+//
+// Callers use it to skip a request that can only fail, never as a claim about
+// the credential's health: an absent, zero, or unparseable expiry answers
+// false and falls through to the HTTP probe, which is authoritative either way.
+//
+// Passing a now shifted into the future asks the other question the same field
+// answers — "would the CLI refresh this on startup" — since Claude refreshes
+// proactively inside a buffer rather than waiting for a 401.
+func CredentialExpired(data []byte, now time.Time) bool {
+	expiresAt, ok := CredentialExpiresAt(data)
+	if !ok {
 		return false
 	}
-	return !time.UnixMilli(oauth.ExpiresAt).After(now)
+	return !time.UnixMilli(expiresAt).After(now)
 }

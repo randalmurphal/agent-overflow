@@ -27,7 +27,7 @@ func TestClaudeKeychainIdentityMatchesConfigScopedNativeService(t *testing.T) {
 
 func TestEphemeralCodexHomeCopiesConfigWithoutSharedStateOrCredential(t *testing.T) {
 	userHome := t.TempDir()
-	credentials, err := NewCredentials(userHome, nil)
+	credentials, err := NewCredentials(userHome, Policy{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -63,7 +63,7 @@ func TestEphemeralCodexHomeCopiesConfigWithoutSharedStateOrCredential(t *testing
 }
 
 func TestEphemeralHomeSeedsOnlySavedCredentialAndCleansUp(t *testing.T) {
-	credentials, err := NewCredentials(t.TempDir(), nil)
+	credentials, err := NewCredentials(t.TempDir(), Policy{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -107,7 +107,7 @@ func TestReadEphemeralCredentialCapturesProviderLogin(t *testing.T) {
 	if runtime.GOOS == "darwin" {
 		t.Skip("Claude uses the native Keychain on macOS")
 	}
-	credentials, err := NewCredentials(t.TempDir(), nil)
+	credentials, err := NewCredentials(t.TempDir(), Policy{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -142,7 +142,7 @@ func TestActivatePreservesRotatedCurrentCredential(t *testing.T) {
 		t.Skip("Claude uses the native Keychain on macOS")
 	}
 	userHome := t.TempDir()
-	credentials, err := NewCredentials(userHome, nil)
+	credentials, err := NewCredentials(userHome, Policy{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -179,7 +179,7 @@ func TestActivatePreservesRotatedCurrentCredential(t *testing.T) {
 // identity reconcile on that slot's next activation; a lost rotation never
 // self-heals.
 func TestActivateWithSnapshotPreservesRotationRacingActivation(t *testing.T) {
-	credentials, err := NewCredentials(t.TempDir(), nil)
+	credentials, err := NewCredentials(t.TempDir(), Policy{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -216,7 +216,7 @@ func TestActivateWithSnapshotPreservesRotationRacingActivation(t *testing.T) {
 // preserved: it is not a credential, and overwriting the outgoing slot with
 // it would destroy the slot's last saved pair for nothing.
 func TestActivateWithSnapshotDoesNotPreserveRacingSignedOutHusk(t *testing.T) {
-	credentials, err := NewCredentials(t.TempDir(), literalHuskDetector)
+	credentials, err := NewCredentials(t.TempDir(), Policy{SignedOut: literalHuskDetector})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -253,7 +253,7 @@ func TestActivateWithSnapshotDoesNotPreserveRacingSignedOutHusk(t *testing.T) {
 // husk canonical as "nothing to preserve" and still completes the
 // reinstatement, rather than stamping the husk into the holder's slot.
 func TestActivateTreatsSignedOutCanonicalAsNothingToPreserve(t *testing.T) {
-	credentials, err := NewCredentials(t.TempDir(), literalHuskDetector)
+	credentials, err := NewCredentials(t.TempDir(), Policy{SignedOut: literalHuskDetector})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -280,7 +280,7 @@ func TestActivateTreatsSignedOutCanonicalAsNothingToPreserve(t *testing.T) {
 }
 
 func TestCommitSelectedCredentialPublishesCanonicalBeforeSavedSlot(t *testing.T) {
-	credentials, err := NewCredentials(t.TempDir(), nil)
+	credentials, err := NewCredentials(t.TempDir(), Policy{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -321,7 +321,7 @@ func TestActivateRejectsSavedCredentialSymlink(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("symlink behavior is platform-policy dependent on Windows")
 	}
-	credentials, err := NewCredentials(t.TempDir(), nil)
+	credentials, err := NewCredentials(t.TempDir(), Policy{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -345,7 +345,7 @@ func TestActivateRejectsSavedCredentialSymlink(t *testing.T) {
 }
 
 func TestPruneOrphanedAccountsLeavesRegisteredSlotsUntouched(t *testing.T) {
-	credentials, err := NewCredentials(t.TempDir(), nil)
+	credentials, err := NewCredentials(t.TempDir(), Policy{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -391,7 +391,7 @@ func TestPruneOrphanedAccountsLeavesRegisteredSlotsUntouched(t *testing.T) {
 // recovered once deleted. This is the guard against the 2026-07-29 incident,
 // where every `go test ./...` run wiped the developer's real saved logins.
 func TestPruneOrphanedAccountsRefusesEmptyKeepSet(t *testing.T) {
-	credentials, err := NewCredentials(t.TempDir(), nil)
+	credentials, err := NewCredentials(t.TempDir(), Policy{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -426,7 +426,7 @@ func TestManagedAccountMutationsRejectSymlinkedRoot(t *testing.T) {
 		t.Skip("symlink behavior is platform-policy dependent on Windows")
 	}
 	userHome := t.TempDir()
-	credentials, err := NewCredentials(userHome, nil)
+	credentials, err := NewCredentials(userHome, Policy{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -471,7 +471,7 @@ func assertFileContents(t *testing.T, path, want string) {
 // would refuse counts as absent, so the two never disagree.
 func TestCredentialPresentMatchesWhatActivationWouldAccept(t *testing.T) {
 	userHome := t.TempDir()
-	credentials, err := NewCredentials(userHome, nil)
+	credentials, err := NewCredentials(userHome, Policy{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -516,7 +516,7 @@ func TestCredentialPresentMatchesWhatActivationWouldAccept(t *testing.T) {
 }
 
 func TestCredentialPresentRejectsAnUnsafeAccountID(t *testing.T) {
-	credentials, err := NewCredentials(t.TempDir(), nil)
+	credentials, err := NewCredentials(t.TempDir(), Policy{})
 	if err != nil {
 		t.Fatal(err)
 	}

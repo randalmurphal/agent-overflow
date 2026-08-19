@@ -1143,7 +1143,7 @@ func newTestAppWithStorePath(t *testing.T) (*App, string) {
 // refusal production enforces.
 func newTestProviderCredentials(t *testing.T, userHome string) *provideraccounts.Credentials {
 	t.Helper()
-	credentials, err := provideraccounts.NewCredentials(userHome, providerSignedOutDetector)
+	credentials, err := provideraccounts.NewCredentials(userHome, providerCredentialPolicy())
 	if err != nil {
 		t.Fatal(err)
 	}

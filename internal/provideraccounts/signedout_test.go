@@ -22,7 +22,7 @@ func literalHuskDetector(providerName string, data []byte) bool {
 // literalHuskDetector, the way production constructs with the real one.
 func newHuskAwareCredentials(t *testing.T) *Credentials {
 	t.Helper()
-	credentials, err := NewCredentials(t.TempDir(), literalHuskDetector)
+	credentials, err := NewCredentials(t.TempDir(), Policy{SignedOut: literalHuskDetector})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -339,7 +339,7 @@ func TestCredentialUsableSeparatesAliveFromHuskedAndMissing(t *testing.T) {
 // Without a detector installed no provider claims a sign-out shape, so the
 // wrapper must answer false rather than panic on the nil hook.
 func TestCredentialSignedOutWithoutADetector(t *testing.T) {
-	credentials, err := NewCredentials(t.TempDir(), nil)
+	credentials, err := NewCredentials(t.TempDir(), Policy{})
 	if err != nil {
 		t.Fatal(err)
 	}

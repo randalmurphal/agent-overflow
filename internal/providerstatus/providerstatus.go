@@ -145,6 +145,19 @@ const claudeFirstPartyAPIProvider = "firstParty"
 // when it knows nothing about the account, so a Codex AccountInfo would
 // always read as authenticated here — `app_codex_probe.go` deliberately
 // leaves its unauthenticated hook nil rather than reusing this.
+// NOT a credential check. It reports what the CLI SAID about itself, and the
+// CLI derives that from `~/.claude.json`'s `oauthAccount` record — which
+// provideraccounts.retireProviderIdentity deletes on every account switch so
+// the provider re-derives it rather than describing the outgoing account over
+// the incoming account's tokens. The CLI restores it from an asynchronous
+// profile fetch, so the first probe after a switch reports nothing no matter
+// how healthy the login is.
+//
+// Use it where "the user has not logged in" is the question (startup status,
+// verifying a login just completed). Never use it to judge a credential that
+// exists: read the bytes, or ask the server. Doing otherwise on the usage
+// refresh path reported healthy accounts as expired and discarded the
+// single-use rotation that had just landed — see probeSelectedClaudeRateLimits.
 func ClaudeUnauthenticated(info provider.AccountInfo) bool {
 	// Trim so a whitespace-only field (a CLI that pads, a caller that
 	// hand-builds an AccountInfo) can't masquerade as identity evidence.

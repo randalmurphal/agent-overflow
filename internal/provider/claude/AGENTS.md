@@ -187,6 +187,18 @@ owner. The top-level `ParseLine` (in `parser.go`) reads the envelope's
 - `json_helpers.go` — tiny JSON-inspection utilities.
 - `options.go` / `probe.go` — non-parser subsystems (session options,
   binary probe).
+- `rotation.go` — the rule that keeps the account probe from destroying
+  the login it is probing. The CLI fires its OAuth refresh at startup as
+  a DETACHED task and answers `initialize` from cached local state
+  without awaiting it, so the probe's answer says nothing about whether
+  the rotation reached disk — and under `--max-turns 0` the CLI exits on
+  stdin EOF, which is what `Close` does first. Anthropic retires the old
+  refresh token the moment the request is processed, so the gap is a
+  permanently dead login, not a retry. `ProbeConfig.ReadCredential` arms
+  a watch when the credential is at or inside the CLI's five-minute
+  proactive-refresh buffer; teardown then holds until the credential
+  actually changes. Measurements, the failure rates, and why a fixed
+  delay is not a fix are on `rotationWatch`.
 - `ratelimits_probe.go` — out-of-band HTTP probe of Anthropic's OAuth usage
   endpoint. Reads a bounded, regular native credential file, preserves every
   dynamically returned limit bucket, and falls back to

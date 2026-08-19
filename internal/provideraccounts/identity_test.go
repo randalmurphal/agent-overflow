@@ -22,7 +22,7 @@ func claudeIdentityFixture(t *testing.T, savedAccountID string) (*Credentials, s
 		t.Skip("darwin stores Claude credentials in the Keychain, not the config home")
 	}
 	userHome := t.TempDir()
-	credentials, err := NewCredentials(userHome, nil)
+	credentials, err := NewCredentials(userHome, Policy{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -171,7 +171,7 @@ func TestRemoveActiveRetiresTheIdentity(t *testing.T) {
 // and no Claude config to touch.
 func TestCodexActivationTouchesNoConfig(t *testing.T) {
 	userHome := t.TempDir()
-	credentials, err := NewCredentials(userHome, nil)
+	credentials, err := NewCredentials(userHome, Policy{})
 	if err != nil {
 		t.Fatal(err)
 	}

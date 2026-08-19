@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"log"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -46,6 +47,30 @@ type ProviderPaths struct {
 // layer, which is itself a bricked login.
 type SignedOutDetector func(providerName string, data []byte) bool
 
+// ChainPosition reports where provider-authored credential bytes sit in one
+// account's rotation chain, as a value that only increases as the chain
+// advances (for Claude, the OAuth access token's expiry — fixed TTL, refreshed
+// only near expiry, so every mint lands strictly further out). ok=false means
+// these bytes carry no ordering signal, which permits any write.
+//
+// It exists so a saved slot being moved BACKWARDS onto a credential the
+// provider has already superseded is VISIBLE. Rotating chains are single-use:
+// an earlier position is not a stale copy that self-heals, it is a token the
+// server has permanently retired, so the write that installs one is the last
+// diagnosable moment before the account dies.
+type ChainPosition func(providerName string, data []byte) (int64, bool)
+
+// Policy carries the provider-specific credential predicates this package
+// cannot implement itself without importing a provider package. Both are
+// supplied at construction rather than through setters, so a store that
+// silently accepts production-refused bytes cannot be built by forgetting a
+// wiring call — the zero value is that choice made explicit, acceptable only
+// for focused tests exercising something other than these rules.
+type Policy struct {
+	SignedOut     SignedOutDetector
+	ChainPosition ChainPosition
+}
+
 // Credentials owns Agent Overflow's opaque copies of provider-native
 // credentials. Provider processes always run against SharedHome; saved account
 // directories receive only the provider's credential file from Agent Overflow
@@ -54,11 +79,11 @@ type SignedOutDetector func(providerName string, data []byte) bool
 type Credentials struct {
 	userHome string
 	keychain claudeKeychain
-	// signedOut is the SignedOutDetector this store was constructed with.
-	// The app wires the provider-specific predicate so this package stays
-	// provider-agnostic; activation, slot writes, and ephemeral seeding all
-	// consult it through credentialSignedOut.
-	signedOut SignedOutDetector
+	// policy holds the provider-specific predicates this store was
+	// constructed with. The app wires them so this package need not import a
+	// provider package; activation, slot writes, and ephemeral seeding all
+	// consult them through credentialSignedOut and supersededSlotWrite.
+	policy Policy
 }
 
 // CredentialSnapshot is one stable read from a provider-native credential
@@ -67,20 +92,16 @@ type CredentialSnapshot struct {
 	Data []byte
 }
 
-// NewCredentials builds the credential store. The detector is a constructor
-// argument rather than a setter so a store that silently accepts sign-out
-// husks cannot be built by forgetting a wiring call: every construction site
-// states its choice, and nil is that choice made explicit — "no provider
-// claims a sign-out shape here", acceptable only for focused tests that
-// exercise something other than the refusal.
-func NewCredentials(userHome string, signedOut SignedOutDetector) (*Credentials, error) {
+// NewCredentials builds the credential store. See Policy for why the
+// provider-specific predicates are constructor arguments rather than setters.
+func NewCredentials(userHome string, policy Policy) (*Credentials, error) {
 	if strings.TrimSpace(userHome) == "" {
 		return nil, errors.New("provideraccounts: empty user home")
 	}
 	return &Credentials{
-		userHome:  filepath.Clean(userHome),
-		keychain:  defaultClaudeKeychain(),
-		signedOut: signedOut,
+		userHome: filepath.Clean(userHome),
+		keychain: defaultClaudeKeychain(),
+		policy:   policy,
 	}, nil
 }
 
@@ -93,8 +114,8 @@ func NewCredentials(userHome string, signedOut SignedOutDetector) (*Credentials,
 // harness run would read and write the developer's real Claude Code
 // login. Harness runs use mock providers only, so no real credential
 // is ever needed.
-func NewCredentialsWithFileKeychain(userHome string, signedOut SignedOutDetector) (*Credentials, error) {
-	credentials, err := NewCredentials(userHome, signedOut)
+func NewCredentialsWithFileKeychain(userHome string, policy Policy) (*Credentials, error) {
+	credentials, err := NewCredentials(userHome, policy)
 	if err != nil {
 		return nil, err
 	}
@@ -103,7 +124,7 @@ func NewCredentialsWithFileKeychain(userHome string, signedOut SignedOutDetector
 }
 
 func (c *Credentials) credentialSignedOut(providerName string, data []byte) bool {
-	return c.signedOut != nil && c.signedOut(providerName, data)
+	return c.policy.SignedOut != nil && c.policy.SignedOut(providerName, data)
 }
 
 // CredentialSignedOut reports that these bytes are the provider's own
@@ -298,6 +319,17 @@ func (c *Credentials) ReadCredentialSnapshot(
 	return c.readCredentialAt(providerName, home, active)
 }
 
+// ReadCredentialAtHome reads the credential a provider process would
+// authenticate with when its config home is pinned to home — the ephemeral
+// homes used for logins and for probing a saved account.
+//
+// Read-only, and it is the read half of the rotation watch: a probe has to be
+// able to see the credential of whatever home it pinned, or it cannot tell
+// whether the CLI's own token rotation reached disk before teardown.
+func (c *Credentials) ReadCredentialAtHome(providerName, home string) (CredentialSnapshot, error) {
+	return c.readCredentialAt(providerName, home, false)
+}
+
 func (c *Credentials) readCredentialAt(
 	providerName string,
 	home string,
@@ -334,7 +366,8 @@ func (c *Credentials) credentialLocation(
 }
 
 // writeCredentialAt is the ONE place opaque credential bytes become durable,
-// and therefore the one place the sign-out refusal has to live.
+// and therefore the one place the sign-out refusal lives — and the one place
+// that can see a slot being moved backwards along its rotation chain.
 func (c *Credentials) writeCredentialAt(
 	providerName string,
 	home string,
@@ -344,7 +377,57 @@ func (c *Credentials) writeCredentialAt(
 	if c.credentialSignedOut(providerName, data) {
 		return fmt.Errorf("%w (%s)", ErrSignedOutCredential, providerName)
 	}
+	// Slot homes only. A slot holds one account for its whole life, so
+	// "backwards" is meaningful there; the canonical home legitimately moves
+	// between accounts on every switch, where an earlier expiry says nothing.
+	if !active {
+		c.noteSupersededSlotWrite(providerName, home, data)
+	}
 	return c.storeCredentialAt(providerName, home, active, data)
+}
+
+// noteSupersededSlotWrite records that home already holds a credential from
+// FURTHER ALONG this account's rotation chain than data — a caller that
+// believed it held newer bytes than it did, which is either a rotation being
+// resurrected or a credential landing in the wrong slot.
+//
+// It OBSERVES; it does not refuse. Refusing was tried and is worse than the
+// disease. A slot is only ever written from a path that has just read the
+// live credential, so a genuine resurrection has no remaining source once
+// rollback stopped rewinding bytes (see rollback.go) — while a wrong verdict
+// here is unrecoverable in both directions. It would drop a real rotation,
+// and because the refusal cannot lower a slot's position either, one bad
+// value (a credential minted under a skewed clock, a foreign shape with a
+// different lifetime) would wedge that slot permanently, with the callers
+// that re-read the slot afterwards silently activating the stale bytes it is
+// now stuck on.
+//
+// So the ordering signal earns its keep as evidence rather than as a gate:
+// if a login dies again, this line names the write that did it.
+func (c *Credentials) noteSupersededSlotWrite(providerName, home string, data []byte) {
+	if c.policy.ChainPosition == nil {
+		return
+	}
+	incoming, ok := c.policy.ChainPosition(providerName, data)
+	if !ok {
+		return
+	}
+	existing, err := c.readCredentialAt(providerName, home, false)
+	if err != nil {
+		return
+	}
+	current, ok := c.policy.ChainPosition(providerName, existing.Data)
+	if !ok || incoming >= current {
+		return
+	}
+	log.Printf(
+		"provideraccounts: a %s credential write moved a saved slot BACKWARDS along its "+
+			"rotation chain (incoming position %d, saved %d); if this account stops "+
+			"working, this write is why",
+		providerName,
+		incoming,
+		current,
+	)
 }
 
 // storeCredentialAt performs the write itself. It is separate from

@@ -14,7 +14,7 @@ func sweepFixture(t *testing.T) *Credentials {
 	// The sweep's husk rules ("never adopt a husk orphan", "adopt over a
 	// husked slot") consult the detector, so the fixture carries it the way
 	// production does.
-	credentials, err := NewCredentials(t.TempDir(), literalHuskDetector)
+	credentials, err := NewCredentials(t.TempDir(), Policy{SignedOut: literalHuskDetector})
 	if err != nil {
 		t.Fatal(err)
 	}

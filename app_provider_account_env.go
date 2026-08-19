@@ -107,9 +107,39 @@ func (a *App) providerProbeEnv(providerName string, pins map[string]string) map[
 // changes which backend answers must change who the probe reports.
 func (a *App) claudeProbeConfig(binary string, pins map[string]string) claude.ProbeConfig {
 	return claude.ProbeConfig{
-		Binary:  binary,
-		WorkDir: providerProbeWorkDir(),
-		Env:     a.providerProbeEnv(string(provider.Claude), pins),
+		Binary:         binary,
+		WorkDir:        providerProbeWorkDir(),
+		Env:            a.providerProbeEnv(string(provider.Claude), pins),
+		ReadCredential: a.claudeProbeCredentialReader(pins),
+	}
+}
+
+// claudeProbeCredentialReader hands the probe a read-only view of the
+// credential its CLI will authenticate with, so the probe can hold the process
+// open until a token rotation it triggered is durable rather than killing the
+// CLI mid-refresh — see claude.ProbeConfig.ReadCredential.
+//
+// It follows the same home the Env pins do, because that is the home whose
+// credential the CLI reads and rotates: an ephemeral probe home's rotation is
+// exactly as unrecoverable as the canonical one's, and its slot is the only
+// holder of that chain.
+//
+// nil when there is no credential store to read — a state in which no probe
+// can run at all, so there is nothing to protect.
+func (a *App) claudeProbeCredentialReader(pins map[string]string) func() ([]byte, error) {
+	credentials := a.providerCredentials
+	if credentials == nil {
+		return nil
+	}
+	if home := pins["CLAUDE_CONFIG_DIR"]; home != "" {
+		return func() ([]byte, error) {
+			snapshot, err := credentials.ReadCredentialAtHome(string(provider.Claude), home)
+			return snapshot.Data, err
+		}
+	}
+	return func() ([]byte, error) {
+		snapshot, err := credentials.ReadCredentialSnapshot(string(provider.Claude), "", true)
+		return snapshot.Data, err
 	}
 }
 

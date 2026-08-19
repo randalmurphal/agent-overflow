@@ -11,7 +11,6 @@ import (
 
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
-	"agent-overflow/internal/providerstatus"
 )
 
 // rateLimitProbeHTTPClient is the shared HTTP client used by every
@@ -102,6 +101,16 @@ var errClaudeUsageStale = errors.New(
 // errProviderAccountNeedsLogin so the user is told which account to repair.
 var errClaudeCredentialSignedOut = errors.New("the Claude CLI signed this login out; sign in again")
 
+// errClaudeCredentialsExpired reports a credential that survived a canonical
+// refresh — it is not the sign-out husk, and the CLI kept it — yet the server
+// still refuses the bearer it holds. Only a fresh login replaces it.
+//
+// It is raised from the usage retry and nowhere else, because that request is
+// the only thing on this path that asks the server about the bytes we actually
+// hold. Deriving it from what the probe REPORTED instead is what made a
+// perfectly good account read as dead every time it was switched to.
+var errClaudeCredentialsExpired = errors.New("Claude credentials expired; log in again")
+
 // probeSelectedClaudeRateLimits probes the account Agent Overflow currently
 // has selected, refreshing in the canonical home when the token has expired.
 //
@@ -154,21 +163,31 @@ func (a *App) probeSelectedClaudeRateLimits(
 	// home", and on macOS a non-default home hashes into a different
 	// Keychain service. Setting it to the default path would send the
 	// rotated credential somewhere Agent Overflow never reads.
-	info, refreshErr := claude.ProbeAccount(ctx, a.claudeProbeConfig(
-		a.providerBinaryPath(string(provider.Claude)),
-		nil,
-	))
+	refreshCfg := a.claudeProbeConfig(a.providerBinaryPath(string(provider.Claude)), nil)
+	// The server just rejected this bearer, which is what brought us here.
+	// That makes the CLI force a refresh regardless of the stored expiry, so
+	// the probe must hold its process for the rotation even when the bytes on
+	// disk still look fresh.
+	refreshCfg.RotationExpected = true
+	info, refreshErr := claude.ProbeAccount(ctx, refreshCfg)
 	if refreshErr != nil {
 		return provider.RateLimitsSnapshot{}, nil, fmt.Errorf("refresh Claude credentials: %w", refreshErr)
 	}
+	// Ordering dependency: this read is only correct because ProbeAccount does
+	// not return until an expected rotation has actually landed (see
+	// claude.ProbeConfig.ReadCredential). Without that, the read races the
+	// CLI's own credential write — and losing that race is not a stale read,
+	// it is a brick: these bytes go straight into CommitSelectedCredential,
+	// which would overwrite the CLI's freshly rotated pair with the retired
+	// one it just replaced.
+	//
 	// The bytes are the verdict, not the probe's account object — so read them
 	// BEFORE weighing what the probe reported. A refresh the server answered
 	// with invalid_grant leaves the CLI blanking the credential in place while
 	// its probe still answers success, echoing the husk's residual fields
 	// (subscriptionType always, email when the canonical home's oauthAccount
 	// record survives). Whatever shape that echo takes, the blank tokens
-	// underneath must reach neither ClaudeUnauthenticated's generic verdict,
-	// nor the retry below, nor the caller's commit.
+	// underneath must reach neither the retry below nor the caller's commit.
 	refreshed, readErr := a.providerCredentials.ReadCredentialSnapshot(
 		string(provider.Claude),
 		"",
@@ -187,10 +206,30 @@ func (a *App) probeSelectedClaudeRateLimits(
 		)
 		return provider.RateLimitsSnapshot{}, nil, errClaudeCredentialSignedOut
 	}
-	if providerstatus.ClaudeUnauthenticated(info) {
-		return provider.RateLimitsSnapshot{}, nil, errors.New("Claude credentials expired; log in again")
-	}
+	// There is deliberately NO ClaudeUnauthenticated check here, and adding one
+	// back is a credential-destroying change.
+	//
+	// That helper asks whether the probe reported any identity. On this path it
+	// cannot: the CLI reads its identity from `~/.claude.json`'s `oauthAccount`
+	// record, AO CLEARS that record on every account switch
+	// (retireProviderIdentity, by design — the provider must re-derive it
+	// rather than describe one account's email over another's tokens), and the
+	// CLI only writes it back from a profile fetch it performs asynchronously
+	// during the very startup this probe drives. So the FIRST canonical refresh
+	// after any switch sees an empty account object no matter how healthy the
+	// login is, and reading that as "expired" both lied to the user and — via
+	// the nil credential below — threw away the rotation the probe had just
+	// spent. Observed 2026-08-18 19:37:30: a switch at 19:37:26, a successful
+	// rotation at 19:37:29, and "Claude credentials expired; log in again" one
+	// second later with the fresh pair left uncommitted.
+	//
+	// The usable verdict is the bytes: the husk check above, then the retry
+	// below, which asks the server about the credential we actually hold.
 	if err := a.assertSelectedClaudeIdentity(selection, info); err != nil {
+		// The one case whose rotation is not ours to keep: an external
+		// `claude login` landed a DIFFERENT account's pair in the canonical
+		// home. Committing it into this account's slot would pair one login's
+		// tokens with another's identity, so it stays where it is.
 		return provider.RateLimitsSnapshot{}, nil, err
 	}
 	snapshot, retryErr := claude.ProbeRateLimitsFromCredentialData(
@@ -198,6 +237,16 @@ func (a *App) probeSelectedClaudeRateLimits(
 		a.rateLimitProbeClient(),
 		refreshed.Data,
 	)
+	if errors.Is(retryErr, claude.ErrOAuthUnauthorized) {
+		// A bearer the server rejects immediately after its own refresh issued
+		// it is a chain that is genuinely over — the byte-derived form of the
+		// verdict the account object used to guess at.
+		retryErr = errClaudeCredentialsExpired
+	}
+	// refreshed.Data goes back on EVERY path from here, error included. Claude
+	// refresh tokens are single-use, so a rotation that reaches disk but not
+	// the commit leaves this account's slot holding a token the server has
+	// already retired — a login that dies at its next use, not a stale read.
 	return snapshot, refreshed.Data, retryErr
 }
 

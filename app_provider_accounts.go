@@ -113,6 +113,27 @@ func providerSignedOutDetector(providerName string, data []byte) bool {
 	return providerName == string(provider.Claude) && claude.CredentialsSignedOut(data)
 }
 
+// providerCredentialChainPosition is the provider-aware "how far along its
+// rotation chain are these bytes" reading that keeps a saved slot from being
+// moved backwards onto a retired token. Claude's OAuth expiry is the signal;
+// Codex has no single-use rotation to protect, so it reports none.
+func providerCredentialChainPosition(providerName string, data []byte) (int64, bool) {
+	if providerName != string(provider.Claude) {
+		return 0, false
+	}
+	return claude.CredentialExpiresAt(data)
+}
+
+// providerCredentialPolicy is the ONE place the provider-specific credential
+// rules are named, so boot, harness, and fixtures all enforce them the same
+// way.
+func providerCredentialPolicy() provideraccounts.Policy {
+	return provideraccounts.Policy{
+		SignedOut:     providerSignedOutDetector,
+		ChainPosition: providerCredentialChainPosition,
+	}
+}
+
 // mapProviderAccountLoginError restates a provider-level "this login no longer
 // exists" verdict as the account-scoped instruction the card can act on. Every
 // other error passes through unchanged — only the one sentinel has a known

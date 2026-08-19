@@ -227,7 +227,7 @@ func (a *App) initStores() (string, *store.Store, error) {
 	if a.fileKeychainOverride {
 		newCredentials = provideraccounts.NewCredentialsWithFileKeychain
 	}
-	a.providerCredentials, err = newCredentials(userHome, providerSignedOutDetector)
+	a.providerCredentials, err = newCredentials(userHome, providerCredentialPolicy())
 	if err != nil {
 		closeErr := st.Close()
 		return "", nil, errors.Join(

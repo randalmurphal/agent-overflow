@@ -21,6 +21,32 @@ type ProbeConfig struct {
 	Env     map[string]string
 	Timeout time.Duration // default: defaultProbeTimeout
 
+	// ReadCredential reads the credential the CLI this probe spawns will
+	// authenticate with — the canonical native store, or whatever home
+	// Env pins. It is called before the spawn and repeatedly during
+	// teardown; it must be free of side effects and must not mutate what it
+	// reads. Only a digest of the bytes is retained.
+	//
+	// Wiring it is what keeps the probe from destroying the account's login.
+	// Spawning a CLI against a credential that is at or near expiry starts a
+	// token rotation the CLI does NOT finish before answering, and Anthropic
+	// retires the old refresh token the moment the request is processed — so
+	// tearing the probe down on its answer loses the replacement pair for
+	// good. With a reader wired, the probe holds the process open until the
+	// rotation is durable; see rotationWatch for the measured window.
+	//
+	// nil disables that protection. It is not an error — a probe against a
+	// home whose credential this package cannot locate is still a useful
+	// probe — but it should be nil only where no rotation is possible.
+	ReadCredential func() ([]byte, error)
+
+	// RotationExpected declares that the caller already knows this
+	// invocation will rotate the token, overriding what the credential's
+	// expiry suggests. Set it when the server has just rejected the bearer:
+	// the CLI's 401 recovery forces a refresh that skips every expiry gate,
+	// so bytes that look fresh still rotate. See armRotationWatch.
+	RotationExpected bool
+
 	// OnModels, when non-nil, fires exactly once on a successful probe with
 	// the `models` array carried by the same initialize response that produced
 	// the AccountInfo. It exists so the model catalog can be enriched from the
@@ -112,10 +138,27 @@ func ProbeAccount(ctx context.Context, cfg ProbeConfig) (provider.AccountInfo, e
 		timeout = defaultProbeTimeout
 	}
 
-	probeCtx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
+	// Armed before the spawn, because the CLI can begin rotating the moment
+	// it starts: the "before" digest has to predate the process.
+	watch := armRotationWatch(cfg.ReadCredential, cfg.RotationExpected, time.Now())
 
-	proc, err := provider.Spawn(probeCtx, provider.SpawnConfig{
+	// Two deadlines, because they answer different questions. The process
+	// lifetime has to cover the probe AND any rotation the probe set off,
+	// and it is deliberately detached from the caller's cancellation when a
+	// rotation is expected — a context cancel mid-rotation is precisely the
+	// kill this budget exists to prevent, and it is still hard-bounded.
+	// The read below keeps the caller's cancellation, so an aborted probe
+	// still returns promptly; only the teardown waits.
+	lifetime := ctx
+	if watch.budget() > 0 {
+		lifetime = context.WithoutCancel(ctx)
+	}
+	spawnCtx, cancelSpawn := context.WithTimeout(lifetime, timeout+watch.budget())
+	defer cancelSpawn()
+	readCtx, cancelRead := context.WithTimeout(ctx, timeout)
+	defer cancelRead()
+
+	proc, err := provider.Spawn(spawnCtx, provider.SpawnConfig{
 		Binary:   binary,
 		Args:     buildProbeArgs(),
 		Dir:      cfg.WorkDir,
@@ -129,7 +172,14 @@ func ProbeAccount(ctx context.Context, cfg ProbeConfig) (provider.AccountInfo, e
 	if err != nil {
 		return provider.AccountInfo{}, fmt.Errorf("claude: probe spawn: %w", err)
 	}
+	// Settle BEFORE Close on every exit path, successful or not: Close starts
+	// by closing stdin, and under `--max-turns 0` that is what makes the CLI
+	// exit. A probe that failed or timed out can have started a rotation just
+	// as easily as one that answered.
 	defer func() {
+		settleCtx, cancelSettle := context.WithTimeout(spawnCtx, rotationSettleTimeout)
+		watch.settle(settleCtx)
+		cancelSettle()
 		_ = proc.Close()
 	}()
 
@@ -146,7 +196,7 @@ func ProbeAccount(ctx context.Context, cfg ProbeConfig) (provider.AccountInfo, e
 		return provider.AccountInfo{}, fmt.Errorf("claude: probe write initialize: %w", err)
 	}
 
-	response, err := readControlInitResponse(probeCtx, proc)
+	response, err := readControlInitResponse(readCtx, proc)
 	if err != nil {
 		return provider.AccountInfo{}, err
 	}
