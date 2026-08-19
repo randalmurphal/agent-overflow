@@ -40,7 +40,12 @@ ralph-*.log
 # Build artifacts
 frontend/package.json.md5
 /build/linux/agent-overflow.desktop
-.claude/
+# Ignore everything under .claude/ (agent worktrees, local settings) except
+# checked-in repo skills. The dev watcher excludes .claude/ by explicit path
+# (build/config.yml dev_mode ignore + vite.config.ts server.watch.ignored),
+# not via gitignore, so this carve-out does not re-arm the fsnotify storm.
+.claude/*
+!.claude/skills/
 .playwright-mcp
 
 # Vitest browser-mode byproducts (failure screenshots / attachments).
