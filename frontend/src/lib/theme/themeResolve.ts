@@ -250,9 +250,17 @@ export function themesForAxis(
   catalog: ReadonlyMap<string, ThemeCatalogEntry>,
   axis: ThemeAxis,
 ): readonly ThemeCatalogEntry[] {
+  // The axis's own default leads the list — it is the selection a reader
+  // resets to, not one alphabet entry among many — and the rest follow in
+  // id order.
+  const defaultId = axis === 'ui' ? BUILTIN_UI_THEME_ID : BUILTIN_CODE_THEME_ID;
   return [...catalog.values()]
     .filter((entry) => (axis === 'ui' ? entry.theme.axes.ui : entry.theme.axes.code))
-    .sort((a, b) => a.theme.id.localeCompare(b.theme.id));
+    .sort((a, b) => {
+      if (a.theme.id === defaultId) return b.theme.id === defaultId ? 0 : -1;
+      if (b.theme.id === defaultId) return 1;
+      return a.theme.id.localeCompare(b.theme.id);
+    });
 }
 
 interface AxisPick {

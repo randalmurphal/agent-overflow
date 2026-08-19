@@ -43,7 +43,7 @@
   } from '../../stores/appearance.svelte';
   import { BUILTIN_THEMES } from '../../theme/builtins';
   import { getAppliedTheme } from '../../theme/themeApply.svelte';
-  import type { ParsedTheme, ThemeWarning } from '../../theme/themeParse';
+  import type { ThemeWarning } from '../../theme/themeParse';
   import { buildThemeCatalog, themesForAxis } from '../../theme/themeResolve';
   import type { ThemeAxis } from '../../theme/tokenRegistry';
   import SettingsCallout from './SettingsCallout.svelte';
@@ -86,10 +86,6 @@
   let applied = $derived(getAppliedTheme());
   let catalog = $derived(buildThemeCatalog(themes, BUILTIN_THEMES));
 
-  function label(theme: ParsedTheme, source: 'user' | 'builtin'): string {
-    return source === 'builtin' ? `${theme.name} (built-in)` : theme.name;
-  }
-
   /**
    * Selectable themes for an axis, plus the files that could NOT make it onto
    * one. A file with a syntax error parses to zero tokens, so it claims no
@@ -98,7 +94,7 @@
   function optionsFor(axis: ThemeAxis): AxisOption[] {
     const selectable = themesForAxis(catalog, axis).map((entry) => ({
       id: entry.theme.id,
-      label: label(entry.theme, entry.source),
+      label: entry.theme.name,
       problem: null,
     }));
     const broken = themes

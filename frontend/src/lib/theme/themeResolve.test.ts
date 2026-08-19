@@ -169,17 +169,23 @@ describe('catalog', () => {
     expect(declOf(cssOf(resolved), ':root', 'accent')).toBe('red');
   });
 
-  it('lists each axis by what a file actually defines', () => {
+  it('lists each axis by what a file actually defines, its default first', () => {
     const catalog = buildThemeCatalog([DARK_UI, DARK_CODE, BOTH_UI]);
     // The built-ins the app ships are on the list too, so the expectation is
-    // "the user files land on the right axis, in id order, among them" — read
-    // from BUILTIN_THEMES rather than restated, so a new curated palette does
-    // not fail an assertion that is not about it.
-    const expected = (axis: 'ui' | 'code', users: string[]): string[] =>
-      [
+    // "the axis default leads, then the user files land on the right axis in
+    // id order among the rest" — read from BUILTIN_THEMES rather than
+    // restated, so a new curated palette does not fail an assertion that is
+    // not about it.
+    const expected = (axis: 'ui' | 'code', users: string[]): string[] => {
+      const defaultId = axis === 'ui' ? 'default' : 'github';
+      const rest = [
         ...BUILTIN_THEMES.filter((t) => (axis === 'ui' ? t.axes.ui : t.axes.code)).map((t) => t.id),
         ...users,
-      ].sort((a, b) => a.localeCompare(b));
+      ]
+        .filter((id) => id !== defaultId)
+        .sort((a, b) => a.localeCompare(b));
+      return [defaultId, ...rest];
+    };
 
     expect(themesForAxis(catalog, 'ui').map((e) => e.theme.id)).toEqual(
       expected('ui', ['duo', 'nightfall']),
