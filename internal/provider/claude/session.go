@@ -240,10 +240,16 @@ type Config struct {
 	// `--disallowedTools`. Spawn-time only: no control_request can add or
 	// drop a tool on a live session, so a change here always requires a
 	// restart (PlanLiveUpdate enforces that by comparing this field).
-	DisallowedTools    []string
-	BasePermissionMode string
-	InteractionMode    provider.InteractionMode
-	MaxTurns           int
+	DisallowedTools []string
+	// DisableTodoReminders exports CLAUDE_CODE_TODO_REMINDER_MODE=off so
+	// the CLI stops nudging the model to use the todo tools (see
+	// claudeTodoReminderModeEnvVar). Spawn-time only, like every session
+	// env value; a change lands on the next session, and PlanLiveUpdate's
+	// trailing DeepEqual reports it as a restart.
+	DisableTodoReminders bool
+	BasePermissionMode   string
+	InteractionMode      provider.InteractionMode
+	MaxTurns             int
 	// AutoCompactPercent is the autocompact threshold (1-90) the CLI
 	// should use for this session, or 0 to inherit Claude's default.
 	// Values >90 are clamped to 90 by `inlineSettingsForCLI` (matches
@@ -267,8 +273,9 @@ type Config struct {
 	// Env carries per-session environment variables Claude Code does NOT
 	// override at startup. NewSession fills in AO's defaults for names
 	// the caller left unset (withClaudeSessionEnvDefaults: the
-	// CLAUDE_CODE_ENTRYPOINT marker and the CLAUDE_CODE_ENABLE_TODO_TOOLS
-	// opt-in). Anything Claude exposes via `settings.env` should go
+	// CLAUDE_CODE_ENTRYPOINT marker, the CLAUDE_CODE_ENABLE_TODO_TOOLS
+	// opt-in, and — only when DisableTodoReminders is set —
+	// CLAUDE_CODE_TODO_REMINDER_MODE=off). Anything Claude exposes via `settings.env` should go
 	// through AutoCompactPercent's inline settings path instead.
 	Env         map[string]string
 	EventLogger *logging.Logger
@@ -310,7 +317,7 @@ func NewSession(ctx context.Context, threadID string, cfg Config, onEvent func(p
 		Binary:      binary,
 		Args:        args,
 		Dir:         cfg.WorkDir,
-		Env:         withClaudeSessionEnvDefaults(cfg.Env),
+		Env:         withClaudeSessionEnvDefaults(cfg.Env, cfg.DisableTodoReminders),
 		UnsetEnv:    []string{"CLAUDE_CONFIG_DIR", "CLAUDE_SECURESTORAGE_CONFIG_DIR"},
 		EventLogger: cfg.EventLogger,
 		ThreadID:    threadID,
@@ -387,14 +394,27 @@ const claudeCodeEntrypointEnvVar = "CLAUDE_CODE_ENTRYPOINT"
 // cfg.Env before withClaudeSessionEnvDefaults applies.
 const claudeTodoToolsEnvVar = "CLAUDE_CODE_ENABLE_TODO_TOOLS"
 
+// claudeTodoReminderModeEnvVar controls the CLI's periodic "track your
+// work with the todo tools" nudge. "off" silences it while keeping the
+// tools; unset, the CLI defaults the mode from a remote feature gate
+// (baseline = nudge every 10 turns without a task write, verified on
+// 2.1.233 binary analysis). Exported into the session only when the
+// user turned reminders off in Settings (Config.DisableTodoReminders),
+// and like the opt-in above it is a default, not a pin: a user value in
+// the provider's custom environment wins.
+const claudeTodoReminderModeEnvVar = "CLAUDE_CODE_TODO_REMINDER_MODE"
+
 // withClaudeSessionEnvDefaults returns a copy of env with AO's
 // session-environment defaults applied — each only when the caller did
 // not already provide the name, so user custom env (and tests) can opt
 // out per variable.
-func withClaudeSessionEnvDefaults(env map[string]string) map[string]string {
-	defaults := [...]struct{ name, value string }{
+func withClaudeSessionEnvDefaults(env map[string]string, disableTodoReminders bool) map[string]string {
+	defaults := []struct{ name, value string }{
 		{claudeCodeEntrypointEnvVar, provider.ClaudeEntrypointOrigin},
 		{claudeTodoToolsEnvVar, "true"},
+	}
+	if disableTodoReminders {
+		defaults = append(defaults, struct{ name, value string }{claudeTodoReminderModeEnvVar, "off"})
 	}
 	missing := 0
 	for _, d := range defaults {

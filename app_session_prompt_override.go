@@ -72,6 +72,7 @@ func (a *App) applySettingsOwnedAxes(t store.Thread, opts *provider.SessionOptio
 	// Provider-wide and settings-owned, so it is stamped here rather than
 	// projected from the thread row — same reasoning as FastModeTierID.
 	opts.DisabledTools = snapshot.DisabledToolsForProvider(t.Provider)
+	opts.DisableTodoReminders = snapshot.TodoRemindersDisabledForProvider(t.Provider)
 
 	// A non-empty prompt at this point means a FEATURE owns it (design
 	// mode's artifact prompt, the discussion deliberation prompt — see
@@ -121,6 +122,7 @@ func pinSettingsOwnedAxes(opts *provider.SessionOptions, launch provider.Session
 		opts.SystemPrompt = launch.SystemPrompt
 	}
 	opts.DisabledTools = launch.DisabledTools
+	opts.DisableTodoReminders = launch.DisableTodoReminders
 }
 
 // featureOwnedSystemPrompt returns the prompt a FEATURE owns for this

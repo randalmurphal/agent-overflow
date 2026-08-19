@@ -47,7 +47,10 @@ import "strings"
 // but only when the merged environment does not already carry the name —
 // so a user's custom environment can restore the vendor's stock tool
 // surface by setting it to "false". Reserving it would turn a default
-// into a mandate.
+// into a mandate. CLAUDE_CODE_TODO_REMINDER_MODE follows the same rule:
+// both spawn paths export "off" when the Settings nudge toggle asks for
+// it (Config.DisableTodoReminders), and a user value in the custom
+// environment outranks the setting.
 //
 // ANTHROPIC_BASE_URL is the one variable Agent Overflow pins WITHOUT reserving
 // it. claudetui's buildEnv (claudetui/launch.go) owns the child's copy because

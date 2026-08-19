@@ -347,3 +347,43 @@ func TestOverrideAccessorsRoutePerProviderAndShareTheClaudeListWithClaudeTUI(t *
 		t.Fatalf("unknown-provider disabled tools = %v, want nil", got)
 	}
 }
+
+// The nudge toggle routes like the tool lists (claude + claude-tui share
+// the answer, codex never sees it), defaults off, survives a reload, and
+// stays out of a sparse write while at the default.
+func TestClaudeTodoRemindersDisabledRoutesAndRoundTrips(t *testing.T) {
+	s := Settings{ClaudeTodoRemindersDisabled: true}
+	for provider, want := range map[string]bool{
+		"claude":     true,
+		"claude-tui": true,
+		"codex":      false,
+		"nope":       false,
+	} {
+		if got := s.TodoRemindersDisabledForProvider(provider); got != want {
+			t.Errorf("TodoRemindersDisabledForProvider(%q) = %v, want %v", provider, got, want)
+		}
+	}
+	if DefaultSettings.ClaudeTodoRemindersDisabled {
+		t.Fatal("DefaultSettings.ClaudeTodoRemindersDisabled = true, want false (nudges keep the vendor default)")
+	}
+
+	svc := NewService(t.TempDir())
+	if svc.Get().ClaudeTodoRemindersDisabled {
+		t.Fatal("fresh settings have reminders disabled, want the vendor default")
+	}
+	data, err := os.ReadFile(svc.Path())
+	if err == nil && bytes.Contains(data, []byte("claudeTodoRemindersDisabled")) {
+		t.Fatalf("sparse write carries the default key: %s", data)
+	}
+
+	updated, err := svc.Update(map[string]any{"claudeTodoRemindersDisabled": true})
+	if err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	if !updated.ClaudeTodoRemindersDisabled {
+		t.Fatal("ClaudeTodoRemindersDisabled = false after enabling")
+	}
+	if !NewService(filepath.Dir(svc.Path())).Get().ClaudeTodoRemindersDisabled {
+		t.Fatal("reloaded ClaudeTodoRemindersDisabled = false, want true")
+	}
+}

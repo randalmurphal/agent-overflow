@@ -104,7 +104,7 @@ func buildLaunchOptions(cfg Config, systemPromptPath, gatewayURL, hookURL, hookT
 		Shell: cfg.Binary,
 		Args:  args,
 		Cwd:   cfg.WorkDir,
-		Env:   buildEnv(cfg.Env, gatewayURL, hookURL, hookToken),
+		Env:   buildEnv(cfg.Env, gatewayURL, hookURL, hookToken, cfg.DisableTodoReminders),
 		Rows:  cfg.rows(),
 		Cols:  cfg.cols(),
 	}, nil
@@ -183,11 +183,18 @@ const BaseURLEnv = "ANTHROPIC_BASE_URL"
 // it to "false" restores the vendor's stock TUI tool surface.
 const todoToolsEnvVar = "CLAUDE_CODE_ENABLE_TODO_TOOLS"
 
+// todoReminderModeEnvVar controls the CLI's periodic "track your work
+// with the todo tools" nudge; "off" silences it while keeping the tools.
+// Appended only when the session asked for it (Config.DisableTodoReminders,
+// from the Settings toggle), with the same default-not-pin posture as the
+// opt-in above: a value already in the base environment wins.
+const todoReminderModeEnvVar = "CLAUDE_CODE_TODO_REMINDER_MODE"
+
 // buildEnv layers the per-session gateway + relay env onto the base
 // environment, stripping any inherited values for the keys we own so a dirty
 // parent env can't redirect Claude away from our gateway, and fills in the
-// todo-tools default when the base carries no value of its own.
-func buildEnv(base []string, gatewayURL, hookURL, hookToken string) []string {
+// todo-tools defaults the base carries no value of its own for.
+func buildEnv(base []string, gatewayURL, hookURL, hookToken string, disableTodoReminders bool) []string {
 	if len(base) == 0 {
 		// Honor the documented "empty means inherit" Config.Env contract for an
 		// empty-but-non-nil slice too, not just nil.
@@ -198,15 +205,19 @@ func buildEnv(base []string, gatewayURL, hookURL, hookToken string) []string {
 		envHookURL:   {},
 		envHookToken: {},
 	}
-	out := make([]string, 0, len(base)+4)
+	out := make([]string, 0, len(base)+5)
 	haveTodoOptIn := false
+	haveReminderMode := false
 	for _, kv := range base {
 		if key, _, ok := strings.Cut(kv, "="); ok {
 			if _, isOwned := owned[key]; isOwned {
 				continue
 			}
-			if key == todoToolsEnvVar {
+			switch key {
+			case todoToolsEnvVar:
 				haveTodoOptIn = true
+			case todoReminderModeEnvVar:
+				haveReminderMode = true
 			}
 		}
 		out = append(out, kv)
@@ -218,6 +229,9 @@ func buildEnv(base []string, gatewayURL, hookURL, hookToken string) []string {
 	)
 	if !haveTodoOptIn {
 		out = append(out, todoToolsEnvVar+"=true")
+	}
+	if disableTodoReminders && !haveReminderMode {
+		out = append(out, todoReminderModeEnvVar+"=off")
 	}
 	return out
 }

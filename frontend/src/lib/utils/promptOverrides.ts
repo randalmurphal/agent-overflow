@@ -191,7 +191,9 @@ export function unknownCodexToggleIds(disabled: readonly string[]): string[] {
 /**
  * Common Claude built-ins offered as one-click additions. Claude takes raw
  * names on `--disallowedTools`, so this is a convenience list, never a
- * closed set — the free-form field is the real interface.
+ * closed set — the free-form field is the real interface. The todo tools
+ * are deliberately absent: they live in CLAUDE_TODO_TOOL_GROUP and get a
+ * grouped control instead of individual suggestion chips.
  */
 export const CLAUDE_TOOL_SUGGESTIONS: readonly string[] = [
   'Workflow',
@@ -201,11 +203,45 @@ export const CLAUDE_TOOL_SUGGESTIONS: readonly string[] = [
   'WebSearch',
   'WebFetch',
   'NotebookEdit',
+] as const;
+
+/**
+ * Claude's todo/task-tracking tool family, managed as ONE group in the
+ * Settings editor: the tools only make sense together (a model that can
+ * TaskCreate but not TaskUpdate strands its own list), so the group
+ * toggle disables or re-enables all of them and a disclosure offers the
+ * per-tool switches for anyone who really wants a partial set.
+ *
+ * TodoWrite is in the group for old-model coverage: claude ≥2.1.233 only
+ * offers the Task* family to modern models (opus ≥4.8, sonnet/fable/
+ * mythos ≥5), but older families still get TodoWrite — and the
+ * CLAUDE_CODE_ENABLE_TODO_TOOLS env default cannot remove it there, so
+ * `--disallowedTools` is the only off switch that works everywhere.
+ *
+ * Storage is unchanged: these are ordinary entries in the flat
+ * claudeDisabledTools list. The group is a UI projection, so a
+ * hand-added "TaskGet" from an older build renders inside the group
+ * rather than as a stray chip.
+ */
+export const CLAUDE_TODO_TOOL_GROUP: readonly string[] = [
+  'TodoWrite',
   'TaskCreate',
   'TaskUpdate',
   'TaskGet',
   'TaskList',
 ] as const;
+
+const CLAUDE_TODO_TOOL_SET: ReadonlySet<string> = new Set(CLAUDE_TODO_TOOL_GROUP);
+
+/** Whether a disabled-tools entry belongs to the todo group's UI. */
+export function isTodoGroupTool(name: string): boolean {
+  return CLAUDE_TODO_TOOL_SET.has(name);
+}
+
+/** The group members currently exposed (i.e. NOT in the disabled list). */
+export function exposedTodoTools(disabled: readonly string[]): string[] {
+  return CLAUDE_TODO_TOOL_GROUP.filter((name) => !disabled.includes(name));
+}
 
 /** A fresh, disabled, empty entry — appended by the Add control. */
 export function newPromptOverride(): PromptOverride {
@@ -357,6 +393,25 @@ export function withToolRemoved(
   name: string,
 ): string[] {
   return list.filter((tool) => tool !== name);
+}
+
+/** The list with every name in `names` added once (blanks skipped). */
+export function withToolsAdded(
+  list: readonly string[],
+  names: readonly string[],
+): string[] {
+  let next = [...list];
+  for (const name of names) next = withToolAdded(next, name);
+  return next;
+}
+
+/** The list without any of `names`. */
+export function withToolsRemoved(
+  list: readonly string[],
+  names: readonly string[],
+): string[] {
+  const drop = new Set(names);
+  return list.filter((tool) => !drop.has(tool));
 }
 
 /**

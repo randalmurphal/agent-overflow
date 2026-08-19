@@ -157,7 +157,7 @@ func countEnv(env []string, key string) (int, string) {
 // caller-provided value — the user's custom provider environment — wins.
 func TestBuildEnvDefaultsTodoToolsOptIn(t *testing.T) {
 	t.Run("default applied when absent", func(t *testing.T) {
-		env := buildEnv([]string{"FOO=bar"}, "http://gw", "http://hook", "tok")
+		env := buildEnv([]string{"FOO=bar"}, "http://gw", "http://hook", "tok", false)
 		if n, v := countEnv(env, todoToolsEnvVar); n != 1 || v != "true" {
 			t.Fatalf("%s: got %d entries (last %q), want exactly one =true; env %v", todoToolsEnvVar, n, v, env)
 		}
@@ -166,7 +166,7 @@ func TestBuildEnvDefaultsTodoToolsOptIn(t *testing.T) {
 	t.Run("user opt-out survives without a duplicate", func(t *testing.T) {
 		env := buildEnv(
 			[]string{"FOO=bar", todoToolsEnvVar + "=false"},
-			"http://gw", "http://hook", "tok",
+			"http://gw", "http://hook", "tok", false,
 		)
 		if n, v := countEnv(env, todoToolsEnvVar); n != 1 || v != "false" {
 			t.Fatalf("%s: got %d entries (last %q), want exactly the caller's =false; env %v", todoToolsEnvVar, n, v, env)
@@ -176,10 +176,40 @@ func TestBuildEnvDefaultsTodoToolsOptIn(t *testing.T) {
 	t.Run("owned gateway keys still replaced", func(t *testing.T) {
 		env := buildEnv(
 			[]string{BaseURLEnv + "=https://dirty.example"},
-			"http://gw", "http://hook", "tok",
+			"http://gw", "http://hook", "tok", false,
 		)
 		if n, v := countEnv(env, BaseURLEnv); n != 1 || v != "http://gw" {
 			t.Fatalf("%s: got %d entries (last %q), want exactly the gateway URL; env %v", BaseURLEnv, n, v, env)
+		}
+	})
+}
+
+// TestBuildEnvTodoReminderMode pins the Settings nudge toggle's TUI leg:
+// disabling reminders exports CLAUDE_CODE_TODO_REMINDER_MODE=off, leaving
+// it enabled exports nothing (the CLI owns its default), and a base-env
+// value outranks the setting.
+func TestBuildEnvTodoReminderMode(t *testing.T) {
+	t.Run("disabled exports off", func(t *testing.T) {
+		env := buildEnv([]string{"FOO=bar"}, "http://gw", "http://hook", "tok", true)
+		if n, v := countEnv(env, todoReminderModeEnvVar); n != 1 || v != "off" {
+			t.Fatalf("%s: got %d entries (last %q), want exactly one =off; env %v", todoReminderModeEnvVar, n, v, env)
+		}
+	})
+
+	t.Run("enabled exports nothing", func(t *testing.T) {
+		env := buildEnv([]string{"FOO=bar"}, "http://gw", "http://hook", "tok", false)
+		if n, v := countEnv(env, todoReminderModeEnvVar); n != 0 {
+			t.Fatalf("%s: got %d entries (last %q), want none; env %v", todoReminderModeEnvVar, n, v, env)
+		}
+	})
+
+	t.Run("user value survives without a duplicate", func(t *testing.T) {
+		env := buildEnv(
+			[]string{todoReminderModeEnvVar + "=baseline"},
+			"http://gw", "http://hook", "tok", true,
+		)
+		if n, v := countEnv(env, todoReminderModeEnvVar); n != 1 || v != "baseline" {
+			t.Fatalf("%s: got %d entries (last %q), want exactly the caller's =baseline; env %v", todoReminderModeEnvVar, n, v, env)
 		}
 	})
 }

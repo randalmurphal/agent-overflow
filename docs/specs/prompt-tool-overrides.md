@@ -107,6 +107,7 @@ ClaudePromptOverrides []PromptOverride `json:"claudePromptOverrides,omitempty"`
 CodexPromptOverrides  []PromptOverride `json:"codexPromptOverrides,omitempty"`
 ClaudeDisabledTools   []string         `json:"claudeDisabledTools,omitempty"`
 CodexDisabledTools    []string         `json:"codexDisabledTools,omitempty"`
+ClaudeTodoRemindersDisabled bool       `json:"claudeTodoRemindersDisabled,omitempty"`
 ```
 
 Decisions (2026-08-17, with user):
@@ -218,6 +219,33 @@ definition of an admissible name.
 Note when reading a Claude list: `Task` and `Agent` are aliases in the
 CLI, so disallowing either removes both.
 
+### The todo tool group + nudge toggle (2026-08-19, with user)
+
+Claude's todo family (`TodoWrite`, `TaskCreate`, `TaskUpdate`,
+`TaskGet`, `TaskList` — `CLAUDE_TODO_TOOL_GROUP` in
+`frontend/src/lib/utils/promptOverrides.ts`) is managed as ONE group in
+the editor: the tools only make sense as a set, so the group switch adds
+or removes all five from `ClaudeDisabledTools` and a per-tool disclosure
+covers partial sets. Storage is unchanged — the group is a UI
+projection over the same flat list, and the five names are absent from
+the flat suggestion row. `TodoWrite` is in the group because pre-gate
+models (opus <4.8, sonnet/fable <5) keep it regardless of
+`CLAUDE_CODE_ENABLE_TODO_TOOLS`, so `--disallowedTools` is the only off
+switch that works on every model.
+
+`ClaudeTodoRemindersDisabled` is the companion nudge toggle: it exports
+`CLAUDE_CODE_TODO_REMINDER_MODE=off` into Claude spawns (headless
+`withClaudeSessionEnvDefaults` and claudetui `buildEnv`, both as a
+DEFAULT a custom-env value outranks — same posture as the todo-tools
+opt-in, see `internal/provider/pinnedenv.go`). It rides
+`SessionOptions.DisableTodoReminders`, the third settings-owned axis:
+stamped by `applySettingsOwnedAxes`, pinned by `pinSettingsOwnedAxes`.
+The CLI double-gates its task_reminder nudge on the reminder mode AND
+the tools' presence in the session (verified 2.1.233), so the toggle
+only matters while ≥1 group tool is exposed — the UI disables it when
+the whole group is off, and turning the group off needs no reminder
+write at all.
+
 **Codex:** curated toggles, each mapping to per-thread `config` map
 entries (all verified per-conversation-settable):
 
@@ -243,8 +271,8 @@ The live-config reconciler (`app_session_config.go
 liveApplySessionConfig`) diffs freshly built options against
 `sess.launchOpts` and escalates non-live-appliable diffs to a deferred
 restart — so it calls **`pinSettingsOwnedAxes`**, which adopts
-`SystemPrompt` and `DisabledTools` from `sess.launchOpts` before
-diffing. Otherwise editing the setting (or the workspace's git state
+`SystemPrompt`, `DisabledTools`, and `DisableTodoReminders` from
+`sess.launchOpts` before diffing. Otherwise editing the setting (or the workspace's git state
 moving under a rendered `{{GIT_BLOCK}}`) would queue restarts on every
 running session. Restarts that happen for other reasons build fresh
 options and adopt the current setting; that is a new session and

@@ -132,6 +132,16 @@ type SessionOptions struct {
 	// single construction site (buildSessionOptions) alongside SystemPrompt.
 	DisabledTools []string
 
+	// DisableTodoReminders turns off Claude Code's periodic "track your
+	// work with the todo tools" nudges by exporting
+	// CLAUDE_CODE_TODO_REMINDER_MODE=off into the session's environment
+	// (as a default a user's custom env can still override). Claude-family
+	// only — Codex ignores it. Spawn-only like DisabledTools, and stamped
+	// from Settings the same way: the app layer sets it in
+	// applySettingsOwnedAxes and the reconcile path pins it to the live
+	// session's launch value (pinSettingsOwnedAxes).
+	DisableTodoReminders bool
+
 	// Resume carries the provider's resume reference. Claude: prior
 	// session uuid. Codex: prior thread id. Empty for brand-new starts.
 	Resume string

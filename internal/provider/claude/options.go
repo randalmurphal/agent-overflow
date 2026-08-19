@@ -79,20 +79,21 @@ func ConfigFromOptions(opts provider.SessionOptions) Config {
 	}
 
 	return Config{
-		Model:              claudeModelForContextWindow(model, contextWindow),
-		WorkDir:            opts.WorkDir,
-		Resume:             opts.Resume,
-		ResumeAt:           opts.ResumeAt,
-		ForkSession:        opts.ForkSession,
-		SystemPrompt:       opts.SystemPrompt,
-		ReasoningEffort:    claudeEffortForModel(model, opts.ReasoningEffort),
-		FastMode:           claudeFastMode(model, opts.FastMode),
-		PermissionFlags:    claudePermissionFlags(opts.RuntimeMode),
-		DisallowedTools:    mergeDisallowedTools(claudeDisallowedTools(opts.RuntimeMode), opts.DisabledTools),
-		BasePermissionMode: claudeBasePermissionMode(opts.RuntimeMode),
-		InteractionMode:    opts.Mode,
-		AutoCompactPercent: autoCompactPercent,
-		ContextWindow:      contextWindow,
+		Model:                claudeModelForContextWindow(model, contextWindow),
+		WorkDir:              opts.WorkDir,
+		Resume:               opts.Resume,
+		ResumeAt:             opts.ResumeAt,
+		ForkSession:          opts.ForkSession,
+		SystemPrompt:         opts.SystemPrompt,
+		ReasoningEffort:      claudeEffortForModel(model, opts.ReasoningEffort),
+		FastMode:             claudeFastMode(model, opts.FastMode),
+		PermissionFlags:      claudePermissionFlags(opts.RuntimeMode),
+		DisallowedTools:      mergeDisallowedTools(claudeDisallowedTools(opts.RuntimeMode), opts.DisabledTools),
+		DisableTodoReminders: opts.DisableTodoReminders,
+		BasePermissionMode:   claudeBasePermissionMode(opts.RuntimeMode),
+		InteractionMode:      opts.Mode,
+		AutoCompactPercent:   autoCompactPercent,
+		ContextWindow:        contextWindow,
 	}
 }
 

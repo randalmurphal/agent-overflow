@@ -52,6 +52,12 @@ type Config struct {
 	// claude.SanitizeDisallowedTools, so the launch appends each one
 	// verbatim. Build this through ConfigFromOptions rather than by hand.
 	DisallowedTools []string
+	// DisableTodoReminders exports CLAUDE_CODE_TODO_REMINDER_MODE=off
+	// into the PTY environment (as a default a value already in Env
+	// outranks — same posture as the todo-tools opt-in; see buildEnv).
+	// Silences the CLI's periodic "track your work with the todo tools"
+	// nudge while keeping the tools.
+	DisableTodoReminders bool
 	// ReasoningEffort is the resolved `--effort` value (low/medium/high/xhigh/
 	// max), already mapped from SessionOptions by claude.ConfigFromOptions.
 	// Empty means "omit the flag" so the CLI keeps its own default. The
@@ -95,6 +101,9 @@ func ConfigFromOptions(opts provider.SessionOptions) Config {
 		ReasoningEffort: base.ReasoningEffort,
 		SystemPrompt:    base.SystemPrompt,
 		DisallowedTools: claude.SanitizeDisallowedTools(opts.DisabledTools),
+		// Settings-owned like the two axes above; claude-tui shares the
+		// Claude answer (one binary, one nudge producer).
+		DisableTodoReminders: opts.DisableTodoReminders,
 	}
 }
 

@@ -63,6 +63,16 @@ our own code.
   four Task\* tools bare and all four with the env var.
   `CLAUDE_CODE_ENABLE_TASKS=false` is the separate whole-feature
   opt-OUT (default on).
+- **Task-reminder nudges** — the CLI injects a "The task tools haven't
+  been used recently…" reminder after 10 turns without a task write
+  (and at most every 10 turns; turn-based, not token-based). Double
+  gated: the producer requires `TaskUpdate` in the session's tool set
+  AND the reminder mode ≠ "off", so removing the tools also removes
+  the nudges. `CLAUDE_CODE_TODO_REMINDER_MODE=off` (env override over
+  the `tengu_soft_slate_nudge` statsig gate, default "baseline") kills
+  the nudges while KEEPING the tools — AO's Settings → todo nudges
+  toggle exports it on both spawn paths, same user-overridable-default
+  posture as the opt-in above. Verified on 2.1.233 binary analysis.
 - **Completed task lists self-delete (≥2.1.233)** — once every task in
   a list is `completed`, the CLI arms a 5s timer and then deletes the
   list's `~/.claude/tasks/<list-id>/*.json` files, bumping the

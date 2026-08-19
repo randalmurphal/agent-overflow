@@ -188,6 +188,14 @@ export interface Settings {
    */
   claudeDisabledTools?: string[];
   codexDisabledTools?: string[];
+  /**
+   * Turns off Claude Code's periodic "track your work with the todo
+   * tools" nudges (CLAUDE_CODE_TODO_REMINDER_MODE=off at spawn; covers
+   * claude-tui too). Only meaningful while at least one todo tool is
+   * still exposed — with the whole group disabled the CLI has nothing
+   * to nudge about. Go persists sparsely, so treat undefined as false.
+   */
+  claudeTodoRemindersDisabled?: boolean;
   /** Seeds whether new draft threads start on the current checkout or a new worktree. */
   defaultThreadEnvMode: ThreadEnvMode;
   /** Prefix used for auto-generated worktree branch names. */

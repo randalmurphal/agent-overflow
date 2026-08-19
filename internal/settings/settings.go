@@ -189,6 +189,18 @@ type Settings struct {
 	ClaudeDisabledTools []string `json:"claudeDisabledTools,omitempty"`
 	CodexDisabledTools  []string `json:"codexDisabledTools,omitempty"`
 
+	// ClaudeTodoRemindersDisabled turns off Claude Code's periodic
+	// "track your work with the todo tools" nudges by exporting
+	// CLAUDE_CODE_TODO_REMINDER_MODE=off into Claude sessions (headless
+	// and claude-tui — one binary). Spawn-only, like the tool lists.
+	// Default false keeps the vendor's behavior: the CLI nudges only
+	// while the todo tools are actually in the session's tool set, so a
+	// user who disables the whole todo group needs no reminder setting
+	// at all — this exists for the keep-the-tools, lose-the-nudges
+	// middle ground. Zero-value default, so it stays out of
+	// DefaultSettings by construction.
+	ClaudeTodoRemindersDisabled bool `json:"claudeTodoRemindersDisabled,omitempty"`
+
 	// DefaultThreadEnvMode seeds the workspace mode for new draft threads.
 	// Accepts "local" or "worktree"; unknown values fall back to "local"
 	// when settings are loaded.

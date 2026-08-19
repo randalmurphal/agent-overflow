@@ -167,6 +167,135 @@ describe('<ClaudeDisabledToolsEditor>', () => {
     await fireEvent.click(getByTestId('settings-claude-tool-remove-Workflow'));
     await waitFor(() => expect(lastPatch()).toEqual({ claudeDisabledTools: ['WebSearch'] }));
   });
+
+  it('offers no individual suggestion chips for the todo tools', async () => {
+    await seed();
+    const { queryByTestId } = render(ClaudeDisabledToolsEditor, {
+      props: { provider: CLAUDE },
+    });
+    for (const name of ['TodoWrite', 'TaskCreate', 'TaskUpdate', 'TaskGet', 'TaskList']) {
+      expect(queryByTestId(`settings-claude-tool-suggest-${name}`)).toBeNull();
+    }
+  });
+
+  it('turning the todo group off disables every member in one write', async () => {
+    await seed({ claudeDisabledTools: ['Workflow'] });
+    const { getByLabelText, getByTestId } = render(ClaudeDisabledToolsEditor, {
+      props: { provider: CLAUDE },
+    });
+    expect(getByTestId('settings-claude-todo-group').dataset.active).toBe('true');
+
+    await fireEvent.click(getByLabelText('Todo tools available to the model'));
+    await waitFor(() =>
+      expect(lastPatch()).toEqual({
+        claudeDisabledTools: [
+          'Workflow',
+          'TodoWrite',
+          'TaskCreate',
+          'TaskUpdate',
+          'TaskGet',
+          'TaskList',
+        ],
+      }),
+    );
+  });
+
+  it('turning the todo group on re-enables every member, keeping other names', async () => {
+    await seed({
+      claudeDisabledTools: [
+        'Workflow',
+        'TodoWrite',
+        'TaskCreate',
+        'TaskUpdate',
+        'TaskGet',
+        'TaskList',
+      ],
+    });
+    const { getByLabelText, getByTestId } = render(ClaudeDisabledToolsEditor, {
+      props: { provider: CLAUDE },
+    });
+    expect(getByTestId('settings-claude-todo-group').dataset.active).toBe('false');
+
+    await fireEvent.click(getByLabelText('Todo tools available to the model'));
+    await waitFor(() => expect(lastPatch()).toEqual({ claudeDisabledTools: ['Workflow'] }));
+  });
+
+  it('renders a group member inside the group, never as a chip, with a mixed hint', async () => {
+    await seed({ claudeDisabledTools: ['TaskGet'] });
+    const { getByTestId, queryByTestId } = render(ClaudeDisabledToolsEditor, {
+      props: { provider: CLAUDE },
+    });
+
+    // Storage still holds the flat name, but the chip row must not show it.
+    expect(queryByTestId('settings-claude-tool-TaskGet')).toBeNull();
+    expect(getByTestId('settings-claude-todo-group').dataset.active).toBe('true');
+    expect(
+      getByTestId('settings-claude-todo-mixed').textContent!.replace(/\s+/g, ' '),
+    ).toContain('1 of 5 disabled');
+
+    await fireEvent.click(getByTestId('settings-claude-todo-customize'));
+    expect(getByTestId('settings-claude-todo-tool-TaskGet').dataset.available).toBe('false');
+    expect(getByTestId('settings-claude-todo-tool-TaskCreate').dataset.available).toBe('true');
+  });
+
+  it('per-tool switches edit single members of the group', async () => {
+    await seed({ claudeDisabledTools: ['TaskGet'] });
+    const { getByTestId, getByLabelText } = render(ClaudeDisabledToolsEditor, {
+      props: { provider: CLAUDE },
+    });
+    await fireEvent.click(getByTestId('settings-claude-todo-customize'));
+
+    await fireEvent.click(getByLabelText('TaskCreate available to the model'));
+    await waitFor(() =>
+      expect(lastPatch()).toEqual({ claudeDisabledTools: ['TaskGet', 'TaskCreate'] }),
+    );
+
+    // The store applied the first write, so the second edits on top of it.
+    await fireEvent.click(getByLabelText('TaskGet available to the model'));
+    await waitFor(() =>
+      expect(lastPatch()).toEqual({ claudeDisabledTools: ['TaskCreate'] }),
+    );
+  });
+
+  it('the nudge toggle writes only the reminder setting', async () => {
+    await seed();
+    const { getByLabelText, getByTestId } = render(ClaudeDisabledToolsEditor, {
+      props: { provider: CLAUDE },
+    });
+    expect(getByTestId('settings-claude-todo-nudges').dataset.enabled).toBe('true');
+
+    await fireEvent.click(getByLabelText('Todo nudges enabled'));
+    await waitFor(() =>
+      expect(lastPatch()).toEqual({ claudeTodoRemindersDisabled: true }),
+    );
+  });
+
+  it('renders a stored reminder opt-out as off and re-enables with false', async () => {
+    await seed({ claudeTodoRemindersDisabled: true });
+    const { getByLabelText, getByTestId } = render(ClaudeDisabledToolsEditor, {
+      props: { provider: CLAUDE },
+    });
+    expect(getByTestId('settings-claude-todo-nudges').dataset.enabled).toBe('false');
+
+    await fireEvent.click(getByLabelText('Todo nudges enabled'));
+    await waitFor(() =>
+      expect(lastPatch()).toEqual({ claudeTodoRemindersDisabled: false }),
+    );
+  });
+
+  it('disables the nudge toggle while the whole todo group is off', async () => {
+    await seed({
+      claudeDisabledTools: ['TodoWrite', 'TaskCreate', 'TaskUpdate', 'TaskGet', 'TaskList'],
+    });
+    const { getByLabelText } = render(ClaudeDisabledToolsEditor, {
+      props: { provider: CLAUDE },
+    });
+    const nudges = getByLabelText('Todo nudges enabled') as HTMLButtonElement;
+    expect(nudges.disabled).toBe(true);
+
+    await fireEvent.click(nudges);
+    expect(getBindingMock('UpdateSettings')?.mock.calls.length ?? 0).toBe(0);
+  });
 });
 
 describe('<CodexDisabledToolsEditor>', () => {

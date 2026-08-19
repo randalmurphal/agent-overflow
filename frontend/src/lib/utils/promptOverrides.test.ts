@@ -1,10 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import {
+  CLAUDE_TODO_TOOL_GROUP,
+  CLAUDE_TOOL_SUGGESTIONS,
   CODEX_TOOL_TOGGLES,
   disabledToolNameError,
   disabledToolsFor,
   disabledToolsSettingsKey,
   entryInertness,
+  exposedTodoTools,
+  isTodoGroupTool,
   insertAtSelection,
   MAX_DISABLED_TOOL_BYTES,
   newPromptOverride,
@@ -20,6 +24,8 @@ import {
   withEntryRemoved,
   withToolAdded,
   withToolRemoved,
+  withToolsAdded,
+  withToolsRemoved,
 } from './promptOverrides';
 import { makeSettings } from '../../test/helpers/settings';
 import type { PromptOverride } from '../types/settings';
@@ -190,6 +196,44 @@ describe('disabled tool list edits', () => {
 
   it('keeps case, because CLI tool names are case-sensitive', () => {
     expect(withToolAdded(['Workflow'], 'workflow')).toEqual(['Workflow', 'workflow']);
+  });
+
+  it('adds and removes a whole group without duplicating existing entries', () => {
+    expect(withToolsAdded(['Workflow', 'TaskGet'], CLAUDE_TODO_TOOL_GROUP)).toEqual([
+      'Workflow',
+      'TaskGet',
+      'TodoWrite',
+      'TaskCreate',
+      'TaskUpdate',
+      'TaskList',
+    ]);
+    expect(
+      withToolsRemoved(
+        ['Workflow', 'TodoWrite', 'TaskCreate', 'TaskUpdate', 'TaskGet', 'TaskList'],
+        CLAUDE_TODO_TOOL_GROUP,
+      ),
+    ).toEqual(['Workflow']);
+  });
+});
+
+describe('todo tool group', () => {
+  it('projects group membership over the flat list', () => {
+    expect(exposedTodoTools([])).toEqual([...CLAUDE_TODO_TOOL_GROUP]);
+    expect(exposedTodoTools(['Workflow', 'TaskGet'])).toEqual([
+      'TodoWrite',
+      'TaskCreate',
+      'TaskUpdate',
+      'TaskList',
+    ]);
+    expect(exposedTodoTools([...CLAUDE_TODO_TOOL_GROUP])).toEqual([]);
+    expect(isTodoGroupTool('TaskCreate')).toBe(true);
+    expect(isTodoGroupTool('Workflow')).toBe(false);
+  });
+
+  it('keeps the group out of the flat suggestion row', () => {
+    for (const name of CLAUDE_TODO_TOOL_GROUP) {
+      expect(CLAUDE_TOOL_SUGGESTIONS).not.toContain(name);
+    }
   });
 });
 

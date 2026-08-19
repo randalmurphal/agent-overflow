@@ -87,6 +87,21 @@ func (s Settings) DisabledToolsForProvider(provider string) []string {
 	}
 }
 
+// TodoRemindersDisabledForProvider reports whether the provider's
+// sessions should export CLAUDE_CODE_TODO_REMINDER_MODE=off.
+// claude-tui shares the Claude answer for the same reason the two
+// selectors above route it onto the Claude lists: one binary, one nudge
+// producer. Codex has no equivalent mechanism, so it is always false
+// there.
+func (s Settings) TodoRemindersDisabledForProvider(provider string) bool {
+	switch provider {
+	case "claude", "claude-tui":
+		return s.ClaudeTodoRemindersDisabled
+	default:
+		return false
+	}
+}
+
 // validatePromptOverrides is the strict write-time pass: an out-of-bounds
 // or malformed entry is a caller bug and fails the save. Returns the
 // normalized list (trimmed models, deduped, empties dropped); a list with

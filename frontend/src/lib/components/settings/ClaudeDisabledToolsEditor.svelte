@@ -4,19 +4,32 @@
   // release. The suggestion row is a convenience over the common built-ins,
   // never a closed set — a name AO has never heard of is a legitimate entry,
   // and one the CLI has never heard of is simply ignored.
+  //
+  // The todo tools (CLAUDE_TODO_TOOL_GROUP) are the one exception to the
+  // flat-chips rendering: they only make sense as a set, so they get one
+  // grouped switch (with a per-tool disclosure for partial sets) instead of
+  // five chips. Storage is still the same flat list — the group is a UI
+  // projection, and a member typed into the free-form field lands in the
+  // group's rows rather than as a stray chip.
 
   import { getSettings, updateSettingsPatch } from '../../stores/settings.svelte';
   import {
+    CLAUDE_TODO_TOOL_GROUP,
     CLAUDE_TOOL_SUGGESTIONS,
     disabledToolNameError,
     disabledToolsFor,
     disabledToolsSettingsKey,
+    exposedTodoTools,
+    isTodoGroupTool,
     normalizeToolName,
     withToolAdded,
     withToolRemoved,
+    withToolsAdded,
+    withToolsRemoved,
   } from '../../utils/promptOverrides';
   import { isImeComposingEvent } from '../../utils/imeComposition';
   import type { ProviderDefinition } from '../../providers/catalog';
+  import ToggleSwitch from '../shared/ToggleSwitch.svelte';
   import SettingsField from './SettingsField.svelte';
   import { GHOST_BUTTON_CLASS, INPUT_CLASS, PRIMARY_BUTTON_CLASS } from './styles';
 
@@ -24,6 +37,17 @@
 
   let settings = $derived(getSettings());
   let tools = $derived(disabledToolsFor(settings, provider.id));
+  // The chips and the group render disjoint slices of the same stored list.
+  let flatTools = $derived(tools.filter((tool) => !isTodoGroupTool(tool)));
+  let exposedTodo = $derived(exposedTodoTools(tools));
+  let todoGroupActive = $derived(exposedTodo.length > 0);
+  let todoGroupMixed = $derived(
+    todoGroupActive && exposedTodo.length < CLAUDE_TODO_TOOL_GROUP.length,
+  );
+  let todoDetailsOpen = $state(false);
+  // The nudge toggle is claudeTodoRemindersDisabled inverted: the switch
+  // reads as availability ("nudges on"), matching every other switch here.
+  let nudgesOn = $derived(!(settings.claudeTodoRemindersDisabled ?? false));
 
   let draft = $state('');
   let normalizedDraft = $derived(normalizeToolName(draft));
@@ -73,6 +97,22 @@
     void write(withToolRemoved(tools, name));
   }
 
+  function setTodoGroupActive(active: boolean): void {
+    void write(
+      active
+        ? withToolsRemoved(tools, CLAUDE_TODO_TOOL_GROUP)
+        : withToolsAdded(tools, CLAUDE_TODO_TOOL_GROUP),
+    );
+  }
+
+  function setTodoToolAvailable(name: string, available: boolean): void {
+    void write(available ? withToolRemoved(tools, name) : withToolAdded(tools, name));
+  }
+
+  function setNudgesOn(on: boolean): void {
+    void updateSettingsPatch({ claudeTodoRemindersDisabled: !on });
+  }
+
   function handleKeydown(e: KeyboardEvent): void {
     if (e.key !== 'Enter' || isImeComposingEvent(e)) return;
     e.preventDefault();
@@ -88,13 +128,13 @@
     stacked
   >
     <div class="flex flex-col gap-2.5">
-      {#if tools.length === 0}
+      {#if flatTools.length === 0}
         <p class="text-[0.71875rem] text-fg-hint" data-testid="settings-claude-tools-empty">
-          No tools disabled.
+          No individual tools disabled.
         </p>
       {:else}
         <div class="flex flex-wrap gap-1.5" data-testid="settings-claude-tools-list">
-          {#each tools as tool (tool)}
+          {#each flatTools as tool (tool)}
             <span
               class="inline-flex items-center gap-1.5 rounded-[var(--radius-field)] border border-border-subtle bg-surface-0 py-0.5 pl-2 pr-1 font-mono text-[0.6875rem] text-fg-muted"
               data-testid="settings-claude-tool-{tool}"
@@ -160,6 +200,87 @@
           {/each}
         </div>
       {/if}
+
+      <div
+        class="flex flex-col rounded-[var(--radius-control)] border border-border-subtle/70 bg-surface-0/40"
+        data-testid="settings-claude-todo-group"
+        data-active={todoGroupActive}
+      >
+        <div class="flex items-center justify-between gap-4 px-3 py-2">
+          <div class="min-w-0">
+            <p class="text-[0.75rem] font-medium text-fg">Todo tools</p>
+            <p class="mt-0.5 text-[0.6875rem] leading-snug text-fg-muted">
+              The task-tracking family (TodoWrite, TaskCreate, TaskUpdate, TaskGet,
+              TaskList). One shared list, so they're toggled together.
+              {#if todoGroupMixed}
+                <span data-testid="settings-claude-todo-mixed">
+                  {CLAUDE_TODO_TOOL_GROUP.length - exposedTodo.length} of
+                  {CLAUDE_TODO_TOOL_GROUP.length} disabled.
+                </span>
+              {/if}
+            </p>
+          </div>
+          <div class="flex shrink-0 items-center gap-2">
+            <button
+              type="button"
+              class={GHOST_BUTTON_CLASS}
+              data-testid="settings-claude-todo-customize"
+              aria-expanded={todoDetailsOpen}
+              onclick={() => (todoDetailsOpen = !todoDetailsOpen)}
+            >
+              {todoDetailsOpen ? 'Collapse' : 'Per-tool'}
+            </button>
+            <ToggleSwitch
+              checked={todoGroupActive}
+              ariaLabel="Todo tools available to the model"
+              onToggle={setTodoGroupActive}
+            />
+          </div>
+        </div>
+
+        {#if todoDetailsOpen}
+          <ul class="flex flex-col gap-1 border-t border-border-subtle/50 px-3 py-2">
+            {#each CLAUDE_TODO_TOOL_GROUP as name (name)}
+              {@const available = !tools.includes(name)}
+              <li
+                class="flex items-center justify-between gap-4"
+                data-testid="settings-claude-todo-tool-{name}"
+                data-available={available}
+              >
+                <span class="font-mono text-[0.6875rem] text-fg-muted">{name}</span>
+                <ToggleSwitch
+                  checked={available}
+                  ariaLabel="{name} available to the model"
+                  onToggle={(value) => setTodoToolAvailable(name, value)}
+                />
+              </li>
+            {/each}
+          </ul>
+        {/if}
+
+        <div
+          class="flex items-center justify-between gap-4 border-t border-border-subtle/50 px-3 py-2"
+          data-testid="settings-claude-todo-nudges"
+          data-enabled={nudgesOn}
+        >
+          <div class="min-w-0">
+            <p class="text-[0.75rem] font-medium text-fg">Todo nudges</p>
+            <p class="mt-0.5 text-[0.6875rem] leading-snug text-fg-muted">
+              {#if todoGroupActive}
+                Periodic reminders that keep the model updating its task list.
+              {:else}
+                Nudges already stop when every todo tool is disabled.
+              {/if}
+            </p>
+          </div>
+          <ToggleSwitch
+            checked={nudgesOn}
+            disabled={!todoGroupActive}
+            ariaLabel="Todo nudges enabled"
+            onToggle={setNudgesOn}
+          />
+        </div>
+      </div>
     </div>
   </SettingsField>
 </div>

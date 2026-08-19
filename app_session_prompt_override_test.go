@@ -159,7 +159,8 @@ func TestBuildSessionOptionsAppliesBothAxesToClaudeTUI(t *testing.T) {
 		"claudePromptOverrides": []map[string]any{
 			{"enabled": true, "models": []string{"claude-opus-5"}, "prompt": "You work in {{WORKDIR}} as {{MODEL_NAME}}."},
 		},
-		"claudeDisabledTools": []string{"Workflow", "WebSearch"},
+		"claudeDisabledTools":         []string{"Workflow", "WebSearch"},
+		"claudeTodoRemindersDisabled": true,
 		"codexPromptOverrides": []map[string]any{
 			{"enabled": true, "models": []string{"claude-opus-5"}, "prompt": "codex prompt"},
 		},
@@ -175,6 +176,11 @@ func TestBuildSessionOptionsAppliesBothAxesToClaudeTUI(t *testing.T) {
 	}
 	if !slices.Equal(opts.DisabledTools, []string{"Workflow", "WebSearch"}) {
 		t.Fatalf("DisabledTools = %v, want the Claude list", opts.DisabledTools)
+	}
+	// The third settings-owned axis stamps alongside the tool list and
+	// reaches the TUI launch config the same way.
+	if !opts.DisableTodoReminders {
+		t.Fatal("DisableTodoReminders = false, want the settings toggle stamped")
 	}
 	if !res.Applied {
 		t.Fatal("resolution reports the override did not apply to a claude-tui thread")
@@ -213,12 +219,13 @@ func TestPinSettingsOwnedAxesKeepsAClaudeTUISessionOffTheRestartPath(t *testing.
 	}
 	launch := promptOverrideOptions(t, app, id)
 
-	// The user edits both axes while the session is live.
+	// The user edits all three settings-owned axes while the session is live.
 	if _, err := app.settings.Update(map[string]any{
 		"claudePromptOverrides": []map[string]any{
 			{"enabled": true, "models": []string{"claude-opus-5"}, "prompt": "edited prompt"},
 		},
-		"claudeDisabledTools": []string{"Workflow", "WebSearch"},
+		"claudeDisabledTools":         []string{"Workflow", "WebSearch"},
+		"claudeTodoRemindersDisabled": true,
 	}); err != nil {
 		t.Fatalf("Update() error = %v", err)
 	}

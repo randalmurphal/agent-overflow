@@ -3272,7 +3272,7 @@ func TestSession_StopTask_ConcurrentSameTaskIDDistinctRequestIDs(t *testing.T) {
 // the gate details).
 func TestWithClaudeSessionEnvDefaults(t *testing.T) {
 	t.Run("nil env gets both defaults set", func(t *testing.T) {
-		got := withClaudeSessionEnvDefaults(nil)
+		got := withClaudeSessionEnvDefaults(nil, false)
 		if got["CLAUDE_CODE_ENTRYPOINT"] != "agent-overflow" {
 			t.Fatalf("CLAUDE_CODE_ENTRYPOINT = %q, want agent-overflow", got["CLAUDE_CODE_ENTRYPOINT"])
 		}
@@ -3282,7 +3282,7 @@ func TestWithClaudeSessionEnvDefaults(t *testing.T) {
 	})
 
 	t.Run("preserves caller-provided keys", func(t *testing.T) {
-		got := withClaudeSessionEnvDefaults(map[string]string{"FOO": "bar"})
+		got := withClaudeSessionEnvDefaults(map[string]string{"FOO": "bar"}, false)
 		if got["FOO"] != "bar" {
 			t.Errorf("FOO clobbered: got %q, want bar", got["FOO"])
 		}
@@ -3297,7 +3297,7 @@ func TestWithClaudeSessionEnvDefaults(t *testing.T) {
 	t.Run("respects caller-provided overrides per variable", func(t *testing.T) {
 		got := withClaudeSessionEnvDefaults(map[string]string{
 			"CLAUDE_CODE_ENTRYPOINT": "test-override",
-		})
+		}, false)
 		if got["CLAUDE_CODE_ENTRYPOINT"] != "test-override" {
 			t.Errorf("entrypoint override clobbered: got %q, want test-override", got["CLAUDE_CODE_ENTRYPOINT"])
 		}
@@ -3311,7 +3311,7 @@ func TestWithClaudeSessionEnvDefaults(t *testing.T) {
 	t.Run("user can disable the todo opt-in", func(t *testing.T) {
 		got := withClaudeSessionEnvDefaults(map[string]string{
 			"CLAUDE_CODE_ENABLE_TODO_TOOLS": "false",
-		})
+		}, false)
 		if got["CLAUDE_CODE_ENABLE_TODO_TOOLS"] != "false" {
 			t.Errorf("todo opt-out clobbered: got %q, want false", got["CLAUDE_CODE_ENABLE_TODO_TOOLS"])
 		}
@@ -3322,7 +3322,7 @@ func TestWithClaudeSessionEnvDefaults(t *testing.T) {
 			"CLAUDE_CODE_ENTRYPOINT":        "x",
 			"CLAUDE_CODE_ENABLE_TODO_TOOLS": "false",
 		}
-		got := withClaudeSessionEnvDefaults(input)
+		got := withClaudeSessionEnvDefaults(input, false)
 		// Maps are reference types: a write through the return proves it
 		// is the caller's map, not a pointless copy.
 		got["PROBE"] = "1"
@@ -3333,9 +3333,32 @@ func TestWithClaudeSessionEnvDefaults(t *testing.T) {
 
 	t.Run("does not mutate caller's map", func(t *testing.T) {
 		input := map[string]string{"FOO": "bar"}
-		_ = withClaudeSessionEnvDefaults(input)
+		_ = withClaudeSessionEnvDefaults(input, false)
 		if len(input) != 1 {
 			t.Errorf("input map was mutated; helper must return a copy")
+		}
+	})
+
+	t.Run("reminders disabled exports the off mode", func(t *testing.T) {
+		got := withClaudeSessionEnvDefaults(nil, true)
+		if got["CLAUDE_CODE_TODO_REMINDER_MODE"] != "off" {
+			t.Fatalf("CLAUDE_CODE_TODO_REMINDER_MODE = %q with reminders disabled, want off", got["CLAUDE_CODE_TODO_REMINDER_MODE"])
+		}
+	})
+
+	t.Run("reminders enabled leaves the mode to the CLI", func(t *testing.T) {
+		got := withClaudeSessionEnvDefaults(nil, false)
+		if v, ok := got["CLAUDE_CODE_TODO_REMINDER_MODE"]; ok {
+			t.Fatalf("CLAUDE_CODE_TODO_REMINDER_MODE = %q with reminders enabled, want unset (the CLI owns its default)", v)
+		}
+	})
+
+	t.Run("user reminder-mode value outranks the setting", func(t *testing.T) {
+		got := withClaudeSessionEnvDefaults(map[string]string{
+			"CLAUDE_CODE_TODO_REMINDER_MODE": "baseline",
+		}, true)
+		if got["CLAUDE_CODE_TODO_REMINDER_MODE"] != "baseline" {
+			t.Errorf("user reminder mode clobbered: got %q, want baseline", got["CLAUDE_CODE_TODO_REMINDER_MODE"])
 		}
 	})
 }
