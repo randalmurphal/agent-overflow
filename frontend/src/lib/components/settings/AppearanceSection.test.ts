@@ -107,12 +107,14 @@ describe('<AppearanceSection> — controls', () => {
     expect(optionIds(getByTestId('settings-code-theme'))).not.toContain('chrome');
   });
 
-  it('labels a built-in as such so a shadowing file is distinguishable', async () => {
+  it('labels every entry with its plain name, the axis default first', async () => {
     await loadAppearance();
     const { getByTestId } = render(AppearanceSection);
     const ui = getByTestId('settings-ui-theme') as HTMLSelectElement;
-    const builtin = ui.querySelector(`option[value="${BUILTIN_UI_THEME_ID}"]`);
-    expect(builtin?.textContent).toContain('built-in');
+    const options = [...ui.querySelectorAll('option')];
+    // No "(built-in)" suffix noise; the default leads the list.
+    expect(options.map((o) => o.textContent)).not.toContainEqual(expect.stringContaining('built-in'));
+    expect(options[0]?.value).toBe(BUILTIN_UI_THEME_ID);
   });
 });
 

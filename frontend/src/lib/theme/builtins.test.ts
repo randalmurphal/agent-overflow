@@ -165,15 +165,16 @@ describe('curated built-in themes', () => {
     // stated values only, so without this pin every md-* statement could be
     // deleted and the whole suite would stay green — the theme character the
     // roles exist to deliver has no other floor. Every UI-axis curated
-    // variant states the five prose roles, and every one of those also opens
-    // the code section and states the chip text beside its ground.
+    // variant states the five prose roles plus the inline-code chip pair
+    // (text beside its ground, both UI-axis).
     const uiVariants = CURATED_BUILTIN_SPECS.filter((spec) => spec.axes.ui).flatMap((spec) =>
       THEME_VARIANTS.map((v) => spec[v]).filter((variant) => variant !== undefined),
     );
     expect(uiVariants.length).toBe(12);
     for (const variant of uiVariants) {
       expect(variant.colors?.['md-heading']).toBeDefined();
-      expect(variant.code?.['md-inline-code']).toBeDefined();
+      expect(variant.colors?.['md-inline-code']).toBeDefined();
+      expect(variant.colors?.['code-inline-bg']).toBeDefined();
     }
   });
 

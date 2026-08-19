@@ -321,10 +321,12 @@ skipped, per token, and everything else still applies.
   - *UI axis*: chrome must match the mode. A theme with only a \`dark\` block
     applies in dark mode and steps aside entirely in light mode, where the
     built-in light palette renders instead.
-  - *Code axis*: code surfaces own their own grounds (\`code-block\`,
-    \`code-inline-bg\`, \`terminal-bg\`), so a theme with only a \`dark\`
-    block **stays itself in light mode** — a dark code island on a light page,
-    the familiar docs-site pattern, rather than unreadable dark-on-light text.
+  - *Code axis*: block-code surfaces own their own grounds (\`code-block\`,
+    \`terminal-bg\`), so a theme with only a \`dark\` block **stays itself in
+    light mode** — a dark code island on a light page, the familiar docs-site
+    pattern, rather than unreadable dark-on-light text. Inline code chips in
+    prose are UI-axis (\`code-inline-bg\` + \`md-inline-code\` in \`colors\`)
+    and follow the UI theme like the rest of the prose chrome.
 - **Built-in ids are \`default\` (UI) and \`github\` (code).** Both are
   identity themes: they name the palette the app ships with rather than
   restating it. A file of your own with one of those names shadows the

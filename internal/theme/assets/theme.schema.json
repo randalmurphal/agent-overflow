@@ -148,6 +148,18 @@
               "maxLength": 256,
               "description": "Markdown list bullets and numbers in chat prose (the code-axis counterpart is syntax-markup-list). Follows the muted body-text tier (fg-muted). Derived by default — override only to stop it tracking."
             },
+            "code-inline-bg": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "description": "Ground behind inline code spans in prose."
+            },
+            "md-inline-code": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "description": "Markdown inline-code text, painted on the code-inline-bg chip (the highlight counterpart is syntax-markup-raw). Both chip tokens are UI-axis: the chip is monochrome prose furniture, not a highlighted surface, and text and ground stay on ONE axis so no UI/code combination can split the pair. Follows the focal text color. Derived by default — override only to stop it tracking."
+            },
             "info": {
               "type": "string",
               "minLength": 1,
@@ -538,7 +550,7 @@
         },
         "code": {
           "type": "object",
-          "description": "code — code-surface grounds (code axis). Sparse: name only the tokens you are changing.",
+          "description": "code — block-code grounds (code axis). Sparse: name only the tokens you are changing.",
           "additionalProperties": false,
           "properties": {
             "code-block": {
@@ -546,18 +558,6 @@
               "minLength": 1,
               "maxLength": 256,
               "description": "Ground behind a fenced code block. Follows the first elevation tier, so a code theme can move blocks without moving every card with them. Derived by default — override only to stop it tracking."
-            },
-            "code-inline-bg": {
-              "type": "string",
-              "minLength": 1,
-              "maxLength": 256,
-              "description": "Ground behind inline code spans."
-            },
-            "md-inline-code": {
-              "type": "string",
-              "minLength": 1,
-              "maxLength": 256,
-              "description": "Markdown inline-code text, painted on the code-inline-bg chip (the highlight counterpart is syntax-markup-raw). Lives on the code axis BECAUSE its ground does — a UI-axis text color over a code-axis ground could pair unreadably. Follows the focal text color. Derived by default — override only to stop it tracking."
             },
             "terminal-bg": {
               "type": "string",

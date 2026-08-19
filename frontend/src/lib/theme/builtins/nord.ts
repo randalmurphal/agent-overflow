@@ -63,6 +63,9 @@ export const NORD: BuiltinThemeSpec = {
       'md-link': '#81a1c1',
       'md-blockquote': '#7b88a1',
       'md-marker': '#d08770',
+      // Inline-code chip: nord1 ground, markup-raw green (nord14) text.
+      'code-inline-bg': '#3b4252',
+      'md-inline-code': '#a3be8c',
       info: '#81a1c1',
       success: '#a3be8c',
       error: '#bf616a',
@@ -126,9 +129,6 @@ export const NORD: BuiltinThemeSpec = {
     },
     code: {
       'code-block': '#242933',
-      'code-inline-bg': '#3b4252',
-      // Inline-code text beside its chip ground (markup-raw green, nord14).
-      'md-inline-code': '#a3be8c',
       'terminal-bg': '#242933',
     },
   },

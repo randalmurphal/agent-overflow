@@ -100,6 +100,9 @@ export const SOLARIZED: BuiltinThemeSpec = {
       'md-link': '#268bd2',
       'md-blockquote': '#839496',
       'md-marker': '#b58900',
+      // Inline-code chip: base02 ground, markup-raw cyan text.
+      'code-inline-bg': '#073642',
+      'md-inline-code': '#2aa198',
       info: '#268bd2',
       success: '#859900',
       error: '#dc322f',
@@ -167,9 +170,6 @@ export const SOLARIZED: BuiltinThemeSpec = {
     },
     code: {
       'code-block': '#00212b',
-      'code-inline-bg': '#073642',
-      // Inline-code text beside its chip ground (markup-raw cyan).
-      'md-inline-code': '#2aa198',
       'terminal-bg': '#00212b',
     },
   },
@@ -203,6 +203,12 @@ export const SOLARIZED: BuiltinThemeSpec = {
       'md-link': '#1c6fa8',
       'md-blockquote': '#657b83',
       'md-marker': '#a97e00',
+      // Inline-code chip: base2 ground. Cyan misses the 4:1 chip floor on it
+      // (canonical #2aa198 2.58:1, darkened #26948b 3.01:1), so the text
+      // restates the focal base02; the chip ground and the mono face carry
+      // the code-ness.
+      'code-inline-bg': '#eee8d5',
+      'md-inline-code': '#073642',
       info: '#268bd2',
       success: '#7f9200',
       error: '#dc322f',
@@ -269,12 +275,6 @@ export const SOLARIZED: BuiltinThemeSpec = {
     },
     code: {
       'code-block': '#fdf6e3',
-      'code-inline-bg': '#eee8d5',
-      // Inline-code text on the chip: cyan misses the 4:1 chip floor on
-      // base2 (canonical #2aa198 2.58:1, darkened #26948b 3.01:1), so the
-      // role restates the focal base02; the chip ground and the mono face
-      // carry the code-ness.
-      'md-inline-code': '#073642',
       'terminal-bg': '#fdf6e3',
     },
   },

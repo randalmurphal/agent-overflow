@@ -70,10 +70,11 @@
      each curated theme picks one emphasis hue for it, usually the palette's
      warm accent, and a light variant without a text-grade hue restates its
      own text color instead (weight still carries the emphasis).
-     md-inline-code lives on the CODE axis (it paints on --code-inline-bg,
-     a code-axis ground) but defaults here beside its siblings. All
-     derived, so a theme that only moves the base palette stays coherent
-     without touching these. */
+     md-inline-code paints on the --code-inline-bg chip; both chip tokens
+     are UI-axis (the chip is monochrome prose furniture, and text and
+     ground stay on one axis so no UI/code combination can split the
+     pair). All derived, so a theme that only moves the base palette
+     stays coherent without touching these. */
   --md-heading: var(--text-primary);
   --md-bold: var(--text-primary);
   --md-link: var(--accent);

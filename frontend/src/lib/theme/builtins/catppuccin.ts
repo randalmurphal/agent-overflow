@@ -71,6 +71,9 @@ export const CATPPUCCIN: BuiltinThemeSpec = {
       'md-link': '#89b4fa',
       'md-blockquote': '#9399b2',
       'md-marker': '#fab387',
+      // Inline-code chip: surface0 ground, markup-raw green text.
+      'code-inline-bg': '#313244',
+      'md-inline-code': '#a6e3a1',
       info: '#89b4fa',
       success: '#a6e3a1',
       error: '#f38ba8',
@@ -138,9 +141,6 @@ export const CATPPUCCIN: BuiltinThemeSpec = {
     },
     code: {
       'code-block': '#181825',
-      'code-inline-bg': '#313244',
-      // Inline-code text beside its chip ground (markup-raw green).
-      'md-inline-code': '#a6e3a1',
       'terminal-bg': '#181825',
     },
   },
@@ -181,6 +181,12 @@ export const CATPPUCCIN: BuiltinThemeSpec = {
       'md-link': '#1e66f5',
       'md-blockquote': '#7c7f93',
       'md-marker': '#d95a05',
+      // Inline-code chip: latte surface0 ground. The darkened green measures
+      // 2.7:1 on it — under the 4:1 chip floor — so the text restates the
+      // latte text color; the chip ground and the mono face carry the
+      // code-ness.
+      'code-inline-bg': '#ccd0da',
+      'md-inline-code': '#4c4f69',
       info: '#1e66f5',
       success: '#3a8f27',
       error: '#d20f39',
@@ -242,12 +248,6 @@ export const CATPPUCCIN: BuiltinThemeSpec = {
     },
     code: {
       'code-block': '#eff1f5',
-      'code-inline-bg': '#ccd0da',
-      // Inline-code text on the chip: latte's darkened green measures 2.7:1
-      // on this ground — under the 4:1 chip floor — so the role restates the
-      // latte text color; the chip ground and the mono face carry the
-      // code-ness.
-      'md-inline-code': '#4c4f69',
       'terminal-bg': '#eff1f5',
     },
   },

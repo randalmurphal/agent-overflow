@@ -17,8 +17,9 @@
 //
 // GROUND. Code block and terminal sit on the extended #16191d app ground, so
 // a code block reads as a well cut into the cards above it.
-// `code-inline-bg` is its `editor.lineHighlightBackground` (#2c313c), which is
-// exactly the "same ground, one step up" role an inline span wants.
+// `code-inline-bg` (UI axis, with the rest of the prose chrome) is its
+// `editor.lineHighlightBackground` (#2c313c), which is exactly the
+// "same ground, one step up" role an inline span wants.
 //
 // ROLE MAPPING. Our 21 families are not TextMate scopes, so the mapping is by
 // ROLE, taken from the scopes the upstream file actually paints:
@@ -68,13 +69,16 @@ export const ONE_DARK: BuiltinThemeSpec = {
       // Markdown prose roles: the same hues this file's code axis gives the
       // markup-* families, so chat prose and fenced markdown agree when both
       // axes are on One Dark. Bold is the number/attribute orange — One Dark
-      // paints `markup.bold` with it. Inline-code text is code-axis (see the
-      // `code` section below).
+      // paints `markup.bold` with it.
       'md-heading': '#e06c75',
       'md-bold': '#d19a66',
       'md-link': '#61afef',
       'md-blockquote': '#7f848e',
       'md-marker': '#e5c07b',
+      // Inline-code chip: lineHighlightBackground ground, markup-raw green
+      // text (6.5:1).
+      'code-inline-bg': '#2c313c',
+      'md-inline-code': '#98c379',
       info: '#61afef',
       success: '#98c379',
       error: '#e06c75',
@@ -139,9 +143,6 @@ export const ONE_DARK: BuiltinThemeSpec = {
     },
     code: {
       'code-block': '#16191d',
-      'code-inline-bg': '#2c313c',
-      // Inline-code text beside its chip ground (markup-raw green, 6.5:1).
-      'md-inline-code': '#98c379',
       'terminal-bg': '#16191d',
     },
   },

@@ -4,7 +4,7 @@
      Source: frontend/src/lib/theme/tokenRegistry.ts + the app stylesheets.
      Regenerate: cd frontend && node scripts/generate-theme-reference.mjs -->
 
-Every color this app paints, and the name a theme file calls it by. 85 tokens: 44 in `colors`, 21 in `syntax`, 16 in `ansi`, 4 in `code`.
+Every color this app paints, and the name a theme file calls it by. 85 tokens: 46 in `colors`, 21 in `syntax`, 16 in `ansi`, 2 in `code`.
 
 ## Where theme files live
 
@@ -46,10 +46,12 @@ skipped, per token, and everything else still applies.
   - *UI axis*: chrome must match the mode. A theme with only a `dark` block
     applies in dark mode and steps aside entirely in light mode, where the
     built-in light palette renders instead.
-  - *Code axis*: code surfaces own their own grounds (`code-block`,
-    `code-inline-bg`, `terminal-bg`), so a theme with only a `dark`
-    block **stays itself in light mode** — a dark code island on a light page,
-    the familiar docs-site pattern, rather than unreadable dark-on-light text.
+  - *Code axis*: block-code surfaces own their own grounds (`code-block`,
+    `terminal-bg`), so a theme with only a `dark` block **stays itself in
+    light mode** — a dark code island on a light page, the familiar docs-site
+    pattern, rather than unreadable dark-on-light text. Inline code chips in
+    prose are UI-axis (`code-inline-bg` + `md-inline-code` in `colors`)
+    and follow the UI theme like the rest of the prose chrome.
 - **Built-in ids are `default` (UI) and `github` (code).** Both are
   identity themes: they name the palette the app ships with rather than
   restating it. A file of your own with one of those names shadows the
@@ -125,6 +127,8 @@ whatever base the mode has).
 | `md-link` | Markdown links in chat prose (the code-axis counterpart is syntax-markup-link). Follows the accent. **Derived** — override only to stop it tracking. | `var(--accent)` | — |
 | `md-blockquote` | Markdown block-quote text in chat prose (the code-axis counterpart is syntax-markup-quote). Follows the supporting text color. **Derived** — override only to stop it tracking. | `var(--text-secondary)` | — |
 | `md-marker` | Markdown list bullets and numbers in chat prose (the code-axis counterpart is syntax-markup-list). Follows the muted body-text tier (fg-muted). **Derived** — override only to stop it tracking. | `var(--fg-muted)` | — |
+| `code-inline-bg` | Ground behind inline code spans in prose. | `oklch(0.275 0.014 285.82)` | `oklch(0.9 0.012 255)` |
+| `md-inline-code` | Markdown inline-code text, painted on the code-inline-bg chip (the highlight counterpart is syntax-markup-raw). Both chip tokens are UI-axis: the chip is monochrome prose furniture, not a highlighted surface, and text and ground stay on ONE axis so no UI/code combination can split the pair. Follows the focal text color. **Derived** — override only to stop it tracking. | `var(--text-primary)` | — |
 | `info` | Informational status: input prompts and neutral notices. | `oklch(0.62 0.17 250)` | `oklch(0.55 0.17 250)` |
 | `success` | Success status: completed work, added lines, healthy state. | `oklch(0.7 0.17 150)` | `oklch(0.5 0.15 155)` |
 | `error` | Failure status: errors, removed lines, refusals. | `oklch(0.63 0.2 25)` | `oklch(0.5 0.18 27)` |
@@ -203,6 +207,4 @@ whatever base the mode has).
 | Token | What it paints | Dark default | Light default |
 | --- | --- | --- | --- |
 | `code-block` | Ground behind a fenced code block. Follows the first elevation tier, so a code theme can move blocks without moving every card with them. **Derived** — override only to stop it tracking. | `var(--surface-1)` | — |
-| `code-inline-bg` | Ground behind inline code spans. | `oklch(0.275 0.014 285.82)` | `oklch(0.9 0.012 255)` |
-| `md-inline-code` | Markdown inline-code text, painted on the code-inline-bg chip (the highlight counterpart is syntax-markup-raw). Lives on the code axis BECAUSE its ground does — a UI-axis text color over a code-axis ground could pair unreadably. Follows the focal text color. **Derived** — override only to stop it tracking. | `var(--text-primary)` | — |
 | `terminal-bg` | Ground of the embedded terminal. | `#000000` | `#fafafb` |

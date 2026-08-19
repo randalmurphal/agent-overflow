@@ -72,7 +72,9 @@ export const MONOKAI: BuiltinThemeSpec = {
     },
     code: {
       'code-block': '#272822',
-      'code-inline-bg': '#3e3d32',
+      // No inline-code chip pair: the chip is UI-axis prose furniture, and
+      // monokai is deliberately code-only (no workbench palette), so inline
+      // chips follow whatever UI theme is selected — like bold and links.
       'terminal-bg': '#272822',
     },
   },

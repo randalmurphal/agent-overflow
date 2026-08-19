@@ -72,6 +72,9 @@ export const DRACULA: BuiltinThemeSpec = {
       'md-link': '#8be9fd',
       'md-blockquote': '#7d8ab8',
       'md-marker': '#ffb86c',
+      // Inline-code chip: currentLine ground, markup-raw yellow text.
+      'code-inline-bg': '#44475a',
+      'md-inline-code': '#f1fa8c',
       info: '#8be9fd',
       success: '#50fa7b',
       error: '#ff5555',
@@ -136,9 +139,6 @@ export const DRACULA: BuiltinThemeSpec = {
       // Code sits on the extended-down app ground (bgDarker), which also
       // lifts the canonical comment #6272a4 from 3.0:1 to 4.0:1.
       'code-block': '#191a21',
-      'code-inline-bg': '#44475a',
-      // Inline-code text beside its chip ground (markup-raw yellow).
-      'md-inline-code': '#f1fa8c',
       'terminal-bg': '#191a21',
     },
   },

@@ -72,6 +72,9 @@ export const TOKYO_NIGHT: BuiltinThemeSpec = {
       'md-link': '#73daca',
       'md-blockquote': '#737aa2',
       'md-marker': '#ff9e64',
+      // Inline-code chip: storm-ground chip, markup-raw green text.
+      'code-inline-bg': '#24283b',
+      'md-inline-code': '#9ece6a',
       info: '#7dcfff',
       success: '#9ece6a',
       error: '#f7768e',
@@ -134,9 +137,6 @@ export const TOKYO_NIGHT: BuiltinThemeSpec = {
     },
     code: {
       'code-block': '#1a1b26',
-      'code-inline-bg': '#24283b',
-      // Inline-code text beside its chip ground (markup-raw green).
-      'md-inline-code': '#9ece6a',
       'terminal-bg': '#1a1b26',
     },
   },

@@ -75,6 +75,10 @@ export const GRUVBOX: BuiltinThemeSpec = {
       'md-link': '#83a598',
       'md-blockquote': '#928374',
       'md-marker': '#fe8019',
+      // Inline-code chip: bg1 ground; aqua text per gruvbox.vim
+      // (`markdownCode` → GruvboxAqua), reading apart from green headings.
+      'code-inline-bg': '#32302f',
+      'md-inline-code': '#8ec07c',
       info: '#83a598',
       success: '#b8bb26',
       error: '#fb4934',
@@ -138,10 +142,6 @@ export const GRUVBOX: BuiltinThemeSpec = {
     },
     code: {
       'code-block': '#1d2021',
-      'code-inline-bg': '#32302f',
-      // Inline-code text beside its chip ground: aqua per gruvbox.vim
-      // (`markdownCode` → GruvboxAqua), reading apart from green headings.
-      'md-inline-code': '#8ec07c',
       'terminal-bg': '#1d2021',
     },
   },
@@ -166,6 +166,13 @@ export const GRUVBOX: BuiltinThemeSpec = {
       'md-link': '#076678',
       'md-blockquote': '#7c6f64',
       'md-marker': '#af3a03',
+      // Inline-code chip: light1 ground. Faded aqua #427b58 measures 3.64:1
+      // on it — under the 4:1 chip floor, and gruvbox's faded ramp has no
+      // darker aqua — so the text restates the light text color (the chip
+      // ground and the mono face carry the code-ness), matching the
+      // latte / solarized-light treatment.
+      'code-inline-bg': '#ebdbb2',
+      'md-inline-code': '#282828',
       info: '#076678',
       success: '#79740e',
       error: '#9d0006',
@@ -227,13 +234,6 @@ export const GRUVBOX: BuiltinThemeSpec = {
     },
     code: {
       'code-block': '#f9f5d7',
-      'code-inline-bg': '#ebdbb2',
-      // Inline-code text on the chip: faded aqua #427b58 measures 3.64:1 on
-      // this ground — under the 4:1 chip floor, and gruvbox's faded ramp has
-      // no darker aqua — so the role restates the light text color (the chip
-      // ground and the mono face carry the code-ness), matching the
-      // latte / solarized-light treatment.
-      'md-inline-code': '#282828',
       'terminal-bg': '#f9f5d7',
     },
   },

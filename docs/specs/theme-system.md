@@ -392,10 +392,11 @@ window background, both carried into phase 2 below.
   by axis, deliberately: a dark-only UI theme in light mode falls back
   to the default light palette (chrome must match the mode); a
   dark-only CODE theme stays itself in light mode, self-contained —
-  code surfaces own their backgrounds (`--code-block`,
-  `--code-inline-bg`, `--terminal-bg`), so a Monokai block on a light
+  block-code surfaces own their backgrounds (`--code-block`,
+  `--terminal-bg`), so a Monokai block on a light
   UI renders as a dark island, the familiar docs-site pattern, instead
-  of unreadable dark-on-light text. The `html.light` class flip stays
+  of unreadable dark-on-light text. (Inline code chips are UI-axis
+  prose chrome — §9.12.) The `html.light` class flip stays
   pure CSS.
 - **Application**: resolve both axes into ONE
   `<style id="user-theme">` rewrite containing `:root {…}` +
@@ -466,8 +467,8 @@ in parallel against one text.
   names minus the `--` (e.g. `"surface-1"`, `"accent"`,
   `"ico-terminal"`, `"syntax-keyword"`, `"ansi-fg-31"`). `colors` is
   the UI axis; `syntax` + `ansi` + `code` are the code axis (`code`
-  holds the code-surface grounds: `code-block`, `code-inline-bg`,
-  `terminal-bg`).
+  holds the block-code grounds: `code-block`, `terminal-bg`; the
+  inline-code chip pair is UI-axis — §9.12).
 - A file that defines `colors` in any variant is listable on the UI
   axis; one that defines any code section is listable on the code
   axis; a file may serve both.
@@ -742,11 +743,13 @@ What changed:
 - **Six `md-*` tokens** (`md-heading`, `md-bold`, `md-link`,
   `md-inline-code`, `md-blockquote`, `md-marker`), derived, declared in
   `tokens.css` and consumed by the `.markdown-body` rules in app.css.
-  Five are UI-axis `colors` tokens; `md-inline-code` is a CODE-axis
-  `code` token because its GROUND is one (`--code-inline-bg`) — a
-  UI-axis text color over a code-axis ground could pair unreadably
-  under mixed axes, so the role lives beside its ground and one theme
-  supplies both (post-task-review finding, three lenses). Defaults
+  Five are UI-axis `colors` tokens; `md-inline-code` first landed as a
+  CODE-axis `code` token because its GROUND was one
+  (`--code-inline-bg`) — a UI-axis text color over a code-axis ground
+  could pair unreadably under mixed axes, so the role lives beside its
+  ground and one theme supplies both (post-task-review finding, three
+  lenses). §9.12 later moved the PAIR to the UI axis; the
+  same-theme-supplies-both invariant is unchanged. Defaults
   derive from the text palette (heading/bold/inline code get a small
   focal lift to `--text-primary` over the fg-muted body tier; link
   follows `--accent`; quote and marker keep their prior tiers), so the
@@ -872,3 +875,29 @@ darker solarized code ground: canonical base01 comments now measure
 3.12:1 and the long-standing `solarized.dark.syntax-comment` exception
 is DELETED (the test demands deletion once an exception clears the
 floor).
+
+### 9.12 Inline-code chip pair moved to the UI axis (2026-08-19)
+
+`code-inline-bg` + `md-inline-code` moved from the `code` section
+(code axis) to `colors` (UI axis). User-driven, and the user was
+right: the inline chip is monochrome prose furniture — a sibling of
+bold and links, with no syntax in it — so "the code theme owns code"
+never actually applied to it; that rationale is about highlighting and
+the dark-island behavior of BLOCK surfaces. The §9.10 invariant was
+narrower than where it first landed: the chip text and chip ground
+must come from the SAME theme so no UI/code combination can split the
+pair — satisfied equally well with both tokens on the UI axis, which
+is also the convention (docs sites keep inline chips prose-matched
+even when code blocks are dark islands).
+
+Consequences: registry 46 colors / 2 code (`code` is now block
+grounds only: `code-block`, `terminal-bg`); every UI-axis curated
+variant states the pair in `colors` (adoption + chip-floor tests
+follow it there); monokai — deliberately code-only — no longer states
+`code-inline-bg`, so inline chips under a monokai code axis follow the
+UI theme like every other prose role. Visible behavior change: with a
+light UI over a dark-only code theme, inline chips are now
+prose-matched instead of tiny dark islands. What surfaced it: a user
+theme stated `md-inline-code` and the edit silently changed nothing,
+because the selected code theme owned the token — the axis split
+applied to a token users read as prose.

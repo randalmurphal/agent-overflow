@@ -358,7 +358,7 @@ describe('curated palette contrast', () => {
     // step — checked, worst case ~10%), and the SAME VARIANT's
     // `code-inline-bg` for md-inline-code, which never renders on the page
     // ground at all. That pairing is guaranteed by construction — the role
-    // lives in the `code` section beside its ground, so one theme supplies
+    // lives in the `colors` section beside its ground, so one theme supplies
     // both. Floors follow what each role IS: headings get 3:1 — NOT a WCAG
     // large-text claim (chat headings are 15-18px, under the threshold) but
     // a deliberate palette-fidelity concession for the heaviest, most
@@ -385,7 +385,8 @@ describe('curated palette contrast', () => {
     for (const key of Object.keys(MD_FLOORS)) {
       expect(tokenKeysInSection('colors').has(key), `${key} is not a colors token`).toBe(true);
     }
-    expect(tokenKeysInSection('code').has('md-inline-code')).toBe(true);
+    expect(tokenKeysInSection('colors').has('md-inline-code')).toBe(true);
+    expect(tokenKeysInSection('colors').has('code-inline-bg')).toBe(true);
     expect(
       violations((report) => {
         for (const { themeId, variantName, variant } of CASES) {
@@ -405,8 +406,8 @@ describe('curated palette contrast', () => {
               }
             }
           }
-          const chipText = variant.code?.['md-inline-code'];
-          const chipGround = variant.code?.['code-inline-bg'];
+          const chipText = variant.colors?.['md-inline-code'];
+          const chipGround = variant.colors?.['code-inline-bg'];
           if (chipText && chipGround) {
             const held = highContrast ? HIGH_CONTRAST_TEXT_FLOOR : CUED_TEXT_FLOOR;
             const ratio = contrastRatio(chipText, chipGround);

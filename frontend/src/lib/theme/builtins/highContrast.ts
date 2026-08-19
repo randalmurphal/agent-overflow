@@ -62,6 +62,10 @@ export const HIGH_CONTRAST: BuiltinThemeSpec = {
       'md-link': '#a0e8ff',
       'md-blockquote': '#b0b8c8',
       'md-marker': '#ffb066',
+      // Inline-code chip: text 12.3:1 on its ground — above the 7:1
+      // high-contrast floor.
+      'code-inline-bg': '#1a1a20',
+      'md-inline-code': '#7ff0a0',
       info: '#7ec4ff',
       success: '#4ee88a',
       error: '#ff7b72',
@@ -128,10 +132,6 @@ export const HIGH_CONTRAST: BuiltinThemeSpec = {
     },
     code: {
       'code-block': '#0a0a0d',
-      'code-inline-bg': '#1a1a20',
-      // Inline-code text beside its chip ground (12.3:1 — above the 7:1
-      // high-contrast floor).
-      'md-inline-code': '#7ff0a0',
       'terminal-bg': '#000000',
     },
   },
@@ -159,6 +159,11 @@ export const HIGH_CONTRAST: BuiltinThemeSpec = {
       'md-link': '#0a5a7a',
       'md-blockquote': '#3f4a5c',
       'md-marker': '#8a3a00',
+      // Inline-code chip: the prose green #0a5f22 measures 6.45:1 on the
+      // chip ground — under this theme's 7:1 floor — so the chip text is a
+      // darker step of the same green (8.1:1).
+      'code-inline-bg': '#e8e8f0',
+      'md-inline-code': '#084e1c',
       info: '#0b4fd6',
       success: '#0a6b2e',
       error: '#ba1414',
@@ -222,11 +227,6 @@ export const HIGH_CONTRAST: BuiltinThemeSpec = {
     },
     code: {
       'code-block': '#f7f7fa',
-      'code-inline-bg': '#e8e8f0',
-      // Inline-code text on the chip: the prose green #0a5f22 measures
-      // 6.45:1 here — under this theme's 7:1 floor — so the chip text is a
-      // darker step of the same green (8.1:1).
-      'md-inline-code': '#084e1c',
       'terminal-bg': '#ffffff',
     },
   },

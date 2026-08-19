@@ -325,8 +325,8 @@ html.light {
   --color-ico-compaction: var(--ico-compaction);
   --color-ico-generic: var(--ico-generic);
 
-  /* Markdown prose roles (defaults in tokens.css; md-inline-code lives on
-     the code axis beside its chip ground). The `.markdown-body` element
+  /* Markdown prose roles (defaults in tokens.css; md-inline-code and its
+     chip ground are UI-axis like the rest). The `.markdown-body` element
      rules below are their normal consumers; the aliases exist so a
      collision class can name the same value (streamdownTheme.ts uses
      text-md-link / text-md-blockquote to cancel vendor palette classes

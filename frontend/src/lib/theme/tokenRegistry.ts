@@ -25,11 +25,13 @@
 // two independently-selectable axes:
 //
 //   colors → UI axis    app chrome: surfaces, text, borders, accent, status,
-//                       provider identity, tool-kind icons
+//                       provider identity, tool-kind icons, and the inline-code
+//                       chip pair (monochrome prose furniture, not a
+//                       highlighted surface — see md-inline-code's entry)
 //   syntax → code axis  the 21 highlight families
 //   ansi   → code axis  the 16 ANSI foregrounds chat output and the terminal
 //                       share
-//   code   → code axis  the grounds code surfaces own (block, inline, terminal)
+//   code   → code axis  the grounds block-code surfaces own (block, terminal)
 //
 // A file that defines `colors` in any variant is listable on the UI axis; a
 // file that defines any code section is listable on the code axis; a file may
@@ -121,7 +123,7 @@ export const SECTION_TITLES: Readonly<Record<ThemeSection, string>> = {
   colors: 'colors — app chrome (UI axis)',
   syntax: 'syntax — highlight families (code axis)',
   ansi: 'ansi — ANSI 16 foregrounds (code axis)',
-  code: 'code — code-surface grounds (code axis)',
+  code: 'code — block-code grounds (code axis)',
 };
 
 /**
@@ -224,6 +226,14 @@ const COLOR_ENTRIES: readonly TokenEntry[] = [
     'tokens.css',
     'md-marker',
     'Markdown list bullets and numbers in chat prose (the code-axis counterpart is syntax-markup-list). Follows the muted body-text tier (fg-muted).',
+    true,
+  ),
+  entry('colors', 'app.css', 'code-inline-bg', 'Ground behind inline code spans in prose.'),
+  entry(
+    'colors',
+    'tokens.css',
+    'md-inline-code',
+    'Markdown inline-code text, painted on the code-inline-bg chip (the highlight counterpart is syntax-markup-raw). Both chip tokens are UI-axis: the chip is monochrome prose furniture, not a highlighted surface, and text and ground stay on ONE axis so no UI/code combination can split the pair. Follows the focal text color.',
     true,
   ),
   entry('colors', 'app.css', 'info', 'Informational status: input prompts and neutral notices.'),
@@ -361,14 +371,6 @@ const CODE_ENTRIES: readonly TokenEntry[] = [
     'tokens.css',
     'code-block',
     'Ground behind a fenced code block. Follows the first elevation tier, so a code theme can move blocks without moving every card with them.',
-    true,
-  ),
-  entry('code', 'app.css', 'code-inline-bg', 'Ground behind inline code spans.'),
-  entry(
-    'code',
-    'tokens.css',
-    'md-inline-code',
-    'Markdown inline-code text, painted on the code-inline-bg chip (the highlight counterpart is syntax-markup-raw). Lives on the code axis BECAUSE its ground does — a UI-axis text color over a code-axis ground could pair unreadably. Follows the focal text color.',
     true,
   ),
   entry('code', 'app.css', 'terminal-bg', 'Ground of the embedded terminal.'),
