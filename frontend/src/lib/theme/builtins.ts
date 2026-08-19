@@ -25,8 +25,10 @@
 
 import { CATPPUCCIN } from './builtins/catppuccin';
 import { DRACULA } from './builtins/dracula';
+import { GRUVBOX } from './builtins/gruvbox';
 import { HIGH_CONTRAST } from './builtins/highContrast';
 import { MONOKAI } from './builtins/monokai';
+import { NORD } from './builtins/nord';
 import { ONE_DARK } from './builtins/oneDark';
 import { SOLARIZED } from './builtins/solarized';
 import { TOKYO_NIGHT } from './builtins/tokyoNight';
@@ -102,14 +104,24 @@ export const IDENTITY_BUILTIN_SPECS: readonly BuiltinThemeSpec[] = [
 
 /**
  * The curated palettes. Listed alphabetically with High Contrast last — it is
- * the accessibility choice rather than a taste one, and the only one that
- * serves both axes. Order here is editorial only: `themesForAxis` sorts a
- * picker's list by id, so nothing downstream depends on it.
+ * the accessibility choice rather than a taste one. Order here is editorial
+ * only: `themesForAxis` sorts a picker's list by id, so nothing downstream
+ * depends on it.
+ *
+ * All but one serve BOTH axes: a palette that publishes workbench colors gets
+ * to dress the chrome as well as the code, which is the point of the two axes
+ * being independently selectable rather than welded together. Monokai is the
+ * exception and stays code-only — it is a syntax theme with no canonical UI
+ * specification, and the nearest thing (Monokai Pro) is a separate commercial
+ * product with its own, differently-hued palette. Inventing chrome for it
+ * would ship something under a name it did not earn.
  */
 export const CURATED_BUILTIN_SPECS: readonly BuiltinThemeSpec[] = [
   CATPPUCCIN,
   DRACULA,
+  GRUVBOX,
   MONOKAI,
+  NORD,
   ONE_DARK,
   SOLARIZED,
   TOKYO_NIGHT,

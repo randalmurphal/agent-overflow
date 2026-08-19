@@ -1,6 +1,14 @@
 // One Dark — Atom's One Dark, in the form One Dark Pro ships as its "Darker"
 // variant (Binaryify/OneDark-Pro, `themes/OneDark-Pro-darker.json`, read
-// 2026-08-18). Dark-only, so it renders as a dark island on a light UI.
+// 2026-08-18). Dark-only on BOTH axes, so its chrome is offered beside its
+// code, and in light mode the code half still renders as a dark island.
+//
+// SURFACE LADDER, from the same file's workbench colors. The darker variant
+// runs a two-ground design — sidebar/tabs/status at #1e2227, editor and
+// activity bar at #23272e — with #2c313a for list hover and selection and
+// #404754 for buttons. That is four published grounds, so the ladder needs
+// nothing invented: the app ground takes the deepest of them, which also
+// makes a code block (#1e2227) read as a well cut into the cards above it.
 //
 // GROUND. The darker variant states `editor.background: #23272e` and
 // `sideBar.background: #1e2227`; the deeper of the two is used here for the
@@ -31,8 +39,43 @@ import type { BuiltinThemeSpec } from '../builtins';
 export const ONE_DARK: BuiltinThemeSpec = {
   id: 'one-dark',
   name: 'One Dark',
-  axes: { ui: false, code: true },
+  axes: { ui: true, code: true },
   dark: {
+    // Chrome. Text tiers are Atom One Dark's own mono ramp: mono-1 #abb2bf
+    // (the theme's `sideBar.foreground`) focal, mono-2 #828997 supporting.
+    // Borders are the published `panel.border` / `focusBorder` value with a
+    // brighter step above it for the emphasized tier.
+    colors: {
+      'surface-0': '#1e2227',
+      'surface-1': '#23272e',
+      'surface-2': '#2c313a',
+      'surface-3': '#404754',
+      border: '#3e4452',
+      'border-strong': '#5c6370',
+      'text-primary': '#abb2bf',
+      'text-secondary': '#828997',
+      accent: '#61afef',
+      'accent-fg': '#1e2227',
+      info: '#61afef',
+      success: '#98c379',
+      error: '#e06c75',
+      warning: '#e5c07b',
+      overlay: '#181a1fa6',
+      // Thirteen icons over an eight-hue palette, so some hues repeat; the
+      // terminal ANSI values (which are One Dark Pro's own) supply the rest.
+      'ico-terminal': '#56b6c2',
+      'ico-file': '#c678dd',
+      'ico-eye': '#61afef',
+      'ico-search': '#4aa5f0',
+      'ico-globe': '#42b3c2',
+      'ico-robot': '#c162de',
+      'ico-speech-bubble': '#e06c75',
+      'ico-checklist': '#98c379',
+      'ico-puzzle': '#de73ff',
+      'ico-clock': '#e5c07b',
+      'ico-brain': '#ff616e',
+      'ico-compaction': '#828997',
+    },
     syntax: {
       'syntax-keyword': '#c678dd',
       'syntax-string': '#98c379',

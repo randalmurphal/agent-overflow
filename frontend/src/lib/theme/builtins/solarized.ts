@@ -7,7 +7,21 @@
 //
 // Solarized is the one palette here designed as a light/dark PAIR: the eight
 // accents are meant to hold on either ground, and only the base tones swap.
-// So both variants ship, and a mode flip keeps the accents in place.
+// So both variants ship, and a mode flip keeps the accents in place. It serves
+// both axes.
+//
+// SURFACE LADDER. Solarized publishes exactly TWO grounds per mode (base03 +
+// base02 dark, base3 + base2 light) against our four tiers, so tiers 2 and 3
+// are documented continuations: the same hue and chroma, stepped by the same
+// amount the published pair steps by. They are the only invented values in
+// this file and they are chrome only — no accent, text tone or syntax color
+// is anything but Schoonover's.
+//
+//   dark   base03 #002b36 → base02 #073642 → #0e4653 → #14515f
+//   light  base3  #fdf6e3 → base2  #eee8d5 → #e0d8c0 → #d3cab0
+//
+// TEXT tiers follow Schoonover's own guidance: the emphasized tone is focal
+// (base1 dark / base01 light) and the body tone is supporting (base0 / base00).
 //
 // ROLE MAPPING follows Schoonover's vim mapping (Statement → green,
 // Constant → cyan, Type → yellow, Identifier → blue, Special → red,
@@ -29,6 +43,13 @@
 //   - comment base1 #93a1a1 → base00 #657b83. base1 measures 1.9:1 on base3,
 //     which is under the hard floor even for a faint-by-design role; base00
 //     is the next base tone in, so the change stays inside the palette.
+//   - the ACCENT role, in both variants. `--accent-fg` has to be readable on
+//     an accent FILL, and Solarized's blue is a mid-tone: #268bd2 tops out at
+//     4.08:1 against base03 and 3.37:1 under base3, so neither end of the ramp
+//     clears 4.5:1 with it. The fill therefore lightens to #3197de on dark
+//     (4.67:1 with base03 as its label) and darkens to #1c6fa8 on light
+//     (4.94:1 with base3). Every other use of blue — links, functions, tags —
+//     keeps #268bd2.
 //   - the light island's plain-foreground ANSI slot (37) takes base01 rather
 //     than base00: Solarized light's body text sits at 4.1:1, half a step
 //     under AA, and terminal output is the one place we do not get to inherit
@@ -42,8 +63,37 @@ import type { BuiltinThemeSpec } from '../builtins';
 export const SOLARIZED: BuiltinThemeSpec = {
   id: 'solarized',
   name: 'Solarized',
-  axes: { ui: false, code: true },
+  axes: { ui: true, code: true },
   dark: {
+    colors: {
+      'surface-0': '#002b36',
+      'surface-1': '#073642',
+      'surface-2': '#0e4653',
+      'surface-3': '#14515f',
+      border: '#586e75',
+      'border-strong': '#657b83',
+      'text-primary': '#93a1a1',
+      'text-secondary': '#839496',
+      accent: '#3197de',
+      'accent-fg': '#002b36',
+      info: '#268bd2',
+      success: '#859900',
+      error: '#dc322f',
+      warning: '#b58900',
+      overlay: '#002b36a6',
+      'ico-terminal': '#2aa198',
+      'ico-file': '#6c71c4',
+      'ico-eye': '#268bd2',
+      'ico-search': '#268bd2',
+      'ico-globe': '#2aa198',
+      'ico-robot': '#6c71c4',
+      'ico-speech-bubble': '#d33682',
+      'ico-checklist': '#859900',
+      'ico-puzzle': '#d33682',
+      'ico-clock': '#b58900',
+      'ico-brain': '#cb4b16',
+      'ico-compaction': '#657b83',
+    },
     syntax: {
       'syntax-keyword': '#859900',
       'syntax-string': '#2aa198',
@@ -98,6 +148,35 @@ export const SOLARIZED: BuiltinThemeSpec = {
     },
   },
   light: {
+    colors: {
+      'surface-0': '#fdf6e3',
+      'surface-1': '#eee8d5',
+      'surface-2': '#e0d8c0',
+      'surface-3': '#d3cab0',
+      border: '#93a1a1',
+      'border-strong': '#839496',
+      'text-primary': '#586e75',
+      'text-secondary': '#657b83',
+      accent: '#1c6fa8',
+      'accent-fg': '#fdf6e3',
+      info: '#268bd2',
+      success: '#7f9200',
+      error: '#dc322f',
+      warning: '#a97e00',
+      overlay: '#002b3647',
+      'ico-terminal': '#26948b',
+      'ico-file': '#6c71c4',
+      'ico-eye': '#268bd2',
+      'ico-search': '#268bd2',
+      'ico-globe': '#26948b',
+      'ico-robot': '#6c71c4',
+      'ico-speech-bubble': '#d33682',
+      'ico-checklist': '#7f9200',
+      'ico-puzzle': '#d33682',
+      'ico-clock': '#a97e00',
+      'ico-brain': '#cb4b16',
+      'ico-compaction': '#657b83',
+    },
     syntax: {
       'syntax-keyword': '#7f9200',
       'syntax-string': '#26948b',

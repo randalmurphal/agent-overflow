@@ -1,10 +1,27 @@
-// Dracula — the official palette and ANSI set from the Dracula spec
-// (draculatheme.com/contribute, "Color Palette" + "Syntax Highlighting").
-// Dark-only.
+// Dracula — the official palette, UI shades and ANSI set from the Dracula spec
+// and its reference VSCode theme (`dracula/visual-studio-code` `src/dracula.yml`,
+// read 2026-08-18). Dark-only, both axes.
 //
 // Palette, for reading the mapping below: background #282a36, current line
 // #44475a, foreground #f8f8f2, comment #6272a4, cyan #8be9fd, green #50fa7b,
 // orange #ffb86c, pink #ff79c6, purple #bd93f9, red #ff5555, yellow #f1fa8c.
+// UI variants: bgDarker #191a21, bgDark #21222c, bgLight #343746,
+// bgLighter #424450.
+//
+// SURFACE LADDER uses those UI variants, which give exactly four grounds
+// upward from the canonical background: #282a36 → bgLight → bgLighter →
+// selection #44475a.
+//
+// BORDERS are the one place the upstream cannot be followed. Dracula's own
+// border color is bgDarker (#191a21) — a line DARKER than the ground, which
+// works in an editor whose panels are separated by shadow but measures 1.5:1
+// the wrong way for a hairline vocabulary built on visible separation. The
+// border tiers therefore take the comment tone #6272a4 (the palette's own mid
+// value, 2.7:1) and a lightened step of it for the emphasized tier.
+//
+// TEXT SECONDARY is likewise adapted: Dracula names no supporting-text tone
+// other than the comment, and #6272a4 measures 2.7:1 on the background, so
+// the role takes a lightened step of the same hue (#7d8ab8, 3.7:1).
 //
 // ROLE MAPPING notes where judgement was involved:
 //
@@ -22,8 +39,37 @@ import type { BuiltinThemeSpec } from '../builtins';
 export const DRACULA: BuiltinThemeSpec = {
   id: 'dracula',
   name: 'Dracula',
-  axes: { ui: false, code: true },
+  axes: { ui: true, code: true },
   dark: {
+    colors: {
+      'surface-0': '#282a36',
+      'surface-1': '#343746',
+      'surface-2': '#424450',
+      'surface-3': '#44475a',
+      border: '#6272a4',
+      'border-strong': '#7d8ab8',
+      'text-primary': '#f8f8f2',
+      'text-secondary': '#7d8ab8',
+      accent: '#bd93f9',
+      'accent-fg': '#282a36',
+      info: '#8be9fd',
+      success: '#50fa7b',
+      error: '#ff5555',
+      warning: '#ffb86c',
+      overlay: '#191a21a6',
+      'ico-terminal': '#8be9fd',
+      'ico-file': '#bd93f9',
+      'ico-eye': '#a4ffff',
+      'ico-search': '#d6acff',
+      'ico-globe': '#8be9fd',
+      'ico-robot': '#bd93f9',
+      'ico-speech-bubble': '#ff79c6',
+      'ico-checklist': '#50fa7b',
+      'ico-puzzle': '#ff92df',
+      'ico-clock': '#f1fa8c',
+      'ico-brain': '#ffb86c',
+      'ico-compaction': '#7d8ab8',
+    },
     syntax: {
       'syntax-keyword': '#ff79c6',
       'syntax-string': '#f1fa8c',

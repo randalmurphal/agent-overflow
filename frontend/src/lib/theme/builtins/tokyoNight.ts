@@ -1,5 +1,13 @@
 // Tokyo Night — folke/tokyonight.nvim's "night" variant (palette read from
-// `lua/tokyonight/colors/storm.lua` + `night.lua`, 2026-08-18). Dark-only.
+// `lua/tokyonight/colors/storm.lua` + `night.lua`, 2026-08-18). Dark-only,
+// both axes.
+//
+// SURFACE LADDER. tokyonight is the one upstream here whose sidebar is DARKER
+// than its editor, so the app ground takes bg_dark (#16161e) and the editor
+// ground (#1a1b26) becomes the first elevation step — which also keeps
+// `code-block` on the tier our own default puts it on. Storm's bg (#24283b)
+// and night's bg_highlight (#292e42) complete the ramp; all four are
+// published values.
 //
 // Palette: bg #1a1b26, bg_dark #16161e, storm's bg #24283b (used here as the
 // inline-code ground), fg #c0caf5, fg_dark #a9b1d6, comment #565f89,
@@ -27,8 +35,37 @@ import type { BuiltinThemeSpec } from '../builtins';
 export const TOKYO_NIGHT: BuiltinThemeSpec = {
   id: 'tokyo-night',
   name: 'Tokyo Night',
-  axes: { ui: false, code: true },
+  axes: { ui: true, code: true },
   dark: {
+    colors: {
+      'surface-0': '#16161e',
+      'surface-1': '#1a1b26',
+      'surface-2': '#24283b',
+      'surface-3': '#292e42',
+      border: '#3b4261',
+      'border-strong': '#414868',
+      'text-primary': '#c0caf5',
+      'text-secondary': '#a9b1d6',
+      accent: '#7aa2f7',
+      'accent-fg': '#16161e',
+      info: '#7dcfff',
+      success: '#9ece6a',
+      error: '#f7768e',
+      warning: '#e0af68',
+      overlay: '#0c0e14a6',
+      'ico-terminal': '#73daca',
+      'ico-file': '#bb9af7',
+      'ico-eye': '#7dcfff',
+      'ico-search': '#7aa2f7',
+      'ico-globe': '#2ac3de',
+      'ico-robot': '#9d7cd8',
+      'ico-speech-bubble': '#f7768e',
+      'ico-checklist': '#9ece6a',
+      'ico-puzzle': '#c7a9ff',
+      'ico-clock': '#e0af68',
+      'ico-brain': '#ff9e64',
+      'ico-compaction': '#737aa2',
+    },
     syntax: {
       'syntax-keyword': '#bb9af7',
       'syntax-string': '#9ece6a',

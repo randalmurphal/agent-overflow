@@ -30,18 +30,31 @@ describe('curated built-in themes', () => {
     expect(CURATED_BUILTIN_SPECS.map((spec) => spec.id)).toEqual([
       'catppuccin',
       'dracula',
+      'gruvbox',
       'monokai',
+      'nord',
       'one-dark',
       'solarized',
       'tokyo-night',
       'high-contrast',
     ]);
 
-    // High Contrast is the only one that dresses app chrome; the rest are code
-    // themes, which is what lets them render as a dark island on a light UI.
+    // Every curated palette is a code theme. All but Monokai also publish
+    // workbench colors and so are offered on the UI axis too — Monokai has no
+    // canonical UI specification, so it stays code-only rather than getting
+    // chrome invented for it.
     for (const spec of CURATED_BUILTIN_SPECS) {
-      const both = spec.id === 'high-contrast';
-      expect(spec.axes, `${spec.id} axes`).toEqual({ ui: both, code: true });
+      expect(spec.axes, `${spec.id} axes`).toEqual({ ui: spec.id !== 'monokai', code: true });
+    }
+  });
+
+  it('declares the UI axis exactly when it defines colors', () => {
+    // The declared axes replace derived ones for the identity built-ins, which
+    // is what makes this worth checking: a curated palette that declared `ui`
+    // without a colors section would be offered and then paint nothing.
+    for (const theme of CURATED) {
+      const definesColors = THEME_VARIANTS.some((v) => theme.variants[v]?.colors !== undefined);
+      expect(definesColors, `${theme.id} axes.ui vs colors`).toBe(theme.axes.ui);
     }
   });
 
@@ -194,10 +207,19 @@ describe('curated built-in themes', () => {
 
 /**
  * Tokens a curated palette may leave to the cascade even inside a section it
- * otherwise fills: the brand marks (a theme does not get to restate someone
- * else's logo color), the media-overlay pair and the design paper (all
- * mode-invariant by design), and the roles that correctly FOLLOW a base the
- * theme has already set.
+ * otherwise fills. Two groups, both deliberate:
+ *
+ * The brand marks, the media-overlay pair and the design paper are
+ * mode-invariant by design — a theme does not get to restate someone else's
+ * logo color, and a scrim sits on user media rather than on app chrome.
+ *
+ * The rest are DERIVED roles that follow a base the theme has already set: the
+ * card and generic-icon aliases, the foreground fade hierarchy over
+ * `text-primary`, and the subtle border over `border`. Leaving them alone is
+ * the correct default — that is what makes a palette that states twenty colors
+ * come out coherent across sixty — so they are optional rather than required.
+ * A theme overrides them only when its own contrast demands it, which is
+ * exactly what High Contrast does and why it states all four.
  */
 const OPTIONAL_KEYS = new Set<string>([
   'provider-codex',
@@ -208,4 +230,8 @@ const OPTIONAL_KEYS = new Set<string>([
   'design-paper',
   'card',
   'ico-generic',
+  'fg-muted',
+  'fg-subtle',
+  'fg-hint',
+  'border-subtle',
 ]);

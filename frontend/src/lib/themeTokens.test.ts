@@ -153,8 +153,10 @@ const RAW_CLASS_ALLOWLIST: Record<string, string> = {};
 const CURATED_PALETTE_MODULES = [
   'catppuccin',
   'dracula',
+  'gruvbox',
   'highContrast',
   'monokai',
+  'nord',
   'oneDark',
   'solarized',
   'tokyoNight',

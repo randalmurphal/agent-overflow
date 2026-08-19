@@ -7,17 +7,25 @@
 // the hex the theme states, no DOM, no probe — against floors that say what
 // the surface is FOR:
 //
-//   • text on the app ground …… 4.5:1, and 7:1 for High Contrast, which is the
-//     whole reason that theme exists (WCAG AA body text / AAA respectively).
-//   • High Contrast's foreground hierarchy …… 4.5:1 for all four tiers. The
-//     default theme's `fg-hint` sits near 3:1 by design; the high-contrast
-//     theme states its tiers literally so that recession cannot happen, and
-//     this is the assertion that keeps that promise honest.
+//   • focal text on the app ground …… 4.5:1, and 7:1 for High Contrast, which
+//     is the whole reason that theme exists (WCAG AA body text / AAA).
+//   • supporting text and the muted body tier …… 3:1, for the reason recorded
+//     at SUPPORTING_TEXT_FLOOR. A tier a theme STATES is held to 4.5:1
+//     instead: stating it is the claim that it was tuned. High Contrast states
+//     all four, and that is the assertion keeping its promise honest.
 //   • syntax on the code-block ground …… 3:1 (WCAG's non-text / large-text
 //     floor, which is the right one for short monospace runs read in bulk),
 //     with a per-theme exception list for the faint-by-design comment tone.
 //   • the ANSI slots ordinary output is painted with (37, 97) …… 4.5:1 on the
 //     terminal ground.
+//   • borders …… 1.5:1, and 3:1 for High Contrast; the accent against its own
+//     foreground …… 4.5:1, because that pair is a real label on a real fill;
+//     status colors …… 3:1, or text contrast in High Contrast.
+//   • the surface ladder …… monotonic, with every adjacent pair separable.
+//
+// The derived foreground tiers are measured AS COMPOSITED (see compositeOver),
+// not as the undiluted token, so a palette cannot pass a tier by declining to
+// mention it.
 //
 // The 14 remaining ANSI slots are deliberately NOT measured. A palette's ANSI
 // black on its own dark ground is invisible by construction — that is what
@@ -69,6 +77,34 @@ export function contrastRatio(a: string, b: string): number {
   return (Math.max(la, lb) + 0.05) / (Math.min(la, lb) + 0.05);
 }
 
+/**
+ * What a translucent foreground actually LOOKS like once it lands on a ground.
+ *
+ * This is how the derived foreground hierarchy has to be measured. `--fg-muted`
+ * and friends are `color-mix(in oklab, var(--text-primary) N%, transparent)` —
+ * i.e. the text color at N% alpha — so the pixel a reader sees is the mix of
+ * that color with whatever is behind it, and asserting on the undiluted token
+ * would measure a color the app never paints. Compositing is sRGB because that
+ * is where the browser composites; the mix itself happens in oklab, so this is
+ * an approximation, and it is a conservative one at these alphas.
+ */
+export function compositeOver(fg: string, bg: string, alpha: number): string {
+  const [fr, fg_, fb] = parseHex(fg);
+  const [br, bg_, bb] = parseHex(bg);
+  const mix = (f: number, b: number): string =>
+    Math.round(alpha * f + (1 - alpha) * b)
+      .toString(16)
+      .padStart(2, '0');
+  return `#${mix(fr, br)}${mix(fg_, bg_)}${mix(fb, bb)}`;
+}
+
+/** The alphas `styles/tokens.css` fades the foreground hierarchy by. */
+const FG_TIER_ALPHA: Readonly<Record<string, number>> = {
+  'fg-muted': 0.8,
+  'fg-subtle': 0.55,
+  'fg-hint': 0.3,
+};
+
 const round = (ratio: number): number => Math.round(ratio * 100) / 100;
 
 // ---------------------------------------------------------------------------
@@ -101,10 +137,39 @@ const SYNTAX_FLOOR = 3;
 const TEXT_FLOOR = 4.5;
 const HIGH_CONTRAST_TEXT_FLOOR = 7;
 
+/**
+ * Supporting text and the muted body tier sit at WCAG's large-text / non-text
+ * floor rather than at 4.5:1, and that is a decision rather than a shrug:
+ * every one of these upstreams paints its secondary tone with the same value
+ * it paints comments with, and forcing 4.5:1 there would mean recoloring the
+ * one tier readers most associate with the palette's character. The FOCAL text
+ * tier carries the 4.5:1 obligation, and it does so in every theme.
+ */
+const SUPPORTING_TEXT_FLOOR = 3;
+
+/**
+ * A hairline only has to be SEEN, not read, and upstream themes draw them
+ * quietly — several draw them darker than their own ground. 1.5:1 is the point
+ * at which a line is still a line. High Contrast is held to 3:1 instead: hard,
+ * unmissable borders are half of what that theme is for.
+ */
+const BORDER_FLOOR = 1.5;
+const HIGH_CONTRAST_BORDER_FLOOR = 3;
+
+/**
+ * Status colors and the accent are glyphs, fills and short labels as often as
+ * they are body text, so they sit at 3:1 — except in High Contrast, where they
+ * are held to text contrast like everything else.
+ */
+const STATUS_FLOOR = 3;
+
+/** Adjacent surface tiers must be separable. See the ladder test. */
+const LADDER_STEP_FLOOR = 1.04;
+
 // ---------------------------------------------------------------------------
 
 const SYNTAX_KEYS = [...tokenKeysInSection('syntax')];
-const FG_TIERS = ['text-primary', 'text-secondary', 'fg-muted', 'fg-subtle', 'fg-hint'] as const;
+const SURFACE_LADDER = ['surface-0', 'surface-1', 'surface-2', 'surface-3'] as const;
 
 interface Case {
   readonly themeId: string;
@@ -130,12 +195,22 @@ function violations(check: (report: (message: string) => void) => void): string[
 
 describe('curated palette contrast', () => {
   it('measures something — the cases exist and carry their grounds', () => {
-    // Seven themes; Catppuccin, Solarized and High Contrast ship both variants.
-    expect(CASES.length).toBe(10);
+    // Nine themes; Catppuccin, Gruvbox, Solarized and High Contrast ship both
+    // variants.
+    expect(CASES.length).toBe(13);
     for (const { themeId, variantName, variant } of CASES) {
       expect(variant.code?.['code-block'], `${themeId}.${variantName} code-block`).toBeDefined();
       expect(variant.code?.['terminal-bg'], `${themeId}.${variantName} terminal-bg`).toBeDefined();
     }
+    // The UI floors below skip a variant that carries no colors, so the count
+    // of variants that DO is pinned: every curated palette but Monokai dresses
+    // chrome, and a section quietly dropped would otherwise pass by absence.
+    const withColors = CASES.filter((c) => c.variant.colors !== undefined);
+    expect(withColors.length).toBe(12);
+    expect(new Set(withColors.map((c) => c.themeId)).size).toBe(8);
+    expect(CASES.filter((c) => c.variant.colors === undefined).map((c) => c.themeId)).toEqual([
+      'monokai',
+    ]);
   });
 
   it('pins the WCAG math against known pairs', () => {
@@ -145,6 +220,17 @@ describe('curated palette contrast', () => {
     expect(round(contrastRatio('#8b949e', '#161b22'))).toBe(round(contrastRatio('#161b22', '#8b949e')));
     expect(parseHex('#abc')).toEqual([0xaa, 0xbb, 0xcc]);
     expect(parseHex('#00000080')).toEqual([0, 0, 0]);
+
+    // Compositing, both ends and the middle — the derived-tier floors are only
+    // as honest as this is.
+    expect(compositeOver('#ffffff', '#000000', 1)).toBe('#ffffff');
+    expect(compositeOver('#ffffff', '#000000', 0)).toBe('#000000');
+    expect(compositeOver('#ffffff', '#000000', 0.5)).toBe('#808080');
+    expect(compositeOver('#ffffff', '#000000', 0.3)).toBe('#4d4d4d');
+    // A fade reduces contrast, which is the entire reason it is measured.
+    expect(contrastRatio(compositeOver('#ffffff', '#111111', 0.3), '#111111')).toBeLessThan(
+      contrastRatio('#ffffff', '#111111'),
+    );
   });
 
   it('keeps every syntax family readable on its own code-block ground', () => {
@@ -216,20 +302,50 @@ describe('curated palette contrast', () => {
     expect(
       violations((report) => {
         for (const { themeId, variantName, variant } of CASES) {
-          const ground = variant.colors?.['surface-0'];
-          if (!ground) continue;
+          const colors = variant.colors;
+          const ground = colors?.['surface-0'];
+          if (!colors || !ground) continue;
           const highContrast = themeId === 'high-contrast';
-          for (const key of FG_TIERS) {
-            const value = variant.colors?.[key];
-            if (!value) continue;
-            const floor =
-              key === 'text-primary' && highContrast ? HIGH_CONTRAST_TEXT_FLOOR : TEXT_FLOOR;
+
+          const check = (key: string, value: string, floor: number, note = ''): void => {
             const ratio = contrastRatio(value, ground);
             if (ratio < floor) {
               report(
-                `${themeId}.${variantName}.${key}: ${value} on ${ground} is ${round(ratio)}:1, floor ${floor}:1`,
+                `${themeId}.${variantName}.${key}${note}: ${value} on ${ground} is ${round(ratio)}:1, floor ${floor}:1`,
               );
             }
+          };
+
+          const primary = colors['text-primary'];
+          if (primary) {
+            check(
+              'text-primary',
+              primary,
+              highContrast ? HIGH_CONTRAST_TEXT_FLOOR : TEXT_FLOOR,
+            );
+          }
+          const secondary = colors['text-secondary'];
+          if (secondary) {
+            check('text-secondary', secondary, highContrast ? TEXT_FLOOR : SUPPORTING_TEXT_FLOOR);
+          }
+
+          // The three fade tiers, measured as they RENDER. A theme that states
+          // them is held to text contrast (that is why it bothered); a theme
+          // that leaves them deriving is measured on the composited result, so
+          // a palette cannot pass by declining to mention the tier that its own
+          // text color would have made illegible.
+          for (const [key, alpha] of Object.entries(FG_TIER_ALPHA)) {
+            const stated = colors[key];
+            if (stated) {
+              check(key, stated, TEXT_FLOOR, ' (stated)');
+              continue;
+            }
+            if (!primary) continue;
+            // Only the body tier carries a floor when derived: subtle and hint
+            // are de-emphasis roles whose whole job is to recede, and the
+            // default theme's own values sit below 4.5:1 by design.
+            if (key !== 'fg-muted') continue;
+            check(key, compositeOver(primary, ground, alpha), SUPPORTING_TEXT_FLOOR, ' (derived)');
           }
         }
       }),
@@ -244,15 +360,21 @@ describe('curated palette contrast', () => {
           const ground = colors?.['surface-0'];
           if (!colors || !ground) continue;
 
-          // The point of the high-contrast theme's border overrides: the
-          // SOFTEST tier still has to be a line you can see. 3:1 is WCAG's
-          // non-text floor, which is exactly what a hairline is.
+          const highContrast = themeId === 'high-contrast';
+          const borderFloor = highContrast ? HIGH_CONTRAST_BORDER_FLOOR : BORDER_FLOOR;
+
+          // Every UI theme states a `border`; a palette that left the hairline
+          // to the cascade would draw the default theme's line on its own
+          // ground, which is the one combination nobody chose.
+          if (!colors.border) report(`${themeId}.${variantName}: no border color`);
           for (const key of ['border-subtle', 'border', 'border-strong']) {
             const value = colors[key];
             if (!value) continue;
             const ratio = contrastRatio(value, ground);
-            if (ratio < SYNTAX_FLOOR) {
-              report(`${themeId}.${variantName}.${key}: ${value} on ${ground} is ${round(ratio)}:1`);
+            if (ratio < borderFloor) {
+              report(
+                `${themeId}.${variantName}.${key}: ${value} on ${ground} is ${round(ratio)}:1, floor ${borderFloor}:1`,
+              );
             }
           }
 
@@ -269,14 +391,15 @@ describe('curated palette contrast', () => {
             }
           }
 
-          // Status colors are read as text on the ground.
+          // Status colors and the accent, read on the ground.
+          const statusFloor = highContrast ? TEXT_FLOOR : STATUS_FLOOR;
           for (const key of ['info', 'success', 'error', 'warning', 'accent']) {
             const value = colors[key];
             if (!value) continue;
             const ratio = contrastRatio(value, ground);
-            if (ratio < TEXT_FLOOR) {
+            if (ratio < statusFloor) {
               report(
-                `${themeId}.${variantName}.${key}: ${value} on ${ground} is ${round(ratio)}:1, floor ${TEXT_FLOOR}:1`,
+                `${themeId}.${variantName}.${key}: ${value} on ${ground} is ${round(ratio)}:1, floor ${statusFloor}:1`,
               );
             }
           }
@@ -285,21 +408,38 @@ describe('curated palette contrast', () => {
     ).toEqual([]);
   });
 
-  it('separates the elevation ladder so surfaces do not collapse together', () => {
+  it('builds a separated, monotonic elevation ladder', () => {
+    // Two properties, and they fail differently. MONOTONIC: every step goes the
+    // same way, so "higher tier" means one thing throughout a theme — a ladder
+    // that lightens then darkens turns depth into noise. SEPARATED: adjacent
+    // tiers are told apart, measured as a contrast RATIO rather than a raw
+    // luminance delta, because at the near-black end of a dark palette real
+    // steps are tiny in absolute luminance and enormous perceptually.
     expect(
       violations((report) => {
         for (const { themeId, variantName, variant } of CASES) {
           const colors = variant.colors;
           if (!colors) continue;
-          const ladder = ['surface-0', 'surface-1', 'surface-2', 'surface-3'];
-          for (let i = 1; i < ladder.length; i += 1) {
-            const lower = colors[ladder[i - 1]!];
-            const upper = colors[ladder[i]!];
-            if (!lower || !upper) continue;
-            const delta = Math.abs(relativeLuminance(upper) - relativeLuminance(lower));
-            if (delta < 0.004) {
+          const tiers = SURFACE_LADDER.map((key) => colors[key]);
+          if (tiers.some((value) => !value)) {
+            report(`${themeId}.${variantName}: incomplete surface ladder`);
+            continue;
+          }
+          const luminances = tiers.map((value) => relativeLuminance(value!));
+          const rising = luminances[luminances.length - 1]! > luminances[0]!;
+          for (let i = 1; i < tiers.length; i += 1) {
+            const from = SURFACE_LADDER[i - 1];
+            const to = SURFACE_LADDER[i];
+            if (rising !== luminances[i]! > luminances[i - 1]!) {
               report(
-                `${themeId}.${variantName}: ${ladder[i - 1]} and ${ladder[i]} are indistinguishable (Δ luminance ${delta.toFixed(4)})`,
+                `${themeId}.${variantName}: ${from} → ${to} reverses the ladder (${tiers[i - 1]} → ${tiers[i]})`,
+              );
+              continue;
+            }
+            const step = contrastRatio(tiers[i - 1]!, tiers[i]!);
+            if (step < LADDER_STEP_FLOOR) {
+              report(
+                `${themeId}.${variantName}: ${from} and ${to} are indistinguishable (${tiers[i - 1]} vs ${tiers[i]}, ${round(step)}:1)`,
               );
             }
           }

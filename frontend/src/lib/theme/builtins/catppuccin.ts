@@ -10,6 +10,19 @@
 //   Parameters → Maroon         Enum variants → Teal
 //   Markdown links → Blue       Diff add/remove → Green / Red
 //
+// Both axes. The UI half is where Catppuccin fits our vocabulary best: it is
+// the one upstream that publishes a named FOUR-step elevation ramp, so the
+// surface ladder is its own, verbatim and in order —
+//
+//   Mocha  base #1e1e2e → surface0 #313244 → surface1 #45475a → surface2 #585b70
+//   Latte  base #eff1f5 → mantle  #e6e9ef → surface0 #ccd0da → surface1 #bcc0cc
+//
+// Latte enters through mantle rather than jumping straight to surface0: on a
+// light ground the base→surface0 step is a visible slab, and mantle is the
+// tone the flavour publishes for exactly that secondary-chrome role. Borders
+// take the overlay ramp, text the text/subtext ramp, and the accent is Mauve
+// (Catppuccin's own default accent).
+//
 // The guide is silent on three of our families, so they are judgement, taken
 // from the palette the guide does hand out:
 //
@@ -29,10 +42,42 @@ import type { BuiltinThemeSpec } from '../builtins';
 export const CATPPUCCIN: BuiltinThemeSpec = {
   id: 'catppuccin',
   name: 'Catppuccin',
-  axes: { ui: false, code: true },
+  axes: { ui: true, code: true },
   // Mocha. base #1e1e2e, surface0 #313244, surface1 #45475a, surface2 #585b70,
-  // overlay2 #9399b2, subtext1 #bac2de, text #cdd6f4.
+  // overlay0 #6c7086, overlay1 #7f849c, overlay2 #9399b2, subtext0 #a6adc8,
+  // subtext1 #bac2de, text #cdd6f4.
   dark: {
+    colors: {
+      'surface-0': '#1e1e2e',
+      'surface-1': '#313244',
+      'surface-2': '#45475a',
+      'surface-3': '#585b70',
+      border: '#6c7086',
+      'border-strong': '#7f849c',
+      'text-primary': '#cdd6f4',
+      'text-secondary': '#a6adc8',
+      accent: '#cba6f7',
+      'accent-fg': '#1e1e2e',
+      info: '#89b4fa',
+      success: '#a6e3a1',
+      error: '#f38ba8',
+      warning: '#f9e2af',
+      overlay: '#11111ba6',
+      // Fourteen published accents against thirteen icon roles, so every one
+      // of these is a distinct upstream color.
+      'ico-terminal': '#94e2d5',
+      'ico-file': '#cba6f7',
+      'ico-eye': '#89dceb',
+      'ico-search': '#89b4fa',
+      'ico-globe': '#74c7ec',
+      'ico-robot': '#b4befe',
+      'ico-speech-bubble': '#f5c2e7',
+      'ico-checklist': '#a6e3a1',
+      'ico-puzzle': '#f2cdcd',
+      'ico-clock': '#f9e2af',
+      'ico-brain': '#eba0ac',
+      'ico-compaction': '#9399b2',
+    },
     syntax: {
       'syntax-keyword': '#cba6f7',
       'syntax-string': '#a6e3a1',
@@ -94,6 +139,35 @@ export const CATPPUCCIN: BuiltinThemeSpec = {
   //   pink     [#ea76cb] → #cc4dad   (2.31:1 → 3.40:1)
   //   lavender [#7287fd] → #6b7ce8   (2.79:1 → 3.25:1)
   light: {
+    colors: {
+      'surface-0': '#eff1f5',
+      'surface-1': '#e6e9ef',
+      'surface-2': '#ccd0da',
+      'surface-3': '#bcc0cc',
+      border: '#9ca0b0',
+      'border-strong': '#7c7f93',
+      'text-primary': '#4c4f69',
+      'text-secondary': '#6c6f85',
+      accent: '#8839ef',
+      'accent-fg': '#eff1f5',
+      info: '#1e66f5',
+      success: '#3a8f27',
+      error: '#d20f39',
+      warning: '#b3730f',
+      overlay: '#4c4f6947',
+      'ico-terminal': '#179299',
+      'ico-file': '#8839ef',
+      'ico-eye': '#209fb5',
+      'ico-search': '#1e66f5',
+      'ico-globe': '#04a5e5',
+      'ico-robot': '#7287fd',
+      'ico-speech-bubble': '#ea76cb',
+      'ico-checklist': '#40a02b',
+      'ico-puzzle': '#dd7878',
+      'ico-clock': '#df8e1d',
+      'ico-brain': '#e64553',
+      'ico-compaction': '#7c7f93',
+    },
     syntax: {
       'syntax-keyword': '#8839ef',
       'syntax-string': '#3a8f27',
