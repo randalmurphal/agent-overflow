@@ -23,16 +23,16 @@
 //   dark   #00212b → base03 #002b36 → base02 #073642 → #0e4653
 //   light  base3  #fdf6e3 → base2  #eee8d5 → #e0d8c0 → #d3cab0
 //
-// TEXT is lifted one published step per tier, because Schoonover's
-// base0-on-base03 body pairing is exactly the low-contrast look this app
-// cannot carry in a wall of prose. FOCAL text takes base2 dark / base02
-// light — the tone every Solarized terminal maps bold/bright text onto
-// (our own ANSI 37/97 slots already do) — and body copy (`fg-muted`, stated
+// TEXT is lifted, because Schoonover's base0-on-base03 body pairing is
+// exactly the low-contrast look this app cannot carry in a wall of prose.
+// FOCAL text takes base3 dark / base02 light — base3 is the palette's
+// whitest tone, the one every Solarized terminal maps BRIGHT white onto
+// (our own ANSI 97 slot already does) — and body copy (`fg-muted`, stated
 // explicitly rather than derived) takes the EMPHASIZED base tone (base1 /
 // base01). The subtle/hint tiers keep deriving from focal (a stated tier
 // claims 4.5:1 text contrast in `builtins.contrast.test.ts`, and
 // de-emphasis tiers recede by design). Every tone is Schoonover's; only the
-// assignments move, and by one step each.
+// assignments move.
 //
 // ROLE MAPPING follows Schoonover's vim mapping (Statement → green,
 // Constant → cyan, Type → yellow, Identifier → blue, Special → red,
@@ -84,7 +84,7 @@ export const SOLARIZED: BuiltinThemeSpec = {
       'surface-3': '#0e4653',
       border: '#586e75',
       'border-strong': '#657b83',
-      'text-primary': '#eee8d5',
+      'text-primary': '#fdf6e3',
       'text-secondary': '#93a1a1',
       'fg-muted': '#93a1a1',
       accent: '#3197de',

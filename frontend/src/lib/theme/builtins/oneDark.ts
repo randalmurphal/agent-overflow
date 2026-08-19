@@ -45,13 +45,13 @@ export const ONE_DARK: BuiltinThemeSpec = {
   name: 'One Dark',
   axes: { ui: true, code: true },
   dark: {
-    // Chrome. Focal text is #d7dae0 — the theme's own bright tier
-    // (`list.activeSelectionForeground`, ANSI 37) — rather than the editor
-    // foreground #abb2bf: chat chrome body copy renders at the fg-muted tier
-    // (80% of focal), so a focal #abb2bf put BODY text near 60% and the whole
-    // app read washed-out beside the default theme. With #d7dae0 focal, body
-    // copy lands right at the classic editor grey while labels stay crisp.
-    // #abb2bf (the `sideBar.foreground` mono-1) moves down to supporting.
+    // Chrome. Focal text is #e6e6e6 — the theme's own ANSI bright-white,
+    // its brightest published tone — rather than the editor foreground
+    // #abb2bf or the mid tier #d7dae0 (ANSI 37): chat chrome body copy
+    // renders at the fg-muted tier (80% of focal), so every step of focal
+    // grayness is paid twice, and both dimmer choices left the whole app
+    // reading gray beside the default theme's near-white. #abb2bf (the
+    // `sideBar.foreground` mono-1) stays as supporting.
     // Borders are the published `panel.border` / `focusBorder` value with a
     // brighter step above it for the emphasized tier.
     colors: {
@@ -61,7 +61,7 @@ export const ONE_DARK: BuiltinThemeSpec = {
       'surface-3': '#404754',
       border: '#3e4452',
       'border-strong': '#5c6370',
-      'text-primary': '#d7dae0',
+      'text-primary': '#e6e6e6',
       'text-secondary': '#abb2bf',
       accent: '#61afef',
       'accent-fg': '#16191d',

@@ -838,7 +838,11 @@ not at the canonical editor ground.** The canonical background becomes
 the card tier — where content actually sits — and the range widens
 without inventing hues:
 
-- **one-dark** `#16191d` (continuation) → `#1e2227` → `#2c313a` → `#404754`
+- **one-dark** `#16191d` (continuation) → `#1e2227` → `#2c313a` → `#404754`;
+  focal text takes the palette's ANSI bright-white `#e6e6e6` (both dimmer
+  candidates — editor fg `#abb2bf`, ANSI 37 `#d7dae0` — left the app gray
+  beside the default's near-white, and the fade tiers pay focal grayness
+  twice)
 - **dracula** bgDarker `#191a21` → bgDark `#21222c` → bg `#282a36` → bgLight `#343746`
 - **catppuccin mocha** mantle `#181825` → base `#1e1e2e` → surface0 → surface1
 - **gruvbox** hard-contrast pairing both modes: `bg0_hard #1d2021` + `fg0 #fbf1c7`
@@ -851,12 +855,13 @@ without inventing hues:
   at fg; the derived 80% tier landed at 7.2:1 with no brighter published
   tone to lift focal to)
 - **solarized dark** `#00212b` continuation → base03 → base02 → `#0e4653`;
-  focal text takes base2 `#eee8d5` (the tone Solarized terminals map
-  bold/bright onto — our ANSI 37/97 already did), `fg-muted` stated =
-  base1; light mirrors it (focal base02, `fg-muted` base01)
+  focal text takes base3 `#fdf6e3` — the palette's whitest tone, the one
+  Solarized terminals map BRIGHT white onto (our ANSI 97 already did) —
+  with `fg-muted` stated = base1; light mirrors it (focal base02,
+  `fg-muted` base01)
 
 Code grounds (`code-block`/`terminal-bg`) follow each new ladder floor.
-Resulting bands: focal 11.1–16.3:1, body 6.3–11.1:1 — the curated set
+Resulting bands: focal 11.1–16.3:1 (one-dark 14.1, solarized 15.5 after the whiter-focal follow-up), body 6.3–11.1:1 — the curated set
 now brackets the default instead of trailing it.
 
 Stating a fade tier is a CLAIM: `builtins.contrast.test.ts` holds any
