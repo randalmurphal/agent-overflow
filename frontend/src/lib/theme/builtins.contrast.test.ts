@@ -124,12 +124,10 @@ const CONTRAST_EXCEPTIONS: Record<string, Exception> = {
     reason:
       "tokyonight's canonical comment tone (#565f89) on its own ground. Comments are faint by design in this palette and the value is one of its signatures; the markup-quote family, which carries prose, is moved off it to dark5 instead.",
   },
-  'solarized.dark.syntax-comment': {
-    ratio: 2.79,
-    reason:
-      'Schoonover uses base01 for comments on base03, and the base ramp IS Solarized — a comment tone one step in would be a different theme. Solarized LIGHT does not get the same latitude: base1 measures 1.9:1 there, under the hard floor, so it is adjusted in the data.',
-  },
 };
+// Solarized dark's canonical base01 comment previously held an exception
+// here (2.79:1 on base03); the code ground now sits on the ladder's #00212b
+// continuation, where the same value measures 3.12:1 and clears the floor.
 
 /** Even a faint-by-design role has a floor. */
 const EXCEPTION_HARD_FLOOR = 2.5;

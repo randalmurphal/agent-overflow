@@ -11,17 +11,28 @@
 // both axes.
 //
 // SURFACE LADDER. Solarized publishes exactly TWO grounds per mode (base03 +
-// base02 dark, base3 + base2 light) against our four tiers, so tiers 2 and 3
-// are documented continuations: the same hue and chroma, stepped by the same
-// amount the published pair steps by. They are the only invented values in
-// this file and they are chrome only — no accent, text tone or syntax color
-// is anything but Schoonover's.
+// base02 dark, base3 + base2 light) against our four tiers, so the missing
+// tiers are documented continuations: the same hue and chroma, stepped by
+// the same amount the published pair steps by. The dark ladder ENTERS on a
+// continuation below base03 — anchored at base03 the app compressed into a
+// ~6:1 luminance range, by far the haziest of the curated set (see the
+// luminance-range rule in `docs/specs/theme-system.md` §9.11). The invented
+// steps are chrome only — no accent, text tone or syntax color is anything
+// but Schoonover's.
 //
-//   dark   base03 #002b36 → base02 #073642 → #0e4653 → #14515f
+//   dark   #00212b → base03 #002b36 → base02 #073642 → #0e4653
 //   light  base3  #fdf6e3 → base2  #eee8d5 → #e0d8c0 → #d3cab0
 //
-// TEXT tiers follow Schoonover's own guidance: the emphasized tone is focal
-// (base1 dark / base01 light) and the body tone is supporting (base0 / base00).
+// TEXT is lifted one published step per tier, because Schoonover's
+// base0-on-base03 body pairing is exactly the low-contrast look this app
+// cannot carry in a wall of prose. FOCAL text takes base2 dark / base02
+// light — the tone every Solarized terminal maps bold/bright text onto
+// (our own ANSI 37/97 slots already do) — and body copy (`fg-muted`, stated
+// explicitly rather than derived) takes the EMPHASIZED base tone (base1 /
+// base01). The subtle/hint tiers keep deriving from focal (a stated tier
+// claims 4.5:1 text contrast in `builtins.contrast.test.ts`, and
+// de-emphasis tiers recede by design). Every tone is Schoonover's; only the
+// assignments move, and by one step each.
 //
 // ROLE MAPPING follows Schoonover's vim mapping (Statement → green,
 // Constant → cyan, Type → yellow, Identifier → blue, Special → red,
@@ -55,8 +66,9 @@
 //     under AA, and terminal output is the one place we do not get to inherit
 //     that. base01 is the palette's own emphasized-text tone.
 //
-// The dark variant's comment keeps canonical base01 and is pinned as a
-// documented exception in `builtins.contrast.test.ts`.
+// The dark variant's comment keeps canonical base01, which clears the 3:1
+// syntax floor on the #00212b code ground (it needed a documented exception
+// back when the code ground was base03).
 
 import type { BuiltinThemeSpec } from '../builtins';
 
@@ -66,14 +78,15 @@ export const SOLARIZED: BuiltinThemeSpec = {
   axes: { ui: true, code: true },
   dark: {
     colors: {
-      'surface-0': '#002b36',
-      'surface-1': '#073642',
-      'surface-2': '#0e4653',
-      'surface-3': '#14515f',
+      'surface-0': '#00212b',
+      'surface-1': '#002b36',
+      'surface-2': '#073642',
+      'surface-3': '#0e4653',
       border: '#586e75',
       'border-strong': '#657b83',
-      'text-primary': '#93a1a1',
-      'text-secondary': '#839496',
+      'text-primary': '#eee8d5',
+      'text-secondary': '#93a1a1',
+      'fg-muted': '#93a1a1',
       accent: '#3197de',
       'accent-fg': '#002b36',
       // Markdown prose roles: this file's markup-* hues (orange headings,
@@ -153,11 +166,11 @@ export const SOLARIZED: BuiltinThemeSpec = {
       'ansi-fg-97': '#fdf6e3',
     },
     code: {
-      'code-block': '#002b36',
+      'code-block': '#00212b',
       'code-inline-bg': '#073642',
-      // Inline-code text beside its chip ground (markup-raw cyan, 4.1:1).
+      // Inline-code text beside its chip ground (markup-raw cyan).
       'md-inline-code': '#2aa198',
-      'terminal-bg': '#002b36',
+      'terminal-bg': '#00212b',
     },
   },
   light: {
@@ -168,8 +181,9 @@ export const SOLARIZED: BuiltinThemeSpec = {
       'surface-3': '#d3cab0',
       border: '#93a1a1',
       'border-strong': '#839496',
-      'text-primary': '#586e75',
-      'text-secondary': '#657b83',
+      'text-primary': '#073642',
+      'text-secondary': '#586e75',
+      'fg-muted': '#586e75',
       accent: '#1c6fa8',
       'accent-fg': '#fdf6e3',
       // Light counterparts of the dark prose roles. A two-variant theme
@@ -179,12 +193,13 @@ export const SOLARIZED: BuiltinThemeSpec = {
       // warning covers exactly this). Orange headings and yellow markers
       // survive the light ground at their 3:1 floors; green misses the 4:1
       // body floor on base3 (canonical #859900 2.97:1, and even this file's
-      // darkened #7f9200 step only reaches 3.24:1), so bold restates base01
-      // and weight carries the emphasis, while links take the darkened
-      // accent blue this file already uses (canonical #268bd2 is 3.41:1).
+      // darkened #7f9200 step only reaches 3.24:1), so bold restates the
+      // focal base02 and weight carries the emphasis, while links take the
+      // darkened accent blue this file already uses (canonical #268bd2 is
+      // 3.41:1).
       // Inline-code text is code-axis (see the `code` section below).
       'md-heading': '#cb4b16',
-      'md-bold': '#586e75',
+      'md-bold': '#073642',
       'md-link': '#1c6fa8',
       'md-blockquote': '#657b83',
       'md-marker': '#a97e00',
@@ -257,9 +272,9 @@ export const SOLARIZED: BuiltinThemeSpec = {
       'code-inline-bg': '#eee8d5',
       // Inline-code text on the chip: cyan misses the 4:1 chip floor on
       // base2 (canonical #2aa198 2.58:1, darkened #26948b 3.01:1), so the
-      // role restates base01 (4.39:1); the chip ground and the mono face
+      // role restates the focal base02; the chip ground and the mono face
       // carry the code-ness.
-      'md-inline-code': '#586e75',
+      'md-inline-code': '#073642',
       'terminal-bg': '#fdf6e3',
     },
   },

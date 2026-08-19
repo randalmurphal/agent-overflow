@@ -816,3 +816,54 @@ serializer's `REFUSED_FUNCTIONS` (`url(` and kin) inside its line
 grammar — the cached-CSS path paints pre-CSP on a `background`
 shorthand, so a hostile localStorage stamp was a first-frame network
 beacon (pre-existing; hostile cases added to themeBootStamp.test.ts).
+
+### 9.11 Luminance-range rule — the haze fix (2026-08-19)
+
+User verdict on the character round: every curated theme except default
+and high-contrast still read as if under "a hazy layer... not crisp and
+clear". Root cause, measured: the default dark palette runs a ~17:1
+luminance range (ground `oklch(0.145 …)` ≈ #0b0b10 under ~#f0f0f2 focal
+text, 11:1 body), while every curated dark variant anchored its surface
+ladder at the upstream's CANONICAL editor background — a tone those
+themes design as the top of a deeper ramp — compressing the app into
+10.6–13.4:1 focal / 7.2–7.8:1 body (solarized: 5.6/4.1). The sub-focal
+text stack amplifies it: `--fg-muted/subtle/hint` derive by
+alpha-fading `--text-primary` (80/55/30%), so a compressed palette pays
+the fade twice. High-contrast was immune because it overrides the
+derived tiers opaquely on true black; that was the tell.
+
+**The rule: a curated dark ladder ENTERS at the bottom of the
+upstream's published range (or one documented continuation below it),
+not at the canonical editor ground.** The canonical background becomes
+the card tier — where content actually sits — and the range widens
+without inventing hues:
+
+- **one-dark** `#16191d` (continuation) → `#1e2227` → `#2c313a` → `#404754`
+- **dracula** bgDarker `#191a21` → bgDark `#21222c` → bg `#282a36` → bgLight `#343746`
+- **catppuccin mocha** mantle `#181825` → base `#1e1e2e` → surface0 → surface1
+- **gruvbox** hard-contrast pairing both modes: `bg0_hard #1d2021` + `fg0 #fbf1c7`
+  (light: `#f9f5d7` + `#282828`)
+- **nord** darkened-nord0 `#242933` (the ports' tone, same standing as
+  `#616e88`) → nord0 → nord1 → nord2
+- **tokyo-night** ground already bg_dark; the fix is the LADDER TOP
+  (bg_highlight `#292e42`, fg_gutter `#3b4261`, borders up a step) plus
+  the text side: `fg-muted` stated = fg `#c0caf5` (upstream renders body
+  at fg; the derived 80% tier landed at 7.2:1 with no brighter published
+  tone to lift focal to)
+- **solarized dark** `#00212b` continuation → base03 → base02 → `#0e4653`;
+  focal text takes base2 `#eee8d5` (the tone Solarized terminals map
+  bold/bright onto — our ANSI 37/97 already did), `fg-muted` stated =
+  base1; light mirrors it (focal base02, `fg-muted` base01)
+
+Code grounds (`code-block`/`terminal-bg`) follow each new ladder floor.
+Resulting bands: focal 11.1–16.3:1, body 6.3–11.1:1 — the curated set
+now brackets the default instead of trailing it.
+
+Stating a fade tier is a CLAIM: `builtins.contrast.test.ts` holds any
+stated `fg-muted/subtle/hint` to 4.5:1 (that is why the theme
+bothered), so themes state only `fg-muted` and let subtle/hint keep
+deriving — de-emphasis tiers recede by design. Side effect of the
+darker solarized code ground: canonical base01 comments now measure
+3.12:1 and the long-standing `solarized.dark.syntax-comment` exception
+is DELETED (the test demands deletion once an exception clears the
+floor).

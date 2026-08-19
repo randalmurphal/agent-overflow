@@ -10,18 +10,21 @@
 //   Parameters → Maroon         Enum variants → Teal
 //   Markdown links → Blue       Diff add/remove → Green / Red
 //
-// Both axes. The UI half is where Catppuccin fits our vocabulary best: it is
-// the one upstream that publishes a named FOUR-step elevation ramp, so the
-// surface ladder is its own, verbatim and in order —
+// Both axes. The UI half is where Catppuccin fits our vocabulary best: it
+// publishes a named elevation ramp deeper than our four slots, so the ladder
+// is its own, verbatim and in order — both flavours enter through MANTLE,
+// the tone the project publishes for secondary chrome below the base:
 //
-//   Mocha  base #1e1e2e → surface0 #313244 → surface1 #45475a → surface2 #585b70
+//   Mocha  mantle #181825 → base #1e1e2e → surface0 #313244 → surface1 #45475a
 //   Latte  base #eff1f5 → mantle  #e6e9ef → surface0 #ccd0da → surface1 #bcc0cc
 //
-// Latte enters through mantle rather than jumping straight to surface0: on a
-// light ground the base→surface0 step is a visible slab, and mantle is the
-// tone the flavour publishes for exactly that secondary-chrome role. Borders
-// take the overlay ramp, text the text/subtext ramp, and the accent is Mauve
-// (Catppuccin's own default accent).
+// Mocha anchored at base compressed the app into an ~11:1 luminance range
+// and read hazy beside the default theme (~17:1); entering at mantle widens
+// the range while every step stays published (see the luminance-range rule
+// in `docs/specs/theme-system.md` §9.11). Latte enters through mantle for
+// the same reason it always did: on a light ground the base→surface0 step
+// is a visible slab. Borders take the overlay ramp, text the text/subtext
+// ramp, and the accent is Mauve (Catppuccin's own default accent).
 //
 // The guide is silent on three of our families, so they are judgement, taken
 // from the palette the guide does hand out:
@@ -43,21 +46,21 @@ export const CATPPUCCIN: BuiltinThemeSpec = {
   id: 'catppuccin',
   name: 'Catppuccin',
   axes: { ui: true, code: true },
-  // Mocha. base #1e1e2e, surface0 #313244, surface1 #45475a, surface2 #585b70,
+  // Mocha. mantle #181825, base #1e1e2e, surface0 #313244, surface1 #45475a,
   // overlay0 #6c7086, overlay1 #7f849c, overlay2 #9399b2, subtext0 #a6adc8,
   // subtext1 #bac2de, text #cdd6f4.
   dark: {
     colors: {
-      'surface-0': '#1e1e2e',
-      'surface-1': '#313244',
-      'surface-2': '#45475a',
-      'surface-3': '#585b70',
+      'surface-0': '#181825',
+      'surface-1': '#1e1e2e',
+      'surface-2': '#313244',
+      'surface-3': '#45475a',
       border: '#6c7086',
       'border-strong': '#7f849c',
       'text-primary': '#cdd6f4',
       'text-secondary': '#a6adc8',
       accent: '#cba6f7',
-      'accent-fg': '#1e1e2e',
+      'accent-fg': '#181825',
       // Markdown prose roles: this file's markup-* hues (red headings,
       // blue links, peach markers), so chat prose and fenced markdown agree
       // when both axes are on Catppuccin. Bold is yellow — the warm
@@ -134,11 +137,11 @@ export const CATPPUCCIN: BuiltinThemeSpec = {
       'ansi-fg-97': '#cdd6f4',
     },
     code: {
-      'code-block': '#1e1e2e',
+      'code-block': '#181825',
       'code-inline-bg': '#313244',
       // Inline-code text beside its chip ground (markup-raw green).
       'md-inline-code': '#a6e3a1',
-      'terminal-bg': '#1e1e2e',
+      'terminal-bg': '#181825',
     },
   },
   // Latte. base #eff1f5, surface0 #ccd0da, surface1 #bcc0cc, surface2 #acb0be,

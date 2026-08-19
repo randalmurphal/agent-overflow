@@ -5,9 +5,22 @@
 // SURFACE LADDER. tokyonight is the one upstream here whose sidebar is DARKER
 // than its editor, so the app ground takes bg_dark (#16161e) and the editor
 // ground (#1a1b26) becomes the first elevation step — which also keeps
-// `code-block` on the tier our own default puts it on. Storm's bg (#24283b)
-// and night's bg_highlight (#292e42) complete the ramp; all four are
-// published values.
+// `code-block` on the tier our own default puts it on. Night's bg_highlight
+// (#292e42) and fg_gutter (#3b4261) complete the ramp; all four are
+// published values. The upper tiers deliberately take the WIDE steps —
+// anchoring them at storm's bg (#24283b) left the whole ladder inside an
+// ~1.6× luminance band and the app read hazy (see the luminance-range rule
+// in `docs/specs/theme-system.md` §9.11); storm's bg stays as the
+// inline-code chip ground.
+//
+// BODY TEXT (`fg-muted`) is stated explicitly instead of letting the app
+// derive it by fading the focal color: tokyonight has no tone brighter than
+// fg (#c0caf5), so the derived 80% body tier landed at 7.2:1 — the lowest
+// of any curated theme — and could not be fixed from the ground side because
+// bg_dark is already the palette floor. Upstream renders body copy at fg
+// itself and reserves fg_dark for de-emphasis, so fg-muted = fg here; the
+// subtle/hint tiers keep deriving (a stated tier claims 4.5:1 text contrast
+// in `builtins.contrast.test.ts`, and de-emphasis tiers recede by design).
 //
 // Palette: bg #1a1b26, bg_dark #16161e, storm's bg #24283b (used here as the
 // inline-code ground), fg #c0caf5, fg_dark #a9b1d6, comment #565f89,
@@ -40,12 +53,13 @@ export const TOKYO_NIGHT: BuiltinThemeSpec = {
     colors: {
       'surface-0': '#16161e',
       'surface-1': '#1a1b26',
-      'surface-2': '#24283b',
-      'surface-3': '#292e42',
-      border: '#3b4261',
-      'border-strong': '#414868',
+      'surface-2': '#292e42',
+      'surface-3': '#3b4261',
+      border: '#414868',
+      'border-strong': '#565f89',
       'text-primary': '#c0caf5',
       'text-secondary': '#a9b1d6',
+      'fg-muted': '#c0caf5',
       accent: '#7aa2f7',
       'accent-fg': '#16161e',
       // Markdown prose roles: this file's markup-* hues, so chat prose and

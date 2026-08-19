@@ -3,16 +3,20 @@
 // 2026-08-18). Dark-only on BOTH axes, so its chrome is offered beside its
 // code, and in light mode the code half still renders as a dark island.
 //
-// SURFACE LADDER, from the same file's workbench colors. The darker variant
-// runs a two-ground design — sidebar/tabs/status at #1e2227, editor and
-// activity bar at #23272e — with #2c313a for list hover and selection and
-// #404754 for buttons. That is four published grounds, so the ladder needs
-// nothing invented: the app ground takes the deepest of them, which also
-// makes a code block (#1e2227) read as a well cut into the cards above it.
+// SURFACE LADDER, anchored on the same file's workbench colors but entered
+// one step BELOW them. The darker variant runs a two-ground design —
+// sidebar/tabs/status at #1e2227, editor and activity bar at #23272e — with
+// #2c313a for list hover/selection and #404754 for buttons. Used verbatim
+// that ladder compresses into an ~11:1 luminance range and the whole app
+// reads hazy beside the default theme (~17:1); see the luminance-range rule
+// in `docs/specs/theme-system.md` §9.11. So the app ground extends the ramp
+// DOWN by its own
+// step (#16191d — not a published One Dark value, same hue and chroma
+// direction as #1e2227 → #23272e continued), the published grounds shift up
+// one tier each, and the widest published step (#404754) keeps the top slot.
 //
-// GROUND. The darker variant states `editor.background: #23272e` and
-// `sideBar.background: #1e2227`; the deeper of the two is used here for the
-// code block and the terminal, per an explicit request for the darker ground.
+// GROUND. Code block and terminal sit on the extended #16191d app ground, so
+// a code block reads as a well cut into the cards above it.
 // `code-inline-bg` is its `editor.lineHighlightBackground` (#2c313c), which is
 // exactly the "same ground, one step up" role an inline span wants.
 //
@@ -51,8 +55,8 @@ export const ONE_DARK: BuiltinThemeSpec = {
     // Borders are the published `panel.border` / `focusBorder` value with a
     // brighter step above it for the emphasized tier.
     colors: {
-      'surface-0': '#1e2227',
-      'surface-1': '#23272e',
+      'surface-0': '#16191d',
+      'surface-1': '#1e2227',
       'surface-2': '#2c313a',
       'surface-3': '#404754',
       border: '#3e4452',
@@ -60,7 +64,7 @@ export const ONE_DARK: BuiltinThemeSpec = {
       'text-primary': '#d7dae0',
       'text-secondary': '#abb2bf',
       accent: '#61afef',
-      'accent-fg': '#1e2227',
+      'accent-fg': '#16191d',
       // Markdown prose roles: the same hues this file's code axis gives the
       // markup-* families, so chat prose and fenced markdown agree when both
       // axes are on One Dark. Bold is the number/attribute orange — One Dark
@@ -134,11 +138,11 @@ export const ONE_DARK: BuiltinThemeSpec = {
       'ansi-fg-97': '#e6e6e6',
     },
     code: {
-      'code-block': '#1e2227',
+      'code-block': '#16191d',
       'code-inline-bg': '#2c313c',
       // Inline-code text beside its chip ground (markup-raw green, 6.5:1).
       'md-inline-code': '#98c379',
-      'terminal-bg': '#1e2227',
+      'terminal-bg': '#16191d',
     },
   },
 };

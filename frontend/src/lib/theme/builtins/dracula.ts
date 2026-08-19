@@ -8,20 +8,26 @@
 // UI variants: bgDarker #191a21, bgDark #21222c, bgLight #343746,
 // bgLighter #424450.
 //
-// SURFACE LADDER uses those UI variants, which give exactly four grounds
-// upward from the canonical background: #282a36 → bgLight → bgLighter →
-// selection #44475a.
+// SURFACE LADDER uses those UI variants, entered from the BOTTOM of the
+// published range rather than at the canonical background: bgDarker #191a21 →
+// bgDark #21222c → background #282a36 → bgLight #343746. Anchoring at
+// #282a36 compressed the app into an ~13:1 luminance range and it read hazy
+// beside the default theme (~17:1); see the luminance-range rule in
+// `docs/specs/theme-system.md` §9.11. Every step is a published Dracula
+// value — the canonical background becomes the card tier, which is where
+// most content actually sits.
 //
 // BORDERS are the one place the upstream cannot be followed. Dracula's own
-// border color is bgDarker (#191a21) — a line DARKER than the ground, which
-// works in an editor whose panels are separated by shadow but measures 1.5:1
-// the wrong way for a hairline vocabulary built on visible separation. The
-// border tiers therefore take the comment tone #6272a4 (the palette's own mid
-// value, 3.03:1) and a lightened step of it for the emphasized tier.
+// border color is bgDarker (#191a21) — a line DARKER than its editor ground
+// (and here the app ground itself), which works in an editor whose panels
+// are separated by shadow but is invisible for a hairline vocabulary built
+// on visible separation. The border tiers therefore take the comment tone
+// #6272a4 (the palette's own mid value) and a lightened step of it for the
+// emphasized tier.
 //
 // TEXT SECONDARY is likewise adapted: Dracula names no supporting-text tone
-// other than the comment, and #6272a4 measures 3.03:1 on the background, so
-// the role takes a lightened step of the same hue (#7d8ab8, 4.20:1).
+// other than the comment, and #6272a4 is the weakest tone in the palette, so
+// the role takes a lightened step of the same hue (#7d8ab8).
 //
 // ROLE MAPPING notes where judgement was involved:
 //
@@ -42,24 +48,25 @@ export const DRACULA: BuiltinThemeSpec = {
   axes: { ui: true, code: true },
   dark: {
     colors: {
-      'surface-0': '#282a36',
-      'surface-1': '#343746',
-      'surface-2': '#424450',
-      'surface-3': '#44475a',
+      'surface-0': '#191a21',
+      'surface-1': '#21222c',
+      'surface-2': '#282a36',
+      'surface-3': '#343746',
       border: '#6272a4',
       'border-strong': '#7d8ab8',
       'text-primary': '#f8f8f2',
       'text-secondary': '#7d8ab8',
       accent: '#bd93f9',
-      'accent-fg': '#282a36',
+      'accent-fg': '#191a21',
       // Markdown prose roles: this file's markup-* hues, so chat prose and
       // fenced markdown agree when both axes are on Dracula. Bold is the
       // signature pink — Dracula's spec renders bold in pink alongside
-      // purple headings. The quote deviates from markup-quote (#6272a4,
-      // 3.03:1 on the ground — under the 3:1 prose floor) to the same
-      // lightened comment step text-secondary already uses (4.20:1); the
-      // fenced markup-quote keeps the canonical comment tone. Inline-code
-      // text is code-axis (see the `code` section below).
+      // purple headings. The quote deviates from markup-quote (#6272a4)
+      // to the same lightened comment step text-secondary already uses:
+      // a block quote carries prose, and the lighter step keeps it
+      // clearly readable while the fenced markup-quote keeps the
+      // canonical comment tone. Inline-code text is code-axis (see the
+      // `code` section below).
       'md-heading': '#bd93f9',
       'md-bold': '#ff79c6',
       'md-link': '#8be9fd',
@@ -126,11 +133,13 @@ export const DRACULA: BuiltinThemeSpec = {
       'ansi-fg-97': '#ffffff',
     },
     code: {
-      'code-block': '#282a36',
+      // Code sits on the extended-down app ground (bgDarker), which also
+      // lifts the canonical comment #6272a4 from 3.0:1 to 4.0:1.
+      'code-block': '#191a21',
       'code-inline-bg': '#44475a',
       // Inline-code text beside its chip ground (markup-raw yellow).
       'md-inline-code': '#f1fa8c',
-      'terminal-bg': '#282a36',
+      'terminal-bg': '#191a21',
     },
   },
 };

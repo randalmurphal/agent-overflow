@@ -11,11 +11,21 @@
 //   faded   red #9d0006  green #79740e  yellow #b57614  blue #076678
 //           purple #8f3f71  aqua #427b58  orange #af3a03
 //
-// Gruvbox publishes a full ground ramp per mode, so both surface ladders are
-// upstream values with nothing invented: dark0 → dark0_soft → dark1 → dark2,
-// and light0 → light0_soft → light1 → light2. The palette's three intensity
-// bands are what the two variants draw their accents from — bright on dark,
-// faded on light — which is exactly how gruvbox itself flips.
+// Gruvbox publishes a full ground ramp per mode PLUS a hard-contrast ground
+// on each end (dark0_hard #1d2021, light0_hard #f9f5d7), so both surface
+// ladders are upstream values with nothing invented — and both run in
+// gruvbox's own HARD CONTRAST pairing (`contrast = hard`: bg0_hard with
+// fg0), which is what keeps the app crisp where the soft pairing read hazy
+// (see the luminance-range rule in `docs/specs/theme-system.md` §9.11):
+//
+//   dark   dark0_hard #1d2021 → dark0 #282828 → dark1 #3c3836 → dark2 #504945
+//          with fg0 #fbf1c7 focal over fg4 #a89984 supporting
+//   light  light0_hard #f9f5d7 → light0_soft #f2e5bc → light1 #ebdbb2 →
+//          light2 #d5c4a1, with fg0 #282828 focal over fg4 #7c6f64 supporting
+//
+// The palette's three intensity bands are what the two variants draw their
+// accents from — bright on dark, faded on light — which is exactly how
+// gruvbox itself flips.
 //
 // ROLE MAPPING follows morhetz's vim highlight groups: Statement/Keyword red,
 // String green, Function green, Type yellow, Constant/Number purple,
@@ -46,16 +56,16 @@ export const GRUVBOX: BuiltinThemeSpec = {
   axes: { ui: true, code: true },
   dark: {
     colors: {
-      'surface-0': '#282828',
-      'surface-1': '#32302f',
+      'surface-0': '#1d2021',
+      'surface-1': '#282828',
       'surface-2': '#3c3836',
       'surface-3': '#504945',
       border: '#665c54',
       'border-strong': '#7c6f64',
-      'text-primary': '#ebdbb2',
+      'text-primary': '#fbf1c7',
       'text-secondary': '#a89984',
       accent: '#fabd2f',
-      'accent-fg': '#282828',
+      'accent-fg': '#1d2021',
       // Markdown prose roles from this file's markup-* hues (agreeing with
       // fenced markdown when both axes are on Gruvbox), and bold shares the
       // orange gruvbox reserves for emphasis. Inline-code text is code-axis
@@ -127,26 +137,26 @@ export const GRUVBOX: BuiltinThemeSpec = {
       'ansi-fg-97': '#ebdbb2',
     },
     code: {
-      'code-block': '#282828',
+      'code-block': '#1d2021',
       'code-inline-bg': '#32302f',
       // Inline-code text beside its chip ground: aqua per gruvbox.vim
       // (`markdownCode` → GruvboxAqua), reading apart from green headings.
       'md-inline-code': '#8ec07c',
-      'terminal-bg': '#282828',
+      'terminal-bg': '#1d2021',
     },
   },
   light: {
     colors: {
-      'surface-0': '#fbf1c7',
+      'surface-0': '#f9f5d7',
       'surface-1': '#f2e5bc',
       'surface-2': '#ebdbb2',
       'surface-3': '#d5c4a1',
       border: '#bdae93',
       'border-strong': '#a89984',
-      'text-primary': '#3c3836',
+      'text-primary': '#282828',
       'text-secondary': '#7c6f64',
       accent: '#076678',
-      'accent-fg': '#fbf1c7',
+      'accent-fg': '#f9f5d7',
       // Light-mode counterparts of the dark prose roles, from the faded
       // ramp: green headings, orange bold/markers, blue links — the same
       // role → hue mapping as dark. Inline-code text is code-axis (see the
@@ -216,15 +226,15 @@ export const GRUVBOX: BuiltinThemeSpec = {
       'ansi-fg-97': '#3c3836',
     },
     code: {
-      'code-block': '#fbf1c7',
+      'code-block': '#f9f5d7',
       'code-inline-bg': '#ebdbb2',
       // Inline-code text on the chip: faded aqua #427b58 measures 3.64:1 on
       // this ground — under the 4:1 chip floor, and gruvbox's faded ramp has
       // no darker aqua — so the role restates the light text color (the chip
       // ground and the mono face carry the code-ness), matching the
       // latte / solarized-light treatment.
-      'md-inline-code': '#3c3836',
-      'terminal-bg': '#fbf1c7',
+      'md-inline-code': '#282828',
+      'terminal-bg': '#f9f5d7',
     },
   },
 };
