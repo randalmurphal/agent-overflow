@@ -36,6 +36,7 @@
   // activity-run rail precedent); the first/last arrows are real
   // buttons and the keyboard-reachable surface.
 
+  import { untrack } from 'svelte';
   import ChevronsUp from '@lucide/svelte/icons/chevrons-up';
   import ChevronsDown from '@lucide/svelte/icons/chevrons-down';
   import type { ThreadPane } from '../../stores/thread.svelte';
@@ -48,9 +49,10 @@
     deriveNavTicks,
     itemWindowBounds,
     mergeNavTicks,
+    naturalRailHeightPx,
     previewTranslateYPercent,
-    railCompressed,
     railHeightPx,
+    railOverflows,
     tickDistanceScale,
     tickFraction,
     tickIndexFromPointer,
@@ -65,14 +67,11 @@
     nodes,
     getListRef,
     onJumpToItem,
-    onJumpToLatest,
   }: {
     pane: ThreadPane;
     nodes: TimelineNode[];
     getListRef(): TimelineVirtualizerHandle | undefined;
     onJumpToItem(id: string): void;
-    /** Bottom arrow: the thread's true tail (reconciles a windowed tail). */
-    onJumpToLatest(): void;
   } = $props();
 
   const ARROW_SIZE_PX = 24;
@@ -80,9 +79,16 @@
   // Vertical px the rail column reserves for the two arrow slots and
   // breathing room: 2 × (ARROW_SIZE_PX + ARROW_GAP_PX) + 20 slack.
   // A CONSTANT on purpose: deriving it from whether the arrows
-  // currently render would couple available height → compression
+  // currently render would couple available height → overflow
   // → arrows → available height into a layout feedback loop.
   const RAIL_VERTICAL_RESERVE_PX = 96;
+  // The clip wrapper's vertical grace beyond the rail window: edge
+  // ticks and the dot render whole instead of losing their half past
+  // the window boundary. The wrapper's negative insets and the strip's
+  // compensating top offset BOTH render from this constant (px, never
+  // a rem utility — a root font-size change must not desync them), so
+  // strip coordinates stay rail-anchored.
+  const CLIP_GRACE_PX = 4;
   // The hit strip extends this far past the rail's ends — enough grace
   // to catch a near-miss, small enough (< ARROW_GAP_PX) not to overlap
   // the arrows, and bounded so a click in the wider left gutter never
@@ -127,17 +133,27 @@
     })();
   });
 
-  let merged = $derived.by(() => {
-    const bounds = itemWindowBounds(pane.items);
-    return mergeNavTicks(
+  // The window-bounds read touches pane.items' edge rows, which the
+  // streaming apply replaces per flush — deriving the bounds down to
+  // PRIMITIVES puts Svelte's equality cutoff between those deltas and
+  // the tick merge, so `merged` (and the O(ticks) structural reset it
+  // drives) only recomputes when the window's span actually moves.
+  // -1 is the "nothing loaded" sentinel; real turn indices are >= 0.
+  let windowBounds = $derived(itemWindowBounds(pane.items));
+  let windowFirstTurn = $derived(windowBounds?.first.turnIndex ?? -1);
+  let windowFirstItem = $derived(windowBounds?.first.itemIndex ?? -1);
+  let windowLastTurn = $derived(windowBounds?.last.turnIndex ?? -1);
+  let windowLastItem = $derived(windowBounds?.last.itemIndex ?? -1);
+  let merged = $derived.by(() =>
+    mergeNavTicks(
       baseline,
       deriveNavTicks(nodes),
-      bounds?.first ?? null,
-      bounds?.last ?? null,
+      windowFirstTurn < 0 ? null : { turnIndex: windowFirstTurn, itemIndex: windowFirstItem },
+      windowLastTurn < 0 ? null : { turnIndex: windowLastTurn, itemIndex: windowLastItem },
       pane.hasMoreHistory,
       pane.hasMoreNewer,
-    );
-  });
+    ),
+  );
   let ticks = $derived(merged.ticks);
   let visible = $derived(ticks.length >= NAV_RAIL_MIN_TICKS);
 
@@ -150,19 +166,25 @@
 
   let containerEl: HTMLDivElement | undefined = $state(undefined);
   let markerEl: HTMLDivElement | undefined = $state(undefined);
+  let stripEl: HTMLDivElement | undefined = $state(undefined);
+  let firstArrowEl: HTMLButtonElement | undefined = $state(undefined);
+  let latestArrowEl: HTMLButtonElement | undefined = $state(undefined);
   let availableHeightPx = $state(0);
   // Raw container height for the visible-band center. Plain (not
   // $state) on purpose: only the sync module reads it, per frame,
   // through a getter — nothing renders from it.
   let containerHeightPx = 0;
 
+  let naturalH = $derived(naturalRailHeightPx(ticks.length));
   let railH = $derived(railHeightPx(ticks.length, availableHeightPx));
-  let compressed = $derived(railCompressed(ticks.length, availableHeightPx));
-  // Arrows exist for a compressed rail only: every message already has a
-  // tick, so the arrows are shortcuts past a dense pack, not the map's
-  // reach. The availableHeightPx > 0 gate stops a one-frame flash before
-  // the ResizeObserver's first delivery (height 0 reads as compressed).
-  let showArrows = $derived(availableHeightPx > 0 && compressed);
+  // Spacing never compresses: a strip taller than the column is CLIPPED
+  // to a window that slides with the reader (the sync module writes the
+  // translate). The arrows exist only in that state, and each shows
+  // only while ITS end tick is clipped out (also the sync module's
+  // per-frame call). The availableHeightPx > 0 gate stops a one-frame
+  // flash before the ResizeObserver's first delivery (height 0 reads
+  // as overflowing).
+  let overflowing = $derived(availableHeightPx > 0 && railOverflows(ticks.length, availableHeightPx));
 
   // Available height for the rail comes from the container's own RO —
   // async-only, no synchronous layout seed (the C20 width-oscillation
@@ -260,13 +282,19 @@
     return tickDistanceScale(resolvedActive === null ? null : Math.abs(index - resolvedActive));
   }
 
-  // The strip spans exactly the rail plus STRIP_PAD_PX each end, so the
-  // event's own offsetY maps onto the rail with plain arithmetic — no
-  // getBoundingClientRect on the pointer-move path (forced layout at
-  // pointer frequency, precisely while streaming keeps layout dirty).
+  // The hit strip spans exactly the rail window plus STRIP_PAD_PX each
+  // end, so the event's own offsetY maps onto the tick strip with plain
+  // arithmetic — no getBoundingClientRect on the pointer-move path
+  // (forced layout at pointer frequency, precisely while streaming
+  // keeps layout dirty). The sync module's clip offset converts window
+  // y into strip y; 0 whenever the strip fits.
   function indexFromStripOffsetY(offsetY: number): number {
     if (ticks.length === 0) return -1;
-    return tickIndexFromPointer(offsetY - STRIP_PAD_PX, railH, ticks.length);
+    return tickIndexFromPointer(
+      offsetY - STRIP_PAD_PX + sync.getClipOffsetPx(),
+      naturalH,
+      ticks.length,
+    );
   }
 
   function handleStripMove(event: MouseEvent): void {
@@ -303,10 +331,22 @@
     getListRef: () => getListRef(),
     getTicks: () => merged,
     getMarkerEl: () => markerEl,
+    getStripEl: () => stripEl,
+    getFirstArrowEl: () => firstArrowEl,
+    getLatestArrowEl: () => latestArrowEl,
+    getAvailableHeightPx: () => availableHeightPx,
     // 0 before the RO's first delivery; the sync module falls back to
     // the raw viewport center then.
     getVisibleCenterY: () => (containerHeightPx > 0 ? TOP_INSET_PX + containerHeightPx / 2 : 0),
     isEnabled: () => visible,
+    // The strip slid under the pointer (a scroll the strip's own wheel
+    // handler never saw — bottom-follow streaming, keyboard scroll, a
+    // landing jump): drop the hover rather than let the preview lie
+    // about which tick it points at. Guarded so the rAF path writes
+    // state only when a hover actually exists.
+    onClipChange: () => {
+      if (activeIndex !== null) activeIndex = null;
+    },
   });
 
   /**
@@ -320,15 +360,35 @@
 
   // A structural pass replaces the tick list; the applied fill is stale
   // by construction (the keyed list reuses surviving elements, so it
-  // must be cleared by hand) — reset and resync.
+  // must be cleared by hand) — reset and resync. untrack because
+  // schedule() reads ctx getters (isEnabled → `visible`): these effects
+  // must re-run on exactly their named dependency, not on whatever a
+  // getter happens to touch.
   $effect(() => {
     ticks;
-    sync.reset();
+    untrack(() => sync.reset());
+  });
+
+  // A column resize changes the window's clip math without a scroll
+  // event to schedule the sync — re-sync on the RO-fed height.
+  $effect(() => {
+    availableHeightPx;
+    untrack(() => sync.schedule());
   });
 
   $effect(() => () => sync.cancel());
 
   let railTop = $derived(`calc(50% - ${railH / 2}px)`);
+
+  // Preview anchor: the hovered tick's y within the rail WINDOW (strip
+  // y minus the slide). getClipOffsetPx is a plain read of the last
+  // synced value, recomputed per hover-index change — the cadence the
+  // card moves at anyway (wheel over the strip drops the hover).
+  let previewAnchor = $derived.by(() => {
+    if (resolvedActive === null) return null;
+    const y = tickFraction(resolvedActive, ticks.length) * naturalH - sync.getClipOffsetPx();
+    return { y, translatePercent: previewTranslateYPercent(railH > 0 ? y / railH : 0.5) };
+  });
 
   const ARROW_CLASSES = [
     'pointer-events-auto absolute left-1.5 z-30',
@@ -373,13 +433,19 @@
       onwheel={() => (activeIndex = null)}
     ></button>
 
-    {#if showArrows}
+    {#if overflowing}
+      <!-- Jump arrows exist only while the strip is clipped, and each is
+           born hidden: the sync module reveals one only while ITS end
+           tick is clipped out of the window (at the strip's end the
+           tick itself is visible and the arrow yields). -->
       <button
+        bind:this={firstArrowEl}
         type="button"
         class={ARROW_CLASSES}
         style:width={`${ARROW_SIZE_PX}px`}
         style:height={`${ARROW_SIZE_PX}px`}
         style:top={`calc(${railTop} - ${ARROW_GAP_PX + ARROW_SIZE_PX}px)`}
+        style:visibility="hidden"
         aria-label="Jump to first message"
         title="Jump to first message"
         data-testid="nav-rail-jump-first"
@@ -388,75 +454,96 @@
         <Icon icon={ChevronsUp} size={13} strokeWidth={2.5} />
       </button>
       <button
+        bind:this={latestArrowEl}
         type="button"
         class={ARROW_CLASSES}
         style:width={`${ARROW_SIZE_PX}px`}
         style:height={`${ARROW_SIZE_PX}px`}
         style:top={`calc(${railTop} + ${railH + ARROW_GAP_PX}px)`}
-        aria-label="Jump to latest"
-        title="Jump to latest"
+        style:visibility="hidden"
+        aria-label="Jump to latest message"
+        title="Jump to latest message"
         data-testid="nav-rail-jump-latest"
-        onclick={onJumpToLatest}
+        onclick={() => onJumpToItem(ticks[ticks.length - 1].id)}
       >
         <Icon icon={ChevronsDown} size={13} strokeWidth={2.5} />
       </button>
     {/if}
 
-    <!-- The rail proper: vertically centered, height capped to the
-         column (spacing compresses past the cap; positions are
-         fractional). Ticks are decorative — the strip owns the events.
-         The transition is transform-ONLY: the in-view fill flips from
-         the scroll path and must not start animations there. -->
+    <!-- The rail proper: a vertically centered WINDOW onto the tick
+         strip. The strip lays every tick out at natural spacing; when
+         it outgrows the window the clip wrapper cuts it and the sync
+         module slides it (translateY) with the reader's position. The
+         wrapper's CLIP_GRACE_PX insets let edge ticks render whole;
+         the strip's matching static top offset keeps strip y
+         rail-anchored. Ticks are decorative — the hit strip
+         owns the events. The tick transition is transform-ONLY: the
+         current fill flips from the scroll path and must not start
+         animations there. -->
     <div
       class="absolute left-0 w-full"
       style:top={railTop}
       style:height={`${railH}px`}
       aria-hidden="true"
     >
-      {#each ticks as tick, i (tick.id)}
+      <div
+        class="absolute inset-x-0 overflow-hidden"
+        style:top={`${-CLIP_GRACE_PX}px`}
+        style:bottom={`${-CLIP_GRACE_PX}px`}
+      >
         <div
-          use:sync.registerTick={i}
-          data-current="false"
-          class="absolute left-3 h-0.5 w-6 origin-left rounded-full bg-border-strong transition-transform duration-150 motion-reduce:transition-none data-[current=true]:bg-accent"
-          style:top={`${tickFraction(i, ticks.length) * 100}%`}
-          style:transform={`translateY(-50%) scaleX(${tickScale(i)})`}
-        ></div>
-      {/each}
+          bind:this={stripEl}
+          class="absolute inset-x-0"
+          style:top={`${CLIP_GRACE_PX}px`}
+          style:height={`${naturalH}px`}
+          data-testid="nav-rail-strip-track"
+        >
+          {#each ticks as tick, i (tick.id)}
+            <div
+              use:sync.registerTick={i}
+              data-current="false"
+              class="absolute left-3 h-0.5 w-6 origin-left rounded-full bg-border-strong transition-transform duration-150 motion-reduce:transition-none data-[current=true]:bg-accent"
+              style:top={`${tickFraction(i, ticks.length) * 100}%`}
+              style:transform={`translateY(-50%) scaleX(${tickScale(i)})`}
+            ></div>
+          {/each}
 
-      {#if ticks.length > 0}
-        <!-- Position dot: sits IN the tick column, x-centered on the
-             resting tick lines, centered in the gap between the two
-             ticks the reader is between, and hops to the next gap on
-             reaching the next message. Shows ONLY while no user message
-             is on screen — whenever one is, the current tick's fill is
-             the position claim and the dot yields (the sync module owns
-             that exclusivity). Smaller and dimmer than the fill on
-             purpose: it is the between-messages state, not the primary
-             marker. style.top and visibility are written imperatively
-             by the sync module; born hidden so it never paints before
-             the first sync. -->
-        <div
-          bind:this={markerEl}
-          class="absolute h-[3px] w-[3px] -translate-x-1/2 -translate-y-1/2 rounded-full bg-accent/75"
-          style:left={`${MARKER_CENTER_X_PX}px`}
-          style:top="0%"
-          style:visibility="hidden"
-          data-testid="nav-rail-marker"
-        ></div>
-      {/if}
+          {#if ticks.length > 0}
+            <!-- Position dot: sits IN the tick column, x-centered on the
+                 resting tick lines, centered in the gap between the two
+                 ticks the reader is between, and hops to the next gap on
+                 reaching the next message. Shows ONLY while no user message
+                 is on screen — whenever one is, the current tick's fill is
+                 the position claim and the dot yields (the sync module owns
+                 that exclusivity). Smaller and dimmer than the fill on
+                 purpose: it is the between-messages state, not the primary
+                 marker. style.top and visibility are written imperatively
+                 by the sync module; born hidden so it never paints before
+                 the first sync. -->
+            <div
+              bind:this={markerEl}
+              class="absolute h-[3px] w-[3px] -translate-x-1/2 -translate-y-1/2 rounded-full bg-accent/75"
+              style:left={`${MARKER_CENTER_X_PX}px`}
+              style:top="0%"
+              style:visibility="hidden"
+              data-testid="nav-rail-marker"
+            ></div>
+          {/if}
+        </div>
+      </div>
     </div>
 
-    {#if resolvedActive !== null && preview && preview.userText}
-      <!-- Turn preview. Anchored to the hovered tick's rail position;
-           edge cards flip instead of clipping. Selectable on purpose —
-           mouseleave keeps the hover while the pointer is anywhere in
-           the container, so text can be selected without the card
-           vanishing. -->
+    {#if previewAnchor !== null && preview && preview.userText}
+      <!-- Turn preview. Anchored to the hovered tick's position within
+           the rail window; cards near the window's edges flip instead
+           of clipping. Selectable on purpose — mouseleave keeps the
+           hover while the pointer is anywhere in the container, so text
+           can be selected without the card vanishing. -->
       <div
         role="tooltip"
         class="pointer-events-auto absolute left-10 z-40 w-80 max-w-[min(20rem,60vw)] cursor-text select-text rounded-lg border border-border-subtle bg-card p-3 shadow-sheet"
-        style:top={`calc(${railTop} + ${tickFraction(resolvedActive, ticks.length) * railH}px)`}
-        style:transform={`translateY(${previewTranslateYPercent(resolvedActive, ticks.length)}%)`}
+        style:top={`calc(${railTop} + ${previewAnchor.y}px)`}
+        style:transform={`translateY(${previewAnchor.translatePercent}%)`}
         onmouseleave={handleHoverLeave}
         data-testid="nav-rail-preview"
       >

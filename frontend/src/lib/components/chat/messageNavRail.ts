@@ -7,9 +7,10 @@
 // Perf contract (the renderer-hang rules, frontend-scroll.md):
 // - `deriveNavTicks` runs once per STRUCTURAL pass (revealedNodes
 //   identity), never per streaming delta.
-// - The per-scroll-frame work is `tickRangeInView` + `markerFraction`:
-//   a handful of binary searches over the tick array plus two engine
-//   offset lookups. No O(items) walk rides the 60Hz scroll callback.
+// - The per-scroll-frame work is `tickRangeInView` + `railGapLow` +
+//   `railClipOffsetPx`: a handful of binary searches over the tick
+//   array plus a few engine offset lookups. No O(items) walk rides the
+//   60Hz scroll callback.
 
 import type { Item } from '../../types/models';
 import type { TimelineNode } from '../../utils/subagentGrouping';
@@ -50,14 +51,17 @@ export interface MergedNavTicks {
 }
 
 /**
- * Vertical budget per tick before the rail's height cap compresses the
- * spacing. Positions are fractional, so past the cap ticks pack closer
- * together instead of overflowing — the fisheye keeps a dense pack
- * targetable, and the first/last arrows cover the ends. Sized so the
- * position dot (4px) fits the gap between two 2px lines with clearance,
- * without the lines having to move.
+ * Vertical budget per tick — a FLOOR, never compressed. When the strip
+ * of ticks outgrows the rail column, the rail clips it to a window that
+ * slides with the reader's position (`railClipOffsetPx`) instead of
+ * packing ticks closer; the first/last arrows appear only while their
+ * end tick is clipped out. Sized so the position dot fits the gap
+ * between two 2px lines with clearance, without the lines having to
+ * move. 8px is the deliberate resting density (user-tuned 2026-08-19):
+ * tighter than the original 12 without reaching the packed look the
+ * old compression produced.
  */
-export const NAV_TICK_SPACING_PX = 12;
+export const NAV_TICK_SPACING_PX = 8;
 
 /** The rail renders nothing below this many ticks (a lone message needs no map). */
 export const NAV_RAIL_MIN_TICKS = 2;
@@ -158,19 +162,51 @@ export function itemWindowBounds(items: readonly Item[]): {
   };
 }
 
-/** Natural (uncompressed) rail height for `count` ticks. */
+/** The tick strip's full height for `count` ticks at natural spacing. */
 export function naturalRailHeightPx(count: number): number {
   return Math.max(0, count - 1) * NAV_TICK_SPACING_PX;
 }
 
-/** Rendered rail height: natural spacing until the available span caps it. */
+/** Rendered rail-viewport height: the natural strip until the column caps it. */
 export function railHeightPx(count: number, availablePx: number): number {
   return Math.min(naturalRailHeightPx(count), Math.max(0, availablePx));
 }
 
-/** True when the cap is compressing spacing — the overflow-arrows trigger. */
-export function railCompressed(count: number, availablePx: number): boolean {
+/**
+ * True when the tick strip outgrows the rail column. Spacing never
+ * compresses: an overflowing strip is CLIPPED to a sliding window
+ * instead, and the first/last jump arrows exist only in this state.
+ */
+export function railOverflows(count: number, availablePx: number): boolean {
   return naturalRailHeightPx(count) > Math.max(0, availablePx);
+}
+
+/**
+ * How far the strip can slide: strip height minus the rail viewport.
+ * 0 while the column has no measured height (pre-ResizeObserver) — a
+ * window with no extent has nothing to slide within.
+ */
+export function railMaxClipPx(count: number, availablePx: number): number {
+  if (availablePx <= 0) return 0;
+  return Math.max(0, naturalRailHeightPx(count) - railHeightPx(count, availablePx));
+}
+
+/**
+ * The clipped strip's slide offset for a reader at `positionFraction`
+ * (0 = first message, 1 = latest) — the reader's point on the strip is
+ * kept at the window's center, clamped so the window never leaves the
+ * strip. 0 for a strip that fits: the whole map is always visible then.
+ */
+export function railClipOffsetPx(
+  positionFraction: number,
+  count: number,
+  availablePx: number,
+): number {
+  const maxClip = railMaxClipPx(count, availablePx);
+  if (maxClip <= 0) return 0;
+  const frac = Math.min(Math.max(positionFraction, 0), 1);
+  const target = frac * naturalRailHeightPx(count) - railHeightPx(count, availablePx) / 2;
+  return Math.min(Math.max(target, 0), maxClip);
 }
 
 /** Tick i's position along the rail, 0..1. A single tick centers. */
@@ -181,9 +217,10 @@ export function tickFraction(index: number, count: number): number {
 }
 
 /**
- * Pointer-Y → nearest tick index over the hit strip. Linear regardless
- * of compression, so a dense pack stays targetable: the strip maps its
- * whole height onto the index range and the fisheye shows what landed.
+ * STRIP-y → nearest tick index. `offsetY` is a strip coordinate — the
+ * caller converts window y by adding the current clip offset — and
+ * `heightPx` is the natural strip height, so only ticks near the
+ * window are reachable when the strip is clipped.
  */
 export function tickIndexFromPointer(offsetY: number, heightPx: number, count: number): number {
   if (count <= 0) return -1;
@@ -281,27 +318,29 @@ export function tickNearestCenter(
 }
 
 /**
- * The position dot's rail fraction, or null when no dot should show.
- * DISCRETE by design: the dot sits centered in the GAP between the two
- * ticks the reader is between — after message k, before message k+1 —
- * and hops to the next gap when the viewport center reaches the next
- * message. At the last message (nothing to be "between") it hides; the
- * current-message fill already marks where the reader is then. Ditto at
- * the very top, above the first message.
+ * The gap the viewport center sits in: the largest LOADED tick index k
+ * whose message starts at or above the center (`loadedStart - 1` when
+ * the center is above the first loaded tick — which is -1 only when
+ * nothing precedes it). Null when fewer than two ticks exist or no
+ * loaded segment does. Geometry exists only for loaded ticks, so with
+ * an unloaded tail the answer tops out at `loadedEnd`, the gap toward
+ * that unloaded tail.
  *
- * Geometry exists only for loaded ticks. A center above the first
- * loaded tick sits in the gap toward unloaded history (when there is
- * one); below the last loaded tick, in the gap toward the unloaded
- * tail.
+ * The one gap search behind both position consumers in the sync
+ * module: the gap DOT — DISCRETE by design, centered at
+ * `(k + 0.5) / (count - 1)` between the two ticks the reader is
+ * between, hopping per message, hidden past either end where the
+ * current-message fill takes over — and the clipped strip's slide
+ * fraction. Sharing the search is what keeps the two claims from
+ * disagreeing about where the reader is.
  */
-export function markerGapFraction(
+export function railGapLow(
   merged: MergedNavTicks,
   viewportCenterOffset: number,
   offsetForNode: (nodeIndex: number) => number,
 ): number | null {
   const { ticks, loadedStart, loadedEnd } = merged;
-  const count = ticks.length;
-  if (count < 2 || loadedStart < 0) return null;
+  if (ticks.length < 2 || loadedStart < 0) return null;
   const nodeAt = (i: number): number => ticks[i].nodeIndex ?? 0;
   // Largest loaded k with offset(ticks[k]) <= center. Binary search
   // keeps the per-frame engine lookups at O(log n).
@@ -313,10 +352,7 @@ export function markerGapFraction(
     else hi = mid - 1;
   }
   // Above the first loaded tick: between unloaded history and it.
-  const gapLo = lo < loadedStart ? loadedStart - 1 : lo;
-  if (gapLo < 0) return null; // above the thread's first message
-  if (gapLo >= count - 1) return null; // at the last message
-  return (gapLo + 0.5) / (count - 1);
+  return lo < loadedStart ? loadedStart - 1 : lo;
 }
 
 /** Hover preview of one turn: the user's ask plus how it resolved. */
@@ -363,13 +399,15 @@ export function turnPreview(items: readonly Item[], userItemId: string): NavTick
 }
 
 /**
- * Preview-card vertical alignment: the first tick's card hangs down, the
- * last tick's hangs up, everything else centers — edge cards flip
- * instead of clipping at the pane's top/bottom.
+ * Preview-card vertical alignment from the tick's position within the
+ * rail VIEWPORT (0 = window top, 1 = window bottom): a card near the
+ * top hangs down, near the bottom hangs up, everything else centers —
+ * edge cards flip instead of clipping at the pane's top/bottom.
+ * Viewport-relative rather than index-relative because a clipped strip
+ * puts mid-list ticks at the window edges.
  */
-export function previewTranslateYPercent(index: number, count: number): number {
-  if (count <= 1) return -50;
-  if (index <= 0) return 0;
-  if (index >= count - 1) return -100;
+export function previewTranslateYPercent(viewportFraction: number): number {
+  if (viewportFraction <= 0.1) return 0;
+  if (viewportFraction >= 0.9) return -100;
   return -50;
 }

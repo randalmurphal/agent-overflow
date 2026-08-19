@@ -3,9 +3,11 @@
 // click routes to onJumpToItem with a real tick id, hover raises the
 // preview card (locally for loaded ticks, over the RPC for unloaded
 // ones), and the visibility gate holds. The pointer→index and merge
-// math is covered in messageNavRail.test.ts. Arrow routing is untested
-// here on purpose: arrows render only for a compressed rail, and
-// happy-dom's ResizeObserver never delivers a height.
+// math is covered in messageNavRail.test.ts, and the clipped-strip
+// slide + arrow visibility in messageNavRailSync.test.ts. Arrow
+// routing is untested here on purpose: arrows render only for an
+// overflowing rail, and happy-dom's ResizeObserver never delivers a
+// height.
 import { describe, expect, it, vi } from 'vitest';
 import { render, fireEvent, waitFor } from '@testing-library/svelte';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
@@ -55,18 +57,16 @@ const threeMessageNodes: TimelineNode[] = [
 function renderRail(props: Record<string, unknown> = {}, baseline: unknown[] = []) {
   setBindingMock('GetThreadUserMessageTicks', async () => baseline);
   const onJumpToItem = vi.fn();
-  const onJumpToLatest = vi.fn();
   const utils = render(MessageNavRail, {
     props: {
       pane: makePane(),
       nodes: threeMessageNodes,
       getListRef: () => undefined,
       onJumpToItem,
-      onJumpToLatest,
       ...props,
     },
   });
-  return { ...utils, onJumpToItem, onJumpToLatest };
+  return { ...utils, onJumpToItem };
 }
 
 describe('MessageNavRail', () => {

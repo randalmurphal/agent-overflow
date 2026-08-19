@@ -8,7 +8,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { TimelineVirtualizerHandle } from '../../utils/virtual/types';
 import type { MergedNavTicks } from './messageNavRail';
-import { createNavRailViewportSync, type NavRailViewportSync } from './messageNavRailSync';
+import {
+  createNavRailViewportSync,
+  type NavRailSyncCtx,
+  type NavRailViewportSync,
+} from './messageNavRailSync';
 
 // Three loaded ticks at nodes 0 / 5 / 10; each node is 100px tall, so
 // findItemIndex is floor(offset / 100) and a tick's offset is node·100.
@@ -28,7 +32,30 @@ describe('messageNavRailSync single position claim', () => {
   let visibleCenterY: number;
   let sync: NavRailViewportSync;
   let marker: HTMLElement;
+  let strip: HTMLElement;
+  let firstArrow: HTMLElement;
+  let latestArrow: HTMLElement;
+  let availableHeight: number;
   let tickEls: HTMLElement[];
+
+  function ctxFor(
+    list: TimelineVirtualizerHandle,
+    ticks: MergedNavTicks,
+    onClipChange?: () => void,
+  ): NavRailSyncCtx {
+    return {
+      getListRef: () => list,
+      getTicks: () => ticks,
+      getMarkerEl: () => marker,
+      getStripEl: () => strip,
+      getFirstArrowEl: () => firstArrow,
+      getLatestArrowEl: () => latestArrow,
+      getAvailableHeightPx: () => availableHeight,
+      getVisibleCenterY: () => visibleCenterY,
+      isEnabled: () => true,
+      onClipChange,
+    };
+  }
 
   function drainFrames(): void {
     while (frames.length > 0) {
@@ -63,13 +90,14 @@ describe('messageNavRailSync single position claim', () => {
     } as unknown as TimelineVirtualizerHandle;
     marker = document.createElement('div');
     marker.style.visibility = 'hidden';
-    sync = createNavRailViewportSync({
-      getListRef: () => list,
-      getTicks: () => merged,
-      getMarkerEl: () => marker,
-      getVisibleCenterY: () => visibleCenterY,
-      isEnabled: () => true,
-    });
+    strip = document.createElement('div');
+    firstArrow = document.createElement('button');
+    firstArrow.style.visibility = 'hidden';
+    latestArrow = document.createElement('button');
+    latestArrow.style.visibility = 'hidden';
+    // Large enough that the 3-tick strip (16px) fits: no clip, no arrows.
+    availableHeight = 300;
+    sync = createNavRailViewportSync(ctxFor(list, merged));
     tickEls = merged.ticks.map((_, i) => {
       const el = document.createElement('div');
       el.dataset.current = 'false';
@@ -106,13 +134,7 @@ describe('messageNavRailSync single position claim', () => {
       sizeAt: () => 100,
       getTotalSize: () => 1100,
     } as unknown as TimelineVirtualizerHandle;
-    const wide = createNavRailViewportSync({
-      getListRef: () => list,
-      getTicks: () => merged,
-      getMarkerEl: () => marker,
-      getVisibleCenterY: () => visibleCenterY,
-      isEnabled: () => true,
-    });
+    const wide = createNavRailViewportSync(ctxFor(list, merged));
     tickEls.forEach((el, i) => wide.registerTick(el, i));
     // Offset 50 (off the top, so the thread-top override stays out of
     // it) → viewport 50..749 sees nodes 0..7 (both u1 and u2). Center
@@ -135,13 +157,7 @@ describe('messageNavRailSync single position claim', () => {
       sizeAt: () => 100,
       getTotalSize: () => 1100,
     } as unknown as TimelineVirtualizerHandle;
-    const wide = createNavRailViewportSync({
-      getListRef: () => list,
-      getTicks: () => merged,
-      getMarkerEl: () => marker,
-      getVisibleCenterY: () => visibleCenterY,
-      isEnabled: () => true,
-    });
+    const wide = createNavRailViewportSync(ctxFor(list, merged));
     tickEls.forEach((el, i) => wide.registerTick(el, i));
     // Same geometry as above (offset 50, off the thread-top override),
     // but a composer eats the bottom: the visible band's center is at
@@ -165,13 +181,7 @@ describe('messageNavRailSync single position claim', () => {
       sizeAt: () => 100,
       getTotalSize: () => 1100,
     } as unknown as TimelineVirtualizerHandle;
-    const wide = createNavRailViewportSync({
-      getListRef: () => list,
-      getTicks: () => merged,
-      getMarkerEl: () => marker,
-      getVisibleCenterY: () => visibleCenterY,
-      isEnabled: () => true,
-    });
+    const wide = createNavRailViewportSync(ctxFor(list, merged));
     tickEls.forEach((el, i) => wide.registerTick(el, i));
     // Same geometry as the nearest-to-center test: at offset 0 the
     // center favors u2, but scrollTop 0 with the thread's first message
@@ -204,13 +214,7 @@ describe('messageNavRailSync single position claim', () => {
       sizeAt: () => 100,
       getTotalSize: () => 1100,
     } as unknown as TimelineVirtualizerHandle;
-    const wide = createNavRailViewportSync({
-      getListRef: () => list,
-      getTicks: () => withHistory,
-      getMarkerEl: () => marker,
-      getVisibleCenterY: () => visibleCenterY,
-      isEnabled: () => true,
-    });
+    const wide = createNavRailViewportSync(ctxFor(list, withHistory));
     tickEls.forEach((el, i) => wide.registerTick(el, i));
     // Center 350: u2's row center 50 is 300 away, u3's 550 is 200 away
     // → u3 stays current even at scrollTop 0.
@@ -230,13 +234,7 @@ describe('messageNavRailSync single position claim', () => {
       sizeAt: () => 100,
       getTotalSize: () => 1100,
     } as unknown as TimelineVirtualizerHandle;
-    const wide = createNavRailViewportSync({
-      getListRef: () => list,
-      getTicks: () => merged,
-      getMarkerEl: () => marker,
-      getVisibleCenterY: () => visibleCenterY,
-      isEnabled: () => true,
-    });
+    const wide = createNavRailViewportSync(ctxFor(list, merged));
     tickEls.forEach((el, i) => wide.registerTick(el, i));
     // Max offset 400 → viewport 400..1099 sees u2 and u3. Center 750:
     // u2's row center 550 is 200 away, u3's 1050 is 300 away — nearest
@@ -269,13 +267,7 @@ describe('messageNavRailSync single position claim', () => {
       sizeAt: () => 100,
       getTotalSize: () => 800,
     } as unknown as TimelineVirtualizerHandle;
-    const wide = createNavRailViewportSync({
-      getListRef: () => list,
-      getTicks: () => withNewer,
-      getMarkerEl: () => marker,
-      getVisibleCenterY: () => visibleCenterY,
-      isEnabled: () => true,
-    });
+    const wide = createNavRailViewportSync(ctxFor(list, withNewer));
     tickEls.forEach((el, i) => wide.registerTick(el, i));
     // Max offset 100 → viewport 100..799 sees u1 and u2. Center 450 is
     // exactly u1's row center → u1, not the override's u2.
@@ -306,13 +298,7 @@ describe('messageNavRailSync single position claim', () => {
       sizeAt: () => 100,
       getTotalSize: () => 300,
     } as unknown as TimelineVirtualizerHandle;
-    const small = createNavRailViewportSync({
-      getListRef: () => list,
-      getTicks: () => tiny,
-      getMarkerEl: () => marker,
-      getVisibleCenterY: () => visibleCenterY,
-      isEnabled: () => true,
-    });
+    const small = createNavRailViewportSync(ctxFor(list, tiny));
     small.registerTick(tickEls[0], 0);
     small.registerTick(tickEls[1], 1);
     // Center 150 is u2's row center exactly → u2.
@@ -336,5 +322,141 @@ describe('messageNavRailSync single position claim', () => {
     expect(currents()).toEqual(['false', 'false', 'false']);
     expect(marker.style.visibility).toBe('');
     expect(marker.style.top).toBe('75%');
+  });
+
+  it('a strip that fits is actively cleared, not merely left alone', () => {
+    // Seed the elements with a stale overflow state (what a remount
+    // inheriting old inline styles would look like): the writer must
+    // WRITE the fitting answer, not skip because its cache matches.
+    strip.style.transform = 'translateY(-99px)';
+    firstArrow.style.visibility = '';
+    latestArrow.style.visibility = '';
+    scrollOffset = 100; // mid-gap, position fraction 0.25
+    sync.schedule();
+    drainFrames();
+    expect(strip.style.transform).toBe('');
+    expect(sync.getClipOffsetPx()).toBe(0);
+    expect(firstArrow.style.visibility).toBe('hidden');
+    expect(latestArrow.style.visibility).toBe('hidden');
+  });
+
+  it('mid-gap with no message on screen the dot fraction drives the clip', () => {
+    // 16px strip in a 6px window → maxClip 10. Viewport covers nodes
+    // 1..3 (between u1 and u2): gap 0 → fraction (0+0.5)/2 = 0.25 →
+    // clip = 0.25·16 − 3 = 1, unclamped, both ends clipped out.
+    availableHeight = 6;
+    scrollOffset = 100;
+    sync.schedule();
+    drainFrames();
+    expect(marker.style.visibility).toBe('');
+    expect(marker.style.top).toBe('25%');
+    expect(sync.getClipOffsetPx()).toBe(1);
+    expect(strip.style.transform).toBe('translateY(-1px)');
+    expect(firstArrow.style.visibility).toBe('');
+    expect(latestArrow.style.visibility).toBe('');
+  });
+
+  it('with nothing loaded the raw scroll proportion still slides the strip', () => {
+    // Baseline-only ticks (no geometry at all): railGapLow answers
+    // null, so the position falls back to offset / maxOffset.
+    const noneLoaded: MergedNavTicks = {
+      ticks: [
+        { id: 'u1', turnIndex: 0, itemIndex: 0, nodeIndex: null },
+        { id: 'u2', turnIndex: 1, itemIndex: 0, nodeIndex: null },
+        { id: 'u3', turnIndex: 2, itemIndex: 0, nodeIndex: null },
+      ],
+      loadedStart: -1,
+      loadedEnd: -1,
+    };
+    availableHeight = 6;
+    const list = {
+      getScrollOffset: () => scrollOffset,
+      getViewportSize: () => 300,
+      findItemIndex: (offset: number) => Math.floor(offset / 100),
+      getItemOffset: (nodeIndex: number) => nodeIndex * 100,
+      sizeAt: () => 100,
+      getTotalSize: () => 1100,
+    } as unknown as TimelineVirtualizerHandle;
+    const cold = createNavRailViewportSync(ctxFor(list, noneLoaded));
+    tickEls.forEach((el, i) => cold.registerTick(el, i));
+    // maxOffset 800, offset 400 → proportion 0.5 → clip 0.5·16 − 3 = 5.
+    scrollOffset = 400;
+    cold.schedule();
+    drainFrames();
+    expect(currents()).toEqual(['false', 'false', 'false']);
+    expect(marker.style.visibility).toBe('hidden');
+    expect(cold.getClipOffsetPx()).toBe(5);
+    expect(strip.style.transform).toBe('translateY(-5px)');
+    cold.cancel();
+  });
+
+  it('onClipChange fires only when the clip actually moves', () => {
+    availableHeight = 6;
+    const list = {
+      getScrollOffset: () => scrollOffset,
+      getViewportSize: () => 300,
+      findItemIndex: (offset: number) => Math.floor(offset / 100),
+      getItemOffset: (nodeIndex: number) => nodeIndex * 100,
+      sizeAt: () => 100,
+      getTotalSize: () => 1100,
+    } as unknown as TimelineVirtualizerHandle;
+    const onClipChange = vi.fn();
+    const watched = createNavRailViewportSync(ctxFor(list, merged, onClipChange));
+    tickEls.forEach((el, i) => watched.registerTick(el, i));
+    scrollOffset = 100; // gap 0 → clip 1 (moved from the initial 0)
+    watched.schedule();
+    drainFrames();
+    expect(onClipChange).toHaveBeenCalledTimes(1);
+    // Same position again: clip unchanged, no callback.
+    watched.schedule();
+    drainFrames();
+    expect(onClipChange).toHaveBeenCalledTimes(1);
+    scrollOffset = 600; // gap 1 → clip 9 → fires again
+    watched.schedule();
+    drainFrames();
+    expect(onClipChange).toHaveBeenCalledTimes(2);
+    watched.cancel();
+  });
+
+  it('an overflowing strip slides with the position claim and each arrow tracks its clipped end', () => {
+    // 3 ticks · 8px = a 16px strip in a 10px window → maxClip 6.
+    availableHeight = 10;
+    const list = {
+      getScrollOffset: () => scrollOffset,
+      getViewportSize: () => 700,
+      findItemIndex: (offset: number) => Math.floor(offset / 100),
+      getItemOffset: (nodeIndex: number) => nodeIndex * 100,
+      sizeAt: () => 100,
+      getTotalSize: () => 1100,
+    } as unknown as TimelineVirtualizerHandle;
+    const wide = createNavRailViewportSync(ctxFor(list, merged));
+    tickEls.forEach((el, i) => wide.registerTick(el, i));
+    // Thread top: u1 current (fraction 0) → no slide; the first tick is
+    // in the window so its arrow yields, the latest is clipped out.
+    scrollOffset = 0;
+    wide.schedule();
+    drainFrames();
+    expect(strip.style.transform).toBe('');
+    expect(wide.getClipOffsetPx()).toBe(0);
+    expect(firstArrow.style.visibility).toBe('hidden');
+    expect(latestArrow.style.visibility).toBe('');
+    // Mid: u2 current (fraction 0.5) → clip 0.5·16 − 5 = 3, both ends
+    // clipped out, both arrows on.
+    scrollOffset = 50;
+    wide.schedule();
+    drainFrames();
+    expect(strip.style.transform).toBe('translateY(-3px)');
+    expect(wide.getClipOffsetPx()).toBe(3);
+    expect(firstArrow.style.visibility).toBe('');
+    expect(latestArrow.style.visibility).toBe('');
+    // Thread bottom: the edge override claims u3 (fraction 1) → max
+    // clip; the latest tick is in the window now, its arrow yields.
+    scrollOffset = 400;
+    wide.schedule();
+    drainFrames();
+    expect(strip.style.transform).toBe('translateY(-6px)');
+    expect(firstArrow.style.visibility).toBe('');
+    expect(latestArrow.style.visibility).toBe('hidden');
+    wide.cancel();
   });
 });

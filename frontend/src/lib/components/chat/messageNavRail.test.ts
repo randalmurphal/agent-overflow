@@ -5,12 +5,14 @@ import {
   NAV_TICK_SPACING_PX,
   deriveNavTicks,
   itemWindowBounds,
-  markerGapFraction,
   mergeNavTicks,
   naturalRailHeightPx,
   previewTranslateYPercent,
-  railCompressed,
+  railClipOffsetPx,
+  railGapLow,
   railHeightPx,
+  railMaxClipPx,
+  railOverflows,
   tickDistanceScale,
   tickFraction,
   tickIndexFromPointer,
@@ -139,16 +141,31 @@ describe('itemWindowBounds', () => {
 });
 
 describe('rail geometry', () => {
-  it('grows by the spacing constant until the cap compresses', () => {
+  it('grows by the spacing constant until the column caps the window', () => {
     // Literal, not recomputed from the constant: a spacing change is a
-    // deliberate test edit, not an automatic pass. 12px leaves a 4px
-    // dot clear of two 2px lines.
-    expect(NAV_TICK_SPACING_PX).toBe(12);
-    expect(naturalRailHeightPx(5)).toBe(48);
-    expect(railHeightPx(5, 1000)).toBe(48);
+    // deliberate test edit, not an automatic pass. 8px (user-tuned
+    // resting density) still clears the 3px dot between two 2px lines.
+    expect(NAV_TICK_SPACING_PX).toBe(8);
+    expect(naturalRailHeightPx(5)).toBe(32);
+    expect(railHeightPx(5, 1000)).toBe(32);
     expect(railHeightPx(200, 300)).toBe(300);
-    expect(railCompressed(200, 300)).toBe(true);
-    expect(railCompressed(5, 300)).toBe(false);
+    expect(railOverflows(200, 300)).toBe(true);
+    expect(railOverflows(5, 300)).toBe(false);
+  });
+
+  it('slides the clipped strip with the reader, clamped to the strip', () => {
+    // 200 ticks · 8px = 1592px strip in a 300px window → 1292 max clip.
+    expect(railMaxClipPx(200, 300)).toBe(1292);
+    expect(railMaxClipPx(5, 300)).toBe(0);
+    // Pre-RO the column reports 0 available px: no window exists yet,
+    // so nothing counts as clipped (not "everything does").
+    expect(railMaxClipPx(200, 0)).toBe(0);
+    // Ends clamp so the end tick is IN the window; the middle centers.
+    expect(railClipOffsetPx(0, 200, 300)).toBe(0);
+    expect(railClipOffsetPx(1, 200, 300)).toBe(1292);
+    expect(railClipOffsetPx(0.5, 200, 300)).toBe(1592 * 0.5 - 150);
+    // A strip that fits never slides, whatever the fraction says.
+    expect(railClipOffsetPx(1, 5, 300)).toBe(0);
   });
 
   it('positions ticks fractionally, centering a lone tick', () => {
@@ -197,52 +214,6 @@ describe('tickRangeInView', () => {
     expect(tickRangeInView(merged, 10, 20)).toBeNull();
     expect(tickRangeInView({ ticks: [], loadedStart: -1, loadedEnd: -1 }, 0, 10)).toBeNull();
     expect(tickRangeInView(merged, 6, 3)).toBeNull();
-  });
-});
-
-describe('markerGapFraction', () => {
-  const offsets = [0, 1000, 3000];
-  const offsetFor = (nodeIndex: number) => offsets[nodeIndex];
-  const allLoaded: MergedNavTicks = {
-    ticks: [tick('a', 0, 0), tick('b', 1, 1), tick('c', 2, 2)],
-    loadedStart: 0,
-    loadedEnd: 2,
-  };
-
-  it('sits centered in the gap between the two surrounding ticks', () => {
-    // Center inside message a (offset 0..999): gap between a and b.
-    expect(markerGapFraction(allLoaded, 0, offsetFor)).toBeCloseTo(0.25);
-    expect(markerGapFraction(allLoaded, 500, offsetFor)).toBeCloseTo(0.25);
-    // Reaching b hops the dot to the b→c gap in one step.
-    expect(markerGapFraction(allLoaded, 1000, offsetFor)).toBeCloseTo(0.75);
-    expect(markerGapFraction(allLoaded, 2999, offsetFor)).toBeCloseTo(0.75);
-  });
-
-  it('hides at the ends: above the first message and at the last', () => {
-    expect(markerGapFraction(allLoaded, -50, offsetFor)).toBeNull();
-    expect(markerGapFraction(allLoaded, 3000, offsetFor)).toBeNull();
-    expect(markerGapFraction({ ticks: [tick('a', 0, 0)], loadedStart: 0, loadedEnd: 0 }, 0, offsetFor)).toBeNull();
-  });
-
-  it('points into the unloaded gaps at the window edges', () => {
-    const withUnloaded: MergedNavTicks = {
-      ticks: [tick('p', 0, null), tick('b', 1, 1), tick('c', 2, 2), tick('s', 3, null)],
-      loadedStart: 1,
-      loadedEnd: 2,
-    };
-    // Above the first loaded tick: between unloaded history and it.
-    expect(markerGapFraction(withUnloaded, 500, offsetFor)).toBeCloseTo(0.5 / 3);
-    // At/after the last loaded tick: between it and the unloaded tail.
-    expect(markerGapFraction(withUnloaded, 3000, offsetFor)).toBeCloseTo(2.5 / 3);
-  });
-
-  it('answers null with nothing loaded (no geometry to place against)', () => {
-    const noneLoaded: MergedNavTicks = {
-      ticks: [tick('p', 0, null), tick('q', 1, null)],
-      loadedStart: -1,
-      loadedEnd: -1,
-    };
-    expect(markerGapFraction(noneLoaded, 500, offsetFor)).toBeNull();
   });
 });
 
@@ -308,11 +279,62 @@ describe('turnPreview', () => {
 });
 
 describe('previewTranslateYPercent', () => {
-  it('flips at the edges and centers elsewhere', () => {
-    expect(previewTranslateYPercent(0, 5)).toBe(0);
-    expect(previewTranslateYPercent(4, 5)).toBe(-100);
-    expect(previewTranslateYPercent(2, 5)).toBe(-50);
-    expect(previewTranslateYPercent(0, 1)).toBe(-50);
+  it('flips near the window edges and centers elsewhere', () => {
+    expect(previewTranslateYPercent(0)).toBe(0);
+    expect(previewTranslateYPercent(0.05)).toBe(0);
+    expect(previewTranslateYPercent(1)).toBe(-100);
+    expect(previewTranslateYPercent(0.95)).toBe(-100);
+    expect(previewTranslateYPercent(0.5)).toBe(-50);
+  });
+});
+
+describe('railGapLow', () => {
+  const offsetFor = (nodeIndex: number): number => nodeIndex * 500;
+  const allLoaded: MergedNavTicks = {
+    ticks: [tick('a', 0, 0), tick('b', 1, 2), tick('c', 2, 4)],
+    loadedStart: 0,
+    loadedEnd: 2,
+  };
+
+  it('names the gap, including the ends the dot hides at', () => {
+    expect(railGapLow(allLoaded, -50, offsetFor)).toBe(-1); // above first
+    expect(railGapLow(allLoaded, 500, offsetFor)).toBe(0); // between a and b
+    expect(railGapLow(allLoaded, 2500, offsetFor)).toBe(2); // at/past last
+    expect(railGapLow({ ticks: [], loadedStart: -1, loadedEnd: -1 }, 0, offsetFor)).toBeNull();
+  });
+
+  it('reaching a tick hops the gap in one step, never a fraction', () => {
+    // Center inside message a (offset 0..999): still gap 0. Reaching
+    // b's own offset moves straight to gap 1.
+    expect(railGapLow(allLoaded, 0, offsetFor)).toBe(0);
+    expect(railGapLow(allLoaded, 999, offsetFor)).toBe(0);
+    expect(railGapLow(allLoaded, 1000, offsetFor)).toBe(1);
+    expect(railGapLow(allLoaded, 1999, offsetFor)).toBe(1);
+  });
+
+  it('points into the unloaded gaps at the window edges', () => {
+    const withUnloaded: MergedNavTicks = {
+      ticks: [tick('p', 0, null), tick('b', 1, 1), tick('c', 2, 2), tick('s', 3, null)],
+      loadedStart: 1,
+      loadedEnd: 2,
+    };
+    // Above the first loaded tick (offset 500): between unloaded
+    // history p and it — loadedStart − 1.
+    expect(railGapLow(withUnloaded, 200, offsetFor)).toBe(0);
+    // At/after the last loaded tick: between it and the unloaded tail,
+    // NOT the past-the-end sentinel — s is still ahead.
+    expect(railGapLow(withUnloaded, 1200, offsetFor)).toBe(2);
+  });
+
+  it('answers null with nothing loaded (no geometry to place against)', () => {
+    const noneLoaded: MergedNavTicks = {
+      ticks: [tick('p', 0, null), tick('q', 1, null)],
+      loadedStart: -1,
+      loadedEnd: -1,
+    };
+    expect(railGapLow(noneLoaded, 500, offsetFor)).toBeNull();
+    // A single tick has no gap to be in.
+    expect(railGapLow({ ticks: [tick('a', 0, 0)], loadedStart: 0, loadedEnd: 0 }, 0, offsetFor)).toBeNull();
   });
 });
 

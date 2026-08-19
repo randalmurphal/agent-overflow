@@ -1098,9 +1098,6 @@
     onJumpToItem={(id) => {
       void jump.jumpToItem(id);
     }}
-    onJumpToLatest={() => {
-      void paging.jumpToLatest();
-    }}
   />
 
   <!-- Visible when the user has escaped or is no longer near the bottom.
