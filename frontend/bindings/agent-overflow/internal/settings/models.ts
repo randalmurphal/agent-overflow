@@ -468,6 +468,20 @@ export class Settings {
     "codexDisabledTools"?: string[];
 
     /**
+     * ClaudeTodoRemindersDisabled turns off Claude Code's periodic
+     * "track your work with the todo tools" nudges by exporting
+     * CLAUDE_CODE_TODO_REMINDER_MODE=off into Claude sessions (headless
+     * and claude-tui — one binary). Spawn-only, like the tool lists.
+     * Default false keeps the vendor's behavior: the CLI nudges only
+     * while the todo tools are actually in the session's tool set, so a
+     * user who disables the whole todo group needs no reminder setting
+     * at all — this exists for the keep-the-tools, lose-the-nudges
+     * middle ground. Zero-value default, so it stays out of
+     * DefaultSettings by construction.
+     */
+    "claudeTodoRemindersDisabled"?: boolean;
+
+    /**
      * DefaultThreadEnvMode seeds the workspace mode for new draft threads.
      * Accepts "local" or "worktree"; unknown values fall back to "local"
      * when settings are loaded.
@@ -825,12 +839,12 @@ export class Settings {
         const $$createField22_0 = $$createType4;
         const $$createField23_0 = $$createType0;
         const $$createField24_0 = $$createType0;
-        const $$createField42_0 = $$createType5;
-        const $$createField43_0 = $$createType6;
-        const $$createField44_0 = $$createType7;
-        const $$createField46_0 = $$createType0;
-        const $$createField47_0 = $$createType9;
-        const $$createField51_0 = $$createType10;
+        const $$createField43_0 = $$createType5;
+        const $$createField44_0 = $$createType6;
+        const $$createField45_0 = $$createType7;
+        const $$createField47_0 = $$createType0;
+        const $$createField48_0 = $$createType9;
+        const $$createField52_0 = $$createType10;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("recentWorkspaces" in $$parsedSource) {
             $$parsedSource["recentWorkspaces"] = $$createField5_0($$parsedSource["recentWorkspaces"]);
@@ -860,22 +874,22 @@ export class Settings {
             $$parsedSource["codexDisabledTools"] = $$createField24_0($$parsedSource["codexDisabledTools"]);
         }
         if ("network" in $$parsedSource) {
-            $$parsedSource["network"] = $$createField42_0($$parsedSource["network"]);
+            $$parsedSource["network"] = $$createField43_0($$parsedSource["network"]);
         }
         if ("editor" in $$parsedSource) {
-            $$parsedSource["editor"] = $$createField43_0($$parsedSource["editor"]);
+            $$parsedSource["editor"] = $$createField44_0($$parsedSource["editor"]);
         }
         if ("retention" in $$parsedSource) {
-            $$parsedSource["retention"] = $$createField44_0($$parsedSource["retention"]);
+            $$parsedSource["retention"] = $$createField45_0($$parsedSource["retention"]);
         }
         if ("gitlabSelfHostedHosts" in $$parsedSource) {
-            $$parsedSource["gitlabSelfHostedHosts"] = $$createField46_0($$parsedSource["gitlabSelfHostedHosts"]);
+            $$parsedSource["gitlabSelfHostedHosts"] = $$createField47_0($$parsedSource["gitlabSelfHostedHosts"]);
         }
         if ("remoteEndpoints" in $$parsedSource) {
-            $$parsedSource["remoteEndpoints"] = $$createField47_0($$parsedSource["remoteEndpoints"]);
+            $$parsedSource["remoteEndpoints"] = $$createField48_0($$parsedSource["remoteEndpoints"]);
         }
         if ("window" in $$parsedSource) {
-            $$parsedSource["window"] = $$createField51_0($$parsedSource["window"]);
+            $$parsedSource["window"] = $$createField52_0($$parsedSource["window"]);
         }
         return new Settings($$parsedSource as Partial<Settings>);
     }
