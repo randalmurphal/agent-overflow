@@ -162,6 +162,13 @@ export const RefreshProviderAccountUsage = dispatch('RefreshProviderAccountUsage
 
 export const GetSettings = dispatch('GetSettings');
 export const UpdateSettings = dispatch('UpdateSettings');
+
+// Appearance / themes (stores/appearance.svelte.ts). Both writes are
+// local-only on the wire, so a test that wants the DEGRADED path throws a
+// `method_not_found` error from its mock rather than omitting one.
+export const GetThemeFiles = dispatch('GetThemeFiles');
+export const SetAppearance = dispatch('SetAppearance');
+export const SetWindowBackgroundColor = dispatch('SetWindowBackgroundColor');
 export const SetProviderCustomEnvVar = dispatch('SetProviderCustomEnvVar');
 export const DeleteProviderCustomEnvVar = dispatch('DeleteProviderCustomEnvVar');
 export const GetProjectWorktreeSetup = dispatch('GetProjectWorktreeSetup');

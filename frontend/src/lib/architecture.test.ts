@@ -64,6 +64,7 @@ const PR_REVIEW_CONFLICTS = 'lib/stores/prReviewConflicts.svelte.ts';
 const MCP_SERVERS_STORE = 'lib/stores/mcpServers.svelte.ts';
 const CHAT_BAR_FAVORITES_STORE = 'lib/stores/chatBarFavorites.svelte.ts';
 const WORKFLOW_RUN_MAP_STORE = 'lib/stores/workflowRunMap.svelte.ts';
+const APPEARANCE_STORE = 'lib/stores/appearance.svelte.ts';
 
 const ENTITY_OWNED_BINDINGS: Record<string, EntityOwnedBinding> = {
   GetGitStatus: owned(GIT_STATUS_STORE, 'refreshGitStatus()'),
@@ -90,6 +91,15 @@ const ENTITY_OWNED_BINDINGS: Record<string, EntityOwnedBinding> = {
   ),
   SetChatBarFavorite: owned(CHAT_BAR_FAVORITES_STORE, 'setChatBarFavorite()'),
   WorkflowGetRunMap: owned(WORKFLOW_RUN_MAP_STORE, 'the run-map entity source'),
+  // Appearance is one app-global value over one directory, so its store is a
+  // plain module store rather than an entityStore — but the ownership rule is
+  // the same one, and it has teeth here: a settings section that called
+  // SetAppearance itself would hold a selection the applier never sees, and a
+  // surface that called SetWindowBackgroundColor outside the store would race
+  // the cache the next launch reads.
+  GetThemeFiles: owned(APPEARANCE_STORE, 'loadAppearance()'),
+  SetAppearance: owned(APPEARANCE_STORE, 'setAppearance()'),
+  SetWindowBackgroundColor: owned(APPEARANCE_STORE, 'syncWindowBackground()'),
 };
 
 // `stores/bindings.ts` is the typed wrapper the whole rule is phrased in terms

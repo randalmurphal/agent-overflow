@@ -101,6 +101,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "GetRemoteEndpointToken", ID: 3604571249},               // main.App.GetRemoteEndpointToken
 	{Name: "GetSettings", ID: 2554697378},                          // main.App.GetSettings
 	{Name: "GetTerminalReplay", ID: 2329592604},                    // main.App.GetTerminalReplay
+	{Name: "GetThemeFiles", ID: 2000462111},                        // main.App.GetThemeFiles
 	{Name: "GetThread", ID: 1098302047},                            // main.App.GetThread
 	{Name: "GetThreadContextUsage", ID: 3852033265},                // main.App.GetThreadContextUsage
 	{Name: "GetThreadDefaults", ID: 3362481473},                    // main.App.GetThreadDefaults
@@ -249,6 +250,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "SendMessage", ID: 1496882310},                          // main.App.SendMessage
 	{Name: "SendMessageWithOptions", ID: 3632185196},               // main.App.SendMessageWithOptions
 	{Name: "SendPlanRevisionComments", ID: 1407159655},             // main.App.SendPlanRevisionComments
+	{Name: "SetAppearance", ID: 3167202905},                        // main.App.SetAppearance
 	{Name: "SetChatBarFavorite", ID: 2813580982},                   // main.App.SetChatBarFavorite
 	{Name: "SetEditorSettings", ID: 3655340267},                    // main.App.SetEditorSettings
 	{Name: "SetNetworkSettings", ID: 3915514446},                   // main.App.SetNetworkSettings
@@ -258,6 +260,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "SetThreadMcpServerEnabled", ID: 1041195811},            // main.App.SetThreadMcpServerEnabled
 	{Name: "SetUIState", ID: 1514250938},                           // main.App.SetUIState
 	{Name: "SetWSLDistroPreference", ID: 3978807241},               // main.App.SetWSLDistroPreference
+	{Name: "SetWindowBackgroundColor", ID: 3648660014},             // main.App.SetWindowBackgroundColor
 	{Name: "SetWorkspaceMcpServerEnabled", ID: 2181574220},         // main.App.SetWorkspaceMcpServerEnabled
 	{Name: "StartCodexReview", ID: 1913732562},                     // main.App.StartCodexReview
 	{Name: "StartDiscussion", ID: 3188309099},                      // main.App.StartDiscussion

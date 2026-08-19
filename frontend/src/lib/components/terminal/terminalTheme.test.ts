@@ -1,42 +1,55 @@
-import { describe, it, expect } from 'vitest';
-import { getXtermTheme } from './terminalTheme';
+// The bridge's DEGRADED half. happy-dom has no canvas, so
+// `utils/cssColorProbe` can normalize nothing and every token reads back
+// undefined — which is precisely the "palette unresolved" branch this file
+// pins. The resolved palette itself is asserted in the real-Chromium
+// `terminalTheme.browser.test.ts`; there is nothing meaningful a DOM without
+// a cascade could say about it.
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { getXtermTheme, resetXtermThemeCache, xtermPaletteIdentity } from './terminalTheme';
 
-const REQUIRED_KEYS = [
-  'background', 'foreground', 'cursor', 'cursorAccent',
-  'selectionBackground', 'selectionForeground',
-  'black', 'red', 'green', 'yellow', 'blue', 'magenta', 'cyan', 'white',
-  'brightBlack', 'brightRed', 'brightGreen', 'brightYellow',
-  'brightBlue', 'brightMagenta', 'brightCyan', 'brightWhite',
-] as const;
+beforeEach(() => {
+  resetXtermThemeCache();
+});
 
-describe('getXtermTheme', () => {
-  it("returns the dark palette for 'dark'", () => {
-    const t = getXtermTheme('dark') as Record<string, string>;
-    for (const k of REQUIRED_KEYS) {
-      expect(t[k]).toMatch(/^#[0-9a-fA-F]{3,8}$/);
-    }
-    expect(t.background).toBe('#000000');
-    expect(t.foreground).toBe('#eeeef0');
-    expect(t.brightWhite).toBe('#ffffff');
+afterEach(() => {
+  resetXtermThemeCache();
+  vi.restoreAllMocks();
+});
+
+describe('getXtermTheme without a resolvable palette', () => {
+  it("hands back xterm's own defaults rather than a stale duplicate", () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    // An empty ITheme leaves every xterm default in place, which is a legible
+    // terminal. The alternative — the 44 hand-maintained hex values this
+    // module used to carry — is the drift the bridge exists to delete.
+    expect(getXtermTheme('dark')).toEqual({});
+    expect(getXtermTheme('light')).toEqual({});
+    warn.mockRestore();
   });
 
-  it("returns the light palette for 'light'", () => {
-    const t = getXtermTheme('light') as Record<string, string>;
-    for (const k of REQUIRED_KEYS) {
-      expect(t[k]).toMatch(/^#[0-9a-fA-F]{3,8}$/);
-    }
-    expect(t.background).toBe('#fafafb');
-    expect(t.foreground).toBe('#34373d');
-    // Light "white" should NOT be #ffffff (would be invisible).
-    expect(t.white).not.toBe('#ffffff');
-    expect(t.brightWhite).not.toBe('#ffffff');
+  it('reports the failure exactly once per session', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    getXtermTheme('dark');
+    getXtermTheme('dark');
+    getXtermTheme('light');
+    expect(warn).toHaveBeenCalledTimes(1);
+    warn.mockRestore();
   });
 
-  it('returns objects that differ by mode', () => {
-    const dark = getXtermTheme('dark');
-    const light = getXtermTheme('light');
-    expect(dark.background).not.toBe(light.background);
-    expect(dark.foreground).not.toBe(light.foreground);
-    expect(dark.red).not.toBe(light.red);
+  it('does not cache the failure, so a later resolvable tick can win', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const first = getXtermTheme('dark');
+    expect(getXtermTheme('dark')).not.toBe(first);
+    warn.mockRestore();
+  });
+});
+
+describe('xtermPaletteIdentity', () => {
+  it('carries the mode as well as the palette, because the probe reads the live cascade', () => {
+    // The identity is the cache key a consumer's `$effect` tracks. Mode has to
+    // be in it: nothing else distinguishes the light resolution of one theme
+    // from its dark one.
+    expect(xtermPaletteIdentity('dark')).not.toBe(xtermPaletteIdentity('light'));
+    expect(xtermPaletteIdentity('dark').startsWith('dark|')).toBe(true);
   });
 });

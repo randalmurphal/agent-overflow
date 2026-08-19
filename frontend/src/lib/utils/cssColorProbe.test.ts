@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { resetCssColorProbe, toConcreteColor } from './cssColorProbe';
+import { resetCssColorProbe, rgbChannels, toConcreteColor } from './cssColorProbe';
 
 // happy-dom has no canvas and no cascade for `oklch()`, so this file
 // covers only what is environment-independent: the strict hex fast path
@@ -55,5 +55,40 @@ describe('toConcreteColor', () => {
     // an unvalidated pass-through.
     expect(toConcreteColor('rgb(16, 16, 23)')).toBeUndefined();
     expect(toConcreteColor('rgba(0, 0, 0, 0)')).toBeUndefined();
+  });
+});
+
+describe('rgbChannels', () => {
+  // BOTH of `toConcreteColor`'s documented output forms, in one place. Two
+  // hand-rolled copies of the rgb() regex existed before this and one of them
+  // silently dropped hex, so a hex-valued accent lost its terminal selection
+  // tint — a bug that is only possible when the re-parse is duplicated.
+  it('reads the rgb() / rgba() form', () => {
+    expect(rgbChannels('rgb(16, 16, 23)')).toEqual({ r: 16, g: 16, b: 23, a: 1 });
+    expect(rgbChannels('rgba(1, 2, 3, 0.5)')).toEqual({ r: 1, g: 2, b: 3, a: 0.5 });
+    // Space-separated and slash-alpha syntax is the same colour.
+    expect(rgbChannels('rgb(1 2 3)')).toEqual({ r: 1, g: 2, b: 3, a: 1 });
+    expect(rgbChannels('rgb(1 2 3 / 50%)')).toEqual({ r: 1, g: 2, b: 3, a: 0.5 });
+    expect(rgbChannels('  rgb(1, 2, 3)  ')).toEqual({ r: 1, g: 2, b: 3, a: 1 });
+  });
+
+  it('reads the hex form, in all four lengths', () => {
+    expect(rgbChannels('#d97757')).toEqual({ r: 217, g: 119, b: 87, a: 1 });
+    expect(rgbChannels('#abc')).toEqual({ r: 170, g: 187, b: 204, a: 1 });
+    expect(rgbChannels('#abcf')).toEqual({ r: 170, g: 187, b: 204, a: 1 });
+    expect(rgbChannels('#d97757ff')).toEqual({ r: 217, g: 119, b: 87, a: 1 });
+    expect(rgbChannels('#d9775700')).toEqual({ r: 217, g: 119, b: 87, a: 0 });
+  });
+
+  it('answers undefined for anything it cannot read', () => {
+    expect(rgbChannels(undefined)).toBeUndefined();
+    expect(rgbChannels('')).toBeUndefined();
+    expect(rgbChannels('   ')).toBeUndefined();
+    expect(rgbChannels('#12345')).toBeUndefined();
+    expect(rgbChannels('#gggggg')).toBeUndefined();
+    expect(rgbChannels('rebeccapurple')).toBeUndefined();
+    // Still in a wide-gamut space: never went through `toConcreteColor`.
+    expect(rgbChannels('oklch(0.178 0.014 285.82)')).toBeUndefined();
+    expect(rgbChannels('rgb(oops)')).toBeUndefined();
   });
 });

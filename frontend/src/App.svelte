@@ -34,6 +34,21 @@
   import { preloadProviderModelsForSettings } from './lib/stores/providerModels.svelte';
   import { applyThemeClass } from './lib/utils/theme';
   import { getResolvedTheme } from './lib/stores/themeMode.svelte';
+  import {
+    getAppearance,
+    getAppearanceRevision,
+    getAppearanceThemes,
+    installAppearanceEvents,
+    isAppearanceLoaded,
+    loadAppearance,
+    syncWindowBackground,
+  } from './lib/stores/appearance.svelte';
+  import {
+    applyTheme,
+    getAppliedTheme,
+    readWindowGroundHex,
+    stampBootTheme,
+  } from './lib/theme/themeApply.svelte';
   import { applyFonts } from './lib/utils/fonts';
   import { startAmbientTicker } from './lib/utils/ambientTicker';
   import { applyFontScale, installZoomKeybindings } from './lib/utils/zoom';
@@ -253,23 +268,74 @@
     void preloadProviderModelsForSettings(getSettings());
   }
 
-  // One resolver: `getResolvedTheme()` reads `settings.theme` and, for
-  // 'system', the single shared prefers-color-scheme subscription. Both are
-  // `$state`, so this re-runs on a settings flip AND on an OS flip, and the
-  // html class lands from the same source the xterm/mermaid consumers read.
+  // ── The theme is applied in TWO pre-effects and read back in one plain
+  // effect, and the split is ordering rather than style. ────────────────────
   //
-  // `$effect.pre` rather than `$effect`, and that is ordering, not style: a
-  // pre-effect is a RENDER effect, and a render effect on the ROOT component
-  // runs before every descendant user effect in the flush by construction.
-  // That is what guarantees the document class is stamped for the new mode
-  // before any consumer resolves a palette off the cascade — the mermaid
-  // bridge resolves inside the vendored `Mermaid.svelte`'s `{@attach}`,
-  // which Svelte builds as a user effect. Anything reading computed styles
-  // for the current theme depends on this; a plain `$effect` here would put
-  // the stamp in the same class as its readers, with no ordering guarantee
-  // between them.
+  // One resolver: `getResolvedTheme()` reads the appearance selection's mode
+  // and, for 'system', the single shared prefers-color-scheme subscription.
+  // Both are `$state`, so these re-run on a selection flip AND on an OS flip,
+  // and the html class lands from the same source the xterm/mermaid consumers
+  // read.
+  //
+  // `$effect.pre` rather than `$effect`: a pre-effect is a RENDER effect, and
+  // Svelte flushes every render effect in the tree before any user effect.
+  // That is what guarantees the document is fully re-themed before a consumer
+  // resolves a palette off the cascade — the mermaid bridge resolves inside
+  // the vendored `Mermaid.svelte`'s `{@attach}` and the xterm bridge inside
+  // TerminalBody's effect, both of which Svelte builds as user effects.
+  //
+  // BOTH halves are pre-effects, and the second one is why: the resolved CSS
+  // is NOT mode-agnostic. It carries a `:root` block and an `html.light`
+  // block, so a theme defining both variants does produce byte-identical text
+  // across a mode flip — but a UI theme with only ONE variant is emitted only
+  // in the mode it speaks (themeResolve.ts's emission model: the tokens
+  // app.css declares as mode-invariant have no light-mode declaration to
+  // out-cascade a stale `:root` block, so a dark-only theme left standing in
+  // light mode half-applies). Splitting the class stamp into the render pass
+  // and the style rewrite into the user pass would therefore leave the whole
+  // render pass in a state where the class says one mode and this element
+  // still holds the other's resolution.
   $effect.pre(() => {
     applyThemeClass(getResolvedTheme());
+  });
+
+  // The `settled` argument is the first-paint guard, not a nicety: this runs
+  // at mount with `themes: []`, so a selected USER theme resolves to the
+  // built-in fallback until `loadAppearance()` answers. Applying that would
+  // overwrite the boot script's cached CSS and clear its inline ground —
+  // recreating the flash the stamp exists to prevent, for exactly the users
+  // who wrote a theme file. `isAppearanceLoaded()` is a `$state` read, so this
+  // re-runs the moment the first answer lands (success, refusal or failure).
+  $effect.pre(() => {
+    const appearance = getAppearance();
+    applyTheme(
+      {
+        mode: getResolvedTheme(),
+        appearance: { uiTheme: appearance.uiTheme, codeTheme: appearance.codeTheme },
+        themes: getAppearanceThemes(),
+        revision: getAppearanceRevision(),
+      },
+      isAppearanceLoaded(),
+    );
+  });
+
+  // Everything that READS the applied cascade back runs here, in the user
+  // pass, because it cannot run before the rewrite above has landed: the
+  // ground probe forces a style recalc, and `syncWindowBackground` writes
+  // store state (which a render effect should not do). The write cannot loop
+  // — it only moves `windowBackground`, which re-runs the pre-effect above to
+  // an IDENTICAL applied theme, and `applyTheme` does not reassign its state
+  // for one.
+  $effect(() => {
+    // Gated on the same answer as the applier above, and for the same reason
+    // in reverse: re-stamping from a pre-load resolution would replace the
+    // cached first-paint CSS with the fallback's, so the flash would simply
+    // move to the NEXT launch.
+    if (!isAppearanceLoaded()) return;
+    const applied = getAppliedTheme();
+    const ground = readWindowGroundHex();
+    stampBootTheme(applied.mode, ground, applied.cssText);
+    if (ground) void syncWindowBackground(ground);
   });
 
   $effect(() => {
@@ -295,6 +361,13 @@
 
   onMount(() => {
     const cleanupEvents = setupEventListeners();
+    // Theme first, and not awaited: the pre-effects above already painted the
+    // built-in palette, so this only ever UPGRADES what is on screen — and it
+    // has to be in flight before the panes mount so a themed terminal or
+    // diagram resolves once rather than twice. The watcher subscription is
+    // the agent-edit loop (write themes/*.json, see the app repaint).
+    void loadAppearance();
+    const cleanupAppearance = installAppearanceEvents();
     // Passive on-launch update check + updater:* event bridge. No-op on builds
     // without an updater; never downloads or installs without an explicit click.
     const cleanupUpdates = initUpdates();
@@ -412,6 +485,7 @@
       stopAmbientTicker();
       flushPaneLayout();
       cleanupEvents();
+      cleanupAppearance();
       cleanupUpdates();
       cleanupExternalLinks();
       cleanupZoomKeys();

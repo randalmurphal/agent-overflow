@@ -17,7 +17,8 @@
     "test:watch": "vitest --project unit",
     "test:browser": "vitest run --project browser",
     "test:manual": "vitest run --project manual",
-    "test:ui": "vitest --ui"
+    "test:ui": "vitest --ui",
+    "generate:theme-reference": "node scripts/generate-theme-reference.mjs"
   },
   "dependencies": {
     "@fontsource/geist-mono": "5.3.0",

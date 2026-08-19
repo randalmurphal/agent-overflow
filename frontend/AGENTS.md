@@ -419,6 +419,89 @@ delegated by `markdownEnhance.ts`.
 ANSI-like payloads render through `AnsiText.svelte`, which diffs into a
 stable `<pre>` with Idiomorph so selection survives streaming updates.
 
+## Theme System
+
+Spec: [`docs/specs/theme-system.md`](../docs/specs/theme-system.md)
+(§7 is the contract, §9 records the as-built deviations). Two
+independent axes — a UI theme and a code theme — over a light/dark mode,
+selected per CLIENT and applied entirely in the frontend. Go never
+parses a theme file; it lists `<configDir>/themes/*.json` as opaque raw
+strings, owns `appearance.json`, and watches the directory.
+
+Where things live:
+
+- `lib/theme/tokenRegistry.ts` is THE token vocabulary — section, JSON
+  key, CSS var, axis, description. `themeTokens.test.ts` parses the
+  three stylesheets and fails on drift in either direction. A role that
+  does not exist yet gets DEFINED here; it never becomes a literal at a
+  call site.
+- `lib/theme/` is pure and RPC-free: parse (structural only — whether a
+  value is a color needs a browser), resolve (selection + files +
+  built-ins → declarations + palette identity + warnings), apply.
+- `lib/stores/appearance.svelte.ts` owns all three theme RPCs and the
+  reactive selection. It degrades along THREE independent facts, not one
+  flag, because they fail independently and only two of them are
+  structural:
+  - `readAvailable` (`isThemeDirectoryAvailable()`) latches false only on
+    `method_not_found` from `GetThemeFiles` — a session with no themes
+    directory at all, which is a posture to render, not an error.
+  - `writesRefused` (`isAppearanceWritable()`) latches on a refused
+    `SetAppearance` or a refused read, and a view-only session is
+    write-blocked up front. A write-blocked session still TAKES the
+    wire's themes, directory and warnings — it just never adopts the
+    wire's SELECTION, which stays local (`localStorage`). The theme is a
+    property of the client machine; a remote browser must not be
+    repainted by whoever is at the desktop.
+  - `loaded` / `loadError` (`getAppearanceLoadError()`) is the transient
+    lane: a failed read surfaces, keeps writes enabled, and keeps the
+    themes already loaded. Nothing latches here.
+
+Rules that are not stylistic:
+
+- **The mode-class stamp and the applier are both `$effect.pre`, in that
+  order — class first, then the style rewrite.** Svelte flushes every
+  render effect before any user effect, and the resolved MODE is a
+  resolver INPUT, so splitting them across the two passes leaves the whole
+  render pass reading a palette that does not match the class on `<html>`.
+  Cascade-READING work (the window-ground probe, the boot stamp, the
+  native-window RPC) goes in a plain `$effect` after them. §9.1 has the
+  full ordering story.
+- **`lib/theme/` being "pure" stops at `applyTheme`.** Beyond rewriting
+  the style element it records what landed — css text, warnings, resolved
+  refs, palette identity — into module-level `$state.raw`, read back
+  through `getAppliedTheme()` / `getThemePaletteIdentity()`. That is
+  app-global reactive state, and it is what Settings → Appearance renders
+  the per-token rejections from and what every palette-keyed cache
+  invalidates on. `applyTheme` is its ONE writer; it is not a function to
+  call speculatively to "check" a resolution.
+- **One `<style id="user-theme">`, rewritten wholesale.** Never
+  `setProperty` per token on the root: each such write is a whole-document
+  style invalidation (~13ms at 5k nodes, ~90ms at 30k), and a theme
+  carries up to 79 tokens. A token the theme does not mention keeps the
+  app's own declaration by cascade, so there is no reset value to emit.
+- **One palette identity.** Anything that caches rendered output keyed on
+  the palette — the mermaid config memo and its `{#key}`, the xterm
+  bridge — widens `getThemePaletteIdentity()` (`uiTheme|codeTheme|revision`)
+  and pairs it with the resolved mode itself. A second key that can
+  disagree means either a stale render or a remount on every tick.
+- **A bad value costs one token, never the theme.** Three layers each
+  answer the question they can: the parser caps length and shape, the
+  resolver refuses anything a declaration cannot carry, and the applier
+  runs `CSS.supports('color', …)` per token. Every rejection is a
+  user-facing warning with the theme id and the path, rendered in
+  Settings → Appearance.
+- **Values reach non-CSS consumers through `utils/cssColorProbe.ts`.**
+  `getComputedStyle` serializes in the DECLARED color space, so the
+  palette comes back as `oklch()`/`oklab()`; the canvas readback is what
+  produces something xterm's or mermaid's parser can read. Do not hand a
+  raw token value to either.
+
+Tests: pure core under `lib/theme/*.test.ts`; anything needing a real
+cascade, canvas, or `CSS.supports` is a `*.browser.test.ts`
+(`themeApply.browser.test.ts`, `terminalTheme.browser.test.ts`) because
+happy-dom answers `false` to every color probe and would assert on code
+paths that never run in production.
+
 ## Anti-Patterns
 
 - Do NOT create legacy stores. Runes only: `$state`, `$derived`,

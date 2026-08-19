@@ -30,5 +30,18 @@ func (a *App) ServiceStartup(ctx context.Context, options application.ServiceOpt
 	a.saveDialog = func(filename string) (string, error) {
 		return wailsApp.Dialog.SaveFile().SetFilename(filename).PromptForSingleSelection()
 	}
+	// Live native-window background (SetWindowBackgroundColor). Applied
+	// to every window this process owns rather than just the main one:
+	// they all render the same SPA under the same theme, and a second
+	// window keeping the construction-time color would flash the wrong
+	// ground on every resize. SetBackgroundColour marshals to the UI
+	// thread itself (InvokeSync), so the RPC goroutine may call it
+	// directly.
+	a.setWindowBackground = func(red, green, blue uint8) {
+		colour := application.NewRGBA(red, green, blue, 255)
+		for _, window := range wailsApp.Window.GetAll() {
+			window.SetBackgroundColour(colour)
+		}
+	}
 	return a.Start(ctx)
 }

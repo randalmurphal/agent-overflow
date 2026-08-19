@@ -216,11 +216,13 @@
     });
   }
 
-  // Follow the app theme live.
+  // Follow the app palette live — mode flips AND theme-file edits, since
+  // `getXtermTheme` reads the palette identity. Resolved before the `term`
+  // guard so the dependency is registered even on a tick with no terminal.
   $effect(() => {
-    const mode = getResolvedTheme();
+    const theme = getXtermTheme(getResolvedTheme());
     if (!term) return;
-    term.options.theme = getXtermTheme(mode);
+    term.options.theme = theme;
   });
 
   async function toggleControl(): Promise<void> {

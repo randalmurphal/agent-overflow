@@ -851,6 +851,8 @@ func (p *privilegedApp) TouchRemoteEndpoint() string          { return "ok" }
 func (p *privilegedApp) SetEditorSettings() string            { return "ok" }
 func (p *privilegedApp) UpdateKeybindings() string            { return "ok" }
 func (p *privilegedApp) ResetKeybindings() string             { return "ok" }
+func (p *privilegedApp) SetAppearance() string                { return "ok" }
+func (p *privilegedApp) SetWindowBackgroundColor() string     { return "ok" }
 func (p *privilegedApp) SetChatBarFavorite() string           { return "ok" }
 func (p *privilegedApp) SetProviderCustomEnvVar() string      { return "ok" }
 func (p *privilegedApp) DeleteProviderCustomEnvVar() string   { return "ok" }

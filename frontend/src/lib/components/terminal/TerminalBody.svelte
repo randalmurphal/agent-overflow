@@ -193,12 +193,17 @@
     }
   });
 
-  // Follow the app theme. Writing term.options.theme applies live —
+  // Follow the app palette. Writing term.options.theme applies live —
   // background, foreground, and ANSI palette swap in place.
+  //
+  // The theme is resolved BEFORE the `term` guard on purpose: `getXtermTheme`
+  // is what reads the palette identity, so a tick that finds no terminal yet
+  // must still register the dependency, or the pane that mounts next never
+  // re-themes when a theme file changes under an unchanged mode.
   $effect(() => {
-    const mode = getResolvedTheme();
+    const theme = getXtermTheme(getResolvedTheme());
     if (!term) return;
-    term.options.theme = getXtermTheme(mode);
+    term.options.theme = theme;
   });
 
   onMount(() => {

@@ -433,11 +433,13 @@ through `utils/cssColorProbe.ts`, so a diagram is themed by the same
 vocabulary as everything around it rather than by mermaid's built-in
 `dark`/`default`. It is owned by `ChatMarkdown` because the Streamdown
 context is created there. The resolved-config memo and the host's
-`{#key}` wrapper both key on `mermaidPaletteIdentity()` (resolved mode +
-sans font today); any future palette source — phase-2 theme files, per
-docs/specs/theme-system.md — must widen that ONE identity, because a
-second key that can disagree with it means either a stale diagram or a
-remount on every tick.
+`{#key}` wrapper both key on `mermaidPaletteIdentity()` — resolved mode,
+sans font, and the theme system's own
+`getThemePaletteIdentity()` (`uiTheme|codeTheme|revision`), which is what
+makes an agent's edit to the selected theme file redraw diagrams that
+already rendered. Any future palette source must widen that ONE identity,
+because a second key that can disagree with it means either a stale
+diagram or a remount on every tick.
 
 Path linkification runs inside marked parsing from the server-validated
 `PathRef[]` allowlist on item metadata. The generated href includes a

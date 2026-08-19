@@ -268,6 +268,12 @@ export {
   UpdateKeybindings,
   ResetKeybindings,
 
+  // Theme files + appearance selection (<configDir>/themes). The read
+  // is LAN-allowed like GetKeybindings; both writers are local-only.
+  GetThemeFiles,
+  SetAppearance,
+  SetWindowBackgroundColor,
+
   // Review pane diffs (workspace / branch / per-commit / edits)
   GetBranchBaseDiff,
   GetWorkspaceCurrentDiff,
@@ -469,6 +475,11 @@ export {
 export {
   Keybinding,
 } from '../../../bindings/agent-overflow/internal/keybindings/models.js';
+export {
+  Appearance as ThemeAppearance,
+  File as ThemeFile,
+  Files as ThemeFiles,
+} from '../../../bindings/agent-overflow/internal/theme/models.js';
 export {
   Settings as NetworkSettings,
 } from '../../../bindings/agent-overflow/internal/network/models.js';

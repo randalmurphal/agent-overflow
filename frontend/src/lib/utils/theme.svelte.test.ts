@@ -5,22 +5,23 @@
 // Before the collapse there were two independent matchMedia listeners (one
 // here, one in the store), so an OS flip travelled two unrelated paths with
 // no ordering relationship. The "one source" test below is the regression
-// pin for that: a settings flip must move the html class and a
+// pin for that: an appearance-mode flip must move the html class and a
 // getResolvedTheme consumer within the same flush.
+//
+// The mode itself lives in `stores/appearance.svelte.ts` rather than in
+// settings (docs/specs/theme-system.md §6.2), so that store is what these
+// tests drive.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { flushSync } from 'svelte';
 import { applyThemeClass } from './theme';
 import { getResolvedTheme, teardownThemeModeForTest } from '../stores/themeMode.svelte';
-import { loadSettings, resetSettingsForTest } from '../stores/settings.svelte';
+import {
+  resetAppearanceForTest,
+  setAppearance,
+  type AppearanceMode,
+} from '../stores/appearance.svelte';
 import { setBindingMock } from '../../test/mocks/bindings-app';
-import type { Settings } from '../types/settings';
-
-const BASE_SETTINGS: Partial<Settings> = {
-  theme: 'system',
-  timestampFormat: 'locale',
-  network: { bindAll: false },
-};
 
 interface FakeMediaQueryList {
   matches: boolean;
@@ -56,9 +57,8 @@ function makeFakeMatchMedia(initialDark: boolean): FakeMediaQueryList {
 
 let mediaList: FakeMediaQueryList;
 
-async function setTheme(theme: 'light' | 'dark' | 'system'): Promise<void> {
-  setBindingMock('GetSettings', async () => ({ ...BASE_SETTINGS, theme }) as Settings);
-  await loadSettings();
+async function setTheme(mode: AppearanceMode): Promise<void> {
+  await setAppearance({ mode });
 }
 
 function htmlClasses(): string[] {
@@ -123,13 +123,16 @@ describe('theme pipeline (App.svelte wiring)', () => {
       vi.fn(() => mediaList),
     );
     teardownThemeModeForTest();
-    resetSettingsForTest();
+    resetAppearanceForTest();
+    localStorage.clear();
+    setBindingMock('SetAppearance', async () => undefined);
     document.documentElement.classList.remove('light', 'dark');
   });
 
   afterEach(() => {
     teardownThemeModeForTest();
-    resetSettingsForTest();
+    resetAppearanceForTest();
+    localStorage.clear();
     vi.unstubAllGlobals();
   });
 
@@ -156,7 +159,7 @@ describe('theme pipeline (App.svelte wiring)', () => {
   }
 
   it('paints from the default settings before GetSettings answers', () => {
-    // Default `theme: 'system'` with a dark OS preference — the first frame
+    // Default `mode: 'system'` with a dark OS preference — the first frame
     // must already be stamped, not blank.
     const { consumerReads, stop } = mountPipeline();
     try {

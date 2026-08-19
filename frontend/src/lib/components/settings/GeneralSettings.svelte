@@ -4,6 +4,7 @@
   import ToggleSwitch from '../shared/ToggleSwitch.svelte';
   import SettingsField from './SettingsField.svelte';
   import SettingsHeader from './SettingsHeader.svelte';
+  import AppearanceSection from './AppearanceSection.svelte';
   import PaneDensitySection from './PaneDensitySection.svelte';
   import ActivityRunSection from './ActivityRunSection.svelte';
   import { INPUT_CLASS, SELECT_CLASS } from './styles';
@@ -22,30 +23,11 @@
 </script>
 
 <div class="flex flex-col gap-6">
-  <section>
-    <SettingsHeader title="Theme and Display" />
-    <div class="flex flex-col gap-1">
-      <SettingsField
-        label="Theme"
-        hint="Choose your preferred color scheme."
-        htmlFor="theme-select"
-      >
-        <select
-          id="theme-select"
-          value={settings.theme}
-          onchange={(e) =>
-            updateSetting(
-              'theme',
-              (e.target as HTMLSelectElement).value as 'system' | 'light' | 'dark',
-            )}
-          class={SELECT_CLASS}
-        >
-          <option value="system">System</option>
-          <option value="light">Light</option>
-          <option value="dark">Dark</option>
-        </select>
-      </SettingsField>
+  <AppearanceSection />
 
+  <section>
+    <SettingsHeader title="Display" />
+    <div class="flex flex-col gap-1">
       <SettingsField
         label="Timestamp format"
         hint="How timestamps appear in the chat."

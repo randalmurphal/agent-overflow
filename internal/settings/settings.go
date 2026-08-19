@@ -70,7 +70,14 @@ type Settings struct {
 	// CurrentSchemaVersion on any save via writeSparse.
 	SchemaVersion int `json:"$schemaVersion,omitempty"`
 
-	Theme           string `json:"theme"`
+	// NOTE: "theme" used to live here and is RETIRED (see
+	// retiredSettingsFieldNames and docs/specs/theme-system.md §6.2). The
+	// light/dark mode is a property of the CLIENT MACHINE, not of a backend,
+	// so it moved to <configDir>/themes/appearance.json. The old value is
+	// CONSUMED ONCE at boot (initThemeDirectory reads it raw via
+	// RetiredString) and DROPPED by the next sparse write — a retired field
+	// is excluded from unknown-field preservation, so nothing republishes
+	// it. Boot ordering is what makes that safe, and it is load-bearing.
 	TimestampFormat string `json:"timestampFormat"`
 	// SansFont and MonoFont select the typefaces wired into the
 	// `--font-sans` and `--font-mono` CSS variables on the frontend.
@@ -363,7 +370,6 @@ type Settings struct {
 
 // DefaultSettings provides sane defaults for all settings fields.
 var DefaultSettings = Settings{
-	Theme:                "system",
 	TimestampFormat:      "locale",
 	SansFont:             "geist",
 	MonoFont:             "geist",
@@ -478,6 +484,42 @@ func NewService(configDir string) *Service {
 // Path returns the full path to the settings file.
 func (s *Service) Path() string {
 	return s.path
+}
+
+// RetiredString reads one RETIRED field's raw string value straight out
+// of the settings file.
+//
+// A retired field is deliberately unreachable through Settings: it is
+// gone from the struct, so unmarshalling drops it, and it is listed in
+// retiredSettingsFieldNames so unknownFields does not republish it
+// either. That is the right posture for a field nobody should keep
+// writing — and it leaves exactly one legitimate reader, the ONE-TIME
+// migration that moves the old value to wherever it now lives (today:
+// "theme" → <configDir>/themes/appearance.json, per
+// docs/specs/theme-system.md §6.2).
+//
+// Reads the file rather than the cache on purpose: the cache is typed,
+// so it cannot hold a field the type no longer has. Every failure —
+// absent file, unparseable JSON, absent key, non-string value — answers
+// "" and the caller falls through to its own default.
+func (s *Service) RetiredString(field string) string {
+	data, err := os.ReadFile(s.path)
+	if err != nil {
+		return ""
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return ""
+	}
+	value, ok := raw[field]
+	if !ok {
+		return ""
+	}
+	var text string
+	if err := json.Unmarshal(value, &text); err != nil {
+		return ""
+	}
+	return text
 }
 
 // Get returns the current settings, merging file contents over defaults.
@@ -698,6 +740,15 @@ func retiredSettingsFieldNames() map[string]struct{} {
 		"defaultReasoningEffort": {},
 		"defaultFastMode":        {},
 		"defaultContextWindow":   {},
+		// Moved to <configDir>/themes/appearance.json — theme is a property
+		// of the client machine, not of a backend (docs/specs/theme-system.md
+		// §6.2). Listed here so it is not round-tripped through unknownFields
+		// preservation: an upgrading user's value is CONSUMED ONCE at boot
+		// (initThemeDirectory, via RetiredString) and DROPPED by the next
+		// sparse write. That is the intended lifecycle for a field nobody
+		// should keep writing, and it is why the boot read has to happen
+		// before any Update can reach the file.
+		"theme": {},
 	}
 }
 

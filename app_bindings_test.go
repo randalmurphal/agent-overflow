@@ -56,7 +56,7 @@ func TestWorkflowThreadSpawningMethodsAreNotBound(t *testing.T) {
 func TestGetSettingsReturnsCurrentServiceState(t *testing.T) {
 	dir := t.TempDir()
 	svc := settings.NewService(dir)
-	if _, err := svc.Update(map[string]any{"theme": "dark"}); err != nil {
+	if _, err := svc.Update(map[string]any{"timestampFormat": "24-hour"}); err != nil {
 		t.Fatalf("Update() error = %v", err)
 	}
 
@@ -65,8 +65,8 @@ func TestGetSettingsReturnsCurrentServiceState(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetSettings() error = %v", err)
 	}
-	if got.Theme != "dark" {
-		t.Fatalf("Theme = %q, want dark", got.Theme)
+	if got.TimestampFormat != "24-hour" {
+		t.Fatalf("TimestampFormat = %q, want 24-hour", got.TimestampFormat)
 	}
 }
 
@@ -75,22 +75,22 @@ func TestUpdateSettingsPersistsPatch(t *testing.T) {
 	app := &App{settings: settings.NewService(dir)}
 
 	got, err := app.UpdateSettings(map[string]any{
-		"theme":       "dark",
-		"paneDensity": "spacious",
+		"timestampFormat": "24-hour",
+		"paneDensity":     "spacious",
 	})
 	if err != nil {
 		t.Fatalf("UpdateSettings() error = %v", err)
 	}
-	if got.Theme != "dark" {
-		t.Fatalf("Theme = %q, want dark", got.Theme)
+	if got.TimestampFormat != "24-hour" {
+		t.Fatalf("TimestampFormat = %q, want 24-hour", got.TimestampFormat)
 	}
 	if got.PaneDensity != "spacious" {
 		t.Fatalf("PaneDensity = %q, want spacious", got.PaneDensity)
 	}
 
 	reloaded := settings.NewService(dir).Get()
-	if reloaded.Theme != "dark" {
-		t.Fatalf("reloaded Theme = %q, want dark", reloaded.Theme)
+	if reloaded.TimestampFormat != "24-hour" {
+		t.Fatalf("reloaded TimestampFormat = %q, want 24-hour", reloaded.TimestampFormat)
 	}
 	if reloaded.PaneDensity != "spacious" {
 		t.Fatalf("reloaded PaneDensity = %q, want spacious", reloaded.PaneDensity)
@@ -99,15 +99,15 @@ func TestUpdateSettingsPersistsPatch(t *testing.T) {
 
 func TestSettingsRollbackPatchRestoresEveryPatchedField(t *testing.T) {
 	previous := settings.DefaultSettings
-	previous.Theme = "light"
+	previous.TimestampFormat = "12-hour"
 	previous.WorkflowPaused = true
 	rollback, err := settingsRollbackPatch(previous, map[string]any{
-		"theme": "dark", "workflowPaused": false,
+		"timestampFormat": "24-hour", "workflowPaused": false,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if rollback["theme"] != "light" || rollback["workflowPaused"] != true {
+	if rollback["timestampFormat"] != "12-hour" || rollback["workflowPaused"] != true {
 		t.Fatalf("rollback patch = %#v", rollback)
 	}
 }
@@ -122,12 +122,12 @@ func TestUpdateSettingsRollsBackMixedPatchWhenWorkflowEngineRejects(t *testing.T
 	}
 	previous := app.currentSettings()
 	if _, err := app.UpdateSettings(map[string]any{
-		"theme": "dark", "workflowPaused": true,
+		"timestampFormat": "24-hour", "workflowPaused": true,
 	}); err == nil {
 		t.Fatal("UpdateSettings with closed workflow engine succeeded")
 	}
 	current := app.currentSettings()
-	if current.Theme != previous.Theme || current.WorkflowPaused != previous.WorkflowPaused {
+	if current.TimestampFormat != previous.TimestampFormat || current.WorkflowPaused != previous.WorkflowPaused {
 		t.Fatalf("mixed patch was not rolled back: got %+v, previous %+v", current, previous)
 	}
 }

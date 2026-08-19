@@ -15,8 +15,8 @@ func TestGetReturnsDefaultsOnMissingFile(t *testing.T) {
 	svc := NewService(t.TempDir())
 	got := svc.Get()
 
-	if got.Theme != "system" {
-		t.Errorf("Theme = %q, want %q", got.Theme, "system")
+	if got.TimestampFormat != "locale" {
+		t.Errorf("TimestampFormat = %q, want %q", got.TimestampFormat, "locale")
 	}
 	if got.StreamingEnabled != true {
 		t.Error("StreamingEnabled = false, want true")
@@ -60,8 +60,8 @@ func TestGetReturnsDefaultsOnMalformedJSON(t *testing.T) {
 	svc := NewService(dir)
 	got := svc.Get()
 
-	if got.Theme != "system" {
-		t.Errorf("Theme = %q, want %q", got.Theme, "system")
+	if got.TimestampFormat != "locale" {
+		t.Errorf("TimestampFormat = %q, want %q", got.TimestampFormat, "locale")
 	}
 	if got.StreamingEnabled != true {
 		t.Error("StreamingEnabled = false, want true")
@@ -121,12 +121,12 @@ func TestUpdatePersistsAndSparseSerializes(t *testing.T) {
 	dir := t.TempDir()
 	svc := NewService(dir)
 
-	updated, err := svc.Update(map[string]any{"theme": "dark"})
+	updated, err := svc.Update(map[string]any{"timestampFormat": "24-hour"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if updated.Theme != "dark" {
-		t.Errorf("Theme = %q, want %q", updated.Theme, "dark")
+	if updated.TimestampFormat != "24-hour" {
+		t.Errorf("TimestampFormat = %q, want %q", updated.TimestampFormat, "24-hour")
 	}
 
 	// Read the file directly to verify sparse serialization.
@@ -140,15 +140,15 @@ func TestUpdatePersistsAndSparseSerializes(t *testing.T) {
 		t.Fatalf("unmarshal settings file: %v", err)
 	}
 
-	// "theme" is the user-set value; "$schemaVersion" is stamped on
+	// "timestampFormat" is the user-set value; "$schemaVersion" is stamped on
 	// every write so a future loader can branch on a missing/older
 	// version. Two entries total — anything else means a sparse-write
 	// regression that's writing default-valued fields.
 	if len(fileMap) != 2 {
 		t.Errorf("file contains %d keys, want 2 (theme + $schemaVersion); contents: %s", len(fileMap), string(data))
 	}
-	if fileMap["theme"] != "dark" {
-		t.Errorf("file theme = %v, want %q", fileMap["theme"], "dark")
+	if fileMap["timestampFormat"] != "24-hour" {
+		t.Errorf("file timestampFormat = %v, want %q", fileMap["timestampFormat"], "24-hour")
 	}
 	// SchemaVersion stamped at write time. The literal value matches
 	// CurrentSchemaVersion; if the version bumps we update both.
@@ -399,14 +399,14 @@ func TestUpdateMergesOverDefaults(t *testing.T) {
 	dir := t.TempDir()
 	svc := NewService(dir)
 
-	updated, err := svc.Update(map[string]any{"theme": "dark"})
+	updated, err := svc.Update(map[string]any{"timestampFormat": "24-hour"})
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	// Changed field.
-	if updated.Theme != "dark" {
-		t.Errorf("Theme = %q, want %q", updated.Theme, "dark")
+	if updated.TimestampFormat != "24-hour" {
+		t.Errorf("TimestampFormat = %q, want %q", updated.TimestampFormat, "24-hour")
 	}
 	// All other fields should still be defaults.
 	if updated.StreamingEnabled != true {
@@ -422,8 +422,8 @@ func TestUpdateMergesOverDefaults(t *testing.T) {
 	// Read it back via Get to ensure cache and file are consistent.
 	svc2 := NewService(dir)
 	got := svc2.Get()
-	if got.Theme != "dark" {
-		t.Errorf("re-read Theme = %q, want %q", got.Theme, "dark")
+	if got.TimestampFormat != "24-hour" {
+		t.Errorf("re-read TimestampFormat = %q, want %q", got.TimestampFormat, "24-hour")
 	}
 	if got.StreamingEnabled != true {
 		t.Error("re-read StreamingEnabled = false, want true")
@@ -435,11 +435,11 @@ func TestGetReloadsWhenFileChangesOnDisk(t *testing.T) {
 	path := filepath.Join(dir, "settings.json")
 	svc := NewService(dir)
 
-	if got := svc.Get(); got.Theme != "system" {
-		t.Fatalf("initial Theme = %q, want %q", got.Theme, "system")
+	if got := svc.Get(); got.TimestampFormat != "locale" {
+		t.Fatalf("initial TimestampFormat = %q, want %q", got.TimestampFormat, "locale")
 	}
 
-	data := []byte("{\n  \"theme\": \"dark\"\n}\n")
+	data := []byte("{\n  \"timestampFormat\": \"24-hour\"\n}\n")
 	if err := os.WriteFile(path, data, 0o644); err != nil {
 		t.Fatalf("WriteFile() error = %v", err)
 	}
@@ -449,8 +449,8 @@ func TestGetReloadsWhenFileChangesOnDisk(t *testing.T) {
 	}
 
 	got := svc.Get()
-	if got.Theme != "dark" {
-		t.Fatalf("Theme after external edit = %q, want %q", got.Theme, "dark")
+	if got.TimestampFormat != "24-hour" {
+		t.Fatalf("TimestampFormat after external edit = %q, want %q", got.TimestampFormat, "24-hour")
 	}
 }
 
@@ -469,23 +469,23 @@ func TestConcurrentReadWrite(t *testing.T) {
 			defer wg.Done()
 			for range 50 {
 				got := svc.Get()
-				// Just verify no panic and we get a valid theme.
-				if got.Theme == "" {
-					t.Error("Get returned empty theme")
+				// Just verify no panic and we get a valid timestamp format.
+				if got.TimestampFormat == "" {
+					t.Error("Get returned empty timestamp format")
 				}
 			}
 		}()
 	}
 
 	// Spin up writers.
-	themes := []string{"dark", "light", "system"}
+	formats := []string{"24-hour", "12-hour", "locale"}
 	for i := range writers {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			for j := range 20 {
-				theme := themes[(i+j)%len(themes)]
-				_, err := svc.Update(map[string]any{"theme": theme})
+				format := formats[(i+j)%len(formats)]
+				_, err := svc.Update(map[string]any{"timestampFormat": format})
 				if err != nil {
 					t.Errorf("Update failed: %v", err)
 				}
@@ -497,8 +497,8 @@ func TestConcurrentReadWrite(t *testing.T) {
 
 	// Final read should return a valid settings object.
 	final := svc.Get()
-	if final.Theme == "" {
-		t.Error("final Get returned empty theme")
+	if final.TimestampFormat == "" {
+		t.Error("final Get returned empty timestamp format")
 	}
 }
 
@@ -617,6 +617,7 @@ func TestRetiredChatDefaultSettingsAreDropped(t *testing.T) {
   "defaultModelCodex": "gpt-5.4",
   "defaultRuntimeMode": "approval-required",
   "modelContextWindows": {"claude-sonnet-4-6": 200000},
+  "theme": "light",
   "unknownFutureSetting": {"keep": true}
 }`)
 	if err := os.WriteFile(path, raw, 0o644); err != nil {
@@ -625,12 +626,12 @@ func TestRetiredChatDefaultSettingsAreDropped(t *testing.T) {
 
 	svc := NewService(dir)
 
-	updated, err := svc.Update(map[string]any{"theme": "dark"})
+	updated, err := svc.Update(map[string]any{"timestampFormat": "24-hour"})
 	if err != nil {
 		t.Fatalf("Update() error = %v", err)
 	}
-	if updated.Theme != "dark" {
-		t.Fatalf("Theme = %q, want dark", updated.Theme)
+	if updated.TimestampFormat != "24-hour" {
+		t.Fatalf("TimestampFormat = %q, want 24-hour", updated.TimestampFormat)
 	}
 
 	data, err := os.ReadFile(path)
@@ -647,6 +648,12 @@ func TestRetiredChatDefaultSettingsAreDropped(t *testing.T) {
 		"defaultModelCodex",
 		"defaultRuntimeMode",
 		"modelContextWindows",
+		// "theme" moved to <configDir>/themes/appearance.json. It is
+		// consumed once on the boot path and dropped here, which is exactly
+		// why initThemeDirectory has to run before any Update — and why a
+		// boot that could not seed keeps the value in process memory
+		// (theme.Service.bootPending).
+		"theme",
 	} {
 		if _, ok := fileMap[key]; ok {
 			t.Fatalf("retired key %q survived in settings file: %s", key, string(data))
@@ -703,7 +710,7 @@ func TestUpdatePreservesUnknownFields(t *testing.T) {
 
 	// Seed the file with known + unknown fields of varied types.
 	initial := map[string]any{
-		"theme":             "system",
+		"timestampFormat":   "locale",
 		"futureFlag":        true,
 		"futureString":      "hello",
 		"futureNumber":      42,
@@ -721,7 +728,7 @@ func TestUpdatePreservesUnknownFields(t *testing.T) {
 
 	svc := NewService(dir)
 	// Updating an unrelated known field must not drop the unknowns.
-	if _, err := svc.Update(map[string]any{"theme": "dark"}); err != nil {
+	if _, err := svc.Update(map[string]any{"timestampFormat": "24-hour"}); err != nil {
 		t.Fatalf("Update: %v", err)
 	}
 
@@ -736,8 +743,8 @@ func TestUpdatePreservesUnknownFields(t *testing.T) {
 	}
 
 	// Known field should reflect the update.
-	if fileMap["theme"] != "dark" {
-		t.Errorf("theme = %v, want %q", fileMap["theme"], "dark")
+	if fileMap["timestampFormat"] != "24-hour" {
+		t.Errorf("theme = %v, want %q", fileMap["timestampFormat"], "24-hour")
 	}
 
 	// All unknowns must round-trip.
@@ -852,7 +859,7 @@ func TestUpdateSettings_RejectsRemoteEndpointsKey(t *testing.T) {
 	patches := []map[string]any{
 		{"remoteEndpoints": []any{}},
 		{"remoteEndpoints": nil},
-		{"theme": "dark", "remoteEndpoints": []any{map[string]any{"id": "x", "url": "ws://h/", "token": ""}}},
+		{"timestampFormat": "24-hour", "remoteEndpoints": []any{map[string]any{"id": "x", "url": "ws://h/", "token": ""}}},
 	}
 	for i, patch := range patches {
 		if _, err := svc.Update(patch); err == nil {
@@ -863,8 +870,8 @@ func TestUpdateSettings_RejectsRemoteEndpointsKey(t *testing.T) {
 	// The companion patch with theme set should not have persisted —
 	// reject-at-boundary means atomicity: no half-applied write.
 	got := svc.Get()
-	if got.Theme == "dark" {
-		t.Errorf("theme leaked through despite rejected patch: %+v", got)
+	if got.TimestampFormat == "24-hour" {
+		t.Errorf("timestampFormat leaked through despite rejected patch: %+v", got)
 	}
 }
 
@@ -890,7 +897,7 @@ func TestGetSettings_UpdateSettings_RoundTripPreservesTokens(t *testing.T) {
 		full.RemoteEndpoints[i].Token = ""
 	}
 	patch := map[string]any{
-		"theme":           "dark",
+		"timestampFormat": "24-hour",
 		"remoteEndpoints": full.RemoteEndpoints,
 	}
 
@@ -907,9 +914,9 @@ func TestGetSettings_UpdateSettings_RoundTripPreservesTokens(t *testing.T) {
 	if reloaded.RemoteEndpoints[0].Token != "real-secret-token" {
 		t.Fatalf("token clobbered by rejected patch: %q", reloaded.RemoteEndpoints[0].Token)
 	}
-	// Theme should also be untouched (atomicity of the rejection).
-	if reloaded.Theme == "dark" {
-		t.Fatalf("theme leaked through despite rejected patch: %+v", reloaded)
+	// The known field should also be untouched (atomicity of the rejection).
+	if reloaded.TimestampFormat == "24-hour" {
+		t.Fatalf("timestampFormat leaked through despite rejected patch: %+v", reloaded)
 	}
 }
 
@@ -919,13 +926,13 @@ func TestGetSettings_UpdateSettings_RoundTripPreservesTokens(t *testing.T) {
 func TestLoad_AcceptsFileWithoutSchemaVersion(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "settings.json")
-	if err := os.WriteFile(path, []byte(`{"theme":"dark"}`), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(`{"timestampFormat":"24-hour"}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
 	got := NewService(dir).Get()
-	if got.Theme != "dark" {
-		t.Fatalf("Theme = %q, want dark (loader rejected unversioned file?)", got.Theme)
+	if got.TimestampFormat != "24-hour" {
+		t.Fatalf("TimestampFormat = %q, want 24-hour (loader rejected unversioned file?)", got.TimestampFormat)
 	}
 }
 
@@ -937,13 +944,13 @@ func TestLoad_AcceptsFileWithoutSchemaVersion(t *testing.T) {
 func TestLoad_AcceptsForwardCompatSchemaVersion(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "settings.json")
-	if err := os.WriteFile(path, []byte(`{"$schemaVersion":99,"theme":"dark"}`), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(`{"$schemaVersion":99,"timestampFormat":"24-hour"}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
 	got := NewService(dir).Get()
-	if got.Theme != "dark" {
-		t.Fatalf("Theme = %q, want dark (loader rejected forward-version file?)", got.Theme)
+	if got.TimestampFormat != "24-hour" {
+		t.Fatalf("TimestampFormat = %q, want 24-hour (loader rejected forward-version file?)", got.TimestampFormat)
 	}
 }
 

@@ -16,10 +16,6 @@ func TestUpdateRejectsInvalidEnumeratedValues(t *testing.T) {
 		patch map[string]any
 	}{
 		{
-			name:  "theme",
-			patch: map[string]any{"theme": "solarized"},
-		},
-		{
 			name:  "timestampFormat",
 			patch: map[string]any{"timestampFormat": "iso8601"},
 		},
@@ -94,7 +90,6 @@ func TestGetSanitizesInvalidLoadedValues(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "settings.json")
 	data := []byte(`{
-  "theme": "solarized",
   "timestampFormat": "iso8601",
   "sansFont": "comicsans",
   "monoFont": "wingdings",
@@ -113,9 +108,6 @@ func TestGetSanitizesInvalidLoadedValues(t *testing.T) {
 
 	got := NewService(dir).Get()
 
-	if got.Theme != DefaultSettings.Theme {
-		t.Fatalf("Theme = %q, want %q", got.Theme, DefaultSettings.Theme)
-	}
 	if got.TimestampFormat != DefaultSettings.TimestampFormat {
 		t.Fatalf("TimestampFormat = %q, want %q", got.TimestampFormat, DefaultSettings.TimestampFormat)
 	}

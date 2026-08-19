@@ -1,14 +1,12 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { flushSync } from 'svelte';
 import { getResolvedTheme, teardownThemeModeForTest } from './themeMode.svelte';
-import { loadSettings } from './settings.svelte';
+import {
+  resetAppearanceForTest,
+  setAppearance,
+  type AppearanceMode,
+} from './appearance.svelte';
 import { setBindingMock } from '../../test/mocks/bindings-app';
-import type { Settings } from '../types/settings';
-
-const BASE_SETTINGS: Partial<Settings> = {
-  theme: 'system',
-  timestampFormat: 'locale',
-  network: { bindAll: false },
-};
 
 interface FakeMediaQueryList {
   matches: boolean;
@@ -39,10 +37,8 @@ function makeFakeMatchMedia(initialDark: boolean): FakeMediaQueryList {
 
 let mediaList: FakeMediaQueryList;
 
-async function setTheme(theme: 'light' | 'dark' | 'system'): Promise<void> {
-  setBindingMock('GetSettings', async () => ({ ...BASE_SETTINGS, theme }) as Settings);
-  setBindingMock('UpdateSettings', async () => ({ ...BASE_SETTINGS, theme }) as Settings);
-  await loadSettings();
+async function setTheme(mode: AppearanceMode): Promise<void> {
+  await setAppearance({ mode });
 }
 
 describe('themeMode', () => {
@@ -53,10 +49,15 @@ describe('themeMode', () => {
       vi.fn(() => mediaList),
     );
     teardownThemeModeForTest();
+    resetAppearanceForTest();
+    localStorage.clear();
+    setBindingMock('SetAppearance', async () => undefined);
   });
 
   afterEach(() => {
     teardownThemeModeForTest();
+    resetAppearanceForTest();
+    localStorage.clear();
     vi.unstubAllGlobals();
   });
 
@@ -95,16 +96,47 @@ describe('themeMode', () => {
     expect(getResolvedTheme()).toBe('dark');
   });
 
-  it('settings=light overrides system preference', async () => {
-    // matchMedia says dark, but settings.theme=light wins.
+  it('mode=light overrides system preference', async () => {
+    // matchMedia says dark, but appearance.mode=light wins.
     await setTheme('light');
     expect(getResolvedTheme()).toBe('light');
   });
 
-  it('settings=dark overrides system preference', async () => {
+  it('mode=dark overrides system preference', async () => {
     // matchMedia returns false (light) by default after fresh teardown.
     mediaList.matches = false;
     await setTheme('dark');
     expect(getResolvedTheme()).toBe('dark');
+  });
+
+  it('does not wake mode consumers when only the window-ground cache moves', async () => {
+    // The resolver is read by every palette consumer in the app. Reading the
+    // whole selection box here made the applier's `windowBackground` write —
+    // a value no mode consumer can observe — trigger a full re-resolve plus a
+    // `CSS.supports` pass in every one of them, all settling identical.
+    await setTheme('dark');
+    const reads: string[] = [];
+    const stop = $effect.root(() => {
+      const mode = $derived(getResolvedTheme());
+      $effect(() => {
+        reads.push(mode);
+      });
+    });
+
+    try {
+      flushSync();
+      expect(reads).toHaveLength(1);
+
+      await setAppearance({ windowBackground: '#101017' });
+      flushSync();
+      expect(reads).toHaveLength(1);
+
+      // …and a real mode change still lands.
+      await setAppearance({ mode: 'light' });
+      flushSync();
+      expect(reads).toEqual(['dark', 'light']);
+    } finally {
+      stop();
+    }
   });
 });

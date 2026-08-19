@@ -89,7 +89,14 @@ vi.mock('../../stores/keybindings.svelte', () => ({
 }));
 vi.mock('../../utils/clipboard', () => ({ copyToClipboard: vi.fn(async () => true) }));
 vi.mock('../../stores/toast.svelte', () => ({ addToast: mocks.addToast }));
-vi.mock('../terminal/terminalTheme', () => ({ getXtermTheme: () => ({}) }));
+// Spread the real module: the bridge already degrades to an empty ITheme
+// without a canvas, and a factory that lists only the export this component
+// uses turns every LATER export of that module into `undefined` for the whole
+// file (frontend/AGENTS.md § Testing). Only the console warning is stubbed.
+vi.mock('../terminal/terminalTheme', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../terminal/terminalTheme')>()),
+  getXtermTheme: () => ({}),
+}));
 vi.mock('../../stores/themeMode.svelte', () => ({ getResolvedTheme: () => 'dark' }));
 vi.mock('../terminal/terminalStore.svelte', () => ({
   notifyTerminalFocus: mocks.notifyTerminalFocus,

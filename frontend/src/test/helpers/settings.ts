@@ -2,7 +2,8 @@ import type { Settings } from '../../lib/types/settings';
 
 export function makeSettings(overrides: Partial<Settings> = {}): Settings {
   return {
-    theme: 'system',
+    // No `theme` field: the light/dark mode moved out of settings into
+    // `stores/appearance.svelte.ts` (docs/specs/theme-system.md §6.2).
     timestampFormat: 'locale',
     sansFont: 'geist',
     monoFont: 'geist',

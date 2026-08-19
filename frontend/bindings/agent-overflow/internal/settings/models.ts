@@ -326,7 +326,17 @@ export class Settings {
      * CurrentSchemaVersion on any save via writeSparse.
      */
     "$schemaVersion"?: number;
-    "theme": string;
+
+    /**
+     * NOTE: "theme" used to live here and is RETIRED (see
+     * retiredSettingsFieldNames and docs/specs/theme-system.md §6.2). The
+     * light/dark mode is a property of the CLIENT MACHINE, not of a backend,
+     * so it moved to <configDir>/themes/appearance.json. The old value is
+     * CONSUMED ONCE at boot (initThemeDirectory reads it raw via
+     * RetiredString) and DROPPED by the next sparse write — a retired field
+     * is excluded from unknown-field preservation, so nothing republishes
+     * it. Boot ordering is what makes that safe, and it is load-bearing.
+     */
     "timestampFormat": string;
 
     /**
@@ -675,9 +685,6 @@ export class Settings {
 
     /** Creates a new Settings instance. */
     constructor($$source: Partial<Settings> = {}) {
-        if (!("theme" in $$source)) {
-            this["theme"] = "";
-        }
         if (!("timestampFormat" in $$source)) {
             this["timestampFormat"] = "";
         }
@@ -809,66 +816,66 @@ export class Settings {
      * Creates a new Settings instance from a string or object.
      */
     static createFrom($$source: any = {}): Settings {
-        const $$createField6_0 = $$createType0;
+        const $$createField5_0 = $$createType0;
+        const $$createField17_0 = $$createType0;
         const $$createField18_0 = $$createType0;
-        const $$createField19_0 = $$createType0;
+        const $$createField19_0 = $$createType2;
         const $$createField20_0 = $$createType2;
-        const $$createField21_0 = $$createType2;
+        const $$createField21_0 = $$createType4;
         const $$createField22_0 = $$createType4;
-        const $$createField23_0 = $$createType4;
+        const $$createField23_0 = $$createType0;
         const $$createField24_0 = $$createType0;
-        const $$createField25_0 = $$createType0;
-        const $$createField43_0 = $$createType5;
-        const $$createField44_0 = $$createType6;
-        const $$createField45_0 = $$createType7;
-        const $$createField47_0 = $$createType0;
-        const $$createField48_0 = $$createType9;
-        const $$createField52_0 = $$createType10;
+        const $$createField42_0 = $$createType5;
+        const $$createField43_0 = $$createType6;
+        const $$createField44_0 = $$createType7;
+        const $$createField46_0 = $$createType0;
+        const $$createField47_0 = $$createType9;
+        const $$createField51_0 = $$createType10;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("recentWorkspaces" in $$parsedSource) {
-            $$parsedSource["recentWorkspaces"] = $$createField6_0($$parsedSource["recentWorkspaces"]);
+            $$parsedSource["recentWorkspaces"] = $$createField5_0($$parsedSource["recentWorkspaces"]);
         }
         if ("claudeHiddenModels" in $$parsedSource) {
-            $$parsedSource["claudeHiddenModels"] = $$createField18_0($$parsedSource["claudeHiddenModels"]);
+            $$parsedSource["claudeHiddenModels"] = $$createField17_0($$parsedSource["claudeHiddenModels"]);
         }
         if ("codexHiddenModels" in $$parsedSource) {
-            $$parsedSource["codexHiddenModels"] = $$createField19_0($$parsedSource["codexHiddenModels"]);
+            $$parsedSource["codexHiddenModels"] = $$createField18_0($$parsedSource["codexHiddenModels"]);
         }
         if ("claudeCustomEnv" in $$parsedSource) {
-            $$parsedSource["claudeCustomEnv"] = $$createField20_0($$parsedSource["claudeCustomEnv"]);
+            $$parsedSource["claudeCustomEnv"] = $$createField19_0($$parsedSource["claudeCustomEnv"]);
         }
         if ("codexCustomEnv" in $$parsedSource) {
-            $$parsedSource["codexCustomEnv"] = $$createField21_0($$parsedSource["codexCustomEnv"]);
+            $$parsedSource["codexCustomEnv"] = $$createField20_0($$parsedSource["codexCustomEnv"]);
         }
         if ("claudePromptOverrides" in $$parsedSource) {
-            $$parsedSource["claudePromptOverrides"] = $$createField22_0($$parsedSource["claudePromptOverrides"]);
+            $$parsedSource["claudePromptOverrides"] = $$createField21_0($$parsedSource["claudePromptOverrides"]);
         }
         if ("codexPromptOverrides" in $$parsedSource) {
-            $$parsedSource["codexPromptOverrides"] = $$createField23_0($$parsedSource["codexPromptOverrides"]);
+            $$parsedSource["codexPromptOverrides"] = $$createField22_0($$parsedSource["codexPromptOverrides"]);
         }
         if ("claudeDisabledTools" in $$parsedSource) {
-            $$parsedSource["claudeDisabledTools"] = $$createField24_0($$parsedSource["claudeDisabledTools"]);
+            $$parsedSource["claudeDisabledTools"] = $$createField23_0($$parsedSource["claudeDisabledTools"]);
         }
         if ("codexDisabledTools" in $$parsedSource) {
-            $$parsedSource["codexDisabledTools"] = $$createField25_0($$parsedSource["codexDisabledTools"]);
+            $$parsedSource["codexDisabledTools"] = $$createField24_0($$parsedSource["codexDisabledTools"]);
         }
         if ("network" in $$parsedSource) {
-            $$parsedSource["network"] = $$createField43_0($$parsedSource["network"]);
+            $$parsedSource["network"] = $$createField42_0($$parsedSource["network"]);
         }
         if ("editor" in $$parsedSource) {
-            $$parsedSource["editor"] = $$createField44_0($$parsedSource["editor"]);
+            $$parsedSource["editor"] = $$createField43_0($$parsedSource["editor"]);
         }
         if ("retention" in $$parsedSource) {
-            $$parsedSource["retention"] = $$createField45_0($$parsedSource["retention"]);
+            $$parsedSource["retention"] = $$createField44_0($$parsedSource["retention"]);
         }
         if ("gitlabSelfHostedHosts" in $$parsedSource) {
-            $$parsedSource["gitlabSelfHostedHosts"] = $$createField47_0($$parsedSource["gitlabSelfHostedHosts"]);
+            $$parsedSource["gitlabSelfHostedHosts"] = $$createField46_0($$parsedSource["gitlabSelfHostedHosts"]);
         }
         if ("remoteEndpoints" in $$parsedSource) {
-            $$parsedSource["remoteEndpoints"] = $$createField48_0($$parsedSource["remoteEndpoints"]);
+            $$parsedSource["remoteEndpoints"] = $$createField47_0($$parsedSource["remoteEndpoints"]);
         }
         if ("window" in $$parsedSource) {
-            $$parsedSource["window"] = $$createField52_0($$parsedSource["window"]);
+            $$parsedSource["window"] = $$createField51_0($$parsedSource["window"]);
         }
         return new Settings($$parsedSource as Partial<Settings>);
     }

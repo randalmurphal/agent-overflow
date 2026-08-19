@@ -56,6 +56,35 @@ func TestEventVisibleToOrigin(t *testing.T) {
 	}
 }
 
+// The payload-less refetch signals are latest-only, as a PAIR: both are
+// `emit(name, nil)` from a debounced directory watcher, so a default-depth
+// ring would replay up to DefaultRingCapacity identical nil frames on
+// reconnect and fire one full-listing refetch per frame. Replay must hand
+// back exactly one.
+func TestRefetchSignalChannelsAreLatestOnly(t *testing.T) {
+	for _, channel := range []string{"theme:changed", "workflow:definitions-changed"} {
+		if !latestOnlyEventChannels[channel] {
+			t.Fatalf("%s is not latest-only: a reconnect would replay a ring's worth of identical refetch signals", channel)
+		}
+		if ephemeralEventChannels[channel] {
+			t.Fatalf("%s is ephemeral: a client that missed the change would never refetch", channel)
+		}
+
+		bus := NewEventBus(10)
+		for range 5 {
+			if _, err := bus.Emit(channel, nil); err != nil {
+				bus.Close()
+				t.Fatalf("Emit(%s): %v", channel, err)
+			}
+		}
+		replayed := bus.Replay(map[string]uint64{channel: 0})
+		bus.Close()
+		if len(replayed) != 1 || replayed[0].Seq != 5 {
+			t.Fatalf("%s replay = %+v, want only the newest frame (seq 5)", channel, replayed)
+		}
+	}
+}
+
 // Seed channels are ephemeral: emitted frames reach live subscribers
 // with monotonic seqs but are never retained for replay — a reconnect
 // gets nothing back and no gap marker (they were never history).

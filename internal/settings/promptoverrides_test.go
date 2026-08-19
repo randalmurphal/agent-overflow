@@ -289,7 +289,7 @@ func TestValidateDisabledToolsRejectsFlagShapedAndBlankEntries(t *testing.T) {
 // not strand the rest of the settings file.
 func TestSanitizeLoadedSettingsRepairsPromptOverrideFields(t *testing.T) {
 	sanitized := sanitizeLoadedSettings(Settings{
-		Theme:                            DefaultSettings.Theme,
+		TimestampFormat:                  DefaultSettings.TimestampFormat,
 		ClaudeDisabledTools:              []string{"Workflow", "-bad", "  ", "Workflow"},
 		ClaudePromptOverrides:            []PromptOverride{{Enabled: true, Models: []string{" m ", "m"}, Prompt: "  p  "}},
 		ClaudeAutoCompactStandardPercent: 90,

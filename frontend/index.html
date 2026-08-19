@@ -7,6 +7,90 @@
     <title>Agent Overflow</title>
   </head>
   <body>
+    <!--
+      First-paint theme stamp. The bundle is a deferred module, so without
+      this the light-mode user gets a dark frame and everyone gets a white
+      flash before app.css lands.
+
+      Both elements live in the BODY on purpose. Vite appends the app's own
+      stylesheet links to the end of <head>, so a style block inserted into
+      the head would LOSE the source-order tie to app.css's :root and the
+      cached palette would be ignored at exactly the moment it matters. A
+      body element wins that tie by document order, with no !important
+      anywhere — and the applier then rewrites this same element by id, so
+      there is still exactly one user-theme style in the document.
+
+      The storage key is pinned against lib/theme/themeApply.svelte.ts by
+      themeBootStamp.test.ts; a rename that lands on only one side is silent.
+
+      THE CACHED CSS IS RE-VALIDATED HERE, not trusted. localStorage is
+      same-origin writable, so this script is the one place in the app that
+      takes CSS text from an untrusted store and puts it in the document —
+      without a check, any same-origin script execution becomes a PERSISTENT
+      injection primitive that outlives the page that planted it. The serializer
+      (themeResolve.ts#serializeThemeCss) emits exactly one grammar, so this
+      re-checks it line by line: `:root {` / `html.light {` headers, `}`
+      closers, and `  --token: value;` declarations over the same conservative
+      value charset with the same balanced-paren rule. Anything else falls back
+      to the mode class plus the ground, which is most of what stops the flash.
+      themeBootStamp.test.ts runs this validator against real serializer output
+      and against hostile input.
+    -->
+    <style id="user-theme"></style>
+    <script>
+      (function () {
+        /* boot-css-validator:start */
+        function okCss(s) {
+          if (s.length === 0) return false;
+          var lines = s.split('\n');
+          var open = false;
+          for (var i = 0; i < lines.length; i++) {
+            var line = lines[i];
+            if (!open) {
+              if (line !== ':root {' && line !== 'html.light {') return false;
+              open = true;
+              continue;
+            }
+            if (line === '}') {
+              open = false;
+              continue;
+            }
+            var m = /^ {2}--[a-z][a-z0-9]*(-[a-z0-9]+)*: ([-#()%,.\/+_ a-zA-Z0-9]+);$/.exec(line);
+            if (!m) return false;
+            var value = m[2];
+            var depth = 0;
+            for (var j = 0; j < value.length; j++) {
+              var ch = value.charAt(j);
+              if (ch === '(') {
+                depth++;
+                if (depth > 8) return false;
+              } else if (ch === ')') {
+                depth--;
+                if (depth < 0) return false;
+              }
+            }
+            if (depth !== 0) return false;
+          }
+          return !open;
+        }
+        /* boot-css-validator:end */
+        try {
+          var raw = localStorage.getItem('agent-overflow:theme:boot');
+          if (!raw) return;
+          var stamp = JSON.parse(raw);
+          var root = document.documentElement;
+          if (stamp.c === 'light' || stamp.c === 'dark') root.classList.add(stamp.c);
+          if (typeof stamp.b === 'string' && /^#[0-9a-fA-F]{6}$/.test(stamp.b)) {
+            root.style.backgroundColor = stamp.b;
+          }
+          if (typeof stamp.s === 'string' && stamp.s.length <= 32768 && okCss(stamp.s)) {
+            document.getElementById('user-theme').textContent = stamp.s;
+          }
+        } catch (err) {
+          /* A wrong-colored first frame is the whole cost of any failure here. */
+        }
+      })();
+    </script>
     <div id="app"></div>
     <script src="./src/main.ts" type="module"></script>
   </body>

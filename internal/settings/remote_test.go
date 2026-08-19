@@ -239,7 +239,7 @@ func TestRemoteEndpointsSparseWhenEmpty(t *testing.T) {
 	// key at all so a fresh install stays sparse.
 	dir := t.TempDir()
 	svc := NewService(dir)
-	if _, err := svc.Update(map[string]any{"theme": "dark"}); err != nil {
+	if _, err := svc.Update(map[string]any{"timestampFormat": "24-hour"}); err != nil {
 		t.Fatalf("Update: %v", err)
 	}
 

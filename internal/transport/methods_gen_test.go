@@ -195,6 +195,15 @@ var wireSafeMethods = map[string]bool{
 	// keyboard shortcut on the remote browser. Mutations stay
 	// LocalOnly in category 3.
 	"GetKeybindings": true,
+	// GetThemeFiles: keybindings parity, and for the same reason. It
+	// returns UI preferences — theme files as opaque text plus which
+	// ones are selected — and it names the themes directory, which is
+	// the one host path it discloses (a fixed subdirectory of a config
+	// dir the remote client can already infer). Refusing it would leave
+	// a remote browser on built-ins with no way to learn the desktop's
+	// palette. The writers (SetAppearance, SetWindowBackgroundColor)
+	// stay LocalOnly in category 3.
+	"GetThemeFiles": true,
 
 	// Host environment probe (no FS read, no credential).
 	"IsWSL": true,

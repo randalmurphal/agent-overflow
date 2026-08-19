@@ -3,7 +3,6 @@ import { GetSettings, UpdateSettings } from "./bindings";
 import { addToast } from "./toast.svelte";
 
 const DEFAULT_SETTINGS: Settings = {
-  theme: "system",
   timestampFormat: "locale",
   sansFont: "geist",
   monoFont: "geist",

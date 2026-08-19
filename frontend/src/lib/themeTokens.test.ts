@@ -19,9 +19,11 @@
 // fixed must be DELETED — a list that grandfathers is a list that stops
 // describing the tree.
 //
-// When phase 2 lands (`themes/*.json` + the terminal hex bridge), several of
-// these entries become stale by construction and this test is where that shows
-// up.
+// Phase 2 landed the terminal bridge, and this file is where that showed up:
+// `terminal/terminalTheme.ts`'s entry — 44 hand-maintained hex values
+// duplicating the ANSI tokens — was DELETED rather than reworded, because the
+// duplicate itself is gone (the palette is now resolved through
+// `utils/cssColorProbe.ts`). That is what a shrink-only list is for.
 //
 // NOTE, and it is the same hazard this file polices: Tailwind's source scanner
 // reads whole files, comments and string literals included. Spelling a real
@@ -141,17 +143,42 @@ const ARBITRARY_COLOR_FUNCTION =
 const RAW_CLASS_ALLOWLIST: Record<string, string> = {};
 
 /**
+ * The curated built-in palettes (phase 3): one module per theme, each holding
+ * nothing but the token → color table its upstream palette publishes. This is
+ * the theme layer in the same sense app.css and syntax.css are — the values
+ * ARE the theme — so it is one exception with one reason, spelled per file so
+ * the list stays exact in both directions. A NEW file here needs a line here
+ * too, which is the point: a hex outside these tables is still a leak.
+ */
+const CURATED_PALETTE_MODULES = [
+  'catppuccin',
+  'dracula',
+  'highContrast',
+  'monokai',
+  'oneDark',
+  'solarized',
+  'tokyoNight',
+];
+
+const CURATED_PALETTE_REASON =
+  'curated built-in theme palette — the values ARE the theme layer, stated as hex so the xterm bridge and the color probe read them without a conversion (see lib/theme/builtins.ts)';
+
+/**
  * Hex literals that are deliberate. Two shapes: the theme layer, where the
  * values ARE the vocabulary, and the handful of places where a hex is not a
  * UI color at all.
  */
 const HEX_ALLOWLIST: Record<string, string> = {
+  ...Object.fromEntries(
+    CURATED_PALETTE_MODULES.map((name) => [
+      `lib/theme/builtins/${name}.ts`,
+      CURATED_PALETTE_REASON,
+    ]),
+  ),
   'app.css':
     'the theme layer itself — the `:root` dark palette and the `html.light` override block are the hex source of truth every token resolves from (phase 2 moves them into themes/*.json). `--design-paper` lives here too: agent-authored iframe paper, default-locked opaque by design rather than themed',
   'styles/syntax.css':
     'the github-dark / github-light `--syntax-*` palettes — 21 token values per mode, the code axis of the theme layer',
-  'lib/components/terminal/terminalTheme.ts':
-    'xterm rejects `oklch`, so the DARK/LIGHT `ITheme` objects are a hand-maintained hex duplicate of the ANSI/terminal tokens; retires with the phase-2 getComputedStyle hex bridge',
   'lib/components/composer/imageCompress.ts':
     'JPEG has no alpha and canvas composites transparency onto black, so the export matte is an opaque white fill — an encoder detail on a produced file, not app chrome',
   'lib/components/chat/UserMessageBody.svelte':

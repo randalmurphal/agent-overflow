@@ -8,7 +8,7 @@ forward-compatible).
 
 - `settings.go` — `Settings` struct, `Load` / `Save`, the sparse
   JSON marshal/unmarshal, schema versioning (`CurrentSchemaVersion`).
-- `validate.go` — enum allow-lists (theme, timestamp format, provider,
+- `validate.go` — enum allow-lists (timestamp format, provider,
   reasoning effort, text-generation provider) plus the
   `ValidateRemoteEndpointURL` / `ValidateRemoteEndpointToken` helpers
   used by both the App-level remote-endpoint mutators and the
@@ -79,6 +79,35 @@ forward-compatible).
 - To change allowed values for an existing enum: update the map in
   `validate.go` and the migration note; old values are normalized on
   load, never at write time.
+
+## Retired fields
+
+A setting that MOVED somewhere else — not one that was deleted — is
+retired rather than kept: it comes out of the `Settings` struct and goes
+into `retiredSettingsFieldNames()`. The name in that set does two things.
+`captureUnknownFields` skips it, so the sparse writer does NOT round-trip
+it, and `Validate` never sees it because the struct has no field for it.
+
+The consequence is the part to get right: a retired value is **consumed
+once and then gone**. Unmarshalling drops it, nothing republishes it, and
+the next `Update` — any update, from anywhere — rewrites the file without
+it. It is not "left on disk".
+
+`Service.RetiredString(field)` is the one legitimate reader: a raw read of
+the FILE (not the typed cache, which cannot hold a field the type no
+longer has) that answers `""` for every failure. It exists for the
+one-time migration that moves the old value to wherever it now lives.
+Two rules follow, and both are load-bearing:
+
+- The migration must run on the BOOT path, before any `Update` can reach
+  the file. `app_startup.go`'s `initThemeDirectory` is the live example
+  (`theme` → `<configDir>/themes/appearance.json`,
+  `docs/specs/theme-system.md` §6.2), and `app_theme_test.go` pins the
+  ordering in both directions.
+- A migration that can FAIL must carry the value in process state, because
+  the drop happens whether or not the migration succeeded.
+  `theme.Service` keeps it in `bootPending` / `pendingLegacy` and retries
+  from the next read.
 
 ## Secrets on the wire
 

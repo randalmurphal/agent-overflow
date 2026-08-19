@@ -587,5 +587,41 @@ func (a *App) initSubsystems(dbDir string, st *store.Store) error {
 		return err
 	}
 	a.startWorkflowDefinitionsWatcher(dbDir)
+	a.initThemeDirectory()
 	return nil
+}
+
+// initThemeDirectory materializes <configDir>/themes (dir + generated
+// schema/TOKENS.md reference + a seeded appearance.json) and arms the
+// live-reload watcher over it.
+//
+// The legacy settings.theme value is read here and handed to EnsureBoot
+// so a user upgrading into the theme system keeps the light/dark choice
+// they already made. It is consulted only when appearance.json is
+// absent.
+//
+// The read is RAW (Service.RetiredString) because the field is now
+// retired: it is gone from the Settings struct and listed in
+// retiredSettingsFieldNames, so neither the typed value nor the
+// unknown-field preservation carries it any more. This one-time
+// migration is the only legitimate reader left, which is exactly what
+// that accessor exists for (docs/specs/theme-system.md §6.2).
+//
+// Neither half fails boot. A themes directory that cannot be created
+// costs live reload and the on-disk reference; GetThemeFiles still
+// answers, and the frontend still renders on built-in themes.
+func (a *App) initThemeDirectory() {
+	service, err := a.themeService()
+	if err != nil {
+		log.Printf("theme directory unavailable: %v", err)
+		return
+	}
+	legacyMode := ""
+	if a.settings != nil {
+		legacyMode = a.settings.RetiredString("theme")
+	}
+	if err := service.EnsureBoot(legacyMode); err != nil {
+		log.Printf("theme directory setup: %v", err)
+	}
+	a.startThemeWatcher(service.Dir())
 }

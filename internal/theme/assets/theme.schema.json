@@ -1,0 +1,537 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://agent-overflow.dev/schemas/theme.schema.json",
+  "title": "Agent Overflow theme",
+  "description": "A theme file states one or two per-mode palettes as sparse overrides of the built-in palette of that polarity. The theme id is the filename stem; there is no \"extends\" key, because the variant name IS the base.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "Path to this schema, for editor completion."
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 80,
+      "description": "Display name. Defaults to the filename stem."
+    },
+    "dark": {
+      "$ref": "#/definitions/variant"
+    },
+    "light": {
+      "$ref": "#/definitions/variant"
+    }
+  },
+  "definitions": {
+    "variant": {
+      "type": "object",
+      "description": "One mode palette. Every section is optional and every section is sparse; a token you do not name keeps the built-in value.",
+      "additionalProperties": false,
+      "properties": {
+        "colors": {
+          "type": "object",
+          "description": "colors — app chrome (UI axis). Sparse: name only the tokens you are changing.",
+          "additionalProperties": false,
+          "properties": {
+            "surface-0": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "description": "App ground: the window and page background every pane sits on."
+            },
+            "surface-1": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "description": "First elevation step: cards, inputs and panels lifted off the ground."
+            },
+            "surface-2": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "description": "Second elevation step: chrome sitting on a card (menus, chips, hover fills)."
+            },
+            "surface-3": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "description": "Third elevation step: progress tracks and hover fills on chrome already at tier 2."
+            },
+            "border": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "description": "Default hairline between regions."
+            },
+            "border-strong": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "description": "Prominent hairline: turn dividers and hover-emphasized control borders."
+            },
+            "border-subtle": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "description": "Softest hairline, for ambient chrome. Follows the border color. Derived by default — override only to stop it tracking."
+            },
+            "text-primary": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "description": "Focal text."
+            },
+            "text-secondary": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "description": "Supporting text: secondary labels, quoted prose, muted glyphs."
+            },
+            "fg-muted": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "description": "Body copy. Follows the focal text color at reduced strength. Derived by default — override only to stop it tracking."
+            },
+            "fg-subtle": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "description": "Labels and de-emphasized text. Follows the focal text color. Derived by default — override only to stop it tracking."
+            },
+            "fg-hint": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "description": "Timestamps and barely-there hints. Follows the focal text color. Derived by default — override only to stop it tracking."
+            },
+            "accent": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "description": "Primary accent: selection, links, focus rings and filled buttons."
+            },
+            "accent-fg": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "description": "Foreground painted on an accent fill, so a pale accent cannot strand its own label."
+            },
+            "info": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "description": "Informational status: input prompts and neutral notices."
+            },
+            "success": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "description": "Success status: completed work, added lines, healthy state."
+            },
+            "error": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "description": "Failure status: errors, removed lines, refusals."
+            },
+            "warning": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "description": "Attention status: a human is blocked (approvals, pending input)."
+            },
+            "provider-codex": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "description": "Codex provider identity. Brand-locked by default."
+            },
+            "provider-claude": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "description": "Claude provider identity. Brand-locked by default, with no separate light value."
+            },
+            "provider-claude-tui": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "description": "claude-tui provider identity: the phosphor green of a CRT terminal."
+            },
+            "overlay": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "description": "Backdrop dimming app chrome behind a modal or sheet. Varies with the mode."
+            },
+            "scrim": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "description": "Chrome painted over USER MEDIA (lightbox grounds, thumbnail badges). Stored opaque and consumed at partial alpha; mode-invariant by default."
+            },
+            "scrim-fg": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "description": "Foreground of the media-overlay pair. Stored opaque and consumed at partial alpha; mode-invariant by default."
+            },
+            "design-paper": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "description": "The design canvas iframe paper. Sandboxed agent HTML is authored against a light page, so this is default-locked."
+            },
+            "card": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "description": "Ambient card ground, referenced at low alpha by tool rows and cards. Follows the first elevation tier. Derived by default — override only to stop it tracking."
+            },
+            "ico-terminal": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "description": "Tool-kind icon: shell and terminal commands."
+            },
+            "ico-file": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "description": "Tool-kind icon: file edits and writes."
+            },
+            "ico-eye": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "description": "Tool-kind icon: reads and views."
+            },
+            "ico-search": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "description": "Tool-kind icon: search and pattern matching."
+            },
+            "ico-globe": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "description": "Tool-kind icon: network and web fetches."
+            },
+            "ico-robot": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "description": "Tool-kind icon: subagents and delegated work."
+            },
+            "ico-speech-bubble": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "description": "Tool-kind icon: conversation and messaging tools."
+            },
+            "ico-checklist": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "description": "Tool-kind icon: task lists and plans."
+            },
+            "ico-puzzle": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "description": "Tool-kind icon: MCP servers and plugin tools."
+            },
+            "ico-clock": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "description": "Tool-kind icon: waits, sleeps and scheduled work."
+            },
+            "ico-brain": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "description": "Tool-kind icon: thinking and reasoning."
+            },
+            "ico-compaction": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "description": "Tool-kind icon: context compaction. A muted slate that reads as a system operation."
+            },
+            "ico-generic": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "description": "Tool-kind icon fallback for unclassified tools. Follows the secondary text color. Derived by default — override only to stop it tracking."
+            }
+          }
+        },
+        "syntax": {
+          "type": "object",
+          "description": "syntax — highlight families (code axis). Sparse: name only the tokens you are changing.",
+          "additionalProperties": false,
+          "properties": {
+            "syntax-keyword": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "description": "Language keywords and control flow."
+            },
+            "syntax-string": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "description": "String literals."
+            },
+            "syntax-string-special": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "description": "Escapes, interpolation markers and regex literals."
+            },
+            "syntax-comment": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "description": "Comments and doc comments."
+            },
+            "syntax-number": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "description": "Numeric literals."
+            },
+            "syntax-function": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "description": "Function and method names at definition and call sites."
+            },
+            "syntax-type": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "description": "Types, classes, structs and interfaces."
+            },
+            "syntax-variable-builtin": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "description": "Built-in variables such as this, self and super."
+            },
+            "syntax-property": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "description": "Object properties and struct fields."
+            },
+            "syntax-constant": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "description": "Constants and enum members, including the language booleans."
+            },
+            "syntax-tag": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "description": "Markup tag names (HTML, JSX, XML)."
+            },
+            "syntax-attribute": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "description": "Markup attribute names and annotations."
+            },
+            "syntax-namespace": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "description": "Modules, packages and namespace qualifiers."
+            },
+            "syntax-label": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "description": "Labels, goto targets and named arguments."
+            },
+            "syntax-markup-heading": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "description": "Markdown headings (also rendered bold)."
+            },
+            "syntax-markup-link": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "description": "Markdown links and URLs."
+            },
+            "syntax-markup-raw": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "description": "Markdown inline code and fenced blocks."
+            },
+            "syntax-markup-list": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "description": "Markdown list markers."
+            },
+            "syntax-markup-quote": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "description": "Markdown block quotes."
+            },
+            "syntax-added": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "description": "Added lines in an embedded diff."
+            },
+            "syntax-removed": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "description": "Removed lines in an embedded diff."
+            }
+          }
+        },
+        "ansi": {
+          "type": "object",
+          "description": "ansi — ANSI 16 foregrounds (code axis). Sparse: name only the tokens you are changing.",
+          "additionalProperties": false,
+          "properties": {
+            "ansi-fg-30": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "description": "ANSI 30 (black) foreground, in chat output and the terminal alike."
+            },
+            "ansi-fg-31": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "description": "ANSI 31 (red) foreground, in chat output and the terminal alike."
+            },
+            "ansi-fg-32": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "description": "ANSI 32 (green) foreground, in chat output and the terminal alike."
+            },
+            "ansi-fg-33": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "description": "ANSI 33 (yellow) foreground, in chat output and the terminal alike."
+            },
+            "ansi-fg-34": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "description": "ANSI 34 (blue) foreground, in chat output and the terminal alike."
+            },
+            "ansi-fg-35": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "description": "ANSI 35 (magenta) foreground, in chat output and the terminal alike."
+            },
+            "ansi-fg-36": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "description": "ANSI 36 (cyan) foreground, in chat output and the terminal alike."
+            },
+            "ansi-fg-37": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "description": "ANSI 37 (white) foreground. Follows the app text palette unless overridden. Derived by default — override only to stop it tracking."
+            },
+            "ansi-fg-90": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "description": "ANSI 90 (bright black, i.e. grey) foreground. Follows the app text palette unless overridden. Derived by default — override only to stop it tracking."
+            },
+            "ansi-fg-91": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "description": "ANSI 91 (bright red) foreground, in chat output and the terminal alike."
+            },
+            "ansi-fg-92": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "description": "ANSI 92 (bright green) foreground, in chat output and the terminal alike."
+            },
+            "ansi-fg-93": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "description": "ANSI 93 (bright yellow) foreground, in chat output and the terminal alike."
+            },
+            "ansi-fg-94": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "description": "ANSI 94 (bright blue) foreground, in chat output and the terminal alike."
+            },
+            "ansi-fg-95": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "description": "ANSI 95 (bright magenta) foreground, in chat output and the terminal alike."
+            },
+            "ansi-fg-96": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "description": "ANSI 96 (bright cyan) foreground, in chat output and the terminal alike."
+            },
+            "ansi-fg-97": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "description": "ANSI 97 (bright white) foreground, in chat output and the terminal alike."
+            }
+          }
+        },
+        "code": {
+          "type": "object",
+          "description": "code — code-surface grounds (code axis). Sparse: name only the tokens you are changing.",
+          "additionalProperties": false,
+          "properties": {
+            "code-block": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "description": "Ground behind a fenced code block. Follows the first elevation tier, so a code theme can move blocks without moving every card with them. Derived by default — override only to stop it tracking."
+            },
+            "code-inline-bg": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "description": "Ground behind inline code spans."
+            },
+            "terminal-bg": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "description": "Ground of the embedded terminal."
+            }
+          }
+        }
+      }
+    }
+  }
+}

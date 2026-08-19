@@ -21,6 +21,7 @@
 import type { MermaidConfig } from 'mermaid';
 import { getResolvedTheme, type ResolvedTheme } from '../../../stores/themeMode.svelte';
 import { getSettings } from '../../../stores/settings.svelte';
+import { getThemePaletteIdentity } from '../../../theme/themeApply.svelte';
 import { readTokenStyles, resetCssColorProbe } from '../../../utils/cssColorProbe';
 
 /** Tokens the diagram palette is derived from. Nothing here is invented:
@@ -42,9 +43,10 @@ type Palette = Partial<Record<TokenName, string>>;
 
 // A font stack is a list of family names, so the shape is narrow by
 // nature: letters, digits, spaces, quotes, commas, hyphens and dots.
-// Phase 2 makes `--font-sans` reachable from a user-authored theme file,
-// and this value is baked verbatim into rendered SVG — the same
-// OMIT-never-pass-through policy the colors get.
+// The value is baked verbatim into rendered SVG, so it gets the same
+// OMIT-never-pass-through policy the colors get. Theme FILES cannot reach
+// `--font-sans` (the token registry is colors-only, deliberately), but
+// Settings → Appearance can, and a user font name is user input either way.
 const SAFE_FONT_FAMILY = /^[A-Za-z0-9 ,"'\-.]{1,256}$/;
 
 const TOKEN_NAMES = Object.values(TOKENS);
@@ -120,19 +122,24 @@ function buildConfig(resolved: ResolvedTheme): {
  * is resolved from `--font-sans` and baked into the cached config, and
  * `utils/fonts.ts#applyFonts` rewrites that variable on a settings change,
  * so a mode-keyed cache handed every already-rendered diagram the old font
- * forever. Phase 2 (user-authored theme files) widens THIS ONE STRING with
- * the active theme file's identity; nothing else has to learn about it.
+ * forever.
+ *
+ * The third half is phase 2's, and it arrived as promised through this ONE
+ * string: `getThemePaletteIdentity()` is `uiTheme|codeTheme|revision`, so a
+ * theme swap AND an agent's edit to the selected file both invalidate every
+ * cached diagram. The revision component is why the edit case works at all —
+ * the selection is unchanged when a file is rewritten under it.
  */
 export function mermaidPaletteIdentity(): string {
   return paletteIdentityFor(getResolvedTheme());
 }
 
 function paletteIdentityFor(resolved: ResolvedTheme): string {
-  return `${resolved}|${getSettings().sansFont}`;
+  return `${resolved}|${getSettings().sansFont}|${getThemePaletteIdentity()}`;
 }
 
-// Resolved palettes are memoized per palette identity. Two reasons, and
-// the second is the load-bearing one:
+// The resolved palette is memoized for the CURRENT identity. Two reasons,
+// and the second is the load-bearing one:
 //
 // 1. The probe is cheap but it is a forced style recalc, and a thread
 //    full of diagrams would pay it once per mount otherwise.
@@ -143,7 +150,16 @@ function paletteIdentityFor(resolved: ResolvedTheme): string {
 //    `Mermaid.svelte`'s `{@attach}` from re-running `mermaid.render` for
 //    every visible diagram on an unrelated settings change. Never return
 //    a fresh object for an unchanged identity.
-const cache = new Map<string, MermaidConfig>();
+//
+// SINGLE ENTRY, on purpose. The identity carries the theme system's
+// monotonic revision and the sans-font setting, so a keyed Map would
+// accumulate one dead config per theme-file edit and per font change for
+// the life of the session, with nothing in production ever evicting them.
+// Every caller asks for the identity that is live right now, so a miss
+// means the held entry is unreachable — and the miss path drops it before
+// storing the new one.
+let cachedIdentity: string | undefined;
+let cachedConfig: MermaidConfig | undefined;
 
 let warnedUnresolved = false;
 
@@ -163,8 +179,11 @@ let warnedUnresolved = false;
  */
 export function resolveMermaidThemeConfig(resolved: ResolvedTheme): MermaidConfig {
   const identity = paletteIdentityFor(resolved);
-  const cached = cache.get(identity);
-  if (cached) return cached;
+  if (cachedConfig && cachedIdentity === identity) return cachedConfig;
+  // A miss retires the held config before anything replaces it, so the cache
+  // holds at most one entry whether or not the rebuild below succeeds.
+  cachedIdentity = undefined;
+  cachedConfig = undefined;
 
   const { config, resolvedAnyColor } = buildConfig(resolved);
   if (!resolvedAnyColor) {
@@ -180,17 +199,22 @@ export function resolveMermaidThemeConfig(resolved: ResolvedTheme): MermaidConfi
     return config;
   }
 
-  cache.set(identity, config);
+  cachedIdentity = identity;
+  cachedConfig = config;
   return config;
 }
 
 /**
- * Drops every memoized palette AND the probe's canvas-context memo, and
- * re-arms the unresolved-palette warning. Tests, and phase-2 live theme
- * reloads.
+ * Drops the memoized palette AND the probe's canvas-context memo, and re-arms
+ * the unresolved-palette warning.
+ *
+ * TESTS ONLY — production has no caller and needs none: the cache holds one
+ * entry keyed on the palette identity, so a theme edit or a font change
+ * evicts it by missing.
  */
 export function resetMermaidThemeCaches(): void {
-  cache.clear();
+  cachedIdentity = undefined;
+  cachedConfig = undefined;
   warnedUnresolved = false;
   resetCssColorProbe();
 }

@@ -9,11 +9,6 @@ import (
 )
 
 var (
-	allowedThemes = map[string]struct{}{
-		"system": {},
-		"light":  {},
-		"dark":   {},
-	}
 	allowedTimestampFormats = map[string]struct{}{
 		"locale":  {},
 		"12-hour": {},
@@ -90,11 +85,6 @@ var (
 )
 
 func validateSettings(current Settings) (Settings, error) {
-	current.Theme = strings.TrimSpace(current.Theme)
-	if err := validateOption("theme", current.Theme, allowedThemes); err != nil {
-		return Settings{}, err
-	}
-
 	current.TimestampFormat = strings.TrimSpace(current.TimestampFormat)
 	if err := validateOption("timestampFormat", current.TimestampFormat, allowedTimestampFormats); err != nil {
 		return Settings{}, err
@@ -278,7 +268,6 @@ func validateSettings(current Settings) (Settings, error) {
 }
 
 func sanitizeLoadedSettings(current Settings) Settings {
-	current.Theme = sanitizeOption("theme", current.Theme, DefaultSettings.Theme, allowedThemes)
 	current.TimestampFormat = sanitizeOption(
 		"timestampFormat",
 		current.TimestampFormat,

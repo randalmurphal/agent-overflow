@@ -79,7 +79,8 @@ var InternalServiceMethods = map[string]bool{
 // privileged vs simply absent. The bookkeeping cost is one map lookup
 // per call.
 //
-// Intentionally NOT in this set: GetKeybindings. The frontend's
+// Intentionally NOT in this set: GetKeybindings and its theme
+// counterpart GetThemeFiles. The frontend's
 // keybindings loader has no client-side defaults — a method_not_found
 // refusal zeros every keyboard shortcut for remote-browser users. The
 // returned data is UI preferences (chord → command), not credentials,
@@ -87,6 +88,9 @@ var InternalServiceMethods = map[string]bool{
 // stay in category 3 so a LAN-attached peer still cannot rewrite the
 // user's bindings. A future reviewer running this same exercise: don't
 // silently flip it without revisiting the remote-browser UX cost.
+// GetThemeFiles reads the same way: theme files are opaque UI
+// preference text, the frontend degrades to built-in themes without
+// them, and its writers stay in category 3.
 //
 // Updates to this set must keep the names in sync with the App-side
 // declarations. methods_gen_test.go gates that contract by failing if
@@ -474,7 +478,16 @@ var LocalOnlyMethods = map[string]bool{
 	"SetEditorSettings":            true,
 	"UpdateKeybindings":            true,
 	"ResetKeybindings":             true,
-	"SetChatBarFavorite":           true,
+	// SetAppearance writes <configDir>/themes/appearance.json on the
+	// host — a settings mutation whose file happens to live outside
+	// settings.json. SetWindowBackgroundColor repaints THIS machine's
+	// native window chrome, which no remote peer has any business
+	// driving: the desktop user would watch their window change color
+	// on a stranger's call. Their read companion, GetThemeFiles, is
+	// deliberately NOT here — see the GetKeybindings note above.
+	"SetAppearance":            true,
+	"SetWindowBackgroundColor": true,
+	"SetChatBarFavorite":       true,
 	// Custom provider environment. Settings mutation (category 3) AND
 	// credential-shaped input (category 6): the value a caller supplies is
 	// injected verbatim into every provider subprocess for that provider —

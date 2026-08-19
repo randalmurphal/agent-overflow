@@ -127,9 +127,9 @@ runtime palette change repaints everything for free **except**:
 
 | Consumer | Today | For custom palettes |
 |---|---|---|
-| **xterm terminals** (`terminal/terminalTheme.ts`, applied in `terminalXterm.ts`, `TerminalBody.svelte`, `TakeControlTerminal.svelte`) | Hand-maintained hex `DARK`/`LIGHT` `ITheme` objects (44 values) — xterm rejects `oklch`, so CSS vars are NOT read; the app.css comment claiming otherwise is stale. `$effect` re-applies on `getResolvedTheme()` flip; live `term.options.theme` write works. | Effect must track palette identity, not just light/dark. Either resolve `--ansi-*`/`--terminal-bg` at runtime or make the theme format carry a terminal section in hex. The runtime route must REUSE `utils/cssColorProbe.ts` — the module the phase-1 mermaid bridge already resolves token colors through; do not grow a second resolver (see §7 phase 2). WebGL addon has a GPU glyph-atlas cache — verify visually. |
+| **xterm terminals** (`terminal/terminalTheme.ts`, applied in `terminalXterm.ts`, `TerminalBody.svelte`, `TakeControlTerminal.svelte`) | **BRIDGED (phase 2).** Was: hand-maintained hex `DARK`/`LIGHT` `ITheme` duplicates (44 values) that CSS vars never reached — xterm rejects `oklch`, and the app.css comment claiming otherwise was stale. Now the `ITheme` is resolved from the live cascade through `utils/cssColorProbe.ts` (the same module the phase-1 mermaid bridge uses — there is still exactly one resolver), and the re-apply effect tracks the palette identity rather than just the light/dark flip. See §9. | WebGL addon has a GPU glyph-atlas cache — verify visually after palette changes. |
 | **Mermaid** (`StreamdownMermaidHost.svelte` + vendored `Streamdown.svelte:52`) | **BRIDGED (phase 1).** Was: built-in `'dark'`/`'default'` palettes only, diagram fills/strokes/labels a wholly uncaptured surface. Now `theme:'base'` + `themeVariables` resolved from app tokens (`chat/markdown/mermaidTokens.ts`, via the probe in `utils/cssColorProbe.ts`); the `{#key}` and the vendored SVG cache key both key on the palette. | Widen the palette identity when theme files land — see §7 phase 2. |
-| **Native window background** (`main_desktop.go:78,169`) | `NewRGBA(22,22,30)` hardcoded at construction — the resize-flash color; wrong for light theme already. | New Go binding (window bg is settable post-creation in Wails v3), called from App's theme effect alongside `applyThemeClass`. Classify in `LocalOnlyMethods` per transport rules. |
+| **Native window background** (`main_desktop.go`) | **BRIDGED (phase 2).** Was: `NewRGBA(22,22,30)` hardcoded at construction — the resize-flash color, wrong for light theme already. Now `SetWindowBackgroundColor` (LocalOnly) paints it live from the app's cascade-reading `$effect`, and construction reads the `windowBackground` cache out of `themes/appearance.json` before the webview exists. See §9.3. | — |
 | **WSL launcher pages** (`cmd/agent-overflow-windows/picker.go`) | Inline HTML, hardcoded `#16161e` + Tokyo Night. Pre-app bootstrap; could at best read settings JSON off disk for light/dark. | Low priority. |
 | **Favicon** (`public/favicon.svg`) | Static, dark tile. | Optional `prefers-color-scheme` inside the SVG. |
 | **Design canvas iframes** | Opaque-origin sandbox; agent HTML owns its colors. `bg-white` paper on the host side. | Out of scope architecturally (sandbox posture). Tokenize the paper as `--design-paper`, default locked white. |
@@ -427,6 +427,105 @@ window background, both carried into phase 2 below.
   writes local-only; view-only sessions render with built-ins or the
   values the bootstrap/read path supplies.
 
+### Phase 2/3 concrete contract (build spec, 2026-08-18)
+
+Fixed here so backend, frontend-core, and integration work can proceed
+in parallel against one text.
+
+**Files** (all under `<configDir>/themes/` so one watcher and one
+`ls` covers everything an agent needs):
+
+- `themes/*.json` — theme files. `id` = filename stem (kebab-case).
+- `themes/appearance.json` — the selection:
+  `{ "mode": "system"|"light"|"dark", "uiTheme": id, "codeTheme": id,
+  "windowBackground": "#rrggbb"? }`. `windowBackground` is a CACHE the
+  frontend maintains (last resolved `--surface-0`-family value) so the
+  native window can be created with the right color before the webview
+  paints; it is never user-edited semantics.
+- `themes/theme.schema.json` + `themes/TOKENS.md` — generated
+  reference, seeded/refreshed by the backend at boot from Go-embedded
+  assets (`internal/theme/assets/`), which are in turn generated from
+  the frontend token registry by
+  `frontend/scripts/generate-theme-reference.mjs` and committed; a test
+  fails when registry and committed assets drift.
+
+**Theme file format** (VSCode shape, per-mode variants):
+
+```json
+{
+  "$schema": "./theme.schema.json",
+  "name": "Display Name",
+  "dark":  { "colors": {…}, "syntax": {…}, "ansi": {…}, "code": {…} },
+  "light": { … }
+}
+```
+
+- A variant block is SPARSE over the built-in base of that polarity.
+- Section key spaces come from the frontend token registry
+  (`frontend/src/lib/theme/tokenRegistry.ts`), one-to-one with CSS var
+  names minus the `--` (e.g. `"surface-1"`, `"accent"`,
+  `"ico-terminal"`, `"syntax-keyword"`, `"ansi-fg-31"`). `colors` is
+  the UI axis; `syntax` + `ansi` + `code` are the code axis (`code`
+  holds the code-surface grounds: `code-block`, `code-inline-bg`,
+  `terminal-bg`).
+- A file that defines `colors` in any variant is listable on the UI
+  axis; one that defines any code section is listable on the code
+  axis; a file may serve both.
+- Built-in ids are reserved: `default` (UI, both variants — the
+  app.css palette, an identity theme emitting no CSS) and `github`
+  (code, both variants — syntax.css, also identity). A user file with
+  a built-in id shadows it and is listed as user-sourced.
+- Variant pick: UI axis uses the variant matching resolved mode, else
+  falls back to built-in default entirely for that mode; code axis
+  uses the matching variant, else its sole variant (dark island).
+
+**Backend** (`internal/theme/`, keybindings-service parity;
+Go is pipe — it never parses theme JSON beyond `appearance.json`):
+
+- `GetThemeFiles() → { dir, themes: [{id, raw}], appearance,
+  warnings: [string] }` — one RPC, LAN-read-allowed (keybindings
+  parity). Unreadable files/dir problems land in `warnings`.
+- `SetAppearance(appearance)` — LOCAL-ONLY (`LocalOnlyMethods`),
+  atomic write, validated (mode enum, id shape, hex shape), sparse.
+- Watcher on `themes/` (template
+  `app_workflow_definitions_watcher.go`: 250ms debounce, ignore own
+  atomic renames) → `a.emit("theme:changed")`; frontend refetches.
+- Boot: ensure dir, seed/refresh schema + TOKENS.md, and if
+  `appearance.json` is absent seed `mode` from legacy
+  `settings.theme`. The settings field retires
+  (`retiredSettingsFieldNames`) in the same change set that moves the
+  frontend picker off it.
+- Native window: `BackgroundColour` at window creation reads
+  `appearance.windowBackground` (fallback: current hardcoded value);
+  a `SetWindowBackgroundColor` App method (LOCAL-ONLY) applies live
+  changes.
+
+**Frontend** (`frontend/src/lib/theme/`):
+
+- `tokenRegistry.ts` — THE canonical token list: section, JSON key,
+  CSS var, axis, description. A test parses app.css/tokens.css/
+  syntax.css and fails on drift in either direction.
+- Pure core: parse/validate (structural in pure code; value
+  validation via `CSS.supports('color', v)` at apply time — invalid
+  values are SKIPPED per-token with a visible warning, never fatal),
+  resolve (appearance + themes + builtins → one CSS text of
+  `:root {…}` + `html.light {…}` blocks + palette identity string +
+  warnings). `--accent-fg` auto-derives by contrast (via
+  `utils/cssColorProbe.ts` luminance readback) when a theme sets
+  `accent` but not `accent-fg`.
+- Application: ONE `<style id="user-theme">` element rewritten
+  wholesale (§1.4 perf note); absent token = cascade default.
+- Palette identity: `mermaidPaletteIdentity()` and the xterm bridge
+  widen with `uiTheme|codeTheme|revision`; xterm's hand-maintained
+  `DARK`/`LIGHT` duplicates in `terminalTheme.ts` are replaced by
+  probe-resolved values (`cssColorProbe.ts`).
+- FOUC: last-applied mode class + window background stamped in
+  `localStorage`, read by an inline script before first paint.
+- Remote/browser sessions (`--connect`, LAN browser): built-in themes
+  + `localStorage` selection; the theme RPCs target the DESKTOP's own
+  config dir and are refused remotely per their classification, so
+  the store must degrade cleanly when they are unavailable.
+
 ### Phase 3 — code-theme bundles + remote clients
 
 - Curated popular palettes (GitHub dark/light [current defaults],
@@ -463,3 +562,166 @@ mechanism details). Stances taken under that mandate:
 5. **Multi-backend client** doesn't exist yet; this design just avoids
    blocking it (nothing theme-shaped is stored backend-side except the
    retired-field migration read).
+
+## 9. As built (integration wave, 2026-08-18)
+
+The contract above is what was built. This section records where the
+implementation is MORE specific than the contract, and the four places
+it deliberately diverges. Everything here is load-bearing: each item
+exists because the obvious reading of the contract produced a visible
+bug.
+
+### 9.1 Ordering — both appliers are render effects
+
+`App.svelte` runs the mode-class stamp and the style rewrite as two
+`$effect.pre` bodies in declaration order, then the cascade-reading work
+as a plain `$effect`:
+
+```
+$effect.pre  → applyThemeClass(getResolvedTheme())
+$effect.pre  → applyTheme({ mode, appearance, themes, revision })
+$effect      → readWindowGroundHex() → stampBootTheme() → syncWindowBackground()
+```
+
+Svelte flushes ALL render effects for the whole tree before ANY user
+effect. A class stamp in the render pass paired with a style rewrite in
+the user pass therefore leaves the ENTIRE render pass with the document
+saying `light` while `<style id="user-theme">` still holds the dark
+resolution — and the resolved MODE is a resolver INPUT (a UI theme with
+only a dark variant is emitted in dark mode and not in light), so the
+mismatch is real CSS, not a cosmetic window. Both halves in the render
+pass close it for pre-effect and user-effect readers alike.
+
+The third block is a user effect for the opposite reason: it READS the
+cascade back and WRITES store state, neither of which belongs in the
+render pass. It cannot loop: `syncWindowBackground` moves only
+`windowBackground`, which re-runs the second pre-effect to an identical
+`AppliedTheme`, which `sameApplied()` refuses to reassign — so the user
+effect's own dependency never changes.
+
+### 9.2 The style element lives in `<body>`
+
+Vite appends the app's stylesheet `<link>`s to the END of `<head>`, so a
+`<style>` the boot script inserts into the head loses the source-order
+tie to `app.css`'s `:root` and the cached palette is ignored at exactly
+the moment it matters. `index.html` therefore declares
+`<style id="user-theme"></style>` in the body, before `#app`, and the
+boot script sits beside it. The applier rewrites that same element by
+id, so there is still exactly one user-theme style in the document —
+and no `!important` anywhere. Pinned by `theme/themeBootStamp.test.ts`,
+which greps `index.html` for the storage key, the element id, the size
+cap and the hex guard, because the boot script cannot import a constant.
+
+### 9.3 The window ground is PROBED, not read from the resolver
+
+`ResolvedTheme.windowBackground` reports only what a theme FILE
+contributed. The built-in palette also sets the ground, and states it in
+`oklch`, which is neither a hex the native window can take nor something
+the resolver reports. `readWindowGroundHex()` therefore probes the live
+`--surface-0` through `utils/cssColorProbe.ts` and normalizes to
+`#rrggbb`, which answers for both cases with what is actually on screen.
+It must run after the class stamp and after `applyTheme`, which is why
+it is in the user effect.
+
+### 9.4 Terminal selection is accent-derived, not a token
+
+The old xterm palette stated `selectionBackground` as an opaque slab plus
+a matching `selectionForeground`, which meant restating the text color
+per theme. The bridge now tints `--accent` at alpha 0.4 (0.22 inactive)
+and emits no `selectionForeground`, so glyphs keep their own colors
+underneath and a code-colored line stays readable while selected. This
+is a deliberate visual change, and it is why no `--selection` token was
+added to the registry.
+
+### 9.5 `settings.theme` retirement
+
+The field is gone from the Go struct, from `DefaultSettings`, from
+`allowedThemes`, and from the TS `Settings` interface; `"theme"` is in
+`retiredSettingsFieldNames()`. `initThemeDirectory` still seeds
+`appearance.json`'s mode from it on first boot, through
+`Service.RetiredString("theme")` — a raw `map[string]json.RawMessage`
+read of the file, because a retired key is by definition not on the
+struct. Retired keys are DROPPED by the next sparse write, and that is
+safe here only because of boot-path ordering: `initThemeDirectory`
+consumes the value before any `Update` can reach the file.
+`TestInitThemeDirectorySeedsModeFromRetiredSettingsField` pins both
+halves.
+
+### 9.6 Degradation
+
+`stores/appearance.svelte.ts` is a plain module store in the shape of
+`settings.svelte.ts` — not an `entityStore` and not a
+`keyedSignalRegistry`: appearance is one app-global value, and the only
+backend resource is a watcher the BACKEND owns for the process lifetime,
+so there is nothing to acquire and nothing to release.
+
+Degradation is THREE facts, not one flag (revised in the review round,
+§9.9 — the single flag conflated a structural refusal with a failed
+read):
+
+- **`readAvailable`** — `GetThemeFiles` answering `method_not_found`.
+  Not an error to report: it is a session without a themes directory.
+  Built-ins only, and the settings surface says so.
+- **`writesRefused`** — a refused `SetAppearance` or a refused read, and
+  a view-only session is write-blocked up front rather than after a
+  failure. A write-blocked session still TAKES the wire's themes,
+  directory and warnings; what it never adopts is the SELECTION. That is
+  the client-residency decision (§6.1) enforced at the read: a remote
+  browser renders its own choice out of `localStorage`, which is the only
+  copy such a session can have, and is not repainted by whoever is at the
+  desktop.
+- **`loadError`** — a transient read failure. It surfaces, keeps writes
+  enabled, and keeps the themes already loaded. Nothing latches.
+
+localStorage is also the first-paint cache and is written on every
+selection change even when the RPCs ARE available, because the boot
+script reads it before the bundle loads.
+
+### 9.7 Where the RPCs live
+
+All three theme RPCs are called from the store, never from
+`lib/theme/`, and are registered in `architecture.test.ts`'s
+`ENTITY_OWNED_BINDINGS` against it. `lib/theme/` stays RPC-free and
+therefore testable as pure code plus one browser suite.
+
+### 9.8 No open-folder affordance
+
+Settings → Appearance names the themes directory as selectable text and
+stops there. `OpenInEditor` is the only open-a-path binding, and
+`editor.ResolvePath` refuses DIRECTORIES anywhere by design (the
+markdown-link work made that a security boundary, not an oversight), so
+there is no existing pattern to reuse and one was not invented. The path
+is copyable, which is what an agent-driven editing loop actually needs.
+
+### 9.9 Review round (2026-08-18)
+
+Six-lens review of the integration wave. Behavior that CHANGED, in one
+line each:
+
+- **A remote session keeps its own selection.** §9.6's one degrade flag
+  split into three independent facts — `readAvailable` (no themes
+  directory at all), `writesRefused` (structural, and view-only sessions
+  are write-blocked up front), and `loadError` (transient, latches
+  nothing). A write-blocked session still takes the wire's themes,
+  directory and warnings but never adopts its SELECTION, which stays in
+  `localStorage`: the theme is a property of the CLIENT, so a browser
+  attached to someone's backend must not be repainted by whoever is at
+  the desktop.
+- **The value gate rejects the `url()`/`var()` families.** A token value
+  that resolves through another declaration or fetches is not a color,
+  whatever `CSS.supports` says about it.
+- **Revision bumps are content-gated.** A refetch that returns identical
+  bytes no longer bumps the palette identity, so it no longer remounts
+  every mermaid diagram and rebuilds the xterm atlas.
+- **`theme:changed` is latest-only on reconnect**
+  (`internal/transport/event_visibility.go`). The frames are payload-less
+  refetch signals, so a ring's worth of them replayed as N identical
+  full-listing refetches; a capacity-1 ring delivers the one that
+  matters. `workflow:definitions-changed` had the identical gap and is
+  classified alongside it.
+- **The `settings.theme` migration survives a failed boot.** The retired
+  key is dropped by the next settings write whether or not the seed
+  succeeded, so a boot that could not create `themes/` now carries the
+  pending mode in process state and re-seeds from the next
+  `GetThemeFiles` — §6.2's one-shot read had exactly one un-handled
+  failure mode, and this is it.

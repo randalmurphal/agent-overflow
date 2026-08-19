@@ -164,6 +164,24 @@ var latestOnlyEventChannels = map[string]bool{
 	// Host CPU + memory sample for the sidebar footer; a fresh sample
 	// lands every 2s regardless (app_sysstat.go).
 	"system:stats": true,
+
+	// The two PAYLOAD-LESS refetch signals, and a matched pair: both are
+	// `a.emit(name, nil)` from a debounced fsnotify watcher over one
+	// directory, and both mean exactly "read that directory again".
+	// Because the payload is nil, N retained frames are N IDENTICAL
+	// frames, and a reconnect after an agent rewrote a file a dozen times
+	// would replay a dozen refetches of the same directory — every one of
+	// them an RPC that reads the whole listing.
+	//
+	// Latest-only rather than ephemeral: the signal is not point-in-time
+	// (nothing is cached in it, so there is nothing to warm) and it is not
+	// imperative (replaying it costs one read, not a restart). A client
+	// that was disconnected while the directory changed DOES need to hear
+	// about it once, which is precisely what a capacity-1 ring delivers.
+	// Both are unkeyed whole-state channels — one directory, one global
+	// answer — so they satisfy the membership rule above.
+	"theme:changed":                true,
+	"workflow:definitions-changed": true,
 }
 
 func eventVisibleToOrigin(channel string, isLoopback bool) bool {

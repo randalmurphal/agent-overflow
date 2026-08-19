@@ -88,7 +88,12 @@ export interface PromptOverride {
 }
 
 export interface Settings {
-  theme: "system" | "light" | "dark";
+  // NOTE: `theme` used to live here and is RETIRED (docs/specs/theme-system.md
+  // §6.2). The light/dark mode is a property of the client machine, not of a
+  // backend, so it lives in `<configDir>/themes/appearance.json` and is read
+  // through `stores/appearance.svelte.ts`. The Go field is retired the same
+  // way (`retiredSettingsFieldNames`), so an old settings.json keeps its value
+  // on disk without being republished.
   timestampFormat: "locale" | "12-hour" | "24-hour";
   /**
    * Sans typeface for the `--font-sans` CSS variable. Default `geist`

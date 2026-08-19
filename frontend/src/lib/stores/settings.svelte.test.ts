@@ -5,7 +5,7 @@ import { setBindingMock, getBindingMock } from '../../test/mocks/bindings-app';
 import { makeSettings } from '../../test/helpers/settings';
 
 const FULL_SETTINGS: Settings = makeSettings({
-  theme: 'light',
+  timestampFormat: 'locale',
   recentWorkspaces: ['/tmp/a'],
   diffWordWrap: true,
   claudeBinaryPath: '/usr/local/bin/claude',
@@ -24,14 +24,14 @@ describe('settings store', () => {
   describe('loadSettings()', () => {
     it('merges GetSettings result over defaults', async () => {
       setBindingMock('GetSettings', async () => ({
-        theme: 'dark',
+        timestampFormat: '24-hour',
         diffWordWrap: true,
       } as Partial<Settings>));
       await loadSettings();
-      expect(getSettings().theme).toBe('dark');
+      expect(getSettings().timestampFormat).toBe('24-hour');
       expect(getSettings().diffWordWrap).toBe(true);
       // Unspecified fields fall back to defaults.
-      expect(getSettings().timestampFormat).toBe('locale');
+      expect(getSettings().sansFont).toBe('geist');
       expect(getSettings().claudeEnabled).toBe(true);
     });
 
@@ -52,32 +52,32 @@ describe('settings store', () => {
 
   describe('updateSetting() optimistic update', () => {
     it('applies the change immediately and persists', async () => {
-      const serverReturn: Settings = { ...FULL_SETTINGS, theme: 'dark' };
+      const serverReturn: Settings = { ...FULL_SETTINGS, timestampFormat: '24-hour' };
       setBindingMock('UpdateSettings', async () => serverReturn);
 
-      const promise = updateSetting('theme', 'dark');
+      const promise = updateSetting('timestampFormat', '24-hour');
       // Optimistic: visible before RPC resolves.
-      expect(getSettings().theme).toBe('dark');
+      expect(getSettings().timestampFormat).toBe('24-hour');
       await promise;
       // After resolution the server return wins.
-      expect(getSettings().theme).toBe('dark');
+      expect(getSettings().timestampFormat).toBe('24-hour');
 
       const mock = getBindingMock('UpdateSettings');
       expect(mock).toBeDefined();
-      expect(mock!.mock.calls[0][0]).toEqual({ theme: 'dark' });
+      expect(mock!.mock.calls[0][0]).toEqual({ timestampFormat: '24-hour' });
     });
 
     it('rolls back on RPC failure', async () => {
       setBindingMock('UpdateSettings', async () => { throw new Error('rpc fail'); });
       const consoleErr = vi.spyOn(console, 'error').mockImplementation(() => {});
 
-      const original = getSettings().theme;
-      const newValue: Settings['theme'] = original === 'dark' ? 'light' : 'dark';
+      const original = getSettings().timestampFormat;
+      const newValue: Settings['timestampFormat'] = original === '24-hour' ? 'locale' : '24-hour';
 
-      await updateSetting('theme', newValue);
+      await updateSetting('timestampFormat', newValue);
 
       // Rolled back to original.
-      expect(getSettings().theme).toBe(original);
+      expect(getSettings().timestampFormat).toBe(original);
       consoleErr.mockRestore();
     });
 
@@ -85,7 +85,7 @@ describe('settings store', () => {
       // Seed a baseline.
       setBindingMock('GetSettings', async () => ({
         ...FULL_SETTINGS,
-        theme: 'light',
+        timestampFormat: 'locale',
         diffWordWrap: false,
       }));
       await loadSettings();
@@ -96,7 +96,7 @@ describe('settings store', () => {
 
       await updateSetting('diffWordWrap', true);
 
-      expect(getSettings().theme).toBe(before.theme);
+      expect(getSettings().timestampFormat).toBe(before.timestampFormat);
       expect(getSettings().diffWordWrap).toBe(before.diffWordWrap);
       expect(getSettings().claudeEnabled).toBe(before.claudeEnabled);
       consoleErr.mockRestore();
@@ -142,7 +142,7 @@ describe('settings store', () => {
       // produced after every earlier patch landed. Dispatched concurrently,
       // the first call's slow answer would arrive last and persist a
       // snapshot that predates the second write.
-      const base: Settings = { ...FULL_SETTINGS, theme: 'light', diffWordWrap: false };
+      const base: Settings = { ...FULL_SETTINGS, timestampFormat: 'locale', diffWordWrap: false };
       setBindingMock('GetSettings', async () => base);
       await loadSettings();
 
@@ -156,15 +156,15 @@ describe('settings store', () => {
         return snapshot as Partial<Settings>;
       });
 
-      const first = updateSetting('theme', 'dark');
+      const first = updateSetting('timestampFormat', '24-hour');
       const second = updateSetting('diffWordWrap', true);
       // Both gestures are visible immediately, before either RPC settles.
-      expect(getSettings().theme).toBe('dark');
+      expect(getSettings().timestampFormat).toBe('24-hour');
       expect(getSettings().diffWordWrap).toBe(true);
 
       await Promise.all([first, second]);
 
-      expect(getSettings().theme).toBe('dark');
+      expect(getSettings().timestampFormat).toBe('24-hour');
       expect(getSettings().diffWordWrap).toBe(true);
       expect(call).toBe(2);
     });
@@ -193,7 +193,7 @@ describe('settings store', () => {
 
     it('rolls back only its own keys, leaving a queued write alone', async () => {
       setBindingMock('UpdateSettings', async (patch: unknown) => {
-        if ('theme' in (patch as Record<string, unknown>)) {
+        if ('timestampFormat' in (patch as Record<string, unknown>)) {
           throw new Error('rpc fail');
         }
         // A real backend would echo the full snapshot; answering with nothing
@@ -204,14 +204,14 @@ describe('settings store', () => {
       const consoleErr = vi.spyOn(console, 'error').mockImplementation(() => {});
 
       const before = getSettings();
-      const nextTheme: Settings['theme'] = before.theme === 'dark' ? 'light' : 'dark';
+      const nextFormat: Settings['timestampFormat'] = before.timestampFormat === '24-hour' ? 'locale' : '24-hour';
 
-      const failing = updateSetting('theme', nextTheme);
+      const failing = updateSetting('timestampFormat', nextFormat);
       // A second gesture writes a different key while the first is in flight.
       const queued = updateSetting('diffWordWrap', !before.diffWordWrap);
       await Promise.all([failing, queued]);
 
-      expect(getSettings().theme).toBe(before.theme);
+      expect(getSettings().timestampFormat).toBe(before.timestampFormat);
       expect(getSettings().diffWordWrap).toBe(!before.diffWordWrap);
       consoleErr.mockRestore();
     });

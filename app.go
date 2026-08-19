@@ -39,6 +39,7 @@ import (
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/terminal"
 	"agent-overflow/internal/textgen"
+	"agent-overflow/internal/theme"
 	"agent-overflow/internal/transport"
 	"agent-overflow/internal/triage"
 	"agent-overflow/internal/uitrace"
@@ -80,6 +81,12 @@ type App struct {
 	// headless WSL backend, where there is no native window to attach a
 	// dialog to and the frontend uses a download fallback instead.
 	saveDialog savePayloadPicker
+	// setWindowBackground paints the native window chrome (the color
+	// visible while a resize outruns the webview). Wired by
+	// ServiceStartup in desktop mode (app_desktop.go); left nil in the
+	// headless WSL backend, whose window lives in the Windows launcher
+	// process, so SetWindowBackgroundColor there is a validated no-op.
+	setWindowBackground func(red, green, blue uint8)
 	// osNotifications is the single platform-routing seam behind notifyOS.
 	// Desktop boot installs the in-process Wails service adapter; the WSL
 	// headless boot installs the transport bridge; harness mode installs an
@@ -95,6 +102,11 @@ type App struct {
 	workflowRunner             *workflowAppRunner
 	workflowScheduler          *scheduler.Scheduler
 	workflowDefinitionsWatcher *workflowDefinitionsWatcher
+	// themeWatcher watches <configDir>/themes so an agent (or a text
+	// editor) rewriting a theme file reaches the UI without a restart.
+	// Nil when the watcher could not start — live reload is a
+	// convenience on top of GetThemeFiles, never a requirement.
+	themeWatcher *themeWatcher
 	// workflowDispositionMu serializes local git/forge disposition actions.
 	// They are rare, mutate shared repository metadata, and must not race an
 	// automatic policy against a manual click.
@@ -214,6 +226,13 @@ type App struct {
 	keybindingsOnce sync.Once
 	keybindings     *keybindings.Service
 	keybindingsErr  error
+	// theme is the lazy-init themes-directory service backing the theme
+	// bindings. Same construction contract as keybindings above: one
+	// Service per App, configDir-rooted, with the ~/.agent-overflow
+	// fallback for an early-boot RPC.
+	themeOnce sync.Once
+	theme     *theme.Service
+	themeErr  error
 	// eventBus is the Phase C transport that owns per-channel seq stamping
 	// and fan-out to connected webview / remote clients. main.go wires it
 	// in via SetEventBus; the atomic.Pointer means SetEventBus and
@@ -636,9 +655,9 @@ type App struct {
 	threadTitleGenMu     sync.Mutex
 	threadTitleGenActive map[string]struct{}
 	// Test-only injection points for binding helpers that need to observe start/stop.
-	startSessionFn func(string) error
-	stopSessionFn  func(string) error
-	sendMessageFn  func(string, string, []string) error
+	startSessionFn        func(string) error
+	stopSessionFn         func(string) error
+	sendMessageFn         func(string, string, []string) error
 	generateBranchNameFn  func(store.Thread, string) (string, error)
 	generateThreadTitleFn func(store.Thread, string, []store.Attachment) (string, error)
 	// regenerateThreadTitleFn is generateThreadTitleFn's counterpart for

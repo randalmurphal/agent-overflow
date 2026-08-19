@@ -101,13 +101,15 @@
      palette, keeping the dark/light pair in sync automatically. */
   --ico-generic: var(--text-secondary);
 
-  /* ANSI 16-color palette. Consumed by the `.ansi-body .ansi-fg-N` rules
-     below — chat ANSI output only. The xterm.js terminal does NOT read
-     these: an ITheme takes plain color strings and can't consume oklch,
-     so terminal/terminalTheme.ts carries a hand-maintained hex duplicate.
-     The two palettes are kept aesthetically twinned BY HAND — change one
-     and change the other. The light-mode block below re-defines the same
-     names with hex values tuned for ≥4.5:1 contrast on --surface-0. */
+  /* ANSI 16-color palette. THE palette for both ANSI surfaces: the
+     `.ansi-body .ansi-fg-N` rules below read it as CSS, and the xterm.js
+     terminal reads the same tokens through terminal/terminalTheme.ts,
+     which resolves them to concrete sRGB via utils/cssColorProbe.ts
+     (xterm's ITheme takes plain color strings and cannot consume oklch,
+     so the values are RESOLVED rather than passed through — there is no
+     longer a hand-maintained hex duplicate to keep in sync). The
+     light-mode block below re-defines the same names with hex values
+     tuned for ≥4.5:1 contrast on --surface-0. */
   --ansi-fg-30: #4b5563;
   --ansi-fg-31: oklch(0.7 0.17 27);
   --ansi-fg-32: oklch(0.75 0.15 150);
@@ -202,7 +204,7 @@ html.light {
      values; each verified ≥4.5:1 contrast on --surface-0 except
      --ansi-fg-96 (cyan, 4.0:1 — decorative use). The dark palette
      above stays in oklch; hex here is simply what the GitHub source
-     values are. terminalTheme.ts duplicates both palettes by hand —
+     values are. Both are consumed by the terminal through the probe —
      see the note on the dark block. */
   --ansi-fg-30: #24292f;
   --ansi-fg-31: #cf222e;

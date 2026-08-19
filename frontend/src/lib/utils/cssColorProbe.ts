@@ -104,6 +104,59 @@ export function toConcreteColor(raw: string | undefined): string | undefined {
   return canvasRoundTrip(value);
 }
 
+/** 8-bit sRGB channels plus alpha in 0–1. */
+export interface RgbChannels {
+  readonly r: number;
+  readonly g: number;
+  readonly b: number;
+  readonly a: number;
+}
+
+const RGB_FUNCTION = /^rgba?\(\s*([0-9.]+)[\s,]+([0-9.]+)[\s,]+([0-9.]+)(?:[\s,/]+([0-9.]+%?))?/;
+
+/**
+ * The channels behind a value {@link toConcreteColor} produced.
+ *
+ * BOTH its output forms are handled — the `rgb()` / `rgba()` string the canvas
+ * round trip returns AND the `#hex` literal the fast path returns — because
+ * every caller that re-parses a concrete color has to accept whatever that
+ * function chose. Two hand-rolled copies of the `rgb()` regex existed before
+ * this, and the second one silently dropped hex, which is why terminal
+ * selection lost its tint under a hex-valued accent.
+ *
+ * `undefined` for anything else, including a value that never went through
+ * `toConcreteColor` and is still in a wide-gamut space.
+ */
+export function rgbChannels(value: string | undefined): RgbChannels | undefined {
+  const raw = value?.trim();
+  if (!raw) return undefined;
+
+  if (raw.startsWith('#')) {
+    if (!HEX_COLOR.test(raw)) return undefined;
+    const digits = raw.slice(1);
+    const short = digits.length === 3 || digits.length === 4;
+    const at = (i: number): number => {
+      const part = short ? digits[i]! + digits[i]! : digits.slice(i * 2, i * 2 + 2);
+      return parseInt(part, 16);
+    };
+    const hasAlpha = digits.length === 4 || digits.length === 8;
+    return { r: at(0), g: at(1), b: at(2), a: hasAlpha ? at(3) / 255 : 1 };
+  }
+
+  const match = RGB_FUNCTION.exec(raw);
+  if (!match) return undefined;
+  const alpha = match[4];
+  const a =
+    alpha === undefined ? 1 : alpha.endsWith('%') ? Number(alpha.slice(0, -1)) / 100 : Number(alpha);
+  const channels = { r: Number(match[1]), g: Number(match[2]), b: Number(match[3]), a };
+  return Number.isFinite(channels.r) &&
+    Number.isFinite(channels.g) &&
+    Number.isFinite(channels.b) &&
+    Number.isFinite(channels.a)
+    ? channels
+    : undefined;
+}
+
 // ---------------------------------------------------------------------------
 // Probe
 // ---------------------------------------------------------------------------

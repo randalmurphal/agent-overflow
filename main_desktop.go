@@ -20,6 +20,7 @@ import (
 	"agent-overflow/internal/appidentity"
 	"agent-overflow/internal/clientmode"
 	"agent-overflow/internal/settings"
+	"agent-overflow/internal/theme"
 	"agent-overflow/internal/uikeys"
 	"agent-overflow/internal/uiwindow"
 	"agent-overflow/internal/windowgeom"
@@ -75,7 +76,7 @@ func runClient(rawURL string) {
 		Height:           800,
 		MinWidth:         800,
 		MinHeight:        600,
-		BackgroundColour: application.NewRGBA(22, 22, 30, 255),
+		BackgroundColour: bootWindowBackgroundColour(),
 		URL:              stub.AppURL(),
 		KeyBindings:      uikeys.WithDevTools(uikeys.BrowserWithReload(stub.AppURL)),
 	})
@@ -166,7 +167,7 @@ func runDesktop(listenAddr string) {
 		Height:           800,
 		MinWidth:         800,
 		MinHeight:        600,
-		BackgroundColour: application.NewRGBA(22, 22, 30, 255),
+		BackgroundColour: bootWindowBackgroundColour(),
 		URL:              withClientID(appURL),
 		KeyBindings:      uikeys.WithDevTools(uikeys.BrowserWithReload(reloadURL)),
 	}
@@ -202,6 +203,34 @@ func runDesktop(listenAddr string) {
 	if runErr != nil {
 		fatalf("wails run: %v", runErr)
 	}
+}
+
+// defaultWindowBackgroundColour is the compiled-in fallback ground: the
+// dark palette's surface-0. It is what a fresh install, a light-theme
+// user who has not repainted yet, and every failure to read the
+// appearance cache all get.
+var defaultWindowBackgroundColour = application.NewRGBA(22, 22, 30, 255)
+
+// bootWindowBackgroundColour resolves the native window's construction
+// color — the ground visible while a resize outruns the webview's paint
+// — from the frontend's cached `themes/appearance.json#windowBackground`.
+//
+// This runs before the App service exists, so it goes through the
+// package-level reader rather than the theme Service: one small file
+// read on the boot path, and any failure (no config dir, absent file,
+// malformed value) keeps the compiled-in dark default. Getting it wrong
+// costs a wrong-colored resize flash, never a failed boot — which is why
+// nothing here is fatal and nothing here creates a directory.
+func bootWindowBackgroundColour() application.RGBA {
+	hex := theme.WindowBackground(bootSettingsDir())
+	if hex == "" {
+		return defaultWindowBackgroundColour
+	}
+	red, green, blue, err := theme.ParseHexColor(hex)
+	if err != nil {
+		return defaultWindowBackgroundColour
+	}
+	return application.NewRGBA(red, green, blue, 255)
 }
 
 // loadPersistedWindowGeometry reads the saved desktop window placement from
