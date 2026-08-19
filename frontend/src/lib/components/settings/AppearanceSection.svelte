@@ -98,7 +98,7 @@
       note:
         axis === 'ui'
           ? `${polarity} only — the default applies in ${other} mode`
-          : `${polarity} only — code surfaces keep it in ${other} mode`,
+          : `${polarity} only — code blocks stay ${polarity.toLowerCase()} even in ${other} mode`,
     };
   }
 
