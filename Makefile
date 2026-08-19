@@ -1,8 +1,9 @@
 .PHONY: install dev dev-wsl launch-wsl soak soak-check build build-wsl test check verify release go-build go-test test-race provider-smoke import-corpus-smoke mockprovider harness-build harness e2e
 
 # `make dev DEBUG=1` / `make dev-wsl DEBUG=1` enables every debug surface
-# wired through this Makefile: frontend UI render tracing and raw provider
-# stdio capture. Use UI_TRACE=1 or PROVIDER_DEBUG=1 for narrower captures.
+# wired through this Makefile: frontend UI render tracing, raw provider
+# stdio capture, and the loopback pprof listener. Use UI_TRACE=1 or
+# PROVIDER_DEBUG=1 for narrower captures.
 #
 # UI_TRACE=1 alone is the LIGHT tier: event traces + spring chase
 # telemetry (`scroll.spring.chase`), cheap enough to measure
@@ -14,6 +15,12 @@
 # the oracle code but the disabled base trace gate keeps everything off.
 UI_TRACE ?= $(DEBUG)
 UI_ORACLES ?= $(DEBUG)
+
+# DEBUG=1 also starts the loopback pprof listener (127.0.0.1:6363,
+# internal/observability/pprofserve). Zero cost until an endpoint is hit
+# and never bound beyond loopback. Export AGENT_OVERFLOW_PPROF yourself
+# for an explicit addr or to enable it without the rest of DEBUG.
+AGENT_OVERFLOW_PPROF ?= $(if $(filter 1,$(DEBUG)),1,)
 
 # Raw provider stdio capture logs land in
 # <dbDir>/logs/provider-events-YYYY-MM-DD.ndjson (one JSON object per line:
@@ -165,7 +172,7 @@ install:
 
 dev:
 	go build -o bin/agent-overflow-dev ./cmd/agent-overflow-dev
-	AGENT_OVERFLOW_DEBUG=$(AGENT_OVERFLOW_DEBUG) VITE_AGENT_OVERFLOW_UI_TRACE=$(UI_TRACE) VITE_AGENT_OVERFLOW_UI_ORACLES=$(UI_ORACLES) bin/agent-overflow-dev
+	AGENT_OVERFLOW_DEBUG=$(AGENT_OVERFLOW_DEBUG) AGENT_OVERFLOW_PPROF=$(AGENT_OVERFLOW_PPROF) VITE_AGENT_OVERFLOW_UI_TRACE=$(UI_TRACE) VITE_AGENT_OVERFLOW_UI_ORACLES=$(UI_ORACLES) bin/agent-overflow-dev
 
 # dev-wsl: cross-compiles the Linux ELF + Windows .exe launcher inside
 # this WSL distro, copies the .exe to a versioned Windows-native path,
