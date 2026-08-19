@@ -19,6 +19,10 @@ import (
 // to surface a "run claude login" banner, Codex leaves them nil because
 // its empty planType is an ambiguous signal that would produce false
 // positives.
+//
+// unauthenticated only ever reads the identity the PROVIDER reported, so it
+// can never be the whole answer on its own — see emitUnauthenticatedIfNoLogin,
+// which is the only thing allowed to call emitUnauth.
 type providerProbeRunner struct {
 	providerName    string
 	cache           *provider.ProbeCache
@@ -38,9 +42,7 @@ type providerProbeRunner struct {
 // "not logged in" signal.
 func (a *App) runAccountProbe(r providerProbeRunner) (provider.AccountInfo, error) {
 	if cached, hit := r.cache.Get(r.key); hit {
-		if r.unauthenticated != nil && r.emitUnauth != nil && r.unauthenticated(cached) {
-			r.emitUnauth()
-		}
+		a.emitUnauthenticatedIfNoLogin(r, cached)
 		return cached, nil
 	}
 
@@ -52,9 +54,7 @@ func (a *App) runAccountProbe(r providerProbeRunner) (provider.AccountInfo, erro
 		return provider.AccountInfo{}, err
 	}
 
-	if r.unauthenticated != nil && r.emitUnauth != nil && r.unauthenticated(info) {
-		r.emitUnauth()
-	}
+	a.emitUnauthenticatedIfNoLogin(r, info)
 	account, _, err := a.adoptCurrentProviderAccount(r.providerName, info, credential)
 	if err != nil {
 		reconcileMu.Unlock()
@@ -67,6 +67,49 @@ func (a *App) runAccountProbe(r providerProbeRunner) (provider.AccountInfo, erro
 		r.afterAdopt(account)
 	}
 	return info, nil
+}
+
+// emitUnauthenticatedIfNoLogin raises the "run `claude login`" banner only
+// when there is actually no login to speak of.
+//
+// The identity heuristic alone cannot decide this. Claude reports its identity
+// out of `~/.claude.json`'s `oauthAccount` record, and Agent Overflow DELETES
+// that record on every account switch (provideraccounts.retireProviderIdentity)
+// so the provider re-derives it rather than describing one account's email over
+// another's tokens. Spike-verified against 2.1.234: with the record absent, a
+// perfectly healthy Claude Max login probes as
+//
+//	{"subscriptionType":"Claude Max","apiProvider":"firstParty"}
+//
+// — no email, no displayName, no tokenSource — which is byte-for-byte the shape
+// a destroyed login echoes, and which ClaudeUnauthenticated therefore reads as
+// logged out. Holding the probe's process open does not help: the CLI does not
+// write the record back on a `--max-turns 0` start at all (12s hold, still
+// absent), so only a real session restores it. That is why every switch was
+// followed by a false "Claude is not authenticated" banner.
+//
+// The credential is the tiebreaker the identity cannot be. Bytes that exist and
+// are not the provider's sign-out husk mean the user IS logged in, whatever the
+// provider just said about itself — and telling them to run `claude login` in
+// that state is advice that would replace a working login.
+//
+// A read failure is treated as "cannot prove there is no login", which keeps a
+// transient Keychain error from raising a banner that instructs the user to
+// sign in again.
+func (a *App) emitUnauthenticatedIfNoLogin(r providerProbeRunner, info provider.AccountInfo) {
+	if r.unauthenticated == nil || r.emitUnauth == nil || !r.unauthenticated(info) {
+		return
+	}
+	if a.providerCredentials != nil {
+		snapshot, present, err := a.readCanonicalCredentialIfPresent(r.providerName)
+		if err != nil {
+			return
+		}
+		if present && !a.providerCredentials.CredentialSignedOut(r.providerName, snapshot.Data) {
+			return
+		}
+	}
+	r.emitUnauth()
 }
 
 // runStableAccountProbe pairs provider identity with one stable canonical

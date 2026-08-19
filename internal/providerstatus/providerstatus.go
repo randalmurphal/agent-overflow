@@ -153,11 +153,18 @@ const claudeFirstPartyAPIProvider = "firstParty"
 // profile fetch, so the first probe after a switch reports nothing no matter
 // how healthy the login is.
 //
-// Use it where "the user has not logged in" is the question (startup status,
-// verifying a login just completed). Never use it to judge a credential that
-// exists: read the bytes, or ask the server. Doing otherwise on the usage
-// refresh path reported healthy accounts as expired and discarded the
-// single-use rotation that had just landed — see probeSelectedClaudeRateLimits.
+// Spike-verified against 2.1.234: with the record absent, a healthy Claude Max
+// login probes as {"subscriptionType":"Claude Max","apiProvider":"firstParty"}
+// — byte-for-byte the shape a DESTROYED login echoes. The two are not
+// distinguishable here, at all, ever.
+//
+// So this is never the whole answer. Pair it with the credential: absent or the
+// sign-out husk means logged out, bytes that exist mean logged in. Both callers
+// do — emitUnauthenticatedIfNoLogin gates the banner, and
+// probeSelectedClaudeRateLimits reads the bytes then asks the server. Skipping
+// that pairing reported healthy accounts as expired, discarded a single-use
+// rotation that had already landed, and told users to re-run `claude login`
+// over a working login.
 func ClaudeUnauthenticated(info provider.AccountInfo) bool {
 	// Trim so a whitespace-only field (a CLI that pads, a caller that
 	// hand-builds an AccountInfo) can't masquerade as identity evidence.
