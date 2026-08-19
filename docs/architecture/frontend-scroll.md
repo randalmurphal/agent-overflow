@@ -170,7 +170,9 @@ the timeline virtualizer, or the scroll controller (`utils/scroll/`).
     keep bounding memory mid-stream).
 - `components/chat/ActivityRun.svelte` owns the one nested scroller that runs
   the same physics as the pane: a height-capped clip over a stretch of
-  activity rows, with a second controller instance on the live run only.
+  activity rows, with a second controller instance on the tail run only
+  (the newest REVEALED run, `node.atTail` — not `live`, which ends
+  mid-stream when closing prose arrives behind the reveal gate).
   Geometry and window math live in `utils/activityRun{Clip,Window}.ts`,
   per-run state in `stores/threadActivityRuns.svelte.ts`. Full architecture:
   [`activity-runs.md`](activity-runs.md).
@@ -1097,9 +1099,13 @@ spring and glide compositing as the pane, so streaming activity chases inside
 the cap while the prose above it stays put. Rules that matter from the outer
 side ([`activity-runs.md`](activity-runs.md) has the rest):
 
-- **Only the live run.** Historical runs are plain `overflow-y: auto` with a
-  restored `scrollTop`; a controller per run in the buffer would be a spring,
-  an observer set, and intent listeners each for physics one of them can use.
+- **Only the tail run** — the newest REVEALED run (`node.atTail`), not the
+  `live` one: `live` ends the moment closing prose arrives behind the reveal
+  gate, and keying the controller there cancelled a glide the reader was
+  watching (the 2026-08-19 in-run jump). Historical runs are plain
+  `overflow-y: auto` with a restored `scrollTop`; a controller per run in the
+  buffer would be a spring, an observer set, and intent listeners each for
+  physics one of them can use.
   (The static `will-change-transform` on the clip content is the one thing
   every expanded run carries, controller or not — see the `chokepoint.ts`
   bullet under `utils/scroll/` above.)

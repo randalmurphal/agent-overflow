@@ -96,11 +96,16 @@ export function createTimelineActivityRunAutoCollapse(
     for (let index = 0; index < nodes.length; index += 1) {
       const node = nodes[index];
       if (node.kind !== 'activity_run' || !heldSet.has(node.runId)) continue;
-      // The hold is recorded WHILE live, so the live run is always in the
+      // The hold is recorded WHILE live, so the tail run is always in the
       // held list — and it is the one run that has not settled into anything
-      // releasable yet. (Its geometry would refuse it too; this is the
-      // semantic reason, not a shortcut.)
-      if (node.live) continue;
+      // releasable yet. Tail-ness, not `live`: releasing a run the reader
+      // still sees as newest would be undone by the very next projection
+      // pass (`resolveCollapsed` refuses defaults while `atTail`), an inert
+      // release that still dropped the recorded hold and bumped the
+      // revision. (Its geometry would refuse it too — the last revealed
+      // node can never be out of sight below — but this is the semantic
+      // reason, not a shortcut.)
+      if (node.atTail) continue;
       const top = listRef.getItemOffset(index);
       const bottom =
         index + 1 < nodes.length ? listRef.getItemOffset(index + 1) : totalSize;

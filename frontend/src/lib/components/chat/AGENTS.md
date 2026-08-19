@@ -302,11 +302,22 @@ Operational rules for this directory:
   must see lives in the pane registry, never in row-local `$state` —
   WaitGroup's "Show N more" writes its `wait:` key for exactly this reason
   (and so the answer survives a windowing remount).
-- **Anything keyed on liveness must read `node.live`.** It is stamped by the
-  projection from the items, withheld nodes included, precisely so it cannot
-  flap while the reveal gate opens and closes. Re-deriving "is this the tail"
-  from `revealedNodes` reintroduces the flap, which rebuilds the scroll
-  controller mid-stream and re-records holds the gate just released.
+- **Anything keyed on liveness or tail-ness reads the stamped node field**
+  (`node.live` / `node.atTail`), never a per-consumer re-derivation from
+  `revealedNodes` — that reintroduces the flap that rebuilt the scroll
+  controller mid-stream and re-recorded holds the gate just released. The
+  two fields answer different questions: `atTail` (the last REVEALED node)
+  is the reader-facing claim, and every BEHAVIORAL consumer keys on it —
+  collapse resolution, the inner controller's lifetime, and the
+  auto-collapse gate's skip. `live` (stamped from the items, withheld nodes
+  included) is the strict "nothing foreign behind the gate" claim; its
+  remaining consumer is the row's `data-live` attribute, kept deliberately
+  as the forensic/test seam that proves the withheld window exists (the
+  `controller lifetime` unit test asserts owner `controller` while
+  `data-live` is false). The controller keyed on `live` once: it died
+  mid-stream the moment closing prose hit the wire, cancelling a glide the
+  reader was watching (the 2026-08-19 in-run jump — see
+  `docs/architecture/activity-runs.md` §The inner controller).
 - **Props a run's effects branch on go through a `$derived` primitive first.**
   `run.collapsed` and `live` are plain reads of a prop the projection replaces
   on every streamed row, so an effect reading either directly re-runs every
@@ -373,7 +384,7 @@ Operational rules for this directory:
   `markStructuralContentPending()` + `observe('live-content')` so the spring
   glides the new row in. Both halves are load-bearing — the hold alone leaves
   the run a row short of its newest activity, further short on every append
-  after that. Compensation writes on the live run go through
+  after that. Compensation writes on a run with a controller go through
   `applyEngineCompensation({ kind: 'head-splice' })`; a bare `scrollTop =`
   reads as a reader gesture and escapes bottom-follow.
 - **Reaching the top of a run's window pages the next chunk in.** The

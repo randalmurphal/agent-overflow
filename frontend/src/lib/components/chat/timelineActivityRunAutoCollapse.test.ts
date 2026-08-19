@@ -134,6 +134,7 @@ function runNode(memberItemIds: string[], threadId = 'thread-1'): ActivityRunNod
     })),
     collapsed: false,
     live: false,
+    atTail: false,
     mountedFrom: 0,
     mountedRows: memberItemIds.length,
     membershipEpoch: 1,

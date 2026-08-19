@@ -38,6 +38,7 @@ function run(
     children,
     collapsed: false,
     live: false,
+    atTail: false,
     mountedFrom: window.from,
     mountedRows: window.rows,
     membershipEpoch: 1,

@@ -35,7 +35,11 @@ describe('nodeSignature', () => {
     // signature exists to prevent. A run has TWO shapes, because its header is
     // unconditional: that header alone, or the header over a capped clip. One
     // letter would let a closed run replay the height it had while open.
-    const activityRun = (over: { collapsed: boolean; live: boolean }): TimelineNode => ({
+    const activityRun = (over: {
+      collapsed: boolean;
+      live: boolean;
+      atTail?: boolean;
+    }): TimelineNode => ({
       kind: 'activity_run',
       runId: 'r1',
       threadId: 'thread-1',
@@ -44,6 +48,7 @@ describe('nodeSignature', () => {
       mountedRows: 1,
       membershipEpoch: 1,
       memberItemIds: ['a'],
+      atTail: over.atTail ?? over.live,
       ...over,
     });
 
@@ -57,6 +62,10 @@ describe('nodeSignature', () => {
     // every time a later run took the tail — the run's height did not change.
     expect(nodeSignature(activityRun({ collapsed: true, live: true }))).toBe(closed);
     expect(nodeSignature(activityRun({ collapsed: false, live: true }))).toBe(open);
+    // `atTail` is not signed either, and independently of `live` — the pair
+    // diverges exactly when closing prose waits behind the reveal gate, and
+    // that moment must not drop the run's measured prior.
+    expect(nodeSignature(activityRun({ collapsed: false, live: false, atTail: true }))).toBe(open);
   });
 
   it('signs group nodes by key and member count', () => {

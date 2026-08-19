@@ -34,6 +34,7 @@ function run(overrides: Partial<ActivityRunNode> = {}): ActivityRunNode {
     children,
     collapsed: false,
     live: false,
+    atTail: false,
     mountedFrom: 0,
     mountedRows: children.length,
     membershipEpoch: 1,

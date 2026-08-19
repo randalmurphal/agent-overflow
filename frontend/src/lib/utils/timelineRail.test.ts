@@ -46,6 +46,7 @@ const activityRun: ActivityRunNode = {
   children: [leaf({ kind: 'tool_call' })],
   collapsed: false,
   live: false,
+  atTail: false,
   mountedFrom: 0,
   mountedRows: 1,
   membershipEpoch: 1,

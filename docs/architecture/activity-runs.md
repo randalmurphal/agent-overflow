@@ -76,6 +76,7 @@ interface ActivityRunNode {
   children: TimelineNode[]           // the wrapped rows, >= 1
   collapsed: boolean                 // resolved: answer, else default, else live
   live: boolean                      // holds the tail; new activity lands here
+  atTail: boolean                    // last REVEALED node; wider than live
   mountedFrom: number                // the mounted row window
   mountedRows: number
   memberItemIds: readonly string[]   // every item the run represents
@@ -89,9 +90,11 @@ Two facts about that shape are load-bearing:
   an open one and a moved window differently from a still one. A signature
   blind to either replays a measured height that no longer applies. `collapsed`
   arrives with liveness already resolved into it, so neither of them has to know
-  what `live` means. `live` is on the node anyway, for the auto-collapse gate's
-  settled check and the controller's lifetime — and to stop two consumers
-  re-deriving "is this the tail" from a list they would each have to hold onto.
+  what `live` means. `atTail` is on the node for the same reason: the
+  controller's lifetime and the auto-collapse gate's skip both key on it, and
+  stamping it once stops those consumers re-deriving "is this the tail" from
+  a list they would each have to hold onto. `live` stays beside it as the
+  strict withheld-aware fact, surfaced as the row's `data-live` attribute.
 - **Liveness counts withheld nodes**, so it is a fact about the items rather
   than about what the reveal gate has let through. The pass runs after
   `sliceRevealedNodes`, so without `GroupActivityRunsOptions.withheld` a run
@@ -311,8 +314,11 @@ Four facts, ranked once, in the registry
    sampled-liveness race). The revealed tail run is what the reader is
    watching whether or not the wire has raced ahead, and the live run is
    always the tail run, so the widening only ADDS holds. `node.live` itself
-   keeps the strict withheld-aware definition — the scroll controller and the
-   auto-collapse gate key on it, and widening IT is what flapped.
+   keeps the strict withheld-aware definition — widening IT is what flapped.
+   Since 2026-08-19 the scroll controller and the auto-collapse gate key on
+   tail-ness too (`node.atTail`, stamped beside `live`); what remains on the
+   strict field is the row's `data-live` attribute, the forensic seam that
+   proves the withheld window exists.
 3. **The recorded hold.** A run that opened as the newest keeps rendering
    open after prose displaces it, until the timeline's auto-collapse gate
    releases it (below) or the reader answers directly.
@@ -521,14 +527,22 @@ the component makes states the flag rather than measuring it —
 geometry is the top fade, which is a pure function of it.
 
 The same fact is what the scroll snapshot's `escaped` field carries, from
-whichever half of the run owns it: the live run's controller as
+whichever half of the run owns it: the tail run's controller as
 `escapedFromLock`, a run without one as `!followingBottom`. A run changes which
-half owns it when a newer run displaces it, so the snapshot must not care which
+half owns it when a newer node displaces it, so the snapshot must not care which
 wrote it.
 
-Only for a run with no controller: the live run's spring owns bottom-following,
+Only for a run with no controller: the tail run's spring owns bottom-following,
 with intent handling this cannot see, and a second pinner would contend for the
 same pixels.
+
+Both halves are owner-driven for the overlay scrollbar. Its
+`ownerDrivenPosition` answers `!escapedFromLock` while the controller exists
+and `followingBottom` once it does not, so neither the spring's writes nor
+the settle observer's bottom-hold (nor the browser's clamp when content
+shrinks under a resting clip) show the thumb — only positions the reader
+produced do. Answering for the controller half alone made every
+settle-observer write flash the bar as if the reader had scrolled.
 
 This **narrows accepted tradeoff 4** ("a historical run does not chase when it
 grows") rather than reversing it. Growth is followed only while the reader is
@@ -643,20 +657,50 @@ it is a headless artifact rather than a Chromium one — running that one file
 headed would close the gap, and needs a display (WSLg has one, CI may not).
 See [Verification](#verification).
 
-## The inner controller (live run only)
+## The inner controller (tail run only)
 
-Only the run holding the live tail — the run that IS the last node of
+Only the run holding the REVEALED tail — the run that IS the last node of
 `revealedNodes`, not merely the last run in it — gets a
-`createUseStickToBottomController`. Prose after a run closes it: the next
-activity row starts a new run, so a run with anything below it can never grow
-again. Since a settled turn usually ends `[…, activity_run, assistant_text]`,
-scanning backward past the prose would hand nearly every thread's last run a
-controller it can never use. Same factory,
-spring constants, fusion floor, and glide compositing as the main pane, so a
-streaming run feels identical to a streaming thread. Historical runs are
-plain `overflow-y: auto` with a restored `scrollTop`: they never chase, so a
-controller each would be a spring, an observer set, and intent listeners per
-run in the buffer for physics only one of them can use.
+`createUseStickToBottomController`. The lifetime keys on the node's `atTail`
+stamp, deliberately NOT on `live`: `live` additionally requires that nothing
+foreign waits behind the reveal gate, so it ends the moment closing prose
+arrives on the wire — mid-stream from where the reader sits. Keying the
+controller there tore the spring down under a still-streaming thinking tail,
+cancelled its glide in place, and the settle observer then snapped the whole
+remaining distance in one frame on the next delta (the 2026-08-19 in-run
+jump; the overlay scrollbar flashing on those unclaimed writes was the
+witness). Tail-ness ends when the reader can SEE the displacing node, by
+which point the run is quiet and the spring idle. The same widening the
+collapse resolution took for the same race, one day earlier.
+
+Prose REVEALED after a run still closes it: the next activity row starts a
+new run, so a run with anything visible below it can never grow again. Since
+a settled turn usually ends `[…, activity_run, assistant_text]`, scanning
+backward past revealed prose would hand nearly every thread's last run a
+controller it can never use. Same factory, spring constants, fusion floor,
+and glide compositing as the main pane, so a streaming run feels identical
+to a streaming thread. Historical runs are plain `overflow-y: auto` with a
+restored `scrollTop`: they never chase, so a controller each would be a
+spring, an observer set, and intent listeners per run in the buffer for
+physics only one of them can use.
+
+A detaching controller hands off both halves of its follow state, after
+`detach()` so no intent machine mistakes the write for a gesture. A
+controller that was still following writes the clip to its bottom
+(`clip.scrollTop = clip.scrollHeight` through `positionWritten`); in the
+ordinary handoff that write is a no-op — the run is quiet by reveal time —
+and the residual case it exists for, a glide genuinely in flight at reveal,
+lands (instantly) at the bottom the reader was already gliding toward
+instead of parking short and snapping later. A controller that was ESCAPED
+states that too (`positionWritten(clip, false)`): the controller sees
+escapes the component never gets a gesture for — selection auto-scroll,
+middle-click autoscroll, a scrollbar drag — and a stale `followingBottom`
+would let the settle observer pin the escaped reader back to the bottom.
+The saved snapshot takes the same fact (`escaped` from the controller when
+one existed, `!followingBottom` otherwise). Skipped when the clip is dying
+(collapse, destroy). The clip carries
+`data-scroll-owner="controller" | "settle"` so a trace or screenshot names
+which half owns the position.
 
 - It leaves `externalContentGeometry` unset. There is no virtualizer inside a
   run, so the controller's own contentEl ResizeObserver is the right geometry
@@ -711,8 +755,8 @@ the pin, and the run resumes following. A jump escapes deliberately, so it
 freezes the same way and releases by the same gesture.
 
 Both directions are load-bearing, and the release is the one that bites: a pin
-left behind after the reader returns would strand a live run behind its
-boundary while it kept streaming. The window is deliberately **not** released
+left behind after the reader returns would strand a still-streaming run behind its
+boundary. The window is deliberately **not** released
 by geometry — an anchor means "the reader is up here", which is not a question
 the tail's position can answer.
 
@@ -796,7 +840,7 @@ one on: streaming tool calls jumped while thinking text growing 1→2→3 lines
 Both writes are the controller's, never the element's:
 `applyEngineCompensation({ kind: 'head-splice' })` is the engine's own name for
 this change (content above the viewport spliced out, anchor holds) and the
-resolver applies it verbatim. A bare `scrollTop =` on the live run would read as
+resolver applies it verbatim. A bare `scrollTop =` on a run with a controller would read as
 a reader gesture and escape bottom-follow. A run with no controller writes
 directly, because there is no intent machine to mislead.
 
@@ -900,7 +944,7 @@ of N estimated ones.
 ## Settings
 
 - `activityRunDefault`: `expanded` | `collapsed`, default `expanded`
-  (preserves prior visibility). Applies to the live run too, which is where the
+  (preserves prior visibility). Applies to the tail run too, which is where the
   collapsed-but-open state comes from: with `collapsed`, a streaming run shows
   its header AND its work, keeps showing it after it settles, and collapses
   only once the reader is provably past it (the auto-collapse gate). This is
@@ -946,7 +990,7 @@ holding the reading position while nothing outside the run moves; the tail
 window sliding under an appended row without displacing the rows on screen,
 and the appended row then GLIDING in over several frames rather than arriving
 — on the first append and on every one after it; a jump
-centering an off-window target and the live run's spring not dragging it
+centering an off-window target and the tail run's spring not dragging it
 back) and `activityRunAutoCollapse.browser.test.ts` (the zero-motion proof:
 per-frame anchor sampling across a release, for a mounted run and for one
 whose row left the virtualizer's buffer; the settled run staying open in the

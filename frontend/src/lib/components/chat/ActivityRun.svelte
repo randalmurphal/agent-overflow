@@ -24,10 +24,11 @@
   // line beside it doubled that edge; instead the header's chevron sits
   // centred on the rail's x, reading as the line folded into its control.
   //
-  // Only the run holding the live tail gets a scroll controller. Historical
-  // runs never chase, so they need no ResizeObserver, no intent listeners,
-  // no warm gate, and no composited layer — a controller each would tax
-  // every run in the buffer for physics only one of them can use.
+  // Only the run holding the revealed tail (`atTail`) gets a scroll
+  // controller. Historical runs never chase, so they need no ResizeObserver,
+  // no intent listeners, no warm gate, and no composited layer — a
+  // controller each would tax every run in the buffer for physics only one
+  // of them can use.
 
   import type { Snippet } from 'svelte';
   import { tick } from 'svelte';
@@ -70,6 +71,7 @@
     run,
     depth,
     live,
+    atTail,
     renderNode,
   }: {
     pane: ThreadPane;
@@ -77,6 +79,15 @@
     depth: number;
     /** This run holds the timeline's tail, so new activity lands here. */
     live: boolean;
+    /**
+     * This run is the newest node the reader can see. Wider than `live`,
+     * which ends the moment closing prose exists behind the reveal gate —
+     * mid-stream from where the reader sits. The controller's lifetime keys
+     * on THIS: keying it on `live` tore the spring down under a still-
+     * streaming thinking tail and the settle observer snapped the canceled
+     * glide's whole remainder in one frame (the 2026-08-19 in-run jump).
+     */
+    atTail: boolean;
     renderNode: Snippet<[TimelineNode, number]>;
   } = $props();
 
@@ -103,14 +114,27 @@
   // dropping the arming that tells the run a reader is the one scrolling it.
   let collapsed = $derived(run.collapsed);
   let isLive = $derived(live);
+  let isTail = $derived(atTail);
   // And on the mount window's head, which the compensation below must react to
   // exactly when it moves and never on the passes where it has not.
   let mountedFrom = $derived(run.mountedFrom);
 
-  // Built only for the live run, and only while it is live — a run that a
-  // later one displaces has no use for a spring, and a controller per run
-  // in the buffer would be a spring, an observer set, and intent listeners
-  // each for physics only one of them can use.
+  // Built only for the tail run, and only while it holds the revealed tail —
+  // a run that a later node displaces has no use for a spring, and a
+  // controller per run in the buffer would be a spring, an observer set, and
+  // intent listeners each for physics only one of them can use.
+  //
+  // TAIL-ness, not liveness, on purpose — the same rule collapse resolution
+  // follows, for the same reason. `live` ends the moment closing prose
+  // arrives on the wire behind the reveal gate, which is mid-stream from
+  // where the reader sits: the thinking tail is still growing, the spring is
+  // still chasing it, and tearing the controller down there cancels the
+  // glide where it stands. The settle observer below then snaps the whole
+  // remaining distance in one frame on the next delta — the in-run jump the
+  // scrollbar witnessed (2026-08-19; its thumb shows on exactly the writes
+  // the departed controller can no longer claim). Tail-ness ends when the
+  // reader can SEE the displacing node, by which point the run's content is
+  // quiet and the spring idle, so the handoff moves nothing.
   //
   // Same factory, spring constants, and glide compositing as the main pane,
   // so a streaming run feels identical to a streaming thread. It NEVER
@@ -249,10 +273,10 @@
     pane.activityRuns.saveScrollSnapshot(runId, {
       scrollTop: clip.scrollTop,
       // One fact — "the reader has left bottom-follow" — recorded from
-      // whichever half of the run owns it. The live run's controller tracks it
+      // whichever half of the run owns it. The tail run's controller tracks it
       // as `escapedFromLock`; a run without one tracks it as the absence of
-      // `followingBottom`. A run can change which half owns it (a live run is
-      // displaced by a newer one), so the snapshot must not care which wrote it.
+      // `followingBottom`. A run can change which half owns it (a tail run is
+      // displaced by a newer node), so the snapshot must not care which wrote it.
       escaped: stick ? stick.escapedFromLock : !followingBottom,
     });
   }
@@ -384,7 +408,7 @@
     const content = contentEl;
     if (!clip) return;
 
-    const controller = isLive && content ? createStick() : null;
+    const controller = isTail && content ? createStick() : null;
     stick = controller;
     if (controller && content) controller.attach(clip, content);
 
@@ -396,31 +420,67 @@
       // latest activity is the reason it is on screen.
       clip.scrollTop = clip.scrollHeight;
     }
+    // One escaped-at-mount fact, stated to BOTH halves of the run's follow.
+    // A pinned window is the same "reader has left the bottom" fact recorded
+    // where a run without a controller could keep it: a historical run a
+    // jump pinned has no `escapedFromLock` to save, so becoming the tail
+    // would hand a fresh controller a clean flag — and the anchor effect
+    // below would release the pin the reader is standing on. The settle
+    // observer reads the same fact through `followingBottom`, so a pinned
+    // run must not mount claiming to follow: the observer would pull the
+    // reader off their pin on the next content resize.
+    const pinned = pane.activityRuns.windowAnchor(runId) !== null;
+    const escapedAtMount = (snapshot?.escaped ?? false) || pinned;
     // The write above dispatches its `scroll` event asynchronously, so the
     // position is read back here rather than waiting for it: a run that mounts
     // already scrolled would otherwise paint one frame without its fade, and
     // the settle observer would spend that frame not knowing where it is.
-    // A restored run follows its tail again only if the reader left it doing
-    // that; a fresh one was just written to the bottom by definition.
-    positionWritten(clip, snapshot ? !snapshot.escaped : true);
+    positionWritten(clip, !escapedAtMount);
 
     // Escape is event-sourced, so it is carried into a new controller rather
-    // than re-derived from the geometry just written. A pinned window is the
-    // same fact recorded where a run without a controller could keep it: a
-    // historical run a jump pinned has no `escapedFromLock` to save, so
-    // becoming the live one would hand this fresh controller a clean flag and
-    // the anchor effect below would release the pin the reader is standing on.
-    const pinned = pane.activityRuns.windowAnchor(runId) !== null;
-    if (controller && (snapshot?.escaped || pinned)) {
+    // than re-derived from the geometry just written.
+    if (controller && escapedAtMount) {
       controller.setEscapedFromLock(true);
     }
 
     return () => {
+      // The one fact the whole teardown hands off: has the reader left
+      // bottom-follow. The controller's flag is authoritative while it
+      // exists — it sees escapes this component never gets a gesture for
+      // (selection auto-scroll, middle-click autoscroll, a scrollbar
+      // drag) — so a run without one falls back to the component's own
+      // record.
+      const escaped = controller ? controller.escapedFromLock : !followingBottom;
+      // Detach FIRST, so the handover write below runs with no intent
+      // machine listening — an untagged `scrollTop` write under a live
+      // controller reads as a reader gesture and escapes bottom-follow.
+      controller?.detach();
+      // Position handover, tail run only. A controller that was still
+      // following dies with whatever glide it had in flight canceled, and
+      // the gap it leaves would otherwise ride along silently until the
+      // next content delta snapped it closed in one frame. On the ordinary
+      // handoff the displacing node is already revealed, content quiet,
+      // spring idle — a no-op write; the residual case this exists for is
+      // a glide genuinely in flight at reveal, which lands (instantly) at
+      // the bottom the reader was already gliding toward. Skipped when the
+      // clip itself is dying (collapse drops it via the `{#if}`; a destroy
+      // pass may have unhooked it) — a reflow forced on a dying element
+      // buys nothing.
+      //
+      // BOTH branches state the follow through `positionWritten`: an
+      // escape only the controller knew about must land in
+      // `followingBottom` before the settle observer takes over, or the
+      // observer pins a reader who had left the bottom — and the
+      // owner-driven scrollbar classification would hide the thumb while
+      // it happened.
+      if (controller && !collapsed && clip.isConnected) {
+        if (!escaped) clip.scrollTop = clip.scrollHeight;
+        positionWritten(clip, !escaped);
+      }
       pane.activityRuns.saveScrollSnapshot(runId, {
         scrollTop: clip.scrollTop,
-        escaped: controller?.escapedFromLock ?? false,
+        escaped,
       });
-      controller?.detach();
       if (stick === controller) stick = null;
     };
   });
@@ -439,7 +499,7 @@
   // growing under a fixed clip, and the CLIP growing when cap inflation gives
   // it more room than its content needs.
   //
-  // Only for a run with no controller. The live run's spring owns
+  // Only for a run with no controller. The tail run's spring owns
   // bottom-following, with intent handling this cannot see; a second pinner
   // would fight it for the same pixels.
   //
@@ -520,8 +580,8 @@
     const target = activityRunScrollTopHoldingRow(clip, advance.row, advance.viewportTop);
     if (target === null) return;
     if (stick) {
-      // Routed, not written. An untagged `scrollTop` write on the live run
-      // reads as a reader gesture and escapes bottom-follow; `head-splice` is
+      // Routed, not written. An untagged `scrollTop` write on a run with a
+      // controller reads as a reader gesture and escapes bottom-follow; `head-splice` is
       // the engine's own name for this change — content above the viewport
       // spliced out, anchor holds — and the resolver applies it verbatim.
       stick.applyEngineCompensation({
@@ -595,17 +655,18 @@
   // row, and new activity collects behind an "N later" boundary instead.
   //
   // Both directions are load-bearing. A pin left behind after the reader
-  // returns to the bottom would strand a live run behind that boundary while
-  // it kept streaming, so returning releases it and the run resumes
+  // returns to the bottom would strand a still-streaming run behind that
+  // boundary, so returning releases it and the run resumes
   // following. Declared AFTER the focus effect so a jump — which escapes
   // deliberately — has stated its intent before this reads it.
   //
   // Historical runs have no controller and no tail to follow; they never
   // slide, so there is nothing here for them to do.
   $effect(() => {
-    // A controller exists only for a mounted clip, so its presence already
-    // says the run has rows to pin — checking the collapse state on top of it
-    // would now be wrong, since a collapsed run keeps its clip while live.
+    // A controller exists only for a mounted clip (the `{#if !collapsed}`
+    // drops both together), so its presence already says the run has rows
+    // to pin — a collapse check on top of it would be a second copy of the
+    // same fact.
     const controller = stick;
     if (!controller) return;
     const head = run.children[run.mountedFrom];
@@ -684,9 +745,8 @@
       ></button>
 
       <!-- Clip host. Exists so the overlay bar has a box exactly the clip's
-           height to hang beside: measured against the run instead, it would span
-           the header too and put the thumb at the wrong offset for every collapsed
-           live run. -->
+           height to hang beside: measured against the run instead, it would
+           span the header too and put the thumb at the wrong offset. -->
       <div class="relative">
         <!-- Fade clip. The top fade below is a 24px overlay strip; on a run
              shorter than that it would spill past the run's own bottom edge, so
@@ -709,12 +769,13 @@
             use:readerGestures
             onscroll={onClipScroll}
             data-testid="activity-run-clip"
+            data-scroll-owner={stick ? 'controller' : 'settle'}
           >
             <!-- Static will-change-transform: composited for the inner
                  controller's sub-pixel glide residue, same contract as
                  the pane's contentEl (see MessageTimeline). Deliberately
-                 unconditional even though only the live run gets a
-                 controller: liveness can land on an already-mounted run
+                 unconditional even though only the tail run gets a
+                 controller: tail-ness can land on an already-mounted run
                  (see the escape-flag comment in the controller effect),
                  and a class that appears or disappears on a mounted
                  element is a raster transition — the flicker class the
@@ -775,12 +836,25 @@
              whether or not this run holds the live tail, and the controller half
              is what is optional (`stick?.`). Handing `undefined` for a historical
              run made a drag the one gesture that armed nothing, so dragging to
-             the top of a run's window paged nothing in. -->
+             the top of a run's window paged nothing in.
+
+             `ownerDrivenPosition` answers for BOTH halves of the run's
+             follow, because both write positions the reader did not ask
+             for: the controller's spring while it exists, and the settle
+             observer's bottom-hold once it does not (`followingBottom` is
+             exactly "the next write is ours", and `readerScrolling` fences
+             the frame where a reader gesture's own scroll event arrives
+             before `followingBottom` has been re-read — the answer is
+             event-sourced, not listener-order-dependent). Answering only
+             for the controller made every settle-observer write — and the
+             browser's own clamp when content shrinks under a resting clip —
+             flash the thumb as if the reader had scrolled (2026-08-19). -->
         <OverlayScrollbar
           target={clipEl}
           content={contentEl}
           ariaLabel="Scroll activity run"
-          ownerDrivenPosition={() => !!stick && !stick.escapedFromLock}
+          ownerDrivenPosition={() =>
+            stick ? !stick.escapedFromLock : followingBottom && !readerScrolling}
           onUserScrollStart={() => {
             armReaderScroll();
             stick?.setEscapedFromLock(true);

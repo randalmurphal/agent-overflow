@@ -226,10 +226,12 @@ function buildRun(
     runId: resolved.runId,
     threadId,
     children: members,
-    // Both stamped by the caller once the whole array is known: liveness is a
-    // fact about what follows this run, and collapse depends on liveness.
+    // All three stamped by the caller once the whole array is known: liveness
+    // and tail-ness are facts about what follows this run, and collapse
+    // depends on tail-ness.
     collapsed: false,
     live: false,
+    atTail: false,
     mountedFrom: resolved.mountedFrom,
     mountedRows: resolved.mountedRows,
     membershipEpoch: resolved.membershipEpoch,
@@ -282,6 +284,20 @@ export function groupActivityRuns(
   const tail = out[out.length - 1];
   if (tail?.kind === 'activity_run') {
     tail.live = options.withheld.every((node) => isRunMember(node, options.getItem));
+    // Tail-ness is the wider, reader-facing fact: this run is the newest
+    // node ON SCREEN, whatever the wire holds behind the gate. It is what
+    // collapse resolution keys on, and what the row's scroll controller
+    // keys on — `live` goes false the moment closing prose exists behind
+    // the reveal gate, which is mid-stream from where the reader sits, and
+    // tearing the controller down there cancelled the glide under a still-
+    // streaming thinking tail (the settle-observer half then snapped the
+    // whole remaining distance in one frame — the 2026-08-19 in-run jump).
+    // Stamped only here, never re-derived per consumer. Under monotonic
+    // reveal it flips at most twice per run, same as `live`; truncation
+    // (edit-and-resend revert) and a late payloadKind merging the next leaf
+    // into the run can hand the tail BACK, which the controller's
+    // snapshot/pin restore path covers.
+    tail.atTail = true;
   }
 
   // Then collapse. Its input is TAIL-NESS, not the liveness just stamped: the
@@ -289,13 +305,13 @@ export function groupActivityRuns(
   // revealed run is what they watched stream whether or not its closing prose
   // has already arrived behind the gate (see `collapsedFor`'s declaration for
   // the sampling race that keying on `live` caused). `node.live` itself stays
-  // strict — the scroll controller and the auto-collapse gate key on it, and
-  // widening IT is what flapped (see `withheld`). Every run is resolved
-  // rather than only the tail: the rule is one rule, and a second path for
-  // the runs that are not the tail would be a copy of it that could disagree.
+  // strict — the auto-collapse gate keys on it, and widening IT is what
+  // flapped (see `withheld`). Every run is resolved rather than only the
+  // tail: the rule is one rule, and a second path for the runs that are not
+  // the tail would be a copy of it that could disagree.
   for (const node of out) {
     if (node.kind !== 'activity_run') continue;
-    node.collapsed = options.identity.collapsedFor(node.runId, node === tail);
+    node.collapsed = options.identity.collapsedFor(node.runId, node.atTail);
   }
 
   options.identity.endPass();

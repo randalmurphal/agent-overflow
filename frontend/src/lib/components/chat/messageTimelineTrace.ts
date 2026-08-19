@@ -95,6 +95,11 @@ export function recordTimelineRenderTrace(
           mountedFrom: node.mountedFrom,
           mountedRows: node.mountedRows,
           collapsed: node.collapsed,
+          // Both halves of the run's follow ownership, so a trace can answer
+          // "who owned the position" without a DOM inspect — the 2026-08-19
+          // jump was diagnosed from a bookmark that could not.
+          live: node.live,
+          atTail: node.atTail,
           turnIndex: timelineNodeTurnIndex(node),
         };
       }

@@ -292,6 +292,21 @@ export interface ActivityRunNode {
    */
   live: boolean;
   /**
+   * This run is the newest node the reader can SEE — the last node in the
+   * revealed array. Wider than `live`, which additionally requires that
+   * nothing foreign waits behind the reveal gate: closing prose that has
+   * arrived on the wire ends `live` while the reader is still watching this
+   * run stream. Collapse resolution keys on this
+   * (`ActivityRunIdentity.collapsedFor`), and so does the row's scroll
+   * controller lifetime, and the auto-collapse gate's skip — tearing the
+   * controller down at `live`'s edge cancelled a mid-stream glide and
+   * snapped the remainder in one frame (2026-08-19). Under monotonic reveal
+   * it flips at most twice per run, same as `live`; truncation
+   * (edit-and-resend revert) and late rail membership can hand the tail
+   * back, which the controller's snapshot/pin restore covers.
+   */
+  atTail: boolean;
+  /**
    * The mounted row window: `mountedRows` children starting at
    * `mountedFrom`. Defaults to the run's tail and relocates when a jump
    * resolves into the run (`utils/activityRunWindow.ts`).

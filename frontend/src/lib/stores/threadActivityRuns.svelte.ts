@@ -128,8 +128,9 @@ export interface ThreadActivityRuns extends ActivityRunIdentity {
    * Runs still rendering open because they opened while live and nobody has
    * answered for them since — the candidates the timeline's auto-collapse
    * gate walks (`components/chat/timelineActivityRunAutoCollapse.ts`).
-   * Includes the run that is STILL live: the registry cannot know liveness
-   * (see `collapsedFor`), so the gate filters on `node.live`.
+   * Includes the run that still holds the revealed tail: the registry
+   * cannot know tail-ness (see `collapsedFor`), so the gate filters on
+   * `node.atTail`.
    */
   openedLiveRunIds(): string[];
   /**

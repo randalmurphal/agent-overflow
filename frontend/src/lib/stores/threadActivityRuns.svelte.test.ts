@@ -854,6 +854,7 @@ function nodeFor(resolved: ActivityRunResolution, ids: readonly string[]): Activ
     children: ids.map((id) => ({ kind: 'leaf' as const, item: makeItem({ id }) })),
     collapsed: false,
     live: false,
+    atTail: false,
     mountedFrom: resolved.mountedFrom,
     mountedRows: resolved.mountedRows,
     membershipEpoch: resolved.membershipEpoch,

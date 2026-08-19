@@ -188,9 +188,10 @@ describe('run boundaries', () => {
 });
 
 describe('liveness', () => {
-  // Liveness decides who gets a scroll controller and — since a collapsed run
-  // keeps its clip while live — when that clip folds shut. It is a claim about
-  // the ITEMS, so it cannot be read off the revealed list alone.
+  // Liveness is the strict claim — nothing foreign behind the gate — and the
+  // auto-collapse gate keys on it. It is a claim about the ITEMS, so it
+  // cannot be read off the revealed list alone. The scroll controller and
+  // collapse resolution key on the wider `atTail` instead (next describe).
   it('marks the tail run live', () => {
     const nodes = [prose('p0'), tool('t0', 'Bash')];
     const out = project(nodes, { live: [] });
@@ -242,6 +243,47 @@ describe('liveness', () => {
     const nodes = [tool('t0', 'Bash'), prose('p0')];
     const out = project(nodes);
     expect(out[1].kind).toBe('leaf');
+  });
+});
+
+describe('tail-ness', () => {
+  // Tail-ness decides who gets a scroll controller and is the fallback input
+  // to collapse resolution. Wider than liveness on purpose: `live` ends the
+  // moment closing prose exists behind the reveal gate, which is mid-stream
+  // from where the reader sits. Keying the controller on `live` tore it down
+  // under a still-streaming thinking tail, and the settle observer snapped
+  // the canceled glide's remainder in one frame (2026-08-19).
+  it('stamps the newest revealed run even with closing prose behind the gate', () => {
+    const held = prose('p0');
+    const nodes = [tool('t0', 'Bash')];
+    const out = project(nodes, { withheld: [held] });
+    expect(run(out, 0).live).toBe(false);
+    expect(run(out, 0).atTail).toBe(true);
+  });
+
+  it('stays live AND at tail while the gate holds only its own activity', () => {
+    // The mirror of the liveness suite's rule from the tail-ness side:
+    // withheld run MEMBERS end neither fact. The pair is independent in one
+    // direction only — atTail without live (prose behind the gate) exists;
+    // live without atTail cannot, since live requires holding the tail.
+    const heldMember = tool('t1', 'Read');
+    const nodes = [tool('t0', 'Bash')];
+    const out = project(nodes, { withheld: [heldMember] });
+    expect(run(out, 0).live).toBe(true);
+    expect(run(out, 0).atTail).toBe(true);
+  });
+
+  it('drops the stamp once a revealed node displaces the run', () => {
+    const nodes = [tool('t0', 'Bash'), prose('p0')];
+    const out = project(nodes);
+    expect(run(out, 0).atTail).toBe(false);
+  });
+
+  it('stamps only the newest of several revealed runs', () => {
+    const nodes = [tool('t0', 'Bash'), prose('p0'), tool('t1', 'Read')];
+    const out = project(nodes);
+    expect(run(out, 0).atTail).toBe(false);
+    expect(run(out, 2).atTail).toBe(true);
   });
 });
 

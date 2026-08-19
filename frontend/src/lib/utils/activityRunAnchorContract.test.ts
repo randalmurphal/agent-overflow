@@ -87,6 +87,7 @@ function activityRunNode(): ActivityRunNode {
     children: [leafNode()],
     collapsed: false,
     live: false,
+    atTail: false,
     mountedFrom: 0,
     mountedRows: 1,
     membershipEpoch: 1,

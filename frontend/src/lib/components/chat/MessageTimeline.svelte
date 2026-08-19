@@ -845,6 +845,7 @@
             run={node}
             {depth}
             live={node.live}
+            atTail={node.atTail}
             {renderNode}
           />
         {/if}

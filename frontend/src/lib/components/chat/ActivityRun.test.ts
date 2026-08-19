@@ -7,6 +7,8 @@ import { buildPane, makeItem, makeThread } from '../../../test/helpers/chat';
 import { makeSettings } from '../../../test/helpers/settings';
 import { clearThreadScrollSnapshotsForTest } from '../../utils/threadScrollSnapshots';
 import { ACTIVITY_RUN_CAP_CSS } from '../../utils/activityRunClip';
+import { __setSmoothingClockForTest } from '../../stores/thread.svelte';
+import type { SmoothingClock } from '../../markdown/smoothing/PerItemSmoother';
 import type { Item, Thread } from '../../types/models';
 import MessageTimeline from './MessageTimeline.svelte';
 
@@ -847,6 +849,106 @@ describe('<ActivityRun>', () => {
       expect(container.querySelector('[data-item-id="t15"]')).not.toBeNull();
       expect(getByTestId('activity-run-later').textContent).toContain('15 later');
       expect(getByTestId('activity-run-header').getAttribute('aria-expanded')).toBe('true');
+    });
+  });
+
+  describe('controller lifetime', () => {
+    class FakeSmoothingClock implements SmoothingClock {
+      private current = 0;
+      private nextHandle = 1;
+      private pending = new Map<number, () => void>();
+      now(): number { return this.current; }
+      schedule(cb: () => void): number {
+        const h = this.nextHandle++;
+        this.pending.set(h, cb);
+        return h;
+      }
+      cancel(h: number): void { this.pending.delete(h); }
+      tickFrame(ms: number): void {
+        this.current += ms;
+        const toFire = [...this.pending.values()];
+        this.pending.clear();
+        for (const cb of toFire) cb();
+      }
+    }
+
+    it('keeps the controller while closing prose is still behind the reveal gate', async () => {
+      // THE 2026-08-19 in-run jump. `live` ends the moment closing prose
+      // exists on the wire — mid-stream from where the reader sits — and the
+      // controller's lifetime used to key on it: the spring was torn down
+      // under a still-streaming thinking tail, its glide cancelled in place,
+      // and the settle observer snapped the remainder in one frame on the
+      // next delta. The lifetime keys on TAIL-ness now: the reader can still
+      // see this run streaming, so it keeps its physics until the displacing
+      // node actually reveals.
+      const clock = new FakeSmoothingClock();
+      __setSmoothingClockForTest(clock);
+      try {
+        const pane = await buildPane(makeThread(), [
+          makeItem({ id: 'user:0', kind: 'user_text', role: 'user', summary: 'go', turnIndex: 0, itemIndex: 0 }),
+        ]);
+        pane.setActiveTurn({ turnId: 'turn-1', turnIndex: 0, startedAt: Date.now() });
+        pane.upsertItem(tool('t0', 1, { turnIndex: 0, status: 'completed' }));
+        // A thinking row streams with a smoother backlog…
+        pane.upsertItem(makeItem({
+          id: 'think:0:2', kind: 'thinking', role: 'assistant', status: 'streaming',
+          turnIndex: 0, itemIndex: 2, summary: '', payloadId: 'p', updatedAt: 1,
+        }));
+        pane.applyItemDelta({
+          threadId: pane.threadId!, itemId: 'think:0:2', kind: 'thinking',
+          delta: 'word '.repeat(40), updatedAt: 2,
+        });
+        // …and the closing prose arrives on the wire behind the gate.
+        pane.upsertItem(makeItem({
+          id: 'prose:0:3', kind: 'assistant_text', role: 'assistant', status: 'streaming',
+          turnIndex: 0, itemIndex: 3, summary: 'closing prose', updatedAt: 3,
+        }));
+
+        const { getByTestId } = render(MessageTimeline, { props: { pane } });
+        await tick();
+
+        const run = getByTestId('activity-run');
+        const clip = getByTestId('activity-run-clip');
+        // The wire has raced ahead — the run is no longer live — but the
+        // reader is still watching it stream, so the controller stays.
+        expect(run.dataset.live).toBe('false');
+        expect(clip.dataset.scrollOwner).toBe('controller');
+
+        // Drain the gate; the prose reveals and displaces the run ON SCREEN.
+        // Only now does the settle half take over.
+        for (let i = 0; i < 200 && pane.revealBoundary !== null; i++) clock.tickFrame(16);
+        // A failure below must blame the fix, not an undrained fixture.
+        expect(pane.revealBoundary).toBeNull();
+        await tick();
+
+        expect(getByTestId('activity-run-clip').dataset.scrollOwner).toBe('settle');
+      } finally {
+        __setSmoothingClockForTest(undefined);
+      }
+    });
+
+    it('a new tail run takes the controller from the displaced one', async () => {
+      // Two runs on screen: prose displaced the first, a fresh tool started
+      // the second. Exactly one clip may own physics — the displaced run on
+      // its settle half, the tail run on its controller.
+      const pane = await buildPane(makeThread(), [
+        makeItem({ id: 'user:0', kind: 'user_text', role: 'user', summary: 'go', turnIndex: 0, itemIndex: 0 }),
+      ]);
+      pane.setActiveTurn({ turnId: 'turn-1', turnIndex: 0, startedAt: Date.now() });
+      pane.upsertItem(tool('t0', 1, { turnIndex: 0, status: 'completed' }));
+      pane.upsertItem(makeItem({
+        id: 'prose:0:2', kind: 'assistant_text', role: 'assistant', status: 'completed',
+        turnIndex: 0, itemIndex: 2, summary: 'closing prose', updatedAt: 2,
+      }));
+      pane.upsertItem(tool('t1', 3, { turnIndex: 0, status: 'streaming' }));
+
+      const { getAllByTestId } = render(MessageTimeline, { props: { pane } });
+      await tick();
+
+      const clips = getAllByTestId('activity-run-clip');
+      expect(clips).toHaveLength(2);
+      expect(clips[0].dataset.scrollOwner).toBe('settle');
+      expect(clips[1].dataset.scrollOwner).toBe('controller');
     });
   });
 });
