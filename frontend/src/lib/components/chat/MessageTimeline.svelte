@@ -20,6 +20,7 @@
   } from '../../utils/subagentGrouping';
   import { getActiveTurn } from '../../stores/threadStatuses.svelte';
   import Button from '../primitives/Button.svelte';
+  import MessageNavRail from './MessageNavRail.svelte';
   import ReadGroupRow from './ReadGroupRow.svelte';
   import ScrollToBottomButton from './ScrollToBottomButton.svelte';
   import SubagentGroup from './SubagentGroup.svelte';
@@ -38,6 +39,7 @@
   import { createTimelineDiagnostics } from './timelineDiagnostics';
   import { createTimelineQuietWork } from './timelineQuietWork';
   import { createTimelineRowUiPrune } from './timelineRowUiPrune';
+  import { createTimelineJump, JUMP_FLASH_DURATION_MS } from './timelineJump.svelte';
   import { createTimelineActivityRunAutoCollapse } from './timelineActivityRunAutoCollapse';
   import { coldLoadPriors, coldLoadWarmEdge } from '../../utils/coldLoadTrace';
 
@@ -161,6 +163,10 @@
   // Imperative handle into the virtualizer. Set once it mounts.
   let listRef: TimelineVirtualizerHandle | undefined = $state(undefined);
   let scrollSurfaceContentWidth = $state(0);
+  // Message-nav rail instance — its viewport sync (in-view ticks +
+  // position marker) is driven imperatively from the scroll callbacks
+  // below, never by a listener of its own.
+  let navRail: MessageNavRail | undefined = $state(undefined);
 
   // Node-derivation pipeline (structural grouping, the reveal gate, rail
   // classification, response-pill duration) lives in
@@ -372,6 +378,24 @@
     armWarmupWithReset,
     resetAutoLoadGates: () => paging.resetGates(),
     clearTimelineWindowPruneShift: () => windowAnchor.clearTimelineWindowPruneShift(),
+  });
+
+  // Explicit-jump session (nav-rail clicks, jump-to-first) + the landing
+  // flash overlay. Routes through the restore session's scrollToItem, so
+  // load-until-item, run reveal, and escape semantics stay in one place.
+  // Row column shell, shared by every row-aligned surface (rows, the
+  // load-older/newer chips, the landing flash): 61rem + pl-8/pr-6
+  // versus the composer's 62rem + px-6 — a deliberate 8px-per-side
+  // inset (approved 2026-08-19) so the nav rail's fully grown tick
+  // clears the text at every pane width. One definition so the copies
+  // cannot drift.
+  const ROW_SHELL_CLASSES = 'mx-auto w-full max-w-[61rem] pl-8 pr-6';
+
+  const jump = createTimelineJump({
+    getPane: () => pane,
+    getListRef: () => listRef,
+    scrollToItem: (id) => restore.scrollToItem(id),
+    findTimelineNodeIndex,
   });
 
   const diag = createTimelineDiagnostics({
@@ -640,6 +664,10 @@
 
   function handleTimelineScroll(offset: number): void {
     restore.saveScrollSnapshot();
+    // Both are O(1)-ish on this 60Hz path: noteScroll is a subtraction,
+    // and the rail sync is rAF-coalesced binary-search math.
+    jump.noteScroll(offset);
+    navRail?.scheduleViewportSync();
     // Older and newer zones are geometrically exclusive in a normal window
     // (you can't be near both edges at once), but a degenerate window that
     // fits in the viewport could satisfy both; firing one direction per
@@ -653,6 +681,7 @@
 
   function handleTimelineScrollEnd(): void {
     restore.saveScrollSnapshot();
+    navRail?.scheduleViewportSync();
     // Scroll end is also how tail growth with no structural bump reaches
     // the quiet passes: the bottom pin's scrollTop writes end in a
     // synthesized scrollend once streaming goes quiet. (The scheduler's
@@ -675,8 +704,17 @@
     coldLoadWarmEdge(pane.paneId, pane.threadId ?? '', stick.isWarm, stick.warmReason);
   });
 
+  let lastJumpEdge = '';
   $effect.pre(() => {
     restore.handleSwitchEdgePre(pane.threadId, pane.switchGeneration);
+    // MessageTimeline survives a thread switch (only the virtualizer is
+    // keyed), so a landing flash — or its pending settle watch — armed
+    // on the previous thread must die here, not at unmount.
+    const edge = `${pane.threadId ?? ''}#${pane.switchGeneration}`;
+    if (edge !== lastJumpEdge) {
+      lastJumpEdge = edge;
+      jump.invalidate();
+    }
   });
 
   $effect(() => {
@@ -693,6 +731,7 @@
   });
 
   onDestroy(() => {
+    jump.invalidate();
     quietWork.invalidate();
     restore.invalidateRestore();
     restore.saveSnapshotOnDestroy();
@@ -733,8 +772,11 @@
      scrollHeight/clientHeight/scrollTop and stays clear of the
      controller. See the TOP_FADE_PX comment for why it is not a mask
      on this element.
-     `scrollbar-gutter: stable both-edges` keeps the centered
-     `mx-auto max-w-[62rem]` rows aligned with ChatView's composer overlay.
+     `scrollbar-gutter: stable both-edges` keeps the centered row column
+     aligned with ChatView's composer overlay. (The row column is
+     deliberately 8px-per-side INSIDE the composer's 62rem — 61rem +
+     pl-8 — so the nav rail's grown ticks clear the text; the centers
+     still coincide, which is what the symmetric gutter preserves.)
      The styled `::-webkit-scrollbar` (app.css) is a classic, space-consuming
      bar, not an overlay, so without a reserved gutter the centered column
      jumps ~5px left the moment the bar appears. `both-edges` is required,
@@ -773,7 +815,7 @@
     {:else if pane.items.length === 0 && getActiveTurn(pane.threadId)}
       <!-- Active turn but no items yet. The working/todo UI lives in the
            ChatView bottom overlay, outside the virtualized history. -->
-      <div class="mx-auto w-full max-w-[62rem] px-6 pt-8"></div>
+      <div class={`${ROW_SHELL_CLASSES} pt-8`}></div>
     {:else}
       {#snippet renderNode(node: TimelineNode, depth: number)}
         {#if node.kind === 'leaf'}
@@ -853,7 +895,14 @@
           onCompensation={stick.applyEngineCompensation}
           applyScrollTarget={stick.applyScrollTarget}
           trackReadingAnchor={() => !stick.isAtBottom || stick.escapedFromLock}
-          onContentGeometry={stick.deliverContentGeometry}
+          onContentGeometry={(sample) => {
+            stick.deliverContentGeometry(sample);
+            // Streaming growth and remeasure shift row offsets without a
+            // scroll event; keep the rail's marker + in-view fill honest.
+            // rAF-coalesced inside the rail, so bursts cost one recompute
+            // per frame.
+            navRail?.scheduleViewportSync();
+          }}
         >
           {#snippet children(node: TimelineNode, index: number)}
             <!-- Outer per-row wrapper. We do NOT set data-item-id here:
@@ -904,7 +953,7 @@
                        the first thing they see. After load-older completes,
                        the explicit scrollToIndex re-anchors them to where they
                        were reading — the button moves up out of view. -->
-                  <div class="pt-6 mx-auto w-full max-w-[62rem] px-6">
+                  <div class={`pt-6 ${ROW_SHELL_CLASSES}`}>
                     {#if pane.hasMoreHistory}
                       <div class="mb-3 flex justify-center">
                         <Button
@@ -923,7 +972,9 @@
                   </div>
                 {/if}
 
-                <div class="mx-auto w-full max-w-[62rem] px-6">
+                <!-- Row column: see ROW_SHELL_CLASSES for the deliberate
+                     inset versus the composer's 62rem + px-6. -->
+                <div class={ROW_SHELL_CLASSES}>
                   {#if rows.rowDecorations.responseDividerIndexes.has(index)}
                     {@const showResponsePill = rows.rowDecorations.responsePillIndexes.has(index)}
                     {@const responseDuration = rows.responsePillDuration(node)}
@@ -965,7 +1016,7 @@
           {/snippet}
         </TimelineVirtualizer>
         {#if pane.hasMoreNewer}
-          <div class="mx-auto flex w-full max-w-[62rem] justify-center px-6 pb-6 pt-2">
+          <div class={`${ROW_SHELL_CLASSES} flex justify-center pb-6 pt-2`}>
             <div class="flex items-center gap-2 rounded-[var(--radius-control)] border border-border-subtle bg-surface-0/80 px-2 py-1.5 shadow-sheet">
               <Button
                 variant="secondary"
@@ -1007,6 +1058,51 @@
     style:background="linear-gradient(to bottom, var(--surface-0), transparent)"
   ></div>
 
+  <!-- Landing flash for explicit jumps (nav rail, jump-to-first): an
+       instant teleport needs a "you landed here" cue. Overlay on the
+       non-scrolling wrapper, matching the row column's centering, so no
+       row gains a transition the timeline kill rule would have to
+       carve out. Positioned once at landing; a real scroll cancels it
+       (jump.noteScroll). Keyed on nonce so a repeat jump restarts the
+       animation. Opacity-only, so it stays visible (just static) under
+       prefers-reduced-motion. -->
+  {#if jump.flash}
+    {#key jump.flash.nonce}
+      <div
+        aria-hidden="true"
+        class="pointer-events-none absolute inset-x-0"
+        style:top={`${jump.flash.top}px`}
+        style:height={`${jump.flash.height}px`}
+        data-testid="timeline-jump-flash"
+      >
+        <div class={`${ROW_SHELL_CLASSES} h-full`}>
+          <div
+            class="nav-jump-flash h-full w-full rounded-lg bg-accent/10"
+            style:animation-duration={`${JUMP_FLASH_DURATION_MS}ms`}
+          ></div>
+        </div>
+      </div>
+    {/key}
+  {/if}
+
+  <!-- Message navigation rail: tick pills in the left row padding, one
+       per user message. Sibling of the scroller for the same C24 reason
+       as the chip below; the row column's 61rem cap + pl-8 (vs the
+       composer's 62rem + px-6) is what guarantees the fisheye's grown
+       ticks clear the text at every pane width. -->
+  <MessageNavRail
+    bind:this={navRail}
+    {pane}
+    nodes={revealedNodes}
+    getListRef={() => listRef}
+    onJumpToItem={(id) => {
+      void jump.jumpToItem(id);
+    }}
+    onJumpToLatest={() => {
+      void paging.jumpToLatest();
+    }}
+  />
+
   <!-- Visible when the user has escaped or is no longer near the bottom.
        Wiring this to `!isSticky` would also pop the chip during sidebar/
        drawer resize leases (pauseDepth > 0) even though the user is
@@ -1023,5 +1119,25 @@
      otherwise would be the optimistic lie this flow exists to avoid. */
   .chat-row-pending-cut {
     opacity: 0.42;
+  }
+
+  /* Landing-flash fade: hold briefly so the eye finds the landing, then
+     dissolve. Duration comes inline from JUMP_FLASH_DURATION_MS so the
+     removal timer and the animation cannot drift. */
+  .nav-jump-flash {
+    animation-name: nav-jump-flash-fade;
+    animation-timing-function: ease-out;
+    animation-fill-mode: forwards;
+  }
+  @keyframes nav-jump-flash-fade {
+    0% {
+      opacity: 1;
+    }
+    35% {
+      opacity: 1;
+    }
+    100% {
+      opacity: 0;
+    }
   }
 </style>

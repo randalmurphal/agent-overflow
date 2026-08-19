@@ -26,8 +26,10 @@ export {
     ThreadMessageHit,
     TimelineCursor,
     Turn,
+    TurnPreview,
     UsageBucket,
     UsageQuery,
+    UserMessageTick,
     WorkItem,
     WorkItemUsage
 } from "./models.js";

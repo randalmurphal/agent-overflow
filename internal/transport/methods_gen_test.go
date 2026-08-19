@@ -108,16 +108,21 @@ var wireSafeMethods = map[string]bool{
 	"DeleteUIState": true,
 
 	// Timeline reads (item slice / turn / search).
-	"GetThreadItem":           true,
-	"ListItems":               true,
-	"ListItemsAfterCursor":    true,
-	"ListItemsAfterTurn":      true,
-	"ListItemsBeforeCursor":   true,
-	"ListItemsBeforeTurn":     true,
-	"ListRecentThreadItems":   true,
-	"ListRecentTurns":         true,
-	"ListSubagentDescendants": true,
-	"ListThreadSliceAround":   true,
+	"GetThreadItem": true,
+	// Same read surface as GetThreadItem: pure SQLite history reads
+	// backing the nav rail (whole-thread tick list; hover preview for
+	// an unloaded turn).
+	"GetThreadUserMessageTicks": true,
+	"GetThreadTurnPreview":      true,
+	"ListItems":                 true,
+	"ListItemsAfterCursor":      true,
+	"ListItemsAfterTurn":        true,
+	"ListItemsBeforeCursor":     true,
+	"ListItemsBeforeTurn":       true,
+	"ListRecentThreadItems":     true,
+	"ListRecentTurns":           true,
+	"ListSubagentDescendants":   true,
+	"ListThreadSliceAround":     true,
 	// The stamp-gated form of ListThreadSliceAround: same store read,
 	// same window, plus the two counters that let the caller skip the
 	// rows entirely. Store-read-only — no FS, no process, no credentials

@@ -12,7 +12,7 @@ import { findPaneShowingThread, iterPanes, syncThread } from './panes.svelte';
 import { refreshProjects, touchProjectActivity } from './projects.svelte';
 import { addToast } from './toast.svelte';
 import { getThreadById, getThreads, replaceAllThreads, replaceThread, touchThreadActivity } from './threads.svelte';
-import { parseJsonObject } from '../utils/parseJsonObject';
+import { isReaderAuthoredUserText } from '../utils/userMessageMeta';
 
 /**
  * Payload for the backend-emitted thread:mode_changed event. Mirrors
@@ -123,11 +123,7 @@ export function syncThreadActivity(threadId: string, updatedAt: number): void {
 }
 
 export function userTextCountsAsActivity(item: Item): boolean {
-  if (item.kind !== 'user_text') return false;
-  if (item.parentId) return false;
-  const meta = parseJsonObject(item.meta);
-  if (meta?.wire_only === true) return false;
-  return true;
+  return isReaderAuthoredUserText(item);
 }
 
 /**

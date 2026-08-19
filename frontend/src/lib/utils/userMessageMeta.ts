@@ -48,6 +48,29 @@ export function parseUserMessageMeta(meta: string | undefined): UserMessageMeta 
 }
 
 /**
+ * True for a top-level user_text row the reader actually wrote. Wire-only
+ * rows — context injections the send path marks in meta — fail it, as do
+ * subagent-child user rows. The ONE TypeScript counterpart of the store's
+ * SQL predicate (items_read.go FirstThreadUserMessage): the nav rail's
+ * tick derivation, the sidebar's activity counting, and any future "which
+ * user messages are real" question all route here so they cannot drift.
+ */
+export function isReaderAuthoredUserText(item: Item): boolean {
+  if (item.kind !== 'user_text') return false;
+  if ((item.parentId ?? '') !== '') return false;
+  return parseUserMessageMeta(item.meta).wire_only !== true;
+}
+
+/**
+ * Strip the attachment-image blocks the send path appends to a user
+ * message's summary. Shared by UserMessage's rendering and the nav
+ * rail's preview so the two cannot disagree about the href shape.
+ */
+export function stripAttachmentImages(summary: string): string {
+  return summary.replace(/\n\n!\[[^\]]*]\(attachment:\/\/[^\s)]+\)/g, '');
+}
+
+/**
  * Where to colour command words on a persisted user row.
  *
  * Keyed on the meta marker the send path wrote (D31), NOT on a live registry

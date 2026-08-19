@@ -267,6 +267,36 @@ func (a *App) ListLiveBackgroundTasks(threadID string) ([]store.Item, error) {
 	return items, nil
 }
 
+// GetThreadUserMessageTicks returns every reader-authored user message
+// in the thread (id + position), oldest first — the message-nav rail's
+// baseline, covering the WHOLE thread rather than the loaded window.
+// Wire-only context injections are excluded. A few bytes per row, read
+// once per thread switch.
+func (a *App) GetThreadUserMessageTicks(threadID string) ([]store.UserMessageTick, error) {
+	ticks, err := a.store.ListThreadUserMessageTicks(threadID)
+	if err != nil {
+		return nil, fmt.Errorf("get thread user message ticks: %w", err)
+	}
+	return ticks, nil
+}
+
+// GetThreadTurnPreview resolves the nav rail's hover card for a turn
+// whose rows are not loaded in the frontend window: the reader's ask
+// plus the turn's final top-level assistant reply, both rune-capped at
+// the wire. Returns the zero preview when the item is not a
+// reader-authored user message on this thread — callers check
+// userText != "".
+func (a *App) GetThreadTurnPreview(threadID, itemID string) (store.TurnPreview, error) {
+	preview, found, err := a.store.ThreadTurnPreview(threadID, itemID)
+	if err != nil {
+		return store.TurnPreview{}, fmt.Errorf("get thread turn preview: %w", err)
+	}
+	if !found {
+		return store.TurnPreview{}, nil
+	}
+	return preview, nil
+}
+
 // GetThreadItem returns a single item by id, scoped to a thread for
 // safety so a compromised caller can't read arbitrary thread history
 // via id enumeration. Used by the frontend's scroll-to-item flow to

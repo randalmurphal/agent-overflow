@@ -536,6 +536,8 @@ export const CountRunningBackgroundTasks = dispatch('CountRunningBackgroundTasks
 export const ListLiveBackgroundTasks = dispatch('ListLiveBackgroundTasks');
 export const GetWorkspaceActivity = dispatch('GetWorkspaceActivity');
 export const GetThreadItem = dispatch('GetThreadItem');
+export const GetThreadUserMessageTicks = dispatch('GetThreadUserMessageTicks');
+export const GetThreadTurnPreview = dispatch('GetThreadTurnPreview');
 
 // Usage accounting
 export const GetUsageStats = dispatch('GetUsageStats');

@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"slices"
 	"strconv"
@@ -151,6 +152,152 @@ func (s *Store) GetThreadItemByPayloadID(threadID, payloadID string) (Item, bool
 		return Item{}, false, fmt.Errorf("store: get item by payload id %s on thread %s: %w", payloadID, threadID, err)
 	}
 	return item, found, nil
+}
+
+// readerAuthoredUserTextFilter matches the user_text rows the reader
+// actually typed: top-level (subagent child prompts excluded) and not
+// wire-only (context injections the send path marks in meta). It is the
+// SQL counterpart of the frontend's `isReaderAuthoredUserText`; the
+// json_valid guard keeps one corrupt meta blob from failing the whole
+// read (the lifecycle queries guard the same way).
+const readerAuthoredUserTextFilter = topLevelItemsFilter +
+	` AND kind = 'user_text'
+	  AND COALESCE(CASE WHEN json_valid(meta) THEN json_extract(meta, '$.wire_only') END, 0) != 1`
+
+// UserMessageTick is one nav-rail tick: a reader-authored user message's
+// id plus its position, small enough that a whole thread's list ships in
+// one read. The position pair is what lets the frontend splice the
+// loaded window's live-derived ticks over the store's baseline.
+type UserMessageTick struct {
+	ID        string `json:"id"`
+	TurnIndex int    `json:"turnIndex"`
+	ItemIndex int    `json:"itemIndex"`
+}
+
+// ListThreadUserMessageTicks returns every reader-authored user message
+// in the thread, oldest first. Backs the message-nav rail, whose ticks
+// cover the WHOLE thread rather than the loaded window — three tiny
+// columns per row, so even a very long thread's list is a few KB. One
+// sorted pass over the thread's user_text rows (timeline_items is a
+// UNION ALL view, so the ORDER BY sorts rather than walking an index) —
+// a per-thread-switch read, not a hot path.
+func (s *Store) ListThreadUserMessageTicks(threadID string) ([]UserMessageTick, error) {
+	rows, err := s.reader().Query(
+		`SELECT id, turn_index, item_index FROM timeline_items
+		  WHERE thread_id = ?
+		    AND `+readerAuthoredUserTextFilter+`
+		  ORDER BY turn_index ASC, item_index ASC`,
+		threadID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("store: list user message ticks on thread %s: %w", threadID, err)
+	}
+	defer rows.Close()
+	ticks := []UserMessageTick{}
+	for rows.Next() {
+		var t UserMessageTick
+		if err := rows.Scan(&t.ID, &t.TurnIndex, &t.ItemIndex); err != nil {
+			return nil, fmt.Errorf("store: scan user message tick on thread %s: %w", threadID, err)
+		}
+		ticks = append(ticks, t)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: list user message ticks on thread %s: %w", threadID, err)
+	}
+	return ticks, nil
+}
+
+// TurnPreview is the nav rail's hover card for one turn: the reader's
+// ask and the turn's final top-level assistant reply.
+type TurnPreview struct {
+	UserText      string `json:"userText"`
+	AssistantText string `json:"assistantText"`
+}
+
+// turnPreviewMaxRunes bounds each preview half at the wire. The card
+// renders ~400 characters after whitespace collapse; shipping a giant
+// message's full body for a hover would be pure waste.
+const turnPreviewMaxRunes = 1000
+
+// turnPreviewScanLimit bounds the walk below one turn. A turn with more
+// top-level text rows than this is pathological; the preview then
+// reflects the first rows, which is still an honest hover hint.
+const turnPreviewScanLimit = 400
+
+// ThreadTurnPreview resolves the hover-card content for the turn a
+// reader-authored user message opens. The assistant half is the LAST
+// top-level assistant_text before the next reader-authored user message
+// — how the turn ended — matching the frontend's `turnPreview` walk over
+// loaded items, so a loaded and an unloaded tick hover read the same.
+// found=false when the item is not a reader-authored user message on
+// this thread.
+func (s *Store) ThreadTurnPreview(threadID, itemID string) (TurnPreview, bool, error) {
+	var userText string
+	var turnIndex, itemIndex int
+	err := s.reader().QueryRow(
+		`SELECT summary, turn_index, item_index FROM timeline_items
+		  WHERE thread_id = ? AND id = ?
+		    AND `+readerAuthoredUserTextFilter,
+		threadID, itemID,
+	).Scan(&userText, &turnIndex, &itemIndex)
+	if errors.Is(err, sql.ErrNoRows) {
+		return TurnPreview{}, false, nil
+	}
+	if err != nil {
+		return TurnPreview{}, false, fmt.Errorf("store: turn preview anchor %s on thread %s: %w", itemID, threadID, err)
+	}
+	rows, err := s.reader().Query(
+		`SELECT kind, summary,
+		        COALESCE(CASE WHEN json_valid(meta) THEN json_extract(meta, '$.wire_only') END, 0)
+		   FROM timeline_items
+		  WHERE thread_id = ?
+		    AND `+topLevelItemsFilter+`
+		    AND kind IN ('user_text', 'assistant_text')
+		    AND (turn_index > ? OR (turn_index = ? AND item_index > ?))
+		  ORDER BY turn_index ASC, item_index ASC
+		  LIMIT ?`,
+		threadID, turnIndex, turnIndex, itemIndex, turnPreviewScanLimit,
+	)
+	if err != nil {
+		return TurnPreview{}, false, fmt.Errorf("store: turn preview walk after %s on thread %s: %w", itemID, threadID, err)
+	}
+	defer rows.Close()
+	assistantText := ""
+	for rows.Next() {
+		var kind, summary string
+		var wireOnly int
+		if err := rows.Scan(&kind, &summary, &wireOnly); err != nil {
+			return TurnPreview{}, false, fmt.Errorf("store: scan turn preview row on thread %s: %w", threadID, err)
+		}
+		if kind == "user_text" {
+			// A wire-only injection mid-turn is context, not the next
+			// ask — same rule as the tick predicate above.
+			if wireOnly == 1 {
+				continue
+			}
+			break
+		}
+		if summary != "" {
+			assistantText = summary
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return TurnPreview{}, false, fmt.Errorf("store: turn preview walk after %s on thread %s: %w", itemID, threadID, err)
+	}
+	return TurnPreview{
+		UserText:      capRunes(userText, turnPreviewMaxRunes),
+		AssistantText: capRunes(assistantText, turnPreviewMaxRunes),
+	}, true, nil
+}
+
+// capRunes truncates on a rune boundary with an ellipsis marker. Wire
+// bound only — display truncation is the frontend's.
+func capRunes(s string, maxRunes int) string {
+	runes := []rune(s)
+	if len(runes) <= maxRunes {
+		return s
+	}
+	return string(runes[:maxRunes]) + "…"
 }
 
 func (s *Store) GetThreadItem(threadID, id string) (Item, bool, error) {

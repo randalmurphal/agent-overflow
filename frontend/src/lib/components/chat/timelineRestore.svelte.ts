@@ -67,7 +67,7 @@ export interface TimelineRestore {
   saveScrollSnapshot(): void;
   handleSwitchEdgePre(nextThreadId: string | null, nextSwitchGeneration: number): void;
   maybeRestoreAfterFlush(): void;
-  scrollToItem(id: string): Promise<void>;
+  scrollToItem(id: string): Promise<boolean>;
   saveSnapshotOnDestroy(): void;
 }
 
@@ -481,21 +481,27 @@ export function createTimelineRestore(options: TimelineRestoreOptions): Timeline
   // Scroll-to-item (search hits, plan rows, tray rows)
   // ============================================================
 
-  async function scrollToItem(id: string): Promise<void> {
+  /**
+   * Returns whether the jump actually issued its scroll — false on every
+   * refusal path (no list, item gone, superseded by a newer navigation).
+   * The nav rail's landing flash keys on that answer, so a superseded
+   * jump cannot flash and cannot cancel the succeeding jump's flash.
+   */
+  async function scrollToItem(id: string): Promise<boolean> {
     const listRef = options.getListRef();
-    if (!listRef || !id) return;
+    if (!listRef || !id) return false;
     const myToken = ++restoreToken;
     const pane = options.getPane();
     const found = await pane.loadUntilItem(id);
-    if (myToken !== restoreToken || !options.getListRef()) return;
+    if (myToken !== restoreToken || !options.getListRef()) return false;
     if (!found) {
       addToast('warning', 'Message is no longer in this thread');
-      return;
+      return false;
     }
     await tick();
-    if (myToken !== restoreToken || !options.getListRef()) return;
+    if (myToken !== restoreToken || !options.getListRef()) return false;
     let idx = options.findTimelineNodeIndex(id);
-    if (idx < 0) return;
+    if (idx < 0) return false;
     let targetNode = options.getRevealedNodes()[idx];
     if (targetNode?.kind === 'activity_run') {
       // The row is the RUN, and the target may be collapsed into its chip or
@@ -505,17 +511,18 @@ export function createTimelineRestore(options: TimelineRestoreOptions): Timeline
       // is what makes the order here safe: the run need not be on screen yet.
       revealActivityRunItem(pane.activityRuns, targetNode, id);
       await tick();
-      if (myToken !== restoreToken || !options.getListRef()) return;
+      if (myToken !== restoreToken || !options.getListRef()) return false;
       // Expanding a chip re-measures every row after it, so the index is
       // re-resolved rather than reused.
       idx = options.findTimelineNodeIndex(id);
-      if (idx < 0) return;
+      if (idx < 0) return false;
       targetNode = options.getRevealedNodes()[idx];
     }
     // Explicit navigation: escape bottom follow, then jump (the write is
     // chokepoint-tagged via applyScrollTarget).
     options.stick.setEscapedFromLock(true);
     options.getListRef()?.scrollToIndex(idx, { align: 'center' });
+    return true;
   }
 
   function nextRestoreToken(): number {

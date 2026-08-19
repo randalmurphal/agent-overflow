@@ -349,6 +349,8 @@ export {
   ListLiveBackgroundTasks,
   GetWorkspaceActivity,
   GetThreadItem,
+  GetThreadUserMessageTicks,
+  GetThreadTurnPreview,
 
   // Projects + directory browser
   ArchiveProject,

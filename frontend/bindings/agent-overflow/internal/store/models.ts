@@ -1271,6 +1271,35 @@ export class Turn {
 }
 
 /**
+ * TurnPreview is the nav rail's hover card for one turn: the reader's
+ * ask and the turn's final top-level assistant reply.
+ */
+export class TurnPreview {
+    "userText": string;
+    "assistantText": string;
+
+    /** Creates a new TurnPreview instance. */
+    constructor($$source: Partial<TurnPreview> = {}) {
+        if (!("userText" in $$source)) {
+            this["userText"] = "";
+        }
+        if (!("assistantText" in $$source)) {
+            this["assistantText"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new TurnPreview instance from a string or object.
+     */
+    static createFrom($$source: any = {}): TurnPreview {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new TurnPreview($$parsedSource as Partial<TurnPreview>);
+    }
+}
+
+/**
  * UsageBucket is one aggregated row of a usage query.
  * 
  * QueryUsage alone only populates token totals and TurnCount — it has
@@ -1430,6 +1459,41 @@ export class UsageQuery {
     static createFrom($$source: any = {}): UsageQuery {
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         return new UsageQuery($$parsedSource as Partial<UsageQuery>);
+    }
+}
+
+/**
+ * UserMessageTick is one nav-rail tick: a reader-authored user message's
+ * id plus its position, small enough that a whole thread's list ships in
+ * one read. The position pair is what lets the frontend splice the
+ * loaded window's live-derived ticks over the store's baseline.
+ */
+export class UserMessageTick {
+    "id": string;
+    "turnIndex": number;
+    "itemIndex": number;
+
+    /** Creates a new UserMessageTick instance. */
+    constructor($$source: Partial<UserMessageTick> = {}) {
+        if (!("id" in $$source)) {
+            this["id"] = "";
+        }
+        if (!("turnIndex" in $$source)) {
+            this["turnIndex"] = 0;
+        }
+        if (!("itemIndex" in $$source)) {
+            this["itemIndex"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new UserMessageTick instance from a string or object.
+     */
+    static createFrom($$source: any = {}): UserMessageTick {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new UserMessageTick($$parsedSource as Partial<UserMessageTick>);
     }
 }
 

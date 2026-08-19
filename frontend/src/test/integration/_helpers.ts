@@ -192,6 +192,9 @@ export function installThreadViewDefaults(): void {
     todo: null,
   }));
   setBindingMock('ListItems', async () => []);
+  // The message-nav rail reads its whole-thread tick baseline once per
+  // thread switch — default to none so unrelated tests stay quiet.
+  setBindingMock('GetThreadUserMessageTicks', async () => []);
   // The composer toolbar's MCP trigger holds the pane's MCP entity while it
   // is mounted, so switching into a thread lists its servers once.
   setBindingMock('ListThreadMcpServers', async () => []);

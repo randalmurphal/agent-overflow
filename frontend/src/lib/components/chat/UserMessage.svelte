@@ -20,6 +20,7 @@
   import {
     parseUserMessageAttachments,
     parseUserMessageMeta,
+    stripAttachmentImages,
     userMessageCommandRanges,
   } from '../../utils/userMessageMeta';
   import { commandSegments } from '../../utils/commandWords';
@@ -86,9 +87,7 @@
     () => attachments,
     { cache },
   );
-  const visibleSummary = $derived(
-    item.summary.replace(/\n\n!\[[^\]]*]\(attachment:\/\/[^\s)]+\)/g, '').trimEnd(),
-  );
+  const visibleSummary = $derived(stripAttachmentImages(item.summary).trimEnd());
   // A composer command that expanded at send time (D31) keeps its words in the
   // transcript — the block it added is never stored — and every occurrence
   // renders in the accent colour, exactly as the composer showed them while
