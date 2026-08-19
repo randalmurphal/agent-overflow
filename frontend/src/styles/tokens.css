@@ -53,10 +53,13 @@
   /* Foreground opacity hierarchy. Four levels mean "this is the focal
      text," "this is supporting," "this is de-emphasized," "this is
      almost invisible until you look." Replaces the binary
-     text-primary/text-secondary split. */
-  --fg-muted: color-mix(in oklab, var(--text-primary) 80%, transparent);
-  --fg-subtle: color-mix(in oklab, var(--text-primary) 55%, transparent);
-  --fg-hint: color-mix(in oklab, var(--text-primary) 30%, transparent);
+     text-primary/text-secondary split. The fade strengths live in
+     app.css (`--fade-*`), per mode — alpha compositing washes out
+     faster toward a light ground, so light mode fades less to render
+     the same contrast. */
+  --fg-muted: color-mix(in oklab, var(--text-primary) var(--fade-muted), transparent);
+  --fg-subtle: color-mix(in oklab, var(--text-primary) var(--fade-subtle), transparent);
+  --fg-hint: color-mix(in oklab, var(--text-primary) var(--fade-hint), transparent);
 
   /* Markdown text roles in chat prose. Consumed by the `.markdown-body`
      rules in app.css — there is no utility form; the @theme aliases exist

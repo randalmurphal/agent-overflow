@@ -30,6 +30,17 @@
   --border-strong: oklch(0.52 0.014 285.82);
   --text-primary: oklch(0.95 0.006 285.82);
   --text-secondary: oklch(0.7 0.006 285.82);
+  /* Fade strengths for the derived fg tiers (--fg-muted/subtle/hint in
+     styles/tokens.css). Mode-split because alpha compositing is
+     asymmetric: fading text toward a light ground loses contrast faster
+     than toward a dark one — at a shared 55% the subtle tier reads
+     5.6:1 in dark mode but 3.8:1 in light. The light values below
+     reproduce dark mode's measured ratios (muted ~10.9:1, subtle
+     ~5.5:1, hint ~2.4:1), so the de-emphasis hierarchy looks the same
+     in both modes. */
+  --fade-muted: 80%;
+  --fade-subtle: 55%;
+  --fade-hint: 30%;
   /* Cobalt-violet primary. Replaces the prior generic dev-tool blue so
      the app reads as a chosen color, not the default Tailwind accent. */
   --accent: oklch(0.58 0.19 276);
@@ -166,6 +177,12 @@ html.light {
   --border-strong: oklch(0.74 0.016 255);
   --text-primary: oklch(0.23 0.014 255);
   --text-secondary: oklch(0.48 0.018 255);
+  /* See the dark block: raised so the composited fg tiers match dark
+     mode's measured contrast instead of washing out on the light
+     ground. */
+  --fade-muted: 87%;
+  --fade-subtle: 67%;
+  --fade-hint: 39%;
   --accent: oklch(0.55 0.18 276);
   --info: oklch(0.55 0.17 250);
   /* Status colors tuned for ≥4.5:1 contrast on --surface-0 light.

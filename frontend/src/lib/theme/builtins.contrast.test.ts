@@ -98,11 +98,23 @@ export function compositeOver(fg: string, bg: string, alpha: number): string {
   return `#${mix(fr, br)}${mix(fg_, bg_)}${mix(fb, bb)}`;
 }
 
-/** The alphas `styles/tokens.css` fades the foreground hierarchy by. */
-const FG_TIER_ALPHA: Readonly<Record<string, number>> = {
-  'fg-muted': 0.8,
-  'fg-subtle': 0.55,
-  'fg-hint': 0.3,
+/**
+ * The alphas the foreground hierarchy fades by (`--fade-*` in app.css,
+ * consumed by `styles/tokens.css`), per mode: alpha compositing washes out
+ * faster toward a light ground, so light mode fades less to render the same
+ * contrast.
+ */
+const FG_TIER_ALPHA: Readonly<Record<'dark' | 'light', Readonly<Record<string, number>>>> = {
+  dark: {
+    'fg-muted': 0.8,
+    'fg-subtle': 0.55,
+    'fg-hint': 0.3,
+  },
+  light: {
+    'fg-muted': 0.87,
+    'fg-subtle': 0.67,
+    'fg-hint': 0.39,
+  },
 };
 
 const round = (ratio: number): number => Math.round(ratio * 100) / 100;
@@ -332,7 +344,7 @@ describe('curated palette contrast', () => {
           // that leaves them deriving is measured on the composited result, so
           // a palette cannot pass by declining to mention the tier that its own
           // text color would have made illegible.
-          for (const [key, alpha] of Object.entries(FG_TIER_ALPHA)) {
+          for (const [key, alpha] of Object.entries(FG_TIER_ALPHA[variantName])) {
             const stated = colors[key];
             if (stated) {
               check(key, stated, TEXT_FLOOR, ' (stated)');

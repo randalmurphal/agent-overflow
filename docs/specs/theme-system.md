@@ -901,3 +901,28 @@ prose-matched instead of tiny dark islands. What surfaced it: a user
 theme stated `md-inline-code` and the edit silently changed nothing,
 because the selected code theme owned the token — the axis split
 applied to a token users read as prose.
+
+### 9.13 Mode-split fade strengths — light-mode gray legibility (2026-08-19)
+
+User verdict: light mode's gray text ("tool name inside runs", the
+worktree name under a thread, diff-view labels) is hard to read.
+Measured, the complaint is structural: the derived fg tiers faded by
+the same percentages in both modes (80/55/30% of `--text-primary`),
+but alpha compositing is asymmetric — fading toward a light ground
+loses contrast faster than toward a dark one. At the shared strengths:
+muted 10.9:1 dark vs 8.6 light, subtle 5.6 vs **3.8** (below the 4.5
+body floor), hint 2.4 vs **1.9**.
+
+Fix at the derivation, not the ~300 call sites: the strengths moved
+into per-mode `--fade-muted/subtle/hint` vars in app.css (`:root`
+80/55/30%, `html.light` 87/67/39% — solved numerically to reproduce
+dark's measured ratios), and tokens.css's tiers consume them
+(`color-mix(in oklab, var(--text-primary) var(--fade-muted), …)`).
+tokens.css's `html.light` block stays EMPTY (the pin behind
+`isSharedDefaultToken` holds; the mode now rides `--fade-*` as well as
+`--text-primary`), `--fade-` joins the drift test's excluded prefixes
+(a percentage scale, not palette — themes tune the tiers by stating
+`fg-muted/subtle/hint`, never these), and the contrast suite's
+derived-tier alpha table went per-mode. Every light theme that leaves
+the tiers derived heals at once; themes stating opaque tiers (High
+Contrast) are untouched.

@@ -88,6 +88,7 @@ skipped, per token, and everything else still applies.
 | `--color-*` | the @theme mapping layer, which re-exports tokens as utilities |
 | `--animate-*` | animation registrations, not colors |
 | `--run-map-*` | run-map lane geometry (lengths) |
+| `--fade-*` | fade strengths (percentages) for the tokens.css fg tiers — mode-split in app.css because alpha compositing washes out faster toward a light ground; themes tune the tiers by overriding fg-muted/subtle/hint, not these |
 | `--text-micro` | type scale — shares the --text- stem with the text colors, so it is excluded by name |
 | `--text-xs` | type scale |
 | `--text-sm` | type scale |
@@ -117,9 +118,9 @@ whatever base the mode has).
 | `border-subtle` | Softest hairline, for ambient chrome. Follows the border color. **Derived** — override only to stop it tracking. | `color-mix(in oklab, var(--border) 55%, transparent)` | — |
 | `text-primary` | Focal text. | `oklch(0.95 0.006 285.82)` | `oklch(0.23 0.014 255)` |
 | `text-secondary` | Supporting text: secondary labels, quoted prose, muted glyphs. | `oklch(0.7 0.006 285.82)` | `oklch(0.48 0.018 255)` |
-| `fg-muted` | Body copy. Follows the focal text color at reduced strength. **Derived** — override only to stop it tracking. | `color-mix(in oklab, var(--text-primary) 80%, transparent)` | — |
-| `fg-subtle` | Labels and de-emphasized text. Follows the focal text color. **Derived** — override only to stop it tracking. | `color-mix(in oklab, var(--text-primary) 55%, transparent)` | — |
-| `fg-hint` | Timestamps and barely-there hints. Follows the focal text color. **Derived** — override only to stop it tracking. | `color-mix(in oklab, var(--text-primary) 30%, transparent)` | — |
+| `fg-muted` | Body copy. Follows the focal text color at reduced strength. **Derived** — override only to stop it tracking. | `color-mix(in oklab, var(--text-primary) var(--fade-muted), transparent)` | — |
+| `fg-subtle` | Labels and de-emphasized text. Follows the focal text color. **Derived** — override only to stop it tracking. | `color-mix(in oklab, var(--text-primary) var(--fade-subtle), transparent)` | — |
+| `fg-hint` | Timestamps and barely-there hints. Follows the focal text color. **Derived** — override only to stop it tracking. | `color-mix(in oklab, var(--text-primary) var(--fade-hint), transparent)` | — |
 | `accent` | Primary accent: selection, links, focus rings and filled buttons. | `oklch(0.58 0.19 276)` | `oklch(0.55 0.18 276)` |
 | `accent-fg` | Foreground painted on an accent fill, so a pale accent cannot strand its own label. | `#ffffff` | — |
 | `md-heading` | Markdown headings in chat prose (the code-axis counterpart is syntax-markup-heading). Follows the focal text color. **Derived** — override only to stop it tracking. | `var(--text-primary)` | — |
