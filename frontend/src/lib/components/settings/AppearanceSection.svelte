@@ -29,6 +29,8 @@
   //   nothing happened" case. `getThemeParseWarnings()` covers every loaded
   //   file; the two sources overlap on the selected ones and are deduped.
 
+  import Moon from '@lucide/svelte/icons/moon';
+  import Sun from '@lucide/svelte/icons/sun';
   import {
     getAppearance,
     getAppearanceFileWarnings,
@@ -41,11 +43,13 @@
     setAppearance,
     type AppearanceMode,
   } from '../../stores/appearance.svelte';
+  import { getResolvedTheme } from '../../stores/themeMode.svelte';
   import { BUILTIN_THEMES } from '../../theme/builtins';
   import { getAppliedTheme } from '../../theme/themeApply.svelte';
   import type { ThemeWarning } from '../../theme/themeParse';
   import { buildThemeCatalog, themesForAxis } from '../../theme/themeResolve';
   import type { ThemeAxis } from '../../theme/tokenRegistry';
+  import Icon from '../primitives/Icon.svelte';
   import SettingsCallout from './SettingsCallout.svelte';
   import SettingsField from './SettingsField.svelte';
   import SettingsHeader from './SettingsHeader.svelte';
@@ -62,6 +66,40 @@
     readonly label: string;
     /** Set when the file cannot be selected on this axis; renders disabled. */
     readonly problem: string | null;
+    /** Hover text for a selectable option — the polarity note, or null. */
+    readonly note: string | null;
+  }
+
+  /**
+   * A compact polarity cue for the option label: a theme carrying exactly one
+   * variant gets a moon (dark-only) or sun (light-only) after its name. The
+   * identity built-ins carry no variants at all — they name the cascade, which
+   * speaks both modes — so they get no glyph, same as any two-variant file.
+   * Native `<option>`s cannot render an icon, so the glyph is a character —
+   * U+23FE (the power-sleep crescent) rather than U+263E MOON, because the
+   * classic moon is missing from enough font stacks to tofu (verified in the
+   * harness browser) while the power-symbol block ships in Segoe UI Symbol
+   * and Noto. The `note` becomes the option's hover title, and its wording is
+   * per-axis because the mode rules differ: a single-polarity UI theme steps
+   * aside in the other mode, a single-polarity code theme keeps its palette
+   * (the dark island).
+   */
+  function polarityCue(
+    variants: { readonly dark?: unknown; readonly light?: unknown },
+    axis: ThemeAxis,
+  ): { glyph: string; note: string | null } {
+    const darkOnly = variants.dark !== undefined && variants.light === undefined;
+    const lightOnly = variants.light !== undefined && variants.dark === undefined;
+    if (!darkOnly && !lightOnly) return { glyph: '', note: null };
+    const polarity = darkOnly ? 'Dark' : 'Light';
+    const other = darkOnly ? 'light' : 'dark';
+    return {
+      glyph: darkOnly ? ' ⏾' : ' ☀',
+      note:
+        axis === 'ui'
+          ? `${polarity} only — the default applies in ${other} mode`
+          : `${polarity} only — code surfaces keep it in ${other} mode`,
+    };
   }
 
   /** One warning, with enough structure that two identical sentences differ. */
@@ -92,23 +130,46 @@
    * axis at all and would otherwise be invisible on both.
    */
   function optionsFor(axis: ThemeAxis): AxisOption[] {
-    const selectable = themesForAxis(catalog, axis).map((entry) => ({
-      id: entry.theme.id,
-      label: entry.theme.name,
-      problem: null,
-    }));
+    const selectable = themesForAxis(catalog, axis).map((entry) => {
+      const cue = polarityCue(entry.theme.variants, axis);
+      return {
+        id: entry.theme.id,
+        label: entry.theme.name + cue.glyph,
+        problem: null,
+        note: cue.note,
+      };
+    });
     const broken = themes
       .filter((theme) => !theme.axes.ui && !theme.axes.code)
       .map((theme) => ({
         id: theme.id,
         label: theme.name,
         problem: theme.warnings[0]?.message ?? 'This file defines no tokens.',
+        note: null,
       }));
     return [...selectable, ...broken];
   }
 
   let uiOptions = $derived(optionsFor('ui'));
   let codeOptions = $derived(optionsFor('code'));
+
+  /**
+   * The selected UI theme is single-polarity and the resolved mode is the one
+   * it does not speak: the resolver renders the default palette and the
+   * selection waits for its own mode. Rendered as the theme's polarity icon
+   * beside the picker, with the explanation on hover — nothing is broken, so
+   * it is a cue rather than a callout. Only the UI axis benches; a
+   * single-polarity CODE theme keeps its palette in both modes.
+   */
+  let resolvedMode = $derived(getResolvedTheme());
+  let benchedUiTheme = $derived.by(() => {
+    const theme = catalog.get(appearance.uiTheme)?.theme;
+    if (!theme?.axes.ui) return null;
+    const { dark, light } = theme.variants;
+    if ((dark === undefined) === (light === undefined)) return null;
+    if (theme.variants[resolvedMode] !== undefined) return null;
+    return { name: theme.name, polarity: dark !== undefined ? ('dark' as const) : ('light' as const) };
+  });
 
   /**
    * Every warning the user can act on, grouped by the file it came from: the
@@ -180,19 +241,36 @@
       hint="Surfaces, text, borders, accent and status colors."
       htmlFor="ui-theme-select"
     >
-      <select
-        id="ui-theme-select"
-        data-testid="settings-ui-theme"
-        value={appearance.uiTheme}
-        onchange={(e) => void setAppearance({ uiTheme: (e.target as HTMLSelectElement).value })}
-        class={SELECT_CLASS}
-      >
-        {#each uiOptions as option (option.id)}
-          <option value={option.id} disabled={option.problem !== null} title={option.problem}>
-            {option.label}
-          </option>
-        {/each}
-      </select>
+      <div class="flex items-center gap-1.5">
+        {#if benchedUiTheme}
+          {@const benchedTitle = `${benchedUiTheme.name} is ${benchedUiTheme.polarity}-only — the default interface theme applies while in ${resolvedMode} mode`}
+          <span
+            class="flex items-center text-fg-subtle"
+            title={benchedTitle}
+            aria-label={benchedTitle}
+            data-testid="settings-ui-theme-benched"
+          >
+            <Icon icon={benchedUiTheme.polarity === 'dark' ? Moon : Sun} size={13} strokeWidth={1.8} />
+          </span>
+        {/if}
+        <select
+          id="ui-theme-select"
+          data-testid="settings-ui-theme"
+          value={appearance.uiTheme}
+          onchange={(e) => void setAppearance({ uiTheme: (e.target as HTMLSelectElement).value })}
+          class={SELECT_CLASS}
+        >
+          {#each uiOptions as option (option.id)}
+            <option
+              value={option.id}
+              disabled={option.problem !== null}
+              title={option.problem ?? option.note}
+            >
+              {option.label}
+            </option>
+          {/each}
+        </select>
+      </div>
     </SettingsField>
 
     <SettingsField
@@ -208,7 +286,11 @@
         class={SELECT_CLASS}
       >
         {#each codeOptions as option (option.id)}
-          <option value={option.id} disabled={option.problem !== null} title={option.problem}>
+          <option
+            value={option.id}
+            disabled={option.problem !== null}
+            title={option.problem ?? option.note}
+          >
             {option.label}
           </option>
         {/each}

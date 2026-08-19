@@ -107,6 +107,48 @@ describe('<AppearanceSection> — controls', () => {
     expect(optionIds(getByTestId('settings-code-theme'))).not.toContain('chrome');
   });
 
+  it('marks single-polarity themes with a glyph and a hover note', async () => {
+    seed([
+      { id: 'neon', raw: JSON.stringify({ name: 'Neon', dark: { colors: { accent: '#b45cff' } } }) },
+      {
+        id: 'paper',
+        raw: JSON.stringify({ name: 'Paper', dark: { colors: { accent: '#333' } }, light: { colors: { accent: '#666' } } }),
+      },
+    ]);
+    await loadAppearance();
+    const { getByTestId } = render(AppearanceSection);
+    const ui = getByTestId('settings-ui-theme') as HTMLSelectElement;
+    const option = (id: string) => ui.querySelector(`option[value="${id}"]`) as HTMLOptionElement;
+
+    expect(option('neon').textContent?.trim()).toBe('Neon ⏾');
+    expect(option('neon').title).toContain('Dark only');
+    // Two-variant files and the identity default (which carries no variants
+    // because it names the cascade, which speaks both modes) get no glyph.
+    expect(option('paper').textContent?.trim()).toBe('Paper');
+    expect(option('paper').title).toBe('');
+    expect(option(BUILTIN_UI_THEME_ID).textContent?.trim()).toBe('Default');
+    expect(option(BUILTIN_UI_THEME_ID).title).toBe('');
+  });
+
+  it('shows the benched cue only while the mode the UI theme lacks is resolved', async () => {
+    seed([
+      { id: 'neon', raw: JSON.stringify({ name: 'Neon', dark: { colors: { accent: '#b45cff' } } }) },
+    ]);
+    await loadAppearance();
+    const { getByTestId, queryByTestId } = render(AppearanceSection);
+
+    await setAppearance({ uiTheme: 'neon', mode: 'dark' });
+    expect(queryByTestId('settings-ui-theme-benched')).toBeNull();
+
+    await setAppearance({ mode: 'light' });
+    const cue = getByTestId('settings-ui-theme-benched');
+    expect(cue.getAttribute('title')).toContain('Neon is dark-only');
+    expect(cue.getAttribute('title')).toContain('light mode');
+
+    await setAppearance({ uiTheme: BUILTIN_UI_THEME_ID });
+    expect(queryByTestId('settings-ui-theme-benched')).toBeNull();
+  });
+
   it('labels every entry with its plain name, the axis default first', async () => {
     await loadAppearance();
     const { getByTestId } = render(AppearanceSection);
