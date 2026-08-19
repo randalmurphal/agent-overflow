@@ -24,6 +24,7 @@
     loginProviderAccount,
     providerAccountActionLabel,
     providerAccountName,
+    providerAccountOrgLabel,
     refreshProviderAccountUsage,
     switchProviderAccount,
   } from '../../stores/providerAccounts.svelte';
@@ -112,8 +113,9 @@
   async function select(row: PickerRow): Promise<void> {
     const { provider, account } = row;
     // A saved account whose credential is gone can't be selected; the login
-    // flow resolves back to this same account by email (same behaviour as the
-    // Settings card), so the picker stays open for its result.
+    // flow resolves back to this same account by identity (email +
+    // organization, same behaviour as the Settings card), so the picker stays
+    // open for its result.
     if (account.needsLogin) {
       await loginProviderAccount(provider);
       return;
@@ -234,6 +236,11 @@
                         >
                           {providerAccountName(account)}
                         </span>
+                        {#if providerAccountOrgLabel(account)}
+                          <span class="max-w-32 shrink-0 truncate text-[0.6875rem] text-fg-hint">
+                            {providerAccountOrgLabel(account)}
+                          </span>
+                        {/if}
                         {#if account.needsLogin}
                           <span
                             class="shrink-0 rounded-full bg-warning/10 px-1.5 py-0.5 text-[0.625rem] font-medium text-warning"

@@ -2001,6 +2001,8 @@ export class ManagedProviderAccount {
     "id": string;
     "provider": string;
     "email"?: string;
+    "orgId"?: string;
+    "orgName"?: string;
     "displayName"?: string;
     "subscriptionType"?: string;
     "tokenSource"?: string;
@@ -2051,10 +2053,10 @@ export class ManagedProviderAccount {
      * Creates a new ManagedProviderAccount instance from a string or object.
      */
     static createFrom($$source: any = {}): ManagedProviderAccount {
-        const $$createField9_0 = $$createType30;
+        const $$createField11_0 = $$createType30;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("rateLimits" in $$parsedSource) {
-            $$parsedSource["rateLimits"] = $$createField9_0($$parsedSource["rateLimits"]);
+            $$parsedSource["rateLimits"] = $$createField11_0($$parsedSource["rateLimits"]);
         }
         return new ManagedProviderAccount($$parsedSource as Partial<ManagedProviderAccount>);
     }

@@ -357,7 +357,7 @@ func tryParseControlInitResponse(line []byte) (initResponse, bool, error) {
 //	{"type":"control_response",
 //	 "response":{"subtype":"success","request_id":"…","response":{
 //	    "commands":[…],"agents":[…],"models":[…],
-//	    "account":{"email":"…","subscriptionType":"Claude Max",
+//	    "account":{"email":"…","organization":"…","subscriptionType":"Claude Max",
 //	               "apiProvider":"firstParty","tokenSource":"…?"},
 //	    …}}}
 //
@@ -373,6 +373,7 @@ func extractAccountInfoFromInitResponse(payload json.RawMessage) (provider.Accou
 	var inner struct {
 		Account struct {
 			Email            string `json:"email"`
+			Organization     string `json:"organization"`
 			SubscriptionType string `json:"subscriptionType"`
 			TokenSource      string `json:"tokenSource"`
 			APIProvider      string `json:"apiProvider"`
@@ -386,6 +387,10 @@ func extractAccountInfoFromInitResponse(payload json.RawMessage) (provider.Accou
 		SubscriptionType: inner.Account.SubscriptionType,
 		TokenSource:      inner.Account.TokenSource,
 		APIProvider:      inner.Account.APIProvider,
+		// The wire carries the organization's display NAME only; the
+		// stable uuid lives in ~/.claude.json's oauthAccount and is
+		// enriched at adoption time (see provider.AccountInfo.OrgID).
+		OrgName: inner.Account.Organization,
 	}, nil
 }
 

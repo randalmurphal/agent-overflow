@@ -133,6 +133,13 @@ func (a *App) runStableAccountProbe(
 		if err != nil {
 			return provider.AccountInfo{}, nil, err
 		}
+		// Claude's org uuid lives beside the credential (oauthAccount in the
+		// same home), not in the wire answer. Reading it HERE — before the
+		// after-read — keeps it inside the stability bracket: an external
+		// login landing between the probe and this read also rewrites the
+		// credential file, so the digest comparison below discards the
+		// attempt instead of pairing one account's org with another's tokens.
+		info = a.enrichClaudeObservedIdentity(providerName, info)
 		after, afterPresent, err := a.readCanonicalCredentialIfPresent(providerName)
 		if err != nil {
 			return provider.AccountInfo{}, nil, err
@@ -142,7 +149,9 @@ func (a *App) runStableAccountProbe(
 			if !afterPresent {
 				return info, nil, nil
 			}
-			return info, &after, nil
+			// Codex's workspace id is IN the credential bytes; parsing the
+			// verified after-snapshot pairs identity and org by construction.
+			return enrichCodexObservedIdentity(providerName, info, after.Data), &after, nil
 		}
 	}
 	return provider.AccountInfo{}, nil, fmt.Errorf(

@@ -45,8 +45,50 @@ credential write. Every failure then converges (nothing moved, or the
 provider re-derives the identity it already had). The reverse order has a
 failure mode that does not self-heal.
 
+One narrow read amends the never-write rule: adoption may READ
+`oauthAccount` (claudeconfig `ReadOAuthAccount`), once, at the moment an
+account is created or matched, to learn the organization uuid — the one
+identity axis the probe wire does not carry (it reports only the org
+display name). The record is accepted only when its email matches the
+probe-reported one, and absence is a non-answer (AO clears the record on
+every switch; the CLI rewrites it asynchronously), so nothing here ever
+depends on it. AO still never writes it.
+
 Codex needs none of this — `auth.json` carries the account claims inside
-the credential, so replacing the file replaces the identity.
+the credential, so replacing the file replaces the identity, and the
+workspace id is parsed straight out of the credential bytes
+(`codex.CredentialOrgID`).
+
+### Identity is (email, organization), matched in ONE place
+
+One email can hold a separate login per organization (Claude org, ChatGPT
+workspace), so email alone cannot key an account. `identity_match.go` owns
+the whole vocabulary: `Identity` (blank = UNKNOWN, never "none"),
+`Contradicts` (the guard question — only two KNOWN values can disagree,
+so the legitimately-empty post-switch Claude probe can never condemn a
+working login), `Confirms` (the keep-my-claim question), `FindByIdentity`
+(the matching lattice), and the write chokepoint rules (same-email
+accounts need distinct non-blank org ids; a saved account's org can be
+enriched from blank but never REBOUND). App call sites resolve through
+`App.findAccountByObservedIdentity` (pure lookup; adoption paths run
+`backfillCodexOrgIDs` first for accounts saved before org capture); no
+call site may compare emails directly.
+
+Matching runs on **email + org ID only**. `OrgName` is display state:
+it comes from two independent sources (the probe wire's display string
+vs the oauthAccount record) and changes on an organization rename, so it
+never matches, never disambiguates, and never contradicts — a name-axis
+refusal on the usage-refresh path would drop a just-spent single-use
+token rotation (the 2026-08-18 incident shape).
+
+Known limitations, both sides of the same legacy blank: an account saved
+before org capture (org unrecoverable from its credential bytes — Claude
+only; Codex backfills from slot bytes) still email-matches the first
+same-email login it sees, and conversely an observation with no org id
+matches a sole same-email account whatever org that account carries —
+both are the pre-org behavior, kept so no store is stranded behind a
+re-login. The active account enriches at its first canonical reconcile,
+so the window is inactive legacy accounts only.
 
 ### Swapping the canonical credential under live processes is SUPPORTED
 
@@ -232,6 +274,10 @@ announced through the app's `auditAccountEvent` — durable at
 ## Layout
 
 - `store.go` — thread-safe metadata and last-known quota persistence.
+- `identity_match.go` — the (email, org-id) identity vocabulary:
+  observed-identity matching (`FindByIdentity`), the guard predicates
+  (`Contradicts` / `Confirms`), and the write-layer org rules the store
+  enforces. Org names are display-only, never matched.
 - `credentials.go` — credential-slot layout, the read/write primitives (with
   the sign-out refusal at the one write chokepoint), the required
   `SignedOutDetector` constructor argument, and the two "can this account be

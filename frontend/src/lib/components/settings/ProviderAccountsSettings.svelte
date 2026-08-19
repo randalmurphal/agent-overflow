@@ -21,6 +21,7 @@
     loginProviderAccount,
     providerAccountActionLabel,
     providerAccountName,
+    providerAccountOrgLabel,
     providerLabel as resolveProviderLabel,
     refreshProviderAccountUsage,
     removeProviderAccount,
@@ -68,8 +69,8 @@
   }
 
   // A saved account whose credential is gone cannot be selected. Logging in
-  // resolves back to this same account by email, so it keeps its usage
-  // history rather than becoming a second card.
+  // resolves back to this same account by identity (email + organization), so
+  // it keeps its usage history rather than becoming a second card.
   function cardAction(account: ManagedProviderAccount): () => void {
     if (account.needsLogin) return () => void loginProviderAccount(provider);
     return () => void switchProviderAccount(provider, account);
@@ -104,6 +105,7 @@
     <div class="mt-3 flex flex-col gap-2">
       {#each accounts as account (account.id)}
         {@const limits = getProviderRateLimits(provider, account.id)}
+        {@const orgLabel = providerAccountOrgLabel(account)}
         <div
           class="rounded-[var(--radius-field)] border px-3 py-2.5 {account.needsLogin
             ? 'border-warning/40 bg-surface-0'
@@ -146,9 +148,9 @@
                   </span>
                 {/if}
               </span>
-              {#if account.email && account.displayName}
+              {#if (account.email && account.displayName) || orgLabel}
                 <span class="mt-0.5 block truncate pl-4 text-[0.6875rem] text-fg-hint">
-                  {account.email}
+                  {[account.displayName ? account.email : '', orgLabel].filter(Boolean).join(' · ')}
                 </span>
               {/if}
               {#if account.needsLogin}

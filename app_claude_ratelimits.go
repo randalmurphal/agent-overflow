@@ -6,11 +6,11 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"strings"
 	"time"
 
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
+	"agent-overflow/internal/provideraccounts"
 )
 
 // rateLimitProbeHTTPClient is the shared HTTP client used by every
@@ -252,21 +252,25 @@ func (a *App) probeSelectedClaudeRateLimits(
 
 // assertSelectedClaudeIdentity refuses to attribute a canonical-home refresh
 // to the selected account when the CLI authenticated as someone else — an
-// external `claude login` during the probe. An empty email cannot contradict
-// anything: Claude reports one only once it has re-derived the identity for
-// the installed credential.
+// external `claude login` during the probe. The comparison is
+// Identity.Contradicts, so a blank field can never condemn anything (Claude
+// reports an identity only once it has re-derived one for the installed
+// credential — the first post-switch probe is legitimately empty), while the
+// same email on a provably different organization (org ID axis; names are
+// display-only) refuses exactly like a different email does. This refusal
+// runs AFTER the refresh may have spent a single-use rotation, which is
+// why only provable contradictions may fire it.
 func (a *App) assertSelectedClaudeIdentity(
 	selection providerAccountSelection,
 	info provider.AccountInfo,
 ) error {
-	observed := strings.TrimSpace(info.Email)
-	expected := strings.TrimSpace(selection.Account.Email)
-	if observed == "" || expected == "" || strings.EqualFold(observed, expected) {
+	observed := provideraccounts.IdentityFromInfo(info)
+	if !provideraccounts.IdentityFromInfo(selection.Account).Contradicts(observed) {
 		return nil
 	}
 	return fmt.Errorf(
 		"the active Claude account changed to %s while refreshing usage; retry",
-		observed,
+		describeObservedAccount(info),
 	)
 }
 

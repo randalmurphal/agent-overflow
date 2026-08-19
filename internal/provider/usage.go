@@ -101,12 +101,23 @@ type MCPServer struct {
 // Email on a firstParty profile login; Codex hardcodes APIProvider and
 // may legitimately report nothing else). The one Claude answer is
 // `providerstatus.ClaudeUnauthenticated`; Codex deliberately has none.
+// OrgID / OrgName carry the organization (Claude) or ChatGPT workspace
+// (Codex) behind the login. One email can hold a separate login per
+// organization, so email alone cannot key an account. Neither field is
+// guaranteed: Claude's probe wire carries only the display name (the
+// uuid lives in `~/.claude.json`'s oauthAccount and is enriched at
+// adoption time), Codex's `account/read` carries neither (the id is
+// parsed out of `auth.json` where the caller holds those bytes), and
+// API-key auth has no organization at all. Blank means UNKNOWN, never
+// "no organization" — matching must treat it as compatible with any.
 type AccountInfo struct {
 	Email            string `json:"email,omitempty"`
 	DisplayName      string `json:"displayName,omitempty"`
 	SubscriptionType string `json:"subscriptionType,omitempty"`
 	TokenSource      string `json:"tokenSource,omitempty"`
 	APIProvider      string `json:"apiProvider,omitempty"`
+	OrgID            string `json:"orgId,omitempty"`
+	OrgName          string `json:"orgName,omitempty"`
 }
 
 // TokenUsage tracks per-turn token/cost accounting. Values are per-turn

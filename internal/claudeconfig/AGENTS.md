@@ -14,6 +14,7 @@ read straight from disk.
 | `plugins.go` | Plugin enablement (`enabledPlugins` across merged settings files), installation records (`installed_plugins.json`), per-plugin `.mcp.json` / `plugin.json` server names. |
 | `projectkey.go` | `ProjectKey(workspacePath)` — the canonical git root, so every worktree of a repo shares the main checkout's entry, exactly how the CLI keys it. |
 | `identity.go` | `oauthAccount` clearing (the config half of an account switch). AO never writes it — the CLI re-derives it. |
+| `identity_read.go` | `ReadOAuthAccount` — the one sanctioned READ of `oauthAccount` (org uuid + name), used at account-adoption time only and accepted only when its email matches the probe answer. Never live state: absence is a non-answer. |
 | `skills.go` | `ListSkills(workspacePath)` — filesystem enumeration of the skills a session would load: user tier (`<home>/skills`), project tier (`<workspace>/.claude/skills`, wins name collisions), enabled plugins' `skills/` dirs (namespaced `<plugin>:<skill>`). |
 | `orderedjson.go` | Key-order-preserving JSON object, so saves don't churn diffs of a file another program owns. |
 

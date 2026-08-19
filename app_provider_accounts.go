@@ -444,12 +444,22 @@ func (a *App) adoptCanonicalProviderAccountLocked(providerName, binary string) e
 		return err
 	}
 	// Resolve the account ID before writing the credential. A canonical
-	// login we are adopting may already be saved under this email from an
-	// earlier session; minting a fresh ID here would put the credential in
-	// a slot the metadata never references, leaving the real account on a
-	// stale credential until the next startup prune deleted the copy.
+	// login we are adopting may already be saved under this identity from
+	// an earlier session; minting a fresh ID here would put the credential
+	// in a slot the metadata never references, leaving the real account on
+	// a stale credential until the next startup prune deleted the copy.
 	accountID := uuid.NewString()
-	if existing, ok := a.providerAccounts.FindByEmail(providerName, info.Email); ok {
+	a.backfillCodexOrgIDs(providerName, info.Email)
+	existing, found, err := a.findAccountByObservedIdentity(providerName, info)
+	if err != nil {
+		return fmt.Errorf(
+			"resolve current %s login %s against saved accounts: %w",
+			providerName,
+			describeObservedAccount(info),
+			err,
+		)
+	}
+	if found {
 		accountID = existing.ID
 	}
 	saved, err := a.providerCredentials.CaptureAccountCredential(providerName, accountID)
@@ -495,6 +505,8 @@ func accountFromInfo(accountID, providerName string, info provider.AccountInfo) 
 		ID:               accountID,
 		Provider:         providerName,
 		Email:            strings.TrimSpace(info.Email),
+		OrgID:            strings.TrimSpace(info.OrgID),
+		OrgName:          strings.TrimSpace(info.OrgName),
 		DisplayName:      strings.TrimSpace(info.DisplayName),
 		SubscriptionType: strings.TrimSpace(info.SubscriptionType),
 		TokenSource:      strings.TrimSpace(info.TokenSource),
@@ -505,6 +517,8 @@ func accountFromInfo(accountID, providerName string, info provider.AccountInfo) 
 func providerAccountInfo(account provideraccounts.Account) provider.AccountInfo {
 	return provider.AccountInfo{
 		Email:            account.Email,
+		OrgID:            account.OrgID,
+		OrgName:          account.OrgName,
 		DisplayName:      account.DisplayName,
 		SubscriptionType: account.SubscriptionType,
 		TokenSource:      account.TokenSource,

@@ -696,3 +696,259 @@ func TestThreadLiveStateIncludesCurrentSessionAccount(t *testing.T) {
 		t.Fatalf("provider account = %+v", state.ProviderAccount)
 	}
 }
+
+// A second workspace on the SAME email is a different login, not a rotation.
+// Before org capture this silently overwrote the saved account; now the saved
+// slot's own bytes name its workspace (backfill), the observed credential
+// names the new one, and reconciliation creates a separate account.
+func TestExternalCodexLoginOnDifferentWorkspaceCreatesSeparateAccount(t *testing.T) {
+	app := newTestAppWithStore(t)
+	app.settings = settings.NewService(t.TempDir())
+	installIdentityTestAccount(
+		t,
+		app,
+		string(provider.Codex),
+		"first",
+		"shared@example.com",
+		[]byte(`{"tokens":{"access_token":"a","account_id":"ws-a"}}`),
+	)
+
+	activePath, err := app.providerCredentials.ActiveCredentialPath(string(provider.Codex))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		activePath,
+		[]byte(`{"tokens":{"access_token":"b","account_id":"ws-b"}}`),
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	binary := writeCodexIdentityProbeBinary(t, "shared@example.com")
+	if _, err := app.settings.Update(map[string]any{"codexBinaryPath": binary}); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.reconcileExternalProviderAccount(string(provider.Codex)); err != nil {
+		t.Fatalf("reconcileExternalProviderAccount: %v", err)
+	}
+
+	accounts := app.providerAccounts.List(string(provider.Codex), time.Now())
+	if len(accounts) != 2 {
+		t.Fatalf("accounts = %+v, want 2", accounts)
+	}
+	active, ok := app.providerAccounts.Active(string(provider.Codex), time.Now())
+	if !ok || active.ID == "first" || active.OrgID != "ws-b" {
+		t.Fatalf("active = %+v, want a NEW account on ws-b", active)
+	}
+	first, ok := app.providerAccounts.Get(string(provider.Codex), "first", time.Now())
+	if !ok || first.OrgID != "ws-a" {
+		t.Fatalf("first = %+v, want backfilled OrgID ws-a", first)
+	}
+}
+
+// The same workspace re-observed lands back on its saved account (no
+// duplicate), and the observation enriches the legacy blank org.
+func TestExternalCodexSameWorkspaceRelandsOnSavedAccount(t *testing.T) {
+	app := newTestAppWithStore(t)
+	app.settings = settings.NewService(t.TempDir())
+	installIdentityTestAccount(
+		t,
+		app,
+		string(provider.Codex),
+		"first",
+		"shared@example.com",
+		[]byte(`{"tokens":{"access_token":"a","account_id":"ws-a"}}`),
+	)
+
+	activePath, err := app.providerCredentials.ActiveCredentialPath(string(provider.Codex))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A refreshed token for the same workspace: new bytes, same account_id.
+	if err := os.WriteFile(
+		activePath,
+		[]byte(`{"tokens":{"access_token":"a2","account_id":"ws-a"}}`),
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	binary := writeCodexIdentityProbeBinary(t, "shared@example.com")
+	if _, err := app.settings.Update(map[string]any{"codexBinaryPath": binary}); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.reconcileExternalProviderAccount(string(provider.Codex)); err != nil {
+		t.Fatalf("reconcileExternalProviderAccount: %v", err)
+	}
+
+	accounts := app.providerAccounts.List(string(provider.Codex), time.Now())
+	if len(accounts) != 1 {
+		t.Fatalf("accounts = %+v, want the one saved account", accounts)
+	}
+	if accounts[0].ID != "first" || accounts[0].OrgID != "ws-a" {
+		t.Fatalf("account = %+v, want first enriched with ws-a", accounts[0])
+	}
+}
+
+// An observation that cannot pick between several same-email accounts
+// (no org id, e.g. an API-key credential) must not fail reconciliation on
+// every tick: when the active account carries the observed email and
+// nothing contradicts it, the credential re-lands on the current
+// assignment.
+func TestReconcileAmbiguousIdentityKeepsTheActiveAccount(t *testing.T) {
+	app := newTestAppWithStore(t)
+	app.settings = settings.NewService(t.TempDir())
+	installIdentityTestAccount(
+		t,
+		app,
+		string(provider.Codex),
+		"acct-a",
+		"shared@example.com",
+		[]byte(`{"OPENAI_API_KEY":"k1"}`),
+	)
+	// Enrich acct-a's org FIRST — the write layer refuses a same-email
+	// sibling while either side's org is unknown — then add the sibling and
+	// re-activate acct-a.
+	for _, account := range []provideraccounts.Account{
+		{ID: "acct-a", Provider: string(provider.Codex), Email: "shared@example.com", OrgID: "ws-a"},
+		{ID: "acct-b", Provider: string(provider.Codex), Email: "shared@example.com", OrgID: "ws-b"},
+		{ID: "acct-a", Provider: string(provider.Codex), Email: "shared@example.com", OrgID: "ws-a"},
+	} {
+		if _, err := app.providerAccounts.UpsertAndActivate(account); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	activePath, err := app.providerCredentials.ActiveCredentialPath(string(provider.Codex))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// An externally refreshed API-key credential: new bytes, no workspace id.
+	if err := os.WriteFile(activePath, []byte(`{"OPENAI_API_KEY":"k2"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	binary := writeCodexIdentityProbeBinary(t, "shared@example.com")
+	if _, err := app.settings.Update(map[string]any{"codexBinaryPath": binary}); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.reconcileExternalProviderAccount(string(provider.Codex)); err != nil {
+		t.Fatalf("reconcileExternalProviderAccount: %v", err)
+	}
+
+	accounts := app.providerAccounts.List(string(provider.Codex), time.Now())
+	if len(accounts) != 2 {
+		t.Fatalf("accounts = %+v, want the two saved accounts", accounts)
+	}
+	active, ok := app.providerAccounts.Active(string(provider.Codex), time.Now())
+	if !ok || active.ID != "acct-a" || active.OrgID != "ws-a" {
+		t.Fatalf("active = %+v, want acct-a still active with ws-a", active)
+	}
+	saved, err := app.providerCredentials.ReadCredential(string(provider.Codex), "acct-a", false)
+	if err != nil || string(saved) != `{"OPENAI_API_KEY":"k2"}` {
+		t.Fatalf("acct-a slot = %q, %v; want the refreshed credential", saved, err)
+	}
+}
+
+func TestAccountIDForObservedIdentityDisambiguatesByOrg(t *testing.T) {
+	app := newTestAppWithStore(t)
+	accounts, err := provideraccounts.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, account := range []provideraccounts.Account{
+		{ID: "acct-a", Provider: string(provider.Claude), Email: "dup@x.com", OrgID: "org-a", OrgName: "Alpha"},
+		{ID: "acct-b", Provider: string(provider.Claude), Email: "dup@x.com", OrgID: "org-b", OrgName: "Beta"},
+	} {
+		if _, err := accounts.UpsertAndActivate(account); err != nil {
+			t.Fatal(err)
+		}
+	}
+	app.providerAccounts = accounts
+
+	cases := []struct {
+		name     string
+		expected string
+		info     provider.AccountInfo
+		wantID   string
+		wantErr  bool
+	}{
+		{
+			name:     "org id reassigns within the same email",
+			expected: "acct-a",
+			info:     provider.AccountInfo{Email: "dup@x.com", OrgID: "org-b"},
+			wantID:   "acct-b",
+		},
+		{
+			// A name is display state and never evidence: the expected
+			// account keeps its claim even when the observation names the
+			// sibling org, because renames and source-formatting differences
+			// make names unreliable and only an org ID may reassign.
+			name:     "an observed org name alone cannot reassign",
+			expected: "acct-a",
+			info:     provider.AccountInfo{Email: "dup@x.com", OrgName: "beta"},
+			wantID:   "acct-a",
+		},
+		{
+			name:     "email-only observation cannot contradict the expected claim",
+			expected: "acct-a",
+			info:     provider.AccountInfo{Email: "dup@x.com"},
+			wantID:   "acct-a",
+		},
+		{
+			name:     "empty identity keeps the expected assignment",
+			expected: "acct-a",
+			info:     provider.AccountInfo{},
+			wantID:   "acct-a",
+		},
+		{
+			name:     "an unsaved organization is refused, not guessed",
+			expected: "acct-a",
+			info:     provider.AccountInfo{Email: "dup@x.com", OrgID: "org-c"},
+			wantErr:  true,
+		},
+	}
+	for _, tc := range cases {
+		got, _, err := app.accountIDForObservedIdentity(string(provider.Claude), tc.expected, tc.info)
+		if tc.wantErr {
+			if err == nil {
+				t.Errorf("%s: expected error, got %q", tc.name, got)
+			}
+			continue
+		}
+		if err != nil || got != tc.wantID {
+			t.Errorf("%s: got (%q, %v), want %q", tc.name, got, err, tc.wantID)
+		}
+	}
+}
+
+func TestAssertSelectedClaudeIdentityUsesOrgContradiction(t *testing.T) {
+	app := newTestAppWithStore(t)
+	selection := providerAccountSelection{
+		AccountID: "acct-a",
+		Account:   provider.AccountInfo{Email: "e@x.com", OrgID: "org-1", OrgName: "Alpha"},
+	}
+	cases := []struct {
+		name    string
+		info    provider.AccountInfo
+		wantErr bool
+	}{
+		{"empty post-switch identity", provider.AccountInfo{}, false},
+		{"same login", provider.AccountInfo{Email: "E@X.com", OrgID: "org-1"}, false},
+		{"same email different org id", provider.AccountInfo{Email: "e@x.com", OrgID: "org-2"}, true},
+		// A differing display name is a rename or a source-formatting
+		// difference, never proof of a different login: refusing here would
+		// drop the token rotation this refresh just spent (2026-08-18
+		// incident shape).
+		{"same email different org name without ids", provider.AccountInfo{Email: "e@x.com", OrgName: "Beta"}, false},
+		{"different email", provider.AccountInfo{Email: "other@x.com"}, true},
+		{"rename under the same org id", provider.AccountInfo{Email: "e@x.com", OrgID: "org-1", OrgName: "Renamed"}, false},
+	}
+	for _, tc := range cases {
+		err := app.assertSelectedClaudeIdentity(selection, tc.info)
+		if (err != nil) != tc.wantErr {
+			t.Errorf("%s: err = %v, wantErr %v", tc.name, err, tc.wantErr)
+		}
+	}
+}

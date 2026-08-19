@@ -190,7 +190,31 @@ func (a *App) reconcileObservedAccountLocked(
 		target = active
 		found = true
 	} else {
-		target, found = a.providerAccounts.FindByEmail(providerName, email)
+		// An adoption may be the first sighting of a second workspace on a
+		// known email; resolve legacy blank-org Codex rows from their slots
+		// first so the blank cannot match the wrong workspace.
+		a.backfillCodexOrgIDs(providerName, email)
+		var findErr error
+		target, found, findErr = a.findAccountByObservedIdentity(providerName, info)
+		switch {
+		case errors.Is(findErr, provideraccounts.ErrAmbiguousIdentity) &&
+			hasActive &&
+			provideraccounts.AccountIdentity(active).Confirms(provideraccounts.IdentityFromInfo(info)):
+			// Several saved accounts share this email and the observation
+			// names no organization. The active account carries the same
+			// email and nothing observed contradicts it, so the credential
+			// re-lands on the current assignment instead of failing every
+			// reconciliation tick until an org-carrying observation arrives.
+			target = active
+			found = true
+		case findErr != nil:
+			return provideraccounts.Account{}, false, fmt.Errorf(
+				"resolve observed %s account %s: %w",
+				providerName,
+				describeObservedAccount(info),
+				findErr,
+			)
+		}
 		if !found && hasActive && strings.TrimSpace(active.Email) == "" {
 			// Enrich an account adopted before identity was available rather
 			// than manufacturing a duplicate the first time the provider
@@ -312,7 +336,10 @@ func (a *App) verifyCanonicalProviderCredentialLocked(
 // accountIDForObservedIdentity prevents a usage snapshot from being stamped
 // onto the selected metadata account when the fresh provider probe identifies
 // a different login. Empty-email modes cannot be disambiguated and retain the
-// expected saved-account assignment.
+// expected saved-account assignment. The expected account holds its claim as
+// long as nothing observed CONTRADICTS it (Identity.Contradicts) — same
+// email on a provably different organization is a different login and
+// reassigns exactly like a different email does.
 func (a *App) accountIDForObservedIdentity(
 	providerName string,
 	expectedAccountID string,
@@ -322,12 +349,22 @@ func (a *App) accountIDForObservedIdentity(
 	if email == "" || a.providerAccounts == nil {
 		return expectedAccountID, nil, nil
 	}
+	observed := provideraccounts.IdentityFromInfo(info)
 	if expected, ok := a.providerAccounts.Get(providerName, expectedAccountID, time.Now()); ok &&
-		strings.EqualFold(expected.Email, email) {
+		provideraccounts.AccountIdentity(expected).Confirms(observed) {
 		return expectedAccountID, nil, nil
 	}
-	if observed, ok := a.providerAccounts.FindByEmail(providerName, email); ok {
-		return observed.ID, nil, nil
+	resolved, found, err := a.findAccountByObservedIdentity(providerName, info)
+	if err != nil {
+		return "", nil, fmt.Errorf(
+			"resolve observed %s account %s: %w",
+			providerName,
+			describeObservedAccount(info),
+			err,
+		)
+	}
+	if found {
+		return resolved.ID, nil, nil
 	}
 	if expected, ok := a.providerAccounts.Get(providerName, expectedAccountID, time.Now()); ok &&
 		strings.TrimSpace(expected.Email) == "" {
@@ -353,6 +390,6 @@ func (a *App) accountIDForObservedIdentity(
 	return "", nil, fmt.Errorf(
 		"%s identity probe returned unsaved account %s instead of selected account",
 		providerName,
-		email,
+		describeObservedAccount(info),
 	)
 }

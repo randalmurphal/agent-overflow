@@ -20,10 +20,20 @@ const (
 
 // Account is safe frontend-facing metadata for one native provider login.
 // Credential material is deliberately absent.
+//
+// OrgID / OrgName identify the organization (Claude) or ChatGPT workspace
+// (Codex) the login belongs to. One email can hold a separate login per
+// organization, so (Email, OrgID) is the identity pair — see
+// identity_match.go for the matching lattice and why blank means unknown.
+// Both fields are additive to the v1 shape: stores written before org
+// capture load with blanks and enrich on the next adoption, and an older
+// build reading a newer file simply drops them until re-enriched.
 type Account struct {
 	ID               string                       `json:"id"`
 	Provider         string                       `json:"provider"`
 	Email            string                       `json:"email,omitempty"`
+	OrgID            string                       `json:"orgId,omitempty"`
+	OrgName          string                       `json:"orgName,omitempty"`
 	DisplayName      string                       `json:"displayName,omitempty"`
 	SubscriptionType string                       `json:"subscriptionType,omitempty"`
 	TokenSource      string                       `json:"tokenSource,omitempty"`
@@ -145,37 +155,25 @@ func (s *Store) Generation(providerName string) uint64 {
 	return s.state.Providers[providerName].Generation
 }
 
-func (s *Store) FindByEmail(providerName, email string) (Account, bool) {
-	email = strings.TrimSpace(email)
-	if email == "" {
-		return Account{}, false
-	}
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	for _, account := range s.state.Providers[providerName].Accounts {
-		if strings.EqualFold(account.Email, email) {
-			return cloneAccount(account), true
-		}
-	}
-	return Account{}, false
-}
-
 // ErrAccountIDMismatch reports that the supplied account ID is not the
-// one this provider already uses for that email. Callers write the
+// one this provider already uses for that identity. Callers write the
 // credential slot before committing metadata, so silently substituting
 // the stored ID would leave the credential in one slot and the metadata
-// pointing at another. Resolve the ID with FindByEmail first.
-var ErrAccountIDMismatch = errors.New("provideraccounts: account id does not match the saved account for this email")
+// pointing at another. Resolve the ID with FindByIdentity first.
+var ErrAccountIDMismatch = errors.New("provideraccounts: account id does not match the saved account for this identity")
 
 // UpsertAndActivate registers account and makes it current. The caller
 // owns credential-file activation and must call this only after that
 // succeeds.
 //
-// An email already registered under a different ID is an error, not a
+// An identity already registered under a different ID is an error, not a
 // silent merge: the caller has by then written a credential under the ID
 // it supplied, and quietly returning a different one strands those bytes
 // in an unreferenced slot while the real account keeps a stale
-// credential. Use FindByEmail to resolve the ID before writing.
+// credential. Use FindByIdentity to resolve the ID before writing.
+// Same-email accounts may coexist only with distinct non-blank org ids
+// (conflictsWithSaved), and a saved account's org can never change
+// (mergeOrgFields).
 func (s *Store) UpsertAndActivate(account Account) (Account, error) {
 	return s.upsertAndActivate(account, false)
 }
@@ -201,13 +199,26 @@ func (s *Store) upsertAndActivate(
 	previous, existed := s.state.Providers[account.Provider]
 	state := cloneProviderState(previous)
 	now := time.Now().UnixMilli()
-	index := -1
-	for i := range state.Accounts {
-		if state.Accounts[i].ID == account.ID {
-			index = i
-			break
+	index := indexOfAccount(state.Accounts, account.ID)
+	if index >= 0 {
+		// Merge over the saved row BEFORE the conflict scan: a blank
+		// incoming org means unknown and inherits the saved value, and
+		// only the merged identity can be judged against siblings.
+		existing := state.Accounts[index]
+		merged, err := mergeOrgFields(account, existing)
+		if err != nil {
+			return Account{}, err
 		}
-		if account.Email != "" && strings.EqualFold(state.Accounts[i].Email, account.Email) {
+		account = merged
+		account.AddedAt = existing.AddedAt
+		if account.RateLimits == nil {
+			account.RateLimits = existing.RateLimits
+		}
+	} else if account.AddedAt == 0 {
+		account.AddedAt = now
+	}
+	for i := range state.Accounts {
+		if i != index && conflictsWithSaved(account, state.Accounts[i]) {
 			return Account{}, fmt.Errorf(
 				"%w: %s account %q is saved as %q",
 				ErrAccountIDMismatch,
@@ -216,15 +227,6 @@ func (s *Store) upsertAndActivate(
 				state.Accounts[i].ID,
 			)
 		}
-	}
-	if index >= 0 {
-		existing := state.Accounts[index]
-		account.AddedAt = existing.AddedAt
-		if account.RateLimits == nil {
-			account.RateLimits = existing.RateLimits
-		}
-	} else if account.AddedAt == 0 {
-		account.AddedAt = now
 	}
 	account.LastUsedAt = now
 	if index >= 0 {
@@ -374,22 +376,7 @@ func (s *Store) UpdateMetadata(account Account) (Account, error) {
 	defer s.mu.Unlock()
 	previous, existed := s.state.Providers[account.Provider]
 	state := cloneProviderState(previous)
-	index := -1
-	for i := range state.Accounts {
-		if state.Accounts[i].ID != account.ID &&
-			account.Email != "" &&
-			strings.EqualFold(state.Accounts[i].Email, account.Email) {
-			return Account{}, fmt.Errorf(
-				"provideraccounts: email %q already belongs to account %q for %s",
-				account.Email,
-				state.Accounts[i].ID,
-				account.Provider,
-			)
-		}
-		if state.Accounts[i].ID == account.ID {
-			index = i
-		}
-	}
+	index := indexOfAccount(state.Accounts, account.ID)
 	if index < 0 {
 		return Account{}, fmt.Errorf(
 			"provideraccounts: account %q not found for %s",
@@ -398,6 +385,22 @@ func (s *Store) UpdateMetadata(account Account) (Account, error) {
 		)
 	}
 	existing := state.Accounts[index]
+	// Merge before the conflict scan — see upsertAndActivate.
+	merged, err := mergeOrgFields(account, existing)
+	if err != nil {
+		return Account{}, err
+	}
+	account = merged
+	for i := range state.Accounts {
+		if i != index && conflictsWithSaved(account, state.Accounts[i]) {
+			return Account{}, fmt.Errorf(
+				"provideraccounts: identity %q already belongs to account %q for %s",
+				account.Email,
+				state.Accounts[i].ID,
+				account.Provider,
+			)
+		}
+	}
 	account.AddedAt = existing.AddedAt
 	account.LastUsedAt = existing.LastUsedAt
 	account.RateLimits = existing.RateLimits
@@ -476,6 +479,15 @@ func validateAccount(account Account) error {
 		return errors.New("provideraccounts: provider is required")
 	}
 	return nil
+}
+
+func indexOfAccount(accounts []Account, accountID string) int {
+	for i := range accounts {
+		if accounts[i].ID == accountID {
+			return i
+		}
+	}
+	return -1
 }
 
 func cloneAccounts(accounts []Account) []Account {

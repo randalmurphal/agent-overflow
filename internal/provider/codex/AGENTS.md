@@ -17,6 +17,10 @@ over stdio.
   identity used to verify which saved login a live process is serving.
 - `identity_probe.go` — fresh-process `account/read` probe used to detect
   native credential changes without a rate-limit request or model turn.
+- `credential_identity.go` — `CredentialOrgID`: the ChatGPT workspace id
+  parsed straight from `auth.json` bytes (id_token claim preferred over
+  the refresh-stale top-level `account_id`), the org axis `account/read`
+  structurally cannot carry.
 - `launch.go` — shared app-server CLI arguments. Agent Overflow pins Codex to
   its native `auth.json` credential store so account switching is a
   deterministic atomic file replacement even where Codex `auto` mode would

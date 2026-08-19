@@ -382,6 +382,12 @@ func TestExtractAccountInfoFromInitResponsePopulatesAllFields(t *testing.T) {
 	if info.APIProvider != "firstParty" {
 		t.Errorf("APIProvider: got %q, want firstParty", info.APIProvider)
 	}
+	if info.OrgName != "User's Org" {
+		t.Errorf("OrgName: got %q, want User's Org", info.OrgName)
+	}
+	if info.OrgID != "" {
+		t.Errorf("OrgID: got %q, want blank — the initialize wire carries no uuid", info.OrgID)
+	}
 }
 
 func TestExtractAccountInfoFromInitResponseTreatsEmptyAsZero(t *testing.T) {

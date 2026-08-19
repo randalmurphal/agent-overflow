@@ -5,8 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"time"
 
+	"agent-overflow/internal/claudeconfig"
 	"agent-overflow/internal/externalurl"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
@@ -97,6 +99,19 @@ func (a *App) LoginProviderAccount(
 	if err != nil {
 		return ManagedProviderAccount{}, fmt.Errorf("capture %s login credentials: %w", providerName, err)
 	}
+	// Organization capture, from material the login home pairs with this
+	// exact credential: Codex carries the workspace id inside the
+	// credential bytes; Claude's login just wrote the oauthAccount record
+	// (org uuid + name) into the home's own .claude.json. Read it before
+	// the home is cleaned up. The email-paired acceptance rule applies as
+	// everywhere: a record describing a different email is discarded.
+	info = enrichCodexObservedIdentity(providerName, info, loginCredential.Data)
+	if providerName == string(provider.Claude) {
+		info = enrichClaudeInfoFromOAuthRecord(
+			info,
+			claudeconfig.New(filepath.Join(loginHome.Path, ".claude.json")),
+		)
+	}
 	if err := loginHome.Cleanup(); err != nil {
 		return ManagedProviderAccount{}, fmt.Errorf("clean temporary %s login home: %w", providerName, err)
 	}
@@ -124,7 +139,17 @@ func (a *App) LoginProviderAccount(
 	}()
 
 	targetID := uuid.NewString()
-	if existing, ok := a.providerAccounts.FindByEmail(providerName, info.Email); ok {
+	a.backfillCodexOrgIDs(providerName, info.Email)
+	existing, found, err := a.findAccountByObservedIdentity(providerName, info)
+	if err != nil {
+		return ManagedProviderAccount{}, fmt.Errorf(
+			"resolve %s login %s against saved accounts: %w",
+			providerName,
+			describeObservedAccount(info),
+			err,
+		)
+	}
+	if found {
 		targetID = existing.ID
 	}
 	// Capture before the write so a failure downstream restores exactly
