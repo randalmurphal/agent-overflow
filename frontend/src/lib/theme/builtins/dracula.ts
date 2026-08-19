@@ -17,11 +17,11 @@
 // works in an editor whose panels are separated by shadow but measures 1.5:1
 // the wrong way for a hairline vocabulary built on visible separation. The
 // border tiers therefore take the comment tone #6272a4 (the palette's own mid
-// value, 2.7:1) and a lightened step of it for the emphasized tier.
+// value, 3.03:1) and a lightened step of it for the emphasized tier.
 //
 // TEXT SECONDARY is likewise adapted: Dracula names no supporting-text tone
-// other than the comment, and #6272a4 measures 2.7:1 on the background, so
-// the role takes a lightened step of the same hue (#7d8ab8, 3.7:1).
+// other than the comment, and #6272a4 measures 3.03:1 on the background, so
+// the role takes a lightened step of the same hue (#7d8ab8, 4.20:1).
 //
 // ROLE MAPPING notes where judgement was involved:
 //
@@ -52,6 +52,19 @@ export const DRACULA: BuiltinThemeSpec = {
       'text-secondary': '#7d8ab8',
       accent: '#bd93f9',
       'accent-fg': '#282a36',
+      // Markdown prose roles: this file's markup-* hues, so chat prose and
+      // fenced markdown agree when both axes are on Dracula. Bold is the
+      // signature pink — Dracula's spec renders bold in pink alongside
+      // purple headings. The quote deviates from markup-quote (#6272a4,
+      // 3.03:1 on the ground — under the 3:1 prose floor) to the same
+      // lightened comment step text-secondary already uses (4.20:1); the
+      // fenced markup-quote keeps the canonical comment tone. Inline-code
+      // text is code-axis (see the `code` section below).
+      'md-heading': '#bd93f9',
+      'md-bold': '#ff79c6',
+      'md-link': '#8be9fd',
+      'md-blockquote': '#7d8ab8',
+      'md-marker': '#ffb86c',
       info: '#8be9fd',
       success: '#50fa7b',
       error: '#ff5555',
@@ -115,6 +128,8 @@ export const DRACULA: BuiltinThemeSpec = {
     code: {
       'code-block': '#282a36',
       'code-inline-bg': '#44475a',
+      // Inline-code text beside its chip ground (markup-raw yellow).
+      'md-inline-code': '#f1fa8c',
       'terminal-bg': '#282a36',
     },
   },

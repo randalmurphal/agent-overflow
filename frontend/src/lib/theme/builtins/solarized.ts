@@ -76,6 +76,17 @@ export const SOLARIZED: BuiltinThemeSpec = {
       'text-secondary': '#839496',
       accent: '#3197de',
       'accent-fg': '#002b36',
+      // Markdown prose roles: this file's markup-* hues (orange headings,
+      // blue links, yellow markers), so chat prose and fenced markdown
+      // agree when both axes are on Solarized. Bold is green — the hue
+      // Schoonover's vim mapping gives Statement, the palette's emphasis
+      // accent. Inline-code text is code-axis (see the `code` section
+      // below).
+      'md-heading': '#cb4b16',
+      'md-bold': '#859900',
+      'md-link': '#268bd2',
+      'md-blockquote': '#839496',
+      'md-marker': '#b58900',
       info: '#268bd2',
       success: '#859900',
       error: '#dc322f',
@@ -144,6 +155,8 @@ export const SOLARIZED: BuiltinThemeSpec = {
     code: {
       'code-block': '#002b36',
       'code-inline-bg': '#073642',
+      // Inline-code text beside its chip ground (markup-raw cyan, 4.1:1).
+      'md-inline-code': '#2aa198',
       'terminal-bg': '#002b36',
     },
   },
@@ -159,6 +172,22 @@ export const SOLARIZED: BuiltinThemeSpec = {
       'text-secondary': '#657b83',
       accent: '#1c6fa8',
       'accent-fg': '#fdf6e3',
+      // Light counterparts of the dark prose roles. A two-variant theme
+      // must state these in BOTH variants or not at all — the md-* defaults
+      // are declared once for both modes, so an omission here would leave
+      // the dark values painting on base3 (the resolver's mode-invariant
+      // warning covers exactly this). Orange headings and yellow markers
+      // survive the light ground at their 3:1 floors; green misses the 4:1
+      // body floor on base3 (canonical #859900 2.97:1, and even this file's
+      // darkened #7f9200 step only reaches 3.24:1), so bold restates base01
+      // and weight carries the emphasis, while links take the darkened
+      // accent blue this file already uses (canonical #268bd2 is 3.41:1).
+      // Inline-code text is code-axis (see the `code` section below).
+      'md-heading': '#cb4b16',
+      'md-bold': '#586e75',
+      'md-link': '#1c6fa8',
+      'md-blockquote': '#657b83',
+      'md-marker': '#a97e00',
       info: '#268bd2',
       success: '#7f9200',
       error: '#dc322f',
@@ -226,6 +255,11 @@ export const SOLARIZED: BuiltinThemeSpec = {
     code: {
       'code-block': '#fdf6e3',
       'code-inline-bg': '#eee8d5',
+      // Inline-code text on the chip: cyan misses the 4:1 chip floor on
+      // base2 (canonical #2aa198 2.58:1, darkened #26948b 3.01:1), so the
+      // role restates base01 (4.39:1); the chip ground and the mono face
+      // carry the code-ness.
+      'md-inline-code': '#586e75',
       'terminal-bg': '#fdf6e3',
     },
   },

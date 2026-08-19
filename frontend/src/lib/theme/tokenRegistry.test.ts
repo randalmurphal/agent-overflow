@@ -23,6 +23,7 @@ import {
   TOKEN_REGISTRY,
   cssVarName,
   isExcludedVar,
+  isSharedDefaultToken,
   tokensInSection,
 } from './tokenRegistry';
 import { isSafeTokenKey } from './themeResolve';
@@ -102,11 +103,11 @@ describe('token registry', () => {
   it('holds the section counts the format documents', () => {
     // Pinned so a deletion is loud: the schema, TOKENS.md and every theme file
     // on disk are written against these key spaces.
-    expect(tokensInSection('colors')).toHaveLength(39);
+    expect(tokensInSection('colors')).toHaveLength(44);
     expect(tokensInSection('syntax')).toHaveLength(21);
     expect(tokensInSection('ansi')).toHaveLength(16);
-    expect(tokensInSection('code')).toHaveLength(3);
-    expect(TOKEN_REGISTRY).toHaveLength(79);
+    expect(tokensInSection('code')).toHaveLength(4);
+    expect(TOKEN_REGISTRY).toHaveLength(85);
   });
 
   it('keeps entries well-formed', () => {
@@ -130,8 +131,12 @@ describe('token registry', () => {
     // Read off the SAME stylesheet parse the rules above use, never trusted as
     // a hand-set flag: `modeInvariant` is a claim that `:root` has nothing in
     // `html.light` to out-cascade it, which is a fact about the CSS. A derived
-    // token is excluded even with no light declaration — it re-derives from a
-    // base that does carry the mode, so it is not stranded.
+    // token is excluded even with no light declaration — its DEFAULT
+    // re-derives from a base that does carry the mode. That protects only the
+    // default: a theme's stated literal replaces the derivation and strands
+    // exactly like a mode-invariant token, which is why
+    // `warnModeInvariantSplits` / `isSharedDefaultToken` treat every
+    // tokens.css-declared role as shared (see the test below).
     const expected: string[] = [];
     for (const token of TOKEN_REGISTRY) {
       const file = CSS[token.cssFile]!;
@@ -151,6 +156,24 @@ describe('token registry', () => {
       'scrim-fg',
       'design-paper',
     ]);
+  });
+
+  it('keeps isSharedDefaultToken aligned with what the stylesheets strand', () => {
+    // `isSharedDefaultToken` proxies "a stated :root value has nothing in
+    // html.light to out-cascade it" through `modeInvariant || cssFile ===
+    // 'tokens.css'`. The proxy is sound only while the CSS cooperates —
+    // tokens.css's light block stays empty (pinned above) AND every non-shared
+    // token really does carry an html.light declaration. This derives the fact
+    // from the same parse, so a derived app.css token added :root-only (the
+    // one shape neither flag would catch) fails here instead of stranding
+    // silently in light mode.
+    for (const token of TOKEN_REGISTRY) {
+      const stranded = !CSS[token.cssFile]!.light.has(cssVarName(token.key));
+      expect(
+        isSharedDefaultToken(token),
+        `${token.key}: ${stranded ? 'no' : 'has an'} html.light declaration in ${token.cssFile}, but isSharedDefaultToken says ${isSharedDefaultToken(token)}`,
+      ).toBe(stranded);
+    }
   });
 
   it('marks exactly the tokens whose default is an expression as derived', () => {

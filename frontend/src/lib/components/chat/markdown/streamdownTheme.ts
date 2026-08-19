@@ -121,7 +121,12 @@ export const chatMarkdownTheme: ThemeOverride = {
     base: 'border-border-subtle my-5',
   },
   blockquote: {
-    base: 'border-border-subtle text-fg-muted my-3 border-l-2 pl-3 italic',
+    // `text-md-blockquote` exists to CANCEL the vendor default's palette
+    // class via tailwind-merge, not to paint: the unlayered
+    // `.markdown-body blockquote` rule in app.css owns the color
+    // (var(--md-blockquote)), and the alias names the same token so the
+    // class cannot disagree with what the cascade renders.
+    base: 'border-border-subtle text-md-blockquote my-3 border-l-2 pl-3 italic',
   },
   // GFM alerts (`> [!NOTE]` … ). Each vendor key carries a full literal
   // palette for its variant — blue-600 for note, green-600 for tip,
@@ -158,10 +163,13 @@ export const chatMarkdownTheme: ThemeOverride = {
     button: 'disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer p-1 text-fg-hint transition-colors hover:text-fg hover:bg-surface-2/60 rounded w-6 h-6 flex items-center justify-center',
     popover: 'min-w-[250px] max-w-md fixed z-[1000] max-h-md overflow-y-auto rounded-md bg-surface-1 border border-border-subtle p-2 shadow-menu',
   },
-  // Links: drop the hardcoded blue-600 text, use our accent token
-  // so light/dark theme stays consistent.
+  // Links: the color classes collide the vendor's blue-600 pair away and
+  // name the token the unlayered `.markdown-body a` rule (app.css) actually
+  // paints — var(--md-link), themeable per palette. The blocked variant is
+  // a <span>, so no element rule competes and its class does paint; a code
+  // label inside it keeps the de-emphasis via the app.css carve-out.
   link: {
-    base: 'text-accent font-medium underline wrap-anywhere hover:text-accent/80',
+    base: 'text-md-link font-medium underline wrap-anywhere hover:text-md-link',
     blocked: 'text-fg-hint',
   },
   // Headings inside markdown lose Streamdown's default `mt-6 mb-2

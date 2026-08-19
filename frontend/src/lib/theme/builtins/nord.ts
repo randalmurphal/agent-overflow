@@ -47,6 +47,17 @@ export const NORD: BuiltinThemeSpec = {
       'text-secondary': '#d8dee9',
       accent: '#88c0d0',
       'accent-fg': '#2e3440',
+      // Markdown prose roles: this file's markup-* hues (frost for
+      // structure, aurora orange for markers), so chat prose and fenced
+      // markdown agree when both axes are on Nord. Bold is the aurora
+      // yellow (nord13) — the warm hue not already spent on the markers
+      // (nord12 carries those). Inline-code text is code-axis (see the
+      // `code` section below).
+      'md-heading': '#88c0d0',
+      'md-bold': '#ebcb8b',
+      'md-link': '#81a1c1',
+      'md-blockquote': '#7b88a1',
+      'md-marker': '#d08770',
       info: '#81a1c1',
       success: '#a3be8c',
       error: '#bf616a',
@@ -111,6 +122,8 @@ export const NORD: BuiltinThemeSpec = {
     code: {
       'code-block': '#2e3440',
       'code-inline-bg': '#3b4252',
+      // Inline-code text beside its chip ground (markup-raw green, nord14).
+      'md-inline-code': '#a3be8c',
       'terminal-bg': '#2e3440',
     },
   },

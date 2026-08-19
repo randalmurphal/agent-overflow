@@ -412,10 +412,30 @@ describe('resolveTheme', () => {
     expect(declOf(cssOf(resolved), 'html.light', 'accent-fg')).toBeUndefined();
   });
 
+  it('warns when a two-variant theme states a DERIVED shared-default role once', () => {
+    // The other stranded class: `md-bold` defaults in tokens.css's single
+    // `:root` block, whose `var()` carries the mode only while the theme
+    // leaves it alone. A dark-only literal lands in the emitted `:root` with
+    // nothing in `html.light` to out-cascade it — the leak found live when
+    // latte's bold rendered mocha's mustard on the light ground.
+    const split = theme('split-derived', {
+      dark: { colors: { 'md-bold': 'gold', accent: 'aqua' } },
+      light: { colors: { accent: 'navy' } },
+    });
+    const resolved = resolve({
+      mode: 'dark',
+      themes: [split],
+      appearance: { uiTheme: 'split-derived', codeTheme: 'github' },
+    });
+    const warning = resolved.warnings.find((w) => w.code === 'mode-invariant');
+    expect(warning?.path).toBe('dark.colors.md-bold');
+    expect(warning?.message).toContain('derived role declared once for both modes');
+  });
+
   it('stays silent when the token is stated in both variants, or in neither', () => {
     const both = theme('both', {
-      dark: { colors: { 'accent-fg': 'black', scrim: 'black' } },
-      light: { colors: { 'accent-fg': 'white', scrim: 'white' } },
+      dark: { colors: { 'accent-fg': 'black', scrim: 'black', 'md-bold': 'gold' } },
+      light: { colors: { 'accent-fg': 'white', scrim: 'white', 'md-bold': 'maroon' } },
     });
     const neither = theme('neither', {
       dark: { colors: { accent: 'aqua' } },

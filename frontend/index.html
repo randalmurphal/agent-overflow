@@ -58,6 +58,16 @@
             var m = /^ {2}--[a-z][a-z0-9]*(-[a-z0-9]+)*: ([-#()%,.\/+_ a-zA-Z0-9]+);$/.exec(line);
             if (!m) return false;
             var value = m[2];
+            /* Mirror of themeResolve.ts REFUSED_FUNCTIONS: this CSS paints
+               before any app code runs and with no CSP, and app.css uses the
+               shorthand `background: var(--surface-0)`, so a url() smuggled
+               into a hostile localStorage stamp would beacon on first frame.
+               Case-folded and whitespace-free so `URL (` cannot slip past. */
+            var folded = value.toLowerCase().replace(/[ \t]+/g, '');
+            var refused = ['url(', 'image-set(', 'src(', 'var(', 'attr(', 'env('];
+            for (var k = 0; k < refused.length; k++) {
+              if (folded.indexOf(refused[k]) !== -1) return false;
+            }
             var depth = 0;
             for (var j = 0; j < value.length; j++) {
               var ch = value.charAt(j);

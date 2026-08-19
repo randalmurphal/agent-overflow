@@ -725,3 +725,94 @@ line each:
   pending mode in process state and re-seeds from the next
   `GetThemeFiles` — §6.2's one-shot read had exactly one un-handled
   failure mode, and this is it.
+
+### 9.10 Markdown prose roles + theme character round (2026-08-19)
+
+User verdict on the shipped UI themes: "a colored film over everything —
+most themes look basically the same." Root causes, confirmed by
+side-by-side harness screenshots: dark editor grounds are near-identical
+grays, so a ground swap reads as a tint; some curated palettes reused
+the upstream's muted EDITOR foreground as chrome text (one-dark's
+#abb2bf focal → body copy at 80% of that, i.e. hazy); and chat prose —
+the surface a reader actually looks at — had no themeable text roles at
+all, so nothing characterful could change.
+
+What changed:
+
+- **Six `md-*` tokens** (`md-heading`, `md-bold`, `md-link`,
+  `md-inline-code`, `md-blockquote`, `md-marker`), derived, declared in
+  `tokens.css` and consumed by the `.markdown-body` rules in app.css.
+  Five are UI-axis `colors` tokens; `md-inline-code` is a CODE-axis
+  `code` token because its GROUND is one (`--code-inline-bg`) — a
+  UI-axis text color over a code-axis ground could pair unreadably
+  under mixed axes, so the role lives beside its ground and one theme
+  supplies both (post-task-review finding, three lenses). Defaults
+  derive from the text palette (heading/bold/inline code get a small
+  focal lift to `--text-primary` over the fg-muted body tier; link
+  follows `--accent`; quote and marker keep their prior tiers), so the
+  default theme keeps its quiet look. Registry 79 → 85 tokens
+  (44 colors / 4 code); schema/TOKENS.md regenerated. Precedence
+  carve-outs in app.css (pinned by `markdownCss.test.js`): bold
+  inherits inside headings, links and quotes; inline code inherits
+  inside links — live and blocked — so a clickable path label reads as
+  a link; `pre code` stays on the block's own text; code chips inside
+  headings/quotes deliberately keep the chip color. There is no
+  utility form for these tokens — the `--color-md-*` aliases exist so
+  `streamdownTheme.ts` can cancel vendor palette classes with classes
+  naming the same token.
+- **Curated themes state the prose roles** from the same hues their
+  code axis gives the `markup-*` families (so chat prose and fenced
+  markdown agree when both axes are on the theme), plus a per-theme
+  bold pick — bold has no `markup-*` counterpart, so each theme picks
+  one emphasis hue, usually its warm accent. Adoption is pinned
+  (builtins.test.ts): all 12 UI-axis curated variants state the five
+  prose roles and the chip text. A variant whose palette has no
+  floor-clearing hue for a role restates its own text tier instead
+  (latte and solarized-light bold; latte, solarized-light and
+  gruvbox-light chip text) — weight and the chip ground carry the
+  role, and the statement stays explicit because of the
+  shared-default rule below.
+- **Contrast floors for stated md-* values**
+  (builtins.contrast.test.ts): headings 3:1 — a deliberate
+  palette-fidelity concession for the heaviest, most isolated text
+  (NOT a WCAG large-text claim; chat headings are 15-18px), which is
+  what keeps solarized's canonical orange at 3.3:1; bold/link 4:1
+  (body-size but carrying a second cue); quote/marker 3:1;
+  `md-inline-code` measured against the SAME variant's
+  `code-inline-bg`, not surface-0 — the ground it actually paints on
+  (this floor is what caught gruvbox-light aqua at 3.64:1 and
+  high-contrast light green at 6.45:1, both re-picked). High Contrast
+  is held to 7:1 on all of them.
+- **one-dark chrome text brightened**: focal #abb2bf → #d7dae0 (the
+  theme's own bright tier), secondary → #abb2bf. Fixes the washed-out
+  chrome; body copy at the fg-muted tier now lands on the classic
+  editor gray.
+- **User bubble carries the accent** (`UserMessage.svelte`:
+  `bg-accent/15` + `border-accent/20`, was neutral surface-2/60) — the
+  one structural accent surface in the transcript, which is what makes
+  each theme's identity legible at a glance. `/15` matches the
+  sidebar's selected-row tint, the precedent for accent presence.
+
+The review round's structural find — **the shared-default (mode-leak)
+rule**: the emission model is "dark variant → `:root`, light variant →
+`html.light`", and every token whose app default is declared ONCE for
+both modes (the `modeInvariant` literals, plus ALL tokens.css-declared
+derived roles — that file's light block is pinned empty) has nothing in
+`html.light` to out-cascade a stated `:root` value. A two-variant theme
+stating such a token in its dark variant alone therefore paints the
+DARK literal in light mode: found live when latte omitted `md-bold`
+and rendered mocha's mustard on `#eff1f5` at 1.12:1. Derivedness
+protects only the DEFAULT — a stated literal replaces the `var()` that
+was carrying the mode. Enforcement is three-layered, all reading ONE
+predicate (`isSharedDefaultToken` in tokenRegistry.ts):
+the resolver's `mode-invariant` warning now fires for derived roles
+stated in one variant of a pair (user files get told); a curated theme
+is TESTED to state a shared-default token in both variants or neither
+(builtins.test.ts); and `tokenRegistry.test.ts` derives the predicate's
+correctness from the stylesheet parse itself, so a future `:root`-only
+derived token in app.css fails the suite instead of stranding silently.
+Same round: the boot-CSS validator in index.html now refuses the
+serializer's `REFUSED_FUNCTIONS` (`url(` and kin) inside its line
+grammar — the cached-CSS path paints pre-CSP on a `background`
+shorthand, so a hostile localStorage stamp was a first-frame network
+beacon (pre-existing; hostile cases added to themeBootStamp.test.ts).

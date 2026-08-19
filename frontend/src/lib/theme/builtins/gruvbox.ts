@@ -56,6 +56,15 @@ export const GRUVBOX: BuiltinThemeSpec = {
       'text-secondary': '#a89984',
       accent: '#fabd2f',
       'accent-fg': '#282828',
+      // Markdown prose roles from this file's markup-* hues (agreeing with
+      // fenced markdown when both axes are on Gruvbox), and bold shares the
+      // orange gruvbox reserves for emphasis. Inline-code text is code-axis
+      // (see the `code` section below).
+      'md-heading': '#b8bb26',
+      'md-bold': '#fe8019',
+      'md-link': '#83a598',
+      'md-blockquote': '#928374',
+      'md-marker': '#fe8019',
       info: '#83a598',
       success: '#b8bb26',
       error: '#fb4934',
@@ -120,6 +129,9 @@ export const GRUVBOX: BuiltinThemeSpec = {
     code: {
       'code-block': '#282828',
       'code-inline-bg': '#32302f',
+      // Inline-code text beside its chip ground: aqua per gruvbox.vim
+      // (`markdownCode` → GruvboxAqua), reading apart from green headings.
+      'md-inline-code': '#8ec07c',
       'terminal-bg': '#282828',
     },
   },
@@ -135,6 +147,15 @@ export const GRUVBOX: BuiltinThemeSpec = {
       'text-secondary': '#7c6f64',
       accent: '#076678',
       'accent-fg': '#fbf1c7',
+      // Light-mode counterparts of the dark prose roles, from the faded
+      // ramp: green headings, orange bold/markers, blue links — the same
+      // role → hue mapping as dark. Inline-code text is code-axis (see the
+      // `code` section below).
+      'md-heading': '#79740e',
+      'md-bold': '#af3a03',
+      'md-link': '#076678',
+      'md-blockquote': '#7c6f64',
+      'md-marker': '#af3a03',
       info: '#076678',
       success: '#79740e',
       error: '#9d0006',
@@ -197,6 +218,12 @@ export const GRUVBOX: BuiltinThemeSpec = {
     code: {
       'code-block': '#fbf1c7',
       'code-inline-bg': '#ebdbb2',
+      // Inline-code text on the chip: faded aqua #427b58 measures 3.64:1 on
+      // this ground — under the 4:1 chip floor, and gruvbox's faded ramp has
+      // no darker aqua — so the role restates the light text color (the chip
+      // ground and the mono face carry the code-ness), matching the
+      // latte / solarized-light treatment.
+      'md-inline-code': '#3c3836',
       'terminal-bg': '#fbf1c7',
     },
   },

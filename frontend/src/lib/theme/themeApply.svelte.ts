@@ -4,7 +4,7 @@
 // `setProperty` costs N whole-document style invalidations, measured at ~13ms
 // each at 5k nodes and ~90ms at 30k (docs/specs/theme-system.md §1.4 — the
 // same measurement that made `utils/ambientTicker.ts` exist). A theme carries
-// up to 79 tokens and a color-picker drag would issue them per frame. One
+// up to 85 tokens and a color-picker drag would issue them per frame. One
 // element rewritten wholesale is one invalidation per change, and "a token the
 // theme does not mention keeps the app's own declaration" falls out of the
 // cascade instead of needing a reset value per token.

@@ -191,7 +191,7 @@
   <div class="flex max-w-[82%] flex-col items-end">
     <div
       bind:this={bubbleEl}
-      class="rounded-[18px] rounded-br-[8px] border border-border-subtle bg-surface-2/60
+      class="rounded-[18px] rounded-br-[8px] border border-accent/20 bg-accent/15
              px-4 py-2.5 text-[0.8125rem] leading-[1.55] text-fg shadow-sheet"
       class:w-[46rem]={editSession !== null}
       class:max-w-full={editSession !== null}

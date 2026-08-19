@@ -32,4 +32,25 @@ describe('markdown CSS', () => {
     expect(appCss).toMatch(/\.markdown-body\s+th,\s*\n\.markdown-body\s+td\s*\{[^}]*overflow-wrap:\s*break-word;/s);
     expect(appCss).not.toMatch(/\.markdown-body\s+th,\s*\n\.markdown-body\s+td\s*\{[^}]*overflow-wrap:\s*anywhere;/s);
   });
+
+  it('consumes every markdown prose token, with the precedence carve-outs', () => {
+    // The --md-* tokens resolve and paint nothing unless these rules exist;
+    // the theme suites can only prove the tokens RESOLVE. A regex pin per
+    // consumption keeps a refactor from silently dropping one — the failure
+    // mode is invisible (prose falls back to inherited color and every
+    // other test stays green).
+    expect(appCss).toMatch(/\.markdown-body\s+h6\s*\{[^}]*color:\s*var\(--md-heading\);/s);
+    expect(appCss).toMatch(/\.markdown-body\s+strong\s*\{[^}]*color:\s*var\(--md-bold\);/s);
+    expect(appCss).toMatch(/\.markdown-body\s+a\s*\{[^}]*color:\s*var\(--md-link\);/s);
+    expect(appCss).toMatch(/\.markdown-body\s+code\s*\{[^}]*color:\s*var\(--md-inline-code\);/s);
+    expect(appCss).toMatch(/\.markdown-body\s+blockquote\s*\{[^}]*color:\s*var\(--md-blockquote\);/s);
+    expect(appCss).toMatch(/\.markdown-body\s+li::marker\s*\{[^}]*color:\s*var\(--md-marker\);/s);
+    // Carve-outs: bold inherits inside headings, links and quotes; code
+    // inherits inside links (live and blocked); pre code stays on the
+    // block's own text so syntax spans keep sole ownership.
+    expect(appCss).toMatch(
+      /\.markdown-body\s+:is\(h1, h2, h3, h4, h5, h6, a, blockquote\)\s+strong,\s*\n\.markdown-body\s+a\s+code,\s*\n\.markdown-body\s+\[data-streamdown-link-blocked\]\s+code\s*\{\s*color:\s*inherit;/s,
+    );
+    expect(appCss).toMatch(/\.markdown-body\s+pre\s+code\s*\{[^}]*color:\s*inherit;/s);
+  });
 });

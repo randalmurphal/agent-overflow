@@ -191,6 +191,41 @@ const COLOR_ENTRIES: readonly TokenEntry[] = [
     'accent-fg',
     'Foreground painted on an accent fill, so a pale accent cannot strand its own label.',
   ),
+  entry(
+    'colors',
+    'tokens.css',
+    'md-heading',
+    'Markdown headings in chat prose (the code-axis counterpart is syntax-markup-heading). Follows the focal text color.',
+    true,
+  ),
+  entry(
+    'colors',
+    'tokens.css',
+    'md-bold',
+    'Markdown bold text in chat prose. No code-axis counterpart exists, so curated themes pick an emphasis hue of their own. Follows the focal text color.',
+    true,
+  ),
+  entry(
+    'colors',
+    'tokens.css',
+    'md-link',
+    'Markdown links in chat prose (the code-axis counterpart is syntax-markup-link). Follows the accent.',
+    true,
+  ),
+  entry(
+    'colors',
+    'tokens.css',
+    'md-blockquote',
+    'Markdown block-quote text in chat prose (the code-axis counterpart is syntax-markup-quote). Follows the supporting text color.',
+    true,
+  ),
+  entry(
+    'colors',
+    'tokens.css',
+    'md-marker',
+    'Markdown list bullets and numbers in chat prose (the code-axis counterpart is syntax-markup-list). Follows the muted body-text tier (fg-muted).',
+    true,
+  ),
   entry('colors', 'app.css', 'info', 'Informational status: input prompts and neutral notices.'),
   entry('colors', 'app.css', 'success', 'Success status: completed work, added lines, healthy state.'),
   entry('colors', 'app.css', 'error', 'Failure status: errors, removed lines, refusals.'),
@@ -329,6 +364,13 @@ const CODE_ENTRIES: readonly TokenEntry[] = [
     true,
   ),
   entry('code', 'app.css', 'code-inline-bg', 'Ground behind inline code spans.'),
+  entry(
+    'code',
+    'tokens.css',
+    'md-inline-code',
+    'Markdown inline-code text, painted on the code-inline-bg chip (the highlight counterpart is syntax-markup-raw). Lives on the code axis BECAUSE its ground does — a UI-axis text color over a code-axis ground could pair unreadably. Follows the focal text color.',
+    true,
+  ),
   entry('code', 'app.css', 'terminal-bg', 'Ground of the embedded terminal.'),
 ];
 
@@ -372,6 +414,22 @@ export function tokenKeysInSection(section: ThemeSection): ReadonlySet<string> {
 /** The CSS custom-property name a registry key maps onto. */
 export function cssVarName(key: string): string {
   return `--${key}`;
+}
+
+/**
+ * True when the token's app default is declared ONCE for both modes, so an
+ * emitted `:root` value has nothing in `html.light` to out-cascade it and a
+ * two-variant theme must state the token in both variants or neither. Two
+ * shapes qualify: the `modeInvariant` literals, and every token whose default
+ * lives in tokens.css — that file's `html.light` block is pinned EMPTY by
+ * `tokenRegistry.test.ts`, and its declarations are derivations, which carry
+ * the mode only while the theme leaves them alone (a stated literal replaces
+ * the derivation; found live when latte's bold rendered mocha's mustard at
+ * 1.1:1). The resolver's mode-invariant warning and the curated
+ * split-statement test both read THIS predicate, so the pin has one dependent.
+ */
+export function isSharedDefaultToken(token: TokenEntry): boolean {
+  return token.modeInvariant || token.cssFile === 'tokens.css';
 }
 
 // ---------------------------------------------------------------------------

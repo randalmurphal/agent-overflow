@@ -431,10 +431,11 @@ strings, owns `appearance.json`, and watches the directory.
 Where things live:
 
 - `lib/theme/tokenRegistry.ts` is THE token vocabulary — section, JSON
-  key, CSS var, axis, description. `themeTokens.test.ts` parses the
-  three stylesheets and fails on drift in either direction. A role that
-  does not exist yet gets DEFINED here; it never becomes a literal at a
-  call site.
+  key, CSS var, axis, description. `lib/theme/tokenRegistry.test.ts`
+  parses the three stylesheets and fails on drift in either direction
+  (`themeTokens.test.ts` is the separate leak tripwire: raw classes and
+  hex literals outside the theme layer). A role that does not exist yet
+  gets DEFINED here; it never becomes a literal at a call site.
 - `lib/theme/` is pure and RPC-free: parse (structural only — whether a
   value is a color needs a browser), resolve (selection + files +
   built-ins → declarations + palette identity + warnings), apply.
@@ -477,7 +478,7 @@ Rules that are not stylistic:
 - **One `<style id="user-theme">`, rewritten wholesale.** Never
   `setProperty` per token on the root: each such write is a whole-document
   style invalidation (~13ms at 5k nodes, ~90ms at 30k), and a theme
-  carries up to 79 tokens. A token the theme does not mention keeps the
+  carries up to 85 tokens. A token the theme does not mention keeps the
   app's own declaration by cascade, so there is no reset value to emit.
 - **One palette identity.** Anything that caches rendered output keyed on
   the palette — the mermaid config memo and its `{#key}`, the xterm

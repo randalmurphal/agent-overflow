@@ -58,6 +58,29 @@
   --fg-subtle: color-mix(in oklab, var(--text-primary) 55%, transparent);
   --fg-hint: color-mix(in oklab, var(--text-primary) 30%, transparent);
 
+  /* Markdown text roles in chat prose. Consumed by the `.markdown-body`
+     rules in app.css — there is no utility form; the @theme aliases exist
+     only so streamdownTheme.ts can spell colliding classes that name the
+     same value. Left alone they derive from the text palette, so the
+     default theme keeps a quiet, mostly-monochrome transcript with a
+     small focal lift on headings / bold / inline code; a curated theme
+     states real colors here (typically the same hues its code axis gives
+     the markup-* syntax families) and the transcript takes on the theme's
+     character. md-bold is the exception with no markup-* counterpart:
+     each curated theme picks one emphasis hue for it, usually the palette's
+     warm accent, and a light variant without a text-grade hue restates its
+     own text color instead (weight still carries the emphasis).
+     md-inline-code lives on the CODE axis (it paints on --code-inline-bg,
+     a code-axis ground) but defaults here beside its siblings. All
+     derived, so a theme that only moves the base palette stays coherent
+     without touching these. */
+  --md-heading: var(--text-primary);
+  --md-bold: var(--text-primary);
+  --md-link: var(--accent);
+  --md-inline-code: var(--text-primary);
+  --md-blockquote: var(--text-secondary);
+  --md-marker: var(--fg-muted);
+
   /* Border softer variant. Used on ambient surfaces (tool-call rows,
      thin card chrome, sidebar dividers) where the full --border is too
      loud. */

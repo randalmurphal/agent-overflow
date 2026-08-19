@@ -20,7 +20,12 @@ import {
 } from './builtins';
 import { THEME_VARIANTS, type ThemeVariantName } from './themeParse';
 import { resolveTheme, serializeThemeCss } from './themeResolve';
-import { THEME_SECTIONS, tokenKeysInSection } from './tokenRegistry';
+import {
+  THEME_SECTIONS,
+  TOKEN_REGISTRY,
+  isSharedDefaultToken,
+  tokenKeysInSection,
+} from './tokenRegistry';
 
 const RESERVED = new Set<string>([BUILTIN_UI_THEME_ID, BUILTIN_CODE_THEME_ID]);
 const CURATED = CURATED_BUILTIN_SPECS.map((spec) => defineBuiltinTheme(spec));
@@ -125,6 +130,51 @@ describe('curated built-in themes', () => {
       }
     }
     expect(gaps).toEqual([]);
+  });
+
+  it('never states a shared-default token in one variant of a pair', () => {
+    // The mode-invariant leak, enforced at the data: tokens whose app default
+    // is declared once for both modes (`modeInvariant`, and every derived
+    // role in tokens.css) land in the emitted `:root` with nothing in
+    // `html.light` to out-cascade them, so a two-variant theme stating one
+    // in dark alone paints the DARK value on its own light ground (found
+    // live: latte's bold rendered mocha's mustard at 1.1:1). User files get
+    // the resolver's `mode-invariant` warning; a curated palette must simply
+    // never do it — state both or neither.
+    const shared = TOKEN_REGISTRY.filter(isSharedDefaultToken);
+    const splits: string[] = [];
+    for (const theme of CURATED) {
+      const { dark, light } = theme.variants;
+      if (!dark || !light) continue;
+      for (const token of shared) {
+        const inDark = dark[token.section]?.[token.key] !== undefined;
+        const inLight = light[token.section]?.[token.key] !== undefined;
+        // A section one variant does not open at all is a different, LOUD
+        // shape (the axis listing changes), so only opened sections count.
+        if (!dark[token.section] || !light[token.section]) continue;
+        if (inDark !== inLight) {
+          splits.push(`${theme.id}.${token.section}.${token.key} (stated in ${inDark ? 'dark' : 'light'} only)`);
+        }
+      }
+    }
+    expect(splits).toEqual([]);
+  });
+
+  it('keeps the markdown prose roles ADOPTED, not just permitted', () => {
+    // The md-* roles are in OPTIONAL_KEYS and the contrast suite measures
+    // stated values only, so without this pin every md-* statement could be
+    // deleted and the whole suite would stay green — the theme character the
+    // roles exist to deliver has no other floor. Every UI-axis curated
+    // variant states the five prose roles, and every one of those also opens
+    // the code section and states the chip text beside its ground.
+    const uiVariants = CURATED_BUILTIN_SPECS.filter((spec) => spec.axes.ui).flatMap((spec) =>
+      THEME_VARIANTS.map((v) => spec[v]).filter((variant) => variant !== undefined),
+    );
+    expect(uiVariants.length).toBe(12);
+    for (const variant of uiVariants) {
+      expect(variant.colors?.['md-heading']).toBeDefined();
+      expect(variant.code?.['md-inline-code']).toBeDefined();
+    }
   });
 
   it('resolves in BOTH modes without a warning, on whichever axis it serves', () => {
@@ -234,4 +284,17 @@ const OPTIONAL_KEYS = new Set<string>([
   'fg-subtle',
   'fg-hint',
   'border-subtle',
+  // The markdown prose roles are optional in the full-coverage sense only —
+  // a palette without a hue for one may restate its own text tier or leave
+  // the derivation. In practice every UI-axis curated variant states all of
+  // them (the adoption pin below), and the split-statement test holds a
+  // two-variant theme to stating a shared-default role in both variants or
+  // neither, because the default is declared once for both modes and a
+  // dark-only literal strands in light mode.
+  'md-heading',
+  'md-bold',
+  'md-link',
+  'md-inline-code',
+  'md-blockquote',
+  'md-marker',
 ]);

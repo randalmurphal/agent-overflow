@@ -231,6 +231,46 @@ describe('applyTheme', () => {
     }
   });
 
+  it('derives an OMITTED prose role from the base the theme moved, in both modes', () => {
+    // The per-theme opt-in contract in a live cascade: a theme stating only
+    // `md-heading` leaves `md-bold` on its tokens.css derivation, which must
+    // re-derive from the THEME's text-primary — in both modes, because the
+    // single :root `var(--text-primary)` picks up whichever declaration the
+    // mode resolves. This is the one-line assertion that would have caught
+    // the original latte leak's sibling (a derivation that stopped deriving).
+    const probe = document.createElement('div');
+    probe.style.color = 'var(--md-bold)';
+    document.body.appendChild(probe);
+    try {
+      const sparse = theme('sparse-md', {
+        dark: {
+          colors: { 'md-heading': 'rgb(200, 50, 50)', 'text-primary': 'rgb(10, 20, 30)' },
+        },
+        light: {
+          colors: { 'md-heading': 'rgb(120, 10, 10)', 'text-primary': 'rgb(40, 50, 60)' },
+        },
+      });
+      applyThemeClass('dark');
+      applyTheme(
+        input({ themes: [sparse], appearance: { uiTheme: 'sparse-md', codeTheme: 'github' } }),
+      );
+      expect(getComputedStyle(probe).color).toBe('rgb(10, 20, 30)');
+
+      applyThemeClass('light');
+      applyTheme(
+        input({
+          mode: 'light',
+          themes: [sparse],
+          appearance: { uiTheme: 'sparse-md', codeTheme: 'github' },
+        }),
+      );
+      expect(getComputedStyle(probe).color).toBe('rgb(40, 50, 60)');
+    } finally {
+      probe.remove();
+      applyThemeClass('dark');
+    }
+  });
+
   it('reports its rejections on the applied theme, not just to the console', () => {
     const applied = applyTheme(
       input({

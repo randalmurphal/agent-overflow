@@ -53,6 +53,15 @@ export const HIGH_CONTRAST: BuiltinThemeSpec = {
       'fg-hint': '#b4b4c2',
       accent: '#6cb6ff',
       'accent-fg': '#000000',
+      // Markdown prose roles: this file's contrast-tuned markup-* hues.
+      // Bold stays white — weight carries emphasis, and nothing here may
+      // trade contrast for color. Inline-code text is code-axis (see the
+      // `code` section below).
+      'md-heading': '#7fd0ff',
+      'md-bold': '#ffffff',
+      'md-link': '#a0e8ff',
+      'md-blockquote': '#b0b8c8',
+      'md-marker': '#ffb066',
       info: '#7ec4ff',
       success: '#4ee88a',
       error: '#ff7b72',
@@ -120,6 +129,9 @@ export const HIGH_CONTRAST: BuiltinThemeSpec = {
     code: {
       'code-block': '#0a0a0d',
       'code-inline-bg': '#1a1a20',
+      // Inline-code text beside its chip ground (12.3:1 — above the 7:1
+      // high-contrast floor).
+      'md-inline-code': '#7ff0a0',
       'terminal-bg': '#000000',
     },
   },
@@ -139,6 +151,14 @@ export const HIGH_CONTRAST: BuiltinThemeSpec = {
       'fg-hint': '#55555f',
       accent: '#0b4fd6',
       'accent-fg': '#ffffff',
+      // Light counterparts of the dark prose roles — the light markup-*
+      // hues; bold stays black for the same contrast-first reason.
+      // Inline-code text is code-axis (see the `code` section below).
+      'md-heading': '#0a4fa8',
+      'md-bold': '#000000',
+      'md-link': '#0a5a7a',
+      'md-blockquote': '#3f4a5c',
+      'md-marker': '#8a3a00',
       info: '#0b4fd6',
       success: '#0a6b2e',
       error: '#ba1414',
@@ -203,6 +223,10 @@ export const HIGH_CONTRAST: BuiltinThemeSpec = {
     code: {
       'code-block': '#f7f7fa',
       'code-inline-bg': '#e8e8f0',
+      // Inline-code text on the chip: the prose green #0a5f22 measures
+      // 6.45:1 here — under this theme's 7:1 floor — so the chip text is a
+      // darker step of the same green (8.1:1).
+      'md-inline-code': '#084e1c',
       'terminal-bg': '#ffffff',
     },
   },

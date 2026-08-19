@@ -4,7 +4,7 @@
      Source: frontend/src/lib/theme/tokenRegistry.ts + the app stylesheets.
      Regenerate: cd frontend && node scripts/generate-theme-reference.mjs -->
 
-Every color this app paints, and the name a theme file calls it by. 79 tokens: 39 in `colors`, 21 in `syntax`, 16 in `ansi`, 3 in `code`.
+Every color this app paints, and the name a theme file calls it by. 85 tokens: 44 in `colors`, 21 in `syntax`, 16 in `ansi`, 4 in `code`.
 
 ## Where theme files live
 
@@ -120,6 +120,11 @@ whatever base the mode has).
 | `fg-hint` | Timestamps and barely-there hints. Follows the focal text color. **Derived** — override only to stop it tracking. | `color-mix(in oklab, var(--text-primary) 30%, transparent)` | — |
 | `accent` | Primary accent: selection, links, focus rings and filled buttons. | `oklch(0.58 0.19 276)` | `oklch(0.55 0.18 276)` |
 | `accent-fg` | Foreground painted on an accent fill, so a pale accent cannot strand its own label. | `#ffffff` | — |
+| `md-heading` | Markdown headings in chat prose (the code-axis counterpart is syntax-markup-heading). Follows the focal text color. **Derived** — override only to stop it tracking. | `var(--text-primary)` | — |
+| `md-bold` | Markdown bold text in chat prose. No code-axis counterpart exists, so curated themes pick an emphasis hue of their own. Follows the focal text color. **Derived** — override only to stop it tracking. | `var(--text-primary)` | — |
+| `md-link` | Markdown links in chat prose (the code-axis counterpart is syntax-markup-link). Follows the accent. **Derived** — override only to stop it tracking. | `var(--accent)` | — |
+| `md-blockquote` | Markdown block-quote text in chat prose (the code-axis counterpart is syntax-markup-quote). Follows the supporting text color. **Derived** — override only to stop it tracking. | `var(--text-secondary)` | — |
+| `md-marker` | Markdown list bullets and numbers in chat prose (the code-axis counterpart is syntax-markup-list). Follows the muted body-text tier (fg-muted). **Derived** — override only to stop it tracking. | `var(--fg-muted)` | — |
 | `info` | Informational status: input prompts and neutral notices. | `oklch(0.62 0.17 250)` | `oklch(0.55 0.17 250)` |
 | `success` | Success status: completed work, added lines, healthy state. | `oklch(0.7 0.17 150)` | `oklch(0.5 0.15 155)` |
 | `error` | Failure status: errors, removed lines, refusals. | `oklch(0.63 0.2 25)` | `oklch(0.5 0.18 27)` |
@@ -199,4 +204,5 @@ whatever base the mode has).
 | --- | --- | --- | --- |
 | `code-block` | Ground behind a fenced code block. Follows the first elevation tier, so a code theme can move blocks without moving every card with them. **Derived** — override only to stop it tracking. | `var(--surface-1)` | — |
 | `code-inline-bg` | Ground behind inline code spans. | `oklch(0.275 0.014 285.82)` | `oklch(0.9 0.012 255)` |
+| `md-inline-code` | Markdown inline-code text, painted on the code-inline-bg chip (the highlight counterpart is syntax-markup-raw). Lives on the code axis BECAUSE its ground does — a UI-axis text color over a code-axis ground could pair unreadably. Follows the focal text color. **Derived** — override only to stop it tracking. | `var(--text-primary)` | — |
 | `terminal-bg` | Ground of the embedded terminal. | `#000000` | `#fafafb` |

@@ -41,8 +41,13 @@ export const ONE_DARK: BuiltinThemeSpec = {
   name: 'One Dark',
   axes: { ui: true, code: true },
   dark: {
-    // Chrome. Text tiers are Atom One Dark's own mono ramp: mono-1 #abb2bf
-    // (the theme's `sideBar.foreground`) focal, mono-2 #828997 supporting.
+    // Chrome. Focal text is #d7dae0 — the theme's own bright tier
+    // (`list.activeSelectionForeground`, ANSI 37) — rather than the editor
+    // foreground #abb2bf: chat chrome body copy renders at the fg-muted tier
+    // (80% of focal), so a focal #abb2bf put BODY text near 60% and the whole
+    // app read washed-out beside the default theme. With #d7dae0 focal, body
+    // copy lands right at the classic editor grey while labels stay crisp.
+    // #abb2bf (the `sideBar.foreground` mono-1) moves down to supporting.
     // Borders are the published `panel.border` / `focusBorder` value with a
     // brighter step above it for the emphasized tier.
     colors: {
@@ -52,10 +57,20 @@ export const ONE_DARK: BuiltinThemeSpec = {
       'surface-3': '#404754',
       border: '#3e4452',
       'border-strong': '#5c6370',
-      'text-primary': '#abb2bf',
-      'text-secondary': '#828997',
+      'text-primary': '#d7dae0',
+      'text-secondary': '#abb2bf',
       accent: '#61afef',
       'accent-fg': '#1e2227',
+      // Markdown prose roles: the same hues this file's code axis gives the
+      // markup-* families, so chat prose and fenced markdown agree when both
+      // axes are on One Dark. Bold is the number/attribute orange — One Dark
+      // paints `markup.bold` with it. Inline-code text is code-axis (see the
+      // `code` section below).
+      'md-heading': '#e06c75',
+      'md-bold': '#d19a66',
+      'md-link': '#61afef',
+      'md-blockquote': '#7f848e',
+      'md-marker': '#e5c07b',
       info: '#61afef',
       success: '#98c379',
       error: '#e06c75',
@@ -121,6 +136,8 @@ export const ONE_DARK: BuiltinThemeSpec = {
     code: {
       'code-block': '#1e2227',
       'code-inline-bg': '#2c313c',
+      // Inline-code text beside its chip ground (markup-raw green, 6.5:1).
+      'md-inline-code': '#98c379',
       'terminal-bg': '#1e2227',
     },
   },

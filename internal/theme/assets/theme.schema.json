@@ -118,6 +118,36 @@
               "maxLength": 256,
               "description": "Foreground painted on an accent fill, so a pale accent cannot strand its own label."
             },
+            "md-heading": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "description": "Markdown headings in chat prose (the code-axis counterpart is syntax-markup-heading). Follows the focal text color. Derived by default — override only to stop it tracking."
+            },
+            "md-bold": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "description": "Markdown bold text in chat prose. No code-axis counterpart exists, so curated themes pick an emphasis hue of their own. Follows the focal text color. Derived by default — override only to stop it tracking."
+            },
+            "md-link": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "description": "Markdown links in chat prose (the code-axis counterpart is syntax-markup-link). Follows the accent. Derived by default — override only to stop it tracking."
+            },
+            "md-blockquote": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "description": "Markdown block-quote text in chat prose (the code-axis counterpart is syntax-markup-quote). Follows the supporting text color. Derived by default — override only to stop it tracking."
+            },
+            "md-marker": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "description": "Markdown list bullets and numbers in chat prose (the code-axis counterpart is syntax-markup-list). Follows the muted body-text tier (fg-muted). Derived by default — override only to stop it tracking."
+            },
             "info": {
               "type": "string",
               "minLength": 1,
@@ -522,6 +552,12 @@
               "minLength": 1,
               "maxLength": 256,
               "description": "Ground behind inline code spans."
+            },
+            "md-inline-code": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "description": "Markdown inline-code text, painted on the code-inline-bg chip (the highlight counterpart is syntax-markup-raw). Lives on the code axis BECAUSE its ground does — a UI-axis text color over a code-axis ground could pair unreadably. Follows the focal text color. Derived by default — override only to stop it tracking."
             },
             "terminal-bg": {
               "type": "string",

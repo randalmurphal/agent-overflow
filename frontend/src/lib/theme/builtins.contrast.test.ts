@@ -352,6 +352,77 @@ describe('curated palette contrast', () => {
     ).toEqual([]);
   });
 
+  it('keeps the markdown prose roles readable on the ground each one paints on', () => {
+    // The md-* roles color the transcript the reader actually reads, so a
+    // stated value is measured on the ground the app.css rule really puts
+    // under it: surface-0 for the five prose roles (the user bubble's faint
+    // accent tint over the same ground moves these by well under half a
+    // step — checked, worst case ~10%), and the SAME VARIANT's
+    // `code-inline-bg` for md-inline-code, which never renders on the page
+    // ground at all. That pairing is guaranteed by construction — the role
+    // lives in the `code` section beside its ground, so one theme supplies
+    // both. Floors follow what each role IS: headings get 3:1 — NOT a WCAG
+    // large-text claim (chat headings are 15-18px, under the threshold) but
+    // a deliberate palette-fidelity concession for the heaviest, most
+    // isolated text on the surface, the one place a canonical hue like
+    // solarized's orange (3.3:1) is kept over a darkened invention; bold,
+    // links and inline code are body-size but carry a second cue (weight,
+    // underline, the chip ground), so they sit at 4:1 rather than the
+    // plain-body 4.5:1; quotes and markers are de-emphasis roles at the
+    // muted floor. A variant whose palette cannot clear a floor restates
+    // its own text tier instead — see catppuccin latte and solarized
+    // light — which is why every check here is on STATED values only.
+    // High Contrast is held to its text floor on all of them, same promise
+    // as everywhere else.
+    const HEADING_FLOOR = 3;
+    const CUED_TEXT_FLOOR = 4;
+    const MD_FLOORS: Readonly<Record<string, number>> = {
+      'md-heading': HEADING_FLOOR,
+      'md-bold': CUED_TEXT_FLOOR,
+      'md-link': CUED_TEXT_FLOOR,
+      'md-blockquote': SUPPORTING_TEXT_FLOOR,
+      'md-marker': SUPPORTING_TEXT_FLOOR,
+    };
+    // Keyed against the registry so a rename cannot silently retire a floor.
+    for (const key of Object.keys(MD_FLOORS)) {
+      expect(tokenKeysInSection('colors').has(key), `${key} is not a colors token`).toBe(true);
+    }
+    expect(tokenKeysInSection('code').has('md-inline-code')).toBe(true);
+    expect(
+      violations((report) => {
+        for (const { themeId, variantName, variant } of CASES) {
+          const highContrast = themeId === 'high-contrast';
+          const colors = variant.colors;
+          const ground = colors?.['surface-0'];
+          if (colors && ground) {
+            for (const [key, floor] of Object.entries(MD_FLOORS)) {
+              const value = colors[key];
+              if (!value) continue;
+              const held = highContrast ? HIGH_CONTRAST_TEXT_FLOOR : floor;
+              const ratio = contrastRatio(value, ground);
+              if (ratio < held) {
+                report(
+                  `${themeId}.${variantName}.${key}: ${value} on ${ground} is ${round(ratio)}:1, floor ${held}:1`,
+                );
+              }
+            }
+          }
+          const chipText = variant.code?.['md-inline-code'];
+          const chipGround = variant.code?.['code-inline-bg'];
+          if (chipText && chipGround) {
+            const held = highContrast ? HIGH_CONTRAST_TEXT_FLOOR : CUED_TEXT_FLOOR;
+            const ratio = contrastRatio(chipText, chipGround);
+            if (ratio < held) {
+              report(
+                `${themeId}.${variantName}.md-inline-code: ${chipText} on chip ${chipGround} is ${round(ratio)}:1, floor ${held}:1`,
+              );
+            }
+          }
+        }
+      }),
+    ).toEqual([]);
+  });
+
   it('gives a UI theme a visible border scale and a usable accent', () => {
     expect(
       violations((report) => {

@@ -146,4 +146,21 @@ describe('boot stamp CSS validator', () => {
     expect(okCss(':root {\n--a: red;\n}')).toBe(false);
     expect(okCss('html.dark {\n  --a: red;\n}')).toBe(false);
   });
+
+  it('refuses the fetch-capable functions the serializer refuses, inside the grammar', () => {
+    // These fit the line grammar perfectly — the danger is the VALUE. The
+    // boot CSS paints before any app code runs and with no CSP, and app.css
+    // paints `background: var(--surface-0)` (a shorthand, which accepts an
+    // image), so a url() in a hostile localStorage stamp is a network beacon
+    // on the first frame of every launch. The validator mirrors
+    // themeResolve's REFUSED_FUNCTIONS; schemeless URLs keep the charset
+    // happy (no colon needed: `//host/x` fetches).
+    expect(okCss(':root {\n  --surface-0: url(//evil.test/x);\n}')).toBe(false);
+    expect(okCss(':root {\n  --surface-0: URL (//evil.test/x);\n}')).toBe(false);
+    expect(okCss(':root {\n  --surface-0: image-set(//evil.test/x 1x);\n}')).toBe(false);
+    expect(okCss(':root {\n  --surface-0: src(//evil.test/x);\n}')).toBe(false);
+    expect(okCss(':root {\n  --surface-0: var(--other);\n}')).toBe(false);
+    expect(okCss(':root {\n  --surface-0: attr(data-x);\n}')).toBe(false);
+    expect(okCss(':root {\n  --surface-0: env(safe-area-inset-top);\n}')).toBe(false);
+  });
 });

@@ -94,6 +94,7 @@ import {
   TOKEN_REGISTRY,
   WINDOW_GROUND_KEY,
   cssVarName,
+  isSharedDefaultToken,
   type ThemeAxis,
   type ThemeSection,
 } from './tokenRegistry';
@@ -487,16 +488,33 @@ export function serializeThemeCss(declarations: ResolvedDeclarations): string {
  *
  * A two-variant theme reads as "here is my dark palette and here is my light
  * one", and for every token with an `html.light` default that is exactly what
- * it gets. For the handful that have none, a value in the `dark` block alone
- * lands in `:root` with nothing in `html.light` to out-cascade it, so it
- * paints in BOTH modes — the theme's light palette quietly inherits a colour
- * its author only wrote once.
+ * it gets. For a token whose only app declaration lives in `:root`, a value in
+ * the `dark` block alone lands in `:root` with nothing in `html.light` to
+ * out-cascade it, so it paints in BOTH modes — the theme's light palette
+ * quietly inherits a colour its author only wrote once.
  *
- * That is a legitimate thing to want (the media-overlay pair is mode-invariant
- * by design), so it is a warning and not a refusal: state it in both variants
- * to be explicit, or leave it and accept the reach. A one-variant theme is not
- * ambiguous at all — it never claims to speak for the other mode — so it is
- * silent here.
+ * TWO classes of token are stranded that way, and both are warned:
+ *
+ *   - the mode-invariant roles (`token.modeInvariant`) — no light default
+ *     exists at all;
+ *   - every token whose default is declared in `tokens.css` — the derived
+ *     roles (`--fg-muted`, `--card`, the `--md-*` prose roles, …) live in a
+ *     single `:root` block whose `var()` carries the mode for the DEFAULT,
+ *     but a theme's literal replaces the derivation, so a dark-only statement
+ *     strands in light mode exactly the same way. (Found live: a light
+ *     variant omitting `md-bold` while its dark variant stated one rendered
+ *     the dark mustard on the light ground.) `tokenRegistry.test.ts` pins
+ *     tokens.css's light block empty, so `cssFile` is the whole predicate.
+ *
+ * Both shapes are one question — "is the default declared once for both
+ * modes?" — asked through `isSharedDefaultToken`, which the curated
+ * split-statement test in `builtins.test.ts` shares.
+ *
+ * Stating in one variant only can be a legitimate thing to want (the
+ * media-overlay pair is mode-invariant by design), so it is a warning and not
+ * a refusal: state it in both variants to be explicit, or leave it and accept
+ * the reach. A one-variant theme is not ambiguous at all — it never claims to
+ * speak for the other mode — so it is silent here.
  */
 function warnModeInvariantSplits(
   theme: ParsedTheme,
@@ -510,18 +528,21 @@ function warnModeInvariantSplits(
     sections.find((section) => variant[section]?.[key] !== undefined);
 
   for (const token of TOKEN_REGISTRY) {
-    if (!token.modeInvariant) continue;
+    if (!isSharedDefaultToken(token)) continue;
     if (!sections.includes(token.section)) continue;
     const inDark = statedIn(dark, token.key);
     const inLight = statedIn(light, token.key);
     if ((inDark === undefined) === (inLight === undefined)) continue;
     const variant: ThemeVariantName = inDark ? 'dark' : 'light';
     const other: ThemeVariantName = inDark ? 'light' : 'dark';
+    const why = token.modeInvariant
+      ? `has no ${other}-mode default`
+      : `is a derived role declared once for both modes`;
     warnings.push({
       code: 'mode-invariant',
       themeId: theme.id,
       path: `${variant}.${(inDark ?? inLight)!}.${token.key}`,
-      message: `"${token.key}" has no ${other}-mode default, so the value in "${variant}" applies in both modes. State it in "${other}" too, or leave it if that is what you meant.`,
+      message: `"${token.key}" ${why}, so the value in "${variant}" applies in both modes. State it in "${other}" too, or leave it if that is what you meant.`,
     });
   }
 }

@@ -58,6 +58,16 @@ export const CATPPUCCIN: BuiltinThemeSpec = {
       'text-secondary': '#a6adc8',
       accent: '#cba6f7',
       'accent-fg': '#1e1e2e',
+      // Markdown prose roles: this file's markup-* hues (red headings,
+      // blue links, peach markers), so chat prose and fenced markdown agree
+      // when both axes are on Catppuccin. Bold is yellow — the warm
+      // emphasis pastel beside the peach markers. Inline-code text is
+      // code-axis (see the `code` section below).
+      'md-heading': '#f38ba8',
+      'md-bold': '#f9e2af',
+      'md-link': '#89b4fa',
+      'md-blockquote': '#9399b2',
+      'md-marker': '#fab387',
       info: '#89b4fa',
       success: '#a6e3a1',
       error: '#f38ba8',
@@ -126,6 +136,8 @@ export const CATPPUCCIN: BuiltinThemeSpec = {
     code: {
       'code-block': '#1e1e2e',
       'code-inline-bg': '#313244',
+      // Inline-code text beside its chip ground (markup-raw green).
+      'md-inline-code': '#a6e3a1',
       'terminal-bg': '#1e1e2e',
     },
   },
@@ -150,6 +162,22 @@ export const CATPPUCCIN: BuiltinThemeSpec = {
       'text-secondary': '#6c6f85',
       accent: '#8839ef',
       'accent-fg': '#eff1f5',
+      // Latte counterparts of the mocha prose roles. A two-variant theme
+      // must state these in BOTH variants or not at all — the md-* defaults
+      // are declared once for both modes, so an omission here would leave
+      // mocha's dark values painting on the latte ground (the resolver's
+      // mode-invariant warning covers exactly this). Where latte has a
+      // text-grade hue the role gets it (red headings, canonical blue
+      // links, darkened peach markers, muted quotes); yellow measures
+      // 2.3:1 on this ground — far under the 4:1 body floor even darkened —
+      // so bold restates the latte text color and weight carries the
+      // emphasis. Inline-code text is code-axis (see the `code` section
+      // below).
+      'md-heading': '#d20f39',
+      'md-bold': '#4c4f69',
+      'md-link': '#1e66f5',
+      'md-blockquote': '#7c7f93',
+      'md-marker': '#d95a05',
       info: '#1e66f5',
       success: '#3a8f27',
       error: '#d20f39',
@@ -212,6 +240,11 @@ export const CATPPUCCIN: BuiltinThemeSpec = {
     code: {
       'code-block': '#eff1f5',
       'code-inline-bg': '#ccd0da',
+      // Inline-code text on the chip: latte's darkened green measures 2.7:1
+      // on this ground — under the 4:1 chip floor — so the role restates the
+      // latte text color; the chip ground and the mono face carry the
+      // code-ness.
+      'md-inline-code': '#4c4f69',
       'terminal-bg': '#eff1f5',
     },
   },
