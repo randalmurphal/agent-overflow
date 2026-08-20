@@ -46,9 +46,15 @@
     return () => clearInterval(timer);
   });
 
+  // Keyed on the settled FACT, not the view box: the registry replaces the
+  // box wholesale per streaming frame, so an effect reading `view` directly
+  // restarted the linger timer on every trailing frame that arrived after
+  // `succeeded`.
+  const succeededRunId = $derived(view?.state === 'succeeded' ? view.runId : null);
+
   $effect(() => {
-    if (view?.state !== 'succeeded') return;
-    const runId = view.runId;
+    const runId = succeededRunId;
+    if (runId === null) return;
     const timer = setTimeout(() => clearSettledWorktreeSetup(threadId, runId), SUCCESS_LINGER_MS);
     return () => clearTimeout(timer);
   });

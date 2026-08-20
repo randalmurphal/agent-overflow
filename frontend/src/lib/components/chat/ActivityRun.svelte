@@ -180,6 +180,15 @@
   let hiddenLater = $derived(
     run.children.length - run.mountedFrom - run.mountedRows,
   );
+  // The mounted SET as a primitive (same rule as `runId` above):
+  // `mountedChildren` slices a fresh array on every projection pass, and a
+  // fresh array never compares equal, so an effect reading it re-ran per
+  // streamed row for every mounted run in the buffer. The expansion
+  // observer keyed on it tore down and rebuilt its MutationObserver +
+  // ResizeObserver and re-walked the clip subtree (forced layout per
+  // disclosure body) each time. The joined node keys change exactly when
+  // the mounted set does.
+  let mountedWindowKey = $derived(mountedChildren.map(timelineNodeKey).join('|'));
 
   // Run ids are minted per REGISTRY, so this one needs the pane scope more
   // than the item-keyed ids do: every pane's first run is `r1`, so two panes
@@ -245,7 +254,7 @@
   }
 
   // Expanded payloads lift the cap by their own height (see
-  // utils/activityRunClip.ts). Reading `mountedChildren` re-targets the
+  // utils/activityRunClip.ts). Reading `mountedWindowKey` re-targets the
   // observers when the mounted set changes: a row can remount already
   // expanded from its lease, which mutates no attribute for the observer
   // inside to see. Streaming text growth changes neither, so this stays off
@@ -256,7 +265,7 @@
       expandedPx = 0;
       return;
     }
-    mountedChildren;
+    mountedWindowKey;
     return observeActivityRunExpansion(clip, (px) => {
       expandedPx = px;
     });
@@ -619,7 +628,7 @@
     // The request is the dependency, not the node: a jump can target an item
     // the current window already holds, which changes nothing on the node.
     pane.activityRuns.revision;
-    const request = pane.activityRuns.takeFocus(run.runId);
+    const request = pane.activityRuns.takeFocus(runId);
     if (!request) return;
     const row = activityRunRowIndexOfItem(run, request.itemId);
     // The item left the run between the request and this flush (a live-window
@@ -669,6 +678,15 @@
     // same fact.
     const controller = stick;
     if (!controller) return;
+    // Deliberately RAW prop reads (no $derived cutoff, unlike the effects
+    // above): this effect is a per-pass reconciler, not an edge detector. A
+    // registry write can RELEASE the pin without the head moving — a "N
+    // later" grow that reaches the run's last row stores `startItemId: null`
+    // (tail mode) — and the escaped reader's pin must be re-asserted on the
+    // projection pass that follows. A head-id cutoff skipped exactly that
+    // wake and let the next append slide the window (the regression test
+    // "holds the jumped-to window while activity arrives" catches it).
+    // setWindowAnchor's own value guard keeps the per-pass call cheap.
     const head = run.children[run.mountedFrom];
     pane.activityRuns.setWindowAnchor(
       run.runId,

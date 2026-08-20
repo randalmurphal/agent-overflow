@@ -32,11 +32,18 @@
   let standardLive = $state(0);
   let extendedLive = $state(0);
 
+  // $derived cutoffs: the settings object is replaced wholesale on every
+  // save, so mirror effects reading the fields off it directly would
+  // re-run on any unrelated save — snapping a thumb mid-drag back to the
+  // persisted value.
+  let standardSetting = $derived(settings[standardKey]);
+  let extendedSetting = $derived(settings[extendedKey]);
+
   $effect(() => {
-    standardLive = settings[standardKey];
+    standardLive = standardSetting;
   });
   $effect(() => {
-    extendedLive = settings[extendedKey];
+    extendedLive = extendedSetting;
   });
 
   function commit(key: keyof Settings, value: number): void {

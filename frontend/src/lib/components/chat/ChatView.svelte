@@ -293,8 +293,15 @@
   // event and the sidebar should stop advertising it as unseen. Pending
   // approvals, user input, and plan-ready remain until the user resolves
   // those actions.
+  // The thread's row id as a $derived primitive: `pane.thread` is replaced
+  // wholesale on every row sync (activity touch, status patch, the
+  // read-mark effect above), so effects that only need the id must not
+  // subscribe to the object itself.
+  const threadRowId = $derived(pane.thread?.id ?? null);
+  const threadWorktreeSetupState = $derived(pane.thread?.worktreeSetupState);
+
   $effect(() => {
-    const threadId = pane.thread?.id;
+    const threadId = threadRowId;
     if (!threadId) return;
     // Same focus gate as the read-mark effect — background panes
     // should not silently clear error/interrupted attention either.
@@ -339,9 +346,17 @@
   // Worktree setup: the run streams over its own channel, but a pane mounting
   // after (or reconnecting past) the run has to pull the snapshot. The row's
   // durable state is the gate, so a thread that never had a setup — nearly all
-  // of them — costs no RPC.
+  // of them — costs no RPC. Keyed on the two $derived primitives, not
+  // `pane.thread`: `failed` is durable for the thread's life, so an effect
+  // subscribed to the object re-snapshotted on every row sync — and each
+  // re-hydration buffers live `worktree:setup` frames while its RPC is in
+  // flight.
   $effect(() => {
-    hydrateWorktreeSetupForThread(pane.thread);
+    hydrateWorktreeSetupForThread(
+      threadRowId
+        ? { id: threadRowId, worktreeSetupState: threadWorktreeSetupState }
+        : null,
+    );
   });
   const showWorktreeSetup = $derived(
     !!pane.threadId && hasWorktreeSetupSurface(pane.threadId),

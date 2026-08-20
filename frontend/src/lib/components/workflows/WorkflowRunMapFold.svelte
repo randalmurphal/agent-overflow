@@ -46,11 +46,16 @@
   // answer depends on geometry read at a specific moment, not on any signal.
   let animated = $state(false);
 
+  // $derived so the gate stays live when the low-power setting flips but a
+  // settings save that didn't move the flag can't wake every mounted fold
+  // (the settings object is replaced wholesale per save, and each wake costs
+  // a getBoundingClientRect).
+  const reduced = $derived(motionReduced());
+
   $effect.pre(() => {
-    // `open` is the trigger and `motionReduced()` keeps the gate live when the
-    // low-power setting flips; both are read tracked, on purpose.
+    // `open` is the trigger and `reduced` keeps the gate live; both are read
+    // tracked, on purpose.
     void open;
-    const reduced = motionReduced();
     animated = foldAnimates(scrollerOf(), regionEl, reduced);
   });
 </script>

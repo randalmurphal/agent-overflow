@@ -33,6 +33,7 @@ let sharedTicker: ReturnType<typeof setInterval> | null = null;
 let activeTickerSubscriberCount = 0;
 let reactiveTickerSubscriberCount = $state(0);
 let stopQueued = false;
+let acquireCountForTest = 0;
 
 function stopSharedTickerIfIdle(): void {
   stopQueued = false;
@@ -48,6 +49,7 @@ function queueSharedTickerStop(): void {
 }
 
 function acquireRunningElapsedTicker(): () => void {
+  acquireCountForTest += 1;
   activeTickerSubscriberCount += 1;
   reactiveTickerSubscriberCount = activeTickerSubscriberCount;
   sharedNow = Date.now();
@@ -72,13 +74,22 @@ export function createRunningElapsed(
   createdAt: () => number,
   thresholdMs: number = RUNNING_ELAPSED_THRESHOLD_MS,
 ): RunningElapsed {
+  // The predicate as a $derived cutoff: callers pass closures like
+  // `() => item.status === 'running'`, and `item` is re-derived as a fresh
+  // object on every streaming delta. An effect invoking the closure
+  // directly subscribes to that object and re-ran per delta — releasing
+  // and re-acquiring the shared ticker, whose acquire writes the global
+  // `sharedNow` $state and wakes every elapsed label in the app. The
+  // derived only propagates when the boolean actually flips.
+  const ticking = $derived.by(isTicking);
+
   $effect(() => {
-    if (!isTicking()) return;
+    if (!ticking) return;
     return acquireRunningElapsedTicker();
   });
 
   const label = $derived.by<string>(() => {
-    if (!isTicking()) return '';
+    if (!ticking) return '';
     const created = createdAt();
     if (!Number.isFinite(created) || created <= 0) return '';
     const elapsedMs = sharedNow - created;
@@ -113,8 +124,10 @@ export function createSharedNowClock(isTicking: () => boolean): SharedNowClock {
   // against a sharedNow left over from whenever the last subscriber
   // released (acquire refreshes too, but effects run after render).
   sharedNow = Date.now();
+  // Same $derived cutoff as createRunningElapsed, same reason.
+  const ticking = $derived.by(isTicking);
   $effect(() => {
-    if (!isTicking()) return;
+    if (!ticking) return;
     return acquireRunningElapsedTicker();
   });
   return {
@@ -132,6 +145,16 @@ export function __runningElapsedTickerActiveForTest(): boolean {
   return sharedTicker !== null;
 }
 
+/**
+ * Total acquires since the last reset — the seam that proves the `ticking`
+ * $derived cutoff holds: replacing the object a caller's `isTicking` closure
+ * reads (a fresh `item` per streaming delta) must not release and re-acquire
+ * the ticker.
+ */
+export function __runningElapsedAcquireCountForTest(): number {
+  return acquireCountForTest;
+}
+
 export function __resetRunningElapsedTickerForTest(): void {
   if (sharedTicker !== null) {
     clearInterval(sharedTicker);
@@ -140,5 +163,6 @@ export function __resetRunningElapsedTickerForTest(): void {
   activeTickerSubscriberCount = 0;
   reactiveTickerSubscriberCount = 0;
   stopQueued = false;
+  acquireCountForTest = 0;
   sharedNow = Date.now();
 }

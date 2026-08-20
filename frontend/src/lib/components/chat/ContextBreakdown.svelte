@@ -33,12 +33,22 @@
 
   let state = $state<State>({ kind: 'loading' });
 
-  // One read per thread: the effect tracks `threadId`, so a pane that swaps
+  // The prop as a $derived primitive. Svelte props are plain getters, so
+  // reading `threadId` in the effect subscribes through the parent's
+  // expression to `pane.thread` itself — a $state replaced wholesale on
+  // every thread-row sync (activity touch, status patch, read-mark). Each
+  // replacement re-fired this read — a control round-trip to the live CLI
+  // plus a full re-tokenization — while the popover was open, cancelling
+  // the in-flight one. The $derived does not propagate while the id is
+  // unchanged, so the read runs once per thread as intended.
+  const tid = $derived(threadId);
+
+  // One read per thread: the effect tracks the id, so a pane that swaps
   // threads under an open popover cancels the in-flight read and re-reads
   // for the new one rather than showing the old thread's numbers.
   $effect(() => {
     let cancelled = false;
-    GetThreadContextUsage(threadId)
+    GetThreadContextUsage(tid)
       .then((usage) => {
         if (cancelled) return;
         if (!usage.available) {

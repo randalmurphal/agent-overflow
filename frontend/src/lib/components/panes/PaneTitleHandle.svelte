@@ -52,16 +52,14 @@
 
   // When the thread id changes, bail out of any in-flight rename — otherwise a
   // switch-thread-mid-edit would silently rename the wrong thread on Enter.
-  // Gate on an ACTUAL id change: reading pane.thread?.id subscribes this effect
-  // to the pane.thread field, which events.ts reassigns on every SAME-id
-  // activity/token-usage/status patch (replaceThread({ ...pane.thread, … })).
-  // Without the id-change guard those same-id reassignments re-run the effect
-  // and close an open rename mid-edit, dropping the user's draft.
-  let lastThreadId: string | undefined;
+  // The id goes through a $derived cutoff: events.ts reassigns pane.thread on
+  // every SAME-id activity/status patch (replaceThread({ ...pane.thread, … })),
+  // and an effect subscribed to the object would close an open rename mid-edit
+  // on each one, dropping the user's draft. The derived does not propagate
+  // while the id is value-equal, so this runs only on an actual switch.
+  const renameThreadId = $derived(pane.thread?.id);
   $effect(() => {
-    const id = pane.thread?.id;
-    if (id === lastThreadId) return;
-    lastThreadId = id;
+    void renameThreadId;
     editing = false;
     draftTitle = '';
     renamePending = false;

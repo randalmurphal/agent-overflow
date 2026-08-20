@@ -49,9 +49,18 @@
   let statuses = $state<ProviderStatus[]>([]);
   let loadGeneration = 0;
 
+  // The two binary paths as $derived primitives: the settings object is
+  // replaced wholesale on EVERY save (optimistic patch + server merge), so
+  // an effect reading the fields off it re-ran on any toggle in this
+  // section — and each run spawns `claude --version` / `codex --version`
+  // via GetProviderStatuses plus two cache-bypassing catalog refreshes.
+  // The deriveds only propagate when a path actually changes.
+  let claudeBinaryPath = $derived(settings.claudeBinaryPath);
+  let codexBinaryPath = $derived(settings.codexBinaryPath);
+
   $effect(() => {
-    settings.claudeBinaryPath;
-    settings.codexBinaryPath;
+    void claudeBinaryPath;
+    void codexBinaryPath;
 
     const generation = ++loadGeneration;
     void (async () => {

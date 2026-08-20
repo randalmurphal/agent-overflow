@@ -80,11 +80,24 @@
     });
   });
 
+  // Project MEMBERSHIP as a $derived key: the projects array is replaced
+  // wholesale by every activity touch (any thread's turn-completed bumps
+  // its project's lastActive), so an effect reading the array re-hydrated
+  // the whole overlay on a per-turn cadence while it was open. The key
+  // changes only when a project is added or removed — which is when a
+  // re-list is actually wanted. Load order is irrelevant downstream (the
+  // ids land in a Set).
+  let projectIdsKey = $derived(
+    getProjects()
+      .map((entry) => entry.project.id)
+      .join('\u0000'),
+  );
+
   // Hydrate once per open. A reopen re-lists so a run started from the CLI
   // while the overlay was closed is present, but keeps the cached catalogs.
   $effect(() => {
     if (!open) return;
-    const projectIds = getProjects().map((entry) => entry.project.id);
+    const projectIds = projectIdsKey.length === 0 ? [] : projectIdsKey.split('\u0000');
     void loadWorkflowsOverlayData(projectIds).then(() => {
       // Restored stack entries whose run no longer exists drop from the top
       // (§2.1); home is always valid.

@@ -86,9 +86,10 @@
   // Project lookup for the badge. The projects store is a singleton;
   // undefined is fine (we just don't render the badge). projectId is derived as
   // a primitive first so the badge lookup only re-runs when the id actually
-  // changes — pane.replaceThread() mints a fresh thread object on every
-  // token-usage push during streaming, but the id string is value-equal, so the
-  // $derived short-circuits (same guard the subscription deps above use).
+  // changes — pane.replaceThread() mints a fresh thread object on every row
+  // sync (activity touches, status patches, the turn-boundary usage
+  // converge), but the id string is value-equal, so the $derived
+  // short-circuits (same guard the subscription deps above use).
   let projectId = $derived(pane.thread?.projectId ?? null);
   let projectBadge = $derived.by(() => {
     if (!projectId) return null;

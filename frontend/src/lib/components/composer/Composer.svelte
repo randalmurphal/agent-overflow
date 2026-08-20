@@ -257,6 +257,13 @@
     }
   }
 
+  // $derived cutoffs for the cleanup effect below: `pane.thread` is replaced
+  // wholesale on every row sync and `pane.items` on every streaming flush, so
+  // reading either directly would wake the effect many times per second
+  // mid-turn even though its answers never moved.
+  const isDraftThread = $derived(pane.thread?.isDraft === true);
+  const timelineEmpty = $derived(pane.items.length === 0);
+
   // Delete an empty materialized draft after its empty state has been saved.
   // Materialization still happens for first real content, uploads, and sends;
   // this trims the row back to a placeholder when that content is fully erased.
@@ -264,8 +271,8 @@
     const threadId = pane.threadId;
     if (!threadId || draft.threadId !== threadId || draft.hydrating) return;
     if (pane.hasDraftPlaceholder || emptyDraftCleanupHasActiveWork()) return;
-    if (pane.thread?.isDraft !== true) return;
-    if (pane.items.length > 0) return;
+    if (!isDraftThread) return;
+    if (!timelineEmpty) return;
     const draftHasContentOrSource = hasDraftContent || draft.sourceProposedPlan !== null;
     const hasPendingSave = draft.hasPendingSave;
     untrack(() => {
