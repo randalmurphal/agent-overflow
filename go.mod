@@ -254,8 +254,17 @@ tool github.com/wailsapp/wails/v3/cmd/wails3
 //     WindowsOptions.RenderForensicsDir; cmd/agent-overflow-windows sets
 //     it always-on (renderForensicsDir). Depends on 1/4's episode model.
 //
+//  7. Browser-exit recovery actually works (812dfe073 + 810e078de,
+//     2026-08-19 hardware round): w32.GetStockObject called
+//     procGetDeviceCaps (beta.4 bug, fixed on upstream master), so 5's
+//     indicator paint panicked and ANY browser-process exit crashed the
+//     app; and 1's rebuild ran inline inside the ProcessFailed COM
+//     handler (InvokeAsync inlines on the main thread), where controller
+//     creation never completes — now genuinely posted. Unpatched 0/2
+//     (panic), patched 8/8 recovered ~3s on the wails-pr6002-matrix rig.
+//
 // Dropped at the beta.4 rebase — both landed upstream: the mixed-DPI
 // monitor-scale-detection re-enable (#5732 -> PR #5734) and the host
 // rasterization-scale stand-down (PR #5761, which generalised it to
 // visual hosting). Do not re-add them.
-replace github.com/wailsapp/wails/v3 => github.com/randalmurphal/wails/v3 v3.0.0-beta.4.0.20260818184928-ee8cff7be33b
+replace github.com/wailsapp/wails/v3 => github.com/randalmurphal/wails/v3 v3.0.0-beta.4.0.20260820002956-810e078de420
