@@ -351,6 +351,32 @@ describe('dispatchComposerInputKeydown', () => {
     expect(d.submitEnter).not.toHaveBeenCalled();
   });
 
+  it('an open completion menu owns ArrowUp before the post-popover claim', () => {
+    // History recall lives in claimAfterPopovers precisely so the menus
+    // keep their navigation; this pins the ordering.
+    const mentions = stubMentions();
+    (mentions as { mentionTrigger: unknown }).mentionTrigger = { query: '' };
+    (mentions as { mentionResults: unknown[] }).mentionResults = [{ path: 'a' }, { path: 'b' }];
+    const claimAfterPopovers = vi.fn(() => true);
+    const d = deps({ mentions, claimAfterPopovers });
+    dispatchComposerInputKeydown(kdown('ArrowUp'), d);
+    expect(mentions.setMentionActiveIndex).toHaveBeenCalled();
+    expect(claimAfterPopovers).not.toHaveBeenCalled();
+  });
+
+  it('a keystroke the menus decline reaches the post-popover claim, which short-circuits the rest', () => {
+    const claimAfterPopovers = vi.fn(() => true);
+    const d = deps({ claimAfterPopovers });
+    dispatchComposerInputKeydown(kdown('ArrowUp'), d);
+    expect(claimAfterPopovers).toHaveBeenCalledTimes(1);
+    expect(d.placeholderKeydown).not.toHaveBeenCalled();
+
+    // Declined: falls through to the placeholder handler as before.
+    const declined = deps({ claimAfterPopovers: vi.fn(() => false) });
+    dispatchComposerInputKeydown(kdown('ArrowUp'), declined);
+    expect(declined.placeholderKeydown).toHaveBeenCalledTimes(1);
+  });
+
   it('Tab is swallowed with no popover open, and yielded as Shift+Tab', () => {
     const d = deps();
     const tab = kdown('Tab');

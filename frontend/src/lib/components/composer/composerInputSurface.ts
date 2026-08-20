@@ -53,6 +53,13 @@ export interface ComposerInputSurfaceProps {
   onSubmitEnter: () => void;
   /** The host's first look at a keydown. Return true when consumed. */
   onKeydown?: (event: KeyboardEvent) => boolean;
+  /**
+   * The host's second look, after the completion menus have declined the
+   * keystroke — an open menu owns ArrowUp/ArrowDown, so anything arrow-
+   * shaped that must yield to it (history recall) claims here. Return
+   * true when consumed; the claimer owns preventDefault.
+   */
+  onKeydownAfterPopovers?: (event: KeyboardEvent) => boolean;
 
   // ---- mode ----
   /**
@@ -107,6 +114,9 @@ export interface ComposerInputSurfaceHandle {
   /** False until the textarea is in the DOM. */
   inputMounted(): boolean;
   focusInputAtEnd(): void;
+  /** Focus with the caret at offset 0 — history recall's up-walk parks
+   * the caret there so the next ArrowUp passes the caret gate again. */
+  focusInputAtStart(): void;
   /** The textarea's current selection, or null when it is not mounted. */
   inputSelection(): ComposerInputSelection | null;
   /**

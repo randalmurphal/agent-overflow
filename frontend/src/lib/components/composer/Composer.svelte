@@ -31,11 +31,14 @@
   import { runInterruptOrRevert } from '../../stores/revertOnInterrupt.svelte';
   import {
     DeleteEmptyDraftThread,
+    GetThreadUserMessageHistory,
     RespondToApproval,
     RespondToUserInput,
     type ApprovalResponse,
     type UserInputResponse,
   } from '../../stores/bindings';
+  import { createComposerHistoryRecall, HISTORY_RECALL_LIMIT, recallArrowIntent } from './composerHistoryRecall';
+  import { isImeComposingEvent } from '../../utils/imeComposition';
   import {
     getPlanComments,
     getThreadCurrentProposedPlan,
@@ -55,7 +58,7 @@
   } from '../../stores/worktreeIntent.svelte';
   import { prepareThreadWorktreeIntent } from '../../stores/worktreeIntentMaterialize';
   import { providerSupports } from '../../providers/catalog';
-  import { registerQueueItem } from '../../stores/sendQueue.svelte';
+  import { getFlushedForThread, getQueueForThread, registerQueueItem } from '../../stores/sendQueue.svelte';
   import { registerComposerDraft } from '../../stores/composerDraftRegistry.svelte';
   import { getThreadById, prependThread } from '../../stores/threads.svelte';
   import { getActiveTurn, isSendInFlight } from '../../stores/threadStatuses.svelte';
@@ -671,6 +674,61 @@
     return false;
   }
 
+  // ---- ArrowUp history recall ----
+  //
+  // Session semantics, persistence contract, and the merge of backend
+  // history + loaded window + pending sends live in
+  // composerHistoryRecall.ts. What stays here is the caret gate and the
+  // paint: recall only fires from the textarea's very first / very last
+  // position, so the native "ArrowUp jumps to the start of the first
+  // line" (and its inverse) keeps working everywhere else.
+  const historyRecall = createComposerHistoryRecall({
+    threadId: () => pane.threadId,
+    draftContent: () => draft.content,
+    draftHasPendingSave: () => draft.hasPendingSave,
+    draftHasAttachments: () => draft.attachments.length > 0 || draft.terminalChips.length > 0,
+    flushDraft: () => draft.flushPending(),
+    fetchHistory: (threadId) => GetThreadUserMessageHistory(threadId, HISTORY_RECALL_LIMIT),
+    paneItems: () => pane.items,
+    pendingMessages: () => [
+      ...getFlushedForThread(pane.threadId).map((f) => f.message),
+      ...getQueueForThread(pane.threadId).map((q) => q.message),
+    ],
+    paint: paintHistoryPreview,
+    reportError: (msg) => pane.setGeneralError(msg),
+  });
+
+  function paintHistoryPreview(text: string, caret: 'start' | 'end'): void {
+    draft.applyHistoryPreview(text);
+    // The textarea is controlled, so the DOM value lands on Svelte's
+    // flush; caret + autosize read the live DOM and must run after it
+    // (same microtask idiom as the pending-panel restore below). The
+    // caret parks at the walk's leading edge — offset 0 going up, the
+    // end going down — so repeating the same arrow keeps walking.
+    queueMicrotask(() => {
+      if (caret === 'start') surface?.focusInputAtStart();
+      else surface?.focusInputAtEnd();
+      surface?.autosizeInput();
+    });
+  }
+
+  function claimHistoryRecallKey(e: KeyboardEvent): boolean {
+    if (hasUserInputPrompt) return false;
+    // Mid-IME-composition the arrows walk the candidate list.
+    if (isImeComposingEvent(e)) return false;
+    const node = e.target instanceof HTMLTextAreaElement ? e.target : null;
+    if (!node) return false;
+    const intent = recallArrowIntent(e, {
+      start: node.selectionStart,
+      end: node.selectionEnd,
+      valueLength: node.value.length,
+    });
+    if (!intent) return false;
+    const claimed = intent === 'up' ? historyRecall.arrowUp() : historyRecall.arrowDown();
+    if (claimed) e.preventDefault();
+    return claimed;
+  }
+
   function submitFromEnter(): void {
     if (hasUserInputPrompt) {
       userInputSubmitSignal += 1;
@@ -850,6 +908,7 @@
       oninput={handleInputValue}
       onSubmitEnter={submitFromEnter}
       onKeydown={claimKeydown}
+      onKeydownAfterPopovers={claimHistoryRecallKey}
       editsDraft={!hasUserInputPrompt}
       showDraftRows={!hasInteractivePrompt}
       {blockAttachment}

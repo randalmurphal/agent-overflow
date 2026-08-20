@@ -76,6 +76,47 @@ describe('composerDraft store', () => {
     expect(last[1]).toBe('abc');
   });
 
+  it('applyHistoryPreview paints without persisting; the next edit takes over', async () => {
+    const saveMock = setBindingMock('SaveDraft', async () => {});
+    const store = createComposerDraftStore({ debounceMs: 5 });
+    await store.setThread('thread-1');
+
+    // The recall controller flushes before previewing, so the ordinary
+    // paint happens with no save pending.
+    store.setContent('typed');
+    await store.flush();
+    saveMock.mockClear();
+
+    store.applyHistoryPreview('a past message');
+    expect(store.content).toBe('a past message');
+    await new Promise((r) => setTimeout(r, 25));
+    expect(saveMock).not.toHaveBeenCalled();
+
+    // The next real edit persists as usual — the takeover semantics.
+    store.setContent('a past message, edited');
+    await new Promise((r) => setTimeout(r, 25));
+    const last = saveMock.mock.calls[saveMock.mock.calls.length - 1];
+    expect(last[1]).toBe('a past message, edited');
+  });
+
+  it('applyHistoryPreview refuses to paint over a pending save', async () => {
+    const saveMock = setBindingMock('SaveDraft', async () => {});
+    const store = createComposerDraftStore({ debounceMs: 5 });
+    await store.setThread('thread-1');
+
+    // A queued save means the durable row does not yet hold the typed
+    // text. Painting a preview here would let the switch-flush persist
+    // the PREVIEW, so the paint is refused and the queued save lands
+    // with what the user typed.
+    store.setContent('typed');
+    store.applyHistoryPreview('a past message');
+    expect(store.content).toBe('typed');
+
+    await new Promise((r) => setTimeout(r, 25));
+    const last = saveMock.mock.calls[saveMock.mock.calls.length - 1];
+    expect(last[1]).toBe('typed');
+  });
+
   it('setContentAndAttachments queues one save with matching content and attachment ids', async () => {
     const saveMock = setBindingMock('SaveDraft', async () => {});
     const store = createComposerDraftStore({ debounceMs: 0 });

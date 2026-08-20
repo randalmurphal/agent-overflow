@@ -363,6 +363,7 @@ export {
   GetWorkspaceActivity,
   GetThreadItem,
   GetThreadUserMessageTicks,
+  GetThreadUserMessageHistory,
   GetThreadTurnPreview,
 
   // Projects + directory browser

@@ -1463,6 +1463,45 @@ export class UsageQuery {
 }
 
 /**
+ * UserMessageHistoryEntry is one composer history-recall entry: a
+ * reader-authored user message's full text plus its position, so the
+ * frontend can merge the loaded window's live rows (optimistic sends
+ * included) over the store's baseline the way the nav rail merges ticks.
+ */
+export class UserMessageHistoryEntry {
+    "id": string;
+    "turnIndex": number;
+    "itemIndex": number;
+    "summary": string;
+
+    /** Creates a new UserMessageHistoryEntry instance. */
+    constructor($$source: Partial<UserMessageHistoryEntry> = {}) {
+        if (!("id" in $$source)) {
+            this["id"] = "";
+        }
+        if (!("turnIndex" in $$source)) {
+            this["turnIndex"] = 0;
+        }
+        if (!("itemIndex" in $$source)) {
+            this["itemIndex"] = 0;
+        }
+        if (!("summary" in $$source)) {
+            this["summary"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new UserMessageHistoryEntry instance from a string or object.
+     */
+    static createFrom($$source: any = {}): UserMessageHistoryEntry {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new UserMessageHistoryEntry($$parsedSource as Partial<UserMessageHistoryEntry>);
+    }
+}
+
+/**
  * UserMessageTick is one nav-rail tick: a reader-authored user message's
  * id plus its position, small enough that a whole thread's list ships in
  * one read. The position pair is what lets the frontend splice the

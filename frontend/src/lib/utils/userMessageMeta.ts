@@ -51,9 +51,10 @@ export function parseUserMessageMeta(meta: string | undefined): UserMessageMeta 
  * True for a top-level user_text row the reader actually wrote. Wire-only
  * rows — context injections the send path marks in meta — fail it, as do
  * subagent-child user rows. The ONE TypeScript counterpart of the store's
- * SQL predicate (items_read.go FirstThreadUserMessage): the nav rail's
- * tick derivation, the sidebar's activity counting, and any future "which
- * user messages are real" question all route here so they cannot drift.
+ * SQL predicate (items_read.go readerAuthoredUserTextFilter): the nav
+ * rail's tick derivation, the sidebar's activity counting, and any future
+ * "which user messages are real" question all route here so they cannot
+ * drift.
  */
 export function isReaderAuthoredUserText(item: Item): boolean {
   if (item.kind !== 'user_text') return false;

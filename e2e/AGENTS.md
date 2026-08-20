@@ -162,6 +162,12 @@ headless, isolated data dir, mocked providers. Full harness guide:
   passing vacuously. The fixture's second branch comes from `RepoSpec`'s
   `branches`, which are created unchecked-out: git refuses to attach a
   worktree to a branch some checkout already holds.
+- `tests/history-recall.spec.ts` — composer ArrowUp history recall through
+  the real app. What only this level proves is the two-step feel over a
+  real textarea (ArrowUp mid-text is the native jump to offset 0, only the
+  NEXT one walks; the inverse for ArrowDown) and durability: after walking
+  into a preview, `page.reload()` hydrates the TYPED draft, never the
+  browsed entry.
 - `tests/session-import.spec.ts` — session import through the REAL UI: the
   sidebar trigger opening the lazy modal, rows from BOTH providers with the
   provider segment / search / clear-filters narrowing them, a two-session

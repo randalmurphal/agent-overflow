@@ -2944,4 +2944,110 @@ describe('<Composer>', () => {
       ));
     });
   });
+
+  describe('ArrowUp history recall', () => {
+    const historyRows = [
+      { id: 'u2', turnIndex: 1, itemIndex: 0, summary: 'second message' },
+      { id: 'u1', turnIndex: 0, itemIndex: 0, summary: 'first message' },
+    ];
+
+    async function mountRecallComposer(typed = 'typed draft') {
+      const pane = await buildPane();
+      const draft = await buildDraft();
+      if (typed !== '') {
+        draft.setContent(typed);
+        // debounceMs 0: let the queued save land so recall's flush is a no-op.
+        await waitFor(() => expect(draft.hasPendingSave).toBe(false));
+      }
+      const { getByLabelText } = render(Composer, { props: { pane, draft } });
+      const textarea = getByLabelText('Message Input') as HTMLTextAreaElement;
+      textarea.focus();
+      return { pane, draft, textarea };
+    }
+
+    function caretTo(textarea: HTMLTextAreaElement, offset: number) {
+      textarea.setSelectionRange(offset, offset);
+    }
+
+    it('walks history from caret 0 and back down to the typed draft', async () => {
+      const historyMock = setBindingMock('GetThreadUserMessageHistory', async () => historyRows);
+      const { textarea } = await mountRecallComposer();
+
+      caretTo(textarea, 0);
+      await fireEvent.keyDown(textarea, { key: 'ArrowUp' });
+      await waitFor(() => expect(textarea.value).toBe('second message'));
+      expect(historyMock).toHaveBeenCalledWith('thread-1', 50);
+      // An up-paint parks the caret at offset 0, so pressing ArrowUp
+      // again keeps walking with no native two-step in between.
+      await waitFor(() => expect(textarea.selectionStart).toBe(0));
+
+      await fireEvent.keyDown(textarea, { key: 'ArrowUp' });
+      await waitFor(() => expect(textarea.value).toBe('first message'));
+
+      // Turning around needs the caret at the end once (the native jump
+      // covers that in a real browser); from there each down-paint
+      // re-parks it at the end, so walking down is one press per entry.
+      caretTo(textarea, textarea.value.length);
+      await fireEvent.keyDown(textarea, { key: 'ArrowDown' });
+      await waitFor(() => expect(textarea.value).toBe('second message'));
+      await waitFor(() => expect(textarea.selectionStart).toBe('second message'.length));
+
+      await fireEvent.keyDown(textarea, { key: 'ArrowDown' });
+      await waitFor(() => expect(textarea.value).toBe('typed draft'));
+
+      // Past the typed draft there is nothing below — the keystroke no-ops.
+      caretTo(textarea, textarea.value.length);
+      await fireEvent.keyDown(textarea, { key: 'ArrowDown' });
+      await tick();
+      expect(textarea.value).toBe('typed draft');
+    });
+
+    it('does not recall unless the caret sits at the very first position', async () => {
+      const historyMock = setBindingMock('GetThreadUserMessageHistory', async () => historyRows);
+      const { textarea } = await mountRecallComposer();
+
+      caretTo(textarea, 2);
+      await fireEvent.keyDown(textarea, { key: 'ArrowUp' });
+      await tick();
+      expect(historyMock).not.toHaveBeenCalled();
+      expect(textarea.value).toBe('typed draft');
+    });
+
+    it('never persists a browsed entry over the typed draft', async () => {
+      setBindingMock('GetThreadUserMessageHistory', async () => historyRows);
+      const saveMock = setBindingMock('SaveDraft', async () => {});
+      const { textarea } = await mountRecallComposer();
+      saveMock.mockClear();
+
+      caretTo(textarea, 0);
+      await fireEvent.keyDown(textarea, { key: 'ArrowUp' });
+      await waitFor(() => expect(textarea.value).toBe('second message'));
+      // Give any stray debounce every chance to fire — previews queue none.
+      await new Promise((r) => setTimeout(r, 10));
+      expect(saveMock).not.toHaveBeenCalled();
+    });
+
+    it('an edited recall takes over as the draft and persists', async () => {
+      setBindingMock('GetThreadUserMessageHistory', async () => historyRows);
+      const saveMock = setBindingMock('SaveDraft', async () => {});
+      const { draft, textarea } = await mountRecallComposer();
+
+      caretTo(textarea, 0);
+      await fireEvent.keyDown(textarea, { key: 'ArrowUp' });
+      await waitFor(() => expect(textarea.value).toBe('second message'));
+
+      await fireEvent.input(textarea, { target: { value: 'second message, edited' } });
+      await waitFor(() => expect(draft.content).toBe('second message, edited'));
+      await waitFor(() => {
+        const last = saveMock.mock.calls[saveMock.mock.calls.length - 1];
+        expect(last?.[1]).toBe('second message, edited');
+      });
+
+      // The session ended with the edit: nothing below the new draft.
+      caretTo(textarea, textarea.value.length);
+      await fireEvent.keyDown(textarea, { key: 'ArrowDown' });
+      await tick();
+      expect(textarea.value).toBe('second message, edited');
+    });
+  });
 });

@@ -510,6 +510,28 @@ export function createComposerDraftStore(options: DraftStoreOptions = {}) {
       return true;
     },
 
+    /**
+     * Paint a history-recall preview into the composer WITHOUT touching
+     * persistence: no debounce queue, no snapshot registry, no SQLite.
+     * Browsing past messages must never overwrite the durable draft row —
+     * a restart restores what the user TYPED, not what they were looking
+     * at. Self-guarding: while a save is pending (`hasPendingSave`), the
+     * paint is refused outright — the pending snapshot holds real typed
+     * state, and painting over it would let the switch-flush persist the
+     * preview. The recall controller flushes before its first paint, so
+     * the refusal only fires on a failed-save race; it leaves content
+     * unchanged, which the controller's attestation reads as session
+     * over. Previews never queue a save, so after the guard passes there
+     * is no timer to cancel and nothing here touches the debounce. The
+     * next real edit goes through `setContent` as usual, which is what
+     * makes an edited recall take over as the draft.
+     */
+    applyHistoryPreview(text: string): void {
+      if (hasPendingSave) return;
+      markOptimisticRestoredDraftDirty();
+      content = text;
+    },
+
     // ---- content mutations ----
     setContent(next: string): void {
       markOptimisticRestoredDraftDirty();

@@ -29,6 +29,7 @@ export {
     TurnPreview,
     UsageBucket,
     UsageQuery,
+    UserMessageHistoryEntry,
     UserMessageTick,
     WorkItem,
     WorkItemUsage

@@ -186,6 +186,14 @@ export interface ComposerInputKeydownDeps {
    * input surface and so are not the surface's to find.
    */
   claimKey?: (event: KeyboardEvent) => boolean;
+  /**
+   * The host's second look, after both completion menus have declined
+   * the keystroke. History recall lives here rather than in `claimKey`:
+   * an open `@` or `/` menu owns ArrowUp/ArrowDown, and a pre-popover
+   * claim would steal its navigation. Return true when consumed — the
+   * claimer owns preventDefault, same contract as `claimKey`.
+   */
+  claimAfterPopovers?: (event: KeyboardEvent) => boolean;
   /** Atomic image-placeholder deletion. Returns true when consumed. */
   placeholderKeydown: (event: KeyboardEvent) => boolean;
   /** A plain Enter that nothing above claimed, i.e. "submit this". */
@@ -232,6 +240,8 @@ export function dispatchComposerInputKeydown(
   if (handleMentionPopoverKeydown(e, deps.mentions)) return;
   if (handleSlashPopoverKeydown(e, deps.slash)) return;
 
+  if (deps.claimAfterPopovers?.(e)) return;
+
   if (deps.placeholderKeydown(e)) return;
 
   // Enter mid-IME-composition confirms the candidate; the composed text is
@@ -245,20 +255,26 @@ export function dispatchComposerInputKeydown(
   }
 }
 
+/** Focus the textarea with the caret collapsed at the given offset. */
+export function focusTextareaAt(node: HTMLTextAreaElement, offset: number): void {
+  // preventScroll is load-bearing: a bare focus() natively scrolls every
+  // scrollable ancestor — the horizontal pane strip included — to the
+  // textarea. Strip reveal belongs to revealPane/PaneHost alone; DOM focus
+  // must never scroll (same contract as paneComposerFocus.ts).
+  node.focus({ preventScroll: true });
+  node.setSelectionRange(offset, offset);
+}
+
 /**
  * Focus the textarea and place the cursor at the end of its current
  * value. Shared idiom: any time the composer programmatically grabs
  * focus (initial mount after draft hydration, thread switch, etc.) we
  * want the caret to land where the user
  * would resume typing — at the end. Centralising it here keeps the
- * "focus + cursor end" contract in one place.
+ * "focus + cursor end" contract in one place. (History recall is the
+ * one caller that places the caret elsewhere — at offset 0 while
+ * walking UP, so the next ArrowUp passes the caret gate again.)
  */
 export function focusTextareaAtEnd(node: HTMLTextAreaElement): void {
-  const end = node.value.length;
-  // preventScroll is load-bearing: a bare focus() natively scrolls every
-  // scrollable ancestor — the horizontal pane strip included — to the
-  // textarea. Strip reveal belongs to revealPane/PaneHost alone; DOM focus
-  // must never scroll (same contract as paneComposerFocus.ts).
-  node.focus({ preventScroll: true });
-  node.setSelectionRange(end, end);
+  focusTextareaAt(node, node.value.length);
 }

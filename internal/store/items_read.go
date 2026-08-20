@@ -207,6 +207,52 @@ func (s *Store) ListThreadUserMessageTicks(threadID string) ([]UserMessageTick, 
 	return ticks, nil
 }
 
+// UserMessageHistoryEntry is one composer history-recall entry: a
+// reader-authored user message's full text plus its position, so the
+// frontend can merge the loaded window's live rows (optimistic sends
+// included) over the store's baseline the way the nav rail merges ticks.
+type UserMessageHistoryEntry struct {
+	ID        string `json:"id"`
+	TurnIndex int    `json:"turnIndex"`
+	ItemIndex int    `json:"itemIndex"`
+	Summary   string `json:"summary"`
+}
+
+// ListThreadUserMessageHistory returns the thread's newest reader-authored
+// user messages, newest first, capped at limit. Backs the composer's
+// ArrowUp history recall, which needs the FULL text — a recalled message
+// is re-sent verbatim, so unlike the turn-preview read nothing here is
+// rune-capped. Wire-only injections and subagent child prompts are
+// excluded by the shared predicate. Like the ticks read, the ORDER BY
+// sorts rather than walking an index (timeline_items is a UNION ALL
+// view) — one read per recall session, not a hot path.
+func (s *Store) ListThreadUserMessageHistory(threadID string, limit int) ([]UserMessageHistoryEntry, error) {
+	rows, err := s.reader().Query(
+		`SELECT id, turn_index, item_index, summary FROM timeline_items
+		  WHERE thread_id = ?
+		    AND `+readerAuthoredUserTextFilter+`
+		  ORDER BY turn_index DESC, item_index DESC
+		  LIMIT ?`,
+		threadID, limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("store: list user message history on thread %s: %w", threadID, err)
+	}
+	defer rows.Close()
+	entries := []UserMessageHistoryEntry{}
+	for rows.Next() {
+		var e UserMessageHistoryEntry
+		if err := rows.Scan(&e.ID, &e.TurnIndex, &e.ItemIndex, &e.Summary); err != nil {
+			return nil, fmt.Errorf("store: scan user message history row on thread %s: %w", threadID, err)
+		}
+		entries = append(entries, e)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: list user message history on thread %s: %w", threadID, err)
+	}
+	return entries, nil
+}
+
 // TurnPreview is the nav rail's hover card for one turn: the reader's
 // ask and the turn's final top-level assistant reply.
 type TurnPreview struct {

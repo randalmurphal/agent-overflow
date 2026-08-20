@@ -111,6 +111,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "GetThreadLiveState", ID: 70226550},                     // main.App.GetThreadLiveState
 	{Name: "GetThreadRuntimeMode", ID: 2573491630},                 // main.App.GetThreadRuntimeMode
 	{Name: "GetThreadTurnPreview", ID: 1512475224},                 // main.App.GetThreadTurnPreview
+	{Name: "GetThreadUserMessageHistory", ID: 3340938325},          // main.App.GetThreadUserMessageHistory
 	{Name: "GetThreadUserMessageTicks", ID: 556088547},             // main.App.GetThreadUserMessageTicks
 	{Name: "GetThreadWorktreeSetup", ID: 49371251},                 // main.App.GetThreadWorktreeSetup
 	{Name: "GetTurnEditsDiff", ID: 2905371438},                     // main.App.GetTurnEditsDiff

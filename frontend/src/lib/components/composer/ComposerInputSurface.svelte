@@ -11,7 +11,7 @@
   import ComposerMentionPopover from './ComposerMentionPopover.svelte';
   import ComposerSlashPopover from './ComposerSlashPopover.svelte';
   import ComposerTerminalChipRow from './ComposerTerminalChipRow.svelte';
-  import { dispatchComposerInputKeydown, focusTextareaAtEnd } from './composerKeyboard';
+  import { dispatchComposerInputKeydown, focusTextareaAt, focusTextareaAtEnd } from './composerKeyboard';
   import { createComposerImagePlaceholders } from './composerImagePlaceholders';
   import { createComposerMentions } from './composerMentions.svelte';
   import { createComposerSlash } from './composerSlash.svelte';
@@ -31,6 +31,7 @@
     oninput,
     onSubmitEnter,
     onKeydown,
+    onKeydownAfterPopovers,
     editsDraft = true,
     showDraftRows = true,
     blockAttachment,
@@ -126,6 +127,7 @@
       mentions,
       slash,
       claimKey: onKeydown,
+      claimAfterPopovers: onKeydownAfterPopovers,
       placeholderKeydown: (e) => imagePlaceholders.handleAtomicPlaceholderKeydown(e),
       submitEnter: onSubmitEnter,
     });
@@ -195,6 +197,10 @@
 
   export function focusInputAtEnd(): void {
     if (textarea) focusTextareaAtEnd(textarea);
+  }
+
+  export function focusInputAtStart(): void {
+    if (textarea) focusTextareaAt(textarea, 0);
   }
 
   export function inputSelection(): ComposerInputSelection | null {

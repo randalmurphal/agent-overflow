@@ -86,6 +86,79 @@ func TestListThreadUserMessageTicks(t *testing.T) {
 	}
 }
 
+// ListThreadUserMessageHistory backs composer ArrowUp recall: newest
+// first, full uncapped text, the shared reader-authored predicate
+// (wire-only injections and subagent children skipped), other threads
+// invisible, and the limit trimming from the OLD end.
+func TestListThreadUserMessageHistory(t *testing.T) {
+	s := newTestStore(t)
+	now := int64(1)
+	for _, threadID := range []string{"t-h", "t-other"} {
+		if err := s.CreateThread(Thread{
+			ID: threadID, ProjectID: defaultTestProjectID, Title: threadID, Provider: "claude", WorkspacePath: "/tmp",
+			CreatedAt: now, UpdatedAt: now,
+		}); err != nil {
+			t.Fatalf("create thread %s: %v", threadID, err)
+		}
+	}
+
+	long := strings.Repeat("y", 3000)
+	rows := []Item{
+		{ID: "h-first", ThreadID: "t-h", TurnIndex: 0, ItemIndex: 0,
+			Kind: "user_text", Role: "user", Summary: "first ask"},
+		{ID: "h-wire", ThreadID: "t-h", TurnIndex: 0, ItemIndex: 1,
+			Kind: "user_text", Role: "user", Summary: "injected context",
+			Meta: `{"wire_only":true}`},
+		{ID: "h-child", ThreadID: "t-h", TurnIndex: 0, ItemIndex: 2,
+			Kind: "user_text", Role: "user", Summary: "child prompt",
+			ParentID: "h-first"},
+		{ID: "h-second", ThreadID: "t-h", TurnIndex: 1, ItemIndex: 0,
+			Kind: "user_text", Role: "user", Summary: long},
+		{ID: "other", ThreadID: "t-other", TurnIndex: 0, ItemIndex: 0,
+			Kind: "user_text", Role: "user", Summary: "other thread"},
+	}
+	for _, it := range rows {
+		it.CreatedAt, it.UpdatedAt = now, now
+		if err := s.InsertItem(it); err != nil {
+			t.Fatalf("insert %s: %v", it.ID, err)
+		}
+	}
+
+	got, err := s.ListThreadUserMessageHistory("t-h", 50)
+	if err != nil {
+		t.Fatalf("history t-h: %v", err)
+	}
+	want := []UserMessageHistoryEntry{
+		{ID: "h-second", TurnIndex: 1, ItemIndex: 0, Summary: long},
+		{ID: "h-first", TurnIndex: 0, ItemIndex: 0, Summary: "first ask"},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("want %d entries, got %+v", len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("entry %d: want %+v, got %+v", i, want[i], got[i])
+		}
+	}
+
+	// The limit keeps the NEWEST rows — recall walks backwards from now.
+	capped, err := s.ListThreadUserMessageHistory("t-h", 1)
+	if err != nil {
+		t.Fatalf("history t-h limit 1: %v", err)
+	}
+	if len(capped) != 1 || capped[0].ID != "h-second" {
+		t.Fatalf("limit must trim the old end, got %+v", capped)
+	}
+
+	empty, err := s.ListThreadUserMessageHistory("t-missing", 50)
+	if err != nil {
+		t.Fatalf("history t-missing: %v", err)
+	}
+	if len(empty) != 0 {
+		t.Fatalf("unknown thread must answer an empty list, got %+v", empty)
+	}
+}
+
 // ThreadTurnPreview pairs a tick's ask with the turn's FINAL top-level
 // assistant reply; a wire-only injection mid-turn neither ends the turn
 // nor becomes the ask, subagent children are invisible, and a

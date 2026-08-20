@@ -14,7 +14,8 @@ import (
 // (a heavy subagent turn rolls up to one card) doesn't leave the rendered
 // timeline visually truncated. `initialTurnWindow` is kept for the legacy
 // ListRecentThreadItems RPC, while `maxWindowItems` is the shared DoS cap
-// for every history binding.
+// for the item-window bindings (the composer history-recall read carries
+// its own row cap below).
 const (
 	initialTurnWindow = 50
 	maxWindowItems    = 2000
@@ -278,6 +279,35 @@ func (a *App) GetThreadUserMessageTicks(threadID string) ([]store.UserMessageTic
 		return nil, fmt.Errorf("get thread user message ticks: %w", err)
 	}
 	return ticks, nil
+}
+
+// Composer history-recall read bounds: how many past messages one
+// ArrowUp session can walk by default, and the cap a caller-supplied
+// limit is clamped to. The cap bounds the ROW count only — bodies are
+// deliberately uncapped (a recalled message is re-sent verbatim), so a
+// call's size is bounded by how much prose those rows hold.
+const (
+	userMessageHistoryDefaultLimit = 50
+	userMessageHistoryMaxLimit     = 200
+)
+
+// GetThreadUserMessageHistory returns the thread's newest reader-authored
+// user messages with their full text, newest first — the composer's
+// ArrowUp history-recall baseline, which the frontend merges with the
+// loaded window's live rows and the pending send queue. Wire-only
+// context injections and subagent child prompts are excluded.
+func (a *App) GetThreadUserMessageHistory(threadID string, limit int) ([]store.UserMessageHistoryEntry, error) {
+	if limit <= 0 {
+		limit = userMessageHistoryDefaultLimit
+	}
+	if limit > userMessageHistoryMaxLimit {
+		limit = userMessageHistoryMaxLimit
+	}
+	entries, err := a.store.ListThreadUserMessageHistory(threadID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("get thread user message history: %w", err)
+	}
+	return slicesx.OrEmpty(entries), nil
 }
 
 // GetThreadTurnPreview resolves the nav rail's hover card for a turn

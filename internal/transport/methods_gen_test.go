@@ -113,16 +113,19 @@ var wireSafeMethods = map[string]bool{
 	// backing the nav rail (whole-thread tick list; hover preview for
 	// an unloaded turn).
 	"GetThreadUserMessageTicks": true,
-	"GetThreadTurnPreview":      true,
-	"ListItems":                 true,
-	"ListItemsAfterCursor":      true,
-	"ListItemsAfterTurn":        true,
-	"ListItemsBeforeCursor":     true,
-	"ListItemsBeforeTurn":       true,
-	"ListRecentThreadItems":     true,
-	"ListRecentTurns":           true,
-	"ListSubagentDescendants":   true,
-	"ListThreadSliceAround":     true,
+	// Composer ArrowUp history recall: the same pure SQLite history
+	// read, full message text, bounded by the app-side limit clamp.
+	"GetThreadUserMessageHistory": true,
+	"GetThreadTurnPreview":        true,
+	"ListItems":                   true,
+	"ListItemsAfterCursor":        true,
+	"ListItemsAfterTurn":          true,
+	"ListItemsBeforeCursor":       true,
+	"ListItemsBeforeTurn":         true,
+	"ListRecentThreadItems":       true,
+	"ListRecentTurns":             true,
+	"ListSubagentDescendants":     true,
+	"ListThreadSliceAround":       true,
 	// The stamp-gated form of ListThreadSliceAround: same store read,
 	// same window, plus the two counters that let the caller skip the
 	// rows entirely. Store-read-only — no FS, no process, no credentials
