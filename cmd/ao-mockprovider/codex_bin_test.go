@@ -145,6 +145,98 @@ func TestCodexThreadResumeEchoesRequestedID(t *testing.T) {
 	p.closeStdinAndExpectExit(0, testTimeout)
 }
 
+// TestCodexThreadForkCutsAtTheAnchor drives `thread/fork` over the real
+// binary: the cut an anchor produces, the full copy an absent anchor
+// produces (the shape AO's mid-turn tail fork sends), and the refusal
+// codex answers a `lastTurnId` naming the in-progress turn with — the
+// refusal AO's tail normalisation exists to stay clear of.
+//
+// Turn 2's `turn/started` is the synchronisation point rather than turn
+// 1's `turn/completed`: the engine finishes a turn AFTER its terminal
+// frame, so only a frame from the next turn proves turn 1 left flight.
+func TestCodexThreadForkCutsAtTheAnchor(t *testing.T) {
+	sc := &scenario.Scenario{
+		Version:  scenario.CurrentVersion,
+		Name:     "codex-fork",
+		Provider: scenario.ProviderCodex,
+		Turns: []scenario.Turn{
+			{Steps: []scenario.Step{{Emit: &scenario.EmitStep{Lines: []string{
+				`{"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"${THREAD_ID}","turn":{"id":"${TURN_ID}"}}}`,
+				`{"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"${THREAD_ID}","turn":{"id":"${TURN_ID}","status":"completed"}}}`,
+			}}}}},
+			{Steps: []scenario.Step{
+				{Emit: &scenario.EmitStep{Lines: []string{
+					`{"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"${THREAD_ID}","turn":{"id":"${TURN_ID}"}}}`,
+				}}},
+				{WaitSignal: &scenario.WaitSignalStep{Name: "hold"}},
+			}},
+		},
+	}
+	p := startMock(t, []string{"app-server"}, writeScenarioFile(t, sc, ""), t.TempDir())
+
+	p.send(`{"jsonrpc":"2.0","id":1,"method":"thread/start","params":{}}`)
+	p.expectLineContaining(`"id":1`, testTimeout)
+	p.send(`{"jsonrpc":"2.0","id":2,"method":"turn/start","params":{"threadId":"mock-codex-thread","input":[]}}`)
+	p.expectLineContaining(`"id":2`, testTimeout)
+	p.expectLineContaining(`"turn":{"id":"turn-1"}`, testTimeout)
+	p.expectLineContaining(`"method":"turn/completed"`, testTimeout)
+
+	p.send(`{"jsonrpc":"2.0","id":3,"method":"turn/start","params":{"threadId":"mock-codex-thread","input":[]}}`)
+	p.expectLineContaining(`"id":3`, testTimeout)
+	p.expectLineContaining(`"turn":{"id":"turn-2"}`, testTimeout)
+
+	fork := func(t *testing.T, id int, params string) (threadID string, turnIDs []string, rpcErr string) {
+		t.Helper()
+		p.send(fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"thread/fork","params":%s}`, id, params))
+		line := p.expectLineContaining(fmt.Sprintf(`"id":%d`, id), testTimeout)
+		var resp struct {
+			Result struct {
+				Thread struct {
+					ID    string `json:"id"`
+					Turns []struct {
+						ID string `json:"id"`
+					} `json:"turns"`
+				} `json:"thread"`
+			} `json:"result"`
+			Error *struct {
+				Message string `json:"message"`
+			} `json:"error"`
+		}
+		if err := json.Unmarshal([]byte(line), &resp); err != nil {
+			t.Fatalf("decode thread/fork response %q: %v", line, err)
+		}
+		if resp.Error != nil {
+			return "", nil, resp.Error.Message
+		}
+		for _, turn := range resp.Result.Thread.Turns {
+			turnIDs = append(turnIDs, turn.ID)
+		}
+		return resp.Result.Thread.ID, turnIDs, ""
+	}
+
+	anchored, turns, rpcErr := fork(t, 4, `{"threadId":"mock-codex-thread","lastTurnId":"turn-1"}`)
+	if rpcErr != "" || len(turns) != 1 || turns[0] != "turn-1" {
+		t.Fatalf("anchored fork = %q / %v / err %q, want the turn-1 cut", anchored, turns, rpcErr)
+	}
+
+	full, turns, rpcErr := fork(t, 5, `{"threadId":"mock-codex-thread"}`)
+	if rpcErr != "" || len(turns) != 2 || turns[1] != "turn-2" {
+		t.Fatalf("anchorless fork = %q / %v / err %q, want every begun turn", full, turns, rpcErr)
+	}
+	if full == anchored {
+		t.Errorf("two forks answered with the same thread id %q", full)
+	}
+
+	if _, _, rpcErr = fork(t, 6, `{"threadId":"mock-codex-thread","lastTurnId":"turn-2"}`); rpcErr == "" {
+		t.Error("fork anchored at the in-progress turn succeeded; codex refuses it")
+	}
+	if _, _, rpcErr = fork(t, 7, `{"threadId":"mock-codex-thread","lastTurnId":"turn-99"}`); rpcErr == "" {
+		t.Error("fork anchored at an unknown turn succeeded")
+	}
+
+	p.closeStdinAndExpectExit(0, testTimeout)
+}
+
 func TestCodexApprovalRoundTrip(t *testing.T) {
 	sc := &scenario.Scenario{
 		Version:  scenario.CurrentVersion,

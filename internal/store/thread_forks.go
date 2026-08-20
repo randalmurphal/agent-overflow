@@ -62,29 +62,94 @@ func BuildForkedThread(source Thread) Thread {
 // at the chosen turn. nil means clone every turn (existing fork-at-tail
 // behavior).
 //
-// Rows with `is_background=1 AND status='running'` are SKIPPED, and so
-// is everything hanging off one — see `cloneThreadItems`. Those rows
-// point at PTYs / subagents owned by the source session's provider
-// subprocess, and the fork gets its own subprocess that can never reach
-// them. Copying them would strand the forked thread with ghost rows
-// that can never complete. The parent thread is untouched — its
+// Rows that are LIVE-backgrounded (`is_background=1` and status
+// `running` or `streaming`) are SKIPPED, and so is everything hanging
+// off one — see `cloneThreadItemsTx`. Those rows point at PTYs /
+// subagents owned by the source session's provider subprocess, and the
+// fork gets its own subprocess that can never reach them. Copying them
+// would strand the forked thread with ghost rows that can never
+// complete: the fork settle (SettleForkedThreadAsInterrupted) exempts
+// background tool_calls in BOTH live statuses, so a copied one would be
+// permanently unsettleable. The parent thread is untouched — its
 // backgrounded launches keep running under its own session.
 //
-// Completed backgrounded rows and non-background running rows copy
+// Completed backgrounded rows and non-background live rows copy
 // normally; the filter is deliberately narrow.
 //
 // All inserts run in a single transaction so a 200-row clone takes one
 // fsync instead of 200. Per-row InsertItem would commit individually
 // and dominate the fork wall-clock for large threads.
+//
+// Forks call CloneThreadHistoryThroughTurn instead, which folds this
+// and the turns clone into ONE transaction. This entry point stands
+// alone for callers that want only the item half.
 func (s *Store) CloneThreadItems(sourceThreadID, targetThreadID string, throughTurnIndex *int) (map[string]string, error) {
-	return s.cloneThreadItems(sourceThreadID, targetThreadID, func(item Item) bool {
-		return throughTurnIndex == nil || item.TurnIndex <= *throughTurnIndex
+	return s.inCloneTx(func(tx *sql.Tx) (map[string]string, error) {
+		return cloneThreadItemsTx(tx, sourceThreadID, targetThreadID, throughTurnKeep(throughTurnIndex))
 	})
 }
 
-// cloneThreadItems is the shared clone body behind CloneThreadItems and
-// CloneThreadHistoryBeforeItem: keep decides which source rows copy; the
-// background-running skip applies on top of it unconditionally.
+// CloneThreadHistoryThroughTurn is the fork pipeline's clone: the item
+// rows and the turn rows of the same cut, read and written inside ONE
+// transaction.
+//
+// The single transaction is the point. Splitting the two halves lets a
+// turn complete between them, so the fork gets a turn row stamped
+// `completed_at`/`end_turn` over items that were snapshotted mid-stream
+// and then flipped to interrupted — a fork whose own two tables
+// disagree about whether its last turn finished. On the single writer
+// connection a transaction is also the only thing that makes the two
+// reads one snapshot.
+func (s *Store) CloneThreadHistoryThroughTurn(sourceThreadID, targetThreadID string, throughTurnIndex *int) (map[string]string, error) {
+	return s.inCloneTx(func(tx *sql.Tx) (map[string]string, error) {
+		idMap, err := cloneThreadItemsTx(tx, sourceThreadID, targetThreadID, throughTurnKeep(throughTurnIndex))
+		if err != nil {
+			return nil, err
+		}
+		if err := cloneThreadTurnsTx(tx, sourceThreadID, targetThreadID, throughTurnIndex); err != nil {
+			return nil, err
+		}
+		return idMap, nil
+	})
+}
+
+// throughTurnKeep renders the turn-granular cut as a cloneThreadItemsTx
+// keep predicate. nil keeps every turn.
+func throughTurnKeep(throughTurnIndex *int) func(Item) bool {
+	return func(item Item) bool {
+		return throughTurnIndex == nil || item.TurnIndex <= *throughTurnIndex
+	}
+}
+
+// inCloneTx runs one clone body inside a writer transaction, rolling
+// back on any error. Every clone entry point in this file shares it so
+// none of them can accidentally ship a half-cloned fork.
+func (s *Store) inCloneTx(body func(*sql.Tx) (map[string]string, error)) (map[string]string, error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, fmt.Errorf("store: begin clone tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	idMap, err := body(tx)
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("store: commit clone tx: %w", err)
+	}
+	return idMap, nil
+}
+
+// cloneThreadItemsTx is the shared clone body behind CloneThreadItems,
+// CloneThreadHistoryThroughTurn, and CloneThreadHistoryBeforeItem: keep
+// decides which source rows copy; the live-background skip applies on
+// top of it unconditionally.
+//
+// The source read runs on the caller's transaction, not on the read
+// pool. That is what makes the items and the turns of one clone a
+// single snapshot: the writer is a single connection, so nothing else
+// can commit while this transaction is open.
 //
 // A skip is TRANSITIVE. A row is dropped when it is a background-running
 // launch, when keep rejects it, or when the row its `parent_id` /
@@ -103,8 +168,12 @@ func (s *Store) CloneThreadItems(sourceThreadID, targetThreadID string, throughT
 // A reference to an id that is not in the source list at all is
 // pre-existing corruption in the SOURCE and copies verbatim — only ids
 // this pass deliberately dropped propagate.
-func (s *Store) cloneThreadItems(sourceThreadID, targetThreadID string, keep func(Item) bool) (map[string]string, error) {
-	items, err := s.ListItems(sourceThreadID)
+func cloneThreadItemsTx(tx *sql.Tx, sourceThreadID, targetThreadID string, keep func(Item) bool) (map[string]string, error) {
+	items, err := queryHydratedTimelineItems(
+		tx, sourceThreadID,
+		`SELECT id FROM timeline_items WHERE thread_id = ?`,
+		sourceThreadID,
+	)
 	if err != nil {
 		return nil, fmt.Errorf("store: list source items for fork %s: %w", sourceThreadID, err)
 	}
@@ -120,7 +189,7 @@ func (s *Store) cloneThreadItems(sourceThreadID, targetThreadID string, keep fun
 		return ok
 	}
 	for _, item := range items {
-		if (item.IsBackground && item.Status == "running") ||
+		if isLiveBackgroundRow(item) ||
 			!keep(item) ||
 			dropped(item.ParentID) ||
 			dropped(item.CompletionOf) {
@@ -154,12 +223,6 @@ func (s *Store) cloneThreadItems(sourceThreadID, targetThreadID string, keep fun
 				sourceThreadID, clonedItems[i].ID, clonedItems[i].CompletionOf)
 		}
 	}
-
-	tx, err := s.db.Begin()
-	if err != nil {
-		return nil, fmt.Errorf("store: begin clone items tx: %w", err)
-	}
-	defer tx.Rollback()
 
 	if err := cloneThreadPayloadsTx(tx, sourceThreadID, targetThreadID, clonedItems); err != nil {
 		return nil, err
@@ -202,10 +265,17 @@ func (s *Store) cloneThreadItems(sourceThreadID, targetThreadID string, keep fun
 		}
 	}
 
-	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("store: commit clone items tx: %w", err)
-	}
 	return idMap, nil
+}
+
+// isLiveBackgroundRow is the clone's "owned by the source's provider
+// subprocess" test. BOTH live statuses count: a background tool_call is
+// exempt from the fork settle in either one (invariant 24), so a
+// `streaming` background row cloned into a fork would be permanently
+// unsettleable — the same ghost-row failure the `running` skip exists
+// to prevent.
+func isLiveBackgroundRow(item Item) bool {
+	return item.IsBackground && (item.Status == "running" || item.Status == "streaming")
 }
 
 // cloneThreadPayloadsTx gives a fork its own copy of every result and input
@@ -297,12 +367,23 @@ func cloneThreadPayloadsTx(tx *sql.Tx, sourceThreadID, targetThreadID string, it
 // lets a later revert/fork inside the forked thread resolve its
 // `lastTurnId` anchor without reaching back to the (possibly deleted)
 // source thread.
+//
+// Forks call CloneThreadHistoryThroughTurn instead, which runs this and
+// the item clone in one transaction; this entry point stands alone for
+// callers that want only the turn half.
 func (s *Store) CloneThreadTurns(sourceThreadID, targetThreadID string, throughTurnIndex *int) error {
+	_, err := s.inCloneTx(func(tx *sql.Tx) (map[string]string, error) {
+		return nil, cloneThreadTurnsTx(tx, sourceThreadID, targetThreadID, throughTurnIndex)
+	})
+	return err
+}
+
+func cloneThreadTurnsTx(tx *sql.Tx, sourceThreadID, targetThreadID string, throughTurnIndex *int) error {
 	cut := -1
 	if throughTurnIndex != nil {
 		cut = *throughTurnIndex
 	}
-	_, err := s.db.Exec(
+	_, err := tx.Exec(
 		`INSERT INTO turns (turn_id, thread_id, turn_index, started_at, completed_at,
 		    stop_reason, assistant_message_id, token_usage_json, error_message, provider_turn_id)
 		 SELECT ? || ':' || turn_index, ?, turn_index, started_at, completed_at,
@@ -317,12 +398,67 @@ func (s *Store) CloneThreadTurns(sourceThreadID, targetThreadID string, throughT
 	return nil
 }
 
+// SettleForkedThreadAsInterrupted applies the standard interrupted
+// treatment to a freshly-cloned fork: every stranded running/streaming
+// item flips to `errored` with summarise(summary), and every turn row
+// still open (`completed_at IS NULL`) closes with
+// stop_reason='interrupted'. Both halves are exactly what
+// RecoverCrashedTurns writes — they share settleStrandedItemsTx and the
+// same stop_reason string — because the fork is in the same position a
+// crash leftover is: its rows describe work no process will ever finish.
+// A mid-turn fork is a snapshot "as if interrupted right now", so it
+// settles the same way a real interrupt or the boot sweep would.
+//
+// Applied to the FORK ONLY, after the clone. The source thread is never
+// touched — it keeps streaming under its own live session, which is the
+// whole point of forking mid-turn.
+//
+// Backgrounded tool_call rows are exempt from the item flip (invariant
+// 24). On the fork path the exemption is inert by construction — the
+// clone drops every live background row transitively, and a COMPLETED
+// one is already outside `status IN ('streaming','running')` — but the
+// clause is SHARED with the crash sweep, where it is load-bearing, and
+// it stays the backstop for a background row that reaches a fork in
+// some live status the clone did not drop.
+//
+// Safe to run unconditionally: an idle source clones no open rows, so
+// both statements match nothing and the transaction is a no-op. Emits
+// nothing — the fork is returned through the RPC response and rendered
+// fresh, so there is no client holding a window of it to invalidate.
+func (s *Store) SettleForkedThreadAsInterrupted(threadID string, summarise func(string) string, now int64) error {
+	if threadID == "" {
+		return fmt.Errorf("store: settle forked thread: thread id is required")
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("store: begin fork settle tx for %s: %w", threadID, err)
+	}
+	defer tx.Rollback()
+
+	if err := settleStrandedItemsTx(tx, threadID, nil, summarise, now); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(
+		`UPDATE turns
+		    SET completed_at = ?, stop_reason = 'interrupted'
+		  WHERE thread_id = ? AND completed_at IS NULL`,
+		now, threadID,
+	); err != nil {
+		return fmt.Errorf("store: fork settle turns for %s: %w", threadID, err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("store: commit fork settle tx for %s: %w", threadID, err)
+	}
+	return nil
+}
+
 // CloneThreadHistoryBeforeItem copies into targetThreadID everything that
 // precedes the anchor item in PROVIDER order — the fork-side twin of
 // DeleteConversationFromItem's kept-set, for providers whose fork cuts
 // provider history at the message itself (Claude's session-file slice).
-// Codex forks stay on the turn-granular CloneThreadItems/CloneThreadTurns
-// pair, matching thread/fork's turn-boundary cut.
+// Codex forks stay on the turn-granular CloneThreadHistoryThroughTurn,
+// matching thread/fork's turn-boundary cut.
 //
 // Kept items: earlier turns, plus the anchor turn's rows before the anchor.
 // An interrupt-promoted anchor (itemmeta promotion marker) additionally
@@ -338,99 +474,103 @@ func (s *Store) CloneThreadTurns(sourceThreadID, targetThreadID string, throughT
 // cloned row and assistant_message_id clears (token usage kept) — the same
 // trim DeleteConversationFromItem applies.
 //
-// Like the CloneThreadItems + CloneThreadTurns pair, the steps are not one
-// SQL transaction: every caller wraps the clone in the fork saga's rollback
-// stack, which deletes the fork thread (and cascades its rows) on failure.
+// Every step — the anchor read, the item clone, the turn clone, the
+// excluded-content probe and the settle trim — runs in ONE transaction,
+// for the same reason CloneThreadHistoryThroughTurn does: a turn
+// completing between the item read and the turn clone would give the
+// fork a settled turn row over items snapshotted mid-stream. The fork
+// saga's rollback stack still wraps the call and deletes the fork thread
+// on any error.
 func (s *Store) CloneThreadHistoryBeforeItem(sourceThreadID, targetThreadID, anchorItemID string) (map[string]string, error) {
-	var turnIndex, itemIndex int
-	var meta string
-	if err := s.reader().QueryRow(
-		`SELECT turn_index, item_index, meta FROM timeline_items WHERE thread_id = ? AND id = ?`,
-		sourceThreadID, anchorItemID,
-	).Scan(&turnIndex, &itemIndex, &meta); err != nil {
-		return nil, fmt.Errorf("store: clone history anchor lookup %s/%s: %w", sourceThreadID, anchorItemID, err)
-	}
-	promotion, err := itemmeta.DecodePromotionState(meta)
-	if err != nil {
-		// Corrupt anchor meta means the provider-order cut is undecidable;
-		// failing the fork beats silently cloning a set the session slice
-		// would disagree with.
-		return nil, fmt.Errorf("store: clone history anchor %s/%s: %w", sourceThreadID, anchorItemID, err)
-	}
+	return s.inCloneTx(func(tx *sql.Tx) (map[string]string, error) {
+		var turnIndex, itemIndex int
+		var meta string
+		if err := tx.QueryRow(
+			`SELECT turn_index, item_index, meta FROM timeline_items WHERE thread_id = ? AND id = ?`,
+			sourceThreadID, anchorItemID,
+		).Scan(&turnIndex, &itemIndex, &meta); err != nil {
+			return nil, fmt.Errorf("store: clone history anchor lookup %s/%s: %w", sourceThreadID, anchorItemID, err)
+		}
+		promotion, err := itemmeta.DecodePromotionState(meta)
+		if err != nil {
+			// Corrupt anchor meta means the provider-order cut is undecidable;
+			// failing the fork beats silently cloning a set the session slice
+			// would disagree with.
+			return nil, fmt.Errorf("store: clone history anchor %s/%s: %w", sourceThreadID, anchorItemID, err)
+		}
 
-	idMap, err := s.cloneThreadItems(sourceThreadID, targetThreadID, func(item Item) bool {
-		if item.TurnIndex != turnIndex {
-			return item.TurnIndex < turnIndex
+		idMap, err := cloneThreadItemsTx(tx, sourceThreadID, targetThreadID, func(item Item) bool {
+			if item.TurnIndex != turnIndex {
+				return item.TurnIndex < turnIndex
+			}
+			if item.ItemIndex < itemIndex {
+				return true
+			}
+			// Only TOP-LEVEL user successors are later-queued messages that
+			// stay behind; a parented wire-only user row (subagent prompt
+			// nested under its tool_call) is interrupted-tail content like any
+			// assistant row — the session slice retains it.
+			if !promotion.Promoted || (item.Role == "user" && item.ParentID == "") {
+				return false
+			}
+			return !promotion.HasEchoBoundary || item.ItemIndex <= promotion.EchoBoundary
+		})
+		if err != nil {
+			return nil, err
 		}
-		if item.ItemIndex < itemIndex {
-			return true
-		}
-		// Only TOP-LEVEL user successors are later-queued messages that
-		// stay behind; a parented wire-only user row (subagent prompt
-		// nested under its tool_call) is interrupted-tail content like any
-		// assistant row — the session slice retains it.
-		if !promotion.Promoted || (item.Role == "user" && item.ParentID == "") {
-			return false
-		}
-		return !promotion.HasEchoBoundary || item.ItemIndex <= promotion.EchoBoundary
-	})
-	if err != nil {
-		return nil, err
-	}
 
-	if _, err := s.db.Exec(
-		`INSERT INTO turns (turn_id, thread_id, turn_index, started_at, completed_at,
-		    stop_reason, assistant_message_id, token_usage_json, error_message, provider_turn_id)
-		 SELECT ? || ':' || turn_index, ?, turn_index, started_at, completed_at,
-		    stop_reason, assistant_message_id, token_usage_json, error_message, provider_turn_id
-		 FROM turns
-		 WHERE thread_id = ?
-		   AND turn_index IN (SELECT DISTINCT turn_index FROM items WHERE thread_id = ?)`,
-		targetThreadID, targetThreadID, sourceThreadID, targetThreadID,
-	); err != nil {
-		return nil, fmt.Errorf("store: clone turns before item into thread %s: %w", targetThreadID, err)
-	}
+		if _, err := tx.Exec(
+			`INSERT INTO turns (turn_id, thread_id, turn_index, started_at, completed_at,
+			    stop_reason, assistant_message_id, token_usage_json, error_message, provider_turn_id)
+			 SELECT ? || ':' || turn_index, ?, turn_index, started_at, completed_at,
+			    stop_reason, assistant_message_id, token_usage_json, error_message, provider_turn_id
+			 FROM turns
+			 WHERE thread_id = ?
+			   AND turn_index IN (SELECT DISTINCT turn_index FROM items WHERE thread_id = ?)`,
+			targetThreadID, targetThreadID, sourceThreadID, targetThreadID,
+		); err != nil {
+			return nil, fmt.Errorf("store: clone turns before item into thread %s: %w", targetThreadID, err)
+		}
 
-	// Same content probe as DeleteConversationFromItem's, evaluated on the
-	// SOURCE rows the keep predicate excluded: content rows (anything but
-	// top-level user rows) after the anchor (plain) or past the echo
-	// boundary (promoted).
-	excludedContent := false
-	switch {
-	case !promotion.Promoted:
-		if err := s.reader().QueryRow(
-			`SELECT EXISTS(SELECT 1 FROM timeline_items
-			  WHERE thread_id = ? AND turn_index = ? AND (role != 'user' OR parent_id != '') AND item_index > ?)`,
-			sourceThreadID, turnIndex, itemIndex,
-		).Scan(&excludedContent); err != nil {
-			return nil, fmt.Errorf("store: probe excluded turn content for fork %s: %w", targetThreadID, err)
+		// Same content probe as DeleteConversationFromItem's, evaluated on the
+		// SOURCE rows the keep predicate excluded: content rows (anything but
+		// top-level user rows) after the anchor (plain) or past the echo
+		// boundary (promoted).
+		excludedContent := false
+		probeAfter := -1
+		switch {
+		case !promotion.Promoted:
+			probeAfter = itemIndex
+		case promotion.HasEchoBoundary:
+			probeAfter = promotion.EchoBoundary
 		}
-	case promotion.HasEchoBoundary:
-		if err := s.reader().QueryRow(
-			`SELECT EXISTS(SELECT 1 FROM timeline_items
-			  WHERE thread_id = ? AND turn_index = ? AND (role != 'user' OR parent_id != '') AND item_index > ?)`,
-			sourceThreadID, turnIndex, promotion.EchoBoundary,
-		).Scan(&excludedContent); err != nil {
-			return nil, fmt.Errorf("store: probe excluded turn content for fork %s: %w", targetThreadID, err)
-		}
-	}
-	if excludedContent {
-		var lastKept sql.NullInt64
-		if err := s.reader().QueryRow(
-			`SELECT MAX(created_at) FROM items WHERE thread_id = ? AND turn_index = ?`,
-			targetThreadID, turnIndex,
-		).Scan(&lastKept); err != nil {
-			return nil, fmt.Errorf("store: cloned turn survivors lookup for fork %s: %w", targetThreadID, err)
-		}
-		if lastKept.Valid {
-			if _, err := s.db.Exec(
-				`UPDATE turns SET completed_at = MIN(completed_at, ?), assistant_message_id = ''
-				 WHERE thread_id = ? AND turn_index = ? AND completed_at IS NOT NULL`,
-				lastKept.Int64, targetThreadID, turnIndex,
-			); err != nil {
-				return nil, fmt.Errorf("store: trim cloned anchor turn settle for thread %s: %w", targetThreadID, err)
+		if probeAfter >= 0 {
+			if err := tx.QueryRow(
+				`SELECT EXISTS(SELECT 1 FROM timeline_items
+				  WHERE thread_id = ? AND turn_index = ? AND (role != 'user' OR parent_id != '') AND item_index > ?)`,
+				sourceThreadID, turnIndex, probeAfter,
+			).Scan(&excludedContent); err != nil {
+				return nil, fmt.Errorf("store: probe excluded turn content for fork %s: %w", targetThreadID, err)
 			}
 		}
-	}
-	return idMap, nil
+		if excludedContent {
+			var lastKept sql.NullInt64
+			if err := tx.QueryRow(
+				`SELECT MAX(created_at) FROM items WHERE thread_id = ? AND turn_index = ?`,
+				targetThreadID, turnIndex,
+			).Scan(&lastKept); err != nil {
+				return nil, fmt.Errorf("store: cloned turn survivors lookup for fork %s: %w", targetThreadID, err)
+			}
+			if lastKept.Valid {
+				if _, err := tx.Exec(
+					`UPDATE turns SET completed_at = MIN(completed_at, ?), assistant_message_id = ''
+					 WHERE thread_id = ? AND turn_index = ? AND completed_at IS NOT NULL`,
+					lastKept.Int64, targetThreadID, turnIndex,
+				); err != nil {
+					return nil, fmt.Errorf("store: trim cloned anchor turn settle for thread %s: %w", targetThreadID, err)
+				}
+			}
+		}
+		return idMap, nil
+	})
 }

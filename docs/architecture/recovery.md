@@ -39,6 +39,30 @@ pre-committed fork cannot get re-forked on the next restart.
   time; the child thread's first start still goes through plain
   resume on its freshly-assigned id.
 
+Forking a thread whose turn is still in flight produces a fork that
+resumes exactly as an interrupted one does. Claude takes the eager
+JSONL slice at the live session's `CanonicalLeafUUID` (cold-scanning
+the file via `ScanSessionLeaf` when the process is already gone, and
+retrying briefly when the wire announced a leaf the CLI has not
+appended yet), so `SessionRef` points at a complete transcript and
+`PendingForkRef` stays empty — the lazy `--fork-session` cursor is
+never used mid-turn. That cut is captured before the clone runs, so
+the slice and the cloned timeline describe one moment. Codex forks
+with no `lastTurnId` and gets back a
+thread whose copy already carries the turn-aborted marker. When
+nothing has been written yet, both refs stay empty and the fork's
+first start is an ordinary `thread/start` / fresh Claude session —
+but only for genuinely-early shapes (no session ref, no file yet, or
+a transcript that parses and holds no settled leaf). A stat/open/size
+failure reading the transcript fails the fork instead, so a fork can
+never silently arrive with a full timeline and no history behind it.
+The
+fork's cloned rows are settled by
+`store.SettleForkedThreadAsInterrupted`, which shares its item flip
+and its `stop_reason='interrupted'` with `RecoverCrashedTurns` — the
+fork is in the same position a crash leftover is, holding rows no
+process will ever finish.
+
 ## Auto-Resume on SwitchThread
 
 The frontend calls `SwitchThread(threadID)` whenever the user selects

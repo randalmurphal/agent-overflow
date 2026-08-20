@@ -45,7 +45,25 @@ root `CLAUDE.md` principle 3.
   co-located — split by responsibility, not visibility.
 - `threads.go` / `thread_view.go` / `thread_forks.go` — threads table
   plus the `ThreadView` translation layer that hydrates `SessionOptions`
-  for the provider packages. Three writers here are reached by callers
+  for the provider packages. `thread_forks.go` also owns
+  `SettleForkedThreadAsInterrupted`, applied to a FORK after its clone:
+  stranded running/streaming rows flip to errored and open turn rows
+  close with `stop_reason='interrupted'`. It shares
+  `settleStrandedItemsTx` and that stop_reason with
+  `RecoverCrashedTurns` — a mid-turn fork holds rows no process will
+  ever finish, which is the crash sweep's situation exactly — and is a
+  no-op on an idle clone, so the fork saga runs it unconditionally. The
+  shared clause exempting background `tool_call` rows (invariant 24) is
+  inert on the fork path — the clone drops every LIVE background row
+  transitively and a completed one is already outside
+  `status IN ('streaming','running')` — but it is load-bearing for the
+  crash sweep and stays the backstop here. `CloneThreadHistoryThroughTurn`
+  is the fork pipeline's clone and runs the item half and the turn half
+  in ONE transaction (as does `CloneThreadHistoryBeforeItem`): split
+  apart, a turn completing between them gives the fork a settled
+  `end_turn` row over items snapshotted mid-stream and then flipped to
+  interrupted.
+  Three writers here are reached by callers
   that hold no lock and can land after someone else rewrote the row,
   and each carries its own guard rather than erroring — a lost race is
   a normal outcome:

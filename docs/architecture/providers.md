@@ -20,6 +20,28 @@ the provider process owns turn state.
 - Fork creates a new thread row; `parent_thread_id` records the lineage.
   Codex has a native `thread/fork` method; Claude forks by replay from a
   chosen turn.
+- Forking DURING an active turn is supported and is a snapshot "as if
+  interrupted right now": the source is never interrupted and never
+  mutated, and only the fork's clone is settled (running/streaming rows
+  → errored with the " — interrupted" suffix, open turn rows closed with
+  `stop_reason='interrupted'`). Codex issues `thread/fork` with NO
+  `lastTurnId` — with no boundary on a mid-turn source it copies
+  persisted history and appends the same turn-aborted marker a real
+  interrupt writes, onto the fork's copy only, and a `lastTurnId` naming
+  an in-progress turn is rejected outright. Claude slices the transcript
+  eagerly at the live session's canonical leaf; the lazy
+  `--fork-session` path is forbidden mid-turn because it would defer the
+  cut to the fork's first send and snapshot at a nondeterministic later
+  time. That Claude cut is resolved BEFORE the SQLite clone, so the
+  transcript can never be AHEAD of the timeline: a fork whose rows say
+  " — interrupted" over an answer its transcript holds complete would be
+  lying. The reverse skew — a partial block in the timeline that the
+  transcript lacks — is the honest real-interrupt shape, since an
+  interrupted row never promised its content landed. Forking seconds
+  after a send, before either provider has written anything, legitimately
+  yields a fork holding just the prompt that starts a fresh provider
+  thread; a transcript that cannot be READ, by contrast, fails the fork
+  rather than degrading to that answer.
 
 ## Approvals (Bidirectional)
 

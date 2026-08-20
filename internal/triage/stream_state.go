@@ -327,6 +327,16 @@ func (r *Router) settleTurnStreaming(threadID string, turnIndex int, status stri
 	return firstErr
 }
 
+// InterruptedSummary is the exported alias of interruptedSummary, for
+// the one non-live writer that must produce the same row shapes: the
+// mid-turn fork settle (`app_thread_fork.go`), which applies the
+// interrupted treatment to a fork's CLONED rows through
+// `store.SettleForkedThreadAsInterrupted`. That path may not drive the
+// Router — triage holds no state for a thread that has never had a
+// session — so it shares the suffix function instead, the same
+// exported-shape rule `ForceCloseSummary` follows for the importer.
+func InterruptedSummary(summary string) string { return interruptedSummary(summary) }
+
 func interruptedSummary(summary string) string {
 	summary = strings.TrimSpace(summary)
 	if summary == "" {

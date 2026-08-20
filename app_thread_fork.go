@@ -1,19 +1,16 @@
 package main
 
 import (
-	"context"
 	"database/sql"
 	"errors"
 	"fmt"
 	"log"
-	"os"
 	"time"
 
 	"agent-overflow/internal/closer"
 	"agent-overflow/internal/provider"
-	"agent-overflow/internal/provider/claude/sessionfork"
-	"agent-overflow/internal/provider/codex"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/triage"
 	"agent-overflow/internal/usermessage"
 )
 
@@ -48,24 +45,90 @@ func (a *App) ForkThread(sourceThreadID string, atTurnIndex *int) (store.Thread,
 	unlock := a.threadLocks().Lock(sourceThreadID)
 	defer unlock()
 
+	// Forking DURING an active turn is supported: the fork is a snapshot
+	// "as if interrupted right now". The SOURCE is never interrupted and
+	// never mutated — it keeps streaming under its own session — and the
+	// fork's clone settles through the standard interrupted treatment
+	// below (same row shapes as the crash sweep / user interrupt). The
+	// provider halves differ: Codex issues `thread/fork` with NO
+	// lastTurnId (codex then appends the same turn-aborted marker a real
+	// interrupt writes, onto the fork's copy only), and Claude slices the
+	// JSONL eagerly at the live session's canonical leaf rather than
+	// deferring to `--fork-session`, which would snapshot at a
+	// nondeterministic later time.
+	//
+	// The turn read runs BEFORE the thread row read, deliberately. Claude
+	// session init (triage's handleInit) writes UpdateSessionRef — which
+	// also clears pending_fork_session_ref — and only THEN inserts the
+	// turn row, holding no thread action lock. Reading the row first
+	// could therefore observe active=true alongside a SessionRef from
+	// before the session started; worst case a never-started lazy fork
+	// would slice the PARENT's transcript while the live tracker's leaf
+	// lives in the child's. Reading the turn first makes the row
+	// at-least-as-fresh as the observation that a turn is running.
+	activeTurn, active, err := a.store.GetActiveTurn(sourceThreadID)
+	if err != nil {
+		return store.Thread{}, fmt.Errorf("fork thread: active turn check: %w", err)
+	}
 	source, err := a.store.GetThread(sourceThreadID)
 	if err != nil {
 		return store.Thread{}, fmt.Errorf("fork thread: %w", err)
 	}
+	if active && atTurnIndex != nil && *atTurnIndex == activeTurn.TurnIndex {
+		// "Keep through the running turn" IS the mid-turn tail fork: the
+		// in-flight turn has no boundary below it to cut on, and Codex
+		// REJECTS a lastTurnId naming an in-progress turn outright.
+		// Normalizing here is what keeps every anchored path strictly
+		// below the active turn.
+		//
+		// ONLY the exact index normalizes. An anchor ABOVE the active
+		// turn is out of range and must be refused exactly as it is on an
+		// idle thread — mapping it to a tail fork would make the same
+		// bad argument succeed or fail depending on whether a turn
+		// happened to be running. `LastTurnIndex` is MAX over items ∪
+		// turns, so the range check below sees the active turn's index
+		// even when that turn has no items yet, which is what lets the
+		// exact-match case through and stops everything above it.
+		atTurnIndex = nil
+	}
+
 	if err := a.ensureThreadCanFork(source, atTurnIndex); err != nil {
 		return store.Thread{}, err
 	}
 
-	// Reject fork during an active turn on the source. The provider is
-	// still writing to its session log (Claude JSONL) or in-memory state
-	// (Codex), and forking the in-flight bytes produces a fork that
-	// resumes mid-message. The popover already hides on
-	// pane.activeTurn != null; this is defense-in-depth for script
-	// callers and races. Mirrors InterruptAndRevertIfClean's predicate.
-	if _, active, err := a.store.GetActiveTurn(sourceThreadID); err != nil {
-		return store.Thread{}, fmt.Errorf("fork thread: active turn check: %w", err)
-	} else if active {
-		return store.Thread{}, fmt.Errorf("fork thread: cannot fork while a turn is in progress; interrupt or wait first")
+	// Everything the Claude mid-turn slice needs is resolved HERE, before
+	// the clone — the source path, the leaf, and whether the leaf came
+	// from the live tracker. Reading the leaf after the clone instead
+	// would let a turn complete in between and hand the fork a transcript
+	// holding the COMPLETE assistant answer while its cloned timeline
+	// shows that answer truncated and flagged " — interrupted": the flag
+	// would be a lie about content the fork actually has.
+	//
+	// Capturing first inverts the skew — the timeline may hold a partial
+	// block the transcript lacks — and that is the honest real-interrupt
+	// shape. A row flagged interrupted makes no promise that its content
+	// reached the provider's transcript; that is exactly what a genuine
+	// interrupt leaves behind.
+	var midTurnCut *claudeMidTurnCut
+	if active {
+		// Streaming text is durable only every 250ms/4KB, so the clone
+		// would otherwise carry a stale tail. Flush before reading.
+		if a.triage != nil {
+			if err := a.triage.FlushThread(sourceThreadID); err != nil {
+				log.Printf("fork thread: flush source stream buffers for %s: %v", sourceThreadID, err)
+			}
+		}
+		// Mid-turn, an ANCHORED fork can never resolve to a tail fork
+		// (LastTurnIndex is at least the active turn's index and the
+		// anchor is strictly below it), so nil-after-normalization is
+		// exactly the set that takes the live-leaf path.
+		if atTurnIndex == nil && source.Provider == string(provider.Claude) {
+			cut, err := a.captureClaudeMidTurnCut(source)
+			if err != nil {
+				return store.Thread{}, err
+			}
+			midTurnCut = &cut
+		}
 	}
 
 	fork := store.BuildForkedThread(source)
@@ -85,20 +148,17 @@ func (a *App) ForkThread(sourceThreadID string, atTurnIndex *int) (store.Thread,
 	}
 	cleanups.Add(func() error { return a.cleanupForkThread(fork.ID) })
 
-	if _, err := a.store.CloneThreadItems(source.ID, fork.ID, atTurnIndex); err != nil {
+	if _, err := a.store.CloneThreadHistoryThroughTurn(source.ID, fork.ID, atTurnIndex); err != nil {
 		return store.Thread{}, errors.Join(
 			fmt.Errorf("fork thread: clone timeline: %w", err),
 			cleanups.Run(),
 		)
 	}
-	if err := a.store.CloneThreadTurns(source.ID, fork.ID, atTurnIndex); err != nil {
-		return store.Thread{}, errors.Join(
-			fmt.Errorf("fork thread: clone turns: %w", err),
-			cleanups.Run(),
-		)
+	if err := a.settleForkAsInterrupted(fork.ID); err != nil {
+		return store.Thread{}, errors.Join(err, cleanups.Run())
 	}
 
-	sessionRef, pendingForkRef, uuidMap, providerCleanup, err := a.resolveForkResumeState(source, atTurnIndex)
+	sessionRef, pendingForkRef, uuidMap, providerCleanup, err := a.resolveForkResumeState(source, atTurnIndex, midTurnCut)
 	if err != nil {
 		return store.Thread{}, errors.Join(err, cleanups.Run())
 	}
@@ -129,14 +189,31 @@ func (a *App) ForkThreadFromMessage(sourceThreadID string, userItemID string) (s
 	unlock := a.threadLocks().Lock(sourceThreadID)
 	defer unlock()
 
+	// Forking from a message DURING an active turn is supported, same
+	// snapshot semantics as ForkThread. The anchor is a real message, so
+	// the cut is always strictly below the in-flight turn on the Codex
+	// side (`anchor.TurnIndex - 1`) and lands on rows already on disk on
+	// the Claude side — but the anchor turn's cloned PREFIX can still
+	// hold running rows (a message queued mid-turn), so the fork settles
+	// through the same interrupted treatment below.
+	//
+	// Turn read before thread row read, same freshness ordering as
+	// ForkThread (handleInit writes the session ref before inserting the
+	// turn row, under no thread action lock).
+	_, active, err := a.store.GetActiveTurn(sourceThreadID)
+	if err != nil {
+		return store.Thread{}, fmt.Errorf("fork thread from message: active turn check: %w", err)
+	}
 	source, err := a.store.GetThread(sourceThreadID)
 	if err != nil {
 		return store.Thread{}, fmt.Errorf("fork thread from message: %w", err)
 	}
-	if _, active, err := a.store.GetActiveTurn(sourceThreadID); err != nil {
-		return store.Thread{}, fmt.Errorf("fork thread from message: active turn check: %w", err)
-	} else if active {
-		return store.Thread{}, fmt.Errorf("fork thread from message: cannot fork while a turn is in progress; interrupt or wait first")
+	if active && a.triage != nil {
+		// Streaming text is durable only every 250ms/4KB — flush so the
+		// clone carries the freshest tail (mirrors ForkThread).
+		if err := a.triage.FlushThread(sourceThreadID); err != nil {
+			log.Printf("fork thread from message: flush source stream buffers for %s: %v", sourceThreadID, err)
+		}
 	}
 
 	item, found, err := a.store.GetThreadItem(sourceThreadID, userItemID)
@@ -187,15 +264,9 @@ func (a *App) ForkThreadFromMessage(sourceThreadID string, userItemID string) (s
 	if source.Provider == string(provider.Codex) {
 		if item.TurnIndex > 0 {
 			lastKeptTurn := item.TurnIndex - 1
-			if _, err := a.store.CloneThreadItems(source.ID, fork.ID, &lastKeptTurn); err != nil {
+			if _, err := a.store.CloneThreadHistoryThroughTurn(source.ID, fork.ID, &lastKeptTurn); err != nil {
 				return store.Thread{}, errors.Join(
 					fmt.Errorf("fork thread from message: clone timeline: %w", err),
-					cleanups.Run(),
-				)
-			}
-			if err := a.store.CloneThreadTurns(source.ID, fork.ID, &lastKeptTurn); err != nil {
-				return store.Thread{}, errors.Join(
-					fmt.Errorf("fork thread from message: clone turns: %w", err),
 					cleanups.Run(),
 				)
 			}
@@ -207,6 +278,9 @@ func (a *App) ForkThreadFromMessage(sourceThreadID string, userItemID string) (s
 				cleanups.Run(),
 			)
 		}
+	}
+	if err := a.settleForkAsInterrupted(fork.ID); err != nil {
+		return store.Thread{}, errors.Join(err, cleanups.Run())
 	}
 
 	sessionRef, pendingForkRef, uuidMap, providerCleanup, err := a.resolveMessageForkResumeState(source, anchor, item)
@@ -305,7 +379,26 @@ func (a *App) ensureThreadCanFork(source store.Thread, atTurnIndex *int) error {
 // `meta.provider_item_id` points at the fork's NEW UUIDs — keeping the
 // "stored UUID matches active session JSONL" invariant intact for
 // forks-of-forks.
-func (a *App) resolveForkResumeState(source store.Thread, atTurnIndex *int) (
+//
+// midTurnCut is non-nil exactly for a Claude TAIL fork taken while the
+// source has an in-flight turn: it is the transcript cut captured
+// BEFORE the clone, so the slice this function writes and the timeline
+// already cloned describe the same moment. Codex needs no equivalent —
+// `forkCodexThreadAt(source, "")` already sends `thread/fork` with no
+// lastTurnId, which is exactly the mid-turn call: codex copies persisted
+// history and appends the same turn-aborted marker a real interrupt
+// writes, onto the FORK's copy only (ForkSnapshot::Interrupted,
+// rust-v0.147.0). The throwaway-resume fallback works mid-turn for the
+// same reason — the on-disk rollout ends mid-turn and codex synthesizes
+// the marker.
+//
+// A nil midTurnCut on a Claude tail fork means the source is idle, and
+// only then may the lazy `--fork-session` path run. Mid-turn it is
+// FORBIDDEN: it defers the actual cut to the fork's first send, which
+// would snapshot the source's transcript at a nondeterministic later
+// point, quite possibly several turns on. The eager slice at the
+// captured leaf is the only cut that means "now".
+func (a *App) resolveForkResumeState(source store.Thread, atTurnIndex *int, midTurnCut *claudeMidTurnCut) (
 	sessionRef string,
 	pendingForkRef string,
 	uuidMap map[string]string,
@@ -320,10 +413,31 @@ func (a *App) resolveForkResumeState(source store.Thread, atTurnIndex *int) (
 		}
 		return ref, "", nil, nil, nil
 	case string(provider.Claude):
-		return a.forkClaudeThread(source, atTurnIndex)
+		return a.forkClaudeThread(source, atTurnIndex, midTurnCut)
 	default:
 		return "", "", nil, nil, fmt.Errorf("fork thread: unsupported provider %q", source.Provider)
 	}
+}
+
+// settleForkAsInterrupted applies the standard interrupted treatment to
+// the fork's freshly-cloned rows: running/streaming items flip to
+// errored with the " — interrupted" suffix, open turn rows close with
+// stop_reason='interrupted'. Same shapes as the boot crash sweep and a
+// user interrupt, written at the STORE level rather than through triage
+// — the Router has no state for a thread that has never had a session,
+// and driving it for a non-live write is the mistake the session
+// importer already exists to avoid.
+//
+// Unconditional: an idle source clones no open rows and the call is a
+// no-op. No event is emitted; the fork goes back through the RPC
+// response and is rendered fresh.
+func (a *App) settleForkAsInterrupted(forkThreadID string) error {
+	if err := a.store.SettleForkedThreadAsInterrupted(
+		forkThreadID, triage.InterruptedSummary, time.Now().UnixMilli(),
+	); err != nil {
+		return fmt.Errorf("fork thread: settle fork as interrupted: %w", err)
+	}
+	return nil
 }
 
 func (a *App) resolveMessageForkResumeState(source store.Thread, anchor store.MessageAnchor, anchorItem store.Item) (
@@ -353,391 +467,4 @@ func (a *App) resolveMessageForkResumeState(source store.Thread, anchor store.Me
 	default:
 		return "", "", nil, nil, fmt.Errorf("fork thread from message: unsupported provider %q", source.Provider)
 	}
-}
-
-// forkCodexThread creates a new Codex thread that mirrors the source up
-// to atTurnIndex (or the tail when atTurnIndex == nil). One
-// `thread/fork` with the resolved lastTurnId anchor does the whole cut
-// (Codex >= 0.143); the source thread is untouched. Returns "" (no
-// error) when the kept prefix has no provider-backed turns at all —
-// the fork then starts a fresh provider thread on its first send, the
-// same contract as resolveMessageForkResumeState's turn-0 branch.
-func (a *App) forkCodexThread(source store.Thread, atTurnIndex *int) (string, error) {
-	const op = "fork codex thread"
-	lastTurnID := ""
-	if atTurnIndex != nil {
-		anchor, found, err := a.resolveCodexForkAnchor(source.ID, *atTurnIndex)
-		if err != nil {
-			return "", fmt.Errorf("%s: %w", op, err)
-		}
-		if !found {
-			log.Printf("%s: thread %s has no provider-backed turns at or before %d — fork starts a fresh provider thread", op, source.ID, *atTurnIndex)
-			return "", nil
-		}
-		lastTurnID = anchor
-	}
-	// Required only once a provider fork is actually happening: an
-	// anchored fork of a local-only prefix returned fresh above, so
-	// reaching here with no thread reference is an inconsistent row
-	// (tail fork of a never-connected thread, or provider-backed turns
-	// on a thread that lost its ref).
-	if source.SessionRef == "" {
-		return "", fmt.Errorf("%s: source thread %q is missing a Codex thread reference", op, source.ID)
-	}
-	forkedID, err := a.forkCodexThreadAt(source, lastTurnID)
-	if err != nil {
-		return "", fmt.Errorf("%s: %w", op, err)
-	}
-	return forkedID, nil
-}
-
-// resolveCodexForkAnchor picks the `thread/fork` lastTurnId for a cut
-// that keeps turns <= lastKeptTurnIndex: the provider turn id of the
-// LATEST provider-backed turn at or before that index. Walking down
-// (instead of taking lastKeptTurnIndex verbatim) skips AO turn indexes
-// that never became provider turns — failed sends that errored before
-// the wire, and any turn whose row predates provider-id stamping.
-//
-// (found=false, err=nil) means the kept prefix holds no provider-backed
-// turns at all; the caller starts a fresh provider thread. That answer
-// is only trusted when the ITEMS agree — a prefix that carries
-// provider-confirmed user messages but no provider turn ids is a
-// legacy-data hole (a fork cloned before turns rows were copied), and
-// silently discarding its provider history would be worse than failing.
-func (a *App) resolveCodexForkAnchor(threadID string, lastKeptTurnIndex int) (string, bool, error) {
-	for idx := lastKeptTurnIndex; idx >= 0; idx-- {
-		turn, found, err := a.store.GetTurnByThreadIndex(threadID, idx)
-		if err != nil {
-			return "", false, fmt.Errorf("resolve codex fork anchor: %w", err)
-		}
-		if found && turn.ProviderTurnID != "" {
-			return turn.ProviderTurnID, true, nil
-		}
-	}
-	providerBacked, err := a.knownCodexProviderTurnCountBefore(threadID, lastKeptTurnIndex+1)
-	if err != nil {
-		return "", false, fmt.Errorf("resolve codex fork anchor: %w", err)
-	}
-	if providerBacked > 0 {
-		return "", false, fmt.Errorf(
-			"resolve codex fork anchor: thread %s has %d provider-backed turns at or before %d but no recorded provider turn id — likely a fork created before turn rows were cloned; fork the thread again from the desired message",
-			threadID, providerBacked, lastKeptTurnIndex,
-		)
-	}
-	return "", false, nil
-}
-
-// forkCodexThreadAt issues `thread/fork` (cut at lastTurnID, or full
-// history when "") through the thread's live app-server session, or a
-// throwaway resume session when none is active.
-func (a *App) forkCodexThreadAt(source store.Thread, lastTurnID string) (string, error) {
-	if activeSession, ok := a.activeCodexSession(source.ID); ok {
-		return activeSession.ForkAt(context.Background(), lastTurnID)
-	}
-
-	tempSession, err := codex.NewSession(context.Background(), source.ID, codex.Config{
-		Binary:         a.providerBinaryPath(source.Provider),
-		Model:          source.Model,
-		WorkDir:        source.WorkspacePath,
-		ResumeThreadID: source.SessionRef,
-		// Boot-mode overrides only, deliberately no `ao` credential: this is a
-		// throwaway app-server used to issue one fork request, not a session an
-		// agent takes a turn in.
-		Env:         a.sessionProcessEnv(source.Provider, nil, aoSessionCredential{}),
-		EventLogger: a.logger,
-	}, func(provider.ProviderEvent) {})
-	if err != nil {
-		return "", fmt.Errorf("resume source thread: %w", err)
-	}
-	defer tempSession.Close()
-
-	return tempSession.ForkAt(context.Background(), lastTurnID)
-}
-
-// forkClaudeThread wires Claude's resume state for the new fork.
-//
-// Fork at tail (atTurnIndex == nil OR atTurnIndex >= lastTurn): use the
-// existing "lazy fork" mechanism — stamp PendingForkRef =
-// source.SessionRef, and the next session start passes --fork-session
-// to the Claude CLI which forks from the source JSONL's tail at
-// startup.
-//
-// Fork at point: slice the source JSONL ourselves (the official
-// recipe — see internal/provider/claude/sessionfork). The new
-// <newID>.jsonl on disk is a complete, resume-loadable session
-// truncated through the END of atTurnIndex's turn (so the previous
-// turn's full assistant response is preserved — slicing at the user
-// prompt itself would leave Claude waiting to respond on resume,
-// which is the wrong semantics). SessionRef points at the new ID
-// directly — no --fork-session needed since the JSONL is already the
-// fork.
-func (a *App) forkClaudeThread(source store.Thread, atTurnIndex *int) (
-	sessionRef string,
-	pendingForkRef string,
-	uuidMap map[string]string,
-	cleanup func() error,
-	err error,
-) {
-	if source.SessionRef == "" {
-		return "", "", nil, nil, fmt.Errorf("fork thread: source thread %q is missing a Claude session reference", source.ID)
-	}
-
-	if atTurnIndex == nil {
-		// Lazy fork-at-tail — startSession will pass --fork-session.
-		// No inline slice happens here so there's nothing to remap;
-		// the fork's --fork-session start will mint new UUIDs that the
-		// AO row's stored provider_item_id never sees. A subsequent
-		// revert in the fork falls back to the ordinal walk (now
-		// synthetic-flag-safe) via the ErrMessageNotFound branch in
-		// `writeRevertedClaudeSession`.
-		return "", source.SessionRef, nil, nil, nil
-	}
-
-	lastTurn, err := a.store.LastTurnIndex(source.ID)
-	if err != nil {
-		return "", "", nil, nil, fmt.Errorf("fork thread: load last turn index: %w", err)
-	}
-	if *atTurnIndex >= lastTurn {
-		// Forking at or past the last turn is equivalent to fork-at-tail.
-		return "", source.SessionRef, nil, nil, nil
-	}
-
-	srcPath, err := sessionfork.LocateSessionFile(source.SessionRef, source.WorkspacePath)
-	if err != nil {
-		return "", "", nil, nil, fmt.Errorf("fork thread: locate claude session: %w", err)
-	}
-
-	// Prefer UUID-keyed slicing when the user_text at turn
-	// `*atTurnIndex+1` carries a stamped wire UUID — the slice is then
-	// immune to synthetic-entry ordinal drift (e.g. /compact). Falls
-	// back to the ordinal walk for legacy rows that pre-date the
-	// stamp.
-	newID, newPath, uuidMap, err := a.writeForkedClaudeSession(srcPath, source.ID, *atTurnIndex)
-	if err != nil {
-		return "", "", nil, nil, fmt.Errorf("fork thread: write forked session: %w", err)
-	}
-	cleanup = func() error {
-		// Best-effort: a missing file is OK (already cleaned up elsewhere).
-		if err := os.Remove(newPath); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("fork thread cleanup: remove %s: %w", newPath, err)
-		}
-		return nil
-	}
-	return newID, "", uuidMap, cleanup, nil
-}
-
-func (a *App) forkClaudeThreadBeforeMessage(source store.Thread, anchor store.MessageAnchor, anchorItem store.Item) (
-	sessionRef string,
-	pendingForkRef string,
-	uuidMap map[string]string,
-	cleanup func() error,
-	err error,
-) {
-	midTurn, err := claudeMidTurnAnchor(anchorItem)
-	if err != nil {
-		return "", "", nil, nil, fmt.Errorf("fork thread from message: %w", err)
-	}
-	// Only an anchor that OPENS turn 0 keeps nothing — the fork then
-	// starts a fresh provider session. A mid-turn-0 anchor (a message
-	// queued during the very first turn) keeps that turn's prefix and
-	// needs the session slice like any later anchor.
-	if anchor.TurnIndex == 0 && !midTurn {
-		return "", "", nil, nil, nil
-	}
-	sourceSessionRef := source.ResolvedSessionRef()
-	if sourceSessionRef == "" {
-		return "", "", nil, nil, fmt.Errorf("fork thread from message: source thread %q is missing a Claude session reference", source.ID)
-	}
-	srcPath, err := sessionfork.LocateSessionFile(sourceSessionRef, source.WorkspacePath)
-	if err != nil {
-		return "", "", nil, nil, fmt.Errorf("fork thread from message: locate claude session: %w", err)
-	}
-	newID, newPath, uuidMap, err := a.writeMessageForkedClaudeSession(srcPath, anchor, anchorItem, midTurn)
-	if err != nil {
-		return "", "", nil, nil, fmt.Errorf("fork thread from message: write forked session: %w", err)
-	}
-	cleanup = func() error {
-		if err := os.Remove(newPath); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("fork thread from message cleanup: remove %s: %w", newPath, err)
-		}
-		return nil
-	}
-	return newID, "", uuidMap, cleanup, nil
-}
-
-// writeForkedClaudeSession is the turn-keyed-fork call into
-// writeClaudeSessionSlice. The slice anchor is the user_text at
-// turn `atTurnIndex+1` — that is the first turn dropped from the
-// fork, so its parent is the end of the last kept turn.
-func (a *App) writeForkedClaudeSession(srcPath, sourceThreadID string, atTurnIndex int) (string, string, map[string]string, error) {
-	anchorUUID := a.lookupTurnAnchorClaudeUUID(sourceThreadID, atTurnIndex+1)
-	logCtx := fmt.Sprintf("fork thread (turn %d)", atTurnIndex+1)
-	// Turn-keyed forks anchor at a turn boundary by construction, so the
-	// ordinal fallback's whole-turn granularity is exact here (and the
-	// mid-turn parent-uuid retry detection never applies — no parent).
-	return writeClaudeSessionSlice(srcPath, []string{anchorUUID}, nil, atTurnIndex, false, logCtx)
-}
-
-// writeMessageForkedClaudeSession is the message-keyed-fork call
-// into writeClaudeSessionSlice. The slice anchors are the dropped
-// user message's wire UUID candidates — the anchor row's copy,
-// then the item row's durable meta stamp (claudeSliceAnchorUUIDs);
-// midTurnAnchor comes from the anchor item's position, same as the
-// un-send path.
-func (a *App) writeMessageForkedClaudeSession(srcPath string, anchor store.MessageAnchor, anchorItem store.Item, midTurnAnchor bool) (string, string, map[string]string, error) {
-	return writeClaudeSessionSlice(
-		srcPath, claudeSliceAnchorUUIDs(anchor, anchorItem), claudeSliceParentUUIDs(anchor, anchorItem),
-		anchor.TurnIndex-1, midTurnAnchor, "fork thread from message",
-	)
-}
-
-// lookupTurnAnchorClaudeUUID returns the wire UUID stamped on the
-// user_text row at turnIndex, or "" if no such row carries a
-// stable id. Used by the fork-slice helpers to pick the UUID-keyed
-// branch when available.
-func (a *App) lookupTurnAnchorClaudeUUID(threadID string, turnIndex int) string {
-	items, err := a.store.ListItemsForTurn(threadID, turnIndex)
-	if err != nil {
-		log.Printf("fork thread: load turn %d items for anchor lookup: %v", turnIndex, err)
-		return ""
-	}
-	for _, it := range items {
-		if it.Kind != "user_text" || it.Role != "user" {
-			continue
-		}
-		if store.IsWireOnlyUserItem(it) {
-			// Cascade-injected user rows (task_notification echo,
-			// future Codex MCP injection) are mid-turn anchors that
-			// don't bound a turn boundary — skip them so the lookup
-			// picks the AO-authored row that opens the turn.
-			continue
-		}
-		if id := usermessage.ReadProviderItemID(it.Meta); id != "" {
-			return id
-		}
-	}
-	return ""
-}
-
-// remapClaudeProviderIDs rewrites every stored provider id that points
-// into the OLD session file to the NEW session's reminted UUIDs:
-// items' `meta.provider_item_id` and message anchors'
-// `provider_user_message_id` / `provider_parent_uuid`. Every fork-slice
-// remints every uuid (sessionfork.buildLines), so any id left pointing
-// at the source session silently degrades the next un-send/fork to the
-// ordinal-walk fallback. Maintains the invariant "stored UUID always
-// matches the active session's JSONL".
-//
-// Callers: the fork pipeline (cloned items; forks carry no anchor rows
-// — that loop is a no-op there) and rollbackClaudeThreadToMessage
-// (surviving items + anchors of the SAME thread after its
-// SessionRef moves to the slice).
-//
-// uuidMap may have entries beyond just user-message UUIDs (assistant /
-// system entries also remap). Anything unmapped (legacy rows,
-// mismatched ids) is left alone rather than blanking the column —
-// UpdateMessageAnchorProviderIDs's empty-string-preserves contract gives
-// the same semantics on the anchor side.
-//
-// Returns nil when the thread has no Claude-stamped rows (Codex fork,
-// lazy fork-at-tail, fork of a pre-stamp thread).
-//
-// Atomicity note: per-row UPDATEs run outside a single SQL transaction.
-// In the fork pipeline that is safe because every caller wraps the
-// remap in a `closer.Stack` whose rollback deletes the fork thread
-// (and cascades to its items + anchors) on any error — a mid-remap
-// failure never leaves a partially-remapped fork visible to readers.
-// The un-send path does NOT use this method: it commits the same
-// rewrites atomically with its SessionRef move via
-// computeClaudeProviderIDRemap + UpdateThreadAndRemapProviderIDs
-// (round-6, R6-5).
-func (a *App) remapClaudeProviderIDs(threadID string, uuidMap map[string]string) error {
-	itemUpdates, anchorUpdates, err := a.computeClaudeProviderIDRemap(threadID, uuidMap)
-	if err != nil {
-		return err
-	}
-	for _, update := range itemUpdates {
-		if err := a.store.UpdateItemMeta(threadID, update.ItemID, update.Meta); err != nil {
-			return fmt.Errorf("remap claude provider ids: update item %s/%s meta: %w", threadID, update.ItemID, err)
-		}
-	}
-	for _, update := range anchorUpdates {
-		if err := a.store.UpdateMessageAnchorProviderIDs(threadID, update.UserItemID, update.ProviderUserMessageID, update.ProviderParentUUID); err != nil {
-			return fmt.Errorf("remap claude provider ids: update anchor %s/%s: %w", threadID, update.UserItemID, err)
-		}
-	}
-	return nil
-}
-
-// computeClaudeProviderIDRemap reads the thread's user rows and
-// message anchors and returns the rewrites uuidMap implies, without
-// applying anything. Shared by remapClaudeProviderIDs (fork pipeline,
-// per-row writes under the saga rollback) and the un-send path (which
-// hands the result to UpdateThreadAndRemapProviderIDs so the rewrites
-// commit atomically with the SessionRef move — round-6, R6-5).
-func (a *App) computeClaudeProviderIDRemap(threadID string, uuidMap map[string]string) ([]store.ItemMetaUpdate, []store.MessageAnchorProviderIDsUpdate, error) {
-	if len(uuidMap) == 0 {
-		return nil, nil, nil
-	}
-
-	// 1. user_text items. Read all items, filter, remap meta.
-	items, err := a.store.ListItems(threadID)
-	if err != nil {
-		return nil, nil, fmt.Errorf("remap claude provider ids: list items: %w", err)
-	}
-	var itemUpdates []store.ItemMetaUpdate
-	for _, it := range items {
-		if it.Kind != "user_text" || it.Role != "user" {
-			continue
-		}
-		// Both meta ids remap in one write: the item id and the parent
-		// uuid stamped alongside it (round-5, R5-8). Unmapped lookups
-		// yield "", which MergeProviderIDs preserves — same semantics as
-		// UpdateMessageAnchorProviderIDs on the anchor side.
-		newUUID := uuidMap[usermessage.ReadProviderItemID(it.Meta)]
-		newParent := uuidMap[usermessage.ReadProviderParentUUID(it.Meta)]
-		if newUUID == "" && newParent == "" {
-			continue
-		}
-		newMeta, err := usermessage.MergeProviderIDs(it.Meta, newUUID, newParent)
-		if err != nil {
-			return nil, nil, fmt.Errorf("remap claude provider ids: merge item %s/%s meta: %w", threadID, it.ID, err)
-		}
-		if newMeta == it.Meta {
-			continue
-		}
-		itemUpdates = append(itemUpdates, store.ItemMetaUpdate{ItemID: it.ID, Meta: newMeta})
-	}
-
-	// 2. Anchor provider ids — the un-send slice anchor
-	// (provider_user_message_id) and the fork parent cursor
-	// (provider_parent_uuid). uuidMap[""] is "" and unmapped lookups
-	// yield "", both of which the empty-preserves UPDATE keeps.
-	anchors, err := a.store.ListMessageAnchors(threadID)
-	if err != nil {
-		return nil, nil, fmt.Errorf("remap claude provider ids: list message anchors: %w", err)
-	}
-	var anchorUpdates []store.MessageAnchorProviderIDsUpdate
-	for _, anchor := range anchors {
-		newMsgID := uuidMap[anchor.ProviderUserMessageID]
-		newParent := uuidMap[anchor.ProviderParentUUID]
-		if newMsgID == "" && newParent == "" {
-			continue
-		}
-		anchorUpdates = append(anchorUpdates, store.MessageAnchorProviderIDsUpdate{
-			UserItemID:            anchor.UserItemID,
-			ProviderUserMessageID: newMsgID,
-			ProviderParentUUID:    newParent,
-		})
-	}
-
-	return itemUpdates, anchorUpdates, nil
-}
-
-func (a *App) activeCodexSession(threadID string) (*codex.Session, bool) {
-	sess, ok := a.sessionManager().get(threadID)
-	if !ok || sess.codex == nil {
-		return nil, false
-	}
-	return sess.codex, true
 }

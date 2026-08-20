@@ -300,16 +300,44 @@ func (s *Store) RecoverCrashedTurns(summarise func(string) string, now int64) ([
 // items to errored inside the recovery transaction. Backgrounded
 // tool_call launches are exempt — see RecoverCrashedTurns.
 func flipCrashedTurnItemsTx(tx *sql.Tx, c CrashedTurn, summarise func(string) string, now int64) error {
+	return settleStrandedItemsTx(tx, c.ThreadID, &c.TurnIndex, summarise, now)
+}
+
+// settleStrandedItemsTx is the shared "no live process can ever finish
+// these rows" flip, used by BOTH interrupted-settle paths: the boot
+// crash sweep (RecoverCrashedTurns, one turn at a time) and the
+// mid-turn fork settle (SettleForkedThreadAsInterrupted, whole thread
+// — its clone has no session at all, so a running row in ANY turn is
+// stranded). turnIndex == nil means the whole thread.
+//
+// Rows flip to `errored` with `summarise(summary)` and updated_at=now.
+// Backgrounded tool_call launches are EXEMPT (invariant 24), matching
+// triage's flipTurnItemsErrored: their disposition belongs to the
+// background recovery sweep, which writes completion siblings instead.
+// Nothing else on the row is touched — `decision` included. An
+// approval that never resolved is only answerable while triage holds
+// its pending request in memory, so the status flip is the whole
+// settle for those rows too (a fork thread has no triage state at
+// all, and a rebooted app has none either).
+func settleStrandedItemsTx(tx *sql.Tx, threadID string, turnIndex *int, summarise func(string) string, now int64) error {
+	scope := threadID
+	args := []any{threadID}
+	turnFilter := ""
+	if turnIndex != nil {
+		scope = fmt.Sprintf("%s/%d", threadID, *turnIndex)
+		turnFilter = " AND turn_index = ?"
+		args = append(args, *turnIndex)
+	}
+
 	rows, err := tx.Query(
 		`SELECT id, summary FROM items
-		  WHERE thread_id = ?
-		    AND turn_index = ?
+		  WHERE thread_id = ?`+turnFilter+`
 		    AND status IN ('streaming', 'running')
 		    AND NOT (is_background = 1 AND kind = 'tool_call')`,
-		c.ThreadID, c.TurnIndex,
+		args...,
 	)
 	if err != nil {
-		return fmt.Errorf("store: crashed-turn item select %s/%d: %w", c.ThreadID, c.TurnIndex, err)
+		return fmt.Errorf("store: stranded item select %s: %w", scope, err)
 	}
 	type flip struct{ id, summary string }
 	var flips []flip
@@ -317,13 +345,13 @@ func flipCrashedTurnItemsTx(tx *sql.Tx, c CrashedTurn, summarise func(string) st
 		var f flip
 		if err := rows.Scan(&f.id, &f.summary); err != nil {
 			rows.Close()
-			return fmt.Errorf("store: crashed-turn item scan: %w", err)
+			return fmt.Errorf("store: stranded item scan: %w", err)
 		}
 		flips = append(flips, f)
 	}
 	if err := rows.Err(); err != nil {
 		rows.Close()
-		return fmt.Errorf("store: crashed-turn item rows err: %w", err)
+		return fmt.Errorf("store: stranded item rows err: %w", err)
 	}
 	rows.Close()
 
@@ -332,9 +360,9 @@ func flipCrashedTurnItemsTx(tx *sql.Tx, c CrashedTurn, summarise func(string) st
 			`UPDATE items
 			    SET status = 'errored', summary = ?, updated_at = ?
 			  WHERE thread_id = ? AND id = ?`,
-			summarise(f.summary), now, c.ThreadID, f.id,
+			summarise(f.summary), now, threadID, f.id,
 		); err != nil {
-			return fmt.Errorf("store: crashed-turn item flip %s: %w", f.id, err)
+			return fmt.Errorf("store: stranded item flip %s: %w", f.id, err)
 		}
 	}
 	return nil

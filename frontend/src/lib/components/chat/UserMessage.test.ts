@@ -178,14 +178,16 @@ describe('<UserMessage>', () => {
     expect(getByLabelText('Fork from this message')).toBeInTheDocument();
   });
 
-  it('keeps the action toolbar mounted but disabled (grayed out) during an active turn', async () => {
-    // Regression for the "footer snaps after the agent responds" glitch:
-    // the toolbar used to unmount on getActiveTurn≠null and remount on
-    // turn-completed, which toggled the footer geometry as turns started
-    // and ended. The buttons now stay rendered but disabled — grayed out
-    // via the IconButton disabled styling — so the footer is invariant
-    // across turn boundaries and race prevention comes from the native
-    // disabled attribute blocking activation.
+  it('keeps the toolbar mounted during an active turn: edit disabled, fork live', async () => {
+    // Two contracts in one mount. (1) Regression for the "footer snaps
+    // after the agent responds" glitch: the toolbar used to unmount on
+    // getActiveTurn≠null and remount on turn-completed, which toggled the
+    // footer geometry as turns started and ended — both buttons stay
+    // rendered across the whole turn. (2) The turn lock covers EDIT only:
+    // edit-and-resend reverts the source thread's history and cannot race
+    // the active turn, while fork snapshots the running thread
+    // as-if-interrupted without touching it, so the fork button stays
+    // enabled and clickable mid-turn.
     const pane = makeActionsPane();
     const item = makeItem({
       id: 'user:1',
@@ -196,8 +198,10 @@ describe('<UserMessage>', () => {
       summary: 'commit',
     });
     const onForkMessage = vi.fn(async () => {});
+    const onEditMessage = vi.fn(async () => {});
     const actions: UserMessageActions = {
       onForkMessage,
+      onEditMessage,
     };
 
     const { container, getByLabelText } = render(UserMessage, {
@@ -205,22 +209,29 @@ describe('<UserMessage>', () => {
     });
 
     const forkButton = getByLabelText('Fork from this message');
+    const editButton = getByLabelText('Edit message and resend from here');
     expect(forkButton).not.toBeDisabled();
+    expect(editButton).not.toBeDisabled();
 
     projectTurnStarted('thread-1', 'turn-1', 1, 1000);
     await tick();
 
-    expect(container.contains(forkButton)).toBe(true);
-    expect(forkButton).toBeDisabled();
+    expect(container.contains(editButton)).toBe(true);
+    expect(editButton).toBeDisabled();
+    await fireEvent.click(editButton);
+    expect(onEditMessage).not.toHaveBeenCalled();
 
+    expect(container.contains(forkButton)).toBe(true);
+    expect(forkButton).not.toBeDisabled();
     await fireEvent.click(forkButton);
-    expect(onForkMessage).not.toHaveBeenCalled();
+    expect(onForkMessage).toHaveBeenCalledTimes(1);
 
     projectTurnCompleted('thread-1', 'turn-1');
     await tick();
 
     expect(container.contains(forkButton)).toBe(true);
     expect(forkButton).not.toBeDisabled();
+    expect(editButton).not.toBeDisabled();
   });
 
   it('requests message fork through the parent-owned handler', async () => {

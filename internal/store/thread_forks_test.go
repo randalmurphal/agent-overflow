@@ -992,3 +992,126 @@ func TestCloneThreadHistoryBeforeItemTurnOpeningAnchor(t *testing.T) {
 		t.Fatal("expected error for missing anchor")
 	}
 }
+
+// TestSettleForkedThreadAsInterrupted pins the fork settle transform:
+// the standard interrupted treatment applied to a fork's cloned rows.
+// Everything running or streaming flips to errored with the suffix,
+// backgrounded tool_call launches are exempt (invariant 24), and every
+// open turn row closes with stop_reason='interrupted'. Already-settled
+// rows and turns are untouched.
+func TestSettleForkedThreadAsInterrupted(t *testing.T) {
+	s := newTestStore(t)
+	mustCreateThreadForTurn(t, s, "fork-settle")
+
+	seedItemWithStatus(t, s, "fork-settle", "done", 0, 0, "assistant_text", "completed", "reply 0", false)
+	if err := s.InsertTurn(makeInflightTurn("fork-settle:0", "fork-settle", 0, 1)); err != nil {
+		t.Fatalf("insert turn 0: %v", err)
+	}
+	if err := s.UpdateTurnCompleted("fork-settle:0", 100, "end_turn", "m0", "", ""); err != nil {
+		t.Fatalf("settle turn 0: %v", err)
+	}
+
+	seedItemWithStatus(t, s, "fork-settle", "stream", 1, 0, "assistant_text", "streaming", "partial", false)
+	seedItemWithStatus(t, s, "fork-settle", "fg-tool", 1, 1, "tool_call", "running", "Read: /tmp/x", false)
+	seedItemWithStatus(t, s, "fork-settle", "bg-tool", 1, 2, "tool_call", "running", "Bash: sleep 600", true)
+	seedItemWithStatus(t, s, "fork-settle", "bg-done", 1, 3, "tool_call", "completed", "Bash: echo hi", true)
+	seedItemWithStatus(t, s, "fork-settle", "blank", 1, 4, "assistant_text", "streaming", "", false)
+	// A stranded row in an EARLIER turn: the fork has no session at all,
+	// so it is just as unfinishable as one in the last turn.
+	seedItemWithStatus(t, s, "fork-settle", "old-running", 0, 1, "tool_call", "running", "Grep: foo", false)
+	if err := s.InsertTurn(makeInflightTurn("fork-settle:1", "fork-settle", 1, 200)); err != nil {
+		t.Fatalf("insert turn 1: %v", err)
+	}
+
+	if err := s.SettleForkedThreadAsInterrupted("fork-settle", testInterruptedSummary, 999); err != nil {
+		t.Fatalf("SettleForkedThreadAsInterrupted(): %v", err)
+	}
+
+	byID := map[string]Item{}
+	items, err := s.ListItems("fork-settle")
+	if err != nil {
+		t.Fatalf("ListItems: %v", err)
+	}
+	for _, it := range items {
+		byID[it.ID] = it
+	}
+	for _, tc := range []struct {
+		id, status, summary string
+	}{
+		{"stream", "errored", "partial — interrupted"},
+		{"fg-tool", "errored", "Read: /tmp/x — interrupted"},
+		{"old-running", "errored", "Grep: foo — interrupted"},
+		{"blank", "errored", "Interrupted"},
+		{"bg-tool", "running", "Bash: sleep 600"},
+		{"bg-done", "completed", "Bash: echo hi"},
+		{"done", "completed", "reply 0"},
+	} {
+		got := byID[tc.id]
+		if got.Status != tc.status || got.Summary != tc.summary {
+			t.Errorf("item %s = %q/%q, want %q/%q", tc.id, got.Status, got.Summary, tc.status, tc.summary)
+		}
+	}
+	if got := byID["stream"].UpdatedAt; got != 999 {
+		t.Errorf("flipped item updated_at = %d, want 999", got)
+	}
+
+	settled, found, err := s.GetTurnByThreadIndex("fork-settle", 1)
+	if err != nil || !found {
+		t.Fatalf("GetTurnByThreadIndex(1) = %v, %v", found, err)
+	}
+	if settled.CompletedAt == nil || *settled.CompletedAt != 999 || settled.StopReason != "interrupted" {
+		t.Errorf("open turn = %v/%q, want 999/interrupted", settled.CompletedAt, settled.StopReason)
+	}
+	untouched, found, err := s.GetTurnByThreadIndex("fork-settle", 0)
+	if err != nil || !found {
+		t.Fatalf("GetTurnByThreadIndex(0) = %v, %v", found, err)
+	}
+	if untouched.CompletedAt == nil || *untouched.CompletedAt != 100 || untouched.StopReason != "end_turn" {
+		t.Errorf("already-settled turn was rewritten: %v/%q", untouched.CompletedAt, untouched.StopReason)
+	}
+}
+
+// TestSettleForkedThreadAsInterruptedIsANoOpWhenIdle: the fork saga
+// runs the settle unconditionally, so an idle source's clone must come
+// out byte-identical.
+func TestSettleForkedThreadAsInterruptedIsANoOpWhenIdle(t *testing.T) {
+	s := newTestStore(t)
+	mustCreateThreadForTurn(t, s, "fork-settle-idle")
+	seedItemWithStatus(t, s, "fork-settle-idle", "a0", 0, 0, "assistant_text", "completed", "reply", false)
+	if err := s.InsertTurn(makeInflightTurn("fork-settle-idle:0", "fork-settle-idle", 0, 1)); err != nil {
+		t.Fatalf("insert turn: %v", err)
+	}
+	if err := s.UpdateTurnCompleted("fork-settle-idle:0", 100, "end_turn", "m0", "", ""); err != nil {
+		t.Fatalf("settle turn: %v", err)
+	}
+	before, err := s.ListItems("fork-settle-idle")
+	if err != nil {
+		t.Fatalf("ListItems: %v", err)
+	}
+
+	if err := s.SettleForkedThreadAsInterrupted("fork-settle-idle", testInterruptedSummary, 999); err != nil {
+		t.Fatalf("SettleForkedThreadAsInterrupted(): %v", err)
+	}
+
+	after, err := s.ListItems("fork-settle-idle")
+	if err != nil {
+		t.Fatalf("ListItems: %v", err)
+	}
+	if fmt.Sprint(before) != fmt.Sprint(after) {
+		t.Errorf("idle settle mutated rows:\nbefore %v\nafter  %v", before, after)
+	}
+	turn, found, err := s.GetTurnByThreadIndex("fork-settle-idle", 0)
+	if err != nil || !found {
+		t.Fatalf("GetTurnByThreadIndex = %v, %v", found, err)
+	}
+	if turn.StopReason != "end_turn" || *turn.CompletedAt != 100 {
+		t.Errorf("idle settle rewrote the turn row: %q/%v", turn.StopReason, turn.CompletedAt)
+	}
+}
+
+func TestSettleForkedThreadAsInterruptedRequiresThreadID(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.SettleForkedThreadAsInterrupted("", testInterruptedSummary, 1); err == nil {
+		t.Fatal("SettleForkedThreadAsInterrupted(\"\") = nil, want a refusal")
+	}
+}

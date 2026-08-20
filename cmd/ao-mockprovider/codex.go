@@ -31,6 +31,9 @@ type codexAdapter struct {
 	mu          sync.Mutex
 	waiters     map[int64]chan bool // approval rpc id → decision
 	approvalSeq atomic.Int64
+	// forkSeq numbers `thread/fork` answers so two forks of the same
+	// mock thread never claim the same id.
+	forkSeq atomic.Int64
 }
 
 func newCodexAdapter(e *engine, w *lineWriter, opts *scenario.CodexOptions) *codexAdapter {
@@ -134,6 +137,8 @@ func (a *codexAdapter) handleRequest(id json.RawMessage, method string, params j
 			Input: codexInputText(params), SessionRef: vars["THREAD_ID"],
 		})
 		a.respond(id, method, vars)
+	case "thread/fork":
+		a.forkThread(id, params)
 	case "turn/interrupt":
 		// The real app-server replies when TurnAborted arrives, immediately
 		// before publishing turn/completed{status:interrupted}. Preserve that
@@ -146,6 +151,49 @@ func (a *codexAdapter) handleRequest(id json.RawMessage, method string, params j
 		}
 		a.respond(id, method, a.e.currentVars())
 	}
+}
+
+// forkThread answers `thread/fork`: a NEW thread id plus the turn tail
+// that survived the cut, which is the shape `parseThreadForkResponse`
+// decodes and `ForkAt` validates its anchor against. `lastTurnId` is
+// inclusive; ABSENT copies every turn, which is exactly what a mid-turn
+// tail fork sends. A `lastTurnId` naming the IN-PROGRESS turn is refused
+// with a JSON-RPC error, matching codex 0.147.0 — that refusal is the
+// whole reason AO normalises such an anchor to a tail fork, so the mock
+// has to be able to produce it rather than quietly full-forking.
+//
+// A scenario that declares its own `thread/fork` response template still
+// wins; this synthesis only fills the default.
+func (a *codexAdapter) forkThread(id json.RawMessage, params json.RawMessage) {
+	if _, scripted := a.responses["thread/fork"]; scripted {
+		a.respond(id, "thread/fork", a.e.currentVars())
+		return
+	}
+	anchor := readParamString(params, "lastTurnId")
+	turnIDs, ok := a.e.forkedTurnIDs(anchor)
+	if !ok {
+		a.writeRPCError(id, -32602, fmt.Sprintf(
+			"thread/fork: lastTurnId %q is unknown or names the in-progress turn", anchor))
+		return
+	}
+	turns := make([]map[string]any, 0, len(turnIDs))
+	for _, turnID := range turnIDs {
+		turns = append(turns, map[string]any{"id": turnID})
+	}
+	forked := fmt.Sprintf("%s-fork-%d", a.e.currentVars()["THREAD_ID"], a.forkSeq.Add(1))
+	a.w.writeLine(mustJSON(map[string]any{
+		"jsonrpc": "2.0",
+		"id":      id,
+		"result":  map[string]any{"thread": map[string]any{"id": forked, "turns": turns}},
+	}), 0, 0)
+}
+
+func (a *codexAdapter) writeRPCError(id json.RawMessage, code int, message string) {
+	a.w.writeLine(mustJSON(map[string]any{
+		"jsonrpc": "2.0",
+		"id":      id,
+		"error":   map[string]any{"code": code, "message": message},
+	}), 0, 0)
 }
 
 func (a *codexAdapter) sendInterruptedTurn(vars scenario.Vars) {

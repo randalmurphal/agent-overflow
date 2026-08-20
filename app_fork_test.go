@@ -296,12 +296,14 @@ func TestForkThreadClaudeAtTurnSlicesSessionJSONL(t *testing.T) {
 	}
 }
 
-// TestForkThreadRejectsWhenSourceHasActiveTurn pins the defense-in-depth
-// guard against forking while the source's provider is still writing
-// its session log. Frontend hides the popover during active turns;
-// this test ensures script callers also get a clean rejection rather
-// than a fork of in-flight bytes.
-func TestForkThreadRejectsWhenSourceHasActiveTurn(t *testing.T) {
+// TestForkThreadDuringActiveTurnSnapshotsInsteadOfRefusing is the
+// successor of the old active-turn refusal. Forking mid-turn is now a
+// snapshot "as if interrupted right now": the fork is created, its
+// cloned rows settle interrupted, and the source keeps its in-flight
+// turn. The full mid-turn contract lives in app_fork_midturn_test.go;
+// this keeps the original fixture's coverage of the plain
+// no-session-file-yet shape.
+func TestForkThreadDuringActiveTurnSnapshotsInsteadOfRefusing(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	app := newTestAppWithStore(t)
 	source := testThread("thread-fork-active")
@@ -324,12 +326,24 @@ func TestForkThreadRejectsWhenSourceHasActiveTurn(t *testing.T) {
 		t.Fatalf("InsertTurn: %v", err)
 	}
 
-	_, err := app.ForkThread(source.ID, nil)
-	if err == nil {
-		t.Fatal("ForkThread should reject when source has active turn")
+	forked, err := app.ForkThread(source.ID, nil)
+	if err != nil {
+		t.Fatalf("ForkThread during an active turn: %v", err)
 	}
-	if got := err.Error(); !strings.Contains(got, "turn is in progress") {
-		t.Errorf("error = %q, want message about active turn", got)
+	// No session file exists under the isolated HOME, so the mid-turn
+	// tail fork takes the sanctioned degenerate answer.
+	if forked.SessionRef != "" || forked.PendingForkRef != "" {
+		t.Errorf("fork refs = %q / %q, want both empty (no transcript to slice)", forked.SessionRef, forked.PendingForkRef)
+	}
+	if _, active, err := app.store.GetActiveTurn(forked.ID); err != nil {
+		t.Fatalf("GetActiveTurn(fork): %v", err)
+	} else if active {
+		t.Error("fork inherited an open turn row — the settle must close it")
+	}
+	if _, active, err := app.store.GetActiveTurn(source.ID); err != nil {
+		t.Fatalf("GetActiveTurn(source): %v", err)
+	} else if !active {
+		t.Error("the source's in-flight turn was settled — forking must never interrupt the source")
 	}
 }
 

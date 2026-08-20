@@ -332,6 +332,15 @@ The surface, and the rules that come with it:
   (`tool_lifecycle.go`), `BuildPayloadMeta` (`payload_items.go`), and
   `ThinkingSummaryPreview` (`stream_items.go`). Same rules as
   `shape.go`: pure, and a change to one changes both writers.
+- `InterruptedSummary` (`stream_state.go`) is the same rule for a
+  SECOND non-live writer: the mid-turn fork settle
+  (`app_thread_fork.go` → `store.SettleForkedThreadAsInterrupted`)
+  applies the interrupted treatment to a fork's cloned rows and must
+  produce exactly the suffix a live truncated turn-complete and the
+  boot crash sweep write. A fork thread has never had a session, so
+  the Router has no state for it and driving it would be the same
+  mistake the importer exists to avoid — sharing the suffix function
+  is what keeps the three settle paths from drifting.
 - Already exported and reused as-is: `ExtractDiffMeta`,
   `ExtractCommandOutputMeta(WithError)`, `ExtractThinkingMeta`,
   `ExtractCompactionMeta`, `ExtractProposedPlanMeta`, `ToolResultMeta`,

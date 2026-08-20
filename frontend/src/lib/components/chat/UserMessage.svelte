@@ -59,15 +59,16 @@
   // unmounting the toolbar at turn-started / re-mounting at turn-completed
   // would collapse the footer row's height (the icon buttons are taller
   // than the timestamp text), which reads as jitter on the just-sent
-  // message. Race prevention during an active turn is handled by
-  // `actionsTurnLocked`, which disables the buttons — grayed out via the
-  // IconButton disabled styling — instead of removing them from the DOM.
+  // message.
   const showMessageActions = $derived(
     pane !== undefined && !isWireOnlyUserMessage,
   );
 
-  // True while a turn is in flight on this pane's thread. Disables the
-  // action buttons so fork can't race the active turn.
+  // True while a turn is in flight on this pane's thread. Disables EDIT
+  // only: edit-and-resend reverts the source thread's history, which
+  // cannot race the active turn. Fork is deliberately NOT gated — the
+  // backend snapshots the running thread as-if-interrupted and never
+  // touches the source (see app_thread_fork.go).
   const actionsTurnLocked = $derived(
     pane !== undefined && getActiveTurn(pane.threadId) !== null,
   );
@@ -135,7 +136,7 @@
   }
 
   async function requestFork(): Promise<void> {
-    if (!canRequestFork || forkBusy || actionsTurnLocked) return;
+    if (!canRequestFork || forkBusy) return;
     await actions?.onForkMessage?.(item);
   }
 </script>
@@ -230,7 +231,7 @@
               label="Fork from this message"
               size="sm"
               variant="ghost"
-              disabled={forkBusy || actionsTurnLocked}
+              disabled={forkBusy}
               onClick={() => void requestFork()}
             >
               {#snippet children()}

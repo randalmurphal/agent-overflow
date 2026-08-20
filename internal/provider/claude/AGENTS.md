@@ -174,6 +174,16 @@ owner. The top-level `ParseLine` (in `parser.go`) reads the envelope's
   `sessionfork.TranscriptTypes` (one exported set shared with the fork
   transform — no copy to drift). See invariant 28, claude-wire.md
   §"active-branch semantics" and §"resume deserialization filters".
+  **Sidechain rows never advance the leaf, and the two feeds spell
+  "sidechain" differently.** A transcript row on disk carries
+  `isSidechain`; the live stdout wire carries top-level
+  `parent_tool_use_id` and never `isSidechain`, on `user` envelopes
+  (a subagent's tool_results) exactly as on `assistant` ones. BOTH
+  ingest paths therefore gate on `parent_tool_use_id`. Without the
+  `user` gate the tracker's leaf became a sidechain uuid for the whole
+  duration of a Task, and every consumer resolves that leaf against the
+  FILE — where the fork transform and the branch walk have already
+  filtered sidechains out — so the lookup could only miss.
 - `models_wire.go` — the `models` array the `initialize` response
   carries (`WireModel`), its canonicalization (`CanonicalSlug` —
   resolvedModel over alias, then `provider.NormalizeModelSlug`, which

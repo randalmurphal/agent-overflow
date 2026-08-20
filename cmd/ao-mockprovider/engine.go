@@ -104,8 +104,50 @@ func (e *engine) varsForTurn(n int) scenario.Vars {
 		vars[k] = v
 	}
 	vars["TURN"] = strconv.Itoa(n)
-	vars["TURN_ID"] = "turn-" + strconv.Itoa(n)
+	vars["TURN_ID"] = turnIDForNumber(n)
 	return vars
+}
+
+// turnIDForNumber is the one place the ${TURN_ID} spelling lives, shared
+// by the vars snapshot, the interrupt's turn-id match, and the
+// thread/fork cut.
+func turnIDForNumber(n int) string { return "turn-" + strconv.Itoa(n) }
+
+// forkedTurnIDs resolves a `thread/fork` cut over the turns this mock has
+// run, in wire order, and reports whether the anchor is forkable at all.
+//
+// An empty lastTurnID keeps every turn that has BEGUN — mid-turn that
+// includes the in-flight one, which is what codex's own interrupted fork
+// snapshot copies. A named anchor must be a turn that has already
+// FINISHED: codex refuses a lastTurnId naming an in-progress turn, and
+// ok=false is how that refusal reaches the adapter.
+func (e *engine) forkedTurnIDs(lastTurnID string) ([]string, bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	through := e.turnSeq
+	if lastTurnID != "" {
+		through = 0
+		for n := 1; n <= e.turnSeq; n++ {
+			if lastTurnID != turnIDForNumber(n) {
+				continue
+			}
+			if e.turns[n] != nil {
+				// Begun and not yet finished — the refused anchor.
+				return nil, false
+			}
+			through = n
+			break
+		}
+		if through == 0 {
+			return nil, false
+		}
+	}
+	ids := make([]string, 0, through)
+	for n := 1; n <= through; n++ {
+		ids = append(ids, turnIDForNumber(n))
+	}
+	return ids, true
 }
 
 // currentTurn returns the most recently begun user-turn number (0 before the
@@ -237,7 +279,7 @@ func (e *engine) interruptTurn(turnID string) bool {
 			}
 		}
 	}
-	if n == 0 || (turnID != "" && turnID != "turn-"+strconv.Itoa(n)) {
+	if n == 0 || (turnID != "" && turnID != turnIDForNumber(n)) {
 		e.mu.Unlock()
 		return false
 	}

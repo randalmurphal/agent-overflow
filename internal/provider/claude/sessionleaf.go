@@ -121,15 +121,33 @@ func (t *claudeLeafTracker) ingestRow(row claudeSessionRow) {
 	case "assistant":
 		t.ingestAssistantLocked(row.UUID, row.ParentUUID, row.ParentToolUseID, row.Message)
 	case "user":
-		t.ingestUserLocked(row.UUID)
+		t.ingestUserLocked(row.UUID, row.ParentToolUseID)
 	case "result":
 		t.markTurnCompleteLocked()
 	}
 }
 
-func (t *claudeLeafTracker) ingestUserLocked(uuid string) {
+// ingestUserLocked advances the canonical leaf onto a top-level user
+// row. `parentToolUseID` gates it exactly as it gates the assistant path:
+// a non-empty value means the row belongs to a Task subagent's sidechain,
+// not to the main conversation.
+//
+// The gate is load-bearing on the LIVE wire, which is where the two
+// discriminators disagree. A transcript row on disk carries
+// `isSidechain: true` and never reaches here; stdout carries
+// `parent_tool_use_id` and never `isSidechain` (claude-wire.md
+// §`parent_tool_use_id` — subagent streams: "This applies to `user`
+// (subagent tool_results) ... as well"; the
+// subagent_usage_inclusion_20260703 fixture shows every MAIN-chain user
+// envelope with `parent_tool_use_id: null`). Without the gate a
+// subagent's tool_result envelope became the canonical leaf for the
+// whole duration of a Task, and every consumer that resolves that leaf
+// against the FILE — cold resume-at, the mid-turn fork slice, both of
+// which filter sidechains before searching — was looking for a uuid
+// that provably is not there.
+func (t *claudeLeafTracker) ingestUserLocked(uuid, parentToolUseID string) {
 	uuid = strings.TrimSpace(uuid)
-	if uuid == "" || t.alreadySeenLocked(uuid) {
+	if uuid == "" || strings.TrimSpace(parentToolUseID) != "" || t.alreadySeenLocked(uuid) {
 		return
 	}
 	t.markSeenLocked(uuid)

@@ -132,6 +132,21 @@ headless, isolated data dir, mocked providers. Full harness guide:
   linkage numbers so a spec compares numbers rather than sometimes `undefined`;
   and it THROWS on a refusal (§4.2) instead of letting an id that names no run
   satisfy the `toHaveLength(0)` most callers assert.
+- `tests/fork-midturn.spec.ts` — forking a thread WHILE it streams: the
+  per-message fork button staying enabled mid-turn (edit stays disabled) and
+  cutting BEFORE its anchor, a sidebar "Fork Thread" tail fork rendering the
+  cloned partial as `… — interrupted` beside a source that keeps streaming and
+  then completes with the whole reply, the sanctioned degenerate Claude shape
+  (transcript removed after the mock wrote it, so the fork lands with both
+  `sessionRef` and `pendingForkRef` empty), and a Codex mid-turn fork. Every
+  case parks the mock between deltas with a `waitSignal` gate, which is what
+  makes "mid-stream" a state to fork from rather than a frame to race. It
+  exercises the LIVE leaf-tracker branch of the Claude cut (the mock writes its
+  user echo to the transcript before sending it, so the tracker's leaf is on
+  disk); the cold-scan fallback is unit-tested in `app_fork_midturn_test.go`.
+  Liveness is asserted from `ListItems` statuses, never
+  `Thread.hasIncompleteTurn` — that flag is derived against `last_read_at`, so
+  opening the thread in the UI flips it while the turn still runs.
 - `tests/session-import.spec.ts` — session import through the REAL UI: the
   sidebar trigger opening the lazy modal, rows from BOTH providers with the
   provider segment / search / clear-filters narrowing them, a two-session
