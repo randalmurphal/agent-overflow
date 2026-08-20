@@ -151,6 +151,7 @@ const RAW_CLASS_ALLOWLIST: Record<string, string> = {};
  * too, which is the point: a hex outside these tables is still a leak.
  */
 const CURATED_PALETTE_MODULES = [
+  'blacklight',
   'catppuccin',
   'dracula',
   'gruvbox',

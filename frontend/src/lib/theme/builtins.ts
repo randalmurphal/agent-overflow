@@ -9,8 +9,9 @@
 // copy of the palette to keep in sync, and a phase-1 token added to app.css
 // is in the default theme the moment it is declared.
 //
-// The curated palettes (One Dark, Monokai, Dracula, Solarized, Tokyo Night,
-// Catppuccin, High Contrast) are DATA ADDITIONS on top of that: one module
+// The curated palettes (Blacklight, One Dark, Monokai, Dracula, Solarized,
+// Tokyo Night, Catppuccin, High Contrast, …) are DATA ADDITIONS on top of
+// that: one module
 // each under `builtins/`, exporting the same {@link BuiltinThemeSpec} shape a
 // user file would carry, and registered in {@link CURATED_BUILTIN_SPECS}
 // below. They go through `parseTheme` exactly as a file on disk does, so a
@@ -23,6 +24,7 @@
 // Adding a curated theme is: one module under `builtins/`, one entry in the
 // list below. Nothing else — the tests iterate the list.
 
+import { BLACKLIGHT } from './builtins/blacklight';
 import { CATPPUCCIN } from './builtins/catppuccin';
 import { DRACULA } from './builtins/dracula';
 import { GRUVBOX } from './builtins/gruvbox';
@@ -117,6 +119,7 @@ export const IDENTITY_BUILTIN_SPECS: readonly BuiltinThemeSpec[] = [
  * would ship something under a name it did not earn.
  */
 export const CURATED_BUILTIN_SPECS: readonly BuiltinThemeSpec[] = [
+  BLACKLIGHT,
   CATPPUCCIN,
   DRACULA,
   GRUVBOX,

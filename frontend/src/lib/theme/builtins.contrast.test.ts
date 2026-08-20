@@ -205,9 +205,9 @@ function violations(check: (report: (message: string) => void) => void): string[
 
 describe('curated palette contrast', () => {
   it('measures something — the cases exist and carry their grounds', () => {
-    // Nine themes; Catppuccin, Gruvbox, Solarized and High Contrast ship both
+    // Ten themes; Catppuccin, Gruvbox, Solarized and High Contrast ship both
     // variants.
-    expect(CASES.length).toBe(13);
+    expect(CASES.length).toBe(14);
     for (const { themeId, variantName, variant } of CASES) {
       expect(variant.code?.['code-block'], `${themeId}.${variantName} code-block`).toBeDefined();
       expect(variant.code?.['terminal-bg'], `${themeId}.${variantName} terminal-bg`).toBeDefined();
@@ -216,8 +216,8 @@ describe('curated palette contrast', () => {
     // of variants that DO is pinned: every curated palette but Monokai dresses
     // chrome, and a section quietly dropped would otherwise pass by absence.
     const withColors = CASES.filter((c) => c.variant.colors !== undefined);
-    expect(withColors.length).toBe(12);
-    expect(new Set(withColors.map((c) => c.themeId)).size).toBe(8);
+    expect(withColors.length).toBe(13);
+    expect(new Set(withColors.map((c) => c.themeId)).size).toBe(9);
     expect(CASES.filter((c) => c.variant.colors === undefined).map((c) => c.themeId)).toEqual([
       'monokai',
     ]);

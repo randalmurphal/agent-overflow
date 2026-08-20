@@ -768,7 +768,7 @@ What changed:
   markdown agree when both axes are on the theme), plus a per-theme
   bold pick — bold has no `markup-*` counterpart, so each theme picks
   one emphasis hue, usually its warm accent. Adoption is pinned
-  (builtins.test.ts): all 12 UI-axis curated variants state the five
+  (builtins.test.ts): all 13 UI-axis curated variants state the five
   prose roles and the chip text. A variant whose palette has no
   floor-clearing hue for a role restates its own text tier instead
   (latte and solarized-light bold; latte, solarized-light and
@@ -926,3 +926,21 @@ tokens.css's `html.light` block stays EMPTY (the pin behind
 derived-tier alpha table went per-mode. Every light theme that leaves
 the tiers derived heals at once; themes stating opaque tiers (High
 Contrast) are untouched.
+
+### 9.14 Blacklight — first original curated palette (2026-08-20)
+
+`blacklight` (dark-only, both axes) is the first curated theme with no
+upstream: UV fluorescence — magenta / UV purple / cyan / mint — on a
+violet-tinted near-black. It began as the author's user theme file
+("neon") and was promoted verbatim, plus the `syntax-markup-list`
+token that postdates the file. Two as-built notes:
+
+- The §9.11 entry-at-the-bottom rule has nothing to re-anchor here —
+  there is no upstream range. The ladder is its own near-black ramp
+  (`#000005 → #0d0d1c → #17172e → #222240`, steps 1.09–1.14:1) and the
+  focal band tops the curated set (19.35:1).
+- It states all three fade tiers, not just `fg-muted` — the derived
+  fades over `#f5f5ff` drift gray, and the stated tiers keep the
+  violet cast; `fg-hint` (#8a8ac0, 6.5:1) clears the stated-tier 4.5:1
+  claim with room, so the §9.11 "state only fg-muted" guidance is a
+  default, not a rule.

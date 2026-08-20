@@ -33,6 +33,7 @@ const CURATED = CURATED_BUILTIN_SPECS.map((spec) => defineBuiltinTheme(spec));
 describe('curated built-in themes', () => {
   it('ships the requested set, each on the axes it declares', () => {
     expect(CURATED_BUILTIN_SPECS.map((spec) => spec.id)).toEqual([
+      'blacklight',
       'catppuccin',
       'dracula',
       'gruvbox',
@@ -170,7 +171,7 @@ describe('curated built-in themes', () => {
     const uiVariants = CURATED_BUILTIN_SPECS.filter((spec) => spec.axes.ui).flatMap((spec) =>
       THEME_VARIANTS.map((v) => spec[v]).filter((variant) => variant !== undefined),
     );
-    expect(uiVariants.length).toBe(12);
+    expect(uiVariants.length).toBe(13);
     for (const variant of uiVariants) {
       expect(variant.colors?.['md-heading']).toBeDefined();
       expect(variant.colors?.['md-inline-code']).toBeDefined();
