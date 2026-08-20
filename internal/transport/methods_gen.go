@@ -26,6 +26,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "AppendUIRenderTraceBatch", ID: 2157691816},             // main.App.AppendUIRenderTraceBatch
 	{Name: "ArchiveProject", ID: 1352159878},                       // main.App.ArchiveProject
 	{Name: "ArchiveThread", ID: 3655608409},                        // main.App.ArchiveThread
+	{Name: "AttachProjectWorktree", ID: 2577753756},                // main.App.AttachProjectWorktree
 	{Name: "AttachThreadWorktree", ID: 2367642633},                 // main.App.AttachThreadWorktree
 	{Name: "AutoResumeThread", ID: 4095667805},                     // main.App.AutoResumeThread
 	{Name: "BookmarkUIRenderTrace", ID: 1374242488},                // main.App.BookmarkUIRenderTrace
@@ -43,6 +44,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "CreateDiffReviewComment", ID: 565306783},               // main.App.CreateDiffReviewComment
 	{Name: "CreateDiscussion", ID: 757689265},                      // main.App.CreateDiscussion
 	{Name: "CreateProject", ID: 969543070},                         // main.App.CreateProject
+	{Name: "CreateProjectBranch", ID: 502820718},                   // main.App.CreateProjectBranch
 	{Name: "CreateProposedPlanComment", ID: 4246792665},            // main.App.CreateProposedPlanComment
 	{Name: "CreateThread", ID: 2579322833},                         // main.App.CreateThread
 	{Name: "CreateThreadFromPR", ID: 1716017387},                   // main.App.CreateThreadFromPR
@@ -119,6 +121,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "GetWorkingTreeDiff", ID: 1858968113},                   // main.App.GetWorkingTreeDiff
 	{Name: "GetWorkspaceActivity", ID: 673985705},                  // main.App.GetWorkspaceActivity
 	{Name: "GetWorkspaceCurrentDiff", ID: 736820142},               // main.App.GetWorkspaceCurrentDiff
+	{Name: "GetWorkspaceWorktreeSetup", ID: 960806842},             // main.App.GetWorkspaceWorktreeSetup
 	{Name: "GitCheckout", ID: 1598126927},                          // main.App.GitCheckout
 	{Name: "GitCheckoutForProject", ID: 585511915},                 // main.App.GitCheckoutForProject
 	{Name: "GitCommit", ID: 1971060042},                            // main.App.GitCommit
@@ -204,6 +207,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "OpenTerminal", ID: 2247958725},                         // main.App.OpenTerminal
 	{Name: "PinThread", ID: 1748405812},                            // main.App.PinThread
 	{Name: "PostChannelMessage", ID: 1315440605},                   // main.App.PostChannelMessage
+	{Name: "PrepareProjectWorktree", ID: 2661174564},               // main.App.PrepareProjectWorktree
 	{Name: "PrepareThreadWorktree", ID: 2870364785},                // main.App.PrepareThreadWorktree
 	{Name: "ProbeClaudeAccount", ID: 1313986574},                   // main.App.ProbeClaudeAccount
 	{Name: "ProbeCodexAccount", ID: 2614227175},                    // main.App.ProbeCodexAccount
@@ -241,6 +245,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "RestartTerminal", ID: 4152403588},                      // main.App.RestartTerminal
 	{Name: "RestartToUpdate", ID: 3141913084},                      // main.App.RestartToUpdate
 	{Name: "RetryThreadWorktreeSetup", ID: 1657104469},             // main.App.RetryThreadWorktreeSetup
+	{Name: "RetryWorkspaceWorktreeSetup", ID: 3315344348},          // main.App.RetryWorkspaceWorktreeSetup
 	{Name: "RevertConversationAndResendMessage", ID: 2059566413},   // main.App.RevertConversationAndResendMessage
 	{Name: "SaveDraft", ID: 3025273299},                            // main.App.SaveDraft
 	{Name: "SavePRCIJobLog", ID: 1537914193},                       // main.App.SavePRCIJobLog

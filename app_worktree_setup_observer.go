@@ -18,6 +18,12 @@ import (
 // a frame cannot disagree with the record it describes, and it is what lets
 // the sequence a chunk carries and its position on the wire be decided in the
 // same critical section.
+//
+// Every frame carries `worktreePath`, not just the started one: an UNBOUND run
+// (started for a draft before any thread row exists) has an empty `threadId`,
+// so the path is the only key its client has. The thread id is read through
+// worktreeSetupThreadID because adoption fills it in mid-run — the first frame
+// after adoption is how a client learns the run now has a thread.
 
 // worktreeSetupObserver is the run's single emitter. It owns the coalescing
 // buffer that turns a byte stream into whole-line frames and the per-run
@@ -45,7 +51,7 @@ func newWorktreeSetupObserver(app *App, run *worktreeSetupRun) *worktreeSetupObs
 func (o *worktreeSetupObserver) RunStarted(_ []worktreesetup.Step) {
 	o.app.emitEvent(worktreeSetupChannel, WorktreeSetupEvent{
 		Phase:        worktreeSetupPhaseStarted,
-		ThreadID:     o.run.threadID,
+		ThreadID:     o.app.worktreeSetupThreadID(o.run),
 		RunID:        o.run.id,
 		WorktreePath: o.run.worktreePath,
 		Steps:        o.run.steps,
@@ -56,10 +62,11 @@ func (o *worktreeSetupObserver) RunStarted(_ []worktreesetup.Step) {
 func (o *worktreeSetupObserver) StepStarted(index int) {
 	o.app.setWorktreeSetupStepStatus(o.run, index, worktreeSetupStepRunning)
 	o.app.emitEvent(worktreeSetupChannel, WorktreeSetupEvent{
-		Phase:     worktreeSetupPhaseStepStarted,
-		ThreadID:  o.run.threadID,
-		RunID:     o.run.id,
-		StepIndex: index,
+		Phase:        worktreeSetupPhaseStepStarted,
+		ThreadID:     o.app.worktreeSetupThreadID(o.run),
+		RunID:        o.run.id,
+		WorktreePath: o.run.worktreePath,
+		StepIndex:    index,
 	})
 }
 
@@ -70,7 +77,7 @@ func (o *worktreeSetupObserver) Output(index int, chunk []byte) {
 	// The tail is written first and unconditionally: the snapshot reads it,
 	// and a client that never sees a single frame still gets the transcript.
 	if _, err := o.run.tail.Write(chunk); err != nil {
-		log.Printf("thread %s: worktree setup output tail: %v", o.run.threadID, err)
+		log.Printf("worktree setup %s: output tail: %v", o.run.worktreePath, err)
 	}
 
 	o.mu.Lock()
@@ -106,12 +113,13 @@ func (o *worktreeSetupObserver) StepFinished(index int, err error) {
 	}
 	o.app.setWorktreeSetupStepStatus(o.run, index, status)
 	o.app.emitEvent(worktreeSetupChannel, WorktreeSetupEvent{
-		Phase:     worktreeSetupPhaseStepFinished,
-		ThreadID:  o.run.threadID,
-		RunID:     o.run.id,
-		StepIndex: index,
-		State:     status,
-		Error:     message,
+		Phase:        worktreeSetupPhaseStepFinished,
+		ThreadID:     o.app.worktreeSetupThreadID(o.run),
+		RunID:        o.run.id,
+		WorktreePath: o.run.worktreePath,
+		StepIndex:    index,
+		State:        status,
+		Error:        message,
 	})
 }
 
@@ -146,12 +154,13 @@ func (o *worktreeSetupObserver) flushLocked() {
 	chunk := string(o.pending)
 	o.pending = o.pending[:0]
 	o.app.emitEvent(worktreeSetupChannel, WorktreeSetupEvent{
-		Phase:     worktreeSetupPhaseOutput,
-		ThreadID:  o.run.threadID,
-		RunID:     o.run.id,
-		StepIndex: o.pendingStep,
-		Seq:       o.run.seq.Add(1),
-		Chunk:     chunk,
+		Phase:        worktreeSetupPhaseOutput,
+		ThreadID:     o.app.worktreeSetupThreadID(o.run),
+		RunID:        o.run.id,
+		WorktreePath: o.run.worktreePath,
+		StepIndex:    o.pendingStep,
+		Seq:          o.run.seq.Add(1),
+		Chunk:        chunk,
 	})
 }
 

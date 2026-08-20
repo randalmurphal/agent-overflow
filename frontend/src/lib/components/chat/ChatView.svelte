@@ -24,7 +24,12 @@
   import { addToast } from '../../stores/toast.svelte';
   import { getActiveTurn, getThreadStatus, projectThreadViewed } from '../../stores/threadStatuses.svelte';
   import { hydrateWorktreeSetupForThread } from '../../stores/eventsWorktreeSetup';
-  import { hasWorktreeSetupSurface } from '../../stores/worktreeSetup.svelte';
+  import {
+    hasWorktreeSetupSurface,
+    hydrateWorkspaceWorktreeSetup,
+    workspaceSetupKey,
+  } from '../../stores/worktreeSetup.svelte';
+  import { worktreeIntentForThread } from '../../stores/worktreeIntent.svelte';
   import type { Item, Thread } from '../../types/models';
   import { userFacingError } from '../../utils/userFacingError';
   import type { UserMessageActions } from './userMessageActions';
@@ -358,8 +363,28 @@
         : null,
     );
   });
+  // A draft placeholder that has already applied its worktree intent owns a
+  // setup run the backend registered against the WORKSPACE — there is no
+  // thread row for it to be keyed by until the send creates one. The pane
+  // shows the same card for it, under the store's workspace key, and the
+  // adoption frame hands the run over to the thread key at that point.
+  const draftSetupWorktreePath = $derived(
+    pane.hasDraftPlaceholder
+      ? (worktreeIntentForThread(pane.thread).applied?.worktreePath ?? '')
+      : '',
+  );
+  const setupKey = $derived(
+    pane.threadId
+      ?? (draftSetupWorktreePath ? workspaceSetupKey(draftSetupWorktreePath) : null),
+  );
+  $effect(() => {
+    const projectId = pane.thread?.projectId;
+    const path = draftSetupWorktreePath;
+    if (!projectId || !path) return;
+    void hydrateWorkspaceWorktreeSetup(projectId, path);
+  });
   const showWorktreeSetup = $derived(
-    !!pane.threadId && hasWorktreeSetupSurface(pane.threadId),
+    !!setupKey && hasWorktreeSetupSurface(setupKey),
   );
   // Lazily imported on first need, then held: the panel's chunk stays out of
   // the startup graph, and the captured promise keeps a stable identity so the
@@ -467,9 +492,9 @@
         <div class="pointer-events-auto mx-auto w-full max-w-[62rem] px-6">
           <SendQueuePreview {pane} />
         </div>
-        {#if showWorktreeSetup && worktreeSetupPanelModule && pane.threadId}
+        {#if showWorktreeSetup && worktreeSetupPanelModule && setupKey}
           {#await worktreeSetupPanelModule then { default: WorktreeSetupPanel }}
-            <WorktreeSetupPanel threadId={pane.threadId} />
+            <WorktreeSetupPanel {setupKey} />
           {:catch err}
             <div class="pointer-events-auto mx-auto w-full max-w-[62rem] px-6 pb-2 text-xs text-error">
               Failed to load worktree setup panel: {err instanceof Error ? err.message : String(err)}

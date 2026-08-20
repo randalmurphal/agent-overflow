@@ -292,8 +292,12 @@ func TestWorktreeSetupFailureIsVisibleAndRetained(t *testing.T) {
 func TestWorktreeSetupUnstartableRecipeFailsVisibly(t *testing.T) {
 	app, thread, recorder := newWorktreeSetupTestApp(t, nil)
 
-	app.recordUnstartableWorktreeSetup(thread, thread.WorktreePath,
-		fmt.Errorf("load worktree setup for project %q: corrupt blob", thread.ProjectID))
+	app.recordUnstartableWorktreeSetupRun(worktreeSetupTarget{
+		threadID:     thread.ID,
+		projectID:    thread.ProjectID,
+		projectRoot:  thread.ProjectPath,
+		worktreePath: thread.WorktreePath,
+	}, fmt.Errorf("load worktree setup for project %q: corrupt blob", thread.ProjectID))
 
 	got, err := app.store.GetThread(thread.ID)
 	if err != nil {

@@ -33,10 +33,12 @@ var loopbackOnlyEventChannels = map[string]bool{
 	// worktree:setup streams the stdout/stderr of the project's own setup
 	// commands running against the user's checkout — the same data class as
 	// terminal:output, and it can carry anything a build or install script
-	// prints, tokens in an env dump included. Its RPCs
-	// (GetThreadWorktreeSetup / RetryThreadWorktreeSetup) are LocalOnly, so a
-	// LAN peer can neither read the snapshot nor start a run; keeping the push
-	// side loopback-only closes the third door.
+	// prints, tokens in an env dump included. Its RPCs are LocalOnly in both
+	// key spaces — the thread pair (GetThreadWorktreeSetup /
+	// RetryThreadWorktreeSetup) and the workspace pair for pre-thread runs
+	// (GetWorkspaceWorktreeSetup / RetryWorkspaceWorktreeSetup) — so a LAN peer
+	// can neither read a snapshot nor start a run under either; keeping the
+	// push side loopback-only closes the third door.
 	"worktree:setup": true,
 	// provider:terminal_output carries the raw PTY bytes of a claude-tui
 	// take-control session — command output, file contents, anything on the

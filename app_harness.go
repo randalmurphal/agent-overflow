@@ -22,6 +22,8 @@ import (
 	"agent-overflow/internal/harness"
 	"agent-overflow/internal/harness/control"
 	"agent-overflow/internal/notify"
+	"agent-overflow/internal/slicesx"
+	"agent-overflow/internal/store"
 	"agent-overflow/internal/uitrace"
 )
 
@@ -108,6 +110,31 @@ func (h *Harness) HarnessSessionEnv(threadID string) (map[string]string, error) 
 		return map[string]string{}, nil
 	}
 	return env, nil
+}
+
+// HarnessListThreadRows returns every non-archived thread ROW, drafts
+// included — the read `App.ListThreads` deliberately cannot serve.
+//
+// The sidebar's list hides a thread until it has an item or a
+// content-carrying draft, so a row that was created and never written to is
+// invisible to every production read a spec can reach. That row is exactly
+// what some regressions are about: an empty thread materialized as a side
+// effect of an unrelated action (naming a workspace for a draft) is a bug
+// whose only symptom is its existence. This is the assertion surface for
+// "nothing was created", and for reading back what a just-materialized row
+// was bound to.
+//
+// Read-only, and it uses the same store call the app's own internal callers
+// use, so the harness is not learning the schema separately.
+func (h *Harness) HarnessListThreadRows() ([]store.Thread, error) {
+	if h.app == nil || h.app.store == nil {
+		return nil, fmt.Errorf("store unavailable")
+	}
+	rows, err := h.app.store.ListThreads()
+	if err != nil {
+		return nil, err
+	}
+	return slicesx.OrEmpty(rows), nil
 }
 
 // HarnessEmit publishes a raw event onto the transport bus — the

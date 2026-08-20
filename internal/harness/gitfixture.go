@@ -25,6 +25,12 @@ type RepoSpec struct {
 	// and commits. An empty list still produces a repo with one empty
 	// initial commit so HEAD exists.
 	Commits []CommitSpec `json:"commits,omitempty"`
+	// Branches are extra local branches created at the final commit and
+	// left UNCHECKED OUT (the repo stays on DefaultBranch). A worktree
+	// attaching an existing branch needs one that no checkout holds —
+	// git refuses a branch that is already checked out somewhere — so
+	// this is deliberately not a checkout list.
+	Branches []string `json:"branches,omitempty"`
 	// Dirty files are written after the last commit and left unstaged —
 	// the state diff views and git-status badges light up on.
 	Dirty map[string]string `json:"dirty,omitempty"`
@@ -86,6 +92,17 @@ func CreateRepo(dir string, spec RepoSpec) error {
 			msg = fmt.Sprintf("commit %d", i+1)
 		}
 		if err := runGit(dir, "commit", "--allow-empty", "-m", msg); err != nil {
+			return err
+		}
+	}
+
+	// After the history exists, so every extra branch points at a real
+	// commit; git's own name validation is the gate on the values.
+	for _, extra := range spec.Branches {
+		if strings.TrimSpace(extra) == "" {
+			return fmt.Errorf("harness: branch name must be non-empty")
+		}
+		if err := runGit(dir, "branch", extra); err != nil {
 			return err
 		}
 	}

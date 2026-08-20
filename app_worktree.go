@@ -120,7 +120,7 @@ func (a *App) PrepareThreadWorktree(threadID, baseBranch, requestedBranch string
 	// onto an unrelated base is a different semantic (rebase-style) we
 	// deliberately don't support.
 	if carryLocalChanges && resolvedBase != strings.TrimSpace(thread.Branch) {
-		return store.Thread{}, fmt.Errorf("create worktree: 'Local with changes' only applies when the base matches the current branch")
+		return store.Thread{}, fmt.Errorf("create worktree: %w", errCarryRequiresCurrentBase)
 	}
 
 	sourceWorkspace := strings.TrimSpace(thread.WorkspacePath)
@@ -128,55 +128,15 @@ func (a *App) PrepareThreadWorktree(threadID, baseBranch, requestedBranch string
 		sourceWorkspace = project
 	}
 
-	stashMessage := ""
-	stashed := false
-	if carryLocalChanges {
-		stashMessage = fmt.Sprintf("ao-carry-%s", gitops.RandomStashSuffix())
-		created, err := core.StashPushIncludeUntracked(sourceWorkspace, stashMessage)
-		if err != nil {
-			return store.Thread{}, fmt.Errorf("create worktree: stash local changes: %w", err)
-		}
-		stashed = created
-	}
-
-	worktreePath, err := a.defaultWorktreePath(project, resolvedBranch)
+	worktreePath, err := a.cutWorktreeWithCarry(worktreeCutRequest{
+		projectPath:       project,
+		sourceWorkspace:   sourceWorkspace,
+		baseBranch:        resolvedBase,
+		newBranch:         resolvedBranch,
+		carryLocalChanges: carryLocalChanges,
+	})
 	if err != nil {
-		if stashed {
-			a.restoreStashOnError(sourceWorkspace, stashMessage)
-		}
 		return store.Thread{}, err
-	}
-	// Carry-over pins the cut to the LOCAL base. The dirty tree about to be
-	// applied was authored against the branch as it exists on this machine,
-	// so starting the worktree at origin's newer tip would turn "move my
-	// changes" into "rebase my changes" — and a conflict there fails the
-	// whole create (the worktree is torn down, the stash left for manual
-	// recovery). Every other cut takes the fetched base.
-	if carryLocalChanges {
-		err = core.CreateWorktreeFromBranch(project, worktreePath, resolvedBase, resolvedBranch)
-	} else {
-		err = a.cutWorktreeFromFreshBase(a.lifeCtx(), project, worktreePath, resolvedBase, resolvedBranch)
-	}
-	if err != nil {
-		if stashed {
-			a.restoreStashOnError(sourceWorkspace, stashMessage)
-		}
-		return store.Thread{}, err
-	}
-
-	if stashed {
-		if err := core.StashApplyByMessage(worktreePath, stashMessage); err != nil {
-			// Apply failed in the new worktree. Tear the worktree down and
-			// keep the stash so the user can recover the changes manually.
-			_ = core.RemoveWorktreeForce(project, worktreePath, true)
-			return store.Thread{}, fmt.Errorf("create worktree: apply local changes in new worktree: %w (recover with: git stash list  →  git stash apply <ref> for entry %q)", err, stashMessage)
-		}
-		if err := core.StashDropByMessage(sourceWorkspace, stashMessage); err != nil {
-			// Apply succeeded but the source stash drop failed. The new
-			// worktree has the changes; leave the stash in place and log
-			// — the user-facing flow stays successful.
-			log.Printf("create worktree: drop carried stash %q: %v", stashMessage, err)
-		}
 	}
 
 	// ProjectID is already set on the thread; the project's Path is the
@@ -456,12 +416,17 @@ func (a *App) removeProjectWorktree(project, callerThreadID, worktreePath string
 		}
 	}
 
-	// Every thread here occupies the worktree that is about to be deleted, so
-	// any setup run of theirs is running IN it. Cancel first and block on the
-	// join: a recipe still writing into the directory would race git's removal
-	// and could recreate paths under it after the removal succeeded. It also
-	// clears the failure state — a "Setup failed" pill for a worktree that no
-	// longer exists has nothing to offer.
+	// Cancel by DIRECTORY and block on the join: a recipe still writing into the
+	// path would race git's removal and could recreate entries under it after
+	// the removal succeeded. The question is which runs execute IN this
+	// directory, which is not the same set as "runs of the threads attached to
+	// it": an UNBOUND run has no thread to be found by, and a bound run can
+	// belong to a thread this removal has no reason to have locked (a sibling
+	// that has since moved on, or one whose row read failed above).
+	a.cancelWorktreeSetupsForPath(worktreePath)
+	// Then clear the durable state of every thread that pointed here — a "Setup
+	// failed" pill for a worktree that no longer exists has nothing to offer.
+	// Their runs are already gone, so this is the column and nothing else.
 	for _, id := range attached {
 		a.cancelThreadWorktreeSetup(id)
 	}
@@ -955,6 +920,22 @@ func (a *App) switchThreadWorkspace(threadID, path string) (store.Thread, error)
 	if err != nil {
 		return store.Thread{}, fmt.Errorf("switch workspace: refresh thread after workspace switch: %w", err)
 	}
+	// The target may carry an UNBOUND run: a project-scoped cut whose thread was
+	// never created (the send binds by switching an existing row instead of
+	// creating one), or a worktree the user cut from a draft and is now entering
+	// through the picker. Adoption is what gives that run an owner, a durable
+	// column and a thread-keyed panel; a no-op when nothing is running there.
+	// Same ordering rationale as CreateThread's: after the row commits.
+	if worktreePath := strings.TrimSpace(refreshed.WorktreePath); worktreePath != "" {
+		if a.adoptWorkspaceWorktreeSetup(worktreePath, refreshed) {
+			// Adoption stamped the durable column, so the row we are about to
+			// return is already stale. Re-read it rather than let the caller's
+			// UI learn "running" from a race with the pushed event.
+			if adopted, err := a.store.GetThread(threadID); err == nil {
+				refreshed = adopted
+			}
+		}
+	}
 	return refreshed, nil
 }
 
@@ -990,6 +971,83 @@ func (a *App) cutWorktreeFromFreshBase(ctx context.Context, projectPath, worktre
 			projectPath, baseBranch, seed.FetchErr)
 	}
 	return err
+}
+
+// worktreeCutRequest states one "cut a new worktree off a base branch"
+// operation without reference to a thread. Both the thread-scoped
+// (PrepareThreadWorktree) and project-scoped (PrepareProjectWorktree) callers
+// state their request this way, so the carry bracket below cannot drift
+// between them.
+type worktreeCutRequest struct {
+	projectPath string
+	// sourceWorkspace is where a carried dirty tree is stashed FROM: the
+	// thread's own workspace for a thread-scoped cut, the project root for a
+	// draft's. Read only when carryLocalChanges is set.
+	sourceWorkspace   string
+	baseBranch        string
+	newBranch         string
+	carryLocalChanges bool
+}
+
+// cutWorktreeWithCarry runs the stash → cut → apply → drop bracket and returns
+// the path of the worktree it created.
+//
+// On stash-apply failure the worktree is removed and the stash entry is kept so
+// the user can recover via `git stash list`; the message names the entry.
+func (a *App) cutWorktreeWithCarry(req worktreeCutRequest) (string, error) {
+	core := a.gitCore()
+
+	stashMessage := ""
+	stashed := false
+	if req.carryLocalChanges {
+		stashMessage = fmt.Sprintf("ao-carry-%s", gitops.RandomStashSuffix())
+		created, err := core.StashPushIncludeUntracked(req.sourceWorkspace, stashMessage)
+		if err != nil {
+			return "", fmt.Errorf("create worktree: stash local changes: %w", err)
+		}
+		stashed = created
+	}
+
+	worktreePath, err := a.defaultWorktreePath(req.projectPath, req.newBranch)
+	if err != nil {
+		if stashed {
+			a.restoreStashOnError(req.sourceWorkspace, stashMessage)
+		}
+		return "", err
+	}
+	// Carry-over pins the cut to the LOCAL base. The dirty tree about to be
+	// applied was authored against the branch as it exists on this machine,
+	// so starting the worktree at origin's newer tip would turn "move my
+	// changes" into "rebase my changes" — and a conflict there fails the
+	// whole create (the worktree is torn down, the stash left for manual
+	// recovery). Every other cut takes the fetched base.
+	if req.carryLocalChanges {
+		err = core.CreateWorktreeFromBranch(req.projectPath, worktreePath, req.baseBranch, req.newBranch)
+	} else {
+		err = a.cutWorktreeFromFreshBase(a.lifeCtx(), req.projectPath, worktreePath, req.baseBranch, req.newBranch)
+	}
+	if err != nil {
+		if stashed {
+			a.restoreStashOnError(req.sourceWorkspace, stashMessage)
+		}
+		return "", err
+	}
+
+	if stashed {
+		if err := core.StashApplyByMessage(worktreePath, stashMessage); err != nil {
+			// Apply failed in the new worktree. Tear the worktree down and
+			// keep the stash so the user can recover the changes manually.
+			_ = core.RemoveWorktreeForce(req.projectPath, worktreePath, true)
+			return "", fmt.Errorf("create worktree: apply local changes in new worktree: %w (recover with: git stash list  →  git stash apply <ref> for entry %q)", err, stashMessage)
+		}
+		if err := core.StashDropByMessage(req.sourceWorkspace, stashMessage); err != nil {
+			// Apply succeeded but the source stash drop failed. The new
+			// worktree has the changes; leave the stash in place and log
+			// — the user-facing flow stays successful.
+			log.Printf("create worktree: drop carried stash %q: %v", stashMessage, err)
+		}
+	}
+	return worktreePath, nil
 }
 
 func (a *App) defaultWorktreePath(projectPath, branch string) (string, error) {

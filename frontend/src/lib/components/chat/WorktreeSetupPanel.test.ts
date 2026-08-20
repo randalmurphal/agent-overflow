@@ -50,7 +50,7 @@ beforeEach(() => {
 
 describe('<WorktreeSetupPanel>', () => {
   it('renders nothing for a thread with no run', () => {
-    const { container } = render(WorktreeSetupPanel, { props: { threadId: THREAD } });
+    const { container } = render(WorktreeSetupPanel, { props: { setupKey: THREAD } });
     expect(container.querySelector('[data-testid="worktree-setup-panel"]')).toBeNull();
     expect(container.querySelector('[data-testid="worktree-setup-bar"]')).toBeNull();
   });
@@ -58,7 +58,7 @@ describe('<WorktreeSetupPanel>', () => {
   it('shows every step with its status while running', async () => {
     applyWorktreeSetupEvent(started());
     applyWorktreeSetupEvent({ phase: 'step-started', threadId: THREAD, runId: 'run-1', stepIndex: 0 });
-    const { container, getByTestId } = render(WorktreeSetupPanel, { props: { threadId: THREAD } });
+    const { container, getByTestId } = render(WorktreeSetupPanel, { props: { setupKey: THREAD } });
 
     await waitFor(() => {
       expect(getByTestId('worktree-setup-panel')).toBeTruthy();
@@ -74,7 +74,7 @@ describe('<WorktreeSetupPanel>', () => {
 
   it('streams output into the panel', async () => {
     applyWorktreeSetupEvent(started());
-    const { container } = render(WorktreeSetupPanel, { props: { threadId: THREAD } });
+    const { container } = render(WorktreeSetupPanel, { props: { setupKey: THREAD } });
     applyWorktreeSetupEvent({
       phase: 'output', threadId: THREAD, runId: 'run-1', stepIndex: 1, seq: 1, chunk: 'installing deps\n',
     });
@@ -90,7 +90,7 @@ describe('<WorktreeSetupPanel>', () => {
     try {
       applyWorktreeSetupEvent(started());
       applyWorktreeSetupEvent(finish('succeeded'));
-      const { container } = render(WorktreeSetupPanel, { props: { threadId: THREAD } });
+      const { container } = render(WorktreeSetupPanel, { props: { setupKey: THREAD } });
       await vi.advanceTimersByTimeAsync(0);
       expect(container.textContent).toContain('Worktree ready');
 
@@ -111,7 +111,7 @@ describe('<WorktreeSetupPanel>', () => {
     });
     applyWorktreeSetupEvent(finish('failed', 'command pnpm install failed: exit status 1'));
 
-    const { container, getByTestId } = render(WorktreeSetupPanel, { props: { threadId: THREAD } });
+    const { container, getByTestId } = render(WorktreeSetupPanel, { props: { setupKey: THREAD } });
     await waitFor(() => {
       expect(getByTestId('worktree-setup-panel').getAttribute('data-state')).toBe('failed');
     });
@@ -128,7 +128,7 @@ describe('<WorktreeSetupPanel>', () => {
   it('collapses a failure to a one-line bar and back', async () => {
     applyWorktreeSetupEvent(started());
     applyWorktreeSetupEvent(finish('failed', 'boom'));
-    const { container, getByTestId } = render(WorktreeSetupPanel, { props: { threadId: THREAD } });
+    const { container, getByTestId } = render(WorktreeSetupPanel, { props: { setupKey: THREAD } });
     await waitFor(() => expect(getByTestId('worktree-setup-dismiss')).toBeTruthy());
 
     await fireEvent.click(getByTestId('worktree-setup-dismiss'));
@@ -146,7 +146,7 @@ describe('<WorktreeSetupPanel>', () => {
     RetryThreadWorktreeSetup.mockResolvedValue(undefined);
     applyWorktreeSetupEvent(started());
     applyWorktreeSetupEvent(finish('failed', 'boom'));
-    const { getByTestId } = render(WorktreeSetupPanel, { props: { threadId: THREAD } });
+    const { getByTestId } = render(WorktreeSetupPanel, { props: { setupKey: THREAD } });
     await waitFor(() => expect(getByTestId('worktree-setup-retry')).toBeTruthy());
 
     await fireEvent.click(getByTestId('worktree-setup-retry'));
@@ -162,7 +162,7 @@ describe('<WorktreeSetupPanel>', () => {
     RetryThreadWorktreeSetup.mockRejectedValue(new Error('thread is not working in a worktree'));
     applyWorktreeSetupEvent(started());
     applyWorktreeSetupEvent(finish('failed', 'boom'));
-    const { getByTestId } = render(WorktreeSetupPanel, { props: { threadId: THREAD } });
+    const { getByTestId } = render(WorktreeSetupPanel, { props: { setupKey: THREAD } });
     await waitFor(() => expect(getByTestId('worktree-setup-retry')).toBeTruthy());
 
     await fireEvent.click(getByTestId('worktree-setup-retry'));
@@ -176,7 +176,7 @@ describe('<WorktreeSetupPanel>', () => {
 
   it('drops the card when the run is cancelled', async () => {
     applyWorktreeSetupEvent(started());
-    const { container, getByTestId } = render(WorktreeSetupPanel, { props: { threadId: THREAD } });
+    const { container, getByTestId } = render(WorktreeSetupPanel, { props: { setupKey: THREAD } });
     await waitFor(() => expect(getByTestId('worktree-setup-panel')).toBeTruthy());
 
     applyWorktreeSetupEvent(finish('cancelled'));

@@ -35,6 +35,7 @@
   import { pathBasename } from '../../../utils/pathDisplay';
   import {
     clearWorktreeIntent,
+    effectiveWorkspacePathForThread,
     setThreadEnvMode,
     worktreeIntentForThread,
   } from '../../../stores/worktreeIntent.svelte';
@@ -82,7 +83,9 @@
   let confirm: ConfirmState | null = $state(null);
 
   let projectPath = $derived(pane.thread?.projectPath ?? '');
-  let currentWorkspace = $derived(pane.thread?.workspacePath ?? '');
+  // Effective, not raw — see BranchPicker: an applied-but-unbound worktree
+  // is where the next turn will run, and the trigger has to say so.
+  let currentWorkspace = $derived(effectiveWorkspacePathForThread(pane.thread));
   let isAtProjectRoot = $derived(sameNormalizedPath(currentWorkspace, projectPath));
   let intent = $derived(worktreeIntentForThread(pane.thread));
 
@@ -90,17 +93,20 @@
   // sits at the project root; the worktree's basename otherwise. Staged
   // new-worktree intent overrides both so the user sees that the next
   // send will run somewhere new.
+  // Once the intent has been APPLIED the worktree exists, so the trigger
+  // names it rather than still promising one.
+  let stagingNewWorktree = $derived(intent.mode === 'new-worktree' && !intent.applied);
   let triggerLabel = $derived.by(() => {
-    if (intent.mode === 'new-worktree') return 'New Worktree';
+    if (stagingNewWorktree) return 'New Worktree';
     if (isAtProjectRoot) return 'Local';
     return pathBasename(currentWorkspace) || 'Worktree';
   });
   let triggerIcon = $derived.by(() => {
-    if (intent.mode === 'new-worktree') return FolderGit2;
+    if (stagingNewWorktree) return FolderGit2;
     return isAtProjectRoot ? Folder : FolderGit2;
   });
   let triggerIconName = $derived.by(() => {
-    if (intent.mode === 'new-worktree') return 'folder-git-2';
+    if (stagingNewWorktree) return 'folder-git-2';
     return isAtProjectRoot ? 'folder' : 'folder-git-2';
   });
 
@@ -384,14 +390,14 @@
   <Menu ariaLabel="Workspace" onClose={closeMenu}>
     <MenuItem
       label={projectPath ? `Local · ${pathBasename(projectPath)}` : 'Local'}
-      checked={isAtProjectRoot && intent.mode !== 'new-worktree'}
+      checked={isAtProjectRoot && !stagingNewWorktree}
       disabled={!projectPath || workspaceChangingDisabled}
       title={workspaceChangingDisabled ? disabledReason : undefined}
       onSelect={() => selectPath(projectPath)}
     />
     <MenuItem
       label="New Worktree"
-      checked={intent.mode === 'new-worktree'}
+      checked={stagingNewWorktree}
       disabled={workspaceChangingDisabled}
       title={workspaceChangingDisabled ? disabledReason : undefined}
       onSelect={selectNewWorktree}
@@ -470,7 +476,7 @@
           {:else}
             <MenuItem
               label={wt.branch ? `${pathBasename(wt.path) || wt.path} · ${wt.branch}` : pathBasename(wt.path) || wt.path}
-              checked={sameNormalizedPath(currentWorkspace, wt.path) && intent.mode !== 'new-worktree'}
+              checked={sameNormalizedPath(currentWorkspace, wt.path) && !stagingNewWorktree}
               disabled={workspaceChangingDisabled}
               title={workspaceChangingDisabled ? disabledReason : undefined}
               onSelect={() => selectPath(wt.path)}

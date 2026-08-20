@@ -1193,9 +1193,10 @@ describe('<Composer>', () => {
   });
 
   it('prepares a pending worktree before implementing the current plan', async () => {
-    const initialThread = makeTestThread({ branch: 'main' });
+    const initialThread = makeTestThread({ branch: 'main', projectId: 'project-1' });
     const worktreeThread = makeTestThread({
       branch: 'feature/custom',
+      projectId: 'project-1',
       workspacePath: '/tmp/wt-feature',
       worktreePath: '/tmp/wt-feature',
     });
@@ -1218,7 +1219,11 @@ describe('<Composer>', () => {
     setNewBranchBase(pane.thread, 'release');
     setNewBranchName(pane.thread, 'feature/custom');
     setBindingMock('ListProposedPlanComments', async () => []);
+    // A thread with history owns its own move: the thread-scoped engine cuts
+    // the worktree AND lands the row on it in one call, so there is no
+    // separate bind step here.
     const prepare = setBindingMock('PrepareThreadWorktree', async () => worktreeThread);
+    const bind = setBindingMock('UpdateThreadWorkspace', async () => worktreeThread);
     const send = setBindingMock('SendMessageWithOptions', async () => worktreeThread);
 
     const { getByTestId, findByText } = render(Composer, { props: { pane, draft } });
@@ -1226,6 +1231,7 @@ describe('<Composer>', () => {
     await fireEvent.click(getByTestId('composer-send'));
 
     expect(prepare).toHaveBeenCalledWith('thread-1', 'release', 'feature/custom', false);
+    expect(bind).not.toHaveBeenCalled();
     await waitFor(() => {
       expect(send).toHaveBeenCalledWith('thread-1', 'Implement the plan.', {
         attachmentIds: [],
@@ -1744,9 +1750,17 @@ describe('<Composer>', () => {
   });
 
   it('prepares a pending worktree before sending', async () => {
-    const initialThread = makeTestThread({ branch: 'main' });
+    // A materialized DRAFT row: the project-scoped engine cuts the worktree
+    // and the row is bound to it here, at send time — deferred so an emptied
+    // draft with a cut worktree can still dematerialize.
+    const initialThread = makeTestThread({
+      branch: 'main',
+      projectId: 'project-1',
+      isDraft: true,
+    });
     const worktreeThread = makeTestThread({
       branch: 'feature/custom',
+      projectId: 'project-1',
       workspacePath: '/tmp/wt-feature',
       worktreePath: '/tmp/wt-feature',
     });
@@ -1758,27 +1772,45 @@ describe('<Composer>', () => {
     setNewBranchBase(pane.thread, 'release');
     setNewBranchName(pane.thread, 'feature/custom');
 
-    const prepare = setBindingMock('PrepareThreadWorktree', async () => worktreeThread);
+    // Two steps now: the worktree is cut against the PROJECT, then the row is
+    // bound to it. Both must land before the message goes out.
+    const prepare = setBindingMock('PrepareProjectWorktree', async () => ({
+      worktreePath: '/tmp/wt-feature',
+      branch: 'feature/custom',
+    }));
+    const bind = setBindingMock('UpdateThreadWorkspace', async () => worktreeThread);
     const send = setBindingMock('SendMessageWithOptions', async () => worktreeThread);
 
     const { getByLabelText, getByTestId } = render(Composer, { props: { pane, draft } });
     await fireEvent.input(getByLabelText('Message Input'), { target: { value: 'work there' } });
     await fireEvent.click(getByTestId('composer-send'));
 
-    expect(prepare).toHaveBeenCalledWith('thread-1', 'release', 'feature/custom', false);
+    expect(prepare).toHaveBeenCalledWith(
+      'project-1',
+      'release',
+      'feature/custom',
+      false,
+      '/tmp/workspace',
+    );
     await waitFor(() => {
       expect(send).toHaveBeenCalledWith('thread-1', 'work there', {
         attachmentIds: [],
       });
     });
-    expect(prepare.mock.invocationCallOrder[0]).toBeLessThan(send.mock.invocationCallOrder[0]);
+    expect(bind).toHaveBeenCalledWith('thread-1', '/tmp/wt-feature');
+    expect(bind.mock.invocationCallOrder[0]).toBeLessThan(send.mock.invocationCallOrder[0]);
     expect(pane.thread?.worktreePath).toBe('/tmp/wt-feature');
   });
 
   it('shows worktree preparation status while creating the worktree', async () => {
-    const initialThread = makeTestThread({ branch: 'main' });
+    const initialThread = makeTestThread({
+      branch: 'main',
+      projectId: 'project-1',
+      isDraft: true,
+    });
     const worktreeThread = makeTestThread({
       branch: 'feature/custom',
+      projectId: 'project-1',
       workspacePath: '/tmp/wt-feature',
       worktreePath: '/tmp/wt-feature',
     });
@@ -1791,12 +1823,13 @@ describe('<Composer>', () => {
     setNewBranchName(pane.thread, 'feature/custom');
 
     let finishPrepare!: () => void;
-    setBindingMock('PrepareThreadWorktree', async () => {
+    setBindingMock('PrepareProjectWorktree', async () => {
       await new Promise<void>((resolve) => {
         finishPrepare = resolve;
       });
-      return worktreeThread;
+      return { worktreePath: '/tmp/wt-feature', branch: 'feature/custom' };
     });
+    setBindingMock('UpdateThreadWorkspace', async () => worktreeThread);
     setBindingMock('SendMessageWithOptions', async () => worktreeThread);
 
     const { getByLabelText, getByTestId, queryByTestId } = render(Composer, { props: { pane, draft } });

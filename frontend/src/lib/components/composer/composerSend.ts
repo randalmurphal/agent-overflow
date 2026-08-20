@@ -19,7 +19,6 @@ import {
   projectSendStarted,
 } from '../../stores/threadStatuses.svelte';
 import type { SourceDiffReview, SourceProposedPlan, Thread } from '../../types/models';
-import { prepareThreadWorktreeIntent } from '../../stores/worktreeIntentMaterialize';
 import { buildSendOptions } from '../../utils/sendOptions';
 
 export interface SendOptions {
@@ -58,36 +57,25 @@ export interface SendOptions {
     terminalChips: TerminalChip[];
     sourceProposedPlan?: SourceProposedPlan | null;
   };
-  /** Currently-focused Thread object — needed to promote a draft thread. */
-  currentThread: Thread | null;
   restoreDraft: (threadId: string, snapshot: SendOptions['snapshot']) => Promise<void>;
   draftThreadId: () => string | null;
   reportError: (message: string) => void;
-  onWorktreePrepareStarted?: () => void;
-  onWorktreePrepareFinished?: () => void;
 }
 
 /**
- * Drive a send: promote a draft-thread if needed, dispatch SendMessage,
- * and restore the draft on failure. Callers are expected to set the
- * pane's local `sending` flag around this call so the UI reflects in-
- * flight state — this function intentionally knows nothing about it.
+ * Drive a send: dispatch SendMessage and restore the draft on failure.
+ * Callers are expected to set the pane's local `sending` flag around this
+ * call so the UI reflects in-flight state — this function intentionally
+ * knows nothing about it.
+ *
+ * The staged branch/worktree intent is NOT applied here. It has to be
+ * applied before the pane's draft placeholder materializes (that is what
+ * lets `CreateThread` carry the worktree), and by the time this runs the
+ * host has already materialized. `Composer.send` owns the ordering.
  */
 export async function dispatchSend(opts: SendOptions): Promise<boolean> {
   let sendStarted = false;
   try {
-    let threadForSend = opts.currentThread;
-    if (threadForSend) {
-      const updated = await prepareThreadWorktreeIntent({
-        thread: threadForSend,
-        onWorktreePrepareStarted: opts.onWorktreePrepareStarted,
-        onWorktreePrepareFinished: opts.onWorktreePrepareFinished,
-      });
-      if (updated) {
-        threadForSend = updated;
-      }
-    }
-
     // Optimistically flip the sidebar pill to Working the moment the
     // user clicks Send. Provider sessions for brand-new threads take
     // seconds to cold-start before the backend emits `turn_started`;

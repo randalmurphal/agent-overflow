@@ -26,12 +26,16 @@
   } from '../../stores/worktreeSetup.svelte';
   import { userFacingError } from '../../utils/userFacingError';
 
-  let { threadId }: { threadId: string } = $props();
+  // One key, two spaces: a thread id once a thread owns the run, or the
+  // store's workspace key while it is still the draft placeholder's unbound
+  // worktree. Every store call this panel makes is key-shaped, so the card
+  // itself does not have to know which it is looking at.
+  let { setupKey }: { setupKey: string } = $props();
 
   /** How long a succeeded run's card stays up before clearing itself. */
   const SUCCESS_LINGER_MS = 2500;
 
-  const view = $derived(getWorktreeSetup(threadId));
+  const view = $derived(getWorktreeSetup(setupKey));
   const running = $derived(view?.state === 'running');
   const failed = $derived(view?.state === 'failed');
 
@@ -55,7 +59,7 @@
   $effect(() => {
     const runId = succeededRunId;
     if (runId === null) return;
-    const timer = setTimeout(() => clearSettledWorktreeSetup(threadId, runId), SUCCESS_LINGER_MS);
+    const timer = setTimeout(() => clearSettledWorktreeSetup(setupKey, runId), SUCCESS_LINGER_MS);
     return () => clearTimeout(timer);
   });
 
@@ -83,7 +87,7 @@
     if (retrying) return;
     retrying = true;
     try {
-      await retryWorktreeSetup(threadId);
+      await retryWorktreeSetup(setupKey);
     } catch (err) {
       addToast('error', userFacingError(err, 'Failed to retry worktree setup'));
     } finally {
@@ -105,7 +109,7 @@
           type="button"
           class="text-fg-muted transition-colors hover:text-text-primary"
           data-testid="worktree-setup-show"
-          onclick={() => showWorktreeSetup(threadId)}
+          onclick={() => showWorktreeSetup(setupKey)}
         >Show</button>
         <span class="text-fg-muted" aria-hidden="true">·</span>
         <button
@@ -148,7 +152,7 @@
               type="button"
               class="shrink-0 text-[0.6875rem] text-fg-muted transition-colors hover:text-text-primary"
               data-testid="worktree-setup-dismiss"
-              onclick={() => dismissWorktreeSetup(threadId)}
+              onclick={() => dismissWorktreeSetup(setupKey)}
             >Dismiss</button>
           {/if}
         </div>

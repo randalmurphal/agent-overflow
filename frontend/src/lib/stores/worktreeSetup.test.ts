@@ -3,10 +3,18 @@ import type { WorktreeSetupEvent } from '../types/events';
 
 const GetThreadWorktreeSetup = vi.fn();
 const RetryThreadWorktreeSetup = vi.fn();
+const GetWorkspaceWorktreeSetup = vi.fn();
+const RetryWorkspaceWorktreeSetup = vi.fn();
 
-vi.mock('./bindings', () => ({
+// Spread the original: a factory listing only the four RPCs this suite drives
+// turns every OTHER export of ./bindings into `undefined` for it, and the
+// failure surfaces the next time something in the import graph reaches for one.
+vi.mock('./bindings', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./bindings')>()),
   GetThreadWorktreeSetup: (...args: unknown[]) => GetThreadWorktreeSetup(...args),
   RetryThreadWorktreeSetup: (...args: unknown[]) => RetryThreadWorktreeSetup(...args),
+  GetWorkspaceWorktreeSetup: (...args: unknown[]) => GetWorkspaceWorktreeSetup(...args),
+  RetryWorkspaceWorktreeSetup: (...args: unknown[]) => RetryWorkspaceWorktreeSetup(...args),
 }));
 
 const {
@@ -15,10 +23,13 @@ const {
   dismissWorktreeSetup,
   getWorktreeSetup,
   hasWorktreeSetupSurface,
+  hydrateWorkspaceWorktreeSetup,
   hydrateWorktreeSetup,
   resetWorktreeSetupForTest,
+  resyncWorkspaceWorktreeSetups,
   retryWorktreeSetup,
   showWorktreeSetup,
+  workspaceSetupKey,
 } = await import('./worktreeSetup.svelte');
 
 const THREAD = 't1';
@@ -45,6 +56,152 @@ beforeEach(() => {
   resetWorktreeSetupForTest();
   GetThreadWorktreeSetup.mockReset();
   RetryThreadWorktreeSetup.mockReset();
+  GetWorkspaceWorktreeSetup.mockReset();
+  RetryWorkspaceWorktreeSetup.mockReset();
+});
+
+// A pre-thread run: the eager worktree apply is project-scoped, so the
+// backend registers the run against the workspace and its frames carry no
+// thread id.
+const WS_PATH = '/wt/pre-thread';
+// The key space joins with the repo's compositeKey separator (NUL), not a
+// colon: the other key space is a raw thread id, and a colon is a byte an id
+// may legitimately contain.
+const WS_KEY = `ws\u0000${WS_PATH}`;
+
+function unboundStarted(runId = 'run-ws'): WorktreeSetupEvent {
+  return {
+    phase: 'started',
+    threadId: '',
+    runId,
+    worktreePath: WS_PATH,
+    startedAt: 500,
+    steps: [{ index: 0, kind: 'copy', label: 'Copy files' }],
+  };
+}
+
+describe('workspace-keyed runs', () => {
+  it('keys a frame with no thread id under the workspace', () => {
+    applyWorktreeSetupEvent(unboundStarted());
+    expect(workspaceSetupKey(WS_PATH)).toBe(WS_KEY);
+    expect(getWorktreeSetup(WS_KEY)?.runId).toBe('run-ws');
+    expect(getWorktreeSetup(WS_KEY)?.worktreePath).toBe(WS_PATH);
+    // Nothing lands under a thread key: there is no thread yet.
+    expect(getWorktreeSetup(THREAD)).toBeNull();
+  });
+
+  it('streams output and outcome under the workspace key', () => {
+    applyWorktreeSetupEvent(unboundStarted());
+    applyWorktreeSetupEvent({
+      phase: 'output', threadId: '', worktreePath: WS_PATH, runId: 'run-ws',
+      stepIndex: 0, seq: 1, chunk: 'copying\n',
+    });
+    applyWorktreeSetupEvent({
+      phase: 'finished', threadId: '', worktreePath: WS_PATH, runId: 'run-ws',
+      state: 'failed', error: 'copy failed', finishedAt: 900,
+    });
+    const view = getWorktreeSetup(WS_KEY);
+    expect(view?.output).toBe('copying\n');
+    expect(view?.state).toBe('failed');
+    expect(view?.error).toBe('copy failed');
+  });
+
+  it('migrates the run to the thread key when the adoption frame arrives', () => {
+    applyWorktreeSetupEvent(unboundStarted());
+    expect(hasWorktreeSetupSurface(WS_KEY)).toBe(true);
+
+    // CreateThread adopted the unbound run; the backend re-emits it with both
+    // ids so a client that watched the workspace lands on the thread.
+    applyWorktreeSetupEvent({ ...unboundStarted(), threadId: THREAD });
+
+    expect(getWorktreeSetup(THREAD)?.runId).toBe('run-ws');
+    // Exactly one card: the workspace box is dropped in the same tick.
+    expect(getWorktreeSetup(WS_KEY)).toBeNull();
+    expect(hasWorktreeSetupSurface(WS_KEY)).toBe(false);
+  });
+
+  it('carries the run\'s progress and the collapse across adoption', () => {
+    applyWorktreeSetupEvent(unboundStarted());
+    applyWorktreeSetupEvent({
+      phase: 'output', threadId: '', worktreePath: WS_PATH, runId: 'run-ws',
+      stepIndex: 0, seq: 1, chunk: 'copying\n',
+    });
+    dismissWorktreeSetup(WS_KEY);
+
+    // The adoption frame is started-SHAPED but describes a run already in
+    // flight, so it hands over the statuses, the transcript and its sequence.
+    applyWorktreeSetupEvent({
+      ...unboundStarted(),
+      threadId: THREAD,
+      stepStatuses: ['running'],
+      output: 'copying\n',
+      outputSeq: 1,
+    });
+
+    const view = getWorktreeSetup(THREAD);
+    expect(view?.stepStatuses).toEqual(['running']);
+    expect(view?.output).toBe('copying\n');
+    expect(view?.outputSeq).toBe(1);
+    // Adoption is not a new run: the card the user collapsed stays collapsed.
+    expect(view?.dismissed).toBe(true);
+    // And the next live chunk is the expected one, so no gap is reported.
+    applyWorktreeSetupEvent({
+      phase: 'output', threadId: THREAD, worktreePath: WS_PATH, runId: 'run-ws',
+      stepIndex: 0, seq: 2, chunk: 'done\n',
+    });
+    expect(getWorktreeSetup(THREAD)?.output).toBe('copying\ndone\n');
+    expect(GetThreadWorktreeSetup).not.toHaveBeenCalled();
+  });
+
+  it('re-snapshots workspace-keyed runs on a transport gap', async () => {
+    GetWorkspaceWorktreeSetup.mockResolvedValue({
+      threadId: '', runId: 'run-ws', state: 'running', worktreePath: WS_PATH,
+      steps: unboundStarted().steps, stepStatuses: ['running'],
+      output: 'a\n', outputSeq: 1,
+    });
+    await hydrateWorkspaceWorktreeSetup('project-1', WS_PATH);
+    GetWorkspaceWorktreeSetup.mockClear();
+
+    // A pre-thread run has no row, so the thread-list walk cannot reach it.
+    resyncWorkspaceWorktreeSetups();
+    await Promise.resolve();
+    expect(GetWorkspaceWorktreeSetup).toHaveBeenCalledWith('project-1', WS_PATH);
+  });
+
+  it('hydrates the workspace snapshot and retries through the workspace RPC', async () => {
+    GetWorkspaceWorktreeSetup.mockResolvedValue({
+      threadId: '', runId: 'run-ws', state: 'failed', worktreePath: WS_PATH,
+      steps: unboundStarted().steps, stepStatuses: ['failed'],
+      output: 'boom\n', outputSeq: 1, error: 'exit 1',
+    });
+    await hydrateWorkspaceWorktreeSetup('project-1', WS_PATH);
+    expect(GetWorkspaceWorktreeSetup).toHaveBeenCalledWith('project-1', WS_PATH);
+    expect(getWorktreeSetup(WS_KEY)?.state).toBe('failed');
+
+    RetryWorkspaceWorktreeSetup.mockResolvedValue(undefined);
+    await retryWorktreeSetup(WS_KEY);
+    expect(RetryWorkspaceWorktreeSetup).toHaveBeenCalledWith('project-1', WS_PATH);
+    expect(RetryThreadWorktreeSetup).not.toHaveBeenCalled();
+    expect(getWorktreeSetup(WS_KEY)?.state).toBe('running');
+  });
+
+  it('re-snapshots the workspace, not a thread, on a detected frame gap', async () => {
+    GetWorkspaceWorktreeSetup.mockResolvedValue({
+      threadId: '', runId: 'run-ws', state: 'running', worktreePath: WS_PATH,
+      steps: unboundStarted().steps, stepStatuses: ['running'],
+      output: 'a\nb\n', outputSeq: 2,
+    });
+    await hydrateWorkspaceWorktreeSetup('project-1', WS_PATH);
+    GetWorkspaceWorktreeSetup.mockClear();
+
+    applyWorktreeSetupEvent({
+      phase: 'output', threadId: '', worktreePath: WS_PATH, runId: 'run-ws',
+      stepIndex: 0, seq: 9, chunk: 'jumped\n',
+    });
+
+    expect(GetWorkspaceWorktreeSetup).toHaveBeenCalledWith('project-1', WS_PATH);
+    expect(GetThreadWorktreeSetup).not.toHaveBeenCalled();
+  });
 });
 
 describe('event projection', () => {

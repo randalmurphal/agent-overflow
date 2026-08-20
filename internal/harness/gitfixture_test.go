@@ -39,6 +39,35 @@ func TestCreateRepoBuildsHistoryAndDirtyState(t *testing.T) {
 	}
 }
 
+func TestCreateRepoExtraBranchesExistUncheckedOut(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "repo")
+	err := CreateRepo(dir, RepoSpec{
+		Commits:  []CommitSpec{{Message: "first", Files: map[string]string{"a.txt": "a\n"}}},
+		Branches: []string{"existing-work", "feature/nested"},
+	})
+	if err != nil {
+		t.Fatalf("CreateRepo: %v", err)
+	}
+	branches := gitOut(t, dir, "branch", "--format=%(refname:short)")
+	for _, want := range []string{"main", "existing-work", "feature/nested"} {
+		if !strings.Contains(branches, want) {
+			t.Fatalf("branch %q missing from %q", want, branches)
+		}
+	}
+	// The point of the field: the extra branches are attachable, which
+	// means nothing may have them checked out.
+	if current := strings.TrimSpace(gitOut(t, dir, "branch", "--show-current")); current != "main" {
+		t.Fatalf("current branch = %q, want main", current)
+	}
+}
+
+func TestCreateRepoRejectsBlankBranchName(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "repo")
+	if err := CreateRepo(dir, RepoSpec{Branches: []string{"  "}}); err == nil {
+		t.Fatal("CreateRepo accepted a blank branch name")
+	}
+}
+
 func TestCreateRepoEmptySpecStillHasHead(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "repo")
 	if err := CreateRepo(dir, RepoSpec{}); err != nil {

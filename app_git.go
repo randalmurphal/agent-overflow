@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -431,31 +432,15 @@ func (a *App) GitCreateBranchFrom(threadID, name, baseBranch string, carryLocalC
 		return store.Thread{}, err
 	}
 
-	name = strings.TrimSpace(name)
-	if name == "" {
-		return store.Thread{}, fmt.Errorf("create branch: name is required")
-	}
-	sanitized := gitops.SanitizeBranchNamePreservingSlashes(name)
-	if sanitized == "" {
-		return store.Thread{}, fmt.Errorf("create branch: name %q is not a valid branch name", name)
-	}
-
 	core := a.gitCore()
 	currentBranch := strings.TrimSpace(thread.Branch)
 	if currentBranch == "" {
 		currentBranch = core.CurrentBranch(workspace)
 	}
-	resolvedBase := strings.TrimSpace(baseBranch)
-	if resolvedBase == "" {
-		resolvedBase = currentBranch
-	}
-	if resolvedBase == "" {
-		return store.Thread{}, fmt.Errorf("create branch: base branch is required")
-	}
-
-	baseIsCurrent := resolvedBase == currentBranch
-	if carryLocalChanges && !baseIsCurrent {
-		return store.Thread{}, fmt.Errorf("create branch: 'Local with changes' only applies when the base matches the current branch")
+	sanitized, resolvedBase, baseIsCurrent, err := resolveBranchCreatePlan(
+		currentBranch, name, baseBranch, carryLocalChanges)
+	if err != nil {
+		return store.Thread{}, err
 	}
 
 	if !baseIsCurrent {
@@ -467,41 +452,8 @@ func (a *App) GitCreateBranchFrom(threadID, name, baseBranch string, carryLocalC
 		}
 	}
 
-	if baseIsCurrent {
-		// Working tree (clean or dirty) stays attached to the new branch.
-		// CheckoutNewBranch validates the name through the package's
-		// branch-name gate so a flag-shaped string can't reach argv.
-		if err := core.CheckoutNewBranch(workspace, sanitized); err != nil {
-			return store.Thread{}, fmt.Errorf("create branch: %w", err)
-		}
-	} else {
-		// Destructive path: stash everything, checkout the base, branch
-		// off it, drop the stash. The frontend has surfaced the warning.
-		// Both checkout calls route through the package's typed wrappers
-		// (Checkout / CheckoutNewBranch) so flag injection in the base
-		// branch name is impossible regardless of the caller's input.
-		stashMessage := fmt.Sprintf("ao-discard-%s", gitops.RandomStashSuffix())
-		stashed, err := core.StashPushIncludeUntracked(workspace, stashMessage)
-		if err != nil {
-			return store.Thread{}, fmt.Errorf("create branch: stash before discard: %w", err)
-		}
-		if err := core.Checkout(workspace, resolvedBase); err != nil {
-			if stashed {
-				a.restoreStashOnError(workspace, stashMessage)
-			}
-			return store.Thread{}, fmt.Errorf("create branch: checkout base %s: %w", resolvedBase, err)
-		}
-		if err := core.CheckoutNewBranch(workspace, sanitized); err != nil {
-			if stashed {
-				a.restoreStashOnError(workspace, stashMessage)
-			}
-			return store.Thread{}, fmt.Errorf("create branch: %w", err)
-		}
-		if stashed {
-			if err := core.StashDropByMessage(workspace, stashMessage); err != nil {
-				log.Printf("create branch: drop discarded stash %q: %v", stashMessage, err)
-			}
-		}
+	if err := a.createBranchInWorkspace(workspace, sanitized, resolvedBase, baseIsCurrent); err != nil {
+		return store.Thread{}, err
 	}
 
 	if a.workspaceFiles != nil {
@@ -512,6 +464,99 @@ func (a *App) GitCreateBranchFrom(threadID, name, baseBranch string, carryLocalC
 		return store.Thread{}, err
 	}
 	return thread, nil
+}
+
+// errCarryRequiresCurrentBase is the ONE refusal every "Local with changes"
+// check issues. Carrying uncommitted work forward is a move; carrying it onto
+// an unrelated base is a rebase, which is a different request the UI does not
+// offer. Four call sites used to spell this sentence out verbatim — the two
+// branch-create paths through resolveBranchCreatePlan below, and the two
+// worktree-cut paths that wrap it with their own "create worktree: " prefix.
+//
+// Callers wrap it with %w behind their operation name. The final `: `-segment
+// must stand alone: the frontend's userFacingError keeps only that segment.
+var errCarryRequiresCurrentBase = errors.New("'Local with changes' only applies when the base matches the current branch")
+
+// resolveBranchCreatePlan is the whole policy of "create branch <name> off
+// <base>", shared by the thread-scoped (GitCreateBranchFrom) and
+// project-scoped (CreateProjectBranch) entry points: name validation, base
+// defaulting, the base-is-current decision that selects between the two git
+// sequences in createBranchInWorkspace, and the carry refusal.
+//
+// currentBranch is the branch of the checkout the caller is about to mutate —
+// the one thing only the caller can resolve, and the one thing that must not
+// be guessed at from the project root when the caller is in a worktree.
+func resolveBranchCreatePlan(currentBranch, name, base string, carryLocalChanges bool) (string, string, bool, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return "", "", false, fmt.Errorf("create branch: name is required")
+	}
+	sanitized := gitops.SanitizeBranchNamePreservingSlashes(name)
+	if sanitized == "" {
+		return "", "", false, fmt.Errorf("create branch: name %q is not a valid branch name", name)
+	}
+	resolvedBase := strings.TrimSpace(base)
+	if resolvedBase == "" {
+		resolvedBase = currentBranch
+	}
+	if resolvedBase == "" {
+		return "", "", false, fmt.Errorf("create branch: base branch is required")
+	}
+	baseIsCurrent := resolvedBase == currentBranch
+	if carryLocalChanges && !baseIsCurrent {
+		return "", "", false, fmt.Errorf("create branch: %w", errCarryRequiresCurrentBase)
+	}
+	return sanitized, resolvedBase, baseIsCurrent, nil
+}
+
+// createBranchInWorkspace performs the checkout half of "branch off base" in a
+// checkout the caller has already decided it may mutate: the thread's workspace
+// (GitCreateBranchFrom) or a project root a draft is branching
+// (CreateProjectBranch). name must already be sanitized, and baseIsCurrent must
+// already have been computed against that checkout's current branch — this
+// helper owns the two git sequences, not the policy that chooses between them.
+//
+// The destructive branch (baseIsCurrent == false) stashes everything, checks
+// out the base, branches off it, and drops the stash. The frontend has surfaced
+// the "discards uncommitted changes" warning by the time we get here. Both
+// checkout calls route through the package's typed wrappers (Checkout /
+// CheckoutNewBranch) so flag injection in the base branch name is impossible
+// regardless of the caller's input.
+func (a *App) createBranchInWorkspace(workspace, name, resolvedBase string, baseIsCurrent bool) error {
+	core := a.gitCore()
+	if baseIsCurrent {
+		// Working tree (clean or dirty) stays attached to the new branch.
+		// CheckoutNewBranch validates the name through the package's
+		// branch-name gate so a flag-shaped string can't reach argv.
+		if err := core.CheckoutNewBranch(workspace, name); err != nil {
+			return fmt.Errorf("create branch: %w", err)
+		}
+		return nil
+	}
+
+	stashMessage := fmt.Sprintf("ao-discard-%s", gitops.RandomStashSuffix())
+	stashed, err := core.StashPushIncludeUntracked(workspace, stashMessage)
+	if err != nil {
+		return fmt.Errorf("create branch: stash before discard: %w", err)
+	}
+	if err := core.Checkout(workspace, resolvedBase); err != nil {
+		if stashed {
+			a.restoreStashOnError(workspace, stashMessage)
+		}
+		return fmt.Errorf("create branch: checkout base %s: %w", resolvedBase, err)
+	}
+	if err := core.CheckoutNewBranch(workspace, name); err != nil {
+		if stashed {
+			a.restoreStashOnError(workspace, stashMessage)
+		}
+		return fmt.Errorf("create branch: %w", err)
+	}
+	if stashed {
+		if err := core.StashDropByMessage(workspace, stashMessage); err != nil {
+			log.Printf("create branch: drop discarded stash %q: %v", stashMessage, err)
+		}
+	}
+	return nil
 }
 
 // GitCreatePR opens a pull request for the workspace's current branch. When

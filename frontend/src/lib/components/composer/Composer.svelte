@@ -49,7 +49,11 @@
     refreshDiffReviewComments,
   } from '../../stores/diffReviewComments.svelte';
   import { addToast } from '../../stores/toast.svelte';
-  import { isWorktreeIntentApplying } from '../../stores/worktreeIntent.svelte';
+  import {
+    hasStagedWorktreeIntent,
+    isWorktreeIntentApplying,
+  } from '../../stores/worktreeIntent.svelte';
+  import { prepareThreadWorktreeIntent } from '../../stores/worktreeIntentMaterialize';
   import { providerSupports } from '../../providers/catalog';
   import { registerQueueItem } from '../../stores/sendQueue.svelte';
   import { registerComposerDraft } from '../../stores/composerDraftRegistry.svelte';
@@ -364,6 +368,33 @@
     });
   });
 
+  /**
+   * Apply + bind the pane's staged branch/worktree choice. Returns false
+   * when the workspace could not be produced — the send must not continue,
+   * and the draft is still untouched at this point, so the user keeps
+   * everything they typed.
+   */
+  async function prepareWorktreeForSend(): Promise<boolean> {
+    try {
+      await prepareThreadWorktreeIntent({
+        pane,
+        onWorktreePrepareStarted: () => {
+          preparingWorktree = true;
+        },
+        onWorktreePrepareFinished: () => {
+          preparingWorktree = false;
+        },
+      });
+      return true;
+    } catch (err) {
+      console.error('Failed to prepare the thread workspace:', err);
+      pane.setGeneralError(`Failed to prepare the workspace: ${errString(err)}`);
+      return false;
+    } finally {
+      preparingWorktree = false;
+    }
+  }
+
   async function send(includeReviewComments = true) {
     if (!canSend) return;
     // Intercepted commands (`/model`, `/clear`, `/compact`, …) are decided
@@ -378,6 +409,15 @@
       resetTextareaHeight();
       return;
     }
+    // Before materialization, not after: applying the staged intent stamps
+    // the pane's draft placeholder, and it is that stamp CreateThread reads
+    // to put the new row straight into the worktree (and to let the backend
+    // adopt the setup run that is already streaming). A materialized row
+    // takes the same call, which binds it with UpdateThreadWorkspace.
+    // Gated synchronously: an unstaged send must not pick up an extra
+    // microtask on its way to the wire (the mid-turn queue path below races
+    // a draft restore that the backend can push during RegisterQueueItem).
+    if (hasStagedWorktreeIntent(pane.thread) && !(await prepareWorktreeForSend())) return;
     if (!pane.threadId) {
       if (!(await pane.ensureMaterializedThread())) return;
     }
@@ -490,7 +530,6 @@
 
     const threadId = pane.threadId;
     if (!threadId) return;
-    const thread = pane.thread;
     sending = true;
     pane.setSendInFlight(true);
     // Capture the pre-send draft contents bound to THIS thread. If the user
@@ -549,16 +588,9 @@
           ? diffReviewCommentsForSend.map((comment) => comment.id)
           : undefined,
         snapshot,
-        currentThread: thread,
         restoreDraft: (tid, snap) => draft.restoreDraftFor(tid, snap),
         draftThreadId: () => draft.threadId,
         reportError: (msg) => sendPane.setGeneralError(msg),
-        onWorktreePrepareStarted: () => {
-          preparingWorktree = true;
-        },
-        onWorktreePrepareFinished: () => {
-          preparingWorktree = false;
-        },
       });
       // `dispatchSend` awaits, and the user can switch this pane to
       // another thread while it does. The optimistic row belongs to

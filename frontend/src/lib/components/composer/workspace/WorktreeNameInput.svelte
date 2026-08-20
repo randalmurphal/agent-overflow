@@ -76,13 +76,13 @@
     applying = true;
     const wasWorktree = intent.mode === 'new-worktree';
     try {
-      const updated = await applyWorktreeIntentNow(pane);
-      if (updated) {
+      const applied = await applyWorktreeIntentNow(pane);
+      if (applied) {
         addToast(
           'info',
           wasWorktree
-            ? `Created worktree on ${updated.branch || 'new branch'}`
-            : `Created branch ${updated.branch || intent.newBranchName}`,
+            ? `Created worktree on ${applied.branch || 'new branch'}`
+            : `Created branch ${applied.branch || intent.newBranchName}`,
         );
       }
     } catch (err) {

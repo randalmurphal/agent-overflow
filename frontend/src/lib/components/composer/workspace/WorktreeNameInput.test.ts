@@ -14,23 +14,36 @@ import {
   setThreadEnvMode,
   worktreeIntentForThread,
 } from '../../../stores/worktreeIntent.svelte';
+import { resetWorktreeIntentMaterializeForTest } from '../../../stores/worktreeIntentMaterialize';
 import { buildPane, makeThread } from '../../../../test/helpers/chat';
 import { makeWorkspaceLock } from '../../../../test/helpers/workspaceLock';
 
+// The confirm button's owner in these tests is a materialized DRAFT row —
+// the shape the composer's workspace strip is normally staged on. Ownership
+// is what picks the engine (see worktreeIntentMaterialize.ts): a draft goes
+// project-scoped and leaves the row where it is; a thread with history goes
+// thread-scoped, which the last test in this file covers.
 function threadOverrides() {
-  return { branch: 'main', workspacePath: '/repo', projectPath: '/repo', projectId: 'project-1' };
+  return {
+    branch: 'main',
+    workspacePath: '/repo',
+    projectPath: '/repo',
+    projectId: 'project-1',
+    isDraft: true,
+  };
 }
 
-async function buildWorktreePane() {
+async function buildWorktreePane(overrides: Record<string, unknown> = {}) {
   setBindingMock('ListLiveBackgroundTasks', async () => []);
   setBindingMock('GetWorkspaceActivity', async () => ({ activeTurnThreads: 0, runningBackgroundTasks: 0 }));
-  return buildPane(makeThread(threadOverrides()));
+  return buildPane(makeThread({ ...threadOverrides(), ...overrides }));
 }
 
 describe('<WorktreeNameInput>', () => {
   beforeEach(() => {
     resetBindingMocks();
     resetWorktreeIntent();
+    resetWorktreeIntentMaterializeForTest();
   });
 
   it('renders nothing without a staged intent', async () => {
@@ -45,8 +58,10 @@ describe('<WorktreeNameInput>', () => {
   it('applies a staged attach-worktree intent from the confirm button', async () => {
     const pane = await buildWorktreePane();
     setThreadEnvMode(pane.thread!, 'new-worktree');
-    const updated = makeThread({ ...threadOverrides(), branch: 'main', worktreePath: '/wt/main' });
-    setBindingMock('AttachThreadWorktree', async () => updated);
+    setBindingMock('AttachProjectWorktree', async () => ({
+      worktreePath: '/wt/main',
+      branch: 'main',
+    }));
 
     const { getByTestId } = render(WorktreeNameInput, {
       props: { pane, workspaceDirty: false, workspaceLock: makeWorkspaceLock() },
@@ -54,8 +69,13 @@ describe('<WorktreeNameInput>', () => {
     await fireEvent.click(getByTestId('apply-worktree-intent-button'));
 
     await waitFor(() => {
-      expect(getBindingMock('AttachThreadWorktree')!.mock.calls[0]).toEqual(['thread-1', 'main']);
-      expect(worktreeIntentForThread(pane.thread).mode).toBe('local');
+      // Project-scoped: the worktree exists after this, but the THREAD is not
+      // moved onto it until a send binds it.
+      expect(getBindingMock('AttachProjectWorktree')!.mock.calls[0]).toEqual(['project-1', 'main']);
+      expect(worktreeIntentForThread(pane.thread).applied).toEqual({
+        worktreePath: '/wt/main',
+        branch: 'main',
+      });
     });
   });
 
@@ -64,8 +84,10 @@ describe('<WorktreeNameInput>', () => {
     setThreadEnvMode(pane.thread!, 'new-worktree');
     enterCreateBranchMode(pane.thread!, { workspaceDirty: false, currentBranch: 'main' });
     setNewBranchName(pane.thread!, 'feat/button');
-    const updated = makeThread({ ...threadOverrides(), branch: 'feat/button' });
-    setBindingMock('PrepareThreadWorktree', async () => updated);
+    setBindingMock('PrepareProjectWorktree', async () => ({
+      worktreePath: '/wt/feat-button',
+      branch: 'feat/button',
+    }));
 
     const { getByTestId } = render(WorktreeNameInput, {
       props: { pane, workspaceDirty: false, workspaceLock: makeWorkspaceLock() },
@@ -73,13 +95,14 @@ describe('<WorktreeNameInput>', () => {
     await fireEvent.click(getByTestId('apply-worktree-intent-button'));
 
     await waitFor(() => {
-      expect(getBindingMock('PrepareThreadWorktree')!.mock.calls[0]).toEqual([
-        'thread-1',
+      expect(getBindingMock('PrepareProjectWorktree')!.mock.calls[0]).toEqual([
+        'project-1',
         'main',
         'feat/button',
         false,
+        '/repo',
       ]);
-      expect(worktreeIntentForThread(pane.thread).creatingBranch).toBe(false);
+      expect(worktreeIntentForThread(pane.thread).applied?.branch).toBe('feat/button');
     });
   });
 
@@ -87,8 +110,7 @@ describe('<WorktreeNameInput>', () => {
     const pane = await buildWorktreePane();
     enterCreateBranchMode(pane.thread!, { workspaceDirty: false, currentBranch: 'main' });
     setNewBranchName(pane.thread!, 'feat/enter');
-    const updated = makeThread({ ...threadOverrides(), branch: 'feat/enter' });
-    setBindingMock('GitCreateBranchFrom', async () => updated);
+    setBindingMock('CreateProjectBranch', async () => ({ worktreePath: '', branch: 'feat/enter' }));
 
     const { getByTestId } = render(WorktreeNameInput, {
       props: { pane, workspaceDirty: false, workspaceLock: makeWorkspaceLock() },
@@ -96,11 +118,12 @@ describe('<WorktreeNameInput>', () => {
     await fireEvent.keyDown(getByTestId('worktree-branch-name-input'), { key: 'Enter' });
 
     await waitFor(() => {
-      expect(getBindingMock('GitCreateBranchFrom')!.mock.calls[0]).toEqual([
-        'thread-1',
+      expect(getBindingMock('CreateProjectBranch')!.mock.calls[0]).toEqual([
+        'project-1',
         'feat/enter',
         'main',
         false,
+        '/repo',
       ]);
     });
   });
@@ -134,14 +157,13 @@ describe('<WorktreeNameInput>', () => {
   it('ignores repeat clicks while a slow apply is in flight', async () => {
     const pane = await buildWorktreePane();
     setThreadEnvMode(pane.thread!, 'new-worktree');
-    const updated = makeThread({ ...threadOverrides(), branch: 'main', worktreePath: '/wt/main' });
     let release!: () => void;
     const gate = new Promise<void>((resolve) => {
       release = resolve;
     });
-    setBindingMock('AttachThreadWorktree', async () => {
+    setBindingMock('AttachProjectWorktree', async () => {
       await gate;
-      return updated;
+      return { worktreePath: '/wt/main', branch: 'main' };
     });
 
     const { getByTestId } = render(WorktreeNameInput, {
@@ -153,15 +175,15 @@ describe('<WorktreeNameInput>', () => {
     release();
 
     await waitFor(() => {
-      expect(worktreeIntentForThread(pane.thread).mode).toBe('local');
+      expect(worktreeIntentForThread(pane.thread).applied).not.toBeNull();
     });
-    expect(getBindingMock('AttachThreadWorktree')!.mock.calls.length).toBe(1);
+    expect(getBindingMock('AttachProjectWorktree')!.mock.calls.length).toBe(1);
   });
 
   it('keeps the staged intent when the backend refuses', async () => {
     const pane = await buildWorktreePane();
     setThreadEnvMode(pane.thread!, 'new-worktree');
-    setBindingMock('AttachThreadWorktree', async () => {
+    setBindingMock('AttachProjectWorktree', async () => {
       throw new Error('worktree create failed: branch busy');
     });
 
@@ -171,11 +193,36 @@ describe('<WorktreeNameInput>', () => {
     await fireEvent.click(getByTestId('apply-worktree-intent-button'));
 
     await waitFor(() => {
-      expect(getBindingMock('AttachThreadWorktree')!.mock.calls.length).toBe(1);
+      expect(getBindingMock('AttachProjectWorktree')!.mock.calls.length).toBe(1);
       expect(
         (getByTestId('apply-worktree-intent-button') as HTMLButtonElement).disabled,
       ).toBe(false);
     });
     expect(worktreeIntentForThread(pane.thread).mode).toBe('new-worktree');
+  });
+
+  it('routes a thread with history through the thread-scoped engine', async () => {
+    const pane = await buildWorktreePane({ isDraft: false });
+    setThreadEnvMode(pane.thread!, 'new-worktree');
+    setBindingMock('AttachThreadWorktree', async () => ({
+      ...pane.thread,
+      worktreePath: '/wt/main',
+      workspacePath: '/wt/main',
+      branch: 'main',
+    }));
+
+    const { getByTestId } = render(WorktreeNameInput, {
+      props: { pane, workspaceDirty: false, workspaceLock: makeWorkspaceLock() },
+    });
+    await fireEvent.click(getByTestId('apply-worktree-intent-button'));
+
+    await waitFor(() => {
+      expect(getBindingMock('AttachThreadWorktree')!.mock.calls[0]).toEqual(['thread-1', 'main']);
+    });
+    // The thread-scoped engine moved the row itself, so nothing is left
+    // pending: the intent is cleared and `applied` is never set.
+    expect(getBindingMock('AttachProjectWorktree')).toBeUndefined();
+    expect(worktreeIntentForThread(pane.thread).applied).toBeNull();
+    expect(worktreeIntentForThread(pane.thread).mode).toBe('local');
   });
 });

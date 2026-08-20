@@ -1,10 +1,19 @@
-// Per-thread chat-thread worktree setup state.
+// Worktree setup state, keyed by whoever owns the run.
 //
-// The backend runs the project's setup recipe over a worktree it just cut for
-// a chat thread (app_worktree_setup.go) and streams every step, its output, and
-// its outcome on the `worktree:setup` channel. This store is the frontend
-// projection of that stream: one keyed box per thread, so a run streaming into
-// one pane does not invalidate every sidebar row.
+// The backend runs the project's setup recipe over a worktree it just cut
+// (app_worktree_setup.go) and streams every step, its output, and its outcome
+// on the `worktree:setup` channel. This store is the frontend projection of
+// that stream: one keyed box, so a run streaming into one pane does not
+// invalidate every sidebar row.
+//
+// There are TWO key spaces, because a run can start before any thread exists:
+// a draft's confirm-button or send-time worktree apply is project-scoped, so
+// its run is registered against the WORKSPACE and its frames carry an empty
+// `threadId`. Those land under `workspaceSetupKey(worktreePath)`. When a thread
+// finally moves into the worktree, the backend adopts the run and emits a
+// frame carrying BOTH ids — that frame writes the thread key and drops the
+// workspace one, so the pane's existing thread-keyed path takes over with no
+// gap and no duplicate card.
 //
 // Two things make it converge with the backend regardless of what a client
 // saw:
@@ -23,8 +32,44 @@
 // that still said "running", and nothing would ever correct it.
 
 import type { WorktreeSetupEvent } from '../types/events';
-import { GetThreadWorktreeSetup, RetryThreadWorktreeSetup } from './bindings';
+import {
+  GetThreadWorktreeSetup,
+  GetWorkspaceWorktreeSetup,
+  RetryThreadWorktreeSetup,
+  RetryWorkspaceWorktreeSetup,
+} from './bindings';
 import { createKeyedSignalRegistry } from './keyedSignalRegistry.svelte';
+import { COMPOSITE_KEY_SEPARATOR, compositeKey } from '../utils/compositeKey';
+
+const WORKSPACE_KEY_TAG = 'ws';
+const WORKSPACE_KEY_PREFIX = `${WORKSPACE_KEY_TAG}${COMPOSITE_KEY_SEPARATOR}`;
+
+/**
+ * Registry key for a setup run that no thread owns yet. Derivable from the
+ * event alone — the frames carry `worktreePath`, never a project id — which
+ * is why the project id needed for the RPCs is remembered separately below.
+ *
+ * The other key space is a raw thread id, so the join has to be one no thread
+ * id can produce. That is exactly what the repo's `compositeKey` guarantees
+ * (NUL, checked rather than assumed) — an ad-hoc `ws:` prefix would collide
+ * with any id containing a colon.
+ */
+export function workspaceSetupKey(worktreePath: string): string {
+  return compositeKey(WORKSPACE_KEY_TAG, worktreePath);
+}
+
+function workspacePathFromKey(key: string): string | null {
+  return key.startsWith(WORKSPACE_KEY_PREFIX)
+    ? key.slice(WORKSPACE_KEY_PREFIX.length)
+    : null;
+}
+
+// worktreePath → projectId, learned from whoever hydrates or retries a
+// workspace-keyed run. The RPCs need a project id the wire frames do not
+// carry; without an entry the gap-refetch simply doesn't run (the live
+// stream still applies), which is the right degradation for a key nobody
+// has claimed.
+const workspaceProjectIds = new Map<string, string>();
 
 export type WorktreeSetupState = 'idle' | 'running' | 'failed' | 'succeeded' | 'cancelled';
 export type WorktreeSetupStepStatus = 'pending' | 'running' | 'succeeded' | 'failed';
@@ -59,19 +104,19 @@ export interface WorktreeSetupView {
 
 const views = createKeyedSignalRegistry<WorktreeSetupView | null>(null);
 
-// Threads with a hydration in flight. Presence is what makes an event buffer
+// Keys with a hydration in flight. Presence is what makes an event buffer
 // rather than apply; the array is replayed after the snapshot lands.
 const hydrationBuffers = new Map<string, WorktreeSetupEvent[]>();
 const hydrationTokens = new Map<string, number>();
 let nextHydrationToken = 1;
 
-/** Tracked read. Null means this thread has nothing to show. */
-export function getWorktreeSetup(threadId: string): WorktreeSetupView | null {
-  return views.get(threadId);
+/** Tracked read. Null means this key has nothing to show. */
+export function getWorktreeSetup(key: string): WorktreeSetupView | null {
+  return views.get(key);
 }
 
 /**
- * True when the thread's panel should be mounted. Kept here rather than in the
+ * True when the key's panel should be mounted. Kept here rather than in the
  * pane so the lazy mount can gate on a cheap boolean without pulling the whole
  * view into a component that may never render it.
  *
@@ -80,26 +125,31 @@ export function getWorktreeSetup(threadId: string): WorktreeSetupView | null {
  * acknowledgement, and unmounting on the state flip would take the panel down
  * before it could show (and then clear) it.
  */
-export function hasWorktreeSetupSurface(threadId: string): boolean {
-  return views.get(threadId) !== null;
+export function hasWorktreeSetupSurface(key: string): boolean {
+  return views.get(key) !== null;
 }
 
-export function dropWorktreeSetup(threadId: string): void {
-  hydrationBuffers.delete(threadId);
-  hydrationTokens.delete(threadId);
-  views.drop(threadId);
+export function dropWorktreeSetup(key: string): void {
+  hydrationBuffers.delete(key);
+  hydrationTokens.delete(key);
+  // The project id is remembered only to serve a workspace key's RPCs. Once
+  // the key is gone it is unreachable bookkeeping, and this map has no other
+  // eviction — every dropped key would leak one entry for the session.
+  const worktreePath = workspacePathFromKey(key);
+  if (worktreePath !== null) workspaceProjectIds.delete(worktreePath);
+  views.drop(key);
 }
 
-export function dismissWorktreeSetup(threadId: string): void {
-  const view = views.get(threadId);
+export function dismissWorktreeSetup(key: string): void {
+  const view = views.get(key);
   if (!view || view.dismissed) return;
-  views.set(threadId, { ...view, dismissed: true });
+  views.set(key, { ...view, dismissed: true });
 }
 
-export function showWorktreeSetup(threadId: string): void {
-  const view = views.get(threadId);
+export function showWorktreeSetup(key: string): void {
+  const view = views.get(key);
   if (!view || !view.dismissed) return;
-  views.set(threadId, { ...view, dismissed: false });
+  views.set(key, { ...view, dismissed: false });
 }
 
 /**
@@ -108,11 +158,11 @@ export function showWorktreeSetup(threadId: string): void {
  * A running or failed run is left alone — neither is the user's to discard by
  * a timeout.
  */
-export function clearSettledWorktreeSetup(threadId: string, runId: string): void {
-  const view = views.get(threadId);
+export function clearSettledWorktreeSetup(key: string, runId: string): void {
+  const view = views.get(key);
   if (!view || view.runId !== runId) return;
   if (view.state === 'running' || view.state === 'failed') return;
-  views.drop(threadId);
+  views.drop(key);
 }
 
 /**
@@ -121,11 +171,15 @@ export function clearSettledWorktreeSetup(threadId: string, runId: string): void
  * without this the button would sit dead until it arrives. A rejected retry
  * restores the failure it was launched from, so the Retry affordance never
  * disappears on an error.
+ *
+ * One entry point for both key spaces: the panel renders the same card for a
+ * thread's run and for a placeholder's unbound one, and which RPC re-runs it
+ * is a property of the key, not of the surface.
  */
-export async function retryWorktreeSetup(threadId: string): Promise<void> {
-  const previous = views.get(threadId);
+export async function retryWorktreeSetup(key: string): Promise<void> {
+  const previous = views.get(key);
   if (previous) {
-    views.set(threadId, {
+    views.set(key, {
       ...previous,
       state: 'running',
       error: '',
@@ -134,9 +188,16 @@ export async function retryWorktreeSetup(threadId: string): Promise<void> {
     });
   }
   try {
-    await RetryThreadWorktreeSetup(threadId);
+    const worktreePath = workspacePathFromKey(key);
+    if (worktreePath === null) {
+      await RetryThreadWorktreeSetup(key);
+    } else {
+      const projectId = workspaceProjectIds.get(worktreePath);
+      if (!projectId) throw new Error('worktree setup: unknown project for this workspace');
+      await RetryWorkspaceWorktreeSetup(projectId, worktreePath);
+    }
   } catch (err) {
-    if (previous) views.set(threadId, previous);
+    if (previous) views.set(key, previous);
     throw err;
   }
 }
@@ -148,89 +209,179 @@ export async function retryWorktreeSetup(threadId: string): Promise<void> {
  */
 export async function hydrateWorktreeSetup(threadId: string): Promise<void> {
   if (!threadId) return;
+  await hydrateInto(threadId, () => GetThreadWorktreeSetup(threadId));
+}
+
+/**
+ * Snapshot for a run that no thread owns yet — the pre-thread worktree a draft
+ * placeholder's eager apply cut. Registers the project id so a later gap
+ * refetch and the Retry button can reach the workspace RPCs.
+ */
+export async function hydrateWorkspaceWorktreeSetup(
+  projectId: string,
+  worktreePath: string,
+): Promise<void> {
+  if (!projectId || !worktreePath) return;
+  workspaceProjectIds.set(worktreePath, projectId);
+  await hydrateInto(workspaceSetupKey(worktreePath), () =>
+    GetWorkspaceWorktreeSetup(projectId, worktreePath),
+  );
+}
+
+/**
+ * Transport-gap recovery for the workspace key space. The thread-keyed half is
+ * driven off the row's durable `worktreeSetupState`, which an unbound run does
+ * not have — the map of paths this client has claimed a project id for IS the
+ * list of workspace runs it is watching, so it is what gets re-snapshotted.
+ * Without this a gap left a pre-thread panel frozen on whatever it last saw.
+ */
+export function resyncWorkspaceWorktreeSetups(): void {
+  for (const [worktreePath, projectId] of [...workspaceProjectIds]) {
+    void hydrateWorkspaceWorktreeSetup(projectId, worktreePath);
+  }
+}
+
+async function hydrateInto(key: string, fetch: () => Promise<unknown>): Promise<void> {
   const token = nextHydrationToken++;
-  hydrationTokens.set(threadId, token);
+  hydrationTokens.set(key, token);
   // Buffer from here, not from when the response lands: an event that arrives
   // mid-flight describes state the snapshot may predate.
-  if (!hydrationBuffers.has(threadId)) hydrationBuffers.set(threadId, []);
+  if (!hydrationBuffers.has(key)) hydrationBuffers.set(key, []);
 
   let snapshot: unknown;
   try {
-    snapshot = await GetThreadWorktreeSetup(threadId);
+    snapshot = await fetch();
   } catch (err) {
-    // A failed hydration must not leave the thread buffering forever — the
+    // A failed hydration must not leave the key buffering forever — the
     // stream would go silent with no way back.
-    if (hydrationTokens.get(threadId) === token) {
-      hydrationTokens.delete(threadId);
-      const buffered = hydrationBuffers.get(threadId) ?? [];
-      hydrationBuffers.delete(threadId);
-      for (const evt of buffered) applyEvent(threadId, evt, true);
+    if (hydrationTokens.get(key) === token) {
+      hydrationTokens.delete(key);
+      const buffered = hydrationBuffers.get(key) ?? [];
+      hydrationBuffers.delete(key);
+      for (const evt of buffered) applyEvent(key, evt, true);
     }
-    console.warn(`worktreeSetup: hydrate thread ${threadId}: ${String(err)}`);
+    console.warn(`worktreeSetup: hydrate ${key}: ${String(err)}`);
     return;
   }
   // A newer hydration started while this one was in flight; it owns the buffer
   // and will replay everything this one would have.
-  if (hydrationTokens.get(threadId) !== token) return;
-  hydrationTokens.delete(threadId);
-  const buffered = hydrationBuffers.get(threadId) ?? [];
-  hydrationBuffers.delete(threadId);
+  if (hydrationTokens.get(key) !== token) return;
+  hydrationTokens.delete(key);
+  const buffered = hydrationBuffers.get(key) ?? [];
+  hydrationBuffers.delete(key);
 
-  const dismissed = views.get(threadId)?.dismissed ?? false;
-  views.set(threadId, viewFromSnapshot(snapshot, dismissed));
+  const dismissed = views.get(key)?.dismissed ?? false;
+  views.set(key, viewFromSnapshot(snapshot, dismissed));
   // Replayed as reconciliation, not as live input: a chunk still ahead of the
   // snapshot here must not start another hydration, or a fast-streaming run
   // could re-enter this path indefinitely.
-  for (const evt of buffered) applyEvent(threadId, evt, true);
+  for (const evt of buffered) applyEvent(key, evt, true);
 }
 
 /** Fan-in target of eventsWorktreeSetup.ts. */
 export function applyWorktreeSetupEvent(evt: WorktreeSetupEvent): void {
-  const threadId = evt?.threadId;
-  if (!threadId) return;
-  const buffer = hydrationBuffers.get(threadId);
+  const threadId = evt?.threadId ?? '';
+  const worktreePath = evt?.worktreePath ?? '';
+  if (!threadId && !worktreePath) return;
+  const key = threadId || workspaceSetupKey(worktreePath);
+  const buffer = hydrationBuffers.get(key);
   if (buffer) {
     buffer.push(evt);
     return;
   }
-  applyEvent(threadId, evt, false);
+  // Adoption: the run this frame describes is now the thread's. The workspace
+  // box's one piece of purely local state is the user's collapse — a view
+  // preference about a card that is not moving on screen, so it rides across
+  // rather than snapping the panel back open.
+  const carried = threadId && worktreePath
+    ? (views.get(workspaceSetupKey(worktreePath))?.dismissed ?? null)
+    : null;
+  // Write the thread key BEFORE dropping the workspace one. ChatView's
+  // `setupKey` flips to the thread the moment the row exists, so a tick with
+  // the workspace box already gone and the thread box not yet written is a
+  // card that unmounts and remounts mid-run.
+  applyEvent(key, evt, false, carried);
+  if (threadId && worktreePath) dropWorkspaceKeyFor(worktreePath);
 }
 
-function applyEvent(threadId: string, evt: WorktreeSetupEvent, replaying: boolean): void {
+function dropWorkspaceKeyFor(worktreePath: string): void {
+  const key = workspaceSetupKey(worktreePath);
+  if (views.get(key) === null && !hydrationBuffers.has(key)) {
+    // Nothing keyed, but the project id learned for this path is now
+    // unreachable bookkeeping either way.
+    workspaceProjectIds.delete(worktreePath);
+    return;
+  }
+  dropWorktreeSetup(key);
+}
+
+/**
+ * Re-snapshot the run a key describes. Which RPC that is follows from the key
+ * space; a workspace key nobody has hydrated has no project id to ask with, so
+ * it is left to the live stream rather than guessed at.
+ */
+function rehydrate(key: string): void {
+  const worktreePath = workspacePathFromKey(key);
+  if (worktreePath === null) {
+    void hydrateWorktreeSetup(key);
+    return;
+  }
+  const projectId = workspaceProjectIds.get(worktreePath);
+  if (projectId) void hydrateWorkspaceWorktreeSetup(projectId, worktreePath);
+}
+
+function applyEvent(
+  key: string,
+  evt: WorktreeSetupEvent,
+  replaying: boolean,
+  carriedDismissed: boolean | null = null,
+): void {
   switch (evt.phase) {
-    case 'started':
-      views.set(threadId, {
+    case 'started': {
+      const steps = evt.steps ?? [];
+      // An ADOPTION frame is started-shaped but describes a run already in
+      // progress, so it carries the progress too. Resetting statuses to
+      // `pending` and the transcript to empty on that frame would rewind a
+      // client that had been watching the unbound run all along — and leave the
+      // next output chunk above the expected sequence, which reads as a lost
+      // frame and triggers a needless re-snapshot.
+      const stepStatuses = evt.stepStatuses?.length
+        ? steps.map((_, index) => normalizeStepStatus(evt.stepStatuses![index] ?? 'pending'))
+        : steps.map(() => 'pending' as const);
+      views.set(key, {
         runId: evt.runId ?? '',
         state: 'running',
-        steps: evt.steps ?? [],
-        stepStatuses: (evt.steps ?? []).map(() => 'pending' as const),
-        output: '',
-        outputSeq: 0,
+        steps,
+        stepStatuses,
+        output: evt.output ?? '',
+        outputSeq: evt.outputSeq ?? 0,
         error: '',
         worktreePath: evt.worktreePath ?? '',
         startedAt: evt.startedAt ?? 0,
         finishedAt: 0,
         // A new run always opens: the user asked for this worktree, and a
-        // dismissal applied to the previous run's outcome.
-        dismissed: false,
+        // dismissal applied to the previous run's outcome. An adoption is not a
+        // new run, so a collapse the user applied to THIS one survives it.
+        dismissed: carriedDismissed ?? false,
       });
       return;
+    }
     case 'step-started':
-      patchStepStatus(threadId, evt, 'running', replaying);
+      patchStepStatus(key, evt, 'running', replaying);
       return;
     case 'step-finished':
-      patchStepStatus(threadId, evt, evt.state === 'failed' ? 'failed' : 'succeeded', replaying);
+      patchStepStatus(key, evt, evt.state === 'failed' ? 'failed' : 'succeeded', replaying);
       return;
     case 'output':
-      appendOutput(threadId, evt, replaying);
+      appendOutput(key, evt, replaying);
       return;
     case 'finished':
-      finishRun(threadId, evt, replaying);
+      finishRun(key, evt, replaying);
       return;
     default:
       // A phase this client doesn't know is a backend/frontend version skew.
       // Loud, because silently ignoring frames is how a panel gets stuck.
-      console.warn(`worktreeSetup: unknown phase "${String(evt.phase)}" for thread ${threadId}`);
+      console.warn(`worktreeSetup: unknown phase "${String(evt.phase)}" for ${key}`);
   }
 }
 
@@ -239,34 +390,34 @@ function applyEvent(threadId: string, evt: WorktreeSetupEvent, replaying: boolea
  * event describes a run this client never saw start.
  */
 function currentRun(
-  threadId: string,
+  key: string,
   evt: WorktreeSetupEvent,
   replaying: boolean,
 ): WorktreeSetupView | null {
-  const view = views.get(threadId);
+  const view = views.get(key);
   if (view && view.runId === evt.runId) return view;
-  if (!replaying) void hydrateWorktreeSetup(threadId);
+  if (!replaying) rehydrate(key);
   return null;
 }
 
 function patchStepStatus(
-  threadId: string,
+  key: string,
   evt: WorktreeSetupEvent,
   status: WorktreeSetupStepStatus,
   replaying: boolean,
 ): void {
-  const view = currentRun(threadId, evt, replaying);
+  const view = currentRun(key, evt, replaying);
   if (!view) return;
   const index = evt.stepIndex ?? -1;
   if (index < 0 || index >= view.stepStatuses.length) return;
   if (view.stepStatuses[index] === status) return;
   const stepStatuses = view.stepStatuses.slice();
   stepStatuses[index] = status;
-  views.set(threadId, { ...view, stepStatuses });
+  views.set(key, { ...view, stepStatuses });
 }
 
-function appendOutput(threadId: string, evt: WorktreeSetupEvent, replaying: boolean): void {
-  const view = currentRun(threadId, evt, replaying);
+function appendOutput(key: string, evt: WorktreeSetupEvent, replaying: boolean): void {
+  const view = currentRun(key, evt, replaying);
   if (!view) return;
   const seq = evt.seq ?? 0;
   // Already folded in by a snapshot that raced this frame.
@@ -274,25 +425,25 @@ function appendOutput(threadId: string, evt: WorktreeSetupEvent, replaying: bool
   if (seq > view.outputSeq + 1 && !replaying) {
     // Frames were lost. Take what we have so the panel keeps moving, and pull
     // the tail — which contains the whole run — to fill the hole.
-    void hydrateWorktreeSetup(threadId);
+    rehydrate(key);
   }
-  views.set(threadId, {
+  views.set(key, {
     ...view,
     output: view.output + (evt.chunk ?? ''),
     outputSeq: seq,
   });
 }
 
-function finishRun(threadId: string, evt: WorktreeSetupEvent, replaying: boolean): void {
-  const view = currentRun(threadId, evt, replaying);
+function finishRun(key: string, evt: WorktreeSetupEvent, replaying: boolean): void {
+  const view = currentRun(key, evt, replaying);
   if (!view) return;
   const state = normalizeState(evt.state);
   if (state === 'cancelled') {
     // The thread left this worktree or was torn down. Nothing to report.
-    views.drop(threadId);
+    views.drop(key);
     return;
   }
-  views.set(threadId, {
+  views.set(key, {
     ...view,
     state,
     error: evt.error ?? '',
@@ -354,6 +505,7 @@ function normalizeStepStatus(status: string): WorktreeSetupStepStatus {
 export function resetWorktreeSetupForTest(): void {
   hydrationBuffers.clear();
   hydrationTokens.clear();
+  workspaceProjectIds.clear();
   nextHydrationToken = 1;
   views.reset();
 }

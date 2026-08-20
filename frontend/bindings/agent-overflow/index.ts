@@ -65,6 +65,7 @@ export {
     ProjectCleanupWorktree,
     ProjectDeletionPreview,
     ProjectDeletionResult,
+    ProjectWorkspaceResult,
     ProviderSessionAccountEvent,
     ProviderTerminalHandle,
     QueueFlushedItem,

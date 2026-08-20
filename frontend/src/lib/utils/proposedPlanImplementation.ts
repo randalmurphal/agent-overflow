@@ -43,7 +43,7 @@ export async function implementProposedPlan(
   if (!pane.threadId || !pane.thread) return false;
   try {
     await prepareThreadWorktreeIntent({
-      thread: pane.thread,
+      pane,
       onWorktreePrepareStarted: options.onWorktreePrepareStarted,
       onWorktreePrepareFinished: options.onWorktreePrepareFinished,
     });
@@ -114,6 +114,11 @@ export async function implementProposedPlanInNewThread(
     const title = buildPlanImplementationThreadTitle(planMarkdown);
     const draftContent = buildPlanImplementationPrompt(planMarkdown);
     const sourceIntent = worktreeIntentForThread(sourceThread);
+    // The source composer's confirm button may already have cut the
+    // workspace. It is not bound to the source thread (that only happens on
+    // a send), so the child consumes it directly instead of cutting a
+    // second one off the same staged choice.
+    const applied = sourceIntent.applied;
 
     let created = (await CreateThread({
       projectId: sourceThread.projectId,
@@ -127,27 +132,33 @@ export async function implementProposedPlanInNewThread(
       title,
       // Start from the source workspace so LOCAL-base worktree intent can
       // carry the same local changes into the child worktree.
-      workspaceOverride: sourceThread.workspacePath,
-      worktreePath: sourceThread.worktreePath ?? '',
-      branch: sourceThread.branch ?? '',
+      workspaceOverride: applied?.worktreePath || sourceThread.workspacePath,
+      worktreePath: applied?.worktreePath || (sourceThread.worktreePath ?? ''),
+      branch: applied?.branch || (sourceThread.branch ?? ''),
     })) as Thread;
 
-    try {
-      const materialized = await materializeWorktreeIntentOnThread({
-        targetThread: created,
-        intent: sourceIntent,
-        clearIntentOnSuccess: false,
-        onWorktreePrepareStarted: options.onWorktreePrepareStarted,
-        onWorktreePrepareFinished: options.onWorktreePrepareFinished,
-      });
-      if (materialized) {
-        created = materialized;
+    if (!applied) {
+      try {
+        // Deliberately the THREAD-scoped engine: this flow's carry semantics
+        // stash from the child row's own workspace (seeded from the source
+        // above), which the project-scoped calls resolve against the project
+        // root instead.
+        const materialized = await materializeWorktreeIntentOnThread({
+          targetThread: created,
+          intent: sourceIntent,
+          clearIntentOnSuccess: false,
+          onWorktreePrepareStarted: options.onWorktreePrepareStarted,
+          onWorktreePrepareFinished: options.onWorktreePrepareFinished,
+        });
+        if (materialized) {
+          created = materialized;
+        }
+      } catch (worktreeErr) {
+        await DeleteThread(created.id).catch((cleanupErr) => {
+          console.error('Failed to clean up orphan implementation thread:', cleanupErr);
+        });
+        throw worktreeErr;
       }
-    } catch (worktreeErr) {
-      await DeleteThread(created.id).catch((cleanupErr) => {
-        console.error('Failed to clean up orphan implementation thread:', cleanupErr);
-      });
-      throw worktreeErr;
     }
 
     // Spread `source` so a future field on SourceProposedPlan flows
@@ -175,10 +186,13 @@ export async function implementProposedPlanInNewThread(
       throw saveErr;
     }
 
-    if (sourceIntent.mode === 'new-worktree' || sourceIntent.creatingBranch) {
-      // The child consumed the staged branch/worktree choice. Leaving the
-      // source intent in place would point the original thread at a branch
-      // that is now already checked out elsewhere.
+    if (applied || sourceIntent.mode === 'new-worktree' || sourceIntent.creatingBranch) {
+      // The child consumed the staged branch/worktree choice — either the
+      // already-applied workspace it inherited through CreateThread, or the
+      // staged one the thread-scoped engine materialized onto it above.
+      // Leaving the source intent in place would point the original pane at a
+      // worktree the child now owns, and at a branch that is already checked
+      // out elsewhere.
       clearWorktreeIntent(sourceThread.id);
     }
     prependThread(created);

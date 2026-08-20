@@ -147,6 +147,21 @@ headless, isolated data dir, mocked providers. Full harness guide:
   Liveness is asserted from `ListItems` statuses, never
   `Thread.hasIncompleteTurn` — that flag is derived against `last_read_at`, so
   opening the thread in the UI flips it while the turn still runs.
+- `tests/draft-worktree.spec.ts` — naming a workspace for a DRAFT is
+  project-scoped: the composer's worktree/branch flow must not touch thread
+  rows. A fresh placeholder cuts a worktree on an existing branch and on a
+  brand-new one, each proving no row was created and no error toast fired;
+  a send from that draft then materializes exactly ONE row bound to the
+  worktree, checked all the way down to the cwd the mock provider was
+  spawned in. The fourth case is the cleanup the old thread-scoped path
+  raced ("sql: no rows in result set"): typed text still materializes a row
+  and erasing it still takes the row back out. The negative assertions go
+  through `HarnessListThreadRows`, because `App.ListThreads` hides exactly
+  the item-less, content-less row the bug created — the send case reading
+  ONE row back off the same call is what keeps the other three from
+  passing vacuously. The fixture's second branch comes from `RepoSpec`'s
+  `branches`, which are created unchecked-out: git refuses to attach a
+  worktree to a branch some checkout already holds.
 - `tests/session-import.spec.ts` — session import through the REAL UI: the
   sidebar trigger opening the lazy modal, rows from BOTH providers with the
   provider segment / search / clear-filters narrowing them, a two-session

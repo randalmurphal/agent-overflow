@@ -8,7 +8,8 @@ this file covers the package boundaries.
 ## What lives where
 
 - `gitfixture.go` — `CreateRepo(path, RepoSpec)`: throwaway git
-  repositories for seeded projects (files, commits, dirty state).
+  repositories for seeded projects (files, commits, dirty state, and
+  extra branches left unchecked-out so a worktree can attach one).
 - `replayer.go` — `Replayer`: re-emits a recorded NDJSON event stream
   (the `internal/observability/replay` format) onto the live event bus
   with original inter-event timing; pause/resume/single-step. One
