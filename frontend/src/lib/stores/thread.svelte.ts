@@ -126,6 +126,28 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
   const paneId = options.paneId ?? 'pane';
   let thread: Thread | null = $state(null);
   let draftPlaceholder: DraftThreadPlaceholder | null = $state(null);
+  // The pane's thread IDENTITY as a $derived primitive. `thread` is
+  // replaced wholesale by every thread:updated sync (mode toggle, title
+  // regen, model change), and a plain getter over the $state has no
+  // equality cutoff — every effect keyed on "which thread is mounted"
+  // re-ran on each replacement even though the id never moved. The nav
+  // rail's baseline effect was the visible casualty: shift+tab cleared
+  // and refetched the whole-thread tick list, blinking the rail
+  // (2026-08-19). A $derived does not propagate while its value is
+  // unchanged, so identity consumers only wake when the pane actually
+  // mounts a different thread.
+  // ($derived.by, not $derived: the inline form typechecks at this spot,
+  // where control flow has narrowed `thread` to its `null` initializer.)
+  const stableThreadId = $derived.by(() =>
+    draftPlaceholder ? null : (thread?.id ?? null),
+  );
+  // Same cutoff for the other primitive facts served off the thread
+  // object: `terminalThreadId` keys a `{#key}` and the terminal
+  // placement wiring, and `activeModel` (its $derived lives beside
+  // `effectiveModel` below) is one effect away from the same trap. Every
+  // primitive-valued getter over `thread` goes through a $derived, so no
+  // consumer can be woken by a replacement that changed nothing it reads.
+  const stableTerminalThreadId = $derived.by(() => thread?.id ?? null);
   let items: Item[] = $state([]);
   // Structural revision for timeline projections that should skip
   // summary-only streaming deltas. Bump whenever the item window's array
@@ -350,6 +372,9 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
   // Session-scoped model actually serving the thread after a provider
   // fallback. The durable thread.model remains the user's requested model.
   let effectiveModel = $state('');
+  // See `stableThreadId` above: the equality cutoff between thread-object
+  // replacement and consumers keyed on the model string.
+  const stableActiveModel = $derived.by(() => effectiveModel || thread?.model || '');
   let effectiveModelRevision = 0;
   let effectiveModelBackendRevision = 0;
   function updateEffectiveModel(model: string): void {
@@ -883,16 +908,16 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       return thread;
     },
     get threadId() {
-      return draftPlaceholder ? null : (thread?.id ?? null);
+      return stableThreadId;
     },
     get activeModel() {
-      return effectiveModel || thread?.model || '';
+      return stableActiveModel;
     },
     get effectiveModel() {
       return effectiveModel;
     },
     get terminalThreadId() {
-      return thread?.id ?? null;
+      return stableTerminalThreadId;
     },
     get draftPlaceholder() {
       return draftPlaceholder;

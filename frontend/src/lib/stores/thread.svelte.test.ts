@@ -9813,3 +9813,57 @@ describe('activityRuns.wholesaleGeneration', () => {
     expect(pane.activityRuns.wholesaleGeneration).toBeGreaterThan(generation);
   });
 });
+
+describe('thread identity cutoff', () => {
+  // thread:updated syncs (mode toggle, title regen, model change) replace
+  // the pane's thread OBJECT wholesale. The primitive getters over it
+  // (threadId, terminalThreadId, activeModel) are served from $deriveds so
+  // that replacement does not wake consumers whose value never moved — the
+  // 2026-08-19 incident was the nav rail's baseline effect keying on
+  // pane.threadId through a plain getter: every shift+tab mode toggle
+  // cleared and refetched the whole-thread tick list, blinking the rail.
+  it('replacing the thread object with the same id does not wake identity consumers', () => {
+    const pane = createThreadPane();
+    pane.replaceThread(makeThread({ id: 't1', mode: 'chat' }));
+    let idRuns = 0;
+    let modelRuns = 0;
+    const stop = $effect.root(() => {
+      $effect(() => {
+        void pane.threadId;
+        void pane.terminalThreadId;
+        idRuns += 1;
+      });
+      $effect(() => {
+        void pane.activeModel;
+        modelRuns += 1;
+      });
+    });
+
+    try {
+      flushSync();
+      expect(idRuns).toBe(1);
+      expect(modelRuns).toBe(1);
+
+      // The mode-toggle sync: same id, new object. Neither consumer wakes.
+      pane.replaceThread(makeThread({ id: 't1', mode: 'plan' }));
+      flushSync();
+      expect(idRuns).toBe(1);
+      expect(modelRuns).toBe(1);
+
+      // A real identity change still propagates; the model consumer stays
+      // asleep because the model string did not move.
+      pane.replaceThread(makeThread({ id: 't2', mode: 'chat' }));
+      flushSync();
+      expect(idRuns).toBe(2);
+      expect(modelRuns).toBe(1);
+
+      // And a model change wakes only the model consumer.
+      pane.replaceThread(makeThread({ id: 't2', model: 'claude-opus-4-6' }));
+      flushSync();
+      expect(idRuns).toBe(2);
+      expect(modelRuns).toBe(2);
+    } finally {
+      stop();
+    }
+  });
+});

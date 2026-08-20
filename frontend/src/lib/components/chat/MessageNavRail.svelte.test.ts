@@ -10,10 +10,12 @@
 // height.
 import { describe, expect, it, vi } from 'vitest';
 import { render, fireEvent, waitFor } from '@testing-library/svelte';
+import { tick } from 'svelte';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
+import { makeThread } from '../../../test/helpers/chat';
 import type { Item } from '../../types/models';
 import type { TimelineNode } from '../../utils/subagentGrouping';
-import type { ThreadPane } from '../../stores/thread.svelte';
+import { createThreadPane, type ThreadPane } from '../../stores/thread.svelte';
 import MessageNavRail from './MessageNavRail.svelte';
 
 function item(partial: Partial<Item>): Item {
@@ -104,6 +106,55 @@ describe('MessageNavRail', () => {
     await waitFor(() => {
       expect(getByTestId('message-nav-rail').querySelectorAll('[data-current]').length).toBe(3);
     });
+  });
+
+  it('does not refetch or blink the baseline when the thread object is replaced with the same id', async () => {
+    // The 2026-08-19 shift+tab flash: mode.cycle → UpdateThreadMode →
+    // syncThread replaces the pane's thread OBJECT with the same id, and
+    // the baseline effect keyed on pane.threadId through a plain getter —
+    // no equality cutoff — so every toggle cleared the whole-thread tick
+    // list and refetched it, blinking the rail (below NAV_RAIL_MIN_TICKS
+    // it unmounted outright). Needs a REAL pane: the fake-object panes
+    // above cannot reproduce the $state invalidation.
+    let fetches = 0;
+    const baseline = [
+      { id: 'old1', turnIndex: 0, itemIndex: 0 },
+      { id: 'old2', turnIndex: 1, itemIndex: 0 },
+    ];
+    setBindingMock('GetThreadUserMessageTicks', async () => {
+      fetches += 1;
+      return baseline;
+    });
+    const pane = createThreadPane();
+    pane.replaceThread(makeThread({ id: 't1', mode: 'chat' }));
+    const { getByTestId } = render(MessageNavRail, {
+      props: {
+        pane,
+        nodes: threeMessageNodes,
+        getListRef: () => undefined,
+        onJumpToItem: vi.fn(),
+      },
+    });
+    const tickCount = () =>
+      getByTestId('message-nav-rail').querySelectorAll('[data-current]').length;
+    // The loaded window's 3 ticks render; the baseline read ran once.
+    // (A real pane with no loaded items reports no window, so the
+    // baseline does not splice — the FETCH COUNT is the pin here: the
+    // incident's blink was this effect re-running, clearing the baseline
+    // and fetching again.)
+    await waitFor(() => expect(fetches).toBe(1));
+    expect(tickCount()).toBe(3);
+
+    // The mode toggle: same id, new object. No refetch, no tick change.
+    pane.replaceThread(makeThread({ id: 't1', mode: 'plan' }));
+    await tick();
+    await tick();
+    expect(fetches).toBe(1);
+    expect(tickCount()).toBe(3);
+
+    // A genuine thread switch still reloads the baseline.
+    pane.replaceThread(makeThread({ id: 't2', mode: 'chat' }));
+    await waitFor(() => expect(fetches).toBe(2));
   });
 
   it('routes a strip click to onJumpToItem with a tick id', async () => {
