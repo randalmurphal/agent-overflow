@@ -181,6 +181,12 @@ const (
 	maxClaudeFallbackModelRunes       = 128
 	maxClaudeFallbackLabelRunes       = 64
 	maxClaudeFallbackIDRunes          = 128
+
+	// maxTaskNotificationUUIDRunes bounds the `system/task_notification`
+	// envelope uuid before it becomes part of a persisted row id. The
+	// wire value is a 36-character UUID; the cap is what keeps a
+	// malformed or hostile envelope from minting an unbounded id.
+	maxTaskNotificationUUIDRunes = 128
 )
 
 // parseStatusEvent handles `system/status`, the CLI's general activity
@@ -995,6 +1001,7 @@ func (p *Parser) parseTaskNotificationEvent(threadID string, raw map[string]json
 		Status:          strings.TrimSpace(firstNonEmpty(readRawString(raw["status"]), readRawString(raw["patch"]))),
 		OutputFile:      firstNonEmpty(readRawString(raw["output_file"]), readRawString(raw["outputFile"])),
 		Summary:         readRawString(raw["summary"]),
+		UUID:            readRawString(raw["uuid"]),
 	}
 	return []provider.ProviderEvent{p.buildBackgroundTaskNotificationEvent(threadID, fields, now)}, nil
 }
@@ -1010,6 +1017,16 @@ func (p *Parser) parseTaskNotificationEvent(threadID string, raw map[string]json
 // always passes "" because the wrapper doesn't expose it; the
 // structured path defensively reads `parent_tool_use_id` /
 // `parentToolUseId` from the envelope.
+//
+// UUID is the envelope's own top-level `uuid`. It is what makes a
+// notification EVENT identifiable rather than just its task: a
+// persistent Monitor (claude-wire.md §E7) fires one
+// `system/task_notification` per output event, all sharing one
+// `task_id`, and the model sees each as a distinct message. Triage
+// keys the notification row on it so those events stop overwriting
+// one another while a replay of the same envelope stays idempotent.
+// An older CLI that omits it leaves this empty and triage falls back
+// to the legacy task-only row id.
 type backgroundTaskNotificationFields struct {
 	TaskID          string
 	ToolUseID       string
@@ -1017,6 +1034,7 @@ type backgroundTaskNotificationFields struct {
 	Status          string
 	OutputFile      string
 	Summary         string
+	UUID            string
 }
 
 // buildBackgroundTaskNotificationEvent assembles the
@@ -1045,6 +1063,9 @@ func (p *Parser) buildBackgroundTaskNotificationEvent(threadID string, fields ba
 	}
 	if fields.OutputFile != "" {
 		metaFields["output_file"] = fields.OutputFile
+	}
+	if uuid := boundedClaudeFallbackField(fields.UUID, maxTaskNotificationUUIDRunes); uuid != "" {
+		metaFields["uuid"] = uuid
 	}
 	meta, _ := json.Marshal(metaFields)
 

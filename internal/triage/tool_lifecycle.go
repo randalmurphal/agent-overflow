@@ -359,9 +359,21 @@ func (r *Router) persistToolCallCompletion(evt provider.ProviderEvent) error {
 			}
 			return r.persistItem(launch, nil)
 		}
-		// Launch row already correctly flagged; the placeholder
-		// completion carries no additional state to persist. The
-		// background task terminal (task_updated / TaskOutput) will
+		// Launch row already background-flagged. Usually the placeholder
+		// completion carries no additional state — but the watch marker
+		// can still be new: §E7's real Monitor launch carries no
+		// run_in_background (the ack is what backgrounds it), and a
+		// future CLI that marks the launch up front would land in THIS
+		// arm and silently lose watch-ness, which the flush-queue drain
+		// reads (HasQueueBlockingBackgroundToolCall). Merge it whenever
+		// the completion asserts it and the row lacks it, whichever arm
+		// the flag arrived through.
+		if meta.WatchTask && !launchIsWatchTask(launch) {
+			launch.UpdatedAt = now
+			launch.Meta = mergeItemMetaJSON(launch.Meta, []byte(`{"watch_task":true}`))
+			return r.persistItem(launch, nil)
+		}
+		// The background task terminal (task_updated / TaskOutput) will
 		// write the sibling completion row when it arrives.
 		return nil
 	}
@@ -702,6 +714,13 @@ type backgroundTaskTerminalMeta struct {
 	ExitCode        *int   `json:"exit_code,omitempty"`
 	OutputFile      string `json:"output_file,omitempty"`
 	EndTime         int64  `json:"end_time,omitempty"`
+	// NotificationSummary is INTERNAL, never on the wire (`json:"-"`):
+	// a task_notification carries its summary as the event's Content,
+	// not inside this meta shape. terminalMetaFromNotification is its
+	// only writer, so the sibling row a notification's own stash drain
+	// creates carries the caption from its first upsert rather than
+	// gaining it a write later.
+	NotificationSummary string `json:"-"`
 }
 
 func decodeBackgroundTaskTerminalMeta(raw json.RawMessage) backgroundTaskTerminalMeta {
@@ -1000,6 +1019,25 @@ func (r *Router) writeBackgroundCompletionSibling(evt provider.ProviderEvent, me
 	now := eventTimestampMillis(evt)
 	status := backgroundTerminalStatus(meta)
 	completionID := backgroundCompletionID(launch.ID, meta.TaskID)
+	// Looked up BEFORE the meta is built: the caption below may only
+	// ride the sibling's FIRST write. A later write (a task_updated
+	// status flip after a TaskOutput drain already created the row)
+	// adding it would grow a mounted card, which the row contract
+	// forbids — same rule as the enrich path.
+	var existing *store.Item
+	if persisted, ok, err := r.store.GetThreadItem(evt.ThreadID, completionID); err != nil {
+		return fmt.Errorf("bg task terminal existing lookup %s: %w", completionID, err)
+	} else if ok {
+		existing = &persisted
+	}
+	if existing != nil {
+		// First-write-only, enforced at the one writer regardless of
+		// caller: the drain path stamps this field before it can know
+		// whether a sibling already exists (a stash can outlive a
+		// TaskOutput-written sibling), and a caption landing on a
+		// mounted card grows it — see captionForSiblingWrite.
+		meta.NotificationSummary = ""
+	}
 	launchTurnIndex := launch.TurnIndex
 	parentID := stringsx.FirstNonEmptyTrimmed(launch.ParentID, eventParentID(evt), meta.ParentToolUseID)
 	toolName := launch.ToolName
@@ -1030,7 +1068,16 @@ func (r *Router) writeBackgroundCompletionSibling(evt provider.ProviderEvent, me
 		outputState, readError := notificationOutputState(notification.Meta)
 		itemMeta = mergeBackgroundCompletionItemMeta(
 			itemMeta,
-			backgroundNotificationCompletionMeta(notificationMeta, notification.PayloadID != "", outputState, readError),
+			backgroundNotificationCompletionMeta(
+				notificationMeta, notification.PayloadID != "", outputState, readError,
+				// The persisted notification row is where the summary
+				// lives on the notification-FIRST order (bell arrived,
+				// sibling created later by a TaskOutput drain). First
+				// write only, and never for a watch task — a watch's
+				// notification rows stay visible, so the caption would
+				// duplicate them.
+				captionForSiblingWrite(existing, launch, notification.Summary),
+			),
 		)
 	}
 	completion.Meta = itemMeta
@@ -1038,10 +1085,10 @@ func (r *Router) writeBackgroundCompletionSibling(evt provider.ProviderEvent, me
 	// Preserve an already-persisted sibling's created_at and
 	// item_index (persistItem keeps item_index on update), but
 	// overwrite the mutable fields so a second call with richer
-	// payload enriches the row.
-	var existing *store.Item
-	if persisted, ok, err := r.store.GetThreadItem(evt.ThreadID, completionID); err == nil && ok {
-		existing = &persisted
+	// payload enriches the row. (The lookup itself ran above, before
+	// the meta build, so the caption could see it.)
+	if existing != nil {
+		persisted := *existing
 		completion.CreatedAt = persisted.CreatedAt
 		completion.TurnIndex = persisted.TurnIndex
 		completion.ItemIndex = persisted.ItemIndex
@@ -1053,8 +1100,6 @@ func (r *Router) writeBackgroundCompletionSibling(evt provider.ProviderEvent, me
 		if shouldKeepExistingBackgroundSummary(persisted.Meta, evt.Content, meta) {
 			completion.Summary = persisted.Summary
 		}
-	} else if err != nil {
-		return fmt.Errorf("bg task terminal existing lookup %s: %w", completionID, err)
 	}
 	if notificationFound && notification.PayloadID != "" {
 		completion.PayloadID = notification.PayloadID

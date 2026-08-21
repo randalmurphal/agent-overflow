@@ -1861,4 +1861,67 @@ describe("<ToolCallCard> status dispatch", () => {
     expect(getByTestId("command-output-status").getAttribute("data-state")).toBe("error");
     expect(getByTestId("command-output-error").textContent).toContain("Tool call stopped");
   });
+
+  it("captions a background completion with the notification summary the model saw", async () => {
+    // The `task_notification` ROW is hidden once this completion exists
+    // (utils/notificationFilter.ts), so the CLI's own wording and exit
+    // code would otherwise be lost. Triage stamps it on the sibling.
+    const pane = await buildPane();
+    const item = makeItem({
+      id: "bg-done",
+      kind: "tool_completion",
+      status: "completed",
+      toolName: "Bash",
+      summary: "Bash: sleep 1 -> exit 0",
+      meta: JSON.stringify({
+        task_id: "task-sum",
+        notification_summary:
+          'Background command "sleep 1" completed (exit code 0)',
+      }),
+    });
+
+    const { getByTestId } = render(ToolCallCard, { props: { pane, item } });
+
+    expect(
+      getByTestId("tool-call-card-notification-summary").textContent?.trim(),
+    ).toBe('Background command "sleep 1" completed (exit code 0)');
+  });
+
+  it("renders no caption when the notification summary repeats the row summary", async () => {
+    const pane = await buildPane();
+    const item = makeItem({
+      id: "bg-done-same",
+      kind: "tool_completion",
+      status: "completed",
+      toolName: "Bash",
+      summary: "Background command completed",
+      meta: JSON.stringify({
+        task_id: "task-same",
+        notification_summary: "Background command completed",
+      }),
+    });
+
+    const { queryByTestId } = render(ToolCallCard, { props: { pane, item } });
+
+    expect(queryByTestId("tool-call-card-notification-summary")).toBeNull();
+  });
+
+  it("renders no caption on a tool_call launch row", async () => {
+    const pane = await buildPane();
+    const item = makeItem({
+      id: "bg-launch",
+      kind: "tool_call",
+      status: "running",
+      toolName: "Bash",
+      summary: "sleep 1",
+      meta: JSON.stringify({
+        task_id: "task-sum",
+        notification_summary: "Background command completed (exit code 0)",
+      }),
+    });
+
+    const { queryByTestId } = render(ToolCallCard, { props: { pane, item } });
+
+    expect(queryByTestId("tool-call-card-notification-summary")).toBeNull();
+  });
 });

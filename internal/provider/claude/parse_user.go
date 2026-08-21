@@ -170,6 +170,11 @@ func (p *Parser) appendToolResultBlock(
 	//      `backgroundTaskId` at all — its own `agentId` IS the task_id
 	//      the later `task_updated`/`task_notification` pair uses. See
 	//      claude-wire.md §E5 "Async local_agent launch (bare ack)".
+	//      On a SIDECHAIN line (a subagent launching its own async
+	//      agent, depth 2) the CLI omits `tool_use_result` entirely, so
+	//      this signal has no structured half at all and the ack's own
+	//      TEXT is the only evidence — `asyncLaunchAckAgentID` below,
+	//      claude-wire.md §E5b.
 	//   4. monitorLaunched — the Monitor watch-task launch ack
 	//      (`{taskId, timeoutMs, persistent}`, §E7). Like (3) it carries
 	//      no `run_in_background` and no `backgroundTaskId`; its `taskId`
@@ -190,6 +195,39 @@ func (p *Parser) appendToolResultBlock(
 	backgroundSignals := readToolResultBackgroundSignals(toolUseResultRaw)
 	markedOnWire := toolResultBackgrounded(backgroundSignals)
 	asyncAgentID, asyncLaunched := toolResultAsyncLaunch(backgroundSignals)
+	// §E5b — the sidechain async-launch ack. A subagent launching its
+	// OWN async agent (depth 2) gets the identical ack body, but the
+	// envelope carries NO `tool_use_result` at all, so every structured
+	// signal above misses and the launch would settle in place with the
+	// internal ack text as its body. Three conjunctive conditions gate
+	// the text fallback, and all three must hold:
+	//
+	//   a. NO `tool_use_result` on this block. When the structured
+	//      sibling exists it is the sole authority — a present-but-not-
+	//      async result (an inline agent's real completion, a string
+	//      InputValidationError ack) must never be re-read as text.
+	//   b. this tool_use was observed as Claude's agent-launch tool
+	//      (`Agent`/`Task`, marked in parse_assistant.go). Nothing else
+	//      can produce an async-launch ack, and the marker is always in
+	//      place: the assistant envelope carrying the launch precedes
+	//      its ack on the same sequentially-parsed stream, and async
+	//      agents die with their CLI process, so no pre-restart agent
+	//      can ack onto a fresh parser.
+	//   c. the ack text passes `asyncLaunchAckAgentID` (exact sentinel
+	//      prefix + an extractable `agentId:` line). `content` is the
+	//      already-flattened body, which concatenates the block array's
+	//      TEXT blocks in wire order and drops images — so a prefix
+	//      match on it is a prefix match on the first text-bearing
+	//      block, without a second decode of a payload that can be
+	//      megabytes elsewhere on this path.
+	//
+	// Failing any of them leaves today's behaviour (an instantly-done
+	// card) rather than promoting: an ack whose agent id we cannot
+	// recover has nothing to correlate its terminal against, and a card
+	// stuck at "running" forever is the worse outcome.
+	if !asyncLaunched && len(toolUseResultRaw) == 0 && p.isAgentLaunchTool(toolUseID) {
+		asyncAgentID, asyncLaunched = asyncLaunchAckAgentID(content)
+	}
 	monitorTaskID, monitorLaunched := toolResultMonitorLaunch(backgroundSignals)
 	isBackground := flaggedAtLaunch || markedOnWire || asyncLaunched || monitorLaunched
 	events = appendToolResultCompletion(
@@ -718,6 +756,89 @@ func toolResultAsyncLaunch(signals toolResultBackgroundSignals) (agentID string,
 		return "", false
 	}
 	return strings.TrimSpace(signals.agentID), true
+}
+
+// asyncLaunchAckSentinel is the fixed opening sentence of Claude's
+// async-agent launch ack. It is a single literal in the 2.1.237 bundle
+// (one occurrence, verified by binary grep) and is emitted verbatim on
+// both the top-level and the sidechain ack, which is what makes an
+// EXACT PREFIX match on it a usable discriminator where the structured
+// `tool_use_result` is absent. Prefix, never contains: arbitrary tool
+// output that merely quotes the sentence somewhere in its body — a
+// `grep` of this file, a pasted transcript — does not classify.
+const asyncLaunchAckSentinel = "Async agent launched successfully."
+
+// asyncLaunchAckAgentIDPrefix is the line prefix carrying the launched
+// agent's id inside the ack body:
+//
+//	agentId: a126ec31b78a8dfc6 (internal ID - do not mention to user. ...)
+//
+// The id is lowercase hex; its LENGTH is deliberately not asserted (17
+// chars observed, but nothing on the wire promises that).
+const asyncLaunchAckAgentIDPrefix = "agentId:"
+
+// asyncLaunchAckMaxScanLines bounds the agentId scan. The id is on line
+// 2 of every captured ack; the bound exists so the scan stays O(1) on a
+// body that passed the sentinel check but is not actually an ack.
+const asyncLaunchAckMaxScanLines = 16
+
+// asyncLaunchAckAgentID recognises an async-agent launch ack from the
+// tool_result TEXT alone and recovers the launched agent's id — the id
+// the later `system/task_updated` + `system/task_notification` pair
+// addresses as `task_id`.
+//
+// This is the §E5b fallback for SIDECHAIN launches, where Claude omits
+// the `tool_use_result` envelope entirely (verified 2026-08-19 capture:
+// the sidechain ack's only top-level keys are message /
+// parent_tool_use_id / session_id / subagent_type / task_description /
+// timestamp / type / uuid). It is NEVER consulted when a
+// `tool_use_result` is present — see the gate in appendToolResultBlock,
+// which also requires the tool_use to have been an agent-launch tool.
+//
+// Both halves must hold. The sentinel alone would classify the resume
+// ack (§E6, which has no agentId line) and any future ack sharing the
+// opening sentence; an `agentId:` line alone appears in ordinary agent
+// prose. Returning ("", false) means "not promoted", which is exactly
+// today's behaviour — an unpromotable ack cannot be lifecycle-
+// correlated, and a permanently-running card is worse than an
+// instantly-done one.
+func asyncLaunchAckAgentID(text string) (agentID string, ok bool) {
+	if !strings.HasPrefix(text, asyncLaunchAckSentinel) {
+		return "", false
+	}
+	rest := text
+	for line := 0; line < asyncLaunchAckMaxScanLines && rest != ""; line++ {
+		var current string
+		if idx := strings.IndexByte(rest, '\n'); idx >= 0 {
+			current, rest = rest[:idx], rest[idx+1:]
+		} else {
+			current, rest = rest, ""
+		}
+		value, found := strings.CutPrefix(current, asyncLaunchAckAgentIDPrefix)
+		if !found {
+			continue
+		}
+		if id := leadingLowerHex(strings.TrimLeft(value, " \t")); id != "" {
+			return id, true
+		}
+	}
+	return "", false
+}
+
+// leadingLowerHex returns the longest lowercase-hex prefix of s (empty
+// when s does not start with one). Used to cut the agent id out of the
+// ack's `agentId: <id> (internal ID - …)` line without asserting a
+// length, and it is what stops a trailing `\r` on a CRLF body from
+// becoming part of the id.
+func leadingLowerHex(s string) string {
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') {
+			continue
+		}
+		return s[:i]
+	}
+	return s
 }
 
 // toolResultMonitorLaunch reports whether the decoded `tool_use_result`

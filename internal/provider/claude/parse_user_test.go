@@ -515,3 +515,241 @@ func TestAppendToolResultBlock_StringToolUseResultNoNewSignals(t *testing.T) {
 		t.Fatal("error ack must not classify as background")
 	}
 }
+
+// sidechainAsyncAckText is the ack BODY of a real depth-2 async agent
+// launch, captured 2026-08-19 (agent a126ec31b78a8dfc6; the transcript
+// path and prompt text are sanitized, the sentence structure and the
+// `agentId:` line are verbatim). It is written JSON-escaped so it can be
+// embedded straight into the envelope literals below.
+const sidechainAsyncAckText = `Async agent launched successfully. (This tool result is internal metadata — never quote or paste any part of it, including the agentId below, into a user-facing reply.)\nagentId: a126ec31b78a8dfc6 (internal ID - do not mention to user. Use SendMessage with to: 'a126ec31b78a8dfc6', summary: '<5-10 word recap>' to continue this agent.)\nThe agent is working in the background. You will be notified automatically when it completes. You know nothing about its results until that notification arrives — do not report, assume, or predict them.\nDo not duplicate this agent's work — avoid working with the same files or topics it is using.\noutput_file: /tmp/claude/00000000-0000-0000-0000-000000000000/tasks/a126ec31b78a8dfc6.output\nDo NOT Read or tail this file via the shell tool — it is the full subagent JSONL transcript and reading it will overflow your context.`
+
+// TestAppendToolResultBlock_SidechainAsyncLaunchAckPromotesToBackground
+// pins claude-wire.md §E5b: on a SIDECHAIN line (a subagent launching
+// its own async agent — depth 2) Claude omits the `tool_use_result`
+// envelope entirely, so every structured §E5 signal misses. Before this
+// path existed the ack settled the launch in place with the internal
+// metadata text as the card body, and every later task_updated /
+// task_notification for that agent was dropped at triage's foreground
+// gates. Envelope shape verified from a live capture (2026-08-19,
+// session ed8a5c81): the only top-level keys are message /
+// parent_tool_use_id / session_id / subagent_type / task_description /
+// timestamp / type / uuid.
+func TestAppendToolResultBlock_SidechainAsyncLaunchAckPromotesToBackground(t *testing.T) {
+	parser := NewParser()
+
+	// Depth-2 launch: an Agent tool_use on a SIDECHAIN assistant
+	// envelope (parent_tool_use_id set), with no run_in_background.
+	if _, err := parser.ParseLine(testThread, []byte(`{"type":"assistant","parent_tool_use_id":"toolu_parent","message":{"id":"msg-side","role":"assistant","content":[{"type":"tool_use","id":"toolu_launch","name":"Agent","input":{"description":"Angle A: line-by-line scan","subagent_type":"general-purpose","prompt":"review the diff"}}]}}`)); err != nil {
+		t.Fatalf("sidechain assistant tool_use: %v", err)
+	}
+
+	line := []byte(`{"type":"user","parent_tool_use_id":"toolu_parent","session_id":"ed8a5c81-d3ac-4433-a958-b0a0b99217f2","uuid":"09a90d76-82db-426d-a197-3f6d62c1ef1c","timestamp":"2026-08-20T03:23:57.854Z","subagent_type":"general-purpose","task_description":"Angle A: line-by-line scan","message":{"role":"user","content":[{"tool_use_id":"toolu_launch","type":"tool_result","content":[{"type":"text","text":"` + sidechainAsyncAckText + `"}]}]}}`)
+	events, err := parser.ParseLine(testThread, line)
+	if err != nil {
+		t.Fatalf("parse sidechain ack: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d: %+v", len(events), events)
+	}
+	if events[0].Kind != provider.EventToolComplete {
+		t.Fatalf("Kind: got %q, want %q", events[0].Kind, provider.EventToolComplete)
+	}
+	if events[0].ItemID != "toolu_launch" {
+		t.Fatalf("ItemID: got %q, want toolu_launch", events[0].ItemID)
+	}
+
+	var meta map[string]any
+	if err := json.Unmarshal(events[0].Meta, &meta); err != nil {
+		t.Fatalf("unmarshal meta: %v", err)
+	}
+	// The whole point: identical is_background meta to the top-level
+	// §E5 ack, so triage's keep-running flip holds the launch row at
+	// status=running and never writes the internal ack text as the
+	// card's body.
+	if meta["is_background"] != true {
+		t.Fatalf("is_background: got %v, want true (sidechain async launch ack)", meta["is_background"])
+	}
+	if _, ok := meta["tool_use_result"]; ok {
+		t.Fatal("the sidechain ack carries no tool_use_result — meta must not invent one")
+	}
+	if _, ok := meta["watch_task"]; ok {
+		t.Fatal("an async agent launch is not a Monitor watch")
+	}
+
+	// Task binding: the ack's own agentId is the task_id the later
+	// lifecycle addresses. No system/task_started was fed here, so a
+	// resolved terminal proves the binding came from the ACK — the
+	// reconnect-safe property §E5 already gives the top-level path.
+	terminal, err := parser.ParseLine(testThread, []byte(`{"type":"system","subtype":"task_updated","task_id":"a126ec31b78a8dfc6","patch":{"status":"killed","end_time":1787196430286}}`))
+	if err != nil {
+		t.Fatalf("task_updated: %v", err)
+	}
+	if len(terminal) != 1 || terminal[0].Kind != provider.EventBackgroundTaskTerminal {
+		t.Fatalf("task_updated must emit one terminal, got %+v", terminal)
+	}
+	if terminal[0].ItemID != "toolu_launch" {
+		t.Fatalf("terminal ItemID: got %q, want toolu_launch (ack must seed task_id ↔ tool_use_id)", terminal[0].ItemID)
+	}
+}
+
+// TestAppendToolResultBlock_AsyncAckStructuredResultStaysAuthoritative
+// is the first false-positive bound: when a `tool_use_result` IS
+// present it is the SOLE authority and the text is never sniffed. The
+// worst case is an INLINE agent's real completion — same tool, same
+// `agentId` field, `status:"completed"` — whose output happens to open
+// with the sentinel (an agent reporting on this very code path).
+// Promoting it would strand a finished agent's card at "running"
+// forever, since no task terminal follows an inline completion that
+// triage would accept.
+func TestAppendToolResultBlock_AsyncAckStructuredResultStaysAuthoritative(t *testing.T) {
+	parser := NewParser()
+
+	if _, err := parser.ParseLine(testThread, []byte(`{"type":"assistant","message":{"id":"msg-1","role":"assistant","content":[{"type":"tool_use","id":"toolu_inline","name":"Agent","input":{"description":"inline review","subagent_type":"general-purpose","prompt":"p"}}]}}`)); err != nil {
+		t.Fatalf("assistant tool_use: %v", err)
+	}
+
+	line := []byte(`{"type":"user","tool_use_result":{"agentId":"a0e27f56d74e34245","agentType":"general-purpose","status":"completed","totalDurationMs":431917,"totalTokens":129893},"message":{"role":"user","content":[{"tool_use_id":"toolu_inline","type":"tool_result","content":[{"type":"text","text":"` + sidechainAsyncAckText + `"}]}]}}`)
+	events, err := parser.ParseLine(testThread, line)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d: %+v", len(events), events)
+	}
+	var meta map[string]any
+	if err := json.Unmarshal(events[0].Meta, &meta); err != nil {
+		t.Fatalf("unmarshal meta: %v", err)
+	}
+	if _, ok := meta["is_background"]; ok {
+		t.Fatalf("a present tool_use_result is the sole authority — text must not promote; meta=%v", meta)
+	}
+}
+
+// TestAppendToolResultBlock_AsyncAckTextNotPromotedWithoutLaunchTool is
+// the second false-positive bound: ordinary tool output that merely
+// carries the ack text cannot promote, because the fallback additionally
+// requires the tool_use to have been observed as Claude's agent-launch
+// tool (`Agent`/`Task`). A `cat` of a transcript, a grep hit on this
+// file, or a Monitor ack quoting it all fail here.
+func TestAppendToolResultBlock_AsyncAckTextNotPromotedWithoutLaunchTool(t *testing.T) {
+	for _, toolName := range []string{"Bash", "Read", "Monitor", "TaskUpdate"} {
+		t.Run(toolName, func(t *testing.T) {
+			parser := NewParser()
+
+			if _, err := parser.ParseLine(testThread, []byte(`{"type":"assistant","message":{"id":"msg-1","role":"assistant","content":[{"type":"tool_use","id":"toolu_other","name":"`+toolName+`","input":{}}]}}`)); err != nil {
+				t.Fatalf("assistant tool_use: %v", err)
+			}
+
+			line := []byte(`{"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu_other","type":"tool_result","content":[{"type":"text","text":"` + sidechainAsyncAckText + `"}]}]}}`)
+			events, err := parser.ParseLine(testThread, line)
+			if err != nil {
+				t.Fatalf("parse: %v", err)
+			}
+			// TaskCreate/TaskUpdate are carved out upstream and emit no
+			// completion at all; every other tool emits one with no
+			// background flag. Neither may classify as async.
+			for _, evt := range events {
+				if evt.Kind != provider.EventToolComplete {
+					continue
+				}
+				var meta map[string]any
+				if err := json.Unmarshal(evt.Meta, &meta); err != nil {
+					t.Fatalf("unmarshal meta: %v", err)
+				}
+				if _, ok := meta["is_background"]; ok {
+					t.Fatalf("%s output carrying the ack text must not classify as an async launch; meta=%v", toolName, meta)
+				}
+			}
+		})
+	}
+}
+
+// TestAppendToolResultBlock_AsyncAckTextVariantsNotPromoted pins the two
+// remaining refusals on the launch tool ITSELF, where the agent-launch
+// marker is present and only the text decides:
+//
+//   - sentinel present but NOT at position 0 (an agent reporting on the
+//     ack rather than acking) — the test is a prefix match, never a
+//     contains;
+//   - sentinel at position 0 but no recoverable `agentId:` line. An
+//     unpromotable ack cannot be lifecycle-correlated, so a permanently
+//     "running" card would be strictly worse than today's
+//     instantly-done one.
+func TestAppendToolResultBlock_AsyncAckTextVariantsNotPromoted(t *testing.T) {
+	cases := []struct {
+		name string
+		text string
+	}{
+		{"sentinel not at start", `The subagent replied: Async agent launched successfully. (...)\nagentId: a126ec31b78a8dfc6 (internal ID)`},
+		{"no agentId line", `Async agent launched successfully. (This tool result is internal metadata.)\nThe agent is working in the background.`},
+		{"agentId line not on a line boundary", `Async agent launched successfully.\nsee agentId: a126ec31b78a8dfc6 for details`},
+		{"agentId value empty", `Async agent launched successfully.\nagentId: (redacted)`},
+		{"resume ack shape (E6), no agentId", `Async agent launched successfully. Agent resumed from transcript in the background.`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			parser := NewParser()
+
+			if _, err := parser.ParseLine(testThread, []byte(`{"type":"assistant","parent_tool_use_id":"toolu_parent","message":{"id":"msg-1","role":"assistant","content":[{"type":"tool_use","id":"toolu_launch","name":"Agent","input":{"description":"d","subagent_type":"general-purpose","prompt":"p"}}]}}`)); err != nil {
+				t.Fatalf("assistant tool_use: %v", err)
+			}
+
+			line := []byte(`{"type":"user","parent_tool_use_id":"toolu_parent","message":{"role":"user","content":[{"tool_use_id":"toolu_launch","type":"tool_result","content":[{"type":"text","text":"` + tc.text + `"}]}]}}`)
+			events, err := parser.ParseLine(testThread, line)
+			if err != nil {
+				t.Fatalf("parse: %v", err)
+			}
+			if len(events) != 1 {
+				t.Fatalf("expected 1 event, got %d: %+v", len(events), events)
+			}
+			var meta map[string]any
+			if err := json.Unmarshal(events[0].Meta, &meta); err != nil {
+				t.Fatalf("unmarshal meta: %v", err)
+			}
+			if _, ok := meta["is_background"]; ok {
+				t.Fatalf("must not promote (%s); meta=%v", tc.name, meta)
+			}
+		})
+	}
+}
+
+// TestAsyncLaunchAckAgentID covers the extractor directly, including the
+// id shape the ack uses (lowercase hex followed by the parenthetical
+// note) and the refusal to assert a length.
+func TestAsyncLaunchAckAgentID(t *testing.T) {
+	cases := []struct {
+		name string
+		text string
+		want string
+	}{
+		{"captured ack", "Async agent launched successfully. (…)\nagentId: a126ec31b78a8dfc6 (internal ID - do not mention to user.)\noutput_file: /tmp/x", "a126ec31b78a8dfc6"},
+		{"short id", "Async agent launched successfully.\nagentId: abc123", "abc123"},
+		{"crlf body", "Async agent launched successfully.\r\nagentId: a126ec31b78a8dfc6 (internal)\r\n", "a126ec31b78a8dfc6"},
+		{"no tab-or-space padding", "Async agent launched successfully.\nagentId:a126ec31b78a8dfc6", "a126ec31b78a8dfc6"},
+		{"uppercase is not the observed shape", "Async agent launched successfully.\nagentId: A126EC31B", ""},
+		{"beyond the scan bound", "Async agent launched successfully." + repeatLines(asyncLaunchAckMaxScanLines+2) + "agentId: a126ec31b78a8dfc6", ""},
+		{"empty", "", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := asyncLaunchAckAgentID(tc.text)
+			if tc.want == "" {
+				if ok {
+					t.Fatalf("expected no match, got %q", got)
+				}
+				return
+			}
+			if !ok || got != tc.want {
+				t.Fatalf("got (%q, %v), want (%q, true)", got, ok, tc.want)
+			}
+		})
+	}
+}
+
+func repeatLines(n int) string {
+	out := make([]byte, 0, n*2)
+	for range n {
+		out = append(out, '\n', 'x')
+	}
+	return string(out) + "\n"
+}

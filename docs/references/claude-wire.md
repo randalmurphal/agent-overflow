@@ -1429,6 +1429,11 @@ bare acknowledgment rather than the subagent's actual result:
 `backgroundTaskId` anywhere on this shape — `agentId` is the id the
 later task lifecycle addresses as `task_id`.
 
+⚠ The envelope above is the TOP-LEVEL shape. A SIDECHAIN launch (a
+subagent launching its own async agent) carries the same ack body with
+**no `tool_use_result` at all**, so none of these markers exist on it —
+see [§E5b](#e5b--sidechain-async-launch-tool_use_result-is-omitted).
+
 ### ⚠ Discriminator subtlety — inline completions ALSO carry `agentId`
 
 An INLINE (awaited) `local_agent` result — the normal case where the
@@ -1491,6 +1496,101 @@ See
 for the full captured 7-line sequence (content_block_start,
 assistant tool_use, task_started, the ack, one task_progress sample,
 task_updated terminal, task_notification).
+
+### E5b — Sidechain async launch: `tool_use_result` is OMITTED
+
+**The E5 envelope above is the TOP-LEVEL shape only.** When the launch
+comes from a SUBAGENT — a sidechain line, `parent_tool_use_id` set, i.e.
+an async agent launching its own async agent (depth 2) — Claude Code
+emits the identical ack BODY but no `tool_use_result` object at all.
+
+Verified from a live capture (2026-08-19,
+`provider-events-2026-08-19.ndjson.1`, sessions `a36a622b` and
+`ed8a5c81`; re-confirmed 2026-08-21). Across 17 async-launch acks in one
+file the split is clean and by depth, not by build:
+
+| Line | `parent_tool_use_id` | Top-level keys |
+|---|---|---|
+| top-level ack | `null` | message, parent_tool_use_id, session_id, timestamp, **tool_use_result**, type, uuid |
+| sidechain ack | `toolu_…` | message, parent_tool_use_id, session_id, **subagent_type**, **task_description**, timestamp, type, uuid |
+
+The sidechain ack replaces the structured sibling with two top-level
+scalars (`subagent_type`, `task_description`) that carry none of the
+E5 markers — no `isAsync`, no `status`, no `agentId`, no
+`backgroundTaskId`. `message.content[0]` is a `tool_result` whose
+`content` is a text-block array, and the text is byte-identical in shape
+to the top-level ack's:
+
+```
+Async agent launched successfully. (This tool result is internal metadata — never quote or paste any part of it, including the agentId below, into a user-facing reply.)
+agentId: a126ec31b78a8dfc6 (internal ID - do not mention to user. Use SendMessage with to: 'a126ec31b78a8dfc6', summary: '<5-10 word recap>' to continue this agent.)
+The agent is working in the background. …
+output_file: /tmp/…/tasks/a126ec31b78a8dfc6.output
+…
+```
+
+#### Symptom before the fallback existed
+
+All four background signals in `parse_user.go` miss, `is_background`
+stays false, and the ack's `EventToolComplete` settles the launch row in
+place — so a depth-2 async agent rendered as an instantly-DONE card
+whose body was the internal ack metadata (the text that explicitly says
+never to show it). Downstream, triage's foreground gates
+(`writeBackgroundCompletionSibling`'s `!launch.IsBackground`) then
+dropped every `task_updated` / `task_notification` for that agent, so
+kills and completions vanished silently.
+
+#### Terminal delivery is unaffected — promoting is safe
+
+The same capture shows each sidechain-launched agent getting the full,
+ordinary lifecycle on TOP-LEVEL `system` envelopes: `task_started`
+(carrying the correct `task_id ↔ tool_use_id` binding),
+`background_tasks_changed`, a `task_progress` stream, and terminal
+`task_updated {patch:{status:"killed"}}` + `task_notification`. Only the
+`user` ack envelope loses its structured half; nothing about the task
+lifecycle is sidechain-specific.
+
+#### Text fallback (the discriminator)
+
+`asyncLaunchAckAgentID` in `parse_user.go` classifies from the ack TEXT,
+under three CONJUNCTIVE conditions — all three must hold, and failing
+any of them leaves the pre-fix behaviour rather than promoting:
+
+1. **No `tool_use_result` on the block.** When the structured sibling
+   exists it stays the sole authority; the text is never sniffed. This
+   is what keeps an INLINE agent's real completion (`{agentId, status:
+   "completed"}`, §E5 discriminator subtlety above) out of the path.
+2. **The `tool_use_id` was observed as Claude's agent-launch tool**
+   (`Agent`, or `Task` on older builds — `isAgentLaunchToolName`). The
+   marker is reliably in place: the assistant envelope carrying the
+   launch precedes its ack on the same sequentially-parsed stream, and
+   `local_agent` tasks die with their CLI process, so no pre-restart
+   agent can ack onto a fresh parser.
+3. **The text passes both halves of the ack test** — an EXACT PREFIX
+   match on `Async agent launched successfully.` (a single literal in
+   the 2.1.237 bundle, one occurrence, verified by binary grep) AND a
+   line-anchored `agentId: <lowercase-hex>` from which an id is
+   recoverable. The id's LENGTH is deliberately not asserted (17 chars
+   observed).
+
+Condition 3's two halves are both required because either alone is
+reachable by non-acks: the sentence alone appears on the §E6 resume ack
+(which has no `agentId` line) and in any agent's prose about this code
+path, while `agentId:` lines appear in ordinary agent output. A prefix —
+never a contains — is what keeps tool output that merely quotes the
+sentence from classifying.
+
+**No agentId ⇒ no promotion, deliberately.** An ack whose agent id
+cannot be recovered has nothing to correlate its terminal against, so
+promoting it would strand the card at `status=running` forever. That is
+strictly worse than the instantly-done card, so the fallback declines.
+
+Once promoted the two behaviours are the top-level ones verbatim:
+`is_background: true` on the completion meta, and `rememberTaskToolUse`
+re-seeding `agentId ↔ tool_use_id` (idempotent against the binding
+`task_started` normally supplies a few ms earlier). Regression guards:
+`TestAppendToolResultBlock_SidechainAsyncLaunchAckPromotesToBackground`
+plus the three refusal tests beside it in `parse_user_test.go`.
 
 ### E6 — Resuming an idle async agent (`task_started` rebind)
 

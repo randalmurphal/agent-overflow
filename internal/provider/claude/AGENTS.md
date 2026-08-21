@@ -500,7 +500,12 @@ Summary of what `ParseLine` dispatches:
   `isAsync`/`status:"async_launched"`, no `run_in_background` at
   launch and no `backgroundTaskId` on the wire; discriminated from an
   ordinary inline agent completion, which also carries `agentId` but
-  never `isAsync`/`async_launched`), Monitor watch-task launch ack
+  never `isAsync`/`async_launched`. On a SIDECHAIN line — a subagent
+  launching its OWN async agent, `parent_tool_use_id` set — the CLI
+  omits `tool_use_result` ENTIRELY, so all four signals miss and the
+  ack TEXT is the only evidence; see §E5b and `asyncLaunchAckAgentID`,
+  whose three conjunctive gates are what keep the text test from
+  firing on anything else), Monitor watch-task launch ack
   (§E7 — `tool_use_result.{taskId, timeoutMs, persistent}`, a
   background `local_bash` launch; `taskId` ALONE is not the
   discriminator — TaskCreate/TaskUpdate task-list acks carry one

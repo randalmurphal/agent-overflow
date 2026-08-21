@@ -23,6 +23,11 @@ type backgroundTaskNotificationMeta struct {
 	Status          string `json:"status,omitempty"`
 	Source          string `json:"source,omitempty"`
 	OutputFile      string `json:"output_file,omitempty"`
+	// UUID is the notification ENVELOPE's own id (Claude's top-level
+	// `uuid`; for the synthetic-XML channel, the wrapping user
+	// envelope's). It is the per-EVENT half of the row id — see
+	// nextTaskNotificationID.
+	UUID string `json:"uuid,omitempty"`
 }
 
 func decodeBackgroundTaskNotificationMeta(raw json.RawMessage) backgroundTaskNotificationMeta {
@@ -99,6 +104,17 @@ func (r *Router) handleBackgroundTaskNotification(evt provider.ProviderEvent) er
 		if _, _, err := r.store.TakePendingBackgroundTerminal(evt.ThreadID, meta.TaskID); err != nil {
 			log.Printf("triage: drain hidden task_notification stash %s: %v", meta.TaskID, err)
 		}
+		// Correct to drop: no resolvable launch means the work belongs
+		// to a subagent whose private transcript was never projected
+		// into this thread, and there is no parent-thread row a
+		// notification could hang off. Logged because the drop was
+		// previously silent — a task_notification vanishing here is
+		// indistinguishable from one that never arrived, and that is
+		// exactly the evidence the next investigation needs.
+		log.Printf(
+			"triage: drop task_notification with no resolvable launch thread=%s task_id=%s summary=%q",
+			evt.ThreadID, meta.TaskID, ClampErrorSummary(evt.Content),
+		)
 		return nil
 	}
 
@@ -127,19 +143,30 @@ func (r *Router) handleBackgroundTaskNotification(evt provider.ProviderEvent) er
 		log.Printf("triage: task notification turn index %s: %v", meta.TaskID, err)
 	}
 
+	// Watch-ness is a property of the LAUNCH (the keep-running flip
+	// copies `watch_task` onto its meta from the Monitor launch ack —
+	// claude-wire.md §E7). It is stamped onto every notification row
+	// here because the frontend's redundant-notification filter has to
+	// tell the two shapes apart at RENDER time, long after the launch
+	// row may have been windowed out of the pane: an ordinary
+	// background task's single bell is redundant once its completion
+	// card exists, but a watch task's notifications ARE its event
+	// history and the completion only means the stream ended.
+	watchTask := launchIsWatchTask(launch)
+
 	notification := store.Item{
-		ID:        nextTaskNotificationID(meta.TaskID),
+		ID:        nextTaskNotificationID(meta.TaskID, meta.UUID),
 		ThreadID:  evt.ThreadID,
 		TurnIndex: turnIndex,
 		Kind:      itemKindNotification,
 		Role:      "system",
 		Status:    statusCompleted,
-		Summary:   stringsxFirst(evt.Content, "Background task notification"),
+		Summary:   stringsxFirst(evt.Content, backgroundTaskNotificationPlaceholderSummary),
 		ParentID:  stringsxFirst(launch.ParentID, eventParentID(evt), meta.ParentToolUseID),
 		ToolName:  launch.ToolName,
 		CreatedAt: now,
 		UpdatedAt: now,
-		Meta:      backgroundNotificationItemMeta(meta, "ready", ""),
+		Meta:      backgroundNotificationItemMeta(meta, "ready", "", watchTask),
 	}
 	if persisted, ok, err := r.store.GetThreadItem(evt.ThreadID, notification.ID); err != nil {
 		return fmt.Errorf("task notification existing lookup %s: %w", notification.ID, err)
@@ -160,7 +187,7 @@ func (r *Router) handleBackgroundTaskNotification(evt provider.ProviderEvent) er
 	outputState := "ready"
 	readErrorString := ""
 	if meta.OutputFile != "" {
-		notification.Meta = backgroundNotificationItemMeta(meta, "loading", "")
+		notification.Meta = backgroundNotificationItemMeta(meta, "loading", "", watchTask)
 		if err := r.maybeDeferOrPersist(evt.ThreadID, notification, nil); err != nil {
 			return err
 		}
@@ -172,7 +199,7 @@ func (r *Router) handleBackgroundTaskNotification(evt provider.ProviderEvent) er
 		if readErr != nil {
 			outputState = "error"
 			readErrorString = readErr.Error()
-			notification.Meta = backgroundNotificationItemMeta(meta, outputState, readErrorString)
+			notification.Meta = backgroundNotificationItemMeta(meta, outputState, readErrorString, watchTask)
 			log.Printf("triage: read Claude task output file %q: %v", meta.OutputFile, readErr)
 			if err := r.maybeDeferOrPersist(evt.ThreadID, notification, nil); err != nil {
 				return err
@@ -180,7 +207,7 @@ func (r *Router) handleBackgroundTaskNotification(evt provider.ProviderEvent) er
 		} else {
 			outputState = "loaded"
 			notificationPayload = payload
-			notification.Meta = backgroundNotificationItemMeta(meta, outputState, "")
+			notification.Meta = backgroundNotificationItemMeta(meta, outputState, "", watchTask)
 			if err := r.maybeDeferOrPersist(evt.ThreadID, notification, notificationPayload); err != nil {
 				return err
 			}
@@ -214,6 +241,17 @@ func (r *Router) drainTaskNotificationStash(evt provider.ProviderEvent, meta bac
 	}
 
 	terminalMeta := terminalMetaFromNotification(meta)
+	// Carry the notification's own summary into the sibling's FIRST
+	// write. This path creates the completion row before the
+	// notification row exists, so leaving the caption to the enrich
+	// call below would mount the card and then grow a line under it.
+	//
+	// Not for a watch task: its notification rows are exempt from the
+	// redundant-notification hide (they ARE the event history), so a
+	// caption would show the same text twice on adjacent rows.
+	if !launchIsWatchTask(launch) {
+		terminalMeta.NotificationSummary = notificationCaptionSummary(evt.Content)
+	}
 	mergeStashIntoTerminalMeta(&terminalMeta, stash)
 	terminalMeta.Source = "task_notification"
 
@@ -265,7 +303,20 @@ func (r *Router) enrichExistingBackgroundCompletionFromNotification(
 	}
 	completion.Meta = mergeBackgroundCompletionItemMeta(
 		completion.Meta,
-		backgroundNotificationCompletionMeta(meta, payload != nil, outputState, readError),
+		backgroundNotificationCompletionMeta(
+			meta, payload != nil, outputState, readError,
+			// NO caption on the enrich path. This function only ever
+			// runs against an already-persisted (and likely mounted)
+			// sibling, and a caption materialising here would grow the
+			// card after first render, which the row contract forbids
+			// (frontend chat AGENTS.md §row shell stability). When the
+			// caption misses its one chance (the sibling's first write),
+			// the notification ROW stays visible instead —
+			// filterRedundantNotifications only hides a notification the
+			// sibling has absorbed. Appending a row is normal timeline
+			// behaviour; growing one is not.
+			"",
+		),
 	)
 	return r.maybeDeferOrPersist(evt.ThreadID, completion, payload)
 }
@@ -300,6 +351,53 @@ func (r *Router) findTaskNotificationItem(threadID, taskID string) (store.Item, 
 		return store.Item{}, false, err
 	}
 	return item, true, nil
+}
+
+// launchIsWatchTask reports whether a persisted launch row was marked as
+// Claude's Monitor (`watch_task`, copied onto the launch by the
+// keep-running flip in tool_lifecycle.go). Decoded through a one-field
+// struct rather than ToolCompleteMeta so a launch carrying a large
+// `input` echo isn't re-scanned on every notification.
+func launchIsWatchTask(launch store.Item) bool {
+	if launch.Meta == "" {
+		return false
+	}
+	var m struct {
+		WatchTask bool `json:"watch_task"`
+	}
+	if json.Unmarshal([]byte(launch.Meta), &m) != nil {
+		return false
+	}
+	return m.WatchTask
+}
+
+// captionForSiblingWrite decides whether THIS write of the completion
+// sibling may carry the notification caption. Two vetoes:
+//
+//   - an existing persisted sibling: the caption's one chance was the
+//     first write; a mounted card must not grow a line (row contract).
+//     The notification row stays visible instead — the filter only
+//     hides what the sibling absorbed.
+//   - a watch task: its notification rows are the event history and
+//     are never hidden, so the caption would duplicate them.
+func captionForSiblingWrite(existing *store.Item, launch store.Item, summary string) string {
+	if existing != nil || launchIsWatchTask(launch) {
+		return ""
+	}
+	return notificationCaptionSummary(summary)
+}
+
+// notificationCaptionSummary is the notification text worth carrying
+// onto a completion sibling as a caption: the summary Claude itself saw
+// ("Background command … completed (exit code 0)"), and nothing else.
+// The placeholder the row falls back to when the envelope had no
+// summary carries no information and is dropped.
+func notificationCaptionSummary(summary string) string {
+	summary = strings.TrimSpace(summary)
+	if summary == backgroundTaskNotificationPlaceholderSummary {
+		return ""
+	}
+	return summary
 }
 
 func notificationOutputState(raw string) (string, string) {
@@ -548,15 +646,52 @@ func pathWithinRoot(path, root string) bool {
 	return strings.HasPrefix(path, root+string(os.PathSeparator))
 }
 
-func nextTaskNotificationID(taskID string) string {
+// backgroundTaskNotificationPlaceholderSummary is what the notification
+// row falls back to when the envelope carried no `summary`. It says
+// nothing the row's own kind doesn't, so it is never propagated onto a
+// completion sibling as a caption.
+const backgroundTaskNotificationPlaceholderSummary = "Background task notification"
+
+// nextTaskNotificationID is the notification row's identity, and it is
+// per-EVENT rather than per-task.
+//
+// A persistent Monitor (claude-wire.md §E7) fires one
+// `system/task_notification` for every output event of the stream it
+// watches. All of them share one `task_id`, and Claude sees each as its
+// own message — so a task-only row id made every event overwrite the
+// last and left exactly one row: the newest. Mixing the envelope's own
+// `uuid` in gives one row per event while keeping the id DETERMINISTIC,
+// which is the exactly-once mechanism: a reconnect replaying the same
+// envelope upserts the same row rather than appending a duplicate.
+//
+// An older CLI (and the claude-tui reconstruction, which synthesizes
+// these envelopes and has no per-notification id to offer) carries no
+// uuid; that falls back to the legacy task-only id, which is the
+// pre-existing upsert-in-place behavior. For an ordinary background
+// task — one notification, one task — both forms produce exactly one
+// row, so nothing about that case changes.
+func nextTaskNotificationID(taskID, uuid string) string {
+	if uuid = strings.TrimSpace(uuid); uuid != "" {
+		return "task-notification:" + taskID + ":" + uuid
+	}
 	return "task-notification:" + taskID
 }
 
-func backgroundNotificationItemMeta(meta backgroundTaskNotificationMeta, outputState, readError string) string {
+func backgroundNotificationItemMeta(meta backgroundTaskNotificationMeta, outputState, readError string, watchTask bool) string {
 	fields := map[string]any{
 		"task_id":           meta.TaskID,
 		"source":            "task_notification",
 		"output_file_state": outputState,
+	}
+	if watchTask {
+		// Only ever written as `true`. An absent key means "not a watch
+		// task", exactly as it does on the launch row this is copied
+		// from, so a row persisted before this field existed reads the
+		// same as one written today.
+		fields["watch_task"] = true
+	}
+	if meta.UUID != "" {
+		fields["uuid"] = meta.UUID
 	}
 	if meta.ToolUseID != "" {
 		fields["tool_use_id"] = meta.ToolUseID
@@ -580,11 +715,17 @@ func backgroundNotificationItemMeta(meta backgroundTaskNotificationMeta, outputS
 	return string(data)
 }
 
+// notificationSummary is the text Claude itself saw. The frontend hides
+// the notification ROW for an ordinary background task (its completion
+// card is the in-app signal), so without this the exit code and the
+// CLI's own wording were simply lost. Empty when the envelope carried no
+// summary; the merge below never overwrites a stored value with "".
 func backgroundNotificationCompletionMeta(
 	meta backgroundTaskNotificationMeta,
 	payloadLoaded bool,
 	outputState string,
 	readError string,
+	notificationSummary string,
 ) string {
 	fields := map[string]any{
 		"task_id":                     meta.TaskID,
@@ -593,6 +734,9 @@ func backgroundNotificationCompletionMeta(
 		"notification_output_state":   outputState,
 		"notification_output_file":    meta.OutputFile,
 		"notification_terminal_state": meta.Status,
+	}
+	if notificationSummary != "" {
+		fields["notification_summary"] = notificationSummary
 	}
 	if readError != "" {
 		fields["notification_output_error"] = readError
@@ -621,6 +765,12 @@ func backgroundCompletionItemMeta(meta backgroundTaskTerminalMeta, rich bool) st
 	}
 	if meta.OutputFile != "" {
 		fields["output_file"] = meta.OutputFile
+	}
+	if meta.NotificationSummary != "" {
+		// Same key the notification-first path writes through
+		// backgroundNotificationCompletionMeta, so both arrival orders
+		// leave one stamped meta.
+		fields["notification_summary"] = meta.NotificationSummary
 	}
 	data, err := json.Marshal(fields)
 	if err != nil {

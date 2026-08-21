@@ -17,6 +17,7 @@
   import ProposedPlanCard from './ProposedPlanCard.svelte';
   import ToolResultCard from './ToolResultCard.svelte';
   import { resolveToolPresentation } from './toolPresentation';
+  import { extractNotificationSummary } from '../../utils/claudeTaskMeta';
 
   let {
     pane,
@@ -36,6 +37,20 @@
       workspacePath: paneWorkspacePath(pane),
     }),
   );
+
+  // The text Claude itself saw for this background task
+  // ("Background command … completed (exit code 0)"). The notification
+  // ROW carrying it is hidden by `utils/notificationFilter.ts` once this
+  // completion exists, so the card is where the wording and the exit
+  // code survive. Triage stamps it on the sibling's first write, so it
+  // is present when the row mounts rather than appearing a beat later.
+  // Suppressed when it says exactly what the card already says.
+  let notificationSummary = $derived.by(() => {
+    if (item.kind !== 'tool_completion') return null;
+    const summary = extractNotificationSummary(item);
+    if (!summary || summary === item.summary?.trim()) return null;
+    return summary;
+  });
 </script>
 
 {#if presentation.kind === 'user-input'}
@@ -128,4 +143,13 @@
   <AdvisorRow {pane} {item} />
 {:else}
   <GenericToolCallRow {pane} {item} />
+{/if}
+
+{#if notificationSummary}
+  <div
+    class="ml-[5.25rem] px-3 pb-1 text-[0.75rem] leading-4 text-fg-muted/75"
+    data-testid="tool-call-card-notification-summary"
+  >
+    {notificationSummary}
+  </div>
 {/if}

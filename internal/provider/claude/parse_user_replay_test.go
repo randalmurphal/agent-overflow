@@ -970,6 +970,41 @@ func TestParseUser_Replay_BundledTaskNotifications_EmitsEach(t *testing.T) {
 	}
 }
 
+// TestParseUser_Replay_BundledSameTaskNotifications_DistinctUUIDs pins
+// the per-block ordinal on the coalesced envelope's uuid. Triage keys
+// each notification row on task-notification:<taskID>:<uuid>, and a
+// coalesced envelope carries ONE uuid for every block — so two blocks
+// for the SAME task (a Monitor firing twice inside one flush window)
+// collided to a single row, silently dropping the first event. Block 0
+// keeps the bare envelope uuid (idempotent with what earlier builds
+// persisted); every later block gets ":<position>" appended.
+func TestParseUser_Replay_BundledSameTaskNotifications_DistinctUUIDs(t *testing.T) {
+	parser := NewParser()
+	content := "<task-notification>\n<task-id>watch1</task-id>\n<tool-use-id>toolu_w</tool-use-id>\n<status>completed</status>\n<summary>tick 1</summary>\n</task-notification>\n\n" +
+		"<task-notification>\n<task-id>watch1</task-id>\n<tool-use-id>toolu_w</tool-use-id>\n<status>completed</status>\n<summary>tick 2</summary>\n</task-notification>"
+	line := []byte(`{"type":"user","isReplay":true,"uuid":"bundle","message":{"role":"user","content":` + jsonString(content) + `}}`)
+
+	events, err := parser.ParseLine(testThread, line)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(events) != 2 {
+		t.Fatalf("expected 2 events, got %d: %+v", len(events), events)
+	}
+	uuids := make([]string, 0, 2)
+	for _, ev := range events {
+		var meta map[string]any
+		if err := json.Unmarshal(ev.Meta, &meta); err != nil {
+			t.Fatalf("unmarshal meta: %v", err)
+		}
+		uuid, _ := meta["uuid"].(string)
+		uuids = append(uuids, uuid)
+	}
+	if uuids[0] != "bundle" || uuids[1] != "bundle:1" {
+		t.Fatalf("want per-block uuids [bundle bundle:1], got %v", uuids)
+	}
+}
+
 // jsonString quotes s as a JSON string literal (with surrounding
 // double quotes) so test fixtures can embed arbitrary content
 // without escaping every character. The result drops directly into
@@ -1137,6 +1172,37 @@ func TestExtractCrossSessionMessage(t *testing.T) {
 	} {
 		if _, ok := ExtractCrossSessionMessage(unbalanced); ok {
 			t.Fatalf("ExtractCrossSessionMessage(%q) = true, want false", unbalanced)
+		}
+	}
+}
+
+// The synthetic-XML channel's `<task-notification>` blocks carry no id
+// of their own, so the WRAPPING user envelope's uuid is what identifies
+// the delivery — block 0 verbatim, later blocks with a per-block ordinal
+// (see TestParseUser_Replay_BundledSameTaskNotifications_DistinctUUIDs
+// for why the bare uuid alone is not enough).
+func TestParseUser_Replay_TaskNotificationCarriesEnvelopeUUID(t *testing.T) {
+	parser := NewParser()
+
+	line := []byte(`{"type":"user","isReplay":true,"uuid":"envelope-uuid-1","message":{"role":"user","content":"A background agent completed a task:\n<task-notification>\n<task-id>task-a</task-id>\n<tool-use-id>tool-a</tool-use-id>\n<status>completed</status>\n<summary>a done</summary>\n</task-notification>\n<task-notification>\n<task-id>task-b</task-id>\n<tool-use-id>tool-b</tool-use-id>\n<status>completed</status>\n<summary>b done</summary>\n</task-notification>"}}`)
+	events, err := parser.ParseLine(testThread, line)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(events) != 2 {
+		t.Fatalf("expected 2 notification events, got %d: %+v", len(events), events)
+	}
+	wantUUIDs := []string{"envelope-uuid-1", "envelope-uuid-1:1"}
+	for i, evt := range events {
+		if evt.Kind != provider.EventBackgroundTaskNotification {
+			t.Fatalf("unexpected event kind %q", evt.Kind)
+		}
+		var meta map[string]any
+		if err := json.Unmarshal(evt.Meta, &meta); err != nil {
+			t.Fatalf("decode meta: %v", err)
+		}
+		if meta["uuid"] != wantUUIDs[i] {
+			t.Fatalf("block %d meta uuid = %v, want %q (meta=%s)", i, meta["uuid"], wantUUIDs[i], evt.Meta)
 		}
 	}
 }

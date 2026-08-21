@@ -24,6 +24,7 @@ package claude
 import (
 	"encoding/json"
 	"html"
+	"strconv"
 	"strings"
 	"time"
 
@@ -226,12 +227,26 @@ func (p *Parser) parseUserReplay(threadID string, raw map[string]json.RawMessage
 		// been captured directly. A non-routable block (empty <task-id>)
 		// has no idempotency key, so it is skipped rather than fabricating
 		// a malformed completion.
+		envelopeUUID := readRawString(raw["uuid"])
 		var events []provider.ProviderEvent
-		for _, fields := range ExtractAllTaskNotificationFields(content) {
+		for i, fields := range ExtractAllTaskNotificationFields(content) {
 			if !fields.Routable() {
 				continue
 			}
-			events = append(events, p.replayTaskNotificationEvents(threadID, fields, now)...)
+			// A coalesced envelope carries ONE uuid for every block, and
+			// the per-event notification row is keyed on
+			// task-notification:<taskID>:<uuid> — so two same-task blocks
+			// in one flush would collide to a single row, silently
+			// dropping the first event. Suffix a per-block ordinal (block
+			// position, not routable count, so the id is deterministic
+			// across replays). Block 0 keeps the bare uuid: a
+			// single-block envelope's id stays identical to what earlier
+			// builds persisted, so re-import stays idempotent.
+			blockUUID := envelopeUUID
+			if i > 0 && blockUUID != "" {
+				blockUUID = envelopeUUID + ":" + strconv.Itoa(i)
+			}
+			events = append(events, p.replayTaskNotificationEvents(threadID, fields, blockUUID, now)...)
 		}
 		return events, nil
 	}
@@ -575,12 +590,21 @@ func extractXMLChild(body, tag string) string {
 // inputs whichever wire path Claude chose. The XML wrapper doesn't
 // expose `parent_tool_use_id`; the shared builder falls back to the
 // parser's task_id ↔ tool_use_id map for it.
-func (p *Parser) replayTaskNotificationEvents(threadID string, fields TaskNotificationFields, now time.Time) []provider.ProviderEvent {
+//
+// envelopeUUID is the WRAPPING user envelope's own top-level `uuid` —
+// the XML block carries no id of its own, and the envelope is the unit
+// the CLI delivered these observations in. It is what triage keys the
+// notification row on, so a replayed envelope re-upserts the same rows
+// instead of appending duplicates. A coalesced envelope carrying
+// several blocks still yields distinct rows, because the task_id is the
+// other half of that key.
+func (p *Parser) replayTaskNotificationEvents(threadID string, fields TaskNotificationFields, envelopeUUID string, now time.Time) []provider.ProviderEvent {
 	return []provider.ProviderEvent{p.buildBackgroundTaskNotificationEvent(threadID, backgroundTaskNotificationFields{
 		TaskID:     fields.TaskID,
 		ToolUseID:  fields.ToolUseID,
 		Status:     fields.Status,
 		OutputFile: fields.OutputFile,
 		Summary:    fields.Summary,
+		UUID:       envelopeUUID,
 	}, now)}
 }

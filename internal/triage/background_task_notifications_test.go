@@ -440,7 +440,7 @@ func TestBackgroundTaskNotification_SiblingEmitsBeforeNotificationRow(t *testing
 		return -1
 	}
 	siblingIdx := firstUpsertIndex(ToolCompletionID("bg-subagent"))
-	notificationIdx := firstUpsertIndex(nextTaskNotificationID("task-bg-subagent-1"))
+	notificationIdx := firstUpsertIndex(nextTaskNotificationID("task-bg-subagent-1", ""))
 	if siblingIdx < 0 {
 		t.Fatalf("no upsert emission for the tool_completion sibling (emissions: %+v)", snapshot)
 	}
@@ -1761,7 +1761,7 @@ func TestBackgroundTaskNotification_ReplayPreservesOriginalTimelinePosition(t *t
 		t.Fatalf("first notification: %v", err)
 	}
 
-	initial, ok, err := st.GetThreadItem("t1", nextTaskNotificationID("task-replay"))
+	initial, ok, err := st.GetThreadItem("t1", nextTaskNotificationID("task-replay", ""))
 	if err != nil || !ok {
 		t.Fatalf("lookup initial notification: ok=%v err=%v", ok, err)
 	}
@@ -1778,7 +1778,7 @@ func TestBackgroundTaskNotification_ReplayPreservesOriginalTimelinePosition(t *t
 		t.Fatalf("replayed notification: %v", err)
 	}
 
-	after, ok, err := st.GetThreadItem("t1", nextTaskNotificationID("task-replay"))
+	after, ok, err := st.GetThreadItem("t1", nextTaskNotificationID("task-replay", ""))
 	if err != nil || !ok {
 		t.Fatalf("lookup replayed notification: ok=%v err=%v", ok, err)
 	}
@@ -1889,4 +1889,374 @@ func TestAllowedClaudeOutputRoots_IncludesClaudeProjectsDir(t *testing.T) {
 		}
 	}
 	t.Errorf("allowedClaudeOutputRoots() did not include %q; got %v", resolved, roots)
+}
+
+// startMonitorLaunch drives the launch half of Claude's Monitor watch
+// task (claude-wire.md §E7): a backgrounded `local_bash` launch whose
+// completion ack carries `watch_task`, which the keep-running flip
+// copies onto the launch row's meta.
+func startMonitorLaunch(t *testing.T, router *Router, threadID, itemID, taskID string) {
+	t.Helper()
+	// The Monitor launch itself carries no run_in_background — §E7's
+	// launch ack is what marks it backgrounded, which is also what
+	// carries watch_task through the keep-running flip.
+	startMeta, _ := json.Marshal(map[string]any{
+		"toolName": "Bash",
+		"input":    map[string]any{"command": "Read output file for task b1"},
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventToolStart,
+		ThreadID:  threadID,
+		ItemID:    itemID,
+		ItemType:  "Bash",
+		Meta:      startMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("monitor start: %v", err)
+	}
+	taskStartedMeta, _ := json.Marshal(map[string]any{"task_id": taskID})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventToolStart,
+		ThreadID:  threadID,
+		ItemID:    itemID,
+		Meta:      taskStartedMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("monitor task_started meta-update: %v", err)
+	}
+	// The Monitor launch ack: a backgrounded placeholder completion
+	// carrying watch_task, which the keep-running flip merges onto the
+	// launch row.
+	ackMeta, _ := json.Marshal(map[string]any{
+		"is_background": true,
+		"watch_task":    true,
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventToolComplete,
+		ThreadID:  threadID,
+		ItemID:    itemID,
+		Meta:      ackMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("monitor launch ack: %v", err)
+	}
+}
+
+func sendTaskNotification(t *testing.T, router *Router, threadID, itemID, taskID, uuid, summary string) {
+	t.Helper()
+	fields := map[string]any{
+		"task_id":     taskID,
+		"tool_use_id": itemID,
+		"status":      "completed",
+		"source":      "task_notification",
+	}
+	if uuid != "" {
+		fields["uuid"] = uuid
+	}
+	meta, _ := json.Marshal(fields)
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventBackgroundTaskNotification,
+		ThreadID:  threadID,
+		ItemID:    itemID,
+		Meta:      meta,
+		Content:   summary,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("task_notification %q: %v", uuid, err)
+	}
+}
+
+// A persistent Monitor fires one system/task_notification per output
+// event of the stream it watches. All of them share one task_id, and
+// Claude sees each as its own message — so the row id has to be
+// per-EVENT or every event silently overwrites the last (W1). The
+// envelope's own uuid supplies that identity while keeping the id
+// deterministic, which is what makes a replay an upsert rather than a
+// third row.
+func TestBackgroundTaskNotification_DistinctUUIDsProduceOneRowEachAndReplayIsIdempotent(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	seedOpenTurn(t, router, st, "t1", 0)
+	startMonitorLaunch(t, router, "t1", "bg-monitor", "task-monitor")
+
+	sendTaskNotification(t, router, "t1", "bg-monitor", "task-monitor", "uuid-1", "Monitor event 1")
+	sendTaskNotification(t, router, "t1", "bg-monitor", "task-monitor", "uuid-2", "Monitor event 2")
+
+	notifications := findItemsByKind(t, st, "t1", itemKindNotification)
+	if len(notifications) != 2 {
+		summaries := make([]string, 0, len(notifications))
+		for _, n := range notifications {
+			summaries = append(summaries, n.Summary)
+		}
+		t.Fatalf("expected 2 notification rows (one per uuid), got %d: %v", len(notifications), summaries)
+	}
+	if notifications[0].ID != nextTaskNotificationID("task-monitor", "uuid-1") {
+		t.Fatalf("first notification id = %q", notifications[0].ID)
+	}
+	if notifications[1].ID != nextTaskNotificationID("task-monitor", "uuid-2") {
+		t.Fatalf("second notification id = %q", notifications[1].ID)
+	}
+
+	// Reconnect replay of the FIRST envelope: same uuid, same row.
+	sendTaskNotification(t, router, "t1", "bg-monitor", "task-monitor", "uuid-1", "Monitor event 1")
+	replayed := findItemsByKind(t, st, "t1", itemKindNotification)
+	if len(replayed) != 2 {
+		t.Fatalf("replay of uuid-1 must upsert, got %d rows", len(replayed))
+	}
+}
+
+// The legacy shape: an older CLI (and the claude-tui reconstruction)
+// carries no envelope uuid. That must keep the pre-existing
+// one-row-per-task upsert rather than degrading to an append.
+func TestBackgroundTaskNotification_WithoutUUIDStillUpsertsOneRowPerTask(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	seedOpenTurn(t, router, st, "t1", 0)
+	startMonitorLaunch(t, router, "t1", "bg-legacy", "task-legacy")
+
+	sendTaskNotification(t, router, "t1", "bg-legacy", "task-legacy", "", "Legacy event 1")
+	sendTaskNotification(t, router, "t1", "bg-legacy", "task-legacy", "", "Legacy event 2")
+
+	notifications := findItemsByKind(t, st, "t1", itemKindNotification)
+	if len(notifications) != 1 {
+		t.Fatalf("expected 1 upserted notification row without a uuid, got %d", len(notifications))
+	}
+	if notifications[0].ID != nextTaskNotificationID("task-legacy", "") {
+		t.Fatalf("legacy notification id = %q", notifications[0].ID)
+	}
+	if notifications[0].Summary != "Legacy event 2" {
+		t.Fatalf("legacy notification summary = %q, want the latest", notifications[0].Summary)
+	}
+}
+
+// The frontend's redundant-notification filter has to tell a watch
+// task's event history from an ordinary task's single bell at RENDER
+// time, when the launch row may be windowed out of the pane. Triage
+// therefore copies the launch's watch marker onto every notification row
+// it writes (W1b).
+func TestBackgroundTaskNotification_StampsWatchTaskOntoNotificationMeta(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	seedOpenTurn(t, router, st, "t1", 0)
+	startMonitorLaunch(t, router, "t1", "bg-monitor", "task-monitor")
+	sendTaskNotification(t, router, "t1", "bg-monitor", "task-monitor", "uuid-1", "Monitor event 1")
+
+	notifications := findItemsByKind(t, st, "t1", itemKindNotification)
+	if len(notifications) != 1 {
+		t.Fatalf("expected 1 notification row, got %d", len(notifications))
+	}
+	meta := decodeItemMetaMap(t, notifications[0].Meta)
+	if meta["watch_task"] != true {
+		t.Fatalf("notification meta watch_task = %v, want true (meta=%s)", meta["watch_task"], notifications[0].Meta)
+	}
+	if meta["uuid"] != "uuid-1" {
+		t.Fatalf("notification meta uuid = %v, want uuid-1", meta["uuid"])
+	}
+}
+
+// An ordinary background task is untouched: no watch marker, so the
+// frontend keeps hiding its redundant bell.
+func TestBackgroundTaskNotification_OrdinaryBackgroundTaskCarriesNoWatchMarker(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	seedOpenTurn(t, router, st, "t1", 0)
+
+	startMeta, _ := json.Marshal(map[string]any{
+		"toolName":      "Bash",
+		"is_background": true,
+		"input":         map[string]any{"command": "sleep 30"},
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "bg-plain",
+		ItemType: "Bash", Meta: startMeta, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	sendTaskNotification(t, router, "t1", "bg-plain", "task-plain", "uuid-1", "Background command completed (exit code 0)")
+
+	notifications := findItemsByKind(t, st, "t1", itemKindNotification)
+	if len(notifications) != 1 {
+		t.Fatalf("expected 1 notification row, got %d", len(notifications))
+	}
+	if meta := decodeItemMetaMap(t, notifications[0].Meta); meta["watch_task"] != nil {
+		t.Fatalf("ordinary background task must carry no watch marker, got %v", meta["watch_task"])
+	}
+}
+
+// The hidden notification's summary is the only place the CLI's own
+// wording and exit code live, so it is stamped onto the completion
+// sibling that replaces it (W3). Both arrival orders must produce the
+// same stamped meta.
+func TestBackgroundTaskNotification_CompletionSiblingCarriesNotificationSummary(t *testing.T) {
+	const summary = `Background command "sleep 1" completed (exit code 0)`
+
+	startPlainBackgroundLaunch := func(t *testing.T, router *Router) {
+		t.Helper()
+		startMeta, _ := json.Marshal(map[string]any{
+			"toolName":      "Bash",
+			"is_background": true,
+			"input":         map[string]any{"command": "sleep 1"},
+		})
+		if err := router.Handle(provider.ProviderEvent{
+			Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "bg-sum",
+			ItemType: "Bash", Meta: startMeta, Timestamp: time.Now(),
+		}); err != nil {
+			t.Fatalf("start: %v", err)
+		}
+		taskStartedMeta, _ := json.Marshal(map[string]any{"task_id": "task-sum"})
+		if err := router.Handle(provider.ProviderEvent{
+			Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "bg-sum",
+			Meta: taskStartedMeta, Timestamp: time.Now(),
+		}); err != nil {
+			t.Fatalf("task_started meta-update: %v", err)
+		}
+	}
+
+	stashTerminal := func(t *testing.T, router *Router) {
+		t.Helper()
+		stashMeta, _ := json.Marshal(map[string]any{
+			"task_id":     "task-sum",
+			"tool_use_id": "bg-sum",
+			"status":      "completed",
+			"source":      "task_updated",
+		})
+		if err := router.Handle(provider.ProviderEvent{
+			Kind: provider.EventBackgroundTaskTerminal, ThreadID: "t1",
+			Meta: stashMeta, Timestamp: time.Now(),
+		}); err != nil {
+			t.Fatalf("task_updated stash: %v", err)
+		}
+	}
+
+	observeViaTaskOutput := func(t *testing.T, router *Router) {
+		t.Helper()
+		observeMeta, _ := json.Marshal(map[string]any{
+			"task_id":     "task-sum",
+			"tool_use_id": "bg-sum",
+			"status":      "completed",
+			"source":      "task_output",
+		})
+		if err := router.Handle(provider.ProviderEvent{
+			Kind: provider.EventBackgroundTaskTerminal, ThreadID: "t1", ItemID: "bg-sum",
+			Meta: observeMeta, Timestamp: time.Now(),
+		}); err != nil {
+			t.Fatalf("task_output observe: %v", err)
+		}
+	}
+
+	assertStamped := func(t *testing.T, st *store.Store) {
+		t.Helper()
+		dones := findItemsByKind(t, st, "t1", itemKindBackgroundDone)
+		if len(dones) != 1 {
+			t.Fatalf("expected 1 tool_completion sibling, got %d", len(dones))
+		}
+		meta := decodeItemMetaMap(t, dones[0].Meta)
+		if got := meta["notification_summary"]; got != summary {
+			t.Fatalf("sibling notification_summary = %v, want %q (meta=%s)", got, summary, dones[0].Meta)
+		}
+	}
+
+	t.Run("sibling first (notification drains the stash)", func(t *testing.T) {
+		router, st, _ := newTestRouter(t)
+		createTestThread(t, st, "t1")
+		seedOpenTurn(t, router, st, "t1", 0)
+		startPlainBackgroundLaunch(t, router)
+		stashTerminal(t, router)
+		sendTaskNotification(t, router, "t1", "bg-sum", "task-sum", "uuid-1", summary)
+		assertStamped(t, st)
+	})
+
+	t.Run("notification first (TaskOutput writes the sibling later)", func(t *testing.T) {
+		router, st, _ := newTestRouter(t)
+		createTestThread(t, st, "t1")
+		seedOpenTurn(t, router, st, "t1", 0)
+		startPlainBackgroundLaunch(t, router)
+		sendTaskNotification(t, router, "t1", "bg-sum", "task-sum", "uuid-1", summary)
+		if dones := findItemsByKind(t, st, "t1", itemKindBackgroundDone); len(dones) != 0 {
+			t.Fatalf("notification alone must not synthesize a sibling, got %d", len(dones))
+		}
+		observeViaTaskOutput(t, router)
+		assertStamped(t, st)
+	})
+
+	assertNotStamped := func(t *testing.T, st *store.Store) {
+		t.Helper()
+		dones := findItemsByKind(t, st, "t1", itemKindBackgroundDone)
+		if len(dones) != 1 {
+			t.Fatalf("expected 1 tool_completion sibling, got %d", len(dones))
+		}
+		if meta := decodeItemMetaMap(t, dones[0].Meta); meta["notification_summary"] != nil {
+			t.Fatalf("sibling must not gain a caption after its first write, got %v (meta=%s)",
+				meta["notification_summary"], dones[0].Meta)
+		}
+	}
+
+	// The caption's ONE chance is the sibling's first write: a mounted
+	// card must not grow a line (chat row-shell contract). When
+	// TaskOutput created the sibling before the bell arrived, the enrich
+	// path leaves the caption off and the notification ROW stays visible
+	// instead (filterRedundantNotifications hides only absorbed bells).
+	t.Run("sibling created before any notification never gains a late caption", func(t *testing.T) {
+		router, st, _ := newTestRouter(t)
+		createTestThread(t, st, "t1")
+		seedOpenTurn(t, router, st, "t1", 0)
+		startPlainBackgroundLaunch(t, router)
+		observeViaTaskOutput(t, router)
+		assertNotStamped(t, st)
+		sendTaskNotification(t, router, "t1", "bg-sum", "task-sum", "uuid-1", summary)
+		assertNotStamped(t, st)
+		notifications := findItemsByKind(t, st, "t1", itemKindNotification)
+		if len(notifications) != 1 {
+			t.Fatalf("uncaptioned order must still persist the notification row, got %d", len(notifications))
+		}
+	})
+
+	// Same veto through the drain path: a task_updated stash that
+	// outlives a TaskOutput-written sibling reaches
+	// writeBackgroundCompletionSibling with NotificationSummary set, and
+	// the writer clears it because the sibling already exists.
+	t.Run("stash surviving past an existing sibling cannot late-caption it", func(t *testing.T) {
+		router, st, _ := newTestRouter(t)
+		createTestThread(t, st, "t1")
+		seedOpenTurn(t, router, st, "t1", 0)
+		startPlainBackgroundLaunch(t, router)
+		observeViaTaskOutput(t, router)
+		stashTerminal(t, router)
+		sendTaskNotification(t, router, "t1", "bg-sum", "task-sum", "uuid-1", summary)
+		assertNotStamped(t, st)
+	})
+}
+
+// A watch task's notification rows are exempt from the redundant-bell
+// hide (they ARE the event history), so a caption on its completion
+// sibling would render the same text twice on adjacent rows. Neither
+// stamp path may produce one.
+func TestWatchTaskCompletionSiblingCarriesNoCaption(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	seedOpenTurn(t, router, st, "t1", 0)
+	startMonitorLaunch(t, router, "t1", "mon-1", "task-mon")
+
+	stashMeta, _ := json.Marshal(map[string]any{
+		"task_id":     "task-mon",
+		"tool_use_id": "mon-1",
+		"status":      "completed",
+		"source":      "task_updated",
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventBackgroundTaskTerminal, ThreadID: "t1",
+		Meta: stashMeta, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("task_updated stash: %v", err)
+	}
+	sendTaskNotification(t, router, "t1", "mon-1", "task-mon", "uuid-mon", "Monitor: stream ended")
+
+	dones := findItemsByKind(t, st, "t1", itemKindBackgroundDone)
+	if len(dones) != 1 {
+		t.Fatalf("expected 1 tool_completion sibling, got %d", len(dones))
+	}
+	if meta := decodeItemMetaMap(t, dones[0].Meta); meta["notification_summary"] != nil {
+		t.Fatalf("watch sibling must carry no caption, got %v (meta=%s)",
+			meta["notification_summary"], dones[0].Meta)
+	}
 }

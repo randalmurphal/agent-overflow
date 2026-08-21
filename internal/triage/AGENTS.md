@@ -72,6 +72,11 @@ none fits.
   for it, and under-reporting a safety refusal is the worse mistake.
 - `tool_lifecycle.go` — tool-call launch/completion rows,
   background-task pairing (Claude), summary/status derivation.
+- `background_task_notifications.go` — Claude's
+  `system/task_notification` attention signal: the per-event
+  `notification` row, the stash drain that writes the `tool_completion`
+  sibling, and the `output_file` payload read/enrichment. See "Task
+  notifications" below.
 - `codex_background.go` / `codex_background_exec.go` /
   `codex_background_subagents.go` — Codex-specific background projection.
   `codex_background.go` holds what both halves share: the
@@ -250,6 +255,7 @@ none fits.
 | Turn metadata (cost/tokens) | Per-turn deltas from the provider: aggregate onto `turns.token_usage_json` (first-write-wins for display) + one `usage_ledger` row per model on every settle event (`usage_ledger.go`). |
 | Context-window usage | Frontend context meter + `threads.last_token_usage`. |
 | Background task terminal (Claude) | `tool_completion` sibling row upsert (idempotent). See `turn-lifecycle.md`. |
+| Task notification (Claude) | One `notification` row per NOTIFICATION EVENT — id `task-notification:<taskID>:<uuid>` — plus the `output_file` enrichment onto the `tool_completion` sibling. Never a lifecycle source (invariant 21). See "Task notifications" below. |
 | Command lifecycle (Claude) | Live-only `provider:command_lifecycle` keyed onto the AO row id; nothing persists. Older CLIs emit no acks, so no routing decision may depend on them. See `command_lifecycle.go`. |
 | Fast-mode report (Claude) | Live-only `provider:fast_mode` from `system/init` and the wire `result`; nothing persists. Absence is unknown, never "off". See `fast_mode.go`. |
 | Compaction status | Live-only `provider:compacting` window per thread (open on Active frames, closed by close frame / compact boundary / turn completion); nothing persists. Snapshot-carried for reconnect. See `compaction_status.go`. |
@@ -331,6 +337,69 @@ Load-bearing reminders:
 - Re-round paths (`maybeReopenSettledRound`) must not call
   `setOpenTurn`; that would reset id-allocating counters and collide
   with rows already persisted under the same logical turn.
+
+### Task notifications (`background_task_notifications.go`)
+
+`system/task_notification` is an ATTENTION SIGNAL, never a completion
+source (invariant 21). Four rules govern what it writes:
+
+- **The row id is per-EVENT, not per-task.** `nextTaskNotificationID` is
+  `task-notification:<taskID>:<uuid>`, where `uuid` is the notification
+  envelope's own top-level id (for the synthetic-XML channel, the
+  wrapping user envelope's — see `claude/parse_user_replay.go`). A
+  persistent Monitor (claude-wire.md §E7) fires one notification per
+  output event of the stream it watches, all under ONE `task_id`, and
+  Claude sees each as a distinct message; a task-only id made each event
+  upsert over the last so only the newest survived. The uuid is what
+  makes them distinct AND what keeps them idempotent — the id stays
+  deterministic, so a reconnect replaying an envelope re-upserts its own
+  row rather than appending a duplicate. A CLI that carries no uuid (and
+  the `claudetui` reconstruction, which synthesizes these envelopes and
+  has no per-notification id to offer) falls back to the legacy
+  task-only id, which is the pre-existing upsert-in-place behavior. For
+  an ordinary background task — one notification, one task — both forms
+  produce exactly one row.
+- **`meta.watch_task` is copied from the launch onto every notification
+  row.** The frontend's `filterRedundantNotifications` hides a
+  notification whose task has a completed lifecycle row; for a watch
+  task that would erase the whole interim event history at the moment
+  the stream ended, so the filter keeps rows that carry this marker. It
+  is stamped HERE, at write time, rather than derived at render time,
+  because the launch row may be windowed out of the pane long before its
+  notifications are. Written only as `true`; an absent key means "not a
+  watch task", which is also what every row persisted before the field
+  existed says.
+- **The summary survives the hide as a caption on the sibling — but
+  only on the sibling's FIRST write, and never for a watch task.** The
+  frontend hides an ordinary task's notification row only when the
+  sibling has ABSORBED it (`meta.notification_summary` present, or the
+  two summaries are equal text), so the text Claude itself saw
+  ("Background command … completed (exit code 0)") is never silently
+  lost: either the sibling carries it as a caption or the notification
+  row stays visible. The caption's one chance is the sibling's first
+  write — a mounted card must not grow a line (chat AGENTS.md row-shell
+  contract) — enforced at the one writer
+  (`writeBackgroundCompletionSibling` clears
+  `meta.NotificationSummary` and passes `""` through
+  `captionForSiblingWrite` when a persisted sibling exists) and by the
+  enrich path never stamping at all. Both first-write orders produce
+  it: sibling-first through `backgroundTaskTerminalMeta.
+  NotificationSummary` (internal, never-on-the-wire, set by the stash
+  drain), notification-first through `captionForSiblingWrite` reading
+  the persisted notification row. Watch tasks never get a caption:
+  their notification rows are exempt from the hide, so a caption would
+  say the same text twice on adjacent rows. The frontend renders the
+  caption as one muted line and skips it when it repeats the row's own
+  summary.
+- **No resolvable launch is a DROP, and the drop is logged.** Hidden
+  subagent work has no parent-thread row a notification could hang off,
+  so nothing is written — but the stash drain still runs and the drop
+  names its `task_id` and summary, because a silently vanished
+  notification is indistinguishable from one that never arrived.
+
+The foreground skip (`!launch.IsBackground`) stays: the launch's own
+status flip is the completion signal and a second row would be
+redundant. It still drains the stash.
 
 ## Exported shape surface
 

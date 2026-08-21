@@ -1210,3 +1210,46 @@ func TestParseSystem_ModelFallbackSubtypesShareARequestIDWithoutColliding(t *tes
 		t.Fatal("both subtypes produced one row id — the second notice would overwrite the first")
 	}
 }
+
+// The envelope's top-level `uuid` is what identifies a task_notification
+// EVENT rather than its task. A persistent Monitor (claude-wire.md §E7)
+// fires one per output event of the stream it watches, all sharing one
+// task_id, so triage needs the uuid to key one row per event instead of
+// overwriting a single row. Verified present on every task_notification
+// in docs/references/fixtures/claude/interactive_outlives_taskoutput_monitor.ndjson.
+func TestParseTaskNotificationEvent_CarriesEnvelopeUUIDOntoMeta(t *testing.T) {
+	parser := NewParser()
+
+	line := []byte(`{"type":"system","subtype":"task_notification","task_id":"t1","tool_use_id":"tu1","status":"completed","summary":"done","uuid":"b733fbc6-41f5-4b1c-927d-d9018dad4909"}`)
+	events, err := parser.ParseLine(testThread, line)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	var meta map[string]any
+	if err := json.Unmarshal(events[0].Meta, &meta); err != nil {
+		t.Fatalf("decode meta: %v", err)
+	}
+	if meta["uuid"] != "b733fbc6-41f5-4b1c-927d-d9018dad4909" {
+		t.Fatalf("meta uuid = %v, want the envelope uuid (meta=%s)", meta["uuid"], events[0].Meta)
+	}
+
+	// An older CLI omits it; the key must then be ABSENT rather than
+	// empty, so triage's fallback reads as "no uuid on the wire".
+	events, err = parser.ParseLine(testThread, []byte(`{"type":"system","subtype":"task_notification","task_id":"t2","status":"completed","summary":"done"}`))
+	if err != nil {
+		t.Fatalf("parse without uuid: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event without uuid, got %d", len(events))
+	}
+	meta = nil
+	if err := json.Unmarshal(events[0].Meta, &meta); err != nil {
+		t.Fatalf("decode meta: %v", err)
+	}
+	if _, ok := meta["uuid"]; ok {
+		t.Fatalf("absent envelope uuid must not emit the key, got %s", events[0].Meta)
+	}
+}

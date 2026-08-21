@@ -1435,16 +1435,22 @@ describe('<MessageTimeline>', () => {
     // wiring — that the filter is plumbed into the grouped-nodes derived,
     // and that the boundary classifier reaches the per-row wrapper class.
 
-    it('drops a redundant task_notification from the rendered timeline', async () => {
+    it('drops an absorbed task_notification from the rendered timeline', async () => {
+      // The completion sibling carries the bell's text as a caption
+      // (meta.notification_summary), which is what licenses hiding the
+      // notification row — see notificationFilter.ts.
       const pane = await buildPane(undefined, [
         makeItem({
           id: 'fg-1',
           itemIndex: 0,
-          kind: 'tool_call',
+          kind: 'tool_completion',
           status: 'completed',
           toolName: 'Bash',
           summary: 'Bash: ls',
-          meta: JSON.stringify({ task_id: 'T1' }),
+          meta: JSON.stringify({
+            task_id: 'T1',
+            notification_summary: 'Bash command "ls" completed',
+          }),
         }),
         makeItem({
           id: 'task-notification:T1',

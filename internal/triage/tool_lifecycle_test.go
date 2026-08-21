@@ -3261,3 +3261,59 @@ func TestSameScopeBackgroundCompletionStillDefersBehindOwnSubagentStream(t *test
 			completion.TurnIndex, completion.ItemIndex, agentText.TurnIndex, agentText.ItemIndex)
 	}
 }
+
+// TestToolCompleteWatchTaskMergesOntoAlreadyBackgroundLaunch — the
+// keep-running flip's first arm (promote foreground→background) merged
+// `watch_task`, but a launch that was ALREADY background at start took
+// the second arm, whose early return silently lost the marker. §E7's
+// real Monitor launch carries no run_in_background today (the ack is
+// what backgrounds it), so this is a tripwire for the future CLI that
+// marks the launch up front: watch-ness feeds the flush-queue predicate
+// (HasQueueBlockingBackgroundToolCall), and losing it would let a
+// queued user send starve behind a persistent watch until session end.
+func TestToolCompleteWatchTaskMergesOntoAlreadyBackgroundLaunch(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	// run_in_background:true marks the launch background AT START —
+	// the shape the current CLI does not send for Monitor, and the one
+	// that used to skip the merge.
+	startMeta, _ := json.Marshal(map[string]any{
+		"toolName": "Monitor",
+		"input": map[string]any{
+			"command": "bash chain.sh | grep PHASE", "persistent": true,
+			"run_in_background": true,
+		},
+		"is_background": true,
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "watch-bg",
+		ItemType: "Monitor", Meta: startMeta, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+
+	completeMeta, _ := json.Marshal(map[string]any{"is_background": true, "watch_task": true})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolComplete, ThreadID: "t1", ItemID: "watch-bg",
+		Meta: completeMeta, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+
+	launches := findItemsByKind(t, st, "t1", itemKindToolCall)
+	if len(launches) != 1 {
+		t.Fatalf("expected 1 launch row, got %d", len(launches))
+	}
+	if !launches[0].IsBackground || launches[0].Status != statusRunning {
+		t.Fatalf("watch launch must stay running background; got background=%v status=%q",
+			launches[0].IsBackground, launches[0].Status)
+	}
+	var meta map[string]any
+	if err := json.Unmarshal([]byte(launches[0].Meta), &meta); err != nil {
+		t.Fatalf("unmarshal launch meta: %v", err)
+	}
+	if meta["watch_task"] != true {
+		t.Fatalf("watch_task must be merged even when the launch was already background; meta=%v", meta)
+	}
+}
