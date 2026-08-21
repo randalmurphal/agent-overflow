@@ -6,6 +6,36 @@ import (
 	"testing"
 )
 
+// TestVars is the ONE substitution environment the library checks run every
+// shipped scenario against. It lives in a _test.go file (the scenario package
+// is linked into ao-mockprovider and must stay import- and payload-light) but
+// is EXPORTED, because the parser check lives in the external scenario_test
+// package and needs the same bindings.
+//
+// One environment, not two: the checks answer different questions about the
+// same lines — is every emit line JSON, and does the app's own parser accept
+// it — so a variable bound in one and not the other means the stricter check
+// silently runs against a line no scenario would ever emit. That is how
+// ${USER_INPUT} and ${QUEUE_CLIENT_ID} came to be substituted in the integrity
+// check and left literal in the parser check.
+//
+// A variable a scenario can reference must be bound here, and bound to a value
+// shaped like the real one. USER_INPUT / QUEUE_CLIENT_ID are bound by the codex
+// adapter only for a turn it dispatched from the provider-side queue and are
+// empty on every other turn — the values below are the populated case, which is
+// the one that has to parse.
+var TestVars = Vars{
+	"SESSION_ID":      "sess-test",
+	"THREAD_ID":       "thread-test",
+	"TURN":            "1",
+	"TURN_ID":         "turn-1",
+	"REQUEST_ID":      "7",
+	"CWD":             "/tmp/workspace",
+	"ITER":            "1",
+	"USER_INPUT":      "queued message",
+	"QUEUE_CLIENT_ID": "user:1:flush:1",
+}
+
 // TestLibraryIntegrity enforces the shipped-library invariants: every
 // file parses + validates, its Name matches its filename, and every
 // inline emit line is itself valid JSON after ${VAR} substitution
@@ -18,15 +48,7 @@ func TestLibraryIntegrity(t *testing.T) {
 	if len(entries) == 0 {
 		t.Fatal("embedded library is empty")
 	}
-	vars := Vars{
-		"SESSION_ID": "sess-test",
-		"THREAD_ID":  "thread-test",
-		"TURN":       "1",
-		"TURN_ID":    "turn-1",
-		"REQUEST_ID": "7",
-		"CWD":        "/tmp/workspace",
-		"ITER":       "1",
-	}
+	vars := TestVars
 	for _, entry := range entries {
 		raw, s, err := LoadLibrary(entry.Name)
 		if err != nil {

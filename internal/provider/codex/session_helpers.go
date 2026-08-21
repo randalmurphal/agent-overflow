@@ -7,7 +7,15 @@ import (
 	"agent-overflow/internal/provider"
 )
 
-func buildThreadParams(cfg Config) map[string]any {
+// buildThreadParams shapes the `thread/start` / `thread/resume` params.
+//
+// codexVersion is the build of the app-server this session is talking to
+// (Session.AppServerVersion, off the `initialize` handshake — see
+// app_server_version.go). It is a parameter rather than a Config field
+// because Config is built before the process exists; see
+// approvalPolicyForCodexVersion in options.go for what it changes and why an
+// empty value must keep the pre-0.149 wire value.
+func buildThreadParams(cfg Config, codexVersion string) map[string]any {
 	params := map[string]any{}
 
 	if cfg.WorkDir != "" {
@@ -23,7 +31,7 @@ func buildThreadParams(cfg Config) map[string]any {
 
 	if cfg.Sandbox != "" {
 		sandbox := normalizeThreadSandbox(cfg.Sandbox)
-		params["approvalPolicy"] = defaultApprovalPolicy(cfg.ApprovalPolicy, sandbox)
+		params["approvalPolicy"] = defaultApprovalPolicy(cfg.ApprovalPolicy, sandbox, codexVersion)
 		params["sandbox"] = sandbox
 	}
 
@@ -137,18 +145,23 @@ func normalizeThreadSandbox(sandbox string) string {
 	}
 }
 
-func defaultApprovalPolicy(policy string, sandbox string) string {
-	if policy != "" {
-		return policy
+// defaultApprovalPolicy resolves the approval policy that reaches the wire:
+// the caller's explicit choice when it has one, otherwise the sandbox's own
+// most-supervised pairing. Both halves run through the version remap, so a
+// Config that never set the axis lands on the same wire value a Config that
+// set it to "untrusted" would.
+func defaultApprovalPolicy(policy string, sandbox string, codexVersion string) string {
+	if policy == "" {
+		switch sandbox {
+		case "danger-full-access":
+			policy = "never"
+		case "workspace-write":
+			policy = codexApprovalPolicyOnRequest
+		default:
+			policy = codexApprovalPolicyUnlessTrusted
+		}
 	}
-	switch sandbox {
-	case "danger-full-access":
-		return "never"
-	case "workspace-write":
-		return "on-request"
-	default:
-		return "untrusted"
-	}
+	return approvalPolicyForCodexVersion(policy, codexVersion)
 }
 
 func turnSandboxPolicy(sandbox string) (map[string]any, error) {
@@ -428,6 +441,30 @@ func parseUserInputQuestions(params json.RawMessage) []provider.UserInputQuestio
 		return nil
 	}
 	return provider.NormalizeUserInputQuestions(*payload.Questions)
+}
+
+// parseUserInputIsBlocking decodes `item/tool/requestUserInput`'s `isBlocking`
+// field (Codex 0.147, `ToolRequestUserInputParams` in
+// codex-rs/app-server-protocol/src/protocol/v2/item.rs).
+//
+// The default is TRUE and upstream applies it in its own custom Deserialize
+// (`is_blocking: wire.is_blocking.unwrap_or(true)`), precisely so a request
+// from a client that predates the field keeps its blocking meaning. AO mirrors
+// that: an absent or malformed key reads as blocking.
+//
+// `false` means the turn continues while the question is outstanding — the
+// model is not parked on the answer. It replaces the deprecated
+// `autoResolutionMs`, which AO never read. No UX change hangs off it yet;
+// it is decoded and logged so a non-blocking request is visible in the log
+// rather than silently rendered as a turn-blocking prompt.
+func parseUserInputIsBlocking(params json.RawMessage) bool {
+	var payload struct {
+		IsBlocking *bool `json:"isBlocking"`
+	}
+	if err := json.Unmarshal(params, &payload); err != nil || payload.IsBlocking == nil {
+		return true
+	}
+	return *payload.IsBlocking
 }
 
 func parsePermissionRequest(params json.RawMessage) (string, *provider.PermissionProfile) {

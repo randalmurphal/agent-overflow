@@ -30,8 +30,23 @@ logic lives here. Stdlib-only.
 - `promoted_at_interrupt.go` — the truncation-relevant markers on a
   queued flush user row (`promoted_at_interrupt`,
   `promoted_echo_boundary`) plus `DecodePromotionState`, and the
-  `mergeKey` primitive every marker writer in this package uses:
-  decode → set one key → re-encode, erroring on malformed meta.
+  `mergeKeys` primitive every marker writer in this package uses:
+  decode → set the keys → re-encode, erroring on malformed meta.
+  `mergeKey` is the one-key form over it; writers that set two keys
+  (`provider_queued.go`) go through the plural form so both land in a
+  single decode/encode and no row can persist half-marked.
+- `provider_queued.go` — the two markers a Codex provider-queue
+  (`thread/queue/*`, codex >= 0.148) hand-off writes on the user row:
+  `providerQueued`, which says the message left AO's queue for the
+  provider's, and `providerQueueHandoff`, which says that hand-off is
+  still UNPROVEN. Both are set before the `thread/queue/add` write —
+  an add that lands and is never acked is the case where this process
+  may not come back to stamp anything — and the confirmation clears
+  only the second. The split is what lets a later process tell a
+  message the provider DISPATCHED (absent from its queue, leave the
+  row as history) from one it never took (absent, hand it back to the
+  composer). Written by `app_flush_queue_provider.go`; read by every
+  flush recovery path.
 - `import.go` — the session-import markers: `ImportSourceUUIDKey`
   provenance via `MarkImported`, and `ImportUnavailableKey` +
   `MarkImportUnavailable` for an item whose payload the provider session

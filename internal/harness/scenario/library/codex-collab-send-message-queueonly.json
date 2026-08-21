@@ -1,0 +1,51 @@
+{
+  "version": 1,
+  "name": "codex-collab-send-message-queueonly",
+  "description": "MultiAgentV2 `send_message` (QueueOnly): the parent messages a running child, which queues into the child's mailbox and starts NO child turn. The typed wire shows only `subAgentActivity kind:\"interacted\"` \u2014 identical to `followup_task` \u2014 so the raw function-call name is the only verb evidence. Expect the interaction on the spawn card (no top-level \"Sent input to X\" row) carrying tool `send_message`, and no child turn.",
+  "provider": "codex",
+  "turns": [
+    {
+      "label": "spawn-then-queue-only-message",
+      "steps": [
+        {
+          "emit": {
+            "delayBetweenMs": 40,
+            "lines": [
+              "{\"jsonrpc\":\"2.0\",\"method\":\"turn/started\",\"params\":{\"threadId\":\"${THREAD_ID}\",\"turn\":{\"id\":\"${TURN_ID}\"}}}",
+              "{\"jsonrpc\":\"2.0\",\"method\":\"rawResponseItem/completed\",\"params\":{\"threadId\":\"${THREAD_ID}\",\"turnId\":\"${TURN_ID}\",\"item\":{\"type\":\"function_call\",\"name\":\"spawn_agent\",\"namespace\":\"collaboration\",\"call_id\":\"call_spawn_reviewer\",\"arguments\":\"{\\\"agent_type\\\":\\\"reviewer\\\",\\\"task_name\\\":\\\"reviewer\\\",\\\"message\\\":\\\"<encrypted>\\\"}\"}}}",
+              "{\"jsonrpc\":\"2.0\",\"method\":\"rawResponseItem/completed\",\"params\":{\"threadId\":\"${THREAD_ID}\",\"turnId\":\"${TURN_ID}\",\"item\":{\"type\":\"function_call_output\",\"call_id\":\"call_spawn_reviewer\",\"output\":\"{\\\"agent_id\\\":\\\"child-reviewer\\\",\\\"task_name\\\":\\\"/root/reviewer\\\",\\\"nickname\\\":\\\"reviewer\\\"}\"}}}",
+              "{\"jsonrpc\":\"2.0\",\"method\":\"item/completed\",\"params\":{\"threadId\":\"${THREAD_ID}\",\"turnId\":\"${TURN_ID}\",\"item\":{\"type\":\"subAgentActivity\",\"id\":\"call_spawn_reviewer\",\"kind\":\"started\",\"agentThreadId\":\"child-reviewer\",\"agentPath\":\"/root/reviewer\"}}}"
+            ]
+          }
+        },
+        {
+          "delayMs": 100
+        },
+        {
+          "emit": {
+            "delayBetweenMs": 40,
+            "lines": [
+              "{\"jsonrpc\":\"2.0\",\"method\":\"rawResponseItem/completed\",\"params\":{\"threadId\":\"${THREAD_ID}\",\"turnId\":\"${TURN_ID}\",\"item\":{\"type\":\"function_call\",\"name\":\"send_message\",\"namespace\":\"collaboration\",\"call_id\":\"call_send_1\",\"arguments\":\"{\\\"target\\\":\\\"/root/reviewer\\\",\\\"message\\\":\\\"<encrypted>\\\"}\"}}}",
+              "{\"jsonrpc\":\"2.0\",\"method\":\"item/completed\",\"params\":{\"threadId\":\"${THREAD_ID}\",\"turnId\":\"${TURN_ID}\",\"item\":{\"type\":\"subAgentActivity\",\"id\":\"call_send_1\",\"kind\":\"interacted\",\"agentThreadId\":\"child-reviewer\",\"agentPath\":\"/root/reviewer\"}}}"
+            ]
+          }
+        },
+        {
+          "delayMs": 100
+        },
+        {
+          "emit": {
+            "delayBetweenMs": 40,
+            "lines": [
+              "{\"jsonrpc\":\"2.0\",\"method\":\"item/started\",\"params\":{\"threadId\":\"${THREAD_ID}\",\"turnId\":\"${TURN_ID}\",\"item\":{\"type\":\"agentMessage\",\"id\":\"msg-queued-${TURN}\",\"status\":\"inProgress\",\"text\":\"\"}}}",
+              "{\"jsonrpc\":\"2.0\",\"method\":\"item/agentMessage/delta\",\"params\":{\"threadId\":\"${THREAD_ID}\",\"turnId\":\"${TURN_ID}\",\"itemId\":\"msg-queued-${TURN}\",\"delta\":\"Queued a note for the reviewer; it keeps working.\"}}",
+              "{\"jsonrpc\":\"2.0\",\"method\":\"item/completed\",\"params\":{\"threadId\":\"${THREAD_ID}\",\"turnId\":\"${TURN_ID}\",\"item\":{\"type\":\"agentMessage\",\"id\":\"msg-queued-${TURN}\",\"status\":\"completed\",\"text\":\"Queued a note for the reviewer; it keeps working.\"}}}",
+              "{\"jsonrpc\":\"2.0\",\"method\":\"turn/completed\",\"params\":{\"threadId\":\"${THREAD_ID}\",\"turn\":{\"id\":\"${TURN_ID}\",\"status\":\"completed\"}}}"
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "afterTurns": "repeatLast"
+}

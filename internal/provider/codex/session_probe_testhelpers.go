@@ -11,7 +11,7 @@ import "context"
 // This helper exists so the app-layer reconciler
 // (App.ReconcileCodexOnReopen) can be unit-tested without spinning up
 // a real Codex app-server. Production code never constructs Session
-// through this path; NewSession in session.go is the only
+// through this path; NewSession in session_start.go is the only
 // supported production constructor.
 //
 // Scoped out of `_test.go` so sibling packages (notably the root

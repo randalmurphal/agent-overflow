@@ -201,6 +201,63 @@ type Settings struct {
 	// DefaultSettings by construction.
 	ClaudeTodoRemindersDisabled bool `json:"claudeTodoRemindersDisabled,omitempty"`
 
+	// The Claude-only spawn-time axes delivered through the CLI's
+	// `--settings` flagSettings block. None has a CLI flag; the settings
+	// key is the delivery mechanism. Shapes, allowed values, validators
+	// and the "why claude-tui is excluded" note live in claudesession.go.
+	//
+	// Every one of them treats its ZERO VALUE as "say nothing" — the key
+	// is omitted from the rendered block and the CLI's own resolution
+	// stands. That is what keeps them out of DefaultSettings and makes an
+	// absent key in an older settings file read as the CLI default.
+	//
+	// Note which fields carry `omitempty` and which do not: it is a no-op
+	// on a STRUCT under encoding/json, so writing it there would claim an
+	// omission that never happens. The struct-valued axes below spell the
+	// tag plainly and state their zero-value meaning in prose instead;
+	// only the string-valued ones actually omit.
+	//
+	// ClaudeOutputStyle names one of Claude Code's four built-in output
+	// styles (Concise / Proactive / Explanatory / Learning).
+	ClaudeOutputStyle string `json:"claudeOutputStyle,omitempty"`
+	// ClaudeCrossSession is the machine-wide peer inbox: whether other
+	// Claude sessions on this host may discover and message AO's threads,
+	// and what happens to a message that arrives. Shape, allowed values
+	// and the reason "hold" is not one of them live in
+	// claudecrosssession.go.
+	//
+	// It is NOT part of ClaudeSessionAxes below even though half of it
+	// rides the same `--settings` block: those axes are spawn-only BY
+	// CONSTRUCTION (invisible to PlanLiveUpdate), while this one travels
+	// on provider.SessionOptions so a save converges a running session
+	// through the ordinary deferred-restart path. The inbox binds once at
+	// setup, so a restart is the only way to change it.
+	ClaudeCrossSession ClaudeCrossSession `json:"claudeCrossSession"`
+	// ClaudeSubagentLimits caps subagent spawn depth and concurrency via
+	// CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH /
+	// CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS in the block's env map.
+	ClaudeSubagentLimits ClaudeSubagentLimits `json:"claudeSubagentLimits"`
+	// ClaudeToolMemoryLimit caps the memory cgroup Claude installs for
+	// its tool subprocesses (CLAUDE_CODE_TOOL_MEMORY_LIMIT). The CLI
+	// implements this by writing a cgroup file under /proc/self/cgroup,
+	// so it takes effect only when the backend runs on Linux (including
+	// the WSL backend) — on macOS and native Windows the value is inert.
+	ClaudeToolMemoryLimit string `json:"claudeToolMemoryLimit,omitempty"`
+
+	// ClaudeThinking is the extended-thinking preference for headless
+	// Claude sessions: leave it to Claude Code, turn thinking off, or pin
+	// a fixed token budget — plus whether thinking text reaches the wire.
+	//
+	// It sits beside the four axes above but is NOT one of them: those
+	// ride the `--settings` block and are spawn-only, while this one has
+	// BOTH a spawn form (`--thinking` / `--max-thinking-tokens` /
+	// `--thinking-display`) and a live form (the `set_max_thinking_tokens`
+	// control_request), so a change reaches running sessions. The one
+	// exception is the return to "Claude Code decides", which has no wire
+	// form at all and lands as a deferred restart — exactly like turning a
+	// prompt override off (docs/specs/prompt-tool-overrides.md).
+	ClaudeThinking ClaudeThinking `json:"claudeThinking"`
+
 	// DefaultThreadEnvMode seeds the workspace mode for new draft threads.
 	// Accepts "local" or "worktree"; unknown values fall back to "local"
 	// when settings are loaded.

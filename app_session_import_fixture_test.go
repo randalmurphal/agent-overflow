@@ -68,9 +68,9 @@ func newImportHome(t *testing.T) importHome {
 			t.Fatalf("mkdir %s: %v", dir, err)
 		}
 	}
-	projectDir, ok, err := sessionfork.WorkspaceProjectDir(home.claudeProjectsDir(), home.workspace)
-	if err != nil || !ok {
-		t.Fatalf("resolve claude project dir for %s: ok=%v err=%v", home.workspace, ok, err)
+	projectDir, err := sessionfork.WorkspaceProjectDir(home.claudeProjectsDir(), home.workspace)
+	if err != nil {
+		t.Fatalf("resolve claude project dir for %s: %v", home.workspace, err)
 	}
 	home.projectDir = projectDir
 	if err := os.MkdirAll(projectDir, 0o755); err != nil {

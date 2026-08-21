@@ -139,10 +139,22 @@ Still true, and still not a workaround worth taking:
 
 ## Known upstream constraints
 
-**History truncation via `thread/fork` is turn-granular only.**
-Source-verified at rust-v0.144.5 and rust-v0.145.0-alpha.23
-(2026-07-17): `ThreadForkParams`'s only cut is `last_turn_id`
-(`truncate_rollout_after_turn_id`). codex-rs core already has a
+**History truncation is turn-granular only — on every cut upstream
+offers.** Source-verified at rust-v0.144.5 / rust-v0.145.0-alpha.23
+(2026-07-17) and re-verified at rust-v0.149.0 (2026-08-21).
+`ThreadForkParams` has grown a second anchor since the first check:
+`last_turn_id` (`truncate_rollout_after_turn_id`, inclusive) and
+`before_turn_id` (`truncate_rollout_before_turn_id`, exclusive, added in
+0.146.0 behind `#[experimental("thread/fork.beforeTurnId")]`, and the two
+cannot be combined). 0.148.0 added a third,
+`thread/revert { threadId, beforeTurnId }`
+(`#[experimental("thread/revert")]`), which replaces the thread's durable
+history in place and emits `thread/reverted`; AO prefers it for
+edit-and-resend wherever the thread supports it, and asks for the
+paginated history it requires on `thread/start` at the same 0.148 floor
+(see `internal/provider/codex/AGENTS.md` §"History truncation").
+**All three cut on TURN boundaries**, so the consequence below is
+unchanged by any of them. codex-rs core already has a
 message-granular fork cut — `ForkSnapshot::TruncateBeforeNthUserMessage`
 slices the rollout strictly before the nth user message, mid-turn
 steers included, and it is what the Codex TUI's Esc-Esc backtrack uses

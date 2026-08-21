@@ -155,6 +155,28 @@ func classifyMiscNotification(threadID, method string, params json.RawMessage, n
 	case "guardianWarning":
 		return []provider.ProviderEvent{codexNotificationEvent(threadID, "warning", readTopLevelString(params, "message"), params, now)}, true
 
+	case "autoApprovalReview/strictReviewRequired":
+		// Codex 0.149. Only reachable in AO's `auto` runtime mode, the one
+		// tier that routes approvals to Codex's own reviewer subagent: the
+		// async risk scorer decided this turn needs STRICT review (a stale
+		// score, or elevated risk — `StrictReviewReason` in
+		// codex-rs/ext/guardian-v2/src/async_scorer/extension.rs), so the
+		// cheap in-line assessment is replaced by a slower one and tool calls
+		// start taking noticeably longer. That is user-facing state, not a log
+		// line: without it the session simply appears to stall. Upstream's own
+		// TUI renders it as a warning cell with the same message
+		// (codex-rs/tui/src/chatwidget/protocol.rs).
+		//
+		// Payload is `{threadId, turnId, startedAtMs}` and carries no reason,
+		// so the copy cannot name one.
+		return []provider.ProviderEvent{codexNotificationEvent(
+			threadID,
+			"warning",
+			"Additional safety checks are running for this turn; some tool calls may take extra time",
+			params,
+			now,
+		)}, true
+
 	case "configWarning":
 		summary := readTopLevelString(params, "summary")
 		if details := readTopLevelString(params, "details"); details != "" {

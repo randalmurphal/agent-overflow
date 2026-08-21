@@ -196,7 +196,7 @@ func readRolloutAppend(path string, offset int64) ([]byte, int64, error) {
 
 func (s *Session) emitSubagentNotificationsFromRolloutLine(line []byte) bool {
 	if len(line) == 0 || (!bytes.Contains(line, []byte("subagent_notification")) &&
-		!bytes.Contains(line, []byte(interAgentFinalAnswerMarker))) {
+		!bytes.Contains(line, []byte(interAgentMessageTypePrefix))) {
 		return false
 	}
 

@@ -199,12 +199,15 @@ func TestBuildSessionOptionsAppliesBothAxesToClaudeTUI(t *testing.T) {
 
 // The reconcile half of the pair on a claude-tui thread: claudetui has no
 // live-update surface, so any diff the reconciler sees becomes a deferred
-// RESTART. pinSettingsOwnedAxes is generic and runs before the diff, so a
-// settings edit (or a workspace's git state moving under a rendered
+// RESTART. reconcileSettingsOwnedAxes runs before the diff and PINS every
+// settings-owned axis for a transport that cannot swap a system prompt live,
+// so a settings edit (or a workspace's git state moving under a rendered
 // {{GIT_BLOCK}}) must leave the freshly built options equal to what the live
 // session launched with. Without the pin, including claude-tui in the feature
 // would queue a restart on every running TUI session the next time anything
-// reconciled.
+// reconciled. Only headless Claude — which has `set_model.system_prompt` —
+// converges the prompt axis; see
+// TestReconcileSettingsOwnedAxesConvergesAnEditedClaudeOverride.
 func TestPinSettingsOwnedAxesKeepsAClaudeTUISessionOffTheRestartPath(t *testing.T) {
 	app := newTestAppWithStore(t)
 	id, _ := seedPromptOverrideThread(t, app, "thread-prompt-override-tui-pin", string(provider.ClaudeTUI), "claude-opus-5")
@@ -238,7 +241,7 @@ func TestPinSettingsOwnedAxesKeepsAClaudeTUISessionOffTheRestartPath(t *testing.
 	if err != nil {
 		t.Fatalf("buildSessionOptions() error = %v", err)
 	}
-	pinSettingsOwnedAxes(&rebuilt, launch)
+	app.reconcileSettingsOwnedAxes(stored, "session-token", &rebuilt, launch)
 
 	if rebuilt.SystemPrompt != launch.SystemPrompt {
 		t.Fatalf("SystemPrompt = %q, want the launched %q", rebuilt.SystemPrompt, launch.SystemPrompt)
@@ -264,9 +267,9 @@ func TestClaudeMemoryDirForThreadCoversBothClaudeTransports(t *testing.T) {
 	if err != nil {
 		t.Fatalf("UserHomeDir() error = %v", err)
 	}
-	want, ok, err := promptoverride.ClaudeMemoryDir(home, workDir)
-	if err != nil || !ok {
-		t.Fatalf("ClaudeMemoryDir() = %q, %v, %v — want a resolvable directory", want, ok, err)
+	want, err := promptoverride.ClaudeMemoryDir(home, workDir)
+	if err != nil {
+		t.Fatalf("ClaudeMemoryDir(%s) error = %v — want a resolvable directory", workDir, err)
 	}
 
 	for _, tc := range []struct {
@@ -484,9 +487,9 @@ func TestSpawnCreatesTheClaudeMemoryDirectoryOnlyWhenThePromptAsksForIt(t *testi
 			if err != nil {
 				t.Fatalf("UserHomeDir() error = %v", err)
 			}
-			dir, ok, err := promptoverride.ClaudeMemoryDir(home, workDir)
-			if err != nil || !ok {
-				t.Fatalf("ClaudeMemoryDir() = %q, %v, %v — want a resolvable directory", dir, ok, err)
+			dir, err := promptoverride.ClaudeMemoryDir(home, workDir)
+			if err != nil {
+				t.Fatalf("ClaudeMemoryDir(%s) error = %v — want a resolvable directory", workDir, err)
 			}
 			_, statErr := os.Stat(dir)
 			if tc.wantMemory && statErr != nil {
@@ -510,9 +513,9 @@ func TestSpawnSurfacesAMemoryDirectoryFailureWithoutFailingTheSpawn(t *testing.T
 	if err != nil {
 		t.Fatalf("UserHomeDir() error = %v", err)
 	}
-	dir, ok, err := promptoverride.ClaudeMemoryDir(home, workDir)
-	if err != nil || !ok {
-		t.Fatalf("ClaudeMemoryDir() = %q, %v, %v — want a resolvable directory", dir, ok, err)
+	dir, err := promptoverride.ClaudeMemoryDir(home, workDir)
+	if err != nil {
+		t.Fatalf("ClaudeMemoryDir(%s) error = %v — want a resolvable directory", workDir, err)
 	}
 	// A regular FILE where the project directory belongs: MkdirAll cannot
 	// create anything underneath it.
@@ -779,4 +782,90 @@ func registerLiveCodexSession(t *testing.T, app *App, threadID string, launchOpt
 		liveness:   newSessionLiveness(time.Now()),
 	}
 	app.mu.Unlock()
+}
+
+// B19: the non-Claude early return pins the prompt, and the pin has to be
+// CONDITIONAL. SystemPrompt is a shared axis — design mode and discussions
+// own it for their threads through threadSystemPrompts, and after
+// buildSessionOptions a non-empty value means exactly that. An unconditional
+// pin overwrote the freshly built feature prompt with the launched one, so
+// the reconciler saw no diff and a design thread froze on its first prompt
+// forever.
+//
+// Driven per non-Claude provider rather than for one representative: the two
+// reach the early return from different Config types, and neither has
+// `set_model.system_prompt` to converge with.
+func TestReconcileSettingsOwnedAxesKeepsFeaturePromptsConvergingOffClaude(t *testing.T) {
+	for _, tc := range []struct{ providerName, model string }{
+		{string(provider.Codex), "gpt-5.4"},
+		{string(provider.ClaudeTUI), "claude-opus-5"},
+	} {
+		t.Run(tc.providerName, func(t *testing.T) {
+			app := newTestAppWithStore(t)
+			id, _ := seedPromptOverrideThread(t, app, "thread-feature-prompt-"+tc.providerName, tc.providerName, tc.model)
+			app.setThreadSystemPrompt(id, "deliberation prompt v1")
+			launch := promptOverrideOptions(t, app, id)
+			if launch.SystemPrompt != "deliberation prompt v1" {
+				t.Fatalf("launch SystemPrompt = %q, want the feature-owned prompt", launch.SystemPrompt)
+			}
+
+			app.setThreadSystemPrompt(id, "deliberation prompt v2")
+
+			stored, err := app.store.GetThread(id)
+			if err != nil {
+				t.Fatalf("GetThread() error = %v", err)
+			}
+			rebuilt, _, err := app.buildSessionOptions(app.sanitizeThreadModelSettings(stored))
+			if err != nil {
+				t.Fatalf("buildSessionOptions() error = %v", err)
+			}
+			app.reconcileSettingsOwnedAxes(stored, "session-token", &rebuilt, launch)
+
+			if rebuilt.SystemPrompt != "deliberation prompt v2" {
+				t.Fatalf("SystemPrompt = %q, want the edited feature prompt to survive the reconcile", rebuilt.SystemPrompt)
+			}
+		})
+	}
+}
+
+// The other side of the same conditional: with NO feature prompt, a
+// non-Claude session still pins what it launched with, so a settings edit
+// cannot queue a restart on a transport that could not have applied it live.
+func TestReconcileSettingsOwnedAxesStillPinsTheSettingsOverrideOffClaude(t *testing.T) {
+	app := newTestAppWithStore(t)
+	id, _ := seedPromptOverrideThread(t, app, "thread-feature-prompt-pin", string(provider.Codex), "gpt-5.4")
+
+	if _, err := app.settings.Update(map[string]any{
+		"codexPromptOverrides": []map[string]any{
+			{"enabled": true, "models": []string{"gpt-5.4"}, "prompt": "launched prompt"},
+		},
+	}); err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	launch := promptOverrideOptions(t, app, id)
+
+	if _, err := app.settings.Update(map[string]any{
+		"codexPromptOverrides": []map[string]any{
+			{"enabled": true, "models": []string{"gpt-5.4"}, "prompt": "edited prompt"},
+		},
+	}); err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+
+	stored, err := app.store.GetThread(id)
+	if err != nil {
+		t.Fatalf("GetThread() error = %v", err)
+	}
+	rebuilt, _, err := app.buildSessionOptions(app.sanitizeThreadModelSettings(stored))
+	if err != nil {
+		t.Fatalf("buildSessionOptions() error = %v", err)
+	}
+	app.reconcileSettingsOwnedAxes(stored, "session-token", &rebuilt, launch)
+
+	if rebuilt.SystemPrompt != launch.SystemPrompt {
+		t.Fatalf("SystemPrompt = %q, want the launched %q — Codex converges on the next spawn", rebuilt.SystemPrompt, launch.SystemPrompt)
+	}
+	if rebuilt.SystemPromptOverrideSource != launch.SystemPromptOverrideSource {
+		t.Fatalf("SystemPromptOverrideSource = %q, want the launched %q", rebuilt.SystemPromptOverrideSource, launch.SystemPromptOverrideSource)
+	}
 }

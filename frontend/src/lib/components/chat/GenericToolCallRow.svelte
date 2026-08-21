@@ -67,6 +67,15 @@
   let summaryMeta = $derived(parseJsonObject(effectiveDisplayItem.payloadMeta));
   let displayMeta = $derived(parseJsonObject(effectiveDisplayItem.meta));
   let itemMeta = $derived(parseJsonObject(item.meta));
+  // Auto-denied before the provider could ask (Claude
+  // `system/permission_denied`). Triage stamps the reason onto the tool row
+  // alongside decision='declined'; the full notice is its own timeline row.
+  let permissionDenialReason = $derived.by(() => {
+    const denied = itemMeta?.permissionDenied;
+    if (!denied || typeof denied !== 'object' || Array.isArray(denied)) return '';
+    const reason = (denied as Record<string, unknown>).reason;
+    return typeof reason === 'string' ? reason.trim() : '';
+  });
   let statusMeta = $derived(parseJsonObject(effectiveStatusItem.payloadMeta));
 
   let time = $derived(formatTimeOfDay(effectiveStatusItem.createdAt));
@@ -147,7 +156,7 @@ let hasExpandableBody = $derived(
 </script>
 
 {#snippet headerActions()}
-  <ToolDecisionChip decision={item.decision} />
+  <ToolDecisionChip decision={item.decision} reason={permissionDenialReason} />
   <ToolHeaderMeta
     statusSlotTestId="tool-call-card-status-slot"
     duration={{

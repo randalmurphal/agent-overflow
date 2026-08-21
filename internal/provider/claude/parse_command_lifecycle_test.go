@@ -25,6 +25,7 @@ func TestParseCommandLifecycle_EveryState(t *testing.T) {
 		provider.CommandStarted,
 		provider.CommandCompleted,
 		provider.CommandCancelled,
+		provider.CommandDiscarded,
 	} {
 		t.Run(string(state), func(t *testing.T) {
 			parser := NewParser()
@@ -126,5 +127,15 @@ func TestCommandResultCarriesActiveCommandUUID(t *testing.T) {
 	parse(`{"type":"command_lifecycle","command_uuid":"cmd-2","state":"cancelled"}`)
 	if meta, ok = resultMeta(parse(synthetic("m3", "late output"))); ok {
 		t.Fatalf("post-cancelled meta = %+v, want uncorrelated", meta)
+	}
+
+	// `discarded` (2.1.224+: the session ended with the message still
+	// queued) is terminal in exactly the same way — the started window it
+	// may have opened must close, or the next synthetic output inherits a
+	// uuid whose command can never answer.
+	parse(`{"type":"command_lifecycle","command_uuid":"cmd-3","state":"started"}`)
+	parse(`{"type":"command_lifecycle","command_uuid":"cmd-3","state":"discarded"}`)
+	if meta, ok = resultMeta(parse(synthetic("m4", "post-discard output"))); ok {
+		t.Fatalf("post-discarded meta = %+v, want uncorrelated", meta)
 	}
 }

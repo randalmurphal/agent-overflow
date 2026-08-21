@@ -332,3 +332,192 @@ func matchAccountUsageFrame(line []byte) (json.RawMessage, bool, error) {
 	}
 	return envelope.Result, true, nil
 }
+
+// ---------------------------------------------------------------------------
+// Thread usage (`account/usage/read {threadId}`)
+// ---------------------------------------------------------------------------
+
+// threadUsageMinimumCodexVersion is the first codex release whose
+// `account/usage/read` accepts params at all. Through 0.147 the method's
+// params are typed `Option<()>`
+// (codex-rs/app-server-protocol/src/protocol/common.rs `GetAccountTokenUsage`),
+// so a `{"threadId": …}` request does not degrade to an account-wide read —
+// it fails deserialization and comes back as a JSON-RPC error. 0.148 retyped
+// them `Option<GetAccountTokenUsageParams>` and added `thread_usage` to the
+// response.
+//
+// This is a per-METHOD floor, unrelated to the provider-wide launch floor
+// (provider.minimumCodexCLIVersion, 0.143): a codex between the two is
+// perfectly usable, it just cannot answer this question.
+const threadUsageMinimumCodexVersion = "0.148.0"
+
+// ErrThreadUsageUnavailable means Codex has no thread-level usage estimate to
+// report. Like ErrAccountUsageUnavailable this is a STATE answer rather than a
+// failure — the caller keeps whatever it already had (for AO: the
+// internal/usagecost table price) instead of showing nothing. Four shapes
+// reach it:
+//
+//   - the connected app-server predates threadUsageMinimumCodexVersion;
+//   - the signed-in account is not a ChatGPT account (an API-key login has no
+//     billing route);
+//   - the backend answered 403/404 for this thread, which upstream maps to
+//     `thread_usage: null` rather than an error (account_processor.rs) — the
+//     documented "billing route is available" caveat on the field;
+//   - the response carried a thread_usage object with no USD figure, i.e.
+//     credits only.
+var ErrThreadUsageUnavailable = errors.New("codex: thread usage unavailable")
+
+// ThreadUsage is Codex's OWN estimate of what one thread has cost. It is
+// CUMULATIVE over the whole thread, not a per-turn delta — every read
+// restates the thread's lifetime total.
+//
+// The figure is upstream's estimate, computed by the ChatGPT backend from its
+// billing route, not a settled invoice. AO stores it as the provider-reported
+// total for the thread and keeps its own per-turn token accounting untouched
+// alongside it (see internal/store/provider_thread_cost.go).
+type ThreadUsage struct {
+	// ThreadID is the Codex thread the estimate describes, echoed by the
+	// backend. Callers must compare it against the thread they asked about:
+	// this is the only field that can catch an estimate being attributed to
+	// the wrong thread.
+	ThreadID string `json:"threadId"`
+	// CreditsMicros is millionths of a usage credit. Always present on the
+	// wire (upstream types it a bare i64).
+	CreditsMicros int64 `json:"creditsMicros"`
+	// USDMicros is millionths of a US dollar, or nil when the backend priced
+	// the thread in credits only. `Option<i64>` upstream, and the reason the
+	// rate-table fallback stays required.
+	USDMicros *int64 `json:"usdMicros,omitempty"`
+	// The wire's per-(model, effort, speed) `groups` breakdown is
+	// deliberately NOT projected. AO's per-model split comes from its own
+	// usage_ledger, and upstream types every token field in a group
+	// `Option<i64>` — so a group cannot substitute for a ledger row, which is
+	// what a consumer would want it for. Projecting it produced an exported
+	// slice, an exported element type, and a per-group allocation on every
+	// settled turn, read only by the test that asserted the projection had
+	// happened. If a consumer appears, the wire struct below still names
+	// every field.
+}
+
+// USD converts USDMicros to dollars, reporting whether the backend supplied
+// one at all. Never fabricates a price from CreditsMicros: the credit-to-USD
+// rate is the backend's, not ours.
+func (u ThreadUsage) USD() (float64, bool) {
+	if u.USDMicros == nil {
+		return 0, false
+	}
+	return float64(*u.USDMicros) / 1e6, true
+}
+
+type threadUsageResponse struct {
+	ThreadUsage *struct {
+		ThreadID                    string `json:"threadId"`
+		EstimatedUsageCreditsMicros int64  `json:"estimatedUsageCreditsMicros"`
+		EstimatedUsageUsdMicros     *int64 `json:"estimatedUsageUsdMicros"`
+		// Named, not decoded: `groups` is the per-(model, effort, speed)
+		// breakdown, and it is documented here so a future consumer knows
+		// the shape without re-reading account_processor.rs —
+		// `{model, reasoningEffort, speed, estimatedUsageCreditsMicros,
+		// netNewInputTokens, cachedInputTokens, inputTokens, outputTokens,
+		// totalTokens}`, every token field an `Option<i64>`. Decoding it
+		// walks the array on every settled turn for a value nothing reads.
+	} `json:"threadUsage"`
+}
+
+// parseThreadUsage projects the wire response for a thread-scoped
+// `account/usage/read`.
+//
+// A thread-scoped response deliberately carries NOTHING else: upstream
+// answers it with an all-nil summary and `dailyUsageBuckets: null`
+// (account_processor.rs), so this never feeds the account-usage cache.
+//
+// An absent or null `threadUsage`, and a present one with no USD figure, both
+// resolve to ErrThreadUsageUnavailable — from a caller's point of view they
+// are the same answer: keep the fallback.
+func parseThreadUsage(raw json.RawMessage) (ThreadUsage, error) {
+	var wire threadUsageResponse
+	if err := json.Unmarshal(raw, &wire); err != nil {
+		return ThreadUsage{}, fmt.Errorf("codex: decode %s thread response: %w", accountUsageMethod, err)
+	}
+	if wire.ThreadUsage == nil {
+		return ThreadUsage{}, fmt.Errorf("%w: no billing route for this thread", ErrThreadUsageUnavailable)
+	}
+	usage := ThreadUsage{
+		ThreadID:      strings.TrimSpace(wire.ThreadUsage.ThreadID),
+		CreditsMicros: wire.ThreadUsage.EstimatedUsageCreditsMicros,
+		USDMicros:     wire.ThreadUsage.EstimatedUsageUsdMicros,
+	}
+	if usage.USDMicros == nil {
+		return usage, fmt.Errorf("%w: the backend priced this thread in credits only", ErrThreadUsageUnavailable)
+	}
+	return usage, nil
+}
+
+// classifyThreadUsageError folds the "nothing to report" answers onto
+// ErrThreadUsageUnavailable. It reuses classifyAccountUsageError's auth and
+// unsupported-method matching (the two share one upstream handler and one
+// error surface) and re-labels the result, so a new refusal string only has
+// to be recognized in one place.
+func classifyThreadUsageError(err error) error {
+	if err == nil {
+		return nil
+	}
+	if classified := classifyAccountUsageError(err); errors.Is(classified, ErrAccountUsageUnavailable) {
+		return fmt.Errorf("%w: %s", ErrThreadUsageUnavailable, strings.TrimPrefix(
+			classified.Error(), ErrAccountUsageUnavailable.Error()+": "))
+	}
+	return err
+}
+
+// ReadThreadUsage asks this session's app-server what Codex itself estimates
+// the session's ROOT thread has cost, cumulatively.
+//
+// Requires codex >= threadUsageMinimumCodexVersion; an older app-server
+// returns ErrThreadUsageUnavailable without a request being sent, because on
+// those builds the request is a guaranteed JSON-RPC error rather than a
+// graceful degradation.
+//
+// Safe to call while a turn is running — the method is global
+// (`serialization: None`), touches no thread state and starts no turn — but
+// callers should not: the estimate only moves when a turn settles, and the
+// app-server forwards every call to the ChatGPT backend.
+func (s *Session) ReadThreadUsage(ctx context.Context) (ThreadUsage, error) {
+	if !s.appServerAtLeast(threadUsageMinimumCodexVersion) {
+		return ThreadUsage{}, fmt.Errorf(
+			"%w: codex %q predates %s params on %s",
+			ErrThreadUsageUnavailable, s.AppServerVersion(),
+			threadUsageMinimumCodexVersion, accountUsageMethod,
+		)
+	}
+	threadID := s.rootThreadID()
+	if threadID == "" {
+		return ThreadUsage{}, fmt.Errorf("%w: session has no codex thread id yet", ErrThreadUsageUnavailable)
+	}
+	raw, err := s.sendRequest(ctx, accountUsageMethod, map[string]any{"threadId": threadID})
+	if err != nil {
+		return ThreadUsage{}, classifyThreadUsageError(err)
+	}
+	usage, err := parseThreadUsage(raw)
+	if err != nil {
+		return usage, err
+	}
+	// The echoed id is the only defense against an estimate landing on the
+	// wrong thread's row. A mismatch is a wire fault, not a state answer, so
+	// it does NOT resolve to ErrThreadUsageUnavailable — the caller should see
+	// it in the log rather than silently keep the fallback forever.
+	if usage.ThreadID != "" && usage.ThreadID != threadID {
+		return ThreadUsage{}, fmt.Errorf(
+			"codex: %s returned usage for thread %q, asked for %q",
+			accountUsageMethod, usage.ThreadID, threadID,
+		)
+	}
+	return usage, nil
+}
+
+// DefaultThreadUsageTimeout bounds one thread-usage read. Deliberately above
+// upstream's own THREAD_USAGE_FETCH_TIMEOUT (60s, account_processor.rs): a
+// client ceiling BELOW the server's would turn slow-but-successful backend
+// reads into client failures and permanently starve the estimate on exactly
+// the accounts whose backend is slowest. Nothing waits on this call, so the
+// only cost of the long ceiling is one parked goroutine.
+const DefaultThreadUsageTimeout = 65 * time.Second

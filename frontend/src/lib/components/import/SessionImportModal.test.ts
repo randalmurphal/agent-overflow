@@ -771,3 +771,64 @@ describe('the progress strip', () => {
     expect(view.queryByRole('dialog')).toBeNull();
   });
 });
+
+describe('sessions Codex imported from another agent', () => {
+  it('name the source agent, so a Claude Code conversation is not offered as a Codex one', async () => {
+    const view = await mountWith([
+      row('codex:imported', {
+        importedFrom: {
+          agent: 'claude-code',
+          sourcePath: '/home/u/.claude/projects/-r/aaaa.jsonl',
+          sourceId: 'aaaa',
+          importedAt: 1_700_000_000_000,
+          duplicateOfThreadId: '',
+        },
+      }),
+      row('codex:plain'),
+    ]);
+
+    const badge = view.getByTestId('session-import-origin-codex:imported');
+    expect(badge.textContent?.trim()).toBe('from Claude Code');
+    expect(badge.getAttribute('title')).toContain('Codex imported this conversation from Claude Code.');
+    // An ordinary Codex session spends no width on a badge it has no reason for.
+    expect(view.queryByTestId('session-import-origin-codex:plain')).toBeNull();
+  });
+
+  it('say so when Agent Overflow already holds the same conversation', async () => {
+    const view = await mountWith([
+      row('codex:dupe', {
+        importedFrom: {
+          agent: 'claude-code',
+          sourcePath: '/home/u/.claude/projects/-r/aaaa.jsonl',
+          sourceId: 'aaaa',
+          importedAt: 1_700_000_000_000,
+          duplicateOfThreadId: 'thread-9',
+        },
+      }),
+    ]);
+
+    const badge = view.getByTestId('session-import-origin-codex:dupe');
+    expect(badge.textContent?.trim()).toBe('from Claude Code · duplicate');
+    expect(badge.getAttribute('title')).toContain('already has this conversation');
+    // The row is still offered: both provider sessions exist and both resume.
+    expect(view.getByTestId('session-import-row-codex:dupe')).toBeTruthy();
+  });
+
+  it('still badge an agent this build has no label for', async () => {
+    const view = await mountWith([
+      row('codex:future', {
+        importedFrom: {
+          agent: 'some-agent-shipped-later',
+          sourcePath: '/tmp/x',
+          sourceId: '',
+          importedAt: 0,
+          duplicateOfThreadId: '',
+        },
+      }),
+    ]);
+
+    expect(view.getByTestId('session-import-origin-codex:future').textContent?.trim()).toBe(
+      'imported into Codex',
+    );
+  });
+});

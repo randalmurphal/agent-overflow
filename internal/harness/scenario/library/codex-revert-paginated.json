@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "name": "codex-revert-paginated",
+  "description": "Codex thread on a current app-server (the mock's own 99.0.0 userAgent): every turn echoes its userMessage and answers it, and thread/start takes the paginated history AO asks for at >= 0.148 — which is what makes edit-and-resend cut the thread in place with thread/revert instead of forking it.",
+  "provider": "codex",
+  "codex": {
+    "threadId": "mock-codex-revert-paginated"
+  },
+  "turns": [
+    {
+      "label": "answered",
+      "steps": [
+        {
+          "emit": {
+            "delayBetweenMs": 10,
+            "lines": [
+              "{\"jsonrpc\":\"2.0\",\"method\":\"turn/started\",\"params\":{\"threadId\":\"${THREAD_ID}\",\"turn\":{\"id\":\"${TURN_ID}\"}}}",
+              "{\"jsonrpc\":\"2.0\",\"method\":\"item/completed\",\"params\":{\"threadId\":\"${THREAD_ID}\",\"turnId\":\"${TURN_ID}\",\"item\":{\"type\":\"userMessage\",\"id\":\"umsg-${TURN}\",\"status\":\"completed\",\"content\":[{\"type\":\"text\",\"text\":\"${USER_INPUT}\"}]}}}",
+              "{\"jsonrpc\":\"2.0\",\"method\":\"item/completed\",\"params\":{\"threadId\":\"${THREAD_ID}\",\"turnId\":\"${TURN_ID}\",\"item\":{\"type\":\"agentMessage\",\"id\":\"msg-${TURN}\",\"status\":\"completed\",\"text\":\"Answering: ${USER_INPUT}\"}}}",
+              "{\"jsonrpc\":\"2.0\",\"method\":\"turn/completed\",\"params\":{\"threadId\":\"${THREAD_ID}\",\"turn\":{\"id\":\"${TURN_ID}\",\"status\":\"completed\"}}}"
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "afterTurns": "repeatLast"
+}

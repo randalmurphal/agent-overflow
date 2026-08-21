@@ -15,6 +15,7 @@ import (
 	"agent-overflow/internal/provider/claudetui"
 	"agent-overflow/internal/provider/codex"
 	"agent-overflow/internal/provideraccounts"
+	"agent-overflow/internal/settings"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/triage"
 
@@ -95,11 +96,13 @@ func (a *App) startSessionNow(threadID string) error {
 // (SystemPrompt when no feature owns it, DisabledTools). Those are read
 // from Settings rather than projected from the thread row, so the two
 // callers need opposite treatment — the spawn path applies today's values
-// (applySettingsOwnedAxes), the reconcile path pins the live session's
-// (pinSettingsOwnedAxes). Both live in app_session_prompt_override.go.
-// Leaving them out here is what keeps the reconciler from composing an
-// override — up to two git subprocesses under the per-thread config lock —
-// only to throw it away.
+// (applySettingsOwnedAxes), the reconcile path resolves against the live
+// session's (reconcileSettingsOwnedAxes: tool lists pin, a headless-Claude
+// prompt override converges live only when its STORED text actually
+// changed). Both live in app_session_prompt_override.go. Leaving them out
+// here is what keeps the reconciler from composing an override — up to two
+// git subprocesses under the per-thread config lock — on every model,
+// effort, and runtime-mode change.
 func (a *App) buildSessionOptions(t store.Thread) (provider.SessionOptions, designSessionConfig, error) {
 	designCfg, err := a.designSessionConfig(t)
 	if err != nil {
@@ -492,6 +495,12 @@ func (a *App) spawnProviderSession(
 		cfg.EventLogger = a.logger
 		cfg.MCPServers = designCfg.MCPServers
 		cfg.MergeMCPServers = designCfg.MergeMCPServers
+		applyClaudeSessionAxes(&cfg, a.settings.Get().ClaudeSessionAxesForProvider(t.Provider))
+		// The peer-visible name rides the Config rather than the options
+		// bundle on purpose: it is live-changeable through `/rename`, so
+		// letting the reconciler see it would queue a restart every time a
+		// thread title lands. See app_claude_peer_name.go.
+		cfg.PeerSessionName = opts.ClaudePeerSessionName
 		sess, err := claude.NewSession(context.Background(), threadID, cfg, onEvent)
 		if err != nil {
 			return session{}, err
@@ -516,6 +525,22 @@ func (a *App) spawnProviderSession(
 		cfg.Env = a.sessionProcessEnv(t.Provider, cfg.Env, credential)
 		cfg.EventLogger = a.logger
 		cfg.MCPServers = designCfg.MCPServers
+		// A message AO handed to the PROVIDER's queue outlives the app-server
+		// that took it: it sits in codex's SQLite and the idle hook dispatches
+		// it on THIS connection. Re-arm the claim ledger (and the pending-send
+		// entries the dispatched turn's echo claims) from the queue before that
+		// can happen, or the resumed session sees a turn it never started and
+		// stamps the user's own prompt "queued from outside Agent Overflow".
+		// A resume onto an OLDER Codex takes the other branch of the same
+		// hook: nothing there can read the queue, so the rows stay where they
+		// are and the user is told they are waiting on an upgrade.
+		//
+		// BeforeResume, not after NewSession: `thread/resume` is what LOADS the
+		// thread, and a loaded thread's idle hook is what dispatches the queue.
+		// A claim armed after the dispatch is no claim at all.
+		cfg.BeforeResume = func(resumed *codex.Session) {
+			a.reconcileCodexProviderQueueOnResume(threadID, resumed)
+		}
 		sess, err := codex.NewSession(context.Background(), threadID, cfg, onEvent)
 		if err != nil {
 			return session{}, err
@@ -1083,4 +1108,36 @@ func (a *App) teardownAndCloseSession(threadID string, sess session) error {
 	// its entries (no final tick ever arrives to clear them).
 	a.highlightSeeder.purgeThread(threadID)
 	return err
+}
+
+// applyClaudeSessionAxes stamps the Claude-only `--settings` block axes
+// (output style, subagent fan-out caps, tool memory limit) onto a freshly
+// built Config.
+//
+// The cross-session inbox policy is deliberately NOT here even though it
+// rides the same `--settings` block: turning the inbox on or off changes
+// whether a running session is reachable by other sessions at all, which
+// is worth a deferred restart rather than "next session, whenever that
+// is". It therefore travels on `provider.SessionOptions` instead — see
+// `applySettingsOwnedAxes` and `claude.ConfigFromOptions`.
+//
+// They live HERE — in the spawn wiring, beside the binary path and the
+// process environment — rather than on `provider.SessionOptions`, and
+// that placement is the feature's "next sessions only" contract. The
+// config reconciler diffs `ConfigFromOptions(prev)` against
+// `ConfigFromOptions(next)`; neither carries these fields, so saving one
+// of these settings can never queue a restart on a running session, and
+// there is nothing for `reconcileSettingsOwnedAxes` to pin. A restart that
+// happens for some other reason rebuilds from scratch and picks the new
+// values up, which is a new session and intended — the same shape the
+// prompt-override / disabled-tool axes use
+// (docs/specs/prompt-tool-overrides.md).
+//
+// One settings snapshot feeds all three, so a save landing mid-spawn
+// cannot produce a session whose axes came from two versions of the file.
+func applyClaudeSessionAxes(cfg *claude.Config, axes settings.ClaudeSessionAxes) {
+	cfg.OutputStyle = axes.OutputStyle
+	cfg.MaxSubagentSpawnDepth = axes.SubagentLimits.MaxSpawnDepth
+	cfg.MaxConcurrentSubagents = axes.SubagentLimits.MaxConcurrent
+	cfg.ToolMemoryLimit = axes.ToolMemoryLimit
 }

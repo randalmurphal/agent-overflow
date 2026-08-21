@@ -20,6 +20,47 @@ export interface UserMessageMeta {
   sourceProposedPlan?: unknown;
   wire_only?: unknown;
   command?: unknown;
+  /**
+   * Who produced this message, when it was not the person in front of Agent
+   * Overflow. Two values today, and the difference matters to a reader:
+   *
+   * - `external-queue` — Codex's own `thread/queue`
+   *   (`codex queue --thread ...`), which injects a turn into a thread this
+   *   app holds. Written by the USER, from another window.
+   *   (`internal/provider/codex/external_turns.go#ExternalTurnOriginQueue`)
+   * - `peer-session` — another Claude session on this machine addressed this
+   *   thread through Claude Code's cross-session inbox. Written by a MODEL.
+   *   (`internal/provider/claude/session_peer.go#PeerTurnOrigin`)
+   *
+   * Absent means locally authored, which is the overwhelmingly common case.
+   */
+  origin?: unknown;
+  /**
+   * The peer session's registered display name, on a `peer-session` row.
+   * May be absent — an older CLI reports only a socket address — in which
+   * case the row is labelled without a name rather than with an empty one.
+   */
+  cross_session_from_name?: unknown;
+}
+
+/**
+ * Attribution for a user row Agent Overflow did not originate. Returns the
+ * empty string for the ordinary case so callers can branch on truthiness.
+ */
+export function userMessageOrigin(meta: UserMessageMeta): string {
+  return typeof meta.origin === 'string' ? meta.origin.trim() : '';
+}
+
+/**
+ * The label for a message another Claude session sent to this thread.
+ *
+ * Names the peer when the wire gave a name, because "from BETA" is what
+ * lets the reader go look at BETA. Falls back to the unnamed form rather
+ * than to an empty name — a message from nobody reads as a bug.
+ */
+export function peerSessionOriginLabel(meta: UserMessageMeta): string {
+  const name = typeof meta.cross_session_from_name === 'string' ? meta.cross_session_from_name.trim() : '';
+  return name ? `From ${name} (another Claude session)` : 'From another Claude session';
 }
 
 function stringField(value: unknown): string {

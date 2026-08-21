@@ -305,3 +305,108 @@ func TestCommandEcho_ConsumesPendingSendAndTurnIndexingSurvives(t *testing.T) {
 		}
 	}
 }
+
+// ---------------------------------------------- suppressed command results
+//
+// Some provider-executed commands must not leave a transcript row: one Agent
+// Overflow issued for its own bookkeeping (`/rename`), and one whose entire
+// output restates state AO already renders in its own UI (`/effort`, `/fast`,
+// `/model`). The decision is made at SEND time in the provider package and
+// arrives here on CommandResultMeta; triage neither makes it nor reads output
+// text to infer it.
+//
+// Both halves are pinned together on purpose: an over-eager rule would swallow
+// `/usage`, which is the one thing this row exists to show.
+
+func suppressedCommandResultEvent(threadID, itemID, text string, suppressed bool) provider.ProviderEvent {
+	evt := commandResultEvent(threadID, itemID, text)
+	meta, err := json.Marshal(provider.CommandResultMeta{
+		CommandUUID: "cmd-" + itemID,
+		Suppressed:  suppressed,
+	})
+	if err != nil {
+		panic(err)
+	}
+	evt.Meta = meta
+	return evt
+}
+
+func TestCommandResult_SuppressedOutputWritesNoRow(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	if err := router.Handle(suppressedCommandResultEvent(
+		"t1", "msg_1", "Set effort level to high (this session only)", true)); err != nil {
+		t.Fatalf("command result: %v", err)
+	}
+	items, err := st.ListItems("t1")
+	if err != nil {
+		t.Fatalf("list items: %v", err)
+	}
+	if len(items) != 0 {
+		t.Fatalf("items = %+v, want none — the effort confirmation is not transcript content", items)
+	}
+}
+
+// The other half, and the one that keeps the rule honest: an ordinary command
+// still writes its row, with or without the meta present at all.
+func TestCommandResult_OrdinaryOutputStillWritesItsRow(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	if err := router.Handle(suppressedCommandResultEvent(
+		"t1", "msg_1", "Current session\n  Tokens: 12,345 in / 6,789 out", false)); err != nil {
+		t.Fatalf("marked-unsuppressed command result: %v", err)
+	}
+	// No meta at all: an older CLI emits no lifecycle bracket, so nothing
+	// correlates and nothing may be suppressed.
+	if err := router.Handle(commandResultEvent("t1", "msg_2", "Context: 42% used")); err != nil {
+		t.Fatalf("meta-less command result: %v", err)
+	}
+	// Undecodable meta is not a suppression signal either: the safe direction
+	// is keeping a row the user might want.
+	corrupt := commandResultEvent("t1", "msg_3", "Cost: $0.42")
+	corrupt.Meta = json.RawMessage(`{"suppressed":`)
+	if err := router.Handle(corrupt); err != nil {
+		t.Fatalf("corrupt-meta command result: %v", err)
+	}
+
+	items, err := st.ListItems("t1")
+	if err != nil {
+		t.Fatalf("list items: %v", err)
+	}
+	if len(items) != 3 {
+		t.Fatalf("items = %d, want 3 — an unmarked command keeps its row", len(items))
+	}
+	for _, item := range items {
+		if item.Kind != "command_result" {
+			t.Fatalf("kind = %q, want command_result", item.Kind)
+		}
+	}
+}
+
+// Suppression must reach the OVERSIZED path too. That branch writes a payload
+// before the row, so a check placed only on the inline return would leak the
+// bytes into SQLite while showing no row for them.
+func TestCommandResult_SuppressedOversizedOutputWritesNoPayload(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	big := strings.Repeat("x", commandResultInlineRunes+500)
+	if err := router.Handle(suppressedCommandResultEvent("t1", "msg_1", big, true)); err != nil {
+		t.Fatalf("command result: %v", err)
+	}
+	items, err := st.ListItems("t1")
+	if err != nil {
+		t.Fatalf("list items: %v", err)
+	}
+	if len(items) != 0 {
+		t.Fatalf("items = %+v, want none", items)
+	}
+	// The oversized branch writes its payload in the same call that writes
+	// the row, so no row means no bytes: a payload can only be reached
+	// through the item that names it.
+	if _, err := st.GetPayloadData("t1", CommandResultItemID(0, "msg_1", 0)); err == nil {
+		t.Fatal("a suppressed command left a payload behind")
+	}
+}

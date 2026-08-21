@@ -48,6 +48,77 @@ forward-compatible).
   dropped. Every cap this file applies to a hand-authored list is
   audible: a tail that vanishes on load is otherwise indistinguishable
   from a save that never happened.
+- `claudesession.go` — the three Claude-only session axes that reach the
+  CLI through its `--settings` block rather than a flag: `outputStyle`
+  (closed allowlist of the four built-in styles), `claudeSubagentLimits`
+  (spawn depth + concurrency, bounded), and `claudeToolMemoryLimit` (a
+  size string). Each has a STRICT validator used by `Validate` and a
+  LENIENT sanitizer used on load, following this package's usual pair.
+  Two rules are worth stating because they are the difference between a
+  setting that works and one that silently does nothing:
+  - **Empty is "the CLI's default", never a value.** Every one of these
+    axes is emitted only when non-empty/non-zero, because the CLI's
+    unset behavior is a real policy (a subagent limit of 0 is unsendable
+    — the CLI's schema is `int({min:1})`) and overwriting it with our
+    idea of a default would be a behavior change nobody asked for.
+    `claudecrosssession.go` is the one deliberate exception, and it is
+    documented there: for that axis the CLI's unset behavior is a silent
+    discard, so "enabled" always sends an explicit value.
+  - **`ClaudeSessionAxesForProvider` answers zero for anything but
+    `claude`.** Unlike `PromptOverridesForProvider` /
+    `DisabledToolsForProvider`, `claude-tui` is deliberately NOT routed
+    onto Claude's values: its PTY launch passes no `--settings` flag at
+    all, so returning them would advertise settings that cannot reach
+    the binary.
+  The file also holds `claudeThinking`, which is in this file for
+  proximity (it is the fifth Claude-only session axis) but is NOT part of
+  that bundle and deliberately not on `ClaudeSessionAxes`: it reaches the
+  CLI as spawn FLAGS (`--thinking` / `--max-thinking-tokens` /
+  `--thinking-display`) and as a `set_max_thinking_tokens` control
+  request on a session that is already running, so it rides
+  `provider.SessionOptions` — the struct `claude.PlanLiveUpdate` diffs —
+  rather than the spawn-only block. `mode` is `""` / `off` / `budget`,
+  `budgetTokens` is required and bounded (1024..128000) in budget mode
+  and forced to zero outside it (a stored number nothing reads is not a
+  setting), and `display` is `""` / `summarized` / `omitted`.
+  `ClaudeThinkingForProvider` answers zero for anything but `claude` for
+  the same shape of reason as the bundle, but a DIFFERENT one in
+  substance: claude-tui drives the same binary and would take the flags,
+  but it has no control-request channel and no live-update surface, so
+  the axis would be half a feature there.
+  The tool-memory limit's grammar mirrors the CLI's own parser
+  (`/^(\d+(?:\.\d+)?)\s*([kmgt]?)(?:i?b)?$/i` plus its falsy words,
+  extended with `none`), and it only takes effect when the CLI runs on
+  Linux — it is implemented as a memory cgroup write. The WSL backend
+  counts; a native Windows or macOS backend does not.
+- `claudecrosssession.go` — `claudeCrossSession`, Claude Code's
+  machine-wide peer inbox (`ListAgents` / `SendMessage` between sessions
+  on one host). TWO mechanisms in one struct, which is why it is not
+  simply a fourth entry in `claudesession.go`: `enabled` opens the CLI's
+  experiment gate (a spawn environment variable) and passes a `--name`,
+  while `inbound` is the `--settings` delivery policy that only means
+  anything once the gate is open. Two rules with teeth:
+  - **`hold` is never emitted, and neither is "unset while enabled".**
+    The CLI's schema is `accept` / `hold` / `refuse`, and both `hold` and
+    an absent key (mode parity) park a peer message awaiting an approval
+    a headless session has no surface to give — the message is then
+    discarded with nothing on the wire to say so. The strict validator
+    REFUSES `hold` by name with a message pointing at the two usable
+    values, and `EffectiveInbound` resolves an enabled-but-empty policy
+    to `accept`. A DISABLED session is not silent either: the spawn
+    states `refuse`, because the gate variable is only an override and
+    the remote `tengu_harbor_kite` flag can bind the inbox for a user who
+    never opted in here. That wall lives in
+    `internal/provider/claude/options.go`, not here — "off" is a
+    provider-level refusal, not a policy the user chose.
+  - **Off by default.** Letting another process start a turn in the
+    user's thread is opt-in, so `ClaudeCrossSession` stays out of
+    `DefaultSettings` — the same rule as `ClaudeTUIEnabled`.
+  Unlike the axes above, a change here is reconciled onto RUNNING
+  sessions: `app_settings.go` fans out `reconcileLiveClaudeSessions` on
+  the patch key and the axis rides `provider.SessionOptions`, so
+  `claude.PlanLiveUpdate` queues a deferred restart rather than leaving
+  the change for whenever the next session happens to start.
 - `remote.go` — the `RemoteEndpoint` shape and its CRUD helpers
   (`Add` / `Update` / `Delete` / `Touch`). Backs the `--connect`
   target list the desktop binary's settings panel exposes.

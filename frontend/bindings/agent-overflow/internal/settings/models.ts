@@ -10,6 +10,158 @@ import { Create as $Create } from "@wailsio/runtime";
 import * as windowgeom$0 from "../windowgeom/models.js";
 
 /**
+ * Claude Code cross-session messaging — the machine-wide peer inbox.
+ * 
+ * Claude Code 2.1.224+ lets one Claude session on a host discover
+ * (`ListAgents`) and address (`SendMessage`) another. A delivered peer
+ * message arrives in the recipient as a USER-ROLE turn the recipient
+ * never asked for, wrapped in `<cross-session-message from="..."
+ * from-name="...">`, and the model answers it like any other prompt.
+ * 
+ * Two things have to be true for an Agent Overflow thread to take part,
+ * and they are two different mechanisms, which is why this is one struct
+ * rather than two settings:
+ * 
+ *  1. **The inbox has to be bound.** It is gated behind a GrowthBook
+ *     experiment with one environment override, `CLAUDE_CODE_HARBOR_KITE`
+ *     — a parsed boolean, so "0" and "" are OFF. With the gate open the
+ *     session binds a unix socket and `system/init` carries
+ *     `messaging_socket_path`; without it the CLI logs
+ *     "cross-session messaging gate off" and binds nothing, which no
+ *     settings key can undo (spike-verified 2.1.237, /tmp/spike-xsession).
+ *     That is what `Enabled` controls.
+ *  2. **Delivery policy.** Once bound, the `crossSessionInbound` key in
+ *     the `--settings` block decides what happens to an arriving message.
+ *     That is `Inbound`.
+ * 
+ * Enabled is NOT the only thing that can bind the inbox, which is why
+ * "off" is a stated refusal rather than silence. The gate variable is
+ * only an OVERRIDE: `tengu_harbor_kite` can bind the socket remotely for
+ * a user who never opted in here, and `tengu_harbor_kite_mode_emit` —
+ * which has no environment override at all — turns on the permission-
+ * class attestation the CLI's unset-key default (mode parity) reads. A
+ * disabled AO session therefore spawns with an explicit
+ * `"crossSessionInbound":"refuse"`, so a remotely bound inbox still
+ * delivers nothing. See claudeCrossSessionInbound in
+ * internal/provider/claude/options.go, which is the wall.
+ * 
+ * Discovery is keyed on a SHARED `CLAUDE_CONFIG_DIR` — the peer registry
+ * is `<CLAUDE_CONFIG_DIR>/sessions/<pid>.json`. Agent Overflow's Claude
+ * sessions deliberately CLEAR that variable (claude.NewSession's
+ * `UnsetEnv`), so they land in the user's own `~/.claude` and can see —
+ * and be seen by — the user's terminal sessions, provided those also run
+ * with the gate open.
+ */
+export class ClaudeCrossSession {
+    /**
+     * Enabled opens the gate: the spawn exports
+     * CLAUDE_CODE_HARBOR_KITE=1 and passes `--name`, so the session is
+     * discoverable and addressable by other Claude sessions on this
+     * machine. Default FALSE — letting another process start a turn in
+     * the user's thread is opt-in, and the CLI's own default is an
+     * experiment flag we neither control nor want to inherit silently.
+     */
+    "enabled"?: boolean;
+
+    /**
+     * Inbound is the delivery policy, meaningful only when Enabled.
+     * Empty means EffectiveInbound's default, which is Accept — see
+     * there for why "unset" is never sent on the wire.
+     */
+    "inbound"?: string;
+
+    /** Creates a new ClaudeCrossSession instance. */
+    constructor($$source: Partial<ClaudeCrossSession> = {}) {
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ClaudeCrossSession instance from a string or object.
+     */
+    static createFrom($$source: any = {}): ClaudeCrossSession {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new ClaudeCrossSession($$parsedSource as Partial<ClaudeCrossSession>);
+    }
+}
+
+/**
+ * ClaudeSubagentLimits caps Claude Code's subagent fan-out for the
+ * sessions Agent Overflow spawns. Both are delivered as environment
+ * variables inside the `--settings` env block, which outranks the
+ * subprocess environment (`flagSettings` > `userSettings`), and both are
+ * `int({min:1, digitsOnly:true})` on the CLI side — so ZERO means "send
+ * nothing and let the CLI decide" rather than "no subagents".
+ * 
+ * The CLI's own defaults are not fixed numbers this package can restate:
+ * the concurrency default is 20, but the spawn-depth default comes from a
+ * remote experiment value with a build-time fallback. Leaving a field at
+ * zero is therefore the only honest way to express "whatever the binary
+ * decides".
+ */
+export class ClaudeSubagentLimits {
+    /**
+     * MaxSpawnDepth → CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH. How many
+     * levels of subagent-spawning-a-subagent the session permits.
+     */
+    "maxSpawnDepth"?: number;
+
+    /**
+     * MaxConcurrent → CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS. How many
+     * subagents may hold a concurrency slot at once.
+     */
+    "maxConcurrent"?: number;
+
+    /** Creates a new ClaudeSubagentLimits instance. */
+    constructor($$source: Partial<ClaudeSubagentLimits> = {}) {
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ClaudeSubagentLimits instance from a string or object.
+     */
+    static createFrom($$source: any = {}): ClaudeSubagentLimits {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new ClaudeSubagentLimits($$parsedSource as Partial<ClaudeSubagentLimits>);
+    }
+}
+
+/**
+ * ClaudeThinking is the user's extended-thinking preference for the
+ * headless Claude sessions Agent Overflow spawns.
+ * 
+ * BudgetTokens is meaningful ONLY with Mode == budget, and the validators
+ * enforce that rather than trusting it: a stored budget beside mode "off"
+ * would be a value that reads as configuration and behaves as nothing.
+ * 
+ * Mode and Display are two independent axes on the CLI side and stay
+ * independent here — `thinking_display` alone is an accepted live request
+ * (spike-verified 2.1.237) — with one exception the wire imposes: a
+ * DISABLED session drops display entirely, so Display beside Mode "off" is
+ * inert rather than wrong.
+ */
+export class ClaudeThinking {
+    "mode"?: string;
+    "budgetTokens"?: number;
+    "display"?: string;
+
+    /** Creates a new ClaudeThinking instance. */
+    constructor($$source: Partial<ClaudeThinking> = {}) {
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ClaudeThinking instance from a string or object.
+     */
+    static createFrom($$source: any = {}): ClaudeThinking {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new ClaudeThinking($$parsedSource as Partial<ClaudeThinking>);
+    }
+}
+
+/**
  * EditorSettings groups the open-in-editor preferences. Lives in its
  * own nested object so future fields (custom argv template, last-used
  * editor for analytics, etc.) can land without reshuffling the
@@ -482,6 +634,76 @@ export class Settings {
     "claudeTodoRemindersDisabled"?: boolean;
 
     /**
+     * The Claude-only spawn-time axes delivered through the CLI's
+     * `--settings` flagSettings block. None has a CLI flag; the settings
+     * key is the delivery mechanism. Shapes, allowed values, validators
+     * and the "why claude-tui is excluded" note live in claudesession.go.
+     * 
+     * Every one of them treats its ZERO VALUE as "say nothing" — the key
+     * is omitted from the rendered block and the CLI's own resolution
+     * stands. That is what keeps them out of DefaultSettings and makes an
+     * absent key in an older settings file read as the CLI default.
+     * 
+     * Note which fields carry `omitempty` and which do not: it is a no-op
+     * on a STRUCT under encoding/json, so writing it there would claim an
+     * omission that never happens. The struct-valued axes below spell the
+     * tag plainly and state their zero-value meaning in prose instead;
+     * only the string-valued ones actually omit.
+     * 
+     * ClaudeOutputStyle names one of Claude Code's four built-in output
+     * styles (Concise / Proactive / Explanatory / Learning).
+     */
+    "claudeOutputStyle"?: string;
+
+    /**
+     * ClaudeCrossSession is the machine-wide peer inbox: whether other
+     * Claude sessions on this host may discover and message AO's threads,
+     * and what happens to a message that arrives. Shape, allowed values
+     * and the reason "hold" is not one of them live in
+     * claudecrosssession.go.
+     * 
+     * It is NOT part of ClaudeSessionAxes below even though half of it
+     * rides the same `--settings` block: those axes are spawn-only BY
+     * CONSTRUCTION (invisible to PlanLiveUpdate), while this one travels
+     * on provider.SessionOptions so a save converges a running session
+     * through the ordinary deferred-restart path. The inbox binds once at
+     * setup, so a restart is the only way to change it.
+     */
+    "claudeCrossSession": ClaudeCrossSession;
+
+    /**
+     * ClaudeSubagentLimits caps subagent spawn depth and concurrency via
+     * CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH /
+     * CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS in the block's env map.
+     */
+    "claudeSubagentLimits": ClaudeSubagentLimits;
+
+    /**
+     * ClaudeToolMemoryLimit caps the memory cgroup Claude installs for
+     * its tool subprocesses (CLAUDE_CODE_TOOL_MEMORY_LIMIT). The CLI
+     * implements this by writing a cgroup file under /proc/self/cgroup,
+     * so it takes effect only when the backend runs on Linux (including
+     * the WSL backend) — on macOS and native Windows the value is inert.
+     */
+    "claudeToolMemoryLimit"?: string;
+
+    /**
+     * ClaudeThinking is the extended-thinking preference for headless
+     * Claude sessions: leave it to Claude Code, turn thinking off, or pin
+     * a fixed token budget — plus whether thinking text reaches the wire.
+     * 
+     * It sits beside the four axes above but is NOT one of them: those
+     * ride the `--settings` block and are spawn-only, while this one has
+     * BOTH a spawn form (`--thinking` / `--max-thinking-tokens` /
+     * `--thinking-display`) and a live form (the `set_max_thinking_tokens`
+     * control_request), so a change reaches running sessions. The one
+     * exception is the return to "Claude Code decides", which has no wire
+     * form at all and lands as a deferred restart — exactly like turning a
+     * prompt override off (docs/specs/prompt-tool-overrides.md).
+     */
+    "claudeThinking": ClaudeThinking;
+
+    /**
      * DefaultThreadEnvMode seeds the workspace mode for new draft threads.
      * Accepts "local" or "worktree"; unknown values fall back to "local"
      * when settings are loaded.
@@ -747,6 +969,15 @@ export class Settings {
         if (!("claudeTuiEnabled" in $$source)) {
             this["claudeTuiEnabled"] = false;
         }
+        if (!("claudeCrossSession" in $$source)) {
+            this["claudeCrossSession"] = (new ClaudeCrossSession());
+        }
+        if (!("claudeSubagentLimits" in $$source)) {
+            this["claudeSubagentLimits"] = (new ClaudeSubagentLimits());
+        }
+        if (!("claudeThinking" in $$source)) {
+            this["claudeThinking"] = (new ClaudeThinking());
+        }
         if (!("defaultThreadEnvMode" in $$source)) {
             this["defaultThreadEnvMode"] = "";
         }
@@ -839,12 +1070,15 @@ export class Settings {
         const $$createField22_0 = $$createType4;
         const $$createField23_0 = $$createType0;
         const $$createField24_0 = $$createType0;
-        const $$createField43_0 = $$createType5;
-        const $$createField44_0 = $$createType6;
-        const $$createField45_0 = $$createType7;
-        const $$createField47_0 = $$createType0;
-        const $$createField48_0 = $$createType9;
-        const $$createField52_0 = $$createType10;
+        const $$createField27_0 = $$createType5;
+        const $$createField28_0 = $$createType6;
+        const $$createField30_0 = $$createType7;
+        const $$createField48_0 = $$createType8;
+        const $$createField49_0 = $$createType9;
+        const $$createField50_0 = $$createType10;
+        const $$createField52_0 = $$createType0;
+        const $$createField53_0 = $$createType12;
+        const $$createField57_0 = $$createType13;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("recentWorkspaces" in $$parsedSource) {
             $$parsedSource["recentWorkspaces"] = $$createField5_0($$parsedSource["recentWorkspaces"]);
@@ -873,23 +1107,32 @@ export class Settings {
         if ("codexDisabledTools" in $$parsedSource) {
             $$parsedSource["codexDisabledTools"] = $$createField24_0($$parsedSource["codexDisabledTools"]);
         }
+        if ("claudeCrossSession" in $$parsedSource) {
+            $$parsedSource["claudeCrossSession"] = $$createField27_0($$parsedSource["claudeCrossSession"]);
+        }
+        if ("claudeSubagentLimits" in $$parsedSource) {
+            $$parsedSource["claudeSubagentLimits"] = $$createField28_0($$parsedSource["claudeSubagentLimits"]);
+        }
+        if ("claudeThinking" in $$parsedSource) {
+            $$parsedSource["claudeThinking"] = $$createField30_0($$parsedSource["claudeThinking"]);
+        }
         if ("network" in $$parsedSource) {
-            $$parsedSource["network"] = $$createField43_0($$parsedSource["network"]);
+            $$parsedSource["network"] = $$createField48_0($$parsedSource["network"]);
         }
         if ("editor" in $$parsedSource) {
-            $$parsedSource["editor"] = $$createField44_0($$parsedSource["editor"]);
+            $$parsedSource["editor"] = $$createField49_0($$parsedSource["editor"]);
         }
         if ("retention" in $$parsedSource) {
-            $$parsedSource["retention"] = $$createField45_0($$parsedSource["retention"]);
+            $$parsedSource["retention"] = $$createField50_0($$parsedSource["retention"]);
         }
         if ("gitlabSelfHostedHosts" in $$parsedSource) {
-            $$parsedSource["gitlabSelfHostedHosts"] = $$createField47_0($$parsedSource["gitlabSelfHostedHosts"]);
+            $$parsedSource["gitlabSelfHostedHosts"] = $$createField52_0($$parsedSource["gitlabSelfHostedHosts"]);
         }
         if ("remoteEndpoints" in $$parsedSource) {
-            $$parsedSource["remoteEndpoints"] = $$createField48_0($$parsedSource["remoteEndpoints"]);
+            $$parsedSource["remoteEndpoints"] = $$createField53_0($$parsedSource["remoteEndpoints"]);
         }
         if ("window" in $$parsedSource) {
-            $$parsedSource["window"] = $$createField52_0($$parsedSource["window"]);
+            $$parsedSource["window"] = $$createField57_0($$parsedSource["window"]);
         }
         return new Settings($$parsedSource as Partial<Settings>);
     }
@@ -901,9 +1144,12 @@ const $$createType1 = ProviderEnvVar.createFrom;
 const $$createType2 = $Create.Array($$createType1);
 const $$createType3 = PromptOverride.createFrom;
 const $$createType4 = $Create.Array($$createType3);
-const $$createType5 = NetworkSettings.createFrom;
-const $$createType6 = EditorSettings.createFrom;
-const $$createType7 = RetentionSettings.createFrom;
-const $$createType8 = RemoteEndpoint.createFrom;
-const $$createType9 = $Create.Array($$createType8);
-const $$createType10 = windowgeom$0.Geometry.createFrom;
+const $$createType5 = ClaudeCrossSession.createFrom;
+const $$createType6 = ClaudeSubagentLimits.createFrom;
+const $$createType7 = ClaudeThinking.createFrom;
+const $$createType8 = NetworkSettings.createFrom;
+const $$createType9 = EditorSettings.createFrom;
+const $$createType10 = RetentionSettings.createFrom;
+const $$createType11 = RemoteEndpoint.createFrom;
+const $$createType12 = $Create.Array($$createType11);
+const $$createType13 = windowgeom$0.Geometry.createFrom;

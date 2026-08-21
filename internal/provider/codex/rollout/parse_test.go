@@ -208,8 +208,11 @@ func TestParseSkipsUnknownTypesAndCountsThem(t *testing.T) {
 	)
 	res := parseFixture(t, path)
 
-	if res.UnknownTypes["world_state"] != 1 {
-		t.Fatalf("world_state not counted: %+v", res.UnknownTypes)
+	// `world_state` is RECOGNISED and dropped, not unknown: Codex writes one
+	// per turn on every modern thread, so counting it would put an unknown-
+	// types warning on essentially every import. See converter.convert.
+	if _, counted := res.UnknownTypes["world_state"]; counted {
+		t.Fatalf("world_state should be recognised and dropped: %+v", res.UnknownTypes)
 	}
 	if res.UnknownTypes["future_record_codex_has_not_shipped_yet"] != 1 {
 		t.Fatalf("unknown envelope not counted: %+v", res.UnknownTypes)

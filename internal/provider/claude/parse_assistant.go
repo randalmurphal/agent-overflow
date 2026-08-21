@@ -331,6 +331,14 @@ func isSyntheticCLIModel(model string) bool {
 //
 // Empty output emits nothing: a command that printed nothing has no row to
 // show, and a blank one would read as a failed command.
+//
+// The event is emitted even when its transcript row is suppressed
+// (`CommandResultMeta.Suppressed`, decided from the send-time candidate AND
+// this text — see command_result_suppression.go). Suppression removes a ROW,
+// not a signal:
+// the live-config settle path and the peer-rename read-back both consume
+// this event, and dropping it here would break the very confirmations the
+// suppressed commands exist to deliver.
 func (p *Parser) commandResultEvents(threadID string, msg assistantMessage, now time.Time, line []byte) []provider.ProviderEvent {
 	var parts []string
 	for _, block := range msg.Content {
@@ -347,7 +355,19 @@ func (p *Parser) commandResultEvents(threadID string, msg assistantMessage, now 
 	}
 	var meta json.RawMessage
 	if p.activeCommandUUID != "" {
-		meta, _ = json.Marshal(provider.CommandResultMeta{CommandUUID: p.activeCommandUUID})
+		resultMeta := provider.CommandResultMeta{CommandUUID: p.activeCommandUUID}
+		if p.peerTurns != nil {
+			// Inside this command's own started -> completed window, so the
+			// uuid is what says which command this text answers. Both calls
+			// are no-ops for a uuid the session has nothing registered for.
+			p.peerTurns.notePeerRenameOutput(p.activeCommandUUID, text)
+			// The TEXT is half the answer: a user-typed state echo is
+			// suppressed only when this is a recognised confirmation of it,
+			// so a rejected /model slug keeps the row that says so
+			// (command_result_suppression.go).
+			resultMeta.Suppressed = p.peerTurns.commandResultRowSuppressed(p.activeCommandUUID, text)
+		}
+		meta, _ = json.Marshal(resultMeta)
 	}
 	return []provider.ProviderEvent{{
 		Kind:           provider.EventCommandResult,

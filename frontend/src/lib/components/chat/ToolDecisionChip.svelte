@@ -1,7 +1,11 @@
 <script lang="ts">
   import type { Item } from '../../types/models';
 
-  let { decision }: { decision?: Item['decision'] } = $props();
+  // `reason` is the deciding component's own words for an auto-denied tool
+  // call (Claude `system/permission_denied`). The chip stays the visible
+  // state; the reason is what a reader hovers for when the notice row that
+  // carries it in full has scrolled away.
+  let { decision, reason }: { decision?: Item['decision']; reason?: string } = $props();
 
   const label = $derived.by(() => {
     switch (decision) {
@@ -29,6 +33,7 @@
     class="rounded-full border px-1.5 py-0.5 text-[0.6875rem] font-medium {classes}"
     data-testid="tool-decision-chip"
     data-decision={decision}
+    title={reason || undefined}
   >
     {label}
   </span>

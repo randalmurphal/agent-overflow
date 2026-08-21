@@ -10,6 +10,7 @@
   import { copyMarkdownToClipboard } from '../../utils/markdownClipboard';
   import { ingestPersistedCodeSpans } from '../../utils/persistedSpans';
   import { splitAtBoundary } from '../../markdown/boundary/split';
+  import { parseJsonObject } from '../../utils/parseJsonObject';
 
   let { pane, item }: { pane?: ThreadPane; item: Item } = $props();
 
@@ -90,6 +91,15 @@
   // replacements of a streaming row — a fresh identity per frame would
   // rebuild ChatMarkdown's marked extension and re-lex every block.
   const pathRefs = $derived(getPathRefsFromMeta(item.meta) ?? EMPTY_PATH_REFS);
+
+  // Codex marks an assistant message the model emitted mid-turn — a progress
+  // note alongside its work, not the turn's answer — with `delivery: "async"`
+  // on the block's stop event. Read POSITIVELY and only positively: absence is
+  // not evidence of finality (most providers never set the key at all), so a
+  // row without it is rendered exactly as before.
+  const isInterim = $derived(
+    (parseJsonObject(item.meta)?.delivery ?? '') === 'async',
+  );
 </script>
 
 <div class="group" data-item-kind={item.kind}>
@@ -113,6 +123,15 @@
       <time class="tabular-nums" datetime={isoTime}>
         {time}
       </time>
+      {#if isInterim}
+        <span
+          class="rounded-full border border-border px-1.5 py-px text-[0.5625rem] uppercase tracking-wide text-fg-hint"
+          data-testid="assistant-message-interim"
+          title="Sent while the model kept working; not the turn's final answer"
+        >
+          Interim
+        </span>
+      {/if}
       <span
         data-testid="assistant-message-copy-slot"
         class="flex h-7 w-7 shrink-0 items-center justify-center"

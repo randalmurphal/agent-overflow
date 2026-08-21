@@ -1,0 +1,31 @@
+{
+  "version": 1,
+  "name": "codex-revert-legacy",
+  "description": "The same answered turn against an app-server that predates thread/revert: the initialize override reports codex_cli_rs/0.147.0, so AO never asks for paginated history and the thread is legacy for life. Edit-and-resend must fall back to thread/fork, which repoints the thread at a NEW provider thread id.",
+  "provider": "codex",
+  "codex": {
+    "threadId": "mock-codex-revert-legacy",
+    "responses": {
+      "initialize": "{\"jsonrpc\":\"2.0\",\"id\":${REQUEST_ID},\"result\":{\"userAgent\":\"codex_cli_rs/0.147.0 (mock; ao-mockprovider)\"}}"
+    }
+  },
+  "turns": [
+    {
+      "label": "answered",
+      "steps": [
+        {
+          "emit": {
+            "delayBetweenMs": 10,
+            "lines": [
+              "{\"jsonrpc\":\"2.0\",\"method\":\"turn/started\",\"params\":{\"threadId\":\"${THREAD_ID}\",\"turn\":{\"id\":\"${TURN_ID}\"}}}",
+              "{\"jsonrpc\":\"2.0\",\"method\":\"item/completed\",\"params\":{\"threadId\":\"${THREAD_ID}\",\"turnId\":\"${TURN_ID}\",\"item\":{\"type\":\"userMessage\",\"id\":\"umsg-${TURN}\",\"status\":\"completed\",\"content\":[{\"type\":\"text\",\"text\":\"${USER_INPUT}\"}]}}}",
+              "{\"jsonrpc\":\"2.0\",\"method\":\"item/completed\",\"params\":{\"threadId\":\"${THREAD_ID}\",\"turnId\":\"${TURN_ID}\",\"item\":{\"type\":\"agentMessage\",\"id\":\"msg-${TURN}\",\"status\":\"completed\",\"text\":\"Answering: ${USER_INPUT}\"}}}",
+              "{\"jsonrpc\":\"2.0\",\"method\":\"turn/completed\",\"params\":{\"threadId\":\"${THREAD_ID}\",\"turn\":{\"id\":\"${TURN_ID}\",\"status\":\"completed\"}}}"
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "afterTurns": "repeatLast"
+}

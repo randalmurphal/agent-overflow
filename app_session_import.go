@@ -89,8 +89,35 @@ type ImportableSession struct {
 	// never reach the frontend. These rows are still listed: the modal hides
 	// them behind a toggle, which needs both the row and the flag.
 	RanInAgentOverflow bool `json:"ranInAgentOverflow"`
+	// ImportedFrom is set when Codex's own external-import ledger says this
+	// Codex session is a conversation Codex imported from ANOTHER coding
+	// agent. Absent on Claude rows and on ordinary Codex sessions.
+	ImportedFrom *ImportOrigin `json:"importedFrom,omitempty"`
 	// Warnings are about THIS row, not the scan.
 	Warnings []string `json:"warnings,omitempty"`
+}
+
+// ImportOrigin says where a session came from before the provider that now
+// holds it. Display only — nothing in the import path branches on it.
+type ImportOrigin struct {
+	// Agent is the source coding agent: `claude-code`, `cursor`, or "" when
+	// the ledger's path shape matches neither. The frontend labels the known
+	// ones and shows a generic badge otherwise; it must not compose its own
+	// list, since the backend derives this.
+	Agent string `json:"agent"`
+	// SourcePath is the file the other agent's session lived in. It may no
+	// longer exist.
+	SourcePath string `json:"sourcePath"`
+	// SourceID is the source agent's own session id, when its layout encodes
+	// one. Empty otherwise.
+	SourceID string `json:"sourceId"`
+	// ImportedAt is epoch ms, like every AO wire timestamp.
+	ImportedAt int64 `json:"importedAt"`
+	// DuplicateOfThreadID names an AO thread that already holds this same
+	// conversation, imported from the source agent directly. The row is still
+	// offered — both provider sessions exist and both resume — so this is a
+	// label, not a filter.
+	DuplicateOfThreadID string `json:"duplicateOfThreadId,omitempty"`
 }
 
 // ImportUpdateStatus is what a check of one imported thread found.
@@ -306,6 +333,7 @@ func wireImportScanResult(scan sessionImportScan) ImportScanResult {
 			KnownProject:       row.KnownProject,
 			Origin:             row.Origin,
 			RanInAgentOverflow: row.RanInAgentOverflow,
+			ImportedFrom:       wireImportOrigin(row.ImportedFrom),
 			// Safe to alias: Get returns a deep copy of the cached scan.
 			Warnings: row.Warnings,
 		})
@@ -314,5 +342,22 @@ func wireImportScanResult(scan sessionImportScan) ImportScanResult {
 		Providers: slicesx.OrEmpty(providers),
 		Rows:      slicesx.OrEmpty(rows),
 		ScannedAt: scan.scannedAt,
+	}
+}
+
+// wireImportOrigin copies the scan's origin onto the wire shape. A fresh
+// struct rather than an aliased pointer: the cached scan hands out a deep
+// copy, and a shared pointer would quietly reintroduce the aliasing the copy
+// exists to prevent.
+func wireImportOrigin(origin *sessionimport.ExternalImportOrigin) *ImportOrigin {
+	if origin == nil {
+		return nil
+	}
+	return &ImportOrigin{
+		Agent:               origin.Agent,
+		SourcePath:          origin.SourcePath,
+		SourceID:            origin.SourceSessionID,
+		ImportedAt:          origin.ImportedAt,
+		DuplicateOfThreadID: origin.DuplicateOfThreadID,
 	}
 }

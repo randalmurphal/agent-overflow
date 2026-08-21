@@ -23,15 +23,9 @@ func TestLibraryAgainstRealParsers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Library: %v", err)
 	}
-	vars := scenario.Vars{
-		"SESSION_ID": "sess-test",
-		"THREAD_ID":  "thread-test",
-		"TURN":       "1",
-		"TURN_ID":    "turn-1",
-		"REQUEST_ID": "7",
-		"CWD":        "/tmp/workspace",
-		"ITER":       "1",
-	}
+	// The same environment the integrity check substitutes with — see
+	// scenario.TestVars for why it must not be a second copy.
+	vars := scenario.TestVars
 	for _, entry := range entries {
 		_, s, err := scenario.LoadLibrary(entry.Name)
 		if err != nil {

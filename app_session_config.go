@@ -3,8 +3,10 @@ package main
 import (
 	"context"
 	"log"
+	"sync"
 	"time"
 
+	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/provider/codex"
 )
@@ -112,18 +114,16 @@ func (a *App) liveApplySessionConfig(threadID string) bool {
 		return true
 	}
 
-	// Adopt the settings-owned axes (SystemPrompt when no feature owns it,
-	// DisabledTools) from what this session actually launched with. They
-	// live in Settings rather than on the thread row, so applying today's
-	// values here would report a spawn-only difference and queue a deferred
-	// restart the user never asked for — every time they saved a Settings
-	// edit, and every time the workspace's git state moved under a rendered
-	// {{GIT_BLOCK}}. "Next sessions only" is the contract
-	// (docs/specs/prompt-tool-overrides.md); a restart that happens for some
-	// other reason rebuilds from scratch and adopts the new value, which is
-	// a new session and intended. See applySettingsOwnedAxes for the spawn
-	// half of the pair.
-	pinSettingsOwnedAxes(&opts, sess.launchOpts)
+	// Resolve the settings-owned axes (SystemPrompt when no feature owns it,
+	// DisabledTools, DisableTodoReminders) against what this session
+	// launched with. The tool lists pin — they are spawn-only on every
+	// provider, so a diff could only queue a restart nobody asked for. A
+	// headless-Claude prompt override converges when (and only when) the
+	// STORED override text changed, which is a Settings edit and never the
+	// workspace's git state moving under a rendered {{GIT_BLOCK}}. See
+	// reconcileSettingsOwnedAxes for the rule and applySettingsOwnedAxes
+	// for the spawn half of the pair.
+	promptOverride := a.reconcileSettingsOwnedAxes(thread, sess.token, &opts, sess.launchOpts)
 
 	switch {
 	case sess.claude != nil:
@@ -147,17 +147,30 @@ func (a *App) liveApplySessionConfig(threadID string) bool {
 		// write, leaving launchOpts claiming a config the session refused
 		// (which would also make the restart fallback see "already
 		// converged" and skip the restart).
-		var rollback func()
-		err = sess.claude.ApplyLiveUpdate(a.lifeCtx(), update, func(receipt claude.LiveApplyReceipt) {
+		var unwind func(claude.LiveApplyOutcome)
+		applied, err := sess.claude.ApplyLiveUpdate(a.lifeCtx(), update, func(receipt claude.LiveApplyReceipt) {
 			a.registerClaudeLiveConfigApplies(threadID, sess.token, sess.launchOpts, update, receipt)
 			a.sessionManager().updateLaunchOpts(threadID, sess.token, opts)
-			rollback = func() {
-				a.rollbackClaudeLiveConfigApplies(threadID, sess.token, sess.launchOpts, receipt)
+			unwind = func(applied claude.LiveApplyOutcome) {
+				// NOT the pre-apply snapshot: a mid-sequence failure leaves
+				// the axes ahead of it genuinely applied on the wire, and
+				// the restart that converges the rest is deferred until the
+				// thread is quiet. Recording what the session is actually
+				// running keeps the live-first retry aimed at the axis that
+				// failed instead of re-sending the ones that landed.
+				a.rollbackClaudeLiveConfigApplies(threadID, sess.token,
+					claude.CommitLiveUpdate(sess.launchOpts, opts, applied), receipt)
 			}
 		})
 		if err != nil {
-			if rollback != nil {
-				rollback()
+			if unwind != nil {
+				unwind(applied)
+			}
+			if applied.SystemPrompt {
+				// The prompt swap landed even though a later axis did not,
+				// so the rendered override's {{MEMORY_DIR}} promise is live
+				// now — same reason the success path below creates it.
+				a.ensureClaudeMemoryDir(thread, opts.WorkDir, promptOverride)
 			}
 			// ErrLiveUpdateRequiresRestart is the expected "can't do this
 			// one live" signal (bypassPermissions escalation, fast-mode
@@ -172,13 +185,38 @@ func (a *App) liveApplySessionConfig(threadID string) bool {
 			}
 			return false
 		}
+		if update.Model != "" {
+			// set_model acked, but its success payload is bare: it does not
+			// state the model the CLI resolved, and a family alias can step
+			// down to a different concrete model and still answer ok.
+			// get_settings is the only channel that does. Read it back off
+			// the reconciler's goroutine — the round-trip is out of band and
+			// nothing here waits on it.
+			//
+			// Deliberately NOT fired for a prompt-only update, even though
+			// the prompt rides the same set_model: `applied` carries model,
+			// effort, advisor and ultracode and nothing about the system
+			// prompt (claude.AppliedSettings), so the round trip would put a
+			// control_request on stdin to verify a fact the answer cannot
+			// contain. The prompt swap's confirmation is the set_model ack
+			// itself — the CLI applies the prompt only when it accepts the
+			// model, which is why the two ride one request.
+			go a.readBackClaudeAppliedModel(threadID, sess.token, update.Model)
+		}
+		// A live prompt swap may have landed. Under a replaced system
+		// prompt the CLI stops creating the memory directory the rendered
+		// override promises already exists, so create it here for the same
+		// reason the spawn path does. No-op unless this reconcile actually
+		// rendered an override using {{MEMORY_DIR}}; MkdirAll is idempotent
+		// when the spawn already made it.
+		a.ensureClaudeMemoryDir(thread, opts.WorkDir, promptOverride)
 		return true
 	case sess.codex != nil:
 		update, ok := codex.PlanLiveUpdate(sess.launchOpts, opts)
 		if !ok {
 			return false
 		}
-		push := codex.PlanThreadSettingsPush(sess.launchOpts, opts)
+		push := codex.PlanThreadSettingsPush(sess.launchOpts, opts, sess.usesProviderQueue())
 		sess.codex.ApplyLiveUpdate(update)
 		a.pushCodexThreadSettings(threadID, sess.codex, push)
 	default:
@@ -188,6 +226,113 @@ func (a *App) liveApplySessionConfig(threadID string) bool {
 
 	a.sessionManager().updateLaunchOpts(threadID, sess.token, opts)
 	return true
+}
+
+// liveClaudeReconcileConcurrency bounds one settings-driven sweep. Each
+// per-thread reconcile can block for the full ApplyLiveUpdate control-request
+// timeout (10s) against a wedged process, so a sequential sweep over N live
+// threads is N × that — long enough for a second save to stack behind the
+// first. The bound exists because the opposite extreme is just as bad:
+// unbounded fan-out would put one goroutine and one in-flight control request
+// on every live Claude process at once.
+const liveClaudeReconcileConcurrency = 8
+
+// scheduleLiveClaudeReconcile runs the settings fan-out off the caller's
+// goroutine, coalescing saves: while a sweep is in flight, further requests
+// set a dirty flag and the running sweep re-runs ONCE when it lands. Two
+// properties matter, and coalescing has both — every request is followed by a
+// sweep that starts after it (so no save is lost), and N rapid saves cost at
+// most 2 sweeps rather than N.
+//
+// The re-run reads settings fresh, so the coalesced sweep converges to the
+// LAST saved value, which is the only value the user is looking at.
+func (a *App) scheduleLiveClaudeReconcile() {
+	a.mu.Lock()
+	if a.liveClaudeReconcileRunning {
+		a.liveClaudeReconcileDirty = true
+		a.mu.Unlock()
+		return
+	}
+	a.liveClaudeReconcileRunning = true
+	a.liveClaudeReconcileDirty = false
+	a.mu.Unlock()
+	go a.runLiveClaudeReconcileSweeps()
+}
+
+func (a *App) runLiveClaudeReconcileSweeps() {
+	for {
+		a.reconcileLiveClaudeSessions()
+		a.mu.Lock()
+		if a.liveClaudeReconcileDirty && !a.shuttingDown.Load() {
+			a.liveClaudeReconcileDirty = false
+			a.mu.Unlock()
+			continue
+		}
+		a.liveClaudeReconcileRunning = false
+		a.liveClaudeReconcileDirty = false
+		a.mu.Unlock()
+		return
+	}
+}
+
+// reconcileLiveClaudeSessions converges every live HEADLESS Claude session
+// onto the current settings + thread row. The fan-out behind a settings save
+// that owns a LIVE session axis (see liveClaudeSettingsAxes).
+//
+// Per-thread and independent by construction — reconcileSessionConfig takes
+// the per-thread config-apply lock itself, so one wedged process delays only
+// its own thread. That independence is what lets the sweep run threads
+// CONCURRENTLY (bounded by liveClaudeReconcileConcurrency): sequentially, one
+// unresponsive process would hold every other thread's settings change behind
+// its 10s control-request timeout.
+//
+// A thread whose delta is not live-appliable arms its deferred-restart
+// watcher exactly as any other config change would, which is what makes the
+// return to "Claude Code decides" converge at all.
+//
+// claude-tui is deliberately excluded: it has no live-update surface, so
+// reconciling it could only queue a restart for a setting it never received.
+//
+// A session still STARTING is swept too (threadIDsForProviderOrStarting).
+// Its spawn snapshotted Settings before this save landed, and it is not in
+// the session map yet — so a sweep over live sessions alone would miss it
+// and nothing would reconcile it again for the life of the session. The
+// per-thread reconcile waits the start out (waitForStartingSession) and then
+// diffs the session that actually registered.
+func (a *App) reconcileLiveClaudeSessions() {
+	threadIDs := a.sessionManager().threadIDsForProviderOrStarting(string(provider.Claude))
+	if len(threadIDs) == 0 {
+		return
+	}
+	slots := make(chan struct{}, liveClaudeReconcileConcurrency)
+	var wg sync.WaitGroup
+	for _, threadID := range threadIDs {
+		if a.shuttingDown.Load() {
+			break
+		}
+		slots <- struct{}{}
+		wg.Add(1)
+		go func(threadID string) {
+			defer wg.Done()
+			defer func() { <-slots }()
+			a.reconcileSessionConfigStep(threadID)
+		}(threadID)
+	}
+	wg.Wait()
+}
+
+// reconcileSessionConfigStep is one thread's share of a sweep. The seam
+// exists so a test can observe a sweep without standing up a provider
+// process; production always runs reconcileSessionConfig.
+func (a *App) reconcileSessionConfigStep(threadID string) {
+	a.mu.Lock()
+	step := a.reconcileSessionConfigFn
+	a.mu.Unlock()
+	if step != nil {
+		step(threadID)
+		return
+	}
+	a.reconcileSessionConfig(threadID)
 }
 
 // codexSettingsPushTimeout bounds the `thread/settings/update` round trip.
@@ -202,26 +347,37 @@ const codexSettingsPushTimeout = 5 * time.Second
 //
 // Two rules, both deliberate:
 //
-//  1. **Between turns only.** A push while a turn is in flight is skipped
-//     entirely rather than deferred. Nothing is lost by skipping: the same
-//     values are already in the session's turn config, so the next
-//     turn/start asserts them exactly as it did before this call existed.
-//     (The check is best-effort against a concurrent send from another
-//     goroutine — but that race is benign in both directions, because a push
-//     that lands beside a turn/start writes the very values that turn/start
-//     is itself carrying.)
+//  1. **Between turns only — unless the session uses the provider's own
+//     queue.** A push while a turn is in flight is normally skipped entirely
+//     rather than deferred, and nothing is lost by skipping: the same values
+//     are already in the session's turn config, so the next turn/start
+//     asserts them exactly as it did before this call existed. (The check is
+//     best-effort against a concurrent send from another goroutine — but that
+//     race is benign in both directions, because a push that lands beside a
+//     turn/start writes the very values that turn/start is itself carrying.)
+//
+//     A queue-native session inverts the argument. There the NEXT turn may be
+//     one the app-server starts by itself out of `thread/queue/*`, and a
+//     queued turn carries no per-turn overrides at all — the thread's stored
+//     settings are its settings. A turn being in flight is also precisely
+//     when rows get queued, so skipping the push there would skip it exactly
+//     when it is load-bearing: the user tightens the runtime mode, the
+//     already-queued message runs under the loose one. See
+//     `codex.PlanThreadSettingsPush`.
 //
 //  2. **Never user-facing on failure.** A failed or unsupported push is a
 //     lost optimization, not a lost setting. It is logged; the thread's
 //     behavior is unchanged. Codex's own rejection of an override arrives
 //     separately as an `error` notification, which is already thread error
 //     state, and an echo that disagrees with the push is surfaced by
-//     verifyThreadSettingsEcho.
+//     verifyThreadSettingsEcho. A queue-native session does not rely on this
+//     path for correctness either — `QueueAdd` re-asserts the whole config
+//     itself and refuses to queue when that assertion fails.
 func (a *App) pushCodexThreadSettings(threadID string, sess *codex.Session, push codex.ThreadSettingsPush) {
 	if sess == nil || push.Empty() {
 		return
 	}
-	if a.threadTurnInFlight(threadID) {
+	if a.threadTurnInFlight(threadID) && !sess.ThreadQueueNative() {
 		return
 	}
 	ctx, cancel := context.WithTimeout(a.lifeCtx(), codexSettingsPushTimeout)

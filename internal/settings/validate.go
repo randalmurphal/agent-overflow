@@ -3,6 +3,7 @@ package settings
 import (
 	"fmt"
 	"log"
+	"sort"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -264,6 +265,27 @@ func validateSettings(current Settings) (Settings, error) {
 		return Settings{}, err
 	}
 
+	current.ClaudeOutputStyle, err = validateClaudeOutputStyle("claudeOutputStyle", current.ClaudeOutputStyle)
+	if err != nil {
+		return Settings{}, err
+	}
+	current.ClaudeCrossSession, err = validateClaudeCrossSession("claudeCrossSession", current.ClaudeCrossSession)
+	if err != nil {
+		return Settings{}, err
+	}
+	current.ClaudeSubagentLimits, err = validateClaudeSubagentLimits("claudeSubagentLimits", current.ClaudeSubagentLimits)
+	if err != nil {
+		return Settings{}, err
+	}
+	current.ClaudeToolMemoryLimit, err = validateClaudeToolMemoryLimit("claudeToolMemoryLimit", current.ClaudeToolMemoryLimit)
+	if err != nil {
+		return Settings{}, err
+	}
+	current.ClaudeThinking, err = validateClaudeThinking("claudeThinking", current.ClaudeThinking)
+	if err != nil {
+		return Settings{}, err
+	}
+
 	return current, nil
 }
 
@@ -395,6 +417,11 @@ func sanitizeLoadedSettings(current Settings) Settings {
 	current.CodexPromptOverrides = sanitizePromptOverrides("codexPromptOverrides", current.CodexPromptOverrides)
 	current.ClaudeDisabledTools = sanitizeDisabledTools("claudeDisabledTools", current.ClaudeDisabledTools)
 	current.CodexDisabledTools = sanitizeDisabledTools("codexDisabledTools", current.CodexDisabledTools)
+	current.ClaudeOutputStyle = sanitizeClaudeOutputStyle("claudeOutputStyle", current.ClaudeOutputStyle)
+	current.ClaudeCrossSession = sanitizeClaudeCrossSession("claudeCrossSession", current.ClaudeCrossSession)
+	current.ClaudeSubagentLimits = sanitizeClaudeSubagentLimits("claudeSubagentLimits", current.ClaudeSubagentLimits)
+	current.ClaudeToolMemoryLimit = sanitizeClaudeToolMemoryLimit("claudeToolMemoryLimit", current.ClaudeToolMemoryLimit)
+	current.ClaudeThinking = sanitizeClaudeThinking("claudeThinking", current.ClaudeThinking)
 	return current
 }
 
@@ -525,6 +552,13 @@ func validateOption(field, value string, allowed map[string]struct{}) error {
 	return nil
 }
 
+// ValidateTextGenerationReasoningEffort is the exported form of the check
+// validateSettings runs, for callers that need to test one field without a
+// whole Settings round trip. Mirrors ValidateProviderEnvVarName.
+func ValidateTextGenerationReasoningEffort(provider, effort string) error {
+	return validateTextGenerationReasoningEffort(provider, effort)
+}
+
 func validateTextGenerationReasoningEffort(provider, effort string) error {
 	if _, ok := allowedTextGenerationEfforts(provider)[effort]; ok {
 		return nil
@@ -575,6 +609,26 @@ func allowedTextGenerationEfforts(provider string) map[string]struct{} {
 	default:
 		return allowedCodexTextGenerationEfforts
 	}
+}
+
+// AllowedTextGenerationEfforts returns the reasoning-effort slugs this package
+// accepts for a text-generation provider, sorted. Order carries no meaning —
+// error messages order the set through joinAllowedValues — the MEMBERSHIP is
+// the contract.
+//
+// Exported for TestTextGenerationEffortsMatchTheProviderSets in the root
+// package, the only place that can see both this copy and
+// provider.ReasoningEffortsForProvider: internal/settings must not import
+// internal/provider (cycle), so the tables above are duplicates, and this is
+// the same arrangement ReservedProviderEnvNames uses for the env deny-list.
+func AllowedTextGenerationEfforts(provider string) []string {
+	allowed := allowedTextGenerationEfforts(provider)
+	efforts := make([]string, 0, len(allowed))
+	for effort := range allowed {
+		efforts = append(efforts, effort)
+	}
+	sort.Strings(efforts)
+	return efforts
 }
 
 func validateWorktreeBranchPrefix(value string) (string, error) {

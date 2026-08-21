@@ -169,4 +169,3 @@ func (r *keyedLockRegistry) releaser(key string, lock *keyedLock) func() {
 		r.dropRef(key, lock)
 	}
 }
-

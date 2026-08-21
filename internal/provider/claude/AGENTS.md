@@ -56,14 +56,20 @@ owner. The top-level `ParseLine` (in `parser.go`) reads the envelope's
   as user aborts; same-goroutine state, no lock; see
   claude-wire.md §"Interrupted-turn result envelope").
 - `parse_system.go` — `system` envelopes (init metadata, compact_boundary,
-  model_refusal_fallback, task_started / task_updated / task_notification,
-  `commands_changed`, `status`). `commands_changed` is an undocumented push
+  the model fallback family, api_error,
+  task_started / task_updated / task_notification,
+  `commands_changed`, `status`, `permission_denied`, `permission_retry`). `commands_changed` is an undocumented push
   whose contract is REPLACE-the-cached-list, so it emits
   `EventCommandsChanged` with the whole list; an empty `commands` array
   is a real replacement while an ABSENT key is dropped. `system/init`
   additionally carries the `slash_commands` / `skills` / `plugins`
   discovery arrays onto `SessionInfo` — `slash_commands` is the only
-  surface listing MCP prompt commands (`mcp__server__prompt`).
+  surface listing MCP prompt commands (`mcp__server__prompt`) — plus
+  `output_style` (the CLI's echo of the style this session actually
+  launched with; the literal `"default"` is a real value, and the echo
+  is the only statement of a style a settings FILE contributed rather
+  than AO's `--settings` block), `mcp_server_errors` (2.1.237) and
+  `capabilities` (see §Capabilities below).
   `system/status` maps `status:"compacting"` and the `compact_result`
   close onto `EventCompactionStatus`; the per-API-request
   `status:"requesting"` noise is dropped. See claude-wire.md
@@ -116,6 +122,20 @@ owner. The top-level `ParseLine` (in `parser.go`) reads the envelope's
   and `isDeferred` rows are excluded from `totalTokens` (summing every
   row overcounts). See claude-wire.md §`get_context_usage` and the
   `context_usage_control_20260803` fixture.
+- `get_settings.go` — the `get_settings` outbound control_request and the
+  `SettingsSnapshot` it answers with (`Session.GetSettings` /
+  `ParseSettingsSnapshot`). Its `applied` object is the CLI's own
+  STRUCTURED statement of the model/effort/advisor/ultracode a turn will
+  actually run with, which is why the live-config settle path prefers it
+  to matching the English reply text of `/effort` and `/fast`. Read on
+  demand — once per apply that needs confirming, never on a timer — and
+  never persisted. An older CLI answers "unsupported control request
+  subtype"; that latches on the session (`GetSettingsUnsupported`) so the
+  settle path falls back to the reply text instead of re-asking every
+  time. Fast mode is deliberately NOT read from here: `applied` does not
+  carry it. `ProjectOverrides` is the second consumer — the `sources`
+  array is how a project-scoped `.claude/settings.json` that silently
+  overrides AO's model or effort becomes a user-visible notice.
 - `approvals.go` — approval-response encoding for the SDK.
 - `live_update.go` — `PlanLiveUpdate` / `ApplyLiveUpdate`: the
   restart-free path for config changes a live session can adopt. Model
@@ -125,7 +145,16 @@ owner. The top-level `ParseLine` (in `parser.go`) reads the envelope's
   `AllowClaudeSlashCommand` sends), whose confirmation arrives later as
   an `EventCommandResult` carrying the uuid — the app side
   (`app_claude_live_config.go`) settles those. Context-window changes
-  ride the `[1m]` marker on `set_model`. `PlanLiveUpdate` returns false
+  ride the `[1m]` marker on `set_model`. Extended thinking rides its own
+  `set_max_thinking_tokens` control_request (`LiveUpdate.Thinking`):
+  `max_thinking_tokens: 0` disables thinking, a positive value sets an
+  explicit budget (which only binds on models that TAKE one — on adaptive
+  models only `thinking_display` applies), and `thinking_display` alone is
+  a legal request. `max_thinking_tokens: null` is accepted and does
+  NOTHING, so returning to the CLI's own choice has no wire form at all
+  and `PlanLiveUpdate` reports that one direction as a restart. Version
+  floor 2.1.214, same posture as the system-prompt axis — an unknown
+  version counts as too old. `PlanLiveUpdate` returns false
   (restart) for everything else, and `ApplyLiveUpdate` validates every
   axis before ANY side effect — including refusing the command axes
   while the transcript needs the resume-at repair — so a restart-bound
@@ -133,7 +162,49 @@ owner. The top-level `ParseLine` (in `parser.go`) reads the envelope's
   validation and the first wire write: the caller registers its
   pending-confirmation state there, BEFORE the CLI can possibly
   answer. See claude-wire.md §"Live config commands".
-- `session.go` — process lifecycle + read loop that feeds ParseLine.
+- `session.go` — the `Session` struct itself (every field with the
+  ownership comment that explains which lock covers it), `NewSession`,
+  `Close`, and the small state accessors (`SessionID`, `PID`,
+  `CanonicalLeafUUID`, `RequiresResumeAtBeforeUserSend`). Process
+  lifecycle only; the five files below own what a live session does.
+- `session_spawn.go` — how the process is launched: the `Config`
+  struct, `buildArgs`, the child environment (`claudeSpawnEnv` /
+  `claudeSpawnUnsetEnv` and the `CLAUDE_CODE_*` defaults
+  `withClaudeSessionEnvDefaults` applies), and the
+  `WriteSystemPromptFile` / `RemoveSystemPromptFile` pair
+  `--system-prompt-file` rides on.
+- `session_readloop.go` — the stdout pump. `readLoop` feeds
+  `ParseLine`, routes the three prefix-gated control envelopes to
+  their handlers, and folds `system/init` facts onto the session:
+  `noteCLIVersion` / `CLIVersion` and `replaceAdvertisedCommands` /
+  `supportsSlashCommand`, whose only writer is this loop.
+- `session_control.go` — the outbound control_request channel.
+  `sendControlRequest` owns the allocate/register/marshal/write/
+  await-response state machine, `interpretControlResponse` the
+  standard reply reading, and `handleControlResponseLine` the
+  read-loop side that matches a reply back to its waiter (and flags
+  the parser on an interrupt ack). The permission-mode axis lives
+  here too — `setPermissionMode`, `SetInteractionMode`,
+  `normalizeClaudePermissionMode` — because it is one more subtype on
+  the same channel. `set_model` / `set_max_thinking_tokens`
+  (`live_update.go`), `get_settings`, `get_context_usage` and the MCP
+  subtypes (`mcp.go`) all ride the same helper from their own files.
+- `session_send.go` — what AO writes onto stdin to drive a turn:
+  `Send` (the user-message envelope, its canonical-uuid check, and the
+  issued-command-uuid note that keeps our own send from reading as a
+  peer's), `Interrupt`, `StopTask`, and the replay-parent expectations
+  `Send` records so `--replay-user-messages`' echo can be checked
+  against the leaf the message was sent from (`verifyReplayParent`).
+- `session_approvals.go` — the inbound control_request side and the
+  approval state it drives: the `can_use_tool` handlers (full-access
+  auto-allow, `ExitPlanMode` plan capture), `control_cancel_request`
+  cleanup, `RespondToApproval` / `RespondToUserInput`, the
+  pending/dedup registry and its close-time drain, and the
+  `AskUserQuestion` answer projection.
+- `session_peer.go` / `peername.go` — cross-session messaging: the
+  issued-command-uuid ledger that tells a peer-started turn from one of
+  ours, `RenamePeerSession`, and the mirror of the CLI's own `--name`
+  normalizer. See §Cross-session messaging.
   The read loop's control_response pre-handler also flags the parser's
   interrupt-ack state (`pendingControlRequests` entries carry
   `isInterrupt`; a successful ack calls `Parser.MarkInterruptAcked`
@@ -196,7 +267,30 @@ owner. The top-level `ParseLine` (in `parser.go`) reads the envelope's
   tier, absence proves nothing.
 - `json_helpers.go` — tiny JSON-inspection utilities.
 - `options.go` / `probe.go` — non-parser subsystems (session options,
-  binary probe).
+  binary probe). `inlineSettingsForCLI` builds the `--settings` JSON
+  block, which is the ONLY delivery route for a setting the CLI reads
+  from its settings file rather than a flag. The block's precedence is
+  the reason it is used at all: the CLI resolves
+  `policySettings > flagSettings > userSettings` and REAPPLIES its own
+  settings `env` block over the inherited environment at init, so an
+  env-backed axis handed to the subprocess as a plain variable is
+  silently discarded. `--settings` currently carries `fastMode`,
+  `outputStyle`, `crossSessionInbound`, and an `env` map holding the
+  auto-compact pair plus `CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH` /
+  `CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS` /
+  `CLAUDE_CODE_TOOL_MEMORY_LIMIT`. Every one of those names is in
+  `provider.ReservedEnvNames`, precisely so a user's custom environment
+  cannot set a value the CLI would then ignore.
+  The flag itself is emitted only when the block would be non-empty —
+  which, since `crossSessionInbound` states its refusal even when the
+  feature is off (§Cross-session messaging), is now every Claude spawn.
+  All of these axes are SPAWN-TIME ONLY and therefore deliberately NOT
+  on `provider.SessionOptions`: `PlanLiveUpdate` diffs
+  `ConfigFromOptions(prev)` against `ConfigFromOptions(next)`, so a
+  field the options struct cannot carry is structurally "next sessions
+  only" — no live-update branch and no reconcile pin is needed for it.
+  The app stamps them in `spawnProviderSession` from
+  `settings.ClaudeSessionAxesForProvider`.
 - `rotation.go` — the rule that keeps the account probe from destroying
   the login it is probing. The CLI fires its OAuth refresh at startup as
   a DETACHED task and answers `initialize` from cached local state
@@ -222,6 +316,24 @@ owner. The top-level `ParseLine` (in `parser.go`) reads the envelope's
   driven by `claude mcp list`) plus the `system/init` → unified status
   projectors (`MCPStatusFromRaw`, `MCPStatusFromListLine`) consumed by
   `internal/mcpstatus` via the shared `Fetcher` interface.
+  `system/init.mcp_server_errors` (2.1.237) is the second half of that
+  projection and lands on `SessionInfo.MCPServerErrors`: servers whose
+  config entry the CLI REFUSED are absent from `mcp_servers[]`
+  entirely, so without this array a rejected server is
+  indistinguishable from one that was never configured. The two arrays
+  never name the same server, which is why `ingestClaudeInitMCPStatus`
+  can loop both without a collision, and every Put it makes from the
+  error array carries a non-empty `Error` — the mcpstatus merge matrix
+  stores those verbatim and only ever carries a prior explanation
+  forward onto an error-LESS ephemeral fetch, so nothing has to be
+  forced.
+  Version floor worth knowing when reading old reports: before 2.1.221
+  a `--mcp-config` server was not connected before the first
+  print-mode turn, so a session's first turn ran with none of them
+  available and `system/init` said so. AO does not gate on this — the
+  supported-version floor is above it — but a stale bug report
+  describing "MCP servers missing on the first message only" is that,
+  not this projection.
   `sanitizeChildStderr` lives here too for bounding child-process
   stderr in user-facing errors.
 - `sessionfork/` — subpackage. The fork transform over an existing
@@ -266,8 +378,80 @@ Summary of what `ParseLine` dispatches:
 
 - `system` subtypes: `init`, `compact_boundary`, `task_started`,
   `task_updated`, `task_notification`,
-  `session_state_changed`, `api_retry`. `tool_progress` is
-  intentionally dropped.
+  `session_state_changed`, `api_retry`, `api_error`,
+  `permission_denied`, `permission_retry`, and the model
+  fallback family — `model_refusal_fallback`, `model_fallback`,
+  `model_consent_fallback`, `model_refusal_no_fallback`.
+  `tool_progress` is intentionally dropped.
+- `system.api_error` is the wire TWIN of `api_retry`: the CLI emits both
+  for one retryable failure. It is normalized onto the SAME
+  `EventAPIRetry`, because triage upserts the per-turn id
+  `retry:<turnIndex>` and a second surface would double-render one
+  failure. The twin is the richer half — it nests `error.formatted`
+  (the CLI's own display string, preferred over `error.message`) and
+  `error.status`, and spells its counters `retryAttempt` / `maxRetries`
+  / `retryInMs` where `api_retry` spells them `attempt` / `max_retries`
+  / `retry_after_ms`. Both spellings are read.
+- The model fallback family is three notices and one error. The three
+  notices (`model_refusal_fallback` — the API refused this request;
+  `model_fallback` — the model was unavailable or blocked;
+  `model_consent_fallback` — a credits/consent choice moved the session)
+  all mean "the turn continues on another model", so all three emit
+  `EventModelFallback` and update the parser's current model;
+  `meta.kind` is what tells them apart, and the consent variant adds
+  `choice` + `persistedAsDefault` (was this written back as the account
+  default, or only for this session). `model_refusal_no_fallback` is the
+  one member whose turn produces NOTHING — refused with no fallback
+  route — so it is `EventError`, per core principle 5. Its meta
+  deliberately carries no top-level `fatal` bool and no top-level
+  `error` string: those are how triage recognises a dead process and an
+  SDK error enum respectively, and only the TURN died here.
+- Field spellings in this family are read case-insensitively across
+  snake_case and camelCase (`readRawStringAny`). This is not defensive
+  padding: the wire emits snake_case (`fallback_model`,
+  `api_refusal_category`, verified in the 2.1.214 / 2.1.219 / 2.1.237
+  serializers) while the CLI's internal object is camelCase, and reading
+  only the latter made every REAL envelope fail with "empty
+  fallback_model".
+- `system.permission_denied` / `system.permission_retry` — the
+  permission family, both `EventNotification` with a `meta.kind`
+  discriminator (`permission_denied` / `permission_retry`), following
+  the model-fallback family's shape rather than inventing an event
+  kind. **Live-wire only**: 2.1.237's two persistence paths BOTH drop
+  these envelopes (`{type:"ignored"}` / a bare `continue`), so neither
+  appears in a transcript — a resumed, imported or forked thread has no
+  record of them, and nothing may be inferred from their absence.
+  - `permission_denied` is emitted where the CLI auto-denies a tool
+    call BEFORE it could ask (the pre-ask gate), which is exactly the
+    case where the timeline would otherwise show a tool that silently
+    never ran. Fields: `tool_name`, `tool_use_id`, `decision_reason`
+    (the deciding component's own sentence, preferred for display —
+    the CLI's own debug renderer prefers it), `message`, `agent_id`,
+    and `decision_reason_type`, the discriminator of the CLI's
+    `PermissionDecisionReason` union: `rule`, `mode`, `workingDir`,
+    `permissionPromptTool`, `subcommandResults`, `hook`, `other`,
+    `sandboxOverride`, `safetyCheck`, `asyncAgent`. Triage attaches
+    the notice to the tool call — the notice's row id is namespaced
+    (`permission-denied:<tool_use_id>`) so it cannot collide with the
+    `tool_call` row, whose id IS the bare tool_use_id — and annotates
+    that row with `Decision="declined"` plus a `permissionDenied` meta
+    block. It deliberately does NOT touch the row's Status: a row that
+    has left `statusRunning` makes `persistToolCallCompletion` drop the
+    real completion, so a denial must never pre-settle the row.
+  - `decision_reason_type:"workingDir"` is the ONLY workspace-boundary
+    signal a denial carries, and the distinction is load-bearing in the
+    copy: the CLI answers a boundary refusal with `addDirectories`
+    suggestions, never a `Bash(...)`-style tool rule, so telling the
+    user to add a permission rule would be advice that fixes nothing.
+    (`blocked_path` itself rides `control_request/can_use_tool`, not
+    this envelope.)
+  - `permission_retry` carries NO `tool_use_id` and no attempt count —
+    its only 2.1.237 producer is the interactive REPL's
+    `onRetryDenials` dialog, which reports by command NAME after a
+    permission-mode change. Parsed defensively as a plain timeline
+    notice with an optional bounded `commands` list; do not build a
+    tool correlation on it.
+
 - `system.task_started` — meta-only `EventToolStart` emission that
   records the `task_id ↔ tool_use_id` mapping into `items.meta`.
   Fires for EVERY Bash/Task — not just backgrounded ones.
@@ -291,6 +475,22 @@ Summary of what `ParseLine` dispatches:
   (several backgrounded tasks completing together), so the path extracts
   every routable block via `ExtractAllTaskNotificationFields`, not just
   the first.
+- `<cross-session-message from="...">` — the OTHER injected-user
+  wrapper, and the one exception to "an injected replay envelope is
+  provider context, drop it". Claude's cross-session inbox (2.1.224+)
+  delivers a peer session's `SendMessage` as a user-role turn wrapped in
+  this tag, so the body is a MESSAGE someone sent into this thread, not
+  context the CLI pasted in. `parse_user_replay.go` therefore checks
+  `ExtractCrossSessionMessage` (the peer sibling of
+  `ExtractAllTaskNotificationFields`) BEFORE the injected-content drop:
+  the row survives with the wrapper stripped, `meta.cross_session_message
+  = true`, and `meta.cross_session_from` carrying the sender, which is
+  what a peer-message row renders from. `sessionfork`'s
+  `InjectedUserContentWrappers` still lists the tag, for the different
+  question that list answers — a fork must not land its cursor ON an
+  injected row.
+  Whether such a message is delivered at all is the user's
+  `claudeCrossSession` setting — see §Cross-session messaging below.
 - `assistant` — text deltas, tool_use, thinking, exit_plan_mode,
   usage. Subagent messages identified by top-level
   `parent_tool_use_id`.
@@ -345,12 +545,57 @@ Summary of what `ParseLine` dispatches:
   flows.
 - `rate_limit_event` — rate-limit state.
 - `command_lifecycle` — per-message delivery ack for stdin user
-  messages (`queued` / `started` / `completed` / `cancelled`). Live UI
-  state, never history; older CLIs emit none, so nothing may depend on
-  its presence.
+  messages (`queued` / `started` / `completed` / `cancelled` /
+  `discarded`). `discarded` (2.1.224+) means the session ended with the
+  message still queued; the parser closes the started-window on it
+  exactly as it does for `cancelled`, and it stays a distinct state only
+  so the cause reaches the timeline. Live UI state, never history; older
+  CLIs emit none, so nothing may depend on its presence.
 
 `parent_tool_use_id` on tool events correlates subagent (`Task`) work
 back to the parent tool call.
+
+## Capabilities (`system/init.capabilities`)
+
+`system/init` carries a `capabilities` array of opaque feature tokens.
+`parse_system.go` normalizes it onto `provider.SessionInfo.Capabilities`
+(trimmed, empties dropped, first-occurrence-wins dedupe preserving wire
+order, capped at 64 tokens × 64 runes) and `session_capabilities.go`
+holds it on the session's live state behind `HasCapability(name)` /
+`Capabilities()`. Nothing is keyed on it yet.
+
+Known tokens, from the CLI's own schema text:
+
+| Token | Meaning |
+|---|---|
+| `interrupt_receipt_v1` | interrupt control requests are acknowledged with a receipt |
+| `interrupt_cancel_queued_v1` | an interrupt also cancels queued messages |
+| `msg_lifecycle_v1` | `command_lifecycle` acks for queued/started/completed messages |
+| `queued_notifications` | schema-named only; no emit site observed in 2.1.237 |
+
+Rules that come with it:
+
+- **Prefer a capability check to CLI version parsing when a token
+  exists for the behaviour.** A token is the CLI's own statement about
+  the build that is actually running; a version string has to be
+  matched against a changelog and is wrong for forks, canaries and
+  vendored builds.
+- **Absence is not a denial.** On 2.1.237 the stream-json engine
+  advertises a two-element constant (`interrupt_receipt_v1`,
+  `msg_lifecycle_v1`); the three-element list including
+  `interrupt_cancel_queued_v1` is declared in the bundle and never
+  referenced, and `queued_notifications` appears only in schema text. A
+  gate must therefore LIGHT UP a newer path when a token is present and
+  never REFUSE an older path when it is missing — otherwise a build that
+  simply under-reports loses working behaviour.
+- **`system/init` is re-emitted before EVERY turn**, so init handling
+  must be idempotent and must not re-fire one-shot work.
+  `noteCapabilities` replaces the set under the live-state lock and logs
+  once per session (`capabilitiesLogged`); an empty array returns early
+  rather than clearing, since a build that says nothing is not a build
+  that revoked everything. Anything new hung off `EventInit` needs the
+  same treatment — regression:
+  `TestParseSystem_RepeatedInitIsIdempotent`.
 
 ## Lifecycles we drive
 
@@ -403,6 +648,84 @@ Do NOT derive turn activity from item state. Do NOT emit lifecycle
 state from `task_notification`. Do NOT rewrite `tool_use_id` between
 start and complete. These are load-bearing rules enforced by
 [`invariants.md`](../../../docs/architecture/invariants.md).
+
+## Cross-session messaging
+
+Claude Code 2.1.224+ gives sessions on one host a peer inbox: they find
+each other with `ListAgents` and address each other with `SendMessage`,
+and a delivered message becomes a USER-ROLE TURN in the receiver that
+nobody at the keyboard asked for. Full wire detail is
+[`claude-wire.md §Cross-session messaging`](../../../docs/references/claude-wire.md#cross-session-messaging-harbor-kite-21224--verified-21237);
+what lives here is the part that shapes this package.
+
+**Four spawn pieces, three files.** `internal/settings`'s
+`claudeCrossSession` (enabled + inbound policy) reaches
+`ConfigFromOptions` through `provider.SessionOptions`. `options.go`
+turns it into the `CLAUDE_CODE_HARBOR_KITE=1` environment gate
+(`withClaudeCrossSessionEnv`), the `--name` flag (`peerSessionNameArgs`),
+and the `crossSessionInbound` key in the `--settings` block. The
+peer-visible NAME rides `Config.PeerSessionName` instead, stamped by
+the app layer.
+
+That split is deliberate and load-bearing. `PlanLiveUpdate` blanks the
+live-appliable axes and then `DeepEqual`s the two Configs, so anything
+reaching `Config` THROUGH `ConfigFromOptions` and left un-blanked becomes
+a deferred restart automatically, while anything stamped OUTSIDE it is
+structurally invisible to that diff:
+
+- The inbox binds once during the CLI's setup and nothing rebinds it, so
+  it rides `SessionOptions` — and a settings change converges by
+  restart, which is what the user is told.
+- The name is live-changeable for free, so it must NOT be able to queue
+  one. It is stamped past `ConfigFromOptions` (`app_session.go`) and
+  converges through `RenamePeerSession`.
+
+**`hold` is never emitted, and neither is silence.** The CLI's schema has
+three inbound values; AO offers two. A held message waits for an approval
+a headless session cannot present, and both `hold` and an ABSENT key
+(mode parity) discard it with nothing on stdout. `internal/settings`
+refuses `hold` at the save and resolves an enabled-but-empty policy to
+`accept`.
+
+**Off states the refusal.** `claudeCrossSessionInbound` returns `refuse`
+when the setting is off, so EVERY Claude spawn carries the key and the
+`--settings` flag is now always present. The reason is that AO's gate is
+not the only one: `tengu_harbor_kite` is a remote GrowthBook flag that
+can bind the inbox for a user who never enabled it here, and
+`tengu_harbor_kite_mode_emit` — which has NO environment override —
+turns on the permission-class attestation that the unset-key default
+reads. Absent key + both remote flags live = a class-matching peer
+auto-delivers, starting a turn in a thread whose user never opted in.
+Off has to mean off regardless of remote flags, so the refusal is stated
+rather than assumed. The env gate cannot carry it: the CLI checks the
+override for truthiness and falls through to the flag when it is unset,
+so no environment value can express "off".
+
+**Renaming is `/rename`, never `rename_session`.** The control request
+moves the session TITLE and leaves the peer registry alone, so it would
+report success while every peer kept addressing the old name.
+`RenamePeerSession` sends `/rename <name>` as an ordinary stdin user
+message with a client-minted uuid and `AllowClaudeSlashCommand` — the
+uuid is what lets triage's pending-send correlator consume the send
+instead of stranding it, and the flag is what keeps the outbound slash
+guard from prefixing a newline the CLI's router would not claim. The
+command costs no model turn (`result.num_turns: 0`).
+
+**A peer-started turn is identified by a uuid we never minted.**
+`session_peer.go` holds the ledger; `parse_command_lifecycle.go` consults
+it and stamps `Meta.origin = "peer-session"` on every frame of an
+unaccounted bracket, releasing the entry on the terminal frame. The
+classifier is fail-safe in one direction only: an unknown session or an
+overflowed ledger reads as OURS. Mislabelling a peer turn costs a missing
+label; mislabelling the user's own turn puts "from another Claude
+session" on a message they typed.
+
+**The peer's text is on the wire, not in the transcript.** AO always
+spawns with `--replay-user-messages`, so the delivery also arrives as a
+`user{isReplay,isSynthetic}` envelope whose top-level `origin` object
+carries the peer's name and body and whose `uuid` equals the bracket's
+`command_uuid`. `parse_user_replay.go` prefers that structured object and
+falls back to the `<cross-session-message>` wrapper parse.
 
 ## Captured wire samples (authoritative test fixtures)
 

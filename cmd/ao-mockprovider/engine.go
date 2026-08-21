@@ -56,10 +56,15 @@ type engine struct {
 	// exitFn is os.Exit in production; tests substitute a recorder.
 	exitFn func(code int)
 
-	mu              sync.Mutex
-	base            scenario.Vars // SESSION_ID / THREAD_ID / CWD
-	turnSeq         int           // last begun user-turn number (1-based)
-	activeTurn      int           // turn currently executing scenario steps
+	mu   sync.Mutex
+	base scenario.Vars // SESSION_ID / THREAD_ID / CWD
+	// turnVars holds extra ${VAR} bindings scoped to one turn, set by an
+	// adapter that knows something about the turn the scenario file cannot —
+	// the text of a provider-queued message, which only exists at dispatch
+	// time. Merged over base in varsForTurn and dropped with the turn.
+	turnVars        map[int]scenario.Vars
+	turnSeq         int // last begun user-turn number (1-based)
+	activeTurn      int // turn currently executing scenario steps
 	turns           map[int]*scenarioTurn
 	doneReported    bool
 	gate            *gate
@@ -77,6 +82,7 @@ func newEngine(sc *scenario.Scenario, fixtureRoot, cwd string, w *lineWriter, re
 		rep:         rep,
 		exitFn:      os.Exit,
 		base:        base,
+		turnVars:    make(map[int]scenario.Vars),
 		turns:       make(map[int]*scenarioTurn),
 		turnCh:      make(chan int, turnQueueCap),
 	}
@@ -99,13 +105,34 @@ func (e *engine) beginTurn() (int, scenario.Vars) {
 func (e *engine) varsForTurn(n int) scenario.Vars {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	vars := make(scenario.Vars, len(e.base)+2)
+	vars := make(scenario.Vars, len(e.base)+2+len(e.turnVars[n]))
 	for k, v := range e.base {
+		vars[k] = v
+	}
+	for k, v := range e.turnVars[n] {
 		vars[k] = v
 	}
 	vars["TURN"] = strconv.Itoa(n)
 	vars["TURN_ID"] = turnIDForNumber(n)
 	return vars
+}
+
+// setTurnVars binds extra ${VAR} values for one turn. Called before
+// enqueueTurn so the turn's very first step already sees them.
+func (e *engine) setTurnVars(n int, extra scenario.Vars) {
+	if len(extra) == 0 {
+		return
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	bound := e.turnVars[n]
+	if bound == nil {
+		bound = make(scenario.Vars, len(extra))
+		e.turnVars[n] = bound
+	}
+	for k, v := range extra {
+		bound[k] = v
+	}
 }
 
 // turnIDForNumber is the one place the ${TURN_ID} spelling lives, shared
@@ -148,6 +175,30 @@ func (e *engine) forkedTurnIDs(lastTurnID string) ([]string, bool) {
 		ids = append(ids, turnIDForNumber(n))
 	}
 	return ids, true
+}
+
+// turnStatus reports what this process knows about turnID out of its own
+// turn ledger: whether it began that turn at all, and whether the turn has
+// finished.
+//
+// The began=false answer is IGNORANCE, not evidence, and the adapters have
+// to treat it that way: the mock keeps no rollout, so a thread it resumed
+// has history it cannot see. Every real rollback lands there — the app
+// stops the live session and issues its history cut through a throwaway
+// resume whose ledger starts empty (app_thread_fork_codex.go
+// `withCodexThreadSession`). See codex_revert.go#anchorIsCuttable.
+func (e *engine) turnStatus(turnID string) (began, finished bool) {
+	if turnID == "" {
+		return false, false
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	for n := 1; n <= e.turnSeq; n++ {
+		if turnID == turnIDForNumber(n) {
+			return true, e.turns[n] == nil
+		}
+	}
+	return false, false
 }
 
 // currentTurn returns the most recently begun user-turn number (0 before the
@@ -198,7 +249,21 @@ func (e *engine) run() {
 	}
 	for n := range e.turnCh {
 		e.runTurn(n)
+		// The thread just went idle. A protocol that owns a provider-side
+		// user-message queue drains its head here, which is what makes the
+		// mock's dispatch AUTOMATIC in the same sense the real app-server's
+		// `on_thread_idle` hook is — the client never asks for it.
+		if dispatcher, ok := e.adapter.(idleQueueDispatcher); ok {
+			dispatcher.dispatchQueuedOnIdle()
+		}
 	}
+}
+
+// idleQueueDispatcher is implemented by a protocol adapter that holds queued
+// user messages of its own (Codex `thread/queue/*`). Optional: the Claude
+// adapter has no such queue and is never asked.
+type idleQueueDispatcher interface {
+	dispatchQueuedOnIdle()
 }
 
 func (e *engine) runTurn(n int) {
@@ -261,6 +326,7 @@ func (e *engine) finishTurn(n int) {
 		e.activeTurn = 0
 	}
 	delete(e.turns, n)
+	delete(e.turnVars, n)
 	e.mu.Unlock()
 }
 

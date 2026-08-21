@@ -375,6 +375,19 @@ type UsageBucket struct {
 	TurnCount    int64 `json:"turnCount"`
 	SessionCount int64 `json:"sessionCount"`
 	UnpricedRows int64 `json:"unpricedRows"`
+	// CostSource names whose arithmetic produced CostUSD, and is empty on
+	// every bucket priced the ordinary way (wire cost plus rate-table
+	// estimates, possibly mixed). It is set only when a single PROVIDER
+	// figure replaced that arithmetic wholesale — currently
+	// `provider-estimate`, a Codex >= 0.148 thread total (see
+	// `provider_thread_cost.go` and `app_usage.go`'s overlay). QueryUsage
+	// never sets it; GetUsageStats does, like CostUSD and UnpricedRows.
+	//
+	// Empty is deliberately NOT a third value meaning "mixed": a reader that
+	// wants to label the number only needs to know when it is somebody
+	// else's, and inventing a label for the default would make every existing
+	// surface owe an explanation it already gives (`≥` for a lower bound).
+	CostSource string `json:"costSource"`
 }
 
 // UsageDetailRow is one (bucket, model, cost-source) group of the

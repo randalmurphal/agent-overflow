@@ -374,8 +374,10 @@ ONE safe CLI argument cannot reach argv on either transport.
 Settings routing is provider-generic: `settings.PromptOverridesForProvider`
 / `DisabledToolsForProvider` map `claude-tui` onto the Claude lists (same
 binary, like `HiddenModelsForProvider`), so the app's spawn path stamps
-both axes with no provider branch and `pinSettingsOwnedAxes` keeps a
-settings edit from restarting a live TUI session.
+both axes with no provider branch and `reconcileSettingsOwnedAxes` keeps
+a settings edit from restarting a live TUI session — it converges the
+prompt axis for HEADLESS Claude only, and pins for every other provider
+including this one, which has no live-update surface at all.
 
 ## Security boundary (load-bearing)
 

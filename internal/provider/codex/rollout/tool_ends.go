@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
+	"time"
 
 	"agent-overflow/internal/importir"
 	"agent-overflow/internal/provider"
@@ -27,6 +29,14 @@ type endEvent struct {
 	input    map[string]any
 	what     string // prose naming the record in a warning
 	enrich   toolEnrichment
+	// startedAt / completedAt are the item's OWN clock, present only on the
+	// `item_completed` records a paginated rollout is built from (items.go).
+	// Both are zero for a legacy `*_end` record — and startedAt is zero for
+	// an item a legacy→paginated migration synthesised, which writes
+	// `started_at_ms: null` — so both fall back to the line's timestamp
+	// rather than inventing a duration.
+	startedAt   time.Time
+	completedAt time.Time
 }
 
 // selfContained reports whether the end record carries enough on its own to
@@ -112,6 +122,14 @@ func (c *converter) emitStandaloneTool(ev endEvent) {
 	if ev.enrich.cwd != "" {
 		input["cwd"] = ev.enrich.cwd
 	}
+	startedAt := ev.startedAt
+	if startedAt.IsZero() {
+		startedAt = c.lastTimestamp
+	}
+	completedAt := ev.completedAt
+	if completedAt.IsZero() {
+		completedAt = c.lastTimestamp
+	}
 	tool := &openTool{
 		callID:    callID,
 		itemID:    callID,
@@ -120,7 +138,7 @@ func (c *converter) emitStandaloneTool(ev endEvent) {
 		command:   ev.enrich.command,
 		turnID:    c.turn.id,
 		turnIndex: c.turn.index,
-		startedAt: c.lastTimestamp,
+		startedAt: startedAt,
 		enrich:    mergeEnrichment(nil, ev.enrich),
 	}
 	if len(input) > 0 {
@@ -135,9 +153,9 @@ func (c *converter) emitStandaloneTool(ev endEvent) {
 		ItemType:  tool.itemType,
 		Role:      "assistant",
 		Meta:      c.toolStartMeta(tool),
-		Timestamp: c.lastTimestamp,
+		Timestamp: startedAt,
 	})
-	c.finishTool(tool, "", "", false)
+	c.finishToolAt(tool, "", "", false, completedAt)
 }
 
 // emitOrphanCompletion records an end event that names no known call AND
@@ -254,9 +272,28 @@ func assembleUnifiedPatch(changes map[string]json.RawMessage) string {
 			Type        string `json:"type"`
 			UnifiedDiff string `json:"unified_diff"`
 			MovePath    string `json:"move_path"`
+			Content     string `json:"content"`
 		}
-		if json.Unmarshal(changes[path], &change) != nil || change.UnifiedDiff == "" {
+		if json.Unmarshal(changes[path], &change) != nil {
 			continue
+		}
+		body := change.UnifiedDiff
+		if body == "" {
+			// `FileChange::Add` / `::Delete` carry the whole file as
+			// `content` and no hunks at all (protocol.rs FileChange), so
+			// without this every created and deleted file rendered as
+			// nothing. Whole-file hunks are the honest rendering: the
+			// record really does say the entire file is new or gone.
+			//
+			// ok is the SKIP signal, not emptiness: an empty added file
+			// has an empty body and still has to appear in the patch,
+			// because "a file was created" is the whole content of that
+			// record. Only a change type this build does not know skips.
+			hunk, ok := wholeFileHunk(change.Type, change.Content)
+			if !ok {
+				continue
+			}
+			body = hunk
 		}
 		newPath := path
 		if change.MovePath != "" {
@@ -274,10 +311,49 @@ func assembleUnifiedPatch(changes map[string]json.RawMessage) string {
 		}
 		b.WriteString("--- a/" + path + "\n")
 		b.WriteString("+++ b/" + newPath + "\n")
-		b.WriteString(strings.TrimRight(change.UnifiedDiff, "\n"))
+		b.WriteString(strings.TrimRight(body, "\n"))
 		b.WriteString("\n")
 	}
 	return b.String()
+}
+
+// wholeFileHunk renders an added or deleted file's full content as one
+// unified-diff hunk. ok=false means the change type is not one this build
+// knows how to render whole-file (a `update` with no `unified_diff`, or a
+// variant added upstream), and the caller drops the entry.
+//
+// An EMPTY add or delete returns ok=true with an empty-range hunk and no
+// body lines. `touch newfile` is a real edit, and the previous "" return
+// made it vanish from the patch entirely — headers included — so the entry
+// the record describes had no representation at all. `@@ -0,0 +0,0 @@` is
+// what git itself writes for an empty new file's hunkless diff body, and
+// the headers around it are what say a file appeared.
+func wholeFileHunk(changeType, content string) (string, bool) {
+	var prefix string
+	switch changeType {
+	case "add":
+		prefix = "+"
+	case "delete":
+		prefix = "-"
+	default:
+		return "", false
+	}
+	if content == "" {
+		return "@@ -0,0 +0,0 @@\n", true
+	}
+	lines := strings.Split(strings.TrimSuffix(content, "\n"), "\n")
+	var b strings.Builder
+	if prefix == "+" {
+		b.WriteString("@@ -0,0 +1," + strconv.Itoa(len(lines)) + " @@\n")
+	} else {
+		b.WriteString("@@ -1," + strconv.Itoa(len(lines)) + " +0,0 @@\n")
+	}
+	for _, line := range lines {
+		b.WriteString(prefix)
+		b.WriteString(line)
+		b.WriteString("\n")
+	}
+	return b.String(), true
 }
 
 func changedPaths(changes map[string]json.RawMessage) []string {

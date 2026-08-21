@@ -119,8 +119,9 @@ func (s *Session) WriteMCPServerToUserConfig(ctx context.Context, name string, s
 // Tools carries the wire's name→definition map so callers can list a
 // server's tool names; values (schemas) are never inspected, and
 // `resources` / `resourceTemplates` are not decoded. AuthStatus is one
-// of `"unsupported" | "notLoggedIn" | "bearerToken" | "oAuth"` per the
-// Codex enum.
+// of `"unknown" | "unsupported" | "notLoggedIn" | "bearerToken" |
+// "oAuth"` per the Codex enum (`unknown` added in 0.147 — see
+// MCPStatusFromList for why it does not mean "not connected").
 //
 // ServerInfo is non-nil exactly when the server's `initialize`
 // succeeded — MCP makes the field mandatory in a successful initialize

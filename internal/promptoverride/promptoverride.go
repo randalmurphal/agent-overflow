@@ -122,18 +122,17 @@ func Render(prompt string, facts Facts) string {
 // The slug is NOT computed here. It comes from
 // sessionfork.WorkspaceProjectDir, which is the same encoder the session
 // relocation writer uses, so the directory AO creates and the one a resumed
-// CLI reads cannot drift apart. ok is false when the workspace path is long
-// enough that Claude appends a `Bun.hash` suffix Go cannot reproduce: there
-// the exact directory is unknowable and callers must degrade rather than
-// create a plausible-looking wrong one. A hard error means the workspace
-// could not be canonicalized (it does not exist).
-func ClaudeMemoryDir(home, workDir string) (dir string, ok bool, err error) {
-	projectDir, ok, err := sessionfork.WorkspaceProjectDir(
+// CLI reads cannot drift apart. Every workspace resolves, over-length paths
+// included (the CLI's truncate-and-hash slug is reproduced exactly), so the
+// error is the only failure answer: the workspace path could not be
+// canonicalized, which means it does not exist.
+func ClaudeMemoryDir(home, workDir string) (string, error) {
+	projectDir, err := sessionfork.WorkspaceProjectDir(
 		filepath.Join(home, ".claude", "projects"),
 		workDir,
 	)
-	if err != nil || !ok {
-		return "", ok, err
+	if err != nil {
+		return "", err
 	}
-	return filepath.Join(projectDir, "memory"), true, nil
+	return filepath.Join(projectDir, "memory"), nil
 }

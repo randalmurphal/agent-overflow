@@ -184,6 +184,13 @@ type Parser struct {
 	// state, no lock. A single string, so no bounding is needed; sessions
 	// on CLIs without command_lifecycle simply never set it.
 	activeCommandUUID string
+	// peerTurns answers "did this app issue that command uuid" for the
+	// command_lifecycle parse, which is how a turn another Claude session
+	// started is told from one of ours. Nil on a bare Parser (every parser
+	// unit test builds one) and correctly read as "cannot classify" — with
+	// no ledger, nothing can be PROVEN unissued. Set by NewSession; see
+	// session_peer.go.
+	peerTurns peerTurnClassifier
 	// usageTotalsByModel is the cumulative `result.modelUsage` snapshot
 	// as of the last result envelope. The wire reports SESSION-CUMULATIVE
 	// per-model usage/cost; per-turn accounting is the delta between

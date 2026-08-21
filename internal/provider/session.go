@@ -41,6 +41,29 @@ type SendOptions struct {
 	// the real TUI where commands are already a first-class affordance. Both
 	// ignore this field.
 	AllowClaudeSlashCommand bool
+	// InternalCommand marks a slash command Agent Overflow issues on its OWN
+	// behalf rather than because the user asked for it — peer-session naming
+	// (`/rename`) and the live-config `/effort` / `/fast` writes.
+	//
+	// The CLI answers every local command with a `<synthetic>` assistant
+	// envelope, which triage persists as a `command_result` row. For a command
+	// the user never typed, that row is AO's bookkeeping showing up in the
+	// user's transcript. Setting this suppresses the ROW ONLY: the command
+	// still runs, its lifecycle bracket still settles, and the output event
+	// still reaches the app-layer observers that read it.
+	//
+	// The suppression it buys is UNCONDITIONAL — the reply text is not
+	// consulted — which is exactly why it must not be set on a command the
+	// user typed. AO surfaces its own commands' failures through its own
+	// reconcilers, so a row would be noise; a user's command that failed has
+	// nowhere else to be said. A user-typed command whose output merely
+	// restates state AO renders itself (`/effort xhigh`, `/fast on`,
+	// `/model <slug>`) needs no flag: the Claude package recognises it from
+	// the outbound text and then suppresses the row only if the REPLY is a
+	// recognised confirmation.
+	//
+	// Claude-only, like AllowClaudeSlashCommand, and meaningless without it.
+	InternalCommand bool
 }
 
 // ImageAttachment is the provider-ready form of a user-attached image.

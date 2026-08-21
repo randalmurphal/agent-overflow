@@ -2,6 +2,7 @@ package triage
 
 import (
 	"encoding/json"
+	"fmt"
 	"sort"
 	"strconv"
 	"strings"
@@ -1933,7 +1934,7 @@ func TestCodexSubagentNotificationAfterLifecycleStatusCarriesFinalOutput(t *test
 		t.Fatalf("subagent notification: %v", err)
 	}
 
-	completion, found, err := st.GetThreadItem("t1", codexMailboxCompletionID("spawn-franklin", "child-turn-1"))
+	completion, found, err := st.GetThreadItem("t1", codexMailboxCompletionID("spawn-franklin", 0, decodeCodexSubagentSignalMeta(notifyMeta)))
 	if err != nil || !found {
 		t.Fatalf("notification completion missing: found=%v err=%v", found, err)
 	}
@@ -1964,7 +1965,7 @@ func TestCodexSubagentNotificationAfterLifecycleStatusCarriesFinalOutput(t *test
 	}); err != nil {
 		t.Fatalf("second mailbox delivery: %v", err)
 	}
-	second, found, err := st.GetThreadItem("t1", codexMailboxCompletionID("spawn-franklin", "child-turn-2"))
+	second, found, err := st.GetThreadItem("t1", codexMailboxCompletionID("spawn-franklin", 0, decodeCodexSubagentSignalMeta(secondNotifyMeta)))
 	if err != nil || !found {
 		t.Fatalf("second delivery completion missing: found=%v err=%v", found, err)
 	}
@@ -2682,4 +2683,491 @@ func countEvents(emissions []emitted, name string) int {
 		}
 	}
 	return count
+}
+
+// TestCodexTwoMailboxDeliveriesInOneParentTurnPersistTwoRows is the triage half
+// of the G1 proof. Both FINAL_ANSWER deliveries in the corpus carry the SAME
+// internal_chat_message_metadata_passthrough.turn_id (the receiving parent
+// turn), so a delivery_id that echoes it is not a delivery identity. Triage must
+// key the completion row on the delivery's own content, not on whatever
+// delivery_id the provider handed it, or the second answer overwrites the first.
+func TestCodexTwoMailboxDeliveriesInOneParentTurnPersistTwoRows(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createCodexBackgroundTestThread(t, st, "t1")
+	seedOpenTurn(t, router, st, "t1", 0)
+
+	spawnMeta := buildSpawnAgentMeta(t, "child-reviewer", "running")
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "spawn-reviewer",
+		ItemType: "collab_agent", TurnID: "turn-0", Meta: spawnMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("spawn start: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolComplete, ThreadID: "t1", ItemID: "spawn-reviewer",
+		ItemType: "collab_agent", TurnID: "turn-0", Meta: spawnMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("spawn complete: %v", err)
+	}
+
+	// Both deliveries echo the same parent turn id.
+	const parentTurnID = "01a020d1-a06b-7b71-9791-749c71f19cd7"
+	deliver := func(message string) {
+		t.Helper()
+		meta, err := json.Marshal(map[string]any{
+			"agent_path":       "/root/codebase_reviewer",
+			"status":           "completed",
+			"mailbox_delivery": true,
+			"delivery_id":      parentTurnID,
+			"message":          message,
+		})
+		if err != nil {
+			t.Fatalf("marshal notification meta: %v", err)
+		}
+		if err := router.Handle(provider.ProviderEvent{
+			Kind: provider.EventSubagentNotification, ThreadID: "t1", ItemID: "spawn-reviewer",
+			Meta: meta, Timestamp: time.Now(),
+		}); err != nil {
+			t.Fatalf("subagent notification: %v", err)
+		}
+	}
+
+	deliver("First review pass.")
+	deliver("Second review pass.")
+
+	siblings := findItemsByKind(t, st, "t1", itemKindBackgroundDone)
+	if len(siblings) != 2 {
+		t.Fatalf("expected 2 mailbox completion rows, got %d: %+v", len(siblings), siblings)
+	}
+	payloads := make([]string, 0, 2)
+	for _, sibling := range siblings {
+		if sibling.CompletionOf != "spawn-reviewer" {
+			t.Fatalf("completion %s is not keyed on the spawn launch: %+v", sibling.ID, sibling)
+		}
+		data, err := st.GetPayloadData(sibling.ThreadID, sibling.PayloadID)
+		if err != nil {
+			t.Fatalf("payload data: %v", err)
+		}
+		payloads = append(payloads, string(data))
+	}
+	sort.Strings(payloads)
+	if payloads[0] != "First review pass." || payloads[1] != "Second review pass." {
+		t.Fatalf("payloads = %q, want both deliveries preserved", payloads)
+	}
+
+	// A genuine retry of the SAME delivery (raw carrier + rollout tail both
+	// seeing one record) still reuses its row.
+	deliver("First review pass.")
+	if again := findItemsByKind(t, st, "t1", itemKindBackgroundDone); len(again) != 2 {
+		t.Fatalf("retry of the same delivery created a row: %d rows", len(again))
+	}
+}
+
+// seedCodexSpawnCard persists a backgrounded spawn_agent launch row and returns
+// its id.
+func seedCodexSpawnCard(t *testing.T, router *Router, st *store.Store, threadID, launchID, childID string) {
+	t.Helper()
+	spawnMeta := buildSpawnAgentMeta(t, childID, "running")
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolStart, ThreadID: threadID, ItemID: launchID,
+		ItemType: "collab_agent", TurnID: "turn-0", Meta: spawnMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("spawn start: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolComplete, ThreadID: threadID, ItemID: launchID,
+		ItemType: "collab_agent", TurnID: "turn-0", Meta: spawnMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("spawn complete: %v", err)
+	}
+}
+
+func launchInteractions(t *testing.T, st *store.Store, threadID, launchID string) []codexCollabInteraction {
+	t.Helper()
+	launch, found, err := st.GetThreadItem(threadID, launchID)
+	if err != nil || !found {
+		t.Fatalf("launch %s: found=%v err=%v", launchID, found, err)
+	}
+	return decodeCodexCollabInteractionLog(json.RawMessage(launch.Meta)).Interactions
+}
+
+// TestCodexCollabInteractionLandsOnSpawnCard covers G3/F2/F3: a V2
+// `subAgentActivity kind:"interacted"` must attach to the child's spawn card
+// with its raw verb preserved, not mint a top-level "Sent input to X" row.
+func TestCodexCollabInteractionLandsOnSpawnCard(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createCodexBackgroundTestThread(t, st, "t1")
+	seedOpenTurn(t, router, st, "t1", 0)
+	seedCodexSpawnCard(t, router, st, "t1", "spawn-1", "child-1")
+
+	before := len(findItemsByKind(t, st, "t1", itemKindToolCall))
+
+	interactionMeta, _ := json.Marshal(map[string]any{
+		"item_status": "completed",
+		"toolName":    "send_input",
+		"input": map[string]any{
+			"tool":              "send_input",
+			"activityTool":      "followup_task",
+			"receiverThreadIds": []string{"child-1"},
+		},
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolComplete, ThreadID: "t1", ItemID: "call-interact-1",
+		ItemType: "send_input", ParentToolUseID: "spawn-1", Meta: interactionMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("interaction complete: %v", err)
+	}
+
+	if after := len(findItemsByKind(t, st, "t1", itemKindToolCall)); after != before {
+		t.Fatalf("tool_call rows = %d, want %d (no top-level send_input row)", after, before)
+	}
+	interactions := launchInteractions(t, st, "t1", "spawn-1")
+	if len(interactions) != 1 {
+		t.Fatalf("interactions = %+v, want one entry on the card", interactions)
+	}
+	if interactions[0].ID != "call-interact-1" || interactions[0].Kind != codexCollabInteractionInteracted {
+		t.Fatalf("interaction = %+v", interactions[0])
+	}
+	if interactions[0].Tool != "followup_task" {
+		t.Fatalf("interaction tool = %q, want the raw activityTool verb", interactions[0].Tool)
+	}
+
+	// Replay is idempotent: no second sub-line for the same activity item.
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolComplete, ThreadID: "t1", ItemID: "call-interact-1",
+		ItemType: "send_input", ParentToolUseID: "spawn-1", Meta: interactionMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("interaction replay: %v", err)
+	}
+	if again := launchInteractions(t, st, "t1", "spawn-1"); len(again) != 1 {
+		t.Fatalf("replayed interaction duplicated: %+v", again)
+	}
+}
+
+// TestCodexCollabInteractionWithoutRawVerbStaysNeutral pins invariant 25 for
+// the messaging verbs: a resumed session sees the typed activity item with no
+// raw function-call name, and the typed wire cannot tell `send_message` from
+// `followup_task`. The row must carry no verb rather than a guessed one.
+func TestCodexCollabInteractionWithoutRawVerbStaysNeutral(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createCodexBackgroundTestThread(t, st, "t1")
+	seedOpenTurn(t, router, st, "t1", 0)
+	seedCodexSpawnCard(t, router, st, "t1", "spawn-1", "child-1")
+
+	interactionMeta, _ := json.Marshal(map[string]any{
+		"item_status": "completed",
+		"toolName":    "send_input",
+		"input": map[string]any{
+			"tool":              "send_input",
+			"receiverThreadIds": []string{"child-1"},
+		},
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolComplete, ThreadID: "t1", ItemID: "call-interact-2",
+		ItemType: "send_input", ParentToolUseID: "spawn-1", Meta: interactionMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("interaction complete: %v", err)
+	}
+	interactions := launchInteractions(t, st, "t1", "spawn-1")
+	if len(interactions) != 1 || interactions[0].Tool != "" {
+		t.Fatalf("interactions = %+v, want one neutral entry", interactions)
+	}
+}
+
+// TestCodexMailboxProgressDeliveryDoesNotCompleteTheChild covers G4/F4: a
+// `Message Type: MESSAGE` delivery is progress, not the answer.
+func TestCodexMailboxProgressDeliveryDoesNotCompleteTheChild(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createCodexBackgroundTestThread(t, st, "t1")
+	seedOpenTurn(t, router, st, "t1", 0)
+	seedCodexSpawnCard(t, router, st, "t1", "spawn-1", "child-1")
+
+	progressMeta, _ := json.Marshal(map[string]any{
+		"agent_path":       "/root/reviewer",
+		"status":           "running",
+		"message_type":     "MESSAGE",
+		"mailbox_delivery": true,
+		"delivery_id":      "content:progress-1",
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventSubagentNotification, ThreadID: "t1", ItemID: "spawn-1",
+		Meta: progressMeta, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("progress delivery: %v", err)
+	}
+
+	if siblings := findItemsByKind(t, st, "t1", itemKindBackgroundDone); len(siblings) != 0 {
+		t.Fatalf("progress delivery synthesized a completion row: %+v", siblings)
+	}
+	launch, found, err := st.GetThreadItem("t1", "spawn-1")
+	if err != nil || !found {
+		t.Fatalf("launch: found=%v err=%v", found, err)
+	}
+	if status := decodeCodexChildTerminalStatuses(json.RawMessage(launch.Meta))["child-1"]; status != "" {
+		t.Fatalf("progress delivery marked the child terminal: %q", status)
+	}
+	interactions := decodeCodexCollabInteractionLog(json.RawMessage(launch.Meta)).Interactions
+	if len(interactions) != 1 || interactions[0].Kind != codexCollabInteractionProgress {
+		t.Fatalf("interactions = %+v, want one progress beat", interactions)
+	}
+}
+
+// TestCodexResumeInteractionIDComesFromTheDurableGeneration: the resume
+// sub-line's id is minted from `codex_child_resume_generations`, which only
+// ever counts up, not from the number of `resumed` entries still in the capped
+// list. Counting off the list walks BACKWARDS after the first trim, so every
+// resume past the cap re-mints one id and the upsert folds them all onto a
+// single sub-line.
+func TestCodexResumeInteractionIDComesFromTheDurableGeneration(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createCodexBackgroundTestThread(t, st, "t1")
+	seedOpenTurn(t, router, st, "t1", 0)
+	seedCodexSpawnCard(t, router, st, "t1", "spawn-1", "child-1")
+
+	// A card that has already been through seven resumes and whose sub-line
+	// list has since been trimmed of every one of them — the state the cap
+	// produces on a long-lived agent.
+	launch, found, err := st.GetThreadItem("t1", "spawn-1")
+	if err != nil || !found {
+		t.Fatalf("launch: found=%v err=%v", found, err)
+	}
+	seeded, _ := json.Marshal(map[string]any{
+		"codex_child_resume_generations": map[string]int{"child-1": 7},
+		"codex_child_terminal_statuses":  map[string]string{"child-1": "completed"},
+		"codex_collab_interactions": []codexCollabInteraction{
+			{ID: "progress:1", Kind: codexCollabInteractionProgress, At: 1},
+		},
+	})
+	if err := st.UpdateItemMeta("t1", "spawn-1", mergeItemMetaJSON(launch.Meta, seeded)); err != nil {
+		t.Fatalf("seed launch meta: %v", err)
+	}
+
+	statusMeta, _ := json.Marshal(map[string]any{"agent_path": "child-1", "status": "running"})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventSubagentStatus, ThreadID: "t1", ItemID: "spawn-1",
+		Meta: statusMeta, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("child resume: %v", err)
+	}
+
+	interactions := launchInteractions(t, st, "t1", "spawn-1")
+	var resumed []codexCollabInteraction
+	for _, interaction := range interactions {
+		if interaction.Kind == codexCollabInteractionResumed {
+			resumed = append(resumed, interaction)
+		}
+	}
+	if len(resumed) != 1 {
+		t.Fatalf("interactions = %+v, want exactly one resumed section", interactions)
+	}
+	if resumed[0].ID != "resumed:child-1:8" {
+		t.Fatalf("resume interaction id = %q, want it minted from the durable generation", resumed[0].ID)
+	}
+	stored, _, err := st.GetThreadItem("t1", "spawn-1")
+	if err != nil {
+		t.Fatalf("launch: %v", err)
+	}
+	if got := decodeCodexChildResumeGenerations(json.RawMessage(stored.Meta))["child-1"]; got != 8 {
+		t.Fatalf("resume generation = %d, want 8", got)
+	}
+}
+
+// TestMergeCodexCollabInteractionDropsAReplayOfATrimmedEntry: the upsert is
+// keyed on entry id but can only see the retained tail, so without the
+// eviction ledger a duplicate that arrives after its original was trimmed
+// re-appends as the NEWEST sub-line and evicts a live one.
+func TestMergeCodexCollabInteractionDropsAReplayOfATrimmedEntry(t *testing.T) {
+	log := codexCollabInteractionLog{}
+	for i := 0; i < maxCodexCollabInteractions+1; i++ {
+		var changed bool
+		log, changed = mergeCodexCollabInteraction(log, codexCollabInteraction{
+			ID:   fmt.Sprintf("interaction-%d", i),
+			Kind: codexCollabInteractionInteracted,
+			At:   int64(i),
+		})
+		if !changed {
+			t.Fatalf("entry %d reported no change", i)
+		}
+	}
+	if len(log.Interactions) != maxCodexCollabInteractions {
+		t.Fatalf("retained %d entries, want the cap", len(log.Interactions))
+	}
+	if len(log.Evicted) != 1 || log.Evicted[0] != codexCollabInteractionEvictedDigest("interaction-0") {
+		t.Fatalf("evicted ledger = %v, want the trimmed id's digest", log.Evicted)
+	}
+
+	replay := codexCollabInteraction{ID: "interaction-0", Kind: codexCollabInteractionInteracted, At: 0}
+	after, changed := mergeCodexCollabInteraction(log, replay)
+	if changed {
+		t.Fatalf("a replay of a trimmed entry was recorded again: %+v", after.Interactions)
+	}
+	if newest := after.Interactions[len(after.Interactions)-1].ID; newest != fmt.Sprintf("interaction-%d", maxCodexCollabInteractions) {
+		t.Fatalf("newest sub-line = %q, want the real newest interaction", newest)
+	}
+	if len(after.Interactions) != maxCodexCollabInteractions {
+		t.Fatalf("retained %d entries after the replay, want the cap", len(after.Interactions))
+	}
+}
+
+// TestMergeCodexCollabInteractionBoundsTheEvictionLedger: the ledger is ids
+// only and capped, so a card that runs for a long time cannot grow its meta
+// without bound.
+func TestMergeCodexCollabInteractionBoundsTheEvictionLedger(t *testing.T) {
+	log := codexCollabInteractionLog{}
+	total := maxCodexCollabInteractions + maxCodexCollabInteractionsEvicted + 10
+	for i := 0; i < total; i++ {
+		log, _ = mergeCodexCollabInteraction(log, codexCollabInteraction{
+			ID:   fmt.Sprintf("interaction-%d", i),
+			Kind: codexCollabInteractionInteracted,
+			At:   int64(i),
+		})
+	}
+	if len(log.Evicted) != maxCodexCollabInteractionsEvicted {
+		t.Fatalf("evicted ledger holds %d ids, want the cap %d", len(log.Evicted), maxCodexCollabInteractionsEvicted)
+	}
+	// Oldest first: the ids nearest the retained window are the ones a replay
+	// is most likely to name.
+	wantOldest := codexCollabInteractionEvictedDigest(
+		fmt.Sprintf("interaction-%d", total-maxCodexCollabInteractions-maxCodexCollabInteractionsEvicted))
+	if log.Evicted[0] != wantOldest {
+		t.Fatalf("evicted[0] = %q, want %q", log.Evicted[0], wantOldest)
+	}
+}
+
+// TestMergeCodexCollabInteractionRemembersPastTheRenderedRetention: the
+// ledger's horizon is DECOUPLED from the rendered list's.
+//
+// It used to be `maxCodexCollabInteractionsEvicted = maxCodexCollabInteractions`,
+// which meant 32 retained plus 32 remembered: at the 65th unique interaction
+// on one card the first was in neither, so a replay of it (a reconnect, a
+// duplicate completion leg) appended as the NEWEST sub-line — evicting a live
+// entry AND re-dating an interaction that happened long ago. The failure the
+// ledger exists to prevent simply moved to a higher entry count.
+//
+// The number below is deliberately BEYOND the old horizon and inside the new
+// one, so it fails on the coupled bound and passes on the decoupled one.
+func TestMergeCodexCollabInteractionRemembersPastTheRenderedRetention(t *testing.T) {
+	if maxCodexCollabInteractionsEvicted <= maxCodexCollabInteractions {
+		t.Fatalf("eviction horizon %d does not outlive the retained %d, so a replay past "+
+			"the rendered window is unrecognisable again",
+			maxCodexCollabInteractionsEvicted, maxCodexCollabInteractions)
+	}
+	log := codexCollabInteractionLog{}
+	// One past the horizon the coupled bound would have given.
+	total := 2*maxCodexCollabInteractions + 1
+	for i := 0; i < total; i++ {
+		log, _ = mergeCodexCollabInteraction(log, codexCollabInteraction{
+			ID:   fmt.Sprintf("interaction-%d", i),
+			Kind: codexCollabInteractionInteracted,
+			At:   int64(i),
+		})
+	}
+	newestBefore := log.Interactions[len(log.Interactions)-1]
+
+	// The very first interaction, replayed long after it left the rendered
+	// list. Its `At` is what makes the damage visible: appending it would
+	// place an hour-old interaction at the head of the card.
+	replay := codexCollabInteraction{ID: "interaction-0", Kind: codexCollabInteractionInteracted, At: 0}
+	after, changed := mergeCodexCollabInteraction(log, replay)
+	if changed {
+		t.Fatalf("a replay of interaction-0 was recorded again after %d entries", total)
+	}
+	newestAfter := after.Interactions[len(after.Interactions)-1]
+	if newestAfter != newestBefore {
+		t.Fatalf("newest sub-line moved from %+v to %+v — the replay evicted a live entry",
+			newestBefore, newestAfter)
+	}
+}
+
+// A row written before the digest form holds RAW ids in the ledger. Both
+// forms have to be recognised, or the first merge after an upgrade forgets
+// everything those rows already knew.
+func TestMergeCodexCollabInteractionHonoursARawIDEvictionLedger(t *testing.T) {
+	log := codexCollabInteractionLog{
+		Interactions: []codexCollabInteraction{
+			{ID: "interaction-9", Kind: codexCollabInteractionInteracted, At: 9},
+		},
+		Evicted: []string{"interaction-0"},
+	}
+	replay := codexCollabInteraction{ID: "interaction-0", Kind: codexCollabInteractionInteracted, At: 0}
+	after, changed := mergeCodexCollabInteraction(log, replay)
+	if changed || len(after.Interactions) != 1 {
+		t.Fatalf("a raw-id ledger entry was not honoured: changed=%v interactions=%+v",
+			changed, after.Interactions)
+	}
+}
+
+// TestCodexChildResumeAfterDeliveryRecordsResumedSection covers the card
+// acceptance criterion that a child's LATER turns appear under the same card.
+func TestCodexChildResumeAfterDeliveryRecordsResumedSection(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createCodexBackgroundTestThread(t, st, "t1")
+	seedOpenTurn(t, router, st, "t1", 0)
+	seedCodexSpawnCard(t, router, st, "t1", "spawn-1", "child-1")
+
+	// First turn's answer lands.
+	deliverMeta, _ := json.Marshal(map[string]any{
+		"agent_path":       "/root/reviewer",
+		"status":           "completed",
+		"message_type":     "FINAL_ANSWER",
+		"mailbox_delivery": true,
+		"delivery_id":      "content:answer-1",
+		"message":          "First answer",
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventSubagentNotification, ThreadID: "t1", ItemID: "spawn-1",
+		Meta: deliverMeta, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("first delivery: %v", err)
+	}
+	launch, _, err := st.GetThreadItem("t1", "spawn-1")
+	if err != nil {
+		t.Fatalf("launch: %v", err)
+	}
+	var delivered struct {
+		At int64 `json:"codex_collab_delivered_at"`
+	}
+	if json.Unmarshal([]byte(launch.Meta), &delivered) != nil || delivered.At == 0 {
+		t.Fatalf("delivered stamp missing: %s", launch.Meta)
+	}
+
+	// The child then starts a new turn.
+	statusMeta, _ := json.Marshal(map[string]any{
+		"agent_path": "child-1",
+		"status":     "running",
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventSubagentStatus, ThreadID: "t1", ItemID: "spawn-1",
+		Meta: statusMeta, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("child resume: %v", err)
+	}
+
+	interactions := launchInteractions(t, st, "t1", "spawn-1")
+	if len(interactions) != 1 || interactions[0].Kind != codexCollabInteractionResumed {
+		t.Fatalf("interactions = %+v, want one resumed section", interactions)
+	}
+
+	// A child that was never terminal is still on its first turn: no section.
+	seedCodexSpawnCard(t, router, st, "t1", "spawn-2", "child-2")
+	statusMeta2, _ := json.Marshal(map[string]any{
+		"agent_path": "child-2",
+		"status":     "running",
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventSubagentStatus, ThreadID: "t1", ItemID: "spawn-2",
+		Meta: statusMeta2, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("first-turn status: %v", err)
+	}
+	if again := launchInteractions(t, st, "t1", "spawn-2"); len(again) != 0 {
+		t.Fatalf("first-turn status recorded a resumed section: %+v", again)
+	}
 }

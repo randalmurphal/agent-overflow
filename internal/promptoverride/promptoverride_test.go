@@ -205,12 +205,9 @@ func TestClaudeMemoryDirUsesTheClaudeProjectSlugLayout(t *testing.T) {
 	home := t.TempDir()
 	workDir := t.TempDir()
 
-	dir, ok, err := ClaudeMemoryDir(home, workDir)
+	dir, err := ClaudeMemoryDir(home, workDir)
 	if err != nil {
 		t.Fatalf("ClaudeMemoryDir() error = %v", err)
-	}
-	if !ok {
-		t.Fatalf("ClaudeMemoryDir() ok = false for %s", workDir)
 	}
 	if filepath.Base(dir) != "memory" {
 		t.Fatalf("dir = %q, want a trailing memory component", dir)
@@ -229,7 +226,7 @@ func TestClaudeMemoryDirUsesTheClaudeProjectSlugLayout(t *testing.T) {
 }
 
 func TestClaudeMemoryDirErrorsOnAMissingWorkspace(t *testing.T) {
-	if _, _, err := ClaudeMemoryDir(t.TempDir(), filepath.Join(t.TempDir(), "gone")); err == nil {
+	if _, err := ClaudeMemoryDir(t.TempDir(), filepath.Join(t.TempDir(), "gone")); err == nil {
 		t.Fatal("ClaudeMemoryDir() error = nil for a workspace that does not exist")
 	}
 }

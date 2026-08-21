@@ -201,11 +201,22 @@ func formatAgentCompletionMessage(result agentTerminalResult, totalChildren int)
 // completion once every child in the spawn is terminal. EventSubagentStatus is
 // status-only live-state evidence and does not synthesize transcript rows.
 type codexSubagentSignalMeta struct {
-	AgentPath       string `json:"agent_path"`
-	Status          string `json:"status"`
-	Message         string `json:"message"`
+	AgentPath string `json:"agent_path"`
+	Status    string `json:"status"`
+	Message   string `json:"message"`
+	// MessageType is the mailbox envelope header (FINAL_ANSWER | MESSAGE).
+	// FINAL_ANSWER is the transcript-completion boundary; MESSAGE is a
+	// mid-run progress note that must never mark a child terminal.
+	MessageType     string `json:"message_type"`
 	MailboxDelivery bool   `json:"mailbox_delivery"`
 	DeliveryID      string `json:"delivery_id"`
+}
+
+// isCodexMailboxProgressDelivery reports whether this delivery is a `MESSAGE`
+// progress note rather than the child's `FINAL_ANSWER`. Wire-typed on the
+// envelope header only (invariant 25) — never inferred from what followed.
+func (m codexSubagentSignalMeta) isCodexMailboxProgressDelivery() bool {
+	return m.MailboxDelivery && strings.TrimSpace(m.MessageType) == "MESSAGE"
 }
 
 func decodeCodexSubagentSignalMeta(raw json.RawMessage) codexSubagentSignalMeta {

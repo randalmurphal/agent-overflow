@@ -135,3 +135,76 @@ func TestSessionManagerSnapshotAndClear(t *testing.T) {
 		t.Fatalf("app sessions after snapshot = %d, want 0", got)
 	}
 }
+
+// The thread set a settings-driven sweep visits is sessions ∪ starting, and
+// the starting half is what B20 was: a spawn snapshots Settings, a save lands
+// before the session registers, and a sweep over the session map alone leaves
+// that thread running the pre-save config for its whole life.
+//
+// A start is included regardless of providerName because an in-flight start
+// has no provider yet — the thread row is read inside the start — while a
+// REGISTERED session on another provider is not this fan-out's business.
+func TestThreadIDsForProviderOrStartingIncludesAStartingSession(t *testing.T) {
+	app := &App{
+		sessions: map[string]session{
+			"live-claude": {provider: string(provider.Claude)},
+			"live-codex":  {provider: string(provider.Codex)},
+		},
+	}
+	manager := app.sessionManager()
+	startState, leader := manager.beginStart("starting-only")
+	if !leader {
+		t.Fatal("beginStart did not lead for a fresh thread")
+	}
+	defer manager.finishStart("starting-only", startState)
+
+	got := threadIDSet(t, manager.threadIDsForProviderOrStarting(string(provider.Claude)))
+	if !got["starting-only"] {
+		t.Fatal("a thread that is only in startingSessions was skipped")
+	}
+	if !got["live-claude"] {
+		t.Fatal("the registered Claude session was skipped")
+	}
+	if got["live-codex"] {
+		t.Fatal("a registered Codex session was swept by the Claude fan-out")
+	}
+	if len(got) != 2 {
+		t.Fatalf("thread ids = %v, want exactly the Claude session and the start", got)
+	}
+}
+
+// The registration handoff is the overlap that must not become a hole OR a
+// duplicate: runSessionStart puts the session into `sessions` before it clears
+// `startingSessions`, so the thread is briefly in both. Reading both maps
+// under one lock makes that "at least once"; the seen-set makes it exactly
+// once, which matters because each id costs one reconcile's worth of wire I/O.
+func TestThreadIDsForProviderOrStartingCountsAHandingOffThreadOnce(t *testing.T) {
+	app := &App{
+		sessions: map[string]session{
+			"handoff": {provider: string(provider.Claude)},
+		},
+	}
+	manager := app.sessionManager()
+	startState, leader := manager.beginStart("handoff")
+	if !leader {
+		t.Fatal("beginStart did not lead for a fresh thread")
+	}
+	defer manager.finishStart("handoff", startState)
+
+	ids := manager.threadIDsForProviderOrStarting(string(provider.Claude))
+	if len(ids) != 1 || ids[0] != "handoff" {
+		t.Fatalf("thread ids = %v, want the handing-off thread exactly once", ids)
+	}
+}
+
+func threadIDSet(t *testing.T, ids []string) map[string]bool {
+	t.Helper()
+	set := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		if set[id] {
+			t.Fatalf("thread id %q appeared twice in %v", id, ids)
+		}
+		set[id] = true
+	}
+	return set
+}

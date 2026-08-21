@@ -199,7 +199,7 @@ func TestConfigFromOptionsServiceTierComesFromTheModelTier(t *testing.T) {
 }
 
 func TestBuildThreadParamsThreadsServiceTier(t *testing.T) {
-	params := buildThreadParams(Config{ServiceTier: "priority"})
+	params := buildThreadParams(Config{ServiceTier: "priority"}, "")
 	if params["serviceTier"] != "priority" {
 		t.Errorf("serviceTier = %v, want priority", params["serviceTier"])
 	}
@@ -328,7 +328,7 @@ func TestConfigFromOptionsReasoningEffortLands(t *testing.T) {
 // config map passed to thread/start carries model_reasoning_effort under
 // the `config` override bag when ReasoningEffort is non-empty.
 func TestBuildThreadParamsThreadsReasoningEffort(t *testing.T) {
-	params := buildThreadParams(Config{ReasoningEffort: "xhigh"})
+	params := buildThreadParams(Config{ReasoningEffort: "xhigh"}, "")
 	cfg, ok := params["config"].(map[string]any)
 	if !ok {
 		t.Fatalf("config override bag missing: %+v", params)
@@ -342,7 +342,7 @@ func TestBuildThreadParamsThreadsContextOverrides(t *testing.T) {
 	params := buildThreadParams(Config{
 		ContextWindow:         provider.CodexExtendedContextWindow,
 		AutoCompactTokenLimit: 800000,
-	})
+	}, "")
 	cfg, ok := params["config"].(map[string]any)
 	if !ok {
 		t.Fatalf("config override bag missing: %+v", params)
@@ -358,7 +358,7 @@ func TestBuildThreadParamsThreadsContextOverrides(t *testing.T) {
 // TestBuildThreadParamsOmitsReasoningEffortWhenEmpty — empty effort must
 // NOT leak a bogus override value into the thread/start handshake.
 func TestBuildThreadParamsOmitsReasoningEffortWhenEmpty(t *testing.T) {
-	params := buildThreadParams(Config{})
+	params := buildThreadParams(Config{}, "")
 	if _, ok := params["config"]; ok {
 		t.Errorf("empty effort should not emit a config override bag; got %+v", params)
 	}
@@ -372,7 +372,7 @@ func TestBuildThreadParamsMergesMCPServersAndEffort(t *testing.T) {
 	params := buildThreadParams(Config{
 		MCPServers:      mcp,
 		ReasoningEffort: "high",
-	})
+	}, "")
 	cfg, ok := params["config"].(map[string]any)
 	if !ok {
 		t.Fatalf("config bag missing: %+v", params)
@@ -388,7 +388,7 @@ func TestBuildThreadParamsMergesMCPServersAndEffort(t *testing.T) {
 // TestBuildThreadParamsBaseInstructions — SystemPrompt must land on the
 // baseInstructions key (camelCase). Matches ThreadStartParams.json.
 func TestBuildThreadParamsBaseInstructions(t *testing.T) {
-	params := buildThreadParams(Config{SystemPrompt: "hello"})
+	params := buildThreadParams(Config{SystemPrompt: "hello"}, "")
 	if params["baseInstructions"] != "hello" {
 		t.Errorf("baseInstructions = %v, want hello", params["baseInstructions"])
 	}

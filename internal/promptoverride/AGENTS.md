@@ -66,16 +66,18 @@ It delegates to `sessionfork.WorkspaceProjectDir`, the same encoder the
 session-relocation writer uses. One encoder means the directory AO creates and
 the directory a resumed CLI reads cannot drift.
 
-`ok == false` is a real answer, not an error: past
-`sessionfork.MaxSanitizedSlugLen` the CLI appends a `Bun.hash` suffix Go cannot
-reproduce, so the exact directory is unknowable and the caller must degrade
-(render the placeholder empty, create nothing) rather than create a
-plausible-looking wrong directory. A hard error means the workspace path could
-not be canonicalized.
+The signature is `(string, error)`. It once carried a third `ok` return
+meaning "past `sessionfork.MaxSanitizedSlugLen`, where the exact directory is
+unknowable", but the encoder reproduces the CLI's truncate-and-hash slug
+exactly, so every workspace resolves and the only real answer left is the
+error: the workspace path could not be canonicalized (it does not exist).
 
 Creating the directory is deliberately elsewhere: `Render` is called on the
 live-config reconcile path as well as the spawn path, so nothing here may have
-a side effect. `App.ensureClaudeMemoryDir` does the `MkdirAll`, spawn-only.
+a side effect. `App.ensureClaudeMemoryDir` does the `MkdirAll`. It runs
+wherever an override is RENDERED — the spawn path, and the reconcile path when
+a live `set_model.system_prompt` swap lands a prompt that claims the directory
+already exists.
 
 ## Anti-patterns
 

@@ -587,7 +587,7 @@ func TestBuildThreadParamsReadOnly(t *testing.T) {
 	params := buildThreadParams(Config{
 		Sandbox:        "read-only",
 		ApprovalPolicy: "on-request",
-	})
+	}, "")
 	if params["sandbox"] != "read-only" {
 		t.Errorf("sandbox: got %v, want %q", params["sandbox"], "read-only")
 	}
@@ -601,7 +601,7 @@ func TestBuildThreadParamsUnknownSandbox(t *testing.T) {
 	params := buildThreadParams(Config{
 		Sandbox:        "custom-sandbox",
 		ApprovalPolicy: "untrusted",
-	})
+	}, "")
 	if params["sandbox"] != "read-only" {
 		t.Errorf("sandbox: got %v, want %q", params["sandbox"], "read-only")
 	}
@@ -617,7 +617,7 @@ func TestBuildThreadParamsUnknownSandbox(t *testing.T) {
 // previous runtime mode's choice. Sending it unconditionally is what makes the
 // wire state a function of the thread row alone.
 func TestBuildThreadParamsMinimal(t *testing.T) {
-	params := buildThreadParams(Config{})
+	params := buildThreadParams(Config{}, "")
 	if len(params) != 1 {
 		t.Errorf("expected only the always-explicit reviewer for zero config, got %v", params)
 	}
@@ -638,7 +638,7 @@ func TestBuildThreadParamsAlwaysSendsReviewer(t *testing.T) {
 			// A resume carries the same Config a fresh start does; the only
 			// difference upstream is the threadId key NewSession adds.
 			cfg.ResumeThreadID = "thread-abc"
-			params := buildThreadParams(cfg)
+			params := buildThreadParams(cfg, "")
 			want := codexApprovalsReviewer(mode)
 			if params["approvalsReviewer"] != want {
 				t.Errorf("approvalsReviewer = %v, want %q", params["approvalsReviewer"], want)
@@ -689,7 +689,7 @@ func TestVerifyApprovalsReviewerEcho(t *testing.T) {
 }
 
 func TestBuildThreadParamsWorkDir(t *testing.T) {
-	params := buildThreadParams(Config{WorkDir: "/home/user/project"})
+	params := buildThreadParams(Config{WorkDir: "/home/user/project"}, "")
 	if params["cwd"] != "/home/user/project" {
 		t.Errorf("cwd: got %v, want %q", params["cwd"], "/home/user/project")
 	}
@@ -700,7 +700,7 @@ func TestBuildThreadParamsIncludesMCPServers(t *testing.T) {
 		MCPServers: map[string]any{
 			"design": map[string]any{"url": "http://127.0.0.1:1234/mcp/thread"},
 		},
-	})
+	}, "")
 
 	config, ok := params["config"].(map[string]any)
 	if !ok {

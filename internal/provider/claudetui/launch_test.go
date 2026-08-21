@@ -157,7 +157,7 @@ func countEnv(env []string, key string) (int, string) {
 // caller-provided value — the user's custom provider environment — wins.
 func TestBuildEnvDefaultsTodoToolsOptIn(t *testing.T) {
 	t.Run("default applied when absent", func(t *testing.T) {
-		env := buildEnv([]string{"FOO=bar"}, "http://gw", "http://hook", "tok", false)
+		env := buildEnv([]string{"FOO=bar"}, "http://gw", "http://hook", "tok", false, false)
 		if n, v := countEnv(env, todoToolsEnvVar); n != 1 || v != "true" {
 			t.Fatalf("%s: got %d entries (last %q), want exactly one =true; env %v", todoToolsEnvVar, n, v, env)
 		}
@@ -166,7 +166,7 @@ func TestBuildEnvDefaultsTodoToolsOptIn(t *testing.T) {
 	t.Run("user opt-out survives without a duplicate", func(t *testing.T) {
 		env := buildEnv(
 			[]string{"FOO=bar", todoToolsEnvVar + "=false"},
-			"http://gw", "http://hook", "tok", false,
+			"http://gw", "http://hook", "tok", false, false,
 		)
 		if n, v := countEnv(env, todoToolsEnvVar); n != 1 || v != "false" {
 			t.Fatalf("%s: got %d entries (last %q), want exactly the caller's =false; env %v", todoToolsEnvVar, n, v, env)
@@ -176,7 +176,7 @@ func TestBuildEnvDefaultsTodoToolsOptIn(t *testing.T) {
 	t.Run("owned gateway keys still replaced", func(t *testing.T) {
 		env := buildEnv(
 			[]string{BaseURLEnv + "=https://dirty.example"},
-			"http://gw", "http://hook", "tok", false,
+			"http://gw", "http://hook", "tok", false, false,
 		)
 		if n, v := countEnv(env, BaseURLEnv); n != 1 || v != "http://gw" {
 			t.Fatalf("%s: got %d entries (last %q), want exactly the gateway URL; env %v", BaseURLEnv, n, v, env)
@@ -190,14 +190,14 @@ func TestBuildEnvDefaultsTodoToolsOptIn(t *testing.T) {
 // value outranks the setting.
 func TestBuildEnvTodoReminderMode(t *testing.T) {
 	t.Run("disabled exports off", func(t *testing.T) {
-		env := buildEnv([]string{"FOO=bar"}, "http://gw", "http://hook", "tok", true)
+		env := buildEnv([]string{"FOO=bar"}, "http://gw", "http://hook", "tok", true, false)
 		if n, v := countEnv(env, todoReminderModeEnvVar); n != 1 || v != "off" {
 			t.Fatalf("%s: got %d entries (last %q), want exactly one =off; env %v", todoReminderModeEnvVar, n, v, env)
 		}
 	})
 
 	t.Run("enabled exports nothing", func(t *testing.T) {
-		env := buildEnv([]string{"FOO=bar"}, "http://gw", "http://hook", "tok", false)
+		env := buildEnv([]string{"FOO=bar"}, "http://gw", "http://hook", "tok", false, false)
 		if n, v := countEnv(env, todoReminderModeEnvVar); n != 0 {
 			t.Fatalf("%s: got %d entries (last %q), want none; env %v", todoReminderModeEnvVar, n, v, env)
 		}
@@ -206,10 +206,98 @@ func TestBuildEnvTodoReminderMode(t *testing.T) {
 	t.Run("user value survives without a duplicate", func(t *testing.T) {
 		env := buildEnv(
 			[]string{todoReminderModeEnvVar + "=baseline"},
-			"http://gw", "http://hook", "tok", true,
+			"http://gw", "http://hook", "tok", true, false,
 		)
 		if n, v := countEnv(env, todoReminderModeEnvVar); n != 1 || v != "baseline" {
 			t.Fatalf("%s: got %d entries (last %q), want exactly the caller's =baseline; env %v", todoReminderModeEnvVar, n, v, env)
 		}
 	})
+}
+
+// envValueIn reads one variable out of a buildEnv result, reporting presence
+// separately from value: for the peer-inbox gate, absent and empty are
+// different answers.
+func envValueIn(env []string, key string) (string, bool) {
+	value, found := "", false
+	for _, kv := range env {
+		name, candidate, ok := strings.Cut(kv, "=")
+		if ok && name == key {
+			value, found = candidate, true
+		}
+	}
+	return value, found
+}
+
+// B7: the TUI drives the same `claude` binary and the same settings file, so
+// the peer-inbox POLICY has to reach it the same way — through the
+// `--settings` block, which is the only delivery route for a key with no
+// flag. Without it a TUI session with the inbox on would fall into the CLI's
+// mode-parity default, which holds and then silently drops peer messages.
+func TestHookSettingsCarryTheCrossSessionPolicy(t *testing.T) {
+	for _, policy := range []string{"accept", "refuse"} {
+		cfg := Config{CrossSessionInbound: policy}
+		rendered, err := hookSettingsJSON(cfg)
+		if err != nil {
+			t.Fatalf("hookSettingsJSON: %v", err)
+		}
+		if !strings.Contains(rendered, `"crossSessionInbound":"`+policy+`"`) {
+			t.Fatalf("policy %q missing from the settings block: %s", policy, rendered)
+		}
+		if !strings.Contains(rendered, `"hooks"`) {
+			t.Fatalf("policy %q displaced the relay hooks: %s", policy, rendered)
+		}
+	}
+}
+
+// An absent policy states nothing rather than pinning one: the same
+// zero-value-means-say-nothing rule the rest of the block follows.
+func TestHookSettingsOmitAnEmptyCrossSessionPolicy(t *testing.T) {
+	rendered, err := hookSettingsJSON(Config{CrossSessionInbound: "   "})
+	if err != nil {
+		t.Fatalf("hookSettingsJSON: %v", err)
+	}
+	if strings.Contains(rendered, "crossSessionInbound") {
+		t.Fatalf("an empty policy rendered a key: %s", rendered)
+	}
+}
+
+// B18, TUI half. The PTY launch assembles a full []string environment
+// instead of the override map Spawn takes, so it has to remove the inherited
+// gate itself. A host that exported CLAUDE_CODE_HARBOR_KITE must not bind the
+// peer inbox for a session whose setting says off — refusing inbound messages
+// does not undo being discoverable in every peer's ListAgents.
+func TestBuildEnvDropsAnInheritedCrossSessionGateWhenDisabled(t *testing.T) {
+	base := []string{
+		claude.CrossSessionGateEnv + "=1",
+		"CLAUDE_CODE_SESSION_NAME=someone-elses-name",
+		"HOME=/home/test",
+	}
+	env := buildEnv(base, "http://gw", "http://hook", "tok", false, false)
+
+	if value, found := envValueIn(env, claude.CrossSessionGateEnv); found {
+		t.Fatalf("%s = %q, want it absent — the setting says off", claude.CrossSessionGateEnv, value)
+	}
+	for _, key := range claude.CrossSessionUnsetEnv() {
+		if value, found := envValueIn(env, key); found {
+			t.Fatalf("%s = %q survived, want it owned and dropped", key, value)
+		}
+	}
+	if value, _ := envValueIn(env, "HOME"); value != "/home/test" {
+		t.Fatalf("HOME = %q, want the inherited value untouched", value)
+	}
+}
+
+// Enabled states the gate explicitly, overriding whatever the host carried.
+func TestBuildEnvStatesTheCrossSessionGateWhenEnabled(t *testing.T) {
+	base := []string{claude.CrossSessionGateEnv + "=totally-bogus", "HOME=/home/test"}
+	env := buildEnv(base, "http://gw", "http://hook", "tok", false, true)
+
+	if value, found := envValueIn(env, claude.CrossSessionGateEnv); !found || value != "1" {
+		t.Fatalf("%s = %q (present=%v), want \"1\"", claude.CrossSessionGateEnv, value, found)
+	}
+	if count := slices.IndexFunc(env, func(kv string) bool {
+		return strings.HasPrefix(kv, claude.CrossSessionGateEnv+"=totally-bogus")
+	}); count >= 0 {
+		t.Fatalf("the inherited gate value survived beside the stated one: %v", env)
+	}
 }

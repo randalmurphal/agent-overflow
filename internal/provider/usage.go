@@ -76,6 +76,45 @@ type SessionInfo struct {
 	Skills []string `json:"skills,omitempty"`
 	// Plugins is `system/init`'s `plugins[]`. Same absence rule.
 	Plugins []PluginInfo `json:"plugins,omitempty"`
+	// OutputStyle is Claude's `system/init.output_style` — the name of the
+	// response style the session actually launched with, which is the CLI's
+	// own answer to what AO put in the `--settings` block. The CLI reports
+	// the literal `"default"` when no style is selected, which is a real
+	// value, not an absence: the echo exists so a settings-source style AO
+	// never sent can still be seen. No other provider has the concept.
+	OutputStyle string `json:"outputStyle,omitempty"`
+	// MCPServerErrors reports servers the provider REFUSED at startup.
+	// Claude emits it as `system/init.mcp_server_errors` (2.1.237). The
+	// affected names are ABSENT from MCPServers — that is the whole point
+	// of the field: without it a server that failed config validation is
+	// indistinguishable from one that was never configured, and the UI
+	// can only infer "not connected" instead of saying why. Same absence
+	// rule as the discovery arrays above: an omitted key means "no
+	// errors", never "unknown".
+	MCPServerErrors []MCPServerError `json:"mcpServerErrors,omitempty"`
+	// Capabilities is Claude's `system/init.capabilities` — the protocol
+	// feature tokens the running CLI advertises so a client can
+	// feature-detect instead of parsing `claude_code_version`. The CLI
+	// documents it as an OPEN SET ("ignore unknown values; check each
+	// capability for exactly the behavior you use"), so it passes through
+	// as data, never an enum, and an ABSENT key means "this build says
+	// nothing" — never "no capabilities". Known tokens and the version
+	// floors they replace are listed in the Claude area guide.
+	Capabilities []string `json:"capabilities,omitempty"`
+}
+
+// MCPServerError is one entry of Claude's `system/init.mcp_server_errors`
+// — a server config entry that failed validation and was skipped.
+//
+// Type is a coarse category the CLI documents as an OPEN SET (2.1.237
+// lists unknown_type / url_missing_type / invalid_config / reserved_name
+// and instructs clients to treat unrecognized values as a generic skip),
+// so it passes through as data, never an enum. Message is the
+// human-readable explanation and is the only field a user can act on.
+type MCPServerError struct {
+	Name    string `json:"name"`
+	Type    string `json:"type,omitempty"`
+	Message string `json:"message,omitempty"`
 }
 
 // MCPServer reports an MCP server's name and provider-reported

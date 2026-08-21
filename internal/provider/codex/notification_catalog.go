@@ -10,14 +10,15 @@ import (
 // codexNotificationCatalog is every server notification method a Codex
 // app-server is known to emit, in upstream declaration order.
 //
-// Sources, both consulted because they disagree: the pinned
-// `server_notification_definitions!` block at
-// codex-rs/app-server-protocol/src/protocol/common.rs (rust-v0.142.5,
-// the tag ~/repos/codex sits on) plus the method table recovered from
-// the installed codex-cli 0.146.0 binary, which is what actually runs.
-// Every 0.142.5 method is still present in 0.146.0; 0.146.0 adds
-// `rawResponse/completed`, `thread/environment/connected` and
-// `thread/environment/disconnected`.
+// Last synced against the `server_notification_definitions!` block at
+// codex-rs/app-server-protocol/src/protocol/common.rs @ **rust-v0.149.0**
+// (77 entries, including the `#[serde(rename = "account/login/completed")]`
+// tail entry). Update BOTH this tag and the list when re-syncing — the
+// tag is the only record of what "complete" meant.
+//
+// The 0.147→0.149 additions: `thread/reverted` and `thread/queue/changed`
+// (0.148), `autoApprovalReview/strictReviewRequired`, `project/changed`
+// and `thread/project/updated` (0.149).
 //
 // The catalog exists to compute the initialize-time opt-out list (the
 // complement of what we consume). Being out of date is therefore safe in
@@ -34,10 +35,14 @@ var codexNotificationCatalog = []string{
 	"thread/deleted",
 	"thread/unarchived",
 	"thread/closed",
+	"thread/reverted",
 	"skills/changed",
 	"thread/name/updated",
 	"thread/goal/updated",
 	"thread/goal/cleared",
+	"thread/queue/changed",
+	"project/changed",
+	"thread/project/updated",
 	"thread/environment/connected",
 	"thread/environment/disconnected",
 	"thread/settings/updated",
@@ -51,6 +56,7 @@ var codexNotificationCatalog = []string{
 	"item/started",
 	"item/autoApprovalReview/started",
 	"item/autoApprovalReview/completed",
+	"autoApprovalReview/strictReviewRequired",
 	"item/completed",
 	"rawResponseItem/completed",
 	"rawResponse/completed",

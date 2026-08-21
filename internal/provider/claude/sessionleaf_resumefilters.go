@@ -51,6 +51,29 @@ import (
 //   - utils/messages.ts filterUnresolvedToolUses,
 //     filterOrphanedThinkingOnlyMessages,
 //     filterWhitespaceOnlyAssistantMessages, mergeUserMessages.
+//
+// One filter added in 2.1.236 is deliberately NOT mirrored. When a
+// resume drops an unresolved tool_use, the CLI can additionally drop the
+// USER rows that carry the synthetic tool_results a shutdown wrote
+// ("interrupted by shutdown" rows) — it passes
+// `shutdownUnwindResultsDoNotResolve` into the unresolved-tool-use pass,
+// so those results stop resolving their tool_use, and then filters the
+// rows themselves. The whole branch is gated on the
+// CLAUDE_CODE_RESUME_INTERRUPTED_TURN environment variable (2.1.237
+// bundle: `p = q.CLAUDE_CODE_RESUME_INTERRUPTED_TURN && !t?.size && !r &&
+// !d`), which AO never sets. With the variable unset the flag is false,
+// the extra pass does not run, and this mirror stays exact.
+//
+// That is not left to chance: the name is in
+// `provider.ReservedEnvNames` for the Claude providers, so a user's custom
+// environment cannot turn it on behind the mirror's back, and
+// `internal/settings/providerenv.go` refuses the save with that reason.
+// It is the only entry on that list reserved for THIS file's benefit
+// rather than to protect a value AO itself sets. If AO ever opts into
+// resuming an interrupted turn, this mirror has to grow the pass and the
+// reservation has to come off IN THE SAME CHANGE — a cursor blessed here
+// but dropped there is the pre-init "No message found with message.uuid
+// of:" resume brick, which is the failure this file exists to prevent.
 
 // claudeRowContentFlags is the per-row digest of message content the
 // filter mirror consumes. Parsed once at ingest; the raw bytes alias

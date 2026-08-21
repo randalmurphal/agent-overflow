@@ -66,10 +66,10 @@ PTY launch (`--model`, `--effort`, `--resume` in
 - `{{MEMORY_DIR}}` and `ensureClaudeMemoryDir` cover claude-tui:
   same binary, same `<claudeHome>/projects/<slug>/memory`, and the CLI
   stops creating it under a replaced prompt either way.
-- Reconcile is unchanged: `pinSettingsOwnedAxes` is generic and runs
-  before the diff, and claudetui has no live-update surface (any diff
-  is a restart), so the pin is what keeps a settings edit from
-  restarting a live TUI session.
+- Reconcile pins for claudetui: `reconcileSettingsOwnedAxes` converges
+  the prompt axis for HEADLESS Claude only, and claudetui has no
+  live-update surface (any diff is a restart), so the pin is what keeps
+  a settings edit from restarting a live TUI session.
 
 ### Why Claude gets the FILE flag
 
@@ -146,7 +146,8 @@ a `promptOverrideResolution` (the matched entry plus whether it applied),
 so every downstream consumer — today `ensureClaudeMemoryDir` — acts on
 the same decision from the same snapshot. A settings save landing
 mid-spawn cannot make the created directory disagree with the rendered
-prompt.
+prompt. `reconcileSettingsOwnedAxes` returns the same type for the same
+reason, non-zero only when THAT reconcile actually rendered something.
 
 ### Placeholder rendering
 
@@ -177,7 +178,8 @@ Under a replaced system prompt the CLI stops mkdir-ing the memory dir,
 but recall (MEMORY.md → first-user-message system-reminder) still works.
 When an override containing `{{MEMORY_DIR}}` is active, AO creates the
 directory at spawn so the prompt's "it already exists" claim holds.
-`ensureClaudeMemoryDir` runs on the spawn path only, takes the
+`ensureClaudeMemoryDir` runs wherever an override is RENDERED — the
+spawn path, and the reconcile path when a live prompt swap lands — takes the
 resolution rather than re-matching, and is never fatal: a failure lands
 as thread error state and the session starts anyway.
 
@@ -239,7 +241,8 @@ switch that works on every model.
 DEFAULT a custom-env value outranks — same posture as the todo-tools
 opt-in, see `internal/provider/pinnedenv.go`). It rides
 `SessionOptions.DisableTodoReminders`, the third settings-owned axis:
-stamped by `applySettingsOwnedAxes`, pinned by `pinSettingsOwnedAxes`.
+stamped by `applySettingsOwnedAxes`, pinned by
+`reconcileSettingsOwnedAxes`.
 The CLI double-gates its task_reminder nudge on the reminder mode AND
 the tools' presence in the session (verified 2.1.233), so the toggle
 only matters while ≥1 group tool is exposed — the UI disables it when
@@ -264,38 +267,59 @@ Deliberately not exposed: shell/unified-exec (session-lobotomizing) and
 `model_catalog_json`). Enterprise-managed installs can veto some keys;
 a refused override surfaces as the thread error it produces.
 
-## "Next sessions only" semantics
+## Reconcile semantics: what a settings edit does to a LIVE session
 
-Settings are read at spawn, so new sessions pick changes up naturally.
+Settings are read at spawn, so new sessions always pick changes up. What
+a change does to a session that is already running depends on the axis.
+
 The live-config reconciler (`app_session_config.go
 liveApplySessionConfig`) diffs freshly built options against
 `sess.launchOpts` and escalates non-live-appliable diffs to a deferred
-restart — so it calls **`pinSettingsOwnedAxes`**, which adopts
-`SystemPrompt`, `DisabledTools`, and `DisableTodoReminders` from
-`sess.launchOpts` before diffing. Otherwise editing the setting (or the workspace's git state
-moving under a rendered `{{GIT_BLOCK}}`) would queue restarts on every
-running session. Restarts that happen for other reasons build fresh
-options and adopt the current setting; that is a new session and
-intended.
+restart. Before diffing it calls **`reconcileSettingsOwnedAxes`**
+(`app_session_prompt_override.go`), which resolves the four
+settings-owned axes:
 
-`applySettingsOwnedAxes` (spawn) and `pinSettingsOwnedAxes` (reconcile)
-are a **pair**, and `buildSessionOptions` stamps neither axis so the
-pairing cannot be forgotten:
+| Axis | Live session behavior |
+|---|---|
+| `DisabledTools` | **Pinned** to `sess.launchOpts`. Spawn-only on every provider, so a diff could only queue a restart nobody asked for. |
+| `DisableTodoReminders` | **Pinned**, same reason (an env var, fixed at spawn). |
+| `SystemPrompt`, headless Claude on CLI ≥ 2.1.214 | **Converges live** when the change lands on a non-empty prompt — an override edited, or one turned on. `claude.PlanLiveUpdate` carries it as `LiveUpdate.SystemPrompt` and `ApplyLiveUpdate` sends it on `set_model` (see `claude-wire.md`). Turning an override OFF is a **deferred restart**: `set_model.system_prompt` must be a non-empty string and has no revert-to-built-in form, so only a respawn without `--system-prompt-file` restores the CLI's own prompt. |
+| `SystemPrompt`, Codex / claude-tui | **Pinned.** Neither has a prompt-swap wire, so re-resolving could only ever queue a deferred restart for an edit the user expected to affect the NEXT session — the contract those two keep. |
+| `SystemPrompt`, headless Claude on an older CLI | **Deferred restart.** The reconciler resolves and `PlanLiveUpdate` plans it as usual; the version gate lives one layer down in `ApplyLiveUpdate`, which answers `ErrLiveUpdateRequiresRestart`. Older builds ACK `set_model.system_prompt` without applying it — the one failure mode with no wire signal at all — so an unknown version counts as too old. |
+| `SystemPrompt`, feature-owned | **Untouched.** A non-empty `opts.SystemPrompt` after `buildSessionOptions` means design mode or discussions owns it; those converge exactly as they did before this feature existed. |
+| `ClaudeThinking`, headless Claude on CLI ≥ 2.1.214 | **Converges live** for every explicit value. `claude.PlanLiveUpdate` carries it as `LiveUpdate.Thinking` and `ApplyLiveUpdate` sends one `set_max_thinking_tokens` control request (`max_thinking_tokens` for off/budget, `thinking_display` for the display axis). Returning to Claude's own choice is a **deferred restart**: `max_thinking_tokens: null` is accepted and does nothing, so only a respawn without the flag resets it. Same version gate and same unknown-version-is-too-old posture as `SystemPrompt`. |
+| `ClaudeThinking`, Codex / claude-tui | **Never resolved at all.** `ClaudeThinkingForProvider` answers the zero value for anything but headless `claude`, on BOTH paths — claude-tui drives the same binary but has no control-request channel, so an axis it could never apply must not diff either. |
 
+"Changed" is decided on the **stored, unrendered** override text
+(`SessionOptions.SystemPromptOverrideSource`), never the rendered one. A
+rendered comparison would report a diff every time the workspace's git
+state moved under a `{{GIT_BLOCK}}` and reconcile forever.
+
+`applySettingsOwnedAxes` (spawn) and `reconcileSettingsOwnedAxes`
+(reconcile) are a **pair**, and `buildSessionOptions` stamps none of the
+three axes so the pairing cannot be forgotten:
+
+- `ClaudeThinking` is the one axis a *settings save alone* has to act on:
+  every other axis here is spawn-only, so nothing would reconcile until an
+  unrelated thread-config edit happened to. `UpdateSettings` therefore
+  fans out `reconcileLiveClaudeSessions` on the `claudeThinking` key, off
+  the binding's goroutine.
 - Adding a settings-owned axis means touching BOTH. An axis stamped only
   on the spawn side would queue a deferred restart on every live session
   the next time anything reconciled — the failure the pin exists to
   prevent, re-introduced silently.
-- The prompt pin is conditional (`if opts.SystemPrompt == ""`) because
-  `SystemPrompt` is a SHARED axis: design mode and discussions own it for
-  their threads, and an edit to a feature-owned prompt must keep
-  converging through the reconciler exactly as it did before this feature
-  existed.
-- The reconcile path composes **nothing** — no `Match`, no `Render`, no
-  git subprocess. It runs under the per-thread config lock on every
-  model / effort / runtime-mode change, and the old shape paid for up to
-  two git subprocesses there to produce a value it discarded on the next
-  line.
+- The reconcile path stays **cheap in the common case**: today's entry is
+  matched (a slug comparison — no git, no `Render`), and its stored text
+  compared against the session's. Unchanged is the overwhelmingly common
+  case and pins. Only a real Settings edit reaches `Render` and its up-to
+  two git subprocesses, and `reconcilePromptOverrideRender` memoizes that
+  per session token — the deferred-restart watcher re-runs the whole
+  reconcile once a second while a thread is busy, so a change that cannot
+  be applied live would otherwise pay for it on every poll.
+- A live prompt swap re-runs `ensureClaudeMemoryDir`: under a replaced
+  system prompt the CLI stops creating the directory a rendered
+  `{{MEMORY_DIR}}` promises already exists, and that is as true of a swap
+  as of a spawn.
 
 ## UI
 

@@ -217,6 +217,16 @@ type RepeatStep struct {
 //	${REQUEST_ID}  — Codex only: the JSON-RPC id being answered
 //	${CWD}         — the mock's working directory (the workspace)
 //	${ITER}        — inside a repeat body: the 1-based iteration number
+//
+// Two more carry what only the running mock knows about the turn's own user
+// message, which no scenario file could name:
+//
+//	${USER_INPUT}       — the turn's user text (Codex: a `turn/start` input
+//	                      vec, or the text of a submission the mock's own
+//	                      provider-side queue dispatched)
+//	${QUEUE_CLIENT_ID}  — Codex `thread/queue` only: the clientUserMessageId
+//	                      the app correlated the submission with; empty on a
+//	                      client-initiated turn
 type Vars map[string]string
 
 // Substitute replaces ${VAR} tokens for every key present in v.

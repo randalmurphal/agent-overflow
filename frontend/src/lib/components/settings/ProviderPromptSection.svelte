@@ -28,6 +28,8 @@
     withEntryRemoved,
   } from '../../utils/promptOverrides';
   import ClaudeDisabledToolsEditor from './ClaudeDisabledToolsEditor.svelte';
+  import ClaudeCrossSessionEditor from './ClaudeCrossSessionEditor.svelte';
+  import ClaudeSessionAxesEditor from './ClaudeSessionAxesEditor.svelte';
   import CodexDisabledToolsEditor from './CodexDisabledToolsEditor.svelte';
   import PromptOverrideEntry from './PromptOverrideEntry.svelte';
   import PromptPlaceholderLegend from './PromptPlaceholderLegend.svelte';
@@ -217,4 +219,18 @@
       <ClaudeDisabledToolsEditor {provider} />
     {/if}
   </div>
+
+  <!--
+    Headless Claude only. claude-tui launches through a PTY with no
+    `--settings` flag, so these axes cannot reach that binary and must not be
+    offered under its heading.
+  -->
+  {#if provider.id === 'claude'}
+    <div class="mt-5 border-t border-border-subtle/60 pt-4">
+      <ClaudeSessionAxesEditor />
+    </div>
+    <div class="mt-5 border-t border-border-subtle/60 pt-4">
+      <ClaudeCrossSessionEditor />
+    </div>
+  {/if}
 </section>

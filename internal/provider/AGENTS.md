@@ -138,10 +138,19 @@ so a new tier cannot be legal in one place and coerced away in another.
 | Tier | Claude (CLI 2.1.219) | Codex (app-server, floor 0.143) |
 |---|---|---|
 | `read-only` | `--permission-mode dontAsk` + `--disallowedTools Write,Edit,NotebookEdit` | approval `never`, sandbox `read-only`, reviewer `user` |
-| `approval-required` | `--permission-mode default` (no flag) | approval `untrusted`, sandbox `read-only`, reviewer `user` |
+| `approval-required` | `--permission-mode default` (no flag) | approval `untrusted`†, sandbox `read-only`, reviewer `user` |
 | `auto-accept-edits` | `--permission-mode acceptEdits` | approval `on-request`, sandbox `workspace-write`, reviewer `user` |
-| `auto` | `--permission-mode auto` | approval `untrusted`, sandbox `read-only`, reviewer `auto_review` |
+| `auto` | `--permission-mode auto` | approval `untrusted`†, sandbox `read-only`, reviewer `auto_review` |
 | `full-access` | `--permission-mode bypassPermissions` + `--allow-dangerously-skip-permissions` | approval `never`, sandbox `danger-full-access`, reviewer `user` |
+
+† On a connected codex **>= 0.149.0** both of these send `on-request`
+instead. 0.149 deleted the known-safe command allowlist that made
+`untrusted` mean "reads run, everything else escalates" (upstream
+`942af8447b`), so the same value now prompts for every command, `ls`
+included; `on-request` under the unchanged read-only sandbox is what
+expresses the old intent. The remap keys off the app-server's own
+`initialize` userAgent and fails safe — an unknown version keeps
+`untrusted`. See `codex/options.go#approvalPolicyForCodexVersion`.
 
 Two tiers can **refuse** an action rather than ask about it, for different
 reasons, and neither is a fallback:
@@ -243,11 +252,14 @@ Codex toggle ids, which `codex/disabled_tools.go` expands into `config`
 override keys. It is spawn-only on every provider, so `PlanLiveUpdate` must
 report a change to it as a restart (claudetui has no live-update surface
 at all — every diff is one). Because the value comes from Settings
-rather than the row, the reconcile path PINS it (alongside `SystemPrompt`)
-to what the live session launched with — `pinSettingsOwnedAxes`, the
-other half of the pair — otherwise every reconcile would diff today's
-Settings against a session started earlier and queue a restart the user
-never asked for.
+rather than the row, the reconcile path PINS it to what the live session
+launched with — `reconcileSettingsOwnedAxes`, the other half of the pair —
+otherwise every reconcile would diff today's Settings against a session
+started earlier and queue a restart the user never asked for. The
+`SystemPrompt` axis is resolved rather than pinned in that same function:
+headless Claude converges an edited-or-enabled override live over
+`set_model.system_prompt`, everything else pins. See
+`docs/specs/prompt-tool-overrides.md`.
 
 ## Interactive Requests
 

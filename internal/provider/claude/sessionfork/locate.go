@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"unicode/utf16"
 )
 
 // ErrSessionFileNotFound is returned when the JSONL for sessionID can't
@@ -16,14 +18,17 @@ var ErrSessionFileNotFound = errors.New("sessionfork: session file not found")
 // LocateSessionFile resolves the on-disk path of a Claude session JSONL.
 //
 // Claude stores sessions at ~/.claude/projects/<slug>/<sessionID>.jsonl
-// where slug is derived from the workspace's CANONICAL absolute path
-// (symlinks resolved): replace each path separator with '-' and prepend
-// a leading '-'. On macOS, /tmp resolves to /private/tmp so the slug is
-// `-private-tmp-<...>` not `-tmp-<...>`.
+// where slug is the workspace's CANONICAL absolute path (symlinks
+// resolved) run through the CLI's own encoder — every non-alphanumeric
+// UTF-16 code unit becomes '-', and a sanitized form past
+// MaxSanitizedSlugLen is truncated and hash-suffixed
+// (claudeProjectDirName). On macOS, /tmp resolves to /private/tmp so the
+// slug is `-private-tmp-<...>` not `-tmp-<...>`.
 //
 // If the file isn't where we expect, fall back to scanning every project
-// dir under ~/.claude/projects/ — sessions can migrate when a workspace
-// is moved.
+// dir under ~/.claude/projects/ — sessions migrate when a workspace is
+// moved, and a pre-2.1.224 CLI wrote long paths under the untruncated
+// name the primary candidate no longer spells.
 func LocateSessionFile(sessionID, workspacePath string) (string, error) {
 	if strings.TrimSpace(sessionID) == "" {
 		return "", fmt.Errorf("sessionfork: empty sessionID")
@@ -49,7 +54,7 @@ func LocateSessionFile(sessionID, workspacePath string) (string, error) {
 		if err == nil {
 			abs, err := filepath.Abs(canonical)
 			if err == nil {
-				slug := projectSlug(abs)
+				slug := claudeProjectDirName(abs)
 				candidate := filepath.Join(pdir, slug, sessionID+".jsonl")
 				if fileExists(candidate) {
 					return candidate, nil
@@ -95,26 +100,48 @@ func defaultProjectsDir() (string, error) {
 	return filepath.Join(home, ".claude", "projects"), nil
 }
 
-// MaxSanitizedSlugLen mirrors MAX_SANITIZED_LENGTH in Claude's
-// sessionStoragePortable.ts. At or below it the slug is the sanitized path
-// verbatim; above it the CLI truncates to this length and appends a
-// `Bun.hash(name)` suffix — a hash we cannot reproduce in Go — so an
-// over-length path's exact project dir is unknowable from here.
+// MaxSanitizedSlugLen mirrors MAX_SANITIZED_LENGTH (`kie` in the minified
+// bundle) in Claude's project-dir encoder. At or below it the slug is the
+// sanitized path verbatim; above it the CLI truncates the SANITIZED string to
+// this length and appends `-<hash>`, where the hash runs over the ORIGINAL
+// (unsanitized) path — see claudeProjectDirName.
+//
+// The long-path truncation landed in 2.1.224 (collision fix). Older CLIs wrote
+// the full sanitized name with no cap, which is why LocateSessionFile keeps its
+// project-dir scan: the exact candidate answers for 2.1.224+, the scan still
+// finds a transcript an older binary filed under the untruncated name.
 const MaxSanitizedSlugLen = 200
 
+// A note on CLAUDE_CODE_PROJECT_DIR_NAME, added in 2.1.234: it is NOT usable by
+// AO as a way to pin a known project dir. Two disqualifiers, both read out of
+// the 2.1.237 bundle. It is honored only when CLAUDE_CONFIG_DIR is ALSO set
+// (`(t.CLAUDE_CONFIG_DIR ? sPs(t.CLAUDE_CODE_PROJECT_DIR_NAME) : void 0) ?? W9(r)`),
+// and setting CLAUDE_CONFIG_DIR relocates settings AND credentials — a
+// non-starter under AO's shared-`~/.claude` credential model, where the CLI and
+// AO deliberately read the same login. And it is a process-wide memoized
+// constant, not a per-project value: the resolver that consults it
+// (`xN(e) = nlu() ?? W9(e)`) ignores its own path argument whenever the override
+// is present, so one AO process would file every workspace's transcripts into a
+// single directory. Reproducing W9 in Go is the only correct option.
+
 // sanitizeProjectComponent encodes a string into a Claude project-dir name the
-// way sessionStoragePortable.ts `sanitizePath` does: every non-alphanumeric
-// rune becomes '-'. Claude's JS `String.replace(/[^a-zA-Z0-9]/g, '-')` runs
-// over UTF-16 code units; for BMP paths — effectively all real workspace paths
-// — rune iteration is equivalent (astral-plane chars would yield one '-' here
-// vs two in JS, an irrelevant edge for filesystem paths).
+// way the CLI's `sanitizePath` does: `e.replace(/[^a-zA-Z0-9]/g, "-")`.
+//
+// That regex runs over UTF-16 CODE UNITS, so an astral-plane rune (one Go rune,
+// two UTF-16 units) becomes TWO dashes, not one. That is not cosmetic any more:
+// the output length decides both the MaxSanitizedSlugLen comparison and where
+// the truncation cuts, so a one-dash-per-rune encoding would compute a different
+// slug for any over-length path containing an emoji.
 func sanitizeProjectComponent(name string) string {
 	var b strings.Builder
 	b.Grow(len(name))
 	for _, r := range name {
 		switch {
 		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
-			b.WriteRune(r)
+			b.WriteByte(byte(r))
+		case r > 0xFFFF:
+			// Surrogate pair on the JS side: two code units, two dashes.
+			b.WriteString("--")
 		default:
 			b.WriteByte('-')
 		}
@@ -122,51 +149,83 @@ func sanitizeProjectComponent(name string) string {
 	return b.String()
 }
 
-// projectSlug encodes a canonical absolute path the way Claude does
-// (sanitizeProjectComponent). Used for LocateSessionFile's primary-lookup
-// candidate, so the over-length case returns a best-effort truncated prefix
-// WITHOUT the Bun.hash suffix: it simply won't match the real dir, and the
-// caller falls through to the full project-dir scan. Earlier this replaced
-// only path separators, which silently missed for any path containing '.',
-// '_', ':' (i.e. nearly all of them) and made the scan the de-facto path.
-func projectSlug(absPath string) string {
-	slug := sanitizeProjectComponent(absPath)
-	if len(slug) > MaxSanitizedSlugLen {
-		slug = slug[:MaxSanitizedSlugLen]
+// claudeProjectDirHash ports the CLI's `y__` / `Act` pair — a classic
+// djb2-style `h = h*31 + unit` fold rendered in lowercase base 36:
+//
+//	function Act(e){let t=0;for(let r=0;r<e.length;r++)t=(t<<5)-t+e.charCodeAt(r)|0;return t}
+//	function y__(e){return Math.abs(Act(e)).toString(36)}
+//
+// Three details are load-bearing:
+//
+//   - The fold runs over the ORIGINAL path, not the sanitized form. Sanitizing
+//     first would collide exactly the paths the suffix exists to separate.
+//   - `charCodeAt` yields UTF-16 code units, so an astral rune contributes its
+//     two surrogates in order. This is `utf16.Encode([]rune(path))` folded in
+//     place; the split is done inline to keep the hash allocation-free.
+//   - JS `|0` is ToInt32, and every intermediate is exact in a float64 (magnitude
+//     below 2^33), so wrapping int32 arithmetic in Go is bit-identical. `Math.abs`
+//     of the int32 result is a DOUBLE, so `Math.abs(-2147483648)` is 2147483648
+//     ("zik0zk"), not a wrapped negative — widen to int64 before negating.
+func claudeProjectDirHash(path string) string {
+	var h int32
+	for _, r := range path {
+		if r > 0xFFFF {
+			hi, lo := utf16.EncodeRune(r)
+			h = h<<5 - h + int32(hi)
+			h = h<<5 - h + int32(lo)
+			continue
+		}
+		h = h<<5 - h + int32(r)
 	}
-	// Absolute paths begin with a separator, so the sanitized form already
-	// leads with '-'. Keep the guard for the degenerate relative-path caller.
-	if !strings.HasPrefix(slug, "-") {
-		slug = "-" + slug
+	v := int64(h)
+	if v < 0 {
+		v = -v
 	}
-	return slug
+	return strconv.FormatInt(v, 36)
+}
+
+// claudeProjectDirName ports the CLI's project-dir encoder verbatim
+// (2.1.237 bundle, `W9`):
+//
+//	function W9(e){let t=z$o(e);if(t.length<=kie)return t;return `${t.slice(0,kie)}-${y__(e)}`}
+//
+// The `slice(0,200)` is a UTF-16 slice of the SANITIZED string; sanitized output
+// is pure ASCII, so a byte slice is exactly equivalent here.
+//
+// Callers pass an already-canonical absolute path, matching the CLI, which
+// resolves + realpaths before encoding. There is no leading-dash fixup: an
+// absolute path's separator already sanitizes to one, and synthesizing it for a
+// relative caller would produce a name the CLI never writes.
+func claudeProjectDirName(path string) string {
+	s := sanitizeProjectComponent(path)
+	if len(s) <= MaxSanitizedSlugLen {
+		return s
+	}
+	return s[:MaxSanitizedSlugLen] + "-" + claudeProjectDirHash(path)
 }
 
 // exactWorkspaceSlug resolves workspacePath to its canonical absolute form and
-// returns the EXACT Claude project-dir slug. ok is false when the sanitized
-// slug exceeds MaxSanitizedSlugLen — there the CLI appends a Bun.hash suffix we
-// can't reproduce, so callers that must land in a precise directory (session
-// relocation) treat !ok as "unresolvable" rather than guess and misplace.
-func exactWorkspaceSlug(workspacePath string) (slug string, ok bool, err error) {
+// returns the EXACT Claude project-dir slug. Every path resolves, over-length
+// ones included — claudeProjectDirName reproduces the CLI's truncate-and-hash
+// suffix — so the only failure left is a workspace that cannot be
+// canonicalized, i.e. it is gone. That is a hard error, never a soft miss: this
+// answer is what a WRITE lands on, and a guess would put the transcript
+// somewhere `claude --resume` will never look.
+func exactWorkspaceSlug(workspacePath string) (string, error) {
 	if strings.TrimSpace(workspacePath) == "" {
-		return "", false, fmt.Errorf("sessionfork: empty workspace path")
+		return "", fmt.Errorf("sessionfork: empty workspace path")
 	}
 	// Match Claude's realpath-based canonicalization. The destination is the
-	// reattach target and must exist, so a resolve failure is a real error,
-	// not a soft miss.
+	// reattach target and must exist.
 	canonical, err := filepath.EvalSymlinks(workspacePath)
 	if err != nil {
-		return "", false, fmt.Errorf("sessionfork: canonicalize %s: %w", workspacePath, err)
+		return "", fmt.Errorf("sessionfork: canonicalize %s: %w", workspacePath, err)
 	}
 	abs, err := filepath.Abs(canonical)
 	if err != nil {
-		return "", false, fmt.Errorf("sessionfork: abs %s: %w", canonical, err)
+		return "", fmt.Errorf("sessionfork: abs %s: %w", canonical, err)
 	}
-	s := sanitizeProjectComponent(abs)
-	if len(s) > MaxSanitizedSlugLen {
-		return "", false, nil
-	}
-	return s, true, nil
+	return claudeProjectDirName(abs), nil
 }
 
 // WorkspaceProjectDir returns the EXACT project directory a session run with
@@ -176,10 +235,10 @@ func exactWorkspaceSlug(workspacePath string) (slug string, ok bool, err error) 
 // It is what a caller that must WRITE a transcript into the right slug uses:
 // Claude resolves `--resume` against the slug of the current cwd, so a file
 // written under any other slug is invisible to the resume that needs it (see
-// RelocateSession's header). ok is false when the sanitized slug exceeds
-// MaxSanitizedSlugLen, where the CLI appends a `Bun.hash` suffix Go cannot
-// reproduce — there is no dir to name, and callers degrade rather than guess.
-// A hard error means the workspace could not be canonicalized (it is gone).
+// RelocateSession's header). Over-length paths are answered exactly too — the
+// CLI's truncate-and-hash suffix is reproduced by claudeProjectDirName — so the
+// only failure is a workspace that could not be canonicalized (it is gone),
+// and that is an error, not a soft "unresolvable" signal.
 //
 // projectsDir is a PARAMETER rather than `~/.claude/projects`: the app can be
 // running against an injected Claude home (the credential-home override, the
@@ -187,12 +246,12 @@ func exactWorkspaceSlug(workspacePath string) (slug string, ok bool, err error) 
 // was read from are two different directories. A caller cutting a file beside
 // an existing session derives it from that session's own location, and then
 // the write can only ever land in the home it was read from.
-func WorkspaceProjectDir(projectsDir, workspacePath string) (dir string, ok bool, err error) {
-	slug, ok, err := exactWorkspaceSlug(workspacePath)
-	if err != nil || !ok {
-		return "", ok, err
+func WorkspaceProjectDir(projectsDir, workspacePath string) (string, error) {
+	slug, err := exactWorkspaceSlug(workspacePath)
+	if err != nil {
+		return "", err
 	}
-	return filepath.Join(projectsDir, slug), true, nil
+	return filepath.Join(projectsDir, slug), nil
 }
 
 func fileExists(p string) bool {

@@ -22,13 +22,31 @@ import (
 // (docs/specs/prompt-tool-overrides.md).
 //
 // Both axes are owned by Settings rather than by the thread row, which is
-// what gives the feature its "next sessions only" semantics — and what
-// makes the two entry points below a PAIR. applySettingsOwnedAxes stamps
-// today's values on the spawn path; pinSettingsOwnedAxes carries the live
-// session's forward on the reconcile path. Adding a third settings-owned
-// axis means touching BOTH: an axis stamped only on the spawn side would
-// queue a deferred restart on every live session the next time anything
-// reconciled.
+// what makes the two entry points below a PAIR. applySettingsOwnedAxes
+// stamps today's values on the spawn path; reconcileSettingsOwnedAxes
+// carries the live session's forward on the reconcile path. Adding a
+// settings-owned axis means touching BOTH: an axis stamped only on the
+// spawn side would queue a deferred restart on every live session the next
+// time anything reconciled.
+//
+// The tool lists are pinned outright — no control_request can add or drop a
+// tool mid-session, so re-reading them on the reconcile path could only
+// produce restarts nobody asked for. The THINKING axis is the opposite: it
+// is re-read on both paths and costs nothing to resolve (a struct copy),
+// because `set_max_thinking_tokens` lands a budget or an off switch on a
+// running session. Only its return to "Claude Code decides" has no wire
+// form, and that one direction falls through to the deferred restart — the
+// same asymmetry the prompt override has. The system prompt is NOT pinned
+// either, since
+// `set_model.system_prompt` can swap one live (internal/provider/claude
+// live_update.go). It converges on an EDIT to the stored override and on
+// nothing else: reconcileSettingsOwnedAxes compares the stored, unrendered
+// entry text against what this session launched with
+// (SessionOptions.SystemPromptOverrideSource) and only re-renders when that
+// changed. Comparing rendered prompts instead would re-render — two git
+// subprocesses, under the per-thread config lock — on every model, effort,
+// and runtime-mode change, and a prompt using {{GIT_BLOCK}} would report a
+// diff every time the workspace's git state moved.
 
 // maxRenderedSystemPromptBytes bounds what a rendered override may grow to.
 // The stored prompt is already length-validated in Settings, but rendering
@@ -41,6 +59,20 @@ import (
 // named; truncating instead would hand the model a prompt cut mid-sentence.
 const maxRenderedSystemPromptBytes = 256_000
 
+// claudeThinkingOption crosses the settings → provider boundary for the
+// thinking axis. Two structurally identical types exist because
+// internal/settings may not import internal/provider (see that package's
+// AGENTS.md §Anti-patterns), and this is the single conversion site, so a
+// field added on one side that is not carried here is a compile error at
+// neither — which is why the round-trip is pinned by a test.
+func claudeThinkingOption(thinking settings.ClaudeThinking) provider.ClaudeThinking {
+	return provider.ClaudeThinking{
+		Mode:         thinking.Mode,
+		BudgetTokens: thinking.BudgetTokens,
+		Display:      thinking.Display,
+	}
+}
+
 // promptOverrideResolution is the single decision a spawn makes about the
 // settings-level override, so every downstream consumer reads the same
 // answer from the same settings snapshot. Applied is false when a feature
@@ -51,13 +83,15 @@ type promptOverrideResolution struct {
 	Applied bool
 }
 
-// applySettingsOwnedAxes stamps the two axes Settings owns onto a freshly
+// applySettingsOwnedAxes stamps the axes Settings owns onto a freshly
 // built options bundle: the system-prompt override (only when no feature
-// already claimed the prompt) and the provider's disabled-tool list.
+// already claimed the prompt), the provider's disabled-tool list, the
+// todo-reminder and thinking axes, and the Claude cross-session peer
+// inbox plus the name this thread advertises to peers.
 //
 // SPAWN PATH ONLY — it renders placeholders, which costs a git probe, and
 // its result is what the live session is then pinned to. The reconcile path
-// calls pinSettingsOwnedAxes instead.
+// calls reconcileSettingsOwnedAxes instead.
 //
 // One settings snapshot serves both axes and the returned resolution, so a
 // save landing mid-spawn cannot produce a session whose prompt, tool list,
@@ -73,6 +107,13 @@ func (a *App) applySettingsOwnedAxes(t store.Thread, opts *provider.SessionOptio
 	// projected from the thread row — same reasoning as FastModeTierID.
 	opts.DisabledTools = snapshot.DisabledToolsForProvider(t.Provider)
 	opts.DisableTodoReminders = snapshot.TodoRemindersDisabledForProvider(t.Provider)
+	opts.ClaudeThinking = claudeThinkingOption(snapshot.ClaudeThinkingForProvider(t.Provider))
+	opts.ClaudeCrossSession = claudeCrossSessionOption(snapshot.ClaudeCrossSessionForProvider(t.Provider))
+	// Derived even when the inbox is off, and harmlessly so: the name only
+	// reaches argv when cross-session messaging is enabled
+	// (claude.peerSessionNameArgs), and deriving it unconditionally keeps
+	// one code path rather than two that can disagree.
+	opts.ClaudePeerSessionName = a.peerSessionNameForThread(t)
 
 	// A non-empty prompt at this point means a FEATURE owns it (design
 	// mode's artifact prompt, the discussion deliberation prompt — see
@@ -100,29 +141,238 @@ func (a *App) applySettingsOwnedAxes(t store.Thread, opts *provider.SessionOptio
 		)
 	}
 	opts.SystemPrompt = rendered
+	opts.SystemPromptOverrideSource = entry.Prompt
 	return promptOverrideResolution{Entry: entry, Applied: true}, nil
 }
 
-// pinSettingsOwnedAxes carries the settings-owned axes of a LIVE session
-// forward onto a freshly built options bundle, so the config reconciler
-// diffs only what the thread row can change.
+// reconcileSettingsOwnedAxes resolves the settings-owned axes of a LIVE
+// session onto a freshly built options bundle, so the config reconciler
+// diffs only what may legitimately have changed.
 //
-// RECONCILE PATH ONLY, and deliberately free of Match / Render / git — the
-// reconciler runs under the per-thread config lock on every model, effort,
-// or runtime-mode change, and composing an override there would pay for two
-// git subprocesses to produce a value that is thrown away on the next line.
+// RECONCILE PATH ONLY. The tool lists are pinned to what the session
+// launched with (spawn-only on every provider — a diff there could only
+// queue a restart the user never asked for). The prompt is resolved:
 //
-// The prompt pin is conditional because SystemPrompt is a shared axis:
-// design mode and discussions own it for their threads, and an edit to the
-// design prompt file must keep converging the way it always has. After
-// buildSessionOptions, a non-empty prompt means exactly "a feature owns
-// this" — no re-derivation needed.
-func pinSettingsOwnedAxes(opts *provider.SessionOptions, launch provider.SessionOptions) {
-	if opts.SystemPrompt == "" {
-		opts.SystemPrompt = launch.SystemPrompt
-	}
+//  1. A non-empty opts.SystemPrompt after buildSessionOptions means a
+//     FEATURE owns it (design mode, discussions). Those converge exactly as
+//     they always have — nothing to do.
+//  2. Otherwise the settings-level override decides. Today's entry is
+//     MATCHED (cheap — a slug comparison, no git, no render) and its STORED
+//     text compared against the one this session launched with. Unchanged
+//     is the overwhelmingly common case and pins, so the reconciler stays
+//     free of Render and the git probe on every model / effort /
+//     runtime-mode change.
+//  3. Only when the stored text actually changed — a Settings edit, an
+//     entry enabled or disabled, or the thread's model moving to a
+//     different entry's scope — is the override rendered, which is where
+//     the git subprocesses live. Any change that LANDS on a non-empty
+//     prompt — an edit, or an override newly turned on — is then a live
+//     `set_model.system_prompt`; only turning one OFF is a deferred
+//     restart, because the CLI has no revert-to-built-in form for the
+//     field. All three verdicts belong to claude.PlanLiveUpdate.
+//
+// Returns the resolution behind a NEWLY RENDERED prompt (Applied false in
+// every other case, including the pinned one) so the caller can create the
+// memory directory the new prompt may claim exists.
+func (a *App) reconcileSettingsOwnedAxes(
+	t store.Thread,
+	sessionToken string,
+	opts *provider.SessionOptions,
+	launch provider.SessionOptions,
+) promptOverrideResolution {
+	// ONE snapshot for every axis below, exactly as the spawn path takes
+	// one: three separate Get() calls could straddle a save and produce a
+	// session whose thinking, inbox and prompt came from different
+	// versions of the file.
+	snapshot := a.settings.Get()
+
 	opts.DisabledTools = launch.DisabledTools
 	opts.DisableTodoReminders = launch.DisableTodoReminders
+	// PINNED, and not for the usual reason: ConfigFromOptions never reads
+	// this field, so a fresh value could not queue a restart even if it
+	// wanted to. It is carried forward so launchOpts keeps describing the
+	// process that is actually running; the name converges live through
+	// syncPeerSessionName instead.
+	opts.ClaudePeerSessionName = launch.ClaudePeerSessionName
+
+	// Only headless Claude reacts to any of the remaining axes, so the
+	// provider gate comes BEFORE them: Codex and claude-tui would
+	// otherwise pay for Claude-only lookups whose result they pin anyway.
+	// A prompt swap without a restart is `set_model.system_prompt`, which
+	// neither of them has — re-resolving there could only ever queue a
+	// deferred restart for a Settings edit the user expected to affect the
+	// NEXT session, the contract those two keep.
+	//
+	// The pin is CONDITIONAL for the same reason it is on the Claude side
+	// below: SystemPrompt is a shared axis, and a non-empty value after
+	// buildSessionOptions means a FEATURE owns it (design mode's artifact
+	// prompt, the discussion deliberation prompt). Those converge by
+	// restart exactly as they always have, and pinning over one would
+	// freeze a design thread on its first prompt forever.
+	if t.Provider != string(provider.Claude) {
+		if opts.SystemPrompt == "" {
+			opts.SystemPrompt = launch.SystemPrompt
+			opts.SystemPromptOverrideSource = launch.SystemPromptOverrideSource
+		}
+		return promptOverrideResolution{}
+	}
+
+	// RESOLVED, not pinned — the one axis here that a live session can
+	// adopt outright. It is read fresh (a struct copy: no match, no
+	// render, no subprocess) so a Settings save converges the running
+	// session through claude.PlanLiveUpdate's set_max_thinking_tokens.
+	// The return to "Claude Code decides" is the one direction that
+	// cannot, and it falls through to the deferred restart exactly like
+	// turning a prompt override off.
+	opts.ClaudeThinking = claudeThinkingOption(snapshot.ClaudeThinkingForProvider(t.Provider))
+	// Also RESOLVED rather than pinned, but converging the opposite way:
+	// nothing rebinds the peer inbox on a running process, so a change
+	// here falls through PlanLiveUpdate's trailing DeepEqual and becomes a
+	// DEFERRED restart — which is the whole reason this axis rides
+	// SessionOptions instead of being stamped onto claude.Config beside
+	// the other `--settings` axes. Pinning it would make the setting
+	// silently never converge.
+	opts.ClaudeCrossSession = claudeCrossSessionOption(snapshot.ClaudeCrossSessionForProvider(t.Provider))
+
+	if opts.SystemPrompt != "" {
+		return promptOverrideResolution{}
+	}
+
+	entry, matched := promptoverride.Match(
+		snapshot.PromptOverridesForProvider(t.Provider),
+		t.Provider,
+		t.Model,
+	)
+	source := ""
+	if matched {
+		source = entry.Prompt
+	}
+	if source == launch.SystemPromptOverrideSource {
+		// Same stored override (or the same absence of one). Pin, and pay
+		// for nothing.
+		opts.SystemPrompt = launch.SystemPrompt
+		opts.SystemPromptOverrideSource = launch.SystemPromptOverrideSource
+		return promptOverrideResolution{}
+	}
+	if !matched {
+		// The override was turned off or stopped matching this model. Leave
+		// the prompt empty: that is a non-empty → empty transition, the one
+		// direction PlanLiveUpdate refuses (there is no revert-to-built-in
+		// wire form), and the restart converges honestly.
+		opts.SystemPromptOverrideSource = ""
+		return promptOverrideResolution{}
+	}
+
+	rendered, ok := a.reconcilePromptOverrideRender(t, sessionToken, entry, opts.WorkDir)
+	if !ok {
+		// Over the size limit. A reconcile must not be fatal the way a
+		// spawn is — killing a live session over a Settings edit is the
+		// worse outcome, and the restart path could only respawn into the
+		// same refusal — so the live session's prompt is pinned. The
+		// refusal is NOT silent, though: pinning means the session keeps
+		// running the OLD prompt while Settings shows the new one, and a
+		// user who is not told believes the prompt they just saved is
+		// active. reconcilePromptOverrideRender surfaces it as thread error
+		// state (once per verdict, not once per reconcile poll).
+		opts.SystemPrompt = launch.SystemPrompt
+		opts.SystemPromptOverrideSource = launch.SystemPromptOverrideSource
+		return promptOverrideResolution{}
+	}
+	opts.SystemPrompt = rendered
+	opts.SystemPromptOverrideSource = entry.Prompt
+	return promptOverrideResolution{Entry: entry, Applied: true}
+}
+
+// promptOverrideRender memoizes one reconcile-path render for one live
+// session. Keyed by everything the render depends on that can move under a
+// live session: the stored override text, the workspace, and the model
+// (whose id and display name are placeholders). The remaining facts —
+// platform, OS version, memory dir — are functions of those or of the
+// process itself.
+//
+// Deliberately NOT keyed on git state, which is the whole point: a
+// {{GIT_BLOCK}} prompt must not re-render because someone committed. The
+// spawn path is where a session picks up a fresh repository snapshot.
+type promptOverrideRender struct {
+	source   string
+	workDir  string
+	model    string
+	rendered string
+	// oversize records that this key rendered OVER the size limit. The
+	// verdict is memoized exactly like a successful render, for both of
+	// the memo's reasons: the git subprocesses must not be re-paid on
+	// every reconcile poll, and the user must not be told the same thing
+	// once a second. rendered is empty when it is set.
+	oversize bool
+}
+
+// reconcilePromptOverrideRender renders a matched override for the reconcile
+// path, reusing the previous render when nothing it depends on moved.
+//
+// The memo is what keeps the "the reconciler composes nothing expensive"
+// property true once the prompt axis stopped being pinned. Every reconcile
+// trigger runs buildSessionOptions — a Settings save fanning out over every
+// live Claude session, a thread-row config change, the deferred-restart
+// watcher's re-check before it kills anything — and this render is the one
+// step in that build that shells out (the git probe behind {{GIT_BLOCK}}).
+//
+// The repeat that actually matters is a live apply answering
+// ErrLiveUpdateRequiresRestart: the render has already been paid, the update
+// converged nothing, and the identical render is computed a second time when
+// the watcher re-checks at the next quiet point. Memoized, that second pass
+// is a three-field compare. (The watcher's BUSY polls cost nothing either
+// way — threadConfigBusy short-circuits before any options are built.)
+//
+// ok is false when the render is over the size limit. That verdict is
+// memoized with the same key as a successful render and surfaced to the
+// thread once, because the caller's response to it is to keep running the
+// PREVIOUS prompt: without a message, Settings would show one prompt and
+// the session would be running another with nothing anywhere saying so
+// (CLAUDE.md principle 5 — errors are user-facing state).
+func (a *App) reconcilePromptOverrideRender(
+	t store.Thread,
+	sessionToken string,
+	entry settings.PromptOverride,
+	workDir string,
+) (string, bool) {
+	key := promptOverrideRender{source: entry.Prompt, workDir: workDir, model: t.Model}
+
+	a.mu.Lock()
+	cached, hit := a.promptOverrideRenders[sessionToken]
+	a.mu.Unlock()
+	if hit && cached.source == key.source && cached.workDir == key.workDir && cached.model == key.model {
+		return cached.rendered, !cached.oversize
+	}
+
+	rendered := promptoverride.Render(entry.Prompt, a.promptOverrideFacts(t, entry.Prompt, workDir))
+	oversize := len(rendered) > maxRenderedSystemPromptBytes
+	if oversize {
+		key.oversize = true
+	} else {
+		key.rendered = rendered
+	}
+
+	a.mu.Lock()
+	if a.promptOverrideRenders == nil {
+		a.promptOverrideRenders = make(map[string]promptOverrideRender)
+	}
+	a.promptOverrideRenders[sessionToken] = key
+	a.mu.Unlock()
+
+	if oversize {
+		log.Printf("thread %s: system prompt override renders to %d bytes from a %d-byte prompt, over the %d-byte limit; keeping the live session's prompt",
+			t.ID, len(rendered), len(entry.Prompt), maxRenderedSystemPromptBytes)
+		// Host-synthesized, not wire-routed: this answers a Settings save,
+		// not provider output, so it keeps the HandleSynthetic carve-out
+		// that lets a stopped thread still receive it.
+		a.emitErrorToThread(t.ID, fmt.Sprintf(
+			"system prompt override not applied: it renders to %d bytes from a %d-byte prompt, over the %d-byte limit. "+
+				"Check for a repeated {{GIT_BLOCK}} placeholder. This session keeps the prompt it started with, "+
+				"and a new session on this thread will refuse to start until the override is smaller.",
+			len(rendered), len(entry.Prompt), maxRenderedSystemPromptBytes))
+		return "", false
+	}
+	return rendered, true
 }
 
 // featureOwnedSystemPrompt returns the prompt a FEATURE owns for this
@@ -216,6 +466,11 @@ func (a *App) promptOverrideGitFacts(workDir string, needBlock bool) (isRepo, bl
 // and both Claude providers refuse it from a user's custom environment
 // (provider.ReservedEnvNames), so `~/.claude` under $HOME is the home the
 // session will read its memory from.
+//
+// The bool means "this thread HAS a memory directory" — false for a Codex
+// thread or a workspace-less one, both of which are ordinary states rather
+// than failures. Every workspace that reaches promptoverride.ClaudeMemoryDir
+// resolves, so beyond those two guards only the error answers false.
 func (a *App) claudeMemoryDirForThread(t store.Thread, workDir string) (string, bool, error) {
 	if t.Provider != string(provider.Claude) && t.Provider != string(provider.ClaudeTUI) {
 		return "", false, nil
@@ -227,7 +482,11 @@ func (a *App) claudeMemoryDirForThread(t store.Thread, workDir string) (string, 
 	if err != nil {
 		return "", false, fmt.Errorf("resolve home directory: %w", err)
 	}
-	return promptoverride.ClaudeMemoryDir(home, workDir)
+	dir, err := promptoverride.ClaudeMemoryDir(home, workDir)
+	if err != nil {
+		return "", false, err
+	}
+	return dir, true, nil
 }
 
 // ensureClaudeMemoryDir creates the memory directory a rendered override
@@ -235,10 +494,11 @@ func (a *App) claudeMemoryDirForThread(t store.Thread, workDir string) (string, 
 // stops creating it (verified 2.1.234) while memory RECALL keeps working,
 // so this is what makes the write side of the feature real.
 //
-// Runs on the spawn path only, and takes the resolution applySettingsOwnedAxes
-// already made rather than re-matching: a settings save landing between the
-// two would otherwise let the mkdir act on a different entry than the one
-// whose {{MEMORY_DIR}} was rendered into the prompt.
+// Runs wherever an override is RENDERED — the spawn path, and the reconcile
+// path when a live prompt swap re-rendered one — and takes the resolution
+// its renderer already made rather than re-matching: a settings save landing
+// between the two would otherwise let the mkdir act on a different entry
+// than the one whose {{MEMORY_DIR}} was rendered into the prompt.
 //
 // Never fails the spawn: a session without a memory directory is a degraded
 // session, not a broken one, so the failure lands as thread error state

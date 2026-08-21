@@ -17,6 +17,54 @@ const (
 	typeResponseItem  = "response_item"
 	typeInterAgent    = "inter_agent_communication"
 	typeInterAgentMet = "inter_agent_communication_metadata"
+	typeWorldState    = "world_state"
+	typeSecurityRisk  = "security_risk_score"
+)
+
+// worldStatePayload is `RolloutItem::WorldState(WorldStateItem)`
+// (codex-rs/protocol/src/protocol.rs @ rust-v0.149.0):
+//
+//	pub struct WorldStateItem { pub full: bool, pub state: Map<String, Value> }
+//
+// Upstream calls it "persisted comparison state used to resume model-visible
+// world-state diffing" — engine bookkeeping for the NEXT turn's context
+// assembly, not a transcript row. It has no user-facing projection to import,
+// so this package recognises it and drops it. See converter.convert.
+type worldStatePayload struct {
+	Full *bool `json:"full"`
+	// State is decoded for PRESENCE and shape only, never kept: this record is
+	// written once per turn on every modern thread and its state map is the
+	// largest payload in the file. `*struct{}` accepts any JSON object and
+	// allocates nothing beyond the pointer, while a non-object (upstream's
+	// field is a non-Option `Map<String, Value>`) fails the decode and falls
+	// through to the drift counter, which is the whole point of decoding it.
+	State *struct{} `json:"state"`
+}
+
+// securityRiskPayload is `RolloutItem::SecurityRiskScore(SecurityRiskScore)`
+// (codex-rs/protocol/src/security_risk.rs @ rust-v0.149.0):
+//
+//	pub struct SecurityRiskScore {
+//	    pub scores: BTreeMap<String, f64>,
+//	    pub sampled_at: Option<DateTime<Utc>>,
+//	}
+//
+// Upstream's own doc comment is the whole argument for dropping it: "Scores
+// must not enter model-visible conversation context or user-visible thread
+// item projections." Importing one would put it in exactly the second place.
+type securityRiskPayload struct {
+	Scores    json.RawMessage `json:"scores"`
+	SampledAt *string         `json:"sampled_at"`
+}
+
+// History modes a `session_meta` line can declare (`ThreadHistoryMode`,
+// codex-rs/protocol/src/protocol.rs, serialized lowercase). An ABSENT field
+// means legacy: upstream's enum defaults to Legacy and the field only exists
+// since 0.147. Anything else is a mode this build has never seen, and is
+// carried through verbatim rather than coerced — see SessionMeta.HistoryMode.
+const (
+	HistoryModeLegacy    = "legacy"
+	HistoryModePaginated = "paginated"
 )
 
 // MetaImportUnavailableKey is the ProviderEvent.Meta key this package stamps
@@ -42,6 +90,7 @@ const (
 	WarnUnmatchedEnd     = "codex-unmatched-tool-end"
 	WarnUnresolvedTool   = "codex-unresolved-tool-call"
 	WarnMissingSessionID = "codex-session-meta-missing"
+	WarnHistoryBase      = "codex-history-base"
 )
 
 // contentText flattens the several shapes Codex uses for message and tool
@@ -103,18 +152,27 @@ func rawString(obj map[string]json.RawMessage, key string) (string, bool) {
 // it, and on a forked file it can name the PARENT — so it must never be used
 // to decide which line to accept.
 type sessionMetaPayload struct {
-	ID             string          `json:"id"`
-	SessionID      string          `json:"session_id"`
-	ForkedFromID   string          `json:"forked_from_id"`
-	ParentThreadID string          `json:"parent_thread_id"`
-	Cwd            string          `json:"cwd"`
-	Originator     string          `json:"originator"`
-	CLIVersion     string          `json:"cli_version"`
-	ThreadSource   string          `json:"thread_source"`
-	ModelProvider  string          `json:"model_provider"`
-	Timestamp      string          `json:"timestamp"`
-	Source         json.RawMessage `json:"source"`
-	Git            *struct {
+	ID             string `json:"id"`
+	SessionID      string `json:"session_id"`
+	ForkedFromID   string `json:"forked_from_id"`
+	ParentThreadID string `json:"parent_thread_id"`
+	Cwd            string `json:"cwd"`
+	Originator     string `json:"originator"`
+	CLIVersion     string `json:"cli_version"`
+	ThreadSource   string `json:"thread_source"`
+	ModelProvider  string `json:"model_provider"`
+	Timestamp      string `json:"timestamp"`
+	HistoryMode    string `json:"history_mode"`
+	HistoryBase    *struct {
+		// ThreadID is upstream's own field name and it means ROLLOUT id,
+		// not thread id — a reverted thread's prefix file carries a
+		// different one (protocol.rs HistoryPosition).
+		ThreadID            string `json:"thread_id"`
+		EndOrdinalExclusive uint64 `json:"end_ordinal_exclusive"`
+		EndByteOffset       uint64 `json:"end_byte_offset"`
+	} `json:"history_base"`
+	Source json.RawMessage `json:"source"`
+	Git    *struct {
 		Branch        string `json:"branch"`
 		CommitHash    string `json:"commit_hash"`
 		RepositoryURL string `json:"repository_url"`
@@ -310,16 +368,140 @@ type reviewModePayload struct {
 	ReviewOutputRaw json.RawMessage
 }
 
+// itemCompletedPayload is `event_msg/item_completed` (upstream
+// ItemCompletedEvent). In a PAGINATED rollout it is the primary record for
+// every turn item; in a legacy one policy.rs persists only the Plan and
+// clock.sleep variants. See items.go.
+//
+// StartedAtMS is a POINTER on purpose: the rollout migration that rewrites a
+// legacy file into a paginated one writes `started_at_ms: null` for every item
+// it synthesises (canonicalizer.write_completed_item_to_turn), because the
+// legacy record it came from carried no start time. A migrated thread's tool
+// rows therefore have a completion clock but no start clock, and this package
+// falls back to the line's own timestamp rather than inventing a duration.
 type itemCompletedPayload struct {
-	ThreadID string          `json:"thread_id"`
-	TurnID   string          `json:"turn_id"`
-	Item     json.RawMessage `json:"item"`
+	ThreadID      string          `json:"thread_id"`
+	TurnID        string          `json:"turn_id"`
+	Item          json.RawMessage `json:"item"`
+	StartedAtMS   *int64          `json:"started_at_ms"`
+	CompletedAtMS *int64          `json:"completed_at_ms"`
 }
 
-type turnItemHeader struct {
+// turnItem is the whole `codex_protocol::items::TurnItem` enum decoded into
+// one struct.
+//
+// Two tag fields, both load-bearing. `type` is TurnItem's own serde tag and it
+// is PascalCase — TurnItem carries `#[serde(tag = "type")]` with NO
+// `rename_all`, unlike the app-server v2 `ThreadItem` mirror of the same data,
+// which is camelCase. `kind` is ExtensionItem's tag (`web.search`,
+// `clock.sleep`, `image_gen.generation`); ExtensionItem is FLATTENED into
+// TurnItem::Extension, so an extension-owned item carries both
+// `"type":"Extension"` and its own `"kind"`. `kind` doubles as
+// SubAgentActivity's activity kind, which is unambiguous because dispatch
+// switches on `type` first.
+//
+// Decoding every variant into one struct rather than per-variant structs is
+// deliberate: the variants share most of their field names with identical
+// meanings, the ones that collide across variants are held as
+// json.RawMessage, and one decode per line is the cheapest thing that can
+// work on a file with thousands of items.
+type turnItem struct {
 	Type string `json:"type"`
+	Kind string `json:"kind"`
 	ID   string `json:"id"`
+
+	// Plan
 	Text string `json:"text"`
+
+	// AgentMessage. Content/Phase/Delivery are decoded but NOT emitted —
+	// the assistant row comes from the `response_item/message` mirror,
+	// which exists in every history mode (see items.go). Delivery is
+	// upstream's 0.149 `AgentMessageDelivery` ("async" for a message a
+	// background agent delivered mid-turn); AO has no non-final-message
+	// notion to carry it into, so it is typed here and dropped.
+	Content  []json.RawMessage `json:"content"`
+	Phase    string            `json:"phase"`
+	Delivery string            `json:"delivery"`
+
+	// CommandExecution
+	Command          []string `json:"command"`
+	Cwd              string   `json:"cwd"`
+	Source           string   `json:"source"`
+	ProcessID        string   `json:"process_id"`
+	Stdout           string   `json:"stdout"`
+	Stderr           string   `json:"stderr"`
+	AggregatedOutput string   `json:"aggregated_output"`
+	ExitCode         *int     `json:"exit_code"`
+
+	// FileChange
+	Changes map[string]json.RawMessage `json:"changes"`
+
+	// McpToolCall (camelCase on the wire, but every field used here is a
+	// single word) and DynamicToolCall (snake_case).
+	Server       string            `json:"server"`
+	Tool         string            `json:"tool"`
+	Namespace    string            `json:"namespace"`
+	Arguments    json.RawMessage   `json:"arguments"`
+	ContentItems []json.RawMessage `json:"content_items"`
+	Success      *bool             `json:"success"`
+	// Result is a CallToolResult object on McpToolCall and a base64
+	// STRING on ImageGeneration; Error is `{message}` on McpToolCall and a
+	// bare string on DynamicToolCall. Raw either way.
+	Result json.RawMessage `json:"result"`
+	Error  json.RawMessage `json:"error"`
+
+	// CollabAgentToolCall. `tool` above names which collab tool it is.
+	SenderThreadID    string                     `json:"sender_thread_id"`
+	ReceiverThreadIDs []string                   `json:"receiver_thread_ids"`
+	ReceiverAgents    []collabAgentRef           `json:"receiver_agents"`
+	Prompt            string                     `json:"prompt"`
+	Model             string                     `json:"model"`
+	ReasoningEffort   string                     `json:"reasoning_effort"`
+	AgentsStates      map[string]json.RawMessage `json:"agents_states"`
+
+	// SubAgentActivity. `kind` above is the activity kind.
+	AgentThreadID string `json:"agent_thread_id"`
+	AgentPath     string `json:"agent_path"`
+
+	// WebSearch (core) and the `web.search` extension item.
+	Query string `json:"query"`
+
+	// ImageView
+	Path string `json:"path"`
+
+	// ImageGeneration: core spells these snake_case, the
+	// `image_gen.generation` extension item camelCase.
+	Status          string `json:"status"`
+	RevisedPrompt   string `json:"revised_prompt"`
+	RevisedPromptCC string `json:"revisedPrompt"`
+	SavedPath       string `json:"saved_path"`
+	SavedPathCC     string `json:"savedPath"`
+
+	// clock.sleep. SleepItem is the one extension item that opts into
+	// `#[serde(rename_all = "camelCase")]` (codex-rs/ext/items/src/sleep.rs,
+	// unchanged 0.146 → 0.149), so `durationMs` is what every observed file
+	// carries; `duration_ms` is the spelling its Rust field name and every
+	// SIBLING core item would produce, and is accepted so dropping that one
+	// attribute upstream stays inert here rather than silently rendering
+	// "Slept for 0s".
+	DurationMS      int64 `json:"durationMs"`
+	DurationMSSnake int64 `json:"duration_ms"`
+
+	// EnteredReviewMode / ExitedReviewMode
+	UserFacingHint string          `json:"user_facing_hint"`
+	Target         json.RawMessage `json:"target"`
+	ReviewOutput   *struct {
+		OverallCorrectness string            `json:"overall_correctness"`
+		OverallExplanation string            `json:"overall_explanation"`
+		Findings           []json.RawMessage `json:"findings"`
+	} `json:"review_output"`
+}
+
+// collabAgentRef is one entry of CollabAgentToolCallItem.receiver_agents.
+type collabAgentRef struct {
+	ThreadID      string `json:"thread_id"`
+	AgentNickname string `json:"agent_nickname"`
+	AgentRole     string `json:"agent_role"`
 }
 
 // collabEndPayload covers the four MultiAgentV1 collab end events

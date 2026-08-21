@@ -71,6 +71,12 @@
   let chipCost = $derived(
     lifetimeBucket ? formatUsageCostOrNull(lifetimeBucket.costUsd, lifetimeBucket.unpricedRows) : null,
   );
+  // `costSource` is set only when a PROVIDER priced this thread itself and
+  // its figure replaced AO's rate-table arithmetic wholesale (Codex >= 0.148
+  // — see app_usage.go's overlay). Empty means the ordinary composition, so
+  // the hint appears only when the number on screen is somebody else's.
+  let providerEstimated = $derived(lifetimeBucket?.costSource === 'provider-estimate');
+
   let chipLabel = $derived.by(() => {
     if (!lifetimeBucket) return '';
     const tokens = formatTokens(tokenTotal);
@@ -117,6 +123,7 @@
     aria-haspopup="dialog"
     aria-expanded={open}
     data-testid="usage-chip-trigger"
+    title={providerEstimated ? 'Cost estimated by Codex' : undefined}
     class="{composerTriggerClasses} tabular-nums"
   >
     {chipLabel}
@@ -157,8 +164,13 @@
           </div>
         {/if}
 
-        <p class="mt-2 border-t border-border-subtle pt-2 text-xs text-fg-hint">
-          {turnLabel(turnCount)}
+        <p
+          class="mt-2 border-t border-border-subtle pt-2 text-xs text-fg-hint"
+          title={providerEstimated
+            ? "The total is Codex's own estimate for this thread. The per-model split above is priced from Agent Overflow's rate table, so the two need not agree."
+            : undefined}
+        >
+          {turnLabel(turnCount)}{#if providerEstimated}&nbsp;· est. by Codex{/if}
         </p>
       </div>
     {/snippet}

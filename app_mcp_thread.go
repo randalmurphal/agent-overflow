@@ -37,9 +37,15 @@ type ThreadMCPServer struct {
 	// scope.
 	Scope string `json:"scope,omitempty"`
 	// AuthStatus is Codex's own auth enum for the row —
-	// "unsupported" | "notLoggedIn" | "bearerToken" | "oAuth" — carried
-	// through so the UI can tell a failed server that HAS an OAuth grant
-	// (offer "Sign in again") from one that never needed credentials.
+	// "unsupported" | "notLoggedIn" | "bearerToken" | "oAuth" | "unknown"
+	// (`McpAuthStatus`, codex >= 0.147) — carried through so the UI can
+	// tell a failed server that HAS an OAuth grant (offer "Sign in
+	// again") from one that never needed credentials. "unknown" means
+	// the server's OAuth support could not be determined, which is a
+	// statement about the PROBE, not about the server: the codex
+	// projection puts it in the evidence-decides set alongside
+	// "unsupported"/"bearerToken"/"oAuth" rather than the give-up set
+	// (internal/provider/codex/mcpstatus.go).
 	// Session rows carry it from the live list; config rows carry the
 	// cache's copy (the ephemeral fetch records it). Empty on Claude
 	// rows and on config rows the cache has never seen.

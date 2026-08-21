@@ -47,24 +47,66 @@ none fits.
   pane is what the user is looking at — and returns the error. Empty steps
   clear the column and emit the empty-steps clear only when something was
   stored.
+- `permission_notices.go` — Claude's permission-notice family
+  (`permission_denied` / `permission_retry`), told apart by `meta.kind` the
+  way the model-fallback family is. It forwards the notice's fields onto the
+  persisted notification meta as a WHITELIST, never a second set of bounds:
+  the parser already truncates every field
+  (`claude/parse_system.go#maxClaudePermission*`), and a duplicate copy of
+  those numbers here was only a way for the two to disagree.
+  `TestPermissionNoticeKindsMatchTheProviderConstants` pins the shared
+  discriminator vocabulary across the provider boundary — triage may not
+  import a provider package for a term, so the pin parses the source instead.
+  A `permission_denied` also cross-references the tool_call row it explains
+  (`annotateDeniedToolCall`): meta plus `items.decision = declined`, never a
+  status write, because the denied tool still gets a real tool_result.
 - `model_fallback.go` — provider classifier/safety fallback handling:
   persists the bounded warning reason, projects the session-scoped effective
   model without overwriting the requested thread model, and clears that live
-  projection when the provider session ends.
+  projection when the provider session ends. Three wire subtypes share the
+  event and the row shape but NOT the persisted kind — `model_fallback`
+  (unavailable), `model_consent_fallback` (credits/consent, which also carries
+  `choice` + `persistedAsDefault`) and `model_refusal_fallback` (safety) are
+  forwarded verbatim, because the row's whole job is to report the CAUSE. An
+  unknown subtype falls back to the refusal kind: the frontend has no branch
+  for it, and under-reporting a safety refusal is the worse mistake.
 - `tool_lifecycle.go` — tool-call launch/completion rows,
   background-task pairing (Claude), summary/status derivation.
-- `codex_background.go` — Codex-specific background projection.
-  Tracks unifiedExec commands as transient running-tray state, clears
-  typed completions from live state, and persists the normal command row
-  using the original item id only while a Codex wire round is active.
-  Terminal interactions persist only waited/interacted marker rows while a
-  unifiedExec tracker is live. Pending unifiedExec commands are tray-visible
-  before a typed wait but only become backgrounded after that wire-typed
-  wait signal. Spawn-agent starts are tracker-only; terminal
-  spawn completions create the visible transcript row and may later use
-  background sibling completion rows. Authorized by the wire-typed signals
-  enriched onto Meta in
+- `codex_background.go` / `codex_background_exec.go` /
+  `codex_background_subagents.go` — Codex-specific background projection.
+  `codex_background.go` holds what both halves share: the
+  per-thread correlation state, its constructor/accessor, the tray-changed
+  emit, and the two tool-lifecycle entry points (`observeCodexToolStart` /
+  `observeCodexToolComplete`) that dispatch into either half.
+  `codex_background_exec.go` owns unifiedExec: commands are transient
+  running-tray state, typed completions clear live state and persist the
+  normal command row using the original item id only while a Codex wire round
+  is active, and terminal-wait carriers persist only waited/interacted marker
+  rows while a tracker is live. Pending unifiedExec commands are tray-visible
+  before a typed wait but only become backgrounded after that wire-typed wait
+  signal. `codex_background_subagents.go` owns spawns: spawn-agent starts are
+  tracker-only, terminal spawn completions create the visible transcript row
+  and may later use background sibling completion rows, `wait_agent`
+  resolution lands there, and so do the persisted-launch lookups every other
+  spawn path resolves through. Authorized by the
+  wire-typed signals enriched onto Meta in
   `internal/provider/codex/protocol.go` (see invariant 25).
+- `codex_background_mailbox.go` — the mailbox half of the spawn projection:
+  Codex's injected `<subagent_notification>` closure signal. A FINAL_ANSWER
+  delivery records terminal status on the owning launch and synthesizes the
+  transcript completion row once every child in that spawn is terminal; a
+  `MESSAGE` progress beat must do NEITHER and lands as a sub-line instead.
+  `codexMailboxCompletionID` is the row identity one delivery gets, and the
+  launch resolution both paths share lives here too.
+- `codex_background_interactions.go` — the bounded ordered list the spawn
+  card renders as sub-lines (`codex_collab_interactions`), its ids-only
+  eviction ledger, the per-child resume-generation counter every per-child
+  ordinal is minted from, and the `send_input` completion path that appends
+  to it. See "Collab interactions" below.
+- `codex_background_meta.go` — the pure decoders and formatters the three
+  projection files share: `codexItemMeta` / `codexSubagentSignalMeta` and
+  their decoders, the child terminal-status readers, and the completion
+  status / summary / outcome builders. No Router receiver, no store.
 - `terminal_interaction.go` — Codex-specific "Waited for background
   terminal" row persistence. Handles `EventTerminalInteraction` for
   the empty-stdin (polling) variant emitted when the model calls
@@ -213,6 +255,9 @@ none fits.
 | Compaction status | Live-only `provider:compacting` window per thread (open on Active frames, closed by close frame / compact boundary / turn completion); nothing persists. Snapshot-carried for reconnect. See `compaction_status.go`. |
 | Slash-command list (Claude) | Live-only `provider:commands` from `system/init` and `commands_changed`; nothing persists. Absence is silence, never an empty palette. See `provider_commands.go`. |
 | Todo list (Claude TodoWrite / Task\*, Codex update_plan) | `provider:todo_update` to the frontend + the whole list onto `threads.live_todo` (v65); no timeline row ever. SQLite is its source of truth — it survives session teardown and app restart, and `GetThreadLiveState` reads it from the store, not from triage. Empty steps clear the column and emit a clear only when something was stored. See `timeline_notifications.go`. |
+| Permission notice (Claude) | `notification` row per `meta.kind` (`permission_denied` / `permission_retry`) with the notice's own fields forwarded; a denial ALSO stamps `permissionDenied` meta + `items.decision = declined` onto the tool_call row it explains, never its status. See `permission_notices.go`. |
+| Model fallback (Claude) | `notification` row keyed on the WIRE SUBTYPE (`model_fallback` / `model_consent_fallback` / `model_refusal_fallback`) + the session-scoped effective-model projection. Never flattened to one kind — the cause is what the row reports. See `model_fallback.go`. |
+| User echo with an external origin (`origin: external-queue`) or peer provenance (`cross_session_message`) | A real `user_text` row with a named author, NOT "Injected provider context". These reach the top-level wire-only branch for a structural reason — the producer minted the uuid, so no pending send can match — but their provenance is POSITIVELY known. Everything else unmatched stays injected context. See `handle_user_text.go`. |
 | Command result (Claude local command) | `command_result` item (role `system`, status `completed`) + on-demand payload above the inline bound. Idempotent on the provider message id so the `result` echo does not duplicate it. See `command_result.go`. |
 | Session wakeup (Claude) | Per-thread pending-wakeup fire time in router state only — nothing persists, nothing emits. Consumed by the idle reaper via `PendingWakeupAt`. See `session_wakeup.go`. |
 | Codex unifiedExec / spawn_agent | unifiedExec starts are transient running-tray state; typed command completions clear live state and persist normal command rows using the original item id only while a Codex wire round is active. Spawn-agent starts are pending-only; terminal spawn completions persist the visible row and use sibling `tool_completion` rows. See `codex_background.go` + invariant 25. |
@@ -416,6 +461,56 @@ Use these categories when adding or moving state:
   paths that start a thread's next session from scratch on the SAME row
   (rollback, provider switch) call `ResetThreadTodo` so a dead list's
   ids can never seed against a session that will mint them again.
+
+### Collab interactions on the Codex spawn card
+
+MultiAgentV2 has no per-interaction transcript row, so a parent -> child
+message, a child -> parent progress beat, and a child resume are recorded ON
+the owning spawn launch as a bounded ordered list under
+`codex_collab_interactions` (`codex_background_interactions.go`). Rules:
+
+- **The three `kind` values are wire constants.** They are persisted in
+  `items.meta` and consumed verbatim by the frontend's
+  `COLLAB_INTERACTION_KINDS`; a rename on either side silently BLANKS every
+  stored sub-line rather than erroring, so
+  `TestCodexCollabInteractionKindsMatchTheFrontendMirror` parses the TS.
+- **`mergeCodexCollabInteraction` is the one upsert-and-bound rule.** Both
+  writers go through it — the persisting wrapper and the resume path, which
+  folds its entry into a larger meta merge. Entries are idempotent by id.
+- **The stored cap (`maxCodexCollabInteractions`) is deliberately larger than
+  what the card renders.** Everything past it is gone from SQLite for good, so
+  the headroom is what lets the visible window grow without a migration.
+- **Idempotency outlives the cap, and its horizon is DECOUPLED from the
+  rendered one.** The upsert only sees the retained tail, so a duplicate
+  arriving after its original was trimmed (reconnect replay, duplicate
+  completion leg) would append as the NEWEST sub-line and evict a live one.
+  `codex_collab_interactions_evicted` is the bounded ledger of what fell off;
+  an entry named there is dropped, not re-recorded. It stores a 4-byte digest
+  of each id (`codexCollabInteractionEvictedDigest`) and reads BOTH that and
+  the raw ids older rows hold, which is what pays for a horizon four times the
+  retained cap at less meta than the raw-id ledger it replaced.
+  `maxCodexCollabInteractionsEvicted` must stay strictly greater than
+  `maxCodexCollabInteractions`: tying them together (it was `=` once) means the
+  entry `maxCodexCollabInteractions + 1` positions back is in NEITHER structure,
+  so the exact failure the ledger exists to prevent simply reappears at a higher
+  count. A digest collision costs one dropped sub-line, never a wrong one — the
+  direction the ledger already errs in. Past the horizon a replay is
+  unrecognisable again; that is the bound's price, not an oversight.
+- **A PLAINTEXT progress note keeps its body; an encrypted one has none.** The
+  raw carrier is projected as an internal event and nothing else persists that
+  text, so an empty `text` means "no body on the wire", never "the child said
+  nothing".
+- **Every per-child ordinal comes from the durable generation counter, never
+  from a list position.** The `resumed` sub-line's id is
+  `resumed:<child>:<codex_child_resume_generations[child]>`. Counting the
+  retained `resumed` entries instead walks BACKWARDS after the first trim, so
+  every later resume re-mints one id and the upsert folds them onto a single
+  sub-line.
+- **Row identity for a mailbox delivery mixes the child's resume generation.**
+  `codexMailboxCompletionID` is otherwise a pure content hash, which collapsed
+  a child that legitimately answered identically twice. The generation is
+  durable launch meta (`codex_child_resume_generations`), never an in-memory
+  counter, so both carriers of ONE delivery still agree.
 
 If a new map represents user-blocking live state, add it to
 `HasPendingWork` in `interactive_requests.go` and cover it in

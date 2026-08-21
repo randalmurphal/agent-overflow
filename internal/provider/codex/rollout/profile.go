@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 
 	"agent-overflow/internal/importir"
@@ -50,9 +51,19 @@ func ReadLatestProfile(ctx context.Context, path string) (importir.ModelProfile,
 		return importir.ModelProfile{}, fmt.Errorf("rollout: open %s for profile: %w", path, err)
 	}
 	defer file.Close()
+	return ReadLatestProfileAt(ctx, file, path)
+}
 
+// ReadLatestProfileAt is ReadLatestProfile over a handle the caller already
+// holds, for the same single-file reason as ReadSourceIdentityAt: a refresh
+// that proves identity, reads a tail, and repairs a profile must do all three
+// against ONE inode, or a rollout replaced between two of them contributes
+// half its answer.
+//
+// Reads are positional, so the caller's own file offset is untouched.
+func ReadLatestProfileAt(ctx context.Context, file io.ReaderAt, path string) (importir.ModelProfile, error) {
 	var profile profileAccumulator
-	scanner := newScanner(file, 0, DefaultMaxLineBytes, scanBufferSize)
+	scanner := newScanner(io.NewSectionReader(file, 0, math.MaxInt64), 0, DefaultMaxLineBytes, scanBufferSize)
 	for lines := 0; ; lines++ {
 		if lines%512 == 0 {
 			if err := ctx.Err(); err != nil {

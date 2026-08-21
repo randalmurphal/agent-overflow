@@ -188,7 +188,7 @@ func approvalSummary(request provider.ApprovalRequest) string {
 }
 
 func approvalDeclinesExecution(decision string) bool {
-	return decision == "declined"
+	return decision == statusDeclined
 }
 
 func approvalLosesExecution(decision string) bool {
@@ -294,9 +294,9 @@ func (r *Router) applyApprovalDecision(
 			}
 		}
 		if approvalDeclinesExecution(decision) && item.Status != statusCompleted && item.Status != statusErrored {
-			item.Status = "declined"
+			item.Status = statusDeclined
 		}
-		if approvalLosesExecution(decision) && item.Status != statusCompleted && item.Status != "declined" {
+		if approvalLosesExecution(decision) && item.Status != statusCompleted && item.Status != statusDeclined {
 			item.Status = statusErrored
 		}
 		item.UpdatedAt = now
@@ -316,7 +316,7 @@ func (r *Router) applyApprovalDecision(
 		itemID,
 		stringsx.FirstNonEmptyTrimmed(request.ToolName, "tool"),
 		approvalSummary(request),
-		"declined",
+		statusDeclined,
 		now,
 	)
 	if err != nil {

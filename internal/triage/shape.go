@@ -240,7 +240,7 @@ func CompletionSuffix(meta ToolCompleteMeta) string {
 		return "(errored)"
 	case meta.ItemStatus == "killed":
 		return "(killed)"
-	case meta.ItemStatus == "declined":
+	case meta.ItemStatus == statusDeclined:
 		return "(declined)"
 	default:
 		return ""
@@ -254,8 +254,8 @@ func CompletionStatus(meta ToolCompleteMeta) string {
 	if meta.IsError || meta.ItemStatus == "failed" || meta.ItemStatus == "errored" || meta.ItemStatus == "killed" {
 		return statusErrored
 	}
-	if meta.ItemStatus == "declined" {
-		return "declined"
+	if meta.ItemStatus == statusDeclined {
+		return statusDeclined
 	}
 	return statusCompleted
 }

@@ -27,6 +27,9 @@ func (c *converter) convertEventMsg(env envelope) {
 		c.applyTokenCount(env)
 
 	case "user_message":
+		if c.paginated {
+			return
+		}
 		var p userMessagePayload
 		if json.Unmarshal(env.Payload, &p) != nil {
 			c.corrupt++
@@ -34,6 +37,9 @@ func (c *converter) convertEventMsg(env envelope) {
 		}
 		c.emitUserText(p.Message)
 	case "agent_message":
+		if c.paginated {
+			return
+		}
 		var p agentMessagePayload
 		if json.Unmarshal(env.Payload, &p) != nil {
 			c.corrupt++
@@ -41,6 +47,9 @@ func (c *converter) convertEventMsg(env envelope) {
 		}
 		c.emitAssistantText(p.Message)
 	case "agent_reasoning":
+		if c.paginated {
+			return
+		}
 		var p agentReasoningPayload
 		if json.Unmarshal(env.Payload, &p) != nil {
 			c.corrupt++
@@ -146,44 +155,6 @@ func reviewSummary(title, hint string) string {
 	return title + ": " + hint
 }
 
-// applyItemCompleted handles the only two item kinds Codex persists a
-// completion for (Plan and Sleep — see rollout/src/policy.rs). A Plan becomes
-// the same proposed-plan event a live session produces rather than a generic
-// notification, so an imported plan renders in the plan card.
-func (c *converter) applyItemCompleted(env envelope) {
-	var p itemCompletedPayload
-	if json.Unmarshal(env.Payload, &p) != nil || len(p.Item) == 0 {
-		c.countUnknown(env)
-		return
-	}
-	var header turnItemHeader
-	if json.Unmarshal(p.Item, &header) != nil {
-		c.countUnknown(env)
-		return
-	}
-	turnID := strings.TrimSpace(p.TurnID)
-	switch strings.ToLower(header.Type) {
-	case "plan":
-		if strings.TrimSpace(header.Text) == "" {
-			return
-		}
-		c.ensureTurn()
-		c.emit(provider.ProviderEvent{
-			Kind:      provider.EventProposedPlan,
-			TurnID:    turnID,
-			ItemID:    header.ID,
-			ItemType:  "plan",
-			Content:   header.Text,
-			Meta:      p.Item,
-			Timestamp: c.lastTimestamp,
-		})
-	case "sleep":
-		c.emitNotification("Agent paused", map[string]any{"kind": "sleep"}, "")
-	default:
-		c.unknown["event_msg/item_completed/"+header.Type]++
-	}
-}
-
 // ------------------------------------------------------------ response_item
 
 func (c *converter) convertResponseItem(env envelope) {
@@ -208,12 +179,19 @@ func (c *converter) convertResponseItem(env envelope) {
 // convertMessage handles `response_item/message`, the model-context mirror of
 // the conversation.
 //
-// Modern rollouts carry BOTH this mirror and the `event_msg` record for the
-// same message, and the mirror is the worse source: it also contains developer
-// and system injections the user never typed. So it is used only as a fallback
-// for files old enough to carry no `event_msg` messages at all.
+// LEGACY rollouts carry BOTH this mirror and the `event_msg` record for the
+// same message, and there the mirror is the worse source: it also contains
+// developer and system injections the user never typed. So it is used only as
+// a fallback for files old enough to carry no `event_msg` messages at all.
+//
+// PAGINATED rollouts invert that. The legacy `user_message` / `agent_message`
+// records are not persisted at all in that mode, so this mirror is the whole
+// conversation — and it is also preferred over the `item_completed` records
+// that replaced them, for the reasons items.go sets out. `hasEventMsgMessage`
+// therefore stops gating once the file declares itself paginated: deferring to
+// a twin that does not exist would drop every message in the thread.
 func (c *converter) convertMessage(env envelope) {
-	if c.pre.hasEventMsgMessage {
+	if !c.paginated && c.pre.hasEventMsgMessage {
 		return
 	}
 	var p messagePayload
@@ -272,7 +250,7 @@ func isInjectedContext(text string) bool {
 // the file also carries the `event_msg/agent_reasoning` twin — which repeats
 // the same text verbatim.
 func (c *converter) convertReasoning(env envelope) {
-	if c.pre.hasEventMsgReasoning {
+	if !c.paginated && c.pre.hasEventMsgReasoning {
 		return
 	}
 	var p reasoningPayload

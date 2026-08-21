@@ -34,6 +34,74 @@ import "strings"
 //	                      (options.go); Claude's flagSettings source outranks
 //	                      the subprocess environment, so a value in the
 //	                      environment would be silently ignored.
+//	CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH, CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS,
+//	CLAUDE_CODE_TOOL_MEMORY_LIMIT
+//	                    — rendered into `--settings` by inlineSettingsForCLI
+//	                      from the Claude subagent-limit / tool-memory
+//	                      settings; same flagSettings precedence, so a
+//	                      value in the environment would be silently
+//	                      ignored. CLAUDE_CODE_TOOL_MEMORY_LIMIT takes
+//	                      effect only when the CLI runs on Linux (the WSL
+//	                      backend included) — it is implemented as a
+//	                      memory cgroup write.
+//	CLAUDE_CODE_DISABLE_1M_CONTEXT
+//	                    — not set by Agent Overflow at all, and reserved for
+//	                      the opposite reason: when it IS set the CLI drops
+//	                      the `[1m]` model suffix AO appends to request the
+//	                      1M-token tier, so the thread's context-window axis
+//	                      would report and bill against a window the session
+//	                      never got. A silently-lied-about window is worse
+//	                      than a refused save.
+//	CLAUDE_CODE_RESUME_INTERRUPTED_TURN
+//	                    — not set by Agent Overflow either, and reserved
+//	                      because it changes what a RESUME keeps. With it
+//	                      set, the CLI's deserialization additionally drops
+//	                      the user rows carrying a shutdown's synthetic
+//	                      tool_results (`shutdownUnwindResultsDoNotResolve`,
+//	                      2.1.236+). AO's resume-filter mirror
+//	                      (claude/sessionleaf_resumefilters.go) does not
+//	                      model that pass, so under this variable it would
+//	                      bless a `--resume-session-at` cursor the CLI is
+//	                      about to discard — the pre-init "No message found
+//	                      with message.uuid of:" brick that leaves a thread
+//	                      unresumable (incident 2026-08-03). Refusing the
+//	                      save is the honest answer until the mirror grows
+//	                      the pass.
+//	CLAUDE_CODE_HARBOR_KITE
+//	                    — exported "1" by claude.NewSession when the
+//	                      cross-session messaging setting is on
+//	                      (options.go withClaudeCrossSessionEnv). It is
+//	                      the CLI's one environment override for the
+//	                      GrowthBook gate that binds the peer inbox, and
+//	                      it goes in the real subprocess environment
+//	                      rather than the `--settings` env block because
+//	                      the bind runs during setup — the block's
+//	                      re-application is not proven to precede it, and
+//	                      the plain variable IS proven to work
+//	                      (spike 2026-08-21, 2.1.237). Reserved because it
+//	                      is the whole ON switch: a user value would make a
+//	                      thread discoverable and addressable by every
+//	                      other Claude session on the host while the
+//	                      setting says the feature is off.
+//	CLAUDE_CODE_SESSION_NAME
+//	                    — not set by Agent Overflow, which passes `--name`
+//	                      instead (both feed the same sanitizer and the
+//	                      same peer registry). Reserved because the name is
+//	                      DERIVED PER THREAD and kept in step with the
+//	                      thread title through `/rename`: one value in the
+//	                      custom environment would give every thread the
+//	                      same peer-visible name, and the CLI's
+//	                      collision-yield would then rename them out from
+//	                      under the app.
+//	CLAUDE_CODE_USER_DIALOG_TIMEOUT_MS
+//	                    — not set by Agent Overflow either. It bounds how
+//	                      long a HELD peer message waits before being
+//	                      dropped with an expired receipt. AO always sends
+//	                      an explicit `crossSessionInbound` (accept or
+//	                      refuse, never hold or unset) precisely so nothing
+//	                      is ever held, and reserving the name keeps a
+//	                      custom value from quietly re-timing a drop that
+//	                      produces no output at all.
 //	CODEX_HOME          — cleared by codex.NewSession (session.go),
 //	                      ProbeAccount / ProbeIdentity, the model catalog
 //	                      fetcher, and the MCP status fetcher; set to a
@@ -73,6 +141,14 @@ func ReservedEnvNames(providerName string) []string {
 			"CLAUDE_CODE_ENTRYPOINT",
 			"CLAUDE_AUTOCOMPACT_PCT_OVERRIDE",
 			"CLAUDE_CODE_AUTO_COMPACT_WINDOW",
+			"CLAUDE_CODE_DISABLE_1M_CONTEXT",
+			"CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH",
+			"CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS",
+			"CLAUDE_CODE_TOOL_MEMORY_LIMIT",
+			"CLAUDE_CODE_RESUME_INTERRUPTED_TURN",
+			"CLAUDE_CODE_HARBOR_KITE",
+			"CLAUDE_CODE_SESSION_NAME",
+			"CLAUDE_CODE_USER_DIALOG_TIMEOUT_MS",
 		)
 	case string(Codex):
 		return append(shared, "CODEX_HOME")

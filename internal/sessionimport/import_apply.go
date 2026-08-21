@@ -76,6 +76,8 @@ func (im *sessionImporter) add(plan branchPlan) error {
 		SourceParentSessionID: im.row.ParentSessionID,
 		LeafUUID:              plan.leafUUID,
 		ImportedAt:            im.importedAt,
+		SourceMetaHash:        plan.identity.MetaHash,
+		SourceHistoryMode:     plan.identity.HistoryMode,
 	}
 	cursor.Apply(&state)
 	if err := im.store.SetThreadImportState(state); err != nil {

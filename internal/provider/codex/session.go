@@ -15,6 +15,16 @@ import (
 	"agent-overflow/internal/provider"
 )
 
+// session.go — the shared Session state and the accessors over it: the struct
+// every other file in this package reaches through, the Config it is built
+// from, the serialized event-emission gate, the root-thread-id atomic, the
+// MCP handler registrations and their retained startup states, and Close,
+// which drops the session-scoped maps field by field.
+//
+// The two sequences that operate on this state live beside it:
+// session_start.go builds a Session and gives it a thread, and
+// session_turn.go serves the turn verbs on a live one.
+
 // ErrApprovalAlreadyResolved is returned by RespondToApproval when the
 // request ID has already been answered. Prevents a second write landing
 // at the provider with a stale decision.
@@ -144,6 +154,52 @@ type Session struct {
 	// clearTurnStart on EventTurnComplete so re-used turn IDs (rare,
 	// typically across resumed sessions) can fire fresh.
 	seenTurnStarts map[string]struct{}
+	// turnOrigins / pendingLocalTurnStarts answer "did WE start this turn?"
+	// for every `turn/started` that arrives. A codex app-server can start a
+	// turn on its own from the external queue (external_turns.go), and the
+	// answer decides whether the echoed user message is marked as injected.
+	// Both guarded by mu; entries are dropped on turn completion.
+	turnOrigins            map[string]turnOrigin
+	pendingLocalTurnStarts int
+	// ambiguousLocalTurnStarts counts how many of those pending claims are
+	// held ONLY because a `turn/start` request timed out after its write —
+	// the turn may exist, so the claim is deliberately not released
+	// (abandonLocalTurnStart's doc). Tracked separately because such a claim
+	// is the one that can outlive every turn it could have described, and a
+	// surplus claim is eventually consumed by an unrelated `turn/started` —
+	// telling the user an externally injected turn was their own. Reconciled
+	// the moment something proves the turn dead; see
+	// dropAmbiguousLocalTurnStartsLocked.
+	ambiguousLocalTurnStarts int
+	// selfQueuedSubmissions / reportedForeignSubmissions back the
+	// provider-native user-message queue (thread_queue.go). The first is the
+	// ledger of claims for submissions AO itself put in the provider's queue —
+	// each one is a turn this session will see START without having asked
+	// for it, and consuming a claim is what keeps that turn out of the
+	// external-origin bucket. Claims are consumed by CLIENT ID (the
+	// dispatched turn's `userMessage` echoes it back), not by position: a
+	// foreign row ahead of AO's in the provider FIFO would otherwise eat
+	// AO's claim. The second dedupes the "queued from outside
+	// Agent Overflow" notice per foreign submission id, because the queue is
+	// re-listed on every change. Both guarded by mu; the first is bounded by
+	// maxSelfQueuedClaims (and REFUSES the add at the cap rather than
+	// dropping a live claim), the second by maxReportedForeignSubmissions.
+	//
+	// The claim ledger maps clientUserMessageId → the server-assigned
+	// submission id (empty until the add's response binds it). A map, not a
+	// slice: nothing reads it by position, and a keyed store cannot evict a
+	// live claim to make room for a new one.
+	selfQueuedSubmissions      map[string]string
+	reportedForeignSubmissions map[string]struct{}
+	// queueListInflight / queueListDirty single-flight the
+	// `thread/queue/changed` reconciliation. Every AO mutation and every
+	// automatic dispatch raises a change, so without this an N-message queue
+	// would spawn 2N goroutines each walking up to queueListPageCap paginated
+	// list RPCs. Dirty re-runs the walk once when a change lands while one is
+	// already in flight, so the last notification is never the one that gets
+	// dropped. Guarded by mu.
+	queueListInflight bool
+	queueListDirty    bool
 	// usageAcct derives per-turn token usage from the cumulative
 	// thread/tokenUsage/updated totals (see usage_accounting.go).
 	// Read-loop goroutine only — observed in dispatchNotification and
@@ -179,11 +235,16 @@ type Session struct {
 	// `internal/triage/codex_background.go` on the first model-produced
 	// yield or at the turn-close catchall — this session package only
 	// surfaces the wire fields; it doesn't project them.
-	childParentByThread       map[string]string
-	childParentByAgentPath    map[string]string
-	childThreadByAgentPath    map[string]string
-	childPathOwnerLive        map[string]bool
-	agentPathByThread         map[string]string
+	childParentByThread    map[string]string
+	childParentByAgentPath map[string]string
+	childThreadByAgentPath map[string]string
+	childPathOwnerLive     map[string]bool
+	agentPathByThread      map[string]string
+	// childTurnGenerations counts each owned child's `turn/started`
+	// notifications, keyed by canonical agent path where one is known and by
+	// provider thread id otherwise. It is the child-turn tiebreak in
+	// subagentNotificationDedupKey; nothing else reads it.
+	childTurnGenerations      map[string]uint64
 	agentMetaByThread         map[string]collabReceiverMeta
 	subagentNotificationDedup map[subagentNotificationDedupKey]struct{}
 	// childLifecycleMu serializes live and recovered child status emission.
@@ -277,6 +338,33 @@ type Session struct {
 	// binary-scoped read (skills) can match on it rather than assuming the
 	// current setting still describes a process that started earlier.
 	binary string
+	// appServerVersion is the codex build the LIVE process reports at
+	// `initialize` (`InitializeResponse.userAgent`), parsed by
+	// recordAppServerVersion. Atomic for the same reason codexThreadID is:
+	// readLoop is already running when the handshake answers, and a
+	// per-method version gate must be readable from any goroutine without
+	// taking mu. "" means "could not be determined", which every gate
+	// treats as too old — see app_server_version.go.
+	appServerVersion atomic.Pointer[string]
+	// threadHistoryMode is the `thread.historyMode` this session's thread
+	// reported on its start/resume response, recorded by
+	// recordThreadHistoryMode. Atomic for the same reason appServerVersion
+	// is. "" means the app-server did not state one, which every gate
+	// treats as not-paginated — see session_revert.go.
+	threadHistoryMode atomic.Pointer[string]
+	// pendingRevert is the in-place history cut this session has asked for
+	// and not yet seen echoed. `thread/reverted` carries only a thread id,
+	// so this is the only thing that can tell a solicited cut from a
+	// foreign one — see session_revert.go.
+	pendingRevert atomic.Pointer[revertExpectation]
+	// threadQueueNative freezes, at handshake time, whether this session
+	// hands mid-turn user messages to the provider's own `thread/queue/*`
+	// (codex >= 0.148) instead of AO's in-process flushqueue. Atomic for the
+	// same reason appServerVersion is — the app-layer dispatcher reads it off
+	// its own goroutine — and written exactly once, by
+	// recordThreadQueueSupport, because the two queues must be mutually
+	// exclusive for the whole life of the session.
+	threadQueueNative atomic.Bool
 }
 
 // Binary returns the codex CLI path this session's app-server process was
@@ -395,6 +483,27 @@ type Config struct {
 	// to provider spawns through this instead of the process env.
 	Env         map[string]string
 	EventLogger *logging.Logger
+	// BeforeResume runs on a RESUME only, after the initialize handshake and
+	// BEFORE the `thread/resume` that loads the thread. Never on a fresh
+	// `thread/start` — there is nothing on the other side to reconcile with.
+	//
+	// It exists for one window, and the window is real rather than tidy:
+	// `thread/resume` LOADS the thread, and a loaded thread's idle hook is
+	// what drains its provider-side queue (`QueuedItemService::on_thread_idle`
+	// → `start_turn_if_idle`). Anything that has to be true before the first
+	// queued turn can start — the self-queued claim ledger a resumed session
+	// rebuilds, a rollback's purge of rows the user just removed — has to be
+	// true HERE, not after NewSession returns. `thread/queue/list` and
+	// `thread/queue/delete` both answer for an unloaded thread (upstream's
+	// `require_thread` falls back to a thread-store read and the listing is a
+	// plain SQLite page read), which is what makes this side of the resume a
+	// usable place to ask.
+	//
+	// Synchronous, and its failures are its own: the hook runs inside
+	// NewSession's handshake sequence, so anything slow here delays the
+	// session, and returning nothing means a hook cannot fail a session that
+	// is otherwise fine.
+	BeforeResume func(*Session)
 }
 
 // emitEvent preserves the provider callback's serialized-delivery contract
@@ -410,354 +519,6 @@ func (s *Session) emitEventLocked(event provider.ProviderEvent) {
 		return
 	}
 	s.onEvent(event)
-}
-
-// NewSession spawns codex app-server, performs the initialize handshake,
-// and starts (or resumes) a thread. Returns after handshake completes.
-func NewSession(ctx context.Context, threadID string, cfg Config, onEvent func(provider.ProviderEvent)) (*Session, error) {
-	binary := cfg.Binary
-	if binary == "" {
-		binary = "codex"
-	}
-
-	childCtx, cancel := context.WithCancel(ctx)
-
-	proc, err := provider.Spawn(childCtx, provider.SpawnConfig{
-		Binary:           binary,
-		Args:             codexAppServerArgs(),
-		Dir:              cfg.WorkDir,
-		Env:              cfg.Env,
-		UnsetEnv:         []string{"CODEX_HOME"},
-		EventLogger:      cfg.EventLogger,
-		EventLogRedactor: newCodexProviderEventLogRedactor(),
-		ThreadID:         threadID,
-		Provider:         string(provider.Codex),
-	})
-	if err != nil {
-		cancel()
-		return nil, fmt.Errorf("codex: spawn: %w", err)
-	}
-
-	s := &Session{
-		proc:                      proc,
-		ctx:                       childCtx,
-		threadID:                  threadID,
-		binary:                    binary,
-		model:                     cfg.Model,
-		usageAcct:                 newUsageAccounting(cfg.ResumeThreadID != ""),
-		reasoningEffort:           cfg.ReasoningEffort,
-		serviceTier:               cfg.ServiceTier,
-		assertedServiceTier:       cfg.ServiceTier,
-		approvalPolicy:            cfg.ApprovalPolicy,
-		sandbox:                   cfg.Sandbox,
-		approvalsReviewer:         threadApprovalsReviewer(cfg),
-		pending:                   make(map[int64]chan json.RawMessage),
-		onEvent:                   onEvent,
-		cancel:                    cancel,
-		readDone:                  make(chan struct{}),
-		childParentByThread:       make(map[string]string),
-		childParentByAgentPath:    make(map[string]string),
-		childThreadByAgentPath:    make(map[string]string),
-		childPathOwnerLive:        make(map[string]bool),
-		agentPathByThread:         make(map[string]string),
-		agentMetaByThread:         make(map[string]collabReceiverMeta),
-		subagentNotificationDedup: make(map[subagentNotificationDedupKey]struct{}),
-		collabMetadataReads:       make(chan struct{}, 4),
-		rawToolCallsByID:          make(map[string]rawToolCall),
-		waitReceiverIDsByCall:     make(map[string][]string),
-		deferredChildWireEvents:   make(map[string][]deferredChildWireEvent),
-		deferredChildDeadlines:    make(map[string]*time.Timer),
-		collabHistoryGeneration:   1,
-		collabHistoryVisited:      make(map[string]uint64),
-		planBuffersByItemID:       make(map[string]*planBuffer),
-		planBuffersByTurnID:       make(map[string]*planBuffer),
-	}
-	// On resume the root provider id is already durable in AO. Seed it before
-	// the read loop starts so child notifications racing the thread/resume
-	// response are quarantined instead of being mistaken for root events. A
-	// fresh thread cannot have children before NewSession returns.
-	if cfg.ResumeThreadID != "" {
-		s.setRootThreadID(cfg.ResumeThreadID)
-	}
-
-	// Start stdout reader goroutine before sending any requests.
-	go s.readLoop()
-
-	// Initialize handshake. The opt-out list is the complement of what
-	// this package consumes, so Codex stops emitting the ~30 notification
-	// methods we would otherwise parse, route and drop per app-server
-	// (one per thread).
-	_, err = s.sendRequest(ctx, "initialize",
-		codexInitializeParams(provider.CodexClientOrigin, sessionOptOutNotificationMethods()))
-	if err != nil {
-		s.Close()
-		return nil, fmt.Errorf("codex: initialize handshake failed: %w", err)
-	}
-
-	// Send initialized notification (no id, no response expected).
-	if err := s.writeNotification("initialized", nil); err != nil {
-		s.Close()
-		return nil, fmt.Errorf("codex: send initialized notification: %w", err)
-	}
-
-	// Start or resume thread.
-	threadParams := buildThreadParams(cfg)
-	var method string
-	if cfg.ResumeThreadID != "" {
-		method = "thread/resume"
-		threadParams["threadId"] = cfg.ResumeThreadID
-	} else {
-		method = "thread/start"
-		threadParams["experimentalRawEvents"] = true
-	}
-
-	resp, err := s.sendRequest(ctx, method, threadParams)
-	if err != nil {
-		s.Close()
-		return nil, fmt.Errorf("codex: %s failed: %w", method, err)
-	}
-
-	// Extract the Codex thread ID from response. s.threadID is already set
-	// from the struct literal above; re-assigning it here would be a write
-	// racing every read-loop read of it for no change in value.
-	responseThreadID := readNestedString(resp, "thread", "id")
-	if responseThreadID == "" {
-		log.Printf("codex: %s response missing thread.id; response: %s", method, string(resp))
-		s.Close()
-		return nil, fmt.Errorf("codex: %s: response did not contain a thread ID", method)
-	}
-	if seeded := s.rootThreadID(); seeded != "" && seeded != responseThreadID {
-		s.Close()
-		return nil, fmt.Errorf("codex: %s: response thread ID %q does not match requested thread %q", method, responseThreadID, seeded)
-	}
-	if err := verifyApprovalsReviewerEcho(method, threadApprovalsReviewer(cfg), resp); err != nil {
-		s.Close()
-		return nil, err
-	}
-	s.setRootThreadID(responseThreadID)
-	if method == "thread/resume" {
-		s.rehydrateCollabOwnershipFromThreadResponse(resp)
-		s.startRolloutSubagentNotificationObserver(readNestedString(resp, "thread", "path"))
-	}
-
-	meta, _ := json.Marshal(provider.SessionInfo{
-		SessionID: s.rootThreadID(),
-		Model:     cfg.Model,
-		CWD:       cfg.WorkDir,
-	})
-	s.emitEvent(provider.ProviderEvent{
-		Kind:      provider.EventInit,
-		ThreadID:  threadID,
-		Meta:      meta,
-		Timestamp: time.Now(),
-	})
-
-	return s, nil
-}
-
-// Send sends a user turn via turn/start.
-//
-// The JSON-RPC response does not directly drive an EventTurnStart: the
-// app-server reliably follows turn/start with a turn/started notification
-// that ClassifyNotification turns into the event. Emitting here as well
-// produced two EventTurnStart per user send (Bug B6). We still record the
-// turn ID locally so Interrupt has something to cancel even if the
-// notification has not yet arrived.
-func (s *Session) Send(ctx context.Context, content string, opts provider.SendOptions) error {
-	input, err := buildTurnInput(content, opts.Attachments)
-	if err != nil {
-		return err
-	}
-
-	cfg := s.turnConfig()
-	params := map[string]any{
-		"threadId":          s.rootThreadID(),
-		"input":             input,
-		"collaborationMode": codexCollaborationMode(opts.InteractionMode, cfg.Model, cfg.ReasoningEffort),
-	}
-	if len(opts.OutputSchema) > 0 {
-		params["outputSchema"] = opts.OutputSchema
-	}
-	// Per-turn config overrides — Codex's TurnStartParams takes `model`,
-	// `effort`, `serviceTier`, `approvalPolicy`, and `sandboxPolicy` at the
-	// top level, each documented upstream as applying "for this turn and
-	// subsequent turns". Threading them here (rather than only at
-	// thread-start) means a mid-session change from the composer
-	// (ApplyLiveUpdate) takes effect on the very next turn without a
-	// session restart. Empty means "inherit the thread default set during
-	// thread/start".
-	if cfg.Model != "" {
-		params["model"] = cfg.Model
-	}
-	if cfg.ReasoningEffort != "" {
-		params["effort"] = cfg.ReasoningEffort
-	}
-	// `serviceTier` is a double option upstream: omitting it means "leave the
-	// thread's tier alone", so switching fast mode OFF has to send an
-	// explicit null or the tier the previous ON asserted stays in force for
-	// the rest of the session. planServiceTierWrite decides which of the
-	// three cases (assert / clear / say nothing) this turn is in.
-	tierWrite := s.planServiceTierWrite()
-	if tierWrite.include {
-		params["serviceTier"] = tierWrite.value
-	}
-	if cfg.ApprovalPolicy != "" {
-		params["approvalPolicy"] = cfg.ApprovalPolicy
-	}
-	// Always sent, for the same reason buildThreadParams always sends it: the
-	// reviewer is thread state that persists until something overwrites it, so
-	// a turn that omits it inherits whatever the last runtime mode selected.
-	// `TurnStartParams.approvals_reviewer` is documented upstream as applying
-	// "for this turn and subsequent turns", which is what makes an auto ↔
-	// other-tier switch a live update rather than a restart.
-	if cfg.ApprovalsReviewer != "" {
-		params["approvalsReviewer"] = cfg.ApprovalsReviewer
-	}
-	if cfg.Sandbox != "" {
-		sandboxPolicy, err := turnSandboxPolicy(cfg.Sandbox)
-		if err != nil {
-			return err
-		}
-		params["sandboxPolicy"] = sandboxPolicy
-	}
-
-	s.setPendingTurnSchema(len(opts.OutputSchema) > 0)
-	resp, err := s.sendRequest(ctx, "turn/start", params)
-	if err != nil {
-		s.clearPendingTurnSchema()
-		return fmt.Errorf("codex: turn/start: %w", err)
-	}
-	s.commitServiceTierWrite(tierWrite)
-
-	turnID := readNestedString(resp, "turn", "id")
-	if turnID != "" {
-		s.bindPendingTurnSchema(turnID)
-		s.mu.Lock()
-		s.activeTurnID = turnID
-		s.mu.Unlock()
-	}
-
-	return nil
-}
-
-func (s *Session) setPendingTurnSchema(schemaed bool) {
-	s.mu.Lock()
-	s.pendingTurnSchemaKnown = true
-	s.pendingTurnSchemaed = schemaed
-	s.mu.Unlock()
-}
-
-func (s *Session) clearPendingTurnSchema() {
-	s.mu.Lock()
-	s.pendingTurnSchemaKnown = false
-	s.pendingTurnSchemaed = false
-	s.mu.Unlock()
-}
-
-func (s *Session) bindPendingTurnSchema(turnID string) {
-	if turnID == "" {
-		return
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if !s.pendingTurnSchemaKnown {
-		return
-	}
-	if s.pendingTurnSchemaed {
-		if s.schemaedTurnIDs == nil {
-			s.schemaedTurnIDs = make(map[string]struct{})
-		}
-		s.schemaedTurnIDs[turnID] = struct{}{}
-	} else {
-		delete(s.schemaedTurnIDs, turnID)
-	}
-	s.pendingTurnSchemaKnown = false
-	s.pendingTurnSchemaed = false
-}
-
-// Steer injects user input into the currently-active turn's
-// pending_input queue via Codex's `turn/steer` JSON-RPC. Mid-turn
-// injection lets the user "steer" the model without spawning a new
-// turn — Codex drains pending_input on the next iteration of its
-// run_turn loop, and the app-server confirms the inject by emitting
-// a wire-typed `item/completed userMessage` inside the same active
-// turn (which our triage handleUserText path correlates with the
-// pending-send marker).
-//
-// REQUIRES an active turn — returns ErrNoActiveTurn if no turn is
-// currently in flight, so the caller can fall back to Send rather
-// than racing the wire. The caller should also fall back when the
-// app-server returns NoActiveTurn or ExpectedTurnMismatch (race
-// window: turn ended or a new turn started between the frontend
-// reading the active-turn registry and the steer RPC arriving here).
-//
-// DOES NOT take effort / approvalPolicy / sandboxPolicy /
-// collaborationMode — those are turn-creation params for turn/start,
-// not steer. Steer's contract is "inject input into an existing
-// turn's input queue"; per-turn settings are fixed at the turn's
-// creation.
-//
-// Wire shape per
-// codex-rs/app-server-protocol/src/protocol/v2.rs:5192-5209
-// (TurnSteerParams). Server-side reference:
-// codex-rs/core/src/session/mod.rs:2983 (errors NoActiveTurn if no
-// turn is running, ExpectedTurnMismatch if the turn id has rolled).
-func (s *Session) Steer(ctx context.Context, content string, opts provider.SendOptions) error {
-	s.mu.Lock()
-	expectedTurnID := s.activeTurnID
-	s.mu.Unlock()
-	if expectedTurnID == "" {
-		return ErrNoActiveTurn
-	}
-
-	input, err := buildTurnInput(content, opts.Attachments)
-	if err != nil {
-		return fmt.Errorf("codex: turn/steer: %w", err)
-	}
-
-	params := map[string]any{
-		"threadId":       s.rootThreadID(),
-		"input":          input,
-		"expectedTurnId": expectedTurnID,
-	}
-
-	if _, err := s.sendRequest(ctx, "turn/steer", params); err != nil {
-		return fmt.Errorf("codex: turn/steer: %w", err)
-	}
-	return nil
-}
-
-// Interrupt sends turn/interrupt to abort whatever the thread is
-// currently doing. We pass `turnId: activeTurnID` when a turn is in
-// flight and `turnId: ""` (the empty string) when the user pressed
-// stop during the dispatch window before `turn/started` arrived —
-// the upstream app-server treats an empty turn_id as a "startup
-// interrupt" and submits Op::Interrupt to the core anyway, then
-// responds immediately with `{}` because startup cancellation has
-// no TurnAborted event to wait on. See
-// codex-rs/app-server/src/codex_message_processor.rs:7790-7849
-// (`is_startup_interrupt = turn_id.is_empty()`) and the README
-// summary at codex-rs/app-server/README.md:167.
-//
-// On success, drains pending approvals and user-input requests so
-// the frontend clears its prompt panel and Codex's pending JSON-RPC
-// requests resolve. Drain on failure too: the user pressed stop and
-// expects the prompt to disappear even if the JSON-RPC errored.
-// This is a deliberate fix beyond t3-code's
-// CodexSessionRuntime.interruptTurn (CodexSessionRuntime.ts:1238–1250),
-// which only sends the JSON-RPC and leaks the local Deferreds.
-func (s *Session) Interrupt(ctx context.Context) error {
-	s.mu.Lock()
-	turnID := s.activeTurnID
-	s.mu.Unlock()
-
-	_, err := s.sendRequest(ctx, "turn/interrupt", map[string]any{
-		"threadId": s.rootThreadID(),
-		"turnId":   turnID,
-	})
-
-	s.drainPendingApprovals("cancel", false, true)
-	return err
 }
 
 // ThreadID returns our internal thread identifier.
@@ -881,6 +642,7 @@ func (s *Session) Close() error {
 	s.childThreadByAgentPath = nil
 	s.childPathOwnerLive = nil
 	s.agentPathByThread = nil
+	s.childTurnGenerations = nil
 	s.agentMetaByThread = nil
 	s.subagentNotificationDedup = nil
 	s.rawToolCallsByID = nil
@@ -899,33 +661,4 @@ func (s *Session) Close() error {
 	s.collabHistoryVisited = nil
 	s.mu.Unlock()
 	return err
-}
-
-// claimTurnStart records the first observation of a turnID, returning
-// true. A second observation returns false so dispatchLine can skip the
-// duplicate EventTurnStart. The map is bounded by the number of live
-// turns — cleared on EventTurnComplete or session Close.
-func (s *Session) claimTurnStart(turnID string) bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.seenTurnStarts == nil {
-		s.seenTurnStarts = make(map[string]struct{})
-	}
-	if _, ok := s.seenTurnStarts[turnID]; ok {
-		return false
-	}
-	s.seenTurnStarts[turnID] = struct{}{}
-	return true
-}
-
-// clearTurnStart drops the recorded turnID on completion so a follow-up
-// turn with the same ID (rare, but possible across resumed sessions)
-// can fire fresh.
-func (s *Session) clearTurnStart(turnID string) {
-	if turnID == "" {
-		return
-	}
-	s.mu.Lock()
-	delete(s.seenTurnStarts, turnID)
-	s.mu.Unlock()
 }

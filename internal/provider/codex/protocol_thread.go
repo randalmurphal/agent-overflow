@@ -56,6 +56,41 @@ func classifyThreadNotification(threadID, method string, params json.RawMessage,
 		// and an unrecognized method would be unsubscribed at initialize.
 		return nil, true
 
+	case "thread/queue/changed":
+		// Codex 0.148. Something OUTSIDE this app-server connection changed
+		// this thread's external queue — in practice `codex queue --thread
+		// <uuid> --message <text>` (codex-rs/cli/src/queue_cmd.rs), which
+		// writes a row into `state_5.sqlite` that AO's own app-server then
+		// picks up. See AGENTS.md §"Externally queued turns" for the full
+		// mechanism and why AO cannot ignore it.
+		//
+		// `ThreadQueueChangedNotification` is `{threadId}` and NOTHING ELSE
+		// (codex-rs/app-server-protocol/src/protocol/v2/thread.rs @
+		// rust-v0.149.0) — there is no depth, no item id, no message text.
+		//
+		// So this event is the answer for a connection that cannot ask:
+		// classification is pure and version-blind, and on an app-server
+		// below 0.148 there is no `thread/queue/list` to ask with. The notice
+		// therefore says only what the notification knows, and the injected
+		// turn carries the content moments later.
+		//
+		// On a queue-native session the SESSION layer drops this event and
+		// replaces it with an evidence-driven one built from a
+		// `thread/queue/list` diffed against AO's own client ids — see
+		// thread_queue.go — because there the change is more often AO's own
+		// write than a foreign producer's.
+		return []provider.ProviderEvent{{
+			Kind:     provider.EventNotification,
+			ThreadID: threadID,
+			Content:  externalQueueNoticeText,
+			Meta: mergeMetaKeys(params, map[string]any{
+				"kind":   "external_queue",
+				"title":  externalQueueNoticeText,
+				"origin": ExternalTurnOriginQueue,
+			}),
+			Timestamp: now,
+		}}, true
+
 	case "thread/started",
 		"thread/status/changed",
 		"thread/archived",
@@ -65,6 +100,12 @@ func classifyThreadNotification(threadID, method string, params json.RawMessage,
 	}
 	return nil, false
 }
+
+// externalQueueNoticeText is the transcript notice a `thread/queue/changed`
+// raises. Deliberately not a warning kind: nothing is wrong, the user (or a
+// script of theirs) queued work from another surface and the turn is about to
+// appear on its own.
+const externalQueueNoticeText = "A message was queued for this thread from outside Agent Overflow"
 
 type codexThreadTokenUsageNotification struct {
 	TokenUsage codexThreadTokenUsage `json:"tokenUsage"`

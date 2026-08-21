@@ -398,10 +398,15 @@ type CompactionStatusMeta struct {
 	ErrorMessage string `json:"errorMessage,omitempty"`
 }
 
-// CommandLifecycleState is one of the four delivery states Claude's
+// CommandLifecycleState is one of the five delivery states Claude's
 // `command_lifecycle` frames report for a stdin user message. The set is
 // closed by the parser: an unrecognised state is dropped rather than
 // forwarded, so no consumer has to carry an "unknown" branch.
+//
+// The wire carries NO reason field — the schema is
+// `{type, command_uuid, state, uuid, session_id}` (verified 2.1.237) —
+// so a consumer that wants to explain a terminal state has only the state
+// itself to go on.
 type CommandLifecycleState string
 
 const (
@@ -414,8 +419,24 @@ const (
 	CommandStarted CommandLifecycleState = "started"
 	// CommandCompleted — the turn the message drove has finished.
 	CommandCompleted CommandLifecycleState = "completed"
-	// CommandCancelled — the message will NEVER be delivered.
+	// CommandCancelled — the message will NEVER be delivered. Claude emits
+	// it for a removal (cancel_async_message, an interrupt sweeping the
+	// queue, a pending cancel landing just before dispatch) AND for a
+	// message consumed into a turn that then aborted or died on a hard
+	// failure. Cancelled-over-completed is deliberate on the CLI's side:
+	// dup-over-loss for exactly-once resenders.
 	CommandCancelled CommandLifecycleState = "cancelled"
+	// CommandDiscarded — the SESSION ended (end_session) with the message
+	// still queued, so it was never delivered and never will be. Added by
+	// Claude Code 2.1.224+ (verified in the 2.1.237 schema alongside the
+	// four above); older CLIs report the same situation as `cancelled` or
+	// as nothing at all.
+	//
+	// Terminal and undelivered, exactly like CommandCancelled — every
+	// consumer treats the two the same way, and they are separate states
+	// only so the CAUSE survives to the timeline: "the session ended" is
+	// actionable in a way "cancelled" is not.
+	CommandDiscarded CommandLifecycleState = "discarded"
 )
 
 // CommandLifecycleMeta is the typed payload for EventCommandLifecycle.
@@ -425,6 +446,14 @@ const (
 type CommandLifecycleMeta struct {
 	CommandUUID string                `json:"commandUuid"`
 	State       CommandLifecycleState `json:"state"`
+	// Origin names the producer of a message this app did not send.
+	// Empty — the overwhelmingly common case — means AO issued the uuid
+	// itself. The only value today is claude.PeerTurnOrigin
+	// ("peer-session"): another Claude session on this machine addressed
+	// this one through the cross-session inbox, and the CLI minted the
+	// uuid for the injected user row. Absence is the safe reading, so a
+	// provider that cannot tell leaves it empty.
+	Origin string `json:"origin,omitempty"`
 }
 
 // CommandsChangedMeta is the typed payload for EventCommandsChanged: the
@@ -445,6 +474,17 @@ type CommandResultMeta struct {
 	// live-config reconciler matches it against the uuids it stamped on
 	// /effort and /fast applies to confirm them.
 	CommandUUID string `json:"commandUuid,omitempty"`
+	// Suppressed marks output that must NOT become a timeline row: a command
+	// Agent Overflow issued for its own bookkeeping, or one whose only output
+	// is a confirmation of state AO already renders in its own UI. The
+	// decision is made at SEND time and correlated back through CommandUUID —
+	// never by reading this text — so a provider that emits no lifecycle
+	// bracket simply never sets it.
+	//
+	// It is a ROW decision only. The event is still delivered, because the
+	// app-layer live-config reconciler is what settles an /effort or /fast
+	// apply from exactly this output.
+	Suppressed bool `json:"suppressed,omitempty"`
 }
 
 // TaskCreateMeta is the typed payload for EventTaskCreate.

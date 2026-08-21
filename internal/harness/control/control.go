@@ -22,10 +22,14 @@ import "encoding/json"
 const (
 	EnvAddr  = "AO_HARNESS_CONTROL"
 	EnvToken = "AO_HARNESS_CONTROL_TOKEN"
-	// EnvTranscriptHome is set only by a fully isolated harness boot. The mock
-	// Claude adapter writes its synthetic transcript there so a backend restart
-	// can exercise the real cold-resume preflight without ever touching a
-	// developer's provider home.
+	// EnvTranscriptHome is set only by a fully isolated harness boot. It is
+	// the mock's stand-in for a provider home: the Claude adapter writes its
+	// synthetic transcript there so a backend restart can exercise the real
+	// cold-resume preflight, and the Codex adapter records each thread's
+	// history mode there so a THROWAWAY RESUME (which is how every rollback
+	// reaches the provider) still knows whether the thread is revertible.
+	// Neither ever touches a developer's provider home; without this
+	// variable both behaviours are simply absent.
 	EnvTranscriptHome = "AO_HARNESS_TRANSCRIPT_HOME"
 )
 
@@ -83,7 +87,7 @@ type Report struct {
 	// Kind: "registered", "user_input", "turn_started",
 	// "turn_interrupted", "step_started", "step_completed",
 	// "waiting_signal", "approval_pending", "approval_decided",
-	// "scenario_done", "exiting".
+	// "history_cut", "scenario_done", "exiting".
 	Kind string `json:"kind"`
 	// Turn is the 1-based user-turn index (0 for lifecycle reports).
 	Turn int `json:"turn,omitempty"`
@@ -92,11 +96,12 @@ type Report struct {
 	// Detail is kind-specific: step action name, wait-gate name,
 	// approval decision, exit code.
 	Detail string `json:"detail,omitempty"`
-	// Input is the user text the mock received on the wire, set only on
+	// Input is the user text the mock received on the wire, set on
 	// ReportUserInput. It is the ONLY surface that answers "what did the
 	// app actually send the provider" — the transcript stores what the
 	// user typed, which is deliberately not the same string once the send
-	// path expands a composer command.
+	// path expands a composer command. ReportHistoryCut reuses it for the
+	// anchor turn id, which is the same question about a different frame.
 	Input string `json:"input,omitempty"`
 	// SessionRef is the provider session that received Input: Claude's
 	// session id or Codex's thread id. A process id cannot answer this for
@@ -124,6 +129,15 @@ const (
 	ReportApprovalDecided = "approval_decided"
 	ReportScenarioDone    = "scenario_done"
 	ReportExiting         = "exiting"
+	// ReportHistoryCut names the provider-history truncation the app just
+	// asked for on a Codex thread: Detail is the method ("thread/revert"
+	// or "thread/fork"), SessionRef the thread it named, Input the anchor
+	// turn id. Posted BEFORE the answer, so a test can assert WHICH of
+	// the two cuts the app chose without racing the response — the
+	// choice is version- and history-mode-gated, and its only other
+	// symptom (a thread id that did or did not change) cannot say
+	// whether a refused revert was even attempted.
+	ReportHistoryCut = "history_cut"
 	// ReportSessionConfig carries the permission/sandbox configuration the
 	// app actually launched this session with. Posted once per mock as soon
 	// as it is observable — for Claude that is argv at boot, for Codex the

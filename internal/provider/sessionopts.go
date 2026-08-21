@@ -81,6 +81,36 @@ func NormalizeInteractionMode(mode string) InteractionMode {
 	}
 }
 
+// ClaudeThinking mirrors settings.ClaudeThinking on the provider side of
+// the boundary. Two types rather than one because internal/settings must
+// not import this package (see internal/settings/AGENTS.md §Anti-patterns);
+// the app layer converts between them at its single stamping site.
+//
+// Mode is "" (leave it to the CLI), "off", or "budget"; BudgetTokens is
+// meaningful only with "budget"; Display is "", "summarized" or "omitted".
+// Validation lives in internal/settings — this is a transport shape, and
+// internal/provider/claude re-normalizes what it renders anyway.
+type ClaudeThinking struct {
+	Mode         string
+	BudgetTokens int
+	Display      string
+}
+
+// ClaudeCrossSession mirrors settings.ClaudeCrossSession on the provider
+// side of the boundary, for the same reason ClaudeThinking is duplicated:
+// internal/settings must not import this package.
+//
+// Enabled opens Claude Code's machine-wide peer inbox for the session
+// (the CLAUDE_CODE_HARBOR_KITE gate plus a `--name`); Inbound is the
+// already-resolved delivery policy for the `--settings` block — "accept"
+// or "refuse", never "hold" and never empty while Enabled. Resolution
+// lives in settings.ClaudeCrossSession.EffectiveInbound; this is a
+// transport shape.
+type ClaudeCrossSession struct {
+	Enabled bool
+	Inbound string
+}
+
 // SessionOptions is the provider-agnostic bundle a Thread projects onto.
 // The per-provider packages (claude, codex) each translate it into their
 // own Config. Keeps the translation out of app.go and makes it testable
@@ -118,6 +148,20 @@ type SessionOptions struct {
 	RuntimeMode                RuntimeMode
 	SystemPrompt               string
 
+	// SystemPromptOverrideSource is the STORED (unrendered) text of the
+	// settings-level prompt override that produced SystemPrompt, or "" when
+	// no settings override is in play (no match, or a feature owns the
+	// prompt). App-layer provenance: it is deliberately mapped into NO
+	// provider Config, so it never participates in a live-vs-restart diff.
+	//
+	// It exists so the reconcile path can answer "did the user edit the
+	// override?" without rendering one. Comparing rendered prompts cannot
+	// answer that — `{{GIT_BLOCK}}` re-renders on every commit, so a
+	// rendered-vs-rendered diff would report a change every time the
+	// workspace moved and never stop reconciling. Comparing the stored text
+	// changes only when Settings does. See app_session_prompt_override.go.
+	SystemPromptOverrideSource string
+
 	// DisabledTools names built-in tools the session must not be given.
 	// PROVIDER-INTERPRETED, and the two providers read it differently:
 	// Claude takes RAW TOOL NAMES ("Workflow") and unions them into
@@ -139,8 +183,58 @@ type SessionOptions struct {
 	// only — Codex ignores it. Spawn-only like DisabledTools, and stamped
 	// from Settings the same way: the app layer sets it in
 	// applySettingsOwnedAxes and the reconcile path pins it to the live
-	// session's launch value (pinSettingsOwnedAxes).
+	// session's launch value (reconcileSettingsOwnedAxes).
 	DisableTodoReminders bool
+
+	// ClaudeThinking is the settings-owned extended-thinking preference.
+	// Claude-family only; Codex ignores it (its reasoning axis is
+	// ReasoningEffort).
+	//
+	// Unlike DisabledTools and DisableTodoReminders — the other two
+	// settings-owned axes stamped here — this one is NOT spawn-only: the
+	// Claude CLI's `set_max_thinking_tokens` control_request applies it to
+	// a running session. That is exactly why it lives on SessionOptions
+	// rather than on claude.Config: the live-config reconciler diffs
+	// ConfigFromOptions(prev) against ConfigFromOptions(next), so an axis
+	// that must converge on a live session has to travel through here.
+	//
+	// The app layer stamps it at the same two places the prompt override
+	// uses (applySettingsOwnedAxes on spawn, reconcileSettingsOwnedAxes on
+	// reconcile).
+	ClaudeThinking ClaudeThinking
+
+	// ClaudeCrossSession is the settings-owned peer-inbox preference:
+	// whether other Claude sessions on this machine may discover and
+	// message this thread, and what happens to a message that arrives.
+	// Claude-family only; Codex ignores it.
+	//
+	// SPAWN-ONLY, and it travels here rather than being stamped straight
+	// onto claude.Config (the way OutputStyle and the subagent caps are)
+	// precisely BECAUSE it is spawn-only: the inbox binds once during the
+	// CLI's setup and no control_request rebinds it, so a change has to
+	// converge by RESTART. Riding SessionOptions is what puts it in front
+	// of claude.PlanLiveUpdate, whose trailing DeepEqual then reports it
+	// as a deferred restart — the same route DisabledTools and
+	// DisableTodoReminders take. An axis stamped outside ConfigFromOptions
+	// would instead be invisible to the reconciler and silently never
+	// converge on a running thread.
+	//
+	// Stamped at the same two places the prompt override uses
+	// (applySettingsOwnedAxes on spawn, reconcileSettingsOwnedAxes on
+	// reconcile), and re-read on BOTH — pinning it would be the bug.
+	ClaudeCrossSession ClaudeCrossSession
+
+	// ClaudePeerSessionName is the name other Claude sessions see for this
+	// thread in `ListAgents`, derived from the thread by the app layer.
+	//
+	// Deliberately NOT part of ClaudeCrossSession, and deliberately NOT
+	// read by ConfigFromOptions: the name is LIVE-CHANGEABLE (`/rename`
+	// costs no model turn), so a title change must never queue a restart.
+	// claude.Config carries it as a spawn-stamped field for exactly the
+	// same reason OutputStyle is spawn-stamped — invisibility to the
+	// DeepEqual is the property being bought, in the opposite direction
+	// from ClaudeCrossSession above.
+	ClaudePeerSessionName string
 
 	// Resume carries the provider's resume reference. Claude: prior
 	// session uuid. Codex: prior thread id. Empty for brand-new starts.

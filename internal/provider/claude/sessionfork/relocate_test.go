@@ -4,45 +4,8 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 )
-
-// TestProjectSlugMatchesClaudeGroundTruth pins the slug encoding to real
-// directory names observed on disk under ~/.claude/projects, and to the spike
-// that confirmed Claude's sanitizePath replaces EVERY non-alphanumeric (not
-// just separators): note the '.' in `.config` becoming a second dash, and the
-// underscores in a temp path collapsing to dashes.
-func TestProjectSlugMatchesClaudeGroundTruth(t *testing.T) {
-	cases := []struct{ in, want string }{
-		{"/home/rmurphy/repos/m32rimm", "-home-rmurphy-repos-m32rimm"},
-		{
-			"/home/rmurphy/.config/agent-overflow/worktrees/m32rimm/tenable-test-harness",
-			"-home-rmurphy--config-agent-overflow-worktrees-m32rimm-tenable-test-harness",
-		},
-		{"/tmp/ao_spike_src", "-tmp-ao-spike-src"},
-		{"/a/b:c", "-a-b-c"}, // colon (Windows-reserved) also sanitizes
-	}
-	for _, c := range cases {
-		if got := projectSlug(c.in); got != c.want {
-			t.Errorf("projectSlug(%q) = %q, want %q", c.in, got, c.want)
-		}
-	}
-}
-
-// TestProjectSlugOverLengthTruncates: above MaxSanitizedSlugLen the
-// primary-lookup slug is a bare truncated prefix (no Bun.hash suffix), which is
-// expected to miss and fall through to the scan.
-func TestProjectSlugOverLengthTruncates(t *testing.T) {
-	long := "/" + strings.Repeat("ab/", 200) // sanitizes to ~600 chars
-	got := projectSlug(long)
-	if len(got) != MaxSanitizedSlugLen {
-		t.Fatalf("projectSlug len = %d, want %d", len(got), MaxSanitizedSlugLen)
-	}
-	if !strings.HasPrefix(got, "-ab-ab-") {
-		t.Errorf("unexpected truncated prefix %q", got)
-	}
-}
 
 // placeSession writes <id>.jsonl under the project slug for workspace and
 // returns the file path. workspace must already exist (its canonical path is
@@ -57,7 +20,7 @@ func placeSession(t *testing.T, home, workspace, id, content string) string {
 	if err != nil {
 		t.Fatalf("abs %s: %v", canonical, err)
 	}
-	dir := filepath.Join(home, ".claude", "projects", projectSlug(abs))
+	dir := filepath.Join(home, ".claude", "projects", claudeProjectDirName(abs))
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatalf("mkdir %s: %v", dir, err)
 	}
@@ -204,10 +167,11 @@ func TestRelocateSessionMissingSourceReturnsNotFound(t *testing.T) {
 	}
 }
 
-// TestRelocateSessionOverLengthDestErrors: when the destination's sanitized
-// slug exceeds MaxSanitizedSlugLen, the CLI appends a Bun.hash suffix we can't
-// reproduce, so relocation must error out rather than misplace the transcript.
-func TestRelocateSessionOverLengthDestErrors(t *testing.T) {
+// TestRelocateSessionOverLengthDestResolves: a destination whose sanitized slug
+// exceeds MaxSanitizedSlugLen used to be a hard refusal ("Bun.hash we can't
+// reproduce"). Since the encoder ports the CLI's truncate-and-hash exactly, the
+// relocation lands in the very directory `claude --resume` will read from there.
+func TestRelocateSessionOverLengthDestResolves(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	srcWS := filepath.Join(home, "src")
@@ -215,7 +179,7 @@ func TestRelocateSessionOverLengthDestErrors(t *testing.T) {
 		t.Fatalf("mkdir src: %v", err)
 	}
 	const id = "sess-overlong"
-	placeSession(t, home, srcWS, id, "p\n")
+	srcPlaced := placeSession(t, home, srcWS, id, "p\n")
 
 	// Build a destination whose absolute path sanitizes beyond 200 chars.
 	deep := filepath.Join(home, "deep")
@@ -227,19 +191,25 @@ func TestRelocateSessionOverLengthDestErrors(t *testing.T) {
 	}
 
 	src, dest, err := RelocateSession(id, srcWS, deep)
-	if err == nil {
-		t.Fatal("expected error for over-length destination slug, got nil")
+	if err != nil {
+		t.Fatalf("RelocateSession: %v", err)
 	}
-	// Hard error contract: destFile empty (caller's signal to refuse), source
-	// still located (it was never the problem), and the cause is named.
-	if dest != "" {
-		t.Errorf("hard error must report empty destFile, got %q", dest)
+	if src != srcPlaced {
+		t.Errorf("srcFile = %q, want %q", src, srcPlaced)
 	}
-	if src == "" {
-		t.Error("source should still be located when only the destination slug is unresolvable")
+	slug, err := exactWorkspaceSlug(deep)
+	if err != nil {
+		t.Fatalf("exactWorkspaceSlug(%q): %v", deep, err)
 	}
-	if !strings.Contains(err.Error(), "Bun.hash") {
-		t.Errorf("error = %v, want mention of the unreproducible Bun.hash suffix", err)
+	if len(slug) <= MaxSanitizedSlugLen {
+		t.Fatalf("destination slug is not over-length (%d chars) — fixture no longer covers the case", len(slug))
+	}
+	want := filepath.Join(home, ".claude", "projects", slug, id+".jsonl")
+	if dest != want {
+		t.Errorf("destFile = %q, want %q", dest, want)
+	}
+	if got, rerr := os.ReadFile(dest); rerr != nil || string(got) != "p\n" {
+		t.Errorf("transcript not copied to the hashed slug: content=%q err=%v", got, rerr)
 	}
 }
 
@@ -273,9 +243,9 @@ func TestRelocateSessionSubagentCopyFailureReturnsSentinel(t *testing.T) {
 
 	// Block ONLY the subagent copy: pre-create the destination <id>/ path as a
 	// regular file so copyTree's MkdirAll fails, while <id>.jsonl still copies.
-	slug, ok, err := exactWorkspaceSlug(dstWS)
-	if err != nil || !ok {
-		t.Fatalf("exactWorkspaceSlug(%q) = %q ok=%v err=%v", dstWS, slug, ok, err)
+	slug, err := exactWorkspaceSlug(dstWS)
+	if err != nil {
+		t.Fatalf("exactWorkspaceSlug(%q): %v", dstWS, err)
 	}
 	destDir := filepath.Join(home, ".claude", "projects", slug)
 	if err := os.MkdirAll(destDir, 0o700); err != nil {

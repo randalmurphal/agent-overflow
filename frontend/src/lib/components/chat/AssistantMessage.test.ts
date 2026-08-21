@@ -6,6 +6,30 @@ import type { ThreadPane } from '../../stores/thread.svelte';
 import AssistantMessage from './AssistantMessage.svelte';
 
 describe('<AssistantMessage>', () => {
+  // Codex marks a mid-turn progress note with `delivery: "async"` on the
+  // block's stop event (wire >= 0.149). Read POSITIVELY only: absence is not
+  // evidence of finality — most rows never carry the key — so an unmarked
+  // row must render exactly as it did before this branch existed.
+  it('labels a delivery:async row as interim and leaves an unmarked row alone', async () => {
+    const marked = render(AssistantMessage, {
+      props: {
+        item: makeItem({ summary: 'still working on it', meta: '{"delivery":"async"}' }),
+      },
+    });
+    await waitFor(() => {
+      expect(marked.getByTestId('assistant-message-interim').textContent).toContain('Interim');
+    });
+    marked.unmount();
+
+    const plain = render(AssistantMessage, {
+      props: { item: makeItem({ summary: 'the answer', meta: '{"blockType":"text"}' }) },
+    });
+    await waitFor(() => {
+      expect(plain.getByTestId('assistant-message-meta')).toBeTruthy();
+    });
+    expect(plain.queryByTestId('assistant-message-interim')).toBeNull();
+  });
+
   it('renders an unterminated inline marker as literal text during stream', async () => {
     // The vendored svelte-streamdown (`vendor/svelte-streamdown/`, ledger
     // entry 4 in its `DIVERGENCE.md`) strips Streamdown's

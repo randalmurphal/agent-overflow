@@ -268,6 +268,48 @@ func (m sessionManager) hasProvider(providerName string) bool {
 	return false
 }
 
+// threadIDsForProviderOrStarting snapshots the thread ids a settings-driven
+// sweep must visit for one provider: every live session on it, PLUS every
+// thread whose session start is still in flight.
+//
+// The starting half is not optional. A spawn snapshots Settings while it
+// builds its session options; a save landing after that snapshot but before
+// the session registers is invisible to a sweep that scans `sessions` alone,
+// and nothing ever reconciles that thread again — it runs the pre-save
+// config for the whole life of the session. Only a restart (or another
+// settings change) would correct it.
+//
+// An in-flight start has no provider yet — the thread row is read inside the
+// start — so starting threads are included regardless of providerName. That
+// costs nothing: the per-thread reconcile waits for the start and then diffs
+// the session that actually exists, which converges to a no-op for a thread
+// that turned out to be on another provider.
+//
+// Both maps are read under ONE lock so the registration handoff cannot hide
+// a thread: the start puts the session into `sessions` before runSessionStart
+// clears `startingSessions`, so a starting thread is in one map or briefly in
+// both — never in neither.
+func (m sessionManager) threadIDsForProviderOrStarting(providerName string) []string {
+	m.app.mu.Lock()
+	defer m.app.mu.Unlock()
+	ids := make([]string, 0, len(m.app.sessions)+len(m.app.startingSessions))
+	seen := make(map[string]struct{}, len(m.app.sessions)+len(m.app.startingSessions))
+	for threadID, sess := range m.app.sessions {
+		if sess.provider != providerName {
+			continue
+		}
+		seen[threadID] = struct{}{}
+		ids = append(ids, threadID)
+	}
+	for threadID := range m.app.startingSessions {
+		if _, dup := seen[threadID]; dup {
+			continue
+		}
+		ids = append(ids, threadID)
+	}
+	return ids
+}
+
 func (m sessionManager) idleCandidates(cutoffNano int64) []string {
 	m.app.mu.Lock()
 	defer m.app.mu.Unlock()

@@ -120,6 +120,11 @@ func (s *Session) childLifecycleEvents(method string, params json.RawMessage, pa
 		return nil
 	}
 	if method == "turn/started" {
+		// A child turn boundary is the only wire-typed thing that separates two
+		// otherwise identical mailbox deliveries. Counted here, on the live
+		// notification, rather than derived from the deliveries themselves —
+		// which would be circular. See subagentNotificationDedupKey.
+		s.advanceChildTurnGeneration(providerThreadID)
 		event := s.childStatusEvent(providerThreadID, parentToolUseID, "running")
 		if event == nil {
 			return nil
@@ -298,6 +303,55 @@ func (s *Session) parentToolUseForProviderThread(providerThreadID string) string
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.childParentByThread[providerThreadID]
+}
+
+// childTurnGenerationKeyLocked normalises the two names ONE child answers to.
+// Live child lifecycle names the provider thread id; a mailbox delivery names
+// the canonical agent path (`/root/reviewer`) except on older unnamed-agent
+// builds, where it is the thread id again. Both must reach the same counter.
+func (s *Session) childTurnGenerationKeyLocked(id string) string {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return ""
+	}
+	if agentPath := s.agentPathByThread[id]; agentPath != "" {
+		return agentPath
+	}
+	return id
+}
+
+// advanceChildTurnGeneration counts one child turn boundary.
+//
+// One entry per child this session currently owns: the entry is dropped by the
+// same ownership teardown that drops the child's parent and path mappings
+// (deleteParentToolUseForProviderThread, which `close_agent` drives), and the
+// whole map goes with the session on close. Without that teardown a long v1
+// session that spawns and closes uniquely named children would grow this map
+// for the life of the process, which is exactly what the other collab maps are
+// cleaned to avoid.
+func (s *Session) advanceChildTurnGeneration(providerThreadID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := s.childTurnGenerationKeyLocked(providerThreadID)
+	if key == "" {
+		return
+	}
+	if s.childTurnGenerations == nil {
+		s.childTurnGenerations = make(map[string]uint64)
+	}
+	s.childTurnGenerations[key]++
+}
+
+// childTurnGeneration reports the child turn a delivery belongs to. Zero is a
+// legal answer — a delivery whose child this session never watched start.
+func (s *Session) childTurnGeneration(agentPath string) uint64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := s.childTurnGenerationKeyLocked(agentPath)
+	if key == "" {
+		return 0
+	}
+	return s.childTurnGenerations[key]
 }
 
 func (s *Session) parentToolUseForAgentPath(agentPath string) string {
@@ -493,6 +547,11 @@ func (s *Session) deleteParentToolUseForProviderThread(providerThreadID string) 
 		return
 	}
 	s.mu.Lock()
+	// Resolved BEFORE agentPathByThread is torn down: the counter is keyed the
+	// way childTurnGeneration reads it (canonical agent path where there is
+	// one, the thread id otherwise), and deleting the mapping first would leave
+	// the entry unreachable and permanent.
+	generationKey := s.childTurnGenerationKeyLocked(providerThreadID)
 	if agentPath := s.agentPathByThread[providerThreadID]; agentPath != "" {
 		if s.childThreadByAgentPath[agentPath] == providerThreadID {
 			delete(s.childParentByAgentPath, agentPath)
@@ -503,6 +562,14 @@ func (s *Session) deleteParentToolUseForProviderThread(providerThreadID string) 
 	}
 	delete(s.childParentByThread, providerThreadID)
 	delete(s.agentMetaByThread, providerThreadID)
+	// The generation counter goes with the ownership it counted. Zero — what a
+	// later delivery for this child would now read — is already the documented
+	// legal answer for a child this session never watched start, and after the
+	// teardown above there is no parent card left for such a delivery to reach
+	// anyway.
+	if generationKey != "" {
+		delete(s.childTurnGenerations, generationKey)
+	}
 	s.mu.Unlock()
 }
 
@@ -712,6 +779,20 @@ func (s *Session) maybeRewriteCollabControlItemID(evt *provider.ProviderEvent, p
 		evt.Kind == provider.EventSubagentStatus {
 		if parentToolUseID := s.parentToolUseForProviderThread(readRawString(item, "agentThreadId")); parentToolUseID != "" {
 			evt.ItemID = parentToolUseID
+			evt.ParentToolUseID = parentToolUseID
+		}
+		return
+	}
+	if readRawString(item, "type") == "subAgentActivity" &&
+		readRawString(item, "kind") == "interacted" &&
+		evt.ItemType == "send_input" {
+		// The interaction belongs to the child's spawn card, but it keeps its
+		// OWN id: the activity item id is the tool call id (upstream's
+		// `SubAgentActivityItem { id: call_id }`), which is what makes each
+		// message a distinct, idempotent sub-line — and what
+		// `enrichRawToolCallMetadata` joins the raw `send_message` /
+		// `followup_task` name onto immediately after this.
+		if parentToolUseID := s.parentToolUseForProviderThread(readRawString(item, "agentThreadId")); parentToolUseID != "" {
 			evt.ParentToolUseID = parentToolUseID
 		}
 		return

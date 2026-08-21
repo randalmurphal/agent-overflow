@@ -2051,7 +2051,15 @@ func claudeProjectSlugForTest(t *testing.T, path string) string {
 			b.WriteByte('-')
 		}
 	}
-	return b.String()
+	// Deliberately independent of sessionfork's encoder, so a bug there cannot
+	// hide behind a fixture that shares it — but that also means this helper
+	// only models the <=200-char branch. Past the cap the CLI truncates and
+	// appends a hash, so fail loudly rather than hand back a name nothing uses.
+	if slug := b.String(); len(slug) <= sessionfork.MaxSanitizedSlugLen {
+		return slug
+	}
+	t.Fatalf("claudeProjectSlugForTest: %s sanitizes past %d chars; use sessionfork.WorkspaceProjectDir for the truncate-and-hash form", abs, sessionfork.MaxSanitizedSlugLen)
+	return ""
 }
 
 // Worktree removal must NOT brick a Claude thread's session. Claude resolves
@@ -2599,13 +2607,13 @@ func TestSwitchThreadWorkspaceRoundTripPreservesLatestTurns(t *testing.T) {
 	}
 }
 
-// Guard-and-refuse at the helper boundary: when the destination workspace's slug
-// is unresolvable (sanitized form exceeds MaxSanitizedSlugLen, where Claude
-// appends an unreproducible Bun.hash suffix), copyClaudeSessionForWorkspaceChange
-// must return a hard error with NO purge list and leave the source transcript
-// untouched — so an abortable caller (switch/create/attach) can refuse the change
-// with the conversation still resumable from its current workspace.
-func TestCopyClaudeSessionForWorkspaceChangeRefusesUnresolvableDest(t *testing.T) {
+// A destination workspace whose sanitized path runs past MaxSanitizedSlugLen
+// used to be refused outright — AO could not reproduce the CLI's hash suffix,
+// so it would not guess a directory. It reproduces the suffix exactly now, so
+// the relocation goes through: the transcript lands in the truncate-and-hash
+// slug `claude --resume` reads from at that cwd, and the pre-move source comes
+// back as a purge entry like any other workspace change.
+func TestCopyClaudeSessionForWorkspaceChangeResolvesOverLengthDest(t *testing.T) {
 	app := newTestAppWithStore(t)
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -2615,14 +2623,21 @@ func TestCopyClaudeSessionForWorkspaceChangeRefusesUnresolvableDest(t *testing.T
 	placeWorktreeTranscript(t, home, fromWS, sessionID)
 	srcTranscript := slugTranscriptPath(t, home, fromWS, sessionID)
 
-	// Destination dir must EXIST (exactWorkspaceSlug canonicalizes via
-	// EvalSymlinks) so we hit the genuine over-length slug guard rather than a
-	// canonicalize-failure path. A 220-char component sanitizes — with the home
-	// prefix — well past the 200-char ceiling.
+	// Destination dir must EXIST (the slug encoder canonicalizes via
+	// EvalSymlinks). A 220-char component sanitizes — with the home prefix —
+	// well past the 200-char ceiling.
 	overlong := filepath.Join(home, strings.Repeat("d", 220))
 	if err := os.MkdirAll(overlong, 0o700); err != nil {
 		t.Fatalf("mkdir overlong dest: %v", err)
 	}
+	destDir, err := sessionfork.WorkspaceProjectDir(filepath.Join(home, ".claude", "projects"), overlong)
+	if err != nil {
+		t.Fatalf("resolve project dir for the over-length dest: %v", err)
+	}
+	if len(filepath.Base(destDir)) <= sessionfork.MaxSanitizedSlugLen {
+		t.Fatalf("destination slug %q is not over-length — fixture no longer covers the case", filepath.Base(destDir))
+	}
+
 	thread := store.Thread{
 		ID:            "thread-overlength",
 		Provider:      string(provider.Claude),
@@ -2631,13 +2646,18 @@ func TestCopyClaudeSessionForWorkspaceChangeRefusesUnresolvableDest(t *testing.T
 	}
 
 	purge, err := app.copyClaudeSessionForWorkspaceChange(thread, fromWS)
-	if err == nil {
-		t.Fatal("expected hard error for unresolvable destination slug, got nil")
+	if err != nil {
+		t.Fatalf("copyClaudeSessionForWorkspaceChange() error = %v, want the relocation to succeed", err)
 	}
-	if purge != nil {
-		t.Errorf("purge = %v, want nil on hard failure (nothing moved, nothing to purge)", purge)
+	if len(purge) != 1 || purge[0] != srcTranscript {
+		t.Errorf("purge = %v, want the pre-move source %q", purge, srcTranscript)
 	}
+	relocated := filepath.Join(destDir, sessionID+".jsonl")
+	if _, statErr := os.Stat(relocated); statErr != nil {
+		t.Errorf("transcript did not land in the hashed slug dir %s: %v", destDir, statErr)
+	}
+	// Purging is the caller's post-commit step, so the source is still there.
 	if _, statErr := os.Stat(srcTranscript); statErr != nil {
-		t.Errorf("source transcript must survive a refused relocation: %v", statErr)
+		t.Errorf("source transcript must survive until the caller purges it: %v", statErr)
 	}
 }

@@ -125,6 +125,43 @@ type Row struct {
 	// IndexedProfile is a provider-index fallback carried only for import.
 	// Codex's rollout profile remains authoritative when present.
 	IndexedProfile importir.ModelProfile
+	// ImportedFrom is set when Codex's own external-import ledger
+	// (`<codexHome>/external_agent_session_imports.json`) says THIS Codex
+	// thread is a conversation Codex imported from another coding agent.
+	// Always nil for Claude rows: AO reads Codex's ledger, and Claude Code
+	// keeps no equivalent.
+	//
+	// It is the only place that provenance survives — the imported rollout is
+	// an ordinary Codex rollout whose originator says `codex_cli` — so
+	// without it the picker offers a Claude Code conversation as a Codex
+	// session with nothing to say where it came from.
+	ImportedFrom *ExternalImportOrigin
+}
+
+// ExternalImportOrigin is where a Codex session came from before it was a
+// Codex session.
+type ExternalImportOrigin struct {
+	// Agent is the source coding agent (`claude-code`, `cursor`), or "" when
+	// the ledger's path shape matches neither. Derived by the rollout reader
+	// from the source path, because the ledger records no agent field.
+	Agent string
+	// SourcePath is the file Codex read, as the ledger recorded it. It may
+	// name a file that no longer exists.
+	SourcePath string
+	// SourceSessionID is the SOURCE agent's own session id, when its layout
+	// encodes one (Claude Code: the `.jsonl` stem). Empty otherwise.
+	SourceSessionID string
+	// ImportedAt is when Codex recorded the import, epoch ms.
+	ImportedAt int64
+	// DuplicateOfThreadID names the AO thread that already holds this same
+	// conversation, imported from the SOURCE agent directly rather than
+	// through Codex. Empty when AO does not have it.
+	//
+	// The row is still offered. Two provider sessions genuinely exist and
+	// both are independently resumable — the Codex copy resumes in Codex —
+	// so suppressing it would take away a real choice. Naming the duplicate
+	// lets the picker say so instead.
+	DuplicateOfThreadID string
 }
 
 // ScanResult is one scan.
@@ -310,14 +347,20 @@ func scanCodex(ctx context.Context, d Deps, known map[store.ProviderSessionRef]s
 	if err != nil {
 		return nil, nil, err
 	}
+	// One bounded read of one small JSON file for the whole scan, not one per
+	// row. A home that never imported from another agent has no file and no
+	// warning; a broken one costs the origin labels and nothing else.
+	imports, ledgerWarnings := rollout.ReadExternalImportLedger(home)
+	warnings = append(warnings, ledgerWarnings...)
 	rows := make([]Row, 0, len(candidates))
 	for _, session := range candidates {
-		origin := strings.TrimSpace(metas[session.ThreadID].Originator)
+		meta := metas[session.ThreadID]
+		origin := strings.TrimSpace(meta.Originator)
 		rows = append(rows, Row{
 			ID:                 RowKey(ProviderCodex, session.ThreadID),
 			Provider:           ProviderCodex,
 			SessionID:          session.ThreadID,
-			ParentSessionID:    strings.TrimSpace(metas[session.ThreadID].ForkedFromID),
+			ParentSessionID:    strings.TrimSpace(meta.ForkedFromID),
 			Title:              session.Title,
 			ProjectPath:        session.Cwd,
 			GitBranch:          session.GitBranch,
@@ -331,9 +374,54 @@ func scanCodex(ctx context.Context, d Deps, known map[store.ProviderSessionRef]s
 				Model:           session.Model,
 				ReasoningEffort: session.ReasoningEffort,
 			},
+			ImportedFrom: externalImportOrigin(imports, known, session.ThreadID),
 		})
 	}
 	return rows, warnings, nil
+}
+
+// Clone returns an independent copy. Every field is a value, so a fresh
+// pointer to a struct copy is a full deep copy — which is what the scan
+// cache's "the result is a deep copy" contract requires of a pointer field.
+func (o *ExternalImportOrigin) Clone() *ExternalImportOrigin {
+	if o == nil {
+		return nil
+	}
+	copied := *o
+	return &copied
+}
+
+// externalImportOrigin resolves one Codex thread's external-import provenance,
+// including whether AO already holds the SAME conversation imported straight
+// from the source agent.
+//
+// The duplicate check reuses the scan's existing `known` set — the same map
+// that already subtracts sessions AO has — so it costs no extra read. It asks
+// about the SOURCE session id under the SOURCE provider, which is a different
+// question from the Codex-side dedup above: that one asks whether AO has this
+// Codex thread, this one asks whether AO has the conversation inside it.
+func externalImportOrigin(
+	imports map[string]rollout.ExternalImportRecord,
+	known map[store.ProviderSessionRef]string,
+	threadID string,
+) *ExternalImportOrigin {
+	record, imported := imports[threadID]
+	if !imported {
+		return nil
+	}
+	origin := &ExternalImportOrigin{
+		Agent:           record.Agent,
+		SourcePath:      record.SourcePath,
+		SourceSessionID: record.SourceSessionID,
+		ImportedAt:      record.ImportedAt,
+	}
+	if record.Agent == rollout.ExternalImportAgentClaude && record.SourceSessionID != "" {
+		origin.DuplicateOfThreadID = known[store.ProviderSessionRef{
+			Provider:  ProviderClaude,
+			SessionID: record.SourceSessionID,
+		}]
+	}
+	return origin
 }
 
 // codexSessionMetaReaders bounds the session-meta fan-out. Each worker does

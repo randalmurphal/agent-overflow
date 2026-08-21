@@ -87,6 +87,72 @@ export interface PromptOverride {
   prompt: string;
 }
 
+/** Claude Code's four built-in output styles. `''` means "no style selected". */
+export type ClaudeOutputStyle = 'Concise' | 'Proactive' | 'Explanatory' | 'Learning';
+
+/**
+ * What a Claude session does with a message another Claude session on this
+ * machine addresses to it.
+ *
+ * Claude Code's own schema has a third value, `hold`, which Agent Overflow
+ * never writes: a held message waits for an approval a headless session has
+ * no surface to give, so it is dropped after a timeout with nothing on the
+ * wire to say so. See internal/settings/claudecrosssession.go.
+ */
+export type ClaudeCrossSessionInbound = 'accept' | 'refuse';
+
+/**
+ * Claude Code's machine-wide peer inbox: whether other Claude sessions on
+ * this machine can discover and message a thread, and what an arriving
+ * message does.
+ *
+ * Two mechanisms, one setting. `enabled` opens the CLI's experiment gate and
+ * passes the peer-visible name, which is what binds the socket at all;
+ * `inbound` is the delivery policy that only matters once it is bound. Off by
+ * default — letting another process start a turn in your thread is opt-in.
+ *
+ * SPAWN-ONLY: a change converges by restarting the session, which the backend
+ * queues as a deferred restart rather than doing under a running turn.
+ */
+export interface ClaudeCrossSession {
+  enabled?: boolean;
+  inbound?: ClaudeCrossSessionInbound | '';
+}
+
+/**
+ * Caps on Claude's subagent fan-out. Zero means "unset" on both axes: the
+ * CLI's schema is a positive integer, so 0 is unsendable and would be a
+ * silent no-op rather than "no subagents".
+ */
+export interface ClaudeSubagentLimits {
+  maxSpawnDepth?: number;
+  maxConcurrent?: number;
+}
+
+/**
+ * How much Claude thinks before it answers. `''` is Claude Code's own
+ * per-model choice (adaptive where the model supports it, its built-in
+ * budget otherwise) — not "off".
+ */
+export type ClaudeThinkingMode = 'off' | 'budget';
+
+/**
+ * Whether thinking text reaches the wire. `''` is Agent Overflow's default,
+ * which is `summarized` — the spawn has always asked for it so newer models'
+ * `omitted` default cannot silence the thinking pane.
+ */
+export type ClaudeThinkingDisplay = 'summarized' | 'omitted';
+
+/**
+ * Claude's extended-thinking preference. `budgetTokens` is meaningful only
+ * with `mode: 'budget'`, and the backend drops it otherwise.
+ */
+export interface ClaudeThinking {
+  mode?: ClaudeThinkingMode | '';
+  budgetTokens?: number;
+  display?: ClaudeThinkingDisplay | '';
+}
+
 export interface Settings {
   // NOTE: `theme` used to live here and is RETIRED (docs/specs/theme-system.md
   // §6.2). The light/dark mode is a property of the client machine, not of a
@@ -196,6 +262,36 @@ export interface Settings {
    * to nudge about. Go persists sparsely, so treat undefined as false.
    */
   claudeTodoRemindersDisabled?: boolean;
+  /**
+   * Claude-only session axes delivered through the CLI's `--settings`
+   * block. None of them has a CLI flag — the settings key IS the delivery
+   * mechanism — and all three are read at spawn, so edits reach new
+   * sessions only. claude-tui is deliberately excluded on the backend:
+   * its PTY launch passes no `--settings` at all.
+   *
+   * Every one treats its empty/zero value as "say nothing, let Claude
+   * Code decide", never as a value of its own. Go persists sparsely, so
+   * treat undefined the same way.
+   */
+  claudeOutputStyle?: ClaudeOutputStyle | '';
+  claudeSubagentLimits?: ClaudeSubagentLimits;
+  claudeToolMemoryLimit?: string;
+  /**
+   * The peer inbox. Rides the same `--settings` block for its policy half
+   * but is NOT one of the three above: it also needs an environment gate and
+   * a `--name` at spawn, and unlike them the backend reconciles a change
+   * onto running sessions as a deferred restart instead of leaving it for
+   * whenever the next session happens to start.
+   */
+  claudeCrossSession?: ClaudeCrossSession;
+  /**
+   * Extended thinking. Unlike the four axes above this one is NOT
+   * spawn-only: the backend applies a change to running headless Claude
+   * sessions with a `set_max_thinking_tokens` control request. The one
+   * exception is going BACK to Claude Code's own choice, which has no wire
+   * form and lands on the deferred-restart path.
+   */
+  claudeThinking?: ClaudeThinking;
   /** Seeds whether new draft threads start on the current checkout or a new worktree. */
   defaultThreadEnvMode: ThreadEnvMode;
   /** Prefix used for auto-generated worktree branch names. */

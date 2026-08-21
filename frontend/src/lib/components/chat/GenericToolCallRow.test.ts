@@ -495,3 +495,42 @@ describe('<GenericToolCallRow> empty-body message', () => {
     });
   });
 });
+
+describe('<GenericToolCallRow> permission-denial chip', () => {
+  beforeEach(() => {
+    resetBindingMocks();
+    setBindingMock('GetPayloadPreview', vi.fn(async () => ({ data: '', size: 0, isComplete: true })));
+  });
+
+  it('shows Declined and carries the denial reason on the chip', () => {
+    const item = makeItem({
+      kind: 'tool_call',
+      toolName: 'Bash',
+      summary: 'rm -rf /',
+      decision: 'declined',
+      meta: JSON.stringify({
+        toolName: 'Bash',
+        permissionDenied: {
+          reason: 'Denied by alwaysDenyRules: Bash(rm:*)',
+          reasonType: 'rule',
+        },
+      }),
+    });
+    const { getByTestId } = render(GenericToolCallRow, { props: { item } });
+    const chip = getByTestId('tool-decision-chip');
+    expect(chip.textContent).toContain('Declined');
+    expect(chip.getAttribute('title')).toBe('Denied by alwaysDenyRules: Bash(rm:*)');
+  });
+
+  it('leaves the chip title unset when the row carries no denial meta', () => {
+    const item = makeItem({
+      kind: 'tool_call',
+      toolName: 'Bash',
+      summary: 'ls',
+      decision: 'declined',
+      meta: JSON.stringify({ toolName: 'Bash' }),
+    });
+    const { getByTestId } = render(GenericToolCallRow, { props: { item } });
+    expect(getByTestId('tool-decision-chip').getAttribute('title')).toBeNull();
+  });
+});

@@ -245,9 +245,29 @@ type InjectedUserContentWrapper struct{ Open, Close string }
 //     entry (a suppressed echo strands the entry and poisons turn indexing —
 //     incident 2026-08-04). The entry here still serves the fork-point
 //     detector, which must not count the echo as a real user prompt.
+//   - <cross-session-message from=…>  2.1.237 binary — a message another
+//     Claude session on the same machine addressed to this one
+//     (`SendMessage` between sessions, discovered via `ListAgents`;
+//     2.1.224+). It arrives as a user-role turn wrapped in
+//     `<cross-session-message from="..." from-name="...">`. Whether AO's
+//     own sessions can RECEIVE one is a user setting (`claudeCrossSession`,
+//     internal/settings/claudecrosssession.go): off by default, in which
+//     case AO spawns with an explicit `crossSessionInbound":"refuse"` so a
+//     remotely gated inbox cannot deliver anyway; on, it emits `accept` or
+//     `refuse` per the user's choice. So this entry is load-bearing in BOTH
+//     directions: for an AO session on `accept`, the wrapper marks a turn
+//     the peer started rather than the user, and for any transcript
+//     written by some OTHER client — a `claude` session the user ran
+//     themselves and then resumed or imported into AO — it keeps a peer's
+//     message from being counted as a user-typed prompt by the fork-point
+//     detector. The live-wire replay path deliberately branches on this
+//     shape BEFORE the wrapper suppression, exactly like `<command-name>`
+//     above (parse_user_replay.go): suppressing it there would destroy the
+//     peer's text, which is real conversation content.
 var InjectedUserContentWrappers = []InjectedUserContentWrapper{
 	{"<task-notification", "</task-notification>"},
 	{"<agent-message", "</agent-message>"},
+	{"<cross-session-message", "</cross-session-message>"},
 	{"<system-reminder>", "</system-reminder>"},
 	{"<bash-input>", "</bash-input>"},
 	{"<bash-stdout>", "</bash-stdout>"},

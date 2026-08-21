@@ -194,10 +194,32 @@ func (r *Router) handleTimelineNotification(evt provider.ProviderEvent) error {
 	if summary == "" {
 		summary = strings.TrimSpace(meta.Title)
 	}
+	// Claude's permission notices compose their sentence in the parser and
+	// carry no `title`, so the generic "Provider notification" placeholder
+	// would swallow the one thing the row exists to say.
+	var notice permissionNoticeMeta
+	isPermissionNotice := isPermissionNoticeKind(meta.Kind)
+	if isPermissionNotice {
+		if len(evt.Meta) > 0 {
+			_ = json.Unmarshal(evt.Meta, &notice)
+		}
+		if summary == "" {
+			summary = permissionNoticeSummaryFallback(notice)
+		}
+	}
 	if summary == "" {
 		summary = "Provider notification"
 	}
-	return r.persistTimelineNotification(evt, meta.Kind, summary)
+	if err := r.persistTimelineNotification(evt, meta.Kind, summary); err != nil {
+		return err
+	}
+	// The notice row is the durable record; the tool_call annotation is
+	// the cross-reference. Order matters: the row must exist before the
+	// chip points at it.
+	if isPermissionNotice && meta.Kind == permissionDeniedNotificationKind {
+		r.annotateDeniedToolCall(evt, notice)
+	}
+	return nil
 }
 
 func (r *Router) persistTimelineNotification(evt provider.ProviderEvent, notificationKind, summary string) error {
@@ -307,8 +329,10 @@ func sanitizedTimelineNotificationMeta(notificationKind, summary string, raw jso
 		addHookNotificationMeta(meta, raw)
 	case sessionDiedNotificationKind:
 		addSessionDiedNotificationMeta(meta, raw)
-	case modelFallbackNotificationKind:
+	case modelRefusalFallbackNotificationKind, modelAvailabilityFallbackKind, modelConsentFallbackKind:
 		addModelFallbackNotificationMeta(meta, raw)
+	case permissionDeniedNotificationKind, permissionRetryNotificationKind:
+		addPermissionNoticeMeta(meta, raw)
 	}
 
 	encoded, err := json.Marshal(meta)
@@ -346,6 +370,15 @@ func addModelFallbackNotificationMeta(meta map[string]any, raw json.RawMessage) 
 	}
 	if value := strings.TrimSpace(fallback.RefusedUserMessageUUID); value != "" {
 		meta["refusedUserMessageUuid"] = value
+	}
+	// model_consent_fallback's own pair. Without them the consent row cannot
+	// say whether the switch was permanent, which is the whole difference
+	// between "for this turn" and "this is your default now".
+	if value := strings.TrimSpace(fallback.Choice); value != "" {
+		meta["choice"] = value
+	}
+	if fallback.PersistedAsDefault {
+		meta["persistedAsDefault"] = true
 	}
 }
 

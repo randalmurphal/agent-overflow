@@ -83,6 +83,20 @@ type ThreadImportState struct {
 	LastItemIndex int   `json:"lastItemIndex"`
 	ImportedAt    int64 `json:"importedAt"`
 	RefreshedAt   int64 `json:"refreshedAt"`
+	// SourceMetaHash and SourceHistoryMode are the source-identity
+	// fingerprint a refresh compares before trusting LastSourceOffset
+	// (migration v67). Codex can rewrite a rollout in place when it migrates
+	// the thread from `legacy` to `paginated` history, producing a file that
+	// is the same size or larger while every offset in it means something
+	// else — which the size check cannot see.
+	//
+	// Both are EMPTY for a row written before v67, and empty means
+	// "unknown", never "no header": a refresh must skip the comparison
+	// rather than report every pre-v67 thread as diverged. Codex is the only
+	// writer today; Claude leaves them blank because its refresh anchors on
+	// a transcript uuid, not a byte offset.
+	SourceMetaHash    string `json:"sourceMetaHash"`
+	SourceHistoryMode string `json:"sourceHistoryMode"`
 }
 
 // ErrInvalidImportProvider is returned for an import provider outside the
@@ -92,7 +106,7 @@ var ErrInvalidImportProvider = errors.New("store: invalid import provider")
 const threadImportStateColumns = `thread_id, provider, source_path, source_session_id,
     source_parent_session_id,
     leaf_uuid, last_source_uuid, last_source_offset, last_turn_index, last_item_index,
-    imported_at, refreshed_at`
+    imported_at, refreshed_at, source_meta_hash, source_history_mode`
 
 // SetThreadImportState writes the thread's import cursor, replacing any
 // previous one. Both the initial import and every refresh go through it —
@@ -112,7 +126,7 @@ func (s *Store) SetThreadImportState(state ThreadImportState) error {
 	}
 	_, err := s.db.Exec(
 		`INSERT INTO thread_import_state (`+threadImportStateColumns+`)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(thread_id) DO UPDATE SET
 		     provider = excluded.provider,
 		     source_path = excluded.source_path,
@@ -124,12 +138,15 @@ func (s *Store) SetThreadImportState(state ThreadImportState) error {
 		     last_turn_index = excluded.last_turn_index,
 		     last_item_index = excluded.last_item_index,
 		     imported_at = excluded.imported_at,
-		     refreshed_at = excluded.refreshed_at`,
+		     refreshed_at = excluded.refreshed_at,
+		     source_meta_hash = excluded.source_meta_hash,
+		     source_history_mode = excluded.source_history_mode`,
 		state.ThreadID, state.Provider, state.SourcePath, state.SourceSessionID,
 		state.SourceParentSessionID,
 		state.LeafUUID, state.LastSourceUUID, state.LastSourceOffset,
 		state.LastTurnIndex, state.LastItemIndex,
 		state.ImportedAt, state.RefreshedAt,
+		state.SourceMetaHash, state.SourceHistoryMode,
 	)
 	if err != nil {
 		return fmt.Errorf("store: set thread import state %s: %w", state.ThreadID, err)
@@ -150,6 +167,7 @@ func (s *Store) GetThreadImportState(threadID string) (ThreadImportState, bool, 
 		&state.LeafUUID, &state.LastSourceUUID, &state.LastSourceOffset,
 		&state.LastTurnIndex, &state.LastItemIndex,
 		&state.ImportedAt, &state.RefreshedAt,
+		&state.SourceMetaHash, &state.SourceHistoryMode,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ThreadImportState{}, false, nil

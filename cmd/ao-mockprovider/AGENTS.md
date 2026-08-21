@@ -71,10 +71,59 @@ Claude interrupted turns end with the verified 2.1.170
 terminal_reason:aborted_streaming}` shape. Codex interrupted turns end with
 `turn/completed{turn.status:interrupted}` per the upstream v2 protocol.
 
+## Codex adapter contract
+
+Three behaviours `codex.go` / `codex_queue.go` / `codex_revert.go` own
+that no scenario can express, because each describes what the app-server
+does on its own:
+
+- **`initialize` reports a version.** The response carries
+  `userAgent: "codex_cli_rs/<mock version> (...)"`, which is where the app
+  parses the connected app-server's build from
+  (`internal/provider/codex/app_server_version.go`). Every per-method version
+  gate fails CLOSED without it, so a mock that answered `{}` would silently
+  run harness sessions as an ancient app-server: no `thread/queue`, no
+  thread-scoped usage, and the pre-0.149 `untrusted` approval policy instead
+  of `on-request`.
+- **`thread/queue/*` dispatches itself.** The queue is drained from the
+  engine's idle hook — one submission per idle edge, FIFO — because upstream
+  drains it from `on_thread_idle` and never waits to be asked. That is the
+  whole point of mocking the family: a client that ALSO dispatches from a
+  queue of its own sends every message twice, and only a mock that starts
+  turns nobody requested can show it. `thread/queue/start` is answered with a
+  JSON-RPC error as a tripwire — dispatch is automatic and a client `start`
+  races the drain — and so are `thread/queue/update` and `.../reorder`, which
+  AO has no caller for: a mock more permissive than the app would let a
+  harness run pass against a wrapper nothing verifies.
+  A dispatched turn binds `${USER_INPUT}` and
+  `${QUEUE_CLIENT_ID}` for its steps, since the queued text exists nowhere a
+  scenario file could name it.
+- **A thread remembers its history mode.** `thread/start` echoes the
+  `historyMode` it was asked for (upstream's default, `legacy`, when the
+  params say nothing) and RECORDS it under `AO_HARNESS_TRANSCRIPT_HOME`;
+  `thread/resume` can only report what is already there. That durability
+  is the point: every rollback cuts through a throwaway resume session, a
+  second mock process that never saw the start, and a mode held in memory
+  would read as legacy there — sending a genuinely paginated thread down
+  the `thread/fork` fallback with no error anywhere. `thread/revert`
+  refuses a legacy thread with upstream's own -32600 and its verbatim
+  wording, which is what AO's classifier turns into
+  `ErrThreadRevertUnsupported`, and answers a paginated one with the
+  response plus the `thread/reverted` notification on the same
+  connection. Both cuts post a `history_cut` control report before they
+  answer, because "which cut did the app choose" has no other observable.
+
+An anchor neither cut recognises is believed on a RESUMED thread and
+refused on a STARTED one. The mock keeps no rollout, so on a resumed
+thread not knowing a turn is ignorance rather than evidence — and every
+real rollback lands there. On a thread this process started it ran the
+whole history, so an unknown anchor is nonsense and stays an error.
+
 ## Testing
 
-`binary_test.go` / `codex_bin_test.go` / `control_e2e_test.go` build
-the real binary once (TestMain) and drive it over pipes; Claude-mode
+`binary_test.go` / `codex_bin_test.go` / `codex_queue_bin_test.go` /
+`codex_revert_bin_test.go` / `control_e2e_test.go` build the real binary
+once (TestMain) and drive it over pipes; Claude-mode
 stdout is validated line-by-line against the app's actual parser
 (`validate_test.go`). Anything protocol-shaped belongs in those tests,
 not unit tests of internals.

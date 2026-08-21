@@ -329,10 +329,49 @@ func (r *Router) peekPendingSendHead(threadID string) (pendingSend, bool) {
 // Returns (zero, false) when nothing matches; handleUserText then routes
 // the echo to the wire-only paths (subagent prompt / injected context).
 func (r *Router) consumeMatchingPendingSend(threadID, providerItemID string) (pendingSend, bool) {
+	return r.consumeMatchingPendingSendForEcho(threadID, providerItemID, "")
+}
+
+// consumeMatchingPendingSendForEcho is the full match, including the echo's
+// `client_id` — the third and STRONGEST key, and the only one that works on
+// Codex.
+//
+// A Codex entry has no expected provider item id (item ids are
+// provider-assigned), so it falls to FIFO — and FIFO is wrong the moment the
+// provider's own queue can hold rows this app did not write. `codex queue
+// --thread` writes into the same FIFO the app-server drains, so a foreign row
+// AHEAD of AO's dispatches first, and its echo would pop AO's entry: the
+// foreign message would be stamped onto AO's optimistic row, and AO's own echo
+// would arrive later with nothing left to match and persist as injected
+// provider context. Both halves of the user's transcript wrong, from one
+// mismatched pop.
+//
+// `clientId` is what upstream threads through for exactly this
+// (`TurnInput::UserInput{client_id}` → `UserMessageItem.client_id`,
+// rust-v0.149.0): AO passes the optimistic row id on `thread/queue/add`, so an
+// echo carrying one names the entry it belongs to. Hence:
+//
+//   - clientID present and equal to an entry's AOItemID → that entry, wherever
+//     it sits in the queue.
+//   - clientID present and matching nothing → NO match, deliberately. A client
+//     id AO does not hold is not AO's message; `codex queue` mints a v7 uuid
+//     and cannot collide with AO's `user:<turn>[:flush:<n>]` grammar. Falling
+//     back to FIFO here would reintroduce the exact mispop above.
+//   - clientID absent → the provider-item-id / FIFO rules above, unchanged.
+//     Every non-Codex path and every pre-0.148 Codex session lands here.
+func (r *Router) consumeMatchingPendingSendForEcho(threadID, providerItemID, clientID string) (pendingSend, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	queue := r.pendingByThread[threadID]
 	if len(queue) == 0 {
+		return pendingSend{}, false
+	}
+	if clientID != "" {
+		for i := range queue {
+			if queue[i].AOItemID == clientID {
+				return r.popPendingSendAtLocked(threadID, i), true
+			}
+		}
 		return pendingSend{}, false
 	}
 	if queue[0].ExpectedProviderItemID == "" || providerItemID == "" {

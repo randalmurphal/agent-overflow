@@ -50,9 +50,28 @@ func (r *Router) handleUserText(evt provider.ProviderEvent) error {
 	if evt.ThreadID == "" {
 		return nil
 	}
-	providerItemID := readProviderItemIDFromMeta(evt.Meta)
+	// ONE decode for the whole classification chain below. Five separate
+	// readers each unmarshalling the same envelope is four wasted passes per
+	// top-level echo, on the provider read loop.
+	meta := decodeUserTextMeta(evt.Meta)
+	providerItemID := meta.text("provider_item_id")
 
-	if eventParentID(evt) == "" {
+	// The FIFO is only consulted for an echo that could BE one of this app's
+	// sends. Two provenance flags say positively that it is not — the Codex
+	// session's `external-queue` origin stamp (another producer's row
+	// dispatched off the provider's own queue) and Claude's cross-session
+	// peer envelope — and both would otherwise pop a real pending entry
+	// whenever that entry has no expected wire id to defend itself with.
+	// The cost of the mispop is two wrong rows, not one: the foreign message
+	// takes the user's optimistic row, and the user's own echo then arrives
+	// with nothing to match and persists as "Injected provider context".
+	//
+	// Checked BEFORE the pop rather than inside it because provenance is a
+	// property of the ECHO; the registry has no way to see it.
+	_, isPeerEcho := meta.crossSessionPeer()
+	foreignEcho := isPeerEcho || meta.text("origin") == externalQueueOrigin
+
+	if eventParentID(evt) == "" && !foreignEcho {
 		// Pop and handle under the thread's flush anchor lock so the popped snapshot's
 		// AnchoredAtInterrupt / WasDeferred state is truthful: the
 		// interrupt paths (PromoteQuietFlushSends,
@@ -67,7 +86,8 @@ func (r *Router) handleUserText(evt provider.ProviderEvent) error {
 			anchor := r.flushAnchor(evt.ThreadID)
 			anchor.Lock()
 			defer anchor.Unlock()
-			pending, ok := r.consumeMatchingPendingSend(evt.ThreadID, providerItemID)
+			pending, ok := r.consumeMatchingPendingSendForEcho(
+				evt.ThreadID, providerItemID, meta.text(userEchoClientIDMetaKey))
 			if !ok {
 				return false, nil
 			}
@@ -77,12 +97,12 @@ func (r *Router) handleUserText(evt provider.ProviderEvent) error {
 			// parent so the session-death self-heal can stamp them — the
 			// echo won't necessarily be re-delivered (round-6, R6-1).
 			pending.EchoProviderItemID = providerItemID
-			pending.EchoParentUUID = readParentUUIDFromMeta(evt.Meta)
+			pending.EchoParentUUID = meta.text("parent_uuid")
 			var handleErr error
 			if pending.DeferredItem != nil {
-				handleErr = r.persistDeferredUserText(&pending, providerItemID, evt)
+				handleErr = r.persistDeferredUserText(&pending, providerItemID, evt, meta)
 			} else {
-				handleErr = r.attachProviderItemIDToUserRow(evt.ThreadID, &pending, providerItemID, evt)
+				handleErr = r.attachProviderItemIDToUserRow(evt.ThreadID, &pending, providerItemID, evt, meta)
 			}
 			if handleErr != nil && !r.isWireOnlyUserTextSeen(evt.ThreadID, providerItemID) {
 				// This echo IS the consumption boundary even though the
@@ -138,7 +158,27 @@ func (r *Router) handleUserText(evt provider.ProviderEvent) error {
 		// content — persist as the nested user_text row.
 		return r.persistWireOnlySubagentPrompt(evt, providerItemID)
 	}
-	if readCommandEchoFromMeta(evt.Meta) {
+	if peer, isPeer := meta.crossSessionPeer(); isPeer {
+		// A message another Claude session on this machine sent to this
+		// one. It reaches the top-level wire-only branch for a structural
+		// reason — the CLI minted the uuid, so no pending-send entry can
+		// ever match it — but unlike the rest of this branch its
+		// provenance is POSITIVELY known: the parser only sets these flags
+		// on a structured `origin.kind == "peer"` envelope or a balanced
+		// `<cross-session-message>` wrapper. Real conversation content with
+		// a named author, so it persists as a message rather than as
+		// "Injected provider context".
+		return r.persistPeerSessionMessage(evt, providerItemID, peer)
+	}
+	if meta.text("origin") == externalQueueOrigin {
+		// The user echo of a turn another Codex process queued onto this
+		// thread (`codex queue --thread`). AO never sent it, so no
+		// pending-send entry matches, but the session stamped its origin
+		// from the turn/started attribution — a named author, so it is a
+		// user row, not injected context.
+		return r.persistExternalOriginMessage(evt, providerItemID, "queue", externalQueueOrigin, nil)
+	}
+	if meta.flag("command_echo") {
 		// A command-INPUT metadata echo (`<command-name>` triple) whose send
 		// this process didn't register — a session-resume replay, or a
 		// command issued by another client on the same session. The XML is
@@ -154,7 +194,7 @@ func (r *Router) handleUserText(evt provider.ProviderEvent) error {
 	return r.persistInjectedContextNotification(evt, providerItemID)
 }
 
-func (r *Router) persistDeferredUserText(pending *pendingSend, providerItemID string, evt provider.ProviderEvent) error {
+func (r *Router) persistDeferredUserText(pending *pendingSend, providerItemID string, evt provider.ProviderEvent, meta userTextMeta) error {
 	if pending.DeferredItem == nil {
 		return nil
 	}
@@ -185,7 +225,7 @@ func (r *Router) persistDeferredUserText(pending *pendingSend, providerItemID st
 	// the prompt above its own response (round-7, R7-4). ThreadID /
 	// TurnIndex / Kind / Role / Status are guaranteed populated by the
 	// dispatcher's row construction in app_flush_queue.go.
-	parentUUID := readParentUUIDFromMeta(evt.Meta)
+	parentUUID := meta.text("parent_uuid")
 	var persisted store.Item
 	persistErr := func() error {
 		if !pending.EchoConsumed {
@@ -265,52 +305,196 @@ func (r *Router) persistDeferredUserText(pending *pendingSend, providerItemID st
 	return nil
 }
 
-// readProviderItemIDFromMeta extracts `provider_item_id` from the event
-// meta. Both Phase B (Claude replay envelope) and Phase C (Codex
-// userMessage item) set the key as a top-level string. Defensive parse:
-// returns empty on absent / parse failure / non-string value so callers
-// don't have to repeat the same defensive shape.
+// userTextMeta is ONE decode of an EventUserText's wire meta, shared by every
+// classifier the handler runs. The keys it answers are all top-level scalars
+// the two parsers stamp:
+//
+//   - `provider_item_id` — Claude's replay envelope uuid / Codex's userMessage
+//     item id. Both Phase B and Phase C set it as a top-level string.
+//   - `parent_uuid` — the echo's transcript parent, the slice-through point a
+//     revert retry needs.
+//   - `command_echo` — the Claude parser's flag for the CLI's command-INPUT
+//     metadata echo (`<command-name>` triple; parse_user_replay.go). A matched
+//     echo stamps the optimistic user row like any direct send; the flag exists
+//     so the UNMATCHED top-level branch drops the raw XML instead of persisting
+//     it as an injected-context row.
+//   - `origin` — the provider's attribution for an echo AO did not send.
+//   - `cross_session_*` — peer-delivery provenance.
+//
+// Every accessor is a defensive parse: absent, malformed, or wrong-typed reads
+// as the zero value, so no caller repeats the same shape.
+type userTextMeta map[string]json.RawMessage
+
+func decodeUserTextMeta(raw json.RawMessage) userTextMeta {
+	if len(raw) == 0 {
+		return nil
+	}
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(raw, &fields) != nil {
+		return nil
+	}
+	return fields
+}
+
+func (m userTextMeta) text(key string) string {
+	raw, ok := m[key]
+	if !ok {
+		return ""
+	}
+	var value string
+	if json.Unmarshal(raw, &value) != nil {
+		return ""
+	}
+	return value
+}
+
+func (m userTextMeta) flag(key string) bool {
+	raw, ok := m[key]
+	if !ok {
+		return false
+	}
+	var value bool
+	if json.Unmarshal(raw, &value) != nil {
+		return false
+	}
+	return value
+}
+
+// readProviderItemIDFromMeta is the one-shot form, for callers that hold only
+// the raw meta (a persisted row's, not a live event's).
 func readProviderItemIDFromMeta(meta json.RawMessage) string {
-	if len(meta) == 0 {
-		return ""
-	}
-	var m map[string]any
-	if json.Unmarshal(meta, &m) != nil {
-		return ""
-	}
-	id, _ := m["provider_item_id"].(string)
-	return id
+	return decodeUserTextMeta(meta).text("provider_item_id")
 }
 
-func readParentUUIDFromMeta(meta json.RawMessage) string {
-	if len(meta) == 0 {
-		return ""
-	}
-	var m map[string]any
-	if json.Unmarshal(meta, &m) != nil {
-		return ""
-	}
-	id, _ := m["parent_uuid"].(string)
-	return id
+// crossSessionPeer is the provenance of a message delivered to this
+// session by another Claude session, as the Claude parser reported it.
+type crossSessionPeer struct {
+	// From is the peer's address and the reply handle (a unix socket
+	// path). May be empty on an older CLI shape.
+	From string
+	// Name is the peer's registered display name. May be empty; the
+	// renderer falls back to From, and then to an unnamed label.
+	Name string
 }
 
-// readCommandEchoFromMeta reports whether the Claude parser flagged this
-// EventUserText as the CLI's command-INPUT metadata echo
-// (`<command-name>` triple; parse_user_replay.go). A matched echo stamps
-// the optimistic user row like any direct send; the flag exists so the
-// UNMATCHED top-level branch drops the raw XML instead of persisting it
-// as an injected-context row.
-func readCommandEchoFromMeta(meta json.RawMessage) bool {
-	if len(meta) == 0 {
-		return false
+// crossSessionPeer reports whether the Claude parser flagged this
+// EventUserText as a cross-session delivery, and lifts the peer's provenance.
+//
+// `cross_session_message` alone gates the branch. The two provenance strings
+// are best-effort: the flag means "another session sent this", and a delivery
+// whose author cannot be named is still not something the user typed.
+func (m userTextMeta) crossSessionPeer() (crossSessionPeer, bool) {
+	if !m.flag("cross_session_message") {
+		return crossSessionPeer{}, false
 	}
-	var m map[string]any
-	if json.Unmarshal(meta, &m) != nil {
-		return false
-	}
-	flagged, _ := m["command_echo"].(bool)
-	return flagged
+	return crossSessionPeer{
+		From: m.text("cross_session_from"),
+		Name: m.text("cross_session_from_name"),
+	}, true
 }
+
+// persistPeerSessionMessage creates the `user_text` row for a message
+// another Claude session sent to this one (Claude Code's cross-session
+// inbox).
+//
+// Role is `user` because that is what the model saw: the CLI injects the
+// delivery as a user-role turn, and a transcript that showed it as a
+// system notice would not explain why the assistant answered. The meta is
+// what keeps that from being a lie about WHO — `origin` names the peer
+// session in the same field and vocabulary Codex's external-queue rows
+// use, so the frontend's one attribution branch labels both.
+//
+// `wire_only` is set for the usual reason it is set on this path: no
+// draft, no attachments, and no local send to reconcile against. It is
+// also what keeps the edit-and-resend pencil off a row whose text this
+// app never owned.
+//
+// The id is deterministic from the wire id (`user:peer:<id>`) so a
+// session-resume replay upserts the same row, and lives in its own
+// prefix so it can never collide with an AO send's `user:<turnIndex>`.
+func (r *Router) persistPeerSessionMessage(evt provider.ProviderEvent, providerItemID string, peer crossSessionPeer) error {
+	fields := map[string]any{"cross_session_message": true}
+	if peer.From != "" {
+		fields["cross_session_from"] = peer.From
+	}
+	if peer.Name != "" {
+		fields["cross_session_from_name"] = peer.Name
+	}
+	return r.persistExternalOriginMessage(evt, providerItemID, "peer", crossSessionMessageOrigin, fields)
+}
+
+// persistExternalOriginMessage creates the `user_text` row for a top-level
+// wire-only user echo whose provenance the provider POSITIVELY named via
+// `Meta.origin` — a Claude peer-session delivery or a Codex turn queued
+// from outside this app (`codex queue`). Both are real conversation
+// content with a known non-AO author, so they persist as user rows the
+// frontend's one attribution branch labels by `origin`, rather than as
+// "Injected provider context".
+//
+// idSlug keeps each origin in its own deterministic id space
+// (`user:<slug>:<wire id>`) so a resume replay upserts the same row and
+// nothing collides with an AO send's `user:<turnIndex>`.
+func (r *Router) persistExternalOriginMessage(evt provider.ProviderEvent, providerItemID, idSlug, origin string, extra map[string]any) error {
+	turnIndex, ok := r.openTurnIndex(evt.ThreadID)
+	if !ok {
+		last, err := r.store.LastTurnIndex(evt.ThreadID)
+		if err != nil {
+			return fmt.Errorf("triage: resolve turn index for %s message on %s: %w", origin, evt.ThreadID, err)
+		}
+		turnIndex = last
+	}
+
+	fields := map[string]any{
+		"provider_item_id": providerItemID,
+		"wire_only":        true,
+		"origin":           origin,
+	}
+	for key, value := range extra {
+		fields[key] = value
+	}
+	metaBytes, err := json.Marshal(fields)
+	if err != nil {
+		return fmt.Errorf("triage: encode %s message meta: %w", origin, err)
+	}
+
+	now := eventTimestampMillis(evt)
+	item := store.Item{
+		ID:        fmt.Sprintf("user:%s:%s", idSlug, providerItemID),
+		ThreadID:  evt.ThreadID,
+		TurnIndex: turnIndex,
+		Kind:      string(provider.ItemUserText),
+		Role:      "user",
+		Status:    statusCompleted,
+		Summary:   evt.Content,
+		Meta:      string(metaBytes),
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	return r.persistItem(item, nil)
+}
+
+// externalQueueOrigin mirrors `codex.ExternalTurnOriginQueue` — the origin
+// the Codex session stamps on the user echo of a turn it did not start
+// (`codex queue --thread`). Duplicated for the same provider-agnostic
+// reason as crossSessionMessageOrigin and pinned by
+// `TestExternalQueueOriginMatchesTheProviderConstant`.
+const externalQueueOrigin = "external-queue"
+
+// userEchoClientIDMetaKey is where the Codex adapter puts a `userMessage`
+// echo's own `clientId` (protocol_item.go's userMessageClientIDMetaKey — same
+// key, and TestUserEchoClientIDKeyMatchesTheProviderConstant is what keeps the
+// two spellings from drifting). For a turn AO queued it is the optimistic row
+// id AO passed to `thread/queue/add`, which is what makes it a pending-send
+// key; every other producer's is a uuid AO never minted. Absent on every path
+// that does not go through the provider's queue.
+const userEchoClientIDMetaKey = "client_id"
+
+// crossSessionMessageOrigin mirrors `claude.PeerTurnOrigin`. Duplicated
+// rather than imported because triage is provider-agnostic by contract —
+// it may not reach into a provider package for a vocabulary term — and
+// pinned against the original by
+// `TestPeerMessageOriginMatchesTheProviderConstant`.
+const crossSessionMessageOrigin = "peer-session"
 
 // attachProviderItemIDToUserRow merges `provider_item_id` onto the
 // existing AO-persisted user row's meta and re-emits the upsert. The
@@ -355,7 +539,7 @@ func readCommandEchoFromMeta(meta json.RawMessage) bool {
 // return nil rather than panic — the send-failure path has already
 // surfaced an error row to the user, and a stranded pending entry would
 // only mis-route the next wire user_text.
-func (r *Router) attachProviderItemIDToUserRow(threadID string, pending *pendingSend, providerItemID string, evt provider.ProviderEvent) error {
+func (r *Router) attachProviderItemIDToUserRow(threadID string, pending *pendingSend, providerItemID string, evt provider.ProviderEvent, meta userTextMeta) error {
 	aoItemID := pending.AOItemID
 	existing, found, err := r.store.GetThreadItem(threadID, aoItemID)
 	if err != nil {
@@ -408,7 +592,7 @@ func (r *Router) attachProviderItemIDToUserRow(threadID string, pending *pending
 	// Item id and parent uuid merge together — the same store tx stamps
 	// both, so the parent (the already-cut retry's slice-through point)
 	// can't be lost to a failed anchor follow-up (round-5, R5-8).
-	parentUUID := readParentUUIDFromMeta(evt.Meta)
+	parentUUID := meta.text("parent_uuid")
 	mergedMeta, err := usermessage.MergeProviderIDs(existing.Meta, providerItemID, parentUUID)
 	if err != nil {
 		return fmt.Errorf("triage: merge provider ids into %s/%s meta: %w", threadID, aoItemID, err)

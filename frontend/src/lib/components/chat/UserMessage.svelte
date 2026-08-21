@@ -1,6 +1,7 @@
 <script lang="ts">
   import Pencil from '@lucide/svelte/icons/pencil';
   import GitFork from '@lucide/svelte/icons/git-fork';
+  import Inbox from '@lucide/svelte/icons/inbox';
   import { untrack } from 'svelte';
   import type { Item } from '../../types/models';
   import type { ThreadPane } from '../../stores/thread.svelte';
@@ -22,6 +23,8 @@
     parseUserMessageMeta,
     stripAttachmentImages,
     userMessageCommandRanges,
+    peerSessionOriginLabel,
+    userMessageOrigin,
   } from '../../utils/userMessageMeta';
   import { commandSegments } from '../../utils/commandWords';
   import { formatTimeOfDay } from '../../utils/format';
@@ -38,6 +41,37 @@
 
   const userMeta = $derived(parseUserMessageMeta(item.meta));
   const isWireOnlyUserMessage = $derived(userMeta?.wire_only === true);
+  // A message that reached this thread from outside Agent Overflow keeps the
+  // user bubble — it IS user-role content and the model answered it — but says
+  // so, because attributing someone else's `codex queue` write to the reader
+  // is how a transcript starts lying about who asked for what.
+  //
+  // A peer-session message — another Claude session on this machine sending
+  // into this thread — is the same reasoning with a stronger case: the author
+  // is not just another window, it is another model, and the reply the user is
+  // about to read was addressed to IT.
+  //
+  // One badge, two origins. The markup was byte-identical between them, so the
+  // only per-origin facts are the testid and the label; keeping them as data
+  // means a third origin is one entry here rather than a third copy of the
+  // row.
+  const messageOrigin = $derived(userMessageOrigin(userMeta));
+  const originBadge = $derived.by<{ testid: string; label: string } | null>(() => {
+    switch (messageOrigin) {
+      case 'external-queue':
+        return {
+          testid: 'user-message-external-origin',
+          label: 'Queued from outside Agent Overflow',
+        };
+      case 'peer-session':
+        return {
+          testid: 'user-message-peer-origin',
+          label: peerSessionOriginLabel(userMeta),
+        };
+      default:
+        return null;
+    }
+  });
   const canRequestEdit = $derived(typeof actions?.onEditMessage === 'function');
   // ANY active edit session locks every pencil, not just the anchor
   // row's: only one edit can run at a time, and a disabled control beats
@@ -142,6 +176,15 @@
 </script>
 
 {#snippet readOnlyBody()}
+  {#if originBadge}
+    <div
+      class="mb-1.5 flex items-center gap-1 text-[0.625rem] font-medium uppercase tracking-wide text-fg-hint"
+      data-testid={originBadge.testid}
+    >
+      <Icon icon={Inbox} size={11} strokeWidth={2.2} />
+      <span>{originBadge.label}</span>
+    </div>
+  {/if}
   {#if attachments.length > 0}
     <div
       class="mb-2 grid max-w-[420px] grid-cols-2 gap-2"

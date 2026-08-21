@@ -931,7 +931,7 @@ func TestDispatchFlushToProvider_RoutesByProviderType(t *testing.T) {
 
 func (a *App) dispatchFlushToProviderShouldErrorWith(t *testing.T, sess session, want string) {
 	t.Helper()
-	err := a.dispatchFlushToProvider(sess, "x", provider.SendOptions{})
+	_, err := a.dispatchFlushToProvider(sess, "thread-1", "x", provider.SendOptions{}, "user:0:flush:1")
 	if err == nil {
 		t.Fatalf("dispatchFlushToProvider with empty session: nil err, want %q", want)
 	}

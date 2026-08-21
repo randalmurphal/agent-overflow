@@ -108,6 +108,37 @@ func (a *App) UpdateSettings(patch map[string]any) (settings.Settings, error) {
 			return settings.Settings{}, errors.Join(err, rollbackBuildErr, rollbackErr)
 		}
 	}
+	if patchTouchesLiveClaudeAxis(patch) {
+		// The settings-owned session axes a LIVE session reacts to. They
+		// converge three different ways and each needs its own trigger,
+		// because nothing else reconciles on a settings save — the
+		// remaining axes here are spawn-only with no live consequence at
+		// all, so without this the change would sit in the file until some
+		// unrelated thread-config edit happened to reconcile.
+		//
+		//   - claudeThinking is adopted outright over a control request
+		//     (set_max_thinking_tokens), except for the return to "Claude
+		//     Code decides", which has no wire form and defers a restart.
+		//   - claudeCrossSession binds once at spawn, so it can only
+		//     converge by a DEFERRED restart the reconciler queues.
+		//   - claudePromptOverrides is the headline live apply:
+		//     reconcileSettingsOwnedAxes RESOLVES the override rather than
+		//     pinning it, so an edited-or-enabled entry lands live as
+		//     set_model.system_prompt and a disabled one defers a restart.
+		//     Without this key the axis that motivated the whole live path
+		//     would never fire from the save that causes it.
+		//
+		// codexPromptOverrides is deliberately NOT a trigger:
+		// reconcileSettingsOwnedAxes PINS the prompt on every non-Claude
+		// provider (no set_model.system_prompt wire there), so the sweep
+		// could only be a no-op. Codex converges on its next spawn, which
+		// is the contract docs/specs/prompt-tool-overrides.md states.
+		//
+		// Off the binding's goroutine: reconciling N threads means N control
+		// requests, each with its own timeout, and a wedged provider process
+		// must not hold up the save the user just made.
+		a.scheduleLiveClaudeReconcile()
+	}
 	a.ReconfigureObservability(prev, next)
 	if _, ok := patch["editor"]; ok {
 		// Editor preference touched — drop the cached catalog so the
@@ -131,6 +162,27 @@ func (a *App) UpdateSettings(patch map[string]any) (settings.Settings, error) {
 		}
 	}
 	return redactedSettings(next), nil
+}
+
+// liveClaudeSettingsAxes are the settings keys whose save must converge
+// already-running Claude sessions. Kept as one list so the trigger and the
+// reconciler cannot drift; see the call site for how each one converges.
+var liveClaudeSettingsAxes = [...]string{
+	"claudeThinking",
+	"claudeCrossSession",
+	"claudePromptOverrides",
+}
+
+// patchTouchesLiveClaudeAxis reports whether an UpdateSettings patch names
+// any key a live Claude session reacts to. Presence is what counts, not the
+// value: clearing an axis converges exactly as setting one does.
+func patchTouchesLiveClaudeAxis(patch map[string]any) bool {
+	for _, key := range liveClaudeSettingsAxes {
+		if _, ok := patch[key]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 func settingsRollbackPatch(previous settings.Settings, patch map[string]any) (map[string]any, error) {

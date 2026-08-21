@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 
+	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/terminal"
 )
 
@@ -104,7 +105,7 @@ func buildLaunchOptions(cfg Config, systemPromptPath, gatewayURL, hookURL, hookT
 		Shell: cfg.Binary,
 		Args:  args,
 		Cwd:   cfg.WorkDir,
-		Env:   buildEnv(cfg.Env, gatewayURL, hookURL, hookToken, cfg.DisableTodoReminders),
+		Env:   buildEnv(cfg.Env, gatewayURL, hookURL, hookToken, cfg.DisableTodoReminders, cfg.CrossSessionEnabled),
 		Rows:  cfg.rows(),
 		Cols:  cfg.cols(),
 	}, nil
@@ -120,9 +121,23 @@ var observeHookEvents = []string{
 	"PostCompact",
 }
 
-// hookSettingsJSON renders the --settings flag payload registering the AO relay
-// subcommand for every captured event. The flag is the flagSettings layer,
-// which merges with (does not clobber) the user's own hooks.
+// hookSettingsJSON renders the --settings flag payload: the AO relay
+// subcommand registered for every captured event, plus the cross-session
+// inbound policy. The flag is the flagSettings layer, which merges with (does
+// not clobber) the user's own hooks.
+//
+// crossSessionInbound is here for the reason the headless block states it
+// (claude/options.go §claudeCrossSessionInbound): the peer registry is
+// machine-wide, AO's env gate is not the only thing that can bind the inbox,
+// and an ABSENT key is the CLI's mode-parity path — which, with the two remote
+// GrowthBook flags live, auto-delivers a peer's message as a user turn in a
+// session whose user never opted in. "Off means off" is not a headless-only
+// property, so the refusal is stated on this surface too.
+//
+// The REST of the headless block (fastMode, outputStyle, the env map) is
+// deliberately not mirrored: those axes are spawn options the app resolves for
+// a headless session, and the interactive TUI is the user's own CLI — it keeps
+// its own settings-file resolution for them.
 func hookSettingsJSON(cfg Config) (string, error) {
 	cmd, err := hookCommand(cfg)
 	if err != nil {
@@ -144,7 +159,12 @@ func hookSettingsJSON(cfg Config) (string, error) {
 		hooks[ev] = observeEntry
 	}
 
-	data, err := json.Marshal(map[string]any{"hooks": hooks})
+	block := map[string]any{"hooks": hooks}
+	if inbound := strings.TrimSpace(cfg.CrossSessionInbound); inbound != "" {
+		block["crossSessionInbound"] = inbound
+	}
+
+	data, err := json.Marshal(block)
 	if err != nil {
 		return "", fmt.Errorf("claudetui: marshal hook settings: %w", err)
 	}
@@ -194,7 +214,7 @@ const todoReminderModeEnvVar = "CLAUDE_CODE_TODO_REMINDER_MODE"
 // environment, stripping any inherited values for the keys we own so a dirty
 // parent env can't redirect Claude away from our gateway, and fills in the
 // todo-tools defaults the base carries no value of its own for.
-func buildEnv(base []string, gatewayURL, hookURL, hookToken string, disableTodoReminders bool) []string {
+func buildEnv(base []string, gatewayURL, hookURL, hookToken string, disableTodoReminders, crossSessionEnabled bool) []string {
 	if len(base) == 0 {
 		// Honor the documented "empty means inherit" Config.Env contract for an
 		// empty-but-non-nil slice too, not just nil.
@@ -204,6 +224,15 @@ func buildEnv(base []string, gatewayURL, hookURL, hookToken string, disableTodoR
 		BaseURLEnv:   {},
 		envHookURL:   {},
 		envHookToken: {},
+	}
+	// The peer-inbox gate and the peer-visible name are OWNED here, not
+	// inherited: CLAUDE_CODE_HARBOR_KITE is a parsed boolean the CLI reads
+	// before any settings layer, so a value in AO's own environment would
+	// make the TUI join the machine-wide registry while the setting says off
+	// — and refusing INBOUND messages does not undo being discoverable. Same
+	// list the headless spawn unsets (claude.CrossSessionUnsetEnv).
+	for _, key := range claude.CrossSessionUnsetEnv() {
+		owned[key] = struct{}{}
 	}
 	out := make([]string, 0, len(base)+5)
 	haveTodoOptIn := false
@@ -227,6 +256,9 @@ func buildEnv(base []string, gatewayURL, hookURL, hookToken string, disableTodoR
 		envHookURL+"="+hookURL,
 		envHookToken+"="+hookToken,
 	)
+	if crossSessionEnabled {
+		out = append(out, claude.CrossSessionGateEnv+"=1")
+	}
 	if !haveTodoOptIn {
 		out = append(out, todoToolsEnvVar+"=true")
 	}

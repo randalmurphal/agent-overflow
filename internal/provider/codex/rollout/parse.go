@@ -26,6 +26,16 @@ type ParseOptions struct {
 	// FromOffset resumes a tail read. It must be an EndOffset a previous
 	// Parse returned; any other value risks starting mid-record.
 	FromOffset int64
+	// File is an already-open handle for Path. When set, Parse reads from
+	// it instead of opening Path, and never closes it — the caller owns it.
+	//
+	// It exists so a refresh can prove the source's identity and read its
+	// tail against ONE inode: Codex publishes a migrated rollout by renaming
+	// over the same path, so two independent opens can straddle the swap and
+	// splice the replacement's bytes onto a thread whose identity was proved
+	// against the file that used to be there. Parse seeks the handle, so a
+	// caller must not depend on its offset afterwards.
+	File *os.File
 	// MaxLineBytes caps one line; 0 uses DefaultMaxLineBytes.
 	MaxLineBytes int
 }
@@ -88,11 +98,15 @@ func Parse(ctx context.Context, opts ParseOptions) (ParseResult, error) {
 		opts.FromOffset = 0
 	}
 
-	file, err := os.Open(opts.Path)
-	if err != nil {
-		return ParseResult{}, fmt.Errorf("rollout: open %s: %w", opts.Path, err)
+	file := opts.File
+	if file == nil {
+		opened, err := os.Open(opts.Path)
+		if err != nil {
+			return ParseResult{}, fmt.Errorf("rollout: open %s: %w", opts.Path, err)
+		}
+		defer opened.Close()
+		file = opened
 	}
-	defer file.Close()
 
 	stat, err := file.Stat()
 	if err != nil {
@@ -257,8 +271,22 @@ type preScanResult struct {
 // absent: proving a negative there costs a full read of every file that never
 // compacted. The head-region seed is a separate, bounded condition on top of
 // this one, not a fourth question — see needsCompactionSeed.
+//
+// A PAGINATED file settles on the header alone. Its history mode is decided
+// on line 0, and in that mode codex persists no `user_message` /
+// `agent_message` / `agent_reasoning` records at all
+// (codex-rs/rollout/src/policy.rs), so the two dedup questions can never
+// become true — waiting for them turned every paginated parse into two FULL
+// passes over the file. The converter does not consult them there either: it
+// gates on `converter.paginated` instead (dispatch.go).
 func (p preScanResult) settled() bool {
-	return p.metaFound && p.hasEventMsgMessage && p.hasEventMsgReasoning
+	if !p.metaFound {
+		return false
+	}
+	if p.meta.HistoryMode == HistoryModePaginated {
+		return true
+	}
+	return p.hasEventMsgMessage && p.hasEventMsgReasoning
 }
 
 // run drives the conversion pass.

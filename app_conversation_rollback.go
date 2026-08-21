@@ -71,9 +71,11 @@ type rollbackConversationLockedArgs struct {
 //     carries RevertedUserMessage=true.
 //  2. Provider rollback:
 //     - Codex stops the session first (closing the stopped-thread
-//     gate), then forks its provider thread at the pre-rollback anchor
-//     turn (thread/fork lastTurnId) through a throwaway resume session
-//     and repoints SessionRef at the fork.
+//     gate), then cuts its provider history at the pre-rollback anchor
+//     turn through a throwaway resume session: `thread/revert
+//     beforeTurnId` in place where the thread supports it (SessionRef
+//     unchanged), otherwise `thread/fork lastTurnId` with SessionRef
+//     repointed at the fork.
 //     - claude-tui reverts natively on the Esc the caller already
 //     delivered; AO only mirrors the cut in its own timeline + draft.
 //     - Claude stops the provider subprocess first, then writes a
@@ -82,9 +84,10 @@ type rollbackConversationLockedArgs struct {
 //     when the caller owns the draft row (promptDraft nil).
 //  4. SQLite truncation at the provider rollback's granularity: Codex
 //     deletes whole turns from the user-item's turnIndex (inclusive,
-//     matching thread/fork's turn-boundary cut); Claude deletes from
-//     the user item itself (DeleteConversationFromItem, matching the
-//     session slice at the message uuid).
+//     matching the turn-boundary cut BOTH Codex truncations make);
+//     Claude deletes from the user item itself
+//     (DeleteConversationFromItem, matching the session slice at the
+//     message uuid).
 //
 // Returns the anchor turn's surviving item ids (empty for the Codex
 // whole-turn cut and whenever the anchor opened its turn) so the
@@ -154,8 +157,8 @@ func (a *App) rollbackConversationLocked(args rollbackConversationLockedArgs) (c
 	// The rollback discards the conversation tail the activity-rail todo
 	// list was minted in, and the provider's own task state does not follow
 	// the thread back: the turn-0 branch starts the next session from
-	// scratch and the deeper branches fork, which starts provider task
-	// state from scratch all the same. The dead list must not stay in
+	// scratch, and the deeper branches cut history (fork or revert),
+	// which starts provider task state from scratch all the same. The dead list must not stay in
 	// threads.live_todo where the next session's per-session task ids would
 	// collide with it (triage.seedTasksFromStoredTodo). claude-tui is the
 	// carve-out — its session and task list stay live across the native
@@ -181,8 +184,9 @@ func (a *App) rollbackConversationLocked(args rollbackConversationLockedArgs) (c
 		}
 	}
 
-	// Truncation granularity must match the provider rollback above. Codex
-	// thread/fork cuts provider history at the turn boundary before the
+	// Truncation granularity must match the provider rollback above. Both
+	// Codex cuts — thread/fork's inclusive lastTurnId and thread/revert's
+	// exclusive beforeTurnId — land on the turn boundary before the
 	// anchor's turn, so SQLite drops the whole turn. Claude's session
 	// slice (and the TUI's native Esc-revert) cut at the message itself, so
 	// only the anchor row and what follows it go — a queued flush message
@@ -214,21 +218,35 @@ func (a *App) rollbackProviderConversationToMessage(thread store.Thread, anchor 
 	}
 }
 
-// rollbackCodexThreadToMessage STOPS the session, then moves the
-// thread's provider cursor to a `thread/fork` of its Codex thread cut
-// at the last provider-backed turn before the rolled-back message. The
-// stop is load-bearing, not cleanup: CleanupThread flips the stopped-
-// thread gate (invariant 29) so straggler wire events from the old
-// thread — late notifications, an interrupt-triggered turn completion
-// — cannot land rows on the timeline the caller is about to truncate.
-// (The old thread/rollback flow kept the session live through the
-// rollback, which is exactly the window the 2026-07 deprecation-notice-
-// on-a-settled-turn race lived in.) The next send resumes on the fork.
+// rollbackCodexThreadToMessage STOPS the session, then cuts its Codex
+// thread's history at the last provider-backed turn before the
+// rolled-back message. The stop is load-bearing, not cleanup:
+// CleanupThread flips the stopped-thread gate (invariant 29) so
+// straggler wire events from the old thread — late notifications, an
+// interrupt-triggered turn completion — cannot land rows on the timeline
+// the caller is about to truncate. (The old thread/rollback flow kept
+// the session live through the rollback, which is exactly the window the
+// 2026-07 deprecation-notice-on-a-settled-turn race lived in.)
+//
+// The cut itself is whichever of upstream's two usable truncations the
+// connected app-server and this thread support — `thread/revert` in
+// place where it is available (codex >= 0.148 AND a paginated-history
+// thread), `thread/fork` + repoint everywhere else. cutCodexThreadHistory
+// owns that choice; here it decides only one thing: an in-place revert
+// keeps SessionRef, a fork replaces it. Either way the next send resumes
+// a provider thread whose history ends at the kept prefix.
 //
 // Rolling back to turn 0 — or to a prefix with no provider-backed turns —
-// needs no fork: SessionRef clears and the next send starts a fresh
+// needs neither cut: SessionRef clears and the next send starts a fresh
 // Codex thread, mirroring rollbackClaudeThreadToMessage's turn-0 branch.
+// Deliberately NOT routed through a revert-to-empty even where one would
+// work: that branch spawns no app-server today, and paying for a process
+// to preserve a provider thread whose history would be empty buys
+// nothing AO can observe.
 func (a *App) rollbackCodexThreadToMessage(thread store.Thread, anchor store.MessageAnchor) error {
+	// Which provider thread this AO thread WAS, sampled before any cut can
+	// change it — see the forget below.
+	previousRef := thread.SessionRef
 	forkAnchor := ""
 	anchorFound := false
 	if anchor.TurnIndex > 0 {
@@ -245,27 +263,80 @@ func (a *App) rollbackCodexThreadToMessage(thread store.Thread, anchor store.Mes
 			return fmt.Errorf("codex rollback: turn %d has provider-backed history but thread %s has no Codex thread reference", anchor.TurnIndex, thread.ID)
 		}
 	}
-	// Stop BEFORE forking: the stopped-thread gate must be closed for
-	// the whole mutation window. Forking through a still-live session
+	// Stop BEFORE cutting: the stopped-thread gate must be closed for
+	// the whole mutation window. Cutting through a still-live session
 	// would leave its read loop delivering source-thread events during
-	// the RPC. forkCodexThreadAt runs the fork through a throwaway
-	// resume session whose events go nowhere.
+	// the RPC — and for the in-place revert it would ALSO be a cut of a
+	// thread whose runtime upstream is about to shut down and reload
+	// under this connection. cutCodexThreadHistory runs the RPC through
+	// a throwaway resume session whose events go nowhere.
+	// BEFORE the stop, while the connection is still live: a message already
+	// handed to `thread/queue/add` is not in AO's flushqueue at all — it is a
+	// row in codex's own SQLite that survives stopSession and that
+	// `QueuedItemService::on_thread_idle` dispatches on the next resume. Left
+	// alone it would re-run a message the user just rolled back, onto a thread
+	// that no longer contains it.
+	//
+	// Its failure ABORTS the rollback, and before the stop, so nothing has
+	// been mutated when it does. A purge that cannot complete leaves messages
+	// armed to run against history the user is deleting; refusing is visible
+	// and retryable, whereas a message replaying onto a truncated thread days
+	// later is neither.
+	if err := a.purgeCodexProviderQueueForRollback(thread.ID); err != nil {
+		return fmt.Errorf("codex rollback: %w", err)
+	}
 	if err := a.stopSession(thread.ID); err != nil {
 		return fmt.Errorf("codex rollback: stop session: %w", err)
 	}
 	a.clearFlushDispatchForRollback(thread.ID)
-	forkRef := ""
+	newRef := ""
 	if anchorFound {
-		var err error
-		forkRef, err = a.forkCodexThreadAt(thread, forkAnchor)
+		// The exclusive anchor the in-place cut needs. Resolved here
+		// rather than inside the cut so a lookup failure aborts before
+		// any app-server is spawned; not finding one is not a failure
+		// (see resolveCodexRevertAnchor) and simply leaves the fork.
+		revertAnchor, _, err := a.resolveCodexRevertAnchor(thread.ID, anchor.TurnIndex)
 		if err != nil {
-			return fmt.Errorf("codex rollback: fork at %s: %w", forkAnchor, err)
+			return fmt.Errorf("codex rollback: %w", err)
 		}
+		cut, err := a.cutCodexThreadHistory(thread, forkAnchor, revertAnchor)
+		if err != nil {
+			return fmt.Errorf("codex rollback: cut history through %s: %w", forkAnchor, err)
+		}
+		// An in-place revert keeps the thread the user is editing: same
+		// Codex thread id, so SessionRef, provider-side thread cost and
+		// any external `codex resume` of it all stay pointed at it. That
+		// identity is the entire reason to prefer the cut, so assert it
+		// rather than trust it — the provider layer validates the
+		// response echo, and this validates that nothing between here
+		// and there swapped the thread out from under the rollback.
+		if cut.Reverted && cut.ThreadRef != thread.SessionRef {
+			return fmt.Errorf(
+				"codex rollback: in-place revert of %s answered for thread %q — refusing to repoint a thread that was reverted in place",
+				thread.SessionRef, cut.ThreadRef,
+			)
+		}
+		newRef = cut.ThreadRef
 	}
-	thread.SessionRef = forkRef
+	thread.SessionRef = newRef
 	thread.PendingForkRef = ""
 	if err := a.store.UpdateThread(thread); err != nil {
 		return fmt.Errorf("codex rollback: persist rolled-back state: %w", err)
+	}
+	if newRef != previousRef {
+		// The stored provider-side cost is keyed by the AO thread id but
+		// DESCRIBES the Codex thread it was read from. A fork moved this
+		// thread onto a new one carrying a shorter history, and the turn-0
+		// branch left it with no Codex thread at all — either way the figure
+		// now belongs to a thread this one no longer is, and it would keep
+		// being shown until some later settled turn happened to re-read it.
+		// An in-place revert takes neither branch: same thread id, and its
+		// next read updates the same row.
+		//
+		// After the persist, deliberately: a failed UpdateThread leaves the
+		// row still pointing at previousRef, which the stored figure still
+		// correctly describes.
+		a.forgetCodexThreadCost(thread.ID)
 	}
 	return nil
 }

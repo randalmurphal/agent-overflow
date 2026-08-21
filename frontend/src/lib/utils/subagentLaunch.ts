@@ -70,9 +70,17 @@ function agentPathLabel(agentPath: string): string {
   return segments.at(-1) ?? '';
 }
 
+/**
+ * `name [role]` — but only when the two actually differ. Codex spawns are
+ * routinely nicknamed after their role, and "reviewer [reviewer]" is noise
+ * that also costs the row its truncation budget. Matched case-insensitively:
+ * the nickname is free-form user text, the role is an enum-ish slug.
+ */
 export function codexSubagentDisplayLabel(label: string, role: string, fallback: string): string {
   const base = label.trim() || fallback.trim() || 'agent';
-  return role.trim() ? `${base} [${role.trim()}]` : base;
+  const roleLabel = role.trim();
+  if (!roleLabel || roleLabel.toLowerCase() === base.toLowerCase()) return base;
+  return `${base} [${roleLabel}]`;
 }
 
 export function codexModelEffortAffix(model: string, reasoningEffort: string): string {

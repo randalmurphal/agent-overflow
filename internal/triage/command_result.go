@@ -114,6 +114,9 @@ func (r *Router) handleCommandResult(evt provider.ProviderEvent) error {
 		// already drops these; this is the belt for a synthesized event.
 		return nil
 	}
+	if commandResultRowSuppressed(evt) {
+		return nil
+	}
 
 	turnIndex := r.timelineNotificationTurnIndex(evt.ThreadID)
 	itemID := commandResultItemID(evt, turnIndex, r)
@@ -155,6 +158,36 @@ func (r *Router) handleCommandResult(evt provider.ProviderEvent) error {
 	// a payload the frontend fetches on demand — triage's standing rule that
 	// meta is cheap and data is heavy.
 	return r.attachPayloadToItem(item, evt, payloadKindCommandResult, preview, true)
+}
+
+// commandResultRowSuppressed reports whether this output belongs to a command
+// whose answer must not become a timeline row: one Agent Overflow issued for
+// its own bookkeeping (`/rename`, the live-config `/effort` and `/fast`
+// writes), or a user-typed `/effort` / `/fast` / `/model` whose reply the CLI
+// confirmed and AO already renders in its own UI.
+//
+// Triage does NOT decide this and deliberately cannot: the decision needs to
+// know who typed the command AND what was asked of it, and both are facts only
+// the send path holds. The provider package stamps the flag, correlating its
+// send-time record with the reply through the command's own lifecycle uuid, so
+// nothing here parses output text or holds state across envelopes. An unmarked
+// event — every other command, every REFUSED state echo, every provider that
+// emits no lifecycle bracket, every imported row — persists exactly as before.
+//
+// Suppression is scoped to the ROW. The event still reaches every other
+// consumer, which is what lets the live-config reconciler settle an /effort
+// apply from output the transcript never shows.
+func commandResultRowSuppressed(evt provider.ProviderEvent) bool {
+	if len(evt.Meta) == 0 {
+		return false
+	}
+	var meta provider.CommandResultMeta
+	if err := json.Unmarshal(evt.Meta, &meta); err != nil {
+		// Undecodable meta is not a suppression signal: the safe direction is
+		// keeping a row the user might want, not silently dropping history.
+		return false
+	}
+	return meta.Suppressed
 }
 
 // commandResultItemID resolves a stable row id.

@@ -101,14 +101,13 @@ func compareCodexCLIVersions(left, right string) int {
 		return strings.Compare(left, right)
 	}
 
-	if parsedLeft.major != parsedRight.major {
-		return parsedLeft.major - parsedRight.major
-	}
-	if parsedLeft.minor != parsedRight.minor {
-		return parsedLeft.minor - parsedRight.minor
-	}
-	if parsedLeft.patch != parsedRight.patch {
-		return parsedLeft.patch - parsedRight.patch
+	// The numeric half is the shared ordering (semver.go); only the
+	// prerelease tail below is Codex-specific.
+	if numeric := CompareSemverTriple(
+		[3]int{parsedLeft.major, parsedLeft.minor, parsedLeft.patch},
+		[3]int{parsedRight.major, parsedRight.minor, parsedRight.patch},
+	); numeric != 0 {
+		return numeric
 	}
 
 	if len(parsedLeft.prerelease) == 0 && len(parsedRight.prerelease) == 0 {
@@ -190,4 +189,28 @@ func isNumericString(value string) bool {
 		}
 	}
 	return true
+}
+
+// ParseCodexCLIVersion extracts the first semver-shaped token from arbitrary
+// Codex version text — `codex --version` output, or the `userAgent` string the
+// app-server returns from `initialize` (`codex_cli_rs/0.149.0 (Linux …)`).
+// Returns "" when nothing parses, which callers must treat as "unknown", never
+// as "old" or "new".
+//
+// Exported so the codex adapter can gate a per-method floor on the version of
+// the process it is actually talking to without duplicating the parser. The
+// package-wide floor (minimumCodexCLIVersion) stays private: it is a
+// launch-time admission decision, not a per-call one.
+func ParseCodexCLIVersion(output string) string { return parseCodexCLIVersion(output) }
+
+// CodexCLIVersionAtLeast reports whether version is >= floor under the same
+// semver ordering DetectProvider admits binaries with. An unparseable version
+// is NOT at least anything: a method floor must fail closed, because sending a
+// newer method's params to an older app-server is a hard JSON-RPC error rather
+// than an ignored field.
+func CodexCLIVersionAtLeast(version, floor string) bool {
+	if _, ok := parseCodexSemver(normalizeCodexCLIVersion(version)); !ok {
+		return false
+	}
+	return compareCodexCLIVersions(version, floor) >= 0
 }

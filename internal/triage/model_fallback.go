@@ -8,7 +8,38 @@ import (
 	"agent-overflow/internal/provider"
 )
 
-const modelFallbackNotificationKind = "model_refusal_fallback"
+// The three system subtypes that mean "the turn survived, on a different model
+// than the user asked for". They share one event and one row shape because the
+// user-visible consequence is identical; only the CAUSE differs, and the cause
+// is what the persisted `kind` reports. Flattening all three onto the refusal
+// kind told the timeline every fallback was a safety refusal — which for a
+// credits-consent switch or an unavailable model is simply false.
+//
+// Produced by claude/parse_system.go#parseModelFallbackEvent as meta.kind.
+const (
+	modelRefusalFallbackNotificationKind = "model_refusal_fallback"
+	modelAvailabilityFallbackKind        = "model_fallback"
+	modelConsentFallbackKind             = "model_consent_fallback"
+)
+
+// modelFallbackNotificationKind is the kind a fallback event lands on when the
+// wire named no subtype at all. It fails toward the refusal kind on purpose:
+// that is the one the frontend renders as a warning, and under-reporting a
+// safety refusal is the worse of the two mistakes.
+const modelFallbackNotificationKind = modelRefusalFallbackNotificationKind
+
+// isModelFallbackNotificationKind gates what a wire value may become. An
+// unknown subtype from a newer CLI is not forwarded as a row kind — the
+// frontend has no branch for it — but the event still persists under the
+// default.
+func isModelFallbackNotificationKind(kind string) bool {
+	switch kind {
+	case modelRefusalFallbackNotificationKind, modelAvailabilityFallbackKind, modelConsentFallbackKind:
+		return true
+	default:
+		return false
+	}
+}
 
 // ModelFallbackEvent is the live wire projection for an automatic provider
 // fallback. EffectiveModel is empty when the provider session ended and the
@@ -23,6 +54,9 @@ type ModelFallbackEvent struct {
 }
 
 type modelFallbackMeta struct {
+	// Kind is the wire subtype (see the constants above). Empty on a producer
+	// that predates it, and on the Codex path, which has no subtype at all.
+	Kind                   string `json:"kind,omitempty"`
 	OriginalModel          string `json:"originalModel"`
 	FallbackModel          string `json:"fallbackModel"`
 	Reason                 string `json:"reason"`
@@ -30,6 +64,13 @@ type modelFallbackMeta struct {
 	Category               string `json:"apiRefusalCategory"`
 	Explanation            string `json:"apiRefusalExplanation"`
 	RefusedUserMessageUUID string `json:"refusedUserMessageUuid"`
+	// Choice and PersistedAsDefault are model_consent_fallback's own two
+	// fields: WHICH consent choice was taken, and whether it was written back
+	// as the account default rather than applying for this session only.
+	// Omitted rather than zeroed — `false` means "this session only", which
+	// the composed sentence already says.
+	Choice             string `json:"choice,omitempty"`
+	PersistedAsDefault bool   `json:"persistedAsDefault,omitempty"`
 }
 
 func (r *Router) handleModelFallback(evt provider.ProviderEvent) error {
@@ -43,6 +84,8 @@ func (r *Router) handleModelFallback(evt provider.ProviderEvent) error {
 			return fmt.Errorf("decode model fallback: %w", err)
 		}
 	}
+	meta.Kind = strings.TrimSpace(meta.Kind)
+	meta.Choice = truncateRunes(strings.TrimSpace(meta.Choice), maxModelFallbackLabelRunes)
 	meta.OriginalModel = strings.TrimSpace(meta.OriginalModel)
 	meta.OriginalModel = truncateRunes(meta.OriginalModel, maxModelFallbackModelRunes)
 	meta.FallbackModel = truncateRunes(strings.TrimSpace(meta.FallbackModel), maxModelFallbackModelRunes)
@@ -64,7 +107,11 @@ func (r *Router) handleModelFallback(evt provider.ProviderEvent) error {
 	if reason == "" {
 		reason = fmt.Sprintf("%s could not handle this request and switched to %s.", meta.OriginalModel, meta.FallbackModel)
 	}
-	if err := r.persistTimelineNotification(evt, modelFallbackNotificationKind, reason); err != nil {
+	notificationKind := modelFallbackNotificationKind
+	if isModelFallbackNotificationKind(meta.Kind) {
+		notificationKind = meta.Kind
+	}
+	if err := r.persistTimelineNotification(evt, notificationKind, reason); err != nil {
 		return err
 	}
 

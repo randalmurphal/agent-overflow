@@ -1,0 +1,75 @@
+{
+  "version": 1,
+  "name": "codex-collab-reload-after-unload",
+  "description": "MultiAgentV2 residency reload: a child answers and goes terminal, then a `followup_task` re-loads it (ensure_v2_agent_loaded re-fires notify_thread_created, so the SAME spawn activity arrives a second time) and it runs another turn and answers again. Expect ONE spawn card \u2014 the repeated ownership registration is idempotent \u2014 carrying a resumed section and BOTH answers, not a second card and not one overwritten row.",
+  "provider": "codex",
+  "turns": [
+    {
+      "label": "answer-reload-answer-again",
+      "steps": [
+        {
+          "emit": {
+            "delayBetweenMs": 40,
+            "lines": [
+              "{\"jsonrpc\":\"2.0\",\"method\":\"turn/started\",\"params\":{\"threadId\":\"${THREAD_ID}\",\"turn\":{\"id\":\"${TURN_ID}\"}}}",
+              "{\"jsonrpc\":\"2.0\",\"method\":\"rawResponseItem/completed\",\"params\":{\"threadId\":\"${THREAD_ID}\",\"turnId\":\"${TURN_ID}\",\"item\":{\"type\":\"function_call\",\"name\":\"spawn_agent\",\"namespace\":\"collaboration\",\"call_id\":\"call_spawn_reviewer\",\"arguments\":\"{\\\"agent_type\\\":\\\"reviewer\\\",\\\"task_name\\\":\\\"reviewer\\\",\\\"message\\\":\\\"<encrypted>\\\"}\"}}}",
+              "{\"jsonrpc\":\"2.0\",\"method\":\"rawResponseItem/completed\",\"params\":{\"threadId\":\"${THREAD_ID}\",\"turnId\":\"${TURN_ID}\",\"item\":{\"type\":\"function_call_output\",\"call_id\":\"call_spawn_reviewer\",\"output\":\"{\\\"agent_id\\\":\\\"child-reviewer\\\",\\\"task_name\\\":\\\"/root/reviewer\\\",\\\"nickname\\\":\\\"reviewer\\\"}\"}}}",
+              "{\"jsonrpc\":\"2.0\",\"method\":\"item/completed\",\"params\":{\"threadId\":\"${THREAD_ID}\",\"turnId\":\"${TURN_ID}\",\"item\":{\"type\":\"subAgentActivity\",\"id\":\"call_spawn_reviewer\",\"kind\":\"started\",\"agentThreadId\":\"child-reviewer\",\"agentPath\":\"/root/reviewer\"}}}"
+            ]
+          }
+        },
+        {
+          "delayMs": 100
+        },
+        {
+          "emit": {
+            "delayBetweenMs": 40,
+            "lines": [
+              "{\"jsonrpc\":\"2.0\",\"method\":\"turn/started\",\"params\":{\"threadId\":\"child-reviewer\",\"turn\":{\"id\":\"child-reviewer-turn\"}}}",
+              "{\"jsonrpc\":\"2.0\",\"method\":\"rawResponseItem/completed\",\"params\":{\"threadId\":\"${THREAD_ID}\",\"turnId\":\"${TURN_ID}\",\"item\":{\"type\":\"agent_message\",\"id\":\"amsg-first-${TURN}\",\"author\":\"/root/reviewer\",\"recipient\":\"/root\",\"content\":[{\"type\":\"input_text\",\"text\":\"Message Type: FINAL_ANSWER\\nTask name: /root\\nSender: /root/reviewer\\nPayload:\\nFirst answer.\"}],\"internal_chat_message_metadata_passthrough\":{\"turn_id\":\"${TURN_ID}\"}}}}",
+              "{\"jsonrpc\":\"2.0\",\"method\":\"turn/completed\",\"params\":{\"threadId\":\"child-reviewer\",\"turn\":{\"id\":\"child-reviewer-turn\",\"status\":\"completed\"}}}"
+            ]
+          }
+        },
+        {
+          "delayMs": 120
+        },
+        {
+          "emit": {
+            "delayBetweenMs": 40,
+            "lines": [
+              "{\"jsonrpc\":\"2.0\",\"method\":\"item/completed\",\"params\":{\"threadId\":\"${THREAD_ID}\",\"turnId\":\"${TURN_ID}\",\"item\":{\"type\":\"subAgentActivity\",\"id\":\"call_spawn_reviewer\",\"kind\":\"started\",\"agentThreadId\":\"child-reviewer\",\"agentPath\":\"/root/reviewer\"}}}",
+              "{\"jsonrpc\":\"2.0\",\"method\":\"rawResponseItem/completed\",\"params\":{\"threadId\":\"${THREAD_ID}\",\"turnId\":\"${TURN_ID}\",\"item\":{\"type\":\"function_call\",\"name\":\"followup_task\",\"namespace\":\"collaboration\",\"call_id\":\"call_followup_1\",\"arguments\":\"{\\\"target\\\":\\\"/root/reviewer\\\",\\\"message\\\":\\\"<encrypted>\\\"}\"}}}",
+              "{\"jsonrpc\":\"2.0\",\"method\":\"item/completed\",\"params\":{\"threadId\":\"${THREAD_ID}\",\"turnId\":\"${TURN_ID}\",\"item\":{\"type\":\"subAgentActivity\",\"id\":\"call_followup_1\",\"kind\":\"interacted\",\"agentThreadId\":\"child-reviewer\",\"agentPath\":\"/root/reviewer\"}}}",
+              "{\"jsonrpc\":\"2.0\",\"method\":\"turn/started\",\"params\":{\"threadId\":\"child-reviewer\",\"turn\":{\"id\":\"child-reviewer-turn\"}}}"
+            ]
+          }
+        },
+        {
+          "delayMs": 120
+        },
+        {
+          "emit": {
+            "delayBetweenMs": 40,
+            "lines": [
+              "{\"jsonrpc\":\"2.0\",\"method\":\"rawResponseItem/completed\",\"params\":{\"threadId\":\"${THREAD_ID}\",\"turnId\":\"${TURN_ID}\",\"item\":{\"type\":\"agent_message\",\"id\":\"amsg-second-${TURN}\",\"author\":\"/root/reviewer\",\"recipient\":\"/root\",\"content\":[{\"type\":\"input_text\",\"text\":\"Message Type: FINAL_ANSWER\\nTask name: /root\\nSender: /root/reviewer\\nPayload:\\nSecond answer.\"}],\"internal_chat_message_metadata_passthrough\":{\"turn_id\":\"${TURN_ID}\"}}}}",
+              "{\"jsonrpc\":\"2.0\",\"method\":\"turn/completed\",\"params\":{\"threadId\":\"child-reviewer\",\"turn\":{\"id\":\"child-reviewer-turn\",\"status\":\"completed\"}}}"
+            ]
+          }
+        },
+        {
+          "delayMs": 60
+        },
+        {
+          "emit": {
+            "delayBetweenMs": 40,
+            "lines": [
+              "{\"jsonrpc\":\"2.0\",\"method\":\"turn/completed\",\"params\":{\"threadId\":\"${THREAD_ID}\",\"turn\":{\"id\":\"${TURN_ID}\",\"status\":\"completed\"}}}"
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "afterTurns": "repeatLast"
+}

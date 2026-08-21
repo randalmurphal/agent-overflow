@@ -301,9 +301,9 @@ func TestImportedClaudeBranchIsCutUnderTheThreadsCurrentWorkspace(t *testing.T) 
 		t.Fatalf("stored sessionRef = %q, want the materialized %q", stored.SessionRef, materialized.SessionRef)
 	}
 
-	destDir, ok, err := sessionfork.WorkspaceProjectDir(home.claudeProjectsDir(), moved)
-	if err != nil || !ok {
-		t.Fatalf("resolve project dir for %s: ok=%v err=%v", moved, ok, err)
+	destDir, err := sessionfork.WorkspaceProjectDir(home.claudeProjectsDir(), moved)
+	if err != nil {
+		t.Fatalf("resolve project dir for %s: %v", moved, err)
 	}
 	cut := filepath.Join(destDir, materialized.SessionRef+".jsonl")
 	if _, err := os.Stat(cut); err != nil {
@@ -471,9 +471,9 @@ func TestImportedBranchDestDirStaysUnderTheSourcesOwnHome(t *testing.T) {
 	source := filepath.Join(projects, "-an-older-slug", "11111111.jsonl")
 
 	got := importedBranchDestDir(store.Thread{ID: "thread-1", WorkspacePath: workspace}, source)
-	want, ok, err := sessionfork.WorkspaceProjectDir(projects, workspace)
-	if err != nil || !ok {
-		t.Fatalf("resolve project dir for %s: ok=%v err=%v", workspace, ok, err)
+	want, err := sessionfork.WorkspaceProjectDir(projects, workspace)
+	if err != nil {
+		t.Fatalf("resolve project dir for %s: %v", workspace, err)
 	}
 	if got != want {
 		t.Fatalf("destDir = %q, want %q — the projects dir the source was read from", got, want)

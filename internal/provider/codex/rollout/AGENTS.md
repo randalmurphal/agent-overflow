@@ -16,10 +16,12 @@ itself — the home is always injected by the caller.
 | `home.go` | `PathInHome` — the containment proof every `rollout_path` passes before it is stat'd, opened, or handed to a caller. |
 | `scan.go` | Offset-exact line scanner + envelope decoding. No `bufio.Scanner`. |
 | `wire.go` | Rollout payload structs, envelope type constants, warning codes. |
-| `meta.go` | `SessionMeta`, `ReadSessionMeta` (bounded head read), `SessionIDFromPath`. |
+| `meta.go` | `SessionMeta`, `ReadSessionMeta` (bounded head read), `ReadSourceIdentity` (the refresh fingerprint), `SessionIDFromPath`. |
+| `import_ledger.go` | `ReadExternalImportLedger` — Codex's own record of sessions IT imported from another coding agent. |
 | `parse.go` | `Parse` — the two-pass orchestration and the resume-offset contract. |
 | `convert.go` | Converter state, `emit`/`lineUUID`, content-row emitters, compaction. |
 | `dispatch.go` | `event_msg` / `response_item` payload dispatch. |
+| `items.go` | `event_msg/item_completed` — the full `TurnItem` set a PAGINATED rollout is built from. |
 | `turns.go` | Turn lifecycle, synthetic turns, model profile, cumulative→per-turn usage. |
 | `profile.go` | Constant-memory latest-profile scan used only to repair older imports. |
 | `tools.go` | Tool-call open/settle correlation by `call_id`. |
@@ -32,6 +34,8 @@ itself — the home is always injected by the caller.
 func List(ctx, ListOptions{CodexHome}) ([]SessionInfo, []importir.Warning, error)
 func Parse(ctx, ParseOptions{Path, SessionID, FromOffset, MaxLineBytes}) (ParseResult, error)
 func ReadSessionMeta(path, sessionID string) (SessionMeta, error)
+func ReadSourceIdentity(path, sessionID string) (SourceIdentity, error)
+func ReadExternalImportLedger(codexHome string) (map[string]ExternalImportRecord, []importir.Warning)
 func SessionIDFromPath(path string) string
 func PathInHome(codexHome, rolloutPath string) (string, error)  // ErrOutsideCodexHome
 ```
@@ -83,6 +87,185 @@ which means importing sub-agent threads as if they were user sessions. A
 missing rollout FILE is different: that row is dropped with a per-row
 `codex-rollout-missing` warning, because one deleted file is not a broken
 index.
+
+## History modes
+
+Codex 0.147 introduced `session_meta.history_mode` (`legacy` | `paginated`;
+absent means legacy, since upstream's enum defaults to it and the field is
+newer than most files on disk). The mode decides which RECORD SET holds the
+conversation, and the two barely overlap
+(`codex-rs/rollout/src/policy.rs` `should_persist_event_msg`):
+
+| | legacy | paginated |
+|---|---|---|
+| `event_msg/user_message`, `agent_message`, `agent_reasoning` | written | **not written** |
+| `event_msg/patch_apply_end`, `mcp_tool_call_end`, `web_search_end`, `sub_agent_activity`, `entered_review_mode`, `exited_review_mode`, `context_compacted`, `image_generation_end` | written | **not written** |
+| `event_msg/item_completed` | Plan and `clock.sleep` only | **every turn item** |
+| `response_item/*` | written | written |
+| `turn_context`, `compacted`, `task_started`/`task_complete`/`turn_aborted`, `token_count` | written | written |
+| `world_state`, `security_risk_score` | written | written — **recognised and dropped**, see below |
+
+### Recognised and dropped
+
+Two envelope types are decoded, confirmed against their rust-v0.149.0 shape,
+and then skipped **silently** — they are not counted in `UnknownTypes` and
+raise no warning:
+
+- `world_state` (`WorldStateItem { full, state }`,
+  `codex-rs/protocol/src/protocol.rs`) is the engine's resume baseline for
+  model-visible context diffing. It has no transcript projection, and Codex
+  writes one per turn on every modern thread — counting it as unknown put a
+  `codex-unknown-types` warning on essentially every import.
+- `security_risk_score` (`SecurityRiskScore { scores, sampled_at }`,
+  `codex-rs/protocol/src/security_risk.rs`) carries upstream's own
+  prohibition in its doc comment: "Scores must not enter model-visible
+  conversation context or user-visible thread item projections." Importing one
+  would be exactly the second.
+
+The DECODE is what makes this recognition rather than a blanket `case`: a
+payload that no longer matches the shape above falls through to
+`UnknownTypes` under a `<type> (unexpected shape)` key and warns again, so
+real drift in either type is still reported. Adding a third entry means
+proving in the Codex source that the record has nothing a transcript should
+show — never that it is merely noisy.
+
+It decodes for SHAPE, never for content: `world_state`'s `state` map is the
+largest payload in the file and is typed `*struct{}` here, which accepts any
+JSON object, rejects a non-object (upstream's field is a non-`Option` map, so
+that is real drift), and allocates nothing. A recognition check that
+materialised the map would cost more than the record it is dropping.
+
+So a reader that only knows the legacy set imports a paginated thread with no
+tool detail at all — no commands, no diffs, no MCP results, no sub-agent
+activity. On one real 12k-line 0.147 rollout that was 1,852 tool rows and 479
+diffs missing.
+
+`items.go` maps every `TurnItem` variant onto the SAME emit helpers the legacy
+branch uses for its counterpart, so a paginated import and a legacy import of
+the same conversation produce the same rows. Three properties of that mapping
+are load-bearing:
+
+- **The variant tags are PascalCase.** `TurnItem` carries
+  `#[serde(tag = "type")]` with NO `rename_all`
+  (`codex-rs/protocol/src/items.rs`). The camelCase `ThreadItem` in
+  `app-server-protocol/src/protocol/v2/item.rs` is a DIFFERENT type — the
+  app-server's public mirror of the same data — and is not what a rollout
+  holds. Matching is case-insensitive anyway, because the same variant has
+  been spelled three ways across the two surfaces and pre-0.147 files.
+- **The discriminators are read alone, before the item.** `applyItemCompleted`
+  decodes `{type, kind}` first and returns on the four kinds the
+  `response_item` mirror owns (below) without ever decoding the item body.
+  Those four are the highest-volume records in a paginated rollout by a wide
+  margin, and every one of them is dropped — decoding their content slices,
+  changes maps and agent-state maps first was pure allocation on the
+  importer's hottest path. One consequence is deliberate: a MALFORMED item of
+  a dropped kind is no longer counted as corrupt, because its bytes are never
+  read.
+- **Extension items are flattened.** `TurnItem::Extension(ExtensionItem)`
+  carries both `"type":"Extension"` and ExtensionItem's own `kind`
+  (`web.search`, `clock.sleep`, `image_gen.generation`), so dispatch reads
+  `type` first and `kind` second.
+- **`CommandExecutionItem.id` / `FileChangeItem.id` IS the `call_id`.**
+  Upstream's own `as_legacy_end_event` copies it straight into
+  `ExecCommandEndEvent.call_id`, so items route through the same call_id
+  correlation as everything else — including the synthetic `exec-<uuid>` ids
+  a command run from inside an `exec` script gets.
+
+### Which record wins when both exist
+
+`response_item` lines are persisted in BOTH modes, so a paginated file carries
+a `response_item` twin for every message and reasoning item, written on the
+very NEXT line (2224/2224 on the reference file). The precedence rule is:
+
+- **The `response_item` mirror owns user text, assistant text and reasoning.**
+  `UserMessage`, `HookPrompt`, `AgentMessage` and `Reasoning` items are
+  recognised and dropped. The mirror is the only source of user text in a
+  native paginated file (no UserMessage items are written at all), a MIGRATED
+  file's items carry fresh ids that no twin shares (so id-based dedup is
+  impossible there), and the migration writes one Reasoning item per chunk
+  each restating the whole accumulated text — emitting those would triple a
+  three-chunk thought.
+- **Items own everything else.** Tool calls, diffs, MCP results, web
+  searches, sub-agent activity and review markers have no mirror.
+- **The gate is the declared mode, not a running flag.** `converter.paginated`
+  comes off the header, which the pre-scan always reads, so a TAIL REFRESH
+  decides the same way a full parse does. A running flag would be clear for a
+  cursor that happened to land after the first item.
+- **A tool row is emitted once either way.** When an item stands alone it
+  records its call id in `converter.itemRows`, and the `response_item` call
+  arriving one line later is skipped rather than opening a second row.
+
+`agentMessage.delivery` (0.149, `"async"` — a message a background agent
+delivered mid-turn) and `phase` are decoded onto `turnItem` and DROPPED: the
+assistant row comes from the mirror, and AO has no non-final-message notion to
+carry them into. If one is ever added, this is where they are already parsed.
+
+### history_base
+
+`session_meta.history_base` (upstream `HistoryPosition`) marks a rollout whose
+history BEGINS INSIDE ANOTHER FILE: everything before `end_ordinal_exclusive` /
+`end_byte_offset` lives in the rollout named by `thread_id` (which is a ROLLOUT
+id, not a thread id — a reverted thread's prefix file carries a different one).
+
+**AO does not follow the chain.** `Parse` emits a `codex-history-base` warning
+saying the earlier conversation is not imported, which is the honest answer;
+presenting a truncated thread as complete is the one thing that would be
+worse. `SessionMeta.HistoryBase` carries the TODO with what a follower needs —
+resolve the prefix path from the same home, parse it with a stop-at-offset
+bound, prepend — plus the three things that must be solved first (chains nest,
+so a cycle/depth guard is required; the resume cursor becomes two coordinates;
+`PathInHome` must still gate the prefix path).
+
+## Codex's external import ledger
+
+Codex can migrate a Claude Code or Cursor session into a Codex thread
+(`codex-rs/external-agent-migration/`). When it does it appends a record to
+`<codexHome>/external_agent_session_imports.json` — `SESSION_IMPORT_LEDGER_FILE`,
+present since 0.147 — naming the file it read and the thread it produced.
+
+That file is the ONLY place the provenance survives. The resulting rollout is
+an ordinary Codex rollout whose `session_meta.originator` says `codex_cli`,
+with nothing in it to say the conversation started somewhere else. Without the
+ledger the import picker offers a Claude Code conversation as a Codex session
+and cannot tell the user it already has the same conversation.
+
+The shape, from `ImportedExternalAgentSessionRecord` (serde derives with no
+`rename_all`, so the JSON keys are the Rust field names verbatim):
+
+```json
+{"records": [{
+  "source_path": "/home/u/.claude/projects/-repo/<uuid>.jsonl",
+  "content_sha256": "…", "imported_thread_id": "<codex thread uuid>",
+  "imported_at": 1786133870, "source_modified_at": 1786133860000000000,
+  "connector_names": ["linear"], "title": "Fix the parser"}],
+ "detected_connector_records": [{"source_path": "…", "connector_names": ["…"]}]}
+```
+
+Four things the reader has to know:
+
+- **`imported_at` is unix SECONDS, `source_modified_at` is unix NANOS.** The
+  units genuinely differ upstream (`now_unix_seconds` vs
+  `duration.as_nanos()`). Only `imported_at` is read, and it is converted to
+  epoch ms at the boundary so nothing downstream carries the discrepancy.
+- **No record names its agent.** Upstream keeps Claude and Cursor apart by
+  TYPE (`SessionRecordFormat::Cla` / `Cur`, chosen by whichever detector
+  produced the candidate) and never persists the choice, so `Agent` is DERIVED
+  from the source path's shape: Cursor's `agent-transcripts` directory or a
+  `.cursor` segment, a `.claude` segment, and finally Claude's
+  `projects/<slug>/<uuid>.jsonl` layout — which is what recognises a
+  RELOCATED Claude home whose directory is not named `.claude`. An
+  unrecognised shape yields `""`, never a guess.
+- **The recovered `SourceSessionID` uses the Claude lister's own admission
+  rule** (a canonical UUID stem). It is compared against AO's Claude import
+  state to answer "does AO already have this conversation", so a stem that
+  lister would never produce must never match one.
+- **`detected_connector_records` is not read.** It describes sources Codex
+  NOTICED, not ones it imported, and carries no thread id to key on.
+
+Failure posture: an absent file is the common case and is SILENT. Anything
+else — unreadable, over the 8 MiB bound, not JSON, not this shape — costs the
+labels, raises exactly one `codex-import-ledger-unreadable`, and never an
+error. The badge is decoration on a listing that must still list.
 
 ## Parsing
 
@@ -281,7 +464,8 @@ searches settle as unresolved.
 
 `codex-rollout-missing`, `codex-corrupt-lines`, `codex-unknown-types`,
 `codex-unmatched-tool-end`, `codex-unresolved-tool-call`,
-`codex-session-meta-missing`.
+`codex-session-meta-missing`, `codex-history-base`,
+`codex-import-ledger-unreadable`.
 
 ## Anti-patterns
 
@@ -293,6 +477,15 @@ searches settle as unresolved.
 - Do NOT make an unrecognised envelope type fatal, and do NOT derive the
   recognised set from a checkout of codex-rs. The enum is open.
 - Do NOT correlate tools by anything but `call_id`.
+- Do NOT emit BOTH an `item_completed` content item and its `response_item`
+  twin. The mirror wins for message and reasoning content; see "Which record
+  wins when both exist" before adding a variant.
+- Do NOT silence a record type without decoding it. A bare `case X: return`
+  turns future drift in X into silent data loss; `dropRecognised` is the
+  pattern, and its shape check is the part that keeps the unknown-types
+  warning meaningful.
+- Do NOT infer `history_mode` from the records seen so far. It is a header
+  field, and a tail refresh must decide it the same way a full parse does.
 - Do NOT invent a completion status for a call the file never settled.
   `import_unresolved` says so instead.
 

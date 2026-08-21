@@ -174,9 +174,15 @@ func TestPlanLiveUpdate(t *testing.T) {
 			wantOK: false,
 		},
 		{
-			name:   "system prompt change needs restart",
-			mutate: func(o *provider.SessionOptions) { o.SystemPrompt = "different prompt" },
-			wantOK: false,
+			// A prompt landing on a non-empty value rides
+			// set_model.system_prompt. Only the empty NEXT side (an
+			// override turned off) still needs a restart — see
+			// TestPlanLiveUpdateSystemPromptTransitions, which owns that
+			// whole axis.
+			name:       "system prompt swap is live",
+			mutate:     func(o *provider.SessionOptions) { o.SystemPrompt = "different prompt" },
+			wantOK:     true,
+			wantUpdate: LiveUpdate{SystemPrompt: "different prompt"},
 		},
 	}
 
@@ -243,7 +249,7 @@ func TestApplyLiveUpdateSendsSetModel(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	if err := s.ApplyLiveUpdate(ctx, LiveUpdate{Model: "claude-fable-5"}, nil); err != nil {
+	if _, err := s.ApplyLiveUpdate(ctx, LiveUpdate{Model: "claude-fable-5"}, nil); err != nil {
 		t.Fatalf("ApplyLiveUpdate: %v", err)
 	}
 
@@ -268,7 +274,7 @@ func TestApplyLiveUpdateAppliesBasePermissionMode(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	if err := s.ApplyLiveUpdate(ctx, LiveUpdate{BasePermissionMode: "acceptEdits"}, nil); err != nil {
+	if _, err := s.ApplyLiveUpdate(ctx, LiveUpdate{BasePermissionMode: "acceptEdits"}, nil); err != nil {
 		t.Fatalf("ApplyLiveUpdate: %v", err)
 	}
 
@@ -306,7 +312,7 @@ func TestApplyLiveUpdateBypassEscalationRequiresRestart(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	err := s.ApplyLiveUpdate(ctx, LiveUpdate{Model: "claude-fable-5", BasePermissionMode: "bypassPermissions"}, nil)
+	_, err := s.ApplyLiveUpdate(ctx, LiveUpdate{Model: "claude-fable-5", BasePermissionMode: "bypassPermissions"}, nil)
 	if !errors.Is(err, ErrLiveUpdateRequiresRestart) {
 		t.Fatalf("ApplyLiveUpdate error = %v, want ErrLiveUpdateRequiresRestart", err)
 	}
@@ -327,7 +333,7 @@ func TestApplyLiveUpdateBypassAllowedWhenSpawnedWithAllowFlag(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	if err := s.ApplyLiveUpdate(ctx, LiveUpdate{BasePermissionMode: "bypassPermissions"}, nil); err != nil {
+	if _, err := s.ApplyLiveUpdate(ctx, LiveUpdate{BasePermissionMode: "bypassPermissions"}, nil); err != nil {
 		t.Fatalf("ApplyLiveUpdate: %v", err)
 	}
 
@@ -494,7 +500,7 @@ func TestApplyLiveUpdateSendsEffortCommand(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	var receipt LiveApplyReceipt
-	if err := s.ApplyLiveUpdate(ctx, LiveUpdate{Effort: "xhigh"}, func(r LiveApplyReceipt) {
+	if _, err := s.ApplyLiveUpdate(ctx, LiveUpdate{Effort: "xhigh"}, func(r LiveApplyReceipt) {
 		receipt = r
 	}); err != nil {
 		t.Fatalf("ApplyLiveUpdate: %v", err)
@@ -526,7 +532,7 @@ func TestApplyLiveUpdateOrdersModelBeforeCommands(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	var receipt LiveApplyReceipt
-	if err := s.ApplyLiveUpdate(ctx, LiveUpdate{
+	if _, err := s.ApplyLiveUpdate(ctx, LiveUpdate{
 		Model:    "claude-opus-5[1m]",
 		Effort:   "low",
 		FastMode: FastModeOff,
@@ -568,7 +574,7 @@ func TestApplyLiveUpdateEffortNeedsAdvertisedCommand(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	err := s.ApplyLiveUpdate(ctx, LiveUpdate{Model: "claude-fable-5", Effort: "low"}, nil)
+	_, err := s.ApplyLiveUpdate(ctx, LiveUpdate{Model: "claude-fable-5", Effort: "low"}, nil)
 	if !errors.Is(err, ErrLiveUpdateRequiresRestart) {
 		t.Fatalf("ApplyLiveUpdate error = %v, want ErrLiveUpdateRequiresRestart", err)
 	}
@@ -588,7 +594,7 @@ func TestApplyLiveUpdateRejectsUnknownEffortTier(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	err := s.ApplyLiveUpdate(ctx, LiveUpdate{Effort: "ultracode"}, nil)
+	_, err := s.ApplyLiveUpdate(ctx, LiveUpdate{Effort: "ultracode"}, nil)
 	if err == nil || errors.Is(err, ErrLiveUpdateRequiresRestart) {
 		t.Fatalf("ApplyLiveUpdate error = %v, want a validation error", err)
 	}
@@ -604,7 +610,7 @@ func TestApplyLiveUpdateFastEnableRequiresSpawnOptIn(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	err := s.ApplyLiveUpdate(ctx, LiveUpdate{FastMode: FastModeOn}, nil)
+	_, err := s.ApplyLiveUpdate(ctx, LiveUpdate{FastMode: FastModeOn}, nil)
 	if !errors.Is(err, ErrLiveUpdateRequiresRestart) {
 		t.Fatalf("ApplyLiveUpdate error = %v, want ErrLiveUpdateRequiresRestart", err)
 	}
@@ -626,7 +632,7 @@ func TestApplyLiveUpdatePreSendRunsBeforeAnyWrite(t *testing.T) {
 	defer cancel()
 	var receipt LiveApplyReceipt
 	preSendCalls := 0
-	err := s.ApplyLiveUpdate(ctx, LiveUpdate{Effort: "low"}, func(r LiveApplyReceipt) {
+	_, err := s.ApplyLiveUpdate(ctx, LiveUpdate{Effort: "low"}, func(r LiveApplyReceipt) {
 		preSendCalls++
 		receipt = r
 		if data, err := os.ReadFile(capturePath); err == nil && len(data) > 0 {
@@ -656,7 +662,7 @@ func TestApplyLiveUpdateEffortRefusedOnEffortlessModel(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	err := s.ApplyLiveUpdate(ctx, LiveUpdate{Effort: "low"}, func(LiveApplyReceipt) {
+	_, err := s.ApplyLiveUpdate(ctx, LiveUpdate{Effort: "low"}, func(LiveApplyReceipt) {
 		t.Error("preSend ran for a rejected update")
 	})
 	if err == nil || errors.Is(err, ErrLiveUpdateRequiresRestart) {
@@ -677,7 +683,7 @@ func TestApplyLiveUpdateRejectsGarbageFastArgument(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	err := s.ApplyLiveUpdate(ctx, LiveUpdate{FastMode: FastModeChange("toggle")}, nil)
+	_, err := s.ApplyLiveUpdate(ctx, LiveUpdate{FastMode: FastModeChange("toggle")}, nil)
 	if err == nil || errors.Is(err, ErrLiveUpdateRequiresRestart) {
 		t.Fatalf("ApplyLiveUpdate error = %v, want a validation error", err)
 	}
@@ -703,7 +709,7 @@ func TestApplyLiveUpdateCommandAxesRefusedDuringResumeRepair(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	err := s.ApplyLiveUpdate(ctx, LiveUpdate{Effort: "low"}, nil)
+	_, err := s.ApplyLiveUpdate(ctx, LiveUpdate{Effort: "low"}, nil)
 	if !errors.Is(err, ErrLiveUpdateRequiresRestart) {
 		t.Fatalf("ApplyLiveUpdate error = %v, want ErrLiveUpdateRequiresRestart", err)
 	}
@@ -714,7 +720,7 @@ func TestApplyLiveUpdateCommandAxesRefusedDuringResumeRepair(t *testing.T) {
 
 	// A model-only update carries no user message and stays live even in
 	// the repair state.
-	if err := s.ApplyLiveUpdate(ctx, LiveUpdate{Model: "claude-fable-5"}, nil); err != nil {
+	if _, err := s.ApplyLiveUpdate(ctx, LiveUpdate{Model: "claude-fable-5"}, nil); err != nil {
 		t.Fatalf("model-only ApplyLiveUpdate during repair state: %v", err)
 	}
 }

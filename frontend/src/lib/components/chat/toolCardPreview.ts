@@ -44,6 +44,10 @@ export function toolCardInputPreview(
     const search = toolSearchPreview(itemMeta);
     if (search) return search;
   }
+  if (item.toolName === 'SendMessage') {
+    const peer = sendMessagePreview(itemMeta);
+    if (peer) return peer;
+  }
   const mcp = mcpPreviewFromMeta(itemMeta);
   if (mcp) return mcp;
   const fromSummary = (item.summary ?? '').trim();
@@ -462,6 +466,27 @@ function skillPreviewFromMeta(itemMeta: Record<string, unknown> | null): string 
   if (!input || typeof input !== 'object' || Array.isArray(input)) return '';
   const skill = (input as Record<string, unknown>).skill;
   return typeof skill === 'string' ? skill.trim() : '';
+}
+
+/**
+ * `SendMessage` addresses another Claude session on this machine through
+ * Claude Code's cross-session inbox. The recipient's NAME is the whole
+ * point of the row — the body text is already the next thing on screen if
+ * the reader opens the card, but who it went to is not recoverable from
+ * anywhere else.
+ *
+ * The CLI accepts `to` / `message` and echoes back its own canonical
+ * `recipient` / `content` alongside them (2.1.237, observed on the wire),
+ * so both spellings are read. Falls back to the empty string, which lets
+ * the caller use the ordinary summary path.
+ */
+function sendMessagePreview(itemMeta: Record<string, unknown> | null): string {
+  const input = itemMeta?.input;
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return '';
+  const fields = input as Record<string, unknown>;
+  const raw = typeof fields.recipient === 'string' ? fields.recipient : fields.to;
+  const recipient = typeof raw === 'string' ? raw.trim() : '';
+  return recipient ? `To ${recipient}` : '';
 }
 
 function toolSearchPreview(itemMeta: Record<string, unknown> | null): string {

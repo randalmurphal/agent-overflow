@@ -106,6 +106,18 @@ func (s *Session) handleServerRequest(method string, id *json.Number, params jso
 			}
 			return
 		}
+		if !parseUserInputIsBlocking(params) {
+			// Codex 0.147+. The turn keeps running while this question is
+			// outstanding, so AO's blocking-prompt presentation is a
+			// mismatch. Logged, not adapted: changing the prompt's
+			// presentation is a UX decision, and a wrong guess here parks a
+			// turn that did not need parking.
+			log.Printf(
+				"codex: requestUserInput isBlocking=false on thread %s turn %s item %s; "+
+					"rendered as a blocking prompt anyway",
+				s.threadID, turnID, itemID,
+			)
+		}
 		meta := buildUserInputMetaFromQuestions(s.threadID, turnID, itemID, rpcID, questions)
 		s.trackPendingApproval(rpcID, provider.EventUserInputResolved)
 		if itemID != "" {

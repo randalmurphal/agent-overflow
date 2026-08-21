@@ -108,3 +108,33 @@ func TestConfigFromOptionsIgnoresEveryRuntimeMode(t *testing.T) {
 		}
 	}
 }
+
+// The peer-inbox axes reach the TUI Config through claude.ConfigFromOptions,
+// so the two Claude transports resolve the policy identically — including the
+// stated refusal when the feature is OFF, which is the whole point of that
+// resolution (a remote GrowthBook flag can bind the inbox for a user who
+// never enabled it here, and only an explicit key says otherwise).
+func TestConfigFromOptionsCarriesTheCrossSessionAxes(t *testing.T) {
+	on := ConfigFromOptions(provider.SessionOptions{
+		Provider:           string(provider.ClaudeTUI),
+		Model:              "claude-opus-5",
+		ClaudeCrossSession: provider.ClaudeCrossSession{Enabled: true, Inbound: "refuse"},
+	})
+	if !on.CrossSessionEnabled {
+		t.Fatal("CrossSessionEnabled = false for an enabled setting")
+	}
+	if on.CrossSessionInbound != "refuse" {
+		t.Fatalf("CrossSessionInbound = %q, want refuse", on.CrossSessionInbound)
+	}
+
+	off := ConfigFromOptions(provider.SessionOptions{
+		Provider: string(provider.ClaudeTUI),
+		Model:    "claude-opus-5",
+	})
+	if off.CrossSessionEnabled {
+		t.Fatal("CrossSessionEnabled = true with the setting off")
+	}
+	if off.CrossSessionInbound != "refuse" {
+		t.Fatalf("CrossSessionInbound = %q with the setting off, want the stated refusal", off.CrossSessionInbound)
+	}
+}

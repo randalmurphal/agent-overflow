@@ -154,6 +154,11 @@ func (a *App) applyThreadTitleIfCurrent(threadID, expected, title string) (bool,
 		ID:     threadID,
 		Title:  &title,
 	})
+	// A live Claude session with the peer inbox open advertises itself to
+	// other sessions on this machine under the thread's name; the fallback
+	// it launched with (`<project>/<short id>`) is exactly what a landed
+	// title improves on. No-op for every other thread.
+	a.syncPeerSessionNameAsync(threadID)
 	return true, nil
 }
 

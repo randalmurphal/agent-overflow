@@ -4,6 +4,7 @@
   import ExpandablePayloadBody from './ExpandablePayloadBody.svelte';
   import RowError from './RowError.svelte';
   import type { RowErrorData } from './rowState';
+  import type { CollabInteractionKind } from './collabToolRowData';
 
   let {
     pane,
@@ -15,6 +16,8 @@
     expanded,
     tool,
     receiverDisplayLabels,
+    interactions = [],
+    earlierInteractionCount = 0,
     expansion,
     emptyMessage,
   }: {
@@ -29,6 +32,11 @@
     expanded: boolean;
     tool: string;
     receiverDisplayLabels: string[];
+    /** Spawn-card interaction sub-lines, oldest first, already labelled and
+     * already trimmed to the tail `CollabToolRow` chose to show. */
+    interactions?: { id: string; kind: CollabInteractionKind; text: string }[];
+    /** How many older interactions the tail dropped. */
+    earlierInteractionCount?: number;
     expansion: PayloadExpansionHandle | null;
     /** Body copy when there is no payload. Owned by `CollabToolRow`, which
      * holds the item this row's output belongs to and so is the one that can
@@ -65,6 +73,36 @@
     data-testid="collab-tool-row-receivers"
   >
     └ {receiverDisplayLabels.join(', ')}
+  </div>
+{/if}
+{#if interactions.length > 0}
+  <!--
+    The conversation with this agent, on this agent's card. Same `└` sub-line
+    language as the prompt and completion previews above, because these are the
+    same class of thing: secondary detail belonging to the row's subject.
+    A `resumed` entry gets a top margin and the dimmer hint colour so the turns
+    that follow it read as a new section rather than more of the same one.
+  -->
+  <div data-testid="collab-tool-row-interactions">
+    {#if earlierInteractionCount > 0}
+      <div
+        class="ml-5 mt-0.5 truncate text-[0.6875rem] text-fg-hint"
+        data-testid="collab-tool-row-interactions-earlier"
+      >
+        └ +{earlierInteractionCount} earlier
+      </div>
+    {/if}
+    {#each interactions as entry (entry.id)}
+      <div
+        class="ml-5 truncate text-[0.6875rem] {entry.kind === 'resumed'
+          ? 'mt-1 text-fg-hint'
+          : 'mt-0.5 text-fg-subtle'}"
+        data-testid="collab-tool-row-interaction"
+        data-kind={entry.kind}
+      >
+        └ {entry.text}
+      </div>
+    {/each}
   </div>
 {/if}
 {#if expansion && expanded}

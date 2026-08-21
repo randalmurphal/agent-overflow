@@ -384,7 +384,9 @@ baseline:
   above individual threads.
 - Threads carry `mode` (canonical default `"chat"`) plus the
   composer-context columns: `reasoning_effort` (provider-specific;
-  Codex currently accepts none/minimal/low/medium/high/xhigh/max/ultra),
+  Codex currently accepts none/minimal/low/medium/high/xhigh/max/ultra
+  — the v1 baseline stopped at `xhigh`, migration v19
+  `codex_max_ultra_reasoning` rebuilt both tables to widen it),
   `fast_mode` (bool), and `context_window` (any positive
   provider/model-supported token count). The per-thread row is the
   source of truth; `SessionOptions` in `thread_view.go` translates it
@@ -1144,6 +1146,16 @@ quiesces the read pool internally, exactly like VACUUM.
 ## Testing
 
 - Every new column, index, or constraint: add a test.
+- Two value sets here are hand-written copies of `internal/provider`'s,
+  because this package must stay provider-free: `normalizeRuntimeMode` +
+  the `runtime_mode` CHECK, and `legalEffortForProvider` +
+  `legalEfforts` + the provider/effort coupling CHECK.
+  `TestRuntimeModeCheckMatchesProvider` and
+  `TestReasoningEffortSetsMatchProvider` (both in `migrate_test.go`,
+  test-only import of `internal/provider`) are what keep them honest in
+  both directions — a tier added to the provider package with no
+  migration would otherwise surface as a raw CHECK violation in
+  production, on a value the picker had already offered.
 - Fixtures: use `t.TempDir()`-scoped DBs. Never share a DB file across
   tests.
 - WAL mode is verified at startup, not just requested. If it didn't

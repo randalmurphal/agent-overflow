@@ -177,9 +177,10 @@ whichever is closer to the new provider's wire format.
    Split wire envelopes per file (`parse_system.go`, `parse_assistant.go`,
    etc.) the way Claude does. Every message either handled or
    explicitly logged as "unknown type — ignored." Never silently drop.
-3. **Session lifecycle.** `session.go` owns `Session.Start`,
-   `Session.Stop`, `Session.readLoop`. Input methods (`SendMessage`,
-   `RespondToApproval`, `Interrupt`) are methods on `Session`.
+3. **Session lifecycle.** `NewSession` spawns and `Close` tears down
+   (`session.go`); the stdout pump is `readLoop` (`session_readloop.go`).
+   Input methods (`Send`, `Interrupt`, `RespondToApproval`) are methods
+   on `Session` (`session_send.go`, `session_approvals.go`).
 4. **Probe.** `probe.go` checks the binary exists, is on a supported
    version, and the user is authenticated. Returns a
    `ProviderStatusEvent` kind the frontend's status banner knows how

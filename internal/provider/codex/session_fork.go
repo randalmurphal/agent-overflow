@@ -25,10 +25,22 @@ func (s *Session) Fork(ctx context.Context) (string, error) {
 // spike-verified against codex-cli 0.144
 // (scratchpad spike-fork-at-turn, 2026-07-10).
 //
+// It is also the cut every supported codex answers, which is why it is
+// still here: Revert (session_revert.go) needs BOTH a 0.148 app-server
+// and a paginated-history thread, so the in-place rollback paths prefer
+// that one and fall back to this.
+//
 // Turn granularity is an app-server API limit, not a core one
 // (source-verified at rust-v0.144.5 and rust-v0.145.0-alpha.23,
-// 2026-07-17): the fork handler's only cut is
-// truncate_rollout_after_turn_id, while codex-rs core already owns a
+// 2026-07-17; re-verified at rust-v0.149.0, 2026-08-21): every cut the
+// fork handler offers lands on a TURN boundary —
+// truncate_rollout_after_turn_id for the inclusive `lastTurnId` AO sends,
+// truncate_rollout_before_turn_id for the exclusive `beforeTurnId` added
+// in 0.146.0 behind #[experimental("thread/fork.beforeTurnId")] (the two
+// cannot be combined), and the in-place `thread/revert` added in 0.148.0
+// (session_revert.go), which AO PREFERS for the in-place rollback paths
+// and falls back from to this one. See AGENTS.md §"History truncation:
+// three cuts, all turn-granular". Meanwhile codex-rs core already owns a
 // message-granular cut — ForkSnapshot::TruncateBeforeNthUserMessage
 // slices the rollout strictly before the nth user message, mid-turn
 // steers included. That granularity is what the Codex TUI's own
@@ -53,7 +65,7 @@ func (s *Session) ForkAt(ctx context.Context, lastTurnID string) (string, error)
 	}
 	resp, err := s.sendRequest(ctx, "thread/fork", params)
 	if err != nil {
-		return "", fmt.Errorf("codex: thread/fork: %w", err)
+		return "", fmt.Errorf("codex: thread/fork: %w", classifyThreadWriterConflict(err))
 	}
 	forked, err := parseThreadForkResponse(resp)
 	if err != nil {

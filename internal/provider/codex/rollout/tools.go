@@ -67,6 +67,12 @@ func (c *converter) startToolCall(env envelope) {
 	if callID == "" {
 		callID = strings.TrimSpace(p.ID)
 	}
+	if _, done := c.itemRows[callID]; done && callID != "" {
+		// A paginated `item_completed` already emitted the complete row
+		// for this call one line earlier, with detail this response item
+		// does not carry. Opening a second row would duplicate the tool.
+		return
+	}
 	if callID == "" {
 		// Nothing to correlate on. Still worth a row: the call happened.
 		// It will settle as unresolved at the turn boundary.
@@ -242,6 +248,10 @@ func (c *converter) completeToolCall(env envelope) {
 	}
 	tool, ok := c.tools[callID]
 	if !ok {
+		if _, done := c.itemRows[callID]; done {
+			// Settled by the item record; not an orphan.
+			return
+		}
 		c.emitOrphanCompletion(callID, "tool output")
 		return
 	}

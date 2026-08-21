@@ -30,7 +30,10 @@
   import ToolRowStatusIndicator from './ToolRowStatusIndicator.svelte';
   import { indicatorStateForItem, rowErrorForStatus } from './rowState';
   import {
+    collabCardState,
     collabInputFromMeta,
+    collabInteractionLabel,
+    collabInteractions,
     collabSpawnInfo,
     collabToolName,
     previewText,
@@ -62,6 +65,10 @@
     trailingActions?: Snippet;
   } = $props();
   let effectiveStatusItem = $derived(statusItem ?? item);
+
+  // Triage caps the stored list at 32. Showing every one turns a chatty agent's
+  // card into a wall, so the tail is what renders and the rest is counted.
+  const maxVisibleCollabInteractions = 8;
 
   const localFallback = untrack(() =>
     createPayloadExpansion(
@@ -127,6 +134,11 @@
       return completionLaunchInfo?.agentLabel || item.summary || 'Completed agent';
     }
     if (spawnInfo) return spawnInfo.title;
+    // Legacy / imported rows only. A live `send_input` completion no longer
+    // mints a top-level row: triage lands it on the owning spawn card as an
+    // interaction sub-line (observeCodexCollabInteractionComplete). Rows
+    // written before that change still exist in users' databases, so the
+    // branch stays rather than degrading them to "Subagent send_input".
     if (tool === 'send_input') return `Sent input to ${agentLabel || 'agent'}`;
     if (tool === 'wait_agent') {
       if (item.kind === 'tool_completion') return 'Finished waiting';
@@ -176,6 +188,23 @@
     if (tool === 'resume_agent') return 'resume';
     return 'agent';
   });
+  // Interactions and card state live on the SPAWN launch's meta, so they render
+  // on the spawn card only — the completion sibling is a different row.
+  let interactions = $derived(spawnInfo ? collabInteractions(meta) : []);
+  let visibleInteractions = $derived(
+    interactions.slice(-maxVisibleCollabInteractions).map((entry) => ({
+      id: entry.id,
+      kind: entry.kind,
+      text: collabInteractionLabel(entry),
+    })),
+  );
+  let earlierInteractionCount = $derived(
+    Math.max(0, interactions.length - visibleInteractions.length),
+  );
+  let cardState = $derived(
+    spawnInfo ? collabCardState(meta, spawnInfo.receiverThreadIds) : null,
+  );
+
   let hasOutputShell = $derived(
     item.kind === 'tool_completion' &&
       item.toolName === 'collab_agent',
@@ -218,6 +247,16 @@
   <span class="min-w-0 flex-1 truncate">
     {title}{#if modelAffix}<span class="ml-1 text-fg-hint">({modelAffix})</span>{/if}
   </span>
+  {#if cardState}
+    <!-- Outside the truncating span on purpose: the state is the shortest and
+         most load-bearing thing on the row, and a long agent label must not be
+         allowed to eat it. -->
+    <span
+      class="ml-1.5 shrink-0 text-[0.6875rem] text-fg-hint"
+      data-testid="collab-tool-row-state"
+      data-state={cardState}
+    >{cardState}</span>
+  {/if}
 {/snippet}
 
 {#snippet rowActions()}
@@ -265,6 +304,8 @@
     expanded={expansion?.expanded ?? false}
     {tool}
     {receiverDisplayLabels}
+    interactions={visibleInteractions}
+    {earlierInteractionCount}
     expansion={hasExpandableOutput ? expansion : null}
     emptyMessage={importUnavailableLabel(item) ?? 'No stored output for this agent.'}
   />

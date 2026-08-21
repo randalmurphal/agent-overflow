@@ -72,11 +72,21 @@ describe('<PromptOverridesSettings>', () => {
     expect(getByText(/Enable a provider under Settings/)).toBeTruthy();
   });
 
-  it('states that changes only affect sessions started later', async () => {
+  // The header is the only place the section states what a save does, so it
+  // has to be true of all four combinations. It used to say every change was
+  // spawn-only, which stopped being true when a Claude prompt edit started
+  // converging live through `set_model.system_prompt`.
+  it('states per provider and axis when a change takes effect', async () => {
     await seed();
     const { getByText } = render(PromptOverridesSettings);
     expect(
-      getByText(/Applies to sessions started after the change; running sessions are unaffected\./),
+      getByText(/A Claude prompt edit reaches running Claude sessions right away/),
+    ).toBeTruthy();
+    expect(getByText(/turning one off applies when the session restarts/)).toBeTruthy();
+    expect(
+      getByText(
+        /Codex prompts, Claude TUI sessions, and both tool lists apply to sessions started later\./,
+      ),
     ).toBeTruthy();
   });
 

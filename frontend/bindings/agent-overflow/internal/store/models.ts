@@ -1337,6 +1337,22 @@ export class UsageBucket {
     "sessionCount": number;
     "unpricedRows": number;
 
+    /**
+     * CostSource names whose arithmetic produced CostUSD, and is empty on
+     * every bucket priced the ordinary way (wire cost plus rate-table
+     * estimates, possibly mixed). It is set only when a single PROVIDER
+     * figure replaced that arithmetic wholesale — currently
+     * `provider-estimate`, a Codex >= 0.148 thread total (see
+     * `provider_thread_cost.go` and `app_usage.go`'s overlay). QueryUsage
+     * never sets it; GetUsageStats does, like CostUSD and UnpricedRows.
+     * 
+     * Empty is deliberately NOT a third value meaning "mixed": a reader that
+     * wants to label the number only needs to know when it is somebody
+     * else's, and inventing a label for the default would make every existing
+     * surface owe an explanation it already gives (`≥` for a lower bound).
+     */
+    "costSource": string;
+
     /** Creates a new UsageBucket instance. */
     constructor($$source: Partial<UsageBucket> = {}) {
         if (!("bucket" in $$source)) {
@@ -1368,6 +1384,9 @@ export class UsageBucket {
         }
         if (!("unpricedRows" in $$source)) {
             this["unpricedRows"] = 0;
+        }
+        if (!("costSource" in $$source)) {
+            this["costSource"] = "";
         }
 
         Object.assign(this, $$source);

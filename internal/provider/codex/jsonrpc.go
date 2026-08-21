@@ -166,6 +166,110 @@ func IsThreadNotFound(err error) bool {
 		strings.HasPrefix(message, "thread not found:") || message == "thread not found"
 }
 
+// Thread writer-ownership refusals.
+//
+// Codex 0.147 extended its cross-process single-writer lock to legacy
+// rollout histories: `LocalThreadStore::resume_thread` (and create) take a
+// `WriterLockGuard` from
+// codex-rs/thread-store/src/local/writer_lock.rs before opening a thread, and
+// a lock another PROCESS holds fails the operation instead of waiting. The
+// practical trigger is the user's own `codex` TUI sitting on the same thread.
+//
+// The refusal reaches the wire as a PLAIN INVALID-REQUEST — there is no
+// `codexErrorInfo` kind to branch on, so this is deliberately a message match.
+// `ThreadStoreError::Conflict` is folded together with `InvalidRequest` by
+// `thread_store_mutation_error`
+// (codex-rs/app-server/src/request_processors/thread_processor.rs), which maps
+// both onto `invalid_request` / -32600. Upstream's own integration test pins
+// the exact pair — `assert_eq!(error.error.code, -32600)` and
+// `format!("thread {} already has an active writer", thread.id)` in
+// codex-rs/app-server/tests/suite/v2/thread_resume.rs — so the substrings
+// below are as stable as anything in this file's message-matching family
+// (IsThreadNotFound, IsNoActiveTurnRace).
+//
+// Two distinct producers, one meaning for the user:
+//
+//   - "already has an active writer" — the cross-process FILE lock
+//     (writer_lock.rs). Another codex process holds the thread.
+//   - "already has a live local writer" — the in-process live-recorder map
+//     (local/mod.rs `ensure_live_recorder_absent` / `insert_live_recorder`).
+//     Same app-server already has the thread open.
+var threadWriterConflictMarkers = []string{
+	"already has an active writer",
+	"already has a live local writer",
+}
+
+// ThreadWriterConflictMessage is the user-facing text for a thread another
+// Codex process owns. It names the overwhelmingly likely culprit and the one
+// action that resolves it, because there is nothing Agent Overflow can do from
+// its side — the lock is advisory-by-process and only its holder can drop it.
+const ThreadWriterConflictMessage = "This Codex thread is open in another Codex process " +
+	"(most likely the terminal TUI). Close it there, then try again."
+
+// ThreadWriterConflictError is a writer-ownership refusal, classified so the
+// app layer can show ThreadWriterConflictMessage instead of a raw wire string.
+// The original RPCError stays reachable through Unwrap for logs.
+type ThreadWriterConflictError struct {
+	// Wire is the app-server's own message, reachable through errors.As for
+	// forensics. It names the thread id, which the user-facing text
+	// deliberately does not — that asymmetry IS the field's purpose, so a
+	// diagnosis can identify the locked thread without the toast doing so.
+	// Nothing logs it today; it is the one piece of the refusal the
+	// user-facing text destroys, and reconstructing it later is impossible.
+	//
+	// The refusing METHOD is deliberately not carried. It reached the struct
+	// once and had no reader by construction: the lock is a property of the
+	// THREAD, not of the method (see classifyThreadWriterConflict), so which
+	// of the four locking RPCs happened to hit it says nothing a caller can
+	// act on — and the wrapped RPCError still carries it for a log line.
+	Wire string
+	err  error
+}
+
+// Error is the same sentence for every conflict, nil receiver included: the
+// message is a constant and nothing about this error is per-instance.
+func (e *ThreadWriterConflictError) Error() string {
+	return ThreadWriterConflictMessage
+}
+
+func (e *ThreadWriterConflictError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.err
+}
+
+// IsThreadWriterConflict reports whether err is a writer-ownership refusal.
+func IsThreadWriterConflict(err error) bool {
+	var conflict *ThreadWriterConflictError
+	return errors.As(err, &conflict)
+}
+
+// classifyThreadWriterConflict upgrades a raw JSON-RPC refusal into
+// ThreadWriterConflictError, or returns err unchanged.
+//
+// Applied at every RPC that can take a writer lock — thread/start,
+// thread/resume (both the handshake and the mid-life reconcile), thread/fork,
+// and the thread/read probe — rather than at one of them, because the lock is
+// a property of the thread, not of the method, and a raw
+// "thread <uuid> already has an active writer" reaching the user is the
+// failure this exists to prevent.
+func classifyThreadWriterConflict(err error) error {
+	if err == nil {
+		return nil
+	}
+	var rpcErr *RPCError
+	if !errors.As(err, &rpcErr) || rpcErr.Code != -32600 {
+		return err
+	}
+	for _, marker := range threadWriterConflictMarkers {
+		if strings.Contains(rpcErr.Message, marker) {
+			return &ThreadWriterConflictError{Wire: rpcErr.Message, err: err}
+		}
+	}
+	return err
+}
+
 // RequestTimeoutError means a JSON-RPC request was written to Codex but no
 // response arrived before the client-side timeout. Callers should treat this
 // as an ambiguous ACK-missing state, not proof that Codex rejected the request.

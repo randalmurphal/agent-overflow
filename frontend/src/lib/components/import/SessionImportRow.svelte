@@ -54,6 +54,35 @@
     return row.origin ? `${base} (${row.origin})` : base;
   });
 
+  // Codex can import a conversation from another coding agent; when it has,
+  // the resulting session looks like any other Codex session and its real
+  // origin is only in Codex's own ledger. The backend derives the agent id,
+  // so this map is a LABEL table, not a membership test — an id it does not
+  // know still gets a badge, just a generic one.
+  const EXTERNAL_AGENT_LABELS: Record<string, string> = {
+    'claude-code': 'Claude Code',
+    cursor: 'Cursor',
+  };
+  let importedFrom = $derived(row.importedFrom ?? undefined);
+  let importedFromLabel = $derived.by(() => {
+    if (!importedFrom) return '';
+    const agent = EXTERNAL_AGENT_LABELS[importedFrom.agent];
+    const base = agent ? `from ${agent}` : 'imported into Codex';
+    // The duplicate half earns its width: without it the user is offered the
+    // same conversation twice with nothing to tell them apart.
+    return importedFrom.duplicateOfThreadId ? `${base} · duplicate` : base;
+  });
+  let importedFromTitle = $derived.by(() => {
+    if (!importedFrom) return undefined;
+    const agent = EXTERNAL_AGENT_LABELS[importedFrom.agent] ?? 'another agent';
+    const lines = [`Codex imported this conversation from ${agent}.`];
+    if (importedFrom.sourcePath) lines.push(importedFrom.sourcePath);
+    if (importedFrom.duplicateOfThreadId) {
+      lines.push('Agent Overflow already has this conversation, imported directly.');
+    }
+    return lines.join('\n');
+  });
+
   function handleClick(): void {
     if (disabled) return;
     onToggle();
@@ -120,6 +149,21 @@
 
   {#if subagentLabel}
     <span class={CHIP_CLASS}>{subagentLabel}</span>
+  {/if}
+
+  {#if importedFromLabel}
+    <span
+      class={[
+        'max-w-[12rem] shrink-0 truncate rounded-[3px] px-1 py-px text-[0.625rem] leading-4',
+        importedFrom?.duplicateOfThreadId
+          ? 'bg-warning/10 text-warning'
+          : 'bg-surface-2/70 text-fg-muted',
+      ].join(' ')}
+      data-testid={`session-import-origin-${row.id}`}
+      title={importedFromTitle}
+    >
+      {importedFromLabel}
+    </span>
   {/if}
 
   {#if !row.knownProject}

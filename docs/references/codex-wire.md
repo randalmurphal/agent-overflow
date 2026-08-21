@@ -127,19 +127,40 @@ Authoritative method list from
 | `turn/plan/updated` | Per-turn plan updates (markdown). |
 | `item/started` | Tool/item lifecycle. `classifyItemNotification` → `EventToolStart` (or drop). |
 | `item/completed` | Tool/item lifecycle. `classifyItemCompleted` → `EventToolComplete` (or drop). |
+| `item/agentMessage/delta` | Streaming assistant text. |
+| `item/reasoning/textDelta`, `.../summaryTextDelta`, `.../summaryPartAdded` | Streaming reasoning. |
+| `item/plan/delta` | Buffered by `appendPlanDelta`; surfaces on the completed plan item, never on the delta. Consumed INLINE, not by a classifier. |
+| `item/commandExecution/outputDelta` | Streaming command output. |
+| `item/commandExecution/terminalInteraction` | The wire-typed background-terminal signal (waited / interacted marker rows). See §Background terminals and invariant 25. |
+| `item/fileChange/outputDelta`, `item/fileChange/patchUpdated` | Streaming patch progress. |
+| `rawResponseItem/completed` | Raw response items: `spawn_agent` / `wait_agent` / `write_stdin` enrichment and the live mailbox carrier. Only available on a fresh `thread/start` with `experimentalRawEvents` — see §`<subagent_notification>`. |
+| `item/mcpToolCall/progress`, `item/autoApprovalReview/started`, `item/autoApprovalReview/completed` | Recognised and dropped (consumed, so never opted out). |
+| `autoApprovalReview/strictReviewRequired` | 0.149. Reachable only in the `auto` runtime mode: strict review replaced the cheap in-line assessment, so tool calls slow down. One warning row; the payload carries no reason. |
+| `hook/started`, `hook/completed` | Hook lifecycle; one notification row each. |
 | `thread/started` | Session-level. First notification on a new thread; emits `EventSessionInit`. |
 | `thread/status/changed` | Session-level. Thread status transitions; emits `EventSessionStatus`. |
-| `thread/compacted` | Thread housekeeping. Compaction boundary event. |
+| `thread/archived`, `thread/unarchived`, `thread/closed` | Recognised, no event. |
+| `thread/reverted` | The echo `thread/revert` waits on. Releases the RPC's bounded wait; an UNSOLICITED one is logged and never acted on (it carries a thread id and no boundary). See §History truncation in the package guide. |
+| `thread/queue/changed` | 0.148. The thread's provider-side queue changed. `{threadId}` and nothing else — no depth, no item id, no text. Below 0.148 the classifier's own notice is the answer; on a queue-native session the session layer replaces it with a `thread/queue/list` diffed against AO's own client ids. See §Externally queued turns in the package guide. |
+| `thread/compacted` | Thread housekeeping. Compaction boundary event (deprecated upstream in favour of the `contextCompaction` item; both feed `EventCompactBoundary`). |
 | `thread/name/updated` | Thread housekeeping. Thread name/title changed. |
-| `thread/tokenUsage/updated` | Thread housekeeping. Rolling token-usage snapshot. |
-| `account/rateLimits/updated` | Account-wide quota snapshot. Surfaced as `EventRateLimits` / `provider:usage action:"rate_limits"`. |
-| `model/rerouted` | Model reroute notice (Codex fell back to a different model). |
-| `configWarning` | Session-level notice surfaced to the user. |
-| `deprecationNotice` | Session-level deprecation notice. |
-| `serverRequest/resolved` | Fires when a previously-sent server request (approval / elicitation) has been resolved by the client. |
+| `thread/tokenUsage/updated` | Thread housekeeping. Rolling CUMULATIVE token-usage snapshot; per-turn deltas are derived (`usage_accounting.go`). |
 | `thread/settings/updated` | Codex's authoritative config echo. Reconciled into the session's observed snapshot; emits nothing. |
+| `skills/changed` | Side channel. An EMPTY struct upstream — no cwd, no scope, no name — so the whole `internal/codexskills` cache is dropped rather than narrowed. |
+| `account/rateLimits/updated` | Account-wide quota snapshot. Surfaced as `EventRateLimits` / `provider:usage action:"rate_limits"`. |
+| `account/updated`, `account/login/completed` | Recognised, no event. |
+| `model/rerouted` | Model reroute notice (Codex fell back to a different model). |
+| `model/verification` | Model-verification warning row. |
 | `model/safetyBuffering/updated` | Response held while OpenAI reviews the turn. Emits a notification row on the show edge only. |
 | `mcpServer/startupStatus/updated` | Per-server MCP startup delta. Side channel to the App's status cache, not a transcript event. |
+| `mcpServer/oauthLogin/completed` | Side channel: an MCP server finished its OAuth login. |
+| `serverRequest/resolved` | A previously-sent server request (approval / elicitation) was resolved. `EventApprovalResolved`. |
+| `error` | User-facing error state, not a log entry. |
+| `warning`, `guardianWarning`, `configWarning`, `deprecationNotice` | Session-level notices surfaced to the user. |
+
+Everything catalogued and NOT in this table is opted out at `initialize`
+— see below. The split is derived, so this table is documentation of a
+decision made in code, never its source.
 
 **Opting out.** `initialize` accepts
 `capabilities.optOutNotificationMethods: string[]`; Codex drops those
@@ -147,10 +168,12 @@ methods for that connection before serializing them
 (`codex-rs/app-server/src/transport.rs`
 `should_skip_notification_for_connection`). Matching is exact-string, so
 an unrecognized entry is inert. Agent Overflow sends the complement of
-what it consumes — see `internal/provider/codex/notification_catalog.go`
-and the catalogue there, which is the pinned 0.142.5 method list plus the
-three 0.146.0 additions (`rawResponse/completed`,
-`thread/environment/connected`, `thread/environment/disconnected`).
+what it consumes — see `internal/provider/codex/notification_catalog.go`,
+whose catalogue is the `server_notification_definitions!` block at
+`codex-rs/app-server-protocol/src/protocol/common.rs` @ **rust-v0.149.0**
+(77 entries). A method upstream adds and the catalogue has not listed is
+never opted out: it arrives, no classifier claims it, and the per-session
+drift log names it once.
 
 ⚠ **Wire-name gotchas.**
 
@@ -371,7 +394,26 @@ and normalizes them before triage:
 | send/follow-up | `collabAgentToolCall`, `tool:"sendInput"` | `subAgentActivity`, `kind:"interacted"` — the completed leg is the signal |
 | interrupt/close | `collabAgentToolCall`, `tool:"closeAgent"` | `subAgentActivity`, `kind:"interrupted"` — the completed leg is the signal |
 | wait | `collabAgentToolCall`, `tool:"wait"`, receivers/statuses | `collabAgentToolCall`, `tool:"wait"`, empty receiver/status maps |
-| list | model-facing raw function call/output only | model-facing raw function call/output only |
+| list | model-facing raw function call only (no item) | model-facing raw function call only (no item) |
+
+⚠ **V2's two messaging verbs are indistinguishable on the typed wire.**
+`send_message` (QueueOnly — queues into the child's mailbox, starts no turn) and
+`followup_task` (TriggerTurn — starts a new child turn) share one handler path
+(`core/src/tools/handlers/multi_agents_v2/message_tool.rs`) and both end in a
+single `kind:"interacted"` item with no verb field. The ONLY signal is the raw
+function-call `name` on `rawResponseItem/completed`, which is live-only: a
+resumed session never sees it. Agent Overflow persists it onto the spawn launch
+at interaction time (`input.activityTool` → `codex_collab_interactions[].tool`)
+so it survives a restart, and labels the interaction neutrally when it is
+absent. It must never be inferred from whether a child turn followed — that is
+exactly the ordering heuristic
+[invariant 25](../architecture/invariants.md#25-codex-backgrounding-uses-wire-typed-signals-never-heuristics)
+forbids.
+
+Namespacing (`features.multi_agent_v2.tool_namespace`, default
+`"collaboration"`) does not change the name: the raw function call carries the
+bare name plus a separate `namespace` field
+(`{"name":"send_message","namespace":"collaboration"}`).
 
 Every V2 activity item arrives as a started/completed pair on the wire (see
 [§MultiAgentV2 spawn normalization](#multiagentv2-spawn-normalization)); the
@@ -540,28 +582,75 @@ with empty `receiverThreadIds` and `agentsStates`; child `turn/completed`
 updates only the launch's live status. Its result does not enter parent history
 until the mailbox is drained into parent context.
 
-MultiAgentV2 persists that delivery in the parent rollout as an
-`inter_agent_communication` record:
+MultiAgentV2 persists that delivery in the parent rollout. **On codex 0.147 it
+is TWO consecutive records, not one.** A bare `inter_agent_communication`
+record carrying `author` / `recipient` / `content` is a legacy/replay shape and
+is still accepted, but it is not what a current rollout contains:
 
 ```json
-{
-  "type": "inter_agent_communication",
-  "payload": {
-    "author": "/root/reviewer",
-    "recipient": "/root",
-    "content": "Message Type: FINAL_ANSWER\nTask name: /root\nSender: /root/reviewer\nPayload:\n<child result>",
-    "internal_chat_message_metadata_passthrough": {"turn_id": "child-turn"},
-    "trigger_turn": false
-  }
-}
+{"type": "inter_agent_communication_metadata", "payload": {"trigger_turn": false}}
+{"type": "response_item",
+ "payload": {
+   "type": "agent_message",
+   "id": "amsg_01a020e3-...",
+   "author": "/root/reviewer",
+   "recipient": "/root",
+   "content": [{"type": "input_text",
+                "text": "Message Type: FINAL_ANSWER\nTask name: /root\nSender: /root/reviewer\nPayload:\n<child result>"}],
+   "internal_chat_message_metadata_passthrough": {"turn_id": "<RECEIVING PARENT TURN ID>"}}}
 ```
 
-That record—not child `turn/completed` and not `wait_agent` returning—is the
-MultiAgentV2 transcript-completion boundary. Agent Overflow emits one flat
-completion row per delivered child turn. Fresh sessions see the model-input
-projection as a raw `agent_message` response item; resumed sessions see the
-durable record above. Older rollouts that persisted the projected response item
-remain supported.
+The metadata record carries only `trigger_turn`; the envelope itself is the
+`response_item`, and the two are matched by adjacency, not by an id.
+
+#### `Message Type:` is the classifier, and it has three values
+
+The envelope's own first line is the only wire-typed signal for what a delivery
+means. Three types are observed:
+
+| Type | Direction | Meaning |
+|---|---|---|
+| `FINAL_ANSWER` | child → parent | The child's terminal answer. **The transcript-completion boundary.** |
+| `MESSAGE` | child → parent | A mid-run progress note (`send_message`, QueueOnly). The child is still running. |
+| `NEW_TASK` | parent → child | Task assignment. Appears in the CHILD's rollout with the child path as `recipient`. |
+
+A child → parent envelope always has `recipient: "/root"` and
+`Task name: /root`, which is what keeps `NEW_TASK` out of the parent's
+completion path. Treating any delivery as terminal without reading this header
+marks a still-running child as finished.
+
+#### ⚠ `internal_chat_message_metadata_passthrough.turn_id` is the RECEIVING PARENT turn
+
+It is **not** the child turn, and it is **not** a delivery identity. Every
+delivery drained into one parent turn carries the same value — corpus proof: a
+parent rollout with two distinct `FINAL_ANSWER`s from one child, 3.5 minutes
+apart, both stamped `01a020d1-a06b-7b71-9791-749c71f19cd7`; and another whose
+ten `MESSAGE` deliveries from four different children all share
+`01a02202-9b32-76b3-872f-4bd409b794d3`. Keying a completion row on it collapses
+every same-turn delivery onto one row and silently loses all but the last
+(the bug fixed by `interAgentContentDeliveryID` in `subagent_notifications.go`).
+Delivery identity is content — agent path, message type, payload text, and a
+digest of the non-text content blocks.
+
+#### Encrypted envelopes carry two content blocks
+
+`send_message.message` and `followup_task.message` are encrypted tool
+parameters, so an envelope's `content` is commonly
+`[{"type": "input_text", ...}, {"type": "encrypted_content", ...}]`: the
+plaintext half is the header and stops at `"Payload:\n"`, and the body never
+leaves the ciphertext. A parser that requires exactly one text block sees none
+of these. Two `MESSAGE` deliveries from the same sender therefore have byte-
+identical plaintext, which is why the ciphertext block has to be folded into the
+delivery digest for them to stay distinct.
+
+That envelope—not child `turn/completed` and not `wait_agent` returning—is the
+MultiAgentV2 transcript-completion boundary, and only for `FINAL_ANSWER`. Agent
+Overflow emits one flat completion row per DELIVERY (a child that answers twice
+in one parent turn produces two rows); a `MESSAGE` delivery produces no
+completion row at all, only a progress beat on the child's spawn card. Fresh
+sessions see the model-input projection as a raw `agent_message` response item;
+resumed sessions see the durable record above. Older rollouts that persisted the
+projected response item remain supported.
 
 **(b) Legacy implicit via `<subagent_notification>`**: When a detached
 child finishes and the parent has NO `wait` outstanding, Codex core
@@ -1211,6 +1300,178 @@ notification), which triage routes through one compaction-divider case.
 
 Compaction is also a non-steerable turn (`turnKind: "compact"`), so callers
 gate it on the thread being idle rather than racing a live turn.
+
+---
+
+## History truncation — `thread/revert` and `historyMode`
+
+Three turn-granular cuts exist upstream; AO uses two, and the choice is
+per THREAD, decided at creation.
+
+```json
+{"method": "thread/start",
+ "params": {"cwd": "...", "historyMode": "paginated", ...}}
+{"method": "thread/revert",
+ "params": {"threadId": "...", "beforeTurnId": "turn-7"}}
+→ {"thread": {"id": "<same id>", "turns": []},
+   "turnsBackwardsCursor": null, "itemsBackwardsCursor": null}
+{"method": "thread/reverted", "params": {"threadId": "..."}}
+```
+
+`ThreadRevertParams` / `ThreadRevertResponse` at
+`codex-rs/app-server-protocol/src/protocol/v2/thread.rs` @ rust-v0.149.0;
+handler `thread_revert_response` in
+`codex-rs/app-server/src/request_processors/thread_processor.rs`.
+`#[experimental("thread/revert")]`, so it rides the
+`capabilities.experimentalApi` every AO handshake already sets. Since
+0.148.
+
+Five facts that decide how a client must call it:
+
+- **`beforeTurnId` is EXCLUSIVE** — the first turn DROPPED. `thread/fork`'s
+  `lastTurnId` is the last turn KEPT. Same boundary, opposite sides, so
+  the two anchors must be resolved separately and never interchanged.
+- **Paginated threads only.** Upstream refuses a legacy-history thread
+  first thing, before touching anything, and a thread's history contract
+  is fixed at creation (`ThreadResumeParams` has no history-mode field).
+  Upstream's default is legacy, so a client that never sends
+  `historyMode` gets threads that can never be reverted — which is why
+  AO asks for `"paginated"` on `thread/start` from 0.148 up. The floor is
+  the REVERT floor, not the field's own (paginated shipped in 0.147): a
+  paginated thread on a server with no `thread/revert` carries the
+  differences with none of the benefit. An app-server whose thread store
+  has no SQLite state database refuses the field itself ("paginated
+  threads require thread/turns/list and thread/items/list support"),
+  raised while destructuring the params, so the client retries once
+  without it.
+- **`thread.turns` on the response is ALWAYS empty.** Upstream points
+  clients at `thread/turns/list` to re-hydrate. The thread-identity echo
+  is therefore the only validation available — and the load-bearing one,
+  since a caller keeps its session pointed at that thread.
+- **It is NOT refused mid-turn.** The handler submits a shutdown, waits
+  up to 10s, reverts, then reloads the runtime with
+  `has_live_in_progress_turn = false` — i.e. a mid-turn revert silently
+  destroys the running turn. This is the one guard where AO inverts
+  upstream and refuses.
+- **Nothing is destroyed on disk.** `revert_thread` writes a NEW immutable
+  rollout referencing the retained prefix and moves only the SQLite
+  rollout pointer (`codex-rs/thread-store/src/local/revert_thread.rs`),
+  so the pre-revert rollout survives exactly like a fork's source does.
+
+Failure taxonomy matters here, because a client that falls back to
+`thread/fork` must know whether anything was mutated. Every refusal AO
+maps to a fallback is raised BEFORE the replacement rollout is written
+and long before the pointer CAS: the paginated gate, and the anchor
+resolution in `history_base_at_boundary` ("turn not found: …", "does not
+have persisted rollout positions", "does not have a persisted start
+boundary", "fork boundary exceeds inherited source history"). All arrive
+as invalid_request (-32600) — upstream folds them onto one code in
+`thread_store_mutation_error` — so they are told apart by message. Errors
+from a later stage (the shutdown timeouts, the CAS conflict) leave a
+thread no fork should be built on.
+
+`thread/reverted` carries `{threadId}` only: it is an ACK for the client
+that asked, not a description of what was cut.
+
+---
+
+## The provider-owned queue — `thread/queue/*`
+
+Since 0.148, all `#[experimental]`.
+
+```json
+{"method": "thread/queue/add",
+ "params": {"threadId": "...", "input": [{"type": "text", "text": "..."}],
+            "clientUserMessageId": "user:3:flush:1"}}
+→ {"queuedSubmission": {"id": "...", "input": [...],
+                        "clientUserMessageId": "user:3:flush:1"}}
+{"method": "thread/queue/list",
+ "params": {"threadId": "...", "cursor": null, "limit": null}}
+→ {"data": [QueuedSubmission], "nextCursor": null}
+{"method": "thread/queue/delete",
+ "params": {"threadId": "...", "queuedSubmissionId": "..."}}
+→ {"deleted": true}
+```
+
+`update` (`{threadId, queuedSubmissionId, input}`) and `reorder`
+(`{threadId, queuedSubmissionIds}`) exist on the same file. `start`
+(`{threadId, queuedSubmissionId?}` → `{turn}`) exists too and **must not
+be called**: `QueuedItemService` is a `ThreadLifecycleContributor` whose
+`on_thread_idle` → `dispatch_if_idle` → `start_turn_if_idle` path already
+drains the queue, and `enqueue` itself calls `wake_if_loaded` — so an
+idle thread dispatches INSIDE the `add` request and a client `start` on
+top of that races the drain.
+
+`list` returns ONE PAGE. Upstream's own README states the contract —
+"pass optional `cursor` and `limit` values to request a page, and continue
+with the returned `nextCursor` until it is `null`"
+(`codex-rs/app-server/README.md:808`, rust-v0.149.0) — so `nextCursor` is
+the only thing that says the walk finished. A client that stops early for
+any other reason (its own page cap, a server repeating a cursor) is
+holding a PREFIX, and a prefix presented as the whole queue is
+indistinguishable from a short queue: it reads as "nothing else is
+queued". AO returns `ErrThreadQueueListIncomplete` with the rows it did
+read rather than let a purge or an ownership walk conclude anything from
+a truncated answer.
+
+**Every field on these three shapes is required.** `QueuedSubmission` is
+`{id: String, input: Vec<UserInput>, client_user_message_id: String}` and
+`ThreadQueueDeleteResponse` is `{deleted: bool}` — all non-`Option`, none
+with a serde default (`codex-rs/app-server-protocol/src/protocol/v2/thread.rs`
+lines 869 and 940, rust-v0.149.0), so upstream's own deserializer refuses a
+body missing any of them. A client that decodes them leniently converts wire
+drift into a plausible-looking answer: an unreadable `QueuedSubmission`
+becomes an empty one, which is indistinguishable from an ABSENT row, and a
+missing `deleted` becomes `false`, which reads as "already dispatched". Both
+are the direction that loses a message rather than reporting a fault, so AO
+decodes `deleted` as a pointer and returns
+`ErrThreadQueueListMalformed` for an element it cannot read (including a
+server-assigned `id` that came back empty).
+
+`clientUserMessageId` is required and upstream mints a uuid when a
+producer omits it, so an empty value gives up correlation silently rather
+than failing. It comes back on the echoed `userMessage` as `clientId`,
+which is what lets a `thread/queue/list` say which entries belong to this
+client.
+
+The queue is also how a turn can start on a thread a client owns without
+that client sending `turn/start` — `codex queue --thread <uuid> --message
+<text>` writes one SQLite row and exits, and the app-server's 10s
+`data_version` poll picks it up. See §"Externally queued turns" in
+`internal/provider/codex/AGENTS.md` for the full mechanism and AO's
+adoption rules.
+
+---
+
+## Thread-scoped `account/usage/read`
+
+Since 0.148 the params carry an optional `threadId`
+(`GetAccountTokenUsageParams`, `codex-rs/app-server-protocol/src/protocol/v2/account.rs`):
+
+```json
+{"method": "account/usage/read", "params": {"threadId": "..."}}
+→ {"summary": {…all null…}, "dailyUsageBuckets": null,
+   "threadUsage": {"threadId": "...", "estimatedUsageCreditsMicros": 4200000,
+                   "estimatedUsageUsdMicros": 137500, "groups": [...]}}
+```
+
+Four things a caller has to know:
+
+- **The params were `Option<()>` through 0.147.** A `{threadId}` request
+  to an older app-server is a hard `invalid_params`, not a graceful
+  degradation, so the call has to be version-gated off the handshake.
+- **The response is thread-scoped or account-scoped, never both.** A
+  thread-scoped answer's `summary` is all-`None` and its
+  `dailyUsageBuckets` is `null`, so it must never feed an account-usage
+  cache.
+- **The estimate is CUMULATIVE for the thread**, not a per-turn delta,
+  and it is the ChatGPT backend's own billing estimate rather than a
+  settled invoice.
+- **Absence is a state.** `threadUsage: null` is what upstream returns
+  when the billing route is unavailable for the thread (403/404 mapped to
+  null in `account_processor.rs`), and a present object with no
+  `estimatedUsageUsdMicros` means the thread was priced in credits only.
+  Both mean "keep your own price", not "the call failed".
 
 ---
 

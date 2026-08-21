@@ -72,6 +72,20 @@ type Config struct {
 	// falls back to defaultRows / defaultCols.
 	Rows uint16
 	Cols uint16
+	// CrossSessionEnabled / CrossSessionInbound are the peer-inbox axes
+	// (claude/AGENTS.md §Cross-session messaging). They ride here for the
+	// same reason they ride the headless Config: the registry is
+	// machine-wide and keyed on the shared CLAUDE_CONFIG_DIR, so a TUI
+	// session joins the SAME registry an AO headless thread does — "off
+	// means off" cannot be a headless-only property.
+	//
+	// CrossSessionInbound is already resolved by claude.ConfigFromOptions
+	// (it is "refuse" whenever the feature is off, never empty), and
+	// launch.go states it in the `--settings` block beside the hooks. The
+	// enabled half rides buildEnv, which removes the inherited
+	// CLAUDE_CODE_HARBOR_KITE gate and sets it only when the setting asks.
+	CrossSessionEnabled bool
+	CrossSessionInbound string
 	// Upstream overrides the gateway's forward target. Empty means the real
 	// Anthropic API; tests point it at a stub.
 	Upstream string
@@ -104,6 +118,11 @@ func ConfigFromOptions(opts provider.SessionOptions) Config {
 		// Settings-owned like the two axes above; claude-tui shares the
 		// Claude answer (one binary, one nudge producer).
 		DisableTodoReminders: opts.DisableTodoReminders,
+		// Same shared-registry reasoning: one binary, one peer registry, so
+		// the TUI surface takes the headless resolution verbatim rather
+		// than re-deriving a second answer from the same options.
+		CrossSessionEnabled: base.CrossSessionEnabled,
+		CrossSessionInbound: base.CrossSessionInbound,
 	}
 }
 

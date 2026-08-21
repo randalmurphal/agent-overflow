@@ -38,7 +38,7 @@ The CLI emits newline-delimited JSON. Every line has a top-level
 
 | `type` | Dispatch | Purpose |
 |---|---|---|
-| `system` | `parseSystem` | Init, task lifecycle, compact boundary, session status. |
+| `system` | `parseSystem` | Init, task lifecycle, compact boundary, session status, the [model-fallback family](#system-model-fallback-family), and the [permission notices](#permission-notices-permission_denied-permission_retry). |
 | `assistant` | `parseAssistant` | Text / thinking / tool_use blocks, token usage. |
 | `user` | `parseUser` | `tool_result` blocks echoed back after tool execution, plus replayed user text (`--replay-user-messages`, `isReplay:true`) — see [§Outbound user message](#outbound-user-message--client-supplied-uuid---replay-user-messages). |
 | `stream_event` | `parseStreamEvent` | Incremental deltas (requires `include_partial_messages:true`). |
@@ -415,7 +415,9 @@ a convenience string only.
  "claude_code_version": "2.1.112",
  "output_style": "daily-driver",
  "apiKeySource": "none",
- "fast_mode_state": "on"}
+ "fast_mode_state": "on",
+ "mcp_server_errors": [{"name": "broken", "error": "invalid config: ..."}],
+ "capabilities": ["interrupt_receipt_v1", "msg_lifecycle_v1"]}
 ```
 
 Emits `EventInit`. Parser extracts model id for usage pricing, and the
@@ -425,6 +427,34 @@ optional fast-mode pair (same shape and same version caveat as on
 `system/init` is the only fast-mode report a thread gets before its first
 turn ends, and the one that reflects a fresh session's spawn flags after
 a resume.
+
+### `mcp_server_errors` (2.1.237)
+
+`mcp_servers[]` lists the servers the CLI ACCEPTED. A server whose config
+entry it REFUSED is absent from that array entirely, which makes it
+indistinguishable from a server that was never configured — so 2.1.237
+added a second array naming the rejects with the CLI's own explanation:
+
+```json
+"mcp_server_errors": [{"name": "broken", "error": "invalid config: ..."}]
+```
+
+Both arrays are optional and the two never name the same server, so a
+consumer can iterate both without a collision check. `error` is
+provider-authored prose: bound it before it reaches user-facing state.
+AO projects both onto the unified MCP status
+(`claude/mcpstatus.go` → `internal/mcpstatus`), and every entry it
+derives from this array carries a non-empty `Error`.
+
+### `capabilities`
+
+An array of opaque feature tokens the running build advertises
+(`interrupt_receipt_v1`, `interrupt_cancel_queued_v1`, `msg_lifecycle_v1`,
+`queued_notifications`). Two rules: prefer a token to CLI-version parsing
+when one exists for the behaviour, and treat ABSENCE as no statement
+rather than as a denial — 2.1.237's stream-json engine under-reports what
+it actually implements. `system/init` is re-emitted before every turn, so
+anything hung off it must be idempotent.
 
 ## `system/status` (verified 2.1.219)
 
@@ -460,7 +490,40 @@ the inactive close (carrying the error string); `requesting` and
 unknown statuses are dropped. Triage projects the window onto
 `provider:compacting` (see `internal/triage/compaction_status.go`).
 
-## `system/model_refusal_fallback`
+## `system` model-fallback family
+
+Four subtypes, one shape, one meaning each: the model the user asked for
+is not the model this request ran on. Three of them are NOTICES (the turn
+continues on `fallback_model`) and one is an ERROR (the turn produced
+nothing). All four spell their fields snake_case ON THE WIRE
+(`fallback_model`, `original_model`, `api_refusal_category`, verified in
+the 2.1.214 / 2.1.219 / 2.1.237 serializers) while the CLI's internal
+object is camelCase; a reader that accepts only one spelling rejects every
+real envelope from the other producer, so read both.
+
+`fallback_model` is required on the three notices — without it there is no
+"now running as" to report.
+
+| Subtype | Meaning | AO event |
+|---|---|---|
+| `model_refusal_fallback` | the API refused this request; retried elsewhere | `EventModelFallback` |
+| `model_fallback` | the model was unavailable or blocked (`trigger`: `model_not_found`, `permission_denied`, `model_blocked`, …) | `EventModelFallback` |
+| `model_consent_fallback` | a credits/consent choice moved the session | `EventModelFallback` |
+| `model_refusal_no_fallback` | refused with NO fallback route — the turn is dead | `EventError` |
+
+`meta.kind` is the discriminator; the three notices are one event kind
+because the user-visible consequence is identical and only the cause
+differs.
+
+### Row identity
+
+`request_id` names the API REQUEST, not the notice, and one request can
+produce more than one member of this family (a consent move and a refusal
+fallback for the same request). AO's row id is therefore
+`model-fallback:<subtype>:<request_id>` — triage upserts on the item id,
+so a subtype-less id would render two real events as one.
+
+### `model_refusal_fallback`
 
 **Fires**: when Fable's safety classifier refuses a request and Claude Code
 retries it on Opus. The envelope is non-fatal: the turn continues on the
@@ -483,6 +546,114 @@ persist one warning notification, and project `fallbackModel` as live
 session state. Do not overwrite `threads.model`: that is the user's requested
 model and a later session may try it again. `GetThreadLiveState` hydrates the
 effective model after a frontend refresh; session cleanup clears it.
+
+### `model_consent_fallback`
+
+**Fires**: when a credits/consent choice moves the session onto another
+model — the user (or the CLI's stored default) answered a "you are out of
+X, continue on Y?" prompt.
+
+```json
+{"type":"system","subtype":"model_consent_fallback",
+ "content":"Continuing on Opus 4.8.",
+ "choice":"continue_on_fallback",
+ "original_model":"claude-fable-5","fallback_model":"claude-opus-4-8",
+ "persisted_as_default":true,"request_id":"req_..."}
+```
+
+Two fields of its own. `choice` is which consent option was taken.
+`persisted_as_default` answers whether the move was WRITTEN BACK as the
+account default or applies to this session only — AO records it only when
+true, because `false` is what the composed sentence already says.
+
+### `model_refusal_no_fallback`
+
+**Fires**: when a refusal has no fallback route. This is the one member
+whose turn produces NOTHING, so it is an ERROR, not a notice.
+
+```json
+{"type":"system","subtype":"model_refusal_no_fallback",
+ "content":"Fable 5's safeguards flagged this message and no fallback model is available.",
+ "original_model":"claude-fable-5","api_refusal_category":"cyber",
+ "refused_user_message_uuid":"...","request_id":"req_..."}
+```
+
+It carries no `fallback_model` — there is none. AO emits `EventError` and
+deliberately gives the meta NO top-level `fatal` bool and NO top-level
+`error` string: those are how triage recognises a dead PROCESS and an SDK
+error enum respectively, and only the TURN died here.
+
+---
+
+## Permission notices (`permission_denied`, `permission_retry`)
+
+Two `system` subtypes that report a permission OUTCOME rather than asking
+for one. Neither is an interactive request — the ask, when there is one,
+rides `control_request/can_use_tool`.
+
+**Live-wire only.** 2.1.237's two persistence paths BOTH drop these
+envelopes (one returns `{type:"ignored"}`, the other a bare `continue`),
+so neither ever appears in a session transcript. A resumed, imported, or
+forked thread has no record of them and NOTHING may be inferred from their
+absence.
+
+### `permission_denied`
+
+**Fires**: where the CLI auto-denies a tool call BEFORE it could ask — the
+pre-ask gate. Without this envelope the timeline would show a tool that
+silently never ran.
+
+```json
+{"type":"system","subtype":"permission_denied",
+ "tool_name":"Bash","tool_use_id":"toolu_...",
+ "decision_reason":"Bash command not in the allowed list",
+ "decision_reason_type":"rule",
+ "message":"Claude requested permissions to use Bash, but you haven't granted it yet.",
+ "agent_id":"..."}
+```
+
+`decision_reason` is the deciding component's OWN sentence and is what to
+display — the CLI's debug renderer prefers it over `message`.
+`decision_reason_type` is the discriminator of the CLI's
+`PermissionDecisionReason` union. The 2.1.237 set is `rule`, `mode`,
+`subcommandResults`, `permissionPromptTool`, `hook`, `asyncAgent`,
+`sandboxOverride`, `workingDir`, `safetyCheck`, `classifier`, `other` —
+and it is an OPEN SET: an unrecognised value must still compose a
+sentence rather than drop the notice.
+
+`workingDir` is the only workspace-boundary signal a denial carries, and
+the distinction is load-bearing in the COPY: the CLI answers a boundary
+refusal with `addDirectories` suggestions, never a `Bash(...)`-style tool
+rule, so telling the user to add a permission rule would be advice that
+fixes nothing. (`blocked_path` itself rides `can_use_tool`, not this
+envelope.)
+
+AO emits `EventNotification` with `meta.kind:"permission_denied"`, on the
+model-fallback family's shape rather than a new event kind. Triage
+attaches the notice to the tool call under the NAMESPACED row id
+`permission-denied:<tool_use_id>` — the `tool_call` row's id is the bare
+`tool_use_id`, so an un-namespaced id would collide — and annotates that
+row with `Decision="declined"` plus a `permissionDenied` meta block. It
+deliberately does NOT touch the row's Status: a row that has left
+`statusRunning` makes `persistToolCallCompletion` drop the real
+completion, so a denial must never pre-settle the row.
+
+### `permission_retry`
+
+**Fires**: from the interactive REPL's `onRetryDenials` dialog after a
+permission-mode change — its only 2.1.237 producer.
+
+```json
+{"type":"system","subtype":"permission_retry",
+ "content":"Allowed Bash(npm test), Bash(npm run build)",
+ "commands":["Bash(npm test)","Bash(npm run build)"],
+ "level":"info","isMeta":false,"uuid":"...","session_id":"..."}
+```
+
+It carries NO `tool_use_id` and no attempt count: it reports by command
+NAME. Parse it as a plain timeline notice with an optional bounded
+`commands` list (`EventNotification`, `meta.kind:"permission_retry"`) and
+do NOT build a tool correlation on it.
 
 ---
 
@@ -917,6 +1088,129 @@ pending-send registry and emits `provider:command_lifecycle`. Live UI
 state only; nothing is persisted. The correlation is registered at
 `queued` and survives the wire echo popping the pending-send FIFO, so
 both arrival orders resolve.
+
+### A `command_uuid` the client never minted (verified 2.1.237)
+
+Every `command_uuid` above is one AO stamped on an outbound envelope —
+with ONE exception, and it is the whole tell for a turn this app did not
+ask for. When cross-session messaging is on and a peer's `SendMessage` is
+accepted, the CLI mints its own uuid for the user row it injects and
+opens the bracket with it:
+
+```
+command_lifecycle{state:"started", command_uuid:"<CLI-minted>"}
+system/init                       <- the turn re-emits init
+user{isReplay:true,isSynthetic:true,uuid:"<the same uuid>",origin:{kind:"peer",...}}
+assistant …
+result
+command_lifecycle{state:"completed", command_uuid:"<CLI-minted>"}
+```
+
+`started` precedes even the `system/init`, so the bracket is the FIRST
+observable of a peer turn. AO keeps a ledger of the uuids it issued
+(`internal/provider/claude/session_peer.go`) and stamps
+`Meta.origin = "peer-session"` on every frame of a bracket whose uuid the
+ledger positively lacks — every frame, not just `started`, so a consumer
+reading the terminal frame reaches the same verdict. The classifier fails
+SAFE: an unknown session or an overflowed ledger reads as ours, because
+labelling the user's own message "from another Claude session" is the
+transcript lying about who asked for what.
+
+Observed states for a peer turn are `started` and `completed` only. No
+`queued` and no `discarded` were seen for one in any spike run
+(2026-08-21, /tmp/spike-xsession) — a refused or held delivery produces
+NOTHING on the receiver's stdout at all, not even a lifecycle frame, so
+"a peer message expired" has no wire form to render.
+
+---
+
+## Cross-session messaging (harbor kite, 2.1.224+ / verified 2.1.237)
+
+One Claude session on a host can discover (`ListAgents`) and address
+(`SendMessage`) another. The pieces, all spike-verified against 2.1.237
+under AO's own flag set:
+
+**Gate.** The feature is behind a GrowthBook experiment with exactly one
+environment override, `CLAUDE_CODE_HARBOR_KITE` — parsed as a boolean, so
+`"0"` and `""` are off. With the gate open the session binds a unix
+socket at `(XDG_RUNTIME_DIR || CLAUDE_CODE_TMPDIR || tmpdir)/cc-socks/<pid>.sock`
+and `system/init` carries `messaging_socket_path`, with `ListAgents`
+joining `tools[]` (`SendMessage` is present either way). Without the gate
+the CLI logs "cross-session messaging gate off" and binds nothing, which
+no settings key can undo. A hidden `--messaging-socket-path <path>` flag
+overrides the socket location.
+
+**Discovery** is keyed on a SHARED `CLAUDE_CONFIG_DIR`: the registry is
+`<CLAUDE_CONFIG_DIR>/sessions/<pid>.json` plus a keyfile, deleted on
+exit. AO's Claude sessions CLEAR that variable (`NewSession`'s
+`UnsetEnv`), so they land in the user's own `~/.claude` and can see — and
+be seen by — sessions the user ran in a terminal.
+
+**Name.** The peer-visible name comes from `--name` / `-n` at spawn or
+`CLAUDE_CODE_SESSION_NAME`; the default is the cwd BASENAME, which would
+name every AO thread of one project identically. The CLI's normalizer is
+`trim` → collapse each run of `\p{Cc}\p{Cf}\u2028\u2029` to one space →
+drop residual `\x00-\x1f\x7f-\x9f` → truncate to 200 CODE POINTS →
+`trim` (mirrored by `claude.SanitizePeerSessionName`). Two rename paths
+exist and only one moves the registry: the `rename_session` control
+request changes the TITLE only, while `/rename <name>` sent as an
+ordinary stdin user message moves the registered name. `/rename` is a
+LOCAL command — `result` comes back `num_turns: 0` with cost unmoved, no
+request reaches the model — so a live rename is free.
+
+**Inbound policy** is the `crossSessionInbound` key in the `--settings`
+block: `accept` / `hold` / `refuse`.
+
+| Value | Behavior |
+|---|---|
+| `accept` | Delivered as a turn. The only value that produces anything on stdout. |
+| `hold` | Parks awaiting approval with NO expiry timer; settled "expired" only at shutdown. Nothing on stdout. |
+| `refuse` | Dropped silently. The SENDER still gets `success: true`. |
+| absent | MODE PARITY, not "off". A sender asserting no permission-mode class holds with cause `no-mode-asserted`, which DOES arm `CLAUDE_CODE_USER_DIALOG_TIMEOUT_MS` (default 5m) and then drops the message. Mode attestation is behind a second flag, `tengu_harbor_kite_mode_emit`, with no environment override. |
+
+Agent Overflow therefore never writes `hold` and never leaves the key
+unset AT ALL. A headless session has no approval surface, so `hold` and
+parity's hold both silently discard — and parity's DELIVERING outcome is
+worse: `tengu_harbor_kite` can bind the inbox remotely for a user who
+never enabled the feature in AO, and with `tengu_harbor_kite_mode_emit`
+also live a class-matching peer would auto-deliver a turn into that
+thread. Neither flag is something AO controls, and the environment
+override cannot express "off" (it is checked for truthiness and falls
+through to the flag when unset), so a disabled session spawns with an
+explicit `"crossSessionInbound":"refuse"`.
+
+**Delivery shape.** Because AO always spawns with
+`--replay-user-messages`, the message itself reaches stdout — no
+transcript read is needed:
+
+```json
+{"type":"user","isReplay":true,"isSynthetic":true,
+ "uuid":"<== the bracket's command_uuid>",
+ "message":{"role":"user","content":"Another Claude session sent a message:\n<cross-session-message from=\"uds:/tmp/cc-socks/3896836.sock\" from-name=\"BETA\">\nPEER PAYLOAD from BETA\n</cross-session-message>\n\n…"},
+ "origin":{"kind":"peer","from":"uds:/tmp/cc-socks/3896836.sock",
+           "verifiedPeerPid":3896836,"msg_id":"…","name":"BETA",
+           "body":"PEER PAYLOAD from BETA"}}
+```
+
+The structured `origin` object is the better source — it carries the
+peer's registered NAME, which the wrapper's `from` (a socket path) does
+not — and the wrapper parse is the fallback for CLIs that predate it.
+`origin.kind` is checked rather than assumed: `origin` is a general
+envelope slot.
+
+**`SendMessage` input** accepts `to` / `message` and echoes the CLI's own
+canonical `recipient` / `content` alongside them.
+
+**AO handling.** `parse_user_replay.go` lifts the message and flags it
+`cross_session_message` / `cross_session_from` /
+`cross_session_from_name` / `origin: "peer-session"`; triage
+(`handle_user_text.go`) persists it as a `user_text` row under
+`user:peer:<uuid>` rather than as injected context, because the
+provenance is positively known. The wrapper stays in
+`InjectedUserContentWrappers` for the fork-point detector, and the live
+path deliberately branches on it BEFORE the wrapper suppression — the
+peer's text is real conversation content.
+
 
 ---
 
@@ -1814,9 +2108,73 @@ CLI binary; the subtypes we use or plan to use:
   change never kills a working session. The CLI also echoes a replayed
   user envelope containing
   `<local-command-stdout>Set model to ...</local-command-stdout>`.
-- `subtype: "set_max_thinking_tokens"` — set the live session's max
-  thinking-token budget. Takes `max_thinking_tokens` (int). Verified
-  accepted on 2.1.205; NOT currently used by AO. There is still no
+
+  **`system_prompt` (bundle-read 2.1.214 / 2.1.219 / 2.1.237, NOT
+  spiked against a live CLI).** The field is `@internal` and appears in
+  no changelog entry, so everything here is `rg -a -o -N` over the
+  shipped bundles:
+
+  - **Validation is up front and strict.** `system_prompt` must be a
+    non-empty string when present: `{ok:false, error:"set_model:
+    system_prompt must be a non-empty string when present"}` otherwise.
+    There is therefore **no revert-to-built-in form** — a session that
+    started with `--system-prompt-file` can only get the CLI's own
+    prompt back by respawning without the flag.
+  - **The model gates the prompt.** The handler resolves and validates
+    the model FIRST; an unrecognized or disallowed model answers
+    `{ok:false}` with the prompt untouched, and marks telemetry
+    `system_prompt_switch: "model_switch_rejected"`. A rejected
+    `set_model` means **neither** axis applied — never "the model failed
+    but the prompt landed".
+  - **The setter is an unguarded assignment.**
+    `setSystemPrompt:(v)=>{p.systemPrompt=v}` onto the same slot
+    `--system-prompt-file` fills at spawn (the flag is read into that
+    string before the query starts). So populating an EMPTY slot is not
+    a special case: turning an override on live is as valid as swapping
+    one for another.
+  - **Old builds and other transports ack without applying.** The
+    field's own schema doc says so. That is the one failure mode with no
+    wire signal at all, which is why AO version-gates
+    (`minLiveSystemPromptCLIVersion`) and treats an unknown version as
+    too old.
+  - **Success says nothing.** The payload is a bare `{ok:true}` — no
+    applied model, no confirmation the prompt landed. A family-alias
+    step-down also answers ok (telemetry `model_switch:
+    "family_alias_stepped_down"`), so `get_settings` is the only channel
+    that reports what is actually running.
+- `subtype: "set_max_thinking_tokens"` — set the live session's thinking
+  budget and/or display. Takes `max_thinking_tokens` (int or null) and
+  `thinking_display` (`"summarized"` / `"omitted"` / null); both are
+  optional and either alone is a legal request. AO sends it for the
+  settings-level thinking axis (`internal/provider/claude/live_update.go`,
+  `LiveUpdate.Thinking`). Verified accepted on 2.1.205; behavior
+  spike-proven on 2.1.237 against an isolated config + a local API sink:
+
+  ```json
+  {"type":"control_request","request_id":"…",
+   "request":{"subtype":"set_max_thinking_tokens",
+              "max_thinking_tokens":2048,"thinking_display":"omitted"}}
+  ```
+
+  answered `{"type":"control_response","response":{"subtype":"success",
+  "request_id":"…"}}`, and the NEXT turn's `/v1/messages` request carried
+  `thinking: {"budget_tokens":2048,"type":"enabled","display":"omitted"}`.
+  Four facts that decide how it can be used:
+
+  - **The budget only binds on models that take an explicit budget.**
+    sonnet-4-5 went 31999 → 2048; on an adaptive-thinking model only
+    `display` changes. (`CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING=1` is what
+    makes the budget matter everywhere.)
+  - **`max_thinking_tokens: 0` is DISABLE**, not "unset": the request
+    becomes `thinking: {"type":"disabled"}` and `display` is dropped.
+  - **`max_thinking_tokens: null` is a NO-OP.** It is accepted and
+    changes nothing — there is no reset-to-default form, so returning a
+    session to the CLI's own choice requires a respawn.
+  - **Bad types are refused with a single message**:
+    `set_max_thinking_tokens: max_thinking_tokens must be an integer or
+    null and thinking_display must be "summarized", "omitted", or null`.
+
+  There is still no
   `set_effort` or `set_fast_mode` control_request as of 2.1.219 (the
   dispatcher's full subtype list: `interrupt`, `stop_task`, `set_model`,
   `set_permission_mode`, `set_max_thinking_tokens`, `set_cwd`,
@@ -1825,6 +2183,36 @@ CLI binary; the subtypes we use or plan to use:
   mode ARE live-settable through the provider-executed `/effort` and
   `/fast` slash commands; see
   [§Live config commands](#live-config-commands-effort-and-fast).
+- `subtype: "get_settings"` — read the effective merged settings and the
+  raw per-source ones. Takes no parameters. Present in 2.1.237 and absent
+  from the 2.1.219 subtype list above; it appears in no changelog entry,
+  so AO does not version-gate it — it sends once and remembers an
+  "Unsupported control request subtype" error response as unsupported for
+  the life of the session. The response spreads the effective/source
+  merge and adds (bundle-read 2.1.237):
+
+  ```
+  {
+    ...effective+sources merge,   // per-source raw settings, keyed
+                                  // userSettings / projectSettings /
+                                  // localSettings / policySettings / ...
+    applied: {
+      model:     string,          // what is ACTUALLY running
+      effort:    string | null,   // null when the model has no effort axis
+      advisor:   string | null,
+      ultracode: ...
+    },
+    errors?: [{file, path, message}]   // severity !== "warning" only
+  }
+  ```
+
+  `applied.model` is the only wire channel that reports a family-alias
+  step-down, and `applied.effort` is the authoritative confirmation of an
+  `/effort` apply — AO uses both instead of parsing the command's reply
+  text (`app_claude_live_config.go`). A `projectSettings` /
+  `localSettings` source carrying a `model` or `effortLevel` that differs
+  from what AO asked for is recorded as a
+  `claude.SettingsOverrideNotice`.
 - `subtype: "mcp_set_servers"` — in-process diff-reconcile of the
   live MCP server set against `servers`. Returns
   `{added, removed, errors}`. Used by AO to sync per-thread MCP
@@ -2235,23 +2623,53 @@ Facts a client depends on:
 
 **`/fast [on|off]`** (bare form toggles) — enables/disables fast mode
 live. The failure replies arrive IMMEDIATELY in the command's own result,
-not at the next turn boundary, and they distinguish the two gates:
+not at the next turn boundary.
 
-- `Fast mode unavailable: Fast mode is not available in the Agent SDK` —
-  the process was spawned without the fast-mode settings opt-in
-  (`fast_mode_disabled_reason: "sdk_opt_in_required"`). A restart WITH
-  the opt-in fixes this — it is the one fast-mode transition that stays
-  on the restart path.
-- `Fast mode unavailable: Fast mode requires usage credits …` — account
-  gate (`extra_usage_disabled`). A restart hits the identical gate;
-  never restart for this.
-- Success: text contains `Fast mode ON` / starts with `Fast mode OFF`.
-  ⚠ Provenance: the success texts come from 2.1.219 binary strings, not
-  a wire capture — the spike account had no fast access, so the fixture
-  holds only the failure replies. Enabling can IMPLICITLY switch the
-  model (the reply appends `model set to <fast-capable model>`), which
-  is why ON is a containment match, and why a client applying model +
-  fast changes together must send `set_model` BEFORE `/fast`.
+The handler has four return sites (2.1.237 `Ksw`, and the toggle `eFi` it
+tails into), so the reply is always one of five shapes and never anything
+else:
+
+| Reply | Meaning | Restart helps? |
+|---|---|---|
+| `<glyph> Fast mode ON[ · model set to <m>] · <plan>[ (this session only)]` | enabled | — |
+| `Fast mode OFF[ (this session only)]` | disabled | — |
+| `Fast mode unavailable: <reason>` | an availability gate, reason from the table below | only for the SDK reason |
+| `<reason>`, bare | fast mode is off for the WHOLE process — `Ksw` short-circuits before the toggle | no |
+| `Unknown argument "<x>". Use: /fast [on|off]` | the CLI did not parse the command | yes (it never ran) |
+
+The bare form is the one worth knowing about, because it has no
+`Fast mode unavailable: ` in front of it and a prefix-shaped matcher
+misses it entirely. Its guard is the same `!Ru()` the reason table
+branches on first, so only two reasons reach it:
+`Fast mode is not available` (`disabled_by_env`) and `Fast mode is only
+available when using the Anthropic API directly` (`not_first_party`).
+
+Gate reasons, and whether a restart is the recovery:
+
+- `Fast mode is not available in the Agent SDK` — the process was spawned
+  without the fast-mode settings opt-in (`sdk_opt_in_required`). A
+  restart WITH the opt-in fixes this — it is the one fast-mode
+  transition that stays on the restart path. ⚠ It CONTAINS the
+  `disabled_by_env` reason above as a substring while meaning the
+  opposite thing about restarts, so any matcher for the shorter string
+  has to carve this one out explicitly.
+- `Fast mode requires usage credits · /usage-credits to turn them on`
+  (`extra_usage_disabled`), `Fast mode has been disabled by your
+  organization` (`preference`), `Fast mode requires a paid subscription`
+  (`free`), `Fast mode unavailable due to network connectivity issues`
+  (`network_error`), `Fast mode is currently unavailable` (`unknown`),
+  `<model> is not in your organization's allowed models`
+  (`model_not_allowed`), `Checking fast mode availability` (`pending`) —
+  a restart hits the identical gate; never restart for these.
+
+⚠ Provenance: the success texts come from binary strings (2.1.219,
+re-read at 2.1.237), not a wire capture — the spike account had no fast
+access, so the fixture holds only the failure replies. Enabling can
+IMPLICITLY switch the model (the reply appends `model set to
+<fast-capable model>`), which is why ON is a containment match, and why
+a client applying model + fast changes together must send `set_model`
+BEFORE `/fast`. The ON line also leads with a glyph, so NO arm of this
+vocabulary can be matched by prefix.
 
 AO consumers: `internal/provider/claude/live_update.go` sends both
 commands (uuid-stamped, slash-guard-exempt);

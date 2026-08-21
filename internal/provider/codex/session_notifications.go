@@ -15,7 +15,20 @@ const maxSubagentNotificationDedupEntries = 1024
 
 type subagentNotificationDedupKey struct {
 	ParentItemID string
-	MetaHash     [sha256.Size]byte
+	// Generation is the child's own turn count at the moment the delivery was
+	// seen (childTurnGenerations, advanced by each child `turn/started`). It is
+	// the same tiebreak triage applies to the persisted row id: without it a
+	// child that legitimately answers IDENTICALLY twice — a `followup_task`
+	// wakes it and it replies "Done." again — loses the second answer HERE,
+	// before triage can separate them.
+	//
+	// Residual, deliberate: within ONE child turn, byte-identical duplicate
+	// deliveries still collapse. A child emits one FINAL_ANSWER per turn, so a
+	// second identical one inside the same generation is the retry this dedupe
+	// exists for (the live raw stream and the rollout tail both carrying the
+	// same record), not a second answer.
+	Generation uint64
+	MetaHash   [sha256.Size]byte
 }
 
 // sessionSideChannelNotifications routes the notifications that are
@@ -32,6 +45,10 @@ var sessionSideChannelNotifications = map[string]func(*Session, json.RawMessage)
 	// skills/changed carries no threadId at all, so it must be claimed
 	// before the child-routing check below rather than after it.
 	skillsChangedMethod: (*Session).dispatchSkillsChanged,
+	// thread/reverted is a statement about the thread's durable history,
+	// not transcript content, and it must be claimed before child routing
+	// so a revert echo is never quarantined behind ownership mapping.
+	threadRevertedMethod: (*Session).dispatchThreadReverted,
 }
 
 func (s *Session) dispatchNotification(method string, params json.RawMessage) {
@@ -119,6 +136,14 @@ func (s *Session) dispatchRoutableNotification(method string, params json.RawMes
 	events, handled := s.classifyNotificationWithBufferedPlan(method, params)
 	if !handled {
 		s.warnUnclaimedNotification(method)
+	}
+	if method == "thread/queue/changed" {
+		// Once AO participates in the provider queue, its OWN adds, edits,
+		// deletes and every automatic dispatch raise this notification too, so
+		// the classifier's unconditional "queued from outside Agent Overflow"
+		// notice would accuse the user of their own message. thread_queue.go
+		// replaces the event with an evidence-driven one.
+		events = s.reconcileThreadQueueChange(events)
 	}
 	suppressSubagentNotificationCarrier := s.emitSubagentNotificationsFromUserCarrier(method, params, events)
 
@@ -259,7 +284,7 @@ func (s *Session) emitSubagentNotification(n subagentNotification, requireKnownP
 		return false
 	}
 	meta := buildSubagentNotificationMeta(n)
-	if !s.claimSubagentNotification(parentItemID, meta) {
+	if !s.claimSubagentNotification(parentItemID, s.childTurnGeneration(n.AgentPath), meta) {
 		return false
 	}
 	s.emitEvent(provider.ProviderEvent{
@@ -272,9 +297,10 @@ func (s *Session) emitSubagentNotification(n subagentNotification, requireKnownP
 	return true
 }
 
-func (s *Session) claimSubagentNotification(parentItemID string, meta json.RawMessage) bool {
+func (s *Session) claimSubagentNotification(parentItemID string, generation uint64, meta json.RawMessage) bool {
 	key := subagentNotificationDedupKey{
 		ParentItemID: parentItemID,
+		Generation:   generation,
 		MetaHash:     sha256.Sum256(meta),
 	}
 	s.mu.Lock()
@@ -339,10 +365,45 @@ func (s *Session) updateNotificationState(evt *provider.ProviderEvent) {
 		if evt.TurnID == "" {
 			return
 		}
+		// Adopt the turn regardless of who started it: activeTurnID is what
+		// Interrupt and Steer address, and an externally injected turn that
+		// AO cannot stop is worse than one it cannot attribute. The return
+		// value only decides the marker.
+		//
+		// turnAdoptionUndecided deliberately stamps NOTHING. A queue dispatch
+		// cannot be attributed until its `userMessage` echo names the
+		// `clientId`, and the echo is the row that actually needs protecting —
+		// it is what a reader would otherwise take for something the person in
+		// front of Agent Overflow typed. A turn-start marker guessed here and
+		// contradicted one event later would be worse than no marker at all.
+		switch s.adoptTurnStart(evt.TurnID) {
+		case turnAdoptionExternal:
+			logExternalTurnAdopted(s.threadID, evt.TurnID)
+			stampExternalOrigin(evt)
+		case turnAdoptionUndecided, turnAdoptionLocal:
+		}
 		s.bindPendingTurnSchema(evt.TurnID)
 		s.mu.Lock()
 		s.activeTurnID = evt.TurnID
 		s.mu.Unlock()
+	case provider.EventUserText:
+		// The user-message echo of an injected turn. Without the marker it
+		// persists identically to a message typed in this app's composer.
+		//
+		// This is also where an UNDECIDED queue dispatch gets its verdict: the
+		// echo's `clientId` is the only thing that says which queued row the
+		// app-server just started, and AO owns a row exactly when that id is
+		// one it minted. resolveUserEchoOrigin records the answer, so every
+		// later event of the same turn reads consistently.
+		external, decided := s.resolveUserEchoOrigin(evt.TurnID, userEchoClientID(evt.Meta))
+		if external {
+			if decided {
+				// Only a verdict reached HERE is new. A turn already adopted
+				// at its `turn/started` logged there.
+				logExternalTurnAdopted(s.threadID, evt.TurnID)
+			}
+			stampExternalOrigin(evt)
+		}
 	case provider.EventTurnComplete:
 		evt.StructuredOutput = s.takeStructuredOutput(evt.TurnID)
 		if meta, ok := evt.TurnComplete.(*provider.WireTurnCompleteMeta); ok && meta != nil {

@@ -122,7 +122,7 @@ export enum Status {
     StatusStarting = "starting",
 
     /**
-     * Codex authStatus∈{unsupported,bearerToken,oAuth} ∧ initialize proven (serverInfo or tools) OR notif "ready" / Claude "connected"
+     * Codex authStatus∈{unknown,unsupported,bearerToken,oAuth} ∧ initialize proven (serverInfo or tools) OR notif "ready" / Claude "connected"
      */
     StatusConnected = "connected",
 

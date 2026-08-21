@@ -711,3 +711,103 @@ func TestModelInfoOmitsAnAbsentFastModeTier(t *testing.T) {
 		t.Fatalf("encoded ModelInfo carries fastModeTier = %v, want the key omitted", decoded["fastModeTier"])
 	}
 }
+
+// TestReasoningEffortSetsAreOneVocabulary ties the three lists this package
+// publishes together. AllReasoningEfforts is what def, the normalizer, and
+// every "is this a known slug" check measure against; the per-provider sets are
+// what decides whether a given provider may carry a slug. A tier added to one
+// and not the others is the failure this catches: added to a provider set only,
+// NormalizeReasoningEffort would coerce it away after validation accepted it;
+// added to AllReasoningEfforts only, no provider could ever use it.
+func TestReasoningEffortSetsAreOneVocabulary(t *testing.T) {
+	perProvider := map[string][]ReasoningEffort{
+		string(Claude):    claudeReasoningEfforts,
+		string(ClaudeTUI): claudeReasoningEfforts,
+		string(Codex):     codexReasoningEfforts,
+	}
+
+	union := map[ReasoningEffort]bool{}
+	for providerName, efforts := range perProvider {
+		seen := map[ReasoningEffort]bool{}
+		lastIndex := -1
+		for _, effort := range efforts {
+			if seen[effort] {
+				t.Errorf("%s lists %q twice", providerName, effort)
+			}
+			seen[effort] = true
+			union[effort] = true
+
+			if !slices.Contains(AllReasoningEfforts, effort) {
+				t.Errorf("%s declares %q but AllReasoningEfforts does not; the slug would be normalized away after validation accepted it", providerName, effort)
+			}
+			// The per-provider sets are subsequences of the canonical order, so
+			// a picker built from either renders the same low-to-high ordering.
+			if index := slices.Index(AllReasoningEfforts, effort); index <= lastIndex {
+				t.Errorf("%s lists %q out of canonical order", providerName, effort)
+			} else {
+				lastIndex = index
+			}
+
+			if !providerSupportsReasoningEffort(providerName, string(effort)) {
+				t.Errorf("providerSupportsReasoningEffort(%s, %q) = false for a canonical tier", providerName, effort)
+			}
+		}
+		for _, effort := range AllReasoningEfforts {
+			if seen[effort] {
+				continue
+			}
+			if providerSupportsReasoningEffort(providerName, string(effort)) {
+				t.Errorf("providerSupportsReasoningEffort(%s, %q) = true but the canonical set omits it", providerName, effort)
+			}
+		}
+	}
+
+	for _, effort := range AllReasoningEfforts {
+		if !union[effort] {
+			t.Errorf("AllReasoningEfforts declares %q but no provider accepts it", effort)
+		}
+	}
+
+	// An unknown provider is a refusal, not a permissive default.
+	if got := ReasoningEffortsForProvider("gemini"); got != nil {
+		t.Errorf("ReasoningEffortsForProvider(gemini) = %v, want nil", got)
+	}
+	if providerSupportsReasoningEffort("gemini", string(EffortHigh)) {
+		t.Error("providerSupportsReasoningEffort accepted a tier for an unknown provider")
+	}
+}
+
+// The Codex catalog's max/ultra tiers are the reason the store CHECK was
+// widened (migration v19). Pin that the shipped fallback catalog still names
+// them, so a catalog edit cannot quietly take the picker back to xhigh while
+// the schema, the validators, and the wire mapping still advertise support.
+func TestCodexCatalogOffersTheTopTiersWhereTheyExist(t *testing.T) {
+	for slug, want := range map[string][]ReasoningEffort{
+		"gpt-5.6-sol":   {EffortMax, EffortUltra},
+		"gpt-5.6-terra": {EffortMax, EffortUltra},
+		"gpt-5.6-luna":  {EffortMax},
+	} {
+		info, found := FindModel(string(Codex), slug)
+		if !found {
+			t.Errorf("codex catalog has no %s", slug)
+			continue
+		}
+		for _, effort := range want {
+			if !ModelInfoSupportsReasoningEffort(info, string(effort)) {
+				t.Errorf("%s does not offer %q", slug, effort)
+			}
+		}
+	}
+
+	// The conservative default set stays conservative: the older models must
+	// not gain tiers nobody has seen them advertise.
+	info, found := FindModel(string(Codex), "gpt-5.5")
+	if !found {
+		t.Fatal("codex catalog has no gpt-5.5")
+	}
+	for _, effort := range []ReasoningEffort{EffortMax, EffortUltra} {
+		if ModelInfoSupportsReasoningEffort(info, string(effort)) {
+			t.Errorf("gpt-5.5 advertises %q in the static fallback; only the live catalog may add a tier", effort)
+		}
+	}
+}

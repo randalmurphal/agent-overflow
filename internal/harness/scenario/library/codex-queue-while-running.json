@@ -1,0 +1,56 @@
+{
+  "version": 1,
+  "name": "codex-queue-while-running",
+  "description": "Codex turn that echoes its user message and then parks mid-stream, so messages sent during it land in the app-server's own thread/queue; when it completes the mock's idle hook dispatches the queue head \u2014 one turn per queued message, FIFO, each echoing the userMessage the app's pending send resolves on.",
+  "provider": "codex",
+  "codex": {
+    "threadId": "mock-codex-thread"
+  },
+  "turns": [
+    {
+      "label": "held-first-turn",
+      "steps": [
+        {
+          "emit": {
+            "lines": [
+              "{\"jsonrpc\":\"2.0\",\"method\":\"turn/started\",\"params\":{\"threadId\":\"${THREAD_ID}\",\"turn\":{\"id\":\"${TURN_ID}\"}}}",
+              "{\"jsonrpc\":\"2.0\",\"method\":\"item/completed\",\"params\":{\"threadId\":\"${THREAD_ID}\",\"turnId\":\"${TURN_ID}\",\"item\":{\"type\":\"userMessage\",\"id\":\"umsg-${TURN}\",\"status\":\"completed\",\"content\":[{\"type\":\"text\",\"text\":\"${USER_INPUT}\"}]}}}",
+              "{\"jsonrpc\":\"2.0\",\"method\":\"item/started\",\"params\":{\"threadId\":\"${THREAD_ID}\",\"turnId\":\"${TURN_ID}\",\"item\":{\"type\":\"commandExecution\",\"id\":\"cmd-${TURN}\",\"status\":\"inProgress\",\"command\":\"sleep 30\"}}}"
+            ]
+          }
+        },
+        {
+          "waitSignal": {
+            "name": "hold-first-turn"
+          }
+        },
+        {
+          "emit": {
+            "lines": [
+              "{\"jsonrpc\":\"2.0\",\"method\":\"item/completed\",\"params\":{\"threadId\":\"${THREAD_ID}\",\"turnId\":\"${TURN_ID}\",\"item\":{\"type\":\"commandExecution\",\"id\":\"cmd-${TURN}\",\"status\":\"completed\",\"command\":\"sleep 30\",\"aggregatedOutput\":\"done\",\"exitCode\":0}}}",
+              "{\"jsonrpc\":\"2.0\",\"method\":\"item/completed\",\"params\":{\"threadId\":\"${THREAD_ID}\",\"turnId\":\"${TURN_ID}\",\"item\":{\"type\":\"agentMessage\",\"id\":\"msg-${TURN}\",\"status\":\"completed\",\"text\":\"Finished turn ${TURN}.\"}}}",
+              "{\"jsonrpc\":\"2.0\",\"method\":\"turn/completed\",\"params\":{\"threadId\":\"${THREAD_ID}\",\"turn\":{\"id\":\"${TURN_ID}\",\"status\":\"completed\"}}}"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "label": "dispatched-from-queue",
+      "steps": [
+        {
+          "emit": {
+            "delayBetweenMs": 20,
+            "lines": [
+              "{\"jsonrpc\":\"2.0\",\"method\":\"turn/started\",\"params\":{\"threadId\":\"${THREAD_ID}\",\"turn\":{\"id\":\"${TURN_ID}\"}}}",
+              "{\"jsonrpc\":\"2.0\",\"method\":\"item/completed\",\"params\":{\"threadId\":\"${THREAD_ID}\",\"turnId\":\"${TURN_ID}\",\"item\":{\"type\":\"userMessage\",\"id\":\"umsg-${TURN}\",\"status\":\"completed\",\"clientId\":\"${QUEUE_CLIENT_ID}\",\"content\":[{\"type\":\"text\",\"text\":\"${USER_INPUT}\"}]}}}",
+              "{\"jsonrpc\":\"2.0\",\"method\":\"item/completed\",\"params\":{\"threadId\":\"${THREAD_ID}\",\"turnId\":\"${TURN_ID}\",\"item\":{\"type\":\"agentMessage\",\"id\":\"msg-${TURN}\",\"status\":\"completed\",\"text\":\"Answering: ${USER_INPUT}\"}}}",
+              "{\"jsonrpc\":\"2.0\",\"method\":\"turn/completed\",\"params\":{\"threadId\":\"${THREAD_ID}\",\"turn\":{\"id\":\"${TURN_ID}\",\"status\":\"completed\"}}}"
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "afterTurns": "repeatLast"
+}

@@ -237,6 +237,45 @@ func TestFindUUIDBeforeUserTurn_SkipsAgentMessage(t *testing.T) {
 	}
 }
 
+// TestFindUUIDBeforeUserTurn_SkipsCrossSessionMessage covers the
+// cross-session inbox (Claude Code 2.1.224+): another session on the same
+// machine can address this one with SendMessage, and a delivered peer
+// message lands as a user-ROLE turn wrapped in
+// `<cross-session-message from="...">`. An AO thread only contains one
+// when the user turned the inbox on and chose `accept` (AO spawns
+// `"crossSessionInbound":"refuse"` otherwise) — but a transcript written
+// by the user's own `claude` CLI session and then resumed/imported into
+// AO can contain one regardless, and a peer's message is not a user turn
+// any more than a subagent report is.
+func TestFindUUIDBeforeUserTurn_SkipsCrossSessionMessage(t *testing.T) {
+	src := `{"type":"user","uuid":"u1","parentUuid":null,"sessionId":"src","message":{"role":"user","content":"first real prompt"}}
+{"type":"assistant","uuid":"a1","parentUuid":"u1","sessionId":"src","message":{"role":"assistant","content":[{"type":"text","text":"response"}]}}
+{"type":"user","uuid":"xs1","parentUuid":"a1","sessionId":"src","message":{"role":"user","content":"<cross-session-message from=\"peer-session\">\nplease look at the build\n</cross-session-message>"}}
+{"type":"user","uuid":"u2","parentUuid":"xs1","sessionId":"src","message":{"role":"user","content":"second real prompt"}}
+`
+	got, err := FindUUIDBeforeUserTurn(strings.NewReader(src), 1)
+	if err != nil {
+		t.Fatalf("err=%v", err)
+	}
+	if got != "xs1" {
+		t.Errorf("got %q, want xs1 (u2's parent — a <cross-session-message> peer delivery must not be counted as a user turn)", got)
+	}
+}
+
+// TestInjectedUserContentWrappersCoversCrossSessionMessage pins the entry
+// in the CANONICAL set rather than only through one caller: the live-wire
+// suppression in parse_user_replay.go ranges over the same slice, and the
+// 2026-07 incident was exactly an entry that existed in one copy and not
+// the other.
+func TestInjectedUserContentWrappersCoversCrossSessionMessage(t *testing.T) {
+	for _, w := range InjectedUserContentWrappers {
+		if w.Open == "<cross-session-message" && w.Close == "</cross-session-message>" {
+			return
+		}
+	}
+	t.Fatalf("InjectedUserContentWrappers is missing the cross-session-message entry: %v", InjectedUserContentWrappers)
+}
+
 // withSyntheticInterruptJSONL reproduces the revert-on-interrupt
 // off-by-one bug. A prior turn was interrupted, so Claude wrote a
 // `[Request interrupted by user]` entry into the JSONL: a

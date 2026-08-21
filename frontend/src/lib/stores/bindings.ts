@@ -526,6 +526,7 @@ import {
   StartTerminalOptions as StartTerminalOptionsClass,
 } from '../../../bindings/agent-overflow/models.js';
 import type { SourceDiffReview, SourceProposedPlan, Thread } from '../types/models';
+import type { ReasoningEffort } from '../types/settings';
 
 export interface CreateThreadOptions {
   projectId: string;
@@ -533,7 +534,9 @@ export interface CreateThreadOptions {
   provider?: 'claude' | 'codex' | string;
   model?: string;
   mode?: 'chat' | 'plan' | 'design' | 'discussion' | string;
-  reasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max' | string;
+  // `| string` keeps a slug this build does not know from failing to
+  // compile; the union is the canonical set (see types/settings.ts).
+  reasoningEffort?: ReasoningEffort | string;
   fastMode?: boolean | null;
   contextWindow?: number;
   autoCompactStandardPercent?: number | null;

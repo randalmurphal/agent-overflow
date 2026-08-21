@@ -196,7 +196,7 @@ func TestBuildArgsAutoCompactRendersThroughSettingsFlag(t *testing.T) {
 	})
 	args := buildArgs(cfg, "")
 	joined := strings.Join(args, " ")
-	want := `--settings {"env":{"CLAUDE_AUTOCOMPACT_PCT_OVERRIDE":"50","CLAUDE_CODE_AUTO_COMPACT_WINDOW":"200000"}}`
+	want := `--settings {"crossSessionInbound":"refuse","env":{"CLAUDE_AUTOCOMPACT_PCT_OVERRIDE":"50","CLAUDE_CODE_AUTO_COMPACT_WINDOW":"200000"}}`
 	if !strings.Contains(joined, want) {
 		t.Fatalf("args missing autocompact-via-flag-settings: got=%v\nwant substring=%q", args, want)
 	}
@@ -216,7 +216,7 @@ func TestBuildArgsAutoCompactSendsWindowForExtendedTier(t *testing.T) {
 	})
 	args := buildArgs(cfg, "")
 	joined := strings.Join(args, " ")
-	want := `--settings {"env":{"CLAUDE_AUTOCOMPACT_PCT_OVERRIDE":"40","CLAUDE_CODE_AUTO_COMPACT_WINDOW":"1000000"}}`
+	want := `--settings {"crossSessionInbound":"refuse","env":{"CLAUDE_AUTOCOMPACT_PCT_OVERRIDE":"40","CLAUDE_CODE_AUTO_COMPACT_WINDOW":"1000000"}}`
 	if !strings.Contains(joined, want) {
 		t.Fatalf("args missing extended-tier autocompact settings: got=%v\nwant substring=%q", args, want)
 	}
@@ -247,7 +247,7 @@ func TestBuildArgsCombinesFastModeAndAutoCompactInOneSettingsFlag(t *testing.T) 
 	})
 	args := buildArgs(cfg, "")
 	joined := strings.Join(args, " ")
-	want := `--settings {"fastMode":true,"env":{"CLAUDE_AUTOCOMPACT_PCT_OVERRIDE":"50","CLAUDE_CODE_AUTO_COMPACT_WINDOW":"200000"}}`
+	want := `--settings {"fastMode":true,"crossSessionInbound":"refuse","env":{"CLAUDE_AUTOCOMPACT_PCT_OVERRIDE":"50","CLAUDE_CODE_AUTO_COMPACT_WINDOW":"200000"}}`
 	if !strings.Contains(joined, want) {
 		t.Fatalf("args missing combined fastMode + autocompact settings: got=%v\nwant substring=%q", args, want)
 	}
@@ -256,15 +256,181 @@ func TestBuildArgsCombinesFastModeAndAutoCompactInOneSettingsFlag(t *testing.T) 
 	}
 }
 
+// TestBuildArgsOmitsSettingsFlagWhenNothingSet pins the "zero value means
+// say nothing" contract for the whole block: an unset axis renders no
+// key, and a block with no keys renders no flag rather than an inert
+// `{}`. The Config is hand-stamped because ConfigFromOptions no longer
+// produces an empty block — see the cross-session refusal below.
 func TestBuildArgsOmitsSettingsFlagWhenNothingSet(t *testing.T) {
+	args := buildArgs(Config{Model: "claude-opus-4-7"}, "")
+	joined := strings.Join(args, " ")
+	if strings.Contains(joined, "--settings") {
+		t.Fatalf("expected no --settings flag when no settings-block axis is set, got %v", args)
+	}
+}
+
+// TestBuildArgsAlwaysStatesTheCrossSessionRefusal is the one axis that
+// breaks the "say nothing when unset" rule, deliberately.
+//
+// Silence is not off here. AO's own gate is CLAUDE_CODE_HARBOR_KITE, but
+// the CLI can also bind the inbox from the remote GrowthBook flag
+// `tengu_harbor_kite`, and `tengu_harbor_kite_mode_emit` — which has no
+// env override at all — turns on the permission-class attestation that
+// the CLI's mode-parity default reads. With both remote flags live and
+// the key absent, a peer whose permission class matches this session
+// would AUTO-DELIVER: a turn started in a thread whose user never
+// enabled the feature. So every spawn states the refusal, and the flag
+// is now present on every Claude session as a result.
+func TestBuildArgsAlwaysStatesTheCrossSessionRefusal(t *testing.T) {
 	cfg := ConfigFromOptions(provider.SessionOptions{
 		Provider: "claude",
 		Model:    "claude-opus-4-7",
 	})
-	args := buildArgs(cfg, "")
-	joined := strings.Join(args, " ")
-	if strings.Contains(joined, "--settings") {
-		t.Fatalf("expected no --settings flag when fastMode/autocompact unset, got %v", args)
+	joined := strings.Join(buildArgs(cfg, ""), " ")
+	if !strings.Contains(joined, `--settings {"crossSessionInbound":"refuse"}`) {
+		t.Fatalf("a cross-session-disabled spawn must state the refusal, got %s", joined)
+	}
+}
+
+// TestCrossSessionOptionsRenderGateNameAndPolicy covers the whole spawn
+// surface of the peer inbox, driven from SessionOptions the way the app
+// drives it — the three pieces have to agree or the feature half-works:
+// the gate variable binds the socket, `--name` makes the session
+// addressable as something other than its cwd basename, and
+// `crossSessionInbound` decides what an arriving message does.
+//
+// "hold" is deliberately absent from the policies exercised here. It is a
+// legal CLI value and an illegal Agent Overflow one — it parks a message
+// with no approval surface a headless session can present — and
+// internal/settings refuses it at the save (claudecrosssession.go).
+func TestCrossSessionOptionsRenderGateNameAndPolicy(t *testing.T) {
+	for _, policy := range []string{"accept", "refuse"} {
+		cfg := ConfigFromOptions(provider.SessionOptions{
+			Provider:              "claude",
+			Model:                 "claude-opus-4-7",
+			ClaudeCrossSession:    provider.ClaudeCrossSession{Enabled: true, Inbound: policy},
+			ClaudePeerSessionName: "AO Thread One",
+		})
+		cfg.PeerSessionName = "AO Thread One"
+		joined := strings.Join(buildArgs(cfg, ""), " ")
+		want := `--settings {"crossSessionInbound":"` + policy + `"}`
+		if !strings.Contains(joined, want) {
+			t.Fatalf("policy %q: got=%s\nwant substring=%q", policy, joined, want)
+		}
+		if !strings.Contains(joined, "--name AO Thread One") {
+			t.Fatalf("policy %q: missing --name: %s", policy, joined)
+		}
+		env := withClaudeCrossSessionEnv(nil, cfg)
+		if env[claudeHarborKiteEnv] != "1" {
+			t.Fatalf("policy %q: gate variable = %q, want \"1\"", policy, env[claudeHarborKiteEnv])
+		}
+	}
+}
+
+// Off states the refusal and nothing else. The gate variable is ABSENT
+// rather than "0" — the CLI's override is checked for truthiness and
+// falls through to the remote flag when unset, so no env value can mean
+// "off" and only the settings key can. `--name` is dropped with it: a
+// name AO derived for peer addressing has no business overriding the
+// /resume picker's label for a session no peer can reach.
+func TestCrossSessionOptionsDisabledEmitOnlyTheRefusal(t *testing.T) {
+	cfg := ConfigFromOptions(provider.SessionOptions{
+		Provider:              "claude",
+		Model:                 "claude-opus-4-7",
+		ClaudePeerSessionName: "AO Thread One",
+	})
+	cfg.PeerSessionName = "AO Thread One"
+	joined := strings.Join(buildArgs(cfg, ""), " ")
+	if !strings.Contains(joined, `"crossSessionInbound":"refuse"`) {
+		t.Fatalf("disabled cross-session must still refuse: %s", joined)
+	}
+	if strings.Contains(joined, "--name") {
+		t.Fatalf("disabled cross-session rendered --name: %s", joined)
+	}
+	if env := withClaudeCrossSessionEnv(map[string]string{"KEEP": "1"}, cfg); env[claudeHarborKiteEnv] != "" {
+		t.Fatalf("disabled cross-session set the gate variable: %v", env)
+	}
+}
+
+// An empty (or whitespace-only) name drops the flag rather than passing
+// one the CLI reads as absent — and the inbox still binds, because the
+// name is a label and the gate is the feature.
+func TestCrossSessionNameFlagDroppedWhenNameSanitizesEmpty(t *testing.T) {
+	cfg := ConfigFromOptions(provider.SessionOptions{
+		Provider:           "claude",
+		Model:              "claude-opus-4-7",
+		ClaudeCrossSession: provider.ClaudeCrossSession{Enabled: true, Inbound: "accept"},
+	})
+	cfg.PeerSessionName = "   \u200b  "
+	joined := strings.Join(buildArgs(cfg, ""), " ")
+	if strings.Contains(joined, "--name") {
+		t.Fatalf("empty name rendered a flag: %s", joined)
+	}
+	if !strings.Contains(joined, "crossSessionInbound") {
+		t.Fatalf("missing policy without a name: %s", joined)
+	}
+}
+
+// TestBuildArgsRendersOutputStyleIntoSettings covers the Claude-only
+// output-style axis. It has no CLI flag — the `outputStyle` settings key
+// is the only delivery path — and an empty value must leave the CLI's own
+// resolution untouched rather than pinning "default".
+func TestBuildArgsRendersOutputStyleIntoSettings(t *testing.T) {
+	cfg := ConfigFromOptions(provider.SessionOptions{Provider: "claude", Model: "claude-opus-4-7"})
+	cfg.OutputStyle = "Explanatory"
+	joined := strings.Join(buildArgs(cfg, ""), " ")
+	want := `--settings {"crossSessionInbound":"refuse","outputStyle":"Explanatory"}`
+	if !strings.Contains(joined, want) {
+		t.Fatalf("args missing output style: got=%s\nwant substring=%q", joined, want)
+	}
+
+	cfg.OutputStyle = "   "
+	joined = strings.Join(buildArgs(cfg, ""), " ")
+	if strings.Contains(joined, "outputStyle") {
+		t.Fatalf("blank output style must not render a key: %s", joined)
+	}
+}
+
+// TestBuildArgsRendersSubagentAndMemoryEnv pins the three env-backed axes.
+// They ride the settings block's `env` map rather than the subprocess
+// environment because Claude reapplies its own settings.json env over
+// inherited values at init — a value put in the real environment can be
+// silently overwritten, one put here cannot.
+func TestBuildArgsRendersSubagentAndMemoryEnv(t *testing.T) {
+	cfg := ConfigFromOptions(provider.SessionOptions{Provider: "claude", Model: "claude-opus-4-7"})
+	cfg.MaxSubagentSpawnDepth = 2
+	cfg.MaxConcurrentSubagents = 6
+	cfg.ToolMemoryLimit = "4G"
+	joined := strings.Join(buildArgs(cfg, ""), " ")
+	for _, want := range []string{
+		`"CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH":"2"`,
+		`"CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS":"6"`,
+		`"CLAUDE_CODE_TOOL_MEMORY_LIMIT":"4G"`,
+	} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("args missing %s: %s", want, joined)
+		}
+	}
+}
+
+// Zero is not a sendable value: the CLI's schema for both counters is
+// `int({min:1, digitsOnly:true})`, so a rendered "0" would be rejected
+// and the session would silently lose the user's other env values along
+// with it.
+func TestBuildArgsOmitsZeroSubagentLimits(t *testing.T) {
+	cfg := ConfigFromOptions(provider.SessionOptions{Provider: "claude", Model: "claude-opus-4-7"})
+	cfg.MaxSubagentSpawnDepth = 0
+	cfg.MaxConcurrentSubagents = 0
+	cfg.ToolMemoryLimit = "   "
+	joined := strings.Join(buildArgs(cfg, ""), " ")
+	for _, name := range []string{
+		"CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH",
+		"CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS",
+		"CLAUDE_CODE_TOOL_MEMORY_LIMIT",
+	} {
+		if strings.Contains(joined, name) {
+			t.Fatalf("zero/blank axis leaked %s into --settings: %s", name, joined)
+		}
 	}
 }
 
@@ -389,7 +555,7 @@ func TestConfigFromOptionsThreadsIntoBuildArgs(t *testing.T) {
 	if !strings.Contains(joined, "--effort high") {
 		t.Fatalf("args missing effort: %v", args)
 	}
-	if !strings.Contains(joined, `--settings {"fastMode":true}`) {
+	if !strings.Contains(joined, `--settings {"fastMode":true,"crossSessionInbound":"refuse"}`) {
 		t.Fatalf("args missing fast mode settings: %v", args)
 	}
 	// Pin the omitempty contract: with no AutoCompactPercent set, the
@@ -628,5 +794,66 @@ func TestNormalizeClaudePermissionModeAcceptsEverySelectableMode(t *testing.T) {
 		if got := normalizeClaudePermissionMode(base); got != base {
 			t.Errorf("runtime mode %q maps to %q but normalizeClaudePermissionMode returns %q", mode, base, got)
 		}
+	}
+}
+
+// envLookup reads one variable out of a BuildEnvironment result, reporting
+// presence separately from value — "absent" and "empty" are different
+// answers here, and the gate's whole contract is about absence.
+func envLookup(env []string, key string) (string, bool) {
+	value, found := "", false
+	for _, entry := range env {
+		name, candidate, ok := strings.Cut(entry, "=")
+		if ok && name == key {
+			value, found = candidate, true
+		}
+	}
+	return value, found
+}
+
+// B18: the gate is a variable the CHILD inherits, so "off" has to be
+// produced rather than merely not-set. When Agent Overflow itself runs under
+// CLAUDE_CODE_HARBOR_KITE=1 — a developer who exported it, or an AO started
+// from inside a Claude session — a disabled setting used to leave cfg.Env
+// untouched and the child inherited the gate: it bound the inbox and
+// advertised itself in every peer's ListAgents while the UI said off.
+// `crossSessionInbound: "refuse"` does not cover that; it blocks DELIVERY,
+// not discovery.
+func TestCrossSessionGateIsNotInheritedWhenDisabled(t *testing.T) {
+	t.Setenv(claudeHarborKiteEnv, "1")
+	t.Setenv(claudePeerSessionNameEnv, "someone-elses-name")
+
+	cfg := ConfigFromOptions(provider.SessionOptions{Provider: "claude", Model: "claude-opus-4-7"})
+	env := provider.BuildEnvironment(claudeSpawnEnv(cfg), claudeSpawnUnsetEnv()...)
+
+	if value, found := envLookup(env, claudeHarborKiteEnv); found {
+		t.Fatalf("%s = %q in the child environment, want it absent — the setting says off", claudeHarborKiteEnv, value)
+	}
+	// The name is AO's to state, in both directions: an inherited one would
+	// register a thread under a label the app never chose.
+	if value, found := envLookup(env, claudePeerSessionNameEnv); found {
+		t.Fatalf("%s = %q in the child environment, want it absent", claudePeerSessionNameEnv, value)
+	}
+}
+
+// The enabled direction over the same host environment: AO states the gate
+// explicitly rather than relying on what it happened to inherit, so the value
+// is exactly "1" no matter what the host exported.
+func TestCrossSessionGateIsStatedExplicitlyWhenEnabled(t *testing.T) {
+	t.Setenv(claudeHarborKiteEnv, "totally-bogus")
+	t.Setenv(claudePeerSessionNameEnv, "someone-elses-name")
+
+	cfg := ConfigFromOptions(provider.SessionOptions{
+		Provider:           "claude",
+		Model:              "claude-opus-4-7",
+		ClaudeCrossSession: provider.ClaudeCrossSession{Enabled: true, Inbound: "accept"},
+	})
+	env := provider.BuildEnvironment(claudeSpawnEnv(cfg), claudeSpawnUnsetEnv()...)
+
+	if value, found := envLookup(env, claudeHarborKiteEnv); !found || value != "1" {
+		t.Fatalf("%s = %q (present=%v), want \"1\"", claudeHarborKiteEnv, value, found)
+	}
+	if value, found := envLookup(env, claudePeerSessionNameEnv); found {
+		t.Fatalf("%s = %q, want it absent — AO passes the name as --name", claudePeerSessionNameEnv, value)
 	}
 }

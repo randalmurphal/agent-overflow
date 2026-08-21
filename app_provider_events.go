@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"log"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -105,6 +106,23 @@ func (a *App) sessionEventHandler(threadID, sessionToken, providerType string) f
 			}
 		}
 
+		// Codex's own cumulative cost estimate for this thread, read once per
+		// settled top-level turn. AFTER triage.Handle, so the turn and its
+		// usage_ledger rows are already persisted and the read can neither
+		// delay nor fail the turn — every failure leaves the rate-table
+		// estimate in place. Nested/subagent completes are excluded for the
+		// same reason appendUsageLedger excludes them: they are not the
+		// thread's turn boundary. See app_codex_thread_cost.go.
+		// A TOP-LEVEL turn boundary: a subagent's completion is not the
+		// thread's. Both post-turn hooks below key off it, so it is resolved
+		// once rather than spelled out per hook.
+		topLevelTurn := evt.Kind == provider.EventTurnComplete &&
+			strings.TrimSpace(evt.ParentToolUseID) == ""
+
+		if topLevelTurn && providerType == string(provider.Codex) {
+			a.noteCodexThreadCost(threadID, sessionToken)
+		}
+
 		if evt.Kind == provider.EventTurnComplete {
 			// Turn completion marks activity; it deliberately does NOT
 			// probe. The 2-minute poll loop (startRateLimitProbeLoop)
@@ -114,6 +132,18 @@ func (a *App) sessionEventHandler(threadID, sessionToken, providerType string) f
 			// machines sharing one account is what earned server 429s on
 			// the usage endpoint.
 			a.noteProviderTurnActivity(providerType)
+			// The idle edge is where a peer rename deferred mid-turn
+			// converges. Stateless: syncPeerSessionName re-derives the
+			// wanted name and no-ops when it already matches, which is the
+			// overwhelmingly common case (app_claude_peer_name.go).
+			// Gated on the session's own inbox state BEFORE the goroutine:
+			// syncPeerSessionName's first act is this same check, and
+			// spawning a goroutine per completed turn to run it is a
+			// per-turn allocation for every Claude thread on a machine
+			// where the feature is off — which is the default.
+			if topLevelTurn && providerType == string(provider.Claude) && a.threadPeerInboxLive(threadID) {
+				a.syncPeerSessionNameAsync(threadID)
+			}
 		}
 
 		if evt.Kind == provider.EventSessionStatus && evt.Content == "error" {
@@ -281,7 +311,7 @@ func (a *App) ingestClaudeInitMCPStatus(meta json.RawMessage) {
 	if err := json.Unmarshal(meta, &info); err != nil {
 		return
 	}
-	if len(info.MCPServers) == 0 {
+	if len(info.MCPServers) == 0 && len(info.MCPServerErrors) == 0 {
 		return
 	}
 	cache := a.mcpStatus()
@@ -299,6 +329,49 @@ func (a *App) ingestClaudeInitMCPStatus(meta json.RawMessage) {
 			CheckedAt: now,
 		})
 	}
+	// `system/init.mcp_server_errors` (claude 2.1.237): entries whose
+	// config the CLI REFUSED at startup. They are absent from
+	// `mcp_servers[]` by contract, so this loop cannot collide with the
+	// one above — and it is the only wire path that carries WHY a server
+	// is missing. Without it the popup can only infer "never connected"
+	// from a config-derived row and show a bare status the user cannot
+	// act on.
+	//
+	// This obeys the cache's error-retention rule rather than fighting it:
+	// the rule only carries a prior error FORWARD onto an error-less
+	// ephemeral fetch, and every Put here is a live-session Put with a
+	// non-empty Error, which stores verbatim. The `type` category rides
+	// Raw because upstream declares it an open set — recording the value
+	// keeps forensics honest without teaching the projector an enum that
+	// will grow.
+	for _, e := range info.MCPServerErrors {
+		if e.Name == "" {
+			continue
+		}
+		cache.Put(mcpstatus.ServerStatus{
+			Key:       mcpstatus.Key{Provider: mcpstatus.ProviderClaude, Name: e.Name},
+			Status:    mcpstatus.StatusFailed,
+			Error:     claudeMCPServerErrorText(e),
+			Raw:       e.Type,
+			Source:    mcpstatus.SourceLiveSession,
+			CheckedAt: now,
+		})
+	}
+}
+
+// claudeMCPServerErrorText composes the user-facing explanation for a
+// refused MCP server config. The message is the actionable half; the
+// category is appended only when a message is missing, because on its own
+// ("invalid_config") it is a label, not an explanation — and an empty
+// Error would defeat the whole point of routing these at all.
+func claudeMCPServerErrorText(e provider.MCPServerError) string {
+	if e.Message != "" {
+		return e.Message
+	}
+	if e.Type != "" {
+		return "server config rejected: " + e.Type
+	}
+	return "server config rejected"
 }
 
 func (a *App) unregisterSession(threadID, sessionToken string) {

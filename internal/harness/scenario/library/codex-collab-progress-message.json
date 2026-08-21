@@ -1,0 +1,58 @@
+{
+  "version": 1,
+  "name": "codex-collab-progress-message",
+  "description": "MultiAgentV2 progress delivery: the child sends `Message Type: MESSAGE` mid-run as an ENCRYPTED envelope (leading input_text header ending at \"Payload:\\n\" plus an encrypted_content block, which is what a single-text-block parser drops on the floor), then later sends its real FINAL_ANSWER. Expect a progress beat on the card with no body and NO terminal status, followed by exactly one completion row.",
+  "provider": "codex",
+  "turns": [
+    {
+      "label": "progress-then-final-answer",
+      "steps": [
+        {
+          "emit": {
+            "delayBetweenMs": 40,
+            "lines": [
+              "{\"jsonrpc\":\"2.0\",\"method\":\"turn/started\",\"params\":{\"threadId\":\"${THREAD_ID}\",\"turn\":{\"id\":\"${TURN_ID}\"}}}",
+              "{\"jsonrpc\":\"2.0\",\"method\":\"rawResponseItem/completed\",\"params\":{\"threadId\":\"${THREAD_ID}\",\"turnId\":\"${TURN_ID}\",\"item\":{\"type\":\"function_call\",\"name\":\"spawn_agent\",\"namespace\":\"collaboration\",\"call_id\":\"call_spawn_reviewer\",\"arguments\":\"{\\\"agent_type\\\":\\\"reviewer\\\",\\\"task_name\\\":\\\"reviewer\\\",\\\"message\\\":\\\"<encrypted>\\\"}\"}}}",
+              "{\"jsonrpc\":\"2.0\",\"method\":\"rawResponseItem/completed\",\"params\":{\"threadId\":\"${THREAD_ID}\",\"turnId\":\"${TURN_ID}\",\"item\":{\"type\":\"function_call_output\",\"call_id\":\"call_spawn_reviewer\",\"output\":\"{\\\"agent_id\\\":\\\"child-reviewer\\\",\\\"task_name\\\":\\\"/root/reviewer\\\",\\\"nickname\\\":\\\"reviewer\\\"}\"}}}",
+              "{\"jsonrpc\":\"2.0\",\"method\":\"item/completed\",\"params\":{\"threadId\":\"${THREAD_ID}\",\"turnId\":\"${TURN_ID}\",\"item\":{\"type\":\"subAgentActivity\",\"id\":\"call_spawn_reviewer\",\"kind\":\"started\",\"agentThreadId\":\"child-reviewer\",\"agentPath\":\"/root/reviewer\"}}}"
+            ]
+          }
+        },
+        {
+          "delayMs": 100
+        },
+        {
+          "emit": {
+            "delayBetweenMs": 40,
+            "lines": [
+              "{\"jsonrpc\":\"2.0\",\"method\":\"rawResponseItem/completed\",\"params\":{\"threadId\":\"${THREAD_ID}\",\"turnId\":\"${TURN_ID}\",\"item\":{\"type\":\"agent_message\",\"id\":\"amsg-progress-${TURN}\",\"author\":\"/root/reviewer\",\"recipient\":\"/root\",\"content\":[{\"type\":\"input_text\",\"text\":\"Message Type: MESSAGE\\nTask name: /root\\nSender: /root/reviewer\\nPayload:\\n\"},{\"type\":\"encrypted_content\",\"data\":\"b3BhcXVlLWNpcGhlcnRleHQtcHJvZ3Jlc3M=\"}],\"internal_chat_message_metadata_passthrough\":{\"turn_id\":\"${TURN_ID}\"}}}}"
+            ]
+          }
+        },
+        {
+          "delayMs": 100
+        },
+        {
+          "emit": {
+            "delayBetweenMs": 40,
+            "lines": [
+              "{\"jsonrpc\":\"2.0\",\"method\":\"rawResponseItem/completed\",\"params\":{\"threadId\":\"${THREAD_ID}\",\"turnId\":\"${TURN_ID}\",\"item\":{\"type\":\"agent_message\",\"id\":\"amsg-final-${TURN}\",\"author\":\"/root/reviewer\",\"recipient\":\"/root\",\"content\":[{\"type\":\"input_text\",\"text\":\"Message Type: FINAL_ANSWER\\nTask name: /root\\nSender: /root/reviewer\\nPayload:\\nReview complete.\"}],\"internal_chat_message_metadata_passthrough\":{\"turn_id\":\"${TURN_ID}\"}}}}"
+            ]
+          }
+        },
+        {
+          "delayMs": 60
+        },
+        {
+          "emit": {
+            "delayBetweenMs": 40,
+            "lines": [
+              "{\"jsonrpc\":\"2.0\",\"method\":\"turn/completed\",\"params\":{\"threadId\":\"${THREAD_ID}\",\"turn\":{\"id\":\"${TURN_ID}\",\"status\":\"completed\"}}}"
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "afterTurns": "repeatLast"
+}

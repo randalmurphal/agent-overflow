@@ -789,7 +789,7 @@ const (
 	// error and the two Codex boundaries (terminal-interaction, completion-only)
 	// use this. The Codex two only PRESERVE prior behavior — not a proven-safe
 	// choice: Codex re-emits child-thread events onto the parent with
-	// parent_tool_use_id set (provider/codex/session.go), so a parent-scope
+	// parent_tool_use_id set (provider/codex/session_notifications.go), so a parent-scope
 	// boundary overlapping a live child text stream would hit the same
 	// fragmentation this fixes for Claude. Unobserved so far — spike before
 	// assuming safe; if seen, switch those two to settleBoundaryScopeOnly.

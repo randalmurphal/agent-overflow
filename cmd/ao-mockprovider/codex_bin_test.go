@@ -44,8 +44,10 @@ func TestCodexHandshakeAndScenarioTurn(t *testing.T) {
 	}
 
 	p.send(`{"jsonrpc":"2.0","method":"initialized"}`)
+	// No historyMode in the params: upstream's default is legacy, and the
+	// echo is what tells the app the thread it just got is NOT revertible.
 	p.send(`{"jsonrpc":"2.0","id":2,"method":"thread/start","params":{}}`)
-	if got := p.expectLine(testTimeout); got != `{"jsonrpc":"2.0","id":2,"result":{"thread":{"id":"th-42"}}}` {
+	if got := p.expectLine(testTimeout); got != `{"jsonrpc":"2.0","id":2,"result":{"thread":{"id":"th-42","historyMode":"legacy"}}}` {
 		t.Fatalf("thread/start response = %q", got)
 	}
 
@@ -131,7 +133,7 @@ func TestCodexThreadResumeEchoesRequestedID(t *testing.T) {
 	p.send(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`)
 	p.expectLineContaining(`"id":1`, testTimeout)
 	p.send(`{"jsonrpc":"2.0","id":2,"method":"thread/resume","params":{"threadId":"resumed-7"}}`)
-	if got := p.expectLine(testTimeout); got != `{"jsonrpc":"2.0","id":2,"result":{"thread":{"id":"resumed-7"}}}` {
+	if got := p.expectLine(testTimeout); got != `{"jsonrpc":"2.0","id":2,"result":{"thread":{"id":"resumed-7","historyMode":"legacy"}}}` {
 		t.Fatalf("thread/resume response = %q", got)
 	}
 

@@ -179,4 +179,3 @@ func TestDecodeClaudeErrorsOnMalformedJSON(t *testing.T) {
 		t.Fatalf("DecodeClaude() error = %v, want decode context", err)
 	}
 }
-

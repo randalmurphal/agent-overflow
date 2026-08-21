@@ -121,6 +121,14 @@ func MarkPromotedEchoBoundary(raw string, boundary int) (string, error) {
 // a lossy float, so stamping a marker would silently rewrite values the
 // marker has nothing to do with.
 func mergeKey(raw, key string, value any) (string, error) {
+	return mergeKeys(raw, map[string]any{key: value})
+}
+
+// mergeKeys is mergeKey for a set of keys written together. One decode
+// and one encode, so a caller that must set two keys atomically (a
+// marker plus the state qualifying it) cannot leave the row carrying
+// only the first.
+func mergeKeys(raw string, values map[string]any) (string, error) {
 	merged := map[string]any{}
 	if raw != "" {
 		decoder := json.NewDecoder(strings.NewReader(raw))
@@ -132,7 +140,9 @@ func mergeKey(raw, key string, value any) (string, error) {
 			merged = map[string]any{}
 		}
 	}
-	merged[key] = value
+	for key, value := range values {
+		merged[key] = value
+	}
 	encoded, err := json.Marshal(merged)
 	if err != nil {
 		return "", err

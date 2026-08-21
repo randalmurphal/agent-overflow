@@ -2,11 +2,13 @@ package sessionimport
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"agent-overflow/internal/provider/codex/rollout"
 	"agent-overflow/internal/store"
 )
 
@@ -552,4 +554,137 @@ func seedProjectAt(t *testing.T, st *store.Store, id, name, path string) store.P
 		}
 	}
 	return project
+}
+
+// ------------------------------------------- Codex's external import ledger
+
+// writeCodexImportLedger writes the file Codex appends to when IT imports a
+// session from another coding agent, hand-written against
+// `ImportedExternalAgentSessionRecord` at codex tag rust-v0.149.0.
+func (h providerHomes) writeCodexImportLedger(t *testing.T, records ...map[string]any) {
+	t.Helper()
+	body, err := json.Marshal(map[string]any{"records": records})
+	if err != nil {
+		t.Fatalf("marshal ledger: %v", err)
+	}
+	path := filepath.Join(h.codexHome, "external_agent_session_imports.json")
+	if err := os.WriteFile(path, body, 0o644); err != nil {
+		t.Fatalf("write ledger: %v", err)
+	}
+}
+
+func (h providerHomes) claudeLedgerRecord(threadID, claudeSessionID string) map[string]any {
+	return map[string]any{
+		"source_path": filepath.Join(
+			h.claudeProjects, "-fixture-repo", claudeSessionID+".jsonl"),
+		"content_sha256":     "0f0f0f",
+		"imported_thread_id": threadID,
+		"imported_at":        baseMillis / 1000,
+		"connector_names":    []string{},
+		"title":              "Imported conversation",
+	}
+}
+
+// The regression this exists for: an imported Claude Code conversation lands
+// as an ordinary Codex rollout whose originator says `codex_cli`, so without
+// the ledger the picker offers it with nothing to say where it came from.
+func TestScanLabelsCodexSessionsCodexImportedFromAnotherAgent(t *testing.T) {
+	st := newTestStore(t)
+	homes := newProviderHomes(t)
+	homes.writeCodexIndex(t, codexThreadA, codexThreadB)
+	homes.codexLinearSession(t, codexThreadA)
+	homes.codexLinearSession(t, codexThreadB)
+	homes.writeCodexImportLedger(t, homes.claudeLedgerRecord(codexThreadA, claudeSessionA))
+
+	result := scanFixture(t, homes.deps(st), Filter{Provider: ProviderCodex})
+
+	imported := rowByID(t, result, RowKey(ProviderCodex, codexThreadA))
+	if imported.ImportedFrom == nil {
+		t.Fatalf("codex A should carry its external origin")
+	}
+	if imported.ImportedFrom.Agent != rollout.ExternalImportAgentClaude {
+		t.Errorf("agent = %q", imported.ImportedFrom.Agent)
+	}
+	if imported.ImportedFrom.SourceSessionID != claudeSessionA {
+		t.Errorf("source session id = %q, want %q",
+			imported.ImportedFrom.SourceSessionID, claudeSessionA)
+	}
+	if imported.ImportedFrom.ImportedAt != (baseMillis/1000)*1000 {
+		t.Errorf("importedAt = %d", imported.ImportedFrom.ImportedAt)
+	}
+	// AO does not hold the source conversation, so there is no duplicate to
+	// name — the absence has to be explicit, or the badge lies.
+	if imported.ImportedFrom.DuplicateOfThreadID != "" {
+		t.Errorf("duplicateOfThreadId = %q, want empty",
+			imported.ImportedFrom.DuplicateOfThreadID)
+	}
+	// A session the ledger says nothing about carries nothing.
+	if plain := rowByID(t, result, RowKey(ProviderCodex, codexThreadB)); plain.ImportedFrom != nil {
+		t.Errorf("codex B should carry no origin: %+v", plain.ImportedFrom)
+	}
+}
+
+// The second thing the ledger buys: AO already holds this conversation,
+// imported straight from ~/.claude. The row is still OFFERED — both provider
+// sessions exist and both resume — but the user must be told.
+func TestScanMarksACodexImportAsADuplicateOfAnAlreadyImportedClaudeSession(t *testing.T) {
+	st := newTestStore(t)
+	homes := newProviderHomes(t)
+	homes.writeCodexIndex(t, codexThreadA)
+	homes.codexLinearSession(t, codexThreadA)
+	homes.writeCodexImportLedger(t, homes.claudeLedgerRecord(codexThreadA, claudeSessionA))
+
+	seedProject(t, st, homes.workspace)
+	imported := seedThread(t, st, "thread-claude-a", "claude", homes.workspace)
+	if err := st.SetThreadImportState(store.ThreadImportState{
+		ThreadID:        imported.ID,
+		Provider:        "claude",
+		SourcePath:      "/gone",
+		SourceSessionID: claudeSessionA,
+		LastTurnIndex:   -1,
+		LastItemIndex:   -1,
+		ImportedAt:      baseMillis,
+	}); err != nil {
+		t.Fatalf("set import state: %v", err)
+	}
+
+	result := scanFixture(t, homes.deps(st), Filter{Provider: ProviderCodex})
+
+	row := rowByID(t, result, RowKey(ProviderCodex, codexThreadA))
+	if row.ImportedFrom == nil {
+		t.Fatalf("codex A should carry its external origin")
+	}
+	if row.ImportedFrom.DuplicateOfThreadID != imported.ID {
+		t.Errorf("duplicateOfThreadId = %q, want %q",
+			row.ImportedFrom.DuplicateOfThreadID, imported.ID)
+	}
+}
+
+// A ledger that cannot be read costs the labels and nothing else: the badge
+// is decoration on a listing that must still list.
+func TestScanStillListsWhenTheImportLedgerIsCorrupt(t *testing.T) {
+	st := newTestStore(t)
+	homes := newProviderHomes(t)
+	homes.writeCodexIndex(t, codexThreadA)
+	homes.codexLinearSession(t, codexThreadA)
+	if err := os.WriteFile(
+		filepath.Join(homes.codexHome, "external_agent_session_imports.json"),
+		[]byte("{not json"), 0o644,
+	); err != nil {
+		t.Fatalf("write corrupt ledger: %v", err)
+	}
+
+	result := scanFixture(t, homes.deps(st), Filter{Provider: ProviderCodex})
+
+	if status := statusFor(t, result, ProviderCodex); !status.Available {
+		t.Fatalf("codex should still be available: %+v", status)
+	}
+	row := rowByID(t, result, RowKey(ProviderCodex, codexThreadA))
+	if row.ImportedFrom != nil {
+		t.Errorf("no labels from a corrupt ledger: %+v", row.ImportedFrom)
+	}
+	// The ledger warning is not a per-file skip and must not be counted as one.
+	if status := statusFor(t, result, ProviderCodex); status.SkippedCount != 0 {
+		t.Errorf("skippedCount = %d, want 0", status.SkippedCount)
+	}
 }

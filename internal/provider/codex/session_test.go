@@ -996,7 +996,7 @@ func TestBuildThreadParams(t *testing.T) {
 		SystemPrompt:   "Be helpful",
 	}
 
-	params := buildThreadParams(cfg)
+	params := buildThreadParams(cfg, "")
 
 	if params["model"] != "gpt-4.1" {
 		t.Errorf("model: got %v, want %q", params["model"], "gpt-4.1")
@@ -1014,7 +1014,7 @@ func TestBuildThreadParams(t *testing.T) {
 
 func TestBuildThreadParamsDangerMode(t *testing.T) {
 	cfg := Config{Sandbox: "danger-full-access"}
-	params := buildThreadParams(cfg)
+	params := buildThreadParams(cfg, "")
 
 	if params["approvalPolicy"] != "never" {
 		t.Errorf("approvalPolicy: got %v, want %q", params["approvalPolicy"], "never")

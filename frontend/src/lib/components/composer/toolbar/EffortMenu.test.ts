@@ -474,6 +474,59 @@ describe("<EffortMenu>", () => {
     ]);
   });
 
+  it("renders Max and Ultra when a Codex model advertises them", async () => {
+    // The complement of the test below. Codex's app-server enum runs through
+    // `ultra` and availability is per-model and server-driven, so the picker's
+    // only job is to render what the catalog advertised — and to label the two
+    // top tiers the way the Go catalog does (provider.effortLabel), since the
+    // wire sends no label of its own for them.
+    const updated = makeThread({
+      provider: "codex",
+      model: "gpt-5.6-sol",
+      reasoningEffort: "ultra",
+      contextWindow: 272000,
+    });
+    setBindingMock("UpdateThreadReasoningEffort", async () => updated);
+    setBindingMock("GetModelsForProvider", async () => [
+      {
+        slug: "gpt-5.6-sol",
+        name: "GPT 5.6 Sol",
+        provider: "codex",
+        capabilities: ["fast_mode"],
+        contextWindows: [],
+        reasoningEfforts: [
+          { slug: "high", label: "High" },
+          { slug: "xhigh", label: "" },
+          { slug: "max", label: "" },
+          { slug: "ultra", label: "" },
+        ],
+      },
+    ]);
+    const pane = await buildPane(
+      makeThread({
+        provider: "codex",
+        model: "gpt-5.6-sol",
+        reasoningEffort: "high",
+        contextWindow: 272000,
+      }),
+    );
+    const { getByTestId, findByRole } = render(EffortMenu, { props: { pane } });
+
+    await fireEvent.click(getByTestId("composer-effort-trigger"));
+    expect(await findByRole("menuitem", { name: /^xHigh$/ })).toBeInTheDocument();
+    expect(await findByRole("menuitem", { name: /^Max$/ })).toBeInTheDocument();
+    const ultra = await findByRole("menuitem", { name: /^Ultra$/ });
+
+    await fireEvent.click(ultra);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(getBindingMock("UpdateThreadReasoningEffort")!.mock.calls[0]).toEqual([
+      "thread-1",
+      "ultra",
+    ]);
+  });
+
   it("uses model reasoning metadata so Codex does not show Max", async () => {
     const pane = await buildPane(
       makeThread({

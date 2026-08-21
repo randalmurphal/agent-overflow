@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/google/uuid"
@@ -123,6 +124,11 @@ type branchPlan struct {
 	// consumed — a refresh that re-read them would re-decide them the same
 	// way, but at the cost of re-reading the tail on every check.
 	endOffset int64
+	// identity is the source fingerprint a later refresh compares before it
+	// trusts endOffset (store migration v67). Codex only: Claude's refresh
+	// anchors on a transcript uuid, which a rewritten file invalidates by
+	// itself.
+	identity rollout.SourceIdentity
 }
 
 // importClaude imports the transcript's active branch as one thread.
@@ -190,12 +196,23 @@ func importCodex(
 	if err != nil {
 		return ImportOutcome{}, fmt.Errorf("sessionimport: %s: %w", row.ID, err)
 	}
-	parsed, err := rollout.Parse(ctx, rollout.ParseOptions{
-		Path:      sourcePath,
-		SessionID: row.SessionID,
-	})
+	// ONE handle serves both reads below, exactly as codexTail's refresh
+	// does. Codex publishes a migrated rollout by writing the canonicalised
+	// file and renaming it over the same path, so two independent opens can
+	// straddle that rename: the events would come from the file that was
+	// there and the fingerprint from the replacement, and the refresh that
+	// later trusts the pair would resume the replacement at an offset that
+	// describes a different inode's records. A held fd keeps naming the inode
+	// it opened, which is what makes the events, the resume offset, and the
+	// fingerprint three answers about one file.
+	file, err := os.Open(sourcePath)
 	if err != nil {
 		return ImportOutcome{}, fmt.Errorf("sessionimport: read %s: %w", sourcePath, err)
+	}
+	defer file.Close()
+	parsed, identity, err := codexImportSource(ctx, file, sourcePath, row.SessionID)
+	if err != nil {
+		return ImportOutcome{}, err
 	}
 	row.SourcePath = sourcePath
 	im := newSessionImporter(d.Store, row, proj)
@@ -210,10 +227,40 @@ func importCodex(
 		profile:        preferParsedProfile(parsed.Profile, row.IndexedProfile),
 		lastActivityAt: row.LastActivityAt,
 		endOffset:      parsed.EndOffset,
+		identity:       identity,
 	}); err != nil {
 		return ImportOutcome{}, err
 	}
 	return im.outcome(), nil
+}
+
+// codexImportSource reads one rollout's events and its source fingerprint
+// from a single open handle.
+//
+// Both answers are POSITIONAL reads of the same fd (Parse seeks it,
+// ReadSourceIdentityAt uses io.ReaderAt), never a second resolution of the
+// path — see the caller for why that matters. A fingerprint that cannot be
+// read is NOT fatal: an unfingerprinted thread simply refreshes under the size
+// test alone, exactly as every thread did before v67, and refresh.go treats a
+// recorded "" as UNKNOWN for that reason. A failed PARSE is fatal, because
+// there is no history to import without it.
+func codexImportSource(
+	ctx context.Context, file *os.File, sourcePath, sessionID string,
+) (rollout.ParseResult, rollout.SourceIdentity, error) {
+	parsed, err := rollout.Parse(ctx, rollout.ParseOptions{
+		File:      file,
+		Path:      sourcePath,
+		SessionID: sessionID,
+	})
+	if err != nil {
+		return rollout.ParseResult{}, rollout.SourceIdentity{},
+			fmt.Errorf("sessionimport: read %s: %w", sourcePath, err)
+	}
+	identity, identityErr := rollout.ReadSourceIdentityAt(file, sourcePath, sessionID)
+	if identityErr != nil {
+		identity = rollout.SourceIdentity{}
+	}
+	return parsed, identity, nil
 }
 
 // newImportedThread builds the thread row one imported branch lands in.

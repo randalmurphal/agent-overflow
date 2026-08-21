@@ -69,6 +69,32 @@ describe('<UserMessage>', () => {
     };
   }
 
+  // A message that reached this thread from outside Agent Overflow (Codex's
+  // own `codex queue --thread ...`) keeps the user bubble — it IS user-role
+  // content the model answered — but says where it came from. Attributing a
+  // stranger's write to the reader is a transcript that lies about who asked.
+  it('marks a message queued from outside, and leaves a locally typed one unmarked', () => {
+    const external = render(UserMessage, {
+      props: {
+        item: makeItem({
+          kind: 'user_text',
+          role: 'user',
+          summary: 'run the tests',
+          meta: JSON.stringify({ origin: 'external-queue' }),
+        }),
+      },
+    });
+    expect(external.getByTestId('user-message-external-origin').textContent).toContain(
+      'Queued from outside Agent Overflow',
+    );
+    external.unmount();
+
+    const local = render(UserMessage, {
+      props: { item: makeItem({ kind: 'user_text', role: 'user', summary: 'run the tests' }) },
+    });
+    expect(local.queryByTestId('user-message-external-origin')).toBeNull();
+  });
+
   it('shows its timestamp without requiring row hover', () => {
     const createdAt = Date.UTC(2026, 0, 2, 15, 4);
     const { container } = render(UserMessage, {

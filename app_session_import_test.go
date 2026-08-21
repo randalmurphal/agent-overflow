@@ -307,7 +307,6 @@ func TestRunBoundedSessionImportsOverlapsSmallSessionsAndRunsLargeOnesAlone(t *t
 	releaseInitial := make(chan struct{})
 	largeStarted := make(chan struct{}, 1)
 	releaseLarge := make(chan struct{})
-	laterStarted := make(chan string, 2)
 
 	jobs := make([]sessionImportJob, 0, sessionImportWorkers+3)
 	for i := range sessionImportWorkers {
@@ -324,9 +323,46 @@ func TestRunBoundedSessionImportsOverlapsSmallSessionsAndRunsLargeOnesAlone(t *t
 		sessionImportJob{id: "later-a", found: true, row: sessionimport.Row{ID: "later-a", ProjectID: "project", SizeBytes: 1}},
 		sessionImportJob{id: "later-b", found: true, row: sessionimport.Row{ID: "later-b", ProjectID: "project", SizeBytes: 1}},
 	)
+
+	// Exclusivity is measured as an OVERLAP, not as a moment. The three
+	// trailing jobs reach the semaphore in whatever order the workers pick
+	// them up: "later-a" can legitimately acquire its one slot, run and
+	// finish before "large" ever asks for its full-width weight. Sampling a
+	// started-channel after the large import begins cannot tell that apart
+	// from a real overlap, which is what made the older form of this test
+	// fail under load. What the weights actually promise is that nothing
+	// else is IN execute while the large import is, so that is what this
+	// records.
+	var mu sync.Mutex
+	running := 0
+	largeRunning := false
+	overlapped := ""
+	enter := func(id string) {
+		mu.Lock()
+		defer mu.Unlock()
+		running++
+		isLarge := id == "large"
+		if overlapped == "" && (largeRunning || (isLarge && running > 1)) {
+			overlapped = id
+		}
+		if isLarge {
+			largeRunning = true
+		}
+	}
+	leave := func(id string) {
+		mu.Lock()
+		defer mu.Unlock()
+		running--
+		if id == "large" {
+			largeRunning = false
+		}
+	}
+
 	execute := func(
 		_ context.Context, _ sessionimport.Deps, row sessionimport.Row,
 	) (sessionimport.ImportOutcome, error) {
+		enter(row.ID)
+		defer leave(row.ID)
 		switch {
 		case strings.HasPrefix(row.ID, "initial-"):
 			initialStarted <- row.ID
@@ -334,8 +370,6 @@ func TestRunBoundedSessionImportsOverlapsSmallSessionsAndRunsLargeOnesAlone(t *t
 		case row.ID == "large":
 			largeStarted <- struct{}{}
 			<-releaseLarge
-		default:
-			laterStarted <- row.ID
 		}
 		return sessionimport.ImportOutcome{}, nil
 	}
@@ -348,16 +382,19 @@ func TestRunBoundedSessionImportsOverlapsSmallSessionsAndRunsLargeOnesAlone(t *t
 			t.Fatalf("%d small imports did not overlap", sessionImportWorkers)
 		}
 	}
+	// Safe as an instant check: every slot is held by a small import that is
+	// parked on releaseInitial, so a large import that had started would mean
+	// the semaphore handed out more weight than it has.
+	select {
+	case <-largeStarted:
+		t.Fatal("large import started while the small imports still held every slot")
+	default:
+	}
 	close(releaseInitial)
 	select {
 	case <-largeStarted:
 	case <-time.After(time.Second):
 		t.Fatal("large import did not start after the small imports released their slots")
-	}
-	select {
-	case id := <-laterStarted:
-		t.Fatalf("small import %s overlapped the exclusive large import", id)
-	default:
 	}
 	close(releaseLarge)
 
@@ -370,6 +407,11 @@ func TestRunBoundedSessionImportsOverlapsSmallSessionsAndRunsLargeOnesAlone(t *t
 	}
 	if completed != len(jobs) {
 		t.Fatalf("completed jobs = %d, want %d", completed, len(jobs))
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if overlapped != "" {
+		t.Fatalf("import %s ran while the exclusive large import held every slot", overlapped)
 	}
 }
 

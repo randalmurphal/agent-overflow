@@ -1,4 +1,5 @@
 import type { ProviderID } from './providers';
+import type { ReasoningEffort } from './settings';
 
 export type RuntimeMode =
   | "read-only"
@@ -43,17 +44,12 @@ export interface Thread {
     | "workflow-studio"
     | "workflow-triage";
   /**
-   * Reasoning effort tier. The selected provider/model controls which
-   * subset is valid.
+   * Reasoning effort tier. The canonical union lives in ./settings — a second
+   * copy here had already drifted (it was missing Codex's `ultra`, so a thread
+   * the backend can persist was not expressible in this type). The selected
+   * provider/model controls which subset is valid; the type is the outer bound.
    */
-  reasoningEffort?:
-    | "none"
-    | "minimal"
-    | "low"
-    | "medium"
-    | "high"
-    | "xhigh"
-    | "max";
+  reasoningEffort?: ReasoningEffort;
   /**
    * When true, the provider uses its native fast execution tier.
    */

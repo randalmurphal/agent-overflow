@@ -115,6 +115,7 @@ import {
   applyProviderCommands,
   type ProviderCommandsPayload,
 } from './providerCommands.svelte';
+import { bumpUsageRefresh } from './usageRefresh.svelte';
 import { applyUserMessageReverted } from './eventsMessageRevert';
 import { applyTransportGap } from './eventsTransportGap';
 import { applyWorktreeSetup } from './eventsWorktreeSetup';
@@ -278,6 +279,16 @@ export function setupEventListeners(): () => void {
   // docs/architecture/turn-lifecycle.md §Frontend state shape.
   const cancelTurnStarted = wailsEventOn<TurnStartedEvent>('provider:turn_started', applyTurnStarted);
   const cancelTurnCompleted = wailsEventOn<TurnCompletedEvent>('provider:turn_completed', applyTurnCompleted);
+  // usage:thread_cost — a PROVIDER's own cost figure for a thread landed
+  // after the turn that produced it had already settled (Codex asks its
+  // backend asynchronously; see app_codex_thread_cost.go). The turn-completed
+  // bump has already fired by then, so without this the chip would keep
+  // showing the rate-table estimate until the next turn. Payload is the
+  // thread id only: every usage surface refetches from the backend.
+  const cancelThreadCost = wailsEventOn<{ threadId?: string }>('usage:thread_cost', (payload) => {
+    const threadId = payload?.threadId;
+    if (threadId) bumpUsageRefresh(threadId);
+  });
   // provider:session_died — provider subprocess exited mid-turn. Drives
   // the per-pane Reconnect banner (separately from the synthesized
   // turn-completed event that clears the working indicator). The
@@ -516,6 +527,7 @@ export function setupEventListeners(): () => void {
     cancelSystemStats();
     cancelTurnStarted();
     cancelTurnCompleted();
+    cancelThreadCost();
     cancelSessionDied();
     cancelTodoUpdate();
     cancelTerminalOutput();

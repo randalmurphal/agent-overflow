@@ -56,6 +56,129 @@ func claudeModelForContextWindow(model string, contextWindow int) string {
 	return model
 }
 
+// ThinkingMode is the extended-thinking axis of a Claude launch config.
+// Three states, and their asymmetry is the whole reason the axis needs its
+// own type rather than a bare int:
+//
+//   - ThinkingDefault says nothing. The spawn passes no `--thinking` /
+//     `--max-thinking-tokens` and the CLI picks per model (adaptive where
+//     supported, its own budget otherwise).
+//   - ThinkingOff spawns `--thinking disabled` and lives as
+//     `set_max_thinking_tokens {max_thinking_tokens: 0}`.
+//   - ThinkingBudget spawns `--max-thinking-tokens N` and lives as
+//     `set_max_thinking_tokens {max_thinking_tokens: N}`.
+//
+// There is NO live form for the return to ThinkingDefault:
+// `max_thinking_tokens: null` is accepted and does nothing (spike-verified
+// 2.1.237), so only a respawn drops the flag. PlanLiveUpdate refuses that
+// one direction and the restart converges it.
+type ThinkingMode string
+
+const (
+	ThinkingDefault ThinkingMode = ""
+	ThinkingOff     ThinkingMode = "off"
+	ThinkingBudget  ThinkingMode = "budget"
+)
+
+// Thinking display values — the CLI's `--thinking-display` /
+// `thinking_display` vocabulary. "summarized" puts thinking text on the
+// wire; "omitted" keeps the thinking BLOCK (signature included, so
+// multi-turn replay still works) and drops its text.
+const (
+	ThinkingDisplaySummarized = "summarized"
+	ThinkingDisplayOmitted    = "omitted"
+)
+
+// ThinkingConfig is the NORMALIZED thinking axis of a Config. Normalized
+// is load-bearing on two counts:
+//
+//   - Display is resolved for every mode but ThinkingOff, where it is
+//     blanked. Agent Overflow has always spawned
+//     `--thinking-display summarized` so newer models' `omitted` default
+//     cannot silence the thinking pane, and that default has to be the
+//     same value on the spawn path and the live path or a live apply would
+//     "change" the display to something the process was already running.
+//     A DISABLED session has no display at all — the CLI drops the flag —
+//     so carrying one there would make two identical sessions compare
+//     unequal and buy a control request that changes nothing.
+//   - BudgetTokens is zero unless Mode is ThinkingBudget, for the same
+//     reason. PlanLiveUpdate diffs this struct by value, so anything that
+//     does not reach the process must not reach the struct either.
+//
+// Comparable by construction (two strings and an int) — LiveUpdate's
+// emptiness check depends on it.
+type ThinkingConfig struct {
+	Mode         ThinkingMode
+	BudgetTokens int
+	Display      string
+}
+
+// claudeThinkingFromOptions normalizes the settings-shaped option bundle
+// into the Config axis. A budget mode without a positive budget degrades to
+// ThinkingDefault rather than spawning `--max-thinking-tokens 0`, which the
+// CLI reads as DISABLED — the opposite of what an unfinished budget means.
+// (Settings validation refuses that shape first; this is the second wall,
+// for any caller that builds SessionOptions directly.)
+func claudeThinkingFromOptions(thinking provider.ClaudeThinking) ThinkingConfig {
+	cfg := ThinkingConfig{Display: normalizeThinkingDisplay(thinking.Display)}
+	switch ThinkingMode(strings.TrimSpace(thinking.Mode)) {
+	case ThinkingOff:
+		cfg.Mode = ThinkingOff
+		cfg.Display = ""
+	case ThinkingBudget:
+		if thinking.BudgetTokens > 0 {
+			cfg.Mode = ThinkingBudget
+			cfg.BudgetTokens = thinking.BudgetTokens
+		}
+	}
+	return cfg
+}
+
+// normalizeThinkingDisplay resolves the display axis to a value the wire
+// accepts. Everything that is not an explicit "omitted" lands on
+// "summarized" — Agent Overflow's default, not the CLI's.
+func normalizeThinkingDisplay(display string) string {
+	if strings.TrimSpace(display) == ThinkingDisplayOmitted {
+		return ThinkingDisplayOmitted
+	}
+	return ThinkingDisplaySummarized
+}
+
+// thinkingArgs renders the spawn form of the thinking axis.
+//
+// The three flags are read on the CLI's ordinary startup path (verified by
+// inspection of the 2.1.237 bundle: `--thinking`/`MAX_THINKING_TOKENS`/
+// `--max-thinking-tokens` resolve into the session's `thinkingConfig`
+// before any print-vs-interactive branch), so they apply to the stream-json
+// spawn exactly as they would to `claude -p`.
+//
+// Two CLI rules the shape below encodes:
+//
+//   - `--thinking enabled` means ADAPTIVE, not "use my budget". A fixed
+//     budget has exactly one flag, `--max-thinking-tokens`, deprecation
+//     notice in its help text notwithstanding.
+//   - `--thinking` outranks `--max-thinking-tokens`, so the two are never
+//     sent together.
+//
+// `--thinking-display` is dropped for a disabled session because the CLI
+// ignores it there; every other case carries it, which is what keeps the
+// pre-existing always-summarized spawn behavior intact for users who never
+// touch the setting.
+func thinkingArgs(thinking ThinkingConfig) []string {
+	display := normalizeThinkingDisplay(thinking.Display)
+	switch thinking.Mode {
+	case ThinkingOff:
+		return []string{"--thinking", "disabled"}
+	case ThinkingBudget:
+		return []string{
+			"--max-thinking-tokens", strconv.Itoa(thinking.BudgetTokens),
+			"--thinking-display", display,
+		}
+	default:
+		return []string{"--thinking-display", display}
+	}
+}
+
 func claudeFastMode(model string, fastMode bool) bool {
 	return fastMode && provider.ModelSupportsCapability(string(provider.Claude), model, provider.ModelCapabilityFastMode)
 }
@@ -94,7 +217,156 @@ func ConfigFromOptions(opts provider.SessionOptions) Config {
 		InteractionMode:      opts.Mode,
 		AutoCompactPercent:   autoCompactPercent,
 		ContextWindow:        contextWindow,
+		Thinking:             claudeThinkingFromOptions(opts.ClaudeThinking),
+		CrossSessionEnabled:  opts.ClaudeCrossSession.Enabled,
+		CrossSessionInbound:  claudeCrossSessionInbound(opts.ClaudeCrossSession),
 	}
+}
+
+// claudeCrossSessionInbound normalizes the inbound policy the
+// `--settings` block will carry. It is never empty: OFF renders
+// "refuse", and ON renders the chosen value.
+//
+// With the inbox ON an empty policy is filled in with "accept" rather
+// than passed through — an empty key is the CLI's MODE-PARITY path,
+// whose hold outcome discards the message with nothing on stdout, so
+// "enabled" has to mean something explicit on the wire.
+//
+// With the inbox OFF the key is emitted anyway, as "refuse", and that is
+// the load-bearing case. AO's own gate is the CLAUDE_CODE_HARBOR_KITE
+// env override, but it is not the ONLY thing that can bind the inbox:
+// `tengu_harbor_kite` is a remote GrowthBook flag that can late-bind it
+// for a user AO never opted in, and `tengu_harbor_kite_mode_emit` (which
+// has NO env override at all) turns on the permission-class attestation
+// that mode parity reads. With both remote flags live and this key
+// absent, a peer whose permission class matches would auto-deliver — a
+// turn started in a thread whose user never enabled the feature. Off has
+// to mean off regardless of remote flags, so the refusal is stated
+// rather than assumed. It costs one settings key on a spawn that would
+// usually carry the block anyway.
+//
+// settings.ClaudeCrossSession.EffectiveInbound applies the enabled half
+// of this rule one layer up; this is the wall for any caller that builds
+// SessionOptions directly.
+func claudeCrossSessionInbound(cross provider.ClaudeCrossSession) string {
+	if !cross.Enabled {
+		return crossSessionInboundRefuse
+	}
+	if inbound := strings.TrimSpace(cross.Inbound); inbound != "" {
+		return inbound
+	}
+	return crossSessionInboundAccept
+}
+
+// The inbound policies Agent Overflow will emit. "hold" is deliberately
+// absent — see internal/settings/claudecrosssession.go for the spike
+// evidence that a held message in a headless session is a silent drop.
+const (
+	crossSessionInboundAccept = "accept"
+	crossSessionInboundRefuse = "refuse"
+)
+
+// claudeHarborKiteEnv is the CLI's one environment override for the
+// GrowthBook experiment that binds the cross-session peer inbox
+// (`function jh(){if(q.CLAUDE_CODE_HARBOR_KITE)return!0; ...}`, 2.1.237).
+// It is a PARSED BOOLEAN on the CLI side, so "0" and "" read as off.
+const claudeHarborKiteEnv = "CLAUDE_CODE_HARBOR_KITE"
+
+// CrossSessionGateEnv is claudeHarborKiteEnv under its exported name, for
+// internal/provider/claudetui — which assembles a full []string environment
+// for its PTY launch rather than the override map Spawn takes, and so has to
+// set the gate itself. One constant, so the two Claude transports cannot
+// disagree about which variable binds the inbox.
+const CrossSessionGateEnv = claudeHarborKiteEnv
+
+// withClaudeCrossSessionEnv adds the inbox gate variable to a session's
+// environment when the setting asks for it.
+//
+// It is the ONE `--settings`-adjacent axis that travels as a REAL
+// subprocess variable rather than inside the block's `env` map, and the
+// reason is ordering, not preference: the inbox binds during the CLI's
+// setup phase, and while the block's env is reapplied over the inherited
+// environment at init, nothing proves that reapplication precedes the
+// bind. The plain variable is what the spike drove and what worked
+// (2026-08-21, 2.1.237, /tmp/spike-xsession) — `system/init` then carries
+// `messaging_socket_path` and `ListAgents` joins `tools[]`. Reserving the
+// name in provider.ReservedEnvNames is what keeps a user's custom
+// environment from setting it behind the setting's back.
+//
+// Absent when off — never "0". The variable's presence is the signal a
+// reader of a process listing goes by, and an explicit off-value would
+// invite the belief that AO ever turns the gate off for a CLI that had it
+// on by experiment. "Absent" is not free, though: the child INHERITS the
+// host environment, so absence has to be produced — see
+// CrossSessionUnsetEnv, which every Claude spawn passes to UnsetEnv.
+func withClaudeCrossSessionEnv(env map[string]string, cfg Config) map[string]string {
+	if !cfg.CrossSessionEnabled {
+		return env
+	}
+	merged := make(map[string]string, len(env)+1)
+	for k, v := range env {
+		merged[k] = v
+	}
+	merged[claudeHarborKiteEnv] = "1"
+	return merged
+}
+
+// claudePeerSessionNameEnv is the CLI's environment spelling of the
+// peer-visible name. AO always states the name as `--name` instead
+// (peerSessionNameArgs), which is why it is a reserved name a user's custom
+// environment may not set (provider.ReservedEnvNames).
+const claudePeerSessionNameEnv = "CLAUDE_CODE_SESSION_NAME"
+
+// CrossSessionUnsetEnv names the INHERITED variables a Claude spawn must
+// remove for AO's cross-session setting to be the answer.
+//
+// Both are removed unconditionally, for two different reasons:
+//
+//   - CLAUDE_CODE_HARBOR_KITE is a parsed boolean the CLI reads as "the peer
+//     inbox is on" before any settings layer is consulted. If AO itself was
+//     launched from a shell carrying it — which is exactly what happens when
+//     a developer exported it to try the feature, or when AO is started from
+//     a Claude session — the child inherits it and JOINS the peer registry
+//     while the setting says off. `crossSessionInbound: "refuse"` does not
+//     cover this: refusing blocks DELIVERY, not discovery, so the thread
+//     still advertises itself in every peer's ListAgents. Off has to mean
+//     off. When the setting is ON the variable is set explicitly instead
+//     (withClaudeCrossSessionEnv), and an override is removed before it is
+//     re-added by BuildEnvironment, so listing it here is harmless.
+//   - CLAUDE_CODE_SESSION_NAME is removed in both states because AO owns the
+//     name: an inherited value would name a thread something the app never
+//     chose, and the app's own `--name` is what the peer registry must show.
+func CrossSessionUnsetEnv() []string {
+	return []string{claudeHarborKiteEnv, claudePeerSessionNameEnv}
+}
+
+// peerSessionNameArgs renders the `--name` flag, which is what makes a
+// thread addressable by a name other than its cwd basename.
+//
+// Emitted only when the inbox is on: `--name` also feeds the /resume
+// picker and the terminal title, but a name AO derived for peer
+// addressing has no business overriding those for a session no peer can
+// reach. Sanitized here rather than trusted, so the flag AO passes is the
+// name the CLI will actually register (SanitizePeerSessionName mirrors
+// its normalizer); an empty result drops the flag, because the CLI reads
+// an empty `--name` as absent and falls back to the basename anyway.
+func peerSessionNameArgs(cfg Config) []string {
+	if !cfg.CrossSessionEnabled {
+		return nil
+	}
+	name := SanitizePeerSessionName(cfg.PeerSessionName)
+	if !PeerSessionNameUsableAsArg(name) {
+		if name != "" {
+			// A leading dash. The CLI's own normalizer keeps it, so this is
+			// a name it would happily register — but `--name -foo` never
+			// reaches the registry, it re-parses as a flag. Dropped here so
+			// the session falls back to the basename rather than running a
+			// CLI invocation nobody wrote.
+			log.Printf("claude: dropping peer session name %q — a leading dash parses as a CLI flag", name)
+		}
+		return nil
+	}
+	return []string{"--name", name}
 }
 
 // claudeReadOnlyDisallowedTools is the set of built-in tools removed outright
@@ -283,25 +555,105 @@ func claudeBasePermissionMode(mode provider.RuntimeMode) string {
 // branch takes the "falling back to prompting" path.
 const claudeAutoPermissionMode = "auto"
 
+// Environment variable names AO renders into the `--settings` env block
+// rather than the subprocess environment. The `flagSettings` source
+// outranks `userSettings`, and Claude Code reapplies its own
+// `~/.claude/settings.json` `env` block over inherited values during init
+// (managedEnv.ts → applySafeConfigEnvironmentVariables), so a value put
+// in the child's real environment can be silently overwritten while one
+// put here cannot. All of them are pinned in
+// `provider.ReservedEnvNames`, so a user's custom environment cannot
+// fight the setting that renders them.
+const (
+	claudeAutoCompactPctEnv    = "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"
+	claudeAutoCompactWindowEnv = "CLAUDE_CODE_AUTO_COMPACT_WINDOW"
+	claudeMaxSpawnDepthEnv     = "CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH"
+	claudeMaxConcurrentSubEnv  = "CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS"
+	claudeToolMemoryLimitEnv   = "CLAUDE_CODE_TOOL_MEMORY_LIMIT"
+)
+
 // cliInlineSettings is the JSON shape projected into the `--settings`
 // CLI flag, which Claude Code applies as the `flagSettings` source. The
 // struct field order is the JSON key order; keep `FastMode` first so
 // the rendered output remains `{"fastMode":true}` for the fastMode-only
-// case (matches existing test fixture and avoids needless churn for
+// case (matches existing test fixtures and avoids needless churn for
 // readers comparing CLI invocations).
+//
+// Every field is `omitempty`, and that is the contract the whole block
+// rests on: a zero value means SAY NOTHING, so the CLI's own resolution
+// (its defaults, the user's settings.json, a `/output-style` switch)
+// stands. Sending an explicit "default" instead would silently overrule
+// choices the user made outside Agent Overflow.
 type cliInlineSettings struct {
-	FastMode bool              `json:"fastMode,omitempty"`
-	Env      map[string]string `json:"env,omitempty"`
+	FastMode bool `json:"fastMode,omitempty"`
+	// CrossSessionInbound is the policy for peer messages another Claude
+	// session on this machine addresses to this one (2.1.224+
+	// `SendMessage` / `ListAgents`): Agent Overflow emits "accept" or
+	// "refuse" and NEVER the CLI's third value, "hold". A delivered peer
+	// message arrives as a user-role turn wrapped in
+	// `<cross-session-message from="..." from-name="...">`.
+	//
+	// Empty is NOT "off", which is why Agent Overflow never leaves it
+	// empty. With the key unset the CLI applies MODE PARITY — matching
+	// permission-mode classes auto-deliver, a mismatched sender is held
+	// for approval, and a sender that asserts no class is held only while
+	// this session bypasses permission prompts (verified 2.1.237). Both
+	// of the non-delivering outcomes — parity's hold and an explicit
+	// "hold" — park the message with NO approval surface in a headless
+	// session and no output whatsoever on stdout, and parity's DELIVERING
+	// outcome would start a turn in a session whose user never enabled
+	// the inbox at all (the gate is a remote GrowthBook flag AO does not
+	// control). So the key is always explicit: "refuse" whenever the
+	// feature is off, the chosen policy when it is on. See
+	// internal/settings/claudecrosssession.go for the spike evidence.
+	CrossSessionInbound string `json:"crossSessionInbound,omitempty"`
+	// OutputStyle names one of the CLI's built-in output styles
+	// ("Concise" / "Proactive" / "Explanatory" / "Learning"). There is no
+	// CLI flag for this axis — the settings key is the only delivery
+	// mechanism.
+	OutputStyle string            `json:"outputStyle,omitempty"`
+	Env         map[string]string `json:"env,omitempty"`
 }
 
 // inlineSettingsForCLI builds the JSON payload for the `--settings` CLI
 // flag, combining every setting we want to project as `flagSettings`.
 // Returns ("", false) when there's nothing to set so the flag can be
-// omitted entirely.
+// omitted entirely — an empty `{}` block would be a no-op the reader of a
+// process listing has to decode before dismissing.
 func inlineSettingsForCLI(cfg Config) (string, bool) {
 	settings := cliInlineSettings{
-		FastMode: cfg.FastMode,
+		FastMode:            cfg.FastMode,
+		CrossSessionInbound: strings.TrimSpace(cfg.CrossSessionInbound),
+		OutputStyle:         strings.TrimSpace(cfg.OutputStyle),
+		Env:                 inlineSettingsEnvForCLI(cfg),
 	}
+	if !settings.FastMode &&
+		settings.CrossSessionInbound == "" &&
+		settings.OutputStyle == "" &&
+		len(settings.Env) == 0 {
+		return "", false
+	}
+	data, err := json.Marshal(settings)
+	if err != nil {
+		// `cliInlineSettings` is bools + strings + map[string]string with
+		// no custom marshalers, so json.Marshal cannot fail in practice.
+		// Panic loudly if it ever does — silently dropping the flag would
+		// mean the user's autocompact / fastMode / output-style /
+		// cross-session / subagent-limit settings are quietly ignored,
+		// which violates the "errors must never silently fail" rule in
+		// CLAUDE.md.
+		panic(fmt.Sprintf("claude: cliInlineSettings marshal failed (unreachable): %v", err))
+	}
+	return string(data), true
+}
+
+// inlineSettingsEnvForCLI builds the `env` half of the block. Returns nil
+// — not an empty map — when nothing is set, so `omitempty` can drop the
+// key: several argv tests assert the fastMode-only rendering carries no
+// `"env"` at all, and that assertion is what catches accidental leakage
+// from unrelated state.
+func inlineSettingsEnvForCLI(cfg Config) map[string]string {
+	env := map[string]string{}
 	if cfg.AutoCompactPercent > 0 {
 		// Defense in depth: upstream `provider.normalizeAutoCompactPercent`
 		// already clamps to ≤90, but `Config.AutoCompactPercent` is a
@@ -312,9 +664,7 @@ func inlineSettingsForCLI(cfg Config) (string, bool) {
 		if percent > 90 {
 			percent = 90
 		}
-		settings.Env = map[string]string{
-			"CLAUDE_AUTOCOMPACT_PCT_OVERRIDE": strconv.Itoa(percent),
-		}
+		env[claudeAutoCompactPctEnv] = strconv.Itoa(percent)
 		// Claude Code ≥2.1.201 only runs auto-compact when an explicit
 		// auto-compact window resolves (env var, SDK option, statsig
 		// experiment, or a hardcoded model table that covers only
@@ -329,23 +679,38 @@ func inlineSettingsForCLI(cfg Config) (string, bool) {
 		// (spike: pct=1 never compacts without this var, compacts
 		// immediately with it, on both 200k and 1m windows).
 		if cfg.ContextWindow > 0 {
-			settings.Env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] = strconv.Itoa(cfg.ContextWindow)
+			env[claudeAutoCompactWindowEnv] = strconv.Itoa(cfg.ContextWindow)
 		}
 	}
-	if !settings.FastMode && len(settings.Env) == 0 {
-		return "", false
+	// Subagent fan-out caps. Both are `int({min:1, digitsOnly:true})` on
+	// the CLI side (2.1.237), so ZERO is unsendable by construction and
+	// means "let the binary decide" — the concurrency default is 20 and
+	// the spawn-depth default comes from a remote experiment value, so
+	// there is no fixed number AO could restate here anyway.
+	if cfg.MaxSubagentSpawnDepth > 0 {
+		env[claudeMaxSpawnDepthEnv] = strconv.Itoa(cfg.MaxSubagentSpawnDepth)
 	}
-	data, err := json.Marshal(settings)
-	if err != nil {
-		// `cliInlineSettings` is a bool + map[string]string with no
-		// custom marshalers, so json.Marshal cannot fail in practice.
-		// Panic loudly if it ever does — silently dropping the flag
-		// would mean the user's autocompact / fastMode setting is
-		// quietly ignored, which violates the "errors must never
-		// silently fail" rule in CLAUDE.md.
-		panic(fmt.Sprintf("claude: cliInlineSettings marshal failed (unreachable): %v", err))
+	if cfg.MaxConcurrentSubagents > 0 {
+		env[claudeMaxConcurrentSubEnv] = strconv.Itoa(cfg.MaxConcurrentSubagents)
 	}
-	return string(data), true
+	// Tool-subprocess memory cap. Passed through verbatim (already
+	// grammar-checked in internal/settings against the CLI's own regex
+	// plus its falsy-word set): the CLI parses it itself, and normalizing
+	// the spelling here would be a second grammar to keep in sync.
+	//
+	// LINUX-ONLY IN EFFECT: the CLI implements this by reading
+	// /proc/self/cgroup and writing memory.max, so on macOS and native
+	// Windows the variable is read and then does nothing. Sending it
+	// anyway is deliberate — the WSL backend IS Linux, and suppressing it
+	// per-host would make the same settings file behave differently
+	// depending on which machine opened it.
+	if limit := strings.TrimSpace(cfg.ToolMemoryLimit); limit != "" {
+		env[claudeToolMemoryLimitEnv] = limit
+	}
+	if len(env) == 0 {
+		return nil
+	}
+	return env
 }
 
 // mcpConfigForCLI renders cfg.MCPServers into the JSON string the

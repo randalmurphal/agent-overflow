@@ -209,14 +209,31 @@ Codex's successful RPC response followed by
 or dispatching turn is a no-op and cannot poison the next turn.
 
 The embedded library (`internal/harness/scenario/library/*.json`)
-ships ready-made scripts — `streaming-text` (Claude default),
+ships ready-made scripts. `HarnessListScenarios` returns the current
+list. With no rules set, every mock gets its provider's default — a
+zero-config harness still streams a sensible reply.
+
+General-purpose scripts: `streaming-text` (Claude default),
 `thinking-then-text`, `tool-call`, `tool-approval`, `file-edit`,
 `session-death`, `stall-forever`, `step-gated`,
 `soak-background-agents` (three async `local_agent` subagents streaming
 forever; see [soak-rig.md](soak-rig.md)), `codex-basic` (Codex
-default), `codex-approval`. `HarnessListScenarios` returns the current
-list. With no rules set, every mock gets its provider's default — a
-zero-config harness still streams a sensible reply.
+default), `codex-approval`.
+
+Codex wire-shape fixtures, each written against a specific behaviour
+the typed stream alone cannot express — read the scenario's own
+`description` before changing one, it names the regression it pins:
+
+| Scenario | What it reproduces |
+|---|---|
+| `codex-collab-two-deliveries` | One child answers TWICE in a single parent turn, both envelopes stamped with the same passthrough `turn_id`. Keying delivery identity on that turn id collapses them onto one row. |
+| `codex-collab-parallel-children` | Two children spawned in one parent turn, both answering into it. Each `FINAL_ANSWER` must land on ITS OWN spawn card. |
+| `codex-collab-progress-message` | A `Message Type: MESSAGE` progress delivery in its ENCRYPTED form — plaintext header block plus an `encrypted_content` tail — followed by the real `FINAL_ANSWER`. A single-text-block parser drops the progress beat entirely. |
+| `codex-collab-send-message-queueonly` | `send_message` (QueueOnly): the parent messages a running child, no child turn starts, and the typed wire is indistinguishable from `followup_task` — the raw function-call name is the only verb evidence. |
+| `codex-collab-reload-after-unload` | A terminal child re-loaded by `followup_task`, which re-fires the SAME spawn activity. The repeated ownership registration must not mint a second spawn card. |
+| `codex-queue-while-running` | A turn that parks mid-stream so sends land in the app-server's own `thread/queue`, then dispatches the queue head FIFO on idle — one turn per queued message. |
+| `codex-revert-paginated` | A thread on a current app-server that takes the paginated history AO asks for at >= 0.148, so edit-and-resend cuts it in place with `thread/revert`. |
+| `codex-revert-legacy` | The same thread against an app-server reporting `codex_cli_rs/0.147.0`: legacy history for life, so edit-and-resend must fall back to `thread/fork` and repoint at a new provider thread id. |
 
 ### Claude framing contract
 

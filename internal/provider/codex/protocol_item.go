@@ -331,7 +331,7 @@ func classifyItemCompleted(threadID string, params json.RawMessage, now time.Tim
 			ItemType:       itemType,
 			Content:        text,
 			ContentPresent: textPresent,
-			Meta:           json.RawMessage(`{"blockType":"text"}`),
+			Meta:           agentMessageBlockMeta(item),
 			Timestamp:      now,
 		}}
 	case "reasoning":
@@ -355,10 +355,28 @@ func classifyItemCompleted(threadID string, params json.RawMessage, now time.Tim
 		// omits the key entirely (never empty-string). Phase E reads
 		// this to stamp the AO-owned `user:<turnIndex>` row, so the
 		// meta key has to be the stable handle, not a synthesized id.
-		var meta json.RawMessage
+		//
+		// `clientId` is the OTHER identity on this item and answers a
+		// different question: who authored the message. Upstream types it
+		// `Option<String>` on ThreadItem::UserMessage (rust-v0.149.0
+		// codex-rs/app-server-protocol/src/protocol/v2/item.rs:236) and
+		// threads it from the submitter through
+		// TurnInput::UserInput{client_id} → UserMessageItem.client_id
+		// (core/src/session/mod.rs:4074), so a queue-dispatched turn echoes
+		// exactly the `clientUserMessageId` its row carried. That is what
+		// tells AO's own queued message from a `codex queue` row's — see
+		// resolveUserEchoOrigin. Absent on turns nobody correlated, so the
+		// key is omitted rather than empty.
+		metaFields := make(map[string]string, 2)
 		if itemID != "" {
-			marshaled, err := json.Marshal(map[string]string{"provider_item_id": itemID})
-			if err == nil {
+			metaFields["provider_item_id"] = itemID
+		}
+		if clientID := readRawString(item, "clientId"); clientID != "" {
+			metaFields[userMessageClientIDMetaKey] = clientID
+		}
+		var meta json.RawMessage
+		if len(metaFields) > 0 {
+			if marshaled, err := json.Marshal(metaFields); err == nil {
 				meta = marshaled
 			}
 		}
@@ -408,6 +426,21 @@ type subAgentActivity struct {
 	Kind          string
 	AgentThreadID string
 	AgentPath     string
+}
+
+// userMessageClientIDMetaKey is where a `userMessage` echo's `clientId`
+// lands in ProviderEvent.Meta. Snake_case to match the rest of the Meta
+// contract (`provider_item_id`, `item_status`, `process_id`), not the wire's
+// camelCase.
+const userMessageClientIDMetaKey = "client_id"
+
+// userEchoClientID reads the client id back out of a user-echo event's Meta.
+// Empty when the wire carried none, which is every turn AO did not correlate.
+func userEchoClientID(meta json.RawMessage) string {
+	if len(meta) == 0 {
+		return ""
+	}
+	return readTopLevelString(meta, userMessageClientIDMetaKey)
 }
 
 func decodeSubAgentActivity(method string, params json.RawMessage) (subAgentActivity, bool) {
@@ -756,4 +789,43 @@ func normalizeCollabToolName(raw string) string {
 	default:
 		return raw
 	}
+}
+
+// AgentMessageDeliveryAsync is the sole variant of Codex's
+// `AgentMessageDelivery` enum (codex-rs/protocol/src/items.rs; camelCase on
+// the v2 wire as `delivery` on the `agentMessage` ThreadItem,
+// protocol/v2/item.rs @ rust-v0.149.0). Upstream documents it as "a
+// user-visible message sent without ending the current turn".
+//
+// Its only producer today is the `send_user_message_async` tool handler
+// (codex-rs/core/src/tools/handlers/send_user_message_async.rs), which emits a
+// complete agentMessage item MID-TURN and keeps working. The item also carries
+// `phase: "finalAnswer"`, so phase alone cannot distinguish it from the real
+// final answer — `delivery` is the only signal that this message is an
+// interjection rather than the turn's conclusion.
+//
+// Carried onto the content-block-stop meta for the frontend to render as
+// non-final (no UI built here). Absent on every message that is NOT an
+// interjection, including every message from a pre-0.149 app-server, so the
+// key is omitted rather than defaulted — a reader must not conclude
+// "delivery != async ⇒ this is the final answer".
+const AgentMessageDeliveryAsync = "async"
+
+// defaultAgentMessageBlockMeta is the pre-existing meta for an agent message
+// with no delivery field: the overwhelmingly common case, kept as a constant
+// so the hot path allocates nothing.
+var defaultAgentMessageBlockMeta = json.RawMessage(`{"blockType":"text"}`)
+
+// agentMessageBlockMeta builds the content-block-stop meta for a completed
+// agentMessage, adding `delivery` only when the wire stated one.
+func agentMessageBlockMeta(item map[string]json.RawMessage) json.RawMessage {
+	delivery := strings.TrimSpace(readRawString(item, "delivery"))
+	if delivery == "" {
+		return defaultAgentMessageBlockMeta
+	}
+	meta, err := json.Marshal(map[string]string{"blockType": "text", "delivery": delivery})
+	if err != nil {
+		return defaultAgentMessageBlockMeta
+	}
+	return meta
 }

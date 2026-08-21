@@ -1,0 +1,61 @@
+{
+  "version": 1,
+  "name": "codex-collab-two-deliveries",
+  "description": "MultiAgentV2: one child answers TWICE inside a single parent turn, both mailbox envelopes stamped with the SAME internal_chat_message_metadata_passthrough.turn_id (the receiving parent turn, which is constant across deliveries). The G1 regression fixture: keying delivery identity on that turn id collapses both answers onto one completion row and loses the first. Expect TWO completion rows under the one spawn card.",
+  "provider": "codex",
+  "turns": [
+    {
+      "label": "spawn-then-two-final-answers",
+      "steps": [
+        {
+          "emit": {
+            "delayBetweenMs": 40,
+            "lines": [
+              "{\"jsonrpc\":\"2.0\",\"method\":\"turn/started\",\"params\":{\"threadId\":\"${THREAD_ID}\",\"turn\":{\"id\":\"${TURN_ID}\"}}}",
+              "{\"jsonrpc\":\"2.0\",\"method\":\"rawResponseItem/completed\",\"params\":{\"threadId\":\"${THREAD_ID}\",\"turnId\":\"${TURN_ID}\",\"item\":{\"type\":\"function_call\",\"name\":\"spawn_agent\",\"namespace\":\"collaboration\",\"call_id\":\"call_spawn_reviewer\",\"arguments\":\"{\\\"agent_type\\\":\\\"reviewer\\\",\\\"task_name\\\":\\\"reviewer\\\",\\\"message\\\":\\\"<encrypted>\\\"}\"}}}",
+              "{\"jsonrpc\":\"2.0\",\"method\":\"rawResponseItem/completed\",\"params\":{\"threadId\":\"${THREAD_ID}\",\"turnId\":\"${TURN_ID}\",\"item\":{\"type\":\"function_call_output\",\"call_id\":\"call_spawn_reviewer\",\"output\":\"{\\\"agent_id\\\":\\\"child-reviewer\\\",\\\"task_name\\\":\\\"/root/reviewer\\\",\\\"nickname\\\":\\\"reviewer\\\"}\"}}}",
+              "{\"jsonrpc\":\"2.0\",\"method\":\"item/completed\",\"params\":{\"threadId\":\"${THREAD_ID}\",\"turnId\":\"${TURN_ID}\",\"item\":{\"type\":\"subAgentActivity\",\"id\":\"call_spawn_reviewer\",\"kind\":\"started\",\"agentThreadId\":\"child-reviewer\",\"agentPath\":\"/root/reviewer\"}}}",
+              "{\"jsonrpc\":\"2.0\",\"method\":\"item/started\",\"params\":{\"threadId\":\"${THREAD_ID}\",\"turnId\":\"${TURN_ID}\",\"item\":{\"type\":\"agentMessage\",\"id\":\"msg-spawned-${TURN}\",\"status\":\"inProgress\",\"text\":\"\"}}}",
+              "{\"jsonrpc\":\"2.0\",\"method\":\"item/agentMessage/delta\",\"params\":{\"threadId\":\"${THREAD_ID}\",\"turnId\":\"${TURN_ID}\",\"itemId\":\"msg-spawned-${TURN}\",\"delta\":\"Spawned the reviewer; waiting for its answers.\"}}",
+              "{\"jsonrpc\":\"2.0\",\"method\":\"item/completed\",\"params\":{\"threadId\":\"${THREAD_ID}\",\"turnId\":\"${TURN_ID}\",\"item\":{\"type\":\"agentMessage\",\"id\":\"msg-spawned-${TURN}\",\"status\":\"completed\",\"text\":\"Spawned the reviewer; waiting for its answers.\"}}}"
+            ]
+          }
+        },
+        {
+          "delayMs": 120
+        },
+        {
+          "emit": {
+            "delayBetweenMs": 40,
+            "lines": [
+              "{\"jsonrpc\":\"2.0\",\"method\":\"rawResponseItem/completed\",\"params\":{\"threadId\":\"${THREAD_ID}\",\"turnId\":\"${TURN_ID}\",\"item\":{\"type\":\"agent_message\",\"id\":\"amsg-first-${TURN}\",\"author\":\"/root/reviewer\",\"recipient\":\"/root\",\"content\":[{\"type\":\"input_text\",\"text\":\"Message Type: FINAL_ANSWER\\nTask name: /root\\nSender: /root/reviewer\\nPayload:\\nFirst review pass.\"}],\"internal_chat_message_metadata_passthrough\":{\"turn_id\":\"${TURN_ID}\"}}}}"
+            ]
+          }
+        },
+        {
+          "delayMs": 120
+        },
+        {
+          "emit": {
+            "delayBetweenMs": 40,
+            "lines": [
+              "{\"jsonrpc\":\"2.0\",\"method\":\"rawResponseItem/completed\",\"params\":{\"threadId\":\"${THREAD_ID}\",\"turnId\":\"${TURN_ID}\",\"item\":{\"type\":\"agent_message\",\"id\":\"amsg-second-${TURN}\",\"author\":\"/root/reviewer\",\"recipient\":\"/root\",\"content\":[{\"type\":\"input_text\",\"text\":\"Message Type: FINAL_ANSWER\\nTask name: /root\\nSender: /root/reviewer\\nPayload:\\nSecond review pass.\"}],\"internal_chat_message_metadata_passthrough\":{\"turn_id\":\"${TURN_ID}\"}}}}"
+            ]
+          }
+        },
+        {
+          "delayMs": 60
+        },
+        {
+          "emit": {
+            "delayBetweenMs": 40,
+            "lines": [
+              "{\"jsonrpc\":\"2.0\",\"method\":\"turn/completed\",\"params\":{\"threadId\":\"${THREAD_ID}\",\"turn\":{\"id\":\"${TURN_ID}\",\"status\":\"completed\"}}}"
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "afterTurns": "repeatLast"
+}

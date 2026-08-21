@@ -307,7 +307,7 @@ func (r *Router) settleTurnStreaming(threadID string, turnIndex int, status stri
 		go func(scope, itemID string) {
 			defer turnWG.Done()
 			defer r.settleWG.Done()
-			captureErr(r.doSettleStreamingText(threadID, scope, itemID, status, "", false))
+			captureErr(r.doSettleStreamingText(threadID, scope, itemID, status, "", false, nil))
 		}(ref.scope, ref.itemID)
 	}
 	for _, key := range thinkingKeys {
@@ -422,7 +422,11 @@ func (r *Router) finishSettle(threadID, scope string) {
 // and the async wrapper (settleStreamingTextAsync, used at
 // content-block-stop on the provider read-loop). Safe to run in any
 // goroutine.
-func (r *Router) doSettleStreamingText(threadID, scope, itemID, status, finalContent string, finalContentPresent bool) error {
+// doSettleStreamingText settles one streaming text row. blockMeta is the
+// stop envelope's row-level meta (today only `delivery`, see
+// blockDeliveryMeta); it is merged onto the row so the persisted item
+// carries what the wire said about the block, not just what it streamed.
+func (r *Router) doSettleStreamingText(threadID, scope, itemID, status, finalContent string, finalContentPresent bool, blockMeta json.RawMessage) error {
 	// finishSettle MUST fire whether we persist successfully, find no
 	// row, or find a row that already settled. Each of those still
 	// represents a streaming slot that just closed; without the drain,
@@ -466,6 +470,7 @@ func (r *Router) doSettleStreamingText(threadID, scope, itemID, status, finalCon
 		item.Summary = interruptedSummary(item.Summary)
 	}
 	now := time.Now().UnixMilli()
+	item.Meta = mergeItemMetaJSON(item.Meta, blockMeta)
 	r.enrichPathRefsFromTexts(threadID, &item, pathRefSource)
 	// Persist highlight spans keyed to the FINAL summary (after the
 	// interrupted decoration above — the spans must match exactly what
@@ -505,7 +510,7 @@ func (r *Router) settleStreamingText(threadID string, turnIndex int, scope strin
 	if !active {
 		return nil
 	}
-	return r.doSettleStreamingText(threadID, scope, itemID, status, "", false)
+	return r.doSettleStreamingText(threadID, scope, itemID, status, "", false, nil)
 }
 
 // settleStreamingTextAsync is the fire-and-forget text-block settle.
@@ -516,11 +521,11 @@ func (r *Router) settleStreamingText(threadID string, turnIndex int, scope strin
 // immediately (duplicate settle calls no-op without spawning a second
 // goroutine). The heavy body runs on a goroutine tracked by
 // r.settleWG so app shutdown can drain.
-func (r *Router) settleStreamingTextAsync(threadID string, turnIndex int, scope, providerItemID, status, finalContent string, finalContentPresent bool) {
+func (r *Router) settleStreamingTextAsync(threadID string, turnIndex int, scope, providerItemID, status, finalContent string, finalContentPresent bool, blockMeta json.RawMessage) {
 	itemID, active := r.takeActiveTextBlock(threadID, turnIndex, scope, providerItemID)
 	if !active {
 		if finalContentPresent && finalContent != "" {
-			if err := r.persistOrUpdateCompletedTextItem(threadID, turnIndex, scope, providerItemID, finalContent); err != nil {
+			if err := r.persistOrUpdateCompletedTextItem(threadID, turnIndex, scope, providerItemID, finalContent, blockMeta); err != nil {
 				log.Printf("triage: persist completed text %s/%s: %v", threadID, providerItemID, err)
 			}
 		}
@@ -529,7 +534,7 @@ func (r *Router) settleStreamingTextAsync(threadID string, turnIndex int, scope,
 	r.settleWG.Add(1)
 	go func() {
 		defer r.settleWG.Done()
-		if err := r.doSettleStreamingText(threadID, scope, itemID, status, finalContent, finalContentPresent); err != nil {
+		if err := r.doSettleStreamingText(threadID, scope, itemID, status, finalContent, finalContentPresent, blockMeta); err != nil {
 			log.Printf("triage: async settle text %s/%s: %v", threadID, itemID, err)
 		}
 	}()
@@ -545,7 +550,7 @@ func (r *Router) settleStreamingTextScopeAsync(threadID string, turnIndex int, s
 		r.settleWG.Add(1)
 		go func(itemID string) {
 			defer r.settleWG.Done()
-			if err := r.doSettleStreamingText(threadID, scope, itemID, status, "", false); err != nil {
+			if err := r.doSettleStreamingText(threadID, scope, itemID, status, "", false, nil); err != nil {
 				log.Printf("triage: async settle text %s/%s: %v", threadID, itemID, err)
 			}
 		}(ref.itemID)
@@ -564,7 +569,7 @@ func (r *Router) activeTextKeysForScope(threadID string, turnIndex int, scope st
 	return keys
 }
 
-func (r *Router) persistOrUpdateCompletedTextItem(threadID string, turnIndex int, scope, providerItemID, content string) error {
+func (r *Router) persistOrUpdateCompletedTextItem(threadID string, turnIndex int, scope, providerItemID, content string, blockMeta json.RawMessage) error {
 	if providerItemID != "" {
 		r.WaitForPendingSettles()
 		if item, found, err := r.store.FindStreamItemByProviderItemID(threadID, turnIndex, itemKindAssistantText, scope, providerItemID); err != nil {
@@ -585,16 +590,17 @@ func (r *Router) persistOrUpdateCompletedTextItem(threadID string, turnIndex int
 			item.Summary = content
 			item.Status = statusCompleted
 			item.UpdatedAt = time.Now().UnixMilli()
+			item.Meta = mergeItemMetaJSON(item.Meta, blockMeta)
 			r.enrichPathRefsFromTexts(threadID, &item, content)
 			r.enrichCodeSpans(&item)
 			payload := assistantTextPayload(item.ID, content, item.UpdatedAt)
 			return r.persistItem(item, &payload)
 		}
 	}
-	return r.persistCompletedTextItem(threadID, turnIndex, scope, providerItemID, content)
+	return r.persistCompletedTextItem(threadID, turnIndex, scope, providerItemID, content, blockMeta)
 }
 
-func (r *Router) persistCompletedTextItem(threadID string, turnIndex int, scope, providerItemID, content string) error {
+func (r *Router) persistCompletedTextItem(threadID string, turnIndex int, scope, providerItemID, content string, blockMeta json.RawMessage) error {
 	itemID := r.nextTextItemID(threadID, turnIndex, scope)
 	now := time.Now().UnixMilli()
 	item := store.Item{
@@ -607,7 +613,7 @@ func (r *Router) persistCompletedTextItem(threadID string, turnIndex int, scope,
 		Summary:   content,
 		PayloadID: AssistantTextPayloadID(itemID),
 		ParentID:  scope,
-		Meta:      providerItemMeta(providerItemID),
+		Meta:      mergeItemMetaJSON(providerItemMeta(providerItemID), blockMeta),
 		CreatedAt: now,
 		UpdatedAt: now,
 	}

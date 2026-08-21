@@ -52,6 +52,12 @@ const (
 	// UI can render a gray "Stopped" badge rather than the red "Failed"
 	// bucket.
 	statusKilled = "killed"
+	// statusDeclined is a refusal, terminal and distinct from statusErrored:
+	// nothing failed, the tool was not allowed to run. The same word is the
+	// `items.decision` vocabulary for the same outcome (see decisionDeclined),
+	// which is why the two are pinned to one another rather than each spelled
+	// out at every site.
+	statusDeclined = "declined"
 )
 
 // isMetaUpdateOnly reports whether this EventToolStart only annotates an
@@ -443,9 +449,19 @@ func (r *Router) persistToolCallCompletedWithoutLaunch(evt provider.ProviderEven
 	return r.persistItemWithInputPayload(item, payload, inputPayload)
 }
 
+// shouldPersistCodexCompletionWithoutLaunch names the Codex tools whose
+// item/completed is the WHOLE lifecycle — no item/started row precedes them —
+// and which therefore have to mint their own top-level row.
+//
+// `send_input` is deliberately NOT here. MultiAgentV2 renders both messaging
+// verbs as `subAgentActivity kind:"interacted"`, and those land on the spawn
+// card as sub-lines (`observeCodexCollabInteractionComplete`) instead of
+// scattering a "Sent input to X" row per message across the timeline. A V1
+// `sendInput` whose spawn card cannot be resolved is dropped by the same rule
+// rather than reappearing as an orphan top-level row with no agent context.
 func shouldPersistCodexCompletionWithoutLaunch(toolName string) bool {
 	switch strings.TrimSpace(toolName) {
-	case "collab_agent", "send_input", "close_agent":
+	case "collab_agent", "close_agent":
 		return true
 	default:
 		return false

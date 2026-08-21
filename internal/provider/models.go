@@ -500,25 +500,67 @@ func CoerceReasoningEffortForModel(providerName, model string, effort ReasoningE
 	return DefaultReasoningEffortForModel(providerName, model, DefaultReasoningEffort)
 }
 
-func providerSupportsReasoningEffort(providerName, effort string) bool {
+// claudeReasoningEfforts and codexReasoningEfforts are the canonical ordered
+// effort sets, per provider. They are the OUTER BOUND on what can be selected,
+// persisted, and sent — not a per-model answer. Which tiers a given model
+// offers is a separate question, answered by ModelInfo.ReasoningEfforts (for
+// Codex, from the live catalog's `supported_reasoning_efforts`, which is
+// server-driven and per model).
+//
+// The two differ because the CLIs differ: Codex's app-server enum runs
+// none -> ultra (codex-rs/protocol/src/openai_models.rs `ReasoningEffort`),
+// while the claude binary's `--effort` has no none/minimal tier and stops at
+// `max`. claude-tui drives the same claude binary, so it shares claude's set.
+//
+// Three packages keep hand-written copies of these sets, because neither may
+// import this one (internal/store stays provider-free; internal/settings would
+// close a dependency cycle). Each copy is pinned by a test that can see both
+// sides, and a new tier belongs in all of them in the same commit:
+//
+//   - internal/store: legalEffortForProvider plus the provider/effort coupling
+//     CHECK on threads + chat_model_profiles —
+//     TestReasoningEffortSetsMatchProvider (internal/store, test-only import).
+//     A tier added here without a migration would fail at INSERT time in
+//     production, which is what that test exists to prevent.
+//   - internal/settings: allowedCodexTextGenerationEfforts /
+//     allowedClaudeTextGenerationEfforts —
+//     TestTextGenerationEffortsMatchTheProviderSets (root package).
+//   - internal/workflow/def: EffortTiers(), against AllReasoningEfforts —
+//     TestWorkflowEffortTiersMatchTheProviderReasoningEfforts (root package).
+//
+// They are unexported deliberately: ReasoningEffortsForProvider is the whole
+// public surface, so no caller outside this package can hold a per-provider
+// slice and no caller can bypass the provider switch (or mutate a shared
+// backing array). Both slices are shared in-package; do not mutate them.
+var (
+	claudeReasoningEfforts = []ReasoningEffort{
+		EffortLow, EffortMedium, EffortHigh, EffortXHigh, EffortMax,
+	}
+	codexReasoningEfforts = []ReasoningEffort{
+		EffortNone, EffortMinimal, EffortLow, EffortMedium, EffortHigh,
+		EffortXHigh, EffortMax, EffortUltra,
+	}
+)
+
+// ReasoningEffortsForProvider returns the canonical ordered effort set for a
+// provider name, or nil for a provider this build does not know. Nil is a
+// refusal, not an empty allowance: providerSupportsReasoningEffort answers
+// false for every slug under it.
+//
+// The returned slice is shared; callers must not mutate it.
+func ReasoningEffortsForProvider(providerName string) []ReasoningEffort {
 	switch providerName {
 	case string(Codex):
-		switch effort {
-		case string(EffortNone), string(EffortMinimal), string(EffortLow), string(EffortMedium), string(EffortHigh), string(EffortXHigh), string(EffortMax), string(EffortUltra):
-			return true
-		default:
-			return false
-		}
+		return codexReasoningEfforts
 	case string(Claude), string(ClaudeTUI):
-		switch effort {
-		case string(EffortLow), string(EffortMedium), string(EffortHigh), string(EffortXHigh), string(EffortMax):
-			return true
-		default:
-			return false
-		}
+		return claudeReasoningEfforts
 	default:
-		return false
+		return nil
 	}
+}
+
+func providerSupportsReasoningEffort(providerName, effort string) bool {
+	return slices.Contains(ReasoningEffortsForProvider(providerName), ReasoningEffort(effort))
 }
 
 func ContextWindowSupportedForModel(providerName, model string, tokens int) bool {
@@ -652,6 +694,15 @@ func claudeEffortOptions(defaultSlug string, efforts ...ReasoningEffort) []Reaso
 	return options
 }
 
+// codexEffortOptions builds one catalog entry's effort rows. The variadic set
+// is PER MODEL and deliberately not ReasoningEffortsForProvider("codex"): which tiers a Codex
+// model offers is server-driven (`supported_reasoning_efforts` on the live
+// `model/list` answer), so this static catalog can only state what is known
+// about each model. The zero-argument default is the conservative mid-range
+// guess for the older models — it omits none/minimal at the bottom and
+// max/ultra at the top on purpose, because offering a tier a model does not
+// have is a picker row that fails when it is clicked. The GPT-5.6 family names
+// its top tiers explicitly.
 func codexEffortOptions(defaultSlug string, efforts ...ReasoningEffort) []ReasoningEffortOption {
 	if len(efforts) == 0 {
 		efforts = []ReasoningEffort{EffortLow, EffortMedium, EffortHigh, EffortXHigh}

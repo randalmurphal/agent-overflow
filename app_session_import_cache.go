@@ -185,6 +185,7 @@ func cloneSessionImportScan(scan sessionImportScan) sessionImportScan {
 	rows := slices.Clone(scan.result.Rows)
 	for i := range rows {
 		rows[i].Warnings = slices.Clone(rows[i].Warnings)
+		rows[i].ImportedFrom = rows[i].ImportedFrom.Clone()
 	}
 	scan.result.Rows = rows
 	return scan
@@ -192,5 +193,6 @@ func cloneSessionImportScan(scan sessionImportScan) sessionImportScan {
 
 func cloneScanRow(row sessionimport.Row) sessionimport.Row {
 	row.Warnings = slices.Clone(row.Warnings)
+	row.ImportedFrom = row.ImportedFrom.Clone()
 	return row
 }

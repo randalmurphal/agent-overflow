@@ -455,7 +455,7 @@ const (
 )
 
 // ThreadTitleContextItems returns the conversation rows a thread-title
-// regeneration reads: top-level (`parent_id = ''`) `user_text` and
+// regeneration reads: top-level (empty `parent_id`) `user_text` and
 // `assistant_text` items, oldest-first, hydrated WITHOUT the payload
 // join — Summary carries the text for both kinds, and the caller
 // renders nothing else.
@@ -678,4 +678,45 @@ func (s *Store) MaxItemIndexForTurn(threadID string, turnIndex int) (int, bool, 
 		return 0, false, nil
 	}
 	return int(maxIndex.Int64), true, nil
+}
+
+// ListUnclaimedProviderQueuedUserItemIDs returns the ids of this thread's
+// `user_text` rows whose message the PROVIDER's own queue took ownership of
+// (`itemmeta.MarkProviderQueued`, a Codex `thread/queue/add` on an app-server
+// >= 0.148) and that no provider echo has claimed yet.
+//
+// The pair of conditions is the whole definition of "still with the provider":
+// the marker is permanent by design (nothing clears it when the message
+// eventually runs), so the row is only outstanding while it also carries no
+// `provider_item_id` — the key triage stamps when the dispatched turn's
+// `userMessage` echo lands on it.
+//
+// Ordered by timeline position so a caller reporting them names them in the
+// order the provider will run them.
+func (s *Store) ListUnclaimedProviderQueuedUserItemIDs(threadID string) ([]string, error) {
+	rows, err := s.reader().Query(
+		`SELECT id FROM items
+		  WHERE thread_id = ?
+		    AND kind = 'user_text'
+		    AND COALESCE(json_extract(meta, '$.providerQueued'), 0) != 0
+		    AND COALESCE(json_extract(meta, '$.provider_item_id'), '') = ''
+		  ORDER BY turn_index, item_index`,
+		threadID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("store: list provider-queued user rows for thread %s: %w", threadID, err)
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("store: scan provider-queued user row for thread %s: %w", threadID, err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: iterate provider-queued user rows for thread %s: %w", threadID, err)
+	}
+	return ids, nil
 }

@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"log"
 
 	"agent-overflow/internal/store"
 )
@@ -72,7 +73,78 @@ func (a *App) GetUsageStats(query store.UsageQuery) ([]store.UsageBucket, error)
 		byBucket[bucket].UnpricedRows = spend.UnpricedRows
 	}
 
+	buckets = a.overlayProviderThreadCost(query, buckets)
+
 	return buckets, nil
+}
+
+// overlayProviderThreadCost replaces a single thread's lifetime cost with the
+// PROVIDER's own figure when one has been recorded (Codex >= 0.148; see
+// app_codex_thread_cost.go), and labels the bucket so a surface can say whose
+// number it is showing.
+//
+// It applies to exactly one query shape: one thread, no time bounds, no
+// grouping, no model filter — the composer usage chip's lifetime query, and
+// the only question a cumulative per-thread total actually answers. Every
+// other shape keeps the rate-table arithmetic, because the provider figure
+// cannot be decomposed into it:
+//
+//   - a day/week/month bucket would need the estimate split across time, and
+//     the provider states one number for the thread's whole life;
+//   - a model or provider bucket would need it split per model — the
+//     `threadUsage.groups` breakdown exists but reports credits, not dollars,
+//     and every token field on it is optional;
+//   - a project or multi-thread aggregate would need it summed with rate-table
+//     figures for the threads that have no estimate, which mixes two pricing
+//     bases inside one total without any way to say so.
+//
+// ZERO buckets is a real case, not an early exit: a RESUMED provider thread
+// has spend the backend knows about and no AO ledger rows at all until it
+// settles a turn here (QueryUsage returns nothing for a thread with no rows).
+// Reporting "no usage" beside a provider figure already on disk would hide the
+// better answer, so the bucket is synthesized — with zero tokens and zero
+// turns, which is the truth about the LEDGER, and the provider's dollars.
+//
+// Failure to read is not failure to answer: the ledger total is already in the
+// bucket, so an error logs and leaves it.
+func (a *App) overlayProviderThreadCost(query store.UsageQuery, buckets []store.UsageBucket) []store.UsageBucket {
+	if query.ThreadID == "" || query.GroupBy != "" || query.Model != "" {
+		return buckets
+	}
+	if query.FromMillis != 0 || query.ToMillis != 0 {
+		return buckets
+	}
+	if len(buckets) > 1 {
+		return buckets
+	}
+	// A row that describes a provider thread this AO thread no longer points
+	// at answers `found=false` here: GetProviderThreadCost compares the stored
+	// provider-thread identity against the thread's current SessionRef
+	// (migration v68). So a rollback whose delete never landed costs the user
+	// the rate-table figure that is already in the bucket, never another Codex
+	// thread's total — with no process-lifetime marker in the way, which is
+	// what makes it survive a restart. See forgetCodexThreadCost.
+	cost, found, err := a.store.GetProviderThreadCost(query.ThreadID)
+	if err != nil {
+		log.Printf("usage stats: provider thread cost for %s: %v", query.ThreadID, err)
+		return buckets
+	}
+	if !found {
+		return buckets
+	}
+	if query.Provider != "" && query.Provider != cost.Provider {
+		return buckets
+	}
+	if len(buckets) == 0 {
+		buckets = append(buckets, store.UsageBucket{})
+	}
+	buckets[0].CostUSD = cost.CostUSD()
+	// The provider priced the whole thread, so nothing in this bucket is
+	// unpriced any more — a `≥` lower-bound marker over a complete figure
+	// would be a worse answer than the one it replaced.
+	buckets[0].UnpricedRows = 0
+	buckets[0].CostSource = cost.CostSource
+	return buckets
 }
 
 // minTZOffsetMinutes / maxTZOffsetMinutes bound UsageQuery.TZOffsetMinutes

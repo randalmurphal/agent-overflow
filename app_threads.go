@@ -498,6 +498,11 @@ func (a *App) RenameThread(id string, title string) error {
 		ID:     id,
 		Title:  &title,
 	})
+	// Keep the peer registry honest: a live Claude session with the
+	// cross-session inbox open is discoverable by name, and the user just
+	// changed the name. No-op for every other thread
+	// (app_claude_peer_name.go).
+	a.syncPeerSessionNameAsync(id)
 	return nil
 }
 

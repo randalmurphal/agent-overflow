@@ -112,8 +112,47 @@ func (a *App) resolveCodexForkAnchor(threadID string, lastKeptTurnIndex int) (st
 // history when "") through the thread's live app-server session, or a
 // throwaway resume session when none is active.
 func (a *App) forkCodexThreadAt(source store.Thread, lastTurnID string) (string, error) {
+	forkedID := ""
+	err := a.withCodexThreadSession(source, func(session *codex.Session) error {
+		var forkErr error
+		forkedID, forkErr = session.ForkAt(context.Background(), lastTurnID)
+		return forkErr
+	})
+	return forkedID, err
+}
+
+// withCodexThreadSession runs fn against an app-server connection for
+// source: the thread's live session when one is running, otherwise a
+// throwaway resume session closed on the way out.
+//
+// Extracted so the two history cuts (`thread/fork` here,
+// `thread/revert` in app_codex_revert.go) share ONE connection. The
+// rollback path stops the live session before cutting, so both cuts
+// reach the throwaway branch — deciding between them across two
+// brackets would spawn two app-servers to perform one truncation.
+func (a *App) withCodexThreadSession(source store.Thread, fn func(*codex.Session) error) error {
+	return a.withCodexThreadSessionPreparedBy(source, nil, fn)
+}
+
+// withCodexThreadSessionPreparedBy is the same bracket with a hook that runs
+// against the connection BEFORE the thread is loaded.
+//
+// The distinction only exists on the throwaway branch, and it is the whole
+// point of the hook: `thread/resume` LOADS the thread, and a loaded thread's
+// idle hook drains its provider-side queue. Work that must happen before a
+// queued row can dispatch — the rollback's purge of rows the user just removed
+// — has to run on this side of the resume, not as fn's first statement. On the
+// LIVE branch there is no resume to be ahead of, so prepare simply runs first;
+// the thread has been loaded for as long as the session has existed and the
+// purge is racing the idle hook either way.
+func (a *App) withCodexThreadSessionPreparedBy(
+	source store.Thread, prepare func(*codex.Session), fn func(*codex.Session) error,
+) error {
 	if activeSession, ok := a.activeCodexSession(source.ID); ok {
-		return activeSession.ForkAt(context.Background(), lastTurnID)
+		if prepare != nil {
+			prepare(activeSession)
+		}
+		return fn(activeSession)
 	}
 
 	tempSession, err := codex.NewSession(context.Background(), source.ID, codex.Config{
@@ -121,6 +160,7 @@ func (a *App) forkCodexThreadAt(source store.Thread, lastTurnID string) (string,
 		Model:          source.Model,
 		WorkDir:        source.WorkspacePath,
 		ResumeThreadID: source.SessionRef,
+		BeforeResume:   prepare,
 		// Boot-mode overrides only, deliberately no `ao` credential: this is a
 		// throwaway app-server used to issue one fork request, not a session an
 		// agent takes a turn in.
@@ -128,11 +168,11 @@ func (a *App) forkCodexThreadAt(source store.Thread, lastTurnID string) (string,
 		EventLogger: a.logger,
 	}, func(provider.ProviderEvent) {})
 	if err != nil {
-		return "", fmt.Errorf("resume source thread: %w", err)
+		return fmt.Errorf("resume source thread: %w", err)
 	}
 	defer tempSession.Close()
 
-	return tempSession.ForkAt(context.Background(), lastTurnID)
+	return fn(tempSession)
 }
 
 func (a *App) activeCodexSession(threadID string) (*codex.Session, bool) {

@@ -427,11 +427,45 @@ type App struct {
 	// (/effort, /fast) awaiting its EventCommandResult confirmation.
 	// Guarded by mu; see app_claude_live_config.go.
 	claudeLiveConfigApplies map[string]claudeLiveConfigApply
+	// Test override for the unconfirmed-apply watchdog's window. Zero
+	// means claudeLiveApplyConfirmAfter.
+	claudeLiveApplyConfirmAfterOverride time.Duration
 	// (sessionToken, axis) → that session answered a live-config command
 	// with something other than the expected state change; the reconciler
 	// must stop retrying the axis live and use the restart path for the
 	// rest of the session's life. Guarded by mu.
 	claudeLiveApplyDegraded map[claudeLiveApplyKey]struct{}
+	// (sessionToken, axis) → how many live-config applies have been
+	// registered for that pair. An apply carries the value it was stamped
+	// with, so a verdict computed asynchronously — the effort read-back,
+	// which runs after its registry entry is already consumed — can tell
+	// that a newer apply superseded it instead of reverting the user's
+	// latest choice. Guarded by mu; purged with the session
+	// (purgeClaudeLiveConfigStateLocked).
+	claudeLiveApplyGenerations map[claudeLiveApplyKey]uint64
+	// liveClaudeReconcileRunning marks a settings-driven Claude reconcile
+	// sweep in flight; liveClaudeReconcileDirty records saves that landed
+	// during one, so N rapid saves cost at most two sweeps instead of N
+	// stacked goroutines. Guarded by mu; see
+	// app_session_config.go scheduleLiveClaudeReconcile.
+	liveClaudeReconcileRunning bool
+	liveClaudeReconcileDirty   bool
+	// reconcileSessionConfigFn overrides one thread's share of that sweep.
+	// Test seam only (nil in production); guarded by mu.
+	reconcileSessionConfigFn func(threadID string)
+	// readClaudeAppliedSettingsFn overrides the `get_settings` round trip
+	// behind an effort read-back. Test seam only (nil in production);
+	// guarded by mu. See app_claude_live_config.go.
+	readClaudeAppliedSettingsFn func(threadID, sessionToken string) (*claude.AppliedSettings, error)
+	// sessionToken → the reconcile path's last system-prompt-override
+	// render for that session. Rendering costs up to two git subprocesses
+	// ({{GIT_BLOCK}}), and a live apply answering
+	// ErrLiveUpdateRequiresRestart pays for the identical render twice —
+	// once on the reconcile that could not converge, once more when the
+	// deferred-restart watcher re-checks at the next quiet point. Guarded
+	// by mu; purged with the session
+	// (purgeClaudeLiveConfigStateLocked). See app_session_prompt_override.go.
+	promptOverrideRenders map[string]promptOverrideRender
 	// threadID → persisted in-process system prompt overrides used for
 	// discussion participants and other non-default session starts.
 	threadSystemPrompts map[string]string
@@ -773,6 +807,48 @@ type App struct {
 	// sweep. Production leaves it nil and retentionNow reads time.Now
 	// directly. Mirrors idleReaperNowFn.
 	retentionNowFn func() time.Time
+	// codexThreadCostInflight single-flights the post-turn Codex
+	// thread-cost read, per thread. The read is fired asynchronously from a
+	// settled turn and forwarded by the app-server to the ChatGPT backend,
+	// so a fast follow-up turn can settle while the previous read is still
+	// out; without the gate each settle would add another concurrent
+	// backend request for a figure that only gets more accurate by
+	// waiting.
+	//
+	// The value is the slot's whole state, not a bare presence marker: a
+	// settle during an in-flight read cannot simply be dropped (that read
+	// may have been answered before the turn completed), so it marks the
+	// slot dirty, hands over its own session token, and the owner goes
+	// around once more against the CURRENT session. See
+	// app_codex_thread_cost.go.
+	//
+	// There is deliberately no companion "the delete failed" map. A stored
+	// row names the provider thread it was read from (store migration v68),
+	// and every read compares that against the thread's current SessionRef,
+	// so a row a rollback could not delete is already unreadable — no
+	// process-lifetime marker is standing between it and the user.
+	codexThreadCostMu       sync.Mutex
+	codexThreadCostInflight map[string]*codexThreadCostRead
+}
+
+// codexThreadCostRead is one thread's in-flight read slot.
+//
+// Every field is guarded by App.codexThreadCostMu, and the slot exists only
+// while a read is out — which is also what bounds the epoch counter: nothing
+// needs to remember a rollback that happened while no read was in flight.
+type codexThreadCostRead struct {
+	// dirty records that a turn settled while this read was out. The owner
+	// consumes it and goes around once more.
+	dirty bool
+	// token is the session the NEXT pass must read from. A settle overwrites
+	// it, because a rerun that used the first claimant's token would fail its
+	// own liveness check after a session restart and silently do nothing.
+	token string
+	// epoch invalidates a read that is already in flight. forgetCodexThreadCost
+	// bumps it when a rollback repoints or clears the thread's SessionRef: the
+	// answer coming back describes the provider thread this AO thread no longer
+	// is, so it must not be written back.
+	epoch uint64
 }
 
 // session wraps a provider session regardless of type. Exactly one of
@@ -875,6 +951,20 @@ func (s session) providerSession() provider.Session {
 	default:
 		return nil
 	}
+}
+
+// usesProviderQueue reports whether this session's mid-turn user messages go
+// into the PROVIDER's own queue (`thread/queue/*`, codex >= 0.148) instead of
+// AO's in-process flushqueue.
+//
+// The two are mutually exclusive by construction and the decision is frozen at
+// session start (`codex.Session.ThreadQueueNative`, taken from the initialize
+// handshake): the provider dispatches its queue itself when the thread goes
+// idle, so a session where both dispatchers were live could send the same
+// message twice. Only Codex has a provider queue — Claude and claude-tui keep
+// AO's, unchanged.
+func (s session) usesProviderQueue() bool {
+	return s.codex != nil && s.codex.ThreadQueueNative()
 }
 
 func NewApp() *App {

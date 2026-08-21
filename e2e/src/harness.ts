@@ -263,6 +263,21 @@ export class HarnessApp {
     });
   }
 
+  /**
+   * Count events seen on a channel, consumed or not.
+   *
+   * The absence half of an event assertion: `waitForEvent` can only prove
+   * something happened, and a test that needs to prove something did NOT
+   * happen has to read the log directly rather than wait on a timeout. Pair
+   * it with a barrier that guarantees the backend is past the point where
+   * the event would have fired.
+   */
+  countEvents<T = unknown>(channel: string, predicate?: (data: T) => boolean): number {
+    return this.eventLog.filter(
+      (ev) => ev.channel === channel && (!predicate || predicate(ev.data as T)),
+    ).length;
+  }
+
   /** Drop remembered events — call after a reset so stale matches can't leak. */
   clearEvents(): void {
     this.eventLog = [];

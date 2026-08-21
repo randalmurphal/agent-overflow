@@ -189,6 +189,27 @@ export function classifyToolName(
         label: raw === "TaskGet" ? "task" : "tasks",
         isSubagent: false,
       };
+    case "ListAgents":
+      // Claude Code's cross-session peer directory: the other Claude
+      // sessions running on this machine, which the model reads before it
+      // can address one. Present only when the peer inbox is on, so the
+      // row appearing at all is itself information.
+      return {
+        icon: "search",
+        label: "sessions",
+        isSubagent: false,
+      };
+    case "SendMessage":
+      // The other half: a message addressed to one of those sessions.
+      // Deliberately NOT `isSubagent` — a peer is a separate, independently
+      // driven session, not a child this turn spawned and waits on, and
+      // marking it as one would put it on the subagent rail with a
+      // lifecycle nothing here owns.
+      return {
+        icon: "speech-bubble",
+        label: "message",
+        isSubagent: false,
+      };
     case "WebFetch":
     case "WebSearch":
     case "webSearch":

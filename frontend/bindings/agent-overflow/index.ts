@@ -40,6 +40,7 @@ export {
     HighlightPatchContextRequest,
     HighlightPatchRequest,
     HighlightResult,
+    ImportOrigin,
     ImportProviderStatus,
     ImportRunHandle,
     ImportScanRequest,

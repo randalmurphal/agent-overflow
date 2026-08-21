@@ -27,7 +27,7 @@ pre-committed fork cannot get re-forked on the next restart.
 `App.startSessionNow` picks the right cursor per provider:
 
 - **Claude** — passes `--resume <session_ref>` via `buildArgs` in
-  `internal/provider/claude/session.go`. If `PendingForkRef` is
+  `internal/provider/claude/session_spawn.go`. If `PendingForkRef` is
   populated it replaces `Resume` and the `ForkSession` flag is set,
   producing `--fork-session --resume <source-ref>` so the CLI replays
   from the source into a fresh session id.

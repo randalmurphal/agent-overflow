@@ -32,17 +32,22 @@ import (
 // backward compatibility with any pre-rename builds; `agent_path` is
 // the fast path and what we forward on.
 type subagentNotification struct {
-	AgentPath       string         `json:"agent_path"`
-	Status          string         `json:"status"`
-	Message         string         `json:"-"`
+	AgentPath string `json:"agent_path"`
+	Status    string `json:"status"`
+	Message   string `json:"-"`
+	// MessageType is the mailbox envelope's own `Message Type:` header —
+	// FINAL_ANSWER for a child's terminal answer, MESSAGE for a mid-run
+	// progress note. Empty for the legacy <subagent_notification> carriers.
+	MessageType     string         `json:"-"`
 	MailboxDelivery bool           `json:"-"`
 	DeliveryID      string         `json:"-"`
 	Extra           map[string]any `json:"-"`
 }
 
 const (
-	interAgentFinalAnswerMarker = "Message Type: FINAL_ANSWER"
-	interAgentFinalAnswerPrefix = interAgentFinalAnswerMarker + "\n"
+	interAgentMessageTypePrefix = "Message Type: "
+	interAgentFinalAnswerType   = "FINAL_ANSWER"
+	interAgentProgressType      = "MESSAGE"
 )
 
 // extractSubagentCompletionFromRawAgentMessageItem parses the MultiAgentV2
@@ -53,25 +58,40 @@ func extractSubagentCompletionFromRawAgentMessageItem(item map[string]json.RawMe
 	if strings.TrimSpace(readRawString(item, "type")) != "agent_message" {
 		return subagentNotification{}, false
 	}
-	text, ok := rawMessageSingleTextOfType(item, "input_text")
+	header, tailDigest, ok := rawMailboxEnvelopeText(item)
 	if !ok {
 		return subagentNotification{}, false
 	}
-	notification, ok := parseSubagentFinalAnswer(
+	notification, ok := parseInterAgentMailboxEnvelope(
 		readRawString(item, "author"),
 		readRawString(item, "recipient"),
-		text,
+		header,
 	)
 	if !ok {
 		return subagentNotification{}, false
 	}
-	notification.DeliveryID = interAgentDeliveryID(item)
-	if notification.DeliveryID == "" {
-		notification.DeliveryID = interAgentContentDeliveryID(notification)
-	}
+	notification.DeliveryID = interAgentContentDeliveryID(notification, tailDigest)
 	return notification, true
 }
 
+// extractSubagentCompletionFromInterAgentCommunication reads the DURABLE
+// mailbox record: a plain `content` string and nothing else.
+//
+// That carrier cannot identify an ENCRYPTED progress beat, and is refused for
+// one. A MESSAGE envelope's payload is the only thing that separates two of
+// them, and an encrypted envelope's plaintext stops at "Payload:\n" — so every
+// encrypted progress note from one child renders here as the SAME
+// (agent path, MESSAGE, "", "") tuple. Admitting it would hand one delivery a
+// second identity (the raw `agent_message` carrier keys the same beat on its
+// ciphertext tail digest, which this record does not have), duplicating the
+// sub-line the card shows, while every later beat from that child collapsed
+// onto the one id this carrier can mint. The raw carrier is the only one that
+// can tell these apart, so it is the only one allowed to report them.
+//
+// FINAL_ANSWER and PLAINTEXT progress are unaffected: their payload is in the
+// plaintext header, both carriers see the same bytes, and
+// interAgentContentDeliveryID already drops the tail for FINAL_ANSWER so the
+// two agree on one id.
 func extractSubagentCompletionFromInterAgentCommunication(payload map[string]json.RawMessage) (subagentNotification, bool) {
 	var triggerTurn *bool
 	if raw, ok := payload["trigger_turn"]; ok {
@@ -80,7 +100,7 @@ func extractSubagentCompletionFromInterAgentCommunication(payload map[string]jso
 	if triggerTurn == nil || *triggerTurn {
 		return subagentNotification{}, false
 	}
-	notification, ok := parseSubagentFinalAnswer(
+	notification, ok := parseInterAgentMailboxEnvelope(
 		readRawString(payload, "author"),
 		readRawString(payload, "recipient"),
 		readRawString(payload, "content"),
@@ -88,37 +108,101 @@ func extractSubagentCompletionFromInterAgentCommunication(payload map[string]jso
 	if !ok {
 		return subagentNotification{}, false
 	}
-	notification.DeliveryID = interAgentDeliveryID(payload)
-	if notification.DeliveryID == "" {
-		notification.DeliveryID = interAgentContentDeliveryID(notification)
+	if notification.MessageType == interAgentProgressType && notification.Message == "" {
+		return subagentNotification{}, false
 	}
+	notification.DeliveryID = interAgentContentDeliveryID(notification, "")
 	return notification, true
 }
 
-func interAgentContentDeliveryID(notification subagentNotification) string {
-	digest := sha256.Sum256([]byte(notification.AgentPath + "\x00" + notification.Message))
+// interAgentContentDeliveryID is the delivery identity for one mailbox record.
+//
+// It is deliberately NOT derived from
+// `internal_chat_message_metadata_passthrough.turn_id`: that field is the
+// RECEIVING PARENT turn, which is constant across every delivery drained into
+// one parent turn (corpus: rollout-2026-08-20T16-16-28-01a020d1-* records 686
+// and 763, two distinct FINAL_ANSWERs sharing turn_id
+// 01a020d1-a06b-7b71-9791-749c71f19cd7). Using it collapsed a child's second
+// answer onto the first row.
+//
+// Hashing (agent path, envelope type, payload) instead makes every distinct
+// delivery distinct, while the two carriers of ONE delivery — the live
+// `rawResponseItem/completed` stream and the rollout tail — still agree, which
+// is what `claimSubagentNotification` needs to dedupe them.
+// tailDigest covers the non-text content blocks (Codex's `encrypted_content`
+// half of an encrypted envelope). It is the only thing that distinguishes two
+// MESSAGE progress deliveries, whose plaintext header ends at "Payload:\n" and
+// whose body never leaves the ciphertext.
+//
+// It is deliberately NOT mixed in for FINAL_ANSWER. Only ONE of the two
+// carriers can ever produce a tail: the raw `agent_message` response item
+// carries the ciphertext block, while the durable `inter_agent_communication`
+// rollout record carries a plain `content` string and nothing else. Mixing the
+// tail in unconditionally therefore gave the SAME encrypted delivery two
+// different ids depending on which carrier saw it first, which is precisely
+// the duplicate row this content key exists to prevent. A FINAL_ANSWER's
+// terminal payload is in the plaintext header, so (agent path, type, payload)
+// already separates two distinct answers; MESSAGE keeps the tail because its
+// payload is not.
+//
+// That leaves MESSAGE with the same split the tail was added to fix, one level
+// down: an ENCRYPTED progress beat is identifiable ONLY through the tail, so
+// the carrier that has no tail cannot name it. That is resolved where the
+// carriers are read rather than here — the durable carrier refuses an
+// encrypted progress beat outright
+// (extractSubagentCompletionFromInterAgentCommunication) instead of minting a
+// second, degenerate id for a delivery the raw carrier already identified.
+func interAgentContentDeliveryID(notification subagentNotification, tailDigest string) string {
+	if notification.MessageType == interAgentFinalAnswerType {
+		tailDigest = ""
+	}
+	digest := sha256.Sum256([]byte(
+		notification.AgentPath + "\x00" +
+			notification.MessageType + "\x00" +
+			notification.Message + "\x00" +
+			tailDigest,
+	))
 	return "content:" + hex.EncodeToString(digest[:])
 }
 
-func interAgentDeliveryID(item map[string]json.RawMessage) string {
-	raw := item["internal_chat_message_metadata_passthrough"]
-	var metadata struct {
-		TurnID string `json:"turn_id"`
-	}
-	if len(raw) == 0 || json.Unmarshal(raw, &metadata) != nil {
-		return ""
-	}
-	return strings.TrimSpace(metadata.TurnID)
-}
-
-func parseSubagentFinalAnswer(author, recipient, text string) (subagentNotification, bool) {
+// parseInterAgentMailboxEnvelope validates the strict child -> parent mailbox
+// envelope Codex renders into parent model context and classifies it by its own
+// `Message Type:` header. Two types reach the root mailbox:
+//
+//   - FINAL_ANSWER — the child's terminal answer. Transcript completion.
+//   - MESSAGE      — a mid-run progress note (`send_message`, QueueOnly). NOT
+//     terminal: the child keeps running, and on an encrypted
+//     envelope the payload never leaves the ciphertext, so the
+//     plaintext header stops at "Payload:\n".
+//
+// NEW_TASK envelopes are parent -> child and never carry `/root` as recipient,
+// so they cannot reach this parser.
+func parseInterAgentMailboxEnvelope(author, recipient, text string) (subagentNotification, bool) {
 	author = strings.TrimSpace(author)
 	recipient = strings.TrimSpace(recipient)
-	if author == "" || recipient != "/root" || !strings.HasPrefix(text, interAgentFinalAnswerPrefix) {
+	if author == "" || recipient != "/root" || !strings.HasPrefix(text, interAgentMessageTypePrefix) {
 		return subagentNotification{}, false
 	}
 
-	rest := strings.TrimPrefix(text, interAgentFinalAnswerPrefix)
+	typeLine, rest, ok := strings.Cut(text, "\n")
+	if !ok {
+		return subagentNotification{}, false
+	}
+	messageType := strings.TrimSpace(strings.TrimPrefix(typeLine, interAgentMessageTypePrefix))
+	status := ""
+	switch messageType {
+	case interAgentFinalAnswerType:
+		status = "completed"
+	case interAgentProgressType:
+		// Progress only. Live-state evidence, never a terminal status —
+		// inferring "still running" from a delivery is exactly the kind of
+		// heuristic invariant 25 forbids, so this rides the wire-typed
+		// envelope header and nothing else.
+		status = "running"
+	default:
+		return subagentNotification{}, false
+	}
+
 	taskLine, rest, ok := strings.Cut(rest, "\n")
 	if !ok || strings.TrimSpace(strings.TrimPrefix(taskLine, "Task name:")) != recipient ||
 		!strings.HasPrefix(taskLine, "Task name:") {
@@ -135,7 +219,8 @@ func parseSubagentFinalAnswer(author, recipient, text string) (subagentNotificat
 	}
 	return subagentNotification{
 		AgentPath:       author,
-		Status:          "completed",
+		Status:          status,
+		MessageType:     messageType,
 		Message:         strings.TrimSpace(payload),
 		MailboxDelivery: true,
 	}, true
@@ -425,6 +510,61 @@ func interAgentNotificationAuthorMatches(author string, notifications []subagent
 	return true
 }
 
+// rawMailboxEnvelopeText reads the mailbox envelope's plaintext header out of a
+// raw `agent_message` item and digests whatever content blocks follow it.
+//
+// The strict single-block form (`rawMessageSingleTextOfType`) is what a
+// plaintext FINAL_ANSWER looks like, but an ENCRYPTED envelope ships two blocks
+// — the plaintext `input_text` header plus an `encrypted_content` body (corpus:
+// child rollout 01a020e0-* records 232 / 340 / 350). Requiring exactly one made
+// every encrypted delivery invisible. The header must still lead, and the tail
+// is never rendered: it is ciphertext. It is digested only so two progress
+// deliveries with identical headers stay distinguishable.
+func rawMailboxEnvelopeText(item map[string]json.RawMessage) (header string, tailDigest string, ok bool) {
+	contentRaw, present := item["content"]
+	if !present || len(contentRaw) == 0 {
+		return "", "", false
+	}
+	// Decoded as raw blocks: only the first one is inspected field-by-field,
+	// and the tail is hashed as the bytes the wire actually carried instead of
+	// being re-marshalled through a map (which would sort keys and reallocate
+	// every ciphertext block just to digest it).
+	var blocks []json.RawMessage
+	if json.Unmarshal(contentRaw, &blocks) != nil || len(blocks) == 0 {
+		return "", "", false
+	}
+	var head map[string]json.RawMessage
+	if json.Unmarshal(blocks[0], &head) != nil {
+		return "", "", false
+	}
+	if strings.TrimSpace(readRawString(head, "type")) != "input_text" {
+		return "", "", false
+	}
+	header, present = readRawStringPresent(head, "text")
+	if !present {
+		return "", "", false
+	}
+	if len(blocks) == 1 {
+		return header, "", true
+	}
+	hash := sha256.New()
+	for _, block := range blocks[1:] {
+		var typed struct {
+			Type string `json:"type"`
+		}
+		if json.Unmarshal(block, &typed) != nil {
+			return "", "", false
+		}
+		// A trailing TEXT block would be envelope content this parser does not
+		// model; refuse rather than silently dropping it.
+		if strings.TrimSpace(typed.Type) == "input_text" {
+			return "", "", false
+		}
+		_, _ = hash.Write(block)
+	}
+	return header, hex.EncodeToString(hash.Sum(nil)), true
+}
+
 func rawMessageSingleTextOfType(item map[string]json.RawMessage, allowedType string) (string, bool) {
 	contentRaw, ok := item["content"]
 	if !ok || len(contentRaw) == 0 {
@@ -457,6 +597,9 @@ func buildSubagentNotificationMeta(n subagentNotification) json.RawMessage {
 	fields["status"] = n.Status
 	if n.Message != "" {
 		fields["message"] = n.Message
+	}
+	if n.MessageType != "" {
+		fields["message_type"] = n.MessageType
 	}
 	if n.MailboxDelivery {
 		fields["mailbox_delivery"] = true

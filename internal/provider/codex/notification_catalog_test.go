@@ -363,3 +363,52 @@ done
 		t.Errorf("handshake opted out of a lifecycle notification: %v", got)
 	}
 }
+
+// TestCatalogCoversThe0149Additions pins the five methods the 0.147→0.149
+// sync added, and — more importantly — which side of the consumed/opt-out
+// line each one landed on. The generic partition test above is satisfied by
+// ANY assignment; this one is the record of the decision.
+func TestCatalogCoversThe0149Additions(t *testing.T) {
+	added := []struct {
+		method   string
+		consumed bool
+		why      string
+	}{
+		{
+			"thread/queue/changed", true,
+			"an external `codex queue` write is about to inject a turn into a thread AO owns; " +
+				"opting out would make that turn arrive with no explanation",
+		},
+		{
+			"autoApprovalReview/strictReviewRequired", true,
+			"the `auto` tier's reviewer switched to the slow path; without the notice the session looks stalled",
+		},
+		{
+			"thread/reverted", true,
+			"AO cuts history in place with thread/revert wherever the thread supports it " +
+				"(session_revert.go); the echo is what releases the RPC's wait, and an " +
+				"UNsolicited one is the only signal that a foreign writer cut a thread AO caches",
+		},
+		{
+			"project/changed", false,
+			"upstream's project surface is not consumed; AO owns its own project rows",
+		},
+		{
+			"thread/project/updated", false,
+			"same — a thread's upstream project binding is not a thing AO reads",
+		},
+	}
+	optOut := sessionOptOutNotificationMethods()
+	for _, entry := range added {
+		if !slices.Contains(codexNotificationCatalog, entry.method) {
+			t.Errorf("%q missing from codexNotificationCatalog", entry.method)
+			continue
+		}
+		if got := notificationMethodConsumed(entry.method); got != entry.consumed {
+			t.Errorf("%q consumed = %v, want %v (%s)", entry.method, got, entry.consumed, entry.why)
+		}
+		if got := slices.Contains(optOut, entry.method); got == entry.consumed {
+			t.Errorf("%q in opt-out list = %v, want %v", entry.method, got, !entry.consumed)
+		}
+	}
+}

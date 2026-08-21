@@ -43,6 +43,27 @@ type converter struct {
 	// is exactly the case the fallback exists for.
 	sawCompacted bool
 
+	// paginated is the file's declared history mode
+	// (`session_meta.history_mode == "paginated"`, Codex >= 0.147). It
+	// decides which of the two record sets owns the conversation: a
+	// paginated rollout persists NO legacy `user_message` /
+	// `agent_message` / `agent_reasoning` / `*_end` records and one
+	// `event_msg/item_completed` per turn item instead
+	// (codex-rs/rollout/src/policy.rs). Reading it off the header rather
+	// than inferring it from the records seen so far is what makes a TAIL
+	// REFRESH behave identically to a full parse: the header is always read
+	// (preScan starts at offset 0), while a running flag would be clear for
+	// a cursor that happens to land after the first item.
+	paginated bool
+
+	// itemRows holds call ids an `item_completed` record already emitted a
+	// complete standalone tool row for. In a paginated file the item is
+	// written one line BEFORE the `response_item` call carrying the same
+	// id, so without this the response item would open a second row for a
+	// tool the item already reported in full. See items.go
+	// applyItemEndEvent and tools.go.
+	itemRows map[string]struct{}
+
 	// Turn state (turns.go).
 	turnIndex  int
 	turn       *openTurn
@@ -80,6 +101,8 @@ func newConverter(opts ParseOptions, pre preScanResult) *converter {
 		// past it, so a `compacted` record the pre-scan happened to see
 		// before short-circuiting is carried over rather than re-derived.
 		sawCompacted: pre.sawCompacted,
+		paginated:    pre.meta.HistoryMode == HistoryModePaginated,
+		itemRows:     map[string]struct{}{},
 		unknown:      map[string]int{},
 		usedTurnIDs:  map[string]struct{}{},
 		tools:        map[string]*openTool{},
@@ -111,6 +134,20 @@ func (c *converter) result() ParseResult {
 		res.Warnings = append(res.Warnings, importir.Warning{
 			Code:    WarnMissingSessionID,
 			Message: fmt.Sprintf("No session header for %s was found in the rollout file; workspace and fork details are unavailable.", c.opts.SessionID),
+		})
+	}
+	if base := c.pre.meta.HistoryBase; base != nil {
+		// The thread continues a DIFFERENT rollout file: everything before
+		// `end_ordinal_exclusive` lives there and is not in this file at
+		// all. AO does not follow the chain (SessionMeta.HistoryBase holds
+		// the TODO with the field shape a follower needs), so the honest
+		// answer is to say the earlier history is missing rather than
+		// present a truncated thread as complete.
+		res.Warnings = append(res.Warnings, importir.Warning{
+			Code: WarnHistoryBase,
+			Message: fmt.Sprintf(
+				"This Codex session continues an earlier rollout (%s) that Agent Overflow does not follow; the conversation before it is not imported.",
+				base.ThreadID),
 		})
 	}
 	if c.corrupt > 0 {
@@ -145,9 +182,43 @@ func (c *converter) convert(env envelope) {
 		c.convertResponseItem(env)
 	case typeInterAgent, typeInterAgentMet:
 		c.convertInterAgent(env)
+	case typeWorldState:
+		// Recognised and dropped, NOT unknown. `world_state` is the engine's
+		// resume baseline for model-visible context diffing (see
+		// worldStatePayload); it has no transcript projection. Codex writes
+		// one per turn on every modern thread, so counting it as unknown put
+		// a `codex-unknown-types` warning on essentially every import — noise
+		// that hides the warning's real job, which is naming genuine wire
+		// drift. The decode is what makes this recognition rather than a
+		// blanket skip: a payload that no longer matches 0.149.0's shape
+		// falls through to the unknown counter and warns again.
+		c.dropRecognised(env, func() bool {
+			var p worldStatePayload
+			return json.Unmarshal(env.Payload, &p) == nil && p.Full != nil && p.State != nil
+		})
+	case typeSecurityRisk:
+		// Same rule, stronger reason: upstream requires these scores never
+		// reach a user-visible thread item projection (see
+		// securityRiskPayload). Importing one would be exactly that.
+		c.dropRecognised(env, func() bool {
+			var p securityRiskPayload
+			return json.Unmarshal(env.Payload, &p) == nil && len(p.Scores) > 0
+		})
 	default:
 		c.countUnknown(env)
 	}
+}
+
+// dropRecognised skips a record type this package deliberately does not
+// import, provided its payload still looks like the shape we verified against
+// the Codex source. A payload that does not is counted under a drift-suffixed
+// key so a changed shape still reaches the user as a warning instead of being
+// silently discarded by a stale `case`.
+func (c *converter) dropRecognised(env envelope, shapeMatches func() bool) {
+	if shapeMatches() {
+		return
+	}
+	c.unknown[qualifiedType(env)+" (unexpected shape)"]++
 }
 
 func (c *converter) countUnknown(env envelope) {

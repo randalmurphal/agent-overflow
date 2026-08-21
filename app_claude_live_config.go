@@ -1,7 +1,9 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -34,24 +36,47 @@ import (
 //     send, so a confirmation can never arrive unmatched.
 //  2. The parser stamps the same uuid onto the command output's
 //     CommandResultMeta (correlated from the command_lifecycle window).
-//  3. observeClaudeCommandResult matches output to pending apply. Expected
-//     text confirms; anything else reverts the launchOpts axis, marks the
-//     (session, axis) pair degraded so the reconciler stops retrying it
-//     live, surfaces the CLI's answer as thread error state, and arms the
-//     deferred-restart watcher — the same convergence fallback every other
-//     non-live-appliable change uses.
+//  3. observeClaudeCommandResult matches output to pending apply. The
+//     verdict then comes from the CLI's STRUCTURED read-back where the
+//     binary offers one — `get_settings.applied.effort` states the tier
+//     that will actually be sent to the API — and from the reply TEXT only
+//     where it does not (an older CLI answering the subtype with
+//     "Unsupported control request subtype"). Text matching is a UI string
+//     with no compatibility contract: a reworded reply reads as a rejection
+//     and costs the user a restart, which is exactly what the structured
+//     path removes. Confirmation is a no-op; anything else reverts the
+//     launchOpts axis, marks the (session, axis) pair degraded so the
+//     reconciler stops retrying it live, surfaces the CLI's answer as
+//     thread error state, and arms the deferred-restart watcher — the same
+//     convergence fallback every other non-live-appliable change uses.
 //  4. A command the CLI cancels instead of executing (its
 //     command_lifecycle reaches `cancelled` — e.g. the queued message died
 //     with an interrupt) reverts the axis without degrading, and the
 //     watcher re-converges: the command never ran, so the session is not
 //     suspect, just not updated.
 //
-// A pending entry whose confirmation never arrives is dropped with its
-// session: entries are keyed to the session token and purged whenever the
-// session leaves the registry (unregister, take, takeIdle,
-// snapshotAndClear), and the replacement session spawns from the thread
-// row, which already holds the requested config. The 24h insert-time
-// eviction is a backstop for tokens that never pass through any of those.
+//  5. Silence is a THIRD outcome, not a rest state. A queued command can
+//     die without either channel saying so (the CLI drops it, the process
+//     wedges, a lifecycle frame goes missing), and the optimistic
+//     launchOpts write would then claim a config the session is not
+//     running for the rest of its life — the same wrong-state a rejection
+//     produces, just with nothing to react to. So every registration arms
+//     a bounded watchdog (claudeLiveApplyConfirmAfter). It re-arms while
+//     the thread has a turn in flight, because a slash command written to
+//     stdin genuinely waits for the turn to drain; otherwise it settles
+//     the entry the same way an answer would — through the structured
+//     read-back when the session offers one (the command may well have RUN
+//     and only its output went missing), and through
+//     declineClaudeLiveConfigApply when it does not, which reverts the
+//     axis, surfaces the silence as thread error state, and hands
+//     convergence to the deferred restart.
+//
+// Entries are keyed to the session token and purged whenever the session
+// leaves the registry (unregister, take, takeIdle, snapshotAndClear), and
+// the replacement session spawns from the thread row, which already holds
+// the requested config — so a session that dies with an apply outstanding
+// needs no watchdog verdict. The 24h insert-time eviction is a backstop for
+// tokens that never pass through any of those.
 
 type claudeLiveConfigApply struct {
 	threadID     string
@@ -64,6 +89,24 @@ type claudeLiveConfigApply struct {
 	prevEffort provider.ReasoningEffort
 	prevFast   bool
 	sentAt     time.Time
+	// generation is the (session, axis) apply counter this entry was
+	// stamped with. The `defunct` tombstone below covers a supersede that
+	// happens while the entry is still IN the registry; this covers the one
+	// that happens after it has been consumed — the effort read-back is
+	// asynchronous, so the entry is already gone by the time its verdict is
+	// computed and there is nothing left to mark. Comparing the stamp
+	// against the live counter is what lets that verdict recognise itself
+	// as superseded instead of restoring a tier the user has since changed.
+	generation uint64
+	// deferredForTurn records that this command was, at some observed
+	// moment, waiting behind a running turn rather than being answered.
+	// It is what lets the sweep tell "the window elapsed while the CLI had
+	// the command" from "the window elapsed while the command was still
+	// queued behind a turn", which are the same silence and opposite
+	// verdicts. Set at registration when the thread is already busy and by
+	// any sweep that finds it busy; CONSUMED by the first sweep that finds
+	// it idle, which grants one fresh window instead of deciding.
+	deferredForTurn bool
 	// defunct marks an entry whose answer no longer decides anything — the
 	// apply was superseded by a newer one for the same axis, or rolled back
 	// after a mid-sequence send failure. The entry is kept (not deleted) as
@@ -86,6 +129,19 @@ const (
 	// tokens that somehow never pass through a registry-removal purge
 	// cannot accumulate entries forever.
 	claudeLiveApplyStaleAfter = 24 * time.Hour
+	// claudeLiveApplyConfirmAfter bounds how long AO waits for a live
+	// config command's answer before deciding for itself. Long enough that
+	// a CLI busy with something other than a turn still wins the race (the
+	// commands themselves are local and answer in milliseconds), short
+	// enough that a user who changed effort and got silence learns about
+	// it in the same sitting. A turn in flight does not consume this
+	// window — the sweep re-arms instead, since the command is legitimately
+	// queued behind the turn — and neither does a window that merely
+	// OVERLAPPED one: the window has to be measured against a session that
+	// could actually have answered, so the first idle sweep after a
+	// deferral restarts it rather than spending it (see
+	// sweepUnconfirmedClaudeLiveApply).
+	claudeLiveApplyConfirmAfter = 45 * time.Second
 )
 
 // claudeLiveApplyKey identifies one (session, axis) pair in the degraded
@@ -110,6 +166,17 @@ func (a *App) registerClaudeLiveConfigApplies(
 	receipt claude.LiveApplyReceipt,
 ) {
 	now := time.Now()
+	// Read BEFORE taking a.mu — threadTurnInFlight resolves the session
+	// through sessionManager, which takes the same (non-reentrant) lock.
+	//
+	// A command registered while a turn is running has not been delivered to
+	// the CLI's command router yet; it is a stdin user message sitting behind
+	// that turn. Stamping the deferral here rather than waiting for a sweep to
+	// observe it is what covers the turn that drains INSIDE the first window:
+	// the sweep only samples at its own expiry, so a turn that ends a second
+	// before it would otherwise look like a session that had the whole window
+	// to answer and did not.
+	busy := a.threadTurnInFlight(threadID)
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.claudeLiveConfigApplies == nil {
@@ -120,44 +187,205 @@ func (a *App) registerClaudeLiveConfigApplies(
 			delete(a.claudeLiveConfigApplies, id)
 		}
 	}
-	supersede := func(axis string) {
+	// supersede does BOTH halves: it tombstones the entries still in the
+	// registry and advances the axis counter, which is what a verdict
+	// computed from an already-consumed entry compares itself against.
+	supersede := func(axis string) uint64 {
 		for id, pending := range a.claudeLiveConfigApplies {
 			if pending.sessionToken == sessionToken && pending.axis == axis && !pending.defunct {
 				pending.defunct = true
 				a.claudeLiveConfigApplies[id] = pending
 			}
 		}
+		return a.bumpClaudeLiveApplyGenerationLocked(sessionToken, axis)
 	}
 	if receipt.EffortCommandUUID != "" {
-		supersede(claudeLiveApplyAxisEffort)
 		a.claudeLiveConfigApplies[receipt.EffortCommandUUID] = claudeLiveConfigApply{
-			threadID:     threadID,
-			sessionToken: sessionToken,
-			axis:         claudeLiveApplyAxisEffort,
-			requested:    update.Effort,
-			prevEffort:   prevOpts.ReasoningEffort,
-			prevFast:     prevOpts.FastMode,
-			sentAt:       now,
+			threadID:        threadID,
+			sessionToken:    sessionToken,
+			axis:            claudeLiveApplyAxisEffort,
+			requested:       update.Effort,
+			prevEffort:      prevOpts.ReasoningEffort,
+			prevFast:        prevOpts.FastMode,
+			sentAt:          now,
+			deferredForTurn: busy,
+			generation:      supersede(claudeLiveApplyAxisEffort),
 		}
 	}
 	if receipt.FastCommandUUID != "" {
-		supersede(claudeLiveApplyAxisFast)
 		a.claudeLiveConfigApplies[receipt.FastCommandUUID] = claudeLiveConfigApply{
-			threadID:     threadID,
-			sessionToken: sessionToken,
-			axis:         claudeLiveApplyAxisFast,
-			requested:    string(update.FastMode),
-			prevEffort:   prevOpts.ReasoningEffort,
-			prevFast:     prevOpts.FastMode,
-			sentAt:       now,
+			threadID:        threadID,
+			sessionToken:    sessionToken,
+			axis:            claudeLiveApplyAxisFast,
+			requested:       string(update.FastMode),
+			prevEffort:      prevOpts.ReasoningEffort,
+			prevFast:        prevOpts.FastMode,
+			sentAt:          now,
+			deferredForTurn: busy,
+			generation:      supersede(claudeLiveApplyAxisFast),
+		}
+	}
+	// Nothing else in this file ever runs if the answer never comes; the
+	// watchdog is what makes an unanswered apply a bounded state.
+	for _, id := range []string{receipt.EffortCommandUUID, receipt.FastCommandUUID} {
+		if id != "" {
+			a.armClaudeLiveApplyConfirmWatchdog(id)
 		}
 	}
 }
 
+// claudeLiveApplyConfirmWindow is claudeLiveApplyConfirmAfter, or the test
+// override when one is set.
+func (a *App) claudeLiveApplyConfirmWindow() time.Duration {
+	if a.claudeLiveApplyConfirmAfterOverride > 0 {
+		return a.claudeLiveApplyConfirmAfterOverride
+	}
+	return claudeLiveApplyConfirmAfter
+}
+
+// armClaudeLiveApplyConfirmWatchdog schedules the unconfirmed-apply sweep
+// for one command uuid. Timer creation only, so it is safe to call with
+// a.mu held; the sweep runs on the timer's own goroutine and takes the lock
+// itself.
+func (a *App) armClaudeLiveApplyConfirmWatchdog(commandUUID string) {
+	time.AfterFunc(a.claudeLiveApplyConfirmWindow(), func() {
+		a.sweepUnconfirmedClaudeLiveApply(commandUUID)
+	})
+}
+
+// sweepUnconfirmedClaudeLiveApply decides an apply the CLI never answered.
+//
+// Four ways to be a no-op, all of them the normal case: the entry is gone
+// (answered, or purged with its session), the entry is a tombstone
+// (superseded or rolled back — whoever tombstoned it owns the axis now), the
+// thread has a turn in flight, or the thread has JUST stopped having one.
+//
+// The first two turn cases are one rule stated at two times. `/effort` and
+// `/fast` are stdin user messages that queue behind a running turn, so a
+// window that elapsed while a turn held the command measured the TURN, not
+// the CLI's willingness to answer — and the sweep samples only at its own
+// expiry, so "a turn is running now" and "a turn was running for part of
+// this window" are equally disqualifying. A command registered at t=0 and
+// re-armed at t=45 whose turn drains at t=46 has been in the CLI's hands for
+// one second when the t=90 sweep fires; deciding there declines an apply
+// that was about to be confirmed, degrades the axis, and schedules a restart
+// nobody needed.
+//
+// So a deferral is remembered on the entry and the first idle sweep SPENDS
+// it on a fresh full window instead of a verdict. The cost is bounded and
+// one-sided: at most one extra window per observed deferral, and only ever
+// waiting longer before declining.
+//
+// Otherwise the entry is consumed here, exactly as an answer would consume
+// it, and settled without one.
+func (a *App) sweepUnconfirmedClaudeLiveApply(commandUUID string) {
+	if a.shuttingDown.Load() || a.lifeCtx().Err() != nil {
+		return
+	}
+	pending, ok := a.peekClaudeLiveConfigApply(commandUUID)
+	if !ok || pending.defunct {
+		return
+	}
+	if a.threadTurnInFlight(pending.threadID) {
+		a.noteClaudeLiveApplyDeferredForTurn(commandUUID)
+		a.armClaudeLiveApplyConfirmWatchdog(commandUUID)
+		return
+	}
+	if a.takeClaudeLiveApplyTurnDeferral(commandUUID) {
+		// The turn that was holding this command has drained (or never
+		// overlapped a full window). The CLI may not have picked the command
+		// up until a moment ago, so this window starts now.
+		a.armClaudeLiveApplyConfirmWatchdog(commandUUID)
+		return
+	}
+	// Peek-then-take, not take-then-restore: a confirmation that lands in
+	// the gap wins, because takeClaudeLiveConfigApply reports it gone and
+	// the sweep drops out. Restoring an entry the answer had already
+	// consumed would be the double-settle this ordering avoids.
+	pending, ok = a.takeClaudeLiveConfigApply(commandUUID)
+	if !ok || pending.defunct {
+		return
+	}
+	a.settleUnconfirmedClaudeLiveApply(pending)
+}
+
+// settleUnconfirmedClaudeLiveApply is the verdict on silence.
+//
+// Silence is not evidence that the command failed: the effort axis has a
+// structured read-back that states what the session is ACTUALLY running, so
+// a command that ran and lost only its output confirms here rather than
+// costing a restart. Everything else declines — launchOpts must never
+// outlive the evidence for it, and the deferred restart converges the row
+// the honest way.
+//
+// Never runs on the read loop: the watchdog owns its own goroutine, which
+// is what makes the get_settings round trip legal here.
+func (a *App) settleUnconfirmedClaudeLiveApply(pending claudeLiveConfigApply) {
+	if pending.axis == claudeLiveApplyAxisEffort && a.claudeSessionMaySupportGetSettings(pending) {
+		applied, err := a.readClaudeAppliedSettingsStep(pending.threadID, pending.sessionToken)
+		if a.claudeLiveApplySuperseded(pending) {
+			// A newer apply landed while the read was out; its settle owns
+			// the axis. Same window, same rule as
+			// settleClaudeEffortApplyFromSettings.
+			return
+		}
+		if err == nil && applied != nil && applied.Effort != "" {
+			if sameClaudeEffortTier(applied.Effort, pending.requested) {
+				return // the command ran; only its answer went missing
+			}
+			a.declineClaudeLiveConfigApply(pending, fmt.Sprintf(
+				"the Claude CLI never answered the live effort change and reports effort %q, not the requested %q; restarting the session to apply it",
+				applied.Effort, pending.requested))
+			return
+		}
+	}
+	a.declineClaudeLiveConfigApply(pending, fmt.Sprintf(
+		"the Claude CLI never answered the live %s change; restarting the session to apply it",
+		pending.axis))
+}
+
+// bumpClaudeLiveApplyGenerationLocked advances and returns the apply counter
+// for one (session, axis) pair. a.mu must be held.
+func (a *App) bumpClaudeLiveApplyGenerationLocked(sessionToken, axis string) uint64 {
+	if a.claudeLiveApplyGenerations == nil {
+		a.claudeLiveApplyGenerations = make(map[claudeLiveApplyKey]uint64)
+	}
+	key := claudeLiveApplyKey{sessionToken, axis}
+	a.claudeLiveApplyGenerations[key]++
+	return a.claudeLiveApplyGenerations[key]
+}
+
+// claudeLiveApplySuperseded reports whether a NEWER apply has been registered
+// for this entry's (session, axis) since it was sent.
+//
+// The effort axis settles asynchronously (settleClaudeEffortApplyFromSettings
+// reads `get_settings` on its own goroutine, after the entry has already been
+// consumed out of the registry), so rapid effort changes interleave: the
+// read-back for change #1 can return AFTER change #2 has landed, see the NEW
+// tier in `applied.effort`, compare it against change #1's `requested`, and
+// "helpfully" decline — restoring #1's prevEffort and scheduling a restart to
+// undo a change the user just made. The generation stamp is the entry's way
+// of noticing it is answering a question nobody is asking any more.
+func (a *App) claudeLiveApplySuperseded(pending claudeLiveConfigApply) bool {
+	if pending.generation == 0 {
+		return false
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.claudeLiveApplyGenerations[claudeLiveApplyKey{pending.sessionToken, pending.axis}] > pending.generation
+}
+
 // rollbackClaudeLiveConfigApplies undoes one registration after its
 // ApplyLiveUpdate failed mid-sequence: the pending entries become defunct
-// tombstones and launchOpts is restored to the pre-apply snapshot, so the
-// retry sees a genuine diff instead of a false "already converged". The
+// tombstones and launchOpts is restored to restoreOpts, so the
+// retry sees a genuine diff instead of a false "already converged".
+//
+// restoreOpts is the pre-apply snapshot with the axes that DID land folded
+// back in (claude.CommitLiveUpdate) — not the raw snapshot. The axes ahead
+// of the failure really are applied on the wire, and the restart that
+// converges the rest is deferred until the thread is quiet; claiming the
+// session still runs the old ones would aim the live-first retry at axes
+// that already landed instead of the one that failed. The
 // retry is LIVE-FIRST — the watcher re-runs liveApplySessionConfig before
 // ever considering a restart (fireDeferredConfigReconnectLocked), because
 // a restart can be deferred indefinitely by a busy thread and is strictly
@@ -176,7 +404,7 @@ func (a *App) registerClaudeLiveConfigApplies(
 // Selective per-axis rollback would buy nothing real for that.
 func (a *App) rollbackClaudeLiveConfigApplies(
 	threadID, sessionToken string,
-	prevOpts provider.SessionOptions,
+	restoreOpts provider.SessionOptions,
 	receipt claude.LiveApplyReceipt,
 ) {
 	a.mu.Lock()
@@ -187,7 +415,18 @@ func (a *App) rollbackClaudeLiveConfigApplies(
 		}
 	}
 	a.mu.Unlock()
-	a.sessionManager().updateLaunchOpts(threadID, sessionToken, prevOpts)
+	a.sessionManager().updateLaunchOpts(threadID, sessionToken, restoreOpts)
+}
+
+// peekClaudeLiveConfigApply reads the pending apply for a command uuid
+// without consuming it. The watchdog's first look: it must be able to decide
+// that an entry is somebody else's business (tombstoned, or queued behind a
+// turn) and leave it exactly where it found it.
+func (a *App) peekClaudeLiveConfigApply(commandUUID string) (claudeLiveConfigApply, bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	pending, ok := a.claudeLiveConfigApplies[commandUUID]
+	return pending, ok
 }
 
 // takeClaudeLiveConfigApply consumes the pending apply for a command uuid.
@@ -199,6 +438,40 @@ func (a *App) takeClaudeLiveConfigApply(commandUUID string) (claudeLiveConfigApp
 		delete(a.claudeLiveConfigApplies, commandUUID)
 	}
 	return pending, ok
+}
+
+// noteClaudeLiveApplyDeferredForTurn records that this command was observed
+// waiting behind a running turn. Idempotent, and deliberately a no-op for an
+// entry that is gone or tombstoned — neither has a verdict left to defer.
+func (a *App) noteClaudeLiveApplyDeferredForTurn(commandUUID string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	pending, ok := a.claudeLiveConfigApplies[commandUUID]
+	if !ok || pending.defunct || pending.deferredForTurn {
+		return
+	}
+	pending.deferredForTurn = true
+	a.claudeLiveConfigApplies[commandUUID] = pending
+}
+
+// takeClaudeLiveApplyTurnDeferral clears the deferral mark and reports
+// whether it was set — the sweep's "spend one fresh window instead of
+// deciding" gate.
+//
+// Consuming it is what bounds the extension: a second idle sweep finds
+// nothing to spend and settles. The mark is cleared under the same lock that
+// reads it, so two sweeps for one uuid (there is only ever one armed timer,
+// but the entry is shared state) cannot each be granted the same window.
+func (a *App) takeClaudeLiveApplyTurnDeferral(commandUUID string) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	pending, ok := a.claudeLiveConfigApplies[commandUUID]
+	if !ok || pending.defunct || !pending.deferredForTurn {
+		return false
+	}
+	pending.deferredForTurn = false
+	a.claudeLiveConfigApplies[commandUUID] = pending
+	return true
 }
 
 // takeClaudeLiveConfigAppliesForAxis consumes every pending apply for one
@@ -275,6 +548,12 @@ func (a *App) purgeClaudeLiveConfigStateLocked(sessionToken string) {
 			delete(a.claudeLiveApplyDegraded, key)
 		}
 	}
+	for key := range a.claudeLiveApplyGenerations {
+		if key.sessionToken == sessionToken {
+			delete(a.claudeLiveApplyGenerations, key)
+		}
+	}
+	delete(a.promptOverrideRenders, sessionToken)
 }
 
 // observeClaudeCommandResult inspects every Claude command output for two
@@ -338,15 +617,20 @@ func (a *App) observeClaudeCommandResult(threadID, sessionToken string, evt prov
 	}
 }
 
-// observeClaudeCommandLifecycle watches for the CLI cancelling a pending
-// live-config command before executing it (the queued message died with an
-// interrupt or shutdown). No output will ever arrive for it, so the
-// optimistic launchOpts write is reverted here — without a degraded mark:
-// the command never ran, so the session's command channel is not suspect —
-// and the watcher re-converges the row's value through a fresh apply.
+// observeClaudeCommandLifecycle watches for the CLI retiring a pending
+// live-config command without executing it (the queued message died with an
+// interrupt or shutdown — `cancelled`; or the session ended with it still
+// queued — `discarded`, Claude 2.1.224+). No output will ever arrive for it
+// either way, so the optimistic launchOpts write is reverted here — without
+// a degraded mark: the command never ran, so the session's command channel
+// is not suspect — and the watcher re-converges the row's value through a
+// fresh apply.
 func (a *App) observeClaudeCommandLifecycle(evt provider.ProviderEvent) {
 	var meta provider.CommandLifecycleMeta
-	if err := json.Unmarshal(evt.Meta, &meta); err != nil || meta.State != provider.CommandCancelled {
+	if err := json.Unmarshal(evt.Meta, &meta); err != nil {
+		return
+	}
+	if meta.State != provider.CommandCancelled && meta.State != provider.CommandDiscarded {
 		return
 	}
 	pending, ok := a.takeClaudeLiveConfigApply(meta.CommandUUID)
@@ -380,13 +664,67 @@ func isEffortCommandReply(text string) bool {
 		strings.HasPrefix(text, "Invalid argument:")
 }
 
+// The LOCAL /fast command's complete reply vocabulary, read out of the
+// installed 2.1.237 bundle rather than guessed. Its handler (`Ksw`, and the
+// toggle `eFi` it tails into) has exactly four return sites, and every reply
+// the CLI can produce is one of these five shapes:
+//
+//	<glyph> Fast mode ON[ \u00b7 model set to <m>] \u00b7 <plan>[ (this session only)]
+//	Fast mode OFF[ (this session only)]
+//	Fast mode unavailable: <reason>           // eFi, every availability gate
+//	<bare reason>                             // Ksw, fast mode off environment-wide
+//	Unknown argument "<x>". Use: /fast [on|off]
+//
+// Matching is by containment on every arm, because the CLI does not lead with
+// the state word: enabling can implicitly switch the model, and the ON line
+// carries a glyph first, so a prefix test matches one spelling out of five.
+const (
+	fastModeOnText          = "Fast mode ON"
+	fastModeOffText         = "Fast mode OFF"
+	fastModeGatePrefixText  = "Fast mode unavailable:"
+	fastModeBadArgumentText = "Use: /fast [on|off]"
+)
+
+// isFastModeGateReply reports whether text says fast mode is UNAVAILABLE
+// rather than toggled.
+//
+// Two spellings, because the gate is reported from two places. `eFi` prefixes
+// its reason with "Fast mode unavailable: " and reaches every case in the
+// reason table (org preference, credits, network, pending, model not allowed,
+// …). `Ksw` short-circuits BEFORE the toggle when fast mode is off for the
+// whole process and returns the reason BARE — and since its own guard is the
+// same `!Ru()` the reason table branches on first, only two reasons can come
+// out of it: `disabled_by_env` and `not_first_party`.
+//
+// Callers must still exclude fastModeSDKUnavailableText, which contains the
+// first of these as a substring while meaning the opposite thing about
+// restarts. See the constant.
+func isFastModeGateReply(text string) bool {
+	return strings.Contains(text, fastModeGatePrefixText) ||
+		// vib("disabled_by_env") — also a substring of the Agent SDK reason.
+		strings.Contains(text, "Fast mode is not available") ||
+		// vib("not_first_party") — a non-Anthropic API base URL.
+		strings.Contains(text, "Fast mode is only available when using the Anthropic API")
+}
+
 // isFastCommandReply reports whether text is unmistakably the output of a
-// /fast command.
+// /fast command, in any of its five shapes.
+//
+// The gate and bad-argument arms are why this is not just the ON / OFF pair:
+// on the uncorrelated-CLI path a refused /fast that matched nothing would fall
+// through to the user-typed handling and leave the pending apply to time out
+// into a restart, when the answer to route it was already in hand.
+//
+// Every caller already requires a pending fast apply on the session, so a
+// wider match costs at worst one settled apply and a narrower one costs a
+// silent degrade. That asymmetry is also why the vocabulary is re-read from
+// the bundle whenever the CLI moves: this matcher used to carry a
+// "Usage: /fast" arm, a string 2.1.237 does not contain anywhere at all.
 func isFastCommandReply(text string) bool {
-	return strings.HasPrefix(text, "Fast mode ON") ||
-		strings.HasPrefix(text, "Fast mode OFF") ||
-		strings.HasPrefix(text, "Fast mode unavailable:") ||
-		strings.HasPrefix(text, "Usage: /fast")
+	return strings.Contains(text, fastModeOnText) ||
+		strings.Contains(text, fastModeOffText) ||
+		strings.Contains(text, fastModeBadArgumentText) ||
+		isFastModeGateReply(text)
 }
 
 // parseEffortSetText extracts the tier from a `/effort` success reply,
@@ -419,7 +757,94 @@ const fastModeSDKUnavailableText = "Fast mode is not available in the Agent SDK"
 
 // resolveClaudeLiveConfigApply settles one pending apply against the CLI's
 // answer.
+//
+// Runs on the provider read loop. The effort axis has a structured verdict
+// available (`get_settings.applied.effort`), but reading it is a control
+// round-trip whose response arrives on THIS goroutine — so it is handed to a
+// goroutine, which then settles through the same tail as the text path.
 func (a *App) resolveClaudeLiveConfigApply(pending claudeLiveConfigApply, text string) {
+	if pending.axis == claudeLiveApplyAxisEffort && a.claudeSessionMaySupportGetSettings(pending) {
+		go a.settleClaudeEffortApplyFromSettings(pending, text)
+		return
+	}
+	a.settleClaudeLiveConfigApplyFromText(pending, text)
+}
+
+// settleClaudeEffortApplyFromSettings confirms (or declines) an effort apply
+// against `get_settings.applied.effort` — the CLI's own statement of the tier
+// it resolved, "what will actually be sent to the API". Falls back to the
+// reply text when the read-back is unavailable: an older CLI without the
+// subtype (recorded once per session, so the wire is not asked twice), or a
+// round-trip that failed or raced the session's teardown.
+//
+// Never runs on the read loop; see resolveClaudeLiveConfigApply.
+func (a *App) settleClaudeEffortApplyFromSettings(pending claudeLiveConfigApply, text string) {
+	applied, err := a.readClaudeAppliedSettingsStep(pending.threadID, pending.sessionToken)
+	if a.claudeLiveApplySuperseded(pending) {
+		// A newer effort apply landed while this read was out. Its own
+		// settle owns the verdict; deciding anything here — confirm OR
+		// decline — would be a verdict about a tier that is no longer
+		// requested, and the decline path would actively revert the newer
+		// one. Checked AFTER the read rather than before so the window it
+		// closes is the whole round trip, which is where the race lives.
+		return
+	}
+	if err != nil || applied == nil {
+		if err != nil && !errors.Is(err, claude.ErrGetSettingsUnsupported) {
+			log.Printf("thread %s: effort read-back failed, falling back to the CLI's reply text: %v", pending.threadID, err)
+		}
+		a.settleClaudeLiveConfigApplyFromText(pending, text)
+		return
+	}
+	if applied.Effort == "" {
+		// The CLI stated NOTHING about effort. `applied.effort` is explicit
+		// null on a model that declares no tiers (see AppliedSettings) — an
+		// answer about the MODEL, not about this request — so reading it as
+		// "the session runs a different tier" would restart the session on
+		// every apply against such a model. Fall through to the reply text,
+		// which is the only statement the CLI made about the command.
+		a.settleClaudeLiveConfigApplyFromText(pending, text)
+		return
+	}
+	if sameClaudeEffortTier(applied.Effort, pending.requested) {
+		return // confirmed by the CLI's own resolved value
+	}
+	// The session is running a different tier than AO asked for. This is
+	// the authoritative answer even when the reply text looked like a
+	// success — a settings layer AO does not control can outrank the
+	// request, and launchOpts must never claim a config the process is not
+	// running.
+	a.declineClaudeLiveConfigApply(pending, fmt.Sprintf(
+		"live effort change was not accepted by the Claude CLI (it reports effort %q, requested %q); restarting the session to apply it",
+		applied.Effort, pending.requested))
+}
+
+// sameClaudeEffortTier compares AO's requested tier against the CLI's own
+// spelling of the resolved one. AO stores the lowercase slugs
+// (provider.ReasoningEffortsForProvider("claude")); `applied.effort` is whatever the running
+// binary writes, and a display-layer spelling ("X-High", "x high") names the
+// same tier. Comparing the raw strings made every such spelling read as a
+// rejection and restarted a session that had in fact accepted the change.
+func sameClaudeEffortTier(a, b string) bool {
+	return normalizeClaudeEffortTier(a) == normalizeClaudeEffortTier(b)
+}
+
+func normalizeClaudeEffortTier(effort string) string {
+	var b strings.Builder
+	for _, r := range strings.ToLower(strings.TrimSpace(effort)) {
+		switch r {
+		case '-', '_', ' ':
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
+// settleClaudeLiveConfigApplyFromText settles one pending apply against the
+// CLI's reply TEXT. The only verdict for the fast axis, and the fallback for
+// effort on a CLI without `get_settings`.
+func (a *App) settleClaudeLiveConfigApplyFromText(pending claudeLiveConfigApply, text string) {
 	switch pending.axis {
 	case claudeLiveApplyAxisEffort:
 		if tier, ok := parseEffortSetText(text); ok && string(tier) == pending.requested {
@@ -427,31 +852,46 @@ func (a *App) resolveClaudeLiveConfigApply(pending claudeLiveConfigApply, text s
 		}
 	case claudeLiveApplyAxisFast:
 		switch {
-		case pending.requested == string(claude.FastModeOn) && strings.Contains(text, "Fast mode ON"):
+		case pending.requested == string(claude.FastModeOn) && strings.Contains(text, fastModeOnText):
 			// Containment, not prefix: enabling can implicitly switch the
 			// model and the reply may lead with that. claude-wire.md
 			// §"Live config commands".
 			return
-		case pending.requested == string(claude.FastModeOff) && strings.HasPrefix(text, "Fast mode OFF"):
+		case pending.requested == string(claude.FastModeOff) && strings.Contains(text, fastModeOffText):
+			// Containment for the same reason the ON arm uses it: the bundle
+			// ships separator- and space-prefixed spellings of this line too.
 			return
-		case strings.HasPrefix(text, "Fast mode unavailable:") && !strings.Contains(text, fastModeSDKUnavailableText):
-			// Account-level gate (e.g. extra-usage credits off). A restart
-			// would hit the identical gate — this is exactly the state a
-			// spawn with the fastMode opt-in produces, and the session's
-			// fast_mode_state on every result keeps the UI truthful. The
-			// requested value stays in launchOpts so the reconciler does
-			// not loop; nothing to surface beyond the visible command row.
+		case isFastModeGateReply(text) && !strings.Contains(text, fastModeSDKUnavailableText):
+			// An availability gate (extra-usage credits off, org preference,
+			// fast mode disabled for the whole process, …). A restart would
+			// hit the identical gate — this is exactly the state a spawn with
+			// the fastMode opt-in produces, and the session's fast_mode_state
+			// on every result keeps the UI truthful. The requested value
+			// stays in launchOpts so the reconciler does not loop; nothing to
+			// surface beyond the visible command row.
+			//
+			// The SDK reason is carved out on purpose and is why this cannot
+			// simply match "Fast mode is not available": that string is a
+			// SUBSTRING of the Agent SDK reason, which a restart DOES fix.
 			log.Printf("thread %s: live fast-mode apply declined by CLI: %s", pending.threadID, firstLine(text))
 			return
 		}
 	}
 
 	// The CLI answered with something other than the expected state change
-	// ("Invalid argument: …", "Usage: …", the SDK fast-mode gate, or
-	// wording drift on a newer CLI). The session is NOT running the
-	// requested value: restore the axis in launchOpts, stop trusting this
-	// session's command channel for the axis, surface the answer, and let
-	// the deferred-restart watcher converge the honest way.
+	// ("Invalid argument: …", `Unknown argument "x". Use: /fast [on|off]`,
+	// the SDK fast-mode gate, or wording drift on a newer CLI).
+	a.declineClaudeLiveConfigApply(pending, fmt.Sprintf(
+		"live %s change was not accepted by the Claude CLI (%q); restarting the session to apply it",
+		pending.axis, firstLine(text)))
+}
+
+// declineClaudeLiveConfigApply is the shared tail for "the session is NOT
+// running the requested value", whichever channel proved it: restore the axis
+// in launchOpts, stop trusting this session's command channel for the axis,
+// surface the reason, and let the deferred-restart watcher converge the
+// honest way.
+func (a *App) declineClaudeLiveConfigApply(pending claudeLiveConfigApply, message string) {
 	if !a.revertClaudeLiveApplyAxis(pending) {
 		// The session is gone or replaced — its registry state was purged
 		// with it, the replacement spawned from the thread row, and an
@@ -459,12 +899,10 @@ func (a *App) resolveClaudeLiveConfigApply(pending claudeLiveConfigApply, text s
 		return
 	}
 	a.markClaudeLiveApplyDegraded(pending.sessionToken, pending.axis)
-	// Wire-route, not synthetic: this runs on the provider read loop, and
-	// the error must respect the stopped-thread gate exactly like the
-	// command output that triggered it (invariant 29).
-	a.emitWireErrorToThread(pending.threadID, fmt.Sprintf(
-		"live %s change was not accepted by the Claude CLI (%q); restarting the session to apply it",
-		pending.axis, firstLine(text)))
+	// Wire-route, not synthetic: this answers command output from the
+	// provider read loop, and the error must respect the stopped-thread
+	// gate exactly like the output that triggered it (invariant 29).
+	a.emitWireErrorToThread(pending.threadID, message)
 	a.schedulePendingConfigReconnect(pending.threadID)
 }
 
@@ -530,4 +968,118 @@ func firstLine(text string) string {
 		return text[:idx]
 	}
 	return text
+}
+
+// claudeGetSettingsTimeout bounds a `get_settings` round trip. The CLI
+// answers it out of band (no turn, no API call), so this is a local-IPC
+// deadline: it exists so a wedged CLI cannot hold a confirmation goroutine
+// for the session's whole control timeout.
+const claudeGetSettingsTimeout = 5 * time.Second
+
+// claudeSessionForToken resolves the live Claude session behind a pending
+// apply, refusing a session that has been replaced since. Nil means "gone" —
+// every caller must then skip its session-scoped side effects.
+func (a *App) claudeSessionForToken(threadID, sessionToken string) *claude.Session {
+	sess, ok := a.sessionManager().get(threadID)
+	if !ok || sess.token != sessionToken || sess.claude == nil {
+		return nil
+	}
+	return sess.claude
+}
+
+// claudeSessionMaySupportGetSettings reports whether it is worth asking this
+// session for a structured read-back. False for a dead or replaced session,
+// and for one that already answered the subtype with an unsupported-subtype
+// error — the CLI's answer to that cannot change while the process lives, so
+// asking again would put a failing control_request on stdin before every
+// confirmation.
+func (a *App) claudeSessionMaySupportGetSettings(pending claudeLiveConfigApply) bool {
+	sess := a.claudeSessionForToken(pending.threadID, pending.sessionToken)
+	return sess != nil && !sess.GetSettingsUnsupported()
+}
+
+// readClaudeAppliedSettingsStep is the read-back behind a test seam, used by
+// every caller that reads `applied` off the reconciler's path (the effort
+// settle, the unconfirmed-apply watchdog, the model read-back): the round
+// trip needs a live provider process, and the branches worth pinning (an
+// empty tier, a differently-spelled tier, a superseded read-back, and the
+// round trip NOT being made at all) are decided by what the CLI ANSWERED,
+// not by how the answer was fetched. Production always runs
+// readClaudeAppliedSettings.
+func (a *App) readClaudeAppliedSettingsStep(threadID, sessionToken string) (*claude.AppliedSettings, error) {
+	a.mu.Lock()
+	read := a.readClaudeAppliedSettingsFn
+	a.mu.Unlock()
+	if read != nil {
+		return read(threadID, sessionToken)
+	}
+	return a.readClaudeAppliedSettings(threadID, sessionToken)
+}
+
+// readClaudeAppliedSettings performs one `get_settings` round-trip and
+// returns its `applied` object. Also logs any project-level settings source
+// found overriding what AO requested — a repository's `.claude/settings.json`
+// naming a different model or effortLevel is a real explanation for a session
+// that will not converge, and it is invisible everywhere else.
+//
+// Returns (nil, nil) when the session is gone; (nil, err) with
+// claude.ErrGetSettingsUnsupported when the CLI predates the subtype.
+func (a *App) readClaudeAppliedSettings(threadID, sessionToken string) (*claude.AppliedSettings, error) {
+	sess := a.claudeSessionForToken(threadID, sessionToken)
+	if sess == nil {
+		return nil, nil
+	}
+	ctx, cancel := context.WithTimeout(a.lifeCtx(), claudeGetSettingsTimeout)
+	defer cancel()
+	snapshot, err := sess.GetSettings(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, notice := range sess.SettingsOverrides() {
+		log.Printf("thread %s: project settings (%s) set %s=%q, overriding the %q AO requested",
+			threadID, notice.Source, notice.Field, notice.Configured, notice.Requested)
+	}
+	return snapshot.Applied, nil
+}
+
+// readBackClaudeAppliedModel records what the CLI actually resolved after a
+// set_model landed. The control_response is a bare success even when the CLI
+// stepped a FAMILY ALIAS down to a different concrete model (telemetry
+// `model_switch: "family_alias_stepped_down"`), so this is the only channel
+// that can state the applied model.
+//
+// MODEL ONLY. A system-prompt swap rides the same set_model, but
+// claude.AppliedSettings carries model, effort, advisor and ultracode and
+// nothing about the prompt, so there is no prompt to verify here — an empty
+// `requested` therefore returns before the round trip rather than after it,
+// instead of putting a control_request on stdin to read an answer that cannot
+// contain the fact being checked.
+//
+// Observation only: nothing is reverted on a mismatch. The CLI accepted the
+// request and the session is running a legitimate model; forcing a restart
+// would only produce the same step-down. The applied value is stamped on the
+// session's live state (claude.Session.AppliedSettingsSnapshot) and logged.
+//
+// Fire-and-forget from a goroutine — never from the read loop.
+func (a *App) readBackClaudeAppliedModel(threadID, sessionToken, requested string) {
+	if requested == "" {
+		return
+	}
+	// No pre-guard on the session: readClaudeAppliedSettings resolves it
+	// itself and answers (nil, nil) when it is gone, so a second resolve
+	// here would only add a window in which the two disagree.
+	applied, err := a.readClaudeAppliedSettingsStep(threadID, sessionToken)
+	if err != nil {
+		if !errors.Is(err, claude.ErrGetSettingsUnsupported) {
+			log.Printf("thread %s: model read-back failed: %v", threadID, err)
+		}
+		return
+	}
+	if applied == nil || applied.Model == "" {
+		return
+	}
+	if provider.NormalizeModelSlug(string(provider.Claude), applied.Model) !=
+		provider.NormalizeModelSlug(string(provider.Claude), requested) {
+		log.Printf("thread %s: claude accepted set_model %q but reports running %q", threadID, requested, applied.Model)
+	}
 }

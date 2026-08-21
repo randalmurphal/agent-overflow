@@ -1,6 +1,7 @@
 package rollout
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -325,5 +326,67 @@ func TestConvertWebSearchCallSettlesOnItsOwnStatus(t *testing.T) {
 		if w.Code == WarnUnresolvedTool {
 			t.Fatalf("no unresolved warning expected: %+v", res.Warnings)
 		}
+	}
+}
+
+// `FileChange::Add` / `::Delete` carry no `unified_diff` at all — the whole
+// file arrives as `content` — so the whole-file rendering is the only thing
+// that keeps a created or deleted file in the patch. Only the `delete` and
+// unknown-type branches were untested.
+func TestAssembleUnifiedPatchRendersWholeFileAddsAndDeletes(t *testing.T) {
+	patch := assembleUnifiedPatch(map[string]json.RawMessage{
+		"/repo/new.go":  json.RawMessage(`{"type":"add","content":"one\ntwo\n"}`),
+		"/repo/gone.go": json.RawMessage(`{"type":"delete","content":"old\n"}`),
+	})
+	for _, want := range []string{
+		"new file\n--- a//repo/new.go\n+++ b//repo/new.go\n@@ -0,0 +1,2 @@\n+one\n+two",
+		"deleted file\n--- a//repo/gone.go\n+++ b//repo/gone.go\n@@ -1,1 +0,0 @@\n-old",
+	} {
+		if !strings.Contains(patch, want) {
+			t.Fatalf("patch missing %q:\n%s", want, patch)
+		}
+	}
+}
+
+// A change type this build does not know how to render whole-file is the ONLY
+// thing that drops an entry. Rendering it as an add or a delete would state
+// the opposite of what the record says.
+func TestAssembleUnifiedPatchSkipsAnUnknownHunklessChangeType(t *testing.T) {
+	patch := assembleUnifiedPatch(map[string]json.RawMessage{
+		"/repo/a.go": json.RawMessage(`{"type":"chmod","content":"whatever"}`),
+		"/repo/b.go": json.RawMessage(`{"type":"add","content":"kept\n"}`),
+	})
+	if strings.Contains(patch, "/repo/a.go") {
+		t.Fatalf("an unrenderable change type must be skipped:\n%s", patch)
+	}
+	if !strings.Contains(patch, "+kept") {
+		t.Fatalf("its neighbour must still render:\n%s", patch)
+	}
+}
+
+// `touch newfile` is a real edit with an empty `content`. It used to vanish
+// from the patch entirely — headers included — because an empty body was read
+// as "nothing to show" rather than "the file is empty".
+func TestAssembleUnifiedPatchKeepsAnEmptyAddedFile(t *testing.T) {
+	patch := assembleUnifiedPatch(map[string]json.RawMessage{
+		"/repo/empty.txt": json.RawMessage(`{"type":"add","content":""}`),
+	})
+	want := "diff --git a//repo/empty.txt b//repo/empty.txt\nnew file\n--- a//repo/empty.txt\n+++ b//repo/empty.txt\n@@ -0,0 +0,0 @@\n"
+	if patch != want {
+		t.Fatalf("empty added file patch =\n%q\nwant\n%q", patch, want)
+	}
+}
+
+// The same, end to end: the diff event must exist at all.
+func TestConvertKeepsADiffForAnEmptyCreatedFile(t *testing.T) {
+	end := `{"timestamp":"2026-08-07T19:07:53.000Z","type":"event_msg","payload":{"type":"patch_apply_end","call_id":"exec-empty","turn_id":"turn-1","stdout":"Success","success":true,"changes":{"/repo/empty.txt":{"type":"add","content":""}}}}`
+	res := parseFixture(t, writeRollout(t, testSessionID, metaLine, taskStartedLine, end, taskCompleteLn))
+
+	diffs := eventsOfKind(res.Events, provider.EventDiff)
+	if len(diffs) != 1 {
+		t.Fatalf("want one diff event, got %d: %v", len(diffs), kinds(res.Events))
+	}
+	if !strings.Contains(diffs[0].Content, "--- a//repo/empty.txt") {
+		t.Fatalf("empty added file lost its headers: %q", diffs[0].Content)
 	}
 }

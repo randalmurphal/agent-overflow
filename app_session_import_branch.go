@@ -142,15 +142,13 @@ func (a *App) materializeImportedClaudeBranch(t store.Thread) store.Thread {
 // forbids. Deriving it from the source makes the destination structurally
 // unable to leave the home the transcript came from.
 //
-// Returns "" — sessionfork's "beside the source" — for three cases. The two
-// resolution FAILURES are logged so a resume that later fails is diagnosable:
+// Returns "" — sessionfork's "beside the source" — for two cases. The
+// resolution FAILURE is logged so a resume that later fails is diagnosable: the
+// workspace cannot be canonicalized, i.e. the directory is gone (a removed
+// worktree the thread has not been reattached from yet). Path LENGTH is no
+// longer such a case — the CLI's truncate-and-hash slug is reproduced exactly.
 //
-//   - the workspace cannot be canonicalized, i.e. the directory is gone (a
-//     removed worktree the thread has not been reattached from yet),
-//   - the sanitized slug exceeds MaxSanitizedSlugLen, where the CLI appends a
-//     Bun.hash suffix Go cannot reproduce.
-//
-// The third — the thread records no workspace — is silent: there is nothing to
+// The other — the thread records no workspace — is silent: there is nothing to
 // resolve, which is not a failure, and every workspace-less thread logging a
 // line about it would be noise.
 //
@@ -164,17 +162,11 @@ func importedBranchDestDir(t store.Thread, sourcePath string) string {
 	}
 	// `<projectsDir>/<slug>/<sessionID>.jsonl` — up two, to the projects dir.
 	projectsDir := filepath.Dir(filepath.Dir(sourcePath))
-	dir, ok, err := sessionfork.WorkspaceProjectDir(projectsDir, workspace)
-	switch {
-	case err != nil:
+	dir, err := sessionfork.WorkspaceProjectDir(projectsDir, workspace)
+	if err != nil {
 		log.Printf(
 			"start session: imported branch %s could not resolve the project dir of workspace %s; cutting beside the source transcript: %v",
 			t.ID, workspace, err)
-		return ""
-	case !ok:
-		log.Printf(
-			"start session: imported branch %s has a workspace path (%s) too long for an exact Claude project slug; cutting beside the source transcript",
-			t.ID, workspace)
 		return ""
 	}
 	return dir

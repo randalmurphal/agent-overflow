@@ -2058,6 +2058,133 @@ UPDATE work_item_phases SET feedback_delivered_at = MAX(started_at, ended_at, 1)
 		SQL: `ALTER TABLE threads ADD COLUMN live_todo TEXT NOT NULL DEFAULT ''
     CHECK(live_todo = '' OR json_valid(live_todo));`,
 	},
+	{
+		Version: 66,
+		Name:    "provider_thread_cost",
+		// The PROVIDER's own cumulative cost estimate for a thread, as opposed
+		// to usage_ledger's per-turn token rows priced from AO's rate table.
+		// Today's only producer is Codex >= 0.148
+		// (`account/usage/read {threadId}` -> `threadUsage`), which answers with
+		// a lifetime-to-date figure for the whole thread rather than a delta.
+		//
+		// WHY NOT usage_ledger. That table's contract is "values are per-turn
+		// deltas; summing any slice of rows is safe", and the workflow budget
+		// check enforces spend limits by summing it. A cumulative figure stored
+		// as a row would be added to every turn it already contains — silently
+		// inflating every dollar total in the app, budget enforcement included.
+		// A cumulative fact needs a table whose grain is the thread.
+		//
+		// ONE ROW PER THREAD, rewritten in place: each read restates the same
+		// total, so this is a cache of the newest answer, not history. It is
+		// cache content in the core-principle-3 sense — droppable and
+		// re-derivable from the provider — which is also why it is a separate
+		// table rather than three Codex-shaped columns on the hot threads row.
+		//
+		// cost_usd_micros stores the wire integer verbatim (millionths of a
+		// dollar) rather than a float: the value crosses no arithmetic on its
+		// way in, so there is no reason to round-trip it through binary
+		// floating point before it is displayed. Only rows the provider PRICED
+		// are written, so the column is NOT NULL and there is no "unknown"
+		// sentinel to disambiguate — an absent estimate is an absent row.
+		//
+		// cost_source names the provenance for a reader that will one day see
+		// more than one kind. 'provider-estimate' is the only legal value now,
+		// and the CHECK is what forces a future producer to declare itself.
+		//
+		// Cascades with the thread, unlike usage_ledger: this row is only ever
+		// read to render one thread's own cost, so it has nothing to say once
+		// that thread is gone. Lifetime account aggregates keep coming from the
+		// ledger.
+		SQL: `CREATE TABLE provider_thread_cost (
+    thread_id       TEXT    PRIMARY KEY REFERENCES threads(id) ON DELETE CASCADE,
+    provider        TEXT    NOT NULL,
+    cost_source     TEXT    NOT NULL CHECK(cost_source IN ('provider-estimate')),
+    cost_usd_micros INTEGER NOT NULL,
+    credits_micros  INTEGER NOT NULL DEFAULT 0,
+    updated_at      INTEGER NOT NULL
+);`,
+	},
+	{
+		Version: 67,
+		Name:    "import_source_identity",
+		// The fingerprint a session-import REFRESH compares before it resumes
+		// reading a provider session file from a byte offset.
+		//
+		// Until now the only divergence test was "is the file smaller than the
+		// cursor" (rollout.ErrSourceShrank). Codex 0.147 made that
+		// insufficient: a thread can be MIGRATED from `legacy` to `paginated`
+		// history in place — codex-rs rewrites the whole rollout into a
+		// canonical form and atomically publishes it over the same path
+		// (thread-store/src/local/rollout_migration.rs). The rewritten file is
+		// usually the same size or LARGER, so the size check passes, while
+		// every byte offset in it now addresses a different record. Resuming
+		// there splices unrelated content into the thread as if the
+		// conversation had continued.
+		//
+		// source_meta_hash is sha256 of the file's FIRST LINE (its header
+		// record), not of the whole file: a rollout is appended to constantly,
+		// so a whole-file digest would have to be recomputed over every
+		// candidate on every refresh, while the header is rewritten by exactly
+		// the events that invalidate a cursor. source_history_mode records the
+		// declared mode alongside it, so a migration is named as the cause
+		// rather than reported as a generic mismatch.
+		//
+		// Both default to '' and '' means "recorded before this migration" —
+		// NOT "no header". A blank stored value therefore cannot be compared
+		// and must not be treated as a mismatch, or every thread imported
+		// before this column existed would report itself diverged on its next
+		// refresh. Two plain ADD COLUMNs; no column list changes, so no table
+		// is rebuilt.
+		SQL: `ALTER TABLE thread_import_state ADD COLUMN source_meta_hash TEXT NOT NULL DEFAULT '';
+ALTER TABLE thread_import_state ADD COLUMN source_history_mode TEXT NOT NULL DEFAULT '';`,
+	},
+	{
+		Version: 68,
+		Name:    "provider_thread_cost_session_ref",
+		// Records WHICH provider thread each cost row describes, so a row that
+		// no longer matches the AO thread's session ref is ignored on read.
+		//
+		// v66's row was keyed by the AO thread id alone and named no provider
+		// thread. That made its correctness depend on a DELETE: a Codex
+		// rollback that forks into a new provider thread, or a rollback to turn
+		// 0 that clears the session ref entirely, had to remove the row before
+		// anything read it again. A delete that failed (a locked database, a
+		// crash between the fence and the statement) left a row describing the
+		// OLD provider thread's lifetime total sitting against a thread whose
+		// history is now shorter, and the only thing hiding it was an
+		// in-memory mark that died with the process.
+		//
+		// session_ref is the provider thread identity the figure was read from
+		// — for Codex, the app-server root thread id echoed back on
+		// `account/usage/read`, the same value `threads.session_ref` holds
+		// while the thread still points at that provider thread. The overlay
+		// join compares them, so a stale row answers "not found" by
+		// construction and the next successful read overwrites it. Deleting on
+		// rollback is still done, because a row nothing can match is dead
+		// weight; it is no longer what makes the answer correct.
+		//
+		// DROPPED rather than converted. This table is cache content in the
+		// core-principle-3 sense: every row is one `account/usage/read` away
+		// from being re-derived, and no existing row can be told which provider
+		// thread it came from — backfilling from today's `threads.session_ref`
+		// would assert exactly the identity the column exists to verify, and
+		// would re-bless the stale rows this migration is here to neutralise.
+		//
+		// The CHECK forbids '' because a blank identity would match every
+		// rolled-back thread's cleared session ref, which is the one comparison
+		// that must never succeed. The writer refuses to store a row it cannot
+		// name.
+		SQL: `DROP TABLE IF EXISTS provider_thread_cost;
+CREATE TABLE provider_thread_cost (
+    thread_id       TEXT    PRIMARY KEY REFERENCES threads(id) ON DELETE CASCADE,
+    session_ref     TEXT    NOT NULL CHECK(session_ref <> ''),
+    provider        TEXT    NOT NULL,
+    cost_source     TEXT    NOT NULL CHECK(cost_source IN ('provider-estimate')),
+    cost_usd_micros INTEGER NOT NULL,
+    credits_micros  INTEGER NOT NULL DEFAULT 0,
+    updated_at      INTEGER NOT NULL
+);`,
+	},
 }
 
 var rebuildWorkItemProviderUsageLimitedV57SQL = mustReplaceOnce(

@@ -434,7 +434,8 @@ var LocalOnlyMethods = map[string]bool{
 	"ForkThread":            true,
 	"ForkThreadFromMessage": true,
 	// RevertConversationAndResendMessage cuts the provider session (Claude
-	// JSONL slice / Codex thread/fork) and truncates SQLite in place, then
+	// JSONL slice / Codex thread/revert or thread/fork) and truncates
+	// SQLite in place, then
 	// dispatches the edited replacement on the same session — the fork
 	// variants' session-control + FS class plus SendMessage's.
 	"RevertConversationAndResendMessage": true,

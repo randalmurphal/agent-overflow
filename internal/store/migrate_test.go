@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -2451,6 +2452,84 @@ func TestRuntimeModeCheckMatchesProvider(t *testing.T) {
 		if got := normalizeRuntimeMode(string(mode)); got != string(mode) {
 			t.Errorf("normalizeRuntimeMode(%q) = %q — store's copy of the value set has drifted", mode, got)
 		}
+	}
+}
+
+// TestReasoningEffortSetsMatchProvider is the same arrangement one layer over:
+// internal/store carries TWO copies of the per-provider reasoning-effort
+// vocabulary — legalEffortForProvider in threads.go and the provider/effort
+// coupling CHECK on threads + chat_model_profiles — and neither can import
+// internal/provider. This proves both copies still equal
+// provider.ReasoningEffortsForProvider, in both directions.
+//
+// Both directions matter and fail differently. A tier canonical in the provider
+// package but absent from the CHECK (Codex's max and ultra were, before
+// migration v19) reaches SQLite as a raw constraint violation on a value the
+// picker had already offered. A tier the CHECK admits but the provider package
+// does not would be persisted and then normalized away on the next read.
+//
+// It asserts against the live schema rather than the migration's SQL text, so a
+// later rebuild that re-derives a table from an older statement group — the
+// exact way these CHECKs have silently regressed before — is caught here rather
+// than in production.
+func TestReasoningEffortSetsMatchProvider(t *testing.T) {
+	s := newTestStore(t)
+
+	// The union first: legalEfforts is what the enum-shaped writes check before
+	// the per-provider coupling ever runs.
+	for _, effort := range provider.AllReasoningEfforts {
+		if _, ok := legalEfforts[string(effort)]; !ok {
+			t.Errorf("provider.AllReasoningEfforts declares %q but store's legalEfforts does not", effort)
+		}
+	}
+	for effort := range legalEfforts {
+		if !slices.Contains(provider.AllReasoningEfforts, provider.ReasoningEffort(effort)) {
+			t.Errorf("store's legalEfforts declares %q but provider.AllReasoningEfforts does not", effort)
+		}
+	}
+
+	for _, providerName := range []string{"claude", "claude-tui", "codex"} {
+		t.Run(providerName, func(t *testing.T) {
+			canonical := provider.ReasoningEffortsForProvider(providerName)
+			if len(canonical) == 0 {
+				t.Fatalf("provider.ReasoningEffortsForProvider(%s) is empty", providerName)
+			}
+			for _, effort := range provider.AllReasoningEfforts {
+				want := slices.Contains(canonical, effort)
+				name := string(effort)
+
+				if got := legalEffortForProvider(providerName, name); got != want {
+					t.Errorf("legalEffortForProvider(%s, %s) = %v, want %v — store's copy has drifted from the provider package",
+						providerName, name, got, want)
+				}
+
+				key := providerName + "-" + name
+				_, threadErr := s.db.Exec(`
+					INSERT INTO threads (id, project_id, title, provider, workspace_path, model,
+						created_at, updated_at, archived, mode, reasoning_effort)
+					VALUES (?, ?, 'Effort', ?, '/tmp', '', 1, 1, 0, 'chat', ?)
+				`, "t-eff-"+key, defaultTestProjectID, providerName, name)
+				if want && threadErr != nil {
+					t.Errorf("threads CHECK rejects %s/%s, which the provider package calls canonical — a migration is missing: %v",
+						providerName, name, threadErr)
+				}
+				if !want && threadErr == nil {
+					t.Errorf("threads CHECK accepted %s/%s, which the provider package does not offer", providerName, name)
+				}
+
+				_, profileErr := s.db.Exec(`
+					INSERT INTO chat_model_profiles (
+						provider, model, reasoning_effort, fast_mode, context_window, runtime_mode, updated_at
+					) VALUES (?, ?, ?, 0, 272000, 'full-access', 1)
+				`, providerName, "model-"+key, name)
+				if want && profileErr != nil {
+					t.Errorf("chat_model_profiles CHECK rejects %s/%s: %v", providerName, name, profileErr)
+				}
+				if !want && profileErr == nil {
+					t.Errorf("chat_model_profiles CHECK accepted %s/%s, which the provider package does not offer", providerName, name)
+				}
+			}
+		})
 	}
 }
 

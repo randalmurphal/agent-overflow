@@ -34,18 +34,62 @@ type codexAdapter struct {
 	// forkSeq numbers `thread/fork` answers so two forks of the same
 	// mock thread never claim the same id.
 	forkSeq atomic.Int64
+	// queue / queueSeq back the provider-owned user-message queue
+	// (`thread/queue/*`, codex >= 0.148). Guarded by mu, which the idle
+	// dispatch on the engine goroutine also takes. See codex_queue.go.
+	queue    []codexQueueEntry
+	queueSeq int
+	// historyMode is the thread's persisted history contract
+	// ("legacy" / "paginated"), decided at thread/start and merely echoed
+	// on thread/resume. It gates `thread/revert`. See codex_revert.go.
+	historyMode string
+	// resumedThread records that this connection joined an EXISTING
+	// thread, so turns it never ran are history rather than nonsense.
+	// See codex_revert.go#anchorIsCuttable.
+	resumedThread bool
 }
+
+// mockCodexModelList is the default `model/list` answer. It is not optional
+// detail: AO treats the app-server's live catalog as REPLACING its shipped one
+// and a miss as authoritative (`CodexLiveModelCatalog`), so an empty answer
+// means "this account has no codex models at all" — after which every
+// explicit reasoning effort on a codex thread is refused and the model picker
+// is blank. The list names the harness seed's own model
+// (`app_harness_seed.go`) plus one current catalog slug, each with the full
+// effort menu and the fast tier, so a harness session looks like an account
+// that can actually run.
+const mockCodexModelList = `{"data":[` +
+	`{"model":"gpt-5.2-codex","displayName":"GPT 5.2 Codex (mock)","defaultReasoningEffort":"medium",` +
+	`"supportedReasoningEfforts":[{"reasoningEffort":"low"},{"reasoningEffort":"medium"},` +
+	`{"reasoningEffort":"high"},{"reasoningEffort":"xhigh"}],` +
+	`"serviceTiers":[{"id":"priority","name":"Fast","description":"mock fast tier"}]},` +
+	`{"model":"gpt-5.6-sol","displayName":"GPT 5.6 Sol (mock)","defaultReasoningEffort":"low",` +
+	`"supportedReasoningEfforts":[{"reasoningEffort":"low"},{"reasoningEffort":"medium"},` +
+	`{"reasoningEffort":"high"},{"reasoningEffort":"xhigh"}],` +
+	`"serviceTiers":[{"id":"priority","name":"Fast","description":"mock fast tier"}]}],` +
+	`"nextCursor":null}`
 
 func newCodexAdapter(e *engine, w *lineWriter, opts *scenario.CodexOptions) *codexAdapter {
 	// Built-in defaults cover the standard handshake; scenarios override
 	// only what they need. Templates are full response lines with
 	// ${REQUEST_ID} substituted verbatim (number or string id).
 	responses := map[string]string{
-		"initialize":     `{"jsonrpc":"2.0","id":${REQUEST_ID},"result":{}}`,
-		"thread/start":   `{"jsonrpc":"2.0","id":${REQUEST_ID},"result":{"thread":{"id":"${THREAD_ID}"}}}`,
-		"thread/resume":  `{"jsonrpc":"2.0","id":${REQUEST_ID},"result":{"thread":{"id":"${THREAD_ID}"}}}`,
+		// The userAgent is what the app parses its VERSION off
+		// (`app_server_version.go`), and several method gates fail closed
+		// without it — thread/queue, thread/revert, thread-scoped usage, and
+		// the >= 0.149 approval-policy remap. The mock answers `--version`
+		// with 99.0.0 and says the same here, so a harness session behaves
+		// like the newest supported app-server rather than an unknown one.
+		"initialize": `{"jsonrpc":"2.0","id":${REQUEST_ID},"result":{"userAgent":"codex_cli_rs/` + mockVersionNumber + ` (mock; ao-mockprovider)"}}`,
+		// ${HISTORY_MODE} is bound by respond(), not by a scenario: the
+		// thread's history contract is decided by the thread/start params
+		// (codex_revert.go), and it is what makes `thread/revert` available
+		// or refused.
+		"thread/start":   `{"jsonrpc":"2.0","id":${REQUEST_ID},"result":{"thread":{"id":"${THREAD_ID}","historyMode":"${HISTORY_MODE}"}}}`,
+		"thread/resume":  `{"jsonrpc":"2.0","id":${REQUEST_ID},"result":{"thread":{"id":"${THREAD_ID}","historyMode":"${HISTORY_MODE}"}}}`,
 		"turn/start":     `{"jsonrpc":"2.0","id":${REQUEST_ID},"result":{"turn":{"id":"${TURN_ID}"}}}`,
 		"turn/interrupt": `{"jsonrpc":"2.0","id":${REQUEST_ID},"result":{}}`,
+		"model/list":     `{"jsonrpc":"2.0","id":${REQUEST_ID},"result":` + mockCodexModelList + `}`,
 	}
 	if opts != nil {
 		for method, tmpl := range opts.Responses {
@@ -102,12 +146,16 @@ func (a *codexAdapter) handleRequest(id json.RawMessage, method string, params j
 				ApprovalPolicy: readParamString(params, "approvalPolicy"),
 			},
 		})
+		// The history contract is settled here and nowhere else — a resume
+		// can only report what the thread already is.
+		a.noteThreadStart(params)
 		a.respond(id, method, a.e.currentVars())
 	case "thread/resume":
 		// Echo the requested thread id and rebind ${THREAD_ID} to it.
 		if tid := readParamString(params, "threadId"); tid != "" {
 			a.e.setThreadID(tid)
 		}
+		a.noteThreadResume(a.e.currentVars()["THREAD_ID"])
 		a.respond(id, method, a.e.currentVars())
 	case "turn/start":
 		// The app-server validates outputSchema per turn rather than at spawn,
@@ -118,9 +166,16 @@ func (a *codexAdapter) handleRequest(id json.RawMessage, method string, params j
 		// Response first (real server order), then the turn's steps
 		// stream as notifications from the engine goroutine.
 		n, vars := a.e.beginTurn()
+		input := codexInputText(params)
+		// Bind the turn's own text so a scenario can echo the `userMessage`
+		// item a real app-server emits for every turn. Without the echo an
+		// app's pending-send correlation never resolves — and on a FIFO
+		// consumer the unconsumed entry then absorbs a LATER turn's echo,
+		// which silently misplaces every message after it.
+		a.e.setTurnVars(n, scenario.Vars{"USER_INPUT": input})
 		a.e.rep.report(control.Report{
 			Kind: control.ReportUserInput, Turn: n,
-			Input: codexInputText(params), SessionRef: vars["THREAD_ID"],
+			Input: input, SessionRef: vars["THREAD_ID"],
 		})
 		a.respond(id, method, vars)
 		a.e.enqueueTurn(n)
@@ -139,6 +194,8 @@ func (a *codexAdapter) handleRequest(id json.RawMessage, method string, params j
 		a.respond(id, method, vars)
 	case "thread/fork":
 		a.forkThread(id, params)
+	case "thread/revert":
+		a.revertThread(id, params)
 	case "turn/interrupt":
 		// The real app-server replies when TurnAborted arrives, immediately
 		// before publishing turn/completed{status:interrupted}. Preserve that
@@ -146,6 +203,9 @@ func (a *codexAdapter) handleRequest(id json.RawMessage, method string, params j
 		a.respond(id, method, a.e.currentVars())
 		a.e.interruptTurn(readParamString(params, "turnId"))
 	default:
+		if a.handleQueueRequest(id, method, params) {
+			return
+		}
 		if _, known := a.responses[method]; !known {
 			log.Printf("codex: request method %q has no scenario response; answering with empty result", method)
 		}
@@ -165,16 +225,34 @@ func (a *codexAdapter) handleRequest(id json.RawMessage, method string, params j
 // A scenario that declares its own `thread/fork` response template still
 // wins; this synthesis only fills the default.
 func (a *codexAdapter) forkThread(id json.RawMessage, params json.RawMessage) {
+	anchor := readParamString(params, "lastTurnId")
+	// Reported before the answer, like thread/revert's, and before the
+	// scripted-response branch: the two cuts are alternatives chosen by a
+	// version + history-mode gate, so a test asserting the choice must be
+	// able to see the one that WAS taken.
+	a.e.rep.report(control.Report{
+		Kind:       control.ReportHistoryCut,
+		Detail:     "thread/fork",
+		Input:      anchor,
+		SessionRef: a.e.currentVars()["THREAD_ID"],
+	})
 	if _, scripted := a.responses["thread/fork"]; scripted {
 		a.respond(id, "thread/fork", a.e.currentVars())
 		return
 	}
-	anchor := readParamString(params, "lastTurnId")
 	turnIDs, ok := a.e.forkedTurnIDs(anchor)
 	if !ok {
-		a.writeRPCError(id, -32602, fmt.Sprintf(
-			"thread/fork: lastTurnId %q is unknown or names the in-progress turn", anchor))
-		return
+		if !a.anchorIsCuttable(anchor) {
+			a.writeRPCError(id, -32602, fmt.Sprintf(
+				"thread/fork: lastTurnId %q is unknown or names the in-progress turn", anchor))
+			return
+		}
+		// An anchor from before this process resumed the thread. A real
+		// app-server reads those turns out of the rollout; the mock has
+		// none, so it answers with the only turn it can name — the anchor
+		// itself, as the last surviving turn, which is the one property
+		// ForkAt validates.
+		turnIDs = []string{anchor}
 	}
 	turns := make([]map[string]any, 0, len(turnIDs))
 	for _, turnID := range turnIDs {
@@ -219,6 +297,7 @@ func (a *codexAdapter) respond(id json.RawMessage, method string, vars scenario.
 		sub[k] = v
 	}
 	sub["REQUEST_ID"] = string(id)
+	sub["HISTORY_MODE"] = a.currentHistoryMode()
 	a.w.writeLine(sub.Substitute(tmpl), 0, 0)
 }
 

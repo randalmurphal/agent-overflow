@@ -146,14 +146,30 @@ func (f *MCPStatusFetcher) Fetch(ctx context.Context, _ mcpstatus.Provider) ([]m
 // destructure the record and lose a signal. Rules:
 //
 //   - authStatus = "notLoggedIn" → StatusNeedsAuth
-//   - authStatus ∈ {"unsupported","bearerToken","oAuth"}:
+//   - authStatus ∈ {"unknown","unsupported","bearerToken","oAuth"}:
 //     serverInfo present ∨ tools non-empty → StatusConnected, else StatusFailed
 //   - unrecognized authStatus → StatusUnknown
+//
+// `unknown` is in the EVIDENCE-DECIDES set, not the give-up set, and that
+// is the whole point of listing it. Codex 0.147 added the variant
+// (`McpAuthStatus::Unknown`, codex-rs/app-server-protocol/src/protocol/v2/mcp.rs;
+// `McpAuthState::Unknown`, codex-rs/rmcp-client/src/auth_status.rs) and
+// reports it whenever OAuth metadata DISCOVERY ITSELF FAILED —
+// `determine_auth_status_from_discovery` returns `Err` and
+// `compute_auth_statuses` (codex-rs/codex-mcp/src/mcp/auth.rs) swallows it
+// into `Unknown` — or whenever an `http_headers_helper` server cannot be
+// inspected without executing the helper. A plain HTTP MCP server that
+// publishes no `.well-known` OAuth metadata is the common producer; 0.146
+// answered `unsupported` for the same server, so treating `unknown` as
+// "we cannot tell anything" would have flipped healthy rows to
+// StatusUnknown on upgrade. The auth axis never decides liveness for any
+// value except `notLoggedIn`: serverInfo/tools prove a completed
+// `initialize`, and that proof is independent of how the auth probe went.
 func MCPStatusFromList(entry MCPServerStatus) mcpstatus.Status {
 	switch strings.TrimSpace(entry.AuthStatus) {
 	case "notLoggedIn":
 		return mcpstatus.StatusNeedsAuth
-	case "unsupported", "bearerToken", "oAuth":
+	case "unknown", "unsupported", "bearerToken", "oAuth":
 		if entry.ServerInfo != nil || len(entry.Tools) > 0 {
 			return mcpstatus.StatusConnected
 		}

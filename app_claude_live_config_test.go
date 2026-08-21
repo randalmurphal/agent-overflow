@@ -581,3 +581,199 @@ func TestLiveApplySessionConfigSerializesPerThread(t *testing.T) {
 		t.Fatal("same-thread apply never ran after the lock was released")
 	}
 }
+
+// TestUncorrelatedFastReplyMatchesTheCLIsPrefixedSpellings — the fast-axis
+// matcher on the uncorrelated path used to be four HasPrefix tests, but the
+// CLI does not always lead with the state word. The 2.1.237 bundle's string
+// table carries " · Fast mode ON" and " Fast mode ON" alongside the bare
+// form, because enabling fast mode can implicitly switch the model and the
+// reply leads with that half. A prefix-only matcher lets a real answer fall
+// through to the user-typed handling, stranding the pending apply until the
+// watchdog declines it and restarts a session that had already complied.
+func TestUncorrelatedFastReplyMatchesTheCLIsPrefixedSpellings(t *testing.T) {
+	cases := []struct {
+		name string
+		text string
+	}{
+		{"separator prefixed", " · Fast mode ON"},
+		{"space prefixed", " Fast mode ON"},
+		{"bare", "Fast mode ON"},
+		{"model switch first", "claude-opus-4-8 model set to fast · Fast mode ON"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if !isFastCommandReply(tc.text) {
+				t.Fatalf("isFastCommandReply(%q) = false; a real /fast answer was not recognized", tc.text)
+			}
+
+			app := newTestAppWithStore(t)
+			id, token := "thread-fast-uncorrelated", "tok-1"
+			optimistic := provider.SessionOptions{Model: "claude-opus-5", FastMode: true}
+			started := seedClaudeLiveConfigThread(t, app, id, token, optimistic)
+
+			prev := optimistic
+			prev.FastMode = false
+			app.registerClaudeLiveConfigApplies(id, token, prev,
+				claude.LiveUpdate{FastMode: claude.FastModeOn},
+				claude.LiveApplyReceipt{FastCommandUUID: "cmd-fast"})
+
+			// No uuid: the CLI predates command_lifecycle, so the axis matcher
+			// is the only thing that can route this answer to its apply.
+			app.observeClaudeCommandResult(id, token, commandResultEvent(t, "", tc.text))
+
+			if _, ok := app.peekClaudeLiveConfigApply("cmd-fast"); ok {
+				t.Fatal("the pending fast apply was left unsettled by its own answer")
+			}
+			if app.claudeLiveApplyIsDegraded(token, claude.LiveUpdate{FastMode: claude.FastModeOn}) {
+				t.Fatal("a successful fast enable degraded the axis")
+			}
+			if !launchOptsForThread(t, app, id).FastMode {
+				t.Fatal("launchOpts fast mode reverted on a successful enable")
+			}
+			assertNoRestartWithin(t, started, 50*time.Millisecond, "fast mode was enabled successfully")
+		})
+	}
+}
+
+// TestFastModeOffConfirmsByContainment — the OFF and unavailable arms of the
+// settle switch had the same prefix assumption as the matcher above, so a
+// separator-prefixed disable answer fell through to "the CLI answered with
+// something other than the expected state change" and declined an apply that
+// had in fact landed.
+func TestFastModeOffConfirmsByContainment(t *testing.T) {
+	app := newTestAppWithStore(t)
+	id, token := "thread-fast-off", "tok-1"
+	optimistic := provider.SessionOptions{Model: "claude-opus-5", FastMode: false}
+	started := seedClaudeLiveConfigThread(t, app, id, token, optimistic)
+
+	prev := optimistic
+	prev.FastMode = true
+	app.registerClaudeLiveConfigApplies(id, token, prev,
+		claude.LiveUpdate{FastMode: claude.FastModeOff}, claude.LiveApplyReceipt{FastCommandUUID: "cmd-fast"})
+
+	app.observeClaudeCommandResult(id, token,
+		commandResultEvent(t, "cmd-fast", " · Fast mode OFF"))
+
+	if app.claudeLiveApplyIsDegraded(token, claude.LiveUpdate{FastMode: claude.FastModeOff}) {
+		t.Fatal("a successful fast disable degraded the axis")
+	}
+	if launchOptsForThread(t, app, id).FastMode {
+		t.Fatal("launchOpts fast mode was restored on a successful disable")
+	}
+	assertNoRestartWithin(t, started, 50*time.Millisecond, "fast mode was disabled successfully")
+}
+
+// TestBareFastModeGateRepliesSettleAsParity — the local /fast command has a
+// SECOND refusal site. `Ksw` short-circuits before the toggle when fast mode
+// is off for the whole process and returns the reason BARE, with no
+// "Fast mode unavailable: " prefix in front of it (2.1.237). The matcher used
+// to know only the prefixed spelling, so on the uncorrelated path these
+// answers routed nowhere and the apply sat until the watchdog restarted a
+// session whose refusal a restart hits identically.
+//
+// Only two reasons can come out of that site, because its own guard is the
+// same one the reason table branches on first.
+func TestBareFastModeGateRepliesSettleAsParity(t *testing.T) {
+	cases := []struct {
+		name string
+		text string
+	}{
+		{"disabled by env", "Fast mode is not available"},
+		{"not first party", "Fast mode is only available when using the Anthropic API directly"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if !isFastModeGateReply(tc.text) {
+				t.Fatalf("isFastModeGateReply(%q) = false; a real /fast gate answer was not recognized", tc.text)
+			}
+
+			app := newTestAppWithStore(t)
+			id, token := "thread-fast-bare-gate", "tok-1"
+			optimistic := provider.SessionOptions{Model: "claude-opus-5", FastMode: true}
+			started := seedClaudeLiveConfigThread(t, app, id, token, optimistic)
+
+			prev := optimistic
+			prev.FastMode = false
+			app.registerClaudeLiveConfigApplies(id, token, prev,
+				claude.LiveUpdate{FastMode: claude.FastModeOn},
+				claude.LiveApplyReceipt{FastCommandUUID: "cmd-fast"})
+
+			// No uuid: the axis matcher is the only thing that can route it.
+			app.observeClaudeCommandResult(id, token, commandResultEvent(t, "", tc.text))
+
+			if _, ok := app.peekClaudeLiveConfigApply("cmd-fast"); ok {
+				t.Fatal("the pending fast apply was left unsettled by its own refusal")
+			}
+			if app.claudeLiveApplyIsDegraded(token, claude.LiveUpdate{FastMode: claude.FastModeOn}) {
+				t.Fatal("an environment-wide gate degraded the axis — a restart hits the identical gate")
+			}
+			if !launchOptsForThread(t, app, id).FastMode {
+				t.Fatal("launchOpts fast mode reverted — the requested value must stay so the reconciler does not loop")
+			}
+			assertNoRestartWithin(t, started, 50*time.Millisecond, "fast mode hit a gate a restart cannot fix")
+		})
+	}
+}
+
+// TestBareSDKFastModeReasonStillRestarts — the tripwire for the substring
+// hazard the gate arm is built around. "Fast mode is not available in the
+// Agent SDK" CONTAINS the environment-wide reason above while meaning the
+// opposite thing about restarts: the spawn opt-in fixes it. A gate arm that
+// matched the shorter string without carving this one out would silently
+// convert every SDK refusal into accepted parity, and the session would run
+// without fast mode forever while the UI said it was on.
+func TestBareSDKFastModeReasonStillRestarts(t *testing.T) {
+	app := newTestAppWithStore(t)
+	id, token := "thread-fast-sdk-bare", "tok-1"
+	optimistic := provider.SessionOptions{Model: "claude-opus-5", FastMode: true}
+	started := seedClaudeLiveConfigThread(t, app, id, token, optimistic)
+
+	prev := optimistic
+	prev.FastMode = false
+	app.registerClaudeLiveConfigApplies(id, token, prev,
+		claude.LiveUpdate{FastMode: claude.FastModeOn}, claude.LiveApplyReceipt{FastCommandUUID: "cmd-fast"})
+
+	app.observeClaudeCommandResult(id, token,
+		commandResultEvent(t, "cmd-fast", fastModeSDKUnavailableText))
+
+	if !app.claudeLiveApplyIsDegraded(token, claude.LiveUpdate{FastMode: claude.FastModeOn}) {
+		t.Fatal("the bare SDK reason was accepted as parity — the restart adds the opt-in")
+	}
+	if launchOptsForThread(t, app, id).FastMode {
+		t.Fatal("launchOpts fast mode kept true after the SDK gate declined it")
+	}
+	waitRestart(t, started, id)
+}
+
+// TestUnknownFastArgumentDeclinesInsteadOfStranding — AO only ever sends
+// `/fast on` or `/fast off`, so this reply means the command AO wrote is not
+// the command the CLI parsed, and the session is NOT running the requested
+// value. Routing it is what makes that visible now rather than at the
+// watchdog's expiry; the verdict is decline, not parity, because a restart
+// spawning from launchOpts is exactly the recovery.
+func TestUnknownFastArgumentDeclinesInsteadOfStranding(t *testing.T) {
+	app := newTestAppWithStore(t)
+	id, token := "thread-fast-badarg", "tok-1"
+	optimistic := provider.SessionOptions{Model: "claude-opus-5", FastMode: true}
+	started := seedClaudeLiveConfigThread(t, app, id, token, optimistic)
+
+	prev := optimistic
+	prev.FastMode = false
+	app.registerClaudeLiveConfigApplies(id, token, prev,
+		claude.LiveUpdate{FastMode: claude.FastModeOn}, claude.LiveApplyReceipt{FastCommandUUID: "cmd-fast"})
+
+	const badArgument = `Unknown argument "onn". Use: /fast [on|off]`
+	if !isFastCommandReply(badArgument) {
+		t.Fatalf("isFastCommandReply(%q) = false; the bad-argument reply routed nowhere", badArgument)
+	}
+	// No uuid, so routing is the matcher's job — the case that used to strand.
+	app.observeClaudeCommandResult(id, token, commandResultEvent(t, "", badArgument))
+
+	if !app.claudeLiveApplyIsDegraded(token, claude.LiveUpdate{FastMode: claude.FastModeOn}) {
+		t.Fatal("a rejected /fast argument did not degrade the axis")
+	}
+	if launchOptsForThread(t, app, id).FastMode {
+		t.Fatal("launchOpts fast mode kept true after the CLI rejected the command")
+	}
+	waitRestart(t, started, id)
+}

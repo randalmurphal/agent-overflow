@@ -342,6 +342,15 @@ func TestMCPStatusFromList(t *testing.T) {
 		{"oAuth", true, 0, mcpstatus.StatusConnected},
 		{"oAuth", false, 0, mcpstatus.StatusFailed},   // the invalid_grant incident shape
 		{" oAuth ", false, 0, mcpstatus.StatusFailed}, // auth enum is trimmed before matching
+		// codex 0.147 `unknown`: OAuth discovery failed, which says nothing
+		// about whether the server connected. A plain HTTP server with no
+		// `.well-known` metadata reports it and still serves tools; 0.146
+		// called the same server `unsupported`, so evidence — not the auth
+		// axis — has to keep deciding or the upgrade greys out healthy rows.
+		{"unknown", true, 0, mcpstatus.StatusConnected},
+		{"unknown", false, 2, mcpstatus.StatusConnected},
+		{"unknown", false, 0, mcpstatus.StatusFailed},
+		{" unknown ", true, 0, mcpstatus.StatusConnected},
 		{"future-state", true, 9, mcpstatus.StatusUnknown},
 		{"", false, 0, mcpstatus.StatusUnknown},
 	}

@@ -68,7 +68,7 @@ func (s *Session) Probe(ctx context.Context) (ProbeResult, error) {
 		"includeTurns": false,
 	})
 	if err != nil {
-		return ProbeResult{}, fmt.Errorf("codex: thread/read: %w", err)
+		return ProbeResult{}, fmt.Errorf("codex: thread/read: %w", classifyThreadWriterConflict(err))
 	}
 
 	return decodeProbeResponse(resp)
@@ -107,7 +107,7 @@ func (s *Session) Resume(ctx context.Context) error {
 		"threadId": rootThreadID,
 	})
 	if err != nil {
-		return fmt.Errorf("codex: thread/resume: %w", err)
+		return fmt.Errorf("codex: thread/resume: %w", classifyThreadWriterConflict(err))
 	}
 	s.rehydrateCollabOwnershipFromThreadResponse(resp)
 	return nil

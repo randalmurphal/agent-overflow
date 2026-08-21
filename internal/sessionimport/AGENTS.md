@@ -188,6 +188,60 @@ multi-generation imports produce the same lineage. Missing parents stay
 unlinked until a later import. Ambiguous, self, or cyclic metadata keeps all
 history and omits only the unsafe edge with a surfaced warning.
 
+Codex's `session_meta.history_mode` (`legacy` | `paginated`) is deliberately
+NOT on `Row`. It had a field once, with no reader; a listing field nothing
+branches on is a shape every caller has to carry and no caller can verify. The
+refresh guard reads the mode where it is actually load-bearing, off
+`rollout.ReadSourceIdentity`, and compares it against the recorded
+`SourceHistoryMode` to catch a Codex history migration (see
+"Source identity"). If a listing consumer ever needs it, it rides the bounded
+head read the scan already performs for fork provenance, so re-adding it costs
+nothing — but read it from the rollout header, never from `threads.history_mode`
+in `state_5.sqlite`: that column arrived with a state migration a Codex home can
+predate, and naming it in the listing query would turn a browse into a hard
+failure on any home that has not migrated.
+
+### Sessions Codex imported from another agent
+
+`Row.ImportedFrom` is set when Codex's own external-import ledger
+(`<codexHome>/external_agent_session_imports.json`, Codex >= 0.147) says a
+Codex thread is a conversation Codex migrated from Claude Code or Cursor. It
+carries the source agent, the source path, the source session id where the
+layout encodes one, when Codex recorded the import, and — the second thing the
+ledger buys — `DuplicateOfThreadID`.
+
+The imported rollout is an ordinary Codex rollout whose originator says
+`codex_cli`, so without the ledger the picker offers a Claude Code
+conversation as a Codex session with nothing to say where it came from. The
+shape, the units, and how the agent is derived live in
+[`internal/provider/codex/rollout/AGENTS.md`](../provider/codex/rollout/AGENTS.md)
+§"Codex's external import ledger".
+
+Two rules here:
+
+- **The duplicate check reuses `known`.** It is the same
+  `ListImportedSessionRefs` map the scan already builds to subtract sessions
+  AO has, so the check costs no extra read — it just asks a different
+  question of it: the Codex-side dedup asks whether AO holds this CODEX
+  THREAD, and this asks whether AO holds the CONVERSATION inside it, keyed on
+  `(claude, sourceSessionID)`.
+- **A duplicate row is still OFFERED.** Two provider sessions genuinely exist
+  and both are independently resumable — the Codex copy resumes in Codex — so
+  suppressing it would take away a real choice, the same reasoning that keeps
+  explicit forks listed. Naming the duplicate lets the picker say so instead.
+
+One bounded read of one small JSON file per SCAN, not per row. Absence is
+silent; a corrupt ledger costs the labels and raises one
+`codex-import-ledger-unreadable`. That warning is not a per-file skip, so
+`countSkipped` does not count it — and `Scan` surfaces warnings only through
+`ProviderStatus.SkippedCount`, so a corrupt ledger is visible to library
+callers and tests but not, today, to the user. The user-visible effect is
+simply that no origin badges appear.
+
+Unlike the history mode above, this one IS on the app's wire shape
+(`ImportableSession.importedFrom`, `app_session_import.go`), because the
+import picker renders it.
+
 ### Which project a row lands under
 
 `projectIndex` (`projectindex.go`) answers it, and a session that ran in a
@@ -355,7 +409,7 @@ The six statuses:
 | `not-imported` | No `thread_import_state` row. The thread is AO's own. |
 | `diverged-local` | `Diverged` says the thread grew past its cursor — the user resumed it inside AO, so the timeline and the file are two different futures. |
 | `source-missing` | The recorded `source_path` is gone. |
-| `source-diverged` | The file is there but no longer contains the position this thread stopped at. |
+| `source-diverged` | The file is there but no longer contains the position this thread stopped at — it was replaced, truncated, or (Codex) rewritten in place by a history migration. |
 | `up-to-date` | The tail produced no rows and no model repair. |
 | `updates-available` | Rows and/or a model-profile repair are built and waiting. |
 
@@ -378,9 +432,53 @@ Finding the tail is provider-shaped, same split as the cursor:
   `source-diverged`, not an error. An apply records the branch's NEW
   leaf, so the next refresh anchors on the branch by its own identity
   rather than on an ancestor it happens to share.
-- **Codex** tails from `last_source_offset`. `rollout.ErrSourceShrank` is
-  `source-diverged`: a rollout is append-only, so a smaller file is a
-  replaced one.
+- **Codex** tails from `last_source_offset`, behind TWO divergence tests
+  that do not subsume each other:
+  - **Source identity.** `rollout.ReadSourceIdentity` fingerprints the
+    file's first line (sha256) and reads its declared `history_mode`; both
+    are compared against `thread_import_state.source_meta_hash` /
+    `source_history_mode` (migration v67) BEFORE the offset is trusted.
+    This is what catches a rollout Codex REWROTE in place: since 0.147 a
+    thread can be migrated from `legacy` to `paginated` history, and the
+    migration canonicalises the whole file and publishes it atomically over
+    the same path. The result is usually the SAME SIZE OR LARGER — so the
+    append-only test below passes — while every byte offset in it addresses
+    a different record. The refusal names the migration as a cause, because
+    that is a thing the user can recognise.
+  - **Append-only position.** `rollout.ErrSourceShrank` is `source-diverged`:
+    a rollout is append-only, so a file smaller than the cursor, or a cursor
+    that no longer follows a record boundary, is a replaced one.
+
+  A RECORDED fingerprint of `""` means UNKNOWN, not mismatched: a row written
+  before v67 has none, the comparison is skipped, and the next successful apply
+  BACKFILLS it. Reporting every pre-v67 thread as diverged would be a worse
+  answer than the size test those threads have always had. Claude records no
+  fingerprint at all — its refresh anchors on a transcript uuid, which a
+  rewritten file invalidates by itself.
+
+  A CURRENT fingerprint of `""` is the opposite case and FAILS CLOSED.
+  `ReadSourceIdentity` answers a NIL ERROR with an empty hash whenever the file
+  has no complete, in-window first line — a first record past the bounded head
+  read, a truncated head, an empty file — so a guard phrased as "compare only
+  when both sides are non-empty" skips the fingerprint exactly when the file is
+  least like the one that was imported, and the recorded byte offset is then
+  trusted against a header nothing read. A thread that HAS a fingerprint proved
+  its first line was readable at import time; a header that stopped being
+  readable is a header that changed. The same posture covers the READ ERROR
+  (`codexIdentityForRefresh`): unfingerprinted is unknown, fingerprinted with a
+  real resume offset is divergence.
+
+  The two `history_mode` spellings are compared through `historyModeLabel`, so
+  an ABSENT mode and an explicit `legacy` are one mode rather than a migration
+  between them — the field exists only from Codex 0.147 and its enum defaults
+  to Legacy. A header that genuinely changed is still caught by the
+  fingerprint, whose prose is the accurate one for it.
+
+  A Codex rollout that inherits history from ANOTHER file
+  (`session_meta.history_base`) imports only its own region and carries a
+  `codex-history-base` warning; AO does not follow the chain. See
+  [`internal/provider/codex/rollout/AGENTS.md`](../provider/codex/rollout/AGENTS.md)
+  §history_base.
 
 `Cursor.Advance` is what keeps a refresh from moving the cursor
 BACKWARDS. A tail that wrote no rows leaves the row position at
@@ -445,8 +543,9 @@ carries no byte offset — each field takes the later of the two.
   writing beside the source would leave the fork under the OLD cwd's slug
   while `claude --resume` looks under the new one — "No conversation
   found", on a thread that never ran. Falling back to the source directory
-  is correct only where a destination slug cannot exist (an over-length
-  path, a workspace that is gone).
+  is correct only where a destination slug cannot be resolved at all — a
+  workspace that is gone. Path length is no longer such a case: the CLI's
+  truncate-and-hash slug for a >200-char path is reproduced exactly.
 
   `WriteForkFileThroughUUID` remints every transcript UUID. The new session
   ref and every imported user item's provider-id metadata are therefore

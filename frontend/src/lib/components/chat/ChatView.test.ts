@@ -674,9 +674,16 @@ describe('<ChatView>', () => {
     const pane = await buildPane({ ...seedThread(), mode: 'terminal' });
     const { getByTestId, queryByTestId, container } = render(ChatView, { props: { pane } });
     // TerminalView mounts through a lazy import, so wait for it to land.
-    await waitFor(() => {
-      expect(container.querySelector('[data-ui-surface="terminal"]')).not.toBeNull();
-    });
+    // The timeout is explicit because what this waits on is MODULE RESOLUTION,
+    // not a state transition: on a loaded machine (the full suite running
+    // beside a Go test run) the dynamic import alone outruns waitFor's 1s
+    // default and the assertion fails on wall clock rather than on behaviour.
+    await waitFor(
+      () => {
+        expect(container.querySelector('[data-ui-surface="terminal"]')).not.toBeNull();
+      },
+      { timeout: 10_000 },
+    );
     expect(getByTestId('terminal-pane-close')).toBeInTheDocument();
     // The chat machinery must be absent — proves the branch replaces, not overlays.
     expect(queryByTestId('chat-header')).toBeNull();

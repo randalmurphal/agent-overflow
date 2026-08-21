@@ -69,7 +69,7 @@ func TestBuildThreadParamsCarriesDisabledToolConfigKeys(t *testing.T) {
 	params := buildThreadParams(Config{
 		DisabledTools:   []string{"update_plan", "collab_agents"},
 		ReasoningEffort: "high",
-	})
+	}, "")
 	config, ok := params["config"].(map[string]any)
 	if !ok {
 		t.Fatalf("params[config] = %T, want map", params["config"])

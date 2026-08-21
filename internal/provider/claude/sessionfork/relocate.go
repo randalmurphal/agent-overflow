@@ -45,10 +45,12 @@ var ErrSubagentCopyIncomplete = errors.New("sessionfork: subagent subdir copy in
 // Returns ErrSessionFileNotFound (with srcFile/destFile empty) when the
 // transcript can't be located under ANY project dir — the session is genuinely
 // gone, and the caller surfaces that as resume state rather than fabricating a
-// new one. Returns a hard error with destFile EMPTY when destWorkspace's exact
-// slug is uncomputable (sanitized form exceeds MaxSanitizedSlugLen, where the
-// CLI appends an unreproducible Bun.hash suffix) or the transcript copy fails —
-// callers that can abort MUST refuse the workspace change. Returns
+// new one. Returns a hard error with destFile EMPTY when destWorkspace cannot
+// be canonicalized (the directory is gone) or the transcript copy fails —
+// callers that can abort MUST refuse the workspace change. An over-length
+// destination is NOT such a case: exactWorkspaceSlug reproduces the CLI's
+// truncate-and-hash slug, so the copy lands in the directory a resume there
+// will read. Returns
 // ErrSubagentCopyIncomplete with destFile SET (soft) when only the subagent
 // subdir copy is partial: resume works, so the move is not refused.
 func RelocateSession(sessionID, fromWorkspace, destWorkspace string) (srcFile, destFile string, err error) {
@@ -59,12 +61,9 @@ func RelocateSession(sessionID, fromWorkspace, destWorkspace string) (srcFile, d
 		return "", "", err
 	}
 
-	slug, ok, err := exactWorkspaceSlug(destWorkspace)
+	slug, err := exactWorkspaceSlug(destWorkspace)
 	if err != nil {
 		return src, "", err
-	}
-	if !ok {
-		return src, "", fmt.Errorf("sessionfork: cannot relocate %s: destination %q sanitizes beyond %d chars where Claude appends an unreproducible Bun.hash suffix", sessionID, destWorkspace, MaxSanitizedSlugLen)
 	}
 
 	pdir, err := defaultProjectsDir()
