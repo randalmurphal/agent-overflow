@@ -13,7 +13,7 @@
   import WorkflowSeedFields from './WorkflowSeedFields.svelte';
   import type { WorkflowDefinitionListing } from '../../types/workflow';
   import { WorkflowStartRun } from '../../stores/bindings';
-  import { getProjects } from '../../stores/projects.svelte';
+  import { getProjectLabelText, getProjects } from '../../stores/projects.svelte';
   import { addToast } from '../../stores/toast.svelte';
   import { userFacingError } from '../../utils/userFacingError';
   import { isViewOnlySession } from '../../transport/runMode';
@@ -142,7 +142,7 @@
               onclick={() => selectProject(entry.project.id)}
               data-testid="workflow-intake-project"
               data-project-id={entry.project.id}
-            >{entry.project.name}</button>
+            >{getProjectLabelText(entry.project.id)}</button>
           {/each}
         </div>
       </fieldset>

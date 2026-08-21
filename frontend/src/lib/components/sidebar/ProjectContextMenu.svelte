@@ -13,7 +13,7 @@
     OpenInEditor,
     ProjectDeletionPreview as fetchDeletionPreview,
   } from '../../stores/bindings';
-  import { removeProjectLocal } from '../../stores/projects.svelte';
+  import { getProjectLabelText, removeProjectLocal } from '../../stores/projects.svelte';
   import { closePanesShowingThreads } from '../../stores/panes.svelte';
   import { removeThread } from '../../stores/threads.svelte';
   import { addToast } from '../../stores/toast.svelte';
@@ -41,6 +41,12 @@
 
   let { project, pane, anchor, open, onClose, onRename }: Props = $props();
 
+  // Disambiguated label (parent-dir prefix when another project shares the
+  // name) so confirm/toast copy names the right copy. Falls back to the raw
+  // name once the row leaves the store (archive/delete remove it before the
+  // toast renders).
+  let labelText = $derived(getProjectLabelText(project.project.id) || project.project.name);
+
   let showArchiveConfirm = $state(false);
   let showDeleteConfirm = $state(false);
   // Set only when the project owns workflow work — that is the case with more
@@ -49,10 +55,12 @@
   let deleting = $state(false);
 
   async function doArchive(): Promise<void> {
+    // Capture before removeProjectLocal drops the row from the label map.
+    const label = labelText;
     try {
       await ArchiveProject(project.project.id);
       removeProjectLocal(project.project.id);
-      addToast('info', `Archived project "${project.project.name}".`);
+      addToast('info', `Archived project "${label}".`);
     } catch (err) {
       console.error('Failed to archive project:', err);
       addToast('error', userFacingError(err));
@@ -91,13 +99,15 @@
 
   async function doDelete(): Promise<void> {
     deleting = true;
+    // Capture before removeProjectLocal drops the row from the label map.
+    const label = labelText;
     try {
       const result = await DeleteProject(project.project.id);
       for (const id of result.threadIds) removeThread(id);
       removeProjectLocal(project.project.id);
       closePanesShowingThreads(result.threadIds);
       deletionPreview = null;
-      addToast('info', `Deleted project "${project.project.name}".`);
+      addToast('info', `Deleted project "${label}".`);
       // A checkout git declined to remove is reported separately and stays on
       // screen as a warning: the deletion succeeded, but there is something on
       // disk the user has to finish themselves, and folding that into the
@@ -161,7 +171,7 @@
 <ConfirmDialog
   open={showArchiveConfirm}
   title="Archive Project"
-  description={`Hide "${project.project.name}" from the sidebar. Threads remain and the project can be unarchived from Settings.`}
+  description={`Hide "${labelText}" from the sidebar. Threads remain and the project can be unarchived from Settings.`}
   confirmLabel="Archive"
   onConfirm={() => {
     showArchiveConfirm = false;
@@ -175,7 +185,7 @@
 <ConfirmDialog
   open={showDeleteConfirm}
   title="Delete Project"
-  description={`Permanently delete "${project.project.name}" and all ${project.threadCount} thread${project.threadCount === 1 ? '' : 's'} it contains. This cannot be undone.`}
+  description={`Permanently delete "${labelText}" and all ${project.threadCount} thread${project.threadCount === 1 ? '' : 's'} it contains. This cannot be undone.`}
   confirmLabel="Delete"
   destructive={true}
   onConfirm={() => {
@@ -190,7 +200,7 @@
 {#if deletionPreview}
   <ProjectDeleteDialog
     open={true}
-    projectName={project.project.name}
+    projectName={labelText}
     threadCount={project.threadCount}
     preview={deletionPreview}
     submitting={deleting}

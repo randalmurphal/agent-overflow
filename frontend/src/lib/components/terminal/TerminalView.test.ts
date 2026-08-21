@@ -69,7 +69,10 @@ vi.mock('../../stores/panes.svelte', () => ({
 }));
 
 // The header shows the project name; a home terminal (no project) shows "~".
-vi.mock('../../stores/projects.svelte', () => ({ getProject: vi.fn(() => undefined) }));
+vi.mock('../../stores/projects.svelte', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../stores/projects.svelte')>()),
+  getProject: vi.fn(() => undefined),
+}));
 
 interface MakePaneOpts {
   paneId?: string;

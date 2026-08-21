@@ -11,7 +11,7 @@
   import { WorkflowSetGlobalPause } from '../../stores/bindings';
   import { addToast } from '../../stores/toast.svelte';
   import { userFacingError } from '../../utils/userFacingError';
-  import { getProjects } from '../../stores/projects.svelte';
+  import { getProjectLabelText, getProjects } from '../../stores/projects.svelte';
   import { isViewOnlySession } from '../../transport/runMode';
   import { isWorkflowEnginePaused } from '../../stores/workflowRuns.svelte';
   import {
@@ -63,7 +63,7 @@
     >
       <option value="">All projects</option>
       {#each projects as entry (entry.project.id)}
-        <option value={entry.project.id}>{entry.project.name}</option>
+        <option value={entry.project.id}>{getProjectLabelText(entry.project.id)}</option>
       {/each}
     </select>
   </label>

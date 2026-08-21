@@ -5,7 +5,7 @@
 
   import WorkflowsHomeControls from './WorkflowsHomeControls.svelte';
   import WorkflowProjectGroup from './WorkflowProjectGroup.svelte';
-  import { getProjects } from '../../stores/projects.svelte';
+  import { getProjectLabelText, getProjects } from '../../stores/projects.svelte';
   import {
     getWorkflowAutomations,
     getWorkflowCatalog,
@@ -15,7 +15,11 @@
   import { getWorkflowProjectFilter } from '../../stores/workflowsOverlay.svelte';
 
   let projectNames = $derived(
-    new Map(getProjects().map((entry) => [entry.project.id, entry.project.name] as const)),
+    new Map(
+      getProjects().map(
+        (entry) => [entry.project.id, getProjectLabelText(entry.project.id)] as const,
+      ),
+    ),
   );
   let groups = $derived(
     groupWorkflowRunsByProject(getWorkflowRuns(), projectNames, getWorkflowProjectFilter())

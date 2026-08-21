@@ -9,7 +9,7 @@
   // rendering an editor whose every save would fail.
 
   import { onMount } from 'svelte';
-  import { getProjects, isLoaded, refreshProjects } from '../../stores/projects.svelte';
+  import { getProjectLabelText, getProjects, isLoaded, refreshProjects } from '../../stores/projects.svelte';
   import { isViewOnlySession } from '../../transport/runMode';
   import SettingsHeader from './SettingsHeader.svelte';
   import SettingsField from './SettingsField.svelte';
@@ -66,7 +66,7 @@
         onchange={(e) => (selectedId = (e.target as HTMLSelectElement).value)}
       >
         {#each projects as entry (entry.project.id)}
-          <option value={entry.project.id}>{entry.project.name}</option>
+          <option value={entry.project.id}>{getProjectLabelText(entry.project.id)}</option>
         {/each}
       </select>
     </SettingsField>

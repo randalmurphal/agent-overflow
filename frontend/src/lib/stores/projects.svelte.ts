@@ -11,6 +11,11 @@
 import type { Project, ProjectWithCounts } from '../types/models';
 import { ListProjects } from './bindings';
 import { addToast } from './toast.svelte';
+import {
+  disambiguatedProjectLabels,
+  formatProjectLabel,
+  type ProjectLabel,
+} from '../utils/pathDisplay';
 
 let projects: ProjectWithCounts[] = $state([]);
 let loaded = $state(false);
@@ -24,6 +29,28 @@ export function getProjects(): readonly ProjectWithCounts[] {
 /** Lookup helper. Returns undefined when the id isn't in the store. */
 export function getProject(id: string): ProjectWithCounts | undefined {
   return projects.find((p) => p.project.id === id);
+}
+
+// Duplicate project names are legal (only paths are unique), so every
+// name-rendering surface reads its label here: unique names label as-is,
+// duplicates gain the minimal parent-dir prefix that tells them apart.
+// One shared $derived so the map is computed once per list change.
+const projectLabels = $derived(
+  disambiguatedProjectLabels(projects.map((p) => p.project)),
+);
+
+/** Structured display label for a project (prefix + name). Undefined when
+ *  the id isn't in the store. */
+export function getProjectLabel(id: string): ProjectLabel | undefined {
+  return projectLabels.get(id);
+}
+
+/** Flat display-label string (`prefix/name` when disambiguated). Falls
+ *  back to the empty string for unknown ids — callers with a "(deleted)"
+ *  style placeholder should check getProjectLabel themselves. */
+export function getProjectLabelText(id: string): string {
+  const label = projectLabels.get(id);
+  return label ? formatProjectLabel(label) : '';
 }
 
 /** True once refreshProjects has completed at least one successful fetch. */

@@ -24,7 +24,7 @@
   import { UsageQuery } from '../../stores/bindings';
   import { getUsageRefreshVersion } from '../../stores/usageRefresh.svelte';
   import { createUsageStats } from '../../stores/usageQuery.svelte';
-  import { getProject } from '../../stores/projects.svelte';
+  import { getProject, getProjectLabelText } from '../../stores/projects.svelte';
   import { getUsagePeriod, setUsagePeriod, VALID_PERIODS, type UsagePeriod } from '../../stores/usagePeriod.svelte';
 
   interface Props {
@@ -69,7 +69,8 @@
    *  deleted. */
   function projectLabel(id: string): string {
     const project = getProject(id);
-    return project ? project.project.name : '(deleted)';
+    if (!project) return '(deleted)';
+    return getProjectLabelText(id) || project.project.name;
   }
 
   // Rows with no project association (empty project_id) are only

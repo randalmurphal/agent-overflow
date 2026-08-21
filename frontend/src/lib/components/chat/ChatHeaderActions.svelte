@@ -20,7 +20,7 @@
   import ChevronsDownUp from '@lucide/svelte/icons/chevrons-down-up';
   import ChevronsUpDown from '@lucide/svelte/icons/chevrons-up-down';
   import type { ThreadPane } from '../../stores/thread.svelte';
-  import { getProject } from '../../stores/projects.svelte';
+  import { getProject, getProjectLabelText } from '../../stores/projects.svelte';
   import { addToast } from '../../stores/toast.svelte';
   import { chordHintForCommand, chordHintSuffix } from '../../stores/keybindings.svelte';
   import { runTerminalToggle } from '../terminal/terminalToggle';
@@ -97,7 +97,7 @@
     if (!project) return null;
     return {
       id: project.project.id,
-      name: project.project.name,
+      name: getProjectLabelText(project.project.id) || project.project.name,
       path: project.project.path,
     };
   });

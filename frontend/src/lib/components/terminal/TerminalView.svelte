@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { ThreadPane } from '../../stores/thread.svelte';
-  import { getProject } from '../../stores/projects.svelte';
+  import { getProject, getProjectLabelText } from '../../stores/projects.svelte';
   import Icon from '../primitives/Icon.svelte';
   import SquareTerminal from '@lucide/svelte/icons/square-terminal';
   import PaneTitleHandle from '../panes/PaneTitleHandle.svelte';
@@ -22,7 +22,9 @@
   let projectLabel = $derived.by(() => {
     const projectId = pane.thread?.projectId;
     if (!projectId) return '~';
-    return getProject(projectId)?.project.name ?? '';
+    const project = getProject(projectId);
+    if (!project) return '';
+    return getProjectLabelText(projectId) || project.project.name;
   });
 
   // Pane-flavored surface. Unlike the bottom drawer, a full pane has no

@@ -19,7 +19,7 @@
   import type { ProjectWithCounts, Thread } from '../../types/models';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import { RenameProject } from '../../stores/bindings';
-  import { updateProjectLocal } from '../../stores/projects.svelte';
+  import { getProjectLabel, updateProjectLocal } from '../../stores/projects.svelte';
   import {
     getProjectSortMode,
     isProjectExpanded,
@@ -227,6 +227,13 @@
   // (matches forge / t3-code: cursor-grab on the row, no separate grip
   // icon). Click still toggles expand because click fires only when no
   // drag completed; HTML5 suppresses click after a successful drag.
+  // Duplicate names are legal (paths are the unique key), so the label
+  // comes from the store's disambiguation map: unique names render bare,
+  // duplicates gain a dim parent-dir prefix.
+  let label = $derived(
+    getProjectLabel(project.project.id) ?? { prefix: '', name: project.project.name },
+  );
+
   let manualMode = $derived(getProjectSortMode() === 'manual');
   let isDragging = $derived(getDraggingProjectId() === project.project.id);
   let dropMarker = $derived.by<'before' | 'after' | null>(() => {
@@ -355,12 +362,34 @@
         class="text-[0.78125rem] flex-1 min-w-0 bg-surface-0 border border-accent/50 rounded-[var(--radius-field)] px-1 py-0.5 text-fg focus:outline-none"
       />
     {:else}
-      <span
-        class="text-[0.78125rem] font-medium truncate flex-1 text-fg"
-        title={project.project.path}
-      >
-        {project.project.name}
-      </span>
+      {#if label.prefix}
+        <!--
+          Name conflict: show the disambiguating parent dirs, dim and
+          smaller, before the name. flex-wrap means a too-long pair
+          breaks into prefix-above / name-below instead of ellipsizing —
+          the prefix exists to be read, so it must never truncate.
+        -->
+        <span
+          class="flex-1 min-w-0 flex flex-wrap items-baseline gap-x-1"
+          title={project.project.path}
+          data-testid="project-item-label"
+        >
+          <span class="text-[0.6875rem] text-fg-subtle min-w-0 break-all leading-tight">
+            {label.prefix}/
+          </span>
+          <span class="text-[0.78125rem] font-medium text-fg min-w-0 break-words leading-tight">
+            {label.name}
+          </span>
+        </span>
+      {:else}
+        <span
+          class="text-[0.78125rem] font-medium truncate flex-1 text-fg"
+          title={project.project.path}
+          data-testid="project-item-label"
+        >
+          {project.project.name}
+        </span>
+      {/if}
       <button
         type="button"
         onclick={handleNewTerminalClick}
