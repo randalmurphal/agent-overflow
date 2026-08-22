@@ -12,43 +12,10 @@
 // (overlapping) until an unrelated remeasure.
 
 /**
- * True when `next` is `prev` with rows only added/removed at the head
- * (`headSplice` > 0 inserts, < 0 removes — the `shift` contract) or at
- * the tail (headSplice 0), with every surviving key at an unchanged
- * relative position. Pure changes take the engine's applyLength path;
- * anything else needs a keyed remap.
- */
-export function isPureHeadTailChange(
-  prev: readonly unknown[],
-  next: readonly unknown[],
-  headSplice: number,
-): boolean {
-  if (headSplice !== 0 && next.length !== prev.length + headSplice) return false;
-  if (headSplice > 0) {
-    for (let i = 0; i < prev.length; i++) {
-      if (next[i + headSplice] !== prev[i]) return false;
-    }
-    return true;
-  }
-  if (headSplice < 0) {
-    for (let i = 0; i < next.length; i++) {
-      if (next[i] !== prev[i - headSplice]) return false;
-    }
-    return true;
-  }
-  const shared = Math.min(prev.length, next.length);
-  for (let i = 0; i < shared; i++) {
-    if (next[i] !== prev[i]) return false;
-  }
-  return true;
-}
-
-/**
  * Builds `prevIndexByNewIndex` for engine.applyKeyedReorder:
  * `result[i]` = the index `next[i]`'s key had in `prev`, or -1 for a key
- * not present before (its row starts unmeasured). Duplicate keys map to
- * the LAST occurrence in `prev` — the keyed `{#each}` would already be
- * broken by duplicates, so no extra handling is owed here.
+ * not present before (its row starts unmeasured). The adapter rejects
+ * duplicate keys before this function, so every match is unambiguous.
  */
 export function keyedReorderPermutation(
   prev: readonly unknown[],
@@ -61,4 +28,49 @@ export function keyedReorderPermutation(
     permutation[i] = prevIndexByKey.get(next[i]) ?? -1;
   }
   return permutation;
+}
+
+export interface KeyedSequenceMutation {
+  kind: 'unchanged' | 'tail' | 'head' | 'keyed';
+  /** Positive for a prepend, negative for a head removal. */
+  headSplice: number;
+}
+
+function prefixMatches(shorter: readonly unknown[], longer: readonly unknown[]): boolean {
+  if (shorter.length > longer.length) return false;
+  for (let i = 0; i < shorter.length; i++) {
+    if (shorter[i] !== longer[i]) return false;
+  }
+  return true;
+}
+
+function suffixMatches(shorter: readonly unknown[], longer: readonly unknown[]): boolean {
+  if (shorter.length > longer.length) return false;
+  const shift = longer.length - shorter.length;
+  for (let i = 0; i < shorter.length; i++) {
+    if (shorter[i] !== longer[i + shift]) return false;
+  }
+  return true;
+}
+
+/**
+ * Derives structural intent from keyed identity. Callers cannot mislabel a
+ * head mutation as a tail mutation or leave a one-flush hint armed.
+ */
+export function classifyKeyedSequenceMutation(
+  prev: readonly unknown[],
+  next: readonly unknown[],
+): KeyedSequenceMutation {
+  if (prev.length === next.length) {
+    return prefixMatches(prev, next)
+      ? { kind: 'unchanged', headSplice: 0 }
+      : { kind: 'keyed', headSplice: 0 };
+  }
+  if (prefixMatches(prev, next) || prefixMatches(next, prev)) {
+    return { kind: 'tail', headSplice: 0 };
+  }
+  if (suffixMatches(prev, next) || suffixMatches(next, prev)) {
+    return { kind: 'head', headSplice: next.length - prev.length };
+  }
+  return { kind: 'keyed', headSplice: 0 };
 }

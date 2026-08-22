@@ -207,9 +207,7 @@ export interface PaneScrollController {
     anchor: HTMLElement,
     action: () => void | Promise<void>,
   ): Promise<void>;
-  preserveTimelineWindowAnchor?(
-    operation: TimelineWindowAnchorOperation,
-  ): boolean;
+  canPreserveTimelineWindow?(keepsItem: (itemId: string) => boolean): boolean;
   /**
    * Run a deliberate height change with the viewport's BOTTOM edge held, so it
    * opens upward instead of pushing the reader's rows down the page — and
@@ -267,11 +265,6 @@ export interface PreserveViewportBottomOptions {
    * instantly (bug-report-20260731T141600Z).
    */
   takeover?: RequestBottomTakeover;
-}
-
-export interface TimelineWindowAnchorOperation {
-  keepsItem(itemId: string): boolean;
-  run(): void;
 }
 
 /**

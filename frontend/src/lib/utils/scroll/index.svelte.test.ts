@@ -103,7 +103,7 @@ describe('createUseStickToBottomController', () => {
 
     scrollEl = document.createElement('div');
     contentEl = document.createElement('div');
-    contentEl.className = 'will-change-transform';
+    contentEl.className = 'scroll-composited-content';
     scrollEl.appendChild(contentEl);
     document.body.appendChild(scrollEl);
 
@@ -1628,7 +1628,7 @@ describe('createUseStickToBottomController', () => {
     it('attach with new elements detaches old listeners', async () => {
       const newScrollEl = document.createElement('div');
       const newContentEl = document.createElement('div');
-      newContentEl.className = 'will-change-transform';
+      newContentEl.className = 'scroll-composited-content';
       newScrollEl.appendChild(newContentEl);
       document.body.appendChild(newScrollEl);
       const newGeom = { scrollHeight: 500, clientHeight: 400, scrollTop: 99, contentHeight: 400 };
@@ -2029,7 +2029,7 @@ describe('createUseStickToBottomController — spring chase', () => {
 
     scrollEl = document.createElement('div');
     contentEl = document.createElement('div');
-    contentEl.className = 'will-change-transform';
+    contentEl.className = 'scroll-composited-content';
     scrollEl.appendChild(contentEl);
     document.body.appendChild(scrollEl);
 
@@ -2763,7 +2763,7 @@ describe('createUseStickToBottomController — spring chase', () => {
     ): UseStickToBottomOptions {
       localScrollEl = document.createElement('div');
       localContentEl = document.createElement('div');
-      localContentEl.className = 'will-change-transform';
+      localContentEl.className = 'scroll-composited-content';
       localScrollEl.appendChild(localContentEl);
       document.body.appendChild(localScrollEl);
       localGeom = { scrollHeight: 1000, clientHeight: 600, scrollTop: 400, contentHeight: 800 };
@@ -3760,7 +3760,7 @@ describe('createUseStickToBottomController — spring chase', () => {
       });
     });
 
-    describe('fractional glide residue (sub-pixel translateY on contentEl)', () => {
+    describe('fractional glide residue (sub-pixel individual translate on contentEl)', () => {
       // The engine rounds scrollTop to whole CSS pixels; the controller
       // renders the sub-pixel remainder of each spring write as a
       // translateY on contentEl. The default geometry stub stores
@@ -3776,16 +3776,25 @@ describe('createUseStickToBottomController — spring chase', () => {
         });
       }
 
-      function parseTranslateY(transform: string): number {
+      function parseTranslateY(translate: string): number {
         // The trailing epsilon rotation is the compositor anti-snap
         // (see setGlideResidue); the translateY carries the residue.
-        const match = /^translateY\((-?\d*\.?\d+)px\) rotate\(0\.0001deg\)$/.exec(transform);
-        expect(match, `unexpected transform: "${transform}"`).not.toBeNull();
+        const match = /^0px (-?\d*\.?\d+)px$/.exec(translate);
+        expect(match, `unexpected translate: "${translate}"`).not.toBeNull();
         return Number(match![1]);
+      }
+
+      function glideTranslate(): string {
+        return contentEl.style.getPropertyValue('translate');
+      }
+
+      function glideRotation(): string {
+        return contentEl.style.getPropertyValue('rotate');
       }
 
       it('rides the rounding remainder on the transform during a chase and rests at translate 0', async () => {
         stubRoundingScrollTop();
+        contentEl.style.transform = 'translateY(123px)';
         const ro = getRO();
         ro.fire(contentEl, 800);
         await waitMs(150); // warm
@@ -3802,10 +3811,12 @@ describe('createUseStickToBottomController — spring chase', () => {
         let residueFrames = 0;
         for (let i = 0; i < 100 && geom.scrollTop !== 800; i++) {
           await nextFrame();
-          const transform = contentEl.style.transform;
-          if (transform !== '') {
+          const translate = glideTranslate();
+          if (translate !== '') {
             residueFrames += 1;
-            expect(Math.abs(parseTranslateY(transform))).toBeLessThanOrEqual(0.5);
+            expect(contentEl.style.transform).toBe('translateY(123px)');
+            expect(glideRotation()).toBe('0.0001deg');
+            expect(Math.abs(parseTranslateY(translate))).toBeLessThanOrEqual(0.5);
           }
         }
         expect(geom.scrollTop).toBe(800);
@@ -3815,16 +3826,18 @@ describe('createUseStickToBottomController — spring chase', () => {
         // to zero (a few decaying frames), never popped — an instant
         // clear once per quantum read as a faint vibration during
         // bursty tool output (2026-07-04). Magnitudes must only
-        // decrease until the transform rests at ''.
+        // decrease until the translate rests at ''.
         const settleMagnitudes: number[] = [];
-        for (let i = 0; i < 20 && contentEl.style.transform !== ''; i++) {
+        for (let i = 0; i < 20 && glideTranslate() !== ''; i++) {
           await nextFrame();
-          const transform = contentEl.style.transform;
-          if (transform !== '') {
-            settleMagnitudes.push(Math.abs(parseTranslateY(transform)));
+          const translate = glideTranslate();
+          if (translate !== '') {
+            settleMagnitudes.push(Math.abs(parseTranslateY(translate)));
           }
         }
-        expect(contentEl.style.transform).toBe('');
+        expect(glideTranslate()).toBe('');
+        expect(glideRotation()).toBe('');
+        expect(contentEl.style.transform).toBe('translateY(123px)');
         for (let i = 1; i < settleMagnitudes.length; i++) {
           expect(settleMagnitudes[i]).toBeLessThan(settleMagnitudes[i - 1]);
         }
@@ -3842,14 +3855,15 @@ describe('createUseStickToBottomController — spring chase', () => {
 
         // Advance until a frame leaves a live residue mid-chase.
         await advanceUntil(
-          () => contentEl.style.transform !== '' && geom.scrollTop < 800,
+          () => glideTranslate() !== '' && geom.scrollTop < 800,
         );
 
         // An instant placement (forceStick) must land with rendered
         // position exactly equal to scrollTop — transform cleared.
         controller.forceStick();
         expect(geom.scrollTop).toBe(800);
-        expect(contentEl.style.transform).toBe('');
+        expect(glideTranslate()).toBe('');
+        expect(glideRotation()).toBe('');
       });
     });
 
@@ -6793,7 +6807,7 @@ describe('createUseStickToBottomController — external content-geometry source'
 
     scrollEl = document.createElement('div');
     contentEl = document.createElement('div');
-    contentEl.className = 'will-change-transform';
+    contentEl.className = 'scroll-composited-content';
     scrollEl.appendChild(contentEl);
     document.body.appendChild(scrollEl);
 
@@ -7116,14 +7130,14 @@ describe('createUseStickToBottomController — two instances', () => {
 
     outerScroll = document.createElement('div');
     outerContent = document.createElement('div');
-    outerContent.className = 'will-change-transform';
+    outerContent.className = 'scroll-composited-content';
     outerScroll.appendChild(outerContent);
     document.body.appendChild(outerScroll);
     // The run's clip lives INSIDE the timeline's content, as it does in the
     // DOM: an inner gesture's target is an outer descendant.
     innerScroll = document.createElement('div');
     innerContent = document.createElement('div');
-    innerContent.className = 'will-change-transform';
+    innerContent.className = 'scroll-composited-content';
     innerScroll.appendChild(innerContent);
     outerContent.appendChild(innerScroll);
 
@@ -7222,7 +7236,7 @@ describe('createUseStickToBottomController — write-refusal forensics wiring', 
     scrollEl = document.createElement('div');
     scrollEl.dataset.testid = 'wedged-clip';
     contentEl = document.createElement('div');
-    contentEl.className = 'will-change-transform';
+    contentEl.className = 'scroll-composited-content';
     scrollEl.appendChild(contentEl);
     document.body.appendChild(scrollEl);
 

@@ -62,8 +62,8 @@ export interface VirtualEngine {
     measureStraddleShift?: (index: number) => number,
   ): EngineUpdate | null;
   /** Data length changed to `count`; `headSplice` rows of that change were
-   * inserted (+) / removed (−) at the head (the `shift` one-flush
-   * contract), the rest is tail growth/shrink. */
+   * inserted (+) / removed (-) at the head, and the rest is tail
+   * growth/shrink. The keyed adapter infers this value. */
   applyLength(count: number, headSplice?: number): EngineUpdate | null;
   /** Row identities moved to new indices (same-length reorder or a keyed
    * change the head/tail entry points can't express).
@@ -143,12 +143,17 @@ export function createEngine(options: EngineOptions): VirtualEngine {
   // seeding, so above-viewport estimate error cannot move the landing.
   let hasScrollInput = false;
 
-  function currentWindow(): ItemsRange {
+  function currentWindow(atOffset = scrollOffset): ItemsRange {
     if (options.renderAll) return fullWindow(store);
     if (!hasScrollInput) return seedTailWindow(store, viewportSize, options.bufferSize);
+    const boundedOffset = clamp(
+      atOffset,
+      0,
+      Math.max(0, storeTotalSize(store) - viewportSize),
+    );
     return computeWindow(
       store,
-      { scrollOffset, viewportSize, bufferSize: options.bufferSize },
+      { scrollOffset: boundedOffset, viewportSize, bufferSize: options.bufferSize },
       window[0],
     );
   }
@@ -156,7 +161,13 @@ export function createEngine(options: EngineOptions): VirtualEngine {
   // force: geometry under the mounted rows changed (measurements, length),
   // so the adapter must re-apply offsets even when the range is identical.
   function refresh(compensation: EngineCompensation | undefined, force: boolean): EngineUpdate | null {
-    const next = currentWindow();
+    // A structural shrink can leave the last observed scrollOffset beyond the
+    // new document until the controller's compensation write emits its scroll
+    // event. Rendering a window from that impossible old coordinate produces
+    // one empty/intersectless flush and remounts surviving rows. Compute this
+    // update from the position the compensation is about to establish. Keep
+    // the observed offset itself unchanged until the real scroll event lands.
+    const next = currentWindow(compensation?.target ?? scrollOffset);
     if (!force && !compensation && rangesEqual(next, window)) return null;
     window = next;
     const update: EngineUpdate = { window, totalSize: storeTotalSize(store) };

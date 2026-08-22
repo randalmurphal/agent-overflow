@@ -105,7 +105,6 @@ export type {
   LoadOlderResult,
   PaneScrollController,
   PreserveViewportBottomOptions,
-  TimelineWindowAnchorOperation,
 } from './threadPaneShared';
 
 export {
@@ -1141,9 +1140,6 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     },
     get newestLoadedTurnIndex() {
       return timelineWindow.newestLoadedTurnIndex;
-    },
-    get pendingTimelineShiftAtHead() {
-      return timelineWindow.pendingTimelineShiftAtHead;
     },
     get hasMoreHistory() {
       return timelineWindow.hasMoreHistory;

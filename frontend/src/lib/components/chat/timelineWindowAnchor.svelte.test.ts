@@ -30,7 +30,13 @@ function leaf(id: string): TimelineNode {
   return { kind: 'leaf', item: { threadId: 't1', id } as Item } as TimelineNode;
 }
 
-function makeHarness({ autoScrollInFlight }: { autoScrollInFlight: boolean }) {
+function makeHarness({
+  autoScrollInFlight,
+  holdingBottom = true,
+}: {
+  autoScrollInFlight: boolean;
+  holdingBottom?: boolean;
+}) {
   const scrollToIndex = vi.fn();
   const observe = vi.fn();
   const markAtBottom = vi.fn();
@@ -49,9 +55,9 @@ function makeHarness({ autoScrollInFlight }: { autoScrollInFlight: boolean }) {
     opts.write?.();
   });
   const stick = {
-    isSticky: true,
+    isSticky: holdingBottom,
     escapedFromLock: false,
-    isAtBottom: true,
+    isAtBottom: holdingBottom,
     pauseAutoScroll: vi.fn(() => release),
     observe,
     markAtBottom,
@@ -65,7 +71,12 @@ function makeHarness({ autoScrollInFlight }: { autoScrollInFlight: boolean }) {
     getPane: () => ({ switchGeneration: 1 }) as ThreadPane,
     stick,
     getListRef: () =>
-      ({ scrollToIndex, getScrollOffset: () => 0 }) as unknown as TimelineVirtualizerHandle,
+      ({
+        scrollToIndex,
+        getScrollOffset: () => 0,
+        findItemIndex: () => 0,
+        getItemOffset: () => 0,
+      }) as unknown as TimelineVirtualizerHandle,
     getScrollEl: () => document.createElement('div'),
     getRevealedNodes: () => nodes,
     findTimelineNodeIndex: () => 0,
@@ -100,46 +111,21 @@ async function settleMeasurementFlush(): Promise<void> {
   await Promise.resolve();
 }
 
-describe('preserveTimelineWindowAnchor — sticking-to-bottom restore', () => {
-  it('requests the bottom as a yield: an in-flight auto-scroll keeps the trip', async () => {
-    const h = makeHarness({ autoScrollInFlight: true });
-    const applied = h.anchor.preserveTimelineWindowAnchor({
-      run: () => {},
-      keepsItem: () => true,
-    });
-    expect(applied).toBe(true);
-    await settleRestore();
+describe('canPreserveTimelineWindow', () => {
+  it('accepts every retention plan while the reader holds the bottom', () => {
+    const h = makeHarness({ autoScrollInFlight: false });
+    const keepsItem = vi.fn(() => false);
 
-    // The prune is unasked, so its restore must never claim the bottom
-    // over a mid-glide spring — the yield hands the fresh geometry to
-    // the live-content path and writes nothing.
-    expect(h.requestBottom).toHaveBeenCalledWith(
-      expect.objectContaining({ takeover: 'yield' }),
-    );
-    expect(h.scrollToIndex).not.toHaveBeenCalled();
-    expect(h.markAtBottom).not.toHaveBeenCalled();
-    expect(h.observe).toHaveBeenCalledWith('live-content');
-    expect(h.saveScrollSnapshot).toHaveBeenCalled();
-    expect(h.release).toHaveBeenCalled();
+    expect(h.anchor.canPreserveTimelineWindow(keepsItem)).toBe(true);
+    expect(keepsItem).not.toHaveBeenCalled();
   });
 
-  it('places the bottom edge through the write callback when no auto-scroll is in flight', async () => {
-    const h = makeHarness({ autoScrollInFlight: false });
-    const applied = h.anchor.preserveTimelineWindowAnchor({
-      run: () => {},
-      keepsItem: () => true,
-    });
-    expect(applied).toBe(true);
-    await settleRestore();
+  it('requires a scrolled-up reader\'s visible anchor to survive', () => {
+    const h = makeHarness({ autoScrollInFlight: false, holdingBottom: false });
+    const keepsItem = vi.fn((itemId: string) => itemId === 'a');
 
-    expect(h.requestBottom).toHaveBeenCalledWith(
-      expect.objectContaining({ takeover: 'yield' }),
-    );
-    expect(h.scrollToIndex).toHaveBeenCalledWith(2, { align: 'end' });
-    expect(h.markAtBottom).toHaveBeenCalled();
-    expect(h.saveScrollSnapshot).toHaveBeenCalled();
-    expect(h.observe).not.toHaveBeenCalled();
-    expect(h.release).toHaveBeenCalled();
+    expect(h.anchor.canPreserveTimelineWindow(keepsItem)).toBe(true);
+    expect(keepsItem).toHaveBeenCalledWith('a');
   });
 });
 

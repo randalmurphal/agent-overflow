@@ -43,7 +43,6 @@ function makeHarness(threadId: string) {
     persistSizePriorsExact,
     armWarmupWithReset: () => {},
     resetAutoLoadGates: () => {},
-    clearTimelineWindowPruneShift: () => {},
   });
 
   return { restore, persistSizePriors, persistSizePriorsExact };

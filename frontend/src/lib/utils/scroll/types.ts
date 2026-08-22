@@ -254,8 +254,8 @@ export interface UseStickToBottomController {
 
   /**
    * Bind the controller to its scroll container and the content element
-   * the glide residue's translateY targets. Contract: `contentEl` must
-   * carry a static `will-change-transform` class in the consumer's own
+   * the glide residue's individual `translate` property targets. Contract:
+   * `contentEl` must carry a static `scroll-composited-content` class in the consumer's own
    * markup so it is composited from first paint — never applied or
    * toggled at runtime, because a will-change transition re-rasters a
    * layer the reader may be looking at (three flicker incidents;

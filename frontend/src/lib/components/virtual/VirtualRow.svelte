@@ -66,6 +66,7 @@
 
 <div
   bind:this={elementRef}
+  data-virtual-row
   style:contain="layout style"
   style:position="absolute"
   style:width="100%"

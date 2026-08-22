@@ -1,7 +1,15 @@
 <script lang="ts" generics="T">
   import { onDestroy, untrack, type Snippet } from 'svelte';
   import { createEngine, mergeCompensations } from '../../utils/virtual/engine';
-  import { isPureHeadTailChange, keyedReorderPermutation } from '../../utils/virtual/keys';
+  import {
+    classifyKeyedSequenceMutation,
+    keyedReorderPermutation,
+  } from '../../utils/virtual/keys';
+  import {
+    projectVirtualPlane,
+    type GlobalPlaneRow,
+    type VirtualPlaneState,
+  } from '../../utils/virtual/plane';
   import { createRowEstimate } from '../../utils/virtual/priors';
   import {
     measureReadingAnchorShift,
@@ -12,7 +20,6 @@
     ContentGeometrySample,
     EngineCompensation,
     EngineUpdate,
-    ItemsRange,
     RowEstimate,
     ScrollToIndexAlign,
   } from '../../utils/virtual/types';
@@ -73,11 +80,14 @@
     estimate?: RowEstimate;
     /** Symmetric overscan px on each side of the visible range. */
     bufferSize?: number;
-    /** One-flush head-splice hint: the CURRENT data-length change happened
-     * at the head (load-older prepend), not the tail. */
-    shift?: boolean;
     /** Mount every row (happy-dom unit-test seam). */
     renderAll?: boolean;
+    /** The stable mounted-row paint plane. Bind when a host scroll
+     * controller needs to apply compositor-only render offsets. */
+    renderPlane?: HTMLDivElement;
+    /** Static classes owned by the target. Chat supplies its permanent
+     * compositor contract; static review documents do not need one. */
+    renderPlaneClass?: string;
     onscroll?: (offset: number) => void;
     onscrollend?: () => void;
     /** Engine compensation observations → scroll controller resolver. */
@@ -106,8 +116,9 @@
     scrollRef,
     estimate,
     bufferSize = DEFAULT_BUFFER_PX,
-    shift = false,
     renderAll = false,
+    renderPlane = $bindable(),
+    renderPlaneClass = '',
     onscroll,
     onscrollend,
     onCompensation,
@@ -130,8 +141,6 @@
     }),
   );
 
-  let windowRange = $state<ItemsRange>(engine.getWindow());
-  let totalSize = $state(engine.getTotalSize());
   // Bumped on every engine update so mounted-row offsets re-read even
   // when the window range itself is unchanged (e.g. a mid-window
   // remeasure shifts the rows below it).
@@ -139,8 +148,6 @@
 
   function applyUpdate(update: EngineUpdate | null): void {
     if (!update) return;
-    windowRange = update.window;
-    totalSize = update.totalSize;
     geometryVersion++;
     if (update.compensation) queueCompensation(update.compensation);
   }
@@ -159,6 +166,8 @@
   // consistent, still before paint — the same timing virtua's patched
   // applier seam had, which the resolver tiers were calibrated against.
   let pendingCompensation: EngineCompensation | null = null;
+  let deliveredGeometryVersion = -1;
+  let deliveredDataSnapshot: object | null = null;
 
   function queueCompensation(next: EngineCompensation): void {
     const prior = pendingCompensation;
@@ -174,8 +183,13 @@
   }
 
   $effect(() => {
-    void geometryVersion;
+    const currentGeometryVersion = geometryVersion;
+    const currentData = reconciledData;
     void contentGeometryTrigger;
+    const geometryChanged = currentGeometryVersion !== deliveredGeometryVersion;
+    const dataChanged = currentData !== deliveredDataSnapshot;
+    deliveredGeometryVersion = currentGeometryVersion;
+    deliveredDataSnapshot = currentData;
     const compensation = pendingCompensation;
     pendingCompensation = null;
     untrack(() => {
@@ -196,7 +210,14 @@
       // is the settled layout the NEXT measurement must be judged against.
       // Sampling before the write would bake the pre-compensation
       // position into the anchor and double-count it next pass.
-      refreshReadingAnchor();
+      // A same-key content update must retain the PRE-update intra-row
+      // reading anchor until ResizeObserver attributes the resulting size
+      // delta. Refreshing here would sample the already-grown DOM and erase
+      // the shift. Geometry updates run this effect again after measurement;
+      // structural key changes need a fresh anchor immediately.
+      if (geometryChanged || (dataChanged && currentData.mutation.kind !== 'unchanged')) {
+        refreshReadingAnchor();
+      }
     });
   });
 
@@ -270,31 +291,62 @@
   // engine versions alone cannot work. The rebuild is O(window)
   // descriptors with matching keys; the keyed diff writes no DOM when
   // geometry is unchanged.
-  const rows = $derived.by(() => {
+  interface RenderRow {
+    item: T;
+    key: unknown;
+    index: number;
+    offset: number;
+    measured: boolean;
+    observe: boolean;
+  }
+
+  let planeState: VirtualPlaneState<unknown> = {
+    anchorKey: null,
+    localOffsets: new Map(),
+  };
+  let planeDataSnapshot: object | null = null;
+
+  const projection = $derived.by(() => {
     void geometryVersion;
+    const current = reconciledData;
+    const currentData = current.items;
+    const windowRange = engine.getWindow();
     const [start, end] = windowRange;
-    const lastIndex = Math.min(end, data.length - 1);
-    const out: { item: T; index: number; offset: number; measured: boolean; observe: boolean }[] = [];
+    const lastIndex = Math.min(end, currentData.length - 1);
+    const rows: RenderRow[] = [];
+    const globalRows: GlobalPlaneRow<unknown>[] = [];
     for (let index = Math.max(0, start); index <= lastIndex; index++) {
-      out.push({
-        item: data[index],
+      const key = reconciledData.keys[index];
+      const globalOffset = engine.getItemOffset(index);
+      globalRows.push({ key, offset: globalOffset, size: engine.sizeAt(index) });
+      rows.push({
+        item: currentData[index],
+        key,
         index,
-        offset: engine.getItemOffset(index),
+        offset: globalOffset,
         measured: engine.isMeasuredAt(index),
         // Exact rows never attach a ResizeObserver — their estimate IS the
         // rendered height (RowEstimate.isExact contract).
         observe: !(engineEstimate.isExact?.(index) ?? false),
       });
     }
-    return out;
+    const newDataSnapshot = current !== planeDataSnapshot;
+    planeDataSnapshot = current;
+    const plane = projectVirtualPlane(
+      globalRows,
+      planeState,
+      newDataSnapshot && (current.mutation.kind === 'head' || current.mutation.kind === 'keyed'),
+    );
+    planeState = plane;
+    for (const row of rows) row.offset = plane.localOffsets.get(row.key) ?? 0;
+    return { rows, plane: plane.geometry };
   });
+
+  const rows = $derived(projection.rows);
 
   // ------------------------------------------------------------------
   // Data changes (tail append/trim, load-older head splice, reorders)
   // ------------------------------------------------------------------
-  // $effect.pre so the engine's window is clamped to the new length
-  // before the row loop renders against it.
-  //
   // Keys are compared every beat, not just lengths: a same-length upsert
   // can REORDER rows (e.g. a queued user message repositioned to its
   // turn tail by the interrupt promote), and a moved row keeps its DOM
@@ -304,22 +356,55 @@
   // changes stay on the applyLength path (its head-splice compensation
   // kind is load-bearing for load-older); anything else remaps measured
   // sizes by row identity.
-  let prevKeys: readonly unknown[] = untrack(() =>
-    data.map((item, index) => getKey(item, index)),
-  );
+  function keysFor(items: readonly T[]): unknown[] {
+    const keys = items.map((item, index) => getKey(item, index));
+    const unique = new Set(keys);
+    if (unique.size !== keys.length) {
+      throw new Error('TimelineVirtualizer requires a unique key for every row');
+    }
+    return keys;
+  }
 
-  $effect.pre(() => {
-    const nextKeys = data.map((item, index) => getKey(item, index));
+  let prevKeys: readonly unknown[] = untrack(() => keysFor(data));
+
+  // This reconciliation is a render dependency, not an effect. An effect.pre
+  // still lets Svelte derive one intermediate template from NEW data and the
+  // OLD engine range before the effect's state bump schedules its second
+  // flush. On a large head prune that transient range is empty, so every
+  // visible keyed row unmounts and remounts in one mutation batch. Reading
+  // `reconciledData` is now the only door to the render data: it updates the
+  // non-reactive engine first and returns that exact keyed snapshot, making an
+  // unreconciled data/range pair structurally unavailable to the template.
+  const reconciledData = $derived.by(() => {
+    const items = data;
+    const nextKeys = keysFor(data);
     const prev = prevKeys;
     prevKeys = nextKeys;
-    const lengthChanged = nextKeys.length !== prev.length;
-    const headSplice = shift && lengthChanged ? nextKeys.length - prev.length : 0;
-    if (isPureHeadTailChange(prev, nextKeys, headSplice)) {
-      if (lengthChanged) applyUpdate(engine.applyLength(nextKeys.length, headSplice));
-      return;
+    const mutation = classifyKeyedSequenceMutation(prev, nextKeys);
+    switch (mutation.kind) {
+      case 'unchanged':
+        break;
+      case 'head':
+      case 'tail':
+        queueUpdate(engine.applyLength(nextKeys.length, mutation.headSplice));
+        break;
+      case 'keyed':
+        queueUpdate(engine.applyKeyedReorder(keyedReorderPermutation(prev, nextKeys)));
     }
-    applyUpdate(engine.applyKeyedReorder(keyedReorderPermutation(prev, nextKeys)));
+    return { items, keys: nextKeys, mutation };
   });
+
+  function queueUpdate(update: EngineUpdate | null): void {
+    if (update?.compensation) queueCompensation(update.compensation);
+  }
+
+  const renderTotalSize = $derived.by(() => {
+    void geometryVersion;
+    void reconciledData;
+    return engine.getTotalSize();
+  });
+
+  const plane = $derived(projection.plane);
 
   // ------------------------------------------------------------------
   // Measurement: one lazy ResizeObserver for the scroller + every row
@@ -753,18 +838,30 @@
   style:flex="none"
   style:position="relative"
   style:width="100%"
-  style:height="{totalSize}px"
+  style:height="{renderTotalSize}px"
 >
-  {#each rows as row (getKey(row.item, row.index))}
-    <VirtualRow
-      item={row.item}
-      index={row.index}
-      offset={row.offset}
-      measured={row.measured}
-      observe={row.observe}
-      register={registerRow}
-      {setRowIndex}
-      {children}
-    />
-  {/each}
+  <div
+    bind:this={renderPlane}
+    data-virtual-row-plane
+    class={renderPlaneClass}
+    style:position="absolute"
+    style:left="0px"
+    style:top="0px"
+    style:width="100%"
+    style:height="{plane.size}px"
+    style:transform="translateY({plane.origin}px)"
+  >
+    {#each rows as row (row.key)}
+      <VirtualRow
+        item={row.item}
+        index={row.index}
+        offset={row.offset}
+        measured={row.measured}
+        observe={row.observe}
+        register={registerRow}
+        {setRowIndex}
+        {children}
+      />
+    {/each}
+  </div>
 </div>

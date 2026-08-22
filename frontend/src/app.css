@@ -241,6 +241,16 @@ html.light {
   --ansi-fg-97: #1f2328;
 }
 
+/*
+ * Permanent compositor contract for controller-owned scroll content.
+ * The controller writes sub-pixel motion through the individual translate
+ * and rotate properties, which can compose with a virtual row plane's base
+ * transform without either owner overwriting the other.
+ */
+.scroll-composited-content {
+  will-change: transform, translate, rotate;
+}
+
 @theme {
   /* Fonts. Geist is self-hosted via @fontsource so the desktop build
      has no network dependency. The system fallbacks keep rendering

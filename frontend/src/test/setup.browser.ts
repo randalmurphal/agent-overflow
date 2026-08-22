@@ -43,13 +43,17 @@ console.error = (...args: unknown[]) => {
   originalConsoleError(...args);
 };
 
-beforeEach(() => {
+function installBrowserTraceSinks(): void {
   // uiRenderTrace is compiled in under MODE==='test' and flushes on a real
   // 500ms timer, which browser tests actually reach (unit tests finish before
   // it fires). Default the sink bindings to no-ops so any traced code path
   // doesn't spam "called without a mock" warnings; tests can override.
   setBindingMock('AppendUIRenderTraceBatch', async () => '');
   setBindingMock('BookmarkUIRenderTrace', async () => '');
+}
+
+beforeEach(() => {
+  installBrowserTraceSinks();
 });
 
 afterEach(() => {
@@ -59,6 +63,10 @@ afterEach(() => {
   cleanup();
   resetWailsMocks();
   resetBindingMocks();
+  // A trace flush timer can outlive the component that scheduled it. Keep
+  // the browser project's documented no-op sink installed across the gap
+  // between this teardown and the next test's beforeEach.
+  installBrowserTraceSinks();
   // Global active-turn registry backing getActiveTurn(); a leaked live
   // turn makes the next test's timeline believe a stream is in flight.
   resetThreadStatusesForTest();

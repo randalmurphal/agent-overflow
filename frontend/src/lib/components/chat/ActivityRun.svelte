@@ -789,7 +789,7 @@
             data-testid="activity-run-clip"
             data-scroll-owner={stick ? 'controller' : 'settle'}
           >
-            <!-- Static will-change-transform: composited for the inner
+            <!-- Static scroll-composited-content: composited for the inner
                  controller's sub-pixel glide residue, same contract as
                  the pane's contentEl (see MessageTimeline). Deliberately
                  unconditional even though only the tail run gets a
@@ -799,7 +799,7 @@
                  element is a raster transition — the flicker class the
                  static hint exists to rule out. Cost: one composited
                  layer per mounted expanded run, live or not. -->
-            <div bind:this={contentEl} class="will-change-transform">
+            <div bind:this={contentEl} class="scroll-composited-content">
               {#if hiddenEarlier > 0}
                 <ActivityRunBoundary count={hiddenEarlier} edge="earlier" onclick={mountEarlier} />
               {/if}

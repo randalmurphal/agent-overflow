@@ -377,7 +377,6 @@
     persistSizePriorsExact: () => sizePriors.maybePersistSizePriors(),
     armWarmupWithReset,
     resetAutoLoadGates: () => paging.resetGates(),
-    clearTimelineWindowPruneShift: () => windowAnchor.clearTimelineWindowPruneShift(),
   });
 
   // Explicit-jump session (nav-rail clicks, jump-to-first) + the landing
@@ -446,12 +445,6 @@
     ],
   });
 
-  // Depends on windowAnchor (module 4), so declared here rather than
-  // alongside the rest of the node-derivation pipeline above.
-  let virtualizerShiftAtHead = $derived(
-    pane.pendingTimelineShiftAtHead || windowAnchor.pruneShiftAtHead,
-  );
-
   // Explicit adapter, not the raw controller: 'host-layout' observations
   // route through the revalidate + re-pin handler above instead of the
   // controller's plain content path, and the timeline-window anchor
@@ -474,7 +467,7 @@
     // a stale settle.
     armWarmup: armWarmupWithReset,
     autoScrollInFlight: () => stick.autoScrollInFlight(),
-    preserveTimelineWindowAnchor: windowAnchor.preserveTimelineWindowAnchor,
+    canPreserveTimelineWindow: windowAnchor.canPreserveTimelineWindow,
     preserveViewportBottom: windowAnchor.preserveViewportBottom,
     stickToLatest: () => {
       void paging.jumpToLatest();
@@ -851,8 +844,9 @@
         {/if}
       {/snippet}
 
-      <!-- contentEl is the warm-up gate's hide target and the
-           controller's registered content element (geometry itself is
+      <!-- The outer wrapper is the warm-up gate's hide target. contentEl is
+           the virtualizer's stable mounted-row plane and the controller's
+           registered compositor target (geometry itself is
            engine-sourced: the virtualizer's container has `contain:
            size; height: totalSize+'px'`, so its `onContentGeometry`
            samples report the content height the controller would
@@ -867,27 +861,25 @@
            flat default. See utils/virtual/priors.ts and
            docs/architecture/frontend-scroll.md.
 
-           The static will-change-transform keeps contentEl permanently
-           composited so the spring's sub-pixel translateY glide residue
-           rides the compositor (utils/scroll/chokepoint.ts, "Fractional
+           The static scroll-composited-content class keeps contentEl
+           permanently composited so the spring's sub-pixel individual
+           translate residue composes with the plane's translateY origin
+           (utils/scroll/chokepoint.ts, "Fractional
            glide residue"). Permanent by design: promotion used to be a
            promote/demote lease that reclaimed idle-pane tile memory, but
            its transitions re-raster a layer the reader may be looking at
            and caused three visible-flicker incidents; a hint that never
            changes on a mounted element cannot flicker. Do not make it
            conditional. -->
-      <div
-        bind:this={contentEl}
-        class="will-change-transform"
-        style:visibility={hideContentForWarmup ? 'hidden' : 'visible'}
-      >
+      <div style:visibility={hideContentForWarmup ? 'hidden' : 'visible'}>
         {#key pane.threadId}
         <TimelineVirtualizer
           bind:this={listRef}
+          bind:renderPlane={contentEl}
+          renderPlaneClass="scroll-composited-content"
           scrollRef={scrollEl}
           data={revealedNodes}
           estimate={sizePriors.rowEstimate}
-          shift={virtualizerShiftAtHead}
           getKey={(node) => timelineNodeKey(node)}
           bufferSize={BUFFER_SIZE_PX}
           renderAll={IS_TEST}

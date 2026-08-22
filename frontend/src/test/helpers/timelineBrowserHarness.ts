@@ -50,6 +50,7 @@ const mounted: MountedEntry[] = [];
 export function setupTimelineHarness(): void {
   beforeEach(async () => {
     setBindingMock('GetSettings', async () => null);
+    setBindingMock('GetThreadUserMessageTicks', async () => []);
     await loadSettings();
   });
   afterEach(async () => {

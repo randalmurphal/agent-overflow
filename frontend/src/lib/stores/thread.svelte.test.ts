@@ -4,7 +4,6 @@ import {
   __setSmoothingClockForTest,
   createThreadPane,
   LIVE_TODO_AUTOHIDE_MS,
-  type TimelineWindowAnchorOperation,
 } from './thread.svelte';
 import {
   MAX_ADAPTIVE_CHARS_PER_SEC,
@@ -2461,9 +2460,6 @@ describe('createThreadPane', () => {
       expect(pane.oldestLoadedTurnIndex).toBe(3);
       expect(pane.hasMoreHistory).toBe(true);
       expect(pane.loadingOlder).toBe(false);
-      // The grow-flush set the shift flag; the finally always clears it, even
-      // on this small window that never reaches the tail-prune.
-      expect(pane.pendingTimelineShiftAtHead).toBe(false);
       expect(result).toEqual({
         status: 'loaded',
         insertedBeforeWindow: true,
@@ -2529,9 +2525,6 @@ describe('createThreadPane', () => {
       // fetch must not leak into it.
       expect(pane.threadId).toBe('thread-b');
       expect(pane.items.some((it) => it.id === 'stale')).toBe(false);
-      // loadOlder set the shift flag before awaiting the (stale) fetch; the
-      // finally clears it even though the result was discarded as stale.
-      expect(pane.pendingTimelineShiftAtHead).toBe(false);
     });
 
     it('loadUntilItem returns true when the item is already in-window', async () => {
@@ -3534,14 +3527,11 @@ describe('createThreadPane', () => {
       expect(pane.hasMoreNewer).toBe(true);
     });
 
-    // === virtualizer `shift` signal (pendingTimelineShiftAtHead) ===
-    // The prepend/append and the window prune must land in SEPARATE flushes
-    // so the `shift` hint can be correct for each end. Coalesced, a
-    // head-grow + tail-shrink collapse into one net length change that no
-    // single `shift` boolean can represent, and the engine's size store
-    // scrambles (the load jank). See the spike notes in
-    // docs/architecture/frontend-scroll.md.
-    it('loadOlder prepends (head-shift) and prunes the tail in a later flush', async () => {
+    // === keyed combined paging mutations ===
+    // The virtualizer derives structural changes from row keys, so paging can
+    // commit a prepend + opposite-edge prune in one render flush. No caller
+    // direction flag or transient over-cap render exists.
+    it('loadOlder prepends and tail-prunes in one render flush', async () => {
       const pane = createThreadPane();
       const initial = Array.from(
         { length: ACTIVE_TIMELINE_WINDOW_MAX_ITEMS },
@@ -3572,7 +3562,6 @@ describe('createThreadPane', () => {
 
       await pane.switchThread(makeThread({ id: 't' }));
       expect(pane.items).toHaveLength(ACTIVE_TIMELINE_WINDOW_MAX_ITEMS);
-      expect(pane.pendingTimelineShiftAtHead).toBe(false);
 
       const pending = pane.loadOlder();
       releaseOlder({
@@ -3583,29 +3572,24 @@ describe('createThreadPane', () => {
         hasMore: true,
         hasMoreOlder: true,
       });
-      // Resume loadOlder past the fetch await, through the synchronous
-      // prepend, up to its first internal `await tick()` — but NOT through
-      // the deferred tail-prune (which lives after that tick).
+      // Resume past the fetch. The prepend and prune both commit before the
+      // one render tick the method awaits.
       await Promise.resolve();
 
-      // Flush 1: head-grow applied with shift=true, prune NOT yet — the
-      // window has grown past the cap, proving the two are separate flushes.
-      expect(pane.pendingTimelineShiftAtHead).toBe(true);
-      expect(pane.items).toHaveLength(ACTIVE_TIMELINE_WINDOW_MAX_ITEMS + 1);
+      expect(pane.items).toHaveLength(ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS);
       expect(pane.items[0]?.id).toBe('older');
 
       await pending;
       await tick();
 
-      // Flush 2: tail-prune ran; head (the freshly prepended rows) kept,
-      // newer history now exists, and the one-shot shift hint is cleared.
+      // The freshly prepended head survives and the dropped tail becomes a
+      // newer-history gap.
       expect(pane.items).toHaveLength(ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS);
       expect(pane.items[0]?.id).toBe('older');
       expect(pane.hasMoreNewer).toBe(true);
-      expect(pane.pendingTimelineShiftAtHead).toBe(false);
     });
 
-    it('loadNewer appends (no shift) then head-prunes (head-shift) in a later flush', async () => {
+    it('loadNewer appends and head-prunes in one render flush', async () => {
       const pane = createThreadPane();
       const initial = Array.from(
         { length: ACTIVE_TIMELINE_WINDOW_MAX_ITEMS },
@@ -3643,15 +3627,10 @@ describe('createThreadPane', () => {
 
       await pane.switchThread(makeThread({ id: 't' }));
 
-      // Record (length, shift) after every flush so the two-flush sequence
-      // is observable without racing internal awaits.
-      const snapshots: Array<{ len: number; shift: boolean }> = [];
+      const snapshots: number[] = [];
       const stop = $effect.root(() => {
         $effect(() => {
-          snapshots.push({
-            len: pane.items.length,
-            shift: pane.pendingTimelineShiftAtHead,
-          });
+          snapshots.push(pane.items.length);
         });
       });
       try {
@@ -3665,20 +3644,10 @@ describe('createThreadPane', () => {
         stop();
       }
 
-      // Tail-grow flush: appended past the cap with shift=false.
-      expect(snapshots).toContainEqual({
-        len: ACTIVE_TIMELINE_WINDOW_MAX_ITEMS + 1,
-        shift: false,
-      });
-      // Head-prune flush: a SEPARATE flush at the target length carrying
-      // shift=true (the engine splices its size store from the front).
-      expect(snapshots).toContainEqual({
-        len: ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS,
-        shift: true,
-      });
+      expect(snapshots).not.toContain(ACTIVE_TIMELINE_WINDOW_MAX_ITEMS + 1);
+      expect(snapshots).toContain(ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS);
       expect(pane.items).toHaveLength(ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS);
       expect(pane.hasMoreHistory).toBe(true);
-      expect(pane.pendingTimelineShiftAtHead).toBe(false);
     });
 
     it('loadOlder does not invent a newer-history gap from the older page response', async () => {
@@ -4394,18 +4363,15 @@ describe('createThreadPane', () => {
         }),
       );
 
-      let itemCountDuringTransaction = 0;
-      const preserveTimelineWindowAnchor = vi.fn((
-        operation: TimelineWindowAnchorOperation,
-      ) => {
-        itemCountDuringTransaction = pane.items.length;
-        expect(operation.keepsItem('t300')).toBe(false);
-        expect(operation.keepsItem('t301')).toBe(true);
-        operation.run();
+      let itemCountDuringGuard = 0;
+      const canPreserveTimelineWindow = vi.fn((keepsItem: (itemId: string) => boolean) => {
+        itemCountDuringGuard = pane.items.length;
+        expect(keepsItem('t300')).toBe(false);
+        expect(keepsItem('t301')).toBe(true);
         return true;
       });
       pane.attachScrollController(
-        stubScrollController({ preserveTimelineWindowAnchor }),
+        stubScrollController({ canPreserveTimelineWindow }),
       );
 
       pane.settleTurn({
@@ -4424,17 +4390,16 @@ describe('createThreadPane', () => {
       // (the controller offers the anchor transaction) records the prune
       // as pending for the quiet scheduler instead of repainting the
       // head-drop into the reveal drain's glide.
-      expect(preserveTimelineWindowAnchor).not.toHaveBeenCalled();
+      expect(canPreserveTimelineWindow).not.toHaveBeenCalled();
       expect(pane.items).toHaveLength(801);
       expect(pane.hasDeferredRecentWindowPrune).toBe(true);
 
       pane.retryDeferredRecentWindowPrune();
 
-      expect(preserveTimelineWindowAnchor).toHaveBeenCalledTimes(1);
-      expect(itemCountDuringTransaction).toBe(801);
+      expect(canPreserveTimelineWindow).toHaveBeenCalledTimes(1);
+      expect(itemCountDuringGuard).toBe(801);
       expect(pane.items).toHaveLength(ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS);
       expect(pane.items[0].id).toBe('t301');
-      expect(pane.pendingTimelineShiftAtHead).toBe(false);
       expect(pane.hasDeferredRecentWindowPrune).toBe(false);
     });
 
@@ -4467,14 +4432,9 @@ describe('createThreadPane', () => {
         }),
       );
 
-      const preserveTimelineWindowAnchor = vi.fn((
-        operation: TimelineWindowAnchorOperation,
-      ) => {
-        operation.run();
-        return true;
-      });
+      const canPreserveTimelineWindow = vi.fn(() => true);
       pane.attachScrollController(
-        stubScrollController({ preserveTimelineWindowAnchor }),
+        stubScrollController({ canPreserveTimelineWindow }),
       );
 
       pane.settleTurn({
@@ -4497,7 +4457,7 @@ describe('createThreadPane', () => {
       pane.setActiveTurn({ turnId: 'turn-801', turnIndex: 801, startedAt: 3 });
       pane.retryDeferredRecentWindowPrune();
 
-      expect(preserveTimelineWindowAnchor).not.toHaveBeenCalled();
+      expect(canPreserveTimelineWindow).not.toHaveBeenCalled();
       expect(pane.items).toHaveLength(801);
       expect(pane.hasDeferredRecentWindowPrune).toBe(true);
 
@@ -4514,7 +4474,7 @@ describe('createThreadPane', () => {
       });
       pane.retryDeferredRecentWindowPrune();
 
-      expect(preserveTimelineWindowAnchor).toHaveBeenCalledTimes(1);
+      expect(canPreserveTimelineWindow).toHaveBeenCalledTimes(1);
       expect(pane.items).toHaveLength(ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS);
       expect(pane.hasDeferredRecentWindowPrune).toBe(false);
     });
@@ -4548,9 +4508,9 @@ describe('createThreadPane', () => {
         }),
       );
 
-      const preserveTimelineWindowAnchor = vi.fn(() => false);
+      const canPreserveTimelineWindow = vi.fn(() => false);
       pane.attachScrollController(
-        stubScrollController({ preserveTimelineWindowAnchor }),
+        stubScrollController({ canPreserveTimelineWindow }),
       );
 
       pane.settleTurn({
@@ -4571,20 +4531,15 @@ describe('createThreadPane', () => {
       // stays recorded.
       pane.retryDeferredRecentWindowPrune();
 
-      expect(preserveTimelineWindowAnchor).toHaveBeenCalledTimes(1);
+      expect(canPreserveTimelineWindow).toHaveBeenCalledTimes(1);
       expect(pane.items).toHaveLength(801);
       expect(pane.items[0].id).toBe('t0');
       expect(pane.hasMoreHistory).toBe(false);
       expect(pane.hasDeferredRecentWindowPrune).toBe(true);
 
-      const retryPreserve = vi.fn((
-        operation: TimelineWindowAnchorOperation,
-      ) => {
-        operation.run();
-        return true;
-      });
+      const retryPreserve = vi.fn(() => true);
       pane.attachScrollController(
-        stubScrollController({ preserveTimelineWindowAnchor: retryPreserve }),
+        stubScrollController({ canPreserveTimelineWindow: retryPreserve }),
       );
 
       pane.retryDeferredRecentWindowPrune();
@@ -4596,7 +4551,7 @@ describe('createThreadPane', () => {
       expect(pane.hasDeferredRecentWindowPrune).toBe(false);
     });
 
-    it('does not treat a prune as applied unless the scroll-controller runs it', async () => {
+    it('keeps prune mutation ownership in the pane after the viewport guard approves it', async () => {
       const pane = createThreadPane();
       const initial = Array.from({ length: 800 }, (_, index) =>
         makeItem({
@@ -4625,9 +4580,9 @@ describe('createThreadPane', () => {
         }),
       );
 
-      const preserveTimelineWindowAnchor = vi.fn(() => true);
+      const canPreserveTimelineWindow = vi.fn(() => true);
       pane.attachScrollController(
-        stubScrollController({ preserveTimelineWindowAnchor }),
+        stubScrollController({ canPreserveTimelineWindow }),
       );
 
       pane.settleTurn({
@@ -4645,11 +4600,11 @@ describe('createThreadPane', () => {
 
       pane.retryDeferredRecentWindowPrune();
 
-      expect(preserveTimelineWindowAnchor).toHaveBeenCalledTimes(1);
-      expect(pane.items).toHaveLength(801);
-      expect(pane.items[0].id).toBe('t0');
-      expect(pane.hasMoreHistory).toBe(false);
-      expect(pane.hasDeferredRecentWindowPrune).toBe(true);
+      expect(canPreserveTimelineWindow).toHaveBeenCalledTimes(1);
+      expect(pane.items).toHaveLength(ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS);
+      expect(pane.items[0].id).toBe('t301');
+      expect(pane.hasMoreHistory).toBe(true);
+      expect(pane.hasDeferredRecentWindowPrune).toBe(false);
     });
 
     it('prunes mid-turn anyway once the hard ceiling is exceeded', async () => {
@@ -4716,9 +4671,9 @@ describe('createThreadPane', () => {
       await pane.switchThread(makeThread({ id: 'fold-ceiling-veto' }));
       pane.setActiveTurn({ turnId: 'turn-x', turnIndex: 800, startedAt: 1 });
 
-      const preserveTimelineWindowAnchor = vi.fn(() => false);
+      const canPreserveTimelineWindow = vi.fn(() => false);
       pane.attachScrollController(
-        stubScrollController({ preserveTimelineWindowAnchor }),
+        stubScrollController({ canPreserveTimelineWindow }),
       );
 
       pane.upsertItems(
@@ -4731,7 +4686,7 @@ describe('createThreadPane', () => {
           }),
         ),
       );
-      expect(preserveTimelineWindowAnchor).not.toHaveBeenCalled();
+      expect(canPreserveTimelineWindow).not.toHaveBeenCalled();
       expect(pane.items).toHaveLength(ACTIVE_TIMELINE_WINDOW_HARD_CEILING_ITEMS);
 
       pane.upsertItem(
@@ -4743,7 +4698,7 @@ describe('createThreadPane', () => {
         }),
       );
 
-      expect(preserveTimelineWindowAnchor).toHaveBeenCalledTimes(1);
+      expect(canPreserveTimelineWindow).toHaveBeenCalledTimes(1);
       expect(pane.items).toHaveLength(ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS);
       expect(pane.items[0].id).toBe('t1101');
       expect(pane.items.at(-1)?.id).toBe('t1600');
@@ -4780,9 +4735,9 @@ describe('createThreadPane', () => {
         }),
       );
 
-      const preserveTimelineWindowAnchor = vi.fn(() => false);
+      const canPreserveTimelineWindow = vi.fn(() => false);
       pane.attachScrollController(
-        stubScrollController({ preserveTimelineWindowAnchor }),
+        stubScrollController({ canPreserveTimelineWindow }),
       );
 
       pane.settleTurn({
@@ -4796,7 +4751,7 @@ describe('createThreadPane', () => {
         aborted: false,
         errorMessage: '',
       });
-      expect(preserveTimelineWindowAnchor).not.toHaveBeenCalled();
+      expect(canPreserveTimelineWindow).not.toHaveBeenCalled();
       expect(pane.items).toHaveLength(801);
       expect(pane.hasDeferredRecentWindowPrune).toBe(true);
 
@@ -4808,7 +4763,7 @@ describe('createThreadPane', () => {
           itemIndex: 0,
         }),
       );
-      expect(preserveTimelineWindowAnchor).not.toHaveBeenCalled();
+      expect(canPreserveTimelineWindow).not.toHaveBeenCalled();
       expect(pane.items).toHaveLength(802);
       expect(pane.hasDeferredRecentWindowPrune).toBe(true);
 
@@ -4823,7 +4778,7 @@ describe('createThreadPane', () => {
         ),
       );
 
-      expect(preserveTimelineWindowAnchor).toHaveBeenCalledTimes(1);
+      expect(canPreserveTimelineWindow).toHaveBeenCalledTimes(1);
       expect(pane.items).toHaveLength(ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS);
       expect(pane.items[0].id).toBe('t1101');
       expect(pane.items.at(-1)?.id).toBe('t1600');

@@ -62,4 +62,20 @@ describe('TimelineVirtualizer under happy-dom', () => {
       host.remove();
     }
   });
+
+  it('rejects duplicate row keys at the component boundary', () => {
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    const duplicate = { id: 'same', heightPx: 100, label: 'Duplicate' };
+    try {
+      expect(() =>
+        mount(TimelineVirtualizerHarness, {
+          target: host,
+          props: { initialRows: [duplicate, { ...duplicate }], renderAll: true },
+        }),
+      ).toThrow(/unique key/);
+    } finally {
+      host.remove();
+    }
+  });
 });

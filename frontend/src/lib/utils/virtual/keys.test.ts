@@ -1,42 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { isPureHeadTailChange, keyedReorderPermutation } from './keys';
-
-describe('isPureHeadTailChange', () => {
-  it('accepts identical key sequences', () => {
-    expect(isPureHeadTailChange(['a', 'b'], ['a', 'b'], 0)).toBe(true);
-  });
-
-  it('accepts a pure tail append and a pure tail trim', () => {
-    expect(isPureHeadTailChange(['a', 'b'], ['a', 'b', 'c'], 0)).toBe(true);
-    expect(isPureHeadTailChange(['a', 'b', 'c'], ['a', 'b'], 0)).toBe(true);
-  });
-
-  it('accepts a pure head prepend with a matching headSplice', () => {
-    expect(isPureHeadTailChange(['c', 'd'], ['a', 'b', 'c', 'd'], 2)).toBe(true);
-  });
-
-  it('accepts a pure head removal with a matching negative headSplice', () => {
-    expect(isPureHeadTailChange(['a', 'b', 'c', 'd'], ['c', 'd'], -2)).toBe(true);
-  });
-
-  it('rejects a headSplice that does not account for the length change', () => {
-    expect(isPureHeadTailChange(['c', 'd'], ['a', 'b', 'c', 'd'], 1)).toBe(false);
-  });
-
-  it('rejects a same-length reorder (the queued-message bump shape)', () => {
-    expect(isPureHeadTailChange(['stop', 'user', 'think'], ['stop', 'think', 'user'], 0)).toBe(
-      false,
-    );
-  });
-
-  it('rejects a mid-list insert claimed as tail growth', () => {
-    expect(isPureHeadTailChange(['a', 'c'], ['a', 'b', 'c'], 0)).toBe(false);
-  });
-
-  it('rejects a head prepend whose surviving keys also moved', () => {
-    expect(isPureHeadTailChange(['c', 'd'], ['a', 'b', 'd', 'c'], 2)).toBe(false);
-  });
-});
+import {
+  classifyKeyedSequenceMutation,
+  keyedReorderPermutation,
+} from './keys';
 
 describe('keyedReorderPermutation', () => {
   it('maps each new index to the key’s previous index', () => {
@@ -51,5 +17,19 @@ describe('keyedReorderPermutation', () => {
 
   it('handles removals implicitly (dropped keys just do not appear)', () => {
     expect(keyedReorderPermutation(['a', 'b', 'c'], ['c', 'a'])).toEqual([2, 0]);
+  });
+});
+
+describe('classifyKeyedSequenceMutation', () => {
+  it.each([
+    [['a', 'b'], ['a', 'b'], 'unchanged', 0],
+    [['a', 'b'], ['a', 'b', 'c'], 'tail', 0],
+    [['a', 'b', 'c'], ['a', 'b'], 'tail', 0],
+    [['c', 'd'], ['a', 'b', 'c', 'd'], 'head', 2],
+    [['a', 'b', 'c', 'd'], ['c', 'd'], 'head', -2],
+    [['a', 'c'], ['a', 'b', 'c'], 'keyed', 0],
+    [['a', 'b'], ['b', 'a'], 'keyed', 0],
+  ] as const)('classifies %j -> %j', (prev, next, kind, headSplice) => {
+    expect(classifyKeyedSequenceMutation(prev, next)).toEqual({ kind, headSplice });
   });
 });

@@ -54,8 +54,6 @@ export interface TimelineRestoreOptions {
   armWarmupWithReset(): void;
   /** Wired to module 3's `resetGates` (both auto-load gates' `.reset()`). */
   resetAutoLoadGates(): void;
-  /** Wired to module 4's `clearTimelineWindowPruneShift`. */
-  clearTimelineWindowPruneShift(): void;
 }
 
 export interface TimelineRestore {
@@ -185,7 +183,6 @@ export function createTimelineRestore(options: TimelineRestoreOptions): Timeline
         restoreToken += 1;
       }
       options.resetAutoLoadGates();
-      options.clearTimelineWindowPruneShift();
       if (nextThreadId && scrollSnapshotThreadId) {
         // Re-arm the warm-up gate BEFORE the DOM update flushes. The
         // restore $effect calls forceStick() (which also arms the gate),

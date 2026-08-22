@@ -152,10 +152,9 @@ export function createTimelinePaging(options: TimelinePagingOptions): TimelinePa
     }
   }
 
-  // The prepend holds the reading position via the engine's head-splice
-  // handling: pane.loadOlder sets pane.pendingTimelineShiftAtHead for the
-  // head-grow flush, so the engine re-bases its size store and reports the
-  // scrollTop compensation in one step. There is deliberately NO explicit
+  // The prepend holds the reading position via the engine's keyed mutation
+  // handling. It re-bases measured sizes and reports the scrollTop
+  // compensation in one step. There is deliberately NO explicit
   // re-anchor here — a
   // re-anchor captured before the await would yank the user back if they
   // kept scrolling while the page loaded. The pause lease keeps the

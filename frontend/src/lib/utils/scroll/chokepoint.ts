@@ -160,9 +160,9 @@ export function createWriteChokepoint(deps: WriteChokepointDeps): WriteChokepoin
   // alone becomes 1px steps at a low effective rate — measured as
   // 14–55Hz stepping on a 165Hz panel (2026-07-04 capture), perceived
   // as "low fps" judder. The compositor has no such quantum: the
-  // sub-pixel remainder of each spring write rides as a translateY on
-  // contentEl, so the rendered position IS the spring's fractional
-  // output and sub-pixel motion is genuinely continuous (bilinear
+  // sub-pixel remainder of each spring write rides as the individual
+  // `translate` property on contentEl, so the rendered position is the
+  // spring's fractional output and sub-pixel motion is genuinely continuous (bilinear
   // resample during motion only). The residue is always < 1px, applies
   // only to 'spring.tick' writes, clears on every other write, is
   // eased out when the spring stops without a write (catch-up /
@@ -176,10 +176,10 @@ export function createWriteChokepoint(deps: WriteChokepointDeps): WriteChokepoin
   // boxes; only an absolute getBoundingClientRect against the viewport
   // would see the <1px offset, and nothing in the scroll path does).
   //
-  // For that translateY to ride the compositor rather than trigger
+  // For that translation to ride the compositor rather than trigger
   // main-thread repaints, contentEl must be composited: every
   // controller-owned content element carries a static
-  // `will-change-transform` class in its own markup (MessageTimeline,
+  // `scroll-composited-content` class in its own markup (MessageTimeline,
   // ChannelView, ActivityRun's clip content — the last on EVERY
   // mounted expanded run, not just the live one that gets a
   // controller, because liveness can land on an already-mounted run
@@ -239,8 +239,16 @@ export function createWriteChokepoint(deps: WriteChokepointDeps): WriteChokepoin
     // non-axis-aligned matrix cannot be pixel-snapped, so the
     // compositor must resample at the true fractional offset. 1e-4deg
     // shears < 0.01px across a 5000px layer — imperceptible itself.
-    contentEl.style.transform =
-      next === 0 ? '' : `translateY(${-next}px) rotate(0.0001deg)`;
+    if (next === 0) {
+      contentEl.style.removeProperty('translate');
+      contentEl.style.removeProperty('rotate');
+      return;
+    }
+    // Individual transform properties compose with the virtualizer's
+    // plane-origin `transform` instead of overwriting it. Flat scroll
+    // surfaces have no base transform and use the same sink unchanged.
+    contentEl.style.setProperty('translate', `0px ${-next}px`);
+    contentEl.style.setProperty('rotate', '0.0001deg');
   }
   function applyGlideResidue(residue: number): void {
     stopResidueSettle();

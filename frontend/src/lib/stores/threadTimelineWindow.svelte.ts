@@ -48,7 +48,7 @@ export interface ThreadTimelineWindowOptions {
   getSwitchGeneration(): number;
   /** streamingReveal.recomputeReveal — commitWindow calls it after every window swap. */
   recomputeReveal(): void;
-  /** Registered pane scroll controller (or null) — applyPrunedWindow uses preserveTimelineWindowAnchor. */
+  /** Registered pane scroll controller (or null). applyPrunedWindow queries its retention guard. */
   getScrollController(): PaneScrollController | null;
   /** Pane-owned subagent transcript hydration — loadUntilItem's subtree hydration. */
   hydrateSubagentChildren(rootItemID: string): Promise<boolean>;
@@ -78,14 +78,6 @@ export interface ThreadTimelineWindow {
   readonly hasDeferredRecentWindowPrune: boolean;
   readonly loadingOlder: boolean;
   readonly loadingNewer: boolean;
-  /**
-   * Direction hint for the virtualizer's `shift` on the NEXT timeline
-   * length change. See the field doc inside the factory for the full
-   * rationale (bug-prone: the prepend/prune choreography is spread
-   * across two flushes).
-   */
-  readonly pendingTimelineShiftAtHead: boolean;
-
   /** Apply `switchThread`'s single initial paged load (cache-miss path). */
   applyInitialSlice(paged: PagedItems, threadID: string): void;
   /** Refresh cursors + hasMore flags from a paged response against the current window. Also used directly by `refreshFromBackend`. */
@@ -102,20 +94,12 @@ export interface ThreadTimelineWindow {
   refreshCursorsAfterTailAppend(): void;
   pruneToRecentWindowIfNeeded(options?: {
     hasMoreNewerAfterPrune?: boolean;
-    /**
-     * 'shift' is used by `loadNewer` (a paging op): the head-drop holds
-     * position via the virtualizer's `shift` head-splice. 'preserve'
-     * (default) is the streaming/settle path, which keeps the explicit
-     * anchor-restore transaction (preserveTimelineWindowAnchor) and its
-     * active-turn defer.
-     */
-    positionMode?: 'shift' | 'preserve';
   }): void;
   retryDeferredRecentWindowPrune(): void;
   /**
    * `settleTurn`'s prune entry: records the prune as pending for the
-   * quiet scheduler when a mounted timeline would have to repaint the
-   * head-drop, applies it immediately otherwise. See the factory doc.
+   * quiet scheduler when a mounted timeline can avoid the structural
+   * reconciliation during activity, and applies it immediately otherwise.
    */
   settleRecentWindowPrune(): void;
   loadOlder(): Promise<LoadOlderResult>;
@@ -284,26 +268,6 @@ export function createThreadTimelineWindow(
   let loadingNewer: boolean = $state(false);
 
   /**
-   * Direction hint for the virtualizer's `shift` on the NEXT timeline length
-   * change: `true` when the change happens at the HEAD (older rows prepended
-   * by `loadOlder`, or the head dropped by `loadNewer`'s prune), `false` for
-   * tail changes. MessageTimeline binds this to
-   * `<TimelineVirtualizer shift={...}>`.
-   *
-   * Without it the engine treats every length change as tail growth and
-   * misindexes its entire size store on a prepend — forcing a re-measure of
-   * every visible row (the "scrollbar jumps around" load jank). Set
-   * synchronously immediately before the `items` mutation so the engine reads
-   * the right value in the same flush, and reset in the paging method's
-   * `finally`. Only `loadOlder` / `loadNewer` touch it; the streaming-prune
-   * path keeps its own anchor-restore (preserveTimelineWindowAnchor) and
-   * leaves this `false`. The prepend/append and the prune are deliberately
-   * split across two flushes so a coalesced head-grow + tail-shrink can't
-   * collapse into one net length change a single `shift` can't represent.
-   */
-  let pendingTimelineShiftAtHead: boolean = $state(false);
-
-  /**
    * Separate generation counter for `loadOlder` / `loadUntilItem` so a
    * second click doesn't race with a slow first fetch. `switchGeneration`
    * covers thread swaps; this guards against same-thread concurrent
@@ -413,13 +377,6 @@ export function createThreadTimelineWindow(
   function pruneToRecentWindowIfNeeded(
     pruneOptions: {
       hasMoreNewerAfterPrune?: boolean;
-      /**
-       * 'shift' is used by `loadNewer` (a paging op): the head-drop holds
-       * position via the virtualizer's `shift` head-splice. 'preserve' (default) is the
-       * streaming/settle path, which keeps the explicit anchor-restore
-       * transaction (preserveTimelineWindowAnchor) and its active-turn defer.
-       */
-      positionMode?: 'shift' | 'preserve';
     } = {},
   ): void {
     const items = options.getItems();
@@ -428,12 +385,11 @@ export function createThreadTimelineWindow(
     const activeTurn = thread !== null ? getActiveTurn(thread.id) : null;
     const exceedsHardCeiling =
       items.length > ACTIVE_TIMELINE_WINDOW_HARD_CEILING_ITEMS;
-    // A head-drop on a visible, bottom-pinned timeline repaints the whole
-    // viewport: the content height collapses by the dropped rows, the
-    // browser clamps scrollTop, and the virtualizer re-measures — seen as a blank
-    // flash mid-stream (incident 2026-06-10). Defer the prune while a
-    // turn is active, holding the hard ceiling as the memory backstop
-    // against a runaway turn. The debt is recorded as pending so the
+    // A large keyed reconciliation is avoidable main-thread work while a
+    // turn is active. Defer it, with the hard ceiling as the memory
+    // backstop against a runaway turn. Paint correctness does not depend on
+    // this timing: the virtualizer's stable row plane preserves surviving
+    // rows even when the ceiling forces the prune. The debt is recorded so the
     // quiet scheduler's retry keeps standing off a turn that started
     // while the prune waited, and later append-path calls short-circuit
     // on the pending flag instead of re-slicing the window.
@@ -449,18 +405,6 @@ export function createThreadTimelineWindow(
       items,
       ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS,
     );
-    // loadNewer paging: the dropped head sits above the viewport, so the
-    // virtualizer's `shift` head-splice holds the reading position — no
-    // anchor transaction, no veto.
-    if (pruneOptions.positionMode === 'shift') {
-      applyPagedPrune(next, {
-        shiftAtHead: true,
-        hasMoreHistoryAfterPrune: true,
-        hasMoreNewerAfterPrune: pruneOptions.hasMoreNewerAfterPrune ?? false,
-      });
-      recentWindowPrunePending = false;
-      return;
-    }
     const vetoPolicy = exceedsHardCeiling ? 'force' : 'defer';
     const result = applyPrunedWindow(next, {
       hasMoreHistoryAfterPrune: true,
@@ -477,9 +421,20 @@ export function createThreadTimelineWindow(
       items,
       ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS,
     );
-    // loadOlder paging: the dropped tail sits below the viewport (tail change,
-    // no shift, no jump), so the virtualizer leaves the reading position alone.
-    applyPagedPrune(next, { shiftAtHead: false, hasMoreNewerAfterPrune: true });
+    // loadOlder paging: the dropped tail sits below the viewport, so the
+    // virtualizer leaves the reading position alone.
+    applyPagedPrune(next, { hasMoreNewerAfterPrune: true });
+  }
+
+  function prunePagedRecentWindowIfNeeded(hasMoreNewerAfterPrune: boolean): void {
+    const items = options.getItems();
+    if (items.length <= ACTIVE_TIMELINE_WINDOW_MAX_ITEMS) return;
+    const next = keepRecentWindowItems(items, ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS);
+    applyPagedPrune(next, {
+      hasMoreHistoryAfterPrune: true,
+      hasMoreNewerAfterPrune,
+    });
+    recentWindowPrunePending = false;
   }
 
   // Shared window swap used by both prune paths: replace items + cursors +
@@ -505,29 +460,22 @@ export function createThreadTimelineWindow(
 
   // Paging prune (loadOlder tail-drop / loadNewer head-drop). The dropped end
   // is always opposite the reading viewport, so there is nothing to veto and
-  // no anchor to restore — the virtualizer's `shift` head-splice holds
-  // position. Set the shift direction at the mutation point so the engine
-  // reads it in the same flush as this length change (head-drop → splice the
-  // size store from the front; tail-drop → no shift).
+  // no anchor to restore. The virtualizer derives the keyed mutation and
+  // carries surviving measurements and paint coordinates with their rows.
   function applyPagedPrune(
     next: PrunedWindow,
     pruneOptions: {
-      shiftAtHead: boolean;
       hasMoreHistoryAfterPrune?: boolean;
       hasMoreNewerAfterPrune?: boolean;
     },
   ): void {
     if (next.items.length === options.getItems().length) return;
-    pendingTimelineShiftAtHead = pruneOptions.shiftAtHead;
     commitWindow(next, pruneOptions);
   }
 
   // Streaming / settle prune. Holds position via the explicit anchor
-  // transaction (preserveTimelineWindowAnchor) because it can fire under a
-  // bottom-pinned, mid-turn viewport, and it can be vetoed/deferred when the
-  // prune would drop the visible anchor (vetoPolicy). Leaves the shift flag
-  // false — MessageTimeline owns the rendered-node head-shift hint because
-  // the virtualizer receives grouped/revealed nodes, not raw pane items.
+  // guard because it can fire under a bottom-pinned, mid-turn viewport, and
+  // it can be vetoed/deferred when the prune would drop the visible anchor.
   function applyPrunedWindow(
     next: PrunedWindow,
     pruneOptions: {
@@ -537,25 +485,11 @@ export function createThreadTimelineWindow(
     },
   ): PrunedWindowApplyResult {
     if (next.items.length === options.getItems().length) return 'applied';
-    let operationApplied = false;
-    const apply = (): void => {
-      if (operationApplied) return;
-      operationApplied = true;
-      commitWindow(next, pruneOptions);
-    };
-    const preserve = options.getScrollController()?.preserveTimelineWindowAnchor;
-    if (!preserve) {
-      apply();
-      return 'applied';
-    }
     const keptItemIds = new Set(next.items.map((item) => item.id));
-    preserve({
-      keepsItem: (itemId) => keptItemIds.has(itemId),
-      run: apply,
-    });
-    if (operationApplied) return 'applied';
-    if (pruneOptions.vetoPolicy === 'defer') return 'deferred';
-    apply();
+    const guard = options.getScrollController()?.canPreserveTimelineWindow;
+    const safe = !guard || guard((itemId) => keptItemIds.has(itemId));
+    if (!safe && pruneOptions.vetoPolicy === 'defer') return 'deferred';
+    commitWindow(next, pruneOptions);
     return 'applied';
   }
 
@@ -660,14 +594,14 @@ export function createThreadTimelineWindow(
    * Turn-settle entry point for the recent-window prune. Wire settle is
    * NOT visual quiet: the reveal smoother keeps draining the tail for
    * seconds after the turn completes (deliberately — the reveal is never
-   * rushed), and the head-drop's flush is the most expensive in the
+   * rushed), and the head-drop's reconciliation is the most expensive in the
    * app, so landing it here put the stall inside the glide the reader
    * was watching (bug-report-20260801T214455Z traces; measured 78–186ms).
    * When a mounted timeline is behind the pane (the controller offers
-   * the anchor transaction), the prune is recorded as pending and the
+   * the anchor-survival guard), the prune is recorded as pending and the
    * quiet scheduler (timelineQuietWork) retries it once nothing is
-   * animating. Without one — discussion surface, headless pane — the
-   * head-drop repaints nothing, so it applies immediately.
+   * animating. Without one, such as a discussion surface or headless pane,
+   * it applies immediately.
    * The hard ceiling stays with the append path and is unaffected.
    * See docs/architecture/scroll-arbitration-plan.md.
    */
@@ -677,7 +611,7 @@ export function createThreadTimelineWindow(
       recentWindowPrunePending = false;
       return;
     }
-    if (options.getScrollController()?.preserveTimelineWindowAnchor) {
+    if (options.getScrollController()?.canPreserveTimelineWindow) {
       recentWindowPrunePending = true;
       return;
     }
@@ -731,10 +665,6 @@ export function createThreadTimelineWindow(
                 !currentIds.has(item.id) &&
                 compareItemsByTimelinePosition(item, currentFirst) < 0,
             );
-      // Head-grow: the engine unshifts its size store and reports a
-      // head-splice compensation so the reading position holds. Set
-      // before the mutation so the engine reads it in the same flush.
-      pendingTimelineShiftAtHead = true;
       const next = mergeItemsById(prepend, options.getItems());
       options.replaceTimelineItems(next, { disposeDropped: true });
       const nextFloor = pagedOldestCursor(paged, prepend) ?? floor;
@@ -753,18 +683,9 @@ export function createThreadTimelineWindow(
       } else {
         hasMoreHistory = pagedHasMoreOlder(paged);
       }
-      // Let the engine process the head-grow (shift=true) before the
-      // prune. The two MUST be separate flushes: coalesced, the net length
-      // change can't represent "prepend at head + drop at tail" and the
-      // size store scrambles (spike-verified — see frontend-scroll.md).
-      await tick();
-      if (
-        gen !== options.getSwitchGeneration() ||
-        pageGen !== pagingGeneration
-      )
-        return loadOlderResult('stale');
-      // Flush 2: tail-prune (shift=false). Dropped rows are below the
-      // viewport, so this is transparent to the reading position.
+      // The keyed virtualizer derives the combined prepend + tail prune,
+      // carries measurements with surviving rows, and emits the exact
+      // compensation in one flush.
       pruneToHeadWindowIfNeeded();
       await tick();
       return loadOlderResult('loaded', insertedBeforeWindow, insertedRows);
@@ -788,9 +709,6 @@ export function createThreadTimelineWindow(
       // is still in-flight; the concurrent call will re-raise the
       // flag on its next write.
       loadingOlder = false;
-      // Both flushes have run by now; clear the one-shot shift hint so a
-      // later streaming length change isn't misread as a head mutation.
-      pendingTimelineShiftAtHead = false;
     }
   }
 
@@ -959,9 +877,6 @@ export function createThreadTimelineWindow(
                 !currentIds.has(item.id) &&
                 compareItemsByTimelinePosition(item, currentLast) > 0,
             );
-      // Tail-grow: shift stays false (the engine appends size slots at the
-      // end, no scroll compensation — rows arrive below the viewport).
-      pendingTimelineShiftAtHead = false;
       const next = mergeItemsById(append, options.getItems());
       options.replaceTimelineItems(next, { disposeDropped: true });
       const nextCeiling = pagedNewestCursor(paged, append) ?? ceiling;
@@ -974,23 +889,9 @@ export function createThreadTimelineWindow(
           ? false
           : pagedHasMoreNewer(paged);
       hasMoreNewer = nextHasMoreNewer;
-      // Flush 1: the engine processes the tail-grow before the head-prune.
-      // Separate flushes (see loadOlder): a coalesced tail-grow +
-      // head-shrink can't be expressed by one `shift`.
-      await tick();
-      if (
-        gen !== options.getSwitchGeneration() ||
-        pageGen !== pagingGeneration
-      )
-        return loadOlderResult('stale');
-      // Flush 2: head-prune (shift=true) — the engine splices its size
-      // store from the front and compensates scrollTop by the dropped
-      // height, holding the reading position. No explicit anchor restore
-      // needed.
-      pruneToRecentWindowIfNeeded({
-        hasMoreNewerAfterPrune: nextHasMoreNewer,
-        positionMode: 'shift',
-      });
+      // The keyed virtualizer derives the combined tail grow + head prune
+      // and preserves the reading coordinate in one flush.
+      prunePagedRecentWindowIfNeeded(nextHasMoreNewer);
       await tick();
       return loadOlderResult('loaded', insertedAfterWindow, insertedRows);
     } catch (err) {
@@ -1004,7 +905,6 @@ export function createThreadTimelineWindow(
       return loadOlderResult('error');
     } finally {
       loadingNewer = false;
-      pendingTimelineShiftAtHead = false;
     }
   }
 
@@ -1073,9 +973,6 @@ export function createThreadTimelineWindow(
     },
     get loadingNewer() {
       return loadingNewer;
-    },
-    get pendingTimelineShiftAtHead() {
-      return pendingTimelineShiftAtHead;
     },
     applyInitialSlice,
     applyWindowMetadataFromPaged,

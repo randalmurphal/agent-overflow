@@ -53,13 +53,11 @@
   // svelte-ignore state_referenced_locally -- seed copy by design; the
   // fixture owns the rows after mount (setRows/resizeRow).
   let rows = $state<HarnessRow[]>(initialRows);
-  let shift = $state(false);
   let scrollEl: HTMLElement | undefined = $state();
   let listRef: TimelineVirtualizerHandle | undefined = $state();
 
-  /** Replace the data array; `shift: true` marks a head splice. */
-  export function setRows(next: HarnessRow[], opts: { shift?: boolean } = {}): void {
-    shift = opts.shift ?? false;
+  /** Replace the keyed data array; the virtualizer derives the mutation. */
+  export function setRows(next: HarnessRow[]): void {
     rows = next;
   }
 
@@ -69,7 +67,6 @@
 
   /** Change one row's rendered height in place (same key → same DOM). */
   export function resizeRow(id: string, heightPx: number): void {
-    shift = false;
     rows = rows.map((row) => (row.id === id ? { ...row, heightPx } : row));
   }
 
@@ -77,7 +74,6 @@
    * down by the same amount (total height grows, tail content unchanged).
    * Models late typesetting landing above the reading position. */
   export function growRowHead(id: string, byPx: number): void {
-    shift = false;
     rows = rows.map((row) =>
       row.id === id
         ? { ...row, headPx: (row.headPx ?? 0) + byPx, heightPx: row.heightPx + byPx }
@@ -121,7 +117,6 @@
     {bufferSize}
     {estimate}
     {renderAll}
-    {shift}
     {onscroll}
     {onscrollend}
     {onCompensation}

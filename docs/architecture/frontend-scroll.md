@@ -55,7 +55,7 @@ the timeline virtualizer, or the scroll controller (`utils/scroll/`).
     programmatic write routes through, plus its satellites: the
     provenance ledger, arrival-readback acceptance, and spring-tick
     trace sampling. The compositing the glide residue below depends on
-    comes from a **static `will-change-transform` class on every
+    comes from a **static `scroll-composited-content` class on every
     controller-owned content element** (MessageTimeline, ChannelView,
     ActivityRun's clip content) — permanent by design. It replaced a
     promote/demote lease that reclaimed idle-pane tile memory (~27MB
@@ -267,58 +267,53 @@ nearest surviving row after it, when a mid-list splice removed it) is
 held stationary — exact for length-changing keyed splices such as the
 review pane's collapse/expand, not just same-length reorders.
 
-## Load Paging (head-splice `shift`)
+## Load Paging (keyed mutation inference)
 
 `loadOlder` and `loadNewer` mutate the window at one end and prune the
-other, and they drive the virtualizer's `shift` head-splice so the reading
-position holds without an explicit re-anchor. `shift` tells the engine
-which end a length change hit: on a **head** change `applyLength` splices
-the size store at the head (`spliceHead`) and reports a `head-splice`
-compensation whose target keeps the viewport stationary — applied in the
-same flush; on a **tail** change it does neither. Priors need no remap
+other. Both mutations commit before one final Svelte flush. The virtualizer
+compares the previous and next key sequences before exposing render data and
+classifies the combined change as head, tail, unchanged, or a general keyed
+mutation. Callers cannot label a mutation or leave a mode bit armed.
+
+On a pure **head** change `applyLength` splices the size store at the head
+(`spliceHead`) and reports a `head-splice` compensation whose target keeps
+the viewport stationary. On a pure **tail** change it does neither. A
+combined head-and-tail page replacement uses `applyKeyedReorder`, which
+carries every surviving measurement by key and anchors the nearest surviving
+visible row. Priors need no remap
 step across the splice: they resolve per-row against a content
 signature (`utils/virtual/priors.ts`), not a position, so there is no
-index-keyed prior state left to shift. Without the `shift` hint itself, every change
-is treated as tail growth/shrink and a prepend misindexes the whole size
-store — every measured height lands on the wrong row, forcing a
-re-measure of everything visible: the "viewport shifts, scrollbar jumps
-around" load jank.
-
-The store exposes the paging direction as `pane.pendingTimelineShiftAtHead`,
-bound into `<TimelineVirtualizer shift={...}>`, set synchronously at the
-`items` mutation so the virtualizer's length `$effect.pre` reads it in the
-same flush, and reset in the paging method's `finally`. The grow
-(prepend/append) and the prune are deliberately split across **two
-flushes** (`await tick()` between them): coalesced, a head-grow plus a
-tail-shrink collapse into one net length change that a single `shift`
-boolean cannot describe — and when the page budget equals the prune count
-the net length is unchanged, so the virtualizer sees no length change at
-all and the size store scrambles. Head-splice semantics are covered in
-`utils/virtual/engine.test.ts` and `sizes.test.ts`; the store's two-flush
-sequencing + shift direction are covered in `thread.svelte.test.ts`.
+index-keyed prior state left to shift. Duplicate keys fail at the virtualizer
+boundary instead of corrupting the measurement map.
 
 `loadOlder` / `loadNewer` apply the paired prune directly (the dropped end is
 always opposite the reading viewport, so there is nothing to veto or restore).
-The streaming / settle prune keeps the explicit anchor transaction
-(`preserveTimelineWindowAnchor`, below) because it can fire under a
-bottom-pinned viewport where the incident-hardened defer-and-restore behavior
-matters. That path does not ask the pane's raw item window whether the prune
-is a head-drop; `<TimelineVirtualizer>` receives filtered/grouped
-`revealedNodes`. `MessageTimeline` compares the rendered `timelineNodeKey`
-list before and after the prune, and marks a local one-flush `shift` only
-when the rendered nodes are a strict suffix. That prevents a prune through a
-Read group, notification filter, subagent group, or reveal boundary from
-splicing the size store against the wrong row set.
+The streaming / settle prune keeps an explicit anchor-survival guard
+(`canPreserveTimelineWindow`, below) because it can fire under a
+reading viewport where the prune may remove the row under the reader. The pane
+owns and commits the retention mutation. The viewport only answers whether
+the visible anchor survives. `<TimelineVirtualizer>` independently classifies
+the filtered/grouped `revealedNodes`, so a Read group, notification filter,
+subagent group, or reveal boundary cannot make pane-level direction metadata
+corrupt the rendered size store.
 
 ## Live Window Bounds
 
 The streaming append path caps the loaded window
 (`ACTIVE_TIMELINE_WINDOW_MAX_ITEMS`, pruning back to
-`ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS`), but the prune **defers past the
-whole visible stream to visual quiet**. A mid-stream head-drop collapses
-content height under a bottom-pinned viewport, the browser clamps
-`scrollTop`, and the window re-measures — a visible blank flash
-(incident 2026-06-10). And wire settle is not the end of the visible
+`ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS`). A mounted timeline normally defers the
+prune to visual quiet because reconciling hundreds of rows is still expensive
+main-thread work. Correctness no longer depends on that timing. The
+virtualizer keeps surviving rows on one stable mounted paint plane, preserves
+their local coordinates across keyed structural changes, and lets the plane
+origin absorb content-space relocation. The outer spacer changes document
+height without becoming the raster surface. This prevents the previous
+remove-all intermediate render. Surviving rows keep their raster even when
+the hard ceiling forces a prune during activity. If that ceiling removes the
+visible anchor, the resulting content replacement still has to paint and may
+jump, but it does not pass through an empty intermediate frame.
+
+Wire settle is not the end of the visible
 stream: the reveal smoother keeps draining the tail for seconds after
 the turn completes, so a settle-time prune landed its flush — the most
 expensive in the app (78–186ms in the bug-report-20260801T214455Z
@@ -328,27 +323,17 @@ therefore only *records* the prune as pending
 the quiet scheduler (`timelineQuietWork.ts`) runs
 `retryDeferredRecentWindowPrune` once no glide is running or armed. A
 pane with no timeline (discussion surface, headless) prunes at settle
-directly — there is nothing to repaint.
+directly.
 `ACTIVE_TIMELINE_WINDOW_HARD_CEILING_ITEMS` is the memory backstop and
 the only force: back-to-back turns that never reach quiet keep deferring
-until the ceiling prunes mid-stream anyway, exactly as a runaway single
-turn does.
+until the ceiling prunes mid-stream.
 
 The streaming / settle window prune goes through `MessageTimeline` when a
-timeline is mounted (the paging prunes use `shift` instead — see **Load
-Paging**). The pane owns the window decision, but the timeline owns the
-DOM/virtualizer anchor transaction: bottom intent pins to the new bottom,
-and reading state preserves the first visible item when that item survives
-the prune. The bottom-intent restore is a `requestBottom` with takeover
-`'yield'` (see **Intent And Programmatic Writes**): the prune is unasked
-and typically lands mid-stream, its head-splice compensation has already
-relocated a mid-glide spring's remaining distance intact, and claiming the
-bottom would collapse that remainder into an instant one-line hop in front
-of the reader (bug-report-20260801T214455Z). The pause release's repin is
-the same yield — a structural append armed during the lease OR a spring
-chase still in flight across it keeps the trip; reader-asked transactions
-are unaffected because their restore claims the bottom before releasing,
-so the repin sees zero distance. If a normal recent-window prune would drop the visible anchor,
+timeline is mounted. The pane owns the window decision and mutation. The
+timeline contributes only the synchronous `canPreserveTimelineWindow` guard.
+Bottom intent is always preservable because the controller owns the resulting
+pin. Reading state is preservable when the first visible item survives. If a
+normal recent-window prune would drop that visible anchor,
 the pane defers it and retries when bottom intent returns instead of
 re-asking on every append. The hard ceiling is the only exception; it
 forces the prune even when anchor preservation vetoes the operation, and
@@ -1106,7 +1091,7 @@ side ([`activity-runs.md`](activity-runs.md) has the rest):
   `overflow-y: auto` with a restored `scrollTop`; a controller per run in the
   buffer would be a spring, an observer set, and intent listeners each for
   physics one of them can use.
-  (The static `will-change-transform` on the clip content is the one thing
+  (The static `scroll-composited-content` class on the clip content is the one thing
   every expanded run carries, controller or not — see the `chokepoint.ts`
   bullet under `utils/scroll/` above.)
 - **The clip's outer height changes only on explicit events** — growth toward

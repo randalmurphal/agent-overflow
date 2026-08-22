@@ -900,20 +900,20 @@ export function createUseStickToBottomController(
     scrollEl = nextScrollEl;
     contentEl = nextContentEl;
     observers.beginWarmup();
-    // The compositing contract check: the glide residue's translateY
+    // The compositing contract check: the glide residue's translation
     // needs contentEl composited, which comes from a static
-    // `will-change-transform` class the consumer's own markup must
+    // `scroll-composited-content` class the consumer's own markup must
     // carry (chokepoint.ts, "Fractional glide residue"). A controller
     // attached without it repaints on every glide frame with nothing
     // visibly wrong, so the breach is made loud here instead. The class
     // is the contract (never a runtime style write — a will-change
     // transition re-rasters a visible layer), so the class is what is
     // checked.
-    const contentComposited = nextContentEl.classList.contains('will-change-transform');
+    const contentComposited = nextContentEl.classList.contains('scroll-composited-content');
     if (!contentComposited) {
       reportFrontendDiagnostic(
         'scroll: controller attached to an uncomposited contentEl — its markup must carry '
-          + 'the static will-change-transform class (utils/scroll/chokepoint.ts)',
+          + 'the static scroll-composited-content class (utils/scroll/chokepoint.ts)',
         `surface ${nextScrollEl.dataset?.testid ?? 'unknown'}`,
       );
     }

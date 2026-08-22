@@ -211,10 +211,10 @@ describe('ownership: the adapter never writes scrollTop', () => {
     const row0Before = rowEl(scrollEl, 'row-0');
     compensations.length = 0;
 
-    harness.setRows(
-      [{ id: 'prepended', heightPx: ROW_PX, label: 'Prepended' }, ...harness.getRows()],
-      { shift: true },
-    );
+    harness.setRows([
+      { id: 'prepended', heightPx: ROW_PX, label: 'Prepended' },
+      ...harness.getRows(),
+    ]);
     await waitFor(() => compensations.length > 0, 'head-splice compensation');
 
     expect(compensations[0].kind).toBe('head-splice');
@@ -231,6 +231,64 @@ describe('ownership: the adapter never writes scrollTop', () => {
     );
     expect(rowEl(scrollEl, 'row-0')).toBe(row0Before);
     expect(rowEl(scrollEl, 'prepended')).not.toBeNull();
+  });
+
+  it('keeps the mounted raster plane and surviving row coordinates stable across a head prune', async () => {
+    let scrollEl: HTMLElement | undefined;
+    const ctx = mountHarness({
+      onCompensation: (compensation) => {
+        if (scrollEl) scrollEl.scrollTop = compensation.target;
+      },
+    });
+    scrollEl = ctx.scrollEl;
+    await pinToBottomAndSettle(scrollEl, 'bottom settle');
+
+    const tail = rowEl(scrollEl, `row-${ROW_COUNT - 1}`);
+    const tailWrapper = tail?.parentElement as HTMLElement | null;
+    const plane = scrollEl.querySelector('[data-virtual-row-plane]');
+    expect(tail).not.toBeNull();
+    expect(tailWrapper).not.toBeNull();
+    expect(plane).not.toBeNull();
+    const localTopBefore = tailWrapper!.style.top;
+
+    ctx.harness.setRows(ctx.harness.getRows().slice(20));
+    await waitFor(
+      () => rowEl(scrollEl!, `row-${ROW_COUNT - 1}`)?.getAttribute('data-row-index') === '39',
+      'tail to survive the head prune',
+    );
+    await waitForStableGeometry(scrollEl, 'head-prune settle');
+
+    expect(scrollEl.querySelector('[data-virtual-row-plane]')).toBe(plane);
+    expect(rowEl(scrollEl, `row-${ROW_COUNT - 1}`)).toBe(tail);
+    expect((tail!.parentElement as HTMLElement).style.top).toBe(localTopBefore);
+    expect(scrollEl.scrollTop).toBe(scrollEl.scrollHeight - scrollEl.clientHeight);
+  });
+
+  it('keeps surviving row identity across a combined head prune and tail append', async () => {
+    let scrollEl: HTMLElement | undefined;
+    const ctx = mountHarness({
+      onCompensation: (compensation) => {
+        if (scrollEl) scrollEl.scrollTop = compensation.target;
+      },
+    });
+    scrollEl = ctx.scrollEl;
+    await pinToBottomAndSettle(scrollEl, 'bottom settle');
+    const tail = rowEl(scrollEl, `row-${ROW_COUNT - 1}`);
+    const tailWrapper = tail?.parentElement;
+    expect(tail).not.toBeNull();
+    expect(tailWrapper).not.toBeNull();
+    const localTopBefore = tailWrapper!.style.top;
+
+    ctx.harness.setRows([
+      ...ctx.harness.getRows().slice(20),
+      { id: 'new-tail', heightPx: ROW_PX, label: 'New tail' },
+    ]);
+    await waitFor(() => rowEl(scrollEl!, 'new-tail') !== null, 'new tail to mount');
+    await waitForStableGeometry(scrollEl, 'combined mutation settle');
+
+    expect(rowEl(scrollEl, `row-${ROW_COUNT - 1}`)?.parentElement).toBe(tailWrapper);
+    expect(rowEl(scrollEl, `row-${ROW_COUNT - 1}`)).toBe(tail);
+    expect(tailWrapper!.style.top).toBe(localTopBefore);
   });
 });
 
@@ -292,6 +350,9 @@ describe('straddling-row attribution (reading anchor)', () => {
     const top = handle.getItemOffset(TALL_INDEX);
     expect(top).toBeLessThan(scrollEl.scrollTop);
     expect(top + TALL_PX).toBeGreaterThan(scrollEl.scrollTop);
+    const rect = scrollEl.getBoundingClientRect();
+    const hit = document.elementFromPoint(rect.left + rect.width / 2, rect.top + 1);
+    expect(hit?.closest('[data-row-id]')?.getAttribute('data-row-id')).toBe('tall');
     compensations.length = 0;
     return { harness, scrollEl, compensations };
   }
@@ -402,10 +463,10 @@ describe('write timing: compensation is delivered post-flush', () => {
     scrollEl.scrollTop = 0;
     await waitFor(() => rowEl(scrollEl, 'row-0') !== null, 'top rows to mount');
     await waitForStableGeometry(scrollEl, 'top settle');
-    harness.setRows(
-      [{ id: 'prepended-timing', heightPx: ROW_PX, label: 'Prepended' }, ...harness.getRows()],
-      { shift: true },
-    );
+    harness.setRows([
+      { id: 'prepended-timing', heightPx: ROW_PX, label: 'Prepended' },
+      ...harness.getRows(),
+    ]);
     await waitFor(() => samples.some((s) => s.kind === 'head-splice'), 'head-splice delivery');
 
     for (const sample of samples) {
@@ -569,7 +630,7 @@ describe('row registration across head splices', () => {
         heightPx: ROW_PX,
         label: `Older ${i}`,
       }));
-      harness.setRows([...prepended, ...harness.getRows()], { shift: true });
+      harness.setRows([...prepended, ...harness.getRows()]);
       await waitForStableGeometry(scrollEl, 'splice settle');
       expect(observeSpy).not.toHaveBeenCalled();
       expect(unobserveSpy).not.toHaveBeenCalled();

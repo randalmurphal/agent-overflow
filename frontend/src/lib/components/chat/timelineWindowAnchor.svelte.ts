@@ -1,19 +1,17 @@
-// Anchored timeline-height transactions: run a change that moves rows, then
-// put the reader back where they were once it flushes. Both entry points share
-// the same shape — capture intent, pause the spring, run the change, restore
-// after the flush — and differ only in which edge they hold still.
+// Timeline viewport guards and anchored height transactions.
 //
-// `preserveTimelineWindowAnchor` is the seam `thread.svelte.ts`'s recent-window
-// pruning calls through, and holds the TOP: rows vanish from an edge the reader
-// is not looking at, so the row they are reading keeps its offset.
+// `canPreserveTimelineWindow` is the read-only seam used by recent-window
+// retention. The pane keeps mutation ownership. The viewport only vetoes a
+// normal prune when it would remove the row under the reader. The virtualizer
+// handles coordinate preservation for surviving keyed rows.
 //
-// `preserveViewportBottom` is for a height change the reader ASKED for — a run
+// `preserveViewportBottom` runs a reader-requested height change, then
 // collapsing or expanding — and holds the BOTTOM, so the change opens upward
 // and the rows they were reading do not move down the page. It also keeps the
 // spring out of it: an expand while stuck at the bottom would otherwise reach
 // the controller as content growth and animate across the whole delta.
 //
-// Both reach components through `PaneScrollController` (MessageTimeline's
+// Both reach callers through `PaneScrollController` (MessageTimeline's
 // `paneScrollController` adapter), so a caller needs the pane, not the
 // timeline.
 
@@ -21,7 +19,6 @@ import { tick } from 'svelte';
 import type {
   PreserveViewportBottomOptions,
   ThreadPane,
-  TimelineWindowAnchorOperation,
 } from '../../stores/thread.svelte';
 import type {
   RequestBottomTakeover,
@@ -29,20 +26,11 @@ import type {
 } from '../../utils/scroll/index.svelte';
 import type { TimelineVirtualizerHandle } from '../../utils/virtual/types';
 import type { TimelineNode } from '../../utils/subagentGrouping';
-import { timelineNodeKey } from '../../utils/subagentGrouping';
 import {
   captureTimelineAnchor,
   captureTimelineTailAnchor,
-  isPureKeyedHeadDrop,
-  type TimelineAnchor,
   type TimelineTailAnchor,
 } from './timelineScroll';
-
-interface TimelineWindowAnchorIntent {
-  switchGeneration: number;
-  shouldStickToBottom: boolean;
-  anchor: TimelineAnchor | null;
-}
 
 interface ViewportBottomIntent {
   switchGeneration: number;
@@ -64,71 +52,31 @@ export interface TimelineWindowAnchorOptions {
 }
 
 export interface TimelineWindowAnchor {
-  /** Reactive — the `virtualizerShiftAtHead` $derived reads this. */
-  readonly pruneShiftAtHead: boolean;
-  clearTimelineWindowPruneShift(): void;
-  preserveTimelineWindowAnchor(operation: TimelineWindowAnchorOperation): boolean;
+  canPreserveTimelineWindow(keepsItem: (itemId: string) => boolean): boolean;
   preserveViewportBottom(change: () => void, opts?: PreserveViewportBottomOptions): void;
 }
 
 export function createTimelineWindowAnchor(
   options: TimelineWindowAnchorOptions,
 ): TimelineWindowAnchor {
-  let timelineWindowPruneShiftAtHead = $state(false);
-  let timelineWindowPruneShiftResetToken = 0;
-
   // The reader is on the timeline's last row, so the bottom edge IS the anchor
   // and no node has to be named to hold it.
   function holdingBottom(): boolean {
     return options.stick.isSticky || (!options.stick.escapedFromLock && options.stick.isAtBottom);
   }
 
-  function captureTimelineWindowAnchorIntent(): TimelineWindowAnchorIntent {
-    const pane = options.getPane();
-    const shouldStickToBottom = holdingBottom();
+  function canPreserveTimelineWindow(keepsItem: (itemId: string) => boolean): boolean {
     const currentListRef = options.getListRef();
-    return {
-      switchGeneration: pane.switchGeneration,
-      shouldStickToBottom,
-      anchor:
-        shouldStickToBottom || !currentListRef
-          ? null
-          : captureTimelineAnchor(
-              options.getRevealedNodes(),
-              currentListRef,
-              currentListRef.getScrollOffset(),
-              { clampIndex: true },
-            ),
-    };
-  }
-
-  function canApplyPruneWithoutDroppingAnchor(
-    intent: TimelineWindowAnchorIntent,
-    operation: TimelineWindowAnchorOperation,
-  ): boolean {
     const revealedNodes = options.getRevealedNodes();
-    if (intent.shouldStickToBottom || revealedNodes.length === 0) {
-      return true;
-    }
-    return intent.anchor !== null && operation.keepsItem(intent.anchor.itemId);
-  }
-
-  function timelineNodeKeys(): string[] {
-    return options.getRevealedNodes().map((node) => timelineNodeKey(node));
-  }
-
-  function markTimelineWindowPruneShiftForOneFlush(): void {
-    timelineWindowPruneShiftAtHead = true;
-    const resetToken = ++timelineWindowPruneShiftResetToken;
-    void tick().then(() => {
-      if (timelineWindowPruneShiftResetToken !== resetToken) return;
-      timelineWindowPruneShiftAtHead = false;
-    });
-  }
-
-  function clearTimelineWindowPruneShift(): void {
-    timelineWindowPruneShiftResetToken += 1;
-    timelineWindowPruneShiftAtHead = false;
+    if (!currentListRef || !options.getScrollEl()) return true;
+    if (holdingBottom() || revealedNodes.length === 0) return true;
+    const anchor = captureTimelineAnchor(
+      revealedNodes,
+      currentListRef,
+      currentListRef.getScrollOffset(),
+      { clampIndex: true },
+    );
+    return anchor !== null && keepsItem(anchor.itemId);
   }
 
   // Every restore in this module preserves intent: scrollToIndex writes are
@@ -157,75 +105,6 @@ export function createTimelineWindowAnchor(
       },
     });
     options.saveScrollSnapshot();
-  }
-
-  function restoreAnchorAfterTimelineWindowPrune(anchor: TimelineAnchor): void {
-    const idx = options.findTimelineNodeIndex(anchor.itemId);
-    if (idx < 0) return;
-    options.getListRef()?.scrollToIndex(idx, {
-      align: 'start',
-      offset: -anchor.offsetTop,
-    });
-    options.saveScrollSnapshot();
-  }
-
-  async function restoreTimelineWindowAnchorAfterPrune(
-    intent: TimelineWindowAnchorIntent,
-    token: number,
-    release: () => void,
-  ): Promise<void> {
-    try {
-      await tick();
-      if (!options.isRestoreTokenCurrent(token)) return;
-      if (options.getPane().switchGeneration !== intent.switchGeneration) return;
-
-      if (intent.shouldStickToBottom) {
-        // The prune is unasked, and its head-splice compensation already
-        // held the reader's view — including a mid-glide spring's
-        // remaining distance to the bottom (the chase reads its target
-        // fresh every tick, so the relocated gap is still its to
-        // close). A claimed bottom here would collapse that remainder
-        // into an instant hop in front of the reader
-        // (bug-report-20260801T214455Z: a one-line snap mid-prose when
-        // the recent-window prune landed mid-chase), so the restore
-        // yields and the in-flight auto-scroll finishes the trip.
-        restoreBottomEdge('yield');
-        return;
-      }
-
-      if (!options.getListRef() || !intent.anchor) return;
-      restoreAnchorAfterTimelineWindowPrune(intent.anchor);
-    } finally {
-      release();
-    }
-  }
-
-  function preserveTimelineWindowAnchor(operation: TimelineWindowAnchorOperation): boolean {
-    if (!options.getListRef() || !options.getScrollEl()) {
-      operation.run();
-      return true;
-    }
-
-    const intent = captureTimelineWindowAnchorIntent();
-    if (!canApplyPruneWithoutDroppingAnchor(intent, operation)) {
-      return false;
-    }
-
-    const release = options.stick.pauseAutoScroll();
-    const token = options.nextRestoreToken();
-    const beforeNodeKeys = timelineNodeKeys();
-    try {
-      operation.run();
-      const afterNodeKeys = timelineNodeKeys();
-      if (isPureKeyedHeadDrop(beforeNodeKeys, afterNodeKeys)) {
-        markTimelineWindowPruneShiftForOneFlush();
-      }
-    } catch (err) {
-      release();
-      throw err;
-    }
-    void restoreTimelineWindowAnchorAfterPrune(intent, token, release);
-    return true;
   }
 
   // The viewport-bottom pause must outlive the flush in which the toggled
@@ -338,11 +217,7 @@ export function createTimelineWindowAnchor(
   }
 
   return {
-    get pruneShiftAtHead() {
-      return timelineWindowPruneShiftAtHead;
-    },
-    clearTimelineWindowPruneShift,
-    preserveTimelineWindowAnchor,
+    canPreserveTimelineWindow,
     preserveViewportBottom,
   };
 }

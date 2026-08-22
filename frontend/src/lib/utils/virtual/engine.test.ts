@@ -88,7 +88,10 @@ describe('applyMeasurements', () => {
     engine.applyScroll(700);
     const update = engine.applyMeasurements([[2, 150]]);
     expect(update).toEqual({
-      window: [4, 9],
+      // The same update asks the controller to move to 750, so the engine
+      // exposes the window for 750 rather than one transient window for the
+      // stale 700px observation.
+      window: [5, 9],
       totalSize: 1050,
       compensation: { kind: 'remeasure-above', delta: 50, target: 750 },
     });
@@ -293,7 +296,9 @@ describe('applyLength', () => {
   it('tail shrink clamps the window', () => {
     const engine = mountedEngine();
     engine.applyScroll(700);
-    expect(engine.applyLength(8)).toEqual({ window: [5, 7], totalSize: 800 });
+    // 700 is impossible after the shrink. Build the render window at the
+    // browser's eventual 500px clamp so it already intersects the viewport.
+    expect(engine.applyLength(8)).toEqual({ window: [3, 7], totalSize: 800 });
   });
 
   it('returns null when nothing changed', () => {
@@ -306,7 +311,7 @@ describe('applyLength', () => {
     engine.applyScroll(300);
     const update = engine.applyLength(12, 2);
     expect(update).toEqual({
-      window: [1, 8],
+      window: [3, 10],
       totalSize: 1200,
       compensation: { kind: 'head-splice', delta: 200, target: 500 },
     });
