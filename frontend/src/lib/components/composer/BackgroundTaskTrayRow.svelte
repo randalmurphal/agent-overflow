@@ -9,6 +9,7 @@
   import { resolveToolPresentation } from '../chat/toolPresentation';
   import {
     formatElapsed,
+    trayTaskAgentInfo,
     type TrayTask,
   } from '../../utils/backgroundTray';
   import type { Item } from '../../types/models';
@@ -68,7 +69,13 @@
   );
   let durationLabel = $derived(task.elapsedMs === null ? '' : formatElapsed(task.elapsedMs));
 
-  let hasStopAction = $derived(stopTarget !== null || onOpen !== undefined);
+  // The explicit open button exists only for agent launches — the same
+  // gate `onOpen` applies before opening the companion. A plain command
+  // row (backgrounded Bash, a Codex PTY) has no agent pane to open, so
+  // the button there was a no-op with a lying tooltip; the row click
+  // still scrolls the timeline to it.
+  let opensAgentPane = $derived(onOpen !== undefined && trayTaskAgentInfo(task) !== null);
+  let hasStopAction = $derived(stopTarget !== null || opensAgentPane);
 </script>
 
 <!-- The div click is a pointer convenience. The keyboard path is the
@@ -83,7 +90,7 @@
   onclick={onRowClick}
 >
   {#snippet stopAction()}
-    {#if onOpen}
+    {#if onOpen && opensAgentPane}
       <button
         type="button"
         class="shrink-0 rounded p-0.5 text-text-secondary hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"

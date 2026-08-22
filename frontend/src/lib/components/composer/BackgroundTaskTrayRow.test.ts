@@ -187,7 +187,13 @@ describe('<BackgroundTaskTrayRow> open affordance (agent-visibility)', () => {
   it('fires onOpen from the row body and the open button, but not from Stop', async () => {
     const onOpen = vi.fn();
     const onStop = vi.fn();
-    const anchor = makeItem({ id: 'L1', kind: 'tool_call', toolName: 'Bash', status: 'running' });
+    const anchor = makeItem({
+      id: 'L1',
+      kind: 'tool_call',
+      toolName: 'Agent',
+      status: 'running',
+      payloadMeta: JSON.stringify({ input: { subagent_type: 'Explorer', description: 'dig' } }),
+    });
     const { getByTestId } = render(BackgroundTaskTrayRow, {
       props: {
         task: taskFor(anchor, { depth: 2 }),
@@ -209,6 +215,24 @@ describe('<BackgroundTaskTrayRow> open affordance (agent-visibility)', () => {
     await fireEvent.click(getByTestId('background-task-tray-row-stop'));
     expect(onStop).toHaveBeenCalledTimes(1);
     expect(onOpen).toHaveBeenCalledTimes(2);
+  });
+
+  it('hides the open button on a plain command row (no agent pane to open), keeping the row-click scroll', async () => {
+    const onOpen = vi.fn();
+    const anchor = makeItem({ id: 'L1', kind: 'tool_call', toolName: 'Bash', status: 'running' });
+    const { getByTestId, queryByTestId } = render(BackgroundTaskTrayRow, {
+      props: {
+        task: taskFor(anchor),
+        stopTarget: 'task-1',
+        isStopping: false,
+        provider: 'claude' as ProviderID,
+        onStop: vi.fn(),
+        onOpen,
+      },
+    });
+    expect(queryByTestId('background-task-tray-row-open')).toBeNull();
+    await fireEvent.click(getByTestId('background-task-tray-row'));
+    expect(onOpen).toHaveBeenCalledTimes(1);
   });
 
   it('renders no open button and no pointer cursor without onOpen', () => {
