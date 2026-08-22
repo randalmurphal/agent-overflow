@@ -13,7 +13,7 @@
 // renders the store's values, over transitions rather than single states.
 
 import { beforeEach, describe, expect, it } from 'vitest';
-import { render } from '@testing-library/svelte';
+import { fireEvent, render } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import { loadSettings } from '../../stores/settings.svelte';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
@@ -26,6 +26,10 @@ import {
   type TimelineNode,
 } from '../../utils/subagentGrouping';
 import SubagentGroupTestHarness from './SubagentGroupTestHarness.svelte';
+import {
+  applySubagentProgress,
+  resetForTest as resetSubagentProgressForTest,
+} from '../../stores/subagentProgress.svelte';
 
 function findGroup(nodes: readonly TimelineNode[]): SubagentGroupNode {
   for (const node of nodes) {
@@ -173,5 +177,190 @@ describe('<SubagentGroup> live resolution against the pane', () => {
     await tick();
 
     expect(getByTestId('subagent-group-count').textContent).toContain('7 entries');
+  });
+});
+
+describe('<SubagentGroup> card affordances (agent-visibility)', () => {
+  beforeEach(async () => {
+    resetBindingMocks();
+    setBindingMock('GetSettings', async () => null);
+    await loadSettings();
+    resetSubagentProgressForTest();
+  });
+
+  it('shows the live activity line, tool count and tokens while the agent runs', async () => {
+    const { pane, group } = await setup([
+      agentLaunch(),
+      makeItem({ id: 'child:1', itemIndex: 1, parentId: 'agent:1', status: 'running', summary: 'reading' }),
+    ]);
+    const { getByTestId } = render(SubagentGroupTestHarness, { props: { group, pane } });
+
+    applySubagentProgress({
+      threadId: 'thread-1',
+      itemId: 'agent:1',
+      progress: { taskId: 'task-9', toolUses: 4, totalTokens: 12_400, activity: 'Scanning the parser' },
+      updatedAt: 100,
+    });
+    await tick();
+
+    expect(getByTestId('subagent-group-preview').textContent).toContain('Scanning the parser');
+    expect(getByTestId('subagent-group-tools').textContent?.trim()).toBe('4 tools');
+    expect(getByTestId('subagent-group-tokens').textContent?.trim()).toBe('12.4k tokens');
+  });
+
+  it('prefers the persisted final numbers and drops the activity once settled', async () => {
+    const { pane, group } = await setup([
+      agentLaunch({
+        status: 'completed',
+        meta: JSON.stringify({
+          subagentProgress: { toolUses: 7, totalTokens: 250_000, durationMs: 90_000 },
+        }),
+      }),
+      makeItem({ id: 'child:1', itemIndex: 1, parentId: 'agent:1', status: 'completed', summary: 'done' }),
+    ]);
+    // A stale live tick that outlived the terminal must not win.
+    applySubagentProgress({
+      threadId: 'thread-1',
+      itemId: 'agent:1',
+      progress: { toolUses: 3, totalTokens: 1_000, activity: 'stale tick' },
+      updatedAt: 50,
+    });
+    const { getByTestId, queryByTestId } = render(SubagentGroupTestHarness, {
+      props: { group, pane },
+    });
+
+    expect(getByTestId('subagent-group-tools').textContent?.trim()).toBe('7 tools');
+    expect(getByTestId('subagent-group-tokens').textContent?.trim()).toBe('250.0k tokens');
+    const preview = queryByTestId('subagent-group-preview');
+    if (preview) expect(preview.textContent).not.toContain('stale tick');
+  });
+
+  it('lights the needs-approval pill while a request scoped to this launch is pending', async () => {
+    const { pane, group } = await setup([
+      agentLaunch(),
+      makeItem({ id: 'child:1', itemIndex: 1, parentId: 'agent:1', status: 'running', summary: 'work' }),
+    ]);
+    const { queryByTestId } = render(SubagentGroupTestHarness, { props: { group, pane } });
+    expect(queryByTestId('subagent-group-approval-pill')).toBeNull();
+
+    pane.addApproval({
+      requestId: 'req-1',
+      threadId: 'thread-1',
+      parentToolUseId: 'agent:1',
+      toolName: 'Bash',
+      description: 'Allow Bash?',
+      input: {},
+      title: 'Approval',
+    });
+    await tick();
+    expect(queryByTestId('subagent-group-approval-pill')).not.toBeNull();
+
+    pane.removeApproval('req-1');
+    await tick();
+    expect(queryByTestId('subagent-group-approval-pill')).toBeNull();
+  });
+
+  it('shows the background pill for an async launch and the agent kind chip', async () => {
+    const { pane, group } = await setup([
+      agentLaunch({ isBackground: true }),
+      makeItem({ id: 'child:1', itemIndex: 1, parentId: 'agent:1', status: 'running', summary: 'w' }),
+    ]);
+    const { getByTestId } = render(SubagentGroupTestHarness, { props: { group, pane } });
+    expect(getByTestId('subagent-group-background-pill')).toBeTruthy();
+    expect(getByTestId('subagent-group-kind').textContent?.trim()).toBe('agent');
+  });
+
+  it('labels a forked skill card with the skill kind chip and never offers backgrounding', async () => {
+    const { pane, group } = await setup([
+      makeItem({
+        id: 'skill:1',
+        itemIndex: 0,
+        kind: 'tool_call',
+        toolName: 'Skill',
+        role: 'assistant',
+        status: 'running',
+        summary: 'Skill: code-review',
+        payloadMeta: JSON.stringify({ toolName: 'Skill', input: { skill: 'code-review' } }),
+      }),
+      makeItem({ id: 'child:1', itemIndex: 1, parentId: 'skill:1', status: 'running', summary: 'w' }),
+    ]);
+    const { getByTestId, queryByTestId } = render(SubagentGroupTestHarness, {
+      props: { group, pane },
+    });
+    expect(getByTestId('subagent-group-kind').textContent?.trim()).toBe('skill');
+    expect(getByTestId('subagent-group-label').textContent).toContain('code-review');
+    expect(queryByTestId('subagent-group-background-button')).toBeNull();
+  });
+
+  it('background button backgrounds a running foreground agent through the binding', async () => {
+    const calls: unknown[][] = [];
+    setBindingMock('BackgroundClaudeTask', async (...args: unknown[]) => {
+      calls.push(args);
+      return null;
+    });
+    const { pane, group } = await setup([
+      agentLaunch(),
+      makeItem({ id: 'child:1', itemIndex: 1, parentId: 'agent:1', status: 'running', summary: 'w' }),
+    ]);
+    const { getByTestId } = render(SubagentGroupTestHarness, { props: { group, pane } });
+
+    await fireEvent.click(getByTestId('subagent-group-background-button'));
+    await tick();
+
+    expect(calls).toEqual([['thread-1', 'agent:1']]);
+  });
+
+  it('surfaces a background refusal on the card instead of swallowing it', async () => {
+    setBindingMock('BackgroundClaudeTask', async () => {
+      throw new Error('no matching foreground task');
+    });
+    const { pane, group } = await setup([
+      agentLaunch(),
+      makeItem({ id: 'child:1', itemIndex: 1, parentId: 'agent:1', status: 'running', summary: 'w' }),
+    ]);
+    const { getByTestId, findByTestId } = render(SubagentGroupTestHarness, {
+      props: { group, pane },
+    });
+
+    await fireEvent.click(getByTestId('subagent-group-background-button'));
+
+    const error = await findByTestId('subagent-group-background-error');
+    expect(error.textContent).toContain('no matching foreground task');
+  });
+
+  it('open-in-pane routes through onOpenNode with the launch id and display name', async () => {
+    const opened: [string, string][] = [];
+    const { pane, group } = await setup([
+      agentLaunch(),
+      makeItem({ id: 'child:1', itemIndex: 1, parentId: 'agent:1', status: 'running', summary: 'w' }),
+    ]);
+    const { getByTestId } = render(SubagentGroupTestHarness, {
+      props: { group, pane, onOpenNode: (id: string, label: string) => opened.push([id, label]) },
+    });
+
+    await fireEvent.click(getByTestId('subagent-group-open-pane'));
+
+    expect(opened).toEqual([['agent:1', 'Explore']]);
+  });
+
+  it('surfaces a failed transcript backfill as an inline error on the card', async () => {
+    // triage stamps notification_output_state/error when the
+    // task_notification's output_file could not be read. A silently
+    // incomplete body reads exactly like a complete one, so the card says
+    // so inline.
+    const { pane, group } = await setup([
+      agentLaunch({
+        status: 'completed',
+        meta: JSON.stringify({
+          notification_output_state: 'error',
+          notification_output_error: 'output file vanished before read',
+        }),
+      }),
+      makeItem({ id: 'child:1', itemIndex: 1, parentId: 'agent:1', status: 'completed', summary: 'done' }),
+    ]);
+    const { getByTestId } = render(SubagentGroupTestHarness, { props: { group, pane } });
+    expect(getByTestId('subagent-group-output-error').textContent).toContain(
+      'output file vanished before read',
+    );
   });
 });

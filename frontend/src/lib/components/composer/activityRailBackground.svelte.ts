@@ -94,8 +94,10 @@ export function createBackgroundController(
     tasks.filter((t) => t.status === 'running').length,
   );
   const anyRunning = $derived(runningCount > 0);
+  // Top-level rows only (spec Q8): a nested launch's completion is its
+  // parent agent's business — the pill must not pulse for it.
   const hasPendingCompletion = $derived(
-    tasks.some((t) => t.completion !== null),
+    tasks.some((t) => t.depth === 0 && t.completion !== null),
   );
 
   return {

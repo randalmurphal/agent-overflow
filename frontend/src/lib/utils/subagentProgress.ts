@@ -58,12 +58,21 @@ function fromTick(tick: SubagentProgress, source: 'live' | 'persisted'): Resolve
  * numbers win once the row settled — a stale live tick that outlived the
  * terminal must not keep showing a mid-run count. Each falls back to the
  * other when only one exists.
+ *
+ * `activeOverride` lets the caller supply a better liveness answer than
+ * the launch row's own status: a BACKGROUND launch row stays `running`
+ * forever by design (the tray invariant — the outcome lands on a separate
+ * completion sibling), so the agent card passes "is the folded completion
+ * still absent/running?" here. Without it a finished background agent
+ * would keep showing the last live tick's activity line.
  */
 export function resolveSubagentProgress(
   item: Item,
   live: SubagentProgress | undefined,
+  activeOverride?: boolean,
 ): ResolvedSubagentProgress {
-  const active = item.status === 'running' || item.status === 'streaming';
+  const active =
+    activeOverride ?? (item.status === 'running' || item.status === 'streaming');
   const persisted = persistedSubagentProgress(item);
   if (active) {
     if (live) return fromTick(live, 'live');

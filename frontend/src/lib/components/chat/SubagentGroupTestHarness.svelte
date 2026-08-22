@@ -13,6 +13,7 @@
     group,
     startDepth = 0,
     pane,
+    onOpenNode,
   }: {
     group: SubagentGroupNode;
     /**
@@ -27,6 +28,8 @@
      * expansion registry and the expand-triggered child hydration.
      */
     pane?: ThreadPane;
+    /** Passthrough for the open-in-pane routing override. */
+    onOpenNode?: (itemId: string, label: string) => void;
   } = $props();
 </script>
 
@@ -44,4 +47,4 @@
   {/if}
 {/snippet}
 
-<SubagentGroup group={group} depth={startDepth} renderNode={renderNode} pane={pane} />
+<SubagentGroup group={group} depth={startDepth} renderNode={renderNode} pane={pane} onOpenNode={onOpenNode} />

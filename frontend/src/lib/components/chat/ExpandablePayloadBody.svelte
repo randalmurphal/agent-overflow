@@ -34,7 +34,7 @@
      * Optional content renderer that replaces the default `<AnsiText>`
      * branch. Receives the resolved `displayData` and the
      * `outputTestId` so callers can wire their own renderer (e.g.
-     * `ClaudeSubagentTranscript`) while keeping the surrounding
+     * `AdvisorRow`'s prose body) while keeping the surrounding
      * loading / error / show-more / copy-footer chrome consistent.
      */
     renderContent?: Snippet<[{ data: string; testId: string }]>;

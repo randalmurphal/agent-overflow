@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { render } from '@testing-library/svelte';
+import { fireEvent, render } from '@testing-library/svelte';
 import BackgroundTaskTrayRow from './BackgroundTaskTrayRow.svelte';
 import { makeItem } from '../../../test/helpers/chat';
 import type { TrayTask } from '../../utils/backgroundTray';
@@ -14,6 +14,7 @@ function taskFor(anchor: Item, overrides: Partial<TrayTask> = {}): TrayTask {
     completion: null,
     status: 'running',
     elapsedMs: 3_000,
+    depth: 0,
     ...overrides,
   };
 }
@@ -179,5 +180,49 @@ describe('<BackgroundTaskTrayRow>', () => {
     const { getByTestId } = renderTrayRow(taskFor(launch), 'claude');
 
     expect(getByTestId('tool-call-card-label').textContent).toBe('read');
+  });
+});
+
+describe('<BackgroundTaskTrayRow> open affordance (agent-visibility)', () => {
+  it('fires onOpen from the row body and the open button, but not from Stop', async () => {
+    const onOpen = vi.fn();
+    const onStop = vi.fn();
+    const anchor = makeItem({ id: 'L1', kind: 'tool_call', toolName: 'Bash', status: 'running' });
+    const { getByTestId } = render(BackgroundTaskTrayRow, {
+      props: {
+        task: taskFor(anchor, { depth: 2 }),
+        stopTarget: 'task-1',
+        isStopping: false,
+        provider: 'claude' as ProviderID,
+        onStop,
+        onOpen,
+      },
+    });
+    const row = getByTestId('background-task-tray-row');
+    expect(row.getAttribute('data-depth')).toBe('2');
+    expect(row.getAttribute('style')).toContain('margin-left');
+
+    await fireEvent.click(row);
+    expect(onOpen).toHaveBeenCalledTimes(1);
+    await fireEvent.click(getByTestId('background-task-tray-row-open'));
+    expect(onOpen).toHaveBeenCalledTimes(2);
+    await fireEvent.click(getByTestId('background-task-tray-row-stop'));
+    expect(onStop).toHaveBeenCalledTimes(1);
+    expect(onOpen).toHaveBeenCalledTimes(2);
+  });
+
+  it('renders no open button and no pointer cursor without onOpen', () => {
+    const anchor = makeItem({ id: 'L1', kind: 'tool_call', toolName: 'Bash', status: 'running' });
+    const { getByTestId, queryByTestId } = render(BackgroundTaskTrayRow, {
+      props: {
+        task: taskFor(anchor),
+        stopTarget: null,
+        isStopping: false,
+        provider: 'claude' as ProviderID,
+        onStop: vi.fn(),
+      },
+    });
+    expect(queryByTestId('background-task-tray-row-open')).toBeNull();
+    expect(getByTestId('background-task-tray-row').className).not.toContain('cursor-pointer');
   });
 });

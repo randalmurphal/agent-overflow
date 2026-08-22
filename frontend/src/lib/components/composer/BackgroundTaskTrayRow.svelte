@@ -13,6 +13,8 @@
   } from '../../utils/backgroundTray';
   import type { Item } from '../../types/models';
   import type { ProviderID } from '../../providers/catalog';
+  import Icon from '../primitives/Icon.svelte';
+  import PanelRightOpen from '@lucide/svelte/icons/panel-right-open';
 
   interface Props {
     task: TrayTask;
@@ -30,9 +32,21 @@
     isStopping: boolean;
     provider: ProviderID | null;
     onStop: (rowID: string, stopTarget: string) => void;
+    /** Row click / open-button target (spec Q8): scroll the source
+     * timeline to this node and, for agent launches, open the agent
+     * companion scoped to it. Absent on surfaces with no pane. */
+    onOpen?: (task: TrayTask) => void;
   }
 
-  let { task, stopTarget, isStopping, provider, onStop }: Props = $props();
+  let { task, stopTarget, isStopping, provider, onStop, onOpen }: Props = $props();
+
+  function onRowClick(event: MouseEvent): void {
+    if (!onOpen) return;
+    // Clicks that belong to an inner control (stop, a disclosure toggle,
+    // the open button itself) keep their own meaning.
+    if ((event.target as HTMLElement | null)?.closest('button, a')) return;
+    onOpen(task);
+  }
 
   let displayItem = $derived<Item>(task.launch ?? task.completion ?? task.anchor);
   let statusItem = $derived<Item>(task.completion ?? task.launch ?? task.anchor);
@@ -54,15 +68,33 @@
   );
   let durationLabel = $derived(task.elapsedMs === null ? '' : formatElapsed(task.elapsedMs));
 
-  let hasStopAction = $derived(stopTarget !== null);
+  let hasStopAction = $derived(stopTarget !== null || onOpen !== undefined);
 </script>
 
+<!-- The div click is a pointer convenience. The keyboard path is the
+     explicit open button in the row's actions. -->
+<!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
 <div
-  class="rounded-[var(--radius-control)] border border-border-subtle bg-surface-0 px-1 py-1"
+  class="rounded-[var(--radius-control)] border border-border-subtle bg-surface-0 px-1 py-1 {onOpen ? 'cursor-pointer hover:border-border' : ''}"
+  style={task.depth > 0 ? `margin-left: ${Math.min(task.depth, 6) * 0.75}rem` : undefined}
   data-testid="background-task-tray-row"
   data-row-id={task.rowId}
+  data-depth={task.depth}
+  onclick={onRowClick}
 >
   {#snippet stopAction()}
+    {#if onOpen}
+      <button
+        type="button"
+        class="shrink-0 rounded p-0.5 text-text-secondary hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+        onclick={() => onOpen(task)}
+        title="Open in agent pane"
+        aria-label="Open in Agent Pane"
+        data-testid="background-task-tray-row-open"
+      >
+        <Icon icon={PanelRightOpen} size={12} />
+      </button>
+    {/if}
     {#if stopTarget !== null}
       <button
         type="button"

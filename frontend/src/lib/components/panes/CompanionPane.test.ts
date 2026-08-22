@@ -49,11 +49,18 @@ describe('CompanionPane across a source-pane thread switch', () => {
       props: { paneId: 'agent-main', kind: 'agent', sourcePaneId: 'main' },
     });
 
-    // The body is a lazily-imported chunk: await its first paint.
-    await findByTestId('companion-pane-agent-body');
-    expect(getByTestId('agent-pane-breadcrumb').textContent?.trim())
+    // The body is a lazily-imported chunk — and no longer a tiny
+    // placeholder: it pulls the chat row components. Give the first
+    // paint more than findBy's 1s default.
+    await findByTestId('companion-pane-agent-body', {}, { timeout: 10_000 });
+    // textContent flattens inter-element whitespace, so normalize around
+    // the separator glyphs before comparing.
+    expect(getByTestId('agent-pane-breadcrumb').textContent?.replace(/\s*›\s*/g, ' › ').trim())
       .toBe('main › code-review › Angle B');
-    expect(getByTestId('agent-pane-scope').textContent?.trim()).toBe('launch-2');
+    expect(getByTestId('agent-pane-breadcrumb-current').textContent?.trim()).toBe('Angle B');
+    // The scoped row is not in the loaded window — the body says so
+    // rather than self-closing (close requires having SEEN the row).
+    expect(getByTestId('agent-pane-not-loaded')).toBeTruthy();
     expect(getByTestId('companion-pane-agent').getAttribute('aria-label')).toBe('Agent');
   });
 

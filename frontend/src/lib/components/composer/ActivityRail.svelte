@@ -326,6 +326,7 @@
       tasks={bg.tasks}
       provider={bg.provider}
       threadId={bg.threadId}
+      {pane}
       runningCount={bg.runningCount}
       anyRunning={bg.anyRunning}
     />

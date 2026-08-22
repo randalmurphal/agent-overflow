@@ -24,8 +24,12 @@
   import {
     isCodexStoppableTask,
     trayRowStopTarget,
+    trayTaskAgentInfo,
+    trayTaskLabel,
     type TrayTask,
   } from '../../utils/backgroundTray';
+  import { openAgentCompanion } from '../../stores/agentPane.svelte';
+  import type { ThreadPane } from '../../stores/thread.svelte';
   import { errString } from '../../utils/errors';
   import BackgroundTaskTrayRow from './BackgroundTaskTrayRow.svelte';
 
@@ -35,9 +39,21 @@
     threadId: string | null;
     runningCount: number;
     anyRunning: boolean;
+    /** Source pane, for the row click path (spec Q8): scroll the
+     * timeline to the node and open the agent companion on launches. */
+    pane?: ThreadPane;
   }
 
-  let { tasks, provider, threadId, runningCount, anyRunning }: Props = $props();
+  let { tasks, provider, threadId, runningCount, anyRunning, pane }: Props = $props();
+
+  function onOpenRow(task: TrayTask): void {
+    if (!pane || !threadId) return;
+    pane.requestScrollToItem(task.rowId);
+    const info = trayTaskAgentInfo(task);
+    if (info) {
+      openAgentCompanion(pane.paneId, threadId, task.rowId, info.name || trayTaskLabel(task));
+    }
+  }
   let backgroundStop = $derived<ProviderBackgroundStop>(
     provider ? getProviderDefinition(provider).backgroundStop : 'none',
   );
@@ -149,6 +165,7 @@
           stopTarget={trayRowStopTarget(task, backgroundStop)}
           isStopping={stoppingRows.has(task.rowId)}
           onStop={onStopRow}
+          onOpen={pane ? onOpenRow : undefined}
         />
       </li>
     {/each}

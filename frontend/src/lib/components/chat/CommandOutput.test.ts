@@ -969,3 +969,72 @@ describe('<CommandOutput>', () => {
     });
   });
 });
+
+describe('<CommandOutput> background button (agent-visibility)', () => {
+  beforeEach(() => {
+    resetBindingMocks();
+  });
+  afterEach(() => cleanup());
+
+  // Minimal pane: canBackground only asks for presence; the expansion
+  // registry is exercised through the pane branch.
+  function fakePane() {
+    const handles = new Map<string, unknown>();
+    return {
+      paneId: 'pane-1',
+      expansionStateFor(item: { id: string }) {
+        let h = handles.get(item.id);
+        if (!h) {
+          h = { expanded: false, displayData: '', loading: false, error: '', toggle() {}, sizeLabel: '', truncated: false, loadedBytes: 0, totalBytes: 0 };
+          handles.set(item.id, h);
+        }
+        return h;
+      },
+      leaseItemExpansion() { return () => {}; },
+    } as unknown as import('../../stores/thread.svelte').ThreadPane;
+  }
+
+  it('shows the button on a running foreground Claude Bash launch and fires BackgroundClaudeTask', async () => {
+    const background = vi.fn(async () => {});
+    setBindingMock('BackgroundClaudeTask', background);
+    const item = makeItem({
+      id: 'bash-1',
+      kind: 'tool_call',
+      status: 'running',
+      toolName: 'Bash',
+      summary: 'pnpm test',
+    });
+    const { getByTestId } = render(CommandOutput, {
+      props: { pane: fakePane(), item, meta: commandMeta() },
+    });
+    await fireEvent.click(getByTestId('command-output-background-button'));
+    await waitFor(() => expect(background).toHaveBeenCalledWith('thread-1', 'bash-1'));
+  });
+
+  it('hides the button once the launch is already backgrounded, settled, or Codex', () => {
+    const backgrounded = makeItem({ id: 'b1', kind: 'tool_call', status: 'running', toolName: 'Bash', isBackground: true });
+    const settled = makeItem({ id: 'b2', kind: 'tool_call', status: 'completed', toolName: 'Bash' });
+    const codex = makeItem({ id: 'b3', kind: 'tool_call', status: 'running', toolName: 'command_execution' });
+    for (const item of [backgrounded, settled, codex]) {
+      const { queryByTestId, unmount } = render(CommandOutput, {
+        props: { pane: fakePane(), item, meta: commandMeta() },
+      });
+      expect(queryByTestId('command-output-background-button')).toBeNull();
+      unmount();
+    }
+  });
+
+  it('surfaces a failed background request inline', async () => {
+    setBindingMock('BackgroundClaudeTask', vi.fn(async () => {
+      throw new Error('control request timed out');
+    }));
+    const item = makeItem({ id: 'bash-9', kind: 'tool_call', status: 'running', toolName: 'Bash' });
+    const { getByTestId } = render(CommandOutput, {
+      props: { pane: fakePane(), item, meta: commandMeta() },
+    });
+    await fireEvent.click(getByTestId('command-output-background-button'));
+    await waitFor(() =>
+      expect(getByTestId('command-output-background-error').textContent).toContain('control request timed out'),
+    );
+  });
+});
