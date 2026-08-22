@@ -10,8 +10,9 @@
   // physics, same activity runs as the chat surface, with the facade's
   // override table naming every divergence (scoped items, own scroll
   // identity, no reveal gate, no edge paging). This pane owns only what
-  // is NOT timeline: the breadcrumb, the status line, the composer
-  // shell, scope lifecycle, and hydration of evicted children.
+  // is NOT timeline: the breadcrumb, the composer shell (which carries
+  // the run status and counters), scope lifecycle, and hydration of
+  // evicted children.
   //
   // Scope changes swap in place (one pane per source pane, no stacking):
   // descending into a child card grows the breadcrumb (the facade routes
@@ -27,10 +28,18 @@
   import { createAgentScopeView } from '../../stores/agentScopeView.svelte';
   import MessageTimeline from '../chat/MessageTimeline.svelte';
   import Icon from '../primitives/Icon.svelte';
-  import AgentPaneStatusLine from './AgentPaneStatusLine.svelte';
   import AgentPaneComposerShell from './AgentPaneComposerShell.svelte';
   import { decoratedSubagentAggregates } from '../../utils/subagentGrouping';
-  import { codexCompletionAnswer } from '../../utils/subagentLaunch';
+  import {
+    codexCompletionAnswer,
+    codexSubagentLaunchInfo,
+    isCodexSubagentLaunchItem,
+  } from '../../utils/subagentLaunch';
+  import { parseJsonObject } from '../../utils/parseJsonObject';
+  import {
+    deriveClaudeSubagentDescription,
+    readClaudeSubagentInput,
+  } from '../../utils/claudeSubagentLabel';
   import ChatMarkdown from '../chat/ChatMarkdown.svelte';
 
   interface Props {
@@ -89,6 +98,32 @@
   });
 
   let scopedItems = $derived(view?.items ?? []);
+
+  // At depth one the trail is "main › X" and the root entry is noise —
+  // closing the pane IS "go back to main" (user ruling 2026-08-22).
+  // Nested trails keep the full ancestry, root included, because there
+  // the hops are real navigation. `crumbOffset` maps a rendered index
+  // back to the trail index `popTo` expects.
+  let visibleBreadcrumb = $derived.by(() => {
+    const trail = agent?.breadcrumb ?? [];
+    return trail.length === 2 ? trail.slice(1) : trail;
+  });
+  let crumbOffset = $derived((agent?.breadcrumb.length ?? 0) === 2 ? 1 : 0);
+
+  // The launch's own one-line task next to the crumb ("Review frontend
+  // agent-visibility…"), matching the card header. Claude: the input
+  // description (prompt-truncation fallback included); Codex: the spawn
+  // prompt, same 80-char clamp.
+  let scopeDescription = $derived.by(() => {
+    if (!launch) return '';
+    if (isCodexSubagentLaunchItem(launch)) {
+      const prompt = codexSubagentLaunchInfo(launch).prompt;
+      return prompt.length > 80 ? `${prompt.slice(0, 80)}…` : prompt;
+    }
+    return deriveClaudeSubagentDescription(
+      readClaudeSubagentInput(parseJsonObject(launch.payloadMeta), parseJsonObject(launch.meta)),
+    );
+  });
   let completionItem = $derived.by(() => {
     void ctx.timelineRevision;
     if (!scopeItemId) return undefined;
@@ -139,11 +174,11 @@
         aria-label="Agent Scope"
         data-testid="agent-pane-breadcrumb"
       >
-        {#each agent.breadcrumb as entry, index (entry.itemId)}
+        {#each visibleBreadcrumb as entry, index (entry.itemId)}
           {#if index > 0}
             <span class="shrink-0 text-fg-hint" aria-hidden="true">›</span>
           {/if}
-          {#if index === agent.breadcrumb.length - 1}
+          {#if index === visibleBreadcrumb.length - 1}
             <span
               class="truncate font-medium text-text-primary"
               data-testid="agent-pane-breadcrumb-current"
@@ -154,13 +189,21 @@
             <button
               type="button"
               class="shrink-0 truncate rounded-[var(--radius-field)] px-1 text-fg-muted hover:bg-surface-2/40 hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
-              onclick={() => agent.popTo(index)}
+              onclick={() => agent.popTo(index + crumbOffset)}
               data-testid="agent-pane-breadcrumb-entry"
             >
               {entry.label}
             </button>
           {/if}
         {/each}
+        {#if scopeDescription}
+          <span
+            class="min-w-0 truncate text-xs text-fg-muted"
+            data-testid="agent-pane-description"
+          >
+            {scopeDescription}
+          </span>
+        {/if}
       </nav>
       <button
         type="button"
@@ -172,8 +215,6 @@
         <Icon icon={X} size={16} />
       </button>
     </header>
-
-    <AgentPaneStatusLine {launch} completion={completionItem} hasChildren={scopedItems.length > 0} />
 
     <div class="flex min-h-0 flex-1 flex-col" data-testid="agent-pane-timeline">
       {#if !launch}
@@ -199,7 +240,12 @@
     </div>
 
     {#if ctx.threadId}
-      <AgentPaneComposerShell threadId={ctx.threadId} {launch} completion={completionItem} />
+      <AgentPaneComposerShell
+        threadId={ctx.threadId}
+        {launch}
+        completion={completionItem}
+        hasChildren={scopedItems.length > 0}
+      />
     {/if}
   {:else}
     <div class="flex h-full min-h-0 items-center justify-center px-4 text-sm text-fg-subtle">

@@ -371,10 +371,19 @@
   // that filter is also what keeps the body short enough to render
   // uncapped (the old max-height + fade scroller is deleted, Q6).
   let bodyNodes = $derived.by<TimelineNode[]>(() => {
+    // "Final text" exists only where a final answer can: while the agent
+    // runs (the latest text is its live report) or after a clean
+    // completion. A killed/errored agent's last text is mid-flight
+    // prose, not an answer — its body stays tool calls + nested cards
+    // (user report 2026-08-22: a stopped agent's prose rendered in the
+    // main chat history).
+    const keepFinalText = isRunning || completionStatus !== 'failure';
     let lastTextId = '';
-    for (const node of group.children) {
-      if (node.kind === 'leaf' && node.item.kind === 'assistant_text') {
-        lastTextId = node.item.id;
+    if (keepFinalText) {
+      for (const node of group.children) {
+        if (node.kind === 'leaf' && node.item.kind === 'assistant_text') {
+          lastTextId = node.item.id;
+        }
       }
     }
     return group.children.filter((node) => {

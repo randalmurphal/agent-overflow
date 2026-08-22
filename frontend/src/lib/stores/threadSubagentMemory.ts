@@ -46,6 +46,17 @@ export interface ThreadSubagentMemoryOptions {
   recomputeReveal(): void;
   /** rowUiState.isSubagentGroupExpanded — the retention check for every launch kind. */
   isSubagentGroupExpanded(groupKey: string): boolean;
+  /**
+   * Every row the OPEN agent companion is rendering (the scope trail's
+   * whole subtree), or null when no pane is open. Consulted at the
+   * eviction COMMIT chokepoint, because per-anchor expansion checks
+   * cannot cover every path to it: collapse-time eviction runs on a
+   * card that is by definition collapsed, and the collapsed-launch
+   * sweep collects whole subtrees — both would fold the very rows the
+   * pane has mounted (live incident 2026-08-22: collapsing the card
+   * blanked the open pane into a hydrate-again flicker).
+   */
+  agentPaneHeldRows(): ReadonlySet<string> | null;
 }
 
 /**
@@ -288,7 +299,14 @@ export function createThreadSubagentMemory(
    * entries are harmless: the registry and the drop set both dedupe by
    * id.
    */
-  function commitSubagentEvictions(evictions: readonly SubagentEviction[]): void {
+  function commitSubagentEvictions(candidates: readonly SubagentEviction[]): void {
+    // Rows the open agent pane is rendering never fold, whatever path
+    // nominated them — see the option's doc. They fold normally on the
+    // first eviction after the pane closes or re-scopes.
+    const held = candidates.length > 0 ? options.agentPaneHeldRows() : null;
+    const evictions = held
+      ? candidates.filter(({ item }) => !held.has(item.id))
+      : candidates;
     if (evictions.length === 0) return;
     const evictedIds = new Set<string>();
     const anchorIds = new Set<string>();

@@ -106,7 +106,9 @@ export function deriveClaudeSubagentModelLabel(
   parentMeta: Record<string, unknown> | null,
   toolName: string,
 ): string {
-  if (toolName !== 'Agent') return '';
+  // `Task` is the older name for the same tool (see subagentLaunchInfo);
+  // both carry the same input shape, so both resolve a model label.
+  if (toolName !== 'Agent' && toolName !== 'Task') return '';
   const stamped =
     parentMeta && typeof parentMeta.subagent_model === 'string'
       ? parentMeta.subagent_model.trim()

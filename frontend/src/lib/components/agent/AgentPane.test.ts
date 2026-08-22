@@ -88,8 +88,20 @@ describe('<AgentPane>', () => {
     // The main thread's own rows never leak into the scope.
     expect(queryByText('main thread prose')).toBeNull();
     expect(getByTestId('agent-pane-breadcrumb-current').textContent?.trim()).toBe('Explore');
-    expect(getByTestId('agent-pane-status-line')).toBeTruthy();
     expect(getByTestId('agent-pane-composer-shell')).toBeTruthy();
+    expect(getByTestId('agent-pane-kind').textContent?.trim()).toBe('agent');
+  });
+
+  it('hides the root breadcrumb entry at depth one (closing the pane is "back to main")', async () => {
+    const { ctx } = await setup([
+      launchItem(),
+      makeItem({ id: 'child-1', itemIndex: 1, threadId: THREAD_ID, parentId: 'launch-1', summary: 'work' }),
+    ]);
+    openAgentCompanion('main', THREAD_ID, 'launch-1', 'Explore');
+    const { getByTestId, queryAllByTestId } = render(AgentPane, { props: { ctx } });
+
+    expect(getByTestId('agent-pane-breadcrumb-current').textContent?.trim()).toBe('Explore');
+    expect(queryAllByTestId('agent-pane-breadcrumb-entry')).toHaveLength(0);
   });
 
   it('breadcrumb pop returns to the outer scope; popping to the root closes the pane', async () => {
@@ -104,7 +116,9 @@ describe('<AgentPane>', () => {
     state?.pushScope('nested-launch', 'nested');
     const patched = { ...ctx, closeAgentPane } as PanelContext;
 
-    const { getByTestId, getAllByTestId, getAllByText } = render(AgentPane, { props: { ctx: patched } });
+    const { getByTestId, getAllByTestId, getAllByText, queryAllByTestId } = render(AgentPane, {
+      props: { ctx: patched },
+    });
     expect(getByTestId('agent-pane-breadcrumb-current').textContent?.trim()).toBe('nested');
 
     // Pop one hop: back to the launch scope — and the outer scope's OWN
@@ -114,9 +128,13 @@ describe('<AgentPane>', () => {
     await fireEvent.click(entries[entries.length - 1]);
     expect(getByTestId('agent-pane-breadcrumb-current').textContent?.trim()).toBe('Explore');
     expect(getAllByText('outer note').length).toBeGreaterThanOrEqual(1);
+    // Back at depth one the root entry is hidden — the pane's close
+    // button is the way back to main (user ruling 2026-08-22).
+    expect(queryAllByTestId('agent-pane-breadcrumb-entry')).toHaveLength(0);
 
-    // Pop to root: empty scope — the body closes the companion.
-    await fireEvent.click(getAllByTestId('agent-pane-breadcrumb-entry')[0]);
+    // Popping to the root (programmatic — layout restore, scope resets)
+    // still empties the scope and the body closes the companion.
+    state?.popTo(0);
     await tick();
     expect(closeAgentPane).toHaveBeenCalled();
   });

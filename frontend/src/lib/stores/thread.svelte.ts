@@ -443,6 +443,14 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     isSubagentGroupExpanded: (groupKey: string) =>
       rowUiState.isSubagentGroupExpanded(groupKey) ||
       (thread !== null && agentPaneScopeTrailHolds(paneId, thread.id, groupKey)),
+    // The commit-chokepoint half of the same rule: eviction paths that
+    // never consult per-anchor expansion (collapse-time eviction, the
+    // collapsed-launch subtree sweep) still must not fold rows the open
+    // pane is rendering.
+    agentPaneHeldRows: () => {
+      const rootScope = thread !== null ? agentPaneRetainedRootScope(paneId, thread.id) : '';
+      return rootScope ? collectAgentScopeRetainedIds(items, rootScope) : null;
+    },
   });
 
   /**

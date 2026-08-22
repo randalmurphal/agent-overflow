@@ -53,6 +53,7 @@ function makeMemoryHarness(initial: readonly Item[] = []) {
   let switchGeneration = 0;
   let thread: Thread | null = makeThread({ id: THREAD_ID });
   const expandedGroups = new Set<string>();
+  let paneHeldRows: ReadonlySet<string> | null = null;
 
   function install(next: Item[]): void {
     items = next;
@@ -76,6 +77,7 @@ function makeMemoryHarness(initial: readonly Item[] = []) {
     getSwitchGeneration: () => switchGeneration,
     recomputeReveal: () => {},
     isSubagentGroupExpanded: (groupKey) => expandedGroups.has(groupKey),
+    agentPaneHeldRows: () => paneHeldRows,
   });
 
   return {
@@ -85,6 +87,9 @@ function makeMemoryHarness(initial: readonly Item[] = []) {
     },
     install,
     expandedGroups,
+    setPaneHeldRows(rows: ReadonlySet<string> | null) {
+      paneHeldRows = rows;
+    },
     setThread(next: Thread | null) {
       thread = next;
       switchGeneration += 1;
@@ -378,6 +383,28 @@ describe('threadSubagentMemory anchors every launch kind', () => {
 
     expect(harness.items.map((it) => it.id)).toEqual(['skill-1', 'child-1']);
     expect(harness.memory.aggregate('skill-1')).toBeUndefined();
+  });
+
+  it('never folds rows the open agent pane holds — and folds them once it lets go', () => {
+    // Collapse-time eviction runs on a card that is by definition
+    // collapsed, so the per-anchor expansion check cannot protect the
+    // open agent pane's rows; the commit chokepoint's held-rows filter
+    // is what does (live incident 2026-08-22: collapsing the card
+    // blanked the open pane into a hydrate-again flicker).
+    const anchor = anchorItem();
+    const child = childItem({ parentId: 'anchor', status: 'completed' });
+    const harness = makeMemoryHarness([anchor, child]);
+    harness.setPaneHeldRows(new Set(['anchor', 'child-1']));
+
+    harness.memory.evictCollapsedSubtree('anchor');
+    expect(harness.items.map((it) => it.id)).toEqual(['anchor', 'child-1']);
+    expect(harness.memory.aggregate('anchor')).toBeUndefined();
+
+    // Pane closed: the next eviction folds normally.
+    harness.setPaneHeldRows(null);
+    harness.memory.evictCollapsedSubtree('anchor');
+    expect(harness.items.map((it) => it.id)).toEqual(['anchor']);
+    expect(harness.memory.aggregate('anchor')?.evictedCount).toBe(1);
   });
 
   it('resolves a settled subtree through a chain of nested launches of mixed kinds', () => {

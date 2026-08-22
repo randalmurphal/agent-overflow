@@ -268,8 +268,8 @@ test('backgrounding a running inline agent returns the turn and the transcript c
   await expect(pane.getByTestId('agent-pane-streaming-paused')).toHaveCount(0);
   // The notification's `usage` is the whole run's, and it persists onto
   // the launch row — a backgrounded agent's live ticks are gone by then.
-  await expect(pane.getByTestId('agent-pane-status-line')).toContainText('2 tools');
-  await expect(pane.getByTestId('agent-pane-status-line')).toContainText('24.1k tokens');
+  await expect(pane.getByTestId('agent-pane-tools')).toHaveText('2 tools');
+  await expect(pane.getByTestId('agent-pane-tokens')).toHaveText('24.1k tokens');
 
   // The backfilled rows belong to the agent, not the main thread.
   await expect

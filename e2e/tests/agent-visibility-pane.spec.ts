@@ -121,7 +121,8 @@ test('an agent card opens as a scoped, read-only thread view that survives reloa
   const pane = page.getByTestId('companion-pane-agent-body');
   await expect(pane).toBeVisible();
   await expect(pane.getByTestId('agent-pane-kind')).toHaveText('agent');
-  await expect(pane.getByTestId('agent-pane-breadcrumb-entry')).toHaveText(['main']);
+  // Depth one hides the root crumb: closing the pane IS "back to main".
+  await expect(pane.getByTestId('agent-pane-breadcrumb-entry')).toHaveCount(0);
   await expect(pane.getByTestId('agent-pane-breadcrumb-current')).toHaveText('Surveyor');
 
   const paneTimeline = pane.getByTestId('agent-pane-timeline');

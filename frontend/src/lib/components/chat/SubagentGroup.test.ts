@@ -395,6 +395,29 @@ describe('<SubagentGroup>', () => {
     expect(ids).toEqual(['tool-1', 'tool-2', 'text-2']);
   });
 
+  it('drops the final-text slot when the agent was killed — mid-flight prose is not an answer', async () => {
+    // User report 2026-08-22: a stopped agent's last text rendered in the
+    // expanded body as if it were the final report. A killed/errored
+    // agent has no final answer, so its digest is tool calls only.
+    const group = mkGroup({
+      parentId: 'p1',
+      parentItem: mkAgentParent('p1', { status: 'killed' }),
+      children: [
+        mkToolLeaf('tool-1', 'Read: file'),
+        mkLeaf('text-1', 'mid-flight prose'),
+      ],
+      descendantCount: 2,
+    });
+    const { getByRole, getAllByTestId } = render(SubagentGroupTestHarness, {
+      props: { group },
+    });
+
+    await fireEvent.click(getByRole('button'));
+
+    const ids = getAllByTestId('leaf').map((el) => el.getAttribute('data-id'));
+    expect(ids).toEqual(['tool-1']);
+  });
+
   it('uses native button activation for keyboard-accessible toggling', async () => {
     const group = mkGroup({
       parentId: 'p1',
