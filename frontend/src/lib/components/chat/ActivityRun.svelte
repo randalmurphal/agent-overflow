@@ -840,87 +840,96 @@
            height to hang beside: measured against the run instead, it would
            span the header too and put the thumb at the wrong offset. -->
       <div class="relative">
-        <!-- Fade clip. The top fade below is a 24px overlay strip; on a run
-             shorter than that it would spill past the run's own bottom edge, so
-             this box clips it to the visible height. `overflow-hidden` is
-             unconditional: the clip inside is already a block formatting
-             context, so it changes no margin. -->
-        <div class="relative overflow-hidden">
-          <!-- overflow-x is hidden on purpose: a wide preview inside a tool row
-               must not raise a horizontal bar at run level, which would consume
-               HEIGHT and shift every row below. overscroll-behavior stays auto —
-               chaining out at the inner edge is wanted, and gesture correctness
-               comes from attribution (utils/scroll/wheelAttribution.ts), not
-               from blocking the chain. -->
-          <div
-            bind:this={clipEl}
-            id={clipId}
-            class="activity-run-clip overflow-y-auto overflow-x-hidden [overflow-anchor:none]"
-            style:max-height={maxHeight}
-            use:nestedScroll
-            use:readerGestures
-            onscroll={onClipScroll}
-            data-testid="activity-run-clip"
-            data-scroll-owner={stick ? 'controller' : 'settle'}
-          >
-            <!-- Static scroll-composited-content: composited for the inner
-                 controller's sub-pixel glide residue, same contract as
-                 the pane's contentEl (see MessageTimeline). Deliberately
-                 unconditional even though only the tail run gets a
-                 controller: tail-ness can land on an already-mounted run
-                 (see the escape-flag comment in the controller effect),
-                 and a class that appears or disappears on a mounted
-                 element is a raster transition — the flicker class the
-                 static hint exists to rule out. Cost: one composited
-                 layer per mounted expanded run, live or not. -->
-            <div bind:this={contentEl} class="scroll-composited-content">
-              {#if hiddenEarlier > 0}
-                <ActivityRunBoundary count={hiddenEarlier} edge="earlier" onclick={mountEarlier} />
-              {/if}
-              <!-- The wrapper carries the row's index because that is the only
-                   handle a jump has on a non-leaf row: only leaves emit
-                   `data-item-id`, and a hit inside a subagent card resolves to
-                   the card. A plain div, so row margins keep collapsing exactly
-                   as they did when these rows were the virtualizer's own. -->
-              {#each mountedChildren as child, i (timelineNodeKey(child))}
-                <div data-run-child={mountedFrom + i}>
-                  {@render renderNode(child, depth)}
-                </div>
-              {/each}
-              {#if hiddenLater > 0}
-                <ActivityRunBoundary count={hiddenLater} edge="later" onclick={mountLater} />
-              {/if}
-            </div>
+        <!-- overflow-x is hidden on purpose: a wide preview inside a tool row
+             must not raise a horizontal bar at run level, which would consume
+             HEIGHT and shift every row below. overscroll-behavior stays auto —
+             chaining out at the inner edge is wanted, and gesture correctness
+             comes from attribution (utils/scroll/wheelAttribution.ts), not
+             from blocking the chain. -->
+        <div
+          bind:this={clipEl}
+          id={clipId}
+          class="activity-run-clip overflow-y-auto overflow-x-hidden [overflow-anchor:none]"
+          style:max-height={maxHeight}
+          use:nestedScroll
+          use:readerGestures
+          onscroll={onClipScroll}
+          data-testid="activity-run-clip"
+          data-scroll-owner={stick ? 'controller' : 'settle'}
+        >
+          <!-- Static scroll-composited-content: composited for the inner
+               controller's sub-pixel glide residue, same contract as
+               the pane's contentEl (see MessageTimeline). Deliberately
+               unconditional even though only the tail run gets a
+               controller: tail-ness can land on an already-mounted run
+               (see the escape-flag comment in the controller effect),
+               and a class that appears or disappears on a mounted
+               element is a raster transition — the flicker class the
+               static hint exists to rule out. Cost: one composited
+               layer per mounted expanded run, live or not. -->
+          <div bind:this={contentEl} class="scroll-composited-content">
+            {#if hiddenEarlier > 0}
+              <ActivityRunBoundary count={hiddenEarlier} edge="earlier" onclick={mountEarlier} />
+            {/if}
+            <!-- The wrapper carries the row's index because that is the only
+                 handle a jump has on a non-leaf row: only leaves emit
+                 `data-item-id`, and a hit inside a subagent card resolves to
+                 the card. A plain div, so row margins keep collapsing exactly
+                 as they did when these rows were the virtualizer's own. -->
+            {#each mountedChildren as child, i (timelineNodeKey(child))}
+              <div data-run-child={mountedFrom + i}>
+                {@render renderNode(child, depth)}
+              </div>
+            {/each}
+            {#if hiddenLater > 0}
+              <ActivityRunBoundary count={hiddenLater} edge="later" onclick={mountLater} />
+            {/if}
           </div>
-          <!-- Top fade, the run's own copy of the conversation's: rows dissolve
-               as they rise out of the clip instead of being cut by a hard edge.
-               Same gradient OVERLAY technique for the same reason — a mask on the
-               clip rasterizes a full clip-sized texture on every streaming
-               repaint, while this is a strip that paints once (see
-               MessageTimeline's TOP_FADE_PX). Paint-only either way: no effect on
-               scrollHeight/clientHeight/scrollTop and no content-RO traffic, so
-               it stays clear of the controller.
-
-               Shorter than the conversation's 32px — a run shows a handful of
-               rows, and a third of one is enough to read as a dissolve without
-               dimming the row behind it. It needs no scrollbar-safe inset:
-               `right-0` is the clip's own right edge, and the overlay bar hangs
-               outside it.
-
-               The fade SNAPS in and out — no transition-opacity. It flips in
-               the same commit as expand (the clip mounts scrolled to its tail),
-               and a transition starting there licenses the compositor to
-               present before the toggle's re-raster finishes (see the timeline
-               transition kill rule in app.css). -->
-          <div
-            aria-hidden="true"
-            class="pointer-events-none absolute top-0 right-0 left-0 h-6"
-            class:opacity-0={!fadedTop}
-            style:background="linear-gradient(to bottom, var(--surface-0), transparent)"
-            data-testid="activity-run-top-fade"
-            data-faded={fadedTop ? 'true' : 'false'}
-          ></div>
         </div>
+        <!-- Top fade, the run's own copy of the conversation's: rows dissolve
+             as they rise out of the clip instead of being cut by a hard edge.
+             Same gradient OVERLAY technique for the same reason — a mask on the
+             clip rasterizes a full clip-sized texture on every streaming
+             repaint, while this is a strip that paints once (see
+             MessageTimeline's TOP_FADE_PX). Paint-only either way: no effect on
+             scrollHeight/clientHeight/scrollTop and no content-RO traffic, so
+             it stays clear of the controller.
+
+             Shorter than the conversation's 32px — a run shows a handful of
+             rows, and a third of one is enough to read as a dissolve without
+             dimming the row behind it. It needs no scrollbar-safe inset:
+             `right-0` is the clip's own right edge, and the overlay bar hangs
+             outside it.
+
+             It starts ONE PIXEL ABOVE the clip. The clip's top lands on a
+             fractional y (row heights above it are LayoutUnit sums), and the
+             composited scroller inside clips its content to the ENCLOSING
+             pixel rect while this strip, painted in the ancestor layer, is
+             antialiased at the fractional edge — so the content's first
+             pixel row showed through above the gradient, unfaded: a bright
+             1px slit of glyph bottoms that strobed as rows glided under it
+             (2026-08-22, "the top pixel is not in the fade"). Whether the
+             slit appears depends on compositor layer state, not on the
+             fraction, so the strip covers the row either way. Nothing clips
+             the strip — the overflow-hidden wrapper that used to bound it
+             was the same antialiased fractional edge and cut the extra row
+             back off. It needs no bound: the shortest run, one tool row, is
+             already taller than the strip (pinned in
+             activityRunScroll.browser.test.ts).
+
+             The fade SNAPS in and out — no transition-opacity. It flips in
+             the same commit as expand (the clip mounts scrolled to its tail),
+             and a transition starting there licenses the compositor to
+             present before the toggle's re-raster finishes (see the timeline
+             transition kill rule in app.css). -->
+        <div
+          aria-hidden="true"
+          class="pointer-events-none absolute -top-px right-0 left-0 h-[25px]"
+          class:opacity-0={!fadedTop}
+          style:background="linear-gradient(to bottom, var(--surface-0), transparent)"
+          data-testid="activity-run-top-fade"
+          data-faded={fadedTop ? 'true' : 'false'}
+        ></div>
         <!-- A zero-width native bar makes the scroll package's geometric
              scrollbar-gutter hit test impossible, so a drag states its intent
              instead of having it inferred.

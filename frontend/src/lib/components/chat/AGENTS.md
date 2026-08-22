@@ -346,6 +346,15 @@ Operational rules for this directory:
   `scrollHeight <= clientHeight` geometry, and the restore observer re-applies
   `pendingRestoreTop` on content growth until it is achieved — superseded by
   any reader gesture or authored write (`positionWritten` clears it).
+- **The run's top fade starts one pixel ABOVE the clip, and nothing clips
+  it.** The clip's top sits on a fractional y, and the composited scroller
+  clips its content to the enclosing pixel rect while the fade strip is
+  antialiased at the fractional edge: the content's first pixel row showed
+  through above the gradient as a bright slit that strobed under a glide
+  (2026-08-22). Any overflow clip around the strip is that same antialiased
+  edge and cuts the extra row back off; it needs no bound because the
+  shortest run (one tool row) is taller than the strip. Both facts are
+  pinned in `activityRunScroll.browser.test.ts`.
 - **A notification bell with a rail member before it is ABSORBED into the
   run** (`isAbsorbedNotification`, `activityRunGrouping.ts`) rather than
   splitting it: bells land at the write head, inside the live run, and the

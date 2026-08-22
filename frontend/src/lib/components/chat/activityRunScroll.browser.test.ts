@@ -655,3 +655,84 @@ describe('activity run — a clamped mount restore is re-applied as content meas
     expect(fadeOf(scrollEl)?.dataset.faded).toBe('true');
   });
 });
+
+describe('activity run — the top fade covers the clip\'s sub-pixel top edge', () => {
+  // The clip's top lands on a fractional y in production (LayoutUnit sums of
+  // the rows above), and the composited scroller inside clips its content to
+  // the ENCLOSING pixel rect while the fade strip is antialiased at the
+  // fractional edge: one pixel row of content showed above the gradient,
+  // unfaded, strobing as rows glided under it. Whether the slit appears
+  // depends on compositor layer state, so a pixel assertion would be flaky;
+  // what can be pinned is the geometry that makes it unreachable — the strip
+  // starts a pixel above the clip, no wrapper clips that pixel back off, and
+  // the shortest run is taller than the strip, so it never hangs past a clip.
+  const THREAD_ID = 'thread-run-fade-edge';
+  const FADE_PX = 24;
+  const clipOf = (scrollEl: HTMLElement): HTMLElement => {
+    const clip = scrollEl.querySelector('[data-testid="activity-run-clip"]');
+    if (!(clip instanceof HTMLElement)) throw new Error('clip not mounted');
+    return clip;
+  };
+  const fadeOf = (scrollEl: HTMLElement): HTMLElement => {
+    const fade = scrollEl.querySelector('[data-testid="activity-run-top-fade"]');
+    if (!(fade instanceof HTMLElement)) throw new Error('fade not mounted');
+    return fade;
+  };
+
+  function runOf(rows: number): Item[] {
+    const built: Item[] = [prose('p0', 0, THREAD_ID)];
+    for (let i = 0; i < rows; i += 1) built.push(tool(`a${i}`, i + 1, THREAD_ID));
+    return built;
+  }
+
+  it('starts one pixel above a capped clip and adds no height to the run', async () => {
+    const { scrollEl } = await mountTimeline(THREAD_ID, runOf(RUN_ROWS), QUIET_BOTTOM);
+    const clip = clipOf(scrollEl);
+    const fade = fadeOf(scrollEl);
+    expect(clip.scrollHeight).toBeGreaterThan(clip.clientHeight); // capped, so faded
+    const c = clip.getBoundingClientRect();
+    const f = fade.getBoundingClientRect();
+    expect(f.top).toBeCloseTo(c.top - 1, 2);
+    expect(f.bottom).toBeCloseTo(c.top + FADE_PX, 2);
+    // Overlay only: the host is exactly the clip's box, so the overlay bar
+    // beside it still measures the clip's height and nothing below moved.
+    const host = clip.parentElement as HTMLElement;
+    expect(host.getBoundingClientRect().height).toBeCloseTo(c.height, 2);
+    // No ancestor between the strip and the row clips it: the extra pixel is
+    // the whole fix, and an overflow clip at the clip's edge cuts it back off.
+    for (let el = fade.parentElement; el && !el.hasAttribute('data-row-index'); el = el.parentElement) {
+      const { overflowY, overflowX } = getComputedStyle(el);
+      expect({ el: el.className, overflowY, overflowX }).toMatchObject({ overflowY: 'visible', overflowX: 'visible' });
+    }
+  });
+
+  it('is shorter than the smallest run, so it never hangs past the clip', async () => {
+    // The harness insists on real windowing, so the one-row run sits at the
+    // head of enough tall prose that the mount lands below it.
+    const built = runOf(1);
+    for (let i = 0; i < 20; i += 1) {
+      built.push(makeItem({
+        id: `r${i}`,
+        threadId: THREAD_ID,
+        itemIndex: 2 + i,
+        summary: `Reply ${i}, paragraph one: enough prose that the row takes real height.\n\n`
+          + 'Paragraph two keeps going so consecutive rows do not share one height bucket.\n\n'
+          + 'Paragraph three exists purely for altitude.',
+        createdAt: 2 + i,
+        updatedAt: 2 + i,
+      }));
+    }
+    const { scrollEl } = await mountTimeline(THREAD_ID, built, QUIET_BOTTOM);
+    await userScrollTo(scrollEl, 0);
+    await waitFor(() => scrollEl.querySelector('[data-testid="activity-run-clip"]') !== null, 'run mounts at the top');
+    const clip = clipOf(scrollEl);
+    const fade = fadeOf(scrollEl);
+    expect(clip.querySelectorAll('[data-run-child]')).toHaveLength(1);
+    const c = clip.getBoundingClientRect();
+    const f = fade.getBoundingClientRect();
+    expect(f.top).toBeCloseTo(c.top - 1, 2);
+    // The strip is unclipped, so this is the one thing keeping it inside the
+    // run: a row shorter than the strip would need a bound added here.
+    expect(f.bottom).toBeLessThanOrEqual(c.bottom);
+  });
+});
