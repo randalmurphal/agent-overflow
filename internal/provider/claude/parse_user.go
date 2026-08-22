@@ -151,7 +151,7 @@ func (p *Parser) appendToolResultBlock(
 	// decision keyed off `is_background` in meta, not a parser-level
 	// drop of the event.
 	//
-	// Four INDEPENDENT signals mark a tool_result as a backgrounded
+	// Five INDEPENDENT signals mark a tool_result as a backgrounded
 	// placeholder (the real terminal arrives later via the task
 	// lifecycle), and any one is sufficient:
 	//
@@ -181,6 +181,28 @@ func (p *Parser) appendToolResultBlock(
 	//      is the `local_bash` task the later `task_updated` terminal
 	//      routes by. Missing this signal is how a live Monitor-watched
 	//      session read as reap-idle (2026-07-28, thread b44a738d).
+	//   5. liveAgentTask — this tool_use's local_agent task is still
+	//      LIVE (`system/task_started` seen, no terminal `task_updated`
+	//      yet). The wire-TYPED twin of (3)'s §E5b text fallback, and
+	//      deliberately redundant with it: an awaited agent's real
+	//      result always arrives AFTER its terminal task_updated (which
+	//      clears the flag) — 0–45ms after, across all 34 awaited
+	//      completions in three weeks of wire logs (2026-08-21) — so a
+	//      local_agent tool_result landing while its task is live is
+	//      definitionally an ack, whatever its text says. This catches
+	//      what §E5b's gate refuses (an ack with no extractable
+	//      `agentId:` line — safe to promote here precisely because
+	//      task_started already recorded the task_id ↔ tool_use_id
+	//      route for the terminal) and survives a CLI rewording of the
+	//      ack sentinel. Like §E5b it fires only when NO
+	//      `tool_use_result` is present — a present structured result
+	//      is the sole authority (see the inline-completion bound
+	//      below). What it does NOT cover is replay/JSONL parsing
+	//      (session files carry no system envelopes), where §E5b's text
+	//      match is the only signal — which is why both exist.
+	//      local_bash tasks never mark the flag: a foreground Bash
+	//      result's ordering against its terminal is not part of the
+	//      verified contract (parse_system.go, task_started).
 	//
 	// ⚠ An INLINE (awaited) agent's real completion also carries
 	// `agentId` + `status:"completed"` in its `tool_use_result`, so
@@ -229,7 +251,8 @@ func (p *Parser) appendToolResultBlock(
 		asyncAgentID, asyncLaunched = asyncLaunchAckAgentID(content)
 	}
 	monitorTaskID, monitorLaunched := toolResultMonitorLaunch(backgroundSignals)
-	isBackground := flaggedAtLaunch || markedOnWire || asyncLaunched || monitorLaunched
+	liveAgentTask := len(toolUseResultRaw) == 0 && p.hasLiveAgentTask(toolUseID)
+	isBackground := flaggedAtLaunch || markedOnWire || asyncLaunched || monitorLaunched || liveAgentTask
 	events = appendToolResultCompletion(
 		events, threadID, toolUseID, now, line,
 		isBackground, monitorLaunched,

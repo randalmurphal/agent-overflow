@@ -1580,10 +1580,12 @@ path, while `agentId:` lines appear in ordinary agent output. A prefix —
 never a contains — is what keeps tool output that merely quotes the
 sentence from classifying.
 
-**No agentId ⇒ no promotion, deliberately.** An ack whose agent id
-cannot be recovered has nothing to correlate its terminal against, so
-promoting it would strand the card at `status=running` forever. That is
-strictly worse than the instantly-done card, so the fallback declines.
+**No agentId ⇒ no promotion via the TEXT path, deliberately.** An ack
+whose agent id cannot be recovered has nothing the text alone can
+correlate its terminal against. When `system/task_started` was observed
+for the tool_use, the liveness signal below still promotes it — safely,
+because task_started already recorded the terminal's route; only when
+BOTH paths miss does the launch settle as the instantly-done card.
 
 Once promoted the two behaviours are the top-level ones verbatim:
 `is_background: true` on the completion meta, and `rememberTaskToolUse`
@@ -1591,6 +1593,28 @@ re-seeding `agentId ↔ tool_use_id` (idempotent against the binding
 `task_started` normally supplies a few ms earlier). Regression guards:
 `TestAppendToolResultBlock_SidechainAsyncLaunchAckPromotesToBackground`
 plus the three refusal tests beside it in `parse_user_test.go`.
+
+#### Terminal-before-result ordering (the typed discriminator)
+
+An awaited (inline) `local_agent` launch resolves its terminal
+`task_updated` BEFORE its real `tool_result` arrives — 0–45ms before,
+across all 34 awaited completions in three weeks of wire logs
+(2026-07-31 → 2026-08-21, 247 `local_agent` task_starteds total). Every
+tool_result that instead arrived while its task was still live was an
+ack: 184 top-level §E5 launch acks, 10 sidechain §E5b acks, and 14 §E6
+resume acks (whose wording differs — a reason text matching alone is
+not enough). Parser signal (5) (`liveAgentTaskToolUses`, parse_user.go)
+encodes this: `task_started(task_type:"local_agent")` arms the
+tool_use, the terminal `task_updated` disarms it, and a tool_result
+carrying NO `tool_use_result` that lands while armed promotes to
+background regardless of its text. `local_bash` never arms (a
+foreground Bash result's ordering is not part of this contract), and a
+present `tool_use_result` stays the sole authority. This is the signal
+that survives an ack rewording and covers the no-`agentId` refusal
+above; the §E5b text fallback in turn covers session-JSONL replay,
+where no `system` envelopes exist. Guards:
+`TestAppendToolResultBlock_LiveAgentTaskPromotesRewordedAck` and the
+three tests beside it.
 
 ### E6 — Resuming an idle async agent (`task_started` rebind)
 

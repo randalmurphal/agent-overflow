@@ -91,6 +91,20 @@ type Parser struct {
 	// overflow, matching the other session-lifetime correlation maps
 	// (taskToolUses, toolUseParents).
 	agentLaunchToolUses map[string]bool
+	// liveAgentTaskToolUses holds every tool_use id whose local_agent
+	// task is LIVE: `system/task_started` with task_type "local_agent"
+	// arrived and no terminal `task_updated` has resolved it yet. This
+	// backs background signal (5) in parse_user.go — the wire-typed
+	// twin of the §E5b sidechain ack-text fallback: a tool_result that
+	// lands while its agent task is still live is an ack (async launch
+	// or resume), never the agent's real result, because awaited
+	// agents' results always arrive AFTER their terminal task_updated
+	// (0–45ms after, across all 34 awaited completions in three weeks
+	// of wire logs, 2026-08-21). See the signal (5) doc in
+	// parse_user.go for the division of labor between the two.
+	// Entries are marked on task_started and released on the terminal
+	// task_updated; a resume re-marks the new carrier tool_use.
+	liveAgentTaskToolUses map[string]bool
 	// subagentModelStamped dedupes per-parent_tool_use_id meta-update
 	// emissions of `subagent_model`. Subagent assistant messages all
 	// carry the same `message.model`, so we only emit the meta merge
@@ -284,6 +298,7 @@ func (p *Parser) Close() {
 	p.toolUseParents = nil
 	p.taskToolUses = nil
 	p.agentLaunchToolUses = nil
+	p.liveAgentTaskToolUses = nil
 	p.subagentModelStamped = nil
 	p.streamBlockTypes = nil
 	p.streamedMessageIDs = nil
@@ -625,6 +640,36 @@ func (p *Parser) taskToolUseRef(taskID string) taskToolUseRef {
 		return taskToolUseRef{}
 	}
 	return p.taskToolUses[taskID]
+}
+
+// markLiveAgentTask records that toolUseID's local_agent task is live
+// (task_started seen, no terminal yet). See the liveAgentTaskToolUses
+// field doc for the invariant this backs.
+func (p *Parser) markLiveAgentTask(toolUseID string) {
+	if p == nil || toolUseID == "" {
+		return
+	}
+	if p.liveAgentTaskToolUses == nil {
+		p.liveAgentTaskToolUses = make(map[string]bool)
+	}
+	if len(p.liveAgentTaskToolUses) >= parserTaskMapCap {
+		p.liveAgentTaskToolUses = make(map[string]bool)
+	}
+	p.liveAgentTaskToolUses[toolUseID] = true
+}
+
+func (p *Parser) clearLiveAgentTask(toolUseID string) {
+	if p == nil || toolUseID == "" || p.liveAgentTaskToolUses == nil {
+		return
+	}
+	delete(p.liveAgentTaskToolUses, toolUseID)
+}
+
+func (p *Parser) hasLiveAgentTask(toolUseID string) bool {
+	if p == nil || toolUseID == "" || p.liveAgentTaskToolUses == nil {
+		return false
+	}
+	return p.liveAgentTaskToolUses[toolUseID]
 }
 
 // markAgentLaunchTool records that toolUseID's tool_use block was

@@ -753,3 +753,154 @@ func repeatLines(n int) string {
 	}
 	return string(out) + "\n"
 }
+
+// TestAppendToolResultBlock_LiveAgentTaskPromotesRewordedAck pins
+// background signal (5), the wire-typed twin of §E5b: when
+// `system/task_started` (task_type local_agent) has fired for the
+// tool_use and no terminal `task_updated` has resolved it, a
+// tool_result with NO `tool_use_result` promotes to background even
+// when its text passes none of §E5b's checks — here a reworded ack
+// with no sentinel prefix and no `agentId:` line, the exact shapes a
+// CLI wording change (or the refused no-agentId ack) produces. The
+// terminal correlates through the task_started binding, which is why
+// promoting without a recoverable agentId is safe on this path.
+func TestAppendToolResultBlock_LiveAgentTaskPromotesRewordedAck(t *testing.T) {
+	parser := NewParser()
+
+	if _, err := parser.ParseLine(testThread, []byte(`{"type":"assistant","parent_tool_use_id":"toolu_parent","message":{"id":"msg-side","role":"assistant","content":[{"type":"tool_use","id":"toolu_launch","name":"Agent","input":{"description":"Angle A","subagent_type":"general-purpose","prompt":"p"}}]}}`)); err != nil {
+		t.Fatalf("sidechain assistant tool_use: %v", err)
+	}
+	if _, err := parser.ParseLine(testThread, []byte(`{"type":"system","subtype":"task_started","task_id":"task-angle","tool_use_id":"toolu_launch","task_type":"local_agent","description":"Angle A"}`)); err != nil {
+		t.Fatalf("task_started: %v", err)
+	}
+
+	line := []byte(`{"type":"user","parent_tool_use_id":"toolu_parent","message":{"role":"user","content":[{"tool_use_id":"toolu_launch","type":"tool_result","content":[{"type":"text","text":"Agent dispatched; running in the background. You will be notified on completion."}]}]}}`)
+	events, err := parser.ParseLine(testThread, line)
+	if err != nil {
+		t.Fatalf("parse ack: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d: %+v", len(events), events)
+	}
+	var meta map[string]any
+	if err := json.Unmarshal(events[0].Meta, &meta); err != nil {
+		t.Fatalf("unmarshal meta: %v", err)
+	}
+	if meta["is_background"] != true {
+		t.Fatalf("is_background: got %v, want true (live local_agent task)", meta["is_background"])
+	}
+
+	// The terminal routes through the task_started binding.
+	terminal, err := parser.ParseLine(testThread, []byte(`{"type":"system","subtype":"task_updated","task_id":"task-angle","patch":{"status":"killed"}}`))
+	if err != nil {
+		t.Fatalf("task_updated: %v", err)
+	}
+	if len(terminal) != 1 || terminal[0].Kind != provider.EventBackgroundTaskTerminal || terminal[0].ItemID != "toolu_launch" {
+		t.Fatalf("terminal must route to toolu_launch, got %+v", terminal)
+	}
+}
+
+// TestAppendToolResultBlock_TerminalClearsLiveAgentTask pins the
+// awaited half of signal (5)'s contract: an awaited agent's terminal
+// `task_updated` always precedes its real tool_result (0–45ms across
+// every awaited completion in three weeks of wire logs), and that
+// terminal must clear the liveness flag so the real result — which on
+// a sidechain line also carries no `tool_use_result` — completes the
+// row in place instead of reading as a background ack.
+func TestAppendToolResultBlock_TerminalClearsLiveAgentTask(t *testing.T) {
+	parser := NewParser()
+
+	if _, err := parser.ParseLine(testThread, []byte(`{"type":"assistant","parent_tool_use_id":"toolu_parent","message":{"id":"msg-side","role":"assistant","content":[{"type":"tool_use","id":"toolu_awaited","name":"Agent","input":{"description":"awaited","subagent_type":"general-purpose","prompt":"p","run_in_background":false}}]}}`)); err != nil {
+		t.Fatalf("assistant tool_use: %v", err)
+	}
+	if _, err := parser.ParseLine(testThread, []byte(`{"type":"system","subtype":"task_started","task_id":"task-awaited","tool_use_id":"toolu_awaited","task_type":"local_agent"}`)); err != nil {
+		t.Fatalf("task_started: %v", err)
+	}
+	if _, err := parser.ParseLine(testThread, []byte(`{"type":"system","subtype":"task_updated","task_id":"task-awaited","patch":{"status":"completed"}}`)); err != nil {
+		t.Fatalf("task_updated: %v", err)
+	}
+
+	line := []byte(`{"type":"user","parent_tool_use_id":"toolu_parent","message":{"role":"user","content":[{"tool_use_id":"toolu_awaited","type":"tool_result","content":[{"type":"text","text":"Findings: none. All hunks reviewed."}]}]}}`)
+	events, err := parser.ParseLine(testThread, line)
+	if err != nil {
+		t.Fatalf("parse result: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d: %+v", len(events), events)
+	}
+	var meta map[string]any
+	if err := json.Unmarshal(events[0].Meta, &meta); err != nil {
+		t.Fatalf("unmarshal meta: %v", err)
+	}
+	if _, ok := meta["is_background"]; ok {
+		t.Fatalf("awaited result after terminal must complete in place; meta=%v", meta)
+	}
+}
+
+// TestAppendToolResultBlock_LocalBashTaskDoesNotMarkLive pins the
+// task_type gate: every foreground Bash also emits task_started (task
+// type "local_bash"), and a foreground Bash result's ordering against
+// its terminal is not part of the verified local_agent contract — so
+// local_bash must never arm signal (5).
+func TestAppendToolResultBlock_LocalBashTaskDoesNotMarkLive(t *testing.T) {
+	parser := NewParser()
+
+	if _, err := parser.ParseLine(testThread, []byte(`{"type":"assistant","message":{"id":"msg-1","role":"assistant","content":[{"type":"tool_use","id":"toolu_bash","name":"Bash","input":{"command":"echo hi"}}]}}`)); err != nil {
+		t.Fatalf("assistant tool_use: %v", err)
+	}
+	if _, err := parser.ParseLine(testThread, []byte(`{"type":"system","subtype":"task_started","task_id":"task-bash","tool_use_id":"toolu_bash","task_type":"local_bash"}`)); err != nil {
+		t.Fatalf("task_started: %v", err)
+	}
+
+	line := []byte(`{"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu_bash","type":"tool_result","content":"hi","is_error":false}]}}`)
+	events, err := parser.ParseLine(testThread, line)
+	if err != nil {
+		t.Fatalf("parse result: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d: %+v", len(events), events)
+	}
+	var meta map[string]any
+	if err := json.Unmarshal(events[0].Meta, &meta); err != nil {
+		t.Fatalf("unmarshal meta: %v", err)
+	}
+	if _, ok := meta["is_background"]; ok {
+		t.Fatalf("foreground Bash must not promote via task liveness; meta=%v", meta)
+	}
+}
+
+// TestAppendToolResultBlock_StructuredResultOverridesLiveTask pins the
+// authority order between signal (5) and a present `tool_use_result`:
+// even with the task nominally live in the parser's mirror, a
+// tool_result that CARRIES the structured envelope is judged by that
+// envelope alone. An inline completion whose terminal task_updated was
+// lost (reconnect) must still complete in place rather than strand at
+// "running" on the liveness flag.
+func TestAppendToolResultBlock_StructuredResultOverridesLiveTask(t *testing.T) {
+	parser := NewParser()
+
+	if _, err := parser.ParseLine(testThread, []byte(`{"type":"assistant","message":{"id":"msg-1","role":"assistant","content":[{"type":"tool_use","id":"toolu_inline","name":"Agent","input":{"description":"inline","subagent_type":"general-purpose","prompt":"p"}}]}}`)); err != nil {
+		t.Fatalf("assistant tool_use: %v", err)
+	}
+	if _, err := parser.ParseLine(testThread, []byte(`{"type":"system","subtype":"task_started","task_id":"task-inline","tool_use_id":"toolu_inline","task_type":"local_agent"}`)); err != nil {
+		t.Fatalf("task_started: %v", err)
+	}
+
+	// No terminal fed — the task is still "live" in the mirror, but the
+	// result carries the structured completion envelope.
+	line := []byte(`{"type":"user","tool_use_result":{"agentId":"a0e27f56d74e34245","agentType":"general-purpose","status":"completed","totalDurationMs":1000,"totalTokens":10},"message":{"role":"user","content":[{"tool_use_id":"toolu_inline","type":"tool_result","content":[{"type":"text","text":"done"}]}]}}`)
+	events, err := parser.ParseLine(testThread, line)
+	if err != nil {
+		t.Fatalf("parse result: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d: %+v", len(events), events)
+	}
+	var meta map[string]any
+	if err := json.Unmarshal(events[0].Meta, &meta); err != nil {
+		t.Fatalf("unmarshal meta: %v", err)
+	}
+	if _, ok := meta["is_background"]; ok {
+		t.Fatalf("present tool_use_result must stay authoritative over liveness; meta=%v", meta)
+	}
+}

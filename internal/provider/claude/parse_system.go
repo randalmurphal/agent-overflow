@@ -861,6 +861,19 @@ func (p *Parser) parseTaskStartedEvent(
 	p.rememberTaskToolUse(taskID, toolUseID)
 	taskRef := p.taskToolUseRef(taskID)
 
+	// Liveness marking for background signal (5) — parse_user.go. Every
+	// local_agent task_started marks its tool_use live, awaited launches
+	// included: awaited agents resolve their terminal task_updated
+	// BEFORE their real tool_result arrives, so the flag is already
+	// cleared by the time an awaited result lands. An ack (async launch
+	// or resume) is the only local_agent tool_result that can arrive
+	// while the flag is still set. Bash's local_bash tasks stay out —
+	// a foreground Bash result's ordering against its terminal is not
+	// part of the verified contract.
+	if taskType == "local_agent" {
+		p.markLiveAgentTask(toolUseID)
+	}
+
 	if isResume {
 		// Route this tool_use through the SAME is_background
 		// mechanism run_in_background launches use (parser.go
@@ -953,6 +966,12 @@ func (p *Parser) parseTaskLifecycleEvent(threadID string, raw map[string]json.Ra
 	taskRef := p.taskToolUseRef(taskID)
 	toolUseID := firstNonEmpty(taskRef.ToolUseID, readRawString(raw["tool_use_id"]), readRawString(raw["toolUseId"]))
 	parentToolUseID := firstNonEmpty(taskRef.ParentToolUseID, readRawString(raw["parent_tool_use_id"]), readRawString(raw["parentToolUseId"]))
+
+	// Terminal resolves the task: release the liveness flag so a
+	// LATER tool_result for this tool_use (an awaited agent's real
+	// result, which always follows its terminal) completes the row in
+	// place instead of reading as a background ack.
+	p.clearLiveAgentTask(toolUseID)
 
 	metaFields := map[string]any{
 		"task_id": taskID,
