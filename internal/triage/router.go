@@ -354,6 +354,12 @@ type Router struct {
 	// swept by cleanupThread AND MarkThreadActive (a replacement process
 	// never inherits the timer). See session_wakeup.go.
 	pendingWakeupByThread map[string]int64
+	// subagentProgress (guarded by r.mu) is the latest live progress tick
+	// per launch tool_use, keyed thread:item. Live UI state only; the
+	// terminal path consumes it into the launch row's meta. Swept with
+	// pendingWakeupByThread (same process-scoped lifetime). See
+	// subagent_progress.go.
+	subagentProgress map[string]provider.SubagentProgressMeta
 	// compactingSinceByThread is the open compacting window per thread:
 	// the epoch-ms timestamp of the frame that opened it. Live-only
 	// projection behind `provider:compacting` (compaction_status.go);
@@ -563,6 +569,7 @@ func NewRouter(st *store.Store, emit func(eventName string, data any)) *Router {
 		wireOnlyUserTextSeen:       make(map[string]map[string]struct{}),
 		queuedFlushItems:           make(map[string][]QueuedFlushItem),
 		pendingWakeupByThread:      make(map[string]int64),
+		subagentProgress:           make(map[string]provider.SubagentProgressMeta),
 		compactingSinceByThread:    make(map[string]int64),
 		commandLifecycle:           make(map[string]map[string]commandLifecycleEntry),
 		claimedFlushItems:          make(map[string]int),
@@ -727,6 +734,12 @@ func (r *Router) dispatch(evt provider.ProviderEvent) error {
 		return r.handleSubagentStatus(evt)
 	case provider.EventCodexExecResult:
 		return r.handleCodexExecResult(evt)
+	case provider.EventSubagentProgress:
+		return r.handleSubagentProgress(evt)
+	case provider.EventSubagentBackgrounded:
+		return r.handleSubagentBackgrounded(evt)
+	case provider.EventBackgroundTasksChanged:
+		return r.handleBackgroundTasksChanged(evt)
 	case provider.EventTerminalInteraction:
 		return r.handleTerminalInteraction(evt)
 	case provider.EventUserText:
