@@ -8,7 +8,6 @@
 // instead — this is only for the ones that don't.
 
 import type { PanelContext } from '../../lib/stores/panelContext.svelte';
-import { registry as activityRunRegistry } from './activityRuns';
 
 export function makeStubPanelContext(overrides: Partial<PanelContext> = {}): PanelContext {
   return {
@@ -22,12 +21,6 @@ export function makeStubPanelContext(overrides: Partial<PanelContext> = {}): Pan
     timelineRevision: 0,
     getItemById: () => undefined,
     ensureSubagentChildren: async () => false,
-    pendingApprovals: [],
-    activityRuns: activityRunRegistry(),
-    latestSettledTurn: null,
-    canCompose: false,
-    requestScrollToItem() {},
-    openAgentScope() {},
     closeAgentPane() {},
     close() {},
     replaceThread() {},

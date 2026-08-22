@@ -26,10 +26,13 @@ function leaf(id: string, overrides: Partial<Parameters<typeof makeItem>[0]> = {
 }
 
 function fakePane(threadId: string, expansionSig = ''): ThreadPane {
-  // Only `.threadId` and `.expansionSignature()` are read by
-  // timelineSizePriors.svelte.ts — a full ThreadPane is not needed.
+  // Only `.threadId`, `.scrollStateKey`, and `.expansionSignature()` are
+  // read by timelineSizePriors.svelte.ts — a full ThreadPane is not
+  // needed. scrollStateKey mirrors the production default (the stable
+  // thread id); the agent-pane facade is what diverges it.
   return {
     threadId,
+    scrollStateKey: threadId,
     expansionSignature: () => expansionSig,
   } as unknown as ThreadPane;
 }

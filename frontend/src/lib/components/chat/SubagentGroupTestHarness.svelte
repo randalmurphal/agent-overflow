@@ -13,7 +13,6 @@
     group,
     startDepth = 0,
     pane,
-    onOpenNode,
   }: {
     group: SubagentGroupNode;
     /**
@@ -29,7 +28,6 @@
      */
     pane?: ThreadPane;
     /** Passthrough for the open-in-pane routing override. */
-    onOpenNode?: (itemId: string, label: string) => void;
   } = $props();
 </script>
 
@@ -47,4 +45,4 @@
   {/if}
 {/snippet}
 
-<SubagentGroup group={group} depth={startDepth} renderNode={renderNode} pane={pane} onOpenNode={onOpenNode} />
+<SubagentGroup group={group} depth={startDepth} renderNode={renderNode} pane={pane} />

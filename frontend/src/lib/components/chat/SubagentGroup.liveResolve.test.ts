@@ -328,14 +328,25 @@ describe('<SubagentGroup> card affordances (agent-visibility)', () => {
     expect(error.textContent).toContain('no matching foreground task');
   });
 
-  it('open-in-pane routes through onOpenNode with the launch id and display name', async () => {
+  it('open-in-pane routes through pane.openAgentPane with the launch id and display name', async () => {
+    // One door: the pane decides where opening goes (the base pane opens
+    // the companion; the agent pane's facade pushes scope). The card only
+    // ever calls pane.openAgentPane.
     const opened: [string, string][] = [];
     const { pane, group } = await setup([
       agentLaunch(),
       makeItem({ id: 'child:1', itemIndex: 1, parentId: 'agent:1', status: 'running', summary: 'w' }),
     ]);
+    const spied = new Proxy(pane, {
+      get(target, prop) {
+        if (prop === 'openAgentPane') {
+          return (id: string, label: string) => opened.push([id, label]);
+        }
+        return Reflect.get(target, prop, target);
+      },
+    });
     const { getByTestId } = render(SubagentGroupTestHarness, {
-      props: { group, pane, onOpenNode: (id: string, label: string) => opened.push([id, label]) },
+      props: { group, pane: spied },
     });
 
     await fireEvent.click(getByTestId('subagent-group-open-pane'));

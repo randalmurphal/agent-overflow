@@ -54,10 +54,6 @@ describe('makePanelContext', () => {
     expect(ctx.getItemById('item-2')?.id).toBe('item-2');
     expect(ctx.getItemById('missing')).toBeUndefined();
     expect(ctx.timelineRevision).toBe(pane.timelineRevision);
-    expect(ctx.pendingApprovals).toEqual([]);
-    expect(ctx.activityRuns).toBe(pane.activityRuns);
-    expect(ctx.latestSettledTurn).toBe(pane.latestSettledTurn);
-    expect(ctx.canCompose).toBe(true);
     expect(await ctx.ensureSubagentChildren('item-1')).toBe(false);
   });
 
@@ -75,26 +71,11 @@ describe('makePanelContext', () => {
     expect(ctx.threadId).toBe('thread-1');
   });
 
-  it('publishes a scroll-to-item intent on the source pane', async () => {
-    const pane = await mountedPane();
-    const ctx = makePanelContext(pane, () => {});
-    const before = pane.scrollToItemRequest.nonce;
-
-    ctx.requestScrollToItem('item-1');
-
-    expect(pane.scrollToItemRequest).toEqual({ itemId: 'item-1', nonce: before + 1 });
-  });
-
-  it('descends the agent scope and closes the agent pane', async () => {
+  it('closes the agent pane and drops its scope', async () => {
     const pane = await mountedPane();
     const ctx = makePanelContext(pane, () => {});
     pane.openAgentPane('launch-1', 'code-review');
-
-    ctx.openAgentScope('launch-2', 'Angle B');
-
-    expect(agentStateForPane('main', 'thread-1').scopeItemId).toBe('launch-2');
-    expect(agentStateForPane('main', 'thread-1').breadcrumb.map((entry) => entry.label))
-      .toEqual(['main', 'code-review', 'Angle B']);
+    expect(agentStateForPane('main', 'thread-1').scopeItemId).toBe('launch-1');
     expect(pane.showAgentPane).toBe(true);
 
     ctx.closeAgentPane();
@@ -103,15 +84,5 @@ describe('makePanelContext', () => {
     expect(isCompanionOpen('main', 'agent')).toBe(false);
     expect(agentScopeForPane('main', 'thread-1')).toBeNull();
     expect(getPaneLayoutItems().map((item) => item.paneId)).toEqual(['main']);
-  });
-
-  it('ignores an empty scope id', async () => {
-    const pane = await mountedPane();
-    const ctx = makePanelContext(pane, () => {});
-    pane.openAgentPane('launch-1', 'code-review');
-
-    ctx.openAgentScope('', 'nothing');
-
-    expect(agentStateForPane('main', 'thread-1').scopeItemId).toBe('launch-1');
   });
 });

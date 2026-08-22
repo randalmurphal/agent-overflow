@@ -66,7 +66,6 @@
     formatToolUses,
     resolveSubagentProgress,
   } from '../../utils/subagentProgress';
-  import { openAgentCompanion } from '../../stores/agentPane.svelte';
   import { BackgroundClaudeTask } from '../../stores/bindings';
   import TranscriptDisclosureHeader from './TranscriptDisclosureHeader.svelte';
   import ToolRowStatusIndicator from './ToolRowStatusIndicator.svelte';
@@ -82,7 +81,6 @@
     group,
     depth = 0,
     renderNode,
-    onOpenNode,
   }: {
     /** Pane for the per-groupKey subagent expansion registry. When omitted,
      * falls back to local state — expand state then resets on windowing remount.
@@ -103,14 +101,6 @@
      * recursively for nested subagent groups.
      */
     renderNode: Snippet<[TimelineNode, number]>;
-    /**
-     * Where the open-in-pane button routes. The agent pane passes its
-     * pushScope so descending INSIDE the pane grows the breadcrumb
-     * (spec Q4b); when absent, the default opens/rescopes the source
-     * pane's agent companion, restarting the trail — the from-outside
-     * rule.
-     */
-    onOpenNode?: (itemId: string, label: string) => void;
   } = $props();
 
   // Spec: render only a "Spawned subagent…" marker at depth >= 3
@@ -293,15 +283,14 @@
     }
   }
 
+  // One door: the PANE decides where opening routes. The base ThreadPane
+  // opens/rescopes its agent companion (the trail restarts — the
+  // from-outside rule); the agent pane's scoped facade overrides
+  // `openAgentPane` to pushScope, so descending INSIDE the pane grows the
+  // breadcrumb (spec Q4b). Rows never talk to the companion store.
   function openInPane(event: MouseEvent): void {
     event.stopPropagation();
-    if (onOpenNode) {
-      onOpenNode(parent.id, agentTitle);
-      return;
-    }
-    const threadId = pane?.threadId;
-    if (!pane || !threadId) return;
-    openAgentCompanion(pane.paneId, threadId, parent.id, agentTitle);
+    pane?.openAgentPane(parent.id, agentTitle);
   }
 
   let previewText = $derived.by<string>(() => {
@@ -504,7 +493,7 @@
             <Icon icon={SendToBack} size={12} />
           </button>
         {/if}
-        {#if pane || onOpenNode}
+        {#if pane}
           <button
             type="button"
             onclick={openInPane}

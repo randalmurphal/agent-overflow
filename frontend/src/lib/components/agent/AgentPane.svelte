@@ -3,43 +3,33 @@
   // READ-ONLY view of the source thread's transcript scoped to one
   // subagent launch. Unlike the inline card's digest body, this surface
   // shows everything the node produced — tool calls, thinking,
-  // intermediate text, nested child cards — rendered through the same row
-  // components the chat timeline uses, so nothing here can drift from
-  // transcript styling.
+  // intermediate text, nested child cards.
+  //
+  // The body is the REAL MessageTimeline over a scoped ThreadPane facade
+  // (stores/agentScopeView.svelte.ts): same virtualizer, same scroll
+  // physics, same activity runs as the chat surface, with the facade's
+  // override table naming every divergence (scoped items, own scroll
+  // identity, no reveal gate, no edge paging). This pane owns only what
+  // is NOT timeline: the breadcrumb, the status line, the composer
+  // shell, scope lifecycle, and hydration of evicted children.
   //
   // Scope changes swap in place (one pane per source pane, no stacking):
-  // descending into a child card grows the breadcrumb (ctx.openAgentScope
-  // → pushScope), a breadcrumb click pops back, and popping to the root
-  // leaves the empty scope, which this body answers by closing the pane.
-  //
-  // The rows receive the REAL source ThreadPane — expansion registries,
-  // live resolution, approvals all stay shared with the chat surface —
-  // wrapped in a proxy that overrides only `paneId`. chatDomIds scopes
-  // every disclosure id by paneId, and the same item can be mounted here
-  // and in the chat timeline at once; without the override the two copies
-  // would emit duplicate DOM ids and aria-controls would resolve to
-  // whichever came first.
+  // descending into a child card grows the breadcrumb (the facade routes
+  // `openAgentPane` to pushScope), a breadcrumb click pops back, and
+  // popping to the root leaves the empty scope, which this body answers
+  // by closing the pane. The timeline is keyed on the scope id, so a
+  // swap remounts it exactly like a thread switch.
   import { untrack } from 'svelte';
   import X from '@lucide/svelte/icons/x';
   import type { PanelContext } from '../../stores/panelContext.svelte';
   import { agentStateForPane } from '../../stores/agentPane.svelte';
   import { getPane } from '../../stores/panes.svelte';
-  import type { ThreadPane } from '../../stores/thread.svelte';
-  import type { Item } from '../../types/models';
-  import TimelineLeaf from '../chat/TimelineLeaf.svelte';
-  import SubagentGroup from '../chat/SubagentGroup.svelte';
-  import WaitGroup from '../chat/WaitGroup.svelte';
-  import ReadGroupRow from '../chat/ReadGroupRow.svelte';
+  import { createAgentScopeView } from '../../stores/agentScopeView.svelte';
+  import MessageTimeline from '../chat/MessageTimeline.svelte';
   import Icon from '../primitives/Icon.svelte';
   import AgentPaneStatusLine from './AgentPaneStatusLine.svelte';
   import AgentPaneComposerShell from './AgentPaneComposerShell.svelte';
-  import {
-    decoratedSubagentAggregates,
-    groupItemsBySubagent,
-    type TimelineNode,
-  } from '../../utils/subagentGrouping';
-  import { nodeKey } from '../chat/SubagentGroup.svelte';
-  import { filterRedundantNotifications } from '../../utils/notificationFilter';
+  import { decoratedSubagentAggregates } from '../../utils/subagentGrouping';
   import { codexCompletionAnswer } from '../../utils/subagentLaunch';
   import ChatMarkdown from '../chat/ChatMarkdown.svelte';
 
@@ -57,21 +47,23 @@
   const agent = ctx.threadId ? agentStateForPane(ctx.paneId, ctx.threadId) : null;
 
   let sourcePane = $derived(getPane(ctx.paneId));
-  let rowPane = $derived(
-    sourcePane
-      ? (new Proxy(sourcePane, {
-          get(target, prop) {
-            if (prop === 'paneId') return `${target.paneId}~agent`;
-            return Reflect.get(target, prop, target);
-          },
-        }) as ThreadPane)
-      : undefined,
-  );
-
   let scopeItemId = $derived(agent?.scopeItemId ?? '');
   let launch = $derived.by(() => {
     void ctx.timelineRevision;
     return scopeItemId ? ctx.getItemById(scopeItemId) : undefined;
+  });
+
+  // One view per scope: created fresh when the scope (or source pane)
+  // changes, disposed with it. The facade reads the scope id it was
+  // built for, and the template keys the timeline on the same id.
+  let view = $derived.by(() =>
+    sourcePane && agent && scopeItemId
+      ? createAgentScopeView(sourcePane, agent, scopeItemId)
+      : null,
+  );
+  $effect(() => {
+    const current = view;
+    return () => current?.dispose();
   });
 
   // ---- Self-close (spec Q5) ------------------------------------------
@@ -96,69 +88,11 @@
     }
   });
 
-  // ---- Scoped subtree -------------------------------------------------
-  // Every loaded row whose parent chain reaches the scope. The completion
-  // sibling of a NESTED launch has the scope (or a descendant) as its
-  // parent, so it rides along and the grouping folds it onto its card; the
-  // scope's OWN completion sibling lives outside the subtree and feeds the
-  // status line instead.
-  let scopedItems = $derived.by<Item[]>(() => {
-    void ctx.timelineRevision;
-    if (!scopeItemId) return [];
-    const byParent = new Map<string, Item[]>();
-    for (const item of ctx.items) {
-      const pid = item.parentId;
-      if (!pid) continue;
-      let bucket = byParent.get(pid);
-      if (!bucket) byParent.set(pid, (bucket = []));
-      bucket.push(item);
-    }
-    const out: Item[] = [];
-    const stack = [scopeItemId];
-    while (stack.length > 0) {
-      const kids = byParent.get(stack.pop()!);
-      if (!kids) continue;
-      for (const kid of kids) {
-        out.push(kid);
-        stack.push(kid.id);
-      }
-    }
-    return out;
-  });
+  let scopedItems = $derived(view?.items ?? []);
   let completionItem = $derived.by(() => {
     void ctx.timelineRevision;
     if (!scopeItemId) return undefined;
     return ctx.items.find((item) => item.completionOf === scopeItemId);
-  });
-  // The grouping input INCLUDES the scope row (and its completion
-  // sibling): groupItemsBySubagent files a child whose parent id is not
-  // in its input under `orphanIds`, so the subtree alone rendered every
-  // direct child with an orphan warning, never minted cards for nested
-  // launches, and dropped their grandchildren outright (found by the F6
-  // harness). The scope's own group node is then UNWRAPPED — the pane
-  // renders its children, not a redundant outer card of itself.
-  //
-  // The scope row goes in with its parentId CLEARED: a nested launch
-  // (descended into from a parent scope) points at a parent that is
-  // deliberately outside this input, which would orphan-leaf the scope
-  // itself and empty the pane. Within this pane the scope IS the root.
-  // Completion siblings carry an empty parentId by construction
-  // (subagentGrouping.ts invariants), so only the launch needs the clone.
-  let nodes = $derived.by<TimelineNode[]>(() => {
-    if (!launch) return [];
-    const scopeRoot = launch.parentId ? { ...launch, parentId: undefined } : launch;
-    const input = completionItem
-      ? [scopeRoot, completionItem, ...scopedItems]
-      : [scopeRoot, ...scopedItems];
-    const grouped = groupItemsBySubagent(
-      filterRedundantNotifications(input),
-      (anchorId) => sourcePane?.subagentLiveAggregate(anchorId),
-    );
-    for (const node of grouped) {
-      if (node.kind === 'group' && node.parent.id === scopeItemId) return node.children;
-    }
-    // No attributed rows yet: the launch grouped as a plain leaf.
-    return [];
   });
 
   // A Codex child's final answer arrives on the spawn's completion
@@ -187,51 +121,7 @@
     if (scopedItems.length > 0 && scopedItems.length >= expected) return;
     void ctx.ensureSubagentChildren(scopeItemId);
   });
-
-  // ---- Follow the tail -------------------------------------------------
-  // Plain stick-to-bottom: while the reader sits at the bottom, growth
-  // keeps them there; scrolling up escapes. Deliberately not the chat
-  // scroll controller — this is a companion scroller like the review
-  // pane's, not a second timeline physics owner.
-  let scrollEl: HTMLDivElement | undefined = $state();
-  let pinned = $state(true);
-  function onScroll(): void {
-    if (!scrollEl) return;
-    pinned = scrollEl.scrollHeight - scrollEl.scrollTop - scrollEl.clientHeight < 48;
-  }
-  $effect(() => {
-    if (!scrollEl) return;
-    const observer = new ResizeObserver(() => {
-      if (pinned && scrollEl) scrollEl.scrollTop = scrollEl.scrollHeight;
-    });
-    observer.observe(scrollEl);
-    for (const child of scrollEl.children) observer.observe(child);
-    return () => observer.disconnect();
-  });
-  $effect(() => {
-    void nodes;
-    if (pinned && scrollEl) scrollEl.scrollTop = scrollEl.scrollHeight;
-  });
-
-  function openChild(itemId: string, label: string): void {
-    ctx.openAgentScope(itemId, label);
-    pinned = true;
-  }
 </script>
-
-{#snippet renderNode(node: TimelineNode, depth: number)}
-  {#if rowPane}
-    {#if node.kind === 'leaf'}
-      <TimelineLeaf pane={rowPane} item={node.item} orphan={node.orphan === true} />
-    {:else if node.kind === 'group'}
-      <SubagentGroup pane={rowPane} group={node} {depth} {renderNode} onOpenNode={openChild} />
-    {:else if node.kind === 'wait_group'}
-      <WaitGroup pane={rowPane} group={node} />
-    {:else if node.kind === 'read_group'}
-      <ReadGroupRow pane={rowPane} group={node} />
-    {/if}
-  {/if}
-{/snippet}
 
 <section
   class="flex h-full min-h-0 flex-col"
@@ -281,29 +171,26 @@
 
     <AgentPaneStatusLine {launch} completion={completionItem} hasChildren={scopedItems.length > 0} />
 
-    <div
-      bind:this={scrollEl}
-      onscroll={onScroll}
-      class="min-h-0 flex-1 overflow-y-auto overscroll-contain px-3 py-2"
-      data-testid="agent-pane-timeline"
-    >
+    <div class="flex min-h-0 flex-1 flex-col" data-testid="agent-pane-timeline">
       {#if !launch}
-        <div class="flex h-full items-center justify-center px-4 text-center text-sm text-fg-subtle" data-testid="agent-pane-not-loaded">
+        <div class="flex flex-1 items-center justify-center px-4 text-center text-sm text-fg-subtle" data-testid="agent-pane-not-loaded">
           This agent's launch row isn't in the loaded timeline window.
         </div>
-      {:else if nodes.length === 0 && !completionAnswer}
-        <div class="flex h-full items-center justify-center px-4 text-center text-sm text-fg-subtle" data-testid="agent-pane-empty">
+      {:else if view && scopedItems.length > 0}
+        <div class="min-h-0 flex-1">
+          {#key scopeItemId}
+            <MessageTimeline pane={view.pane} />
+          {/key}
+        </div>
+      {:else if !completionAnswer}
+        <div class="flex flex-1 items-center justify-center px-4 text-center text-sm text-fg-subtle" data-testid="agent-pane-empty">
           No output yet.
         </div>
-      {:else}
-        {#each nodes as node (nodeKey(node))}
-          {@render renderNode(node, 0)}
-        {/each}
-        {#if completionAnswer}
-          <div class="pt-2 text-sm" data-testid="agent-pane-final-answer">
-            <ChatMarkdown source={completionAnswer} workspacePath={ctx.workspacePath ?? ''} />
-          </div>
-        {/if}
+      {/if}
+      {#if launch && completionAnswer}
+        <div class="min-h-0 shrink-0 overflow-y-auto px-3 py-2 text-sm" data-testid="agent-pane-final-answer">
+          <ChatMarkdown source={completionAnswer} workspacePath={ctx.workspacePath ?? ''} />
+        </div>
       {/if}
     </div>
 

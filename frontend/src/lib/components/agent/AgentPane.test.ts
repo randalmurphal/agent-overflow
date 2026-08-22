@@ -1,8 +1,8 @@
-// The agent companion pane (docs/specs/agent-visibility.md Q4/Q5): a
-// read-only thread view scoped to one launch. These tests drive it with a
-// real ThreadPane so the scoped-subtree projection, the breadcrumb, the
-// self-close rule, and the composer shell's Stop gate run against the same
-// state the chat surface uses.
+// The agent companion pane (docs/specs/agent-visibility.md Q4/Q5): the
+// REAL MessageTimeline over the scoped facade (agentScopeView.svelte.ts).
+// These tests drive it with a real ThreadPane so the scoped projection,
+// the breadcrumb, the self-close rule, and the composer shell's Stop gate
+// run against the same state the chat surface uses.
 import { cleanup, fireEvent, render, waitFor } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -184,18 +184,17 @@ describe('<AgentPane>', () => {
   });
 
   it('renders a nested launch as a real card (no orphan warnings) with grandchildren intact', async () => {
-    // Regression (found by the F6 harness): the grouping input excluded
-    // the scope row, so direct children ranked as orphans, nested
-    // launches never became cards, and grandchild rows were dropped.
-    const openAgentScope = vi.fn();
+    // Regression (found by the F6 harness): a direct child whose parentId
+    // is absent from the grouping input ranks as an orphan, a nested
+    // launch never becomes a card, and grandchild rows are dropped. The
+    // facade lifts direct children to the scope's top level instead.
     const { ctx } = await setup([
       launchItem(),
       makeItem({ id: 'nested-launch', itemIndex: 1, threadId: THREAD_ID, parentId: 'launch-1', kind: 'tool_call', toolName: 'Agent', status: 'running', summary: 'Agent: nested', payloadMeta: JSON.stringify({ toolName: 'Agent', input: { description: 'nested', subagent_type: 'Explore' } }) }),
       makeItem({ id: 'grandchild', itemIndex: 2, threadId: THREAD_ID, parentId: 'nested-launch', summary: 'grandchild work' }),
     ]);
-    openAgentCompanion('main', THREAD_ID, 'launch-1', 'Explore');
-    const patched = { ...ctx, openAgentScope } as PanelContext;
-    const { getByTestId, queryByText, getAllByTestId, getAllByText } = render(AgentPane, { props: { ctx: patched } });
+    const state = openAgentCompanion('main', THREAD_ID, 'launch-1', 'Explore');
+    const { getByTestId, queryByText, getAllByTestId, getAllByText } = render(AgentPane, { props: { ctx } });
 
     expect(queryByText(/Orphan subagent entry/)).toBeNull();
     const card = getByTestId('subagent-group');
@@ -205,9 +204,11 @@ describe('<AgentPane>', () => {
     await fireEvent.click(getByTestId('subagent-group-toggle'));
     expect(getAllByText('grandchild work').length).toBeGreaterThanOrEqual(2);
 
-    // Descending from inside the pane goes through ctx.openAgentScope.
+    // Descending from inside the pane goes through the facade's
+    // openAgentPane override — a breadcrumb hop, not a companion re-seed.
     await fireEvent.click(getAllByTestId('subagent-group-open-pane')[0]);
-    expect(openAgentScope).toHaveBeenCalledWith('nested-launch', expect.any(String));
+    expect(state?.scopeItemId).toBe('nested-launch');
+    expect(state?.breadcrumb.map((entry) => entry.itemId)).toEqual(['', 'launch-1', 'nested-launch']);
   });
 
   it('renders a NESTED scope’s children after descending (scope row with a parentId)', async () => {

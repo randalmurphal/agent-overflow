@@ -921,6 +921,16 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     get threadId() {
       return stableThreadId;
     },
+    /**
+     * Key the timeline's scroll state (snapshots, restore identity) is
+     * stored under. The base pane's is its thread id; a scoped facade
+     * (agentScopeView) overrides it per scope so an agent pane's scroll
+     * position never clobbers the main timeline's saved position for the
+     * same thread. timelineRestore must key on THIS, never on threadId.
+     */
+    get scrollStateKey() {
+      return stableThreadId;
+    },
     get activeModel() {
       return stableActiveModel;
     },

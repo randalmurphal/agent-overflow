@@ -1,0 +1,160 @@
+// The scoped ThreadPane facade the agent pane mounts MessageTimeline on.
+// These tests pin the override table against a REAL ThreadPane: what the
+// scope window contains, which identities diverge, and that everything
+// else forwards to the source pane.
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+
+import { createAgentScopeView } from './agentScopeView.svelte';
+import { createThreadPane, type ThreadPane } from './thread.svelte';
+import { registerPaneForTest, resetPanesForTest } from './panes.svelte';
+import { resetPaneLayoutForTest, setPaneLayoutItemsForTest } from './paneLayout.svelte';
+import { resetCompanionPanesForTest } from './companionPanes.svelte';
+import {
+  __resetAgentPaneStateForTest,
+  openAgentCompanion,
+  type AgentPaneState,
+} from './agentPane.svelte';
+import { installPaneMocks, makeItem, makeThread } from '../../test/helpers/chat';
+import { resetBindingMocks } from '../../test/mocks/bindings-app';
+import type { Item } from '../types/models';
+
+const THREAD_ID = 'thread-scope';
+
+function fixtureItems(): Item[] {
+  return [
+    makeItem({ id: 'launch-1', itemIndex: 0, threadId: THREAD_ID, kind: 'tool_call', toolName: 'Agent', status: 'running', summary: 'Agent: outer' }),
+    makeItem({ id: 'main-text', itemIndex: 1, threadId: THREAD_ID, summary: 'main thread prose' }),
+    makeItem({ id: 'child-a', itemIndex: 2, threadId: THREAD_ID, parentId: 'launch-1', summary: 'child a' }),
+    makeItem({ id: 'nested-launch', itemIndex: 3, threadId: THREAD_ID, parentId: 'launch-1', kind: 'tool_call', toolName: 'Agent', status: 'completed', summary: 'Agent: nested' }),
+    makeItem({ id: 'grandchild', itemIndex: 4, threadId: THREAD_ID, parentId: 'nested-launch', summary: 'grandchild work' }),
+    // The NESTED launch's completion sibling: no parentId, only completionOf.
+    makeItem({ id: 'nested-completion', itemIndex: 5, threadId: THREAD_ID, kind: 'tool_completion', status: 'completed', completionOf: 'nested-launch', summary: 'nested done' }),
+    // The SCOPE's own completion sibling: stays out (feeds the status line).
+    makeItem({ id: 'scope-completion', itemIndex: 6, threadId: THREAD_ID, kind: 'tool_completion', status: 'completed', completionOf: 'launch-1', summary: 'outer done' }),
+  ];
+}
+
+async function setup(): Promise<{ pane: ThreadPane; agent: AgentPaneState }> {
+  installPaneMocks(fixtureItems());
+  const pane = createThreadPane({ paneId: 'main' });
+  registerPaneForTest('main', pane);
+  await pane.switchThread(makeThread({ id: THREAD_ID }));
+  setPaneLayoutItemsForTest([{ id: 'main', paneId: 'main', kind: 'thread', widthPx: 400 }]);
+  const agent = openAgentCompanion('main', THREAD_ID, 'launch-1', 'outer')!;
+  return { pane, agent };
+}
+
+beforeEach(() => {
+  resetBindingMocks();
+  resetPanesForTest();
+  resetPaneLayoutForTest();
+  resetCompanionPanesForTest();
+  __resetAgentPaneStateForTest();
+});
+
+afterEach(() => {
+  __resetAgentPaneStateForTest();
+  resetCompanionPanesForTest();
+  resetPanesForTest();
+  resetPaneLayoutForTest();
+});
+
+describe('createAgentScopeView', () => {
+  it('scopes items to the launch subtree, lifting direct children to top level', async () => {
+    const { pane, agent } = await setup();
+    const view = createAgentScopeView(pane, agent, 'launch-1');
+
+    const ids = view.items.map((item) => item.id);
+    expect(ids).toContain('child-a');
+    expect(ids).toContain('nested-launch');
+    expect(ids).toContain('grandchild');
+    expect(ids).not.toContain('main-text');
+    expect(ids).not.toContain('launch-1');
+
+    // Direct children read as this surface's top level; deeper rows keep
+    // their real parent chain so nested cards still group.
+    const childA = view.items.find((item) => item.id === 'child-a')!;
+    expect(childA.parentId).toBeUndefined();
+    const grandchild = view.items.find((item) => item.id === 'grandchild')!;
+    expect(grandchild.parentId).toBe('nested-launch');
+
+    view.dispose();
+  });
+
+  it('carries a nested launch’s completion sibling but never the scope’s own', async () => {
+    const { pane, agent } = await setup();
+    const view = createAgentScopeView(pane, agent, 'launch-1');
+
+    const ids = view.items.map((item) => item.id);
+    expect(ids).toContain('nested-completion');
+    expect(ids).not.toContain('scope-completion');
+
+    view.dispose();
+  });
+
+  it('answers scoped identities and inert paging, forwards the rest', async () => {
+    const { pane, agent } = await setup();
+    const view = createAgentScopeView(pane, agent, 'launch-1');
+    const facade = view.pane;
+
+    // Diverging identities.
+    expect(facade.paneId).toBe('main~agent');
+    expect(facade.scrollStateKey).toBe(`${THREAD_ID}~agent:launch-1`);
+    expect(facade.scrollStateKey).not.toBe(pane.scrollStateKey);
+    expect(facade.revealBoundary).toBeNull();
+    expect(facade.activityRuns).not.toBe(pane.activityRuns);
+
+    // A scope window has no edges to page.
+    expect(facade.hasMoreHistory).toBe(false);
+    expect(facade.hasMoreNewer).toBe(false);
+    expect(facade.loading).toBe(false);
+    expect(facade.showLoadingSpinner).toBe(false);
+    await expect(facade.loadOlder()).resolves.toMatchObject({ status: 'noop' });
+    await expect(facade.loadUntilItem('grandchild')).resolves.toBe(true);
+    await expect(facade.loadUntilItem('main-text')).resolves.toBe(false);
+
+    // Everything else is the source pane.
+    expect(facade.threadId).toBe(pane.threadId);
+    expect(facade.getItemById('main-text')?.id).toBe('main-text');
+    expect(facade.timelineRevision).toBe(pane.timelineRevision);
+
+    view.dispose();
+  });
+
+  it('keeps its scroll-to-item slot separate from the source pane’s', async () => {
+    const { pane, agent } = await setup();
+    const view = createAgentScopeView(pane, agent, 'launch-1');
+    const before = pane.scrollToItemRequest;
+
+    view.pane.requestScrollToItem('grandchild');
+
+    expect(view.pane.scrollToItemRequest.itemId).toBe('grandchild');
+    expect(pane.scrollToItemRequest).toBe(before);
+
+    view.dispose();
+  });
+
+  it('routes openAgentPane to a breadcrumb hop instead of re-seeding the companion', async () => {
+    const { pane, agent } = await setup();
+    const view = createAgentScopeView(pane, agent, 'launch-1');
+
+    view.pane.openAgentPane('nested-launch', 'nested');
+
+    expect(agent.scopeItemId).toBe('nested-launch');
+    expect(agent.breadcrumb.map((entry) => entry.itemId)).toEqual(['', 'launch-1', 'nested-launch']);
+
+    view.dispose();
+  });
+
+  it('recomputes the window when the source timeline changes', async () => {
+    const { pane, agent } = await setup();
+    const view = createAgentScopeView(pane, agent, 'launch-1');
+    expect(view.items.some((item) => item.id === 'child-a')).toBe(true);
+
+    pane.removeItemById('child-a', THREAD_ID);
+
+    expect(view.items.some((item) => item.id === 'child-a')).toBe(false);
+
+    view.dispose();
+  });
+});
