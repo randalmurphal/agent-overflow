@@ -2318,14 +2318,46 @@ CLI binary; the subtypes we use or plan to use:
   `{added, removed, errors}`. Used by AO to sync per-thread MCP
   toggles without respawning the session.
 - `subtype: "mcp_authenticate"` — start the OAuth handshake for an
-  http/sse MCP server. Takes `server_name`. Returns `{authUrl,
-  requiresUserAction}`.
+  http/sse MCP server. Takes `serverName` (plus an optional
+  `redirectUri`; a custom one the authorization server rejects falls
+  back to localhost). Returns either
+  `{authUrl, requiresUserAction: true, callbackExpected,
+  redirectScheme, state, callbackPort}` when a browser hop is needed,
+  or a bare `{requiresUserAction: false}` when the flow settled
+  without one — the second form carries NO `authUrl` and is a
+  success, not a malformed body.
 - `subtype: "mcp_oauth_callback_url"` — post the captured callback
   URL back to the CLI to finish OAuth when the browser landed
   somewhere other than the CLI's loopback listener. Takes
-  `server_name` and `callback_url`.
+  `serverName` and `callbackUrl`. Only resolves against a flow the
+  SAME session started via `mcp_authenticate`; otherwise
+  `No active OAuth flow for server: <name>`.
+
+> ⚠ **Key spelling is per-handler and unguessable.** The CLI
+> destructures the fields it wants off `request` and validates
+> nothing, so a wrong key is not an error — the field reads
+> `undefined` and the handler fails on the value. `mcp_authenticate`
+> and `mcp_oauth_callback_url` are camelCase (`serverName`,
+> `callbackUrl`); `stop_task` is snake (`task_id`); `set_model` mixes
+> both (`model`, `system_prompt`). AO sent `server_name` to
+> `mcp_authenticate` until 2026-08-21 and got
+> `Server not found: undefined` for every server, which read as an
+> MCP-plugin bug because plugin servers were the only ones that ever
+> needed OAuth. Re-derive spellings from the installed binary and pin
+> them in `TestControlRequestWireKeys`
+> (`internal/provider/claude/control_request_wire_test.go`).
 - `subtype: "mcp_status"` — read-only snapshot of current MCP server
   state. No additional params. See [§mcp_status](#mcp_status) below.
+
+Plugin MCP servers participate in all of these under their qualified
+`plugin:<plugin>:<server>` name, and only that name — the bare server
+name is refused with `Server not found: <name>`. They report
+`scope: "dynamic"` in `mcp_status`, never `"plugin"`. `mcp_reconnect`
+refuses a server sitting in needs-auth with `Server status:
+needs-auth`; that refusal comes from inside the reconnect
+implementation, AFTER name resolution, so it is not a name problem and
+reconnect can never substitute for sign-in. All verified against
+2.1.237 (2026-08-21 spike).
 
 ### Response envelope
 

@@ -13,6 +13,7 @@ import (
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/provider/codex"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/threadmode"
 )
 
 // ThreadMCPServer is the per-thread MCP row the composer menu renders.
@@ -187,7 +188,7 @@ func (a *App) setClaudeThreadMCPEnabled(t store.Thread, name string, enabled boo
 	// Design Claude sessions launch with --strict-mcp-config — user MCP
 	// isn't visible to them, so only the config write (affecting future
 	// non-design sessions in this workspace) applies.
-	if t.Mode != "design" {
+	if t.Mode != threadmode.ModeDesign {
 		if sess, ok := a.sessionManager().get(t.ID); ok && sess.claude != nil {
 			ctx, cancel := context.WithTimeout(a.lifeCtx(), mcpLiveApplyTimeout)
 			defer cancel()

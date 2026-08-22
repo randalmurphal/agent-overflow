@@ -1042,12 +1042,18 @@ func TestPollClaudeMCPAfterOAuth_MissingEntryKeepsPolling(t *testing.T) {
 	}
 }
 
-// TestPollClaudeMCPAfterOAuth_TimeoutNoEmission asserts the budget-
-// exhausted path: every tick returns needs-auth, the loop walks the
-// full interval list, no mcp:oauth-completed fires, no cache write.
-// The prior cache entry (whatever it was) stays intact — the user can
-// hit Refresh manually.
-func TestPollClaudeMCPAfterOAuth_TimeoutNoEmission(t *testing.T) {
+// TestPollClaudeMCPAfterOAuth_TimeoutEmitsNotConfirmed asserts the
+// budget-exhausted path: every tick returns needs-auth, the loop walks
+// the full interval list, and the tail then (1) invalidates the cache
+// key — the unknown sentinel is what makes every attached pane re-list,
+// so a sign-in that completed after the poll gave up still flips the
+// row via the live-session re-list — and (2) emits
+// mcp:oauth-completed{success:false, timedOut:true}. No cache WRITE
+// happens: the poll has no provider truth to record, so it must not
+// manufacture an entry. Before the tail existed the poll ended in
+// silence and a slow success left "Needs sign-in" rendering over a
+// connected server.
+func TestPollClaudeMCPAfterOAuth_TimeoutEmitsNotConfirmed(t *testing.T) {
 	app := newTestAppWithStore(t)
 	snapshot := captureOrderedEmissions(app, "mcp:oauth-completed", "mcp:status")
 
@@ -1069,14 +1075,102 @@ func TestPollClaudeMCPAfterOAuth_TimeoutNoEmission(t *testing.T) {
 	if _, ok := app.mcpStatus().Get(mcpstatus.Key{Provider: mcpstatus.ProviderClaude, Name: "stuck"}); ok {
 		t.Error("cache should not be populated when poll budget exhausts on needs-auth")
 	}
-	var oauthEvents int
+	var oauth []capturedEmission
+	var statusSentinels int
 	for _, e := range snapshot() {
-		if e.name == "mcp:oauth-completed" {
-			oauthEvents++
+		switch e.name {
+		case "mcp:oauth-completed":
+			oauth = append(oauth, e)
+		case "mcp:status":
+			statusSentinels++
 		}
 	}
-	if oauthEvents != 0 {
-		t.Errorf("expected no mcp:oauth-completed on timeout, got %d", oauthEvents)
+	if len(oauth) != 1 {
+		t.Fatalf("expected 1 mcp:oauth-completed on timeout, got %d", len(oauth))
+	}
+	payload, _ := oauth[0].data.(map[string]any)
+	if payload["success"] != false {
+		t.Errorf("success = %v, want false", payload["success"])
+	}
+	if payload["timedOut"] != true {
+		t.Errorf("timedOut = %v, want true", payload["timedOut"])
+	}
+	if payload["serverName"] != "stuck" {
+		t.Errorf("serverName = %v, want stuck", payload["serverName"])
+	}
+	if statusSentinels != 1 {
+		t.Errorf("expected 1 mcp:status invalidation sentinel, got %d", statusSentinels)
+	}
+}
+
+// TestPollClaudeMCPAfterOAuth_ShutdownGuardSuppressesTimeout is the
+// exhaustion-tail sibling of ShutdownGuardSuppressesTerminal: if ctx
+// flips to Done() between the last tick's query and the tail, nothing
+// may emit or touch triage — and a canceled poll must never report a
+// timeout verdict, because cancellation means a superseding Sign In
+// click or shutdown owns the flow now.
+func TestPollClaudeMCPAfterOAuth_ShutdownGuardSuppressesTimeout(t *testing.T) {
+	app := newTestAppWithStore(t)
+	snapshot := captureOrderedEmissions(app, "mcp:oauth-completed", "mcp:status")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	ticks := 0
+	app.pollClaudeMCPAfterOAuth(
+		ctx,
+		"thread-1",
+		"slow",
+		zeroIntervals(3),
+		func() claudeMCPStatusQuerier {
+			return func(ctx context.Context) ([]claude.MCPServerStatus, error) {
+				ticks++
+				if ticks == 3 {
+					// Cancel lands while the LAST query is in flight, so
+					// the loop still exits by exhaustion (ctxutil.Sleep
+					// never sees the cancel) and only the tail's own
+					// guard stands between it and the emissions.
+					cancel()
+				}
+				return []claude.MCPServerStatus{{Name: "slow", Status: "needs-auth"}}, nil
+			}
+		},
+	)
+
+	if ticks != 3 {
+		t.Fatalf("expected the loop to exhaust all 3 ticks, got %d", ticks)
+	}
+	if got := len(snapshot()); got != 0 {
+		t.Errorf("expected zero emissions from a canceled poll, got %d", got)
+	}
+}
+
+// TestDefaultClaudeMCPOAuthIntervals_Shape pins the schedule: the fib
+// ramp keeps fast flows fast, and the trailing cadence extends the
+// total budget to at least 5 minutes so a slow IdP hop is still
+// confirmed. A regression back to the original ~32s budget recreated
+// exactly the stale-"Needs sign-in" gap the exhaustion tail closed.
+func TestDefaultClaudeMCPOAuthIntervals_Shape(t *testing.T) {
+	ramp := []time.Duration{
+		1 * time.Second,
+		2 * time.Second,
+		3 * time.Second,
+		5 * time.Second,
+		8 * time.Second,
+		13 * time.Second,
+	}
+	if len(defaultClaudeMCPOAuthIntervals) < len(ramp) {
+		t.Fatalf("schedule shorter than the ramp: %d ticks", len(defaultClaudeMCPOAuthIntervals))
+	}
+	for i, want := range ramp {
+		if defaultClaudeMCPOAuthIntervals[i] != want {
+			t.Errorf("tick %d = %s, want %s", i, defaultClaudeMCPOAuthIntervals[i], want)
+		}
+	}
+	var total time.Duration
+	for _, d := range defaultClaudeMCPOAuthIntervals {
+		total += d
+	}
+	if total < 5*time.Minute {
+		t.Errorf("total budget = %s, want >= 5m", total)
 	}
 }
 

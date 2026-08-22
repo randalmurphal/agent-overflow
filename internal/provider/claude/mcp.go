@@ -38,6 +38,12 @@ func (s *Session) ToggleMCPServer(ctx context.Context, serverName string, enable
 // connect surfaces as an error response with the connection failure.
 // Verified live on 2.1.219 (2026-08-04 spike: failed → fixed →
 // reconnect → connected with tools restored).
+//
+// A server sitting in needs-auth is refused with `Server status:
+// needs-auth` — the refusal comes from inside the CLI's reconnect
+// implementation, AFTER name resolution, so it is not a
+// name-resolution signal. Sign-in has to come first; a bare reconnect
+// can never clear needs-auth (2.1.237 spike).
 func (s *Session) ReconnectMCPServer(ctx context.Context, serverName string) error {
 	serverName = strings.TrimSpace(serverName)
 	if serverName == "" {
@@ -53,11 +59,18 @@ func (s *Session) ReconnectMCPServer(ctx context.Context, serverName string) err
 	return interpretControlResponse(res, "mcp_reconnect "+serverName)
 }
 
-// MCPAuthResult mirrors the response shape of mcp_authenticate. AuthURL
-// is the OAuth URL the App must open; RequiresUserAction is the CLI's
-// signal that the wrapper / user is expected to drive the next step
-// (open browser, paste callback) — false would mean the CLI completed
-// the flow itself, which doesn't happen in headless agent-overflow.
+// MCPAuthResult mirrors the response shape of mcp_authenticate.
+//
+// The CLI answers one of exactly two success bodies (2.1.237, spike
+// 2026-08-21): `{authUrl, requiresUserAction:true, callbackExpected,
+// redirectScheme, state, callbackPort}` when a browser hop is needed,
+// or a bare `{requiresUserAction:false}` when the flow settled without
+// one — cached XAA id_token, or a grant already installed. The second
+// form carries NO authUrl and is a success, not a malformed response:
+// callers treat an empty AuthURL as "nothing left for the user to do".
+// The extra 2.1.237 keys are deliberately not decoded; AO lets the CLI
+// own its loopback listener and has no use for the port or the PKCE
+// state.
 type MCPAuthResult struct {
 	AuthURL            string `json:"authUrl"`
 	RequiresUserAction bool   `json:"requiresUserAction"`
@@ -70,14 +83,26 @@ type MCPAuthResult struct {
 // the authorization URL the App should open. The App can let the
 // browser hit the loopback callback directly, OR capture the
 // redirect URL and complete via CompleteMCPOAuth.
+//
+// The name goes on the wire as `serverName`, matching the CLI's
+// `let {serverName, redirectUri} = request` destructure — NOT the
+// `server_name` this sent until 2026-08-21. A mis-spelled key is not a
+// validation error: the CLI reads undefined and answers
+// `Server not found: undefined` for every server, which is what made
+// MCP sign-in look like a plugin-only defect (plugin servers were the
+// only ones in the reporter's setup that ever needed OAuth). Plugin
+// servers themselves resolve fine under their qualified
+// `plugin:<plugin>:<server>` name — spike-verified against 2.1.237,
+// which also refuses the bare unqualified name. Every outbound
+// control_request key is pinned by TestControlRequestWireKeys.
 func (s *Session) AuthenticateMCP(ctx context.Context, serverName string) (*MCPAuthResult, error) {
 	serverName = strings.TrimSpace(serverName)
 	if serverName == "" {
 		return nil, fmt.Errorf("claude: mcp_authenticate: server name required")
 	}
 	res, err := s.sendControlRequest(ctx, "mcp_authenticate "+serverName, map[string]any{
-		"subtype":     "mcp_authenticate",
-		"server_name": serverName,
+		"subtype":    "mcp_authenticate",
+		"serverName": serverName,
 	})
 	if err != nil {
 		return nil, err
@@ -88,14 +113,22 @@ func (s *Session) AuthenticateMCP(ctx context.Context, serverName string) (*MCPA
 		}
 		return nil, fmt.Errorf("claude: mcp_authenticate %s: %s", serverName, res.errMsg)
 	}
-	out := &MCPAuthResult{}
-	if len(res.payload) > 0 {
-		if err := json.Unmarshal(res.payload, out); err != nil {
-			return nil, fmt.Errorf("claude: mcp_authenticate %s: decode response: %w", serverName, err)
-		}
+	// Both success bodies carry a payload; a bare ack is a shape the CLI
+	// does not produce, so it stays an error rather than being read as
+	// the settled-without-a-hop case.
+	if len(res.payload) == 0 {
+		return nil, fmt.Errorf("claude: mcp_authenticate %s: success response carried no payload", serverName)
 	}
-	if out.AuthURL == "" {
-		return nil, fmt.Errorf("claude: mcp_authenticate %s: empty authUrl in response", serverName)
+	out := &MCPAuthResult{}
+	if err := json.Unmarshal(res.payload, out); err != nil {
+		return nil, fmt.Errorf("claude: mcp_authenticate %s: decode response: %w", serverName, err)
+	}
+	// An empty authUrl is only malformed when the CLI ALSO claims the
+	// user has to act; on its own it is the settled-without-a-hop
+	// success body. Failing the call on it turned "already
+	// authenticated" into a red sign-in-failed toast.
+	if out.AuthURL == "" && out.RequiresUserAction {
+		return nil, fmt.Errorf("claude: mcp_authenticate %s: response requires user action but carries no authUrl", serverName)
 	}
 	return out, nil
 }
@@ -190,6 +223,19 @@ func (s *Session) QueryMCPStatus(ctx context.Context) ([]MCPServerStatus, error)
 // `http://*?code=XXX&state=YYY` is accepted. On success the CLI fires
 // `mcp_reconnect` internally and the next tool-list refresh picks up
 // the now-authed tools.
+//
+// Keys go on the wire as `serverName` / `callbackUrl` — the CLI's
+// destructure is `let {serverName, callbackUrl} = request` (2.1.237).
+// The old `server_name` / `callback_url` spelling produced
+// `No active OAuth flow for server: undefined`, the sibling of the
+// AuthenticateMCP defect; both were fixed together and are pinned by
+// TestControlRequestWireKeys.
+//
+// This only resolves against a flow the SAME session started, so it
+// must follow an AuthenticateMCP on this session. It currently has no
+// caller: AO opens the auth URL and relies on the CLI's loopback
+// listener catching the redirect, which leaves no recovery when the
+// browser cannot reach that port.
 func (s *Session) CompleteMCPOAuth(ctx context.Context, serverName, callbackURL string) error {
 	serverName = strings.TrimSpace(serverName)
 	if serverName == "" {
@@ -200,9 +246,9 @@ func (s *Session) CompleteMCPOAuth(ctx context.Context, serverName, callbackURL 
 		return fmt.Errorf("claude: mcp_oauth_callback_url: callback url required")
 	}
 	res, err := s.sendControlRequest(ctx, "mcp_oauth_callback_url "+serverName, map[string]any{
-		"subtype":      "mcp_oauth_callback_url",
-		"server_name":  serverName,
-		"callback_url": callbackURL,
+		"subtype":     "mcp_oauth_callback_url",
+		"serverName":  serverName,
+		"callbackUrl": callbackURL,
 	})
 	if err != nil {
 		return err

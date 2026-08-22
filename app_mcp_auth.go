@@ -13,6 +13,7 @@ import (
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/provider/codex"
+	"agent-overflow/internal/threadmode"
 )
 
 func (a *App) triggerMcpAuth(threadID, name string) (MCPAuthInitResult, error) {
@@ -22,6 +23,19 @@ func (a *App) triggerMcpAuth(threadID, name string) (MCPAuthInitResult, error) {
 	thread, err := a.store.GetThread(threadID)
 	if err != nil {
 		return MCPAuthInitResult{}, err
+	}
+	// A design thread spawns with `--mcp-config <design servers>
+	// --strict-mcp-config`, so its session cannot see a single workspace
+	// MCP server. Without this guard the auto-start below would spawn
+	// exactly that session and ask it to authenticate a name it will
+	// never resolve — the CLI answers `Server not found: <name>` and the
+	// user gets a sign-in-failed toast blaming the server. The toggle
+	// path already carves design threads out the same way
+	// (setClaudeThreadMCPEnabled); the OAuth grant itself is global to
+	// the CLI's secure storage, so a regular thread in any workspace can
+	// perform it.
+	if thread.Mode == threadmode.ModeDesign {
+		return MCPAuthInitResult{}, ErrMCPDesignThreadUnsupported
 	}
 	if !a.hasActiveSession(threadID) {
 		if err := a.startSession(context.Background(), threadID); err != nil {
@@ -171,21 +185,33 @@ func (a *App) startClaudeMCPOAuthPoll(threadID, serverName string) {
 // Session struct.
 type claudeMCPStatusQuerier func(ctx context.Context) ([]claude.MCPServerStatus, error)
 
-// defaultClaudeMCPOAuthIntervals is a Fibonacci-shaped backoff:
-// short early ticks for fast browser flows (most OAuth completes
-// inside 10s), a trailing 13s tick as slack for slow IdPs and the
-// CLI's client-pool warm-up before a freshly-credentialed server
-// reports as `connected`. Total wall budget across 6 attempts is
-// ~32s. Tests pass zero-duration slices to drive the loop
-// deterministically without changing the tick count.
-var defaultClaudeMCPOAuthIntervals = []time.Duration{
-	1 * time.Second,
-	2 * time.Second,
-	3 * time.Second,
-	5 * time.Second,
-	8 * time.Second,
-	13 * time.Second,
-}
+// defaultClaudeMCPOAuthIntervals is a Fibonacci-shaped ramp for fast
+// browser flows (most OAuth completes inside 10s), then a steady 15s
+// cadence out to a ~5-minute total budget for the slow ones: an IdP
+// login the user has to complete first, or a hop they came back to
+// after a distraction. Each tick is one `mcp_status` control_request
+// answered from the CLI's in-memory client pools — no API call, no
+// token cost — so the long tail is nearly free. When the budget
+// exhausts, the poll reports "not confirmed" rather than going
+// silent (see pollClaudeMCPAfterOAuth). Tests pass zero-duration
+// slices to drive the loop deterministically without changing the
+// tick count.
+var defaultClaudeMCPOAuthIntervals = func() []time.Duration {
+	intervals := []time.Duration{
+		1 * time.Second,
+		2 * time.Second,
+		3 * time.Second,
+		5 * time.Second,
+		8 * time.Second,
+		13 * time.Second,
+	}
+	total := 32 * time.Second
+	for total < 5*time.Minute {
+		intervals = append(intervals, 15*time.Second)
+		total += 15 * time.Second
+	}
+	return intervals
+}()
 
 // pollClaudeMCPAfterOAuth polls Claude's `mcp_status` control_request
 // after a successful TriggerMcpAuth, waiting for `serverName` to flip
@@ -200,8 +226,27 @@ var defaultClaudeMCPOAuthIntervals = []time.Duration{
 // inline feedback. Other states ({needs-auth, starting/pending,
 // unknown, server-missing-from-response, or transient query error})
 // keep the loop running until intervals is exhausted or ctx is
-// canceled. On timeout no event fires — the prior cache entry stays
-// in place and the user can hit Refresh manually.
+// canceled.
+//
+// Exhaustion is "not confirmed", never "failed": the CLI's in-flight
+// OAuth flow outlives this poll (it dies only when superseded or the
+// process exits), so a sign-in the poll gave up on can still land.
+// The tail therefore invalidates the cache entry instead of writing
+// one — the sentinel re-lists every pane carrying the server, and a
+// live-session re-list queries the CLI fresh, flipping the row to
+// connected when the slow hop did complete — and emits
+// `mcp:oauth-completed{success:false, timedOut:true}`. Deliberately
+// NO thread-error: the common way to reach the tail is the user
+// abandoning the browser hop on purpose, and an error item landing
+// five minutes after they changed their mind is noise, not signal
+// (user ruling 2026-08-21). Abandon-and-retry needs no affordance
+// here — the row keeps its Sign in button throughout, and a new
+// click supersedes both the CLI's flow and this poll. Before this
+// tail existed the poll ended in silence, and a sign-in completed
+// after ~32s left the row on "Needs sign-in" with no signal anything
+// was stale. Ctx cancellation (shutdown, or a superseding Sign In
+// click) still exits without emitting — a fresh poll owns the flow
+// now, and a timeout verdict from the dead one would be a lie.
 //
 // getQuerier is re-invoked each tick so a session that dies mid-poll
 // stops the loop cleanly. Production passes a closure that resolves
@@ -278,6 +323,21 @@ func (a *App) pollClaudeMCPAfterOAuth(
 			// already continues earlier.
 		}
 	}
+	// Budget exhausted without a terminal answer. Same shutdown race
+	// guard as the terminal branch: past the drain barrier nothing may
+	// emit or file a triage.
+	if ctx.Err() != nil {
+		return
+	}
+	a.mcpStatus().Invalidate(mcpstatus.Key{Provider: mcpstatus.ProviderClaude, Name: serverName})
+	a.emit("mcp:oauth-completed", map[string]any{
+		"threadId":   threadID,
+		"provider":   mcpProviderClaude,
+		"serverName": serverName,
+		"success":    false,
+		"timedOut":   true,
+		"error":      "sign-in not confirmed",
+	})
 }
 
 // handleCodexMCPOAuthCompleted is the side-channel callback Codex

@@ -55,6 +55,14 @@ interface MCPOAuthCompletedPayload {
   provider: string;
   serverName: string;
   success: boolean;
+  /**
+   * True when the Claude-side poll exhausted its budget without a
+   * terminal answer — "not confirmed", not a provider-reported
+   * failure; the sign-in may still have landed and the re-list this
+   * event triggers will show it. Absent on Codex events and on real
+   * terminal outcomes.
+   */
+  timedOut?: boolean;
   error?: string;
 }
 
