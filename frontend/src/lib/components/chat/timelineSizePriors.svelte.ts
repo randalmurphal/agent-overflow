@@ -272,9 +272,13 @@ export function createTimelineSizePriors(
   // signature churn still drops dead rows for free.
   function maybePersistSizePriors(): void {
     const pane = options.getPane();
+    // Priors stay keyed per THREAD (row sizes are a property of the
+    // content, deliberately shared across surfaces showing it); the
+    // restored-guard compares the pane's scroll-state key, which is what
+    // the restore module records.
     const threadId = pane.threadId || null;
     const listRef = options.getListRef();
-    if (!threadId || !listRef || options.getRestoredThreadId() !== threadId) return;
+    if (!threadId || !listRef || options.getRestoredThreadId() !== pane.scrollStateKey) return;
     // O(1) read (the engine's prefix-sum total) — the cheap change-gate.
     // Skip the takeSnapshot() slice entirely when geometry hasn't moved
     // (60Hz spring).

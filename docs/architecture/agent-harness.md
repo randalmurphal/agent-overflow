@@ -181,7 +181,10 @@ list consumed per user message), and `afterTurns`
   `chunkIntervalMs` for partial-line stress),
 - `fixture` — stream a recorded NDJSON fixture file (`fromLine`/`toLine`),
 - `delayMs`, `writeFile` (real workspace mutations so diffs/git are real),
-- `approval` — raise a permission request, branch `onAllow`/`onDeny`,
+- `approval` — raise a permission request, branch `onAllow`/`onDeny`;
+  Claude requests may name `toolUseId` and `agentId` (the subagent's
+  task id), the correlation fields that scope a prompt to an agent's
+  card — omit them for a main-agent prompt,
 - `waitSignal` — block until a named `advance`,
 - `stall` — hang until `advance` (or `durationMs`),
 - `repeat` — run a nested step list `count` times, or forever when

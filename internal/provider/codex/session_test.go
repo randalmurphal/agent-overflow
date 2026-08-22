@@ -1232,19 +1232,74 @@ func TestDispatchLineSuppressesChildTurnLifecycle(t *testing.T) {
 	}
 }
 
-// TestDispatchLineSuppressesChildTokenUsage ensures that child-thread
-// `thread/tokenUsage/updated` notifications do not surface as
-// EventTokenUsage on the parent thread. Per ADR-002 Codex subagents
-// flatten onto the parent; without this filter the child's context
-// window would overwrite the parent meter every time a subagent ran a
-// turn. Mirrors the Claude precedent at
-// internal/provider/claude/parse_assistant.go:appendContextUsageEvent.
-func TestDispatchLineSuppressesChildTokenUsage(t *testing.T) {
+// TestDispatchLineChildTokenUsageBecomesScopedProgress replaces the old
+// TestDispatchLineSuppressesChildTokenUsage. A child's
+// `thread/tokenUsage/updated` is still forbidden from reaching the
+// PARENT's meter (ADR-002: Codex subagents flatten onto the parent, so
+// the child's window would overwrite it) — but dropping it entirely also
+// threw away the only live signal Codex gives for a running child. It is
+// now re-emitted as a scoped EventSubagentProgress naming the spawn
+// tool_use (docs/specs/agent-visibility.md).
+func TestDispatchLineChildTokenUsageBecomesScopedProgress(t *testing.T) {
 	var events []provider.ProviderEvent
 	s := &Session{
 		threadID:            "parent-thread",
 		pending:             make(map[int64]chan json.RawMessage),
 		childParentByThread: map[string]string{"child-provider-1": "call-collab-1"},
+		usageAcct:           newUsageAccounting(false),
+		onEvent: func(evt provider.ProviderEvent) {
+			events = append(events, evt)
+		},
+	}
+
+	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"thread/tokenUsage/updated","params":{"threadId":"child-provider-1","tokenUsage":{"last":{"totalTokens":50000},"total":{"totalTokens":73000},"modelContextWindow":200000}}}`))
+
+	if len(events) != 1 {
+		t.Fatalf("events = %+v, want exactly one scoped progress tick", events)
+	}
+	event := events[0]
+	if event.Kind != provider.EventSubagentProgress {
+		t.Fatalf("kind = %q, want %q", event.Kind, provider.EventSubagentProgress)
+	}
+	if event.ThreadID != "parent-thread" {
+		t.Fatalf("threadID = %q, want the AO parent thread", event.ThreadID)
+	}
+	if event.ItemID != "call-collab-1" {
+		t.Fatalf("itemID = %q, want the spawn tool_use", event.ItemID)
+	}
+	if event.ParentToolUseID != "" {
+		t.Fatalf("parentToolUseID = %q, want empty for a depth-1 child", event.ParentToolUseID)
+	}
+	var progress provider.SubagentProgressMeta
+	if err := json.Unmarshal(event.Meta, &progress); err != nil {
+		t.Fatalf("decode progress meta: %v", err)
+	}
+	// The CUMULATIVE total, not `last` (which is the context size the
+	// parent-thread meter reads).
+	if progress.TaskID != "child-provider-1" || progress.TotalTokens != 73000 {
+		t.Fatalf("progress = %+v, want the child thread id and its cumulative total", progress)
+	}
+	if progress.ToolUses != 0 || progress.DurationMs != 0 {
+		t.Fatalf("progress = %+v, Codex reports neither tool count nor elapsed", progress)
+	}
+
+	// The parent's own per-turn accounting never saw it.
+	if s.usageAcct.latestSet {
+		t.Fatalf("child usage reached the parent meter: %+v", s.usageAcct)
+	}
+}
+
+// TestDispatchLineChildTokenUsageWithoutTotalEmitsNothing pins that a
+// frame carrying no cumulative total is silence rather than a zeroing
+// tick — the consumer merges ticks, so a zero would be indistinguishable
+// from "this agent has spent nothing" if it were ever applied.
+func TestDispatchLineChildTokenUsageWithoutTotalEmitsNothing(t *testing.T) {
+	var events []provider.ProviderEvent
+	s := &Session{
+		threadID:            "parent-thread",
+		pending:             make(map[int64]chan json.RawMessage),
+		childParentByThread: map[string]string{"child-provider-1": "call-collab-1"},
+		usageAcct:           newUsageAccounting(false),
 		onEvent: func(evt provider.ProviderEvent) {
 			events = append(events, evt)
 		},
@@ -1253,7 +1308,73 @@ func TestDispatchLineSuppressesChildTokenUsage(t *testing.T) {
 	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"thread/tokenUsage/updated","params":{"threadId":"child-provider-1","tokenUsage":{"last":{"totalTokens":50000},"modelContextWindow":200000}}}`))
 
 	if len(events) != 0 {
-		t.Fatalf("expected no events for child token usage, got %+v", events)
+		t.Fatalf("events = %+v, want none", events)
+	}
+	if s.usageAcct.latestSet {
+		t.Fatalf("child usage reached the parent meter: %+v", s.usageAcct)
+	}
+}
+
+// TestDispatchLineNestedChildTokenUsageCarriesTheSpawnsOwnParent pins the
+// depth-2 case: the tick names the nested spawn AND the spawn that owns
+// it, resolved from the canonical agent path, so a consumer can nest the
+// card without a store lookup.
+func TestDispatchLineNestedChildTokenUsageCarriesTheSpawnsOwnParent(t *testing.T) {
+	var events []provider.ProviderEvent
+	s := &Session{
+		threadID: "parent-thread",
+		pending:  make(map[int64]chan json.RawMessage),
+		childParentByThread: map[string]string{
+			"child-1":      "spawn-reviewer",
+			"grandchild-1": "spawn-deep",
+		},
+		agentPathByThread: map[string]string{
+			"child-1":      "/root/reviewer",
+			"grandchild-1": "/root/reviewer/deep",
+		},
+		childParentByAgentPath: map[string]string{
+			"/root/reviewer":      "spawn-reviewer",
+			"/root/reviewer/deep": "spawn-deep",
+		},
+		usageAcct: newUsageAccounting(false),
+		onEvent: func(evt provider.ProviderEvent) {
+			events = append(events, evt)
+		},
+	}
+
+	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"thread/tokenUsage/updated","params":{"threadId":"grandchild-1","tokenUsage":{"total":{"totalTokens":1200},"modelContextWindow":200000}}}`))
+
+	if len(events) != 1 {
+		t.Fatalf("events = %+v, want one progress tick", events)
+	}
+	if events[0].ItemID != "spawn-deep" || events[0].ParentToolUseID != "spawn-reviewer" {
+		t.Fatalf("scope = item %q parent %q, want spawn-deep under spawn-reviewer", events[0].ItemID, events[0].ParentToolUseID)
+	}
+}
+
+// TestDispatchLineParentTokenUsageStillMetersTheParent is the control:
+// unsuppressing the CHILD channel must not change what a parent-thread
+// notification does.
+func TestDispatchLineParentTokenUsageStillMetersTheParent(t *testing.T) {
+	var events []provider.ProviderEvent
+	s := &Session{
+		threadID:            "parent-thread",
+		pending:             make(map[int64]chan json.RawMessage),
+		childParentByThread: map[string]string{"child-provider-1": "call-collab-1"},
+		usageAcct:           newUsageAccounting(false),
+		onEvent: func(evt provider.ProviderEvent) {
+			events = append(events, evt)
+		},
+	}
+	s.setRootThreadID("provider-parent")
+
+	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"thread/tokenUsage/updated","params":{"threadId":"provider-parent","tokenUsage":{"last":{"totalTokens":8400},"total":{"totalTokens":11839},"modelContextWindow":200000}}}`))
+
+	if len(events) != 1 || events[0].Kind != provider.EventTokenUsage {
+		t.Fatalf("events = %+v, want one EventTokenUsage", events)
+	}
+	if !s.usageAcct.latestSet || s.usageAcct.latest.TotalTokens != 11839 {
+		t.Fatalf("parent accounting = %+v, want the cumulative total observed", s.usageAcct)
 	}
 }
 

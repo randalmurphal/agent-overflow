@@ -56,8 +56,13 @@ function mkItem(overrides: Partial<Item> & { id: string }): Item {
   };
 }
 
-function mkLeaf(id: string, summary = ''): TimelineLeaf {
-  return { kind: 'leaf', item: mkItem({ id, summary }) };
+function mkLeaf(id: string, summary = '', kind = 'assistant_text'): TimelineLeaf {
+  return { kind: 'leaf', item: mkItem({ id, summary, kind }) };
+}
+
+/** A tool_call leaf — the row kind the expanded body's digest always keeps. */
+function mkToolLeaf(id: string, summary = ''): TimelineLeaf {
+  return { kind: 'leaf', item: mkItem({ id, summary, kind: 'tool_call', toolName: 'Bash' }) };
 }
 
 interface AgentParentInput {
@@ -339,10 +344,10 @@ describe('<SubagentGroup>', () => {
     expect(indicator?.getAttribute('aria-label')).toBe('Backgrounded');
   });
 
-  it('clicking the header toggles expansion and renders children inside a scrollable body', async () => {
+  it('clicking the header toggles expansion and renders children in an uncapped body', async () => {
     const group = mkGroup({
       parentId: 'p1',
-      children: [mkLeaf('c1', 'first child text'), mkLeaf('c2', 'second child text')],
+      children: [mkToolLeaf('c1', 'Bash: first'), mkToolLeaf('c2', 'Bash: second')],
       descendantCount: 2,
     });
     const { getByRole, getByTestId, getAllByTestId, queryAllByTestId } = render(
@@ -357,13 +362,60 @@ describe('<SubagentGroup>', () => {
     const leaves = getAllByTestId('leaf');
     expect(leaves).toHaveLength(2);
 
+    // The capped-body + fade scroller is deleted (spec Q6): the digest body
+    // renders in place with no inner max-height scroll region.
     const body = getByTestId('subagent-group-body');
-    expect(body.className).toContain('max-h-[20rem]');
-    expect(body.className).toContain('overflow-y-auto');
+    expect(body.className).not.toContain('max-h-[20rem]');
+    expect(body.className).not.toContain('overflow-y-auto');
 
     await fireEvent.click(toggle);
     expect(toggle.getAttribute('aria-expanded')).toBe('false');
     await waitFor(() => expect(queryAllByTestId('leaf')).toHaveLength(0));
+  });
+
+  it('expanded body is a digest: tool calls + final text; thinking and intermediate text stay out', async () => {
+    const group = mkGroup({
+      parentId: 'p1',
+      children: [
+        mkLeaf('think-1', 'pondering', 'thinking'),
+        mkToolLeaf('tool-1', 'Bash: build'),
+        mkLeaf('text-1', 'intermediate note'),
+        mkToolLeaf('tool-2', 'Read: file'),
+        mkLeaf('text-2', 'final report'),
+      ],
+      descendantCount: 5,
+    });
+    const { getByRole, getAllByTestId } = render(SubagentGroupTestHarness, {
+      props: { group },
+    });
+
+    await fireEvent.click(getByRole('button'));
+
+    const ids = getAllByTestId('leaf').map((el) => el.getAttribute('data-id'));
+    expect(ids).toEqual(['tool-1', 'tool-2', 'text-2']);
+  });
+
+  it('drops the final-text slot when the agent was killed — mid-flight prose is not an answer', async () => {
+    // User report 2026-08-22: a stopped agent's last text rendered in the
+    // expanded body as if it were the final report. A killed/errored
+    // agent has no final answer, so its digest is tool calls only.
+    const group = mkGroup({
+      parentId: 'p1',
+      parentItem: mkAgentParent('p1', { status: 'killed' }),
+      children: [
+        mkToolLeaf('tool-1', 'Read: file'),
+        mkLeaf('text-1', 'mid-flight prose'),
+      ],
+      descendantCount: 2,
+    });
+    const { getByRole, getAllByTestId } = render(SubagentGroupTestHarness, {
+      props: { group },
+    });
+
+    await fireEvent.click(getByRole('button'));
+
+    const ids = getAllByTestId('leaf').map((el) => el.getAttribute('data-id'));
+    expect(ids).toEqual(['tool-1']);
   });
 
   it('uses native button activation for keyboard-accessible toggling', async () => {
@@ -470,7 +522,7 @@ describe('<SubagentGroup>', () => {
   it('renders nested subagent groups recursively when expanded', async () => {
     const inner: SubagentGroupNode = mkGroup({
       parentId: 'inner',
-      children: [mkLeaf('c1', 'inner-one'), mkLeaf('c2', 'inner-two')],
+      children: [mkToolLeaf('c1', 'inner-one'), mkToolLeaf('c2', 'inner-two')],
       descendantCount: 2,
     });
     const outer = mkGroup({

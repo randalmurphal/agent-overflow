@@ -1,4 +1,4 @@
-import { onDestroy, untrack } from 'svelte';
+import { untrack } from 'svelte';
 import { GetAttachmentData, GetAttachmentThumbnail } from '../stores/bindings';
 import {
   parseUserMessageAttachments,
@@ -128,15 +128,25 @@ export function createAttachmentPreviews(
 
   function loadPreview(attachment: AttachmentPreviewSource, generation: number): Promise<ImagePreviewItem | null> {
     const existing = untrack(() => previews[attachment.id]);
-    if (existing) return Promise.resolve(existing);
-    // Re-check cache here in case another factory instance loaded the
-    // same attachment after our initial seed.
     if (options.cache) {
+      // The cache owner is the blob-lifecycle authority. Re-check it even
+      // when we hold a local copy: another factory instance may have
+      // loaded the attachment after our seed (adopt its entry), and the
+      // owner may have DISPOSED ours since (a row-UI prune revokes the
+      // blob and drops the cache entry, leaving `existing` a dead
+      // handle — fall through and reload instead of returning it).
       const cached = options.cache.get(attachment.id);
       if (cached) {
-        previews = { ...previews, [attachment.id]: cached };
+        // Compare by blob URL, not object identity: `existing` comes back
+        // through the $state proxy, so it is never `===` the raw cache
+        // entry even when it mirrors it.
+        if (existing?.url !== cached.url) {
+          previews = { ...previews, [attachment.id]: cached };
+        }
         return Promise.resolve(cached);
       }
+    } else if (existing) {
+      return Promise.resolve(existing);
     }
     const pending = loading.get(attachment.id);
     if (pending) return pending;
@@ -192,13 +202,18 @@ export function createAttachmentPreviews(
     }
   });
 
-  onDestroy(() => {
-    // When a cache is provided the pane owns the blob lifecycle; do not
-    // revoke here or remount-and-back would render broken thumbnails.
-    if (options.cache) return;
-    for (const preview of Object.values(previews)) {
-      revokePreview(preview);
-    }
+  // Teardown-only effect (reads nothing, so it never re-runs): when a
+  // cache is provided the pane owns the blob lifecycle; do not revoke
+  // here or remount-and-back would render broken thumbnails. An effect
+  // rather than onDestroy so the factory works under any effect root,
+  // not only component init.
+  $effect(() => {
+    return () => {
+      if (options.cache) return;
+      for (const preview of Object.values(untrack(() => previews))) {
+        revokePreview(preview);
+      }
+    };
   });
 
   return {

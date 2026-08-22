@@ -145,12 +145,49 @@ root `CLAUDE.md` principle 3.
   pagers, and has-more probes. Every window, budget, and probe counts
   visible **top-level** rows only (`parent_id = ''`); subagent children
   are excluded so one subagent-heavy turn can't eat the window budget
-  or flash a "Load older" button that loads nothing.
+  or flash a "Load older" button that loads nothing. The background
+  tray is the one read that does NOT share that filter — see
+  `thread_aggregates.go` below.
+- `thread_aggregates.go` — thread-wide reads backing dedicated frontend
+  bindings (plan sidebar, background tray). `ListLiveBackgroundTasks` is
+  the tray's item set and lists by BACKGROUNDED ANCESTRY, not by
+  top-level-ness (`docs/specs/agent-visibility.md` Q8): every live
+  `is_background = 1` launch at ANY depth, every live launch that
+  DESCENDS from one and is itself a subagent launch
+  (`subagentLaunchFilterFor`), and the recent completion siblings of
+  that set. Foreground plain tool calls under a background agent stay
+  out — they are the agent's own work, rendered inside its card. Because
+  only a launch can be a parent, the second class also supplies every
+  intermediate ancestor between a background root and a nested launch,
+  so the frontend indents by walking `parentId` WITHIN the result rather
+  than asking for rows it was not given. This is the DISPLAY query only:
+  the reaper and queue gates in `items_lifecycle.go` and `paging.go`'s
+  `topLevelItemsFilter` keep `parent_id = ''` (invariant 24), because
+  whether the tray SHOWS a nested background Bash and whether that Bash
+  blocks the flush queue are different questions.
 - `subagent_items.go` — the two read surfaces that replace in-window
   subagent children: `decorateSubagentAnchors` stamps each windowed
   launch anchor with its descendant count + latest-child summary
   (collapsed-card aggregates), and `ListSubagentDescendants` loads the
-  full child subtree on demand when a group card expands.
+  full child subtree on demand when a group card expands. It also owns
+  the two shared SQL fragments both this file and `thread_aggregates.go`
+  build their recursive reads from:
+  - `descendantsCTE(table, rootSet)` — the `rel(root, id)` recursive walk
+    down `parent_id` from a root set, `CROSS JOIN`ed as a planner
+    directive and repeating `parent_id <> ''` so the partial index
+    applies. `descendantsCTEFromRoots(n)` is the `timeline_items`
+    bind-list form the descendants read uses; the tray passes plain
+    `items` and a subquery.
+  - `subagentLaunchFilterFor(alias)` — what makes a `tool_call` row a
+    subagent LAUNCH. It is **structural** (a `tool_call` that has at
+    least one visible child attributed to it), never a tool-name list,
+    which is what keeps it provider-neutral across Claude
+    `Agent`/`Task`, a forked Skill, a SendMessage resume, and Codex
+    `spawn_agent`. The alias is MANDATORY: unqualified `thread_id` / `id`
+    inside the `EXISTS` would bind to the inner `items child` copy and
+    make the predicate vacuously true. `Store.IsSubagentLaunch` is the
+    single-row exported form, used by triage to tell a launch terminal
+    from an ordinary tool completion.
 - `usage_ledger.go` — append-only per-turn per-model token/cost
   accounting (`usage_ledger` table, migration v14). DELIBERATELY no
   foreign keys: lifetime aggregates must survive thread/project

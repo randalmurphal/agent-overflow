@@ -699,7 +699,7 @@
 
   let lastJumpEdge = '';
   $effect.pre(() => {
-    restore.handleSwitchEdgePre(pane.threadId, pane.switchGeneration);
+    restore.handleSwitchEdgePre(pane.scrollStateKey, pane.switchGeneration);
     // MessageTimeline survives a thread switch (only the virtualizer is
     // keyed), so a landing flash — or its pending settle watch — armed
     // on the previous thread must die here, not at unmount.

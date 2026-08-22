@@ -1,4 +1,4 @@
-import type { Thread } from '../types/models';
+import type { Item, Thread } from '../types/models';
 import type { ActiveOptionSet, DesignViewport } from '../types/design';
 import { mountThreadInPane, syncThread } from './panes.svelte';
 import type { ThreadPane } from './thread.svelte';
@@ -13,6 +13,16 @@ import type { ThreadPane } from './thread.svelte';
  * Adding a new panel kind that needs row registries (expansion state,
  * attachment cache, subagent group flags) should EXTEND this interface with
  * the specific accessors it needs, not widen back to `pane`.
+ *
+ * The AGENT panel is the one body that legitimately reads timeline state
+ * (`items`, `timelineRevision`, …): its scope lifecycle and hydration run
+ * off the source timeline, so those reads are its subject matter rather
+ * than an accidental coupling. That is exactly why they are enumerated
+ * here one by one instead of handing the body `pane` — no OTHER panel
+ * kind should touch them, and adding one to this list is a decision
+ * someone has to make on purpose. (The agent body's TRANSCRIPT does not
+ * come through this projection at all: it mounts the real MessageTimeline
+ * over the scoped facade in `agentScopeView.svelte.ts`.)
  */
 export interface PanelContext {
   /** Thread this panel belongs to. May be null when the pane has no thread
@@ -31,6 +41,22 @@ export interface PanelContext {
   designViewport: DesignViewport;
   /** Active design option set, when the agent has emitted choices. */
   activeOptionSet: ActiveOptionSet | null;
+  /** The source pane's loaded timeline window. Agent panel only. */
+  readonly items: Item[];
+  /** Bumped on every structural timeline change — the cutoff a projection
+   *  over `items` recomputes on. Agent panel only. */
+  readonly timelineRevision: number;
+  /** Row lookup by id, for resolving a scope/breadcrumb to its launch row.
+   *  Agent panel only. */
+  getItemById(itemId: string): Item | undefined;
+  /** Hydrate the evicted child transcript under a subagent launch anchor
+   *  (`threadSubagentMemory.hydrateChildren`). Scoping the pane to a node
+   *  whose children were evicted is exactly the case that needs it. Agent
+   *  panel only. */
+  ensureSubagentChildren(rootItemId: string): Promise<boolean>;
+  /** Close the agent companion for this source pane and drop its scope.
+   *  The body calls this when the scoped row resolves to nothing. */
+  closeAgentPane(): void;
   /** Close this panel (X button, ESC, programmatic). Generic across panel
    *  kinds — injected by the owning shell. */
   close(): void;
@@ -72,6 +98,11 @@ export function makePanelContext(pane: ThreadPane, close: () => void): PanelCont
     get workspacePath() { return pane.thread?.workspacePath; },
     get designViewport() { return pane.designViewport; },
     get activeOptionSet() { return pane.activeOptionSet; },
+    get items() { return pane.items; },
+    get timelineRevision() { return pane.timelineRevision; },
+    getItemById: (itemId) => pane.getItemById(itemId),
+    ensureSubagentChildren: (rootItemId) => pane.ensureSubagentChildren(rootItemId),
+    closeAgentPane: () => pane.closeAgentPane(),
     close,
     replaceThread: syncThread,
     switchThread: async (thread) => { await mountThreadInPane(thread, pane); },

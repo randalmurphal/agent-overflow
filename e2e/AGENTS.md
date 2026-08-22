@@ -198,6 +198,30 @@ headless, isolated data dir, mocked providers. Full harness guide:
   `journal_mode=DELETE` because the reader opens it `immutable=1` and would
   not see a WAL. The workspace the sessions record is a `HarnessSeed`'d git
   repo, so reset owns its cleanup.
+- `tests/agent-visibility-*.spec.ts` + `tests/agent-visibility-helpers.ts` —
+  one scenario per success criterion of
+  `docs/specs/agent-visibility.md`, driven through the real SPA:
+  `-tree` (a forked `code-review` is ONE `skill` card and none of its
+  fan-out's tool calls are the main agent's; a depth-2 background agent
+  nests in its parent's card and indents in the tray under live
+  `task_progress`), `-pane` (the card body is a digest, the pane is the
+  full transcript, and the scope survives reload), `-controls` (a
+  subagent's `can_use_tool` lights the approval pill and its
+  `permission_denied` notice nests under the card; the background button
+  returns the main turn and the transcript completes from the task
+  notification's `output_file`), `-codex` (a `spawn_agent` child gets the
+  same card and pane, counting the CHILD thread's
+  `thread/tokenUsage/updated`), and `-notify` (a top-level background
+  completion writes a bell row, a nested one does not). The helpers hold
+  every Claude wire-line builder, modelled on the checked-in 2026-08-22
+  captures in `docs/references/fixtures/claude/`. Two of these specs
+  began life as `test.fail()` bug documents and now pin the fixes they
+  forced: descending into a child from inside the pane (the pane's
+  grouping input, scope-row parentId clear, and the fold-aware hydrate
+  gate), and a Codex child's FINAL_ANSWER rendering from the spawn
+  completion's `payloadMeta.preview`.
+  Live progress is in-memory UI state, so these specs open the page
+  BEFORE starting the session and gate every tick behind a `waitSignal`.
 - `tests/notifications.spec.ts` — OS-notification pipe: `HarnessNotify`'s
   typed degraded send error, cold activation through transport replay and
   the pre-hydration queue, and the `none`-target no-op log.

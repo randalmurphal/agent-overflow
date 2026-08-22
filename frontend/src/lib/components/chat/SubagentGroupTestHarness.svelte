@@ -27,6 +27,7 @@
      * expansion registry and the expand-triggered child hydration.
      */
     pane?: ThreadPane;
+    /** Passthrough for the open-in-pane routing override. */
   } = $props();
 </script>
 

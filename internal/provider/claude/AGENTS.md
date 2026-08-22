@@ -57,7 +57,8 @@ owner. The top-level `ParseLine` (in `parser.go`) reads the envelope's
   claude-wire.md §"Interrupted-turn result envelope").
 - `parse_system.go` — `system` envelopes (init metadata, compact_boundary,
   the model fallback family, api_error,
-  task_started / task_updated / task_notification,
+  task_started / task_progress / task_updated / task_notification,
+  `background_tasks_changed`,
   `commands_changed`, `status`, `permission_denied`, `permission_retry`). `commands_changed` is an undocumented push
   whose contract is REPLACE-the-cached-list, so it emits
   `EventCommandsChanged` with the whole list; an empty `commands` array
@@ -82,7 +83,17 @@ owner. The top-level `ParseLine` (in `parser.go`) reads the envelope's
   split into `appendTaskOutputCompletion` (Task-tool background path)
   and `appendToolResultCompletion` (standard inline path).
 - `parse_control.go` — `control_request` envelopes: CanUseTool
-  approvals and the exit_plan_mode signal.
+  approvals and the exit_plan_mode signal. `parseControlRequest` is a
+  `*Parser` METHOD because a subagent's ask arrives here as
+  `request.agent_id` (its task id) with no `parent_tool_use_id`
+  anywhere on the envelope — the parser's task_id ↔ tool_use_id map is
+  the only state that can turn that into the launch scope that nests
+  the approval under the agent's card. The resolved launch lands on
+  both the `ApprovalRequest` / `UserInputRequest` payload
+  (`ParentToolUseID`) and the `ProviderEvent`; an unresolvable
+  `agent_id` leaves it EMPTY (triage owns the row-lookup fallback)
+  rather than guessing a scope. See claude-wire.md §"Subagent
+  approvals carry `agent_id`".
 - `parse_command_lifecycle.go` — `command_lifecycle` envelopes: the
   CLI's delivery ack for a user message we wrote to stdin, keyed by
   the client-minted `command_uuid`. Send-side correlation lives in
@@ -192,7 +203,9 @@ owner. The top-level `ParseLine` (in `parser.go`) reads the envelope's
 - `session_send.go` — what AO writes onto stdin to drive a turn:
   `Send` (the user-message envelope, its canonical-uuid check, and the
   issued-command-uuid note that keeps our own send from reading as a
-  peer's), `Interrupt`, `StopTask`, and the replay-parent expectations
+  peer's), `Interrupt`, `StopTask`, `BackgroundTask` (the Ctrl+B
+  equivalent — see the control_request list below), and the
+  replay-parent expectations
   `Send` records so `--replay-user-messages`' echo can be checked
   against the leaf the message was sent from (`verifyReplayParent`).
 - `session_approvals.go` — the inbound control_request side and the
@@ -377,7 +390,8 @@ of truth.
 Summary of what `ParseLine` dispatches:
 
 - `system` subtypes: `init`, `compact_boundary`, `task_started`,
-  `task_updated`, `task_notification`,
+  `task_progress`, `task_updated`, `task_notification`,
+  `background_tasks_changed`,
   `session_state_changed`, `api_retry`, `api_error`,
   `permission_denied`, `permission_retry`, and the model
   fallback family — `model_refusal_fallback`, `model_fallback`,
@@ -455,13 +469,44 @@ Summary of what `ParseLine` dispatches:
 - `system.task_started` — meta-only `EventToolStart` emission that
   records the `task_id ↔ tool_use_id` mapping into `items.meta`.
   Fires for EVERY Bash/Task — not just backgrounded ones.
+- `system.task_progress` — the per-round live tick for a running
+  `local_agent` (never a forked skill). Emits `EventSubagentProgress`
+  keyed by the LAUNCH tool_use, with the launch's own parent as
+  `ParentToolUseID` so a depth-2 agent attributes without a store
+  lookup. An envelope carrying both ids RE-SEEDS the task binding (same
+  reconnect insurance `task_started` and the §E5 ack provide); a tick
+  whose launch cannot be resolved is dropped with a log line rather
+  than emitted with an empty ItemID. Live UI state only — triage holds
+  the latest per launch in memory and persists the final numbers at the
+  launch's terminal.
 - `system.task_updated` (terminal `patch.status` in
   `{completed, failed, killed}`) — emits
   `EventBackgroundTaskTerminal` keyed by task_id + resolved
   tool_use_id.
+- `system.task_updated` with a NON-terminal patch carrying
+  `is_backgrounded: true` — the reply to Ctrl+B / AO's
+  `background_tasks` control_request. Emits `EventSubagentBackgrounded`
+  on the launch row: the only typed statement that a FOREGROUND agent's
+  sidechain streaming stopped here. It deliberately does not clear the
+  liveness flag — signal (5) must stay armed for the §E5 ack that
+  follows. Every other non-terminal patch stays a no-op.
+- `system.background_tasks_changed` — the LEVEL set of live background
+  tasks, REPLACE semantics. Emits `EventBackgroundTasksChanged` with
+  each member's launch tool_use resolved through the task map when
+  known. `tasks: []` is a real empty set and is forwarded; an ABSENT or
+  unreadable `tasks` key is dropped (unreadable is not evidence that
+  nothing is running). Foreground agents and forked skills are never in
+  the set.
 - `system.task_notification` — **NOT a completion source**. Emits
   `EventBackgroundTaskNotification` so triage can persist a distinct
-  notification row and optionally ingest `output_file` into SQLite.
+  notification row and optionally ingest `output_file` into SQLite. A
+  `local_agent` completion additionally carries
+  `usage{total_tokens, tool_uses, duration_ms}` — the run's
+  AUTHORITATIVE final counters — which ride the event meta under the
+  key `usage` as a `provider.SubagentProgressMeta` object so triage can
+  fold them onto the launch row without depending on a live tick having
+  survived. A usage-less notification (every `local_bash` bookend)
+  stamps nothing, so a zeroed object can never overwrite real numbers.
   See [`claude-wire.md §task_notification`](../../../docs/references/claude-wire.md#systemtask_notification)
   and [`turn-lifecycle.md §Task lifecycle`](../../../docs/architecture/turn-lifecycle.md#2-task-lifecycle-claude-only).
   `parseTaskNotificationEvent` and the synthetic-XML extraction in
@@ -517,6 +562,18 @@ Summary of what `ParseLine` dispatches:
   ADDITIONALLY emits `EventSessionWakeup` (the pending in-process
   wakeup timer has NO task lifecycle — this event is the only signal
   keeping the idle reaper off a session that will resume itself).
+  A seventh variant carries no lifecycle of its own: the FORKED SKILL
+  completion (§E9 — `tool_use_result.{success, commandName,
+  status:"forked", agentId, result}`). It is the only wire statement
+  that a `Skill` row was an agent, so `toolResultSkillFork` stamps
+  `meta.skillFork = {agentId, commandName}` onto the ordinary
+  `EventToolComplete` and binds `agentId → the Skill tool_use` so a
+  later `can_use_tool.agent_id` from inside the fork resolves to that
+  row. `status:"forked"` is the entire discriminator — an INLINE skill
+  answers `{success, commandName}` with no status and is left
+  unstamped, as is a `forked` result with no `agentId` (the id is what
+  the stamp is for). Never marked `is_background`: the main turn was
+  blocked for the whole fork.
 - `stream_event` — streaming deltas (requires
   `include_partial_messages: true`).
 - `result` — **turn-complete signal**. Emits `EventTurnComplete`.
@@ -524,7 +581,16 @@ Summary of what `ParseLine` dispatches:
   `exit_plan_mode`. Outbound from us carries `interrupt` (abort the
   current turn — `Session.Interrupt`), `stop_task` (kill a
   backgrounded Bash / Task subagent by `task_id` —
-  `Session.StopTask`), `set_permission_mode`, `set_model` (live model
+  `Session.StopTask`), `background_tasks` (the OPPOSITE direction:
+  detach an in-flight FOREGROUND Bash / subagent from the turn instead
+  of killing it, keyed by `tool_use_id` — `Session.BackgroundTask`,
+  bound as `App.BackgroundClaudeTask`. The reply's
+  `response.backgrounded` is verified rather than trusted: the CLI
+  answers `subtype:"success"` for a well-formed request that matched no
+  live foreground task, and reporting that as done would flip a
+  still-streaming row in the UI. AO never sends the id-less
+  "background everything" form),
+  `set_permission_mode`, `set_model` (live model
   switch, `live_update.go` — acked mid-turn, applies from the next
   turn; verified 2.1.205), the five MCP control
   subtypes AO wraps (`mcp_toggle` / `mcp_reconnect` /
@@ -851,6 +917,47 @@ falls back to the `<cross-session-message>` wrapper parse.
   transcript; Go regression guards are the four
   `TestAppendToolResultBlock_{MonitorLaunch…,TaskListAck…,
   ScheduleWakeup…,StringToolUseResult…}` tests in `parse_user_test.go`.
+
+- `docs/references/fixtures/claude/task_progress_20260822.ndjson` — one
+  async `local_agent` (2.1.237, 2026-08-22 spike, sanitized) running a
+  40-second Bash, from launch to notification: `system/task_started`,
+  two `system/task_progress` snapshots (LEVEL — cumulative
+  `usage{total_tokens, tool_uses, duration_ms}` plus `description` /
+  `last_tool_name`), the NESTED `local_bash` task the agent spawned,
+  two `system/background_tasks_changed` pushes (one member, then the
+  empty array), both terminals and both notifications — the agent's
+  carrying the same `usage` block — and the inline `tool_result`.
+  Authoritative for `parseTaskProgressEvent`, for the nested task
+  carrying the AGENT's `parent_tool_use_id` rather than the parent
+  turn's, and for `task_notification`'s `meta.usage`.
+- `docs/references/fixtures/claude/background_tasks_control_20260822.ndjson`
+  — the full `background_tasks` control round trip against a live async
+  agent: our outbound `control_request{subtype:"background_tasks",
+  tool_use_id}`, the `system/background_tasks_changed` listing the
+  `local_agent`, the `system/task_updated{patch:{is_backgrounded:true}}`
+  push, and the `control_response{backgrounded:true}` — in that order,
+  i.e. the pushes land BEFORE the reply. Authoritative for
+  `Session.BackgroundTask`'s reply verification and for
+  `parseTaskBackgroundedPatch` (a patch with no `status`, which must not
+  clear the task's liveness — the §E5 ack that follows still carries
+  `is_background:true`).
+- `docs/references/fixtures/claude/can_use_tool_agent_id_20260822.ndjson`
+  — a backgrounded agent asking for a Write approval from inside the
+  sidechain: `control_request{subtype:"can_use_tool", agent_id}` with NO
+  `parent_tool_use_id` anywhere on it, our deny `control_response`, and
+  the resulting error `tool_result`. Authoritative for the `agent_id` →
+  launch-`tool_use` resolution in `parse_control.go` (the fixture's
+  `agent_id` is the `task_started` id three lines above it).
+- `docs/references/fixtures/claude/forked_skill_20260822.ndjson` — a
+  `Skill` invocation that the CLI ran as a FORKED agent (§E9), captured
+  from a real AO session's provider-event log: the `Skill` tool_use, two
+  sidechain assistant/user pairs carrying the fork's own work, a
+  `tool_progress` heartbeat, and the completion
+  `tool_use_result{success, commandName, status:"forked", agentId}`.
+  There is NO task lifecycle anywhere in it — no `task_started`, no
+  `task_updated`, no `task_notification` — which is the whole reason the
+  `skillFork` meta stamp exists. Long strings are truncated with
+  `…[trimmed for fixture]`.
 
 Use these in tests via file path. When fresh captures prove wire drift,
 refresh the checked-in fixtures from a new `AGENT_OVERFLOW_DEBUG=provider`

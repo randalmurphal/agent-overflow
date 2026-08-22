@@ -39,6 +39,13 @@ import {
   toggleCompanion,
 } from './companionPanes.svelte';
 import { openReviewCompanion } from './reviewPane.svelte';
+import {
+  agentPaneRetainedRootScope,
+  agentPaneScopeTrailHolds,
+  disposeAgentStateForPane,
+  openAgentCompanion,
+} from './agentPane.svelte';
+import { collectAgentScopeRetainedIds } from './agentScopeView.svelte';
 import { errString } from '../utils/errors';
 import type { RevealBoundary } from '../utils/subagentGrouping';
 import type { SubagentFoldAggregate } from '../utils/subagentFold';
@@ -429,8 +436,47 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     getThread: () => thread,
     getSwitchGeneration: () => switchGeneration,
     recomputeReveal: streamingReveal.recomputeReveal,
-    isSubagentGroupExpanded: rowUiState.isSubagentGroupExpanded,
+    // An anchor the OPEN agent pane is scoped to (or holds on its trail)
+    // retains its children exactly like an expanded card: the pane is a
+    // live view of those rows, so folding them out from under it would
+    // blank the very transcript the reader opened.
+    isSubagentGroupExpanded: (groupKey: string) =>
+      rowUiState.isSubagentGroupExpanded(groupKey) ||
+      (thread !== null && agentPaneScopeTrailHolds(paneId, thread.id, groupKey)),
+    // The commit-chokepoint half of the same rule: eviction paths that
+    // never consult per-anchor expansion (collapse-time eviction, the
+    // collapsed-launch subtree sweep) still must not fold rows the open
+    // pane is rendering.
+    agentPaneHeldRows: () => {
+      const rootScope = thread !== null ? agentPaneRetainedRootScope(paneId, thread.id) : '';
+      return rootScope ? collectAgentScopeRetainedIds(items, rootScope) : null;
+    },
   });
+
+  /**
+   * Row-UI retention union for the open agent pane (the row-UI-state
+   * half of the retention rule above): the scope trail's whole subtree
+   * — item ids, their payload keys, and their group keys — joins
+   * whatever the chat timeline's prune pass retained. No open pane, no
+   * cost: the original retention passes through untouched.
+   */
+  function widenRetentionForAgentPane(retention: RowUiStateRetention): RowUiStateRetention {
+    const rootScope = thread !== null ? agentPaneRetainedRootScope(paneId, thread.id) : '';
+    if (!rootScope) return retention;
+    const scopeIds = collectAgentScopeRetainedIds(items, rootScope);
+    if (scopeIds.size === 0) return retention;
+    const itemIds = new Set(retention.itemIds);
+    const groupKeys = new Set(retention.groupKeys);
+    const payloads = [...retention.payloads];
+    for (const id of scopeIds) {
+      groupKeys.add(id);
+      if (itemIds.has(id)) continue;
+      itemIds.add(id);
+      const item = getItemById(id);
+      if (item?.payloadId) payloads.push({ threadId: item.threadId, payloadId: item.payloadId });
+    }
+    return { itemIds, payloads, groupKeys };
+  }
 
   /**
    * Nonce bumped when the pane wants the active MessageTimeline to scroll
@@ -910,6 +956,16 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     get threadId() {
       return stableThreadId;
     },
+    /**
+     * Key the timeline's scroll state (snapshots, restore identity) is
+     * stored under. The base pane's is its thread id; a scoped facade
+     * (agentScopeView) overrides it per scope so an agent pane's scroll
+     * position never clobbers the main timeline's saved position for the
+     * same thread. timelineRestore must key on THIS, never on threadId.
+     */
+    get scrollStateKey() {
+      return stableThreadId;
+    },
     get activeModel() {
       return stableActiveModel;
     },
@@ -1234,6 +1290,12 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     },
     get showDesignPreviewPanel() {
       return isCompanionOpen(paneId, 'design-preview');
+    },
+    /** Whether the agent companion (a subagent's scoped thread view) is
+     *  open for this pane. There is at most one — opening another node
+     *  swaps its scope (docs/specs/agent-visibility.md Q4b). */
+    get showAgentPane() {
+      return isCompanionOpen(paneId, 'agent');
     },
     /**
      * Monotonically increasing counter bumped at the top of every
@@ -1779,9 +1841,18 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     hasUserExpansionWithin: rowUiState.hasUserExpansionWithin,
     activityRuns,
     attachmentCacheFor: rowUiState.attachmentCacheFor,
+    // Retention arrives from the CHAT MessageTimeline's prune pass and
+    // describes only that instance's revealed rows — but the row-UI
+    // store is shared with the agent companion's scoped timeline (whose
+    // own prune is deliberately a no-op, agentScopeView.svelte.ts). An
+    // open agent pane's rows must survive this pass or its attachment
+    // blobs, expansion handles, and thinking tails get disposed out
+    // from under a mounted surface, so retention is widened with the
+    // scope trail's whole subtree before anything is dropped.
     pruneRowUiState(retention: RowUiStateRetention): void {
-      rowUiState.pruneRowUiState(retention);
-      streamingReveal.pruneSettledThinkingTails(retention.itemIds);
+      const widened = widenRetentionForAgentPane(retention);
+      rowUiState.pruneRowUiState(widened);
+      streamingReveal.pruneSettledThinkingTails(widened.itemIds);
     },
     // Full revealed text for a reasoning-tail row. Live while the row
     // streams and retained across a content-consistent settle (see
@@ -2164,6 +2235,26 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
         const companion = companionForSource(paneId, 'review');
         if (companion) closeCompanion(companion.paneId);
       }
+    },
+
+    /**
+     * Open the agent companion scoped to `launchItemId` (an Agent/Task row,
+     * a forked Skill, a Codex spawn_agent — whatever the card was for), or
+     * re-scope the one already open. Opened from CARDS only; there is no
+     * header button, because "which agent" is not a question a header can
+     * answer.
+     */
+    openAgentPane(launchItemId: string, label: string): void {
+      if (!thread?.id) return;
+      openAgentCompanion(paneId, thread.id, launchItemId, label);
+    },
+
+    closeAgentPane(): void {
+      const companion = companionForSource(paneId, 'agent');
+      if (companion) closeCompanion(companion.paneId);
+      // Explicitly closing drops the trail: the next open arrives with its
+      // own launch row, so a retained breadcrumb could only be stale.
+      disposeAgentStateForPane(paneId);
     },
 
     toggleDesignPreviewPanel(): void {

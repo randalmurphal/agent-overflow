@@ -80,7 +80,9 @@ export function createTimelinePaging(options: TimelinePagingOptions): TimelinePa
         loading: pane.loadingOlder,
         floorCursor: pane.oldestLoadedCursor,
         restoredThreadId: options.getRestoredThreadId(),
-        threadId: pane.threadId,
+        // Identity, not a thread id: restore bookkeeping is keyed by the
+        // pane's scroll-state key (see timelineRestore).
+        threadId: pane.scrollStateKey,
         inTriggerZone: () =>
           isWithinTopTriggerZone(offset, AUTO_LOAD_ZONE, () => listRef.findItemIndex(offset)),
       })
@@ -110,7 +112,9 @@ export function createTimelinePaging(options: TimelinePagingOptions): TimelinePa
         loading: pane.loadingNewer,
         floorCursor: pane.newestLoadedCursor,
         restoredThreadId: options.getRestoredThreadId(),
-        threadId: pane.threadId,
+        // Identity, not a thread id: restore bookkeeping is keyed by the
+        // pane's scroll-state key (see timelineRestore).
+        threadId: pane.scrollStateKey,
         inTriggerZone: () => {
           const edge = bottomEdgeGeometry(viewport.scrollHeight, viewport.clientHeight, offset);
           return isWithinBottomTriggerZone(

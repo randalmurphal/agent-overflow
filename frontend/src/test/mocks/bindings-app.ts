@@ -126,6 +126,7 @@ export const SendPlanRevisionComments = dispatch('SendPlanRevisionComments');
 export const StopClaudeTask = dispatch('StopClaudeTask');
 export const TerminateCodexBackgroundTerminal = dispatch('TerminateCodexBackgroundTerminal');
 export const CleanCodexBackgroundTerminals = dispatch('CleanCodexBackgroundTerminals');
+export const BackgroundClaudeTask = dispatch('BackgroundClaudeTask');
 
 // Live-session context breakdown (Claude's canonical /context read).
 export const GetThreadContextUsage = dispatch('GetThreadContextUsage');

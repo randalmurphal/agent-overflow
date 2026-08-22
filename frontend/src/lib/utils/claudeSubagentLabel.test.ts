@@ -116,6 +116,10 @@ describe('deriveClaudeSubagentModelLabel', () => {
     ).toBe('');
   });
 
+  it('accepts Task, the older name for the Agent tool', () => {
+    expect(deriveClaudeSubagentModelLabel({ model: 'opus' }, {}, 'Task')).toBe('Opus');
+  });
+
   it('prefers parentMeta.subagent_model (the post-spawn stamp) over input.model', () => {
     expect(
       deriveClaudeSubagentModelLabel(

@@ -398,7 +398,7 @@ func (p *Parser) ParseLine(threadID string, line []byte) ([]provider.ProviderEve
 	case "stream_event":
 		return p.parseStreamEvent(threadID, raw, now)
 	case "control_request":
-		return parseControlRequest(threadID, raw, now, line)
+		return p.parseControlRequest(threadID, raw, now, line)
 	case "control_response":
 		// The CLI emits control_response envelopes only as replies to
 		// outbound client control_requests (today: stop_task). The

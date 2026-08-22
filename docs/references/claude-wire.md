@@ -882,7 +882,7 @@ top-level `user:wire` user bubbles (incident 2026-07).
 
 ---
 
-## `system/task_progress` (dropped by AO today)
+## `system/task_progress`
 
 Per-subagent live progress, emitted after each of the agent's tool
 rounds for `local_agent` tasks (never for a forked skill, §E9).
@@ -899,12 +899,36 @@ Captured 2.1.237, 2026-08-22:
 Schema (bundle): `task_id`, optional `tool_use_id`, `description` (the
 agent's CURRENT activity line, not the launch description), optional
 `subagent_type`, `usage{total_tokens, tool_uses, duration_ms}`, optional
-`last_tool_name`, optional `summary`. `parse_system.go` lists it under
-the explicitly-skipped subtypes; it is the one wire source of a running
-agent's tool count / token spend / elapsed time, which is what a
-compact agent card would show.
+`last_tool_name`, optional `summary`. It is the one wire source of a
+running agent's tool count / token spend / elapsed time, which is what
+the compact agent card shows.
 
-## `system/background_tasks_changed` (dropped by AO today)
+**AO emits `EventSubagentProgress`** (`parseTaskProgressEvent`). `ItemID`
+is the LAUNCH tool_use — the envelope's own `tool_use_id` when present,
+otherwise the parser's `task_id ↔ tool_use_id` binding — and
+`ParentToolUseID` is that launch's own parent, so a depth-2 agent's tick
+attributes to its parent card without a store lookup. The counters land
+on `provider.SubagentProgressMeta` (`toolUses` / `totalTokens` /
+`durationMs` / `activity` / `lastToolName` / `agentType` / `summary`),
+which triage holds in memory per launch and persists only at the
+launch's terminal — a tick is live UI state, never a timeline row.
+
+Two rules the parser enforces:
+
+- **An envelope carrying BOTH ids re-seeds the binding**, exactly as
+  `task_started` and the §E5 ack do, so a parser that reconnected
+  mid-agent can still resolve the later terminal. The CLI's own echo
+  tracks its current binding (a §E6 resume rebinds `task_id` onto the
+  resuming tool_use and the echoes follow), so the re-seed can never
+  fight a rebind.
+- **An unattributable tick is DROPPED with a log line**, never emitted
+  with an empty `ItemID`. Progress routes by launch row id; a tick that
+  names no launch has nothing to update.
+
+Fixture:
+[`task_progress_20260822.ndjson`](fixtures/claude/task_progress_20260822.ndjson).
+
+## `system/background_tasks_changed`
 
 A LEVEL signal: the full set of live background tasks, emitted whenever
 membership changes (start, completion, kill, a foreground task being
@@ -921,8 +945,34 @@ unspecified.
 ```
 
 Foreground agents and forked skills are NOT in the set; async/backgrounded
-agents and backgrounded Bash are. AO's `default:` arm drops it; a
-reconnect-safe "is background work running" indicator would key on it.
+agents and backgrounded Bash are.
+
+**AO emits `EventBackgroundTasksChanged`**
+(`parseBackgroundTasksChangedEvent`) carrying the whole set as
+`provider.BackgroundTasksChangedMeta`. Each member's launch
+`tool_use_id` is resolved through the parser's task map when known
+(the wire member carries only `task_id`, `task_type` and
+`description`); a task whose launch predates this parser instance keeps
+an empty `toolUseId` and triage falls back to the persisted
+`items.meta.task_id`.
+
+The absent-vs-empty distinction is the same one `commands_changed`
+draws, and it decides whether a live indicator can be wedged or wrongly
+cleared:
+
+- `"tasks": []` is a REAL answer — nothing is running in the background
+  — and is forwarded as an allocated empty slice (serialized `[]`,
+  never `null`).
+- An ABSENT `tasks` key says nothing and is dropped. So is a `tasks`
+  value that fails to decode: unreadable is not evidence that nothing
+  is running.
+
+Fixtures:
+[`task_progress_20260822.ndjson`](fixtures/claude/task_progress_20260822.ndjson)
+(a nested backgrounded Bash moving the set to one member and back to
+empty) and
+[`background_tasks_control_20260822.ndjson`](fixtures/claude/background_tasks_control_20260822.ndjson)
+(a foreground agent entering the set).
 
 ---
 
@@ -1935,6 +1985,31 @@ Verified 2.1.237 across 12 Skill launches in AO provider-events logs
   `{success:true, commandName, status:"forked", agentId, result}`.
   `agentId` is the fork's sidechain id (`subagents/agent-<id>.jsonl`
   on disk, `meta.json` `{agentType:"general-purpose", spawnDepth:1}`).
+
+  **AO stamps this onto the Skill's `EventToolComplete` meta** as
+  `skillFork: {agentId, commandName}` (`toolResultSkillFork`,
+  `parse_user.go`) and binds `agentId → the Skill tool_use` in the
+  parser's task map, so a later `can_use_tool.agent_id` from inside the
+  fork resolves to the Skill row. `status:"forked"` is the whole
+  discriminator: the `local_agent` family spells its statuses
+  `async_launched` / `completed` / `failed` / `killed`, and an INLINE
+  (non-forking) skill answers `{success, commandName}` with no `status`
+  at all and is deliberately left unstamped. A `forked` result carrying
+  no `agentId` is also left unstamped — the id is what the stamp is
+  FOR. The completion is never marked `is_background`: the main turn
+  was blocked for the whole fork, so a background row would sit at
+  `status=running` with no terminal ever coming.
+
+  Fixture:
+  [`forked_skill_20260822.ndjson`](fixtures/claude/forked_skill_20260822.ndjson)
+  — the Skill tool_use, four attributed sidechain rows, a
+  `tool_progress` heartbeat, and the forked completion. Lifted from an
+  AO provider-events log (thread `e84f5c04`, 2.1.237, captured
+  2026-08-22T03:58Z, log file `provider-events-2026-08-21.ndjson.2`,
+  whose date stamp is the rotation day rather than the capture day).
+  The only edit is CONTENT: string values longer than 320 characters
+  are truncated with a `…[trimmed for fixture]` marker. No key was
+  added, removed, or renamed.
 - **The main turn is BLOCKED for the whole fork.** Order observed:
   Skill tool_use 04:01:53 → first sidechain row 04:01:56 → Skill
   tool_result 04:04:48 → `result` 04:04:56. The interactive TUI's
@@ -1969,6 +2044,24 @@ the subagent as an ordinary refusal). `agent_id` equals the task id that
 `task_started` bound to the launching tool_use, which is how the ask
 resolves to its launch scope. Under `read-only` (`dontAsk`) the same
 ask is auto-denied and surfaces as `system/permission_denied` instead.
+
+**AO resolves it in the parser** (`(*Parser).parseControlRequest` — the
+function is a method precisely because the task map is the only state
+that can answer "which agent asked"). The resolved launch tool_use
+lands on BOTH `ApprovalRequest.ParentToolUseID` and the
+`ProviderEvent.ParentToolUseID`, which is what nests the approval row
+under the agent's card and lights its "needs approval" pill; the prompt
+itself is still presented by the thread's normal approval UI. The same
+resolution applies to the `AskUserQuestion` branch, whose
+`UserInputRequest` carries the identically-named field.
+
+An `agent_id` this parser cannot resolve (it reconnected mid-agent)
+leaves the scope EMPTY rather than guessing — triage owns the fallback,
+looking the requested tool's own persisted row scope up. A main-agent
+ask carries no `agent_id` at all and stays unscoped.
+
+Fixture:
+[`can_use_tool_agent_id_20260822.ndjson`](fixtures/claude/can_use_tool_agent_id_20260822.ndjson).
 
 ### Steering a running subagent from a client
 
@@ -2366,7 +2459,9 @@ CLI binary; the subtypes we use or plan to use:
 - `subtype: "background_tasks"` — background an in-flight FOREGROUND
   task (Bash or subagent), the control-request form of Ctrl+B. Optional
   `tool_use_id` targets the one task started by that tool_use block;
-  omitted, it backgrounds every foreground task. Verified 2.1.237
+  omitted, it backgrounds every foreground task — a shape AO never
+  sends, because the button that reaches it names a single row
+  (`Session.BackgroundTask` refuses a blank id). Verified 2.1.237
   (2026-08-22 spike) on a foreground `local_agent`: reply
   `{subtype:"success", response:{backgrounded:true}}`; the CLI then
   emits `system/task_updated {patch:{is_backgrounded:true}}` (a
@@ -2376,6 +2471,30 @@ CLI binary; the subtypes we use or plan to use:
   (`tool_use_result.{isAsync, status:"async_launched", agentId}`), and
   the blocked turn ends with a normal `result`; completion later
   arrives as `task_updated`/`task_notification` as for any async agent.
+
+  **`response.backgrounded` is checked, not assumed.** The CLI answers
+  `subtype:"success"` for any well-formed request, including one whose
+  `tool_use_id` matched no live foreground task, so success alone would
+  flip a still-streaming row to "backgrounded" in the UI. AO returns a
+  descriptive error when the flag is false or absent.
+
+  **AO turns the non-terminal patch into
+  `EventSubagentBackgrounded`** (`parseTaskBackgroundedPatch`), keyed on
+  the launch tool_use, with `SubagentBackgroundedMeta{taskId}`. It is
+  the earliest and the only typed statement that this agent's sidechain
+  streaming stopped, which is what lets the agent pane place its
+  "streaming paused" marker after the last streamed row. The branch
+  deliberately does NOT clear the parser's liveness flag — signal (5)
+  must stay armed so the §E5 ack that follows ~40ms later still reads
+  as an ack rather than the agent's real result (regression:
+  `TestParseTaskUpdated_BackgroundedPatchKeepsLiveAgentTask`, alongside
+  commit 230cd078's `running`-patch twin). A patch carrying BOTH a
+  terminal status and `is_backgrounded` stays a terminal.
+
+  Fixture:
+  [`background_tasks_control_20260822.ndjson`](fixtures/claude/background_tasks_control_20260822.ndjson)
+  — the full round trip including our outbound control_request and the
+  CLI's control_response, neither of which produces an event.
   **Visibility price:** an agent backgrounded mid-flight streams NOTHING
   further on the wire — zero sidechain envelopes after the ack (only
   `system/task_progress` counters and its Bash calls' own
@@ -3414,10 +3533,13 @@ with no cursor — the safe degenerate.
 
 ## Captured samples
 
-All three captures are real wire output from claude-code CLI version
-2.1.112 (Sonnet 4.6) with `stream-json` mode. They ARE the
-authoritative test fixtures for parser refactor work — do not
-fabricate shapes when these samples cover the scenario.
+Every entry below is real wire output from a `stream-json` session; the
+CLI version is named per entry (the three oldest — `ndjson_bash.log`,
+`ndjson_task.log`, `ndjson_outlives.log` — are 2.1.112 / Sonnet 4.6).
+They ARE the authoritative test fixtures for parser refactor work — do
+not fabricate shapes when these samples cover the scenario. Where an
+entry says a value was truncated, that is the ONLY edit: no key is ever
+added, removed, or renamed.
 
 ### `docs/references/fixtures/claude/ndjson_bash.log`
 **Scenario**: one `run_in_background:true` Bash + one foreground
@@ -3468,6 +3590,76 @@ are truncated to placeholders — every other key/value, including the
 `description`/`subagent_type` echoed on the round-2 `task_started` and
 the ack's `resumedAgentId`, is byte-identical to the capture (AO
 thread `9941d40f`, 2026-07-02).
+
+### `docs/references/fixtures/claude/task_progress_20260822.ndjson`
+**Scenario**: one `local_agent` (`Agent` tool, foreground/awaited) that
+runs a backgrounded Bash of its own — the agent-visibility happy path.
+
+**Shapes covered**: `assistant` tool_use, `system/task_started`, the
+agent's first sidechain prompt, two `system/task_progress` ticks, the
+agent's own sidechain Bash rounds, two `system/background_tasks_changed`
+frames (one member, then the empty set), both tasks'
+`system/task_updated` terminals and `system/task_notification`s — the
+agent's carrying `usage{total_tokens, tool_uses, duration_ms}` — and the
+agent's inline `tool_result`. 17 real wire lines, byte-identical to the
+capture apart from the two OUTBOUND steer probes the steering spike sent
+(they belong to §"Steering a running subagent from a client", not to
+this sequence, and the CLI never routed them to the subagent). Replayed
+by `TestReplay_TaskProgressFixture` (2.1.237, 2026-08-22,
+`/tmp/spike-steer/wire.ndjson`).
+
+### `docs/references/fixtures/claude/background_tasks_control_20260822.ndjson`
+**Scenario**: AO backgrounds a running FOREGROUND `local_agent`
+mid-flight with the `background_tasks` control_request — the Ctrl+B
+equivalent.
+
+**Shapes covered**: `assistant` tool_use, `system/task_started`, our
+OUTBOUND `control_request {subtype:"background_tasks", tool_use_id}`,
+the agent's first sidechain prompt, `system/background_tasks_changed`
+listing the agent, the non-terminal
+`system/task_updated {patch:{is_backgrounded:true}}`, the
+`control_response {backgrounded:true}`, the §E5 async-ack `tool_result`
+the freed turn receives, and the `result` closing it. 9 real wire lines,
+byte-identical to the capture. The two control envelopes are inert
+through `ParseLine` (an outbound request and its reply); they are in the
+fixture because the round trip is the point. Replayed by
+`TestReplay_BackgroundTasksControlFixture` (2.1.237, 2026-08-22,
+`/tmp/spike-steer/wire2.ndjson`).
+
+### `docs/references/fixtures/claude/can_use_tool_agent_id_20260822.ndjson`
+**Scenario**: a subagent asks for permission — `control_request
+/can_use_tool` with `agent_id` and NO `parent_tool_use_id` anywhere on
+the envelope — and is denied.
+
+**Shapes covered**: `assistant` tool_use (Agent),
+`system/background_tasks_changed`, `system/task_started`, the async ack,
+the subagent's sidechain `Write` tool_use, a `system/task_progress`
+tick, the `can_use_tool` carrying `agent_id` +
+`permission_suggestions:[{type:"setMode",mode:"acceptEdits"}]`, our
+outbound `deny` control_response, the subagent's error `tool_result`,
+and the agent's terminal + notification. 11 real wire lines,
+byte-identical to the capture. Replayed by
+`TestReplay_CanUseToolAgentIDFixture` (2.1.237, 2026-08-22,
+`/tmp/spike-steer/wire3.ndjson`).
+
+### `docs/references/fixtures/claude/forked_skill_20260822.ndjson`
+**Scenario**: a forked skill (§E9) — the `code-review` skill running as
+a subagent with NO task lifecycle of any kind.
+
+**Shapes covered**: the `Skill` `assistant` tool_use, four sidechain
+rows attributed to it by `parent_tool_use_id`, a
+`tool_progress` heartbeat (`<skill tool_use_id>-heartbeat-0`), and the
+completion whose `tool_use_result` is
+`{success:true, commandName, status:"forked", agentId, result}`. 7 real
+wire lines. Deliberately contains ZERO `system/task_started`,
+`task_progress`, `task_updated` or `background_tasks_changed` envelopes
+— that absence is what the replay test asserts. The only edit is
+CONTENT: string values longer than 320 characters carry a
+`…[trimmed for fixture]` marker; no key was added, removed or renamed.
+Replayed by `TestReplay_ForkedSkillFixture` (2.1.237, AO thread
+`e84f5c04`, captured 2026-08-22T03:58Z out of
+`provider-events-2026-08-21.ndjson.2`, whose name is the rotation day
+rather than the capture day).
 
 ### `docs/references/fixtures/claude/ndjson_outlives.log` + `ndjson_outlives_turn2.log`
 **Scenario**: backgrounded Bash that outlives its launching turn —

@@ -253,11 +253,29 @@ func (p *Parser) appendToolResultBlock(
 	monitorTaskID, monitorLaunched := toolResultMonitorLaunch(backgroundSignals)
 	liveAgentTask := len(toolUseResultRaw) == 0 && p.hasLiveAgentTask(toolUseID)
 	isBackground := flaggedAtLaunch || markedOnWire || asyncLaunched || monitorLaunched || liveAgentTask
+	// §E9 — a FORKED skill's completion. A skill whose frontmatter forks
+	// runs as a subagent whose rows land on the parent stream with
+	// `parent_tool_use_id` = this Skill tool_use, but it gets no
+	// `system/task_started`, no task_id, no `task_progress` and no entry
+	// in `background_tasks_changed`. Its ONLY identity statement is this
+	// completion: `{success, commandName, status:"forked", agentId}`.
+	// Stamping it marks the launch row as an agent node the card and pane
+	// can render; an INLINE skill answers `{success, commandName}` with no
+	// status and is deliberately left unstamped.
+	forkedAgentID, forkedCommandName, skillForked := toolResultSkillFork(backgroundSignals)
 	events = appendToolResultCompletion(
 		events, threadID, toolUseID, now, line,
-		isBackground, monitorLaunched,
+		isBackground, monitorLaunched, skillForked, forkedAgentID, forkedCommandName,
 		block, content, toolUseResultRaw,
 	)
+	if skillForked {
+		// The fork's agentId is the id a later `can_use_tool.agent_id`
+		// or `task_progress` addresses it by (it is the sidechain id in
+		// `subagents/agent-<id>.jsonl`), so bind it to the Skill
+		// tool_use exactly as an async launch binds its task_id. Without
+		// this a fork's approvals would resolve to no scope at all.
+		p.rememberTaskToolUse(forkedAgentID, toolUseID)
+	}
 	// The async / Monitor ack IS the task lifecycle's task_id ↔
 	// tool_use_id correlation (normally learned ~4ms earlier from
 	// `system/task_started`). Recording it here too means a parser that
@@ -409,6 +427,9 @@ func appendToolResultCompletion(
 	line []byte,
 	isBackground bool,
 	watchTask bool,
+	skillForked bool,
+	skillForkAgentID string,
+	skillForkCommandName string,
 	block map[string]json.RawMessage,
 	content string,
 	toolUseResult json.RawMessage,
@@ -441,6 +462,16 @@ func appendToolResultCompletion(
 		// while every other background consumer (reaper, revert, context
 		// repair) still counts them as live work.
 		metaFields["watch_task"] = true
+	}
+	if skillForked {
+		// The structural fork marker (claude-wire.md §E9). Triage reads
+		// it to treat this Skill row as an agent launch: `agentId` is
+		// the fork's own sidechain id and `commandName` the skill name
+		// the card labels itself with.
+		metaFields["skillFork"] = map[string]string{
+			"agentId":     skillForkAgentID,
+			"commandName": skillForkCommandName,
+		}
 	}
 	if code, ok := extractExitCode(block["content"], toolUseResult); ok {
 		metaFields["exit_code"] = code
@@ -621,6 +652,7 @@ type toolResultBackgroundSignals struct {
 	isAsync          bool
 	status           string
 	agentID          string
+	commandName      string
 	taskID           string
 	scheduledForMs   int64
 	stopped          bool
@@ -629,6 +661,7 @@ type toolResultBackgroundSignals struct {
 	isAsyncSet          bool
 	statusSet           bool
 	agentIDSet          bool
+	commandNameSet      bool
 	taskIDSet           bool
 	persistentSet       bool
 	timeoutMsSet        bool
@@ -666,6 +699,7 @@ func (s *toolResultBackgroundSignals) fill(obj map[string]json.RawMessage) {
 	fillSignalString(obj, "backgroundTaskId", &s.backgroundTaskID, &s.backgroundTaskIDSet)
 	fillSignalString(obj, "status", &s.status, &s.statusSet)
 	fillSignalString(obj, "agentId", &s.agentID, &s.agentIDSet)
+	fillSignalString(obj, "commandName", &s.commandName, &s.commandNameSet)
 	fillSignalString(obj, "taskId", &s.taskID, &s.taskIDSet)
 	fillSignalBool(obj, "isAsync", &s.isAsync, &s.isAsyncSet)
 	fillSignalBool(obj, "stopped", &s.stopped, &s.stoppedSet)
@@ -787,6 +821,37 @@ func toolResultAsyncLaunch(signals toolResultBackgroundSignals) (agentID string,
 		return "", false
 	}
 	return strings.TrimSpace(signals.agentID), true
+}
+
+// toolResultSkillFork reports whether the decoded `tool_use_result` is a
+// FORKED skill's completion (claude-wire.md §E9) and, if so, returns the
+// fork's agent id and skill name.
+//
+// The shape is `{success:true, commandName, status:"forked", agentId,
+// result}`. `status:"forked"` is the discriminator and it is unique to
+// this path — the `local_agent` family spells its statuses
+// `async_launched` / `completed` / `failed` / `killed`, and an INLINE
+// (non-forking) skill answers `{success, commandName}` with no `status`
+// at all. Both `status` and a non-empty `agentId` are required: the id
+// is the whole point of the stamp (it is what a later
+// `can_use_tool.agent_id` addresses the fork by), so a `forked` result
+// without one has nothing to bind and is left unstamped rather than
+// stamped empty.
+//
+// A fork has NO task lifecycle whatsoever — no `task_started`, no
+// task_id, no `task_progress`, no `background_tasks_changed` entry — so
+// this completion is the only wire statement that the Skill row was an
+// agent. `commandName` may legitimately be empty on an older build; the
+// stamp still carries the id.
+func toolResultSkillFork(signals toolResultBackgroundSignals) (agentID, commandName string, ok bool) {
+	if signals.status != "forked" {
+		return "", "", false
+	}
+	agentID = strings.TrimSpace(signals.agentID)
+	if agentID == "" {
+		return "", "", false
+	}
+	return agentID, strings.TrimSpace(signals.commandName), true
 }
 
 // asyncLaunchAckSentinel is the fixed opening sentence of Claude's

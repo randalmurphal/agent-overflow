@@ -66,7 +66,11 @@ over stdio.
   redaction for stdin payloads.
 - `collab_agents.go` — spawned child-thread parent mapping, agent path
   mapping, receiver metadata enrichment, wait-target preservation, and
-  child metadata refresh.
+  child metadata refresh. Also owns the two child-projection gates:
+  `isChildSuppressedThreadNotification` (thread-WIDE notifications from a
+  child that must never be projected onto the parent) and
+  `isUnsafeChildProjectionEvent` (event kinds a child may never emit onto
+  the parent thread). See "Child thread-wide suppression" below.
 - `session_helpers.go` — thread start/resume params, sandbox policy,
   approval/user-input metadata builders, and route-field parsing.
 - `session_probe.go` — `thread/read` liveness probe used on reopen to
@@ -182,8 +186,11 @@ over stdio.
 - `protocol_turn.go` / `protocol_thread.go` — turn lifecycle,
   thread/account/model notifications, and token usage normalization.
 - `usage_accounting.go` — per-turn token accounting derived from the
-  cumulative `thread/tokenUsage/updated` totals (Codex has no per-turn
-  usage signal and no USD cost on the wire). Tracks
+  cumulative `thread/tokenUsage/updated` totals of the ROOT thread only
+  (Codex has no per-turn usage signal and no USD cost on the wire). A
+  spawned CHILD's tokenUsage never reaches it — it is intercepted and
+  re-scoped as subagent progress, see "Child thread-wide suppression"
+  below. Tracks
   accounted-vs-latest cumulative per session, handles the resume
   baseline (skips the first post-resume turn when no pre-turn seed
   arrived) and the ContextWindowExceeded sentinel that destroys the
@@ -585,6 +592,36 @@ for the wire sequence. Key points:
   `InterAgentCommunication` assistant/commentary message or a standalone
   user-message carrier.
 - Wire enum for the wait tool is `"wait"` (not `"waitAgent"`).
+
+### Child thread-wide suppression, and its one carve-out
+
+A child thread's THREAD-WIDE notifications describe the child, not the
+parent, so projecting them would let a subagent overwrite the parent's
+context meter, title, or compact state (ADR-002).
+`isChildSuppressedThreadNotification` drops them, and
+`isUnsafeChildProjectionEvent` is the second gate on the event side.
+
+`thread/tokenUsage/updated` is the one method deliberately NOT in the
+suppression set. It is intercepted in `dispatchRoutableNotification`
+BEFORE the child-state branch and converted, by
+`emitChildTokenUsageProgress`, into an `EventSubagentProgress` scoped to
+the spawn card:
+
+- `ItemID` is the spawn's `parentToolUseID` — the launch row the tick
+  renders on;
+- `ParentToolUseID` is that spawn's OWN parent, resolved by trimming the
+  child's canonical agent path (`/root/reviewer/deep` → `/root/reviewer`)
+  and mapping it back to a launch. Depth-1 children and path-less builds
+  resolve to `""`, which is correct: their spawn is top-level;
+- `Meta.TotalTokens` is the child's CUMULATIVE total
+  (`tokenUsage.total.totalTokens` via `childCumulativeTokenTotal`), not
+  `normalizeThreadTokenUsage`'s `last.totalTokens` — that one is context
+  occupancy, and `SubagentProgressMeta.TotalTokens` means spend.
+
+It never reaches `usageAcct.observe` and is never emitted as
+`EventTokenUsage`, so the parent's meter and per-turn accounting are
+untouched. This is the only channel through which a child's usage
+reaches the parent thread; anything else remains suppressed.
 
 ## Externally queued turns
 

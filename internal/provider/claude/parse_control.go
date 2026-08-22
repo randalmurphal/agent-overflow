@@ -18,7 +18,19 @@ import (
 //
 // `permission_suggestions` is preserved as opaque JSON so downstream code
 // (UI / approval handling) can surface the Claude SDK suggestions.
-func parseControlRequest(threadID string, raw map[string]json.RawMessage, now time.Time, line []byte) ([]provider.ProviderEvent, error) {
+//
+// A SUBAGENT's ask reaches the client through this same envelope, with
+// `request.agent_id` set and NO `parent_tool_use_id` anywhere on it
+// (claude-wire.md §"Subagent approvals carry `agent_id`", spiked
+// 2026-08-22 on 2.1.237). `agent_id` is the asking agent's TASK id — the
+// same id the §E5 async ack calls `agentId` — so the parser's
+// task_id ↔ tool_use_id map resolves it to the LAUNCH tool_use, which is
+// what nests the approval row under the agent's card. This is why the
+// function is a *Parser method: it is the only correlation state that can
+// answer "which agent asked". An id this parser cannot resolve (it
+// reconnected mid-agent) leaves the scope empty rather than guessing —
+// triage falls back to the requested tool's own persisted row scope.
+func (p *Parser) parseControlRequest(threadID string, raw map[string]json.RawMessage, now time.Time, line []byte) ([]provider.ProviderEvent, error) {
 	var requestID string
 	if v, ok := raw["request_id"]; ok {
 		_ = json.Unmarshal(v, &requestID)
@@ -34,6 +46,8 @@ func parseControlRequest(threadID string, raw map[string]json.RawMessage, now ti
 		ToolName              string          `json:"tool_name"`
 		ToolUseID             string          `json:"tool_use_id"`
 		ToolUseIDCamel        string          `json:"toolUseId"`
+		AgentID               string          `json:"agent_id"`
+		AgentIDCamel          string          `json:"agentId"`
 		Input                 json.RawMessage `json:"input"`
 		PermissionSuggestions json.RawMessage `json:"permission_suggestions"`
 	}
@@ -50,24 +64,33 @@ func parseControlRequest(threadID string, raw map[string]json.RawMessage, now ti
 		toolUseID = req.ToolUseIDCamel
 	}
 
+	// Subagent scope: agent_id == the asking agent's task id.
+	agentID := req.AgentID
+	if agentID == "" {
+		agentID = req.AgentIDCamel
+	}
+	parentToolUseID := p.taskToolUseRef(agentID).ToolUseID
+
 	if req.ToolName == "AskUserQuestion" {
 		questions := parseAskUserQuestions(req.Input)
 		if len(questions) > 0 {
 			meta, _ := json.Marshal(provider.UserInputRequest{
-				RequestID: requestID,
-				ThreadID:  threadID,
-				ToolUseID: toolUseID,
-				ToolName:  req.ToolName,
-				Title:     "User Input Required",
-				Questions: questions,
+				RequestID:       requestID,
+				ThreadID:        threadID,
+				ToolUseID:       toolUseID,
+				ParentToolUseID: parentToolUseID,
+				ToolName:        req.ToolName,
+				Title:           "User Input Required",
+				Questions:       questions,
 			})
 			return []provider.ProviderEvent{{
-				Kind:      provider.EventUserInputRequest,
-				ThreadID:  threadID,
-				ItemID:    requestID,
-				Meta:      meta,
-				Timestamp: now,
-				Raw:       line,
+				Kind:            provider.EventUserInputRequest,
+				ThreadID:        threadID,
+				ItemID:          requestID,
+				Meta:            meta,
+				ParentToolUseID: parentToolUseID,
+				Timestamp:       now,
+				Raw:             line,
 			}}, nil
 		}
 	}
@@ -76,6 +99,7 @@ func parseControlRequest(threadID string, raw map[string]json.RawMessage, now ti
 		RequestID:             requestID,
 		ThreadID:              threadID,
 		ToolUseID:             toolUseID,
+		ParentToolUseID:       parentToolUseID,
 		ToolName:              req.ToolName,
 		Description:           fmt.Sprintf("Allow %s?", req.ToolName),
 		Input:                 req.Input,
@@ -84,12 +108,13 @@ func parseControlRequest(threadID string, raw map[string]json.RawMessage, now ti
 	})
 
 	return []provider.ProviderEvent{{
-		Kind:      provider.EventApprovalRequest,
-		ThreadID:  threadID,
-		ItemID:    requestID,
-		Meta:      approvalMeta,
-		Timestamp: now,
-		Raw:       line,
+		Kind:            provider.EventApprovalRequest,
+		ThreadID:        threadID,
+		ItemID:          requestID,
+		Meta:            approvalMeta,
+		ParentToolUseID: parentToolUseID,
+		Timestamp:       now,
+		Raw:             line,
 	}}, nil
 }
 

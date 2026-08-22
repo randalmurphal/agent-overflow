@@ -9,6 +9,7 @@ import { registerPaneForTest, resetPanesForTest } from '../../stores/panes.svelt
 import { resetPaneLayoutForTest, setPaneLayoutItemsForTest } from '../../stores/paneLayout.svelte';
 import { isCompanionOpen, openCompanion, resetCompanionPanesForTest } from '../../stores/companionPanes.svelte';
 import { __resetReviewPaneStateForTest } from '../../stores/reviewPane.svelte';
+import { __resetAgentPaneStateForTest, openAgentCompanion } from '../../stores/agentPane.svelte';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
 
 describe('CompanionPane across a source-pane thread switch', () => {
@@ -18,6 +19,7 @@ describe('CompanionPane across a source-pane thread switch', () => {
     resetPaneLayoutForTest();
     resetCompanionPanesForTest();
     __resetReviewPaneStateForTest();
+    __resetAgentPaneStateForTest();
     // Review-state creation kicks off a workspace-scope diff load; give
     // it the minimal backend surface so mount side effects resolve.
     setBindingMock('GetWorkspaceCurrentDiff', async () => '');
@@ -28,6 +30,38 @@ describe('CompanionPane across a source-pane thread switch', () => {
 
   afterEach(() => {
     cleanup();
+    __resetAgentPaneStateForTest();
+  });
+
+  it('mounts the agent body at the scope its companion was opened on', async () => {
+    const thread = makeThread({ id: 'thread-agent' });
+    installPaneMocks([makeItem({ threadId: 'thread-agent' })]);
+    const pane = createThreadPane({ paneId: 'main' });
+    registerPaneForTest('main', pane);
+    await pane.switchThread(thread);
+    setPaneLayoutItemsForTest([
+      { id: 'main', paneId: 'main', kind: 'thread', widthPx: 400 },
+    ]);
+    const agent = openAgentCompanion('main', 'thread-agent', 'launch-1', 'code-review');
+    agent?.pushScope('launch-2', 'Angle B');
+
+    const { findByTestId, getByTestId } = render(CompanionPane, {
+      props: { paneId: 'agent-main', kind: 'agent', sourcePaneId: 'main' },
+    });
+
+    // The body is a lazily-imported chunk — and no longer a tiny
+    // placeholder: it pulls the chat row components. Give the first
+    // paint more than findBy's 1s default.
+    await findByTestId('companion-pane-agent-body', {}, { timeout: 10_000 });
+    // textContent flattens inter-element whitespace, so normalize around
+    // the separator glyphs before comparing.
+    expect(getByTestId('agent-pane-breadcrumb').textContent?.replace(/\s*›\s*/g, ' › ').trim())
+      .toBe('main › code-review › Angle B');
+    expect(getByTestId('agent-pane-breadcrumb-current').textContent?.trim()).toBe('Angle B');
+    // The scoped row is not in the loaded window — the body says so
+    // rather than self-closing (close requires having SEEN the row).
+    expect(getByTestId('agent-pane-not-loaded')).toBeTruthy();
+    expect(getByTestId('companion-pane-agent').getAttribute('aria-label')).toBe('Agent');
   });
 
   // Regression: with a review companion open, switching the source pane to

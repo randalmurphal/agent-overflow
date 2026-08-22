@@ -1544,6 +1544,7 @@ func (r *Router) cleanupThread(threadID string, requireEpoch *uint64) bool {
 	// session, so its record must not outlive it and shield a future
 	// session from the idle reaper.
 	delete(r.pendingWakeupByThread, threadID)
+	r.dropSubagentProgressForThread(threadID)
 	// A compacting window belongs to the process running the compaction;
 	// the frontend drops its copy on the same session-teardown path, so
 	// no inactive frame is emitted here.
@@ -1666,6 +1667,7 @@ func (r *Router) MarkThreadActive(threadID string) {
 	// fire time would shield the fresh session from the idle reaper for
 	// up to the wakeup clamp (60 min).
 	delete(r.pendingWakeupByThread, threadID)
+	r.dropSubagentProgressForThread(threadID)
 	// A replacement process is never mid-compaction; a stale window would
 	// pin a "Compacting" label onto the fresh session.
 	delete(r.compactingSinceByThread, threadID)

@@ -32,7 +32,8 @@ function makeHarness(threadId: string) {
     // An empty, settled thread: `maybeRestoreAfterFlush` takes its
     // no-rows branch, which is enough to make the module consider the
     // thread restored — the only precondition the destroy path has.
-    getPane: () => ({ threadId, items: [], loading: false }) as unknown as ThreadPane,
+    getPane: () =>
+      ({ threadId, scrollStateKey: threadId, items: [], loading: false }) as unknown as ThreadPane,
     stick,
     getListRef: () => undefined,
     getScrollEl: () => undefined,

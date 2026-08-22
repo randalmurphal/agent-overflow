@@ -164,6 +164,69 @@ func (s *Session) StopTask(ctx context.Context, taskID string) error {
 	return interpretControlResponse(res, opName)
 }
 
+// BackgroundTask moves an in-flight FOREGROUND task (a `local_agent`
+// subagent or a foreground Bash) to the background — the control-request
+// form of the interactive TUI's Ctrl+B. The `tool_use_id` argument
+// targets the ONE task started by that tool_use block; the CLI's schema
+// also accepts the parameter omitted (background everything), which AO
+// deliberately never sends: the UI's background button lives on a
+// specific row.
+//
+// Verified 2.1.237 (2026-08-22 spike, background_tasks_control_20260822.ndjson):
+// the reply is `{subtype:"success", response:{backgrounded:true}}` and
+// the CLI then emits `system/task_updated {patch:{is_backgrounded:true}}`,
+// a `system/background_tasks_changed` listing the agent, the agent's
+// tool_result in the §E5 async-ack shape, and a normal `result` closing
+// the freed turn. Completion arrives later as
+// `task_updated`/`task_notification` like any async agent.
+//
+// `response.backgrounded` is checked rather than trusted: the CLI answers
+// `subtype:"success"` for a well-formed request even when it matched no
+// live foreground task, so success alone would report "backgrounded" for
+// a row that kept streaming. A false/absent flag is a descriptive error
+// the UI can show.
+//
+// ⚠ Visibility price, and it is why this is a user action rather than an
+// automatic one: an agent backgrounded MID-FLIGHT streams nothing further
+// on the wire — zero sidechain envelopes after the ack — and its full
+// transcript is only recoverable from the task_notification's
+// `output_file`. See claude-wire.md §control_request `background_tasks`.
+//
+// Returns a timeout error after controlRequestTimeout (or ctx.Done) if
+// the CLI never answers.
+func (s *Session) BackgroundTask(ctx context.Context, toolUseID string) error {
+	toolUseID = strings.TrimSpace(toolUseID)
+	if toolUseID == "" {
+		return fmt.Errorf("claude: background_tasks: empty tool_use_id")
+	}
+	opName := "background_tasks " + toolUseID
+	res, err := s.sendControlRequest(ctx, opName, map[string]any{
+		"subtype":     "background_tasks",
+		"tool_use_id": toolUseID,
+	})
+	if err != nil {
+		return err
+	}
+	if err := interpretControlResponse(res, opName); err != nil {
+		return err
+	}
+	var payload struct {
+		Backgrounded *bool `json:"backgrounded"`
+	}
+	if len(res.payload) > 0 {
+		if err := json.Unmarshal(res.payload, &payload); err != nil {
+			return fmt.Errorf("claude: %s: unreadable response payload: %w", opName, err)
+		}
+	}
+	if payload.Backgrounded == nil {
+		return fmt.Errorf("claude: %s: provider did not report a backgrounded result", opName)
+	}
+	if !*payload.Backgrounded {
+		return fmt.Errorf("claude: %s: provider refused to background the task (no matching foreground task)", opName)
+	}
+	return nil
+}
+
 // replayExpectation is the transcript parent recorded at send time for one
 // outbound user message, matched against the replay echo carrying the same
 // client-minted uuid.

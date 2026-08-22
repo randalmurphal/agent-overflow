@@ -3967,7 +3967,7 @@ describe('createThreadPane', () => {
       expect(pane.subagentLiveAggregate('anchor')).toBeUndefined();
     });
 
-    it('sweeps the settled subtree out when the anchor flips to a suppressed launch', async () => {
+    it('sweeps the settled subtree through a nested launch when the outer card collapses', async () => {
       const pane = await paneWithAnchor('fold-backgrounded');
       pane.toggleSubagentGroupExpanded('anchor');
       pane.upsertItem(childItem('fold-backgrounded'));
@@ -3995,11 +3995,13 @@ describe('createThreadPane', () => {
       expect(pane.items.some((it) => it.id === 'child-1')).toBe(true);
       expect(pane.items.some((it) => it.id === 'grandchild')).toBe(true);
 
-      // Backgrounding the launch mid-run makes the whole transcript
-      // unrenderable (the grouping walk suppresses it) regardless of
-      // expansion state. Nested launches stay as fold keys; their
-      // settled children fold under their own anchor.
-      pane.upsertItem(launchItem('fold-backgrounded', { isBackground: true }));
+      // Collapsing the OUTER card makes the whole transcript unrenderable,
+      // the nested card included — its own expansion no longer reaches a
+      // reader. The sweep resolves the chain through the nested launch:
+      // nested launches stay loaded as fold keys and cards, and their
+      // settled children fold under their own anchor so nested entry
+      // counters stay honest.
+      expect(pane.toggleSubagentGroupExpanded('anchor')).toBe(false);
 
       expect(pane.items.some((it) => it.id === 'anchor')).toBe(true);
       expect(pane.items.some((it) => it.id === 'nested')).toBe(true);
@@ -4009,7 +4011,7 @@ describe('createThreadPane', () => {
       expect(pane.subagentLiveAggregate('nested')?.evictedCount).toBe(1);
     });
 
-    it('folds terminal children of a suppressed anchor while keeping streaming ones', async () => {
+    it('folds terminal children of a collapsed background anchor while keeping streaming ones', async () => {
       const pane = await paneWithAnchor(
         'fold-suppressed',
         launchItem('fold-suppressed', { isBackground: true }),

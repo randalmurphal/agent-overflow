@@ -111,6 +111,8 @@ import {
   applyCompactingState,
   type CompactingStatePayload,
 } from './compactingState.svelte';
+import { applySubagentProgress } from './subagentProgress.svelte';
+import type { SubagentProgressEvent } from '../types/events';
 import {
   applyProviderCommands,
   type ProviderCommandsPayload,
@@ -355,6 +357,15 @@ export function setupEventListeners(): () => void {
     applyCompactingState,
   );
 
+  // provider:subagent_progress — the latest live counters of one running
+  // subagent (tool count, tokens, elapsed, activity line). Triage merges
+  // each tick over the previous one, so the newest frame is the whole
+  // answer; the final numbers persist on the launch row at its terminal.
+  const cancelSubagentProgress = wailsEventOn<SubagentProgressEvent>(
+    'provider:subagent_progress',
+    applySubagentProgress,
+  );
+
   // provider:commands — the CLI's own list of slash commands it will execute
   // without an API call. Restated wholesale on every session init and every
   // `commands_changed` push, so the newest frame REPLACES the previous one;
@@ -538,6 +549,7 @@ export function setupEventListeners(): () => void {
     cancelCommandLifecycle();
     cancelFastModeState();
     cancelCompactingState();
+    cancelSubagentProgress();
     cancelProviderCommands();
     cancelUserMessageReverted();
     cancelThreadUpdated();

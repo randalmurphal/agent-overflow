@@ -26,6 +26,7 @@
     plan: () => import('../chat/PlanSidebar.svelte'),
     'design-preview': () => import('../design/DesignPreviewRhsPanel.svelte'),
     review: () => import('../review/ReviewPane.svelte'),
+    agent: () => import('../agent/AgentPane.svelte'),
   } satisfies Record<CompanionPanelKind, CompanionLoader>;
 
   let { paneId, kind, sourcePaneId }: Props = $props();
@@ -51,7 +52,13 @@
 
 {#if sourcePane && panelContext}
   <aside
-    aria-label={kind === 'plan' ? 'Proposed Plan' : kind === 'review' ? 'Review' : 'Design Preview'}
+    aria-label={kind === 'plan'
+      ? 'Proposed Plan'
+      : kind === 'review'
+        ? 'Review'
+        : kind === 'agent'
+          ? 'Agent'
+          : 'Design Preview'}
     class="flex h-full min-h-0 flex-col border-l border-border bg-surface-1"
     data-testid={`companion-pane-${kind}`}
     data-companion-pane-id={paneId}

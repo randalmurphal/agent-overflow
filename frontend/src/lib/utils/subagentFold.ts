@@ -4,8 +4,8 @@
 // During a live turn, subagent child rows stream into `pane.items` so the
 // card UX (per-agent entry counters, latest-action preview, expanded live
 // transcript) can render from real rows. Once a child reaches a terminal
-// status and its card is collapsed (or its launch kind never renders
-// children inline — backgrounded Claude launches, Codex spawns), the row
+// status and its card is collapsed — every launch kind renders its
+// transcript inline in the same card, so that is the whole rule — the row
 // is dropped from pane memory and folded here: the id is remembered for
 // replay dedupe, the count is remembered for the collapsed-card entry
 // counter, and the latest terminal preview is remembered for the card's

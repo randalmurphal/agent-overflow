@@ -116,6 +116,39 @@ const (
 	// Codex's injected <subagent_notification> fragments.
 	EventSubagentStatus EventKind = "subagent_status"
 
+	// EventSubagentProgress is the provider-neutral live-progress tick for
+	// ONE running subagent: the launch tool_use (ItemID) it belongs to, plus
+	// the counters a compact agent card shows while the agent runs (tool
+	// count, token spend, elapsed, current activity line). Claude emits it
+	// from `system/task_progress` (local_agent tasks only — never a forked
+	// skill); Codex from a child thread's `thread/tokenUsage/updated`,
+	// scoped to the spawn_agent tool_use and kept OFF the parent's own
+	// context meter. Live UI state, never a timeline row: triage holds the
+	// latest tick per launch in memory and persists only the FINAL numbers
+	// onto the launch row at its terminal. Meta is SubagentProgressMeta.
+	EventSubagentProgress EventKind = "subagent_progress"
+
+	// EventSubagentBackgrounded is the wire-typed signal that a FOREGROUND
+	// task was moved to the background mid-flight (Claude
+	// `system/task_updated` with the non-terminal `patch.is_backgrounded`,
+	// the reply to Ctrl+B or AO's `background_tasks` control_request). An
+	// agent launched async never emits it. It is the only statement that
+	// streaming for that agent stopped at this point — a backgrounded
+	// agent emits zero sidechain envelopes afterwards and its transcript
+	// completes only from the task_notification's output_file — so triage
+	// stamps the launch row with the cut timestamp and the pane renders the
+	// "streaming paused" marker from it. Meta is SubagentBackgroundedMeta.
+	EventSubagentBackgrounded EventKind = "subagent_backgrounded"
+
+	// EventBackgroundTasksChanged is Claude's LEVEL signal for the set of
+	// live background tasks (`system/background_tasks_changed`): the whole
+	// set, REPLACE semantics, emitted on every membership change. Foreground
+	// agents and forked skills are not in it. Consumers swap their set for
+	// the payload rather than pairing start/stop edges, so a missed bookend
+	// cannot wedge a stale running indicator. Meta is
+	// BackgroundTasksChangedMeta.
+	EventBackgroundTasksChanged EventKind = "background_tasks_changed"
+
 	// EventCodexExecResult is a Codex-only internal signal derived from the
 	// raw `exec_command` function-call output. It records whether the model
 	// was told the process exited during the initial wait or yielded with a
@@ -212,6 +245,9 @@ var AllEventKinds = []EventKind{
 	EventSubagentNotification,
 	EventSubagentStatus,
 	EventCodexExecResult,
+	EventSubagentProgress,
+	EventSubagentBackgrounded,
+	EventBackgroundTasksChanged,
 	EventTerminalInteraction,
 	EventUserText,
 	EventCommandLifecycle,
@@ -505,4 +541,56 @@ type TaskUpdateMeta struct {
 	Subject string `json:"subject,omitempty"`
 	Owner   string `json:"owner,omitempty"`
 	Deleted bool   `json:"deleted,omitempty"`
+}
+
+// SubagentProgressMeta is the typed payload for EventSubagentProgress.
+// Every counter is cumulative for the agent's whole run, never a delta;
+// a provider that cannot report a field leaves it zero / empty and the
+// consumer keeps whatever it already had for that field (Codex reports
+// only TotalTokens).
+type SubagentProgressMeta struct {
+	// TaskID is the provider's own id for the running agent (Claude
+	// task_id; Codex child thread id). Empty when the provider has none.
+	TaskID string `json:"taskId,omitempty"`
+	// ToolUses is the number of tool calls the agent has made so far.
+	ToolUses int `json:"toolUses,omitempty"`
+	// TotalTokens is the agent's own token spend so far (input + output,
+	// all of its rounds). Never folded into the parent thread's meter.
+	TotalTokens int64 `json:"totalTokens,omitempty"`
+	// DurationMs is the agent's wall-clock run time so far.
+	DurationMs int64 `json:"durationMs,omitempty"`
+	// Activity is the agent's CURRENT activity line (Claude: the
+	// task_progress `description`, which is NOT the launch description).
+	Activity string `json:"activity,omitempty"`
+	// LastToolName is the name of the tool the agent used most recently.
+	LastToolName string `json:"lastToolName,omitempty"`
+	// AgentType is the provider's agent/subagent type name when it
+	// reports one (Claude `subagent_type`).
+	AgentType string `json:"agentType,omitempty"`
+	// Summary is an optional provider-written progress summary.
+	Summary string `json:"summary,omitempty"`
+}
+
+// SubagentBackgroundedMeta is the typed payload for
+// EventSubagentBackgrounded. ItemID on the event is the launch tool_use.
+type SubagentBackgroundedMeta struct {
+	TaskID string `json:"taskId,omitempty"`
+}
+
+// BackgroundTaskRef is one member of the live background-task set.
+type BackgroundTaskRef struct {
+	TaskID string `json:"taskId"`
+	// ToolUseID is the launch tool_use the task belongs to when the
+	// parser can resolve it (task_id ↔ tool_use_id map); empty otherwise.
+	ToolUseID   string `json:"toolUseId,omitempty"`
+	TaskType    string `json:"taskType,omitempty"`
+	Description string `json:"description,omitempty"`
+}
+
+// BackgroundTasksChangedMeta is the typed payload for
+// EventBackgroundTasksChanged: the provider's FULL replacement set. An
+// empty Tasks slice is a real answer (nothing is running in the
+// background) and consumers must apply it as such.
+type BackgroundTasksChangedMeta struct {
+	Tasks []BackgroundTaskRef `json:"tasks"`
 }

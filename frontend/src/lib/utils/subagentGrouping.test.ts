@@ -180,7 +180,7 @@ describe('groupItemsBySubagent', () => {
     expect(nodes.map((node) => expectLeaf(node).item.id)).toEqual(['parent', 'child']);
   });
 
-  it('keeps backgrounded Claude agents and Codex spawn rows flat', () => {
+  it('renders backgrounded Claude agents and Codex spawn rows as group cards', () => {
     const nodes = groupItemsBySubagent([
       mkItem({
         id: 'background-agent',
@@ -200,17 +200,23 @@ describe('groupItemsBySubagent', () => {
       }),
     ]);
 
-    expect(expectLeaf(nodes[0]).item.id).toBe('background-agent');
-    expect(expectLeaf(nodes[1]).item.id).toBe('codex-agent');
+    // Every launch anchors a card from first render, awaited or not, and
+    // whichever provider it came from — the "suppressed leaf" path is gone.
+    const backgroundGroup = expectGroup(nodes[0]);
+    expect(backgroundGroup.parent.id).toBe('background-agent');
+    expect(backgroundGroup.children).toEqual([]);
+    const codexGroup = expectGroup(nodes[1]);
+    expect(codexGroup.parent.id).toBe('codex-agent');
+    expect(codexGroup.children).toEqual([]);
   });
 
-  it('suppresses backgrounded Claude subagent child rows, keeping launch and completion', () => {
+  it('nests a backgrounded Claude agent transcript in its card and folds the completion sibling', () => {
     // A backgrounded Claude Agent launches at the top level (parentId
     // empty — the main agent launched it). Its inner transcript carries
-    // parentId === launch.id and must NOT leak into the main timeline
-    // interleaved with the main agent's own rows. The launch stays a
-    // leaf and the completion sibling (parentId empty, completionOf ===
-    // launch.id) surfaces the result "on completion".
+    // parentId === launch.id and belongs INSIDE the launch's card, never
+    // interleaved with the main agent's own rows. The completion sibling
+    // (parentId empty, completionOf === launch.id) folds onto the same
+    // card as its status source instead of trailing it as a second row.
     const nodes = groupItemsBySubagent([
       mkItem({ id: 'main-think', itemIndex: 0, kind: 'thinking', summary: 'planning' }),
       mkItem({
@@ -245,24 +251,36 @@ describe('groupItemsBySubagent', () => {
       }),
     ]);
 
-    // Only the main-agent rows, the launch (leaf), and the completion
-    // sibling survive as roots — no subagent child leaks between them.
-    expect(nodes.map((node) => expectLeaf(node).item.id)).toEqual([
+    expect(nodes.map((node) => timelineNodeItemId(node))).toEqual([
       'main-think',
       'bg-agent',
       'main-text',
-      'complete:bg-agent',
     ]);
+    const group = expectGroup(nodes[1]);
+    expect(group.children.map((child) => expectLeaf(child).item.id)).toEqual([
+      'child-bash',
+      'child-bash-done',
+      'child-text',
+    ]);
+    expect(group.descendantCount).toBe(3);
+    // The completion sibling folded in as the card's status source and left
+    // the top level — fold and drop agree.
+    expect(group.completion?.id).toBe('complete:bg-agent');
+    expect(nodeContainsItem(group, 'complete:bg-agent')).toBe(true);
+    expect(findTimelineNodeIndex(nodes, 'complete:bg-agent')).toBe(1);
+    // …but it is the header, not a transcript entry: not counted, and never
+    // the collapsed preview.
+    expect(group.descendantCount).toBe(3);
+    expect(group.latestChildSummary).toBe('found it');
     for (const childId of ['child-bash', 'child-bash-done', 'child-text']) {
-      expect(nodes.some((node) => nodeContainsItem(node, childId))).toBe(false);
+      expect(nodes.some((node) => nodeContainsItem(node, childId))).toBe(true);
     }
   });
 
-  it('nests foreground subagent children while suppressing background ones in the same turn', () => {
-    // Both launch types coexisting in one turn: the foreground Agent must
-    // still group its child; the background Agent must still suppress its
-    // child. Guards the two code paths against future refactors that share
-    // the launch predicates.
+  it('nests foreground and background subagent children alike in the same turn', () => {
+    // Both launch shapes coexisting in one turn. They used to take different
+    // code paths (group vs suppressed leaf); there is one path now, and this
+    // pins that the async flag no longer changes the SHAPE of the tree.
     const nodes = groupItemsBySubagent([
       agentLaunch('fg-agent', 0),
       mkItem({ id: 'fg-child', itemIndex: 1, kind: 'tool_call', toolName: 'Bash', parentId: 'fg-agent', summary: 'Bash: fg' }),
@@ -282,21 +300,18 @@ describe('groupItemsBySubagent', () => {
     const fgGroup = expectGroup(nodes[0]);
     expect(fgGroup.parent.id).toBe('fg-agent');
     expect(fgGroup.children.map((child) => expectLeaf(child).item.id)).toEqual(['fg-child']);
-    const bgLeaf = expectLeaf(nodes[1]);
-    expect(bgLeaf.item.id).toBe('bg-agent');
-    expect(nodes.some((node) => nodeContainsItem(node, 'bg-child'))).toBe(false);
+    const bgGroup = expectGroup(nodes[1]);
+    expect(bgGroup.parent.id).toBe('bg-agent');
+    expect(bgGroup.children.map((child) => expectLeaf(child).item.id)).toEqual(['bg-child']);
   });
 
-  it('surfaces a failed background subagent on its completion item, not as a leaked inner row', () => {
-    // The user-facing contract for a backgrounded subagent that fails:
-    // the failure shows on the completion item, never as an interleaved
-    // inner row. On the wire a failing background subagent terminates via
+  it('folds a failed background agent errored completion onto its card', () => {
+    // On the wire a failing background subagent terminates via
     // `task_updated{failed}`, which triage maps to an `errored` completion
     // sibling (parentId empty, completionOf === launch.id — verified
-    // against 238 real Agent completions). Suppression is structural
-    // (parentId-keyed), so it must preserve that completion regardless of
-    // status while still dropping the inner transcript, including the
-    // child rows that themselves errored.
+    // against 238 real Agent completions). That sibling is the card's status
+    // source, so it must reach the node whatever its status, and the failed
+    // inner transcript stays inside the same card.
     const nodes = groupItemsBySubagent([
       mkItem({
         id: 'bg-agent',
@@ -330,29 +345,25 @@ describe('groupItemsBySubagent', () => {
       }),
     ]);
 
-    // Launch leaf + errored completion item survive; the inner (failed)
-    // transcript is suppressed.
-    expect(nodes.map((node) => expectLeaf(node).item.id)).toEqual([
-      'bg-agent',
-      'complete:bg-agent',
+    expect(nodes).toHaveLength(1);
+    const group = expectGroup(nodes[0]);
+    expect(group.parent.id).toBe('bg-agent');
+    const completion = group.completion;
+    expect(completion?.id).toBe('complete:bg-agent');
+    expect(completion?.status).toBe('errored');
+    expect(completion?.completionOf).toBe('bg-agent');
+    expect(group.children.map((child) => expectLeaf(child).item.id)).toEqual([
+      'child-bash',
+      'child-bash-done',
     ]);
-    const completion = expectLeaf(nodes[1]).item;
-    expect(completion.status).toBe('errored');
-    expect(completion.completionOf).toBe('bg-agent');
-    for (const childId of ['child-bash', 'child-bash-done']) {
-      expect(nodes.some((node) => nodeContainsItem(node, childId))).toBe(false);
-    }
   });
 
-  it('suppresses a grandchild under a non-background launch nested inside a background subagent (transitive suppression)', () => {
-    // Regression for the tool-call flash leak: a bg running Agent launch has
-    // a NESTED launch child that is itself foreground (not background) — a
-    // real Claude shape (an inline agent launched from within a backgrounded
-    // one). The old filter only dropped items whose DIRECT parentId matched
-    // a suppressed anchor, so the nested launch was dropped (level 1) but
-    // its own child fell through to the orphan branch and rendered at the
-    // TOP LEVEL. The suppression walk must be transitive over the whole
-    // subtree, not one level deep.
+  it('nests a foreground launch inside a background launch, with its own grandchild', () => {
+    // A bg running Agent launch has a NESTED launch child that is itself
+    // foreground — a real Claude shape (an inline agent launched from within
+    // a backgrounded one). Depth 2: the nested launch is its own group INSIDE
+    // the outer card, and its grandchild sits inside THAT. Nothing reaches
+    // the top level.
     const nodes = groupItemsBySubagent([
       mkItem({
         id: 'bg-agent',
@@ -386,18 +397,21 @@ describe('groupItemsBySubagent', () => {
       }),
     ]);
 
-    // Only the bg launch itself survives as a root.
-    expect(nodes.map((node) => expectLeaf(node).item.id)).toEqual(['bg-agent']);
-    // The grandchild must appear NOWHERE: not as an orphan leaf, not inside
-    // a read_group, not nested in any group's children.
-    for (const node of nodes) {
-      expect(nodeContainsItem(node, 'nested-launch')).toBe(false);
-      expect(nodeContainsItem(node, 'grandchild-read')).toBe(false);
-    }
-    expect(nodes.some((node) => node.kind === 'read_group')).toBe(false);
+    expect(nodes.map((node) => timelineNodeItemId(node))).toEqual(['bg-agent']);
+    const outer = expectGroup(nodes[0]);
+    expect(outer.children).toHaveLength(1);
+    const nested = expectGroup(outer.children[0]);
+    expect(nested.parent.id).toBe('nested-launch');
+    expect(nested.children.map((child) => expectLeaf(child).item.id)).toEqual([
+      'grandchild-read',
+    ]);
+    // The outer count rolls the nested card's own descendants up.
+    expect(nested.descendantCount).toBe(1);
+    expect(outer.descendantCount).toBe(2);
+    expect(nodeContainsItem(outer, 'grandchild-read')).toBe(true);
   });
 
-  it('suppresses a depth-3 mixed subtree (launches and plain tools) under a background anchor', () => {
+  it('nests a depth-3 mixed subtree (launches and plain tools) under a background anchor', () => {
     const nodes = groupItemsBySubagent([
       mkItem({
         id: 'bg-agent',
@@ -451,17 +465,32 @@ describe('groupItemsBySubagent', () => {
       }),
     ]);
 
-    expect(nodes.map((node) => expectLeaf(node).item.id)).toEqual(['bg-agent']);
+    expect(nodes.map((node) => timelineNodeItemId(node))).toEqual(['bg-agent']);
+    // Only LAUNCHES become cards. `depth2-tool` is an ordinary Bash row, so
+    // it stays a leaf and `depth3-launch` — which names it as parent —
+    // attaches to the nearest launch ANCESTOR (`depth1-launch`) as a sibling
+    // rather than turning a Bash row into a container.
+    const outer = expectGroup(nodes[0]);
+    const depth1 = expectGroup(outer.children[0]);
+    expect(depth1.parent.id).toBe('depth1-launch');
+    expect(expectLeaf(depth1.children[0]).item.id).toBe('depth2-tool');
+    const depth3 = expectGroup(depth1.children[1]);
+    expect(depth3.parent.id).toBe('depth3-launch');
+    expect(depth3.children.map((child) => expectLeaf(child).item.id)).toEqual([
+      'depth4-tool',
+    ]);
+    // Three nested cards is exactly MAX_DEPTH; nothing was flattened.
+    expect(MAX_DEPTH).toBe(3);
+    expect(outer.descendantCount).toBe(4);
     for (const id of ['depth1-launch', 'depth2-tool', 'depth3-launch', 'depth4-tool']) {
-      expect(nodes.some((node) => nodeContainsItem(node, id))).toBe(false);
+      expect(findTimelineNodeIndex(nodes, id)).toBe(0);
     }
   });
 
-  it('keeps a true orphan (missing parent) top-level even alongside a suppressed background subtree', () => {
-    // Guards the suppression walk against over-reaching: it must only
-    // suppress items reachable by parent->child edges from an actual
-    // suppressed anchor, never rows whose declared parent simply does not
-    // exist in the input.
+  it('keeps a true orphan (missing parent) top-level alongside a nested background subtree', () => {
+    // Guards the nesting walk against over-reaching: only rows whose parent
+    // is an actual loaded launch move inside a card. A row whose declared
+    // parent does not exist in the input stays a flagged top-level leaf.
     const nodes = groupItemsBySubagent([
       mkItem({
         id: 'bg-agent',
@@ -476,18 +505,20 @@ describe('groupItemsBySubagent', () => {
       mkItem({ id: 'orphan', itemIndex: 2, parentId: 'missing-parent', summary: 'lost child' }),
     ]);
 
-    expect(nodes.map((node) => expectLeaf(node).item.id)).toEqual(['bg-agent', 'orphan']);
+    expect(nodes.map((node) => timelineNodeItemId(node))).toEqual(['bg-agent', 'orphan']);
     const orphan = expectLeaf(nodes[1]);
     expect(orphan.orphan).toBe(true);
-    expect(nodes.some((node) => nodeContainsItem(node, 'bg-child'))).toBe(false);
+    expect(expectGroup(nodes[0]).children.map((c) => expectLeaf(c).item.id)).toEqual([
+      'bg-child',
+    ]);
   });
 
-  it('keeps a top-level background completion sibling rendering while suppressing one nested a level deeper', () => {
-    // Two completion siblings in the same tree: the OUTER bg launch's
-    // completion has parentId "" (empty) and must always render top-level.
-    // The INNER bg launch's completion has parentId = the OUTER anchor (the
-    // real wire shape for a nested backgrounded launch) — the transitive
-    // walk correctly suppresses it along with the rest of the inner subtree.
+  it('folds each background completion sibling onto its own launch card', () => {
+    // Two completion siblings in the same tree: the OUTER bg launch's has
+    // parentId "" (empty), the INNER one carries parentId = the OUTER anchor
+    // (the real wire shape for a nested backgrounded launch). Each belongs to
+    // the card of the launch it completes, wherever that card sits — the fold
+    // keys on `completionOf`, never on where the row happens to be parented.
     const nodes = groupItemsBySubagent([
       mkItem({
         id: 'outer-bg',
@@ -539,26 +570,29 @@ describe('groupItemsBySubagent', () => {
       }),
     ]);
 
-    expect(nodes.map((node) => expectLeaf(node).item.id)).toEqual([
-      'outer-bg',
-      'complete:outer-bg',
+    expect(nodes.map((node) => timelineNodeItemId(node))).toEqual(['outer-bg']);
+    const outer = expectGroup(nodes[0]);
+    expect(outer.completion?.id).toBe('complete:outer-bg');
+    const inner = expectGroup(outer.children[0]);
+    expect(inner.parent.id).toBe('inner-bg');
+    expect(inner.completion?.id).toBe('complete:inner-bg');
+    expect(inner.children.map((child) => expectLeaf(child).item.id)).toEqual([
+      'inner-child',
     ]);
-    for (const id of ['inner-bg', 'inner-child', 'complete:inner-bg']) {
-      expect(nodes.some((node) => nodeContainsItem(node, id))).toBe(false);
+    // Both folded completions resolve to the top-level row that renders them.
+    for (const id of ['inner-bg', 'inner-child', 'complete:inner-bg', 'complete:outer-bg']) {
+      expect(findTimelineNodeIndex(nodes, id)).toBe(0);
     }
   });
 
   it('terminates on malformed cyclic parentId data without swallowing the top-level anchor', () => {
-    // Defensive guard for the suppression pass: parentId cycles cannot occur
-    // in persisted data (the store enforces acyclic parent chains), but a
-    // grouping walk over untrusted input must still terminate and must not
-    // let a cycle swallow legitimate rows. The single forward pass visits
-    // each item exactly once, so termination is structural. A top-level
-    // anchor has parentId '' and therefore can never enter the suppression
-    // set itself. Items trapped in a cycle are unreachable from any
-    // suppressed anchor, so they degrade to flat top-level leaves (their
-    // declared parents exist in the item set, so they are not
-    // orphan-flagged) rather than crashing or vanishing.
+    // Defensive guard for the grouping pass: parentId cycles cannot occur in
+    // persisted data (the store enforces acyclic parent chains), but a walk
+    // over untrusted input must still terminate and must not let a cycle
+    // swallow legitimate rows. Items trapped in a cycle name parents that are
+    // not launches, so they degrade to flat top-level leaves (their declared
+    // parents exist in the item set, so they are not orphan-flagged) rather
+    // than crashing or vanishing.
     const nodes = groupItemsBySubagent([
       mkItem({
         id: 'bg-agent',
@@ -577,20 +611,22 @@ describe('groupItemsBySubagent', () => {
       mkItem({ id: 'self-ref', itemIndex: 4, kind: 'tool_call', toolName: 'Bash', parentId: 'self-ref', summary: 'Bash: self' }),
     ]);
 
-    expect(nodes.map((node) => expectLeaf(node).item.id)).toEqual([
+    expect(nodes.map((node) => timelineNodeItemId(node))).toEqual([
       'bg-agent',
       'cycle-x',
       'cycle-y',
       'self-ref',
     ]);
-    expect(nodes.some((node) => nodeContainsItem(node, 'bg-child'))).toBe(false);
+    expect(expectGroup(nodes[0]).children.map((c) => expectLeaf(c).item.id)).toEqual([
+      'bg-child',
+    ]);
     // Cycle members are not orphan-flagged: their declared parents exist.
-    for (const node of nodes) {
+    for (const node of nodes.slice(1)) {
       expect(expectLeaf(node).orphan).toBeUndefined();
     }
   });
 
-  it('keeps Codex spawn rows flat when spawn metadata lives in meta', () => {
+  it('groups Codex spawn rows when spawn metadata lives in meta', () => {
     const nodes = groupItemsBySubagent([
       mkItem({
         id: 'codex-agent',
@@ -602,10 +638,10 @@ describe('groupItemsBySubagent', () => {
       }),
     ]);
 
-    expect(expectLeaf(nodes[0]).item.id).toBe('codex-agent');
+    expect(expectGroup(nodes[0]).parent.id).toBe('codex-agent');
   });
 
-  it('suppresses Codex child prompt echo rows from the main timeline', () => {
+  it('nests a Codex child prompt echo row inside its spawn card', () => {
     const nodes = groupItemsBySubagent([
       mkItem({
         id: 'codex-agent',
@@ -626,10 +662,14 @@ describe('groupItemsBySubagent', () => {
     ]);
 
     expect(nodes).toHaveLength(1);
-    expect(expectLeaf(nodes[0]).item.id).toBe('codex-agent');
+    const group = expectGroup(nodes[0]);
+    expect(group.parent.id).toBe('codex-agent');
+    expect(group.children.map((child) => expectLeaf(child).item.id)).toEqual([
+      'child-prompt',
+    ]);
   });
 
-  it('suppresses Codex child transcript rows from the main timeline', () => {
+  it('nests the whole Codex child transcript inside its spawn card', () => {
     const nodes = groupItemsBySubagent([
       mkItem({
         id: 'codex-agent',
@@ -674,13 +714,20 @@ describe('groupItemsBySubagent', () => {
     ]);
 
     expect(nodes).toHaveLength(1);
-    expect(expectLeaf(nodes[0]).item.id).toBe('codex-agent');
+    const group = expectGroup(nodes[0]);
+    expect(group.parent.id).toBe('codex-agent');
+    expect(group.children.map((child) => expectLeaf(child).item.id)).toEqual([
+      'initial-prompt-echo',
+      'later-repeated-message',
+      'child-tool',
+      'child-answer',
+    ]);
+    expect(group.descendantCount).toBe(4);
   });
 
-  it('suppresses a transitive descendant subtree under a Codex spawn anchor', () => {
-    // Same transitive-suppression walk as the background-Claude case: a
-    // grandchild whose parent is not itself the spawn anchor must not leak
-    // to the top level.
+  it('nests a transitive descendant subtree under a Codex spawn anchor', () => {
+    // A grandchild whose parent is not itself the spawn anchor nests under
+    // its own parent's node, and never reaches the top level.
     const nodes = groupItemsBySubagent([
       mkItem({
         id: 'codex-agent',
@@ -711,9 +758,16 @@ describe('groupItemsBySubagent', () => {
     ]);
 
     expect(nodes).toHaveLength(1);
-    expect(expectLeaf(nodes[0]).item.id).toBe('codex-agent');
-    expect(nodes.some((node) => nodeContainsItem(node, 'child-tool'))).toBe(false);
-    expect(nodes.some((node) => nodeContainsItem(node, 'grandchild-tool'))).toBe(false);
+    const group = expectGroup(nodes[0]);
+    expect(group.parent.id).toBe('codex-agent');
+    // `child-tool` is an ordinary command row, so the grandchild lands beside
+    // it inside the spawn card instead of leaking to the top level.
+    expect(group.children.map((child) => expectLeaf(child).item.id)).toEqual([
+      'child-tool',
+      'grandchild-tool',
+    ]);
+    expect(nodeContainsItem(nodes[0], 'child-tool')).toBe(true);
+    expect(nodeContainsItem(nodes[0], 'grandchild-tool')).toBe(true);
   });
 
   it('maps hidden Codex child transcript rows back to their visible spawn row', () => {
@@ -936,7 +990,7 @@ describe('groupItemsBySubagent', () => {
     expect(group.children.map((node) => expectLeaf(node).item.id)).toEqual(['complete-spawn-1']);
   });
 
-  it('projects a persisted Codex spawn/wait sequence with hidden child transcript rows', () => {
+  it('projects a persisted Codex spawn/wait sequence with the child transcript in the spawn card', () => {
     const nodes = groupItemsBySubagent([
       mkItem({
         id: 'spawn-review',
@@ -1030,7 +1084,16 @@ describe('groupItemsBySubagent', () => {
     ]);
 
     expect(nodes).toHaveLength(3);
-    expect(expectLeaf(nodes[0]).item.id).toBe('spawn-review');
+    const spawnGroup = expectGroup(nodes[0]);
+    expect(spawnGroup.parent.id).toBe('spawn-review');
+    expect(spawnGroup.children.map((node) => expectLeaf(node).item.id)).toEqual([
+      'child-prompt',
+      'child-progress',
+    ]);
+    // The spawn's own completion carries `wait_carrier_id`, so the WAIT group
+    // claims it — a wait link always wins over the launch fold, or a finished
+    // wait would render with nothing under it.
+    expect(spawnGroup.completion).toBeUndefined();
     const waitGroup = expectWaitGroup(nodes[1]);
     expect(waitGroup.parent.id).toBe('wait-review');
     expect(waitGroup.children.map((node) => expectLeaf(node).item.id)).toEqual([
@@ -1041,8 +1104,8 @@ describe('groupItemsBySubagent', () => {
     expect(nodeContainsItem(waitGroup, 'complete-wait-review')).toBe(true);
     expect(findTimelineNodeIndex(nodes, 'complete-wait-review')).toBe(1);
     expect(expectLeaf(nodes[2]).item.id).toBe('assistant-after-review');
-    expect(nodes.some((node) => nodeContainsItem(node, 'child-prompt'))).toBe(false);
-    expect(nodes.some((node) => nodeContainsItem(node, 'child-progress'))).toBe(false);
+    expect(findTimelineNodeIndex(nodes, 'child-prompt')).toBe(0);
+    expect(findTimelineNodeIndex(nodes, 'child-progress')).toBe(0);
   });
 
   it('nests target completions under a legacy camelCase wait carrier id', () => {
@@ -1374,6 +1437,437 @@ describe('groupItemsBySubagent', () => {
     expect(isToolTextBoundary(nodes, 0)).toBe(false);
     expect(isToolTextBoundary(nodes, 1)).toBe(true);
     expect(isToolTextBoundary(nodes, 2)).toBe(true);
+  });
+});
+
+// Every shape `subagentLaunchInfo` recognises anchors a card, and the tree
+// is the same shape whichever one it is. Predicate-level coverage (which
+// signals prove a fork, what makes a SendMessage a carrier) lives in
+// `subagentLaunch.test.ts`; this block is about the TREE those answers build.
+describe('groupItemsBySubagent — launch kinds', () => {
+  function forkedSkill(
+    id: string,
+    itemIndex: number,
+    overrides: Partial<Item> = {},
+    name = 'code-review',
+  ): Item {
+    return mkItem({
+      id,
+      itemIndex,
+      kind: 'tool_call',
+      toolName: 'Skill',
+      summary: `Skill: ${name}`,
+      meta: toolMeta({
+        toolName: 'Skill',
+        input: { skill: name },
+        skillFork: { agentId: `agent-${id}`, commandName: name },
+      }),
+      ...overrides,
+    });
+  }
+
+  it('renders a forked Skill as a group with its attributed rows inside', () => {
+    const nodes = groupItemsBySubagent([
+      forkedSkill('skill-1', 0),
+      mkItem({
+        id: 'fork-tool',
+        itemIndex: 1,
+        kind: 'tool_call',
+        toolName: 'Read',
+        parentId: 'skill-1',
+        summary: 'Read: thing.ts',
+      }),
+      mkItem({
+        id: 'fork-text',
+        itemIndex: 2,
+        kind: 'assistant_text',
+        parentId: 'skill-1',
+        summary: 'three findings',
+      }),
+      mkItem({ id: 'main-text', itemIndex: 3, kind: 'assistant_text', summary: 'thanks' }),
+    ]);
+
+    expect(nodes.map((node) => timelineNodeItemId(node))).toEqual(['skill-1', 'main-text']);
+    const group = expectGroup(nodes[0]);
+    expect(group.children.map((child) => expectLeaf(child).item.id)).toEqual([
+      'fork-tool',
+      'fork-text',
+    ]);
+    expect(group.descendantCount).toBe(2);
+    expect(group.latestChildSummary).toBe('three findings');
+  });
+
+  it('detects a fork from an attributed row alone, with no meta stamp', () => {
+    const nodes = groupItemsBySubagent([
+      mkItem({
+        id: 'skill-1',
+        itemIndex: 0,
+        kind: 'tool_call',
+        toolName: 'Skill',
+        summary: 'Skill: brainstorm',
+        meta: toolMeta({ toolName: 'Skill', input: { skill: 'brainstorm' } }),
+      }),
+      mkItem({
+        id: 'fork-text',
+        itemIndex: 1,
+        kind: 'assistant_text',
+        parentId: 'skill-1',
+        summary: 'option A',
+      }),
+    ]);
+
+    expect(nodes).toHaveLength(1);
+    expect(expectGroup(nodes[0]).children.map((c) => expectLeaf(c).item.id)).toEqual([
+      'fork-text',
+    ]);
+  });
+
+  it('keeps an INLINE skill a plain leaf', () => {
+    // No attributed row, no fork stamp, no descendant decoration: the skill
+    // ran in the main context and is an ordinary tool row.
+    const nodes = groupItemsBySubagent([
+      mkItem({
+        id: 'skill-1',
+        itemIndex: 0,
+        kind: 'tool_call',
+        toolName: 'Skill',
+        status: 'completed',
+        summary: 'Skill: init',
+        meta: toolMeta({ toolName: 'Skill', input: { skill: 'init' } }),
+      }),
+      mkItem({ id: 'after', itemIndex: 1, kind: 'assistant_text', summary: 'done' }),
+    ]);
+
+    expect(nodes.map((node) => expectLeaf(node).item.id)).toEqual(['skill-1', 'after']);
+  });
+
+  it('renders a SendMessage resume carrier as a group and folds its round-2 completion', () => {
+    // claude-wire.md §E6: round 2 of a resumed async agent is carried by the
+    // resuming tool_use, and writes its own `complete:<carrierID>` sibling.
+    const nodes = groupItemsBySubagent([
+      mkItem({
+        id: 'toolu_resume',
+        itemIndex: 0,
+        kind: 'tool_call',
+        toolName: 'SendMessage',
+        isBackground: true,
+        status: 'running',
+        summary: 'Agent: Frontend transitive suppression fix',
+        meta: toolMeta({ task_id: 'a464e54e96a45cd0c', description: 'Frontend fix' }),
+      }),
+      mkItem({
+        id: 'round2-tool',
+        itemIndex: 1,
+        kind: 'tool_call',
+        toolName: 'Bash',
+        parentId: 'toolu_resume',
+        summary: 'Bash: pnpm test',
+      }),
+      mkItem({
+        id: 'complete:toolu_resume',
+        itemIndex: 2,
+        kind: 'tool_completion',
+        toolName: 'SendMessage',
+        isBackground: true,
+        completionOf: 'toolu_resume',
+        summary: 'Agent: Frontend transitive suppression fix -> done',
+      }),
+    ]);
+
+    expect(nodes).toHaveLength(1);
+    const group = expectGroup(nodes[0]);
+    expect(group.parent.id).toBe('toolu_resume');
+    expect(group.children.map((child) => expectLeaf(child).item.id)).toEqual(['round2-tool']);
+    expect(group.completion?.id).toBe('complete:toolu_resume');
+  });
+
+  it('keeps an ordinary SendMessage a leaf and does not adopt rows under it', () => {
+    const nodes = groupItemsBySubagent([
+      mkItem({
+        id: 'send-1',
+        itemIndex: 0,
+        kind: 'tool_call',
+        toolName: 'SendMessage',
+        status: 'completed',
+        summary: 'SendMessage: ping',
+        meta: toolMeta({ toolName: 'SendMessage' }),
+      }),
+      mkItem({ id: 'after', itemIndex: 1, kind: 'assistant_text', summary: 'ok' }),
+    ]);
+
+    expect(nodes.map((node) => expectLeaf(node).item.id)).toEqual(['send-1', 'after']);
+  });
+
+  it('nests three launch kinds three deep under a background parent', () => {
+    // depth 0: backgrounded Agent, depth 1: forked Skill it ran, depth 2: the
+    // Agent that fork spawned (claude-wire.md §E9 — "agents a fork spawns are
+    // ordinary"), depth 3: that agent's own tool row, at the cap as a leaf.
+    const nodes = groupItemsBySubagent([
+      mkItem({
+        id: 'bg-agent',
+        itemIndex: 0,
+        kind: 'tool_call',
+        toolName: 'Agent',
+        isBackground: true,
+        status: 'running',
+        summary: 'Agent: review wave',
+        meta: toolMeta({ toolName: 'Agent', input: { subagent_type: 'general-purpose' } }),
+      }),
+      forkedSkill('skill-1', 1, { parentId: 'bg-agent' }),
+      mkItem({
+        id: 'depth2-agent',
+        itemIndex: 2,
+        kind: 'tool_call',
+        toolName: 'Agent',
+        parentId: 'skill-1',
+        summary: 'Agent: angle B',
+        meta: toolMeta({ toolName: 'Agent' }),
+      }),
+      mkItem({
+        id: 'depth3-read',
+        itemIndex: 3,
+        kind: 'tool_call',
+        toolName: 'Read',
+        parentId: 'depth2-agent',
+        summary: 'Read: angle-b.ts',
+      }),
+    ]);
+
+    expect(nodes).toHaveLength(1);
+    const outer = expectGroup(nodes[0]);
+    const skill = expectGroup(outer.children[0]);
+    expect(skill.parent.id).toBe('skill-1');
+    const inner = expectGroup(skill.children[0]);
+    expect(inner.parent.id).toBe('depth2-agent');
+    expect(inner.children.map((child) => expectLeaf(child).item.id)).toEqual(['depth3-read']);
+    // Counts roll all the way up through both nested cards.
+    expect(inner.descendantCount).toBe(1);
+    expect(skill.descendantCount).toBe(2);
+    expect(outer.descendantCount).toBe(3);
+  });
+
+  function launchChain(depthCount: number, extra: readonly Item[] = []): Item[] {
+    const items: Item[] = [];
+    for (let depth = 0; depth <= depthCount; depth++) {
+      items.push(mkItem({
+        id: `l${depth}`,
+        itemIndex: depth,
+        kind: 'tool_call',
+        toolName: 'Agent',
+        isBackground: true,
+        ...(depth > 0 ? { parentId: `l${depth - 1}` } : {}),
+        meta: toolMeta({ toolName: 'Agent' }),
+      }));
+    }
+    return [...items, ...extra];
+  }
+
+  it('flattens the subtree of the launch that sits AT the depth cap', () => {
+    const nodes = groupItemsBySubagent(launchChain(5));
+
+    const l1 = expectGroup(expectGroup(nodes[0]).children[0]);
+    const l2 = expectGroup(l1.children[0]);
+    const l3 = expectGroup(l2.children[0]);
+    // l3 is at MAX_DEPTH: it still gets a card, but everything below it
+    // flattens into leaf siblings instead of opening further cards.
+    expect(MAX_DEPTH).toBe(3);
+    expect(l3.children.map((child) => expectLeaf(child).item.id)).toEqual(['l4', 'l5']);
+    expect(l3.descendantCount).toBe(2);
+  });
+
+  it('re-emits a flattened launch completion sibling as a leaf beside it', () => {
+    // Below the cap a nested launch renders as a LEAF, so it has no node to
+    // fold its completion into — and the top-level drop already removed it.
+    // Re-emitting it here is what keeps the outcome from vanishing.
+    const nodes = groupItemsBySubagent(launchChain(4, [
+      mkItem({
+        id: 'complete:l4',
+        itemIndex: 5,
+        kind: 'tool_completion',
+        toolName: 'Agent',
+        isBackground: true,
+        completionOf: 'l4',
+        summary: 'Agent: deep -> done',
+      }),
+    ]));
+
+    expect(nodes).toHaveLength(1);
+    const l3 = expectGroup(
+      expectGroup(expectGroup(expectGroup(nodes[0]).children[0]).children[0]).children[0],
+    );
+    expect(l3.children.map((child) => expectLeaf(child).item.id)).toEqual([
+      'l4',
+      'complete:l4',
+    ]);
+    expect(findTimelineNodeIndex(nodes, 'complete:l4')).toBe(0);
+  });
+
+  it('keeps a completion sibling as a top-level leaf when its launch is outside the window', () => {
+    // Page boundary: the launch scrolled out of the loaded window, so nothing
+    // can fold the sibling. It must still render rather than disappear —
+    // the same trade `wait_group` makes with an unloaded wait carrier.
+    const nodes = groupItemsBySubagent([
+      mkItem({ id: 'main-text', itemIndex: 0, kind: 'assistant_text', summary: 'hi' }),
+      mkItem({
+        id: 'complete:bg-agent',
+        itemIndex: 1,
+        kind: 'tool_completion',
+        toolName: 'Agent',
+        isBackground: true,
+        completionOf: 'bg-agent',
+        summary: 'Agent: investigate -> done',
+      }),
+    ]);
+
+    expect(nodes.map((node) => expectLeaf(node).item.id)).toEqual([
+      'main-text',
+      'complete:bg-agent',
+    ]);
+    expect(findTimelineNodeIndex(nodes, 'complete:bg-agent')).toBe(1);
+  });
+
+  it('resolves a folded completion through nodeContainsItem and findTimelineNodeIndex', () => {
+    const nodes = groupItemsBySubagent([
+      mkItem({ id: 'lead-text', itemIndex: 0, kind: 'assistant_text', summary: 'starting' }),
+      mkItem({
+        id: 'bg-agent',
+        itemIndex: 1,
+        kind: 'tool_call',
+        toolName: 'Agent',
+        isBackground: true,
+        status: 'running',
+        meta: toolMeta({ toolName: 'Agent' }),
+      }),
+      mkItem({
+        id: 'complete:bg-agent',
+        itemIndex: 2,
+        kind: 'tool_completion',
+        toolName: 'Agent',
+        isBackground: true,
+        completionOf: 'bg-agent',
+        summary: 'Agent: investigate -> done',
+      }),
+    ]);
+
+    expect(nodes).toHaveLength(2);
+    const group = expectGroup(nodes[1]);
+    expect(group.completion?.id).toBe('complete:bg-agent');
+    expect(nodeContainsItem(group, 'complete:bg-agent')).toBe(true);
+    // A search hit on the completion's own id (Go indexes its summary)
+    // resolves to the card that renders it, not to -1.
+    expect(findTimelineNodeIndex(nodes, 'complete:bg-agent')).toBe(1);
+    // The anchor id stays the launch — containment is the separate question.
+    expect(timelineNodeItemId(group)).toBe('bg-agent');
+  });
+});
+
+describe('visibleTimelineItemIdForItem', () => {
+  const claudeAgent = mkItem({
+    id: 'agent-1',
+    itemIndex: 0,
+    kind: 'tool_call',
+    toolName: 'Agent',
+    isBackground: true,
+    meta: toolMeta({ toolName: 'Agent' }),
+  });
+  const forkedSkill = mkItem({
+    id: 'skill-1',
+    itemIndex: 0,
+    kind: 'tool_call',
+    toolName: 'Skill',
+    meta: toolMeta({ input: { skill: 'code-review' }, skillFork: { commandName: 'code-review' } }),
+  });
+  const codexSpawn = mkItem({
+    id: 'spawn-1',
+    itemIndex: 0,
+    kind: 'tool_call',
+    toolName: 'collab_agent',
+    meta: toolMeta({ toolName: 'collab_agent', input: { tool: 'spawn_agent' } }),
+  });
+  const resumeCarrier = mkItem({
+    id: 'toolu_resume',
+    itemIndex: 0,
+    kind: 'tool_call',
+    toolName: 'SendMessage',
+    isBackground: true,
+    meta: toolMeta({ task_id: 'a1' }),
+  });
+
+  it.each([
+    ['a backgrounded Claude agent', claudeAgent],
+    ['a forked skill', forkedSkill],
+    ['a Codex spawn', codexSpawn],
+    ['a SendMessage resume carrier', resumeCarrier],
+  ])('walks a child up to %s', (_label, launch) => {
+    const items = [
+      launch,
+      mkItem({ id: 'child', itemIndex: 1, kind: 'assistant_text', parentId: launch.id }),
+    ];
+
+    expect(visibleTimelineItemIdForItem(items, 'child')).toBe(launch.id);
+    expect(visibleTimelineItemIdForItem(items, launch.id)).toBe(launch.id);
+  });
+
+  it('walks all the way to the OUTERMOST launch, not the immediate one', () => {
+    const items = [
+      claudeAgent,
+      mkItem({
+        id: 'skill-1',
+        itemIndex: 1,
+        kind: 'tool_call',
+        toolName: 'Skill',
+        parentId: 'agent-1',
+        meta: toolMeta({ input: { skill: 'code-review' }, skillFork: { commandName: 'x' } }),
+      }),
+      mkItem({ id: 'deep', itemIndex: 2, kind: 'assistant_text', parentId: 'skill-1' }),
+    ];
+
+    expect(visibleTimelineItemIdForItem(items, 'deep')).toBe('agent-1');
+    expect(visibleTimelineItemIdForItem(items, 'skill-1')).toBe('agent-1');
+  });
+
+  it('resolves a folded completion sibling to the launch that renders it', () => {
+    const items = [
+      claudeAgent,
+      mkItem({
+        id: 'complete:agent-1',
+        itemIndex: 1,
+        kind: 'tool_completion',
+        toolName: 'Agent',
+        completionOf: 'agent-1',
+      }),
+    ];
+
+    expect(visibleTimelineItemIdForItem(items, 'complete:agent-1')).toBe('agent-1');
+  });
+
+  it('leaves a row alone when nothing above it is a launch', () => {
+    const items = [
+      mkItem({ id: 'bash', itemIndex: 0, kind: 'tool_call', toolName: 'Bash' }),
+      mkItem({ id: 'under-bash', itemIndex: 1, kind: 'assistant_text', parentId: 'bash' }),
+      mkItem({
+        id: 'complete:bash',
+        itemIndex: 2,
+        kind: 'tool_completion',
+        toolName: 'Bash',
+        completionOf: 'bash',
+      }),
+      mkItem({ id: 'unknown-parent', itemIndex: 3, parentId: 'gone' }),
+    ];
+
+    expect(visibleTimelineItemIdForItem(items, 'under-bash')).toBe('under-bash');
+    expect(visibleTimelineItemIdForItem(items, 'complete:bash')).toBe('complete:bash');
+    expect(visibleTimelineItemIdForItem(items, 'unknown-parent')).toBe('unknown-parent');
+    expect(visibleTimelineItemIdForItem(items, 'missing')).toBe('missing');
+  });
+
+  it('terminates on a parentId cycle', () => {
+    const items = [
+      mkItem({ id: 'x', itemIndex: 0, kind: 'tool_call', toolName: 'Bash', parentId: 'y' }),
+      mkItem({ id: 'y', itemIndex: 1, kind: 'tool_call', toolName: 'Bash', parentId: 'x' }),
+    ];
+
+    expect(visibleTimelineItemIdForItem(items, 'x')).toBe('x');
   });
 });
 

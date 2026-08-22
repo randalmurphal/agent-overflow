@@ -9,14 +9,23 @@ import (
 
 // ApprovalRequest is sent when a provider needs user permission.
 type ApprovalRequest struct {
-	RequestID   string          `json:"requestId"`
-	ThreadID    string          `json:"threadId"`
-	TurnID      string          `json:"turnId,omitempty"`
-	ToolUseID   string          `json:"toolUseId,omitempty"`
-	ToolName    string          `json:"toolName"`
-	Description string          `json:"description"`
-	Input       json.RawMessage `json:"input"`
-	Title       string          `json:"title"`
+	RequestID string `json:"requestId"`
+	ThreadID  string `json:"threadId"`
+	TurnID    string `json:"turnId,omitempty"`
+	ToolUseID string `json:"toolUseId,omitempty"`
+	// ParentToolUseID is the launch tool_use of the SUBAGENT that is asking,
+	// or empty when the main agent asks. It is what nests the approval's
+	// timeline row under the agent's card and lights the card's "needs
+	// approval" pill; the prompt itself is still presented by the thread's
+	// normal approval UI. Claude carries the asking agent's `agent_id` on
+	// `can_use_tool` (== its task id), which the parser resolves through its
+	// task_id ↔ tool_use_id map; triage falls back to the requested tool's
+	// own persisted row scope when the parser could not resolve it.
+	ParentToolUseID string          `json:"parentToolUseId,omitempty"`
+	ToolName        string          `json:"toolName"`
+	Description     string          `json:"description"`
+	Input           json.RawMessage `json:"input"`
+	Title           string          `json:"title"`
 	// Structured approval fields.
 	Kind        string             `json:"kind,omitempty"`        // "command"|"file-read"|"file-change"|"permission"|"mcp-elicitation"
 	Permissions *PermissionProfile `json:"permissions,omitempty"` // populated for permission kind
@@ -55,13 +64,21 @@ type ApprovalEvent struct {
 // answer collection, not permission grants, and the frontend renders them
 // through a different composer flow.
 type UserInputRequest struct {
-	RequestID string              `json:"requestId"`
-	ThreadID  string              `json:"threadId"`
-	TurnID    string              `json:"turnId,omitempty"`
-	ToolUseID string              `json:"toolUseId,omitempty"`
-	ToolName  string              `json:"toolName"`
-	Title     string              `json:"title"`
-	Questions []UserInputQuestion `json:"questions"`
+	RequestID string `json:"requestId"`
+	ThreadID  string `json:"threadId"`
+	TurnID    string `json:"turnId,omitempty"`
+	ToolUseID string `json:"toolUseId,omitempty"`
+	// ParentToolUseID is the launch tool_use of the SUBAGENT that is
+	// asking, or empty when the main agent asks — the UserInputRequest
+	// twin of ApprovalRequest.ParentToolUseID, resolved the same way
+	// (Claude's `can_use_tool.agent_id` through the parser's
+	// task_id ↔ tool_use_id map). It nests the prompt's timeline row
+	// under the agent's card; the prompt itself is still presented by
+	// the thread's normal user-input UI.
+	ParentToolUseID string              `json:"parentToolUseId,omitempty"`
+	ToolName        string              `json:"toolName"`
+	Title           string              `json:"title"`
+	Questions       []UserInputQuestion `json:"questions"`
 }
 
 // UserInputEvent is the frontend-facing channel payload for structured

@@ -72,6 +72,13 @@ export interface ApprovalRequest {
   threadId: string;
   turnId?: string;
   toolUseId?: string;
+  /**
+   * Launch tool_use of the SUBAGENT that is asking; absent when the main
+   * agent asks. Nests the request under that agent's card ("needs
+   * approval" pill) — the prompt itself still renders in the thread's
+   * normal approval UI.
+   */
+  parentToolUseId?: string;
   toolName: string;
   description: string;
   input: unknown;
@@ -110,6 +117,8 @@ export interface UserInputRequest {
   threadId: string;
   turnId?: string;
   toolUseId?: string;
+  /** Same scope rule as ApprovalRequest.parentToolUseId. */
+  parentToolUseId?: string;
   toolName: string;
   title: string;
   questions: UserInputQuestion[];
@@ -543,4 +552,42 @@ export interface WorktreeSetupStepFrame {
   kind: string;
   label: string;
   argv?: string[];
+}
+
+/**
+ * Live counters for one running subagent (Go: provider.SubagentProgressMeta).
+ * Cumulative for the agent's whole run; a provider that cannot report a
+ * field omits it (Codex reports only totalTokens).
+ */
+export interface SubagentProgress {
+  taskId?: string;
+  toolUses?: number;
+  totalTokens?: number;
+  durationMs?: number;
+  /** The agent's CURRENT activity line, not the launch description. */
+  activity?: string;
+  lastToolName?: string;
+  agentType?: string;
+  summary?: string;
+  /** Epoch ms of the tick; stamped by the store on apply. */
+  updatedAt?: number;
+}
+
+/** `provider:subagent_progress` payload (Go: triage.SubagentProgressEvent). */
+export interface SubagentProgressEvent {
+  threadId: string;
+  /** The launch tool_use the tick belongs to. */
+  itemId: string;
+  /** The launch's own parent tool_use; absent at top level. */
+  parentId?: string;
+  progress: SubagentProgress;
+  updatedAt: number;
+}
+
+/** One member of Claude's live background-task level set. */
+export interface BackgroundTaskRef {
+  taskId: string;
+  toolUseId?: string;
+  taskType?: string;
+  description?: string;
 }

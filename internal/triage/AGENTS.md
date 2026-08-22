@@ -25,9 +25,16 @@ none fits.
   `logUnknownSessionStatusOnce` capped log throttle that keeps novel
   status strings from polluting steady-state logs.
 - `approvals.go` — approval-request lifecycle: pending-approval map,
-  approval-resolved fan-out, decision → item projection.
+  approval-resolved fan-out, decision → item projection. Also owns
+  `resolveInteractiveScope`, the one attribution rule both interactive
+  families use — see "Interactive scope" below.
 - `user_inputs.go` — structured user-input request lifecycle and
-  provider:user_input frontend event fan-out.
+  provider:user_input frontend event fan-out. Scoped through the same
+  `resolveInteractiveScope`.
+- `subagent_progress.go` — the LIVE per-launch progress state (tool
+  count, token spend, elapsed, activity line) plus the backgrounded
+  stamp and the `background_tasks_changed` forward. See "Live subagent
+  progress" below.
 - `turn_lifecycle.go` — per-turn and per-thread correlation state
   (open turns, interrupt queue, stopped-thread markers, turn span
   bookkeeping, cleanup paths).
@@ -77,6 +84,11 @@ none fits.
   `notification` row, the stash drain that writes the `tool_completion`
   sibling, and the `output_file` payload read/enrichment. See "Task
   notifications" below.
+- `subagent_transcript.go` — the transcript backfill a `local_agent`
+  task_notification triggers: projecting the agent's sidechain JSONL
+  through the session importer's reader and replaying the rows the live
+  stream never delivered, under the launch, through triage's own persist
+  paths. See "The task_notification path" below.
 - `codex_background.go` / `codex_background_exec.go` /
   `codex_background_subagents.go` — Codex-specific background projection.
   `codex_background.go` holds what both halves share: the
@@ -255,7 +267,7 @@ none fits.
 | Turn metadata (cost/tokens) | Per-turn deltas from the provider: aggregate onto `turns.token_usage_json` (first-write-wins for display) + one `usage_ledger` row per model on every settle event (`usage_ledger.go`). |
 | Context-window usage | Frontend context meter + `threads.last_token_usage`. |
 | Background task terminal (Claude) | `tool_completion` sibling row upsert (idempotent). See `turn-lifecycle.md`. |
-| Task notification (Claude) | One `notification` row per NOTIFICATION EVENT — id `task-notification:<taskID>:<uuid>` — plus the `output_file` enrichment onto the `tool_completion` sibling. Never a lifecycle source (invariant 21). See "Task notifications" below. |
+| Task notification (Claude) | One `notification` row per NOTIFICATION EVENT — id `task-notification:<taskID>:<uuid>` — for a TOP-LEVEL launch or any watch task, plus the `output_file` enrichment onto the `tool_completion` sibling, the run's final `usage` folded onto the launch row, and (agent launches) the sidechain transcript backfilled under it. Never a lifecycle source (invariant 21). See "Task notifications" below. |
 | Command lifecycle (Claude) | Live-only `provider:command_lifecycle` keyed onto the AO row id; nothing persists. Older CLIs emit no acks, so no routing decision may depend on them. See `command_lifecycle.go`. |
 | Fast-mode report (Claude) | Live-only `provider:fast_mode` from `system/init` and the wire `result`; nothing persists. Absence is unknown, never "off". See `fast_mode.go`. |
 | Compaction status | Live-only `provider:compacting` window per thread (open on Active frames, closed by close frame / compact boundary / turn completion); nothing persists. Snapshot-carried for reconnect. See `compaction_status.go`. |
@@ -271,6 +283,9 @@ none fits.
 | Turn start/complete | Write `turns` row; emit `provider:turn_*` to frontend; force-close orphan tool_calls on complete. |
 | Error `result`, no open round/turn | Orphan error item attributed to the pending-send head (else last turn index); queued-send flush suppressed. Settled turns route to `persistLateTurnPayload` instead. See `turn-lifecycle.md §Error routing` path 5. |
 | Error | Distinct event kind; frontend renders as status/alert. |
+| Subagent progress tick | Live-only `provider:subagent_progress` + the latest tick per launch in a bounded map; nothing persists until the launch's terminal folds the final numbers onto `meta.subagentProgress`. See "Live subagent progress" below. |
+| Subagent backgrounded | Flips the launch to `is_background` and stamps `meta.subagentBackgroundedAt` first-wins (the moment sidechain streaming stopped). |
+| Background tasks changed | Live-only `provider:background_tasks_changed`; the whole set every time, and an empty set is a real answer. |
 | Unknown | Log with full context, do not drop silently. |
 
 ## Stopped-thread routing (invariant 29)
@@ -403,6 +418,190 @@ source (invariant 21). Four rules govern what it writes:
 The foreground skip (`!launch.IsBackground`) stays: the launch's own
 status flip is the completion signal and a second row would be
 redundant. It still drains the stash.
+
+#### The task_notification path (Q11, usage, transcript backfill)
+
+Three more things happen on this envelope, all of them because it is the
+agent's TERMINAL and the last chance to say anything about the run.
+
+- **The notification row is the thread's BELL, and a bell fires for
+  top-level nodes only** (`docs/specs/agent-visibility.md` Q11). A launch
+  with a `ParentID` writes NO notification row: a nested agent finishing
+  updates its card, it does not raise the thread. Everything else on the
+  path still runs for it — the stash drains, the output file is read, the
+  completion sibling is enriched with the payload and the output state,
+  and the transcript is backfilled — so nothing but the bell is lost.
+  `writeBell` is the one gate and `persistBell` the one write point, so a
+  new state transition cannot accidentally reintroduce the row.
+  **A watch task is exempt at any depth**: its notification rows are not
+  a bell at all, they ARE its event history (claude-wire.md §E7, exempt
+  from the frontend's redundant-notification hide), so suppressing a
+  nested one would delete content no other row carries.
+- **`meta.usage` is the run's authoritative final counters** and folds
+  onto the LAUNCH row through `persistSubagentFinalProgress`
+  (`subagent_progress.go`), before any row work and on every path out of
+  the handler — foreground launches included. It is folded, not
+  assigned: the merge base is what is already persisted, so a
+  `task_updated` terminal carrying a live tick and this envelope carrying
+  the real numbers land the same result in either order. A usage-less
+  envelope (every `local_bash` bookend) stamps nothing, so a zero object
+  can never overwrite real numbers. Background Bash is not special-cased
+  out — the merge is order-free and a launch with no counters is left
+  untouched, so the only cost of not branching on the tool type is a
+  comparison.
+- **`output_file` completes an agent's transcript**
+  (`subagent_transcript.go`). An agent launched ASYNC streams its whole
+  sidechain; an agent BACKGROUNDED mid-flight streams NOTHING further
+  (claude-wire.md §`background_tasks`), and its work exists only in the
+  sidechain JSONL this envelope names. So triage projects that file with
+  the session importer's own reader
+  (`claude/sessionimport.ConvertSubagentTranscript`) and replays the
+  events the live stream never delivered. For an async agent that finds
+  nothing and is a no-op. Only for an AGENT launch —
+  `isSubagentTranscriptLaunch` splits on the same tool-name test the
+  payload builder uses, because a `local_bash` task's `output_file` is
+  captured stdout, which the command_output payload path already owns.
+
+**Dedupe identity, and why the events are REPLAYED rather than written
+as rows.** The obvious implementation — hand the projected events to
+`internal/sessionimport`'s writer — is wrong twice over. It is a package
+cycle (`sessionimport` imports `triage` for every row shape, so triage
+can never import it), and, independently, the two writers do not agree
+on a SUBAGENT-scoped row id: the Router allocates `text:<turn>:<scope>:<n>`
+from a live per-scope counter that starts at 1 for a subagent scope
+(only scope `""` is seeded to `-1`), while the importer allocates from 0.
+Rows written the importer's way would be invisible to every later live
+lookup. So the backfill goes through triage's OWN persist paths, which
+mint live ids by construction.
+
+That leaves dedupe, which therefore cannot key on the row id for
+text/thinking. It keys on the identity BOTH writers spell identically:
+
+| Event | Identity |
+|---|---|
+| tool start / complete | the `tool_use_id`, which IS the row id on both sides. A completion additionally requires the row to have left `running` — a launch the live stream left running is the tool that was in flight at the cut, and nothing else will ever settle it. |
+| assistant text / thinking | `items.meta.provider_item_id` — the provider's own `<messageID>#<ordinal>`, written by the live parser (`recoveredBlockItemID`) and the importer (`nextBlockItemID`) in the same spelling, and queryable via `FindStreamItemByProviderItemID`. |
+| everything else (errors, command results, compaction) | UNDECIDABLE. Their live ids are per-turn sequence numbers that say nothing about which event produced them. |
+
+`subagentBackfillCut` therefore finds the first decidable-and-missing
+event and replays the whole tail from there, which is the shape of the
+wire fact: backgrounding stops a sidechain at a POINT, so everything
+before it streamed and everything after it did not. Carrying the
+undecidable events along with the neighbours they arrived between is the
+only way to place them at all. One store read builds the index — a
+subagent's rows all carry the launch's `turn_index` (invariant 10), so
+one turn read is a superset of what a replay could duplicate.
+
+Placement follows from the same invariants: rows go in at the LAUNCH's
+turn (10) at the store's own `MAX(item_index)+1` (1 and 11 — `item_index`
+is immutable after the first upsert and `(thread, turn, item_index)` is
+UNIQUE, so there is no splicing mid-turn). Text and thinking deliberately
+bypass `handleTextDelta` / `handleThinking`: those open a streaming block
+and wait for a stop the transcript has no event for, which would leave
+the scope's streaming count incremented forever and wedge the interrupt
+queue.
+
+**Failure is loud.** A file that cannot be resolved, is over
+`claudeTaskOutputFileMaxBytes`, or cannot be projected surfaces on the
+existing `outputState = "error"` path with the reason attached. A
+silently incomplete agent transcript reads exactly like a complete one,
+and no second signal would ever correct it. (The size ceiling is refused
+rather than truncated here even though the PAYLOAD read truncates and
+succeeds: a transcript cut mid-line would replay into rows that silently
+lose the tail.)
+
+**The raw `output_file` payload stays.** It is not a duplicate of the
+backfilled rows: one payload row (`tool-call-result:<launchID>`) is
+referenced by both the notification and the completion sibling, and it is
+the LOSSLESS artifact behind a lossy projection — the importer drops
+`attachment` rows, unknown `system` subtypes, and the agent's opening
+prompt. Suppressing it for agent launches would also mean editing
+`tool_lifecycle.go`, whose `writeBackgroundCompletionSibling` rebuilds it
+independently.
+
+**Why not parse the JSONL in the frontend?** Because there would then be
+two parsers for Claude's transcript format, and the second one would be
+in TypeScript, unversioned against the reader that already exists and
+unreachable from every other consumer of these rows. One parser — the
+importer's — is what keeps a backgrounded agent's transcript identical to
+an imported one, keeps the rows searchable/paged/windowed like every
+other row (a frontend parse would produce view-only content SQLite never
+sees), and keeps the frontend memory bound to the visible thread (core
+principle 4) instead of a whole sidechain JSONL.
+
+### Live subagent progress (`subagent_progress.go`)
+
+A running subagent's counters are LIVE state, never history. Claude
+emits a `task_progress` tick after every tool round and Codex a child
+`thread/tokenUsage/updated` per child turn; a row per tick would be a
+write per round for work the provider already records. Triage therefore
+keeps the LATEST tick per launch in a bounded per-thread map, fans it
+out on `provider:subagent_progress`, and persists only the FINAL numbers
+onto the launch row's `meta.subagentProgress`.
+
+- The map is coordination state in the `pendingApprovals` class, not a
+  read model: nothing derives from it, every tick replaces it wholesale,
+  and `CleanupThread` / `MarkThreadActive` sweep the thread's entries —
+  a replacement process never carries the previous process's tasks.
+- `PeekSubagentProgress` reads without consuming; `TakeSubagentProgress`
+  consumes. Only the terminal paths take.
+- `persistSubagentFinalProgress(launch, final)` folds the live entry
+  under the caller's authoritative `final` and merges the result onto
+  the launch row. It is additive and idempotent, so a second terminal
+  for the same launch (the `task_notification`'s usage arriving after
+  the `task_updated` terminal) merges over what is already persisted
+  rather than blanking it.
+- **Every terminal that settles a LAUNCH row calls it.** There are four:
+  the inline tool completion (`tool_lifecycle.go`
+  `persistToolCallCompletion`), the background sibling write
+  (`writeBackgroundCompletionSibling`), the Codex spawn-child terminal
+  (`codex_background_subagents.go` `markCodexSpawnChildTerminal`), and
+  the Claude task notification (`background_task_notifications.go`).
+  Every one of them is gated on a live tick EXISTING first, so an
+  ordinary tool result costs zero store probes. The inline path is the
+  only one that also settles ordinary tools, so it is the only one that
+  additionally probes `store.IsSubagentLaunch` — a stray tick keyed on a
+  non-launch id is dropped, never persisted. The other three are
+  provably launch contexts by their callers.
+- Ordering matters on the Codex path: the progress merge runs AFTER that
+  path's own `persistItem`, so it lands on the meta that write produced
+  instead of being clobbered by it.
+
+### Interactive scope (`resolveInteractiveScope`)
+
+An approval or a structured question raised by a SUBAGENT belongs on the
+subagent's card, not the main thread's (`docs/specs/agent-visibility.md`
+Q10). `resolveInteractiveScope` is the one rule, and it resolves in
+three steps, first non-empty wins:
+
+1. the scope the PARSER already resolved (Claude fills
+   `ApprovalRequest.ParentToolUseID` from `can_use_tool`'s `agent_id`
+   through its own task map when it can);
+2. the event envelope's `ParentToolUseID`;
+3. a lookup of the REQUESTED TOOL's own persisted `tool_call` row — its
+   `ParentID` is the launch that owns it. This is the fallback for a
+   nested agent whose `agent_id` the parser could not map.
+
+Top level stays `""`; an unknown tool id stays `""`. The resolved value
+is stored on the pending-approval state, so it reaches the frontend
+event, the reconnect snapshot, the synthesized DECLINED row's
+`ParentID`, and Codex's synthetic `request_user_input` row — all four
+from one resolution, because a question that renders under the wrong
+agent on any one of them is the same bug.
+
+### Tray membership vs. lifecycle gates
+
+The background tray and the reaper/queue gates ask different questions
+and must not share a filter. `Store.ListLiveBackgroundTasks` lists by
+BACKGROUNDED ANCESTRY (every live background launch at any depth, plus
+the live agent launches descending from one), while
+`HasLiveBackgroundToolCall`, `HasQueueBlockingBackgroundToolCall`,
+`CountLiveRunningBackgroundToolCalls`,
+`HasRunningTopLevelForegroundToolCall` and
+`MarkLiveBackgroundToolCallsInactive` stay `parent_id = ''`. Whether the
+tray SHOWS a nested background Bash is a display question; whether that
+Bash blocks the flush queue or survives a session teardown is still
+answered at the top level only. See invariant 24.
 
 ## Exported shape surface
 

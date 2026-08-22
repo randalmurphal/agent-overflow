@@ -53,6 +53,7 @@ function makeMemoryHarness(initial: readonly Item[] = []) {
   let switchGeneration = 0;
   let thread: Thread | null = makeThread({ id: THREAD_ID });
   const expandedGroups = new Set<string>();
+  let paneHeldRows: ReadonlySet<string> | null = null;
 
   function install(next: Item[]): void {
     items = next;
@@ -76,6 +77,7 @@ function makeMemoryHarness(initial: readonly Item[] = []) {
     getSwitchGeneration: () => switchGeneration,
     recomputeReveal: () => {},
     isSubagentGroupExpanded: (groupKey) => expandedGroups.has(groupKey),
+    agentPaneHeldRows: () => paneHeldRows,
   });
 
   return {
@@ -85,6 +87,9 @@ function makeMemoryHarness(initial: readonly Item[] = []) {
     },
     install,
     expandedGroups,
+    setPaneHeldRows(rows: ReadonlySet<string> | null) {
+      paneHeldRows = rows;
+    },
     setThread(next: Thread | null) {
       thread = next;
       switchGeneration += 1;
@@ -282,5 +287,253 @@ describe('threadSubagentMemory admission through the pane', () => {
     } finally {
       warn.mockRestore();
     }
+  });
+});
+
+// The fold registry and the eviction sweep key on the SAME provider-neutral
+// launch predicate the timeline tree does. What follows pins that a launch
+// AO renders as a card is also a launch the memory policy treats as an
+// anchor — for every kind, and through a nested chain of mixed kinds.
+describe('threadSubagentMemory anchors every launch kind', () => {
+  beforeEach(() => {
+    resetBindingMocks();
+  });
+
+  function forkedSkill(overrides: Partial<Item> = {}): Item {
+    return makeItem({
+      id: 'skill-1',
+      threadId: THREAD_ID,
+      turnIndex: 1,
+      itemIndex: 0,
+      kind: 'tool_call',
+      toolName: 'Skill',
+      status: 'running',
+      summary: 'Skill: code-review',
+      meta: JSON.stringify({
+        toolName: 'Skill',
+        input: { skill: 'code-review' },
+        skillFork: { agentId: 'a1', commandName: 'code-review' },
+      }),
+      ...overrides,
+    });
+  }
+
+  function codexSpawn(overrides: Partial<Item> = {}): Item {
+    return makeItem({
+      id: 'spawn-1',
+      threadId: THREAD_ID,
+      turnIndex: 1,
+      itemIndex: 0,
+      kind: 'tool_call',
+      toolName: 'collab_agent',
+      status: 'running',
+      summary: 'collab_agent: review',
+      meta: JSON.stringify({ toolName: 'collab_agent', input: { tool: 'spawn_agent' } }),
+      ...overrides,
+    });
+  }
+
+  function resumeCarrier(overrides: Partial<Item> = {}): Item {
+    return makeItem({
+      id: 'toolu_resume',
+      threadId: THREAD_ID,
+      turnIndex: 1,
+      itemIndex: 0,
+      kind: 'tool_call',
+      toolName: 'SendMessage',
+      isBackground: true,
+      status: 'running',
+      summary: 'Agent: resumed work',
+      meta: JSON.stringify({ task_id: 'a464e54e96a45cd0c', description: 'resumed work' }),
+      ...overrides,
+    });
+  }
+
+  it.each([
+    ['a forked skill', forkedSkill()],
+    ['a Codex spawn', codexSpawn()],
+    ['a SendMessage resume carrier', resumeCarrier()],
+    ['a backgrounded Claude agent', anchorItem({ isBackground: true })],
+  ])('folds a settled child under %s', (_label, anchor) => {
+    const child = childItem({
+      parentId: anchor.id,
+      status: 'completed',
+      summary: 'ran the build',
+    });
+    const harness = makeMemoryHarness([anchor, child]);
+
+    harness.memory.evictSettledChildren([child]);
+
+    expect(harness.items.map((it) => it.id)).toEqual([anchor.id]);
+    expect(harness.memory.aggregate(anchor.id)).toEqual({
+      evictedCount: 1,
+      terminalPreview: 'ran the build',
+      terminalTurnIndex: 1,
+      terminalItemIndex: 1,
+    });
+  });
+
+  it('keeps a child loaded while its card is expanded, whichever kind the card is', () => {
+    const anchor = forkedSkill();
+    const child = childItem({ parentId: 'skill-1', status: 'completed' });
+    const harness = makeMemoryHarness([anchor, child]);
+    harness.expandedGroups.add('skill-1');
+
+    harness.memory.evictSettledChildren([child]);
+
+    expect(harness.items.map((it) => it.id)).toEqual(['skill-1', 'child-1']);
+    expect(harness.memory.aggregate('skill-1')).toBeUndefined();
+  });
+
+  it('never folds rows the open agent pane holds — and folds them once it lets go', () => {
+    // Collapse-time eviction runs on a card that is by definition
+    // collapsed, so the per-anchor expansion check cannot protect the
+    // open agent pane's rows; the commit chokepoint's held-rows filter
+    // is what does (live incident 2026-08-22: collapsing the card
+    // blanked the open pane into a hydrate-again flicker).
+    const anchor = anchorItem();
+    const child = childItem({ parentId: 'anchor', status: 'completed' });
+    const harness = makeMemoryHarness([anchor, child]);
+    harness.setPaneHeldRows(new Set(['anchor', 'child-1']));
+
+    harness.memory.evictCollapsedSubtree('anchor');
+    expect(harness.items.map((it) => it.id)).toEqual(['anchor', 'child-1']);
+    expect(harness.memory.aggregate('anchor')).toBeUndefined();
+
+    // Pane closed: the next eviction folds normally.
+    harness.setPaneHeldRows(null);
+    harness.memory.evictCollapsedSubtree('anchor');
+    expect(harness.items.map((it) => it.id)).toEqual(['anchor']);
+    expect(harness.memory.aggregate('anchor')?.evictedCount).toBe(1);
+  });
+
+  it('resolves a settled subtree through a chain of nested launches of mixed kinds', () => {
+    // Claude agent > forked skill > nested agent > its settled row. Every
+    // launch in the chain stays loaded (each is a fold key and a card); only
+    // the non-launch rows fold, each under its OWN nearest launch.
+    const anchor = anchorItem();
+    const skill = forkedSkill({ itemIndex: 1, parentId: 'anchor' });
+    const nestedAgent = makeItem({
+      id: 'nested-agent',
+      threadId: THREAD_ID,
+      turnIndex: 1,
+      itemIndex: 2,
+      kind: 'tool_call',
+      toolName: 'Agent',
+      parentId: 'skill-1',
+      status: 'running',
+      summary: 'Agent: angle B',
+      meta: JSON.stringify({ toolName: 'Agent' }),
+    });
+    const skillRow = childItem({
+      id: 'skill-row',
+      itemIndex: 3,
+      parentId: 'skill-1',
+      status: 'completed',
+      summary: 'read the diff',
+    });
+    const deepRow = childItem({
+      id: 'deep-row',
+      itemIndex: 4,
+      parentId: 'nested-agent',
+      status: 'completed',
+      summary: 'deep work',
+    });
+    const stillStreaming = childItem({
+      id: 'live-row',
+      itemIndex: 5,
+      parentId: 'nested-agent',
+      status: 'streaming',
+      summary: 'still going',
+    });
+    const harness = makeMemoryHarness([
+      anchor, skill, nestedAgent, skillRow, deepRow, stillStreaming,
+    ]);
+
+    harness.memory.evictCollapsedSubtree('anchor');
+
+    expect(harness.items.map((it) => it.id)).toEqual([
+      'anchor',
+      'skill-1',
+      'nested-agent',
+      'live-row',
+    ]);
+    expect(harness.memory.aggregate('skill-1')?.evictedCount).toBe(1);
+    expect(harness.memory.aggregate('nested-agent')?.evictedCount).toBe(1);
+    expect(harness.memory.aggregate('anchor')).toBeUndefined();
+  });
+
+  it('folds a row parented on an ordinary tool under its nearest launch ancestor', () => {
+    // The grouping pass buckets such a row inside the launch's card, so the
+    // fold has to agree — evicting it under the same anchor, not refusing.
+    const anchor = anchorItem();
+    const midTool = childItem({
+      id: 'mid-bash',
+      itemIndex: 1,
+      parentId: 'anchor',
+      kind: 'tool_call',
+      toolName: 'Bash',
+      status: 'completed',
+      summary: 'Bash: build',
+    });
+    const grandchild = childItem({
+      id: 'grandchild',
+      itemIndex: 2,
+      parentId: 'mid-bash',
+      status: 'completed',
+      summary: 'build output',
+    });
+    const harness = makeMemoryHarness([anchor, midTool, grandchild]);
+
+    harness.memory.evictSettledChildren([midTool, grandchild]);
+
+    expect(harness.items.map((it) => it.id)).toEqual(['anchor']);
+    expect(harness.memory.aggregate('anchor')?.evictedCount).toBe(2);
+  });
+
+  it('never folds a launch row itself, whichever kind it is', () => {
+    const anchor = anchorItem();
+    const nested = codexSpawn({ itemIndex: 1, parentId: 'anchor', status: 'completed' });
+    const harness = makeMemoryHarness([anchor, nested]);
+
+    harness.memory.evictSettledChildren([nested]);
+
+    expect(harness.items.map((it) => it.id)).toEqual(['anchor', 'spawn-1']);
+    expect(harness.memory.aggregate('anchor')).toBeUndefined();
+  });
+
+  it.each([
+    ['a forked skill', forkedSkill()],
+    ['a Codex spawn', codexSpawn()],
+    ['a SendMessage resume carrier', resumeCarrier()],
+  ])('hydrates the child transcript of %s', async (_label, anchor) => {
+    // The store query (ListSubagentDescendants) walks parent_id and knows no
+    // tool names, so hydration is provider-neutral by construction — this
+    // pins that the FRONTEND does not gate it on kind either.
+    const harness = makeMemoryHarness([anchor]);
+    const requested: string[] = [];
+    setBindingMock('ListSubagentDescendants', async (_threadId, rootItemID) => {
+      requested.push(rootItemID as string);
+      return [childItem({ parentId: anchor.id, status: 'completed', summary: 'done' })];
+    });
+
+    await expect(harness.memory.hydrateChildren(anchor.id)).resolves.toBe(true);
+
+    expect(requested).toEqual([anchor.id]);
+    expect(harness.items.map((it) => it.id)).toEqual([anchor.id, 'child-1']);
+  });
+
+  it('reclaims a folded child on hydration so it is never counted twice', async () => {
+    const anchor = forkedSkill();
+    const child = childItem({ parentId: 'skill-1', status: 'completed', summary: 'done' });
+    const harness = makeMemoryHarness([anchor, child]);
+    harness.memory.evictSettledChildren([child]);
+    expect(harness.memory.aggregate('skill-1')?.evictedCount).toBe(1);
+
+    setBindingMock('ListSubagentDescendants', async () => [child]);
+    await expect(harness.memory.hydrateChildren('skill-1')).resolves.toBe(true);
+
+    expect(harness.items.map((it) => it.id)).toEqual(['skill-1', 'child-1']);
+    expect(harness.memory.aggregate('skill-1')).toBeUndefined();
   });
 });

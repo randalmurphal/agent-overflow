@@ -93,8 +93,15 @@ export function createTimelineRestore(options: TimelineRestoreOptions): Timeline
   // staleness and bail.
   let restoreToken = 0;
 
+  // The restore/snapshot IDENTITY for this timeline surface. The base
+  // pane's scrollStateKey IS its thread id; a scoped facade
+  // (agentScopeView) answers a per-scope key so its snapshots and
+  // restore bookkeeping never collide with the main timeline's for the
+  // same thread. Every identity compare in this module uses the key —
+  // pane.threadId appears only where a REAL thread id is required
+  // (loadUntilItem, trace payloads' pane fields).
   function snapshotThreadId(): string | null {
-    return options.getPane().threadId || null;
+    return options.getPane().scrollStateKey || null;
   }
 
   function saveScrollSnapshot(): void {
@@ -234,7 +241,7 @@ export function createTimelineRestore(options: TimelineRestoreOptions): Timeline
 
   function maybeRestoreAfterFlush(): void {
     const pane = options.getPane();
-    const threadId = pane.threadId;
+    const threadId = pane.scrollStateKey;
     const itemsLength = pane.items.length;
     const loading = pane.loading;
     if (!threadId) return;
@@ -404,7 +411,7 @@ export function createTimelineRestore(options: TimelineRestoreOptions): Timeline
     try {
       await tick();
       const pane = options.getPane();
-      if (token !== restoreToken || pane.threadId !== threadId) {
+      if (token !== restoreToken || pane.scrollStateKey !== threadId) {
         if (isUiRenderTraceEnabled()) {
           recordUiTrace('timeline.restore.anchor.bail', {
             threadId,
@@ -438,14 +445,14 @@ export function createTimelineRestore(options: TimelineRestoreOptions): Timeline
           itemId: snap.itemId,
         });
       }
-      if (token !== restoreToken || options.getPane().threadId !== threadId) return;
+      if (token !== restoreToken || options.getPane().scrollStateKey !== threadId) return;
       if (!found) {
         restoreToBottom();
         return;
       }
       await tick();
       const listRef = options.getListRef();
-      if (token !== restoreToken || options.getPane().threadId !== threadId || !listRef) return;
+      if (token !== restoreToken || options.getPane().scrollStateKey !== threadId || !listRef) return;
       const idx = options.findTimelineNodeIndex(snap.itemId);
       const scrollEl = options.getScrollEl();
       if (isUiRenderTraceEnabled()) {

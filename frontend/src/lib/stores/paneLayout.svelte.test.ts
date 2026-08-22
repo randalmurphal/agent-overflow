@@ -8,6 +8,7 @@ import {
   minAnchorPaneLayoutWidths,
   movePaneLayoutItem,
   movePaneLayoutItemToIndex,
+  isCompanionKind,
   paneBlockRangeAt,
   removePaneLayoutItem,
   resetPaneLayoutForTest,
@@ -29,6 +30,43 @@ describe('paneLayout store', () => {
   beforeEach(() => {
     resetPaneLayoutForTest();
     resetLayoutMetricsForTest();
+  });
+
+  it('classifies every companion kind, and only those', () => {
+    expect(isCompanionKind('agent')).toBe(true);
+    expect(isCompanionKind('review')).toBe(true);
+    expect(isCompanionKind('plan')).toBe(true);
+    expect(isCompanionKind('design-preview')).toBe(true);
+    expect(isCompanionKind('take-control')).toBe(true);
+    expect(isCompanionKind('thread')).toBe(false);
+  });
+
+  it('deep-copies an agent item\'s persisted scope on every clone', () => {
+    const scope = {
+      scopeItemId: 'launch-1',
+      breadcrumb: [
+        { itemId: '', label: 'main' },
+        { itemId: 'launch-1', label: 'code-review' },
+      ],
+    };
+    addPaneLayoutItem({
+      id: 'agent-main',
+      paneId: 'agent-main',
+      kind: 'agent',
+      widthPx: 560,
+      sourcePaneId: 'main',
+      agentScope: scope,
+    });
+
+    const stored = getPaneLayoutItems().find((item) => item.paneId === 'agent-main');
+    expect(stored?.agentScope).toEqual(scope);
+    // A shared breadcrumb array would let one item's trail mutate another's.
+    expect(stored?.agentScope).not.toBe(scope);
+    expect(stored?.agentScope?.breadcrumb[0]).not.toBe(scope.breadcrumb[0]);
+
+    scope.breadcrumb.push({ itemId: 'launch-2', label: 'Angle B' });
+    expect(getPaneLayoutItems().find((item) => item.paneId === 'agent-main')?.agentScope?.breadcrumb)
+      .toHaveLength(2);
   });
 
   it('allows the layout to become empty', () => {

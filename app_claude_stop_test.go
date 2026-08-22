@@ -116,3 +116,94 @@ func TestStopClaudeTask_ShuttingDown(t *testing.T) {
 		t.Fatalf("err = %v, want ErrShuttingDown", err)
 	}
 }
+
+// TestBackgroundClaudeTask_SessionMissing mirrors the StopClaudeTask
+// guard: backgrounding before Start / after Close must be a clear
+// error, not a silent no-op that leaves the row's button dead.
+func TestBackgroundClaudeTask_SessionMissing(t *testing.T) {
+	a := NewApp()
+
+	err := a.BackgroundClaudeTask("no-such-thread", "toolu_123")
+	if err == nil {
+		t.Fatal("BackgroundClaudeTask with no session: expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "no active session") {
+		t.Errorf("error should mention missing session, got: %v", err)
+	}
+}
+
+// TestBackgroundClaudeTask_ProviderMismatch: Codex has no equivalent —
+// a spawned collab-agent child is already asynchronous and close_agent
+// is a model-only tool — so a caller who reached this binding for a
+// Codex thread is programming against the wrong API and must see it.
+func TestBackgroundClaudeTask_ProviderMismatch(t *testing.T) {
+	a := NewApp()
+
+	a.mu.Lock()
+	a.sessions["codex-thread"] = session{provider: "codex"}
+	a.mu.Unlock()
+
+	err := a.BackgroundClaudeTask("codex-thread", "toolu_123")
+	if err == nil {
+		t.Fatal("BackgroundClaudeTask on non-Claude thread: expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "is not a Claude thread") {
+		t.Errorf("error should mention provider mismatch, got: %v", err)
+	}
+}
+
+// TestBackgroundClaudeTask_RoundTripSucceeds drives the happy path
+// through a real claude.Session wired to a fake CLI that answers the
+// background_tasks control_request with `{backgrounded:true}`. The
+// session-level tests own the wire shape; this proves the binding's
+// context + lookup + BackgroundTask glue hooks through.
+func TestBackgroundClaudeTask_RoundTripSucceeds(t *testing.T) {
+	a := NewApp()
+
+	scriptPath := t.TempDir() + "/fake-claude"
+	script := `#!/bin/sh
+set -u
+while IFS= read -r line; do
+    case "$line" in
+        *'"background_tasks"'*)
+            reqid=$(printf '%s' "$line" | sed -n 's/.*"request_id":"\([^"]*\)".*/\1/p')
+            printf '{"type":"control_response","response":{"subtype":"success","request_id":"%s","response":{"backgrounded":true}}}\n' "$reqid"
+            ;;
+    esac
+done
+`
+	if err := os.WriteFile(scriptPath, []byte(script), 0755); err != nil {
+		t.Fatalf("write fake cli: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	sess, err := claude.NewSession(ctx, "claude-thread", claude.Config{
+		Binary: scriptPath,
+	}, func(_ provider.ProviderEvent) {})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	t.Cleanup(func() { _ = sess.Close() })
+
+	a.mu.Lock()
+	a.sessions["claude-thread"] = session{provider: "claude", claude: sess}
+	a.mu.Unlock()
+
+	if err := a.BackgroundClaudeTask("claude-thread", "toolu_abc"); err != nil {
+		t.Fatalf("BackgroundClaudeTask: %v", err)
+	}
+}
+
+// TestBackgroundClaudeTask_ShuttingDown short-circuits mid-teardown like
+// every other binding entry point.
+func TestBackgroundClaudeTask_ShuttingDown(t *testing.T) {
+	a := NewApp()
+	a.shuttingDown.Store(true)
+
+	err := a.BackgroundClaudeTask("any-thread", "toolu_123")
+	if err != ErrShuttingDown {
+		t.Fatalf("err = %v, want ErrShuttingDown", err)
+	}
+}

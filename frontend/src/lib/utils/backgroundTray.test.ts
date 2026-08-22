@@ -4,6 +4,7 @@ import { __resetParseJsonObjectCacheForTest } from './parseJsonObject';
 import {
   completionStatusFor,
   deriveTrayTasks,
+  trayTaskAgentInfo,
   extractClaudeTaskID,
   formatElapsed,
   isCodexStoppableTask,
@@ -42,6 +43,7 @@ function makeTrayTask(overrides: Partial<TrayTask> = {}): TrayTask {
     completion: null,
     status: 'running',
     elapsedMs: 0,
+    depth: 0,
     ...overrides,
   };
 }
@@ -404,6 +406,7 @@ describe('trayTaskLabel', () => {
       completion,
       status: 'completed',
       elapsedMs: 0,
+      depth: 0,
     };
     expect(trayTaskLabel(task)).toBe('Bash: sleep 30');
   });
@@ -422,6 +425,7 @@ describe('trayTaskLabel', () => {
       completion,
       status: 'completed',
       elapsedMs: null,
+      depth: 0,
     };
     expect(trayTaskLabel(task)).toBe('Bash');
   });
@@ -435,6 +439,7 @@ describe('trayTaskLabel', () => {
       completion: null,
       status: 'running',
       elapsedMs: 0,
+      depth: 0,
     };
     expect(trayTaskLabel(task)).toBe('Tool');
   });
@@ -557,5 +562,55 @@ describe('deriveTrayTasks', () => {
   it('ignores non-running launches (defensive — backend should filter but we verify)', () => {
     const done = makeItem({ id: 'D', status: 'completed' });
     expect(deriveTrayTasks([done], 10, RETENTION_MS)).toHaveLength(0);
+  });
+});
+
+describe('deriveTrayTasks tree order (agent-visibility)', () => {
+  it('indents nested launches under their tray ancestor and keeps tree order', () => {
+    const items = [
+      makeItem({ id: 'A', kind: 'tool_call', toolName: 'Agent', status: 'running', isBackground: true, itemIndex: 0 }),
+      makeItem({ id: 'B', kind: 'tool_call', toolName: 'Agent', status: 'running', parentId: 'A', itemIndex: 1 }),
+      makeItem({ id: 'C', kind: 'tool_call', toolName: 'Bash', status: 'running', parentId: 'B', isBackground: true, itemIndex: 2 }),
+      // A second background ROOT after the whole first subtree.
+      makeItem({ id: 'D', kind: 'tool_call', toolName: 'Bash', status: 'running', isBackground: true, itemIndex: 3, createdAt: 10 }),
+    ];
+    const tasks = deriveTrayTasks(items, 1_000, Number.POSITIVE_INFINITY);
+    expect(tasks.map((t) => [t.rowId, t.depth])).toEqual([
+      ['A', 0],
+      ['B', 1],
+      ['C', 2],
+      ['D', 0],
+    ]);
+  });
+
+  it('renders a background launch whose parent is NOT in the tray set at depth 0', () => {
+    // Accepted deviation: the foreground parent agent is the timeline's
+    // to show; the tray lists backgrounded ancestry only.
+    const items = [
+      makeItem({ id: 'bg-bash', kind: 'tool_call', toolName: 'Bash', status: 'running', isBackground: true, parentId: 'foreground-agent-not-in-set' }),
+    ];
+    const tasks = deriveTrayTasks(items, 1_000, Number.POSITIVE_INFINITY);
+    expect(tasks).toHaveLength(1);
+    expect(tasks[0].depth).toBe(0);
+  });
+});
+
+describe('trayTaskAgentInfo', () => {
+  it('answers the launch identity for an agent row and null for a command row', () => {
+    const agent = makeTrayTask({
+      launch: makeItem({
+        id: 'L1',
+        kind: 'tool_call',
+        toolName: 'Agent',
+        status: 'running',
+        payloadMeta: JSON.stringify({ toolName: 'Agent', input: { subagent_type: 'Explore', description: 'x' } }),
+      }),
+    });
+    expect(trayTaskAgentInfo({ ...agent, rowId: 'L1', anchor: agent.launch! })?.kind).toBe('agent');
+
+    const bash = makeTrayTask({
+      launch: makeItem({ id: 'L2', kind: 'tool_call', toolName: 'Bash', status: 'running' }),
+    });
+    expect(trayTaskAgentInfo({ ...bash, rowId: 'L2', anchor: bash.launch! })).toBeNull();
   });
 });

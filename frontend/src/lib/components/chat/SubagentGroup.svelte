@@ -14,28 +14,36 @@
 </script>
 
 <script lang="ts">
-  // Visual structure mirrors `GenericToolCallRow.svelte` so a subagent
-  // card reads as part of the timeline rather than a separate floating
-  // callout. The only meaningful differences are:
-  //   - expanded body is a scrollable list of children rendered via the
-  //     parent-supplied `renderNode` snippet (no payload-fetch path);
-  //   - title resolves from the parent tool_use input
-  //     (`subagent_type` / `description` for Claude `Agent`);
-  //   - per-subagent model is read from `parent.meta.subagent_model`,
-  //     stamped by the Claude parser on the first subagent assistant
-  //     envelope.
-  // Status visualization generally mirrors a regular tool call.
+  // THE shared agent card (docs/specs/agent-visibility.md Q1/Q2/Q6): one
+  // component renders every launch kind — Claude Agent/Task (awaited or
+  // background), a forked Skill, a SendMessage resume carrier, a Codex
+  // spawn — in the timeline and in the agent pane. Visual structure
+  // mirrors `GenericToolCallRow.svelte` so it reads as part of the
+  // timeline rather than a separate floating callout. What is specific
+  // to this card:
+  //   - kind chip (`agent` / `skill`) + name from the provider-neutral
+  //     launch predicate (`utils/subagentLaunch.ts`);
+  //   - status pills: `background` for async nodes, `needs approval`
+  //     while an interactive request scoped to this launch is pending;
+  //   - live progress (tool count, activity line, tokens-when-room) from
+  //     `provider:subagent_progress`, falling back to the final numbers
+  //     triage persisted on the launch row at terminal;
+  //   - expanded body is a DIGEST: the node's tool calls, its final
+  //     text, and collapsed child cards. Thinking and intermediate text
+  //     live in the agent pane (Q2) — which is also why the body has no
+  //     height cap or fade: what remains is short by construction.
+  //   - open-in-pane button; a background button while a foreground
+  //     Claude agent runs (Q9).
 
   import type { Snippet } from 'svelte';
   import ToolKindIcon from './ToolKindIcon.svelte';
   import ToolHeaderMeta from './ToolHeaderMeta.svelte';
   import { deriveCompletionStatus } from '../../utils/toolCompletionStatus';
   import { parseJsonObject } from '../../utils/parseJsonObject';
-  import { formatElapsedSeconds } from '../../utils/format';
+  import { formatDurationMs, formatElapsedSeconds, formatTokens } from '../../utils/format';
   import { createSharedNowClock } from './useRunningElapsed.svelte';
   import {
     deriveClaudeSubagentDescription,
-    deriveClaudeSubagentLabel,
     deriveClaudeSubagentModelLabel,
     readClaudeSubagentInput,
   } from '../../utils/claudeSubagentLabel';
@@ -46,12 +54,27 @@
     type SubagentGroupNode,
     type TimelineNode,
   } from '../../utils/subagentGrouping';
+  import {
+    codexCompletionAnswer,
+    subagentLaunchInfo,
+    type SubagentLaunchContext,
+  } from '../../utils/subagentLaunch';
+  import ChatMarkdown from './ChatMarkdown.svelte';
+  import { paneWorkspacePath } from '../../stores/thread.svelte';
+  import { liveSubagentProgress } from '../../stores/subagentProgress.svelte';
+  import {
+    formatToolUses,
+    resolveSubagentProgress,
+  } from '../../utils/subagentProgress';
+  import { BackgroundClaudeTask } from '../../stores/bindings';
   import TranscriptDisclosureHeader from './TranscriptDisclosureHeader.svelte';
   import ToolRowStatusIndicator from './ToolRowStatusIndicator.svelte';
   import RowError from './RowError.svelte';
   import { indicatorStateForItem, rowErrorForStatus } from './rowState';
   import { preservePaneScrollAnchor } from './preserveScrollAnchor';
-  import { nestedScroll } from '../../utils/scroll/wheelAttribution';
+  import Icon from '../primitives/Icon.svelte';
+  import PanelRightOpen from '@lucide/svelte/icons/panel-right-open';
+  import SendToBack from '@lucide/svelte/icons/send-to-back';
 
   let {
     pane,
@@ -135,6 +158,20 @@
   // projection — grouping, run wrapping and the virtualizer's data array
   // for ~800 rows, at up to 48Hz.
   let parent = $derived(pane?.getItemById(group.parent.id) ?? group.parent);
+  // A backgrounded launch row stays `running` forever by design (the tray
+  // invariant: the launch is immutable and the outcome arrives on a separate
+  // `complete:<id>` sibling). The grouping folds that sibling onto the node,
+  // and it — not the launch — is what says whether this agent finished, how
+  // it finished, and when. An awaited launch has no sibling and completes in
+  // place, so the launch row remains the source there.
+  let completionItem = $derived(
+    group.completion
+      ? (pane?.getItemById(group.completion.id) ?? group.completion)
+      : null,
+  );
+  let statusItem = $derived(completionItem ?? parent);
+  // The Codex child's delivered verdict (empty for Claude launches).
+  let completionAnswer = $derived(codexCompletionAnswer(parent, completionItem));
   let decorated = $derived(decoratedSubagentAggregates(parent));
   // Max, not replace — the same reconciliation `subagentGroupNode` does,
   // re-run against the live anchor. The node's count already folds in
@@ -156,25 +193,27 @@
   // One derived id for both halves of the disclosure (utils/chatDomIds.ts):
   // the header's `controls` and the body's `id` must be one string.
   let groupDomId = $derived(chatRowDomId(pane, 'subagent-group', parent.id));
-
-  // Whether children are passing under the body's upper edge — the only
-  // state the top fade should paint in (same rule as ActivityRun's
-  // `fadedTop`). Pure geometry, so row-local state is correct here: a
-  // windowing remount lands the body back at its top, where the answer is
-  // false again. Sub-pixel slack for fractional row heights.
-  let bodyFadedTop = $state(false);
-
-  function onBodyScroll(event: Event): void {
-    bodyFadedTop = (event.currentTarget as HTMLElement).scrollTop > 1;
-  }
   let parentMeta = $derived(parseJsonObject(parent.meta));
   let payloadMeta = $derived(parseJsonObject(parent.payloadMeta));
+  let statusPayloadMeta = $derived(
+    completionItem ? parseJsonObject(completionItem.payloadMeta) : payloadMeta,
+  );
   let inputObject = $derived(readClaudeSubagentInput(payloadMeta, parentMeta));
   let parentToolName = $derived((parent.toolName ?? '').trim());
 
-  // Title-cased label, model affix, and description — see
-  // utils/claudeSubagentLabel.ts for the resolution rules.
-  let agentTitle = $derived(deriveClaudeSubagentLabel(inputObject, parentToolName));
+  // The provider-neutral launch identity: kind chip, display name,
+  // async-ness. The context answers "does this launch have loaded
+  // children?" from the node itself — the group was BUILT from the rows
+  // the window holds, so no second index is needed. A group node whose
+  // row somehow stops answering the predicate (cannot happen for the
+  // kinds the grouping mints, but the type allows it) falls back to a
+  // plain foreground agent presentation rather than a blank header.
+  const launchCtx: SubagentLaunchContext = {
+    hasChildren: () => group.children.length > 0 || group.descendantCount > 0,
+  };
+  let launchInfo = $derived(subagentLaunchInfo(parent, launchCtx));
+  let kindLabel = $derived(launchInfo?.kind ?? 'agent');
+  let agentTitle = $derived(launchInfo?.name ?? (parentToolName || 'Agent'));
   let modelLabel = $derived(
     deriveClaudeSubagentModelLabel(inputObject, parentMeta, parentToolName),
   );
@@ -182,35 +221,87 @@
 
   // ---- Status visualization (matches GenericToolCallRow) -----------
 
-  // The redesign drops the row-level "running" / "…" text label —
-  // `Indicator` carries that state visually now. Keep a boolean
-  // around for the per-second elapsed ticker and the "still running"
-  // branches of the duration / status slots. The previous
-  // `isBackgroundedLaunch` derivation existed only to pick between
-  // the two unused strings, so it goes away with them.
-  let isRunning = $derived(parent.status === 'running' || parent.status === 'streaming');
-
-  // The latest-action preview row is conditional because this card can
-  // still turn out to be a backgrounded launch: Claude's async-default
-  // agents carry no `run_in_background` in their tool input, and
-  // `is_background` lands only with the CLI's ack tool_result
-  // (claude-wire.md §E5) — at which point the grouping flips this whole
-  // card into an AgentRow leaf. The timeline physics spring growth, not
-  // shrink, so the "Initializing..." placeholder waits for proof the
-  // card will stay foreground: a descendant exists (loaded, evicted
-  // fold, or backend decoration — descendantCount folds in all three)
-  // or the input explicitly declined backgrounding. A real child
-  // summary needs no gate — child activity is itself that proof.
-  // Before proof, the header renders one line, matching the leaf's
-  // height so a flip is height-neutral; after settle with no child
-  // text there is nothing to say, so the placeholder never sticks to
-  // finished or failed cards.
-  let foregroundConfirmed = $derived(
-    descendantCount > 0 || inputObject?.run_in_background === false,
+  let isRunning = $derived(
+    statusItem.status === 'running' || statusItem.status === 'streaming',
   );
+
+  // ---- Live progress (spec Q1) --------------------------------------
+  // The live tick while the agent runs; the persisted final numbers once
+  // it settled. `isRunning` (completion-aware) is passed as the liveness
+  // override because the launch row of a background agent never leaves
+  // `running` — see resolveSubagentProgress.
+  let liveTick = $derived(liveSubagentProgress(parent.threadId, parent.id));
+  let progress = $derived(resolveSubagentProgress(parent, liveTick, isRunning));
+  let toolCountLabel = $derived(formatToolUses(progress.toolUses));
+  let tokensLabel = $derived(
+    progress.totalTokens !== null ? `${formatTokens(progress.totalTokens)} tokens` : '',
+  );
+
+  // "needs approval" pill (spec Q10b): an interactive request whose scope
+  // is THIS launch. Direct scope only — a nested agent's ask lights the
+  // nested card, which is visible inside this card's body when expanded.
+  let needsApproval = $derived.by(() => {
+    if (!pane) return false;
+    const scoped = (requests: readonly { parentToolUseId?: string }[] | undefined) =>
+      (requests ?? []).some((request) => request.parentToolUseId === parent.id);
+    return scoped(pane.pendingApprovals) || scoped(pane.pendingUserInputs);
+  });
+
+  // "background" pill: the node runs detached from the main turn — stamped
+  // at launch (§E5 async, run_in_background, Codex spawn) or mid-flight
+  // (the background button / Ctrl+B, which lands as
+  // `meta.subagentBackgroundedAt`).
+  let isBackgroundNode = $derived(
+    launchInfo?.background === true || parentMeta?.subagentBackgroundedAt !== undefined,
+  );
+
+  // Background button (spec Q9): Claude foreground Agent/Task only, while
+  // it runs. Forks have no task to detach, a resume carrier is already
+  // background, and Codex children are always async.
+  let canBackground = $derived(
+    pane !== undefined
+      && isRunning
+      && !isBackgroundNode
+      && (parentToolName === 'Agent' || parentToolName === 'Task'),
+  );
+  let backgrounding = $state(false);
+  let backgroundError = $state('');
+
+  async function moveToBackground(event: MouseEvent): Promise<void> {
+    event.stopPropagation();
+    if (backgrounding) return;
+    backgrounding = true;
+    backgroundError = '';
+    try {
+      await BackgroundClaudeTask(parent.threadId, parent.id);
+    } catch (err) {
+      // The CLI's refusal ("no matching foreground task") is a real
+      // answer the user needs to see — the row keeps streaming.
+      backgroundError = err instanceof Error ? err.message : String(err);
+    } finally {
+      backgrounding = false;
+    }
+  }
+
+  // One door: the PANE decides where opening routes. The base ThreadPane
+  // opens/rescopes its agent companion (the trail restarts — the
+  // from-outside rule); the agent pane's scoped facade overrides
+  // `openAgentPane` to pushScope, so descending INSIDE the pane grows the
+  // breadcrumb (spec Q4b). Rows never talk to the companion store.
+  function openInPane(event: MouseEvent): void {
+    event.stopPropagation();
+    pane?.openAgentPane(parent.id, agentTitle);
+  }
+
   let previewText = $derived.by<string>(() => {
+    // The live activity line is the freshest statement of what the agent
+    // is doing right now (`task_progress.description`); child summaries
+    // and the Initializing placeholder are the fallbacks.
+    if (isRunning && progress.activity) return progress.activity;
     if (latestChildSummary) return latestChildSummary;
-    return foregroundConfirmed && isRunning ? 'Initializing...' : '';
+    const activityConfirmed =
+      descendantCount > 0 || inputObject?.run_in_background === false;
+    return activityConfirmed && isRunning ? 'Initializing...' : '';
   });
 
   // Shared 1Hz clock (useRunningElapsed.svelte.ts) instead of a private
@@ -222,22 +313,47 @@
 
   let elapsedLabel = $derived.by<string>(() => {
     const start = parent.createdAt;
-    if (!Number.isFinite(start) || start <= 0) return '';
-    const end = isRunning ? clock.now : parent.updatedAt;
-    if (!Number.isFinite(end) || end <= start) return '';
-    return formatElapsedSeconds(Math.floor((end - start) / 1_000));
+    if (Number.isFinite(start) && start > 0) {
+      // Start at the launch, end at whatever carries the terminal — for a
+      // background agent that is the completion sibling, whose updatedAt is
+      // when the task actually reported back.
+      const end = isRunning ? clock.now : statusItem.updatedAt;
+      if (Number.isFinite(end) && end > start) {
+        return formatElapsedSeconds(Math.floor((end - start) / 1_000));
+      }
+    }
+    // A settled row with unusable timestamps (an imported session) still
+    // has the provider's own wall-clock report in the persisted progress.
+    return progress.durationMs !== null ? formatDurationMs(progress.durationMs) : '';
   });
 
   let completionStatus = $derived(
-    deriveCompletionStatus(parent, { meta: payloadMeta }),
+    deriveCompletionStatus(statusItem, { meta: statusPayloadMeta }),
   );
-  let indicatorState = $derived(indicatorStateForItem(parent, { meta: payloadMeta }));
+  let indicatorState = $derived(
+    indicatorStateForItem(statusItem, { meta: statusPayloadMeta }),
+  );
   let rowError = $derived.by(() => {
     if (completionStatus !== 'failure') return null;
-    return rowErrorForStatus(parent.status, 'Agent failed') ?? {
+    return rowErrorForStatus(statusItem.status, 'Agent failed') ?? {
       tone: 'error' as const,
       msg: 'Agent failed',
     };
+  });
+
+  // A failed transcript backfill (the task_notification's output_file
+  // could not be read — triage stamps notification_output_state/error on
+  // the completion sibling, output_file_state/error on older rows). A
+  // silently incomplete card body reads exactly like a complete one, so
+  // the failure renders inline.
+  let statusMeta = $derived(
+    completionItem ? parseJsonObject(completionItem.meta) : parentMeta,
+  );
+  let outputBackfillError = $derived.by(() => {
+    const state = statusMeta?.notification_output_state ?? statusMeta?.output_file_state;
+    if (state !== 'error') return '';
+    const error = statusMeta?.notification_output_error ?? statusMeta?.output_file_error;
+    return typeof error === 'string' && error ? error : 'Task output could not be read.';
   });
 
   let entryCountLabel = $derived.by(() => {
@@ -247,6 +363,36 @@
   let entryCountAriaLabel = $derived.by(() => {
     if (descendantCount === 0) return '';
     return `${descendantCount} ${descendantCount === 1 ? 'timeline entry' : 'timeline entries'} inside this subagent group`;
+  });
+
+  // ---- Expanded-body digest (spec Q2) --------------------------------
+  // The body shows the node's tool calls, its FINAL text, and collapsed
+  // child cards. Thinking and intermediate text live in the agent pane —
+  // that filter is also what keeps the body short enough to render
+  // uncapped (the old max-height + fade scroller is deleted, Q6).
+  let bodyNodes = $derived.by<TimelineNode[]>(() => {
+    // "Final text" exists only where a final answer can: while the agent
+    // runs (the latest text is its live report) or after a clean
+    // completion. A killed/errored agent's last text is mid-flight
+    // prose, not an answer — its body stays tool calls + nested cards
+    // (user report 2026-08-22: a stopped agent's prose rendered in the
+    // main chat history).
+    const keepFinalText = isRunning || completionStatus !== 'failure';
+    let lastTextId = '';
+    if (keepFinalText) {
+      for (const node of group.children) {
+        if (node.kind === 'leaf' && node.item.kind === 'assistant_text') {
+          lastTextId = node.item.id;
+        }
+      }
+    }
+    return group.children.filter((node) => {
+      if (node.kind !== 'leaf') return true;
+      const kind = node.item.kind;
+      if (kind === 'thinking') return false;
+      if (kind === 'assistant_text') return node.item.id === lastTextId;
+      return true;
+    });
   });
 </script>
 
@@ -261,10 +407,11 @@
   </div>
 {:else}
   <div
-    class="group/tool overflow-hidden"
+    class="group/tool @container overflow-hidden"
     style="margin-left: {indentRem}rem"
     data-testid="subagent-group"
     data-tool-kind="robot"
+    data-background={isBackgroundNode ? 'true' : undefined}
   >
     <TranscriptDisclosureHeader
       expanded={expanded}
@@ -273,8 +420,8 @@
       class="rounded-[var(--radius-control)] px-1 py-1 hover:bg-surface-2/20"
       onToggle={(event) => preservePaneScrollAnchor(pane, event, toggle)}
     >
-      {#snippet icon()}<ToolKindIcon kind="robot" ariaLabel="agent" />{/snippet}
-      {#snippet label()}<span data-testid="subagent-group-gutter-label">agent</span>{/snippet}
+      {#snippet icon()}<ToolKindIcon kind="robot" ariaLabel={kindLabel} />{/snippet}
+      {#snippet label()}<span data-testid="subagent-group-kind">{kindLabel}</span>{/snippet}
       {#snippet body()}
       <span class="min-w-0 flex-1">
         <span class="flex min-w-0 items-center gap-2">
@@ -299,6 +446,33 @@
       </span>
       {/snippet}
       {#snippet actions()}
+        {#if needsApproval}
+          <span
+            class="shrink-0 rounded-full border border-warning/30 bg-warning/10 px-1.5 py-0.5 text-[0.625rem] font-medium text-warning"
+            data-testid="subagent-group-approval-pill"
+          >
+            needs approval
+          </span>
+        {/if}
+        {#if toolCountLabel}
+          <span
+            class="shrink-0 text-[0.625rem] text-fg-hint tabular-nums"
+            data-testid="subagent-group-tools"
+          >
+            {toolCountLabel}
+          </span>
+        {/if}
+        {#if tokensLabel}
+          <!-- Tokens only when the card has room (spec Q1): container
+               width, not viewport — a narrow pane on a wide screen still
+               hides them. -->
+          <span
+            class="hidden shrink-0 text-[0.625rem] text-fg-hint tabular-nums @[36rem]:inline"
+            data-testid="subagent-group-tokens"
+          >
+            {tokensLabel}
+          </span>
+        {/if}
         {#if entryCountLabel}
           <span
             class="shrink-0 text-[0.625rem] text-fg-hint opacity-70 transition-opacity group-hover/tool:opacity-100"
@@ -308,13 +482,38 @@
             {entryCountLabel}
           </span>
         {/if}
+        {#if canBackground}
+          <button
+            type="button"
+            onclick={moveToBackground}
+            disabled={backgrounding}
+            title="Move to background"
+            aria-label="Move agent to background"
+            data-testid="subagent-group-background-button"
+            class="opacity-0 group-hover/tool:opacity-100 focus-visible:opacity-100 rounded p-0.5 text-text-secondary hover:text-text-primary cursor-pointer disabled:cursor-default disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+          >
+            <Icon icon={SendToBack} size={12} />
+          </button>
+        {/if}
+        {#if pane}
+          <button
+            type="button"
+            onclick={openInPane}
+            title="Open in agent pane"
+            aria-label="Open {agentTitle} in agent pane"
+            data-testid="subagent-group-open-pane"
+            class="opacity-0 group-hover/tool:opacity-100 focus-visible:opacity-100 rounded p-0.5 text-text-secondary hover:text-text-primary cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+          >
+            <Icon icon={PanelRightOpen} size={12} />
+          </button>
+        {/if}
         <ToolHeaderMeta
           statusSlotTestId="subagent-group-status-slot"
           duration={{ testId: 'subagent-group-duration', label: elapsedLabel }}
         >
           {#snippet status()}
             <ToolRowStatusIndicator
-              item={parent}
+              item={statusItem}
               state={isRunning || completionStatus === 'failure' ? indicatorState : null}
               testId="subagent-group-status"
             />
@@ -328,46 +527,52 @@
         <RowError tone={rowError.tone} msg={rowError.msg} />
       </div>
     {/if}
+    {#if backgroundError}
+      <div class="ml-[5.25rem] px-3 pb-1" data-testid="subagent-group-background-error">
+        <RowError tone="error" msg={backgroundError} />
+      </div>
+    {/if}
+    {#if outputBackfillError}
+      <div class="ml-[5.25rem] px-3 pb-1" data-testid="subagent-group-output-error">
+        <RowError tone="error" msg={outputBackfillError} />
+      </div>
+    {/if}
 
     {#if expanded}
-      <!-- Fade host: the top fade below is an overlay strip, so it needs a
-           positioned box exactly the scroller's height to hang inside. -->
-      <div class="relative ml-5">
-        <div
-          id={groupDomId}
-          class="max-h-[20rem] overflow-y-auto border-l border-border-subtle bg-surface-0/35 px-3 py-2"
-          use:nestedScroll
-          onscroll={onBodyScroll}
-          role="region"
-          aria-label="Subagent Timeline"
-          data-testid="subagent-group-body"
-        >
-          {#if group.children.length === 0}
-            {#if descendantCount > 0}
-              <p class="text-xs text-text-secondary italic" data-testid="subagent-group-loading">
-                Loading {entryCountLabel}…
-              </p>
-            {:else}
-              <p class="text-xs text-text-secondary italic">No child entries captured.</p>
-            {/if}
-          {:else}
-            {#each group.children as child (nodeKey(child))}
-              {@render renderNode(child, depth + 1)}
-            {/each}
+      <div
+        id={groupDomId}
+        class="ml-5 border-l border-border-subtle bg-surface-0/35 px-3 py-2"
+        role="region"
+        aria-label="Subagent Timeline"
+        data-testid="subagent-group-body"
+      >
+        {#if group.children.length === 0}
+          {#if descendantCount > 0}
+            <p class="text-xs text-text-secondary italic" data-testid="subagent-group-loading">
+              Loading {entryCountLabel}…
+            </p>
+          {:else if !completionAnswer}
+            <p class="text-xs text-text-secondary italic">No child entries captured.</p>
           {/if}
-        </div>
-        <!-- Top fade, same overlay technique as ActivityRun's clip (see the
-             comment there): rows dissolve as they rise out of the capped body
-             instead of being cut by a hard edge. Paint-only, snaps in and out
-             (no transition — timeline transition kill rule). -->
-        <div
-          aria-hidden="true"
-          class="pointer-events-none absolute top-0 right-0 left-0 h-6"
-          class:opacity-0={!bodyFadedTop}
-          style:background="linear-gradient(to bottom, var(--surface-0), transparent)"
-          data-testid="subagent-group-top-fade"
-          data-faded={bodyFadedTop ? 'true' : 'false'}
-        ></div>
+        {:else if bodyNodes.length === 0}
+          {#if !completionAnswer}
+            <p class="text-xs text-text-secondary italic" data-testid="subagent-group-digest-empty">
+              Intermediate output only. Open the agent pane for the full transcript.
+            </p>
+          {/if}
+        {:else}
+          {#each bodyNodes as child (nodeKey(child))}
+            {@render renderNode(child, depth + 1)}
+          {/each}
+        {/if}
+        {#if completionAnswer}
+          <!-- A Codex child streams nothing to the parent thread; the
+               FINAL_ANSWER on the folded completion sibling is its whole
+               product, so the card body is where it renders. -->
+          <div class="text-sm" data-testid="subagent-group-final-answer">
+            <ChatMarkdown source={completionAnswer} workspacePath={paneWorkspacePath(pane)} />
+          </div>
+        {/if}
       </div>
     {/if}
   </div>

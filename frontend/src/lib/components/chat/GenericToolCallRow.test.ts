@@ -387,46 +387,11 @@ describe('<GenericToolCallRow> editor-link wiring', () => {
     expect(queryByTestId('tool-call-card-body')).toBeNull();
   });
 
-  it('renders Claude Agent JSONL payloads as transcript entries', async () => {
-    setBindingMock('GetPayloadPreview', vi.fn(async () => ({
-      data: [
-        JSON.stringify({
-          isSidechain: true,
-          agentId: 'agent-1',
-          type: 'assistant',
-          message: {
-            role: 'assistant',
-            content: [
-              {
-                type: 'tool_use',
-                id: 'tool-1',
-                name: 'Bash',
-                input: { command: 'echo done' },
-              },
-            ],
-          },
-        }),
-        JSON.stringify({
-          isSidechain: true,
-          agentId: 'agent-1',
-          type: 'user',
-          message: {
-            role: 'user',
-            content: [
-              {
-                type: 'tool_result',
-                tool_use_id: 'tool-1',
-                content: 'done',
-                is_error: false,
-              },
-            ],
-          },
-        }),
-      ].join('\n'),
-      totalSize: 400,
-      nextOffset: 400,
-      isComplete: true,
-    })));
+  it('renders header-only with no expandable transcript body (agent-visibility)', async () => {
+    // The old ack-text body that re-parsed the payload JSONL into a
+    // pseudo-transcript is deleted: the agent's transcript is real rows
+    // under the launch now (card body + agent pane). The leaf row is a
+    // non-expandable header.
     const item = makeItem({
       kind: 'tool_completion',
       status: 'completed',
@@ -434,19 +399,41 @@ describe('<GenericToolCallRow> editor-link wiring', () => {
       summary: 'Agent: worker -> done',
       payloadId: 'agent-jsonl',
     });
-    const { getByTestId, getAllByTestId, queryByText } = render(AgentRow, {
+    const { getByTestId, queryByTestId } = render(AgentRow, {
       props: { item },
     });
 
-    await fireEvent.click(getByTestId('agent-row-toggle'));
+    const toggle = getByTestId('agent-row-toggle');
+    expect(toggle).toHaveAttribute('aria-disabled', 'true');
+    await fireEvent.click(toggle);
+    expect(queryByTestId('claude-subagent-transcript')).toBeNull();
+    expect(queryByTestId('expandable-payload-body')).toBeNull();
+  });
 
-    await waitFor(() => {
-      expect(getByTestId('claude-subagent-transcript')).toBeInTheDocument();
+  it('surfaces a failed transcript backfill as an inline error line', () => {
+    // triage stamps notification_output_state/error on the launch row when
+    // the task_notification's output_file could not be read; a silently
+    // incomplete transcript reads exactly like a complete one, so the row
+    // must say so.
+    const item = makeItem({
+      kind: 'tool_call',
+      status: 'running',
+      isBackground: true,
+      toolName: 'Agent',
+      summary: 'Agent: worker',
+      meta: JSON.stringify({
+        notification_output_state: 'error',
+        notification_output_error: 'output file vanished before read',
+      }),
+      payloadMeta: JSON.stringify({
+        toolName: 'Agent',
+        input: { subagent_type: 'Explore', description: 'worker' },
+      }),
     });
-    expect(getAllByTestId('claude-subagent-transcript-entry')).toHaveLength(2);
-    expect(queryByText(/"isSidechain"/)).toBeNull();
-    expect(queryByText('echo done')).toBeInTheDocument();
-    expect(queryByText('done')).toBeInTheDocument();
+    const { getByTestId } = render(AgentRow, { props: { item } });
+    expect(getByTestId('agent-row-output-error').textContent).toContain(
+      'output file vanished before read',
+    );
   });
 });
 

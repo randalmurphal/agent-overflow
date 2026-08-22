@@ -172,6 +172,40 @@ export function AutoResumeThread(threadID: string): $CancellablePromise<void> {
 }
 
 /**
+ * BackgroundClaudeTask moves an in-flight FOREGROUND Claude task (a
+ * running subagent or a foreground Bash) to the background, identified
+ * by the `toolUseID` of the block that started it — the control-request
+ * form of the Claude TUI's Ctrl+B, and the wire behind the background
+ * button on a running agent / Bash row.
+ * 
+ * Keyed by tool_use_id, NOT task_id, because that is what the CLI's
+ * `background_tasks` subtype takes and because the UI's button lives on
+ * the launch row, whose id IS the tool_use_id. StopClaudeTask is the
+ * sibling in the opposite direction and takes a task_id — the two ids
+ * are not interchangeable, which is why the bindings do not share one
+ * parameter name.
+ * 
+ * On success the CLI answers `{backgrounded:true}` and then emits
+ * `system/task_updated {patch:{is_backgrounded:true}}`, which flows
+ * through triage as EventSubagentBackgrounded and stamps the launch row
+ * with the moment its sidechain streaming stopped.
+ * 
+ * Returns typed errors for:
+ * 
+ *   - session-missing: no Claude session for this thread. The caller
+ *     backgrounded before Start / after Close.
+ *   - provider-mismatch: the thread exists but it's a Codex session.
+ *     Codex has no equivalent — a spawned collab-agent child is already
+ *     asynchronous and `close_agent` is a model-only tool — so the
+ *     frontend must branch on provider before reaching for this.
+ *   - timeout / provider error: surfaced verbatim, including the CLI's
+ *     refusal when no foreground task matched the tool_use_id.
+ */
+export function BackgroundClaudeTask(threadID: string, toolUseID: string): $CancellablePromise<void> {
+    return $Call.ByID(2098425262, threadID, toolUseID);
+}
+
+/**
  * BookmarkUIRenderTrace freezes the current trace contents (and any
  * rotated `.1` predecessor) into a non-rotating bookmark file under
  * `<configDir>/ui-trace/bookmarks/`. The frontend invokes this from

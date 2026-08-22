@@ -833,6 +833,7 @@ func (p *privilegedApp) RevertConversationAndResendMessage() string {
 	return "ok"
 }
 func (p *privilegedApp) StopClaudeTask() string                { return "ok" }
+func (p *privilegedApp) BackgroundClaudeTask() string          { return "ok" }
 func (p *privilegedApp) CleanCodexBackgroundTerminals() string { return "ok" }
 
 func (p *privilegedApp) TerminateCodexBackgroundTerminal() string { return "ok" }

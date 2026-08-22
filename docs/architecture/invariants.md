@@ -671,6 +671,23 @@ background commands / subagents. The background tray shows the live
 launch, and the timeline shows both the launch and, when it lands, the
 sibling `tool_completion` row.
 
+The tray lists by BACKGROUNDED ANCESTRY, not by top-level-ness
+(`docs/specs/agent-visibility.md` Q8). `Store.ListLiveBackgroundTasks`
+returns every live `is_background=1` launch at ANY depth, every live
+agent launch that DESCENDS from one (which also supplies the
+intermediate ancestors, so the frontend indents by walking `parentId`
+within the result), and the recent completion siblings of that set. A
+foreground plain tool call under a background agent is NOT a tray row —
+it is the agent's own work, rendered inside its card. This is a DISPLAY
+rule only: the reaper and queue gates in `items_lifecycle.go`
+(`HasRunningTopLevelForegroundToolCall`, `HasLiveBackgroundToolCall`,
+`HasQueueBlockingBackgroundToolCall`,
+`CountLiveRunningBackgroundToolCalls`,
+`MarkLiveBackgroundToolCallsInactive`) and `paging.go`'s
+`topLevelItemsFilter` keep `parent_id = ''`. Whether the tray SHOWS a
+nested background Bash and whether that Bash blocks the flush queue or
+survives a session teardown are different questions.
+
 **Rationale.** Claude's `task_updated` terminal / TaskOutput
 enrichment and Codex's background terminal / subagent completion
 signals can arrive AFTER the turn that launched the work. Agents

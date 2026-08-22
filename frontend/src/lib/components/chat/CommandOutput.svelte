@@ -37,6 +37,9 @@
   import { preservePaneScrollAnchor } from './preserveScrollAnchor';
   import { useLeasedItemExpansion } from './useLeasedPayloadExpansion.svelte';
   import { nestedScroll } from '../../utils/scroll/wheelAttribution';
+  import Icon from '../primitives/Icon.svelte';
+  import SendToBack from '@lucide/svelte/icons/send-to-back';
+  import { BackgroundClaudeTask } from '../../stores/bindings';
 
   let {
     pane,
@@ -116,6 +119,35 @@
   let isRunning = $derived(
     effectiveStatusItem.status === 'running' || effectiveStatusItem.status === 'streaming',
   );
+
+  // Background button (docs/specs/agent-visibility.md Q9): the
+  // control-request form of the Claude TUI's Ctrl+B, on a running
+  // FOREGROUND Claude Bash launch. Keyed by the launch row id (the
+  // tool_use_id — what the `background_tasks` control takes). Codex
+  // command rows (`command_execution`) never qualify: backgrounding
+  // there is model-initiated (invariant 25), not a client control.
+  let canBackground = $derived(
+    pane !== undefined &&
+      isRunning &&
+      !isBackgroundedLaunch &&
+      effectiveStatusItem.kind === 'tool_call' &&
+      item.toolName === 'Bash' &&
+      parseJsonObject(item.meta)?.subagentBackgroundedAt === undefined,
+  );
+  let backgrounding = $state(false);
+  let backgroundError = $state('');
+  async function moveToBackground(): Promise<void> {
+    if (backgrounding) return;
+    backgrounding = true;
+    backgroundError = '';
+    try {
+      await BackgroundClaudeTask(item.threadId, item.id);
+    } catch (err) {
+      backgroundError = err instanceof Error ? err.message : String(err);
+    } finally {
+      backgrounding = false;
+    }
+  }
 
   const ticker = createRunningElapsed(
     () => isRunning && durationLabel === '' && !isBackgroundedLaunch,
@@ -255,6 +287,19 @@
     {#if confirmedDevServerURL}
       <DevServerChip url={confirmedDevServerURL} />
     {/if}
+    {#if canBackground}
+      <button
+        type="button"
+        onclick={(event) => { event.stopPropagation(); void moveToBackground(); }}
+        disabled={backgrounding}
+        title="Move to background"
+        aria-label="Move command to background"
+        data-testid="command-output-background-button"
+        class="opacity-0 group-hover/tool:opacity-100 focus-visible:opacity-100 rounded p-0.5 text-text-secondary hover:text-text-primary cursor-pointer disabled:cursor-default disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+      >
+        <Icon icon={SendToBack} size={12} />
+      </button>
+    {/if}
     <ToolDecisionChip decision={effectiveDisplayItem.decision} />
     <ToolHeaderMeta
       statusSlotTestId="command-output-status-slot"
@@ -294,6 +339,11 @@
   {#if commandError}
     <div class="ml-[5.25rem] px-3 pb-1" data-testid="command-output-error">
       <RowError tone={commandError.tone} code={commandError.code} msg={commandError.msg} />
+    </div>
+  {/if}
+  {#if backgroundError}
+    <div class="ml-[5.25rem] px-3 pb-1" data-testid="command-output-background-error">
+      <RowError tone="error" msg={backgroundError} />
     </div>
   {/if}
   {#if compactCollapsedPreview && !expansion.expanded}

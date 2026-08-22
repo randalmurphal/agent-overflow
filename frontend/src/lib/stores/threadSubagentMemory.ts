@@ -2,8 +2,12 @@ import type { Item, Thread } from '../types/models';
 import {
   isItemActive,
   normalizePreviewText,
-  subagentLaunchKind,
 } from '../utils/subagentGrouping';
+import {
+  subagentLaunchContextFrom,
+  subagentLaunchInfo,
+  type SubagentLaunchContext,
+} from '../utils/subagentLaunch';
 import type {
   SubagentFoldAggregate,
   SubagentFoldSnapshot,
@@ -40,9 +44,27 @@ export interface ThreadSubagentMemoryOptions {
   getSwitchGeneration(): number;
   /** streamingReveal.recomputeReveal — commitSubagentEvictions recomputes after the drop. */
   recomputeReveal(): void;
-  /** rowUiState.isSubagentGroupExpanded — retention check for inline launches. */
+  /** rowUiState.isSubagentGroupExpanded — the retention check for every launch kind. */
   isSubagentGroupExpanded(groupKey: string): boolean;
+  /**
+   * Every row the OPEN agent companion is rendering (the scope trail's
+   * whole subtree), or null when no pane is open. Consulted at the
+   * eviction COMMIT chokepoint, because per-anchor expansion checks
+   * cannot cover every path to it: collapse-time eviction runs on a
+   * card that is by definition collapsed, and the collapsed-launch
+   * sweep collects whole subtrees — both would fold the very rows the
+   * pane has mounted (live incident 2026-08-22: collapsing the card
+   * blanked the open pane into a hydrate-again flicker).
+   */
+  agentPaneHeldRows(): ReadonlySet<string> | null;
 }
+
+/**
+ * Bound on the parent walk `evictableAnchorIdFor` does. Real subagent trees
+ * are two or three deep; the cap exists only so corrupt provider parentId
+ * links cannot spin here.
+ */
+const MAX_ANCESTOR_HOPS = 16;
 
 /** One row leaving pane memory for the fold, keyed by its launch anchor. */
 interface SubagentEviction {
@@ -125,7 +147,7 @@ export function createThreadSubagentMemory(
   /**
    * Live-eviction fold for subagent children (see utils/subagentFold.ts).
    * Terminal child rows leave pane memory once nothing can render them —
-   * collapsed inline cards, backgrounded launches, Codex spawns — and
+   * i.e. once their card is collapsed, whichever launch kind it is — and
    * their count/preview fold in here so the collapsed card stays honest.
    * SQLite keeps the rows (triage persists before emitting); expansion
    * re-hydrates and `reclaim`s the ids. Every fold mutation rides a
@@ -191,51 +213,80 @@ export function createThreadSubagentMemory(
   }
 
   /**
+   * Launch-predicate context over the CURRENT window. Built per public
+   * entry point rather than cached: the window changes under us, and the
+   * context's parent-id index is lazy, so a batch that touches no `Skill`
+   * row never materializes one.
+   */
+  function launchContext(): SubagentLaunchContext {
+    return subagentLaunchContextFrom(options.getItems());
+  }
+
+  /**
    * Eviction policy for one upserted or patched row. Returns the launch
    * anchor to fold the row under, or null when the row must stay in
    * pane memory: still active (the delta pipeline requires streaming
    * rows to exist), itself a launch anchor (anchors are the fold keys
-   * and the cards), a flat non-subagent row, an orphan, or a child of
-   * an inline card that is currently expanded. Retention is keyed on
-   * the direct parent's expansion only; settled rows under collapsed
-   * ancestors are swept by evictCollapsedSubtree when their own
-   * card collapses.
+   * and the cards), a flat non-subagent row, an orphan, or a child of a
+   * card that is currently expanded. Every launch kind renders its
+   * transcript inline now, so there is one retention rule rather than
+   * one per kind. Retention is keyed on the direct parent's expansion
+   * only; settled rows under collapsed ancestors are swept by
+   * evictCollapsedSubtree when their own card collapses.
    */
-  function evictableAnchorIdFor(item: Item): string | null {
+  function evictableAnchorIdFor(item: Item, ctx: SubagentLaunchContext): string | null {
     if (isItemActive(item)) return null;
-    const parentId = item.parentId ?? '';
-    if (!parentId) return null;
-    if (subagentLaunchKind(item) !== null) return null;
-    const parentIndex = options.getItemIndex(parentId);
-    if (parentIndex === undefined) return null;
-    const parent = options.getItems()[parentIndex];
-    const launchKind = subagentLaunchKind(parent);
-    if (launchKind === null) return null;
-    if (launchKind === 'inline' && options.isSubagentGroupExpanded(parent.id)) {
-      return null;
+    if (subagentLaunchInfo(item, ctx) !== null) return null;
+    const items = options.getItems();
+    let parentId = item.parentId ?? '';
+    // Walk to the nearest launch ANCESTOR, which is the same anchor
+    // `groupItemsBySubagent` buckets the row under: a row parented on an
+    // ordinary tool call inside an agent still renders in that agent's card,
+    // so the two must agree on where it folds. `MAX_ANCESTOR_HOPS` bounds a
+    // corrupt parentId cycle — the grouping pass carries the same guard.
+    for (let hops = 0; parentId && hops < MAX_ANCESTOR_HOPS; hops++) {
+      const parentIndex = options.getItemIndex(parentId);
+      if (parentIndex === undefined) return null;
+      const parent = items[parentIndex];
+      if (subagentLaunchInfo(parent, ctx) !== null) {
+        return options.isSubagentGroupExpanded(parent.id) ? null : parent.id;
+      }
+      parentId = parent.parentId ?? '';
     }
-    return parent.id;
+    return null;
   }
 
   /**
    * Collect every settled non-launch descendant under `anchorId` into
-   * `out`. Nested launches stay loaded (they are fold keys and render
-   * as nested cards); their settled children fold under their own
-   * anchor so nested entry counters stay honest. One forward pass
-   * suffices because items are in (turnIndex, itemIndex) order — a
-   * launch precedes its rows.
+   * `out`. Nested launches — of ANY kind, including a forked skill or a
+   * Codex spawn inside a Claude agent — stay loaded (they are fold keys
+   * and render as nested cards); their settled children fold under their
+   * own anchor so nested entry counters stay honest. One forward pass
+   * resolves the whole chain because items are in (turnIndex, itemIndex)
+   * order — a launch precedes its rows (invariants #10/#11).
    */
-  function collectSettledSubtree(anchorId: string, out: SubagentEviction[]): void {
+  function collectSettledSubtree(
+    anchorId: string,
+    out: SubagentEviction[],
+    ctx: SubagentLaunchContext,
+  ): void {
     const launchIds = new Set([anchorId]);
+    // Nearest-launch-ancestor resolution, mirroring the grouping pass's
+    // bucketing exactly: an ACTIVE row is still recorded here (it just is
+    // not evicted) so its own settled children can resolve through it.
+    const anchorOf = new Map<string, string>();
     for (const item of options.getItems()) {
       const parentId = item.parentId ?? '';
-      if (!parentId || !launchIds.has(parentId)) continue;
-      if (subagentLaunchKind(item) !== null) {
+      if (!parentId) continue;
+      const anchor = launchIds.has(parentId) ? parentId : anchorOf.get(parentId);
+      if (anchor === undefined) continue;
+      if (subagentLaunchInfo(item, ctx) !== null) {
         launchIds.add(item.id);
         continue;
       }
+      anchorOf.set(item.id, anchor);
       if (isItemActive(item)) continue;
-      out.push({ item, anchorId: parentId });
+      out.push({ item, anchorId: anchor });
     }
   }
 
@@ -248,7 +299,14 @@ export function createThreadSubagentMemory(
    * entries are harmless: the registry and the drop set both dedupe by
    * id.
    */
-  function commitSubagentEvictions(evictions: readonly SubagentEviction[]): void {
+  function commitSubagentEvictions(candidates: readonly SubagentEviction[]): void {
+    // Rows the open agent pane is rendering never fold, whatever path
+    // nominated them — see the option's doc. They fold normally on the
+    // first eviction after the pane closes or re-scopes.
+    const held = candidates.length > 0 ? options.agentPaneHeldRows() : null;
+    const evictions = held
+      ? candidates.filter(({ item }) => !held.has(item.id))
+      : candidates;
     if (evictions.length === 0) return;
     const evictedIds = new Set<string>();
     const anchorIds = new Set<string>();
@@ -271,19 +329,26 @@ export function createThreadSubagentMemory(
    * Fold-and-drop settled subagent children that nothing can render.
    * `candidates` is the changed-row set of the upsert batch or status
    * patch that just applied: children that arrived terminal, children
-   * whose stored row just flipped terminal, and — when a launch anchor
-   * itself changed — a sweep of its settled subtree (covers a
-   * foreground launch being backgrounded mid-run, which flips its
-   * whole transcript from expandable to suppressed).
+   * whose stored row just flipped terminal, and — when a COLLAPSED launch
+   * anchor itself changed — a sweep of its settled subtree.
    */
   function evictSettledChildren(candidates: readonly Item[]): void {
+    const ctx = launchContext();
     let evictions: SubagentEviction[] | null = null;
     for (const candidate of candidates) {
-      if (subagentLaunchKind(candidate) === 'suppressed') {
-        collectSettledSubtree(candidate.id, (evictions ??= []));
+      if (subagentLaunchInfo(candidate, ctx) !== null) {
+        // A launch row is never evictable itself — it is the fold key and
+        // the card. But a launch row changing while its card is COLLAPSED
+        // is the one moment a whole settled transcript can be sitting in
+        // memory with nothing able to render it: the rows may have landed
+        // before the anchor was recognisable as a launch (a `Skill` only
+        // becomes a fork once something is attributed to it). Sweep it.
+        if (!options.isSubagentGroupExpanded(candidate.id)) {
+          collectSettledSubtree(candidate.id, (evictions ??= []), ctx);
+        }
         continue;
       }
-      const anchorId = evictableAnchorIdFor(candidate);
+      const anchorId = evictableAnchorIdFor(candidate, ctx);
       if (anchorId === null) continue;
       (evictions ??= []).push({ item: candidate, anchorId });
     }
@@ -298,9 +363,10 @@ export function createThreadSubagentMemory(
   function evictCollapsedSubtree(anchorId: string): void {
     const anchorIndex = options.getItemIndex(anchorId);
     if (anchorIndex === undefined) return;
-    if (subagentLaunchKind(options.getItems()[anchorIndex]) === null) return;
+    const ctx = launchContext();
+    if (subagentLaunchInfo(options.getItems()[anchorIndex], ctx) === null) return;
     const evictions: SubagentEviction[] = [];
-    collectSettledSubtree(anchorId, evictions);
+    collectSettledSubtree(anchorId, evictions, ctx);
     commitSubagentEvictions(evictions);
   }
 

@@ -64,8 +64,13 @@ const (
 	codexBackgroundTasksChangedEventName = "provider:background_tasks_changed"
 )
 
+// BackgroundTasksChangedEvent is the `provider:background_tasks_changed`
+// payload: a refresh nudge for the tray listing, optionally carrying
+// Claude's level set of live background tasks (subagent_progress.go).
+// Tasks is nil for the Codex / app-side nudges, which know no set.
 type BackgroundTasksChangedEvent struct {
-	ThreadID string `json:"threadId"`
+	ThreadID string                       `json:"threadId"`
+	Tasks    []provider.BackgroundTaskRef `json:"tasks,omitempty"`
 }
 
 // codexBackgroundState holds the per-thread correlation state for

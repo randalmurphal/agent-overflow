@@ -90,6 +90,9 @@ func TestAllEventKindsListIsComplete(t *testing.T) {
 		provider.EventSubagentNotification:       true, // reserved for Codex subagent UI
 		provider.EventSubagentStatus:             true, // Codex child lifecycle marker; updates live state only
 		provider.EventCodexExecResult:            true, // Codex raw exec_command result; live-state enrichment only
+		provider.EventSubagentProgress:           true, // live per-subagent counters; in-memory + provider:subagent_progress, final numbers persisted at terminal
+		provider.EventSubagentBackgrounded:       true, // Claude task_updated is_backgrounded patch; stamps the launch row's streaming cut
+		provider.EventBackgroundTasksChanged:     true, // Claude level set of live background tasks; forwarded as a tray refresh with the set
 		provider.EventTerminalInteraction:        true, // Codex polling marker; triage persists empty-stdin variant
 		provider.EventUserText:                   true, // Phase A: dispatch case wired; full handler lands in Phase E
 		provider.EventCommandLifecycle:           true, // Claude stdin delivery ack; live UI state only, never persisted

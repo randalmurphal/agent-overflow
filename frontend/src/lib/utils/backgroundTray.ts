@@ -7,7 +7,12 @@ import type { ProviderBackgroundStop } from '../providers/catalog';
 import type { Item } from '../types/models';
 import { extractClaudeTaskID } from './claudeTaskMeta';
 import { extractCodexProcessID } from './codexProcessMeta';
-import { isCodexSubagentLaunchItem } from './subagentLaunch';
+import {
+  isCodexSubagentLaunchItem,
+  NO_LOADED_SUBAGENT_CHILDREN,
+  subagentLaunchInfo,
+  type SubagentLaunchInfo,
+} from './subagentLaunch';
 
 export { extractClaudeTaskID } from './claudeTaskMeta';
 export { extractCodexProcessID } from './codexProcessMeta';
@@ -27,6 +32,25 @@ export interface TrayTask {
   /** ms since the launch started; null when we only have a completion
    * (no meaningful start time to count from). */
   elapsedMs: number | null;
+  /** Ancestry depth WITHIN the tray set: how many tray rows sit on this
+   * row's parent chain. 0 for a background root — including a background
+   * launch under a FOREGROUND agent, whose parent is deliberately not in
+   * the set (accepted deviation: the tray lists backgrounded ancestry,
+   * and a foreground parent is the timeline's to show). */
+  depth: number;
+}
+
+/**
+ * The provider-neutral launch identity for a tray row, or null for a
+ * plain command row. Uses the cold-thread context (no loaded rows): a
+ * tray entry is a single row read in isolation, so forked-Skill
+ * detection rests on its meta signals — exactly what
+ * NO_LOADED_SUBAGENT_CHILDREN documents.
+ */
+export function trayTaskAgentInfo(task: TrayTask): SubagentLaunchInfo | null {
+  const launch = task.launch ?? task.completion;
+  if (!launch) return null;
+  return subagentLaunchInfo(launch, NO_LOADED_SUBAGENT_CHILDREN);
 }
 
 // The backend exposes four terminal statuses for a completion row:
@@ -245,8 +269,51 @@ export function deriveTrayTasks(
       // "0s" for a task that actually ran for minutes — so we omit
       // the label entirely in that case.
       elapsedMs: launch ? Math.max(0, now - launch.createdAt) : null,
+      depth: 0,
     });
   }
 
-  return out.sort((a, b) => a.anchor.createdAt - b.anchor.createdAt);
+  out.sort((a, b) => a.anchor.createdAt - b.anchor.createdAt);
+
+  // Tree order + depth: children render under their parent, indented by
+  // how many TRAY rows sit on their parent chain (walked through the
+  // full input set — the backend supplies every intermediate agent
+  // launch between a background root and a nested launch, so the chain
+  // never dead-ends inside the set).
+  const parentById = new Map<string, string>();
+  for (const item of items) {
+    if (item.parentId) parentById.set(item.id, item.parentId);
+  }
+  const taskByRowId = new Map(out.map((t) => [t.rowId, t] as const));
+  const childrenByRow = new Map<string, TrayTask[]>();
+  const roots: TrayTask[] = [];
+  for (const task of out) {
+    let hops = 0;
+    let nearestTrayAncestor: string | null = null;
+    for (
+      let pid = parentById.get(task.rowId);
+      pid !== undefined && hops < 64;
+      pid = parentById.get(pid), hops++
+    ) {
+      if (taskByRowId.has(pid)) {
+        nearestTrayAncestor = pid;
+        break;
+      }
+    }
+    if (nearestTrayAncestor === null) {
+      roots.push(task);
+    } else {
+      let bucket = childrenByRow.get(nearestTrayAncestor);
+      if (!bucket) childrenByRow.set(nearestTrayAncestor, (bucket = []));
+      bucket.push(task);
+    }
+  }
+  const ordered: TrayTask[] = [];
+  const place = (task: TrayTask, depth: number): void => {
+    task.depth = depth;
+    ordered.push(task);
+    for (const child of childrenByRow.get(task.rowId) ?? []) place(child, depth + 1);
+  };
+  for (const root of roots) place(root, 0);
+  return ordered;
 }
