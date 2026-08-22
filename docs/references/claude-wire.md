@@ -882,6 +882,50 @@ top-level `user:wire` user bubbles (incident 2026-07).
 
 ---
 
+## `system/task_progress` (dropped by AO today)
+
+Per-subagent live progress, emitted after each of the agent's tool
+rounds for `local_agent` tasks (never for a forked skill, §E9).
+Captured 2.1.237, 2026-08-22:
+
+```json
+{"type":"system","subtype":"task_progress",
+ "task_id":"a75a87231e749bff1","tool_use_id":"toolu_01LQR6...",
+ "description":"Running Sleep for 40 seconds","subagent_type":"general-purpose",
+ "usage":{"total_tokens":18227,"tool_uses":1,"duration_ms":2368},
+ "last_tool_name":"Bash","uuid":"...","session_id":"..."}
+```
+
+Schema (bundle): `task_id`, optional `tool_use_id`, `description` (the
+agent's CURRENT activity line, not the launch description), optional
+`subagent_type`, `usage{total_tokens, tool_uses, duration_ms}`, optional
+`last_tool_name`, optional `summary`. `parse_system.go` lists it under
+the explicitly-skipped subtypes; it is the one wire source of a running
+agent's tool count / token spend / elapsed time, which is what a
+compact agent card would show.
+
+## `system/background_tasks_changed` (dropped by AO today)
+
+A LEVEL signal: the full set of live background tasks, emitted whenever
+membership changes (start, completion, kill, a foreground task being
+backgrounded). REPLACE semantics per the bundle's own description —
+"swap your set for this payload rather than pairing edges, so a missed
+bookend cannot wedge a stale running indicator". Ordering against the
+`task_started` / `task_notification` edges for the same transition is
+unspecified.
+
+```json
+{"type":"system","subtype":"background_tasks_changed",
+ "tasks":[{"task_id":"b8tm4jomt","task_type":"local_bash","description":"Sleep for 40 seconds"}],
+ "uuid":"...","session_id":"..."}
+```
+
+Foreground agents and forked skills are NOT in the set; async/backgrounded
+agents and backgrounded Bash are. AO's `default:` arm drops it; a
+reconnect-safe "is background work running" indicator would key on it.
+
+---
+
 ## Outbound `user` message + client-supplied `uuid` (`--replay-user-messages`)
 
 AO mints a uuidv4 at send time and sets it as the **top-level `uuid`** on
@@ -1863,6 +1907,84 @@ When the wakeup fires, the injected turn's own wire activity takes over
 protection; observed delays run 240–1800s, so a wakeup can legally
 exceed the idle-reap threshold on its own.
 
+### E9 — Forked skill (`Skill` tool, `context: fork`)
+
+A skill whose frontmatter forks (the built-in `code-review`,
+`post-task-review`, `brainstorm`, ...) runs as a SUBAGENT whose context
+is a copy of the parent conversation at the call, plus the skill body
+as its first user message. Its wire shape is NOT the `local_agent`
+shape above, and three things an Agent launch provides are absent.
+Verified 2.1.237 across 12 Skill launches in AO provider-events logs
+(2026-08-20 → 08-22) and the `85f7aa3d` review thread:
+
+- **No `system/task_started`, no `task_id`, no `task_progress`, and no
+  entry in `background_tasks_changed`** — 0 of 12. Parser signal (5)
+  never arms for a fork, and `stop_task` has nothing to target:
+  killing a fork is `interrupt`-only.
+- **The launch signal is attribution.** The fork's rows land on the
+  parent stream as ordinary sidechain envelopes with
+  `parent_tool_use_id` = the `Skill` tool_use's id (2–45 rows per fork,
+  first one ~2.5s after the tool_use). A skill that did NOT fork gets
+  zero attributed rows and its tool_result arrives immediately as
+  `Launching skill: <name>` with `tool_use_result: {success,
+  commandName}`. So "did this Skill fork" is answered by the first
+  attributed row, never by a skill-name list.
+- **The completion carries the fork's identity.** The Skill
+  tool_result text is `Skill "<name>" completed (forked execution).\n\n
+  Result:\n<agent's final text>` and `tool_use_result` is
+  `{success:true, commandName, status:"forked", agentId, result}`.
+  `agentId` is the fork's sidechain id (`subagents/agent-<id>.jsonl`
+  on disk, `meta.json` `{agentType:"general-purpose", spawnDepth:1}`).
+- **The main turn is BLOCKED for the whole fork.** Order observed:
+  Skill tool_use 04:01:53 → first sidechain row 04:01:56 → Skill
+  tool_result 04:04:48 → `result` 04:04:56. The interactive TUI's
+  "Running in the background as @<skill>" freedom is TUI-only; over
+  stream-json nothing else runs until the fork returns, so no
+  SendMessage relay (below) is possible during a fork unless it is
+  first backgrounded with the `background_tasks` control_request.
+- **Agents a fork spawns are ordinary.** Its depth-2 `Agent` launches
+  get `task_started`, acks, and terminals exactly as §E5/§E5b describe,
+  and their rows carry the depth-2 launch (not the Skill) as
+  `parent_tool_use_id` — immediate-parent semantics, 280 such rows in
+  the same logs, so the agent tree is reconstructible from
+  `parent_tool_use_id` alone.
+
+Whether the forked agent gets the `Agent` tool is the CLI's depth gate
+(`rfS` in 2.1.237: keep `Agent` iff `agentDepth < limit`, limit from
+`CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH`, default 1). The code-review
+skill's prompt silently degrades to a solo pass when the tool is
+absent ("If the Agent tool is not available ... perform each angle
+yourself") and says nothing about it in its output.
+
+### Steering a running subagent from a client
+
+There is NO stdin path that addresses a subagent (spiked 2026-08-22 on
+2.1.237, `/tmp/spike-steer`). The outbound `user` envelope schema
+accepts `parent_tool_use_id`, but the CLI's stdin consumer never reads
+it for routing: two user envelopes sent while an agent ran — one with
+the Agent's `tool_use_id`, one with its agent id — were both queued for
+the MAIN agent and answered as its next turn once the subagent
+finished; the sidechain never saw them. The TUI's steer is in-process
+(`pendingMessages` on the task registry, drained at the agent's next
+tool round) and has exactly three callers: the TUI's agent-view input,
+the model's `SendMessage` tool, and the observer-report tool.
+
+What a client CAN do is relay through the model, verified end to end:
+
+1. `control_request {subtype:"background_tasks", tool_use_id}` — the
+   Ctrl+B equivalent; see §control_request below. Unnecessary when the
+   agent was launched async (§E5) — the main turn is already free.
+2. Send the main agent a user message asking it to
+   `SendMessage(to: <agentId>, message: ...)`. The tool answers
+   `Message queued for delivery to <agentId> at its next tool round.`
+3. The agent receives it as `The coordinator sent a message while you
+   were working: <text>` before its next tool call and can act on it
+   (the spike agent quoted it back verbatim in its final summary).
+
+Costs one short main turn per steer, and the steer lands only if the
+agent makes at least one more tool call. A mid-flight `background_tasks`
+has a visibility price, below.
+
 ---
 
 ## `assistant` envelope
@@ -2227,6 +2349,27 @@ CLI binary; the subtypes we use or plan to use:
 - `subtype: "stop_task"` — kill a specific backgrounded task (Bash with
   `run_in_background:true` OR Task subagent). Takes `task_id` (the id
   from `system/task_started`). See [§stop_task](#stop_task) below.
+- `subtype: "background_tasks"` — background an in-flight FOREGROUND
+  task (Bash or subagent), the control-request form of Ctrl+B. Optional
+  `tool_use_id` targets the one task started by that tool_use block;
+  omitted, it backgrounds every foreground task. Verified 2.1.237
+  (2026-08-22 spike) on a foreground `local_agent`: reply
+  `{subtype:"success", response:{backgrounded:true}}`; the CLI then
+  emits `system/task_updated {patch:{is_backgrounded:true}}` (a
+  non-terminal patch — `NormalizeTaskTerminalStatus` must keep ignoring
+  it), `system/background_tasks_changed` listing the agent, the Agent's
+  tool_result arrives in the §E5 async-ack shape
+  (`tool_use_result.{isAsync, status:"async_launched", agentId}`), and
+  the blocked turn ends with a normal `result`; completion later
+  arrives as `task_updated`/`task_notification` as for any async agent.
+  **Visibility price:** an agent backgrounded mid-flight streams NOTHING
+  further on the wire — zero sidechain envelopes after the ack (only
+  `system/task_progress` counters and its Bash calls' own
+  `task_started`/`task_notification` bookends leak through) — whereas
+  an agent launched async streams its sidechain fully (92 of 92 §E5
+  launches in AO logs 2026-08-15 → 08-22 have rows after their ack).
+  Its full transcript is still in the `task_notification.output_file`
+  (sidechain JSONL, `isSidechain:true`, including `attachment` rows).
 - `subtype: "set_permission_mode"` — switch the live session's permission
   mode (Plan ↔ chat ↔ accept-edits ↔ bypass). Takes `mode`. Escalating to
   `bypassPermissions` is REJECTED unless the process was launched with
