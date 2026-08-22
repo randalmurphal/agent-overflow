@@ -8,7 +8,10 @@ import { createAgentScopeView } from './agentScopeView.svelte';
 import { createThreadPane, type ThreadPane } from './thread.svelte';
 import { registerPaneForTest, resetPanesForTest } from './panes.svelte';
 import { resetPaneLayoutForTest, setPaneLayoutItemsForTest } from './paneLayout.svelte';
-import { resetCompanionPanesForTest } from './companionPanes.svelte';
+import {
+  closeCompanionsForSource,
+  resetCompanionPanesForTest,
+} from './companionPanes.svelte';
 import {
   __resetAgentPaneStateForTest,
   openAgentCompanion,
@@ -144,6 +147,45 @@ describe('createAgentScopeView', () => {
     expect(agent.breadcrumb.map((entry) => entry.itemId)).toEqual(['', 'launch-1', 'nested-launch']);
 
     view.dispose();
+  });
+
+  it('never lets the scoped instance’s prune reach the shared row-UI store', async () => {
+    // Regression for the 2026-08-22 dead-screenshots incident: the agent
+    // pane's MessageTimeline ran the row-UI prune with scope-only
+    // retention against the SHARED store, revoking the main timeline's
+    // attachment blobs (and the main prune disposed agent-pane rows).
+    const { pane, agent } = await setup();
+    const view = createAgentScopeView(pane, agent, 'launch-1');
+    pane.setUserMessageExpanded('main-text', true);
+
+    view.pane.pruneRowUiState({ itemIds: new Set(), payloads: [], groupKeys: new Set() });
+
+    expect(pane.isUserMessageExpanded('main-text')).toBe(true);
+    view.dispose();
+  });
+
+  it('host prune spares the open scope subtree, and stops sparing once the pane closes', async () => {
+    // The other half of the shared-store contract: the source pane's own
+    // prune widens its retention with the open scope's subtree, so state
+    // under rows only the agent pane has mounted survives the chat
+    // timeline's bounded-memory pass — exactly while the pane is open.
+    const { pane } = await setup();
+    pane.setUserMessageExpanded('grandchild', true);
+    expect(pane.toggleSubagentGroupExpanded('nested-launch')).toBe(true);
+    const emptyRetention = () => ({
+      itemIds: new Set<string>(),
+      payloads: [],
+      groupKeys: new Set<string>(),
+    });
+
+    pane.pruneRowUiState(emptyRetention());
+    expect(pane.isUserMessageExpanded('grandchild')).toBe(true);
+    expect(pane.isSubagentGroupExpanded('nested-launch')).toBe(true);
+
+    closeCompanionsForSource('main');
+    pane.pruneRowUiState(emptyRetention());
+    expect(pane.isUserMessageExpanded('grandchild')).toBe(false);
+    expect(pane.isSubagentGroupExpanded('nested-launch')).toBe(false);
   });
 
   it('recomputes the window when the source timeline changes', async () => {

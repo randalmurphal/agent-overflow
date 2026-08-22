@@ -40,10 +40,12 @@ import {
 } from './companionPanes.svelte';
 import { openReviewCompanion } from './reviewPane.svelte';
 import {
+  agentPaneRetainedRootScope,
   agentPaneScopeTrailHolds,
   disposeAgentStateForPane,
   openAgentCompanion,
 } from './agentPane.svelte';
+import { collectAgentScopeRetainedIds } from './agentScopeView.svelte';
 import { errString } from '../utils/errors';
 import type { RevealBoundary } from '../utils/subagentGrouping';
 import type { SubagentFoldAggregate } from '../utils/subagentFold';
@@ -442,6 +444,31 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       rowUiState.isSubagentGroupExpanded(groupKey) ||
       (thread !== null && agentPaneScopeTrailHolds(paneId, thread.id, groupKey)),
   });
+
+  /**
+   * Row-UI retention union for the open agent pane (the row-UI-state
+   * half of the retention rule above): the scope trail's whole subtree
+   * — item ids, their payload keys, and their group keys — joins
+   * whatever the chat timeline's prune pass retained. No open pane, no
+   * cost: the original retention passes through untouched.
+   */
+  function widenRetentionForAgentPane(retention: RowUiStateRetention): RowUiStateRetention {
+    const rootScope = thread !== null ? agentPaneRetainedRootScope(paneId, thread.id) : '';
+    if (!rootScope) return retention;
+    const scopeIds = collectAgentScopeRetainedIds(items, rootScope);
+    if (scopeIds.size === 0) return retention;
+    const itemIds = new Set(retention.itemIds);
+    const groupKeys = new Set(retention.groupKeys);
+    const payloads = [...retention.payloads];
+    for (const id of scopeIds) {
+      groupKeys.add(id);
+      if (itemIds.has(id)) continue;
+      itemIds.add(id);
+      const item = getItemById(id);
+      if (item?.payloadId) payloads.push({ threadId: item.threadId, payloadId: item.payloadId });
+    }
+    return { itemIds, payloads, groupKeys };
+  }
 
   /**
    * Nonce bumped when the pane wants the active MessageTimeline to scroll
@@ -1806,9 +1833,18 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     hasUserExpansionWithin: rowUiState.hasUserExpansionWithin,
     activityRuns,
     attachmentCacheFor: rowUiState.attachmentCacheFor,
+    // Retention arrives from the CHAT MessageTimeline's prune pass and
+    // describes only that instance's revealed rows — but the row-UI
+    // store is shared with the agent companion's scoped timeline (whose
+    // own prune is deliberately a no-op, agentScopeView.svelte.ts). An
+    // open agent pane's rows must survive this pass or its attachment
+    // blobs, expansion handles, and thinking tails get disposed out
+    // from under a mounted surface, so retention is widened with the
+    // scope trail's whole subtree before anything is dropped.
     pruneRowUiState(retention: RowUiStateRetention): void {
-      rowUiState.pruneRowUiState(retention);
-      streamingReveal.pruneSettledThinkingTails(retention.itemIds);
+      const widened = widenRetentionForAgentPane(retention);
+      rowUiState.pruneRowUiState(widened);
+      streamingReveal.pruneSettledThinkingTails(widened.itemIds);
     },
     // Full revealed text for a reasoning-tail row. Live while the row
     // streams and retained across a content-consistent settle (see

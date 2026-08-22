@@ -40,6 +40,17 @@
 // - `openAgentPane`: descend-in-place. Inside the pane, opening a child
 //   card grows the breadcrumb (`pushScope`) instead of re-seeding the
 //   companion from the outside.
+// - `pruneRowUiState`: no-op. Row-UI state (expansion handles, attachment
+//   blob caches, thinking tails) is SHARED with the source pane by
+//   design, and each MessageTimeline instance's prune pass computes
+//   retention from ITS OWN revealed rows — a scoped instance's retention
+//   describes one subtree, so letting it reach the shared store would
+//   revoke the attachment blobs and expansion state of every main-
+//   timeline row (live incident 2026-08-22: pasted screenshots went
+//   dead the moment the agent pane's prune ran). The host pane's own
+//   prune stays the one bounded-memory owner, and it spares the open
+//   scope's rows in return (thread.svelte.ts widens its retention via
+//   `collectAgentScopeRetainedIds`).
 //
 // One instance per (pane body mount × scope): AgentPane keys the
 // timeline on the scope id, so a scope swap builds a fresh view and a
@@ -76,6 +87,49 @@ const NO_PAGE: Promise<LoadOlderResult> = Promise.resolve({
   status: 'noop',
 });
 
+/**
+ * Every loaded row the scope at `scopeItemId` is responsible for: the
+ * scope row itself, its whole parent-chain subtree, and the completion
+ * siblings of launches inside it (completions carry `completionOf`, not
+ * a parentId, so the parent walk alone cannot reach them).
+ *
+ * Two consumers, one truth: the facade's item window filters through
+ * this set, and the source pane's row-UI prune widens its retention
+ * with it so the chat timeline's bounded-memory pass cannot dispose
+ * state under rows the agent pane has mounted.
+ */
+export function collectAgentScopeRetainedIds(
+  items: readonly Item[],
+  scopeItemId: string,
+): Set<string> {
+  const retained = new Set<string>();
+  if (!scopeItemId) return retained;
+  const byParent = new Map<string, string[]>();
+  for (const item of items) {
+    const pid = item.parentId;
+    if (!pid) continue;
+    let bucket = byParent.get(pid);
+    if (!bucket) byParent.set(pid, (bucket = []));
+    bucket.push(item.id);
+  }
+  retained.add(scopeItemId);
+  const stack = [scopeItemId];
+  while (stack.length > 0) {
+    const kids = byParent.get(stack.pop()!);
+    if (!kids) continue;
+    for (const kid of kids) {
+      retained.add(kid);
+      stack.push(kid);
+    }
+  }
+  for (const item of items) {
+    if (item.completionOf && retained.has(item.completionOf)) {
+      retained.add(item.id);
+    }
+  }
+  return retained;
+}
+
 export function createAgentScopeView(
   sourcePane: ThreadPane,
   agent: AgentPaneState,
@@ -87,38 +141,21 @@ export function createAgentScopeView(
   // bump would be invisible anyway — matching the source pane's own
   // contract). Direct children are cloned with parentId lifted; deeper
   // rows keep their real parent chain.
+  //
+  // One ordered pass over the source items, so the window keeps the
+  // timeline's document order exactly. The membership set comes from
+  // `collectAgentScopeRetainedIds` (subtree + completion siblings); the
+  // SCOPE's own row and its completion sibling stay out — they feed the
+  // pane's breadcrumb and status line, not the transcript.
   let scopedItems = $derived.by<Item[]>(() => {
     void sourcePane.timelineRevision;
     if (!scopeItemId) return [];
-    const byParent = new Map<string, Item[]>();
-    for (const item of sourcePane.items) {
-      const pid = item.parentId;
-      if (!pid) continue;
-      let bucket = byParent.get(pid);
-      if (!bucket) byParent.set(pid, (bucket = []));
-      bucket.push(item);
-    }
+    const retained = collectAgentScopeRetainedIds(sourcePane.items, scopeItemId);
     const out: Item[] = [];
-    const subtreeIds = new Set<string>([scopeItemId]);
-    const stack = [scopeItemId];
-    while (stack.length > 0) {
-      const kids = byParent.get(stack.pop()!);
-      if (!kids) continue;
-      for (const kid of kids) {
-        subtreeIds.add(kid.id);
-        out.push(kid.parentId === scopeItemId ? { ...kid, parentId: undefined } : kid);
-        stack.push(kid.id);
-      }
-    }
-    // Completion siblings carry `completionOf`, not a parentId, so the
-    // parent walk above cannot reach them. A nested launch's completion
-    // must ride along for its card to fold status; the SCOPE's own
-    // completion stays out (it feeds the pane's status line instead).
     for (const item of sourcePane.items) {
-      if (!item.completionOf || item.completionOf === scopeItemId) continue;
-      if (subtreeIds.has(item.completionOf) && !subtreeIds.has(item.id)) {
-        out.push(item);
-      }
+      if (item.id === scopeItemId || !retained.has(item.id)) continue;
+      if (item.completionOf === scopeItemId) continue;
+      out.push(item.parentId === scopeItemId ? { ...item, parentId: undefined } : item);
     }
     return out;
   });
@@ -186,6 +223,10 @@ export function createAgentScopeView(
       return false;
     },
     retryDeferredRecentWindowPrune(): void {},
+    // See the module header: a scoped instance's retention describes one
+    // subtree, so its prune pass must never reach the SHARED row-UI
+    // store. The host pane's own prune is the one bounded-memory owner.
+    pruneRowUiState(): void {},
     // The scope's rows are already local (or arriving via hydration);
     // the thread-level loading states describe the SOURCE window.
     get loading() {

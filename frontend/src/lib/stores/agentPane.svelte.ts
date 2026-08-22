@@ -209,6 +209,26 @@ export function agentPaneScopeTrailHolds(
 }
 
 /**
+ * The OUTERMOST scoped node on the open agent pane's breadcrumb trail
+ * (`''` when no pane is open for this pane+thread). Descending inside
+ * the pane only ever enters the current scope's subtree, so the trail is
+ * an ancestry chain and the first non-root entry's subtree covers every
+ * scope on it. The thread pane's row-UI prune widens its retention with
+ * that subtree — state under rows the agent pane (or a pop back up its
+ * trail) is showing must not be disposed by the chat timeline's
+ * bounded-memory pass.
+ */
+export function agentPaneRetainedRootScope(
+  sourcePaneId: string,
+  threadId: string,
+): string {
+  const state = statesBySourcePane.get(sourcePaneId);
+  if (!state || state.threadId !== threadId || !state.scopeItemId) return '';
+  if (!isCompanionOpen(sourcePaneId, 'agent')) return '';
+  return state.breadcrumb.find((entry) => entry.itemId !== '')?.itemId ?? '';
+}
+
+/**
  * Restore a persisted scope onto a source pane. Used by layout restore
  * only; the snapshot has already been validated (non-empty scope, trail
  * ending at it) by the persistence parser.
