@@ -106,6 +106,15 @@ describe('serializeRangeToMarkdown — inline', () => {
     expect(serializeRangeToMarkdown(selectAll(host))).toBe('![Logo](https://x/logo.png)');
   });
 
+  it('preserves a local image file URI instead of copying its blob URL', () => {
+    const host = asMarkdownBody(
+      '<p><img alt="diagram" src="blob:page-local" data-markdown-image-src="file:///workspace/diagram.png"></p>',
+    );
+    expect(serializeRangeToMarkdown(selectAll(host))).toBe(
+      '![diagram](file:///workspace/diagram.png)',
+    );
+  });
+
   it('escapes brackets in link text so a smuggled bracket cannot forge a fake link', () => {
     // Without escaping, the rendered visible text `foo](evil` would
     // re-tokenize as `[foo](evil)baz](https://safe)` — pasted into

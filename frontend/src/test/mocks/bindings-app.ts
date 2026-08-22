@@ -412,6 +412,7 @@ export const ListAttachments = dispatch('ListAttachments');
 export const DeleteAttachment = dispatch('DeleteAttachment');
 export const GetAttachmentData = dispatch('GetAttachmentData');
 export const GetAttachmentThumbnail = dispatch('GetAttachmentThumbnail');
+export const GetLocalImageData = dispatch('GetLocalImageData');
 export const SaveDraft = dispatch('SaveDraft');
 export const GetDraft = dispatch('GetDraft');
 export const ClearDraft = dispatch('ClearDraft');

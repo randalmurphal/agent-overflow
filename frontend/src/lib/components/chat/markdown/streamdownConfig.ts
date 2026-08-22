@@ -4,7 +4,6 @@ import StreamdownMermaidHostDeferred from './StreamdownMermaidHostDeferred.svelt
 import StreamdownMathHost from './StreamdownMathHost.svelte';
 import StreamdownMathHostDeferred from './StreamdownMathHostDeferred.svelte';
 
-export const STREAMDOWN_ALLOWED_IMAGE_PREFIXES = Object.freeze(['*']) as string[];
 export const STREAMDOWN_CONTROLS = Object.freeze({
   code: false,
   table: false,

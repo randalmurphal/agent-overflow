@@ -83,6 +83,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "GetGitStatus", ID: 4123560639},                         // main.App.GetGitStatus
 	{Name: "GetGitStatusFastForProject", ID: 2193133889},           // main.App.GetGitStatusFastForProject
 	{Name: "GetKeybindings", ID: 3015840904},                       // main.App.GetKeybindings
+	{Name: "GetLocalImageData", ID: 3247514443},                    // main.App.GetLocalImageData
 	{Name: "GetMcpServerStatus", ID: 4139359668},                   // main.App.GetMcpServerStatus
 	{Name: "GetMergeConflictFile", ID: 3176695009},                 // main.App.GetMergeConflictFile
 	{Name: "GetModelsForProvider", ID: 1632984917},                 // main.App.GetModelsForProvider

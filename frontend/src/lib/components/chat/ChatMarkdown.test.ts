@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { render, waitFor } from '@testing-library/svelte';
 import ChatMarkdown from './ChatMarkdown.svelte';
 import { CHAT_MARKDOWN_PRESENCE_CONTEXT } from './markdownSettledContext';
+import { setBindingMock } from '../../../test/mocks/bindings-app';
 
 // Integration coverage for the path-link primitive flowing through
 // Streamdown's URL gate. The unit suite in `pathLinkExtension.test.ts`
@@ -31,6 +32,7 @@ describe('<ChatMarkdown> path-link rendering', () => {
       expect(href).toContain('path=src%2Ffoo.ts');
       expect(href).toContain('line=42');
       expect(href).toContain('workspace=%2Frepo');
+      expect(anchor?.getAttribute('title')).toBe('Open src/foo.ts:42 in editor');
     });
   });
 
@@ -204,6 +206,19 @@ describe('<ChatMarkdown> path-link rendering', () => {
     expect(webLink?.textContent).toBe('https://example.com');
   });
 
+  it('keeps explicit Markdown titles on allowed links', async () => {
+    const { container } = render(ChatMarkdown, {
+      props: {
+        source: '[Documentation](https://example.com "Read the documentation")',
+      },
+    });
+
+    await waitFor(() => {
+      const anchor = container.querySelector('a[href="https://example.com/"]');
+      expect(anchor?.getAttribute('title')).toBe('Read the documentation');
+    });
+  });
+
   it('renders a repo-relative link as plain text without a [blocked] tag', async () => {
     // PR/issue bodies routinely carry repo-relative links like
     // `[docs/guide.md](docs/guide.md)` — not navigable from the app,
@@ -248,8 +263,48 @@ describe('<ChatMarkdown> path-link rendering', () => {
       const anchor = container.querySelector('a[href^="agent-overflow:open"]');
       expect(anchor).not.toBeNull();
       expect(anchor?.getAttribute('href')).toContain('path=%2Fhome%2Fuser%2F.claude%2Fx.md');
+      expect(anchor?.getAttribute('title')).toBe('Open /home/user/.claude/x.md in editor');
     });
     expect(container.querySelector('a[href="/home/user/.claude/x.md"]')).toBeNull();
+  });
+
+  it('rewrites a local file URI without rendering a blocked marker', async () => {
+    const { container } = render(ChatMarkdown, {
+      props: {
+        source: '[Entity definition](file:///repo/models/event.py#L42)',
+        workspacePath: '/repo',
+        pathRefs: [],
+      },
+    });
+
+    await waitFor(() => {
+      const anchor = container.querySelector('a[href^="agent-overflow:open"]');
+      expect(anchor).not.toBeNull();
+      expect(anchor?.getAttribute('href')).toContain('path=%2Frepo%2Fmodels%2Fevent.py');
+      expect(anchor?.getAttribute('href')).toContain('line=42');
+      expect(anchor?.getAttribute('title')).toBe('Open /repo/models/event.py:42 in editor');
+    });
+    expect(container.textContent).not.toContain('[blocked]');
+    expect(container.querySelector('[data-streamdown-link-blocked]')).toBeNull();
+  });
+
+  it('loads a local file image through the guarded backend image path', async () => {
+    setBindingMock('GetLocalImageData', async () => ({
+      data: 'iVBORw0KGgo=',
+      mimeType: 'image/png',
+    }));
+    const { container } = render(ChatMarkdown, {
+      props: {
+        source: '![diagram](file:///repo/docs/diagram.png)',
+        workspacePath: '/repo',
+        pathRefs: [],
+      },
+    });
+
+    await waitFor(() => {
+      expect(container.querySelector('img[alt="diagram"]')).not.toBeNull();
+    });
+    expect(container.querySelector('[data-streamdown-image-blocked]')).toBeNull();
   });
 
   it('never rewrites an absolute href into an editor link on a workspace-less surface', async () => {

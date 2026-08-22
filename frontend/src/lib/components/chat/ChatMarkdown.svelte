@@ -42,7 +42,6 @@
   import { resolveMermaidThemeConfig } from './markdown/mermaidTokens';
   import { getResolvedTheme } from '../../stores/themeMode.svelte';
   import {
-    STREAMDOWN_ALLOWED_IMAGE_PREFIXES,
     STREAMDOWN_CONTROLS,
     streamdownComponentsFor,
   } from './markdown/streamdownConfig';
@@ -52,9 +51,12 @@
     ensurePathLinkClickDelegate,
   } from '../../utils/markdownEnhance';
   import {
+    LOCAL_IMAGE_HREF_PREFIX,
     PATH_LINK_HREF_PREFIX,
     buildPathLinkExtension,
   } from '../../utils/pathLinkExtension';
+  import { EMPTY_PATH_REFS } from '../../utils/pathLinkify';
+  import StreamdownImageHost from './markdown/StreamdownImageHost.svelte';
   import type { PathRef } from '../../types/models';
   import { StreamingBoundarySplitter } from '../../markdown/boundary';
   import { getSettings } from '../../stores/settings.svelte';
@@ -80,11 +82,10 @@
     /** Server-validated allowlist of file paths to linkify in prose.
      *  Only paths in this list get the prose `agent-overflow:` link
      *  treatment — this component never invents prose links. Choosing
-     *  a value on a new surface: `undefined` disables the extension
-     *  outright; `[]` (use EMPTY_PATH_REFS, not a fresh literal — the
-     *  extension identity feeds streamdown's lex cache) enables
-     *  markdown-link href rewriting alone, which still needs
-     *  `workspacePath` to do anything. */
+     *  a value on a new surface: `undefined` disables prose
+     *  linkification, while a present `workspacePath` still enables
+     *  explicit local-link and local-image href rewriting. `[]` has the
+     *  same behavior; use EMPTY_PATH_REFS rather than a fresh literal. */
     pathRefs?: PathRef[];
     class?: string;
   } = $props();
@@ -124,21 +125,13 @@
   });
 
   // Marked inline extension derived from the validated allowlist. The
-  // extension is rebuilt when `pathRefs` / `workspacePath` change —
-  // both must be IDENTITY-stable across streaming chunks (see
-  // EMPTY_PATH_REFS in pathLinkify.ts): the extension array's identity
-  // is streamdown's lex-cache key, so a fresh extension per frame
-  // re-lexes every mounted block. It is built whenever `pathRefs` is
-  // DEFINED, including `[]`: the allowlist only feeds prose
-  // linkification, while the markdown-link half rewrites path-shaped
-  // hrefs (`[x](/abs/file.md)`) into editor affordances whenever a
-  // workspace is present — without the rewrite those hrefs render as
-  // dead text (the vendored Link element refuses raw `/`-leading
-  // anchors). buildPathLinkExtension returns undefined when both
-  // halves would be inert; surfaces passing `undefined` stay
-  // unenriched entirely.
+  // extension is rebuilt when `pathRefs` / `workspacePath` change. A
+  // missing allowlist disables prose linkification only; explicit local
+  // hrefs still normalize whenever the surface has a workspace. The shared
+  // empty array keeps that fallback identity stable across streaming frames.
+  // buildPathLinkExtension returns undefined when both halves are inert.
   const pathLinkExtension = $derived(
-    pathRefs ? buildPathLinkExtension(pathRefs, workspacePath) : undefined,
+    buildPathLinkExtension(pathRefs ?? EMPTY_PATH_REFS, workspacePath),
   );
   const extensions = $derived(pathLinkExtension ? [pathLinkExtension] : undefined);
 
@@ -151,6 +144,7 @@
   // the nonce-prefixed form and is rejected before any anchor is
   // rendered.
   const allowedLinkPrefixes = ['*', PATH_LINK_HREF_PREFIX];
+  const allowedImagePrefixes = ['*', LOCAL_IMAGE_HREF_PREFIX];
 
   // LOAD-BEARING ABSENCE: no `defaultOrigin` is ever passed to
   // Streamdown. With no origin, streamdown's `parseUrl` returns null
@@ -263,7 +257,7 @@
     theme={chatMarkdownTheme}
     {mermaidConfig}
     {allowedLinkPrefixes}
-    allowedImagePrefixes={STREAMDOWN_ALLOWED_IMAGE_PREFIXES}
+    {allowedImagePrefixes}
     renderHtml={false}
     controls={STREAMDOWN_CONTROLS}
     {extensions}
@@ -272,6 +266,9 @@
   >
     {#snippet inlineCitation({ token })}
       {token.text ?? token.raw}
+    {/snippet}
+    {#snippet image({ token })}
+      <StreamdownImageHost {token} />
     {/snippet}
   </Streamdown>
 {/snippet}

@@ -32,6 +32,7 @@
 
 import type { Token, Tokens, TokensList } from 'marked';
 import type { PathRef } from '../types/models';
+import { openInEditorLabel } from './editorLinkLabel';
 
 // Per-page-load nonce that gates our `agent-overflow:open?…` scheme.
 // Streamdown's `transformUrl` honors a custom-scheme prefix only when
@@ -69,6 +70,7 @@ function generatePathLinkNonce(): string {
 // links by href, not by class. Includes the nonce so a raw markdown
 // link written by an agent cannot satisfy this prefix.
 export const PATH_LINK_HREF_PREFIX = `agent-overflow:open?nonce=${PATH_LINK_NONCE}&`;
+export const LOCAL_IMAGE_HREF_PREFIX = `agent-overflow:image?nonce=${PATH_LINK_NONCE}&`;
 
 // Boundary chars that may legitimately precede a path token. Mirrors
 // the lookbehind set used by `pathLinkify.ts` (the legacy DOM walker)
@@ -107,7 +109,11 @@ interface PathLinkExtension {
   name: 'pathLink';
   level: 'inline';
   start(src: string): number | undefined;
-  tokenizer(this: unknown, src: string, tokens: Token[] | TokensList): GenericLinkToken | undefined;
+  tokenizer(
+    this: unknown,
+    src: string,
+    tokens: Token[] | TokensList,
+  ): GenericLinkToken | GenericImageToken | undefined;
 }
 
 // Shape that satisfies both marked's runtime contract and streamdown's
@@ -115,6 +121,10 @@ interface PathLinkExtension {
 // patched package's deep import path).
 interface GenericLinkToken extends Tokens.Link {
   type: 'link';
+}
+
+interface GenericImageToken extends Tokens.Image {
+  type: 'image';
 }
 
 interface PathLinkTokenizerContext {
@@ -246,7 +256,7 @@ export function buildPathLinkExtension(
     type: 'link',
     raw,
     href: buildPathLinkHref(path, line, col, workspacePath),
-    title: null,
+    title: openInEditorLabel(path, line, col),
     text: inner,
     tokens: [{ type: childKind, raw, text: inner }],
   });
@@ -271,8 +281,8 @@ export function buildPathLinkExtension(
     tokenizer(this: unknown, src, tokens) {
       if (isInsideMarkdownLinkLabel(this)) return undefined;
 
-      if (src.startsWith('[')) {
-        return markdownPathLinkToken(src, this, parseAllowlistedTarget, workspacePath);
+      if (src.startsWith('[') || src.startsWith('![')) {
+        return markdownLocalResourceToken(src, this, parseAllowlistedTarget, workspacePath);
       }
       if (!bareRe || !wrappedRe) return undefined;
 
@@ -365,6 +375,36 @@ export function parsePathLinkHref(href: string | null | undefined): {
   return { path, line, col, workspacePath };
 }
 
+export function buildLocalImageHref(
+  path: string,
+  workspacePath: string,
+  sourceHref = '',
+): string {
+  const params = new URLSearchParams();
+  params.set('path', path);
+  params.set('workspace', workspacePath);
+  if (sourceHref) params.set('source', sourceHref);
+  return `${LOCAL_IMAGE_HREF_PREFIX}${params.toString()}`;
+}
+
+export function parseLocalImageHref(href: string | null | undefined): {
+  path: string;
+  workspacePath: string;
+  sourceHref: string;
+} | null {
+  if (!href || !href.startsWith(LOCAL_IMAGE_HREF_PREFIX)) return null;
+  let url: URL;
+  try {
+    url = new URL(href);
+  } catch {
+    return null;
+  }
+  const path = url.searchParams.get('path');
+  const workspacePath = url.searchParams.get('workspace');
+  if (!path || !workspacePath) return null;
+  return { path, workspacePath, sourceHref: url.searchParams.get('source') ?? '' };
+}
+
 /**
  * Earliest position in `src` where an allowlisted path begins AND the
  * preceding character is a boundary (or position 0). Includes an
@@ -441,21 +481,74 @@ function earliestPathLinkHit(src: string, scanRe: RegExp | null): number | undef
   return earliest === -1 ? undefined : earliest;
 }
 
-function markdownPathLinkToken(
+function markdownLocalResourceToken(
   src: string,
   ctx: unknown,
   parseAllowlistedTarget: (target: string) => ParsedPathTarget | null,
   workspacePath: string,
-): GenericLinkToken | undefined {
+): GenericLinkToken | GenericImageToken | undefined {
   const tokenizerContext = ctx as PathLinkTokenizerContext;
   const token = tokenizerContext.lexer?.tokenizer?.link?.(src);
-  if (!token || token.type !== 'link') return undefined;
-  const parsed = parseAllowlistedTarget(token.href) ?? parsePathShapedHref(token.href, workspacePath);
+  if (!token || (token.type !== 'link' && token.type !== 'image')) return undefined;
+  const fileTarget = parseLocalFileHref(token.href, workspacePath);
+  if (token.type === 'image') {
+    if (!fileTarget) return token as GenericImageToken;
+    return {
+      ...token,
+      href: buildLocalImageHref(fileTarget.path, workspacePath, token.href),
+    } as GenericImageToken;
+  }
+  const parsed = fileTarget ?? parseAllowlistedTarget(token.href) ?? parsePathShapedHref(token.href, workspacePath);
   if (!parsed) return token;
   return {
     ...token,
     href: buildPathLinkHref(parsed.path, parsed.line, parsed.col, workspacePath),
+    title: openInEditorLabel(parsed.path, parsed.line, parsed.col),
   };
+}
+
+function splitPathSuffix(target: string): ParsedPathTarget {
+  let path = target;
+  let line: number | undefined;
+  let col: number | undefined;
+  const suffixMatch = PATH_SUFFIX_RUN_AT_END_RE.exec(target);
+  if (suffixMatch && suffixMatch.index > 0) {
+    const suffix = parsePathSuffix(target.slice(suffixMatch.index));
+    if (suffix) {
+      path = target.slice(0, suffixMatch.index);
+      line = suffix.line;
+      col = suffix.col;
+    }
+  }
+  return { path, line, col };
+}
+
+function parseLocalFileHref(href: unknown, workspacePath: string): ParsedPathTarget | null {
+  if (typeof href !== 'string' || workspacePath === '' || !/^file:/i.test(href)) return null;
+  let url: URL;
+  try {
+    url = new URL(href);
+  } catch {
+    return null;
+  }
+  if (url.protocol !== 'file:') return null;
+  const hostname = url.hostname.toLowerCase();
+  if (hostname !== '' && hostname !== 'localhost') return null;
+
+  let path = decodePathComponent(url.pathname);
+  // WHATWG file URLs spell a Windows drive as `/C:/…`. The backend
+  // needs the native `C:/…` path rather than a URL-rooted POSIX shape.
+  if (/^\/[a-zA-Z]:\//.test(path)) path = path.slice(1);
+  if (path === '') return null;
+
+  const parsed = splitPathSuffix(path);
+  const fragment = decodePathComponent(url.hash.slice(1));
+  const location = /^L(\d+)(?:C(\d+)|-L?\d+)?$/.exec(fragment);
+  if (location && parsed.line === undefined) {
+    parsed.line = Number(location[1]);
+    parsed.col = location[2] ? Number(location[2]) : undefined;
+  }
+  return parsed;
 }
 
 /**
@@ -499,20 +592,11 @@ function parsePathShapedHref(href: unknown, workspacePath: string): ParsedPathTa
   // reads as path + line rather than as a `Makefile:` URI scheme. Port
   // shapes still land right: `http://host:8080` strips `:8080`, then
   // the remainder fails the scheme check anyway.
-  let path = target;
-  let line: number | undefined;
-  let col: number | undefined;
-  const suffixMatch = PATH_SUFFIX_RUN_AT_END_RE.exec(target);
-  if (suffixMatch && suffixMatch.index > 0) {
-    const suffix = parsePathSuffix(target.slice(suffixMatch.index));
-    if (suffix) {
-      path = target.slice(0, suffixMatch.index);
-      line = suffix.line;
-      col = suffix.col;
-    }
-  }
+  const parsed = splitPathSuffix(target);
+  const { path } = parsed;
   if (SCHEME_RE.test(path)) return null;
-  return { path: decodePathComponent(path), line, col };
+  parsed.path = decodePathComponent(path);
+  return parsed;
 }
 
 // Percent-decode a path-shaped href component; a malformed escape

@@ -263,6 +263,7 @@ export {
   DeleteAttachment,
   GetAttachmentData,
   GetAttachmentThumbnail,
+  GetLocalImageData,
   SaveDraft,
   GetDraft,
   ClearDraft,

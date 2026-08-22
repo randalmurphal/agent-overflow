@@ -332,3 +332,10 @@ Paths below are relative to `dist/`. Regression-test paths are relative to
     into its own cache key, delete this hunk and take upstream's — the
     regression below asserts the observable property, not our exact
     serialization. Regression: `markdown/mermaidCacheKey.test.ts`.
+19. **allowed links render their Markdown title** (`Elements/Link.svelte`)
+    — upstream passes `token.title` only to a custom link snippet. Its
+    default anchor drops the title, so standard Markdown link titles and
+    host-generated action tooltips disappear unless every host replaces the
+    whole link renderer. The default anchor now emits the title attribute
+    when the token has one. Upstream bug, upstream-PR candidate. Regression:
+    `ChatMarkdown.test.ts` (editor-link hover text).

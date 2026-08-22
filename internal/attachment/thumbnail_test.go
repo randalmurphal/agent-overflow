@@ -239,7 +239,7 @@ func TestThumbnailRejectsDecodeBomb(t *testing.T) {
 	// inside Decode would attempt a ~40 GB allocation and OOM the
 	// process. With the pre-check, we reject before allocation.
 	bomb := pngWithDeclaredDimensions(t, 100_000, 100_000)
-	if err := guardImageBudget(bomb, "image/png"); err == nil {
+	if err := ValidateImageDimensions(bomb); err == nil {
 		t.Fatal("expected decode-bomb pre-check to reject 100k×100k declared image")
 	}
 }
@@ -273,7 +273,7 @@ func pngWithDeclaredDimensions(t *testing.T, width, height int) []byte {
 	out[ihdrWidthOffset+7] = byte(height)
 	// We deliberately do NOT recompute the CRC. image.DecodeConfig
 	// reads the IHDR and accepts it without validating the chunk CRC,
-	// which is exactly the attack surface guardImageBudget protects.
+	// which is exactly the attack surface ValidateImageDimensions protects.
 	return out
 }
 

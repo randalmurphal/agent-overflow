@@ -206,6 +206,44 @@ describe('<ComposerPendingUserInputPanel>', () => {
     expect(queryByTestId('user-input-options')).toBeTruthy();
   });
 
+  it('rewrites local file links inside option previews', async () => {
+    const { getByTestId } = render(ComposerPendingUserInputPanel, {
+      props: {
+        request: request({
+          questions: [
+            {
+              id: 'layout',
+              header: 'Layout',
+              question: 'Pick one',
+              options: [
+                {
+                  label: 'A',
+                  description: '',
+                  preview: '[entity](file:///workspace/models/event.py#L42)',
+                },
+              ],
+            },
+          ],
+        }),
+        customAnswer: '',
+        submitSignal: 0,
+        setCustomAnswerText: vi.fn(),
+        onResolve: vi.fn(),
+        onResolved: vi.fn(),
+        onError: vi.fn(),
+        workspacePath: '/workspace',
+      },
+    });
+
+    await waitFor(() => {
+      const anchor = getByTestId('user-input-preview').querySelector(
+        'a[href^="agent-overflow:open"]',
+      );
+      expect(anchor).not.toBeNull();
+      expect(anchor?.getAttribute('href')).toContain('line=42');
+    });
+  });
+
   it('does not render the preview pane when no option has preview', async () => {
     const { queryByTestId } = render(ComposerPendingUserInputPanel, {
       props: {

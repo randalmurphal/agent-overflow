@@ -2,9 +2,11 @@ import { describe, expect, it } from 'vitest';
 import { Lexer } from 'marked';
 
 import {
+  LOCAL_IMAGE_HREF_PREFIX,
   PATH_LINK_HREF_PREFIX,
   buildPathLinkExtension,
   buildPathLinkHref,
+  parseLocalImageHref,
   parsePathLinkHref,
 } from './pathLinkExtension';
 
@@ -34,6 +36,7 @@ function lex(text: string, extension: ReturnType<typeof buildPathLinkExtension>)
 interface FoundLink {
   raw: string;
   href: string;
+  title: string | null;
   childTypes: string[];
 }
 
@@ -42,13 +45,19 @@ function findLinks(tokens: ReturnType<typeof lex>): FoundLink[] {
   const walk = (nodes: unknown[]) => {
     for (const node of nodes) {
       if (!node || typeof node !== 'object') continue;
-      const t = node as { type?: string; raw?: string; href?: string; tokens?: unknown[] };
+      const t = node as {
+        type?: string;
+        raw?: string;
+        href?: string;
+        title?: string | null;
+        tokens?: unknown[];
+      };
       if (t.type === 'link' && typeof t.raw === 'string' && typeof t.href === 'string') {
         const children = Array.isArray(t.tokens) ? t.tokens : [];
         const childTypes = children
           .map((c) => (c && typeof c === 'object' ? ((c as { type?: string }).type ?? '') : ''))
           .filter((s) => s !== '');
-        out.push({ raw: t.raw, href: t.href, childTypes });
+        out.push({ raw: t.raw, href: t.href, title: t.title ?? null, childTypes });
       }
       if (Array.isArray(t.tokens)) walk(t.tokens);
     }
@@ -65,6 +74,32 @@ function findCodespans(tokens: ReturnType<typeof lex>): string[] {
       const t = node as { type?: string; raw?: string; tokens?: unknown[] };
       if (t.type === 'codespan' && typeof t.raw === 'string') out.push(t.raw);
       if (Array.isArray(t.tokens)) walk(t.tokens);
+    }
+  };
+  walk(tokens as unknown[]);
+  return out;
+}
+
+function findImages(tokens: ReturnType<typeof lex>): Array<{ raw: string; href: string; text: string }> {
+  const out: Array<{ raw: string; href: string; text: string }> = [];
+  const walk = (nodes: unknown[]) => {
+    for (const node of nodes) {
+      if (!node || typeof node !== 'object') continue;
+      const token = node as {
+        type?: string;
+        raw?: string;
+        href?: string;
+        text?: string;
+        tokens?: unknown[];
+      };
+      if (
+        token.type === 'image' &&
+        typeof token.raw === 'string' &&
+        typeof token.href === 'string'
+      ) {
+        out.push({ raw: token.raw, href: token.href, text: token.text ?? '' });
+      }
+      if (Array.isArray(token.tokens)) walk(token.tokens);
     }
   };
   walk(tokens as unknown[]);
@@ -111,6 +146,7 @@ describe('buildPathLinkExtension', () => {
     expect(links[0].href).toContain('path=src%2Flib%2Ffoo.ts');
     expect(links[0].href).toContain('workspace=%2Fworkspace');
     expect(links[0].href.startsWith(PATH_LINK_HREF_PREFIX)).toBe(true);
+    expect(links[0].title).toBe('Open src/lib/foo.ts in editor');
   });
 
   it('extracts :line:col suffix from the matched text', () => {
@@ -120,6 +156,7 @@ describe('buildPathLinkExtension', () => {
     expect(links[0].raw).toBe('src/foo.ts:42:7');
     expect(links[0].href).toContain('line=42');
     expect(links[0].href).toContain('col=7');
+    expect(links[0].title).toBe('Open src/foo.ts:42:7 in editor');
   });
 
   it('extracts :line without col', () => {
@@ -378,6 +415,40 @@ describe('buildPathLinkExtension', () => {
       expect(links[0].href).toContain('path=%2Fhome%2Fuser%2F.claude%2Fprompt.md');
     });
 
+    it('normalizes a local file URI into the guarded editor link', () => {
+      const links = findLinks(lex('[entity](file:///workspace/models/event.py:42:7)', ext()));
+      expect(links).toHaveLength(1);
+      expect(links[0].href.startsWith(PATH_LINK_HREF_PREFIX)).toBe(true);
+      expect(links[0].href).toContain('path=%2Fworkspace%2Fmodels%2Fevent.py');
+      expect(links[0].href).toContain('line=42');
+      expect(links[0].href).toContain('col=7');
+      expect(links[0].title).toBe('Open /workspace/models/event.py:42:7 in editor');
+    });
+
+    it('reads GitHub-style line fragments from local file URIs', () => {
+      const links = findLinks(lex('[entity](file:///workspace/models/event.py#L42-L48)', ext()));
+      expect(links).toHaveLength(1);
+      expect(links[0].href).toContain('path=%2Fworkspace%2Fmodels%2Fevent.py');
+      expect(links[0].href).toContain('line=42');
+      expect(links[0].href).not.toContain('col=');
+    });
+
+    it('accepts localhost file URIs but refuses remote file authorities', () => {
+      const local = findLinks(lex('[entity](file://localhost/workspace/models/event.py)', ext()));
+      expect(local[0].href.startsWith(PATH_LINK_HREF_PREFIX)).toBe(true);
+      expect(local[0].href).toContain('path=%2Fworkspace%2Fmodels%2Fevent.py');
+
+      const remote = findLinks(lex('[entity](file://fileserver/share/event.py)', ext()));
+      expect(remote[0].href.startsWith(PATH_LINK_HREF_PREFIX)).toBe(false);
+    });
+
+    it('normalizes a Windows drive file URI without keeping the URL root slash', () => {
+      const links = findLinks(lex('[entity](file:///C:/repo/models/event.py#L9)', ext()));
+      expect(links).toHaveLength(1);
+      expect(links[0].href).toContain('path=C%3A%2Frepo%2Fmodels%2Fevent.py');
+      expect(links[0].href).toContain('line=9');
+    });
+
     it('rewrites a ~/ href (expansion happens backend-side)', () => {
       const links = findLinks(lex('[prompt](~/.claude/prompt.md)', ext()));
       expect(links).toHaveLength(1);
@@ -464,7 +535,7 @@ describe('buildPathLinkExtension', () => {
       expect(links[0].href).toContain('col=7');
     });
 
-    it('never rewrites scheme, fragment, query, network-path, or UNC hrefs', () => {
+    it('never rewrites unsupported schemes, fragment, query, network-path, or UNC hrefs', () => {
       const cases = [
         'https://example.com/x',
         // Port shapes: the trailing `:8080` parses like a line suffix,
@@ -551,6 +622,43 @@ describe('buildPathLinkExtension', () => {
     const links = findLinks(lex('See internal/foo.go *important*.', ext));
     expect(links).toHaveLength(1);
     expect(links[0].raw).toBe('internal/foo.go');
+  });
+
+  it('rewrites a local file image into a guarded backend-image URL', () => {
+    const ext = buildPathLinkExtension([], '/workspace');
+    const images = findImages(lex('![diagram](file:///workspace/docs/flow.png)', ext));
+    expect(images).toHaveLength(1);
+    expect(images[0].href.startsWith(LOCAL_IMAGE_HREF_PREFIX)).toBe(true);
+    expect(images[0].href).toContain('path=%2Fworkspace%2Fdocs%2Fflow.png');
+    expect(images[0].href).toContain('workspace=%2Fworkspace');
+  });
+
+  it('does not rewrite remote-authority or non-file image URLs', () => {
+    const ext = buildPathLinkExtension([], '/workspace');
+    for (const href of ['file://fileserver/share/x.png', 'https://example.com/x.png']) {
+      const images = findImages(lex(`![diagram](${href})`, ext));
+      expect(images).toHaveLength(1);
+      expect(images[0].href.startsWith(LOCAL_IMAGE_HREF_PREFIX), href).toBe(false);
+    }
+  });
+});
+
+describe('parseLocalImageHref', () => {
+  it('round-trips the guarded local-image href', () => {
+    expect(
+      parseLocalImageHref(
+        `${LOCAL_IMAGE_HREF_PREFIX}path=%2Fworkspace%2Fdiagram.png&workspace=%2Fworkspace&source=file%3A%2F%2F%2Fworkspace%2Fdiagram.png`,
+      ),
+    ).toEqual({
+      path: '/workspace/diagram.png',
+      workspacePath: '/workspace',
+      sourceHref: 'file:///workspace/diagram.png',
+    });
+  });
+
+  it('rejects a missing nonce or path', () => {
+    expect(parseLocalImageHref('agent-overflow:image?path=/etc/passwd')).toBeNull();
+    expect(parseLocalImageHref(LOCAL_IMAGE_HREF_PREFIX)).toBeNull();
   });
 });
 

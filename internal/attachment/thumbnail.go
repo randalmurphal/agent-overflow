@@ -131,7 +131,7 @@ func generateThumbnail(src []byte, srcMIME string) ([]byte, string, error) {
 	// `image.DecodeConfig` reads only the header, so a decode-bomb that
 	// declares billions of pixels is rejected before image.NewRGBA tries
 	// to allocate the backing slice.
-	if err := guardImageBudget(src, srcMIME); err != nil {
+	if err := ValidateImageDimensions(src); err != nil {
 		return nil, "", err
 	}
 
@@ -195,20 +195,11 @@ func generateThumbnail(src []byte, srcMIME string) ([]byte, string, error) {
 	}
 }
 
-// guardImageBudget rejects sources whose declared header dimensions exceed
-// `thumbPixelBudget`, before the full Decode allocates a proportionally-
-// sized backing slice. Returns nil for GIF: gif.DecodeAll's first frame
-// dimensions are bounded by the GIF logical screen size, which is itself a
-// 16-bit quantity (max ~65k×65k = 4 Gpx — still well over budget, but the
-// Go gif decoder mallocs lazily per-frame and the first frame is what we
-// keep, so the same image.NewRGBA budget check below catches the rest).
-func guardImageBudget(src []byte, srcMIME string) error {
-	if srcMIME == "image/gif" {
-		// gif.DecodeAll already returns headers in the decoded result;
-		// we'd need a separate gif.DecodeConfig pass to peek without
-		// reading frames. The bounds check after decode catches it.
-		return nil
-	}
+// ValidateImageDimensions rejects corrupt images and sources whose declared
+// dimensions exceed the decode budget. It runs before browser delivery or a
+// full Go decode, so a tiny file with hostile dimensions cannot force either
+// process to allocate a multi-gigabyte pixel buffer.
+func ValidateImageDimensions(src []byte) error {
 	cfg, _, err := image.DecodeConfig(bytes.NewReader(src))
 	if err != nil {
 		return fmt.Errorf("decode image config: %w", err)

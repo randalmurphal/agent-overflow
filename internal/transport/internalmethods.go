@@ -538,6 +538,7 @@ var LocalOnlyMethods = map[string]bool{
 	"DeleteAttachment":       true,
 	"GetAttachmentData":      true,
 	"GetAttachmentThumbnail": true,
+	"GetLocalImageData":      true,
 	// Design-mode local-FS + coordination surface. The frontend posts
 	// iframe-captured diagnostics into the per-thread ring and
 	// reads/writes the per-thread design workdir (option-set

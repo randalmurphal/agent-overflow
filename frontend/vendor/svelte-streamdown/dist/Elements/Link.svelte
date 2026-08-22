@@ -62,6 +62,7 @@
 			href={transformedUrl}
 			target="_blank"
 			rel="noopener noreferrer"
+			title={token.title ?? undefined}
 		>
 			{@render children()}
 		</a>

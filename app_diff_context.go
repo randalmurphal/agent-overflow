@@ -318,36 +318,41 @@ func capContent(action, path, content string, maxBytes int64) (string, bool, err
 // caps allocation even when the file grows after the fstat. maxBytes
 // <= 0 means unbounded (the type check still applies).
 func readWorkspaceFile(path string, maxBytes int64) (string, error) {
+	data, err := readWorkspaceFileBytes(path, maxBytes)
+	return string(data), err
+}
+
+func readWorkspaceFileBytes(path string, maxBytes int64) ([]byte, error) {
 	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	defer f.Close()
 	info, err := f.Stat()
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	if !info.Mode().IsRegular() {
-		return "", errors.New("not a regular file")
+		return nil, errors.New("not a regular file")
 	}
 	if maxBytes <= 0 {
 		data, err := io.ReadAll(f)
 		if err != nil {
-			return "", err
+			return nil, err
 		}
-		return string(data), nil
+		return data, nil
 	}
 	if info.Size() > maxBytes {
-		return "", fmt.Errorf("exceeds %d bytes", maxBytes)
+		return nil, fmt.Errorf("exceeds %d bytes", maxBytes)
 	}
 	data, err := io.ReadAll(io.LimitReader(f, maxBytes+1))
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	if int64(len(data)) > maxBytes {
-		return "", fmt.Errorf("exceeds %d bytes", maxBytes)
+		return nil, fmt.Errorf("exceeds %d bytes", maxBytes)
 	}
-	return string(data), nil
+	return data, nil
 }
 
 // splitContentLines splits file content into lines the way diff line

@@ -217,7 +217,10 @@ function serializeAnchor(el: HTMLElement, ctx: SerializeContext): string {
 
 function serializeImage(el: HTMLElement): string {
   const alt = el.getAttribute('alt') ?? '';
-  const src = el.getAttribute('src') ?? '';
+  // Local markdown images render from short-lived blob URLs. Their
+  // nonce-gated host preserves the original file URI so copy-as-markdown
+  // does not leak an unusable page-local blob destination.
+  const src = el.dataset.markdownImageSrc || el.getAttribute('src') || '';
   // Filter unsafe data: URIs so a sanitization bypass upstream
   // can't smuggle, e.g., `data:text/html,...` into someone's
   // clipboard via copy-as-markdown.

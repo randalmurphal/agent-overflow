@@ -2042,6 +2042,36 @@ export class LiveStateTodoStep {
 }
 
 /**
+ * LocalImageData is the validated byte payload for a local image referenced
+ * by rendered markdown. The frontend turns it into a blob URL rather than
+ * handing a model-authored file URI to the webview.
+ */
+export class LocalImageData {
+    "data": string;
+    "mimeType": string;
+
+    /** Creates a new LocalImageData instance. */
+    constructor($$source: Partial<LocalImageData> = {}) {
+        if (!("data" in $$source)) {
+            this["data"] = "";
+        }
+        if (!("mimeType" in $$source)) {
+            this["mimeType"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new LocalImageData instance from a string or object.
+     */
+    static createFrom($$source: any = {}): LocalImageData {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new LocalImageData($$parsedSource as Partial<LocalImageData>);
+    }
+}
+
+/**
  * MCPAuthInitResult is the response shape for TriggerMcpAuth.
  */
 export class MCPAuthInitResult {

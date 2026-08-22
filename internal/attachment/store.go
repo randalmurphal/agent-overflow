@@ -356,31 +356,44 @@ func validateType(mimeType, filename string) (string, string, error) {
 	return "", "", fmt.Errorf("attachment: disallowed mime type %q", mime)
 }
 
-func validateImagePayload(mimeType string, data []byte) error {
+// DetectImageMIME identifies the image formats Agent Overflow can render.
+// It reads signatures rather than trusting a filename or caller-provided
+// content type, so filesystem-backed markdown images and uploaded
+// attachments share one byte-level allowlist.
+func DetectImageMIME(data []byte) (string, error) {
 	if len(data) < 4 {
-		return fmt.Errorf("attachment: image payload is too short")
+		return "", fmt.Errorf("attachment: image payload is too short")
 	}
-	switch mimeType {
-	case "image/png":
-		if len(data) >= 8 &&
-			data[0] == 0x89 && data[1] == 'P' && data[2] == 'N' && data[3] == 'G' &&
-			data[4] == 0x0D && data[5] == 0x0A && data[6] == 0x1A && data[7] == 0x0A {
-			return nil
-		}
-	case "image/jpeg", "image/jpg":
-		if len(data) >= 3 && data[0] == 0xFF && data[1] == 0xD8 && data[2] == 0xFF {
-			return nil
-		}
-	case "image/gif":
-		if len(data) >= 6 && (string(data[:6]) == "GIF87a" || string(data[:6]) == "GIF89a") {
-			return nil
-		}
-	case "image/webp":
-		if len(data) >= 12 && string(data[:4]) == "RIFF" && string(data[8:12]) == "WEBP" {
-			return nil
-		}
+	if len(data) >= 8 &&
+		data[0] == 0x89 && data[1] == 'P' && data[2] == 'N' && data[3] == 'G' &&
+		data[4] == 0x0D && data[5] == 0x0A && data[6] == 0x1A && data[7] == 0x0A {
+		return "image/png", nil
 	}
-	return fmt.Errorf("attachment: payload does not match %s", mimeType)
+	if len(data) >= 3 && data[0] == 0xFF && data[1] == 0xD8 && data[2] == 0xFF {
+		return "image/jpeg", nil
+	}
+	if len(data) >= 6 && (string(data[:6]) == "GIF87a" || string(data[:6]) == "GIF89a") {
+		return "image/gif", nil
+	}
+	if len(data) >= 12 && string(data[:4]) == "RIFF" && string(data[8:12]) == "WEBP" {
+		return "image/webp", nil
+	}
+	return "", fmt.Errorf("attachment: payload is not a supported image")
+}
+
+func validateImagePayload(mimeType string, data []byte) error {
+	detected, err := DetectImageMIME(data)
+	if err != nil {
+		return err
+	}
+	want := mimeType
+	if want == "image/jpg" {
+		want = "image/jpeg"
+	}
+	if detected == want {
+		return nil
+	}
+	return fmt.Errorf("attachment: payload does not match %s (detected %s)", mimeType, detected)
 }
 
 // sanitizeThreadID strips path separators from the thread id so it can be

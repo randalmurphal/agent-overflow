@@ -22,6 +22,7 @@
   import { OpenInEditor } from '../../stores/bindings';
   import { addToast } from '../../stores/toast.svelte';
   import { errString } from '../../utils/errors';
+  import { openInEditorLabel } from '../../utils/editorLinkLabel';
 
   interface Props {
     path: string;
@@ -79,12 +80,6 @@
   const inlineToneClass = $derived(
     tone === 'inherit' ? 'text-inherit hover:underline' : 'text-accent hover:underline',
   );
-
-  function openInEditorLabel(target: string, line: number, col: number): string {
-    const suffix = line > 0 ? `:${line}${col > 0 ? `:${col}` : ''}` : '';
-    const labelWithLocation = suffix && !target.endsWith(suffix) ? `${target}${suffix}` : target;
-    return `Open ${labelWithLocation} in editor`;
-  }
 
   async function handleClick(e: MouseEvent): Promise<void> {
     // Anchor's default href="#" navigation would scroll to top; cancel
