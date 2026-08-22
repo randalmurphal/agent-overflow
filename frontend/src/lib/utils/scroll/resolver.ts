@@ -140,6 +140,18 @@ export interface ContentDeltaObservation {
    * already-rendered content, so it sync-pins even in spring mode.
    */
   widthReflowActive: boolean;
+  /**
+   * A displaced pinned-remeasure redirect landed within the last settle
+   * window (the controller's `applyEngineCompensation` opened it when an
+   * `engine.anchorRedirect` write had to recover a pinned viewport from a
+   * large remeasure displacement): the surface is mid measurement-
+   * correction wave, so a height delta is layout correction for
+   * already-rendered content — same classification as `widthReflowActive`,
+   * same effect (sync-pin, never glide). Positive signal carried by the
+   * correction itself, deliberately NOT a liveness/recency guess (see the
+   * springGateIsOpen comment on why those were rejected).
+   */
+  pinnedRemeasureActive: boolean;
   /** OS prefers-reduced-motion OR the app's low-power setting — the
    * controller feeds this from its combined motionReduced() gate. */
   prefersReducedMotion: boolean;
@@ -403,7 +415,11 @@ export function resolveContentDelivery(
     //
     // The warm gate is what keeps a thread-switch restore from chasing
     // its mount cascade (e00723f): the cascade fires while !warm, so it
-    // sync-pins exactly as before.
+    // sync-pins exactly as before. The pinned-remeasure settle window
+    // is the post-warm counterpart: a correction wave that outlived the
+    // gate (bug-report-20260822T020840Z) announces itself through the
+    // displaced anchor-redirect, and its trailing deltas are the same
+    // layout correction the width-reflow carve-out sync-pins.
     if (
       state.warm
       && springGateIsOpen({
@@ -414,6 +430,7 @@ export function resolveContentDelivery(
         prefersReducedMotion: obs.prefersReducedMotion,
       })
       && !obs.widthReflowActive
+      && !obs.pinnedRemeasureActive
     ) {
       startSpring = true;
     } else {
@@ -443,8 +460,9 @@ export function resolveContentDelivery(
     // the spring gate requires warm, so no spring is active during the
     // cascade and the sync-pin runs as before. Width reflow overrides
     // the carve-out: the paired growth is layout correction and
-    // sync-pins, so the shrink must too.
-    if (!state.springActive || obs.widthReflowActive) {
+    // sync-pins, so the shrink must too — and the pinned-remeasure
+    // settle window overrides it for the same reason.
+    if (!state.springActive || obs.widthReflowActive || obs.pinnedRemeasureActive) {
       write = {
         caller: obs.widthReflowActive ? 'contentRO.negativeDeltaReflow' : 'contentRO.negativeDelta',
         value: target,
@@ -565,7 +583,26 @@ export function resolveEngineCompensation(
   // reader onto the new row and leave the armed spring with zero
   // distance. Preserve the pre-append view instead; the arm's follow-up
   // nudge glides the remainder to the bottom.
-  if (domAlreadyPinned && movesAwayFromBottom && !state.structuralAppendPending) {
+  //
+  // The second clause (`!state.springActive`) covers the DISPLACED
+  // pinned reader: one remeasure burst can both shrink above-viewport
+  // rows and grow the total (a post-warm cold-load correction wave —
+  // bug-report-20260822T020840Z seq 64892: delta −4441 above, +3677
+  // total), so at delivery time scrollTop already sits far from the NEW
+  // bottom and `domAlreadyPinned` fails exactly when the correction is
+  // big enough to matter. Landing that compensation verbatim parked the
+  // viewport ~6 viewports short and handed the whole distance to a
+  // spring chase. Intent is still bottom-follow and nothing is
+  // animating, so the destination is the bottom — redirect. A live
+  // chase/sentinel (springActive) keeps the verbatim tier: an applied
+  // compensation mid-chase relocates the glide without changing its
+  // remaining distance, and redirecting would teleport over a running
+  // animation.
+  if (
+    (domAlreadyPinned || !state.springActive)
+    && movesAwayFromBottom
+    && !state.structuralAppendPending
+  ) {
     return { write: { caller: 'engine.anchorRedirect', value: obs.bottomTarget } };
   }
   return { write: { caller: 'engine.compensation', value: obs.target } };

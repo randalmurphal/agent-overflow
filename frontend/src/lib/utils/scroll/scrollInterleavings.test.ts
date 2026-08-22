@@ -67,12 +67,12 @@ const MAX_FRAME_STEP =
 // and its RO delivery resolves the recovery in the same pass — so a
 // drain-frame oscillation snap means a guard fired WITHOUT fresh clamp
 // evidence (the exact defect the provenance ledger exists to prevent,
-// bug-report-20260801T213259Z). catchupJump needs a ≥1s rAF gap and the
+// bug-report-20260801T213259Z). catchupSnap needs a ≥1s rAF gap and the
 // drain ticks steady 16.67ms frames, so it too can only be a bug here.
 const FORBIDDEN_DRAIN_CALLERS = new Set<string>([
   'spring.oscillationSnap',
   'contentRO.oscillationSnap',
-  'spring.catchupJump',
+  'spring.catchupSnap',
 ]);
 
 const STATES = ['at-rest', 'mid-glide', 'sentinel-idle', 'escaped', 'paused'] as const;
@@ -110,7 +110,7 @@ describe('scroll interleavings — ops × states frame invariants', () => {
   // frames would leave refresh-rate races untested. STEADY models
   // 60Hz; JITTERED alternates 120Hz and 30Hz gaps with a 250ms stall
   // every 16th frame — long enough to trigger the spring's bounded
-  // catch-up burst, deliberately short of the ≥1s catchupJump
+  // catch-up burst, deliberately short of the ≥1s catchupSnap
   // discontinuity (which stays a forbidden caller here).
   type FrameProfile = (frameIndex: number) => number;
   const STEADY: FrameProfile = () => 16.67;

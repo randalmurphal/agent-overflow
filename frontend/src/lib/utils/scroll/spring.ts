@@ -64,7 +64,7 @@ const SIXTY_FPS_INTERVAL_MS = 1000 / 60;
 // capped), so the lost integration time is recovered smoothly instead
 // of instantly. The extremes stay bounded by the two mechanisms that
 // always handled them — the arrival snap, and the >1-viewport
-// catchupJump for gaps a spring should not chase at all.
+// catchupSnap for gaps a spring should not chase at all.
 //
 // Exported for the interleaving invariant suite
 // (scrollInterleavings.test.ts), which holds every non-snap frame to
@@ -163,21 +163,23 @@ const SPRING_CARRY_VELOCITY_CEILING = 4;
 // transient is bounded and reclaimed precisely because this cap far
 // exceeds growth and the envelope licenses 0.09× of any accrued lag.
 export const SPRING_MAX_VELOCITY_PX_PER_FRAME = 27;
-// Bound on how far a RESUMED chase may animate, in viewports. When a
-// tick finds the target more than one viewport away AND one of the
-// discontinuity signals below says rendering genuinely paused, the
-// glide's start point jumps forward so exactly one viewport of smooth
-// motion remains — the far span cuts, the last screenful glides in as
-// visible, intentional catch-up (~0.55s of motion at the velocity cap).
-// Without it, returning to an occluded/minimized window mid-turn paid
-// the entire backlog as a multi-second bounded-speed glide ("catching
-// up on the whole scroll distance from when you left").
+// Backlog threshold (in viewports) past which a RESUMED chase snaps to
+// the target instead of animating at all. When a tick finds the target
+// more than one viewport away AND one of the discontinuity signals below
+// says rendering genuinely paused, the backlog accrued while nothing was
+// being watched is placed instantly — the reader returns to a window
+// that is simply already in the right place. This used to leave one
+// viewport of glide as a "catch-up in flight" cue; that residual motion
+// was rejected 2026-08-22 ("when it becomes visible it should already be
+// in the right place, instantly") — the cue was read as the app being
+// behind, not as intentional. Growth that arrives AFTER the snap is
+// ordinary live follow and glides as always.
 //
 // Distance alone is deliberately NOT proof of a stall: a >viewport
 // structural mount (a huge diff card, a fat command-output flush) is
 // spring-routed by design during live follow (resolver.ts
-// positiveWillPin) and must keep its full bounded glide — clamping it
-// would be an unintentional mid-stream cut. So the clamp additionally
+// positiveWillPin) and must keep its full bounded glide — snapping it
+// would be an unintentional mid-stream cut. So the snap additionally
 // requires an OBSERVED discontinuity, either signal sufficing:
 //   - this tick's real rAF gap ≥ STALL_RESUME_GAP_MS (occlusion or
 //     minimize froze rAF mid-chase / mid-sentinel; the first resumed
@@ -188,9 +190,9 @@ export const SPRING_MAX_VELOCITY_PX_PER_FRAME = 27;
 //     visible also snaps the text smoothers to the wire in one frame,
 //     which is exactly what creates the backlog).
 // Failure is self-limiting in both directions: a missed signal
-// degrades to the old full-distance bounded glide; a spurious signal
-// still needs a >viewport jump to do anything and then produces a
-// bounded cut plus a screenful of motion — never a teleport-to-bottom.
+// degrades to the full-distance bounded glide; a spurious signal still
+// needs a >viewport backlog to do anything, and the reader it snaps was
+// not watching the span it skipped.
 const SPRING_MAX_CHASE_DISTANCE_VIEWPORTS = 1;
 const STALL_RESUME_GAP_MS = 1000;
 const RESUME_CLAMP_WINDOW_MS = 2000;
@@ -1176,17 +1178,17 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
           deps.arrival.clear();
           sentinelEntryTarget = -1;
           sentinelClampWitnessed = false;
-          // Chase-distance clamp (see SPRING_MAX_CHASE_DISTANCE_VIEWPORTS
-          // for the full gating rationale): only on a >viewport backlog
-          // paired with an OBSERVED discontinuity — this tick's real rAF
-          // gap, or a just-resumed document. Jump the glide's start point
-          // so exactly one viewport of motion remains, entering at cruise
-          // speed so the remaining glide reads as catch-up already in
-          // flight (the deceleration envelope still shapes the landing).
-          // Layout is clean here (targetScrollTop just read it), so
-          // clientHeight doesn't reflow. Skip when unmeasured
-          // (clientHeight 0): a zero limit would degrade every chase into
-          // a snap.
+          // Resume snap (see SPRING_MAX_CHASE_DISTANCE_VIEWPORTS for the
+          // full gating rationale): only on a >viewport backlog paired
+          // with an OBSERVED discontinuity — this tick's real rAF gap,
+          // or a just-resumed document. The backlog accrued while
+          // nothing was being watched, so it is placed in one write
+          // rather than paid as motion; velocity resets to standstill so
+          // growth arriving after the snap ramps up like any other cold
+          // onset. Layout is clean here (targetScrollTop just read it),
+          // so clientHeight doesn't reflow. Skip when unmeasured
+          // (clientHeight 0): a zero threshold would degrade every chase
+          // into a snap.
           const chaseLimitPx = el.clientHeight * SPRING_MAX_CHASE_DISTANCE_VIEWPORTS;
           const tickGapMs = previousTickAt === null ? 0 : now - previousTickAt;
           const resumedFromDiscontinuity =
@@ -1197,23 +1199,15 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
             && chaseLimitPx > 0
             && Math.abs(target - current) > chaseLimitPx
           ) {
-            const chasingDown = target > current;
-            const entry = chasingDown ? target - chaseLimitPx : target + chaseLimitPx;
-            deps.writeScrollTop('spring.catchupJump', entry);
-            // Re-read: the engine may round the written value. Seed the
-            // cruise entry only if the element actually MOVED — a
-            // refused jump (write-refusal wedge) that seeded cap
-            // velocity would hand the main write below a full-speed
-            // step computed off a position the element never took, and
-            // the guard's refusal arm would then bank that velocity
-            // into the eventual heal. A refused jump falls through to
-            // the main write, whose classification counts it.
+            deps.writeScrollTop('spring.catchupSnap', target);
+            // Re-read: the engine may round or refuse the written value.
+            // Reset kinematics only if the element actually MOVED — a
+            // refused snap (write-refusal wedge) falls through to the
+            // main write, whose classification counts it.
             if (el.scrollTop !== current) {
               current = el.scrollTop;
               accumulated = 0;
-              velocity = chasingDown
-                ? SPRING_MAX_VELOCITY_PX_PER_FRAME
-                : -SPRING_MAX_VELOCITY_PX_PER_FRAME;
+              velocity = 0;
               if (chaseTelemetry) chaseTelemetry.distanceJumps += 1;
             }
           }

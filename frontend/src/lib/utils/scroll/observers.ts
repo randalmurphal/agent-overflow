@@ -57,6 +57,15 @@ const CONTENT_REFLOW_WIDTH_EPSILON_PX = 2;
 // the layout-correction classification alive briefly so a width-only fire
 // followed by renderer height settle still sync-pins.
 const CONTENT_REFLOW_SETTLE_WINDOW_MS = 250;
+// Same shape for the pinned-remeasure classification: a DISPLACED
+// engine.anchorRedirect (the controller recovering a pinned viewport from
+// a large post-warm remeasure burst — bug-report-20260822T020840Z) proves
+// a measurement-correction wave is in flight, and the wave's trailing
+// height deltas arrive over the following frames. Fixed window,
+// deliberately NOT refreshed by the deltas it classifies: a self-
+// extending window would convert a streaming turn that starts inside it
+// into indefinite sync-pins.
+const PINNED_REMEASURE_SETTLE_WINDOW_MS = 250;
 
 // ===== Warm-up (quiescence) gate =====
 // After attach() or forceStick(), the controller stays in sync-pin mode
@@ -195,6 +204,14 @@ export interface ContentObserver {
   /** Raw resizeDifference read for trace payloads only. */
   resizeDifferenceNow(): number;
   /**
+   * Open the pinned-remeasure settle window: the controller just wrote a
+   * DISPLACED engine.anchorRedirect (a large remeasure burst threw a
+   * pinned viewport off the bottom), so height deltas for the next
+   * PINNED_REMEASURE_SETTLE_WINDOW_MS classify as layout correction and
+   * sync-pin instead of gliding.
+   */
+  openPinnedRemeasureSettleWindow(): void;
+  /**
    * Stamp a synthetic RO-correlation before an out-of-content instant
    * pin (composer/host geometry), so the resulting scroll event is
    * classified as layout, not user input.
@@ -207,6 +224,7 @@ export function createContentObserver(deps: ContentObserverDeps): ContentObserve
   let previousHeight: number | undefined;
   let previousWidth: number | undefined;
   let contentReflowSettleUntil = 0;
+  let pinnedRemeasureSettleUntil = 0;
   let resizeDifference = 0;
   let resizeClearTimer: ReturnType<typeof setTimeout> | null = null;
   let resizeCorrelatedUntaggedScrollBudget = 0;
@@ -471,6 +489,7 @@ export function createContentObserver(deps: ContentObserverDeps): ContentObserve
 
     const delta = nextHeight - prev;
     const widthReflowActive = widthChanged || contentReflowSettleUntil > nowMs();
+    const pinnedRemeasureActive = pinnedRemeasureSettleUntil > nowMs();
     // Common case: the virtualizer re-measures a same-height row, padding-bottom
     // CSS variable updates with identical computed value, etc. No
     // geometry change → nothing to chase, no scroll-event tagging needed.
@@ -521,6 +540,7 @@ export function createContentObserver(deps: ContentObserverDeps): ContentObserve
       scrollTop: scrollTopAtDelivery,
       target,
       widthReflowActive,
+      pinnedRemeasureActive,
       prefersReducedMotion: deps.prefersReducedMotion(),
     };
     const decision = resolveContentDelivery(deps.resolverStateSnapshot(), observation);
@@ -544,6 +564,7 @@ export function createContentObserver(deps: ContentObserverDeps): ContentObserve
       widthDelta: prevWidth === undefined ? null : roundCssPx(nextWidth - prevWidth),
       widthChanged,
       widthReflowActive,
+      pinnedRemeasureActive,
       settleEvidence: settle === undefined ? null : lastSettleEvidence,
       liveContentActive: deps.liveContentActive(),
       structuralAppendSpringPending: deps.spring.structuralAppendPending(),
@@ -632,6 +653,7 @@ export function createContentObserver(deps: ContentObserverDeps): ContentObserve
     previousHeight = undefined;
     previousWidth = undefined;
     contentReflowSettleUntil = 0;
+    pinnedRemeasureSettleUntil = 0;
     lastSettleEvidence = false;
     // Also drop the warm-up baseline: a stale hasFirstContentRO would let
     // a post-detach notifyQuietContextSignalChanged arm a quiet timer and
@@ -653,6 +675,9 @@ export function createContentObserver(deps: ContentObserverDeps): ContentObserve
       return correlated;
     },
     resizeDifferenceNow: () => resizeDifference,
+    openPinnedRemeasureSettleWindow: () => {
+      pinnedRemeasureSettleUntil = nowMs() + PINNED_REMEASURE_SETTLE_WINDOW_MS;
+    },
     stampSyntheticResizeCorrelation: () => {
       // Stamp resizeDifference BEFORE the caller writes scrollTop so the
       // resulting scroll event is treated as RO-correlated, not

@@ -42,6 +42,7 @@ function delta(overrides: Partial<ContentDeltaObservation> = {}): ContentDeltaOb
     scrollTop: TARGET,
     target: TARGET,
     widthReflowActive: false,
+    pinnedRemeasureActive: false,
     prefersReducedMotion: false,
     ...overrides,
   };
@@ -389,6 +390,19 @@ describe('resolveContentDelivery — positive delta', () => {
     expect(d.write).toEqual({ caller: 'contentRO.positiveDelta', value: TARGET });
   });
 
+  it('sync-pins inside the pinned-remeasure settle window (post-warm correction wave)', () => {
+    // bug-report-20260822T020840Z: the reopen correction wave outlives
+    // the warm gate; the displaced anchor-redirect opened the settle
+    // window and the wave's trailing growth is layout correction, not
+    // the bottom advancing.
+    const d = resolveContentDelivery(
+      state(),
+      delta({ delta: 20, scrollTop: TARGET - 20, pinnedRemeasureActive: true }),
+    );
+    expect(d.write).toEqual({ caller: 'contentRO.positiveDelta', value: TARGET });
+    expect(d.startSpring).toBe(false);
+  });
+
   it('chases growth that no code path stamped as live content', () => {
     // THE regression guard for the 2026-07-25 jump classes. Growth that
     // nothing marked as "live" — a row's late enrichment (highlight
@@ -482,6 +496,15 @@ describe('resolveContentDelivery — negative delta', () => {
       delta({ delta: -56, scrollTop: TARGET - 56, widthReflowActive: true }),
     );
     expect(d.write).toEqual({ caller: 'contentRO.negativeDeltaReflow', value: TARGET });
+    expect(d.bumpTargetChanged).toBe(false);
+  });
+
+  it('the pinned-remeasure settle window overrides the mid-chase carve-out the same way', () => {
+    const d = resolveContentDelivery(
+      state({ springActive: true }),
+      delta({ delta: -56, scrollTop: TARGET - 56, pinnedRemeasureActive: true }),
+    );
+    expect(d.write).toEqual({ caller: 'contentRO.negativeDelta', value: TARGET });
     expect(d.bumpTargetChanged).toBe(false);
   });
 
@@ -658,9 +681,13 @@ describe('resolveEngineCompensation — anchor redirect', () => {
     expect(decision.write).toEqual({ caller: 'engine.anchorRedirect', value: TARGET });
   });
 
-  it('does not redirect when the DOM is not pinned (legitimate compensation while short of the bottom)', () => {
+  it('does not redirect an unpinned DOM mid-chase (legitimate relocation while the spring is closing the gap)', () => {
+    // Pre-W1 this passed with springActive: false too; since
+    // bug-report-20260822T020840Z an idle displaced compensation
+    // redirects (the displaced-pinned tier). The verbatim pass for an
+    // unpinned DOM is now scoped to an in-flight chase.
     const decision = resolveEngineCompensation(
-      state(),
+      state({ springActive: true }),
       comp({ target: 600, scrollTop: 700 }),
     );
     expect(decision.write).toEqual({ caller: 'engine.compensation', value: 600 });
@@ -733,12 +760,41 @@ describe('resolveEngineCompensation — mid-chase apply', () => {
     expect(decision.write).toEqual({ caller: 'engine.compensation', value: 1301 });
   });
 
-  it('applies when no chase is in flight (20260524T200233Z: suppression caused the thread-switch flicker)', () => {
+  // The 20260524T200233Z lesson — suppression caused the thread-switch
+  // flicker — survives as "every delivery WRITES". The idle-and-displaced
+  // case now writes the bottom instead of the anchor target (see the
+  // displaced-redirect suite below); the thread-switch cascade itself
+  // runs pre-warm and keeps the verbatim apply through the pass tier.
+});
+
+describe('resolveEngineCompensation — displaced pinned redirect (bug-report-20260822T020840Z)', () => {
+  it('redirects an idle displaced pinned viewport to the bottom (the reopen correction burst)', () => {
+    // The trace shape (seq 64892): one post-warm remeasure burst shrank
+    // above-viewport rows (delta −4441) AND grew the total (+3677), so at
+    // delivery time scrollTop sits far from the NEW bottom and the
+    // "already pinned" epsilon fails. Intent is bottom-follow, nothing is
+    // animating: the destination is the bottom, not the reading anchor.
     const decision = resolveEngineCompensation(
       state({ springActive: false }),
-      comp({ target: 990, scrollTop: 700, bottomTarget: 1000 }),
+      comp({ target: 801, scrollTop: 5242, bottomTarget: 8919 }),
     );
-    expect(decision.write).toEqual({ caller: 'engine.compensation', value: 990 });
+    expect(decision.write).toEqual({ caller: 'engine.anchorRedirect', value: 8919 });
+  });
+
+  it('keeps the verbatim apply for the same shape mid-chase — a running glide is relocated, never teleported', () => {
+    const decision = resolveEngineCompensation(
+      state({ springActive: true }),
+      comp({ target: 801, scrollTop: 5242, bottomTarget: 8919 }),
+    );
+    expect(decision.write).toEqual({ caller: 'engine.compensation', value: 801 });
+  });
+
+  it('yields to a pending structural append like every other redirect', () => {
+    const decision = resolveEngineCompensation(
+      state({ springActive: false, structuralAppendPending: true }),
+      comp({ target: 801, scrollTop: 5242, bottomTarget: 8919 }),
+    );
+    expect(decision.write).toEqual({ caller: 'engine.compensation', value: 801 });
   });
 });
 
@@ -779,14 +835,15 @@ describe('resolveEngineCompensation — structural invariants', () => {
                   // controller's bottom target — never a third value.
                   if (decision.write.caller === 'engine.anchorRedirect') {
                     expect(decision.write.value).toBe(bottomTarget);
-                    // A redirect happens ONLY on pinned-DOM + moves-away
-                    // while fully engaged.
-                    expect(engaged && pinned && movesAway).toBe(true);
+                    // A redirect happens ONLY while fully engaged, on a
+                    // moves-away request, with either a pinned DOM or an
+                    // idle (no chase/sentinel) displaced one.
+                    expect(engaged && movesAway && (pinned || !springActive)).toBe(true);
                   } else {
                     expect(decision.write.value).toBe(target);
                     // And it ALWAYS happens there — the two branches
                     // partition the space exactly.
-                    expect(engaged && pinned && movesAway).toBe(false);
+                    expect(engaged && movesAway && (pinned || !springActive)).toBe(false);
                   }
                 }
               }

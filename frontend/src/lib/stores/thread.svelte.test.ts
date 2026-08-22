@@ -73,6 +73,7 @@ import {
   SLICE_AROUND_ITEM_BUDGET,
 } from './threadPaneShared';
 import { MAX_CACHED_SNAPSHOT_CHARS } from './threadItemCache';
+import { prependThread, removeThread } from './threads.svelte';
 
 function nextFrame(): Promise<void> {
   return new Promise((resolve) => {
@@ -4818,6 +4819,64 @@ describe('createThreadPane', () => {
       expect(pane.oldestLoadedTurnIndex).toBe(0);
       // Don't actually await — the load mock hangs forever; cache hit
       // means we never wait on it anyway.
+      void switching;
+    });
+
+    it('caches the window on pane close so a reopen paints synchronously (bug-report-20260822T020840Z)', async () => {
+      const pane = createThreadPane();
+      const threadRow = makeThread({ id: 't-close' });
+      // snapshotForClose caches only threads the store still lists (a
+      // deletion flow evicts first and must stay evicted).
+      prependThread(threadRow);
+      try {
+        const items = [
+          makeItem({ id: 'a', threadId: 't-close', turnIndex: 0, itemIndex: 0 }),
+          makeItem({ id: 'b', threadId: 't-close', turnIndex: 1, itemIndex: 0 }),
+        ];
+        setBindingMock('ListThreadSliceAround', async () => ({
+          items,
+          oldestTurnIndex: 0,
+          hasMore: false,
+        }));
+        await pane.switchThread(threadRow);
+        expect(pane.items.map((it) => it.id)).toEqual(['a', 'b']);
+
+        // The destroyPane sequence: snapshot, then clear.
+        pane.snapshotForClose();
+        pane.clear();
+        expect(pane.items).toEqual([]);
+
+        // Reopen with the network hung — the close-time cache is the
+        // only possible painter.
+        setBindingMock('ListThreadSliceAround', () => new Promise(() => {}));
+        const switching = pane.switchThread(makeThread({ id: 't-close' }));
+        expect(pane.items.map((it) => it.id)).toEqual(['a', 'b']);
+        void switching;
+      } finally {
+        removeThread('t-close');
+      }
+    });
+
+    it('close-time snapshot skips a thread the store no longer lists (deletion stays evicted)', async () => {
+      const pane = createThreadPane();
+      const items = [
+        makeItem({ id: 'a', threadId: 't-deleted', turnIndex: 0, itemIndex: 0 }),
+      ];
+      setBindingMock('ListThreadSliceAround', async () => ({
+        items,
+        oldestTurnIndex: 0,
+        hasMore: false,
+      }));
+      // Never prepended to the threads store — the deletion flow's
+      // removeThread has already run by the time panes close.
+      await pane.switchThread(makeThread({ id: 't-deleted' }));
+      pane.snapshotForClose();
+      pane.clear();
+
+      setBindingMock('ListThreadSliceAround', () => new Promise(() => {}));
+      const switching = pane.switchThread(makeThread({ id: 't-deleted' }));
+      await Promise.resolve();
+      expect(pane.items).toEqual([]); // no cache resurrection
       void switching;
     });
 

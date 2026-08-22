@@ -23,7 +23,7 @@ export type ScrollWriteCaller =
   | 'spring.overshoot'
   | 'spring.arrive'
   | 'spring.oscillationSnap'
-  | 'spring.catchupJump'
+  | 'spring.catchupSnap'
   | 'notifyContentMaybeGrew'
   | 'notifyLiveContentMaybeGrew'
   | 'notifyLiveContentMaybeGrew.arrive'
@@ -70,7 +70,7 @@ export const SCROLL_WRITE_CALLER_PHYSICS: Record<
   'spring.overshoot': 'program',
   'spring.arrive': 'program',
   'spring.oscillationSnap': 'placement',
-  'spring.catchupJump': 'placement',
+  'spring.catchupSnap': 'placement',
   notifyContentMaybeGrew: 'placement',
   notifyLiveContentMaybeGrew: 'placement',
   'notifyLiveContentMaybeGrew.arrive': 'program',

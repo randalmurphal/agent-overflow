@@ -2102,11 +2102,14 @@ describe('createUseStickToBottomController — spring chase', () => {
       expect(geom.scrollTop).toBe(400); // redirected to bottom
     });
 
-    it('does NOT redirect when the DOM is not yet pinned to bottom (legit compensation passes)', async () => {
-      // Mid-cascade: the controller has not pinned yet, so the DOM sits below
-      // bottom. The engine's compensation here is legitimate above-viewport
-      // anchoring and must land untouched — the redirect is narrow to
-      // domAlreadyPinned.
+    it('redirects an idle displaced compensation to the bottom (bug-report-20260822T020840Z)', async () => {
+      // Warm, intent pinned, no chase in flight, but the DOM sits well
+      // below the bottom (a remeasure burst displaced it). Pre-W1 this
+      // tier passed the compensation verbatim, preserving the
+      // displacement for the next growth's spring to pay off visibly
+      // (the reopen "viewport high, then glide" bug). Now the idle
+      // displaced case redirects to the bottom; only an in-flight chase
+      // keeps verbatim relocation.
       liveContent = false;
       const ro = getRO();
       ro.fire(contentEl, 800);
@@ -2116,7 +2119,55 @@ describe('createUseStickToBottomController — spring chase', () => {
       geom.contentHeight = 1000;
       geom.scrollTop = 300; // position DOM below bottom (600) directly
       expect(controller.applyEngineCompensation({ kind: 'remeasure-above', delta: 50, target: 350 })).toBe(true);
-      expect(geom.scrollTop).toBe(350); // not redirected — lands as the engine asked
+      expect(geom.scrollTop).toBe(600); // redirected to the bottom, no spring owed
+    });
+
+    it('a displaced redirect opens the settle window: trailing growth sync-pins instead of gliding', async () => {
+      // W2 companion to the displaced redirect: the same remeasure wave
+      // that displaced the anchor keeps landing after the redirect, as
+      // contentRO growth. Inside the 250ms settle window that growth is
+      // layout correction, not the bottom advancing — it pins
+      // synchronously. liveContent keeps animation in spring mode so a
+      // glide would be observable if the window failed to suppress it.
+      liveContent = true;
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      await waitMs(150);
+      geom.scrollHeight = 1200;
+      geom.contentHeight = 1000;
+      geom.scrollTop = 300;
+      controller.applyEngineCompensation({ kind: 'remeasure-above', delta: 50, target: 350 });
+      expect(geom.scrollTop).toBe(600);
+
+      // Trailing correction growth, same frame family (well inside 250ms).
+      geom.scrollHeight = 1250;
+      geom.contentHeight = 1050;
+      ro.fire(contentEl, 1050);
+      expect(geom.scrollTop).toBe(650); // sync-pinned, no glide owed
+      await nextFrame();
+      expect(geom.scrollTop).toBe(650);
+    });
+
+    it('growth after the settle window lapses glides as usual', async () => {
+      liveContent = true;
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      await waitMs(150);
+      geom.scrollHeight = 1200;
+      geom.contentHeight = 1000;
+      geom.scrollTop = 300;
+      controller.applyEngineCompensation({ kind: 'remeasure-above', delta: 50, target: 350 });
+      expect(geom.scrollTop).toBe(600);
+
+      // Advance the MOCKED clock (waitMs runs real timers only) past
+      // PINNED_REMEASURE_SETTLE_WINDOW_MS.
+      await nextFrameAfter(300);
+
+      geom.scrollHeight = 1250;
+      geom.contentHeight = 1050;
+      ro.fire(contentEl, 1050);
+      expect(geom.scrollTop).toBe(600); // spring armed, not teleported
+      await advanceUntil(() => Math.abs(geom.scrollTop - 650) <= 1);
     });
 
     it('does NOT redirect a compensation that stops just short of the epsilon band', async () => {
@@ -3489,11 +3540,15 @@ describe('createUseStickToBottomController — spring chase', () => {
       while (mockNow < 520) await nextFrame();
 
       // Spring canceled (instant mode never enters the sentinel), so a
-      // routed compensation resolves through the pass tier and lands.
+      // routed compensation resolves as IDLE — since W1 the idle
+      // displaced tier redirects to the new bottom (1300 - 600 = 700)
+      // instead of landing verbatim at 650. A still-active spring would
+      // have landed the 650 verbatim, so the redirect doubles as the
+      // cancellation observable.
       geom.scrollHeight = 1300;
       expect(controller.applyEngineCompensation({ kind: 'remeasure-above', delta: 50, target: 650 })).toBe(true);
 
-      expect(geom.scrollTop).toBe(650);
+      expect(geom.scrollTop).toBe(700);
     });
 
     it('structural append spring absorbs a quick measured-height correction', async () => {

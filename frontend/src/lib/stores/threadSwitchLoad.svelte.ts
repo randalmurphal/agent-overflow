@@ -185,6 +185,12 @@ export interface ThreadSwitchLoad {
   retryHistoryLoad(): Promise<void>;
   /** Drop every cached copy of a thread's window (L1, priors, replica, stamp). */
   dropCachedWindow(threadId: string): void;
+  /**
+   * Pane-close edge of the outgoing-window cache: snapshot the current
+   * thread's window (L1 + durable replica + size priors) so a later
+   * reopen restores warm. Must run BEFORE `clear()` empties the items.
+   */
+  snapshotPaneForClose(): void;
   /** Tear down the terminals a draft placeholder opened. */
   closeDraftPlaceholderTerminals(placeholderId: string): void;
   /** Move a draft placeholder's terminals onto the thread it materialized into. */
@@ -503,19 +509,15 @@ export function createThreadSwitchLoad(
   }
 
   /**
-   * Snapshot the outgoing thread into the LRU cache (when worth it),
-   * and evict its highlight-span cache entries.
-   * Same-thread re-switch skips the
-   * snapshot AND force-evicts the cache entry so the incoming load
-   * fetches fresh state instead of flashing the stale view through
-   * `cache.get`. Streamed events evict inactive-thread cache entries
-   * defensively, and evict active-thread entries only when the upsert
-   * changes the visible item window; redundant active-thread echoes
-   * keep the warm re-entry snapshot intact.
+   * The shared caching core behind the two "pane is leaving this
+   * thread" edges — thread switch (`snapshotOutgoingPane`) and pane
+   * close (`snapshotPaneForClose`). Captures size priors, retires the
+   * write-back timer, strips optimistic rows, and (when the window is
+   * worth keeping) writes the L1 snapshot + durable replica. Pass
+   * `cacheableThreadId: null` to run only the capture/reset legs (the
+   * same-thread reswitch, which must not cache its own stale shape).
    */
-  function snapshotOutgoingPane(incomingThreadId: string): void {
-    const outgoingThreadId = options.getThread()?.id ?? null;
-    const sameThreadReswitch = outgoingThreadId === incomingThreadId;
+  function cacheOutgoingWindow(cacheableThreadId: string | null): void {
     // FIRST, before anything below re-points the pane: the mounted timeline
     // captures its row-size priors while `items` and the engine's measured
     // sizes still describe the thread we are leaving. Unconditional — the
@@ -533,9 +535,9 @@ export function createThreadSwitchLoad(
     // durably. It is dropped from the rows AND costs the snapshot its
     // stamp (see optimisticFreeWindow).
     const l1 = optimisticFreeWindow();
+    const outgoingThreadId = cacheableThreadId;
     if (
       outgoingThreadId &&
-      !sameThreadReswitch &&
       !options.getLoading() &&
       l1.rows.length > 0 &&
       l1.rows.length <= MAX_CACHED_SNAPSHOT_ITEMS
@@ -571,6 +573,23 @@ export function createThreadSwitchLoad(
       });
       persistReplicaWindow(outgoingThreadId);
     }
+  }
+
+  /**
+   * Snapshot the outgoing thread into the LRU cache (when worth it),
+   * and evict its highlight-span cache entries.
+   * Same-thread re-switch skips the
+   * snapshot AND force-evicts the cache entry so the incoming load
+   * fetches fresh state instead of flashing the stale view through
+   * `cache.get`. Streamed events evict inactive-thread cache entries
+   * defensively, and evict active-thread entries only when the upsert
+   * changes the visible item window; redundant active-thread echoes
+   * keep the warm re-entry snapshot intact.
+   */
+  function snapshotOutgoingPane(incomingThreadId: string): void {
+    const outgoingThreadId = options.getThread()?.id ?? null;
+    const sameThreadReswitch = outgoingThreadId === incomingThreadId;
+    cacheOutgoingWindow(sameThreadReswitch ? null : outgoingThreadId);
     if (sameThreadReswitch) {
       // A same-thread re-switch mutates this thread's items in place, so
       // every cached copy of the previous shape is now a lie — including
@@ -586,6 +605,26 @@ export function createThreadSwitchLoad(
       // still-open thread also requested survive the drop.
       evictDiffSpansForThread(outgoingThreadId);
     }
+  }
+
+  /**
+   * The pane-close edge of the same caching (bug-report-20260822T020840Z:
+   * closing a pane never cached its window, so every reopen was a cold
+   * 200-item fetch whose estimate→measure cascade paid a visible spring).
+   * Runs BEFORE `pane.clear()` empties the items, while the timeline is
+   * still mounted so `persistSizePriors` reaches a live listRef. Same
+   * gates as the switch edge (loading, row-count budget) via
+   * `cacheOutgoingWindow`; streamed events for a still-running thread
+   * evict the entry afterwards exactly as they do for a switched-away
+   * one, so a running thread's close is a transient cache at worst.
+   * Span eviction matches the switch edge too — the pane leaving the
+   * thread frees its highlight spans either way.
+   */
+  function snapshotPaneForClose(): void {
+    const outgoingThreadId = options.getThread()?.id ?? null;
+    if (!outgoingThreadId) return;
+    cacheOutgoingWindow(outgoingThreadId);
+    evictDiffSpansForThread(outgoingThreadId);
   }
 
   /**
@@ -1319,6 +1358,7 @@ export function createThreadSwitchLoad(
     refreshFromBackend,
     retryHistoryLoad,
     dropCachedWindow,
+    snapshotPaneForClose,
     closeDraftPlaceholderTerminals,
     migrateDraftPlaceholderTerminals,
     getLiveTouchedDuringSync: () => liveTouchedDuringSync,

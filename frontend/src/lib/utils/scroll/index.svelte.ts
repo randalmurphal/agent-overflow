@@ -65,6 +65,7 @@ import { createContentObserver } from './observers';
 import type { EngineCompensation } from '../virtual/types';
 import {
   ARRIVAL_DISTANCE_PX,
+  AUTO_FOLLOW_BOTTOM_EPSILON_PX,
   SPRING_OVERSHOOT_INSTANT_SNAP_THRESHOLD_PX,
   resolveEngineCompensation,
   withinArrivalBand,
@@ -486,6 +487,21 @@ export function createUseStickToBottomController(
       pauseDepth,
     }));
     writeScrollTop(decision.write.caller, decision.write.value);
+    // A DISPLACED redirect — the anchor-redirect tier recovering a
+    // pinned viewport that a large post-warm remeasure burst threw off
+    // the bottom (bug-report-20260822T020840Z) — proves a measurement-
+    // correction wave is in flight. Open the settle window so the wave's
+    // trailing height deltas classify as layout correction (sync-pin,
+    // never glide). An ordinary already-pinned redirect (displacement
+    // within the epsilon, the common streaming case) opens nothing:
+    // gating on real displacement is what keeps live-follow glides
+    // untouched.
+    if (
+      decision.write.caller === 'engine.anchorRedirect'
+      && observation.bottomTarget - observation.scrollTop > AUTO_FOLLOW_BOTTOM_EPSILON_PX
+    ) {
+      observers.openPinnedRemeasureSettleWindow();
+    }
     // A head splice displaces scrollTop with the content height (and so
     // the bottom target) unchanged — the exact numeric shape of a
     // browser clamp after a dip-restore. No special-casing is needed:

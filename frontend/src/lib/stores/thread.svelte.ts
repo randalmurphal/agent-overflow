@@ -19,7 +19,7 @@ import type {
   DesignViewport,
 } from '../types/design';
 import { CreateThread } from './bindings';
-import { prependThread, removeThread } from './threads.svelte';
+import { getThreadById, prependThread, removeThread } from './threads.svelte';
 import { leaseDuringSettle } from '../utils/scrollLeaseDuringTransition';
 import {
   clearWorktreeIntent,
@@ -1279,6 +1279,21 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       return switchLoad.retryHistoryLoad();
     },
 
+    /**
+     * Pane-close counterpart of the thread-switch snapshot: cache the
+     * item window (+ durable replica, size priors) so a later reopen is
+     * a warm restore, not a cold fetch with an estimate→measure spring
+     * (bug-report-20260822T020840Z). Called by `destroyPane` BEFORE
+     * `clear()` empties the items. Skips a thread the store no longer
+     * lists — deletion flows call `removeThread` (which evicts every
+     * cache tier) before closing the panes, and caching here would
+     * resurrect the just-evicted window.
+     */
+    snapshotForClose(): void {
+      if (!thread || !getThreadById(thread.id)) return;
+      switchLoad.snapshotPaneForClose();
+    },
+
     clear(): void {
       // Any intent staged against the (about-to-be-discarded) placeholder
       // id must die with it — otherwise repeated "+ New" clicks, thread
@@ -1355,6 +1370,10 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     ): void {
       // clear() drops any intent staged against the prior placeholder id,
       // so "+ New" on top of an existing placeholder doesn't leak entries.
+      // "+ New" on a pane showing a thread is a leaving-the-thread edge
+      // like close: cache the window first so returning to that thread
+      // is a warm restore.
+      this.snapshotForClose();
       this.clear();
       const now = Date.now();
       const placeholder: DraftThreadPlaceholder = {

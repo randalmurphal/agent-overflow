@@ -277,6 +277,11 @@ export function destroyPane(id: string): void {
   const nextFocusId = removedIndex > 0
     ? order[removedIndex - 1]
     : order.find((paneId) => paneId !== id) ?? null;
+  // Cache the thread's item window before clear() empties it, so a later
+  // reopen restores warm instead of cold-fetching (and paying the
+  // estimate→measure spring). The timeline component is still mounted
+  // here — unmount happens on the flush after the registry update below.
+  pane.snapshotForClose();
   pane.clear();
   panes = new Map(panes);
   panes.delete(id);

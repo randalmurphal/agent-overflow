@@ -122,12 +122,14 @@ the timeline virtualizer, or the scroll controller (`utils/scroll/`).
     momentum decays by the slew factor per real elapsed frame while
     parked, so a brief inter-quantum catch-up resumes at speed while a
     longer pause re-enters at the base ramp. Also owns the
-    chase-distance clamp: after an observed rAF discontinuity (tick gap
+    resume snap: after an observed rAF discontinuity (tick gap
     ≥1s, or document visibility resumed ≤2s ago) a chase more than one
-    viewport behind jump-enters the glide (`spring.catchupJump` write)
-    so exactly one viewport animates — distance alone never clamps, and
-    the jump's cap-speed entry is exempt from the slew (the seed is the
-    ramp's base).
+    viewport behind snaps fully to the target (`spring.catchupSnap`
+    write) — the backlog accrued while frames weren't painting was
+    never going to be watched, and the residual one-viewport glide the
+    old clamp left is exactly the workspace-return animation the user
+    ruled out (2026-08-22). Distance alone never snaps; growth arriving
+    after the snap ramps up as a cold onset.
   - `observers.ts` — the content-geometry delivery pipeline, the warm-up
     (quiescence) gate, and resize classification. Two sources feed the
     one pipeline: engine-sourced samples in chat
@@ -211,6 +213,19 @@ The pipeline itself — `snapshotOutgoingPane`,
 in `frontend/src/lib/stores/threadSwitchLoad.svelte.ts`;
 `thread.svelte.ts` keeps the pane state it writes through and exposes
 the two methods as one-line delegations.
+
+The switch edge is not the only cache writer: pane close is the other
+(`pane.snapshotForClose` → `snapshotPaneForClose`, called by
+`destroyPane` before `clear()` empties the items, and by
+`startDraftPlaceholder` when "+ New" replaces a mounted thread). Both
+edges share `cacheOutgoingWindow` — size priors, write-back timer
+retirement, optimistic-row stripping, the L1 snapshot + durable
+replica — so a reopened thread restores warm instead of cold-fetching
+and paying the estimate→measure cascade as a visible spring
+(bug-report-20260822T020840Z: every reopen in the trace was
+`source: "fetch"`). The close path skips a thread the store no longer
+lists, because deletion flows evict every cache tier via `removeThread`
+before closing panes and the snapshot must not resurrect the window.
 
 The switch runs `SwitchThread`, live-state hydration, recent-turn fetch,
 and the initial slice under one `Promise.allSettled`.
@@ -746,14 +761,30 @@ documented at the function):
   compensation lands unchanged (mount cascades, mid-thread reading).
   Above-viewport visual stability is the whole point; suppressing these
   visibly shifts the reading anchor.
-- **anchor-redirect** — DOM already pinned to true bottom (within
-  `AUTO_FOLLOW_BOTTOM_EPSILON_PX`) and the compensation requests a target
-  meaningfully *above* it (numerically smaller than the bottom target):
-  the write is rewritten to `targetScrollTop()`.
-  The engine's `delta` only compensates above-viewport remeasures, not
-  the at/below-fold growth that pushed the bottom down, so letting the
-  requested value land paints one frame short of bottom — the cold
-  thread-switch flicker.
+- **anchor-redirect** — the compensation requests a target meaningfully
+  *above* the bottom target while intent is pinned and either (a) the
+  DOM is already at true bottom (within
+  `AUTO_FOLLOW_BOTTOM_EPSILON_PX`) or (b) no spring chase is in flight
+  (`!springActive` — the idle displaced case): the write is rewritten to
+  `targetScrollTop()`. The engine's `delta` only compensates
+  above-viewport remeasures, not the at/below-fold growth that pushed
+  the bottom down, so letting the requested value land paints short of
+  bottom — the cold thread-switch flicker for (a); for (b), a post-warm
+  remeasure burst that grows the total in the same delivery defeats the
+  pinned-DOM check and strands the viewport viewports above the bottom,
+  displacement the next growth's spring then pays off as a multi-second
+  visible glide (bug-report-20260822T020840Z, seq 64892: an idle
+  reopen's `remeasure-above` left an 8118px gap). Only an in-flight
+  chase keeps verbatim relocation — the spring re-reads `el.scrollTop`
+  per tick, so relocating it is loss-free.
+  A redirect that actually moved the viewport (landed more than the
+  epsilon from where it was) also opens the observers' 250ms
+  **pinned-remeasure settle window**: contentRO deltas inside it carry
+  `pinnedRemeasureActive` and sync-pin instead of gliding, because they
+  are the same correction wave still landing, not the bottom advancing.
+  The window is fixed — deliberately not refreshed by the deltas it
+  classifies — so a streaming turn that starts inside it cannot be
+  converted into indefinite sync-pins.
 - **pass** — anything else applies verbatim, mid-chase included. The
   compensation is an exact coordinate shift: layout moved the content
   under the viewport by `delta`, and the write moves the viewport by the
@@ -1344,10 +1375,11 @@ Useful trace records:
   sentinel), a frame-gap histogram (`gapBuckets`, bounds
   `[<9, 9–13, 13–18, 18–26, 26–42, >42]` ms — see
   `CHASE_GAP_BUCKET_BOUNDS_MS`), `maxGapMs`, catch-up clamp count
-  (`catchupClamps`), chase-distance jumps (`distanceJumps` — the
-  `spring.catchupJump` write that, after an observed rAF discontinuity,
-  re-enters the glide one viewport from the target instead of animating
-  the whole frozen-tab backlog), target changes, sentinel entries
+  (`catchupClamps`), chase-distance snaps (`distanceJumps` — the field
+  name predates the rename; it now counts the `spring.catchupSnap`
+  write that, after an observed rAF discontinuity, snaps fully to the
+  target instead of animating any of the frozen-tab
+  backlog), target changes, sentinel entries
   (stop/restart cycles), long-task count/duration during the chase
   (Chromium `longtask` observer; absent under WebKit), and
   `refusedWrites` (write attempts the element swallowed outright, a
