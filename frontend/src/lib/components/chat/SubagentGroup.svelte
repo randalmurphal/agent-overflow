@@ -55,9 +55,12 @@
     type TimelineNode,
   } from '../../utils/subagentGrouping';
   import {
+    codexCompletionAnswer,
     subagentLaunchInfo,
     type SubagentLaunchContext,
   } from '../../utils/subagentLaunch';
+  import ChatMarkdown from './ChatMarkdown.svelte';
+  import { paneWorkspacePath } from '../../stores/thread.svelte';
   import { liveSubagentProgress } from '../../stores/subagentProgress.svelte';
   import {
     formatToolUses,
@@ -177,6 +180,8 @@
       : null,
   );
   let statusItem = $derived(completionItem ?? parent);
+  // The Codex child's delivered verdict (empty for Claude launches).
+  let completionAnswer = $derived(codexCompletionAnswer(parent, completionItem));
   let decorated = $derived(decoratedSubagentAggregates(parent));
   // Max, not replace — the same reconciliation `subagentGroupNode` does,
   // re-run against the live anchor. The node's count already folds in
@@ -555,17 +560,27 @@
             <p class="text-xs text-text-secondary italic" data-testid="subagent-group-loading">
               Loading {entryCountLabel}…
             </p>
-          {:else}
+          {:else if !completionAnswer}
             <p class="text-xs text-text-secondary italic">No child entries captured.</p>
           {/if}
         {:else if bodyNodes.length === 0}
-          <p class="text-xs text-text-secondary italic" data-testid="subagent-group-digest-empty">
-            Intermediate output only. Open the agent pane for the full transcript.
-          </p>
+          {#if !completionAnswer}
+            <p class="text-xs text-text-secondary italic" data-testid="subagent-group-digest-empty">
+              Intermediate output only. Open the agent pane for the full transcript.
+            </p>
+          {/if}
         {:else}
           {#each bodyNodes as child (nodeKey(child))}
             {@render renderNode(child, depth + 1)}
           {/each}
+        {/if}
+        {#if completionAnswer}
+          <!-- A Codex child streams nothing to the parent thread; the
+               FINAL_ANSWER on the folded completion sibling is its whole
+               product, so the card body is where it renders. -->
+          <div class="text-sm" data-testid="subagent-group-final-answer">
+            <ChatMarkdown source={completionAnswer} workspacePath={paneWorkspacePath(pane)} />
+          </div>
         {/if}
       </div>
     {/if}

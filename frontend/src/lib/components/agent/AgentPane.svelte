@@ -34,11 +34,14 @@
   import AgentPaneStatusLine from './AgentPaneStatusLine.svelte';
   import AgentPaneComposerShell from './AgentPaneComposerShell.svelte';
   import {
+    decoratedSubagentAggregates,
     groupItemsBySubagent,
     type TimelineNode,
   } from '../../utils/subagentGrouping';
   import { nodeKey } from '../chat/SubagentGroup.svelte';
   import { filterRedundantNotifications } from '../../utils/notificationFilter';
+  import { codexCompletionAnswer } from '../../utils/subagentLaunch';
+  import ChatMarkdown from '../chat/ChatMarkdown.svelte';
 
   interface Props {
     ctx: PanelContext;
@@ -127,26 +130,61 @@
     if (!scopeItemId) return undefined;
     return ctx.items.find((item) => item.completionOf === scopeItemId);
   });
-  let nodes = $derived(
-    groupItemsBySubagent(
-      filterRedundantNotifications(scopedItems),
+  // The grouping input INCLUDES the scope row (and its completion
+  // sibling): groupItemsBySubagent files a child whose parent id is not
+  // in its input under `orphanIds`, so the subtree alone rendered every
+  // direct child with an orphan warning, never minted cards for nested
+  // launches, and dropped their grandchildren outright (found by the F6
+  // harness). The scope's own group node is then UNWRAPPED — the pane
+  // renders its children, not a redundant outer card of itself.
+  //
+  // The scope row goes in with its parentId CLEARED: a nested launch
+  // (descended into from a parent scope) points at a parent that is
+  // deliberately outside this input, which would orphan-leaf the scope
+  // itself and empty the pane. Within this pane the scope IS the root.
+  // Completion siblings carry an empty parentId by construction
+  // (subagentGrouping.ts invariants), so only the launch needs the clone.
+  let nodes = $derived.by<TimelineNode[]>(() => {
+    if (!launch) return [];
+    const scopeRoot = launch.parentId ? { ...launch, parentId: undefined } : launch;
+    const input = completionItem
+      ? [scopeRoot, completionItem, ...scopedItems]
+      : [scopeRoot, ...scopedItems];
+    const grouped = groupItemsBySubagent(
+      filterRedundantNotifications(input),
       (anchorId) => sourcePane?.subagentLiveAggregate(anchorId),
-    ),
-  );
+    );
+    for (const node of grouped) {
+      if (node.kind === 'group' && node.parent.id === scopeItemId) return node.children;
+    }
+    // No attributed rows yet: the launch grouped as a plain leaf.
+    return [];
+  });
+
+  // A Codex child's final answer arrives on the spawn's completion
+  // sibling (payloadMeta.preview) — none of the child's transcript
+  // streams to the parent thread, so without this the pane for a
+  // finished Codex agent says "No output yet." over a delivered verdict.
+  let completionAnswer = $derived(codexCompletionAnswer(launch, completionItem));
 
   // Scoping to a node whose settled children were evicted from pane memory
-  // is exactly what hydrateChildren exists for. Re-armed whenever rows are
-  // present, so a later eviction while the pane sits open re-hydrates once
-  // instead of leaving an empty body.
-  let hydratedScope = $state('');
+  // is exactly what hydrateChildren exists for. Gate on the COUNT, the
+  // same rule SubagentGroup uses on expand: eviction is partial — a
+  // nested launch anchor survives (anchors are fold keys) while its
+  // sibling rows page out, so "some rows loaded" proves nothing (e2e
+  // regression: the pane opened from a collapsed, settled card rendered
+  // only the nested card). The expected count is the larger of the
+  // backend decoration and what the live-eviction fold says was paged
+  // out. hydrateChildren dedupes in-flight and exhausted anchors itself,
+  // so re-running is a no-op.
   $effect(() => {
     if (!scopeItemId || !launch) return;
-    if (scopedItems.length > 0) {
-      hydratedScope = '';
-      return;
-    }
-    if (untrack(() => hydratedScope) === scopeItemId) return;
-    hydratedScope = scopeItemId;
+    const evicted = sourcePane?.subagentLiveAggregate(scopeItemId)?.evictedCount ?? 0;
+    const expected = Math.max(
+      decoratedSubagentAggregates(launch).count,
+      scopedItems.length + evicted,
+    );
+    if (scopedItems.length > 0 && scopedItems.length >= expected) return;
     void ctx.ensureSubagentChildren(scopeItemId);
   });
 
@@ -253,7 +291,7 @@
         <div class="flex h-full items-center justify-center px-4 text-center text-sm text-fg-subtle" data-testid="agent-pane-not-loaded">
           This agent's launch row isn't in the loaded timeline window.
         </div>
-      {:else if nodes.length === 0}
+      {:else if nodes.length === 0 && !completionAnswer}
         <div class="flex h-full items-center justify-center px-4 text-center text-sm text-fg-subtle" data-testid="agent-pane-empty">
           No output yet.
         </div>
@@ -261,6 +299,11 @@
         {#each nodes as node (nodeKey(node))}
           {@render renderNode(node, 0)}
         {/each}
+        {#if completionAnswer}
+          <div class="pt-2 text-sm" data-testid="agent-pane-final-answer">
+            <ChatMarkdown source={completionAnswer} workspacePath={ctx.workspacePath ?? ''} />
+          </div>
+        {/if}
       {/if}
     </div>
 

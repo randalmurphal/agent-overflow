@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   __resetAgentPaneStateForTest,
+  agentPaneScopeTrailHolds,
   agentScopeForPane,
   agentStateForPane,
   disposeAgentStateForPane,
@@ -8,6 +9,7 @@ import {
   seedAgentStateForPane,
 } from './agentPane.svelte';
 import {
+  closeCompanion,
   companionForSource,
   installCompanionPanes,
   resetCompanionPanesForTest,
@@ -176,5 +178,28 @@ describe('agent pane scope', () => {
     expect(state?.scopeItemId).toBe('launch-3');
     expect(labels('main')).toEqual(['main', 'code-review', 'Angle B']);
     expect(seedAgentStateForPane('main', 'thread-1', { scopeItemId: '', breadcrumb: [] })).toBeNull();
+  });
+
+  it('retains an anchor on the open trail for the subagent-memory eviction guard', () => {
+    // The thread pane's eviction policy consults this alongside card
+    // expansion: rows under an anchor the reader is scoped to (or one
+    // hop up the trail from) must not fold out of pane memory.
+    expect(agentPaneScopeTrailHolds('main', 'thread-1', 'launch-1')).toBe(false);
+
+    const state = openAgentCompanion('main', 'thread-1', 'launch-1', 'code-review');
+    state?.pushScope('launch-3', 'Angle B');
+    expect(agentPaneScopeTrailHolds('main', 'thread-1', 'launch-1')).toBe(true);
+    expect(agentPaneScopeTrailHolds('main', 'thread-1', 'launch-3')).toBe(true);
+    expect(agentPaneScopeTrailHolds('main', 'thread-1', 'launch-9')).toBe(false);
+    // Foreign thread and foreign pane hold nothing.
+    expect(agentPaneScopeTrailHolds('main', 'thread-2', 'launch-1')).toBe(false);
+    expect(agentPaneScopeTrailHolds('right', 'thread-1', 'launch-1')).toBe(false);
+
+    // Scope state can outlive a generic companion close — a closed pane
+    // retains nothing, so eviction resumes.
+    const companion = companionForSource('main', 'agent');
+    expect(companion).not.toBeNull();
+    closeCompanion(companion!.paneId);
+    expect(agentPaneScopeTrailHolds('main', 'thread-1', 'launch-1')).toBe(false);
   });
 });

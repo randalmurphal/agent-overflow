@@ -423,3 +423,24 @@ export function subagentLaunchInfo(
 
   return null;
 }
+
+/**
+ * A Codex child's final answer, read off the spawn launch's completion
+ * sibling (`payloadMeta.preview`). Codex delivers NONE of a child's
+ * transcript to the parent thread — the FINAL_ANSWER text on that
+ * sibling is the child's entire product, so the agent card and the
+ * agent pane must render it themselves (the pre-card CollabToolRow
+ * path used to). Empty for Claude launches: their sibling carries the
+ * formulaic ack whose rendering the spec deletes, and the real
+ * transcript exists as attributed rows.
+ */
+export function codexCompletionAnswer(
+  launch: Item | null | undefined,
+  completion: Item | null | undefined,
+): string {
+  if (!launch || !completion) return '';
+  const info = subagentLaunchInfo(launch, NO_LOADED_SUBAGENT_CHILDREN);
+  if (info?.provider !== 'codex') return '';
+  const preview = parseJsonObject(completion.payloadMeta)?.preview;
+  return typeof preview === 'string' ? preview.trim() : '';
+}

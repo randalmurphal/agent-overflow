@@ -39,7 +39,11 @@ import {
   toggleCompanion,
 } from './companionPanes.svelte';
 import { openReviewCompanion } from './reviewPane.svelte';
-import { disposeAgentStateForPane, openAgentCompanion } from './agentPane.svelte';
+import {
+  agentPaneScopeTrailHolds,
+  disposeAgentStateForPane,
+  openAgentCompanion,
+} from './agentPane.svelte';
 import { errString } from '../utils/errors';
 import type { RevealBoundary } from '../utils/subagentGrouping';
 import type { SubagentFoldAggregate } from '../utils/subagentFold';
@@ -430,7 +434,13 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     getThread: () => thread,
     getSwitchGeneration: () => switchGeneration,
     recomputeReveal: streamingReveal.recomputeReveal,
-    isSubagentGroupExpanded: rowUiState.isSubagentGroupExpanded,
+    // An anchor the OPEN agent pane is scoped to (or holds on its trail)
+    // retains its children exactly like an expanded card: the pane is a
+    // live view of those rows, so folding them out from under it would
+    // blank the very transcript the reader opened.
+    isSubagentGroupExpanded: (groupKey: string) =>
+      rowUiState.isSubagentGroupExpanded(groupKey) ||
+      (thread !== null && agentPaneScopeTrailHolds(paneId, thread.id, groupKey)),
   });
 
   /**

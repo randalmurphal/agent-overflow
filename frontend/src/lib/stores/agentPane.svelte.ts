@@ -18,7 +18,7 @@
 // a transient, never a thing a reload can land in.
 
 import { addPaneDestroyedObserver } from './panes.svelte';
-import { openCompanion } from './companionPanes.svelte';
+import { isCompanionOpen, openCompanion } from './companionPanes.svelte';
 import { requestPaneLayoutPersistence } from './paneLayout.svelte';
 import type { AgentPaneBreadcrumbEntry, AgentPaneScopeSnapshot } from '../types/settings';
 
@@ -185,6 +185,27 @@ export function agentScopeForPane(
     scopeItemId: state.scopeItemId,
     breadcrumb: state.breadcrumb.map((entry) => ({ ...entry })),
   };
+}
+
+/**
+ * True when the OPEN agent pane for `sourcePaneId` is scoped to
+ * `itemId` — or holds it on the breadcrumb trail. The thread pane's
+ * subagent memory consults this alongside card expansion: rows under a
+ * scope the reader is looking at (or one hop up the trail from) must not
+ * fold out of pane memory the way rows under a collapsed card do.
+ * Requires the companion to actually be open, because scope state can
+ * outlive a generic companion close.
+ */
+export function agentPaneScopeTrailHolds(
+  sourcePaneId: string,
+  threadId: string,
+  itemId: string,
+): boolean {
+  if (!itemId) return false;
+  const state = statesBySourcePane.get(sourcePaneId);
+  if (!state || state.threadId !== threadId || !state.scopeItemId) return false;
+  if (!isCompanionOpen(sourcePaneId, 'agent')) return false;
+  return state.breadcrumb.some((entry) => entry.itemId === itemId);
 }
 
 /**

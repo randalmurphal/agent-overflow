@@ -363,4 +363,37 @@ describe('<SubagentGroup> card affordances (agent-visibility)', () => {
       'output file vanished before read',
     );
   });
+
+  it("renders a finished Codex child's final answer from the folded completion sibling", async () => {
+    // Codex streams none of a child's transcript to the parent; the
+    // FINAL_ANSWER on the completion sibling is the child's whole
+    // product (regression found by the F6 harness — the pre-card
+    // CollabToolRow used to render it).
+    const { pane, group } = await setup([
+      agentLaunch({
+        toolName: 'collab_agent',
+        status: 'completed',
+        summary: 'Spawn reviewer',
+        payloadMeta: JSON.stringify({
+          toolName: 'collab_agent',
+          input: { tool: 'spawn_agent', newAgentNickname: 'reviewer' },
+        }),
+      }),
+      makeItem({
+        id: 'complete:agent:1',
+        itemIndex: 1,
+        threadId: 'thread-1',
+        kind: 'tool_completion',
+        toolName: 'collab_agent',
+        status: 'completed',
+        completionOf: 'agent:1',
+        payloadMeta: JSON.stringify({ preview: 'Final verdict: LGTM' }),
+      }),
+    ]);
+    const { getByTestId, queryByTestId } = render(SubagentGroupTestHarness, { props: { group, pane } });
+
+    await fireEvent.click(getByTestId('subagent-group-toggle'));
+    expect(getByTestId('subagent-group-final-answer').textContent).toContain('Final verdict: LGTM');
+    expect(queryByTestId('subagent-group-digest-empty')).toBeNull();
+  });
 });

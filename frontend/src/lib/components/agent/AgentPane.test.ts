@@ -96,6 +96,7 @@ describe('<AgentPane>', () => {
     const closeAgentPane = vi.fn();
     const { ctx } = await setup([
       launchItem(),
+      makeItem({ id: 'outer-note', itemIndex: 1, threadId: THREAD_ID, parentId: 'launch-1', summary: 'outer note' }),
       makeItem({ id: 'nested-launch', itemIndex: 2, threadId: THREAD_ID, parentId: 'launch-1', kind: 'tool_call', toolName: 'Agent', status: 'running', summary: 'Agent: nested', payloadMeta: JSON.stringify({ toolName: 'Agent', input: { description: 'nested', subagent_type: 'Explore' } }) }),
       makeItem({ id: 'nested-child', itemIndex: 3, threadId: THREAD_ID, parentId: 'nested-launch', summary: 'deep work' }),
     ]);
@@ -103,13 +104,16 @@ describe('<AgentPane>', () => {
     state?.pushScope('nested-launch', 'nested');
     const patched = { ...ctx, closeAgentPane } as PanelContext;
 
-    const { getByTestId, getAllByTestId } = render(AgentPane, { props: { ctx: patched } });
+    const { getByTestId, getAllByTestId, getAllByText } = render(AgentPane, { props: { ctx: patched } });
     expect(getByTestId('agent-pane-breadcrumb-current').textContent?.trim()).toBe('nested');
 
-    // Pop one hop: back to the launch scope.
+    // Pop one hop: back to the launch scope — and the outer scope's OWN
+    // leaf rows come back with it (e2e regression: after a pop the pane
+    // rendered only the nested card).
     const entries = getAllByTestId('agent-pane-breadcrumb-entry');
     await fireEvent.click(entries[entries.length - 1]);
     expect(getByTestId('agent-pane-breadcrumb-current').textContent?.trim()).toBe('Explore');
+    expect(getAllByText('outer note').length).toBeGreaterThanOrEqual(1);
 
     // Pop to root: empty scope — the body closes the companion.
     await fireEvent.click(getAllByTestId('agent-pane-breadcrumb-entry')[0]);
@@ -177,5 +181,78 @@ describe('<AgentPane>', () => {
 
     expect(getByTestId('agent-pane-streaming-paused')).toBeTruthy();
     expect(getByTestId('agent-pane-background-pill')).toBeTruthy();
+  });
+
+  it('renders a nested launch as a real card (no orphan warnings) with grandchildren intact', async () => {
+    // Regression (found by the F6 harness): the grouping input excluded
+    // the scope row, so direct children ranked as orphans, nested
+    // launches never became cards, and grandchild rows were dropped.
+    const openAgentScope = vi.fn();
+    const { ctx } = await setup([
+      launchItem(),
+      makeItem({ id: 'nested-launch', itemIndex: 1, threadId: THREAD_ID, parentId: 'launch-1', kind: 'tool_call', toolName: 'Agent', status: 'running', summary: 'Agent: nested', payloadMeta: JSON.stringify({ toolName: 'Agent', input: { description: 'nested', subagent_type: 'Explore' } }) }),
+      makeItem({ id: 'grandchild', itemIndex: 2, threadId: THREAD_ID, parentId: 'nested-launch', summary: 'grandchild work' }),
+    ]);
+    openAgentCompanion('main', THREAD_ID, 'launch-1', 'Explore');
+    const patched = { ...ctx, openAgentScope } as PanelContext;
+    const { getByTestId, queryByText, getAllByTestId, getAllByText } = render(AgentPane, { props: { ctx: patched } });
+
+    expect(queryByText(/Orphan subagent entry/)).toBeNull();
+    const card = getByTestId('subagent-group');
+    expect(card).toBeTruthy();
+    // Expand the nested card: the grandchild ROW renders inside it (the
+    // card's collapsed preview also echoes the text, hence getAll).
+    await fireEvent.click(getByTestId('subagent-group-toggle'));
+    expect(getAllByText('grandchild work').length).toBeGreaterThanOrEqual(2);
+
+    // Descending from inside the pane goes through ctx.openAgentScope.
+    await fireEvent.click(getAllByTestId('subagent-group-open-pane')[0]);
+    expect(openAgentScope).toHaveBeenCalledWith('nested-launch', expect.any(String));
+  });
+
+  it('renders a NESTED scope’s children after descending (scope row with a parentId)', async () => {
+    // Regression (found by the F6 harness, second round): a descended-into
+    // scope row carries a parentId pointing OUTSIDE the pane's grouping
+    // input, which orphan-leafed the scope itself — no group node to
+    // unwrap, so the pane went empty ("No output yet.") at exactly the
+    // scope the breadcrumb said it was showing. The scope row's parentId
+    // is cleared before grouping: within this pane the scope is the root.
+    const { ctx } = await setup([
+      launchItem(),
+      makeItem({ id: 'nested-launch', itemIndex: 1, threadId: THREAD_ID, parentId: 'launch-1', kind: 'tool_call', toolName: 'Agent', status: 'running', summary: 'Agent: nested', payloadMeta: JSON.stringify({ toolName: 'Agent', input: { description: 'nested', subagent_type: 'Explore' } }) }),
+      makeItem({ id: 'grandchild', itemIndex: 2, threadId: THREAD_ID, parentId: 'nested-launch', summary: 'grandchild work' }),
+    ]);
+    const state = openAgentCompanion('main', THREAD_ID, 'launch-1', 'Explore');
+    state?.pushScope('nested-launch', 'nested');
+
+    const { getByText, queryByTestId } = render(AgentPane, { props: { ctx } });
+    expect(queryByTestId('agent-pane-empty')).toBeNull();
+    expect(getByText('grandchild work')).toBeTruthy();
+  });
+
+  it("renders a finished Codex child's final answer from the completion sibling", async () => {
+    const { ctx } = await setup([
+      launchItem({
+        toolName: 'collab_agent',
+        status: 'completed',
+        summary: 'Spawn reviewer',
+        payloadMeta: JSON.stringify({ toolName: 'collab_agent', input: { tool: 'spawn_agent', newAgentNickname: 'reviewer' } }),
+      }),
+      makeItem({
+        id: 'complete-1',
+        itemIndex: 1,
+        threadId: THREAD_ID,
+        kind: 'tool_completion',
+        toolName: 'collab_agent',
+        status: 'completed',
+        completionOf: 'launch-1',
+        payloadMeta: JSON.stringify({ preview: 'Final verdict: LGTM' }),
+      }),
+    ]);
+    openAgentCompanion('main', THREAD_ID, 'launch-1', 'reviewer');
+    const { getByTestId, queryByTestId } = render(AgentPane, { props: { ctx } });
+
+    expect(queryByTestId('agent-pane-empty')).toBeNull();
+    expect(getByTestId('agent-pane-final-answer').textContent).toContain('Final verdict: LGTM');
   });
 });
