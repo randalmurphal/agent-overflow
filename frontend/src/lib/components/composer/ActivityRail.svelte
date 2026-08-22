@@ -41,6 +41,11 @@
   import type { SharedNowClock } from '../chat/useRunningElapsed.svelte';
   import { activityRailChipClasses, activityRailRowClasses } from './activityRailClasses';
   import type { BackgroundController } from './activityRailBackground.svelte';
+  import WorkingSprite from './WorkingSprite.svelte';
+  import { BUILTIN_SPINNER_VERBS } from '../../spinners/builtinVerbs';
+  import { assembleVerbPool, pickFromPool, stableTurnKey } from '../../spinners/pick';
+  import { selectWorkingSprite } from '../../spinners/select';
+  import { ensureCustomSpinners, peekCustomSpinners } from '../../stores/spinners.svelte';
   import ActivityRailTodosBody from './ActivityRailTodosBody.svelte';
   import ActivityRailBackgroundBody from './ActivityRailBackgroundBody.svelte';
   import Icon from '../primitives/Icon.svelte';
@@ -75,9 +80,59 @@
 
   let activeTurn = $derived(getActiveTurn(pane.threadId));
   let isWorking = $derived(isThreadWorking(pane.threadId));
+
+  // Per-turn spinner picks (docs: lib/spinners/). Both hash over the
+  // same stable key so a re-render or pane remount never rerolls
+  // mid-turn. The key spans a WORKING SESSION: the queued-send bridge
+  // mints it and the turn that follows adopts it, so the chip's verb
+  // and sprite hold steady through the send handoff (see stableTurnKey).
+  // A pane with no thread renders no working segment, so the empty-string
+  // fallback below is never a rendered pick — it only satisfies the picker's
+  // non-null key contract.
+  let spinnerThreadId = $derived(pane.threadId ?? '');
+  let turnKey = $derived(stableTurnKey(spinnerThreadId, activeTurn?.turnId ?? null));
+
+  // One verb per turn, drawn from built-ins + custom verbs. Null when
+  // the feature is off or the assembled pool is empty — the label falls
+  // back to plain "Working".
+  let spinnerVerb = $derived.by<string | null>(() => {
+    const settings = getSettings();
+    if (!settings.spinnerVerbsEnabled) return null;
+    const pool = assembleVerbPool(
+      BUILTIN_SPINNER_VERBS,
+      settings.spinnerCustomVerbs ?? [],
+      settings.spinnerBuiltinVerbsDisabled,
+    );
+    return pickFromPool(pool, spinnerThreadId, turnKey, 'verb');
+  });
+
   // Label-only swap while the provider summarizes the thread's context;
-  // the elapsed timer keeps running off the turn start as usual.
-  let workingLabel = $derived(isThreadCompacting(pane.threadId) ? 'Compacting' : 'Working');
+  // the elapsed timer keeps running off the turn start as usual. The
+  // compaction label always wins over a spinner verb — it is information.
+  let workingLabel = $derived(
+    isThreadCompacting(pane.threadId) ? 'Compacting' : (spinnerVerb ?? 'Working'),
+  );
+
+  // Custom sprites load lazily and only once animations are actually on;
+  // the effect keys on the setting so flipping it mid-session attaches.
+  $effect(() => {
+    if (getSettings().spinnerAnimationsEnabled) ensureCustomSpinners();
+  });
+
+  // The per-turn sprite standing in for the LED chase. Compacting swaps
+  // to the assigned compaction sprite; null renders the stock LEDs.
+  let workingSprite = $derived.by(() => {
+    const settings = getSettings();
+    if (!settings.spinnerAnimationsEnabled) return null;
+    return selectWorkingSprite(
+      peekCustomSpinners().sprites,
+      settings.spinnerDisabledAnimations ?? [],
+      isThreadCompacting(pane.threadId),
+      settings.spinnerCompactionAnimation,
+      spinnerThreadId,
+      turnKey,
+    );
+  });
 
   let elapsedLabel = $derived.by(() => {
     if (!activeTurn) return '0s';
@@ -120,7 +175,8 @@
   // The LED chase is a standing animation (4 presents/s — stepped, see
   // the working-indicator note in app.css). Low-power mode drops the
   // chase; the LEDs render static at their resting opacity. The
-  // hairline never animates, so it shows in every mode.
+  // hairline never animates, so it shows in every mode. The same flag
+  // freezes the working sprite at frame 0 when animations are on.
   let ledChase = $derived(!getSettings().lowPowerMode);
 </script>
 
@@ -164,15 +220,19 @@
         aria-live="polite"
         data-testid="activity-rail-working"
       >
-        <span
-          class="inline-flex items-center gap-1 {ledChase ? 'working-leds' : ''}"
-          aria-hidden="true"
-          data-testid="activity-rail-working-leds"
-        >
-          <span class="working-led h-2 w-1 rounded-[1.5px] bg-accent"></span>
-          <span class="working-led h-2 w-1 rounded-[1.5px] bg-accent"></span>
-          <span class="working-led h-2 w-1 rounded-[1.5px] bg-accent"></span>
-        </span>
+        {#if workingSprite}
+          <WorkingSprite sprite={workingSprite} animate={ledChase} />
+        {:else}
+          <span
+            class="inline-flex items-center gap-1 {ledChase ? 'working-leds' : ''}"
+            aria-hidden="true"
+            data-testid="activity-rail-working-leds"
+          >
+            <span class="working-led h-2 w-1 rounded-[1.5px] bg-accent"></span>
+            <span class="working-led h-2 w-1 rounded-[1.5px] bg-accent"></span>
+            <span class="working-led h-2 w-1 rounded-[1.5px] bg-accent"></span>
+          </span>
+        {/if}
         <!-- Keep the DOM and initial timer width stable across the pending-send
              handoff. Visibility reserves "0s" without showing a clock before
              the provider supplies its authoritative start. -->

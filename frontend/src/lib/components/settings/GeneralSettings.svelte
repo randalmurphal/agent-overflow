@@ -7,6 +7,7 @@
   import AppearanceSection from './AppearanceSection.svelte';
   import PaneDensitySection from './PaneDensitySection.svelte';
   import ActivityRunSection from './ActivityRunSection.svelte';
+  import SpinnerSection from './SpinnerSection.svelte';
   import { INPUT_CLASS, SELECT_CLASS } from './styles';
 
   // Mirrors internal/settings.{Min,Max}FontSize and DefaultSettings.FontSize.
@@ -162,6 +163,8 @@
       </SettingsField>
     </div>
   </section>
+
+  <SpinnerSection />
 
   <PaneDensitySection />
 

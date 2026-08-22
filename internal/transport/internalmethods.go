@@ -90,7 +90,10 @@ var InternalServiceMethods = map[string]bool{
 // silently flip it without revisiting the remote-browser UX cost.
 // GetThemeFiles reads the same way: theme files are opaque UI
 // preference text, the frontend degrades to built-in themes without
-// them, and its writers stay in category 3.
+// them, and its writers stay in category 3. GetSpinnerFiles joins them
+// on identical grounds — the user's custom working-indicator sprites out
+// of a sibling directory of the same config dir, with no write companion
+// to classify at all (sprites are authored by dropping files in).
 //
 // Updates to this set must keep the names in sync with the App-side
 // declarations. methods_gen_test.go gates that contract by failing if

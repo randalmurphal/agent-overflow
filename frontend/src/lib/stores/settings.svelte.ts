@@ -12,6 +12,15 @@ const DEFAULT_SETTINGS: Settings = {
   collapseDiffPreviews: false,
   streamingEnabled: true,
   lowPowerMode: false,
+  // Spinner defaults mirror internal/settings.DefaultSettings: verbs on
+  // (text-only), animations off (the LED chase is stock), compaction
+  // slot "" = the built-in robo-papers default.
+  spinnerVerbsEnabled: true,
+  spinnerAnimationsEnabled: false,
+  spinnerCustomVerbs: [],
+  spinnerBuiltinVerbsDisabled: false,
+  spinnerDisabledAnimations: [],
+  spinnerCompactionAnimation: "",
   confirmArchive: true,
   confirmDelete: true,
   claudeBinaryPath: "claude",
@@ -79,6 +88,8 @@ function defaultSettings(): Settings {
     codexHiddenModels: [...(DEFAULT_SETTINGS.codexHiddenModels ?? [])],
     claudeCustomEnv: [...(DEFAULT_SETTINGS.claudeCustomEnv ?? [])],
     codexCustomEnv: [...(DEFAULT_SETTINGS.codexCustomEnv ?? [])],
+    spinnerCustomVerbs: [...(DEFAULT_SETTINGS.spinnerCustomVerbs ?? [])],
+    spinnerDisabledAnimations: [...(DEFAULT_SETTINGS.spinnerDisabledAnimations ?? [])],
   };
 }
 
@@ -113,6 +124,12 @@ function mergeSettingsWithDefaults(result: Partial<Settings>): Settings {
     codexCustomEnv: result.codexCustomEnv
       ? [...result.codexCustomEnv]
       : defaults.codexCustomEnv,
+    spinnerCustomVerbs: result.spinnerCustomVerbs
+      ? [...result.spinnerCustomVerbs]
+      : defaults.spinnerCustomVerbs,
+    spinnerDisabledAnimations: result.spinnerDisabledAnimations
+      ? [...result.spinnerDisabledAnimations]
+      : defaults.spinnerDisabledAnimations,
   };
 }
 

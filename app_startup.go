@@ -588,6 +588,7 @@ func (a *App) initSubsystems(dbDir string, st *store.Store) error {
 	}
 	a.startWorkflowDefinitionsWatcher(dbDir)
 	a.initThemeDirectory()
+	a.initSpinnerDirectory()
 	return nil
 }
 
@@ -624,4 +625,26 @@ func (a *App) initThemeDirectory() {
 		log.Printf("theme directory setup: %v", err)
 	}
 	a.startThemeWatcher(service.Dir())
+}
+
+// initSpinnerDirectory materializes <configDir>/spinners (dir + the
+// generated SPINNERS.md authoring reference) and arms the live-reload
+// watcher over it.
+//
+// Nothing is migrated here — spinners are a new surface, so unlike
+// initThemeDirectory there is no retiring settings key to consume — and
+// nothing fails boot for the same reason themes does not: a spinners
+// directory that cannot be created costs live reload and the on-disk
+// reference, while GetSpinnerFiles still answers and the composer still
+// animates on the sprites bundled with the frontend.
+func (a *App) initSpinnerDirectory() {
+	service, err := a.spinnerService()
+	if err != nil {
+		log.Printf("spinner directory unavailable: %v", err)
+		return
+	}
+	if err := service.EnsureBoot(); err != nil {
+		log.Printf("spinner directory setup: %v", err)
+	}
+	a.startSpinnerWatcher(service.Dir())
 }

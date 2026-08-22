@@ -189,6 +189,34 @@ export interface Settings {
    * animated streaming, activity shimmer suppressed. Display-only.
    */
   lowPowerMode: boolean;
+  /**
+   * Working-indicator spinner verbs: replace the rail's "Working" label
+   * with one verb per turn, drawn from the built-in list plus
+   * `spinnerCustomVerbs`. Default ON — the verbs are text-only and the
+   * plain label is one toggle away.
+   */
+  spinnerVerbsEnabled: boolean;
+  /**
+   * Working-indicator sprite animations: replace the LED chase with a
+   * per-turn random sprite from the pool. Default OFF — the LED chase
+   * is the stock behavior.
+   */
+  spinnerAnimationsEnabled: boolean;
+  /** User-added verbs, appended to the built-in pool. */
+  spinnerCustomVerbs?: string[];
+  /** Draw verbs from `spinnerCustomVerbs` only. */
+  spinnerBuiltinVerbsDisabled: boolean;
+  /**
+   * Animation ids UNCHECKED from the random pool. Exclusion list so a
+   * newly dropped custom sprite joins the pool without a settings
+   * write.
+   */
+  spinnerDisabledAnimations?: string[];
+  /**
+   * Sprite shown while compacting: "" = the built-in default
+   * (robo-papers), "none" = no override, else a sprite id.
+   */
+  spinnerCompactionAnimation: string;
   confirmArchive: boolean;
   confirmDelete: boolean;
   claudeBinaryPath: string;

@@ -103,6 +103,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "GetRateLimitsSnapshots", ID: 3325141610},               // main.App.GetRateLimitsSnapshots
 	{Name: "GetRemoteEndpointToken", ID: 3604571249},               // main.App.GetRemoteEndpointToken
 	{Name: "GetSettings", ID: 2554697378},                          // main.App.GetSettings
+	{Name: "GetSpinnerFiles", ID: 2622552651},                      // main.App.GetSpinnerFiles
 	{Name: "GetTerminalReplay", ID: 2329592604},                    // main.App.GetTerminalReplay
 	{Name: "GetThemeFiles", ID: 2000462111},                        // main.App.GetThemeFiles
 	{Name: "GetThread", ID: 1098302047},                            // main.App.GetThread

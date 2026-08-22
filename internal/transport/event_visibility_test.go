@@ -56,13 +56,13 @@ func TestEventVisibleToOrigin(t *testing.T) {
 	}
 }
 
-// The payload-less refetch signals are latest-only, as a PAIR: both are
+// The payload-less refetch signals are latest-only, as a SET: each is
 // `emit(name, nil)` from a debounced directory watcher, so a default-depth
 // ring would replay up to DefaultRingCapacity identical nil frames on
 // reconnect and fire one full-listing refetch per frame. Replay must hand
 // back exactly one.
 func TestRefetchSignalChannelsAreLatestOnly(t *testing.T) {
-	for _, channel := range []string{"theme:changed", "workflow:definitions-changed"} {
+	for _, channel := range []string{"theme:changed", "spinner:changed", "workflow:definitions-changed"} {
 		if !latestOnlyEventChannels[channel] {
 			t.Fatalf("%s is not latest-only: a reconnect would replay a ring's worth of identical refetch signals", channel)
 		}

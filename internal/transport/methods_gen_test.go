@@ -212,6 +212,15 @@ var wireSafeMethods = map[string]bool{
 	// palette. The writers (SetAppearance, SetWindowBackgroundColor)
 	// stay LocalOnly in category 3.
 	"GetThemeFiles": true,
+	// GetSpinnerFiles: the same call, one directory over. It returns the
+	// user's custom working-indicator sprites — an opaque manifest string
+	// plus base64 PNG bytes per sprite — and names the spinners
+	// directory, which is the same fixed subdirectory of the same config
+	// dir GetThemeFiles already discloses. A remote browser refused this
+	// renders the built-in sprites and never sees the ones the desktop
+	// user added, which is precisely the theme situation. There is no
+	// write companion at all: sprites are authored by dropping files in.
+	"GetSpinnerFiles": true,
 
 	// Host environment probe (no FS read, no credential).
 	"IsWSL": true,

@@ -13,6 +13,14 @@ export function makeSettings(overrides: Partial<Settings> = {}): Settings {
     collapseDiffPreviews: false,
     streamingEnabled: true,
     lowPowerMode: false,
+    // Shipped spinner defaults: verbs on, animations off (see
+    // stores/settings.svelte.ts DEFAULT_SETTINGS).
+    spinnerVerbsEnabled: true,
+    spinnerAnimationsEnabled: false,
+    spinnerCustomVerbs: [],
+    spinnerBuiltinVerbsDisabled: false,
+    spinnerDisabledAnimations: [],
+    spinnerCompactionAnimation: '',
     confirmArchive: true,
     confirmDelete: true,
     claudeBinaryPath: 'claude',

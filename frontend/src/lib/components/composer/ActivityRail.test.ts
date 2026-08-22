@@ -12,6 +12,10 @@ import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-
 import { getSettings, resetSettingsForTest } from '../../stores/settings.svelte';
 import { getToasts, removeToast } from '../../stores/toast.svelte';
 import { resetForTest as resetThreadStatuses } from '../../stores/threadStatuses.svelte';
+import { applyCompactingState, resetForTest as resetCompactingState } from '../../stores/compactingState.svelte';
+import { BUILTIN_SPINNER_VERBS } from '../../spinners/builtinVerbs';
+import { BUILTIN_SPRITES } from '../../spinners/catalog';
+import { __resetCustomSpinnersForTest } from '../../stores/spinners.svelte';
 import { resetForTest as resetSendQueue, replaceQueueForThread } from '../../stores/sendQueue.svelte';
 import { __resetActivityRailUiPrefsForTest, __resetLiveTodoUiPrefsForTest, LIVE_TODO_AUTOHIDE_MS } from '../../stores/thread.svelte';
 import type { QueueItem } from '../../stores/sendQueue.svelte';
@@ -825,5 +829,74 @@ describe('<ActivityRail>', () => {
     expect(getByTestId('activity-rail-input-toggle')).toBeTruthy();
     expect(queryByTestId('activity-rail-working')).toBeNull();
     expect(queryByTestId('activity-rail-hairline')).toBeNull();
+  });
+
+  describe('spinner verbs + sprites', () => {
+    it('shows one built-in verb per turn by default (verbs default on)', async () => {
+      const pane = await buildPane();
+      pane.setActiveTurn({ turnId: 't1', turnIndex: 0, startedAt: Date.now() - 3_000 });
+      const { findByTestId } = render(ActivityRailHost, { props: { pane } });
+      await tick();
+      const working = await findByTestId('activity-rail-working');
+      const label = working.textContent ?? '';
+      expect(label).not.toContain('Working');
+      expect(BUILTIN_SPINNER_VERBS.some((verb) => label.includes(verb))).toBe(true);
+    });
+
+    it('falls back to the plain Working label when verbs are off', async () => {
+      getSettings().spinnerVerbsEnabled = false;
+      const pane = await buildPane();
+      pane.setActiveTurn({ turnId: 't1', turnIndex: 0, startedAt: Date.now() - 3_000 });
+      const { findByTestId } = render(ActivityRailHost, { props: { pane } });
+      await tick();
+      expect((await findByTestId('activity-rail-working')).textContent).toContain('Working');
+    });
+
+    it('draws only custom verbs when built-ins are disabled', async () => {
+      getSettings().spinnerCustomVerbs = ['Vibing'];
+      getSettings().spinnerBuiltinVerbsDisabled = true;
+      const pane = await buildPane();
+      pane.setActiveTurn({ turnId: 't1', turnIndex: 0, startedAt: Date.now() - 3_000 });
+      const { findByTestId } = render(ActivityRailHost, { props: { pane } });
+      await tick();
+      expect((await findByTestId('activity-rail-working')).textContent).toContain('Vibing');
+    });
+
+    it('the compacting label beats the verb', async () => {
+      const pane = await buildPane();
+      pane.setActiveTurn({ turnId: 't1', turnIndex: 0, startedAt: Date.now() - 3_000 });
+      applyCompactingState({ threadId: pane.threadId!, active: true, sinceUnixMs: Date.now() });
+      const { findByTestId } = render(ActivityRailHost, { props: { pane } });
+      await tick();
+      expect((await findByTestId('activity-rail-working')).textContent).toContain('Compacting');
+      resetCompactingState();
+    });
+
+    it('replaces the LED cluster with a sprite when animations are on', async () => {
+      setBindingMock('GetSpinnerFiles', async () => ({ dir: '/cfg', sprites: [], warnings: [] }));
+      getSettings().spinnerAnimationsEnabled = true;
+      const pane = await buildPane();
+      pane.setActiveTurn({ turnId: 't1', turnIndex: 0, startedAt: Date.now() - 3_000 });
+      const { findByTestId, queryByTestId } = render(ActivityRailHost, { props: { pane } });
+      await tick();
+      const slot = await findByTestId('activity-rail-sprite');
+      expect(slot.querySelector('.working-sprite')).not.toBeNull();
+      expect(queryByTestId('activity-rail-working-leds')).toBeNull();
+      __resetCustomSpinnersForTest();
+    });
+
+    it('keeps the LED cluster when animations are on but every sprite is unchecked', async () => {
+      setBindingMock('GetSpinnerFiles', async () => ({ dir: '/cfg', sprites: [], warnings: [] }));
+      getSettings().spinnerAnimationsEnabled = true;
+      getSettings().spinnerDisabledAnimations = BUILTIN_SPRITES.map((sprite) => sprite.id);
+      getSettings().spinnerCompactionAnimation = 'none';
+      const pane = await buildPane();
+      pane.setActiveTurn({ turnId: 't1', turnIndex: 0, startedAt: Date.now() - 3_000 });
+      const { findByTestId, queryByTestId } = render(ActivityRailHost, { props: { pane } });
+      await tick();
+      expect(await findByTestId('activity-rail-working-leds')).toBeInTheDocument();
+      expect(queryByTestId('activity-rail-sprite')).toBeNull();
+      __resetCustomSpinnersForTest();
+    });
   });
 });

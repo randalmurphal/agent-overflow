@@ -902,6 +902,63 @@ export class Settings {
     "usagePeriod": string;
 
     /**
+     * The composer's working-indicator knobs. Two independent axes —
+     * the WORD beside the spinner and the sprite that animates — plus the
+     * per-axis curation lists.
+     * 
+     * SpinnerVerbsEnabled turns the rotating verb ("Deliberating…",
+     * "Reticulating…") on. Default TRUE, and therefore present in
+     * DefaultSettings: the verbs are what the indicator has always shown,
+     * so an absent key in every settings file that predates this must read
+     * as on. Contrast ClaudeTUIEnabled, whose default is the zero value
+     * and which stays out of DefaultSettings for exactly the mirrored
+     * reason.
+     */
+    "spinnerVerbsEnabled": boolean;
+
+    /**
+     * SpinnerAnimationsEnabled turns the animated sprite on. Default
+     * false (zero value, so it stays out of DefaultSettings by
+     * construction): motion beside the composer is opt-in, and a user who
+     * upgrades into this feature should not find their indicator moving
+     * unasked.
+     */
+    "spinnerAnimationsEnabled"?: boolean;
+
+    /**
+     * SpinnerCustomVerbs are the user's own verbs, added to the pool the
+     * indicator draws from. Trimmed and deduped; bounds and the
+     * reject-don't-truncate rule live in spinner.go.
+     */
+    "spinnerCustomVerbs"?: string[];
+
+    /**
+     * SpinnerBuiltinVerbsDisabled removes the shipped verbs from the pool,
+     * leaving only SpinnerCustomVerbs. Zero-value default: the built-ins
+     * are what the indicator shows today.
+     */
+    "spinnerBuiltinVerbsDisabled"?: boolean;
+
+    /**
+     * SpinnerDisabledAnimations lists the animation ids the user
+     * UNCHECKED from the random pool. An EXCLUSION list, not a selection:
+     * a sprite dropped into <configDir>/spinners tomorrow, or one a later
+     * app version bundles, joins the pool automatically instead of staying
+     * invisible until someone goes and ticks it.
+     */
+    "spinnerDisabledAnimations"?: string[];
+
+    /**
+     * SpinnerCompactionAnimation pins one sprite to auto-compaction, which
+     * is the one moment the indicator means something specific rather than
+     * "working". "" means never chosen and resolves to the default;
+     * "none" is the explicit choice of nothing; anything else is an
+     * animation id. Whether that id still resolves is the frontend's
+     * question — this package cannot see which sprites exist.
+     */
+    "spinnerCompactionAnimation": string;
+
+    /**
      * WorkflowPaused is the global workflow kill switch: while set, no
      * workflow phase starts anywhere and in-flight turns finish. It is
      * persisted so a paused engine stays paused across a restart.
@@ -1047,6 +1104,12 @@ export class Settings {
         if (!("usagePeriod" in $$source)) {
             this["usagePeriod"] = "";
         }
+        if (!("spinnerVerbsEnabled" in $$source)) {
+            this["spinnerVerbsEnabled"] = false;
+        }
+        if (!("spinnerCompactionAnimation" in $$source)) {
+            this["spinnerCompactionAnimation"] = "";
+        }
         if (!("workflowPaused" in $$source)) {
             this["workflowPaused"] = false;
         }
@@ -1078,7 +1141,9 @@ export class Settings {
         const $$createField50_0 = $$createType10;
         const $$createField52_0 = $$createType0;
         const $$createField53_0 = $$createType12;
-        const $$createField57_0 = $$createType13;
+        const $$createField58_0 = $$createType0;
+        const $$createField60_0 = $$createType0;
+        const $$createField63_0 = $$createType13;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("recentWorkspaces" in $$parsedSource) {
             $$parsedSource["recentWorkspaces"] = $$createField5_0($$parsedSource["recentWorkspaces"]);
@@ -1131,8 +1196,14 @@ export class Settings {
         if ("remoteEndpoints" in $$parsedSource) {
             $$parsedSource["remoteEndpoints"] = $$createField53_0($$parsedSource["remoteEndpoints"]);
         }
+        if ("spinnerCustomVerbs" in $$parsedSource) {
+            $$parsedSource["spinnerCustomVerbs"] = $$createField58_0($$parsedSource["spinnerCustomVerbs"]);
+        }
+        if ("spinnerDisabledAnimations" in $$parsedSource) {
+            $$parsedSource["spinnerDisabledAnimations"] = $$createField60_0($$parsedSource["spinnerDisabledAnimations"]);
+        }
         if ("window" in $$parsedSource) {
-            $$parsedSource["window"] = $$createField57_0($$parsedSource["window"]);
+            $$parsedSource["window"] = $$createField63_0($$parsedSource["window"]);
         }
         return new Settings($$parsedSource as Partial<Settings>);
     }

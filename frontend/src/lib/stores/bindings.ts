@@ -285,6 +285,7 @@ export {
   // Theme files + appearance selection (<configDir>/themes). The read
   // is LAN-allowed like GetKeybindings; both writers are local-only.
   GetThemeFiles,
+  GetSpinnerFiles,
   SetAppearance,
   SetWindowBackgroundColor,
 

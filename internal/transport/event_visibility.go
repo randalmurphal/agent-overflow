@@ -167,9 +167,9 @@ var latestOnlyEventChannels = map[string]bool{
 	// lands every 2s regardless (app_sysstat.go).
 	"system:stats": true,
 
-	// The two PAYLOAD-LESS refetch signals, and a matched pair: both are
+	// The PAYLOAD-LESS refetch signals, a matched set: each is
 	// `a.emit(name, nil)` from a debounced fsnotify watcher over one
-	// directory, and both mean exactly "read that directory again".
+	// directory, and each means exactly "read that directory again".
 	// Because the payload is nil, N retained frames are N IDENTICAL
 	// frames, and a reconnect after an agent rewrote a file a dozen times
 	// would replay a dozen refetches of the same directory — every one of
@@ -180,9 +180,10 @@ var latestOnlyEventChannels = map[string]bool{
 	// imperative (replaying it costs one read, not a restart). A client
 	// that was disconnected while the directory changed DOES need to hear
 	// about it once, which is precisely what a capacity-1 ring delivers.
-	// Both are unkeyed whole-state channels — one directory, one global
+	// All are unkeyed whole-state channels — one directory, one global
 	// answer — so they satisfy the membership rule above.
 	"theme:changed":                true,
+	"spinner:changed":              true,
 	"workflow:definitions-changed": true,
 }
 

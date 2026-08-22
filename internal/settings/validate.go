@@ -286,6 +286,25 @@ func validateSettings(current Settings) (Settings, error) {
 		return Settings{}, err
 	}
 
+	current.SpinnerCustomVerbs, err = validateSpinnerCustomVerbs("spinnerCustomVerbs", current.SpinnerCustomVerbs)
+	if err != nil {
+		return Settings{}, err
+	}
+	current.SpinnerDisabledAnimations, err = validateSpinnerDisabledAnimations(
+		"spinnerDisabledAnimations",
+		current.SpinnerDisabledAnimations,
+	)
+	if err != nil {
+		return Settings{}, err
+	}
+	current.SpinnerCompactionAnimation, err = validateSpinnerCompactionAnimation(
+		"spinnerCompactionAnimation",
+		current.SpinnerCompactionAnimation,
+	)
+	if err != nil {
+		return Settings{}, err
+	}
+
 	return current, nil
 }
 
@@ -422,6 +441,15 @@ func sanitizeLoadedSettings(current Settings) Settings {
 	current.ClaudeSubagentLimits = sanitizeClaudeSubagentLimits("claudeSubagentLimits", current.ClaudeSubagentLimits)
 	current.ClaudeToolMemoryLimit = sanitizeClaudeToolMemoryLimit("claudeToolMemoryLimit", current.ClaudeToolMemoryLimit)
 	current.ClaudeThinking = sanitizeClaudeThinking("claudeThinking", current.ClaudeThinking)
+	current.SpinnerCustomVerbs = sanitizeSpinnerCustomVerbs("spinnerCustomVerbs", current.SpinnerCustomVerbs)
+	current.SpinnerDisabledAnimations = sanitizeSpinnerDisabledAnimations(
+		"spinnerDisabledAnimations",
+		current.SpinnerDisabledAnimations,
+	)
+	current.SpinnerCompactionAnimation = sanitizeSpinnerCompactionAnimation(
+		"spinnerCompactionAnimation",
+		current.SpinnerCompactionAnimation,
+	)
 	return current
 }
 

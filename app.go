@@ -36,6 +36,7 @@ import (
 	"agent-overflow/internal/provideraccounts"
 	"agent-overflow/internal/screenshot"
 	"agent-overflow/internal/settings"
+	"agent-overflow/internal/spinner"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/terminal"
 	"agent-overflow/internal/textgen"
@@ -107,6 +108,11 @@ type App struct {
 	// Nil when the watcher could not start — live reload is a
 	// convenience on top of GetThemeFiles, never a requirement.
 	themeWatcher *themeWatcher
+	// spinnerWatcher watches <configDir>/spinners so a sprite dropped
+	// into the directory reaches the composer's working indicator
+	// without a restart. Nil on the same terms as themeWatcher — live
+	// reload is a convenience on top of GetSpinnerFiles.
+	spinnerWatcher *spinnerWatcher
 	// workflowDispositionMu serializes local git/forge disposition actions.
 	// They are rare, mutate shared repository metadata, and must not race an
 	// automatic policy against a manual click.
@@ -233,6 +239,13 @@ type App struct {
 	themeOnce sync.Once
 	theme     *theme.Service
 	themeErr  error
+	// spinner is the lazy-init spinners-directory service backing
+	// GetSpinnerFiles. Same construction contract as theme above: one
+	// Service per App, configDir-rooted, with the ~/.agent-overflow
+	// fallback for an early-boot RPC.
+	spinnerOnce sync.Once
+	spinner     *spinner.Service
+	spinnerErr  error
 	// eventBus is the Phase C transport that owns per-channel seq stamping
 	// and fan-out to connected webview / remote clients. main.go wires it
 	// in via SetEventBus; the atomic.Pointer means SetEventBus and

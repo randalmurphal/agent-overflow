@@ -167,6 +167,7 @@ export const UpdateSettings = dispatch('UpdateSettings');
 // local-only on the wire, so a test that wants the DEGRADED path throws a
 // `method_not_found` error from its mock rather than omitting one.
 export const GetThemeFiles = dispatch('GetThemeFiles');
+export const GetSpinnerFiles = dispatch('GetSpinnerFiles');
 export const SetAppearance = dispatch('SetAppearance');
 export const SetWindowBackgroundColor = dispatch('SetWindowBackgroundColor');
 export const SetProviderCustomEnvVar = dispatch('SetProviderCustomEnvVar');

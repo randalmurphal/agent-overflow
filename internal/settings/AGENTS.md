@@ -119,6 +119,30 @@ forward-compatible).
   the patch key and the axis rides `provider.SessionOptions`, so
   `claude.PlanLiveUpdate` queues a deferred restart rather than leaving
   the change for whenever the next session happens to start.
+- `spinner.go` — the composer working-indicator knobs' bounds and
+  validators: the custom-verb list, the animation EXCLUSION list, and the
+  compaction-animation selection. Four rules worth stating:
+  - **`spinnerVerbsEnabled` defaults TRUE and therefore lives in
+    `DefaultSettings`**, the mirror image of `ClaudeTUIEnabled`: the verb
+    is what the indicator has always shown, so an absent key in an older
+    file must read as on. `spinnerAnimationsEnabled` is the opt-in half
+    and stays out of `DefaultSettings` by construction.
+  - **A verb is refused, never truncated.** Over-long or control-bearing
+    entries fail the write; a verb cut mid-word would render as something
+    the user never typed. The cap counts RUNES, because this is display
+    text in any script.
+  - **The animation list is an exclusion list.** Ids the user unchecked,
+    so a sprite dropped into `<configDir>/spinners` tomorrow joins the
+    random pool automatically. The id grammar is duplicated from
+    `internal/spinner` rather than imported — this package stays
+    dependency-free, and the vocabulary here is wider anyway (built-in
+    sprites ship with the frontend and never appear in that directory).
+  - **`spinnerCompactionAnimation` stores `""` for "never chosen" — never
+    a concrete id.** The frontend catalog names the default sprite;
+    baking that id in here would duplicate a frontend vocabulary AND make
+    the settings UI's "Default" selection unrepresentable (the echo would
+    match no `<option>` and the select would render blank). `"none"` is
+    the explicit nothing; anything else is an id the frontend resolves.
 - `remote.go` — the `RemoteEndpoint` shape and its CRUD helpers
   (`Add` / `Update` / `Delete` / `Touch`). Backs the `--connect`
   target list the desktop binary's settings panel exposes.

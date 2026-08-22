@@ -416,6 +416,53 @@ type Settings struct {
 	// persistence rationale as ProjectSortMode.
 	UsagePeriod string `json:"usagePeriod"`
 
+	// The composer's working-indicator knobs. Two independent axes —
+	// the WORD beside the spinner and the sprite that animates — plus the
+	// per-axis curation lists.
+	//
+	// SpinnerVerbsEnabled turns the rotating verb ("Deliberating…",
+	// "Reticulating…") on. Default TRUE, and therefore present in
+	// DefaultSettings: the verbs are what the indicator has always shown,
+	// so an absent key in every settings file that predates this must read
+	// as on. Contrast ClaudeTUIEnabled, whose default is the zero value
+	// and which stays out of DefaultSettings for exactly the mirrored
+	// reason.
+	SpinnerVerbsEnabled bool `json:"spinnerVerbsEnabled"`
+
+	// SpinnerAnimationsEnabled turns the animated sprite on. Default
+	// false (zero value, so it stays out of DefaultSettings by
+	// construction): motion beside the composer is opt-in, and a user who
+	// upgrades into this feature should not find their indicator moving
+	// unasked.
+	SpinnerAnimationsEnabled bool `json:"spinnerAnimationsEnabled,omitempty"`
+
+	// SpinnerCustomVerbs are the user's own verbs, added to the pool the
+	// indicator draws from. Trimmed and deduped; bounds and the
+	// reject-don't-truncate rule live in spinner.go.
+	SpinnerCustomVerbs []string `json:"spinnerCustomVerbs,omitempty"`
+
+	// SpinnerBuiltinVerbsDisabled removes the shipped verbs from the pool,
+	// leaving only SpinnerCustomVerbs. Zero-value default: the built-ins
+	// are what the indicator shows today.
+	SpinnerBuiltinVerbsDisabled bool `json:"spinnerBuiltinVerbsDisabled,omitempty"`
+
+	// SpinnerDisabledAnimations lists the animation ids the user
+	// UNCHECKED from the random pool. An EXCLUSION list, not a selection:
+	// a sprite dropped into <configDir>/spinners tomorrow, or one a later
+	// app version bundles, joins the pool automatically instead of staying
+	// invisible until someone goes and ticks it.
+	SpinnerDisabledAnimations []string `json:"spinnerDisabledAnimations,omitempty"`
+
+	// SpinnerCompactionAnimation pins one sprite to auto-compaction, which
+	// is the one moment the indicator means something specific rather than
+	// "working". "" means never chosen and resolves to the default;
+	// "none" is the explicit choice of nothing; anything else is an
+	// animation id. Whether that id still resolves is the frontend's
+	// question — this package cannot see which sprites exist, and the
+	// default sprite for "" is the frontend's to name (catalog.ts), so no
+	// id is ever baked in here.
+	SpinnerCompactionAnimation string `json:"spinnerCompactionAnimation,omitempty"`
+
 	// WorkflowPaused is the global workflow kill switch: while set, no
 	// workflow phase starts anywhere and in-flight turns finish. It is
 	// persisted so a paused engine stays paused across a restart.
@@ -493,6 +540,18 @@ var DefaultSettings = Settings{
 	ProjectSortMode:    "lastActivity",
 	UsagePeriod:        "month",
 	WorkflowPaused:     false,
+	// The verb beside the working indicator is what the composer has
+	// always shown, so it stays on for everyone who upgrades into the
+	// spinner settings — an absent key reads true only because the default
+	// is here. The animated sprite is the new behavior and is opt-in, so
+	// SpinnerAnimationsEnabled deliberately is NOT here (zero value).
+	// SpinnerCompactionAnimation is NOT here either, and not because it has
+	// no default: "" IS the stored default ("never chosen"), which the
+	// FRONTEND resolves to its default sprite. Storing a concrete id here
+	// would bake a frontend sprite name into this package and make ""
+	// unrepresentable — the settings UI's "Default" choice could then never
+	// round-trip (it would echo back as the id and match no option).
+	SpinnerVerbsEnabled: true,
 }
 
 // HiddenModelsForProvider returns the hidden-model slug list for the
