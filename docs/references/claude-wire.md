@@ -1956,6 +1956,20 @@ skill's prompt silently degrades to a solo pass when the tool is
 absent ("If the Agent tool is not available ... perform each angle
 yourself") and says nothing about it in its output.
 
+### Subagent approvals carry `agent_id`
+
+A subagent's tool ask reaches the client through the SAME
+`control_request/can_use_tool` as the main agent's, with
+`request.agent_id` set and NO `parent_tool_use_id` anywhere on the
+envelope (spiked 2026-08-22 on 2.1.237, `--permission-mode default
+--permission-prompt-tool stdio`: a haiku subagent's `Write` asked with
+`tool_use_id`, `agent_id:"a40feadb631d41a04"`, `permission_suggestions:
+[{type:"setMode", mode:"acceptEdits"}]`; a `deny` answer came back to
+the subagent as an ordinary refusal). `agent_id` equals the task id that
+`task_started` bound to the launching tool_use, which is how the ask
+resolves to its launch scope. Under `read-only` (`dontAsk`) the same
+ask is auto-denied and surfaces as `system/permission_denied` instead.
+
 ### Steering a running subagent from a client
 
 There is NO stdin path that addresses a subagent (spiked 2026-08-22 on
