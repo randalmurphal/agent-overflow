@@ -156,6 +156,17 @@
   // One derived id for both halves of the disclosure (utils/chatDomIds.ts):
   // the header's `controls` and the body's `id` must be one string.
   let groupDomId = $derived(chatRowDomId(pane, 'subagent-group', parent.id));
+
+  // Whether children are passing under the body's upper edge — the only
+  // state the top fade should paint in (same rule as ActivityRun's
+  // `fadedTop`). Pure geometry, so row-local state is correct here: a
+  // windowing remount lands the body back at its top, where the answer is
+  // false again. Sub-pixel slack for fractional row heights.
+  let bodyFadedTop = $state(false);
+
+  function onBodyScroll(event: Event): void {
+    bodyFadedTop = (event.currentTarget as HTMLElement).scrollTop > 1;
+  }
   let parentMeta = $derived(parseJsonObject(parent.meta));
   let payloadMeta = $derived(parseJsonObject(parent.payloadMeta));
   let inputObject = $derived(readClaudeSubagentInput(payloadMeta, parentMeta));
@@ -319,27 +330,44 @@
     {/if}
 
     {#if expanded}
-      <div
-        id={groupDomId}
-        class="ml-5 max-h-[20rem] overflow-y-auto border-l border-border-subtle bg-surface-0/35 px-3 py-2"
-        use:nestedScroll
-        role="region"
-        aria-label="Subagent Timeline"
-        data-testid="subagent-group-body"
-      >
-        {#if group.children.length === 0}
-          {#if descendantCount > 0}
-            <p class="text-xs text-text-secondary italic" data-testid="subagent-group-loading">
-              Loading {entryCountLabel}…
-            </p>
+      <!-- Fade host: the top fade below is an overlay strip, so it needs a
+           positioned box exactly the scroller's height to hang inside. -->
+      <div class="relative ml-5">
+        <div
+          id={groupDomId}
+          class="max-h-[20rem] overflow-y-auto border-l border-border-subtle bg-surface-0/35 px-3 py-2"
+          use:nestedScroll
+          onscroll={onBodyScroll}
+          role="region"
+          aria-label="Subagent Timeline"
+          data-testid="subagent-group-body"
+        >
+          {#if group.children.length === 0}
+            {#if descendantCount > 0}
+              <p class="text-xs text-text-secondary italic" data-testid="subagent-group-loading">
+                Loading {entryCountLabel}…
+              </p>
+            {:else}
+              <p class="text-xs text-text-secondary italic">No child entries captured.</p>
+            {/if}
           {:else}
-            <p class="text-xs text-text-secondary italic">No child entries captured.</p>
+            {#each group.children as child (nodeKey(child))}
+              {@render renderNode(child, depth + 1)}
+            {/each}
           {/if}
-        {:else}
-          {#each group.children as child (nodeKey(child))}
-            {@render renderNode(child, depth + 1)}
-          {/each}
-        {/if}
+        </div>
+        <!-- Top fade, same overlay technique as ActivityRun's clip (see the
+             comment there): rows dissolve as they rise out of the capped body
+             instead of being cut by a hard edge. Paint-only, snaps in and out
+             (no transition — timeline transition kill rule). -->
+        <div
+          aria-hidden="true"
+          class="pointer-events-none absolute top-0 right-0 left-0 h-6"
+          class:opacity-0={!bodyFadedTop}
+          style:background="linear-gradient(to bottom, var(--surface-0), transparent)"
+          data-testid="subagent-group-top-fade"
+          data-faded={bodyFadedTop ? 'true' : 'false'}
+        ></div>
       </div>
     {/if}
   </div>
