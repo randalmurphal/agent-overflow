@@ -121,6 +121,31 @@ type codexTokenBreakdown struct {
 	TotalTokens int `json:"totalTokens"`
 }
 
+// childCumulativeTokenTotal reads a `thread/tokenUsage/updated`'s
+// CUMULATIVE total — `tokenUsage.total.totalTokens`, every round the
+// thread has run — which is what SubagentProgressMeta.TotalTokens means
+// ("the agent's own token spend so far ... all of its rounds").
+//
+// Deliberately NOT normalizeThreadTokenUsage's number: that one reports
+// `last.totalTokens` because it answers a different question (how full
+// is the context window right now), and a context size is not a spend.
+// A child's window is also nobody's meter — only its spend is shown, on
+// its own card.
+//
+// ok=false when the notification carried no total, so a malformed or
+// empty frame leaves whatever the consumer already had rather than
+// resetting the card's counter to zero.
+func childCumulativeTokenTotal(params json.RawMessage) (int64, bool) {
+	var payload codexThreadTokenUsageNotification
+	if json.Unmarshal(params, &payload) != nil {
+		return 0, false
+	}
+	if payload.TokenUsage.Total.TotalTokens <= 0 {
+		return 0, false
+	}
+	return int64(payload.TokenUsage.Total.TotalTokens), true
+}
+
 func normalizeThreadTokenUsage(params json.RawMessage) json.RawMessage {
 	var payload codexThreadTokenUsageNotification
 	if json.Unmarshal(params, &payload) != nil {

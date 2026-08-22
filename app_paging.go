@@ -237,7 +237,11 @@ func (a *App) ListThreadProposedPlans(threadID string) ([]store.Item, error) {
 
 // ListLiveBackgroundTasks returns running launches plus their
 // recently-completed siblings (within the tray retention window) so the
-// BackgroundTaskTray can render without scanning `pane.items`. SQLite
+// BackgroundTaskTray can render without scanning `pane.items`. The store
+// leg lists by BACKGROUNDED ANCESTRY, not top-level-ness (invariant 24):
+// nested background launches and the agent launches between them and a
+// background root are included, so the tray can indent by walking
+// parentId within the result. SQLite
 // rows cover persisted Claude launches and Codex subagent launches; the
 // latter are projected as running tray rows while the chat-history spawn
 // card remains completed. The triage router appends transient Codex

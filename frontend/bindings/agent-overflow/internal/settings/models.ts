@@ -954,9 +954,11 @@ export class Settings {
      * "working". "" means never chosen and resolves to the default;
      * "none" is the explicit choice of nothing; anything else is an
      * animation id. Whether that id still resolves is the frontend's
-     * question — this package cannot see which sprites exist.
+     * question — this package cannot see which sprites exist, and the
+     * default sprite for "" is the frontend's to name (catalog.ts), so no
+     * id is ever baked in here.
      */
-    "spinnerCompactionAnimation": string;
+    "spinnerCompactionAnimation"?: string;
 
     /**
      * WorkflowPaused is the global workflow kill switch: while set, no
@@ -1106,9 +1108,6 @@ export class Settings {
         }
         if (!("spinnerVerbsEnabled" in $$source)) {
             this["spinnerVerbsEnabled"] = false;
-        }
-        if (!("spinnerCompactionAnimation" in $$source)) {
-            this["spinnerCompactionAnimation"] = "";
         }
         if (!("workflowPaused" in $$source)) {
             this["workflowPaused"] = false;

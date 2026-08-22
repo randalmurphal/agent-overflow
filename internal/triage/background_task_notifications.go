@@ -28,6 +28,15 @@ type backgroundTaskNotificationMeta struct {
 	// envelope's). It is the per-EVENT half of the row id — see
 	// nextTaskNotificationID.
 	UUID string `json:"uuid,omitempty"`
+	// Usage is the agent's AUTHORITATIVE final counters. Claude reports
+	// `usage{total_tokens, tool_uses, duration_ms}` for the whole run on
+	// exactly one envelope — this one — and the parser forwards it under
+	// `usage` as a provider.SubagentProgressMeta (parse_system.go
+	// §buildBackgroundTaskNotificationEvent; the key and type are
+	// contract). Zero value when the envelope reported none: the
+	// synthetic-XML channel never carries it, and neither does a
+	// `local_bash` bookend.
+	Usage provider.SubagentProgressMeta `json:"usage"`
 }
 
 func decodeBackgroundTaskNotificationMeta(raw json.RawMessage) backgroundTaskNotificationMeta {
@@ -118,6 +127,24 @@ func (r *Router) handleBackgroundTaskNotification(evt provider.ProviderEvent) er
 		return nil
 	}
 
+	// The agent's final numbers, before any of the row work below and on
+	// every path out of this handler. `task_notification` is the one
+	// envelope that reports the whole run's `usage`, so it is the
+	// authoritative half of the launch row's persisted progress —
+	// available even when no live tick survived (a backgrounded agent
+	// emits task_progress, but a session restart or a reconnect drops the
+	// in-memory ticks outright). Folded for background Bash too when it
+	// carries usage: the merge is order-free and a launch with no
+	// counters is left untouched, so the only cost of not special-casing
+	// the tool type is a comparison.
+	if meta.Usage != (provider.SubagentProgressMeta{}) {
+		if err := r.persistSubagentFinalProgress(launch, meta.Usage); err != nil {
+			// Never fatal to the notification: the counters are a card
+			// decoration and the bell is the user-visible signal.
+			log.Printf("triage: persist final subagent progress for %s: %v", launch.ID, err)
+		}
+	}
+
 	// Foreground tools (Bash without run_in_background:true) also receive
 	// task_notification envelopes from Claude on completion — the CLI emits
 	// them for every Bash/Task lifecycle, not just backgrounded ones (see
@@ -154,6 +181,22 @@ func (r *Router) handleBackgroundTaskNotification(evt provider.ProviderEvent) er
 	// history and the completion only means the stream ended.
 	watchTask := launchIsWatchTask(launch)
 
+	// Q11 (docs/specs/agent-visibility.md): notifications fire for
+	// TOP-LEVEL nodes only; a nested completion updates its card
+	// silently. This row IS the thread's bell — the frontend's
+	// notification surface and the toast both hang off it — so a nested
+	// launch simply does not get one. Everything else on this path still
+	// runs for a nested launch: the stash drains, the output file is
+	// read, and the completion sibling is enriched with the payload and
+	// output state, which is what its card renders.
+	//
+	// A watch task is exempt regardless of depth. Its notification rows
+	// are not a bell at all: they ARE its event history (claude-wire.md
+	// §E7 — one row per observed output event, exempt from the frontend's
+	// redundant-notification hide), and suppressing them would delete
+	// content no other row carries.
+	writeBell := strings.TrimSpace(launch.ParentID) == "" || watchTask
+
 	notification := store.Item{
 		ID:        nextTaskNotificationID(meta.TaskID, meta.UUID),
 		ThreadID:  evt.ThreadID,
@@ -168,27 +211,39 @@ func (r *Router) handleBackgroundTaskNotification(evt provider.ProviderEvent) er
 		UpdatedAt: now,
 		Meta:      backgroundNotificationItemMeta(meta, "ready", "", watchTask),
 	}
-	if persisted, ok, err := r.store.GetThreadItem(evt.ThreadID, notification.ID); err != nil {
-		return fmt.Errorf("task notification existing lookup %s: %w", notification.ID, err)
-	} else if ok && persisted.Kind == itemKindNotification {
-		notification.CreatedAt = persisted.CreatedAt
-		notification.TurnIndex = persisted.TurnIndex
-		notification.ItemIndex = persisted.ItemIndex
-		notification.PayloadID = persisted.PayloadID
-		if notification.ParentID == "" {
-			notification.ParentID = persisted.ParentID
+	if writeBell {
+		if persisted, ok, err := r.store.GetThreadItem(evt.ThreadID, notification.ID); err != nil {
+			return fmt.Errorf("task notification existing lookup %s: %w", notification.ID, err)
+		} else if ok && persisted.Kind == itemKindNotification {
+			notification.CreatedAt = persisted.CreatedAt
+			notification.TurnIndex = persisted.TurnIndex
+			notification.ItemIndex = persisted.ItemIndex
+			notification.PayloadID = persisted.PayloadID
+			if notification.ParentID == "" {
+				notification.ParentID = persisted.ParentID
+			}
+			if notification.ToolName == "" {
+				notification.ToolName = persisted.ToolName
+			}
 		}
-		if notification.ToolName == "" {
-			notification.ToolName = persisted.ToolName
+	}
+
+	// persistBell is the one write point for the notification row, so
+	// every state transition below (loading → loaded / error) reads the
+	// same way whether or not this launch is entitled to a bell.
+	persistBell := func(state, readError string, payload *store.Payload) error {
+		if !writeBell {
+			return nil
 		}
+		notification.Meta = backgroundNotificationItemMeta(meta, state, readError, watchTask)
+		return r.maybeDeferOrPersist(evt.ThreadID, notification, payload)
 	}
 
 	var notificationPayload *store.Payload
 	outputState := "ready"
 	readErrorString := ""
 	if meta.OutputFile != "" {
-		notification.Meta = backgroundNotificationItemMeta(meta, "loading", "", watchTask)
-		if err := r.maybeDeferOrPersist(evt.ThreadID, notification, nil); err != nil {
+		if err := persistBell("loading", "", nil); err != nil {
 			return err
 		}
 		if err := r.enrichExistingBackgroundCompletionFromNotification(evt, launch, meta, nil, "loading", ""); err != nil {
@@ -199,26 +254,50 @@ func (r *Router) handleBackgroundTaskNotification(evt provider.ProviderEvent) er
 		if readErr != nil {
 			outputState = "error"
 			readErrorString = readErr.Error()
-			notification.Meta = backgroundNotificationItemMeta(meta, outputState, readErrorString, watchTask)
 			log.Printf("triage: read Claude task output file %q: %v", meta.OutputFile, readErr)
-			if err := r.maybeDeferOrPersist(evt.ThreadID, notification, nil); err != nil {
-				return err
-			}
 		} else {
 			outputState = "loaded"
 			notificationPayload = payload
-			notification.Meta = backgroundNotificationItemMeta(meta, outputState, "", watchTask)
-			if err := r.maybeDeferOrPersist(evt.ThreadID, notification, notificationPayload); err != nil {
-				return err
+			// The transcript backfill runs only once the file has proved
+			// readable — it reads the same bytes, so a read failure has
+			// already been reported and re-reporting it would say nothing
+			// new. A backfill failure is its OWN report: the file was
+			// readable but could not be projected, which is the one
+			// condition under which the payload loaded and the rows are
+			// still missing.
+			if backfillErr := r.maybeBackfillSubagentTranscript(evt.ThreadID, launch, meta); backfillErr != nil {
+				outputState = "error"
+				readErrorString = backfillErr.Error()
 			}
 		}
-	} else {
-		if err := r.maybeDeferOrPersist(evt.ThreadID, notification, nil); err != nil {
+		if err := persistBell(outputState, readErrorString, notificationPayload); err != nil {
 			return err
 		}
+	} else if err := persistBell(outputState, "", nil); err != nil {
+		return err
 	}
 
 	return r.enrichExistingBackgroundCompletionFromNotification(evt, launch, meta, notificationPayload, outputState, readErrorString)
+}
+
+// maybeBackfillSubagentTranscript completes an agent's transcript from
+// the notification's `output_file` (subagent_transcript.go). A no-op for
+// anything whose output file is not a sidechain JSONL — a background
+// Bash's output_file is captured command output, and the command_output
+// payload path already owns it.
+func (r *Router) maybeBackfillSubagentTranscript(threadID string, launch store.Item, meta backgroundTaskNotificationMeta) error {
+	if !isSubagentTranscriptLaunch(launch) {
+		return nil
+	}
+	written, err := r.backfillSubagentTranscript(threadID, launch, meta.OutputFile)
+	if err != nil {
+		log.Printf("triage: backfill subagent transcript for %s from %q: %v", launch.ID, meta.OutputFile, err)
+		return err
+	}
+	if written > 0 {
+		log.Printf("triage: backfilled %d row(s) of subagent %s from its task_notification transcript", written, launch.ID)
+	}
+	return nil
 }
 
 // drainTaskNotificationStash drains the pending-background-terminal
@@ -492,13 +571,20 @@ func CommandFromLaunch(launch store.Item) string {
 	return summary
 }
 
-func readClaudeTaskOutputFile(path string, maxBytes int64) ([]byte, map[string]any, error) {
+// resolveClaudeTaskOutputPath canonicalises an `output_file` path and
+// enforces the containment guard, returning the resolved path and its
+// stat. Two readers share it: the payload read below, and the subagent
+// transcript backfill (subagent_transcript.go), which needs a vetted
+// PATH rather than bytes because it streams the file through the
+// importer's own reader. Splitting it is what keeps one containment
+// rule instead of two.
+func resolveClaudeTaskOutputPath(path string) (string, os.FileInfo, error) {
 	path = strings.TrimSpace(path)
 	if path == "" {
-		return nil, nil, fmt.Errorf("empty output_file path")
+		return "", nil, fmt.Errorf("empty output_file path")
 	}
 	if !filepath.IsAbs(path) {
-		return nil, nil, fmt.Errorf("output_file path must be absolute")
+		return "", nil, fmt.Errorf("output_file path must be absolute")
 	}
 	// Resolve symlinks BEFORE the regular-file check. Claude wraps each
 	// task output as `<task_id>.output → <subagent>.jsonl` inside
@@ -511,17 +597,25 @@ func readClaudeTaskOutputFile(path string, maxBytes int64) ([]byte, map[string]a
 	// than circumvented by it.
 	resolvedPath, err := filepath.EvalSymlinks(path)
 	if err != nil {
-		return nil, nil, err
+		return "", nil, err
 	}
 	info, err := os.Stat(resolvedPath)
 	if err != nil {
-		return nil, nil, err
+		return "", nil, err
 	}
 	if !info.Mode().IsRegular() {
-		return nil, nil, fmt.Errorf("output_file path is not a regular file")
+		return "", nil, fmt.Errorf("output_file path is not a regular file")
 	}
 	if !isAllowedClaudeOutputPath(resolvedPath) {
-		return nil, nil, fmt.Errorf("output_file path is outside allowed roots")
+		return "", nil, fmt.Errorf("output_file path is outside allowed roots")
+	}
+	return resolvedPath, info, nil
+}
+
+func readClaudeTaskOutputFile(path string, maxBytes int64) ([]byte, map[string]any, error) {
+	resolvedPath, info, err := resolveClaudeTaskOutputPath(path)
+	if err != nil {
+		return nil, nil, err
 	}
 	file, err := os.Open(resolvedPath)
 	if err != nil {

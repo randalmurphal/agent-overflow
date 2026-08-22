@@ -422,17 +422,81 @@ func (r *Router) persistToolCallCompletion(evt provider.ProviderEvent) error {
 	}
 
 	payload := completionPayloadForLaunch(launch, evt, meta, now)
+	var persistErr error
 	switch {
 	case payload == nil:
-		return r.persistItemWithInputPayload(launch, nil, inputPayload)
+		persistErr = r.persistItemWithInputPayload(launch, nil, inputPayload)
 	case launch.PayloadID == "":
-		return r.persistItemWithInputPayload(launch, payload, inputPayload)
+		persistErr = r.persistItemWithInputPayload(launch, payload, inputPayload)
 	case launch.PayloadKind == payloadKindToolCallResult:
 		payload.ID = launch.PayloadID
-		return r.persistItemWithInputPayload(launch, payload, inputPayload)
+		persistErr = r.persistItemWithInputPayload(launch, payload, inputPayload)
 	default:
-		return r.persistItemWithInputPayload(launch, nil, inputPayload)
+		persistErr = r.persistItemWithInputPayload(launch, nil, inputPayload)
 	}
+	if persistErr != nil {
+		return persistErr
+	}
+	// This row just went terminal. An AWAITED agent launch settles HERE
+	// and nowhere else — no completion sibling, no child terminal — so
+	// this is the one moment its live counters can become durable.
+	return r.persistFinalSubagentProgressIfLaunch(launch)
+}
+
+// persistFinalSubagentProgress folds a settling LAUNCH row's last live
+// progress tick onto the row (docs/specs/agent-visibility.md: ticks are
+// live UI state, the final numbers persist). Skipped outright when no
+// tick was ever seen for the id, which is what keeps an ordinary tool
+// result and a second drain of the same background terminal from paying
+// a write to restate numbers nobody changed.
+//
+// The AUTHORITATIVE-usage terminal (Claude's task_notification) does not
+// come through here: it carries counters of its own even when no tick
+// was seen, so it calls persistSubagentFinalProgress directly. The
+// helper is order-free, so either arriving first lands the same row.
+//
+// Callers are the terminals that settle a launch and already KNOW their
+// row is one: the background completion sibling and the Codex child
+// terminal. The inline tool completion, which settles every ordinary
+// tool too, goes through persistFinalSubagentProgressIfLaunch instead.
+func (r *Router) persistFinalSubagentProgress(launch store.Item) error {
+	if r == nil {
+		return nil
+	}
+	if _, live := r.PeekSubagentProgress(launch.ThreadID, launch.ID); !live {
+		return nil
+	}
+	return r.persistSubagentFinalProgress(launch, provider.SubagentProgressMeta{})
+}
+
+// persistFinalSubagentProgressIfLaunch is persistFinalSubagentProgress
+// plus the structural launch probe, for the one terminal that also
+// settles ordinary tools. `Store.IsSubagentLaunch` is the provider-
+// neutral predicate the store already anchors subagent cards on (a
+// tool_call that other rows are attributed to) rather than a list of
+// launch tool names this package would have to keep in sync with two
+// providers. It runs only after a live tick has been found, so a plain
+// Read/Edit result never reaches the store for it.
+func (r *Router) persistFinalSubagentProgressIfLaunch(launch store.Item) error {
+	if r == nil || r.store == nil {
+		return nil
+	}
+	if _, live := r.PeekSubagentProgress(launch.ThreadID, launch.ID); !live {
+		return nil
+	}
+	isLaunch, err := r.store.IsSubagentLaunch(launch.ThreadID, launch.ID)
+	if err != nil {
+		return fmt.Errorf("triage: subagent launch probe %s: %w", launch.ID, err)
+	}
+	if !isLaunch {
+		// A tick named a row nothing is attributed to. Drop the live
+		// entry rather than stamp agent counters onto a plain tool
+		// card — and rather than leave it to be swept at thread
+		// cleanup, where it would still be reported as live progress.
+		r.TakeSubagentProgress(launch.ThreadID, launch.ID)
+		return nil
+	}
+	return r.persistSubagentFinalProgress(launch, provider.SubagentProgressMeta{})
 }
 
 func (r *Router) persistToolCallCompletedWithoutLaunch(evt provider.ProviderEvent, meta ToolCompleteMeta) error {
@@ -1117,6 +1181,13 @@ func (r *Router) writeBackgroundCompletionSibling(evt provider.ProviderEvent, me
 	}
 
 	if err := r.maybeDeferOrPersist(evt.ThreadID, completion, payload); err != nil {
+		return err
+	}
+
+	// The sibling is the background launch's terminal (the launch row
+	// itself stays `running` forever — invariant 24), so this is where
+	// its live counters become durable.
+	if err := r.persistFinalSubagentProgress(launch); err != nil {
 		return err
 	}
 

@@ -68,6 +68,22 @@ describe('companionPanes store', () => {
     expect(companionForSource('main', 'design-preview')).toEqual(preview);
   });
 
+  it('hosts an agent companion like any other panel kind', () => {
+    setPaneLayoutItemsForTest([threadItem('main'), threadItem('right')]);
+    createPane('main');
+
+    const agent = openCompanion('main', 'agent');
+
+    expect(agent).toEqual({ paneId: 'agent-main', kind: 'agent', sourcePaneId: 'main' });
+    expect(paneIds()).toEqual(['main', 'agent-main', 'right']);
+    expect(openCompanion('main', 'agent')).toBe(agent);
+
+    destroyPane('main');
+
+    expect(isCompanionOpen('main', 'agent')).toBe(false);
+    expect(getCompanionPane('agent-main')).toBeNull();
+  });
+
   it('does not open a duplicate companion for the same source and kind', () => {
     setPaneLayoutItemsForTest([threadItem('main')]);
 

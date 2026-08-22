@@ -1,5 +1,7 @@
 import type { Thread } from '../types/models';
 import type {
+  AgentPaneBreadcrumbEntry,
+  AgentPaneScopeSnapshot,
   PaneLayoutPersistedPane,
   PaneLayoutPersistedSettings,
 } from '../types/settings';
@@ -20,6 +22,7 @@ import {
 import { getMinPaneWidth } from './paneDensity.svelte';
 import { FALLBACK_PANE_WIDTH_PX, normalizePaneWidthPx } from '../utils/paneWidths';
 import { restoreCompanion, type CompanionPanelKind } from './companionPanes.svelte';
+import { agentScopeForPane, seedAgentStateForPane } from './agentPane.svelte';
 import {
   focusPane,
   getAllPanes,
@@ -38,11 +41,21 @@ import {
 // adopted at read time.
 const PANE_LAYOUT_KEY = 'paneLayout';
 const LEGACY_PANE_LAYOUT_STORAGE_KEY = 'agentOverflowPaneLayout';
+// Deliberately NOT bumped for the agent companion's `agentScope` field.
+// The accepted-version check below rejects the WHOLE layout on an unknown
+// version, so a bump would make an older build throw away every pane rather
+// than the one it cannot render. An unknown `kind` degrades far better:
+// `isPersistedCompanionKind` skips the agent entry and every other pane
+// restores. New optional fields on an existing version are read tolerantly
+// in both directions, which is the property that makes the bump unnecessary.
 const PANE_LAYOUT_SETTINGS_VERSION = 3;
 const PANE_RESIZE_PERSIST_DELAY_MS = 200;
 const MAX_RESTORED_PANES = 24;
 const MAX_PANE_ID_LENGTH = 64;
 const MAX_THREAD_ID_LENGTH = 256;
+const MAX_ITEM_ID_LENGTH = 256;
+const MAX_BREADCRUMB_ENTRIES = 32;
+const MAX_BREADCRUMB_LABEL_LENGTH = 200;
 // Cap for pre-v3 persisted flex ratios during migration.
 const MAX_LEGACY_PANE_RATIO = 100;
 const SAFE_PANE_ID_PATTERN = /^[A-Za-z0-9_-]+$/;
@@ -84,7 +97,7 @@ function isSafePersistedPaneId(paneId: string): boolean {
 // for a same-named source pane (companionPaneIdFor('main','plan') ===
 // 'plan-main'), so reject it at the parse edge. Real companion entries
 // keep the shape — this guard applies to thread panes only.
-const COMPANION_SHAPED_PANE_ID = /^(?:plan|design-preview|review|take-control)-/;
+const COMPANION_SHAPED_PANE_ID = /^(?:plan|design-preview|review|take-control|agent)-/;
 
 function isSafePersistedThreadPaneId(paneId: string): boolean {
   return isSafePersistedPaneId(paneId) && !COMPANION_SHAPED_PANE_ID.test(paneId);
@@ -96,7 +109,41 @@ function isSafePersistedThreadId(threadId: string): boolean {
 
 // take-control is deliberately absent: a live PTY mirror is never persisted.
 function isPersistedCompanionKind(kind: unknown): kind is CompanionPanelKind {
-  return kind === 'plan' || kind === 'design-preview' || kind === 'review';
+  return kind === 'plan' || kind === 'design-preview' || kind === 'review' || kind === 'agent';
+}
+
+/**
+ * Validate an agent companion's persisted scope. Anything short of a
+ * well-formed trail ending at a non-empty scope id answers null, and the
+ * caller drops the PANE — an agent pane with no scope has nothing to render,
+ * and guessing a scope would open a reader onto the wrong node's transcript.
+ *
+ * The scoped ROW is deliberately not required here: items load after the
+ * layout does, so restore cannot know yet whether the row survives. The pane
+ * body self-closes when it resolves the scope to nothing (spec Q5).
+ */
+function parsePersistedAgentScope(value: unknown): AgentPaneScopeSnapshot | null {
+  if (!value || typeof value !== 'object') return null;
+  const record = value as Record<string, unknown>;
+  const scopeItemId = record.scopeItemId;
+  if (typeof scopeItemId !== 'string') return null;
+  if (scopeItemId.length === 0 || scopeItemId.length > MAX_ITEM_ID_LENGTH) return null;
+  if (!Array.isArray(record.breadcrumb)) return null;
+  if (record.breadcrumb.length === 0 || record.breadcrumb.length > MAX_BREADCRUMB_ENTRIES) return null;
+  const breadcrumb: AgentPaneBreadcrumbEntry[] = [];
+  for (const entry of record.breadcrumb) {
+    if (!entry || typeof entry !== 'object') return null;
+    const hop = entry as Record<string, unknown>;
+    // The root hop is the thread itself and carries an empty itemId; every
+    // other hop names a launch row.
+    if (typeof hop.itemId !== 'string' || hop.itemId.length > MAX_ITEM_ID_LENGTH) return null;
+    if (typeof hop.label !== 'string') return null;
+    breadcrumb.push({ itemId: hop.itemId, label: hop.label.slice(0, MAX_BREADCRUMB_LABEL_LENGTH) });
+  }
+  // The trail must END at the scope, or the breadcrumb would describe an
+  // ancestry the pane is not actually showing.
+  if (breadcrumb[breadcrumb.length - 1].itemId !== scopeItemId) return null;
+  return { scopeItemId, breadcrumb };
 }
 
 function companionPaneIdFor(sourcePaneId: string, kind: CompanionPanelKind): string {
@@ -179,13 +226,18 @@ function parsePersistedLayout(raw: unknown): PersistedPaneLayout | null {
       if (typeof pane.sourcePaneId !== 'string' || !isSafePersistedPaneId(pane.sourcePaneId)) continue;
       if (!validThreadPaneIds.has(pane.sourcePaneId)) continue;
       if (pane.paneId !== companionPaneIdFor(pane.sourcePaneId, pane.kind)) continue;
+      // An agent pane IS its scope: no scope, no pane.
+      const agentScope = pane.kind === 'agent' ? parsePersistedAgentScope(pane.agentScope) : null;
+      if (pane.kind === 'agent' && !agentScope) continue;
       seenPaneIds.add(pane.paneId);
-      panes.push({
+      const restored: PersistedPane = {
         paneId: pane.paneId,
         kind: pane.kind,
         sourcePaneId: pane.sourcePaneId,
         widthPx: persistedWidthFor(pane, record.version),
-      });
+      };
+      if (agentScope) restored.agentScope = agentScope;
+      panes.push(restored);
     }
     if (panes.length >= MAX_RESTORED_PANES) break;
   }
@@ -220,12 +272,26 @@ function buildSnapshot(): PersistedPaneLayout {
       item.sourcePaneId &&
       persistedThreadPaneIds.has(item.sourcePaneId)
     ) {
-      panes.push({
+      const entry: PersistedPane = {
         paneId: item.paneId,
         kind: item.kind,
         sourcePaneId: item.sourcePaneId,
         widthPx: normalizePersistedWidthPx(item.widthPx),
-      });
+      };
+      if (item.kind === 'agent') {
+        // Live scope first; the layout item's carried copy covers the window
+        // between a restore and the body's first mount. A scope neither can
+        // answer for means the pane is not restorable — drop the ENTRY, not
+        // just the field, so a reload doesn't resurrect a blank agent pane.
+        const threadId = panesById.get(item.sourcePaneId)?.threadId ?? '';
+        const scope = agentScopeForPane(item.sourcePaneId, threadId) ?? item.agentScope ?? null;
+        if (!scope || !scope.scopeItemId) continue;
+        entry.agentScope = {
+          scopeItemId: scope.scopeItemId,
+          breadcrumb: scope.breadcrumb.map((hop) => ({ ...hop })),
+        };
+      }
+      panes.push(entry);
     }
   }
   // Focus persists as-is when the focused pane itself is in the snapshot
@@ -320,6 +386,12 @@ export async function loadPersistedPaneLayout(availableThreads?: Thread[]): Prom
     const sourcePane = getAllPanes().get(pane.sourcePaneId);
     if (!sourcePane) continue;
     if (pane.kind === 'design-preview' && sourcePane.thread?.mode !== 'design') continue;
+    // The agent pane's scope is seeded from the snapshot, keyed by the SOURCE
+    // pane (one agent pane per source pane). A source pane that failed to
+    // hydrate a thread has nothing to scope against, so drop the companion —
+    // same shape as the design-preview mode guard above.
+    const sourceThreadId = sourcePane.threadId;
+    if (pane.kind === 'agent' && (!pane.agentScope || !sourceThreadId)) continue;
     const item: PaneLayoutItem = {
       id: pane.paneId,
       paneId: pane.paneId,
@@ -327,6 +399,10 @@ export async function loadPersistedPaneLayout(availableThreads?: Thread[]): Prom
       widthPx: pane.widthPx,
       sourcePaneId: pane.sourcePaneId,
     };
+    if (pane.kind === 'agent' && pane.agentScope && sourceThreadId) {
+      item.agentScope = pane.agentScope;
+      seedAgentStateForPane(pane.sourcePaneId, sourceThreadId, pane.agentScope);
+    }
     const companions = companionsBySource.get(pane.sourcePaneId) ?? [];
     companions.push(item);
     companionsBySource.set(pane.sourcePaneId, companions);

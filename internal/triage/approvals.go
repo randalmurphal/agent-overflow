@@ -7,12 +7,20 @@ package triage
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"strings"
 
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/stringsx"
 )
 
+// pendingApprovalState carries the request as triage RESOLVED it, not
+// as the wire sent it: Request.ParentToolUseID holds the subagent scope
+// worked out at request time (see resolveInteractiveScope). The
+// resolution has to survive until the decision arrives, because the
+// row applyApprovalDecision may have to synthesize is created AFTER the
+// asking agent's own row could be looked up — a declined tool that
+// never ran has no persisted row to inherit a parent from.
 type pendingApprovalState struct {
 	Request provider.ApprovalRequest
 	ItemID  string
@@ -20,6 +28,62 @@ type pendingApprovalState struct {
 
 func eventParentID(evt provider.ProviderEvent) string {
 	return strings.TrimSpace(evt.ParentToolUseID)
+}
+
+// resolveInteractiveScope answers "which agent is asking?" for an
+// interactive request that names a tool_use. Anything a subagent causes
+// carries its scope (docs/specs/agent-visibility.md, Q10): the approval
+// row has to nest under the agent's card and light its "needs approval"
+// pill, exactly as `permission_denied` now does.
+//
+// Precedence, strongest evidence first:
+//
+//  1. a scope the PARSER resolved — Claude carries the asking agent's
+//     `agent_id` on `can_use_tool`, which the parser maps through its
+//     task_id ↔ tool_use_id table;
+//  2. a scope the EVENT envelope carries;
+//  3. the requested tool's OWN persisted row scope. `can_use_tool`
+//     arrives before the tool runs but AFTER the assistant tool_use that
+//     announced it, so the row normally exists and its parent_id already
+//     is the attribution — for Agent launches and forked skills alike.
+//
+// A missing row leaves the request top-level, which is the honest
+// record: better a main-timeline approval than one nested under a guess.
+//
+// permission_notices.go's lookupDeniedToolCall / deniedToolCallScope
+// pair is this same resolution for the notice family; the two should
+// collapse onto this helper.
+func (r *Router) resolveInteractiveScope(evt provider.ProviderEvent, parserScope, toolUseID string) string {
+	if scope := strings.TrimSpace(parserScope); scope != "" {
+		return scope
+	}
+	if scope := eventParentID(evt); scope != "" {
+		return scope
+	}
+	return r.persistedToolCallScope(evt.ThreadID, toolUseID)
+}
+
+// persistedToolCallScope reads a tool_call row's own parent_id. Empty
+// when the id names nothing, names a non-tool row, or the read fails —
+// a lookup error is logged and reads as "top level", because the prompt
+// must still reach the user.
+func (r *Router) persistedToolCallScope(threadID, toolUseID string) string {
+	if r == nil || r.store == nil {
+		return ""
+	}
+	toolUseID = strings.TrimSpace(toolUseID)
+	if toolUseID == "" {
+		return ""
+	}
+	item, found, err := r.store.GetThreadItem(threadID, toolUseID)
+	if err != nil {
+		log.Printf("triage: interactive scope lookup %s: %v", toolUseID, err)
+		return ""
+	}
+	if !found || item.Kind != itemKindToolCall {
+		return ""
+	}
+	return strings.TrimSpace(item.ParentID)
 }
 
 func approvalStateKey(threadID, requestID string) string {
@@ -208,6 +272,7 @@ func (r *Router) handleApprovalRequest(evt provider.ProviderEvent) error {
 	}
 
 	itemID := approvalItemID(evt, request)
+	request.ParentToolUseID = r.resolveInteractiveScope(evt, request.ParentToolUseID, itemID)
 	r.setPendingApproval(evt.ThreadID, pendingApprovalState{
 		Request: request,
 		ItemID:  itemID,
@@ -323,7 +388,11 @@ func (r *Router) applyApprovalDecision(
 		return fmt.Errorf("approval synthetic item: %w", err)
 	}
 	item.Decision = decision
-	item.ParentID = ""
+	// The synthesized row stands in for a tool that never ran, so it
+	// inherits the scope resolved when the prompt was raised. Nothing
+	// else can supply it: the tool has no persisted row of its own —
+	// that absence is why we are here.
+	item.ParentID = strings.TrimSpace(request.ParentToolUseID)
 	if approvalLosesExecution(decision) {
 		item.Status = statusErrored
 	}

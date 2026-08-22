@@ -65,6 +65,18 @@ export class ApprovalRequest {
     "threadId": string;
     "turnId"?: string;
     "toolUseId"?: string;
+
+    /**
+     * ParentToolUseID is the launch tool_use of the SUBAGENT that is asking,
+     * or empty when the main agent asks. It is what nests the approval's
+     * timeline row under the agent's card and lights the card's "needs
+     * approval" pill; the prompt itself is still presented by the thread's
+     * normal approval UI. Claude carries the asking agent's `agent_id` on
+     * `can_use_tool` (== its task id), which the parser resolves through its
+     * task_id ↔ tool_use_id map; triage falls back to the requested tool's
+     * own persisted row scope when the parser could not resolve it.
+     */
+    "parentToolUseId"?: string;
     "toolName": string;
     "description": string;
     "input": json$0.RawMessage;
@@ -126,14 +138,14 @@ export class ApprovalRequest {
      * Creates a new ApprovalRequest instance from a string or object.
      */
     static createFrom($$source: any = {}): ApprovalRequest {
-        const $$createField9_0 = $$createType1;
-        const $$createField10_0 = $$createType3;
+        const $$createField10_0 = $$createType1;
+        const $$createField11_0 = $$createType3;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("permissions" in $$parsedSource) {
-            $$parsedSource["permissions"] = $$createField9_0($$parsedSource["permissions"]);
+            $$parsedSource["permissions"] = $$createField10_0($$parsedSource["permissions"]);
         }
         if ("elicitation" in $$parsedSource) {
-            $$parsedSource["elicitation"] = $$createField10_0($$parsedSource["elicitation"]);
+            $$parsedSource["elicitation"] = $$createField11_0($$parsedSource["elicitation"]);
         }
         return new ApprovalRequest($$parsedSource as Partial<ApprovalRequest>);
     }
@@ -822,6 +834,17 @@ export class UserInputRequest {
     "threadId": string;
     "turnId"?: string;
     "toolUseId"?: string;
+
+    /**
+     * ParentToolUseID is the launch tool_use of the SUBAGENT that is
+     * asking, or empty when the main agent asks — the UserInputRequest
+     * twin of ApprovalRequest.ParentToolUseID, resolved the same way
+     * (Claude's `can_use_tool.agent_id` through the parser's
+     * task_id ↔ tool_use_id map). It nests the prompt's timeline row
+     * under the agent's card; the prompt itself is still presented by
+     * the thread's normal user-input UI.
+     */
+    "parentToolUseId"?: string;
     "toolName": string;
     "title": string;
     "questions": UserInputQuestion[];
@@ -851,10 +874,10 @@ export class UserInputRequest {
      * Creates a new UserInputRequest instance from a string or object.
      */
     static createFrom($$source: any = {}): UserInputRequest {
-        const $$createField6_0 = $$createType26;
+        const $$createField7_0 = $$createType26;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("questions" in $$parsedSource) {
-            $$parsedSource["questions"] = $$createField6_0($$parsedSource["questions"]);
+            $$parsedSource["questions"] = $$createField7_0($$parsedSource["questions"]);
         }
         return new UserInputRequest($$parsedSource as Partial<UserInputRequest>);
     }

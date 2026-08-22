@@ -43,12 +43,45 @@ export type ActivityRunDefaultMode = "expanded" | "collapsed";
 export type ProjectSortMode = "lastActivity" | "createdAt" | "manual";
 export type CommitMessageStyle = "conventional" | "repo" | "custom";
 
+/**
+ * One breadcrumb hop in the agent companion's scope trail. The first entry
+ * is always the thread itself (`itemId: ''`, label `main`); every later
+ * entry is a launch row the reader descended into.
+ */
+export interface AgentPaneBreadcrumbEntry {
+  itemId: string;
+  label: string;
+}
+
+/**
+ * The agent companion's persisted scope: the launch item its thread view is
+ * filtered to, plus the trail that reached it. `scopeItemId` always equals
+ * the LAST breadcrumb entry's `itemId`, so the two can never disagree about
+ * where the pane is; a snapshot that breaks that is treated as malformed and
+ * its pane is dropped on restore.
+ *
+ * Declared here rather than beside the store so `paneLayout.svelte.ts` can
+ * carry it on a layout item without importing the agent store (which imports
+ * the layout store — a runtime cycle a type import avoids).
+ */
+export interface AgentPaneScopeSnapshot {
+  scopeItemId: string;
+  breadcrumb: AgentPaneBreadcrumbEntry[];
+}
+
 export interface PaneLayoutPersistedPane {
   paneId: string;
-  kind: "thread" | "plan" | "design-preview" | "review";
+  kind: "thread" | "plan" | "design-preview" | "review" | "agent";
   threadId?: string;
   sourcePaneId?: string;
   widthPx: number;
+  /**
+   * Present on `agent` companions only, and REQUIRED there — an agent pane
+   * with no scope has nothing to render, so the parser drops such an entry
+   * instead of restoring a blank pane. Optional on the type because every
+   * other kind omits it.
+   */
+  agentScope?: AgentPaneScopeSnapshot;
 }
 
 export interface PaneLayoutPersistedSettings {

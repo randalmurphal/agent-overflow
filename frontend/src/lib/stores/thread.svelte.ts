@@ -39,6 +39,7 @@ import {
   toggleCompanion,
 } from './companionPanes.svelte';
 import { openReviewCompanion } from './reviewPane.svelte';
+import { disposeAgentStateForPane, openAgentCompanion } from './agentPane.svelte';
 import { errString } from '../utils/errors';
 import type { RevealBoundary } from '../utils/subagentGrouping';
 import type { SubagentFoldAggregate } from '../utils/subagentFold';
@@ -1235,6 +1236,12 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     get showDesignPreviewPanel() {
       return isCompanionOpen(paneId, 'design-preview');
     },
+    /** Whether the agent companion (a subagent's scoped thread view) is
+     *  open for this pane. There is at most one — opening another node
+     *  swaps its scope (docs/specs/agent-visibility.md Q4b). */
+    get showAgentPane() {
+      return isCompanionOpen(paneId, 'agent');
+    },
     /**
      * Monotonically increasing counter bumped at the top of every
      * `switchThread`, `clear`, `startDraftPlaceholder`, and
@@ -2164,6 +2171,26 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
         const companion = companionForSource(paneId, 'review');
         if (companion) closeCompanion(companion.paneId);
       }
+    },
+
+    /**
+     * Open the agent companion scoped to `launchItemId` (an Agent/Task row,
+     * a forked Skill, a Codex spawn_agent — whatever the card was for), or
+     * re-scope the one already open. Opened from CARDS only; there is no
+     * header button, because "which agent" is not a question a header can
+     * answer.
+     */
+    openAgentPane(launchItemId: string, label: string): void {
+      if (!thread?.id) return;
+      openAgentCompanion(paneId, thread.id, launchItemId, label);
+    },
+
+    closeAgentPane(): void {
+      const companion = companionForSource(paneId, 'agent');
+      if (companion) closeCompanion(companion.paneId);
+      // Explicitly closing drops the trail: the next open arrives with its
+      // own launch row, so a retained breadcrumb could only be stale.
+      disposeAgentStateForPane(paneId);
     },
 
     toggleDesignPreviewPanel(): void {

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/stringsx"
 )
 
 func decodeUserInputRequest(raw json.RawMessage) provider.UserInputRequest {
@@ -70,6 +71,12 @@ func (r *Router) handleUserInputRequest(evt provider.ProviderEvent) error {
 	if request.ToolUseID == "" && request.ToolName == "user_input" {
 		request.ToolUseID = evt.ItemID
 	}
+	// Same attribution rule as an approval (approvals.go
+	// resolveInteractiveScope): a question a SUBAGENT raised belongs on
+	// its card. Resolved once here so the frontend event, the pending
+	// snapshot a reconnect hydrates from, and the Codex synthetic row
+	// completeCodexUserInputToolCall mints all carry one answer.
+	request.ParentToolUseID = r.resolveInteractiveScope(evt, request.ParentToolUseID, request.ToolUseID)
 	if request.RequestID == "" || request.ThreadID == "" || len(request.Questions) == 0 {
 		return r.handleError(provider.ProviderEvent{
 			Kind:      provider.EventError,
@@ -220,12 +227,16 @@ func (r *Router) completeCodexUserInputToolCall(evt provider.ProviderEvent, requ
 		turnID = evt.TurnID
 	}
 	return r.handleToolComplete(provider.ProviderEvent{
-		Kind:      provider.EventToolComplete,
-		ThreadID:  evt.ThreadID,
-		TurnID:    turnID,
-		ItemID:    request.ToolUseID,
-		ItemType:  "request_user_input",
-		Meta:      meta,
-		Timestamp: timestamp,
+		Kind:     provider.EventToolComplete,
+		ThreadID: evt.ThreadID,
+		TurnID:   turnID,
+		ItemID:   request.ToolUseID,
+		ItemType: "request_user_input",
+		// The synthetic row is the prompt's only timeline presence, so
+		// it carries the scope resolved at request time — otherwise a
+		// child agent's question renders as the main agent's.
+		ParentToolUseID: stringsx.FirstNonEmptyTrimmed(request.ParentToolUseID, evt.ParentToolUseID),
+		Meta:            meta,
+		Timestamp:       timestamp,
 	})
 }

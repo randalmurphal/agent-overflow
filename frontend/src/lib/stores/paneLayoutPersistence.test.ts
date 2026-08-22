@@ -13,6 +13,11 @@ import {
   resetCompanionPanesForTest,
 } from './companionPanes.svelte';
 import {
+  __resetAgentPaneStateForTest,
+  agentScopeForPane,
+  openAgentCompanion,
+} from './agentPane.svelte';
+import {
   createPane,
   focusPane,
   getAllPanes,
@@ -75,6 +80,13 @@ function makeSavedLayout(
     | { paneId: string; threadId: string; widthPx: number }
     | { paneId: string; kind: 'thread'; threadId: string; widthPx: number }
     | { paneId: string; kind: 'plan' | 'design-preview' | 'review'; sourcePaneId: string; widthPx: number }
+    | {
+        paneId: string;
+        kind: 'agent';
+        sourcePaneId: string;
+        widthPx: number;
+        agentScope: { scopeItemId: string; breadcrumb: { itemId: string; label: string }[] };
+      }
   >,
   focusedPaneId: string | null,
 ): PaneLayoutPersistedSettings {
@@ -120,6 +132,7 @@ describe('pane layout persistence', () => {
     resetAppStorageForTest();
     resetPanesForTest();
     resetCompanionPanesForTest();
+    __resetAgentPaneStateForTest();
     resetPaneLayoutForTest();
     installPaneLayoutPersistence();
     await installUIStateMock();
@@ -127,6 +140,7 @@ describe('pane layout persistence', () => {
 
   afterEach(() => {
     resetPaneLayoutPersistenceForTest();
+    __resetAgentPaneStateForTest();
     resetCompanionPanesForTest();
     vi.useRealTimers();
     vi.restoreAllMocks();
@@ -241,6 +255,154 @@ describe('pane layout persistence', () => {
     // The design-preview companion is dropped (source thread is not
     // design-mode), so its persisted focus cannot be honored.
     expect(getCompanionPane('design-preview-main')).toBeNull();
+    expect(getFocusedPaneId()).toBe('main');
+  });
+
+
+  it('round-trips an agent companion with its scope and seeds the state on restore', async () => {
+    const left = makeThread({ id: 'left-thread', title: 'Left' });
+    installPaneMocks();
+    seedPane('left', left);
+    setPaneLayoutItemsForTest([
+      { id: 'left', paneId: 'left', kind: 'thread', widthPx: 660 },
+    ]);
+    const scoped = openAgentCompanion('left', 'left-thread', 'launch-1', 'code-review');
+    // Descend one level, as a click inside the pane would.
+    scoped?.pushScope('launch-2', 'Angle B');
+
+    persistPaneLayout();
+    await waitForPaneLayoutPersistenceForTest();
+
+    expect(persistedPaneLayout()).toEqual(makeSavedLayout([
+      { paneId: 'left', threadId: 'left-thread', widthPx: 660 },
+      {
+        paneId: 'agent-left',
+        kind: 'agent',
+        sourcePaneId: 'left',
+        widthPx: 660,
+        agentScope: {
+          scopeItemId: 'launch-2',
+          breadcrumb: [
+            { itemId: '', label: 'main' },
+            { itemId: 'launch-1', label: 'code-review' },
+            { itemId: 'launch-2', label: 'Angle B' },
+          ],
+        },
+      },
+    ], 'left'));
+
+    // Drop the companion REGISTRY first: clearing a pane cascades
+    // closeCompanionsForSource, and a close persists — which would
+    // overwrite the snapshot under test before it is ever restored.
+    resetCompanionPanesForTest();
+    __resetAgentPaneStateForTest();
+    resetPanesForTest();
+    setPaneLayoutItemsForTest([]);
+
+    await loadPersistedPaneLayout([left]);
+
+    expect(getCompanionPane('agent-left')).toEqual({
+      paneId: 'agent-left',
+      kind: 'agent',
+      sourcePaneId: 'left',
+    });
+    expect(agentScopeForPane('left', 'left-thread')).toEqual({
+      scopeItemId: 'launch-2',
+      breadcrumb: [
+        { itemId: '', label: 'main' },
+        { itemId: 'launch-1', label: 'code-review' },
+        { itemId: 'launch-2', label: 'Angle B' },
+      ],
+    });
+  });
+
+  it('saves the layout when the agent scope changes with nothing else moving', async () => {
+    const left = makeThread({ id: 'left-thread' });
+    installPaneMocks();
+    seedPane('left', left);
+    setPaneLayoutItemsForTest([
+      { id: 'left', paneId: 'left', kind: 'thread', widthPx: 660 },
+    ]);
+    const scoped = openAgentCompanion('left', 'left-thread', 'launch-1', 'code-review');
+    await waitForPaneLayoutPersistenceForTest();
+
+    // A breadcrumb descent moves no pane, so nothing else would ask for a
+    // save — and the reload would land on the scope the reader left.
+    scoped?.pushScope('launch-2', 'Angle B');
+    await waitForPaneLayoutPersistenceForTest();
+
+    const saved = persistedPaneLayout() as { panes: Array<Record<string, unknown>> };
+    expect(saved.panes.find((pane) => pane.paneId === 'agent-left')?.agentScope).toEqual({
+      scopeItemId: 'launch-2',
+      breadcrumb: [
+        { itemId: '', label: 'main' },
+        { itemId: 'launch-1', label: 'code-review' },
+        { itemId: 'launch-2', label: 'Angle B' },
+      ],
+    });
+  });
+
+  it('drops a persisted agent pane whose scope is empty, missing, or malformed', async () => {
+    const thread = makeThread({ id: 'chat-thread' });
+    await installUIStateMock({
+      version: 3,
+      focusedPaneId: 'main',
+      panes: [
+        { paneId: 'main', kind: 'thread', threadId: thread.id, widthPx: 1 },
+        // No scope at all.
+        { paneId: 'agent-main', kind: 'agent', sourcePaneId: 'main', widthPx: 700 },
+      ],
+    });
+    installPaneMocks();
+
+    await loadPersistedPaneLayout([thread]);
+
+    expect(getCompanionPane('agent-main')).toBeNull();
+    expect(getPaneLayoutItems().map((item) => item.paneId)).toEqual(['main']);
+    expect(agentScopeForPane('main', thread.id)).toBeNull();
+
+    for (const agentScope of [
+      { scopeItemId: '', breadcrumb: [{ itemId: '', label: 'main' }] },
+      { scopeItemId: 'launch-1', breadcrumb: [] },
+      // The trail must END at the scope.
+      { scopeItemId: 'launch-1', breadcrumb: [{ itemId: '', label: 'main' }] },
+      { scopeItemId: 'launch-1', breadcrumb: [{ itemId: 'launch-1', label: 7 }] },
+      { scopeItemId: 'launch-1', breadcrumb: 'nope' },
+      { scopeItemId: 7, breadcrumb: [{ itemId: 'launch-1', label: 'x' }] },
+    ]) {
+      resetPanesForTest();
+      resetCompanionPanesForTest();
+      __resetAgentPaneStateForTest();
+      setPaneLayoutItemsForTest([]);
+      await installUIStateMock({
+        version: 3,
+        focusedPaneId: 'main',
+        panes: [
+          { paneId: 'main', kind: 'thread', threadId: thread.id, widthPx: 1 },
+          { paneId: 'agent-main', kind: 'agent', sourcePaneId: 'main', widthPx: 700, agentScope },
+        ],
+      });
+      installPaneMocks();
+
+      await loadPersistedPaneLayout([thread]);
+
+      expect(getCompanionPane('agent-main')).toBeNull();
+      expect(getPaneLayoutItems().map((item) => item.paneId)).toEqual(['main']);
+    }
+  });
+
+  it('rejects a persisted THREAD pane whose id is shaped like an agent companion id', async () => {
+    const good = makeThread({ id: 'good-thread' });
+    const impostor = makeThread({ id: 'impostor-thread' });
+    await installUIStateMock(makeSavedLayout([
+      { paneId: 'main', threadId: good.id, widthPx: 1 },
+      { paneId: 'agent-main', kind: 'thread', threadId: impostor.id, widthPx: 1 },
+    ], 'agent-main'));
+    installPaneMocks();
+
+    await loadPersistedPaneLayout([good, impostor]);
+
+    expect(getPaneLayoutItems().map((item) => item.paneId)).toEqual(['main']);
     expect(getFocusedPaneId()).toBe('main');
   });
 

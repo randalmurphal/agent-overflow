@@ -8,17 +8,22 @@ import {
   type PaneBoundaryDrag,
 } from '../utils/paneWidths';
 import { getPaneHostWidth } from './layoutMetrics.svelte';
+import type { AgentPaneScopeSnapshot } from '../types/settings';
 
 // 'thread' panes host a ChatView for a ThreadPane (the registry in
 // panes.svelte.ts). Companion panes are NOT ThreadPanes: they host surfaces
 // paired to a source thread pane via `sourcePaneId`. take-control remains
-// ephemeral; plan, design-preview, and review companions are persisted by layout
-// persistence and restored through companionPanes.svelte.ts.
-export type PaneLayoutKind = 'thread' | 'take-control' | 'plan' | 'design-preview' | 'review';
-export type CompanionPaneKind = 'take-control' | 'plan' | 'design-preview' | 'review';
+// ephemeral; plan, design-preview, review, and agent companions are persisted
+// by layout persistence and restored through companionPanes.svelte.ts.
+export type PaneLayoutKind = 'thread' | 'take-control' | 'plan' | 'design-preview' | 'review' | 'agent';
+export type CompanionPaneKind = 'take-control' | 'plan' | 'design-preview' | 'review' | 'agent';
 
 export function isCompanionKind(kind: PaneLayoutKind): kind is CompanionPaneKind {
-  return kind === 'take-control' || kind === 'plan' || kind === 'design-preview' || kind === 'review';
+  return kind === 'take-control' ||
+    kind === 'plan' ||
+    kind === 'design-preview' ||
+    kind === 'review' ||
+    kind === 'agent';
 }
 
 export interface PaneLayoutItem {
@@ -34,6 +39,13 @@ export interface PaneLayoutItem {
   // surface is paired to. Drives adjacency (companions sit immediately right
   // of their source) and cascade close (source closes → companions close).
   sourcePaneId?: string;
+  // Set only on 'agent' companion items, and only by layout RESTORE: the
+  // scope the pane was persisted at. It is a carrier, not the truth — the
+  // live scope lives in agentPane.svelte.ts, and buildSnapshot reads this
+  // only for a pane whose live state has not been created yet (restore ran,
+  // the body has not mounted, a width drag already asked for a save). Live
+  // state always wins.
+  agentScope?: AgentPaneScopeSnapshot;
 }
 
 interface PaneLayoutPersistenceHandlers {
@@ -71,6 +83,17 @@ function requestLayoutPersistence(debounced = false): void {
   }
 }
 
+/**
+ * Ask for a layout save from a store that owns state the SNAPSHOT reads but
+ * the layout items do not hold — currently the agent companion's scope
+ * (`agentPane.svelte.ts`). Without it a scope change would sit unsaved until
+ * some unrelated layout mutation happened to write, and a reload would
+ * restore the pane to a scope the reader had already left.
+ */
+export function requestPaneLayoutPersistence(): void {
+  requestLayoutPersistence();
+}
+
 export function flushPaneLayoutPersistence(): Promise<void> {
   return persistenceHandlers?.flush() ?? Promise.resolve();
 }
@@ -87,6 +110,14 @@ function cloneLayoutItem(item: PaneLayoutItem): PaneLayoutItem {
     widthPx: normalizePaneWidthPx(item.widthPx),
   };
   if (item.sourcePaneId !== undefined) cloned.sourcePaneId = item.sourcePaneId;
+  // Deep-copied: every clone hands out a layout item callers may hold, and a
+  // shared breadcrumb array would let one item's trail mutate another's.
+  if (item.agentScope !== undefined) {
+    cloned.agentScope = {
+      scopeItemId: item.agentScope.scopeItemId,
+      breadcrumb: item.agentScope.breadcrumb.map((entry) => ({ ...entry })),
+    };
+  }
   return cloned;
 }
 

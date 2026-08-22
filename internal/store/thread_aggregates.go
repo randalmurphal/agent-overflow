@@ -92,6 +92,23 @@ func (s *Store) GetThreadProposedPlanItem(threadID, itemID string) (Item, bool, 
 // launches plus their completion siblings whose `created_at` is inside
 // the retention window.
 //
+// The tray lists by BACKGROUNDED ANCESTRY, not by top-level-ness
+// (docs/specs/agent-visibility.md Q8). Three row classes qualify:
+//
+//  1. every live launch that is `is_background = 1`, at ANY depth — a
+//     nested agent that backgrounded a Bash is running work the user
+//     needs a handle on, and hiding it because its parent happened to
+//     be an agent is how backgrounded work went invisible;
+//  2. every live AGENT LAUNCH that descends from a background launch
+//     (subagentLaunchFilterFor — structural, never a tool-name list).
+//     Foreground PLAIN tool calls under a background agent stay out:
+//     they are the agent's own work, rendered inside its card. Because
+//     only a launch can be a parent, this class also supplies every
+//     intermediate ancestor between a background root and a nested
+//     launch, so the frontend indents by walking `parentId` WITHIN the
+//     result instead of asking for rows it was not given;
+//  3. the recent completion siblings of that same anchor set.
+//
 // A background process launch stays `status='running'` forever (spec
 // invariant — the sibling completion row carries the final state). The
 // launch and its completion must age out together: returning an orphan
@@ -99,6 +116,16 @@ func (s *Store) GetThreadProposedPlanItem(threadID, itemID string) (Item, bool, 
 // indefinitely. A launch with no completion yet still surfaces unless
 // projection meta explicitly marks it inactive with
 // `live_background_active=false`.
+//
+// This is the DISPLAY query only. The reaper and queue gates in
+// items_lifecycle.go (HasRunningTopLevelForegroundToolCall,
+// HasLiveBackgroundToolCall, HasQueueBlockingBackgroundToolCall,
+// CountLiveRunningBackgroundToolCalls,
+// MarkLiveBackgroundToolCallsInactive) and paging.go's
+// topLevelItemsFilter KEEP `parent_id = ''`: whether the tray SHOWS a
+// nested background Bash and whether that Bash blocks the flush queue
+// or survives a session teardown are different questions, and the
+// second one is still answered at the top level only.
 //
 // Codex subagents are different: the chat-history spawn card is completed
 // immediately while the child thread keeps running. App.ListLiveBackgroundTasks
@@ -108,16 +135,35 @@ func (s *Store) GetThreadProposedPlanItem(threadID, itemID string) (Item, bool, 
 // Thread-scoped. Live launches surface regardless of turn_index.
 // Ordering is (turn_index, item_index) so launches precede completions.
 func (s *Store) ListLiveBackgroundTasks(threadID string, retentionCutoffMillis int64) ([]Item, error) {
+	// Placeholder order: bg roots (threadID), descendants base hop
+	// (threadID), descendants recursive hop (threadID), anchor join
+	// (threadID), outer scope (threadID), launch completion window
+	// (cutoff), sibling window (cutoff).
 	rows, err := s.reader().Query(
-		`SELECT `+itemColumns+`
+		`WITH RECURSIVE bg(id) AS (
+		    SELECT id FROM items
+		     WHERE thread_id = ?
+		       AND kind = 'tool_call'
+		       AND is_background = 1
+		),
+		`+descendantsCTE("items", "SELECT id FROM bg")+`,
+		anchors(id) AS (
+		    SELECT id FROM bg
+		    UNION
+		    SELECT i.id
+		      FROM rel
+		      CROSS JOIN items i ON i.thread_id = ? AND i.id = rel.id
+		     WHERE `+subagentLaunchFilterFor("i.")+`
+		)
+		SELECT `+itemColumns+`
 		   FROM items
 		   LEFT JOIN payloads ON payloads.thread_id = items.thread_id AND payloads.id = items.payload_id
 		  WHERE items.thread_id = ?
 		    AND (
 		      (
-		        items.is_background = 1
+		        items.id IN (SELECT id FROM anchors)
+		        AND items.kind = 'tool_call'
 		        AND items.status = 'running'
-		        AND items.parent_id = ''
 		        AND COALESCE(json_extract(items.meta, '$.live_background_active'), 1) != 0
 		        AND (
 		          NOT EXISTS (
@@ -138,14 +184,11 @@ func (s *Store) ListLiveBackgroundTasks(threadID string, retentionCutoffMillis i
 		      OR (
 		        items.completion_of <> ''
 		        AND items.created_at >= ?
-		        AND items.completion_of IN (
-		          SELECT id FROM items
-		           WHERE thread_id = ? AND is_background = 1 AND parent_id = ''
-		        )
+		        AND items.completion_of IN (SELECT id FROM anchors)
 		      )
 		    )
 		  ORDER BY items.turn_index, items.item_index`,
-		threadID, retentionCutoffMillis, retentionCutoffMillis, threadID,
+		threadID, threadID, threadID, threadID, threadID, retentionCutoffMillis, retentionCutoffMillis,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("store: list live background tasks for %s: %w", threadID, err)

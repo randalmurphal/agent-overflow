@@ -135,6 +135,18 @@
   // projection — grouping, run wrapping and the virtualizer's data array
   // for ~800 rows, at up to 48Hz.
   let parent = $derived(pane?.getItemById(group.parent.id) ?? group.parent);
+  // A backgrounded launch row stays `running` forever by design (the tray
+  // invariant: the launch is immutable and the outcome arrives on a separate
+  // `complete:<id>` sibling). The grouping folds that sibling onto the node,
+  // and it — not the launch — is what says whether this agent finished, how
+  // it finished, and when. An awaited launch has no sibling and completes in
+  // place, so the launch row remains the source there.
+  let completionItem = $derived(
+    group.completion
+      ? (pane?.getItemById(group.completion.id) ?? group.completion)
+      : null,
+  );
+  let statusItem = $derived(completionItem ?? parent);
   let decorated = $derived(decoratedSubagentAggregates(parent));
   // Max, not replace — the same reconciliation `subagentGroupNode` does,
   // re-run against the live anchor. The node's count already folds in
@@ -169,6 +181,9 @@
   }
   let parentMeta = $derived(parseJsonObject(parent.meta));
   let payloadMeta = $derived(parseJsonObject(parent.payloadMeta));
+  let statusPayloadMeta = $derived(
+    completionItem ? parseJsonObject(completionItem.payloadMeta) : payloadMeta,
+  );
   let inputObject = $derived(readClaudeSubagentInput(payloadMeta, parentMeta));
   let parentToolName = $derived((parent.toolName ?? '').trim());
 
@@ -188,29 +203,25 @@
   // branches of the duration / status slots. The previous
   // `isBackgroundedLaunch` derivation existed only to pick between
   // the two unused strings, so it goes away with them.
-  let isRunning = $derived(parent.status === 'running' || parent.status === 'streaming');
+  let isRunning = $derived(
+    statusItem.status === 'running' || statusItem.status === 'streaming',
+  );
 
-  // The latest-action preview row is conditional because this card can
-  // still turn out to be a backgrounded launch: Claude's async-default
-  // agents carry no `run_in_background` in their tool input, and
-  // `is_background` lands only with the CLI's ack tool_result
-  // (claude-wire.md §E5) — at which point the grouping flips this whole
-  // card into an AgentRow leaf. The timeline physics spring growth, not
-  // shrink, so the "Initializing..." placeholder waits for proof the
-  // card will stay foreground: a descendant exists (loaded, evicted
-  // fold, or backend decoration — descendantCount folds in all three)
-  // or the input explicitly declined backgrounding. A real child
-  // summary needs no gate — child activity is itself that proof.
-  // Before proof, the header renders one line, matching the leaf's
-  // height so a flip is height-neutral; after settle with no child
-  // text there is nothing to say, so the placeholder never sticks to
-  // finished or failed cards.
-  let foregroundConfirmed = $derived(
+  // The "Initializing..." placeholder waits for proof that this launch
+  // actually has a transcript: a descendant exists (loaded, evicted fold,
+  // or backend decoration — descendantCount folds in all three) or the
+  // input explicitly declined backgrounding. Until then the header renders
+  // one line, so a card that never produces child activity does not grow
+  // and then shrink (the timeline physics spring growth, not shrink). A
+  // real child summary needs no gate — child activity is itself the proof;
+  // and after settle with no child text there is nothing to say, so the
+  // placeholder never sticks to finished or failed cards.
+  let activityConfirmed = $derived(
     descendantCount > 0 || inputObject?.run_in_background === false,
   );
   let previewText = $derived.by<string>(() => {
     if (latestChildSummary) return latestChildSummary;
-    return foregroundConfirmed && isRunning ? 'Initializing...' : '';
+    return activityConfirmed && isRunning ? 'Initializing...' : '';
   });
 
   // Shared 1Hz clock (useRunningElapsed.svelte.ts) instead of a private
@@ -223,18 +234,23 @@
   let elapsedLabel = $derived.by<string>(() => {
     const start = parent.createdAt;
     if (!Number.isFinite(start) || start <= 0) return '';
-    const end = isRunning ? clock.now : parent.updatedAt;
+    // Start at the launch, end at whatever carries the terminal — for a
+    // background agent that is the completion sibling, whose updatedAt is
+    // when the task actually reported back.
+    const end = isRunning ? clock.now : statusItem.updatedAt;
     if (!Number.isFinite(end) || end <= start) return '';
     return formatElapsedSeconds(Math.floor((end - start) / 1_000));
   });
 
   let completionStatus = $derived(
-    deriveCompletionStatus(parent, { meta: payloadMeta }),
+    deriveCompletionStatus(statusItem, { meta: statusPayloadMeta }),
   );
-  let indicatorState = $derived(indicatorStateForItem(parent, { meta: payloadMeta }));
+  let indicatorState = $derived(
+    indicatorStateForItem(statusItem, { meta: statusPayloadMeta }),
+  );
   let rowError = $derived.by(() => {
     if (completionStatus !== 'failure') return null;
-    return rowErrorForStatus(parent.status, 'Agent failed') ?? {
+    return rowErrorForStatus(statusItem.status, 'Agent failed') ?? {
       tone: 'error' as const,
       msg: 'Agent failed',
     };
@@ -314,7 +330,7 @@
         >
           {#snippet status()}
             <ToolRowStatusIndicator
-              item={parent}
+              item={statusItem}
               state={isRunning || completionStatus === 'failure' ? indicatorState : null}
               testId="subagent-group-status"
             />

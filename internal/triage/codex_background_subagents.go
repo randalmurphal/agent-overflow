@@ -450,7 +450,20 @@ func (r *Router) markCodexSpawnChildTerminal(launch store.Item, meta codexItemMe
 	aggregateStatus := aggregateCodexSubagentTerminalStatus(meta.ReceiverThreadIDs, terminalStatuses)
 	launch.Meta = mergeItemMetaJSON(launch.Meta, codexSubagentTerminalMeta(childID, status, allTerminal, aggregateStatus))
 	launch.UpdatedAt = time.Now().UnixMilli()
-	return allTerminal, aggregateStatus, r.persistItem(launch, nil)
+	if err := r.persistItem(launch, nil); err != nil {
+		return allTerminal, aggregateStatus, err
+	}
+	// A child going terminal is where this spawn's live token counters
+	// stop moving, so they become durable here. Every child terminal
+	// folds — not just the last — because a spawn with several children
+	// keeps ticking after the first one settles, and the fold is
+	// order-free: the persisted numbers are the next fold's merge base.
+	// Ordered AFTER the persist above so it merges onto the meta that
+	// write just landed rather than being clobbered by it.
+	if err := r.persistFinalSubagentProgress(launch); err != nil {
+		return allTerminal, aggregateStatus, err
+	}
+	return allTerminal, aggregateStatus, nil
 }
 
 func aggregateCodexSubagentTerminalStatus(receiverThreadIDs []string, terminalStatuses map[string]string) string {

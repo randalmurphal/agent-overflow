@@ -74,14 +74,26 @@ func isChildTurnLifecycleNotification(method string) bool {
 // (adding child notification handling in one helper but not the matching
 // lifecycle / suppression helper is a subtle bug).
 //
+// `thread/tokenUsage/updated` is NO LONGER here either. It used to be,
+// for the reason above — the child's window would overwrite the
+// parent's meter — but dropping it outright also threw away the ONLY
+// live signal Codex gives for a running child
+// (docs/specs/agent-visibility.md: "Live progress ... for Codex, the
+// child thread's `thread/tokenUsage/updated` (unsuppressed into a
+// scoped progress event)"). It is now intercepted in
+// `dispatchRoutableNotification` and re-emitted as a SCOPED
+// `EventSubagentProgress` naming the spawn tool_use, which reaches
+// neither the parent's usage accounting nor `EventTokenUsage`. The
+// intercept returns before the classifier, so removing it from this
+// list cannot make it fall through to the parent meter.
+//
 // `error` and unrecognised `thread/*` methods (e.g. a future
 // `thread/error`) are ALSO intentionally not suppressed — subagent
 // failures need to surface on the parent thread so the user knows
 // something went wrong; silently dropping them would hide real errors.
 func isChildSuppressedThreadNotification(method string) bool {
 	switch method {
-	case "thread/tokenUsage/updated",
-		"thread/compacted",
+	case "thread/compacted",
 		"thread/name/updated",
 		"thread/started",
 		"thread/settings/updated",
@@ -203,6 +215,13 @@ func (s *Session) childLifecycleRevisionForThread(providerThreadID string) uint6
 // child even when the child itself is known. Transcript-bearing child events
 // (assistant text, thinking, tools, command output, diffs, warnings) remain
 // allowed and receive ParentToolUseID in the normal dispatch path.
+//
+// `EventSubagentProgress` is allowed by default (it is not listed) and
+// that is deliberate: it is the child's OWN usage channel, scoped to the
+// spawn tool_use and consumed as per-agent live state, never folded into
+// the parent's meter. `EventTokenUsage` below stays forbidden, which is
+// what keeps the two apart — a child's numbers reach the UI only under
+// the agent's own id.
 func isUnsafeChildProjectionEvent(kind provider.EventKind) bool {
 	switch kind {
 	case provider.EventInit,
@@ -268,6 +287,83 @@ func (s *Session) childStatusEvent(providerThreadID, parentToolUseID, status str
 		Meta:            meta,
 		Timestamp:       time.Now(),
 	}
+}
+
+// childProgressEvent projects a CHILD thread's `thread/tokenUsage/updated`
+// into the provider-neutral live-progress channel
+// (docs/specs/agent-visibility.md). Codex reports no tool count and no
+// elapsed time for a child, so tokens are the whole tick — which is why
+// SubagentProgressMeta is merged rather than replaced downstream.
+//
+//   - ItemID is the spawn tool_use, so the tick lands on the spawn card
+//     the child belongs to.
+//   - ParentToolUseID is the SPAWN's own parent when the wire lets us
+//     resolve one, so a nested spawn's tick is attributable without a
+//     row lookup. Codex publishes no direct edge; the canonical agent
+//     path is the one thing that encodes the chain
+//     (`/root/reviewer/deep` → `/root/reviewer`), so a build that sends
+//     no path — or a depth-1 child, whose parent is the root thread and
+//     owns no launch — resolves to empty, which is the honest answer.
+//   - TaskID is the child provider thread id: the provider's own name
+//     for the running agent.
+//
+// nil when the notification named no child thread, no spawn, or carried
+// no cumulative total.
+func (s *Session) childProgressEvent(providerThreadID, parentToolUseID string, params json.RawMessage) *provider.ProviderEvent {
+	providerThreadID = strings.TrimSpace(providerThreadID)
+	parentToolUseID = strings.TrimSpace(parentToolUseID)
+	if providerThreadID == "" || parentToolUseID == "" {
+		return nil
+	}
+	total, ok := childCumulativeTokenTotal(params)
+	if !ok {
+		return nil
+	}
+	meta, err := json.Marshal(provider.SubagentProgressMeta{
+		TaskID:      providerThreadID,
+		TotalTokens: total,
+	})
+	if err != nil {
+		log.Printf("codex: marshal child progress for %s: %v", providerThreadID, err)
+		return nil
+	}
+	return &provider.ProviderEvent{
+		Kind:            provider.EventSubagentProgress,
+		ThreadID:        s.threadID,
+		ItemID:          parentToolUseID,
+		ParentToolUseID: s.spawnLaunchParentToolUse(providerThreadID),
+		Meta:            meta,
+		Timestamp:       time.Now(),
+	}
+}
+
+// emitChildTokenUsageProgress is the dispatch-side wrapper: a child's
+// token usage becomes a scoped progress tick or nothing at all. It never
+// reaches usageAcct.observe or the notification classifier — the caller
+// returns immediately after — so the parent's own meter and its
+// EventTokenUsage stream are untouched (ADR-002).
+func (s *Session) emitChildTokenUsageProgress(providerThreadID, parentToolUseID string, params json.RawMessage) {
+	event := s.childProgressEvent(providerThreadID, parentToolUseID, params)
+	if event == nil {
+		return
+	}
+	s.emitEvent(*event)
+}
+
+// spawnLaunchParentToolUse resolves the spawn tool_use's OWN parent for a
+// nested child: the launch of the agent that spawned this child's
+// spawner. See childProgressEvent for why the canonical path is the only
+// available edge. Empty for a depth-1 child and for any build that sends
+// no path.
+func (s *Session) spawnLaunchParentToolUse(providerThreadID string) string {
+	s.mu.Lock()
+	agentPath := s.agentPathByThread[strings.TrimSpace(providerThreadID)]
+	s.mu.Unlock()
+	cut := strings.LastIndex(agentPath, "/")
+	if cut <= 0 {
+		return ""
+	}
+	return s.parentToolUseForAgentPath(agentPath[:cut])
 }
 
 func (s *Session) childErrorStatusEvent(providerThreadID, parentToolUseID string) *provider.ProviderEvent {

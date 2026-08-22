@@ -449,6 +449,11 @@ var LocalOnlyMethods = map[string]bool{
 	"StopClaudeTask":                   true,
 	"CleanCodexBackgroundTerminals":    true,
 	"TerminateCodexBackgroundTerminal": true,
+	// BackgroundClaudeTask drives the same live Claude stdio control
+	// channel in the opposite direction: it detaches a running subagent /
+	// Bash from the foreground turn rather than killing it. Session
+	// control over a local subprocess either way.
+	"BackgroundClaudeTask": true,
 	// StartCodexReview and CompactCodexThread each start a real, billed,
 	// non-steerable turn on the thread's live provider subprocess — the
 	// review one that reads the user's working tree or git history and runs

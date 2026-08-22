@@ -146,6 +146,61 @@ lifecycle.
   task completion state. See
   [claude-wire.md §task_notification](../references/claude-wire.md#systemtask_notification).
 
+### Live progress, mid-flight backgrounding, and the level set
+
+Three additional `system/*` pushes ride the same `task_id` keyspace.
+None of them is a lifecycle transition, and none may be treated as one.
+
+- **`system/task_progress` — live only, never history.** The CLI emits a
+  tick after every tool round the subagent completes, carrying
+  cumulative `usage{total_tokens, tool_uses, duration_ms}` plus the
+  agent's `description` and `last_tool_name`. The parser resolves the
+  tick's `task_id` to the LAUNCH `tool_use_id` and emits
+  `EventSubagentProgress`; triage MERGES it into an in-memory entry
+  keyed `(threadId, itemId)` and fans it out on
+  `provider:subagent_progress`. Nothing is written per tick — persisting
+  a row per tool round for work the provider already records is exactly
+  what principle 3 forbids. The FINAL numbers land once, on the launch
+  row's `meta.subagentProgress`, when the launch reaches its terminal
+  (`persistSubagentFinalProgress`), which is also where
+  `task_notification`'s authoritative `usage` block folds in. A tick
+  whose `task_id` this parser cannot resolve (it reconnected mid-agent)
+  is dropped with a log line — never emitted with an empty `ItemID`,
+  which would address the wrong row.
+- **`system/task_updated` with `patch.is_backgrounded: true` and NO
+  `patch.status` — stamps the launch row.** This is the only wire-typed
+  statement that a FOREGROUND agent was moved to the background
+  mid-flight, i.e. the moment its sidechain streaming stops. It emits
+  `EventSubagentBackgrounded` on the launch `tool_use_id`; triage flips
+  `is_background` on the launch row and stamps
+  `meta.subagentBackgroundedAt` with the cut timestamp so the pane can
+  place its "streaming paused" marker after the last streamed row. It is
+  NOT a terminal and must not clear the task's liveness: the §E5 async
+  ack that follows still needs to carry `is_background: true`. A patch
+  that DOES carry a terminal `status` takes the terminal path above
+  unchanged.
+- **`system/background_tasks_changed` — a LEVEL set, and a tray nudge.**
+  The payload's `tasks` array is the provider's FULL replacement set of
+  currently-backgrounded tasks, not a delta, and the distinction between
+  an ABSENT `tasks` key (no statement — dropped) and an EMPTY array (a
+  real "nothing is backgrounded now") is load-bearing, exactly as it is
+  for `commands_changed`. It emits `EventBackgroundTasksChanged`, which
+  triage forwards on the shared `provider:background_tasks_changed`
+  channel Codex already uses. Consumers treat any frame as a nudge to
+  refresh their tray listing; the set rides along so a consumer that
+  wants reconnect-safe membership can read it without a round trip. It
+  is not a completion source and never mutates a row.
+
+AO can also DRIVE this transition rather than only observe it:
+`Session.BackgroundTask` sends `control_request{subtype:
+"background_tasks", tool_use_id}` and verifies
+`response.backgrounded == true` — a `false` is the provider saying no
+foreground task matched, which is an error, not a silent no-op.
+`App.BackgroundClaudeTask` is the bound method behind it (local-only,
+same class as `StopClaudeTask`). The `task_updated` and
+`background_tasks_changed` pushes arrive BEFORE the control response, so
+the row is already stamped by the time the call returns.
+
 ### Inline `local_agent` launches emit this lifecycle too
 
 `system/task_started` fires for EVERY Bash/Task invocation — foreground
@@ -582,7 +637,10 @@ cases only — it must not feed turn detection.
 | Claude `system/task_started` | `EventToolStart` (meta-only) | `provider:item_event` upsert | Merge `task_id` into `items.meta` |
 | Claude `system/task_updated` terminal | `EventBackgroundTaskTerminal` | `provider:background_task_state` exited | Stash terminal in `pending_background_task_terminals`; no chat sibling yet |
 | Claude TaskOutput `tool_result` | `EventToolComplete` + optional `EventBackgroundTaskTerminal` | `provider:item_event` upsert | Close TaskOutput row; drain stash and write/enrich sibling when terminal data is present |
-| Claude `system/task_notification` | — today; future notification event only | — today; future row only | No lifecycle state mutation |
+| Claude `system/task_notification` | `EventBackgroundTaskNotification` (+ `meta.usage` when present) | `provider:item_event` upsert (notification row, backgrounded top-level launches only) | No lifecycle state mutation; the authoritative `usage` folds into the launch row's final `meta.subagentProgress` |
+| Claude `system/task_progress` | `EventSubagentProgress` | `provider:subagent_progress` | LIVE ONLY — merged into an in-memory entry per launch, fanned out, never persisted per tick; final numbers persist on the launch row at its terminal |
+| Claude `system/task_updated` `patch.is_backgrounded` (no status) | `EventSubagentBackgrounded` | `provider:item_event` patch | Flip `is_background` on the LAUNCH row + stamp `meta.subagentBackgroundedAt`; not a terminal, liveness stays armed |
+| Claude `system/background_tasks_changed` | `EventBackgroundTasksChanged` | `provider:background_tasks_changed` | LEVEL set — forwarded as a tray nudge carrying full membership; absent `tasks` key is dropped, empty array is a real empty set; no row written |
 | Claude `result` | `EventTurnComplete` | `provider:turn_completed` | Update `turns` row, force-close orphans |
 | Codex `item/started` | `EventToolStart` | `provider:item_event` upsert for persisted items | Upsert item row; `unifiedExecStartup` starts stay transient tray state |
 | Codex `item/completed` | `EventToolComplete` | `provider:item_event` upsert for persisted items | Update item row; unifiedExec completion clears live state and only persists while a Codex wire round is active |

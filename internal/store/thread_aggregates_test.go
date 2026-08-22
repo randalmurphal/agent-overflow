@@ -282,12 +282,16 @@ func TestMarkLiveBackgroundToolCallsInactiveClearsOnlyLiveTopLevelLaunches(t *te
 		t.Fatalf("child status = %q, want running", child.Status)
 	}
 
+	// The DISPLAY query lists by backgrounded ancestry, so the nested
+	// background launch is a tray row even though the top-level-only
+	// reaper above left it untouched. `run` drops out because the reaper
+	// marked it inactive; `child` stays because nothing marked it.
 	live, err := s.ListLiveBackgroundTasks("t", 0)
 	if err != nil {
 		t.Fatalf("list live background tasks: %v", err)
 	}
-	if ids := collectIDs(live); !equalStringSlice(ids, []string{"completed-launch", "completed-row"}) {
-		t.Fatalf("live ids = %v, want completed launch pair only", ids)
+	if ids := collectIDs(live); !equalStringSlice(ids, []string{"completed-launch", "completed-row", "child"}) {
+		t.Fatalf("live ids = %v, want the completed launch pair plus the nested launch", ids)
 	}
 }
 
@@ -659,7 +663,17 @@ func TestListLiveBackgroundTasks_CrossThreadIsolation(t *testing.T) {
 	}
 }
 
-func TestListLiveBackgroundTasks_ExcludesSubagentScopedBackgroundRows(t *testing.T) {
+// TestListLiveBackgroundTasks_IncludesSubagentScopedBackgroundRows is
+// the inverse of what this file used to pin (0a285f77 "Hide subagent
+// commands from background tray"). The tray now lists by backgrounded
+// ancestry (docs/specs/agent-visibility.md Q8): a background Bash the
+// review agent started is still backgrounded work, so it and its recent
+// completion sibling are tray rows at depth 1. What 0a285f77 was
+// actually protecting — a subagent's FOREGROUND tool calls flooding the
+// tray, and a subagent-scoped row blocking the flush queue — is still
+// protected: see the foreground-exclusion assertion below and
+// TestHasLiveBackgroundToolCall_ExcludesSubagentScopedBackgroundRows.
+func TestListLiveBackgroundTasks_IncludesSubagentScopedBackgroundRows(t *testing.T) {
 	s := newTestStore(t)
 	if err := s.CreateThread(makeThread("t", "claude")); err != nil {
 		t.Fatalf("create thread: %v", err)
@@ -719,14 +733,119 @@ func TestListLiveBackgroundTasks_ExcludesSubagentScopedBackgroundRows(t *testing
 		t.Fatalf("seed scoped completion: %v", err)
 	}
 
-	seedBackgroundItem(t, s, "t", "top-level-bash", 0, 3, "running", "", 300)
+	// A FOREGROUND plain tool call under the same agent: the agent's own
+	// work, rendered inside its card, never a tray row.
+	if err := s.InsertItem(Item{
+		ID:        "child-read",
+		ThreadID:  "t",
+		TurnIndex: 0,
+		ItemIndex: 3,
+		Kind:      "tool_call",
+		Role:      "assistant",
+		Status:    "running",
+		Summary:   "Read: main.go",
+		ParentID:  "spawn-parent",
+		ToolName:  "Read",
+		CreatedAt: 250,
+		UpdatedAt: 250,
+	}); err != nil {
+		t.Fatalf("seed foreground child: %v", err)
+	}
+
+	seedBackgroundItem(t, s, "t", "top-level-bash", 0, 4, "running", "", 300)
 
 	got, err := s.ListLiveBackgroundTasks("t", 4000)
 	if err != nil {
 		t.Fatalf("list tasks: %v", err)
 	}
-	if !equalStringSlice(collectIDs(got), []string{"top-level-bash"}) {
-		t.Fatalf("ids: got %v, want [top-level-bash]", collectIDs(got))
+	want := []string{"child-bash", "child-bash-done", "top-level-bash"}
+	if !equalStringSlice(collectIDs(got), want) {
+		t.Fatalf("ids: got %v, want %v", collectIDs(got), want)
+	}
+	// The foreground agent that owns them is NOT a tray row: it is not
+	// backgrounded and does not descend from anything that is.
+	for _, id := range collectIDs(got) {
+		if id == "spawn-parent" || id == "child-read" {
+			t.Fatalf("unexpected tray row %q in %v", id, collectIDs(got))
+		}
+	}
+}
+
+// TestListLiveBackgroundTasks_NestedAgentUnderBackgroundLaunch pins the
+// second row class: an agent launch that DESCENDS from a background
+// launch is a tray row even though it is itself foreground, so the
+// frontend can indent depth-2 work by walking parentId within the
+// result. Its own plain tool call is not.
+func TestListLiveBackgroundTasks_NestedAgentUnderBackgroundLaunch(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.CreateThread(makeThread("t", "claude")); err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+
+	// bg-agent (background, depth 0)
+	//   └─ nested-agent (foreground launch, depth 1)  -> tray row
+	//        ├─ leaf-read (plain tool call)           -> NOT a tray row
+	//        └─ deep-agent (foreground launch, depth 2) -> tray row
+	//             └─ deep-leaf (plain tool call)      -> NOT a tray row
+	seedBackgroundItem(t, s, "t", "bg-agent", 0, 0, "running", "", 100)
+	seedChildToolCall(t, s, "t", "nested-agent", "bg-agent", 0, 1, "running", "Agent", 200)
+	seedChildToolCall(t, s, "t", "leaf-read", "nested-agent", 0, 2, "running", "Read", 300)
+	seedChildToolCall(t, s, "t", "deep-agent", "nested-agent", 0, 3, "running", "Agent", 400)
+	seedChildToolCall(t, s, "t", "deep-leaf", "deep-agent", 0, 4, "running", "Bash", 500)
+
+	got, err := s.ListLiveBackgroundTasks("t", 0)
+	if err != nil {
+		t.Fatalf("list tasks: %v", err)
+	}
+	want := []string{"bg-agent", "nested-agent", "deep-agent"}
+	if !equalStringSlice(collectIDs(got), want) {
+		t.Fatalf("ids: got %v, want %v", collectIDs(got), want)
+	}
+
+	// The gates stay top-level: none of this blocks the flush queue.
+	blocking, err := s.HasLiveBackgroundToolCall("t")
+	if err != nil {
+		t.Fatalf("has live background: %v", err)
+	}
+	if !blocking {
+		t.Fatal("the top-level background agent should still block the queue")
+	}
+	count, err := s.CountLiveRunningBackgroundToolCalls("t")
+	if err != nil {
+		t.Fatalf("count live background: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("live background count = %d, want 1 (top level only)", count)
+	}
+}
+
+// seedChildToolCall persists a foreground tool_call attributed to a
+// parent launch. `toolName` is cosmetic — the launch predicate is
+// structural (a row that has children is a launch), never a name list.
+func seedChildToolCall(
+	t *testing.T,
+	s *Store,
+	threadID, id, parentID string,
+	turnIndex, itemIndex int,
+	status, toolName string,
+	createdAt int64,
+) {
+	t.Helper()
+	if err := s.InsertItem(Item{
+		ID:        id,
+		ThreadID:  threadID,
+		TurnIndex: turnIndex,
+		ItemIndex: itemIndex,
+		Kind:      "tool_call",
+		Role:      "assistant",
+		Status:    status,
+		Summary:   id,
+		ParentID:  parentID,
+		ToolName:  toolName,
+		CreatedAt: createdAt,
+		UpdatedAt: createdAt,
+	}); err != nil {
+		t.Fatalf("seed child tool call %s: %v", id, err)
 	}
 }
 

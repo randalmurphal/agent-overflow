@@ -398,7 +398,15 @@ func TestMultiAgentV2ChildThreadWideEventsAreSuppressedAndErrorsAreNonFatal(t *t
 	s.dispatchLine(v2ActivityLine("root-provider-thread", "root-turn", "spawn-a", "started", "child-a", "/root/reviewer"))
 	events = nil
 
+	// A child's token usage is no longer dropped: it is re-emitted as a
+	// SCOPED progress tick (never EventTokenUsage, never the parent
+	// meter). See TestDispatchLineChildTokenUsageBecomesScopedProgress.
 	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"thread/tokenUsage/updated","params":{"threadId":"child-a","tokenUsage":{"last":{"totalTokens":5},"total":{"totalTokens":5},"modelContextWindow":100}}}`))
+	if len(events) != 1 || events[0].Kind != provider.EventSubagentProgress || events[0].ItemID != "spawn-a" {
+		t.Fatalf("child token usage = %+v, want one scoped progress tick", events)
+	}
+	events = nil
+
 	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"child-a","turnId":"child-turn","item":{"id":"child-user","type":"userMessage","content":[{"type":"text","text":"child prompt"}]}}}`))
 	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"model/rerouted","params":{"threadId":"child-a","toModel":"other-model"}}`))
 	if len(events) != 0 {

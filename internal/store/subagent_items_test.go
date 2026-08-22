@@ -510,3 +510,73 @@ func TestDecorateSubagentAnchors_LeavesChildlessRowsUntouched(t *testing.T) {
 		t.Error("non-tool_call row must not receive subagent decoration")
 	}
 }
+
+// TestIsSubagentLaunch_StructuralNotToolName pins the provider-neutral
+// launch predicate: a tool_call that other rows are attributed to is a
+// launch, whatever it is called; a tool_call with nothing under it is
+// not, however agent-shaped its name is. That is what keeps triage's
+// final-progress persistence off ordinary tool calls without either
+// package maintaining a list of launch tool names.
+func TestIsSubagentLaunch_StructuralNotToolName(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.CreateThread(makeThread("t", "claude")); err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+	// An anonymous MCP tool that spawned attributed rows IS a launch.
+	seedAnchorItem(t, s, "t", "mcp__thing", 0, 0)
+	seedChildItem(t, s, "t", "child", 0, 1, "mcp__thing", "child work", "completed")
+	// A row NAMED Agent with nothing attributed is NOT.
+	if err := s.InsertItem(Item{
+		ID: "toolu_bare_agent", ThreadID: "t", TurnIndex: 0, ItemIndex: 2,
+		Kind: "tool_call", Role: "assistant", Status: "running",
+		Summary: "Agent: review", ToolName: "Agent", CreatedAt: 2,
+	}); err != nil {
+		t.Fatalf("seed bare agent: %v", err)
+	}
+	// A non-tool_call row that somehow anchors children is NOT.
+	seedChildItem(t, s, "t", "text-parent", 0, 3, "", "text", "completed")
+	seedChildItem(t, s, "t", "text-child", 0, 4, "text-parent", "nested", "completed")
+
+	for _, tc := range []struct {
+		id   string
+		want bool
+	}{
+		{"mcp__thing", true},
+		{"toolu_bare_agent", false},
+		{"text-parent", false},
+		{"child", false},
+		{"missing", false},
+		{"", false},
+	} {
+		got, err := s.IsSubagentLaunch("t", tc.id)
+		if err != nil {
+			t.Fatalf("is subagent launch %q: %v", tc.id, err)
+		}
+		if got != tc.want {
+			t.Errorf("IsSubagentLaunch(%q) = %v, want %v", tc.id, got, tc.want)
+		}
+	}
+}
+
+// TestIsSubagentLaunch_CrossThreadIsolation pins that a launch in one
+// thread cannot be answered for by another thread's children — the
+// EXISTS probe joins a second copy of `items`, and an unqualified
+// column there would make the predicate vacuously true.
+func TestIsSubagentLaunch_CrossThreadIsolation(t *testing.T) {
+	s := newTestStore(t)
+	for _, id := range []string{"t1", "t2"} {
+		if err := s.CreateThread(makeThread(id, "claude")); err != nil {
+			t.Fatalf("create thread %s: %v", id, err)
+		}
+	}
+	seedAnchorItem(t, s, "t1", "toolu_launch", 0, 0)
+	seedAnchorItem(t, s, "t2", "toolu_launch", 0, 0)
+	seedChildItem(t, s, "t2", "child", 0, 1, "toolu_launch", "child work", "completed")
+
+	if got, err := s.IsSubagentLaunch("t1", "toolu_launch"); err != nil || got {
+		t.Fatalf("t1 launch = %v (err %v), want false", got, err)
+	}
+	if got, err := s.IsSubagentLaunch("t2", "toolu_launch"); err != nil || !got {
+		t.Fatalf("t2 launch = %v (err %v), want true", got, err)
+	}
+}

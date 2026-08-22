@@ -2,6 +2,7 @@ import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import { beforeEach, describe, expect, it } from 'vitest';
 import ReviewPane from './ReviewPane.svelte';
 import type { PanelContext } from '../../stores/panelContext.svelte';
+import { makeStubPanelContext } from '../../../test/helpers/panelContext';
 import { __resetReviewPaneStateForTest } from '../../stores/reviewPane.svelte';
 import { resetForTest as resetDiffReviewCommentsForTest } from '../../stores/diffReviewComments.svelte';
 import { resetAppStorageForTest } from '../../stores/appStorage';
@@ -10,20 +11,7 @@ import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { applyPRReviewUpdated } from '../../stores/eventsPRReview';
 
 function makeCtx(): PanelContext {
-  return {
-    paneId: 'source-pane',
-    threadId: 'thread-1',
-    thread: null,
-    workspacePath: '/repo',
-    designViewport: 'desktop',
-    activeOptionSet: null,
-    close() {},
-    replaceThread() {},
-    async switchThread() {},
-    setDesignViewport() {},
-    setActiveOptionSet() {},
-    async refreshDesignOptions() {},
-  };
+  return makeStubPanelContext();
 }
 
 function patch(): string {

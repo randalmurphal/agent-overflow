@@ -29,6 +29,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "AttachProjectWorktree", ID: 2577753756},                // main.App.AttachProjectWorktree
 	{Name: "AttachThreadWorktree", ID: 2367642633},                 // main.App.AttachThreadWorktree
 	{Name: "AutoResumeThread", ID: 4095667805},                     // main.App.AutoResumeThread
+	{Name: "BackgroundClaudeTask", ID: 2098425262},                 // main.App.BackgroundClaudeTask
 	{Name: "BookmarkUIRenderTrace", ID: 1374242488},                // main.App.BookmarkUIRenderTrace
 	{Name: "BrowseDirectory", ID: 320967638},                       // main.App.BrowseDirectory
 	{Name: "CancelSessionImport", ID: 2562316972},                  // main.App.CancelSessionImport

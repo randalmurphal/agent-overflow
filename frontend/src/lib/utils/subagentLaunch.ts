@@ -1,6 +1,49 @@
+// Provider-neutral subagent-launch predicate plus the Codex spawn-row
+// label helpers it shares with `CollabToolRow`.
+//
+// `subagentLaunchInfo` is THE launch predicate: one function that answers
+// "does this row anchor a subagent?" for every shape AO renders as an
+// agent card (docs/specs/agent-visibility.md § "Anchor set"). Everything
+// above it — the timeline tree (`utils/subagentGrouping.ts`), the pane's
+// live-eviction fold (`stores/threadSubagentMemory.ts`), and the agent
+// pane — is provider-neutral and must key on this and nothing else, so a
+// new launch shape lands in one place.
+//
+// The four shapes, and the wire fact each is read from:
+//
+//   - Claude `Agent` / `Task` tool_call — the ordinary subagent launch.
+//     `isBackground` distinguishes awaited from async (claude-wire.md
+//     §E5: the CLI stamps it from the `isAsync` / `async_launched` ack,
+//     so a foreground launch is the ABSENCE of the flag, never `false`).
+//   - Claude forked `Skill` tool_call — structural detection only, never
+//     a skill-name list (claude-wire.md §E9). A fork is proven by any of
+//     three signals, in cost order: a loaded child row attributed to the
+//     Skill tool_use, the `skillFork` stamp the parser writes from the
+//     completion's `tool_use_result {status:"forked", agentId,
+//     commandName}`, or the store's `subagentDescendantCount` decoration
+//     (history windows load no children at all, so neither of the first
+//     two is available on a cold thread). An INLINE skill has none of
+//     them and is not a launch — it stays a plain tool row.
+//   - Claude `SendMessage` background carrier — the §E6 resume rebind.
+//     The parser marks the resuming tool_use backgrounded and triage
+//     stamps the rebound `task_id` on it, so "backgrounded SendMessage
+//     carrying a task id" is the carrier and nothing else is.
+//   - Codex `spawn_agent` (normalized to `toolName=collab_agent`) — child
+//     threads, always asynchronous.
+//
+// `ctx.hasChildren` is supplied by the caller because only the caller
+// knows which rows are loaded; it is consulted ONLY for `Skill` rows, so
+// a context that builds an index lazily pays nothing on a thread with no
+// skills in the window.
+
 import type { Item } from '../types/models';
 import { parseJsonObject } from './parseJsonObject';
 import { displayModelLabel } from './modelLabels';
+import { extractClaudeTaskID } from './claudeTaskMeta';
+import {
+  deriveClaudeSubagentLabel,
+  readClaudeSubagentInputFromStrings,
+} from './claudeSubagentLabel';
 
 interface ParsedCodexSubagentInput {
   tool: string;
@@ -145,4 +188,238 @@ export function codexSubagentReceiverLabels(items: readonly Item[]): Map<string,
     }
   }
   return labels;
+}
+
+// ---------------------------------------------------------------------
+// Provider-neutral launch predicate
+// ---------------------------------------------------------------------
+
+/**
+ * What kind of node a launch anchors. `agent` is a conversational
+ * subagent (Claude `Agent`/`Task`, a resumed async agent, a Codex
+ * spawned child); `skill` is a forked Skill, which runs as a subagent
+ * whose context is a copy of the parent's (claude-wire.md §E9) and has
+ * no task id, so it can never be killed or backgrounded by id.
+ */
+export type SubagentLaunchKind = 'agent' | 'skill';
+
+export interface SubagentLaunchInfo {
+  kind: SubagentLaunchKind;
+  provider: 'claude' | 'codex';
+  /**
+   * The launch runs asynchronously — the main turn is not blocked on it.
+   * Codex children are always async; a Claude agent is async when the CLI
+   * stamped `is_background` (an explicit `run_in_background`, the §E5
+   * async ack, or a mid-flight `background_tasks` control_request).
+   */
+  background: boolean;
+  /** Display name for the card header (`Explore`, `code-review`, …). */
+  name: string;
+  /** Claude's `subagent_type` when the launch input carried one. */
+  agentType?: string;
+}
+
+/**
+ * What the predicate needs from the caller: whether any LOADED row is
+ * attributed to `itemId`. Only forked-Skill detection consults it.
+ */
+export interface SubagentLaunchContext {
+  hasChildren(itemId: string): boolean;
+}
+
+/**
+ * Context for callers with no loaded rows to offer (a single row read in
+ * isolation — a tray entry, a background-section entry). Forked skills
+ * then rest on their two meta signals, which is exactly the cold-thread
+ * case those surfaces are in anyway.
+ */
+export const NO_LOADED_SUBAGENT_CHILDREN: SubagentLaunchContext = {
+  hasChildren: () => false,
+};
+
+/**
+ * Build a context over a list of loaded items. The parent-id index is
+ * built on FIRST USE, not eagerly: `subagentLaunchInfo` reaches
+ * `hasChildren` only for `Skill` rows, so a window with none never pays
+ * for the pass.
+ */
+export function subagentLaunchContextFrom(
+  items: readonly Item[],
+): SubagentLaunchContext {
+  let parentIds: Set<string> | null = null;
+  return {
+    hasChildren(itemId: string): boolean {
+      if (parentIds === null) {
+        parentIds = new Set<string>();
+        for (const item of items) {
+          const parentId = item.parentId ?? '';
+          if (parentId) parentIds.add(parentId);
+        }
+      }
+      return parentIds.has(itemId);
+    },
+  };
+}
+
+/**
+ * Meta key the store stamps on every anchor it finds children for
+ * (internal/store/subagent_items.go `decorateSubagentAnchors`). Read here
+ * rather than in `subagentGrouping.ts` because forked-Skill detection is
+ * one of its two consumers and this module must not import upward into
+ * the grouping pass.
+ */
+export function subagentDescendantCountFromMeta(
+  meta: Record<string, unknown> | null,
+): number {
+  const raw = meta?.subagentDescendantCount;
+  return typeof raw === 'number' && Number.isFinite(raw) && raw > 0
+    ? Math.floor(raw)
+    : 0;
+}
+
+/**
+ * Cheap tool-name prefilter — a strict SUPERSET of `subagentLaunchInfo`,
+ * parsing no meta. Used by the grouping pass's no-signal fast path, which
+ * only has to be conservative: a false positive costs one grouping walk,
+ * a false negative would render a launch as a leaf.
+ */
+export function isPotentialSubagentLaunch(item: Item): boolean {
+  if (item.kind !== 'tool_call') return false;
+  const toolName = (item.toolName ?? '').trim();
+  return (
+    toolName === 'Agent'
+    || toolName === 'Task'
+    || toolName === 'Skill'
+    || toolName === 'SendMessage'
+    || toolName === 'collab_agent'
+  );
+}
+
+function trimmedInputString(
+  input: Record<string, unknown> | null,
+  key: string,
+): string {
+  const value = input?.[key];
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+/**
+ * Structural fork detection (claude-wire.md §E9) — "did this Skill fork"
+ * is answered by attribution and by the completion's `status:"forked"`,
+ * never by a skill-name list. Three signals, checked cheapest first:
+ *
+ *  1. a loaded row is attributed to the Skill tool_use;
+ *  2. `meta.skillFork` — what the parser stamps from the fork's
+ *     completion (`{agentId, commandName}`), which survives on the launch
+ *     row because triage merges completion meta into it;
+ *  3. the store's descendant-count decoration, the only signal available
+ *     on a history window (which loads no child rows at all).
+ */
+function isForkedSkillLaunch(item: Item, ctx: SubagentLaunchContext): boolean {
+  if (ctx.hasChildren(item.id)) return true;
+  const meta = parseJsonObject(item.meta);
+  const fork = meta?.skillFork;
+  if (fork !== null && typeof fork === 'object' && !Array.isArray(fork)) return true;
+  return subagentDescendantCountFromMeta(meta) > 0;
+}
+
+function forkedSkillName(item: Item): string {
+  const input = readClaudeSubagentInputFromStrings(item.payloadMeta, item.meta);
+  const fromInput = trimmedInputString(input, 'skill') || trimmedInputString(input, 'command');
+  if (fromInput) return fromInput;
+  const fork = parseJsonObject(item.meta)?.skillFork;
+  if (fork !== null && typeof fork === 'object' && !Array.isArray(fork)) {
+    const commandName = (fork as Record<string, unknown>).commandName;
+    if (typeof commandName === 'string' && commandName.trim()) return commandName.trim();
+  }
+  return 'Skill';
+}
+
+/**
+ * Name for a §E6 resume carrier. The resuming tool is a `SendMessage`, so
+ * its own input says nothing about the agent; the parser stamps the
+ * ORIGINAL agent's `description` off the rebind `task_started`, and
+ * triage rewrites the row Summary to `Agent: <description>` from the
+ * original launch. Read the stamp first, fall back to un-prefixing the
+ * summary, and never render the bare tool name.
+ */
+const RESUME_SUMMARY_PREFIX = 'Agent: ';
+
+function resumedAgentName(item: Item): string {
+  const description = parseJsonObject(item.meta)?.description;
+  if (typeof description === 'string' && description.trim()) return description.trim();
+  const summary = (item.summary ?? '').trim();
+  if (summary.startsWith(RESUME_SUMMARY_PREFIX)) {
+    const stripped = summary.slice(RESUME_SUMMARY_PREFIX.length).trim();
+    if (stripped) return stripped;
+  }
+  return 'Agent';
+}
+
+/**
+ * THE launch predicate. Returns null for every row that does not anchor a
+ * subagent — including an inline (non-forking) `Skill` and a
+ * `SendMessage` that is just a message.
+ */
+export function subagentLaunchInfo(
+  item: Item,
+  ctx: SubagentLaunchContext,
+): SubagentLaunchInfo | null {
+  if (item.kind !== 'tool_call') return null;
+  const toolName = (item.toolName ?? '').trim();
+
+  if (toolName === 'Agent' || toolName === 'Task') {
+    const input = readClaudeSubagentInputFromStrings(item.payloadMeta, item.meta);
+    const agentType = trimmedInputString(input, 'subagent_type');
+    return {
+      kind: 'agent',
+      provider: 'claude',
+      // Optional on the wire: undefined and false both mean awaited, so
+      // this is deliberately not a strict `=== false` negation.
+      background: item.isBackground === true,
+      // `Task` is the older name for the same tool; both resolve through
+      // the `Agent` label rules so one launch never renders two ways.
+      name: deriveClaudeSubagentLabel(input, 'Agent'),
+      ...(agentType ? { agentType } : {}),
+    };
+  }
+
+  if (toolName === 'Skill') {
+    if (!isForkedSkillLaunch(item, ctx)) return null;
+    return {
+      kind: 'skill',
+      provider: 'claude',
+      background: item.isBackground === true,
+      name: forkedSkillName(item),
+    };
+  }
+
+  if (toolName === 'SendMessage') {
+    // A resume carrier is backgrounded AND bound to the resumed agent's
+    // task id; an ordinary SendMessage is neither.
+    if (item.isBackground !== true) return null;
+    if (!extractClaudeTaskID(item)) return null;
+    return {
+      kind: 'agent',
+      provider: 'claude',
+      background: true,
+      name: resumedAgentName(item),
+    };
+  }
+
+  if (isCodexSubagentLaunchItem(item)) {
+    const codex = codexSubagentLaunchInfo(item);
+    const agentType = codex.agentRole.trim();
+    return {
+      kind: 'agent',
+      provider: 'codex',
+      // Codex children are their own threads; the parent never awaits one
+      // inline, it waits on them explicitly through `wait_agent`.
+      background: true,
+      name: codex.agentLabel,
+      ...(agentType ? { agentType } : {}),
+    };
+  }
+
+  return null;
 }

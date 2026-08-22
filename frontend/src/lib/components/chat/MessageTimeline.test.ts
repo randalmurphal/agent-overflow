@@ -369,8 +369,13 @@ describe('<MessageTimeline>', () => {
 
     expect(getByTestId('wait-group').textContent).toContain('Waiting for Agent');
     expect(getByTestId('collab-tool-row-receivers').textContent).toBe('└ Chandrasekhar');
+    // The spawn row is an agent card now, collapsed by default: its child
+    // transcript is inside it rather than interleaved with the main thread,
+    // and the newest child surfaces only as the card's preview line.
     expect(queryByText('Review the timeline code')).toBeNull();
-    expect(queryByText('I will inspect the live path.')).toBeNull();
+    expect(getByTestId('subagent-group-preview').textContent).toContain(
+      'I will inspect the live path.',
+    );
 
     pane.upsertItems([
       makeItem({

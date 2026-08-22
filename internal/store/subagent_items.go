@@ -42,8 +42,8 @@ type subagentAnchorAggregate struct {
 	latestChildSummary string
 }
 
-// descendantsCTE walks parent_id edges downward from a set of root item
-// ids, carrying the originating root through the recursion so per-root
+// descendantsCTEFromRoots walks parent_id edges downward from an
+// explicit list of root item ids, carrying the originating root through the recursion so per-root
 // aggregates fall out of a GROUP BY. UNION (not UNION ALL) dedups
 // (root, id) pairs during recursion, so a pathological parent_id cycle
 // terminates instead of looping forever.
@@ -64,22 +64,94 @@ type subagentAnchorAggregate struct {
 // notifications never render, so they must not count against the
 // collapsed card's "N entries" badge either.
 func descendantsCTEFromRoots(rootCount int) string {
+	return `WITH RECURSIVE ` + descendantsCTE("timeline_items", placeholders(rootCount))
+}
+
+// descendantsCTE is the `rel(root, id) AS (...)` clause itself, without
+// the leading `WITH RECURSIVE`, so a caller that needs other CTEs
+// alongside it (ListLiveBackgroundTasks stacks a background-root CTE
+// under the same WITH) can compose one statement instead of forking the
+// walk. `table` is the row source — `timeline_items` for reads that must
+// see imported history, plain `items` for the live-only tray — and
+// `rootSet` is whatever yields the root ids: a `?` placeholder list or a
+// subquery naming an earlier CTE.
+//
+// Placeholder order is unchanged for both forms: thread id for the base
+// hop, then the rootSet's own parameters (if any), then thread id again
+// for the recursive hop.
+func descendantsCTE(table, rootSet string) string {
 	visible := visibleItemsFilterFor("i.")
-	return `WITH RECURSIVE rel(root, id) AS (
+	return `rel(root, id) AS (
 		SELECT i.parent_id, i.id
-		  FROM timeline_items i
+		  FROM ` + table + ` i
 		 WHERE i.thread_id = ?
-		   AND i.parent_id IN (` + placeholders(rootCount) + `)
+		   AND i.parent_id IN (` + rootSet + `)
 		   AND i.parent_id <> ''
 		   AND ` + visible + `
 		UNION
 		SELECT rel.root, i.id
 		  FROM rel
-		  CROSS JOIN timeline_items i ON i.parent_id = rel.id
+		  CROSS JOIN ` + table + ` i ON i.parent_id = rel.id
 		 WHERE i.thread_id = ?
 		   AND i.parent_id <> ''
 		   AND ` + visible + `
 	)`
+}
+
+// subagentLaunchFilterFor is the provider-neutral "this tool_call row is
+// an agent launch" predicate, and the one place that answers the
+// question for SQL. It is STRUCTURAL, never a tool-name list: a launch
+// is the tool_call that other rows are attributed to. That is exactly
+// what decorateSubagentAnchors already treats as an anchor (a tool_call
+// with visible descendants), and it covers every launch kind the spec
+// names — Claude `Agent`/`Task`, a forked `Skill`, a SendMessage resume
+// carrier, Codex `spawn_agent` — without this package having to know any
+// of their names or which provider produced them.
+//
+// A launch that has not yet produced its first attributed row does not
+// match. That is deliberate: an "agent" with nothing under it is
+// indistinguishable from an ordinary tool call, and every consumer
+// re-reads on the next event.
+//
+// `alias` is the row's table alias WITH its trailing dot ("items.").
+// It is mandatory, not cosmetic: the EXISTS probe joins a second copy of
+// `items`, and an unqualified `thread_id`/`id` inside it would bind to
+// that inner copy and make the predicate vacuously true.
+func subagentLaunchFilterFor(alias string) string {
+	return alias + `kind = 'tool_call'
+		    AND EXISTS (
+		      SELECT 1 FROM items child
+		       WHERE child.thread_id = ` + alias + `thread_id
+		         AND child.parent_id = ` + alias + `id
+		         AND child.parent_id <> ''
+		    )`
+}
+
+// IsSubagentLaunch reports whether the row is an agent launch by the
+// structural predicate above. The Go-side companion to
+// subagentLaunchFilterFor, for triage's terminal paths: only a launch
+// row carries the subagent's final progress numbers, and an ordinary
+// tool call must never be stamped with them.
+func (s *Store) IsSubagentLaunch(threadID, itemID string) (bool, error) {
+	threadID = strings.TrimSpace(threadID)
+	itemID = strings.TrimSpace(itemID)
+	if threadID == "" || itemID == "" {
+		return false, nil
+	}
+	var exists int
+	if err := s.reader().QueryRow(
+		`SELECT EXISTS(
+		    SELECT 1 FROM items
+		     WHERE items.thread_id = ?
+		       AND items.id = ?
+		       AND `+subagentLaunchFilterFor("items.")+`
+		     LIMIT 1
+		)`,
+		threadID, itemID,
+	).Scan(&exists); err != nil {
+		return false, fmt.Errorf("store: is subagent launch %s/%s: %w", threadID, itemID, err)
+	}
+	return exists != 0, nil
 }
 
 // decorateSubagentAnchors merges descendant aggregates into the meta of

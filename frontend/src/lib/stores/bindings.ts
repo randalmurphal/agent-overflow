@@ -54,6 +54,11 @@ export {
   StopClaudeTask,
   TerminateCodexBackgroundTerminal,
   CleanCodexBackgroundTerminals,
+  // The opposite direction, Claude only: detach a running foreground
+  // subagent / Bash from the turn instead of killing it. Keyed by
+  // tool_use_id (the launch ROW id), not the task id StopClaudeTask
+  // takes — Codex has no equivalent.
+  BackgroundClaudeTask,
 
   // Codex thread operations the composer's `/compact` and `/review`
   // commands drive. Both are LOCAL-ONLY, both need a live session, and

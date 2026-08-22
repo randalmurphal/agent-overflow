@@ -101,6 +101,18 @@ func (s *Session) dispatchRoutableNotification(method string, params json.RawMes
 		s.rememberAgentMetaForProviderThread(providerThreadID, params)
 	}
 	if parentToolUseID != "" {
+		if method == "thread/tokenUsage/updated" {
+			// The child's ONLY live progress signal. Re-emitted scoped to
+			// the spawn card and returned on immediately, so it reaches
+			// neither usageAcct.observe below (the parent's per-turn
+			// accounting) nor the classifier's EventTokenUsage (the
+			// parent's context meter). Removing it from
+			// isChildSuppressedThreadNotification without this intercept
+			// would leak a child's window onto the parent meter, which is
+			// what that list was protecting against.
+			s.emitChildTokenUsageProgress(providerThreadID, parentToolUseID, params)
+			return
+		}
 		childStateNotification := isChildSuppressedThreadNotification(method) ||
 			isChildSuppressedItemNotification(method, params)
 		if childStateNotification {

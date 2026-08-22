@@ -1,6 +1,7 @@
 // Package claude — parser for `system`-type NDJSON lines (init metadata,
-// compact_boundary, and the task_started / task_updated / task_notification
-// triples that drive Claude's background-task lifecycle).
+// compact_boundary, and the task_started / task_progress / task_updated /
+// task_notification family plus background_tasks_changed that drive
+// Claude's background-task and subagent-visibility lifecycle).
 
 package claude
 
@@ -8,6 +9,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -159,14 +161,19 @@ func (p *Parser) parseSystem(threadID string, raw map[string]json.RawMessage, no
 	case "task_notification":
 		return p.parseTaskNotificationEvent(threadID, raw, now)
 
+	case "task_progress":
+		return p.parseTaskProgressEvent(threadID, raw, now)
+
+	case "background_tasks_changed":
+		return p.parseBackgroundTasksChangedEvent(threadID, raw, now)
+
 	// Explicitly skipped subtypes — no action, no error.
 	case "hook_started", "hook_progress", "hook_response",
 		"notification",
 		"files_persisted",
 		"tool_use_summary",
 		"memory_recall",
-		"local_command_output",
-		"task_progress":
+		"local_command_output":
 		return nil, nil
 
 	default:
@@ -931,13 +938,147 @@ func (p *Parser) parseTaskStartedEvent(
 	}}, nil
 }
 
+// parseTaskProgressEvent handles `system/task_progress`: the CLI's
+// per-round live-progress tick for a running `local_agent` task (never
+// a forked skill — §E9 forks have no task at all). It is the one wire
+// source of a running agent's tool count, token spend, elapsed time and
+// current activity line, which is what a compact agent card renders
+// while the agent works.
+//
+// Wire (2.1.237, captured 2026-08-22): `task_id`, optional
+// `tool_use_id`, `description` (the agent's CURRENT activity, NOT the
+// launch description), optional `subagent_type`, `usage{total_tokens,
+// tool_uses, duration_ms}`, optional `last_tool_name`, optional
+// `summary`. See claude-wire.md §`system/task_progress` and
+// task_progress_20260822.ndjson.
+//
+// The tick is live UI state, never a timeline row: triage holds the
+// latest per launch in memory and persists only the final numbers at
+// the launch's terminal. A tick whose launch tool_use cannot be
+// resolved (a parser that reconnected mid-agent and has no binding,
+// with no inline echo) is DROPPED with a log line rather than emitted
+// with an empty ItemID — triage routes progress by launch row id and an
+// unattributable tick has nothing to update.
+func (p *Parser) parseTaskProgressEvent(threadID string, raw map[string]json.RawMessage, now time.Time) ([]provider.ProviderEvent, error) {
+	taskID := readRawString(raw["task_id"])
+	if taskID == "" {
+		return nil, nil
+	}
+	envelopeToolUseID := firstNonEmpty(readRawString(raw["tool_use_id"]), readRawString(raw["toolUseId"]))
+	// Reconnect re-seed, same as task_started and the §E5 async ack: an
+	// envelope carrying BOTH ids re-establishes a binding a restarted
+	// parser lost, so the later terminal still resolves to this launch.
+	// The CLI's own echo tracks its current binding (a resume rebinds
+	// task_id onto the resuming tool_use and the echoes follow), so
+	// re-remembering can never fight the rebind.
+	if envelopeToolUseID != "" {
+		p.rememberTaskToolUse(taskID, envelopeToolUseID)
+	}
+	taskRef := p.taskToolUseRef(taskID)
+	toolUseID := firstNonEmpty(envelopeToolUseID, taskRef.ToolUseID)
+	if toolUseID == "" {
+		log.Printf("claude: task_progress for task %s has no resolvable tool_use_id; dropping tick", taskID)
+		return nil, nil
+	}
+	parentToolUseID := firstNonEmpty(taskRef.ParentToolUseID, p.toolUseParent(toolUseID))
+
+	progress, _ := readTaskUsage(raw["usage"])
+	progress.TaskID = taskID
+	progress.Activity = readRawString(raw["description"])
+	progress.LastToolName = firstNonEmpty(readRawString(raw["last_tool_name"]), readRawString(raw["lastToolName"]))
+	progress.AgentType = firstNonEmpty(readRawString(raw["subagent_type"]), readRawString(raw["subagentType"]))
+	progress.Summary = readRawString(raw["summary"])
+
+	meta, err := json.Marshal(progress)
+	if err != nil {
+		return nil, fmt.Errorf("parse task_progress: marshal meta: %w", err)
+	}
+	return []provider.ProviderEvent{{
+		Kind:            provider.EventSubagentProgress,
+		ThreadID:        threadID,
+		ItemID:          toolUseID,
+		Meta:            meta,
+		ParentToolUseID: parentToolUseID,
+		Timestamp:       now,
+	}}, nil
+}
+
+// parseBackgroundTasksChangedEvent handles
+// `system/background_tasks_changed`: the CLI's LEVEL signal for the
+// whole set of live background tasks, re-emitted on every membership
+// change (start, completion, kill, a foreground task being
+// backgrounded). REPLACE semantics — consumers swap their set for this
+// payload rather than pairing start/stop edges, so a missed bookend
+// cannot wedge a stale running indicator.
+//
+// An EMPTY `tasks` array is a real answer ("nothing is running in the
+// background") and must be forwarded. An ABSENT `tasks` key says
+// nothing and is dropped — the same distinction `commands_changed`
+// draws, and for the same reason: a payload-less envelope would
+// otherwise clear a live set.
+//
+// Each member's launch `tool_use_id` is resolved through the parser's
+// task map when known; a task whose launch predates this parser
+// instance carries only its `task_id` and triage falls back to the
+// persisted `items.meta.task_id`. Forked skills and foreground agents
+// are never in the set (claude-wire.md §E9).
+func (p *Parser) parseBackgroundTasksChangedEvent(threadID string, raw map[string]json.RawMessage, now time.Time) ([]provider.ProviderEvent, error) {
+	rawTasks, present := raw["tasks"]
+	if !present {
+		return nil, nil
+	}
+	var wireTasks []struct {
+		TaskID         string `json:"task_id"`
+		TaskIDCamel    string `json:"taskId"`
+		TaskType       string `json:"task_type"`
+		TaskTypeCamel  string `json:"taskType"`
+		Description    string `json:"description"`
+		ToolUseID      string `json:"tool_use_id"`
+		ToolUseIDCamel string `json:"toolUseId"`
+	}
+	if err := json.Unmarshal(rawTasks, &wireTasks); err != nil {
+		// A malformed / non-array `tasks` is not an empty set: applying
+		// it as one would clear the live indicator on a shape we simply
+		// failed to read. Drop it like an absent key.
+		log.Printf("claude: background_tasks_changed has unreadable tasks payload: %v", err)
+		return nil, nil
+	}
+	tasks := make([]provider.BackgroundTaskRef, 0, len(wireTasks))
+	for _, wt := range wireTasks {
+		taskID := firstNonEmpty(wt.TaskID, wt.TaskIDCamel)
+		if taskID == "" {
+			continue
+		}
+		ref := provider.BackgroundTaskRef{
+			TaskID:      taskID,
+			ToolUseID:   firstNonEmpty(wt.ToolUseID, wt.ToolUseIDCamel, p.taskToolUseRef(taskID).ToolUseID),
+			TaskType:    firstNonEmpty(wt.TaskType, wt.TaskTypeCamel),
+			Description: wt.Description,
+		}
+		tasks = append(tasks, ref)
+	}
+	meta, err := json.Marshal(provider.BackgroundTasksChangedMeta{Tasks: tasks})
+	if err != nil {
+		return nil, fmt.Errorf("parse background_tasks_changed: marshal meta: %w", err)
+	}
+	return []provider.ProviderEvent{{
+		Kind:      provider.EventBackgroundTasksChanged,
+		ThreadID:  threadID,
+		Meta:      meta,
+		Timestamp: now,
+	}}, nil
+}
+
 // parseTaskLifecycleEvent handles `system/task_updated`. A terminal
 // `patch.status` (`completed`, `failed`, `killed`) emits
 // `EventBackgroundTaskTerminal` for the backgrounded task — the
 // authoritative basic-terminal signal for the task lifecycle. A later
 // TaskOutput enrichment for the same task idempotently upserts through
 // triage with richer payload. Non-terminal `patch.status` values
-// (`pending`, `running`) are no-ops; dedup is triage's job.
+// (`pending`, `running`) are no-ops UNLESS the patch carries
+// `is_backgrounded:true` — that shape routes to
+// parseTaskBackgroundedPatch and emits `EventSubagentBackgrounded`.
+// Dedup is triage's job.
 // See docs/references/claude-wire.md §task_updated and
 // docs/architecture/turn-lifecycle.md §Task lifecycle.
 func (p *Parser) parseTaskLifecycleEvent(threadID string, raw map[string]json.RawMessage, now time.Time) ([]provider.ProviderEvent, error) {
@@ -955,7 +1096,18 @@ func (p *Parser) parseTaskLifecycleEvent(threadID string, raw map[string]json.Ra
 		readRawString(raw["status"]),
 	))
 	if status == "" {
-		return nil, nil
+		// Non-terminal patch. The one shape that carries meaning is
+		// `is_backgrounded:true` — the CLI's reply to Ctrl+B / AO's
+		// `background_tasks` control_request, and the ONLY typed
+		// statement that a FOREGROUND agent moved to the background.
+		// Everything else (a `running` progress patch) stays a no-op.
+		//
+		// Deliberately does NOT clear the liveness flag: signal (5) in
+		// parse_user.go must stay armed so the §E5 async ack that
+		// follows this patch classifies as an ack rather than the
+		// agent's real result. Only the TERMINAL below disarms it —
+		// pinned by TestAppendToolResultBlock_NonTerminalUpdateKeepsLiveAgentTask.
+		return p.parseTaskBackgroundedPatch(threadID, taskID, raw, patch, now)
 	}
 
 	// An empty tool_use_id here means the in-memory map is empty (fresh
@@ -1003,6 +1155,87 @@ func (p *Parser) parseTaskLifecycleEvent(threadID string, raw map[string]json.Ra
 	}}, nil
 }
 
+// parseTaskBackgroundedPatch emits `EventSubagentBackgrounded` for a
+// non-terminal `system/task_updated` whose patch carries
+// `is_backgrounded: true` — a FOREGROUND task that was just moved to
+// the background mid-flight (claude-wire.md §control_request
+// `background_tasks`; captured 2026-08-22 in
+// background_tasks_control_20260822.ndjson).
+//
+// It is the earliest and the only typed statement that this agent's
+// sidechain streaming STOPPED here: a backgrounded agent emits zero
+// further sidechain envelopes and its transcript completes only from
+// the task_notification's output_file. Triage stamps the launch row
+// with the cut timestamp so the agent pane can place its "streaming
+// paused" marker after the last streamed row.
+//
+// An agent launched async (§E5) was never in the foreground and never
+// produces this patch. A patch we cannot attribute to a launch tool_use
+// is dropped with a log line — the event's whole payload is the launch
+// it belongs to.
+func (p *Parser) parseTaskBackgroundedPatch(
+	threadID, taskID string,
+	raw map[string]json.RawMessage,
+	patch map[string]json.RawMessage,
+	now time.Time,
+) ([]provider.ProviderEvent, error) {
+	var backgrounded bool
+	if rawFlag, ok := patch["is_backgrounded"]; ok {
+		_ = json.Unmarshal(rawFlag, &backgrounded)
+	}
+	if !backgrounded {
+		if rawFlag, ok := patch["isBackgrounded"]; ok {
+			_ = json.Unmarshal(rawFlag, &backgrounded)
+		}
+	}
+	if !backgrounded {
+		return nil, nil
+	}
+
+	taskRef := p.taskToolUseRef(taskID)
+	toolUseID := firstNonEmpty(taskRef.ToolUseID, readRawString(raw["tool_use_id"]), readRawString(raw["toolUseId"]))
+	if toolUseID == "" {
+		log.Printf("claude: task_updated is_backgrounded for task %s has no resolvable tool_use_id; dropping", taskID)
+		return nil, nil
+	}
+	parentToolUseID := firstNonEmpty(taskRef.ParentToolUseID, readRawString(raw["parent_tool_use_id"]), readRawString(raw["parentToolUseId"]))
+
+	meta, err := json.Marshal(provider.SubagentBackgroundedMeta{TaskID: taskID})
+	if err != nil {
+		return nil, fmt.Errorf("parse task_updated is_backgrounded: marshal meta: %w", err)
+	}
+	return []provider.ProviderEvent{{
+		Kind:            provider.EventSubagentBackgrounded,
+		ThreadID:        threadID,
+		ItemID:          toolUseID,
+		Meta:            meta,
+		ParentToolUseID: parentToolUseID,
+		Timestamp:       now,
+	}}, nil
+}
+
+// readTaskUsage decodes the `usage{total_tokens, tool_uses, duration_ms}`
+// object both `system/task_progress` and a completing
+// `system/task_notification` carry into the shared
+// provider.SubagentProgressMeta counter shape. ok=false when the key is
+// absent or holds no readable counter at all, which is what keeps a
+// notification WITHOUT usage (every `local_bash` bookend) from stamping
+// a zeroed meta over real numbers.
+func readTaskUsage(usage json.RawMessage) (provider.SubagentProgressMeta, bool) {
+	var counters provider.SubagentProgressMeta
+	var any bool
+	if toolUses, ok := readIntAtAnyKey(usage, "tool_uses", "toolUses"); ok {
+		counters.ToolUses, any = toolUses, true
+	}
+	if totalTokens, ok := readIntAtAnyKey(usage, "total_tokens", "totalTokens"); ok {
+		counters.TotalTokens, any = int64(totalTokens), true
+	}
+	if durationMs, ok := readIntAtAnyKey(usage, "duration_ms", "durationMs"); ok {
+		counters.DurationMs, any = int64(durationMs), true
+	}
+	return counters, any
+}
+
 // parseTaskNotificationEvent surfaces Claude's non-lifecycle
 // `system/task_notification` attention signal. This event must never be
 // interpreted as task completion; triage persists it as a lightweight
@@ -1022,6 +1255,7 @@ func (p *Parser) parseTaskNotificationEvent(threadID string, raw map[string]json
 		Summary:         readRawString(raw["summary"]),
 		UUID:            readRawString(raw["uuid"]),
 	}
+	fields.Usage, fields.UsageSet = readTaskUsage(raw["usage"])
 	return []provider.ProviderEvent{p.buildBackgroundTaskNotificationEvent(threadID, fields, now)}, nil
 }
 
@@ -1054,6 +1288,18 @@ type backgroundTaskNotificationFields struct {
 	OutputFile      string
 	Summary         string
 	UUID            string
+	// Usage carries the agent's AUTHORITATIVE final counters when the
+	// notification is a `local_agent` completion: `system/task_notification`
+	// is the one envelope that reports `usage{total_tokens, tool_uses,
+	// duration_ms}` for the whole agent run (captured 2.1.237,
+	// 2026-08-22). It rides the event meta under `"usage"` as a
+	// provider.SubagentProgressMeta so triage can fold it onto the launch
+	// row's persisted final progress without depending on a live tick
+	// having survived. UsageSet distinguishes "the envelope reported all
+	// zeros" from "the envelope reported nothing"; the synthetic
+	// `<task-notification>` XML path never sets it.
+	Usage    provider.SubagentProgressMeta
+	UsageSet bool
 }
 
 // buildBackgroundTaskNotificationEvent assembles the
@@ -1085,6 +1331,12 @@ func (p *Parser) buildBackgroundTaskNotificationEvent(threadID string, fields ba
 	}
 	if uuid := boundedClaudeFallbackField(fields.UUID, maxTaskNotificationUUIDRunes); uuid != "" {
 		metaFields["uuid"] = uuid
+	}
+	if fields.UsageSet {
+		// Key and type are contract: triage decodes
+		// `Usage provider.SubagentProgressMeta \`json:"usage"\`` off this
+		// meta to persist the agent's final numbers on its launch row.
+		metaFields["usage"] = fields.Usage
 	}
 	meta, _ := json.Marshal(metaFields)
 

@@ -38,6 +38,7 @@ import ChatView from '../../lib/components/chat/ChatView.svelte';
 import ReviewPane from '../../lib/components/review/ReviewPane.svelte';
 import PaneHost from '../../lib/components/panes/PaneHost.svelte';
 import type { PanelContext } from '../../lib/stores/panelContext.svelte';
+import { makeStubPanelContext } from '../helpers/panelContext';
 import { createThreadPane } from '../../lib/stores/thread.svelte';
 import {
   destroyPane,
@@ -205,20 +206,11 @@ describe.runIf(gc)('closed review companion DOM is collectable', () => {
     const sourcePane = await buildPane(seedThread('thread-rev-1'), 'pane-rev-src');
 
     async function mountAndClose(): Promise<WeakRef<Element>[]> {
-      const ctx: PanelContext = {
+      const ctx: PanelContext = makeStubPanelContext({
         paneId: sourcePane.paneId,
         threadId: 'thread-rev-1',
         thread: sourcePane.thread,
-        workspacePath: '/repo',
-        designViewport: 'desktop',
-        activeOptionSet: null,
-        close() {},
-        replaceThread() {},
-        async switchThread() {},
-        setDesignViewport() {},
-        setActiveOptionSet() {},
-        async refreshDesignOptions() {},
-      };
+      });
       const target = document.body.appendChild(document.createElement('div'));
       const app = mount(ReviewPane, { target, props: { ctx } });
       flushSync();

@@ -144,7 +144,7 @@ Authoritative method list from
 | `thread/queue/changed` | 0.148. The thread's provider-side queue changed. `{threadId}` and nothing else — no depth, no item id, no text. Below 0.148 the classifier's own notice is the answer; on a queue-native session the session layer replaces it with a `thread/queue/list` diffed against AO's own client ids. See §Externally queued turns in the package guide. |
 | `thread/compacted` | Thread housekeeping. Compaction boundary event (deprecated upstream in favour of the `contextCompaction` item; both feed `EventCompactBoundary`). |
 | `thread/name/updated` | Thread housekeeping. Thread name/title changed. |
-| `thread/tokenUsage/updated` | Thread housekeeping. Rolling CUMULATIVE token-usage snapshot; per-turn deltas are derived (`usage_accounting.go`). |
+| `thread/tokenUsage/updated` | Thread housekeeping. Rolling CUMULATIVE token-usage snapshot; per-turn deltas are derived (`usage_accounting.go`). On a SPAWNED CHILD thread it is the one thread-wide notification not suppressed — it is re-scoped onto the spawn card as `EventSubagentProgress` and never meters the parent. See below. |
 | `thread/settings/updated` | Codex's authoritative config echo. Reconciled into the session's observed snapshot; emits nothing. |
 | `skills/changed` | Side channel. An EMPTY struct upstream — no cwd, no scope, no name — so the whole `internal/codexskills` cache is dropped rather than narrowed. |
 | `account/rateLimits/updated` | Account-wide quota snapshot. Surfaced as `EventRateLimits` / `provider:usage action:"rate_limits"`. |
@@ -204,6 +204,22 @@ the max window:
   }
 }
 ```
+
+`total.totalTokens` is the CUMULATIVE spend for that thread; `last` is
+the current context occupancy. The two are not interchangeable — the
+context meter reads `last`, and anything reporting "how much has this
+cost" reads `total`.
+
+**On a spawned child thread.** Every other thread-wide notification from
+a collab child is suppressed so a subagent cannot overwrite the parent's
+meter, title, or compact state (ADR-002). This one is not: Agent
+Overflow intercepts it and emits a `EventSubagentProgress` scoped to the
+spawn's `parentToolUseID`, carrying the child's provider thread id as
+`taskId` and `total.totalTokens` as the progress total. It never reaches
+the parent's usage accounting and is never emitted as `EventTokenUsage`.
+This is the only channel through which a child's usage is visible on the
+parent thread — see
+[`internal/provider/codex/AGENTS.md` §Child thread-wide suppression](../../internal/provider/codex/AGENTS.md).
 
 ### `account/rateLimits/updated` and `account/rateLimits/read`
 

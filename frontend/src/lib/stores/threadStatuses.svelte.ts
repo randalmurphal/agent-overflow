@@ -16,6 +16,10 @@ import {
   resetForTest as resetCompactingStateForTest,
 } from './compactingState.svelte';
 import {
+  clearSubagentProgressForThread,
+  resetForTest as resetSubagentProgressForTest,
+} from './subagentProgress.svelte';
+import {
   clearProviderCommandsForThread,
   resetForTest as resetProviderCommandsForTest,
 } from './providerCommands.svelte';
@@ -300,6 +304,7 @@ export function clearThreadStatus(threadId: string): void {
   // archived/deleted has none.
   clearFastModeStateForThread(threadId);
   clearCompactingForThread(threadId);
+  clearSubagentProgressForThread(threadId);
   clearProviderCommandsForThread(threadId);
   statuses.drop(threadId);
 }
@@ -773,6 +778,7 @@ export function resetForTest(): void {
   resetSendQueueForTest();
   resetFastModeStateForTest();
   resetCompactingStateForTest();
+  resetSubagentProgressForTest();
   resetProviderCommandsForTest();
   liveStateHydratingThreads.reset();
   statuses.reset();
