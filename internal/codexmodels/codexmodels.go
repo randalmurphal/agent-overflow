@@ -120,15 +120,20 @@ func (c *Cache) Get(ctx context.Context, binary string) ([]provider.ModelInfo, e
 		c.mu.Lock()
 		l.models = cloned
 		l.err = err
-		delete(c.inflight, binary)
-		entryTTL := c.ttl
-		if err != nil {
-			entryTTL = DefaultErrorTTL
-		}
-		c.entries[binary] = entry{
-			models:    provider.CloneModels(models),
-			err:       err,
-			expiresAt: c.now().Add(entryTTL),
+		// Reset detaches in-flight loads. A detached load still completes for
+		// the callers already waiting on it, but it must not overwrite a newer
+		// lookup that started after the reset.
+		if c.inflight[binary] == l {
+			delete(c.inflight, binary)
+			entryTTL := c.ttl
+			if err != nil {
+				entryTTL = DefaultErrorTTL
+			}
+			c.entries[binary] = entry{
+				models:    provider.CloneModels(models),
+				err:       err,
+				expiresAt: c.now().Add(entryTTL),
+			}
 		}
 		close(l.done)
 		c.mu.Unlock()
@@ -137,13 +142,29 @@ func (c *Cache) Get(ctx context.Context, binary string) ([]provider.ModelInfo, e
 	}
 }
 
-// Reset drops every cached entry. In-flight lookups are not cancelled —
-// they finish but their results are not stored. Callers use this after
-// the user changes the Codex binary path so the next Get spawns a
-// fresh lookup against the new binary.
+// Peek returns a fresh cached result without starting or waiting for a model
+// lookup. The final return value is false for a miss, an expired entry, or a
+// lookup that is still in flight. Cached errors are returned as hits so callers
+// can use the same fallback they would use after Get without retrying the CLI.
+func (c *Cache) Peek(binary string) ([]provider.ModelInfo, error, bool) {
+	binary = strings.TrimSpace(binary)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	e, ok := c.entries[binary]
+	if !ok || !c.now().Before(e.expiresAt) {
+		return nil, nil, false
+	}
+	return provider.CloneModels(e.models), e.err, true
+}
+
+// Reset drops every cached entry and detaches in-flight lookups. Detached
+// lookups finish for their existing callers but cannot populate the cache or
+// capture later callers. The next Get always starts a fresh lookup.
 func (c *Cache) Reset() {
 	c.mu.Lock()
 	c.entries = make(map[string]entry)
+	c.inflight = make(map[string]*load)
 	c.mu.Unlock()
 }
 

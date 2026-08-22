@@ -59,6 +59,89 @@ func TestGet_ReturnsDefensiveClone(t *testing.T) {
 	}
 }
 
+func TestPeek_IsNonBlockingAndReturnsOnlyFreshCachedResults(t *testing.T) {
+	now := time.Unix(1000, 0)
+	started := make(chan struct{})
+	release := make(chan struct{})
+	cache := NewWith(time.Minute, func(_ context.Context, _ string) ([]provider.ModelInfo, error) {
+		close(started)
+		<-release
+		return []provider.ModelInfo{{Slug: "cached", Capabilities: []string{"fast"}}}, nil
+	}, func() time.Time { return now })
+
+	if models, err, ok := cache.Peek("codex"); ok || err != nil || models != nil {
+		t.Fatalf("cold Peek = (%v, %v, %v), want cache miss", models, err, ok)
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := cache.Get(context.Background(), "codex")
+		done <- err
+	}()
+	<-started
+	if models, err, ok := cache.Peek("codex"); ok || err != nil || models != nil {
+		t.Fatalf("in-flight Peek = (%v, %v, %v), want nonblocking cache miss", models, err, ok)
+	}
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+
+	models, err, ok := cache.Peek("codex")
+	if !ok || err != nil || len(models) != 1 || models[0].Slug != "cached" {
+		t.Fatalf("warm Peek = (%v, %v, %v), want cached result", models, err, ok)
+	}
+	models[0].Capabilities[0] = "mutated"
+	again, _, ok := cache.Peek("codex")
+	if !ok || again[0].Capabilities[0] != "fast" {
+		t.Fatalf("Peek returned shared cache storage: %v", again)
+	}
+
+	now = now.Add(2 * time.Minute)
+	if models, err, ok := cache.Peek("codex"); ok || err != nil || models != nil {
+		t.Fatalf("expired Peek = (%v, %v, %v), want cache miss", models, err, ok)
+	}
+}
+
+func TestReset_DetachesInFlightLookup(t *testing.T) {
+	firstStarted := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	calls := 0
+	cache := NewWith(time.Hour, func(_ context.Context, _ string) ([]provider.ModelInfo, error) {
+		calls++
+		if calls == 1 {
+			close(firstStarted)
+			<-releaseFirst
+			return []provider.ModelInfo{{Slug: "stale"}}, nil
+		}
+		return []provider.ModelInfo{{Slug: "fresh"}}, nil
+	}, nil)
+
+	firstDone := make(chan error, 1)
+	go func() {
+		_, err := cache.Get(context.Background(), "codex")
+		firstDone <- err
+	}()
+	<-firstStarted
+	cache.Reset()
+
+	models, err := cache.Get(context.Background(), "codex")
+	if err != nil {
+		t.Fatalf("post-reset Get: %v", err)
+	}
+	if len(models) != 1 || models[0].Slug != "fresh" {
+		t.Fatalf("post-reset models = %v, want fresh lookup", models)
+	}
+	close(releaseFirst)
+	if err := <-firstDone; err != nil {
+		t.Fatalf("detached Get: %v", err)
+	}
+
+	models, err, ok := cache.Peek("codex")
+	if !ok || err != nil || len(models) != 1 || models[0].Slug != "fresh" {
+		t.Fatalf("cache after detached completion = (%v, %v, %v), want fresh result", models, err, ok)
+	}
+}
+
 func TestGet_DropsCachedEntryOnReset(t *testing.T) {
 	calls := 0
 	cache := NewWith(time.Hour, func(_ context.Context, _ string) ([]provider.ModelInfo, error) {
@@ -133,6 +216,9 @@ func TestGet_ErrorIsCachedBriefly(t *testing.T) {
 	}
 	if calls != 1 {
 		t.Fatalf("error should be cached briefly: calls=%d, want 1", calls)
+	}
+	if models, err, ok := cache.Peek("codex"); !ok || err == nil || models != nil {
+		t.Fatalf("Peek cached error = (%v, %v, %v), want error hit", models, err, ok)
 	}
 
 	now = now.Add(DefaultErrorTTL + time.Second)

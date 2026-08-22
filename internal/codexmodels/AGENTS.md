@@ -4,7 +4,9 @@ TTL'd, single-flighted cache around Codex `model/list`. The catalog
 fetch spawns a Codex CLI subprocess — without coalescing, every settings
 render and every model picker open would fire one. The Cache keys by
 binary path, TTLs successful results for `DefaultTTL` (5 min), and
-collapses concurrent calls against the same binary into one CLI run.
+collapses concurrent calls against the same binary into one CLI run. `Peek`
+is the nonblocking read for paint paths: it returns only a fresh completed
+entry and never starts or joins a subprocess.
 
 The App owns a single Cache instance (lazy-init through
 `(*App).codexModels()` so tests that build an `&App{...}` directly stay
@@ -14,9 +16,9 @@ NPE-safe) and reaches into it from `GetModelsForProvider("codex")` and
 ## Layout
 
 - `codexmodels.go` — `Cache` type, `New` / `NewWith` constructors,
-  `Get` / `Reset` methods, `Lister` test seam, and the
-  `cloneModels` defensive-copy helper. `DefaultTTL` is the only
-  exported constant.
+  `Get` / `Peek` / `Reset` methods, `Lister` test seam, and the
+  shared `provider.CloneModels` defensive-copy helper. `DefaultTTL` and
+  `DefaultErrorTTL` are the exported cache lifetimes.
 
 ## Responsibility boundary
 
@@ -34,10 +36,10 @@ NPE-safe) and reaches into it from `GetModelsForProvider("codex")` and
 
 ## Anti-patterns
 
-- Do NOT cache failed lookups. A transient CLI failure
-  (binary missing during a settings edit, permissions) must not
-  pin a bad answer for the full TTL. Only success populates the
-  cache; errors fall through.
+- Do NOT cache failed lookups for the full success TTL. A transient CLI
+  failure (binary missing during a settings edit, permissions) is retained
+  only for `DefaultErrorTTL`, so paired capability reads share the failure
+  without masking recovery for five minutes.
 - Do NOT add a per-key TTL knob to `Get`. The cache's coherence
   assumption is "one TTL for everything"; introducing per-call
   overrides invites drift in which call sites get fresh data and

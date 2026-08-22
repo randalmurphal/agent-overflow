@@ -228,11 +228,20 @@ func (a *App) refreshCodexModelCatalog() {
 }
 
 func (a *App) codexModelsForBinary(ctx context.Context, binary string) ([]provider.ModelInfo, error) {
+	binary = normalizedCodexBinary(binary)
+	return a.codexModels().Get(ctx, binary)
+}
+
+func (a *App) cachedCodexModelsForBinary(binary string) ([]provider.ModelInfo, error, bool) {
+	return a.codexModels().Peek(normalizedCodexBinary(binary))
+}
+
+func normalizedCodexBinary(binary string) string {
 	binary = strings.TrimSpace(binary)
 	if binary == "" {
-		binary = settings.DefaultSettings.CodexBinaryPath
+		return settings.DefaultSettings.CodexBinaryPath
 	}
-	return a.codexModels().Get(ctx, binary)
+	return binary
 }
 
 func (a *App) codexModels() *codexmodels.Cache {

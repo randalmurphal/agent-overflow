@@ -398,7 +398,7 @@ func (a *App) GetThreadDefaults(opts CreateThreadOptions) (ThreadDefaults, error
 		model = trimmed
 	}
 	model = provider.NormalizeModelSlug(providerName, model)
-	effort := a.coerceReasoningEffortForModel(providerName, model, seed.ReasoningEffort)
+	effort, fastMode := a.draftModelDefaults(providerName, model, seed.ReasoningEffort, seed.FastMode)
 	contextWindow := seed.ContextWindow
 	options := chatmodel.ContextWindowOptions(providerName, model)
 	if len(options) > 0 && !chatmodel.ContextWindowSupported(options, contextWindow) {
@@ -409,7 +409,7 @@ func (a *App) GetThreadDefaults(opts CreateThreadOptions) (ThreadDefaults, error
 		Provider:        providerName,
 		Model:           model,
 		ReasoningEffort: effort,
-		FastMode:        seed.FastMode && a.supportsFastModeForModel(providerName, model),
+		FastMode:        fastMode,
 		ContextWindow:   contextWindow,
 		RuntimeMode:     seed.RuntimeMode,
 		Branch:          branch,
