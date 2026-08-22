@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/store"
 )
 
 // Claude's permission-notice family. Both subtypes arrive as
@@ -98,6 +99,51 @@ func commandNames(names []string) []string {
 	return out
 }
 
+// lookupDeniedToolCall fetches the tool_call row a permission_denied
+// notice explains. found is false when the envelope carried no
+// tool_use_id, the row does not exist yet (fresh session, dropped
+// launch), or the id names something other than a tool call. A lookup
+// error is logged and reads as not found: the notice row is the durable
+// record either way and must not fail on the cross-reference.
+func (r *Router) lookupDeniedToolCall(threadID string, notice permissionNoticeMeta) (store.Item, bool) {
+	if r == nil || r.store == nil {
+		return store.Item{}, false
+	}
+	toolUseID := strings.TrimSpace(notice.ToolUseID)
+	if toolUseID == "" {
+		return store.Item{}, false
+	}
+	item, found, err := r.store.GetThreadItem(threadID, toolUseID)
+	if err != nil {
+		log.Printf("triage: permission denial tool lookup %s: %v", toolUseID, err)
+		return store.Item{}, false
+	}
+	if !found || item.Kind != itemKindToolCall {
+		return store.Item{}, false
+	}
+	return item, true
+}
+
+// deniedToolCallScope is the scope a permission_denied notice persists
+// under. `system/permission_denied` is a top-level envelope — it never
+// carries `parent_tool_use_id`, only the denied `tool_use_id` — so a
+// subagent's denial would otherwise land as a main-timeline row between
+// agent cards while the tool it explains sits inside one (incident
+// 2026-08-22: a read-only thread's review agents' Bash denials rendered
+// as the main agent's). The denied tool row's own parent_id IS that
+// attribution, for Agent launches and forked skills alike, so the notice
+// inherits it. A scope the event already carries wins; a missing row
+// leaves the notice top-level, which is the honest record.
+func deniedToolCallScope(evt provider.ProviderEvent, tool store.Item, found bool) string {
+	if scope := eventParentID(evt); scope != "" {
+		return scope
+	}
+	if !found {
+		return ""
+	}
+	return strings.TrimSpace(tool.ParentID)
+}
+
 // annotateDeniedToolCall attaches the denial to the tool_call row it
 // explains, so the card itself says "Declined" instead of showing a
 // tool that quietly produced a rejection sentence. The standalone
@@ -120,20 +166,16 @@ func commandNames(names []string) []string {
 //
 // Failures are logged, never propagated: the notice row is already
 // persisted and visible, and losing the chip must not fail the event.
-func (r *Router) annotateDeniedToolCall(evt provider.ProviderEvent, notice permissionNoticeMeta) {
-	if r == nil || r.store == nil {
+//
+// The row is fetched ONCE by lookupDeniedToolCall, because the caller
+// needs it before the notice is persisted: the notice row inherits the
+// denied tool's scope (see deniedToolCallScope).
+func (r *Router) annotateDeniedToolCall(evt provider.ProviderEvent, notice permissionNoticeMeta, item store.Item, found bool) {
+	if r == nil || r.store == nil || !found {
 		return
 	}
 	toolUseID := strings.TrimSpace(notice.ToolUseID)
 	if toolUseID == "" {
-		return
-	}
-	item, found, err := r.store.GetThreadItem(evt.ThreadID, toolUseID)
-	if err != nil {
-		log.Printf("triage: permission denial tool lookup %s: %v", toolUseID, err)
-		return
-	}
-	if !found || item.Kind != itemKindToolCall {
 		return
 	}
 

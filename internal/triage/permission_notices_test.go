@@ -319,3 +319,62 @@ func TestPermissionNoticeSummaryFallback(t *testing.T) {
 	}
 	t.Fatal("no notification row persisted")
 }
+
+// A subagent's denial belongs to the subagent. `system/permission_denied`
+// is a top-level envelope (no parent_tool_use_id), so without inheriting
+// the denied tool row's scope the notice rendered as a main-timeline row
+// between agent cards (incident 2026-08-22, read-only review thread).
+func TestPermissionDeniedInheritsTheSubagentScopeOfTheDeniedTool(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	launchMeta, _ := json.Marshal(map[string]any{"toolName": "Agent", "input": map[string]any{"description": "L2 review"}})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventToolStart,
+		ThreadID:  "t1",
+		ItemID:    "toolu_launch",
+		ItemType:  "Agent",
+		Meta:      launchMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("seed launch: %v", err)
+	}
+	bashMeta, _ := json.Marshal(map[string]any{"toolName": "Bash", "input": map[string]any{"command": "go test ./..."}})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:            provider.EventToolStart,
+		ThreadID:        "t1",
+		ItemID:          "toolu_side",
+		ItemType:        "Bash",
+		ParentToolUseID: "toolu_launch",
+		Meta:            bashMeta,
+		Timestamp:       time.Now(),
+	}); err != nil {
+		t.Fatalf("seed sidechain tool_call: %v", err)
+	}
+
+	if err := router.Handle(permissionDeniedEvent("t1", "toolu_side", map[string]any{"agentId": "a1"})); err != nil {
+		t.Fatalf("handle permission_denied: %v", err)
+	}
+
+	notice, found, err := st.GetThreadItem("t1", "permission-denied:toolu_side")
+	if err != nil || !found {
+		t.Fatalf("notice row: found=%v err=%v", found, err)
+	}
+	if notice.ParentID != "toolu_launch" {
+		t.Fatalf("notice parent_id = %q, want the launch toolu_launch (subagent scope)", notice.ParentID)
+	}
+	tool, _, _ := st.GetThreadItem("t1", "toolu_side")
+	if tool.Decision != "declined" {
+		t.Fatalf("tool decision = %q, want declined", tool.Decision)
+	}
+
+	// A top-level tool's denial stays top-level.
+	seedRunningToolCall(t, router, "t1", "toolu_top")
+	if err := router.Handle(permissionDeniedEvent("t1", "toolu_top", nil)); err != nil {
+		t.Fatalf("handle top-level denial: %v", err)
+	}
+	top, _, _ := st.GetThreadItem("t1", "permission-denied:toolu_top")
+	if top.ParentID != "" {
+		t.Fatalf("top-level notice parent_id = %q, want empty", top.ParentID)
+	}
+}

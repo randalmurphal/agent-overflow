@@ -210,14 +210,23 @@ func (r *Router) handleTimelineNotification(evt provider.ProviderEvent) error {
 	if summary == "" {
 		summary = "Provider notification"
 	}
+	isDenial := isPermissionNotice && meta.Kind == permissionDeniedNotificationKind
+	var deniedTool store.Item
+	deniedToolFound := false
+	if isDenial {
+		// A subagent's denial belongs to that subagent: the notice takes
+		// the denied tool row's scope (deniedToolCallScope).
+		deniedTool, deniedToolFound = r.lookupDeniedToolCall(evt.ThreadID, notice)
+		evt.ParentToolUseID = deniedToolCallScope(evt, deniedTool, deniedToolFound)
+	}
 	if err := r.persistTimelineNotification(evt, meta.Kind, summary); err != nil {
 		return err
 	}
 	// The notice row is the durable record; the tool_call annotation is
 	// the cross-reference. Order matters: the row must exist before the
 	// chip points at it.
-	if isPermissionNotice && meta.Kind == permissionDeniedNotificationKind {
-		r.annotateDeniedToolCall(evt, notice)
+	if isDenial {
+		r.annotateDeniedToolCall(evt, notice, deniedTool, deniedToolFound)
 	}
 	return nil
 }
