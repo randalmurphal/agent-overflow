@@ -384,6 +384,14 @@ func (p *Parser) appendTaskOutputCompletion(
 	// ON a TaskOutput tool_result whose own tool_use_id is NOT the
 	// backgrounded one, so the map entry for `originalToolUseID` is
 	// orthogonal to the caller's clear path.
+	//
+	// Liveness is different: this IS terminal evidence for the
+	// underlying task, and signal (5)'s contract is "any terminal
+	// disarms". A dropped task_updated (reconnect gap) whose completion
+	// surfaces only through TaskOutput polling must still release the
+	// flag, or a later no-`tool_use_result` result for the original
+	// tool_use would misclassify as a background ack.
+	p.clearLiveAgentTask(originalToolUseID)
 	return events
 }
 

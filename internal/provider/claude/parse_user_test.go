@@ -837,6 +837,51 @@ func TestAppendToolResultBlock_TerminalClearsLiveAgentTask(t *testing.T) {
 	}
 }
 
+// TestAppendToolResultBlock_TaskOutputTerminalClearsLiveAgentTask pins
+// the second disarm path for signal (5): when a terminal task_updated
+// is lost (reconnect gap) and the task's completion surfaces only
+// through TaskOutput enrichment, that terminal evidence must clear the
+// liveness flag too — otherwise the original tool_use's later
+// no-`tool_use_result` result would misclassify as a background ack.
+func TestAppendToolResultBlock_TaskOutputTerminalClearsLiveAgentTask(t *testing.T) {
+	parser := NewParser()
+
+	if _, err := parser.ParseLine(testThread, []byte(`{"type":"assistant","message":{"id":"msg-1","role":"assistant","content":[{"type":"tool_use","id":"toolu_agent","name":"Agent","input":{"description":"d","subagent_type":"general-purpose","prompt":"p"}}]}}`)); err != nil {
+		t.Fatalf("assistant tool_use: %v", err)
+	}
+	if _, err := parser.ParseLine(testThread, []byte(`{"type":"system","subtype":"task_started","task_id":"task-agent","tool_use_id":"toolu_agent","task_type":"local_agent"}`)); err != nil {
+		t.Fatalf("task_started: %v", err)
+	}
+	if _, err := parser.ParseLine(testThread, []byte(`{"type":"assistant","message":{"id":"msg-2","role":"assistant","content":[{"type":"tool_use","id":"toolu_taskoutput","name":"TaskOutput","input":{"task_id":"task-agent"}}]}}`)); err != nil {
+		t.Fatalf("taskoutput tool_use: %v", err)
+	}
+	// No task_updated arrives; the completion comes via TaskOutput.
+	if _, err := parser.ParseLine(testThread, []byte(`{"type":"user","tool_use_result":{"retrieval_status":"success","task":{"task_id":"task-agent","task_type":"local_agent","status":"completed","output":"done","exitCode":0}},"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_taskoutput","content":"Task completed"}]}}`)); err != nil {
+		t.Fatalf("taskoutput result: %v", err)
+	}
+
+	if parser.hasLiveAgentTask("toolu_agent") {
+		t.Fatalf("TaskOutput terminal must clear the liveness flag for toolu_agent")
+	}
+
+	// The original tool_use's bare result now completes in place.
+	line := []byte(`{"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu_agent","type":"tool_result","content":[{"type":"text","text":"Findings: none."}]}]}}`)
+	events, err := parser.ParseLine(testThread, line)
+	if err != nil {
+		t.Fatalf("parse original result: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d: %+v", len(events), events)
+	}
+	var meta map[string]any
+	if err := json.Unmarshal(events[0].Meta, &meta); err != nil {
+		t.Fatalf("unmarshal meta: %v", err)
+	}
+	if _, ok := meta["is_background"]; ok {
+		t.Fatalf("result after TaskOutput terminal must complete in place; meta=%v", meta)
+	}
+}
+
 // TestAppendToolResultBlock_LocalBashTaskDoesNotMarkLive pins the
 // task_type gate: every foreground Bash also emits task_started (task
 // type "local_bash"), and a foreground Bash result's ordering against
