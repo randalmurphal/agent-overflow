@@ -2566,11 +2566,37 @@ describe('scroll integration — activity run inner controller', () => {
       get: () => scrollTop,
       set: (next: number) => { scrollTop = next; },
     });
+    // A scrollable clip — the save path refuses collapsed-content geometry
+    // (happy-dom's default zeros), because that is what a mid-eviction read
+    // looks like.
+    Object.defineProperty(clip, 'scrollHeight', { configurable: true, get: () => 600 });
+    Object.defineProperty(clip, 'clientHeight', { configurable: true, get: () => 288 });
     clip.scrollTop = 128;
 
     // Unmount is what the virtualizer does when the row leaves the buffer;
     // the offset has to survive it or a run the user scrolled inside snaps
     // back to its tail every time it goes off screen.
+    view.unmount();
+
+    expect(pane.activityRuns.scrollSnapshot(runId)?.scrollTop).toBe(128);
+  });
+
+  it('a teardown against collapsed content does not overwrite the saved offset', async () => {
+    // On a windowing eviction the clip's content can be gone before the
+    // teardown runs, and `scrollTop` reads 0 there. Archiving that zero
+    // destroyed the reader's position (the per-frame saves had it right), so
+    // every remount parked the run at its top with the fade off — half of the
+    // 2026-08-22 "no faded top edge" defect. A clip that reports nothing to
+    // scroll must leave the snapshot alone.
+    const pane = await buildPane(undefined, tools(3));
+    const view = render(MessageTimeline, { props: { pane } });
+    await tick();
+
+    const runId = (view.getByTestId('activity-run') as HTMLElement).dataset.runId!;
+    pane.activityRuns.saveScrollSnapshot(runId, { scrollTop: 128, escaped: true });
+
+    // happy-dom's zero geometry IS the collapsed-content shape: scrollHeight
+    // and clientHeight both 0, scrollTop 0.
     view.unmount();
 
     expect(pane.activityRuns.scrollSnapshot(runId)?.scrollTop).toBe(128);

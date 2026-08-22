@@ -164,6 +164,34 @@ function isRunMember(node: TimelineNode, getItem: (id: string) => Item | undefin
   return timelineNodeHasRail(node, currentLeafItem(node, getItem));
 }
 
+/**
+ * A notification bell is ABSORBED into a run that is already open — it joins
+ * the run when a rail member precedes it, and stays standalone otherwise.
+ *
+ * Bells are activity-shaped interim history (a Monitor ping, a background
+ * launch), and they land at the CURRENT WRITE HEAD (`internal/triage/
+ * tool_lifecycle.go` `backgroundCompletionTurnIndex`) — which during a turn is
+ * inside the live run. Before absorption every such bell CUT the run: the head
+ * kept the id, the rows after minted a fresh one, and the reader watched the
+ * clip they were following restart from a one-row unfaded clip on every ping
+ * (~30s under a Monitor — the 2026-08-22 fade-flap investigation). Absorbed
+ * bells keep the run whole and its identity, controller, and scroll state
+ * intact.
+ *
+ * Absorption is one-directional and stable: a TRAILING bell (nothing after it
+ * yet — the live-tail case this exists for) stays absorbed even once prose
+ * settles the run, so membership never churns when the next node arrives. A
+ * bell with no rail member before it (idle-time ping after prose) is not a
+ * run and renders standalone, as before.
+ */
+function isAbsorbedNotification(
+  node: TimelineNode,
+  getItem: (id: string) => Item | undefined,
+): boolean {
+  const item = currentLeafItem(node, getItem);
+  return item !== null && item.kind === 'notification';
+}
+
 /** Every item a run row represents, including group members. */
 function* activityRunMemberItems(nodes: readonly TimelineNode[]): Generator<Item> {
   for (const node of nodes) {
@@ -268,7 +296,11 @@ export function groupActivityRuns(
       continue;
     }
     let j = i + 1;
-    while (j < nodes.length && isRunMember(nodes[j], options.getItem)) j += 1;
+    while (
+      j < nodes.length
+      && (isRunMember(nodes[j], options.getItem)
+        || isAbsorbedNotification(nodes[j], options.getItem))
+    ) j += 1;
     out.push(buildRun(nodes.slice(i, j), options));
     i = j;
   }
@@ -283,7 +315,10 @@ export function groupActivityRuns(
   // when the gate opens, so it is still the live one.
   const tail = out[out.length - 1];
   if (tail?.kind === 'activity_run') {
-    tail.live = options.withheld.every((node) => isRunMember(node, options.getItem));
+    // An absorbable bell behind the gate joins this very run when revealed,
+    // same as withheld activity — it must not read as closing prose.
+    tail.live = options.withheld.every((node) =>
+      isRunMember(node, options.getItem) || isAbsorbedNotification(node, options.getItem));
     // Tail-ness is the wider, reader-facing fact: this run is the newest
     // node ON SCREEN, whatever the wire holds behind the gate. It is what
     // collapse resolution keys on, and what the row's scroll controller

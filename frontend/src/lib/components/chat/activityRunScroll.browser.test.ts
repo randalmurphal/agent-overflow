@@ -521,3 +521,137 @@ describe('activity run — a toggle opens upward', () => {
     expect(bottomGap()).toBeLessThanOrEqual(2);
   });
 });
+
+describe('activity run — a clamped mount restore is re-applied as content measures', () => {
+  // The virtualizer remounts a run whose reader had scrolled inside it, and
+  // the mount's restore write lands BEFORE the rows inside finish measuring —
+  // markdown, payload bodies, and font metrics all land late in production.
+  // The browser clamps the write toward 0, and an escaped run has no
+  // controller or settle-follow to re-ask: it parked at its top, scrollable
+  // with the fade off (the 2026-08-22 "no faded top edge" defect). The
+  // restore observer must re-apply the armed target as the content grows.
+  //
+  // Late measurement is simulated by shrinking the run's thinking summaries
+  // while the run is unmounted and restoring them after it remounts: same
+  // signal path (the content ResizeObserver), deterministic heights.
+  const THREAD_ID = 'thread-run-restore-hold';
+  const LONG_THOUGHT = 'Considering the fixture layout in detail: the run needs interior height, '
+    + 'so this reasoning row carries several clauses and wraps across multiple '
+    + 'lines under the clip\'s narrow column, giving each row real height to lose.';
+  const RUN_LEN = 20;
+  const TAIL_PROSE = 20;
+
+  function thinkingItem(id: string, index: number, summary: string, updatedAt = index): Item {
+    return makeItem({
+      id,
+      threadId: THREAD_ID,
+      itemIndex: index,
+      kind: 'thinking',
+      summary,
+      createdAt: index,
+      updatedAt,
+    });
+  }
+
+  function items(): Item[] {
+    const built: Item[] = [prose('p0', 0, THREAD_ID)];
+    for (let i = 0; i < RUN_LEN; i += 1) {
+      // Mostly thinking rows: their tail-clamped text is the height that can
+      // shrink, and the clamp scenario needs the run to lose several hundred
+      // px while unmounted.
+      built.push(i % 10 === 0
+        ? tool(`a${i}`, i + 1, THREAD_ID)
+        : thinkingItem(`th${i}`, i + 1, LONG_THOUGHT));
+    }
+    for (let i = 0; i < TAIL_PROSE; i += 1) {
+      // Tall rows: the run must end up past the virtualizer's above-viewport
+      // buffer when the timeline rests at the bottom, or the return leg is
+      // never a remount.
+      built.push(makeItem({
+        id: `r${i}`,
+        threadId: THREAD_ID,
+        itemIndex: RUN_LEN + 1 + i,
+        summary: `Reply ${i}, paragraph one: enough prose that the row takes real height.\n\n`
+          + 'Paragraph two keeps going so consecutive rows do not share one height bucket '
+          + 'and the seeded scrollback genuinely exceeds the windowing buffers.\n\n'
+          + 'Paragraph three exists purely for altitude.',
+        createdAt: RUN_LEN + 1 + i,
+        updatedAt: RUN_LEN + 1 + i,
+      }));
+    }
+    return built;
+  }
+
+  const clipOf = (scrollEl: HTMLElement): HTMLElement | null =>
+    scrollEl.querySelector('[data-testid="activity-run-clip"]');
+  const fadeOf = (scrollEl: HTMLElement): HTMLElement | null =>
+    scrollEl.querySelector('[data-testid="activity-run-top-fade"]');
+
+  it('lands on the saved position once the rows have measured, fade on', async () => {
+    const { pane, scrollEl } = await mountTimeline(THREAD_ID, items(), QUIET_BOTTOM);
+
+    // The run sits at the head of a long thread; the mount lands at the
+    // bottom, far below it. It must be OUT of the rendered window for the
+    // return leg to be a real remount.
+    await waitFor(() => clipOf(scrollEl) === null, 'run unmounted at the bottom');
+
+    // Up to the run.
+    await userScrollTo(scrollEl, 0);
+    await waitFor(() => clipOf(scrollEl) !== null, 'run mounts on the way up');
+    const clip = clipOf(scrollEl)!;
+    await waitFor(() => clip.scrollHeight > clip.clientHeight, 'clip scrollable');
+
+    // The reader steps inside: a wheel gesture (intent) plus the position.
+    clip.dispatchEvent(new WheelEvent('wheel', { deltaY: -120, bubbles: true }));
+    clip.scrollTop = Math.max(0, clip.scrollHeight - clip.clientHeight - 20);
+    await raf();
+    const target = clip.scrollTop;
+    expect(target).toBeGreaterThan(250); // vacuity: deep enough that the shrink strands it
+
+    // Away again, far enough that the run leaves the window.
+    await userScrollTo(scrollEl, scrollEl.scrollHeight);
+    await waitFor(() => clipOf(scrollEl) === null, 'run unmounts at the bottom');
+
+    // While it is unmounted, its thinking rows lose their height — the
+    // remount will measure SHORT, exactly like unresolved rows in production.
+    for (let i = 0; i < RUN_LEN; i += 1) {
+      if (i % 10 === 0) continue;
+      pane.upsertItem(thinkingItem(`th${i}`, i + 1, 'hm', 1000 + i));
+    }
+    await tick();
+
+    // Back up: the remount's restore write clamps against the short content.
+    await userScrollTo(scrollEl, 0);
+    await waitFor(() => clipOf(scrollEl) !== null, 'run remounts');
+    const remounted = clipOf(scrollEl)!;
+    await raf();
+    // Vacuity guard: the clamp really happened — the saved position is not
+    // reachable in the shrunken clip, or the whole scenario proved nothing.
+    expect(remounted.scrollTop).toBeLessThan(target);
+
+    // The rows measure in (grow back). The armed restore must follow the
+    // growth to the saved position — this is the fix under test; before it,
+    // the run parked wherever the clamp left it, scrollable with no fade.
+    for (let i = 0; i < RUN_LEN; i += 1) {
+      if (i % 10 === 0) continue;
+      pane.upsertItem(thinkingItem(`th${i}`, i + 1, LONG_THOUGHT, 2000 + i));
+    }
+    await tick();
+    const runEl = scrollEl.querySelector('[data-testid="activity-run"]') as HTMLElement;
+    const runId = runEl?.dataset.runId ?? '?';
+    const state = (): string => {
+      const snap = pane.activityRuns.scrollSnapshot(runId);
+      return `st=${remounted.scrollTop} sh=${remounted.scrollHeight} ch=${remounted.clientHeight}`
+        + ` snap=${JSON.stringify(snap)} target=${target}`;
+    };
+    try {
+      await waitFor(
+        () => Math.abs(remounted.scrollTop - target) <= 2,
+        'restore re-applied to the saved position',
+      );
+    } catch {
+      throw new Error(`restore not re-applied [${state()}]`);
+    }
+    expect(fadeOf(scrollEl)?.dataset.faded).toBe('true');
+  });
+});

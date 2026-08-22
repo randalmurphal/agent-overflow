@@ -130,11 +130,60 @@ describe('run boundaries', () => {
     expect(project(input)).toBe(input);
   });
 
+  // Notification bells are ABSORBED, not run-breaking: they land at the
+  // current write head (a Monitor ping, a background launch), which during a
+  // turn is inside the live run — and breaking there cut the run the reader
+  // was following on every ping, minting a fresh tail id and remounting its
+  // rows from a one-row clip (the 2026-08-22 fade-flap defect).
+  describe('notification absorption', () => {
+    it('a bell between rail rows joins the run, id intact', () => {
+      const reg = identity();
+      const before = project([tool('t1', 'Bash'), tool('t2', 'Bash')], { identity: reg });
+      const runId = run(before, 0).runId;
+
+      const after = project(
+        [tool('t1', 'Bash'), leaf({ id: 'bell', kind: 'notification' }), tool('t2', 'Bash')],
+        { identity: reg },
+      );
+
+      expect(after.map((n) => n.kind)).toEqual(['activity_run']);
+      expect(run(after, 0).runId).toBe(runId);
+      expect(run(after, 0).memberItemIds).toEqual(['t1', 'bell', 't2']);
+    });
+
+    it('a trailing bell stays absorbed — the live-tail case', () => {
+      const nodes = project([
+        tool('t1', 'Bash'),
+        leaf({ id: 'bell', kind: 'notification' }),
+      ]);
+
+      expect(nodes.map((n) => n.kind)).toEqual(['activity_run']);
+      expect(run(nodes, 0).children).toHaveLength(2);
+    });
+
+    it('a bell with no open run stays standalone', () => {
+      const nodes = project([
+        prose('p1'),
+        leaf({ id: 'bell', kind: 'notification' }),
+        tool('t1', 'Bash'),
+      ]);
+
+      expect(nodes.map((n) => n.kind)).toEqual(['leaf', 'leaf', 'activity_run']);
+    });
+
+    it('a withheld bell keeps the tail run live', () => {
+      const nodes = project([tool('t1', 'Bash')], {
+        withheld: [leaf({ id: 'bell', kind: 'notification' })],
+      });
+
+      expect(run(nodes, 0).live).toBe(true);
+    });
+  });
+
   it.each([
     ['assistant_text', 'assistant_text'],
     ['user_text', 'user_text'],
     ['error', 'error'],
-    ['notification', 'notification'],
     ['api_retry', 'api_retry'],
     ['compaction', 'compaction'],
     ['terminal_interaction', 'terminal_interaction'],

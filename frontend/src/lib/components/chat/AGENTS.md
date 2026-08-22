@@ -335,6 +335,24 @@ Operational rules for this directory:
   and window anchor both), so it reopens on its newest row. `saveScrollSnapshot`
   refuses a save for a run with no clip because the closing clip's own teardown
   routes through it — do not "fix" that by moving the check to the call site.
+- **A snapshot is only written from a laid-out, scrollable clip, and a clamped
+  mount restore stays armed until the content can take it.** Two halves of one
+  defect (2026-08-22, "no faded top edge"): on a windowing eviction the clip's
+  content collapses before the teardown reads it, so `scrollTop` reads 0 and
+  the scroll event the clamp fires archives that artifact over the reader's
+  real position; and at remount the restore write lands before the rows have
+  measured, so the browser clamps it toward 0 with nothing re-asking for an
+  escaped run. `saveInnerScroll` and the teardown save both refuse
+  `scrollHeight <= clientHeight` geometry, and the restore observer re-applies
+  `pendingRestoreTop` on content growth until it is achieved — superseded by
+  any reader gesture or authored write (`positionWritten` clears it).
+- **A notification bell with a rail member before it is ABSORBED into the
+  run** (`isAbsorbedNotification`, `activityRunGrouping.ts`) rather than
+  splitting it: bells land at the write head, inside the live run, and the
+  split minted a fresh tail id that remounted the reader's rows from a
+  one-row clip on every Monitor ping. Trailing bells stay absorbed so a
+  settling run's membership never churns; an idle bell (no open run) stays
+  standalone.
 - **Every collapse/expand runs inside `withViewportBottomHeld`, and the hold
   lives INSIDE the registry mutators** — `setCollapsed`, `setAllCollapsed`,
   and `releaseOpenedLive` each run their write inside the transaction, so a

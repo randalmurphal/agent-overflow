@@ -40,6 +40,34 @@ describe('counts', () => {
     expect(counts.entries.map((e) => e.label)).toEqual(['Edit', 'Write']);
   });
 
+  it('counts absorbed notification bells, ambient-ranked between tools and thinking', () => {
+    seq += 1;
+    const bell = makeItem({ id: 'bell', itemIndex: seq, kind: 'notification' });
+    seq += 1;
+    const bell2 = makeItem({ id: 'bell2', itemIndex: seq, kind: 'notification' });
+    const { counts } = activityRunSummary([
+      bell,
+      tool('a', 'Bash'),
+      thinking('th'),
+      bell2,
+    ], 'claude');
+
+    expect(counts.entries.map(({ label, count }) => ({ label, count }))).toEqual([
+      { label: 'Bash', count: 1 },
+      // Pluralized: "2 notification" reads as a typo where "2 thinking" does not.
+      { label: 'notifications', count: 2 },
+      { label: 'thinking', count: 1 },
+    ]);
+  });
+
+  it('keeps the singular label for one bell', () => {
+    seq += 1;
+    const bell = makeItem({ id: 'bell', itemIndex: seq, kind: 'notification' });
+    const { counts } = activityRunSummary([tool('a', 'Bash'), bell], 'claude');
+
+    expect(counts.entries.map(({ label }) => label)).toEqual(['Bash', 'notification']);
+  });
+
   it('sorts thinking last regardless of count', () => {
     const { counts } = activityRunSummary([
       thinking('th1'),

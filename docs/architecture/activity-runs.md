@@ -48,6 +48,17 @@ control. Because the predicate reads live item state, a late-arriving
 `payloadKind` can **split** a run mid-stream; the registry's membership rule
 below is what keeps state attached across that.
 
+One absorption rides on top of the predicate: a `notification` leaf with a
+rail member before it joins the open run (`isAbsorbedNotification` in
+`activityRunGrouping.ts`). Bells land at the current write head
+(`backgroundCompletionTurnIndex`), which during a turn is inside the live
+run — before absorption every Monitor ping cut the run there, minting a
+fresh tail id and remounting its rows from a one-row unfaded clip
+(2026-08-22). A trailing bell stays absorbed so settling never pops it out;
+a bell with no rail member before it renders standalone. The header line
+counts absorbed bells as `N notification(s)`, ranked between tools and
+thinking.
+
 That is also why rail participation is part of `itemTimelineStructureKey`
 (`utils/timelineStructure.ts`): a row leaving the rail changes which top-level
 rows exist, so it has to bump `timelineRevision` like an insertion does.

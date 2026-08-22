@@ -279,6 +279,14 @@
   function saveInnerScroll(): void {
     const clip = clipEl;
     if (!clip) return;
+    // Only a laid-out, scrollable clip has a position worth archiving. During
+    // unmount the content collapses before the row is gone, the browser clamps
+    // `scrollTop` to 0 and fires a scroll event for it — and that artifact
+    // overwrote the reader's real position (saved per-frame while they
+    // scrolled), so every remount parked the run at its top with the fade off.
+    // An unscrollable clip can only ever be at 0 anyway; refusing the save
+    // keeps the last meaningful position for the restore path.
+    if (clip.scrollHeight <= clip.clientHeight) return;
     pane.activityRuns.saveScrollSnapshot(runId, {
       scrollTop: clip.scrollTop,
       // One fact — "the reader has left bottom-follow" — recorded from
@@ -335,8 +343,19 @@
   // compensation then moved them there for real.
   let readerScrolling = false;
 
+  // A mount restore that landed against unmeasured content. The mount write
+  // aims at the snapshot's scrollTop, but the rows inside are not measured at
+  // that instant, so the browser clamps the write — and for a run that is not
+  // bottom-following nothing ever re-asks: a settled scrollable run remounted
+  // mid-thread parked at its top, scrollable but faded-top off, until a
+  // gesture. The clamped target stays armed here and the restore observer
+  // below re-applies it as the content measures; any newer authored write
+  // (`positionWritten`) or reader gesture supersedes it.
+  let pendingRestoreTop: number | null = null;
+
   function armReaderScroll(): void {
     readerScrolling = true;
+    pendingRestoreTop = null;
   }
 
   /**
@@ -376,6 +395,10 @@
   function positionWritten(clip: HTMLElement, following: boolean): void {
     readerScrolling = false;
     followingBottom = following;
+    // A newer authored position supersedes a clamped mount restore — the
+    // prepend compensation, the head-splice hold, the handoff, and a jump all
+    // own the position from here.
+    pendingRestoreTop = null;
     syncPosition(clip);
   }
 
@@ -445,6 +468,14 @@
     // already scrolled would otherwise paint one frame without its fade, and
     // the settle observer would spend that frame not knowing where it is.
     positionWritten(clip, !escapedAtMount);
+    // AFTER positionWritten (which clears it): if the restore write clamped —
+    // the rows are not measured yet, so scrollHeight undershoots — arm the
+    // real target for the restore observer. Escaped mounts only: a following
+    // mount is bottomed by the settle observer / controller as content grows,
+    // which is already the position the snapshot described.
+    if (snapshot && escapedAtMount && Math.abs(clip.scrollTop - snapshot.scrollTop) > 1) {
+      pendingRestoreTop = snapshot.scrollTop;
+    }
 
     // Escape is event-sourced, so it is carried into a new controller rather
     // than re-derived from the geometry just written.
@@ -486,10 +517,17 @@
         if (!escaped) clip.scrollTop = clip.scrollHeight;
         positionWritten(clip, !escaped);
       }
-      pane.activityRuns.saveScrollSnapshot(runId, {
-        scrollTop: clip.scrollTop,
-        escaped,
-      });
+      // Same laid-out-and-scrollable refusal as `saveInnerScroll`: on a
+      // windowing eviction this teardown can run against a clip whose content
+      // is already gone, and `clip.scrollTop` reads 0 there — archiving that
+      // destroyed the position the per-frame saves had kept. The escape flag
+      // rides the per-frame saves too, so nothing is lost by refusing.
+      if (clip.scrollHeight > clip.clientHeight) {
+        pane.activityRuns.saveScrollSnapshot(runId, {
+          scrollTop: clip.scrollTop,
+          escaped,
+        });
+      }
       if (stick === controller) stick = null;
     };
   });
@@ -531,6 +569,42 @@
     settle.observe(clip);
     settle.observe(content);
     return () => settle.disconnect();
+  });
+
+  // Re-applies a clamped mount restore as the content measures.
+  //
+  // Counterpart to the settle observer above, for the mounts that observer
+  // deliberately ignores: a run whose reader had stepped inside
+  // (`escapedAtMount`) restores to a position, not to the bottom, and the
+  // mount write happens before the rows resolve — so the browser clamps it
+  // toward 0 and, with `followingBottom` false, nothing re-asks. The armed
+  // target is re-applied on every growth until the content can take it;
+  // partial applications are kept (each one is closer than the clamp), and
+  // the target dies the moment anything newer owns the position — a reader
+  // gesture (`armReaderScroll`) or an authored write (`positionWritten`).
+  //
+  // Unlike the settle observer this also runs under a live controller: an
+  // escaped tail run restores the same way, and the untagged write cannot
+  // un-escape it — gesture classification only ever sets escape.
+  $effect(() => {
+    const clip = clipEl;
+    const content = contentEl;
+    if (!clip || !content) return;
+    const restore = new ResizeObserver(() => {
+      const target = pendingRestoreTop;
+      if (target === null) return;
+      const max = clip.scrollHeight - clip.clientHeight;
+      if (max <= 0) return;
+      clip.scrollTop = Math.min(target, max);
+      // Ours — must not read as the reader arriving at the window's top and
+      // page in a chunk nobody asked for.
+      readerScrolling = false;
+      if (max >= target) pendingRestoreTop = null;
+      syncPosition(clip);
+    });
+    restore.observe(clip);
+    restore.observe(content);
+    return () => restore.disconnect();
   });
 
   // Holds the reading position when the mount window's head ADVANCES, and

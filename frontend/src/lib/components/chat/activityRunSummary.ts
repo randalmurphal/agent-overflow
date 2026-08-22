@@ -65,6 +65,17 @@ const WAIT_PRESENTATION: ActivityRunPresentation = {
   isThinking: false,
 };
 
+// Notification bells absorbed into a run (`activityRunGrouping.ts`
+// `isAbsorbedNotification`): a Monitor ping or background-task bell that
+// landed mid-run. Label pluralized in the entry post-pass — "2 notification"
+// reads as a typo where "12 thinking" does not.
+const NOTIFICATION_PRESENTATION: ActivityRunPresentation = {
+  key: 'notification',
+  label: 'notification',
+  icon: 'speech-bubble',
+  isThinking: false,
+};
+
 function capitalizedHeaderLabel(label: string): string {
   if (label === 'mcp') return 'MCP';
   return label.length > 0
@@ -90,6 +101,8 @@ function activityRunPresentation(
   if (item.kind === 'thinking') return THINKING_PRESENTATION;
 
   if (item.kind === 'terminal_interaction') return WAIT_PRESENTATION;
+
+  if (item.kind === 'notification') return NOTIFICATION_PRESENTATION;
 
   const rawName = item.toolName?.trim() ?? '';
   const sourceKey = rawName || UNNAMED_TOOL_LABEL;
@@ -199,14 +212,22 @@ export function activityRunSummary(
 
   const entries = [...buckets.values()]
     .sort((a, b) => {
-      // Thinking last regardless of count: it is ambient, and a reader
-      // scanning a header wants the tools first.
-      const aThinking = a.isThinking;
-      const bThinking = b.isThinking;
-      if (aThinking !== bThinking) return aThinking ? 1 : -1;
+      // Ambient rows last regardless of count — a reader scanning a header
+      // wants the tools first. Notifications before thinking: they are
+      // events, thinking is background hum.
+      const rank = (e: ActivityRunCountEntry): number =>
+        e.isThinking ? 2 : e.key === NOTIFICATION_PRESENTATION.key ? 1 : 0;
+      const aRank = rank(a);
+      const bRank = rank(b);
+      if (aRank !== bRank) return aRank - bRank;
       if (a.count !== b.count) return b.count - a.count;
       return a.label.localeCompare(b.label);
     });
+  for (const entry of entries) {
+    if (entry.key === NOTIFICATION_PRESENTATION.key && entry.count > 1) {
+      entry.label = 'notifications';
+    }
+  }
 
   return { counts: { entries, total }, hasFailure, runningLabel };
 }
