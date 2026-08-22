@@ -74,12 +74,13 @@ describe('filterRedundantNotifications', () => {
     expect(ids(filterRedundantNotifications(items))).toEqual(['launch', 'completion']);
   });
 
-  it('keeps a notification whose completion sibling never absorbed it (TaskOutput-first order)', () => {
+  it('hides a notification whose sibling exists without a caption (TaskOutput-first order)', () => {
     // The sibling was created by a TaskOutput drain BEFORE the bell
-    // arrived, so the caption missed its one first-write chance (a
-    // mounted card must not grow a line). Hiding the row here would
-    // silently drop the only place the bell's text exists — the exact
-    // "Claude sees events AO doesn't show" class this filter caused.
+    // arrived, so the caption missed its one first-write chance. This is
+    // the NORMAL agentic wait order (bg Bash + blocking TaskOutput), and
+    // the bell's text is the CLI's formulaic restatement of what the
+    // sibling already shows — existence of the completed sibling hides
+    // it (user ruling 2026-08-22; the row stays in SQLite).
     const items = [
       mkItem({ id: 'launch', kind: 'tool_call', status: 'running', meta: withTaskId('T1') }),
       mkItem({
@@ -91,13 +92,10 @@ describe('filterRedundantNotifications', () => {
       }),
       mkItem({ id: 'notif', itemIndex: 2, kind: 'notification', summary: BELL, meta: withTaskId('T1') }),
     ];
-    expect(ids(filterRedundantNotifications(items))).toEqual(['launch', 'completion', 'notif']);
+    expect(ids(filterRedundantNotifications(items))).toEqual(['launch', 'completion']);
   });
 
-  it('hides a notification whose text equals the completion row summary (legacy absorption)', () => {
-    // Rows persisted before the caption meta existed: the sibling's own
-    // summary can already BE the bell text. Equal text is absorption —
-    // nothing is lost by hiding the duplicate.
+  it('hides a notification whose text equals the completion row summary', () => {
     const items = [
       mkItem({
         id: 'completion',
@@ -110,7 +108,7 @@ describe('filterRedundantNotifications', () => {
     expect(ids(filterRedundantNotifications(items))).toEqual(['completion']);
   });
 
-  it('hides via summary equality against a completed foreground tool_call', () => {
+  it('hides against a completed foreground tool_call with equal text', () => {
     const items = [
       mkItem({ id: 'fg', kind: 'tool_call', status: 'completed', summary: BELL, meta: withTaskId('T2') }),
       mkItem({ id: 'notif', itemIndex: 1, kind: 'notification', summary: BELL, meta: withTaskId('T2') }),
@@ -118,15 +116,15 @@ describe('filterRedundantNotifications', () => {
     expect(ids(filterRedundantNotifications(items))).toEqual(['fg']);
   });
 
-  it('keeps a notification a completed tool_call did not absorb', () => {
-    // A bare completed lifecycle row is no longer enough to hide the
-    // bell: existence proved the task ended, not that its text survives
-    // anywhere else.
+  it('hides a notification against a completed tool_call with different text', () => {
+    // Legacy history and the foreground case: a completed lifecycle row
+    // with the same task_id hides the bell regardless of caption or
+    // summary text.
     const items = [
       mkItem({ id: 'fg', kind: 'tool_call', status: 'completed', summary: 'Bash: sleep 30', meta: withTaskId('T2') }),
       mkItem({ id: 'notif', itemIndex: 1, kind: 'notification', summary: BELL, meta: withTaskId('T2') }),
     ];
-    expect(ids(filterRedundantNotifications(items))).toEqual(['fg', 'notif']);
+    expect(ids(filterRedundantNotifications(items))).toEqual(['fg']);
   });
 
   it('hides multi-subagent bells separated from their captioned completions by a running sibling', () => {

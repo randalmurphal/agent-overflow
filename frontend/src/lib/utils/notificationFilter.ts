@@ -1,16 +1,22 @@
-// A `task_notification` row is hidden only when its completion sibling
-// has ABSORBED it — the sibling carries the notification's summary as a
-// caption (`meta.notification_summary`, stamped by triage on the
-// sibling's first write), or the sibling's own summary already says the
-// same thing. A completion that merely EXISTS is not enough: on the
-// sibling-first write order (a TaskOutput drain created the row before
-// the bell arrived) the caption misses its one chance — a mounted card
-// must never grow a line — and hiding the notification there would
-// silently drop the summary text the model can see. The original
-// `notification` row always stays in SQLite (the backend persists it for
-// the load-bearing `output_file` enrichment side effect in
-// `internal/triage/background_task_notifications.go`); this filter only
-// suppresses rendering.
+// A `task_notification` row is hidden once a COMPLETED lifecycle
+// sibling with the same task_id exists. The bell's text ("Background
+// command … completed (exit code 0)") is the CLI's formulaic
+// restatement of facts the completion card already shows — description
+// and exit code — so rendering both prints one completion twice, and
+// the common agentic wait pattern (bg Bash + a blocking TaskOutput)
+// made that the NORMAL case: the TaskOutput drain writes the sibling
+// before the bell arrives, so an absorption-only rule (caption stamped
+// on the sibling's first write) left the bell visible on every waited
+// background command (user ruling 2026-08-22). Existence of the
+// completed sibling is therefore the whole hide predicate. Nothing is
+// lost durably: the notification row stays in SQLite (the backend
+// persists it for the load-bearing `output_file` enrichment side
+// effect in `internal/triage/background_task_notifications.go`) and
+// the caption still renders on the card when the write order let
+// triage stamp it — this filter only suppresses rendering.
+//
+// Only a COMPLETED sibling hides. A running launch keeps its bell, and
+// so do errored/killed ones — the explicit failure ping is wanted.
 //
 // A WATCH task (Claude's Monitor — claude-wire.md §E7) is the one
 // exception, and it is not a special case so much as a different shape:
@@ -21,60 +27,36 @@
 // the exact moment the run finished. Triage stamps `meta.watch_task`
 // onto each notification at write time (copied from the launch row,
 // which the keep-running flip marks) precisely so this decision does not
-// depend on the launch row still being in the rendered window — and
-// never stamps a caption for a watch task, so the absorption test below
-// is naturally false for them too; the kind check is belt on top.
+// depend on the launch row still being in the rendered window.
 //
 // Operates on the flat `pane.items` array before subagent grouping so a
 // hidden notification never enters the rendered tree, including when the
 // notification's `parentId` would have placed it inside a SubagentGroup.
 
 import type { Item } from '../types/models';
-import {
-  extractClaudeTaskID,
-  extractNotificationSummary,
-  isClaudeWatchTaskNotification,
-} from './claudeTaskMeta';
-
-interface CompletionAbsorption {
-  /** The sibling carries a `notification_summary` caption. */
-  captioned: boolean;
-  /** Trimmed completion summaries, for the equal-text fallback. */
-  summaries: Set<string>;
-}
+import { extractClaudeTaskID, isClaudeWatchTaskNotification } from './claudeTaskMeta';
 
 export function filterRedundantNotifications(items: readonly Item[]): readonly Item[] {
   // Hot path: no notifications → nothing to filter, return the original
   // array reference so downstream `$derived` chains see no change.
   if (!items.some((it) => it.kind === 'notification')) return items;
 
-  const completions = new Map<string, CompletionAbsorption>();
+  const completedTaskIDs = new Set<string>();
   for (const it of items) {
     const isCompletedLifecycle =
       it.kind === 'tool_completion' ||
       (it.kind === 'tool_call' && it.status === 'completed');
     if (!isCompletedLifecycle) continue;
     const id = extractClaudeTaskID(it);
-    if (!id) continue;
-    let entry = completions.get(id);
-    if (!entry) {
-      entry = { captioned: false, summaries: new Set() };
-      completions.set(id, entry);
-    }
-    if (extractNotificationSummary(it) !== null) entry.captioned = true;
-    const summary = it.summary?.trim();
-    if (summary) entry.summaries.add(summary);
+    if (id) completedTaskIDs.add(id);
   }
-  if (completions.size === 0) return items;
+  if (completedTaskIDs.size === 0) return items;
 
   const out: Item[] = [];
   for (const it of items) {
     if (it.kind === 'notification' && !isClaudeWatchTaskNotification(it)) {
       const id = extractClaudeTaskID(it);
-      const entry = id ? completions.get(id) : undefined;
-      if (entry && (entry.captioned || entry.summaries.has(it.summary?.trim() ?? ''))) {
-        continue;
-      }
+      if (id && completedTaskIDs.has(id)) continue;
     }
     out.push(it);
   }

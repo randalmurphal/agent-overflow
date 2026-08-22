@@ -1807,6 +1807,23 @@ work was a persistent Monitor read as fully idle to the reaper, and
 closing it would have killed the watched multi-hour job (2026-07-28,
 thread `b44a738d`).
 
+**Idle-wake delivery is INVISIBLE on stream-json (2.1.237, live
+2026-08-22, session `3a8bf2a1`).** When a Monitor event fires while the
+session is idle (the previous turn's `result` already emitted), the CLI
+wakes the model by writing a `queue-operation` row plus a plain `user`
+row carrying `<task-notification>` XML into the transcript FILE and
+starting the next API iteration — stdout carries `system/init` +
+`system/status` + `message_start` and NOTHING else. No
+`system/task_notification`, no user replay echo (despite
+`--replay-user-messages` — the injected row has no
+`isReplay`/`isSynthetic` flags), no `command_lifecycle` bracket. A
+stream-json client therefore cannot render what woke the model or what
+it was told; the transcript file is the only record. The
+`system/task_notification` delivery above holds for events that land
+while a turn is open. AO currently shows a new response starting "from
+nothing" in this case; fixing it requires a transcript-tail backfill,
+which is not built.
+
 ### E8 — ScheduleWakeup ack (pending in-process wakeup, NO task lifecycle)
 
 The harness's `ScheduleWakeup` tool arms an **in-process timer** (delay

@@ -369,16 +369,20 @@ source (invariant 21). Four rules govern what it writes:
   notifications are. Written only as `true`; an absent key means "not a
   watch task", which is also what every row persisted before the field
   existed says.
-- **The summary survives the hide as a caption on the sibling — but
-  only on the sibling's FIRST write, and never for a watch task.** The
-  frontend hides an ordinary task's notification row only when the
-  sibling has ABSORBED it (`meta.notification_summary` present, or the
-  two summaries are equal text), so the text Claude itself saw
-  ("Background command … completed (exit code 0)") is never silently
-  lost: either the sibling carries it as a caption or the notification
-  row stays visible. The caption's one chance is the sibling's first
-  write — a mounted card must not grow a line (chat AGENTS.md row-shell
-  contract) — enforced at the one writer
+- **The hide is existence-based; the caption is display enrichment,
+  first-write-only, never for a watch task.** The frontend hides an
+  ordinary task's notification row once a COMPLETED lifecycle sibling
+  with the same task_id exists (`filterRedundantNotifications`) — the
+  bell's text is the CLI's formulaic restatement of the sibling's own
+  description + exit code, and the common agentic wait order (bg Bash +
+  blocking TaskOutput) writes the sibling captionless first, so an
+  absorption-only hide left the bell visible on every waited background
+  command (user ruling 2026-08-22). The row itself always stays in
+  SQLite. When the write order allows it, the sibling still carries the
+  bell text as a caption (`meta.notification_summary`) rendered as one
+  muted line on the card: the caption's one chance is the sibling's
+  first write — a mounted card must not grow a line (chat AGENTS.md
+  row-shell contract) — enforced at the one writer
   (`writeBackgroundCompletionSibling` clears
   `meta.NotificationSummary` and passes `""` through
   `captionForSiblingWrite` when a persisted sibling exists) and by the
@@ -388,9 +392,8 @@ source (invariant 21). Four rules govern what it writes:
   drain), notification-first through `captionForSiblingWrite` reading
   the persisted notification row. Watch tasks never get a caption:
   their notification rows are exempt from the hide, so a caption would
-  say the same text twice on adjacent rows. The frontend renders the
-  caption as one muted line and skips it when it repeats the row's own
-  summary.
+  say the same text twice on adjacent rows. The frontend skips the
+  caption when it repeats the row's own summary.
 - **No resolvable launch is a DROP, and the drop is logged.** Hidden
   subagent work has no parent-thread row a notification could hang off,
   so nothing is written — but the stash drain still runs and the drop
