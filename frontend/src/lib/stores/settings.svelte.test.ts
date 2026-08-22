@@ -22,6 +22,25 @@ describe('settings store', () => {
   });
 
   describe('loadSettings()', () => {
+    it('an own-undefined wire key does not stomp its default (generated model class shape)', async () => {
+      // The wails-generated Settings class declares every field, so a
+      // wire-omitted optional key arrives as an OWN property holding
+      // undefined — which a bare spread would copy over the default.
+      // Field bug 2026-08-22: the untouched compaction slot ("" =
+      // built-in default) reached the sprite resolver as undefined and
+      // the compaction sprite fell through to the random pool pick.
+      setBindingMock('GetSettings', async () => ({
+        timestampFormat: 'locale',
+        spinnerCompactionAnimation: undefined,
+        spinnerVerbsEnabled: undefined,
+        network: { bindAll: undefined },
+      }));
+      await loadSettings();
+      expect(getSettings().spinnerCompactionAnimation).toBe('');
+      expect(getSettings().spinnerVerbsEnabled).toBe(true);
+      expect(getSettings().network.bindAll).toBe(false);
+    });
+
     it('merges GetSettings result over defaults', async () => {
       setBindingMock('GetSettings', async () => ({
         timestampFormat: '24-hour',

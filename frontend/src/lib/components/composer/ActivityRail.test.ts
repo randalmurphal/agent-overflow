@@ -898,5 +898,31 @@ describe('<ActivityRail>', () => {
       expect(queryByTestId('activity-rail-sprite')).toBeNull();
       __resetCustomSpinnersForTest();
     });
+
+    it('shows the default compaction sprite while compacting, even unchecked from the pool', async () => {
+      setBindingMock('GetSpinnerFiles', async () => ({ dir: '/cfg', sprites: [], warnings: [] }));
+      const settings = getSettings();
+      settings.spinnerAnimationsEnabled = true;
+      // Field-observed configuration (2026-08-22): the compaction slot
+      // untouched ("" = built-in default) and the default's own sprite
+      // unchecked from the random pool — a coherent setup the resolver
+      // must honor by resolving against ALL sprites, not the pool.
+      settings.spinnerDisabledAnimations = [
+        'nyan-cat',
+        'party-parrot-classic',
+        'robo-jam',
+        'robo-marathon',
+        'robo-papers',
+      ];
+      const pane = await buildPane();
+      pane.setActiveTurn({ turnId: 't1', turnIndex: 0, startedAt: Date.now() - 3_000 });
+      applyCompactingState({ threadId: pane.threadId!, active: true, sinceUnixMs: Date.now() });
+      const { findByTestId } = render(ActivityRailHost, { props: { pane } });
+      await tick();
+      const slot = await findByTestId('activity-rail-sprite');
+      expect(slot.querySelector('.working-sprite')?.getAttribute('data-sprite-id')).toBe('robo-papers');
+      resetCompactingState();
+      __resetCustomSpinnersForTest();
+    });
   });
 });
