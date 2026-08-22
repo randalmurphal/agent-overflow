@@ -177,10 +177,10 @@ test('a Codex spawn_agent child renders as the same card and pane, counting the 
   await card.getByTestId('subagent-group-open-pane').first().click();
   const pane = page.getByTestId('companion-pane-agent-body');
   await expect(pane).toBeVisible();
-  await expect(pane.getByTestId('agent-pane-kind')).toHaveText('agent');
+  await expect(pane.getByTestId('agent-pane-model')).toBeVisible();
   await expect(pane.getByTestId('agent-pane-breadcrumb-entry')).toHaveCount(0);
   await expect(pane.getByTestId('agent-pane-breadcrumb-current')).toContainText('reviewer');
-  await expect(pane.getByTestId('agent-pane-tokens')).toHaveText('4.3k tokens');
+  await expect(pane.getByTestId('workspace-strip-usage')).toHaveText('4.3k');
   // `close_agent` is a model tool, so the pane offers no Stop either.
   await expect(pane.getByTestId('agent-pane-stop')).toHaveCount(0);
 

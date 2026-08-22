@@ -1,44 +1,41 @@
 <script lang="ts">
-  // The agent pane's composer (spec Q5, user ruling): the SAME card the
-  // main composer renders — chrome, input area, toolbar row — carrying
-  // everything the wire actually knows about a subagent, just not
-  // editable. Steering a subagent is not a thing the wire offers, so
-  // there is no textarea and nothing focusable; the one live control is
-  // Stop, sitting where the send button would.
+  // The agent pane's composer (spec Q5, user rulings 2026-08-22): the
+  // SAME card the main composer renders, built from the REAL composer
+  // pieces with the subagent's values filled in and the non-applicable
+  // pieces absent — never a hand-drawn imitation:
   //
-  // The toolbar is the pane's ONE status home (the separate status strip
-  // was removed by user ruling 2026-08-22): left cluster mirrors the main
-  // toolbar's picker chips with the launch's facts — provider icon +
-  // model where the main pane has the model picker, reasoning effort
-  // (Codex spawns carry one), the launch kind — and the right cluster
-  // carries the run indicator and live counters where the main pane
-  // has its meters. What the wire does NOT give a subagent: a
-  // context-window fill (progress ticks report cumulative token spend
-  // only) and, for Codex children, tool counts (their ticks carry only
-  // totalTokens — types/events.ts SubagentProgress).
-  //
-  // Stop renders only where the wire can actually kill the task — a
-  // Claude launch carrying a task_id (backgrounded Bash / Task subagent,
-  // StopClaudeTask). Forked skills have no task lifecycle and a Codex
-  // spawn's child thread has no client-reachable kill, so neither ever
-  // shows the button.
-  import CircleStop from '@lucide/svelte/icons/circle-stop';
+  // - input area: read-only line (plus the backgrounded-stream note);
+  //   no textarea because steering a subagent is not a thing the wire
+  //   offers.
+  // - toolbar row: model chip (provider icon + the launch's model) where
+  //   the model picker sits, Codex reasoning effort beside it. No rate
+  //   dials, no run timer, no spinner, no tool count, no kind chip —
+  //   all ruled off this surface.
+  // - send slot: the real SendButton in its stop variant, only where
+  //   the wire can actually kill the task (a Claude launch carrying a
+  //   task_id — StopClaudeTask). Forked skills have no task lifecycle
+  //   and a Codex child has no client-reachable kill, so neither shows
+  //   a button at all.
+  // - bottom row: the real ComposerWorkspaceStrip (readonly) — same
+  //   mode/project/env/branch as the main pane, because a subagent runs
+  //   in this very thread — with the usage slot showing the SUBAGENT's
+  //   own token spend. No cost: usage rows are priced per thread, never
+  //   per launch. No context ring either — progress ticks carry
+  //   cumulative spend, not context occupancy.
   import type { Item } from '../../types/models';
-  import Icon from '../primitives/Icon.svelte';
+  import type { ThreadPane } from '../../stores/thread.svelte';
   import ProviderIcon from '../shared/ProviderIcon.svelte';
   import RowError from '../chat/RowError.svelte';
-  import ToolRowStatusIndicator from '../chat/ToolRowStatusIndicator.svelte';
-  import { indicatorStateForItem } from '../chat/rowState';
-  import { deriveCompletionStatus } from '../../utils/toolCompletionStatus';
-  import { createRunningElapsed } from '../chat/useRunningElapsed.svelte';
+  import SendButton from '../composer/toolbar/SendButton.svelte';
+  import ComposerWorkspaceStrip from '../composer/ComposerWorkspaceStrip.svelte';
   import { StopClaudeTask } from '../../stores/bindings';
   import { extractClaudeTaskID } from '../../utils/claudeTaskMeta';
   import { parseJsonObject } from '../../utils/parseJsonObject';
-  import { formatDurationMs, formatTokens } from '../../utils/format';
+  import { formatTokens } from '../../utils/format';
   import { displayModelLabel } from '../../utils/modelLabels';
   import { providerLabel } from '../../providers/catalog';
   import { liveSubagentProgress } from '../../stores/subagentProgress.svelte';
-  import { formatToolUses, resolveSubagentProgress } from '../../utils/subagentProgress';
+  import { resolveSubagentProgress } from '../../utils/subagentProgress';
   import {
     deriveClaudeSubagentModelLabel,
     readClaudeSubagentInput,
@@ -51,11 +48,14 @@
 
   let {
     threadId,
+    pane,
     launch,
     completion,
     hasChildren,
   }: {
     threadId: string;
+    /** Source thread pane — the workspace strip renders ITS facts. */
+    pane: ThreadPane | undefined;
     launch: Item | undefined;
     completion: Item | undefined;
     hasChildren: boolean;
@@ -72,14 +72,13 @@
   let inputObject = $derived(readClaudeSubagentInput(payloadMeta, parentMeta));
   const launchCtx: SubagentLaunchContext = { hasChildren: () => hasChildren };
   let launchInfo = $derived(launch ? subagentLaunchInfo(launch, launchCtx) : null);
-  let kindLabel = $derived(launchInfo?.kind ?? 'agent');
   let provider = $derived(launchInfo?.provider ?? 'claude');
   let codexInfo = $derived(
     launch && launchInfo?.provider === 'codex' ? codexSubagentLaunchInfo(launch) : null,
   );
-  // Model chip: the launch's own model when it named one; the provider
-  // label alone when it did not (a Claude launch without a model inherits
-  // the caller's, which this row cannot know after the fact).
+  // The launch's own model when it named one; the provider label alone
+  // when it did not (a Claude launch without a model inherits the
+  // caller's, which this row cannot know after the fact).
   let modelLabel = $derived.by(() => {
     const named = codexInfo
       ? codexInfo.model
@@ -90,41 +89,21 @@
   });
   let effortLabel = $derived(codexInfo?.reasoningEffort ?? '');
 
-  let isBackgroundNode = $derived(
-    launchInfo?.background === true || parentMeta?.subagentBackgroundedAt !== undefined,
-  );
   let streamingPaused = $derived(
     isRunning && parentMeta?.subagentBackgroundedAt !== undefined,
   );
 
-  // Live counters (provider:subagent_progress while running, the numbers
-  // triage persisted on the launch row once settled).
+  // The subagent's own spend for the strip's usage slot: the live
+  // progress tick while running, the persisted final numbers once
+  // settled (provider:subagent_progress → meta.subagentProgress).
   let liveTick = $derived(
     launch ? liveSubagentProgress(launch.threadId, launch.id) : undefined,
   );
-  let progress = $derived.by(() => {
-    if (!launch) return null;
-    return resolveSubagentProgress(launch, liveTick, isRunning);
-  });
-  const ticker = createRunningElapsed(
-    () => isRunning && !isBackgroundNode && progress?.durationMs === null,
-    () => launch?.createdAt ?? 0,
-  );
-  let elapsedLabel = $derived.by(() => {
+  let tokensLabel = $derived.by(() => {
     if (!launch) return '';
-    if (progress && progress.durationMs !== null) return formatDurationMs(progress.durationMs);
-    if (isRunning) return ticker.label;
-    const start = launch.createdAt;
-    const end = (statusItem ?? launch).updatedAt;
-    if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return '';
-    return formatDurationMs(end - start);
+    const progress = resolveSubagentProgress(launch, liveTick, isRunning);
+    return progress.totalTokens !== null ? formatTokens(progress.totalTokens) : '';
   });
-  let toolsLabel = $derived(progress ? formatToolUses(progress.toolUses) : '');
-  let tokensLabel = $derived(
-    progress && progress.totalTokens !== null
-      ? `${formatTokens(progress.totalTokens)} tokens`
-      : '',
-  );
 
   let stopTaskId = $derived.by(() => {
     if (!launch || !isRunning) return null;
@@ -180,8 +159,6 @@
         </div>
       {/if}
     </div>
-    <!-- Toolbar-twin row: launch facts where the pickers sit, run
-         indicator + counters where the meters sit, Stop where send sits. -->
     <div class="flex items-center gap-0.5 px-2.5 pb-2 pt-1">
       <span class={chipClasses} data-provider={provider} data-testid="agent-pane-model">
         <ProviderIcon {provider} size={13} />
@@ -190,41 +167,22 @@
       {#if effortLabel}
         <span class={chipClasses} data-testid="agent-pane-effort">{effortLabel}</span>
       {/if}
-      <span class={chipClasses} data-testid="agent-pane-kind">{kindLabel}</span>
-      <div class="ml-auto flex items-center gap-2 text-xs text-fg-muted">
-        {#if statusItem}
-          <ToolRowStatusIndicator
-            item={statusItem}
-            state={isRunning ||
-            deriveCompletionStatus(statusItem, { meta: parseJsonObject(statusItem.payloadMeta) }) === 'failure'
-              ? indicatorStateForItem(statusItem, { meta: parseJsonObject(statusItem.payloadMeta) })
-              : null}
-            testId="agent-pane-status"
-          />
-        {/if}
-        {#if elapsedLabel}
-          <span data-testid="agent-pane-elapsed">{elapsedLabel}</span>
-        {/if}
-        {#if toolsLabel}
-          <span data-testid="agent-pane-tools">{toolsLabel}</span>
-        {/if}
-        {#if tokensLabel}
-          <span data-testid="agent-pane-tokens">{tokensLabel}</span>
-        {/if}
+      <div class="ml-auto flex items-center gap-1.5">
         {#if stopTaskId !== null}
-          <button
-            type="button"
-            class="flex shrink-0 items-center gap-1 rounded-[var(--radius-field)] border border-border-subtle px-2 py-0.5 text-[0.75rem] font-medium text-text-secondary hover:bg-surface-2/40 hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:cursor-not-allowed disabled:opacity-50"
-            onclick={() => stopTask(stopTaskId!)}
-            disabled={stopping}
-            data-testid="agent-pane-stop"
-            aria-label="Stop Agent"
-          >
-            <Icon icon={CircleStop} size={14} />
-            {stopping ? 'Stopping…' : 'Stop'}
-          </button>
+          <div class="flex" data-testid="agent-pane-stop">
+            <SendButton
+              canSend={false}
+              isTurnActive={true}
+              onSend={() => {}}
+              onInterrupt={() => stopTask(stopTaskId!)}
+              interruptLabel="Stop agent"
+            />
+          </div>
         {/if}
       </div>
     </div>
+    {#if pane}
+      <ComposerWorkspaceStrip {pane} readonly usageLabel={tokensLabel} />
+    {/if}
   </div>
 </footer>

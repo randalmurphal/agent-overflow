@@ -89,7 +89,10 @@ describe('<AgentPane>', () => {
     expect(queryByText('main thread prose')).toBeNull();
     expect(getByTestId('agent-pane-breadcrumb-current').textContent?.trim()).toBe('Explore');
     expect(getByTestId('agent-pane-composer-shell')).toBeTruthy();
-    expect(getByTestId('agent-pane-kind').textContent?.trim()).toBe('agent');
+    // Model chip: this launch names no model, so the provider label fills in.
+    expect(getByTestId('agent-pane-model').textContent?.trim()).toBe('Claude');
+    // The header carries the launch's own one-line task.
+    expect(getByTestId('agent-pane-description').textContent?.trim()).toBe('Explore the parser');
   });
 
   it('hides the root breadcrumb entry at depth one (closing the pane is "back to main")', async () => {
@@ -165,7 +168,8 @@ describe('<AgentPane>', () => {
     openAgentCompanion('main', THREAD_ID, 'launch-1', 'Explore');
     const { getByTestId } = render(AgentPane, { props: { ctx } });
 
-    await fireEvent.click(getByTestId('agent-pane-stop'));
+    // The stop control is the real SendButton in its stop variant.
+    await fireEvent.click(getByTestId('composer-interrupt'));
     await waitFor(() => expect(stop).toHaveBeenCalledWith(THREAD_ID, 'task-9'));
   });
 

@@ -36,6 +36,12 @@
     onSendWithoutPlanComments?: () => void;
     onSendInNewThread?: () => void;
     onInterrupt: () => void;
+    /**
+     * aria-label/title for the stop variant. Hosts whose stop kills
+     * something other than the turn (the agent pane's read-only shell
+     * stops a background task) override it.
+     */
+    interruptLabel?: string;
   }
 
   let {
@@ -49,6 +55,7 @@
     onSendWithoutPlanComments,
     onSendInNewThread,
     onInterrupt,
+    interruptLabel = 'Interrupt current turn',
   }: Props = $props();
   let menuTriggerEl: HTMLButtonElement | undefined = $state(undefined);
   let menuOpen = $state(false);
@@ -171,8 +178,8 @@
     onclick={handleClick}
     {disabled}
     data-testid={showStop ? 'composer-interrupt' : 'composer-send'}
-    aria-label={showStop ? 'Interrupt current turn' : idleLabel}
-    title={showStop ? 'Interrupt current turn' : idleLabel}
+    aria-label={showStop ? interruptLabel : idleLabel}
+    title={showStop ? interruptLabel : idleLabel}
     class={[
       'inline-flex h-8 items-center justify-center rounded-full shrink-0',
       label && !showStop ? 'gap-1.5 px-3 text-xs font-medium' : 'w-8',

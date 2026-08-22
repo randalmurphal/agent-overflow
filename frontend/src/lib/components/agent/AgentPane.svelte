@@ -197,6 +197,7 @@
           {/if}
         {/each}
         {#if scopeDescription}
+          <span class="shrink-0 text-fg-hint" aria-hidden="true">-</span>
           <span
             class="min-w-0 truncate text-xs text-fg-muted"
             data-testid="agent-pane-description"
@@ -242,6 +243,7 @@
     {#if ctx.threadId}
       <AgentPaneComposerShell
         threadId={ctx.threadId}
+        pane={sourcePane}
         {launch}
         completion={completionItem}
         hasChildren={scopedItems.length > 0}
