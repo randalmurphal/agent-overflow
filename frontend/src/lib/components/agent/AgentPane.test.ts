@@ -142,6 +142,32 @@ describe('<AgentPane>', () => {
     expect(closeAgentPane).toHaveBeenCalled();
   });
 
+  it('pages the window to a restored scope whose launch sits above the tail', async () => {
+    // Restore-shaped (bug 2026-08-22): layout restore re-seeds the scope,
+    // but the restored window is the thread's TAIL — the launch row sits
+    // above it, so the pane came back as a husk (bare label, dead body).
+    // The pane must page the window to its scope row itself.
+    const { pane, ctx } = await setup([
+      makeItem({ id: 'tail-row', itemIndex: 9, threadId: THREAD_ID, summary: 'tail prose' }),
+    ]);
+    const loadUntilItem = vi.fn(async (itemId: string) => {
+      expect(itemId).toBe('launch-1');
+      pane.upsertItem(launchItem());
+      return true;
+    });
+    (pane as { loadUntilItem: ThreadPane['loadUntilItem'] }).loadUntilItem = loadUntilItem;
+    openAgentCompanion('main', THREAD_ID, 'launch-1', 'General Purpose');
+
+    const { getByTestId } = render(AgentPane, { props: { ctx } });
+    await waitFor(() => expect(loadUntilItem).toHaveBeenCalledTimes(1));
+    // Once the row pages in, the header fills out and the not-loaded body goes away.
+    await waitFor(() =>
+      expect(getByTestId('agent-pane-description').textContent?.trim()).toBe('Explore the parser'),
+    );
+    // One attempt per scope: the effect re-runs (launch now present) without re-paging.
+    expect(loadUntilItem).toHaveBeenCalledTimes(1);
+  });
+
   it('self-closes when a row it has seen vanishes, not when the row was never loaded', async () => {
     const closeAgentPane = vi.fn();
     const { pane, ctx } = await setup([launchItem(), makeItem({ id: 'other', itemIndex: 1, threadId: THREAD_ID })]);

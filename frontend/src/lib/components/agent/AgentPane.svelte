@@ -97,6 +97,26 @@
     }
   });
 
+  // ---- Restore load (persisted scope across an app restart) ----------
+  // Layout restore re-seeds the scope, but the restored window is the
+  // thread's TAIL — the scoped launch can sit above it, and nothing else
+  // pages it in (opening from a card always has the row loaded). Without
+  // this the pane restores as a husk: bare label, no description, a
+  // permanent "not in the loaded window" body. One attempt per scope:
+  // loadUntilItem fetches the row, pages the window to include it, and
+  // hydrates the subagent subtree. A miss (row deleted, transient fetch
+  // failure) leaves the honest not-loaded state rather than closing —
+  // restart is exactly when a transient failure is most likely.
+  let scopeLoadAttempted = $state('');
+  $effect(() => {
+    if (!scopeItemId || launch) return;
+    const source = sourcePane;
+    if (!source || source.loading) return;
+    if (untrack(() => scopeLoadAttempted) === scopeItemId) return;
+    scopeLoadAttempted = scopeItemId;
+    void source.loadUntilItem(scopeItemId);
+  });
+
   let scopedItems = $derived(view?.items ?? []);
 
   // At depth one the trail is "main › X" and the root entry is noise —
