@@ -1073,10 +1073,10 @@ func (r *Router) writeBackgroundCompletionSibling(evt provider.ProviderEvent, me
 				// The persisted notification row is where the summary
 				// lives on the notification-FIRST order (bell arrived,
 				// sibling created later by a TaskOutput drain). First
-				// write only, and never for a watch task — a watch's
-				// notification rows stay visible, so the caption would
-				// duplicate them.
-				captionForSiblingWrite(existing, launch, notification.Summary),
+				// write only, never for a watch task, and never when
+				// the notification carries an output_file (the report
+				// becomes the payload — see captionForSiblingWrite).
+				captionForSiblingWrite(existing, launch, notificationMeta.OutputFile, notification.Summary),
 			),
 		)
 	}

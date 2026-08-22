@@ -30,10 +30,20 @@ export function isClaudeWatchTaskNotification(item: Item): boolean {
  * the `tool_completion` sibling it explains. Present only when the wire
  * supplied one, and only on rows written since triage started carrying
  * it — the caller renders nothing when it is null.
+ *
+ * Never for a row whose notification carried an `output_file`: there the
+ * "summary" IS the task's full output (an async Agent's final report),
+ * which already lives on the row's expandable payload — a caption would
+ * dump the whole report inline (2026-08-22, "Test nested agent
+ * spawning"). Triage no longer stamps a caption on those siblings; this
+ * guard also retro-hides rows persisted before that fix.
  */
 export function extractNotificationSummary(item: Item): string | null {
-  const summary = parseJsonObject(item.meta)?.notification_summary;
+  const meta = parseJsonObject(item.meta);
+  const summary = meta?.notification_summary;
   if (typeof summary !== 'string') return null;
+  if (typeof meta?.notification_output_state === 'string' && meta.notification_output_state !== '')
+    return null;
   const trimmed = summary.trim();
   return trimmed.length > 0 ? trimmed : null;
 }

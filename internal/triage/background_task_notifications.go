@@ -249,7 +249,11 @@ func (r *Router) drainTaskNotificationStash(evt provider.ProviderEvent, meta bac
 	// Not for a watch task: its notification rows are exempt from the
 	// redundant-notification hide (they ARE the event history), so a
 	// caption would show the same text twice on adjacent rows.
-	if !launchIsWatchTask(launch) {
+	//
+	// Not when the notification carries an output_file: that content
+	// becomes the sibling's payload, and the "summary" for those tasks
+	// is the agent's entire report — see captionForSiblingWrite.
+	if !launchIsWatchTask(launch) && meta.OutputFile == "" {
 		terminalMeta.NotificationSummary = notificationCaptionSummary(evt.Content)
 	}
 	mergeStashIntoTerminalMeta(&terminalMeta, stash)
@@ -309,12 +313,11 @@ func (r *Router) enrichExistingBackgroundCompletionFromNotification(
 			// runs against an already-persisted (and likely mounted)
 			// sibling, and a caption materialising here would grow the
 			// card after first render, which the row contract forbids
-			// (frontend chat AGENTS.md §row shell stability). When the
-			// caption misses its one chance (the sibling's first write),
-			// the notification ROW stays visible instead —
-			// filterRedundantNotifications only hides a notification the
-			// sibling has absorbed. Appending a row is normal timeline
-			// behaviour; growing one is not.
+			// (frontend chat AGENTS.md §row shell stability). A caption
+			// that misses its one chance (the sibling's first write) is
+			// simply absent — the hide is existence-based either way,
+			// and for output_file tasks a caption is vetoed everywhere
+			// (see captionForSiblingWrite).
 			"",
 		),
 	)
@@ -372,16 +375,22 @@ func launchIsWatchTask(launch store.Item) bool {
 }
 
 // captionForSiblingWrite decides whether THIS write of the completion
-// sibling may carry the notification caption. Two vetoes:
+// sibling may carry the notification caption. Three vetoes:
 //
 //   - an existing persisted sibling: the caption's one chance was the
 //     first write; a mounted card must not grow a line (row contract).
-//     The notification row stays visible instead — the filter only
-//     hides what the sibling absorbed.
 //   - a watch task: its notification rows are the event history and
 //     are never hidden, so the caption would duplicate them.
-func captionForSiblingWrite(existing *store.Item, launch store.Item, summary string) string {
-	if existing != nil || launchIsWatchTask(launch) {
+//   - an output_file on the notification: the file's content becomes
+//     the sibling's own payload, and for those tasks (async agents,
+//     Task subagents) the notification "summary" is the agent's ENTIRE
+//     final report — captioning it dumps the full report inline as a
+//     muted paragraph, duplicating the expandable payload
+//     (2026-08-22, "Test nested agent spawning"). The caption exists to
+//     preserve text that would otherwise render nowhere; a payload-
+//     backed notification has a better home for it.
+func captionForSiblingWrite(existing *store.Item, launch store.Item, outputFile, summary string) string {
+	if existing != nil || launchIsWatchTask(launch) || outputFile != "" {
 		return ""
 	}
 	return notificationCaptionSummary(summary)

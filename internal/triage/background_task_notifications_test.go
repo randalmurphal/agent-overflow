@@ -2227,6 +2227,121 @@ func TestBackgroundTaskNotification_CompletionSiblingCarriesNotificationSummary(
 	})
 }
 
+// A notification carrying an output_file never captions the sibling:
+// the file's content becomes the sibling's own payload, and for those
+// tasks (async agents, Task subagents) the notification "summary" is
+// the agent's ENTIRE final report — a caption would dump the full
+// report inline as a muted paragraph duplicating the expandable
+// payload (2026-08-22, "Test nested agent spawning"). Both stamp
+// orders carry the veto.
+func TestOutputFileNotificationNeverCaptionsSibling(t *testing.T) {
+	writeOutputFile := func(t *testing.T) string {
+		t.Helper()
+		path := filepath.Join(t.TempDir(), "agent.output")
+		if err := os.WriteFile(path, []byte("Confirmed: the agent's full report text."), 0o600); err != nil {
+			t.Fatalf("write output file: %v", err)
+		}
+		return path
+	}
+
+	startAgentLaunch := func(t *testing.T, router *Router) {
+		t.Helper()
+		startMeta, _ := json.Marshal(map[string]any{
+			"toolName":      "Agent",
+			"is_background": true,
+			"input":         map[string]any{"description": "Test nested agent spawning"},
+		})
+		if err := router.Handle(provider.ProviderEvent{
+			Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "agent-1",
+			ItemType: "Agent", Meta: startMeta, Timestamp: time.Now(),
+		}); err != nil {
+			t.Fatalf("start: %v", err)
+		}
+		taskStartedMeta, _ := json.Marshal(map[string]any{"task_id": "task-agent"})
+		if err := router.Handle(provider.ProviderEvent{
+			Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "agent-1",
+			Meta: taskStartedMeta, Timestamp: time.Now(),
+		}); err != nil {
+			t.Fatalf("task_started meta-update: %v", err)
+		}
+	}
+
+	sendOutputFileNotification := func(t *testing.T, router *Router, outputFile string) {
+		t.Helper()
+		fields := map[string]any{
+			"task_id":     "task-agent",
+			"tool_use_id": "agent-1",
+			"status":      "completed",
+			"source":      "task_notification",
+			"uuid":        "uuid-agent",
+			"output_file": outputFile,
+		}
+		meta, _ := json.Marshal(fields)
+		if err := router.Handle(provider.ProviderEvent{
+			Kind: provider.EventBackgroundTaskNotification, ThreadID: "t1",
+			ItemID: "agent-1", Meta: meta,
+			Content:   "Confirmed: the agent's full report text.",
+			Timestamp: time.Now(),
+		}); err != nil {
+			t.Fatalf("task_notification: %v", err)
+		}
+	}
+
+	assertUncaptionedWithPayload := func(t *testing.T, st *store.Store) {
+		t.Helper()
+		dones := findItemsByKind(t, st, "t1", itemKindBackgroundDone)
+		if len(dones) != 1 {
+			t.Fatalf("expected 1 tool_completion sibling, got %d", len(dones))
+		}
+		meta := decodeItemMetaMap(t, dones[0].Meta)
+		if meta["notification_summary"] != nil {
+			t.Fatalf("output_file notification must not caption the sibling, got %v (meta=%s)",
+				meta["notification_summary"], dones[0].Meta)
+		}
+		if dones[0].PayloadID == "" {
+			t.Fatalf("sibling should carry the output-file payload instead (meta=%s)", dones[0].Meta)
+		}
+	}
+
+	t.Run("sibling first (notification drains the stash)", func(t *testing.T) {
+		router, st, _ := newTestRouter(t)
+		createTestThread(t, st, "t1")
+		seedOpenTurn(t, router, st, "t1", 0)
+		startAgentLaunch(t, router)
+		stashMeta, _ := json.Marshal(map[string]any{
+			"task_id": "task-agent", "tool_use_id": "agent-1",
+			"status": "completed", "source": "task_updated",
+		})
+		if err := router.Handle(provider.ProviderEvent{
+			Kind: provider.EventBackgroundTaskTerminal, ThreadID: "t1",
+			Meta: stashMeta, Timestamp: time.Now(),
+		}); err != nil {
+			t.Fatalf("task_updated stash: %v", err)
+		}
+		sendOutputFileNotification(t, router, writeOutputFile(t))
+		assertUncaptionedWithPayload(t, st)
+	})
+
+	t.Run("notification first (TaskOutput writes the sibling later)", func(t *testing.T) {
+		router, st, _ := newTestRouter(t)
+		createTestThread(t, st, "t1")
+		seedOpenTurn(t, router, st, "t1", 0)
+		startAgentLaunch(t, router)
+		sendOutputFileNotification(t, router, writeOutputFile(t))
+		observeMeta, _ := json.Marshal(map[string]any{
+			"task_id": "task-agent", "tool_use_id": "agent-1",
+			"status": "completed", "source": "task_output",
+		})
+		if err := router.Handle(provider.ProviderEvent{
+			Kind: provider.EventBackgroundTaskTerminal, ThreadID: "t1", ItemID: "agent-1",
+			Meta: observeMeta, Timestamp: time.Now(),
+		}); err != nil {
+			t.Fatalf("task_output observe: %v", err)
+		}
+		assertUncaptionedWithPayload(t, st)
+	})
+}
+
 // A watch task's notification rows are exempt from the redundant-bell
 // hide (they ARE the event history), so a caption on its completion
 // sibling would render the same text twice on adjacent rows. Neither
