@@ -11,8 +11,19 @@
   import { ingestPersistedCodeSpans } from '../../utils/persistedSpans';
   import { splitAtBoundary } from '../../markdown/boundary/split';
   import { parseJsonObject } from '../../utils/parseJsonObject';
+  import { RawJsonFenceFormatter } from './markdown/rawJsonFence';
 
   let { pane, item }: { pane?: ThreadPane; item: Item } = $props();
+
+  // A schema-bound turn answers with one unfenced JSON document, often a
+  // single line tens of KB long; as prose that line re-pairs its `_` and
+  // backtick characters on every reveal tick and restyles text already
+  // on screen (the tail-of-stream flash, 2026-08-22). The formatter
+  // wraps it as a pretty-printed ```json fence instead, prefix-stable so
+  // the code host's incremental rendering stays incremental; anything
+  // that is not JSON comes back untouched. One instance per row because
+  // it resumes from the previous source. See `markdown/rawJsonFence.ts`.
+  const jsonFence = new RawJsonFenceFormatter();
 
   // Warm the code span cache from the row's persisted fence spans
   // (items.meta `codeSpans`, written at settle). The init call is the
@@ -100,6 +111,8 @@
   const isInterim = $derived(
     (parseJsonObject(item.meta)?.delivery ?? '') === 'async',
   );
+
+  const markdownSource = $derived(jsonFence.render(item.summary, streaming));
 </script>
 
 <div class="group" data-item-kind={item.kind}>
@@ -109,7 +122,7 @@
     data-render-mode="client-markdown"
   >
     <ChatMarkdown
-      source={item.summary}
+      source={markdownSource}
       {streaming}
       workspacePath={paneWorkspacePath(pane)}
       {pathRefs}

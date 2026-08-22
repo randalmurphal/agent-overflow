@@ -536,6 +536,20 @@ host wrappers.
 Regression coverage lives in `AssistantMessage.test.ts` and
 `src/lib/markdown/`.
 
+A raw-JSON assistant message (a schema-bound turn's answer: the body
+starts with `{"`, `{}`, `[{`, `["`, `[[` or `[]`) never reaches the prose
+path. `AssistantMessage.svelte` hands `ChatMarkdown` the output of
+`markdown/rawJsonFence.ts` instead: a pretty-printed ```json fence whose
+printer is PREFIX-STABLE (the output for any prefix of the source is a
+prefix of the output for the whole source), so the code host's
+incremental line rendering stays incremental while the document streams.
+As prose, a 20KB single-line envelope re-paired its `_` and backtick
+characters on every reveal tick and restyled up to 5KB of text the reader
+had already seen (2026-08-22). Detection is that shape sniff and nothing
+else — no wire flag, because Codex emits prose progress notes mid-turn in
+the same schema session. Not collapsed, by ruling: it is the agent's
+answer, not an artifact.
+
 ## Test Notes
 
 happy-dom reports zero geometry, so `MessageTimeline.svelte` enables the

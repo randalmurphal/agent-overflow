@@ -1239,3 +1239,60 @@ describe('<AssistantMessage>', () => {
     await waitFor(() => expect(writeText).toHaveBeenCalledWith(summary));
   });
 });
+
+describe('<AssistantMessage> raw JSON', () => {
+  // A schema-bound turn answers with one unfenced JSON document. Rendered
+  // as prose, a 20KB single line re-paired its `_` and backtick characters
+  // on every reveal tick and restyled text already on screen; the row now
+  // renders it as a pretty-printed ```json fence through the code host.
+  const RAW = '{"status":"ok","notes":["use `make check`","_never_ reset"],"n":2}';
+  const PRETTY =
+    '{\n  "status": "ok",\n  "notes": [\n    "use `make check`",\n    "_never_ reset"\n  ],\n  "n": 2\n}';
+
+  it('renders a raw JSON summary as one formatted json code block, not prose', async () => {
+    const { getByTestId } = render(AssistantMessage, {
+      props: { item: makeItem({ status: 'completed', summary: RAW }) },
+    });
+    const body = getByTestId('assistant-message-body');
+    await waitFor(() => {
+      const host = body.querySelector('[data-code-source]');
+      expect(host).not.toBeNull();
+      expect(host?.getAttribute('data-code-lang')).toBe('json');
+      expect(host?.getAttribute('data-code-source')).toBe(PRETTY);
+    });
+    expect(body.querySelector('p')).toBeNull();
+    expect(body.querySelector('em')).toBeNull();
+  });
+
+  it('keeps the fence open while streaming and the rendered code grows monotonically', async () => {
+    const ticks = [12, 30, 47, RAW.length].map((n) => RAW.slice(0, n));
+    const { getByTestId, rerender } = render(AssistantMessage, {
+      props: { item: makeItem({ status: 'streaming', summary: ticks[0] }) },
+    });
+    const body = getByTestId('assistant-message-body');
+    let previous = '';
+    for (const summary of ticks) {
+      await rerender({ item: makeItem({ status: 'streaming', summary }) });
+      await waitFor(() => {
+        const source = body.querySelector('[data-code-source]')?.getAttribute('data-code-source') ?? '';
+        expect(source.length).toBeGreaterThan(0);
+        expect(source.startsWith(previous)).toBe(true);
+        previous = source;
+      });
+    }
+    await rerender({ item: makeItem({ status: 'completed', summary: RAW }) });
+    await waitFor(() => {
+      expect(body.querySelector('[data-code-source]')?.getAttribute('data-code-source')).toBe(PRETTY);
+    });
+    expect(body.querySelector('em')).toBeNull();
+  });
+
+  it('leaves a prose summary that merely mentions braces alone', async () => {
+    const { getByTestId } = render(AssistantMessage, {
+      props: { item: makeItem({ status: 'completed', summary: 'Set `{"a":1}` in _config_.' }) },
+    });
+    const body = getByTestId('assistant-message-body');
+    await waitFor(() => expect(body.querySelector('em')).not.toBeNull());
+    expect(body.querySelector('[data-code-source]')).toBeNull();
+  });
+});
