@@ -4341,14 +4341,18 @@ describe('createUseStickToBottomController — spring chase', () => {
       expect(geom.scrollTop).toBe(afterDetach);
     });
 
-    it('chases growth that arrives with no live content stamped', async () => {
+    it('chases growth that arrives with no live content stamped (past the cold-load window)', async () => {
       // Regression guard for the 2026-07-25 jump classes (a background
       // completion's late enrichment; drain growth in a reveal gap).
       // Liveness false is the state those growths land in — nothing
-      // stamped them — and they must still glide, not teleport.
+      // stamped them — and they must still glide, not teleport. Scoped
+      // since W5 to AFTER the cold-load settle window: those classes are
+      // mid-session events, and within the window the same shape is the
+      // load cascade, which sync-pins (next test).
       const ro = getRO();
       ro.fire(contentEl, 800);
       await waitMs(150); // warm
+      await nextFrameAfter(8100); // past COLD_LOAD_SETTLE_MAX_MS on the mocked clock
 
       liveContent = false;
 
@@ -4364,6 +4368,50 @@ describe('createUseStickToBottomController — spring chase', () => {
       // And it still arrives.
       await advanceUntil(() => geom.scrollTop === 600);
       expect(geom.scrollTop).toBe(600);
+    });
+
+    it('sync-pins unstamped post-warm growth inside the cold-load settle window', async () => {
+      // The 2026-08-22 boot-restart trace: warm opened on ~100ms of RO
+      // quiet, then measurement bursts and the window sync grew the
+      // content 8.5kpx with no live stamp — and glided for ~2s. Inside
+      // the cold-load window that growth is coordinate correction:
+      // instant re-pin to the bottom, before paint.
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      await waitMs(150); // warm; cold-load window still open
+
+      liveContent = false;
+
+      geom.scrollHeight = 1200;
+      geom.contentHeight = 1000;
+      ro.fire(contentEl, 1000);
+      expect(geom.scrollTop).toBe(600); // pinned to the new bottom, same delivery
+      await nextFrame();
+      expect(geom.scrollTop).toBe(600); // and no glide follows
+    });
+
+    it('a live-content stamp retires the cold-load window for good', async () => {
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      await waitMs(150); // warm; cold-load window open
+
+      // Streaming starts: the delivery that observes liveness both ends
+      // the window and glides.
+      liveContent = true;
+      geom.scrollHeight = 1200;
+      geom.contentHeight = 1000;
+      ro.fire(contentEl, 1000);
+      expect(geom.scrollTop).toBe(400);
+      await advanceUntil(() => geom.scrollTop === 600);
+
+      // Liveness lapses (turn ended). Later unstamped growth still
+      // glides — the window did not come back.
+      liveContent = false;
+      geom.scrollHeight = 1300;
+      geom.contentHeight = 1100;
+      ro.fire(contentEl, 1100);
+      expect(geom.scrollTop).toBe(600);
+      await advanceUntil(() => geom.scrollTop === 700);
     });
 
     it('keeps gliding when liveness lapses mid-settle', async () => {

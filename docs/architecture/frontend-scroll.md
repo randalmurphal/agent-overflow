@@ -785,6 +785,19 @@ documented at the function):
   The window is fixed — deliberately not refreshed by the deltas it
   classifies — so a streaming turn that starts inside it cannot be
   converted into indefinite sync-pins.
+  The **cold-load settle window** is the second announcer of the same
+  fact, with a different lifecycle: every warm-up arm (attach, restore
+  forceStick, the slice application's `armWarmup`) opens it, and while
+  it is open post-warm growth sync-pins too — the warm gate opens on
+  ~100ms of RO quiet, but the estimate→measure cascade and the window
+  sync land bursts seconds later (2026-08-22 boot restart: 8.5kpx of
+  measurement growth glided for ~2s, then an unrelated bottom-held
+  transaction snapped it). It ends for good at the first delivery that
+  observes live content or an armed structural append — from then on
+  glides own the pane — with an 8s cap as the failsafe for a pane that
+  never streams; `skipWarmup` (placeholder materialization) clears it.
+  Both signals feed the one `pinnedRemeasureActive` resolver input; the
+  trace records them separately (`coldLoadSettleActive`).
 - **pass** — anything else applies verbatim, mid-chase included. The
   compensation is an exact coordinate shift: layout moved the content
   under the viewport by `delta`, and the write moves the viewport by the

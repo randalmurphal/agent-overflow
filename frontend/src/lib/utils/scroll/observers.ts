@@ -66,6 +66,26 @@ const CONTENT_REFLOW_SETTLE_WINDOW_MS = 250;
 // extending window would convert a streaming turn that starts inside it
 // into indefinite sync-pins.
 const PINNED_REMEASURE_SETTLE_WINDOW_MS = 250;
+// Cold-load settle: from warm-up arm (attach / restore forceStick /
+// armWarmup at slice application) the pane is inside a cold load, and any
+// height growth is the estimate→measure cascade or the window sync
+// reconciling the painted replica — coordinate corrections to content the
+// reader considers already-there, never the bottom advancing. Those must
+// keep `scrollTop == bottom` true pre-paint (sync-pin), not animate: the
+// 2026-08-22 boot trace glided 8.5kpx of measurement growth for ~2s and
+// then got snapped by an unrelated bottom-held transaction. The warm gate
+// alone cannot cover this — it opens on ~100ms of RO quiet while cascade
+// bursts and the sync page land seconds later.
+//
+// The window ends the moment genuinely new content announces itself —
+// a live-content stamp or an armed structural append observed at
+// delivery time — because from then on glides own the pane. The time
+// cap is only the failsafe for a pane that never streams; it is
+// deliberately generous, because the cost of it running long is an
+// instant (correct-position) pin where a glide was tolerable, while the
+// cost of it running short is the boot-time animated crawl this exists
+// to kill.
+const COLD_LOAD_SETTLE_MAX_MS = 8000;
 
 // ===== Warm-up (quiescence) gate =====
 // After attach() or forceStick(), the controller stays in sync-pin mode
@@ -225,6 +245,10 @@ export function createContentObserver(deps: ContentObserverDeps): ContentObserve
   let previousWidth: number | undefined;
   let contentReflowSettleUntil = 0;
   let pinnedRemeasureSettleUntil = 0;
+  // 0 = inactive. Armed by beginWarmup (every cold edge arms the warm
+  // gate), cleared by skipWarmup, detach, and the first delivery that
+  // observes live content or an armed structural append.
+  let coldLoadSettleUntil = 0;
   let resizeDifference = 0;
   let resizeClearTimer: ReturnType<typeof setTimeout> | null = null;
   let resizeCorrelatedUntaggedScrollBudget = 0;
@@ -313,6 +337,10 @@ export function createContentObserver(deps: ContentObserverDeps): ContentObserve
     // which the initial-slice application calls synchronously with the
     // item mutation.
     failsafeTimer = setTimeout(() => markWarm('failsafe'), FAILSAFE_MS);
+    // Every warm-up arm is a cold edge (attach, restore forceStick, the
+    // slice application's armWarmup): open the cold-load settle window so
+    // post-warm cascade/sync growth sync-pins. See COLD_LOAD_SETTLE_MAX_MS.
+    coldLoadSettleUntil = nowMs() + COLD_LOAD_SETTLE_MAX_MS;
   }
 
   function skipWarmup(): void {
@@ -321,6 +349,9 @@ export function createContentObserver(deps: ContentObserverDeps): ContentObserve
       deps.setWarmReason('skip');
       clearWarmupTimers();
     }
+    // Placeholder → materialized: no cascade to settle, and the first
+    // growth is the optimistic send + response, which must glide.
+    coldLoadSettleUntil = 0;
   }
 
   // Pick the quiet window for an arm. The shortened SETTLED_QUIET_MS is
@@ -489,7 +520,24 @@ export function createContentObserver(deps: ContentObserverDeps): ContentObserve
 
     const delta = nextHeight - prev;
     const widthReflowActive = widthChanged || contentReflowSettleUntil > nowMs();
-    const pinnedRemeasureActive = pinnedRemeasureSettleUntil > nowMs();
+    // Genuinely new content retires the cold-load window for good: from
+    // the first live stamp or armed structural append onward, growth is
+    // the bottom advancing and glides own the pane. Checked per delivery
+    // (not via a timer) so the delivery that carries the new content is
+    // itself classified as content, not correction.
+    if (
+      coldLoadSettleUntil !== 0
+      && (deps.liveContentActive() || deps.spring.structuralAppendPending())
+    ) {
+      coldLoadSettleUntil = 0;
+    }
+    const coldLoadSettleActive = coldLoadSettleUntil > nowMs();
+    // One resolver input for both announcers of the same fact — "a
+    // measurement-correction wave is in flight while pinned": the
+    // displaced anchor-redirect's fixed window, and the cold-load settle
+    // window. The raw signals are traced separately below.
+    const pinnedRemeasureActive =
+      pinnedRemeasureSettleUntil > nowMs() || coldLoadSettleActive;
     // Common case: the virtualizer re-measures a same-height row, padding-bottom
     // CSS variable updates with identical computed value, etc. No
     // geometry change → nothing to chase, no scroll-event tagging needed.
@@ -565,6 +613,7 @@ export function createContentObserver(deps: ContentObserverDeps): ContentObserve
       widthChanged,
       widthReflowActive,
       pinnedRemeasureActive,
+      coldLoadSettleActive,
       settleEvidence: settle === undefined ? null : lastSettleEvidence,
       liveContentActive: deps.liveContentActive(),
       structuralAppendSpringPending: deps.spring.structuralAppendPending(),
@@ -654,6 +703,7 @@ export function createContentObserver(deps: ContentObserverDeps): ContentObserve
     previousWidth = undefined;
     contentReflowSettleUntil = 0;
     pinnedRemeasureSettleUntil = 0;
+    coldLoadSettleUntil = 0;
     lastSettleEvidence = false;
     // Also drop the warm-up baseline: a stale hasFirstContentRO would let
     // a post-detach notifyQuietContextSignalChanged arm a quiet timer and
