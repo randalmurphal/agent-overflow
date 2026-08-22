@@ -180,7 +180,6 @@ describe('<AgentPane>', () => {
     const { getByTestId } = render(AgentPane, { props: { ctx } });
 
     expect(getByTestId('agent-pane-streaming-paused')).toBeTruthy();
-    expect(getByTestId('agent-pane-background-pill')).toBeTruthy();
   });
 
   it('renders a nested launch as a real card (no orphan warnings) with grandchildren intact', async () => {

@@ -260,13 +260,17 @@ describe('<SubagentGroup> card affordances (agent-visibility)', () => {
     expect(queryByTestId('subagent-group-approval-pill')).toBeNull();
   });
 
-  it('shows the background pill for an async launch and the agent kind chip', async () => {
+  it('marks an async launch as background (data attribute, no pill) with the agent kind chip', async () => {
+    // The visible "background" pill was removed by user ruling (2026-08-22):
+    // it was noise on every async card. Classification stays pinned via the
+    // card root's data-background attribute, which the e2e specs assert too.
     const { pane, group } = await setup([
       agentLaunch({ isBackground: true }),
       makeItem({ id: 'child:1', itemIndex: 1, parentId: 'agent:1', status: 'running', summary: 'w' }),
     ]);
-    const { getByTestId } = render(SubagentGroupTestHarness, { props: { group, pane } });
-    expect(getByTestId('subagent-group-background-pill')).toBeTruthy();
+    const { getByTestId, queryByTestId } = render(SubagentGroupTestHarness, { props: { group, pane } });
+    expect(getByTestId('subagent-group').getAttribute('data-background')).toBe('true');
+    expect(queryByTestId('subagent-group-background-pill')).toBeNull();
     expect(getByTestId('subagent-group-kind').textContent?.trim()).toBe('agent');
   });
 

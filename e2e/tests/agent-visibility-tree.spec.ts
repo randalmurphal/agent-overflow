@@ -246,7 +246,7 @@ test('a depth-2 background agent nests under its parent card and indents in the 
   const timeline = page.getByTestId('message-timeline-scroll');
   const outerCard = timeline.getByTestId('subagent-group').first();
   await expect(outerCard.getByTestId('subagent-group-label')).toContainText('Outer Reviewer');
-  await expect(outerCard.getByTestId('subagent-group-background-pill')).toBeVisible();
+  await expect(outerCard).toHaveAttribute('data-background', 'true');
 
   // The nested card lives in the parent's body, not on the main timeline.
   await expect(timeline.getByTestId('subagent-group')).toHaveCount(1);
@@ -258,7 +258,7 @@ test('a depth-2 background agent nests under its parent card and indents in the 
     .first();
   await expect(innerCard.getByTestId('subagent-group-label')).toContainText('Inner Scanner');
   await expect(innerCard.getByTestId('subagent-group-kind')).toHaveText('agent');
-  await expect(innerCard.getByTestId('subagent-group-background-pill')).toBeVisible();
+  await expect(innerCard).toHaveAttribute('data-background', 'true');
 
   // Now the live tick, with the page already watching.
   await waitForGate(harness, 'tick');

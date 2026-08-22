@@ -233,7 +233,7 @@ test('backgrounding a running inline agent returns the turn and the transcript c
   const card = timeline.getByTestId('subagent-group').first();
   await expect(card.getByTestId('subagent-group-label')).toContainText('Sweeper');
   // Running, in the foreground, and the turn owns the composer.
-  await expect(card.getByTestId('subagent-group-background-pill')).toHaveCount(0);
+  await expect(card).not.toHaveAttribute('data-background', 'true');
   await expect(page.getByTestId('composer-interrupt')).toBeVisible();
 
   // --- Background it -------------------------------------------------
@@ -246,12 +246,11 @@ test('backgrounding a running inline agent returns the turn and the transcript c
   // The main turn returned: the composer is a composer again.
   await expect(page.getByTestId('composer-send')).toBeVisible();
   await expect(page.getByTestId('composer-interrupt')).toHaveCount(0);
-  await expect(card.getByTestId('subagent-group-background-pill')).toBeVisible();
+  await expect(card).toHaveAttribute('data-background', 'true');
 
   // --- The pane marks the cut ---------------------------------------
   await card.getByTestId('subagent-group-open-pane').first().click();
   const pane = page.getByTestId('companion-pane-agent-body');
-  await expect(pane.getByTestId('agent-pane-background-pill')).toBeVisible();
   await expect(pane.getByTestId('agent-pane-streaming-paused')).toBeVisible();
   const paneTimeline = pane.getByTestId('agent-pane-timeline');
   await expect(paneTimeline.getByText('Reading the first shard.')).toBeVisible();

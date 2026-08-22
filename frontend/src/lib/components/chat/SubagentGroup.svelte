@@ -402,6 +402,7 @@
     style="margin-left: {indentRem}rem"
     data-testid="subagent-group"
     data-tool-kind="robot"
+    data-background={isBackgroundNode ? 'true' : undefined}
   >
     <TranscriptDisclosureHeader
       expanded={expanded}
@@ -442,14 +443,6 @@
             data-testid="subagent-group-approval-pill"
           >
             needs approval
-          </span>
-        {/if}
-        {#if isBackgroundNode}
-          <span
-            class="shrink-0 rounded-full border border-border-subtle bg-surface-2/40 px-1.5 py-0.5 text-[0.625rem] font-medium text-text-secondary"
-            data-testid="subagent-group-background-pill"
-          >
-            background
           </span>
         {/if}
         {#if toolCountLabel}

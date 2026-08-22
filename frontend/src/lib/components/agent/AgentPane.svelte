@@ -123,8 +123,12 @@
   });
 </script>
 
+<!-- bg-surface-0: CompanionPane paints its bodies bg-surface-1 (elevated
+     chrome), but this body IS a thread transcript — it must sit on the
+     same ground as the chat timeline or the pane reads as a different
+     surface entirely. -->
 <section
-  class="flex h-full min-h-0 flex-col"
+  class="flex h-full min-h-0 flex-col bg-surface-0"
   data-testid="companion-pane-agent-body"
   aria-label="Agent Transcript"
 >

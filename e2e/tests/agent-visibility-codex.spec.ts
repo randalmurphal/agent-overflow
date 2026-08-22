@@ -163,7 +163,7 @@ test('a Codex spawn_agent child renders as the same card and pane, counting the 
   await expect(card.getByTestId('subagent-group-kind')).toHaveText('agent');
   await expect(card.getByTestId('subagent-group-label')).toContainText('reviewer');
   // A Codex child is always its own thread — never awaited inline.
-  await expect(card.getByTestId('subagent-group-background-pill')).toBeVisible();
+  await expect(card).toHaveAttribute('data-background', 'true');
   // ...and it can never be killed or backgrounded from here.
   await expect(card.getByTestId('subagent-group-background-button')).toHaveCount(0);
 
@@ -194,7 +194,7 @@ test('a Codex spawn_agent child renders as the same card and pane, counting the 
   await waitForGate(harness, 'answer');
   await advance(harness, mockId, 'answer');
   await harness.waitForEvent('provider:turn_completed');
-  await expect(card.getByTestId('subagent-group-background-pill')).toBeVisible();
+  await expect(card).toHaveAttribute('data-background', 'true');
   await expect(card.getByTestId('subagent-group-duration')).toBeVisible();
   // Nothing the child did leaked to the main timeline as the parent's.
   await expect(timeline.getByTestId('subagent-group')).toHaveCount(1);

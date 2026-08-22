@@ -90,11 +90,6 @@
       <span class="rounded-[var(--radius-field)] bg-surface-2/60 px-1.5 py-0.5 font-medium uppercase tracking-wide text-[0.625rem] text-fg-muted" data-testid="agent-pane-kind">
         {launchInfo?.kind ?? 'agent'}
       </span>
-      {#if isBackgroundNode}
-        <span class="rounded-[var(--radius-field)] bg-surface-2/60 px-1.5 py-0.5 text-[0.625rem] uppercase tracking-wide" data-testid="agent-pane-background-pill">
-          background
-        </span>
-      {/if}
       {#if elapsedLabel}
         <span data-testid="agent-pane-elapsed">{elapsedLabel}</span>
       {/if}
