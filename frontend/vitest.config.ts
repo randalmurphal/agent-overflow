@@ -109,7 +109,11 @@ export default defineConfig({
         // fails collection ("failed to find the current suite") on the first
         // run after a cache wipe.
         optimizeDeps: {
-          include: ['@testing-library/svelte'],
+          include: [
+            '@testing-library/svelte',
+            '@lucide/svelte/icons/circle',
+            '@lucide/svelte/icons/circle-check',
+          ],
           entries: [
             'src/**/*.browser.{test,spec}.{ts,js}',
             'src/test/setup.browser.ts',

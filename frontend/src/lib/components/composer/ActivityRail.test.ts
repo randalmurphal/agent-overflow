@@ -341,16 +341,26 @@ describe('<ActivityRail>', () => {
     expect(queryByTestId('activity-rail-todos-body')).not.toBeNull();
   });
 
-  it('shows the bridge label when a queue item is present without an active turn', async () => {
+  it('keeps one width-reserved label when the pending-send bridge becomes an active turn', async () => {
     const pane = await buildPane();
     enqueueSimple(pane.threadId!, 'queued follow-up');
 
-    const { findByTestId, queryByTestId } = render(ActivityRailHost, { props: { pane } });
+    const { findByTestId } = render(ActivityRailHost, { props: { pane } });
     await tick();
     expect(await findByTestId('activity-rail')).toBeInTheDocument();
     expect(await findByTestId('activity-rail-working')).toBeInTheDocument();
-    expect(await findByTestId('activity-rail-working-bridge')).toBeInTheDocument();
-    expect(queryByTestId('activity-rail-working-elapsed')).toBeNull();
+    const label = await findByTestId('activity-rail-working-label');
+    const elapsed = await findByTestId('activity-rail-working-elapsed');
+    expect(elapsed).toHaveClass('invisible');
+    expect(elapsed).toHaveAttribute('aria-hidden', 'true');
+
+    pane.setActiveTurn({ turnId: 'turn-1', turnIndex: 0, startedAt: Date.now() });
+    await tick();
+
+    expect(await findByTestId('activity-rail-working-label')).toBe(label);
+    expect(await findByTestId('activity-rail-working-elapsed')).toBe(elapsed);
+    expect(elapsed).not.toHaveClass('invisible');
+    expect(elapsed).toHaveAttribute('aria-hidden', 'false');
   });
 
   it('sorts todo steps in-progress -> pending -> completed and preserves wire order within buckets', async () => {

@@ -173,16 +173,17 @@
           <span class="working-led h-2 w-1 rounded-[1.5px] bg-accent"></span>
           <span class="working-led h-2 w-1 rounded-[1.5px] bg-accent"></span>
         </span>
-        {#if activeTurn}
-          <span class="text-fg-muted">
-            {workingLabel} <span
-              class="tabular-nums text-fg"
-              data-testid="activity-rail-working-elapsed"
-            >{elapsedLabel}</span>
-          </span>
-        {:else}
-          <span class="text-fg-muted" data-testid="activity-rail-working-bridge">{workingLabel}</span>
-        {/if}
+        <!-- Keep the DOM and initial timer width stable across the pending-send
+             handoff. Visibility reserves "0s" without showing a clock before
+             the provider supplies its authoritative start. -->
+        <span class="text-fg-muted" data-testid="activity-rail-working-label">
+          {workingLabel} <span
+            class="tabular-nums text-fg"
+            class:invisible={!activeTurn}
+            aria-hidden={!activeTurn}
+            data-testid="activity-rail-working-elapsed"
+          >{elapsedLabel}</span>
+        </span>
       </span>
     {/if}
 
