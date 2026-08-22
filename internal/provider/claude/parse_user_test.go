@@ -904,3 +904,39 @@ func TestAppendToolResultBlock_StructuredResultOverridesLiveTask(t *testing.T) {
 		t.Fatalf("present tool_use_result must stay authoritative over liveness; meta=%v", meta)
 	}
 }
+
+// TestAppendToolResultBlock_NonTerminalUpdateKeepsLiveAgentTask pins
+// where the liveness clear sits: a NON-terminal task_updated (progress
+// patches normalize to "" and no-op) must not disarm signal (5) — only
+// the terminal does. Guards against the clear migrating above the
+// terminal-status guard in parseTaskLifecycleEvent.
+func TestAppendToolResultBlock_NonTerminalUpdateKeepsLiveAgentTask(t *testing.T) {
+	parser := NewParser()
+
+	if _, err := parser.ParseLine(testThread, []byte(`{"type":"assistant","parent_tool_use_id":"toolu_parent","message":{"id":"msg-side","role":"assistant","content":[{"type":"tool_use","id":"toolu_launch","name":"Agent","input":{"description":"d","subagent_type":"general-purpose","prompt":"p"}}]}}`)); err != nil {
+		t.Fatalf("assistant tool_use: %v", err)
+	}
+	if _, err := parser.ParseLine(testThread, []byte(`{"type":"system","subtype":"task_started","task_id":"task-live","tool_use_id":"toolu_launch","task_type":"local_agent"}`)); err != nil {
+		t.Fatalf("task_started: %v", err)
+	}
+	// Non-terminal patch: must not disarm.
+	if _, err := parser.ParseLine(testThread, []byte(`{"type":"system","subtype":"task_updated","task_id":"task-live","patch":{"status":"running"}}`)); err != nil {
+		t.Fatalf("non-terminal task_updated: %v", err)
+	}
+
+	line := []byte(`{"type":"user","parent_tool_use_id":"toolu_parent","message":{"role":"user","content":[{"tool_use_id":"toolu_launch","type":"tool_result","content":[{"type":"text","text":"Agent dispatched; running in the background."}]}]}}`)
+	events, err := parser.ParseLine(testThread, line)
+	if err != nil {
+		t.Fatalf("parse ack: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d: %+v", len(events), events)
+	}
+	var meta map[string]any
+	if err := json.Unmarshal(events[0].Meta, &meta); err != nil {
+		t.Fatalf("unmarshal meta: %v", err)
+	}
+	if meta["is_background"] != true {
+		t.Fatalf("non-terminal task_updated must not disarm liveness; meta=%v", meta)
+	}
+}
