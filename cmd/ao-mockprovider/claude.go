@@ -319,10 +319,28 @@ func (a *claudeAdapter) persistTranscript(line string) {
 	}
 }
 
+// claudeBackgroundTasksResponsePayload is the inner response payload for a
+// control_request{subtype:"background_tasks"} ack. The real CLI answers
+// `{backgrounded:true}` when a foreground task matched the tool_use_id
+// (verified 2.1.237 — docs/references/fixtures/claude/
+// background_tasks_control_20260822.ndjson), and Session.BackgroundTask
+// FAILS on a response that reports no result at all, so an empty `{}` here
+// would make every background-button click surface a provider error.
+//
+// Always true: the mock has no task table to consult, and the refusal path
+// ("no matching foreground task") is unit-tested against the real parser.
+// A scenario that wants the refusal shape emits the control_response itself.
+const claudeBackgroundTasksResponsePayload = `{"backgrounded":true}`
+
 // writeClaudeControlAck answers an inbound control_request with the
-// standard success control_response. The initialize and get_context_usage
-// subtypes carry the payloads their callers actually read; everything else
-// gets an empty response object.
+// standard success control_response. The initialize, get_context_usage and
+// background_tasks subtypes carry the payloads their callers actually read;
+// everything else gets an empty response object.
+//
+// The ack is the whole answer for background_tasks: the CLI's follow-up
+// `system/task_updated {patch:{is_backgrounded:true}}` (and the level set
+// that rides with it) is scenario-authored, because only the scenario knows
+// which task_id it started.
 func writeClaudeControlAck(w *lineWriter, requestID, subtype string) {
 	payload := "{}"
 	switch subtype {
@@ -330,6 +348,8 @@ func writeClaudeControlAck(w *lineWriter, requestID, subtype string) {
 		payload = claudeInitializeResponsePayload
 	case "get_context_usage":
 		payload = claudeContextUsageResponsePayload
+	case "background_tasks":
+		payload = claudeBackgroundTasksResponsePayload
 	}
 	w.writeLine(fmt.Sprintf(
 		`{"type":"control_response","response":{"subtype":"success","request_id":%s,"response":%s}}`,
@@ -357,14 +377,24 @@ func (a *claudeAdapter) sendApproval(step *scenario.ApprovalStep, vars scenario.
 	if len(bytes.TrimSpace(input)) == 0 {
 		input = json.RawMessage("{}")
 	}
+	request := map[string]any{
+		"subtype":   "can_use_tool",
+		"tool_name": step.ToolName,
+		"input":     input,
+	}
+	// Correlation fields, emitted only when the scenario names them —
+	// their ABSENCE is the real CLI's main-agent shape, so defaulting
+	// them would make every scenario's prompt look like a subagent's.
+	if id := strings.TrimSpace(vars.Substitute(step.ToolUseID)); id != "" {
+		request["tool_use_id"] = id
+	}
+	if id := strings.TrimSpace(vars.Substitute(step.AgentID)); id != "" {
+		request["agent_id"] = id
+	}
 	msg := map[string]any{
 		"type":       "control_request",
 		"request_id": requestID,
-		"request": map[string]any{
-			"subtype":   "can_use_tool",
-			"tool_name": step.ToolName,
-			"input":     input,
-		},
+		"request":    request,
 	}
 	data, err := json.Marshal(msg)
 	if err != nil {

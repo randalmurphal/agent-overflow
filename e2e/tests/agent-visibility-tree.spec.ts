@@ -1,0 +1,291 @@
+// Agent visibility — the TREE half of the spec's success criteria
+// (docs/specs/agent-visibility.md § "Success criteria", items 1 and 2),
+// driven through the real backend and the real SPA.
+//
+//   1. A forked `code-review` renders as ONE `skill` card and none of its
+//      tool calls — nor any of its fan-out children's — appear as the main
+//      agent's.
+//   2. A depth-2 background agent renders as a running card under its
+//      parent's card, with the live tool count and activity line
+//      `system/task_progress` supplies, and appears in the background tray
+//      indented under its parent.
+//
+// Both open the UI BEFORE the live turn starts: `task_progress` ticks are
+// in-memory frontend state (nothing persists until the terminal), so a tick
+// emitted before the page subscribed is gone for good.
+import { test, expect } from './fixtures.js';
+import {
+  RESULT_LINE,
+  advance,
+  asyncAgentAckLine,
+  backgroundTasksChangedLine,
+  claudeScenario,
+  emit,
+  listItems,
+  seedAgentThread,
+  startMock,
+  taskNotificationLine,
+  taskProgressLine,
+  taskStartedLine,
+  taskUpdatedLine,
+  textLines,
+  toolResultLine,
+  toolUseLine,
+  waitForGate,
+} from './agent-visibility-helpers.js';
+
+const FORK_DIFF_COMMAND = 'git diff HEAD~2 --stat';
+
+test('a forked code-review skill is one skill card and nothing it does is the main agent’s', async ({
+  harness,
+  page,
+}) => {
+  // §E9: a forked Skill gets no task_started and no task id at all. Its
+  // rows are attributed to the Skill tool_use and its completion's
+  // `tool_use_result {status:"forked", agentId, commandName}` is the only
+  // identity statement — which is also what binds the fan-out beneath it.
+  await harness.rpc('HarnessSetScenario', {
+    scenario: claudeScenario('fork-code-review', [
+      emit([
+        ...textLines('msg-lead', 'Running the code-review skill.'),
+        toolUseLine('msg-skill', 'tu-skill', 'Skill', {
+          skill: 'code-review',
+          args: 'medium --base HEAD~2',
+        }),
+
+        // The fork's own tool call.
+        toolUseLine('msg-fork-diff', 'tu-fork-diff', 'Bash', { command: FORK_DIFF_COMMAND }, 'tu-skill'),
+        toolResultLine('tu-fork-diff', ' 5 files changed, 210 insertions(+)', {
+          parentToolUseId: 'tu-skill',
+        }),
+
+        // Fan-out: two agents the FORK launches, each with its own tool call.
+        toolUseLine('msg-angle-a', 'tu-angle-a', 'Agent', {
+          description: 'Angle A: correctness',
+          subagent_type: 'angle-a',
+        }, 'tu-skill'),
+        taskStartedLine('task-angle-a', 'tu-angle-a', 'Angle A: correctness'),
+        asyncAgentAckLine('tu-angle-a', 'task-angle-a', 'Angle A: correctness', 'tu-skill'),
+        toolUseLine('msg-angle-a-read', 'tu-angle-a-read', 'Read', {
+          file_path: 'internal/provider/claude/parser.go',
+        }, 'tu-angle-a'),
+        toolResultLine('tu-angle-a-read', 'package claude', { parentToolUseId: 'tu-angle-a' }),
+
+        toolUseLine('msg-angle-b', 'tu-angle-b', 'Agent', {
+          description: 'Angle B: perf',
+          subagent_type: 'angle-b',
+        }, 'tu-skill'),
+        taskStartedLine('task-angle-b', 'tu-angle-b', 'Angle B: perf'),
+        asyncAgentAckLine('tu-angle-b', 'task-angle-b', 'Angle B: perf', 'tu-skill'),
+        toolUseLine('msg-angle-b-grep', 'tu-angle-b-grep', 'Grep', { pattern: 'allocate' }, 'tu-angle-b'),
+        toolResultLine('tu-angle-b-grep', 'no matches', { parentToolUseId: 'tu-angle-b' }),
+
+        // Both fan-out children settle.
+        taskUpdatedLine('task-angle-a', { status: 'completed', end_time: 1787415964724 }),
+        taskNotificationLine('task-angle-a', 'tu-angle-a', 'Angle A verdict: correct.'),
+        taskUpdatedLine('task-angle-b', { status: 'completed', end_time: 1787415964725 }),
+        taskNotificationLine('task-angle-b', 'tu-angle-b', 'Angle B verdict: no regressions.'),
+
+        // The fork closes. `status:"forked"` is the whole signal.
+        toolResultLine('tu-skill', 'Skill "code-review" completed (forked execution).\n\nResult:\nNo blocking findings.', {
+          toolUseResult: {
+            success: true,
+            commandName: 'code-review',
+            status: 'forked',
+            agentId: 'fork-agent-1',
+            result: 'No blocking findings.',
+          },
+        }),
+        ...textLines('msg-final', 'The review found nothing blocking.'),
+        RESULT_LINE,
+      ]),
+    ]),
+  });
+
+  const threadId = await seedAgentThread(harness, 'fork-app', 'Forked skill');
+  await page.goto(harness.url);
+  await page.getByText('Forked skill').click();
+  await startMock(harness, threadId);
+  await harness.rpc('SendMessage', threadId, 'review the change', null);
+  await harness.waitForEvent('provider:turn_completed');
+
+  // --- Attribution, at the row level -------------------------------
+  // Nothing the fork or its fan-out produced may sit at the top level.
+  await expect
+    .poll(async () => {
+      const items = await listItems(harness, threadId);
+      const skill = items.filter((i) => i.kind === 'tool_call' && i.toolName === 'Skill');
+      if (skill.length !== 1) return null;
+      return {
+        topLevelToolCalls: items
+          .filter((i) => i.kind === 'tool_call' && !i.parentId)
+          .map((i) => i.toolName)
+          .sort(),
+        underFork: items
+          .filter((i) => i.kind === 'tool_call' && i.parentId === skill[0].id)
+          .map((i) => i.toolName)
+          .sort(),
+        underAngles: items
+          .filter(
+            (i) =>
+              i.kind === 'tool_call' &&
+              (i.parentId === 'tu-angle-a' || i.parentId === 'tu-angle-b'),
+          )
+          .map((i) => i.toolName)
+          .sort(),
+      };
+    })
+    .toEqual({
+      topLevelToolCalls: ['Skill'],
+      underFork: ['Agent', 'Agent', 'Bash'],
+      underAngles: ['Grep', 'Read'],
+    });
+
+  // --- One card, in the timeline -----------------------------------
+  const timeline = page.getByTestId('message-timeline-scroll');
+  await expect(timeline.getByTestId('subagent-group')).toHaveCount(1);
+  await expect(timeline.getByTestId('subagent-group-kind')).toHaveText('skill');
+  await expect(timeline.getByTestId('subagent-group-label')).toContainText('code-review');
+
+  // Collapsed, the fork's work is nowhere on the main timeline — and the
+  // old expandable transcript is gone entirely (component deleted).
+  await expect(timeline.getByText(FORK_DIFF_COMMAND)).toHaveCount(0);
+  await expect(page.getByTestId('claude-subagent-transcript')).toHaveCount(0);
+
+  // Expanded, everything it did lives INSIDE the card: its own Bash row
+  // and both fan-out children as nested cards.
+  await timeline.getByTestId('subagent-group-toggle').click();
+  const body = timeline.getByTestId('subagent-group-body').first();
+  await expect(body.getByText(FORK_DIFF_COMMAND)).toBeVisible();
+  await expect(body.getByTestId('subagent-group')).toHaveCount(2);
+  await expect(body.getByTestId('subagent-group-label')).toHaveText([/^Angle A/, /^Angle B/]);
+  await expect(body.getByTestId('subagent-group-description')).toHaveText([
+    'Angle A: correctness',
+    'Angle B: perf',
+  ]);
+  // Kind chips: the fork is a `skill`, its fan-out children are `agent`s.
+  await expect(timeline.getByTestId('subagent-group-kind')).toHaveText([
+    'skill',
+    'agent',
+    'agent',
+  ]);
+});
+
+test('a depth-2 background agent nests under its parent card and indents in the tray', async ({
+  harness,
+  page,
+}) => {
+  // Parent and child are BOTH backgrounded, which is what puts the child
+  // at tray depth 1: the tray lists by backgrounded ancestry, and a
+  // background launch under a FOREGROUND agent is deliberately a tray root
+  // (utils/backgroundTray.ts).
+  await harness.rpc('HarnessSetScenario', {
+    scenario: claudeScenario('depth-2-background', [
+      emit([
+        ...textLines('msg-lead', 'Launching the outer reviewer.'),
+        toolUseLine('msg-outer', 'tu-outer', 'Agent', {
+          description: 'outer reviewer',
+          subagent_type: 'outer-reviewer',
+        }),
+        taskStartedLine('task-outer', 'tu-outer', 'outer reviewer'),
+        asyncAgentAckLine('tu-outer', 'task-outer', 'outer reviewer'),
+        backgroundTasksChangedLine([
+          { task_id: 'task-outer', task_type: 'local_agent', description: 'outer reviewer' },
+        ]),
+
+        // The outer agent launches its own agent: depth 2.
+        toolUseLine('msg-inner', 'tu-inner', 'Agent', {
+          description: 'inner scanner',
+          subagent_type: 'inner-scanner',
+        }, 'tu-outer'),
+        taskStartedLine('task-inner', 'tu-inner', 'inner scanner', { ownedBySubagent: true }),
+        asyncAgentAckLine('tu-inner', 'task-inner', 'inner scanner', 'tu-outer'),
+        backgroundTasksChangedLine([
+          { task_id: 'task-outer', task_type: 'local_agent', description: 'outer reviewer' },
+          { task_id: 'task-inner', task_type: 'local_agent', description: 'inner scanner' },
+        ]),
+        RESULT_LINE,
+      ]),
+      // Held so the page is provably subscribed before the live tick.
+      { waitSignal: { name: 'tick' } },
+      emit([
+        taskProgressLine(
+          'task-inner',
+          'tu-inner',
+          'Scanning the parser for drift',
+          { total_tokens: 18227, tool_uses: 3, duration_ms: 2368 },
+          'Grep',
+        ),
+      ]),
+      // Both agents settle only after the running-state assertions. A
+      // background agent left running outlives the test: `HarnessReset`
+      // stops sessions and settles in-flight TURNS, but a running
+      // background tool_call survives both and then blocks the project
+      // delete ("cannot delete project while thread ... is running"),
+      // which fails the NEXT test in this worker rather than this one.
+      { waitSignal: { name: 'settle' } },
+      emit([
+        taskUpdatedLine('task-inner', { status: 'completed', end_time: 1787415964724 }),
+        taskNotificationLine('task-inner', 'tu-inner', 'Inner scan done.'),
+        taskUpdatedLine('task-outer', { status: 'completed', end_time: 1787415964725 }),
+        taskNotificationLine('task-outer', 'tu-outer', 'Outer review done.'),
+        backgroundTasksChangedLine([]),
+      ]),
+    ]),
+  });
+
+  const threadId = await seedAgentThread(harness, 'depth2-app', 'Nested background');
+  await page.goto(harness.url);
+  await page.getByText('Nested background').click();
+  const mockId = await startMock(harness, threadId);
+  await harness.rpc('SendMessage', threadId, 'review deeply', null);
+
+  // The main turn returns while both agents keep running in the background.
+  await harness.waitForEvent('provider:turn_completed');
+
+  const timeline = page.getByTestId('message-timeline-scroll');
+  const outerCard = timeline.getByTestId('subagent-group').first();
+  await expect(outerCard.getByTestId('subagent-group-label')).toContainText('Outer Reviewer');
+  await expect(outerCard.getByTestId('subagent-group-background-pill')).toBeVisible();
+
+  // The nested card lives in the parent's body, not on the main timeline.
+  await expect(timeline.getByTestId('subagent-group')).toHaveCount(1);
+  await outerCard.getByTestId('subagent-group-toggle').first().click();
+  const innerCard = outerCard
+    .getByTestId('subagent-group-body')
+    .first()
+    .getByTestId('subagent-group')
+    .first();
+  await expect(innerCard.getByTestId('subagent-group-label')).toContainText('Inner Scanner');
+  await expect(innerCard.getByTestId('subagent-group-kind')).toHaveText('agent');
+  await expect(innerCard.getByTestId('subagent-group-background-pill')).toBeVisible();
+
+  // Now the live tick, with the page already watching.
+  await waitForGate(harness, 'tick');
+  await advance(harness, mockId, 'tick');
+  await expect(innerCard.getByTestId('subagent-group-tools')).toHaveText('3 tools');
+  await expect(innerCard.getByTestId('subagent-group-preview')).toContainText(
+    'Scanning the parser for drift',
+  );
+
+  // The background tray lists both, the child indented under its parent.
+  await page.getByTestId('activity-rail-background-toggle').click();
+  const trayRows = page.getByTestId('background-task-tray-row');
+  await expect(trayRows).toHaveCount(2);
+  await expect(trayRows.nth(0)).toHaveAttribute('data-depth', '0');
+  await expect(trayRows.nth(0)).toHaveAttribute('data-row-id', 'tu-outer');
+  await expect(trayRows.nth(1)).toHaveAttribute('data-depth', '1');
+  await expect(trayRows.nth(1)).toHaveAttribute('data-row-id', 'tu-inner');
+  // Indentation is the visual half of the same claim.
+  const [outerBox, innerBox] = await Promise.all([
+    trayRows.nth(0).boundingBox(),
+    trayRows.nth(1).boundingBox(),
+  ]);
+  expect(innerBox!.x).toBeGreaterThan(outerBox!.x);
+
+  // Both settle: the tray is driven by the level set, so an empty
+  // `background_tasks_changed` empties it.
+  await waitForGate(harness, 'settle');
+  await advance(harness, mockId, 'settle');
+  await expect(trayRows).toHaveCount(0);
+});

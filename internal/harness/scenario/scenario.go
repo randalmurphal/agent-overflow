@@ -160,6 +160,18 @@ type ApprovalStep struct {
 	// command approval (Codex).
 	ToolName string          `json:"toolName"`
 	Input    json.RawMessage `json:"input,omitempty"`
+	// ToolUseID/AgentID are the Claude-only correlation fields the real
+	// CLI puts on `control_request/can_use_tool`: the id of the tool_use
+	// awaiting the decision, and — when the asking tool call originated
+	// inside a subagent — that subagent's agent id (its task_id). Both
+	// are load-bearing downstream: triage resolves AgentID to the launch
+	// tool_use so the prompt scopes to the agent's card rather than the
+	// main thread. Captured shape:
+	// docs/references/fixtures/claude/can_use_tool_agent_id_20260822.ndjson.
+	// Omitted fields are left off the request, which is the top-level
+	// (main-agent) shape. Both support ${VAR} substitution.
+	ToolUseID string `json:"toolUseId,omitempty"`
+	AgentID   string `json:"agentId,omitempty"`
 	OnAllow  []Step          `json:"onAllow,omitempty"`
 	OnDeny   []Step          `json:"onDeny,omitempty"`
 	// TimeoutMs bounds the wait; 0 means wait forever. On timeout the
