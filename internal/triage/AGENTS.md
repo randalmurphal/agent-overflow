@@ -275,6 +275,7 @@ none fits.
 | Todo list (Claude TodoWrite / Task\*, Codex update_plan) | `provider:todo_update` to the frontend + the whole list onto `threads.live_todo` (v65); no timeline row ever. SQLite is its source of truth — it survives session teardown and app restart, and `GetThreadLiveState` reads it from the store, not from triage. Empty steps clear the column and emit a clear only when something was stored. See `timeline_notifications.go`. |
 | Permission notice (Claude) | `notification` row per `meta.kind` (`permission_denied` / `permission_retry`) with the notice's own fields forwarded; a denial ALSO stamps `permissionDenied` meta + `items.decision = declined` onto the tool_call row it explains, never its status. See `permission_notices.go`. |
 | Model fallback (Claude) | `notification` row keyed on the WIRE SUBTYPE (`model_fallback` / `model_consent_fallback` / `model_refusal_fallback`) + the session-scoped effective-model projection. Never flattened to one kind — the cause is what the row reports. See `model_fallback.go`. |
+| Scoped user echo (`parent_tool_use_id` set) | The agent's own prompt, as a nested `user_text` row `user:wire:<provider_item_id>` under the launch, meta `wire_only` — on the LAUNCH's turn, never the thread's current one, because a backgrounded agent's prompt arrives from the transcript backfill after the launching turn closed. `wire_only` keeps it out of every reader-authored user-text read. See `handle_user_text.go`. |
 | User echo with an external origin (`origin: external-queue`) or peer provenance (`cross_session_message`) | A real `user_text` row with a named author, NOT "Injected provider context". These reach the top-level wire-only branch for a structural reason — the producer minted the uuid, so no pending send can match — but their provenance is POSITIVELY known. Everything else unmatched stays injected context. See `handle_user_text.go`. |
 | Command result (Claude local command) | `command_result` item (role `system`, status `completed`) + on-demand payload above the inline bound. Idempotent on the provider message id so the `result` echo does not duplicate it. See `command_result.go`. |
 | Session wakeup (Claude) | Per-thread pending-wakeup fire time in router state only — nothing persists, nothing emits. Consumed by the idle reaper via `PendingWakeupAt`. See `session_wakeup.go`. |
@@ -481,6 +482,7 @@ text/thinking. It keys on the identity BOTH writers spell identically:
 |---|---|
 | tool start / complete | the `tool_use_id`, which IS the row id on both sides. A completion additionally requires the row to have left `running` — a launch the live stream left running is the tool that was in flight at the cut, and nothing else will ever settle it. |
 | assistant text / thinking | `items.meta.provider_item_id` — the provider's own `<messageID>#<ordinal>`, written by the live parser (`recoveredBlockItemID`) and the importer (`nextBlockItemID`) in the same spelling, and queryable via `FindStreamItemByProviderItemID`. |
+| the agent's own prompt | the row id `user:wire:<transcript uuid>`, which both write paths spell identically (`persistWireOnlySubagentPrompt` live, `sessionimport`'s `subagentPrompt`). |
 | everything else (errors, command results, compaction) | UNDECIDABLE. Their live ids are per-turn sequence numbers that say nothing about which event produced them. |
 
 `subagentBackfillCut` therefore finds the first decidable-and-missing
@@ -491,6 +493,15 @@ undecidable events along with the neighbours they arrived between is the
 only way to place them at all. One store read builds the index — a
 subagent's rows all carry the launch's `turn_index` (invariant 10), so
 one turn read is a superset of what a replay could duplicate.
+
+**The agent's own prompt is outside the cut entirely** (`replaySubagentEventAt`).
+The CLI echoes it on the wire only for an INLINE agent (claude-wire.md
+§"Subagent stream forwarding"), so an ASYNC agent streams its whole
+sidechain and is still missing that one row — it is not evidence about
+where streaming stopped, and letting it decide the cut would replay every
+async agent's transcript from row zero. It is replayed whenever the
+thread has no row for it, at any position, and its deterministic id makes
+that idempotent.
 
 Placement follows from the same invariants: rows go in at the LAUNCH's
 turn (10) at the store's own `MAX(item_index)+1` (1 and 11 — `item_index`
@@ -532,8 +543,7 @@ lose the tail.)
 backfilled rows: one payload row (`tool-call-result:<launchID>`) is
 referenced by both the notification and the completion sibling, and it is
 the LOSSLESS artifact behind a lossy projection — the importer drops
-`attachment` rows, unknown `system` subtypes, and the agent's opening
-prompt. Suppressing it for agent launches would also mean editing
+`attachment` rows and unknown `system` subtypes. Suppressing it for agent launches would also mean editing
 `tool_lifecycle.go`, whose `writeBackgroundCompletionSibling` rebuilds it
 independently.
 

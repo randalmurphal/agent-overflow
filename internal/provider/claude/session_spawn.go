@@ -339,6 +339,24 @@ func buildArgs(cfg Config, systemPromptPath string) []string {
 		// flag is purely additive — non-replay user envelopes (tool_result
 		// blocks) are unchanged.
 		"--replay-user-messages",
+		// Always-on. An agent launched with an explicit
+		// `run_in_background: false` — an INLINE, awaited agent — runs the
+		// CLI's synchronous Task path, whose progress emitter drops every
+		// content block that is not a tool_use or tool_result before it
+		// reaches the parent stream (2.1.237 bundle: `if(!forwardSubagentText
+		// && block.type!=="tool_use" && block.type!=="tool_result") continue`).
+		// Its prose, thinking, and final answer exist only in the agent's own
+		// sidechain JSONL, so the agent pane showed a wall of tool rows and
+		// nothing else. Agents that default to background take a different
+		// emitter that forwards every message, which is why only the inline
+		// ones looked starved. The flag lifts the filter; the CLI has carried
+		// it since 2.1.211 (bisected against published linux-x64 builds) and
+		// it requires the print + stream-json output this arg list already
+		// establishes. Verified live 2026-08-23: same inline Explore agent
+		// emits `assistant/thinking` + `assistant/text` parented to the launch
+		// with the flag, nothing without it. See
+		// docs/references/claude-wire.md §"Subagent stream forwarding".
+		"--forward-subagent-text",
 	}
 	// The thinking axis. With nothing configured this renders exactly the
 	// `--thinking-display summarized` this list used to carry inline: opt

@@ -40,6 +40,29 @@ func seedUserTextRow(t *testing.T, st *store.Store, threadID string, turnIndex i
 	return persisted
 }
 
+// seedLaunchRow inserts the `tool_call` row an agent launch persists as,
+// so a scoped event can resolve its turn from the launch it names.
+func seedLaunchRow(t *testing.T, st *store.Store, threadID string, turnIndex int, itemID string) store.Item {
+	t.Helper()
+	now := time.Now().UnixMilli()
+	persisted, err := st.UpsertItem(store.Item{
+		ID:        itemID,
+		ThreadID:  threadID,
+		TurnIndex: turnIndex,
+		Kind:      "tool_call",
+		Role:      "assistant",
+		Status:    "running",
+		ToolName:  "Agent",
+		Summary:   "Agent",
+		CreatedAt: now,
+		UpdatedAt: now,
+	}, nil)
+	if err != nil {
+		t.Fatalf("seed tool_call row %s: %v", itemID, err)
+	}
+	return persisted
+}
+
 func itemUpsertEmissionsForID(emissions []emitted, threadID, itemID string) []store.Item {
 	hits := []store.Item{}
 	for _, e := range emissions {
@@ -517,6 +540,40 @@ func TestHandleUserText_NoPending_SubagentPromptPersistsUnderParent(t *testing.T
 	}
 	if after := readThreadUpdatedAt(t, st, "t1"); after != before {
 		t.Fatalf("threads.updated_at moved across subagent EventUserText: before=%d after=%d", before, after)
+	}
+}
+
+// A subagent prompt lands on the LAUNCH's turn, not the thread's current
+// one. A backgrounded agent's prompt can arrive from the transcript
+// backfill long after the launching turn closed, and the pane reads a
+// scope's rows within the launch's turn — a row filed under a later turn
+// simply vanishes from the card it belongs to.
+func TestHandleUserText_SubagentPromptLandsOnTheLaunchTurnNotTheOpenOne(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	seedOpenTurn(t, router, st, "t1", 2)
+	seedLaunchRow(t, st, "t1", 2, "spawn-1")
+
+	// The thread has moved on by the time the prompt arrives.
+	seedOpenTurn(t, router, st, "t1", 5)
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:            provider.EventUserText,
+		ThreadID:        "t1",
+		Content:         "Inspect the parser",
+		ParentToolUseID: "spawn-1",
+		Meta:            json.RawMessage(`{"provider_item_id":"child_prompt_late"}`),
+		Timestamp:       time.UnixMilli(1_700_000_000_000),
+	}); err != nil {
+		t.Fatalf("Handle EventUserText: %v", err)
+	}
+
+	persisted, found, err := st.GetThreadItem("t1", "user:wire:child_prompt_late")
+	if err != nil || !found {
+		t.Fatalf("expected subagent prompt row to exist: found=%v err=%v", found, err)
+	}
+	if persisted.TurnIndex != 2 {
+		t.Fatalf("TurnIndex = %d, want the launch's turn 2", persisted.TurnIndex)
 	}
 }
 

@@ -211,6 +211,21 @@ func deliverSubagentBlock(t *testing.T, router *Router, threadID, scope, provide
 	router.WaitForPendingSettles()
 }
 
+// deliverSubagentPrompt drives the parented `user`/text envelope the CLI
+// echoes when an agent runs INLINE (and only then — an async agent never
+// echoes its prompt, which is why the backfill replays it separately).
+func deliverSubagentPrompt(t *testing.T, router *Router, threadID, scope, providerItemID, content string) {
+	t.Helper()
+	meta, _ := json.Marshal(map[string]any{"provider_item_id": providerItemID})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventUserText, ThreadID: threadID, Role: "user",
+		Content: content, ContentPresent: true, Meta: meta,
+		ParentToolUseID: scope, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("subagent prompt %s: %v", providerItemID, err)
+	}
+}
+
 func childrenOfLaunch(t *testing.T, st *store.Store, threadID, launchID string, turnIndex int) []store.Item {
 	t.Helper()
 	items, err := st.ListTurnItemsSansPayload(threadID, turnIndex)
@@ -408,6 +423,7 @@ func TestSubagentTranscriptBackfillWritesNothingWhenTheLiveStreamDeliveredEveryt
 	seedOpenTurn(t, router, st, "t1", 0)
 
 	startAgentLaunch(t, router, "t1", "agent-async", "", "task-async")
+	deliverSubagentPrompt(t, router, "t1", "agent-async", "s1", "the task prompt")
 	deliverSubagentBlock(t, router, "t1", "agent-async", "msg_open#0", "text", "reading the file first")
 	toolStart, _ := json.Marshal(map[string]any{
 		"toolName": "Read", "input": map[string]any{"file_path": "/repo/a.go"},
@@ -438,6 +454,73 @@ func TestSubagentTranscriptBackfillWritesNothingWhenTheLiveStreamDeliveredEveryt
 	}
 }
 
+// The one row an ASYNC agent's live stream never carries is its own
+// prompt: the CLI echoes that only on the INLINE path. So a transcript
+// whose every other row is already on the thread still backfills one row
+// — and it must, or an async agent's card and pane open with no
+// statement of what the agent was asked to do.
+func TestSubagentTranscriptBackfillAddsThePromptAnAsyncAgentNeverEchoed(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	seedOpenTurn(t, router, st, "t1", 0)
+
+	startAgentLaunch(t, router, "t1", "agent-async", "", "task-async")
+	deliverSubagentBlock(t, router, "t1", "agent-async", "msg_open#0", "text", "reading the file first")
+	toolStart, _ := json.Marshal(map[string]any{
+		"toolName": "Read", "input": map[string]any{"file_path": "/repo/a.go"},
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "toolu_sub_read",
+		ItemType: "Read", Meta: toolStart, ParentToolUseID: "agent-async", Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("nested tool start: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolComplete, ThreadID: "t1", ItemID: "toolu_sub_read",
+		Content: "package main", ParentToolUseID: "agent-async", Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("nested tool complete: %v", err)
+	}
+	deliverSubagentBlock(t, router, "t1", "agent-async", "msg_close#0", "text", "done: it is a main package")
+
+	stashAgentTerminal(t, router, "t1", "agent-async", "task-async")
+	notifyAgent(t, router, "t1", "agent-async", "task-async", fullAgentTranscript(t, "agent-async.jsonl"), nil)
+	router.WaitForPendingSettles()
+
+	children := childrenOfLaunch(t, st, "t1", "agent-async", 0)
+	got := childIDs(children)
+	want := []string{
+		TextItemID(0, "agent-async", 1),
+		"toolu_sub_read",
+		TextItemID(0, "agent-async", 2),
+		"user:wire:s1",
+	}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("backfilled children = %v, want %v", got, want)
+	}
+	prompt := children[3]
+	if prompt.Kind != itemKindUserText || prompt.Role != "user" || prompt.Summary != "the task prompt" {
+		t.Fatalf("backfilled prompt row = %+v", prompt)
+	}
+	if prompt.TurnIndex != 0 {
+		t.Fatalf("prompt landed on turn %d, want the launch's turn 0", prompt.TurnIndex)
+	}
+	// wire_only is what keeps it out of the reader-authored user-text
+	// reads (nav rail, title regeneration): the agent was told this, the
+	// person at the keyboard did not type it.
+	if decodeItemMetaMap(t, prompt.Meta)["wire_only"] != true {
+		t.Fatalf("backfilled prompt meta = %s, want wire_only", prompt.Meta)
+	}
+
+	// A second notification adds nothing: the row id is derived from the
+	// transcript uuid, so the replay upserts rather than appends.
+	notifyAgent(t, router, "t1", "agent-async", "task-async", fullAgentTranscript(t, "agent-async-replay.jsonl"), nil)
+	router.WaitForPendingSettles()
+	if again := childIDs(childrenOfLaunch(t, st, "t1", "agent-async", 0)); fmt.Sprint(again) != fmt.Sprint(want) {
+		t.Fatalf("second notification changed the children: %v, want %v", again, want)
+	}
+}
+
 // An agent BACKGROUNDED mid-flight streams nothing further: its work
 // exists only in the sidechain JSONL the notification names. Exactly the
 // rows after the cut are replayed, under the launch, on the launch's own
@@ -450,7 +533,8 @@ func TestSubagentTranscriptBackfillReplaysOnlyTheRowsAfterTheCut(t *testing.T) {
 
 	startAgentLaunch(t, router, "t1", "agent-cut", "", "task-cut")
 	// Everything the live stream delivered before the agent was
-	// backgrounded: one whole assistant text block.
+	// backgrounded: its prompt and one whole assistant text block.
+	deliverSubagentPrompt(t, router, "t1", "agent-cut", "s1", "the task prompt")
 	deliverSubagentBlock(t, router, "t1", "agent-cut", "msg_open#0", "text", "reading the file first")
 
 	// The turn moves on while the agent runs in the background. The
@@ -464,6 +548,7 @@ func TestSubagentTranscriptBackfillReplaysOnlyTheRowsAfterTheCut(t *testing.T) {
 	children := childrenOfLaunch(t, st, "t1", "agent-cut", 0)
 	got := childIDs(children)
 	want := []string{
+		"user:wire:s1",
 		TextItemID(0, "agent-cut", 1),
 		"toolu_sub_read",
 		TextItemID(0, "agent-cut", 2),
@@ -489,14 +574,14 @@ func TestSubagentTranscriptBackfillReplaysOnlyTheRowsAfterTheCut(t *testing.T) {
 
 	// The replayed text carries the provider's own block identity, which
 	// is what a later live lookup finds it by.
-	replayed := children[2]
+	replayed := children[3]
 	if replayed.Kind != itemKindAssistantText || replayed.Summary != "done: it is a main package" {
 		t.Fatalf("replayed text row = %+v", replayed)
 	}
 	if got := decodeItemMetaMap(t, replayed.Meta)["provider_item_id"]; got != "msg_close#0" {
 		t.Fatalf("replayed text provider_item_id = %v, want msg_close#0", got)
 	}
-	if tool := children[1]; tool.Kind != itemKindToolCall || tool.Status != statusCompleted {
+	if tool := children[2]; tool.Kind != itemKindToolCall || tool.Status != statusCompleted {
 		t.Fatalf("replayed tool row = %+v, want a completed tool_call", tool)
 	}
 
@@ -524,6 +609,7 @@ func TestSubagentTranscriptBackfillRunsForANestedLaunch(t *testing.T) {
 
 	got := childIDs(childrenOfLaunch(t, st, "t1", "agent-inner", 0))
 	want := []string{
+		"user:wire:s1",
 		TextItemID(0, "agent-inner", 1),
 		"toolu_sub_read",
 		TextItemID(0, "agent-inner", 2),

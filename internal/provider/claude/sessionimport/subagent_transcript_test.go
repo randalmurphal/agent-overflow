@@ -42,6 +42,7 @@ func TestConvertSubagentTranscriptMatchesTheJoinedImport(t *testing.T) {
 	}
 	got := renderEvents(standalone.Events)
 	want := strings.Join([]string{
+		`user_text turn=0 item=s1 parent=toolu_task src=s1 content="the task prompt"`,
 		`text_delta turn=0 item=msg_sub#0 parent=toolu_task src=s2 content="subagent thinking out loud"`,
 		`tool_start turn=0 item=toolu_sub parent=toolu_task src=s3 content=""`,
 		`tool_complete turn=0 item=toolu_sub parent=toolu_task src=s4 content="package main"`,
@@ -69,6 +70,11 @@ func TestConvertSubagentTranscriptMatchesTheJoinedImport(t *testing.T) {
 
 // A transcript with nothing convertible in it is an empty result, never
 // an error: an agent killed before it produced anything still has a file.
+//
+// "Nothing convertible" means no rows a timeline can render. An agent
+// killed after being GIVEN its task still has its prompt, and that row
+// is the whole reason a killed agent's card is not blank — so the empty
+// case here is a transcript of pure machinery.
 func TestConvertSubagentTranscriptEmptyAndInvalidInputs(t *testing.T) {
 	dir := t.TempDir()
 	promptOnly := filepath.Join(dir, "agent-only-prompt.jsonl")
@@ -79,8 +85,21 @@ func TestConvertSubagentTranscriptEmptyAndInvalidInputs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ConvertSubagentTranscript(prompt only): %v", err)
 	}
-	if len(result.Events) != 0 {
-		t.Fatalf("prompt-only transcript produced %d event(s)", len(result.Events))
+	if got := renderEvents(result.Events); got != `user_text turn=0 item=s1 parent=toolu_task src=s1 content="the task prompt"` {
+		t.Fatalf("prompt-only transcript produced:\n%s", got)
+	}
+
+	machineryOnly := filepath.Join(dir, "agent-machinery.jsonl")
+	writeJSONL(t, machineryOnly,
+		userRow("m1", "", "Caveat: this is a caveat", "2026-01-01T00:00:02.000Z",
+			with("isSidechain", true), with("isMeta", true)),
+	)
+	empty, err := ConvertSubagentTranscript(machineryOnly, "toolu_task")
+	if err != nil {
+		t.Fatalf("ConvertSubagentTranscript(machinery only): %v", err)
+	}
+	if len(empty.Events) != 0 {
+		t.Fatalf("machinery-only transcript produced %d event(s)", len(empty.Events))
 	}
 
 	if _, err := ConvertSubagentTranscript(promptOnly, "  "); err == nil {

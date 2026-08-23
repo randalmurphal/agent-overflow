@@ -887,21 +887,24 @@ func (r *Router) recordEchoBoundaryAnchor(threadID string, pending *pendingSend)
 // its launching tool_call). The id format `user:wire:<provider_item_id>`
 // is deterministic from the wire id so repeated arrivals (session resume
 // replay) upsert the same row even if the in-memory dedup set has been
-// swept. Turn index resolution prefers the open turn (the wire-only
-// envelope arrives mid-turn by definition); LastTurnIndex is the
-// defensive fallback for races against clearOpenTurn.
+// swept.
+//
+// The turn is the LAUNCH's turn, never the thread's current one
+// (invariant 10). A backgrounded agent's prompt can arrive from the
+// transcript backfill long after the launching turn closed, and filing
+// it under whatever turn happens to be open would put the agent's own
+// opening line in a different turn from the card it belongs to — the
+// pane reads a scope's rows within the launch's turn, so it would simply
+// vanish. turnIndexForEvent resolves the launch row and only falls back
+// to the current turn when there is no launch to read.
 //
 // This is the PARENTED wire-only branch only. A top-level wire-only echo
 // (no parent) is not a subagent prompt and not an AO send — it is
 // provider-injected context, routed to persistInjectedContextNotification.
 func (r *Router) persistWireOnlySubagentPrompt(evt provider.ProviderEvent, providerItemID string) error {
-	turnIndex, ok := r.openTurnIndex(evt.ThreadID)
-	if !ok {
-		last, err := r.store.LastTurnIndex(evt.ThreadID)
-		if err != nil {
-			return fmt.Errorf("triage: resolve turn index for wire-only subagent prompt on %s: %w", evt.ThreadID, err)
-		}
-		turnIndex = last
+	turnIndex, err := r.turnIndexForEvent(evt)
+	if err != nil {
+		return fmt.Errorf("triage: resolve turn index for wire-only subagent prompt on %s: %w", evt.ThreadID, err)
 	}
 
 	metaBytes, err := json.Marshal(map[string]any{

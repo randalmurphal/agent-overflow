@@ -222,15 +222,21 @@ func (c *converter) convertUser(row Row) {
 		return
 	}
 
-	if c.subagentScope != "" {
-		// The subagent's opening prompt is the Task tool's input; it has
-		// a launch row already and does not repeat as a user message.
-		return
-	}
 	text, ok := userPromptText(row)
 	if !ok {
 		return
 	}
+	// Inside a subagent this is the agent's own conversation — the task
+	// prompt the CLI handed it, and anything delivered into it later —
+	// so it nests under the launch (c.emit stamps the scope) rather than
+	// opening a turn. startTurn is already inert in scope; the call is
+	// kept so both cases read the same.
+	//
+	// A LIVE inline agent echoes the same prompt on stdout and triage
+	// persists it there; both sides key the row on this uuid, so the
+	// import of a session that streamed live converges on one row rather
+	// than doubling it. A backgrounded agent never echoes, which is why
+	// this path cannot be skipped as "the launch row already has it".
 	c.startTurn(row)
 	c.emit(provider.ProviderEvent{
 		Kind:           provider.EventUserText,

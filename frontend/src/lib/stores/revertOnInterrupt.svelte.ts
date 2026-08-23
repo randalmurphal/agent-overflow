@@ -31,6 +31,7 @@ import type { TerminalChip } from '../types/draft';
 import type { Item } from '../types/models';
 import type { ComposerDraftSnapshot } from './composerDraftSnapshots';
 import type { ThreadPane } from './thread.svelte';
+import { isReaderAuthoredUserText } from '../utils/userMessageMeta';
 import { restoredDraftSnapshotFromUserItem } from '../utils/userMessageDraftSnapshot';
 import { getActiveTurn } from './threadStatuses.svelte';
 import { getQueueForThread } from './sendQueue.svelte';
@@ -101,7 +102,13 @@ export function canRevertEarlyInterrupt(
     if (item.kind === 'assistant_text' || item.kind === 'tool_call') {
       return { canRevert: false, reason: 'agent has responded' };
     }
-    if (item.kind === 'user_text' && item.role === 'user') {
+    if (isReaderAuthoredUserText(item) && item.role === 'user') {
+      // Reader-authored only. A subagent's own prompt is a user_text row
+      // carrying the LAUNCH's turn index, so it sits in this turn and a
+      // bare kind test would count it as a mid-round steer. Today the
+      // launch's own tool_call returns above before that can happen; the
+      // predicate is here so the answer stays right if that ever moves,
+      // and because "did the reader write this" has one definition.
       userItem = item;
       userCount++;
     }

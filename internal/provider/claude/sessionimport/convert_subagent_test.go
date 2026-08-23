@@ -33,6 +33,7 @@ func TestConvertSubagentRowsNestUnderTheirTask(t *testing.T) {
 		`turn_start turn=1 item= parent= src=u1 content=""`,
 		`user_text turn=1 item=u1 parent= src=u1 content="delegate it"`,
 		`tool_start turn=1 item=toolu_task parent= src=a1 content=""`,
+		`user_text turn=1 item=s1 parent=toolu_task src=s1 content="the task prompt"`,
 		`text_delta turn=1 item=msg_sub#0 parent=toolu_task src=s2 content="subagent thinking out loud"`,
 		`tool_start turn=1 item=toolu_sub parent=toolu_task src=s3 content=""`,
 		`tool_complete turn=1 item=toolu_task parent= src=r1 content="agent finished"`,
@@ -106,10 +107,13 @@ func TestSubagentBindsToItsFirstLaunchOnly(t *testing.T) {
 			nested = append(nested, e)
 		}
 	}
-	if len(nested) != 1 {
-		t.Fatalf("subagent rows emitted %d times, want 1: %s", len(nested), renderEvents(branch.Events))
+	// Its two rows — the task prompt and the agent's reply — once each.
+	if len(nested) != 2 {
+		t.Fatalf("subagent rows emitted %d times, want 2: %s", len(nested), renderEvents(branch.Events))
 	}
-	if nested[0].ParentToolUseID != "toolu_launch" {
-		t.Errorf("nested under %q, want the launch tool call", nested[0].ParentToolUseID)
+	for _, e := range nested {
+		if e.ParentToolUseID != "toolu_launch" {
+			t.Errorf("nested under %q, want the launch tool call", e.ParentToolUseID)
+		}
 	}
 }

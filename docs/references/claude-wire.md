@@ -2146,6 +2146,95 @@ currently handled in our parser.
 
 ---
 
+## Subagent stream forwarding (`--forward-subagent-text`)
+
+**Verified 2.1.237, live spike 2026-08-23.** Which of a subagent's
+content blocks reach the parent stream depends on HOW the agent was
+launched, and one CLI flag lifts the difference.
+
+### Two launch paths
+
+The CLI decides asynchrony at the launch site, not from the tool input's
+absence:
+
+```js
+// 2.1.237 bundle, Agent/Task launch
+const runAsync = !isTeammate && input.run_in_background !== false;
+```
+
+So an Agent/Task call is **async unless `run_in_background: false` is
+explicitly passed**. An async agent's progress emitter forwards EVERY
+assistant and user message it produces, parented to the launch. A
+synchronous (inline, awaited) agent goes through the Task tool's own
+`onMessage`, which filters:
+
+```js
+// 2.1.237 bundle, Task tool onMessage
+if (!forwardSubagentText && block.type !== "tool_use" && block.type !== "tool_result") continue;
+```
+
+Its text, thinking, and final answer therefore never leave the CLI. They
+exist only in the agent's own sidechain JSONL. From the outside this
+looks like a starved agent: a wall of tool rows with no prose, no
+reasoning, and no report, while agents that defaulted to background on
+the same session stream normally.
+
+### The flag
+
+```
+--forward-subagent-text   Forward subagent text and thinking blocks as
+                          assistant/user messages with parent_tool_use_id
+                          set (only works with --print and
+                          --output-format=stream-json)
+```
+
+It sets `forwardSubagentText`, which lifts the filter above and also
+stops the subagent's thinking display being forced to `omitted`. It only
+RELAXES a filter — an agent that already forwards everything is
+unaffected — so AO passes it unconditionally (`session_spawn.go`).
+
+**Version floor: 2.1.211.** Bisected against published linux-x64 builds:
+absent in 2.1.209 and 2.1.210, present in 2.1.211, 2.1.212, 2.1.213,
+2.1.214 and 2.1.237.
+
+Live A/B on 2.1.237 with one inline (`run_in_background: false`) Explore
+agent: without the flag the parent stream carries the agent's Bash
+`tool_use`/`tool_result` pairs and nothing else; with it, the same run
+additionally carries `assistant`/`thinking` and `assistant`/`text`
+envelopes parented to the launch.
+
+### The subagent's opening prompt
+
+The inline path ALSO echoes the task prompt the CLI handed the agent, as
+a parented `user` envelope. The async path does not — an async agent's
+prompt is on the wire nowhere at all.
+
+```json
+{"type": "user",
+ "uuid": "16630705-4c37-4ca6-8308-61d136289247",
+ "parent_tool_use_id": "toolu_01SjD…",
+ "subagent_type": "Explore",
+ "task_description": "map surfaces",
+ "session_id": "…",
+ "timestamp": "…",
+ "message": {"role": "user", "content": [{"type": "text", "text": "…"}]}}
+```
+
+No `isReplay`, no `isMeta`. The `uuid` equals the FIRST user row's uuid
+in the agent's `subagents/agent-<id>.jsonl`, which is what lets the live
+wire and the sidechain backfill converge on one row instead of two:
+`parse_user.go` promotes it to a scoped `EventUserText`, triage persists
+it as `user:wire:<uuid>` under the launch, and the transcript backfill
+recognises the same id. An async agent's prompt reaches the same row
+through the backfill alone.
+
+Content is usually a one-element text block array; a bare string is the
+same fact in the other shape. The `isMeta` / `isCompactSummary` /
+`isVisibleInTranscriptOnly` rows that ride the same envelope shape are
+CLI machinery and are not prompts.
+
+---
+
 ## Error envelope shapes
 
 API failures land on three loosely-coupled shapes. Both providers

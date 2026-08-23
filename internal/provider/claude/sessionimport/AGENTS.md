@@ -174,7 +174,7 @@ differ, this is the mapping:
 | unrecognised `system` subtype | nothing, one grouped warning | The subtype set is not closed. |
 | `attachment` | nothing | See below. |
 | `progress`, `mode`, `queue-operation`, `last-prompt`, `custom-title`, … | nothing | Either not a transcript type, or dropped by the DAG. `last-prompt` is read separately for branch titles. |
-| subagent rows | same mappings with `ParentToolUseID` set | Emitted BETWEEN the Task launch and its completion — the order a live session streams them in. The subagent's own opening prompt is skipped: it is the Task tool's input, which the launch row already carries. |
+| subagent rows | same mappings with `ParentToolUseID` set | Emitted BETWEEN the Task launch and its completion — the order a live session streams them in. The agent's own opening prompt is one of them: it is the only statement of what the agent was told, the launch row carries a description rather than the prompt, and a BACKGROUNDED agent never echoes it on the wire. It rides `ItemID` = the transcript uuid, which is the same id the live wire path keys `user:wire:<uuid>` on, so a session that streamed live imports one row rather than two. |
 
 `ConvertResult.Profile.Model` is the newest non-empty, non-`<synthetic>`
 `assistant.message.model` on the TOP-LEVEL branch. It is captured independently

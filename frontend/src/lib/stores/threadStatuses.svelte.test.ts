@@ -145,6 +145,28 @@ describe('threadStatuses store', () => {
     expect(getThreadStatus('thread-1')).toBe('running');
   });
 
+  it('holds error across a subagent prompt row', () => {
+    projectThreadItem(makeItem({
+      id: 'error-1',
+      kind: 'error',
+      role: 'system',
+      status: 'completed',
+    }));
+    expect(getThreadStatus('thread-1')).toBe('error');
+
+    // The agent's own instructions row: same kind and role as a message
+    // the reader typed, but nobody attended to the error.
+    projectThreadItem(makeItem({
+      id: 'user:wire:abc',
+      kind: 'user_text',
+      role: 'user',
+      status: 'completed',
+      parentId: 'toolu_agent',
+      meta: '{"provider_item_id":"abc","wire_only":true}',
+    }));
+    expect(getThreadStatus('thread-1')).toBe('error');
+  });
+
   it('clears an error when the thread is viewed', () => {
     projectThreadItem(makeItem({
       id: 'error-1',

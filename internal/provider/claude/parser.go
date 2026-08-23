@@ -386,9 +386,10 @@ func (p *Parser) ParseLine(threadID string, line []byte) ([]provider.ProviderEve
 		//   2. tool_result echoes (the long-standing path): the model has
 		//      finished a tool call; parseUser emits one EventToolComplete
 		//      per result block.
-		// Non-replay string-content user messages still drop silently
-		// inside parseUser today — the replay flag is what gives us a
-		// confirmation point.
+		// Non-replay user messages carrying prose reach parseUser, which
+		// claims only the SCOPED ones (a subagent's opening prompt); an
+		// unparented one has no confirmation point without the replay flag
+		// and still drops there.
 		if isReplayEnvelope(raw) {
 			return p.parseUserReplay(threadID, raw, now, line)
 		}

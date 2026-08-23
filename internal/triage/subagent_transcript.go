@@ -80,8 +80,12 @@ func (r *Router) backfillSubagentTranscript(threadID string, launch store.Item, 
 		return 0, err
 	}
 
+	cut := subagentBackfillCut(converted.Events, delivered)
 	replayed := 0
-	for _, event := range converted.Events[subagentBackfillCut(converted.Events, delivered):] {
+	for i, event := range converted.Events {
+		if !replaySubagentEventAt(i, cut, event.ProviderEvent, delivered) {
+			continue
+		}
 		written, err := r.replaySubagentEvent(threadID, launch, event.ProviderEvent)
 		if err != nil {
 			return replayed, fmt.Errorf("replay %s from subagent transcript: %w", event.Kind, err)
@@ -91,6 +95,27 @@ func (r *Router) backfillSubagentTranscript(threadID string, launch store.Item, 
 		}
 	}
 	return replayed, nil
+}
+
+// replaySubagentEventAt decides whether one projected event is replayed,
+// given where the cut fell.
+//
+// Past the cut, everything is. Before it, one kind still can be: the
+// agent's own prompt, and only when the thread has no row for it. The
+// prompt is not part of the streamed sequence the cut reasons about —
+// an ASYNC agent streams its whole sidechain and never echoes its
+// prompt, so a fully-delivered transcript is still missing that one row
+// — and letting it decide the cut instead would replay every async
+// agent's whole transcript from row zero.
+func replaySubagentEventAt(index, cut int, evt provider.ProviderEvent, delivered subagentDeliveredRows) bool {
+	if index >= cut {
+		return true
+	}
+	if evt.Kind != provider.EventUserText {
+		return false
+	}
+	_, present := subagentEventDelivered(evt, delivered)
+	return !present
 }
 
 // subagentDeliveredRows is the identity index of everything the live
@@ -168,6 +193,11 @@ func decodeProviderItemID(meta string) string {
 // agent's answer and makes the whole backfill a no-op.
 func subagentBackfillCut(events []importir.Event, delivered subagentDeliveredRows) int {
 	for i := range events {
+		if events[i].Kind == provider.EventUserText {
+			// The prompt is not evidence about where streaming stopped —
+			// see replaySubagentEventAt.
+			continue
+		}
 		decidable, present := subagentEventDelivered(events[i].ProviderEvent, delivered)
 		if !decidable || present {
 			continue
@@ -202,6 +232,13 @@ func subagentEventDelivered(evt provider.ProviderEvent, delivered subagentDelive
 	case provider.EventThinking:
 		row, found := delivered.byProviderItem[itemKindThinking+"|"+itemID]
 		return true, found && row.Status == statusCompleted
+	case provider.EventUserText:
+		// Decidable by id: a subagent prompt's row id is
+		// `user:wire:<transcript uuid>` on both write paths
+		// (persistWireOnlySubagentPrompt live, subagentPrompt on import),
+		// so the transcript can address it directly.
+		_, found := delivered.byID["user:wire:"+itemID]
+		return true, found
 	default:
 		return false, false
 	}
@@ -242,6 +279,31 @@ func (r *Router) replaySubagentEvent(threadID string, launch store.Item, evt pro
 			threadID, launch.TurnIndex, launch.ID, strings.TrimSpace(evt.ItemID), evt.Content)
 	case provider.EventError:
 		evt.Meta = replayedErrorMeta(evt.Meta)
+		return true, r.dispatch(evt)
+	case provider.EventUserText:
+		// The agent's own opening prompt — the task text the CLI handed
+		// it. A BACKGROUNDED agent never echoes it on the wire (only the
+		// inline path does), so the transcript is the sole source, and
+		// this is the row the pane shows as the agent's instructions.
+		//
+		// handleUserText keys the row and its dedup on the meta's
+		// `provider_item_id`, not on ItemID, so the transcript uuid is
+		// stamped there. That is also what makes the replay converge with
+		// the live echo instead of doubling it: both name the same uuid,
+		// so an inline agent's already-persisted row is recognised as
+		// seen and the replay is a no-op.
+		if strings.TrimSpace(evt.Content) == "" {
+			return false, nil
+		}
+		uuid := strings.TrimSpace(evt.ItemID)
+		if uuid == "" {
+			return false, nil
+		}
+		meta, err := json.Marshal(map[string]any{"provider_item_id": uuid})
+		if err != nil {
+			return false, fmt.Errorf("encode subagent prompt meta for %s: %w", uuid, err)
+		}
+		evt.Meta = meta
 		return true, r.dispatch(evt)
 	case provider.EventToolStart, provider.EventToolComplete,
 		provider.EventNotification, provider.EventCommandResult,

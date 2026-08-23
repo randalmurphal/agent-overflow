@@ -20,6 +20,14 @@ claude --output-format stream-json --input-format stream-json --verbose
 Session resume uses `--resume <session-ref>`. Fork is replay-based: we
 replay from the chosen turn against a fresh session.
 
+`--forward-subagent-text` is passed unconditionally. Without it, an agent
+launched with an explicit `run_in_background: false` — an INLINE, awaited
+agent — has its prose, thinking and final answer dropped by the
+synchronous Task path before they reach the parent stream, so its card
+and pane show tool rows and nothing else. The flag only relaxes that
+filter, and the CLI has carried it since 2.1.211. See claude-wire.md
+§"Subagent stream forwarding".
+
 Structured output is session-sticky: `Config.OutputSchema` is passed as
 inline JSON through `--json-schema` when the process starts. Per-turn
 `provider.SendOptions.OutputSchema` is deliberately ignored by Claude.
@@ -81,7 +89,12 @@ owner. The top-level `ParseLine` (in `parser.go`) reads the envelope's
   `appendExitPlanModeEvent` / `appendAssistantUsageEvent`.
 - `parse_user.go` — `user` envelopes carrying `tool_result` blocks,
   split into `appendTaskOutputCompletion` (Task-tool background path)
-  and `appendToolResultCompletion` (standard inline path).
+  and `appendToolResultCompletion` (standard inline path). Plus the one
+  prose case this layer claims: a SCOPED envelope with no tool_result in
+  it is the subagent's own conversation — the task prompt the CLI handed
+  the agent — and becomes an `EventUserText` under the launch
+  (`subagentPromptEvents`). Unparented prose belongs to the replay echo
+  and is dropped here. See claude-wire.md §"Subagent stream forwarding".
 - `parse_control.go` — `control_request` envelopes: CanUseTool
   approvals and the exit_plan_mode signal. `parseControlRequest` is a
   `*Parser` METHOD because a subagent's ask arrives here as

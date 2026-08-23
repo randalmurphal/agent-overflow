@@ -1,5 +1,6 @@
 import type { ApprovalKind } from '../types/events';
 import type { Item, Thread } from '../types/models';
+import { isReaderAuthoredUserText } from '../utils/userMessageMeta';
 import { resolveEffectiveThreadStatus } from '../utils/threadStatusPill';
 import { createKeyedSignalRegistry } from './keyedSignalRegistry.svelte';
 import {
@@ -622,7 +623,10 @@ export function projectThreadItem(item: Item): void {
   if (item.kind === 'error') {
     pendingSendThreads.set(item.threadId, false);
     errorThreads.add(item.threadId);
-  } else if (item.kind === 'user_text') {
+  } else if (isReaderAuthoredUserText(item)) {
+    // A new message from the READER supersedes the thread's error /
+    // interrupted badge. A subagent's own prompt is a user_text row too
+    // and must not clear a badge nobody attended to.
     errorThreads.delete(item.threadId);
     interruptedThreads.delete(item.threadId);
   }

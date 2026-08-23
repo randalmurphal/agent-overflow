@@ -985,3 +985,121 @@ func TestAppendToolResultBlock_NonTerminalUpdateKeepsLiveAgentTask(t *testing.T)
 		t.Fatalf("non-terminal task_updated must not disarm liveness; meta=%v", meta)
 	}
 }
+
+// A SCOPED user envelope with no tool_result in it is the subagent's own
+// conversation — the task prompt the CLI handed the agent. It is the only
+// statement of what the agent was asked to do, so it becomes an
+// EventUserText under the launching tool_use.
+//
+// Captured from a live 2.1.237 spike (/tmp/ao-spike-fst, 2026-08-23): the
+// CLI emits it on the INLINE path with `parent_tool_use_id`,
+// `subagent_type` and `task_description` alongside, and no `isReplay`.
+func TestParseUser_ScopedPromptBecomesUserTextUnderTheLaunch(t *testing.T) {
+	parser := NewParser()
+
+	line := []byte(`{"type":"user","uuid":"16630705-4c37-4ca6-8308-61d136289247","parent_tool_use_id":"toolu_01SjD","subagent_type":"Explore","task_description":"find it","session_id":"s","message":{"role":"user","content":[{"type":"text","text":"Say the word BANANA and nothing else."}]}}`)
+	events, err := parser.ParseLine(testThread, line)
+	if err != nil {
+		t.Fatalf("scoped prompt: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d: %+v", len(events), events)
+	}
+	evt := events[0]
+	if evt.Kind != provider.EventUserText {
+		t.Fatalf("kind = %s, want %s", evt.Kind, provider.EventUserText)
+	}
+	if evt.Role != "user" || !evt.ContentPresent {
+		t.Fatalf("role = %q contentPresent = %v", evt.Role, evt.ContentPresent)
+	}
+	if evt.Content != "Say the word BANANA and nothing else." {
+		t.Fatalf("content = %q", evt.Content)
+	}
+	if evt.ParentToolUseID != "toolu_01SjD" {
+		t.Fatalf("parentToolUseID = %q, want the launch", evt.ParentToolUseID)
+	}
+	// Triage keys the row AND its dedup on the meta id, never ItemID.
+	var meta map[string]any
+	if err := json.Unmarshal(evt.Meta, &meta); err != nil {
+		t.Fatalf("decode meta %s: %v", evt.Meta, err)
+	}
+	if meta["provider_item_id"] != "16630705-4c37-4ca6-8308-61d136289247" {
+		t.Fatalf("meta = %v, want the envelope uuid", meta)
+	}
+}
+
+// String content is the same fact in the other wire shape: the CLI writes
+// a bare string when the prompt carries no attachments.
+func TestParseUser_ScopedStringPromptBecomesUserText(t *testing.T) {
+	parser := NewParser()
+
+	events, err := parser.ParseLine(testThread, []byte(
+		`{"type":"user","uuid":"u-1","parent_tool_use_id":"toolu_x","message":{"role":"user","content":"go read the parser"}}`))
+	if err != nil {
+		t.Fatalf("scoped string prompt: %v", err)
+	}
+	if len(events) != 1 || events[0].Content != "go read the parser" {
+		t.Fatalf("events = %+v", events)
+	}
+}
+
+// Everything the scoped branch must NOT claim. Each of these would put a
+// user bubble under an agent card for something nobody said to it.
+func TestParseUser_ScopedPromptExclusions(t *testing.T) {
+	cases := []struct {
+		name string
+		line string
+	}{
+		{"top level prose belongs to the replay echo", `{"type":"user","uuid":"u-1","message":{"role":"user","content":"what the user typed"}}`},
+		{"isMeta caveat", `{"type":"user","uuid":"u-1","parent_tool_use_id":"t","isMeta":true,"message":{"role":"user","content":"Caveat: ..."}}`},
+		{"compaction summary", `{"type":"user","uuid":"u-1","parent_tool_use_id":"t","isCompactSummary":true,"message":{"role":"user","content":"summary"}}`},
+		{"transcript-only injection", `{"type":"user","uuid":"u-1","parent_tool_use_id":"t","isVisibleInTranscriptOnly":true,"message":{"role":"user","content":"injected"}}`},
+		{"no uuid to dedup on", `{"type":"user","parent_tool_use_id":"t","message":{"role":"user","content":"unkeyed"}}`},
+		{"blank text", `{"type":"user","uuid":"u-1","parent_tool_use_id":"t","message":{"role":"user","content":"   "}}`},
+		{"image-only content", `{"type":"user","uuid":"u-1","parent_tool_use_id":"t","message":{"role":"user","content":[{"type":"image","source":{}}]}}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			events, err := NewParser().ParseLine(testThread, []byte(tc.line))
+			if err != nil {
+				t.Fatalf("parse: %v", err)
+			}
+			if len(events) != 0 {
+				t.Fatalf("expected no events, got %+v", events)
+			}
+		})
+	}
+}
+
+// A scoped envelope carrying a tool_result is the agent's own tool echo,
+// and stays exactly what it was: one completion, no prompt row. The text
+// block riding alongside it is the tool's context, not a message.
+func TestParseUser_ScopedToolResultIsStillOnlyACompletion(t *testing.T) {
+	parser := NewParser()
+	if _, err := parser.ParseLine(testThread, []byte(`{"type":"assistant","parent_tool_use_id":"toolu_agent","message":{"id":"msg-1","role":"assistant","content":[{"type":"tool_use","id":"toolu_read","name":"Read","input":{"file_path":"/a.go"}}]}}`)); err != nil {
+		t.Fatalf("nested tool_use: %v", err)
+	}
+
+	events, err := parser.ParseLine(testThread, []byte(
+		`{"type":"user","uuid":"u-1","parent_tool_use_id":"toolu_agent","message":{"role":"user","content":[{"type":"text","text":"here you go"},{"type":"tool_result","tool_use_id":"toolu_read","content":"package main"}]}}`))
+	if err != nil {
+		t.Fatalf("scoped tool result: %v", err)
+	}
+	if len(events) != 1 || events[0].Kind != provider.EventToolComplete {
+		t.Fatalf("events = %+v, want one tool completion", events)
+	}
+}
+
+// A tool_result the completion path could not use is still a tool echo.
+// Reading it back as prose would put the tool's own output — here the
+// text block riding alongside it — into a user bubble under the agent.
+func TestParseUser_ScopedMalformedToolResultIsNotAPrompt(t *testing.T) {
+	events, err := NewParser().ParseLine(testThread, []byte(
+		`{"type":"user","uuid":"u-1","parent_tool_use_id":"toolu_agent","message":{"role":"user","content":[{"type":"text","text":"here you go"},{"type":"tool_result","content":"package main"}]}}`))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(events) != 0 {
+		t.Fatalf("expected no events, got %+v", events)
+	}
+}

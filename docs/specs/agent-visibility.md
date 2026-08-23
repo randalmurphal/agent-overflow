@@ -27,6 +27,14 @@ launch, how do progress and terminal signals arrive, which controls exist
 - Collapsed row: kind chip (`agent` / `skill`), name, status pill,
   elapsed, tool count, current activity line; tokens when the row has
   room, hidden under a container-width breakpoint (Q1).
+- The initial prompt is a plain user-side message row nested under the
+  launch (ruling 2026-08-23), not a bespoke shape: `user_text` with
+  `meta.wire_only`, so it renders as a user bubble with no edit / fork /
+  resend actions and stays out of every reader-authored read (nav rail,
+  title regeneration). On Claude it arrives on the wire for an INLINE
+  agent and from the sidechain transcript for a backgrounded one; both
+  key it on the same transcript uuid, so the two paths converge on one
+  row. Codex already echoed its spawn prompt as one.
 - Expanded body is an allowlist (ruling 2026-08-23): the initial prompt
   (first `user_text`), tool call rows, a provider refusal's reason
   (`permission_denied` notification), error rows, nested child cards,
@@ -132,6 +140,10 @@ launch, how do progress and terminal signals arrive, which controls exist
 - [ ] Opening any card shows that node's full transcript in the agent
       pane; opening a child from inside swaps scope with a working
       breadcrumb; reload restores the pane to the same scope.
+- [ ] Every agent card and pane opens with what the agent was asked to
+      do, and an agent that is awaited inline streams its thinking,
+      prose and final answer as it produces them — not only its tool
+      calls.
 - [ ] A subagent's `permission_denied` and `can_use_tool` rows nest
       under its card; the card shows the approval pill while the prompt
       is pending.

@@ -17,9 +17,14 @@ import (
 )
 
 // parseUser picks up the Claude `user` echo of a prior assistant tool_use.
-// The content is a list of `tool_result` blocks (other user-role messages
-// have a string content and aren't interesting at this layer). Each block
-// becomes one EventToolComplete keyed by the original tool_use_id.
+// The content is a list of `tool_result` blocks; each becomes one
+// EventToolComplete keyed by the original tool_use_id.
+//
+// A user envelope with no tool_result in it is prose, and the only prose
+// this layer claims is SCOPED prose — a `parent_tool_use_id` envelope,
+// which is the subagent's own conversation rather than the user's. That
+// goes to subagentPromptEvents. Unparented prose belongs to the replay
+// echo (parse_user_replay.go) and is dropped here.
 //
 // The `tool_use_result` sibling carries richer structured metadata for some
 // tools (e.g. Bash's `exit_code`, stdout/stderr). We surface `exit_code`
@@ -41,12 +46,17 @@ func (p *Parser) parseUser(threadID string, raw map[string]json.RawMessage, now 
 		return nil, nil
 	}
 
-	// user.message.content can be either a plain string or an array of blocks.
-	// User-authored block messages contain text/image blocks; only tool_result
-	// blocks are interesting at this layer.
+	// user.message.content can be either a plain string or an array of
+	// blocks (tool_result, text, image).
 	var blocks []map[string]json.RawMessage
 	if err := json.Unmarshal(msg.Content, &blocks); err != nil {
-		return nil, nil
+		// String content. Nothing at this layer wants a top-level one (the
+		// user's own text arrives through the `isReplay` echo), but a
+		// SCOPED one is the subagent's opening prompt.
+		return subagentPromptEvents(threadID, raw, msg.Content, nil, now), nil
+	}
+	if !hasBlockOfType(blocks, "tool_result") {
+		return subagentPromptEvents(threadID, raw, nil, blocks, now), nil
 	}
 
 	// Optional sibling with richer per-tool result metadata. Not all tools
@@ -58,6 +68,110 @@ func (p *Parser) parseUser(threadID string, raw map[string]json.RawMessage, now 
 		events = p.appendToolResultBlock(events, threadID, now, line, raw, block, toolUseResults)
 	}
 	return events, nil
+}
+
+// hasBlockOfType reports whether a content array carries a block of the
+// given type.
+//
+// The prompt branch keys on the PRESENCE of a tool_result, not on
+// whether the completion path produced anything: a malformed tool_result
+// (no `tool_use_id`) emits no event, and re-reading that envelope as
+// prose would put the tool's output in a user bubble. Same rule the
+// importer's userPromptText applies to the same rows.
+func hasBlockOfType(blocks []map[string]json.RawMessage, blockType string) bool {
+	for _, block := range blocks {
+		if readRawString(block["type"]) == blockType {
+			return true
+		}
+	}
+	return false
+}
+
+// subagentPromptEvents promotes a SCOPED user envelope carrying prose —
+// no tool_result block anywhere in it — to an EventUserText under the
+// launching tool_use.
+//
+// This is the subagent's own conversation: the task prompt the CLI hands
+// the agent (`parent_tool_use_id` set, no `isReplay`), and any later
+// user-role text delivered into that agent. Triage's parented wire-only
+// branch persists it as the nested `user:wire:<uuid>` row, which is where
+// the agent pane's opening instructions row and the card's initial-prompt
+// line come from. The same rows reach a BACKGROUNDED agent through the
+// transcript backfill instead, keyed on the same uuid, so the two paths
+// converge on one row.
+//
+// Top-level envelopes are left alone: an unparented string-content user
+// row is the pending-send echo's business (parse_user_replay.go), and
+// promoting it here would mint a second, unmatched bubble.
+//
+// The exclusions mirror the importer's `userPromptText` exactly, because
+// the same rows arrive through both doors: `isMeta` bookkeeping, the
+// compaction summary, and `isVisibleInTranscriptOnly` context injections
+// are CLI machinery, not something the agent was told.
+func subagentPromptEvents(
+	threadID string,
+	raw map[string]json.RawMessage,
+	stringContent json.RawMessage,
+	blocks []map[string]json.RawMessage,
+	now time.Time,
+) []provider.ProviderEvent {
+	parentToolUseID := readRawString(raw["parent_tool_use_id"])
+	if parentToolUseID == "" {
+		return nil
+	}
+	if readBoolValue(raw, "isMeta") || readBoolValue(raw, "isCompactSummary") ||
+		readBoolValue(raw, "isVisibleInTranscriptOnly") {
+		return nil
+	}
+	// An envelope with no stable uuid cannot be deduped against a replay
+	// or against the backfill's copy of the same row, and triage refuses
+	// to mint an id for one. Dropping it is the honest outcome.
+	uuid := readRawString(raw["uuid"])
+	if uuid == "" {
+		return nil
+	}
+
+	var text string
+	if len(stringContent) > 0 {
+		text = readRawString(stringContent)
+	} else {
+		text = blockTextContent(blocks)
+	}
+	if strings.TrimSpace(text) == "" {
+		return nil
+	}
+
+	meta, err := json.Marshal(map[string]any{"provider_item_id": uuid})
+	if err != nil {
+		return nil
+	}
+	return []provider.ProviderEvent{{
+		Kind:            provider.EventUserText,
+		ThreadID:        threadID,
+		Role:            "user",
+		Content:         text,
+		ContentPresent:  true,
+		ParentToolUseID: parentToolUseID,
+		Meta:            meta,
+		Timestamp:       now,
+	}}
+}
+
+// blockTextContent concatenates the `text` blocks of a user content
+// array. Images and other block kinds carry nothing a row can render, so
+// they contribute nothing; a block list with no text at all yields "" and
+// the caller drops the envelope.
+func blockTextContent(blocks []map[string]json.RawMessage) string {
+	var parts []string
+	for _, block := range blocks {
+		if readRawString(block["type"]) != "text" {
+			continue
+		}
+		if text := readRawString(block["text"]); text != "" {
+			parts = append(parts, text)
+		}
+	}
+	return strings.Join(parts, "\n")
 }
 
 // appendToolResultBlock emits the tool-lifecycle completion for one

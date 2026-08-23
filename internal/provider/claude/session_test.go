@@ -719,6 +719,7 @@ func TestBuildArgsDefault(t *testing.T) {
 		"--permission-prompt-tool", "stdio",
 		"--include-partial-messages",
 		"--replay-user-messages",
+		"--forward-subagent-text",
 		"--thinking-display", "summarized",
 	}
 	if len(args) != len(expected) {
@@ -727,6 +728,25 @@ func TestBuildArgsDefault(t *testing.T) {
 	for i, want := range expected {
 		if args[i] != want {
 			t.Errorf("args[%d]: got %q, want %q", i, args[i], want)
+		}
+	}
+}
+
+// An agent launched with an explicit `run_in_background: false` runs the
+// CLI's synchronous Task path, whose progress emitter drops every content
+// block that is not a tool_use or tool_result before it reaches the parent
+// stream. Without this flag such an agent's prose, thinking and final
+// answer never leave the CLI, and its pane is a wall of tool rows.
+//
+// The flag is unconditional: it only relaxes a filter, an agent that
+// already forwards everything is unaffected, and the CLI has carried it
+// since 2.1.211 (bisected against published linux-x64 builds), below the
+// supported floor.
+func TestBuildArgsForwardsSubagentText(t *testing.T) {
+	for _, cfg := range []Config{{}, {Resume: "sess-1"}, {Model: "opus"}} {
+		args := buildArgs(cfg, "")
+		if !slices.Contains(args, "--forward-subagent-text") {
+			t.Fatalf("spawn args omit --forward-subagent-text: %v", args)
 		}
 	}
 }

@@ -139,8 +139,15 @@ type TurnUserSummary struct {
 	Summary   string
 }
 
-// ListTurnUserSummaries returns each turn's first user_text summary.
-// Turns without a user row (rare recovery shapes) are simply absent.
+// ListTurnUserSummaries returns each turn's first reader-authored
+// user_text summary. Turns without one (rare recovery shapes) are simply
+// absent.
+//
+// readerAuthoredUserTextFilter, not a bare kind test: a subagent's own
+// prompt is a `user_text` row too, nested under its launch and carrying
+// the launch's turn index, and a turn whose only user row is one would
+// otherwise label the edit selector with what an agent was told rather
+// than what the reader asked for.
 func (s *Store) ListTurnUserSummaries(threadID string) ([]TurnUserSummary, error) {
 	// SQLite resolves the bare summary column against the row that
 	// carries MIN(item_index) — the first prompt of the turn (a steer
@@ -148,7 +155,8 @@ func (s *Store) ListTurnUserSummaries(threadID string) ([]TurnUserSummary, error
 	rows, err := s.reader().Query(`
 		SELECT turn_index, summary, MIN(item_index)
 		  FROM timeline_items
-		 WHERE thread_id = ? AND kind = 'user_text'
+		 WHERE thread_id = ?
+		   AND `+readerAuthoredUserTextFilter+`
 		 GROUP BY turn_index
 		 ORDER BY turn_index ASC`,
 		threadID,
