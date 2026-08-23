@@ -182,6 +182,12 @@ export function activityRunSummary(
   provider: ProviderID | null | undefined,
 ): ActivityRunSummary {
   const presentIds = new Set(items.map((item) => item.id));
+  const completedCallIds = new Set<string>();
+  for (const item of items) {
+    if (item.kind === 'tool_completion' && item.completionOf) {
+      completedCallIds.add(item.completionOf);
+    }
+  }
   // A run can hold hundreds of repeated Bash/Edit rows and this summary
   // re-evaluates on streaming deltas. Classify each distinct source name once
   // per pass; a module-level cache would be unbounded by provider input.
@@ -192,10 +198,16 @@ export function activityRunSummary(
   let runningLabel: string | null = null;
 
   for (const item of items) {
-    if (isFailedStatus(item.status)) hasFailure = true;
-    // Last one wins: the newest active row is what the user wants named.
-    if (isRunningStatus(item.status)) {
-      runningLabel = activityRunPresentation(item, provider, presentationCache).label;
+    // A completion supersedes its immutable call record. Detached agent
+    // launches deliberately remain `running` forever in canonical history,
+    // so considering both statuses would keep a false running indicator after
+    // the completion landed.
+    if (!completedCallIds.has(item.id)) {
+      if (isFailedStatus(item.status)) hasFailure = true;
+      // Last one wins: the newest active row is what the user wants named.
+      if (isRunningStatus(item.status)) {
+        runningLabel = activityRunPresentation(item, provider, presentationCache).label;
+      }
     }
 
     if (item.kind === 'tool_completion') {

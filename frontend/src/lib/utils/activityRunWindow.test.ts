@@ -45,6 +45,7 @@ function run(
     mountedRows: window.rows,
     membershipEpoch: 1,
     memberItemIds: [],
+    summaryItemIds: [],
   };
 }
 

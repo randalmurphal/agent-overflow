@@ -47,8 +47,8 @@ function groupNode(parentId: string): TimelineNode {
     anchor: parent,
     groupKey: parentId,
     // Deliberately non-empty: a group's children are inside its own card, so
-    // `activityRunMemberItems` must NOT walk them — and the anchor must still
-    // resolve from the parent alone.
+    // `activityRunMemberItems` must NOT walk them. This awaited card's anchor
+    // is its parent; the detached-card case is pinned separately below.
     children: [leafNode({ id: `${parentId}-child` })],
     descendantCount: 1,
     loadedDescendantCount: 1,
@@ -94,6 +94,7 @@ function activityRunNode(): ActivityRunNode {
     mountedRows: 1,
     membershipEpoch: 1,
     memberItemIds: [],
+    summaryItemIds: [],
   };
 }
 
@@ -178,6 +179,38 @@ describe('activity run window-anchor contract', () => {
       }
     },
   );
+
+  it('uses a detached group completion as the row anchor and identity member', () => {
+    const { registry, rows } = capturingIdentity();
+    const parent = makeItem({
+      id: 'detached-agent',
+      kind: 'tool_call',
+      toolName: 'Agent',
+      isBackground: true,
+    });
+    const completion = makeItem({
+      id: 'complete:detached-agent',
+      kind: 'tool_completion',
+      toolName: 'Agent',
+      completionOf: parent.id,
+    });
+    const detached: TimelineNode = {
+      kind: 'group',
+      parent,
+      anchor: completion,
+      completion,
+      groupKey: parent.id,
+      children: [],
+      descendantCount: 0,
+      loadedDescendantCount: 0,
+      latestChildSummary: '',
+    };
+
+    const run = projectRun([detached], registry);
+
+    expect(timelineNodeItemId(run.children[0])).toBe(completion.id);
+    expect(rows()[0]).toEqual([completion.id]);
+  });
 
   it('holds for every kind at once, in one run', () => {
     const { registry, rows } = capturingIdentity();

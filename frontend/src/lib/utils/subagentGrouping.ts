@@ -340,18 +340,23 @@ export interface ActivityRunNode {
    * Registry-assigned membership stamp — see `ActivityRunResolution`.
    * The header pairs it with the pane's per-run content revision and the
    * registry's wholesale-replace generation to key its summary, so no
-   * change any of the three covers needs a walk over `memberItemIds`.
+   * change any of the three covers needs a walk over `summaryItemIds`.
    */
   membershipEpoch: number;
   /**
-   * Every item the run represents, group members included, in timeline
-   * order. The chip aggregates its counts from the CURRENT items behind
-   * these ids rather than from a snapshot baked in here: counts, failure,
-   * and the running label all change on ordinary streaming deltas, and a
-   * node that carried them would rebuild the virtualizer's data array on
-   * every chunk. Same rule leaf rows already follow.
+   * Positional identity items for the run, group members included, in
+   * timeline order. A detached card names its completion anchor here, never
+   * the launch leaf that already belongs to an earlier run.
    */
   memberItemIds: readonly string[];
+  /**
+   * Current rows the header summarizes. Counts, failure, and the running
+   * label come from the current items behind these ids rather than a snapshot
+   * baked into the node. Separate from identity membership
+   * because an immutable detached launch depends on its later completion,
+   * which is also the positional anchor of another run.
+   */
+  summaryItemIds: readonly string[];
 }
 
 /**

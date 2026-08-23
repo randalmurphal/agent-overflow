@@ -1,14 +1,14 @@
 // The two O(1) signals `ActivityRunHeader` keys its summary on.
 //
 // The header used to rebuild a (id, kind, status, toolName, completionOf)
-// tuple for every member of the run on every reveal tick — an O(members)
+// tuple for every summary dependency on every reveal tick — an O(members)
 // walk and string build at ~50Hz, on the longest runs in the thread. It now
 // reads two counters instead:
 //
-//   membershipEpoch        stamped by the projection when the member SET
-//                          changes, carried out on the node
+//   membershipEpoch        stamped when identity or summary dependencies
+//                          change, carried out on the node
 //   memberContentRevision  bumped by the pane's row-write chokepoints when
-//                          a member's summary tuple actually moves
+//                          a dependency's summary tuple actually moves
 //
 // Between them they have to cover everything the tuple covered, which means
 // each needs transition coverage in BOTH directions: it must move when the
@@ -88,6 +88,24 @@ describe('membershipEpoch', () => {
     expect(leftAfter.membershipEpoch).toBeGreaterThan(left.membershipEpoch);
     expect(rightAfter.membershipEpoch).toBe(right.membershipEpoch);
   });
+
+  it('moves when a detached launch gains its completion dependency', () => {
+    const runs = registry();
+    runs.beginPass();
+    const before = runs.resolve([['launch']], 'thread-1', ['launch']);
+    runs.endPass();
+
+    runs.beginPass();
+    const after = runs.resolve(
+      [['launch']],
+      'thread-1',
+      ['launch', 'completion'],
+    );
+    runs.endPass();
+
+    expect(after.runId).toBe(before.runId);
+    expect(after.membershipEpoch).toBeGreaterThan(before.membershipEpoch);
+  });
 });
 
 describe('memberContentRevision', () => {
@@ -102,7 +120,7 @@ describe('memberContentRevision', () => {
     expect(runs.memberContentRevision(run.runId)).toBe(2);
   });
 
-  it('only moves the run that holds the member', () => {
+  it('only moves the run that summarizes the item', () => {
     const runs = registry();
     const [left, right] = pass(runs, [['a'], ['b']]);
 
@@ -112,7 +130,28 @@ describe('memberContentRevision', () => {
     expect(runs.memberContentRevision(right.runId)).toBe(0);
   });
 
-  it('ignores an id no run holds', () => {
+  it('moves every header that summarizes a shared completion', () => {
+    const runs = registry();
+    runs.beginPass();
+    const launch = runs.resolve(
+      [['launch']],
+      'thread-1',
+      ['launch', 'completion'],
+    );
+    const card = runs.resolve(
+      [['completion']],
+      'thread-1',
+      ['completion'],
+    );
+    runs.endPass();
+
+    runs.noteMemberContentChanged('completion');
+
+    expect(runs.memberContentRevision(launch.runId)).toBe(1);
+    expect(runs.memberContentRevision(card.runId)).toBe(1);
+  });
+
+  it('ignores an id no run summarizes', () => {
     const runs = registry();
     const [run] = pass(runs, [['a']]);
 

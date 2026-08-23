@@ -48,6 +48,7 @@ describe('nodeSignature', () => {
       mountedRows: 1,
       membershipEpoch: 1,
       memberItemIds: ['a'],
+      summaryItemIds: ['a'],
       atTail: over.atTail ?? over.live,
       ...over,
     });

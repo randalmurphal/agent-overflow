@@ -255,6 +255,38 @@ describe('attention state', () => {
     expect(summary.runningLabel).toBe('Bash');
   });
 
+  it('lets a completion settle an immutable detached-agent launch', () => {
+    const summary = activityRunSummary([
+      tool('agent-launch', 'Agent', { status: 'running' }),
+      makeItem({
+        id: 'complete:agent-launch',
+        kind: 'tool_completion',
+        toolName: 'Agent',
+        completionOf: 'agent-launch',
+        status: 'completed',
+      }),
+    ], 'claude');
+
+    expect(summary.runningLabel).toBeNull();
+    expect(summary.counts.total).toBe(1);
+  });
+
+  it('takes failure state from the completion instead of its immutable launch', () => {
+    const summary = activityRunSummary([
+      tool('agent-launch', 'Agent', { status: 'running' }),
+      makeItem({
+        id: 'complete:agent-launch',
+        kind: 'tool_completion',
+        toolName: 'Agent',
+        completionOf: 'agent-launch',
+        status: 'errored',
+      }),
+    ], 'claude');
+
+    expect(summary.runningLabel).toBeNull();
+    expect(summary.hasFailure).toBe(true);
+  });
+
   it('counts a running member that is also a paired completion target', () => {
     // The pairing skip must not skip the status scan too: a completion
     // arriving for a still-streaming call is exactly when the chip most

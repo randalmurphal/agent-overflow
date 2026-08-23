@@ -859,6 +859,7 @@ function nodeFor(resolved: ActivityRunResolution, ids: readonly string[]): Activ
     mountedRows: resolved.mountedRows,
     membershipEpoch: resolved.membershipEpoch,
     memberItemIds: [...ids],
+    summaryItemIds: [...ids],
   };
 }
 

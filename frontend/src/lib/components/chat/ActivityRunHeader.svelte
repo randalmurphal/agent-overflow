@@ -53,9 +53,9 @@
   // depends only on five fields per member, none of which move on a reveal
   // tick. Both halves of that are counters maintained where the change
   // happens: `membershipEpoch` is stamped by the projection when the
-  // member SET changes, and `memberContentRevision` is bumped by the pane's
+  // summary dependencies change, and `memberContentRevision` is bumped by the pane's
   // row-write chokepoints when `activityRunSummaryFieldsChanged` says a
-  // member's tuple moved. This derived used to rebuild that tuple for every
+  // dependency's tuple moved. This derived used to rebuild that tuple for every
   // member on every tick — an O(members) walk and string build per run, at
   // reveal cadence, on the longest runs in the thread. The summary body
   // still runs untracked so its item reads don't re-subscribe it to
@@ -74,7 +74,7 @@
   let summary = $derived.by(() => {
     void summaryKey;
     return untrack(() => {
-      const items = run.memberItemIds
+      const items = run.summaryItemIds
         .map((id) => pane.getItemById(id))
         .filter((item) => item !== undefined);
       return activityRunSummary(items, pane.thread?.provider);

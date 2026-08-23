@@ -49,6 +49,33 @@ function group(parentId: string, toolName = 'Task'): TimelineNode {
   };
 }
 
+function detachedGroup(parentId: string, completionId: string): TimelineNode {
+  const parent = makeItem({
+    id: parentId,
+    kind: 'tool_call',
+    toolName: 'Agent',
+    status: 'running',
+  });
+  const completion = makeItem({
+    id: completionId,
+    kind: 'tool_completion',
+    toolName: 'Agent',
+    completionOf: parentId,
+    status: 'completed',
+  });
+  return {
+    kind: 'group',
+    parent,
+    anchor: completion,
+    completion,
+    groupKey: parentId,
+    children: [],
+    descendantCount: 0,
+    loadedDescendantCount: 0,
+    latestChildSummary: '',
+  };
+}
+
 /**
  * A Codex wait carrier row, optionally with the standalone `wait_agent`
  * completion that `WaitGroup` folds in as its header once the wait finishes.
@@ -346,10 +373,17 @@ describe('member items', () => {
     expect(run(nodes, 0).memberItemIds).toEqual(['t1', 'r1', 'r2', 'r3']);
   });
 
-  it('lists a subagent group by its launch row, not its descendants', () => {
+  it('lists an awaited subagent group by its launch row, not its descendants', () => {
     const nodes = project([group('g1'), tool('t1', 'Bash')]);
 
     expect(run(nodes, 0).memberItemIds).toEqual(['g1', 't1']);
+  });
+
+  it('lists a detached subagent card by its completion anchor', () => {
+    const nodes = project([detachedGroup('g1', 'complete:g1'), tool('t1', 'Bash')]);
+
+    expect(run(nodes, 0).memberItemIds).toEqual(['complete:g1', 't1']);
+    expect(run(nodes, 0).summaryItemIds).toEqual(['complete:g1', 't1']);
   });
 
   it('counts rows and items separately — a read group is many items, one row', () => {
@@ -378,6 +412,35 @@ describe('member items', () => {
 });
 
 describe('identity migration', () => {
+  it('keeps separated detached-launch and completion-card runs stable across a collapse', () => {
+    const id = identity();
+    const input = [
+      tool('agent-launch', 'Agent', { status: 'running' }),
+      prose('between'),
+      detachedGroup('agent-launch', 'complete:agent-launch'),
+      leaf({ id: 'thinking', kind: 'thinking' }),
+    ];
+    const first = project(input, { identity: id });
+    const launchRunId = run(first, 0).runId;
+    const cardRunId = run(first, 2).runId;
+
+    expect(cardRunId).not.toBe(launchRunId);
+    expect(run(first, 0).summaryItemIds).toEqual([
+      'agent-launch',
+      'complete:agent-launch',
+    ]);
+    expect(run(first, 2).summaryItemIds).toEqual([
+      'complete:agent-launch',
+      'thinking',
+    ]);
+    id.setCollapsed(cardRunId, true);
+
+    const second = project(input, { identity: id });
+    expect(run(second, 0).runId).toBe(launchRunId);
+    expect(run(second, 2).runId).toBe(cardRunId);
+    expect(run(second, 2).collapsed).toBe(true);
+  });
+
   it('keeps its id when lazy paging extends a run backward', () => {
     const id = identity();
     const first = run(project([tool('t2', 'Bash'), tool('t3', 'Bash')], { identity: id }), 0).runId;

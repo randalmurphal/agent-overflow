@@ -39,6 +39,7 @@ function run(overrides: Partial<ActivityRunNode> = {}): ActivityRunNode {
     mountedRows: children.length,
     membershipEpoch: 1,
     memberItemIds: [],
+    summaryItemIds: [],
     ...overrides,
   };
 }

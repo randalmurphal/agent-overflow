@@ -37,10 +37,10 @@ export interface ActivityRunResolution {
   /** How many rows are mounted, from `mountedFrom`. */
   mountedRows: number;
   /**
-   * Increments whenever this run's ORDERED membership changes — a row
-   * joining, leaving, being replaced by a different id, or the same ids
-   * arriving in a different order. Lets the header stamp membership in
-   * O(1) instead of walking `memberItemIds`; the count alone would miss a
+   * Increments whenever this run's ordered identity or summary dependencies
+   * change — a row joining, leaving, being replaced by a different id, or
+   * the same ids arriving in a different order. Lets the header stamp them in
+   * O(1) instead of walking `summaryItemIds`; the count alone would miss a
    * swap, a set comparison would miss a reorder (the running label is the
    * last active member in order), and re-deriving the sequence per render
    * is the cost this whole node exists to avoid.
@@ -101,6 +101,13 @@ export interface ActivityRunIdentity {
   resolve(
     rowMemberIds: readonly (readonly string[])[],
     threadId: string,
+    /**
+     * Items the header summarizes. Usually identical to identity membership,
+     * but a detached launch also depends on its later completion row. Summary
+     * dependencies may belong to more than one run and never participate in
+     * identity matching.
+     */
+    summaryItemIds?: readonly string[],
   ): ActivityRunResolution;
   /**
    * Whether the run renders without its clip.
@@ -192,45 +199,102 @@ function isAbsorbedNotification(
   return item !== null && item.kind === 'notification';
 }
 
-/** Every item a run row represents, including group members. */
-function* activityRunMemberItems(nodes: readonly TimelineNode[]): Generator<Item> {
+/** Every positional identity item one run row represents. */
+function* activityRunMemberItems(node: TimelineNode): Generator<Item> {
+  switch (node.kind) {
+    case 'leaf':
+      yield node.item;
+      break;
+    case 'read_group':
+      yield* node.members;
+      break;
+    case 'group':
+      // The row's POSITIONAL anchor. Awaited cards sit at their launch;
+      // detached cards sit at their completion. Using the launch for both
+      // makes the launch leaf and later completion card claim the same
+      // identity member when prose separates them, so every collapse pass
+      // transfers the id between the two runs and remounts the clicked row.
+      // Nested children are deliberately not walked: they are inside the
+      // group's own card, and counting them would double-count what the
+      // card already summarizes.
+      yield node.anchor;
+      break;
+    case 'wait_group':
+      yield node.parent;
+      // Plus the folded completion `WaitGroup` renders AS its header. It is
+      // the only place a finished wait's status lives, so leaving it out
+      // would let a collapsed chip hide an errored or killed wait — exactly
+      // what the chip promises never to do. Counts are unaffected: it pairs
+      // with the carrier (`completionOf === parent.id`), and
+      // `activityRunSummary` counts a paired completion zero times.
+      if (node.completion) yield node.completion;
+      break;
+    case 'activity_run':
+      // Unreachable by construction: this pass runs once, over the
+      // pre-run node array, so no run can contain another. Loud rather
+      // than a silent empty yield, which would drop a whole run's
+      // membership and quietly break identity migration.
+      throw new Error('activityRunMemberItems: activity runs cannot nest');
+  }
+}
+
+/** Top-level completion relationships visible to this projection pass. */
+function indexCompletions(
+  nodes: readonly TimelineNode[],
+  getItem: (id: string) => Item | undefined,
+  completions = new Map<string, Item>(),
+): Map<string, Item> {
+  const index = (snapshot: Item | undefined): void => {
+    if (!snapshot) return;
+    const item = getItem(snapshot.id) ?? snapshot;
+    if (item.kind === 'tool_completion' && item.completionOf) {
+      completions.set(item.completionOf, item);
+    }
+  };
   for (const node of nodes) {
     switch (node.kind) {
       case 'leaf':
-        yield node.item;
+        index(node.item);
         break;
       case 'read_group':
-        yield* node.members;
+        for (const member of node.members) index(member);
         break;
       case 'group':
-        // The launch row itself. Nested children are deliberately not walked:
-        // they are inside the group's own card, and counting them would
-        // double-count what the card already summarizes.
-        yield node.parent;
+        index(node.completion);
+        index(node.anchor);
         break;
       case 'wait_group':
-        yield node.parent;
-        // Plus the folded completion `WaitGroup` renders AS its header. It is
-        // the only place a finished wait's status lives, so leaving it out
-        // would let a collapsed chip hide an errored or killed wait — exactly
-        // what the chip promises never to do. Counts are unaffected: it pairs
-        // with the carrier (`completionOf === parent.id`), and
-        // `activityRunSummary` counts a paired completion zero times.
-        if (node.completion) yield node.completion;
+        index(node.completion);
         break;
       case 'activity_run':
-        // Unreachable by construction: this pass runs once, over the
-        // pre-run node array, so no run can contain another. Loud rather
-        // than a silent empty yield, which would drop a whole run's
-        // membership and quietly break identity migration.
-        throw new Error('activityRunMemberItems: activity runs cannot nest');
+        throw new Error('indexCompletions: activity runs cannot nest');
     }
+  }
+  return completions;
+}
+
+/**
+ * Header dependencies for one rendered row.
+ *
+ * A detached launch stays immutable at `running`; its completion is a later
+ * row. The launch run therefore summarizes both records once the completion
+ * exists, while identity continues to belong only to the launch's position.
+ */
+function* activityRunSummaryItems(
+  node: TimelineNode,
+  completionByLaunchId: ReadonlyMap<string, Item>,
+): Generator<Item> {
+  for (const item of activityRunMemberItems(node)) {
+    yield item;
+    const completion = completionByLaunchId.get(item.id);
+    if (completion) yield completion;
   }
 }
 
 function buildRun(
   members: TimelineNode[],
   options: GroupActivityRunsOptions,
+  completionByLaunchId: ReadonlyMap<string, Item>,
 ): ActivityRunNode {
   // The projected member ids are enough for identity, the mount window, and
   // threadId — all immutable per item — so this pass never resolves current
@@ -238,17 +302,24 @@ function buildRun(
   // displays that CAN change is derived from these ids at render time.
   const rowMemberIds: string[][] = [];
   const memberItemIds: string[] = [];
+  const summaryItemIds: string[] = [];
+  const seenSummaryIds = new Set<string>();
   let threadId = '';
   for (const node of members) {
     const row: string[] = [];
-    for (const item of activityRunMemberItems([node])) {
+    for (const item of activityRunMemberItems(node)) {
       if (threadId === '') threadId = item.threadId;
       row.push(item.id);
       memberItemIds.push(item.id);
     }
     rowMemberIds.push(row);
+    for (const item of activityRunSummaryItems(node, completionByLaunchId)) {
+      if (seenSummaryIds.has(item.id)) continue;
+      seenSummaryIds.add(item.id);
+      summaryItemIds.push(item.id);
+    }
   }
-  const resolved = options.identity.resolve(rowMemberIds, threadId);
+  const resolved = options.identity.resolve(rowMemberIds, threadId, summaryItemIds);
   return {
     kind: 'activity_run',
     runId: resolved.runId,
@@ -264,6 +335,7 @@ function buildRun(
     mountedRows: resolved.mountedRows,
     membershipEpoch: resolved.membershipEpoch,
     memberItemIds,
+    summaryItemIds,
   };
 }
 
@@ -288,6 +360,11 @@ export function groupActivityRuns(
   }
 
   const out: TimelineNode[] = [];
+  // Include withheld nodes so a completion already received from the wire
+  // settles its launch header without waiting for the reveal gate to expose
+  // the completion card.
+  const completionByLaunchId = indexCompletions(nodes, options.getItem);
+  indexCompletions(options.withheld, options.getItem, completionByLaunchId);
   let i = 0;
   while (i < nodes.length) {
     if (!isRunMember(nodes[i], options.getItem)) {
@@ -301,7 +378,7 @@ export function groupActivityRuns(
       && (isRunMember(nodes[j], options.getItem)
         || isAbsorbedNotification(nodes[j], options.getItem))
     ) j += 1;
-    out.push(buildRun(nodes.slice(i, j), options));
+    out.push(buildRun(nodes.slice(i, j), options, completionByLaunchId));
     i = j;
   }
 

@@ -90,7 +90,8 @@ interface ActivityRunNode {
   atTail: boolean                    // last REVEALED node; wider than live
   mountedFrom: number                // the mounted row window
   mountedRows: number
-  memberItemIds: readonly string[]   // every item the run represents
+  memberItemIds: readonly string[]   // positional identity membership
+  summaryItemIds: readonly string[]  // current rows the header summarizes
 }
 ```
 
@@ -118,9 +119,12 @@ Two facts about that shape are load-bearing:
 - **Counts are NOT on the node.** Per-tool counts, the failure marker, and
   the running label all move on ordinary streaming deltas, so baking them in
   would rebuild the virtualizer's data array on every chunk. The header
-  resolves current items behind `memberItemIds` and calls
+  resolves current items behind `summaryItemIds` and calls
   `components/chat/activityRunSummary.ts` — the same rule leaf rows already
-  follow.
+  follow. Summary dependencies are separate from identity membership: a
+  detached completion settles both its immutable launch header and its later
+  completion-card header, but only the completion card owns that completion
+  as an identity member.
 
 A fifth `kind` had to be threaded through every node dispatcher.
 Compile- or runtime-enforced: `timelineNodeKey`, `timelineNodeItemId`,
@@ -420,7 +424,7 @@ COLLAPSED is an answer about that card, not engagement.
 
 The peek's scope is the run's RENDERED items
 (`renderedItemIdsWithin(run.children)`), not its identity membership:
-`memberItemIds` deliberately stops at group parents, but a reader's
+`memberItemIds` deliberately stops at group anchors, but a reader's
 expansion can sit on any row a group renders — a wait group's children or
 its folded completion, an opened subagent card's transcript. Failure keeps
 the membership scope, matching what the collapsed chip summarizes.

@@ -139,6 +139,7 @@ function runNode(memberItemIds: string[], threadId = 'thread-1'): ActivityRunNod
     mountedRows: memberItemIds.length,
     membershipEpoch: 1,
     memberItemIds,
+    summaryItemIds: memberItemIds,
   };
 }
 

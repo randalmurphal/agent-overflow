@@ -309,7 +309,7 @@ Operational rules for this directory:
   entries created with `loadOnMount` are skipped wholesale (`autoExpands` on
   the registry entry) because their expanded bit is the setting's doing, and
   the peek's scope is `renderedItemIdsWithin(run.children)`, not
-  `memberItemIds` — identity membership stops at group parents, but a
+  `memberItemIds` — identity membership stops at group anchors, but a
   reader's expansion can sit on a wait child or inside an opened subagent
   card. Do not substitute `expandedPx` or any rendered-height proxy:
   `collapseDiffPreviews` defaults diffs to expanded, so a pixel guard

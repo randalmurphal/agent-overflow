@@ -682,6 +682,70 @@ describe('<ActivityRun>', () => {
       expect(queryByTestId('activity-run-header-running')).toBeNull();
     });
 
+    it('settles both headers for a detached agent and toggles its completion run once per click', async () => {
+      const launch = makeItem({
+        id: 'agent-launch',
+        itemIndex: 0,
+        kind: 'tool_call',
+        toolName: 'Agent',
+        status: 'running',
+        isBackground: true,
+        summary: 'Agent: investigate',
+        meta: JSON.stringify({
+          toolName: 'Agent',
+          input: { description: 'investigate' },
+        }),
+      });
+      const completion = makeItem({
+        id: 'complete:agent-launch',
+        itemIndex: 2,
+        kind: 'tool_completion',
+        toolName: 'Agent',
+        status: 'completed',
+        isBackground: true,
+        completionOf: launch.id,
+        summary: 'Agent: investigate',
+      });
+      const { getAllByTestId, queryAllByTestId } = await renderRun([
+        launch,
+        makeItem({
+          id: 'between',
+          itemIndex: 1,
+          kind: 'assistant_text',
+          summary: 'Main agent continued while the child worked.',
+        }),
+        completion,
+        makeItem({
+          id: 'thinking-after',
+          itemIndex: 3,
+          kind: 'thinking',
+          summary: 'Writing up the result.',
+        }),
+      ]);
+
+      const completionHeader = getAllByTestId('activity-run-header').find((header) =>
+        header.textContent?.includes('1 Agent, 1 thinking'));
+      expect(completionHeader).toBeDefined();
+      expect(queryAllByTestId('activity-run-header-running')).toHaveLength(0);
+      expect(completionHeader?.getAttribute('aria-expanded')).toBe('true');
+
+      await fireEvent.click(completionHeader!);
+      await tick();
+
+      const collapsedHeader = getAllByTestId('activity-run-header').find((header) =>
+        header.textContent?.includes('1 Agent, 1 thinking'));
+      expect(collapsedHeader).toBe(completionHeader);
+      expect(collapsedHeader?.getAttribute('aria-expanded')).toBe('false');
+
+      await fireEvent.click(collapsedHeader!);
+      await tick();
+
+      const expandedHeader = getAllByTestId('activity-run-header').find((header) =>
+        header.textContent?.includes('1 Agent, 1 thinking'));
+      expect(expandedHeader).toBe(completionHeader);
+      expect(expandedHeader?.getAttribute('aria-expanded')).toBe('true');
+    });
+
     it('recounts from live items as the run streams', async () => {
       await updateSetting('activityRunDefault', 'collapsed');
       const pane = await buildPane(undefined, [tool('t0', 0, { status: 'running' })]);

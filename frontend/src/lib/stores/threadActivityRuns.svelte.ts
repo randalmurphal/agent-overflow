@@ -213,9 +213,9 @@ export interface ThreadActivityRuns extends ActivityRunIdentity {
   /** Read and clear the pending focus request. */
   takeFocus(runId: string): ActivityRunFocusRequest | null;
   /**
-   * How many times a member of `runId` has had a summary-relevant field
+   * How many times a summary dependency of `runId` has had a relevant field
    * change (see `activityRunSummaryFieldsChanged`). The header keys its
-   * summary on this, so a reveal tick — which replaces the member's item
+   * summary on this, so a reveal tick — which replaces the dependency's item
    * object ~50 times a second without touching those fields — costs one
    * number comparison instead of a walk over every member.
    *
@@ -226,7 +226,7 @@ export interface ThreadActivityRuns extends ActivityRunIdentity {
   memberContentRevision(runId: string): number;
   /**
    * Record that `itemId`'s summary fields changed. A no-op for an id no
-   * run holds, so the pane's write chokepoints can call it unconditionally
+   * run summarizes, so the pane's write chokepoints can call it unconditionally
    * rather than each deciding whether a row is in a run.
    */
   noteMemberContentChanged(itemId: string): void;
@@ -267,8 +267,14 @@ interface RunEntry {
   threadId: string;
   members: Set<string>;
   /**
-   * Bumped by `indexMembers` when the ORDERED membership changes — a join,
-   * a leave, a swap, or a reorder of the same ids. Plain, not `$state`: it
+   * Items whose current fields feed this run's header. Unlike `members`, one
+   * item may feed multiple runs: a detached completion settles both the
+   * launch row and the completion card without joining both identities.
+   */
+  summaryMembers: Set<string>;
+  /**
+   * Bumped by `indexMembers` when ordered identity membership or summary
+   * dependencies change. Plain, not `$state`: it
    * is written during the projection pass (which runs untracked and must
    * not touch reactive state) and read out of the same pass onto the node,
    * where consumers pick it up as a prop.
@@ -335,7 +341,7 @@ interface RunEntry {
 // entry cannot describe.
 interface ArchivedRun extends Omit<
   RunEntry,
-  'members' | 'focus' | 'clipOpen' | 'openedLive' | 'membershipEpoch'
+  'members' | 'summaryMembers' | 'focus' | 'clipOpen' | 'openedLive' | 'membershipEpoch'
 > {
   keys: string[];
 }
@@ -356,6 +362,7 @@ function emptyEntry(threadId: string): RunEntry {
   return {
     threadId,
     members: new Set(),
+    summaryMembers: new Set(),
     membershipEpoch: 0,
     collapsed: null,
     clipOpen: true,
@@ -459,6 +466,12 @@ export function createThreadActivityRuns(
   // Reverse index so migration is one lookup per member instead of a scan
   // over every entry. Rebuilt incrementally as entries take new members.
   const runIdByMember = new Map<string, string>();
+  // Summary dependencies are many-to-many. A detached completion feeds the
+  // earlier launch run and the later completion-card run, but only the latter
+  // owns it for identity. Keeping a separate reverse index lets an in-place
+  // status correction invalidate every affected header without corrupting
+  // run migration.
+  const runIdsBySummaryMember = new Map<string, Set<string>>();
   // Per-run content revision, keyed by runId. Reactive per KEY (SvelteMap),
   // so a member changing inside one run does not invalidate the headers of
   // the other runs on screen. Entries are dropped with their run in
@@ -510,6 +523,7 @@ export function createThreadActivityRuns(
     entry: RunEntry,
     runId: string,
     rowMemberIds: readonly (readonly string[])[],
+    summaryItemIds: readonly string[],
   ): void {
     // Built before the old set is torn down so membership can be compared:
     // the header stamps its summary with `membershipEpoch` rather than
@@ -518,11 +532,11 @@ export function createThreadActivityRuns(
     //
     // Compared POSITIONALLY, not as a set. `Set` iterates in insertion
     // order and insertion here follows row order, so the stored set IS the
-    // ordered membership — and the summary reads it that way: the running
-    // label is the LAST active member in iteration order, so the same ids
-    // arriving in a different order is a different summary. A set-equality
-    // test would have skipped the bump and left the header naming a tool
-    // that is no longer the one in flight.
+    // ordered identity. Summary dependencies are compared separately below,
+    // in the order the header reads them: the running label is the LAST active
+    // item, so the same ids arriving in a different order is a different
+    // summary. A set-equality test would leave the header naming a tool that
+    // is no longer the one in flight.
     const next = new Set<string>();
     const previous = entry.members.values();
     let changed = false;
@@ -544,7 +558,34 @@ export function createThreadActivityRuns(
     }
     entry.members = next;
     for (const id of next) runIdByMember.set(id, runId);
-    if (changed) entry.membershipEpoch += 1;
+
+    const nextSummary = new Set(summaryItemIds);
+    const previousSummary = entry.summaryMembers.values();
+    let summaryChanged = false;
+    for (const id of nextSummary) {
+      if (!summaryChanged && previousSummary.next().value !== id) {
+        summaryChanged = true;
+      }
+    }
+    if (!summaryChanged && previousSummary.next().done !== true) {
+      summaryChanged = true;
+    }
+    for (const id of entry.summaryMembers) {
+      const runIds = runIdsBySummaryMember.get(id);
+      if (!runIds) continue;
+      runIds.delete(runId);
+      if (runIds.size === 0) runIdsBySummaryMember.delete(id);
+    }
+    entry.summaryMembers = nextSummary;
+    for (const id of nextSummary) {
+      let runIds = runIdsBySummaryMember.get(id);
+      if (!runIds) {
+        runIds = new Set();
+        runIdsBySummaryMember.set(id, runIds);
+      }
+      runIds.add(runId);
+    }
+    if (changed || summaryChanged) entry.membershipEpoch += 1;
   }
 
   function beginPass(): void {
@@ -578,6 +619,7 @@ export function createThreadActivityRuns(
         entries.set(minted, {
           threadId,
           members: new Set(),
+          summaryMembers: new Set(),
           membershipEpoch: 0,
           collapsed: revived.collapsed,
           clipOpen: true,
@@ -642,11 +684,17 @@ export function createThreadActivityRuns(
   function resolve(
     rowMemberIds: readonly (readonly string[])[],
     threadId: string,
+    summaryItemIds?: readonly string[],
   ): ActivityRunResolution {
     const runId = claimRunId(rowMemberIds, threadId);
     claimed.add(runId);
     const entry = ensureEntry(runId, threadId);
-    indexMembers(entry, runId, rowMemberIds);
+    indexMembers(
+      entry,
+      runId,
+      rowMemberIds,
+      summaryItemIds ?? rowMemberIds.flat(),
+    );
     // A run never mounts more than it has. The stored size only exists once
     // the user has pulled in another chunk or a jump has relocated the
     // window; until then it tracks the current setting, so changing the
@@ -692,6 +740,12 @@ export function createThreadActivityRuns(
       for (const id of entry.members) {
         if (runIdByMember.get(id) === runId) runIdByMember.delete(id);
       }
+      for (const id of entry.summaryMembers) {
+        const runIds = runIdsBySummaryMember.get(id);
+        if (!runIds) continue;
+        runIds.delete(runId);
+        if (runIds.size === 0) runIdsBySummaryMember.delete(id);
+      }
       entries.delete(runId);
       // Not archived: the revision only means "something changed since the
       // last render", and a run coming back from the archive re-renders
@@ -705,9 +759,11 @@ export function createThreadActivityRuns(
   }
 
   function noteMemberContentChanged(itemId: string): void {
-    const runId = runIdByMember.get(itemId);
-    if (runId === undefined) return;
-    memberContentRevisions.set(runId, (memberContentRevisions.get(runId) ?? 0) + 1);
+    const runIds = runIdsBySummaryMember.get(itemId);
+    if (!runIds) return;
+    for (const runId of runIds) {
+      memberContentRevisions.set(runId, (memberContentRevisions.get(runId) ?? 0) + 1);
+    }
   }
 
   function noteWholesaleReplace(): void {
@@ -969,6 +1025,7 @@ export function createThreadActivityRuns(
       for (const entry of entries.values()) archiveEntry(entry);
       entries.clear();
       runIdByMember.clear();
+      runIdsBySummaryMember.clear();
       memberContentRevisions.clear();
       claimed = new Set();
       // The bulk override is scoped to the thread it was taken on (see its

@@ -53,6 +53,7 @@ const activityRun: ActivityRunNode = {
   mountedRows: 1,
   membershipEpoch: 1,
   memberItemIds: ['i1'],
+  summaryItemIds: ['i1'],
 };
 
 describe('timelineNodeHasRail', () => {
