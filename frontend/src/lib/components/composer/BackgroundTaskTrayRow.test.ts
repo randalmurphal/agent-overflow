@@ -5,6 +5,7 @@ import { makeItem } from '../../../test/helpers/chat';
 import type { TrayTask } from '../../utils/backgroundTray';
 import type { Item } from '../../types/models';
 import type { ProviderID } from '../../providers/catalog';
+import { applySubagentProgress, resetForTest } from '../../stores/subagentProgress.svelte';
 
 function taskFor(anchor: Item, overrides: Partial<TrayTask> = {}): TrayTask {
   return {
@@ -250,5 +251,39 @@ describe('<BackgroundTaskTrayRow> open affordance (agent-visibility)', () => {
     });
     expect(queryByTestId('background-task-tray-row-open')).toBeNull();
     expect(getByTestId('background-task-tray-row').className).not.toContain('cursor-pointer');
+  });
+
+  it('shows a running agent\u2019s live tool count, tokens and activity line', () => {
+    // The tray is a running background agent's live surface (user ruling
+    // 2026-08-23): the launch row never changes and the card does not
+    // exist until the completion lands, so the counters show here.
+    const launch = makeItem({
+      id: 'tu-agent',
+      threadId: 'thread-1',
+      kind: 'tool_call',
+      toolName: 'Agent',
+      status: 'running',
+      isBackground: true,
+      payloadMeta: JSON.stringify({
+        toolName: 'Agent',
+        input: { description: 'scan the parser', subagent_type: 'scanner' },
+      }),
+    });
+    applySubagentProgress({
+      threadId: 'thread-1',
+      itemId: 'tu-agent',
+      progress: { toolUses: 3, totalTokens: 18_227, activity: 'Scanning the parser for drift' },
+      updatedAt: 1,
+    });
+    try {
+      const { getByTestId } = renderTrayRow(taskFor(launch), 'claude');
+      expect(getByTestId('background-task-tray-row-tools').textContent?.trim()).toBe('3 tools');
+      expect(getByTestId('background-task-tray-row-tokens').textContent?.trim()).toBe('18.2k tokens');
+      expect(getByTestId('background-task-tray-row-activity').textContent).toContain(
+        'Scanning the parser for drift',
+      );
+    } finally {
+      resetForTest();
+    }
   });
 });

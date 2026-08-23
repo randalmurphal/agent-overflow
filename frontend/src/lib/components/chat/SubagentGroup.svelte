@@ -23,8 +23,9 @@
   // to this card:
   //   - kind chip (`agent` / `skill`) + name from the provider-neutral
   //     launch predicate (`utils/subagentLaunch.ts`);
-  //   - status pills: `background` for async nodes, `needs approval`
-  //     while an interactive request scoped to this launch is pending;
+  //   - no status pills: `data-background` marks a detached node for
+  //     tests, and a pending approval shows ONLY in the composer's
+  //     approval UI (user ruling 2026-08-23), never on the card;
   //   - live progress (tool count, activity line, tokens-when-room) from
   //     `provider:subagent_progress`, falling back to the final numbers
   //     triage persisted on the launch row at terminal;
@@ -55,10 +56,13 @@
     type TimelineNode,
   } from '../../utils/subagentGrouping';
   import {
+    codexCompletionAnswer,
     launchRunsDetached,
     subagentLaunchInfo,
     type SubagentLaunchContext,
   } from '../../utils/subagentLaunch';
+  import ChatMarkdown from './ChatMarkdown.svelte';
+  import { paneWorkspacePath } from '../../stores/thread.svelte';
   import { liveSubagentProgress } from '../../stores/subagentProgress.svelte';
   import {
     formatToolUses,
@@ -168,6 +172,9 @@
       : null,
   );
   let statusItem = $derived(completionItem ?? parent);
+  // The Codex child's delivered verdict (empty for Claude launches): the
+  // FINAL_ANSWER on the completion sibling this card sits at.
+  let completionAnswer = $derived(codexCompletionAnswer(parent, completionItem));
   let decorated = $derived(decoratedSubagentAggregates(parent));
   // Max, not replace — the same reconciliation `subagentGroupNode` does,
   // re-run against the live anchor. The node's count already folds in
@@ -233,16 +240,6 @@
     progress.totalTokens !== null ? `${formatTokens(progress.totalTokens)} tokens` : '',
   );
 
-  // "needs approval" pill (spec Q10b): an interactive request whose scope
-  // is THIS launch. Direct scope only — a nested agent's ask lights the
-  // nested card, which is visible inside this card's body when expanded.
-  let needsApproval = $derived.by(() => {
-    if (!pane) return false;
-    const scoped = (requests: readonly { parentToolUseId?: string }[] | undefined) =>
-      (requests ?? []).some((request) => request.parentToolUseId === parent.id);
-    return scoped(pane.pendingApprovals) || scoped(pane.pendingUserInputs);
-  });
-
   // "background" pill: the node runs detached from the main turn — stamped
   // at launch (§E5 async, run_in_background, Codex spawn) or mid-flight
   // (the background button / Ctrl+B, which lands as
@@ -292,6 +289,10 @@
     // is doing right now (`task_progress.description`); child summaries
     // and the Initializing placeholder are the fallbacks.
     if (isRunning && progress.activity) return progress.activity;
+    // A settled Codex child's answer is its collapsed line, as the
+    // completion row showed it — the last progress message is not what a
+    // reader wants from a finished agent.
+    if (completionAnswer) return completionAnswer;
     if (latestChildSummary) return latestChildSummary;
     const activityConfirmed =
       descendantCount > 0 || inputObject?.run_in_background === false;
@@ -440,14 +441,6 @@
       </span>
       {/snippet}
       {#snippet actions()}
-        {#if needsApproval}
-          <span
-            class="shrink-0 rounded-full border border-warning/30 bg-warning/10 px-1.5 py-0.5 text-[0.625rem] font-medium text-warning"
-            data-testid="subagent-group-approval-pill"
-          >
-            needs approval
-          </span>
-        {/if}
         {#if toolCountLabel}
           <span
             class="shrink-0 text-[0.625rem] text-fg-hint tabular-nums"
@@ -545,17 +538,27 @@
             <p class="text-xs text-text-secondary italic" data-testid="subagent-group-loading">
               Loading {entryCountLabel}…
             </p>
-          {:else}
+          {:else if !completionAnswer}
             <p class="text-xs text-text-secondary italic">No child entries captured.</p>
           {/if}
         {:else if bodyNodes.length === 0}
-          <p class="text-xs text-text-secondary italic" data-testid="subagent-group-digest-empty">
-            Intermediate output only. Open the agent pane for the full transcript.
-          </p>
+          {#if !completionAnswer}
+            <p class="text-xs text-text-secondary italic" data-testid="subagent-group-digest-empty">
+              Intermediate output only. Open the agent pane for the full transcript.
+            </p>
+          {/if}
         {:else}
           {#each bodyNodes as child (nodeKey(child))}
             {@render renderNode(child, depth + 1)}
           {/each}
+        {/if}
+        {#if completionAnswer}
+          <!-- A Codex child streams nothing to the parent thread; the
+               FINAL_ANSWER on the completion sibling is its whole product,
+               so the card body is where it renders. -->
+          <div class="text-sm" data-testid="subagent-group-final-answer">
+            <ChatMarkdown source={completionAnswer} workspacePath={paneWorkspacePath(pane)} />
+          </div>
         {/if}
       </div>
     {/if}

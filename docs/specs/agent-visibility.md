@@ -63,9 +63,10 @@ launch, how do progress and terminal signals arrive, which controls exist
 - Attribution rule: anything a subagent causes carries its scope.
   `permission_denied` fixed (ce580f3f); `can_use_tool` approvals must
   resolve `agent_id` → launch tool_use (parser task map, triage row
-  lookup as fallback) so the approval row nests under the card and the
-  card shows a "needs approval" pill; the normal approval UI still
-  presents the prompt (Q10, Q10b).
+  lookup as fallback) so the approval row nests under the card. The
+  approval itself shows ONLY in the composer's approval UI — no pill on
+  the card, awaited or background (user ruling 2026-08-23 reverses
+  Q10b).
 - Notifications (bell/toast) fire for top-level nodes only; nested
   completions update their card silently (Q11).
 - A DETACHED launch (async ack, `run_in_background`, a Codex spawn, a
@@ -76,20 +77,20 @@ launch, how do progress and terminal signals arrive, which controls exist
   label, model, description, the `backgrounded` indicator, launch time;
   no ticker, no text pill — c58f9b55), a Codex `spawn_agent` launch is
   the collab `launched` row. Neither changes after the spawn and neither
-  is ever a card. A Claude detached launch's ONE card — status,
-  duration, tool count, tokens, the expandable transcript, open-in-pane
-  — renders AT the `complete:<id>` sibling (`SubagentGroupNode.anchor`),
-  top-level or inside the parent card for a nested node, after
-  everything the main thread wrote while the agent ran. While the agent
-  runs there is no card: the pane and the tray are its live surfaces. A
-  Codex spawn has no card at all: its completion renders as it always
-  did (the collab completion row carrying the FINAL_ANSWER preview, or
-  folded under the `wait_agent` group that claimed it), and the child
-  thread's tokens show in its pane. The bell is hidden on the strength
-  of the completion rendering (`utils/notificationFilter.ts`), which is
-  why the Claude card sits at the sibling rather than folding it onto a
-  card at the launch (the fold-and-drop version left the transcript with
-  no trace of the agent finishing — regression 2026-08-22; tripwire
+  is ever a card. The launch's ONE card — status, duration, tool count,
+  tokens, the expandable transcript, open-in-pane — renders AT its
+  completion sibling (`SubagentGroupNode.anchor`): top-level, inside the
+  parent card for a nested node, or under the `wait_agent` group that
+  claimed a Codex completion (`WaitGroupNode.children` are nodes), after
+  everything the main thread wrote while the agent ran. A Codex card
+  also carries the child's FINAL_ANSWER (collapsed preview + body). While
+  the agent runs there is no card: the pane and the tray are its live
+  surfaces, and the tray row shows the live tool count, tokens and
+  activity line. The bell is hidden on the strength of the completion
+  rendering (`utils/notificationFilter.ts`), which is why the card sits
+  at the sibling rather than folding it onto a card at the launch (the
+  fold-and-drop version left the transcript with no trace of the agent
+  finishing — regression 2026-08-22; tripwire
   `utils/backgroundCompletionVisibility.test.ts`). Awaited launches are
   unchanged: one card at the launch, completing in place.
 - Row actions (open-in-pane, background, stop) render before the
@@ -133,9 +134,9 @@ launch, how do progress and terminal signals arrive, which controls exist
 - [ ] Background button on a running inline agent returns the main
       turn, the card flips to background, the pane shows the paused
       marker, and the transcript completes on the task notification.
-- [ ] Codex `spawn_agent` children open the same pane from their
-      unchanged `launched` row, with token counts from the child thread
-      (amended 2026-08-23: no card for a Codex spawn).
+- [ ] Codex `spawn_agent` children render with the same card (at the
+      completion point) and pane, with token counts from the child
+      thread.
 - [ ] Top-level completions notify; nested completions do not.
 
 ## Migration/removal

@@ -235,31 +235,6 @@ describe('<SubagentGroup> card affordances (agent-visibility)', () => {
     if (preview) expect(preview.textContent).not.toContain('stale tick');
   });
 
-  it('lights the needs-approval pill while a request scoped to this launch is pending', async () => {
-    const { pane, group } = await setup([
-      agentLaunch(),
-      makeItem({ id: 'child:1', itemIndex: 1, parentId: 'agent:1', status: 'running', summary: 'work' }),
-    ]);
-    const { queryByTestId } = render(SubagentGroupTestHarness, { props: { group, pane } });
-    expect(queryByTestId('subagent-group-approval-pill')).toBeNull();
-
-    pane.addApproval({
-      requestId: 'req-1',
-      threadId: 'thread-1',
-      parentToolUseId: 'agent:1',
-      toolName: 'Bash',
-      description: 'Allow Bash?',
-      input: {},
-      title: 'Approval',
-    });
-    await tick();
-    expect(queryByTestId('subagent-group-approval-pill')).not.toBeNull();
-
-    pane.removeApproval('req-1');
-    await tick();
-    expect(queryByTestId('subagent-group-approval-pill')).toBeNull();
-  });
-
   it('marks an async launch as background (data attribute, no pill) with the agent kind chip', async () => {
     // The visible "background" pill was removed by user ruling (2026-08-22):
     // it was noise on every async card. Classification stays pinned via the
@@ -391,5 +366,40 @@ describe('<SubagentGroup> card affordances (agent-visibility)', () => {
     expect(getByTestId('subagent-group-output-error').textContent).toContain(
       'output file vanished before read',
     );
+  });
+
+  it("renders a finished Codex child's final answer on the card at its completion", async () => {
+    // Codex streams none of a child's transcript to the parent; the
+    // FINAL_ANSWER on the completion sibling is the child's whole product.
+    // The card sits AT that sibling (`SubagentGroupNode.anchor`) and shows
+    // the answer collapsed (preview) and expanded (body).
+    const { pane, group } = await setup([
+      agentLaunch({
+        toolName: 'collab_agent',
+        status: 'completed',
+        summary: 'Spawn reviewer',
+        payloadMeta: JSON.stringify({
+          toolName: 'collab_agent',
+          input: { tool: 'spawn_agent', newAgentNickname: 'reviewer' },
+        }),
+      }),
+      makeItem({
+        id: 'complete:agent:1',
+        itemIndex: 1,
+        threadId: 'thread-1',
+        kind: 'tool_completion',
+        toolName: 'collab_agent',
+        status: 'completed',
+        completionOf: 'agent:1',
+        payloadMeta: JSON.stringify({ preview: 'Final verdict: LGTM' }),
+      }),
+    ]);
+    expect(group.anchor.id).toBe('complete:agent:1');
+    const { getByTestId, queryByTestId } = render(SubagentGroupTestHarness, { props: { group, pane } });
+    expect(getByTestId('subagent-group-preview').textContent).toContain('Final verdict: LGTM');
+
+    await fireEvent.click(getByTestId('subagent-group-toggle'));
+    expect(getByTestId('subagent-group-final-answer').textContent).toContain('Final verdict: LGTM');
+    expect(queryByTestId('subagent-group-digest-empty')).toBeNull();
   });
 });

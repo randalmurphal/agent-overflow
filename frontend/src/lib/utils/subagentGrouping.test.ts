@@ -1072,7 +1072,7 @@ describe('groupItemsBySubagent', () => {
     expect(group.children.map((node) => expectLeaf(node).item.id)).toEqual(['complete-spawn-1']);
   });
 
-  it('projects a persisted Codex spawn/wait sequence: spawn leaf, wait group, child transcript withheld', () => {
+  it('projects a persisted Codex spawn/wait sequence: spawn leaf, and the spawn card under the wait group', () => {
     const nodes = groupItemsBySubagent([
       mkItem({
         id: 'spawn-review',
@@ -1169,21 +1169,28 @@ describe('groupItemsBySubagent', () => {
     expect(expectLeaf(nodes[0]).item.id).toBe('spawn-review');
     // The spawn's own completion carries `wait_carrier_id`, so the WAIT group
     // claims it — a wait link always wins, or a finished wait would render
-    // with nothing under it.
+    // with nothing under it. That completion is where the spawn's CARD
+    // renders (`SubagentGroupNode.anchor`), child transcript inside.
     const waitGroup = expectWaitGroup(nodes[1]);
     expect(waitGroup.parent.id).toBe('wait-review');
-    expect(waitGroup.children.map((node) => expectLeaf(node).item.id)).toEqual([
-      'complete-spawn-review',
+    expect(waitGroup.children).toHaveLength(1);
+    const spawnCard = expectGroup(waitGroup.children[0]);
+    expect(spawnCard.parent.id).toBe('spawn-review');
+    expect(spawnCard.anchor.id).toBe('complete-spawn-review');
+    expect(spawnCard.completion?.id).toBe('complete-spawn-review');
+    expect(spawnCard.children.map((node) => expectLeaf(node).item.id)).toEqual([
+      'child-prompt',
+      'child-progress',
     ]);
     // Folded completion resolves to this wait_group row (index 1) for
     // search-scroll, not -1.
     expect(nodeContainsItem(waitGroup, 'complete-wait-review')).toBe(true);
     expect(findTimelineNodeIndex(nodes, 'complete-wait-review')).toBe(1);
     expect(expectLeaf(nodes[2]).item.id).toBe('assistant-after-review');
-    // The child transcript has no node of its own (see
-    // `visibleTimelineItemIdForItem` for how a jump to it lands on the spawn).
-    expect(findTimelineNodeIndex(nodes, 'child-prompt')).toBe(-1);
-    expect(findTimelineNodeIndex(nodes, 'child-progress')).toBe(-1);
+    // The child transcript lives in the card under the wait group (index 1).
+    expect(findTimelineNodeIndex(nodes, 'child-prompt')).toBe(1);
+    expect(findTimelineNodeIndex(nodes, 'child-progress')).toBe(1);
+    expect(findTimelineNodeIndex(nodes, 'complete-spawn-review')).toBe(1);
   });
 
   it('nests target completions under a legacy camelCase wait carrier id', () => {

@@ -1,7 +1,8 @@
 <script lang="ts">
+  import type { Snippet } from 'svelte';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import type { ExpandedImagePreview } from '../../utils/attachmentPreview.svelte';
-  import { timelineNodeKey, type WaitGroupNode } from '../../utils/subagentGrouping';
+  import { timelineNodeKey, type TimelineNode, type WaitGroupNode } from '../../utils/subagentGrouping';
   import TimelineLeaf from './TimelineLeaf.svelte';
   import type { UserMessageActions } from './userMessageActions';
   import { preservePaneScrollAnchor } from './preserveScrollAnchor';
@@ -15,12 +16,16 @@
     onImageExpand,
     userMessageActions,
     codexSubagentReceiverLabels = new Map<string, string>(),
+    renderNode,
   }: {
     pane: ThreadPane;
     group: WaitGroupNode;
     onImageExpand?: (preview: ExpandedImagePreview) => void;
     userMessageActions?: UserMessageActions;
     codexSubagentReceiverLabels?: ReadonlyMap<string, string>;
+    /** The timeline's node renderer: a waited Codex spawn's completion
+     * is that spawn's CARD (`SubagentGroupNode.anchor`), not a leaf. */
+    renderNode: Snippet<[TimelineNode, number]>;
   } = $props();
 
   // Registry state, not local: `group.groupKey` is the `wait:` key in the
@@ -63,6 +68,8 @@
       {#each visibleChildren as child (timelineNodeKey(child))}
         {#if child.kind === 'leaf'}
           <TimelineLeaf {pane} item={child.item} {onImageExpand} {userMessageActions} {codexSubagentReceiverLabels} />
+        {:else}
+          {@render renderNode(child, 1)}
         {/if}
       {/each}
       {#if hiddenChildCount > 0}

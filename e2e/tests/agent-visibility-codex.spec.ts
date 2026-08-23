@@ -1,12 +1,11 @@
 // Agent visibility — the CODEX criterion
 // (docs/specs/agent-visibility.md § "Success criteria", item 6):
 //
-//   Codex `spawn_agent` children open the same pane from their unchanged
-//   `launched` row, with token counts from the child thread (amended
-//   2026-08-23: a Codex spawn is never a card).
+//   Codex `spawn_agent` children render with the same card (at the
+//   completion point) and pane, with token counts from the child thread.
 //
-// "The same pane" is the load-bearing half: the pane assertions below are
-// the same testids the Claude specs use, on a thread whose provider is
+// "The same card and pane" is the load-bearing half: the assertions below
+// are the same testids the Claude specs use, on a thread whose provider is
 // Codex and whose launch row is a `collab_agent` tool call.
 //
 // The token count comes from the child THREAD's own
@@ -152,37 +151,40 @@ async function startSpawnTurn(
   return mockId;
 }
 
-test('a Codex spawn_agent child keeps its launched row and opens the same pane, counting the child thread\u2019s tokens', async ({
+test('a Codex spawn_agent child keeps its launched row, opens the same pane, and gets its card at the completion', async ({
   harness,
   page,
 }) => {
   const mockId = await startSpawnTurn(harness, page, 'codex-agent-app', 'Codex children');
 
   // --- The launch row, unchanged --------------------------------------
-  // A Codex spawn is never a card (user ruling 2026-08-23): the row is the
-  // collab `launched` leaf it was before the card existed, plus the one
-  // approved addition, the open-in-pane door.
+  // The row is the collab `launched` leaf it was before the card existed,
+  // plus the one approved addition, the open-in-pane door (user ruling
+  // 2026-08-23). No card while the child runs.
   const timeline = page.getByTestId('message-timeline-scroll');
   const spawnRow = timeline.locator(`[data-item-id="${SPAWN_CALL}"]`);
   await expect(spawnRow.getByTestId('collab-tool-row')).toHaveCount(1);
   await expect(spawnRow).toContainText('reviewer');
   await expect(timeline.getByTestId('subagent-group')).toHaveCount(0);
-  // The door sits LEFT of the status/duration columns (Row Contract).
   await spawnRow.hover();
   await expect(spawnRow.getByTestId('collab-tool-row-open-pane')).toBeVisible();
 
-  // --- Tokens, from the child thread --------------------------------
+  // --- Tokens, from the child thread, live on the tray row ------------
   await waitForGate(harness, 'tokens');
   await advance(harness, mockId, 'tokens');
+  await page.getByTestId('activity-rail-background-toggle').click();
+  const trayRow = page.getByTestId('background-task-tray-row').first();
+  // The CUMULATIVE total (4321), not the round's 1200.
+  await expect(trayRow.getByTestId('background-task-tray-row-tokens')).toHaveText('4.3k tokens');
 
   // --- The same pane ------------------------------------------------
+  await spawnRow.hover();
   await spawnRow.getByTestId('collab-tool-row-open-pane').click();
   const pane = page.getByTestId('companion-pane-agent-body');
   await expect(pane).toBeVisible();
   await expect(pane.getByTestId('agent-pane-model')).toBeVisible();
   await expect(pane.getByTestId('agent-pane-breadcrumb-entry')).toHaveCount(0);
   await expect(pane.getByTestId('agent-pane-breadcrumb-current')).toContainText('reviewer');
-  // The CUMULATIVE total (4321), not the round's 1200.
   await expect(pane.getByTestId('workspace-strip-usage')).toHaveText('4.3k');
   // `close_agent` is a model tool, so the pane offers no Stop.
   await expect(pane.getByTestId('agent-pane-stop')).toHaveCount(0);
@@ -193,11 +195,23 @@ test('a Codex spawn_agent child keeps its launched row and opens the same pane, 
   // the breadcrumb are the whole pane for a Codex child.
   await expect(pane.getByTestId('agent-pane-empty')).toBeVisible();
 
-  // --- The child's answer settles nothing on the launch row ---------
+  // --- The child's answer lands: the card, at the completion ---------
   await waitForGate(harness, 'answer');
   await advance(harness, mockId, 'answer');
   await harness.waitForEvent('provider:turn_completed');
-  await expect(timeline.getByTestId('subagent-group')).toHaveCount(0);
+  await expect(timeline.getByTestId('subagent-group')).toHaveCount(1);
+  const card = timeline.getByTestId('subagent-group').first();
+  await expect(card.getByTestId('subagent-group-kind')).toHaveText('agent');
+  await expect(card.getByTestId('subagent-group-label')).toContainText('reviewer');
+  await expect(card).toHaveAttribute('data-background', 'true');
+  await expect(card.getByTestId('subagent-group-background-button')).toHaveCount(0);
+  await expect(card.getByTestId('subagent-group-tokens')).toHaveText('4.3k tokens');
+  await expect(card.getByTestId('subagent-group-duration')).toBeVisible();
+  await expect(card.getByTestId('subagent-group-open-pane')).toHaveCount(1);
+  // The card sits below the launch row, at the completion point.
+  const [spawnBox, cardBox] = await Promise.all([spawnRow.boundingBox(), card.boundingBox()]);
+  expect(cardBox!.y).toBeGreaterThan(spawnBox!.y + spawnBox!.height - 1);
+  // The launch row is still the launch row.
   await expect(spawnRow.getByTestId('collab-tool-row')).toHaveCount(1);
 });
 
@@ -207,10 +221,9 @@ test('a Codex spawn_agent child keeps its launched row and opens the same pane, 
 // text in `payloadMeta.preview` (kind `tool_completion`,
 // `completionOf: call_spawn_reviewer`). Codex delivers none of the
 // child's transcript to the parent, so that preview is the child's whole
-// product. It renders in two places, both pinned: the collab completion
-// row at the point it finished (the pre-card rendering, unchanged) and
-// the agent pane (`agent-pane-final-answer`, `codexCompletionAnswer`),
-// reached through the launch row's door.
+// product. The card sits AT that sibling and shows the answer collapsed
+// (its preview line) and expanded (`subagent-group-final-answer`); the
+// pane shows it too (`agent-pane-final-answer`).
 test('a Codex child\u2019s FINAL_ANSWER is readable somewhere in the UI', async ({
   harness,
   page,
@@ -223,15 +236,12 @@ test('a Codex child\u2019s FINAL_ANSWER is readable somewhere in the UI', async 
   await harness.waitForEvent('provider:turn_completed');
 
   const timeline = page.getByTestId('message-timeline-scroll');
-  const completionRow = timeline.locator(`[data-item-id^="complete:${SPAWN_CALL}"]`);
-  await expect(completionRow).toHaveCount(1);
-  await expect(completionRow).toContainText(FINAL_ANSWER);
-  await expect(page.getByText(FINAL_ANSWER)).toHaveCount(1);
+  const card = timeline.getByTestId('subagent-group').first();
+  await expect(card.getByTestId('subagent-group-preview')).toContainText(FINAL_ANSWER);
+  await card.getByTestId('subagent-group-toggle').first().click();
+  await expect(card.getByTestId('subagent-group-final-answer')).toContainText(FINAL_ANSWER);
 
-  const spawnRow = timeline.locator(`[data-item-id="${SPAWN_CALL}"]`);
-  await spawnRow.hover();
-  await spawnRow.getByTestId('collab-tool-row-open-pane').click();
+  await card.getByTestId('subagent-group-open-pane').first().click();
   const pane = page.getByTestId('companion-pane-agent-body');
   await expect(pane.getByTestId('agent-pane-final-answer')).toContainText(FINAL_ANSWER);
-  await expect(page.getByText(FINAL_ANSWER)).toHaveCount(2);
 });

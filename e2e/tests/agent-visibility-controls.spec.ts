@@ -40,11 +40,9 @@ const WRITE_PATH = 'spike3.txt';
 const DENY_REASON = 'Bash(rm:*) is denied by a project rule';
 const BACKFILL_TEXT = 'Backfilled: the corpus sweep found two drifts.';
 
-// The agent here is AWAITED: its card sits at the launch point while it
-// runs, so the pill has a card to light. A background agent has no card
-// until its completion lands (ruling 2026-08-23); while it waits on an
-// approval the composer prompt is the only surface that asks.
-test('a subagent’s approval and denial rows nest under its card, and the card asks for approval', async ({
+// The approval itself shows ONLY in the composer's approval UI (user
+// ruling 2026-08-23): the card carries no pill, awaited or background.
+test('a subagent’s approval and denial rows nest under its card; the composer alone asks', async ({
   harness,
   page,
 }) => {
@@ -118,15 +116,15 @@ test('a subagent’s approval and denial rows nest under its card, and the card 
   const timeline = page.getByTestId('message-timeline-scroll');
   const card = timeline.getByTestId('subagent-group').first();
   await expect(card.getByTestId('subagent-group-label')).toContainText('Writer');
-  await expect(card.getByTestId('subagent-group-approval-pill')).toBeVisible();
+  await expect(card.getByText('needs approval')).toHaveCount(0);
 
-  // --- Resolved: the pill goes with the prompt ----------------------
+  // --- Resolved through the composer ---------------------------------
   await page.getByTestId('approval-allow').click();
   await harness.waitForEvent(
     'harness:mock',
     (ev: any) => ev.report.kind === 'approval_decided' && ev.report.detail === 'allow',
   );
-  await expect(card.getByTestId('subagent-group-approval-pill')).toHaveCount(0);
+  await expect(page.getByTestId('composer-pending-approval')).toHaveCount(0);
   await harness.waitForEvent('provider:turn_completed');
 
   // --- Attribution, at the row level --------------------------------

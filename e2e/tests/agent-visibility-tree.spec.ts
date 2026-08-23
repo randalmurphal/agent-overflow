@@ -285,6 +285,13 @@ test('a depth-2 background agent nests under its parent card and indents in the 
   await waitForGate(harness, 'tick');
   await advance(harness, mockId, 'tick');
   await expect(pane.getByTestId('workspace-strip-usage')).toHaveText('18.2k');
+  // ...and the tray row, the agent's other live surface, shows the tick's
+  // tool count, tokens and activity line (user ruling 2026-08-23).
+  await expect(trayRows.nth(1).getByTestId('background-task-tray-row-tools')).toHaveText('3 tools');
+  await expect(trayRows.nth(1).getByTestId('background-task-tray-row-tokens')).toHaveText('18.2k tokens');
+  await expect(trayRows.nth(1).getByTestId('background-task-tray-row-activity')).toContainText(
+    'Scanning the parser for drift',
+  );
 
   // Both settle: the tray is driven by the level set, so an empty
   // `background_tasks_changed` empties it — and the cards appear at the

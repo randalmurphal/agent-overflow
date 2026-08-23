@@ -834,6 +834,7 @@
             {onImageExpand}
             {userMessageActions}
             codexSubagentReceiverLabels={rows.codexReceiverLabels}
+            {renderNode}
           />
         {:else if node.kind === 'read_group'}
           <ReadGroupRow {pane} group={node} />

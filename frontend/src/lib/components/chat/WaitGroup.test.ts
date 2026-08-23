@@ -1,9 +1,14 @@
+import { createRawSnippet } from 'svelte';
 import { describe, expect, it } from "vitest";
 import { fireEvent, render } from "@testing-library/svelte";
 import { tick } from "svelte";
 import WaitGroup from "./WaitGroup.svelte";
 import { buildPane, makeItem, makeThread } from "../../../test/helpers/chat";
 import type { WaitGroupNode } from "../../utils/subagentGrouping";
+
+// The fixtures here observe plain completions (leaves); the node renderer
+// only fires for a detached spawn's card, which MessageTimeline supplies.
+const noopRenderNode = createRawSnippet(() => ({ render: () => '<span></span>' }));
 
 describe("<WaitGroup>", () => {
   it("renders the folded completion as a finished header above the nested target completion rows", async () => {
@@ -57,7 +62,7 @@ describe("<WaitGroup>", () => {
     };
 
     const { getByTestId, getByText, queryByText } = render(WaitGroup, {
-      props: { pane, group },
+      props: { pane, group, renderNode: noopRenderNode },
     });
 
     expect(getByTestId("wait-group")).toBeInTheDocument();
@@ -96,7 +101,7 @@ describe("<WaitGroup>", () => {
       descendantCount: 0,
     };
 
-    const { getByText, queryByText } = render(WaitGroup, { props: { pane, group } });
+    const { getByText, queryByText } = render(WaitGroup, { props: { pane, group, renderNode: noopRenderNode } });
     expect(getByText(/Waiting for agents/)).toBeInTheDocument();
     expect(queryByText(/Finished waiting/)).not.toBeInTheDocument();
   });
@@ -139,7 +144,7 @@ describe("<WaitGroup>", () => {
       descendantCount: 1,
     };
 
-    const { getByTestId } = render(WaitGroup, { props: { pane, group } });
+    const { getByTestId } = render(WaitGroup, { props: { pane, group, renderNode: noopRenderNode } });
     expect(getByTestId("wait-group-children").className).toContain("ml-[6.375rem]");
   });
 
@@ -161,7 +166,7 @@ describe("<WaitGroup>", () => {
     };
 
     const { getByTestId, queryByTestId } = render(WaitGroup, {
-      props: { pane, group },
+      props: { pane, group, renderNode: noopRenderNode },
     });
 
     expect(getByTestId("wait-group")).toBeInTheDocument();
@@ -195,7 +200,7 @@ describe("<WaitGroup>", () => {
       descendantCount: children.length,
     };
 
-    const view = render(WaitGroup, { props: { pane, group } });
+    const view = render(WaitGroup, { props: { pane, group, renderNode: noopRenderNode } });
 
     expect(view.getByText(/Spawned Agent 24 -> done/)).toBeInTheDocument();
     expect(view.queryByText(/Spawned Agent 25 -> done/)).not.toBeInTheDocument();
@@ -212,7 +217,7 @@ describe("<WaitGroup>", () => {
     expect(pane.isSubagentGroupExpanded("wait:wait-many")).toBe(true);
     expect(pane.hasUserExpansionWithin(["wait-many"])).toBe(true);
     view.unmount();
-    const remounted = render(WaitGroup, { props: { pane, group } });
+    const remounted = render(WaitGroup, { props: { pane, group, renderNode: noopRenderNode } });
     expect(remounted.getByText(/Spawned Agent 29 -> done/)).toBeInTheDocument();
   });
 
@@ -243,7 +248,7 @@ describe("<WaitGroup>", () => {
       descendantCount: 1,
     };
 
-    const view = render(WaitGroup, { props: { pane, group } });
+    const view = render(WaitGroup, { props: { pane, group, renderNode: noopRenderNode } });
     expect(view.getByText(/Waiting for agents/)).toBeInTheDocument();
     expect(view.getByText(/Spawned Galileo -> running/)).toBeInTheDocument();
 

@@ -12,6 +12,9 @@
     trayTaskAgentInfo,
     type TrayTask,
   } from '../../utils/backgroundTray';
+  import { liveSubagentProgress } from '../../stores/subagentProgress.svelte';
+  import { formatToolUses, resolveSubagentProgress } from '../../utils/subagentProgress';
+  import { formatTokens } from '../../utils/format';
   import type { Item } from '../../types/models';
   import type { ProviderID } from '../../providers/catalog';
   import Icon from '../primitives/Icon.svelte';
@@ -74,8 +77,30 @@
   // row (backgrounded Bash, a Codex PTY) has no agent pane to open, so
   // the button there was a no-op with a lying tooltip; the row click
   // still scrolls the timeline to it.
-  let opensAgentPane = $derived(onOpen !== undefined && trayTaskAgentInfo(task) !== null);
-  let hasStopAction = $derived(stopTarget !== null || opensAgentPane);
+  let agentInfo = $derived(trayTaskAgentInfo(task));
+  let opensAgentPane = $derived(onOpen !== undefined && agentInfo !== null);
+
+  // The agent's live counters (user ruling 2026-08-23: a running
+  // background agent's tool count, tokens and activity line show HERE —
+  // the tray is its live surface; the launch row never changes and the
+  // card does not exist until the completion lands). Same source the card
+  // reads: the live tick while running, the persisted final numbers once
+  // the completion landed. The launch row carries the persisted meta, so
+  // a completion-only entry (launch outside the live set) has none.
+  let progressLaunch = $derived(agentInfo !== null ? (task.launch ?? task.completion) : null);
+  let progressLaunchId = $derived(task.launch?.id ?? task.completion?.completionOf ?? '');
+  let liveTick = $derived(liveSubagentProgress(task.anchor.threadId, progressLaunchId));
+  let progress = $derived(
+    progressLaunch ? resolveSubagentProgress(progressLaunch, liveTick, task.status === 'running') : null,
+  );
+  let toolCountLabel = $derived(progress ? formatToolUses(progress.toolUses) : '');
+  let tokensLabel = $derived(
+    progress && progress.totalTokens !== null ? `${formatTokens(progress.totalTokens)} tokens` : '',
+  );
+  let activityLine = $derived(progress && task.status === 'running' ? progress.activity : '');
+  let hasStopAction = $derived(
+    stopTarget !== null || opensAgentPane || toolCountLabel !== '' || tokensLabel !== '',
+  );
 </script>
 
 <!-- The div click is a pointer convenience. The keyboard path is the
@@ -90,6 +115,22 @@
   onclick={onRowClick}
 >
   {#snippet stopAction()}
+    {#if toolCountLabel}
+      <span
+        class="shrink-0 text-[0.625rem] text-fg-hint tabular-nums"
+        data-testid="background-task-tray-row-tools"
+      >
+        {toolCountLabel}
+      </span>
+    {/if}
+    {#if tokensLabel}
+      <span
+        class="shrink-0 text-[0.625rem] text-fg-hint tabular-nums"
+        data-testid="background-task-tray-row-tokens"
+      >
+        {tokensLabel}
+      </span>
+    {/if}
     {#if onOpen && opensAgentPane}
       <button
         type="button"
@@ -157,4 +198,15 @@
       />
     {/if}
   </div>
+  {#if activityLine}
+    <!-- The agent's current activity (`task_progress.description`), in
+         the card's preview style. Live only: a settled row has no "now". -->
+    <div
+      class="ml-[5.25rem] truncate px-1 pb-0.5 text-[0.6875rem] text-fg-hint/85"
+      data-testid="background-task-tray-row-activity"
+    >
+      <span aria-hidden="true">└</span>
+      {activityLine}
+    </div>
+  {/if}
 </div>
