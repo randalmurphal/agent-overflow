@@ -613,10 +613,27 @@ the spawn card:
   child's canonical agent path (`/root/reviewer/deep` → `/root/reviewer`)
   and mapping it back to a launch. Depth-1 children and path-less builds
   resolve to `""`, which is correct: their spawn is top-level;
-- `Meta.TotalTokens` is the child's CUMULATIVE total
-  (`tokenUsage.total.totalTokens` via `childCumulativeTokenTotal`), not
-  `normalizeThreadTokenUsage`'s `last.totalTokens` — that one is context
-  occupancy, and `SubagentProgressMeta.TotalTokens` means spend.
+- `Meta.TotalTokens` is the child's TRUE CUMULATIVE spend, every token
+  counted once, assembled by `childAgentTokenSpend` as
+  `total.inputTokens - total.cachedInputTokens +
+  total.cacheWriteInputTokens + total.outputTokens`. Every term is a
+  provider cumulative that only grows, so the figure is MONOTONIC through
+  a child's own compaction. It is deliberately neither of the two figures
+  already on the wire: `total.totalTokens` re-counts the cached prompt
+  every round (a real 42-minute child reported 4,570,684 there against
+  209,724 of actual spend), and `normalizeThreadTokenUsage`'s
+  `last.totalTokens` is context occupancy, which drops every earlier
+  round's output.
+
+  One card component renders both providers, and Claude cannot be given
+  the same treatment: its `task_progress` envelope is
+  `{total_tokens, tool_uses, duration_ms}` with no breakdown, and 2.1.237
+  builds that total as LATEST input plus all output. The two quantities
+  agree until a compaction — summing each round's FRESH input is how the
+  current context got its size — and diverge by 1.2% on the 42-minute
+  child above. Claude's is the one that can dip, which is why
+  `triage.mergeSubagentProgress` takes the newest value for this field
+  rather than the max.
 
 It never reaches `usageAcct.observe` and is never emitted as
 `EventTokenUsage`, so the parent's meter and per-turn accounting are

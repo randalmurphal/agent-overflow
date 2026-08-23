@@ -368,11 +368,13 @@ describe('<SubagentGroup> card affordances (agent-visibility)', () => {
     );
   });
 
-  it("renders a finished Codex child's final answer on the card at its completion", async () => {
-    // Codex streams none of a child's transcript to the parent; the
-    // FINAL_ANSWER on the completion sibling is the child's whole product.
-    // The card sits AT that sibling (`SubagentGroupNode.anchor`) and shows
-    // the answer collapsed (preview) and expanded (body).
+  it("summarizes a finished Codex child with its answer, and renders that answer once", async () => {
+    // A Codex child DOES stream its transcript to the parent, parented to
+    // the launch — its final assistant message is the answer, as a normal
+    // message. The completion sibling's `preview` is a 240-char truncation
+    // of that same text, so it is the collapsed one-liner and nothing
+    // more: rendering it in the body too showed the answer twice,
+    // unformatted and cut mid-word (user ruling 2026-08-23).
     const { pane, group } = await setup([
       agentLaunch({
         toolName: 'collab_agent',
@@ -384,6 +386,60 @@ describe('<SubagentGroup> card affordances (agent-visibility)', () => {
         }),
       }),
       makeItem({
+        id: 'child-text',
+        itemIndex: 1,
+        threadId: 'thread-1',
+        kind: 'assistant_text',
+        role: 'assistant',
+        status: 'completed',
+        parentId: 'agent:1',
+        summary: 'Final verdict: LGTM, with one caveat about the parser drift.',
+      }),
+      makeItem({
+        id: 'complete:agent:1',
+        itemIndex: 2,
+        threadId: 'thread-1',
+        kind: 'tool_completion',
+        toolName: 'collab_agent',
+        status: 'completed',
+        completionOf: 'agent:1',
+        payloadMeta: JSON.stringify({ preview: 'Final verdict: LGTM, with one caveat' }),
+      }),
+    ]);
+    expect(group.anchor.id).toBe('complete:agent:1');
+    const { getByTestId, getAllByText, queryByTestId } = render(SubagentGroupTestHarness, {
+      props: { group, pane },
+    });
+    expect(getByTestId('subagent-group-preview').textContent).toContain('Final verdict: LGTM');
+
+    await fireEvent.click(getByTestId('subagent-group-toggle'));
+    expect(queryByTestId('subagent-group-final-answer')).toBeNull();
+    expect(queryByTestId('subagent-group-digest-empty')).toBeNull();
+    expect(
+      getAllByText(/Final verdict: LGTM, with one caveat about the parser drift/),
+    ).toHaveLength(1);
+  });
+
+  // Real V2 wire shape (codex 0.149.0): `{task_name, fork_turns,
+  // message}` with the message encrypted and NO nickname anywhere, so
+  // the label already IS the model-chosen task name. The description
+  // slot must stay empty rather than repeat it.
+  it('says a V2 Codex task name once, in the label, not twice', async () => {
+    const { pane, group } = await setup([
+      agentLaunch({
+        toolName: 'collab_agent',
+        status: 'completed',
+        summary: 'Spawn audit_internal_tail',
+        payloadMeta: JSON.stringify({
+          toolName: 'collab_agent',
+          input: {
+            tool: 'spawn_agent',
+            activityKind: 'started',
+            taskName: '/root/audit_internal_tail',
+          },
+        }),
+      }),
+      makeItem({
         id: 'complete:agent:1',
         itemIndex: 1,
         threadId: 'thread-1',
@@ -391,15 +447,41 @@ describe('<SubagentGroup> card affordances (agent-visibility)', () => {
         toolName: 'collab_agent',
         status: 'completed',
         completionOf: 'agent:1',
-        payloadMeta: JSON.stringify({ preview: 'Final verdict: LGTM' }),
       }),
     ]);
-    expect(group.anchor.id).toBe('complete:agent:1');
     const { getByTestId, queryByTestId } = render(SubagentGroupTestHarness, { props: { group, pane } });
-    expect(getByTestId('subagent-group-preview').textContent).toContain('Final verdict: LGTM');
+    expect(getByTestId('subagent-group-label').textContent).toContain('audit_internal_tail');
+    expect(queryByTestId('subagent-group-description')).toBeNull();
+  });
 
-    await fireEvent.click(getByTestId('subagent-group-toggle'));
-    expect(getByTestId('subagent-group-final-answer').textContent).toContain('Final verdict: LGTM');
-    expect(queryByTestId('subagent-group-digest-empty')).toBeNull();
+  // V1 (`collabAgentToolCall`) DOES carry a plaintext prompt. The card
+  // reads it off the Codex input, not through the Claude reader whose
+  // `description` branch returns unclamped text.
+  it('describes a V1 Codex card with its plaintext prompt, clamped', async () => {
+    const prompt = 'Audit '.repeat(30);
+    const { pane, group } = await setup([
+      agentLaunch({
+        toolName: 'collab_agent',
+        status: 'completed',
+        summary: 'Spawn reviewer',
+        payloadMeta: JSON.stringify({
+          toolName: 'collab_agent',
+          input: { tool: 'spawn_agent', newAgentNickname: 'reviewer', prompt },
+        }),
+      }),
+      makeItem({
+        id: 'complete:agent:1',
+        itemIndex: 1,
+        threadId: 'thread-1',
+        kind: 'tool_completion',
+        toolName: 'collab_agent',
+        status: 'completed',
+        completionOf: 'agent:1',
+      }),
+    ]);
+    const { getByTestId } = render(SubagentGroupTestHarness, { props: { group, pane } });
+    const shown = getByTestId('subagent-group-description').textContent?.trim() ?? '';
+    expect(shown).toContain('Audit Audit');
+    expect(shown.length).toBeLessThanOrEqual(81);
   });
 });

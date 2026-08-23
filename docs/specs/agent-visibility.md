@@ -34,7 +34,21 @@ launch, how do progress and terminal signals arrive, which controls exist
   title regeneration). On Claude it arrives on the wire for an INLINE
   agent and from the sidechain transcript for a backgrounded one; both
   key it on the same transcript uuid, so the two paths converge on one
-  row. Codex already echoed its spawn prompt as one.
+  row. Codex MultiAgentV2 has no prompt to show at any price — the model
+  service encrypts `spawn_agent.message` and the child's NEW_TASK payload
+  alike, so no client can read it. Its only plaintext statement of the
+  task is the model-chosen `task_name`, and the card title and pane
+  breadcrumb ALREADY carry it: a V2 spawn sends no nickname, so the label
+  falls back to the agent path's own tail. `codexSubagentTaskDescription`
+  is therefore empty on V2 by design (it would repeat the label) and
+  carries the plaintext prompt on V1.
+- A Codex child's final answer is a NORMAL message, not a special block
+  (ruling 2026-08-23). Its transcript streams to the parent parented to
+  the launch, so the answer already renders in the card body and the
+  pane as its own assistant row. The FINAL_ANSWER on the completion
+  sibling is a 240-char preview and stays the COLLAPSED one-liner only —
+  it was briefly rendered in the body too, which showed the same text
+  twice, unformatted and cut mid-word.
 - Expanded body is an allowlist (ruling 2026-08-23): the initial prompt
   (first `user_text`), tool call rows, a provider refusal's reason
   (`permission_denied` notification), error rows, nested child cards,
@@ -95,7 +109,8 @@ launch, how do progress and terminal signals arrive, which controls exist
   parent card for a nested node, or under the `wait_agent` group that
   claimed a Codex completion (`WaitGroupNode.children` are nodes), after
   everything the main thread wrote while the agent ran. A Codex card
-  also carries the child's FINAL_ANSWER (collapsed preview + body). While
+  summarizes collapsed with the child's FINAL_ANSWER preview; the answer
+  itself is a normal message in the body, never a second block. While
   the agent runs there is no card: the pane and the tray are its live
   surfaces, and the tray row shows the live tool count, tokens and
   activity line. The bell is hidden on the strength of the completion
@@ -151,8 +166,10 @@ launch, how do progress and terminal signals arrive, which controls exist
       turn, the card flips to background, the pane shows the paused
       marker, and the transcript completes on the task notification.
 - [ ] Codex `spawn_agent` children render with the same card (at the
-      completion point) and pane, with token counts from the child
-      thread.
+      completion point) and pane, counting the child thread's own
+      cumulative spend (fresh input + cache writes + all output), which
+      never goes backwards.
+- [ ] A Codex child's answer appears exactly once, as its own message.
 - [ ] Top-level completions notify; nested completions do not.
 
 ## Migration/removal

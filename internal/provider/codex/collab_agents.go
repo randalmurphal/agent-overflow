@@ -308,20 +308,20 @@ func (s *Session) childStatusEvent(providerThreadID, parentToolUseID, status str
 //     for the running agent.
 //
 // nil when the notification named no child thread, no spawn, or carried
-// no cumulative total.
+// no usable token figures.
 func (s *Session) childProgressEvent(providerThreadID, parentToolUseID string, params json.RawMessage) *provider.ProviderEvent {
 	providerThreadID = strings.TrimSpace(providerThreadID)
 	parentToolUseID = strings.TrimSpace(parentToolUseID)
 	if providerThreadID == "" || parentToolUseID == "" {
 		return nil
 	}
-	total, ok := childCumulativeTokenTotal(params)
+	spend, ok := childAgentTokenSpend(params)
 	if !ok {
 		return nil
 	}
 	meta, err := json.Marshal(provider.SubagentProgressMeta{
 		TaskID:      providerThreadID,
-		TotalTokens: total,
+		TotalTokens: spend,
 	})
 	if err != nil {
 		log.Printf("codex: marshal child progress for %s: %v", providerThreadID, err)

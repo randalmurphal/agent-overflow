@@ -13,8 +13,11 @@
 // thread the parent never shows. It reaches the card only because the
 // session intercepts it for a mapped child and re-emits it as a scoped
 // `EventSubagentProgress` naming the spawn tool_use
-// (internal/provider/codex/session_notifications.go); the number is the
-// CUMULATIVE `tokenUsage.total.totalTokens`, not the per-round `last`.
+// (internal/provider/codex/session_notifications.go). The number is the
+// child's TRUE CUMULATIVE spend — fresh input + cache writes + all output,
+// assembled in `childAgentTokenSpend` off the provider's own cumulative
+// counters, so it never goes backwards when the child compacts. It is NOT
+// `total.totalTokens`, which re-counts the cached prompt every round.
 import { test, expect } from './fixtures.js';
 import {
   advance,
@@ -41,10 +44,14 @@ const SPAWN_LINES = [
       name: 'spawn_agent',
       namespace: 'collaboration',
       call_id: SPAWN_CALL,
+      // The real V2 argument set (codex 0.149.0): a model-chosen
+      // task_name, fork_turns, and a Fernet-encrypted message no client
+      // can read. There is no nickname and no agent_type on this wire,
+      // which is why the task name IS the card's label.
       arguments: JSON.stringify({
-        agent_type: 'reviewer',
         task_name: 'reviewer',
-        message: '<encrypted>',
+        fork_turns: 'all',
+        message: 'gAAAAABqi1w-encrypted-spawn-payload',
       }),
     },
   }),
@@ -54,11 +61,7 @@ const SPAWN_LINES = [
     item: {
       type: 'function_call_output',
       call_id: SPAWN_CALL,
-      output: JSON.stringify({
-        agent_id: CHILD_THREAD,
-        task_name: '/root/reviewer',
-        nickname: 'reviewer',
-      }),
+      output: JSON.stringify({ task_name: '/root/reviewer' }),
     },
   }),
   // The ownership statement. Until this lands the child thread is
@@ -78,14 +81,51 @@ const SPAWN_LINES = [
   }),
 ];
 
+// Cumulative spend = fresh input (91000 - 88000) + cache writes (100) +
+// all output (300) = 3400. Two wrong answers are seeded alongside it:
+// `total.totalTokens` (91300) re-counts the cached prompt every round,
+// and the latest-input composition (4000 + 100 + 300 = 4400) dips
+// whenever the child compacts.
 const CHILD_TOKENS_LINE = rpc('thread/tokenUsage/updated', {
   threadId: CHILD_THREAD,
   tokenUsage: {
-    last: { totalTokens: 1200 },
-    total: { totalTokens: 4321 },
+    last: {
+      totalTokens: 4080,
+      inputTokens: 4000,
+      cachedInputTokens: 3900,
+      cacheWriteInputTokens: 100,
+      outputTokens: 80,
+    },
+    total: {
+      totalTokens: 91300,
+      inputTokens: 91000,
+      cachedInputTokens: 88000,
+      cacheWriteInputTokens: 100,
+      outputTokens: 300,
+    },
     modelContextWindow: 272000,
   },
 });
+
+// What a Codex child actually does: its transcript streams to the parent
+// thread, parented to the spawn (`isUnsafeChildProjectionEvent` lets
+// assistant text through). Its final message IS the answer — the
+// FINAL_ANSWER envelope below repeats the same text into the parent's
+// model context, and the completion sibling's `preview` is a 240-char
+// truncation of it.
+const CHILD_TRANSCRIPT_LINES = [
+  rpc('item/agentMessage/delta', {
+    threadId: CHILD_THREAD,
+    turnId: 'child-turn',
+    itemId: 'child-answer',
+    delta: FINAL_ANSWER,
+  }),
+  rpc('item/completed', {
+    threadId: CHILD_THREAD,
+    turnId: 'child-turn',
+    item: { id: 'child-answer', type: 'agentMessage', text: FINAL_ANSWER },
+  }),
+];
 
 const FINAL_ANSWER_LINES = [
   rpc('rawResponseItem/completed', {
@@ -135,6 +175,7 @@ async function startSpawnTurn(
             { waitSignal: { name: 'tokens' } },
             { emit: { lines: [CHILD_TOKENS_LINE], delayBetweenMs: 5 } },
             { waitSignal: { name: 'answer' } },
+            { emit: { lines: CHILD_TRANSCRIPT_LINES, delayBetweenMs: 5 } },
             { emit: { lines: FINAL_ANSWER_LINES, delayBetweenMs: 5 } },
           ],
         },
@@ -174,8 +215,9 @@ test('a Codex spawn_agent child keeps its launched row, opens the same pane, and
   await advance(harness, mockId, 'tokens');
   await page.getByTestId('activity-rail-background-toggle').click();
   const trayRow = page.getByTestId('background-task-tray-row').first();
-  // The CUMULATIVE total (4321), not the round's 1200.
-  await expect(trayRow.getByTestId('background-task-tray-row-tokens')).toHaveText('4.3k tokens');
+  // The child's cumulative spend (3400), not the 91.3k that re-counts the
+  // cached prompt each round and not the 4.4k latest-input figure.
+  await expect(trayRow.getByTestId('background-task-tray-row-tokens')).toHaveText('3.4k tokens');
 
   // --- The same pane ------------------------------------------------
   await spawnRow.hover();
@@ -185,14 +227,17 @@ test('a Codex spawn_agent child keeps its launched row, opens the same pane, and
   await expect(pane.getByTestId('agent-pane-model')).toBeVisible();
   await expect(pane.getByTestId('agent-pane-breadcrumb-entry')).toHaveCount(0);
   await expect(pane.getByTestId('agent-pane-breadcrumb-current')).toContainText('reviewer');
-  await expect(pane.getByTestId('workspace-strip-usage')).toHaveText('4.3k');
+  // The model-chosen task name IS the crumb: a V2 spawn sends no
+  // nickname, so the label falls back to the agent path's tail. There
+  // is no second plaintext string, and repeating it would read
+  // "reviewer - reviewer".
+  await expect(pane.getByTestId('agent-pane-description')).toHaveCount(0);
+  await expect(pane.getByTestId('workspace-strip-usage')).toHaveText('3.4k');
   // `close_agent` is a model tool, so the pane offers no Stop.
   await expect(pane.getByTestId('agent-pane-stop')).toHaveCount(0);
 
-  // The pane body is EMPTY, and honestly so: Codex delivers none of a
-  // child's transcript to the parent thread, so there is no row whose
-  // parent chain reaches this scope. The counter, the status line and
-  // the breadcrumb are the whole pane for a Codex child.
+  // The pane body is empty until the child says something: its rows
+  // reach this scope only once they stream.
   await expect(pane.getByTestId('agent-pane-empty')).toBeVisible();
 
   // --- The child's answer lands: the card, at the completion ---------
@@ -203,9 +248,10 @@ test('a Codex spawn_agent child keeps its launched row, opens the same pane, and
   const card = timeline.getByTestId('subagent-group').first();
   await expect(card.getByTestId('subagent-group-kind')).toHaveText('agent');
   await expect(card.getByTestId('subagent-group-label')).toContainText('reviewer');
+  await expect(card.getByTestId('subagent-group-description')).toHaveCount(0);
   await expect(card).toHaveAttribute('data-background', 'true');
   await expect(card.getByTestId('subagent-group-background-button')).toHaveCount(0);
-  await expect(card.getByTestId('subagent-group-tokens')).toHaveText('4.3k tokens');
+  await expect(card.getByTestId('subagent-group-tokens')).toHaveText('3.4k tokens');
   await expect(card.getByTestId('subagent-group-duration')).toBeVisible();
   await expect(card.getByTestId('subagent-group-open-pane')).toHaveCount(1);
   // The card sits below the launch row, at the completion point.
@@ -215,16 +261,17 @@ test('a Codex spawn_agent child keeps its launched row, opens the same pane, and
   await expect(spawnRow.getByTestId('collab-tool-row')).toHaveCount(1);
 });
 
-// Regression pin — a Codex child's FINAL_ANSWER must render.
+// Regression pin — a Codex child's answer renders ONCE, as its own
+// message, formatted and whole.
 //
-// The answer arrives as the spawn launch's completion sibling, with the
-// text in `payloadMeta.preview` (kind `tool_completion`,
-// `completionOf: call_spawn_reviewer`). Codex delivers none of the
-// child's transcript to the parent, so that preview is the child's whole
-// product. The card sits AT that sibling and shows the answer collapsed
-// (its preview line) and expanded (`subagent-group-final-answer`); the
-// pane shows it too (`agent-pane-final-answer`).
-test('a Codex child\u2019s FINAL_ANSWER is readable somewhere in the UI', async ({
+// The answer exists in three places: the child's own assistant row
+// (parented to the spawn), the FINAL_ANSWER envelope that puts it into
+// the parent's model context, and the 240-char `payloadMeta.preview` on
+// the completion sibling. Only the first is a message. The preview is
+// the COLLAPSED one-liner and nothing else — rendering it in the body
+// too showed the same text twice, unformatted and cut mid-word (user
+// ruling 2026-08-23).
+test('a Codex child\u2019s answer renders once, as a normal message', async ({
   harness,
   page,
 }) => {
@@ -238,10 +285,16 @@ test('a Codex child\u2019s FINAL_ANSWER is readable somewhere in the UI', async 
   const timeline = page.getByTestId('message-timeline-scroll');
   const card = timeline.getByTestId('subagent-group').first();
   await expect(card.getByTestId('subagent-group-preview')).toContainText(FINAL_ANSWER);
+
   await card.getByTestId('subagent-group-toggle').first().click();
-  await expect(card.getByTestId('subagent-group-final-answer')).toContainText(FINAL_ANSWER);
+  const body = card.getByTestId('subagent-group-body');
+  await expect(body).toContainText(FINAL_ANSWER);
+  await expect(card.getByTestId('subagent-group-final-answer')).toHaveCount(0);
+  await expect(body.getByText(FINAL_ANSWER, { exact: false })).toHaveCount(1);
 
   await card.getByTestId('subagent-group-open-pane').first().click();
   const pane = page.getByTestId('companion-pane-agent-body');
-  await expect(pane.getByTestId('agent-pane-final-answer')).toContainText(FINAL_ANSWER);
+  await expect(pane.getByTestId('agent-pane-timeline')).toContainText(FINAL_ANSWER);
+  await expect(pane.getByTestId('agent-pane-final-answer')).toHaveCount(0);
+  await expect(pane.getByTestId('agent-pane-empty')).toHaveCount(0);
 });

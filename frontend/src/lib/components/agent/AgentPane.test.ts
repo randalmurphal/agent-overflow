@@ -278,7 +278,13 @@ describe('<AgentPane>', () => {
     expect(getByText('grandchild work')).toBeTruthy();
   });
 
-  it("renders a finished Codex child's final answer from the completion sibling", async () => {
+  // A Codex child's final answer is a NORMAL message in the transcript —
+  // its assistant text streams to the parent thread parented to the
+  // launch, exactly like Claude's. The completion sibling's `preview` is
+  // a 240-char truncation of that same text; rendering it as a second
+  // body block showed the answer twice, unformatted and cut mid-word
+  // (user ruling 2026-08-23).
+  it("shows a finished Codex child's answer once, as its own transcript message", async () => {
     const { ctx } = await setup([
       launchItem({
         toolName: 'collab_agent',
@@ -287,20 +293,85 @@ describe('<AgentPane>', () => {
         payloadMeta: JSON.stringify({ toolName: 'collab_agent', input: { tool: 'spawn_agent', newAgentNickname: 'reviewer' } }),
       }),
       makeItem({
-        id: 'complete-1',
+        id: 'child-text',
         itemIndex: 1,
+        threadId: THREAD_ID,
+        kind: 'assistant_text',
+        role: 'assistant',
+        status: 'completed',
+        parentId: 'launch-1',
+        summary: 'Final verdict: LGTM, with one caveat about the parser drift.',
+      }),
+      makeItem({
+        id: 'complete-1',
+        itemIndex: 2,
         threadId: THREAD_ID,
         kind: 'tool_completion',
         toolName: 'collab_agent',
         status: 'completed',
         completionOf: 'launch-1',
-        payloadMeta: JSON.stringify({ preview: 'Final verdict: LGTM' }),
+        payloadMeta: JSON.stringify({ preview: 'Final verdict: LGTM, with one caveat' }),
       }),
     ]);
     openAgentCompanion('main', THREAD_ID, 'launch-1', 'reviewer');
-    const { getByTestId, queryByTestId } = render(AgentPane, { props: { ctx } });
+    const { getByText, queryByTestId } = render(AgentPane, { props: { ctx } });
 
     expect(queryByTestId('agent-pane-empty')).toBeNull();
-    expect(getByTestId('agent-pane-final-answer').textContent).toContain('Final verdict: LGTM');
+    expect(getByText(/Final verdict: LGTM, with one caveat about the parser drift/)).toBeTruthy();
+    expect(queryByTestId('agent-pane-final-answer')).toBeNull();
+  });
+
+  // MultiAgentV2 encrypts the spawn message, so the model-chosen task
+  // name is the only plaintext statement of what the agent was asked to
+  // do. Before this the header showed nothing at all for a V2 spawn.
+  // Real V2 wire shape (codex 0.149.0): `{task_name, fork_turns,
+  // message}` with the message encrypted and NO nickname anywhere. The
+  // crumb already carries the model-chosen task name, so the header must
+  // not append it a second time as a description.
+  it('says a V2 Codex task name once, in the crumb, not twice', async () => {
+    const { ctx } = await setup([
+      launchItem({
+        toolName: 'collab_agent',
+        status: 'completed',
+        summary: 'Spawn audit_internal_tail',
+        payloadMeta: JSON.stringify({
+          toolName: 'collab_agent',
+          input: {
+            tool: 'spawn_agent',
+            activityKind: 'started',
+            taskName: '/root/audit_internal_tail',
+          },
+        }),
+      }),
+    ]);
+    openAgentCompanion('main', THREAD_ID, 'launch-1', 'audit_internal_tail');
+    const { getByTestId, queryByTestId } = render(AgentPane, { props: { ctx } });
+
+    expect(getByTestId('agent-pane-breadcrumb-current').textContent).toContain('audit_internal_tail');
+    expect(queryByTestId('agent-pane-description')).toBeNull();
+  });
+
+  // V1 (`collabAgentToolCall`) DOES carry a plaintext prompt, and it is
+  // read off the Codex input rather than through the Claude reader,
+  // whose `description` branch returns unclamped text.
+  it('describes a V1 Codex scope with its plaintext prompt, clamped', async () => {
+    const prompt = 'Audit '.repeat(30);
+    const { ctx } = await setup([
+      launchItem({
+        toolName: 'collab_agent',
+        status: 'completed',
+        summary: 'Spawn reviewer',
+        payloadMeta: JSON.stringify({
+          toolName: 'collab_agent',
+          input: { tool: 'spawn_agent', newAgentNickname: 'reviewer', prompt },
+        }),
+      }),
+    ]);
+    openAgentCompanion('main', THREAD_ID, 'launch-1', 'reviewer');
+    const { getByTestId } = render(AgentPane, { props: { ctx } });
+
+    const shown = getByTestId('agent-pane-description').textContent ?? '';
+    expect(shown).toContain('Audit Audit');
+    expect(shown.length).toBeLessThanOrEqual(81);
   });
 });

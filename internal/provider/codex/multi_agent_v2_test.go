@@ -401,7 +401,7 @@ func TestMultiAgentV2ChildThreadWideEventsAreSuppressedAndErrorsAreNonFatal(t *t
 	// A child's token usage is no longer dropped: it is re-emitted as a
 	// SCOPED progress tick (never EventTokenUsage, never the parent
 	// meter). See TestDispatchLineChildTokenUsageBecomesScopedProgress.
-	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"thread/tokenUsage/updated","params":{"threadId":"child-a","tokenUsage":{"last":{"totalTokens":5},"total":{"totalTokens":5},"modelContextWindow":100}}}`))
+	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"thread/tokenUsage/updated","params":{"threadId":"child-a","tokenUsage":{"last":{"totalTokens":5,"inputTokens":4,"outputTokens":1},"total":{"totalTokens":5,"inputTokens":4,"outputTokens":1},"modelContextWindow":100}}}`))
 	if len(events) != 1 || events[0].Kind != provider.EventSubagentProgress || events[0].ItemID != "spawn-a" {
 		t.Fatalf("child token usage = %+v, want one scoped progress tick", events)
 	}

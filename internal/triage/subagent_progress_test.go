@@ -229,3 +229,61 @@ func TestBackgroundTasksChangedForwardsTheSet(t *testing.T) {
 		t.Fatalf("empty set must be an empty slice: %+v", payload.Tasks)
 	}
 }
+
+// Claude's task_progress figure is LATEST input + all output, so a
+// subagent that compacts its own context legitimately reports a SMALLER
+// number afterwards (Codex's is cumulative and cannot). A max merge
+// would pin the card to the pre-compaction peak for the rest of the run
+// while Claude's own UI moved on.
+func TestSubagentProgressTokensFollowAClaudeCompactionDownward(t *testing.T) {
+	h := newSubagentTestHarness(t)
+	r := h.router
+
+	for _, tokens := range []int64{9_000, 42_000} {
+		if err := r.Handle(subagentProgressEvent(t, h.threadID, "toolu_launch", "", provider.SubagentProgressMeta{
+			ToolUses: 3, TotalTokens: tokens,
+		})); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// The agent compacted: its context shrank, its output kept growing.
+	if err := r.Handle(subagentProgressEvent(t, h.threadID, "toolu_launch", "", provider.SubagentProgressMeta{
+		TotalTokens: 11_500,
+	})); err != nil {
+		t.Fatal(err)
+	}
+
+	got, ok := r.PeekSubagentProgress(h.threadID, "toolu_launch")
+	if !ok || got.TotalTokens != 11_500 {
+		t.Fatalf("tokens = %d (ok=%v), want the post-compaction 11500, not the 42000 peak", got.TotalTokens, ok)
+	}
+	// The genuinely monotonic counters still take the max, and a
+	// tokens-only tick must not zero them.
+	if got.ToolUses != 3 {
+		t.Fatalf("toolUses = %d, want 3 — a tokens-only tick must not clear it", got.ToolUses)
+	}
+}
+
+// Zero still means "this provider did not report it": a Codex-shaped tick
+// carrying only tokens must not erase a Claude count, and a tick carrying
+// no tokens must not erase the token figure.
+func TestSubagentProgressUnreportedTokensKeepTheLastValue(t *testing.T) {
+	h := newSubagentTestHarness(t)
+	r := h.router
+
+	if err := r.Handle(subagentProgressEvent(t, h.threadID, "toolu_launch", "", provider.SubagentProgressMeta{
+		TotalTokens: 7_700,
+	})); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Handle(subagentProgressEvent(t, h.threadID, "toolu_launch", "", provider.SubagentProgressMeta{
+		Activity: "Running tests",
+	})); err != nil {
+		t.Fatal(err)
+	}
+
+	got, ok := r.PeekSubagentProgress(h.threadID, "toolu_launch")
+	if !ok || got.TotalTokens != 7_700 || got.Activity != "Running tests" {
+		t.Fatalf("progress = %+v, want the tokens held across an activity-only tick", got)
+	}
+}

@@ -215,7 +215,13 @@ a collab child is suppressed so a subagent cannot overwrite the parent's
 meter, title, or compact state (ADR-002). This one is not: Agent
 Overflow intercepts it and emits a `EventSubagentProgress` scoped to the
 spawn's `parentToolUseID`, carrying the child's provider thread id as
-`taskId` and `total.totalTokens` as the progress total. It never reaches
+`taskId` and, as the progress total, `total.inputTokens -
+total.cachedInputTokens + total.cacheWriteInputTokens +
+total.outputTokens` — the child's cumulative spend with every token
+counted once, monotonic because each term is a provider cumulative. Not
+`total.totalTokens`: that re-counts the cached prompt on every round,
+which on a long child is an order of magnitude above the agent's own
+spend and grows with round count rather than with work. It never reaches
 the parent's usage accounting and is never emitted as `EventTokenUsage`.
 This is the only channel through which a child's usage is visible on the
 parent thread — see
@@ -549,7 +555,12 @@ MultiAgentV2 marks `spawn_agent.message`, `send_message.message`, and
 `followup_task.message` as encrypted tool parameters. Raw response items carry
 opaque model-service ciphertext in those fields; clients cannot decrypt it and
 must never normalize it as a plaintext prompt. Safe raw fields such as target,
-explicit role, model, and effort may enrich the row. The canonical activity,
+explicit role, model, and effort may enrich the row. On codex 0.149.0 a V2
+`spawn_agent` in practice carries only `{task_name, fork_turns, message}` and
+its output only `{task_name}` — no nickname, no agent_type — so the
+model-chosen `task_name` is the whole plaintext statement of what the child
+was asked to do, and a display label derived from it is the same string
+twice. The canonical activity,
 active session profile, cached `thread/started`, and `thread/read` metadata
 provide path, effective model/effort, and display label. Effective profiles are
 tracked per owned provider thread so a nested spawn inherits its immediate

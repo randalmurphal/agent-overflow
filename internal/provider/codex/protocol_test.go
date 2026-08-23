@@ -1515,3 +1515,101 @@ func TestClassifyItemNotification_ContextCompactionStartedOpensCompactingWindow(
 		t.Fatalf("meta = %+v, want Active=true", meta)
 	}
 }
+
+// childAgentTokenSpend is what an agent card shows: the child's true
+// cumulative spend, every token counted once. See the function's doc for
+// why it is neither wire figure and how it relates to Claude's.
+func TestChildAgentTokenSpendIsTheChildsCumulativeSpend(t *testing.T) {
+	// Shape taken from a real 42-minute child (codex 0.149.0, 2026-08-23):
+	// `total.totalTokens` is 22x the agent's own spend because it
+	// re-counts the cached prompt on every round.
+	params := json.RawMessage(`{"tokenUsage":{` +
+		`"last":{"totalTokens":197519,"inputTokens":194872,"cachedInputTokens":193280,"cacheWriteInputTokens":0,"outputTokens":2647,"reasoningOutputTokens":1359},` +
+		`"total":{"totalTokens":4570684,"inputTokens":4558354,"cachedInputTokens":4360960,"cacheWriteInputTokens":0,"outputTokens":12330,"reasoningOutputTokens":5622},` +
+		`"modelContextWindow":353400}}`)
+
+	spend, ok := childAgentTokenSpend(params)
+	if !ok {
+		t.Fatal("childAgentTokenSpend refused a complete notification")
+	}
+	// (4558354 - 4360960) fresh input + 0 cache-write + 12330 output ever.
+	if spend != 209_724 {
+		t.Fatalf("spend = %d, want 209724 (fresh input + cache writes + all output)", spend)
+	}
+	if spend >= 4_570_684 {
+		t.Fatal("spend fell back to total.totalTokens, the inflated cumulative")
+	}
+	if spend == 207_202 {
+		t.Fatal("spend is the LATEST-input figure, which dips on compaction")
+	}
+}
+
+// cacheWriteInputTokens is billed on its own axis and is NOT inside
+// `inputTokens`, so it is added rather than subtracted out with the
+// cached reads.
+func TestChildAgentTokenSpendCountsCacheWrites(t *testing.T) {
+	params := json.RawMessage(`{"tokenUsage":{` +
+		`"last":{"inputTokens":1000,"cachedInputTokens":900,"cacheWriteInputTokens":250,"outputTokens":40},` +
+		`"total":{"inputTokens":5000,"cachedInputTokens":4500,"cacheWriteInputTokens":250,"outputTokens":300}}}`)
+
+	spend, ok := childAgentTokenSpend(params)
+	if !ok || spend != 1050 {
+		t.Fatalf("spend = %d (ok=%v), want 1050 = 500 fresh + 250 cache-write + 300 output", spend, ok)
+	}
+}
+
+// The whole reason this reads `total.*`: a child that compacts sees its
+// CONTEXT collapse while its cumulative counters keep climbing, and the
+// card must climb with them. Under the latest-input composition the
+// second frame here reports LESS than the first.
+func TestChildAgentTokenSpendClimbsThroughACompaction(t *testing.T) {
+	before := json.RawMessage(`{"tokenUsage":{` +
+		`"last":{"inputTokens":180000,"cachedInputTokens":176000,"cacheWriteInputTokens":0,"outputTokens":900},` +
+		`"total":{"inputTokens":900000,"cachedInputTokens":880000,"cacheWriteInputTokens":0,"outputTokens":9000}}}`)
+	// Compacted: the live window is a fraction of what it was.
+	after := json.RawMessage(`{"tokenUsage":{` +
+		`"last":{"inputTokens":24000,"cachedInputTokens":21000,"cacheWriteInputTokens":0,"outputTokens":300},` +
+		`"total":{"inputTokens":930000,"cachedInputTokens":904000,"cacheWriteInputTokens":0,"outputTokens":9600}}}`)
+
+	first, ok1 := childAgentTokenSpend(before)
+	second, ok2 := childAgentTokenSpend(after)
+	if !ok1 || !ok2 {
+		t.Fatalf("both frames must report (ok=%v,%v)", ok1, ok2)
+	}
+	if first != 29_000 {
+		t.Fatalf("first = %d, want 29000", first)
+	}
+	if second != 35_600 {
+		t.Fatalf("second = %d, want 35600", second)
+	}
+	if second <= first {
+		t.Fatalf("the figure went backwards through a compaction: %d -> %d", first, second)
+	}
+}
+
+// A frame with nothing usable must leave the card's counter alone rather
+// than resetting it to zero, and an INVERTED one (cached larger than the
+// input it is nested inside) must never subtract real output away.
+func TestChildAgentTokenSpendRefusesEmptyFrames(t *testing.T) {
+	for name, params := range map[string]string{
+		"malformed":   `{"tokenUsage":`,
+		"absent":      `{"threadId":"t"}`,
+		"all zero":    `{"tokenUsage":{"last":{"totalTokens":0},"total":{"totalTokens":0}}}`,
+		"totals only": `{"tokenUsage":{"last":{"totalTokens":900},"total":{"totalTokens":900}}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			if spend, ok := childAgentTokenSpend(json.RawMessage(params)); ok || spend != 0 {
+				t.Fatalf("spend = %d (ok=%v), want a refusal", spend, ok)
+			}
+		})
+	}
+
+	t.Run("inverted cache counts clamp instead of going negative", func(t *testing.T) {
+		params := json.RawMessage(`{"tokenUsage":{"total":` +
+			`{"inputTokens":10,"cachedInputTokens":9000,"cacheWriteInputTokens":0,"outputTokens":400}}}`)
+		spend, ok := childAgentTokenSpend(params)
+		if !ok || spend != 400 {
+			t.Fatalf("spend = %d (ok=%v), want the 400 output with fresh input clamped to 0", spend, ok)
+		}
+	})
+}

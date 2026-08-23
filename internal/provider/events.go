@@ -554,8 +554,26 @@ type SubagentProgressMeta struct {
 	TaskID string `json:"taskId,omitempty"`
 	// ToolUses is the number of tool calls the agent has made so far.
 	ToolUses int `json:"toolUses,omitempty"`
-	// TotalTokens is the agent's own token spend so far (input + output,
-	// all of its rounds). Never folded into the parent thread's meter.
+	// TotalTokens is the agent's own token spend so far — every token it
+	// caused to be processed, counted ONCE. Never folded into the parent
+	// thread's meter. Re-sending a cached prompt is not spend: a figure
+	// that counts it grows with round count instead of with work, which
+	// is what made a real 42-minute Codex child report 4.5M against
+	// 210k of actual spend.
+	//
+	// The two providers reach it differently, because only one of them
+	// gives a choice. Codex ships cumulative breakdowns, so
+	// childAgentTokenSpend sums fresh input + cache writes + all output
+	// and the result is MONOTONIC. Claude ships one pre-summed
+	// `{total_tokens}` with no breakdown, and 2.1.237 builds it as LATEST
+	// input plus all output — so Claude's dips when a subagent compacts
+	// and cannot be made to do otherwise. The two agree until a
+	// compaction (summing each round's fresh input is how the current
+	// context got its size); after one they diverge, Claude low.
+	//
+	// Consumers must therefore NOT assume this only grows. See
+	// triage.mergeSubagentProgress, which takes the newest value here
+	// while the genuinely monotonic counters take the max.
 	TotalTokens int64 `json:"totalTokens,omitempty"`
 	// DurationMs is the agent's wall-clock run time so far.
 	DurationMs int64 `json:"durationMs,omitempty"`

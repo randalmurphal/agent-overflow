@@ -56,13 +56,14 @@
     type TimelineNode,
   } from '../../utils/subagentGrouping';
   import {
-    codexCompletionAnswer,
+    codexCompletionPreview,
+    codexSubagentLaunchInfo,
+    codexSubagentTaskDescription,
+    isCodexSubagentLaunchItem,
     launchRunsDetached,
     subagentLaunchInfo,
     type SubagentLaunchContext,
   } from '../../utils/subagentLaunch';
-  import ChatMarkdown from './ChatMarkdown.svelte';
-  import { paneWorkspacePath } from '../../stores/thread.svelte';
   import { liveSubagentProgress } from '../../stores/subagentProgress.svelte';
   import {
     formatToolUses,
@@ -174,7 +175,7 @@
   let statusItem = $derived(completionItem ?? parent);
   // The Codex child's delivered verdict (empty for Claude launches): the
   // FINAL_ANSWER on the completion sibling this card sits at.
-  let completionAnswer = $derived(codexCompletionAnswer(parent, completionItem));
+  let completionAnswer = $derived(codexCompletionPreview(parent, completionItem));
   let decorated = $derived(decoratedSubagentAggregates(parent));
   // Max, not replace — the same reconciliation `subagentGroupNode` does,
   // re-run against the live anchor. The node's count already folds in
@@ -220,7 +221,15 @@
   let modelLabel = $derived(
     deriveClaudeSubagentModelLabel(inputObject, parentMeta, parentToolName),
   );
-  let inputDescription = $derived(deriveClaudeSubagentDescription(inputObject));
+  // The one-line task beside the title. Codex spawns read their OWN
+  // shape (V1's plaintext prompt; V2 adds nothing, because its prompt is
+  // encrypted and the label already is the task name it falls back to);
+  // everything else reads the Claude input block.
+  let inputDescription = $derived(
+    isCodexSubagentLaunchItem(parent)
+      ? codexSubagentTaskDescription(codexSubagentLaunchInfo(parent))
+      : deriveClaudeSubagentDescription(inputObject),
+  );
 
   // ---- Status visualization (matches GenericToolCallRow) -----------
 
@@ -556,27 +565,17 @@
             <p class="text-xs text-text-secondary italic" data-testid="subagent-group-loading">
               Loading {entryCountLabel}…
             </p>
-          {:else if !completionAnswer}
+          {:else}
             <p class="text-xs text-text-secondary italic">No child entries captured.</p>
           {/if}
         {:else if bodyNodes.length === 0}
-          {#if !completionAnswer}
-            <p class="text-xs text-text-secondary italic" data-testid="subagent-group-digest-empty">
-              Intermediate output only. Open the agent pane for the full transcript.
-            </p>
-          {/if}
+          <p class="text-xs text-text-secondary italic" data-testid="subagent-group-digest-empty">
+            Intermediate output only. Open the agent pane for the full transcript.
+          </p>
         {:else}
           {#each bodyNodes as child (nodeKey(child))}
             {@render renderNode(child, depth + 1)}
           {/each}
-        {/if}
-        {#if completionAnswer}
-          <!-- A Codex child streams nothing to the parent thread; the
-               FINAL_ANSWER on the completion sibling is its whole product,
-               so the card body is where it renders. -->
-          <div class="text-sm" data-testid="subagent-group-final-answer">
-            <ChatMarkdown source={completionAnswer} workspacePath={paneWorkspacePath(pane)} />
-          </div>
         {/if}
       </div>
     {/if}

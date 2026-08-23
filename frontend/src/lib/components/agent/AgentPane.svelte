@@ -31,8 +31,8 @@
   import AgentPaneComposerShell from './AgentPaneComposerShell.svelte';
   import { decoratedSubagentAggregates } from '../../utils/subagentGrouping';
   import {
-    codexCompletionAnswer,
     codexSubagentLaunchInfo,
+    codexSubagentTaskDescription,
     isCodexSubagentLaunchItem,
   } from '../../utils/subagentLaunch';
   import { parseJsonObject } from '../../utils/parseJsonObject';
@@ -40,7 +40,6 @@
     deriveClaudeSubagentDescription,
     readClaudeSubagentInput,
   } from '../../utils/claudeSubagentLabel';
-  import ChatMarkdown from '../chat/ChatMarkdown.svelte';
 
   interface Props {
     ctx: PanelContext;
@@ -133,12 +132,12 @@
   // The launch's own one-line task next to the crumb ("Review frontend
   // agent-visibility…"), matching the card header. Claude: the input
   // description (prompt-truncation fallback included); Codex: the spawn
-  // prompt, same 80-char clamp.
+  // prompt on V1, and nothing on V2 — its prompt is encrypted and the
+  // crumb already carries the model-chosen task name it falls back to.
   let scopeDescription = $derived.by(() => {
     if (!launch) return '';
     if (isCodexSubagentLaunchItem(launch)) {
-      const prompt = codexSubagentLaunchInfo(launch).prompt;
-      return prompt.length > 80 ? `${prompt.slice(0, 80)}…` : prompt;
+      return codexSubagentTaskDescription(codexSubagentLaunchInfo(launch));
     }
     return deriveClaudeSubagentDescription(
       readClaudeSubagentInput(parseJsonObject(launch.payloadMeta), parseJsonObject(launch.meta)),
@@ -152,12 +151,6 @@
     const completion = ctx.items.find((item) => item.completionOf === scopeItemId);
     return completion ? (ctx.getItemById(completion.id) ?? completion) : undefined;
   });
-
-  // A Codex child's final answer arrives on the spawn's completion
-  // sibling (payloadMeta.preview) — none of the child's transcript
-  // streams to the parent thread, so without this the pane for a
-  // finished Codex agent says "No output yet." over a delivered verdict.
-  let completionAnswer = $derived(codexCompletionAnswer(launch, completionItem));
 
   // Scoping to a node whose settled children were evicted from pane memory
   // is exactly what hydrateChildren exists for. Gate on the COUNT, the
@@ -251,14 +244,9 @@
             <MessageTimeline pane={view.pane} />
           {/key}
         </div>
-      {:else if !completionAnswer}
+      {:else}
         <div class="flex flex-1 items-center justify-center px-4 text-center text-sm text-fg-subtle" data-testid="agent-pane-empty">
           No output yet.
-        </div>
-      {/if}
-      {#if launch && completionAnswer}
-        <div class="min-h-0 shrink-0 overflow-y-auto px-3 py-2 text-sm" data-testid="agent-pane-final-answer">
-          <ChatMarkdown source={completionAnswer} workspacePath={ctx.workspacePath ?? ''} />
         </div>
       {/if}
     </div>

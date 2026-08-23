@@ -446,16 +446,24 @@ export function subagentLaunchInfo(
 }
 
 /**
- * A Codex child's final answer, read off the spawn launch's completion
- * sibling (`payloadMeta.preview`). Codex delivers NONE of a child's
- * transcript to the parent thread — the FINAL_ANSWER text on that
- * sibling is the child's entire product, so the agent card and the
- * agent pane must render it themselves (the pre-card CollabToolRow
- * path used to). Empty for Claude launches: their sibling carries the
- * formulaic ack whose rendering the spec deletes, and the real
- * transcript exists as attributed rows.
+ * The COLLAPSED one-line summary of a Codex child's outcome, read off
+ * the spawn launch's completion sibling (`payloadMeta.preview`, the
+ * first 240 chars of the delivered FINAL_ANSWER — triage's
+ * `completionPayload`). A settled agent's conclusion is what a reader
+ * wants on the collapsed row, not its last progress beat.
+ *
+ * Preview ONLY. The answer itself is not rendered from here: a Codex
+ * child streams its whole transcript to the parent thread as rows
+ * parented to the launch (`isUnsafeChildProjectionEvent` lets assistant
+ * text through), so the final answer already IS a normal message in the
+ * card body and the pane. Rendering the preview as a second body block
+ * showed the same text twice, unformatted and cut mid-word.
+ *
+ * Empty for Claude launches: their sibling carries the formulaic ack
+ * whose rendering the spec deletes, and the real transcript exists as
+ * attributed rows.
  */
-export function codexCompletionAnswer(
+export function codexCompletionPreview(
   launch: Item | null | undefined,
   completion: Item | null | undefined,
 ): string {
@@ -464,4 +472,29 @@ export function codexCompletionAnswer(
   if (info?.provider !== 'codex') return '';
   const preview = parseJsonObject(completion.payloadMeta)?.preview;
   return typeof preview === 'string' ? preview.trim() : '';
+}
+
+/**
+ * The one-line task description a Codex spawn shows beside its label.
+ *
+ * Codex-shaped on purpose, so a spawn never reads the CLAUDE input keys
+ * by coincidence — `description` there is returned untruncated, and
+ * Codex growing a key by that name would put an unclamped string on the
+ * row.
+ *
+ * MultiAgentV1 carries the real prompt in plaintext, so that wins.
+ *
+ * MultiAgentV2 has nothing to add and returns '': the model service
+ * encrypts `spawn_agent.message` and the child's NEW_TASK payload alike
+ * (docs/references/codex-wire.md), so the model-chosen task name is the
+ * only plaintext statement of what the agent was asked to do — and the
+ * card title and the pane breadcrumb ALREADY show it, because a V2 spawn
+ * carries no nickname and `agentLabel` falls back to the agent path's own
+ * tail. Repeating it would render "audit_internal_tail -
+ * audit_internal_tail" and spend the row's truncation budget on nothing.
+ */
+export function codexSubagentTaskDescription(info: CodexSubagentLaunchInfo): string {
+  const text = info.prompt || agentPathLabel(info.agentPath);
+  if (!text || text.toLowerCase() === info.agentLabel.trim().toLowerCase()) return '';
+  return text.length > 80 ? `${text.slice(0, 80)}\u2026` : text;
 }

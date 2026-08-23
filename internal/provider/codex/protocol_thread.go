@@ -112,38 +112,71 @@ type codexThreadTokenUsageNotification struct {
 }
 
 type codexThreadTokenUsage struct {
-	Last               codexTokenBreakdown `json:"last"`
-	Total              codexTokenBreakdown `json:"total"`
-	ModelContextWindow int                 `json:"modelContextWindow"`
+	Last               codexWireTokenBreakdown `json:"last"`
+	Total              codexWireTokenBreakdown `json:"total"`
+	ModelContextWindow int                     `json:"modelContextWindow"`
 }
 
-type codexTokenBreakdown struct {
-	TotalTokens int `json:"totalTokens"`
-}
-
-// childCumulativeTokenTotal reads a `thread/tokenUsage/updated`'s
-// CUMULATIVE total — `tokenUsage.total.totalTokens`, every round the
-// thread has run — which is what SubagentProgressMeta.TotalTokens means
-// ("the agent's own token spend so far ... all of its rounds").
+// childAgentTokenSpend reads a `thread/tokenUsage/updated` for a SPAWNED
+// CHILD and returns the number an agent card shows: the child's TRUE
+// CUMULATIVE spend, every token it ever caused to be processed, counted
+// once.
 //
-// Deliberately NOT normalizeThreadTokenUsage's number: that one reports
-// `last.totalTokens` because it answers a different question (how full
-// is the context window right now), and a context size is not a spend.
-// A child's window is also nobody's meter — only its spend is shown, on
-// its own card.
+//	all fresh input + all cache writes + all output
 //
-// ok=false when the notification carried no total, so a malformed or
-// empty frame leaves whatever the consumer already had rather than
-// resetting the card's counter to zero.
-func childCumulativeTokenTotal(params json.RawMessage) (int64, bool) {
+// Every term is a `total.*` cumulative the provider only ever grows, so
+// the figure is MONOTONIC — it cannot go backwards when the child
+// compacts its own context (user ruling 2026-08-23).
+//
+// Wire mapping: Codex's `inputTokens` INCLUDES `cachedInputTokens` but
+// NOT `cacheWriteInputTokens` (see usage_accounting.go), so fresh input
+// is `total.inputTokens - total.cachedInputTokens` and the cache writes
+// are added separately; `outputTokens` already includes
+// `reasoningOutputTokens`, so `total.outputTokens` is the whole
+// generated side and must not have reasoning added on top.
+//
+// Deliberately NOT `total.totalTokens`, which is what this used to send.
+// That figure re-counts the cached prompt every round: a real 42-minute
+// child measured 4,570,684 there against 209,724 of actual spend — 22x,
+// and it grows with round count rather than with work done.
+//
+// Deliberately NOT normalizeThreadTokenUsage's number either: that one
+// is `last.totalTokens` because it answers "how full is the context
+// window right now". A child's window is nobody's meter.
+//
+// Relation to Claude, since one card component renders both. Claude's
+// `system/task_progress` `usage.total_tokens` is LATEST input plus all
+// output — the 2.1.237 bundle's accumulator overwrites its input term
+// each assistant message (`latestInputTokens = input + cache_creation +
+// cache_read`) and only `+=`s output. That is the same quantity right up
+// until a compaction, because summing each round's FRESH input is how the
+// current context got its size; after one, Claude's dips and this does
+// not. Claude cannot be given the same treatment: its envelope is
+// `{total_tokens, tool_uses, duration_ms}` with no breakdown to
+// accumulate, so it stays half-cumulative by force. On the same 42-minute
+// child the two differ by 1.2% (209,724 here vs 207,202 Claude-shaped).
+//
+// ok=false when the frame carried nothing usable, so a malformed or empty
+// notification leaves whatever the card already had rather than resetting
+// its counter to zero.
+func childAgentTokenSpend(params json.RawMessage) (int64, bool) {
 	var payload codexThreadTokenUsageNotification
 	if json.Unmarshal(params, &payload) != nil {
 		return 0, false
 	}
-	if payload.TokenUsage.Total.TotalTokens <= 0 {
+	total := payload.TokenUsage.Total
+	// Clamped rather than trusted: the subtraction is only meaningful
+	// because upstream nests cached inside input, and an inverted frame
+	// would otherwise subtract real output out of the card.
+	fresh := total.InputTokens - total.CachedInputTokens
+	if fresh < 0 {
+		fresh = 0
+	}
+	spend := fresh + total.CacheWriteInputTokens + total.OutputTokens
+	if spend <= 0 {
 		return 0, false
 	}
-	return int64(payload.TokenUsage.Total.TotalTokens), true
+	return int64(spend), true
 }
 
 func normalizeThreadTokenUsage(params json.RawMessage) json.RawMessage {

@@ -110,7 +110,18 @@ func mergeSubagentProgress(base, tick provider.SubagentProgressMeta) provider.Su
 	if tick.ToolUses > out.ToolUses {
 		out.ToolUses = tick.ToolUses
 	}
-	if tick.TotalTokens > out.TotalTokens {
+	// Latest wins, not max. Codex's figure is cumulative and can only
+	// grow, so the two rules agree there. CLAUDE's cannot: its
+	// task_progress number is LATEST input plus all output (see
+	// provider.SubagentProgressMeta), so an agent that compacts its own
+	// context legitimately reports a SMALLER one afterwards, and a max
+	// merge would pin the card to the pre-compaction peak for the rest of
+	// the run while Claude's own UI moved on. Latest also lets a
+	// terminal's authoritative usage correct an earlier, larger tick.
+	// Zero still means "this provider did not report it", which is what
+	// the guard is for — the other counters here are genuinely monotonic
+	// and keep their max.
+	if tick.TotalTokens > 0 {
 		out.TotalTokens = tick.TotalTokens
 	}
 	if tick.DurationMs > out.DurationMs {

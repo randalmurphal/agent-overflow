@@ -285,7 +285,7 @@ none fits.
 | Turn start/complete | Write `turns` row; emit `provider:turn_*` to frontend; force-close orphan tool_calls on complete. |
 | Error `result`, no open round/turn | Orphan error item attributed to the pending-send head (else last turn index); queued-send flush suppressed. Settled turns route to `persistLateTurnPayload` instead. See `turn-lifecycle.md §Error routing` path 5. |
 | Error | Distinct event kind; frontend renders as status/alert. |
-| Subagent progress tick | Live-only `provider:subagent_progress` + the latest tick per launch in a bounded map; nothing persists until the launch's terminal folds the final numbers onto `meta.subagentProgress`. See "Live subagent progress" below. |
+| Subagent progress tick | Live-only `provider:subagent_progress` + the merged latest tick per launch in a bounded map (monotonic counters take the max, `TotalTokens` takes the newest value because Claude's can dip on a subagent compaction); nothing persists until the launch's terminal folds the final numbers onto `meta.subagentProgress`. See "Live subagent progress" below. |
 | Subagent backgrounded | Flips the launch to `is_background` and stamps `meta.subagentBackgroundedAt` first-wins (the moment sidechain streaming stopped). |
 | Background tasks changed | Live-only `provider:background_tasks_changed`; the whole set every time, and an empty set is a real answer. |
 | Unknown | Log with full context, do not drop silently. |
@@ -572,6 +572,18 @@ onto the launch row's `meta.subagentProgress`.
   read model: nothing derives from it, every tick replaces it wholesale,
   and `CleanupThread` / `MarkThreadActive` sweep the thread's entries —
   a replacement process never carries the previous process's tasks.
+- A tick MERGES into the stored entry rather than replacing it: a
+  provider that cannot report a counter leaves it zero, so a replace
+  would blank Claude's tool count on a tick carrying only tokens.
+  `ToolUses` / `DurationMs` take the max because they are genuinely
+  monotonic; `TotalTokens` takes the LATEST value instead. Codex's is
+  cumulative and the two rules agree there, but CLAUDE's is latest-input
+  plus all output (`provider.SubagentProgressMeta`), so a subagent that
+  compacts its own context legitimately reports a SMALLER number
+  afterwards — a max would pin the card to the pre-compaction peak for
+  the rest of the run while Claude's own UI moved on. Latest also lets a
+  terminal's authoritative usage correct an earlier, larger tick. Zero
+  still means "not reported", which is what the guard is for.
 - `PeekSubagentProgress` reads without consuming; `TakeSubagentProgress`
   consumes. Only the terminal paths take.
 - `persistSubagentFinalProgress(launch, final)` folds the live entry

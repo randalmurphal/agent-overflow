@@ -1252,7 +1252,13 @@ func TestDispatchLineChildTokenUsageBecomesScopedProgress(t *testing.T) {
 		},
 	}
 
-	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"thread/tokenUsage/updated","params":{"threadId":"child-provider-1","tokenUsage":{"last":{"totalTokens":50000},"total":{"totalTokens":73000},"modelContextWindow":200000}}}`))
+	// Real-shaped breakdown: a child on its third round, most of whose
+	// input is a cached re-read. `total.totalTokens` (147000) is the
+	// number the card used to show and the one this test now refuses.
+	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"thread/tokenUsage/updated","params":{"threadId":"child-provider-1","tokenUsage":{` +
+		`"last":{"totalTokens":50000,"inputTokens":49000,"cachedInputTokens":46000,"cacheWriteInputTokens":500,"outputTokens":1000,"reasoningOutputTokens":400},` +
+		`"total":{"totalTokens":147000,"inputTokens":144000,"cachedInputTokens":138000,"cacheWriteInputTokens":500,"outputTokens":3000,"reasoningOutputTokens":1200},` +
+		`"modelContextWindow":200000}}}`))
 
 	if len(events) != 1 {
 		t.Fatalf("events = %+v, want exactly one scoped progress tick", events)
@@ -1274,10 +1280,13 @@ func TestDispatchLineChildTokenUsageBecomesScopedProgress(t *testing.T) {
 	if err := json.Unmarshal(event.Meta, &progress); err != nil {
 		t.Fatalf("decode progress meta: %v", err)
 	}
-	// The CUMULATIVE total, not `last` (which is the context size the
-	// parent-thread meter reads).
-	if progress.TaskID != "child-provider-1" || progress.TotalTokens != 73000 {
-		t.Fatalf("progress = %+v, want the child thread id and its cumulative total", progress)
+	// The child's cumulative spend, counted once: fresh input
+	// (144000 - 138000) + cache writes (500) + all output ever (3000) =
+	// 9500. Not `total.totalTokens` (147000), which re-counts the cached
+	// prompt every round; not `last.totalTokens` (50000), which is a
+	// context size and drops the earlier rounds' output.
+	if progress.TaskID != "child-provider-1" || progress.TotalTokens != 9500 {
+		t.Fatalf("progress = %+v, want the child thread id and its cumulative spend", progress)
 	}
 	if progress.ToolUses != 0 || progress.DurationMs != 0 {
 		t.Fatalf("progress = %+v, Codex reports neither tool count nor elapsed", progress)
@@ -1342,7 +1351,7 @@ func TestDispatchLineNestedChildTokenUsageCarriesTheSpawnsOwnParent(t *testing.T
 		},
 	}
 
-	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"thread/tokenUsage/updated","params":{"threadId":"grandchild-1","tokenUsage":{"total":{"totalTokens":1200},"modelContextWindow":200000}}}`))
+	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"thread/tokenUsage/updated","params":{"threadId":"grandchild-1","tokenUsage":{"last":{"inputTokens":1100,"outputTokens":40},"total":{"totalTokens":1200,"inputTokens":1100,"outputTokens":100},"modelContextWindow":200000}}}`))
 
 	if len(events) != 1 {
 		t.Fatalf("events = %+v, want one progress tick", events)
