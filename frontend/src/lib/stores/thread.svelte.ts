@@ -1685,8 +1685,11 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
 
     /**
      * One-item compatibility wrapper around the batched upsert path.
-     * Event routing uses `upsertItems` so bursts of wait rows and payload
-     * enrichments hit the timeline in one paint.
+     * Neither this nor `upsertItems` arms the structural spring: wire
+     * appends route through `applyProviderItemUpserts` below, which
+     * does. The un-armed paths are for rows that must NOT animate the
+     * viewport (revert-on-interrupt restores) or arm at their own call
+     * site (the composer's optimistic send).
      */
     upsertItem(item: Item): boolean {
       return itemStream.upsertItemsBatch([item]) !== null;

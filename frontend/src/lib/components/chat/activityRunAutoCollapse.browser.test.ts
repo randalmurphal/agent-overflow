@@ -118,10 +118,16 @@ describe('activity run — auto-collapse off-screen', () => {
     const runId = subject.dataset.runId!;
     expect(subject.dataset.live).toBe('true');
 
+    // Every append below goes through `applyProviderItemUpserts`, the
+    // wire's entry point: it is the one upsert path that arms the
+    // structural spring, and an arm is what retires the controller's
+    // cold-load settle window. `pane.upsertItem` merges without arming,
+    // so its growth inside that window sync-pins as a load correction
+    // and the glide these tests measure never happens.
     // Prose settles the run. The old behavior closed the clip here; the new
     // one holds it open — nobody has moved on yet.
     const lastProse = prose('p1', AFTER_RUN_INDEX, THREAD_ID);
-    pane.upsertItem(lastProse);
+    pane.applyProviderItemUpserts([lastProse]);
     await waitForQuietBottom(scrollEl, 'settle after closing prose', QUIET_BOTTOM);
     expect(subject.dataset.live).toBe('false');
     expect(subject.dataset.collapsed).toBe('false');
@@ -138,7 +144,7 @@ describe('activity run — auto-collapse off-screen', () => {
     let last: Item | undefined;
     for (let i = 0; i < count; i += 1) {
       last = prose(`t${i}`, AFTER_RUN_INDEX + 1 + i, THREAD_ID, tall);
-      mounted.pane.upsertItem(last);
+      mounted.pane.applyProviderItemUpserts([last]);
     }
     await waitForQuietBottom(mounted.scrollEl, 'tail growth settle', QUIET_BOTTOM);
     return last!;
@@ -283,7 +289,7 @@ describe('activity run — auto-collapse off-screen', () => {
     // direct write and snap the animation. The gate must stand down until
     // the settle's scrollend instead.
     for (let i = 0; i < 6; i += 1) {
-      pane.upsertItem(prose(`t${i}`, AFTER_RUN_INDEX + 1 + i, THREAD_ID, true));
+      pane.applyProviderItemUpserts([prose(`t${i}`, AFTER_RUN_INDEX + 1 + i, THREAD_ID, true)]);
     }
 
     // Sample every frame until the hold is gone AND the viewport has been
@@ -335,8 +341,8 @@ describe('activity run — auto-collapse off-screen', () => {
     );
 
     // Immediately inside the restore's settle window: the next glide.
-    pane.upsertItem(prose('g0', AFTER_RUN_INDEX + 20, THREAD_ID, true));
-    pane.upsertItem(prose('g1', AFTER_RUN_INDEX + 21, THREAD_ID, true));
+    pane.applyProviderItemUpserts([prose('g0', AFTER_RUN_INDEX + 20, THREAD_ID, true)]);
+    pane.applyProviderItemUpserts([prose('g1', AFTER_RUN_INDEX + 21, THREAD_ID, true)]);
 
     // Track what the reader sees: the incoming row's viewport-relative
     // top. A glide only ever walks it UP the screen; compensation for
@@ -352,7 +358,7 @@ describe('activity run — auto-collapse off-screen', () => {
       if (i === 3) {
         // Mid-glide, a row far above the viewport re-measures taller —
         // the late-typesetting shape that moves the stale target.
-        pane.upsertItem(
+        pane.applyProviderItemUpserts([
           makeItem({
             id: 't0',
             threadId: THREAD_ID,
@@ -365,7 +371,7 @@ describe('activity run — auto-collapse off-screen', () => {
             createdAt: AFTER_RUN_INDEX + 1,
             updatedAt: 99999,
           }),
-        );
+        ]);
       }
       if (distanceToBottom(scrollEl) <= QUIET_BOTTOM.epsilonPx) quietFrames += 1;
       else quietFrames = 0;
@@ -396,7 +402,7 @@ describe('activity run — auto-collapse off-screen', () => {
     );
 
     for (let i = 0; i < 10; i += 1) {
-      pane.upsertItem(prose(`t${i}`, AFTER_RUN_INDEX + 1 + i, THREAD_ID, true));
+      pane.applyProviderItemUpserts([prose(`t${i}`, AFTER_RUN_INDEX + 1 + i, THREAD_ID, true)]);
     }
     // Quiet, but NOT at the bottom: the reader is parked on the run, and an
     // escaped controller must not be scrolled by the growth.
