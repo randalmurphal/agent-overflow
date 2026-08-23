@@ -29,13 +29,6 @@ export function commandTextForItem(
   return commandFromSummary(item.summary);
 }
 
-export function displayCommandForItem(
-  item: Item,
-  meta: CommandOutputMeta | null | undefined,
-): string {
-  return stripShellWrapper(commandTextForItem(item, meta));
-}
-
 export function commandErrorForItem(
   item: Item,
   meta: CommandOutputMeta | null | undefined,
@@ -204,16 +197,35 @@ function basename(path: string): string {
   return idx >= 0 ? normalized.slice(idx + 1) : normalized;
 }
 
+// Splits on unquoted whitespace with POSIX-ish quoting: single quotes
+// are literal, double quotes honor backslash escapes, a bare backslash
+// escapes the next character. Returns null for an unterminated quote or
+// a trailing escape (a truncated preview), so the caller can fall back.
+//
+// The word under construction is a run of SLICES of the input, cut only
+// at the characters the splitter consumes (quotes, escapes, separators);
+// the previous per-character `current += char` minted a cons string per
+// character, which was the single largest V8 allocation site while a
+// command streamed (5MB/min, 2026-08-23 profile).
 export function splitShellWords(input: string): string[] | null {
   const words: string[] = [];
   let current = '';
+  // Start of the slice of `input` not yet appended to `current`.
+  let segmentStart = 0;
   let quote: "'" | '"' | null = null;
   let escaped = false;
   let sawToken = false;
 
-  for (const char of input) {
+  const consume = (index: number): void => {
+    if (index > segmentStart) current += input.slice(segmentStart, index);
+    segmentStart = index + 1;
+  };
+
+  for (let i = 0; i < input.length; i += 1) {
+    const char = input[i];
     if (escaped) {
-      current += char;
+      // The escaped character stays in the word: the segment simply
+      // continues through it.
       sawToken = true;
       escaped = false;
       continue;
@@ -221,9 +233,9 @@ export function splitShellWords(input: string): string[] | null {
 
     if (quote === "'") {
       if (char === "'") {
+        consume(i);
         quote = null;
       } else {
-        current += char;
         sawToken = true;
       }
       continue;
@@ -231,27 +243,31 @@ export function splitShellWords(input: string): string[] | null {
 
     if (quote === '"') {
       if (char === '"') {
+        consume(i);
         quote = null;
       } else if (char === '\\') {
+        consume(i);
         escaped = true;
       } else {
-        current += char;
         sawToken = true;
       }
       continue;
     }
 
     if (char === '\\') {
+      consume(i);
       escaped = true;
       sawToken = true;
       continue;
     }
     if (char === "'" || char === '"') {
+      consume(i);
       quote = char;
       sawToken = true;
       continue;
     }
     if (/\s/.test(char)) {
+      consume(i);
       if (sawToken) {
         words.push(current);
         current = '';
@@ -259,11 +275,11 @@ export function splitShellWords(input: string): string[] | null {
       }
       continue;
     }
-    current += char;
     sawToken = true;
   }
 
   if (escaped || quote !== null) return null;
+  consume(input.length);
   if (sawToken) words.push(current);
   return words;
 }

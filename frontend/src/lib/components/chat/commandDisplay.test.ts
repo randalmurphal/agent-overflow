@@ -3,12 +3,19 @@ import { makeItem } from '../../../test/helpers/chat';
 import { __resetParseJsonObjectCacheForTest } from '../../utils/parseJsonObject';
 import {
   commandTextForItem,
-  displayCommandForItem,
   isCommandToolName,
   splitShellWords,
   stripShellWrapper,
   terminalInteractionLabelFromSummary,
 } from './commandDisplay';
+import type { Item, CommandOutputMeta } from '../../types/models';
+
+// The two-step form CommandOutput.svelte composes (command text, then the
+// wrapper strip), kept as one call here so the display expectations read
+// end to end.
+function displayCommandForItem(item: Item, meta: CommandOutputMeta | null): string {
+  return stripShellWrapper(commandTextForItem(item, meta));
+}
 
 describe('commandDisplay', () => {
   it('classifies Claude Bash and Codex command_execution as command tools', () => {
@@ -43,6 +50,19 @@ describe('commandDisplay', () => {
       '-lc',
       `python3 -c 'print("Hello, world!")'`,
     ]);
+  });
+
+  it('splits on unquoted whitespace only, honoring escapes inside and outside double quotes', () => {
+    expect(splitShellWords('a  b\tc')).toEqual(['a', 'b', 'c']);
+    expect(splitShellWords('  leading and trailing  ')).toEqual(['leading', 'and', 'trailing']);
+    expect(splitShellWords('one\\ word two')).toEqual(['one word', 'two']);
+    expect(splitShellWords('"a \\"quoted\\" b" c')).toEqual(['a "quoted" b', 'c']);
+    expect(splitShellWords("'back\\slash stays' x")).toEqual(['back\\slash stays', 'x']);
+    expect(splitShellWords('""')).toEqual(['']);
+    expect(splitShellWords('')).toEqual([]);
+    expect(splitShellWords('unterminated "quote')).toBeNull();
+    expect(splitShellWords('trailing escape\\')).toBeNull();
+    expect(splitShellWords('emoji 🎉 "🎉 x"')).toEqual(['emoji', '🎉', '🎉 x']);
   });
 
   it('does not rewrite non-shell-wrapper commands', () => {

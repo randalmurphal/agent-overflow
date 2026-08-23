@@ -23,7 +23,8 @@
   import AnsiText from './AnsiText.svelte';
   import {
     commandErrorForItem,
-    displayCommandForItem,
+    commandTextForItem,
+    stripShellWrapper,
   } from './commandDisplay';
   import { createRunningElapsed } from './useRunningElapsed.svelte';
   import { formatDurationMs, formatTimeOfDay } from '../../utils/format';
@@ -109,7 +110,14 @@
   let hasBody = $derived(
     hasPayload || deferredOutputState === 'loading' || deferredOutputState === 'error',
   );
-  let displayCommand = $derived(displayCommandForItem(effectiveDisplayItem, meta));
+  // Two deriveds, not one: `effectiveDisplayItem` is a fresh object on
+  // every streamed upsert, so a single derived re-ran the shell-word
+  // split on every chunk of output (7MB/min of strings in the 2026-08-23
+  // profile). The command TEXT is a string, and a derived whose value is
+  // unchanged does not wake its dependents, so the strip runs once per
+  // distinct command.
+  let commandText = $derived(commandTextForItem(effectiveDisplayItem, meta));
+  let displayCommand = $derived(stripShellWrapper(commandText));
   let isBackgroundedLaunch = $derived(
     effectiveStatusItem.kind === 'tool_call' && effectiveStatusItem.isBackground === true,
   );
