@@ -34,7 +34,7 @@
     statusItem,
     durationLabel = '',
     showTimestamp = true,
-    trailingActions,
+    hostActions,
   }: {
     pane?: ThreadPane;
     item: Item;
@@ -42,7 +42,7 @@
     statusItem?: Item;
     durationLabel?: string;
     showTimestamp?: boolean;
-    trailingActions?: Snippet;
+    hostActions?: Snippet;
   } = $props();
   let effectiveDisplayItem = $derived(displayItem ?? item);
   let effectiveStatusItem = $derived(statusItem ?? item);
@@ -166,7 +166,7 @@ let hasExpandableBody = $derived(
     timestamp={showTimestamp
       ? { testId: 'tool-call-card-time', value: effectiveStatusItem.createdAt, label: time }
       : undefined}
-    {trailingActions}
+    actions={hostActions}
   >
     {#snippet status()}
       <ToolRowStatusIndicator item={effectiveStatusItem} state={indicatorState} testId="tool-call-card-status" />

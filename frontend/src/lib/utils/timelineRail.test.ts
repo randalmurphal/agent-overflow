@@ -14,9 +14,11 @@ function leaf(overrides: Partial<Item> = {}): TimelineNode {
   return { kind: 'leaf', item: makeItem(overrides) };
 }
 
+const groupParent = makeItem({ id: 'parent' });
 const group: SubagentGroupNode = {
   kind: 'group',
-  parent: makeItem({ id: 'parent' }),
+  parent: groupParent,
+  anchor: groupParent,
   groupKey: 'group:parent',
   children: [],
   descendantCount: 0,

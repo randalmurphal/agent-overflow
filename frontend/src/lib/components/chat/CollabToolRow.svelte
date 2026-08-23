@@ -53,7 +53,7 @@
     durationLabel = '',
     showTimestamp = false,
     showSpawnStatus = false,
-    trailingActions,
+    hostActions,
   }: {
     pane?: ThreadPane;
     item: Item;
@@ -62,7 +62,7 @@
     durationLabel?: string;
     showTimestamp?: boolean;
     showSpawnStatus?: boolean;
-    trailingActions?: Snippet;
+    hostActions?: Snippet;
   } = $props();
   let effectiveStatusItem = $derived(statusItem ?? item);
 
@@ -268,7 +268,7 @@
     timestamp={showTimestamp
       ? { testId: 'collab-tool-row-time', value: effectiveStatusItem.createdAt, label: time }
       : undefined}
-    {trailingActions}
+    actions={hostActions}
   >
     {#snippet status()}
       <ToolRowStatusIndicator

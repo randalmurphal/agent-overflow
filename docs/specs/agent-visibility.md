@@ -37,6 +37,10 @@ launch, how do progress and terminal signals arrive, which controls exist
 - Pane keeps the composer shell, non-interactive, with Stop (= kill
   where the wire can) as its only live control; background button and
   status/elapsed sit in the pane header beside the breadcrumb (Q20).
+  The shell's top row is the working chip — the agent's own spinner
+  sprite / LED chase, verb and elapsed timer, keyed on the launch — while
+  the agent runs (ruling 2026-08-23, reversing the earlier "no run timer,
+  no spinner" call); idle, the row stays as a height twin.
 - Pane lifetime mirrors the review pane: persisted and restored, closed
   when the source thread changes, closes itself when the scoped row is
   gone on restore (Q5).
@@ -64,15 +68,28 @@ launch, how do progress and terminal signals arrive, which controls exist
   presents the prompt (Q10, Q10b).
 - Notifications (bell/toast) fire for top-level nodes only; nested
   completions update their card silently (Q11).
-- A background completion sibling ALWAYS renders as its own row at the
-  completion point (top-level, or inside the parent card for a nested
-  node), as a compact agent row with the card's open-in-pane door.
-  Folding it onto the launch card as the card's status source is
-  additive, never a replacement: the bell is hidden on the strength of
-  this row existing (`utils/notificationFilter.ts`), so a fold that also
-  dropped the row left the main transcript with no trace of the agent
-  finishing (regression 2026-08-22; tripwire
-  `utils/backgroundCompletionVisibility.test.ts`).
+- A DETACHED launch (async ack, `run_in_background`, a Codex spawn, a
+  SendMessage resume carrier, or backgrounded mid-flight —
+  `launchRunsDetached`) has an immutable spawn row and ONE card, at its
+  completion point (ruling 2026-08-23): the spawn row is a compact agent
+  row (label, model, description, launch time, a static `background`
+  marker, the open-in-pane door) that never changes after the spawn; the
+  card — status, duration, tool count, tokens, the expandable transcript,
+  open-in-pane — renders AT the `complete:<id>` sibling
+  (`SubagentGroupNode.anchor`), top-level or inside the parent card for
+  a nested node, after everything the main thread wrote while the agent
+  ran. While the agent runs there is no card: the pane and the tray are
+  its live surfaces. The bell is hidden on the strength of the completion
+  rendering (`utils/notificationFilter.ts`), which is why the card sits
+  at the sibling rather than folding it onto a card at the launch (the
+  fold-and-drop version left the transcript with no trace of the agent
+  finishing — regression 2026-08-22; tripwire
+  `utils/backgroundCompletionVisibility.test.ts`). Awaited launches are
+  unchanged: one card at the launch, completing in place.
+- Row actions (open-in-pane, background, stop) render before the
+  status / duration / timestamp columns on every row so the timestamp
+  column stays aligned (`ToolHeaderMeta`'s `actions` slot; chat
+  AGENTS.md "Row Contract").
 - The agent pane keys its whole scoped window as ONE turn
   (`ThreadPane.timelineTurns`, overridden by the scope facade): active
   while the scoped launch runs, settled on the launch's own completion

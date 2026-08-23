@@ -1,14 +1,27 @@
 <script lang="ts">
-  // Compact agent LEAF row: the background tray's agent entry and the two
-  // page-boundary shapes (a depth-cap flattened launch, a completion
-  // sibling whose launch is outside the loaded window). The inline
-  // timeline renders launches as the shared agent card (SubagentGroup)
-  // instead — this row is deliberately header-only.
+  // Compact agent LEAF row. Three shapes share it:
   //
-  // The old expandable body that parsed the payload JSONL back into a
+  //   - The SPAWN RECORD of a detached launch (`launchRunsDetached`: the
+  //     §E5 async ack, run_in_background, a SendMessage resume carrier,
+  //     or backgrounded mid-flight). Immutable by contract: label, model,
+  //     description, launch time, a static `background` marker, and the
+  //     open-in-pane door. No status, no duration, no progress — a
+  //     detached launch's row never changes after the spawn (the tray
+  //     invariant), and everything the agent does shows on its card at
+  //     the completion point (`SubagentGroupNode.anchor`, user ruling
+  //     2026-08-23). This row must not read the completion sibling to
+  //     decorate itself.
+  //   - The background tray's agent entry: the host supplies the
+  //     completion as `statusItem`, its own duration and its actions.
+  //   - The two page-boundary shapes: a depth-cap flattened launch and a
+  //     completion sibling whose launch is outside the loaded window.
+  //
+  // The inline timeline renders awaited launches as the shared agent card
+  // (SubagentGroup); this row is deliberately header-only. The old
+  // expandable body that parsed the payload JSONL back into a
   // pseudo-transcript (ClaudeSubagentTranscript) is DELETED
   // (docs/specs/agent-visibility.md migration table, "ack-text
-  // rendering"): the agent's transcript now exists as real rows under the
+  // rendering"): the agent's transcript exists as real rows under the
   // launch — streamed live or backfilled from the task_notification's
   // output_file — and renders in the card body and the agent pane. A
   // failed output-file read/backfill still surfaces here as an inline
@@ -32,6 +45,7 @@
     deriveClaudeSubagentModelLabel,
     readClaudeSubagentInput,
   } from '../../utils/claudeSubagentLabel';
+  import { launchRunsDetached, subagentLaunchInfo } from '../../utils/subagentLaunch';
   import ToolHeaderMeta from './ToolHeaderMeta.svelte';
   import ToolRowStatusIndicator from './ToolRowStatusIndicator.svelte';
   import RowError from './RowError.svelte';
@@ -45,7 +59,7 @@
     statusItem,
     durationLabel = '',
     showTimestamp = true,
-    trailingActions,
+    hostActions,
   }: {
     pane?: ThreadPane;
     item: Item;
@@ -53,16 +67,16 @@
     statusItem?: Item;
     durationLabel?: string;
     showTimestamp?: boolean;
-    trailingActions?: Snippet;
+    /** A host's own row actions (the tray's stop/open). Replaces the open-pane door. */
+    hostActions?: Snippet;
   } = $props();
 
   // The launch this row stands for. A completion sibling names it through
   // `completionOf`; every other shape IS the launch.
   let launchId = $derived(item.kind === 'tool_completion' ? (item.completionOf ?? '') : item.id);
-  // A completion leaf renders with its LAUNCH's identity (label, model,
-  // description) when the launch is loaded, so the row at the completion
-  // point reads as the same agent the card above it named. The completion
-  // item stays the status source.
+  // A completion leaf (page boundary: its launch outside the loaded
+  // window, or a depth-cap flatten) renders with its LAUNCH's identity
+  // when the launch is loaded. The completion item stays the status source.
   let launchItem = $derived(
     item.kind === 'tool_completion' && launchId ? pane?.getItemById(launchId) : undefined,
   );
@@ -83,13 +97,25 @@
   );
   let time = $derived(formatTimeOfDay(effectiveStatusItem.createdAt));
 
-  let isBackgroundedLaunch = $derived(effectiveStatusItem.kind === 'tool_call' && effectiveStatusItem.isBackground === true);
-  let isRunning = $derived(effectiveStatusItem.status === 'running' || effectiveStatusItem.status === 'streaming');
+  // The spawn record (header comment): a detached launch with no host-
+  // supplied status. A forked Skill cannot be recognised from one row
+  // (it needs its children), and a flattened fork is a depth-cap edge
+  // that keeps the ordinary status rendering.
+  let isSpawnRecord = $derived(
+    item.kind === 'tool_call'
+      && statusItem === undefined
+      && launchRunsDetached(item, subagentLaunchInfo(item, { hasChildren: () => false }), itemMeta),
+  );
+  let isRunning = $derived(
+    !isSpawnRecord
+      && (effectiveStatusItem.status === 'running' || effectiveStatusItem.status === 'streaming'),
+  );
   const ticker = createRunningElapsed(
-    () => isRunning && durationLabel === '' && !isBackgroundedLaunch,
+    () => isRunning && durationLabel === '',
     () => item.createdAt,
   );
   let durationMs = $derived.by<number | null>(() => {
+    if (isSpawnRecord) return null;
     const d = summaryMeta?.durationMs;
     return typeof d === 'number' && d >= 0 ? d : null;
   });
@@ -102,38 +128,58 @@
     const error = itemMeta?.notification_output_error ?? itemMeta?.output_file_error;
     return typeof error === 'string' && error ? error : 'Task output could not be read.';
   });
-  let indicatorState = $derived(indicatorStateForItem(effectiveStatusItem, { meta: statusMeta }));
+  let indicatorState = $derived(
+    isSpawnRecord ? null : indicatorStateForItem(effectiveStatusItem, { meta: statusMeta }),
+  );
   let rowError = $derived(
-    rowErrorWithFallback(effectiveStatusItem, { meta: statusMeta, fallback: 'Agent failed' }),
+    isSpawnRecord
+      ? null
+      : rowErrorWithFallback(effectiveStatusItem, { meta: statusMeta, fallback: 'Agent failed' }),
   );
 
   // Same door the card uses: the PANE decides where opening routes (the
   // base pane opens its agent companion; the scoped facade pushes a
-  // breadcrumb hop). A host that supplies its own trailing actions (the
-  // background tray) keeps them; the default is the open affordance, so a
-  // completion leaf at the bottom of the transcript can reach the agent's
-  // transcript without scrolling back to the card that launched it.
-  let opensAgentPane = $derived(pane !== undefined && trailingActions === undefined && launchId !== '');
+  // breadcrumb hop). A host that supplies its own actions (the background
+  // tray) keeps them; the default is the open affordance, so the spawn
+  // record is the way into a running background agent's transcript.
+  let opensAgentPane = $derived(pane !== undefined && hostActions === undefined && launchId !== '');
   function openInPane(event: MouseEvent): void {
     event.stopPropagation();
     pane?.openAgentPane(launchId, agentLabel);
   }
 </script>
 
-{#snippet openPaneAction()}
-  <button
-    type="button"
-    onclick={openInPane}
-    title="Open in agent pane"
-    aria-label="Open {agentLabel} in agent pane"
-    data-testid="agent-row-open-pane"
-    class="inline-flex items-center justify-center opacity-0 group-hover/tool:opacity-100 focus-visible:opacity-100 rounded p-0.5 text-text-secondary hover:text-text-primary cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
-  >
-    <Icon icon={PanelRightOpen} size={12} />
-  </button>
+{#snippet rowActions()}
+  {#if isSpawnRecord}
+    <span
+      class="shrink-0 text-[0.625rem] text-fg-hint"
+      data-testid="agent-row-background"
+    >
+      background
+    </span>
+  {/if}
+  {#if hostActions}
+    {@render hostActions()}
+  {:else if opensAgentPane}
+    <button
+      type="button"
+      onclick={openInPane}
+      title="Open in agent pane"
+      aria-label="Open {agentLabel} in agent pane"
+      data-testid="agent-row-open-pane"
+      class="inline-flex items-center justify-center opacity-0 group-hover/tool:opacity-100 focus-visible:opacity-100 rounded p-0.5 text-text-secondary hover:text-text-primary cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+    >
+      <Icon icon={PanelRightOpen} size={12} />
+    </button>
+  {/if}
 {/snippet}
 
-<div class="group/tool overflow-hidden" data-testid="agent-row" data-tool-kind="robot">
+<div
+  class="group/tool overflow-hidden"
+  data-testid="agent-row"
+  data-tool-kind="robot"
+  data-spawn-record={isSpawnRecord ? 'true' : undefined}
+>
   <TranscriptDisclosureHeader
     expanded={false}
     expandable={false}
@@ -156,7 +202,7 @@
           label: durationLabel || (durationMs !== null ? formatDurationMs(durationMs) : ticker.label),
         }}
         timestamp={showTimestamp ? { testId: 'agent-row-time', value: effectiveStatusItem.createdAt, label: time } : undefined}
-        trailingActions={trailingActions ?? (opensAgentPane ? openPaneAction : undefined)}
+        actions={isSpawnRecord || hostActions || opensAgentPane ? rowActions : undefined}
       >
         {#snippet status()}
           <ToolRowStatusIndicator item={effectiveStatusItem} state={indicatorState} testId="agent-row-status" />

@@ -109,9 +109,11 @@ function mkGroup(
   overrides: Partial<SubagentGroupNode> & { parentId: string; parentItem?: Item },
 ): SubagentGroupNode {
   const { parentId, parentItem, ...rest } = overrides;
+  const parent = parentItem ?? mkAgentParent(parentId);
   return {
     kind: 'group',
-    parent: parentItem ?? mkAgentParent(parentId),
+    parent,
+    anchor: parent,
     groupKey: parentId,
     children: [],
     descendantCount: 0,

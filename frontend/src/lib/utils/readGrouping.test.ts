@@ -104,9 +104,11 @@ describe('groupConsecutiveReads', () => {
     // chrome belongs to a subagent transcript and the compact reads
     // row would otherwise pretend to own activity that lives inside
     // an entirely different container.
+    const groupParent = mkItem({ id: 'p1', kind: 'tool_call', toolName: 'Agent', summary: 'Agent: x' });
     const group: TimelineNode = {
       kind: 'group',
-      parent: mkItem({ id: 'p1', kind: 'tool_call', toolName: 'Agent', summary: 'Agent: x' }),
+      parent: groupParent,
+      anchor: groupParent,
       groupKey: 'g:p1',
       children: [],
       descendantCount: 0,

@@ -16,9 +16,11 @@ function leaf(id: string): TimelineNode {
 
 /** A subagent card: one run row, several items, none of them the row's own. */
 function card(parentId: string, childId: string): TimelineNode {
+  const parent = makeItem({ id: parentId, kind: 'tool_call', toolName: 'Task' });
   return {
     kind: 'group',
-    parent: makeItem({ id: parentId, kind: 'tool_call', toolName: 'Task' }),
+    parent,
+    anchor: parent,
     groupKey: parentId,
     children: [leaf(childId)],
     descendantCount: 1,

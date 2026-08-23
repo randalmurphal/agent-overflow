@@ -6,14 +6,15 @@
 //
 // `filterRedundantNotifications` hides the bell on the strength of the
 // completed lifecycle sibling existing — it assumes that sibling renders
-// in place. `groupItemsBySubagent` folds that same sibling onto the
-// launch card as its status source. Each rule was correct alone and each
-// had its own unit test; what neither test saw was the grouping pass ALSO
-// dropping the folded sibling from the node array, which left the main
-// transcript with no trace of an agent finishing (live regression
-// 2026-08-22: "THERE IS NEVER THE COMPLETION IN THE MAIN TIMELINE"). This
-// file runs the two rules in their production order, over the shapes the
-// backend actually writes, and counts rows.
+// in place. `groupItemsBySubagent` builds the launch's card AT that
+// sibling (`SubagentGroupNode.anchor`), folding it in as the status
+// source. Each rule was correct alone and each had its own unit test;
+// what neither test saw was an earlier grouping pass folding the sibling
+// onto a card at the LAUNCH and dropping it from the node array, which
+// left the main transcript with no trace of an agent finishing (live
+// regression 2026-08-22: "THERE IS NEVER THE COMPLETION IN THE MAIN
+// TIMELINE"). This file runs the two rules in their production order,
+// over the shapes the backend actually writes, and counts rows.
 
 import { describe, expect, it } from 'vitest';
 import type { Item } from '../types/models';
@@ -122,13 +123,19 @@ describe('background completion visibility (filter + grouping, production order)
     expect(bellsIn(nodes)).toEqual([]);
     expect(rowsCarrying(nodes, 'complete:agent-1')).toBe(1);
     // At its own position — after the prose the main agent wrote while
-    // the task ran — not folded back onto the card launched earlier.
+    // the task ran — as the agent's card, with the transcript under it.
+    // The launch row stays where it was, as the immutable spawn record.
     expect(nodes.map((node) => timelineNodeItemId(node))).toEqual([
       'lead',
       'agent-1',
       'main-prose',
       'complete:agent-1',
     ]);
+    expect(nodes[1].kind).toBe('leaf');
+    const card = nodes[3];
+    if (card.kind !== 'group') throw new Error('expected the completion point to be the card');
+    expect(card.parent.id).toBe('agent-1');
+    expect(card.children.map((child) => timelineNodeItemId(child))).toEqual(['child']);
     expect(findTimelineNodeIndex(nodes, 'complete:agent-1')).toBe(3);
   });
 
@@ -140,11 +147,13 @@ describe('background completion visibility (filter + grouping, production order)
 
     expect(bellsIn(nodes)).toEqual([]);
     expect(rowsCarrying(nodes, 'complete:bash-1')).toBe(1);
+    // A Bash launch is not a subagent launch: both rows are plain leaves.
     expect(nodes.map((node) => timelineNodeItemId(node))).toEqual([
       'bash-1',
       'main-prose',
       'complete:bash-1',
     ]);
+    expect(nodes.every((node) => node.kind === 'leaf')).toBe(true);
   });
 
   it('a nested background agent: its completion row sits inside the parent card, no bell is written', () => {
@@ -160,13 +169,16 @@ describe('background completion visibility (filter + grouping, production order)
     expect(rowsCarrying(nodes, 'complete:inner')).toBe(1);
     expect(rowsCarrying(nodes, 'complete:outer')).toBe(1);
     expect(nodes.map((node) => timelineNodeItemId(node))).toEqual(['outer', 'complete:outer']);
-    const outer = nodes[0];
-    if (outer.kind !== 'group') throw new Error('expected the outer launch to be a card');
+    expect(nodes[0].kind).toBe('leaf');
+    const outer = nodes[1];
+    if (outer.kind !== 'group') throw new Error('expected the outer completion point to be a card');
     expect(outer.children.map((child) => timelineNodeItemId(child))).toEqual([
       'inner',
       'outer-prose',
       'complete:inner',
     ]);
+    expect(outer.children[0].kind).toBe('leaf');
+    expect(outer.children[2].kind).toBe('group');
   });
 
   it('a watch task keeps its bells: they are the history, not a redundant ping', () => {
@@ -178,9 +190,10 @@ describe('background completion visibility (filter + grouping, production order)
     expect(rowsCarrying(nodes, 'complete:monitor-1')).toBe(1);
   });
 
-  it('a still-running background agent keeps its bell-less launch card and no completion row', () => {
+  it('a still-running background agent is a bell-less spawn leaf with no completion row', () => {
     // The other half of the contract: nothing renders a completion that
-    // has not happened.
+    // has not happened — and nothing renders a card either (the spawn row
+    // is immutable; the live transcript is the pane's).
     const nodes = project([
       mkItem({
         id: 'agent-live',
@@ -196,6 +209,7 @@ describe('background completion visibility (filter + grouping, production order)
     ]);
 
     expect(nodes.map((node) => timelineNodeItemId(node))).toEqual(['agent-live', 'main-prose']);
+    expect(nodes.every((node) => node.kind === 'leaf')).toBe(true);
     expect(nodes.some((node) => node.kind === 'leaf' && node.item.kind === 'tool_completion')).toBe(false);
   });
 });

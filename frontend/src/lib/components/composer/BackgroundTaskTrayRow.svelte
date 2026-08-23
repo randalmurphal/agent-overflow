@@ -127,7 +127,7 @@
         payloadId={presentation.payloadId}
         {durationLabel}
         showTimestamp={false}
-        trailingActions={hasStopAction ? stopAction : undefined}
+        hostActions={hasStopAction ? stopAction : undefined}
       />
     {:else if presentation.kind === 'agent'}
       <AgentRow
@@ -136,7 +136,7 @@
         statusItem={presentation.statusItem}
         {durationLabel}
         showTimestamp={false}
-        trailingActions={hasStopAction ? stopAction : undefined}
+        hostActions={hasStopAction ? stopAction : undefined}
       />
     {:else if presentation.kind === 'collab'}
       <CollabToolRow
@@ -144,7 +144,7 @@
         statusItem={presentation.statusItem}
         {durationLabel}
         showSpawnStatus
-        trailingActions={hasStopAction ? stopAction : undefined}
+        hostActions={hasStopAction ? stopAction : undefined}
       />
     {:else}
       <GenericToolCallRow
@@ -153,7 +153,7 @@
         statusItem={presentation.statusItem}
         {durationLabel}
         showTimestamp={false}
-        trailingActions={hasStopAction ? stopAction : undefined}
+        hostActions={hasStopAction ? stopAction : undefined}
       />
     {/if}
   </div>

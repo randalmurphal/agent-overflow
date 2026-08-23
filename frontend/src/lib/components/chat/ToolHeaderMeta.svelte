@@ -1,4 +1,10 @@
 <script lang="ts">
+  // The right-hand meta columns of a tool row header: status slot,
+  // duration, timestamp — in that order, every row, so the columns line
+  // up down the transcript. Row ACTIONS (open-in-pane, background, stop)
+  // render FIRST, before the status slot: a control appended after the
+  // timestamp shifts that column on exactly the rows that carry it
+  // (user ruling 2026-08-23; see AGENTS.md "Row Contract").
   import type { Snippet } from 'svelte';
 
   interface DurationSlot {
@@ -18,7 +24,8 @@
     timestamp?: TimestampSlot;
     class?: string;
     status?: Snippet;
-    trailingActions?: Snippet;
+    /** Row actions. Rendered before the meta columns — never after the timestamp. */
+    actions?: Snippet;
   }
 
   let {
@@ -27,7 +34,7 @@
     timestamp,
     class: className = '',
     status,
-    trailingActions,
+    actions,
   }: Props = $props();
 
   // Non-finite values produce an Invalid Date, which is truthy but whose
@@ -41,6 +48,10 @@
 </script>
 
 <span class="flex shrink-0 items-center gap-2 {className}">
+  {#if actions}
+    {@render actions()}
+  {/if}
+
   <span
     class="inline-flex min-w-5 shrink-0 items-center justify-center"
     data-testid={statusSlotTestId}
@@ -67,9 +78,5 @@
     >
       {timestamp.label}
     </time>
-  {/if}
-
-  {#if trailingActions}
-    {@render trailingActions()}
   {/if}
 </span>

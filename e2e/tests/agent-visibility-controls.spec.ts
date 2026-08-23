@@ -40,6 +40,10 @@ const WRITE_PATH = 'spike3.txt';
 const DENY_REASON = 'Bash(rm:*) is denied by a project rule';
 const BACKFILL_TEXT = 'Backfilled: the corpus sweep found two drifts.';
 
+// The agent here is AWAITED: its card sits at the launch point while it
+// runs, so the pill has a card to light. A background agent has no card
+// until its completion lands (ruling 2026-08-23); while it waits on an
+// approval the composer prompt is the only surface that asks.
 test('a subagent’s approval and denial rows nest under its card, and the card asks for approval', async ({
   harness,
   page,
@@ -52,11 +56,7 @@ test('a subagent’s approval and denial rows nest under its card, and the card 
           description: 'spike3',
           subagent_type: 'writer',
         }),
-        backgroundTasksChangedLine([
-          { task_id: 'task-writer', task_type: 'local_agent', description: 'spike3' },
-        ]),
         taskStartedLine('task-writer', 'tu-agent', 'spike3'),
-        asyncAgentAckLine('tu-agent', 'task-writer', 'spike3'),
 
         // The subagent's own tool_use, on the parent stream with
         // parent_tool_use_id — exactly as the capture carries it.
@@ -91,7 +91,7 @@ test('a subagent’s approval and denial rows nest under its card, and the card 
               }),
 
               taskUpdatedLine('task-writer', { status: 'completed', end_time: 1787419835322 }),
-              taskNotificationLine('task-writer', 'tu-agent', 'WROTE'),
+              toolResultLine('tu-agent', 'WROTE'),
               ...textLines('msg-final', 'The writer agent finished.'),
               RESULT_LINE,
             ]),
@@ -246,11 +246,19 @@ test('backgrounding a running inline agent returns the turn and the transcript c
   // The main turn returned: the composer is a composer again.
   await expect(page.getByTestId('composer-send')).toBeVisible();
   await expect(page.getByTestId('composer-interrupt')).toHaveCount(0);
-  await expect(card).toHaveAttribute('data-background', 'true');
+  // The card is gone from the launch point: a backgrounded launch's row
+  // becomes the immutable spawn record, and its card renders at the
+  // completion point once that lands (ruling 2026-08-23).
+  await expect(timeline.getByTestId('subagent-group')).toHaveCount(0);
+  const spawnRow = timeline.locator('[data-item-id="tu-agent"]');
+  await expect(spawnRow.getByTestId('agent-row-background')).toHaveText('background');
+  await expect(spawnRow.getByTestId('agent-row-status')).toHaveCount(0);
 
   // --- The pane marks the cut ---------------------------------------
-  await card.getByTestId('subagent-group-open-pane').first().click();
+  await spawnRow.hover();
+  await spawnRow.getByTestId('agent-row-open-pane').click();
   const pane = page.getByTestId('companion-pane-agent-body');
+  await expect(pane.getByTestId('agent-pane-working')).toBeVisible();
   await expect(pane.getByTestId('agent-pane-streaming-paused')).toBeVisible();
   const paneTimeline = pane.getByTestId('agent-pane-timeline');
   await expect(paneTimeline.getByText('Reading the first shard.')).toBeVisible();
@@ -263,9 +271,14 @@ test('backgrounding a running inline agent returns the turn and the transcript c
   await expect(paneTimeline.getByText(BACKFILL_TEXT)).toBeVisible();
   // ...tool rows included, not just the text.
   await expect(paneTimeline.getByRole('link', { name: 'Open README.md in editor' })).toBeVisible();
-  // A file the backfill could not read would say so on the card.
-  await expect(card.getByTestId('subagent-group-output-error')).toHaveCount(0);
+  // The card is back, at the completion point, settled. A file the
+  // backfill could not read would say so on it.
+  await expect(timeline.getByTestId('subagent-group')).toHaveCount(1);
+  const settledCard = timeline.getByTestId('subagent-group').first();
+  await expect(settledCard).toHaveAttribute('data-background', 'true');
+  await expect(settledCard.getByTestId('subagent-group-output-error')).toHaveCount(0);
   await expect(pane.getByTestId('agent-pane-streaming-paused')).toHaveCount(0);
+  await expect(pane.getByTestId('agent-pane-working')).toHaveCount(0);
   // The notification's `usage` is the whole run's, and it persists onto
   // the launch row — a backgrounded agent's live ticks are gone by then.
   await expect(pane.getByTestId('workspace-strip-usage')).toHaveText('24.1k');

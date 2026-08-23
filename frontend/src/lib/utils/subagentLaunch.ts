@@ -357,6 +357,28 @@ function resumedAgentName(item: Item): string {
 }
 
 /**
+ * Whether a launch runs DETACHED from the main turn — stamped at launch
+ * (the §E5 async ack, an explicit `run_in_background`, a Codex spawn, a
+ * SendMessage resume carrier) or mid-flight (the background button /
+ * Ctrl+B, which triage stamps on the launch row as
+ * `meta.subagentBackgroundedAt`).
+ *
+ * The one rule the card, the compact agent row, and the grouping share
+ * for "is this the immutable spawn record?": a detached launch's row
+ * never changes after the spawn (the tray invariant — it stays `running`
+ * forever and its outcome lands on a separate `complete:<id>` sibling),
+ * so nothing live or terminal is ever rendered on it. Everything the
+ * agent does shows at its completion point (`SubagentGroupNode.anchor`).
+ */
+export function launchRunsDetached(
+  item: Item,
+  info: SubagentLaunchInfo | null,
+  meta: Record<string, unknown> | null,
+): boolean {
+  return info?.background === true || meta?.subagentBackgroundedAt !== undefined;
+}
+
+/**
  * THE launch predicate. Returns null for every row that does not anchor a
  * subagent — including an inline (non-forking) `Skill` and a
  * `SendMessage` that is just a message.

@@ -66,6 +66,7 @@ import type { SubagentFoldAggregate } from './subagentFold';
 import { parseJsonObject } from './parseJsonObject';
 import {
   isPotentialSubagentLaunch,
+  launchRunsDetached,
   subagentDescendantCountFromMeta,
   subagentLaunchContextFrom,
   subagentLaunchInfo,
@@ -124,8 +125,31 @@ export interface TimelineLeaf {
 
 export interface SubagentGroupNode {
   kind: 'group';
-  /** The parent tool-call item that anchors the group. */
+  /**
+   * The launch tool-call this card IS: its identity (label, model,
+   * description), its expansion key, and the bucket its children were
+   * collected under. Always the launch, wherever the card sits.
+   */
   parent: Item;
+  /**
+   * The item whose POSITION the card occupies, and the id the card
+   * answers to for ordering, reveal gating, scroll anchors and
+   * jump-to-item (`timelineNodeItemId`, `nodeContainsItem`):
+   *
+   *   - an AWAITED launch completes in place, so the card sits at the
+   *     launch and `anchor === parent`;
+   *   - a DETACHED Claude launch (`launchRunsDetached`: async,
+   *     run_in_background, a resume carrier, or backgrounded mid-flight)
+   *     is an immutable spawn record — its row renders as a compact leaf
+   *     that never changes — and the card sits at the launch's
+   *     `complete:<id>` sibling, after everything the main thread wrote
+   *     while the agent ran. There `anchor === completion`. Until that
+   *     sibling loads there is no card at all: the agent's live
+   *     transcript is the pane's and the tray's, never the spawn row's
+   *     (user ruling 2026-08-23). A Codex spawn keeps its card at the
+   *     launch (see `detachedLaunchIDs` in `groupItemsBySubagent`).
+   */
+  anchor: Item;
   /** Stable structural key for virtualization and expansion state. */
   groupKey: string;
   /**
@@ -135,22 +159,21 @@ export interface SubagentGroupNode {
    * reports at terminal — status, duration, the final report payload —
    * which the launch row itself never receives, because a backgrounded
    * launch stays `running` forever by design (the tray invariant). The
-   * card renders it as its status/result source.
+   * card renders it as its status/result source, and — for a detached
+   * launch — sits AT it (`anchor`), so the sibling's position in the
+   * transcript is exactly where the card renders. That is load-bearing:
+   * the bell (`notification` row) is hidden whenever a completed sibling
+   * exists (utils/notificationFilter.ts), so the card at the completion
+   * point is the only in-sequence evidence that the agent finished. A
+   * version that folded the sibling onto a card sitting at the LAUNCH and
+   * dropped the sibling's row erased every trace of the completion from
+   * the point where it happened (live regression 2026-08-22; tripwire
+   * `backgroundCompletionVisibility.test.ts`).
    *
-   * Folding is ADDITIVE: the sibling also keeps its own row at its own
-   * position (top-level, or inside the parent launch's card when nested),
-   * because that row is the only in-sequence evidence that the agent
-   * finished. The card sits where the agent was LAUNCHED, possibly many
-   * turns above; the bell (`notification` row) is hidden whenever a
-   * completed sibling exists (utils/notificationFilter.ts). Dropping the
-   * sibling from the top level therefore erased every trace of the
-   * completion from the point where it happened (live regression
-   * 2026-08-22). Unlike `WaitGroupNode.completion`, this one is never
-   * removed from the node array.
-   *
-   * Undefined while the agent is still running, for an awaited launch
-   * (which completes in place and has no sibling at all), and at a page
-   * boundary where the sibling loaded but the launch did not.
+   * Undefined while the agent is still running and for an awaited launch
+   * (which completes in place and has no sibling at all). At a page
+   * boundary where the sibling loaded but the launch did not, the sibling
+   * renders as a compact leaf of its own and no card exists.
    *
    * NOT counted in `descendantCount` and not a preview candidate of ITS
    * OWN card: it is that card's header source, not its transcript.
@@ -429,7 +452,11 @@ function isWaitCarrier(item: Item): boolean {
 
 function timelineNodeRootItem(node: TimelineNode): Item {
   if (node.kind === 'leaf') return node.item;
-  if (node.kind === 'group' || node.kind === 'wait_group') return node.parent;
+  // A card's position is its anchor's: the launch for an awaited card, the
+  // completion sibling for a detached launch's card (see
+  // `SubagentGroupNode.anchor`).
+  if (node.kind === 'group') return node.anchor;
+  if (node.kind === 'wait_group') return node.parent;
   if (node.kind === 'read_group') return node.members[0];
   // A run's position is its first member's position — that is what orders
   // it against prose rows and what the reveal gate compares against.
@@ -601,6 +628,8 @@ function countDescendants(children: TimelineNode[]): number {
  */
 function subagentGroupNode(
   parent: Item,
+  /** Where the card sits: the launch, or its completion sibling (see `SubagentGroupNode.anchor`). */
+  anchor: Item,
   children: TimelineNode[],
   loadedDescendantCount: number,
   aggregates: SubagentLiveAggregates | undefined,
@@ -608,9 +637,7 @@ function subagentGroupNode(
    * The launch's background completion sibling, when one has loaded. Folded
    * onto the node as its status source; the FOLD adds nothing to the
    * counts or the preview (a finished agent with an empty transcript must
-   * not wedge its body on "Loading 1 entries…"). The sibling's own row is
-   * a separate matter: it sits in whichever bucket its `parentId` puts it
-   * in and counts there like any other child.
+   * not wedge its body on "Loading 1 entries…").
    */
   completion?: Item,
   // Evicted-fold counts of launches rendered as flattened leaves inside
@@ -625,6 +652,7 @@ function subagentGroupNode(
   return {
     kind: 'group',
     parent,
+    anchor,
     groupKey: parent.id,
     ...(completion ? { completion } : {}),
     children,
@@ -671,10 +699,17 @@ export function timelineNodeKey(node: TimelineNode): string {
   return _exhaustive;
 }
 
-/** Item id of the leaf or group root. */
+/**
+ * Item id of the leaf or structural node's root — the row the node
+ * RENDERS at its position. For a subagent card that is its anchor: a
+ * detached launch's own id belongs to its spawn leaf, so a scroll anchor
+ * or jump naming that id lands on the spawn row, never on the card
+ * sitting at the completion point turns later.
+ */
 export function timelineNodeItemId(node: TimelineNode): string {
   if (node.kind === 'leaf') return node.item.id;
-  if (node.kind === 'group' || node.kind === 'wait_group') return node.parent.id;
+  if (node.kind === 'group') return node.anchor.id;
+  if (node.kind === 'wait_group') return node.parent.id;
   if (node.kind === 'read_group') return node.members[0].id;
   if (node.kind === 'activity_run') return timelineNodeItemId(node.children[0]);
   const _exhaustive: never = node;
@@ -827,16 +862,23 @@ export function timelineNodeRepresentativeItem(node: TimelineNode): Item {
  */
 export function nodeContainsItem(node: TimelineNode, itemId: string): boolean {
   if (node.kind === 'leaf') return node.item.id === itemId;
-  if (node.kind === 'group' || node.kind === 'wait_group') {
+  if (node.kind === 'group') {
+    // A card claims the row it renders AT (its anchor) and its children.
+    // For an awaited launch the anchor IS the launch; for a detached one
+    // it is the completion sibling, and the launch id is deliberately
+    // NOT claimed: that row is the spawn leaf, rendered on its own
+    // turns earlier, and a scroll anchor or jump naming it must land
+    // there (see `timelineNodeItemId`).
+    return node.anchor.id === itemId
+      || node.children.some((child) => nodeContainsItem(child, itemId));
+  }
+  if (node.kind === 'wait_group') {
     // A wait group's folded `completion` is rendered AS its header and
     // exists nowhere else in the node array, so a search hit on that
     // completion's own id (Go indexes its summary) must resolve to this
-    // row or fail to scroll. A subagent group's completion is NOT claimed
-    // here: that sibling keeps its own leaf at its own position (see
-    // `SubagentGroupNode.completion`), and a jump to it lands on the
-    // leaf, not on the card launched turns earlier.
+    // row or fail to scroll.
     return node.parent.id === itemId
-      || (node.kind === 'wait_group' && node.completion?.id === itemId)
+      || node.completion?.id === itemId
       || node.children.some((child) => nodeContainsItem(child, itemId));
   }
   if (node.kind === 'read_group') return node.members.some((m) => m.id === itemId);
@@ -969,6 +1011,16 @@ export function groupItemsBySubagent(
   // is about to place.
   const launchContext = subagentLaunchContextFrom(sortedWithCarriers);
   const subagentLaunchIDs = new Set<string>();
+  // CLAUDE launches that run detached from the main turn
+  // (`launchRunsDetached`). Their row is an immutable spawn record and
+  // their card sits at their completion sibling — see
+  // `SubagentGroupNode.anchor`. Codex spawns are detached too but keep
+  // their card at the launch: a Codex child's completion is claimed by the
+  // `wait_agent` group that observed it whenever the parent waited (see
+  // the fold pass below), so a spawn has no reliable completion row of its
+  // own to host the card, and none of its transcript streams to the parent
+  // either — there is nothing live to keep off the spawn row.
+  const detachedLaunchIDs = new Set<string>();
 
   /** Returns whether the child was linked under the carrier. */
   function addWaitChild(carrierID: string, child: Item): boolean {
@@ -1001,16 +1053,23 @@ export function groupItemsBySubagent(
 
   for (const item of sortedWithCarriers) {
     itemByID.set(item.id, item);
-    if (subagentLaunchInfo(item, launchContext) !== null) {
+    const launchInfo = subagentLaunchInfo(item, launchContext);
+    if (launchInfo !== null) {
       subagentLaunchIDs.add(item.id);
+      if (
+        launchInfo.provider === 'claude'
+        && launchRunsDetached(item, launchInfo, parseJsonObject(item.meta))
+      ) {
+        detachedLaunchIDs.add(item.id);
+      }
     }
   }
 
   // A LAUNCH's background completion sibling folds into its launch's group
-  // node as the header, the same fold-and-drop trade a wait_group makes with
-  // its wait_agent completion. Fold and drop are kept in lockstep by
-  // construction here: the drop filter below keys on the ids actually folded,
-  // so a completion the fold declined can never vanish.
+  // node as the status source. For a detached launch the sibling is ALSO
+  // where that card renders (`cardLaunchByCompletionID` below): the
+  // sibling's position becomes the card's, so nothing is dropped and
+  // nothing renders twice.
   const launchCompletionByLaunchID = new Map<string, Item>();
 
   for (const item of sortedWithCarriers) {
@@ -1048,10 +1107,22 @@ export function groupItemsBySubagent(
       launchCompletionByLaunchID.set(item.completionOf, item);
     }
   }
-  // A launch's background completion sibling is NOT filtered here: it folds
-  // onto its card (`launchCompletionByLaunchID`) AND stays a row at its own
-  // position — see `SubagentGroupNode.completion` for why dropping it
-  // erased the completion from the timeline.
+  // A detached launch's completion sibling: the position at which that
+  // launch's card renders (see `SubagentGroupNode.anchor`). Keyed by the
+  // sibling's id so `buildNode`, visiting the sibling at its own place in
+  // its bucket, builds the card there. An awaited launch that somehow
+  // carries a sibling keeps the sibling as a leaf of its own.
+  const cardLaunchByCompletionID = new Map<string, Item>();
+  for (const [launchID, completion] of launchCompletionByLaunchID) {
+    const launch = itemByID.get(launchID);
+    if (launch && detachedLaunchIDs.has(launchID)) {
+      cardLaunchByCompletionID.set(completion.id, launch);
+    }
+  }
+
+  // A launch's background completion sibling is NOT filtered here: it is
+  // the row the card is built AT — see `SubagentGroupNode.completion` for
+  // why dropping it erased the completion from the timeline.
   const sorted = sortedWithCarriers.filter((item) => {
     if (waitChildIDs.has(item.id)) return false;
     if (item.kind === 'tool_completion' && item.completionOf && item.toolName === 'wait_agent') {
@@ -1120,12 +1191,32 @@ export function groupItemsBySubagent(
       };
     }
 
-    const childItems = childrenByParent.get(item.id);
+    // A detached launch's completion sibling is where that launch's card
+    // renders (`SubagentGroupNode.anchor`): the sibling's slot, the
+    // launch's identity and subtree.
+    const cardLaunch = cardLaunchByCompletionID.get(item.id);
+    if (cardLaunch) return buildLaunchGroup(cardLaunch, item, depth);
+
     const isLaunch = subagentLaunchIDs.has(item.id);
+    // A detached launch is an immutable spawn record: a leaf, whatever
+    // sits under it. Its subtree renders under its card once the
+    // completion sibling loads; until then the agent's live transcript is
+    // the pane's and the tray's, never the spawn row's.
+    if (isLaunch && detachedLaunchIDs.has(item.id)) return { kind: 'leaf', item };
+
+    const childItems = childrenByParent.get(item.id);
     if ((!childItems || childItems.length === 0) && !isLaunch) {
       return { kind: 'leaf', item };
     }
+    return buildLaunchGroup(item, item, depth);
+  }
 
+  /**
+   * The card for launch `item`, positioned at `anchor` (the launch itself
+   * for an awaited launch, its completion sibling for a detached one).
+   */
+  function buildLaunchGroup(item: Item, anchor: Item, depth: number): SubagentGroupNode {
+    const childItems = childrenByParent.get(item.id);
     if (depth >= MAX_DEPTH) {
       // Cap depth: render the deeper descendants as flat leaf siblings of
       // this node's parent instead of nesting further. The group still
@@ -1170,8 +1261,8 @@ export function groupItemsBySubagent(
         flatChildren.push({ kind: 'leaf', item: next });
         if (subagentLaunchIDs.has(next.id)) {
           flattenedFoldCount += aggregates?.(next.id)?.evictedCount ?? 0;
-          // A flattened launch renders as a LEAF with no node to fold its
-          // completion sibling into; the sibling is a row of its own in
+          // A flattened launch renders as a LEAF with no card to build at
+          // its completion sibling; the sibling is a leaf of its own in
           // this same bucket (it carries the launch's parentId), so it
           // arrives through `enqueue` like any other descendant.
         }
@@ -1195,6 +1286,7 @@ export function groupItemsBySubagent(
       }
       return subagentGroupNode(
         item,
+        anchor,
         flatChildren,
         flatChildren.length,
         aggregates,
@@ -1209,6 +1301,7 @@ export function groupItemsBySubagent(
     const children = (childItems ?? []).map((child) => buildNode(child, depth + 1));
     return subagentGroupNode(
       item,
+      anchor,
       children,
       countDescendants(children),
       aggregates,

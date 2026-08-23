@@ -264,9 +264,23 @@ describe('<SubagentGroup> card affordances (agent-visibility)', () => {
     // The visible "background" pill was removed by user ruling (2026-08-22):
     // it was noise on every async card. Classification stays pinned via the
     // card root's data-background attribute, which the e2e specs assert too.
+    // A detached Claude launch has no card until its completion sibling
+    // loads (the spawn row is immutable; the card sits at the completion —
+    // utils/subagentGrouping.ts `SubagentGroupNode.anchor`), so the fixture
+    // settles the agent to get one.
     const { pane, group } = await setup([
       agentLaunch({ isBackground: true }),
-      makeItem({ id: 'child:1', itemIndex: 1, parentId: 'agent:1', status: 'running', summary: 'w' }),
+      makeItem({ id: 'child:1', itemIndex: 1, parentId: 'agent:1', status: 'completed', summary: 'w' }),
+      makeItem({
+        id: 'complete:agent:1',
+        itemIndex: 2,
+        kind: 'tool_completion',
+        toolName: 'Agent',
+        isBackground: true,
+        completionOf: 'agent:1',
+        status: 'completed',
+        summary: 'Agent: done',
+      }),
     ]);
     const { getByTestId, queryByTestId } = render(SubagentGroupTestHarness, { props: { group, pane } });
     expect(getByTestId('subagent-group').getAttribute('data-background')).toBe('true');

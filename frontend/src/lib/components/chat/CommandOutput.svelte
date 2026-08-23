@@ -52,7 +52,7 @@
     collapsedPreview = '',
     durationLabel = '',
     showTimestamp = true,
-    trailingActions,
+    hostActions,
   }: {
     pane?: ThreadPane;
     item: Item;
@@ -69,7 +69,7 @@
     /** Tray surfaces show elapsed time instead of the absolute transcript timestamp. */
     showTimestamp?: boolean;
     /** Optional actions rendered outside the disclosure button. */
-    trailingActions?: Snippet;
+    hostActions?: Snippet;
   } = $props();
   let effectiveDisplayItem = $derived(displayItem ?? item);
   let effectiveStatusItem = $derived(statusItem ?? item);
@@ -318,7 +318,7 @@
       timestamp={showTimestamp
         ? { testId: 'command-output-time', value: effectiveStatusItem.createdAt, label: time }
         : undefined}
-      {trailingActions}
+      actions={hostActions}
     >
       {#snippet status()}
         <ToolRowStatusIndicator item={effectiveStatusItem} state={indicatorState} testId="command-output-status" />

@@ -40,9 +40,11 @@ function leafNode(overrides: Partial<Item> = {}): TimelineNode {
 }
 
 function groupNode(parentId: string): TimelineNode {
+  const parent = makeItem({ id: parentId, kind: 'tool_call', toolName: 'Task' });
   return {
     kind: 'group',
-    parent: makeItem({ id: parentId, kind: 'tool_call', toolName: 'Task' }),
+    parent,
+    anchor: parent,
     groupKey: parentId,
     // Deliberately non-empty: a group's children are inside its own card, so
     // `activityRunMemberItems` must NOT walk them — and the anchor must still

@@ -40,6 +40,7 @@ function group(parentId: string, toolName = 'Task'): TimelineNode {
   return {
     kind: 'group',
     parent,
+    anchor: parent,
     groupKey: parentId,
     children: [],
     descendantCount: 0,

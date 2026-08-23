@@ -4,13 +4,21 @@
   // pieces with the subagent's values filled in and the non-applicable
   // pieces absent — never a hand-drawn imitation:
   //
+  // - activity rail: the working chip (the agent's own spinner sprite /
+  //   LED chase, verb, and elapsed timer, keyed on the launch so they
+  //   hold for the run) while the agent runs — the same chip the main
+  //   composer's rail shows for the thread's turn (user ruling
+  //   2026-08-23, reversing the earlier "no run timer, no spinner" call).
+  //   Idle, the row stays as a height twin so the transcript's bottom
+  //   edge never moves when the agent settles (same reservation
+  //   Composer makes). No todos, no background segment, no input chip:
+  //   those are the thread's.
   // - input area: read-only line (plus the backgrounded-stream note);
   //   no textarea because steering a subagent is not a thing the wire
   //   offers.
   // - toolbar row: model chip (provider icon + the launch's model) where
   //   the model picker sits, Codex reasoning effort beside it. No rate
-  //   dials, no run timer, no spinner, no tool count, no kind chip —
-  //   all ruled off this surface.
+  //   dials, no tool count, no kind chip — ruled off this surface.
   // - send slot: the real SendButton in its stop variant, only where
   //   the wire can actually kill the task (a Claude launch carrying a
   //   task_id — StopClaudeTask). Forked skills have no task lifecycle
@@ -28,6 +36,10 @@
   import RowError from '../chat/RowError.svelte';
   import SendButton from '../composer/toolbar/SendButton.svelte';
   import ComposerWorkspaceStrip from '../composer/ComposerWorkspaceStrip.svelte';
+  import WorkingChip from '../composer/WorkingChip.svelte';
+  import { activityRailChipClasses, activityRailRowClasses } from '../composer/activityRailClasses';
+  import { createSharedNowClock } from '../chat/useRunningElapsed.svelte';
+  import { formatElapsedSeconds } from '../../utils/format';
   import { StopClaudeTask } from '../../stores/bindings';
   import { extractClaudeTaskID } from '../../utils/claudeTaskMeta';
   import { parseJsonObject } from '../../utils/parseJsonObject';
@@ -93,6 +105,17 @@
     isRunning && parentMeta?.subagentBackgroundedAt !== undefined,
   );
 
+  // The chip's elapsed timer runs from the LAUNCH, on the shared 1Hz
+  // clock (one interval for every running timer in the app). The scope's
+  // turn facet (agentScopeView) settles the pane's turn on the same
+  // start/end pair, so the chip and the response pill never disagree.
+  const clock = createSharedNowClock(() => isRunning);
+  let elapsedLabel = $derived.by(() => {
+    const start = launch?.createdAt ?? 0;
+    if (!Number.isFinite(start) || start <= 0) return '0s';
+    return formatElapsedSeconds(Math.max(0, Math.floor((clock.now - start) / 1_000)));
+  });
+
   // The subagent's own spend for the strip's usage slot: the live
   // progress tick while running, the persisted final numbers once
   // settled (provider:subagent_progress → meta.subagentProgress).
@@ -151,6 +174,35 @@
     data-testid="agent-pane-composer-shell"
     aria-disabled="true"
   >
+    <div
+      class="relative border-b border-border-subtle"
+      role="region"
+      aria-label="Agent Activity"
+      data-testid="agent-pane-activity-rail"
+    >
+      {#if isRunning && launch}
+        <span
+          class="working-hairline pointer-events-none absolute inset-x-0 top-0 z-10 block h-px"
+          aria-hidden="true"
+          data-testid="agent-pane-hairline"
+        ></span>
+      {/if}
+      <div class={activityRailRowClasses}>
+        {#if isRunning && launch}
+          <WorkingChip
+            {threadId}
+            pickKey={launch.id}
+            {elapsedLabel}
+            testIdPrefix="agent-pane-working"
+          />
+        {:else}
+          <!-- Height twin of the chip (Composer's `composer-activity-reserve`
+               trick): a zero-width space gives the chip box its line box, so
+               the shell's height is the same whether the agent runs or not. -->
+          <span class="{activityRailChipClasses} shrink-0" aria-hidden="true" data-testid="agent-pane-activity-reserve">{'\u200B'}</span>
+        {/if}
+      </div>
+    </div>
     <div class="px-4 pt-3 pb-2 text-sm text-fg-hint">
       Read-only agent transcript.
       {#if streamingPaused}

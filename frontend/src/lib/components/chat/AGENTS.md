@@ -81,6 +81,12 @@ Every row rendered inside `<TimelineVirtualizer>`:
 - Keeps its outer shell stable after first render. Do not swap static rows
   into buttons, insert chevrons late, animate body height inside the
   scroll surface, or append completion-only history rows.
+- Puts header ACTIONS (open-in-pane, background, stop) before the meta
+  columns. `ToolHeaderMeta` renders status slot, duration, timestamp in
+  that order on every row so the columns line up down the transcript;
+  its `actions` slot is its FIRST child. Never append a control after
+  the `<time>` — it shifts the timestamp column on exactly the rows
+  that carry the control.
 - Keeps conditionally rendered header actions height-neutral across every
   state transition. `opacity-0` hides paint, not layout, so a running-only
   control still sets the row height until it is removed at completion. Icon

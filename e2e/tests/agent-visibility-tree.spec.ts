@@ -243,30 +243,16 @@ test('a depth-2 background agent nests under its parent card and indents in the 
   // The main turn returns while both agents keep running in the background.
   await harness.waitForEvent('provider:turn_completed');
 
+  // While both run, the main timeline shows only the OUTER spawn record:
+  // an immutable compact row, no card (ruling 2026-08-23 — a background
+  // launch's card renders at its completion point, and the inner agent's
+  // rows are the outer agent's transcript, never the main thread's).
   const timeline = page.getByTestId('message-timeline-scroll');
-  const outerCard = timeline.getByTestId('subagent-group').first();
-  await expect(outerCard.getByTestId('subagent-group-label')).toContainText('Outer Reviewer');
-  await expect(outerCard).toHaveAttribute('data-background', 'true');
-
-  // The nested card lives in the parent's body, not on the main timeline.
-  await expect(timeline.getByTestId('subagent-group')).toHaveCount(1);
-  await outerCard.getByTestId('subagent-group-toggle').first().click();
-  const innerCard = outerCard
-    .getByTestId('subagent-group-body')
-    .first()
-    .getByTestId('subagent-group')
-    .first();
-  await expect(innerCard.getByTestId('subagent-group-label')).toContainText('Inner Scanner');
-  await expect(innerCard.getByTestId('subagent-group-kind')).toHaveText('agent');
-  await expect(innerCard).toHaveAttribute('data-background', 'true');
-
-  // Now the live tick, with the page already watching.
-  await waitForGate(harness, 'tick');
-  await advance(harness, mockId, 'tick');
-  await expect(innerCard.getByTestId('subagent-group-tools')).toHaveText('3 tools');
-  await expect(innerCard.getByTestId('subagent-group-preview')).toContainText(
-    'Scanning the parser for drift',
-  );
+  const outerSpawnRow = timeline.locator('[data-item-id="tu-outer"]');
+  await expect(outerSpawnRow.getByTestId('agent-row-preview')).toContainText('Outer Reviewer');
+  await expect(outerSpawnRow.getByTestId('agent-row-background')).toHaveText('background');
+  await expect(timeline.getByTestId('subagent-group')).toHaveCount(0);
+  await expect(timeline.locator('[data-item-id="tu-inner"]')).toHaveCount(0);
 
   // The background tray lists both, the child indented under its parent.
   await page.getByTestId('activity-rail-background-toggle').click();
@@ -283,9 +269,46 @@ test('a depth-2 background agent nests under its parent card and indents in the 
   ]);
   expect(innerBox!.x).toBeGreaterThan(outerBox!.x);
 
+  // The live surface for a running background agent is its PANE: the
+  // tray's open button scopes the companion to the inner agent, whose
+  // composer shell shows the working chip with its elapsed timer.
+  await trayRows.nth(1).getByTestId('background-task-tray-row-open').click();
+  const pane = page.getByTestId('companion-pane-agent-body');
+  await expect(pane.getByTestId('agent-pane-breadcrumb-current')).toContainText('Inner Scanner');
+  const shell = pane.getByTestId('agent-pane-composer-shell');
+  await expect(shell.getByTestId('agent-pane-working')).toBeVisible();
+  await expect(shell.getByTestId('agent-pane-working-elapsed')).toHaveText(/^\d+s$/);
+  await expect(shell.getByTestId('agent-pane-activity-reserve')).toHaveCount(0);
+
+  // Now the live tick, with the page already watching: the inner agent's
+  // own token spend reaches its pane's usage slot.
+  await waitForGate(harness, 'tick');
+  await advance(harness, mockId, 'tick');
+  await expect(pane.getByTestId('workspace-strip-usage')).toHaveText('18.2k');
+
   // Both settle: the tray is driven by the level set, so an empty
-  // `background_tasks_changed` empties it.
+  // `background_tasks_changed` empties it — and the cards appear at the
+  // completion points: the outer card on the main timeline, the inner
+  // card inside the outer card's body, each carrying its final counters.
   await waitForGate(harness, 'settle');
   await advance(harness, mockId, 'settle');
   await expect(trayRows).toHaveCount(0);
+  await expect(shell.getByTestId('agent-pane-working')).toHaveCount(0);
+  await expect(shell.getByTestId('agent-pane-activity-reserve')).toHaveCount(1);
+
+  await expect(timeline.getByTestId('subagent-group')).toHaveCount(1);
+  const outerCard = timeline.getByTestId('subagent-group').first();
+  await expect(outerCard.getByTestId('subagent-group-label')).toContainText('Outer Reviewer');
+  await expect(outerCard).toHaveAttribute('data-background', 'true');
+  await outerCard.getByTestId('subagent-group-toggle').first().click();
+  const innerCard = outerCard
+    .getByTestId('subagent-group-body')
+    .first()
+    .getByTestId('subagent-group')
+    .first();
+  await expect(innerCard.getByTestId('subagent-group-label')).toContainText('Inner Scanner');
+  await expect(innerCard.getByTestId('subagent-group-kind')).toHaveText('agent');
+  await expect(innerCard).toHaveAttribute('data-background', 'true');
+  // The last live tick is what the terminal persisted (mergeSubagentProgress).
+  await expect(innerCard.getByTestId('subagent-group-tools')).toHaveText('3 tools');
 });

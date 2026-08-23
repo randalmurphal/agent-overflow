@@ -250,6 +250,7 @@ function subagentGroup(parent: ReturnType<typeof makeItem>, children: TimelineNo
   return {
     kind: 'group',
     parent,
+    anchor: parent,
     groupKey: `group:${parent.id}`,
     children,
     descendantCount: children.length,

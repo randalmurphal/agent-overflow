@@ -198,25 +198,45 @@ describe('groupItemsBySubagent', () => {
         isBackground: true,
         meta: toolMeta({ toolName: 'collab_agent', input: { tool: 'spawn_agent' } }),
       }),
+      mkItem({
+        id: 'complete:background-agent',
+        itemIndex: 2,
+        kind: 'tool_completion',
+        toolName: 'Agent',
+        isBackground: true,
+        completionOf: 'background-agent',
+        summary: 'Agent: background-agent -> done',
+      }),
     ]);
 
-    // Every launch anchors a card from first render, awaited or not, and
-    // whichever provider it came from — the "suppressed leaf" path is gone.
-    const backgroundGroup = expectGroup(nodes[0]);
-    expect(backgroundGroup.parent.id).toBe('background-agent');
-    expect(backgroundGroup.children).toEqual([]);
+    // A settled Claude background launch: spawn leaf at the launch, card at
+    // the completion. A Codex spawn keeps its card at the launch (its
+    // completion may be claimed by a wait group, so the launch is the one
+    // reliable position) — see `detachedLaunchIDs` in the grouping.
+    expect(nodes.map((node) => timelineNodeItemId(node))).toEqual([
+      'background-agent',
+      'codex-agent',
+      'complete:background-agent',
+    ]);
+    expectLeaf(nodes[0]);
     const codexGroup = expectGroup(nodes[1]);
     expect(codexGroup.parent.id).toBe('codex-agent');
+    expect(codexGroup.anchor.id).toBe('codex-agent');
     expect(codexGroup.children).toEqual([]);
+    const backgroundGroup = expectGroup(nodes[2]);
+    expect(backgroundGroup.parent.id).toBe('background-agent');
+    expect(backgroundGroup.anchor.id).toBe('complete:background-agent');
+    expect(backgroundGroup.children).toEqual([]);
   });
 
-  it('nests a backgrounded Claude agent transcript in its card and folds the completion sibling', () => {
+  it('renders a backgrounded Claude agent as an immutable spawn leaf and ONE card at its completion', () => {
     // A backgrounded Claude Agent launches at the top level (parentId
-    // empty — the main agent launched it). Its inner transcript carries
-    // parentId === launch.id and belongs INSIDE the launch's card, never
-    // interleaved with the main agent's own rows. The completion sibling
-    // (parentId empty, completionOf === launch.id) folds onto the same
-    // card as its status source instead of trailing it as a second row.
+    // empty — the main agent launched it). Its row is the immutable spawn
+    // record; its inner transcript (parentId === launch.id) renders INSIDE
+    // its card, never interleaved with the main agent's own rows; and the
+    // card sits AT the completion sibling (parentId empty, completionOf
+    // === launch.id), after the prose the main agent wrote meanwhile —
+    // `SubagentGroupNode.anchor`, user ruling 2026-08-23.
     const nodes = groupItemsBySubagent([
       mkItem({ id: 'main-think', itemIndex: 0, kind: 'thinking', summary: 'planning' }),
       mkItem({
@@ -251,29 +271,36 @@ describe('groupItemsBySubagent', () => {
       }),
     ]);
 
-    // The completion sibling is BOTH the card's status source (folded) and
-    // a row of its own at the completion point. Folding is additive: the
-    // version that also dropped the sibling from the top level left the
-    // main transcript with no trace of the agent finishing (the bell is
-    // hidden on the strength of this row existing — see
-    // backgroundCompletionVisibility.test.ts).
+    // Node ids are the rows the nodes render AT: the spawn leaf answers
+    // the launch id, the card answers the completion id. The completion
+    // sibling is the card's status source AND its position — the bell is
+    // hidden on the strength of the completion rendering (see
+    // backgroundCompletionVisibility.test.ts), so the card at the
+    // completion point is the transcript's only trace of the agent
+    // finishing.
     expect(nodes.map((node) => timelineNodeItemId(node))).toEqual([
       'main-think',
       'bg-agent',
       'main-text',
       'complete:bg-agent',
     ]);
-    const group = expectGroup(nodes[1]);
+    expect(expectLeaf(nodes[1]).item.id).toBe('bg-agent');
+    const group = expectGroup(nodes[3]);
+    expect(group.parent.id).toBe('bg-agent');
+    expect(group.anchor.id).toBe('complete:bg-agent');
     expect(group.children.map((child) => expectLeaf(child).item.id)).toEqual([
       'child-bash',
       'child-bash-done',
       'child-text',
     ]);
     expect(group.completion?.id).toBe('complete:bg-agent');
-    // A jump to the completion lands on ITS leaf, not on the card launched
-    // turns earlier.
-    expect(nodeContainsItem(group, 'complete:bg-agent')).toBe(false);
+    // A jump to the completion lands on the card; a jump to the LAUNCH
+    // lands on the spawn leaf, never on the card turns later (a scroll
+    // restore anchored on the spawn row must come back to the spawn row).
+    expect(nodeContainsItem(group, 'complete:bg-agent')).toBe(true);
+    expect(nodeContainsItem(group, 'bg-agent')).toBe(false);
     expect(findTimelineNodeIndex(nodes, 'complete:bg-agent')).toBe(3);
+    expect(findTimelineNodeIndex(nodes, 'bg-agent')).toBe(1);
     // The fold is the header, not a transcript entry: not counted, and
     // never the collapsed preview.
     expect(group.descendantCount).toBe(3);
@@ -283,10 +310,12 @@ describe('groupItemsBySubagent', () => {
     }
   });
 
-  it('nests foreground and background subagent children alike in the same turn', () => {
-    // Both launch shapes coexisting in one turn. They used to take different
-    // code paths (group vs suppressed leaf); there is one path now, and this
-    // pins that the async flag no longer changes the SHAPE of the tree.
+  it('a running background launch is a spawn leaf with no card; its children wait for the completion', () => {
+    // Both launch shapes in one turn. An awaited launch is a card at the
+    // launch, children inside. A detached launch is an immutable spawn
+    // record: until its completion sibling lands there is no card and its
+    // children render nowhere on this surface — the pane and the tray are
+    // the live surfaces (user ruling 2026-08-23).
     const nodes = groupItemsBySubagent([
       agentLaunch('fg-agent', 0),
       mkItem({ id: 'fg-child', itemIndex: 1, kind: 'tool_call', toolName: 'Bash', parentId: 'fg-agent', summary: 'Bash: fg' }),
@@ -305,13 +334,15 @@ describe('groupItemsBySubagent', () => {
     expect(nodes).toHaveLength(2);
     const fgGroup = expectGroup(nodes[0]);
     expect(fgGroup.parent.id).toBe('fg-agent');
+    expect(fgGroup.anchor.id).toBe('fg-agent');
     expect(fgGroup.children.map((child) => expectLeaf(child).item.id)).toEqual(['fg-child']);
-    const bgGroup = expectGroup(nodes[1]);
-    expect(bgGroup.parent.id).toBe('bg-agent');
-    expect(bgGroup.children.map((child) => expectLeaf(child).item.id)).toEqual(['bg-child']);
+    expect(expectLeaf(nodes[1]).item.id).toBe('bg-agent');
+    expect(nodes.some((node) => nodeContainsItem(node, 'bg-child'))).toBe(false);
+    // The fallback jump target for the unrendered child is the spawn row.
+    expect(findTimelineNodeIndex(nodes, 'bg-agent')).toBe(1);
   });
 
-  it('folds a failed background agent errored completion onto its card', () => {
+  it('builds a failed background agent\u2019s card at its errored completion', () => {
     // On the wire a failing background subagent terminates via
     // `task_updated{failed}`, which triage maps to an `errored` completion
     // sibling (parentId empty, completionOf === launch.id — verified
@@ -355,7 +386,8 @@ describe('groupItemsBySubagent', () => {
       'bg-agent',
       'complete:bg-agent',
     ]);
-    const group = expectGroup(nodes[0]);
+    expectLeaf(nodes[0]);
+    const group = expectGroup(nodes[1]);
     expect(group.parent.id).toBe('bg-agent');
     const completion = group.completion;
     expect(completion?.id).toBe('complete:bg-agent');
@@ -404,10 +436,19 @@ describe('groupItemsBySubagent', () => {
         parentId: 'nested-launch',
         summary: 'Read: file.ts',
       }),
+      mkItem({
+        id: 'complete:bg-agent',
+        itemIndex: 3,
+        kind: 'tool_completion',
+        toolName: 'Agent',
+        isBackground: true,
+        completionOf: 'bg-agent',
+        summary: 'Agent: bg-agent -> done',
+      }),
     ]);
 
-    expect(nodes.map((node) => timelineNodeItemId(node))).toEqual(['bg-agent']);
-    const outer = expectGroup(nodes[0]);
+    expect(nodes.map((node) => timelineNodeItemId(node))).toEqual(['bg-agent', 'complete:bg-agent']);
+    const outer = expectGroup(nodes[1]);
     expect(outer.children).toHaveLength(1);
     const nested = expectGroup(outer.children[0]);
     expect(nested.parent.id).toBe('nested-launch');
@@ -472,14 +513,23 @@ describe('groupItemsBySubagent', () => {
         parentId: 'depth3-launch',
         summary: 'Read: depth4',
       }),
+      mkItem({
+        id: 'complete:bg-agent',
+        itemIndex: 5,
+        kind: 'tool_completion',
+        toolName: 'Agent',
+        isBackground: true,
+        completionOf: 'bg-agent',
+        summary: 'Agent: bg-agent -> done',
+      }),
     ]);
 
-    expect(nodes.map((node) => timelineNodeItemId(node))).toEqual(['bg-agent']);
+    expect(nodes.map((node) => timelineNodeItemId(node))).toEqual(['bg-agent', 'complete:bg-agent']);
     // Only LAUNCHES become cards. `depth2-tool` is an ordinary Bash row, so
     // it stays a leaf and `depth3-launch` — which names it as parent —
     // attaches to the nearest launch ANCESTOR (`depth1-launch`) as a sibling
     // rather than turning a Bash row into a container.
-    const outer = expectGroup(nodes[0]);
+    const outer = expectGroup(nodes[1]);
     const depth1 = expectGroup(outer.children[0]);
     expect(depth1.parent.id).toBe('depth1-launch');
     expect(expectLeaf(depth1.children[0]).item.id).toBe('depth2-tool');
@@ -492,7 +542,7 @@ describe('groupItemsBySubagent', () => {
     expect(MAX_DEPTH).toBe(3);
     expect(outer.descendantCount).toBe(4);
     for (const id of ['depth1-launch', 'depth2-tool', 'depth3-launch', 'depth4-tool']) {
-      expect(findTimelineNodeIndex(nodes, id)).toBe(0);
+      expect(findTimelineNodeIndex(nodes, id)).toBe(1);
     }
   });
 
@@ -512,22 +562,31 @@ describe('groupItemsBySubagent', () => {
       }),
       mkItem({ id: 'bg-child', itemIndex: 1, kind: 'tool_call', toolName: 'Bash', parentId: 'bg-agent', summary: 'Bash: bg' }),
       mkItem({ id: 'orphan', itemIndex: 2, parentId: 'missing-parent', summary: 'lost child' }),
+      mkItem({
+        id: 'complete:bg-agent',
+        itemIndex: 3,
+        kind: 'tool_completion',
+        toolName: 'Agent',
+        isBackground: true,
+        completionOf: 'bg-agent',
+        summary: 'Agent: bg-agent -> done',
+      }),
     ]);
 
-    expect(nodes.map((node) => timelineNodeItemId(node))).toEqual(['bg-agent', 'orphan']);
+    expect(nodes.map((node) => timelineNodeItemId(node))).toEqual(['bg-agent', 'orphan', 'complete:bg-agent']);
     const orphan = expectLeaf(nodes[1]);
     expect(orphan.orphan).toBe(true);
-    expect(expectGroup(nodes[0]).children.map((c) => expectLeaf(c).item.id)).toEqual([
+    expect(expectGroup(nodes[2]).children.map((c) => expectLeaf(c).item.id)).toEqual([
       'bg-child',
     ]);
   });
 
-  it('folds each background completion sibling onto its own launch card', () => {
+  it('builds each background launch\u2019s card at its own completion sibling, nested or not', () => {
     // Two completion siblings in the same tree: the OUTER bg launch's has
     // parentId "" (empty), the INNER one carries parentId = the OUTER anchor
-    // (the real wire shape for a nested backgrounded launch). Each belongs to
-    // the card of the launch it completes, wherever that card sits — the fold
-    // keys on `completionOf`, never on where the row happens to be parented.
+    // (the real wire shape for a nested backgrounded launch). Each is where
+    // the card of the launch it completes renders — the link is
+    // `completionOf`, the position is the sibling's own.
     const nodes = groupItemsBySubagent([
       mkItem({
         id: 'outer-bg',
@@ -579,27 +638,33 @@ describe('groupItemsBySubagent', () => {
       }),
     ]);
 
-    // Each completion folds onto its card AND keeps a row where it was
-    // written: the inner one inside the outer card (it carries the outer
-    // launch's parentId), the outer one at the top level.
+    // The outer spawn leaf at the top, the outer card at its completion;
+    // inside that card, the inner spawn leaf and then the inner card at
+    // ITS completion (which carries the outer launch's parentId).
     expect(nodes.map((node) => timelineNodeItemId(node))).toEqual([
       'outer-bg',
       'complete:outer-bg',
     ]);
-    const outer = expectGroup(nodes[0]);
+    expectLeaf(nodes[0]);
+    const outer = expectGroup(nodes[1]);
+    expect(outer.parent.id).toBe('outer-bg');
     expect(outer.completion?.id).toBe('complete:outer-bg');
-    const inner = expectGroup(outer.children[0]);
+    expect(outer.children.map((child) => timelineNodeItemId(child))).toEqual([
+      'inner-bg',
+      'complete:inner-bg',
+    ]);
+    expectLeaf(outer.children[0]);
+    const inner = expectGroup(outer.children[1]);
     expect(inner.parent.id).toBe('inner-bg');
     expect(inner.completion?.id).toBe('complete:inner-bg');
     expect(inner.children.map((child) => expectLeaf(child).item.id)).toEqual([
       'inner-child',
     ]);
-    expect(expectLeaf(outer.children[1]).item.id).toBe('complete:inner-bg');
-    // Every row resolves to the top-level node that renders it.
+    // Every row inside the outer card resolves to the outer card.
     for (const id of ['inner-bg', 'inner-child', 'complete:inner-bg']) {
-      expect(findTimelineNodeIndex(nodes, id)).toBe(0);
+      expect(findTimelineNodeIndex(nodes, id)).toBe(1);
     }
-    expect(findTimelineNodeIndex(nodes, 'complete:outer-bg')).toBe(1);
+    expect(findTimelineNodeIndex(nodes, 'outer-bg')).toBe(0);
   });
 
   it('terminates on malformed cyclic parentId data without swallowing the top-level anchor', () => {
@@ -626,6 +691,15 @@ describe('groupItemsBySubagent', () => {
       mkItem({ id: 'cycle-y', itemIndex: 3, kind: 'tool_call', toolName: 'Bash', parentId: 'cycle-x', summary: 'Bash: y' }),
       // Self-referential parentId.
       mkItem({ id: 'self-ref', itemIndex: 4, kind: 'tool_call', toolName: 'Bash', parentId: 'self-ref', summary: 'Bash: self' }),
+      mkItem({
+        id: 'complete:bg-agent',
+        itemIndex: 5,
+        kind: 'tool_completion',
+        toolName: 'Agent',
+        isBackground: true,
+        completionOf: 'bg-agent',
+        summary: 'Agent: bg-agent -> done',
+      }),
     ]);
 
     expect(nodes.map((node) => timelineNodeItemId(node))).toEqual([
@@ -633,12 +707,13 @@ describe('groupItemsBySubagent', () => {
       'cycle-x',
       'cycle-y',
       'self-ref',
+      'complete:bg-agent',
     ]);
-    expect(expectGroup(nodes[0]).children.map((c) => expectLeaf(c).item.id)).toEqual([
+    expect(expectGroup(nodes[4]).children.map((c) => expectLeaf(c).item.id)).toEqual([
       'bg-child',
     ]);
     // Cycle members are not orphan-flagged: their declared parents exist.
-    for (const node of nodes.slice(1)) {
+    for (const node of nodes.slice(1, 4)) {
       expect(expectLeaf(node).orphan).toBeUndefined();
     }
   });
@@ -1595,7 +1670,10 @@ describe('groupItemsBySubagent — launch kinds', () => {
       'toolu_resume',
       'complete:toolu_resume',
     ]);
-    const group = expectGroup(nodes[0]);
+    // A resume carrier is a detached Claude launch: spawn leaf, card at
+    // its round-2 completion.
+    expectLeaf(nodes[0]);
+    const group = expectGroup(nodes[1]);
     expect(group.parent.id).toBe('toolu_resume');
     expect(group.children.map((child) => expectLeaf(child).item.id)).toEqual(['round2-tool']);
     expect(group.completion?.id).toBe('complete:toolu_resume');
@@ -1651,10 +1729,19 @@ describe('groupItemsBySubagent — launch kinds', () => {
         parentId: 'depth2-agent',
         summary: 'Read: angle-b.ts',
       }),
+      mkItem({
+        id: 'complete:bg-agent',
+        itemIndex: 4,
+        kind: 'tool_completion',
+        toolName: 'Agent',
+        isBackground: true,
+        completionOf: 'bg-agent',
+        summary: 'Agent: bg-agent -> done',
+      }),
     ]);
 
-    expect(nodes).toHaveLength(1);
-    const outer = expectGroup(nodes[0]);
+    expect(nodes.map((node) => timelineNodeItemId(node))).toEqual(['bg-agent', 'complete:bg-agent']);
+    const outer = expectGroup(nodes[1]);
     const skill = expectGroup(outer.children[0]);
     expect(skill.parent.id).toBe('skill-1');
     const inner = expectGroup(skill.children[0]);
@@ -1666,6 +1753,10 @@ describe('groupItemsBySubagent — launch kinds', () => {
     expect(outer.descendantCount).toBe(3);
   });
 
+  // Awaited launches: the depth cap is about nesting, and an awaited card
+  // sits at its launch whatever its depth. (A detached Claude launch is a
+  // spawn leaf until its completion loads — a different contract, pinned
+  // above.)
   function launchChain(depthCount: number, extra: readonly Item[] = []): Item[] {
     const items: Item[] = [];
     for (let depth = 0; depth <= depthCount; depth++) {
@@ -1674,7 +1765,7 @@ describe('groupItemsBySubagent — launch kinds', () => {
         itemIndex: depth,
         kind: 'tool_call',
         toolName: 'Agent',
-        isBackground: true,
+        isBackground: false,
         ...(depth > 0 ? { parentId: `l${depth - 1}` } : {}),
         meta: toolMeta({ toolName: 'Agent' }),
       }));
@@ -1696,8 +1787,8 @@ describe('groupItemsBySubagent — launch kinds', () => {
   });
 
   it('keeps a flattened launch completion sibling as a leaf beside it', () => {
-    // Below the cap a nested launch renders as a LEAF, so it has no node to
-    // fold its completion into. The sibling carries the launch's parentId
+    // Below the cap a nested launch renders as a LEAF, so there is no card
+    // to build at its completion. The sibling carries the launch's parentId
     // (Go writes it with `ParentID: launch.ParentID`), so it sits in the
     // same bucket and flattens through `enqueue` like any other row — no
     // re-emit path, nothing to forget.
@@ -1749,7 +1840,7 @@ describe('groupItemsBySubagent — launch kinds', () => {
     expect(findTimelineNodeIndex(nodes, 'complete:bg-agent')).toBe(1);
   });
 
-  it('resolves a folded completion to its own leaf, not to the card it folds onto', () => {
+  it('resolves the completion to the card at the completion point, and the launch to its spawn leaf', () => {
     const nodes = groupItemsBySubagent([
       mkItem({ id: 'lead-text', itemIndex: 0, kind: 'assistant_text', summary: 'starting' }),
       mkItem({
@@ -1777,14 +1868,18 @@ describe('groupItemsBySubagent — launch kinds', () => {
       'bg-agent',
       'complete:bg-agent',
     ]);
-    const group = expectGroup(nodes[1]);
+    expectLeaf(nodes[1]);
+    const group = expectGroup(nodes[2]);
     expect(group.completion?.id).toBe('complete:bg-agent');
-    // The card folds the completion as its status source but does not
-    // CLAIM it: a search hit on the completion's own id (Go indexes its
-    // summary) lands on the completion's leaf at the completion point.
-    expect(nodeContainsItem(group, 'complete:bg-agent')).toBe(false);
+    // The card IS the completion point: a search hit on the completion's
+    // own id (Go indexes its summary) lands on the card. The launch id is
+    // the spawn leaf's — a scroll anchor taken on the spawn row must come
+    // back to the spawn row, not to a card turns later.
+    expect(nodeContainsItem(group, 'complete:bg-agent')).toBe(true);
+    expect(nodeContainsItem(group, 'bg-agent')).toBe(false);
     expect(findTimelineNodeIndex(nodes, 'complete:bg-agent')).toBe(2);
-    expect(timelineNodeItemId(group)).toBe('bg-agent');
+    expect(findTimelineNodeIndex(nodes, 'bg-agent')).toBe(1);
+    expect(timelineNodeItemId(group)).toBe('complete:bg-agent');
   });
 });
 
