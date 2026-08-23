@@ -42,6 +42,7 @@ import {
 import { focusPane, resetPanesForTest } from '../../stores/panes.svelte';
 import { resetPaneLayoutForTest, setPaneLayoutItemsForTest } from '../../stores/paneLayout.svelte';
 import { resetCompanionPanesForTest } from '../../stores/companionPanes.svelte';
+import { idleWorkspaceActivity } from '../../../test/helpers/workspaceLock';
 
 function installDraftMocks() {
   setBindingMock('GetDraft', async (threadId: string) => ({
@@ -57,7 +58,7 @@ function installDraftMocks() {
   setBindingMock('ListAttachments', async () => []);
   setBindingMock('GetAttachmentData', async () => 'iVBORw0KGgo=');
   setBindingMock('ListLiveBackgroundTasks', async () => []);
-  setBindingMock('GetWorkspaceActivity', async () => ({ activeTurnThreads: 0, runningBackgroundTasks: 0 }));
+  setBindingMock('GetWorkspaceActivity', async () => idleWorkspaceActivity());
   // The composer toolbar's MCP trigger holds the pane's MCP entity for as
   // long as it is mounted, so every composer render lists once.
   setBindingMock('ListThreadMcpServers', async () => []);

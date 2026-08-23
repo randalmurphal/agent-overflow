@@ -11,7 +11,7 @@ import {
 } from '../../../../test/mocks/bindings-app';
 import { resetForTest as resetWorktreeIntent } from '../../../stores/worktreeIntent.svelte';
 import { buildPane as buildRegisteredPane, makeThread as makeBaseThread } from '../../../../test/helpers/chat';
-import { makeWorkspaceLock } from '../../../../test/helpers/workspaceLock';
+import { idleWorkspaceActivity, makeWorkspaceLock } from '../../../../test/helpers/workspaceLock';
 import { emitWailsEvent } from '../../../../test/mocks/wailsio-runtime';
 import { registerPaneForTest, resetPanesForTest } from '../../../stores/panes.svelte';
 
@@ -39,7 +39,7 @@ function makeProject(overrides: Partial<Project> = {}): Project {
 
 async function buildPane(thread: Thread) {
   setBindingMock('ListLiveBackgroundTasks', async () => []);
-  setBindingMock('GetWorkspaceActivity', async () => ({ activeTurnThreads: 0, runningBackgroundTasks: 0 }));
+  setBindingMock('GetWorkspaceActivity', async () => idleWorkspaceActivity());
   return buildRegisteredPane(thread);
 }
 
@@ -122,6 +122,8 @@ describe('<EnvPicker>', () => {
     const workspaceLock = makeWorkspaceLock({
       locked: true,
       reason: 'Workspace changes are unavailable while the agent is responding.',
+      threadLocked: true,
+      threadReason: 'Workspace changes are unavailable while the agent is responding.',
     });
     setBindingMock('GitListWorktrees', async () => [
       { path: '/repo', branch: 'main', head: 'abc' },
@@ -146,11 +148,44 @@ describe('<EnvPicker>', () => {
     expect(getByTestId('env-picker-trigger').textContent ?? '').toMatch(/Local/);
   });
 
+  // The rows move THIS thread; they must not be pinned by a sibling thread
+  // responding in the same directory (the directory view is what Remove
+  // Worktree reads).
+  it('keeps the rows live when only the DIRECTORY is busy with a sibling thread', async () => {
+    const pane = await buildPane(makeThread({ workspacePath: '/repo', projectPath: '/repo' }));
+    const workspaceLock = makeWorkspaceLock({
+      locked: true,
+      reason: 'Workspace changes are unavailable while the agent is responding.',
+    });
+    setBindingMock('GitListWorktrees', async () => [
+      { path: '/repo', branch: 'main', head: 'abc' },
+      { path: '/tmp/wt-feature', branch: 'feat', head: 'def' },
+    ]);
+    const update = setBindingMock('UpdateThreadWorkspace', async () =>
+      makeThread({ workspacePath: '/tmp/wt-feature', worktreePath: '/tmp/wt-feature', branch: 'feat' }),
+    );
+
+    const { getByTestId, findByRole } = render(EnvPicker, { props: { pane, workspaceLock } });
+    await fireEvent.click(getByTestId('env-picker-trigger'));
+    const newWorktreeRow = await findByRole('menuitem', { name: /New Worktree/ });
+    expect(newWorktreeRow).not.toHaveAttribute('aria-disabled', 'true');
+    const wtRow = await findByRole('menuitem', { name: /wt-feature/ });
+    expect(wtRow).not.toHaveAttribute('aria-disabled', 'true');
+    expect(wtRow).not.toHaveAttribute('title');
+
+    await fireEvent.click(wtRow);
+    await waitFor(() => {
+      expect(update).toHaveBeenCalledWith('thread-1', '/tmp/wt-feature');
+    });
+  });
+
   it('disables workspace changes while background tasks are running', async () => {
     const pane = await buildPane(makeThread({ workspacePath: '/repo', projectPath: '/repo' }));
     const workspaceLock = makeWorkspaceLock({
       locked: true,
       reason: 'Workspace changes are unavailable while background tasks are running.',
+      threadLocked: true,
+      threadReason: 'Workspace changes are unavailable while background tasks are running.',
       runningBackgroundCount: 1,
     });
     setBindingMock('GitListWorktrees', async () => [

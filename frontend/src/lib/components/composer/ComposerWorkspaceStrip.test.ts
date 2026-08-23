@@ -11,13 +11,14 @@ import {
   setThreadEnvMode,
   worktreeIntentForThread,
 } from '../../stores/worktreeIntent.svelte';
+import { idleWorkspaceActivity } from '../../../test/helpers/workspaceLock';
 
 describe('<ComposerWorkspaceStrip>', () => {
   beforeEach(() => {
     resetBindingMocks();
     resetWorktreeIntent();
     setBindingMock('ListLiveBackgroundTasks', async () => []);
-    setBindingMock('GetWorkspaceActivity', async () => ({ activeTurnThreads: 0, runningBackgroundTasks: 0 }));
+    setBindingMock('GetWorkspaceActivity', async () => idleWorkspaceActivity());
     setBindingMock('GitListBranches', async () => []);
   });
 

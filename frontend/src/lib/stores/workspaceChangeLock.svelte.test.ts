@@ -19,21 +19,38 @@ import { emitWailsEvent, resetWailsMocks } from '../../test/mocks/wailsio-runtim
 const WORKSPACE = '/repo';
 const OTHER_WORKSPACE = '/repo/.worktrees/feature';
 
-interface Activity {
-  activeTurnThreads: number;
+interface BusyThread {
+  threadId: string;
+  activeTurn: boolean;
   runningBackgroundTasks: number;
 }
 
+interface Activity {
+  activeTurnThreads: number;
+  runningBackgroundTasks: number;
+  busyThreads: BusyThread[];
+}
+
 function idle(): Activity {
-  return { activeTurnThreads: 0, runningBackgroundTasks: 0 };
+  return { activeTurnThreads: 0, runningBackgroundTasks: 0, busyThreads: [] };
 }
 
-function busyWithTasks(count = 1): Activity {
-  return { activeTurnThreads: 0, runningBackgroundTasks: count };
+// The busy thread defaults to a SIBLING the pane never mounted: the
+// directory view must lock on it, the thread view must not.
+function busyWithTasks(count = 1, threadId = 'thread-sibling'): Activity {
+  return {
+    activeTurnThreads: 0,
+    runningBackgroundTasks: count,
+    busyThreads: [{ threadId, activeTurn: false, runningBackgroundTasks: count }],
+  };
 }
 
-function busyWithTurn(): Activity {
-  return { activeTurnThreads: 1, runningBackgroundTasks: 0 };
+function busyWithTurn(threadId = 'thread-sibling'): Activity {
+  return {
+    activeTurnThreads: 1,
+    runningBackgroundTasks: 0,
+    busyThreads: [{ threadId, activeTurn: true, runningBackgroundTasks: 0 }],
+  };
 }
 
 function makeThread(overrides: Partial<Thread> = {}): Thread {
@@ -155,6 +172,66 @@ describe('createWorkspaceChangeLockState', () => {
     });
     // No task is running — the lock is the sibling's turn, not a task count.
     expect(state).toHaveAttribute('data-running-background-count', '0');
+  });
+
+  // The thread view. Moving a thread to another checkout rewrites only that
+  // thread's row, so a busy sibling in the directory must not pin an idle
+  // thread at the project root for the length of the sibling's turn — the
+  // env picker was greyed out on every idle thread while any one responded.
+  it('leaves the THREAD view unlocked when only a sibling is busy', async () => {
+    setBindingMock('GetWorkspaceActivity', async () => busyWithTurn('thread-sibling'));
+    const pane = await buildPane(makeThread({ id: 'thread-a' }));
+
+    const { getByTestId } = render(Harness, { props: { pane } });
+    const state = getByTestId('workspace-change-lock');
+
+    await waitFor(() => {
+      expect(state).toHaveAttribute('data-locked', 'true');
+      expect(state).toHaveAttribute('data-thread-locked', 'false');
+      expect(state).toHaveAttribute('data-thread-reason', '');
+    });
+  });
+
+  it('locks the THREAD view when this thread\'s own background tasks are running', async () => {
+    setBindingMock('GetWorkspaceActivity', async () => busyWithTasks(1, 'thread-a'));
+    const pane = await buildPane(makeThread({ id: 'thread-a' }));
+
+    const { getByTestId } = render(Harness, { props: { pane } });
+    const state = getByTestId('workspace-change-lock');
+
+    await waitFor(() => {
+      expect(state).toHaveAttribute('data-thread-locked', 'true');
+      expect(state.getAttribute('data-thread-reason') ?? '').toMatch(/background tasks/);
+    });
+  });
+
+  it('locks the THREAD view on this pane\'s own turn without a round trip', async () => {
+    setBindingMock('GetWorkspaceActivity', async () => idle());
+    const pane = await buildPane();
+    pane.setActiveTurn({ turnId: 'turn-1', turnIndex: 0, startedAt: 1 });
+
+    const { getByTestId } = render(Harness, { props: { pane } });
+    const state = getByTestId('workspace-change-lock');
+
+    expect(state).toHaveAttribute('data-thread-locked', 'true');
+    expect(state.getAttribute('data-thread-reason') ?? '').toMatch(/agent is responding/);
+  });
+
+  it('keeps the THREAD view locked while unverified, for the same fail-safe reason', async () => {
+    setBindingMock('GetWorkspaceActivity', async () => {
+      throw new Error('boom');
+    });
+    const pane = await buildPane();
+
+    const { getByTestId } = render(Harness, { props: { pane } });
+    const state = getByTestId('workspace-change-lock');
+
+    expect(state).toHaveAttribute('data-thread-locked', 'true');
+    expect(state.getAttribute('data-thread-reason') ?? '').toMatch(/Checking workspace availability/);
+    await waitFor(() => {
+      expect(state.getAttribute('data-thread-reason') ?? '').toMatch(/Cannot check.*boom/);
+    });
+    expect(state).toHaveAttribute('data-thread-locked', 'true');
   });
 
   it('does not lock when nothing in the workspace is running', async () => {

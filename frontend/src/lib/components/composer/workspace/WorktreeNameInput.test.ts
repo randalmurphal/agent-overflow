@@ -16,7 +16,7 @@ import {
 } from '../../../stores/worktreeIntent.svelte';
 import { resetWorktreeIntentMaterializeForTest } from '../../../stores/worktreeIntentMaterialize';
 import { buildPane, makeThread } from '../../../../test/helpers/chat';
-import { makeWorkspaceLock } from '../../../../test/helpers/workspaceLock';
+import { idleWorkspaceActivity, makeWorkspaceLock } from '../../../../test/helpers/workspaceLock';
 
 // The confirm button's owner in these tests is a materialized DRAFT row —
 // the shape the composer's workspace strip is normally staged on. Ownership
@@ -35,7 +35,7 @@ function threadOverrides() {
 
 async function buildWorktreePane(overrides: Record<string, unknown> = {}) {
   setBindingMock('ListLiveBackgroundTasks', async () => []);
-  setBindingMock('GetWorkspaceActivity', async () => ({ activeTurnThreads: 0, runningBackgroundTasks: 0 }));
+  setBindingMock('GetWorkspaceActivity', async () => idleWorkspaceActivity());
   return buildPane(makeThread({ ...threadOverrides(), ...overrides }));
 }
 
@@ -128,9 +128,48 @@ describe('<WorktreeNameInput>', () => {
     });
   });
 
-  it('disables the confirm button while the workspace is locked, with the reason as title', async () => {
+  it('disables the confirm button while THIS thread is locked, with the reason as title', async () => {
     const pane = await buildWorktreePane();
     setThreadEnvMode(pane.thread!, 'new-worktree');
+    const { getByTestId } = render(WorktreeNameInput, {
+      props: {
+        pane,
+        workspaceDirty: false,
+        workspaceLock: makeWorkspaceLock({
+          locked: true,
+          reason: 'turn 0 is active',
+          threadLocked: true,
+          threadReason: 'turn 0 is active',
+        }),
+      },
+    });
+    const button = getByTestId('apply-worktree-intent-button') as HTMLButtonElement;
+    expect(button.disabled).toBe(true);
+    expect(button.title).toBe('turn 0 is active');
+  });
+
+  // A new worktree is a new directory; a sibling busy in the current one is
+  // no reason to refuse cutting it.
+  it('keeps the new-worktree confirm live when only the directory is busy', async () => {
+    const pane = await buildWorktreePane();
+    setThreadEnvMode(pane.thread!, 'new-worktree');
+    const { getByTestId } = render(WorktreeNameInput, {
+      props: {
+        pane,
+        workspaceDirty: false,
+        workspaceLock: makeWorkspaceLock({ locked: true, reason: 'turn 0 is active' }),
+      },
+    });
+    const button = getByTestId('apply-worktree-intent-button') as HTMLButtonElement;
+    expect(button.disabled).toBe(false);
+  });
+
+  // A local branch create moves HEAD under every thread sharing the checkout,
+  // so the directory view gates it even when this thread is idle.
+  it('disables a local branch create while the directory is busy', async () => {
+    const pane = await buildWorktreePane();
+    enterCreateBranchMode(pane.thread!, { workspaceDirty: false, currentBranch: 'main' });
+    setNewBranchName(pane.thread!, 'feat');
     const { getByTestId } = render(WorktreeNameInput, {
       props: {
         pane,

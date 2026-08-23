@@ -37,6 +37,7 @@ import {
 import { resetCompanionPanesForTest } from '../../stores/companionPanes.svelte';
 import { resetEditResendExecutionForTest } from './editResendFlow.svelte';
 import { SRC_ROOT } from '../../../test/sourceScan';
+import { idleWorkspaceActivity } from '../../../test/helpers/workspaceLock';
 
 const appCss = readFileSync(join(SRC_ROOT, 'app.css'), 'utf8');
 
@@ -131,7 +132,7 @@ async function buildPane(
   // these on mount. Default to empty; tests that need a populated rail
   // override these before rendering.
   setBindingMock('ListLiveBackgroundTasks', async () => []);
-  setBindingMock('GetWorkspaceActivity', async () => ({ activeTurnThreads: 0, runningBackgroundTasks: 0 }));
+  setBindingMock('GetWorkspaceActivity', async () => idleWorkspaceActivity());
   setBindingMock('CountRunningBackgroundTasks', async () => 0);
   // GitActionsControl calls GetGitStatus on mount; return "not a repo"
   // so the control renders nothing — we don't need a branch chip.

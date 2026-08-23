@@ -110,8 +110,13 @@
     return isAtProjectRoot ? 'folder' : 'folder-git-2';
   });
 
-  let disabledReason = $derived(workspaceLock.reason);
-  let workspaceChangingDisabled = $derived(workspaceLock.locked);
+  // Every row here MOVES this thread; none mutates the directory it leaves.
+  // So the gate is the thread view of the lock, not the directory view: a
+  // sibling thread responding at the project root must not pin this one
+  // there. The per-row trash is directory-destructive and is gated by the
+  // backend's own per-row `deleteBlocked` instead.
+  let disabledReason = $derived(workspaceLock.threadReason);
+  let workspaceChangingDisabled = $derived(workspaceLock.threadLocked);
 
   async function handleTrigger(): Promise<void> {
     open = !open;

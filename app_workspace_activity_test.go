@@ -2,11 +2,19 @@ package main
 
 import (
 	"path/filepath"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 
 	"agent-overflow/internal/store"
 )
+
+// idle reports a zero answer. The struct holds a slice, so it cannot be
+// compared against WorkspaceActivity{} directly.
+func (w WorkspaceActivity) idle() bool {
+	return w.ActiveTurnThreads == 0 && w.RunningBackgroundTasks == 0 && len(w.BusyThreads) == 0
+}
 
 // seedRunningBackgroundLaunch writes the persisted shape of a live background
 // task: a running, top-level, is_background tool_call with no completion
@@ -76,6 +84,11 @@ func TestGetWorkspaceActivity_AggregatesAcrossThreadsSharingAWorkspace(t *testin
 	if activity.ActiveTurnThreads != 0 {
 		t.Errorf("ActiveTurnThreads = %d, want 0", activity.ActiveTurnThreads)
 	}
+	// The busy set names the sibling only: the idle thread is free to move
+	// elsewhere even though its directory is busy.
+	if want := []BusyThread{{ThreadID: busy.ID, RunningBackgroundTasks: 1}}; !slices.Equal(activity.BusyThreads, want) {
+		t.Errorf("BusyThreads = %+v, want %+v", activity.BusyThreads, want)
+	}
 
 	// The count belongs to the directory, not to a project or a thread: an
 	// unrelated workspace must not inherit it.
@@ -83,7 +96,7 @@ func TestGetWorkspaceActivity_AggregatesAcrossThreadsSharingAWorkspace(t *testin
 	if err != nil {
 		t.Fatalf("GetWorkspaceActivity(elsewhere): %v", err)
 	}
-	if other != (WorkspaceActivity{}) {
+	if !other.idle() {
 		t.Errorf("GetWorkspaceActivity(elsewhere) = %+v, want zero", other)
 	}
 }
@@ -125,6 +138,14 @@ func TestGetWorkspaceActivity_SumsTasksFromEveryThreadInTheWorkspace(t *testing.
 	if activity.RunningBackgroundTasks != 3 {
 		t.Errorf("RunningBackgroundTasks = %d, want 3", activity.RunningBackgroundTasks)
 	}
+	want := []BusyThread{
+		{ThreadID: first.ID, RunningBackgroundTasks: 1},
+		{ThreadID: second.ID, RunningBackgroundTasks: 2},
+	}
+	slices.SortFunc(want, func(x, y BusyThread) int { return strings.Compare(x.ThreadID, y.ThreadID) })
+	if !slices.Equal(activity.BusyThreads, want) {
+		t.Errorf("BusyThreads = %+v, want %+v", activity.BusyThreads, want)
+	}
 }
 
 // The turn leg is workspace-scoped for the same reason the task leg is: a
@@ -153,6 +174,9 @@ func TestGetWorkspaceActivity_CountsOpenTurnsOfSiblingThreads(t *testing.T) {
 	if activity.RunningBackgroundTasks != 0 {
 		t.Errorf("RunningBackgroundTasks = %d, want 0", activity.RunningBackgroundTasks)
 	}
+	if want := []BusyThread{{ThreadID: streaming.ID, ActiveTurn: true}}; !slices.Equal(activity.BusyThreads, want) {
+		t.Errorf("BusyThreads = %+v, want %+v", activity.BusyThreads, want)
+	}
 
 	// A settled turn releases the workspace.
 	if err := app.store.UpdateTurnCompleted(
@@ -164,7 +188,7 @@ func TestGetWorkspaceActivity_CountsOpenTurnsOfSiblingThreads(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetWorkspaceActivity(after complete): %v", err)
 	}
-	if settled != (WorkspaceActivity{}) {
+	if !settled.idle() {
 		t.Errorf("GetWorkspaceActivity(after complete) = %+v, want zero", settled)
 	}
 }
@@ -180,7 +204,7 @@ func TestGetWorkspaceActivity_IdleWorkspaceReportsNothing(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetWorkspaceActivity: %v", err)
 	}
-	if activity != (WorkspaceActivity{}) {
+	if !activity.idle() {
 		t.Errorf("GetWorkspaceActivity = %+v, want zero", activity)
 	}
 
@@ -190,7 +214,7 @@ func TestGetWorkspaceActivity_IdleWorkspaceReportsNothing(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetWorkspaceActivity(unknown): %v", err)
 	}
-	if unknown != (WorkspaceActivity{}) {
+	if !unknown.idle() {
 		t.Errorf("GetWorkspaceActivity(unknown) = %+v, want zero", unknown)
 	}
 }

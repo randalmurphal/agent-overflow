@@ -1,15 +1,27 @@
 // Whether a WORKSPACE can be changed right now.
 //
 // Doctrine (frontend/CLAUDE.md → State Boundaries): state is keyed by its
-// ENTITY. The question this answers — "would moving or deleting this checkout
-// break something that is running in it?" — is a fact about the DIRECTORY,
-// not about the thread that happens to be asking and not about the control
-// that asks. Remove Worktree runs `git worktree remove` on a directory; the
-// env picker moves where the next turn runs. Two threads sharing one worktree
-// is first-class (project-root threads default to it, and "implement this
-// plan in a new thread" inherits the source worktree), so a thread-keyed lock
-// left the destructive action live while a SIBLING thread's agent was writing
-// into the very directory being deleted.
+// ENTITY. The store is keyed by DIRECTORY, and it answers TWO questions off
+// the one fetch, because the affordances it gates mutate two different
+// entities:
+//
+//   - `locked` / `reason`: "would mutating THIS CHECKOUT break something
+//     running in it?" Remove Worktree runs `git worktree remove` on the
+//     directory; a local branch create moves HEAD under every thread in it.
+//     Two threads sharing one worktree is first-class (project-root threads
+//     default to it, and "implement this plan in a new thread" inherits the
+//     source worktree), so a thread-keyed lock left the destructive action
+//     live while a SIBLING thread's agent was writing into the very directory
+//     being deleted. Any busy thread in the directory locks this.
+//   - `threadLocked` / `threadReason`: "is THIS THREAD running?" Moving a
+//     thread to another checkout (env picker, new-worktree confirm) rewrites
+//     only that thread's row and transcript slug; a sibling working in the
+//     directory it leaves is unaffected. Gating this on the directory answer
+//     froze every idle thread at the project root for as long as any one
+//     thread was responding. The backend's own gate for these RPCs is
+//     ensureWorkspaceChangeAllowed(threadID), thread-keyed, and the
+//     affordance must not be stricter than the refusal. Only this pane's
+//     thread locks this, resolved from the same payload's busyThreads.
 //
 // Error posture is FAIL-SAFE. These gate irreversible actions. A failed
 // GetWorkspaceActivity means we do not KNOW whether anything is running, and
@@ -161,8 +173,14 @@ const store = createEntityStore<WorkspaceActivity, void>({
 // state, and nothing can be verified over a dead wire anyway.
 
 export interface WorkspaceChangeLockState {
+  /** The DIRECTORY is busy: any thread in it is responding or has live
+   *  background tasks. Gates destructive in-place operations. */
   readonly locked: boolean;
   readonly reason: string;
+  /** THIS pane's thread is busy. Gates moving the thread to another
+   *  checkout. Implied by `locked` being false; stricter never. */
+  readonly threadLocked: boolean;
+  readonly threadReason: string;
   readonly runningBackgroundCount: number;
   /** Re-check now. No-op when the pane holds no thread row. */
   refresh(): void;
@@ -214,30 +232,55 @@ export function createWorkspaceChangeLockState(
   // lock truthful about threads this pane cannot see.
   const localTurnActive = (): boolean => getActiveTurn(getPane().threadId) !== null;
 
+  // Both views share the unverified / failed / local-only legs: a fetch that
+  // has not answered (or cannot) says nothing about either entity, and
+  // fail-safe means locked for both. Only the verified branch diverges.
+  const unverifiedReason = (key: string): string | null => {
+    const error = store.peekError(key);
+    if (error === LOCAL_ONLY_REASON) return error;
+    if (error !== null) return `Cannot check for running background tasks: ${error}`;
+    if (store.peek(key) === null) return CHECKING_REASON;
+    return null;
+  };
+  const ownThreadReason = (activity: WorkspaceActivity): string => {
+    const threadId = getPane().threadId;
+    const own = activity.busyThreads.find((t) => t.threadId === threadId);
+    if (!own) return '';
+    if (own.activeTurn) return TURN_REASON;
+    return own.runningBackgroundTasks > 0 ? TASKS_REASON : '';
+  };
+
+  const reason = (): string => {
+    if (localTurnActive()) return TURN_REASON;
+    const key = workspaceKey;
+    if (!key) return '';
+    const unverified = unverifiedReason(key);
+    if (unverified !== null) return unverified;
+    const activity = store.peek(key)!;
+    if (activity.activeTurnThreads > 0) return TURN_REASON;
+    return activity.runningBackgroundTasks > 0 ? TASKS_REASON : '';
+  };
+  const threadReason = (): string => {
+    if (localTurnActive()) return TURN_REASON;
+    const key = workspaceKey;
+    if (!key) return '';
+    const unverified = unverifiedReason(key);
+    if (unverified !== null) return unverified;
+    return ownThreadReason(store.peek(key)!);
+  };
+
   return {
     get locked() {
-      if (localTurnActive()) return true;
-      const key = workspaceKey;
-      if (!key) return false;
-      if (store.peekError(key) !== null) return true;
-      const activity = store.peek(key);
-      // No observation yet — unverified, which is locked. Same shape as
-      // `reason` below, rather than a sentinel count that means "not a
-      // count".
-      if (activity === null) return true;
-      return activity.activeTurnThreads > 0 || activity.runningBackgroundTasks > 0;
+      return reason() !== '';
     },
     get reason() {
-      if (localTurnActive()) return TURN_REASON;
-      const key = workspaceKey;
-      if (!key) return '';
-      const error = store.peekError(key);
-      if (error === LOCAL_ONLY_REASON) return error;
-      if (error !== null) return `Cannot check for running background tasks: ${error}`;
-      const activity = store.peek(key);
-      if (activity === null) return CHECKING_REASON;
-      if (activity.activeTurnThreads > 0) return TURN_REASON;
-      return activity.runningBackgroundTasks > 0 ? TASKS_REASON : '';
+      return reason();
+    },
+    get threadLocked() {
+      return threadReason() !== '';
+    },
+    get threadReason() {
+      return threadReason();
     },
     get runningBackgroundCount() {
       return workspaceKey ? (store.peek(workspaceKey)?.runningBackgroundTasks ?? 0) : 0;

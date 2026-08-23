@@ -42,6 +42,7 @@ import {
 } from '../../lib/components/terminal/terminalStore.svelte';
 import { clearThreadScrollSnapshotsForTest } from '../../lib/utils/threadScrollSnapshots';
 import { makeSettings } from '../helpers/settings';
+import { idleWorkspaceActivity } from '../helpers/workspaceLock';
 
 /**
  * The one workspace every integration fixture lives in: the project root,
@@ -236,7 +237,7 @@ export function installThreadViewDefaults(): void {
   setBindingMock('ListProposedPlanComments', async () => []);
   setBindingMock('GetPayloadData', async () => ({ data: '# Plan\n\nBody' }));
   setBindingMock('ListLiveBackgroundTasks', async () => []);
-  setBindingMock('GetWorkspaceActivity', async () => ({ activeTurnThreads: 0, runningBackgroundTasks: 0 }));
+  setBindingMock('GetWorkspaceActivity', async () => idleWorkspaceActivity());
   setBindingMock('AppendUIRenderTraceBatch', async () => '/tmp/ui-render.jsonl');
   // Design-thread mounts spin DesignPreviewPanel's $effect which
   // immediately calls EnsureDesignWorkdir + LatestDesignOptionSet on

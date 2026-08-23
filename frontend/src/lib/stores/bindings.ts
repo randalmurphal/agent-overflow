@@ -492,6 +492,7 @@ export {
   TerminalOpenOptions,
   ThreadMCPServer,
   UpdateAvailability,
+  BusyThread,
   WorkspaceActivity,
   WorktreeStatus,
 } from '../../../bindings/agent-overflow/models.js';

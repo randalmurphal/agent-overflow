@@ -12,6 +12,7 @@ import {
   __seedGitStatusForTest,
 } from '../../stores/gitStatusStore.svelte';
 import { buildPane as buildRegisteredPane, makeThread as makeBaseThread } from '../../../test/helpers/chat';
+import { idleWorkspaceActivity, busyWorkspaceActivity } from '../../../test/helpers/workspaceLock';
 
 // GitActionsControl is a pure consumer of the shared workspace-keyed
 // git-status store — it owns no subscription (ChatHeaderActions attaches).
@@ -131,7 +132,7 @@ describe('<GitActionsControl> consumer rendering', () => {
 
   it('disables Remove Worktree while this pane thread is busy', async () => {
     setBindingMock('ListLiveBackgroundTasks', async () => []);
-    setBindingMock('GetWorkspaceActivity', async () => ({ activeTurnThreads: 0, runningBackgroundTasks: 0 }));
+    setBindingMock('GetWorkspaceActivity', async () => idleWorkspaceActivity());
     const pane = await buildPane(makeThread({
       workspacePath: '/workspace-wt/feat',
       worktreePath: '/workspace-wt/feat',
@@ -165,7 +166,7 @@ describe('<GitActionsControl> consumer rendering', () => {
     setBindingMock('ListLiveBackgroundTasks', async () => []);
     setBindingMock('GetWorkspaceActivity', async (workspacePath: unknown) => {
       asked.push(String(workspacePath));
-      return { activeTurnThreads: 0, runningBackgroundTasks: 1 };
+      return busyWorkspaceActivity(1);
     });
     const pane = await buildPane(makeThread({
       id: 'thread-a',

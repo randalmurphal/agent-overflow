@@ -19,5 +19,7 @@
   data-testid="workspace-change-lock"
   data-locked={lock.locked ? 'true' : 'false'}
   data-reason={lock.reason}
+  data-thread-locked={lock.threadLocked ? 'true' : 'false'}
+  data-thread-reason={lock.threadReason}
   data-running-background-count={lock.runningBackgroundCount}
 ></div>

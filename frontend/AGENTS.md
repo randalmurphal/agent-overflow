@@ -106,17 +106,21 @@ State is keyed by its ENTITY, never by its consumer. Before adding
   toggle changes what a SIBLING workspace should show; that fan-out is
   a push (the `mcp:status` sentinel re-lists every key carrying the
   server), not a reason to widen the key.
-  Also the workspace-change lock: it gates removing a worktree and
-  moving where the next turn runs, so it guards a DIRECTORY, not a
-  conversation. Two threads sharing a worktree is first-class, and a
-  thread-keyed lock asked only about the thread that happened to be
-  asking — leaving `rm -rf` live over a checkout a sibling thread's
-  agent was writing into. Both legs are workspace-scoped (open turns
-  and live background tasks, aggregated backend-side over every thread
-  that references the path) so the affordance matches the refusal
-  `removeProjectWorktree` would issue. A pane's OWN turn is still read
-  from local state on top, purely so the lock closes without waiting
-  for an event round trip.
+  Also the workspace-change lock, keyed by DIRECTORY and answering two
+  questions off one fetch. `locked` is the directory view: removing a
+  worktree or creating a branch in place mutates a checkout every thread
+  in it shares, so any busy thread locks it (open turns and live
+  background tasks, aggregated backend-side over every thread that
+  references the path, matching the refusal `removeProjectWorktree`
+  issues). `threadLocked` is the thread view: the env picker and the
+  new-worktree confirm MOVE the pane's thread to another checkout, which
+  rewrites only that thread's row, so only that thread's own activity
+  locks it (from the same payload's `busyThreads`, matching the backend's
+  `ensureWorkspaceChangeAllowed(threadID)`). Gating a move on the
+  directory view pinned every idle thread at the project root while any
+  sibling responded. A pane's OWN turn is read from local state on top of
+  both, purely so the lock closes without waiting for an event round
+  trip.
 - **PR** — detail, review threads, live head SHA, CI pipeline, merge
   conflicts.
 - **thread** — items, streaming, approvals.

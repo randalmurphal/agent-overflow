@@ -21,6 +21,7 @@ import { recentBranchSelections, recordBranchSelection } from '../../../stores/b
 import { resetAppStorageForTest } from '../../../stores/appStorage';
 import { __seedGitStatusForTest } from '../../../stores/gitStatusStore.svelte';
 import { registerPaneForTest, resetPanesForTest } from '../../../stores/panes.svelte';
+import { idleWorkspaceActivity } from '../../../../test/helpers/workspaceLock';
 
 function makeThread(branch: string, overrides: Partial<Thread> = {}): Thread {
   return makeBaseThread({
@@ -47,7 +48,7 @@ function makeProject(overrides: Partial<Project> = {}): Project {
 
 async function buildPane(branch: string, overrides: Partial<Thread> = {}) {
   setBindingMock('ListLiveBackgroundTasks', async () => []);
-  setBindingMock('GetWorkspaceActivity', async () => ({ activeTurnThreads: 0, runningBackgroundTasks: 0 }));
+  setBindingMock('GetWorkspaceActivity', async () => idleWorkspaceActivity());
   return buildRegisteredPane(makeThread(branch, overrides));
 }
 

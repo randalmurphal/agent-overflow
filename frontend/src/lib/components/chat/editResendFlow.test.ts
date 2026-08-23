@@ -53,6 +53,7 @@ import {
 import { resetLayoutMetricsForTest } from '../../stores/layoutMetrics.svelte';
 import { resetPaneLayoutForTest } from '../../stores/paneLayout.svelte';
 import { resetCompanionPanesForTest } from '../../stores/companionPanes.svelte';
+import { idleWorkspaceActivity } from '../../../test/helpers/workspaceLock';
 
 beforeAll(() => {
   if (typeof (Element.prototype as unknown as { animate?: unknown }).animate !== 'function') {
@@ -163,7 +164,7 @@ async function buildPane(
   installPaneMocks(items);
   setBindingMock('SwitchThread', async () => thread);
   setBindingMock('ListLiveBackgroundTasks', async () => []);
-  setBindingMock('GetWorkspaceActivity', async () => ({ activeTurnThreads: 0, runningBackgroundTasks: 0 }));
+  setBindingMock('GetWorkspaceActivity', async () => idleWorkspaceActivity());
   setBindingMock('CountRunningBackgroundTasks', async () => 0);
   setBindingMock('GetGitStatus', async () => ({
     isRepo: false,

@@ -34,6 +34,7 @@ import {
   resetPaneTitleRenameForTest,
 } from '../../stores/paneTitleRename';
 import type { ThreadPane } from '../../stores/thread.svelte';
+import { idleWorkspaceActivity } from '../../../test/helpers/workspaceLock';
 
 function installBaseMocks() {
   setBindingMock('GetDraft', async (threadId: string) => ({
@@ -48,7 +49,7 @@ function installBaseMocks() {
   setBindingMock('DeleteEmptyDraftThread', async () => false);
   setBindingMock('ListAttachments', async () => []);
   setBindingMock('ListLiveBackgroundTasks', async () => []);
-  setBindingMock('GetWorkspaceActivity', async () => ({ activeTurnThreads: 0, runningBackgroundTasks: 0 }));
+  setBindingMock('GetWorkspaceActivity', async () => idleWorkspaceActivity());
   setBindingMock('ListThreadProposedPlans', async () => []);
   setBindingMock('ListProposedPlanComments', async () => []);
   setBindingMock('SearchWorkspaceFiles', async () => ({

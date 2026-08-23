@@ -64,6 +64,7 @@ import type { Thread } from '../../lib/types/models';
 import { setBindingMock, resetBindingMocks } from '../mocks/bindings-app';
 import { installPaneMocks, makeItem } from '../helpers/chat';
 import type { Item } from '../../lib/types/models';
+import { idleWorkspaceActivity } from '../helpers/workspaceLock';
 
 const gc = (globalThis as { gc?: () => void }).gc;
 
@@ -86,7 +87,7 @@ async function buildPane(thread: Thread, paneId: string, items: Item[] = []) {
   installPaneMocks(items);
   setBindingMock('SwitchThread', async () => thread);
   setBindingMock('ListLiveBackgroundTasks', async () => []);
-  setBindingMock('GetWorkspaceActivity', async () => ({ activeTurnThreads: 0, runningBackgroundTasks: 0 }));
+  setBindingMock('GetWorkspaceActivity', async () => idleWorkspaceActivity());
   setBindingMock('CountRunningBackgroundTasks', async () => 0);
   setBindingMock('GetGitStatus', async () => ({
     isRepo: false, branch: '', hasChanges: false, hasUpstream: false,

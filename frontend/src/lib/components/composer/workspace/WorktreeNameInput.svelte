@@ -50,13 +50,20 @@
   let showInput = $derived(intent.creatingBranch);
   let showButton = $derived(!intent.creatingBranch && intent.mode === 'new-worktree');
   let nameMissing = $derived(intent.creatingBranch && !intent.newBranchName.trim());
-  let confirmDisabled = $derived(applying || workspaceLock.locked || nameMissing);
+  // A new worktree is a new directory: only this thread moves, so a sibling
+  // busy in the current checkout is no reason to refuse. A local branch
+  // create moves HEAD under every thread sharing the checkout, so that one
+  // takes the directory view.
+  let lockReason = $derived(
+    intent.mode === 'new-worktree' ? workspaceLock.threadReason : workspaceLock.reason,
+  );
+  let confirmDisabled = $derived(applying || lockReason !== '' || nameMissing);
 
   let confirmLabel = $derived(
     intent.mode === 'new-worktree' ? 'Create worktree now' : 'Create branch now',
   );
   let confirmTitle = $derived.by(() => {
-    if (workspaceLock.locked) return workspaceLock.reason;
+    if (lockReason) return lockReason;
     if (nameMissing) return 'Enter a branch name first';
     return `${confirmLabel} — sending a message also applies it`;
   });

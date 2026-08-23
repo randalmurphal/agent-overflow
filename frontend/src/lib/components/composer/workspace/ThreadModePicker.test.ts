@@ -14,6 +14,7 @@ import {
   setBindingMock,
 } from '../../../../test/mocks/bindings-app';
 import { buildPane as buildRegisteredPane, makeThread as makeBaseThread } from '../../../../test/helpers/chat';
+import { idleWorkspaceActivity } from '../../../../test/helpers/workspaceLock';
 
 function makeProject(overrides: Partial<Project> = {}): Project {
   return {
@@ -39,7 +40,7 @@ function makeThread(overrides: Partial<Thread> = {}): Thread {
 
 async function buildPane(thread: Thread) {
   setBindingMock('ListLiveBackgroundTasks', async () => []);
-  setBindingMock('GetWorkspaceActivity', async () => ({ activeTurnThreads: 0, runningBackgroundTasks: 0 }));
+  setBindingMock('GetWorkspaceActivity', async () => idleWorkspaceActivity());
   // ThreadModePicker fetches fresh defaults via GetThreadDefaults
   // before swapping the placeholder so the new mode picks up the
   // seeded model / branch / effort. Tests mock a stable payload so

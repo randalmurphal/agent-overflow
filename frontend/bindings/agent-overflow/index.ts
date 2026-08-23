@@ -13,6 +13,7 @@ export {
     BranchPruneCandidates,
     BranchPruneResult,
     BranchPruneSelection,
+    BusyThread,
     ChannelParticipantState,
     ChannelStatePayload,
     ClaudeSlashCommands,

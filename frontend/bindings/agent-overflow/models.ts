@@ -225,6 +225,39 @@ export class BranchPruneSelection {
 }
 
 /**
+ * BusyThread is one thread's contribution to WorkspaceActivity. At least one
+ * leg is set; idle threads are not listed.
+ */
+export class BusyThread {
+    "threadId": string;
+    "activeTurn": boolean;
+    "runningBackgroundTasks": number;
+
+    /** Creates a new BusyThread instance. */
+    constructor($$source: Partial<BusyThread> = {}) {
+        if (!("threadId" in $$source)) {
+            this["threadId"] = "";
+        }
+        if (!("activeTurn" in $$source)) {
+            this["activeTurn"] = false;
+        }
+        if (!("runningBackgroundTasks" in $$source)) {
+            this["runningBackgroundTasks"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new BusyThread instance from a string or object.
+     */
+    static createFrom($$source: any = {}): BusyThread {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new BusyThread($$parsedSource as Partial<BusyThread>);
+    }
+}
+
+/**
  * ChannelParticipantState is one entry in ChannelStatePayload's
  * Participants list.
  */
@@ -6954,6 +6987,18 @@ export class WorkspaceActivity {
      */
     "runningBackgroundTasks": number;
 
+    /**
+     * BusyThreads breaks the counters down per thread. The frontend gates two
+     * different actions off one fetch: the DIRECTORY question (is anything
+     * running here? — remove worktree, branch switch in place) reads the
+     * counters; the THREAD question (is this thread running? — moving the
+     * thread to another checkout) looks itself up here. Moving an idle
+     * thread out of a directory a sibling is working in touches only the
+     * idle thread's row, so the directory answer must not gate it. Sorted by
+     * id, so the answer is stable across calls.
+     */
+    "busyThreads": BusyThread[];
+
     /** Creates a new WorkspaceActivity instance. */
     constructor($$source: Partial<WorkspaceActivity> = {}) {
         if (!("activeTurnThreads" in $$source)) {
@@ -6961,6 +7006,9 @@ export class WorkspaceActivity {
         }
         if (!("runningBackgroundTasks" in $$source)) {
             this["runningBackgroundTasks"] = 0;
+        }
+        if (!("busyThreads" in $$source)) {
+            this["busyThreads"] = [];
         }
 
         Object.assign(this, $$source);
@@ -6970,7 +7018,11 @@ export class WorkspaceActivity {
      * Creates a new WorkspaceActivity instance from a string or object.
      */
     static createFrom($$source: any = {}): WorkspaceActivity {
+        const $$createField2_0 = $$createType124;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("busyThreads" in $$parsedSource) {
+            $$parsedSource["busyThreads"] = $$createField2_0($$parsedSource["busyThreads"]);
+        }
         return new WorkspaceActivity($$parsedSource as Partial<WorkspaceActivity>);
     }
 }
@@ -7002,7 +7054,7 @@ export class WorkspaceFileSearchResult {
      * Creates a new WorkspaceFileSearchResult instance from a string or object.
      */
     static createFrom($$source: any = {}): WorkspaceFileSearchResult {
-        const $$createField0_0 = $$createType124;
+        const $$createField0_0 = $$createType126;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("files" in $$parsedSource) {
             $$parsedSource["files"] = $$createField0_0($$parsedSource["files"]);
@@ -7080,7 +7132,7 @@ export class WorktreeSetupConfig {
      */
     static createFrom($$source: any = {}): WorktreeSetupConfig {
         const $$createField0_0 = $$createType2;
-        const $$createField1_0 = $$createType125;
+        const $$createField1_0 = $$createType127;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("copy" in $$parsedSource) {
             $$parsedSource["copy"] = $$createField0_0($$parsedSource["copy"]);
@@ -7154,7 +7206,7 @@ export class WorktreeSetupRunState {
      * Creates a new WorktreeSetupRunState instance from a string or object.
      */
     static createFrom($$source: any = {}): WorktreeSetupRunState {
-        const $$createField3_0 = $$createType127;
+        const $$createField3_0 = $$createType129;
         const $$createField4_0 = $$createType2;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("steps" in $$parsedSource) {
@@ -7381,8 +7433,10 @@ const $$createType119 = WorkflowRunMapRun.createFrom;
 const $$createType120 = $Create.Array($$createType119);
 const $$createType121 = WorkflowRunMapRefusal.createFrom;
 const $$createType122 = $Create.Nullable($$createType121);
-const $$createType123 = workspacefiles$0.WorkspaceFile.createFrom;
+const $$createType123 = BusyThread.createFrom;
 const $$createType124 = $Create.Array($$createType123);
-const $$createType125 = $Create.Array($$createType2);
-const $$createType126 = WorktreeSetupStep.createFrom;
-const $$createType127 = $Create.Array($$createType126);
+const $$createType125 = workspacefiles$0.WorkspaceFile.createFrom;
+const $$createType126 = $Create.Array($$createType125);
+const $$createType127 = $Create.Array($$createType2);
+const $$createType128 = WorktreeSetupStep.createFrom;
+const $$createType129 = $Create.Array($$createType128);

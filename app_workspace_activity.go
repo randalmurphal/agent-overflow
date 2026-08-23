@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 
 	gitops "agent-overflow/internal/git"
@@ -28,11 +29,31 @@ type WorkspaceActivity struct {
 	// over those threads: persisted Claude/Codex background launches, live
 	// Codex subagent launches, and transient Codex unified-exec terminals.
 	RunningBackgroundTasks int `json:"runningBackgroundTasks"`
+	// BusyThreads breaks the counters down per thread. The frontend gates two
+	// different actions off one fetch: the DIRECTORY question (is anything
+	// running here? — remove worktree, branch switch in place) reads the
+	// counters; the THREAD question (is this thread running? — moving the
+	// thread to another checkout) looks itself up here. Moving an idle
+	// thread out of a directory a sibling is working in touches only the
+	// idle thread's row, so the directory answer must not gate it. Sorted by
+	// id, so the answer is stable across calls.
+	BusyThreads []BusyThread `json:"busyThreads"`
 }
 
-// GetWorkspaceActivity answers "is anything running in this directory?" for
-// the frontend's workspace-change lock, which gates the destructive workspace
-// affordances (remove worktree, env / branch moves).
+// BusyThread is one thread's contribution to WorkspaceActivity. At least one
+// leg is set; idle threads are not listed.
+type BusyThread struct {
+	ThreadID               string `json:"threadId"`
+	ActiveTurn             bool   `json:"activeTurn"`
+	RunningBackgroundTasks int    `json:"runningBackgroundTasks"`
+}
+
+// GetWorkspaceActivity answers "is anything running in this directory, and
+// which threads are they?" for the frontend's workspace-change lock. The
+// counters gate the directory-destructive affordances (remove worktree,
+// branch switch in place); BusyThreads lets the same fetch gate the
+// thread-scoped ones (moving a thread to another checkout) on that thread
+// alone, matching the backend's own ensureWorkspaceChangeAllowed(threadID).
 //
 // It is deliberately the same computation the removal gate performs while
 // holding the thread locks (removeProjectWorktree →
@@ -69,16 +90,25 @@ func (a *App) GetWorkspaceActivity(workspacePath string) (WorkspaceActivity, err
 		}
 		seen[ref.ID] = struct{}{}
 
+		thread := BusyThread{ThreadID: ref.ID}
 		if _, open, err := a.store.GetActiveTurn(ref.ID); err != nil {
 			return WorkspaceActivity{}, fmt.Errorf("workspace activity: check active turn for %s: %w", ref.ID, err)
 		} else if open {
 			activity.ActiveTurnThreads++
+			thread.ActiveTurn = true
 		}
 		count, err := a.countRunningBackgroundTasks(ref.ID)
 		if err != nil {
 			return WorkspaceActivity{}, fmt.Errorf("workspace activity: count background tasks for %s: %w", ref.ID, err)
 		}
 		activity.RunningBackgroundTasks += count
+		thread.RunningBackgroundTasks = count
+		if thread.ActiveTurn || count > 0 {
+			activity.BusyThreads = append(activity.BusyThreads, thread)
+		}
 	}
+	slices.SortFunc(activity.BusyThreads, func(x, y BusyThread) int {
+		return strings.Compare(x.ThreadID, y.ThreadID)
+	})
 	return activity, nil
 }
