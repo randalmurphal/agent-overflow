@@ -46,6 +46,18 @@
   let lastAutosizedTextarea: HTMLTextAreaElement | undefined;
   let lastAutosizedValue = '';
 
+  // The textarea grows with its content through `field-sizing: content`
+  // (the `field-sizing-content` + `max-h-50` utilities on the element) and
+  // the JS autosize below exists only for an engine without it. Measured
+  // 2026-08-23 on the WebView2 build: the JS path cost every keystroke two
+  // forced layouts (height:auto → scrollHeight, then the frame's own), and
+  // an inline `height` would override the CSS sizing, so the two paths are
+  // exclusive. Detected off the style object rather than `CSS.supports`,
+  // which happy-dom answers true for every query; the unit suite runs the
+  // fallback, the browser suite runs the native path.
+  const nativeAutosize =
+    typeof document !== 'undefined' && 'fieldSizing' in document.createElement('textarea').style;
+
   const mentions = createComposerMentions({
     getTextarea: () => textarea,
     getThreadId: () => pane.threadId,
@@ -95,6 +107,7 @@
   });
 
   $effect(() => {
+    if (nativeAutosize) return;
     const next = value;
     const node = textarea;
     if (!node) return;
@@ -107,7 +120,7 @@
   });
 
   function autosizeTextarea() {
-    if (!textarea) return;
+    if (!textarea || nativeAutosize) return;
     textarea.style.height = 'auto';
     const measuredHeight = textarea.scrollHeight;
     if (measuredHeight > 0) {
@@ -153,11 +166,14 @@
   }
 
   // The command overlay hides while a selection covers text (its opaque word
-  // would punch a hole in the highlight) and follows the textarea's scroll.
+  // would punch a hole in the highlight). Its scroll offset is read from the
+  // textarea's own `scroll` event only: reading `scrollTop` here, on every
+  // keystroke, forced a layout while the typed character had the textarea
+  // dirty, and every scroll-offset change fires the event anyway (a height
+  // collapse that clamps the offset included).
   function syncSelectionState() {
     if (!textarea) return;
     selectionCollapsed = textarea.selectionStart === textarea.selectionEnd;
-    textareaScrollTop = textarea.scrollTop;
   }
 
   function refuseAttachment(event: DragEvent | ClipboardEvent, notify = true): boolean {
@@ -216,7 +232,7 @@
   }
 
   export function resetInputHeight(): void {
-    if (!textarea) return;
+    if (!textarea || nativeAutosize) return;
     textarea.style.height = 'auto';
   }
 
@@ -318,7 +334,7 @@
       aria-label="Message Input"
       rows={1}
       {value}
-      class="w-full resize-none bg-transparent px-1 py-1 text-[0.8125rem] leading-[1.55] text-fg placeholder:text-fg-hint focus:outline-none disabled:opacity-40 disabled:cursor-not-allowed"
+      class="field-sizing-content max-h-50 w-full resize-none bg-transparent px-1 py-1 text-[0.8125rem] leading-[1.55] text-fg placeholder:text-fg-hint focus:outline-none disabled:opacity-40 disabled:cursor-not-allowed"
     ></textarea>
 
     <!-- After the textarea in DOM order as well as above it in paint
