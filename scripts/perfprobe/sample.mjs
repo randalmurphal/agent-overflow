@@ -8,7 +8,7 @@ const arg = (name, def) => { const i = args.indexOf(name); return i >= 0 ? +args
 const EVERY = arg('--every', 0);
 const FOR = arg('--for', 0);
 // Runtime.queryObjects runs V8's CollectAllAvailableGarbage (v8/src/profiler/heap-profiler.cc,
-// "we need to collect all garbage first") — the same memory-reducing collection a low-memory
+// "we need to collect all garbage first"), the same memory-reducing collection a low-memory
 // notification triggers, Oilpan included. It collapses the heap this probe exists to measure, so a
 // poll loop with it on reports a floor the app never reaches by itself and hides every peak in
 // between. Opt in only for a retention question (does X survive a full GC), never for footprint
@@ -28,7 +28,7 @@ async function sample() {
       role: r,
       privMB: proc.privMB,
       // blink_gc is committed Oilpan; blink_live is the live-object subset, so the gap between them
-      // is garbage plus pooled free pages — the part a GC could give back.
+      // is garbage plus pooled free pages, the part a GC could give back.
       blink_gc: allocatorMB(proc, 'blink_gc'),
       blink_live: r === 'renderer' ? allocatedObjectsMB(proc) : null,
       cc: allocatorMB(proc, 'cc'),

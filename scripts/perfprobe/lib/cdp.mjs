@@ -40,6 +40,15 @@ function connect(url) {
     const pending = new Map();
     const events = [];
     const listeners = [];
+    // The browser going away (app restart, window closed) must fail every caller loudly. Without
+    // this, in-flight sends sit in `pending` forever and a poll loop hangs alive and silent,
+    // still "running" to a supervisor while producing nothing.
+    let dead = null;
+    ws.onclose = () => {
+      dead = new Error(`cdp: connection to ${url} closed by the browser (app restarted or window closed)`);
+      for (const { rej } of pending.values()) rej(dead);
+      pending.clear();
+    };
     ws.onmessage = (ev) => {
       const m = JSON.parse(ev.data);
       if (m.id && pending.has(m.id)) {
@@ -53,6 +62,7 @@ function connect(url) {
     };
     ws.onopen = () => resolve({
       send: (method, params = {}) => new Promise((res, rej) => {
+        if (dead) { rej(dead); return; }
         const mid = ++id;
         pending.set(mid, { res, rej });
         ws.send(JSON.stringify({ id: mid, method, params }));
