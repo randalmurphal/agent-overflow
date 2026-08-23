@@ -81,6 +81,15 @@ Every row rendered inside `<TimelineVirtualizer>`:
 - Keeps its outer shell stable after first render. Do not swap static rows
   into buttons, insert chevrons late, animate body height inside the
   scroll surface, or append completion-only history rows.
+- Keeps conditionally rendered header actions height-neutral across every
+  state transition. `opacity-0` hides paint, not layout, so a running-only
+  control still sets the row height until it is removed at completion. Icon
+  buttons inside text-bearing headers must establish explicit flex geometry
+  (`inline-flex items-center justify-center`) so inherited text line boxes and
+  padding cannot make the active row taller. Any control that appears or
+  disappears between running and settled states needs a real-browser
+  regression comparing the row root's height before and after the transition;
+  happy-dom cannot prove this geometry.
 - Uses `TranscriptDisclosureHeader.svelte` for disclosure headers unless
   there is a specific reason not to.
 - Survives windowing remount. Row-local state disappears when scrolled out
