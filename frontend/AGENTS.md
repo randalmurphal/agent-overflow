@@ -142,7 +142,16 @@ not stylistic — it follows from what backs the key:
   One `$state.raw` box per key, no refcount, no source, no transport
   edge. Users: `threadStatuses`, `sendQueue`, `compactingState`,
   `fastModeState`, `claudeSkills`, `codexSkills`, `providerCommands`,
-  `worktreeSetup`.
+  `worktreeSetup`, and the thread pane's per-row item boxes behind
+  `pane.getItemById` (`pane.items` itself is `$state.raw`; a row's
+  reader wakes only when its own row is written — see the `items`
+  declaration in `thread.svelte.ts`). The split is load-bearing: a
+  reactive scope takes MEMBERSHIP and order from `pane.items` and reads
+  a row's FIELDS (status, summary, meta) through `getItemById`. A field
+  patch is written in place and the array signal stays silent for it, so
+  a scope that scans the array and then reads `.status` off the hit never
+  wakes (the nav-rail hover preview and the agent-scope turn pill both did
+  this before 2026-08-23; `agentScopeView.svelte.test.ts` pins the fix).
 
 The deciding question is "is there something to release?", not "is it
 keyed?". Both module headers carry the full rationale — read the one you

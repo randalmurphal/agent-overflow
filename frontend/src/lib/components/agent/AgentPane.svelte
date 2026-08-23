@@ -147,7 +147,10 @@
   let completionItem = $derived.by(() => {
     void ctx.timelineRevision;
     if (!scopeItemId) return undefined;
-    return ctx.items.find((item) => item.completionOf === scopeItemId);
+    // Membership from the array (structure); the row's live fields from
+    // its box — an in-place patch to the row never fires the array signal.
+    const completion = ctx.items.find((item) => item.completionOf === scopeItemId);
+    return completion ? (ctx.getItemById(completion.id) ?? completion) : undefined;
   });
 
   // A Codex child's final answer arrives on the spawn's completion

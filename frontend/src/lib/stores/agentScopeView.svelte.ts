@@ -173,10 +173,13 @@ export function createAgentScopeView(
   });
 
   // ---- Scope lifecycle as the timeline's turn ---------------------------
-  // Status reads go through the SOURCE pane's live item (the `$state`
-  // proxy), so a launch flipping to terminal re-derives without a
-  // structural revision. The completion sibling is the status source once
-  // it exists — same rule the card and the composer shell follow.
+  // Status reads go through the SOURCE pane's live row (`getItemById`,
+  // the row's own box), so a launch flipping to terminal re-derives
+  // without a structural revision. The completion sibling is the status
+  // source once it exists — same rule the card and the composer shell
+  // follow. Its MEMBERSHIP comes from the array (structure); its fields
+  // must not, because a patch to the row is written in place and the
+  // array signal stays silent for it.
   let scopeLaunch = $derived.by<Item | undefined>(() => {
     void sourcePane.timelineRevision;
     return scopeItemId ? sourcePane.getItemById(scopeItemId) : undefined;
@@ -184,7 +187,8 @@ export function createAgentScopeView(
   let scopeCompletion = $derived.by<Item | undefined>(() => {
     void sourcePane.timelineRevision;
     if (!scopeItemId) return undefined;
-    return sourcePane.items.find((item) => item.completionOf === scopeItemId);
+    const completion = sourcePane.items.find((item) => item.completionOf === scopeItemId);
+    return completion ? (sourcePane.getItemById(completion.id) ?? completion) : undefined;
   });
   const timelineTurns: TimelineTurnFacet = {
     keyOf: () => AGENT_SCOPE_TURN_KEY,

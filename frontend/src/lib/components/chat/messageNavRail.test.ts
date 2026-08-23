@@ -237,6 +237,8 @@ describe('tickRangeInView', () => {
   });
 });
 
+const byId = (rows: readonly Item[]) => (id: string) => rows.find((it) => it.id === id);
+
 describe('turnPreview', () => {
   const items: Item[] = [
     item({ id: 'u1', kind: 'user_text', summary: 'fix the   bug\n\nplease' }),
@@ -249,17 +251,35 @@ describe('turnPreview', () => {
   ];
 
   it('pairs the ask with the turn final top-level assistant reply', () => {
-    expect(turnPreview(items, 'u1')).toEqual({
+    expect(turnPreview(items, 'u1', byId(items))).toEqual({
       userText: 'fix the bug please',
       assistantText: 'fixed it',
     });
   });
 
+  it('reads the reply through the resolver, not the array copy', () => {
+    // `pane.items` is `$state.raw`: a streamed delta writes the row in place,
+    // so the array a scope captured can hold a stale summary while the
+    // per-row box carries the live one.
+    const live = new Map<string, Item>(items.map((it) => [it.id, it] as const));
+    live.set('a2', { ...items[4], summary: 'fixed it, and tested' });
+    expect(turnPreview(items, 'u1', (id) => live.get(id))).toEqual({
+      userText: 'fix the bug please',
+      assistantText: 'fixed it, and tested',
+    });
+  });
+
+  it('a reply row that landed without text yet does not blank the previous reply', () => {
+    const live = new Map<string, Item>(items.map((it) => [it.id, it] as const));
+    live.set('a2', { ...items[4], summary: '' });
+    expect(turnPreview(items, 'u1', (id) => live.get(id)).assistantText).toBe('looking');
+  });
+
   it('stops at the next user message and tolerates a missing reply', () => {
-    const tail = turnPreview(items, 'u2');
+    const tail = turnPreview(items, 'u2', byId(items));
     expect(tail.userText).toBe('thanks');
     expect(tail.assistantText).toBe('after next turn');
-    expect(turnPreview(items, 'missing')).toEqual({ userText: '', assistantText: '' });
+    expect(turnPreview(items, 'missing', byId(items))).toEqual({ userText: '', assistantText: '' });
   });
 
   it('a wire-only injection mid-turn neither ends the turn nor becomes the ask', () => {
@@ -275,7 +295,7 @@ describe('turnPreview', () => {
       item({ id: 'a2', kind: 'assistant_text', role: 'assistant', summary: 'final answer' }),
       item({ id: 'u2', kind: 'user_text', summary: 'next ask' }),
     ];
-    expect(turnPreview(withInjection, 'u1')).toEqual({
+    expect(turnPreview(withInjection, 'u1', byId(withInjection))).toEqual({
       userText: 'real ask',
       assistantText: 'final answer',
     });
@@ -291,7 +311,7 @@ describe('turnPreview', () => {
       }),
       item({ id: 'a9', kind: 'assistant_text', role: 'assistant', summary: long }),
     ];
-    const preview = turnPreview(withAttachment, 'u9');
+    const preview = turnPreview(withAttachment, 'u9', byId(withAttachment));
     expect(preview.userText).toBe('see this');
     expect(preview.assistantText.length).toBeLessThan(long.length);
     expect(preview.assistantText.endsWith('…')).toBe(true);

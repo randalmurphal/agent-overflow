@@ -95,7 +95,9 @@
     if (item.kind !== 'tool_completion' || item.toolName !== 'collab_agent' || !item.completionOf) {
       return null;
     }
-    const launch = pane?.items.find((candidate) => candidate.id === item.completionOf);
+    // The row's box, not an array scan: the launch row's meta is patched
+    // in place, and only the box wakes this derived for it.
+    const launch = pane?.getItemById(item.completionOf);
     if (!launch || !isCodexSubagentLaunchItem(launch)) return null;
     return codexSubagentLaunchInfo(launch);
   });

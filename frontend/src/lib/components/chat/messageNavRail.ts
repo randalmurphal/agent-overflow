@@ -411,24 +411,40 @@ function compactPreview(text: string): string {
  * user message — how the turn ended, matching what the reader would find
  * by jumping there. Runs on hover only; the walk is bounded by the
  * window and stops at the next user message.
+ *
+ * `items` answers STRUCTURE (which rows, in what order, of what kind);
+ * the two summaries are read through `resolve` — `pane.getItemById`,
+ * the row's own box — because a streaming row's summary is written in
+ * place and the array signal does not fire for it. A reactive caller
+ * that read `.summary` off the array would show the turn as it stood at
+ * the last structural change.
  */
-export function turnPreview(items: readonly Item[], userItemId: string): NavTickPreview {
+export function turnPreview(
+  items: readonly Item[],
+  userItemId: string,
+  resolve: (itemId: string) => Item | undefined,
+): NavTickPreview {
   const start = items.findIndex((it) => it.id === userItemId);
   if (start < 0) return { userText: '', assistantText: '' };
-  const userText = compactPreview(items[start].summary);
-  let assistantText = '';
+  const userText = compactPreview((resolve(userItemId) ?? items[start]).summary);
+  const replies: Item[] = [];
   for (let i = start + 1; i < items.length; i++) {
     const it = items[i];
     if ((it.parentId ?? '') !== '') continue;
     if (it.kind === 'user_text') {
-      // A wire-only injection mid-turn is context, not the next ask —
-      // the walk must agree with `deriveNavTicks` about what a turn is.
       if (isReaderAuthoredUserText(it)) break;
       continue;
     }
-    if (it.kind === 'assistant_text' && it.summary) assistantText = it.summary;
+    if (it.kind === 'assistant_text') replies.push(it);
   }
-  return { userText, assistantText: compactPreview(assistantText) };
+  // The newest reply with text wins, read through the resolver: the array
+  // copy a reactive scope holds can trail a streamed delta, and a reply row
+  // that has landed without a word yet must not blank the one before it.
+  for (let i = replies.length - 1; i >= 0; i--) {
+    const assistantText = compactPreview((resolve(replies[i].id) ?? replies[i]).summary);
+    if (assistantText !== '') return { userText, assistantText };
+  }
+  return { userText, assistantText: '' };
 }
 
 /**

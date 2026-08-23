@@ -63,10 +63,10 @@ export interface TimelineRowUiPruneSignatureInputs {
 // before allocating retention sets and without touching the node tree
 // or the item list. The active-row leg is a store-maintained revision
 // rather than a walk of `pane.items`: the walk cost O(loaded items) per
-// prune callback on an array whose `$state` proxy re-creates a source
-// per index after every upsert batch, which is a main-thread wedge at
-// the window cap mid-turn. The store proves the no-op instead, per
-// changed row.
+// prune callback (and, while the array was a deep `$state` proxy, a
+// re-created source per index after every upsert batch), which was a
+// main-thread wedge at the window cap mid-turn. The store proves the
+// no-op instead, per changed row.
 export function timelineRowUiPruneSignature(inputs: TimelineRowUiPruneSignatureInputs): string {
   return [
     inputs.threadId,

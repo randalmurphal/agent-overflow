@@ -269,17 +269,19 @@
 
   // Guard BEFORE touching pane.items so an idle rail tracks only the
   // hover index, not every streaming upsert batch. A loaded tick derives
-  // locally (tracks live edits); an unloaded one reads the RPC cache.
+  // locally — structure from `pane.items`, the two summaries through
+  // `pane.getItemById` so a streaming answer's in-place writes reach the
+  // card; an unloaded one reads the RPC cache.
   let preview = $derived.by(() => {
     if (resolvedActive === null) return null;
     const tick = ticks[resolvedActive];
     if (!tick) return null;
-    if (tick.nodeIndex !== null) return turnPreview(pane.items, tick.id);
+    if (tick.nodeIndex !== null) return turnPreview(pane.items, tick.id, pane.getItemById);
     return remotePreviews[tick.id] ?? null;
   });
 
-  function tickScale(index: number): number {
-    return tickDistanceScale(resolvedActive === null ? null : Math.abs(index - resolvedActive));
+  function tickStyleTransform(index: number): string {
+    return tickTransform(resolvedActive === null ? null : Math.abs(index - resolvedActive));
   }
 
   // The hit strip spans exactly the rail window plus STRIP_PAD_PX each

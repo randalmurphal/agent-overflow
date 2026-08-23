@@ -40,14 +40,16 @@ function leaf(partial: Partial<Item>): TimelineNode {
 }
 
 function makePane(overrides: Partial<ThreadPane> = {}): ThreadPane {
-  return {
+  const pane = {
     threadId: 't1',
     switchGeneration: 0,
     hasMoreHistory: false,
     hasMoreNewer: false,
     items: [] as Item[],
+    getItemById: (id: string) => pane.items.find((it) => it.id === id),
     ...overrides,
   } as unknown as ThreadPane;
+  return pane;
 }
 
 const threeMessageNodes: TimelineNode[] = [

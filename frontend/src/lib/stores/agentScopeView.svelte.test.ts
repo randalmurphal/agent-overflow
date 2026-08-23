@@ -247,4 +247,44 @@ describe('createAgentScopeView', () => {
 
     view.dispose();
   });
+
+  it('a status patch written to the completion row in place re-settles the scope turn', async () => {
+    // `pane.items` is `$state.raw`: a field patch writes the row in place
+    // and the array signal stays silent, so the status must be read
+    // through the row's own box or the turn pill sits on a dead state.
+    const { pane, agent } = await setup();
+    pane.removeItemById('scope-completion', THREAD_ID);
+    const view = createAgentScopeView(pane, agent, 'launch-1');
+    const turns = view.pane.timelineTurns;
+    pane.upsertItem(
+      makeItem({
+        id: 'scope-completion',
+        itemIndex: 6,
+        threadId: THREAD_ID,
+        kind: 'tool_completion',
+        status: 'running',
+        completionOf: 'launch-1',
+        createdAt: 5_000,
+        updatedAt: 6_000,
+        summary: '',
+      }),
+    );
+    expect(turns.activeKey).toBe(turns.keyOf(view.items[0]));
+    expect(turns.settled).toBeNull();
+
+    pane.applyItemPatch({
+      threadId: THREAD_ID,
+      itemId: 'scope-completion',
+      kind: 'tool_completion',
+      patch: { status: 'completed', updatedAt: 9_000 },
+    });
+
+    expect(turns.activeKey).toBeNull();
+    expect(turns.settled).toEqual({
+      key: turns.keyOf(view.items[0]),
+      startedAt: pane.getItemById('launch-1')!.createdAt,
+      completedAt: 9_000,
+    });
+    view.dispose();
+  });
 });

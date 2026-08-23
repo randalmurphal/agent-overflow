@@ -13,9 +13,11 @@
 // its predecessor, so it costs O(changed) per batch; the prune then
 // proves a no-op from that scalar instead of walking every loaded item.
 // A full walk at prune cadence is what wedged the renderer for 6-19s
-// mid-turn: `pane.items` is a `$state` array replaced on every upsert
-// batch, so each walk re-created ~800 lazy per-index sources in the
-// proxy's get trap (incident 2026-08-10).
+// mid-turn: `pane.items` was then a deep `$state` array replaced on every
+// upsert batch, so each walk re-created ~800 lazy per-index sources in
+// the proxy's get trap (incident 2026-08-10). The array is `$state.raw`
+// since 2026-08-23; the scalar bail still keeps an O(window) walk off
+// the reveal cadence.
 
 import type { Item } from '../types/models';
 

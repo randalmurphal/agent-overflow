@@ -64,6 +64,7 @@ import { createThreadPendingInteractiveState } from './threadPendingInteractiveS
 import { createThreadActivityRuns } from './threadActivityRuns.svelte';
 import { activityRunDefaultCollapsed, activityRunWindowRows } from './activityRunPrefs.svelte';
 import type { SettledTurn, TimelineTurnFacet } from './threadTurnProjection';
+import { createKeyedSignalRegistry } from './keyedSignalRegistry.svelte';
 import { createThreadRowUiState, type RowUiStateRetention } from './threadRowUiState.svelte';
 import { createThreadStreamingReveal } from './threadStreamingReveal.svelte';
 import { createThreadTimelineWindow } from './threadTimelineWindow.svelte';
@@ -155,7 +156,19 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
   // primitive-valued getter over `thread` goes through a $derived, so no
   // consumer can be woken by a replacement that changed nothing it reads.
   const stableTerminalThreadId = $derived.by(() => thread?.id ?? null);
-  let items: Item[] = $state([]);
+  // `$state.raw`, not `$state`: the window is replaced wholesale on every
+  // upsert batch, and a deep proxy re-minted a source per index and per
+  // item field on every read after each replacement (9.9MB/min of proxy
+  // `get` allocation in the 2026-08-23 profile) — and because the nested
+  // Item proxies were new each time, every mounted row's `displayItem`
+  // changed identity on every batch and re-derived whether or not its row
+  // had been written. Row-level reactivity comes from `itemBoxes` instead:
+  // one `$state.raw` box per LOADED item id, written at the same
+  // chokepoints that write `items`, so a row re-derives only when its own
+  // row is written. The array signal itself fires on replacement only
+  // (structure, and the batch commit); an in-place `writeItemAt` is
+  // silent at the array and loud at the row's box.
+  let items: Item[] = $state.raw([]);
   // Structural revision for timeline projections that should skip
   // summary-only streaming deltas. Bump whenever the item window's array
   // changes shape or identity; `applyItemDelta` intentionally does not bump.
@@ -165,8 +178,10 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
   // changed which rows the prune retains unconditionally, or what it
   // retains for one. The prune's no-op bail reads it as a scalar instead
   // of walking `items` per callback — that walk wedged the renderer for
-  // 6-19s mid-turn, because the `$state` array is replaced on every
-  // upsert batch and each walk re-created a proxy source per index.
+  // 6-19s mid-turn while `items` was a deep `$state` array (replaced on
+  // every upsert batch, each walk re-created a proxy source per index).
+  // `items` is `$state.raw` now, but the walk is still O(window) per
+  // callback and stays off the hot path.
   //
   // Deliberately NOT `$state`, same reason as `lastLiveContentAt`: the
   // only reader is the quiet scheduler's prune pass, which runs off a
@@ -197,9 +212,21 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     lastLiveContentAt = nowForLiveContent();
   }
   const itemIndexById: Map<string, number> = new Map();
+  // Invariant: a box exists for exactly the ids in `items`. `writeItemAt`
+  // and the two commit chokepoints are the only writers; `syncItemBoxes`
+  // is the only place a box is dropped. A box-less id is "not loaded",
+  // and a reactive reader of one tracks the registry's creation version
+  // so it wakes when that row lands.
+  const itemBoxes = createKeyedSignalRegistry<Item | undefined>(undefined);
   function getItemById(itemId: string): Item | undefined {
-    const index = itemIndexById.get(itemId);
-    return index === undefined ? undefined : items[index];
+    return itemBoxes.get(itemId);
+  }
+  /** Wholesale replacement: box every surviving row, drop every lost one. */
+  function syncItemBoxes(previous: readonly Item[], nextItems: readonly Item[]): void {
+    for (const item of nextItems) itemBoxes.set(item.id, item);
+    for (const item of previous) {
+      if (!itemIndexById.has(item.id)) itemBoxes.drop(item.id);
+    }
   }
   /**
    * The ONE in-place row write. Every path that replaces a single loaded
@@ -226,6 +253,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       activityRuns.noteMemberContentChanged(next.id);
     }
     items[index] = next;
+    itemBoxes.set(next.id, next);
   }
   const rowUiState = createThreadRowUiState({
     getItemById,
@@ -701,8 +729,12 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     droppedItems: readonly Item[],
     exhaustedScope?: ReadonlySet<string>,
   ): boolean {
+    const previous = items;
     items = nextItems;
+    // Indexes first: the box sync drops a previous row only when
+    // `itemIndexById` no longer knows it.
     rebuildItemIndexes(items);
+    syncItemBoxes(previous, items);
     // Fold↔items chokepoint: folds are only meaningful while their
     // anchor row is loaded — once an anchor leaves the window, the
     // next load of its region decorates from SQLite. Every wholesale
@@ -805,6 +837,9 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
         );
       }
     }
+    // The merge never drops a row, so there is nothing to un-box;
+    // `changedItems` carries the appended rows too.
+    for (const item of next.changedItems) itemBoxes.set(item.id, item);
     if (next.structureChanged) timelineRevision++;
     if (next.rowUiRetentionChanged) rowUiRetentionRevision += 1;
     for (const id of next.summaryFieldsChangedIds) {
