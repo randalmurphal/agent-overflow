@@ -615,7 +615,7 @@ why vendored packages are `workspace:` and never `file:` — pnpm resolves a
 `file:` directory through the same store and hardlinks the tree in, so the
 `vendor/` files and the ones the build reads would share inodes.
 
-- `svelte@5.56.8.patch` — four hunks with different drop rules:
+- `svelte@5.56.8.patch` — five hunks with different drop rules:
   1. **ownerless-roots** — `$effect.root` no longer inherits the
      creating component's context/parent, so store-level roots
      (threadRowUiState's expansion registry) don't pin dead row
@@ -684,6 +684,28 @@ why vendored packages are `workspace:` and never `file:` — pnpm resolves a
      `error-handling.js`. No upstream issue filed — all three pieces are
      upstream-PR candidates. Drop when
      `svelte-patch-flush-caps.test.ts` passes on an unpatched release.
+  5. **reconnect-dedupe** — `get()` on a derived that was DISCONNECTED
+     (lost its last reaction earlier), has run before, and is dirty
+     registers it twice in one call: `update_derived` runs with
+     `CONNECTED` pre-set, so `update_reaction` pushes the derived into
+     every dep past `skipped_deps` (the deps new or re-ordered that run),
+     and then `reconnect()` pushes it into EVERY dep again. A dep that was
+     new that run holds the derived twice; when the derived later loses
+     its last reader, `remove_reaction` pops one copy and the other keeps
+     that dep — and everything upstream of it — connected for the life of
+     the app. Live shape (2026-08-23 heap snapshot): ComposerToolbar's
+     `sessionUsesSelectedAccount` reads the session account's proxied
+     fields before `selectedAccount`; the ring popover is its only
+     reader. Hover, leave, a re-announced session account (new object,
+     new proxied sources), hover again — and `selectedAccount` stayed in
+     the global `accounts` signal's reactions after the pane closed,
+     retaining the pane's whole DOM (3.4k detached nodes) through the
+     derived's closure context. The hunk makes `reconnect()` skip a dep
+     that already holds the derived (`runtime.js` only). Upstream `main`
+     has the same code as of 2026-08-23; no issue filed yet — PR
+     candidate. Drop when `svelte-patch-reconnect-dedupe.test.ts` passes
+     on an unpatched release; `chatview-dom-retention.test.ts` carries the
+     component-level tripwire (the ring re-hover case).
 
   Dropped on the 5.56.3 → 5.56.8 re-roll: the **zombie-mint fix** and its
   **probe** (`src/lib/utils/zombieMintProbe.ts`, deleted). Upstream fixed

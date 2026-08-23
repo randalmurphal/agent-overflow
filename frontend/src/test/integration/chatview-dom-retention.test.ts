@@ -56,9 +56,14 @@ import { resetForTest as resetThreadStatuses, projectSendStarted } from '../../l
 import { __resetReviewPaneStateForTest } from '../../lib/stores/reviewPane.svelte';
 import { resetForTest as resetDiffReviewCommentsForTest } from '../../lib/stores/diffReviewComments.svelte';
 import { resetAppStorageForTest } from '../../lib/stores/appStorage';
+import {
+  resetForTest as resetAccountInfoForTest,
+  setProviderAccount,
+} from '../../lib/stores/accountInfo.svelte';
 import type { Thread } from '../../lib/types/models';
 import { setBindingMock, resetBindingMocks } from '../mocks/bindings-app';
-import { installPaneMocks } from '../helpers/chat';
+import { installPaneMocks, makeItem } from '../helpers/chat';
+import type { Item } from '../../lib/types/models';
 
 const gc = (globalThis as { gc?: () => void }).gc;
 
@@ -77,8 +82,8 @@ function seedThread(id: string): Thread {
   };
 }
 
-async function buildPane(thread: Thread, paneId: string) {
-  installPaneMocks([]);
+async function buildPane(thread: Thread, paneId: string, items: Item[] = []) {
+  installPaneMocks(items);
   setBindingMock('SwitchThread', async () => thread);
   setBindingMock('ListLiveBackgroundTasks', async () => []);
   setBindingMock('GetWorkspaceActivity', async () => ({ activeTurnThreads: 0, runningBackgroundTasks: 0 }));
@@ -133,6 +138,7 @@ beforeEach(() => {
   resetLayoutMetricsForTest();
   resetThreadStatuses();
   resetComposerDraftSnapshotsForTest();
+  resetAccountInfoForTest();
 });
 
 describe.runIf(gc)('closed chat pane DOM is collectable', () => {
@@ -297,5 +303,95 @@ describe.runIf(gc)('closed pane under PaneHost is collectable while siblings liv
 describe.runIf(!gc)('closed chat pane DOM is collectable (SKIPPED)', () => {
   it('requires --expose-gc (run with NODE_OPTIONS=--expose-gc)', () => {
     expect(true).toBe(true);
+  });
+});
+
+describe.runIf(gc)('closed pane after the rate-limit popover was re-hovered post session-connect', () => {
+  it('releases the pane even though the toolbar account derived changed its dep list between hovers', async () => {
+    // Live-app shape (2026-08-23 heap snapshot): the ring popover is the
+    // only reader of ComposerToolbar's `sessionUsesSelectedAccount`, and
+    // that derived reads the session account's proxied fields before
+    // `selectedAccount`. Hover → leave (the chain disconnects) → the
+    // session account is re-announced as a new object (new proxied
+    // sources, so the dep list past `sessionAccount` is new next run) →
+    // hover is exactly "a disconnected derived reconnects while dirty with
+    // a changed dep list" — the sequence pristine svelte double-registers
+    // (reconnect-dedupe hunk of patches/svelte@5.56.8.patch; focused
+    // regression in svelte-patch-reconnect-dedupe.test.ts). The leftover
+    // registration pinned `selectedAccount` in the global accounts signal
+    // and, through the derived's closure context, the closed pane's whole
+    // DOM.
+    const threadId = 'thread-ring-1';
+    setProviderAccount('claude', { email: 'ring@example.test', subscriptionType: 'max' }, 'acct-ring');
+
+    async function hoverRingOnceAndLeave(root: Element, expectEmail: boolean): Promise<void> {
+      const ring = root.querySelector('[data-testid="composer-rate-limit-5h"] button');
+      expect(ring, 'probe precondition: rate-limit ring mounted (pane locked + provider)').not.toBeNull();
+      ring!.dispatchEvent(new MouseEvent('mouseenter', { bubbles: false }));
+      flushSync();
+      await tick();
+      const tip = document.querySelector('[role="tooltip"]');
+      expect(tip, 'probe precondition: ring popover open').not.toBeNull();
+      if (expectEmail) {
+        expect(tip!.textContent, 'probe precondition: popover reads the session account email').toContain('ring@example.test');
+      }
+      ring!.dispatchEvent(new MouseEvent('mouseleave', { bubbles: false }));
+      // useHoverPopover closes 140ms after leave.
+      await new Promise((r) => setTimeout(r, 200));
+      flushSync();
+      expect(document.querySelector('[role="tooltip"]'), 'probe precondition: ring popover closed').toBeNull();
+    }
+
+    async function mountHoverAndClose(): Promise<WeakRef<Element>[]> {
+      const pane = await buildPane(seedThread(threadId), 'pane-ring-1', [
+        makeItem({ id: 'user:0', threadId, kind: 'user_message', role: 'user', summary: 'hi' }),
+      ]);
+      const target = document.body.appendChild(document.createElement('div'));
+      const app = mount(ChatView, { target, props: { pane } });
+      flushSync();
+      await tick();
+      await settle();
+      await settle();
+
+      const toolbar = target.querySelector('[data-composer-toolbar]');
+      const root = target.firstElementChild;
+      expect(toolbar, 'probe precondition: composer toolbar mounted').not.toBeNull();
+      const refs = [new WeakRef(toolbar!), new WeakRef(root!)];
+
+      // The session is connected on the selected account, so hover 1 runs
+      // the full chain: sessionUsesSelectedAccount reads the session
+      // account's proxied fields AND selectedAccount.
+      const connect = () =>
+        pane.setProviderSessionAccount({
+          provider: 'claude',
+          threadId,
+          connected: true,
+          accountId: 'acct-ring',
+          account: { email: 'ring@example.test', subscriptionType: 'max' },
+        });
+      connect();
+      flushSync();
+      await hoverRingOnceAndLeave(target, true);
+      // The session account is re-announced (every turn start does this):
+      // a NEW object, so its proxied fields are new sources. The next run
+      // of the disconnected derived keeps `sessionAccount` as its first dep
+      // and sees everything after it — including selectedAccount — as new.
+      connect();
+      flushSync();
+      // Hover 2: the disconnected deriveds reconnect while dirty.
+      await hoverRingOnceAndLeave(target, true);
+
+      unmount(app);
+      flushSync();
+      destroyPane('pane-ring-1');
+      flushSync();
+      target.remove();
+      await settle();
+      return refs;
+    }
+
+    const refs = await mountHoverAndClose();
+    await collectHard();
+    expect(survivors(refs), 'closed pane DOM still strongly reachable after ring re-hover').toBe(0);
   });
 });

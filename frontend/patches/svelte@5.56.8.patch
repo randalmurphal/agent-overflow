@@ -911,3 +911,27 @@ index c5d195dfaeb41422bbdd2923f239b248be0240c9..dd2ce22bbaa90ca2ff5185d3e8d595cb
  
  	effect.f ^= DESTROYING;
  	effect.f |= DESTROYED;
+diff --git a/src/internal/client/runtime.js b/src/internal/client/runtime.js
+index 4458595d3520ca57feb3775b4cb8764ae669d661..6bd7568b17c90d38e5d2627fef6e2d8fbf2a4aee 100644
+--- a/src/internal/client/runtime.js
++++ b/src/internal/client/runtime.js
+@@ -720,7 +720,18 @@ function reconnect(derived) {
+ 	if (derived.deps === null) return;
+ 
+ 	for (const dep of derived.deps) {
+-		(dep.reactions ??= []).push(derived);
++		// PATCH(agent-overflow reconnect-dedupe): when `get()` reconnects a
++		// dirty derived it first runs `update_derived` with CONNECTED set, and
++		// `update_reaction` has already pushed the derived into every dep
++		// beyond `skipped_deps` (the deps that are new or re-ordered this
++		// run). Pushing again leaves those deps holding the derived twice, so
++		// the later `remove_reaction` pops one copy and the other keeps the
++		// dep — and everything upstream of it — connected forever.
++		var reactions = (dep.reactions ??= []);
++
++		if (!includes.call(reactions, derived)) {
++			reactions.push(derived);
++		}
+ 
+ 		if ((dep.f & DERIVED) !== 0 && (dep.f & CONNECTED) === 0) {
+ 			unfreeze_derived_effects(/** @type {Derived} */ (dep));
