@@ -1,4 +1,5 @@
 import type { TokenUsageSummary } from '../types/events';
+import type { Item } from '../types/models';
 
 /**
  * SettledTurn is the most recent completed turn's projection. ChatView uses
@@ -105,4 +106,33 @@ export function parseTokenUsage(raw: string | null | undefined): TokenUsageSumma
   } catch {
     return null;
   }
+}
+
+/**
+ * What a timeline surface treats as a TURN for its response decorations
+ * (the divider before prose that follows tool activity, and the
+ * "Response <duration>" pill on a settled turn's final prose).
+ *
+ * The chat timeline keys on the provider turn (`item.turnIndex`, the
+ * thread's active turn, `latestSettledTurn`). The agent pane's scoped
+ * facade answers with ONE key for its whole window and derives active /
+ * settled from the scoped launch's own lifecycle: a subagent's rows are
+ * written across the main thread's turns while belonging to one run, so
+ * keying them on the provider turn stamped a finished-looking "Response"
+ * pill on a still-running agent the moment the main turn settled (live
+ * regression 2026-08-22).
+ */
+export interface TimelineTurnFacet {
+  /** Turn key of a timeline item. Equal keys are one turn. */
+  keyOf(item: Item): number;
+  /** Key of the turn still in progress, or null when nothing is. */
+  readonly activeKey: number | null;
+  /** The most recently settled turn, for the pill's duration. */
+  readonly settled: SettledTimelineTurn | null;
+}
+
+export interface SettledTimelineTurn {
+  key: number;
+  startedAt: number;
+  completedAt: number;
 }

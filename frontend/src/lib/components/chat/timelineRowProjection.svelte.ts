@@ -28,7 +28,6 @@ import { timelineRowDecorations, type TimelineRowDecorationSets } from './timeli
 import { codexSubagentReceiverLabels } from '../../utils/subagentLaunch';
 import { PROVIDER_DEFINITIONS } from '../../providers/catalog';
 import { filterRedundantNotifications } from '../../utils/notificationFilter';
-import { getActiveTurn } from '../../stores/threadStatuses.svelte';
 
 const EMPTY_RECEIVER_LABELS = new Map<string, string>();
 /** Shared, so the common "gate is holding nothing" case allocates nothing. */
@@ -142,7 +141,10 @@ export function createTimelineRowProjection(
   });
 
   let rowDecorations = $derived.by(() => {
-    const activeTurnIndex = getActiveTurn(options.getPane().threadId)?.turnIndex ?? null;
+    // Turn identity comes from the PANE, not from the thread's turn store:
+    // the agent pane's facade keys its scoped window as one run.
+    const turns = options.getPane().timelineTurns;
+    const activeTurnKey = turns.activeKey;
     // Every set this returns is a set of INDEXES into `revealedNodes`, so it
     // must be invalidated by exactly what reshapes that array — and it is
     // tracked directly rather than by re-listing its dependencies, because a
@@ -151,13 +153,14 @@ export function createTimelineRowProjection(
     // reference when nothing shaped it, and its prelude already excludes the
     // growing summary text inside an existing row.) `timelineRowDecorations`
     // is pure over the nodes it is handed, so this adds no per-item reads.
-    return timelineRowDecorations(revealedNodes, activeTurnIndex);
+    return timelineRowDecorations(revealedNodes, activeTurnKey, turns.keyOf);
   });
 
   function responsePillDuration(node: TimelineNode): string {
     if (node.kind !== 'leaf') return '';
-    const settledTurn = options.getPane().latestSettledTurn;
-    if (settledTurn?.turnIndex !== node.item.turnIndex) return '';
+    const turns = options.getPane().timelineTurns;
+    const settledTurn = turns.settled;
+    if (settledTurn?.key !== turns.keyOf(node.item)) return '';
     const elapsedMs = settledTurn.completedAt - settledTurn.startedAt;
     if (!Number.isFinite(elapsedMs) || elapsedMs < 0) return '';
     return formatElapsedSeconds(Math.floor(elapsedMs / 1_000));

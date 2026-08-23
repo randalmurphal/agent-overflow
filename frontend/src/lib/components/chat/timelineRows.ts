@@ -1,8 +1,10 @@
+import type { Item } from '../../types/models';
 import {
   finalAssistantTextIdsByTurn,
   isToolTextBoundary,
+  itemTurnIndexKey,
   nodeRole,
-  timelineNodeTurnIndex,
+  timelineNodeRepresentativeItem,
   type TimelineNode,
 } from '../../utils/subagentGrouping';
 
@@ -21,21 +23,29 @@ export interface TimelineRowDecorationSets {
  * turns with no `tool` role on record, and the assistant message closing
  * one of them would lose its response divider.
  */
-function nodeTurnIndexes(node: TimelineNode): number[] {
-  if (node.kind !== 'activity_run') return [timelineNodeTurnIndex(node)];
+function nodeTurnKeys(node: TimelineNode, turnKeyOf: (item: Item) => number): number[] {
+  if (node.kind !== 'activity_run') return [turnKeyOf(timelineNodeRepresentativeItem(node))];
   const turns: number[] = [];
   for (const child of node.children) {
-    const turnIndex = timelineNodeTurnIndex(child);
-    if (turns[turns.length - 1] !== turnIndex) turns.push(turnIndex);
+    const turnKey = turnKeyOf(timelineNodeRepresentativeItem(child));
+    if (turns[turns.length - 1] !== turnKey) turns.push(turnKey);
   }
   return turns;
 }
 
+/**
+ * Turn identity is an INPUT, not `item.turnIndex` read in place: the
+ * surface decides what a "turn" is (`ThreadPane.timelineTurns`). The chat
+ * timeline keys on the provider turn; the agent pane keys its whole
+ * scoped window as one run, so the main thread settling never stamps a
+ * "Response" pill on a subagent that is still working.
+ */
 export function timelineRowDecorations(
   nodes: readonly TimelineNode[],
-  activeTurnIndex: number | null,
+  activeTurnKey: number | null,
+  turnKeyOf: (item: Item) => number = itemTurnIndexKey,
 ): TimelineRowDecorationSets {
-  const finalAssistantTextIds = finalAssistantTextIdsByTurn(nodes, activeTurnIndex);
+  const finalAssistantTextIds = finalAssistantTextIdsByTurn(nodes, activeTurnKey, turnKeyOf);
   const toolTextBoundaryIndexes = new Set<number>();
   const responseDividerIndexes = new Set<number>();
   const responsePillIndexes = new Set<number>();
@@ -51,7 +61,7 @@ export function timelineRowDecorations(
 
     const responseDivider = node.kind === 'leaf'
       && node.item.kind === 'assistant_text'
-      && lastRenderableRoleByTurn.get(node.item.turnIndex) === 'tool';
+      && lastRenderableRoleByTurn.get(turnKeyOf(node.item)) === 'tool';
     if (responseDivider) {
       responseDividerIndexes.add(index);
       if (finalAssistantTextIds.has(node.item.id)) {
@@ -60,8 +70,8 @@ export function timelineRowDecorations(
     }
 
     if (role === 'tool' || role === 'text') {
-      for (const turnIndex of nodeTurnIndexes(node)) {
-        lastRenderableRoleByTurn.set(turnIndex, role);
+      for (const turnKey of nodeTurnKeys(node, turnKeyOf)) {
+        lastRenderableRoleByTurn.set(turnKey, role);
       }
     }
   }

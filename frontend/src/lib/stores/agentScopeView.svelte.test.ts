@@ -188,6 +188,54 @@ describe('createAgentScopeView', () => {
     expect(pane.isSubagentGroupExpanded('nested-launch')).toBe(false);
   });
 
+  it('keys the scoped window as one turn that follows the launch lifecycle', async () => {
+    // The live regression: the main turn settling stamped "Response 1m 58s"
+    // on a still-running subagent, because the decorations keyed on
+    // `item.turnIndex` + the THREAD's active/settled turn. The facade
+    // answers its own facet: one key for every scoped row, active while
+    // the scoped launch runs, settled on the launch's own completion with
+    // the agent's own duration.
+    const { pane, agent } = await setup();
+    // Fixture: launch-1 is still running and has no completion yet.
+    pane.removeItemById('scope-completion', THREAD_ID);
+    const view = createAgentScopeView(pane, agent, 'launch-1');
+    const turns = view.pane.timelineTurns;
+
+    const first = view.items[0];
+    const last = view.items[view.items.length - 1];
+    expect(turns.keyOf(first)).toBe(turns.keyOf(last));
+    // The source pane keys on the provider turn; the facade must not.
+    expect(pane.timelineTurns.keyOf(makeItem({ turnIndex: 7 }))).toBe(7);
+
+    expect(turns.activeKey).toBe(turns.keyOf(first));
+    expect(turns.settled).toBeNull();
+
+    // The completion sibling lands: the scope's turn settles on IT, not on
+    // anything the main thread did.
+    pane.upsertItem(
+      makeItem({
+        id: 'scope-completion',
+        itemIndex: 6,
+        threadId: THREAD_ID,
+        kind: 'tool_completion',
+        status: 'completed',
+        completionOf: 'launch-1',
+        createdAt: 5_000,
+        updatedAt: 9_000,
+        summary: 'outer done',
+      }),
+    );
+
+    expect(turns.activeKey).toBeNull();
+    expect(turns.settled).toEqual({
+      key: turns.keyOf(first),
+      startedAt: pane.getItemById('launch-1')!.createdAt,
+      completedAt: 9_000,
+    });
+
+    view.dispose();
+  });
+
   it('recomputes the window when the source timeline changes', async () => {
     const { pane, agent } = await setup();
     const view = createAgentScopeView(pane, agent, 'launch-1');

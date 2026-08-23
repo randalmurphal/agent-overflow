@@ -64,6 +64,22 @@ launch, how do progress and terminal signals arrive, which controls exist
   presents the prompt (Q10, Q10b).
 - Notifications (bell/toast) fire for top-level nodes only; nested
   completions update their card silently (Q11).
+- A background completion sibling ALWAYS renders as its own row at the
+  completion point (top-level, or inside the parent card for a nested
+  node), as a compact agent row with the card's open-in-pane door.
+  Folding it onto the launch card as the card's status source is
+  additive, never a replacement: the bell is hidden on the strength of
+  this row existing (`utils/notificationFilter.ts`), so a fold that also
+  dropped the row left the main transcript with no trace of the agent
+  finishing (regression 2026-08-22; tripwire
+  `utils/backgroundCompletionVisibility.test.ts`).
+- The agent pane keys its whole scoped window as ONE turn
+  (`ThreadPane.timelineTurns`, overridden by the scope facade): active
+  while the scoped launch runs, settled on the launch's own completion
+  with the agent's duration. A subagent's rows span however many
+  provider turns it outlives, so keying the response divider/pill on the
+  main thread's turn stamped "Response 1m 58s" on a still-running agent
+  the moment the main turn settled (regression 2026-08-22).
 - Forked skills are detected structurally: the first row attributed to
   a `Skill` tool_use marks the fork; the completion's
   `tool_use_result.status:"forked"` + `agentId` closes it. No skill-name

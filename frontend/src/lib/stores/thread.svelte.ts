@@ -47,7 +47,7 @@ import {
 } from './agentPane.svelte';
 import { collectAgentScopeRetainedIds } from './agentScopeView.svelte';
 import { errString } from '../utils/errors';
-import type { RevealBoundary } from '../utils/subagentGrouping';
+import { itemTurnIndexKey, type RevealBoundary } from '../utils/subagentGrouping';
 import type { SubagentFoldAggregate } from '../utils/subagentFold';
 import { rowUiRetentionChanged } from '../utils/rowUiRetention';
 import { activityRunSummaryFieldsChanged } from '../utils/activityRunGrouping';
@@ -63,7 +63,7 @@ import { createLiveTodoState } from './liveTodoState.svelte';
 import { createThreadPendingInteractiveState } from './threadPendingInteractiveState.svelte';
 import { createThreadActivityRuns } from './threadActivityRuns.svelte';
 import { activityRunDefaultCollapsed, activityRunWindowRows } from './activityRunPrefs.svelte';
-import type { SettledTurn } from './threadTurnProjection';
+import type { SettledTurn, TimelineTurnFacet } from './threadTurnProjection';
 import { createThreadRowUiState, type RowUiStateRetention } from './threadRowUiState.svelte';
 import { createThreadStreamingReveal } from './threadStreamingReveal.svelte';
 import { createThreadTimelineWindow } from './threadTimelineWindow.svelte';
@@ -945,6 +945,27 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     designState,
   });
 
+  // Turn identity for the timeline's response decorations
+  // (`TimelineTurnFacet`): the provider turn. One object for the pane's
+  // lifetime — the getters read the live signals — so the per-row pill
+  // lookup allocates nothing. The agent pane's scoped facade overrides
+  // this with its launch's own lifecycle.
+  const timelineTurns: TimelineTurnFacet = {
+    keyOf: itemTurnIndexKey,
+    get activeKey() {
+      return getActiveTurn(thread?.id)?.turnIndex ?? null;
+    },
+    get settled() {
+      const settled = latestSettledTurn;
+      if (!settled) return null;
+      return {
+        key: settled.turnIndex,
+        startedAt: settled.startedAt,
+        completedAt: settled.completedAt,
+      };
+    },
+  };
+
   return {
     // --- Getters (reactive reads) ---
     get paneId() {
@@ -1179,6 +1200,9 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
      */
     get latestSettledTurn() {
       return latestSettledTurn;
+    },
+    get timelineTurns(): TimelineTurnFacet {
+      return timelineTurns;
     },
     /**
      * Inclusive floor of the loaded history window. Consumers use this

@@ -43,6 +43,30 @@ describe('timelineRowDecorations', () => {
     expect(decorations.responsePillIndexes).toEqual(new Set());
   });
 
+  it('keys turn identity on the surface-supplied turnKeyOf, not item.turnIndex', () => {
+    // The agent pane's scoped window: a subagent's rows are written at the
+    // main thread's write head across several provider turns. Keyed on
+    // `item.turnIndex` the tool (turn 3) and the prose (turn 5) never meet,
+    // so the prose gets no divider — and worse, the main thread settling
+    // turn 3 would label it. The facade keys the whole window as ONE turn.
+    const nodes = groupItemsBySubagent([
+      makeItem({ id: 'tool', turnIndex: 3, kind: 'tool_call', toolName: 'Bash', summary: 'ls' }),
+      makeItem({ id: 'answer', turnIndex: 5, itemIndex: 1, kind: 'assistant_text', summary: 'done' }),
+    ]);
+    const oneKey = () => 0;
+
+    const byTurnIndex = timelineRowDecorations(nodes, null);
+    expect(byTurnIndex.responseDividerIndexes).toEqual(new Set());
+
+    const whileAgentRuns = timelineRowDecorations(nodes, 0, oneKey);
+    expect(whileAgentRuns.responseDividerIndexes).toEqual(new Set([1]));
+    expect(whileAgentRuns.responsePillIndexes).toEqual(new Set());
+
+    const afterAgentSettles = timelineRowDecorations(nodes, null, oneKey);
+    expect(afterAgentSettles.responseDividerIndexes).toEqual(new Set([1]));
+    expect(afterAgentSettles.responsePillIndexes).toEqual(new Set([1]));
+  });
+
   it('keeps active-turn response dividers unlabeled until the turn settles', () => {
     const nodes = groupItemsBySubagent([
       makeItem({ id: 'tool', turnIndex: 1, kind: 'tool_call', toolName: 'Bash', summary: 'ls' }),

@@ -26,6 +26,14 @@
 // - `revealBoundary`: null. The reveal gate sequences TOP-LEVEL rows of
 //   the main transcript; child rows were never reveal-sequenced, and a
 //   boundary id from the main thread must not withhold scoped rows.
+// - `timelineTurns`: the scope IS one turn. A subagent's rows are written
+//   at the main thread's write head across however many provider turns
+//   it outlives, so keying the response decorations on `item.turnIndex`
+//   plus the thread's active/settled turn put a "Response 1m 58s" pill
+//   on a still-running agent the moment the main turn settled (live
+//   regression 2026-08-22). Here every scoped row shares one key; the
+//   turn is active while the scoped launch runs and settles on the
+//   launch's own completion, with the agent's own duration.
 // - `activityRuns`: an own registry. Run membership differs per surface
 //   (the scoped list has different top-level rows), and collapse state
 //   is a view concern, so sharing the source registry would let one
@@ -70,6 +78,10 @@ import type {
   PaneScrollController,
   ScrollToItemRequest,
 } from './threadPaneShared';
+import type { TimelineTurnFacet } from './threadTurnProjection';
+
+/** The one turn key every scoped row shares (see `timelineTurns` above). */
+const AGENT_SCOPE_TURN_KEY = 0;
 
 export interface AgentScopeView {
   /** The ThreadPane facade MessageTimeline mounts. */
@@ -160,6 +172,39 @@ export function createAgentScopeView(
     return out;
   });
 
+  // ---- Scope lifecycle as the timeline's turn ---------------------------
+  // Status reads go through the SOURCE pane's live item (the `$state`
+  // proxy), so a launch flipping to terminal re-derives without a
+  // structural revision. The completion sibling is the status source once
+  // it exists — same rule the card and the composer shell follow.
+  let scopeLaunch = $derived.by<Item | undefined>(() => {
+    void sourcePane.timelineRevision;
+    return scopeItemId ? sourcePane.getItemById(scopeItemId) : undefined;
+  });
+  let scopeCompletion = $derived.by<Item | undefined>(() => {
+    void sourcePane.timelineRevision;
+    if (!scopeItemId) return undefined;
+    return sourcePane.items.find((item) => item.completionOf === scopeItemId);
+  });
+  const timelineTurns: TimelineTurnFacet = {
+    keyOf: () => AGENT_SCOPE_TURN_KEY,
+    get activeKey() {
+      const status = (scopeCompletion ?? scopeLaunch)?.status;
+      return status === 'running' || status === 'streaming' ? AGENT_SCOPE_TURN_KEY : null;
+    },
+    get settled() {
+      const launch = scopeLaunch;
+      const statusItem = scopeCompletion ?? launch;
+      if (!launch || !statusItem) return null;
+      if (statusItem.status === 'running' || statusItem.status === 'streaming') return null;
+      return {
+        key: AGENT_SCOPE_TURN_KEY,
+        startedAt: launch.createdAt,
+        completedAt: statusItem.updatedAt,
+      };
+    },
+  };
+
   // ---- Own view registries ---------------------------------------------
   let scrollController: PaneScrollController | null = $state.raw(null);
   let scrollToItemRequest = $state.raw<ScrollToItemRequest>({ itemId: '', nonce: 0 });
@@ -181,6 +226,9 @@ export function createAgentScopeView(
     },
     get revealBoundary() {
       return null;
+    },
+    get timelineTurns() {
+      return timelineTurns;
     },
     get activityRuns() {
       return activityRuns;
