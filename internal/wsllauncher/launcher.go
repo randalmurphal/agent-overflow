@@ -115,11 +115,8 @@ type CommandRunner func(ctx context.Context, name string, args ...string) *exec.
 // every descendant; on non-Windows hosts (where Launch errors out)
 // Launcher exposes a no-op Stop so test code can construct the type.
 type Launcher struct {
-	cmd       *exec.Cmd
-	stdout    io.ReadCloser
-	stderr    io.ReadCloser
-	platform  platformLauncher
-	bootstrap Bootstrap
+	cmd      *exec.Cmd
+	platform platformLauncher
 
 	stopOnce sync.Once
 	stopErr  error
@@ -136,9 +133,6 @@ type platformLauncher interface {
 	// a side effect on Windows.
 	close() error
 }
-
-// Bootstrap returns the {port, token} the child handed back at launch.
-func (l *Launcher) Bootstrap() Bootstrap { return l.bootstrap }
 
 // Wait blocks until the child process exits and returns its run error.
 // Wait is a thin wrapper around (*exec.Cmd).Wait — it does NOT close
@@ -178,16 +172,6 @@ func (l *Launcher) Stop() error {
 		}
 	})
 	return l.stopErr
-}
-
-// resolveCommand wraps exec.CommandContext so tests can inject a stub.
-// Production callers pass nil for opts.CommandRunner, which selects
-// the real wsl.exe.
-func resolveCommand(opts LaunchOptions) CommandRunner {
-	if opts.CommandRunner != nil {
-		return opts.CommandRunner
-	}
-	return exec.CommandContext
 }
 
 // buildLaunchArgs assembles the wsl.exe argument vector for spawning the

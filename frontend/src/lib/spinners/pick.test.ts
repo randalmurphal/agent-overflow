@@ -1,10 +1,11 @@
 import { beforeEach, describe, expect, it } from 'vitest';
-import { __resetSpinnerPickForTest, assembleVerbPool, fnv1a, pickFromPool, stableTurnKey } from './pick';
+import { fnv1a32 } from '../utils/fnv1a';
+import { __resetSpinnerPickForTest, assembleVerbPool, pickFromPool, stableTurnKey } from './pick';
 
-describe('fnv1a', () => {
+describe('fnv1a32', () => {
   it('is deterministic and spreads distinct inputs', () => {
-    expect(fnv1a('a:b:c')).toBe(fnv1a('a:b:c'));
-    expect(fnv1a('a:b:c')).not.toBe(fnv1a('a:b:d'));
+    expect(fnv1a32('a:b:c')).toBe(fnv1a32('a:b:c'));
+    expect(fnv1a32('a:b:c')).not.toBe(fnv1a32('a:b:d'));
   });
 });
 

@@ -439,7 +439,6 @@
 
 <ProjectContextMenu
   {project}
-  pane={pane ?? undefined}
   anchor={contextMenuAnchor}
   open={contextMenuOpen}
   onClose={closeContextMenu}

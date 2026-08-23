@@ -549,12 +549,6 @@ func workflowOutcomeCarriesEnvelope(kind engine.OutcomeKind) bool {
 	}
 }
 
-func (r *workflowAppRunner) schemaForThread(threadID string) json.RawMessage {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return append(json.RawMessage(nil), r.schemas[threadID]...)
-}
-
 func (r *workflowAppRunner) sessionSchemaForThread(threadID string) (json.RawMessage, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()

@@ -5,7 +5,6 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
-	"regexp"
 	"strings"
 	"syscall"
 	"time"
@@ -89,22 +88,6 @@ func (f *MCPStatusFetcher) Fetch(ctx context.Context, _ mcpstatus.Provider) ([]m
 	}
 	return parseMCPList(stdout.String(), time.Now()), nil
 }
-
-// mcpListLine matches the three formats `claude mcp list` emits in
-// its handler (src/cli/handlers/mcp.tsx):
-//
-//	${name}: ${url} (SSE) - ${status}
-//	${name}: ${url} (HTTP) - ${status}
-//	${name}: ${command} ${args...} - ${status}
-//
-// Server names can contain colons (e.g. `plugin:playwright:playwright`),
-// commands can contain spaces, and status strings can contain emoji
-// and spaces. The pattern anchors the suffix ` - ${status}` at the end
-// of the line and treats everything before the rightmost ` - ` as the
-// name+config blob. The split on the FIRST `: ` separates name from
-// config — and name in practice does not contain `: ` (colon+space),
-// so we're safe.
-var mcpListLine = regexp.MustCompile(`^(?P<name>[^\s][^:]*(?::[^\s][^:]*)*): (?P<config>.*?) - (?P<status>.+)$`)
 
 // parseMCPList walks the CLI output and returns one ServerStatus per
 // recognised line. The header ("Checking MCP server health...") and

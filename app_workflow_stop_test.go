@@ -93,19 +93,6 @@ func TestWorkflowStopReturnsWhileAWedgedSendHoldsTheAttempt(t *testing.T) {
 	}
 }
 
-// waitForInterrupt receives one interrupt and requires it to name one thread.
-func waitForInterrupt(t *testing.T, interrupted chan string, want string) {
-	t.Helper()
-	select {
-	case got := <-interrupted:
-		if got != want {
-			t.Fatalf("interrupted thread %q, want %q", got, want)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatalf("the session on thread %s was never interrupted", want)
-	}
-}
-
 // The ordinary case the bound must not distort: nothing is wedged, so the stop
 // completes its whole blocking half — the send-barrier wait and the interrupt —
 // before returning to the engine, and nothing about it is latched as wedged.

@@ -1,9 +1,7 @@
 // Package observability_test contains cross-package integration tests that
-// exercise the otel and replay sub-packages end-to-end. These tests are the
-// "glue" coverage — individual sub-packages have their own white-box tests
-// in place, but the integration tests make sure the API contract that app.go
-// depends on remains intact (span emission, metric counters, replay writer
-// lifecycle).
+// exercise the disabled OpenTelemetry provider and replay sub-package through
+// their caller-facing APIs. Live turn spans and counters are tested where the
+// app records them, in internal/triage/telemetry_test.go.
 package observability_test
 
 import (
@@ -11,7 +9,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -23,35 +20,7 @@ import (
 
 	obsotel "agent-overflow/internal/observability/otel"
 	"agent-overflow/internal/observability/replay"
-
-	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/metric"
-	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
-	"go.opentelemetry.io/otel/sdk/metric/metricdata"
-	sdktrace "go.opentelemetry.io/otel/sdk/trace"
-	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
-
-// newExporterProvider builds a Provider with its tracer wired to an in-memory
-// span recorder so tests can inspect what the exporter observed. The Provider
-// itself is constructed in disabled mode so we don't require a live OTLP
-// collector; we then swap in a real sdktrace.TracerProvider via the
-// test-only replaceTracerProvider helper (exposed in the otel package's
-// span_test-compatible surface). We cannot reach that helper from an
-// _test package in a different directory, so we rely on the package's
-// TestInstallTracerProvider hook below — implemented by using the SDK
-// directly to create spans that mirror what Provider.StartSpan would do.
-func newRecordingTracerProvider(t *testing.T) (*tracetest.SpanRecorder, *sdktrace.TracerProvider) {
-	t.Helper()
-	recorder := tracetest.NewSpanRecorder()
-	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(recorder))
-	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		_ = tp.Shutdown(ctx)
-	})
-	return recorder, tp
-}
 
 // --- OTel integration tests -----------------------------------------------
 
@@ -65,157 +34,13 @@ func TestObs_TracingDisabledEmitsNoSpans(t *testing.T) {
 		_ = provider.Shutdown(context.Background())
 	})
 
-	recorder, tp := newRecordingTracerProvider(t)
-	// The disabled provider uses the no-op tracer internally; spans started
-	// via provider.Tracer() land nowhere. Sanity: start a span that way.
-	_, span1 := provider.Tracer().Start(ctx, "should-be-noop")
-	span1.End()
-
-	// Now compare with a recording tracer — make sure our own tp can record.
-	_, span2 := tp.Tracer("sanity").Start(ctx, "sanity-span")
-	span2.End()
-
-	if len(recorder.Ended()) != 1 {
-		t.Fatalf("sanity: recorder saw %d spans, want 1 (the sanity one)", len(recorder.Ended()))
+	_, span := provider.Tracer().Start(ctx, "should-be-noop")
+	if span.IsRecording() {
+		t.Error("disabled provider returned a recording span")
 	}
-	// The no-op span can't be recorded, so the only span in the recorder is
-	// the sanity one — implicit proof that the disabled provider emits
-	// nothing.
+	span.End()
 	if provider.Enabled() {
 		t.Error("Enabled() returned true for disabled provider")
-	}
-}
-
-func TestObs_TracingEnabledEmitsToExporter(t *testing.T) {
-	// We don't spin up a real OTLP collector here — enabling the provider
-	// with a bad endpoint would try to dial grpc on startup. Instead we use
-	// the disabled provider as a scaffold and wire the recording tracer
-	// through the exported TracerProvider() on the SDK side. This mirrors
-	// what app.go does once telemetry is reported enabled.
-	recorder, tp := newRecordingTracerProvider(t)
-
-	tracer := tp.Tracer("test-integration")
-	_, span := tracer.Start(context.Background(), "turn.start")
-	span.End()
-
-	ended := recorder.Ended()
-	if len(ended) != 1 {
-		t.Fatalf("recorder ended = %d, want 1", len(ended))
-	}
-	if ended[0].Name() != "turn.start" {
-		t.Errorf("span name = %q, want turn.start", ended[0].Name())
-	}
-}
-
-func TestObs_TracingShutdownFlushes(t *testing.T) {
-	recorder := tracetest.NewSpanRecorder()
-	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(recorder))
-
-	tracer := tp.Tracer("flush-test")
-	for i := 0; i < 5; i++ {
-		_, span := tracer.Start(context.Background(), fmt.Sprintf("op-%d", i))
-		span.End()
-	}
-
-	// Shutdown must flush buffered spans to the exporter.
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	if err := tp.Shutdown(ctx); err != nil {
-		t.Fatalf("Shutdown: %v", err)
-	}
-
-	ended := recorder.Ended()
-	if len(ended) != 5 {
-		t.Errorf("after Shutdown ended = %d, want 5", len(ended))
-	}
-}
-
-func TestObs_TurnLifecycleSpanHasCorrectAttributes(t *testing.T) {
-	recorder, tp := newRecordingTracerProvider(t)
-
-	tracer := tp.Tracer("turn-attrs")
-	_, span := tracer.Start(context.Background(), "turn.lifecycle") // Use the same attribute helpers the Provider exposes so we catch
-	// regressions in the attribute keys.
-
-	span.SetAttributes(
-		obsotel.ThreadAttr("thread-99"),
-		obsotel.ProviderAttr("codex"),
-		obsotel.ModelAttr("gpt-5.4"),
-		obsotel.TurnAttr(7),
-	)
-	span.End()
-
-	ended := recorder.Ended()
-	if len(ended) != 1 {
-		t.Fatalf("ended = %d, want 1", len(ended))
-	}
-
-	got := map[string]attribute.Value{}
-	for _, kv := range ended[0].Attributes() {
-		got[string(kv.Key)] = kv.Value
-	}
-	if v := got["thread.id"]; v.AsString() != "thread-99" {
-		t.Errorf("thread.id = %v, want thread-99", v)
-	}
-	if v := got["provider"]; v.AsString() != "codex" {
-		t.Errorf("provider = %v, want codex", v)
-	}
-	if v := got["model"]; v.AsString() != "gpt-5.4" {
-		t.Errorf("model = %v, want gpt-5.4", v)
-	}
-	if v := got["turn.index"]; v.AsInt64() != 7 {
-		t.Errorf("turn.index = %v, want 7", v)
-	}
-}
-
-func TestObs_MetricsCountersIncrement(t *testing.T) {
-	// Use a ManualReader so we can inspect the metric collection deterministically.
-	reader := sdkmetric.NewManualReader()
-	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
-	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-		defer cancel()
-		_ = mp.Shutdown(ctx)
-	})
-
-	meter := mp.Meter("integration-test")
-	counter, err := meter.Int64Counter("turns.started",
-		metric.WithDescription("test copy"))
-	if err != nil {
-		t.Fatalf("Int64Counter: %v", err)
-	}
-
-	for i := 0; i < 5; i++ {
-		counter.Add(context.Background(), 1)
-	}
-
-	var rm metricdata.ResourceMetrics
-	if err := reader.Collect(context.Background(), &rm); err != nil {
-		t.Fatalf("Collect: %v", err)
-	}
-
-	var found bool
-	var total int64
-	for _, sm := range rm.ScopeMetrics {
-		for _, m := range sm.Metrics {
-			if m.Name != "turns.started" {
-				continue
-			}
-			sum, ok := m.Data.(metricdata.Sum[int64])
-			if !ok {
-				t.Fatalf("metric data type = %T, want Sum[int64]", m.Data)
-			}
-			for _, dp := range sum.DataPoints {
-				total += dp.Value
-			}
-			found = true
-		}
-	}
-	if !found {
-		t.Fatal("turns.started counter not reported")
-	}
-	if total != 5 {
-		t.Errorf("turns.started total = %d, want 5", total)
 	}
 }
 

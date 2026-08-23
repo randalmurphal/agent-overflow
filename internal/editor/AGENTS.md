@@ -12,10 +12,8 @@ editor reachable via the vendor's WSL Remote integration.
   /mnt/c discovery on WSL.
 - `wsl.go` — WSL detection (cached read of
   `/proc/sys/kernel/osrelease`), the well-known /mnt/c install paths
-  per editor, the shim-script content sniff that decides whether a
-  PATH-resolved binary actually targets a Windows install, and the
-  Linux-path → `\\wsl.localhost\<distro>\...` UNC translator used by
-  `explorer.exe` integrations.
+  per editor, and the shim-script content sniff that decides whether a
+  PATH-resolved binary actually targets a Windows install.
 - `preference.go` — `Resolve(detected, preferredID)` maps the user's
   settings preference onto the detection result, falling back through
   the catalog priority order and ultimately the env fallback.

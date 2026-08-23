@@ -12,22 +12,22 @@ import { resolve } from 'node:path';
 const happyDomResolve = {
   conditions: ['browser'],
   alias: [
-    { find: '@wailsio/runtime', replacement: resolve(__dirname, 'src/test/mocks/wailsio-runtime.ts') },
+    { find: '@wailsio/runtime', replacement: resolve(import.meta.dirname, 'src/test/mocks/wailsio-runtime.ts') },
     // Matches the relative path that lib/stores/bindings.ts imports from.
     // Both the worktree path and any nested depth resolve to the mock.
-    { find: '../../../bindings/agent-overflow/app.js', replacement: resolve(__dirname, 'src/test/mocks/bindings-app.ts') },
-    { find: '../../../bindings/agent-overflow/internal/provider/models.js', replacement: resolve(__dirname, 'src/test/mocks/bindings-models.ts') },
+    { find: '../../../bindings/agent-overflow/app.js', replacement: resolve(import.meta.dirname, 'src/test/mocks/bindings-app.ts') },
+    { find: '../../../bindings/agent-overflow/internal/provider/models.js', replacement: resolve(import.meta.dirname, 'src/test/mocks/bindings-models.ts') },
     // Vitest's loader can't parse raw CSS imported outside of a Svelte
     // `<style>` block -- `svelte-streamdown`'s Math element does
     // `import 'katex/dist/katex.min.css'`, which would crash component tests
     // with "Unknown file extension '.css'". Stub it explicitly.
-    { find: 'katex/dist/katex.min.css', replacement: resolve(__dirname, 'src/test/mocks/empty-css.ts') },
+    { find: 'katex/dist/katex.min.css', replacement: resolve(import.meta.dirname, 'src/test/mocks/empty-css.ts') },
     // auto-animate's element poller leaves untracked node timers running
     // after environment teardown (setInterval -> requestAnimationFrame on
     // a torn-down happy-dom global), which flakes the suite with unhandled
     // ReferenceErrors under load. Animations don't matter in tests — stub
     // the module. See src/test/mocks/auto-animate.ts.
-    { find: '@formkit/auto-animate', replacement: resolve(__dirname, 'src/test/mocks/auto-animate.ts') },
+    { find: '@formkit/auto-animate', replacement: resolve(import.meta.dirname, 'src/test/mocks/auto-animate.ts') },
   ],
 };
 

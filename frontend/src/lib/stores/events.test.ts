@@ -13,7 +13,7 @@ import { resetForTest as resetSendQueue } from './sendQueue.svelte';
 import { resetLiveUsageSnapshotsForTest } from './threadContextWindow';
 import { getThreads, refreshThreads } from './threads.svelte';
 import { getToasts } from './toast.svelte';
-import { addProjectLocal, getProjects, refreshProjects, resetProjectsForTest } from './projects.svelte';
+import { getProjects, refreshProjects, resetProjectsForTest } from './projects.svelte';
 import {
   getProviderRateLimit,
   resetForTest as resetRateLimitsInfo,
@@ -250,7 +250,7 @@ describe('setupEventListeners', () => {
     });
     expect(cacheModule.threadItemCache.size).toBe(2);
 
-    const pane = await buildPane(makeThread({ id: 'thread-a' }));
+    await buildPane(makeThread({ id: 'thread-a' }));
 
     emitWailsEvent('provider:item_event', {
       action: 'upsert',
@@ -278,7 +278,7 @@ describe('setupEventListeners', () => {
       kind: 'assistant_text',
       summary: 'same',
     });
-    const pane = await buildPane(makeThread({ id: 'thread-a' }), [item]);
+    await buildPane(makeThread({ id: 'thread-a' }), [item]);
     cacheModule.threadItemCache.set('thread-a', {
       items: [item],
       oldestLoadedTurnIndex: 0,
@@ -887,7 +887,7 @@ describe('setupEventListeners', () => {
   });
 
   it('sets thread error status from an error item upsert', async () => {
-    const pane = await buildPane();
+    await buildPane();
 
     const item = makeItem({
       id: 'error-1',
@@ -949,7 +949,7 @@ describe('setupEventListeners', () => {
   });
 
   it('does not project thread running from ordered item_event upserts', async () => {
-    const pane = await buildPane();
+    await buildPane();
 
     const streamingItem = makeItem({
       id: 'text-1',
@@ -1856,7 +1856,7 @@ describe('setupEventListeners', () => {
     ]);
     await refreshThreads();
     await refreshProjects();
-    const pane = await buildPane(makeThread({
+    await buildPane(makeThread({
       id: 'thread-stale',
       projectId: 'project-stale',
       updatedAt: 100,
@@ -1894,7 +1894,7 @@ describe('setupEventListeners', () => {
     ]);
     await refreshThreads();
     await refreshProjects();
-    const pane = await buildPane(makeThread({
+    await buildPane(makeThread({
       id: 'thread-stale',
       projectId: 'project-stale',
       updatedAt: 100,
@@ -2537,7 +2537,7 @@ describe('setupEventListeners', () => {
   // provider slot, not replace it. Codex emits both together; we test
   // the harder Claude case here because it's the merge-correctness pin.
   it('merges Claude single-window updates without clobbering the other window', async () => {
-    const pane = await buildPane();
+    await buildPane();
 
     emitWailsEvent('provider:usage', {
       action: 'rate_limits',
@@ -2573,7 +2573,7 @@ describe('setupEventListeners', () => {
   // `getProviderRateLimit(provider, 300)` / `(provider, 10080)` and a
   // stray 0 entry would let an unrenderable window fill memory forever.
   it('keeps unknown-duration limits out of the toolbar lookup', async () => {
-    const pane = await buildPane();
+    await buildPane();
 
     emitWailsEvent('provider:usage', {
       action: 'rate_limits',
@@ -2783,7 +2783,7 @@ describe('setupEventListeners', () => {
   });
 
   it('turn_started for thread A does not clear a session-death banner on thread B', async () => {
-    const paneA = await buildPane(makeThread({ id: 'thread-aa', provider: 'claude' }), [], 'a');
+    await buildPane(makeThread({ id: 'thread-aa', provider: 'claude' }), [], 'a');
     const paneB = await buildPane(makeThread({ id: 'thread-bb', provider: 'claude' }), [], 'b');
 
     emitWailsEvent('provider:session_died', {
@@ -3176,7 +3176,7 @@ describe('setupEventListeners', () => {
   });
 
   it('defers thread-status projection to the frame batch', async () => {
-    const pane = await buildPane();
+    await buildPane();
 
     const item = makeItem({ id: 'err-1', kind: 'error', role: 'system', summary: 'boom' });
     emitWailsEvent('provider:item_event', { action: 'upsert', threadId: item.threadId, item });

@@ -16,6 +16,13 @@ import (
 	"golang.org/x/sys/windows"
 )
 
+func resolveCommand(opts LaunchOptions) CommandRunner {
+	if opts.CommandRunner != nil {
+		return opts.CommandRunner
+	}
+	return exec.CommandContext
+}
+
 // ListDistros runs `wsl.exe -l -v` and parses the output. Returns an
 // empty slice and nil error when wsl.exe isn't on PATH or WSL itself
 // isn't installed — the picker UI uses that as the cue to show install
@@ -144,11 +151,8 @@ func Launch(ctx context.Context, opts LaunchOptions) (*Launcher, *Bootstrap, err
 	}
 
 	return &Launcher{
-		cmd:       cmd,
-		stdout:    stdout,
-		stderr:    stderr,
-		platform:  platform,
-		bootstrap: bs,
+		cmd:      cmd,
+		platform: platform,
 	}, &bs, nil
 }
 

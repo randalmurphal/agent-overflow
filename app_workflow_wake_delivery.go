@@ -125,8 +125,8 @@ func (a *App) deliverWorkflowWake(item store.WorkItem, composed composedWake) bo
 // "Nothing has happened since" is not inferred here — it is recorded, by
 // clearing the stored signature whenever any member of the run tree returns to
 // `running`, which is what every resolve, answer, resume, retry, and rerun does
-// (clearTreeWakeSignature, below). So a match here means both halves of the
-// rule at once: same words, and no action between them.
+// (`clearTreeWorkflowAttentionForTransition`, below). So a match here means
+// both halves of the rule at once: same words, and no action between them.
 //
 // Suppression is LOGGED, never silent. A wake that did not arrive is
 // indistinguishable from a wake that was never composed unless something says
@@ -167,8 +167,7 @@ func (a *App) wakeAlreadyDelivered(item store.WorkItem, signature string) bool {
 //
 // The invalidation lives WHERE THE CLEAR ALREADY LIVES rather than in a second
 // mechanism beside it: a claim is an ordinary value in the same column, so any
-// code that spends the record — today's clearTreeWakeSignature, tomorrow's
-// third clear site — invalidates a pending promotion for free, because the
+// code that spends the record invalidates a pending promotion for free, because the
 // promotion is a compare-and-set against the claim it wrote.
 //
 // A real signature always begins `kind=rest ` or `kind=progress `
@@ -219,32 +218,6 @@ func (a *App) recordWakeDelivery(itemID, signature string) {
 		// that triggered the delivery.
 		log.Printf("workflow wake %s: record delivered signature: %v", itemID, err)
 	}
-}
-
-// clearTreeWakeSignature is the other half of the coalescing rule: somebody
-// acted on this run, so whatever its bound thread was last told is spent and the
-// next wake delivers however familiar it looks.
-//
-// It clears the ROOT's record for a transition on ANY tree member, because the
-// root is where wakes are delivered and recorded: a descendant that was resumed
-// is precisely the action that makes its next identical park worth reporting
-// again.
-func (a *App) clearTreeWakeSignature(itemID string) {
-	item, err := a.store.GetWorkItem(itemID)
-	if err != nil {
-		log.Printf("workflow wake %s: load run to clear its wake record: %v", itemID, err)
-		return
-	}
-	root := item
-	if item.ParentItemID != "" {
-		chain, err := a.workflowAncestry(item)
-		if err != nil {
-			log.Printf("workflow wake %s: resolve root to clear its wake record: %v", itemID, err)
-			return
-		}
-		root = chain[0]
-	}
-	a.clearRootWakeSignature(root)
 }
 
 // clearRootWakeSignature spends a root whose caller has already resolved the
@@ -342,8 +315,8 @@ func (a *App) clearStaleWakeBinding(item store.WorkItem, reason string) {
 		log.Printf("workflow wake %s: clear stale binding: %v", item.ID, err)
 	}
 	// The record describes what a thread that no longer exists was told, so it
-	// is spent — and clearTreeWakeSignature deliberately skips unbound roots
-	// (that transition fires on every phase advance of every run in the app),
+	// is spent. Transition clearing skips unbound roots because it fires on every
+	// phase advance of every run in the app,
 	// which would otherwise strand a queued claim here with nothing left to
 	// invalidate it.
 	a.clearWakeRecord(item.ID)

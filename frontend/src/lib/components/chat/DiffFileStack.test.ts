@@ -5,7 +5,7 @@
 // parsePatchFiles, then render one DiffFileBlock per file in
 // meta.inlineDiff.files.
 
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { tick } from 'svelte';
 import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import DiffFileStack from './DiffFileStack.svelte';

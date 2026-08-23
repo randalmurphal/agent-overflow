@@ -60,6 +60,7 @@
   import type { PathRef } from '../../types/models';
   import { StreamingBoundarySplitter } from '../../markdown/boundary';
   import { getSettings } from '../../stores/settings.svelte';
+  import { isViewOnlySession } from '../../transport/runMode';
 
   let {
     source,
@@ -90,6 +91,8 @@
     class?: string;
   } = $props();
 
+  let viewOnly = $derived(isViewOnlySession());
+
   // Aggregation hook for the chat warm-gate "is the visible
   // async-typesetting context settled?" signal. MessageTimeline
   // setContext()s a one-shot mark function on every armWarmup() so
@@ -114,8 +117,6 @@
   );
   $effect(() => registerPresence?.());
 
-  let root: HTMLDivElement | undefined = $state();
-
   // Install document-level delegates once per page lifetime. Subsequent
   // ChatMarkdown mounts are no-ops; subsequent calls from other surfaces
   // share the same listeners.
@@ -131,7 +132,9 @@
   // empty array keeps that fallback identity stable across streaming frames.
   // buildPathLinkExtension returns undefined when both halves are inert.
   const pathLinkExtension = $derived(
-    buildPathLinkExtension(pathRefs ?? EMPTY_PATH_REFS, workspacePath),
+    viewOnly
+      ? undefined
+      : buildPathLinkExtension(pathRefs ?? EMPTY_PATH_REFS, workspacePath),
   );
   const extensions = $derived(pathLinkExtension ? [pathLinkExtension] : undefined);
 
@@ -274,7 +277,6 @@
 {/snippet}
 
 <div
-  bind:this={root}
   class={['markdown-body', className].filter(Boolean).join(' ')}
 >
   {#if splitDerived.prefix}

@@ -30,9 +30,7 @@ var (
 		// the previous call (per gopsutil docs).
 		return cpu.PercentWithContext(ctx, 0, false)
 	}
-	readMem = func(ctx context.Context) (*mem.VirtualMemoryStat, error) {
-		return mem.VirtualMemoryWithContext(ctx)
-	}
+	readMem = mem.VirtualMemoryWithContext
 )
 
 // Prime performs a throwaway CPU read to seed gopsutil's per-process

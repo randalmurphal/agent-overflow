@@ -6894,14 +6894,6 @@ describe('createUseStickToBottomController — external content-geometry source'
     return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
-  async function advanceUntil(predicate: () => boolean, maxFrames = 200): Promise<void> {
-    for (let i = 0; i < maxFrames; i++) {
-      if (predicate()) return;
-      await nextFrame();
-    }
-    throw new Error(`advanceUntil: predicate not satisfied within ${maxFrames} frames`);
-  }
-
   /** Deliver one engine-sourced sample. Settle evidence defaults to
    * "window not yet fully measured" — the pre-settle shape. */
   function deliver(

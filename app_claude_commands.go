@@ -70,13 +70,6 @@ func (a *App) storeClaudeWireCommands(key provider.ProbeCacheKey, commands []pro
 	claudeCommandCache().Store(key, commands, wireErr)
 }
 
-// claudeSlashCommands returns the command list the last probe left behind for
-// the active Claude identity. Never spawns; nil means no probe has reported
-// yet, which a caller must not render as "no commands".
-func (a *App) claudeSlashCommands() []provider.SlashCommand {
-	return claudeCommandCache().CommandsFor(a.claudeProbeModelKey())
-}
-
 // ClaudeSlashCommands is the wire shape of GetClaudeSlashCommands.
 //
 // Probed is the field that carries the nil-vs-empty distinction a JSON array

@@ -24,7 +24,7 @@
     workflowDigestFallback,
     workflowResolutionKind,
   } from '../../utils/workflowActionRows';
-  import { OpenInEditor } from '../../stores/bindings';
+  import { openInEditor } from '../../stores/openInEditor';
   import { addToast } from '../../stores/toast.svelte';
   import { userFacingError } from '../../utils/userFacingError';
   import { isViewOnlySession } from '../../transport/runMode';
@@ -80,8 +80,9 @@
   });
 
   async function openArtifact(path: string): Promise<void> {
+    if (viewOnly) return;
     try {
-      await OpenInEditor(path, 0, 0, '', '');
+      await openInEditor(path, 0, 0, '', '');
     } catch (err) {
       addToast('error', userFacingError(err, 'Could not open that file.'));
     }

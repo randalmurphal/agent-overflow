@@ -220,21 +220,6 @@ export function workflowClosedDuration(startedAt: number, endedAt: number): stri
 }
 
 /**
- * Format a turn-completion token count as a human-readable label fragment.
- * Returns "150 tokens" below 1_000 and "1.23k tokens" at/above 1_000 (two
- * decimals of k per docs/architecture/turn-lifecycle.md). Negative / non-
- * finite inputs produce "0 tokens"; callers check for meaningful counts
- * before calling.
- *
- * Examples: 150 -> "150 tokens", 1234 -> "1.23k tokens".
- */
-export function formatTurnTokens(n: number): string {
-  if (!Number.isFinite(n) || n < 0) return '0 tokens';
-  if (n >= 1_000) return `${(n / 1_000).toFixed(2)}k tokens`;
-  return `${Math.floor(n)} tokens`;
-}
-
-/**
  * Format a byte count as gibibytes (1024³) with one decimal — used by
  * the sidebar SystemStatsFooter's `used / total GB` display. The "GB"
  * label is colloquial (htop / Activity Monitor convention): a stick

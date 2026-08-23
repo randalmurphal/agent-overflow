@@ -3,10 +3,7 @@
 // These functions are unit-tested in `attachmentHelpers.test.ts`
 // without mounting the whole composer.
 
-import {
-  DEFAULT_MAX_ATTACHMENT_SIZE,
-  isAllowedAttachmentMime,
-} from '../../types/attachment';
+import { isAllowedAttachmentMime } from '../../types/attachment';
 
 export {
   DEFAULT_MAX_ATTACHMENT_COUNT,

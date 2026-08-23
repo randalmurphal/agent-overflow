@@ -8,7 +8,6 @@
 
   let {
     pane,
-    itemId,
     bodyDomId,
     promptPreview,
     rowError,
@@ -22,7 +21,6 @@
     emptyMessage,
   }: {
     pane?: ThreadPane;
-    itemId: string;
     /** Owned by `CollabToolRow`, which also states it as the header's
      * `controls` — see utils/chatDomIds.ts. */
     bodyDomId: string;

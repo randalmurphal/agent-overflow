@@ -131,7 +131,7 @@ describe('<AskUserQuestionCard>', () => {
       }),
     });
 
-    const { getByTestId, queryByTestId } = render(AskUserQuestionCard, {
+    const { queryByTestId } = render(AskUserQuestionCard, {
       props: { item },
     });
 

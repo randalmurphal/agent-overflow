@@ -384,8 +384,8 @@ func TestWorkflowGetRunMapBudgetResolvesTheProjectProfileDefault(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	configDir, err := projectpkg.EnsureConfigDir(app.configDir, project.Slug)
-	if err != nil {
+	configDir := projectpkg.ConfigDir(app.configDir, project.Slug)
+	if err := os.MkdirAll(configDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(

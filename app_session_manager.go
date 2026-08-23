@@ -257,17 +257,6 @@ func normalizeCodexBinary(binary string) string {
 	return binary
 }
 
-func (m sessionManager) hasProvider(providerName string) bool {
-	m.app.mu.Lock()
-	defer m.app.mu.Unlock()
-	for _, sess := range m.app.sessions {
-		if sess.provider == providerName {
-			return true
-		}
-	}
-	return false
-}
-
 // threadIDsForProviderOrStarting snapshots the thread ids a settings-driven
 // sweep must visit for one provider: every live session on it, PLUS every
 // thread whose session start is still in flight.

@@ -10,7 +10,7 @@ import { resolve } from "node:path";
 // Generated bindings remain byte-identical — this alias is the only
 // change at the build layer required to swap Wails native IPC for the
 // localhost WS server.
-const transportShim = resolve(__dirname, "src/lib/transport/runtime.ts");
+const transportShim = resolve(import.meta.dirname, "src/lib/transport/runtime.ts");
 
 export default defineConfig({
   resolve: {
@@ -48,10 +48,6 @@ export default defineConfig({
             {
               name: "terminal-vendor",
               test: /node_modules\/(@xterm)\//,
-            },
-            {
-              name: "capture-vendor",
-              test: /node_modules\/modern-screenshot\//,
             },
             {
               name: "ui-vendor",

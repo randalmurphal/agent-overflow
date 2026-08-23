@@ -3,7 +3,7 @@
 // (`provider:item_event`-derived `onItemUpsert`,
 // `provider:background_tasks_changed`, `provider:background_task_state`),
 // and a debounced refresh. Exposes reactive `tasks` / `runningCount` /
-// `anyRunning` / `hasPendingCompletion` for the rail's toggle pill and
+// `hasPendingCompletion` for the rail's toggle pill and
 // expanded body.
 //
 // Owned by `Composer.svelte`, not the rail: the composer's `railVisible`
@@ -16,7 +16,8 @@
 
 import type { ThreadPane } from '../../stores/thread.svelte';
 import { ListLiveBackgroundTasks } from '../../stores/bindings';
-import { onItemUpsert, wailsEventOn } from '../../stores/events';
+import { onItemUpsert } from '../../stores/eventsItemStream';
+import { wailsEventOn } from '../../stores/wailsEvents';
 import type {
   BackgroundTaskStateEvent,
   BackgroundTasksChangedEvent,
@@ -36,7 +37,6 @@ export interface BackgroundController {
   readonly tasks: TrayTask[];
   readonly count: number;
   readonly runningCount: number;
-  readonly anyRunning: boolean;
   readonly hasPendingCompletion: boolean;
   readonly threadId: string | null;
   readonly provider: ProviderID | null;
@@ -93,7 +93,6 @@ export function createBackgroundController(
   const runningCount = $derived(
     tasks.filter((t) => t.status === 'running').length,
   );
-  const anyRunning = $derived(runningCount > 0);
   // Top-level rows only (spec Q8): a nested launch's completion is its
   // parent agent's business — the pill must not pulse for it.
   const hasPendingCompletion = $derived(
@@ -104,7 +103,6 @@ export function createBackgroundController(
     get tasks() { return tasks; },
     get count() { return count; },
     get runningCount() { return runningCount; },
-    get anyRunning() { return anyRunning; },
     get hasPendingCompletion() { return hasPendingCompletion; },
     get threadId() { return threadId; },
     get provider() { return provider; },

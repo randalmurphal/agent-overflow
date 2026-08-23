@@ -38,7 +38,7 @@ func (a *App) UpdateThreadModel(threadID string, model string) (threadResult sto
 	if err != nil {
 		return store.Thread{}, err
 	}
-	return a.updateThreadFromChatModelProfile(thread, profile, "model")
+	return a.updateThreadFromChatModelProfile(thread, profile)
 }
 
 // UpdateThreadModelSelection changes provider + model as one atomic model-menu
@@ -74,7 +74,7 @@ func (a *App) UpdateThreadModelSelection(threadID string, providerName string, m
 	if err != nil {
 		return store.Thread{}, err
 	}
-	return a.updateThreadFromChatModelProfile(thread, profile, "model")
+	return a.updateThreadFromChatModelProfile(thread, profile)
 }
 
 func validThreadProvider(providerName string) bool {
@@ -134,7 +134,7 @@ func threadWithModelSelectionProfile(thread store.Thread, profile store.ChatMode
 	return thread
 }
 
-func (a *App) updateThreadFromChatModelProfile(previous store.Thread, profile store.ChatModelProfile, changedField string) (store.Thread, error) {
+func (a *App) updateThreadFromChatModelProfile(previous store.Thread, profile store.ChatModelProfile) (store.Thread, error) {
 	thread := threadWithModelSelectionProfile(previous, profile)
 	if err := a.updateThreadForModelSelection(previous, thread); err != nil {
 		if errors.Is(err, store.ErrThreadProviderLocked) {

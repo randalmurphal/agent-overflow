@@ -188,7 +188,7 @@
     if (completionStatus !== 'failure') return rowErrorForStatus(effectiveStatusItem.status, 'Command failed');
     const statusError = rowErrorForStatus(effectiveStatusItem.status, 'Command failed');
     if (statusError && effectiveStatusItem.status !== 'errored') return statusError;
-    const error = commandErrorForItem(item, meta, itemMeta, statusMeta ?? payloadMeta);
+    const error = commandErrorForItem(meta, itemMeta, statusMeta ?? payloadMeta);
     return { tone: 'error' as const, ...error };
   });
   let indicatorState = $derived(

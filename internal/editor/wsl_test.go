@@ -123,32 +123,6 @@ func TestFindWindowsInstall_StatErrorPropagatesToFalse(t *testing.T) {
 	}
 }
 
-func TestToWSLUNCPath_NoOpOutsideWSL(t *testing.T) {
-	env := detectEnv{
-		envValue: func(name string) (string, bool) { return "", false },
-	}
-	got := toWSLUNCPathWithEnv("/home/alice/project", env)
-	if got != "/home/alice/project" {
-		t.Fatalf("expected pass-through outside WSL; got %q", got)
-	}
-}
-
-func TestToWSLUNCPath_TranslatesUsingDistroEnv(t *testing.T) {
-	env := detectEnv{
-		envValue: func(name string) (string, bool) {
-			if name == "WSL_DISTRO_NAME" {
-				return "Ubuntu-22.04", true
-			}
-			return "", false
-		},
-	}
-	got := toWSLUNCPathWithEnv("/home/alice/agent-overflow", env)
-	want := `\\wsl.localhost\Ubuntu-22.04\home\alice\agent-overflow`
-	if got != want {
-		t.Fatalf("toWSLUNCPath:\n got: %q\nwant: %q", got, want)
-	}
-}
-
 // TestValidateWindowsCodeShim_BrokenInstallRejected pins the fix for
 // the half-uninstalled VS Code case: bin/code is still present but the
 // VERSIONFOLDER it references no longer has resources/app/out/cli.js.

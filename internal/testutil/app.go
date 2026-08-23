@@ -87,19 +87,6 @@ func MockClaudeStreamedText(msgID, text string) []string {
 	}
 }
 
-// MockClaudeStreamedThinking is the thinking-block equivalent of
-// MockClaudeStreamedText: stream_event thinking_delta carries the
-// content; the assistant envelope's thinking block is skipped.
-func MockClaudeStreamedThinking(msgID, thinking string) []string {
-	thinkingJSON, _ := json.Marshal(thinking)
-	return []string{
-		`{"type":"stream_event","event":"content_block_start","data":{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}}`,
-		`{"type":"stream_event","event":"content_block_delta","data":{"type":"content_block_delta","delta":{"type":"thinking_delta","thinking":` + string(thinkingJSON) + `}}}`,
-		`{"type":"stream_event","event":"content_block_stop","data":{"type":"content_block_stop","index":0}}`,
-		`{"type":"assistant","message":{"id":"` + msgID + `","role":"assistant","content":[{"type":"thinking","thinking":` + string(thinkingJSON) + `}]}}`,
-	}
-}
-
 // WriteMockClaudeScript writes a Claude-like script that emits a sequence of
 // pre-baked NDJSON frames in response to each stdin line. The caller supplies
 // a slice-of-slices: responses[i] is the batch of event lines emitted after

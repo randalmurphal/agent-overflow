@@ -180,5 +180,3 @@ export function fileChangeToolUseResult({ toolName, filePath, storedPatch, writt
   if (structuredPatch.length === 0) return null;
   return { type: 'update', filePath, structuredPatch };
 }
-
-export const ITEM_KINDS = { THINKING, TEXT };

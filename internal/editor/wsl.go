@@ -203,24 +203,3 @@ func validateWindowsCodeShim(resolved string, env detectEnv) bool {
 	}
 	return ok
 }
-
-// ToWSLUNCPath converts a Linux path to the Windows UNC form
-// (\\wsl.localhost\<distro>\<linux-path-with-backslashes>). Used by
-// callers that want to hand a path to a Windows-side process that
-// can't read /mnt/<drive> mappings — most notably explorer.exe.
-//
-// distro is read from WSL_DISTRO_NAME; on a non-WSL host the env is
-// empty and ToWSLUNCPath returns the input unchanged so callers can
-// invoke it unconditionally.
-func ToWSLUNCPath(linuxPath string) string {
-	return toWSLUNCPathWithEnv(linuxPath, liveDetectEnv())
-}
-
-func toWSLUNCPathWithEnv(linuxPath string, env detectEnv) string {
-	distro, ok := env.envValue("WSL_DISTRO_NAME")
-	if !ok || distro == "" {
-		return linuxPath
-	}
-	windows := strings.ReplaceAll(linuxPath, "/", `\`)
-	return `\\wsl.localhost\` + distro + windows
-}

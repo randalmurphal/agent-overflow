@@ -89,6 +89,6 @@ sub-frame at message-complete boundary.
 
 - Frontend allowlist consumer: `frontend/src/lib/utils/markdownEnhance.ts`.
 - Triage integration point:
-  `internal/triage/stream_state.go` `settleStreamingText`.
+  `internal/triage/stream_state.go` `doSettleStreamingText`.
 - Click-time gate (deliberately looser than this package — see the
   safety-floor note above): `internal/editor.ResolvePath`.

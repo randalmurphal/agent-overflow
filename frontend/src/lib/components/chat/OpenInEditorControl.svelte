@@ -13,7 +13,7 @@
   // lets the backend resolve the default independently, so only the icon
   // and the dropdown depend on the shared store having loaded.
   import ChevronDown from '@lucide/svelte/icons/chevron-down';
-  import { OpenInEditor } from '../../stores/bindings';
+  import { openInEditor } from '../../stores/openInEditor';
   import { errString } from '../../utils/errors';
   import { addToast } from '../../stores/toast.svelte';
   import {
@@ -29,9 +29,11 @@
   import MenuItem from '../primitives/MenuItem.svelte';
   import Icon from '../primitives/Icon.svelte';
   import EditorIcon from '../shared/EditorIcon.svelte';
+  import { isViewOnlySession } from '../../transport/runMode';
 
   let { path, name }: { path: string; name: string } = $props();
 
+  let viewOnly = $derived(isViewOnlySession());
   let available = $derived(getAvailableEditors());
   let resolved = $derived(getResolvedEditor());
   let hasChoice = $derived(available.length > 1);
@@ -40,6 +42,7 @@
   let menuTriggerEl: HTMLButtonElement | undefined = $state(undefined);
 
   $effect(() => {
+    if (viewOnly) return;
     void ensureEditorsLoaded();
   });
 
@@ -47,10 +50,15 @@
   // Empty editorID → backend resolves the default; a concrete id → open
   // in exactly that editor, this once, without touching the default.
   async function openIn(editorID: string): Promise<void> {
+    if (viewOnly) return;
     try {
-      await OpenInEditor(path, 0, 0, '', editorID);
+      await openInEditor(path, 0, 0, '', editorID);
     } catch (err) {
       addToast('error', errString(err));
+    } finally {
+      // A primary open does not need the frontend catalog, but it is a useful
+      // revalidation edge after the shared snapshot reaches its 60s TTL.
+      void ensureEditorsLoaded();
     }
   }
 
@@ -71,55 +79,57 @@
   );
 </script>
 
-<div class="flex shrink-0">
-  <button
-    onclick={() => void openIn('')}
-    title={primaryTitle}
-    aria-label={primaryTitle}
-    data-testid="chat-header-open-editor"
-    class="{SPLIT_BTN_BASE} gap-1 px-2 {hasChoice ? 'rounded-l' : 'rounded'}"
-  >
-    <EditorIcon editorId={resolved?.id ?? null} size={12} class="opacity-90" />
-    Open
-  </button>
-  {#if hasChoice}
+{#if !viewOnly}
+  <div class="flex shrink-0">
     <button
-      bind:this={menuTriggerEl}
-      onclick={() => (showDropdown = !showDropdown)}
-      aria-label="Open in a different editor"
-      aria-expanded={showDropdown}
-      aria-haspopup="menu"
-      data-testid="chat-header-open-editor-caret"
-      class="{SPLIT_BTN_BASE} rounded-r border-l-0 px-1"
+      onclick={() => void openIn('')}
+      title={primaryTitle}
+      aria-label={primaryTitle}
+      data-testid="chat-header-open-editor"
+      class="{SPLIT_BTN_BASE} gap-1 px-2 {hasChoice ? 'rounded-l' : 'rounded'}"
     >
-      <Icon icon={ChevronDown} size={12} strokeWidth={2} class="opacity-80" />
+      <EditorIcon editorId={resolved?.id ?? null} size={12} class="opacity-90" />
+      Open
     </button>
-  {/if}
-</div>
+    {#if hasChoice}
+      <button
+        bind:this={menuTriggerEl}
+        onclick={() => (showDropdown = !showDropdown)}
+        aria-label="Open in a different editor"
+        aria-expanded={showDropdown}
+        aria-haspopup="menu"
+        data-testid="chat-header-open-editor-caret"
+        class="{SPLIT_BTN_BASE} rounded-r border-l-0 px-1"
+      >
+        <Icon icon={ChevronDown} size={12} strokeWidth={2} class="opacity-80" />
+      </button>
+    {/if}
+  </div>
 
-{#if hasChoice}
-  <Popover
-    anchor={menuTriggerEl}
-    open={showDropdown}
-    onClose={closeMenu}
-    placement="bottom-end"
-    role="none"
-  >
-    {#snippet children()}
-      <Menu ariaLabel="Open in editor" onClose={closeMenu} minWidthClass="min-w-[180px]">
-        {#each available as editor (editor.id)}
-          <MenuItem
-            label={editor.name}
-            checked={editor.id === resolved?.id}
-            title={`Open ${name} in ${editor.name}`}
-            onSelect={() => selectEditor(editor.id)}
-          >
-            {#snippet icon()}
-              <EditorIcon editorId={editor.id} size={14} />
-            {/snippet}
-          </MenuItem>
-        {/each}
-      </Menu>
-    {/snippet}
-  </Popover>
+  {#if hasChoice}
+    <Popover
+      anchor={menuTriggerEl}
+      open={showDropdown}
+      onClose={closeMenu}
+      placement="bottom-end"
+      role="none"
+    >
+      {#snippet children()}
+        <Menu ariaLabel="Open in editor" onClose={closeMenu} minWidthClass="min-w-[180px]">
+          {#each available as editor (editor.id)}
+            <MenuItem
+              label={editor.name}
+              checked={editor.id === resolved?.id}
+              title={`Open ${name} in ${editor.name}`}
+              onSelect={() => selectEditor(editor.id)}
+            >
+              {#snippet icon()}
+                <EditorIcon editorId={editor.id} size={14} />
+              {/snippet}
+            </MenuItem>
+          {/each}
+        </Menu>
+      {/snippet}
+    </Popover>
+  {/if}
 {/if}

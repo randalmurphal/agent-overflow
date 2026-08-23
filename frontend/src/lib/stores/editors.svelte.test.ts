@@ -3,19 +3,22 @@ import {
   resolveDefault,
   ensureEditorsLoaded,
   refreshEditors,
+  getEditors,
   getAvailableEditors,
   getResolvedEditor,
   getEditorsError,
-  editorsLoaded,
-  applyEditorPreference,
+  getEditorsLoadStatus,
+  hasEditorsSnapshot,
+  setEditorPreference,
   resetEditorsForTest,
 } from './editors.svelte';
 import {
   setBindingMock,
-  getBindingMock,
   resetBindingMocks,
 } from '../../test/mocks/bindings-app';
 import type { EditorInfo } from './bindings';
+import { DisconnectedError } from '../transport/wsClient';
+import { __setTransportStatusForTest } from './transportStatus.svelte';
 
 // Plain-object rows — the store reads .id/.available/.envFallback, which
 // matches what the ListAvailableEditors RPC returns over the wire.
@@ -88,19 +91,112 @@ describe('editors store', () => {
     expect(getEditorsError()).toBeNull();
   });
 
-  it('applyEditorPreference updates the resolved default without a refetch', async () => {
+  it('persists a preference and updates the resolved default without a refetch', async () => {
     const listMock = setBindingMock('ListAvailableEditors', vi.fn(async () => [
       ed('code', true),
       ed('cursor', true),
     ]));
     setBindingMock('GetEditorSettings', vi.fn(async () => ({ preference: '' })));
+    const setMock = setBindingMock('SetEditorSettings', vi.fn(async () => ({
+      preference: 'cursor',
+    })));
 
     await ensureEditorsLoaded();
     expect(getResolvedEditor()?.id).toBe('code');
 
-    applyEditorPreference('cursor');
+    await setEditorPreference('cursor');
     expect(getResolvedEditor()?.id).toBe('cursor');
-    expect(listMock).toHaveBeenCalledTimes(1); // no extra RPC
+    expect(setMock).toHaveBeenCalledTimes(1);
+    expect(listMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not let an older settings read overwrite a preference saved during load', async () => {
+    let resolveList!: (value: EditorInfo[]) => void;
+    const list = new Promise<EditorInfo[]>((resolve) => { resolveList = resolve; });
+    setBindingMock('ListAvailableEditors', vi.fn(() => list));
+    setBindingMock('GetEditorSettings', vi.fn(async () => ({ preference: 'code' })));
+    setBindingMock('SetEditorSettings', vi.fn(async () => ({ preference: 'cursor' })));
+
+    const loading = ensureEditorsLoaded();
+    await Promise.resolve();
+    await setEditorPreference('cursor');
+    resolveList([ed('code', true), ed('cursor', true)]);
+    await loading;
+
+    expect(getResolvedEditor()?.id).toBe('cursor');
+  });
+
+  it('does not let a settings read started during a write erase the optimistic preference', async () => {
+    const listMock = setBindingMock('ListAvailableEditors', vi.fn(async () => [
+      ed('code', true),
+      ed('cursor', true),
+    ]));
+    setBindingMock('GetEditorSettings', vi.fn(async () => ({ preference: 'code' })));
+    let resolveSave!: (value: { preference: string }) => void;
+    const write = new Promise<{ preference: string }>((resolve) => { resolveSave = resolve; });
+    setBindingMock('SetEditorSettings', vi.fn(() => write));
+
+    await ensureEditorsLoaded();
+    const saving = setEditorPreference('cursor');
+    await refreshEditors();
+
+    expect(listMock).toHaveBeenCalledTimes(2);
+    expect(getResolvedEditor()?.id).toBe('cursor');
+    resolveSave({ preference: 'cursor' });
+    await saving;
+    expect(getResolvedEditor()?.id).toBe('cursor');
+  });
+
+  it('rolls back to the last confirmed preference when persistence fails', async () => {
+    setBindingMock('ListAvailableEditors', vi.fn(async () => [
+      ed('code', true),
+      ed('cursor', true),
+    ]));
+    setBindingMock('GetEditorSettings', vi.fn(async () => ({ preference: 'code' })));
+    let rejectSave!: (reason: unknown) => void;
+    const write = new Promise((_, reject) => {
+      rejectSave = reject;
+    });
+    setBindingMock('SetEditorSettings', vi.fn(() => write));
+
+    await ensureEditorsLoaded();
+    const saving = setEditorPreference('cursor');
+    expect(getResolvedEditor()?.id).toBe('cursor');
+
+    rejectSave(new Error('disk full'));
+    await expect(saving).rejects.toThrow('disk full');
+    expect(getResolvedEditor()?.id).toBe('code');
+  });
+
+  it('serializes overlapping writes and rolls the newest failure back to the prior success', async () => {
+    setBindingMock('ListAvailableEditors', vi.fn(async () => [
+      ed('code', true),
+      ed('cursor', true),
+      ed('zed', true),
+    ]));
+    setBindingMock('GetEditorSettings', vi.fn(async () => ({ preference: 'code' })));
+    let resolveFirst!: (value: { preference: string }) => void;
+    let rejectSecond!: (reason: unknown) => void;
+    const first = new Promise<{ preference: string }>((resolve) => { resolveFirst = resolve; });
+    const second = new Promise<{ preference: string }>((_, reject) => { rejectSecond = reject; });
+    const setMock = setBindingMock('SetEditorSettings', vi.fn()
+      .mockImplementationOnce(() => first)
+      .mockImplementationOnce(() => second));
+
+    await ensureEditorsLoaded();
+    const firstSave = setEditorPreference('cursor');
+    const secondSave = setEditorPreference('zed');
+    expect(getResolvedEditor()?.id).toBe('zed');
+    await vi.waitFor(() => expect(setMock).toHaveBeenCalledTimes(1));
+
+    resolveFirst({ preference: 'cursor' });
+    await firstSave;
+    await vi.waitFor(() => expect(setMock).toHaveBeenCalledTimes(2));
+    expect(getResolvedEditor()?.id).toBe('zed');
+
+    rejectSecond(new Error('second save failed'));
+    await expect(secondSave).rejects.toThrow('second save failed');
+    expect(getResolvedEditor()?.id).toBe('cursor');
   });
 
   it('refreshEditors re-fetches the catalog', async () => {
@@ -114,7 +210,25 @@ describe('editors store', () => {
     expect(listMock).toHaveBeenCalledTimes(2);
   });
 
-  it('degrades to an empty catalog and records the error when the RPC rejects', async () => {
+  it('revalidates a successful snapshot after the catalog TTL', async () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
+      const listMock = setBindingMock('ListAvailableEditors', vi.fn(async () => [ed('code', true)]));
+      setBindingMock('GetEditorSettings', vi.fn(async () => ({ preference: '' })));
+
+      await ensureEditorsLoaded();
+      vi.setSystemTime(new Date('2026-01-01T00:01:01Z'));
+      await ensureEditorsLoaded();
+
+      expect(listMock).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('records a first-load transport error without presenting it as an empty catalog', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
     setBindingMock('ListAvailableEditors', vi.fn(async () => {
       throw new Error('catalog spawn failed');
     }));
@@ -124,8 +238,79 @@ describe('editors store', () => {
 
     expect(getAvailableEditors()).toEqual([]);
     expect(getResolvedEditor()).toBeNull();
-    expect(editorsLoaded()).toBe(true); // an attempt finished, even failed
+    expect(hasEditorsSnapshot()).toBe(false);
+    expect(getEditorsLoadStatus()).toBe('error');
     expect(getEditorsError()).toContain('catalog spawn failed');
-    void getBindingMock;
+    consoleError.mockRestore();
+  });
+
+  it('keeps a successful empty catalog distinct from an error', async () => {
+    setBindingMock('ListAvailableEditors', vi.fn(async () => []));
+    setBindingMock('GetEditorSettings', vi.fn(async () => ({ preference: '' })));
+
+    await ensureEditorsLoaded();
+
+    expect(getEditors()).toEqual([]);
+    expect(hasEditorsSnapshot()).toBe(true);
+    expect(getEditorsLoadStatus()).toBe('loaded');
+    expect(getEditorsError()).toBeNull();
+  });
+
+  it('keeps the last successful catalog visible when revalidation fails', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const listMock = setBindingMock('ListAvailableEditors', vi.fn()
+      .mockResolvedValueOnce([ed('code', true)])
+      .mockRejectedValueOnce(new Error('refresh failed')));
+    setBindingMock('GetEditorSettings', vi.fn(async () => ({ preference: '' })));
+
+    await ensureEditorsLoaded();
+    await refreshEditors();
+
+    expect(listMock).toHaveBeenCalledTimes(2);
+    expect(getEditors().map((editor) => editor.id)).toEqual(['code']);
+    expect(hasEditorsSnapshot()).toBe(true);
+    expect(getEditorsLoadStatus()).toBe('error');
+    expect(getEditorsError()).toContain('refresh failed');
+    consoleError.mockRestore();
+  });
+
+  it('drops a superseded load result instead of overwriting the refresh', async () => {
+    let resolveFirst!: (value: EditorInfo[]) => void;
+    let resolveSecond!: (value: EditorInfo[]) => void;
+    const first = new Promise<EditorInfo[]>((resolve) => { resolveFirst = resolve; });
+    const second = new Promise<EditorInfo[]>((resolve) => { resolveSecond = resolve; });
+    const listMock = setBindingMock('ListAvailableEditors', vi.fn()
+      .mockImplementationOnce(() => first)
+      .mockImplementationOnce(() => second));
+    setBindingMock('GetEditorSettings', vi.fn(async () => ({ preference: '' })));
+
+    const initial = ensureEditorsLoaded();
+    const refresh = refreshEditors();
+    resolveSecond([ed('cursor', true)]);
+    await refresh;
+    resolveFirst([ed('code', true)]);
+    await initial;
+
+    expect(listMock).toHaveBeenCalledTimes(2);
+    expect(getEditors().map((editor) => editor.id)).toEqual(['cursor']);
+  });
+
+  it('retries a transport-class load failure on reconnect', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const listMock = setBindingMock('ListAvailableEditors', vi.fn()
+      .mockRejectedValueOnce(new DisconnectedError())
+      .mockResolvedValueOnce([ed('code', true)]));
+    setBindingMock('GetEditorSettings', vi.fn(async () => ({ preference: '' })));
+
+    __setTransportStatusForTest({ status: 'reconnecting', nextAttemptAt: Date.now() + 1 });
+    await ensureEditorsLoaded();
+    expect(getEditorsLoadStatus()).toBe('error');
+
+    __setTransportStatusForTest({ status: 'connected', nextAttemptAt: null });
+    await vi.waitFor(() => expect(getEditorsLoadStatus()).toBe('loaded'));
+
+    expect(listMock).toHaveBeenCalledTimes(2);
+    expect(getResolvedEditor()?.id).toBe('code');
+    consoleError.mockRestore();
   });
 });

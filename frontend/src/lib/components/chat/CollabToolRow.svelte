@@ -325,7 +325,6 @@
   </TranscriptDisclosureHeader>
   <CollabToolRowDetails
     {pane}
-    itemId={item.id}
     bodyDomId={outputDomId}
     {promptPreview}
     {rowError}

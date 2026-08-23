@@ -6,7 +6,7 @@ import { createThreadPane } from '../../stores/thread.svelte';
 import { resetPanesForTest } from '../../stores/panes.svelte';
 import { resetPaneLayoutForTest } from '../../stores/paneLayout.svelte';
 import { loadSettings } from '../../stores/settings.svelte';
-import { refreshThreads, getThreads } from '../../stores/threads.svelte';
+import { refreshThreads } from '../../stores/threads.svelte';
 import {
   beginThreadLiveStateHydration,
   finishThreadLiveStateHydration,

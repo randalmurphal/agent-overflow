@@ -15,10 +15,11 @@
 // Neither delegate cares which surface mounted the markdown; both
 // match on attributes / classes that any rendered tree can carry.
 
-import { OpenInEditor } from '../stores/bindings';
+import { openInEditor } from '../stores/openInEditor';
 import { addToast } from '../stores/toast.svelte';
 import { errString } from './errors';
 import { PATH_LINK_HREF_PREFIX, parsePathLinkHref } from './pathLinkExtension';
+import { isViewOnlySession } from '../transport/runMode';
 
 export {
   ensureMarkdownCopyDelegate,
@@ -52,6 +53,10 @@ function handlePathLinkClick(event: MouseEvent): void {
   const parsed = parsePathLinkHref(href);
   if (!parsed) return;
   event.preventDefault();
+  // The anchor may have been rendered before bootstrap established that this
+  // is a non-loopback session. Keep the document-level boundary safe across
+  // that transition even though ChatMarkdown stops emitting new path links.
+  if (isViewOnlySession()) return;
   void invokePathLink(parsed.path, parsed.line, parsed.col, parsed.workspacePath);
 }
 
@@ -80,7 +85,7 @@ async function invokePathLink(
   try {
     // Empty editorID → open in the user's default editor (preference →
     // catalog → $EDITOR). Path links never target a specific editor.
-    await OpenInEditor(path, line, col, workspacePath, '');
+    await openInEditor(path, line, col, workspacePath, '');
   } catch (err) {
     addToast('error', errString(err));
   }

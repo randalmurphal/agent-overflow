@@ -20,6 +20,7 @@ function item(over: Partial<WorkItem> = {}): WorkItem {
   return {
     id: 'run-1', projectId: 'p', goal: 'ship it', workflowId: 'port',
     state: 'needs-human', reason: 'gate', createdAt: 1,
+    ...over,
   } as WorkItem;
 }
 

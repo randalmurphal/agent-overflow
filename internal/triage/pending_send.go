@@ -557,18 +557,8 @@ func (r *Router) reinsertPendingSendHead(threadID string, entry pendingSend) {
 	r.mu.Unlock()
 }
 
-// clearWireOnlyUserTextForThread sweeps the dedup set for threadID.
-// Called by CleanupThread on session teardown. Acquires r.mu — for
-// the CleanupThread codepath that already holds r.mu, see
-// clearWireOnlyUserTextLocked.
-func (r *Router) clearWireOnlyUserTextForThread(threadID string) {
-	r.mu.Lock()
-	r.clearWireOnlyUserTextLocked(threadID)
-	r.mu.Unlock()
-}
-
-// clearWireOnlyUserTextLocked is the no-lock variant of
-// clearWireOnlyUserTextForThread. Caller MUST hold r.mu.
+// clearWireOnlyUserTextLocked clears the dedup set for threadID. Caller must
+// hold r.mu.
 func (r *Router) clearWireOnlyUserTextLocked(threadID string) {
 	delete(r.wireOnlyUserTextSeen, threadID)
 }

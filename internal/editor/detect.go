@@ -126,8 +126,7 @@ type detectEnv struct {
 	readDir func(path string) ([]string, error)
 	// stat substitutes os.Stat for the /mnt/c install-path probes.
 	stat func(path string) (bool, error)
-	// envValue substitutes os.LookupEnv. Used for WSL_DISTRO_NAME
-	// (mapped via wsl.go) and for $EDITOR / $VISUAL fallbacks.
+	// envValue substitutes os.LookupEnv for $EDITOR / $VISUAL fallbacks.
 	envValue func(name string) (string, bool)
 }
 

@@ -58,11 +58,6 @@ func (d ReviewDelivery) valid() bool {
 type ReviewTargetKind string
 
 const (
-	// reviewTargetUnset is the zero value. It exists so a ReviewTarget that
-	// was never built by a constructor fails at the wire boundary instead
-	// of serialising as some arbitrary variant.
-	reviewTargetUnset ReviewTargetKind = ""
-
 	ReviewTargetUncommittedChanges ReviewTargetKind = "uncommittedChanges"
 	ReviewTargetBaseBranch         ReviewTargetKind = "baseBranch"
 	ReviewTargetCommit             ReviewTargetKind = "commit"
@@ -90,8 +85,8 @@ type ReviewTarget struct {
 	instructions string
 }
 
-// Kind reports which variant this target is. reviewTargetUnset for a zero
-// value.
+// Kind reports which variant this target is. It returns the empty string for a
+// zero value.
 func (t ReviewTarget) Kind() ReviewTargetKind { return t.kind }
 
 // ReviewUncommittedChanges reviews the working tree: staged, unstaged and

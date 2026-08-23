@@ -131,13 +131,6 @@ func seedPayloadRow(s *Store, threadID string, p Payload) error {
 	return insertPayloadTx(s.db, threadID, p, "test: seed payload row")
 }
 
-func mustSeedPayloadRow(t *testing.T, s *Store, threadID string, p Payload) {
-	t.Helper()
-	if err := seedPayloadRow(s, threadID, p); err != nil {
-		t.Fatalf("seed payload row %s: %v", p.ID, err)
-	}
-}
-
 func TestNewCreatesTablesSuccessfully(t *testing.T) {
 	s := newTestStore(t)
 

@@ -352,13 +352,6 @@ func AutoCompactPercentForContextTier(tier string, standardPercent, extendedPerc
 	return normalizeAutoCompactPercent(standardPercent)
 }
 
-func AutoCompactPercentForContextWindow(contextWindow, standardPercent, extendedPercent int) int {
-	if contextWindow >= 1000000 {
-		return normalizeAutoCompactPercent(extendedPercent)
-	}
-	return normalizeAutoCompactPercent(standardPercent)
-}
-
 func normalizeAutoCompactPercent(percent int) int {
 	switch {
 	case percent <= 0:

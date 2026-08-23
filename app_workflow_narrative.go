@@ -70,7 +70,7 @@ func (r *workflowAppRunner) writeAttemptNarrative(attempt *workflowAttempt, auth
 	if present {
 		return nil
 	}
-	narrative := ""
+	var narrative string
 	if strings.TrimSpace(authored) != "" {
 		// No RecoveredNarrativeHeader: the element chose to put this account in
 		// its envelope, so it is authored exactly as a file it wrote would be.

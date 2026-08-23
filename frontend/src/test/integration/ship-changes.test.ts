@@ -2,7 +2,7 @@
 // through Commit -> Push -> Create PR; this suite mounts the full App,
 // opens the drawer via the git actions menu, and drives each step.
 
-import { describe, expect, it, beforeAll, beforeEach, vi } from 'vitest';
+import { describe, expect, it, beforeAll, beforeEach } from 'vitest';
 import { render, fireEvent, waitFor } from '@testing-library/svelte';
 
 // The header subscribes through the backend gitwatch stream and the store

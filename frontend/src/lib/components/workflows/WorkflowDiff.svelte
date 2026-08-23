@@ -60,7 +60,7 @@
 {#if files.length > 0}
   <section class="space-y-1.5" data-testid="wf-diff">
     <h3 class="text-[11px] font-semibold uppercase tracking-wider text-fg-muted">Changes</h3>
-    {#each files as file, index (file.path)}
+    {#each files as file (file.path)}
       <div class="overflow-hidden rounded-md border border-border-subtle" data-testid="wf-diff-file">
         <button class="flex w-full items-center gap-2 px-2.5 py-2 text-left text-xs hover:bg-surface-2" onclick={() => toggle(file)} data-testid="wf-diff-file-toggle">
           <span class="text-fg-muted">{expanded.has(file.path) ? '▼' : '▶'}</span>

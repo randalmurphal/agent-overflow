@@ -23,24 +23,6 @@ copy_file() {
 	cp "$src" "$dst"
 }
 
-write_linux_desktop() {
-	dst=$1
-	cat > "$dst" <<'DESKTOP'
-[Desktop Entry]
-Version=1.0
-Type=Application
-Name=Agent Overflow
-Comment=Desktop app for using coding agents with a shared UX
-Exec=agent-overflow
-Icon=agent-overflow
-Categories=Development;
-Terminal=false
-Keywords=AI;Agent;Coding;Development;
-StartupNotify=true
-StartupWMClass=agent-overflow
-DESKTOP
-}
-
 checksum_dir() {
 	dir=$1
 	(
@@ -58,6 +40,5 @@ checksum_dir() {
 
 copy_file "$ROOT_DIR/scripts/install.sh" "$OUT_DIR/install.sh"
 copy_file "$ROOT_DIR/build/appicon.png" "$OUT_DIR/appicon.png"
-write_linux_desktop "$OUT_DIR/agent-overflow.desktop"
 chmod +x "$OUT_DIR/install.sh"
 checksum_dir "$OUT_DIR"

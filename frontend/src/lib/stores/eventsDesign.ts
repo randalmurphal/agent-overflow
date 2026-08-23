@@ -4,7 +4,6 @@
 // setupEventListeners.
 import {
   DESIGN_RELOAD_MAIN_EVENT,
-  DESIGN_OPTIONS_UPDATE_EVENT,
 } from './eventNames';
 import { iterPanes } from './panes.svelte';
 
@@ -135,7 +134,6 @@ export function applyDesignOptionsUpdate(payload: DesignOptionsUpdatePayload): v
         void pane.applyDesignOptionsUpdate(detail.threadId, detail.setId ?? '');
       }
     }
-    dispatchDomEvent(DESIGN_OPTIONS_UPDATE_EVENT, detail);
   });
 }
 

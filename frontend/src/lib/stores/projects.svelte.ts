@@ -19,7 +19,6 @@ import {
 
 let projects: ProjectWithCounts[] = $state([]);
 let loaded = $state(false);
-let error: string | null = $state(null);
 
 /** Read-only view of the current project list for consumers. */
 export function getProjects(): readonly ProjectWithCounts[] {
@@ -58,11 +57,6 @@ export function isLoaded(): boolean {
   return loaded;
 }
 
-/** Most recent error message from refreshProjects, or null. */
-export function getProjectsError(): string | null {
-  return error;
-}
-
 /**
  * Pull the authoritative list from the backend. Resolves once the store
  * has been populated (or left unchanged on failure — previous data is
@@ -73,11 +67,8 @@ export async function refreshProjects(): Promise<void> {
     const result = (await ListProjects()) as ProjectWithCounts[] | null;
     projects = Array.isArray(result) ? result : [];
     loaded = true;
-    error = null;
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
     console.error('Failed to load projects:', err);
-    error = message;
     addToast('error', 'Failed to load projects');
   }
 }
@@ -140,5 +131,4 @@ export function removeProjectLocal(id: string): void {
 export function resetProjectsForTest(): void {
   projects = [];
   loaded = false;
-  error = null;
 }

@@ -30,7 +30,6 @@ export function commandTextForItem(
 }
 
 export function commandErrorForItem(
-  item: Item,
   meta: CommandOutputMeta | null | undefined,
   itemMeta: Record<string, unknown> | null,
   payloadMeta: Record<string, unknown> | null,

@@ -10,76 +10,53 @@
   // explicit pick is persisted as the editor ID so a vendor binary
   // upgrade doesn't quietly switch selection.
   //
-  // In --connect (client) mode the panel is hidden. The remote
-  // installation has its own editor catalog (the user's local apps),
-  // and persisting a preference here would write into the remote
-  // settings file instead of the user's local one.
+  // In --connect mode and non-loopback browser sessions the panel is
+  // read-only. The backend owns the editor catalog and preference, and its
+  // list/write RPCs are deliberately unavailable to a remote peer.
 
-  import {
-    EditorSettings,
-    GetEditorSettings,
-    ListAvailableEditors,
-    SetEditorSettings,
-    type EditorInfo,
-  } from '../../stores/bindings';
   import { addToast } from '../../stores/toast.svelte';
   import { errString } from '../../utils/errors';
-  import { isClientMode } from '../../transport/runMode';
-  import { applyEditorPreference } from '../../stores/editors.svelte';
+  import { isClientMode, isViewOnlySession } from '../../transport/runMode';
+  import {
+    ensureEditorsLoaded,
+    getEditorPreference,
+    getEditors,
+    getEditorsError,
+    getEditorsLoadStatus,
+    hasEditorsSnapshot,
+    refreshEditors,
+    setEditorPreference,
+  } from '../../stores/editors.svelte';
   import SettingsHeader from './SettingsHeader.svelte';
+  import SettingsCallout from './SettingsCallout.svelte';
+  import Button from '../primitives/Button.svelte';
 
   const clientMode = isClientMode();
+  let viewOnly = $derived(isViewOnlySession());
+  let localOnly = $derived(clientMode || viewOnly);
 
-  let editors = $state<EditorInfo[]>([]);
-  let preference = $state<string>('');
-  // Track the last persisted value separately from `preference` so the
-  // optimistic radio change can revert on RPC failure without re-fetching.
-  let savedPreference = $state<string>('');
-  let loading = $state(true);
+  let editors = $derived(getEditors());
+  let preference = $derived(getEditorPreference());
+  let loadStatus = $derived(getEditorsLoadStatus());
+  let loadError = $derived(getEditorsError());
+  let hasSnapshot = $derived(hasEditorsSnapshot());
   let saving = $state(false);
 
-  async function load(): Promise<void> {
-    if (clientMode) {
-      loading = false;
-      return;
-    }
-    loading = true;
-    try {
-      const [list, current] = await Promise.all([
-        ListAvailableEditors(),
-        GetEditorSettings(),
-      ]);
-      editors = (list as EditorInfo[]) ?? [];
-      const pref = (current as EditorSettings | null)?.preference ?? '';
-      preference = pref;
-      savedPreference = pref;
-    } catch (err) {
-      addToast('error', `Failed to load editor settings: ${errString(err)}`);
-    } finally {
-      loading = false;
-    }
+  function retryLoad(): void {
+    if (localOnly || loadStatus === 'loading') return;
+    void refreshEditors();
   }
 
   async function selectEditor(id: string): Promise<void> {
-    if (saving || preference === id) return;
-    const previous = savedPreference;
+    if (localOnly || saving || preference === id) return;
     saving = true;
-    preference = id;
     try {
       // Server validates against the live catalog at open time, not at
       // save time — invalid IDs persist quietly and silently fall back
       // to the catalog default. That matches Resolve()'s contract and
       // means we don't have to reject "VS Code (not installed)" here.
-      const updated = (await SetEditorSettings(
-        new EditorSettings({ preference: id }),
-      )) as EditorSettings;
-      preference = updated.preference;
-      savedPreference = updated.preference;
-      // Mirror the new default into the shared editors store so the chat
-      // header's Open button icon updates without waiting for a refetch.
-      applyEditorPreference(updated.preference);
+      await setEditorPreference(id);
     } catch (err) {
-      preference = previous;
       addToast('error', `Failed to update editor preference: ${errString(err)}`);
     } finally {
       saving = false;
@@ -87,11 +64,12 @@
   }
 
   $effect(() => {
-    void load();
+    if (localOnly) return;
+    void ensureEditorsLoaded();
   });
 </script>
 
-{#if clientMode}
+{#if localOnly}
   <section data-testid="editor-section-clientmode">
     <SettingsHeader
       title="Editor"
@@ -111,7 +89,7 @@
       {/snippet}
     </SettingsHeader>
 
-    {#if loading}
+    {#if loadStatus === 'loading' && !hasSnapshot}
       <p
         class="text-[0.75rem] text-fg-subtle"
         role="status"
@@ -119,7 +97,35 @@
       >
         Loading editors…
       </p>
-    {:else}
+    {:else if loadStatus === 'loading'}
+      <p class="text-[0.75rem] text-fg-subtle" role="status" aria-live="polite">
+        Refreshing editor choices…
+      </p>
+    {/if}
+
+    {#if loadStatus === 'error' && loadError}
+      <SettingsCallout tone="error">
+        <div class="flex items-center gap-3">
+          <div class="min-w-0 flex-1">
+            <p class="font-semibold">Editor choices could not be loaded</p>
+            <p class="mt-1 break-words font-mono text-[0.71875rem]">{loadError}</p>
+            {#if hasSnapshot}
+              <p class="mt-1 text-fg-muted">Showing the last editor list loaded successfully.</p>
+            {/if}
+          </div>
+          <Button
+            size="xs"
+            onclick={retryLoad}
+            testId="editor-section-retry"
+            ariaLabel="Retry loading editor choices"
+          >
+            {#snippet children()}Retry{/snippet}
+          </Button>
+        </div>
+      </SettingsCallout>
+    {/if}
+
+    {#if hasSnapshot}
       <fieldset
         class="flex flex-col gap-0.5"
         role="radiogroup"

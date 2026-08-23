@@ -244,7 +244,7 @@
   // at launch (§E5 async, run_in_background, Codex spawn) or mid-flight
   // (the background button / Ctrl+B, which lands as
   // `meta.subagentBackgroundedAt`).
-  let isBackgroundNode = $derived(launchRunsDetached(parent, launchInfo, parentMeta));
+  let isBackgroundNode = $derived(launchRunsDetached(launchInfo, parentMeta));
 
   // Background button (spec Q9): Claude foreground Agent/Task only, while
   // it runs. Forks have no task to detach, a resume carrier is already

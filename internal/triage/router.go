@@ -244,6 +244,12 @@ type Router struct {
 	// threadID since the provider treats each thread as its own turn
 	// stream.
 	turnSpans map[string]trace.Span
+	// turnSpanGenerations prevents a slow or reentrant span start from
+	// registering after a newer start or terminal cleanup won the thread.
+	// Values are monotonic for the process lifetime and are never deleted:
+	// resetting one would let an old in-flight generation match a later
+	// session that reused the thread id.
+	turnSpanGenerations map[string]uint64
 	// stoppedThreads remembers thread IDs that CleanupThread has
 	// explicitly stopped. While the flag is set, Handle drops events
 	// that would persist to the store so late-arriving readLoop lines
@@ -398,7 +404,7 @@ type Router struct {
 	// anchor is recorded at send time in app_send.go.
 	flushUserTextConfirmed func(threadID string, item store.Item)
 	// workspacePathByThread is a small read-through cache for the
-	// thread row's WorkspacePath, populated lazily by enrichPathRefs
+	// thread row's WorkspacePath, populated lazily by path-ref enrichment
 	// (the only hot caller). A thread's workspace is set at create
 	// time and effectively immutable, so the cache is safe without
 	// invalidation beyond CleanupThread. Without it, every
@@ -553,6 +559,7 @@ func NewRouter(st *store.Store, emit func(eventName string, data any)) *Router {
 		effectiveModelRevisions:    make(map[string]uint64),
 		tasksByThread:              make(map[string]*threadTasks),
 		turnSpans:                  make(map[string]trace.Span),
+		turnSpanGenerations:        make(map[string]uint64),
 		stoppedThreads:             make(map[string]struct{}),
 		threadEpochs:               make(map[string]uint64),
 		unknownSessionStatusLogged: make(map[string]struct{}),
@@ -1261,7 +1268,7 @@ func (r *Router) finishFatalProviderError(threadID string, now int64, summary st
 		return err
 	}
 	r.clearOpenTurn(threadID)
-	r.closeTurnSpan(threadID, errors.New(summary))
+	r.finishTurnSpan(threadID, providerErrorTurnOutcome(summary))
 
 	// Synthesize a truncated TurnComplete only when no wire
 	// TurnComplete is expected downstream. `meta.expect_turn_complete`

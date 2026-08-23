@@ -101,14 +101,7 @@ type Session struct {
 // Manager's lock only long enough to register the session; Session itself
 // does not depend on the Manager for correctness.
 func newSession(id, threadID string, opts SessionOptions, onOutput outputEmitter, onExit exitEmitter) (*Session, error) {
-	cfg := ProcessConfig{
-		Shell: opts.Shell,
-		Args:  opts.Args,
-		Cwd:   opts.Cwd,
-		Env:   opts.Env,
-		Rows:  opts.Rows,
-		Cols:  opts.Cols,
-	}
+	cfg := ProcessConfig(opts)
 	proc, err := Start(cfg)
 	if err != nil {
 		return nil, err

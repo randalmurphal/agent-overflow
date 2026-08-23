@@ -10,6 +10,8 @@ import (
 	"agent-overflow/internal/workflow/def"
 )
 
+func (w waiter) itemID() string { return w.item.item.ID }
+
 func TestSemaphoreReleaseOnEveryImplementedExitPath(t *testing.T) {
 	tests := []struct {
 		name       string

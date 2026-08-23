@@ -49,10 +49,8 @@ import {
 } from '../utils/virtual/priors';
 import {
   resetLayoutMetricsForTest,
-  setPaneWidth,
 } from './layoutMetrics.svelte';
 import {
-  getPaneLayoutItems,
   resetPaneLayoutForTest,
   setPaneLayoutItemsForTest,
 } from './paneLayout.svelte';

@@ -6,13 +6,12 @@
 
   import type { ProjectWithCounts } from '../../types/models';
   import type { ProjectDeletionPreview } from '../../types/workflow';
-  import type { ThreadPane } from '../../stores/thread.svelte';
   import {
     ArchiveProject,
     DeleteProject,
-    OpenInEditor,
     ProjectDeletionPreview as fetchDeletionPreview,
   } from '../../stores/bindings';
+  import { openInEditor } from '../../stores/openInEditor';
   import { getProjectLabelText, removeProjectLocal } from '../../stores/projects.svelte';
   import { closePanesShowingThreads } from '../../stores/panes.svelte';
   import { removeThread } from '../../stores/threads.svelte';
@@ -26,10 +25,10 @@
   import Menu from '../primitives/Menu.svelte';
   import MenuItem from '../primitives/MenuItem.svelte';
   import MenuDivider from '../primitives/MenuDivider.svelte';
+  import { isViewOnlySession } from '../../transport/runMode';
 
   interface Props {
     project: ProjectWithCounts;
-    pane?: ThreadPane;
     anchor: HTMLElement | undefined;
     open: boolean;
     onClose: (reason?: PopoverCloseReason) => void;
@@ -39,7 +38,8 @@
     onRename: () => void;
   }
 
-  let { project, pane, anchor, open, onClose, onRename }: Props = $props();
+  let { project, anchor, open, onClose, onRename }: Props = $props();
+  let viewOnly = $derived(isViewOnlySession());
 
   // Disambiguated label (parent-dir prefix when another project shares the
   // name) so confirm/toast copy names the right copy. Falls back to the raw
@@ -68,10 +68,11 @@
   }
 
   async function doOpenInEditor(): Promise<void> {
+    if (viewOnly) return;
     try {
       // Project path is already absolute; workspacePath is unused.
       // Empty editorID → the user's default editor.
-      await OpenInEditor(project.project.path, 0, 0, '', '');
+      await openInEditor(project.project.path, 0, 0, '', '');
     } catch (err) {
       addToast('error', userFacingError(err));
     }
@@ -140,13 +141,15 @@
             onRename();
           }}
         />
-        <MenuItem
-          label="Open in Editor"
-          onSelect={() => {
-            onClose();
-            void doOpenInEditor();
-          }}
-        />
+        {#if !viewOnly}
+          <MenuItem
+            label="Open in Editor"
+            onSelect={() => {
+              onClose();
+              void doOpenInEditor();
+            }}
+          />
+        {/if}
         <MenuItem
           label="Archive Project"
           onSelect={() => {

@@ -12,6 +12,12 @@ import (
 	"time"
 )
 
+func (m *Manager) openCount() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return len(m.writers)
+}
+
 func TestManagerEnqueueWhenDisabledDrops(t *testing.T) {
 	dir := t.TempDir()
 	drops := atomic.Int64{}

@@ -221,9 +221,10 @@ func (e *Engine) recoverTerminal(item *runtimeItem, phase store.WorkItemPhase) e
 	}
 	if phase.Status == "running" {
 		kind := OutcomeDone
-		if envelope.Status == "question" {
+		switch envelope.Status {
+		case "question":
 			kind = OutcomeQuestion
-		} else if envelope.Status == "stuck" {
+		case "stuck":
 			kind = OutcomeStuck
 		}
 		return e.complete(RunKey{ItemID: item.item.ID, PhaseID: phase.PhaseID, Attempt: phase.Attempt}, Outcome{Kind: kind, Envelope: phase.OutputEnvelope})

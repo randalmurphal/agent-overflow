@@ -565,17 +565,6 @@ type commandOutputPayloadMeta struct {
 	ErrorMessage string
 }
 
-func commandOutputPayloadMetaFields(raw json.RawMessage) commandOutputPayloadMeta {
-	if len(raw) == 0 {
-		return commandOutputPayloadMeta{}
-	}
-	var obj map[string]json.RawMessage
-	if json.Unmarshal(raw, &obj) != nil || obj == nil {
-		return commandOutputPayloadMeta{}
-	}
-	return commandOutputPayloadMetaFieldsObject(obj)
-}
-
 func commandOutputPayloadMetaFieldsObject(obj map[string]json.RawMessage) commandOutputPayloadMeta {
 	if obj == nil {
 		return commandOutputPayloadMeta{}
@@ -698,20 +687,6 @@ func commandOutputBoolField(obj map[string]json.RawMessage, key string) bool {
 	}
 	var b bool
 	return json.Unmarshal(raw, &b) == nil && b
-}
-
-func buildThinkingPayloadMeta(preview string, totalBytes int, signature string) string {
-	tm := ThinkingMeta{
-		TokenCount: totalBytes / 4,
-		Preview:    preview,
-		Signature:  signature,
-	}
-	data, err := json.Marshal(tm)
-	if err != nil {
-		log.Printf("triage: marshal thinking meta: %v", err)
-		return "{}"
-	}
-	return string(data)
 }
 
 // BuildThinkingPayloadMeta builds the persisted thinking payload header when

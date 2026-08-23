@@ -52,7 +52,7 @@
     type DiagnosticSeverity,
     type DesignViewport,
   } from '../../types/design';
-  import { DESIGN_RELOAD_MAIN_EVENT } from '../../stores/events';
+  import { DESIGN_RELOAD_MAIN_EVENT } from '../../stores/eventNames';
   import Icon from '../primitives/Icon.svelte';
 
   let { ctx }: { ctx: PanelContext } = $props();

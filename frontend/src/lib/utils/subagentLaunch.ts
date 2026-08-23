@@ -371,7 +371,6 @@ function resumedAgentName(item: Item): string {
  * (`SubagentGroupNode.anchor`); a Codex spawn has no card.
  */
 export function launchRunsDetached(
-  item: Item,
   info: SubagentLaunchInfo | null,
   meta: Record<string, unknown> | null,
 ): boolean {

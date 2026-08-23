@@ -375,11 +375,6 @@ func extractSubagentNotificationsFromUserMessage(params json.RawMessage) []subag
 	return notifications
 }
 
-func isSubagentNotificationOnlyUserMessage(params json.RawMessage) bool {
-	notifications, remainder := extractSubagentNotificationsAndRemainderFromUserMessage(params)
-	return len(notifications) > 0 && strings.TrimSpace(remainder) == ""
-}
-
 func extractSubagentNotificationsAndRemainderFromUserMessage(params json.RawMessage) ([]subagentNotification, string) {
 	item := readNestedObject(params, "item")
 	if item == nil {

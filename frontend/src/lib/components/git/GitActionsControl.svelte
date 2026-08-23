@@ -17,7 +17,7 @@
   import type { ThreadPane } from '../../stores/thread.svelte';
   import { forgeLabels } from '../../utils/forgeLabels';
   import { handleExternalURL, safeExternalURL } from '../../utils/externalLinks';
-  import { OPEN_SHIP_CHANGES_EVENT } from '../../stores/events';
+  import { OPEN_SHIP_CHANGES_EVENT } from '../../stores/eventNames';
   import ConfirmDialog from '../shared/ConfirmDialog.svelte';
   import { restorePickerFocus } from '../panes/paneComposerFocus';
   import type { PopoverCloseReason } from '../../utils/popoverOwnership';

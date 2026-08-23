@@ -1,7 +1,6 @@
 package sessionimport
 
 import (
-	"encoding/json"
 	"path/filepath"
 	"testing"
 	"time"
@@ -69,15 +68,6 @@ func seedThread(t *testing.T, st *store.Store, threadID, providerName, workspace
 		t.Fatalf("create thread: %v", err)
 	}
 	return thread
-}
-
-func mustJSON(t *testing.T, value any) json.RawMessage {
-	t.Helper()
-	encoded, err := json.Marshal(value)
-	if err != nil {
-		t.Fatalf("marshal fixture json: %v", err)
-	}
-	return encoded
 }
 
 // importEvents lifts wire events into IR events, stamping the source

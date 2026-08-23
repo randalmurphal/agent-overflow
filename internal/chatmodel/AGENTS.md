@@ -6,8 +6,8 @@ detection and the context-window query/validation cluster. Every
 function here is callable without a running App or SQLite handle.
 
 The App-coupled wrappers that need persistence (`rememberChatModelProfile`,
-`seedChatModelProfile`, `defaultContextWindowForModel`, plus the
-context-settings and thread-model bindings) stay in `app_*.go` and
+`seedChatModelProfile`, plus the context-settings and thread-model bindings)
+stay in `app_*.go` and
 compose this package's pieces with their store reads/writes.
 
 ## Layout

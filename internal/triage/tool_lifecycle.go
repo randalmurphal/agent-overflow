@@ -1732,14 +1732,6 @@ func completionPayloadForLaunch(launch store.Item, evt provider.ProviderEvent, m
 	return CompletionPayloadForTool(launch.ID, launch.ToolName, CommandFromLaunch(launch), evt, meta, now)
 }
 
-func marshalJSONObjectOrEmpty(fields map[string]any) json.RawMessage {
-	data, err := json.Marshal(fields)
-	if err != nil {
-		return json.RawMessage("{}")
-	}
-	return data
-}
-
 func isCommandOutputToolName(toolName string) bool {
 	switch strings.TrimSpace(toolName) {
 	case "Bash", "command_execution", "commandExecution", "exec_command":

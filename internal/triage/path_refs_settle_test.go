@@ -14,7 +14,7 @@ import (
 
 // TestSettleStreamingTextEnrichesPathRefs is the integration-shaped
 // test that the path-link enrichment hook actually fires from
-// settleStreamingText and writes a validated allowlist onto the
+// text settlement and writes a validated allowlist onto the
 // persisted item's meta. The text contains both a real file path
 // (relative to the seeded workspace) and a bogus token (`bogus.nope`)
 // that would have passed the legacy client-side regex — only the real
@@ -59,7 +59,7 @@ func TestSettleStreamingTextEnrichesPathRefs(t *testing.T) {
 		t.Fatalf("text delta: %v", err)
 	}
 
-	// Close the block: settleStreamingText fires, enrichPathRefs runs,
+	// Close the block: text settlement and path-ref enrichment run,
 	// persistItem writes the enriched meta. The settle is async on the
 	// content-block-stop hot path, so wait before reading the row.
 	if err := router.Handle(provider.ProviderEvent{

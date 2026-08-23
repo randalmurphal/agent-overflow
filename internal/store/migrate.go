@@ -2621,7 +2621,7 @@ var validTableName = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`)
 // tableColumns returns the set of column names defined on the given
 // table. Kept exported-within-package because items_lifecycle_test.go
 // and items_parent_test.go use it as a schema-existence probe.
-func tableColumns(db *sql.DB, table string) (map[string]bool, error) {
+func tableColumns(db sqlQueryer, table string) (map[string]bool, error) {
 	if !validTableName.MatchString(table) {
 		return nil, fmt.Errorf("invalid table name: %q", table)
 	}
@@ -2707,7 +2707,7 @@ func applyMigration(db *sql.DB, m Migration) error {
 }
 
 func addThreadPRRefColumn(tx *sql.Tx) error {
-	columns, err := tableColumnsTx(tx, "threads")
+	columns, err := tableColumns(tx, "threads")
 	if err != nil {
 		return err
 	}
@@ -2718,36 +2718,6 @@ func addThreadPRRefColumn(tx *sql.Tx) error {
 		return fmt.Errorf("add threads.pr_ref: %w", err)
 	}
 	return nil
-}
-
-func tableColumnsTx(tx *sql.Tx, table string) (map[string]bool, error) {
-	if !validTableName.MatchString(table) {
-		return nil, fmt.Errorf("invalid table name: %q", table)
-	}
-	rows, err := tx.Query(fmt.Sprintf("PRAGMA table_info(%s)", table))
-	if err != nil {
-		return nil, fmt.Errorf("pragma table_info(%s): %w", table, err)
-	}
-	defer rows.Close()
-	columns := make(map[string]bool)
-	for rows.Next() {
-		var (
-			cid        int
-			name       string
-			columnType string
-			notNull    int
-			defaultVal sql.NullString
-			pk         int
-		)
-		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultVal, &pk); err != nil {
-			return nil, fmt.Errorf("scan table_info(%s): %w", table, err)
-		}
-		columns[name] = true
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate table_info(%s): %w", table, err)
-	}
-	return columns, nil
 }
 
 // applyRebuildMigration runs a table-rebuild migration with foreign keys

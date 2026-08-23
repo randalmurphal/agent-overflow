@@ -34,12 +34,16 @@ avoid otel's global lookups (see `otel.NewProvider` in
 - **Spans** — triage opens a `turn.lifecycle` span on `EventTurnStart` and
   closes it on `EventTurnComplete`, tagged with `thread.id`, `provider`,
   `model`, `turn.index` (see `Router.openTurnSpan` in
-  `internal/triage/turn_lifecycle.go`).
+  `internal/triage/turn_telemetry.go`).
 - **Counters** — `turns.started`, `turns.completed`, `turns.errored`,
   `items.persisted`, `payloads.persisted` (recorded by the triage
   router), plus `replay.events.queued` / `replay.events.dropped`
   (recorded by the event-log hook wired from `app.go` via
-  `App.emitWithReplay`).
+  `App.emitWithReplay`). A terminal turn span increments exactly one of
+  `turns.completed` or `turns.errored`; provider errors, interruptions,
+  truncation, persistence failures, and cleanup all take the errored path.
+  A re-sent turn start replaces the live span without claiming a terminal
+  outcome because it is a lifecycle transition for the same turn.
 - **Histogram** — `provider.stream.frames` for byte sizes of individual
   provider stream frames.
 - Metric export uses a `PeriodicReader` at 15s (see

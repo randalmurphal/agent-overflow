@@ -9,15 +9,7 @@
 // `stableTurnKey` hands back the last real turn's key for that gap so
 // the verb/sprite hold steady instead of flickering through a reroll.
 
-/** FNV-1a over a string; stable, fast, good enough spread for pool picks. */
-export function fnv1a(text: string): number {
-  let hash = 0x811c9dc5;
-  for (let i = 0; i < text.length; i += 1) {
-    hash ^= text.charCodeAt(i);
-    hash = Math.imul(hash, 0x01000193);
-  }
-  return hash >>> 0;
-}
+import { fnv1a32 } from '../utils/fnv1a';
 
 /**
  * Pick one entry from a pool, stable for a given (threadId, turnKey,
@@ -27,7 +19,7 @@ export function fnv1a(text: string): number {
  */
 export function pickFromPool<T>(pool: readonly T[], threadId: string, turnKey: string, salt: string): T | null {
   if (pool.length === 0) return null;
-  return pool[fnv1a(`${salt}:${threadId}:${turnKey}`) % pool.length] ?? null;
+  return pool[fnv1a32(`${salt}:${threadId}:${turnKey}`) % pool.length] ?? null;
 }
 
 /**

@@ -24,9 +24,9 @@ import (
 type childInclusion int
 
 const (
-	// excludeChildren (default): only the node's direct text; every
+	// The zero value excludes children: only the node's direct text; every
 	// child node's range is subtracted.
-	excludeChildren childInclusion = iota
+	_ childInclusion = iota
 	// includeUnnamedChildren: subtract only named children (markdown's
 	// block_continuation quote markers stay out, raw tokens stay in).
 	includeUnnamedChildren

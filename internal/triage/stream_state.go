@@ -349,8 +349,8 @@ func interruptedSummary(summary string) string {
 	return summary + suffix
 }
 
-// takeActiveTextBlock is the synchronous prelude shared by the sync
-// and async settleStreamingText variants. It checks and clears the
+// takeActiveTextBlock is the synchronous prelude shared by the turn-wide and
+// async text-settle paths. It checks and clears the
 // activeTextBlocks slot atomically so a duplicate settle attempt
 // no-ops correctly. The streamingItemCounts AND streamingScopeCounts
 // decrements are DEFERRED to finishSettle (which runs after persistItem
@@ -418,9 +418,8 @@ func (r *Router) finishSettle(threadID, scope string) {
 // flush the stream-persist buffer, re-read the item from SQLite,
 // stamp final status + pathRefs, persist only the changed fields, and
 // emit a lightweight patch instead of the full Item. Called by both the
-// sync wrapper (settleStreamingText, used inside settleTurnStreaming)
-// and the async wrapper (settleStreamingTextAsync, used at
-// content-block-stop on the provider read-loop). Safe to run in any
+// turn-wide settle path and the async wrapper used at content-block-stop on
+// the provider read-loop. Safe to run in any
 // goroutine.
 // doSettleStreamingText settles one streaming text row. blockMeta is the
 // stop envelope's row-level meta (today only `delivery`, see
@@ -498,19 +497,6 @@ func (r *Router) doSettleStreamingText(threadID, scope, itemID, status, finalCon
 		update.Summary = &item.Summary
 	}
 	return r.persistItemFieldsAndPatch(threadID, itemID, item.Kind, update)
-}
-
-// settleStreamingText is the synchronous text-block settle. Used by
-// settleTurnStreaming's per-scope goroutines (where the per-turn
-// WaitGroup guarantees turn-row commit sequencing after all streaming
-// commits) and by tests that need a deterministic post-settle barrier
-// without an extra WaitForPendingSettles call.
-func (r *Router) settleStreamingText(threadID string, turnIndex int, scope string, status string) error {
-	itemID, active := r.takeActiveTextBlock(threadID, turnIndex, scope, "")
-	if !active {
-		return nil
-	}
-	return r.doSettleStreamingText(threadID, scope, itemID, status, "", false, nil)
 }
 
 // settleStreamingTextAsync is the fire-and-forget text-block settle.
@@ -640,23 +626,8 @@ func (r *Router) nextTextItemID(threadID string, turnIndex int, scope string) st
 	key := scopeCounterKey(threadID, turnIndex, scope)
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.segmentIndexByScope[key] = r.segmentIndexByScope[key] + 1
+	r.segmentIndexByScope[key]++
 	return TextItemID(turnIndex, scope, r.segmentIndexByScope[key])
-}
-
-// enrichPathRefs is the settle-time hook for assistant_text rows.
-// Delegates to enrichPathRefsFromTexts using item.Summary as the only
-// validation source. Kept as a wrapper so the streaming-text settle
-// path stays unchanged.
-//
-// Other persist sites (ProposedPlan, AskUserQuestion, advisor result,
-// ChannelMessage) live in different fields than item.Summary and call
-// enrichPathRefsFromTexts directly with the correct source.
-func (r *Router) enrichPathRefs(threadID string, item *store.Item) {
-	if item.Kind != itemKindAssistantText {
-		return
-	}
-	r.enrichPathRefsFromTexts(threadID, item, item.Summary)
 }
 
 // enrichPathRefsFromTexts is the explicit-source variant. It validates
@@ -748,7 +719,7 @@ type streamingPathRefsState struct {
 // bump updated_at), and emits a `provider:item_event` with
 // action:"meta" so the frontend can re-render path links mid-stream.
 //
-// Why this exists: settle-time enrichment (enrichPathRefs) only fires
+// Why this exists: settle-time enrichment only fires
 // when the stream ends, so a user watching a long assistant_text
 // stream sees raw paths until the model finishes. This helper runs on
 // every flush-persistence tick for an assistant_text row, gated by a
@@ -768,7 +739,7 @@ type streamingPathRefsState struct {
 // from the cached one, emission fires.
 //
 // Best-effort: a thread without a workspace or a merge failure
-// returns silently. The settle path will re-run enrichPathRefs
+// returns silently. The settle path will re-run enrichPathRefsFromTexts
 // against the final summary either way (it stays the authoritative
 // full-text scan).
 func (r *Router) enrichStreamingPathRefsAndEmit(item store.Item, updatedAt int64) {
@@ -965,14 +936,6 @@ func (r *Router) doSettleStreamingThinking(threadID, scope, itemID, status, fina
 		update.Summary = &summary
 	}
 	return r.persistItemFieldsAndPatch(threadID, itemID, item.Kind, update)
-}
-
-func (r *Router) settleStreamingThinking(threadID string, turnIndex int, scope string, status string) error {
-	itemID, active := r.takeActiveThinkingBlock(threadID, turnIndex, scope, "")
-	if !active {
-		return nil
-	}
-	return r.doSettleStreamingThinking(threadID, scope, itemID, status, "", false)
 }
 
 func (r *Router) settleStreamingThinkingAsync(threadID string, turnIndex int, scope, providerItemID, status, finalContent string, finalContentPresent bool) {

@@ -8,12 +8,10 @@ import VirtualList from './VirtualList.svelte';
 // runs. Tests override clientHeight via the stub below.
 class StubResizeObserver {
   private cb: ResizeObserverCallback;
-  private element: Element | null = null;
   constructor(cb: ResizeObserverCallback) {
     this.cb = cb;
   }
   observe(el: Element): void {
-    this.element = el;
     // Fire synchronously with the current bounding rect. Tests can
     // override getBoundingClientRect before mounting to control the
     // visible window size.

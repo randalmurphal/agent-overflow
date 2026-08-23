@@ -105,7 +105,7 @@ func (s *Store) SetEnabled(name string, enabled bool) error {
 		return ErrInvalidName
 	}
 	return s.modify(func(data []byte) ([]byte, error) {
-		start, end, _ := findSectionByName(data, name)
+		start, end := findSectionByName(data, name)
 		if start < 0 {
 			return nil, fmt.Errorf("%w: %s", ErrNotFound, name)
 		}

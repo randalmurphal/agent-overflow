@@ -85,7 +85,7 @@ owner. The top-level `ParseLine` (in `parser.go`) reads the envelope's
   §`system/status`.
 - `parse_assistant.go` — `assistant` envelopes (text deltas, tool_use
   blocks, thinking blocks, usage). Dispatches each content block to
-  `appendTextEvent` / `appendToolUseEvent` / `appendThinkingEvent` /
+  `appendRecoveredBlockEvent` / `appendToolUseEvent` /
   `appendExitPlanModeEvent` / `appendAssistantUsageEvent`.
 - `parse_user.go` — `user` envelopes carrying `tool_result` blocks,
   split into `appendTaskOutputCompletion` (Task-tool background path)

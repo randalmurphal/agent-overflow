@@ -234,7 +234,7 @@
           class="rounded-[var(--radius-field)] bg-accent/15 px-1 text-[0.625rem] font-medium text-accent"
           data-testid="activity-rail-background-count"
         >{bg.count}</span>
-        {#if bg.anyRunning}
+        {#if bg.runningCount > 0}
           <span
             class="h-1.5 w-1.5 rounded-full bg-accent animate-pulse"
             aria-hidden="true"
@@ -256,7 +256,6 @@
       threadId={bg.threadId}
       {pane}
       runningCount={bg.runningCount}
-      anyRunning={bg.anyRunning}
     />
   {/if}
 </div>

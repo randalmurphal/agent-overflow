@@ -1,8 +1,6 @@
 // Package claude — parser for `assistant`-type NDJSON lines. The top-level
-// parseAssistant dispatches each content block to a per-type helper
-// (appendTextEvent / appendToolUseEvent / appendThinkingEvent /
-// appendExitPlanModeEvent) so new block types can be added without growing
-// the main function.
+// parseAssistant dispatches each content block to a per-type helper so new
+// block types can be added without growing the main function.
 
 package claude
 
@@ -449,26 +447,6 @@ func truncate(s string, max int) string {
 	return string(r[:max]) + "..."
 }
 
-// appendTextEvent emits a streaming text delta for a `text` block. The
-// message-level id (msg.ID) is used as the item id so every text chunk in
-// the same assistant message collapses onto one timeline row.
-func appendTextEvent(
-	events []provider.ProviderEvent,
-	threadID, itemID, parentToolUseID string,
-	now time.Time,
-	block assistantContentBlock,
-) []provider.ProviderEvent {
-	return append(events, provider.ProviderEvent{
-		Kind:            provider.EventTextDelta,
-		ThreadID:        threadID,
-		ItemID:          itemID,
-		Content:         block.Text,
-		Role:            "assistant",
-		ParentToolUseID: parentToolUseID,
-		Timestamp:       now,
-	})
-}
-
 // appendToolUseEvent handles `tool_use` blocks. ExitPlanMode takes a
 // dedicated path (proposed-plan event); TodoWrite takes a dedicated
 // path (live-plan event, with NO timeline tool-call row); every other
@@ -793,33 +771,6 @@ func appendExitPlanModeEvent(
 		ItemID:          block.ID,
 		ItemType:        block.Name,
 		Content:         planMarkdown,
-		ParentToolUseID: parentToolUseID,
-		Timestamp:       now,
-	})
-}
-
-// appendThinkingEvent emits a thinking block, optionally carrying the
-// cryptographic signature Claude attaches when it's enabled. The
-// signature is marshaled into meta rather than stamped onto the Content
-// so the frontend can rely on Content being plain text.
-func appendThinkingEvent(
-	events []provider.ProviderEvent,
-	threadID, itemID, parentToolUseID string,
-	now time.Time,
-	block assistantContentBlock,
-) []provider.ProviderEvent {
-	var meta json.RawMessage
-	if block.Signature != "" {
-		meta, _ = json.Marshal(map[string]any{
-			"signature": block.Signature,
-		})
-	}
-	return append(events, provider.ProviderEvent{
-		Kind:            provider.EventThinking,
-		ThreadID:        threadID,
-		ItemID:          itemID,
-		Content:         block.Thinking,
-		Meta:            meta,
 		ParentToolUseID: parentToolUseID,
 		Timestamp:       now,
 	})

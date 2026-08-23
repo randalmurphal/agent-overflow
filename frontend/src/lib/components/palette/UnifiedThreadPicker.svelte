@@ -12,7 +12,7 @@
   import { pathBasename } from '../../utils/pathDisplay';
   import { getProviderDefinition } from '../../providers/catalog';
   import { resolveThreadStatusPill } from '../../utils/threadStatusPill';
-  import { PICKER_TOGGLE_INPUT_EVENT } from '../../stores/events';
+  import { PICKER_TOGGLE_INPUT_EVENT } from '../../stores/eventNames';
   import { isHiddenThreadMode } from '../../utils/threadModes';
 
   interface Props {

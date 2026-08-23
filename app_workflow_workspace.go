@@ -494,10 +494,6 @@ func workflowUnitBranchOwner(itemID string) string {
 	return fragment
 }
 
-func workflowWorktreeBranch(prefix, workflowID, itemID string) string {
-	return gitops.BuildTemporaryWorktreeBranchNameWithPrefix(workflowWorktreeBranchPrefix(prefix, workflowID, itemID))
-}
-
 func workflowWorktreeBranchPrefix(prefix, workflowID, itemID string) string {
 	configuredPrefix := strings.TrimSpace(prefix)
 	if configuredPrefix != "" && !strings.HasSuffix(configuredPrefix, "-") && !strings.HasSuffix(configuredPrefix, "_") {

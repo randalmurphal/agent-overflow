@@ -1,4 +1,4 @@
-import { describe, expect, it, beforeEach, vi } from 'vitest';
+import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
 import { render, fireEvent, waitFor } from '@testing-library/svelte';
 import OpenInEditorControl from './OpenInEditorControl.svelte';
 import {
@@ -10,6 +10,7 @@ import {
   resetBindingMocks,
 } from '../../../test/mocks/bindings-app';
 import type { EditorInfo } from '../../stores/bindings';
+import { setViewOnlySessionFromBootstrap } from '../../transport/runMode';
 
 // Popover/Menu transitions poke Element.animate on mount; happy-dom lacks it.
 if (typeof Element !== 'undefined' && !('animate' in Element.prototype)) {
@@ -40,6 +41,11 @@ describe('<OpenInEditorControl>', () => {
   beforeEach(() => {
     resetBindingMocks();
     resetEditorsForTest();
+    setViewOnlySessionFromBootstrap(false);
+  });
+
+  afterEach(() => {
+    setViewOnlySessionFromBootstrap(false);
   });
 
   it('opens in the default editor and shows no dropdown with a single editor', async () => {
@@ -115,5 +121,22 @@ describe('<OpenInEditorControl>', () => {
     await fireEvent.click(getByTestId('chat-header-open-editor'));
     await waitFor(() => expect(open).toHaveBeenCalledTimes(1));
     expect(open.mock.calls[0]).toEqual(['/proj', 0, 0, '', '']);
+  });
+
+  it('renders no editor control and makes no editor RPC in a view-only session', async () => {
+    setViewOnlySessionFromBootstrap(true);
+    const list = setBindingMock('ListAvailableEditors', vi.fn(async () => []));
+    const settings = setBindingMock('GetEditorSettings', vi.fn(async () => ({ preference: '' })));
+    const open = setBindingMock('OpenInEditor', vi.fn(async () => undefined));
+
+    const { queryByTestId } = render(OpenInEditorControl, {
+      props: { path: '/proj', name: 'Alpha' },
+    });
+    await Promise.resolve();
+
+    expect(queryByTestId('chat-header-open-editor')).toBeNull();
+    expect(list).not.toHaveBeenCalled();
+    expect(settings).not.toHaveBeenCalled();
+    expect(open).not.toHaveBeenCalled();
   });
 });

@@ -52,11 +52,6 @@ import { transportGapChannel } from '../transport/wsClient';
 // setupEventListeners() use and re-exported below for existing import sites.
 import { wailsEventOn } from './wailsEvents';
 import {
-  DESIGN_RELOAD_MAIN_EVENT,
-  DESIGN_OPTIONS_UPDATE_EVENT,
-} from './eventNames';
-import {
-  onItemUpsert,
   applyItemStreamEvent,
   flushItemEventQueue,
   resetItemEventQueue,
@@ -161,32 +156,6 @@ import {
   applyWorkflowSoftStopEvent,
 } from './eventsWorkflow';
 import { addToast } from './toast.svelte';
-
-/**
- * Frontend custom DOM event names live in `./eventNames` so consumers
- * that this file depends on transitively (notably panes.svelte.ts) can
- * import them without forming an import cycle. Re-exported here so
- * existing consumers that pull names from `./events` keep working —
- * new code should prefer the direct `./eventNames` import.
- */
-export {
-  DESIGN_RELOAD_MAIN_EVENT,
-  DESIGN_OPTIONS_UPDATE_EVENT,
-  PICKER_TOGGLE_INPUT_EVENT,
-  RENAME_THREAD_EVENT,
-  OPEN_SHIP_CHANGES_EVENT,
-} from './eventNames';
-
-// wailsEventOn is defined in ./wailsEvents (a leaf module) and re-exported here
-// so existing subscribers (terminal drawer, diff panel, mcpServers, …) keep
-// importing it from './events'. It lives in a leaf so low-level stores can
-// subscribe without importing this handler module — see wailsEvents.ts.
-export { wailsEventOn };
-
-// onItemUpsert is defined in ./eventsItemStream (the item-batching leaf) and
-// re-exported here so existing subscribers (activityRailBackground,
-// workspaceChangeLock, proposedPlans) keep importing it from './events'.
-export { onItemUpsert };
 
 /**
  * Set up the app's Wails event listeners.

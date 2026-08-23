@@ -5,29 +5,6 @@ ROOT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 TMP_DIR=$(mktemp -d)
 trap 'rm -rf "$TMP_DIR"' EXIT HUP INT TERM
 
-hash_file() {
-	file=$1
-	if command -v sha256sum >/dev/null 2>&1; then
-		sha256sum "$file" | awk '{print $1}'
-	elif command -v shasum >/dev/null 2>&1; then
-		shasum -a 256 "$file" | awk '{print $1}'
-	else
-		echo "ERROR: sha256sum or shasum is required" >&2
-		exit 1
-	fi
-}
-
-write_checksums() {
-	dir=$1
-	(
-		cd "$dir"
-		rm -f SHASUMS256
-		for file in agent-overflow-darwin-arm64.zip agent-overflow-linux-amd64 agent-overflow-wsl-amd64.exe appicon.png; do
-			printf '%s  %s\n' "$(hash_file "$file")" "$file"
-		done > SHASUMS256
-	)
-}
-
 make_fake_release() {
 	dir=$1
 	mkdir -p "$dir"
@@ -39,8 +16,11 @@ make_fake_release() {
 	printf '#!/usr/bin/env sh\nexit 0\n' > "$macos_stage/Agent Overflow.app/Contents/MacOS/agent-overflow"
 	chmod +x "$macos_stage/Agent Overflow.app/Contents/MacOS/agent-overflow"
 	( cd "$macos_stage" && zip -qr "$dir/agent-overflow-darwin-arm64.zip" "Agent Overflow.app" )
-	cp "$ROOT_DIR/build/appicon.png" "$dir/appicon.png"
-	write_checksums "$dir"
+	"$ROOT_DIR/scripts/package-release-assets.sh" "$dir"
+	[ ! -e "$dir/agent-overflow.desktop" ] || {
+		echo "ERROR: release packaging emitted the redundant Linux desktop entry" >&2
+		exit 1
+	}
 }
 
 make_fake_wsl_tools() {

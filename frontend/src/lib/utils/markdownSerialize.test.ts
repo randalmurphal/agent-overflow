@@ -408,23 +408,48 @@ describe('serializeRangeToMarkdown — math and mermaid', () => {
     expect(serializeRangeToMarkdown(selectAll(host))).toBe('$harmless$');
   });
 
-  it('reads mermaid source from data-mermaid-source on the rendered <pre>', () => {
+  it('reads mermaid source from the current rendered host without copying hidden or SVG text', () => {
     const host = asMarkdownBody(
-      '<pre class="mermaid mermaid-rendered" data-mermaid-source="graph TD\nA --> B"><svg></svg></pre>',
+      '<p>before</p>'
+      + '<div class="mermaid streamdown-mermaid-host mermaid-host-with-fallback mermaid-rendered" '
+      + 'data-mermaid-source="graph TD&#10;A to B">'
+      + '<pre class="mermaid-source-fallback" aria-hidden="true">graph TD\nA to B</pre>'
+      + '<div data-streamdown-mermaid="diagram-1"><div>'
+      + '<svg data-mermaid-svg><svg><text>Rendered A</text><text>Rendered B</text></svg></svg>'
+      + '</div></div></div>'
+      + '<p>after</p>',
     );
     expect(serializeRangeToMarkdown(selectAll(host))).toBe(
-      '```mermaid\ngraph TD\nA --> B\n```',
+      'before\n\n```mermaid\ngraph TD\nA to B\n```\n\nafter',
     );
   });
 
-  it('ignores a forged data-mermaid-source on a <pre> with no rendered SVG', () => {
-    // Same threat model as math: the data attribute is only
-    // authoritative when the renderer has rewritten the DOM.
+  it('does not trust a data-mermaid-source host without a rendered nested SVG', () => {
+    // The outer panzoom SVG exists before Mermaid finishes. Only a nested
+    // rendered SVG proves that the source attribute describes visible output.
     const host = asMarkdownBody(
-      '<pre data-mermaid-source="evil source"><code>visible code</code></pre>',
+      '<div class="mermaid streamdown-mermaid-host" data-mermaid-source="evil source">'
+      + '<pre><code>visible source</code></pre>'
+      + '<svg data-mermaid-svg></svg>'
+      + '</div>',
     );
     expect(serializeRangeToMarkdown(selectAll(host))).toBe(
-      '```\nvisible code\n```',
+      '```\nvisible source\n```',
+    );
+  });
+
+  it('keeps a current Mermaid host on block boundaries beside inline fragments', () => {
+    const host = asMarkdownBody(
+      '<span>before</span>'
+      + '<div class="mermaid streamdown-mermaid-host mermaid-rendered" '
+      + 'data-mermaid-source="graph LR">'
+      + '<svg data-mermaid-svg><svg><text>Rendered label</text></svg></svg>'
+      + '</div>'
+      + '<span>after</span>',
+    );
+
+    expect(serializeRangeToMarkdown(selectAll(host))).toBe(
+      'before\n```mermaid\ngraph LR\n```\n\nafter',
     );
   });
 });

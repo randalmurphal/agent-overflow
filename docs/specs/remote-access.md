@@ -826,8 +826,7 @@ leases) is a net *reduction* in wire and CPU cost, not an addition.
    plus the §7 Origin allow-list — deleting the `sessionStorage` copy
    and `window.__AO_BOOTSTRAP__`. This is the same channel that
    carries session credentials from phase 2 on, not a stopgap. Also:
-   `safeExternalURL` on the two unvalidated `PRStep.svelte` hrefs,
-   either using or dropping the unused `dompurify` dependency, tests
+   `safeExternalURL` on the two unvalidated `PRStep.svelte` hrefs, tests
    for `/`- and `//`-leading hrefs, a correction to the false claim in
    `frontend/CLAUDE.md`, and the §13 surface enumeration + CI gate
    seeded with HTTP routes, listeners, and content origins (the

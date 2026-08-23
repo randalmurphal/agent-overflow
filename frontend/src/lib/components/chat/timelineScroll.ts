@@ -115,21 +115,6 @@ export function resolveVisibleTimelineNodeIndex(
   return visibleItemId === itemId ? -1 : findTimelineNodeIndex(nodes, visibleItemId);
 }
 
-export function timelineRowElementForIndex(
-  root: ParentNode | undefined | null,
-  index: number,
-): HTMLElement | null {
-  return root?.querySelector(`[data-row-index="${index}"]`) ?? null;
-}
-
-export function centeredScrollTop(
-  rowTop: number,
-  rowHeight: number,
-  viewportHeight: number,
-): number {
-  return rowTop - Math.max(0, (viewportHeight - rowHeight) / 2);
-}
-
 export function captureTimelineAnchor(
   nodes: readonly TimelineNode[],
   geometry: TimelineGeometry,
@@ -170,20 +155,6 @@ export function captureTimelineTailAnchor(
     itemId: timelineNodeItemId(node),
     offsetBottom: geometry.getItemOffset(idx) + geometry.sizeAt(idx) - bottom,
   };
-}
-
-export function isPureKeyedHeadDrop(
-  beforeKeys: readonly string[],
-  afterKeys: readonly string[],
-): boolean {
-  if (afterKeys.length >= beforeKeys.length) return false;
-  const removedCount = beforeKeys.length - afterKeys.length;
-  for (let index = 0; index < afterKeys.length; index += 1) {
-    if (beforeKeys[removedCount + index] !== afterKeys[index]) {
-      return false;
-    }
-  }
-  return true;
 }
 
 /**

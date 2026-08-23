@@ -76,20 +76,3 @@ func projectPathForThread(t *testing.T, a *App, thread store.Thread) string {
 	}
 	return p.Path
 }
-
-// setThreadProject updates a thread's ProjectID + persists so a test
-// can re-root a pre-created thread onto a new project (e.g., tests that
-// want the thread's project path to be different from the default
-// workspace project). Creates the project row if it doesn't exist.
-func setThreadProject(t *testing.T, a *App, thread *store.Thread, projectPath string) {
-	t.Helper()
-	project, err := a.ensureProjectForWorkspace(projectPath)
-	if err != nil {
-		t.Fatalf("setThreadProject %s: %v", thread.ID, err)
-	}
-	thread.ProjectID = project.ID
-	thread.UpdatedAt = time.Now().UnixMilli()
-	if err := a.store.UpdateThread(*thread); err != nil {
-		t.Fatalf("setThreadProject persist %s: %v", thread.ID, err)
-	}
-}

@@ -191,8 +191,7 @@ describe('quota exceeded', () => {
     // eviction — not the pre-eviction serialization.
     const originalSetItem = localStorage.setItem.bind(localStorage);
     let threw = false;
-    const setItemSpy = vi
-      .spyOn(localStorage, 'setItem')
+    vi.spyOn(localStorage, 'setItem')
       .mockImplementation((key: string, value: string) => {
         if (key === `${V1_PREFIX}index` && !threw) {
           threw = true;
@@ -216,8 +215,7 @@ describe('quota exceeded', () => {
 
     const originalSetItem = localStorage.setItem.bind(localStorage);
     let threw = false;
-    const setItemSpy = vi
-      .spyOn(localStorage, 'setItem')
+    vi.spyOn(localStorage, 'setItem')
       .mockImplementation((key: string, value: string) => {
         if (key === `${V1_PREFIX}t1` && !threw) {
           threw = true;

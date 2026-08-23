@@ -140,7 +140,6 @@ func collectRecentContext(messages []Message, maxChars int) (string, bool, int) 
 				if text := stringsx.TailRunes(section[len(header):], room); text != "" {
 					tail := header + text
 					sections = append(sections, tail)
-					total += len(tail) + separator
 				}
 			}
 			truncated = true

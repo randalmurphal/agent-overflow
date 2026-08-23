@@ -349,7 +349,7 @@ harness: harness-build
 # e2e runs the Playwright harness suite (e2e/) against a fresh
 # harness-build. Chromium comes from `make install`'s playwright cache.
 e2e: harness-build
-	cd e2e && pnpm install
+	cd e2e && pnpm install --frozen-lockfile
 	cd e2e && pnpm test
 
 test:

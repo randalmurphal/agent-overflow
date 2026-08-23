@@ -113,11 +113,6 @@ func (a *App) loadThreadForFocus(threadID string) (store.Thread, error) {
 	return sanitized, nil
 }
 
-// resumeThreadAfterFocus is a no-op. Retained so test fixtures that
-// reference it still compile; the session spawn it used to perform now
-// happens lazily in sendToProvider.
-func (a *App) resumeThreadAfterFocus(_ store.Thread) {}
-
 // ReconnectSession tears down the current session and starts a fresh one using
 // the thread's stored resume cursor.
 //

@@ -29,8 +29,8 @@ func TestLoadOAuthBearerRejectsCredentialSymlink(t *testing.T) {
 	if err := os.Symlink(target, link); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := loadOAuthBearerFromPath(link); err == nil {
-		t.Fatal("loadOAuthBearerFromPath() accepted a credential symlink")
+	if _, err := readCredentialFile(link); err == nil {
+		t.Fatal("readCredentialFile() accepted a credential symlink")
 	}
 }
 

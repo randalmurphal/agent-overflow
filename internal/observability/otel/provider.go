@@ -201,13 +201,13 @@ func (p *Provider) buildMetrics() error {
 
 	var err error
 	p.metrics.TurnsStarted, err = p.meter.Int64Counter("turns.started",
-		metric.WithDescription("Turns that have started via SendMessage."))
+		metric.WithDescription("Live turn spans registered from provider turn starts."))
 	addErr(err)
 	p.metrics.TurnsCompleted, err = p.meter.Int64Counter("turns.completed",
-		metric.WithDescription("Turns that completed without error."))
+		metric.WithDescription("Terminal turn spans that completed without error or interruption."))
 	addErr(err)
 	p.metrics.TurnsErrored, err = p.meter.Int64Counter("turns.errored",
-		metric.WithDescription("Turns that ended with an error event."))
+		metric.WithDescription("Terminal turn spans that ended with a provider error, interruption, persistence failure, or cleanup."))
 	addErr(err)
 	p.metrics.ItemsPersisted, err = p.meter.Int64Counter("items.persisted",
 		metric.WithDescription("Items inserted by triage after a provider event."))
@@ -286,16 +286,6 @@ func (p *Provider) MeterProvider() metric.MeterProvider {
 		return metricnoop.NewMeterProvider()
 	}
 	return p.meterProvider
-}
-
-// -- test-only helpers --
-
-// replaceTracerProvider swaps the tracer provider at runtime. Used by unit
-// tests that want to inspect spans via sdktrace.NewTracerProvider with a
-// test exporter. Not meant for production callers.
-func (p *Provider) replaceTracerProvider(tp trace.TracerProvider) {
-	p.tracerProvider = tp
-	p.tracer = tp.Tracer(instrumentationName)
 }
 
 // newNoopMetrics builds a Metrics struct whose instruments are backed by the

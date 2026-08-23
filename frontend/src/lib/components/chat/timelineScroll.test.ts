@@ -1,19 +1,14 @@
 import { describe, expect, it, vi } from 'vitest';
 import { makeItem } from '../../../test/helpers/chat';
-import type { Item } from '../../types/models';
-import { groupConsecutiveReads } from '../../utils/readGrouping';
-import { groupItemsBySubagent, timelineNodeKey } from '../../utils/subagentGrouping';
+import { groupItemsBySubagent } from '../../utils/subagentGrouping';
 import {
   bottomEdgeGeometry,
   captureTimelineAnchor,
   captureTimelineTailAnchor,
-  centeredScrollTop,
   createAutoLoadGate,
-  isPureKeyedHeadDrop,
   isWithinBottomTriggerZone,
   isWithinTopTriggerZone,
   resolveVisibleTimelineNodeIndex,
-  timelineRowElementForIndex,
   type AutoLoadGateState,
   type TimelineGeometry,
   type TimelineTailGeometry,
@@ -49,11 +44,6 @@ function gateState(overrides: Partial<AutoLoadGateState> = {}): AutoLoadGateStat
   };
 }
 
-function timelineNodeKeysForItems(items: Item[]): string[] {
-  return groupConsecutiveReads(groupItemsBySubagent(items)).map((node) =>
-    timelineNodeKey(node));
-}
-
 describe('timelineScroll', () => {
   it('resolves hidden Codex child rows back to their visible timeline row', () => {
     const spawn = makeItem({
@@ -74,20 +64,6 @@ describe('timelineScroll', () => {
 
     expect(resolveVisibleTimelineNodeIndex(nodes, items, 'child-answer')).toBe(0);
     expect(resolveVisibleTimelineNodeIndex(nodes, items, 'missing')).toBe(-1);
-  });
-
-  it('finds timeline row elements by virtualizer row index', () => {
-    const root = document.createElement('div');
-    root.innerHTML = '<div data-row-index="3"></div>';
-
-    expect(timelineRowElementForIndex(root, 3)).toBe(root.firstElementChild);
-    expect(timelineRowElementForIndex(root, 4)).toBeNull();
-    expect(timelineRowElementForIndex(undefined, 3)).toBeNull();
-  });
-
-  it('computes centered scrollTop from row and viewport geometry', () => {
-    expect(centeredScrollTop(500, 100, 300)).toBe(400);
-    expect(centeredScrollTop(500, 400, 300)).toBe(500);
   });
 
   it('captures an anchor at the current scroll offset', () => {
@@ -173,51 +149,6 @@ describe('timelineScroll', () => {
     const nodes = groupItemsBySubagent([makeItem({ id: 'a', summary: 'first' })]);
 
     expect(captureTimelineAnchor(nodes, geometry(-1, 0), 200)).toBeNull();
-  });
-
-  it('detects a pure rendered head drop from virtualizer keys', () => {
-    const before = ['row:a', 'row:b', 'row:c'];
-    const after = ['row:b', 'row:c'];
-
-    expect(isPureKeyedHeadDrop(before, after)).toBe(true);
-    expect(isPureKeyedHeadDrop(before, ['row:a', 'row:b'])).toBe(false);
-    expect(isPureKeyedHeadDrop(before, before)).toBe(false);
-  });
-
-  it('does not treat a prune through a rendered Read group as a pure head drop', () => {
-    const readA = makeItem({
-      id: 'read-a',
-      threadId: 'thread-reads',
-      itemIndex: 0,
-      kind: 'tool_call',
-      toolName: 'Read',
-    });
-    const readB = makeItem({
-      id: 'read-b',
-      threadId: 'thread-reads',
-      itemIndex: 1,
-      kind: 'tool_call',
-      toolName: 'Read',
-    });
-    const tail = makeItem({
-      id: 'tail',
-      threadId: 'thread-reads',
-      itemIndex: 2,
-      kind: 'assistant_text',
-    });
-
-    const beforeKeys = timelineNodeKeysForItems([readA, readB, tail]);
-    const afterKeys = timelineNodeKeysForItems([readB, tail]);
-
-    expect(beforeKeys).toEqual([
-      'rg:thread-reads:reads:read-a',
-      'l:thread-reads:tail',
-    ]);
-    expect(afterKeys).toEqual([
-      'rg:thread-reads:reads:read-b',
-      'l:thread-reads:tail',
-    ]);
-    expect(isPureKeyedHeadDrop(beforeKeys, afterKeys)).toBe(false);
   });
 
   // ============================================================

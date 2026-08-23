@@ -10,11 +10,16 @@ import (
 	"testing"
 	"time"
 
+	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/testutil"
 	"agent-overflow/internal/workflow/engine"
 	"agent-overflow/internal/worktreesetup"
 )
+
+func workflowWorktreeBranch(prefix, workflowID, itemID string) string {
+	return gitops.BuildTemporaryWorktreeBranchNameWithPrefix(workflowWorktreeBranchPrefix(prefix, workflowID, itemID))
+}
 
 func TestWorkflowWritingItemProvisionsHooksAndCapturesArtifact(t *testing.T) {
 	app, _ := setupE2EApp(t)

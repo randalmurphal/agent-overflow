@@ -36,8 +36,9 @@ none fits.
   stamp and the `background_tasks_changed` forward. See "Live subagent
   progress" below.
 - `turn_lifecycle.go` — per-turn and per-thread correlation state
-  (open turns, interrupt queue, stopped-thread markers, turn span
-  bookkeeping, cleanup paths).
+  (open turns, interrupt queue, stopped-thread markers, cleanup paths).
+- `turn_telemetry.go` — live turn-span lifecycle plus the one outcome
+  classifier shared by span status and completed/error counters.
 - `live_state.go` — refresh/reconnect snapshot of backend-owned live
   session state (active wire round, queue, interactive prompts,
   effective fallback model)
@@ -651,7 +652,7 @@ The surface, and the rules that come with it:
   `StoredToolCallMeta`, `BuildToolCallSummary`,
   `BuildCompletionSummary`, `CompletionBaseSummary`,
   `CompletionSuffix`, `CompletionStatus`, `CompletionPayloadForTool`,
-  `CommandCompletionPayload`, and the row-id constructors `TextItemID`,
+  `CommandCompletionPayloadObject`, and the row-id constructors `TextItemID`,
   `ThinkingItemID`, `ErrorItemID`, `ToolCompletionID`,
   `AssistantTextPayloadID`, `ThinkingPayloadID`.
 - `tool_meta_rules.go` — `ShapeToolItemMeta(item, now)`, the pure core.

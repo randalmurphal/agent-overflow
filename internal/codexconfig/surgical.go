@@ -3,13 +3,12 @@ package codexconfig
 import (
 	"bytes"
 	"fmt"
-	"strings"
 )
 
 // findSectionByName locates the byte range of the [mcp_servers.<name>]
 // table inside data. The returned [start, end) range covers the
 // header line + every line that belongs to that section (up to but
-// not including the next table header, or EOF). Returns (-1, -1, nil)
+// not including the next table header, or EOF). Returns (-1, -1)
 // if not present. A best-effort tolerance for dotted subsections is
 // included: `[mcp_servers.<name>.<sub>]` headers nested under the
 // same name belong to the same logical section, so they're absorbed
@@ -20,7 +19,7 @@ import (
 // Comments preceding the header are NOT absorbed into the range —
 // they belong to whatever came before. AO removes only the section
 // proper.
-func findSectionByName(data []byte, name string) (int, int, error) {
+func findSectionByName(data []byte, name string) (int, int) {
 	// Header patterns we consider belonging to this server's section.
 	// Bare-key form only; users with quoted names go through a
 	// different code path that's currently rejected by validate.
@@ -50,7 +49,7 @@ func findSectionByName(data []byte, name string) (int, int, error) {
 			isOurExact := bytes.HasPrefix(trimmed, prefixExact)
 			isOurDotted := bytes.HasPrefix(trimmed, prefixDotted)
 			if inSection && !isOurExact && !isOurDotted {
-				return start, pos, nil
+				return start, pos
 			}
 			if !inSection && (isOurExact || isOurDotted) {
 				inSection = true
@@ -60,9 +59,9 @@ func findSectionByName(data []byte, name string) (int, int, error) {
 		pos += advance
 	}
 	if inSection {
-		return start, len(data), nil
+		return start, len(data)
 	}
-	return -1, -1, nil
+	return -1, -1
 }
 
 // spliceReplace returns data with the [start, end) byte range
@@ -98,28 +97,6 @@ func spliceReplace(data []byte, start, end int, replacement []byte) []byte {
 	}
 	out = append(out, data[end:]...)
 	return out
-}
-
-func endsWithBlankLine(b []byte) bool {
-	if len(b) == 0 {
-		return true
-	}
-	// A "blank line" at the tail is one of: ends with \n\n, or ends
-	// with a single \n while the preceding content was just whitespace.
-	if bytes.HasSuffix(b, []byte("\n\n")) {
-		return true
-	}
-	if b[len(b)-1] == '\n' && len(b) > 1 {
-		// Find the previous newline; the line between them must be
-		// entirely whitespace.
-		end := len(b) - 1
-		prev := bytes.LastIndexByte(b[:end], '\n')
-		segment := b[prev+1 : end]
-		if len(strings.TrimSpace(string(segment))) == 0 {
-			return true
-		}
-	}
-	return false
 }
 
 func startsWithBlankLine(b []byte) bool {

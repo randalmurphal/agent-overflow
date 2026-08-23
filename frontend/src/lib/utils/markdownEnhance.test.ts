@@ -8,16 +8,19 @@ import {
 } from './markdownEnhance';
 import { buildPathLinkHref } from './pathLinkExtension';
 import { setBindingMock, getBindingMock } from '../../test/mocks/bindings-app';
+import { setViewOnlySessionFromBootstrap } from '../transport/runMode';
 
 describe('ensurePathLinkClickDelegate', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     __resetPathLinkDelegateForTest();
+    setViewOnlySessionFromBootstrap(false);
   });
 
   afterEach(() => {
     document.body.innerHTML = '';
     __resetPathLinkDelegateForTest();
+    setViewOnlySessionFromBootstrap(false);
   });
 
   function mountAnchor(href: string): HTMLAnchorElement {
@@ -110,6 +113,17 @@ describe('ensurePathLinkClickDelegate', () => {
     link.click();
 
     await waitFor(() => expect(mock).toHaveBeenCalledTimes(1));
+  });
+
+  it('suppresses an already-rendered path link after the session becomes view-only', () => {
+    const mock = setBindingMock('OpenInEditor', vi.fn(async () => undefined));
+    ensurePathLinkClickDelegate();
+    const link = mountAnchor(buildPathLinkHref('src/foo.ts', undefined, undefined, '/repo'));
+    setViewOnlySessionFromBootstrap(true);
+
+    const event = new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 });
+    expect(link.dispatchEvent(event)).toBe(false);
+    expect(mock).not.toHaveBeenCalled();
   });
 });
 
@@ -251,6 +265,26 @@ describe('markdown-aware copy delegate', () => {
       expect(event.clipboardData?.getData('text/html')).toBe(
         '<table><thead><tr><th>A</th></tr></thead><tbody><tr><td>1</td></tr></tbody></table>',
       );
+    });
+
+    it('copies the source of a rendered Mermaid host in both clipboard flavors', () => {
+      const event = selectAndCopy(
+        '<p>before</p>'
+        + '<div class="mermaid streamdown-mermaid-host mermaid-rendered" '
+        + 'data-mermaid-source="graph TD&#10;A to B">'
+        + '<pre class="mermaid-source-fallback" aria-hidden="true">graph TD\nA to B</pre>'
+        + '<div data-streamdown-mermaid="diagram-1"><div>'
+        + '<svg data-mermaid-svg><svg><text>Rendered label</text></svg></svg>'
+        + '</div></div></div>'
+        + '<p>after</p>',
+      );
+
+      expect(event.clipboardData?.getData('text/plain')).toBe(
+        'before\n\n```mermaid\ngraph TD\nA to B\n```\n\nafter',
+      );
+      const html = event.clipboardData?.getData('text/html') ?? '';
+      expect(html).toContain('<code class="language-mermaid">graph TD\nA to B</code>');
+      expect(html).not.toContain('Rendered label');
     });
 
     it('leaves the html flavor unset when the selection has no renderable markdown', () => {

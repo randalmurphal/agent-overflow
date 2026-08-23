@@ -56,15 +56,6 @@ type proposedPlanCommentCounts struct {
 	Resolved int `json:"resolved"`
 }
 
-type proposedPlanItemMeta struct {
-	PlanVersion               int                       `json:"planVersion"`
-	PlanRevisionParentItemID  string                    `json:"planRevisionParentItemId,omitempty"`
-	PlanImplementedAt         int64                     `json:"planImplementedAt,omitempty"`
-	PlanImplementedByThreadID string                    `json:"planImplementedByThreadId,omitempty"`
-	PlanImplementedByItemID   string                    `json:"planImplementedByItemId,omitempty"`
-	PlanCommentCounts         proposedPlanCommentCounts `json:"planCommentCounts"`
-}
-
 // EnsureProposedPlanState creates a state row for a newly-persisted proposed
 // plan item. Existing rows are left untouched, making provider replay/upsert
 // idempotent.

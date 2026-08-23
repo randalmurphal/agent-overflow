@@ -252,24 +252,9 @@ type SourceIdentity struct {
 	HistoryMode string
 }
 
-// ReadSourceIdentity reads the head of a rollout and returns the fingerprint
-// a refresh compares. A file with no matching `session_meta` is not an error
-// here: the hash alone is still a usable identity, and refusing to refresh a
-// thread over a missing header would be a worse answer than the parse's own
-// codex-session-meta-missing warning.
-//
-// sessionID is the uuid from the file name, as for ReadSessionMeta.
-func ReadSourceIdentity(path, sessionID string) (SourceIdentity, error) {
-	file, err := os.Open(path)
-	if err != nil {
-		return SourceIdentity{}, fmt.Errorf("rollout: open %s: %w", path, err)
-	}
-	defer file.Close()
-	return ReadSourceIdentityAt(file, path, sessionID)
-}
-
-// ReadSourceIdentityAt is ReadSourceIdentity over a handle the caller already
-// holds.
+// ReadSourceIdentityAt reads the rollout fingerprint over a handle the caller
+// already holds. A file with no matching `session_meta` is not an error: the
+// hash alone remains usable, and the parse reports a missing header itself.
 //
 // It exists so a caller can prove the identity and read the tail from ONE open
 // file. Doing each through its own os.Open leaves a window in which Codex

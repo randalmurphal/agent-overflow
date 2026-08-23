@@ -34,7 +34,7 @@ const GENERATED_BINDINGS_DIR = resolve(SRC_ROOT, '..', 'bindings');
 //
 // This is deliberately NOT "components may not import stores/bindings". 87
 // non-test component files import bindings today and almost all of them are
-// imperative commands (OpenInEditor, GitCommit, WorkflowStartRun) — calls, not
+// imperative commands (GitCommit, WorkflowStartRun) — calls, not
 // state. A blanket rule would need an 87-entry allowlist that a new
 // `GetGitStatus` caller would simply be pre-approved by. Naming the RPCs an
 // entity store owns is the rule that actually catches the regression.
@@ -65,6 +65,7 @@ const MCP_SERVERS_STORE = 'lib/stores/mcpServers.svelte.ts';
 const CHAT_BAR_FAVORITES_STORE = 'lib/stores/chatBarFavorites.svelte.ts';
 const WORKFLOW_RUN_MAP_STORE = 'lib/stores/workflowRunMap.svelte.ts';
 const APPEARANCE_STORE = 'lib/stores/appearance.svelte.ts';
+const EDITORS_STORE = 'lib/stores/editors.svelte.ts';
 
 const ENTITY_OWNED_BINDINGS: Record<string, EntityOwnedBinding> = {
   GetGitStatus: owned(GIT_STATUS_STORE, 'refreshGitStatus()'),
@@ -100,12 +101,16 @@ const ENTITY_OWNED_BINDINGS: Record<string, EntityOwnedBinding> = {
   GetThemeFiles: owned(APPEARANCE_STORE, 'loadAppearance()'),
   SetAppearance: owned(APPEARANCE_STORE, 'setAppearance()'),
   SetWindowBackgroundColor: owned(APPEARANCE_STORE, 'syncWindowBackground()'),
+  ListAvailableEditors: owned(EDITORS_STORE, 'startLoad()'),
+  GetEditorSettings: owned(EDITORS_STORE, 'startLoad()'),
+  SetEditorSettings: owned(EDITORS_STORE, 'setEditorPreference()'),
 };
 
 // `stores/bindings.ts` is the typed wrapper the whole rule is phrased in terms
 // of: it imports every generated RPC by definition, so it cannot be an
 // offender without the rule contradicting itself.
 const BINDINGS_WRAPPER = 'lib/stores/bindings.ts';
+const OPEN_IN_EDITOR_OWNER = 'lib/stores/openInEditor.ts';
 
 // Files that still reach an entity-owned RPC they do not own.
 // Currently none — phases 1-3 moved every one of them behind a store, and the
@@ -263,6 +268,29 @@ describe('architecture', () => {
       ENTITY_BINDING_ALLOWLIST,
       'New violations.',
       'Read the entity through its store instead of re-fetching it; see frontend/CLAUDE.md → State Boundaries.',
+    );
+  });
+
+  it('keeps OpenInEditor behind its view-only gate', () => {
+    const offenders = new Map<string, string[]>();
+    for (const source of sources) {
+      if (source.path === BINDINGS_WRAPPER || source.path === OPEN_IN_EDITOR_OWNER) continue;
+      const reasons: string[] = [];
+      for (const parsed of source.imports) {
+        if (!isBindingsModule(source.file, parsed.specifier)) continue;
+        if (parsed.wholeModule || parsed.names.includes('OpenInEditor')) {
+          reasons.push(
+            `imports OpenInEditor from '${parsed.specifier}' instead of the view-only-gated owner`,
+          );
+        }
+      }
+      if (reasons.length > 0) offenders.set(source.path, reasons);
+    }
+    expectAllowlistExact(
+      offenders,
+      {},
+      'New violations.',
+      `Call openInEditor() from ${OPEN_IN_EDITOR_OWNER} so view-only sessions cannot reach the LocalOnly RPC.`,
     );
   });
 

@@ -1,9 +1,11 @@
 import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
 import { render, fireEvent, waitFor } from '@testing-library/svelte';
 import EditorSection from './EditorSection.svelte';
-import { setBindingMock, getBindingMock, resetBindingMocks } from '../../../test/mocks/bindings-app';
+import { setBindingMock, resetBindingMocks } from '../../../test/mocks/bindings-app';
 import { setRunMode, resetRunMode } from '../../../test/runMode';
 import { getToasts, removeToast } from '../../stores/toast.svelte';
+import { setViewOnlySessionFromBootstrap } from '../../transport/runMode';
+import { resetEditorsForTest } from '../../stores/editors.svelte';
 
 interface EditorRow {
   id: string;
@@ -23,6 +25,8 @@ describe('<EditorSection>', () => {
   beforeEach(() => {
     resetBindingMocks();
     resetRunMode();
+    setViewOnlySessionFromBootstrap(false);
+    resetEditorsForTest();
     // Drain the toast registry so a sibling case's error message can't
     // satisfy this case's "find this error" assertion.
     for (const toast of [...getToasts()]) removeToast(toast.id);
@@ -31,6 +35,8 @@ describe('<EditorSection>', () => {
   afterEach(() => {
     resetBindingMocks();
     resetRunMode();
+    setViewOnlySessionFromBootstrap(false);
+    resetEditorsForTest();
     for (const toast of [...getToasts()]) removeToast(toast.id);
   });
 
@@ -121,23 +127,36 @@ describe('<EditorSection>', () => {
     expect(getMock).not.toHaveBeenCalled();
   });
 
-  it('toasts a friendly error if the catalog fails to load', async () => {
-    setBindingMock('ListAvailableEditors', vi.fn(async () => {
-      throw new Error('catalog spawn failed');
-    }));
+  it('renders the same local-only placeholder in a view-only browser', async () => {
+    setViewOnlySessionFromBootstrap(true);
+    const listMock = setBindingMock('ListAvailableEditors', vi.fn(async () => FIXTURE_EDITORS));
+    const getMock = setBindingMock('GetEditorSettings', vi.fn(async () => ({ preference: '' })));
+
+    const { findByTestId, queryByTestId } = render(EditorSection);
+    await findByTestId('editor-section-clientmode');
+
+    expect(queryByTestId('editor-section-radiogroup')).toBeNull();
+    expect(listMock).not.toHaveBeenCalled();
+    expect(getMock).not.toHaveBeenCalled();
+  });
+
+  it('keeps a load failure inline and retries from the section', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const listMock = setBindingMock('ListAvailableEditors', vi.fn()
+      .mockRejectedValueOnce(new Error('catalog unavailable'))
+      .mockResolvedValueOnce(FIXTURE_EDITORS));
     setBindingMock('GetEditorSettings', vi.fn(async () => ({ preference: '' })));
 
-    render(EditorSection);
-    // The toast contains the user-facing message verbatim. The toast UI
-    // isn't rendered in this isolated test, so check the registry
-    // directly. Editor list stays empty when the catalog RPC rejects,
-    // but the Auto option still renders so the user can clear a stale
-    // preference even on a degraded catalog.
-    await waitFor(() => {
-      const toasts = getToasts();
-      const match = toasts.find((t) => t.message.includes('catalog spawn failed'));
-      expect(match?.type).toBe('error');
-    });
+    const { findByRole, findByTestId, queryByTestId } = render(EditorSection);
+    const alert = await findByRole('alert');
+    expect(alert.textContent).toContain('catalog unavailable');
+    expect(queryByTestId('editor-section-radiogroup')).toBeNull();
+
+    await fireEvent.click(await findByTestId('editor-section-retry'));
+    await findByTestId('editor-section-radiogroup');
+    expect(listMock).toHaveBeenCalledTimes(2);
+    expect(queryByTestId('editor-section-retry')).toBeNull();
+    consoleError.mockRestore();
   });
 
   it('does not call SetEditorSettings if the user re-selects the current value', async () => {
@@ -153,6 +172,5 @@ describe('<EditorSection>', () => {
     await fireEvent.change(cursorRadio);
 
     expect(setMock).not.toHaveBeenCalled();
-    void getBindingMock; // keep helper imported
   });
 });

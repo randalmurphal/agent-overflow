@@ -216,14 +216,6 @@ func readCredentialFile(path string) ([]byte, error) {
 	return data, nil
 }
 
-func loadOAuthBearerFromPath(path string) (string, error) {
-	data, err := readCredentialFile(path)
-	if err != nil {
-		return "", err
-	}
-	return loadOAuthBearer(data)
-}
-
 func loadOAuthBearer(data []byte) (string, error) {
 	var creds struct {
 		ClaudeAIOauth struct {

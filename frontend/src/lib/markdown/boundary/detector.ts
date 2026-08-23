@@ -14,8 +14,6 @@ const RE_FENCE_START = /^(\s*)((`{3,})|(~{3,}))/
 const RE_EMPTY_LINE = /^\s*$/
 const RE_HEADING = /^#{1,6}\s/
 const RE_THEMATIC_BREAK = /^(\*{3,}|-{3,}|_{3,})\s*$/
-const RE_UNORDERED_LIST = /^(\s*)([-*+])\s/
-const RE_ORDERED_LIST = /^(\s*)(\d{1,9})[.)]\s/
 const RE_BLOCKQUOTE = /^\s{0,3}>/
 const RE_HTML_BLOCK_1 = /^\s{0,3}<(script|pre|style|textarea|!--|!DOCTYPE|\?|!\[CDATA\[)/i
 const RE_HTML_BLOCK_2 = /^\s{0,3}<\/?[a-zA-Z][a-zA-Z0-9-]*(\s|>|$)/
@@ -664,4 +662,3 @@ export function updateContext(
 ): BlockContext {
   return contextManager.update(line, context, containerConfig)
 }
-

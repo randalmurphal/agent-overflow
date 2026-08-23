@@ -66,6 +66,10 @@ import {
   resetSettingsOverlayForTest,
 } from './settingsOverlay.svelte';
 import { openTerminalThread } from './threadCreation.svelte';
+import {
+  registerPaneTitleRename,
+  resetPaneTitleRenameForTest,
+} from './paneTitleRename';
 import type { Project, Thread } from '../types/models';
 import type { TerminalSessionSummary } from '../types/terminal';
 
@@ -510,7 +514,6 @@ function makeBuiltinHooks(overrides: Partial<BuiltinHooks> = {}): BuiltinHooks {
     openDesignThreadFormInNewPane: () => {},
     openThreadFromPR: () => {},
     openShipChanges: () => {},
-    requestRename: () => {},
     requestDiscussion: () => {},
     focusThreadSearch: () => {},
     requestThreadJump: () => {},
@@ -522,6 +525,59 @@ function registerFixtureCommands(pane: ReturnType<typeof createThreadPane>): voi
   void pane;
   registerBuiltinCommands(makeBuiltinHooks());
 }
+
+describe('thread rename command', () => {
+  beforeEach(() => {
+    clearCommandRegistry();
+    resetPaneTitleRenameForTest();
+  });
+
+  afterEach(() => {
+    resetPaneTitleRenameForTest();
+  });
+
+  it('opens the rename editor registered for the command target pane', () => {
+    const target = readyPane();
+    const targetStart = vi.fn();
+    const otherStart = vi.fn();
+    registerPaneTitleRename(target.paneId, { start: targetStart });
+    registerPaneTitleRename('other-pane', { start: otherStart });
+    registerFixtureCommands(target);
+
+    expect(runCommand('thread.rename', makeCommandContext(target, {}))).toBe(true);
+    expect(targetStart).toHaveBeenCalledOnce();
+    expect(otherStart).not.toHaveBeenCalled();
+  });
+
+  it('keeps a replacement handle registered when the older handle releases', () => {
+    const pane = readyPane();
+    const oldStart = vi.fn();
+    const currentStart = vi.fn();
+    const releaseOld = registerPaneTitleRename(pane.paneId, { start: oldStart });
+    registerPaneTitleRename(pane.paneId, { start: currentStart });
+    releaseOld();
+    registerFixtureCommands(pane);
+
+    expect(runCommand('thread.rename', makeCommandContext(pane, {}))).toBe(true);
+    expect(oldStart).not.toHaveBeenCalled();
+    expect(currentStart).toHaveBeenCalledOnce();
+  });
+
+  it('warns when the target pane has no mounted rename editor', () => {
+    const pane = readyPane();
+    registerFixtureCommands(pane);
+    const before = getToasts().length;
+
+    expect(runCommand('thread.rename', makeCommandContext(pane, {}))).toBe(true);
+
+    expect(getToasts().slice(before)).toEqual([
+      expect.objectContaining({
+        type: 'warning',
+        message: 'The thread title is not editable here.',
+      }),
+    ]);
+  });
+});
 
 describe('thread archive/delete command safety', () => {
   beforeEach(() => {

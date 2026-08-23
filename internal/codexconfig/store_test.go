@@ -21,15 +21,6 @@ func newStoreWithFile(t *testing.T, body string) *Store {
 	return New(path)
 }
 
-func readFile(t *testing.T, path string) string {
-	t.Helper()
-	b, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read: %v", err)
-	}
-	return string(b)
-}
-
 const userLikeConfig = `model = "gpt-5.5"
 model_reasoning_effort = "high"
 plan_mode_reasoning_effort = "xhigh"
@@ -224,7 +215,7 @@ X = "1"
 [mcp_servers.beta]
 command = "/bin/beta"
 `
-	start, end, _ := findSectionByName([]byte(body), "alpha")
+	start, end := findSectionByName([]byte(body), "alpha")
 	chunk := body[start:end]
 	if !strings.Contains(chunk, "[mcp_servers.alpha]") {
 		t.Errorf("missing alpha header in chunk:\n%s", chunk)
@@ -238,7 +229,7 @@ command = "/bin/beta"
 }
 
 func TestFindSectionByName_missing(t *testing.T) {
-	start, end, _ := findSectionByName([]byte(`[features]
+	start, end := findSectionByName([]byte(`[features]
 foo = true
 `), "alpha")
 	if start != -1 || end != -1 {

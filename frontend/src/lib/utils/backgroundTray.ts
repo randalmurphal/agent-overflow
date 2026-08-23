@@ -161,18 +161,6 @@ export function statusClass(status: TrayTask['status']): string {
 }
 
 /**
- * Count rows that still render as running tray work. This intentionally
- * counts the tray's visible logical tasks rather than only persisted
- * `isBackground` launches: Codex can show pending unifiedExec rows
- * before they are backgrounded, and reverting the provider session
- * would kill those too.
- */
-export function countRunningTrayTasks(items: readonly Item[]): number {
-  return deriveTrayTasks(items, Date.now(), Number.POSITIVE_INFINITY)
-    .filter((task) => task.status === 'running').length;
-}
-
-/**
  * Human-readable elapsed-time label — `12s` / `3m 7s` / `1h 12m 5s`.
  * Tray rows call this once per 1s tick against the task's live
  * elapsedMs; the formatting stays frontend-rendered because the Go

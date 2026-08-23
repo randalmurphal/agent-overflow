@@ -89,11 +89,6 @@ export function providerLabel(provider: ProviderID): string {
   return getProviderDefinition(provider).label;
 }
 
-/** Every saved account, all providers, in backend order. */
-export function getProviderAccounts(): ManagedProviderAccount[] {
-  return accounts;
-}
-
 /** One provider's saved accounts. */
 export function getProviderAccountsFor(provider: ProviderID): ManagedProviderAccount[] {
   return accounts.filter((account) => account.provider === provider);

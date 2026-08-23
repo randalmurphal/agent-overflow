@@ -38,13 +38,12 @@
     provider: ProviderID | null;
     threadId: string | null;
     runningCount: number;
-    anyRunning: boolean;
     /** Source pane, for the row click path (spec Q8): scroll the
      * timeline to the node and open the agent companion on launches. */
     pane?: ThreadPane;
   }
 
-  let { tasks, provider, threadId, runningCount, anyRunning, pane }: Props = $props();
+  let { tasks, provider, threadId, runningCount, pane }: Props = $props();
 
   function onOpenRow(task: TrayTask): void {
     if (!pane || !threadId) return;
@@ -141,7 +140,7 @@
 >
   <div class="mb-1.5 flex items-center gap-2 font-mono text-[0.65625rem] text-fg-hint/70">
     <span data-testid="activity-rail-background-running-label">
-      {anyRunning ? `${runningCount} running` : 'idle'}
+      {runningCount > 0 ? `${runningCount} running` : 'idle'}
     </span>
     {#if canStopAll}
       <button

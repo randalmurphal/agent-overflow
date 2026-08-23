@@ -448,26 +448,6 @@ func (r *Router) clearCodexTerminalWaitCarrierIfMatches(threadID, processID, ite
 	r.mu.Unlock()
 }
 
-func (r *Router) clearCodexPendingTerminalWait(threadID, processID string) error {
-	processID = strings.TrimSpace(processID)
-	if processID == "" {
-		return nil
-	}
-	var itemID string
-	r.mu.Lock()
-	state := r.codexBackground[threadID]
-	if state != nil {
-		wait := state.pendingWaitByProcess[processID]
-		itemID = wait.itemID
-	}
-	r.mu.Unlock()
-	if err := r.settleCodexTerminalWaitCarrier(threadID, itemID); err != nil {
-		return err
-	}
-	r.clearCodexPendingTerminalWaitState(threadID, processID, itemID)
-	return nil
-}
-
 func (r *Router) clearCodexPendingTerminalWaitState(threadID, processID, itemID string) {
 	processID = strings.TrimSpace(processID)
 	itemID = strings.TrimSpace(itemID)

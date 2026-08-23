@@ -149,16 +149,8 @@ func (a *App) reclaimWorkflowUsageAttention() []store.WorkflowProviderUsageAtten
 // source, which may have resolved while a suppressed sibling remains parked.
 func (a *App) surfaceReclaimedWorkflowUsageAttention(recoveries []store.WorkflowProviderUsageAttentionRecovery) {
 	for _, recovery := range recoveries {
-		recovery := recovery
 		a.workflowWake.Go(func() { a.recoverWorkflowUsageAttention(recovery) })
 	}
-}
-
-// sweepWorkflowUsageAttention is the test/manual form of the boot sequence.
-// Production separates reclaim from surface around Engine.Start so claims made
-// by the new process cannot be mistaken for leftovers from the old one.
-func (a *App) sweepWorkflowUsageAttention() {
-	a.surfaceReclaimedWorkflowUsageAttention(a.reclaimWorkflowUsageAttention())
 }
 
 func (a *App) recoverWorkflowUsageAttention(recovery store.WorkflowProviderUsageAttentionRecovery) {

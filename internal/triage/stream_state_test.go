@@ -165,7 +165,7 @@ func TestInterruptQueueDrainsInArrivalOrder(t *testing.T) {
 }
 
 // TestSettleNonStreamingRowStillDrainsQueue pins a subtle invariant in
-// settleStreamingText / settleStreamingThinking: once the streaming
+// text/thinking settle paths: once the streaming
 // counter has been decremented inside the lock, the interrupt-queue
 // drain MUST run even if the store lookup finds the row in a
 // non-streaming state. Without the drain-after-decrement path, a late
@@ -251,7 +251,7 @@ func TestSettleNonStreamingRowStillDrainsQueue(t *testing.T) {
 		t.Fatalf("flip row status out of streaming: %v", err)
 	}
 
-	// 4. Fire content block stop. settleStreamingText decrements the
+	// 4. Fire content block stop. Text settlement decrements the
 	//    counter to 0, sees the row is non-streaming, and MUST still
 	//    drain the queued background completion.
 	if err := router.Handle(provider.ProviderEvent{
@@ -365,7 +365,7 @@ func TestSettleStreamingThinkingNonStreamingRowStillDrainsQueue(t *testing.T) {
 //     this — a head-capped summary would show the BEGINNING of
 //     reasoning instead of the conclusion on cold reload.
 //  2. The tail is produced by the streaming-flush path
-//     (`AppendItemSummaryTail`), so `settleStreamingThinking` does
+//     (`AppendItemSummaryTail`), so thinking settlement does
 //     NOT re-read `payloads.data` on the hot event path. The prior
 //     settle-time payload read was perceptible as an
 //     end-of-thinking freeze that queued subsequent tool/text events

@@ -223,7 +223,7 @@ describe('above-viewport compensation outcomes (real MessageTimeline × real win
 
   it('escaped: an above-viewport row growing holds the reading anchor', async () => {
     const threadId = 'thread-comp-escaped';
-    const { pane, scrollEl, entry } = await mountTimeline(threadId, seedItems(threadId), QUIET_BOTTOM);
+    const { pane, scrollEl } = await mountTimeline(threadId, seedItems(threadId), QUIET_BOTTOM);
 
     // Read mid-thread: far enough from the bottom that a re-pin would be
     // unmistakable, far enough from the top that an above-viewport buffer

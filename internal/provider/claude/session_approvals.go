@@ -289,14 +289,6 @@ func (s *Session) clearPendingApprovals() {
 	}
 }
 
-func (s *Session) maybeHandleFullAccessToolRequest(line []byte) (bool, error) {
-	var raw controlRequestEnvelope
-	if err := json.Unmarshal(line, &raw); err != nil {
-		return false, err
-	}
-	return s.handleFullAccessToolRequest(raw)
-}
-
 func (s *Session) handleControlRequest(raw controlRequestEnvelope) (handled bool, fatalMessage string, err error) {
 	handled, err = s.handleExitPlanModeRequest(raw)
 	if err != nil || handled {
@@ -342,14 +334,6 @@ func (s *Session) handleFullAccessToolRequest(raw controlRequestEnvelope) (bool,
 		return true, fmt.Errorf("claude: send full-access approval response: %w", err)
 	}
 	return true, nil
-}
-
-func (s *Session) maybeHandleExitPlanModeRequest(line []byte) (bool, error) {
-	var raw controlRequestEnvelope
-	if err := json.Unmarshal(line, &raw); err != nil {
-		return false, err
-	}
-	return s.handleExitPlanModeRequest(raw)
 }
 
 func (s *Session) handleExitPlanModeRequest(raw controlRequestEnvelope) (bool, error) {

@@ -18,24 +18,24 @@ const maxReportedChildFindings = 3
 // here rather than silently ignored at run time.
 func validateCall(phase Phase, phaseElement string) []Finding {
 	var findings []Finding
-	add := func(code, message string) {
-		findings = append(findings, finding(code, phaseElement, message))
+	add := func(message string) {
+		findings = append(findings, finding("phase.call", phaseElement, message))
 	}
 	if !phase.IsCall() {
 		if phase.CallTarget() != "" || len(phase.Args) > 0 || phase.MaxDepth != 0 {
-			add("phase.call", "call, args, and max_depth require shape: call")
+			add("call, args, and max_depth require shape: call")
 		}
 		return findings
 	}
 	target := phase.CallTarget()
 	switch {
 	case target == "":
-		add("phase.call", "call shape requires call: the id of the workflow to invoke")
+		add("call shape requires call: the id of the workflow to invoke")
 	case !idPattern.MatchString(target):
-		add("phase.call", fmt.Sprintf("call target %q must match [a-z0-9-]+; a call names a static workflow id, never a variable", target))
+		add(fmt.Sprintf("call target %q must match [a-z0-9-]+; a call names a static workflow id, never a variable", target))
 	}
 	if phase.MaxDepth < 0 {
-		add("phase.call", "max_depth must be >= 1")
+		add("max_depth must be >= 1")
 	}
 	// One message per forbidden group, naming the fields the author actually
 	// wrote, so a miswired call phase reads as one problem instead of a wall.
@@ -68,7 +68,7 @@ func validateCall(phase Phase, phaseElement string) []Finding {
 	}
 	for _, group := range forbidden {
 		if group.present {
-			add("phase.call", fmt.Sprintf("%s is not valid on a call phase: %s", strings.Join(group.fields, "/"), group.message))
+			add(fmt.Sprintf("%s is not valid on a call phase: %s", strings.Join(group.fields, "/"), group.message))
 		}
 	}
 	return findings

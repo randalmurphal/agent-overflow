@@ -6,7 +6,6 @@ import { refreshThreads } from '../../stores/threads.svelte';
 import {
   projectTurnStarted,
   resetForTest as resetThreadStatuses,
-  setThreadStatus,
 } from '../../stores/threadStatuses.svelte';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { installAnimateShim } from '../../../test/integration/_helpers';

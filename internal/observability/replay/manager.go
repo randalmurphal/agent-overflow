@@ -416,14 +416,6 @@ func (m *Manager) evictIdle() {
 	}
 }
 
-// openCount reports how many writers the manager currently holds. Used by
-// tests.
-func (m *Manager) openCount() int {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return len(m.writers)
-}
-
 // RemoveThreadLog closes the writer for threadID (if any) and removes the
 // per-thread replay file plus any rotated backups (.1 / .2 / .3). Called by
 // deleteThreadTree so thread deletion does not leave orphan replay logs on

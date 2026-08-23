@@ -92,54 +92,52 @@ func NewWith(ttl time.Duration, list Lister, now func() time.Time) *Cache {
 // The returned slice is a defensive clone — callers may mutate it.
 func (c *Cache) Get(ctx context.Context, binary string) ([]provider.ModelInfo, error) {
 	binary = strings.TrimSpace(binary)
-	for {
-		c.mu.Lock()
-		if e, ok := c.entries[binary]; ok && c.now().Before(e.expiresAt) {
-			models := provider.CloneModels(e.models)
-			c.mu.Unlock()
-			return models, e.err
-		}
-		if existing, ok := c.inflight[binary]; ok {
-			done := existing.done
-			c.mu.Unlock()
-			select {
-			case <-ctx.Done():
-				return nil, ctx.Err()
-			case <-done:
-				return provider.CloneModels(existing.models), existing.err
-			}
-		}
-
-		l := &load{done: make(chan struct{})}
-		c.inflight[binary] = l
+	c.mu.Lock()
+	if e, ok := c.entries[binary]; ok && c.now().Before(e.expiresAt) {
+		models := provider.CloneModels(e.models)
 		c.mu.Unlock()
-
-		models, err := c.list(ctx, binary)
-		cloned := provider.CloneModels(models)
-
-		c.mu.Lock()
-		l.models = cloned
-		l.err = err
-		// Reset detaches in-flight loads. A detached load still completes for
-		// the callers already waiting on it, but it must not overwrite a newer
-		// lookup that started after the reset.
-		if c.inflight[binary] == l {
-			delete(c.inflight, binary)
-			entryTTL := c.ttl
-			if err != nil {
-				entryTTL = DefaultErrorTTL
-			}
-			c.entries[binary] = entry{
-				models:    provider.CloneModels(models),
-				err:       err,
-				expiresAt: c.now().Add(entryTTL),
-			}
-		}
-		close(l.done)
-		c.mu.Unlock()
-
-		return provider.CloneModels(models), err
+		return models, e.err
 	}
+	if existing, ok := c.inflight[binary]; ok {
+		done := existing.done
+		c.mu.Unlock()
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-done:
+			return provider.CloneModels(existing.models), existing.err
+		}
+	}
+
+	l := &load{done: make(chan struct{})}
+	c.inflight[binary] = l
+	c.mu.Unlock()
+
+	models, err := c.list(ctx, binary)
+	cloned := provider.CloneModels(models)
+
+	c.mu.Lock()
+	l.models = cloned
+	l.err = err
+	// Reset detaches in-flight loads. A detached load still completes for
+	// the callers already waiting on it, but it must not overwrite a newer
+	// lookup that started after the reset.
+	if c.inflight[binary] == l {
+		delete(c.inflight, binary)
+		entryTTL := c.ttl
+		if err != nil {
+			entryTTL = DefaultErrorTTL
+		}
+		c.entries[binary] = entry{
+			models:    provider.CloneModels(models),
+			err:       err,
+			expiresAt: c.now().Add(entryTTL),
+		}
+	}
+	close(l.done)
+	c.mu.Unlock()
+
+	return provider.CloneModels(models), err
 }
 
 // Peek returns a fresh cached result without starting or waiting for a model

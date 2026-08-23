@@ -8,7 +8,7 @@ import {
 // happy-dom reports zero geometry, so every rect in this suite is stubbed.
 // Rects are the ONLY input the module reads besides the hit test, which
 // makes stubbing them a faithful model rather than a shortcut.
-function stubRect(el: Element, top: number, extra: Partial<DOMRect> = {}): void {
+function stubRect(el: Element, top: number): void {
   vi.spyOn(el, 'getBoundingClientRect').mockImplementation(
     () => ({ top, left: 0, width: 800, height: 100, bottom: top + 100, right: 800, x: 0, y: top, toJSON: () => ({}) }) as DOMRect,
   );

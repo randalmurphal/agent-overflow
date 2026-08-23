@@ -207,7 +207,7 @@ func entryLine(note Note) string {
 			line.WriteString(untrustedtext.Field(path))
 		}
 		if len(note.Files) > len(shown) {
-			line.WriteString(fmt.Sprintf(" (+%d more)", len(note.Files)-len(shown)))
+			fmt.Fprintf(&line, " (+%d more)", len(note.Files)-len(shown))
 		}
 	}
 	line.WriteString("\n")

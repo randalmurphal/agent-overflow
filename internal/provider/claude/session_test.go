@@ -1789,6 +1789,14 @@ done
 	}
 }
 
+func (s *Session) maybeHandleFullAccessToolRequest(line []byte) (bool, error) {
+	var raw controlRequestEnvelope
+	if err := json.Unmarshal(line, &raw); err != nil {
+		return false, err
+	}
+	return s.handleFullAccessToolRequest(raw)
+}
+
 func TestFullAccessToolRequestDoesNotAutoApproveInPlanMode(t *testing.T) {
 	s := &Session{
 		basePermissionMode:    "bypassPermissions",

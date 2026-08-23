@@ -784,7 +784,6 @@ func (a *App) dispatchFlushToProvider(
 				if !codex.IsAmbiguousQueueAddTimeout(err) {
 					return codexQueueHandoffNone, err
 				}
-				handoff = codexQueueHandoffUnconfirmed
 				// The add was written but never acked. `thread/queue/add` has
 				// no idempotency key upstream — a retry is a second row and a
 				// second turn — so the queue is ASKED instead of guessed at.

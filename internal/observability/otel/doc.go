@@ -3,8 +3,8 @@
 // The package exposes a single entry point, Provider, that owns tracer and
 // meter providers configured from user settings. The provider is created at
 // ServiceStartup and shut down at ServiceShutdown. It never uses otel's
-// package-global tracer/meter — callers receive the Provider and pass spans
-// explicitly via StartSpan.
+// package-global tracer/meter. Callers receive the Provider and inject its
+// Tracer and Metrics into the subsystem that owns each telemetry decision.
 //
 // Telemetry is opt-in. When the user has not enabled tracing, the provider
 // returns no-op tracer/meter implementations; instrumented call sites pay

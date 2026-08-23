@@ -11,7 +11,7 @@
   import { fuzzyFilter } from '../../utils/fuzzy';
   import { isImeComposingEvent } from '../../utils/imeComposition';
   import { chordHintForCommand } from '../../stores/keybindings.svelte';
-  import { PICKER_TOGGLE_INPUT_EVENT } from '../../stores/events';
+  import { PICKER_TOGGLE_INPUT_EVENT } from '../../stores/eventNames';
   import Modal from '../primitives/Modal.svelte';
   import PaletteResultRow from './PaletteResultRow.svelte';
 

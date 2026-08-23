@@ -9,7 +9,7 @@
 //   - Stage 1 redesign: container uses rounded-[var(--radius-control)] + shadow-menu + border-border-subtle.
 
 import { describe, expect, it, vi } from 'vitest';
-import { render, fireEvent } from '@testing-library/svelte';
+import { render } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import Harness from './MenuHarness.svelte';
 import AsyncHarness from './MenuAsyncHarness.svelte';

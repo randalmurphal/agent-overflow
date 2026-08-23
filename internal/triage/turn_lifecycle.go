@@ -3,6 +3,7 @@ package triage
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -138,48 +139,6 @@ func (r *Router) upsertTurnRow(turn store.Turn) {
 	if err := r.store.InsertTurn(turn); err != nil {
 		log.Printf("triage: turn start insert %s: %v", turn.TurnID, err)
 	}
-}
-
-// openTurnSpan begins a turn.lifecycle span for the incoming turn. Any
-// existing span for the thread is closed first — the provider sometimes
-// re-sends EventTurnStart (e.g. after a Claude interrupt/re-init) and we
-// don't want to leak orphan spans. turnIndex is the value the caller has
-// already resolved via resolveTurnIndexOnStart so the span's `turn.index`
-// attribute matches what setOpenTurn / upsertTurnRow wrote; querying
-// LastTurnIndex here would diverge for queue-dispatched turns where the
-// deferred user_text hasn't been persisted yet.
-func (r *Router) openTurnSpan(evt provider.ProviderEvent, turnIndex int) {
-	r.mu.Lock()
-	tracer := r.tracer
-	if existing, ok := r.turnSpans[evt.ThreadID]; ok {
-		delete(r.turnSpans, evt.ThreadID)
-		r.mu.Unlock()
-		existing.End()
-		r.mu.Lock()
-	}
-	thread, err := r.store.GetThread(evt.ThreadID)
-	r.mu.Unlock()
-	if err != nil {
-		// We don't know the provider/model without the thread; drop the
-		// span rather than record misleading attributes.
-		return
-	}
-	_, span := tracer.Start(context.Background(), "turn.lifecycle",
-		trace.WithAttributes(
-			attribute.String("thread.id", evt.ThreadID),
-			attribute.String("provider", thread.Provider),
-			attribute.String("model", thread.Model),
-			attribute.Int("turn.index", turnIndex),
-		),
-	)
-	r.mu.Lock()
-	r.turnSpans[evt.ThreadID] = span
-	r.mu.Unlock()
-	r.metrics.TurnsStarted.Add(context.Background(), 1,
-		metric.WithAttributes(
-			attribute.String("provider", thread.Provider),
-		),
-	)
 }
 
 func (r *Router) handleTurnComplete(evt provider.ProviderEvent) error {
@@ -418,7 +377,7 @@ func (r *Router) handleTurnComplete(evt provider.ProviderEvent) error {
 	r.settleTurnRow(evt, turnIndex, now, meta, persistErr)
 
 	r.clearOpenTurn(evt.ThreadID)
-	r.closeTurnSpan(evt.ThreadID, persistErr)
+	r.finishTurnSpan(evt.ThreadID, completedTurnOutcome(meta, persistErr))
 	r.FlushUsageEmitThrottle(evt.ThreadID)
 
 	// Opportunistic WAL passive checkpoint at the idle boundary. PASSIVE
@@ -709,27 +668,6 @@ func lateErrorTurnPayload(meta turnCompleteMeta) (string, string) {
 	return "error", meta.Error
 }
 
-// closeTurnSpan ends the live turn span for the thread, flagging it as
-// errored when persistErr is non-nil. Safe to call with no active span.
-func (r *Router) closeTurnSpan(threadID string, persistErr error) {
-	r.mu.Lock()
-	span, ok := r.turnSpans[threadID]
-	if ok {
-		delete(r.turnSpans, threadID)
-	}
-	r.mu.Unlock()
-	if !ok {
-		return
-	}
-	if persistErr != nil {
-		span.RecordError(persistErr)
-		r.metrics.TurnsErrored.Add(context.Background(), 1)
-	} else {
-		r.metrics.TurnsCompleted.Add(context.Background(), 1)
-	}
-	span.End()
-}
-
 func (r *Router) currentTurnIndex(threadID string) (int, error) {
 	r.mu.Lock()
 	if turnIndex, ok := r.openTurns[threadID]; ok {
@@ -959,6 +897,7 @@ func (r *Router) settleQueuedEchoPredecessor(threadID string, turnIndex int, com
 	if !r.claimTurnSettlement(threadID, turnIndex) {
 		return
 	}
+	var persistErr error
 	if stopReason == "interrupted" {
 		// A user interrupt provably cut this turn: its in-flight rows are
 		// partial output and must carry the errored + " — stopped" state
@@ -971,16 +910,21 @@ func (r *Router) settleQueuedEchoPredecessor(threadID string, turnIndex int, com
 		// rows the flip already moved out of streaming status.
 		if err := r.flipTurnItemsErrored(threadID, turnIndex, completedAt, stoppedSummary); err != nil {
 			log.Printf("triage: flip interrupted queued-echo predecessor rows %s/%d: %v", threadID, turnIndex, err)
+			persistErr = errors.Join(persistErr, err)
 		}
 	}
 	if err := r.settleTurnStreaming(threadID, turnIndex, statusCompleted); err != nil {
 		log.Printf("triage: settle queued-echo predecessor streaming %s/%d: %v", threadID, turnIndex, err)
+		persistErr = errors.Join(persistErr, err)
 	}
 	turnID := r.persistedTurnID(provider.ProviderEvent{ThreadID: threadID}, turnIndex)
 	if err := r.store.UpdateTurnCompleted(turnID, completedAt, stopReason, "", "", ""); err != nil {
 		log.Printf("triage: settle queued-echo predecessor turn %s: %v", turnID, err)
+		persistErr = errors.Join(persistErr, err)
 	}
-	r.closeTurnSpan(threadID, nil)
+	r.finishTurnSpan(threadID, completedTurnOutcome(turnCompleteMeta{
+		StopReason: stopReason,
+	}, persistErr))
 }
 
 func (r *Router) clearActiveStreamBlocksForTurnLocked(threadID string, turnIndex int) {
@@ -1490,6 +1434,10 @@ func (r *Router) cleanupThread(threadID string, requireEpoch *uint64) bool {
 	// thread with full state, or a stopped thread with no state.
 	r.stoppedThreads[threadID] = struct{}{}
 	var orphanSpan trace.Span
+	// Invalidate a span start that is still outside the lock doing thread
+	// lookup or invoking the tracer. The generation remains monotonic across
+	// session reuse so that stale start can never match a later session.
+	r.turnSpanGenerations[threadID]++
 	if span, ok := r.turnSpans[threadID]; ok {
 		orphanSpan = span
 		delete(r.turnSpans, threadID)
@@ -1599,9 +1547,7 @@ func (r *Router) cleanupThread(threadID string, requireEpoch *uint64) bool {
 	}
 
 	if orphanSpan != nil {
-		// Closing outside the lock avoids self-deadlock when the tracer's
-		// OnEnd hook reaches for any shared resource.
-		orphanSpan.End()
+		r.recordTurnSpanOutcome(orphanSpan, cleanupTurnOutcome())
 	}
 	if r.store != nil {
 		count, err := r.store.MarkLiveCodexSubagentLaunchesInactive(threadID, cleanupAt)

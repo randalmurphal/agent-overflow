@@ -889,7 +889,7 @@ describe('<ActivityRun>', () => {
         ...LONG_RUN,
         makeItem({ id: 'p0', itemIndex: 40, kind: 'assistant_text', summary: 'done' }),
       ]);
-      const { container, getByTestId, queryByTestId } = render(MessageTimeline, {
+      const { container, getByTestId } = render(MessageTimeline, {
         props: { pane },
       });
       pane.requestScrollToItem('t20');

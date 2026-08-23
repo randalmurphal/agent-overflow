@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { activityRunHasFailure, activityRunSummary } from './activityRunSummary';
+import { activityRunSummary } from './activityRunSummary';
 import type { Item } from '../../types/models';
 import { makeItem } from '../../../test/helpers/chat';
 
@@ -324,40 +324,5 @@ describe('attention state', () => {
       hasFailure: false,
       runningLabel: null,
     });
-  });
-});
-
-describe('activityRunHasFailure', () => {
-  function lookup(...members: Item[]): (id: string) => Item | undefined {
-    const byId = new Map(members.map((item) => [item.id, item]));
-    return (id) => byId.get(id);
-  }
-
-  it('reports an errored or killed member', () => {
-    expect(
-      activityRunHasFailure(['a'], lookup(tool('a', 'Bash', { status: 'errored' }))),
-    ).toBe(true);
-    expect(
-      activityRunHasFailure(['a'], lookup(tool('a', 'Bash', { status: 'killed' }))),
-    ).toBe(true);
-  });
-
-  it('finds the one failure among healthy members', () => {
-    const get = lookup(
-      tool('a', 'Bash'),
-      tool('b', 'Read', { status: 'errored' }),
-      tool('c', 'Edit'),
-    );
-    expect(activityRunHasFailure(['a', 'b', 'c'], get)).toBe(true);
-  });
-
-  it('does not count declined — a user decision, not a failure', () => {
-    expect(
-      activityRunHasFailure(['a'], lookup(tool('a', 'Bash', { status: 'declined' }))),
-    ).toBe(false);
-  });
-
-  it('cannot be failed by an item that has left the window', () => {
-    expect(activityRunHasFailure(['a', 'gone'], lookup(tool('a', 'Bash')))).toBe(false);
   });
 });

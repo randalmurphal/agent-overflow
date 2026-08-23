@@ -207,46 +207,6 @@ func importTurnCompletionsTx(tx *sql.Tx, threadID string, completions []TurnComp
 
 const importRowsPerInsert = 256
 
-type importPayloadRow struct {
-	itemID  string
-	payload Payload
-}
-
-// importRowsTx writes all payloads before their referencing items, in bounded
-// multi-row INSERTs. The dependency order satisfies the immediate FKs, while
-// reducing a million-row import from millions of database/driver round trips
-// to a few thousand. The surrounding transaction retains the exact same
-// all-or-nothing contract.
-func importRowsTx(tx *sql.Tx, threadID string, rows []ImportRow) error {
-	if len(rows) == 0 {
-		return nil
-	}
-
-	payloads := make([]importPayloadRow, 0, len(rows))
-	for _, row := range rows {
-		for _, payload := range []*Payload{row.InputPayload, row.Payload} {
-			if payload == nil {
-				continue
-			}
-			payloads = append(payloads, importPayloadRow{itemID: row.Item.ID, payload: *payload})
-		}
-	}
-	if err := execImportInsertChunks(
-		tx, payloadInsertPrefix, payloadInsertValues, payloads,
-		func(row importPayloadRow) []any { return payloadInsertArgs(threadID, row.payload) },
-		func(row importPayloadRow) string { return row.itemID },
-		"payload",
-	); err != nil {
-		return err
-	}
-	return execImportInsertChunks(
-		tx, itemInsertPrefix, itemInsertValues, rows,
-		func(row ImportRow) []any { return itemInsertArgs(row.Item) },
-		func(row ImportRow) string { return row.Item.ID },
-		"item",
-	)
-}
-
 func execImportInsertChunks[T any](
 	tx *sql.Tx,
 	prefix string,

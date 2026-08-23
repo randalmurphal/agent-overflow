@@ -2,11 +2,8 @@
   import { onMount, onDestroy } from 'svelte';
   import { documentHidden } from './lib/utils/pageVisibility';
   import { ensureMainPane, getFocusedPaneOrNull, getPane, iterPanes, openThreadFromNavigation, resetPaneRegistry } from './lib/stores/panes.svelte';
-  import {
-    OPEN_SHIP_CHANGES_EVENT,
-    RENAME_THREAD_EVENT,
-    setupEventListeners,
-  } from './lib/stores/events';
+  import { setupEventListeners } from './lib/stores/events';
+  import { OPEN_SHIP_CHANGES_EVENT } from './lib/stores/eventNames';
   import { getThreads, loadThreads } from './lib/stores/threads.svelte';
   import { markNotificationHydrated } from './lib/stores/eventsNotification';
   import {
@@ -227,13 +224,6 @@
     redirectTypingToFocusedComposer(ev, ctx.flags);
   }
 
-  function requestRenameForThread(thread: Thread): void {
-    // Sidebar currently owns inline rename via ThreadRow. We surface the
-    // rename request as a CustomEvent so the (future) rename modal or the
-    // sidebar row can pick it up; until then the event is documentation.
-    window.dispatchEvent(new CustomEvent(RENAME_THREAD_EVENT, { detail: thread }));
-  }
-
   function requestThreadJump(index: number): void {
     const ids = getVisibleSidebarThreadIds();
     const targetId = ids[index - 1];
@@ -446,7 +436,6 @@
           detail: { paneId },
         }));
       },
-      requestRename: requestRenameForThread,
       requestDiscussion: handleStartDiscussion,
       focusThreadSearch: () => searchFocuser?.(),
       requestThreadJump,

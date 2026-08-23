@@ -227,9 +227,6 @@ type waiter struct {
 	vars map[string]any
 }
 
-// itemID identifies the run a held start belongs to, whichever kind it is.
-func (w waiter) itemID() string { return w.item.item.ID }
-
 type waitKey struct {
 	itemID string
 	unitID string

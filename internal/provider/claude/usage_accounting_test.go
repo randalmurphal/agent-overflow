@@ -174,7 +174,7 @@ func TestParseResult_DuplicateModelUsageDoesNotFallThroughToFlat(t *testing.T) {
 	if err != nil {
 		t.Fatalf("turn 1: %v", err)
 	}
-	usage, perModel := requireUsage(t, events)
+	usage, _ := requireUsage(t, events)
 	if usage == nil || usage.InputTokens != 10 || usage.OutputTokens != 42 {
 		t.Fatalf("turn 1 usage: %+v", usage)
 	}
@@ -190,7 +190,7 @@ func TestParseResult_DuplicateModelUsageDoesNotFallThroughToFlat(t *testing.T) {
 	if err != nil {
 		t.Fatalf("duplicate: %v", err)
 	}
-	usage, perModel = requireUsage(t, events)
+	usage, perModel := requireUsage(t, events)
 	if usage != nil || perModel != nil {
 		t.Fatalf("duplicate result must yield nil usage/ModelUsage, got %v %v", usage, perModel)
 	}

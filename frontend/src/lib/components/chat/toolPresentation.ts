@@ -130,7 +130,6 @@ export function resolveToolPresentation(input: ToolPresentationInput): ToolPrese
 function resolveTimelineToolPresentation(input: ToolPresentationInput): ToolPresentation {
   const item = input.item;
   const payloadId = item.payloadId;
-  const payloadKind = item.payloadKind;
 
   if (isUserInputTool(item)) {
     return { kind: 'user-input', item };

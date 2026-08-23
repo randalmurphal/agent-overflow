@@ -21,7 +21,6 @@ import { addToast } from './toast.svelte';
 import { getActiveTurn, isSendInFlight } from './threadStatuses.svelte';
 import {
   focusAdjacentPane,
-  focusPane,
   getFocusedThreadPaneId,
   getPane,
   moveFocusedPane,
@@ -83,7 +82,8 @@ import {
   type ComposerPickerId,
 } from './composerPickerRegistry.svelte';
 import { reportNonBenignInterruptError } from './interruptErrors';
-import { PICKER_TOGGLE_INPUT_EVENT } from './events';
+import { PICKER_TOGGLE_INPUT_EVENT } from './eventNames';
+import { startPaneTitleRename } from './paneTitleRename';
 import { registerWorkflowCommands } from './workflowCommands.svelte';
 import {
   getWorkflowsOverlayTop,
@@ -106,7 +106,6 @@ export interface BuiltinCommandHooks {
   openDesignThreadFormInNewPane?: () => void;
   openThreadFromPR: () => void;
   openShipChanges: (paneId: string) => void;
-  requestRename: (thread: Thread) => void;
   requestDiscussion: (thread: Thread) => void;
   focusThreadSearch: () => void;
   requestThreadJump: (index: number) => void;
@@ -208,7 +207,6 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     openDesignThreadFormInNewPane,
     openThreadFromPR,
     openShipChanges,
-    requestRename,
     requestDiscussion,
     focusThreadSearch,
     requestThreadJump,
@@ -389,12 +387,14 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     icon: 'A',
     when: 'hasActiveThread',
     run: (ctx) =>
-      withActiveThread(ctx, (t, pane) => {
+      withActiveThread(ctx, (_thread, pane) => {
         if (!pane.threadId) {
           addToast('warning', 'Start the thread before renaming it.');
           return;
         }
-        requestRename(t);
+        if (!startPaneTitleRename(pane.paneId)) {
+          addToast('warning', 'The thread title is not editable here.');
+        }
       }),
   });
 

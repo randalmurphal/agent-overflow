@@ -6,8 +6,7 @@
 // The walker depends only on rendered DOM tags, so it is decoupled
 // from the markdown library, the path-link enrichment, the Shiki
 // rewrite of code blocks, and the KaTeX/Mermaid replacements. Math
-// and Mermaid stash their original source on data attributes
-// (set in markdownEnhance.ts before the renderer destroys the source);
+// and Mermaid hosts stash their original source on data attributes;
 // the walker reads those instead of the rendered output.
 //
 // Output is normalized: `*foo*` always emits as `*foo*` (never
@@ -47,10 +46,13 @@ function isBlockNode(node: Node): boolean {
   if (!(node instanceof Element)) return false;
   const tag = node.tagName.toLowerCase();
   if (BLOCK_TAGS.has(tag)) return true;
-  // Display math wraps in <div class="math-display">. Treat as block
-  // even though <div> isn't in the tag set above.
-  if (tag === 'div' && (node as HTMLElement).classList.contains('math-display')) {
-    return true;
+  if (tag === 'div') {
+    const el = node as HTMLElement;
+    // Display math and Mermaid both use block-level host divs. Treat them as
+    // blocks even though generic divs stay transparent to the serializer.
+    if (el.classList.contains('math-display') || el.dataset.mermaidSource !== undefined) {
+      return true;
+    }
   }
   return false;
 }
@@ -76,11 +78,18 @@ function serializeNode(node: Node, ctx: SerializeContext): string {
   if (!(node instanceof Element)) return '';
   const el = node as HTMLElement;
 
-  // UI chrome injected by markdownEnhance — the per-pre CopyButton
-  // mount and the Mermaid-pending placeholder shouldn't appear in
-  // copy output.
+  // UI chrome injected by the legacy renderer's per-pre CopyButton mount
+  // should not appear in copy output.
   if (el.dataset.codeCopyMount === 'true') return '';
-  if (el.classList.contains('mermaid-placeholder')) return '';
+
+  // The current Mermaid host keeps a hidden source fallback beside the
+  // rendered SVG. Serializing its children would copy that fallback as an
+  // unlabelled fence, then append the SVG's visible labels. Recover the
+  // canonical source from the host instead. The panzoom SVG exists while
+  // Mermaid is still loading, so require the nested rendered SVG before
+  // trusting the data attribute.
+  const mermaidSource = renderedMermaidSource(el);
+  if (mermaidSource !== null) return fencedBlock('mermaid', mermaidSource);
 
   // Math nodes — KaTeX rewrites the inner DOM, so the LaTeX source
   // has to be stashed on a data attribute beforehand. The data
@@ -262,6 +271,12 @@ function mathSourceFor(el: HTMLElement): string {
   return el.textContent ?? '';
 }
 
+function renderedMermaidSource(el: HTMLElement): string | null {
+  const source = el.dataset.mermaidSource;
+  if (source === undefined) return null;
+  return el.querySelector('[data-mermaid-svg] > svg') ? source : null;
+}
+
 function serializeBlockquote(el: HTMLElement, ctx: SerializeContext): string {
   const inner = serializeChildren(el, ctx).replace(/\n+$/, '');
   const quoted = inner
@@ -341,16 +356,6 @@ function serializeListItem(el: HTMLElement, ctx: SerializeContext): string {
 }
 
 function serializePre(el: HTMLElement): string {
-  // Mermaid: enhanceMarkdown rewrites <pre> into an SVG host and
-  // stashes the original diagram source on data-mermaid-source so the
-  // walker (which sees the rendered SVG, not the source) can recover
-  // it. Gate on actual SVG evidence — without it, an attacker who
-  // injected raw HTML could pin an arbitrary `data-mermaid-source`
-  // to mislead the clipboard result.
-  const mermaidSource = el.dataset.mermaidSource;
-  if (mermaidSource !== undefined && el.querySelector(':scope > svg')) {
-    return fencedBlock('mermaid', mermaidSource);
-  }
   // Code block (Shiki-highlighted or plain). The <code> textContent
   // is the raw program source either way; Shiki wraps in token spans
   // but textContent walks through them.

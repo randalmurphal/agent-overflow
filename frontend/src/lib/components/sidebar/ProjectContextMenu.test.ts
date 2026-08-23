@@ -2,7 +2,7 @@
 // deletion involves before it offers anything, and the three answers — nothing
 // to say, something to say, or "I could not tell" — each get their own path.
 
-import { describe, expect, it, beforeEach, vi } from 'vitest';
+import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
 import { render, fireEvent, waitFor } from '@testing-library/svelte';
 import ProjectContextMenu from './ProjectContextMenu.svelte';
 import {
@@ -13,6 +13,7 @@ import {
 import { getToasts, removeToast } from '../../stores/toast.svelte';
 import type { ProjectWithCounts } from '../../types/models';
 import type { ProjectDeletionPreview, ProjectDeletionResult } from '../../types/workflow';
+import { setViewOnlySessionFromBootstrap } from '../../transport/runMode';
 
 function makeProject(): ProjectWithCounts {
   return {
@@ -98,8 +99,22 @@ function toastMessages(): string[] {
 describe('<ProjectContextMenu> delete flow', () => {
   beforeEach(() => {
     resetBindingMocks();
+    setViewOnlySessionFromBootstrap(false);
     for (const toast of [...getToasts()]) removeToast(toast.id);
     setBindingMock('DeleteProject', async () => emptyResult());
+  });
+
+  afterEach(() => {
+    setViewOnlySessionFromBootstrap(false);
+  });
+
+  it('omits Open in Editor in a view-only session', () => {
+    setViewOnlySessionFromBootstrap(true);
+    const open = setBindingMock('OpenInEditor', vi.fn(async () => undefined));
+    const { baseElement } = renderMenu();
+
+    expect(baseElement.textContent).not.toContain('Open in Editor');
+    expect(open).not.toHaveBeenCalled();
   });
 
   it('takes the plain confirm when the project owns no workflow work', async () => {

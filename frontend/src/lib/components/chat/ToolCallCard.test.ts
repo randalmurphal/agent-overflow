@@ -1170,7 +1170,7 @@ describe("<ToolCallCard> header dispatcher", () => {
       }),
     });
 
-    const { getByTestId, queryByTestId } = render(ToolCallCard, {
+    const { getByTestId } = render(ToolCallCard, {
       props: { pane, item },
     });
     const text = getByTestId("collab-tool-row").textContent ?? "";

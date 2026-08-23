@@ -313,7 +313,7 @@ describe('PerItemSmoother', () => {
   });
 
   it('getLag reflects the unrevealed gap', () => {
-    const { clock, smoother } = makeSmoother();
+    const { smoother } = makeSmoother();
     smoother.appendDelta('hello world');
     expect(smoother.getLag()).toBe(11);
     smoother.snap();

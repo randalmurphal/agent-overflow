@@ -6,7 +6,6 @@
 import { describe, expect, it, beforeAll, beforeEach } from 'vitest';
 import { render, fireEvent, waitFor } from '@testing-library/svelte';
 import App from '../../App.svelte';
-import type { Thread } from '../../lib/types/models';
 import { setBindingMock } from '../mocks/bindings-app';
 import { getProviderModels } from '../../lib/stores/providerModels.svelte';
 import {

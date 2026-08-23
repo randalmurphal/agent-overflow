@@ -16,7 +16,7 @@ itself — the home is always injected by the caller.
 | `home.go` | `PathInHome` — the containment proof every `rollout_path` passes before it is stat'd, opened, or handed to a caller. |
 | `scan.go` | Offset-exact line scanner + envelope decoding. No `bufio.Scanner`. |
 | `wire.go` | Rollout payload structs, envelope type constants, warning codes. |
-| `meta.go` | `SessionMeta`, `ReadSessionMeta` (bounded head read), `ReadSourceIdentity` (the refresh fingerprint), `SessionIDFromPath`. |
+| `meta.go` | `SessionMeta`, `ReadSessionMeta` (bounded head read), `ReadSourceIdentityAt` (the refresh fingerprint over an open handle), `SessionIDFromPath`. |
 | `import_ledger.go` | `ReadExternalImportLedger` — Codex's own record of sessions IT imported from another coding agent. |
 | `parse.go` | `Parse` — the two-pass orchestration and the resume-offset contract. |
 | `convert.go` | Converter state, `emit`/`lineUUID`, content-row emitters, compaction. |
@@ -34,7 +34,7 @@ itself — the home is always injected by the caller.
 func List(ctx, ListOptions{CodexHome}) ([]SessionInfo, []importir.Warning, error)
 func Parse(ctx, ParseOptions{Path, SessionID, FromOffset, MaxLineBytes}) (ParseResult, error)
 func ReadSessionMeta(path, sessionID string) (SessionMeta, error)
-func ReadSourceIdentity(path, sessionID string) (SourceIdentity, error)
+func ReadSourceIdentityAt(file io.ReaderAt, path, sessionID string) (SourceIdentity, error)
 func ReadExternalImportLedger(codexHome string) (map[string]ExternalImportRecord, []importir.Warning)
 func SessionIDFromPath(path string) string
 func PathInHome(codexHome, rolloutPath string) (string, error)  // ErrOutsideCodexHome

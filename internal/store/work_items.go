@@ -77,8 +77,6 @@ type WorkItemListFilter struct {
 	UnresolvedOnly bool   `json:"unresolvedOnly,omitempty"`
 }
 
-const unresolvedWorkItemsPredicate = `disposition = '' AND state IN ('running','needs-human','done','failed')`
-
 func qualifiedUnresolvedWorkItemsPredicate(prefix string) string {
 	return prefix + `disposition = '' AND ` + prefix + `state IN ('running','needs-human','done','failed')`
 }

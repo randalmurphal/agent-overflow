@@ -374,8 +374,9 @@ func TestWorkflowWakeQueuedRecordIsSpentByAnActionBeforeItDispatches(t *testing.
 }
 
 // A binding cleared out from under a queued message strands its claim:
-// clearTreeWakeSignature skips unbound roots (it fires on every phase advance of
-// every run in the app), so the one place that unbinds has to spend the record.
+// Transition clearing skips unbound roots because it fires on every phase
+// advance of every run in the app, so the one place that unbinds has to spend
+// the record.
 func TestWorkflowWakeStaleBindingSpendsTheRecord(t *testing.T) {
 	h := newWakeHarness(t)
 	thread := h.chatThread(t, "origin-unbound-later")

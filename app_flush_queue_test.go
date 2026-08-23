@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -1737,76 +1736,6 @@ func guardCompileEnsureSendMessageOptionsCompatible(p flushQueuePayload) SendMes
 		RevisionSourceDiffReview:     p.RevisionSourceDiffReview,
 		RevisionSourceDiffCommentIDs: p.RevisionSourceDiffCommentIDs,
 	}
-}
-
-func installMethodLoggingCodexSession(t *testing.T, thread store.Thread, methodLog string) *codex.Session {
-	t.Helper()
-	binary := writeMethodLoggingCodexBinary(t, thread.ID+"-codex", methodLog)
-	sess, err := codex.NewSession(
-		context.Background(),
-		thread.ID,
-		codex.Config{
-			Binary:  binary,
-			WorkDir: thread.WorkspacePath,
-		},
-		func(provider.ProviderEvent) {},
-	)
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
-	t.Cleanup(func() { _ = sess.Close() })
-	if err := os.WriteFile(methodLog, nil, 0o644); err != nil {
-		t.Fatalf("clear method log: %v", err)
-	}
-	codex.SetActiveTurnIDForTest(sess, "active-turn")
-	return sess
-}
-
-func writeMethodLoggingCodexBinary(t *testing.T, threadID string, methodLog string) string {
-	t.Helper()
-	script := fmt.Sprintf(`#!/bin/sh
-log_path=%q
-while IFS= read -r line; do
-    id=$(/bin/echo "$line" | /usr/bin/grep -o '"id":[0-9]*' | /usr/bin/head -1 | /usr/bin/grep -o '[0-9]*')
-    if [ -z "$id" ]; then
-        continue
-    fi
-    if /bin/echo "$line" | /usr/bin/grep -q '"method":"initialize"'; then
-        printf '{"jsonrpc":"2.0","id":%%s,"result":{}}\n' "$id"
-        continue
-    fi
-    if /bin/echo "$line" | /usr/bin/grep -q '"method":"thread/start"'; then
-        printf '{"jsonrpc":"2.0","id":%%s,"result":{"thread":{"id":"%s"}}}\n' "$id"
-        continue
-    fi
-    if /bin/echo "$line" | /usr/bin/grep -q '"method":"turn/start"'; then
-        printf 'turn/start\n' >> "$log_path"
-        printf '{"jsonrpc":"2.0","id":%%s,"result":{"thread":{"id":"%s"},"turn":{"id":"fresh-turn"}}}\n' "$id"
-        continue
-    fi
-    if /bin/echo "$line" | /usr/bin/grep -q '"method":"turn/steer"'; then
-        printf 'turn/steer\n' >> "$log_path"
-        printf '{"jsonrpc":"2.0","id":%%s,"result":{"turnId":"active-turn"}}\n' "$id"
-        continue
-    fi
-    printf '{"jsonrpc":"2.0","id":%%s,"result":{}}\n' "$id"
-done
-`, methodLog, threadID, threadID)
-
-	path := filepath.Join(t.TempDir(), "codex-method-log.sh")
-	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
-		t.Fatalf("write codex method logger: %v", err)
-	}
-	return path
-}
-
-func readMethodLog(t *testing.T, methodLog string) string {
-	t.Helper()
-	data, err := os.ReadFile(methodLog)
-	if err != nil {
-		t.Fatalf("read method log: %v", err)
-	}
-	return string(data)
 }
 
 // emitRecorder captures every event emitted by the App so tests can

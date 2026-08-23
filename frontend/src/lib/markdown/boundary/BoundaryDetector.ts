@@ -16,7 +16,6 @@ import {
   isThematicBreak,
   isBlockquoteStart,
   isListItemStart,
-  detectContainer,
   detectContainerEnd,
   isFootnoteDefinitionStart,
   isFootnoteContinuation,
@@ -122,7 +121,7 @@ class ListBoundaryChecker implements StabilityChecker {
  * 脚注边界检查器
  */
 class FootnoteBoundaryChecker implements StabilityChecker {
-  check(lineIndex: number, context: BlockContext, lines: string[]): number {
+  check(lineIndex: number, _context: BlockContext, lines: string[]): number {
     const line = lines[lineIndex]
     const prevLine = lines[lineIndex - 1]
 
@@ -418,4 +417,3 @@ export class BoundaryDetector {
     return -1
   }
 }
-

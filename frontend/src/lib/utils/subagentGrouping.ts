@@ -1065,7 +1065,7 @@ export function groupItemsBySubagent(
     const launchInfo = subagentLaunchInfo(item, launchContext);
     if (launchInfo !== null) {
       subagentLaunchIDs.add(item.id);
-      if (launchRunsDetached(item, launchInfo, parseJsonObject(item.meta))) {
+      if (launchRunsDetached(launchInfo, parseJsonObject(item.meta))) {
         detachedLaunchIDs.add(item.id);
       }
     }

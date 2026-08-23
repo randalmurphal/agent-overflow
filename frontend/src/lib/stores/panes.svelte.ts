@@ -224,24 +224,8 @@ export function iterPanes(): IterableIterator<ThreadPane> {
   return panes.values();
 }
 
-export function forEachPane(fn: (pane: ThreadPane) => void): void {
-  for (const pane of panes.values()) {
-    fn(pane);
-  }
-}
-
 export function panesShowingThread(threadId: string): ThreadPane[] {
   return listPanes().filter((pane) => pane.threadId === threadId);
-}
-
-export function forPanesShowingThread(
-  threadId: string,
-  fn: (pane: ThreadPane) => void,
-): void {
-  for (const pane of panes.values()) {
-    if (pane.threadId !== threadId) continue;
-    fn(pane);
-  }
 }
 
 export function isThreadVisible(threadId: string): boolean {

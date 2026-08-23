@@ -75,20 +75,6 @@ func OriginPatterns(bindAll bool, lanIP string) []string {
 	return patterns
 }
 
-// AppURL returns the URL the user should share. For loopback binds
-// we use the server's own Addr (already 127.0.0.1:<port>). For LAN
-// binds we replace the unspecified host (0.0.0.0 / ::) with a
-// discovered private LAN IP. Discovery falls back to the loopback
-// URL if no interface address fits — the user gets something
-// pasteable either way, even if it only works locally.
-func AppURL(srv *transport.Server, bindAll bool) string {
-	lanIP := ""
-	if bindAll {
-		lanIP = DiscoverLocalLANIP()
-	}
-	return AppURLWithLAN(srv, bindAll, lanIP)
-}
-
 // AppURLWithLAN renders the URL using a caller-supplied LAN IP so
 // the discovery function isn't called twice in a Set flow (once for
 // the allow-list, once for the URL).

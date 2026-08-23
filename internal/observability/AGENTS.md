@@ -14,9 +14,8 @@ process needs, because the wedge is discovered after the process started.
 
 - `otel/` — OpenTelemetry wiring.
   - `provider.go` — `Provider` that owns tracer + meter providers
-    configured from user settings. Callers receive this explicitly;
-    nothing uses the otel package globals.
-  - `span.go` — `StartSpan` helper.
+    configured from user settings. Callers inject its raw tracer and
+    pre-built metric instruments; nothing uses the otel package globals.
   - `shutdown.go` — graceful flush on shutdown.
   - `config.go` — settings-driven config loader.
 - `replay/` — per-thread NDJSON event log for debug replay.

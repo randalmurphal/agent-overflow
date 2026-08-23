@@ -191,8 +191,8 @@ history and omits only the unsafe edge with a surfaced warning.
 Codex's `session_meta.history_mode` (`legacy` | `paginated`) is deliberately
 NOT on `Row`. It had a field once, with no reader; a listing field nothing
 branches on is a shape every caller has to carry and no caller can verify. The
-refresh guard reads the mode where it is actually load-bearing, off
-`rollout.ReadSourceIdentity`, and compares it against the recorded
+refresh guard reads the mode where it is actually load-bearing, through
+`rollout.ReadSourceIdentityAt`, and compares it against the recorded
 `SourceHistoryMode` to catch a Codex history migration (see
 "Source identity"). If a listing consumer ever needs it, it rides the bounded
 head read the scan already performs for fork provenance, so re-adding it costs
@@ -434,7 +434,7 @@ Finding the tail is provider-shaped, same split as the cursor:
   rather than on an ancestor it happens to share.
 - **Codex** tails from `last_source_offset`, behind TWO divergence tests
   that do not subsume each other:
-  - **Source identity.** `rollout.ReadSourceIdentity` fingerprints the
+  - **Source identity.** `rollout.ReadSourceIdentityAt` fingerprints the
     file's first line (sha256) and reads its declared `history_mode`; both
     are compared against `thread_import_state.source_meta_hash` /
     `source_history_mode` (migration v67) BEFORE the offset is trusted.
@@ -457,7 +457,7 @@ Finding the tail is provider-shaped, same split as the cursor:
   rewritten file invalidates by itself.
 
   A CURRENT fingerprint of `""` is the opposite case and FAILS CLOSED.
-  `ReadSourceIdentity` answers a NIL ERROR with an empty hash whenever the file
+  `ReadSourceIdentityAt` answers a NIL ERROR with an empty hash whenever the file
   has no complete, in-window first line — a first record past the bounded head
   read, a truncated head, an empty file — so a guard phrased as "compare only
   when both sides are non-empty" skips the fingerprint exactly when the file is

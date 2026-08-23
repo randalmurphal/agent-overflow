@@ -609,7 +609,10 @@ func TestMcpConfigForCLIBackfillsHTTPType(t *testing.T) {
 func TestBuildArgsCanMergeFirstPartyMCPWithNativeDiscovery(t *testing.T) {
 	cfg := Config{
 		MCPServers: map[string]any{
-			"workflows": HTTPMCPServer("http://127.0.0.1/mcp", map[string]string{"Authorization": "Bearer token"}),
+			"workflows": map[string]any{
+				"url":     "http://127.0.0.1/mcp",
+				"headers": map[string]string{"Authorization": "Bearer token"},
+			},
 		},
 		MergeMCPServers: true,
 	}

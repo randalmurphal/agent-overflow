@@ -20,6 +20,12 @@ import (
 	"agent-overflow/internal/workflow/profile"
 )
 
+func (r *workflowAppRunner) schemaForThread(threadID string) json.RawMessage {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append(json.RawMessage(nil), r.schemas[threadID]...)
+}
+
 func TestWorkflowBindingRunsGatesQuestionsAndEnvelopeRetry(t *testing.T) {
 	app, bus := setupE2EApp(t)
 	app.testEmitHook = bus.emit

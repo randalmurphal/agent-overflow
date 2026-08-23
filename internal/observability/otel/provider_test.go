@@ -5,10 +5,6 @@ import (
 	"errors"
 	"testing"
 	"time"
-
-	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/sdk/trace"
-	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
 
 func TestNewProviderNoopWhenDisabled(t *testing.T) {
@@ -72,104 +68,6 @@ func TestNewProviderMetricsBuiltEvenWhenNoop(t *testing.T) {
 	if m.ReplayEventsDropped == nil {
 		t.Error("ReplayEventsDropped instrument is nil")
 	}
-}
-
-func TestProviderStartSpanProducesNoopWhenDisabled(t *testing.T) {
-	p, err := NewProvider(context.Background(), Config{Enabled: false})
-	if err != nil {
-		t.Fatalf("NewProvider: %v", err)
-	}
-
-	ctx, span := p.StartSpan(context.Background(), "test.span", attribute.String("x", "y"))
-	if ctx == nil {
-		t.Error("StartSpan returned nil context")
-	}
-	if span == nil {
-		t.Fatal("StartSpan returned nil span")
-	}
-	// No-op span: SpanContext should not be recording.
-	if span.IsRecording() {
-		t.Error("expected no-op span to not be recording")
-	}
-	span.End()
-}
-
-func TestProviderStartSpanRecordsWithTestExporter(t *testing.T) {
-	recorder := tracetest.NewSpanRecorder()
-	tp := trace.NewTracerProvider(trace.WithSpanProcessor(recorder))
-
-	p, err := NewProvider(context.Background(), Config{Enabled: false})
-	if err != nil {
-		t.Fatalf("NewProvider: %v", err)
-	}
-	p.replaceTracerProvider(tp)
-
-	_, span := p.StartSpan(context.Background(), "turn.lifecycle",
-		ThreadAttr("thread-1"),
-		ProviderAttr("claude"),
-		ModelAttr("claude-sonnet-4-6"),
-		TurnAttr(3),
-	)
-	span.End()
-
-	spans := recorder.Ended()
-	if len(spans) != 1 {
-		t.Fatalf("Ended() = %d spans, want 1", len(spans))
-	}
-	s := spans[0]
-	if s.Name() != "turn.lifecycle" {
-		t.Errorf("span name = %q, want turn.lifecycle", s.Name())
-	}
-
-	attrs := s.Attributes()
-	got := make(map[string]attribute.Value, len(attrs))
-	for _, kv := range attrs {
-		got[string(kv.Key)] = kv.Value
-	}
-	if v, ok := got["thread.id"]; !ok || v.AsString() != "thread-1" {
-		t.Errorf("thread.id attr = %v, want thread-1", got["thread.id"])
-	}
-	if v, ok := got["provider"]; !ok || v.AsString() != "claude" {
-		t.Errorf("provider attr = %v, want claude", got["provider"])
-	}
-	if v, ok := got["model"]; !ok || v.AsString() != "claude-sonnet-4-6" {
-		t.Errorf("model attr = %v, want claude-sonnet-4-6", got["model"])
-	}
-	if v, ok := got["turn.index"]; !ok || v.AsInt64() != 3 {
-		t.Errorf("turn.index attr = %v, want 3", got["turn.index"])
-	}
-}
-
-func TestRecordErrorSetsStatus(t *testing.T) {
-	recorder := tracetest.NewSpanRecorder()
-	tp := trace.NewTracerProvider(trace.WithSpanProcessor(recorder))
-
-	p, _ := NewProvider(context.Background(), Config{Enabled: false})
-	p.replaceTracerProvider(tp)
-
-	_, span := p.StartSpan(context.Background(), "op")
-	RecordError(span, errors.New("boom"))
-	span.End()
-
-	spans := recorder.Ended()
-	if len(spans) != 1 {
-		t.Fatalf("Ended() = %d, want 1", len(spans))
-	}
-	if spans[0].Status().Code.String() != "Error" {
-		t.Errorf("status = %v, want Error", spans[0].Status().Code)
-	}
-	if spans[0].Status().Description != "boom" {
-		t.Errorf("status description = %q, want boom", spans[0].Status().Description)
-	}
-	if len(spans[0].Events()) == 0 {
-		t.Error("expected at least one event (the recorded exception)")
-	}
-}
-
-func TestRecordErrorNoOpsOnNil(t *testing.T) {
-	// RecordError must not panic on nil inputs.
-	RecordError(nil, errors.New("err"))
-	RecordError(nil, nil)
 }
 
 func TestConfigFromFlagsTrimsEndpoint(t *testing.T) {

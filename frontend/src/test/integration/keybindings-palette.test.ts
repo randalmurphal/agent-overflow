@@ -172,7 +172,7 @@ describe('App integration — keybindings + palette', () => {
       makeThread({ id: 't-2', title: 'Thread Two' }),
       makeThread({ id: 't-3', title: 'Thread Three' }),
     ];
-    const rendered = await mountBareApp(threads);
+    await mountBareApp(threads);
     await waitForThreadStore(threads.length);
     await loadKeybindingsFromMock([
       { key: 'mod+1', command: 'thread.jump.1' },

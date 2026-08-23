@@ -433,16 +433,6 @@ func (a *App) createWorktreeForNewThread(projectPath, branch string) (string, st
 	return worktreePath, resolvedBranch, nil
 }
 
-func (a *App) defaultContextWindowForModel(providerName, model string) int {
-	if a.store != nil {
-		profile, err := a.store.GetChatModelProfile(providerName, strings.TrimSpace(model))
-		if err == nil && chatmodel.IsValidContextWindow(profile.ContextWindow) {
-			return chatmodel.SanitizeProfile(profile).ContextWindow
-		}
-	}
-	return chatmodel.DefaultContextWindow(providerName, model, 0)
-}
-
 // ListThreads backs the frontend sidebar. It deliberately excludes
 // "draft" threads (newly created but never sent) so the sidebar stays
 // clean: a thread only becomes visible once its first item lands.
@@ -653,7 +643,7 @@ func (a *App) UpdateThreadProvider(id, providerName string) (store.Thread, error
 	if err != nil {
 		return store.Thread{}, err
 	}
-	return a.updateThreadFromChatModelProfile(current, profile, "provider")
+	return a.updateThreadFromChatModelProfile(current, profile)
 }
 
 // UpdateThreadReasoningEffort persists the effort tier and reconciles a

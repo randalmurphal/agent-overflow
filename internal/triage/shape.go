@@ -281,19 +281,7 @@ func CompletionPayloadForToolObject(itemID string, toolName string, command stri
 	return completionPayload(itemID, provider.ProviderEvent{Content: content}, meta, now)
 }
 
-// CommandCompletionPayload builds the `command_output` payload for a
-// shell-style tool completion, with the command line, exit code and
-// error flags folded into the payload meta header (meta is cheap, data
-// is heavy). Returns nil for empty output.
-func CommandCompletionPayload(itemID string, command string, evt provider.ProviderEvent, meta ToolCompleteMeta, now int64) *store.Payload {
-	var obj map[string]json.RawMessage
-	if len(evt.Meta) > 0 {
-		_ = json.Unmarshal(evt.Meta, &obj)
-	}
-	return CommandCompletionPayloadObject(itemID, command, evt.Content, obj, meta, now)
-}
-
-// CommandCompletionPayloadObject is CommandCompletionPayload for an
+// CommandCompletionPayloadObject builds the `command_output` payload from an
 // already-decoded completion envelope.
 func CommandCompletionPayloadObject(itemID string, command string, content string, obj map[string]json.RawMessage, meta ToolCompleteMeta, now int64) *store.Payload {
 	if content == "" {

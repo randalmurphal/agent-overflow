@@ -1,8 +1,9 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import { render, waitFor } from '@testing-library/svelte';
 import ChatMarkdown from './ChatMarkdown.svelte';
 import { CHAT_MARKDOWN_PRESENCE_CONTEXT } from './markdownSettledContext';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
+import { setViewOnlySessionFromBootstrap } from '../../transport/runMode';
 
 // Integration coverage for the path-link primitive flowing through
 // Streamdown's URL gate. The unit suite in `pathLinkExtension.test.ts`
@@ -16,6 +17,10 @@ import { setBindingMock } from '../../../test/mocks/bindings-app';
 // the href to `about:blank#blocked` without any unit test catching it.
 
 describe('<ChatMarkdown> path-link rendering', () => {
+  afterEach(() => {
+    setViewOnlySessionFromBootstrap(false);
+  });
+
   it('renders an agent-overflow:open anchor when the path is on the allowlist', async () => {
     const { container } = render(ChatMarkdown, {
       props: {
@@ -51,6 +56,21 @@ describe('<ChatMarkdown> path-link rendering', () => {
 
     const anchor = container.querySelector('a[href^="agent-overflow:open"]');
     expect(anchor).toBeNull();
+  });
+
+  it('emits no local path affordance in a view-only session', async () => {
+    setViewOnlySessionFromBootstrap(true);
+    const { container } = render(ChatMarkdown, {
+      props: {
+        source: 'See src/foo.ts here',
+        workspacePath: '/repo',
+        pathRefs: [{ path: 'src/foo.ts' }],
+      },
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 16));
+    expect(container.querySelector('a[href^="agent-overflow:open"]')).toBeNull();
+    expect(container.textContent).toContain('src/foo.ts');
   });
 
   it('drops the `@` mention prefix into the rendered anchor text', async () => {

@@ -9,7 +9,7 @@
   import { asProviderID, type ProviderID } from '../../types/providers';
   import { computeHighlightSegments } from '../../utils/highlight';
   import { isImeComposingEvent } from '../../utils/imeComposition';
-  import { PICKER_TOGGLE_INPUT_EVENT } from '../../stores/events';
+  import { PICKER_TOGGLE_INPUT_EVENT } from '../../stores/eventNames';
 
   interface Props {
     open: boolean;

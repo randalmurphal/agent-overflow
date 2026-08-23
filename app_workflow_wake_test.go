@@ -20,6 +20,10 @@ import (
 	"agent-overflow/internal/workflow/wake"
 )
 
+func (a *App) sweepWorkflowUsageAttention() {
+	a.surfaceReclaimedWorkflowUsageAttention(a.reclaimWorkflowUsageAttention())
+}
+
 // wakeHarness wires the two seams a wake crosses — the ordinary send and the
 // flush queue — so a test can assert which one a delivery took without a
 // provider process.

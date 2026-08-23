@@ -330,7 +330,7 @@ write_linux_desktop() {
 		printf '%s\n' "  Icon=$icon"
 		return
 	fi
-	tmp=$(mktemp "${TMPDIR:-/tmp}/agent-overflow-shortcut.XXXXXX.ps1")
+	tmp=$(mktemp "${TMPDIR:-/tmp}/agent-overflow-shortcut.XXXXXX.desktop")
 	register_cleanup_path "$tmp"
 	cat > "$tmp" <<EOF
 [Desktop Entry]

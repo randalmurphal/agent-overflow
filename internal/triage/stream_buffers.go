@@ -98,18 +98,6 @@ func (r *Router) stageTextPersistenceForEmit(threadID, itemID, payloadID, delta 
 	}, false)
 }
 
-func (r *Router) bufferThinkingPersistence(threadID, itemID, payloadID, delta string, updatedAt int64) error {
-	return r.bufferStreamPersistence(pendingStreamFlush{
-		threadID:     threadID,
-		itemID:       itemID,
-		kind:         itemKindThinking,
-		payloadID:    payloadID,
-		summaryDelta: delta,
-		payloadDelta: delta,
-		updatedAt:    updatedAt,
-	})
-}
-
 func (r *Router) stageThinkingPersistenceForEmit(threadID, itemID, payloadID, delta string, updatedAt int64) bool {
 	return r.stageStreamPersistence(pendingStreamFlush{
 		threadID:     threadID,
@@ -433,16 +421,6 @@ func (r *Router) flushStreamPersistence(flush pendingStreamFlush) error {
 	default:
 		return fmt.Errorf("unknown stream persistence kind %q for %s", flush.kind, flush.itemID)
 	}
-}
-
-func ignoreLateStreamPersistence(err error) error {
-	if err == nil {
-		return nil
-	}
-	if isLateStreamPersistence(err) {
-		return nil
-	}
-	return err
 }
 
 func isLateStreamPersistence(err error) bool {

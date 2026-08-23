@@ -4,7 +4,7 @@ import DesignPreviewPanel from './DesignPreviewPanel.svelte';
 import { makePanelContext } from '../../stores/panelContext.svelte';
 import type { Thread } from '../../types/models';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
-import { DESIGN_RELOAD_MAIN_EVENT } from '../../stores/events';
+import { DESIGN_RELOAD_MAIN_EVENT } from '../../stores/eventNames';
 import { buildPane as buildRegisteredPane, makeThread as makeBaseThread } from '../../../test/helpers/chat';
 
 // Mock the iframe-capture round-trip so tests don't need a real layout

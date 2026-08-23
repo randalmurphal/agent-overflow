@@ -188,13 +188,13 @@ func TestSetNetworkSettings_NoOpWhenUnchanged(t *testing.T) {
 	}
 }
 
-// TestNetworkAppURL_LoopbackUsesAppURL pins the URL output for the
+// TestNetworkFromServer_LoopbackUsesAppURL pins the URL output for the
 // default loopback bind: it must equal Server.AppURL so the user
 // always sees a consistent string regardless of how settings is
 // queried.
-func TestNetworkAppURL_LoopbackUsesAppURL(t *testing.T) {
+func TestNetworkFromServer_LoopbackUsesAppURL(t *testing.T) {
 	_, srv := newNetworkTestApp(t)
-	got := network.AppURL(srv, false)
+	got := network.FromServer(srv, false).URL
 	if got != srv.AppURL() {
 		t.Fatalf("loopback URL = %q, want srv.AppURL() = %q", got, srv.AppURL())
 	}

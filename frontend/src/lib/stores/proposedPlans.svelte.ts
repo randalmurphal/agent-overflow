@@ -1,7 +1,7 @@
 import type { Item, ProposedPlanComment } from '../types/models';
 import { comparePlanItemPosition, latestProposedPlanItem } from '../utils/proposedPlan';
 import { ListProposedPlanComments, ListThreadProposedPlans } from './bindings';
-import { onItemUpsert } from './events';
+import { onItemUpsert } from './eventsItemStream';
 import { itemsAreEqual } from './threadItems';
 
 const REFRESH_DEBOUNCE_MS = 100;
@@ -83,11 +83,6 @@ export function getThreadCurrentProposedPlan(
   threadId: string | null | undefined,
 ): Item | null {
   return latestProposedPlanItem(threadId, getThreadProposedPlans(threadId));
-}
-
-export function hasLoadedThreadProposedPlans(threadId: string | null | undefined): boolean {
-  if (!threadId) return false;
-  return cache[threadId]?.loaded ?? false;
 }
 
 export function getPlanComments(
