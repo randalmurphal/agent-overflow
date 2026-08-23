@@ -410,6 +410,64 @@ describe('<GenericToolCallRow> editor-link wiring', () => {
     expect(queryByTestId('expandable-payload-body')).toBeNull();
   });
 
+  it('renders a completion leaf with its launch identity and opens the pane on the launch', async () => {
+    // The completion sibling is the row that says "this agent finished" at
+    // the point it finished. It reads as the SAME agent the card named
+    // (launch label/description, completion status) and carries the card's
+    // open-in-pane door, keyed on the launch id, so the reader does not
+    // have to scroll back to the card.
+    const launch = makeItem({
+      id: 'agent-1',
+      kind: 'tool_call',
+      status: 'completed',
+      isBackground: true,
+      toolName: 'Agent',
+      summary: 'Agent: worker',
+      payloadMeta: JSON.stringify({
+        toolName: 'Agent',
+        input: { subagent_type: 'Explore', description: 'find the leak' },
+      }),
+    });
+    const completion = makeItem({
+      id: 'complete:agent-1',
+      itemIndex: 9,
+      kind: 'tool_completion',
+      status: 'completed',
+      isBackground: true,
+      toolName: 'Agent',
+      completionOf: 'agent-1',
+      summary: 'Agent: worker -> done',
+    });
+    const opened: [string, string][] = [];
+    const pane = makeFakePane({
+      getItemById: (id: string) => (id === 'agent-1' ? launch : undefined),
+      openAgentPane: (id: string, label: string) => {
+        opened.push([id, label]);
+      },
+    } as Partial<import('../../stores/thread.svelte').ThreadPane>);
+
+    const { getByTestId } = render(AgentRow, { props: { pane, item: completion } });
+
+    const preview = getByTestId('agent-row-preview').textContent ?? '';
+    expect(preview).toContain('Explore');
+    expect(preview).toContain('find the leak');
+
+    await fireEvent.click(getByTestId('agent-row-open-pane'));
+    expect(opened).toEqual([['agent-1', 'Explore']]);
+  });
+
+  it('offers no open-in-pane door without a pane to route through', () => {
+    const item = makeItem({
+      kind: 'tool_completion',
+      status: 'completed',
+      toolName: 'Agent',
+      completionOf: 'agent-1',
+      summary: 'Agent: worker -> done',
+    });
+    const { queryByTestId } = render(AgentRow, { props: { item } });
+    expect(queryByTestId('agent-row-open-pane')).toBeNull();
+  });
+
   it('surfaces a failed transcript backfill as an inline error line', () => {
     // triage stamps notification_output_state/error on the launch row when
     // the task_notification's output_file could not be read; a silently

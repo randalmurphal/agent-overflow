@@ -12,9 +12,12 @@
 // three callers, none of them this path), and the row is deliberately
 // hidden from the timeline once its completed lifecycle sibling exists
 // (utils/notificationFilter.ts, user ruling 2026-08-22), which for an
-// agent is always. So the row is asserted where it lives rather than in
-// the DOM; a DOM assertion here would be asserting the filter, not the
-// gate.
+// agent is always. So the BELL is asserted where it lives rather than in
+// the DOM. What IS asserted in the DOM is the row the bell's hiding
+// depends on: the top-level completion sibling, rendered at the
+// completion point as a compact agent row. An earlier version of this
+// spec asserted only SQLite, which is how the grouping pass dropping that
+// row shipped unnoticed (2026-08-22).
 import { test, expect } from './fixtures.js';
 import {
   RESULT_LINE,
@@ -111,10 +114,25 @@ test('a top-level background completion writes a bell and a nested one does not'
       },
     ]);
 
+  // --- The completion is IN the transcript, where it completed --------
+  // The bell is hidden on the strength of this row existing. It renders
+  // as a compact agent row (the launch is a card; its completion is a
+  // leaf at the completion point, after the turn's prose), settled, and
+  // named after the agent the card named.
+  const timeline = page.getByTestId('message-timeline-scroll');
+  const completionRow = timeline.locator('[data-item-id="complete:tu-top"]');
+  await expect(completionRow).toHaveCount(1);
+  await expect(completionRow.getByTestId('agent-row-preview')).toContainText('Top Runner');
+  // Settled: a completed row renders no status dot at all (the indicator
+  // exists only for running / backgrounded / failed states).
+  await expect(completionRow.getByTestId('agent-row-status')).toHaveCount(0);
+  await expect(completionRow.getByTestId('agent-row-open-pane')).toHaveCount(1);
+  // The nested completion sits inside the outer card, never at top level.
+  await expect(timeline.locator('[data-item-id="complete:tu-nested"]')).toHaveCount(0);
+
   // --- The nested completion is not silent about ITSELF -------------
   // "Nested completions do not notify" is a claim about the bell only:
   // the card still folds in the notification's final usage.
-  const timeline = page.getByTestId('message-timeline-scroll');
   const topCard = timeline.getByTestId('subagent-group').first();
   await expect(topCard.getByTestId('subagent-group-label')).toContainText('Top Runner');
   await topCard.getByTestId('subagent-group-toggle').first().click();

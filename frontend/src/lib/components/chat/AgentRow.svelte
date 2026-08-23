@@ -16,8 +16,10 @@
   // like a complete one.
 
   import type { Snippet } from 'svelte';
+  import PanelRightOpen from '@lucide/svelte/icons/panel-right-open';
   import type { Item } from '../../types/models';
   import { paneWorkspacePath, type ThreadPane } from '../../stores/thread.svelte';
+  import Icon from '../primitives/Icon.svelte';
   import ToolDecisionChip from './ToolDecisionChip.svelte';
   import ToolKindIcon from './ToolKindIcon.svelte';
   import { parseJsonObject } from '../../utils/parseJsonObject';
@@ -54,7 +56,17 @@
     trailingActions?: Snippet;
   } = $props();
 
-  let effectiveDisplayItem = $derived(displayItem ?? item);
+  // The launch this row stands for. A completion sibling names it through
+  // `completionOf`; every other shape IS the launch.
+  let launchId = $derived(item.kind === 'tool_completion' ? (item.completionOf ?? '') : item.id);
+  // A completion leaf renders with its LAUNCH's identity (label, model,
+  // description) when the launch is loaded, so the row at the completion
+  // point reads as the same agent the card above it named. The completion
+  // item stays the status source.
+  let launchItem = $derived(
+    item.kind === 'tool_completion' && launchId ? pane?.getItemById(launchId) : undefined,
+  );
+  let effectiveDisplayItem = $derived(displayItem ?? launchItem ?? item);
   let effectiveStatusItem = $derived(statusItem ?? item);
   let summaryMeta = $derived(parseJsonObject(effectiveDisplayItem.payloadMeta));
   let displayMeta = $derived(parseJsonObject(effectiveDisplayItem.meta));
@@ -94,7 +106,32 @@
   let rowError = $derived(
     rowErrorWithFallback(effectiveStatusItem, { meta: statusMeta, fallback: 'Agent failed' }),
   );
+
+  // Same door the card uses: the PANE decides where opening routes (the
+  // base pane opens its agent companion; the scoped facade pushes a
+  // breadcrumb hop). A host that supplies its own trailing actions (the
+  // background tray) keeps them; the default is the open affordance, so a
+  // completion leaf at the bottom of the transcript can reach the agent's
+  // transcript without scrolling back to the card that launched it.
+  let opensAgentPane = $derived(pane !== undefined && trailingActions === undefined && launchId !== '');
+  function openInPane(event: MouseEvent): void {
+    event.stopPropagation();
+    pane?.openAgentPane(launchId, agentLabel);
+  }
 </script>
+
+{#snippet openPaneAction()}
+  <button
+    type="button"
+    onclick={openInPane}
+    title="Open in agent pane"
+    aria-label="Open {agentLabel} in agent pane"
+    data-testid="agent-row-open-pane"
+    class="inline-flex items-center justify-center opacity-0 group-hover/tool:opacity-100 focus-visible:opacity-100 rounded p-0.5 text-text-secondary hover:text-text-primary cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+  >
+    <Icon icon={PanelRightOpen} size={12} />
+  </button>
+{/snippet}
 
 <div class="group/tool overflow-hidden" data-testid="agent-row" data-tool-kind="robot">
   <TranscriptDisclosureHeader
@@ -119,7 +156,7 @@
           label: durationLabel || (durationMs !== null ? formatDurationMs(durationMs) : ticker.label),
         }}
         timestamp={showTimestamp ? { testId: 'agent-row-time', value: effectiveStatusItem.createdAt, label: time } : undefined}
-        {trailingActions}
+        trailingActions={trailingActions ?? (opensAgentPane ? openPaneAction : undefined)}
       >
         {#snippet status()}
           <ToolRowStatusIndicator item={effectiveStatusItem} state={indicatorState} testId="agent-row-status" />

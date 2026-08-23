@@ -251,10 +251,17 @@ describe('groupItemsBySubagent', () => {
       }),
     ]);
 
+    // The completion sibling is BOTH the card's status source (folded) and
+    // a row of its own at the completion point. Folding is additive: the
+    // version that also dropped the sibling from the top level left the
+    // main transcript with no trace of the agent finishing (the bell is
+    // hidden on the strength of this row existing — see
+    // backgroundCompletionVisibility.test.ts).
     expect(nodes.map((node) => timelineNodeItemId(node))).toEqual([
       'main-think',
       'bg-agent',
       'main-text',
+      'complete:bg-agent',
     ]);
     const group = expectGroup(nodes[1]);
     expect(group.children.map((child) => expectLeaf(child).item.id)).toEqual([
@@ -262,14 +269,13 @@ describe('groupItemsBySubagent', () => {
       'child-bash-done',
       'child-text',
     ]);
-    expect(group.descendantCount).toBe(3);
-    // The completion sibling folded in as the card's status source and left
-    // the top level — fold and drop agree.
     expect(group.completion?.id).toBe('complete:bg-agent');
-    expect(nodeContainsItem(group, 'complete:bg-agent')).toBe(true);
-    expect(findTimelineNodeIndex(nodes, 'complete:bg-agent')).toBe(1);
-    // …but it is the header, not a transcript entry: not counted, and never
-    // the collapsed preview.
+    // A jump to the completion lands on ITS leaf, not on the card launched
+    // turns earlier.
+    expect(nodeContainsItem(group, 'complete:bg-agent')).toBe(false);
+    expect(findTimelineNodeIndex(nodes, 'complete:bg-agent')).toBe(3);
+    // The fold is the header, not a transcript entry: not counted, and
+    // never the collapsed preview.
     expect(group.descendantCount).toBe(3);
     expect(group.latestChildSummary).toBe('found it');
     for (const childId of ['child-bash', 'child-bash-done', 'child-text']) {
@@ -345,7 +351,10 @@ describe('groupItemsBySubagent', () => {
       }),
     ]);
 
-    expect(nodes).toHaveLength(1);
+    expect(nodes.map((node) => timelineNodeItemId(node))).toEqual([
+      'bg-agent',
+      'complete:bg-agent',
+    ]);
     const group = expectGroup(nodes[0]);
     expect(group.parent.id).toBe('bg-agent');
     const completion = group.completion;
@@ -570,7 +579,13 @@ describe('groupItemsBySubagent', () => {
       }),
     ]);
 
-    expect(nodes.map((node) => timelineNodeItemId(node))).toEqual(['outer-bg']);
+    // Each completion folds onto its card AND keeps a row where it was
+    // written: the inner one inside the outer card (it carries the outer
+    // launch's parentId), the outer one at the top level.
+    expect(nodes.map((node) => timelineNodeItemId(node))).toEqual([
+      'outer-bg',
+      'complete:outer-bg',
+    ]);
     const outer = expectGroup(nodes[0]);
     expect(outer.completion?.id).toBe('complete:outer-bg');
     const inner = expectGroup(outer.children[0]);
@@ -579,10 +594,12 @@ describe('groupItemsBySubagent', () => {
     expect(inner.children.map((child) => expectLeaf(child).item.id)).toEqual([
       'inner-child',
     ]);
-    // Both folded completions resolve to the top-level row that renders them.
-    for (const id of ['inner-bg', 'inner-child', 'complete:inner-bg', 'complete:outer-bg']) {
+    expect(expectLeaf(outer.children[1]).item.id).toBe('complete:inner-bg');
+    // Every row resolves to the top-level node that renders it.
+    for (const id of ['inner-bg', 'inner-child', 'complete:inner-bg']) {
       expect(findTimelineNodeIndex(nodes, id)).toBe(0);
     }
+    expect(findTimelineNodeIndex(nodes, 'complete:outer-bg')).toBe(1);
   });
 
   it('terminates on malformed cyclic parentId data without swallowing the top-level anchor', () => {
@@ -1574,7 +1591,10 @@ describe('groupItemsBySubagent — launch kinds', () => {
       }),
     ]);
 
-    expect(nodes).toHaveLength(1);
+    expect(nodes.map((node) => timelineNodeItemId(node))).toEqual([
+      'toolu_resume',
+      'complete:toolu_resume',
+    ]);
     const group = expectGroup(nodes[0]);
     expect(group.parent.id).toBe('toolu_resume');
     expect(group.children.map((child) => expectLeaf(child).item.id)).toEqual(['round2-tool']);
@@ -1675,10 +1695,12 @@ describe('groupItemsBySubagent — launch kinds', () => {
     expect(l3.descendantCount).toBe(2);
   });
 
-  it('re-emits a flattened launch completion sibling as a leaf beside it', () => {
+  it('keeps a flattened launch completion sibling as a leaf beside it', () => {
     // Below the cap a nested launch renders as a LEAF, so it has no node to
-    // fold its completion into — and the top-level drop already removed it.
-    // Re-emitting it here is what keeps the outcome from vanishing.
+    // fold its completion into. The sibling carries the launch's parentId
+    // (Go writes it with `ParentID: launch.ParentID`), so it sits in the
+    // same bucket and flattens through `enqueue` like any other row — no
+    // re-emit path, nothing to forget.
     const nodes = groupItemsBySubagent(launchChain(4, [
       mkItem({
         id: 'complete:l4',
@@ -1687,6 +1709,7 @@ describe('groupItemsBySubagent — launch kinds', () => {
         toolName: 'Agent',
         isBackground: true,
         completionOf: 'l4',
+        parentId: 'l3',
         summary: 'Agent: deep -> done',
       }),
     ]));
@@ -1726,7 +1749,7 @@ describe('groupItemsBySubagent — launch kinds', () => {
     expect(findTimelineNodeIndex(nodes, 'complete:bg-agent')).toBe(1);
   });
 
-  it('resolves a folded completion through nodeContainsItem and findTimelineNodeIndex', () => {
+  it('resolves a folded completion to its own leaf, not to the card it folds onto', () => {
     const nodes = groupItemsBySubagent([
       mkItem({ id: 'lead-text', itemIndex: 0, kind: 'assistant_text', summary: 'starting' }),
       mkItem({
@@ -1749,14 +1772,18 @@ describe('groupItemsBySubagent — launch kinds', () => {
       }),
     ]);
 
-    expect(nodes).toHaveLength(2);
+    expect(nodes.map((node) => timelineNodeItemId(node))).toEqual([
+      'lead-text',
+      'bg-agent',
+      'complete:bg-agent',
+    ]);
     const group = expectGroup(nodes[1]);
     expect(group.completion?.id).toBe('complete:bg-agent');
-    expect(nodeContainsItem(group, 'complete:bg-agent')).toBe(true);
-    // A search hit on the completion's own id (Go indexes its summary)
-    // resolves to the card that renders it, not to -1.
-    expect(findTimelineNodeIndex(nodes, 'complete:bg-agent')).toBe(1);
-    // The anchor id stays the launch — containment is the separate question.
+    // The card folds the completion as its status source but does not
+    // CLAIM it: a search hit on the completion's own id (Go indexes its
+    // summary) lands on the completion's leaf at the completion point.
+    expect(nodeContainsItem(group, 'complete:bg-agent')).toBe(false);
+    expect(findTimelineNodeIndex(nodes, 'complete:bg-agent')).toBe(2);
     expect(timelineNodeItemId(group)).toBe('bg-agent');
   });
 });

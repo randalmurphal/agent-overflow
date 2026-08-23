@@ -215,6 +215,14 @@ test('a Codex spawn_agent child renders as the same card and pane, counting the 
 // The fix it pins: `codexCompletionAnswer` renders the folded
 // completion's preview on the card (`subagent-group-final-answer`) and
 // in the pane (`agent-pane-final-answer`), gated to Codex launches.
+//
+// Since 2026-08-22 the fold is additive — the completion sibling ALSO
+// keeps its own row at the completion point (see
+// docs/specs/agent-visibility.md, "always renders as its own row"), and
+// for Codex that row is the collab completion row carrying the same
+// preview. So the answer is readable in two places, and both are pinned:
+// the card (the agent's result, where a reader looks for it) and the
+// in-sequence row (the only evidence at the point it finished).
 test('a Codex child\u2019s FINAL_ANSWER is readable somewhere in the UI', async ({
   harness,
   page,
@@ -226,7 +234,12 @@ test('a Codex child\u2019s FINAL_ANSWER is readable somewhere in the UI', async 
   await advance(harness, mockId, 'answer');
   await harness.waitForEvent('provider:turn_completed');
 
-  const card = page.getByTestId('message-timeline-scroll').getByTestId('subagent-group').first();
+  const timeline = page.getByTestId('message-timeline-scroll');
+  const card = timeline.getByTestId('subagent-group').first();
   await card.getByTestId('subagent-group-toggle').first().click();
-  await expect(page.getByText(FINAL_ANSWER)).toHaveCount(1);
+  await expect(card.getByTestId('subagent-group-final-answer')).toContainText(FINAL_ANSWER);
+  const completionRow = timeline.locator(`[data-item-id^="complete:${SPAWN_CALL}"]`);
+  await expect(completionRow).toHaveCount(1);
+  await expect(completionRow).toContainText(FINAL_ANSWER);
+  await expect(page.getByText(FINAL_ANSWER)).toHaveCount(2);
 });

@@ -18,6 +18,16 @@
 // Only a COMPLETED sibling hides. A running launch keeps its bell, and
 // so do errored/killed ones — the explicit failure ping is wanted.
 //
+// LOAD-BEARING ASSUMPTION: the completed sibling RENDERS, in place, at
+// the completion point. This filter deletes the only other row that says
+// "the task finished", so anything downstream that folds the sibling
+// away — the subagent grouping folds it onto the launch card as the
+// card's status source — must keep the sibling's own row as well. It
+// did not, once (2026-08-22): the fold also dropped the sibling from the
+// node array, and a finished agent left no trace in the main transcript.
+// `backgroundCompletionVisibility.test.ts` runs this filter and the
+// grouping in production order and counts rows; keep it green.
+//
 // A WATCH task (Claude's Monitor — claude-wire.md §E7) is the one
 // exception, and it is not a special case so much as a different shape:
 // a Monitor fires one notification per output event of the stream it
