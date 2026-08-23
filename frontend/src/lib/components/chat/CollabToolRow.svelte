@@ -7,6 +7,7 @@
   import Play from '@lucide/svelte/icons/play';
   import Clock from '@lucide/svelte/icons/clock';
   import CheckCircle2 from '@lucide/svelte/icons/check-circle-2';
+  import PanelRightOpen from '@lucide/svelte/icons/panel-right-open';
   import Icon from '../primitives/Icon.svelte';
   import TranscriptDisclosureHeader from './TranscriptDisclosureHeader.svelte';
   import type { Item } from '../../types/models';
@@ -235,7 +236,33 @@
   }
 
   let time = $derived(formatTimeOfDay(effectiveStatusItem.createdAt));
+
+  // The one approved change to a Codex spawn row (user ruling
+  // 2026-08-23): the open-in-pane door. Everything else on the row is the
+  // pre-card `launched` indicator, and the spawn is never a card. A host
+  // that supplies its own actions (the background tray) keeps them.
+  let spawnLaunchInfo = $derived(isCodexSubagentLaunchItem(item) ? codexSubagentLaunchInfo(item) : null);
+  let opensAgentPane = $derived(
+    pane !== undefined && hostActions === undefined && spawnLaunchInfo !== null,
+  );
+  function openInPane(event: MouseEvent): void {
+    event.stopPropagation();
+    pane?.openAgentPane(item.id, spawnLaunchInfo?.agentLabel || title);
+  }
 </script>
+
+{#snippet openPaneAction()}
+  <button
+    type="button"
+    onclick={openInPane}
+    title="Open in agent pane"
+    aria-label="Open {spawnLaunchInfo?.agentLabel || title} in agent pane"
+    data-testid="collab-tool-row-open-pane"
+    class="inline-flex items-center justify-center opacity-0 group-hover/tool:opacity-100 focus-visible:opacity-100 rounded p-0.5 text-text-secondary hover:text-text-primary cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+  >
+    <Icon icon={PanelRightOpen} size={12} />
+  </button>
+{/snippet}
 
 {#snippet rowIcon()}
   <Icon {icon} size={13} strokeWidth={2} class="shrink-0 opacity-75" />
@@ -268,7 +295,7 @@
     timestamp={showTimestamp
       ? { testId: 'collab-tool-row-time', value: effectiveStatusItem.createdAt, label: time }
       : undefined}
-    actions={hostActions}
+    actions={hostActions ?? (opensAgentPane ? openPaneAction : undefined)}
   >
     {#snippet status()}
       <ToolRowStatusIndicator

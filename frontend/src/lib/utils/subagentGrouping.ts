@@ -140,14 +140,15 @@ export interface SubagentGroupNode {
    *     launch and `anchor === parent`;
    *   - a DETACHED Claude launch (`launchRunsDetached`: async,
    *     run_in_background, a resume carrier, or backgrounded mid-flight)
-   *     is an immutable spawn record — its row renders as a compact leaf
-   *     that never changes — and the card sits at the launch's
-   *     `complete:<id>` sibling, after everything the main thread wrote
-   *     while the agent ran. There `anchor === completion`. Until that
-   *     sibling loads there is no card at all: the agent's live
-   *     transcript is the pane's and the tray's, never the spawn row's
-   *     (user ruling 2026-08-23). A Codex spawn keeps its card at the
-   *     launch (see `detachedLaunchIDs` in `groupItemsBySubagent`).
+   *     keeps its pre-card launch row — a compact leaf that never changes
+   *     — and the card sits at the launch's `complete:<id>` sibling,
+   *     after everything the main thread wrote while the agent ran.
+   *     There `anchor === completion`. Until that sibling loads there is
+   *     no card at all: the agent's live transcript is the pane's and the
+   *     tray's, never the launch row's (user ruling 2026-08-23).
+   *   - a Codex spawn is never a group: its launch row is the collab
+   *     `launched` leaf and its completion renders as it did before the
+   *     card existed (see `detachedLaunchIDs` in `groupItemsBySubagent`).
    */
   anchor: Item;
   /** Stable structural key for virtualization and expansion state. */
@@ -1011,16 +1012,18 @@ export function groupItemsBySubagent(
   // is about to place.
   const launchContext = subagentLaunchContextFrom(sortedWithCarriers);
   const subagentLaunchIDs = new Set<string>();
-  // CLAUDE launches that run detached from the main turn
-  // (`launchRunsDetached`). Their row is an immutable spawn record and
-  // their card sits at their completion sibling — see
-  // `SubagentGroupNode.anchor`. Codex spawns are detached too but keep
-  // their card at the launch: a Codex child's completion is claimed by the
+  // Launches that run detached from the main turn (`launchRunsDetached`),
+  // every provider. Their launch row is the pre-card leaf and never a
+  // group (user ruling 2026-08-23). A CLAUDE detached launch's card sits
+  // at its completion sibling — see `SubagentGroupNode.anchor`. A Codex
+  // spawn gets no card anywhere: its completion is claimed by the
   // `wait_agent` group that observed it whenever the parent waited (see
   // the fold pass below), so a spawn has no reliable completion row of its
-  // own to host the card, and none of its transcript streams to the parent
-  // either — there is nothing live to keep off the spawn row.
+  // own to host one, and none of its transcript streams to the parent —
+  // the child's tokens show in its pane, reached through the launch row's
+  // door.
   const detachedLaunchIDs = new Set<string>();
+  const codexLaunchIDs = new Set<string>();
 
   /** Returns whether the child was linked under the carrier. */
   function addWaitChild(carrierID: string, child: Item): boolean {
@@ -1056,10 +1059,8 @@ export function groupItemsBySubagent(
     const launchInfo = subagentLaunchInfo(item, launchContext);
     if (launchInfo !== null) {
       subagentLaunchIDs.add(item.id);
-      if (
-        launchInfo.provider === 'claude'
-        && launchRunsDetached(item, launchInfo, parseJsonObject(item.meta))
-      ) {
+      if (launchInfo.provider === 'codex') codexLaunchIDs.add(item.id);
+      if (launchRunsDetached(item, launchInfo, parseJsonObject(item.meta))) {
         detachedLaunchIDs.add(item.id);
       }
     }
@@ -1107,15 +1108,16 @@ export function groupItemsBySubagent(
       launchCompletionByLaunchID.set(item.completionOf, item);
     }
   }
-  // A detached launch's completion sibling: the position at which that
-  // launch's card renders (see `SubagentGroupNode.anchor`). Keyed by the
-  // sibling's id so `buildNode`, visiting the sibling at its own place in
-  // its bucket, builds the card there. An awaited launch that somehow
-  // carries a sibling keeps the sibling as a leaf of its own.
+  // A detached CLAUDE launch's completion sibling: the position at which
+  // that launch's card renders (see `SubagentGroupNode.anchor`). Keyed by
+  // the sibling's id so `buildNode`, visiting the sibling at its own place
+  // in its bucket, builds the card there. An awaited launch that somehow
+  // carries a sibling keeps the sibling as a leaf of its own; a Codex
+  // spawn's completion stays the leaf it always was.
   const cardLaunchByCompletionID = new Map<string, Item>();
   for (const [launchID, completion] of launchCompletionByLaunchID) {
     const launch = itemByID.get(launchID);
-    if (launch && detachedLaunchIDs.has(launchID)) {
+    if (launch && detachedLaunchIDs.has(launchID) && !codexLaunchIDs.has(launchID)) {
       cardLaunchByCompletionID.set(completion.id, launch);
     }
   }
@@ -1198,10 +1200,12 @@ export function groupItemsBySubagent(
     if (cardLaunch) return buildLaunchGroup(cardLaunch, item, depth);
 
     const isLaunch = subagentLaunchIDs.has(item.id);
-    // A detached launch is an immutable spawn record: a leaf, whatever
-    // sits under it. Its subtree renders under its card once the
+    // A detached launch keeps its pre-card launch row: a leaf, whatever
+    // sits under it. A Claude subtree renders under its card once the
     // completion sibling loads; until then the agent's live transcript is
-    // the pane's and the tray's, never the spawn row's.
+    // the pane's and the tray's, never the launch row's. A Codex spawn's
+    // descendants (the prompt echo, anything the child parents to it)
+    // stay off the main timeline entirely, as before the card.
     if (isLaunch && detachedLaunchIDs.has(item.id)) return { kind: 'leaf', item };
 
     const childItems = childrenByParent.get(item.id);

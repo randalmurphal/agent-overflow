@@ -363,12 +363,12 @@ function resumedAgentName(item: Item): string {
  * Ctrl+B, which triage stamps on the launch row as
  * `meta.subagentBackgroundedAt`).
  *
- * The one rule the card, the compact agent row, and the grouping share
- * for "is this the immutable spawn record?": a detached launch's row
- * never changes after the spawn (the tray invariant — it stays `running`
- * forever and its outcome lands on a separate `complete:<id>` sibling),
- * so nothing live or terminal is ever rendered on it. Everything the
- * agent does shows at its completion point (`SubagentGroupNode.anchor`).
+ * The one rule the card and the grouping share for "does this launch keep
+ * its pre-card launch row?": a detached launch's row never changes after
+ * the spawn (the tray invariant — it stays `running` forever and its
+ * outcome lands on a separate `complete:<id>` sibling), so it is never a
+ * group. A Claude detached launch's card sits at its completion point
+ * (`SubagentGroupNode.anchor`); a Codex spawn has no card.
  */
 export function launchRunsDetached(
   item: Item,

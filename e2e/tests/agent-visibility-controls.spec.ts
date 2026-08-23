@@ -251,8 +251,8 @@ test('backgrounding a running inline agent returns the turn and the transcript c
   // completion point once that lands (ruling 2026-08-23).
   await expect(timeline.getByTestId('subagent-group')).toHaveCount(0);
   const spawnRow = timeline.locator('[data-item-id="tu-agent"]');
-  await expect(spawnRow.getByTestId('agent-row-background')).toHaveText('background');
-  await expect(spawnRow.getByTestId('agent-row-status')).toHaveCount(0);
+  await expect(spawnRow.getByTestId('agent-row-status')).toHaveAttribute('data-state', 'backgrounded');
+  await expect(spawnRow.getByText('background', { exact: true })).toHaveCount(0);
 
   // --- The pane marks the cut ---------------------------------------
   await spawnRow.hover();

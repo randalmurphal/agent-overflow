@@ -311,7 +311,7 @@ describe('<MessageTimeline>', () => {
         summary: 'The diff is tiny.',
       }),
     ]);
-    const { getByTestId, queryByText } = render(MessageTimeline, { props: { pane } });
+    const { getByTestId, queryByTestId, queryByText } = render(MessageTimeline, { props: { pane } });
 
     pane.upsertItems([
       makeItem({
@@ -369,13 +369,12 @@ describe('<MessageTimeline>', () => {
 
     expect(getByTestId('wait-group').textContent).toContain('Waiting for Agent');
     expect(getByTestId('collab-tool-row-receivers').textContent).toBe('└ Chandrasekhar');
-    // The spawn row is an agent card now, collapsed by default: its child
-    // transcript is inside it rather than interleaved with the main thread,
-    // and the newest child surfaces only as the card's preview line.
+    // The spawn row is the collab `launched` leaf it always was — never a
+    // card (user ruling 2026-08-23) — and the child's transcript is
+    // withheld from the main timeline; it belongs to the agent pane.
+    expect(queryByTestId('subagent-group')).toBeNull();
     expect(queryByText('Review the timeline code')).toBeNull();
-    expect(getByTestId('subagent-group-preview').textContent).toContain(
-      'I will inspect the live path.',
-    );
+    expect(queryByText('I will inspect the live path.')).toBeNull();
 
     pane.upsertItems([
       makeItem({

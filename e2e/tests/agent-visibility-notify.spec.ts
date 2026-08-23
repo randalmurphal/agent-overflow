@@ -118,15 +118,14 @@ test('a top-level background completion writes a bell and a nested one does not'
   // --- The completion is IN the transcript, where it completed --------
   // The bell is hidden on the strength of the completion rendering. The
   // launch row stays where it was as the immutable spawn record — label,
-  // a static `background` marker, the open-in-pane door, no status, no
-  // duration — and the agent's CARD sits at the completion point, after
+  // the backgrounded indicator icon (no text pill), the open-in-pane
+  // door, no duration — and the agent's CARD sits at the completion point, after
   // the turn's prose: status, duration, tool count, the transcript.
   const timeline = page.getByTestId('message-timeline-scroll');
   const spawnRow = timeline.locator('[data-item-id="tu-top"]');
-  await expect(spawnRow.getByTestId('agent-row')).toHaveAttribute('data-spawn-record', 'true');
   await expect(spawnRow.getByTestId('agent-row-preview')).toContainText('Top Runner');
-  await expect(spawnRow.getByTestId('agent-row-background')).toHaveText('background');
-  await expect(spawnRow.getByTestId('agent-row-status')).toHaveCount(0);
+  await expect(spawnRow.getByTestId('agent-row-status')).toHaveAttribute('data-state', 'backgrounded');
+  await expect(spawnRow.getByText('background', { exact: true })).toHaveCount(0);
   await expect(spawnRow.getByTestId('agent-row-duration')).toHaveText('');
   await expect(spawnRow.getByTestId('agent-row-open-pane')).toHaveCount(1);
   // The open-pane door sits LEFT of the timestamp (AGENTS.md Row Contract).
@@ -165,5 +164,5 @@ test('a top-level background completion writes a bell and a nested one does not'
   await expect(nestedCard.getByTestId('subagent-group-tools')).toHaveText('4 tools');
   // The nested launch's own spawn record sits in the body too, above its card.
   const nestedSpawnRow = topCard.locator('[data-item-id="tu-nested"]');
-  await expect(nestedSpawnRow.getByTestId('agent-row-background')).toHaveText('background');
+  await expect(nestedSpawnRow.getByTestId('agent-row-status')).toHaveAttribute('data-state', 'backgrounded');
 });

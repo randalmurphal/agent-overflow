@@ -180,7 +180,7 @@ describe('groupItemsBySubagent', () => {
     expect(nodes.map((node) => expectLeaf(node).item.id)).toEqual(['parent', 'child']);
   });
 
-  it('renders backgrounded Claude agents and Codex spawn rows as group cards', () => {
+  it('keeps a backgrounded Claude launch and a Codex spawn as leaves; only the Claude card exists, at its completion', () => {
     const nodes = groupItemsBySubagent([
       mkItem({
         id: 'background-agent',
@@ -209,20 +209,18 @@ describe('groupItemsBySubagent', () => {
       }),
     ]);
 
-    // A settled Claude background launch: spawn leaf at the launch, card at
-    // the completion. A Codex spawn keeps its card at the launch (its
-    // completion may be claimed by a wait group, so the launch is the one
-    // reliable position) — see `detachedLaunchIDs` in the grouping.
+    // A settled Claude background launch: its pre-card launch row at the
+    // launch, the card at the completion. A Codex spawn is never a card:
+    // its completion may be claimed by a wait group, and the user ruled
+    // its `launched` row stays exactly as it was — see `detachedLaunchIDs`
+    // in the grouping.
     expect(nodes.map((node) => timelineNodeItemId(node))).toEqual([
       'background-agent',
       'codex-agent',
       'complete:background-agent',
     ]);
     expectLeaf(nodes[0]);
-    const codexGroup = expectGroup(nodes[1]);
-    expect(codexGroup.parent.id).toBe('codex-agent');
-    expect(codexGroup.anchor.id).toBe('codex-agent');
-    expect(codexGroup.children).toEqual([]);
+    expect(expectLeaf(nodes[1]).item.id).toBe('codex-agent');
     const backgroundGroup = expectGroup(nodes[2]);
     expect(backgroundGroup.parent.id).toBe('background-agent');
     expect(backgroundGroup.anchor.id).toBe('complete:background-agent');
@@ -718,7 +716,7 @@ describe('groupItemsBySubagent', () => {
     }
   });
 
-  it('groups Codex spawn rows when spawn metadata lives in meta', () => {
+  it('recognises a Codex spawn when its metadata lives in meta: a leaf whose children stay withheld', () => {
     const nodes = groupItemsBySubagent([
       mkItem({
         id: 'codex-agent',
@@ -728,12 +726,21 @@ describe('groupItemsBySubagent', () => {
         payloadMeta: toolMeta({ lineCount: 1 }),
         meta: toolMeta({ toolName: 'collab_agent', input: { tool: 'spawn_agent' } }),
       }),
+      mkItem({
+        id: 'child-answer',
+        itemIndex: 1,
+        kind: 'assistant_text',
+        parentId: 'codex-agent',
+        summary: '0',
+      }),
     ]);
 
-    expect(expectGroup(nodes[0]).parent.id).toBe('codex-agent');
+    // Recognition is what withholds the child: an unrecognised parent
+    // would leave `child-answer` a flat top-level leaf.
+    expect(nodes.map((node) => expectLeaf(node).item.id)).toEqual(['codex-agent']);
   });
 
-  it('nests a Codex child prompt echo row inside its spawn card', () => {
+  it('withholds a Codex child prompt echo row from the main timeline', () => {
     const nodes = groupItemsBySubagent([
       mkItem({
         id: 'codex-agent',
@@ -753,15 +760,10 @@ describe('groupItemsBySubagent', () => {
       }),
     ]);
 
-    expect(nodes).toHaveLength(1);
-    const group = expectGroup(nodes[0]);
-    expect(group.parent.id).toBe('codex-agent');
-    expect(group.children.map((child) => expectLeaf(child).item.id)).toEqual([
-      'child-prompt',
-    ]);
+    expect(nodes.map((node) => expectLeaf(node).item.id)).toEqual(['codex-agent']);
   });
 
-  it('nests the whole Codex child transcript inside its spawn card', () => {
+  it('withholds the whole Codex child transcript from the main timeline', () => {
     const nodes = groupItemsBySubagent([
       mkItem({
         id: 'codex-agent',
@@ -805,21 +807,15 @@ describe('groupItemsBySubagent', () => {
       }),
     ]);
 
-    expect(nodes).toHaveLength(1);
-    const group = expectGroup(nodes[0]);
-    expect(group.parent.id).toBe('codex-agent');
-    expect(group.children.map((child) => expectLeaf(child).item.id)).toEqual([
-      'initial-prompt-echo',
-      'later-repeated-message',
-      'child-tool',
-      'child-answer',
-    ]);
-    expect(group.descendantCount).toBe(4);
+    // The spawn row is the pre-card `launched` leaf (user ruling
+    // 2026-08-23); what the child parents to it renders in the agent pane,
+    // never on the main timeline.
+    expect(nodes.map((node) => expectLeaf(node).item.id)).toEqual(['codex-agent']);
   });
 
-  it('nests a transitive descendant subtree under a Codex spawn anchor', () => {
-    // A grandchild whose parent is not itself the spawn anchor nests under
-    // its own parent's node, and never reaches the top level.
+  it('withholds a transitive descendant subtree under a Codex spawn', () => {
+    // A grandchild whose parent is not itself the spawn anchor resolves to
+    // the spawn all the same, and never reaches the top level.
     const nodes = groupItemsBySubagent([
       mkItem({
         id: 'codex-agent',
@@ -849,17 +845,11 @@ describe('groupItemsBySubagent', () => {
       }),
     ]);
 
-    expect(nodes).toHaveLength(1);
-    const group = expectGroup(nodes[0]);
-    expect(group.parent.id).toBe('codex-agent');
-    // `child-tool` is an ordinary command row, so the grandchild lands beside
-    // it inside the spawn card instead of leaking to the top level.
-    expect(group.children.map((child) => expectLeaf(child).item.id)).toEqual([
-      'child-tool',
-      'grandchild-tool',
-    ]);
-    expect(nodeContainsItem(nodes[0], 'child-tool')).toBe(true);
-    expect(nodeContainsItem(nodes[0], 'grandchild-tool')).toBe(true);
+    expect(nodes.map((node) => expectLeaf(node).item.id)).toEqual(['codex-agent']);
+    // A leaf claims only itself: a jump to a withheld row goes through
+    // `visibleTimelineItemIdForItem`, which maps it to the spawn row.
+    expect(nodeContainsItem(nodes[0], 'child-tool')).toBe(false);
+    expect(nodeContainsItem(nodes[0], 'grandchild-tool')).toBe(false);
   });
 
   it('maps hidden Codex child transcript rows back to their visible spawn row', () => {
@@ -1082,7 +1072,7 @@ describe('groupItemsBySubagent', () => {
     expect(group.children.map((node) => expectLeaf(node).item.id)).toEqual(['complete-spawn-1']);
   });
 
-  it('projects a persisted Codex spawn/wait sequence with the child transcript in the spawn card', () => {
+  it('projects a persisted Codex spawn/wait sequence: spawn leaf, wait group, child transcript withheld', () => {
     const nodes = groupItemsBySubagent([
       mkItem({
         id: 'spawn-review',
@@ -1176,16 +1166,10 @@ describe('groupItemsBySubagent', () => {
     ]);
 
     expect(nodes).toHaveLength(3);
-    const spawnGroup = expectGroup(nodes[0]);
-    expect(spawnGroup.parent.id).toBe('spawn-review');
-    expect(spawnGroup.children.map((node) => expectLeaf(node).item.id)).toEqual([
-      'child-prompt',
-      'child-progress',
-    ]);
+    expect(expectLeaf(nodes[0]).item.id).toBe('spawn-review');
     // The spawn's own completion carries `wait_carrier_id`, so the WAIT group
-    // claims it — a wait link always wins over the launch fold, or a finished
-    // wait would render with nothing under it.
-    expect(spawnGroup.completion).toBeUndefined();
+    // claims it — a wait link always wins, or a finished wait would render
+    // with nothing under it.
     const waitGroup = expectWaitGroup(nodes[1]);
     expect(waitGroup.parent.id).toBe('wait-review');
     expect(waitGroup.children.map((node) => expectLeaf(node).item.id)).toEqual([
@@ -1196,8 +1180,10 @@ describe('groupItemsBySubagent', () => {
     expect(nodeContainsItem(waitGroup, 'complete-wait-review')).toBe(true);
     expect(findTimelineNodeIndex(nodes, 'complete-wait-review')).toBe(1);
     expect(expectLeaf(nodes[2]).item.id).toBe('assistant-after-review');
-    expect(findTimelineNodeIndex(nodes, 'child-prompt')).toBe(0);
-    expect(findTimelineNodeIndex(nodes, 'child-progress')).toBe(0);
+    // The child transcript has no node of its own (see
+    // `visibleTimelineItemIdForItem` for how a jump to it lands on the spawn).
+    expect(findTimelineNodeIndex(nodes, 'child-prompt')).toBe(-1);
+    expect(findTimelineNodeIndex(nodes, 'child-progress')).toBe(-1);
   });
 
   it('nests target completions under a legacy camelCase wait carrier id', () => {

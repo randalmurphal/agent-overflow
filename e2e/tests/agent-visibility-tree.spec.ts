@@ -250,7 +250,7 @@ test('a depth-2 background agent nests under its parent card and indents in the 
   const timeline = page.getByTestId('message-timeline-scroll');
   const outerSpawnRow = timeline.locator('[data-item-id="tu-outer"]');
   await expect(outerSpawnRow.getByTestId('agent-row-preview')).toContainText('Outer Reviewer');
-  await expect(outerSpawnRow.getByTestId('agent-row-background')).toHaveText('background');
+  await expect(outerSpawnRow.getByTestId('agent-row-status')).toHaveAttribute('data-state', 'backgrounded');
   await expect(timeline.getByTestId('subagent-group')).toHaveCount(0);
   await expect(timeline.locator('[data-item-id="tu-inner"]')).toHaveCount(0);
 

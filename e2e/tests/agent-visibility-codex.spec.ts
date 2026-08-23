@@ -1,11 +1,12 @@
 // Agent visibility — the CODEX criterion
 // (docs/specs/agent-visibility.md § "Success criteria", item 6):
 //
-//   Codex `spawn_agent` children render with the same card and pane, with
-//   token counts from the child thread.
+//   Codex `spawn_agent` children open the same pane from their unchanged
+//   `launched` row, with token counts from the child thread (amended
+//   2026-08-23: a Codex spawn is never a card).
 //
-// "The same card and pane" is the load-bearing half: the assertions below
-// are the same testids the Claude specs use, on a thread whose provider is
+// "The same pane" is the load-bearing half: the pane assertions below are
+// the same testids the Claude specs use, on a thread whose provider is
 // Codex and whose launch row is a `collab_agent` tool call.
 //
 // The token count comes from the child THREAD's own
@@ -151,37 +152,39 @@ async function startSpawnTurn(
   return mockId;
 }
 
-test('a Codex spawn_agent child renders as the same card and pane, counting the child thread\u2019s tokens', async ({
+test('a Codex spawn_agent child keeps its launched row and opens the same pane, counting the child thread\u2019s tokens', async ({
   harness,
   page,
 }) => {
   const mockId = await startSpawnTurn(harness, page, 'codex-agent-app', 'Codex children');
 
-  // --- The same card ------------------------------------------------
+  // --- The launch row, unchanged --------------------------------------
+  // A Codex spawn is never a card (user ruling 2026-08-23): the row is the
+  // collab `launched` leaf it was before the card existed, plus the one
+  // approved addition, the open-in-pane door.
   const timeline = page.getByTestId('message-timeline-scroll');
-  const card = timeline.getByTestId('subagent-group').first();
-  await expect(card.getByTestId('subagent-group-kind')).toHaveText('agent');
-  await expect(card.getByTestId('subagent-group-label')).toContainText('reviewer');
-  // A Codex child is always its own thread — never awaited inline.
-  await expect(card).toHaveAttribute('data-background', 'true');
-  // ...and it can never be killed or backgrounded from here.
-  await expect(card.getByTestId('subagent-group-background-button')).toHaveCount(0);
+  const spawnRow = timeline.locator(`[data-item-id="${SPAWN_CALL}"]`);
+  await expect(spawnRow.getByTestId('collab-tool-row')).toHaveCount(1);
+  await expect(spawnRow).toContainText('reviewer');
+  await expect(timeline.getByTestId('subagent-group')).toHaveCount(0);
+  // The door sits LEFT of the status/duration columns (Row Contract).
+  await spawnRow.hover();
+  await expect(spawnRow.getByTestId('collab-tool-row-open-pane')).toBeVisible();
 
   // --- Tokens, from the child thread --------------------------------
   await waitForGate(harness, 'tokens');
   await advance(harness, mockId, 'tokens');
-  // The CUMULATIVE total (4321), not the round's 1200.
-  await expect(card.getByTestId('subagent-group-tokens')).toHaveText('4.3k tokens');
 
   // --- The same pane ------------------------------------------------
-  await card.getByTestId('subagent-group-open-pane').first().click();
+  await spawnRow.getByTestId('collab-tool-row-open-pane').click();
   const pane = page.getByTestId('companion-pane-agent-body');
   await expect(pane).toBeVisible();
   await expect(pane.getByTestId('agent-pane-model')).toBeVisible();
   await expect(pane.getByTestId('agent-pane-breadcrumb-entry')).toHaveCount(0);
   await expect(pane.getByTestId('agent-pane-breadcrumb-current')).toContainText('reviewer');
+  // The CUMULATIVE total (4321), not the round's 1200.
   await expect(pane.getByTestId('workspace-strip-usage')).toHaveText('4.3k');
-  // `close_agent` is a model tool, so the pane offers no Stop either.
+  // `close_agent` is a model tool, so the pane offers no Stop.
   await expect(pane.getByTestId('agent-pane-stop')).toHaveCount(0);
 
   // The pane body is EMPTY, and honestly so: Codex delivers none of a
@@ -190,39 +193,24 @@ test('a Codex spawn_agent child renders as the same card and pane, counting the 
   // the breadcrumb are the whole pane for a Codex child.
   await expect(pane.getByTestId('agent-pane-empty')).toBeVisible();
 
-  // --- The child's answer settles its card --------------------------
+  // --- The child's answer settles nothing on the launch row ---------
   await waitForGate(harness, 'answer');
   await advance(harness, mockId, 'answer');
   await harness.waitForEvent('provider:turn_completed');
-  await expect(card).toHaveAttribute('data-background', 'true');
-  await expect(card.getByTestId('subagent-group-duration')).toBeVisible();
-  // Nothing the child did leaked to the main timeline as the parent's.
-  await expect(timeline.getByTestId('subagent-group')).toHaveCount(1);
+  await expect(timeline.getByTestId('subagent-group')).toHaveCount(0);
+  await expect(spawnRow.getByTestId('collab-tool-row')).toHaveCount(1);
 });
 
 // Regression pin — a Codex child's FINAL_ANSWER must render.
 //
 // The answer arrives as the spawn launch's completion sibling, with the
 // text in `payloadMeta.preview` (kind `tool_completion`,
-// `completionOf: call_spawn_reviewer`). The grouping folds that sibling
-// onto the launch's card, and the card body renders CHILD rows — of
-// which a Codex child has none, because none of its transcript streams
-// to the parent. The migration table's "DELETE the ack-text rendering"
-// was right for Claude, whose completion text is a formulaic ack; for
-// Codex the same row IS the agent's answer, and this spec started as a
-// `test.fail()` documenting exactly that deletion.
-//
-// The fix it pins: `codexCompletionAnswer` renders the folded
-// completion's preview on the card (`subagent-group-final-answer`) and
-// in the pane (`agent-pane-final-answer`), gated to Codex launches.
-//
-// Since 2026-08-22 the fold is additive — the completion sibling ALSO
-// keeps its own row at the completion point (see
-// docs/specs/agent-visibility.md, "always renders as its own row"), and
-// for Codex that row is the collab completion row carrying the same
-// preview. So the answer is readable in two places, and both are pinned:
-// the card (the agent's result, where a reader looks for it) and the
-// in-sequence row (the only evidence at the point it finished).
+// `completionOf: call_spawn_reviewer`). Codex delivers none of the
+// child's transcript to the parent, so that preview is the child's whole
+// product. It renders in two places, both pinned: the collab completion
+// row at the point it finished (the pre-card rendering, unchanged) and
+// the agent pane (`agent-pane-final-answer`, `codexCompletionAnswer`),
+// reached through the launch row's door.
 test('a Codex child\u2019s FINAL_ANSWER is readable somewhere in the UI', async ({
   harness,
   page,
@@ -235,11 +223,15 @@ test('a Codex child\u2019s FINAL_ANSWER is readable somewhere in the UI', async 
   await harness.waitForEvent('provider:turn_completed');
 
   const timeline = page.getByTestId('message-timeline-scroll');
-  const card = timeline.getByTestId('subagent-group').first();
-  await card.getByTestId('subagent-group-toggle').first().click();
-  await expect(card.getByTestId('subagent-group-final-answer')).toContainText(FINAL_ANSWER);
   const completionRow = timeline.locator(`[data-item-id^="complete:${SPAWN_CALL}"]`);
   await expect(completionRow).toHaveCount(1);
   await expect(completionRow).toContainText(FINAL_ANSWER);
+  await expect(page.getByText(FINAL_ANSWER)).toHaveCount(1);
+
+  const spawnRow = timeline.locator(`[data-item-id="${SPAWN_CALL}"]`);
+  await spawnRow.hover();
+  await spawnRow.getByTestId('collab-tool-row-open-pane').click();
+  const pane = page.getByTestId('companion-pane-agent-body');
+  await expect(pane.getByTestId('agent-pane-final-answer')).toContainText(FINAL_ANSWER);
   await expect(page.getByText(FINAL_ANSWER)).toHaveCount(2);
 });
