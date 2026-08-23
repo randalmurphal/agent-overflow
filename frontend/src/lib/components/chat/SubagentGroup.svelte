@@ -360,10 +360,15 @@
     return `${descendantCount} ${descendantCount === 1 ? 'timeline entry' : 'timeline entries'} inside this subagent group`;
   });
 
-  // ---- Expanded-body digest (spec Q2) --------------------------------
-  // The body shows the node's tool calls, its FINAL text, and collapsed
-  // child cards. Thinking and intermediate text live in the agent pane —
-  // that filter is also what keeps the body short enough to render
+  // ---- Expanded-body digest (spec Q2; user ruling 2026-08-23) --------
+  // The body is what the agent was asked, what it did, and what it
+  // produced — an ALLOWLIST, not a denylist: the initial prompt (the
+  // first user_text — Codex echoes the spawn prompt as one), its tool
+  // calls, a provider refusal's reason (the only place "why a tool did
+  // not run" lives), errors, nested child cards, and its FINAL text.
+  // Everything else — thinking, intermediate prose, later prompts,
+  // progress chatter, compaction, retries — lives in the agent pane.
+  // That filter is also what keeps the body short enough to render
   // uncapped (the old max-height + fade scroller is deleted, Q6).
   let bodyNodes = $derived.by<TimelineNode[]>(() => {
     // "Final text" exists only where a final answer can: while the agent
@@ -374,19 +379,32 @@
     // main chat history).
     const keepFinalText = isRunning || completionStatus !== 'failure';
     let lastTextId = '';
-    if (keepFinalText) {
-      for (const node of group.children) {
-        if (node.kind === 'leaf' && node.item.kind === 'assistant_text') {
-          lastTextId = node.item.id;
-        }
-      }
+    let firstPromptId = '';
+    for (const node of group.children) {
+      if (node.kind !== 'leaf') continue;
+      if (keepFinalText && node.item.kind === 'assistant_text') lastTextId = node.item.id;
+      if (!firstPromptId && node.item.kind === 'user_text') firstPromptId = node.item.id;
     }
     return group.children.filter((node) => {
       if (node.kind !== 'leaf') return true;
-      const kind = node.item.kind;
-      if (kind === 'thinking') return false;
-      if (kind === 'assistant_text') return node.item.id === lastTextId;
-      return true;
+      const item = node.item;
+      switch (item.kind) {
+        case 'tool_call':
+        case 'tool_completion':
+        case 'error':
+        case 'api_error':
+          return true;
+        case 'user_text':
+          return item.id === firstPromptId;
+        case 'assistant_text':
+          return item.id === lastTextId;
+        case 'notification': {
+          const kind = parseJsonObject(item.meta)?.kind ?? item.toolName;
+          return kind === 'permission_denied';
+        }
+        default:
+          return false;
+      }
     });
   });
 </script>

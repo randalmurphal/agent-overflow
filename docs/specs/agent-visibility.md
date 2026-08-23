@@ -27,8 +27,12 @@ launch, how do progress and terminal signals arrive, which controls exist
 - Collapsed row: kind chip (`agent` / `skill`), name, status pill,
   elapsed, tool count, current activity line; tokens when the row has
   room, hidden under a container-width breakpoint (Q1).
-- Expanded body: the node's tool calls + its final text; thinking and
-  intermediate text live in the pane. A spawned child shows as a
+- Expanded body is an allowlist (ruling 2026-08-23): the initial prompt
+  (first `user_text`), tool call rows, a provider refusal's reason
+  (`permission_denied` notification), error rows, nested child cards,
+  and the final text. Thinking, intermediate prose, later prompts,
+  progress chatter, compaction, and retries live in the pane; any of
+  them rendering in a card body is a bug. A spawned child shows as a
   collapsed child card inside the parent's body (Q2, Q3).
 - Pane = new companion kind `agent` with a scope (launch item id),
   rendered by the thread renderer filtered to `parent_id == scope`.

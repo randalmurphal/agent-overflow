@@ -375,17 +375,44 @@ describe('<SubagentGroup>', () => {
     await waitFor(() => expect(queryAllByTestId('leaf')).toHaveLength(0));
   });
 
-  it('expanded body is a digest: tool calls + final text; thinking and intermediate text stay out', async () => {
+  it('expanded body is a digest: initial prompt + tool calls + denial reasons + final text; everything else stays out', async () => {
+    // An allowlist (user ruling 2026-08-23): what the agent was asked,
+    // what it did, what it produced. Thinking, intermediate prose, later
+    // prompts, progress chatter, compaction and retries are the pane's.
     const group = mkGroup({
       parentId: 'p1',
       children: [
+        mkLeaf('prompt-1', 'Inspect the parser', 'user_text'),
         mkLeaf('think-1', 'pondering', 'thinking'),
         mkToolLeaf('tool-1', 'Bash: build'),
         mkLeaf('text-1', 'intermediate note'),
+        {
+          kind: 'leaf',
+          item: mkItem({
+            id: 'deny-1',
+            kind: 'notification',
+            role: 'system',
+            summary: 'Permission to use Bash denied',
+            meta: JSON.stringify({ kind: 'permission_denied' }),
+          }),
+        },
+        {
+          kind: 'leaf',
+          item: mkItem({
+            id: 'bell-1',
+            kind: 'notification',
+            role: 'system',
+            summary: 'Background task finished',
+            meta: JSON.stringify({ kind: 'background_task' }),
+          }),
+        },
+        mkLeaf('retry-1', 'retrying', 'api_retry'),
+        mkLeaf('compact-1', 'compacted', 'compaction'),
+        mkLeaf('prompt-2', 'Repeated prompt', 'user_text'),
         mkToolLeaf('tool-2', 'Read: file'),
         mkLeaf('text-2', 'final report'),
       ],
-      descendantCount: 5,
+      descendantCount: 11,
     });
     const { getByRole, getAllByTestId } = render(SubagentGroupTestHarness, {
       props: { group },
@@ -394,7 +421,7 @@ describe('<SubagentGroup>', () => {
     await fireEvent.click(getByRole('button'));
 
     const ids = getAllByTestId('leaf').map((el) => el.getAttribute('data-id'));
-    expect(ids).toEqual(['tool-1', 'tool-2', 'text-2']);
+    expect(ids).toEqual(['prompt-1', 'tool-1', 'deny-1', 'tool-2', 'text-2']);
   });
 
   it('drops the final-text slot when the agent was killed — mid-flight prose is not an answer', async () => {
