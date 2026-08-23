@@ -6,7 +6,8 @@
 //
 // Frame geometry is baked here rather than measured at runtime — the
 // numbers are verified against the committed PNGs by
-// catalog.browser.test.ts, so a re-exported strip that disagrees fails
+// spinnerRail.browser.test.ts, which also proves no frame carries a
+// piece of its neighbour, so a re-exported strip that disagrees fails
 // the gate instead of rendering a smeared cycle.
 //
 // Custom sprites from <configDir>/spinners/ carry the same fields via
@@ -59,8 +60,8 @@ export const BUILTIN_SPRITES: readonly SpinnerSprite[] = [
   sprite('robo-papers', 'Robot · hauling paperwork', roboPapers, 6, 200, 84),
   sprite('robo-repair', 'Robot · wrench and gears', roboRepair, 6, 200, 72),
   sprite('robo-dash', 'Robot · jet dash', roboDash, 6, 160, 100),
-  sprite('robo-collapse', 'Robot · collapse and recover', roboCollapse, 6, 260, 95),
-  sprite('robo-marathon', 'Robot · all thirty poses', roboMarathon, 30, 150, 84),
+  sprite('robo-collapse', 'Robot · collapse and recover', roboCollapse, 7, 260, 95),
+  sprite('robo-marathon', 'Robot · all thirty-one poses', roboMarathon, 31, 150, 84),
   sprite('robo-jam', 'Robot · full dance set', roboJam, 9, 105, 72),
   sprite('robo-dance', 'Robot · dancing', roboDance, 4, 140, 72),
   sprite('robo-twerk', 'Robot · butt wiggle', roboTwerk, 4, 140, 72),

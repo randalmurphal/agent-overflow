@@ -50,12 +50,67 @@ function decode(src: string): Promise<{ width: number; height: number }> {
   });
 }
 
+/** Alpha channel of one strip, row-major, via a canvas readback. */
+function alphaPlane(src: string): Promise<{ width: number; height: number; alpha: Uint8ClampedArray }> {
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => {
+      const canvas = document.createElement('canvas');
+      canvas.width = image.naturalWidth;
+      canvas.height = image.naturalHeight;
+      const ctx = canvas.getContext('2d')!;
+      ctx.drawImage(image, 0, 0);
+      const { data } = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      const alpha = new Uint8ClampedArray(canvas.width * canvas.height);
+      for (let i = 0; i < alpha.length; i += 1) alpha[i] = data[i * 4 + 3]!;
+      resolve({ width: canvas.width, height: canvas.height, alpha });
+    };
+    image.onerror = () => reject(new Error(`failed to decode ${src}`));
+    image.src = src;
+  });
+}
+
+// Strips whose art runs to the cell edge BY DESIGN: a looping rainbow
+// trail (nyan) or a body framed flush against its cell (the parrot GIFs).
+// Every other strip is a pose centred in its cell with empty columns on
+// both sides, so content on BOTH sides of an internal boundary means one
+// frame carries a piece of its neighbour.
+const EDGE_ART_BY_DESIGN = new Set(['nyan-cat', 'nyan-parrot', 'party-parrot', 'party-parrot-classic']);
+
 describe('committed sprite strips', () => {
   it('every catalog entry matches its PNG geometry', async () => {
     for (const sprite of BUILTIN_SPRITES) {
       const { width, height } = await decode(sprite.src);
       expect(height, sprite.id).toBe(sprite.frameHeight);
       expect(width, sprite.id).toBe(sprite.frames * sprite.frameWidth);
+    }
+  });
+
+  it('no frame carries a piece of its neighbour', async () => {
+    // Field bug 2026-08-22: the activity sheet these robots were cut from
+    // is not a uniform grid (its last row holds seven poses), and filing
+    // components by grid cell put two robots in one cell — the frame then
+    // showed a sliver of the second at its edge. Debris clipped by a frame
+    // edge (a paper sheet, a gear) renders as the same kind of dark bar.
+    // The extractor now files by pose and drops edge-clipped debris
+    // whole; this pins the result on the committed bytes.
+    for (const sprite of BUILTIN_SPRITES) {
+      if (EDGE_ART_BY_DESIGN.has(sprite.id)) continue;
+      const { width, height, alpha } = await alphaPlane(sprite.src);
+      const opaqueRows = (x: number): number => {
+        let n = 0;
+        for (let y = 0; y < height; y += 1) if (alpha[y * width + x]! > 40) n += 1;
+        return n;
+      };
+      for (let frame = 0; frame + 1 < sprite.frames; frame += 1) {
+        const right = opaqueRows(frame * sprite.frameWidth + sprite.frameWidth - 1);
+        const left = opaqueRows((frame + 1) * sprite.frameWidth);
+        expect(
+          right > 0 && left > 0,
+          `${sprite.id}: content on both sides of the ${frame}|${frame + 1} boundary (${right} and ${left} opaque rows)`,
+        ).toBe(false);
+      }
+      expect(opaqueRows(width - 1), `${sprite.id}: last frame clipped at the strip edge`).toBe(0);
     }
   });
 });
