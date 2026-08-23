@@ -230,10 +230,11 @@ export function tickIndexFromPointer(offsetY: number, heightPx: number, count: n
 }
 
 /**
- * Fisheye horizontal scale by distance from the hovered tick. Transform
- * only — the tick's box never changes size, so hover costs no layout
- * (the perf lesson from t3-code's minimap, whose width-transition
- * version kept a style/layout/paint pipeline alive during scroll).
+ * Fisheye horizontal scale by distance from the hovered tick, as a
+ * fraction of the full (hovered) width. Transform only — the tick's box
+ * never changes size, so hover costs no layout (the perf lesson from
+ * t3-code's minimap, whose width-transition version kept a
+ * style/layout/paint pipeline alive during scroll).
  * `null` distance means "no hover": every tick rests.
  */
 export function tickDistanceScale(distance: number | null): number {
@@ -247,6 +248,38 @@ export function tickDistanceScale(distance: number | null): number {
     default:
       return 0.38;
   }
+}
+
+/** A hovered tick's width; every other scale is a fraction of this. */
+export const TICK_FULL_WIDTH_PX = 24;
+
+/**
+ * A tick's INTRINSIC width is its resting width, and the fisheye scales
+ * UP from it, so a tick at rest carries no transform at all
+ * (`tickTransform(null) === ''`). The inverse form — full width, rest
+ * expressed as `scaleX(0.38)` — made every mounted tick a non-2D
+ * transform paint-property node, and Chromium re-allocates a
+ * `GeometryMapperTransformCache::PlaneRootTransform` for each such
+ * node whenever any transform or scroll offset changes anywhere in the
+ * page: ~540 ticks × 288B per scroll frame, 25.8MB of Oilpan garbage
+ * per 14s of scrolling (measured 2026-08-23), committed heap pages that
+ * the renderer never gave back. Only the ticks inside the fisheye hold
+ * a transform, and only while the pointer is on the rail.
+ */
+export const TICK_REST_WIDTH_PX = Math.round(TICK_FULL_WIDTH_PX * tickDistanceScale(null) * 100) / 100;
+
+const FISHEYE_TRANSFORMS: readonly string[] = [0, 1, 2].map(
+  (distance) => `scaleX(${(tickDistanceScale(distance) / tickDistanceScale(null)).toFixed(4)})`,
+);
+
+/**
+ * The inline transform for a tick at `distance` from the hovered tick:
+ * a scale relative to the RESTING width, empty at rest. Precomputed so
+ * a fisheye sweep re-renders ticks without allocating.
+ */
+export function tickTransform(distance: number | null): string {
+  if (distance === null || distance >= FISHEYE_TRANSFORMS.length) return '';
+  return FISHEYE_TRANSFORMS[distance];
 }
 
 /**

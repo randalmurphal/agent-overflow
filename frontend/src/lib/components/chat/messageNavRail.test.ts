@@ -13,8 +13,11 @@ import {
   railHeightPx,
   railMaxClipPx,
   railOverflows,
+  TICK_FULL_WIDTH_PX,
+  TICK_REST_WIDTH_PX,
   tickDistanceScale,
   tickFraction,
+  tickTransform,
   tickIndexFromPointer,
   tickNearestCenter,
   tickRangeInView,
@@ -191,6 +194,23 @@ describe('rail geometry', () => {
     expect(tickDistanceScale(99)).toBe(tickDistanceScale(3));
     // null = no hover: every tick rests.
     expect(tickDistanceScale(null)).toBe(tickDistanceScale(3));
+  });
+
+  // A resting tick must carry NO transform: with one on every mounted
+  // tick, Chromium re-allocated a PlaneRootTransform per tick on every
+  // scroll frame (the 2026-08-23 Oilpan ratchet). The fisheye scales up
+  // from the intrinsic resting width instead.
+  it('a tick at rest has no transform; the fisheye scales up from the resting width', () => {
+    expect(tickTransform(null)).toBe('');
+    expect(tickTransform(3)).toBe('');
+    expect(tickTransform(99)).toBe('');
+    expect(TICK_REST_WIDTH_PX).toBeCloseTo(TICK_FULL_WIDTH_PX * tickDistanceScale(null));
+    for (const distance of [0, 1, 2]) {
+      const match = /^scaleX\(([\d.]+)\)$/.exec(tickTransform(distance));
+      expect(match, `distance ${distance}`).not.toBeNull();
+      const rendered = Number(match![1]) * TICK_REST_WIDTH_PX;
+      expect(rendered).toBeCloseTo(TICK_FULL_WIDTH_PX * tickDistanceScale(distance), 2);
+    }
   });
 });
 

@@ -17,6 +17,7 @@ import type { Item } from '../../types/models';
 import type { TimelineNode } from '../../utils/subagentGrouping';
 import { createThreadPane, type ThreadPane } from '../../stores/thread.svelte';
 import MessageNavRail from './MessageNavRail.svelte';
+import { TICK_REST_WIDTH_PX } from './messageNavRail';
 
 function item(partial: Partial<Item>): Item {
   return {
@@ -83,6 +84,16 @@ describe('MessageNavRail', () => {
   it('hides entirely for a lone fully-loaded message', () => {
     const { queryByTestId } = renderRail({ nodes: [leaf({ id: 'u1', summary: 'only' })] });
     expect(queryByTestId('message-nav-rail')).toBeNull();
+  });
+
+  it('a resting tick carries its width in its box and no inline transform', () => {
+    const { getByTestId } = renderRail({ pane: makePane(), nodes: threeMessageNodes });
+    const ticks = getByTestId('message-nav-rail').querySelectorAll<HTMLElement>('[data-current]');
+    expect(ticks.length).toBe(3);
+    for (const el of ticks) {
+      expect(el.style.transform).toBe('');
+      expect(el.style.width).toBe(`${TICK_REST_WIDTH_PX}px`);
+    }
   });
 
   it('renders baseline ticks for unloaded history, spliced under the window', async () => {

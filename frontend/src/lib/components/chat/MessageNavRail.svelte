@@ -53,9 +53,10 @@
     previewTranslateYPercent,
     railHeightPx,
     railOverflows,
-    tickDistanceScale,
+    TICK_REST_WIDTH_PX,
     tickFraction,
     tickIndexFromPointer,
+    tickTransform,
     turnPreview,
     type BaselineTick,
     type NavTickPreview,
@@ -98,11 +99,10 @@
   // sweep across the rail must not fan out one request per tick.
   const REMOTE_PREVIEW_DEBOUNCE_MS = 120;
   // The gap dot's x: centered on the RESTING tick's visual span. Ticks
-  // are left-3 (12px) + w-6 (24px) scaled from the left edge by the
-  // resting fisheye scale, so their at-rest center is 12 + 24·rest/2.
-  // Rest-state on purpose — the magnify effect is transient and the dot
-  // deliberately does not track it.
-  const MARKER_CENTER_X_PX = 12 + (24 * tickDistanceScale(null)) / 2;
+  // are left-3 (12px) + their resting width, so their at-rest center is
+  // 12 + rest/2. Rest-state on purpose — the magnify effect is transient
+  // and the dot deliberately does not track it.
+  const MARKER_CENTER_X_PX = 12 + TICK_REST_WIDTH_PX / 2;
 
   // ============================================================
   // Tick sourcing: store baseline + loaded-window splice
@@ -479,7 +479,10 @@
          rail-anchored. Ticks are decorative — the hit strip
          owns the events. The tick transition is transform-ONLY: the
          current fill flips from the scroll path and must not start
-         animations there. -->
+         animations there. A tick at REST has no transform (its box is
+         its resting width; `-mt-px` is the vertical centering the old
+         translateY(-50%) did) — see `tickTransform` for why a resting
+         transform on every tick was a renderer-wide memory cost. -->
     <div
       class="absolute left-0 w-full"
       style:top={railTop}
@@ -502,9 +505,10 @@
             <div
               use:sync.registerTick={i}
               data-current="false"
-              class="absolute left-3 h-0.5 w-6 origin-left rounded-full bg-border-strong transition-transform duration-150 motion-reduce:transition-none data-[current=true]:bg-accent"
+              class="absolute left-3 -mt-px h-0.5 origin-left rounded-full bg-border-strong transition-transform duration-150 motion-reduce:transition-none data-[current=true]:bg-accent"
               style:top={`${tickFraction(i, ticks.length) * 100}%`}
-              style:transform={`translateY(-50%) scaleX(${tickScale(i)})`}
+              style:width={`${TICK_REST_WIDTH_PX}px`}
+              style:transform={tickStyleTransform(i)}
             ></div>
           {/each}
 
