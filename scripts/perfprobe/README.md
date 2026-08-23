@@ -35,6 +35,10 @@ All probes are read-only except `ab`, which injects a CSS override and can drive
 synthetic wheel scrolling. It refuses port 9223 without `--allow-user-app` because
 that is the port of the app somebody is actually using.
 
+`sample --detached` adds a `Runtime.queryObjects` node census, which runs a full
+memory-reducing GC on every tick and so changes the memory it reports. Keep it off for
+footprint-over-time curves; use `detached` or a heap snapshot for retention questions.
+
 Only one tracing session can exist on the browser target at a time, so `memdump`,
 `sample`, `churn`, `tiles`, `frames` and `ab` must not run concurrently.
 
