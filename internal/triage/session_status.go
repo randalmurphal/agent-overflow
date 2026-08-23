@@ -64,7 +64,7 @@ func (r *Router) handleSessionDied(evt provider.ProviderEvent) error {
 
 	info := decodeProcessExitInfo(evt.Meta)
 
-	turnIndex := r.timelineNotificationTurnIndex(evt.ThreadID)
+	turnIndex := r.timelineNotificationTurnIndex(evt)
 	deathID := sessionDiedNotificationID(turnIndex)
 	wasNew, err := r.persistTimelineNotificationWithID(evt, deathID, sessionDiedNotificationKind, sessionDiedSummary(info))
 	if err != nil {

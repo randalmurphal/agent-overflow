@@ -87,6 +87,26 @@ func sidechainToolResultRow(uuid, parent, toolUseID, content string, seconds int
 	}
 }
 
+func sidechainCompactRow(uuid, parent string, seconds int) map[string]any {
+	return map[string]any{
+		"type": "system", "subtype": "compact_boundary", "uuid": uuid, "parentUuid": parent,
+		"isSidechain": true, "timestamp": sidechainStamp(seconds),
+		"content":         "Conversation compacted",
+		"compactMetadata": map[string]any{"trigger": "auto", "preTokens": 120000},
+	}
+}
+
+func sidechainAPIErrorRow(uuid, parent, messageID, enum string, seconds int) map[string]any {
+	return map[string]any{
+		"type": "assistant", "uuid": uuid, "parentUuid": parent, "isSidechain": true,
+		"isApiErrorMessage": true, "timestamp": sidechainStamp(seconds),
+		"message": map[string]any{
+			"role": "assistant", "id": messageID, "model": "claude-test-1", "error": enum,
+			"content": []any{map[string]any{"type": "text", "text": "API Error: " + enum}},
+		},
+	}
+}
+
 // fullAgentTranscript is the shared fixture: text, a tool call, its
 // result, and a closing text — four rows the live stream may have
 // delivered any prefix of.
@@ -622,5 +642,131 @@ func TestSubagentTranscriptBackfillSkipsABackgroundCommand(t *testing.T) {
 	}
 	if state := decodeItemMetaMap(t, sibling.Meta)["notification_output_state"]; state != "loaded" {
 		t.Fatalf("sibling output state = %v, want loaded", state)
+	}
+}
+
+// ---------------------------------------------------------------------
+// A subagent's events never reach the main agent's thread.
+// ---------------------------------------------------------------------
+
+// A subagent's compaction is the subagent's business: replayed from its
+// transcript it lands as a row under the launch, on the launch's turn,
+// and the main thread sees nothing — no top-level "Context compacted",
+// no context-meter write, no usage frame.
+func TestSubagentTranscriptBackfillKeepsACompactionUnderTheLaunch(t *testing.T) {
+	router, st, emissions := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	seedOpenTurn(t, router, st, "t1", 0)
+
+	startAgentLaunch(t, router, "t1", "agent-compact", "", "task-compact")
+	deliverSubagentBlock(t, router, "t1", "agent-compact", "msg_open#0", "text", "reading the file first")
+	// The main agent has moved on by the time the agent's terminal lands.
+	seedOpenTurn(t, router, st, "t1", 1)
+	emissions.reset()
+
+	transcript := writeSubagentTranscript(t, "agent-compact.jsonl",
+		sidechainPromptRow("s1", "the task prompt", 1),
+		sidechainTextRow("s2", "s1", "msg_open", "reading the file first", 2),
+		sidechainTextRow("s3", "s2", "msg_mid", "still reading", 3),
+		sidechainCompactRow("s4", "s3", 4),
+		sidechainTextRow("s5", "s4", "msg_close", "done after compacting", 5),
+	)
+	stashAgentTerminal(t, router, "t1", "agent-compact", "task-compact")
+	notifyAgent(t, router, "t1", "agent-compact", "task-compact", transcript, nil)
+	router.WaitForPendingSettles()
+
+	children := childrenOfLaunch(t, st, "t1", "agent-compact", 0)
+	var compaction *store.Item
+	for i := range children {
+		if children[i].Kind == "compaction" {
+			compaction = &children[i]
+		}
+	}
+	if compaction == nil {
+		t.Fatalf("the subagent's compaction must replay under its launch, children = %v", childIDs(children))
+	}
+	if compaction.TurnIndex != 0 {
+		t.Fatalf("compaction row landed on turn %d, want the launch's turn 0", compaction.TurnIndex)
+	}
+	for _, turn := range []int{0, 1} {
+		items, err := st.ListTurnItemsSansPayload("t1", turn)
+		if err != nil {
+			t.Fatalf("list turn %d: %v", turn, err)
+		}
+		for _, item := range items {
+			if item.Kind == "compaction" && item.ParentID == "" {
+				t.Fatalf("a subagent's compaction leaked onto the main timeline at turn %d: %+v", turn, item)
+			}
+		}
+	}
+	thread, err := st.GetThread("t1")
+	if err != nil {
+		t.Fatalf("get thread: %v", err)
+	}
+	if thread.LastTokenUsage != "" {
+		t.Fatalf("a subagent's compaction must not touch the thread's meter, got %q", thread.LastTokenUsage)
+	}
+	if got := len(filterEmissions(emissions.snapshot(), "provider:usage")); got != 0 {
+		t.Fatalf("a subagent's compaction must emit no usage frame, got %d", got)
+	}
+}
+
+// A transcript error is history: it happened inside a detached agent and
+// the CLI never ended the main turn for it. Replayed, it persists as the
+// agent's own api_error row under the launch and leaves the thread's
+// current turn — and everything running in it — untouched.
+func TestSubagentTranscriptBackfillNeverReplaysAnErrorAsFatal(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	seedOpenTurn(t, router, st, "t1", 0)
+
+	startAgentLaunch(t, router, "t1", "agent-err", "", "task-err")
+	deliverSubagentBlock(t, router, "t1", "agent-err", "msg_open#0", "text", "reading the file first")
+
+	// The main agent is mid-tool on a later turn when the notification
+	// arrives — exactly what a fatal replay would wreck.
+	seedOpenTurn(t, router, st, "t1", 1)
+	mainTool, _ := json.Marshal(map[string]any{
+		"toolName": "Read", "input": map[string]any{"file_path": "/repo/b.go"},
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "toolu_main_read",
+		ItemType: "Read", Meta: mainTool, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("main tool start: %v", err)
+	}
+
+	transcript := writeSubagentTranscript(t, "agent-err.jsonl",
+		sidechainPromptRow("s1", "the task prompt", 1),
+		sidechainTextRow("s2", "s1", "msg_open", "reading the file first", 2),
+		sidechainTextRow("s3", "s2", "msg_mid", "still reading", 3),
+		sidechainAPIErrorRow("s4", "s3", "msg_err", "rate_limit", 4),
+	)
+	stashAgentTerminal(t, router, "t1", "agent-err", "task-err")
+	notifyAgent(t, router, "t1", "agent-err", "task-err", transcript, nil)
+	router.WaitForPendingSettles()
+
+	children := childrenOfLaunch(t, st, "t1", "agent-err", 0)
+	var apiError *store.Item
+	for i := range children {
+		if children[i].Kind == itemKindAPIError {
+			apiError = &children[i]
+		}
+	}
+	if apiError == nil {
+		t.Fatalf("the agent's API error must replay as its own api_error row, children = %v", childIDs(children))
+	}
+	if fatal, _ := decodeItemMetaMap(t, apiError.Meta)["fatal"].(bool); fatal {
+		t.Fatalf("a replayed error must not be fatal, meta = %s", apiError.Meta)
+	}
+	mainRow, ok, err := st.GetThreadItem("t1", "toolu_main_read")
+	if err != nil || !ok {
+		t.Fatalf("lookup main tool: ok=%v err=%v", ok, err)
+	}
+	if mainRow.Status != statusRunning {
+		t.Fatalf("a subagent's error flipped the main turn's running tool to %q", mainRow.Status)
+	}
+	if turn, err := router.currentTurnIndex("t1"); err != nil || turn != 1 {
+		t.Fatalf("the main turn must still be open at 1, got %d err=%v", turn, err)
 	}
 }

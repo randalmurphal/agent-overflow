@@ -232,7 +232,7 @@ func (r *Router) handleTimelineNotification(evt provider.ProviderEvent) error {
 }
 
 func (r *Router) persistTimelineNotification(evt provider.ProviderEvent, notificationKind, summary string) error {
-	turnIndex := r.timelineNotificationTurnIndex(evt.ThreadID)
+	turnIndex := r.timelineNotificationTurnIndex(evt)
 	itemID := eventItemID(evt)
 	if strings.TrimSpace(itemID) == "" {
 		itemID = NotificationItemID(turnIndex, r.nextNotificationSequence(evt.ThreadID, turnIndex))
@@ -253,7 +253,7 @@ func (r *Router) persistTimelineNotificationWithID(evt provider.ProviderEvent, i
 	if notificationKind == "" {
 		notificationKind = "notification"
 	}
-	turnIndex := r.timelineNotificationTurnIndex(evt.ThreadID)
+	turnIndex := r.timelineNotificationTurnIndex(evt)
 	now := eventTimestampMillis(evt)
 	item := store.Item{
 		ID:        itemID,
@@ -284,8 +284,14 @@ func (r *Router) persistTimelineNotificationWithID(evt provider.ProviderEvent, i
 	return !found, nil
 }
 
-func (r *Router) timelineNotificationTurnIndex(threadID string) int {
-	turnIndex, err := r.currentTurnIndex(threadID)
+// timelineNotificationTurnIndex is the turn a system-row (notification,
+// command result, session death) belongs to: the thread's current turn,
+// or the LAUNCH's turn for a row scoped to a subagent (invariant 10 —
+// the two differ once a detached agent's transcript is replayed after
+// the main turn moved on). 0 when no turn can be resolved, matching every
+// other timeline-notification writer.
+func (r *Router) timelineNotificationTurnIndex(evt provider.ProviderEvent) int {
+	turnIndex, err := r.turnIndexForEvent(evt)
 	if err == nil {
 		return turnIndex
 	}

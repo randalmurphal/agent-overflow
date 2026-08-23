@@ -118,7 +118,7 @@ func (r *Router) handleCommandResult(evt provider.ProviderEvent) error {
 		return nil
 	}
 
-	turnIndex := r.timelineNotificationTurnIndex(evt.ThreadID)
+	turnIndex := r.timelineNotificationTurnIndex(evt)
 	itemID := commandResultItemID(evt, turnIndex, r)
 	now := eventTimestampMillis(evt)
 

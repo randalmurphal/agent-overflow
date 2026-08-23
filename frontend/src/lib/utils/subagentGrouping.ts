@@ -14,25 +14,26 @@
 //
 // Rules:
 //   - Normal rows always stay leaves.
-//   - EVERY subagent launch is a group node from first render, before any
-//     child activity arrives — Claude `Agent`/`Task` (awaited or async), a
-//     forked `Skill`, a §E6 `SendMessage` resume carrier, and a Codex
-//     `spawn_agent`. One predicate decides
-//     (`utils/subagentLaunch.ts#subagentLaunchInfo`); nothing here knows a
-//     tool name. A launch nested inside another launch becomes a nested
-//     group, recursively.
-//     This replaced a "suppressed leaf" path that withheld a backgrounded
-//     or Codex launch's whole descendant subtree from the timeline and let
-//     the completion sibling carry the outcome. Every node is now
-//     inspectable in place (docs/specs/agent-visibility.md), so there is
-//     nothing left to withhold.
-//   - A launch's background completion sibling (the Go `complete:<id>` row —
-//     `kind:'tool_completion'`, `completionOf` = the launch, EMPTY parentId)
-//     folds into its launch's group node as `completion` and is dropped from
-//     the top level, the same way a Codex `wait_group` folds its `wait_agent`
-//     completion. At a page boundary where the launch is outside the loaded
-//     window the completion stays a top-level leaf, so a finished background
-//     agent still renders something.
+//   - Every subagent launch gets ONE card (a `group` node) — Claude
+//     `Agent`/`Task` (awaited or async), a forked `Skill`, a §E6
+//     `SendMessage` resume carrier, and a Codex `spawn_agent`. One
+//     predicate decides (`utils/subagentLaunch.ts#subagentLaunchInfo`);
+//     nothing here knows a tool name. A launch nested inside another
+//     launch becomes a nested group, recursively.
+//   - WHERE the card sits depends on whether the launch runs detached
+//     (`launchRunsDetached`: a background / async Claude launch, one
+//     backgrounded mid-flight, every Codex spawn):
+//       - an AWAITED launch is the card from first render, anchored on
+//         the launch row itself (`anchor === parent`);
+//       - a DETACHED launch keeps its pre-card launch row as a plain leaf
+//         (ruling 2026-08-23: that row is immutable — the only addition is
+//         the open-pane door) and its card renders at its COMPLETION
+//         sibling (the Go `complete:<id>` row, `completionOf` = the
+//         launch), with `anchor` = that sibling and the launch's whole
+//         subtree as children. No card exists while the agent runs; the
+//         tray and the pane are its live surfaces. A completion observed
+//         by a Codex `wait_agent` renders as that card under the wait
+//         group, so `WaitGroupNode.children` are nodes, not leaves.
 //   - Wait carriers use a stable structural wrapper from first render; Codex
 //     subagent target completions render beneath them when linked by
 //     `wait_carrier_id` or shared wait payload correlation.

@@ -138,6 +138,46 @@ func TestHandleTokenUsage_DropsSubagentEvents(t *testing.T) {
 	}
 }
 
+// A compact boundary scoped to a subagent persists under that launch, on
+// the launch's turn, and leaves the thread alone: no context-window
+// write, no usage frame — even when the meta carries a window. The meter
+// is the main agent's; a subagent's compaction is private to it.
+func TestHandleCompaction_ScopedBoundaryStaysUnderItsLaunchAndOffTheMeter(t *testing.T) {
+	router, st, emissions := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	seedOpenTurn(t, router, st, "t1", 0)
+	startAgentLaunch(t, router, "t1", "agent-scoped", "", "task-scoped")
+	seedOpenTurn(t, router, st, "t1", 1)
+	emissions.reset()
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:            provider.EventCompactBoundary,
+		ThreadID:        "t1",
+		ItemID:          "boundary-1",
+		Content:         "Context compacted",
+		ParentToolUseID: "agent-scoped",
+		Meta:            mustMarshalContextWindow(t, provider.ContextWindow{UsedTokens: 99999, MaxTokens: 200000}),
+		Timestamp:       time.Now(),
+	}); err != nil {
+		t.Fatalf("handle: %v", err)
+	}
+
+	children := childrenOfLaunch(t, st, "t1", "agent-scoped", 0)
+	if len(children) != 1 || children[0].Kind != "compaction" {
+		t.Fatalf("scoped compaction must land under the launch on its turn, got %+v", children)
+	}
+	thread, err := st.GetThread("t1")
+	if err != nil {
+		t.Fatalf("get thread: %v", err)
+	}
+	if thread.LastTokenUsage != "" {
+		t.Fatalf("a subagent's compaction must NOT touch the thread's last_token_usage, got %q", thread.LastTokenUsage)
+	}
+	if got := len(filterEmissions(emissions.snapshot(), "provider:usage")); got != 0 {
+		t.Fatalf("expected 0 usage emissions for a scoped compaction, got %d (%+v)", got, emissions.snapshot())
+	}
+}
+
 // createCodexThread mirrors createTestThread but sets Provider=codex so
 // the formula branch under test is exercised.
 func createCodexThread(t *testing.T, st *store.Store, id string) {

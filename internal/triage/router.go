@@ -1144,7 +1144,10 @@ func (r *Router) handleRateLimits(evt provider.ProviderEvent) error {
 
 func (r *Router) handleError(evt provider.ProviderEvent) error {
 	now := eventTimestampMillis(evt)
-	turnIndex, err := r.currentTurnIndex(evt.ThreadID)
+	// A subagent's error lands on its LAUNCH's turn (invariant 10), which
+	// is the thread's current turn while the agent streams live but not
+	// when its transcript is replayed after the turn moved on.
+	turnIndex, err := r.turnIndexForEvent(evt)
 	if err != nil {
 		turnIndex, err = r.store.LastTurnIndex(evt.ThreadID)
 		if err != nil {

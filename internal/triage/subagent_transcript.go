@@ -240,9 +240,17 @@ func (r *Router) replaySubagentEvent(threadID string, launch store.Item, evt pro
 		}
 		return true, r.persistOrUpdateCompletedThinkingItem(
 			threadID, launch.TurnIndex, launch.ID, strings.TrimSpace(evt.ItemID), evt.Content)
+	case provider.EventError:
+		evt.Meta = replayedErrorMeta(evt.Meta)
+		return true, r.dispatch(evt)
 	case provider.EventToolStart, provider.EventToolComplete,
-		provider.EventError, provider.EventNotification,
-		provider.EventCommandResult, provider.EventCompactBoundary:
+		provider.EventNotification, provider.EventCommandResult,
+		provider.EventCompactBoundary:
+		// Every one of these lands under the launch: the handlers scope
+		// their row by ParentToolUseID and resolve the turn from it, and
+		// handleCompaction keeps a scoped boundary off the thread's
+		// compacting window and context meter — a subagent's compaction
+		// is private to the subagent.
 		return true, r.dispatch(evt)
 	default:
 		// Turn boundaries, usage frames, and anything a future reader
@@ -251,6 +259,33 @@ func (r *Router) replaySubagentEvent(threadID string, launch store.Item, evt pro
 		// write history the launching turn already owns.
 		return false, nil
 	}
+}
+
+// replayedErrorMeta rewrites a transcript error's meta for replay. The
+// error is history: it happened inside a detached agent, after the cut,
+// and the CLI did not end the main turn for it (the turn the agent was
+// launched in closed at the cut, and the agent ran on alone). The
+// converter stamps `fatal:true` because on a session IMPORT a fatal API
+// error is the end of the session it reads; dispatched live here it
+// would flip every running row in the thread's CURRENT turn to errored
+// and run the fatal-error finish, for an error the main agent never saw.
+// The enum stays, so the row still persists as `api_error` with its
+// actionable copy — under the launch, where the failure belongs.
+func replayedErrorMeta(meta json.RawMessage) json.RawMessage {
+	if len(meta) == 0 {
+		return meta
+	}
+	var fields map[string]any
+	if err := json.Unmarshal(meta, &fields); err != nil || fields == nil {
+		return meta
+	}
+	fields["fatal"] = false
+	delete(fields, "expect_turn_complete")
+	rewritten, err := json.Marshal(fields)
+	if err != nil {
+		return meta
+	}
+	return rewritten
 }
 
 // isSubagentTranscriptLaunch reports whether a launch's `output_file` is

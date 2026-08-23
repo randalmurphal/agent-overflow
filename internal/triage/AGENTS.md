@@ -495,11 +495,29 @@ one turn read is a superset of what a replay could duplicate.
 Placement follows from the same invariants: rows go in at the LAUNCH's
 turn (10) at the store's own `MAX(item_index)+1` (1 and 11 — `item_index`
 is immutable after the first upsert and `(thread, turn, item_index)` is
-UNIQUE, so there is no splicing mid-turn). Text and thinking deliberately
-bypass `handleTextDelta` / `handleThinking`: those open a streaming block
-and wait for a stop the transcript has no event for, which would leave
-the scope's streaming count incremented forever and wedge the interrupt
-queue.
+UNIQUE, so there is no splicing mid-turn). Every handler the replay
+dispatches into resolves its turn through `turnIndexForEvent`, so a
+scoped error / notification / command result / compaction lands on the
+launch's turn even when the thread has moved on. Text and thinking
+deliberately bypass `handleTextDelta` / `handleThinking`: those open a
+streaming block and wait for a stop the transcript has no event for,
+which would leave the scope's streaming count incremented forever and
+wedge the interrupt queue.
+
+**A subagent's events never reach the main agent's thread** — not its
+rows, not its context. The replay enforces two things the live handlers
+would otherwise get wrong for a detached agent's history:
+
+- an error replays with `fatal:false` (`replayedErrorMeta`). The
+  converter stamps a fatal API error the way an import reads it (the end
+  of the session); dispatched live it would flip the thread's CURRENT
+  turn to errored and run the fatal finish for an error the main agent
+  never saw. The row still persists as `api_error`, under the launch.
+- a compact boundary carrying a scope persists as a compaction row under
+  the launch and nothing else (`persistSubagentCompaction`): no
+  compacting-window close, no usage-throttle reset, no context-window
+  write. The meter is the main agent's; a subagent's compaction is
+  private to it, exactly as `handleTokenUsage` drops scoped usage.
 
 **Failure is loud.** A file that cannot be resolved, is over
 `claudeTaskOutputFileMaxBytes`, or cannot be projected surfaces on the

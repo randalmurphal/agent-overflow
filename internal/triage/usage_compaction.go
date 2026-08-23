@@ -66,47 +66,23 @@ func encodeContextWindow(window provider.ContextWindow) string {
 }
 
 func (r *Router) handleCompaction(evt provider.ProviderEvent) error {
+	if scope := eventParentID(evt); scope != "" {
+		return r.persistSubagentCompaction(evt, scope)
+	}
+
 	// The boundary is both providers' success signal, so it closes the
 	// live compacting window (compaction_status.go). Claude also sends
 	// an explicit close frame ~20ms earlier, making this a no-op there;
 	// for Codex this IS the close (its open was item/started).
 	r.clearCompacting(evt.ThreadID)
 
-	now := eventTimestampMillis(evt)
 	turnIndex, err := r.currentTurnIndex(evt.ThreadID)
 	if err != nil {
 		return fmt.Errorf("compaction turn index: %w", err)
 	}
-
-	itemID, err := r.compactionItemID(evt, turnIndex)
+	item, payload, err := r.compactionRow(evt, turnIndex, "")
 	if err != nil {
 		return err
-	}
-
-	// The claudetui provider commits the compaction summarizer's summary onto
-	// the boundary meta. Lift that (potentially multi-KB) summary into an
-	// on-demand payload so items.meta stays a cheap {trigger} blob (Core
-	// Principle 4: heavy payloads load on demand). The summarizer's reasoning
-	// streamed live as its own compaction_reasoning row, so it is not here.
-	// Headless claude and Codex carry no summary, so it is empty, restMeta is
-	// evt.Meta byte-for-byte, and the row persists exactly as before.
-	summary, restMeta := ExtractCompactionSummary(evt.Meta)
-
-	item := store.Item{
-		ID:        itemID,
-		ThreadID:  evt.ThreadID,
-		TurnIndex: turnIndex,
-		Kind:      "compaction",
-		Role:      "system",
-		Status:    statusCompleted,
-		Summary:   stringsx.FirstNonEmptyTrimmed(evt.Content, "Context compacted"),
-		Meta:      string(restMeta),
-		CreatedAt: now,
-		UpdatedAt: now,
-	}
-	payload := BuildCompactionPayload(summary, now)
-	if payload != nil {
-		item.PayloadID = payload.ID
 	}
 	if err := r.persistItem(item, payload); err != nil {
 		return err
@@ -124,6 +100,65 @@ func (r *Router) handleCompaction(evt provider.ProviderEvent) error {
 	// would flash a misleading 0% in the brief window between the two
 	// notifications.
 	return nil
+}
+
+// persistSubagentCompaction writes a SUBAGENT's compaction as a row under
+// its launch, on the launch's turn, and touches nothing else. A subagent
+// compacts its OWN context, which is private to it — the same reason
+// handleTokenUsage drops scoped usage — so the thread's compacting
+// window, its usage-emit throttle and its context meter, all of which
+// describe the main agent, stay exactly where they are. Today only the
+// transcript backfill (subagent_transcript.go) delivers a scoped
+// boundary; the rule lives in the handler so a live one would land the
+// same way.
+func (r *Router) persistSubagentCompaction(evt provider.ProviderEvent, scope string) error {
+	turnIndex, err := r.turnIndexForScope(evt.ThreadID, scope)
+	if err != nil {
+		return fmt.Errorf("subagent compaction turn index: %w", err)
+	}
+	item, payload, err := r.compactionRow(evt, turnIndex, scope)
+	if err != nil {
+		return err
+	}
+	return r.persistItem(item, payload)
+}
+
+// compactionRow builds a boundary's timeline row and, when the meta
+// committed a summary, the on-demand payload it routes to.
+func (r *Router) compactionRow(evt provider.ProviderEvent, turnIndex int, scope string) (store.Item, *store.Payload, error) {
+	itemID, err := r.compactionItemID(evt, turnIndex)
+	if err != nil {
+		return store.Item{}, nil, err
+	}
+
+	// The claudetui provider commits the compaction summarizer's summary onto
+	// the boundary meta. Lift that (potentially multi-KB) summary into an
+	// on-demand payload so items.meta stays a cheap {trigger} blob (Core
+	// Principle 4: heavy payloads load on demand). The summarizer's reasoning
+	// streamed live as its own compaction_reasoning row, so it is not here.
+	// Headless claude and Codex carry no summary, so it is empty, restMeta is
+	// evt.Meta byte-for-byte, and the row persists exactly as before.
+	summary, restMeta := ExtractCompactionSummary(evt.Meta)
+
+	now := eventTimestampMillis(evt)
+	item := store.Item{
+		ID:        itemID,
+		ThreadID:  evt.ThreadID,
+		TurnIndex: turnIndex,
+		Kind:      "compaction",
+		Role:      "system",
+		Status:    statusCompleted,
+		Summary:   stringsx.FirstNonEmptyTrimmed(evt.Content, "Context compacted"),
+		ParentID:  scope,
+		Meta:      string(restMeta),
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	payload := BuildCompactionPayload(summary, now)
+	if payload != nil {
+		item.PayloadID = payload.ID
+	}
+	return item, payload, nil
 }
 
 func (r *Router) compactionItemID(evt provider.ProviderEvent, turnIndex int) (string, error) {
