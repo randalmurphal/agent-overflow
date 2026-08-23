@@ -52,10 +52,11 @@ func (a *App) ForkThread(sourceThreadID string, atTurnIndex *int) (store.Thread,
 	// below (same row shapes as the crash sweep / user interrupt). The
 	// provider halves differ: Codex issues `thread/fork` with NO
 	// lastTurnId (codex then appends the same turn-aborted marker a real
-	// interrupt writes, onto the fork's copy only), and Claude slices the
-	// JSONL eagerly at the live session's canonical leaf rather than
-	// deferring to `--fork-session`, which would snapshot at a
-	// nondeterministic later time.
+	// interrupt writes, onto the fork's copy only), and Claude PINS the
+	// lazy `--fork-session` cut at the live session's canonical leaf —
+	// the fork's first start passes `--resume-session-at <leaf>` so the
+	// CLI's own fork cuts where the timeline was cloned rather than at
+	// a nondeterministic later time.
 	//
 	// The turn read runs BEFORE the thread row read, deliberately. Claude
 	// session init (triage's handleInit) writes UpdateSessionRef — which
@@ -73,6 +74,19 @@ func (a *App) ForkThread(sourceThreadID string, atTurnIndex *int) (store.Thread,
 	source, err := a.store.GetThread(sourceThreadID)
 	if err != nil {
 		return store.Thread{}, fmt.Errorf("fork thread: %w", err)
+	}
+	// "Live" is deliberately WIDER than "has an open turn row". The
+	// Claude CLI closes a turn (end_turn) and then self-re-invokes when a
+	// background task completes — for hours, with no user send and no new
+	// turn row — so the transcript can grow whenever the session process
+	// is registered, open turn row or not. Keying the snapshot decision on
+	// the turn row alone shipped a fork whose transcript was cut 44s after
+	// its timeline (incident 2026-08-22: turn row closed 2.6h earlier
+	// while the session streamed on). A registered live session is the
+	// truth about whether the file can still move.
+	live := active
+	if !live {
+		_, live = a.activeClaudeSession(sourceThreadID)
 	}
 	if active && atTurnIndex != nil && *atTurnIndex == activeTurn.TurnIndex {
 		// "Keep through the running turn" IS the mid-turn tail fork: the
@@ -95,10 +109,28 @@ func (a *App) ForkThread(sourceThreadID string, atTurnIndex *int) (store.Thread,
 	if err := a.ensureThreadCanFork(source, atTurnIndex); err != nil {
 		return store.Thread{}, err
 	}
+	// A Claude anchor AT the last turn is a tail fork and must be
+	// normalized HERE, not inside forkClaudeThread where it historically
+	// lived: the mid-turn capture below keys on atTurnIndex == nil, and a
+	// live source whose anchored-at-tail fork skipped capture would fall
+	// through to the lazy `--fork-session` path — the exact
+	// snapshot-at-first-send bug the capture exists to prevent. Only ==
+	// is reachable (ensureThreadCanFork already refused anything above).
+	// Codex keeps its anchor: it has no lazy path, and the anchored call
+	// verifies the fork's tail against the anchor, which nil would skip.
+	if atTurnIndex != nil && source.Provider == string(provider.Claude) {
+		lastTurn, err := a.store.LastTurnIndex(source.ID)
+		if err != nil {
+			return store.Thread{}, fmt.Errorf("fork thread: load source last turn index: %w", err)
+		}
+		if *atTurnIndex >= lastTurn {
+			atTurnIndex = nil
+		}
+	}
 
-	// Everything the Claude mid-turn slice needs is resolved HERE, before
-	// the clone — the source path, the leaf, and whether the leaf came
-	// from the live tracker. Reading the leaf after the clone instead
+	// The Claude mid-turn cut — the source path and the leaf the fork
+	// will PIN its lazy `--fork-session` start at — is resolved HERE,
+	// before the clone. Reading the leaf after the clone instead
 	// would let a turn complete in between and hand the fork a transcript
 	// holding the COMPLETE assistant answer while its cloned timeline
 	// shows that answer truncated and flagged " — interrupted": the flag
@@ -110,7 +142,7 @@ func (a *App) ForkThread(sourceThreadID string, atTurnIndex *int) (store.Thread,
 	// reached the provider's transcript; that is exactly what a genuine
 	// interrupt leaves behind.
 	var midTurnCut *claudeMidTurnCut
-	if active {
+	if live {
 		// Streaming text is durable only every 250ms/4KB, so the clone
 		// would otherwise carry a stale tail. Flush before reading.
 		if a.triage != nil {
@@ -118,10 +150,11 @@ func (a *App) ForkThread(sourceThreadID string, atTurnIndex *int) (store.Thread,
 				log.Printf("fork thread: flush source stream buffers for %s: %v", sourceThreadID, err)
 			}
 		}
-		// Mid-turn, an ANCHORED fork can never resolve to a tail fork
-		// (LastTurnIndex is at least the active turn's index and the
-		// anchor is strictly below it), so nil-after-normalization is
-		// exactly the set that takes the live-leaf path.
+		// Every anchor that means "tail" has been normalized to nil by
+		// now (the active-turn exact match, then the Claude
+		// at-last-turn hoist), so nil-after-normalization is exactly
+		// the set that takes the live-leaf path; a surviving anchor
+		// cuts strictly below anything still moving.
 		if atTurnIndex == nil && source.Provider == string(provider.Claude) {
 			cut, err := a.captureClaudeMidTurnCut(source)
 			if err != nil {
@@ -158,17 +191,18 @@ func (a *App) ForkThread(sourceThreadID string, atTurnIndex *int) (store.Thread,
 		return store.Thread{}, errors.Join(err, cleanups.Run())
 	}
 
-	sessionRef, pendingForkRef, uuidMap, providerCleanup, err := a.resolveForkResumeState(source, atTurnIndex, midTurnCut)
+	resume, err := a.resolveForkResumeState(source, atTurnIndex, midTurnCut)
 	if err != nil {
 		return store.Thread{}, errors.Join(err, cleanups.Run())
 	}
-	if providerCleanup != nil {
-		cleanups.Add(providerCleanup)
+	if resume.Cleanup != nil {
+		cleanups.Add(resume.Cleanup)
 	}
-	fork.SessionRef = sessionRef
-	fork.PendingForkRef = pendingForkRef
+	fork.SessionRef = resume.SessionRef
+	fork.PendingForkRef = resume.PendingForkRef
+	fork.PendingForkResumeAt = resume.PinnedResumeAt
 	fork.UpdatedAt = time.Now().UnixMilli()
-	if err := a.remapClaudeProviderIDs(fork.ID, uuidMap); err != nil {
+	if err := a.remapClaudeProviderIDs(fork.ID, resume.UUIDMap); err != nil {
 		return store.Thread{}, errors.Join(err, cleanups.Run())
 	}
 
@@ -208,7 +242,13 @@ func (a *App) ForkThreadFromMessage(sourceThreadID string, userItemID string) (s
 	if err != nil {
 		return store.Thread{}, fmt.Errorf("fork thread from message: %w", err)
 	}
-	if active && a.triage != nil {
+	// Same widened liveness as ForkThread: a registered session can
+	// stream (background-task re-invocations) with the turn row closed.
+	live := active
+	if !live {
+		_, live = a.activeClaudeSession(sourceThreadID)
+	}
+	if live && a.triage != nil {
 		// Streaming text is durable only every 250ms/4KB — flush so the
 		// clone carries the freshest tail (mirrors ForkThread).
 		if err := a.triage.FlushThread(sourceThreadID); err != nil {
@@ -283,17 +323,18 @@ func (a *App) ForkThreadFromMessage(sourceThreadID string, userItemID string) (s
 		return store.Thread{}, errors.Join(err, cleanups.Run())
 	}
 
-	sessionRef, pendingForkRef, uuidMap, providerCleanup, err := a.resolveMessageForkResumeState(source, anchor, item)
+	resume, err := a.resolveMessageForkResumeState(source, anchor, item)
 	if err != nil {
 		return store.Thread{}, errors.Join(err, cleanups.Run())
 	}
-	if providerCleanup != nil {
-		cleanups.Add(providerCleanup)
+	if resume.Cleanup != nil {
+		cleanups.Add(resume.Cleanup)
 	}
-	fork.SessionRef = sessionRef
-	fork.PendingForkRef = pendingForkRef
+	fork.SessionRef = resume.SessionRef
+	fork.PendingForkRef = resume.PendingForkRef
+	fork.PendingForkResumeAt = resume.PinnedResumeAt
 	fork.UpdatedAt = time.Now().UnixMilli()
-	if err := a.remapClaudeProviderIDs(fork.ID, uuidMap); err != nil {
+	if err := a.remapClaudeProviderIDs(fork.ID, resume.UUIDMap); err != nil {
 		return store.Thread{}, errors.Join(err, cleanups.Run())
 	}
 
@@ -364,58 +405,68 @@ func (a *App) ensureThreadCanFork(source store.Thread, atTurnIndex *int) error {
 	return nil
 }
 
-// resolveForkResumeState wires the provider-specific resume reference for
-// the new fork and returns an optional cleanup callback. The cleanup runs
-// only if a later step in the fork sequence fails — it is responsible for
-// any provider-side artifacts the fork created (e.g. a Claude JSONL slice
-// on disk). Codex thread/fork already-spawned forks cannot be deleted via
-// JSON-RPC; orphan rollouts are accepted there.
+// forkResumeState is the provider resume wiring resolveForkResumeState
+// hands back for a new fork:
 //
-// uuidMap is the source-UUID → fork-UUID rewrite produced by the
-// inline Claude JSONL slice (nil for Codex, nil for lazy fork-at-tail
-// where the actual fork happens at `--fork-session` start time and we
-// have no slice yet). When non-nil, the caller must call
-// `remapClaudeProviderIDs(fork.ID, uuidMap)` so cloned items'
-// `meta.provider_item_id` points at the fork's NEW UUIDs — keeping the
-// "stored UUID matches active session JSONL" invariant intact for
-// forks-of-forks.
+//   - SessionRef: the fork's own provider session id, set when the fork
+//     materialized its transcript up front (a Claude anchored slice, a
+//     Codex thread/fork child).
+//   - PendingForkRef: the SOURCE session id for a lazy Claude fork —
+//     the first session start passes `--fork-session --resume <ref>`.
+//   - PinnedResumeAt: the transcript cut for a PINNED lazy Claude fork
+//     (a tail fork of a live source): the leaf uuid captured when Fork
+//     was clicked. The first session start repairs it against the CLI's
+//     resume filters and passes `--resume-session-at`, so the CLI's own
+//     fork cuts exactly where the timeline was cloned instead of
+//     wherever the source has grown to by first send. Empty on an
+//     idle-source lazy fork, whose tail IS the cut.
+//   - UUIDMap: the source-UUID → fork-UUID rewrite an inline Claude
+//     JSONL slice produced (nil for Codex and both lazy shapes). When
+//     non-nil the caller must run remapClaudeProviderIDs so cloned
+//     items' meta.provider_item_id points at the fork's NEW uuids.
+//   - Cleanup: undoes provider-side artifacts (a JSONL slice on disk)
+//     when a later fork step fails. Codex thread/fork children cannot
+//     be deleted over JSON-RPC; orphan rollouts are accepted there.
+type forkResumeState struct {
+	SessionRef     string
+	PendingForkRef string
+	PinnedResumeAt string
+	UUIDMap        map[string]string
+	Cleanup        func() error
+}
+
+// resolveForkResumeState wires the provider-specific resume reference for
+// the new fork. See forkResumeState for the field contract.
 //
 // midTurnCut is non-nil exactly for a Claude TAIL fork taken while the
-// source has an in-flight turn: it is the transcript cut captured
-// BEFORE the clone, so the slice this function writes and the timeline
-// already cloned describe the same moment. Codex needs no equivalent —
-// `forkCodexThreadAt(source, "")` already sends `thread/fork` with no
-// lastTurnId, which is exactly the mid-turn call: codex copies persisted
-// history and appends the same turn-aborted marker a real interrupt
-// writes, onto the FORK's copy only (ForkSnapshot::Interrupted,
-// rust-v0.147.0). The throwaway-resume fallback works mid-turn for the
-// same reason — the on-disk rollout ends mid-turn and codex synthesizes
-// the marker.
+// source is live: it is the transcript cut captured BEFORE the clone, so
+// the pin stored here and the timeline already cloned describe the same
+// moment. Codex needs no equivalent — `forkCodexThreadAt(source, "")`
+// already sends `thread/fork` with no lastTurnId, which is exactly the
+// mid-turn call: codex copies persisted history and appends the same
+// turn-aborted marker a real interrupt writes, onto the FORK's copy only
+// (ForkSnapshot::Interrupted, rust-v0.147.0). The throwaway-resume
+// fallback works mid-turn for the same reason — the on-disk rollout ends
+// mid-turn and codex synthesizes the marker.
 //
 // A nil midTurnCut on a Claude tail fork means the source is idle, and
-// only then may the lazy `--fork-session` path run. Mid-turn it is
-// FORBIDDEN: it defers the actual cut to the fork's first send, which
-// would snapshot the source's transcript at a nondeterministic later
-// point, quite possibly several turns on. The eager slice at the
-// captured leaf is the only cut that means "now".
-func (a *App) resolveForkResumeState(source store.Thread, atTurnIndex *int, midTurnCut *claudeMidTurnCut) (
-	sessionRef string,
-	pendingForkRef string,
-	uuidMap map[string]string,
-	cleanup func() error,
-	err error,
-) {
+// only then may the UNPINNED lazy `--fork-session` path run: with
+// nothing streaming, the source's tail at first send IS the tail the
+// timeline was cloned at. On a live source the cut must be pinned —
+// deferring it unpinned snapshots the transcript at a nondeterministic
+// later point (the 2026-08-22 44s-skew incident).
+func (a *App) resolveForkResumeState(source store.Thread, atTurnIndex *int, midTurnCut *claudeMidTurnCut) (forkResumeState, error) {
 	switch source.Provider {
 	case string(provider.Codex):
 		ref, err := a.forkCodexThread(source, atTurnIndex)
 		if err != nil {
-			return "", "", nil, nil, fmt.Errorf("fork thread: fork codex provider state: %w", err)
+			return forkResumeState{}, fmt.Errorf("fork thread: fork codex provider state: %w", err)
 		}
-		return ref, "", nil, nil, nil
+		return forkResumeState{SessionRef: ref}, nil
 	case string(provider.Claude):
 		return a.forkClaudeThread(source, atTurnIndex, midTurnCut)
 	default:
-		return "", "", nil, nil, fmt.Errorf("fork thread: unsupported provider %q", source.Provider)
+		return forkResumeState{}, fmt.Errorf("fork thread: unsupported provider %q", source.Provider)
 	}
 }
 
@@ -440,13 +491,7 @@ func (a *App) settleForkAsInterrupted(forkThreadID string) error {
 	return nil
 }
 
-func (a *App) resolveMessageForkResumeState(source store.Thread, anchor store.MessageAnchor, anchorItem store.Item) (
-	sessionRef string,
-	pendingForkRef string,
-	uuidMap map[string]string,
-	cleanup func() error,
-	err error,
-) {
+func (a *App) resolveMessageForkResumeState(source store.Thread, anchor store.MessageAnchor, anchorItem store.Item) (forkResumeState, error) {
 	switch source.Provider {
 	case string(provider.Codex):
 		// Codex forks are turn-granular (thread/fork cuts at a turn
@@ -454,17 +499,17 @@ func (a *App) resolveMessageForkResumeState(source store.Thread, anchor store.Me
 		// the whole anchor turn is dropped, matching the turn-granular
 		// SQLite clone.
 		if anchor.TurnIndex == 0 {
-			return "", "", nil, nil, nil
+			return forkResumeState{}, nil
 		}
 		lastKeptTurn := anchor.TurnIndex - 1
 		ref, err := a.forkCodexThread(source, &lastKeptTurn)
 		if err != nil {
-			return "", "", nil, nil, fmt.Errorf("fork thread from message: fork codex provider state: %w", err)
+			return forkResumeState{}, fmt.Errorf("fork thread from message: fork codex provider state: %w", err)
 		}
-		return ref, "", nil, nil, nil
+		return forkResumeState{SessionRef: ref}, nil
 	case string(provider.Claude):
 		return a.forkClaudeThreadBeforeMessage(source, anchor, anchorItem)
 	default:
-		return "", "", nil, nil, fmt.Errorf("fork thread from message: unsupported provider %q", source.Provider)
+		return forkResumeState{}, fmt.Errorf("fork thread from message: unsupported provider %q", source.Provider)
 	}
 }

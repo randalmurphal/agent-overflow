@@ -874,6 +874,25 @@ an empty `provider_turn_id`.
   ADD COLUMN with a CHECK — SQLite permits one on an added column — so the
   FK-parent `threads` table is not rebuilt.
 
+## Recent schema changes (v69) — the pinned lazy-fork cut
+
+- `threads.pending_fork_resume_at` (`TEXT NOT NULL DEFAULT ''`) pins the
+  transcript cut for a lazy Claude fork taken off a LIVE source: the
+  source session's canonical leaf uuid, captured when Fork was clicked.
+  The fork's first session start repairs it against the CLI's resume
+  filters (`claude.ResolveForkResumeCursor`) and passes
+  `--resume-session-at <cursor> --fork-session`, so the CLI's own fork
+  cuts where the timeline was cloned instead of wherever the source has
+  grown to by first send (the 2026-08-22 skew incident). Empty on an
+  idle-source lazy fork — the source's tail IS the cut there — and on
+  every non-fork thread.
+- One-shot like `pending_fork_session_ref`, and consumed with it: BOTH
+  session-ref writers (`UpdateSessionRef`,
+  `UpdateSessionRefAndRemapProviderIDs`) clear the pair in the same
+  UPDATE, so a committed fork cannot re-pin a later restart.
+  `BuildForkedThread`'s explicit field list means a fork of a fork never
+  inherits a stale pin. A plain `ADD COLUMN`, no CHECK, no rebuild.
+
 ## Recent schema changes (v54) — the explicitly scheduled resume moment
 
 - `work_items.auto_resume_at` (`INTEGER NOT NULL DEFAULT 0`, Unix milliseconds)

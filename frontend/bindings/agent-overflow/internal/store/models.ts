@@ -917,6 +917,18 @@ export class Thread {
     "prRef"?: string;
     "sessionRef"?: string;
     "pendingForkRef"?: string;
+
+    /**
+     * PendingForkResumeAt pins the transcript cut for a lazy Claude fork:
+     * the source-session leaf uuid captured when the fork was taken. The
+     * fork's first session start passes it (repaired against the CLI's
+     * resume filters) as --resume-session-at alongside --fork-session so
+     * the cut lands where the timeline was cloned, not wherever the source
+     * has grown to by first send. Empty = unpinned (idle-source lazy fork,
+     * every non-fork thread). Cleared with PendingForkRef by both
+     * session-ref writers.
+     */
+    "pendingForkResumeAt"?: string;
     "mode": string;
     "reasoningEffort": string;
     "fastMode": boolean;

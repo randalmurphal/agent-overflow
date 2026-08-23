@@ -18,8 +18,13 @@ the provider process owns turn state.
 - `session_ref` on `threads` records the provider-side session file path
   (`~/.claude/...` or `~/.codex/...`). This is what resume feeds back in.
 - Fork creates a new thread row; `parent_thread_id` records the lineage.
-  Codex has a native `thread/fork` method; Claude forks by replay from a
-  chosen turn.
+  Codex has a native `thread/fork` method. A Claude tail fork is LAZY:
+  `pending_fork_session_ref` stamps the source session and the fork's
+  first send spawns `claude --resume <source> --fork-session`, so the
+  CLI itself copies the transcript at startup. An anchored (fork-at-turn
+  / fork-from-message) Claude fork slices the source JSONL up front
+  instead (`internal/provider/claude/sessionfork`) — anchors point at
+  rows already on disk, so the slice is exact.
 - Forking DURING an active turn is supported and is a snapshot "as if
   interrupted right now": the source is never interrupted and never
   mutated, and only the fork's clone is settled (running/streaming rows
@@ -28,20 +33,37 @@ the provider process owns turn state.
   `lastTurnId` — with no boundary on a mid-turn source it copies
   persisted history and appends the same turn-aborted marker a real
   interrupt writes, onto the fork's copy only, and a `lastTurnId` naming
-  an in-progress turn is rejected outright. Claude slices the transcript
-  eagerly at the live session's canonical leaf; the lazy
-  `--fork-session` path is forbidden mid-turn because it would defer the
-  cut to the fork's first send and snapshot at a nondeterministic later
-  time. That Claude cut is resolved BEFORE the SQLite clone, so the
-  transcript can never be AHEAD of the timeline: a fork whose rows say
-  " — interrupted" over an answer its transcript holds complete would be
-  lying. The reverse skew — a partial block in the timeline that the
-  transcript lacks — is the honest real-interrupt shape, since an
-  interrupted row never promised its content landed. Forking seconds
-  after a send, before either provider has written anything, legitimately
-  yields a fork holding just the prompt that starts a fresh provider
-  thread; a transcript that cannot be READ, by contrast, fails the fork
-  rather than degrading to that answer.
+  an in-progress turn is rejected outright. Claude PINS the lazy cut:
+  the fork click captures the live session's canonical leaf into
+  `pending_fork_resume_at`, and the fork's first send passes
+  `--resume-session-at <cursor> --fork-session`, which makes the CLI cut
+  its fork copy exactly at the pin even when the source has kept
+  streaming since (spike-verified 2.1.237: rows after the cursor are
+  dropped from the fork copy, and source uuids are preserved verbatim, so
+  no provider-id remap is needed). The UNPINNED lazy path is forbidden
+  whenever a live session is registered — it would snapshot the
+  transcript at the fork's first send, minutes or turns later (2026-08-22
+  incident: a fork keyed on the turn row alone deferred unpinned and its
+  transcript was cut 44s after its timeline). "Live" is wider than "has
+  an open turn row": the Claude CLI closes a turn on `end_turn` and then
+  self-re-invokes when a background task completes — for hours, with no
+  new turn row — so the transcript can grow whenever the session process
+  exists. At spawn time the stored pin is repaired against the CLI's
+  resume deserialization filters (`claude.ResolveForkResumeCursor`; the
+  CLI filters BEFORE the cursor lookup, so a dangling-tool_use pin would
+  hard-fail resume pre-init) to the deepest filter-surviving row at or
+  before the pin's file position — never forward — and a pin the file has
+  not received yet (stdout-to-disk append gap) gets a bounded wait, then
+  falls back to the deepest on-disk cursor. The pin is captured BEFORE
+  the SQLite clone, so the transcript can never be AHEAD of the timeline:
+  a fork whose rows say " — interrupted" over an answer its transcript
+  holds complete would be lying. The reverse skew — a partial block in
+  the timeline that the transcript lacks — is the honest real-interrupt
+  shape, since an interrupted row never promised its content landed.
+  Forking seconds after a send, before either provider has written
+  anything, legitimately yields a fork holding just the prompt that
+  starts a fresh provider thread; a transcript that cannot be READ, by
+  contrast, fails the fork rather than degrading to that answer.
 
 ## Approvals (Bidirectional)
 

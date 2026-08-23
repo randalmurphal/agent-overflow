@@ -176,12 +176,16 @@ func seedMidTurnSourceRows(t *testing.T, st *store.Store, threadID string) {
 	openTurn(t, st, threadID, threadID+":1", 1)
 }
 
-// TestForkThreadClaudeMidTurnTailSlicesAtLiveLeaf is the headline case:
+// TestForkThreadClaudeMidTurnTailPinsLazyCut is the headline case:
 // forking a Claude thread WHILE a turn streams. The fork is a snapshot
-// "as if interrupted right now" — eager JSONL slice at the live
-// session's canonical leaf, cloned rows settled with the standard
-// interrupted treatment — and the SOURCE is left completely alone.
-func TestForkThreadClaudeMidTurnTailSlicesAtLiveLeaf(t *testing.T) {
+// "as if interrupted right now" — the timeline clones and settles with
+// the standard interrupted treatment, and the transcript cut is PINNED
+// at the live session's canonical leaf: PendingForkRef = the source
+// session, PendingForkResumeAt = the leaf. The fork's first start
+// passes `--resume-session-at <leaf> --fork-session`, so the CLI's own
+// fork cuts at the pin even after the source keeps streaming. Nothing
+// is sliced at fork time and the SOURCE is left completely alone.
+func TestForkThreadClaudeMidTurnTailPinsLazyCut(t *testing.T) {
 	app := newTestAppWithStore(t)
 	fixture := newMidTurnForkFixture(t, "mid-turn-session", midTurnSourceJSONL)
 
@@ -200,15 +204,23 @@ func TestForkThreadClaudeMidTurnTailSlicesAtLiveLeaf(t *testing.T) {
 		t.Fatalf("ForkThread(mid-turn tail): %v", err)
 	}
 
-	// Eager slice, never the lazy --fork-session path.
-	if forked.PendingForkRef != "" {
-		t.Errorf("fork PendingForkRef = %q, want empty (mid-turn must never take the lazy path)", forked.PendingForkRef)
+	// Pinned lazy cut, never an eager slice.
+	if forked.SessionRef != "" {
+		t.Errorf("fork SessionRef = %q, want empty (the fork's session materializes at first send)", forked.SessionRef)
 	}
-	if forked.SessionRef == "" || forked.SessionRef == fixture.sessionID {
-		t.Fatalf("fork SessionRef = %q, want a fresh sliced session id", forked.SessionRef)
+	if forked.PendingForkRef != fixture.sessionID {
+		t.Errorf("fork PendingForkRef = %q, want the source session %q", forked.PendingForkRef, fixture.sessionID)
 	}
-	if _, err := os.Stat(filepath.Join(fixture.projectDir, forked.SessionRef+".jsonl")); err != nil {
-		t.Errorf("sliced transcript missing: %v", err)
+	if forked.PendingForkResumeAt != "a1" {
+		t.Errorf("fork PendingForkResumeAt = %q, want the live leaf a1", forked.PendingForkResumeAt)
+	}
+	// No transcript written at fork time — the source's is the only file.
+	entries, err := os.ReadDir(fixture.projectDir)
+	if err != nil {
+		t.Fatalf("read project dir: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Errorf("project dir holds %d files after a pinned lazy fork, want 1 (the source transcript)", len(entries))
 	}
 
 	forkItems, err := app.store.ListItems(forked.ID)
@@ -251,11 +263,12 @@ func TestForkThreadClaudeMidTurnTailSlicesAtLiveLeaf(t *testing.T) {
 		t.Errorf("fork turn 1 = completedAt %v / stopReason %q, want closed + interrupted", forkTurn.CompletedAt, forkTurn.StopReason)
 	}
 
-	// UUID remap: the cloned user rows must point at the SLICE's reminted
-	// uuids, not the source transcript's.
+	// No uuid remap: the CLI's --fork-session copy preserves the source's
+	// uuids verbatim (spike-verified 2.1.237), so the cloned rows keep
+	// pointing at the very uuids the fork copy will hold.
 	forkUser := itemBySummaryPrefix(t, forkItems, "second prompt")
-	if got := usermessage.ReadProviderItemID(forkUser.Meta); got == "" || got == "u1" {
-		t.Errorf("cloned user row provider_item_id = %q, want a reminted uuid", got)
+	if got := usermessage.ReadProviderItemID(forkUser.Meta); got != "u1" {
+		t.Errorf("cloned user row provider_item_id = %q, want the source uuid u1 kept verbatim", got)
 	}
 
 	// The SOURCE is untouched: rows still running, turn still open, and
@@ -287,11 +300,14 @@ func TestForkThreadClaudeMidTurnTailSlicesAtLiveLeaf(t *testing.T) {
 	}
 }
 
-// TestForkThreadClaudeMidTurnFallsBackToOnDiskLeaf covers the write
+// TestForkThreadClaudeMidTurnPinsLeafNotYetOnDisk covers the write
 // ordering race: the live session announced a leaf on stdout that the
-// CLI has not appended to the transcript yet. The fork must not fail —
-// it slices through the deepest leaf that IS on disk.
-func TestForkThreadClaudeMidTurnFallsBackToOnDiskLeaf(t *testing.T) {
+// CLI has not appended to the transcript yet. The fork must not fail
+// and must not resolve the gap early — the pin is stored VERBATIM, and
+// the fork's first session start waits out the append gap (or falls
+// back to the deepest on-disk cursor) in resolveClaudeForkResumeAt,
+// against the file as it stands at spawn time.
+func TestForkThreadClaudeMidTurnPinsLeafNotYetOnDisk(t *testing.T) {
 	app := newTestAppWithStore(t)
 	fixture := newMidTurnForkFixture(t, "mid-turn-session", midTurnSourceJSONL)
 
@@ -312,31 +328,16 @@ func TestForkThreadClaudeMidTurnFallsBackToOnDiskLeaf(t *testing.T) {
 		t.Fatalf("ForkThread(mid-turn, leaf not on disk): %v", err)
 	}
 	if elapsed := time.Since(start); elapsed > 10*time.Second {
-		t.Errorf("mid-turn fork took %s — the not-yet-flushed retry is unbounded", elapsed)
+		t.Errorf("mid-turn fork took %s — the fork click must not wait on the transcript", elapsed)
 	}
-	if forked.SessionRef == "" || forked.SessionRef == fixture.sessionID {
-		t.Fatalf("fork SessionRef = %q, want a fresh sliced session id", forked.SessionRef)
+	if forked.SessionRef != "" {
+		t.Errorf("fork SessionRef = %q, want empty", forked.SessionRef)
 	}
-	if forked.PendingForkRef != "" {
-		t.Errorf("fork PendingForkRef = %q, want empty", forked.PendingForkRef)
+	if forked.PendingForkRef != fixture.sessionID {
+		t.Errorf("fork PendingForkRef = %q, want the source session %q", forked.PendingForkRef, fixture.sessionID)
 	}
-
-	// The slice landed at the on-disk leaf (a1): the whole file survives,
-	// with every uuid reminted and nothing invented for the missing a2.
-	sliced, err := os.ReadFile(filepath.Join(fixture.projectDir, forked.SessionRef+".jsonl"))
-	if err != nil {
-		t.Fatalf("read sliced transcript: %v", err)
-	}
-	for _, want := range []string{"first prompt", "reply 0", "second prompt", "partial rep"} {
-		if !strings.Contains(string(sliced), want) {
-			t.Errorf("sliced transcript is missing %q — the cut did not reach the on-disk leaf", want)
-		}
-	}
-	if strings.Contains(string(sliced), `"a2"`) {
-		t.Error("sliced transcript references the never-flushed leaf a2")
-	}
-	if strings.Contains(string(sliced), `"uuid":"a1"`) {
-		t.Error("sliced transcript kept a source uuid verbatim — the slice must remint every uuid")
+	if forked.PendingForkResumeAt != "a2" {
+		t.Errorf("fork PendingForkResumeAt = %q, want the announced leaf a2 stored verbatim", forked.PendingForkResumeAt)
 	}
 }
 
@@ -369,8 +370,9 @@ func TestForkThreadClaudeMidTurnWithoutSessionFileStartsFresh(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ForkThread(degenerate mid-turn): %v", err)
 	}
-	if forked.SessionRef != "" || forked.PendingForkRef != "" {
-		t.Errorf("fork refs = %q / %q, want both empty (fresh provider thread)", forked.SessionRef, forked.PendingForkRef)
+	if forked.SessionRef != "" || forked.PendingForkRef != "" || forked.PendingForkResumeAt != "" {
+		t.Errorf("fork refs = %q / %q / %q, want all empty (fresh provider thread)",
+			forked.SessionRef, forked.PendingForkRef, forked.PendingForkResumeAt)
 	}
 
 	forkItems, err := app.store.ListItems(forked.ID)
@@ -397,9 +399,9 @@ func TestForkThreadClaudeMidTurnWithoutSessionFileStartsFresh(t *testing.T) {
 }
 
 // TestForkThreadClaudeMidTurnAtActiveTurnBehavesAsTail: "keep through
-// the running turn" IS the mid-turn tail fork. It must take the eager
-// slice, never the lazy PendingForkRef shortcut that an at-or-past-tail
-// anchor takes on an idle thread.
+// the running turn" IS the mid-turn tail fork. It must take the PINNED
+// lazy path, never the unpinned shortcut an at-or-past-tail anchor
+// takes on an idle thread.
 func TestForkThreadClaudeMidTurnAtActiveTurnBehavesAsTail(t *testing.T) {
 	app := newTestAppWithStore(t)
 	fixture := newMidTurnForkFixture(t, "mid-turn-session", midTurnSourceJSONL)
@@ -419,11 +421,12 @@ func TestForkThreadClaudeMidTurnAtActiveTurnBehavesAsTail(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ForkThread(at the active turn): %v", err)
 	}
-	if forked.PendingForkRef != "" {
-		t.Errorf("fork PendingForkRef = %q, want empty — an anchor at the active turn must slice, not defer", forked.PendingForkRef)
+	if forked.SessionRef != "" {
+		t.Errorf("fork SessionRef = %q, want empty", forked.SessionRef)
 	}
-	if forked.SessionRef == "" || forked.SessionRef == fixture.sessionID {
-		t.Fatalf("fork SessionRef = %q, want a fresh sliced session id", forked.SessionRef)
+	if forked.PendingForkRef != fixture.sessionID || forked.PendingForkResumeAt != "a1" {
+		t.Errorf("fork pin = %q@%q, want %q@a1 — an anchor at the active turn must take the pinned tail path",
+			forked.PendingForkRef, forked.PendingForkResumeAt, fixture.sessionID)
 	}
 	forkItems, err := app.store.ListItems(forked.ID)
 	if err != nil {
@@ -643,8 +646,12 @@ func TestForkThreadMidTurnAnchorOnAnItemlessActiveTurnIsATailFork(t *testing.T) 
 	if err != nil {
 		t.Fatalf("ForkThread(anchor on the itemless active turn): %v", err)
 	}
-	if forked.SessionRef == "" || forked.PendingForkRef != "" {
-		t.Errorf("fork refs = %q / %q, want a sliced session ref and no lazy cursor", forked.SessionRef, forked.PendingForkRef)
+	if forked.SessionRef != "" {
+		t.Errorf("fork SessionRef = %q, want empty", forked.SessionRef)
+	}
+	if forked.PendingForkRef != fixture.sessionID || forked.PendingForkResumeAt != "a0" {
+		t.Errorf("fork pin = %q@%q, want %q@a0 (the live leaf)",
+			forked.PendingForkRef, forked.PendingForkResumeAt, fixture.sessionID)
 	}
 	if _, active, err := app.store.GetActiveTurn(forked.ID); err != nil {
 		t.Fatalf("GetActiveTurn(fork): %v", err)
@@ -702,3 +709,204 @@ func TestForkThreadClaudeMidTurnColdScanIOFailureFailsTheFork(t *testing.T) {
 		t.Errorf("thread count %d -> %d: a half-built fork row survived the failure", len(before), len(after))
 	}
 }
+
+// closeTurn closes an open turn row the way triage does on end_turn,
+// WITHOUT touching the thread's items — the background-continuation
+// state: the CLI keeps streaming (task-notification re-invocations)
+// long after the turn row closed.
+func closeTurn(t *testing.T, st *store.Store, turnID string) {
+	t.Helper()
+	if err := st.UpdateTurnCompleted(turnID, time.Now().UnixMilli(), "end_turn", "m-closed", "", ""); err != nil {
+		t.Fatalf("UpdateTurnCompleted(%s): %v", turnID, err)
+	}
+}
+
+// TestForkThreadClaudeBackgroundContinuationPinsLazyCut is the
+// 2026-08-22 incident: the source's turn row closed hours ago (the model
+// hit end_turn while a background task ran) but the CLI process is alive
+// and self-re-invoking, so items still stream and the transcript still
+// grows. The fork must be classified LIVE off the registered session and
+// PIN the cut — the unpinned lazy path would snapshot the transcript at
+// the fork's first send, handing the fork tool calls its timeline never
+// got.
+func TestForkThreadClaudeBackgroundContinuationPinsLazyCut(t *testing.T) {
+	app := newTestAppWithStore(t)
+	fixture := newMidTurnForkFixture(t, "mid-turn-session", midTurnSourceJSONL)
+
+	source := testThread("thread-claude-bg-continuation")
+	source.Provider = string(provider.Claude)
+	source.SessionRef = fixture.sessionID
+	source.WorkspacePath = fixture.workspace
+	if err := app.store.CreateThread(source); err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+	seedMidTurnSourceRows(t, app.store, source.ID)
+	// The incident state: turn row CLOSED, items still live, session
+	// registered.
+	closeTurn(t, app.store, source.ID+":1")
+	if _, active, err := app.store.GetActiveTurn(source.ID); err != nil || active {
+		t.Fatalf("precondition: active turn = %v, %v — want none (the whole point)", active, err)
+	}
+	attachLiveClaudeSession(t, app, source.ID, fixture.workspace, fixture.sessionID, "a1")
+
+	forked, err := app.ForkThread(source.ID, nil)
+	if err != nil {
+		t.Fatalf("ForkThread(background continuation): %v", err)
+	}
+
+	// Pinned lazy cut, never an unpinned defer.
+	if forked.SessionRef != "" {
+		t.Errorf("fork SessionRef = %q, want empty", forked.SessionRef)
+	}
+	if forked.PendingForkRef != fixture.sessionID || forked.PendingForkResumeAt != "a1" {
+		t.Errorf("fork pin = %q@%q, want %q@a1 — a live session must pin the cut, never defer it unpinned",
+			forked.PendingForkRef, forked.PendingForkResumeAt, fixture.sessionID)
+	}
+
+	// The clone's live rows settle interrupted even though no turn row
+	// was open.
+	forkItems := mustListItems(t, app.store, forked.ID)
+	stream := itemBySummaryPrefix(t, forkItems, "partial rep")
+	if stream.Status != "errored" || !strings.HasSuffix(stream.Summary, " — interrupted") {
+		t.Errorf("cloned streaming row = %q/%q, want errored + interrupted suffix", stream.Status, stream.Summary)
+	}
+
+	// The source is untouched: rows still live, transcript byte-stable.
+	if got := itemByID(t, mustListItems(t, app.store, source.ID), "src-stream"); got.Status != "streaming" {
+		t.Errorf("source streaming row mutated: %q", got.Status)
+	}
+	after, err := os.ReadFile(fixture.jsonlPath)
+	if err != nil {
+		t.Fatalf("re-read source transcript: %v", err)
+	}
+	if string(after) != midTurnSourceJSONL {
+		t.Error("source transcript mutated by the fork")
+	}
+}
+
+// TestForkThreadClaudeBackgroundContinuationAnchoredAtLastTurn pins the
+// anchored door into the same bug: with no open turn row, the
+// active-turn exact-match normalization never fires, so an anchor AT the
+// last turn used to reach forkClaudeThread's own at-or-past-tail mapping
+// and take the UNPINNED lazy path — skipping the capture entirely. The
+// hoisted normalization in ForkThread routes it through the pinned cut.
+func TestForkThreadClaudeBackgroundContinuationAnchoredAtLastTurn(t *testing.T) {
+	app := newTestAppWithStore(t)
+	fixture := newMidTurnForkFixture(t, "mid-turn-session", midTurnSourceJSONL)
+
+	source := testThread("thread-claude-bg-cont-anchored")
+	source.Provider = string(provider.Claude)
+	source.SessionRef = fixture.sessionID
+	source.WorkspacePath = fixture.workspace
+	if err := app.store.CreateThread(source); err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+	seedMidTurnSourceRows(t, app.store, source.ID)
+	closeTurn(t, app.store, source.ID+":1")
+	attachLiveClaudeSession(t, app, source.ID, fixture.workspace, fixture.sessionID, "a1")
+
+	atTurn := 1 // == LastTurnIndex; no open turn row to normalize against
+	forked, err := app.ForkThread(source.ID, &atTurn)
+	if err != nil {
+		t.Fatalf("ForkThread(anchored at last turn, live session): %v", err)
+	}
+	if forked.SessionRef != "" {
+		t.Errorf("fork SessionRef = %q, want empty", forked.SessionRef)
+	}
+	if forked.PendingForkRef != fixture.sessionID || forked.PendingForkResumeAt != "a1" {
+		t.Errorf("fork pin = %q@%q, want %q@a1 — the anchored-at-tail door must pin, not defer unpinned",
+			forked.PendingForkRef, forked.PendingForkResumeAt, fixture.sessionID)
+	}
+}
+
+// TestForkClaudeThreadLazyPathRefusedWithLiveSession pins the tripwire:
+// reaching the lazy --fork-session branch while a live session is
+// registered means a caller skipped the mid-turn capture, and the fork
+// must fail loudly rather than defer the cut to first send.
+func TestForkClaudeThreadLazyPathRefusedWithLiveSession(t *testing.T) {
+	app := newTestAppWithStore(t)
+	fixture := newMidTurnForkFixture(t, "mid-turn-session", midTurnSourceJSONL)
+
+	source := testThread("thread-claude-lazy-tripwire")
+	source.Provider = string(provider.Claude)
+	source.SessionRef = fixture.sessionID
+	source.WorkspacePath = fixture.workspace
+	if err := app.store.CreateThread(source); err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+	attachLiveClaudeSession(t, app, source.ID, fixture.workspace, fixture.sessionID, "a1")
+
+	// Direct call with no captured cut — the caller mistake the tripwire
+	// exists for.
+	_, err := app.forkClaudeThread(source, nil, nil)
+	if err == nil || !strings.Contains(err.Error(), "refusing the unpinned lazy --fork-session path") {
+		t.Fatalf("forkClaudeThread(live session, no cut) = %v, want the unpinned-lazy refusal", err)
+	}
+}
+
+// TestResolveClaudeForkResumeAtPinOnDisk covers the first-send half of
+// the pinned fork: a pin that survives the CLI's resume filters passes
+// through verbatim; a filter-dropped pin (dangling tool_use — exactly
+// the row a mid-turn capture tends to land on) is repaired to the
+// deepest surviving row at or before it.
+func TestResolveClaudeForkResumeAtPinOnDisk(t *testing.T) {
+	fixture := newMidTurnForkFixture(t, "mid-turn-session", midTurnSourceJSONL)
+
+	// a1 is a plain text assistant row — survives every filter.
+	cursor, err := resolveClaudeForkResumeAt(fixture.sessionID, fixture.workspace, "a1")
+	if err != nil {
+		t.Fatalf("resolveClaudeForkResumeAt(surviving pin): %v", err)
+	}
+	if cursor != "a1" {
+		t.Errorf("cursor = %q, want the pin a1 verbatim", cursor)
+	}
+
+	// Append a dangling tool_use leaf — the CLI's resume filters drop it,
+	// so pinning there must repair backward to a1.
+	dangling := `{"type":"assistant","uuid":"a2","parentUuid":"a1","sessionId":"mid-turn-session","message":{"id":"m2","role":"assistant","content":[{"type":"tool_use","id":"tool-x","name":"Bash","input":{}}]}}` + "\n"
+	if err := os.WriteFile(fixture.jsonlPath, []byte(midTurnSourceJSONL+dangling), 0o600); err != nil {
+		t.Fatalf("append dangling tool_use: %v", err)
+	}
+	cursor, err = resolveClaudeForkResumeAt(fixture.sessionID, fixture.workspace, "a2")
+	if err != nil {
+		t.Fatalf("resolveClaudeForkResumeAt(filter-dropped pin): %v", err)
+	}
+	if cursor != "a1" {
+		t.Errorf("cursor = %q, want a1 (the pin's deepest surviving ancestor)", cursor)
+	}
+}
+
+// TestResolveClaudeForkResumeAtWaitsOutAppendGapThenFallsBack: a pin
+// the file never receives (the stdout-to-disk append gap that never
+// closes — source process died mid-write) exhausts the bounded wait
+// and falls back to the deepest ON-DISK cursor. Backward skew is the
+// honest interrupt shape; failing the start would strand the fork.
+func TestResolveClaudeForkResumeAtWaitsOutAppendGapThenFallsBack(t *testing.T) {
+	fixture := newMidTurnForkFixture(t, "mid-turn-session", midTurnSourceJSONL)
+
+	start := time.Now()
+	cursor, err := resolveClaudeForkResumeAt(fixture.sessionID, fixture.workspace, "a2-never-flushed")
+	if err != nil {
+		t.Fatalf("resolveClaudeForkResumeAt(pin never lands): %v", err)
+	}
+	if cursor != "a1" {
+		t.Errorf("cursor = %q, want the deepest on-disk survivor a1", cursor)
+	}
+	if elapsed := time.Since(start); elapsed > 10*time.Second {
+		t.Errorf("resolution took %s — the append-gap wait is unbounded", elapsed)
+	}
+}
+
+// TestResolveClaudeForkResumeAtFailsWithNoResumableRow: a transcript
+// whose active branch holds NO row the CLI would accept as a cursor is
+// a loud failure, not a silent unpinned fork.
+func TestResolveClaudeForkResumeAtFailsWithNoResumableRow(t *testing.T) {
+	// The whole file is one dangling tool_use — filtered, no survivor.
+	jsonl := `{"type":"assistant","uuid":"a-dangling","parentUuid":null,"sessionId":"mid-turn-session","message":{"id":"m1","role":"assistant","content":[{"type":"tool_use","id":"tool-x","name":"Bash","input":{}}]}}` + "\n"
+	fixture := newMidTurnForkFixture(t, "mid-turn-session", jsonl)
+
+	if _, err := resolveClaudeForkResumeAt(fixture.sessionID, fixture.workspace, "a-dangling"); err == nil {
+		t.Fatal("resolveClaudeForkResumeAt(no resumable row) = nil error, want a loud failure")
+	}
+}
+

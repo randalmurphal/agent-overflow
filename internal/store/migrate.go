@@ -2185,6 +2185,25 @@ CREATE TABLE provider_thread_cost (
     updated_at      INTEGER NOT NULL
 );`,
 	},
+	{
+		Version: 69,
+		Name:    "pending_fork_resume_at",
+		// The transcript cut a lazy Claude fork start must pin. A mid-turn
+		// tail fork stores (pending_fork_session_ref = the SOURCE session,
+		// pending_fork_resume_at = the leaf uuid captured when Fork was
+		// clicked); the fork's first session start then spawns
+		// `--resume <source> --resume-session-at <repaired leaf>
+		// --fork-session`, which makes the CLI's own fork cut exactly where
+		// the timeline was cloned instead of wherever the source's
+		// transcript has grown to by first send (the 2026-08-22 44s-skew
+		// incident). Empty means "no pin": a plain lazy fork of an idle
+		// source cuts at the CLI's own tail, which is correct there.
+		// Cleared together with pending_fork_session_ref by both
+		// session-ref writers — a committed fork must not re-pin on a later
+		// restart. NOT NULL DEFAULT '' so "no pin" has one spelling; a
+		// plain ADD COLUMN, so the FK-parent threads table is not rebuilt.
+		SQL: `ALTER TABLE threads ADD COLUMN pending_fork_resume_at TEXT NOT NULL DEFAULT '';`,
+	},
 }
 
 var rebuildWorkItemProviderUsageLimitedV57SQL = mustReplaceOnce(

@@ -324,18 +324,27 @@ func (s *Store) vacuumIfFragmented(minFreeBytes int64, minFreeFraction float64) 
 // (ReasoningEffort, FastMode, ContextWindow) are persisted so two threads
 // sharing a project can diverge on these axes.
 type Thread struct {
-	ID                         string `json:"id"`
-	ProjectID                  string `json:"projectId"`
-	ProjectPath                string `json:"projectPath"`
-	Title                      string `json:"title"`
-	Provider                   string `json:"provider"`
-	Model                      string `json:"model"`
-	WorkspacePath              string `json:"workspacePath"`
-	WorktreePath               string `json:"worktreePath,omitempty"`
-	Branch                     string `json:"branch,omitempty"`
-	PRRef                      string `json:"prRef,omitempty"`
-	SessionRef                 string `json:"sessionRef,omitempty"`
-	PendingForkRef             string `json:"pendingForkRef,omitempty"`
+	ID             string `json:"id"`
+	ProjectID      string `json:"projectId"`
+	ProjectPath    string `json:"projectPath"`
+	Title          string `json:"title"`
+	Provider       string `json:"provider"`
+	Model          string `json:"model"`
+	WorkspacePath  string `json:"workspacePath"`
+	WorktreePath   string `json:"worktreePath,omitempty"`
+	Branch         string `json:"branch,omitempty"`
+	PRRef          string `json:"prRef,omitempty"`
+	SessionRef     string `json:"sessionRef,omitempty"`
+	PendingForkRef string `json:"pendingForkRef,omitempty"`
+	// PendingForkResumeAt pins the transcript cut for a lazy Claude fork:
+	// the source-session leaf uuid captured when the fork was taken. The
+	// fork's first session start passes it (repaired against the CLI's
+	// resume filters) as --resume-session-at alongside --fork-session so
+	// the cut lands where the timeline was cloned, not wherever the source
+	// has grown to by first send. Empty = unpinned (idle-source lazy fork,
+	// every non-fork thread). Cleared with PendingForkRef by both
+	// session-ref writers.
+	PendingForkResumeAt        string `json:"pendingForkResumeAt,omitempty"`
 	Mode                       string `json:"mode"`
 	ReasoningEffort            string `json:"reasoningEffort"`
 	FastMode                   bool   `json:"fastMode"`

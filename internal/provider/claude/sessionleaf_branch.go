@@ -47,6 +47,12 @@ import (
 type claudeBranchIndex struct {
 	rows    map[string]*claudeBranchRow
 	tipUUID string
+	// nextSeq numbers rows in ingest (file) order. Chain order and file
+	// order can disagree (late-written stale-parent rows), and the fork
+	// pin repair needs the FILE-order bound: "at or before the pin"
+	// means at or before its position in the transcript, not its depth
+	// on the branch. See forkResumeCursorFromScan.
+	nextSeq int
 }
 
 // claudeBranchRow is what the index keeps per transcript row: the
@@ -59,6 +65,7 @@ type claudeBranchRow struct {
 	parent  string
 	rowType string
 	isMeta  bool
+	seq     int
 	flags   claudeRowContentFlags
 }
 
@@ -104,7 +111,9 @@ func (b *claudeBranchIndex) ingestRow(row claudeSessionRow) {
 		parent:  strings.TrimSpace(row.ParentUUID),
 		rowType: row.Type,
 		isMeta:  row.IsMeta,
+		seq:     b.nextSeq,
 	}
+	b.nextSeq++
 	if row.Type == "user" || row.Type == "assistant" {
 		indexed.flags = parseClaudeRowContentFlags(row.Message)
 	}

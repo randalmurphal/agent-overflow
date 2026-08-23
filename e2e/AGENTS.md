@@ -136,14 +136,17 @@ headless, isolated data dir, mocked providers. Full harness guide:
   per-message fork button staying enabled mid-turn (edit stays disabled) and
   cutting BEFORE its anchor, a sidebar "Fork Thread" tail fork rendering the
   cloned partial as `… — interrupted` beside a source that keeps streaming and
-  then completes with the whole reply, the sanctioned degenerate Claude shape
-  (transcript removed after the mock wrote it, so the fork lands with both
-  `sessionRef` and `pendingForkRef` empty), and a Codex mid-turn fork. Every
+  then completes with the whole reply (the tail fork asserts the PINNED lazy
+  cut: empty `sessionRef`, `pendingForkRef` = the source session,
+  `pendingForkResumeAt` set), the sanctioned degenerate Claude shape
+  (transcript removed after the mock wrote it, so the fork lands with all
+  three refs empty), and a Codex mid-turn fork. Every
   case parks the mock between deltas with a `waitSignal` gate, which is what
   makes "mid-stream" a state to fork from rather than a frame to race. It
   exercises the LIVE leaf-tracker branch of the Claude cut (the mock writes its
   user echo to the transcript before sending it, so the tracker's leaf is on
-  disk); the cold-scan fallback is unit-tested in `app_fork_midturn_test.go`.
+  disk); the cold-scan fallback and the first-send pin repair are unit-tested
+  in `app_fork_midturn_test.go`.
   Liveness is asserted from `ListItems` statuses, never
   `Thread.hasIncompleteTurn` — that flag is derived against `last_read_at`, so
   opening the thread in the UI flips it while the turn still runs.

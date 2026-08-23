@@ -15,12 +15,15 @@ to hand back.
 |---|---|
 | `session_ref` | The provider-side session ID. For Claude it's the session file basename; for Codex it's the thread id. |
 | `pending_fork_session_ref` | Set on a freshly-forked thread to point at the *source* session. Cleared the first time we start under it. |
+| `pending_fork_resume_at` | The PIN for a lazy Claude fork taken off a LIVE source (migration v69): the source leaf uuid captured when Fork was clicked. Consumed with `pending_fork_session_ref` — both session-ref writers clear the pair. Empty on an idle-source fork, whose tail IS the cut. |
 
 `Router.handleInit` writes `session_ref` via
 `store.UpdateSessionRef` on every `EventInit`. The store-level update
-also clears `pending_fork_session_ref` in the same statement
-(`Store.UpdateSessionRef` in `internal/store/threads.go`) so a
-pre-committed fork cannot get re-forked on the next restart.
+also clears `pending_fork_session_ref` and `pending_fork_resume_at` in
+the same statement (`Store.UpdateSessionRef` in
+`internal/store/threads.go`, mirrored by
+`UpdateSessionRefAndRemapProviderIDs`) so a pre-committed fork cannot
+get re-forked — or re-pinned — on the next restart.
 
 ## Start, Resume, Fork
 
@@ -30,7 +33,15 @@ pre-committed fork cannot get re-forked on the next restart.
   `internal/provider/claude/session_spawn.go`. If `PendingForkRef` is
   populated it replaces `Resume` and the `ForkSession` flag is set,
   producing `--fork-session --resume <source-ref>` so the CLI replays
-  from the source into a fresh session id.
+  from the source into a fresh session id. If `PendingForkResumeAt` is
+  also populated (a live-source tail fork), `startSessionNow` first
+  resolves the pin through `resolveClaudeForkResumeAt` — a bounded wait
+  for a pin still in the stdout-to-disk append gap, then
+  `claude.ResolveForkResumeCursor`, which repairs a filter-dropped pin
+  to the deepest surviving row at or before it (never forward) — and
+  passes the result as `--resume-session-at <cursor>`, so the CLI cuts
+  its fork copy at the pinned moment rather than the source's current
+  tail.
 - **Codex** — passes `ResumeThreadID = t.SessionRef`. The session
   selects `thread/resume` over `thread/start` when the ID is non-empty
   (see the method-dispatch switch in `Session.start` in
@@ -40,15 +51,20 @@ pre-committed fork cannot get re-forked on the next restart.
   resume on its freshly-assigned id.
 
 Forking a thread whose turn is still in flight produces a fork that
-resumes exactly as an interrupted one does. Claude takes the eager
-JSONL slice at the live session's `CanonicalLeafUUID` (cold-scanning
-the file via `ScanSessionLeaf` when the process is already gone, and
-retrying briefly when the wire announced a leaf the CLI has not
-appended yet), so `SessionRef` points at a complete transcript and
-`PendingForkRef` stays empty — the lazy `--fork-session` cursor is
-never used mid-turn. That cut is captured before the clone runs, so
-the slice and the cloned timeline describe one moment. Codex forks
-with no `lastTurnId` and gets back a
+resumes exactly as an interrupted one does. Claude PINS the lazy cut:
+the fork click captures the live session's `CanonicalLeafUUID`
+(cold-scanning the file via `ScanSessionLeaf` when the process is
+already gone) into `PendingForkResumeAt` alongside
+`PendingForkRef = <source ref>`, and the fork's first send resolves the
+pin and passes `--resume-session-at` (see above), so the CLI's own
+fork cuts where the timeline was cloned rather than wherever the
+source has grown to by then. Registration, not the turn row, is the
+liveness test: the CLI self-re-invokes on background task completions
+with the turn row long closed, and the transcript can grow whenever
+the process exists (forkClaudeThread refuses the UNPINNED lazy branch
+outright if a live session slipped past the capture). The pin is
+captured before the clone runs, so it and the cloned timeline describe
+one moment. Codex forks with no `lastTurnId` and gets back a
 thread whose copy already carries the turn-aborted marker. When
 nothing has been written yet, both refs stay empty and the fork's
 first start is an ordinary `thread/start` / fresh Claude session —

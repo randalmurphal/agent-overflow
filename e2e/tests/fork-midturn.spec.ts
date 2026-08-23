@@ -13,11 +13,14 @@
 // Which Claude branch this exercises: the LIVE one. The mock persists
 // each user echo to `<homeDir>/.claude/projects/mock/<sessionId>.jsonl`
 // before writing it to stdout, and the app's leaf tracker ingests that
-// same echo off the wire — so a mid-turn fork finds a registered session
-// whose CanonicalLeafUUID is on disk, and the eager slice runs. The
-// cold-scan fallback is unit-tested (app_fork_midturn_test.go); what
-// only this level proves is that the live tracker, the transcript the
-// CLI actually wrote, and the settle agree with each other.
+// same echo off the wire — so a mid-turn tail fork finds a registered
+// session whose CanonicalLeafUUID is on disk and PINS the lazy
+// --fork-session cut there (pendingForkRef + pendingForkResumeAt; the
+// fork's first send passes --resume-session-at). The cold-scan fallback
+// and the first-send pin repair are unit-tested
+// (app_fork_midturn_test.go); what only this level proves is that the
+// live tracker, the transcript the CLI actually wrote, and the settle
+// agree with each other.
 import { test, expect, type HarnessMockEvent, type SeedResult } from './fixtures.js';
 import { access, rm } from 'node:fs/promises';
 import * as path from 'node:path';
@@ -112,6 +115,7 @@ interface Thread {
   title: string;
   sessionRef?: string;
   pendingForkRef?: string;
+  pendingForkResumeAt?: string;
 }
 
 interface Item {
@@ -292,12 +296,14 @@ test('a tail fork taken mid-stream renders the interrupted snapshot beside a sti
       .rpc<Thread[]>('ListThreads')
       .then((threads) => threads.find((t) => t.title === 'Tail fork (fork)')!),
   ]);
-  // The eager slice ran: the fork points at a transcript of its own,
-  // written at the leaf the live session had settled, and never at the
-  // lazy `--fork-session` cursor (which would snapshot at first send).
-  expect(fork.sessionRef).toBeTruthy();
-  expect(fork.sessionRef).not.toBe(source.sessionRef);
-  expect(fork.pendingForkRef ?? '').toBe('');
+  // The cut is PINNED, never sliced: the fork holds no session of its
+  // own yet — its first send passes `--resume-session-at <pin>
+  // --fork-session` against the SOURCE session, so the CLI's own fork
+  // cuts at the leaf the live tracker had settled when Fork was
+  // clicked, not wherever the source has grown to by then.
+  expect(fork.sessionRef ?? '').toBe('');
+  expect(fork.pendingForkRef).toBe(source.sessionRef);
+  expect(fork.pendingForkResumeAt).toBeTruthy();
 
   // Only the fork's copy settled; the source's row is still streaming.
   expect(
@@ -352,6 +358,7 @@ test('a Claude fork with no transcript on disk yet starts a fresh provider threa
   const fork = await harness.rpc<Thread>('ForkThread', threadId, null);
   expect(fork.sessionRef ?? '').toBe('');
   expect(fork.pendingForkRef ?? '').toBe('');
+  expect(fork.pendingForkResumeAt ?? '').toBe('');
   // The clone still settled: the fork holds the prompt plus the partial
   // reply under the interrupted treatment, and starts a fresh provider
   // thread on its first send.

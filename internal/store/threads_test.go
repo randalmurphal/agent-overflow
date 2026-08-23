@@ -52,26 +52,27 @@ func TestCreateThreadWithNewFields(t *testing.T) {
 	}
 
 	thr := Thread{
-		ID:                 "thread-new-fields",
-		ProjectID:          proj.ID,
-		Title:              "Full Thread",
-		Provider:           "claude",
-		SessionRef:         "sess-123",
-		PendingForkRef:     "sess-pending",
-		WorkspacePath:      "/home/user/project",
-		Model:              "opus-4",
-		WorktreePath:       "/home/user/.worktrees/feat-x",
-		Branch:             "feat-x",
-		Mode:               "plan",
-		ReasoningEffort:    "xhigh",
-		FastMode:           true,
-		ContextWindow:      200000,
-		DiscussionID:       "disc-abc",
-		ParentThreadID:     "parent-1",
-		ForkedFromThreadID: "parent-1",
-		CreatedAt:          now,
-		UpdatedAt:          now,
-		Archived:           false,
+		ID:                  "thread-new-fields",
+		ProjectID:           proj.ID,
+		Title:               "Full Thread",
+		Provider:            "claude",
+		SessionRef:          "sess-123",
+		PendingForkRef:      "sess-pending",
+		PendingForkResumeAt: "leaf-uuid-1",
+		WorkspacePath:       "/home/user/project",
+		Model:               "opus-4",
+		WorktreePath:        "/home/user/.worktrees/feat-x",
+		Branch:              "feat-x",
+		Mode:                "plan",
+		ReasoningEffort:     "xhigh",
+		FastMode:            true,
+		ContextWindow:       200000,
+		DiscussionID:        "disc-abc",
+		ParentThreadID:      "parent-1",
+		ForkedFromThreadID:  "parent-1",
+		CreatedAt:           now,
+		UpdatedAt:           now,
+		Archived:            false,
 	}
 
 	if err := s.CreateThread(thr); err != nil {
@@ -120,6 +121,9 @@ func TestCreateThreadWithNewFields(t *testing.T) {
 	}
 	if got.PendingForkRef != thr.PendingForkRef {
 		t.Errorf("PendingForkRef: got %q, want %q", got.PendingForkRef, thr.PendingForkRef)
+	}
+	if got.PendingForkResumeAt != thr.PendingForkResumeAt {
+		t.Errorf("PendingForkResumeAt: got %q, want %q", got.PendingForkResumeAt, thr.PendingForkResumeAt)
 	}
 	if got.Provider != thr.Provider {
 		t.Errorf("Provider: got %q, want %q", got.Provider, thr.Provider)
@@ -450,6 +454,7 @@ func TestUpdateSessionRefClearsPendingForkRef(t *testing.T) {
 	thread := makeThread("thread-clear-pending", "claude")
 	thread.ProjectID = proj.ID
 	thread.PendingForkRef = "pending-123"
+	thread.PendingForkResumeAt = "leaf-abc"
 	thread.UpdatedAt = 1000
 	if err := s.CreateThread(thread); err != nil {
 		t.Fatalf("CreateThread() error = %v", err)
@@ -469,6 +474,9 @@ func TestUpdateSessionRefClearsPendingForkRef(t *testing.T) {
 	if got.PendingForkRef != "" {
 		t.Fatalf("PendingForkRef = %q, want empty", got.PendingForkRef)
 	}
+	if got.PendingForkResumeAt != "" {
+		t.Fatalf("PendingForkResumeAt = %q, want empty (one-shot pin, consumed with the ref)", got.PendingForkResumeAt)
+	}
 	if got.UpdatedAt != thread.UpdatedAt {
 		t.Fatalf("UpdatedAt = %d, want %d", got.UpdatedAt, thread.UpdatedAt)
 	}
@@ -476,6 +484,7 @@ func TestUpdateSessionRefClearsPendingForkRef(t *testing.T) {
 	// A restated (unchanged) ref must still clear a pending fork ref: the
 	// changed flag gates the frontend push, never the write itself.
 	got.PendingForkRef = "pending-again"
+	got.PendingForkResumeAt = "leaf-again"
 	if err := s.UpdateThread(got); err != nil {
 		t.Fatalf("UpdateThread() error = %v", err)
 	}
@@ -492,6 +501,41 @@ func TestUpdateSessionRefClearsPendingForkRef(t *testing.T) {
 	}
 	if got.PendingForkRef != "" {
 		t.Fatalf("PendingForkRef = %q after restate, want empty (clear must not be gated on changed)", got.PendingForkRef)
+	}
+	if got.PendingForkResumeAt != "" {
+		t.Fatalf("PendingForkResumeAt = %q after restate, want empty", got.PendingForkResumeAt)
+	}
+}
+
+// TestUpdateSessionRefAndRemapClearsPendingForkPin covers the OTHER
+// session-ref writer: the remap variant a lazy fork's first session
+// init goes through must consume the pin exactly like UpdateSessionRef
+// — a survivor would re-pin the NEXT session start.
+func TestUpdateSessionRefAndRemapClearsPendingForkPin(t *testing.T) {
+	s := newTestStore(t)
+	proj := newTestProject(t, s, "proj-pending-remap", "/tmp/p")
+
+	thread := makeThread("thread-clear-pending-remap", "claude")
+	thread.ProjectID = proj.ID
+	thread.PendingForkRef = "pending-123"
+	thread.PendingForkResumeAt = "leaf-abc"
+	if err := s.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread() error = %v", err)
+	}
+
+	if _, err := s.UpdateSessionRefAndRemapProviderIDs(thread.ID, "session-789", nil, nil); err != nil {
+		t.Fatalf("UpdateSessionRefAndRemapProviderIDs() error = %v", err)
+	}
+
+	got, err := s.GetThread(thread.ID)
+	if err != nil {
+		t.Fatalf("GetThread() error = %v", err)
+	}
+	if got.SessionRef != "session-789" {
+		t.Fatalf("SessionRef = %q, want %q", got.SessionRef, "session-789")
+	}
+	if got.PendingForkRef != "" || got.PendingForkResumeAt != "" {
+		t.Fatalf("pending fork state = %q@%q after remap writer, want both empty", got.PendingForkRef, got.PendingForkResumeAt)
 	}
 }
 

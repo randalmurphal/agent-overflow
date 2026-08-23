@@ -190,8 +190,28 @@ func (a *App) startSessionNowWithClaudeResumeAt(threadID, claudeResumeAt string)
 	// final transcript rows right up to exit. Scanning before the stop
 	// could validate against (or pick a leaf from) a file the dying
 	// process is still extending.
-	if t.Provider == string(provider.Claude) && opts.Resume != "" && !opts.ForkSession {
-		opts.ResumeAt = resolveClaudeResumeAt(opts.Resume, opts.WorkDir, claudeResumeAt)
+	//
+	// A fork start resolves against the SOURCE session instead
+	// (opts.Resume IS the source ref while PendingForkRef is pending),
+	// and only when the fork stored a pin: a pinned lazy fork must cut
+	// where its timeline was cloned, so an unresolvable pin FAILS the
+	// start rather than falling back to the source's current tail —
+	// spawning unpinned there silently snapshots whatever the source
+	// has streamed since the fork (the 2026-08-22 skew incident). An
+	// unpinned fork (idle source at fork time) keeps the CLI's own
+	// tail-cut semantics.
+	if t.Provider == string(provider.Claude) && opts.Resume != "" {
+		if opts.ForkSession {
+			if t.PendingForkResumeAt != "" {
+				cursor, err := resolveClaudeForkResumeAt(opts.Resume, opts.WorkDir, t.PendingForkResumeAt)
+				if err != nil {
+					return fmt.Errorf("start session: resolve fork resume cursor: %w", err)
+				}
+				opts.ResumeAt = cursor
+			}
+		} else {
+			opts.ResumeAt = resolveClaudeResumeAt(opts.Resume, opts.WorkDir, claudeResumeAt)
+		}
 	}
 
 	// Re-admit the thread's events in triage BEFORE spawning. A prior
@@ -332,6 +352,63 @@ func resolveClaudeResumeAt(sessionRef, workDir, explicit string) string {
 		return ""
 	}
 	return state.CanonicalLeafUUID
+}
+
+// claudeForkPinRetries / claudeForkPinBackoff bound the wait for a fork
+// pin — a leaf observed on the source session's stdout at fork time —
+// to reach the source transcript file. The CLI emits the stdout frame
+// before appending the row, so a fork whose first send lands inside
+// that window scans a file that does not hold the pin yet. The gap has
+// never been measured; the budget is a guess with a bounded failure
+// mode: if the real gap is longer, the cost is 500ms spent here and a
+// fall back to the deepest on-disk cursor, which cuts slightly EARLIER
+// than the pin — the honest interrupt shape, never later.
+const (
+	claudeForkPinRetries = 10
+	claudeForkPinBackoff = 50 * time.Millisecond
+)
+
+// resolveClaudeForkResumeAt turns a pinned fork's stored cut
+// (threads.pending_fork_resume_at) into the --resume-session-at cursor
+// its `--fork-session` spawn passes. The pin is repaired against the
+// CLI's resume deserialization filters over the SOURCE file — the CLI
+// filters BEFORE the cursor lookup, so a pin sitting on a row the
+// filters drop (a dangling tool_use from a tool that was mid-flight at
+// fork time) would hard-fail resume pre-init; the repair substitutes
+// the deepest surviving row at or before the pin's file position, never
+// after it. A pin not on disk yet is the stdout-to-disk append gap and
+// is waited out (bounded); exhaustion falls back to the deepest
+// surviving on-disk cursor. Only two shapes fail the start: a real I/O
+// fault reading the source, and a source that holds no resumable row at
+// all — both would otherwise spawn a fork whose cut is a lie.
+func resolveClaudeForkResumeAt(sourceRef, workDir, pin string) (string, error) {
+	var last claude.ForkResumeCursor
+	for attempt := range claudeForkPinRetries {
+		if attempt > 0 {
+			time.Sleep(claudeForkPinBackoff)
+		}
+		res, err := claude.ResolveForkResumeCursor(sourceRef, workDir, pin)
+		if err != nil {
+			return "", fmt.Errorf("resolve fork cut %s in source session %s: %w", pin, sourceRef, err)
+		}
+		if res.PinOnDisk {
+			if res.Cursor == "" {
+				return "", fmt.Errorf("fork source session %s holds no resumable row at or before the fork cut %s", sourceRef, pin)
+			}
+			if res.Cursor != pin {
+				log.Printf("start session: fork cut %s does not survive claude's resume filters in %s — pinning at %s instead", pin, sourceRef, res.Cursor)
+			} else if attempt > 0 {
+				log.Printf("start session: fork cut %s reached %s after %d retries", pin, sourceRef, attempt)
+			}
+			return res.Cursor, nil
+		}
+		last = res
+	}
+	if last.Cursor == "" {
+		return "", fmt.Errorf("fork cut %s never reached source session %s and its transcript holds no resumable row", pin, sourceRef)
+	}
+	log.Printf("start session: fork cut %s never reached source session %s — pinning at the on-disk cursor %s instead", pin, sourceRef, last.Cursor)
+	return last.Cursor, nil
 }
 
 // reconcileCodexAfterStart runs the on-reopen reconcile once the Codex

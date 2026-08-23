@@ -333,31 +333,9 @@ func scanSessionLeafFile(path string) (SessionLeafState, error) {
 }
 
 func scanSessionLeafReader(r io.Reader) (SessionLeafState, error) {
-	tracker := newClaudeLeafTracker("")
-	branch := newClaudeBranchIndex()
-	scanner := bufio.NewScanner(r)
-	scanner.Buffer(make([]byte, 1024*1024), maxClaudeSessionLeafLineBytes)
-	rows := 0
-	for scanner.Scan() {
-		rows++
-		if rows > maxClaudeSessionLeafRows {
-			return SessionLeafState{}, fmt.Errorf("claude: session leaf file has more than %d rows", maxClaudeSessionLeafRows)
-		}
-		line := scanner.Bytes()
-		if len(line) == 0 {
-			continue
-		}
-		// One decode serves both consumers — the superset envelope
-		// carries every field either ingest path reads.
-		var row claudeSessionRow
-		if err := json.Unmarshal(line, &row); err != nil {
-			continue
-		}
-		tracker.ingestRow(row)
-		branch.ingestRow(row)
-	}
-	if err := scanner.Err(); err != nil {
-		return SessionLeafState{}, fmt.Errorf("claude: scan session leaf: %w", err)
+	tracker, branch, err := scanSessionTrackerAndBranch(r)
+	if err != nil {
+		return SessionLeafState{}, err
 	}
 	// The tracker's leaf is file-order based; claude validates resume-at
 	// against the parentUuid branch from the file's last transcript row
@@ -369,6 +347,40 @@ func scanSessionLeafReader(r io.Reader) (SessionLeafState, error) {
 	// whitespace-only rows. Repair to the deepest surviving branch row
 	// so cold resume never targets a uuid claude is about to discard.
 	return repairLeafForActiveBranch(tracker.stateForColdResume(), branch), nil
+}
+
+// scanSessionTrackerAndBranch is the shared single-pass scan feeding
+// both transcript consumers: the file-order leaf tracker and the
+// branch/filter index. One decode serves both — the superset envelope
+// carries every field either ingest path reads. Callers own the
+// interpretation (leaf repair for cold resume, pin repair for fork
+// starts).
+func scanSessionTrackerAndBranch(r io.Reader) (*claudeLeafTracker, *claudeBranchIndex, error) {
+	tracker := newClaudeLeafTracker("")
+	branch := newClaudeBranchIndex()
+	scanner := bufio.NewScanner(r)
+	scanner.Buffer(make([]byte, 1024*1024), maxClaudeSessionLeafLineBytes)
+	rows := 0
+	for scanner.Scan() {
+		rows++
+		if rows > maxClaudeSessionLeafRows {
+			return nil, nil, fmt.Errorf("claude: session leaf file has more than %d rows", maxClaudeSessionLeafRows)
+		}
+		line := scanner.Bytes()
+		if len(line) == 0 {
+			continue
+		}
+		var row claudeSessionRow
+		if err := json.Unmarshal(line, &row); err != nil {
+			continue
+		}
+		tracker.ingestRow(row)
+		branch.ingestRow(row)
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, nil, fmt.Errorf("claude: scan session leaf: %w", err)
+	}
+	return tracker, branch, nil
 }
 
 func findReplayUserParent(sessionID, workspacePath, replayUUID string) (string, bool, error) {

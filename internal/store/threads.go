@@ -26,6 +26,7 @@ const threadColumns = `id, COALESCE(project_id, ''),
     workspace_path, COALESCE(worktree_path, ''), COALESCE(branch, ''),
     COALESCE(pr_ref, ''),
     COALESCE(session_ref, ''), COALESCE(pending_fork_session_ref, ''),
+    pending_fork_resume_at,
     mode, reasoning_effort, fast_mode, context_window,
     auto_compact_standard_percent, auto_compact_extended_percent, runtime_mode,
     COALESCE(discussion_id, ''), COALESCE(parent_thread_id, ''),
@@ -172,6 +173,7 @@ func scanThread(scanner interface{ Scan(...any) error }) (Thread, error) {
 		&t.ID, &t.ProjectID, &t.ProjectPath, &t.Title, &t.Provider, &t.Model,
 		&t.WorkspacePath, &t.WorktreePath, &t.Branch, &t.PRRef,
 		&t.SessionRef, &t.PendingForkRef,
+		&t.PendingForkResumeAt,
 		&t.Mode, &t.ReasoningEffort, &fastMode, &t.ContextWindow,
 		&t.AutoCompactStandardPercent, &t.AutoCompactExtendedPercent, &t.RuntimeMode,
 		&t.DiscussionID, &t.ParentThreadID, &t.ForkedFromThreadID, &t.LastTokenUsage,
@@ -252,15 +254,17 @@ func insertThread(execer threadExecer, t Thread, lastReadAtArg any) error {
 	_, err := execer.Exec(
 		`INSERT INTO threads (id, project_id, title, provider, model,
 		    workspace_path, worktree_path, branch, pr_ref, session_ref, pending_fork_session_ref,
+		    pending_fork_resume_at,
 		    mode, reasoning_effort, fast_mode, context_window,
 		    auto_compact_standard_percent, auto_compact_extended_percent, runtime_mode,
 		    discussion_id, parent_thread_id, forked_from_thread_id, last_token_usage,
 		    created_at, updated_at, archived, last_read_at, import_source)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		t.ID, nilIfEmpty(t.ProjectID), t.Title, t.Provider, t.Model,
 		t.WorkspacePath, nilIfEmpty(t.WorktreePath), nilIfEmpty(t.Branch),
 		t.PRRef,
 		nilIfEmpty(t.SessionRef), nilIfEmpty(t.PendingForkRef),
+		t.PendingForkResumeAt,
 		t.Mode, t.ReasoningEffort, boolToInt(t.FastMode), t.ContextWindow,
 		t.AutoCompactStandardPercent, t.AutoCompactExtendedPercent, t.RuntimeMode,
 		nilIfEmpty(t.DiscussionID), nilIfEmpty(t.ParentThreadID), nilIfEmpty(t.ForkedFromThreadID), t.LastTokenUsage,
@@ -596,6 +600,7 @@ func (s *Store) ListBlockedThreadWorkspaceRefs() ([]ThreadWorkspaceRef, error) {
 // rewrite either.
 const updateThreadSetSQL = `UPDATE threads SET project_id=?, title=?, provider=?, model=?,
     workspace_path=?, worktree_path=?, branch=?, pr_ref=?, session_ref=?, pending_fork_session_ref=?,
+    pending_fork_resume_at=?,
     mode=?, reasoning_effort=?, fast_mode=?, context_window=?,
     auto_compact_standard_percent=?, auto_compact_extended_percent=?, runtime_mode=?,
     discussion_id=?, parent_thread_id=?, forked_from_thread_id=?, last_token_usage=?,
@@ -629,6 +634,7 @@ func updateThreadArgs(t Thread) []any {
 		t.WorkspacePath, nilIfEmpty(t.WorktreePath), nilIfEmpty(t.Branch),
 		t.PRRef,
 		nilIfEmpty(t.SessionRef), nilIfEmpty(t.PendingForkRef),
+		t.PendingForkResumeAt,
 		t.Mode, t.ReasoningEffort, boolToInt(t.FastMode), t.ContextWindow,
 		t.AutoCompactStandardPercent, t.AutoCompactExtendedPercent, t.RuntimeMode,
 		nilIfEmpty(t.DiscussionID), nilIfEmpty(t.ParentThreadID), nilIfEmpty(t.ForkedFromThreadID), t.LastTokenUsage,
@@ -733,7 +739,7 @@ func (s *Store) UpdateSessionRefAndRemapProviderIDs(
 		return false, fmt.Errorf("store: read session ref for provider id remap %s: %w", threadID, err)
 	}
 	result, err := tx.Exec(
-		`UPDATE threads SET session_ref = ?, pending_fork_session_ref = NULL WHERE id = ?`,
+		`UPDATE threads SET session_ref = ?, pending_fork_session_ref = NULL, pending_fork_resume_at = '' WHERE id = ?`,
 		ref, threadID,
 	)
 	if err != nil {
@@ -1148,7 +1154,7 @@ func (s *Store) UpdateSessionRef(threadID, ref string) (changed bool, err error)
 	}
 	result, err := s.db.Exec(
 		`UPDATE threads
-		 SET session_ref = ?, pending_fork_session_ref = NULL
+		 SET session_ref = ?, pending_fork_session_ref = NULL, pending_fork_resume_at = ''
 		 WHERE id = ?`,
 		ref, threadID,
 	)

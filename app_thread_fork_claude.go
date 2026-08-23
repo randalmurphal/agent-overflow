@@ -1,7 +1,7 @@
 // Claude half of the fork saga (app_thread_fork.go): session-JSONL
-// slicing at a turn / message / live-leaf cut, the mid-turn capture, and
-// the provider-id remap that keeps cloned rows pointing at the slice's
-// reminted uuids.
+// slicing at a turn / message cut, the mid-turn capture that pins a
+// live-source tail fork's lazy cut, and the provider-id remap that
+// keeps cloned rows pointing at a slice's reminted uuids.
 package main
 
 import (
@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"time"
 
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/provider/claude/sessionfork"
@@ -20,17 +19,22 @@ import (
 // forkClaudeThread wires Claude's resume state for the new fork.
 //
 // Fork at tail (atTurnIndex == nil OR atTurnIndex >= lastTurn) on an
-// IDLE source: use the existing "lazy fork" mechanism — stamp PendingForkRef =
+// IDLE source: the plain "lazy fork" — stamp PendingForkRef =
 // source.SessionRef, and the next session start passes --fork-session
-// to the Claude CLI which forks from the source JSONL's tail at
-// startup.
+// to the Claude CLI, which forks from the source JSONL's tail at
+// startup. With no session live, that tail is exactly the tail the
+// timeline was cloned at, so no pin is needed.
 //
-// Fork at tail, MID-TURN (midTurnCut != nil): the lazy path is refused.
-// `--fork-session` defers the cut to the fork's first send, which can
-// be minutes or turns later — the snapshot would be of whatever the
-// source's transcript looks like THEN, not now. Instead the slice runs
-// eagerly through the leaf the caller captured before the clone; see
-// forkClaudeThreadAtLiveLeaf.
+// Fork at tail, LIVE source (midTurnCut != nil): the PINNED lazy fork.
+// Same PendingForkRef mechanism, plus PinnedResumeAt = the leaf the
+// caller captured before the clone. The fork's first session start
+// repairs that pin against the CLI's resume filters and passes
+// `--resume-session-at <cursor> --fork-session`, which makes the CLI
+// cut its fork copy exactly at the pin even when the source has kept
+// streaming since (spike-verified 2.1.237: rows after the cursor are
+// dropped from the fork copy). Unpinned lazy on a live source is
+// forbidden — it snapshots whatever the transcript looks like at first
+// send, minutes or turns later (the 2026-08-22 skew incident).
 //
 // Fork at point: slice the source JSONL ourselves (the official
 // recipe — see internal/provider/claude/sessionfork). The new
@@ -44,37 +48,50 @@ import (
 // strictly below the in-flight turn (the caller normalizes anything
 // higher to a tail fork), so its anchor rows are old and already on
 // disk, and ParseTranscript tolerates the source's torn final line.
-func (a *App) forkClaudeThread(source store.Thread, atTurnIndex *int, midTurnCut *claudeMidTurnCut) (
-	sessionRef string,
-	pendingForkRef string,
-	uuidMap map[string]string,
-	cleanup func() error,
-	err error,
-) {
+func (a *App) forkClaudeThread(source store.Thread, atTurnIndex *int, midTurnCut *claudeMidTurnCut) (forkResumeState, error) {
 	// The mid-turn cut is decided BEFORE the missing-session-ref
 	// refusal: mid-turn, a tail fork of a thread whose session has not
 	// landed yet is the sanctioned degenerate case (fresh provider
 	// thread on first send), not an error. Its presence already implies
 	// atTurnIndex == nil — the caller only captures one for a tail fork.
 	if midTurnCut != nil {
-		return a.forkClaudeThreadAtLiveLeaf(source, *midTurnCut)
+		if midTurnCut.degenerate() {
+			return forkResumeState{}, nil
+		}
+		return forkResumeState{
+			PendingForkRef: midTurnCut.SessionRef,
+			PinnedResumeAt: midTurnCut.Leaf,
+		}, nil
 	}
 
 	tail := atTurnIndex == nil
 	if !tail {
 		lastTurn, err := a.store.LastTurnIndex(source.ID)
 		if err != nil {
-			return "", "", nil, nil, fmt.Errorf("fork thread: load last turn index: %w", err)
+			return forkResumeState{}, fmt.Errorf("fork thread: load last turn index: %w", err)
 		}
 		// Forking at or past the last turn is equivalent to fork-at-tail.
 		tail = *atTurnIndex >= lastTurn
 	}
 
 	if source.SessionRef == "" {
-		return "", "", nil, nil, fmt.Errorf("fork thread: source thread %q is missing a Claude session reference", source.ID)
+		return forkResumeState{}, fmt.Errorf("fork thread: source thread %q is missing a Claude session reference", source.ID)
 	}
 
 	if tail {
+		// Tripwire, not a reachable path: ForkThread captures a mid-turn
+		// cut whenever a live session is registered, so arriving here with
+		// one means a caller skipped the capture — and the unpinned lazy
+		// path below would snapshot the transcript at the fork's FIRST
+		// SEND, minutes or turns after the timeline was cloned (the
+		// 2026-08-22 skew incident). Refuse loudly instead of silently
+		// deferring the cut.
+		if _, ok := a.activeClaudeSession(source.ID); ok {
+			return forkResumeState{}, fmt.Errorf(
+				"fork thread: source thread %s has a live Claude session but no mid-turn cut was captured — refusing the unpinned lazy --fork-session path, which would snapshot at first send instead of now",
+				source.ID,
+			)
+		}
 		// Lazy fork-at-tail — startSession will pass --fork-session.
 		// No inline slice happens here so there's nothing to remap;
 		// the fork's --fork-session start will mint new UUIDs that the
@@ -82,12 +99,12 @@ func (a *App) forkClaudeThread(source store.Thread, atTurnIndex *int, midTurnCut
 		// revert in the fork falls back to the ordinal walk (now
 		// synthetic-flag-safe) via the ErrMessageNotFound branch in
 		// `writeRevertedClaudeSession`.
-		return "", source.SessionRef, nil, nil, nil
+		return forkResumeState{PendingForkRef: source.SessionRef}, nil
 	}
 
 	srcPath, err := sessionfork.LocateSessionFile(source.SessionRef, source.WorkspacePath)
 	if err != nil {
-		return "", "", nil, nil, fmt.Errorf("fork thread: locate claude session: %w", err)
+		return forkResumeState{}, fmt.Errorf("fork thread: locate claude session: %w", err)
 	}
 
 	// Prefer UUID-keyed slicing when the user_text at turn
@@ -97,37 +114,23 @@ func (a *App) forkClaudeThread(source store.Thread, atTurnIndex *int, midTurnCut
 	// stamp.
 	newID, newPath, uuidMap, err := a.writeForkedClaudeSession(srcPath, source.ID, *atTurnIndex)
 	if err != nil {
-		return "", "", nil, nil, fmt.Errorf("fork thread: write forked session: %w", err)
+		return forkResumeState{}, fmt.Errorf("fork thread: write forked session: %w", err)
 	}
-	cleanup = func() error {
-		// Best-effort: a missing file is OK (already cleaned up elsewhere).
-		if err := os.Remove(newPath); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("fork thread cleanup: remove %s: %w", newPath, err)
-		}
-		return nil
-	}
-	return newID, "", uuidMap, cleanup, nil
+	return forkResumeState{
+		SessionRef: newID,
+		UUIDMap:    uuidMap,
+		Cleanup: func() error {
+			// Best-effort: a missing file is OK (already cleaned up elsewhere).
+			if err := os.Remove(newPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+				return fmt.Errorf("fork thread cleanup: remove %s: %w", newPath, err)
+			}
+			return nil
+		},
+	}, nil
 }
 
-// claudeMidTurnForkLeafRetries / claudeMidTurnForkLeafBackoff bound the
-// wait for a leaf observed on stdout to reach the transcript file.
-//
-// The ASSUMPTION is that the CLI appends its JSONL rows shortly after
-// the matching stdout frame, so a fork issued in that window sees
-// ErrMessageNotFound for a uuid that is genuinely coming. The gap has
-// never been measured — no spike or capture in this repo records it —
-// so the budget is a guess with a bounded failure mode rather than a
-// number derived from data: if the real gap is longer, the cost is the
-// 500ms spent here and a fall through to the on-disk leaf, which still
-// produces a correct (slightly older) cut. A spike measuring the actual
-// stdout-frame-to-append delay would let this shrink.
-const (
-	claudeMidTurnForkLeafRetries = 10
-	claudeMidTurnForkLeafBackoff = 50 * time.Millisecond
-)
-
-// claudeMidTurnCut is the transcript cut for a mid-turn tail fork,
-// resolved BEFORE the SQLite clone so the slice and the cloned timeline
+// claudeMidTurnCut is the transcript cut for a live-source tail fork,
+// resolved BEFORE the SQLite clone so the pin and the cloned timeline
 // describe the same moment (see ForkThread). A zero SourcePath or Leaf
 // is the sanctioned degenerate case: the fork starts a FRESH provider
 // thread on its first send and the cloned prompt is its whole
@@ -137,10 +140,6 @@ type claudeMidTurnCut struct {
 	WorkspacePath string
 	SourcePath    string
 	Leaf          string
-	// Live says the leaf came from the running session's stdout tracker
-	// rather than from the file, which is the only case where a miss can
-	// be a write-ordering race worth retrying.
-	Live bool
 }
 
 func (c claudeMidTurnCut) degenerate() bool {
@@ -191,7 +190,7 @@ func (a *App) captureClaudeMidTurnCut(source store.Thread) (claudeMidTurnCut, er
 	cut := claudeMidTurnCut{SessionRef: sourceRef, WorkspacePath: source.WorkspacePath, SourcePath: srcPath}
 	if sess, ok := a.activeClaudeSession(source.ID); ok {
 		if leaf := sess.CanonicalLeafUUID(); leaf != "" {
-			cut.Leaf, cut.Live = leaf, true
+			cut.Leaf = leaf
 			return cut, nil
 		}
 	}
@@ -222,163 +221,40 @@ func (a *App) scanClaudeSessionLeaf(op string, cut claudeMidTurnCut) (string, er
 	return state.CanonicalLeafUUID, nil
 }
 
-// forkClaudeThreadAtLiveLeaf is the mid-turn tail fork: an EAGER slice
-// of the source transcript through the captured leaf, so the fork is a
-// snapshot of "when Fork was clicked" rather than of whenever
-// `--fork-session` would have run. The source file is only read — it
-// keeps streaming under its own session.
-//
-// The cut lands on the deepest row the session had settled, which
-// mid-turn can still be an assistant row holding a client tool_use whose
-// result never arrived (a Bash that was running when the fork was
-// taken). That is the interrupted-transcript shape, not a defect, and
-// invariant 28's existing enforcement covers it: the slice re-chains
-// through sessionfork, and the fork's own resume runs the branch +
-// resume-filter screen that repairs a rejected cursor.
-func (a *App) forkClaudeThreadAtLiveLeaf(source store.Thread, cut claudeMidTurnCut) (
-	sessionRef string,
-	pendingForkRef string,
-	uuidMap map[string]string,
-	cleanup func() error,
-	err error,
-) {
-	const op = "fork thread mid-turn"
-
-	if cut.degenerate() {
-		return "", "", nil, nil, nil
-	}
-
-	newID, newPath, uuidMap, err := a.sliceClaudeSessionThroughLeaf(op, cut)
-	if err != nil {
-		if !errors.Is(err, sessionfork.ErrMessageNotFound) && !errors.Is(err, sessionfork.ErrSessionEmpty) {
-			return "", "", nil, nil, fmt.Errorf("%s: write forked session: %w", op, err)
-		}
-		// The captured leaf never reached the file. Fall back to whatever
-		// IS on disk — a slightly older cut is a truthful snapshot; failing
-		// the fork over a write the CLI has not flushed is not. Re-scanning
-		// HERE rather than at capture time is sound: this only runs when
-		// the captured leaf is absent, and no row that landed after it can
-		// be a successor of a row that never landed.
-		diskLeaf, scanErr := a.scanClaudeSessionLeaf(op, cut)
-		if scanErr != nil {
-			return "", "", nil, nil, scanErr
-		}
-		if diskLeaf == "" || diskLeaf == cut.Leaf {
-			log.Printf("%s: leaf %q absent from %s and no on-disk fallback — fork starts a fresh provider thread", op, cut.Leaf, cut.SourcePath)
-			return "", "", nil, nil, nil
-		}
-		log.Printf("%s: leaf %q absent from %s — slicing through the on-disk leaf %q instead", op, cut.Leaf, cut.SourcePath, diskLeaf)
-		newID, newPath, uuidMap, err = sessionfork.WriteForkFileThroughUUID(sessionfork.ForkCut{
-			SourcePath:   cut.SourcePath,
-			LastKeptUUID: diskLeaf,
-		})
-		if err != nil {
-			if errors.Is(err, sessionfork.ErrMessageNotFound) || errors.Is(err, sessionfork.ErrSessionEmpty) {
-				log.Printf("%s: on-disk leaf %q unusable in %s (%v) — fork starts a fresh provider thread", op, diskLeaf, cut.SourcePath, err)
-				return "", "", nil, nil, nil
-			}
-			return "", "", nil, nil, fmt.Errorf("%s: write forked session: %w", op, err)
-		}
-	}
-
-	cleanup = func() error {
-		if err := os.Remove(newPath); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("%s cleanup: remove %s: %w", op, newPath, err)
-		}
-		return nil
-	}
-	return newID, "", uuidMap, cleanup, nil
-}
-
-// sliceClaudeSessionThroughLeaf writes the fork's transcript, retrying a
-// LIVE leaf that has not been flushed to the file yet. ErrMessageNotFound
-// on a stdout-observed uuid is a write-ordering race, not drift: the CLI
-// emits the frame before appending the row. A COLD leaf came out of the
-// file itself, so a miss there is real and retrying only wastes time.
-//
-// A retry re-STATS the source before it re-PARSES it. WriteForkFileThroughUUID
-// reads and decodes the whole transcript, which on a multi-MB session is
-// tens of milliseconds of work repeated up to ten times while the
-// SOURCE's thread action lock is held (blocking Stop and send). An
-// unchanged size means the append that would carry the leaf has not
-// happened, so the parse cannot possibly find it — sleep again instead.
-// Size is the right probe because a transcript only ever GROWS during a
-// turn; a stat that fails is treated as "changed" so an unreadable stat
-// can never silently disable the retry.
-func (a *App) sliceClaudeSessionThroughLeaf(op string, cut claudeMidTurnCut) (string, string, map[string]string, error) {
-	attempts := 1
-	if cut.Live {
-		attempts = claudeMidTurnForkLeafRetries
-	}
-	var lastErr error
-	lastSize := int64(-1)
-	for attempt := range attempts {
-		if attempt > 0 {
-			time.Sleep(claudeMidTurnForkLeafBackoff)
-		}
-		size := int64(-1)
-		if st, statErr := os.Stat(cut.SourcePath); statErr == nil {
-			size = st.Size()
-		}
-		if attempt > 0 && size >= 0 && size == lastSize {
-			continue
-		}
-		lastSize = size
-		newID, newPath, uuidMap, err := sessionfork.WriteForkFileThroughUUID(sessionfork.ForkCut{
-			SourcePath:   cut.SourcePath,
-			LastKeptUUID: cut.Leaf,
-		})
-		if err == nil {
-			if attempt > 0 {
-				log.Printf("%s: live leaf %q reached %s after %d retries", op, cut.Leaf, cut.SourcePath, attempt)
-			}
-			return newID, newPath, uuidMap, nil
-		}
-		lastErr = err
-		if !errors.Is(err, sessionfork.ErrMessageNotFound) {
-			break
-		}
-	}
-	return "", "", nil, lastErr
-}
-
-func (a *App) forkClaudeThreadBeforeMessage(source store.Thread, anchor store.MessageAnchor, anchorItem store.Item) (
-	sessionRef string,
-	pendingForkRef string,
-	uuidMap map[string]string,
-	cleanup func() error,
-	err error,
-) {
+func (a *App) forkClaudeThreadBeforeMessage(source store.Thread, anchor store.MessageAnchor, anchorItem store.Item) (forkResumeState, error) {
 	midTurn, err := claudeMidTurnAnchor(anchorItem)
 	if err != nil {
-		return "", "", nil, nil, fmt.Errorf("fork thread from message: %w", err)
+		return forkResumeState{}, fmt.Errorf("fork thread from message: %w", err)
 	}
 	// Only an anchor that OPENS turn 0 keeps nothing — the fork then
 	// starts a fresh provider session. A mid-turn-0 anchor (a message
 	// queued during the very first turn) keeps that turn's prefix and
 	// needs the session slice like any later anchor.
 	if anchor.TurnIndex == 0 && !midTurn {
-		return "", "", nil, nil, nil
+		return forkResumeState{}, nil
 	}
 	sourceSessionRef := source.ResolvedSessionRef()
 	if sourceSessionRef == "" {
-		return "", "", nil, nil, fmt.Errorf("fork thread from message: source thread %q is missing a Claude session reference", source.ID)
+		return forkResumeState{}, fmt.Errorf("fork thread from message: source thread %q is missing a Claude session reference", source.ID)
 	}
 	srcPath, err := sessionfork.LocateSessionFile(sourceSessionRef, source.WorkspacePath)
 	if err != nil {
-		return "", "", nil, nil, fmt.Errorf("fork thread from message: locate claude session: %w", err)
+		return forkResumeState{}, fmt.Errorf("fork thread from message: locate claude session: %w", err)
 	}
 	newID, newPath, uuidMap, err := a.writeMessageForkedClaudeSession(srcPath, anchor, anchorItem, midTurn)
 	if err != nil {
-		return "", "", nil, nil, fmt.Errorf("fork thread from message: write forked session: %w", err)
+		return forkResumeState{}, fmt.Errorf("fork thread from message: write forked session: %w", err)
 	}
-	cleanup = func() error {
-		if err := os.Remove(newPath); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("fork thread from message cleanup: remove %s: %w", newPath, err)
-		}
-		return nil
-	}
-	return newID, "", uuidMap, cleanup, nil
+	return forkResumeState{
+		SessionRef: newID,
+		UUIDMap:    uuidMap,
+		Cleanup: func() error {
+			if err := os.Remove(newPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+				return fmt.Errorf("fork thread from message cleanup: remove %s: %w", newPath, err)
+			}
+			return nil
+		},
+	}, nil
 }
 
 // writeForkedClaudeSession is the turn-keyed-fork call into
