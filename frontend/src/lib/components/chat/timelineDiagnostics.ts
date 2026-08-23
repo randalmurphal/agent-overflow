@@ -180,8 +180,15 @@ export function createTimelineDiagnostics(
   // whole capture). The early return also drops revealedNodes from the
   // effect's dep set on non-transition runs, so the effect itself
   // stops waking per pass.
+  // `listRef` is held through a WeakRef: this dedup cache outlives the
+  // handle it compares against, and a strong ref here pinned the outgoing
+  // virtualizer's whole detached row plane between binds (2026-08-22 heap
+  // snapshot — `lastListRefBind` was a top retainer of detached timeline
+  // DOM). A collected handle simply fails the identity compare and the
+  // transition records again, which is the correct answer anyway: the
+  // handle being gone means it was a different virtualizer.
   let lastListRefBind: {
-    listRef: TimelineVirtualizerHandle | undefined;
+    listRef: WeakRef<TimelineVirtualizerHandle> | null;
     threadId: string | null;
     restoredThreadId: string | null;
   } | null = null;
@@ -190,16 +197,25 @@ export function createTimelineDiagnostics(
     const listRef = options.getListRef();
     const threadId = options.getPane().threadId;
     const restoredThreadId = options.getRestoredThreadId();
+    // WeakRef refuses non-object targets, and test seams hand this method
+    // null/primitive stand-ins; those dedup as "unbound" (worst case a
+    // duplicate transition record, never a crash or a pin).
+    const refable = typeof listRef === 'object' && listRef !== null;
     const last = lastListRefBind;
     if (
       last
-      && last.listRef === listRef
+      && (last.listRef !== null) === refable
+      && (last.listRef === null || last.listRef.deref() === listRef)
       && last.threadId === threadId
       && last.restoredThreadId === restoredThreadId
     ) {
       return;
     }
-    lastListRefBind = { listRef, threadId, restoredThreadId };
+    lastListRefBind = {
+      listRef: refable ? new WeakRef(listRef) : null,
+      threadId,
+      restoredThreadId,
+    };
     const scrollEl = options.getScrollEl();
     recordUiTrace('timeline.listRef.bind', {
       bound: listRef !== undefined,

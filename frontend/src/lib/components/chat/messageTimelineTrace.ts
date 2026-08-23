@@ -25,6 +25,17 @@ const MAX_TRACE_DOM_ROWS = 64;
 // optimization is documented at MessageTimeline.svelte's row-resize $effect).
 // Shared by both probes so they can't drift.
 const ROW_SELECTOR = '[data-row-index]';
+
+// Every probe below keys per-element state on WeakMaps, never Maps. The
+// `mutationTargetIsInsideRow` guard means removals that happen INSIDE a row
+// (ActivityRun's child windowing evicting [data-run-child] subtrees) never
+// reach the probes' untrack paths — a strong Map there pinned every evicted
+// reasoning body plus its whole subtree for the pane's lifetime (13.5k
+// detached nodes in a day-long dev session, 2026-08-22 heap snapshot).
+// ResizeObserver holds its targets weakly per spec, so WeakMap keys are the
+// only strong ref a probe could add; keeping them weak makes a missed
+// untrack cost nothing. The scan test in messageTimelineTrace.test.ts
+// enforces this for new probes.
 const mutationTargetIsInsideRow = (target: Node): boolean => {
   if (target instanceof Element) {
     return target.closest(ROW_SELECTOR) !== null;
@@ -131,7 +142,7 @@ export function startTimelineRowResizeTrace(root: Element): () => void {
   if (!isUiOracleTraceEnabled()) return () => {};
   if (typeof ResizeObserver === 'undefined') return () => {};
 
-  const trackedHeights = new Map<Element, number | null>();
+  const trackedHeights = new WeakMap<Element, number | null>();
 
   const resizeObserver = new ResizeObserver((entries) => {
     for (const entry of entries) {
@@ -201,7 +212,6 @@ export function startTimelineRowResizeTrace(root: Element): () => void {
   return () => {
     mo.disconnect();
     resizeObserver.disconnect();
-    trackedHeights.clear();
   };
 }
 
@@ -262,9 +272,9 @@ export function startRowMarginDivergenceTrace(root: Element): () => void {
   if (!isUiOracleTraceEnabled()) return () => {};
   if (typeof ResizeObserver === 'undefined') return () => {};
 
-  const wrapperToRow = new Map<Element, HTMLElement>();
-  const rowToWrapper = new Map<Element, Element>();
-  const lastHeight = new Map<Element, number>();
+  const wrapperToRow = new WeakMap<Element, HTMLElement>();
+  const rowToWrapper = new WeakMap<Element, Element>();
+  const lastHeight = new WeakMap<Element, number>();
 
   const ro = new ResizeObserver((entries) => {
     // Build this frame's changed-height set first so a wrapper entry can ask
@@ -350,9 +360,6 @@ export function startRowMarginDivergenceTrace(root: Element): () => void {
   return () => {
     mo.disconnect();
     ro.disconnect();
-    wrapperToRow.clear();
-    rowToWrapper.clear();
-    lastHeight.clear();
   };
 }
 
@@ -428,7 +435,11 @@ export function startReasoningTailJumpTrace(root: Element): () => void {
   // Per body: last seen content width + text length, or null until the first
   // RO callback seeds the baseline. A resize whose width changed but whose text
   // length did NOT is a re-wrap with no delta — the stale-pin trigger.
-  const seen = new Map<Element, { width: number; textLen: number } | null>();
+  // WeakMap is load-bearing here, not defensive: bodies inside an
+  // ActivityRun's mount window are evicted by in-row mutations the observer
+  // below deliberately skips, so `untrack` never runs for them (see the
+  // guard comment below).
+  const seen = new WeakMap<Element, { width: number; textLen: number } | null>();
 
   const ro = new ResizeObserver((entries) => {
     for (const entry of entries) {
@@ -477,12 +488,15 @@ export function startReasoningTailJumpTrace(root: Element): () => void {
     for (const m of mutations) {
       // Skip the per-node rescan for mutations INSIDE an already-tracked row —
       // the same guard both sibling probes use (streaming markdown churns child
-      // lists every chunk). Safe here because a reasoning body always co-mounts
-      // with its keyed [data-row-index] row (ReasoningTailRow renders the body
-      // snippet unconditionally; collapse only flips a class), so discovery
-      // lands at the row-add boundary where m.target sits ABOVE every row and is
-      // not skipped. Do NOT copy this into a context where a body can be
-      // injected into an already-present row — it would then go silently blind.
+      // lists every chunk). This is a DELIBERATE coverage trade, not a safety
+      // claim: ActivityRun's child windowing mounts and evicts reasoning
+      // bodies through in-row mutations this skip never sees. Bodies paged in
+      // that way are historical (no text deltas coming), so the stale-pin
+      // trigger this oracle watches for cannot fire on them — the live
+      // streaming body always mounts with its row at the plane level, which
+      // this observer does see. The evictions the skip misses are why `seen`
+      // MUST stay a WeakMap: with a strong Map, every skipped eviction pinned
+      // the body's whole subtree (the 2026-08-22 detached-DOM leak).
       if (mutationTargetIsInsideRow(m.target)) continue;
       m.addedNodes.forEach((n) => {
         if (!(n instanceof Element)) return;
@@ -501,6 +515,5 @@ export function startReasoningTailJumpTrace(root: Element): () => void {
   return () => {
     mo.disconnect();
     ro.disconnect();
-    seen.clear();
   };
 }

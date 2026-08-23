@@ -1,4 +1,7 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { SRC_ROOT } from '../../../test/sourceScan';
 import { cleanup, render } from '@testing-library/svelte';
 import {
   clearUiRenderTrace,
@@ -259,5 +262,36 @@ describe('messageTimelineTrace', () => {
 
     stop();
     root.remove();
+  });
+});
+
+// Retention tripwire for the probe class. The probes' MutationObservers skip
+// mutations inside rows (the streaming hot path), so element removals that
+// happen in-row — ActivityRun child windowing evicting [data-run-child]
+// subtrees — never reach an untrack path. A strong element-keyed collection
+// at probe scope therefore pins every skipped eviction's whole subtree for
+// the pane's lifetime (13.5k detached nodes in the 2026-08-22 heap snapshot).
+// ResizeObserver targets are held weakly per spec, so WeakMap keys are the
+// only strong ref a probe could add: this scan fails any NEW strong
+// element-keyed collection in the trace modules, and the WeakRef guard pins
+// the one handle cache in timelineDiagnostics the same snapshot caught.
+describe('probe retention tripwire', () => {
+  const read = (name: string): string =>
+    readFileSync(join(SRC_ROOT, 'lib', 'components', 'chat', name), 'utf8');
+
+  it('messageTimelineTrace holds no strong element-keyed collections (frame-local `changed` excepted)', () => {
+    const src = read('messageTimelineTrace.ts');
+    const offenders = [...src.matchAll(/new (?:Map|Set)<(?:HTML|SVG)?Element\b[^>]*>/g)]
+      .map((m) => ({ match: m[0], line: src.slice(0, m.index).split('\n').length }))
+      // The margin probe's per-frame `changed` map lives only for one RO
+      // callback and must stay iterable — the single allowed strong Map.
+      .filter(({ line }) => !/const changed = new Map<Element/.test(src.split('\n')[line - 1] ?? ''));
+    expect(offenders).toEqual([]);
+  });
+
+  it('timelineDiagnostics holds the listRef dedup cache through a WeakRef', () => {
+    const src = read('timelineDiagnostics.ts');
+    expect(src).toMatch(/lastListRefBind:\s*\{\s*\n?\s*listRef:\s*WeakRef</);
+    expect(src).not.toMatch(/listRef:\s*TimelineVirtualizerHandle \| undefined;/);
   });
 });
