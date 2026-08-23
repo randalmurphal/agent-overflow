@@ -193,6 +193,26 @@ describe('createUseStickToBottomController', () => {
     });
   });
 
+  describe('onScrollTopWritten', () => {
+    it('reports every chokepoint write with the browser readback', () => {
+      controller.detach();
+      const written: number[] = [];
+      controller = createUseStickToBottomController({
+        onScrollTopWritten: (top) => written.push(top),
+      });
+      controller.attach(scrollEl, contentEl);
+      written.length = 0;
+      geom.scrollTop = 0;
+      controller.forceStick();
+      expect(geom.scrollTop).toBe(400);
+      expect(written).toEqual([400]);
+      // The readback, not the request: a write past the max clamps.
+      controller.applyScrollTarget(5000);
+      expect(written.at(-1)).toBe(geom.scrollTop);
+      expect(written.at(-1)).toBeLessThanOrEqual(400);
+    });
+  });
+
   describe('wheel handler', () => {
     it('wheel up on outer scrollEl escapes immediately', async () => {
       fireWheel(scrollEl, -50, scrollEl);

@@ -31,6 +31,16 @@ controller chokepoint, simpler surfaces may pass a direct writer they
 own. Do not add chat imports here; the dependency runs one way only
 (surfaces import the adapter, never the reverse).
 
+The write flows back too: the engine's scroll offset is the base every
+compensation target is computed from, and a scroll event reports an
+authored write one frame late. Chat forwards the controller's
+`onScrollTopWritten` readback to `noteScrollTopWritten`, so a row
+re-measuring above the viewport mid-glide compensates from where the
+spring actually is, not where it was last frame (regression:
+`activityRunAutoCollapse.browser.test.ts` "never yanks the glide").
+Windowing still keys off the scroll event; the note moves the offset
+only.
+
 A pending `scrollToIndex` converges across measurement passes but may
 only continue a journey nobody else has redirected: each pass checks the
 live position against where its own last write left it (compensation

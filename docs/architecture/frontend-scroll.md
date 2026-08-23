@@ -40,6 +40,11 @@ the timeline virtualizer, or the scroll controller (`utils/scroll/`).
     target in the engine and perform the write through the controller
     chokepoint (the `applyScrollTarget` prop). There is no second
     scrollTop writer to guard against by construction.
+  - **The engine's offset never trails a controller write.** Every
+    chokepoint write is reported back (`onScrollTopWritten` →
+    `noteScrollTopWritten`) before the scroll event carrying it fires,
+    because a compensation computed between the two would be based a
+    frame behind the glide and land the viewport that far back.
 - `utils/scroll/` owns user scroll intent and **every** programmatic
   `scrollTop` write. Inside the package:
   - `resolver.ts` — the pure per-delivery reducer. Every contentRO

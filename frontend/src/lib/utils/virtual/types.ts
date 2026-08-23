@@ -97,6 +97,13 @@ export type ScrollToIndexAlign = 'start' | 'center' | 'end' | 'nearest';
 export interface TimelineVirtualizerHandle {
   scrollToIndex(index: number, opts?: { align?: ScrollToIndexAlign; offset?: number }): void;
   revalidate(): void;
+  /**
+   * The scroll controller wrote scrollTop (browser-rounded readback).
+   * Wired from the controller's `onScrollTopWritten` option so the
+   * engine's offset never lags an authored write — see
+   * `VirtualEngine.noteScrollOffset`.
+   */
+  noteScrollTopWritten(top: number): void;
   getScrollOffset(): number;
   getViewportSize(): number;
   getScrollSize(): number;

@@ -82,6 +82,31 @@ describe('applyScroll', () => {
   });
 });
 
+describe('noteScrollOffset', () => {
+  it('moves the compensation base without touching the window', () => {
+    const engine = mountedEngine();
+    engine.applyScroll(700);
+    // A controller write (spring tick) landed at 702; its scroll event
+    // has not fired yet.
+    engine.noteScrollOffset(702);
+    expect(engine.getScrollOffset()).toBe(702);
+    expect(engine.getWindow()).toEqual([5, 9]);
+    const update = engine.applyMeasurements([[2, 150]]);
+    expect(update?.compensation).toEqual({ kind: 'remeasure-above', delta: 50, target: 752 });
+  });
+
+  it('does not end tail seeding — only a scroll event does', () => {
+    const engine = mountedEngine();
+    const seeded = engine.getWindow();
+    engine.noteScrollOffset(0);
+    expect(engine.getWindow()).toEqual(seeded);
+    // Still tail-seeded: a measurement re-seeds from the tail rather
+    // than windowing at the noted offset 0.
+    expect(engine.applyMeasurements([[9, 200]])?.window).toEqual([6, 9]);
+    expect(engine.applyScroll(0)?.window).toEqual([0, 5]);
+  });
+});
+
 describe('applyMeasurements', () => {
   it('growth entirely above the viewport emits remeasure-above compensation', () => {
     const engine = mountedEngine();

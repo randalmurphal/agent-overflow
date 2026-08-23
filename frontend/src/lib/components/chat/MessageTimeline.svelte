@@ -247,6 +247,10 @@
     // IS the content height) — the controller creates no contentEl RO;
     // samples arrive through `onContentGeometry` below.
     externalContentGeometry: true,
+    // ... and learns every controller write the moment it lands, so the
+    // offset its compensations are computed from never trails a glide
+    // by a frame (see VirtualEngine.noteScrollOffset).
+    onScrollTopWritten: (top) => listRef?.noteScrollTopWritten(top),
   });
 
   function markMarkdownSettled(): void {

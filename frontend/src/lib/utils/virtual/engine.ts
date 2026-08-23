@@ -47,6 +47,21 @@ export interface VirtualEngine {
   /** Scroll position changed. Null when the window is unchanged — the
    * range-equality early-out that makes per-scroll-event work near-free. */
   applyScroll(offset: number): EngineUpdate | null;
+  /**
+   * The controller wrote scrollTop; `offset` is the browser's readback.
+   * Updates the offset every compensation is computed from WITHOUT
+   * recomputing the window — the scroll event that follows still does
+   * that, one frame later, exactly as before.
+   *
+   * Without this the offset lags authored writes by a frame: a spring
+   * glide writes in rAF, the scroll event lands next frame, and a row
+   * re-measuring above the viewport in between computes its
+   * compensation target from the pre-write offset. The controller lands
+   * that target verbatim mid-chase, so the viewport is pulled back by
+   * the glide's last frame of travel (2px at glide start, ~17px at
+   * peak) — the yank the auto-collapse release suite guards against.
+   */
+  noteScrollOffset(offset: number): void;
   applyViewportResize(size: number): EngineUpdate | null;
   /** One RO delivery batch of [index, size] pairs.
    *
@@ -184,6 +199,12 @@ export function createEngine(options: EngineOptions): VirtualEngine {
       scrollOffset = offset;
       hasScrollInput = true;
       return refresh(undefined, false);
+    },
+
+    noteScrollOffset(offset) {
+      // Deliberately leaves `hasScrollInput` alone: tail seeding ends on
+      // the first scroll EVENT, as it always has.
+      scrollOffset = offset;
     },
 
     applyViewportResize(size) {

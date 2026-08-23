@@ -800,6 +800,9 @@
   export function getScrollOffset(): number {
     return engine.getScrollOffset();
   }
+  export function noteScrollTopWritten(top: number): void {
+    engine.noteScrollOffset(top);
+  }
   export function getViewportSize(): number {
     return engine.getViewportSize();
   }

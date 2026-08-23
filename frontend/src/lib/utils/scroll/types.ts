@@ -470,4 +470,14 @@ export interface UseStickToBottomOptions {
    * double-report every height change).
    */
   externalContentGeometry?: boolean;
+  /**
+   * Every chokepoint write, reported with the browser-rounded readback
+   * the scroll event will carry. Chat's MessageTimeline forwards it to
+   * the virtualizer (`TimelineVirtualizerHandle.noteScrollTopWritten`)
+   * so the engine's scroll offset tracks authored writes synchronously
+   * instead of one scroll event late — the base every above-viewport
+   * compensation target is computed from. Surfaces without a
+   * virtualizer leave it unset.
+   */
+  onScrollTopWritten?: (top: number) => void;
 }

@@ -218,7 +218,10 @@ export function createUseStickToBottomController(
     getContentEl: () => contentEl,
     scrollTopIsAtTarget,
     refreshIsNearBottom,
-    noteProgrammaticWrite: (top) => intent.noteProgrammaticWrite(top),
+    noteProgrammaticWrite: (top) => {
+      intent.noteProgrammaticWrite(top);
+      options.onScrollTopWritten?.(top);
+    },
     traceState: () => ({
       isAtBottomState,
       escapedFromLockState,
