@@ -1,0 +1,114 @@
+#!/usr/bin/env bash
+# Runner for the CDP probes. Online probes exec Windows node.exe; offline ones read a saved file.
+set -uo pipefail
+
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PORT="${AO_CDP_PORT:-9223}"
+
+list_probes() {
+  local f name
+  for f in "$DIR"/*.mjs; do
+    [ -e "$f" ] || continue
+    name="$(basename "$f" .mjs)"
+    printf '  %-18s %s\n' "$name" "$(sed -n '1s|^// *||p' "$f")"
+  done
+}
+
+if [ $# -eq 0 ]; then
+  cat <<'USAGE'
+usage: scripts/perfprobe/probe <name> [args...]
+
+Drives Chrome DevTools Protocol probes against the WebView2 window of a running
+DEBUG=1 dev build. WSL cannot reach Windows loopback, so online probes are staged
+into a Windows directory and run there under node.exe. Offline probes read a saved
+snapshot or trace and run under WSL node with a raised heap limit.
+
+env:
+  AO_CDP_PORT        CDP port (default 9223; the soak rig uses 9224)
+  AO_PERFPROBE_OUT   Windows directory for staged scripts and saved output
+                     (default %LOCALAPPDATA%\Temp\ao-perfprobe)
+
+probes:
+USAGE
+  list_probes
+  exit 0
+fi
+
+name="${1%.mjs}"; shift
+script="$DIR/$name.mjs"
+if [ ! -f "$script" ]; then
+  echo "probe: no such probe: $name" >&2
+  echo "       run 'scripts/perfprobe/probe' with no arguments for the list" >&2
+  exit 1
+fi
+
+# ab is the only probe that changes what the user sees, so the user's own app needs consent.
+if [ "$name" = "ab" ] && [ "$PORT" = "9223" ]; then
+  allow=0
+  for a in "$@"; do [ "$a" = "--allow-user-app" ] && allow=1; done
+  if [ "$allow" -eq 0 ]; then
+    echo "probe: ab injects a CSS override and can drive synthetic wheel scrolling, so it changes what you" >&2
+    echo "       see in the app on port 9223. Run it against the soak rig instead (make soak, then" >&2
+    echo "       AO_CDP_PORT=9224 probe ab ...), or pass --allow-user-app to accept the interference." >&2
+    exit 2
+  fi
+fi
+
+# Line 3 marks a probe that reads a file instead of talking to CDP, always or behind a flag.
+marker="$(sed -n '3p' "$script")"
+offline=0
+case "$marker" in
+  "// offline") offline=1 ;;
+  "// offline-with "*)
+    flag="${marker#// offline-with }"
+    for a in "$@"; do [ "$a" = "$flag" ] && offline=1; done
+    ;;
+esac
+
+if [ "$offline" -eq 1 ]; then
+  if ! command -v node >/dev/null 2>&1; then
+    echo "probe: no WSL node on PATH; offline probes need it for the raised heap limit" >&2
+    exit 1
+  fi
+  exec node --max-old-space-size=8192 "$script" "$@"
+fi
+
+NODE_EXE="$(command -v node.exe 2>/dev/null || true)"
+if [ -z "$NODE_EXE" ]; then
+  win_node="$(powershell.exe -NoProfile -Command "(Get-Command node).Source" 2>/dev/null | tr -d '\r')"
+  [ -n "$win_node" ] && NODE_EXE="$(wslpath -u "$win_node" 2>/dev/null || true)"
+fi
+if [ -z "$NODE_EXE" ] || [ ! -x "$NODE_EXE" ]; then
+  echo "probe: no Windows node.exe found. CDP is on Windows loopback and WSL cannot reach it," >&2
+  echo "       so the probes need node.exe (Node 22+) on PATH or resolvable via powershell.exe." >&2
+  exit 1
+fi
+
+OUT_WIN="${AO_PERFPROBE_OUT:-}"
+if [ -z "$OUT_WIN" ]; then
+  # Run cmd.exe from a Windows-visible cwd so it does not warn about the UNC path.
+  localappdata="$(cd /mnt/c && cmd.exe /c 'echo %LOCALAPPDATA%' 2>/dev/null | tr -d '\r')"
+  if [ -z "$localappdata" ]; then
+    echo "probe: could not resolve %LOCALAPPDATA%; set AO_PERFPROBE_OUT to a Windows path" >&2
+    exit 1
+  fi
+  OUT_WIN="${localappdata}\\Temp\\ao-perfprobe"
+fi
+OUT_WSL="$(wslpath -u "$OUT_WIN" 2>/dev/null || true)"
+if [ -z "$OUT_WSL" ]; then
+  echo "probe: AO_PERFPROBE_OUT must be a Windows path, got: $OUT_WIN" >&2
+  exit 1
+fi
+
+mkdir -p "$OUT_WSL/lib" || exit 1
+cp -f "$DIR"/*.mjs "$OUT_WSL/" || exit 1
+cp -f "$DIR"/lib/*.mjs "$OUT_WSL/lib/" || exit 1
+
+cd "$OUT_WSL" || exit 1
+WSLENV="${WSLENV:+$WSLENV:}AO_CDP_PORT:AO_PERFPROBE_OUT" \
+AO_CDP_PORT="$PORT" \
+AO_PERFPROBE_OUT="$OUT_WIN" \
+  "$NODE_EXE" "$name.mjs" "$@"
+rc=$?
+echo "probe: out dir $OUT_WIN  ->  $OUT_WSL"
+exit $rc

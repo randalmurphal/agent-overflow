@@ -1,0 +1,39 @@
+---
+name: perf-investigation
+description: Investigate memory or CPU cost of the running DEBUG=1 dev app (make dev-wsl) or the soak rig. Use when the user shows a Task Manager reading (GPU process, renderer, WebView2 Manager), asks why memory grows over hours, why a closed pane or old items are still retained, what a process's memory is made of, or where idle and per-frame CPU goes. Drives the CDP probe toolkit in scripts/perfprobe and ends in numbers attributed to process, allocator and owning code, a list of fixes built, and a decision sheet. Never a guess from Task Manager totals.
+---
+
+# Perf investigation
+
+Deliverable: the symptom restated as numbers, each attributed process → allocator → owner (the code in this repo that causes it), then the fixes split into built (every clear improvement) and a decision sheet (product-visible tradeoffs the user owns). [REFERENCE.md](REFERENCE.md) holds the measured floors and the causes already fixed or ruled out; read it before calling anything new.
+
+## Rulings
+
+User-set and standing. They decide what counts as a fix.
+
+- Production steady state is the target: an hour of normal use with streaming panes open. Idle-only or blur-only savings are second levers and go on the decision sheet.
+- Never trade performance for memory. Making the app do less visible work (mount fewer panes, slow a ticker, drop an animation) was rejected; make the unit cheaper instead.
+- The user's running app is read-only. Dumps, profiles and snapshots are fine. Injecting CSS, sending wheel or key events, anything the user can see, needs their OK first or runs on the soak rig.
+- `make dev-wsl` does not hot-reload frontend edits. Every fix report says "needs a restart", and verification happens after the restart by re-running the probe that found the item.
+
+## Environment
+
+- CDP is WebView2 on Windows loopback: 9223 for dev, 9224 for the soak rig (`make soak`, isolated profile, mock providers). WSL cannot reach it, so `scripts/perfprobe/probe <name> [args]` stages the scripts and runs them under Windows node.exe. `probe` alone lists the probes; `AO_CDP_PORT=9224` targets the soak rig. Saved traces, profiles and snapshots land in `%LOCALAPPDATA%\Temp\ao-perfprobe`; the wrapper prints the `/mnt/c/...` path.
+- One tracing session per browser. Memory dumps and frame traces both use it, so a background `sample --every` curve collides with `memdump`, `frames` and `ab`. Stop the sampler first.
+- Go backend: `DEBUG=1` sets `AGENT_OVERFLOW_PPROF=1`, pprof on `127.0.0.1:6363`, reachable from WSL: `go tool pprof -top http://127.0.0.1:6363/debug/pprof/heap` and `.../profile?seconds=30`.
+- Task Manager's memory column is the private working set, close to memory-infra `private_kb`. Rows: "Agent Overflow (dev)" is the renderer, "GPU Process", "Manager" is the browser process, and "WebView2 Manager (N)" is the group sum.
+- The production bundle is minified. `probe overview` prints the live `index-*.js` name and the backend port; `curl http://127.0.0.1:<port>/assets/<name>` and read around a profile's line:col. Function names survive minification, source lines do not.
+
+## Process
+
+Each pass ends with its attribution written down or the cause ruled out. A pass that ends on "probably" is not done.
+
+1. **Symptom as numbers.** Take the process and the number from the user (screenshot row or words). `probe overview`, then `probe memdump` (`--gpu` for the GPU process). Split the renderer into blink_gc (Oilpan), cc/tile_memory, v8, malloc and partition_alloc; the GPU process into cc/resource_memory (tiles), skia, shared images and unattributed malloc (driver, swap chain). Subtract the floors in REFERENCE.md. Done: a table of process → allocator → MB, and the part above the floor.
+2. **Floor or growth.** Run `probe sample --every 300 --for 7200` in the background (Bash `run_in_background`) while the user works, then read the curve. Growth that flattens with committed ≫ allocated is the Oilpan fragmentation floor, not a leak (a memory-reducing GC runs only when hidden or under pressure). Monotonic growth, or a detached-node count that steps up and stays after a pane closes, is a leak. Done: MB/h per allocator and a leak verdict backed by the detached curve.
+3. **Churn.** Find what is being allocated and freed. `probe memdump --renderer --classes` twice a few minutes apart during normal use and diff the blink class rows; a class name leads to Chromium source and from there to the DOM or style feature we drive (`PlaneRootTransform` → paint transform nodes → `probe transforms`). `probe alloc 60` gives JS allocation sites during streaming. `probe memdump --trigger-blink-gc-mb N` catches the peak. Done: each top grower named with its owner in this repo (component or util file).
+4. **CPU and frames.** `probe cpu 60` (JS self and inclusive, callers of hot native reads, metric deltas), then `probe frames 20` (time per event name, busiest seconds, style recalc causes, forced layouts by JS frame, thread roster). JS under a few percent of wall means the cost is native per-frame work: `probe layers` (composited layer count and reasons), `probe animations` (running animations and transitions), `probe mutations 10` (DOM churn by parent and attribute). Done: each per-frame cost named by mechanism (which animation, which layer set, which mutation source).
+5. **Retention.** `probe detached` for the live census. When detached nodes stay after a close: `probe heapsnapshot <label>` (pauses the renderer for a few seconds; say so if the user is mid-work), `probe snapshot-detached <file>` for the census, retainer boundaries and paths. A path through `system / Context → <var> → reactions` is a svelte signal still holding a derived or effect from the dead pane: `probe snapshot-signal <file> <moduleVar>` lists every reaction on it with its parent chain and whether its closure DOM is detached, `probe snapshot-node <file> <ids>` dumps one. Write the retention test before the fix: `frontend/src/test/integration/chatview-dom-retention.test.ts` is the pattern (mount, drive the interaction, unmount, gc, count survivors), and `svelte-patch-*.test.ts` when the bug is inside svelte (fix via `pnpm patch`, hunk documented under Vendor Patches in `frontend/AGENTS.md`; REFERENCE.md has the red/green recipe). Done: red on the old code and green on the fix, for the internals test and the component tripwire both.
+6. **A/B.** Confirm a hypothesis by measuring B against A on the same state: `probe ab --css '<override>' [--scroll] --secs 30` runs A, B, A and reports the allocation rate and the blink classes that moved. Soak rig by default (`AO_CDP_PORT=9224`); on the user's app only after telling them what they will see, with `--allow-user-app`. Done: A/B/A rates and a confirmed or refuted mechanism.
+7. **Go.** One heap and one CPU profile on 6363. The backend has been lean (REFERENCE.md); confirm and move on unless it moved.
+8. **Fix and verify.** Build every clear fix. Gates: `make go-build`, `make go-test`, `cd frontend && pnpm run check && pnpm run build && pnpm test`. Each commit names the mechanism. Report "needs a restart", then after the restart re-run the probe that found each item and quote before and after. The decision sheet carries the rest: numbered, one line each, with the measured ceiling of the win and what the user would see change.
+9. **Ledger.** Add new floors, fixed causes and ruled-out causes to REFERENCE.md so the next investigation starts past them.
