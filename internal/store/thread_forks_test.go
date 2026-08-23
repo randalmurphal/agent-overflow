@@ -71,9 +71,10 @@ func TestCloneThreadItemsRespectsThroughTurnIndex(t *testing.T) {
 
 // TestCloneThreadItemsExcludesRunningBackgroundRows pins Phase-4's
 // fork-exclusion contract at the store level: the clone skips rows
-// whose `IsBackground && status='running'` combination implicates the
-// source thread's subprocess. Any other row — completed backgrounded,
-// non-background running, non-tool_call text — copies normally.
+// whose `IsBackground && status='running'` combination — with no
+// completion sibling to settle them — implicates the source thread's
+// subprocess. Any other row — completed backgrounded, non-background
+// running, non-tool_call text — copies normally.
 //
 // The parent thread is untouched; the filter is applied in the clone
 // path alone.
@@ -300,11 +301,12 @@ func assertClonedLinksResolve(t *testing.T, s *Store, threadID string, exempt ..
 }
 
 // TestCloneThreadItemsSkipsSubtreeOfRunningBackgroundLaunch pins the
-// transitive half of the background-running skip: dropping the launch
+// transitive half of the live-background skip: dropping the launch
 // without dropping what hangs off it left every descendant carrying the
-// SOURCE thread's parent id verbatim. Covers both link kinds — nested
-// children at two depths and the completion row that settles the
-// skipped launch.
+// SOURCE thread's parent id verbatim. The launch is truly live — no
+// completion sibling — because a sibling settles it (invariant 24) and
+// a settled launch clones (see the KeepsSettled test below). Covers
+// nested children at two depths.
 func TestCloneThreadItemsSkipsSubtreeOfRunningBackgroundLaunch(t *testing.T) {
 	s := newTestStore(t)
 	seedForkSource(t, s, "t-bgtree-src", "t-bgtree-dst", []Item{
@@ -312,8 +314,7 @@ func TestCloneThreadItemsSkipsSubtreeOfRunningBackgroundLaunch(t *testing.T) {
 		{ID: "bg-launch", TurnIndex: 1, ItemIndex: 1, Kind: "tool_call", Role: "assistant", Status: "running", IsBackground: true, ToolName: "Agent", Summary: "Agent: audit"},
 		{ID: "bg-child", TurnIndex: 1, ItemIndex: 2, Kind: "tool_call", Role: "assistant", Status: "completed", ParentID: "bg-launch", ToolName: "Read", Summary: "Agent > Read: a.go"},
 		{ID: "bg-grandchild", TurnIndex: 1, ItemIndex: 3, Kind: "tool_completion", Role: "assistant", Status: "completed", ParentID: "bg-child", CompletionOf: "bg-child", ToolName: "Read", Summary: "Agent > Read: a.go -> done"},
-		{ID: "bg-launch-done", TurnIndex: 1, ItemIndex: 4, Kind: "tool_completion", Role: "assistant", Status: "completed", CompletionOf: "bg-launch", ToolName: "Agent", Summary: "Agent: audit -> done"},
-		{ID: "asst-tail", TurnIndex: 1, ItemIndex: 5, Kind: "assistant_text", Role: "assistant", Status: "completed", Summary: "meanwhile"},
+		{ID: "asst-tail", TurnIndex: 1, ItemIndex: 4, Kind: "assistant_text", Role: "assistant", Status: "completed", Summary: "meanwhile"},
 	})
 
 	if _, err := s.CloneThreadItems("t-bgtree-src", "t-bgtree-dst", nil); err != nil {
@@ -321,7 +322,7 @@ func TestCloneThreadItemsSkipsSubtreeOfRunningBackgroundLaunch(t *testing.T) {
 	}
 
 	dst := clonedBySummary(t, s, "t-bgtree-dst")
-	for _, gone := range []string{"Agent: audit", "Agent > Read: a.go", "Agent > Read: a.go -> done", "Agent: audit -> done"} {
+	for _, gone := range []string{"Agent: audit", "Agent > Read: a.go", "Agent > Read: a.go -> done"} {
 		if _, ok := dst[gone]; ok {
 			t.Errorf("row %q cloned, want the whole skipped launch subtree absent", gone)
 		}
@@ -330,6 +331,82 @@ func TestCloneThreadItemsSkipsSubtreeOfRunningBackgroundLaunch(t *testing.T) {
 		t.Errorf("cloned rows = %d, want 2 (user-0 + asst-tail)", len(dst))
 	}
 	assertClonedLinksResolve(t, s, "t-bgtree-dst")
+}
+
+// TestCloneThreadItemsKeepsSettledBackgroundLaunchSubtree pins the
+// other half of the liveness test: a background launch's terminal is
+// its completion SIBLING — the launch row stays `running` forever
+// (invariant 24) — so a running launch WITH a sibling is finished
+// history and must clone whole: launch, nested transcript, and the
+// sibling, all remapped. A status-only skip dropped every finished
+// background task's record from every fork (thread c65dfb09 lost 1631
+// completed subagent rows).
+func TestCloneThreadItemsKeepsSettledBackgroundLaunchSubtree(t *testing.T) {
+	s := newTestStore(t)
+	seedForkSource(t, s, "t-bgdone-src", "t-bgdone-dst", []Item{
+		{ID: "user-0", TurnIndex: 1, ItemIndex: 0, Kind: "user_text", Role: "user", Summary: "go audit"},
+		{ID: "bg-launch", TurnIndex: 1, ItemIndex: 1, Kind: "tool_call", Role: "assistant", Status: "running", IsBackground: true, ToolName: "Agent", Summary: "Agent: audit"},
+		{ID: "bg-child", TurnIndex: 1, ItemIndex: 2, Kind: "tool_call", Role: "assistant", Status: "completed", ParentID: "bg-launch", ToolName: "Read", Summary: "Agent > Read: a.go"},
+		{ID: "bg-child-done", TurnIndex: 1, ItemIndex: 3, Kind: "tool_completion", Role: "assistant", Status: "completed", ParentID: "bg-child", CompletionOf: "bg-child", ToolName: "Read", Summary: "Agent > Read: a.go -> done"},
+		{ID: "bg-launch-done", TurnIndex: 1, ItemIndex: 4, Kind: "tool_completion", Role: "assistant", Status: "completed", IsBackground: true, CompletionOf: "bg-launch", ToolName: "Agent", Summary: "Agent: audit -> done"},
+		{ID: "asst-tail", TurnIndex: 1, ItemIndex: 5, Kind: "assistant_text", Role: "assistant", Status: "completed", Summary: "meanwhile"},
+	})
+
+	if _, err := s.CloneThreadItems("t-bgdone-src", "t-bgdone-dst", nil); err != nil {
+		t.Fatalf("CloneThreadItems: %v", err)
+	}
+
+	dst := clonedBySummary(t, s, "t-bgdone-dst")
+	if len(dst) != 6 {
+		t.Errorf("cloned rows = %d, want all 6 (settled launch subtree kept)", len(dst))
+	}
+	launch, ok := dst["Agent: audit"]
+	if !ok {
+		t.Fatal("settled background launch missing from clone")
+	}
+	if launch.Status != "running" || !launch.IsBackground {
+		t.Errorf("cloned launch = status %q bg=%v, want running background verbatim (the sibling is its terminal)", launch.Status, launch.IsBackground)
+	}
+	if got := dst["Agent: audit -> done"].CompletionOf; got != launch.ID {
+		t.Errorf("cloned sibling completion_of = %q, want remapped launch id %q", got, launch.ID)
+	}
+	if got := dst["Agent > Read: a.go"].ParentID; got != launch.ID {
+		t.Errorf("cloned child parent_id = %q, want remapped launch id %q", got, launch.ID)
+	}
+	assertClonedLinksResolve(t, s, "t-bgdone-dst")
+}
+
+// TestCloneThreadItemsDropsLaunchWhoseSiblingIsBeyondTheCut pins the
+// cut-scoped half of the settled test: the sibling only vouches for
+// its launch when the sibling itself survives `keep`. A background
+// completion lands at the write head, possibly turns after its launch;
+// a through-turn fork cut between them must treat the launch as live
+// (the fork's copy would have no sibling and could never settle).
+func TestCloneThreadItemsDropsLaunchWhoseSiblingIsBeyondTheCut(t *testing.T) {
+	s := newTestStore(t)
+	seedForkSource(t, s, "t-bgcut-src", "t-bgcut-dst", []Item{
+		{ID: "user-0", TurnIndex: 1, ItemIndex: 0, Kind: "user_text", Role: "user", Summary: "go audit"},
+		{ID: "bg-launch", TurnIndex: 1, ItemIndex: 1, Kind: "tool_call", Role: "assistant", Status: "running", IsBackground: true, ToolName: "Bash", Summary: "Bash: make test"},
+		{ID: "user-1", TurnIndex: 2, ItemIndex: 0, Kind: "user_text", Role: "user", Summary: "and then"},
+		{ID: "bg-launch-done", TurnIndex: 3, ItemIndex: 0, Kind: "tool_completion", Role: "assistant", Status: "completed", IsBackground: true, CompletionOf: "bg-launch", ToolName: "Bash", Summary: "Bash: make test -> done"},
+	})
+
+	cut := 2
+	if _, err := s.CloneThreadItems("t-bgcut-src", "t-bgcut-dst", &cut); err != nil {
+		t.Fatalf("CloneThreadItems: %v", err)
+	}
+
+	dst := clonedBySummary(t, s, "t-bgcut-dst")
+	if _, ok := dst["Bash: make test"]; ok {
+		t.Error("launch cloned although its settling sibling is beyond the cut — the fork's copy could never settle")
+	}
+	if _, ok := dst["Bash: make test -> done"]; ok {
+		t.Error("sibling beyond the cut leaked into the clone")
+	}
+	if len(dst) != 2 {
+		t.Errorf("cloned rows = %d, want 2 (user-0 + user-1)", len(dst))
+	}
+	assertClonedLinksResolve(t, s, "t-bgcut-dst")
 }
 
 // TestCloneThreadItemsSkipsNestedRunningLaunchUnderClonedParent pins the
@@ -461,9 +538,14 @@ func TestCloneThreadItemsRefusesOutOfOrderDroppedReference(t *testing.T) {
 			{ID: "early-child", TurnIndex: 1, ItemIndex: 0, Kind: "assistant_text", Role: "assistant", Status: "completed", ParentID: "bg-launch", Summary: "child before its launch"},
 			{ID: "bg-launch", TurnIndex: 1, ItemIndex: 1, Kind: "tool_call", Role: "assistant", Status: "running", IsBackground: true, ToolName: "Agent", Summary: "Agent: audit"},
 		}},
+		// The completion references a row dropped TRANSITIVELY (nested
+		// under a live launch) rather than the live launch itself — a
+		// completion sibling of the launch would SETTLE it (invariant
+		// 24) and the clone would rightly keep both.
 		{name: "completion", rows: []Item{
-			{ID: "early-done", TurnIndex: 1, ItemIndex: 0, Kind: "tool_completion", Role: "assistant", Status: "completed", CompletionOf: "bg-launch", ToolName: "Agent", Summary: "done before its launch"},
+			{ID: "early-done", TurnIndex: 1, ItemIndex: 0, Kind: "tool_completion", Role: "assistant", Status: "completed", CompletionOf: "nested-tool", ToolName: "Read", Summary: "done before its tool"},
 			{ID: "bg-launch", TurnIndex: 1, ItemIndex: 1, Kind: "tool_call", Role: "assistant", Status: "running", IsBackground: true, ToolName: "Agent", Summary: "Agent: audit"},
+			{ID: "nested-tool", TurnIndex: 1, ItemIndex: 2, Kind: "tool_call", Role: "assistant", Status: "completed", ParentID: "bg-launch", ToolName: "Read", Summary: "Agent > Read: a.go"},
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

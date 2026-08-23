@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -910,3 +911,158 @@ func TestResolveClaudeForkResumeAtFailsWithNoResumableRow(t *testing.T) {
 	}
 }
 
+// TestForkThreadClaudeMidTurnKeepsTriageWrittenSettledBackgroundWork
+// drives the REAL background lifecycle writer — triage's EventToolStart
+// + EventBackgroundTaskTerminal, the exact rows a live session persists
+// (launch permanently `running` + `tool_completion` sibling, invariant
+// 24) — and then runs the full ForkThread saga over it. Pins the
+// end-to-end contract the store-level clone tests can only approximate
+// with hand-seeded rows: finished background work survives the fork
+// verbatim (launch still running+background, sibling completed,
+// completion_of remapped), the interrupted settle does NOT flip the
+// settled launch, and a truly-live (siblingless) background launch
+// still drops. The 2026-08-22 incident fork silently lost 1631 such
+// rows to a status-only liveness test.
+func TestForkThreadClaudeMidTurnKeepsTriageWrittenSettledBackgroundWork(t *testing.T) {
+	app := newTestAppWithStore(t)
+	app.ensureTriageRouter()
+	fixture := newMidTurnForkFixture(t, "mid-turn-session", midTurnSourceJSONL)
+
+	source := testThread("thread-claude-midturn-bgdone")
+	source.Provider = string(provider.Claude)
+	source.SessionRef = fixture.sessionID
+	source.WorkspacePath = fixture.workspace
+	if err := app.store.CreateThread(source); err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+
+	// Turn 0, written by triage itself: a background Bash launch and
+	// its agent-observed completion. This is the durable shape every
+	// finished background task holds forever.
+	startMeta, err := json.Marshal(map[string]any{
+		"toolName":      "Bash",
+		"is_background": true,
+		"input":         map[string]any{"command": "make go-test"},
+	})
+	if err != nil {
+		t.Fatalf("marshal start meta: %v", err)
+	}
+	if err := app.triage.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolStart, ThreadID: source.ID, ItemID: "bg-done-launch",
+		ItemType: "Bash", Meta: startMeta, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("triage tool start: %v", err)
+	}
+	terminalMeta, err := json.Marshal(map[string]any{
+		"task_id":     "tsk-fork-done",
+		"tool_use_id": "bg-done-launch",
+		"status":      "completed",
+		"exit_code":   0,
+		"source":      "task_output",
+	})
+	if err != nil {
+		t.Fatalf("marshal terminal meta: %v", err)
+	}
+	if err := app.triage.Handle(provider.ProviderEvent{
+		Kind: provider.EventBackgroundTaskTerminal, ThreadID: source.ID, ItemID: "bg-done-launch",
+		Meta: terminalMeta, Content: "all packages ok", Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("triage background terminal: %v", err)
+	}
+	now := time.Now().UnixMilli()
+	if err := app.store.InsertTurn(store.Turn{TurnID: source.ID + ":0", ThreadID: source.ID, TurnIndex: 0, StartedAt: now}); err != nil {
+		t.Fatalf("InsertTurn(settled): %v", err)
+	}
+	if err := app.store.UpdateTurnCompleted(source.ID+":0", now+1, "end_turn", "m0", "", ""); err != nil {
+		t.Fatalf("UpdateTurnCompleted: %v", err)
+	}
+
+	// Sanity: triage left the launch running+background with a
+	// completed sibling — the invariant-24 shape under test.
+	srcItems, err := app.store.ListItems(source.ID)
+	if err != nil {
+		t.Fatalf("ListItems(source): %v", err)
+	}
+	srcLaunch := itemByID(t, srcItems, "bg-done-launch")
+	if srcLaunch.Status != "running" || !srcLaunch.IsBackground {
+		t.Fatalf("triage-written launch = status %q bg=%v, want running background (invariant 24)", srcLaunch.Status, srcLaunch.IsBackground)
+	}
+
+	// Turn 1, mid-flight at the fork: a streaming reply and a LIVE
+	// (siblingless) background launch the clone must still drop.
+	for _, it := range []store.Item{
+		{
+			ID: "src-stream", ThreadID: source.ID, TurnIndex: 1, ItemIndex: 0,
+			Kind: "assistant_text", Role: "assistant", Status: "streaming",
+			Summary: "partial rep", CreatedAt: now, UpdatedAt: now,
+		},
+		{
+			ID: "src-live-bg", ThreadID: source.ID, TurnIndex: 1, ItemIndex: 1,
+			Kind: "tool_call", Role: "assistant", Status: "running", IsBackground: true,
+			ToolName: "Bash", Summary: "Bash: sleep 600", CreatedAt: now, UpdatedAt: now,
+		},
+	} {
+		if err := app.store.InsertItem(it); err != nil {
+			t.Fatalf("InsertItem(%s): %v", it.ID, err)
+		}
+	}
+	openTurn(t, app.store, source.ID, source.ID+":1", 1)
+	attachLiveClaudeSession(t, app, source.ID, fixture.workspace, fixture.sessionID, "a1")
+
+	forked, err := app.ForkThread(source.ID, nil)
+	if err != nil {
+		t.Fatalf("ForkThread: %v", err)
+	}
+
+	forkItems, err := app.store.ListItems(forked.ID)
+	if err != nil {
+		t.Fatalf("ListItems(fork): %v", err)
+	}
+	var launch, sibling store.Item
+	for _, it := range forkItems {
+		switch {
+		case it.Kind == "tool_call" && strings.HasPrefix(it.Summary, "Bash: make go-test"):
+			launch = it
+		case it.CompletionOf != "":
+			sibling = it
+		case strings.HasPrefix(it.Summary, "Bash: sleep 600"):
+			t.Errorf("live siblingless background launch cloned into the fork: %+v", it)
+		}
+	}
+	if launch.ID == "" {
+		t.Fatal("settled background launch missing from the fork")
+	}
+	if launch.ID == "bg-done-launch" {
+		t.Error("fork leaked the source launch id")
+	}
+	if launch.Status != "running" || !launch.IsBackground {
+		t.Errorf("forked launch = status %q bg=%v, want running background verbatim (the settle must not flip it)", launch.Status, launch.IsBackground)
+	}
+	if strings.Contains(launch.Summary, "interrupted") {
+		t.Errorf("forked launch summary %q carries the interrupted treatment", launch.Summary)
+	}
+	if sibling.ID == "" {
+		t.Fatal("completion sibling missing from the fork")
+	}
+	if sibling.CompletionOf != launch.ID {
+		t.Errorf("forked sibling completion_of = %q, want remapped launch id %q", sibling.CompletionOf, launch.ID)
+	}
+	if sibling.Status != "completed" {
+		t.Errorf("forked sibling status = %q, want completed", sibling.Status)
+	}
+	stream := itemBySummaryPrefix(t, forkItems, "partial rep")
+	if stream.Status != "errored" {
+		t.Errorf("forked streaming row status = %q, want errored (the interrupted settle still applies to it)", stream.Status)
+	}
+
+	// Source untouched: launch still running with its sibling, live bg
+	// row still present.
+	srcAfter, err := app.store.ListItems(source.ID)
+	if err != nil {
+		t.Fatalf("ListItems(source after): %v", err)
+	}
+	if got := itemByID(t, srcAfter, "bg-done-launch"); got.Status != "running" {
+		t.Errorf("source launch status mutated to %q", got.Status)
+	}
+	itemByID(t, srcAfter, "src-live-bg")
+}

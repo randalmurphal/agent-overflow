@@ -62,19 +62,23 @@ func BuildForkedThread(source Thread) Thread {
 // at the chosen turn. nil means clone every turn (existing fork-at-tail
 // behavior).
 //
-// Rows that are LIVE-backgrounded (`is_background=1` and status
-// `running` or `streaming`) are SKIPPED, and so is everything hanging
-// off one — see `cloneThreadItemsTx`. Those rows point at PTYs /
-// subagents owned by the source session's provider subprocess, and the
-// fork gets its own subprocess that can never reach them. Copying them
-// would strand the forked thread with ghost rows that can never
-// complete: the fork settle (SettleForkedThreadAsInterrupted) exempts
-// background tool_calls in BOTH live statuses, so a copied one would be
+// Rows that are LIVE-backgrounded (`is_background=1`, status `running`
+// or `streaming`, and NO completion sibling inside the cut) are
+// SKIPPED, and so is everything hanging off one — see
+// `cloneThreadItemsTx`. Those rows point at PTYs / subagents owned by
+// the source session's provider subprocess, and the fork gets its own
+// subprocess that can never reach them. Copying them would strand the
+// forked thread with ghost rows that can never complete: the fork
+// settle (SettleForkedThreadAsInterrupted) exempts background
+// tool_calls in BOTH live statuses, so a copied one would be
 // permanently unsettleable. The parent thread is untouched — its
 // backgrounded launches keep running under its own session.
 //
-// Completed backgrounded rows and non-background live rows copy
-// normally; the filter is deliberately narrow.
+// A running background launch WITH a completion sibling is not live —
+// it is the permanent shape of every finished background task
+// (invariant 24: the sibling is the terminal, the launch's status
+// never flips) — and clones normally, subtree included. So do
+// non-background live rows; the filter is deliberately narrow.
 //
 // All inserts run in a single transaction so a 200-row clone takes one
 // fsync instead of 200. Per-row InsertItem would commit individually
@@ -151,8 +155,9 @@ func (s *Store) inCloneTx(body func(*sql.Tx) (map[string]string, error)) (map[st
 // single snapshot: the writer is a single connection, so nothing else
 // can commit while this transaction is open.
 //
-// A skip is TRANSITIVE. A row is dropped when it is a background-running
-// launch, when keep rejects it, or when the row its `parent_id` /
+// A skip is TRANSITIVE. A row is dropped when it is a LIVE background
+// launch (running/streaming with no completion sibling in the cut),
+// when keep rejects it, or when the row its `parent_id` /
 // `completion_of` names was itself dropped. Without that closure a
 // child of a dropped launch cloned with its parent_id unremapped — a
 // reference into the SOURCE thread, invisible to every window read and
@@ -178,6 +183,19 @@ func cloneThreadItemsTx(tx *sql.Tx, sourceThreadID, targetThreadID string, keep 
 		return nil, fmt.Errorf("store: list source items for fork %s: %w", sourceThreadID, err)
 	}
 
+	// A background launch's terminal is its completion SIBLING — the
+	// launch row itself stays `running` forever (invariant 24), so
+	// "live" cannot be read off the launch's own status. This pre-pass
+	// collects the launches settled by a sibling INSIDE the cut; keep
+	// filters it too, so a sibling beyond a through-turn cut cannot
+	// vouch for a launch the fork would then hold unsettleable.
+	settled := make(map[string]struct{})
+	for _, item := range items {
+		if item.CompletionOf != "" && keep(item) {
+			settled[item.CompletionOf] = struct{}{}
+		}
+	}
+
 	clonedItems := make([]Item, 0, len(items))
 	idMap := make(map[string]string, len(items))
 	skipped := make(map[string]struct{})
@@ -189,7 +207,7 @@ func cloneThreadItemsTx(tx *sql.Tx, sourceThreadID, targetThreadID string, keep 
 		return ok
 	}
 	for _, item := range items {
-		if isLiveBackgroundRow(item) ||
+		if isLiveBackgroundRow(item, settled) ||
 			!keep(item) ||
 			dropped(item.ParentID) ||
 			dropped(item.CompletionOf) {
@@ -269,13 +287,22 @@ func cloneThreadItemsTx(tx *sql.Tx, sourceThreadID, targetThreadID string, keep 
 }
 
 // isLiveBackgroundRow is the clone's "owned by the source's provider
-// subprocess" test. BOTH live statuses count: a background tool_call is
-// exempt from the fork settle in either one (invariant 24), so a
-// `streaming` background row cloned into a fork would be permanently
-// unsettleable — the same ghost-row failure the `running` skip exists
-// to prevent.
-func isLiveBackgroundRow(item Item) bool {
-	return item.IsBackground && (item.Status == "running" || item.Status == "streaming")
+// subprocess" test. A background launch's terminal is its completion
+// sibling, never its own status — the launch row stays `running`
+// forever (invariant 24) — so a launch named in `settled` is finished
+// history and clones as-is, sibling and subtree included (thread
+// c65dfb09's fork silently lost 1631 completed subagent rows to a
+// status-only version of this test). BOTH live statuses count for a
+// siblingless launch: a background tool_call is exempt from the fork
+// settle in either one, so a truly-live row cloned into a fork would
+// be permanently unsettleable — the ghost-row failure the skip exists
+// to prevent (fork d1166194, 5901 rows).
+func isLiveBackgroundRow(item Item, settled map[string]struct{}) bool {
+	if !item.IsBackground || (item.Status != "running" && item.Status != "streaming") {
+		return false
+	}
+	_, ok := settled[item.ID]
+	return !ok
 }
 
 // cloneThreadPayloadsTx gives a fork its own copy of every result and input
@@ -414,12 +441,13 @@ func cloneThreadTurnsTx(tx *sql.Tx, sourceThreadID, targetThreadID string, throu
 // whole point of forking mid-turn.
 //
 // Backgrounded tool_call rows are exempt from the item flip (invariant
-// 24). On the fork path the exemption is inert by construction — the
-// clone drops every live background row transitively, and a COMPLETED
-// one is already outside `status IN ('streaming','running')` — but the
-// clause is SHARED with the crash sweep, where it is load-bearing, and
-// it stays the backstop for a background row that reaches a fork in
-// some live status the clone did not drop.
+// 24), and on the fork path that exemption is LOAD-BEARING: the clone
+// keeps every settled background launch — permanently `running` with
+// its completion sibling, the designed terminal shape — and flipping
+// one to errored here would rewrite finished work as interrupted. The
+// truly-live (siblingless) background rows the exemption would
+// otherwise strand never reach this settle: the clone drops them
+// transitively.
 //
 // Safe to run unconditionally: an idle source clones no open rows, so
 // both statements match nothing and the transaction is a no-op. Emits

@@ -54,10 +54,13 @@ root `CLAUDE.md` principle 3.
   ever finish, which is the crash sweep's situation exactly — and is a
   no-op on an idle clone, so the fork saga runs it unconditionally. The
   shared clause exempting background `tool_call` rows (invariant 24) is
-  inert on the fork path — the clone drops every LIVE background row
-  transitively and a completed one is already outside
-  `status IN ('streaming','running')` — but it is load-bearing for the
-  crash sweep and stays the backstop here. `CloneThreadHistoryThroughTurn`
+  load-bearing on BOTH paths: the clone keeps every SETTLED background
+  launch — permanently `running` with its completion sibling, the
+  designed terminal shape — and the exemption is what stops the fork
+  settle from rewriting that finished work as errored. Truly-live
+  (siblingless running/streaming) background launches never reach the
+  settle — `cloneThreadItemsTx` drops them transitively, sibling
+  presence judged inside the clone's cut. `CloneThreadHistoryThroughTurn`
   is the fork pipeline's clone and runs the item half and the turn half
   in ONE transaction (as does `CloneThreadHistoryBeforeItem`): split
   apart, a turn completing between them gives the fork a settled
