@@ -476,7 +476,10 @@
       --composer-height, which the timeline reads as bottom padding so
       the last row clears the overlay.
     -->
-    <div class="chat-surface-ground relative flex-1 min-h-0">
+    <div
+      class="relative flex-1 min-h-0 bg-transparent"
+      data-testid="chat-timeline-surface"
+    >
       <ProviderStatusBanner {pane} />
       <MessageTimeline
         {pane}
@@ -573,7 +576,7 @@
     data-ui-surface="chat-empty"
     data-thread-id=""
     data-testid="chat-empty"
-    class="chat-surface-ground flex h-full w-full items-center justify-center px-8"
+    class="flex h-full w-full items-center justify-center bg-transparent px-8"
   >
     <p class="text-sm text-fg-muted">Select a thread or create a new one to get started.</p>
   </div>

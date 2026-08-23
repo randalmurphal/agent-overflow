@@ -46,6 +46,8 @@ describe('<BackgroundTaskTrayRow>', () => {
 
     const { getByTestId } = renderTrayRow(taskFor(launch));
 
+    expect(getByTestId('background-task-tray-row')).toHaveClass('bg-transparent');
+    expect(getByTestId('background-task-tray-row')).not.toHaveClass('bg-surface-0');
     expect(getByTestId('command-output-label').textContent).toBe('bash');
     expect(getByTestId('command-output-status')).toHaveAttribute('data-state', 'backgrounded');
   });

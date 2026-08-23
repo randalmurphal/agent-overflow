@@ -82,7 +82,7 @@
      explicit open button in the row's actions. -->
 <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
 <div
-  class="rounded-[var(--radius-control)] border border-border-subtle bg-surface-0 px-1 py-1 {onOpen ? 'cursor-pointer hover:border-border' : ''}"
+  class="rounded-[var(--radius-control)] border border-border-subtle bg-transparent px-1 py-1 {onOpen ? 'cursor-pointer hover:border-border' : ''}"
   style={task.depth > 0 ? `margin-left: ${Math.min(task.depth, 6) * 0.75}rem` : undefined}
   data-testid="background-task-tray-row"
   data-row-id={task.rowId}

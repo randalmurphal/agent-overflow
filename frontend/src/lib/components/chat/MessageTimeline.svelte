@@ -77,8 +77,9 @@
   // gradient OVERLAY (surface color -> transparent, painted over the
   // content), NOT a mask on the scroller. The two are pixel-identical
   // here because the backdrop the old mask revealed is the flat
-  // .chat-surface-ground color (verified live 2026-07-21, max channel
-  // delta 2/255) — but their compositor cost is wildly different: a
+  // app-shell surface shown through ChatView's transparent timeline
+  // (verified live 2026-07-21, max channel delta 2/255) — but their
+  // compositor cost is wildly different: a
   // mask on the scroller rasterizes as a full viewport-sized texture
   // whenever the pane's content layer is lease-promoted (~4.5MB
   // renderer + the same again in the GPU-process mirror, per streaming

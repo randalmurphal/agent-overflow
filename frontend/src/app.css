@@ -399,10 +399,6 @@ body {
   background: var(--surface-0);
 }
 
-.chat-surface-ground {
-  background-color: var(--surface-0);
-}
-
 /* Shared pairing indicator: a terminal-green bar along the top of both halves of
    a take-control pair (the source thread pane and its take-control terminal
    pane), marking them as one bound entity. A top border, NOT an inset shadow: the

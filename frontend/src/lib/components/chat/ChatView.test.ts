@@ -8,7 +8,8 @@
 import { describe, expect, it, beforeAll, beforeEach, vi } from 'vitest';
 import { fireEvent, render, waitFor, within } from '@testing-library/svelte';
 import { tick } from 'svelte';
-import appCss from '../../../app.css?raw';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import ChatView from './ChatView.svelte';
 import { createThreadPane } from '../../stores/thread.svelte';
 import { focusPane, registerPaneForTest, resetPanesForTest } from '../../stores/panes.svelte';
@@ -35,6 +36,9 @@ import {
 } from '../../stores/paneLayout.svelte';
 import { resetCompanionPanesForTest } from '../../stores/companionPanes.svelte';
 import { resetEditResendExecutionForTest } from './editResendFlow.svelte';
+import { SRC_ROOT } from '../../../test/sourceScan';
+
+const appCss = readFileSync(join(SRC_ROOT, 'app.css'), 'utf8');
 
 beforeAll(() => {
   // Svelte transitions used by children call element.animate; happy-dom
@@ -732,27 +736,20 @@ describe('<ChatView>', () => {
     expect(getByText('Select a thread or create a new one to get started.')).toBeInTheDocument();
   });
 
-  it('keeps the bounded chat background on timeline and empty states', async () => {
+  it('lets the app shell own the ground behind transparent chat states', async () => {
     const activePane = await buildPane();
     const active = render(ChatView, { props: { pane: activePane } });
     await tick();
 
-    // The scroll element is now wrapped in a non-scrolling
-    // `relative h-full` container that anchors the floating
-    // ScrollToBottomButton outside the scroll viewport. We check the
-    // chat-surface-ground class on the nearest ancestor with that
-    // class, not strictly the parentElement, so the wrapper insertion
-    // doesn't break the contract this test cares about: the timeline
-    // ground sits behind the timeline.
-    expect(active.getByTestId('message-timeline-scroll').closest('.chat-surface-ground'))
-      .not.toBeNull();
+    expect(active.getByTestId('chat-timeline-surface')).toHaveClass('bg-transparent');
     active.unmount();
 
     const emptyPane = createThreadPane();
     const empty = render(ChatView, { props: { pane: emptyPane } });
     await tick();
 
-    expect(empty.getByTestId('chat-empty')).toHaveClass('chat-surface-ground');
+    expect(empty.getByTestId('chat-empty')).toHaveClass('bg-transparent');
+    expect(appCss).toMatch(/\.app-shell\s*\{[^}]*background:\s*var\(--surface-0\)/);
   });
 
   it('does not reintroduce a global blended app overlay', () => {

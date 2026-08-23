@@ -206,8 +206,8 @@
   it overlays the top of the message list without changing the scroller's
   clientHeight, so messages never reflow — the property the old reserved
   slots bought, except those held ~36px each (~72px of empty space under
-  the header) forever. Anchored to the `chat-surface-ground` relative
-  container in ChatView, stacking both banners top-down; z-20 matches the
+  the header) forever. Anchored to the relative timeline container in
+  ChatView, stacking both banners top-down; z-20 matches the
   composer overlay in that container. A shown banner covers the topmost
   rows — intended: scroll up, or dismiss/resolve the banner, to reveal them.
 -->

@@ -280,7 +280,9 @@ describe('PaneHost', () => {
 
     const rendered = render(PaneHost);
 
-    expect(rendered.getByTestId('pane-host-empty')).toHaveTextContent(
+    const empty = rendered.getByTestId('pane-host-empty');
+    expect(empty).toHaveClass('bg-transparent');
+    expect(empty).toHaveTextContent(
       'Select a thread or create a new one to get started.',
     );
   });

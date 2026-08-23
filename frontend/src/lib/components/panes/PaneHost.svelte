@@ -432,7 +432,7 @@
 >
   {#if layoutItems.length === 0}
     <section
-      class="chat-surface-ground flex h-full min-w-full flex-1 items-center justify-center px-8"
+      class="flex h-full min-w-full flex-1 items-center justify-center bg-transparent px-8"
       data-testid="pane-host-empty"
     >
       <p class="text-sm text-fg-muted">Select a thread or create a new one to get started.</p>
