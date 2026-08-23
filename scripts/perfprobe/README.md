@@ -36,7 +36,7 @@ synthetic wheel scrolling. It refuses port 9223 without `--allow-user-app` becau
 that is the port of the app somebody is actually using.
 
 Only one tracing session can exist on the browser target at a time, so `memdump`,
-`sample` and `frames` must not run concurrently.
+`sample`, `churn`, `tiles`, `frames` and `ab` must not run concurrently.
 
 ## Method
 
