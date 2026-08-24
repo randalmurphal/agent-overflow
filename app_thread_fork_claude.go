@@ -341,7 +341,7 @@ func (a *App) lookupTurnAnchorClaudeUUID(threadID string, turnIndex int) string 
 // failure never leaves a partially-remapped fork visible to readers.
 // The un-send path does NOT use this method: it commits the same
 // rewrites atomically with its SessionRef move via
-// computeClaudeProviderIDRemap + UpdateThreadAndRemapProviderIDs
+// computeClaudeProviderIDRemap + UpdateSessionRefAndRemapProviderIDs
 // (round-6, R6-5).
 func (a *App) remapClaudeProviderIDs(threadID string, uuidMap map[string]string) error {
 	itemUpdates, anchorUpdates, err := a.computeClaudeProviderIDRemap(threadID, uuidMap)
@@ -365,7 +365,7 @@ func (a *App) remapClaudeProviderIDs(threadID string, uuidMap map[string]string)
 // message anchors and returns the rewrites uuidMap implies, without
 // applying anything. Shared by remapClaudeProviderIDs (fork pipeline,
 // per-row writes under the saga rollback) and the un-send path (which
-// hands the result to UpdateThreadAndRemapProviderIDs so the rewrites
+// hands the result to UpdateSessionRefAndRemapProviderIDs so the rewrites
 // commit atomically with the SessionRef move — round-6, R6-5).
 func (a *App) computeClaudeProviderIDRemap(threadID string, uuidMap map[string]string) ([]store.ItemMetaUpdate, []store.MessageAnchorProviderIDsUpdate, error) {
 	if len(uuidMap) == 0 {

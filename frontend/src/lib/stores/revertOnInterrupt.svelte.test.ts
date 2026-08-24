@@ -12,6 +12,11 @@ import { setBindingMock } from '../../test/mocks/bindings-app';
 import { replaceQueueForThread } from './sendQueue.svelte';
 import type { Item, Thread } from '../types/models';
 import type { ComposerDraftSnapshot } from './composerDraftSnapshots';
+import { resetResendRevertMarkersForTest } from './eventsMessageRevert';
+import {
+  isThreadInterruptPending,
+  resetThreadInterruptStateForTest,
+} from './threadInterruptState.svelte';
 
 const EMPTY_DRAFT = {
   content: '',
@@ -122,6 +127,16 @@ function thinkingItem(id: string, turnIndex: number, threadId = 'thread-1'): Ite
   } as Item;
 }
 
+function successfulRevert(userItemId = 'u:0', turnIndex = 0) {
+  return {
+    reverted: true,
+    userItemId,
+    turnIndex,
+    historyEpoch: 1,
+    historyRev: 1,
+  };
+}
+
 describe('canRevertEarlyInterrupt', () => {
   beforeEach(() => {
     replaceQueueForThread('thread-1', []);
@@ -224,6 +239,8 @@ describe('runInterruptOrRevert', () => {
   beforeEach(() => {
     replaceQueueForThread('thread-1', []);
     setBindingMock('CountRunningBackgroundTasks', async () => 0);
+    resetThreadInterruptStateForTest();
+    resetResendRevertMarkersForTest();
   });
 
   async function flushInterruptFlow(): Promise<void> {
@@ -242,7 +259,7 @@ describe('runInterruptOrRevert', () => {
     setBindingMock('InterruptAndRevertIfClean', (id: unknown) => {
       revertCalls.push(id as string);
       return new Promise((resolve) => {
-        resolveRevert = () => resolve({ reverted: true, userItemId: 'u:0', turnIndex: 0 });
+        resolveRevert = () => resolve(successfulRevert());
       });
     });
     setBindingMock('InterruptTurn', async () => {
@@ -250,14 +267,17 @@ describe('runInterruptOrRevert', () => {
     });
 
     runInterruptOrRevert(pane, EMPTY_DRAFT);
+    expect(isThreadInterruptPending('thread-1')).toBe(true);
     await Promise.resolve();
     expect(pane.items.find((i) => i.id === 'u:0')).toBeUndefined();
+    expect(isThreadInterruptPending('thread-1')).toBe(true);
     resolveRevert?.();
     await flushInterruptFlow();
 
     expect(revertCalls).toEqual(['thread-1']);
     // Row stays removed on Reverted=true (event handler refreshes draft).
     expect(pane.items.find((i) => i.id === 'u:0')).toBeUndefined();
+    expect(isThreadInterruptPending('thread-1')).toBe(false);
   });
 
   it('restores the interrupted user message into the draft after the background preflight', async () => {
@@ -266,11 +286,7 @@ describe('runInterruptOrRevert', () => {
     pane.setActiveTurn({ turnId: 'turn-1', turnIndex: 0, startedAt: 1 });
     const draft = optimisticDraftProbe();
 
-    setBindingMock('InterruptAndRevertIfClean', async () => ({
-      reverted: true,
-      userItemId: 'u:0',
-      turnIndex: 0,
-    }));
+    setBindingMock('InterruptAndRevertIfClean', async () => successfulRevert());
 
     runInterruptOrRevert(pane, draft);
     await flushInterruptFlow();
@@ -306,11 +322,7 @@ describe('runInterruptOrRevert', () => {
     pane.setActiveTurn({ turnId: 'turn-1', turnIndex: 0, startedAt: 1 });
     const draft = optimisticDraftProbe();
 
-    setBindingMock('InterruptAndRevertIfClean', async () => ({
-      reverted: true,
-      userItemId: 'u:0',
-      turnIndex: 0,
-    }));
+    setBindingMock('InterruptAndRevertIfClean', async () => successfulRevert());
 
     runInterruptOrRevert(pane, draft);
     await flushInterruptFlow();
@@ -349,11 +361,7 @@ describe('runInterruptOrRevert', () => {
     pane.setActiveTurn({ turnId: 'turn-1', turnIndex: 0, startedAt: 1 });
     const draft = optimisticDraftProbe();
 
-    setBindingMock('InterruptAndRevertIfClean', async () => ({
-      reverted: true,
-      userItemId: 'u:0',
-      turnIndex: 0,
-    }));
+    setBindingMock('InterruptAndRevertIfClean', async () => successfulRevert());
 
     runInterruptOrRevert(pane, draft);
     await flushInterruptFlow();
@@ -379,6 +387,7 @@ describe('runInterruptOrRevert', () => {
     await flushInterruptFlow();
 
     expect(pane.items.find((i) => i.id === 'u:0')).toBeDefined();
+    expect(isThreadInterruptPending('thread-1')).toBe(false);
   });
 
   it('clears the optimistic draft restore when the backend declines the revert', async () => {
@@ -417,6 +426,7 @@ describe('runInterruptOrRevert', () => {
     await flushInterruptFlow();
 
     expect(interruptCalls).toEqual(['thread-1']);
+    expect(isThreadInterruptPending('thread-1')).toBe(false);
     // The user_text + assistant_text rows are untouched on the
     // fallback path.
     expect(pane.items.find((i) => i.id === 'u:0')).toBeDefined();
@@ -461,6 +471,24 @@ describe('runInterruptOrRevert', () => {
     expect(draft.cleared).toEqual(draft.applied);
   });
 
+  it('keeps Send closed when a successful response cannot identify its committed cut', async () => {
+    const pane = readyPane();
+    pane.upsertItem(userItem('u:0', 0));
+    pane.setActiveTurn({ turnId: 'turn-1', turnIndex: 0, startedAt: 1 });
+
+    setBindingMock('InterruptAndRevertIfClean', async () => ({
+      ...successfulRevert(),
+      historyEpoch: 0,
+      historyRev: 0,
+    }));
+
+    runInterruptOrRevert(pane, EMPTY_DRAFT);
+    await flushInterruptFlow();
+
+    expect(isThreadInterruptPending('thread-1')).toBe(true);
+    expect(pane.generalError ?? '').not.toBe('');
+  });
+
   // The user_text isn't the only kind on the latest turn — thinking,
   // api_retry, and error rows can sit there too (they don't block the
   // predicate). Backend `DeleteConversationFromTurn` is inclusive, so
@@ -473,11 +501,7 @@ describe('runInterruptOrRevert', () => {
     pane.upsertItem(thinkingItem('think:0:0', 0));
     pane.setActiveTurn({ turnId: 'turn-1', turnIndex: 0, startedAt: 1 });
 
-    setBindingMock('InterruptAndRevertIfClean', async () => ({
-      reverted: true,
-      userItemId: 'u:0',
-      turnIndex: 0,
-    }));
+    setBindingMock('InterruptAndRevertIfClean', async () => successfulRevert());
 
     runInterruptOrRevert(pane, EMPTY_DRAFT);
     await flushInterruptFlow();
@@ -517,11 +541,7 @@ describe('runInterruptOrRevert', () => {
     pane.upsertItem(thinkingItem('think:1:0', 1));
     pane.setActiveTurn({ turnId: 'turn-2', turnIndex: 1, startedAt: 2 });
 
-    setBindingMock('InterruptAndRevertIfClean', async () => ({
-      reverted: true,
-      userItemId: 'u:1',
-      turnIndex: 1,
-    }));
+    setBindingMock('InterruptAndRevertIfClean', async () => successfulRevert('u:1', 1));
 
     runInterruptOrRevert(pane, EMPTY_DRAFT);
     await flushInterruptFlow();
@@ -553,5 +573,6 @@ describe('runInterruptOrRevert', () => {
     expect(interruptCalls).toEqual(['thread-1']);
     expect(revert).not.toHaveBeenCalled();
     expect(pane.items.find((i) => i.id === 'u:0')).toBeDefined();
+    expect(isThreadInterruptPending('thread-1')).toBe(false);
   });
 });

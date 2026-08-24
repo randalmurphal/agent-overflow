@@ -659,14 +659,14 @@ func (s *Store) UpdateThread(t Thread) error {
 }
 
 // ItemMetaUpdate names one item's replacement meta blob for
-// UpdateThreadAndRemapProviderIDs.
+// UpdateSessionRefAndRemapProviderIDs.
 type ItemMetaUpdate struct {
 	ItemID string
 	Meta   string
 }
 
 // MessageAnchorProviderIDsUpdate names one message anchor's replacement
-// provider ids for UpdateThreadAndRemapProviderIDs. Empty strings
+// provider ids for UpdateSessionRefAndRemapProviderIDs. Empty strings
 // preserve the stored value (same contract as
 // UpdateMessageAnchorProviderIDs).
 type MessageAnchorProviderIDsUpdate struct {
@@ -675,51 +675,13 @@ type MessageAnchorProviderIDsUpdate struct {
 	ProviderParentUUID    string
 }
 
-// UpdateThreadAndRemapProviderIDs commits a thread-row update together
-// with precomputed item-meta and anchor provider-id rewrites in ONE
-// transaction. The Claude conversation-rollback path uses it to move
-// SessionRef onto a freshly sliced session file atomically with the
-// uuid remap that keeps stored wire ids pointing into that file:
-// committed separately, a crash between the two leaves ids one fork
-// generation stale, and a retried rollback on top of that loses the
-// single-generation forkedFrom provenance the anchor lookups can heal
-// through (round-6, R6-5). The caller precomputes every rewrite; this
-// method only applies data.
-func (s *Store) UpdateThreadAndRemapProviderIDs(t Thread, items []ItemMetaUpdate, anchors []MessageAnchorProviderIDsUpdate) error {
-	t, err := normalizeThreadForUpdate(t)
-	if err != nil {
-		return err
-	}
-	tx, err := s.db.Begin()
-	if err != nil {
-		return fmt.Errorf("store: begin update thread %s with provider id remap: %w", t.ID, err)
-	}
-	defer tx.Rollback()
-
-	args := append(updateThreadArgs(t), t.ID)
-	result, err := tx.Exec(updateThreadSetSQL+` WHERE id=?`, args...)
-	if err != nil {
-		return fmt.Errorf("store: update thread %s: %w", t.ID, err)
-	}
-	if err := requireRowsAffected(result, fmt.Sprintf("store: update thread %s", t.ID)); err != nil {
-		return err
-	}
-	if err := remapProviderIDsTx(tx, t.ID, items, anchors); err != nil {
-		return err
-	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("store: commit update thread %s with provider id remap: %w", t.ID, err)
-	}
-	return nil
-}
-
 // UpdateSessionRefAndRemapProviderIDs is the targeted counterpart to
-// UpdateThreadAndRemapProviderIDs. Materializing an imported Claude branch
-// remints every transcript UUID, so the new session reference and every
-// surviving SQLite correlation id must commit together. Only session_ref and
-// pending_fork_session_ref are changed on the thread row; concurrent title,
-// workspace, model, and activity updates cannot be overwritten by a stale
-// whole-row snapshot.
+// separate session-ref and provider-id writes. Materializing or rolling back
+// a Claude branch remints transcript UUIDs, so the new session reference and
+// every surviving SQLite correlation id must commit together. Only
+// session_ref and pending-fork state change on the thread row; concurrent
+// title, workspace, model, and activity updates cannot be overwritten by a
+// stale whole-row snapshot.
 func (s *Store) UpdateSessionRefAndRemapProviderIDs(
 	threadID, ref string,
 	items []ItemMetaUpdate,

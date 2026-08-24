@@ -10,6 +10,7 @@ import { adoptEventStamp, dropThreadHistoryStamp } from './threadHistoryStamps';
 import { threadItemCache } from './threadItemCache';
 import { removeReplicaWindow } from '../replica';
 import { compositeKey } from '../utils/compositeKey';
+import { onBackendIdentity } from '../transport/backendIdentity';
 
 // `user_message:reverted` fires after a successful conversation revert
 // (Stop/Esc un-send, or the edit-and-resend saga's committed revert).
@@ -55,6 +56,24 @@ import { compositeKey } from '../utils/compositeKey';
 // the thread id so the per-thread sweep below compares values instead of
 // parsing keys — no separator can then be confused for one inside an id.
 const pendingResendReverts = new Map<string, string>();
+// The initiating RPC and the event bus both deliver the same committed cut.
+// Their order is intentionally unspecified. The post-cut history stamp is the
+// mutation identity, so applying one delivery makes the other a no-op instead
+// of letting it clear a newer send that reused the reverted turn number.
+const appliedRevertRevByThread = new Map<string, number>();
+
+onBackendIdentity(() => {
+  pendingResendReverts.clear();
+  appliedRevertRevByThread.clear();
+});
+
+function revertRevision(payload: UserMessageRevertedEvent): number | null {
+  const { historyEpoch, historyRev } = payload;
+  if (typeof historyEpoch !== 'number' || typeof historyRev !== 'number') return null;
+  if (!Number.isFinite(historyEpoch) || !Number.isFinite(historyRev)) return null;
+  if (historyEpoch <= 0 && historyRev <= 0) return null;
+  return historyRev;
+}
 
 function markerKey(threadId: string, userItemId: string): string {
   return compositeKey(threadId, userItemId);
@@ -83,11 +102,19 @@ function clearResendRevertMarkersForThread(threadId: string): void {
 
 export function resetResendRevertMarkersForTest(): void {
   pendingResendReverts.clear();
+  appliedRevertRevByThread.clear();
 }
 
 export function applyUserMessageReverted(payload: UserMessageRevertedEvent | null): void {
   if (!payload?.threadId || !payload.userItemId) return;
   if (typeof payload.turnIndex !== 'number') return;
+  const revision = revertRevision(payload);
+  const appliedRevision = appliedRevertRevByThread.get(payload.threadId);
+  // `history_rev` is monotonic for a backend generation. Ignore both the
+  // second delivery of one cut and an older cut that arrived after a newer
+  // one. Backend identity changes clear this map before a restored database
+  // can rewind the counter.
+  if (revision !== null && appliedRevision !== undefined && appliedRevision >= revision) return;
   const rehydrateDrafts = payload.draftPendingResend !== true;
   clearResendRevertMarkersForThread(payload.threadId);
   if (payload.draftPendingResend === true) {
@@ -124,4 +151,5 @@ export function applyUserMessageReverted(payload: UserMessageRevertedEvent | nul
   // pre-cut rows would let the next sync call them fresh. In-memory
   // only, like every event-carried stamp (§3.4).
   adoptEventStamp(payload.threadId, payload.historyEpoch, payload.historyRev);
+  if (revision !== null) appliedRevertRevByThread.set(payload.threadId, revision);
 }

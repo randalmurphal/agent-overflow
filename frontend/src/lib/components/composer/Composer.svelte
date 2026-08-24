@@ -62,6 +62,7 @@
   import { registerComposerDraft } from '../../stores/composerDraftRegistry.svelte';
   import { getThreadById, prependThread } from '../../stores/threads.svelte';
   import { getActiveTurn, isSendInFlight } from '../../stores/threadStatuses.svelte';
+  import { isThreadInterruptPending } from '../../stores/threadInterruptState.svelte';
   import { getFocusedPaneId } from '../../stores/panes.svelte';
   import { getTerminalFocused } from '../terminal/terminalStore.svelte';
   import { errString } from '../../utils/errors';
@@ -109,6 +110,7 @@
   // actual behaviour and is the canonical wire-round emission contract
   // documented in internal/triage/AGENTS.md "Wire-round vs logical-turn".
   let isTurnActive = $derived(getActiveTurn(pane.threadId) !== null);
+  let interruptPending = $derived(isThreadInterruptPending(pane.threadId));
   let blockingApprovals = $derived(pane.pendingApprovals);
   let activeApproval = $derived(blockingApprovals[0]);
   let activeUserInput = $derived(pane.pendingUserInputs[0]);
@@ -167,7 +169,7 @@
   let sendState = $derived(deriveComposerSendState({
     isDisabled,
     sending,
-    sendSuspended,
+    sendSuspended: sendSuspended || interruptPending,
     hasBlockingPrompt,
     hasUserInputPrompt,
     hasDraftContent,
@@ -933,6 +935,9 @@
       sendInFlight={isSendInFlight(pane.threadId, pane.sendInFlight)}
       {sendAction}
       {sendLabel}
+      sendDisabledReason={interruptPending
+        ? 'Wait for the interrupted message to finish reverting'
+        : undefined}
       hasCurrentPlan={Boolean(latestPlanItem)}
       planCommentCount={hasDraftDiffReviewComments ? activeDiffReviewDraftComments.length : latestPlanDraftComments.length}
       hideSendButton={hasInteractivePrompt}

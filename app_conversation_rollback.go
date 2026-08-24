@@ -318,9 +318,7 @@ func (a *App) rollbackCodexThreadToMessage(thread store.Thread, anchor store.Mes
 		}
 		newRef = cut.ThreadRef
 	}
-	thread.SessionRef = newRef
-	thread.PendingForkRef = ""
-	if err := a.store.UpdateThread(thread); err != nil {
+	if _, err := a.store.UpdateSessionRef(thread.ID, newRef); err != nil {
 		return fmt.Errorf("codex rollback: persist rolled-back state: %w", err)
 	}
 	if newRef != previousRef {
@@ -333,7 +331,7 @@ func (a *App) rollbackCodexThreadToMessage(thread store.Thread, anchor store.Mes
 		// An in-place revert takes neither branch: same thread id, and its
 		// next read updates the same row.
 		//
-		// After the persist, deliberately: a failed UpdateThread leaves the
+		// After the persist, deliberately: a failed UpdateSessionRef leaves the
 		// row still pointing at previousRef, which the stored figure still
 		// correctly describes.
 		a.forgetCodexThreadCost(thread.ID)
@@ -351,9 +349,8 @@ func (a *App) rollbackClaudeThreadToMessage(thread store.Thread, anchor store.Me
 	// 0 — a flush message queued during the very first turn — keeps that
 	// turn's prefix, so it needs the session slice like any later turn.
 	if anchor.TurnIndex == 0 && !midTurn {
-		thread.SessionRef = ""
-		thread.PendingForkRef = ""
-		return a.store.UpdateThread(thread)
+		_, err := a.store.UpdateSessionRef(thread.ID, "")
+		return err
 	}
 	sourceSessionRef := thread.ResolvedSessionRef()
 	if sourceSessionRef == "" {
@@ -394,9 +391,7 @@ func (a *App) rollbackClaudeThreadToMessage(thread store.Thread, anchor store.Me
 		a.removeAbandonedSessionSlice(newPath)
 		return fmt.Errorf("claude rollback: compute provider id remap: %w", err)
 	}
-	thread.SessionRef = newID
-	thread.PendingForkRef = ""
-	if err := a.store.UpdateThreadAndRemapProviderIDs(thread, itemUpdates, anchorUpdates); err != nil {
+	if _, err := a.store.UpdateSessionRefAndRemapProviderIDs(thread.ID, newID, itemUpdates, anchorUpdates); err != nil {
 		a.removeAbandonedSessionSlice(newPath)
 		return fmt.Errorf("persist rolled-back claude state: %w", err)
 	}

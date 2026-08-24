@@ -31,6 +31,8 @@
     sendInFlight?: boolean;
     action?: SendButtonAction;
     label?: string;
+    /** Hover explanation when a thread operation temporarily blocks Send. */
+    disabledReason?: string;
     planCommentCount?: number;
     onSend: () => void;
     onSendWithoutPlanComments?: () => void;
@@ -50,6 +52,7 @@
     sendInFlight = false,
     action = 'send',
     label,
+    disabledReason,
     planCommentCount = 0,
     onSend,
     onSendWithoutPlanComments,
@@ -67,7 +70,8 @@
   // the enqueue branch internally when `isTurnActive` is true.
   // Interrupt is still reachable through the working-indicator's stop
   // button, which is dedicated to interrupt regardless of draft state.
-  let showStop = $derived((isTurnActive || sendInFlight) && !canSend);
+  let operationBlocked = $derived(Boolean(disabledReason));
+  let showStop = $derived(!operationBlocked && (isTurnActive || sendInFlight) && !canSend);
 
   function handleClick(): void {
     if (showStop) {
@@ -77,10 +81,9 @@
     if (canSend) onSend();
   }
 
-  // The button is only disabled when we genuinely can't do anything:
-  // the textarea is empty AND no turn is running. When a turn is active
-  // the button becomes an interrupt trigger and stays enabled.
-  let disabled = $derived(!showStop && !canSend);
+  // The button is disabled when there is no available action, or while a
+  // thread operation must settle before another Send can reuse its turn.
+  let disabled = $derived(operationBlocked || (!showStop && !canSend));
   let idleLabel = $derived(action === 'implement'
     ? 'Implement proposed plan'
     : action === 'refine'
@@ -115,7 +118,7 @@
       {disabled}
       data-testid="composer-send"
       aria-label={idleLabel}
-      title={idleLabel}
+      title={disabledReason ?? idleLabel}
       class={[
         'inline-flex h-8 items-center justify-center gap-1.5 rounded-l-full shrink-0 px-3 text-xs font-medium',
         'transition-[background-color,transform,opacity] duration-150 cursor-pointer',
@@ -141,6 +144,7 @@
       onclick={() => (menuOpen = !menuOpen)}
       disabled={disabled}
       aria-label={showImplementMenu ? 'More implementation options' : 'More send options'}
+      title={disabledReason}
       aria-haspopup="menu"
       aria-expanded={menuOpen}
       class={[
@@ -179,7 +183,7 @@
     {disabled}
     data-testid={showStop ? 'composer-interrupt' : 'composer-send'}
     aria-label={showStop ? interruptLabel : idleLabel}
-    title={showStop ? interruptLabel : idleLabel}
+    title={showStop ? interruptLabel : (disabledReason ?? idleLabel)}
     class={[
       'inline-flex h-8 items-center justify-center rounded-full shrink-0',
       label && !showStop ? 'gap-1.5 px-3 text-xs font-medium' : 'w-8',

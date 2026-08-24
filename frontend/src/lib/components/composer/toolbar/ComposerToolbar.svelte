@@ -39,6 +39,7 @@
     sendInFlight?: boolean;
     sendAction?: SendButtonAction;
     sendLabel?: string;
+    sendDisabledReason?: string;
     hasCurrentPlan?: boolean;
     planCommentCount?: number;
     onSend: () => void;
@@ -55,6 +56,7 @@
     sendInFlight = false,
     sendAction,
     sendLabel,
+    sendDisabledReason,
     hasCurrentPlan = false,
     planCommentCount = 0,
     onSend,
@@ -222,6 +224,7 @@
         {sendInFlight}
         action={sendAction}
         label={sendLabel}
+        disabledReason={sendDisabledReason}
         {planCommentCount}
         {onSend}
         {onSendWithoutPlanComments}

@@ -36,6 +36,11 @@ import { restoredDraftSnapshotFromUserItem } from '../utils/userMessageDraftSnap
 import { getActiveTurn } from './threadStatuses.svelte';
 import { getQueueForThread } from './sendQueue.svelte';
 import { reportNonBenignInterruptError } from './interruptErrors';
+import { applyUserMessageReverted } from './eventsMessageRevert';
+import {
+  beginThreadInterrupt,
+  finishThreadInterrupt,
+} from './threadInterruptState.svelte';
 import {
   CountRunningBackgroundTasks,
   InterruptAndRevertIfClean,
@@ -144,17 +149,37 @@ export function runInterruptOrRevert(
 ): void {
   const threadId = pane.threadId;
   if (!threadId) return;
+  const interruptToken = beginThreadInterrupt(threadId);
+  if (interruptToken === null) return;
 
   const eligibility = canRevertEarlyInterrupt(pane, draft);
 
   if (!eligibility.canRevert) {
-    void InterruptTurn(threadId).catch((err) =>
-      reportNonBenignInterruptError(pane, err),
-    );
+    void runPlainInterrupt(pane, threadId, interruptToken);
     return;
   }
 
-  void runInterruptOrRevertAfterBackgroundPreflight(pane, draft, threadId, eligibility.userItem);
+  void runInterruptOrRevertAfterBackgroundPreflight(
+    pane,
+    draft,
+    threadId,
+    eligibility.userItem,
+    interruptToken,
+  );
+}
+
+async function runPlainInterrupt(
+  pane: ThreadPane,
+  threadId: string,
+  interruptToken: number,
+): Promise<void> {
+  try {
+    await InterruptTurn(threadId);
+  } catch (err) {
+    reportNonBenignInterruptError(pane, err);
+  } finally {
+    finishThreadInterrupt(threadId, interruptToken);
+  }
 }
 
 async function runInterruptOrRevertAfterBackgroundPreflight(
@@ -162,21 +187,18 @@ async function runInterruptOrRevertAfterBackgroundPreflight(
   draft: DraftSnapshotInputs,
   threadId: string,
   userItem: Item,
+  interruptToken: number,
 ): Promise<void> {
   let backgroundCount = 0;
   try {
     backgroundCount = Number(await CountRunningBackgroundTasks(threadId));
   } catch (err) {
     reportNonBenignInterruptError(pane, err);
-    await InterruptTurn(threadId).catch((interruptErr) =>
-      reportNonBenignInterruptError(pane, interruptErr),
-    );
+    await runPlainInterrupt(pane, threadId, interruptToken);
     return;
   }
   if (backgroundCount > 0) {
-    await InterruptTurn(threadId).catch((err) =>
-      reportNonBenignInterruptError(pane, err),
-    );
+    await runPlainInterrupt(pane, threadId, interruptToken);
     return;
   }
 
@@ -196,22 +218,59 @@ async function runInterruptOrRevertAfterBackgroundPreflight(
     draft.applyOptimisticRestoredDraft?.(threadId, restoredDraft);
   }
 
+  let result: Awaited<ReturnType<typeof InterruptAndRevertIfClean>>;
   try {
-    const result = await InterruptAndRevertIfClean(threadId);
-    if (!result.reverted) {
-      if (removedItems.length > 0) pane.upsertItems(removedItems);
-      if (restoredDraft) {
-        draft.clearOptimisticRestoredDraft?.(threadId, restoredDraft);
-      }
-    }
-    // Reverted=true: backend will emit `user_message:reverted` which
-    // confirms the removal (idempotent) and refreshes the composer draft
-    // if the user has not already edited the optimistic restore.
+    result = await InterruptAndRevertIfClean(threadId);
   } catch (err) {
     if (removedItems.length > 0) pane.upsertItems(removedItems);
     if (restoredDraft) {
       draft.clearOptimisticRestoredDraft?.(threadId, restoredDraft);
     }
+    finishThreadInterrupt(threadId, interruptToken);
     reportNonBenignInterruptError(pane, err);
+    return;
   }
+
+  if (!result.reverted) {
+    if (removedItems.length > 0) pane.upsertItems(removedItems);
+    if (restoredDraft) {
+      draft.clearOptimisticRestoredDraft?.(threadId, restoredDraft);
+    }
+    finishThreadInterrupt(threadId, interruptToken);
+    return;
+  }
+
+  // The event bus coalesces frames independently from RPC responses, so the
+  // response can arrive first. Apply its identical authoritative cut before
+  // releasing Send; eventsMessageRevert deduplicates the later event by its
+  // post-cut history stamp. A missing cut is a server contract breach. Keep
+  // Send closed because restoring or re-enabling here could race a cut that
+  // has committed but has not reached this client.
+  if (!result.userItemId
+    || result.userItemId !== userItem.id
+    || typeof result.turnIndex !== 'number'
+    || result.turnIndex !== userItem.turnIndex
+    || typeof result.historyEpoch !== 'number'
+    || typeof result.historyRev !== 'number'
+    || !Number.isFinite(result.historyEpoch)
+    || !Number.isFinite(result.historyRev)
+    || (result.historyEpoch <= 0 && result.historyRev <= 0)) {
+    reportNonBenignInterruptError(
+      pane,
+      new Error('interrupt-and-revert completed without its authoritative cut fields'),
+    );
+    return;
+  }
+  applyUserMessageReverted({
+    threadId,
+    userItemId: result.userItemId,
+    turnIndex: result.turnIndex,
+    keptAnchorTurnItemIds: result.keptAnchorTurnItemIds,
+    historyEpoch: result.historyEpoch,
+    historyRev: result.historyRev,
+  });
+  // Caller-owned release, after its exact RPC cut has been applied. A revert
+  // event from another client on the same thread must not release this
+  // operation while its own RPC is still queued behind that client.
+  finishThreadInterrupt(threadId, interruptToken);
 }

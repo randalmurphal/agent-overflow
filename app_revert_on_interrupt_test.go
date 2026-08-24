@@ -572,6 +572,9 @@ func TestInterruptAndRevertIfCleanRevertsClaudeFirstTurn(t *testing.T) {
 	if result.TurnIndex != 0 {
 		t.Fatalf("TurnIndex = %d, want 0", result.TurnIndex)
 	}
+	if result.HistoryEpoch <= 0 || result.HistoryRev <= 0 {
+		t.Fatalf("result history stamp = %d:%d, want a committed positive stamp", result.HistoryEpoch, result.HistoryRev)
+	}
 
 	items, err := app.store.ListItems(thread.ID)
 	if err != nil {
@@ -598,6 +601,60 @@ func TestInterruptAndRevertIfCleanRevertsClaudeFirstTurn(t *testing.T) {
 	}
 	if updated.SessionRef != "" {
 		t.Fatalf("SessionRef = %q, want empty after revert", updated.SessionRef)
+	}
+}
+
+// A rollback receives the thread snapshot loaded when the interrupt began.
+// Session slicing can take long enough for a narrow thread setting update to
+// land before that snapshot is committed. Finishing the rollback must change
+// only provider-resume state, never restore unrelated fields from its stale
+// snapshot.
+func TestInterruptRollbackPreservesConcurrentEffortChange(t *testing.T) {
+	for _, providerName := range []string{"claude", "codex"} {
+		t.Run(providerName, func(t *testing.T) {
+			app, cleanup := newTestApp(t)
+			defer cleanup()
+
+			thread := createAppTestThread(t, app, "revert-preserves-effort-"+providerName, providerName, t.TempDir())
+			thread.ReasoningEffort = "high"
+			thread.SessionRef = "stale-session"
+			if err := app.store.UpdateThread(thread); err != nil {
+				t.Fatalf("seed thread: %v", err)
+			}
+			rollbackSnapshot, err := app.store.GetThread(thread.ID)
+			if err != nil {
+				t.Fatalf("load rollback snapshot: %v", err)
+			}
+			if err := app.store.UpdateReasoningEffort(thread.ID, "xhigh"); err != nil {
+				t.Fatalf("update effort during rollback: %v", err)
+			}
+
+			anchor := store.MessageAnchor{ThreadID: thread.ID, UserItemID: "user:0", TurnIndex: 0}
+			userItem := store.Item{
+				ID: "user:0", ThreadID: thread.ID, TurnIndex: 0,
+				Kind: "user_text", Role: "user",
+			}
+			switch providerName {
+			case "claude":
+				err = app.rollbackClaudeThreadToMessage(rollbackSnapshot, anchor, userItem)
+			case "codex":
+				err = app.rollbackCodexThreadToMessage(rollbackSnapshot, anchor)
+			}
+			if err != nil {
+				t.Fatalf("finish rollback: %v", err)
+			}
+
+			updated, err := app.store.GetThread(thread.ID)
+			if err != nil {
+				t.Fatalf("reload thread: %v", err)
+			}
+			if updated.ReasoningEffort != "xhigh" {
+				t.Fatalf("effort after rollback = %q, want xhigh", updated.ReasoningEffort)
+			}
+			if updated.SessionRef != "" {
+				t.Fatalf("session ref after turn-zero rollback = %q, want empty", updated.SessionRef)
+			}
+		})
 	}
 }
 

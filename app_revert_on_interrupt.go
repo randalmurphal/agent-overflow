@@ -28,11 +28,19 @@ type InterruptAndRevertResult struct {
 	UserItemID string `json:"userItemId,omitempty"`
 	// TurnIndex is the turn the reverted user message belonged to.
 	// Zero-valued when Reverted is false.
-	TurnIndex int `json:"turnIndex,omitempty"`
+	TurnIndex int `json:"turnIndex"`
 	// Reason is a short tag describing why a revert was declined.
 	// Populated only when Reverted is false; useful for telemetry and
 	// frontend debugging without exposing internals to the user.
 	Reason string `json:"reason,omitempty"`
+	// The remaining fields carry the authoritative post-commit cut also
+	// emitted on user_message:reverted. Returning them lets the initiating
+	// client apply the cut before it re-enables Send; the event remains the
+	// cross-client/replay path. HistoryEpoch+HistoryRev make applying both
+	// deliveries idempotent on the frontend.
+	KeptAnchorTurnItemIDs []string `json:"keptAnchorTurnItemIds,omitempty"`
+	HistoryRev            int64    `json:"historyRev"`
+	HistoryEpoch          int64    `json:"historyEpoch"`
 }
 
 // UserMessageRevertedEvent is the wire payload for the
@@ -173,19 +181,23 @@ func (a *App) InterruptAndRevertIfClean(threadID string) (InterruptAndRevertResu
 		return InterruptAndRevertResult{}, err
 	}
 
-	a.emit("user_message:reverted", UserMessageRevertedEvent{
+	cutEvent := UserMessageRevertedEvent{
 		ThreadID:              threadID,
 		UserItemID:            userItem.ID,
 		TurnIndex:             userItem.TurnIndex,
 		KeptAnchorTurnItemIDs: cut.KeptAnchorTurnItemIDs,
 		HistoryRev:            cut.Stamp.Rev,
 		HistoryEpoch:          cut.Stamp.Epoch,
-	})
+	}
+	a.emit("user_message:reverted", cutEvent)
 
 	return InterruptAndRevertResult{
-		Reverted:   true,
-		UserItemID: userItem.ID,
-		TurnIndex:  userItem.TurnIndex,
+		Reverted:              true,
+		UserItemID:            userItem.ID,
+		TurnIndex:             userItem.TurnIndex,
+		KeptAnchorTurnItemIDs: cutEvent.KeptAnchorTurnItemIDs,
+		HistoryRev:            cutEvent.HistoryRev,
+		HistoryEpoch:          cutEvent.HistoryEpoch,
 	}, nil
 }
 

@@ -172,11 +172,11 @@ func TestDeleteConversationFromTurnCoversDriftedAnchors(t *testing.T) {
 	}
 }
 
-// TestUpdateThreadAndRemapProviderIDs pins R6-5 (round 6): the thread
-// row, item meta rewrites, and anchor provider-id rewrites commit in
+// TestUpdateSessionRefAndRemapProviderIDs pins R6-5 (round 6): the session
+// ref, item meta rewrites, and anchor provider-id rewrites commit in
 // ONE transaction — a failing rewrite rolls back the thread update
 // too, so SessionRef can never move without its uuid remap.
-func TestUpdateThreadAndRemapProviderIDs(t *testing.T) {
+func TestUpdateSessionRefAndRemapProviderIDs(t *testing.T) {
 	s := newTestStore(t)
 	mustCreateThreadWithUserItems(t, s, "t1")
 	if err := s.UpsertMessageAnchor(MessageAnchor{
@@ -185,17 +185,11 @@ func TestUpdateThreadAndRemapProviderIDs(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("upsert anchor: %v", err)
 	}
-	thread, err := s.GetThread("t1")
-	if err != nil {
-		t.Fatalf("GetThread: %v", err)
-	}
-
-	thread.SessionRef = "new-session-ref"
-	if err := s.UpdateThreadAndRemapProviderIDs(thread,
+	if _, err := s.UpdateSessionRefAndRemapProviderIDs("t1", "new-session-ref",
 		[]ItemMetaUpdate{{ItemID: "t1-user:0", Meta: `{"provider_item_id":"new-uuid"}`}},
 		[]MessageAnchorProviderIDsUpdate{{UserItemID: "t1-user:0", ProviderUserMessageID: "new-uuid", ProviderParentUUID: ""}},
 	); err != nil {
-		t.Fatalf("UpdateThreadAndRemapProviderIDs: %v", err)
+		t.Fatalf("UpdateSessionRefAndRemapProviderIDs: %v", err)
 	}
 	updated, err := s.GetThread("t1")
 	if err != nil {
@@ -223,8 +217,7 @@ func TestUpdateThreadAndRemapProviderIDs(t *testing.T) {
 	}
 
 	// A failing item rewrite (unknown id) rolls the WHOLE commit back.
-	thread.SessionRef = "half-committed-ref"
-	err = s.UpdateThreadAndRemapProviderIDs(thread,
+	_, err = s.UpdateSessionRefAndRemapProviderIDs("t1", "half-committed-ref",
 		[]ItemMetaUpdate{{ItemID: "no-such-item", Meta: `{}`}}, nil)
 	if err == nil {
 		t.Fatal("remap against a missing item must error")

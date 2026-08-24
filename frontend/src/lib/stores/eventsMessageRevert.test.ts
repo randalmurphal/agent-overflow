@@ -15,6 +15,10 @@ import {
 import type { ComposerDraftStore } from './composerDraft.svelte';
 import { resetPanesForTest } from './panes.svelte';
 import { resetForTest as resetThreadStatuses } from './threadStatuses.svelte';
+import {
+  isThreadWorking,
+  projectSendStarted,
+} from './threadStatuses.svelte';
 import { buildPane, makeItem, makeThread } from '../../test/helpers/chat';
 import { resetBindingMocks } from '../../test/mocks/bindings-app';
 import {
@@ -24,6 +28,12 @@ import {
 } from './threadHistoryStamps';
 import { threadItemCache } from './threadItemCache';
 import type { ThreadPane } from './thread.svelte';
+import {
+  beginThreadInterrupt,
+  finishThreadInterrupt,
+  isThreadInterruptPending,
+  resetThreadInterruptStateForTest,
+} from './threadInterruptState.svelte';
 
 function stubDraft(): { draft: ComposerDraftStore; reloadFromBackend: ReturnType<typeof vi.fn> } {
   const reloadFromBackend = vi.fn(async () => {});
@@ -49,6 +59,7 @@ describe('applyUserMessageReverted', () => {
     resetThreadStatuses();
     resetComposerDraftRegistryForTest();
     resetResendRevertMarkersForTest();
+    resetThreadInterruptStateForTest();
     __resetThreadHistoryStampsForTest();
   });
 
@@ -148,6 +159,53 @@ describe('applyUserMessageReverted', () => {
 
     expect(pane.items.map((it) => it.id)).toEqual(['u:0']);
     expect(reloadFromBackend).toHaveBeenCalledWith('thread-a');
+  });
+
+  it('ignores duplicate and stale cuts after Send reopens', async () => {
+    const pane = await seedPane();
+    const token = beginThreadInterrupt('thread-a')!;
+    const cut = {
+      threadId: 'thread-a',
+      userItemId: 'u:1',
+      turnIndex: 1,
+      historyEpoch: 3,
+      historyRev: 12,
+    };
+
+    // The RPC response applies the committed cut and releases Send.
+    applyUserMessageReverted(cut);
+    finishThreadInterrupt('thread-a', token);
+    expect(isThreadInterruptPending('thread-a')).toBe(false);
+
+    // A new optimistic send legitimately reuses the reverted identity.
+    pane.trackOptimisticItem('u:1');
+    pane.upsertItem(makeItem({
+      id: 'u:1',
+      threadId: 'thread-a',
+      turnIndex: 1,
+      kind: 'user_text',
+      role: 'user',
+      summary: 'resent prompt',
+    }));
+    projectSendStarted('thread-a');
+
+    // The coalesced event for the same cut can arrive after that click. Its
+    // history stamp identifies it as the already-applied mutation.
+    applyUserMessageReverted(cut);
+
+    expect(pane.items.find((item) => item.id === 'u:1')?.summary).toBe('resent prompt');
+    expect(isThreadWorking('thread-a')).toBe(true);
+
+    // A response from an older operation can also arrive after a newer cut.
+    // Its lower rev belongs to history this client has already passed.
+    applyUserMessageReverted({
+      ...cut,
+      historyEpoch: 2,
+      historyRev: 11,
+    });
+
+    expect(pane.items.find((item) => item.id === 'u:1')?.summary).toBe('resent prompt');
+    expect(isThreadWorking('thread-a')).toBe(true);
   });
 
   it('leaves the composer alone while a resend is pending', async () => {

@@ -1954,7 +1954,7 @@ export class InterruptAndRevertResult {
      * TurnIndex is the turn the reverted user message belonged to.
      * Zero-valued when Reverted is false.
      */
-    "turnIndex"?: number;
+    "turnIndex": number;
 
     /**
      * Reason is a short tag describing why a revert was declined.
@@ -1963,10 +1963,30 @@ export class InterruptAndRevertResult {
      */
     "reason"?: string;
 
+    /**
+     * The remaining fields carry the authoritative post-commit cut also
+     * emitted on user_message:reverted. Returning them lets the initiating
+     * client apply the cut before it re-enables Send; the event remains the
+     * cross-client/replay path. HistoryEpoch+HistoryRev make applying both
+     * deliveries idempotent on the frontend.
+     */
+    "keptAnchorTurnItemIds"?: string[];
+    "historyRev": number;
+    "historyEpoch": number;
+
     /** Creates a new InterruptAndRevertResult instance. */
     constructor($$source: Partial<InterruptAndRevertResult> = {}) {
         if (!("reverted" in $$source)) {
             this["reverted"] = false;
+        }
+        if (!("turnIndex" in $$source)) {
+            this["turnIndex"] = 0;
+        }
+        if (!("historyRev" in $$source)) {
+            this["historyRev"] = 0;
+        }
+        if (!("historyEpoch" in $$source)) {
+            this["historyEpoch"] = 0;
         }
 
         Object.assign(this, $$source);
@@ -1976,7 +1996,11 @@ export class InterruptAndRevertResult {
      * Creates a new InterruptAndRevertResult instance from a string or object.
      */
     static createFrom($$source: any = {}): InterruptAndRevertResult {
+        const $$createField4_0 = $$createType2;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("keptAnchorTurnItemIds" in $$parsedSource) {
+            $$parsedSource["keptAnchorTurnItemIds"] = $$createField4_0($$parsedSource["keptAnchorTurnItemIds"]);
+        }
         return new InterruptAndRevertResult($$parsedSource as Partial<InterruptAndRevertResult>);
     }
 }

@@ -43,6 +43,8 @@ import { focusPane, resetPanesForTest } from '../../stores/panes.svelte';
 import { resetPaneLayoutForTest, setPaneLayoutItemsForTest } from '../../stores/paneLayout.svelte';
 import { resetCompanionPanesForTest } from '../../stores/companionPanes.svelte';
 import { idleWorkspaceActivity } from '../../../test/helpers/workspaceLock';
+import { resetThreadInterruptStateForTest } from '../../stores/threadInterruptState.svelte';
+import { resetResendRevertMarkersForTest } from '../../stores/eventsMessageRevert';
 
 function installDraftMocks() {
   setBindingMock('GetDraft', async (threadId: string) => ({
@@ -162,6 +164,8 @@ describe('<Composer>', () => {
     resetWorktreeIntent();
     resetSendQueueForTest();
     resetThreadStatuses();
+    resetThreadInterruptStateForTest();
+    resetResendRevertMarkersForTest();
     resetTerminalFocusForTest();
     // The initial-focus gate compares against the panes store's focused
     // pane id ('main' after reset) — without this, any test that moves
@@ -2008,6 +2012,65 @@ describe('<Composer>', () => {
     await fireEvent.click(getByTestId('composer-interrupt'));
 
     expect(interrupt).toHaveBeenCalledWith('thread-1');
+  });
+
+  it('keeps Send disabled with hover guidance until the revert cut is applied', async () => {
+    const pane = await buildPane(makeTestThread(), [makeItem({
+      id: 'user:0',
+      turnIndex: 0,
+      kind: 'user_text',
+      role: 'user',
+      summary: 'retry this prompt',
+    })]);
+    pane.setActiveTurn({ turnId: 't1', turnIndex: 0, startedAt: 0 });
+    const draft = await buildDraft();
+    const revert = deferred<{
+      reverted: boolean;
+      userItemId: string;
+      turnIndex: number;
+      historyEpoch: number;
+      historyRev: number;
+    }>();
+    setBindingMock('CountRunningBackgroundTasks', async () => 0);
+    setBindingMock('InterruptAndRevertIfClean', async () => revert.promise);
+    // The event-side draft refresh reads the durable prompt the backend wrote.
+    setBindingMock('GetDraft', async (threadId: string) => ({
+      threadId,
+      content: 'retry this prompt',
+      attachmentIds: [],
+      terminalChips: [],
+      updatedAt: 1,
+    }));
+    const send = setBindingMock('SendMessageWithOptions', async () =>
+      makeTestThread({ runtimeMode: 'full-access' }));
+
+    const { getByLabelText, getByTestId, queryByTestId } = render(Composer, {
+      props: { pane, draft },
+    });
+    await fireEvent.click(getByTestId('composer-interrupt'));
+
+    await waitFor(() => {
+      const button = getByTestId('composer-send') as HTMLButtonElement;
+      expect(button.disabled).toBe(true);
+      expect(button.title).toBe('Wait for the interrupted message to finish reverting');
+    });
+    expect(queryByTestId('composer-interrupt')).toBeNull();
+    await fireEvent.keyDown(getByLabelText('Message Input'), { key: 'Enter' });
+    expect(send).not.toHaveBeenCalled();
+
+    revert.resolve({
+      reverted: true,
+      userItemId: 'user:0',
+      turnIndex: 0,
+      historyEpoch: 2,
+      historyRev: 4,
+    });
+
+    await waitFor(() => {
+      expect((getByTestId('composer-send') as HTMLButtonElement).disabled).toBe(false);
+    });
+    await fireEvent.click(getByTestId('composer-send'));
+    await waitFor(() => expect(send).toHaveBeenCalledTimes(1));
   });
 
   it('shows the interrupt affordance while a send is waiting for turn start', async () => {

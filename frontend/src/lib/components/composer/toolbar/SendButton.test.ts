@@ -61,6 +61,30 @@ describe('<SendButton>', () => {
     expect(onSend).not.toHaveBeenCalled();
   });
 
+  it('stays a disabled Send with an explanation while a revert is committing', async () => {
+    const onSend = vi.fn();
+    const onInterrupt = vi.fn();
+    const reason = 'Wait for the interrupted message to finish reverting';
+    const { getByTestId, queryByTestId } = render(SendButton, {
+      props: {
+        canSend: false,
+        isTurnActive: true,
+        sendInFlight: true,
+        disabledReason: reason,
+        onSend,
+        onInterrupt,
+      },
+    });
+
+    expect(queryByTestId('composer-interrupt')).toBeNull();
+    const button = getByTestId('composer-send') as HTMLButtonElement;
+    expect(button.disabled).toBe(true);
+    expect(button.title).toBe(reason);
+    await fireEvent.click(button);
+    expect(onSend).not.toHaveBeenCalled();
+    expect(onInterrupt).not.toHaveBeenCalled();
+  });
+
   it('renders Send (not Stop) when a turn is active AND a draft is ready to queue', async () => {
     // Pins the per-thread send queue UX: the Send button must stay
     // in Send variant during an active turn whenever the user has
