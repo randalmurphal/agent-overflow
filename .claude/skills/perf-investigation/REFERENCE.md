@@ -36,6 +36,38 @@ Prove the bug on the previous patch, the fix on the new one, without touching no
 
 Edit a hunk with `pnpm patch svelte@<v> --edit-dir <dir>` (applies the existing patch first) and `pnpm patch-commit <dir>`; only the patch hash changes in the lock. `svelte/internal/client` exports `get/set/state` in its types but `derived/effect/effect_root` only at runtime (import the namespace and cast).
 
+## The present-policy mechanism, measured (2026-08-24)
+
+`scripts/perfprobe/present-policy-arms.mjs` + `present-policy-page.html`. Synthetic
+timeline, repeated compensated head splices, three-plus arms. Headless +
+SoftwareRenderer + one raster thread, so only the arm-to-arm comparison counts.
+
+The Print Doctrine's conclusion is right and its named mechanism was wrong. There
+is no smoothness-priority flip: `tree_priority` stays `SAME_PRIORITY_FOR_BOTH_TREES`
+in every arm (that mode is pinch / active compositor scroll). What an active
+animation changes is the DRAW DRIVE — `SetNeedsOneBeginImplFrameOnImplThread`
+0 -> 781, `LayerTreeHostImpl::PrepareToDraw` 34 -> ~650 — so the compositor draws on
+the frame deadline instead of waiting for raster.
+
+Draws landing while raster is still outstanding, 3 repeats:
+
+| animating elements | 0 | 1 | 3 | 14 | 30 |
+|---|---|---|---|---|---|
+| draws | 34 | 638 | 637 | 652 | 670 |
+| during outstanding raster | 3 | 20 | 15 | 17 | 17 |
+
+**Binary, not proportional.** One animation costs what thirty do; the only
+meaningful state is zero. **Document-wide, not scroller-scoped:** an animation
+outside the scroller scores the same as one inside (18 vs 23).
+
+Consequence for the ambient indicators, unresolved and with the user: keeping
+`ambient-led` / `ambient-spin` / `working-sprite-run` as CSS animations puts the
+compositor in per-vsync draw mode during exactly the working turns when the
+timeline splices, so reverting `animate-pulse` alone did not close the window it
+was reverted to close. Either go to zero animations app-wide, or accept the mode
+and stop paying the ticker for pulse. Do not propose a middle position — the
+measurement says there isn't one.
+
 ## The ambient indicators drive ~two thirds of the renderer main thread
 
 **Built 2026-08-23, then partly reversed the same day.** LED chase,

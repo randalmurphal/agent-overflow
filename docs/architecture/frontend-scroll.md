@@ -1017,9 +1017,36 @@ producer died with `DiffPanelDrawer` in the review-pane redesign — and
 the whole flash mechanism was removed rather than left dormant.)
 
 This is not an aesthetic preference; it is a present-policy constraint.
-The browser presents a frame whose tiles have finished rastering —
-*unless an animation is active*, which flips its scheduler to
-smoothness-priority and licenses presenting with tiles missing. The
+The browser has no reason to draw until raster lands — *unless an
+animation is active*, which drives a begin-frame every vsync, so the
+compositor draws on the frame deadline whether or not the tiles are
+ready.
+
+That wording was corrected on 2026-08-24 against measurement
+(`scripts/perfprobe/present-policy-arms.mjs`; ledger entry in the
+perf-investigation skill). This document previously said an animation
+flips the scheduler to *smoothness-priority*. It does not:
+`tree_priority` never leaves `SAME_PRIORITY_FOR_BOTH_TREES` while
+animations run, because that mode is driven by pinch and active
+compositor scroll, not by CSS animations. The conclusion held, the named
+mechanism did not.
+
+Two properties of the real mechanism do not match how the rules below
+are scoped, and both are open questions rather than settled practice:
+
+- **It is binary, not proportional.** One animation and thirty measure
+  the same (20 / 15 / 17 / 17 draws landing during outstanding raster at
+  1 / 3 / 14 / 30 animating elements, against 3 with none). The only
+  meaningful state is zero, so removing *some* animations from a window
+  buys nothing.
+- **It is document-wide, not scroller-scoped.** An animation outside the
+  scroller scores the same as one inside (18 vs 23). "It mounts outside
+  the scroller" is therefore not, on its own, a safety argument — though
+  it remains a correct statement about where a component renders.
+
+Caveat before quoting the numbers: headless, `SoftwareRenderer`, one
+raster thread. The arm-to-arm comparison is the result; the absolute
+counts are not. The
 timeline's core moves are compensated viewport-space moves (bottom-held
 toggles, prune shifts, head splices): rows that stay screen-stationary
 while their tiles all invalidate at once. Under the default policy that

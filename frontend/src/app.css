@@ -1218,10 +1218,28 @@ html.light .working-sprite {
  * moves every row below the toggled run inside the scroller's content
  * space while scroll compensation keeps it screen-stationary, so all of
  * that text's compositor tiles invalidate and re-raster in one commit.
- * Normally cc waits for those tiles before presenting. But an ACTIVE
- * ANIMATION flips the scheduler to smoothness-priority, which licenses
- * presenting with tiles missing — background where the text was, i.e.
- * "the text below blinks out on expand". The animations doing the
+ * Normally cc has no reason to draw until that raster lands. An ACTIVE
+ * ANIMATION removes that: it drives a begin-frame every vsync, so the
+ * compositor draws on the frame deadline whether or not the tiles are
+ * ready — background where the text was, i.e. "the text below blinks
+ * out on expand".
+ *
+ * Measured 2026-08-24 (scripts/perfprobe/present-policy-arms.mjs), and
+ * it corrects the earlier reading of this incident. It is NOT a
+ * smoothness-priority flip: `tree_priority` never leaves
+ * SAME_PRIORITY_FOR_BOTH_TREES with animations running — that mode is
+ * for pinch and active compositor scroll. What changes is the draw
+ * drive (`SetNeedsOneBeginImplFrameOnImplThread` 0 -> 781), and with it
+ * the draws that land while raster is still outstanding: 3 with no
+ * animation, 15-23 with one.
+ *
+ * TWO CONSEQUENCES, both load-bearing, neither matching how this rule
+ * was scoped. The exposure is BINARY, not proportional — 1 animation
+ * and 30 measure the same (20/15/17/17 draws-during-raster at 1/3/14/30
+ * dots), so the only meaningful state is zero. And it is DOCUMENT-wide,
+ * not scroller-scoped — an animation outside the scroller scores the
+ * same as one inside (18 vs 23). Anything running anywhere in the
+ * document during a compensated move opens the same window. The animations doing the
  * licensing were pure decoration starting in that same commit: the
  * disclosure chevron's rotate, the run fade's ease, the clip scrollbar's
  * activity fade, and the hover transitions the browser starts by

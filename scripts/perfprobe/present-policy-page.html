@@ -1,0 +1,97 @@
+<!doctype html><meta charset=utf-8>
+<title>present policy repro</title>
+<style>
+  html,body { margin:0; height:100%; background:#000; }
+  /* Pure green is the tell: rows are opaque, so any green pixel inside
+     the scroller rect is a tile that was not rastered when the frame
+     was presented. */
+  #scroller {
+    position:absolute; inset:0 0 0 0; width:1200px; height:900px;
+    overflow-y:auto; overflow-anchor:none; background:#00ff00;
+    contain: strict;
+  }
+  .row {
+    background:#202020; color:#c8c8d0; padding:10px 14px; margin:0;
+    font:13px/1.5 monospace; border-bottom:1px solid #303040;
+    text-shadow: 0 0 2px rgba(180,180,255,.55), 0 0 6px rgba(120,120,255,.35);
+  }
+  .row b { color:#8fb0ff; text-shadow: 0 0 3px rgba(140,160,255,.8); }
+  .row .heavy { display:inline-block; filter: blur(0.4px) drop-shadow(0 0 2px #46f);
+                background:linear-gradient(97deg,#2b2b3a,#3a2b3a 40%,#2b3a3a); border-radius:3px; padding:0 4px; }
+  .row i { color:#ffb08f; }
+  /* The indicator under test: a stepped composited opacity animation,
+     the exact shape of ambient-pulse. */
+  @keyframes probe-pulse { 0%{opacity:1} 50%{opacity:.5} 100%{opacity:1} }
+  .probe { width:8px; height:8px; border-radius:9999px; background:#ff00ff;
+           display:inline-block; animation: probe-pulse 2s steps(8, jump-none) infinite; }
+  #outside { position:absolute; left:1210px; top:10px; }
+</style>
+<div id="scroller"></div>
+<div id="outside"></div>
+<script>
+let seq = 0;
+const scroller = document.getElementById('scroller');
+const outside = document.getElementById('outside');
+
+function makeRow(tag) {
+  const p = document.createElement('p');
+  p.className = 'row';
+  p.innerHTML = `<b>${tag}</b> lorem ipsum dolor sit amet <i>consectetur</i> adipiscing elit ` +
+    `sed do eiusmod tempor incididunt ut labore et dolore magna aliqua ${tag} ` +
+    `<b>ut enim</b> ad minim veniam quis nostrud <i>exercitation</i> ullamco laboris ` +
+    Array.from({length:6},(_,k)=>`<span class="heavy">seg${k}-${tag}</span>`).join(' ');
+  return p;
+}
+
+window.build = (rows, arm) => {
+  scroller.innerHTML = '';
+  outside.innerHTML = '';
+  seq = 0;
+  const frag = document.createDocumentFragment();
+  for (let i = 0; i < rows; i++) frag.append(makeRow('r' + (seq++)));
+  scroller.append(frag);
+  scroller.scrollTop = scroller.scrollHeight;   // pinned to bottom, like the timeline
+
+  // arm: 'none' | 'inside' | 'outside'
+  if (typeof arm === 'number') {
+    // N dots spread across the last N rows, all inside the scroller.
+    const kids = scroller.children;
+    for (let i = 0; i < arm; i++) {
+      const dot = document.createElement('span');
+      dot.className = 'probe';
+      kids[kids.length - 1 - i].append(dot);
+    }
+  } else if (arm === 'inside') {
+    // A running-tool-call dot, in a row, inside the scroller — exactly
+    // where chat/Indicator.svelte puts animate-pulse.
+    const host = scroller.lastElementChild;
+    const dot = document.createElement('span');
+    dot.className = 'probe';
+    host.append(dot);
+  } else if (arm === 'outside') {
+    const dot = document.createElement('span');
+    dot.className = 'probe';
+    outside.append(dot);
+  }
+  return { rows: scroller.children.length, arm };
+};
+
+// One compensated head splice: prepend rows and add exactly their height
+// to scrollTop in the SAME task, so every row stays screen-stationary
+// while every tile invalidates.
+window.splice = (count) => {
+  const before = scroller.scrollHeight;
+  const frag = document.createDocumentFragment();
+  for (let i = 0; i < count; i++) frag.append(makeRow('s' + (seq++)));
+  scroller.prepend(frag);
+  const after = scroller.scrollHeight;
+  scroller.scrollTop += after - before;
+  return after - before;
+};
+
+window.probeState = () => ({
+  animations: document.getAnimations().length,
+  scrollTop: scroller.scrollTop,
+  height: scroller.scrollHeight,
+});
+</script>
