@@ -251,7 +251,10 @@ func CompletionSuffix(meta ToolCompleteMeta) string {
 // value. `declined` stays distinct from `errored` because the UI renders
 // a user refusal differently from a failure.
 func CompletionStatus(meta ToolCompleteMeta) string {
-	if meta.IsError || meta.ItemStatus == "failed" || meta.ItemStatus == "errored" || meta.ItemStatus == "killed" {
+	if meta.ItemStatus == "killed" {
+		return statusKilled
+	}
+	if meta.IsError || meta.ItemStatus == "failed" || meta.ItemStatus == "errored" {
 		return statusErrored
 	}
 	if meta.ItemStatus == statusDeclined {

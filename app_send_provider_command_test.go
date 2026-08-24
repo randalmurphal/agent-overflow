@@ -133,13 +133,10 @@ func newClaudeThreadForProviderCommandTest(t *testing.T, app *App, id string) st
 	return thread
 }
 
-// TestSendMessageWithOptions_ProviderCommandTransitionsOnOneThread is the
-// transition test the flag needs: the SAME thread sends the SAME text twice,
-// once marked as a provider command and once not, and the two must reach the
-// CLI differently. A per-send flag that leaked into session state — or one
-// that was never plumbed at all — passes a single-state test and fails this
-// one.
-func TestSendMessageWithOptions_ProviderCommandTransitionsOnOneThread(t *testing.T) {
+// A command-shaped opener always belongs to Claude's native command router.
+// Command discovery is asynchronous and must not decide whether Enter sends
+// the same text as a command or model prose.
+func TestSendMessageWithOptions_CommandRoutingDoesNotDependOnDiscovery(t *testing.T) {
 	app := newTestAppWithStore(t)
 	app.triage = triage.NewRouter(app.store, func(string, any) {})
 
@@ -147,29 +144,27 @@ func TestSendMessageWithOptions_ProviderCommandTransitionsOnOneThread(t *testing
 	capturePath := filepath.Join(t.TempDir(), "stdin.ndjson")
 	installCapturingClaudeSession(t, app, thread, capturePath)
 
-	if _, err := app.SendMessageWithOptions(thread.ID, "/usage", SendMessageOptions{ProviderCommand: true}); err != nil {
-		t.Fatalf("flagged SendMessageWithOptions: %v", err)
+	if _, err := app.SendMessageWithOptions(thread.ID, "/usage", SendMessageOptions{}); err != nil {
+		t.Fatalf("SendMessageWithOptions: %v", err)
 	}
 	texts := waitForCapturedUserMessages(t, capturePath, 1)
 	if texts[0] != "/usage" {
-		t.Fatalf("flagged send reached the CLI as %q, want %q — the slash guard must not fire on a deliberate command", texts[0], "/usage")
+		t.Fatalf("known command reached the CLI as %q, want %q", texts[0], "/usage")
 	}
 
-	if _, err := app.SendMessageWithOptions(thread.ID, "/usage", SendMessageOptions{}); err != nil {
-		t.Fatalf("unflagged SendMessageWithOptions: %v", err)
+	if _, err := app.SendMessageWithOptions(thread.ID, "/not-discovered argument", SendMessageOptions{}); err != nil {
+		t.Fatalf("unknown SendMessageWithOptions: %v", err)
 	}
 	texts = waitForCapturedUserMessages(t, capturePath, 2)
-	if texts[1] != "\n/usage" {
-		t.Fatalf("unflagged send reached the CLI as %q, want %q — the previous send's opt-in must not persist", texts[1], "\n/usage")
+	if texts[1] != "/not-discovered argument" {
+		t.Fatalf("undiscovered command reached the CLI as %q, want native routing", texts[1])
 	}
 }
 
-// TestRegisterQueueItem_ProviderCommandSurvivesTheFlushBoundary pins the
-// queue round-trip: a command typed while a turn is running is queued as a
-// payload and dispatched later, and the opt-in has to travel with it. The
-// direct-send path cannot cover this — the flag is resolved from the decoded
-// payload at dispatch time, on the other side of a JSON boundary.
-func TestRegisterQueueItem_ProviderCommandSurvivesTheFlushBoundary(t *testing.T) {
+// Native command routing is a property of user-authored text, so a queued
+// command keeps the same behavior without a discovered-command classification
+// crossing the queue boundary.
+func TestRegisterQueueItem_CommandRoutingSurvivesFlushBoundary(t *testing.T) {
 	app, _ := newAppForFlushQueueRPC(t)
 
 	thread := newClaudeThreadForProviderCommandTest(t, app, "thread-queued-provider-command")
@@ -187,49 +182,32 @@ func TestRegisterQueueItem_ProviderCommandSurvivesTheFlushBoundary(t *testing.T)
 		t.Fatalf("EventTurnStart: %v", err)
 	}
 
-	queued, err := app.RegisterQueueItem(thread.ID, "/usage", SendMessageOptions{ProviderCommand: true})
+	_, err := app.RegisterQueueItem(thread.ID, "/usage", SendMessageOptions{})
 	if err != nil {
 		t.Fatalf("RegisterQueueItem: %v", err)
 	}
-	if !queued.ProviderCommand {
-		t.Fatal("the returned queue item must mirror the opt-in so a client rendering the queue shows a command, not prose")
-	}
-
 	texts := waitForCapturedUserMessages(t, capturePath, 1)
 	if texts[0] != "/usage" {
-		t.Fatalf("queued command reached the CLI as %q, want %q — the opt-in must cross the queue payload", texts[0], "/usage")
+		t.Fatalf("queued command reached the CLI as %q, want %q", texts[0], "/usage")
 	}
 }
 
-// TestRegisterQueueItem_UnflaggedQueuedTextStaysGuarded is the other half of
-// the queue transition: an ordinary message that merely opens with a slash
-// must still be guarded after the same round trip.
-func TestRegisterQueueItem_UnflaggedQueuedTextStaysGuarded(t *testing.T) {
+func TestInjectedQueueTextKeepsSlashGuardAcrossFlushBoundary(t *testing.T) {
 	app, _ := newAppForFlushQueueRPC(t)
-
-	thread := newClaudeThreadForProviderCommandTest(t, app, "thread-queued-plain-slash")
+	thread := newClaudeThreadForProviderCommandTest(t, app, "thread-queued-injected-prose")
 	capturePath := filepath.Join(t.TempDir(), "stdin.ndjson")
 	installCapturingClaudeSession(t, app, thread, capturePath)
 
-	if err := app.triage.Handle(provider.ProviderEvent{
-		Kind:      provider.EventTurnStart,
-		ThreadID:  thread.ID,
-		TurnIndex: 0,
-		Timestamp: time.Now(),
-	}); err != nil {
-		t.Fatalf("EventTurnStart: %v", err)
+	if _, err := app.registerQueueItem(
+		thread.ID,
+		"/workflow was mentioned by a wake",
+		SendMessageOptions{},
+		injectedQueueOptions{preserveDraft: true},
+	); err != nil {
+		t.Fatalf("registerQueueItem: %v", err)
 	}
-
-	queued, err := app.RegisterQueueItem(thread.ID, "/usage", SendMessageOptions{})
-	if err != nil {
-		t.Fatalf("RegisterQueueItem: %v", err)
-	}
-	if queued.ProviderCommand {
-		t.Fatal("an unflagged register must not report itself as a provider command")
-	}
-
 	texts := waitForCapturedUserMessages(t, capturePath, 1)
-	if texts[0] != "\n/usage" {
-		t.Fatalf("unflagged queued text reached the CLI as %q, want %q", texts[0], "\n/usage")
+	if texts[0] != "\n/workflow was mentioned by a wake" {
+		t.Fatalf("injected queue text reached the CLI as %q, want guarded prose", texts[0])
 	}
 }

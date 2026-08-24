@@ -215,10 +215,12 @@ func (s *Store) subagentAggregatesByRoot(q sqlQueryer, threadID string, rootIDs 
 		SELECT root, total, summary FROM (
 			SELECT rel.root,
 			       COUNT(*) OVER (PARTITION BY rel.root) AS total,
-			       i.summary,
+			       CASE WHEN i.kind IN ('tool_call','tool_completion','terminal_interaction','error','api_error')
+			            THEN i.summary ELSE '' END AS summary,
 			       ROW_NUMBER() OVER (
 			           PARTITION BY rel.root
-			           ORDER BY (TRIM(i.summary) <> '') DESC,
+			           ORDER BY (i.kind IN ('tool_call','tool_completion','terminal_interaction','error','api_error')
+			                     AND TRIM(i.summary) <> '') DESC,
 			                    (i.status IN ('running','streaming')) DESC,
 			                    i.turn_index DESC, i.item_index DESC,
 			                    i.id

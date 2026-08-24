@@ -16,15 +16,14 @@ package claude
 // `startsWith('/')` test while adding nothing a model reads as instruction.
 
 // guardOutboundSlashCommand returns content adjusted so the Claude CLI's
-// command router will not claim it, unless the caller explicitly allowed a
-// command (provider.SendOptions.AllowClaudeSlashCommand).
+// command router will not claim an Agent Overflow composer command.
 //
 // It fires only when the message's FIRST word is command-shaped — see
 // startsWithCommandShapedWord. Everything else, including a mid-message slash
 // and a leading path like "/etc/hosts is world-readable", passes through
 // byte-for-byte.
-func guardOutboundSlashCommand(content string, allowCommand bool) string {
-	if allowCommand || !startsWithCommandShapedWord(content) {
+func guardOutboundSlashCommand(content string, forceModelProse bool) string {
+	if !forceModelProse || !startsWithCommandShapedWord(content) {
 		return content
 	}
 	return "\n" + content

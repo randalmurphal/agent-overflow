@@ -9,6 +9,7 @@ import (
 
 	"agent-overflow/internal/importir"
 	"agent-overflow/internal/itemmeta"
+	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/stringsx"
 	"agent-overflow/internal/triage"
@@ -65,6 +66,7 @@ func (b *builder) prompt(evt importir.Event) error {
 	meta, err := mergeMetaKeys("", map[string]string{
 		"provider_item_id":     stringsx.FirstNonEmptyTrimmed(metaString(evt.Meta, "provider_item_id"), evt.ItemID),
 		"provider_parent_uuid": metaString(evt.Meta, "parent_uuid"),
+		"command":              metaString(evt.Meta, "command"),
 	})
 	if err != nil {
 		return fmt.Errorf("user text meta %s: %w", itemID, err)
@@ -315,7 +317,11 @@ func (b *builder) commandResult(evt importir.Event) error {
 	b.commandSeq[turnIndex]++
 	itemID := triage.CommandResultItemID(turnIndex, strings.TrimSpace(evt.ItemID), seq)
 
-	shaped, err := triage.BuildCommandResultRow(text)
+	var resultMeta provider.CommandResultMeta
+	if len(evt.Meta) > 0 {
+		_ = json.Unmarshal(evt.Meta, &resultMeta)
+	}
+	shaped, err := triage.BuildCommandResultRowWithAgentResult(text, resultMeta.AgentResult)
 	if err != nil {
 		return fmt.Errorf("command result meta %s: %w", itemID, err)
 	}

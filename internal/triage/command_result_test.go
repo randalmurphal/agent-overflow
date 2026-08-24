@@ -69,6 +69,49 @@ func TestCommandResult_PersistsItsOwnKind(t *testing.T) {
 	}
 }
 
+func TestCommandResult_ForkedAgentResultPreservesSourceAndMarkdownMetadata(t *testing.T) {
+	wsRoot := seedPathlinksWorkspace(t, "internal/triage/command_result.go")
+	router, st, _ := newTestRouter(t)
+	ensureTriageProject(t, st)
+	now := time.Now().UnixMilli()
+	if err := st.CreateThread(store.Thread{
+		ID: "t-result", ProjectID: triageTestProjectID, Title: "fork result",
+		Provider: "claude", WorkspacePath: wsRoot, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+	router.SetCodeSpanEnricher(func(text string) json.RawMessage {
+		return json.RawMessage(`{"hv":"test","blocks":[]}`)
+	})
+	evt := commandResultEvent("t-result", "synthetic-1", "Found `internal/triage/command_result.go:1`.\n\n```go\npackage triage\n```")
+	evt.Meta = json.RawMessage(`{"commandUuid":"cmd-1","agentResult":{"launchId":"claude-command:cmd-1","sourceKind":"skill","sourceName":"code-review"}}`)
+	if err := router.Handle(evt); err != nil {
+		t.Fatalf("command result: %v", err)
+	}
+
+	item, found, err := st.GetThreadItem("t-result", "command-result:synthetic-1")
+	if err != nil || !found {
+		t.Fatalf("get result: found=%v err=%v", found, err)
+	}
+	var meta commandResultMeta
+	if err := json.Unmarshal([]byte(item.Meta), &meta); err != nil {
+		t.Fatalf("decode meta: %v", err)
+	}
+	if meta.AgentResult == nil || meta.AgentResult.LaunchID != "claude-command:cmd-1" || meta.AgentResult.SourceKind != "skill" || meta.AgentResult.SourceName != "code-review" {
+		t.Fatalf("agent result source = %+v", meta.AgentResult)
+	}
+	if len(pathRefsFromMeta(t, item.Meta)) == 0 {
+		t.Fatalf("agent result has no validated path refs: %s", item.Meta)
+	}
+	var enriched map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(item.Meta), &enriched); err != nil {
+		t.Fatalf("decode enriched meta: %v", err)
+	}
+	if len(enriched[codeSpansMetaKey]) == 0 {
+		t.Fatalf("agent result has no persisted code spans: %s", item.Meta)
+	}
+}
+
 // A repeated envelope (replay, reconnect) must upsert the same row rather than
 // stack duplicates — the provider message id is what makes that possible.
 func TestCommandResult_IsIdempotentOnProviderID(t *testing.T) {

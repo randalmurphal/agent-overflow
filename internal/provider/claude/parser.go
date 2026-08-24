@@ -198,6 +198,9 @@ type Parser struct {
 	// state, no lock. A single string, so no bounding is needed; sessions
 	// on CLIs without command_lifecycle simply never set it.
 	activeCommandUUID string
+	// transcriptMirror owns incremental --session-mirror projection for
+	// direct command forks and manually backgrounded foreground agents.
+	transcriptMirror *transcriptMirrorState
 	// peerTurns answers "did this app issue that command uuid" for the
 	// command_lifecycle parse, which is how a turn another Claude session
 	// started is told from one of ours. Nil on a bare Parser (every parser
@@ -306,6 +309,7 @@ func (p *Parser) Close() {
 	p.lastAssistantMessageID = ""
 	p.interruptAcked = false
 	p.activeCommandUUID = ""
+	p.closeTranscriptMirrors()
 	p.usageTotalsByModel = nil
 	p.usageAccountedCostUSD = 0
 }
@@ -418,6 +422,8 @@ func (p *Parser) ParseLine(threadID string, line []byte) ([]provider.ProviderEve
 		// pending-send registry); the parser keeps only the wire-window
 		// correlation documented on the method.
 		return p.parseCommandLifecycle(threadID, raw, now, line)
+	case "transcript_mirror":
+		return p.parseTranscriptMirror(threadID, raw, now)
 	default:
 		// Unknown type — skip gracefully.
 		return nil, nil

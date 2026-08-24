@@ -23,6 +23,34 @@ func firstItemByKind(t *testing.T, st *store.Store, threadID, kind string) store
 	return items[0]
 }
 
+func TestTranscriptSnapshotThinkingPersistsCompletedWithoutOpeningSmoother(t *testing.T) {
+	router, st, emissions := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	meta, err := json.Marshal(map[string]any{provider.MetaTranscriptSnapshotKey: true})
+	if err != nil {
+		t.Fatalf("marshal meta: %v", err)
+	}
+	content := "first line\nsecond line\nthird line\nlatest line"
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventThinking, ThreadID: "t1", ItemID: "mirror-think",
+		Content: content, Meta: meta, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("snapshot thinking: %v", err)
+	}
+	item := firstItemByKind(t, st, "t1", itemKindThinking)
+	if item.Status != statusCompleted || item.Summary != content {
+		t.Fatalf("snapshot item = %+v, want completed current state", item)
+	}
+	if router.hasActiveStreamingItem("t1") {
+		t.Fatal("snapshot thinking opened streaming state")
+	}
+	for _, emission := range emissions.snapshot() {
+		if emission.eventName == "provider:item_delta" {
+			t.Fatalf("snapshot thinking emitted a smoothing delta: %+v", emission)
+		}
+	}
+}
+
 // TestInterruptQueueDrainsInArrivalOrder pins the FIFO contract on the
 // interrupt queue. While a streaming text item is open, two background
 // tool completions (A then B) arrive. The queue holds both, and on

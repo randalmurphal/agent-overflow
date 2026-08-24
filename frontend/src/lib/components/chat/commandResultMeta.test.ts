@@ -22,6 +22,7 @@ describe('readCommandResultView', () => {
       preview: 'Current session\n  Tokens: 12',
       truncated: false,
       totalBytes: 0,
+      agentResult: null,
     });
   });
 
@@ -32,7 +33,7 @@ describe('readCommandResultView', () => {
         { payloadId: 'payload-1' },
       ),
     );
-    expect(view).toEqual({ preview: 'head', truncated: true, totalBytes: 12_000 });
+    expect(view).toEqual({ preview: 'head', truncated: true, totalBytes: 12_000, agentResult: null });
   });
 
   it('refuses to claim truncation when no payload is linked', () => {
@@ -81,5 +82,28 @@ describe('readCommandResultView', () => {
       commandResultItem({ kind: 'command_result', preview: '' }),
     );
     expect(view.preview).toBe('summary text');
+  });
+
+  it('returns a complete forked-agent source and rejects partial source metadata', () => {
+    const sourced = readCommandResultView(commandResultItem({
+      kind: 'command_result',
+      preview: 'findings',
+      agentResult: {
+        launchId: 'claude-command:cmd-1',
+        sourceKind: 'skill',
+        sourceName: 'code-review',
+      },
+    }));
+    expect(sourced.agentResult).toEqual({
+      launchId: 'claude-command:cmd-1',
+      sourceKind: 'skill',
+      sourceName: 'code-review',
+    });
+
+    const partial = readCommandResultView(commandResultItem({
+      kind: 'command_result', preview: 'findings',
+      agentResult: { launchId: 'claude-command:cmd-1', sourceKind: 'skill' },
+    }));
+    expect(partial.agentResult).toBeNull();
   });
 });

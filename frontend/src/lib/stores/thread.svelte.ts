@@ -1045,6 +1045,12 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     get scrollStateKey() {
       return stableThreadId;
     },
+    // Empty on the thread timeline. Agent-scope facades override this so a
+    // nested launch renders as a navigation edge instead of an inline body
+    // whose descendants deliberately belong to another scope.
+    get agentScopeRootId() {
+      return '';
+    },
     get activeModel() {
       return stableActiveModel;
     },

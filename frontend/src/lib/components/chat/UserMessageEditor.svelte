@@ -147,7 +147,6 @@
       // Exact parity with a fresh composer send: the same first-word
       // classification decides whether the CLI should execute the message
       // as a command instead of the model answering it.
-      providerCommand: surface?.isProviderCommandSend(message) ?? false,
     });
   }
 

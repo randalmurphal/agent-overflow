@@ -357,6 +357,8 @@ describe('threadSubagentMemory anchors every launch kind', () => {
   ])('folds a settled child under %s', (_label, anchor) => {
     const child = childItem({
       parentId: anchor.id,
+      kind: 'tool_call',
+      toolName: 'Bash',
       status: 'completed',
       summary: 'ran the build',
     });

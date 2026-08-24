@@ -19,9 +19,11 @@
 //   position never clobbers the main timeline's saved position).
 // - `items`: the scope's loaded subtree. Direct children get their
 //   `parentId` LIFTED (cleared) so the grouping treats them as this
-//   surface's top level — nested launches still become cards, read
-//   groups still group, activity runs still wrap. Completion siblings of
-//   subtree launches ride along by `completionOf` (they carry no
+//   surface's top level. A direct child launch remains a card, but its own
+//   transcript stays outside this scope. Opening that row changes scope
+//   through the breadcrumb instead of recursively embedding panes. Read
+//   groups still group and activity runs still wrap. Completion siblings of
+//   direct child launches ride along by `completionOf` (they carry no
 //   parentId of their own), so nested cards fold status correctly.
 // - `revealBoundary`: null. The reveal gate sequences TOP-LEVEL rows of
 //   the main transcript; child rows were never reveal-sequenced, and a
@@ -100,10 +102,10 @@ const NO_PAGE: Promise<LoadOlderResult> = Promise.resolve({
 });
 
 /**
- * Every loaded row the scope at `scopeItemId` is responsible for: the
- * scope row itself, its whole parent-chain subtree, and the completion
- * siblings of launches inside it (completions carry `completionOf`, not
- * a parentId, so the parent walk alone cannot reach them).
+ * Every loaded row the scope at `scopeItemId` renders or needs as a direct
+ * navigation edge: the scope row itself, its direct children, and the
+ * completion siblings of those rows. A child's descendants belong to the
+ * child's own pane scope and are deliberately not retained here.
  *
  * Two consumers, one truth: the facade's item window filters through
  * this set, and the source pane's row-UI prune widens its retention
@@ -116,24 +118,10 @@ export function collectAgentScopeRetainedIds(
 ): Set<string> {
   const retained = new Set<string>();
   if (!scopeItemId) return retained;
-  const byParent = new Map<string, string[]>();
   for (const item of items) {
-    const pid = item.parentId;
-    if (!pid) continue;
-    let bucket = byParent.get(pid);
-    if (!bucket) byParent.set(pid, (bucket = []));
-    bucket.push(item.id);
+    if (item.parentId === scopeItemId) retained.add(item.id);
   }
   retained.add(scopeItemId);
-  const stack = [scopeItemId];
-  while (stack.length > 0) {
-    const kids = byParent.get(stack.pop()!);
-    if (!kids) continue;
-    for (const kid of kids) {
-      retained.add(kid);
-      stack.push(kid);
-    }
-  }
   for (const item of items) {
     if (item.completionOf && retained.has(item.completionOf)) {
       retained.add(item.id);
@@ -151,12 +139,12 @@ export function createAgentScopeView(
   // Recomputed per source timelineRevision (the projection reads items
   // untracked behind that revision, so identity churn outside a revision
   // bump would be invisible anyway — matching the source pane's own
-  // contract). Direct children are cloned with parentId lifted; deeper
-  // rows keep their real parent chain.
+  // contract). Direct children are cloned with parentId lifted. A nested
+  // launch's descendants do not enter this window.
   //
   // One ordered pass over the source items, so the window keeps the
   // timeline's document order exactly. The membership set comes from
-  // `collectAgentScopeRetainedIds` (subtree + completion siblings); the
+  // `collectAgentScopeRetainedIds` (direct rows + completion siblings); the
   // SCOPE's own row and its completion sibling stay out — they feed the
   // pane's breadcrumb and status line, not the transcript.
   let scopedItems = $derived.by<Item[]>(() => {
@@ -224,6 +212,9 @@ export function createAgentScopeView(
     },
     get scrollStateKey() {
       return `${sourcePane.threadId ?? ''}~agent:${scopeItemId}`;
+    },
+    get agentScopeRootId() {
+      return scopeItemId;
     },
     get items() {
       return scopedItems;

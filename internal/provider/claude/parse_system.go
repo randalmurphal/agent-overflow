@@ -866,6 +866,9 @@ func (p *Parser) parseTaskStartedEvent(
 	}
 
 	p.rememberTaskToolUse(taskID, toolUseID)
+	if taskType == "local_agent" {
+		p.noteMirrorTaskScope(taskID, toolUseID, true)
+	}
 	taskRef := p.taskToolUseRef(taskID)
 
 	// Liveness marking for background signal (5) — parse_user.go. Every
@@ -1162,12 +1165,10 @@ func (p *Parser) parseTaskLifecycleEvent(threadID string, raw map[string]json.Ra
 // `background_tasks`; captured 2026-08-22 in
 // background_tasks_control_20260822.ndjson).
 //
-// It is the earliest and the only typed statement that this agent's
-// sidechain streaming STOPPED here: a backgrounded agent emits zero
-// further sidechain envelopes and its transcript completes only from
-// the task_notification's output_file. Triage stamps the launch row
-// with the cut timestamp so the agent pane can place its "streaming
-// paused" marker after the last streamed row.
+// It is the earliest typed statement that ordinary sidechain forwarding
+// stopped here. The parser uses it to bind later transcript_mirror rows to
+// this launch; sessions without mirror support still recover from the
+// task_notification output_file.
 //
 // An agent launched async (§E5) was never in the foreground and never
 // produces this patch. A patch we cannot attribute to a launch tool_use
@@ -1199,6 +1200,7 @@ func (p *Parser) parseTaskBackgroundedPatch(
 		return nil, nil
 	}
 	parentToolUseID := firstNonEmpty(taskRef.ParentToolUseID, readRawString(raw["parent_tool_use_id"]), readRawString(raw["parentToolUseId"]))
+	p.noteMirrorTaskScope(taskID, toolUseID, false)
 
 	meta, err := json.Marshal(provider.SubagentBackgroundedMeta{TaskID: taskID})
 	if err != nil {
@@ -1256,7 +1258,8 @@ func (p *Parser) parseTaskNotificationEvent(threadID string, raw map[string]json
 		UUID:            readRawString(raw["uuid"]),
 	}
 	fields.Usage, fields.UsageSet = readTaskUsage(raw["usage"])
-	return []provider.ProviderEvent{p.buildBackgroundTaskNotificationEvent(threadID, fields, now)}, nil
+	events := p.finishMirroredTask(threadID, taskID)
+	return append(events, p.buildBackgroundTaskNotificationEvent(threadID, fields, now)), nil
 }
 
 // backgroundTaskNotificationFields is the shared input shape both the

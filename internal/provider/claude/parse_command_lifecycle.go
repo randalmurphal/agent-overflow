@@ -84,9 +84,11 @@ func (p *Parser) parseCommandLifecycle(threadID string, raw map[string]json.RawM
 		origin = PeerTurnOrigin
 	}
 
+	var mirroredEvents []provider.ProviderEvent
 	switch state {
 	case provider.CommandStarted:
 		p.activeCommandUUID = commandUUID
+		mirroredEvents = p.startMirroredCommand(threadID, commandUUID, now)
 	case provider.CommandCompleted, provider.CommandCancelled, provider.CommandDiscarded:
 		// Guard on identity so a late ack for an older message cannot
 		// clear a newer started window. `discarded` closes the window for
@@ -100,7 +102,9 @@ func (p *Parser) parseCommandLifecycle(threadID string, raw map[string]json.RawM
 		// answer for. Released AFTER the origin resolution above, or the
 		// terminal frame would classify differently from its own `started`.
 		if p.peerTurns != nil {
+			mirroredEvents = p.finishMirroredCommand(threadID, commandUUID, state, now)
 			p.peerTurns.releaseIssuedCommandUUID(commandUUID)
+			p.peerTurns.releaseDirectSlashCommand(commandUUID)
 			// An in-flight `/rename` promotes its name only on `completed`
 			// — cancelled and discarded left the peer registry on the old
 			// name. See session_peer.go settlePeerRename.
@@ -120,14 +124,18 @@ func (p *Parser) parseCommandLifecycle(threadID string, raw map[string]json.RawM
 	if err != nil {
 		return nil, err
 	}
-	return []provider.ProviderEvent{{
+	event := provider.ProviderEvent{
 		Kind:      provider.EventCommandLifecycle,
 		ThreadID:  threadID,
 		ItemID:    commandUUID,
 		Meta:      meta,
 		Timestamp: now,
 		Raw:       line,
-	}}, nil
+	}
+	if len(mirroredEvents) == 0 {
+		return []provider.ProviderEvent{event}, nil
+	}
+	return append(mirroredEvents, event), nil
 }
 
 func commandLifecycleState(value string) (provider.CommandLifecycleState, bool) {

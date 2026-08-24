@@ -95,6 +95,20 @@ owner. The top-level `ParseLine` (in `parser.go`) reads the envelope's
   the agent — and becomes an `EventUserText` under the launch
   (`subagentPromptEvents`). Unparented prose belongs to the replay echo
   and is dropped here. See claude-wire.md §"Subagent stream forwarding".
+- `parse_transcript_mirror.go` — `transcript_mirror` envelopes enabled by
+  the always-on `--session-mirror` launch flag. It projects the two gaps in
+  ordinary stdout: a direct slash command's attributed Skill fork and the
+  tail of a foreground agent after `background_tasks` detaches it. The
+  shared session-import projector preserves message ordinals and compaction
+  pairing across batches. Classification shallow-decodes each entry; only a
+  claimed mirror gets the one full Row decode used by projection and nested
+  task binding. Unattributed prefixes are bounded by file count, entry count,
+  per-file bytes, and total bytes. Crossing a bound emits one visible
+  degradation warning for the command. A fork's outer synthetic answer is
+  held until terminal and emitted once as a top-level sourced command result.
+  Projection, task, owner, and dedupe state is
+  released at terminal. Ordinary async sidechains keep using stdout and their
+  mirror copies are ignored.
 - `parse_control.go` — `control_request` envelopes: CanUseTool
   approvals and the exit_plan_mode signal. `parseControlRequest` is a
   `*Parser` METHOD because a subagent's ask arrives here as
@@ -115,7 +129,10 @@ owner. The top-level `ParseLine` (in `parser.go`) reads the envelope's
   `Parser.activeCommandUUID` so `parse_assistant.go` can stamp a
   provider-executed command's output (`EventCommandResult`) with the
   command uuid it answers (`provider.CommandResultMeta`) — the
-  confirmation channel for `/effort` / `/fast` live applies. Windows can
+  confirmation channel for `/effort` / `/fast` live applies. A user-issued
+  native slash command also gets a running Command row at `started`; a
+  mirrored `attributionSkill` update changes that same row to Skill. Internal
+  `/effort`, `/fast`, and `/rename` commands remain row-suppressed. Windows can
   nest (a mid-turn message drains into the running turn), so the field
   is last-started-wins with an identity guard on clear; it is safe
   because only `<synthetic>` envelopes are stamped and a command's
@@ -165,8 +182,8 @@ owner. The top-level `ParseLine` (in `parser.go`) reads the envelope's
   restart-free path for config changes a live session can adopt. Model
   and permission mode ride control_requests (`set_model`,
   `set_permission_mode`); effort and fast mode ride the CLI's own
-  `/effort` / `/fast` slash commands (uuid-stamped,
-  `AllowClaudeSlashCommand` sends), whose confirmation arrives later as
+  `/effort` / `/fast` slash commands (uuid-stamped native command sends),
+  whose confirmation arrives later as
   an `EventCommandResult` carrying the uuid — the app side
   (`app_claude_live_config.go`) settles those. Context-window changes
   ride the `[1m]` marker on `set_model`. Extended thinking rides its own
@@ -245,12 +262,14 @@ owner. The top-level `ParseLine` (in `parser.go`) reads the envelope's
 - `slash_guard.go` — the outbound slash guard. The CLI routes any user
   message whose FIRST word is command-shaped to its own command router
   and the model never sees it (an unknown one answers "Unknown command:
-  /x" with `num_turns: 0`), so AO prefixes a single `"\n"` unless the
-  caller opted in via `SendOptions.AllowClaudeSlashCommand`. Default-off
-  is load-bearing: AO's own composer commands (`/workflow`) and injected
-  wake prompts are prose, not CLI commands. A word with an interior
-  slash (`/etc/hosts …`) is not command-shaped and passes through
-  untouched. See claude-wire.md §"Slash commands (provider-executed)".
+  /x" with `num_turns: 0`). Native routing is the default for every direct
+  command-shaped send, independent of asynchronous command discovery. AO
+  prefixes a single `"\n"` only when the caller sets
+  `SendOptions.GuardClaudeSlashCommand`, which is reserved for an
+  AO-expanded composer command whose rendered prompt still starts with a
+  slash. A word with an interior slash (`/etc/hosts …`) is not
+  command-shaped and passes through untouched. See claude-wire.md §"Slash
+  commands (provider-executed)".
 - `commands_wire.go` — decoders + bounds for the two discovery surfaces
   (`initialize` control_response `commands[]`, `system/commands_changed`)
   and the name/plugin arrays on `system/init`. Parsing only; the cache
@@ -500,9 +519,10 @@ Summary of what `ParseLine` dispatches:
   `is_backgrounded: true` — the reply to Ctrl+B / AO's
   `background_tasks` control_request. Emits `EventSubagentBackgrounded`
   on the launch row: the only typed statement that a FOREGROUND agent's
-  sidechain streaming stopped here. It deliberately does not clear the
-  liveness flag — signal (5) must stay armed for the §E5 ack that
-  follows. Every other non-terminal patch stays a no-op.
+  ordinary sidechain forwarding stopped here. The transcript mirror keeps
+  later rows live under the same launch. It deliberately does not clear the
+  liveness flag — signal (5) must stay armed for the §E5 ack that follows.
+  Every other non-terminal patch stays a no-op.
 - `system.background_tasks_changed` — the LEVEL set of live background
   tasks, REPLACE semantics. Emits `EventBackgroundTasksChanged` with
   each member's launch tool_use resolved through the task map when
@@ -789,11 +809,11 @@ so no environment value can express "off".
 moves the session TITLE and leaves the peer registry alone, so it would
 report success while every peer kept addressing the old name.
 `RenamePeerSession` sends `/rename <name>` as an ordinary stdin user
-message with a client-minted uuid and `AllowClaudeSlashCommand` — the
-uuid is what lets triage's pending-send correlator consume the send
-instead of stranding it, and the flag is what keeps the outbound slash
-guard from prefixing a newline the CLI's router would not claim. The
-command costs no model turn (`result.num_turns: 0`).
+message with a client-minted uuid. Native command-shaped sends route to
+Claude by default; only AO-expanded composer commands set
+`GuardClaudeSlashCommand` and receive the newline guard. The uuid lets
+triage's pending-send correlator consume the send instead of stranding it.
+The command costs no model turn (`result.num_turns: 0`).
 
 **A peer-started turn is identified by a uuid we never minted.**
 `session_peer.go` holds the ledger; `parse_command_lifecycle.go` consults

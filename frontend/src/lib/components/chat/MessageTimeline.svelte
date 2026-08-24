@@ -36,6 +36,7 @@
   import { createTimelinePaging } from './timelinePaging';
   import { createTimelineWindowAnchor } from './timelineWindowAnchor.svelte';
   import { createTimelineRowProjection } from './timelineRowProjection.svelte';
+  import { responsePillLabel } from './timelineRows';
   import { createTimelineDiagnostics } from './timelineDiagnostics';
   import { createTimelineQuietWork } from './timelineQuietWork';
   import { createTimelineRowUiPrune } from './timelineRowUiPrune';
@@ -980,7 +981,7 @@
                           <span
                             class="rounded-full border border-border bg-surface-1 px-2.5 py-1 text-[0.625rem] uppercase leading-tight tracking-[0.14em] text-text-secondary"
                           >
-                            Response{#if responseDuration}{' '}<span class="normal-case tabular-nums tracking-normal">{responseDuration}</span>{/if}
+                            {responsePillLabel(node)}{#if responseDuration}{' '}<span class="normal-case tabular-nums tracking-normal">{responseDuration}</span>{/if}
                           </span>
                           <span class="timeline-hairline flex-1" aria-hidden="true"></span>
                         {/if}

@@ -84,7 +84,6 @@ function makeSession(item: Item, stage: UserMessageEditStage = 'editing') {
   const onSubmit = vi.fn((_payload: {
     message: string;
     attachmentIds: string[];
-    providerCommand: boolean;
   }) => {});
   // The real factory, so the row's writes are reactive exactly as they are
   // in production and the starting state cannot drift from ChatView's.
@@ -180,7 +179,6 @@ describe('<UserMessageEditor>', () => {
     const payload = onSubmit.mock.calls[0][0];
     expect(payload.message).toContain('rewritten prompt');
     expect(payload.attachmentIds).toEqual(['att-9']);
-    expect(payload.providerCommand).toBe(false);
   });
 
   it('submits on plain Enter', async () => {

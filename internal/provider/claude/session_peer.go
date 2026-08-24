@@ -176,11 +176,21 @@ func (s *Session) releaseIssuedCommandUUID(uuid string) {
 // uuid can be PROVEN unissued.
 type peerTurnClassifier interface {
 	commandUUIDIsPeerOriginated(commandUUID string) bool
+	directSlashCommand(commandUUID string) (directSlashCommand, bool)
+	releaseDirectSlashCommand(commandUUID string)
 	releaseIssuedCommandUUID(commandUUID string)
 	settlePeerRename(commandUUID string, state provider.CommandLifecycleState)
 	notePeerRenameOutput(commandUUID, text string)
 	commandResultRowSuppressed(commandUUID, text string) bool
 	releaseSuppressedCommandResult(commandUUID string)
+}
+
+func (s *Session) directSlashCommand(commandUUID string) (directSlashCommand, bool) {
+	return s.directCommands.get(commandUUID)
+}
+
+func (s *Session) releaseDirectSlashCommand(commandUUID string) {
+	s.directCommands.release(commandUUID)
 }
 
 // settlePeerRename resolves an in-flight `/rename` against its bracket's
@@ -477,10 +487,6 @@ func (s *Session) RenamePeerSession(ctx context.Context, name string) error {
 	s.noteIssuedCommandUUID(id)
 	err := s.Send(ctx, "/rename "+sanitized, provider.SendOptions{
 		UserMessageUUID: id,
-		// Without this the outbound slash guard prefixes a newline and the
-		// CLI's router never claims the line — the rename would arrive at
-		// the model as prose (slash_guard.go).
-		AllowClaudeSlashCommand: true,
 		// AO's own bookkeeping: the user never typed this, so its
 		// "Session renamed to: …" output must not land in their transcript.
 		// Row only — the bracket still settles and the name still promotes

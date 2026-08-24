@@ -12,6 +12,7 @@ import (
 	attachmentstore "agent-overflow/internal/attachment"
 	"agent-overflow/internal/planrevision"
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provider/codex"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadmode"
 	"agent-overflow/internal/triage"
@@ -64,29 +65,14 @@ type sendMessageOptions struct {
 	// default, so a new internal send path can never expand a `/…` opener
 	// in a prompt the app itself wrote just by forgetting a flag.
 	ExpandComposerCommands bool
-	// ProviderCommand marks this send as a DELIBERATE invocation of a
-	// provider-executed command (Claude's `/usage`, `/context`, a plugin or
-	// MCP prompt), so the outbound slash guard lets the leading `/word`
-	// reach the CLI's own command router
-	// (provider.SendOptions.AllowClaudeSlashCommand).
-	//
-	// Send-time transport state, never history: it changes what goes on the
-	// wire for exactly one message and is not recorded on the persisted row.
-	// The one place it has to survive a hop is the flush queue, where a
-	// message typed during an active turn waits for a boundary — see
-	// flushqueue.Payload.
-	//
-	// Default false is load-bearing in the same direction the provider
-	// field's is: an ordinary message that merely OPENS with `/word` must be
-	// guarded, because an unguarded one is swallowed by the CLI and the
-	// model never sees it. Every way of losing the flag therefore degrades
-	// to "delivered as prose", never to "silently dropped".
-	ProviderCommand bool
 	// onProviderDispatch runs under the provider-account read lock immediately
 	// before the provider write. It exists so an observer can attribute an error
 	// emitted as soon as stdin is written to the exact account generation that
 	// sent the turn; reading the session after Send returns is already too late.
 	onProviderDispatch func(providerDispatchIdentity)
+	// onCodexReviewStarted observes the review/start acknowledgement for the
+	// legacy structured binding. Composer sends leave it nil.
+	onCodexReviewStarted func(codex.ReviewStarted)
 }
 
 // userMessageInputs is the projection of fields shared by every
@@ -108,10 +94,6 @@ type userMessageInputs struct {
 	// sends), whose text did not come from a composer and must reach the
 	// provider byte-for-byte as composed.
 	expandComposerCommands bool
-	// providerCommand mirrors sendMessageOptions.ProviderCommand into the
-	// persisted user meta so a requeue that rebuilds its payload from the
-	// row keeps the slash-guard opt-in.
-	providerCommand bool
 }
 
 // resolvedUserMessage bundles everything resolveUserMessageEnvelope
@@ -232,7 +214,7 @@ func (a *App) resolveUserMessageEnvelope(
 		RevisionSourceDiff:     revisionSourceDiff,
 		RevisionDiffCommentIDs: revisionDiffCommentIDs,
 		Command:                command,
-		ProviderCommand:        inputs.providerCommand,
+		ExpandComposerCommands: inputs.expandComposerCommands,
 	})
 	if err != nil {
 		return resolvedUserMessage{}, fmt.Errorf("user meta: %w", err)
@@ -373,6 +355,23 @@ func (a *App) sendMessageLocked(
 		}
 	}
 
+	var (
+		reviewTarget  codex.ReviewTarget
+		isCodexReview bool
+	)
+	if opts.ExpandComposerCommands && thread.Provider == string(provider.Codex) {
+		reviewTarget, isCodexReview, err = codexReviewCommandTarget(content)
+		if err != nil {
+			return store.Item{}, fmt.Errorf("send message: /review: %w", err)
+		}
+		if isCodexReview && (len(opts.AttachmentIDs) > 0 || opts.SourceProposedPlan != nil ||
+			opts.RevisionSourceProposedPlan != nil || len(opts.RevisionSourceCommentIDs) > 0 ||
+			opts.RevisionSourceDiffReview != nil || len(opts.RevisionSourceDiffCommentIDs) > 0 ||
+			len(opts.OutputSchema) > 0) {
+			return store.Item{}, fmt.Errorf("send message: /review cannot include attachments or review-context inputs")
+		}
+	}
+
 	// implemented_at is durable UI/history state, not a send-time lock.
 	// An explicit source-plan send is still valid after the plan is marked
 	// accepted, including restored drafts after a conversation revert.
@@ -384,7 +383,6 @@ func (a *App) sendMessageLocked(
 		revisionSourceDiffReview:     opts.RevisionSourceDiffReview,
 		revisionSourceDiffCommentIDs: opts.RevisionSourceDiffCommentIDs,
 		expandComposerCommands:       opts.ExpandComposerCommands,
-		providerCommand:              opts.ProviderCommand,
 	})
 	if err != nil {
 		return store.Item{}, fmt.Errorf("send message: %w", err)
@@ -399,6 +397,12 @@ func (a *App) sendMessageLocked(
 	persistedAttachments := resolved.persistedAttachments
 	sourcePlan := resolved.sourcePlan
 	userMeta := resolved.userMessageMeta
+	if isCodexReview {
+		userMeta, err = usermessage.MergeCommand(userMeta, "review")
+		if err != nil {
+			return store.Item{}, fmt.Errorf("send message: mark /review command: %w", err)
+		}
+	}
 
 	thread, restoreImplementMode, err := a.beginImplementModeSwitch(thread, sourcePlan)
 	if err != nil {
@@ -455,7 +459,9 @@ func (a *App) sendMessageLocked(
 	if hasPriorItems {
 		turnIndex++
 	}
-	a.maybeRenameTemporaryWorktreeBranch(threadID, content)
+	if !isCodexReview {
+		a.maybeRenameTemporaryWorktreeBranch(threadID, content)
+	}
 
 	now := time.Now().UnixMilli()
 	userItem := store.Item{
@@ -521,29 +527,59 @@ func (a *App) sendMessageLocked(
 	}
 	defer unlockAccount()
 
-	// Register the pending-send marker BEFORE sendToProvider writes to
-	// stdin. The wire-init from Claude (or wire turn/started from Codex)
-	// can otherwise race ahead of the marker and miss the
-	// pending-send-present branch in handleInit / handleUserText. The
-	// marker is consumed by handleUserText when the matching replay
-	// envelope arrives, or cleared on send failure below. sendUUID (set
-	// for Claude, empty for Codex) keys the match by identity: only the
-	// echo carrying this exact uuid consumes the entry, so a
-	// provider-injected user envelope can never mispair with it.
-	a.triage.RegisterPendingSendExpecting(threadID, userItem.ID, turnIndex, sendUUID)
 	if opts.onProviderDispatch != nil {
 		opts.onProviderDispatch(providerDispatchIdentity{
 			Provider: sess.provider, AccountID: sess.credentialAccountID,
 			CredentialGeneration: sess.credentialGeneration,
 		})
 	}
+	if isCodexReview {
+		if sess.codex == nil {
+			err = fmt.Errorf("/review is only available on Codex threads")
+			a.recordSendFailureAndCompleteTurn(threadID, turnIndex, err)
+			return store.Item{}, fmt.Errorf("send message: %w", err)
+		}
+		reviewCtx, cancel := context.WithTimeout(context.Background(), codexReviewRPCTimeout)
+		defer cancel()
+		started, startErr := sess.codex.StartReviewForTurn(
+			reviewCtx,
+			reviewTarget,
+			codex.ReviewDeliveryInline,
+			codex.ReviewRunOptions{TurnIndex: turnIndex},
+		)
+		if startErr != nil {
+			err = fmt.Errorf("start code review: %w", startErr)
+			a.recordSendFailureAndCompleteTurn(threadID, turnIndex, err)
+			return store.Item{}, fmt.Errorf("send message: %w", err)
+		}
+		if started.Detached {
+			err = fmt.Errorf("codex returned detached review thread %s for an inline review", started.ReviewThreadID)
+			a.recordSendFailureAndCompleteTurn(threadID, turnIndex, err)
+			return store.Item{}, fmt.Errorf("send message: %w", err)
+		}
+		if opts.onCodexReviewStarted != nil {
+			opts.onCodexReviewStarted(started)
+		}
+		return userItem, nil
+	}
+
+	// Register the pending-send marker BEFORE sendToProvider writes to
+	// stdin. The wire-init from Claude (or wire turn/started from Codex)
+	// can otherwise race ahead of the marker and miss the
+	// pending-send-present branch in handleInit / handleUserText. A review
+	// deliberately has no marker: its literal command is not a provider user
+	// item, and its synthetic visible turn carries TurnIndex directly.
+	// The marker is consumed by handleUserText when the matching replay
+	// envelope arrives, or cleared on send failure below. sendUUID (set
+	// for Claude, empty for Codex) keys the match by identity.
+	a.triage.RegisterPendingSendExpecting(threadID, userItem.ID, turnIndex, sendUUID)
 
 	if err := sendToProvider(sess, threadID, providerContent, provider.SendOptions{
 		InteractionMode:         provider.NormalizeInteractionMode(thread.Mode),
 		Attachments:             providerAttachments,
 		UserMessageUUID:         sendUUID,
 		OutputSchema:            opts.OutputSchema,
-		AllowClaudeSlashCommand: opts.ProviderCommand,
+		GuardClaudeSlashCommand: !opts.ExpandComposerCommands || resolved.command != "",
 	}); err != nil {
 		// Drop the pending-send marker before persisting the error row.
 		// Without this, the marker would still be live when the next AO
@@ -560,7 +596,7 @@ func (a *App) sendMessageLocked(
 	// Codex from `turn/started`. There is no synthetic EventTurnStart
 	// emission here.
 
-	if !threadmode.IsSagaOwned(thread.Mode) {
+	if !isCodexReview && !threadmode.IsSagaOwned(thread.Mode) {
 		a.maybeGenerateThreadTitleWithAttachments(thread, content, persistedAttachments, hasPriorItems)
 	}
 	return userItem, nil
@@ -660,6 +696,32 @@ func (a *App) prepareWorkflowUnitTakeoverSend(
 
 func (a *App) recordSendFailureAndCompleteTurn(threadID string, turnIndex int, sendErr error) {
 	a.ensureTriageRouter()
+	turnID := ""
+	canCompleteTurn := false
+	turn, found, lookupErr := a.store.GetTurnByThreadIndex(threadID, turnIndex)
+	if lookupErr != nil {
+		log.Printf("send message: inspect send-failure turn: %v", lookupErr)
+	} else if found {
+		turnID = turn.TurnID
+		canCompleteTurn = true
+	} else if codex.IsAmbiguousTurnStartTimeout(sendErr) {
+		// The provider may still announce the turn. A synthetic replacement
+		// would collide with that late authority and falsely settle work that
+		// is still running.
+	} else {
+		turnID = fmt.Sprintf("send-failure:%s:%d", threadID, turnIndex)
+		if startErr := a.triage.HandleSynthetic(provider.ProviderEvent{
+			Kind:      provider.EventTurnStart,
+			ThreadID:  threadID,
+			TurnID:    turnID,
+			TurnIndex: turnIndex,
+			Timestamp: time.Now(),
+		}); startErr != nil {
+			log.Printf("send message: start synthetic send-failure turn: %v", startErr)
+		} else {
+			canCompleteTurn = true
+		}
+	}
 	// Allocate an error id from the same per-turn counter the EventError
 	// handler uses so a subsequent provider error on the same turn doesn't
 	// collide on "error:<turn>:0".
@@ -683,9 +745,14 @@ func (a *App) recordSendFailureAndCompleteTurn(threadID string, turnIndex int, s
 	// thread's session was stopped (the start attempt errored), and the
 	// stopped-thread gate would silently drop this settle — leaving the
 	// turn open from triage's perspective.
+	if !canCompleteTurn {
+		return
+	}
 	if completeErr := a.triage.HandleSynthetic(provider.ProviderEvent{
 		Kind:         provider.EventTurnComplete,
 		ThreadID:     threadID,
+		TurnID:       turnID,
+		TurnIndex:    turnIndex,
 		TurnComplete: &provider.TruncatedTurnCompleteMeta{},
 		Timestamp:    time.Now(),
 	}); completeErr != nil {

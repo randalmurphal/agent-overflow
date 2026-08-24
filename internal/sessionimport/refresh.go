@@ -522,6 +522,7 @@ func codexTail(
 	if err != nil {
 		return tailResult{}, fmt.Errorf("sessionimport: re-read %s: %w", state.SourcePath, err)
 	}
+	parsed = rollout.ProjectReviewChildren(ctx, d.CodexHome, state.SourceSessionID, parsed)
 	profile := parsed.Profile
 	if repairProfile && profile.Model == "" {
 		profile, err = rollout.ReadLatestProfileAt(ctx, file, sourcePath)

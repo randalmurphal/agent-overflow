@@ -1,0 +1,105 @@
+<script lang="ts">
+  import { tick, untrack, type Snippet } from 'svelte';
+  import type { TimelineNode } from '../../utils/subagentGrouping';
+  import { timelineNodeKey } from '../../utils/subagentGrouping';
+  import { createRowEstimate } from '../../utils/virtual/priors';
+  import type { TimelineVirtualizerHandle } from '../../utils/virtual/types';
+  import { createUseStickToBottomController } from '../../utils/scroll/index.svelte';
+  import { nestedScroll } from '../../utils/scroll/wheelAttribution';
+  import TimelineVirtualizer from '../virtual/TimelineVirtualizer.svelte';
+  import OverlayScrollbar from '../shared/OverlayScrollbar.svelte';
+
+  let {
+    nodes,
+    depth,
+    live,
+    renderNode,
+  }: {
+    nodes: TimelineNode[];
+    depth: number;
+    live: boolean;
+    renderNode: Snippet<[TimelineNode, number]>;
+  } = $props();
+
+  const IS_HAPPY_DOM =
+    import.meta.env.MODE === 'test' && typeof window !== 'undefined' && 'happyDOM' in window;
+  const estimate = createRowEstimate({ defaultSize: 36 });
+  const stick = createUseStickToBottomController({
+    liveContentActive: () => live,
+    externalContentGeometry: true,
+    onScrollTopWritten: (top) => listRef?.noteScrollTopWritten(top),
+  });
+
+  let scrollEl = $state<HTMLElement | undefined>();
+  let contentEl = $state<HTMLDivElement | undefined>();
+  let listRef = $state<TimelineVirtualizerHandle | undefined>();
+  let fadedTop = $state(false);
+
+  $effect(() => {
+    const scroll = scrollEl;
+    const content = contentEl;
+    if (!scroll || !content) return;
+    untrack(() => {
+      stick.attach(scroll, content);
+      // A newly expanded digest starts at its newest activity. Claiming the
+      // bottom before rows finish measuring also makes later live growth use
+      // the same spring as the main timeline.
+      stick.forceStick();
+    });
+    void tick().then(() => {
+      if (scrollEl === scroll) stick.observe('content');
+    });
+    return () => stick.detach();
+  });
+
+  function handleScroll(offset: number): void {
+    fadedTop = offset > 1;
+  }
+</script>
+
+<div class="relative" data-testid="subagent-group-scroll-host">
+  <div
+    bind:this={scrollEl}
+    class="activity-run-clip max-h-[min(50vh,20rem)] overflow-y-auto overflow-x-hidden [overflow-anchor:none]"
+    use:nestedScroll
+    data-testid="subagent-group-scroll"
+    data-scroll-owner="controller"
+  >
+    <TimelineVirtualizer
+      bind:this={listRef}
+      bind:renderPlane={contentEl}
+      scrollRef={scrollEl}
+      data={nodes}
+      getKey={(node) => timelineNodeKey(node)}
+      {estimate}
+      bufferSize={480}
+      renderAll={IS_HAPPY_DOM}
+      onscroll={handleScroll}
+      onCompensation={stick.applyEngineCompensation}
+      applyScrollTarget={stick.applyScrollTarget}
+      trackReadingAnchor={() => !stick.isAtBottom || stick.escapedFromLock}
+      onContentGeometry={stick.deliverContentGeometry}
+    >
+      {#snippet children(node)}
+        {@render renderNode(node, depth)}
+      {/snippet}
+    </TimelineVirtualizer>
+  </div>
+  <div
+    aria-hidden="true"
+    class="pointer-events-none absolute -top-px right-0 left-0 h-[25px]"
+    class:opacity-0={!fadedTop}
+    style:background="linear-gradient(to bottom, var(--surface-0), transparent)"
+    data-testid="subagent-group-top-fade"
+  ></div>
+  <OverlayScrollbar
+    target={scrollEl}
+    content={contentEl}
+    ariaLabel="Scroll agent activity"
+    ownerDrivenPosition={() => !stick.escapedFromLock}
+    onUserScrollStart={() => stick.setEscapedFromLock(true)}
+    onUserScrollEnd={(atBottom) => {
+      if (atBottom) stick.markAtBottom();
+    }}
+  />
+</div>

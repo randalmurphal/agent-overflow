@@ -357,6 +357,15 @@ func buildArgs(cfg Config, systemPromptPath string) []string {
 		// with the flag, nothing without it. See
 		// docs/references/claude-wire.md §"Subagent stream forwarding".
 		"--forward-subagent-text",
+		// Always-on provider-pushed transcript writes. Claude's local slash
+		// command runner consumes a forked skill's ordinary stdout stream, and
+		// a foreground agent moved to the background stops forwarding its
+		// sidechain after the transition. transcript_mirror is the only live
+		// wire surface that still carries those rows. AO never reads the path
+		// named by a frame; it consumes the bounded entries supplied on stdout.
+		// The flag is SDK-internal but is the exact surface Claude's own
+		// ProcessTransport enables for SessionStore.
+		"--session-mirror",
 	}
 	// The thinking axis. With nothing configured this renders exactly the
 	// `--thinking-display summarized` this list used to carry inline: opt

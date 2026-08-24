@@ -61,6 +61,8 @@ export interface InterceptedCommandDef {
    * reroutes (`/model`, `/effort`, …) are AO surfaces, not provider features.
    */
   providers?: readonly string[];
+  /** The backend handles this as a real provider turn through normal Send. */
+  providerTurn?: boolean;
 }
 
 /**
@@ -85,6 +87,7 @@ export const INTERCEPTED_COMMANDS: readonly InterceptedCommandDef[] = [
     description: 'Run Codex’s code review on this workspace',
     argumentHint: '[target]',
     providers: ['codex'],
+    providerTurn: true,
   },
 ];
 
@@ -103,6 +106,15 @@ export function interceptedCommandNames(
   provider: string | null | undefined,
 ): Set<string> {
   return new Set(interceptedCommandsFor(provider).map((command) => command.name));
+}
+
+export function isProviderTurnCommand(
+  provider: string | null | undefined,
+  name: string,
+): boolean {
+  return interceptedCommandsFor(provider).some(
+    (command) => command.name === name && command.providerTurn === true,
+  );
 }
 
 // ---------------------------------------------------------------------------

@@ -148,7 +148,23 @@ func (a *App) sessionEventHandler(threadID, sessionToken, providerType string) f
 
 		if evt.Kind == provider.EventSessionStatus && evt.Content == "error" {
 			deathReported = true
-			a.restoreUnconfirmedQueueOnSessionDeath(threadID)
+			// The provider read loop must not wait for the thread action lock.
+			// NewSession and Send can emit this status while their caller holds
+			// that lock, and Close waits for this callback to return. Restore on a
+			// separate goroutine, then fence the drain after the lock is acquired.
+			// The token covers a registered replacement. The triage epoch covers
+			// a replacement that called MarkThreadActive but has not registered
+			// its provider session yet.
+			epoch := uint64(0)
+			if a.triage != nil {
+				epoch = a.triage.ThreadEpoch(threadID)
+			}
+			go a.restoreUnconfirmedQueueOnSessionDeathIf(threadID, func() bool {
+				if current, ok := a.sessionManager().get(threadID); ok {
+					return current.token == sessionToken
+				}
+				return a.triage != nil && a.triage.ThreadEpoch(threadID) == epoch
+			})
 		}
 
 		if evt.Kind == provider.EventSessionStatus && evt.Content == "disconnected" {

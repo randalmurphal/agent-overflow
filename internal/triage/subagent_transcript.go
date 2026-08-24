@@ -23,11 +23,10 @@ import (
 // §background_tasks). Its work exists in exactly one place: the sidechain
 // JSONL that `system/task_notification` names as `output_file`.
 //
-// So at the agent's terminal, triage reads that file, projects it with
-// the SAME reader the session importer uses, and replays the events the
-// live stream never delivered through triage's OWN persist paths. For an
-// async agent that finds nothing and is a no-op; for a backgrounded one
-// it is the only way the transcript reaches the pane.
+// New Claude sessions also emit transcript_mirror frames, which the parser
+// projects live through the SAME converter and marks on the launch. This
+// terminal file path is compatibility recovery for a process started before
+// that flag existed. A mirrored launch skips it.
 //
 // Why the events are replayed rather than written as rows: see
 // internal/triage/AGENTS.md §task_notification path. Short version — a
@@ -364,4 +363,16 @@ func isSubagentTranscriptLaunch(launch store.Item) bool {
 	return launch.Kind == itemKindToolCall &&
 		strings.TrimSpace(launch.ToolName) != "" &&
 		!isCommandOutputLaunch(launch)
+}
+
+func subagentTranscriptAlreadyMirrored(launch store.Item) bool {
+	if strings.TrimSpace(launch.Meta) == "" {
+		return false
+	}
+	var meta map[string]any
+	if json.Unmarshal([]byte(launch.Meta), &meta) != nil {
+		return false
+	}
+	mirrored, _ := meta[provider.MetaTranscriptMirroredKey].(bool)
+	return mirrored
 }

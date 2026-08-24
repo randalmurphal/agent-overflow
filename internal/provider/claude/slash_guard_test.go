@@ -40,7 +40,7 @@ func TestGuardOutboundSlashCommand(t *testing.T) {
 	cases := []struct {
 		name    string
 		content string
-		allow   bool
+		guard   bool
 		want    string
 	}{
 		{
@@ -49,22 +49,23 @@ func TestGuardOutboundSlashCommand(t *testing.T) {
 			// num_turns 0) and the model never saw the appended block.
 			name:    "ao workflow command with appended block",
 			content: "/workflow run nightly\n\n[appended block]",
+			guard:   true,
 			want:    "\n/workflow run nightly\n\n[appended block]",
 		},
 		{
-			name:    "bare command, no arguments",
+			name:    "native command passes raw",
 			content: "/usage",
-			want:    "\n/usage",
+			want:    "/usage",
 		},
 		{
-			name:    "unknown command shape still guarded",
+			name:    "unknown command keeps native router semantics",
 			content: "/zzz-not-a-real-command",
-			want:    "\n/zzz-not-a-real-command",
+			want:    "/zzz-not-a-real-command",
 		},
 		{
 			name:    "plugin-prefixed name",
 			content: "/release-tools:ship-it 1.2.0",
-			want:    "\n/release-tools:ship-it 1.2.0",
+			want:    "/release-tools:ship-it 1.2.0",
 		},
 		{
 			// Interior slash: the CLI cannot resolve this as a command name,
@@ -106,52 +107,45 @@ func TestGuardOutboundSlashCommand(t *testing.T) {
 			want:    "",
 		},
 		{
-			name:    "deliberate command passes raw",
-			content: "/usage",
-			allow:   true,
-			want:    "/usage",
-		},
-		{
-			name:    "allow does not alter prose either",
+			name:    "guard does not alter prose",
 			content: "/etc/hosts is fine",
-			allow:   true,
+			guard:   true,
 			want:    "/etc/hosts is fine",
 		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := guardOutboundSlashCommand(tc.content, tc.allow); got != tc.want {
-				t.Fatalf("guardOutboundSlashCommand(%q, %v) = %q, want %q", tc.content, tc.allow, got, tc.want)
+			if got := guardOutboundSlashCommand(tc.content, tc.guard); got != tc.want {
+				t.Fatalf("guardOutboundSlashCommand(%q, %v) = %q, want %q", tc.content, tc.guard, got, tc.want)
 			}
 		})
 	}
 }
 
-// TestGuardOutboundSlashCommandTransitions covers the on->off->on sequence a
-// menu send introduces: the same session sends a guarded message, then a
-// deliberate command, then a guarded message again. The guard is a pure
-// function of its arguments, so no opt-in may leave residue behind.
+// TestGuardOutboundSlashCommandTransitions covers the on->off->on sequence an
+// AO composer command introduces. The guard is a pure function of its
+// arguments, so no forced-prose send may leave residue behind.
 func TestGuardOutboundSlashCommandTransitions(t *testing.T) {
 	const content = "/workflow run nightly"
 	sequence := []struct {
-		allow bool
+		guard bool
 		want  string
 	}{
-		{allow: false, want: "\n" + content},
-		{allow: true, want: content},
-		{allow: false, want: "\n" + content},
-		{allow: true, want: content},
+		{guard: false, want: content},
+		{guard: true, want: "\n" + content},
+		{guard: false, want: content},
+		{guard: true, want: "\n" + content},
 	}
 	for i, step := range sequence {
-		if got := guardOutboundSlashCommand(content, step.allow); got != step.want {
-			t.Fatalf("step %d (allow=%v): got %q, want %q", i, step.allow, got, step.want)
+		if got := guardOutboundSlashCommand(content, step.guard); got != step.want {
+			t.Fatalf("step %d (guard=%v): got %q, want %q", i, step.guard, got, step.want)
 		}
 	}
 }
 
 func TestBuildUserMessageBlocksGuardsSlashCommand(t *testing.T) {
-	blocks, err := buildUserMessageBlocks("/workflow run nightly\n\n[appended block]", nil, false)
+	blocks, err := buildUserMessageBlocks("/workflow run nightly\n\n[appended block]", nil, true)
 	if err != nil {
 		t.Fatalf("buildUserMessageBlocks: %v", err)
 	}
@@ -164,8 +158,8 @@ func TestBuildUserMessageBlocksGuardsSlashCommand(t *testing.T) {
 	}
 }
 
-func TestBuildUserMessageBlocksAllowsDeliberateSlashCommand(t *testing.T) {
-	blocks, err := buildUserMessageBlocks("/usage", nil, true)
+func TestBuildUserMessageBlocksPreservesNativeSlashCommand(t *testing.T) {
+	blocks, err := buildUserMessageBlocks("/usage", nil, false)
 	if err != nil {
 		t.Fatalf("buildUserMessageBlocks: %v", err)
 	}
@@ -186,7 +180,7 @@ func TestBuildUserMessageBlocksGuardComposesWithImageMarkers(t *testing.T) {
 		{ID: "a", MimeType: "image/png", Data: []byte("first")},
 		{ID: "b", MimeType: "image/png", Data: []byte("second")},
 	}
-	blocks, err := buildUserMessageBlocks("/workflow run [Image #1] then [Image #2] please", attachments, false)
+	blocks, err := buildUserMessageBlocks("/workflow run [Image #1] then [Image #2] please", attachments, true)
 	if err != nil {
 		t.Fatalf("buildUserMessageBlocks: %v", err)
 	}
@@ -213,7 +207,7 @@ func TestBuildUserMessageBlocksGuardComposesWithImageMarkers(t *testing.T) {
 // would leave the CLI's router looking at a `/` it still claims.
 func TestBuildUserMessageBlocksGuardsWhenMessageOpensWithAnImage(t *testing.T) {
 	attachments := []provider.ImageAttachment{{ID: "a", MimeType: "image/png", Data: []byte("x")}}
-	blocks, err := buildUserMessageBlocks("[Image #1]/usage", attachments, false)
+	blocks, err := buildUserMessageBlocks("[Image #1]/usage", attachments, true)
 	if err != nil {
 		t.Fatalf("buildUserMessageBlocks: %v", err)
 	}
@@ -235,15 +229,15 @@ func TestBuildUserMessageBlocksGuardsWhenMessageOpensWithAnImage(t *testing.T) {
 func TestSendGuardsSlashCommandOnTheWire(t *testing.T) {
 	for _, tc := range []struct {
 		name       string
-		allow      bool
+		guard      bool
 		wantPrefix string
 	}{
-		{name: "guarded", allow: false, wantPrefix: "\n/workflow run nightly"},
-		{name: "allowed", allow: true, wantPrefix: "/workflow run nightly"},
+		{name: "native", guard: false, wantPrefix: "/workflow run nightly"},
+		{name: "ao expanded", guard: true, wantPrefix: "\n/workflow run nightly"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			line := captureSentUserLine(t, "/workflow run nightly", provider.SendOptions{
-				AllowClaudeSlashCommand: tc.allow,
+				GuardClaudeSlashCommand: tc.guard,
 			})
 			var envelope struct {
 				Message struct {

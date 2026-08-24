@@ -18,9 +18,9 @@ import (
 // the errors this split exists to keep.
 
 func TestCommandSuppressionCandidateClassifiesEverySendShape(t *testing.T) {
-	command := provider.SendOptions{AllowClaudeSlashCommand: true}
-	internal := provider.SendOptions{AllowClaudeSlashCommand: true, InternalCommand: true}
-	guarded := provider.SendOptions{}
+	command := provider.SendOptions{}
+	internal := provider.SendOptions{InternalCommand: true}
+	guarded := provider.SendOptions{GuardClaudeSlashCommand: true}
 
 	cases := []struct {
 		name          string
@@ -183,9 +183,9 @@ func TestSuppressedCommandResultIsScopedToItsOwnCommandUUID(t *testing.T) {
 
 	s := &Session{}
 	s.noteSuppressedCommandResult("uuid-effort", "/effort xhigh",
-		provider.SendOptions{AllowClaudeSlashCommand: true})
+		provider.SendOptions{})
 	s.noteSuppressedCommandResult("uuid-usage", "/usage",
-		provider.SendOptions{AllowClaudeSlashCommand: true})
+		provider.SendOptions{})
 
 	if !s.commandResultRowSuppressed("uuid-effort", confirmed) {
 		t.Fatal("the confirmed /effort send was not suppressed")
@@ -217,7 +217,7 @@ func TestSuppressedCommandResultIsScopedToItsOwnCommandUUID(t *testing.T) {
 func TestSuppressedCandidateStillKeepsARefusalRow(t *testing.T) {
 	s := &Session{}
 	s.noteSuppressedCommandResult("uuid-model", "/model claude-opus-9",
-		provider.SendOptions{AllowClaudeSlashCommand: true})
+		provider.SendOptions{})
 
 	if s.commandResultRowSuppressed("uuid-model", "Model 'claude-opus-9' not found") {
 		t.Fatal("a rejected /model slug lost the only row that says the command failed")
@@ -233,7 +233,7 @@ func TestSuppressedCandidateStillKeepsARefusalRow(t *testing.T) {
 func TestInternalCommandSuppressionIgnoresTheReplyText(t *testing.T) {
 	s := &Session{}
 	s.noteSuppressedCommandResult("uuid-rename", "/rename AO Thread One",
-		provider.SendOptions{AllowClaudeSlashCommand: true, InternalCommand: true})
+		provider.SendOptions{InternalCommand: true})
 
 	for _, text := range []string{
 		`Session renamed to: AO Thread One`,
@@ -262,9 +262,9 @@ func TestCommandResultEventCarriesTheSuppressionAndStillEmits(t *testing.T) {
 	// middle command in the fixture (`/effort bogus`) is left unmarked: its
 	// argument is not a live tier, so it was never a candidate.
 	s.noteSuppressedCommandResult(effortUUID, "/effort low",
-		provider.SendOptions{AllowClaudeSlashCommand: true})
+		provider.SendOptions{})
 	s.noteSuppressedCommandResult(fastUUID, "/fast on",
-		provider.SendOptions{AllowClaudeSlashCommand: true})
+		provider.SendOptions{})
 
 	parser := NewParser()
 	parser.peerTurns = s

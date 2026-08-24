@@ -302,6 +302,36 @@ describe('subagentLaunchInfo — Codex spawn_agent', () => {
   });
 });
 
+describe('subagentLaunchInfo — Codex built-in review', () => {
+  it('reads the synthetic review launch as an awaited agent with its effective model', () => {
+    const info = subagentLaunchInfo(
+      mkItem({
+        id: 'review-1',
+        toolName: 'codex_review',
+        meta: meta({
+          toolName: 'codex_review',
+          input: {
+            tool: 'review',
+            model: 'gpt-5.6-codex',
+            newAgentNickname: 'Code review',
+            newAgentRole: 'review',
+          },
+        }),
+      }),
+      NO_CHILDREN,
+    );
+
+    expect(info).toEqual({
+      kind: 'agent',
+      provider: 'codex',
+      background: false,
+      name: 'Code review',
+      model: 'gpt-5.6-codex',
+      agentType: 'review',
+    });
+  });
+});
+
 describe('subagentLaunchContextFrom', () => {
   it('answers hasChildren from any row that names the id as parent', () => {
     const ctx = subagentLaunchContextFrom([
@@ -336,7 +366,7 @@ describe('subagentLaunchContextFrom', () => {
 
 describe('isPotentialSubagentLaunch', () => {
   it('is a superset of the real predicate — every launch tool name passes', () => {
-    for (const toolName of ['Agent', 'Task', 'Skill', 'SendMessage', 'collab_agent']) {
+    for (const toolName of ['Agent', 'Task', 'Skill', 'SendMessage', 'collab_agent', 'codex_review']) {
       expect(isPotentialSubagentLaunch(mkItem({ id: toolName, toolName }))).toBe(true);
     }
     // Superset: an inline skill is not a launch, but must still trip the

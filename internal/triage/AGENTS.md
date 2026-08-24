@@ -86,10 +86,9 @@ none fits.
   sibling, and the `output_file` payload read/enrichment. See "Task
   notifications" below.
 - `subagent_transcript.go` — the transcript backfill a `local_agent`
-  task_notification triggers: projecting the agent's sidechain JSONL
-  through the session importer's reader and replaying the rows the live
-  stream never delivered, under the launch, through triage's own persist
-  paths. See "The task_notification path" below.
+  task_notification can trigger for an older provider process without a
+  transcript-mirror marker. New sessions project the mirror live and skip
+  this compatibility replay. See "The task_notification path" below.
 - `codex_background.go` / `codex_background_exec.go` /
   `codex_background_subagents.go` — Codex-specific background projection.
   `codex_background.go` holds what both halves share: the
@@ -168,7 +167,9 @@ none fits.
   labelled correctly.
 - `command_result.go` — output of a provider-executed (local) slash
   command as its own `command_result` item kind: role `system`, status
-  `completed`, never an assistant bubble. Output under
+  `completed`, never parent-assistant output. A typed forked-agent source
+  preserves honest attribution while allowing its result to render as
+  Markdown. Output under
   `commandResultInlineRunes` lives in the summary; larger output moves
   to a payload with a bounded preview. Idempotent on the CLI's
   `message.id`, so the `result` envelope's verbatim repeat of the same
@@ -268,7 +269,7 @@ none fits.
 | Turn metadata (cost/tokens) | Per-turn deltas from the provider: aggregate onto `turns.token_usage_json` (first-write-wins for display) + one `usage_ledger` row per model on every settle event (`usage_ledger.go`). |
 | Context-window usage | Frontend context meter + `threads.last_token_usage`. |
 | Background task terminal (Claude) | `tool_completion` sibling row upsert (idempotent). See `turn-lifecycle.md`. |
-| Task notification (Claude) | One `notification` row per NOTIFICATION EVENT — id `task-notification:<taskID>:<uuid>` — for a TOP-LEVEL launch or any watch task, plus the `output_file` enrichment onto the `tool_completion` sibling, the run's final `usage` folded onto the launch row, and (agent launches) the sidechain transcript backfilled under it. Never a lifecycle source (invariant 21). See "Task notifications" below. |
+| Task notification (Claude) | One `notification` row per NOTIFICATION EVENT — id `task-notification:<taskID>:<uuid>` — for a TOP-LEVEL launch or any watch task, plus the `output_file` enrichment onto the `tool_completion` sibling, the run's final `usage` folded onto the launch row, and a compatibility sidechain backfill only when the launch has no transcript-mirror marker. Never a lifecycle source (invariant 21). See "Task notifications" below. |
 | Command lifecycle (Claude) | Live-only `provider:command_lifecycle` keyed onto the AO row id; nothing persists. Older CLIs emit no acks, so no routing decision may depend on them. See `command_lifecycle.go`. |
 | Fast-mode report (Claude) | Live-only `provider:fast_mode` from `system/init` and the wire `result`; nothing persists. Absence is unknown, never "off". See `fast_mode.go`. |
 | Compaction status | Live-only `provider:compacting` window per thread (open on Active frames, closed by close frame / compact boundary / turn completion); nothing persists. Snapshot-carried for reconnect. See `compaction_status.go`. |
@@ -276,7 +277,7 @@ none fits.
 | Todo list (Claude TodoWrite / Task\*, Codex update_plan) | `provider:todo_update` to the frontend + the whole list onto `threads.live_todo` (v65); no timeline row ever. SQLite is its source of truth — it survives session teardown and app restart, and `GetThreadLiveState` reads it from the store, not from triage. Empty steps clear the column and emit a clear only when something was stored. See `timeline_notifications.go`. |
 | Permission notice (Claude) | `notification` row per `meta.kind` (`permission_denied` / `permission_retry`) with the notice's own fields forwarded; a denial ALSO stamps `permissionDenied` meta + `items.decision = declined` onto the tool_call row it explains, never its status. See `permission_notices.go`. |
 | Model fallback (Claude) | `notification` row keyed on the WIRE SUBTYPE (`model_fallback` / `model_consent_fallback` / `model_refusal_fallback`) + the session-scoped effective-model projection. Never flattened to one kind — the cause is what the row reports. See `model_fallback.go`. |
-| Scoped user echo (`parent_tool_use_id` set) | The agent's own prompt, as a nested `user_text` row `user:wire:<provider_item_id>` under the launch, meta `wire_only` — on the LAUNCH's turn, never the thread's current one, because a backgrounded agent's prompt arrives from the transcript backfill after the launching turn closed. `wire_only` keeps it out of every reader-authored user-text read. See `handle_user_text.go`. |
+| Scoped user echo (`parent_tool_use_id` set) | The agent's own prompt, as a nested `user_text` row `user:wire:<provider_item_id>` under the launch, meta `wire_only` — on the LAUNCH's turn, never the thread's current one. It can arrive on ordinary sidechain stdout, the live transcript mirror, or the old-process transcript backfill. `wire_only` keeps it out of every reader-authored user-text read. See `handle_user_text.go`. |
 | User echo with an external origin (`origin: external-queue`) or peer provenance (`cross_session_message`) | A real `user_text` row with a named author, NOT "Injected provider context". These reach the top-level wire-only branch for a structural reason — the producer minted the uuid, so no pending send can match — but their provenance is POSITIVELY known. Everything else unmatched stays injected context. See `handle_user_text.go`. |
 | Command result (Claude local command) | `command_result` item (role `system`, status `completed`) + on-demand payload above the inline bound. Idempotent on the provider message id so the `result` echo does not duplicate it. See `command_result.go`. |
 | Session wakeup (Claude) | Per-thread pending-wakeup fire time in router state only — nothing persists, nothing emits. Consumed by the idle reaper via `PendingWakeupAt`. See `session_wakeup.go`. |
@@ -432,7 +433,8 @@ agent's TERMINAL and the last chance to say anything about the run.
   updates its card, it does not raise the thread. Everything else on the
   path still runs for it — the stash drains, the output file is read, the
   completion sibling is enriched with the payload and the output state,
-  and the transcript is backfilled — so nothing but the bell is lost.
+  and an old-process transcript is backfilled when needed — so nothing but
+  the bell is lost.
   `writeBell` is the one gate and `persistBell` the one write point, so a
   new state transition cannot accidentally reintroduce the row.
   **A watch task is exempt at any depth**: its notification rows are not
@@ -451,18 +453,16 @@ agent's TERMINAL and the last chance to say anything about the run.
   out — the merge is order-free and a launch with no counters is left
   untouched, so the only cost of not branching on the tool type is a
   comparison.
-- **`output_file` completes an agent's transcript**
-  (`subagent_transcript.go`). An agent launched ASYNC streams its whole
-  sidechain; an agent BACKGROUNDED mid-flight streams NOTHING further
-  (claude-wire.md §`background_tasks`), and its work exists only in the
-  sidechain JSONL this envelope names. So triage projects that file with
-  the session importer's own reader
-  (`claude/sessionimport.ConvertSubagentTranscript`) and replays the
-  events the live stream never delivered. For an async agent that finds
-  nothing and is a no-op. Only for an AGENT launch —
-  `isSubagentTranscriptLaunch` splits on the same tool-name test the
-  payload builder uses, because a `local_bash` task's `output_file` is
-  captured stdout, which the command_output payload path already owns.
+- **`output_file` is terminal enrichment and old-process compatibility**
+  (`subagent_transcript.go`). New Claude processes launch with
+  `--session-mirror`; a mid-flight backgrounded agent's later rows are
+  projected live and stamp `transcript_mirrored` on the launch. Triage
+  still reads `output_file` for the completion payload, but skips transcript
+  replay when that marker is present. A provider process started before the
+  flag has no marker, so triage projects its sidechain JSONL with
+  `claude/sessionimport.ConvertSubagentTranscript` and replays the missing
+  tail. Only AGENT launches take this path. A `local_bash` task's
+  `output_file` is captured stdout, which the command-output payload owns.
 
 **Dedupe identity, and why the events are REPLAYED rather than written
 as rows.** The obvious implementation — hand the projected events to
@@ -863,7 +863,9 @@ assistant snapshot (CLI-internal retry) persist as completed rows but
 reuse the streaming wire shape — upsert(streaming, blank summary) →
 delta(full content) → patch(completed) — so they animate instead of
 mounting wholesale (`persistCompletedBlockEmitStreaming`); subagent
-recoveries keep the single completed upsert.
+recoveries keep the single completed upsert. Live transcript-mirror rows are
+also complete snapshots: thinking mounts at its current tail immediately and
+never enters the smoother after later tool activity has already arrived.
 
 ## App-layer observers and enrichers
 

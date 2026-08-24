@@ -130,7 +130,6 @@ function stubSlash(): ComposerSlashHandle & {
     closeSlash: vi.fn(),
     clearCommandError: vi.fn(),
     consumeInterceptedSend: vi.fn(() => false),
-    isProviderCommandSend: vi.fn(() => false),
     interceptedRanges: vi.fn(() => []),
   } as unknown as ReturnType<typeof stubSlash>;
 }

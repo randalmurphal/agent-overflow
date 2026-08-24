@@ -1,7 +1,9 @@
 package triage
 
 import (
+	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"agent-overflow/internal/provider"
@@ -94,6 +96,19 @@ func (r *Router) handleThinking(evt provider.ProviderEvent) error {
 	if evt.Content == "" {
 		return nil
 	}
+	if eventMetaBool(evt.Meta, provider.MetaTranscriptSnapshotKey) {
+		turnIndex, err := r.turnIndexForEvent(evt)
+		if err != nil {
+			return fmt.Errorf("snapshot thinking turn index: %w", err)
+		}
+		return r.persistOrUpdateCompletedThinkingItem(
+			evt.ThreadID,
+			turnIndex,
+			eventParentID(evt),
+			strings.TrimSpace(evt.ItemID),
+			evt.Content,
+		)
+	}
 	// Reasoning deltas count as a yield for the Codex background-terminal
 	// projector, but Codex TUI keeps any active terminal wait status visible
 	// while reasoning streams.
@@ -158,6 +173,18 @@ func (r *Router) handleThinking(evt provider.ProviderEvent) error {
 		}
 	}
 	return r.emitInline(evt)
+}
+
+func eventMetaBool(meta json.RawMessage, key string) bool {
+	if len(meta) == 0 {
+		return false
+	}
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(meta, &fields) != nil {
+		return false
+	}
+	var value bool
+	return json.Unmarshal(fields[key], &value) == nil && value
 }
 
 // emitStreamingBlockStart persists a new streaming text/thinking row (with

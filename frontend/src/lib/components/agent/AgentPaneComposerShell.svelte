@@ -88,22 +88,19 @@
   let codexInfo = $derived(
     launch && launchInfo?.provider === 'codex' ? codexSubagentLaunchInfo(launch) : null,
   );
-  // The launch's own model when it named one; the provider label alone
-  // when it did not (a Claude launch without a model inherits the
-  // caller's, which this row cannot know after the fact).
+  // The launch's own model when it named one. Otherwise the child inherits
+  // the live session model from the source pane; the provider label is only
+  // the final fallback for restored rows whose thread is unavailable.
   let modelLabel = $derived.by(() => {
     const named = codexInfo
       ? codexInfo.model
         ? displayModelLabel('codex', codexInfo.model)
         : ''
       : deriveClaudeSubagentModelLabel(inputObject, parentMeta, launch?.toolName ?? '');
-    return named || providerLabel(provider);
+    const inherited = pane?.effectiveModel || pane?.thread?.model || '';
+    return named || (inherited ? displayModelLabel(provider, inherited) : providerLabel(provider));
   });
   let effortLabel = $derived(codexInfo?.reasoningEffort ?? '');
-
-  let streamingPaused = $derived(
-    isRunning && parentMeta?.subagentBackgroundedAt !== undefined,
-  );
 
   // The chip's elapsed timer runs from the LAUNCH, on the shared 1Hz
   // clock (one interval for every running timer in the app). The scope's
@@ -205,11 +202,6 @@
     </div>
     <div class="px-4 pt-3 pb-2 text-sm text-fg-hint">
       Read-only agent transcript.
-      {#if streamingPaused}
-        <div class="pt-1 text-xs" data-testid="agent-pane-streaming-paused">
-          Backgrounded. Live streaming is paused. The transcript fills in when this agent finishes.
-        </div>
-      {/if}
     </div>
     <div class="flex items-center gap-0.5 px-2.5 pb-2 pt-1">
       <span class={chipClasses} data-provider={provider} data-testid="agent-pane-model">

@@ -89,8 +89,8 @@ describe('<AgentPane>', () => {
     expect(queryByText('main thread prose')).toBeNull();
     expect(getByTestId('agent-pane-breadcrumb-current').textContent?.trim()).toBe('Explore');
     expect(getByTestId('agent-pane-composer-shell')).toBeTruthy();
-    // Model chip: this launch names no model, so the provider label fills in.
-    expect(getByTestId('agent-pane-model').textContent?.trim()).toBe('Claude');
+    // Model chip: this launch names no override, so it inherits the caller.
+    expect(getByTestId('agent-pane-model').textContent?.trim()).toBe('Sonnet 4.6');
     // The header carries the launch's own one-line task.
     expect(getByTestId('agent-pane-description').textContent?.trim()).toBe('Explore the parser');
   });
@@ -216,7 +216,7 @@ describe('<AgentPane>', () => {
     expect(queryByTestId('agent-pane-stop')).toBeNull();
   });
 
-  it('marks a backgrounded running launch as streaming-paused', async () => {
+  it('keeps a manually backgrounded launch live instead of showing the old paused marker', async () => {
     const { ctx } = await setup([
       launchItem({
         isBackground: true,
@@ -225,31 +225,32 @@ describe('<AgentPane>', () => {
       makeItem({ id: 'child-1', itemIndex: 1, threadId: THREAD_ID, parentId: 'launch-1', summary: 'work' }),
     ]);
     openAgentCompanion('main', THREAD_ID, 'launch-1', 'Explore');
-    const { getByTestId } = render(AgentPane, { props: { ctx } });
+    const { queryByTestId } = render(AgentPane, { props: { ctx } });
 
-    expect(getByTestId('agent-pane-streaming-paused')).toBeTruthy();
+    expect(queryByTestId('agent-pane-streaming-paused')).toBeNull();
   });
 
-  it('renders a nested launch as a real card (no orphan warnings) with grandchildren intact', async () => {
+  it('renders a nested launch as a navigation row without embedding its transcript', async () => {
     // Regression (found by the F6 harness): a direct child whose parentId
     // is absent from the grouping input ranks as an orphan, a nested
     // launch never becomes a card, and grandchild rows are dropped. The
     // facade lifts direct children to the scope's top level instead.
     const { ctx } = await setup([
       launchItem(),
-      makeItem({ id: 'nested-launch', itemIndex: 1, threadId: THREAD_ID, parentId: 'launch-1', kind: 'tool_call', toolName: 'Agent', status: 'running', summary: 'Agent: nested', payloadMeta: JSON.stringify({ toolName: 'Agent', input: { description: 'nested', subagent_type: 'Explore' } }) }),
+      makeItem({ id: 'nested-launch', itemIndex: 1, threadId: THREAD_ID, parentId: 'launch-1', kind: 'tool_call', toolName: 'Agent', status: 'running', summary: 'Agent: nested', meta: JSON.stringify({ subagentDescendantCount: 8 }), payloadMeta: JSON.stringify({ toolName: 'Agent', input: { description: 'nested', subagent_type: 'Explore' } }) }),
       makeItem({ id: 'grandchild', itemIndex: 2, threadId: THREAD_ID, parentId: 'nested-launch', summary: 'grandchild work' }),
     ]);
     const state = openAgentCompanion('main', THREAD_ID, 'launch-1', 'Explore');
-    const { getByTestId, queryByText, getAllByTestId, getAllByText } = render(AgentPane, { props: { ctx } });
+    const { getByTestId, queryByText, queryByTestId, getAllByTestId } = render(AgentPane, { props: { ctx } });
 
     expect(queryByText(/Orphan subagent entry/)).toBeNull();
     const card = getByTestId('subagent-group');
     expect(card).toBeTruthy();
-    // Expand the nested card: the grandchild ROW renders inside it (the
-    // card's collapsed preview also echoes the text, hence getAll).
+    // Expanding a child row does not recursively embed the child's pane.
+    expect(getByTestId('subagent-group-toggle')).toHaveAttribute('aria-disabled', 'true');
     await fireEvent.click(getByTestId('subagent-group-toggle'));
-    expect(getAllByText('grandchild work').length).toBeGreaterThanOrEqual(2);
+    expect(queryByText('grandchild work')).toBeNull();
+    expect(queryByTestId('subagent-group-loading')).toBeNull();
 
     // Descending from inside the pane goes through the facade's
     // openAgentPane override — a breadcrumb hop, not a companion re-seed.

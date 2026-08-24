@@ -29,6 +29,7 @@ type SessionMeta struct {
 	Originator     string
 	CLIVersion     string
 	ThreadSource   string
+	SubagentKind   string
 	ModelProvider  string
 	GitBranch      string
 	GitCommit      string
@@ -208,6 +209,12 @@ func decodeSessionMeta(env envelope, sessionID string) (SessionMeta, bool) {
 		ThreadSource:   strings.TrimSpace(payload.ThreadSource),
 		ModelProvider:  payload.ModelProvider,
 		HistoryMode:    strings.TrimSpace(payload.HistoryMode),
+	}
+	var source struct {
+		Subagent string `json:"subagent"`
+	}
+	if json.Unmarshal(payload.Source, &source) == nil {
+		meta.SubagentKind = strings.TrimSpace(source.Subagent)
 	}
 	if payload.HistoryBase != nil {
 		meta.HistoryBase = &HistoryBase{

@@ -39,13 +39,11 @@ type Meta struct {
 	// later changes. One marker per row: naming a command twice expands
 	// it once.
 	Command string `json:"command,omitempty"`
-	// ProviderCommand records that this send deliberately invoked a
-	// provider-executed slash command (the composer's send-time
-	// classification), which is what opts the outbound text out of the
-	// Claude slash guard. Persisted so a session-death requeue that
-	// rebuilds its payload from this row keeps the opt-in — without it
-	// the redelivery would arrive as guarded prose instead of executing.
-	ProviderCommand bool `json:"providerCommand,omitempty"`
+	// ExpandComposerCommands records that this row came through the public
+	// composer path. A flush item can be rebuilt from this durable row after a
+	// crash; without the bit that rebuild would treat the user's leading slash
+	// as app-injected prose and guard it away from Claude's command router.
+	ExpandComposerCommands bool `json:"expandComposerCommands,omitempty"`
 }
 
 // Input is the per-entry-point projection Marshal encodes. A struct
@@ -60,7 +58,7 @@ type Input struct {
 	RevisionSourceDiff     *store.DiffReviewSourceRef
 	RevisionDiffCommentIDs []string
 	Command                string
-	ProviderCommand        bool
+	ExpandComposerCommands bool
 }
 
 // AttachmentMeta is the per-attachment slice element. The Go side
@@ -88,7 +86,7 @@ func Marshal(in Input) (string, error) {
 		in.RevisionSourceDiff == nil &&
 		len(in.RevisionDiffCommentIDs) == 0 &&
 		in.Command == "" &&
-		!in.ProviderCommand {
+		!in.ExpandComposerCommands {
 		return "", nil
 	}
 	metaAttachments := make([]AttachmentMeta, 0, len(in.Attachments))
@@ -109,7 +107,7 @@ func Marshal(in Input) (string, error) {
 		RevisionSourceDiffReview:     in.RevisionSourceDiff,
 		RevisionSourceDiffCommentIDs: in.RevisionDiffCommentIDs,
 		Command:                      in.Command,
-		ProviderCommand:              in.ProviderCommand,
+		ExpandComposerCommands:       in.ExpandComposerCommands,
 	}
 	data, err := json.Marshal(meta)
 	if err != nil {
@@ -211,6 +209,36 @@ func ReadProviderParentUUID(metaJSON string) string {
 // row). All call it directly — there is no intermediate delegate.
 func MergeProviderItemID(existing, providerItemID string) (string, error) {
 	return MergeProviderIDs(existing, providerItemID, "")
+}
+
+// MergeCommand records a composer command handled as a provider turn while
+// preserving attachments and every source-reference field already encoded in
+// existing. It is used by built-in commands such as Codex /review whose
+// literal text is the durable user row but whose provider input is a dedicated
+// RPC rather than that text.
+func MergeCommand(existing, command string) (string, error) {
+	command = strings.TrimSpace(command)
+	if command == "" {
+		return existing, nil
+	}
+	merged := map[string]any{}
+	if trimmed := strings.TrimSpace(existing); trimmed != "" {
+		if err := json.Unmarshal([]byte(trimmed), &merged); err != nil {
+			return "", fmt.Errorf("decode existing meta: %w", err)
+		}
+		if merged == nil {
+			merged = map[string]any{}
+		}
+	}
+	if current, _ := merged["command"].(string); current == command {
+		return existing, nil
+	}
+	merged["command"] = command
+	encoded, err := json.Marshal(merged)
+	if err != nil {
+		return "", fmt.Errorf("encode command meta: %w", err)
+	}
+	return string(encoded), nil
 }
 
 // MergeProviderIDs returns a JSON-encoded meta blob that preserves

@@ -2055,13 +2055,12 @@ func TestSessionStatusErrorRestoresQueuedFlushItemsToDraft(t *testing.T) {
 				Timestamp: time.Now(),
 			})
 
-			draft, _, err := app.store.GetThreadDraft(thread.ID)
-			if err != nil {
-				t.Fatalf("GetThreadDraft: %v", err)
-			}
-			if draft.Content != "restore through handler" {
-				t.Fatalf("draft content = %q", draft.Content)
-			}
+			var draft store.ThreadDraft
+			waitForCondition(t, "session error restores queued message", func() bool {
+				var err error
+				draft, _, err = app.store.GetThreadDraft(thread.ID)
+				return err == nil && draft.Content == "restore through handler"
+			})
 			if app.triage.HasQueuedFlushItems(thread.ID) {
 				t.Fatal("queued flush items still live after handler restore")
 			}
@@ -3144,7 +3143,8 @@ func TestFlushPayloadFromUserMeta_DropsBakedRevisionCommentIDs(t *testing.T) {
 		"sourceProposedPlan":{"itemId":"plan-src"},
 		"revisionSourceProposedPlan":{"itemId":"plan-rev"},
 		"revisionSourceCommentIds":["c1","c2"],
-		"revisionSourceDiffCommentIds":["d1"]
+		"revisionSourceDiffCommentIds":["d1"],
+		"expandComposerCommands":true
 	}`
 	raw, err := flushPayloadFromUserMeta(meta)
 	if err != nil {
@@ -3169,22 +3169,21 @@ func TestFlushPayloadFromUserMeta_DropsBakedRevisionCommentIDs(t *testing.T) {
 	if len(payload.RevisionSourceDiffCommentIDs) != 0 {
 		t.Errorf("RevisionSourceDiffCommentIDs = %v, want none — excerpts are already baked into the content", payload.RevisionSourceDiffCommentIDs)
 	}
+	if !payload.ExpandComposerCommands {
+		t.Error("ExpandComposerCommands = false, want composer provenance preserved across requeue")
+	}
 }
 
-// TestFlushPayloadFromUserMeta_KeepsProviderCommandOptIn pins the
-// slash-guard opt-in across a requeue: a persisted `/command` row must
-// redispatch as a provider command, not as guarded prose.
-func TestFlushPayloadFromUserMeta_KeepsProviderCommandOptIn(t *testing.T) {
-	raw, err := flushPayloadFromUserMeta(`{"providerCommand":true}`)
-	if err != nil {
-		t.Fatalf("flushPayloadFromUserMeta: %v", err)
-	}
+func TestQueuePayloadFromUserItemPreservesComposerCommandProvenance(t *testing.T) {
+	raw := queuePayloadFromUserItem(store.Item{
+		Meta: `{"expandComposerCommands":true}`,
+	}, nil)
 	var payload flushQueuePayload
 	if err := json.Unmarshal(raw, &payload); err != nil {
 		t.Fatalf("decode payload: %v", err)
 	}
-	if !payload.ProviderCommand {
-		t.Error("ProviderCommand = false, want the persisted opt-in to survive the rebuild")
+	if !payload.ExpandComposerCommands {
+		t.Error("ExpandComposerCommands = false, want true")
 	}
 }
 

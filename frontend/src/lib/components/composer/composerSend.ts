@@ -43,13 +43,6 @@ export interface SendOptions {
   revisionSourceCommentIds?: string[];
   revisionSourceDiffReview?: SourceDiffReview;
   revisionSourceDiffCommentIds?: string[];
-  /**
-   * True when the message's first word names a command this thread's provider
-   * reports it will execute itself. Opts the send out of Claude's outbound
-   * slash guard so the CLI runs the command instead of the model reading a
-   * neutralised copy of it.
-   */
-  providerCommand?: boolean;
   /** Draft snapshot used to restore the composer on send failure. */
   snapshot: {
     content: string;
@@ -92,7 +85,6 @@ export async function dispatchSend(opts: SendOptions): Promise<boolean> {
     // the message reaches the backend.
     const sendOptions = buildSendOptions({
       attachmentIds: opts.attachmentIds,
-      providerCommand: opts.providerCommand,
       sourceProposedPlan: opts.sourceProposedPlan,
       revisionSourceProposedPlan: opts.revisionSourceProposedPlan,
       revisionSourceCommentIds: opts.revisionSourceCommentIds,

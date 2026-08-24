@@ -51,6 +51,7 @@ type Session struct {
 	proc     *provider.Process
 	ctx      context.Context
 	threadID string // our internal thread ID
+	workDir  string // absolute workspace cwd used for project-scoped config/read
 	// codexThreadID is the Codex app-server's thread ID for this session's
 	// root thread, learned from the thread/start (or thread/resume) response.
 	// Read it with rootThreadID(); write it with setRootThreadID().
@@ -65,6 +66,12 @@ type Session struct {
 	// order. An atomic has neither.
 	codexThreadID atomic.Pointer[string]
 	activeTurnID  string // current active turn ID from turn/started; cleared on turn/completed
+	// review is the bounded correlation state for Codex's built-in inline
+	// review. A review has two turn ids: the outer id carried by visible item
+	// events and turn/completed, and a private execution id carried only by
+	// turn/started. The private id must remain activeTurnID because it is the
+	// only id turn/interrupt accepts. review owns the separate visible scope.
+	review *reviewRun
 	// pendingTurnSchemaKnown/pendingTurnSchemaed bridge Send's per-turn
 	// options to the turn ID supplied by the response or turn/started. The
 	// maps retain only schemaed turns and their latest completed agentMessage;
@@ -637,6 +644,7 @@ func (s *Session) Close() error {
 	s.pendingTurnSchemaed = false
 	s.schemaedTurnIDs = nil
 	s.structuredOutputByTurn = nil
+	s.review = nil
 	s.childParentByThread = nil
 	s.childParentByAgentPath = nil
 	s.childThreadByAgentPath = nil

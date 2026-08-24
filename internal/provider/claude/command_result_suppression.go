@@ -170,9 +170,10 @@ type commandSuppression struct {
 // a user-typed command — commandOutputConfirmsState finishes the decision when
 // the reply arrives.
 func commandSuppressionCandidate(content string, opts provider.SendOptions) (commandSuppression, bool) {
-	if !opts.AllowClaudeSlashCommand {
+	if opts.GuardClaudeSlashCommand || !startsWithCommandShapedWord(content) {
 		// Guarded sends never reach the CLI's command router at all
-		// (slash_guard.go), so they produce no command output to suppress.
+		// (slash_guard.go), and non-command text produces no command output to
+		// suppress.
 		return commandSuppression{}, false
 	}
 	if opts.InternalCommand {

@@ -393,7 +393,7 @@ import writer.
 | `codexToolName` | tool start/complete | The RAW wire tool name when it differs from the normalized one (e.g. `exec` → `Bash`). Nothing is lost by normalizing. |
 | `blockType` | content-block stop | `"text"` or `"thinking"` — the same shape the live Codex adapter emits. |
 | `windowId` | compact boundary | Codex's compaction window id. |
-| `kind` | notification | `subagent_activity` \| `agent_message` \| `thread_goal` \| `thread_rolled_back` \| `review_status` \| `sleep`. |
+| `kind` | notification | `subagent_activity` \| `agent_message` \| `thread_goal` \| `thread_rolled_back` \| `sleep`. Review boundaries become a `codex_review` agent launch and sourced result, never status notifications. |
 | `activityKind`, `agentPath`, `agentThreadId`, `recipient`, `agentNickname`, `agentRole` | notification / collab completion | Collab-agent identity. |
 | `status`, `title` | notification | Thread-goal status; review-status title. |
 | `source`, `files`, `mcpServer`, `mcpTool`, `query` | tool complete | End-record detail per tool family. |

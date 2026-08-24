@@ -73,6 +73,7 @@ import {
   subagentLaunchInfo,
 } from './subagentLaunch';
 import { reportFrontendDiagnostic } from './frontendErrorCapture';
+import { isCommandAgentResult } from './commandAgentResult';
 
 /**
  * Accessor into the pane's live-eviction fold registry. Group nodes add
@@ -387,9 +388,8 @@ export function normalizePreviewText(summary: string): string {
 }
 
 /**
- * Whether an item contributes user-visible text (assistant messages,
- * thinking, tool summaries) — false for items whose summary is non-text
- * noise, which are not preview candidates.
+ * Whether an item contributes observable activity text. Agent prose and
+ * thinking belong in the pane and never become the collapsed card preview.
  *
  * Exactly `normalizePreviewText(summary) !== ''` without building the
  * preview: that function returns empty precisely when its scan window
@@ -399,7 +399,28 @@ export function normalizePreviewText(summary: string): string {
  * is deferred to the one item that wins.
  */
 function hasPreviewText(item: Item): boolean {
-  return NON_WHITESPACE.test(previewScanWindow(item.summary ?? ''));
+  return isSubagentActivityPreviewKind(item.kind)
+    && NON_WHITESPACE.test(previewScanWindow(item.summary ?? ''));
+}
+
+/** Rows that describe observable work rather than the agent's prose. */
+export function isSubagentActivityPreviewKind(kind: string): boolean {
+  switch (kind) {
+    case 'tool_call':
+    case 'tool_completion':
+    case 'terminal_interaction':
+    case 'error':
+    case 'api_error':
+      return true;
+    default:
+      return false;
+  }
+}
+
+export function subagentActivityPreview(item: Item): string {
+  return isSubagentActivityPreviewKind(item.kind)
+    ? normalizePreviewText(item.summary ?? '')
+    : '';
 }
 
 /**
@@ -803,7 +824,7 @@ export function nodeRole(node: TimelineNode): NodeRole {
   ) return 'tool';
   const k = node.item.kind;
   if (k === 'tool_call' || k === 'tool_completion' || k === 'terminal_interaction') return 'tool';
-  if (k === 'assistant_text' || k === 'user_text') return 'text';
+  if (k === 'assistant_text' || k === 'user_text' || isCommandAgentResult(node.item)) return 'text';
   return 'other';
 }
 

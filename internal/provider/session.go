@@ -25,22 +25,26 @@ type SendOptions struct {
 	// Optional: empty means "let the provider assign the id" (legacy
 	// behaviour, id learned from the echo).
 	UserMessageUUID string
-	// AllowClaudeSlashCommand opts this send OUT of the Claude slash-command
-	// guard, letting a message whose first word is command-shaped ("/usage",
-	// "/workflow run x") reach the CLI's own command router.
+	// GuardClaudeSlashCommand forces a command-shaped leading word to reach
+	// Claude as model prose instead of entering the CLI's command router.
 	//
-	// Default false, and that default is load-bearing: the Claude CLI routes
-	// any stdin user message starting with `/word` to its command router and
-	// SWALLOWS it — an unknown name answers "Unknown command: /x" with
-	// num_turns 0 and the model never sees the text (verified 2.1.219,
-	// 2026-08-03 live probe). Ordinary sends therefore go out guarded, with a
-	// leading newline that defeats the CLI's `startsWith('/')` test. Set true
-	// only when the user DELIBERATELY invoked a provider command.
+	// The zero value deliberately preserves Claude's native syntax: `/usage`,
+	// installed skills, plugin commands, MCP prompts, aliases, and unknown
+	// `/word` inputs all go to the router. Discovery is asynchronous and can
+	// never be a safe send-time gate. Classifying from a cached command list
+	// made the same text run as a command or as model prose depending on
+	// whether that cache had answered before Enter was pressed.
+	//
+	// Set this only when Agent Overflow expanded one of its own composer
+	// commands while retaining the typed `/name` at the front of the payload.
+	// The appended block is model context, so allowing Claude to claim the
+	// first word would silently discard it. Unknown commands now fail visibly
+	// through Claude's own "Unknown command" result instead of being
+	// reinterpreted as prose.
 	//
 	// Claude-only: Codex has no text command router, and claude-tui types into
-	// the real TUI where commands are already a first-class affordance. Both
-	// ignore this field.
-	AllowClaudeSlashCommand bool
+	// the real TUI where commands are already a first-class affordance.
+	GuardClaudeSlashCommand bool
 	// InternalCommand marks a slash command Agent Overflow issues on its OWN
 	// behalf rather than because the user asked for it — peer-session naming
 	// (`/rename`) and the live-config `/effort` / `/fast` writes.
@@ -62,7 +66,7 @@ type SendOptions struct {
 	// the outbound text and then suppresses the row only if the REPLY is a
 	// recognised confirmation.
 	//
-	// Claude-only, like AllowClaudeSlashCommand, and meaningless without it.
+	// Claude-only. Internal commands are always sent unguarded.
 	InternalCommand bool
 }
 

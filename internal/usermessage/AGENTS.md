@@ -44,12 +44,6 @@ serialisation boundary.
   because both the send path and history rendering must agree on it. A
   command named more than once expands once and is marked once; the
   repetition is a rendering fact, not a payload one.
-- `Meta.ProviderCommand` persists the composer's send-time
-  slash-guard opt-in (this send deliberately invokes a
-  provider-executed `/command`). It exists for one consumer: a
-  session-death requeue that rebuilds its queue payload from the
-  persisted row (`flushPayloadFromUserMeta`) — without the marker the
-  redelivery would arrive as guarded prose instead of executing.
 - The composer-draft builders that consume `Meta`
   (`composerDraftFromUserItem*` in `app_draft.go`) stay in main
   because they bind `a.attachments` for cross-thread cloning.

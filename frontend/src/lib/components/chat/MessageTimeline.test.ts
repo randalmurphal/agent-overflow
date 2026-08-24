@@ -1150,6 +1150,41 @@ describe('<MessageTimeline>', () => {
       expect(container.querySelector('[data-final-response]')).toBeNull();
     });
 
+    it('labels a sourced command answer as a Result and renders it outside the activity row', async () => {
+      const pane = await buildPane(undefined, [
+        makeItem({
+          id: 'tool:0:0',
+          kind: 'tool_call',
+          toolName: 'Skill',
+          summary: 'Skill: code-review',
+          meta: JSON.stringify({
+            toolName: 'Skill', input: { skill: 'code-review' },
+            skillFork: { agentId: 'agent-1', commandName: 'code-review' },
+            directCommandFork: true, directCommandResult: true,
+          }),
+        }),
+        makeItem({
+          id: 'command-result:synthetic-1',
+          itemIndex: 1,
+          kind: 'command_result',
+          role: 'system',
+          summary: '## Findings\n\nNo issues found.',
+          meta: JSON.stringify({
+            kind: 'command_result',
+            preview: '## Findings\n\nNo issues found.',
+            agentResult: {
+              launchId: 'tool:0:0', sourceKind: 'skill', sourceName: 'code-review',
+            },
+          }),
+        }),
+      ]);
+
+      const { getByTestId } = render(MessageTimeline, { props: { pane } });
+      expect(getByTestId('response-divider').textContent).toContain('Result');
+      expect(getByTestId('response-divider').textContent).not.toContain('Response');
+      expect(getByTestId('agent-result-source').textContent).toContain('code-review');
+    });
+
     it('renders only one response divider for consecutive assistant text after tools', async () => {
       const pane = await buildPane(undefined, [
         makeItem({ id: 'user:0', kind: 'user_text', role: 'user', summary: 'hi' }),

@@ -3,6 +3,7 @@ package codex
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 )
@@ -88,6 +89,11 @@ type ReviewTarget struct {
 // Kind reports which variant this target is. It returns the empty string for a
 // zero value.
 func (t ReviewTarget) Kind() ReviewTargetKind { return t.kind }
+
+func (t ReviewTarget) Branch() string       { return t.branch }
+func (t ReviewTarget) SHA() string          { return t.sha }
+func (t ReviewTarget) Title() string        { return t.title }
+func (t ReviewTarget) Instructions() string { return t.instructions }
 
 // ReviewUncommittedChanges reviews the working tree: staged, unstaged and
 // untracked files. It takes no payload, so it cannot fail.
@@ -217,6 +223,14 @@ type ReviewStarted struct {
 	Detached bool
 }
 
+// ReviewRunOptions carries the app-owned logical turn coordinate for the
+// visible review. Codex's own review turn id is still the provider authority;
+// TurnIndex only keeps the synthetic launch and result on the user command's
+// already-persisted AO turn.
+type ReviewRunOptions struct {
+	TurnIndex int
+}
+
 type reviewStartResponse struct {
 	ReviewThreadID string `json:"reviewThreadId"`
 	Turn           struct {
@@ -225,13 +239,9 @@ type reviewStartResponse struct {
 	} `json:"turn"`
 }
 
-// StartReview asks Codex to run a code review on this session's thread.
-//
-// The review is a real turn: it bills tokens and it is not steerable
-// (`turn/start` or `turn/steer` against it fails with
-// `activeTurnNotSteerable`, `turnKind: "review"`). Its transcript is
-// bracketed by `enteredReviewMode` / `exitedReviewMode` thread items,
-// which this package already surfaces as review-status notification rows.
+// StartReview asks Codex to run a code review without projecting it into an
+// Agent Overflow logical turn. Low-level protocol callers and wire tests use
+// it. User-visible reviews use StartReviewForTurn.
 //
 // Delivery caveat for callers: an inline review runs on the session's own
 // thread and every notification it produces already routes. A DETACHED
@@ -242,6 +252,31 @@ type reviewStartResponse struct {
 // transcript needs the returned ReviewThreadID registered with the
 // routing tables first, which is not wired yet.
 func (s *Session) StartReview(ctx context.Context, target ReviewTarget, delivery ReviewDelivery) (ReviewStarted, error) {
+	return s.startReview(ctx, target, delivery, nil)
+}
+
+// StartReviewForTurn projects Codex review mode as one nested Code review
+// agent. Codex exposes an outer visible review turn and a private execution
+// turn. The outer id scopes UI events. The private id remains activeTurnID
+// because it is the only id turn/interrupt accepts.
+func (s *Session) StartReviewForTurn(
+	ctx context.Context,
+	target ReviewTarget,
+	delivery ReviewDelivery,
+	opts ReviewRunOptions,
+) (ReviewStarted, error) {
+	if delivery == ReviewDeliveryDetached {
+		return ReviewStarted{}, fmt.Errorf("codex: %s: detached delivery has no Agent Overflow projection", reviewStartMethod)
+	}
+	return s.startReview(ctx, target, delivery, &opts)
+}
+
+func (s *Session) startReview(
+	ctx context.Context,
+	target ReviewTarget,
+	delivery ReviewDelivery,
+	opts *ReviewRunOptions,
+) (ReviewStarted, error) {
 	if !delivery.valid() {
 		return ReviewStarted{}, fmt.Errorf("codex: %s: unknown delivery %q", reviewStartMethod, string(delivery))
 	}
@@ -256,6 +291,25 @@ func (s *Session) StartReview(ctx context.Context, target ReviewTarget, delivery
 	if err != nil {
 		return ReviewStarted{}, err
 	}
+	projected := opts != nil
+	reserved := false
+	if projected {
+		if err := s.reserveReview(opts.TurnIndex, target); err != nil {
+			return ReviewStarted{}, err
+		}
+		reserved = true
+		defer func() {
+			if reserved {
+				s.releaseReservedReview()
+			}
+		}()
+
+		model, err := s.effectiveReviewModel(ctx)
+		if err != nil {
+			return ReviewStarted{}, err
+		}
+		s.setReservedReviewModel(model)
+	}
 	params := map[string]any{
 		"threadId": rootThreadID,
 		"target":   json.RawMessage(encodedTarget),
@@ -264,13 +318,29 @@ func (s *Session) StartReview(ctx context.Context, target ReviewTarget, delivery
 		params["delivery"] = string(delivery)
 	}
 
+	if projected {
+		// The only turn/started this request produces is Codex's private review
+		// execution turn. Claim it before the write so external-turn adoption does
+		// not misclassify it if it beats the response.
+		s.beginLocalTurnStart()
+	}
 	raw, err := s.sendRequest(ctx, reviewStartMethod, params)
 	if err != nil {
+		if projected {
+			s.abandonLocalTurnStart()
+			var timeout *RequestTimeoutError
+			if errors.As(err, &timeout) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+				_ = s.Close()
+			}
+		}
 		return ReviewStarted{}, fmt.Errorf("codex: %s: %w", reviewStartMethod, err)
 	}
 	var resp reviewStartResponse
 	if len(raw) > 0 {
 		if err := json.Unmarshal(raw, &resp); err != nil {
+			if projected {
+				_ = s.Close()
+			}
 			return ReviewStarted{}, fmt.Errorf("codex: %s: decode response: %w", reviewStartMethod, err)
 		}
 	}
@@ -279,7 +349,27 @@ func (s *Session) StartReview(ctx context.Context, target ReviewTarget, delivery
 		// The whole routing contract rests on this field. An empty one
 		// would silently fall back to "assume inline", which is the exact
 		// assumption the returned id exists to replace.
+		if projected {
+			_ = s.Close()
+		}
 		return ReviewStarted{}, fmt.Errorf("codex: %s: response carried no reviewThreadId", reviewStartMethod)
+	}
+	if projected && reviewThreadID != rootThreadID {
+		// A projected inline review on another thread cannot be scoped or
+		// interrupted through this Session. Close the process so the billed
+		// review cannot continue invisibly after we report the protocol fault.
+		_ = s.Close()
+		return ReviewStarted{}, fmt.Errorf(
+			"codex: %s: inline review landed on detached thread %s",
+			reviewStartMethod, reviewThreadID,
+		)
+	}
+	if projected {
+		if err := s.bindReviewResponse(resp.Turn.ID); err != nil {
+			_ = s.Close()
+			return ReviewStarted{}, err
+		}
+		reserved = false
 	}
 	return ReviewStarted{
 		ReviewThreadID: reviewThreadID,
@@ -298,6 +388,12 @@ func (s *Session) StartReview(ctx context.Context, target ReviewTarget, delivery
 // (`turnKind: "compact"`), so callers should gate it on the thread being
 // idle rather than racing a live turn.
 func (s *Session) CompactThread(ctx context.Context) error {
+	s.mu.Lock()
+	busy := s.activeTurnID != "" || s.review != nil
+	s.mu.Unlock()
+	if busy {
+		return fmt.Errorf("codex: %s: thread already has an active turn", threadCompactStartMethod)
+	}
 	rootThreadID := s.rootThreadID()
 	if rootThreadID == "" {
 		return fmt.Errorf("codex: %s: session has no thread id", threadCompactStartMethod)

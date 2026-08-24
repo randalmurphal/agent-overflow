@@ -587,8 +587,7 @@ func (s *Session) effectiveConfigModel(update LiveUpdate) string {
 // command output's CommandResultMeta.
 func (s *Session) sendConfigCommand(ctx context.Context, command, id string) error {
 	err := s.Send(ctx, command, provider.SendOptions{
-		UserMessageUUID:         id,
-		AllowClaudeSlashCommand: true,
+		UserMessageUUID: id,
 		// AO issued this, not the user. The flag is what buys unconditional
 		// row suppression: the CLI's refusals here are surfaced by the
 		// live-config reconciler, and a text-matched suppression would put

@@ -29,13 +29,14 @@ import (
 // source, so headless Claude always inlines the bytes — unlike claude-tui (pastes
 // the path) and Codex (sends a `localImage` path).
 //
-// allowSlashCommand is a REQUIRED argument, not an option struct field with a
-// zero value, so a new send path has to state which side of the guard it is on.
-func buildUserMessageBlocks(content string, attachments []provider.ImageAttachment, allowSlashCommand bool) ([]map[string]any, error) {
+// forceModelProse is a REQUIRED argument, not an option struct field with a
+// zero value, so a new send path has to state whether AO expanded a command
+// that Claude's local router must not claim.
+func buildUserMessageBlocks(content string, attachments []provider.ImageAttachment, forceModelProse bool) ([]map[string]any, error) {
 	if strings.TrimSpace(content) == "" && len(attachments) == 0 {
 		return nil, fmt.Errorf("claude: user message requires text or image content")
 	}
-	content = guardOutboundSlashCommand(content, allowSlashCommand)
+	content = guardOutboundSlashCommand(content, forceModelProse)
 	blocks := make([]map[string]any, 0, 1+2*len(attachments))
 	for _, part := range provider.SplitContentByImageMarkers(content, len(attachments)) {
 		if part.ImageIndex >= 0 {

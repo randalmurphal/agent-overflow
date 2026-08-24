@@ -82,19 +82,3 @@ export function interceptedCommandRange(
   if (name === null || !interceptedNames.has(name)) return null;
   return { name, start: 0, end: name.length + 1 };
 }
-
-/**
- * Whether this message should be sent with `providerCommand: true`.
- *
- * True only when the first word names a command the thread's provider has
- * actually reported. An unknown `/word` stays guarded — the CLI would route it
- * to its own router, answer "Unknown command" with `num_turns: 0`, and discard
- * everything the user wrote after it.
- */
-export function isProviderCommandMessage(
-  content: string,
-  knownProviderNames: ReadonlySet<string>,
-): boolean {
-  const name = leadingCommandName(content);
-  return name !== null && knownProviderNames.has(name);
-}

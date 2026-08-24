@@ -91,6 +91,7 @@ const (
 	WarnUnresolvedTool   = "codex-unresolved-tool-call"
 	WarnMissingSessionID = "codex-session-meta-missing"
 	WarnHistoryBase      = "codex-history-base"
+	WarnReviewChild      = "codex-review-child-unavailable"
 )
 
 // contentText flattens the several shapes Codex uses for message and tool
@@ -363,9 +364,11 @@ type threadGoalPayload struct {
 }
 
 type reviewModePayload struct {
-	TurnID          string `json:"turn_id"`
-	UserFacingHint  string `json:"user_facing_hint"`
-	ReviewOutputRaw json.RawMessage
+	TurnID          string          `json:"turn_id"`
+	UserFacingHint  string          `json:"user_facing_hint"`
+	ItemID          string          `json:"item_id"`
+	Target          json.RawMessage `json:"target"`
+	ReviewOutputRaw json.RawMessage `json:"review_output"`
 }
 
 // itemCompletedPayload is `event_msg/item_completed` (upstream

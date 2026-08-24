@@ -63,23 +63,21 @@ afterEach(() => {
 });
 
 describe('createAgentScopeView', () => {
-  it('scopes items to the launch subtree, lifting direct children to top level', async () => {
+  it('scopes items to direct children, lifting them to top level', async () => {
     const { pane, agent } = await setup();
     const view = createAgentScopeView(pane, agent, 'launch-1');
 
     const ids = view.items.map((item) => item.id);
     expect(ids).toContain('child-a');
     expect(ids).toContain('nested-launch');
-    expect(ids).toContain('grandchild');
+    expect(ids).not.toContain('grandchild');
     expect(ids).not.toContain('main-text');
     expect(ids).not.toContain('launch-1');
 
-    // Direct children read as this surface's top level; deeper rows keep
-    // their real parent chain so nested cards still group.
+    // Direct children read as this surface's top level. Deeper rows belong
+    // to the child launch's own scope and arrive after navigation.
     const childA = view.items.find((item) => item.id === 'child-a')!;
     expect(childA.parentId).toBeUndefined();
-    const grandchild = view.items.find((item) => item.id === 'grandchild')!;
-    expect(grandchild.parentId).toBe('nested-launch');
 
     view.dispose();
   });
@@ -113,7 +111,8 @@ describe('createAgentScopeView', () => {
     expect(facade.loading).toBe(false);
     expect(facade.showLoadingSpinner).toBe(false);
     await expect(facade.loadOlder()).resolves.toMatchObject({ status: 'noop' });
-    await expect(facade.loadUntilItem('grandchild')).resolves.toBe(true);
+    await expect(facade.loadUntilItem('nested-launch')).resolves.toBe(true);
+    await expect(facade.loadUntilItem('grandchild')).resolves.toBe(false);
     await expect(facade.loadUntilItem('main-text')).resolves.toBe(false);
 
     // Everything else is the source pane.
@@ -164,13 +163,13 @@ describe('createAgentScopeView', () => {
     view.dispose();
   });
 
-  it('host prune spares the open scope subtree, and stops sparing once the pane closes', async () => {
+  it('host prune spares the open scope rows, and stops sparing once the pane closes', async () => {
     // The other half of the shared-store contract: the source pane's own
-    // prune widens its retention with the open scope's subtree, so state
+    // prune widens its retention with the open scope's direct rows, so state
     // under rows only the agent pane has mounted survives the chat
     // timeline's bounded-memory pass — exactly while the pane is open.
     const { pane } = await setup();
-    pane.setUserMessageExpanded('grandchild', true);
+    pane.setUserMessageExpanded('child-a', true);
     expect(pane.toggleSubagentGroupExpanded('nested-launch')).toBe(true);
     const emptyRetention = () => ({
       itemIds: new Set<string>(),
@@ -179,12 +178,13 @@ describe('createAgentScopeView', () => {
     });
 
     pane.pruneRowUiState(emptyRetention());
-    expect(pane.isUserMessageExpanded('grandchild')).toBe(true);
+    expect(pane.isUserMessageExpanded('child-a')).toBe(true);
+    expect(pane.isUserMessageExpanded('grandchild')).toBe(false);
     expect(pane.isSubagentGroupExpanded('nested-launch')).toBe(true);
 
     closeCompanionsForSource('main');
     pane.pruneRowUiState(emptyRetention());
-    expect(pane.isUserMessageExpanded('grandchild')).toBe(false);
+    expect(pane.isUserMessageExpanded('child-a')).toBe(false);
     expect(pane.isSubagentGroupExpanded('nested-launch')).toBe(false);
   });
 

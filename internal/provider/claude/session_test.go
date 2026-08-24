@@ -720,6 +720,7 @@ func TestBuildArgsDefault(t *testing.T) {
 		"--include-partial-messages",
 		"--replay-user-messages",
 		"--forward-subagent-text",
+		"--session-mirror",
 		"--thinking-display", "summarized",
 	}
 	if len(args) != len(expected) {

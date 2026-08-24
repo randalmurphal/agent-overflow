@@ -13,6 +13,7 @@ import (
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/provider/codex"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/testutil"
 	"agent-overflow/internal/triage"
 )
 
@@ -48,6 +49,49 @@ done
 	path := filepath.Join(t.TempDir(), "codex-review.sh")
 	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
 		t.Fatalf("write codex-review binary: %v", err)
+	}
+	return path
+}
+
+func writeProjectedCodexReviewBinary(t *testing.T, threadID, capturePath string) string {
+	t.Helper()
+	script := fmt.Sprintf(`#!/bin/sh
+while IFS= read -r line; do
+    printf '%%s\n' "$line" >> %s
+    id=$(/bin/echo "$line" | /usr/bin/grep -o '"id":[0-9]*' | /usr/bin/head -1 | /usr/bin/grep -o '[0-9]*')
+    if [ -z "$id" ]; then
+        continue
+    fi
+    if /bin/echo "$line" | /usr/bin/grep -q '"method":"thread/start"'; then
+        printf '{"jsonrpc":"2.0","id":%%s,"result":{"thread":{"id":"%s"}}}\n' "$id"
+        continue
+    fi
+    if /bin/echo "$line" | /usr/bin/grep -q '"method":"config/read"'; then
+        printf '{"jsonrpc":"2.0","id":%%s,"result":{"config":{"review_model":"gpt-review"},"origins":{}}}\n' "$id"
+        continue
+    fi
+    if /bin/echo "$line" | /usr/bin/grep -q '"method":"review/start"'; then
+        printf '{"jsonrpc":"2.0","id":%%s,"result":{"reviewThreadId":"%s","turn":{"id":"outer-review","status":"inProgress","items":[]}}}\n' "$id"
+        printf '{"jsonrpc":"2.0","method":"item/started","params":{"threadId":"%s","turnId":"outer-review","item":{"type":"enteredReviewMode","id":"enter-review","review":"Review uncommitted changes"}}}\n'
+        printf '{"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"%s","turn":{"id":"private-review","status":"inProgress","items":[]}}}\n'
+        printf '{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"%s","turnId":"outer-review","item":{"type":"userMessage","id":"review-prompt","content":[{"type":"text","text":"Review the working tree"}]}}}\n'
+        printf '{"jsonrpc":"2.0","method":"item/started","params":{"threadId":"%s","turnId":"outer-review","item":{"type":"commandExecution","id":"cmd-review","command":"git diff --stat","status":"inProgress"}}}\n'
+        printf '{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"%s","turnId":"outer-review","item":{"type":"commandExecution","id":"cmd-review","command":"git diff --stat","status":"completed","aggregatedOutput":"1 file changed","exitCode":0}}}\n'
+        printf '{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"%s","turnId":"outer-review","item":{"type":"reasoning","id":"think-review","summary":"Checked the affected parser."}}}\n'
+        printf '{"jsonrpc":"2.0","method":"item/started","params":{"threadId":"%s","turnId":"outer-review","item":{"type":"agentMessage","id":"raw-review","text":"{\\"findings\\":[]}"}}}\n'
+        printf '{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"%s","turnId":"outer-review","item":{"type":"exitedReviewMode","id":"exit-review","review":"No issues found."}}}\n'
+        printf '{"jsonrpc":"2.0","method":"item/started","params":{"threadId":"%s","turnId":"outer-review","item":{"type":"agentMessage","id":"answer-review","text":"No issues found."}}}\n'
+        printf '{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"%s","turnId":"outer-review","item":{"type":"agentMessage","id":"answer-review","text":"No issues found."}}}\n'
+        printf '{"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"%s","turn":{"id":"outer-review","status":"completed","items":[]}}}\n'
+        continue
+    fi
+    printf '{"jsonrpc":"2.0","id":%%s,"result":{}}\n' "$id"
+done
+	`, capturePath, threadID, threadID, threadID, threadID, threadID, threadID, threadID, threadID, threadID, threadID, threadID, threadID, threadID)
+
+	path := filepath.Join(t.TempDir(), "codex-projected-review.sh")
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatalf("write projected codex review binary: %v", err)
 	}
 	return path
 }
@@ -167,6 +211,50 @@ func TestCodexReviewTargetFromWireRoutesThroughTheValidatingConstructors(t *test
 	}
 }
 
+func TestCodexReviewCommandTargetUsesTheComposerGrammar(t *testing.T) {
+	for _, command := range []string{
+		"/review",
+		"/review uncommitted",
+		"/review branch\tmain",
+		"/review commit abc123 Fix the parser",
+		"/review custom inspect every lock transition",
+	} {
+		if _, matched, err := codexReviewCommandTarget(command); !matched || err != nil {
+			t.Fatalf("codexReviewCommandTarget(%q) = matched %v, err %v", command, matched, err)
+		}
+	}
+	for _, prose := range []string{" /review", "/reviewish", "please /review"} {
+		if _, matched, err := codexReviewCommandTarget(prose); matched || err != nil {
+			t.Fatalf("codexReviewCommandTarget(%q) = matched %v, err %v", prose, matched, err)
+		}
+	}
+	if _, matched, err := codexReviewCommandTarget("/review branch"); !matched || err == nil {
+		t.Fatalf("missing branch = matched %v, err %v", matched, err)
+	}
+}
+
+func TestCodexReviewCannotBeQueuedOrSteeredIntoAnActiveTurn(t *testing.T) {
+	app := newTestAppWithStore(t)
+	app.triage = triage.NewRouter(app.store, func(string, any) {})
+	thread := newCodexThreadForReviewTest(t, app, "thread-codex-review-active")
+
+	if _, err := app.RegisterQueueItem(thread.ID, "/review", SendMessageOptions{}); err == nil ||
+		!strings.Contains(err.Error(), "idle thread") {
+		t.Fatalf("queue /review error = %v", err)
+	}
+	if _, err := app.SteerMessageWithOptions(thread.ID, "/review", SendMessageOptions{}); err == nil ||
+		!strings.Contains(err.Error(), "idle thread") {
+		t.Fatalf("steer /review error = %v", err)
+	}
+	items, err := app.store.ListItems(thread.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 0 {
+		t.Fatalf("rejected review command persisted rows: %+v", items)
+	}
+}
+
 // TestStartCodexReviewSendsTheTargetInline is the happy path: the validated
 // target reaches `review/start` with inline delivery, and the answer names the
 // AO thread the review's transcript will arrive on.
@@ -201,6 +289,110 @@ func TestStartCodexReviewSendsTheTargetInline(t *testing.T) {
 	}
 }
 
+func TestComposerReviewUsesOneTurnWithAgentActivityAndSourcedResult(t *testing.T) {
+	app := newTestAppWithStore(t)
+	app.triage = app.newTriageRouter(app.store)
+
+	thread := newCodexThreadForReviewTest(t, app, "thread-codex-projected-review")
+	capturePath := filepath.Join(t.TempDir(), "rpc.ndjson")
+	var callbackErrors = make(chan error, 16)
+	sess, err := codex.NewSession(
+		context.Background(),
+		thread.ID,
+		codex.Config{
+			Binary:  writeProjectedCodexReviewBinary(t, thread.ID+"-codex", capturePath),
+			WorkDir: thread.WorkspacePath,
+			Model:   "gpt-parent",
+		},
+		func(event provider.ProviderEvent) {
+			if handleErr := app.triage.Handle(event); handleErr != nil {
+				select {
+				case callbackErrors <- handleErr:
+				default:
+				}
+			}
+		},
+	)
+	if err != nil {
+		t.Fatalf("codex.NewSession: %v", err)
+	}
+	t.Cleanup(func() { _ = sess.Close() })
+	app.mu.Lock()
+	app.sessions[thread.ID] = session{
+		provider: string(provider.Codex), token: "codex-projected-review", codex: sess,
+	}
+	app.mu.Unlock()
+
+	if _, err := app.SendMessageWithOptions(thread.ID, "/review", SendMessageOptions{}); err != nil {
+		t.Fatalf("SendMessageWithOptions /review: %v", err)
+	}
+	waitForCapturedRequest(t, capturePath, `"method":"review/start"`)
+
+	var items []store.Item
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		items, err = app.store.ListItems(thread.ID)
+		if err != nil {
+			t.Fatalf("ListItems: %v", err)
+		}
+		hasResult := false
+		for _, item := range items {
+			if item.Kind == "command_result" {
+				hasResult = true
+				break
+			}
+		}
+		if hasResult {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for review result; items=%+v", items)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	select {
+	case callbackErr := <-callbackErrors:
+		t.Fatalf("triage callback: %v", callbackErr)
+	default:
+	}
+
+	var user, launch, result *store.Item
+	for i := range items {
+		item := &items[i]
+		switch {
+		case item.ID == "user:0":
+			user = item
+		case item.ToolName == "codex_review":
+			launch = item
+		case item.Kind == "command_result":
+			result = item
+		case item.Kind == "notification" && strings.Contains(item.Meta, "review_status"):
+			t.Fatalf("review status notification should not be persisted: %+v", item)
+		case item.Kind == "assistant_text" && item.ParentID == "":
+			t.Fatalf("review final leaked as parent-agent prose: %+v", item)
+		}
+	}
+	if user == nil || user.Summary != "/review" || !strings.Contains(user.Meta, `"command":"review"`) {
+		t.Fatalf("user command row = %+v", user)
+	}
+	if launch == nil || launch.Status != "completed" || !strings.Contains(launch.Meta, `"model":"gpt-review"`) {
+		t.Fatalf("review launch = %+v", launch)
+	}
+	if result == nil || result.Summary != "No issues found." || result.ParentID != "" {
+		t.Fatalf("review result = %+v", result)
+	}
+	if !strings.Contains(result.Meta, `"sourceKind":"review"`) || !strings.Contains(result.Meta, launch.ID) {
+		t.Fatalf("review result source meta = %s", result.Meta)
+	}
+	children, err := app.store.ListSubagentDescendants(thread.ID, launch.ID)
+	if err != nil {
+		t.Fatalf("ListSubagentDescendants: %v", err)
+	}
+	if len(children) < 4 {
+		t.Fatalf("review agent transcript has %d rows, want prompt, tool, thinking, and final: %+v", len(children), children)
+	}
+}
+
 // TestStartCodexReviewRefusesADetachedAnswer: we asked for inline, so a
 // different review thread id means the transcript lands on a thread this
 // session does not own and is quarantined. Returning success would hand the UI
@@ -219,6 +411,10 @@ func TestStartCodexReviewRefusesADetachedAnswer(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "detached") {
 		t.Fatalf("error = %v, want it to name the detached thread", err)
+	}
+	turn, found, turnErr := app.store.GetTurnByThreadIndex(thread.ID, 0)
+	if turnErr != nil || !found || turn.CompletedAt == nil {
+		t.Fatalf("failed review turn = %+v, found=%v, err=%v", turn, found, turnErr)
 	}
 }
 
@@ -241,23 +437,36 @@ func TestCompactCodexThreadDrivesTheRPC(t *testing.T) {
 	}
 }
 
-// TestCodexReviewBindingsRefuseWithoutALiveCodexSession: both bindings steer an
-// EXISTING conversation, so a thread with no process behind it is a clear
-// user-facing refusal — never a spawn the user did not ask for.
-func TestCodexReviewBindingsRefuseWithoutALiveCodexSession(t *testing.T) {
+// A review is a turn-starting composer command, so a cold thread gets the same
+// lazy session materialisation as an ordinary first message. Compaction still
+// requires an existing provider context.
+func TestCodexReviewLazyStartsAColdThread(t *testing.T) {
 	app := newTestAppWithStore(t)
 	app.triage = triage.NewRouter(app.store, func(string, any) {})
 	thread := newCodexThreadForReviewTest(t, app, "thread-codex-no-session")
+	binary := testutil.WriteMockCodexSession(t, t.TempDir(), map[string]string{
+		`"method":"initialize"`:           `{"jsonrpc":"2.0","id":%s,"result":{}}`,
+		`"method":"thread/start"`:         `{"jsonrpc":"2.0","id":%s,"result":{"thread":{"id":"cold-codex-thread"}}}`,
+		`"method":"config/read"`:          `{"jsonrpc":"2.0","id":%s,"result":{"config":{},"origins":{}}}`,
+		`"method":"review/start"`:         `{"jsonrpc":"2.0","id":%s,"result":{"reviewThreadId":"cold-codex-thread","turn":{"id":"cold-review","status":"inProgress","items":[]}}}`,
+		`"method":"thread/compact/start"`: `{"jsonrpc":"2.0","id":%s,"result":{}}`,
+	})
+	if _, err := app.settings.Update(map[string]any{"codexBinaryPath": binary}); err != nil {
+		t.Fatalf("set mock Codex binary: %v", err)
+	}
 
-	if _, err := app.StartCodexReview(context.Background(), thread.ID, CodexReviewTarget{Kind: "uncommittedChanges"}); err == nil {
-		t.Fatal("StartCodexReview must refuse a thread with no live session")
-	} else if !strings.Contains(err.Error(), "no active session") {
-		t.Fatalf("error = %v, want a no-active-session refusal", err)
+	started, err := app.StartCodexReview(context.Background(), thread.ID, CodexReviewTarget{Kind: "uncommittedChanges"})
+	if err != nil {
+		t.Fatalf("StartCodexReview: %v", err)
+	}
+	if started.TurnID != "cold-review" {
+		t.Fatalf("started = %+v", started)
+	}
+	if _, ok := app.sessionManager().get(thread.ID); !ok {
+		t.Fatal("cold review did not retain the lazy-started session")
 	}
 	if err := app.CompactCodexThread(context.Background(), thread.ID); err == nil {
-		t.Fatal("CompactCodexThread must refuse a thread with no live session")
-	} else if !strings.Contains(err.Error(), "no active session") {
-		t.Fatalf("error = %v, want a no-active-session refusal", err)
+		t.Fatal("CompactCodexThread must refuse while the review turn is active")
 	}
 
 	if _, err := app.StartCodexReview(context.Background(), "  ", CodexReviewTarget{Kind: "uncommittedChanges"}); err == nil {

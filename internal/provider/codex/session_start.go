@@ -52,6 +52,7 @@ func NewSession(ctx context.Context, threadID string, cfg Config, onEvent func(p
 		proc:                      proc,
 		ctx:                       childCtx,
 		threadID:                  threadID,
+		workDir:                   cfg.WorkDir,
 		binary:                    binary,
 		model:                     cfg.Model,
 		usageAcct:                 newUsageAccounting(cfg.ResumeThreadID != ""),

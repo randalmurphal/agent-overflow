@@ -1,12 +1,12 @@
 import type { Item } from '../../types/models';
 import {
-  finalAssistantTextIdsByTurn,
   isToolTextBoundary,
   itemTurnIndexKey,
   nodeRole,
   timelineNodeRepresentativeItem,
   type TimelineNode,
 } from '../../utils/subagentGrouping';
+import { isCommandAgentResult } from '../../utils/commandAgentResult';
 
 export interface TimelineRowDecorationSets {
   toolTextBoundaryIndexes: ReadonlySet<number>;
@@ -45,7 +45,7 @@ export function timelineRowDecorations(
   activeTurnKey: number | null,
   turnKeyOf: (item: Item) => number = itemTurnIndexKey,
 ): TimelineRowDecorationSets {
-  const finalAssistantTextIds = finalAssistantTextIdsByTurn(nodes, activeTurnKey, turnKeyOf);
+  const finalResponseIds = finalResponseIdsByTurn(nodes, activeTurnKey, turnKeyOf);
   const toolTextBoundaryIndexes = new Set<number>();
   const responseDividerIndexes = new Set<number>();
   const responsePillIndexes = new Set<number>();
@@ -60,11 +60,11 @@ export function timelineRowDecorations(
     }
 
     const responseDivider = node.kind === 'leaf'
-      && node.item.kind === 'assistant_text'
+      && (node.item.kind === 'assistant_text' || isCommandAgentResult(node.item))
       && lastRenderableRoleByTurn.get(turnKeyOf(node.item)) === 'tool';
     if (responseDivider) {
       responseDividerIndexes.add(index);
-      if (finalAssistantTextIds.has(node.item.id)) {
+      if (finalResponseIds.has(node.item.id)) {
         responsePillIndexes.add(index);
       }
     }
@@ -81,4 +81,23 @@ export function timelineRowDecorations(
     responseDividerIndexes,
     responsePillIndexes,
   };
+}
+
+function finalResponseIdsByTurn(
+  nodes: readonly TimelineNode[],
+  activeTurnKey: number | null,
+  turnKeyOf: (item: Item) => number,
+): Set<string> {
+  const lastByTurn = new Map<number, string>();
+  for (const node of nodes) {
+    if (node.kind !== 'leaf') continue;
+    if (node.item.kind !== 'assistant_text' && !isCommandAgentResult(node.item)) continue;
+    lastByTurn.set(turnKeyOf(node.item), node.item.id);
+  }
+  if (activeTurnKey !== null) lastByTurn.delete(activeTurnKey);
+  return new Set(lastByTurn.values());
+}
+
+export function responsePillLabel(node: TimelineNode): 'Result' | 'Response' {
+  return node.kind === 'leaf' && isCommandAgentResult(node.item) ? 'Result' : 'Response';
 }

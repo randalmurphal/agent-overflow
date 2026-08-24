@@ -312,6 +312,12 @@ func (c *converter) convertToolResult(row Row, block map[string]any) {
 	if backgroundToolResult(toolUseResult) {
 		fields["is_background"] = true
 	}
+	if agentID, commandName, ok := skillForkResult(toolUseResult); ok {
+		fields["skillFork"] = map[string]string{
+			"agentId":     agentID,
+			"commandName": commandName,
+		}
+	}
 	if c.toolOutputUnavailable(content) {
 		fields[MetaImportUnavailableKey] = MetaImportUnavailableToolOutputGC
 		c.unavailableGCs++

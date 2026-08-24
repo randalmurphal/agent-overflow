@@ -1,19 +1,19 @@
 <script lang="ts">
   // Output of a slash command the provider CLI executed itself — `/usage`,
   // `/context`, a skill, a plugin command. The model never saw it, so this row
-  // deliberately does NOT look like an assistant bubble and is never routed
-  // through ChatMarkdown: the CLI hands us terminal text with ANSI already
-  // stripped (docs/references/claude-wire.md §"Slash commands"), and markdown
-  // rendering would re-flow aligned columns and eat `#`/`*` glyphs the command
-  // meant literally. It is a system row — muted label line over a monospaced
-  // block — matching NotificationRow's register rather than a message.
+  // never claims assistant authorship. Ordinary local-command answers remain
+  // terminal text: a muted label over a monospaced block, matching
+  // NotificationRow's register. A forked command is different: its synthetic
+  // answer came from the Skill agent and is Markdown prose. Typed source meta
+  // renders that variant as readable prose under an explicit "skill result"
+  // attribution, still with role=system and kind=command_result.
   //
   // Shape is fixed at first render: triage writes the row completed in one
   // shot (internal/triage/command_result.go), so `truncated` cannot flip under
   // the reader and no affordance appears late.
   import { untrack } from 'svelte';
   import type { Item } from '../../types/models';
-  import type { ThreadPane } from '../../stores/thread.svelte';
+  import { paneWorkspacePath, type ThreadPane } from '../../stores/thread.svelte';
   import { chatRowDomId } from '../../utils/chatDomIds';
   import {
     createPayloadExpansion,
@@ -28,9 +28,13 @@
   import { nestedScroll } from '../../utils/scroll/wheelAttribution';
   import { formatTimeOfDay } from '../../utils/format';
   import ToolKindIcon from './ToolKindIcon.svelte';
+  import ChatMarkdown from './ChatMarkdown.svelte';
   import CopyButton from '../primitives/CopyButton.svelte';
   import { addToast } from '../../stores/toast.svelte';
   import { readCommandResultView } from './commandResultMeta';
+  import { EMPTY_PATH_REFS, getPathRefsFromMeta } from '../../utils/pathLinkify';
+  import { copyMarkdownToClipboard } from '../../utils/markdownClipboard';
+  import { ingestPersistedCodeSpans } from '../../utils/persistedSpans';
 
   let { pane, item }: { pane?: ThreadPane; item: Item } = $props();
 
@@ -38,6 +42,19 @@
     'cursor-pointer rounded text-accent hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50';
 
   const view = $derived(readCommandResultView(item));
+  const isAgentResult = $derived(view.agentResult !== null);
+
+  // Fork results render through the same settled Markdown path as assistant
+  // prose. Seed persisted fence spans synchronously so a history mount does
+  // not need a highlight RPC, then accept a later metadata upsert as usual.
+  // svelte-ignore state_referenced_locally
+  ingestPersistedCodeSpans(item.meta);
+  $effect(() => {
+    if (isAgentResult) ingestPersistedCodeSpans(item.meta);
+  });
+  const pathRefs = $derived(
+    isAgentResult ? (getPathRefsFromMeta(item.meta) ?? EMPTY_PATH_REFS) : EMPTY_PATH_REFS,
+  );
 
   // No-pane fallback (standalone renders, tests). The payload is written with
   // the row and never grows, so the default module cache and the settled
@@ -113,43 +130,83 @@
   }
 </script>
 
-<div bind:this={rowEl} class="group/command-result mb-1.5" data-testid="command-result-row">
-  <div class="flex items-center gap-2 px-1 py-0.5 text-[0.6875rem] text-fg-hint">
-    <ToolKindIcon kind="terminal" ariaLabel="command" />
-    <span data-testid="command-result-label">command</span>
-    {#if sizeLabel}
-      <span class="tabular-nums text-fg-subtle" data-testid="command-result-size">{sizeLabel}</span>
-    {/if}
-    <span class="flex-1"></span>
-    <span
-      class="flex h-7 w-7 shrink-0 items-center justify-center"
-      data-testid="command-result-copy-slot"
+<div
+  bind:this={rowEl}
+  class="group/command-result mb-1.5"
+  data-testid="command-result-row"
+  data-agent-result={isAgentResult ? 'true' : undefined}
+>
+  {#if isAgentResult && view.agentResult}
+    <div class="mb-1 flex items-center gap-1.5 text-[0.6875rem] text-fg-hint" data-testid="agent-result-source">
+      <ToolKindIcon kind="robot" ariaLabel={view.agentResult.sourceKind} />
+      <span>{view.agentResult.sourceName}</span>
+      <span aria-hidden="true">·</span>
+      <span>{view.agentResult.sourceKind} result</span>
+    </div>
+    <div
+      id={bodyDomId}
+      class="min-w-0 text-fg-muted"
+      data-testid="agent-result-body"
+      data-render-mode="client-markdown"
     >
-      <span
-        class="opacity-0 transition-opacity duration-150 group-hover/command-result:opacity-100 focus-within:opacity-100"
-      >
-        <CopyButton
-          text={getCopyText}
-          label="Copy output"
-          onError={() => addToast('error', 'Failed to copy')}
-        />
+      <ChatMarkdown
+        source={outputText}
+        streaming={false}
+        workspacePath={paneWorkspacePath(pane)}
+        {pathRefs}
+      />
+    </div>
+    <div class="mt-1.5 flex items-center gap-1.5 text-[0.625rem] text-fg-hint">
+      <time class="tabular-nums" datetime={isoTime}>{time}</time>
+      <span class="flex h-7 w-7 shrink-0 items-center justify-center" data-testid="command-result-copy-slot">
+        <span class="opacity-0 transition-opacity duration-150 group-hover/command-result:opacity-100 focus-within:opacity-100">
+          <CopyButton
+            text={getCopyText}
+            write={copyMarkdownToClipboard}
+            label="Copy result"
+            onError={() => addToast('error', 'Failed to copy')}
+          />
+        </span>
       </span>
-    </span>
-    <time class="tabular-nums" datetime={isoTime}>{time}</time>
-  </div>
+    </div>
+  {:else}
+    <div class="flex items-center gap-2 px-1 py-0.5 text-[0.6875rem] text-fg-hint">
+      <ToolKindIcon kind="terminal" ariaLabel="command" />
+      <span data-testid="command-result-label">command</span>
+      {#if sizeLabel}
+        <span class="tabular-nums text-fg-subtle" data-testid="command-result-size">{sizeLabel}</span>
+      {/if}
+      <span class="flex-1"></span>
+      <span
+        class="flex h-7 w-7 shrink-0 items-center justify-center"
+        data-testid="command-result-copy-slot"
+      >
+        <span
+          class="opacity-0 transition-opacity duration-150 group-hover/command-result:opacity-100 focus-within:opacity-100"
+        >
+          <CopyButton
+            text={getCopyText}
+            label="Copy output"
+            onError={() => addToast('error', 'Failed to copy')}
+          />
+        </span>
+      </span>
+      <time class="tabular-nums" datetime={isoTime}>{time}</time>
+    </div>
 
-  <div
-    id={bodyDomId}
-    class="ml-5 max-h-60 min-w-0 max-w-full overflow-y-auto overflow-x-hidden whitespace-pre-wrap break-words border-l border-border-subtle bg-surface-0/35 px-3 py-2 font-mono text-[0.6875rem] leading-relaxed text-fg-muted"
-    use:nestedScroll
-    data-testid="command-result-output">{outputText}</div>
+    <div
+      id={bodyDomId}
+      class="ml-5 max-h-60 min-w-0 max-w-full overflow-y-auto overflow-x-hidden whitespace-pre-wrap break-words border-l border-border-subtle bg-surface-0/35 px-3 py-2 font-mono text-[0.6875rem] leading-relaxed text-fg-muted"
+      use:nestedScroll
+      data-testid="command-result-output">{outputText}</div>
+  {/if}
 
   <!-- Present for the whole life of a truncated row, in every load state: the
        control the reader just used must not vanish out from under their focus,
        and `aria-expanded` is only honest on a control that reports both
        states. An untruncated row has nothing to fetch and renders none of it. -->
   {#if view.truncated && expansion}
-    <div class="ml-5 border-l border-border-subtle px-3 pb-2 text-[0.6875rem]">
+    <div class={isAgentResult ? 'pb-2 text-[0.6875rem]' : 'ml-5 border-l border-border-subtle px-3 pb-2 text-[0.6875rem]'}>
       {#if expansion.loading}
         <p class="animate-pulse text-fg-subtle" role="status" aria-live="polite">Loading…</p>
       {:else if expansion.error}
@@ -171,7 +228,7 @@
           onclick={() => withRowAnchored(handleToggle)}
           data-testid="command-result-show-full"
         >
-          {#if expanded}Show less ↑{:else}Show full output{sizeLabel ? ` (${sizeLabel})` : ''} ↓{/if}
+          {#if expanded}Show less ↑{:else}Show full {isAgentResult ? 'result' : 'output'}{sizeLabel ? ` (${sizeLabel})` : ''} ↓{/if}
         </button>
         {#if expanded && expansion.hasMore}
           <button
@@ -180,7 +237,7 @@
             onclick={() => withRowAnchored(() => expansion.showFull())}
             data-testid="command-result-show-more"
           >
-            Load more output ({formatPayloadSize(expansion.totalSize)}) ↓
+            Load more {isAgentResult ? 'result' : 'output'} ({formatPayloadSize(expansion.totalSize)}) ↓
           </button>
         {/if}
       {/if}

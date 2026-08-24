@@ -1,12 +1,156 @@
 package sessionimport
 
 import (
+	"encoding/json"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"agent-overflow/internal/importir"
 )
+
+func TestSidechainProjectorPreservesStateAcrossMirrorBatches(t *testing.T) {
+	fixture := []map[string]any{
+		userRow("s1", "", "the task prompt", "2026-01-01T00:00:02.000Z", with("isSidechain", true)),
+		assistantRow("s2", "s1", "msg_sub", []any{textBlock("first block")},
+			"2026-01-01T00:00:03.000Z", with("isSidechain", true)),
+		assistantRow("s3", "s2", "msg_sub", []any{textBlock("second block")},
+			"2026-01-01T00:00:04.000Z", with("isSidechain", true)),
+		assistantRow("s4", "s3", "msg_tool", []any{
+			toolUseBlock("toolu_sub", "Read", map[string]any{"file_path": "/repo/a.go"}),
+		}, "2026-01-01T00:00:05.000Z", with("isSidechain", true)),
+		toolResultRow("s5", "s4", "toolu_sub", "package main", "2026-01-01T00:00:06.000Z",
+			with("isSidechain", true)),
+	}
+
+	projector, err := NewSidechainProjector("toolu_task")
+	if err != nil {
+		t.Fatalf("NewSidechainProjector: %v", err)
+	}
+	var streamed []importir.Event
+	for _, entry := range fixture {
+		encoded, marshalErr := json.Marshal(entry)
+		if marshalErr != nil {
+			t.Fatalf("marshal fixture: %v", marshalErr)
+		}
+		batch, appendErr := projector.Append([]json.RawMessage{encoded})
+		if appendErr != nil {
+			t.Fatalf("Append: %v", appendErr)
+		}
+		streamed = append(streamed, batch.Events...)
+	}
+	streamed = append(streamed, projector.Close().Events...)
+
+	complete := ConvertSubagentRows(newRows(fixture), "toolu_task")
+	if got, want := renderEvents(streamed), renderEvents(complete.Events); got != want {
+		t.Fatalf("incremental projection diverged from complete conversion:\ngot:\n%s\nwant:\n%s", got, want)
+	}
+	if got := renderEvents(streamed); !strings.Contains(got, "item=msg_sub#0") || !strings.Contains(got, "item=msg_sub#1") {
+		t.Fatalf("assistant block ordinal reset across batches:\n%s", got)
+	}
+	if result := projector.Close(); len(result.Events) != 0 || len(result.Warnings) != 0 {
+		t.Fatalf("second Close returned %+v", result)
+	}
+	if _, err := projector.Append(nil); err == nil {
+		t.Fatal("Append after Close succeeded")
+	}
+}
+
+func TestSidechainProjectorFoldsCompactSummaryAcrossMirrorBatches(t *testing.T) {
+	boundary := map[string]any{
+		"type": "system", "subtype": "compact_boundary", "uuid": "compact-1",
+		"content": "Conversation compacted", "timestamp": "2026-01-01T00:00:01.000Z",
+	}
+	summary := userRow("summary-1", "compact-1", "kept facts", "2026-01-01T00:00:02.000Z",
+		with("isCompactSummary", true), with("isVisibleInTranscriptOnly", true))
+
+	projector, err := NewSidechainProjector("toolu_task")
+	if err != nil {
+		t.Fatalf("NewSidechainProjector: %v", err)
+	}
+	var streamed []importir.Event
+	for _, entry := range []map[string]any{boundary, summary} {
+		encoded, marshalErr := json.Marshal(entry)
+		if marshalErr != nil {
+			t.Fatalf("marshal fixture: %v", marshalErr)
+		}
+		result, appendErr := projector.Append([]json.RawMessage{encoded})
+		if appendErr != nil {
+			t.Fatalf("Append: %v", appendErr)
+		}
+		if len(result.Events) > 1 {
+			t.Fatalf("Append returned %d events, want at most the folded boundary", len(result.Events))
+		}
+		streamed = append(streamed, result.Events...)
+	}
+	result := projector.Close()
+	streamed = append(streamed, result.Events...)
+	if len(result.Events) != 0 {
+		t.Fatalf("Close emitted an extra summary event: %s", renderEvents(result.Events))
+	}
+	complete := ConvertSubagentRows(newRows([]map[string]any{boundary, summary}), "toolu_task")
+	if got, want := renderEvents(streamed), renderEvents(complete.Events); got != want {
+		t.Fatalf("incremental compact projection diverged:\ngot:\n%s\nwant:\n%s", got, want)
+	}
+	if len(streamed) != 1 || !strings.Contains(string(streamed[0].Meta), "kept facts") {
+		t.Fatalf("compact projection did not fold summary: %+v", streamed)
+	}
+}
+
+func TestSidechainProjectorRejectsMalformedBatchWithoutAdvancingState(t *testing.T) {
+	projector, err := NewSidechainProjector("toolu_task")
+	if err != nil {
+		t.Fatalf("NewSidechainProjector: %v", err)
+	}
+	valid, err := json.Marshal(userRow(
+		"s1", "", "the task prompt", "2026-01-01T00:00:02.000Z", with("isSidechain", true),
+	))
+	if err != nil {
+		t.Fatalf("marshal valid row: %v", err)
+	}
+	if result, appendErr := projector.Append([]json.RawMessage{valid, json.RawMessage(`{"type":`)}); appendErr == nil {
+		t.Fatal("malformed batch succeeded")
+	} else if len(result.Events) != 0 || len(result.Warnings) != 0 {
+		t.Fatalf("malformed batch returned partial projection: %+v", result)
+	}
+
+	result, err := projector.Append([]json.RawMessage{valid})
+	if err != nil {
+		t.Fatalf("valid retry after malformed batch: %v", err)
+	}
+	if got := renderEvents(result.Events); got != `user_text turn=0 item=s1 parent=toolu_task src=s1 content="the task prompt"` {
+		t.Fatalf("valid retry after malformed batch produced:\n%s", got)
+	}
+}
+
+func TestSidechainProjectorUsesMirrorArrivalForTimestampLessRows(t *testing.T) {
+	projector, err := NewSidechainProjector("toolu_task")
+	if err != nil {
+		t.Fatalf("NewSidechainProjector: %v", err)
+	}
+	encoded, err := json.Marshal(userRow(
+		"s1", "", "prompt", "", with("isSidechain", true),
+	))
+	if err != nil {
+		t.Fatalf("marshal row: %v", err)
+	}
+	receivedAt := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	rows, err := DecodeSidechainRows([]json.RawMessage{encoded}, receivedAt)
+	if err != nil {
+		t.Fatalf("DecodeSidechainRows: %v", err)
+	}
+	if got, want := rows[0].Timestamp, receivedAt.UnixMilli(); got != want {
+		t.Fatalf("Timestamp = %d, want arrival %d", got, want)
+	}
+	result, err := projector.AppendRows(rows)
+	if err != nil {
+		t.Fatalf("AppendRows: %v", err)
+	}
+	if len(result.Events) != 1 || !result.Events[0].Timestamp.Equal(receivedAt) {
+		t.Fatalf("events = %+v, want one event at arrival time", result.Events)
+	}
+}
 
 // ConvertSubagentTranscript is the live path's entry point: one known
 // sidechain file, one known launch, no parent transcript in play. The

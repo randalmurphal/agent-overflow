@@ -30,14 +30,32 @@ import (
 // and must re-register them once the cleanup has run (round-13,
 // D13-1). Callers with no subsequent cleanup may ignore the return.
 func (a *App) restoreUnconfirmedQueueOnSessionDeath(threadID string) []triage.UnconfirmedFlushItem {
+	return a.restoreUnconfirmedQueueOnSessionDeathIf(threadID, nil)
+}
+
+// restoreUnconfirmedQueueOnSessionDeathIf is the guarded form used by the
+// provider read loop. The guard runs after the thread action lock is held and
+// before any queue state is drained. That makes a session token plus triage
+// epoch check atomic with respect to a replacement start or send on the same
+// thread.
+func (a *App) restoreUnconfirmedQueueOnSessionDeathIf(
+	threadID string,
+	guard func() bool,
+) []triage.UnconfirmedFlushItem {
 	if a.triage == nil || strings.TrimSpace(threadID) == "" {
 		return nil
 	}
 
-	dispatchItems := a.drainFlushDispatchForSessionEnd(threadID)
-
 	unlock := a.threadLocks().Lock(threadID)
 	defer unlock()
+	if guard != nil && !guard() {
+		return nil
+	}
+
+	// threadLock -> flushDispatchMu is the established lock order documented
+	// by RegisterQueueItem. Draining here, rather than before the thread lock,
+	// keeps the guard and the destructive operation in one critical section.
+	dispatchItems := a.drainFlushDispatchForSessionEnd(threadID)
 
 	drained := a.triage.DrainUnconfirmedFlushItems(threadID)
 	for _, item := range dispatchItems {
@@ -335,9 +353,10 @@ func flushPayloadFromUserMeta(meta string) (json.RawMessage, error) {
 		SourceProposedPlan:         m.SourceProposedPlan,
 		RevisionSourceProposedPlan: m.RevisionSourceProposedPlan,
 		RevisionSourceDiffReview:   m.RevisionSourceDiffReview,
-		// The slash-guard opt-in survives the requeue: without it the
-		// redispatch would deliver `/command` as guarded prose.
-		ProviderCommand: m.ProviderCommand,
+		// Composer provenance survives the requeue. It controls both AO
+		// command expansion and whether an otherwise-unexpanded leading slash
+		// reaches Claude's native command router.
+		ExpandComposerCommands: m.ExpandComposerCommands,
 	}
 	for _, att := range m.Attachments {
 		payload.AttachmentIDs = append(payload.AttachmentIDs, att.ID)
@@ -482,6 +501,7 @@ func queuePayloadFromUserItem(item store.Item, fallback json.RawMessage) json.Ra
 		RevisionSourceCommentIDs:     meta.RevisionSourceCommentIDs,
 		RevisionSourceDiffReview:     meta.RevisionSourceDiffReview,
 		RevisionSourceDiffCommentIDs: meta.RevisionSourceDiffCommentIDs,
+		ExpandComposerCommands:       meta.ExpandComposerCommands,
 	})
 	if err != nil {
 		return fallback

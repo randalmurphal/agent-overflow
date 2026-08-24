@@ -18,10 +18,19 @@ import (
 func (c *converter) convertEventMsg(env envelope) {
 	switch payloadType(env.Payload) {
 	case "task_started":
+		if c.applyReviewTaskStarted(env) {
+			return
+		}
 		c.startTurn(env)
 	case "task_complete":
+		if c.completeReviewTurn(env, false) {
+			return
+		}
 		c.completeTurn(env)
 	case "turn_aborted":
+		if c.completeReviewTurn(env, true) {
+			return
+		}
 		c.abortTurn(env)
 	case "token_count":
 		c.applyTokenCount(env)
@@ -45,7 +54,7 @@ func (c *converter) convertEventMsg(env envelope) {
 			c.corrupt++
 			return
 		}
-		c.emitAssistantText(p.Message)
+		c.emitReviewAwareAssistantText(p.Message)
 	case "agent_reasoning":
 		if c.paginated {
 			return
@@ -93,17 +102,9 @@ func (c *converter) convertEventMsg(env envelope) {
 	case "thread_rolled_back":
 		c.emitNotification("Thread rolled back", map[string]any{"kind": "thread_rolled_back"}, "")
 	case "entered_review_mode":
-		var p reviewModePayload
-		_ = json.Unmarshal(env.Payload, &p)
-		c.emitNotification(reviewSummary("Code review started", p.UserFacingHint), map[string]any{
-			"kind":  "review_status",
-			"title": "Code review started",
-		}, "")
+		c.beginReview(env)
 	case "exited_review_mode":
-		c.emitNotification("Code review finished", map[string]any{
-			"kind":  "review_status",
-			"title": "Code review finished",
-		}, "")
+		c.exitReview(env)
 
 	case "item_completed":
 		c.applyItemCompleted(env)
@@ -208,9 +209,14 @@ func (c *converter) convertMessage(env envelope) {
 		if isInjectedContext(text) {
 			return
 		}
+		if c.review != nil {
+			// Codex injects the formatted review into the parent context as a
+			// user_action message. It is not a second user-authored turn.
+			return
+		}
 		c.emitUserText(text)
 	case "assistant":
-		c.emitAssistantText(text)
+		c.emitReviewAwareAssistantText(text)
 	default:
 		// developer / system: harness instructions, never transcript.
 	}

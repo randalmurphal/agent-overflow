@@ -20,6 +20,7 @@
       kind === 'deprecation_notice' ||
       kind === 'model_verification' ||
       kind === 'model_refusal_fallback' ||
+      kind === 'transcript_mirror_degraded' ||
       // Messages parked in Codex's own queue that the running Codex has no
       // API for. Same family as a deprecation notice: nothing is lost, but
       // it stays true until the user upgrades.
@@ -50,6 +51,7 @@
     kind === 'deprecation_notice' ||
     kind === 'model_verification' ||
     kind === 'model_refusal_fallback' ||
+    kind === 'transcript_mirror_degraded' ||
     // The messages run only after a Codex upgrade, so the row is a standing
     // request for action, not chatter.
     kind === 'codex_queue_unsupported' ||

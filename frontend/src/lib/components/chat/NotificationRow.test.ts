@@ -161,6 +161,21 @@ describe('<NotificationRow> permission notices', () => {
     expect(row.querySelector('svg')?.getAttribute('class')).toContain('triangle');
   });
 
+  it('surfaces transcript mirror data loss as a warning', () => {
+    const { getByTestId } = render(NotificationRow, {
+      props: {
+        item: makeNotification(
+          { kind: 'transcript_mirror_degraded' },
+          "Some early agent activity could not be shown because Claude's transcript mirror exceeded Agent Overflow's safety bound.",
+        ),
+      },
+    });
+    const row = getByTestId('notification-row');
+    expect(row.className).toContain('text-warning');
+    expect(row.getAttribute('role')).toBe('status');
+    expect(row.querySelector('svg')?.getAttribute('class')).toContain('triangle');
+  });
+
   it('lists the commands a permission_retry re-allowed, without the warning tone', () => {
     const { getByTestId } = render(NotificationRow, {
       props: {

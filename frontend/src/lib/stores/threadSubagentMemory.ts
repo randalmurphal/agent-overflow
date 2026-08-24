@@ -1,7 +1,7 @@
 import type { Item, Thread } from '../types/models';
 import {
   isItemActive,
-  normalizePreviewText,
+  subagentActivityPreview,
 } from '../utils/subagentGrouping';
 import {
   subagentLaunchContextFrom,
@@ -314,7 +314,7 @@ export function createThreadSubagentMemory(
       subagentFolds.recordEvicted(
         anchorId,
         item,
-        normalizePreviewText(item.summary ?? ''),
+        subagentActivityPreview(item),
       );
       evictedIds.add(item.id);
       anchorIds.add(anchorId);

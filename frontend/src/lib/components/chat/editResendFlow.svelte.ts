@@ -389,7 +389,6 @@ export function createEditResendFlow(opts: EditResendFlowOptions): EditResendFlo
         content: payload.message,
         attachmentIds: payload.attachmentIds,
         killRunningBackgroundTasks,
-        providerCommand: payload.providerCommand,
       });
       // No toast: the visible truncate plus the edited message arriving IS
       // the confirmation. The marker the reverted event recorded is

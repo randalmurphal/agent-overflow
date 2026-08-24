@@ -67,7 +67,6 @@ func (a *App) SteerMessageWithOptions(threadID string, content string, opts Send
 		RevisionSourceDiffCommentIDs: opts.RevisionSourceDiffCommentIDs,
 		// Wire entry: this text was typed into a composer (D31).
 		ExpandComposerCommands: true,
-		ProviderCommand:        opts.ProviderCommand,
 	}); err != nil {
 		return store.Thread{}, err
 	}
@@ -103,6 +102,19 @@ func (a *App) steerMessageWithOptions(threadID string, content string, opts send
 			return store.Item{}, fmt.Errorf("steer message: runtime mode: %w", err)
 		}
 	}
+	thread, err := a.store.GetThread(threadID)
+	if err != nil {
+		return store.Item{}, fmt.Errorf("steer message: load thread: %w", err)
+	}
+	if opts.ExpandComposerCommands && thread.Provider == string(provider.Codex) {
+		_, isReview, parseErr := codexReviewCommandTarget(content)
+		if parseErr != nil {
+			return store.Item{}, fmt.Errorf("steer message: /review: %w", parseErr)
+		}
+		if isReview {
+			return store.Item{}, fmt.Errorf("steer message: /review needs an idle thread; wait for the current turn to finish")
+		}
+	}
 
 	// Resolve plan refs the same way send does so traceability metadata
 	// stays accurate when a steer carries plan-revision context.
@@ -119,7 +131,6 @@ func (a *App) steerMessageWithOptions(threadID string, content string, opts send
 		// (D31). Anything else would make the same typed message mean two
 		// different things depending on whether a turn happened to be open.
 		expandComposerCommands: opts.ExpandComposerCommands,
-		providerCommand:        opts.ProviderCommand,
 	})
 	if err != nil {
 		return store.Item{}, fmt.Errorf("steer message: %w", err)
@@ -184,25 +195,13 @@ func (a *App) steerMessageWithOptions(threadID string, content string, opts send
 	// in handleUserText. Cleared on Steer failure below.
 	a.triage.RegisterPendingSend(threadID, userItem.ID, turnIndex)
 
-	thread, err := a.store.GetThread(threadID)
-	if err != nil {
-		a.triage.ClearPendingSendForFailure(threadID, userItem.ID)
-		return store.Item{}, fmt.Errorf("steer message: load thread: %w", err)
-	}
-
 	// Stamp activity before stdin write so the idle reaper can't race
 	// a slow Steer-and-respawn against its own teardown. Mirrors the
 	// pre-Send stamp in sendToProvider.
 	sess.liveness.bumpActivity(time.Now())
-	// AllowClaudeSlashCommand is carried even though this path is Codex-only
-	// and Codex ignores it: the flag belongs to the message, not to the
-	// provider that happens to be reading it, and a future steer-capable
-	// provider must not silently start guarding a deliberate command because
-	// this call site forgot the field.
 	steerErr := codexSess.Steer(context.Background(), providerContent, provider.SendOptions{
-		InteractionMode:         provider.NormalizeInteractionMode(thread.Mode),
-		Attachments:             providerAttachments,
-		AllowClaudeSlashCommand: opts.ProviderCommand,
+		InteractionMode: provider.NormalizeInteractionMode(thread.Mode),
+		Attachments:     providerAttachments,
 	})
 	if steerErr != nil {
 		// Drop the pending-send marker so a stale wire echo from the

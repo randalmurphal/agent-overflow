@@ -32,13 +32,13 @@ func (r *Router) SetCodeSpanEnricher(fn func(text string) json.RawMessage) {
 }
 
 // enrichCodeSpans merges the enricher's output into item.Meta under
-// codeSpansMetaKey. Every assistant_text persist site calls it with
+// codeSpansMetaKey. Every Markdown prose persist site calls it with
 // the FINAL summary already on the item (post interrupted-decoration):
 // spans must key to exactly the text the frontend renders. Failures
 // skip enrichment — the RPC path covers those fences and the persist
 // itself stays robust.
 func (r *Router) enrichCodeSpans(item *store.Item) {
-	if r.codeSpanEnricher == nil || item.Kind != itemKindAssistantText {
+	if r.codeSpanEnricher == nil || !itemRendersMarkdown(item) {
 		return
 	}
 	blob := r.codeSpanEnricher(item.Summary)
@@ -51,6 +51,20 @@ func (r *Router) enrichCodeSpans(item *store.Item) {
 		return
 	}
 	item.Meta = merged
+}
+
+func itemRendersMarkdown(item *store.Item) bool {
+	if item == nil {
+		return false
+	}
+	if item.Kind == itemKindAssistantText {
+		return true
+	}
+	if item.Kind != itemKindCommandResult {
+		return false
+	}
+	var meta commandResultMeta
+	return json.Unmarshal([]byte(item.Meta), &meta) == nil && meta.AgentResult != nil
 }
 
 // mergeMetaKey sets one key in a meta JSON object, preserving raw

@@ -100,6 +100,7 @@ describe('<SubagentGroup> live resolution against the pane', () => {
       agentLaunch(),
       makeItem({
         id: 'child:1', itemIndex: 1, parentId: 'agent:1',
+        kind: 'tool_call', toolName: 'Read',
         status: 'streaming', summary: 'reading alpha.ts',
       }),
     ]);
@@ -108,6 +109,7 @@ describe('<SubagentGroup> live resolution against the pane', () => {
 
     pane.upsertItem(makeItem({
       id: 'child:1', itemIndex: 1, parentId: 'agent:1',
+      kind: 'tool_call', toolName: 'Read',
       status: 'streaming', summary: 'reading beta.ts', updatedAt: 6,
     }));
     await tick();
@@ -124,6 +126,7 @@ describe('<SubagentGroup> live resolution against the pane', () => {
       agentLaunch(),
       makeItem({
         id: 'child:1', itemIndex: 1, parentId: 'agent:1',
+        kind: 'tool_call', toolName: 'Read',
         status: 'running', summary: 'reading alpha.ts',
       }),
     ]);
@@ -131,6 +134,7 @@ describe('<SubagentGroup> live resolution against the pane', () => {
 
     pane.upsertItem(makeItem({
       id: 'child:1', itemIndex: 1, parentId: 'agent:1',
+      kind: 'tool_call', toolName: 'Read',
       status: 'completed', summary: 'read alpha.ts', updatedAt: 7,
     }));
     await tick();

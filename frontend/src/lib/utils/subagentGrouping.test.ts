@@ -302,7 +302,7 @@ describe('groupItemsBySubagent', () => {
     // The fold is the header, not a transcript entry: not counted, and
     // never the collapsed preview.
     expect(group.descendantCount).toBe(3);
-    expect(group.latestChildSummary).toBe('found it');
+    expect(group.latestChildSummary).toBe('Bash: ls');
     for (const childId of ['child-bash', 'child-bash-done', 'child-text']) {
       expect(nodes.some((node) => nodeContainsItem(node, childId))).toBe(true);
     }
@@ -1579,7 +1579,7 @@ describe('groupItemsBySubagent — launch kinds', () => {
       'fork-text',
     ]);
     expect(group.descendantCount).toBe(2);
-    expect(group.latestChildSummary).toBe('three findings');
+    expect(group.latestChildSummary).toBe('Read: thing.ts');
   });
 
   it('detects a fork from an attributed row alone, with no meta stamp', () => {
@@ -2147,7 +2147,7 @@ describe('live fold aggregates (evicted subagent children)', () => {
     // Loaded terminal earlier than the fold → fold preview wins.
     const foldWins = expectGroup(groupItemsBySubagent([
       agentLaunch('agent-1', 0),
-      mkItem({ id: 'c1', itemIndex: 2, parentId: 'agent-1', summary: 'loaded at 2' }),
+      mkItem({ id: 'c1', itemIndex: 2, parentId: 'agent-1', kind: 'tool_call', toolName: 'Bash', summary: 'loaded at 2' }),
     ], fold)[0]);
     expect(foldWins.descendantCount).toBe(3);
     expect(foldWins.loadedDescendantCount).toBe(1);
@@ -2156,7 +2156,7 @@ describe('live fold aggregates (evicted subagent children)', () => {
     // Loaded terminal later than the fold → loaded preview wins.
     const loadedWins = expectGroup(groupItemsBySubagent([
       agentLaunch('agent-1', 0),
-      mkItem({ id: 'c2', itemIndex: 9, parentId: 'agent-1', summary: 'loaded at 9' }),
+      mkItem({ id: 'c2', itemIndex: 9, parentId: 'agent-1', kind: 'tool_call', toolName: 'Bash', summary: 'loaded at 9' }),
     ], fold)[0]);
     expect(loadedWins.latestChildSummary).toBe('loaded at 9');
   });
@@ -2169,6 +2169,8 @@ describe('live fold aggregates (evicted subagent children)', () => {
           id: 'c1',
           itemIndex: 1,
           parentId: 'agent-1',
+          kind: 'tool_call',
+          toolName: 'Bash',
           status: 'streaming',
           summary: 'streaming now',
         }),
@@ -2340,9 +2342,9 @@ describe('subagent anchor decoration fallback', () => {
         subagentDescendantCount: 2,
         subagentLatestChildSummary: 'stale decorated preview',
       }),
-      mkItem({ id: 'c1', itemIndex: 1, parentId: 'agent-1', summary: 'first step' }),
-      mkItem({ id: 'c2', itemIndex: 2, parentId: 'agent-1', summary: 'second step' }),
-      mkItem({ id: 'c3', itemIndex: 3, parentId: 'agent-1', summary: 'third step' }),
+      mkItem({ id: 'c1', itemIndex: 1, parentId: 'agent-1', kind: 'tool_call', toolName: 'Bash', summary: 'first step' }),
+      mkItem({ id: 'c2', itemIndex: 2, parentId: 'agent-1', kind: 'tool_call', toolName: 'Bash', summary: 'second step' }),
+      mkItem({ id: 'c3', itemIndex: 3, parentId: 'agent-1', kind: 'tool_call', toolName: 'Bash', summary: 'third step' }),
     ]);
 
     const group = expectGroup(nodes[0]);
@@ -2351,10 +2353,40 @@ describe('subagent anchor decoration fallback', () => {
     expect(group.latestChildSummary).toBe('third step');
   });
 
+  it('keeps prose and thinking out of the collapsed activity preview', () => {
+    const nodes = groupItemsBySubagent([
+      decoratedLaunch('agent-1', 0, { subagentDescendantCount: 3 }),
+      mkItem({
+        id: 'read',
+        itemIndex: 1,
+        parentId: 'agent-1',
+        kind: 'tool_call',
+        toolName: 'Read',
+        summary: 'Read parse_system.go',
+      }),
+      mkItem({
+        id: 'thinking',
+        itemIndex: 2,
+        parentId: 'agent-1',
+        kind: 'thinking',
+        summary: 'I should inspect one more path',
+      }),
+      mkItem({
+        id: 'prose',
+        itemIndex: 3,
+        parentId: 'agent-1',
+        kind: 'assistant_text',
+        summary: 'The review is complete',
+      }),
+    ]);
+
+    expect(expectGroup(nodes[0]).latestChildSummary).toBe('Read parse_system.go');
+  });
+
   it('keeps the decorated count when loaded children trail it', () => {
     const nodes = groupItemsBySubagent([
       decoratedLaunch('agent-1', 0, { subagentDescendantCount: 5 }),
-      mkItem({ id: 'c1', itemIndex: 1, parentId: 'agent-1', summary: 'only loaded row' }),
+      mkItem({ id: 'c1', itemIndex: 1, parentId: 'agent-1', kind: 'tool_call', toolName: 'Bash', summary: 'only loaded row' }),
     ]);
 
     const group = expectGroup(nodes[0]);
@@ -2384,8 +2416,8 @@ describe('subagent anchor decoration fallback', () => {
   it('skips a whitespace-only child summary as a preview candidate', () => {
     const nodes = groupItemsBySubagent([
       decoratedLaunch('agent-1', 0, { subagentDescendantCount: 2 }),
-      mkItem({ id: 'c1', itemIndex: 1, parentId: 'agent-1', summary: 'real text' }),
-      mkItem({ id: 'c2', itemIndex: 2, parentId: 'agent-1', summary: '  \n\t ' }),
+      mkItem({ id: 'c1', itemIndex: 1, parentId: 'agent-1', kind: 'tool_call', toolName: 'Bash', summary: 'real text' }),
+      mkItem({ id: 'c2', itemIndex: 2, parentId: 'agent-1', kind: 'tool_call', toolName: 'Bash', summary: '  \n\t ' }),
     ]);
 
     // c2 is the later row, so a gate that let it through would win and
@@ -2404,6 +2436,8 @@ describe('subagent anchor decoration fallback', () => {
           id: 'c1',
           itemIndex: 1,
           parentId: 'agent-1',
+          kind: 'tool_call',
+          toolName: 'Bash',
           status,
           summary: `\n  ran\n\n  tests ${'x'.repeat(400)}`,
         }),

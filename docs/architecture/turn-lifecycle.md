@@ -170,15 +170,15 @@ None of them is a lifecycle transition, and none may be treated as one.
 - **`system/task_updated` with `patch.is_backgrounded: true` and NO
   `patch.status` — stamps the launch row.** This is the only wire-typed
   statement that a FOREGROUND agent was moved to the background
-  mid-flight, i.e. the moment its sidechain streaming stops. It emits
+  mid-flight, i.e. the moment ordinary sidechain forwarding stops. It emits
   `EventSubagentBackgrounded` on the launch `tool_use_id`; triage flips
   `is_background` on the launch row and stamps
-  `meta.subagentBackgroundedAt` with the cut timestamp so the pane can
-  place its "streaming paused" marker after the last streamed row. It is
-  NOT a terminal and must not clear the task's liveness: the §E5 async
-  ack that follows still needs to carry `is_background: true`. A patch
-  that DOES carry a terminal `status` takes the terminal path above
-  unchanged.
+  `meta.subagentBackgroundedAt` with the cut timestamp. New Claude sessions
+  continue the agent's rows live through `transcript_mirror`; the stamp is
+  the detached-state fact, not a streaming-pause marker. It is NOT a
+  terminal and must not clear the task's liveness: the §E5 async ack that
+  follows still needs to carry `is_background: true`. A patch that DOES
+  carry a terminal `status` takes the terminal path above unchanged.
 - **`system/background_tasks_changed` — a LEVEL set, and a tray nudge.**
   The payload's `tasks` array is the provider's FULL replacement set of
   currently-backgrounded tasks, not a delta, and the distinction between

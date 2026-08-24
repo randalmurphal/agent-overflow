@@ -2570,9 +2570,9 @@ CLI binary; the subtypes we use or plan to use:
   **AO turns the non-terminal patch into
   `EventSubagentBackgrounded`** (`parseTaskBackgroundedPatch`), keyed on
   the launch tool_use, with `SubagentBackgroundedMeta{taskId}`. It is
-  the earliest and the only typed statement that this agent's sidechain
-  streaming stopped, which is what lets the agent pane place its
-  "streaming paused" marker after the last streamed row. The branch
+  the earliest typed statement that ordinary sidechain forwarding stopped,
+  so the parser binds subsequent `transcript_mirror` rows to the same launch.
+  The branch
   deliberately does NOT clear the parser's liveness flag — signal (5)
   must stay armed so the §E5 ack that follows ~40ms later still reads
   as an ack rather than the agent's real result (regression:
@@ -2584,14 +2584,18 @@ CLI binary; the subtypes we use or plan to use:
   [`background_tasks_control_20260822.ndjson`](fixtures/claude/background_tasks_control_20260822.ndjson)
   — the full round trip including our outbound control_request and the
   CLI's control_response, neither of which produces an event.
-  **Visibility price:** an agent backgrounded mid-flight streams NOTHING
-  further on the wire — zero sidechain envelopes after the ack (only
+  **Ordinary-stdout visibility price:** an agent backgrounded mid-flight
+  streams NOTHING further through `--forward-subagent-text` — zero sidechain
+  envelopes after the ack (only
   `system/task_progress` counters and its Bash calls' own
   `task_started`/`task_notification` bookends leak through) — whereas
   an agent launched async streams its sidechain fully (92 of 92 §E5
   launches in AO logs 2026-08-15 → 08-22 have rows after their ack).
-  Its full transcript is still in the `task_notification.output_file`
-  (sidechain JSONL, `isSidechain:true`, including `attachment` rows).
+  With `--session-mirror`, the same sidechain rows continue live as
+  `transcript_mirror` frames. Its full transcript also remains in the
+  `task_notification.output_file` (sidechain JSONL, `isSidechain:true`,
+  including `attachment` rows), which AO uses only as a compatibility
+  backfill for sessions started before mirror support.
 - `subtype: "set_permission_mode"` — switch the live session's permission
   mode (Plan ↔ chat ↔ accept-edits ↔ bypass). Takes `mode`. Escalating to
   `bypassPermissions` is REJECTED unless the process was launched with
@@ -3015,10 +3019,54 @@ router. Three verified consequences:
    `/zzz-not-a-real-command`) are routed; a word with an INTERIOR slash
    (`/etc/hosts on this box …`) is passed to the model as prose.
 
-AO's outbound guard is `internal/provider/claude/slash_guard.go`: when a
-message's first word matches `^/[A-Za-z0-9_:-]+(\s|$)` it prefixes a single
-`"\n"`, which defeats the CLI's `startsWith('/')` test. `provider.SendOptions.
-AllowClaudeSlashCommand` opts a deliberate command out of the guard.
+AO reserves that leading command shape for Claude's native router by default.
+This removes command-discovery timing from correctness: a known, newly
+installed, aliased, or unknown `/name` has the same routing before and after
+`system/init` advertises commands. `internal/provider/claude/slash_guard.go`
+prefixes `"\n"` only when `provider.SendOptions.GuardClaudeSlashCommand` is
+explicitly set for an Agent Overflow composer command whose expanded context
+must reach the model.
+
+### `--session-mirror`: live transcript rows absent from normal stdout
+
+Verified on **2.1.237** with AO's full stream-json flag set and an isolated
+local fake API. `--session-mirror` emits:
+
+```json
+{"type":"transcript_mirror","filePath":".../subagents/agent-<id>.jsonl",
+ "entries":[{/* complete transcript row */}]}
+```
+
+The entries arrive after successful local transcript writes. They are complete
+JSON rows, not byte fragments. Repeated delivery is safe to dedupe by the
+transcript row's `uuid`.
+
+Two gaps make this surface necessary:
+
+- A directly entered forked command such as `/code-review high` produces only
+  its outer `<synthetic>` command result on ordinary stdout. Its fork-root
+  prompt, tool calls, results, and final assistant row arrive live in the
+  mirrored sidechain. Root assistant rows carry `attributionSkill` and
+  `agentId`, which dynamically proves a Skill fork without a command-name
+  list. The `command_lifecycle` uuid identifies the outer command. AO shows a
+  provisional running Command row on the lifecycle's `started` frame, then
+  changes that same row to Skill when attribution arrives. A long first model
+  step no longer looks like a command that failed to start.
+- A foreground agent moved through `background_tasks` stops ordinary
+  sidechain forwarding at the acknowledgement. Its later rows continue in
+  the mirror. An agent launched async normally still forwards its sidechain,
+  so AO ignores that duplicate mirror unless the launch belongs below an
+  already mirrored scope.
+
+AO always enables the flag on new Claude processes. It incrementally projects
+received entries through the session-import converter's stateful
+`SidechainProjector`, then sends ordinary provider events through triage. It
+never tails transcript files for live updates. The terminal file converter
+remains only for an older process that has no mirrored marker.
+
+Unattributed prefixes stay in a bounded buffer until `attributionSkill`
+claims the fork. If the file, entry, or byte bound drops any prefix data, AO
+persists a warning beneath the command row instead of leaving the gap silent.
 
 ### Local command envelope sequence
 
@@ -3090,6 +3138,16 @@ that field only when building an error message, so it produces no second row.
 **No `stream_event` deltas were observed for command output** — the assistant
 envelope is a complete snapshot, and AO persists it as one completed
 `command_result` row.
+
+For a directly entered forked command, AO holds that outer synthetic answer
+until the lifecycle closes. It then emits one top-level `command_result` with
+typed `agentResult` source metadata pointing at the Skill launch. The row
+remains system-authored history, but the timeline renders its body as settled
+Markdown under a `<skill name> · skill result` label. It is deliberately not
+parented beneath the Skill, so collapsing the activity cannot hide the answer.
+When that result is present, the mirrored final assistant row stays available
+in the agent pane and is omitted from the Skill card's inline digest. If the
+CLI returns no synthetic answer, the digest keeps the mirrored final row.
 
 ### Discovery surfaces (three, none subsuming another)
 

@@ -51,7 +51,7 @@ func (s *Session) Send(ctx context.Context, content string, opts provider.SendOp
 	message := map[string]any{
 		"role": "user",
 	}
-	blocks, err := buildUserMessageBlocks(content, attachments, opts.AllowClaudeSlashCommand)
+	blocks, err := buildUserMessageBlocks(content, attachments, opts.GuardClaudeSlashCommand)
 	if err != nil {
 		return err
 	}
@@ -63,6 +63,10 @@ func (s *Session) Send(ctx context.Context, content string, opts provider.SendOp
 	// unrecorded uuid would classify this app's own send as a turn some
 	// peer session started (session_peer.go).
 	s.noteIssuedCommandUUID(opts.UserMessageUUID)
+	// Native slash-command correlation must be present before the write for
+	// the same reason as issuedCommands: lifecycle and mirror frames can race
+	// Send's return.
+	s.directCommands.note(opts.UserMessageUUID, content, opts)
 	// Same timing, same reason: the command's own `<synthetic>` output can
 	// reach the read loop before Send returns, and an unrecorded uuid would
 	// let AO's bookkeeping land in the user's transcript
@@ -102,6 +106,7 @@ func (s *Session) Send(ctx context.Context, content string, opts provider.SendOp
 		// as local. Releasing here is safe precisely because the write
 		// failed — nothing on the wire can still claim this uuid.
 		s.releaseIssuedCommandUUID(opts.UserMessageUUID)
+		s.directCommands.release(opts.UserMessageUUID)
 		s.releaseSuppressedCommandResult(opts.UserMessageUUID)
 		return err
 	}
@@ -186,11 +191,11 @@ func (s *Session) StopTask(ctx context.Context, taskID string) error {
 // a row that kept streaming. A false/absent flag is a descriptive error
 // the UI can show.
 //
-// ⚠ Visibility price, and it is why this is a user action rather than an
-// automatic one: an agent backgrounded MID-FLIGHT streams nothing further
-// on the wire — zero sidechain envelopes after the ack — and its full
-// transcript is only recoverable from the task_notification's
-// `output_file`. See claude-wire.md §control_request `background_tasks`.
+// The ordinary --forward-subagent-text stream stops after the ack. New AO
+// sessions also run --session-mirror, which continues those transcript rows
+// live; the task_notification output_file remains compatibility recovery for
+// a process started before mirror support. See claude-wire.md
+// §control_request `background_tasks`.
 //
 // Returns a timeout error after controlRequestTimeout (or ctx.Done) if
 // the CLI never answers.

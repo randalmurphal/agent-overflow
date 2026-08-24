@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
   interceptedCommandRange,
-  isProviderCommandMessage,
   leadingCommandArgument,
   leadingCommandName,
   parseInterceptedCommand,
@@ -69,33 +68,6 @@ describe('parseInterceptedCommand', () => {
     // Mid-sentence is prose and WILL be sent — interception is position-0 only.
     expect(parseInterceptedCommand('run /clear afterwards', intercepted)).toBeNull();
     expect(parseInterceptedCommand('/models', intercepted)).toBeNull();
-  });
-});
-
-describe('isProviderCommandMessage', () => {
-  const known = new Set(['usage', 'context', 'mcp__linear__create_issue']);
-
-  it('marks a first word the provider reports', () => {
-    expect(isProviderCommandMessage('/usage', known)).toBe(true);
-    expect(isProviderCommandMessage('/usage for this week', known)).toBe(true);
-    expect(isProviderCommandMessage('/mcp__linear__create_issue x', known)).toBe(true);
-  });
-
-  it('leaves an unknown /word guarded', () => {
-    // The CLI would route it, answer "Unknown command", and discard the rest
-    // of the message — so an unreported name must stay prose.
-    expect(isProviderCommandMessage('/deploy the release', known)).toBe(false);
-    expect(isProviderCommandMessage('/workflow start', known)).toBe(false);
-  });
-
-  it('never marks a mid-message or path-shaped slash', () => {
-    expect(isProviderCommandMessage('check /usage later', known)).toBe(false);
-    expect(isProviderCommandMessage('/etc/hosts is world-readable', known)).toBe(false);
-    expect(isProviderCommandMessage('', known)).toBe(false);
-  });
-
-  it('is empty-set safe, so an unprobed thread never opts out of the guard', () => {
-    expect(isProviderCommandMessage('/usage', new Set())).toBe(false);
   });
 });
 

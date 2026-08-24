@@ -215,6 +215,8 @@ export interface SubagentLaunchInfo {
   background: boolean;
   /** Display name for the card header (`Explore`, `code-review`, …). */
   name: string;
+  /** Effective model when the provider reports the child-specific choice. */
+  model?: string;
   /** Claude's `subagent_type` when the launch input carried one. */
   agentType?: string;
 }
@@ -292,6 +294,7 @@ export function isPotentialSubagentLaunch(item: Item): boolean {
     || toolName === 'Skill'
     || toolName === 'SendMessage'
     || toolName === 'collab_agent'
+    || toolName === 'codex_review'
   );
 }
 
@@ -438,11 +441,35 @@ export function subagentLaunchInfo(
       // inline, it waits on them explicitly through `wait_agent`.
       background: true,
       name: codex.agentLabel,
+      ...(codex.model ? { model: codex.model } : {}),
       ...(agentType ? { agentType } : {}),
     };
   }
 
+  if (isCodexReviewLaunchItem(item)) {
+    const codex = codexSubagentLaunchInfo(item);
+    return {
+      kind: 'agent',
+      provider: 'codex',
+      background: false,
+      name: 'Code review',
+      ...(codex.model ? { model: codex.model } : {}),
+      agentType: 'review',
+    };
+  }
+
   return null;
+}
+
+export function isCodexReviewLaunchItem(item: Item): boolean {
+  if (item.kind !== 'tool_call') return false;
+  if ((item.toolName ?? '').trim() !== 'codex_review') return false;
+  const tool = parseCodexSubagentInput(item).tool;
+  return tool === '' || tool === 'review';
+}
+
+export function isCodexAgentLaunchItem(item: Item): boolean {
+  return isCodexSubagentLaunchItem(item) || isCodexReviewLaunchItem(item);
 }
 
 /**

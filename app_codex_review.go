@@ -51,9 +51,9 @@ type CodexReviewStarted struct {
 	TurnStatus string `json:"turnStatus"`
 }
 
-// StartCodexReview runs Codex's built-in code review on the thread's current
-// workspace state, INLINE — the review turn lands on this thread, so its
-// transcript flows through the same triage path every other turn does.
+// StartCodexReview runs Codex's built-in review through the normal composer
+// send transaction. The user command, turn, nested agent activity, sourced
+// result, lazy session start, and send-failure state therefore share one path.
 //
 // Detached delivery is deliberately not exposed. A detached review runs on a
 // thread this session does not own, so every notification it produces hits the
@@ -69,36 +69,50 @@ func (a *App) StartCodexReview(ctx context.Context, threadID string, target Code
 	if a.shuttingDown.Load() {
 		return CodexReviewStarted{}, ErrShuttingDown
 	}
-	sess, err := a.codexSessionForThread("start codex review", threadID)
+	thread, err := a.store.GetThread(strings.TrimSpace(threadID))
 	if err != nil {
-		return CodexReviewStarted{}, err
+		return CodexReviewStarted{}, fmt.Errorf("app: start codex review: load thread: %w", err)
+	}
+	if thread.Provider != "codex" {
+		return CodexReviewStarted{}, fmt.Errorf("app: start codex review: thread %s is not a Codex thread", thread.ID)
 	}
 	reviewTarget, err := codexReviewTargetFromWire(target)
 	if err != nil {
 		return CodexReviewStarted{}, fmt.Errorf("app: start codex review: %w", err)
 	}
-
-	rpcCtx, cancel := context.WithTimeout(ctx, codexReviewRPCTimeout)
-	defer cancel()
-	started, err := sess.StartReview(rpcCtx, reviewTarget, codex.ReviewDeliveryInline)
+	command := codexReviewCommandText(reviewTarget)
+	var started codex.ReviewStarted
+	_, err = a.sendMessageWithOptions(ctx, threadID, command, sendMessageOptions{
+		ExpandComposerCommands: true,
+		onCodexReviewStarted: func(observed codex.ReviewStarted) {
+			started = observed
+		},
+	})
 	if err != nil {
 		return CodexReviewStarted{}, fmt.Errorf("app: start codex review: %w", err)
-	}
-	if started.Detached {
-		// We asked for inline and the server answered with a thread this
-		// session does not own. Its notifications are quarantined, so the
-		// review would burn tokens and produce nothing visible. Say so
-		// rather than returning a success the UI cannot act on.
-		return CodexReviewStarted{}, fmt.Errorf(
-			"app: start codex review: codex answered with detached review thread %s; its transcript cannot be shown",
-			started.ReviewThreadID,
-		)
 	}
 	return CodexReviewStarted{
 		ThreadID:   threadID,
 		TurnID:     started.TurnID,
 		TurnStatus: started.TurnStatus,
 	}, nil
+}
+
+func codexReviewCommandText(target codex.ReviewTarget) string {
+	switch target.Kind() {
+	case codex.ReviewTargetBaseBranch:
+		return "/review branch " + target.Branch()
+	case codex.ReviewTargetCommit:
+		command := "/review commit " + target.SHA()
+		if title := target.Title(); title != "" {
+			command += " " + title
+		}
+		return command
+	case codex.ReviewTargetCustom:
+		return "/review custom " + target.Instructions()
+	default:
+		return "/review"
+	}
 }
 
 // CompactCodexThread asks Codex to compact the thread's context now.
@@ -129,10 +143,8 @@ func (a *App) CompactCodexThread(ctx context.Context, threadID string) error {
 
 // codexSessionForThread resolves the live Codex session driving one thread.
 //
-// Never starts one. Both callers steer an EXISTING conversation — a review or a
-// compaction of a thread with no process behind it has no context to act on —
-// so a missing session is a user-facing "there is nothing running here", not an
-// invitation to spawn a subprocess the user did not ask for.
+// It never starts one. Manual compaction operates only on an existing provider
+// context. Review uses the normal send path and can lazy-start the session.
 func (a *App) codexSessionForThread(action, threadID string) (*codex.Session, error) {
 	threadID = strings.TrimSpace(threadID)
 	if threadID == "" {
@@ -164,5 +176,52 @@ func codexReviewTargetFromWire(target CodexReviewTarget) (codex.ReviewTarget, er
 		return codex.ReviewCustom(target.Instructions)
 	default:
 		return codex.ReviewTarget{}, fmt.Errorf("unknown review target kind %q", target.Kind)
+	}
+}
+
+// codexReviewCommandTarget recognises the built-in turn command from the exact
+// user-authored text. A leading space or any command word other than /review
+// is ordinary model input. The grammar mirrors the composer target picker.
+func codexReviewCommandTarget(content string) (codex.ReviewTarget, bool, error) {
+	if content != strings.TrimLeft(content, " \t\r\n") || !strings.HasPrefix(content, "/review") {
+		return codex.ReviewTarget{}, false, nil
+	}
+	if len(content) > len("/review") {
+		next := content[len("/review")]
+		if next != ' ' && next != '\t' && next != '\r' && next != '\n' {
+			return codex.ReviewTarget{}, false, nil
+		}
+	}
+	arg := strings.TrimSpace(content[len("/review"):])
+	if arg == "" || arg == "uncommitted" {
+		return codex.ReviewUncommittedChanges(), true, nil
+	}
+	fields := strings.Fields(arg)
+	head := fields[0]
+	rest := strings.TrimSpace(arg[len(head):])
+	switch head {
+	case "branch":
+		branch := ""
+		if restFields := strings.Fields(rest); len(restFields) > 0 {
+			branch = restFields[0]
+		}
+		target, err := codex.ReviewBaseBranch(branch)
+		return target, true, err
+	case "commit":
+		sha := ""
+		title := ""
+		if restFields := strings.Fields(rest); len(restFields) > 0 {
+			sha = restFields[0]
+			title = strings.TrimSpace(rest[len(sha):])
+		}
+		target, err := codex.ReviewCommit(sha, title)
+		return target, true, err
+	case "custom":
+		target, err := codex.ReviewCustom(rest)
+		return target, true, err
+	default:
+		return codex.ReviewTarget{}, true, fmt.Errorf(
+			"unknown review target %q; use uncommitted, branch, commit, or custom", head,
+		)
 	}
 }

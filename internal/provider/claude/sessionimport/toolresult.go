@@ -82,6 +82,18 @@ func backgroundToolResult(toolUseResult any) bool {
 	return false
 }
 
+func skillForkResult(toolUseResult any) (agentID, commandName string, ok bool) {
+	m := rawMapValue(toolUseResult)
+	if m == nil || rawString(m, "status") != "forked" {
+		return "", "", false
+	}
+	agentID = strings.TrimSpace(rawString(m, "agentId"))
+	if agentID == "" {
+		return "", "", false
+	}
+	return agentID, strings.TrimSpace(rawString(m, "commandName")), true
+}
+
 // Markers Claude leaves behind when a tool result was too large to inline
 // (toolResultStorage.ts). The preview stays in the transcript; the full
 // body lives in `<sessionDir>/tool-results/` until housekeeping removes it.

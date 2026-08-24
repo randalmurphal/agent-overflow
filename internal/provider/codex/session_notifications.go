@@ -89,6 +89,9 @@ func (s *Session) dispatchRoutableNotification(method string, params json.RawMes
 	if method == "rawResponseItem/completed" {
 		providerThreadID = providerThreadIDFromParams(params)
 	}
+	if s.handleReviewSpecialNotification(method, params) {
+		return
+	}
 	mappedChildThreadIDs := s.observeSubAgentActivityOwnership(method, params)
 	parentToolUseID := s.parentToolUseForProviderThread(providerThreadID)
 	if s.emitSubagentNotificationsFromRawMailboxCarrier(method, params, providerThreadID, parentToolUseID) {
@@ -157,6 +160,7 @@ func (s *Session) dispatchRoutableNotification(method string, params json.RawMes
 		// replaces the event with an evidence-driven one.
 		events = s.reconcileThreadQueueChange(events)
 	}
+	events = s.scopeReviewEvents(events)
 	suppressSubagentNotificationCarrier := s.emitSubagentNotificationsFromUserCarrier(method, params, events)
 
 	for i := range events {

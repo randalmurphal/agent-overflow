@@ -2,6 +2,7 @@ package sessionimport
 
 import (
 	"context"
+	"database/sql"
 	"os"
 	"reflect"
 	"strconv"
@@ -97,6 +98,133 @@ func TestImportKeepsAnOrphanCodexToolOutputAsAPlaceholder(t *testing.T) {
 	}
 	if got := len(itemsByKind(items, "assistant_text")); got != 1 {
 		t.Errorf("assistant_text rows = %d, want 1: %s", got, itemKinds(items))
+	}
+}
+
+func TestImportCodexReviewJoinsChildActivityUnderOneSourcedResult(t *testing.T) {
+	const (
+		controlTurnID = "55555555-5555-4555-8555-555555555555"
+		childThreadID = "66666666-6666-4666-8666-666666666666"
+	)
+	st := newTestStore(t)
+	homes := newProviderHomes(t)
+	homes.writeCodexIndex(t, codexThreadA)
+	rootPath := homes.writeCodexRollout(t, codexThreadA,
+		homes.codexMetaLine(codexThreadA, ""),
+		codexLine(100, "event_msg", map[string]any{
+			"type": "entered_review_mode", "turn_id": codexThreadA,
+			"item_id": "review-enter", "target": map[string]any{"type": "uncommittedChanges"},
+			"user_facing_hint": "Review uncommitted changes",
+		}),
+		codexLine(200, "event_msg", map[string]any{
+			"type": "task_started", "turn_id": controlTurnID,
+			"started_at": 1.0, "model_context_window": 258400,
+		}),
+		codexLine(300, "event_msg", map[string]any{
+			"type": "exited_review_mode", "turn_id": codexThreadA,
+			"item_id": "review-exit", "review_output": map[string]any{
+				"findings": []any{}, "overall_correctness": "patch is correct",
+				"overall_explanation": "No issues found.",
+			},
+		}),
+		codexLine(400, "event_msg", map[string]any{
+			"type": "agent_message", "message": "No issues found.", "phase": nil,
+		}),
+		codexLine(500, "event_msg", map[string]any{
+			"type": "task_complete", "turn_id": codexThreadA,
+			"started_at": 1.0, "completed_at": 2.0,
+		}),
+	)
+	childPath := homes.writeCodexRollout(t, childThreadID,
+		codexLine(0, "session_meta", map[string]any{
+			"id": childThreadID, "parent_thread_id": codexThreadA,
+			"thread_source": "subagent", "source": map[string]any{"subagent": "review"},
+			"cwd": homes.workspace, "history_mode": "legacy",
+		}),
+		codexLine(100, "turn_context", map[string]any{
+			"turn_id": controlTurnID, "cwd": homes.workspace,
+			"model": "gpt-review", "effort": "high",
+		}),
+		codexLine(200, "event_msg", map[string]any{
+			"type": "task_started", "turn_id": controlTurnID,
+			"started_at": 1.0, "model_context_window": 258400,
+		}),
+		codexLine(300, "response_item", map[string]any{
+			"type": "function_call", "call_id": "review-call", "name": "exec_command",
+			"arguments": `{"cmd":"git diff"}`,
+		}),
+		codexLine(400, "response_item", map[string]any{
+			"type": "function_call_output", "call_id": "review-call", "output": "diff output",
+		}),
+		codexLine(500, "event_msg", map[string]any{
+			"type": "agent_message", "message": `{"findings":[]}`, "phase": nil,
+		}),
+		codexLine(600, "event_msg", map[string]any{
+			"type": "task_complete", "turn_id": controlTurnID,
+			"started_at": 1.0, "completed_at": 2.0,
+		}),
+	)
+	db, err := sql.Open("sqlite", homes.codexHome+"/state_5.sqlite")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.Exec(`
+INSERT INTO threads (id, rollout_path, created_at, updated_at, source, cwd, title,
+                     first_user_message, archived, thread_source, preview, recency_at_ms,
+                     created_at_ms, updated_at_ms, git_branch, model, reasoning_effort, tokens_used)
+VALUES (?, ?, 1, 2, '{"subagent":"review"}', ?, 'Review', '', 0, 'subagent', '', 2,
+        1000, 2000, 'main', 'gpt-review', 'high', 0)`, childThreadID, childPath, homes.workspace)
+	if err != nil {
+		_ = db.Close()
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	d := homes.deps(st)
+	row := scanOne(t, d, ProviderCodex)
+	if row.SourcePath != rootPath {
+		t.Fatalf("scan selected %q, want root rollout %q", row.SourcePath, rootPath)
+	}
+	outcome := importFixtureRow(t, d, row)
+	if len(outcome.Threads) != 1 {
+		t.Fatalf("threads = %d, want one root thread", len(outcome.Threads))
+	}
+	items, err := st.ListItems(outcome.Threads[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var launch, result *store.Item
+	for i := range items {
+		item := &items[i]
+		if item.ToolName == "codex_review" {
+			launch = item
+		}
+		if item.Kind == "command_result" {
+			result = item
+		}
+		if item.Summary == `{"findings":[]}` {
+			t.Fatalf("raw reviewer JSON leaked into root items: %+v", item)
+		}
+	}
+	if launch == nil || launch.Status != "completed" || !strings.Contains(launch.Meta, `"model":"gpt-review"`) {
+		t.Fatalf("review launch = %+v", launch)
+	}
+	if result == nil || result.Summary != "No issues found." || !strings.Contains(result.Meta, `"sourceKind":"review"`) {
+		t.Fatalf("review result = %+v", result)
+	}
+	descendants, err := st.ListSubagentDescendants(outcome.Threads[0].ID, launch.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(itemsByKind(descendants, "tool_call")) != 1 {
+		t.Fatalf("review descendants = %+v, want one joined tool call", descendants)
+	}
+	for _, item := range descendants {
+		if item.Summary == `{"findings":[]}` {
+			t.Fatalf("raw reviewer JSON leaked into descendants: %+v", item)
+		}
 	}
 }
 

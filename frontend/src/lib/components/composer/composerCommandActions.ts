@@ -11,7 +11,7 @@
 // composer. Nothing here toasts: the user is looking at the text they typed,
 // which is where the answer belongs.
 
-import { CompactCodexThread, StartCodexReview } from '../../stores/bindings';
+import { CompactCodexThread } from '../../stores/bindings';
 import { makeCommandContext } from '../../stores/builtinCommands.svelte';
 import { runCommand } from '../../stores/commandRegistry.svelte';
 import { openComposerPicker } from '../../stores/composerPickerRegistry.svelte';
@@ -33,7 +33,6 @@ import { displayModelLabel } from '../../utils/modelLabels';
 import { errString } from '../../utils/errors';
 import { resolveArgCandidate, type ArgCandidate } from './composerCommandArgs';
 import type { InterceptedInvocation } from './composerCommandParse';
-import { parseReviewTarget } from './composerReviewTargets';
 
 /** Effort tiers a model with no catalog entry still offers, per EffortMenu. */
 const FALLBACK_EFFORTS: readonly ReasoningEffortOption[] = [
@@ -181,19 +180,6 @@ async function runCompact(pane: ThreadPane): Promise<CommandActionResult> {
   }
 }
 
-async function runReview(pane: ThreadPane, arg: string): Promise<CommandActionResult> {
-  const blocked = requireIdleCodexThread(pane, '/review');
-  if (blocked !== '') return fail(blocked);
-  const parsed = parseReviewTarget(arg);
-  if (!parsed.target) return fail(parsed.error ?? 'Could not read the review target.');
-  try {
-    await StartCodexReview(pane.threadId!, parsed.target);
-    return DONE;
-  } catch (err) {
-    return fail(`Failed to start review: ${errString(err)}`);
-  }
-}
-
 /**
  * Run one intercepted command. The caller has already consumed the composer
  * text; this only performs the action and reports whether it worked.
@@ -218,7 +204,7 @@ export async function runInterceptedCommand(
     case 'compact':
       return runCompact(pane);
     case 'review':
-      return runReview(pane, invocation.arg);
+      return fail('/review must run through the provider turn pipeline.');
     default:
       // Unreachable while the registry and this switch agree; a name added to
       // one and not the other must be loud rather than silently sent.

@@ -5,11 +5,6 @@
 // loaded sources those rows come from, and the composer-local error an
 // intercepted command reports.
 //
-// It also owns the SEND decision, because the same three facts decide it:
-// which commands the provider reports, which names AO intercepts, and what the
-// draft's first word is. Keeping it here means there is no hidden per-send
-// flag — a hand-typed command behaves exactly like a menu-selected one.
-//
 // Rendering lives in Composer.svelte / ComposerSlashPopover.
 
 import { GitListBranches, ListRecentCommits } from '../../stores/bindings';
@@ -29,14 +24,12 @@ import {
   filterCommandSections,
   flattenSections,
   interceptedCommandNames,
-  mergeStaticClaudeCommands,
-  unionProviderCommands,
+  isProviderTurnCommand,
   type ComposerCommandEntry,
   type ComposerCommandSection,
 } from './composerCommandEntries';
 import {
   interceptedCommandRange,
-  isProviderCommandMessage,
   parseInterceptedCommand,
 } from './composerCommandParse';
 import {
@@ -100,8 +93,6 @@ export interface ComposerSlashHandle {
    * the composer must NOT send — the text has already been handled.
    */
   consumeInterceptedSend(message: string): boolean;
-  /** Whether this message should carry `providerCommand: true`. */
-  isProviderCommandSend(message: string): boolean;
   /**
    * Accent-overlay range of a leading intercepted command, for the same
    * treatment AO's own command words get. Empty list when there is none.
@@ -123,30 +114,6 @@ export function createComposerSlash(opts: ComposerSlashOptions): ComposerSlashHa
 
   const workspacePath = $derived(paneWorkspacePath(pane));
   const provider = $derived(pane.thread?.provider ?? '');
-
-  /**
-   * The command names this thread's provider says it will execute.
-   *
-   * Claude unions two sources; Codex has no `provider:commands` wire at all,
-   * so the set stays empty and no Codex send is ever marked as a provider
-   * command (skills are `$name` tokens the model scans for, not commands).
-   */
-  const providerCommandNames = $derived.by(() => {
-    if (provider === 'codex' || provider === '') return new Set<string>();
-    const frame = getProviderCommandsFrame(pane.threadId);
-    const probe = getClaudeProbeCommands();
-    // Filesystem-enumerated skills count as provider commands too: the CLI
-    // executes `/skill-name`, and a pre-session send must carry the same
-    // providerCommand flag it would after `system/init` lists the skill.
-    const union = unionProviderCommands(
-      frame ? frame.commands : null,
-      mergeStaticClaudeCommands(
-        probe.probed ? probe.commands : null,
-        getClaudeSkills(workspacePath).skills,
-      ),
-    );
-    return new Set(union.map((command) => command.name));
-  });
 
   const interceptedNames = $derived(interceptedCommandNames(provider));
 
@@ -271,6 +238,7 @@ export function createComposerSlash(opts: ComposerSlashOptions): ComposerSlashHa
   function consumeInterceptedSend(message: string): boolean {
     const invocation = parseInterceptedCommand(message, interceptedNames);
     if (!invocation) return false;
+	if (isProviderTurnCommand(provider, invocation.name)) return false;
     commandError = '';
     closeSlash();
     // The menu is closed and the text is already gone by the time the action
@@ -300,9 +268,6 @@ export function createComposerSlash(opts: ComposerSlashOptions): ComposerSlashHa
     clearCommandError(): void { commandError = ''; },
 
     consumeInterceptedSend,
-    isProviderCommandSend(message: string): boolean {
-      return isProviderCommandMessage(message, providerCommandNames);
-    },
     interceptedRanges(value: string) {
       const range = interceptedCommandRange(value, interceptedNames);
       return range ? [range] : [];

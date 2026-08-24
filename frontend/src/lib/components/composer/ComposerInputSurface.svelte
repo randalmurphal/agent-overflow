@@ -267,9 +267,6 @@
     return slash.consumeInterceptedSend(message);
   }
 
-  export function isProviderCommandSend(message: string): boolean {
-    return slash.isProviderCommandSend(message);
-  }
 </script>
 
 {#if showDraftRows}

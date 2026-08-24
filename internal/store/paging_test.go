@@ -55,6 +55,24 @@ func seedAnchorItem(t *testing.T, s *Store, threadID, id string, turnIndex, item
 	}
 }
 
+func seedActivityItem(t *testing.T, s *Store, threadID, id string, turnIndex, itemIndex int, parentID string) {
+	t.Helper()
+	if err := s.InsertItem(Item{
+		ID:        id,
+		ThreadID:  threadID,
+		TurnIndex: turnIndex,
+		ItemIndex: itemIndex,
+		Kind:      "tool_call",
+		Role:      "assistant",
+		ToolName:  "Read",
+		Summary:   id,
+		ParentID:  parentID,
+		CreatedAt: int64(turnIndex*10 + itemIndex),
+	}); err != nil {
+		t.Fatalf("seed activity item %s: %v", id, err)
+	}
+}
+
 // seedBackgroundItem persists a background tool_call with a deterministic
 // status + created_at so the tray-retention tests can stage precise
 // time-windowed state without hand-rolling inserts per case.
@@ -1351,7 +1369,7 @@ func TestListThreadSliceAround_ChildAnchorLoadsNoSiblings(t *testing.T) {
 	seedItem(t, s, "t", "c-3", 3, 0, "parent")
 	seedItem(t, s, "t", "c-4", 4, 0, "parent")
 	seedItem(t, s, "t", "c-5", 5, 0, "parent")
-	seedItem(t, s, "t", "c-6", 6, 0, "parent")
+	seedActivityItem(t, s, "t", "c-6", 6, 0, "parent")
 	// Some unrelated noise above and below the group so the window is
 	// definitely not "the whole thread."
 	seedItem(t, s, "t", "noise-0", 0, 0, "")

@@ -3096,13 +3096,6 @@ export class RevertAndResendOptions {
      */
     "killRunningBackgroundTasks"?: boolean;
 
-    /**
-     * ProviderCommand mirrors SendMessageOptions.ProviderCommand: set only
-     * when the user invoked a provider-executed command from the command
-     * menu, so the Claude slash guard lets it through.
-     */
-    "providerCommand"?: boolean;
-
     /** Creates a new RevertAndResendOptions instance. */
     constructor($$source: Partial<RevertAndResendOptions> = {}) {
         if (!("content" in $$source)) {
@@ -3160,15 +3153,6 @@ export class SendMessageOptions {
     "revisionSourceCommentIds"?: string[];
     "revisionSourceDiffReview"?: SourceDiffReview | null;
     "revisionSourceDiffCommentIds"?: string[];
-
-    /**
-     * ProviderCommand marks the message as a deliberate provider-executed
-     * command so the Claude slash guard lets it through (see
-     * sendMessageOptions.ProviderCommand). The composer sets it only when
-     * the user actually invoked a command from the command menu; typing
-     * prose that happens to open with `/word` must leave it false.
-     */
-    "providerCommand"?: boolean;
 
     /** Creates a new SendMessageOptions instance. */
     constructor($$source: Partial<SendMessageOptions> = {}) {

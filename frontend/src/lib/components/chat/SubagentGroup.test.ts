@@ -1,6 +1,7 @@
 import { describe, expect, it, beforeAll } from 'vitest';
 import { render, fireEvent, waitFor } from '@testing-library/svelte';
 import SubagentGroupTestHarness from './SubagentGroupTestHarness.svelte';
+import { withoutNestedAgentCards } from './SubagentGroup.svelte';
 import type { Item } from '../../types/models';
 import type { SubagentGroupNode, TimelineLeaf, TimelineNode } from '../../utils/subagentGrouping';
 
@@ -171,6 +172,28 @@ describe('<SubagentGroup>', () => {
 
     expect(getByTestId('subagent-group-description').textContent).toContain('Find foo');
     expect(getByTestId('subagent-group-preview').textContent).toContain('Initializing...');
+  });
+
+  it('renders a Codex review as an awaited Code review agent with its review model', () => {
+    const group = mkGroup({
+      parentId: 'review-1',
+      parentItem: mkAgentParent('review-1', {
+        toolName: 'codex_review',
+        input: {
+          tool: 'review',
+          prompt: 'Review uncommitted changes',
+          model: 'gpt-5.6-codex',
+          newAgentNickname: 'Code review',
+          newAgentRole: 'review',
+        },
+      }),
+    });
+    const { getByTestId } = render(SubagentGroupTestHarness, { props: { group } });
+
+    expect(getByTestId('subagent-group-label').textContent).toContain('Code review');
+		expect(getByTestId('subagent-group-label').textContent).toContain('GPT 5.6 Codex');
+    expect(getByTestId('subagent-group-description').textContent).toContain('Review uncommitted changes');
+    expect(getByTestId('subagent-group').getAttribute('data-background')).toBeNull();
   });
 
   it('falls back to "Agent" when subagent_type is missing', () => {
@@ -346,7 +369,7 @@ describe('<SubagentGroup>', () => {
     expect(indicator?.getAttribute('aria-label')).toBe('Backgrounded');
   });
 
-  it('clicking the header toggles expansion and renders children in an uncapped body', async () => {
+  it('clicking the header toggles a capped virtualized child timeline', async () => {
     const group = mkGroup({
       parentId: 'p1',
       children: [mkToolLeaf('c1', 'Bash: first'), mkToolLeaf('c2', 'Bash: second')],
@@ -364,11 +387,9 @@ describe('<SubagentGroup>', () => {
     const leaves = getAllByTestId('leaf');
     expect(leaves).toHaveLength(2);
 
-    // The capped-body + fade scroller is deleted (spec Q6): the digest body
-    // renders in place with no inner max-height scroll region.
-    const body = getByTestId('subagent-group-body');
-    expect(body.className).not.toContain('max-h-[20rem]');
-    expect(body.className).not.toContain('overflow-y-auto');
+    const scroll = getByTestId('subagent-group-scroll');
+    expect(scroll.className).toContain('max-h-[min(50vh,20rem)]');
+    expect(scroll.className).toContain('overflow-y-auto');
 
     await fireEvent.click(toggle);
     expect(toggle.getAttribute('aria-expanded')).toBe('false');
@@ -399,6 +420,16 @@ describe('<SubagentGroup>', () => {
         {
           kind: 'leaf',
           item: mkItem({
+            id: 'mirror-warning-1',
+            kind: 'notification',
+            role: 'system',
+            summary: 'Some early agent activity could not be shown.',
+            meta: JSON.stringify({ kind: 'transcript_mirror_degraded' }),
+          }),
+        },
+        {
+          kind: 'leaf',
+          item: mkItem({
             id: 'bell-1',
             kind: 'notification',
             role: 'system',
@@ -412,7 +443,7 @@ describe('<SubagentGroup>', () => {
         mkToolLeaf('tool-2', 'Read: file'),
         mkLeaf('text-2', 'final report'),
       ],
-      descendantCount: 11,
+      descendantCount: 12,
     });
     const { getByRole, getAllByTestId } = render(SubagentGroupTestHarness, {
       props: { group },
@@ -421,7 +452,64 @@ describe('<SubagentGroup>', () => {
     await fireEvent.click(getByRole('button'));
 
     const ids = getAllByTestId('leaf').map((el) => el.getAttribute('data-id'));
-    expect(ids).toEqual(['prompt-1', 'tool-1', 'deny-1', 'tool-2', 'text-2']);
+    expect(ids).toEqual([
+      'prompt-1', 'tool-1', 'deny-1', 'mirror-warning-1', 'tool-2', 'text-2',
+    ]);
+  });
+
+  it('keeps a forked Skill final answer in the agent pane instead of duplicating it in the digest', async () => {
+    const group = mkGroup({
+      parentId: 'skill-1',
+      parentItem: mkAgentParent('skill-1', {
+        toolName: 'Skill',
+        status: 'completed',
+        metaFields: {
+          toolName: 'Skill',
+          input: { skill: 'code-review' },
+          directCommandFork: true,
+          directCommandResult: true,
+          skillFork: { agentId: 'agent-1', commandName: 'code-review' },
+        },
+      }),
+      children: [
+        mkLeaf('prompt-1', 'Review the change', 'user_text'),
+        mkToolLeaf('tool-1', 'Read: file'),
+        mkLeaf('text-1', 'No findings.'),
+      ],
+      descendantCount: 3,
+    });
+    const { getByRole, getAllByTestId } = render(SubagentGroupTestHarness, {
+      props: { group },
+    });
+
+    await fireEvent.click(getByRole('button'));
+    const ids = getAllByTestId('leaf').map((el) => el.getAttribute('data-id'));
+    expect(ids).toEqual(['prompt-1', 'tool-1']);
+  });
+
+  it('keeps final prose for a Skill when no separate command result exists', async () => {
+    const group = mkGroup({
+      parentId: 'skill-1',
+      parentItem: mkAgentParent('skill-1', {
+        toolName: 'Skill',
+        status: 'completed',
+        metaFields: {
+          toolName: 'Skill',
+          input: { skill: 'code-review' },
+          directCommandFork: true,
+          skillFork: { agentId: 'agent-1', commandName: 'code-review' },
+        },
+      }),
+      children: [mkToolLeaf('tool-1', 'Read: file'), mkLeaf('text-1', 'No findings.')],
+      descendantCount: 2,
+    });
+    const { getByRole, getAllByTestId } = render(SubagentGroupTestHarness, {
+      props: { group },
+    });
+
+    await fireEvent.click(getByRole('button'));
+    const ids = getAllByTestId('leaf').map((el) => el.getAttribute('data-id'));
+    expect(ids).toEqual(['tool-1', 'text-1']);
   });
 
   it('drops the final-text slot when the agent was killed — mid-flight prose is not an answer', async () => {
@@ -548,7 +636,7 @@ describe('<SubagentGroup>', () => {
     expect(fourth.queryByTestId('subagent-group-preview')).toBeNull();
   });
 
-  it('renders nested subagent groups recursively when expanded', async () => {
+  it('keeps nested subagent groups out of the main-thread digest', async () => {
     const inner: SubagentGroupNode = mkGroup({
       parentId: 'inner',
       children: [mkToolLeaf('c1', 'inner-one'), mkToolLeaf('c2', 'inner-two')],
@@ -567,13 +655,26 @@ describe('<SubagentGroup>', () => {
 
     await fireEvent.click(getAllByRole('button')[0]);
 
-    const buttons = getAllByRole('button');
-    expect(buttons).toHaveLength(2);
-
+    expect(getAllByRole('button')).toHaveLength(1);
     expect(() => getAllByTestId('leaf')).toThrow();
+  });
 
-    await fireEvent.click(buttons[1]);
-    expect(getAllByTestId('leaf')).toHaveLength(2);
+  it('removes agent cards nested inside wait groups from the main-thread digest', () => {
+    const nested = mkGroup({ parentId: 'nested' });
+    const ordinary = mkToolLeaf('wait-result', 'Finished waiting');
+    const wait: TimelineNode = {
+      kind: 'wait_group',
+      parent: mkItem({ id: 'wait', kind: 'tool_call', toolName: 'wait_agent' }),
+      groupKey: 'wait:wait',
+      children: [nested, ordinary],
+      descendantCount: 2,
+    };
+
+    const sanitized = withoutNestedAgentCards(wait);
+    expect(sanitized?.kind).toBe('wait_group');
+    if (sanitized?.kind !== 'wait_group') throw new Error('wait group was removed');
+    expect(sanitized.children).toEqual([ordinary]);
+    expect(sanitized.descendantCount).toBe(1);
   });
 
   it('shows a no-entries message when expanded with zero children (defensive)', async () => {

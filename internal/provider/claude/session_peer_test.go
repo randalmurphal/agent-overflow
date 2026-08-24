@@ -295,7 +295,7 @@ done
 	if text != "/rename AO Thread One" {
 		// A leading newline here is the slash-guard prefix, which would
 		// make the CLI's router miss the line and send it to the model as
-		// prose. AllowClaudeSlashCommand is what prevents it.
+		// prose. Native slash routing is the zero-value send behavior.
 		t.Fatalf("captured text = %q, want %q", text, "/rename AO Thread One")
 	}
 	if envelope.UUID == "" {

@@ -338,8 +338,8 @@ describe('composer command menu', () => {
     });
   });
 
-  describe('send-time classification', () => {
-    it('marks a hand-typed provider command without any menu interaction', async () => {
+  describe('native command sends', () => {
+    it('does not encode asynchronous discovery as send-time routing metadata', async () => {
       setBindingMock('GetClaudeSlashCommands', async () => ({
         probed: true,
         commands: [{ name: 'usage' }],
@@ -354,16 +354,14 @@ describe('composer command menu', () => {
       await typeInto(textarea, '/usage for this week');
       await fireEvent.click(getByTestId('composer-send'));
 
-      await waitFor(() =>
-        expect(send).toHaveBeenCalledWith(
-          'thread-1',
-          '/usage for this week',
-          expect.objectContaining({ providerCommand: true }),
-        ),
-      );
+      await waitFor(() => expect(send).toHaveBeenCalled());
+      expect(send.mock.calls[0][0]).toBe('thread-1');
+      expect(send.mock.calls[0][1]).toBe('/usage for this week');
+      expect((send.mock.calls[0][2] as { providerCommand?: boolean }).providerCommand)
+        .toBeUndefined();
     });
 
-    it('leaves an unknown /word guarded', async () => {
+    it('does not classify an unknown /word as model prose', async () => {
       setBindingMock('GetClaudeSlashCommands', async () => ({
         probed: true,
         commands: [{ name: 'usage' }],
@@ -376,10 +374,8 @@ describe('composer command menu', () => {
       await fireEvent.click(getByTestId('composer-send'));
 
       await waitFor(() => expect(send).toHaveBeenCalled());
-      // The generated options class declares every field, so the property
-      // exists on the instance — what matters is that it is not set.
       expect((send.mock.calls[0][2] as { providerCommand?: boolean }).providerCommand)
-        .toBeFalsy();
+        .toBeUndefined();
     });
   });
 
@@ -546,11 +542,7 @@ describe('composer command menu', () => {
       setBindingMock('ListRecentCommits', async () => [
         { sha: 'abc1234000', shortSha: 'abc1234', subject: 'Fix the parser', author: 'a', authoredAt: 0 },
       ]);
-      const start = setBindingMock('StartCodexReview', async () => ({
-        threadId: 'thread-1',
-        turnId: 'turn-1',
-        turnStatus: 'running',
-      }));
+      const send = setBindingMock('SendMessageWithOptions', async () => makeThread({ provider: 'codex' }));
       const pane = await buildPane(makeThread({ provider: 'codex' }));
       const { textarea, draft, getAllByTestId, getByTestId } = await mountComposer(pane);
 
@@ -570,26 +562,26 @@ describe('composer command menu', () => {
 
       await fireEvent.click(getByTestId('composer-send'));
       await waitFor(() =>
-        expect(start).toHaveBeenCalledWith(
+        expect(send).toHaveBeenCalledWith(
           'thread-1',
-          expect.objectContaining({ kind: 'commit', sha: 'abc1234' }),
+          '/review commit abc1234 ',
+          expect.anything(),
         ),
       );
     });
 
-    it('surfaces an RPC failure instead of swallowing it', async () => {
+    it('surfaces a review send failure instead of swallowing it', async () => {
       setBindingMock('GitListBranches', async () => []);
-      setBindingMock('StartCodexReview', async () => {
+      setBindingMock('SendMessageWithOptions', async () => {
         throw new Error('no active session for thread');
       });
       const pane = await buildPane(makeThread({ provider: 'codex' }));
-      const { textarea, getByTestId, findByTestId } = await mountComposer(pane);
+      const { textarea, getByTestId } = await mountComposer(pane);
 
       await typeInto(textarea, '/review');
       await fireEvent.click(getByTestId('composer-send'));
 
-      const error = await findByTestId('composer-command-error');
-      expect(error.textContent).toMatch(/no active session/);
+      await waitFor(() => expect(pane.generalError).toMatch(/no active session/i));
     });
   });
 });

@@ -17,6 +17,31 @@ describe('timelineRowDecorations', () => {
     expect(decorations.responsePillIndexes).toEqual(new Set([1]));
   });
 
+  it('treats a forked command answer as a final sourced result after activity', () => {
+    const nodes = groupItemsBySubagent([
+      makeItem({ id: 'skill', kind: 'tool_call', toolName: 'Skill', summary: 'code-review' }),
+      makeItem({
+        id: 'result',
+        itemIndex: 1,
+        kind: 'command_result',
+        role: 'system',
+        summary: 'No findings.',
+        meta: JSON.stringify({
+          kind: 'command_result',
+          preview: 'No findings.',
+          agentResult: {
+            launchId: 'skill', sourceKind: 'skill', sourceName: 'code-review',
+          },
+        }),
+      }),
+    ]);
+
+    const decorations = timelineRowDecorations(nodes, null);
+    expect(decorations.toolTextBoundaryIndexes).toEqual(new Set([1]));
+    expect(decorations.responseDividerIndexes).toEqual(new Set([1]));
+    expect(decorations.responsePillIndexes).toEqual(new Set([1]));
+  });
+
   it('does not render a response divider for direct user-to-assistant text', () => {
     const nodes = groupItemsBySubagent([
       makeItem({ id: 'user', kind: 'user_text', role: 'user' }),

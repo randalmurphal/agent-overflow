@@ -16,6 +16,7 @@
 
 import type { Item } from '../../types/models';
 import { parseJsonObject } from '../../utils/parseJsonObject';
+import { commandAgentResult, type CommandAgentResult } from '../../utils/commandAgentResult';
 
 export interface CommandResultView {
   /**
@@ -37,6 +38,8 @@ export interface CommandResultView {
    * the wire carried none (it is written only alongside `truncated`).
    */
   totalBytes: number;
+  /** Forked-agent source. Null for ordinary terminal-style command output. */
+  agentResult: CommandAgentResult | null;
 }
 
 /**
@@ -58,5 +61,6 @@ export function readCommandResultView(item: Item): CommandResultView {
       truncated && typeof rawTotal === 'number' && Number.isFinite(rawTotal) && rawTotal > 0
         ? rawTotal
         : 0,
+    agentResult: commandAgentResult(item),
   };
 }

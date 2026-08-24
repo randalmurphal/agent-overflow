@@ -214,6 +214,7 @@ func importCodex(
 	if err != nil {
 		return ImportOutcome{}, err
 	}
+	parsed = rollout.ProjectReviewChildren(ctx, d.CodexHome, row.SessionID, parsed)
 	row.SourcePath = sourcePath
 	im := newSessionImporter(d.Store, row, proj)
 	im.warn(parsed.Warnings...)

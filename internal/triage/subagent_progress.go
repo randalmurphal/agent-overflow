@@ -230,8 +230,8 @@ func (r *Router) dropSubagentProgressForThread(threadID string) {
 // handleSubagentBackgrounded stamps the launch row as backgrounded
 // mid-flight: IsBackground flips (the async-ack tool_result that follows
 // also does this, but the patch is the earlier and the only typed
-// statement) and the cut timestamp lands in meta so the pane can place
-// its "streaming paused" marker after the last streamed row.
+// statement) and the cut timestamp lands in meta as the durable fact that
+// this launch changed from foreground to detached execution.
 func (r *Router) handleSubagentBackgrounded(evt provider.ProviderEvent) error {
 	itemID := strings.TrimSpace(evt.ItemID)
 	if itemID == "" {

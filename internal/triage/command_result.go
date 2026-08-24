@@ -17,8 +17,9 @@ import (
 // It is history, not live state: the user asked for `/usage` and the answer
 // belongs in the transcript. It is NOT model output, which is why it gets its
 // own kind rather than riding `assistant_text` — the renderer must not
-// attribute it to the agent, and nothing that walks a turn's reply may pick it
-// up.
+// attribute it to the parent agent. A forked command can stamp its own agent
+// source so the renderer presents that answer as sourced Markdown without
+// changing the durable role.
 //
 // The envelope is a complete snapshot (no `stream_event` deltas are emitted for
 // command output on 2.1.219), so the row is written completed in one shot. The
@@ -36,7 +37,10 @@ const (
 	// in items.summary. Local command output is small in practice (`/usage`,
 	// `/cost`, `/status` are tens of lines), so most rows never allocate a
 	// payload; `/context` and a verbose skill can exceed it.
-	commandResultInlineRunes = 4000
+	commandResultInlineRunes      = 4000
+	commandAgentResultLaunchRunes = 512
+	commandAgentResultKindRunes   = 32
+	commandAgentResultNameRunes   = 128
 )
 
 // commandResultMeta is the items.meta shape for a command_result row. It is a
@@ -57,6 +61,10 @@ type commandResultMeta struct {
 	// TotalBytes is the full output length, present only when truncated, so a
 	// collapsed row can say how much is behind the fetch.
 	TotalBytes int `json:"totalBytes,omitempty"`
+	// AgentResult is present only for a command that ran as a forked agent.
+	// It changes presentation and attribution. The durable row remains
+	// system-authored command output.
+	AgentResult *provider.CommandAgentResultMeta `json:"agentResult,omitempty"`
 }
 
 // CommandResultRow is the shaped `command_result` row content: what goes
@@ -73,12 +81,27 @@ type CommandResultRow struct {
 // into the row fields both writers persist. Pure: text in, field values
 // out. The caller decides where the full bytes live when Oversized.
 func BuildCommandResultRow(text string) (CommandResultRow, error) {
+	return buildCommandResultRow(text, nil)
+}
+
+// BuildCommandResultRowWithAgentResult shapes provider command output whose
+// visible answer came from a child agent. Imports use this to preserve the
+// same durable attribution as the live router.
+func BuildCommandResultRowWithAgentResult(
+	text string,
+	agentResult *provider.CommandAgentResultMeta,
+) (CommandResultRow, error) {
+	return buildCommandResultRow(text, sanitizeCommandAgentResult(agentResult))
+}
+
+func buildCommandResultRow(text string, agentResult *provider.CommandAgentResultMeta) (CommandResultRow, error) {
 	preview := truncateRunes(text, commandResultInlineRunes)
 	truncated := preview != text
 	meta := commandResultMeta{
-		Kind:      itemKindCommandResult,
-		Preview:   preview,
-		Truncated: truncated,
+		Kind:        itemKindCommandResult,
+		Preview:     preview,
+		Truncated:   truncated,
+		AgentResult: agentResult,
 	}
 	if truncated {
 		meta.TotalBytes = len(text)
@@ -114,7 +137,8 @@ func (r *Router) handleCommandResult(evt provider.ProviderEvent) error {
 		// already drops these; this is the belt for a synthesized event.
 		return nil
 	}
-	if commandResultRowSuppressed(evt) {
+	resultMeta := decodeCommandResultEventMeta(evt.Meta)
+	if resultMeta.Suppressed {
 		return nil
 	}
 
@@ -122,7 +146,7 @@ func (r *Router) handleCommandResult(evt provider.ProviderEvent) error {
 	itemID := commandResultItemID(evt, turnIndex, r)
 	now := eventTimestampMillis(evt)
 
-	shaped, err := BuildCommandResultRow(text)
+	shaped, err := buildCommandResultRow(text, resultMeta.AgentResult)
 	if err != nil {
 		return fmt.Errorf("command result marshal meta %s: %w", itemID, err)
 	}
@@ -140,6 +164,10 @@ func (r *Router) handleCommandResult(evt provider.ProviderEvent) error {
 		Meta:      shaped.Meta,
 		CreatedAt: now,
 		UpdatedAt: now,
+	}
+	if resultMeta.AgentResult != nil {
+		r.enrichPathRefsFromTexts(evt.ThreadID, &item, text)
+		r.enrichCodeSpans(&item)
 	}
 	existing, found, err := r.store.GetThreadItem(evt.ThreadID, item.ID)
 	if err != nil {
@@ -160,11 +188,11 @@ func (r *Router) handleCommandResult(evt provider.ProviderEvent) error {
 	return r.attachPayloadToItem(item, evt, payloadKindCommandResult, preview, true)
 }
 
-// commandResultRowSuppressed reports whether this output belongs to a command
-// whose answer must not become a timeline row: one Agent Overflow issued for
-// its own bookkeeping (`/rename`, the live-config `/effort` and `/fast`
-// writes), or a user-typed `/effort` / `/fast` / `/model` whose reply the CLI
-// confirmed and AO already renders in its own UI.
+// decodeCommandResultEventMeta reads the provider's row policy and optional
+// forked-agent source. Suppressed output belongs to a command Agent Overflow
+// issued for its own bookkeeping (`/rename`, the live-config `/effort` and
+// `/fast` writes), or a user-typed `/effort` / `/fast` / `/model` whose reply
+// the CLI confirmed and AO already renders in its own UI.
 //
 // Triage does NOT decide this and deliberately cannot: the decision needs to
 // know who typed the command AND what was asked of it, and both are facts only
@@ -177,17 +205,33 @@ func (r *Router) handleCommandResult(evt provider.ProviderEvent) error {
 // Suppression is scoped to the ROW. The event still reaches every other
 // consumer, which is what lets the live-config reconciler settle an /effort
 // apply from output the transcript never shows.
-func commandResultRowSuppressed(evt provider.ProviderEvent) bool {
-	if len(evt.Meta) == 0 {
-		return false
-	}
+func decodeCommandResultEventMeta(raw json.RawMessage) provider.CommandResultMeta {
 	var meta provider.CommandResultMeta
-	if err := json.Unmarshal(evt.Meta, &meta); err != nil {
+	if len(raw) == 0 {
+		return meta
+	}
+	if err := json.Unmarshal(raw, &meta); err != nil {
 		// Undecodable meta is not a suppression signal: the safe direction is
 		// keeping a row the user might want, not silently dropping history.
-		return false
+		return provider.CommandResultMeta{}
 	}
-	return meta.Suppressed
+	meta.AgentResult = sanitizeCommandAgentResult(meta.AgentResult)
+	return meta
+}
+
+func sanitizeCommandAgentResult(source *provider.CommandAgentResultMeta) *provider.CommandAgentResultMeta {
+	if source == nil {
+		return nil
+	}
+	clean := &provider.CommandAgentResultMeta{
+		LaunchID:   truncateRunes(strings.TrimSpace(source.LaunchID), commandAgentResultLaunchRunes),
+		SourceKind: truncateRunes(strings.TrimSpace(source.SourceKind), commandAgentResultKindRunes),
+		SourceName: truncateRunes(strings.TrimSpace(source.SourceName), commandAgentResultNameRunes),
+	}
+	if clean.LaunchID == "" || clean.SourceKind == "" || clean.SourceName == "" {
+		return nil
+	}
+	return clean
 }
 
 // commandResultItemID resolves a stable row id.

@@ -286,7 +286,7 @@ func (r *Router) handleBackgroundTaskNotification(evt provider.ProviderEvent) er
 // Bash's output_file is captured command output, and the command_output
 // payload path already owns it.
 func (r *Router) maybeBackfillSubagentTranscript(threadID string, launch store.Item, meta backgroundTaskNotificationMeta) error {
-	if !isSubagentTranscriptLaunch(launch) {
+	if !isSubagentTranscriptLaunch(launch) || subagentTranscriptAlreadyMirrored(launch) {
 		return nil
 	}
 	written, err := r.backfillSubagentTranscript(threadID, launch, meta.OutputFile)

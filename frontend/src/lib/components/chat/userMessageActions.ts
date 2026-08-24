@@ -15,7 +15,6 @@ export interface EditResendPayload {
   message: string;
   attachmentIds: string[];
   /** Same first-word classification a fresh composer send would apply. */
-  providerCommand: boolean;
 }
 
 /**

@@ -3955,6 +3955,8 @@ describe('createThreadPane', () => {
         turnIndex: 1,
         itemIndex: 1,
         parentId: 'anchor',
+        kind: 'tool_call',
+        toolName: 'Bash',
         status: 'completed',
         summary: 'ran the build',
         ...overrides,
@@ -4069,7 +4071,12 @@ describe('createThreadPane', () => {
       const pane = await paneWithAnchor('fold-patch');
 
       pane.upsertItem(
-        childItem('fold-patch', { status: 'streaming', summary: 'partial' }),
+        childItem('fold-patch', {
+          kind: 'assistant_text',
+          toolName: '',
+          status: 'streaming',
+          summary: 'partial',
+        }),
       );
       expect(pane.items.some((it) => it.id === 'child-1')).toBe(true);
 
@@ -4085,9 +4092,9 @@ describe('createThreadPane', () => {
       expect(pane.items.some((it) => it.id === 'child-1')).toBe(false);
       expect(pane.subagentLiveAggregate('anchor')).toEqual({
         evictedCount: 1,
-        terminalPreview: 'full text',
-        terminalTurnIndex: 1,
-        terminalItemIndex: 1,
+        terminalPreview: '',
+        terminalTurnIndex: -1,
+        terminalItemIndex: -1,
       });
     });
 

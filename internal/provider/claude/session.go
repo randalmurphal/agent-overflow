@@ -119,6 +119,11 @@ type Session struct {
 	// concurrency story as issuedCommands, and released by the same
 	// terminal lifecycle frame.
 	suppressedCommands suppressedCommandUUIDs
+	// directCommands records every command-shaped send that is intentionally
+	// entering Claude's native command router. transcript_mirror uses this
+	// ledger to turn a forked built-in command into a Skill launch without a
+	// maintained command-name list.
+	directCommands directSlashCommands
 	// crossSessionEnabled records whether this process joined Claude
 	// Code's machine-wide peer inbox at spawn. Immutable for the
 	// session's life — the inbox binds once during setup and no control

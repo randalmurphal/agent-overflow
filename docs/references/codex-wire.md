@@ -1265,6 +1265,18 @@ The transcript is bracketed by two thread items
 {"type": "exitedReviewMode",  "id": "...", "review": "..."}
 ```
 
+A current inline review exposes two distinct turn ids. The id returned by
+`review/start` also appears on `enteredReviewMode`, review item activity,
+`exitedReviewMode`, and the outer `turn/completed`. A separate private
+`turn/started` id identifies the reviewer execution. `turn/interrupt` accepts
+only that private id. Showing both would create a false second user turn, but
+discarding the private id makes Stop ineffective.
+
+The review's final answer also has two forms. The reviewer first emits raw
+structured JSON. After `exitedReviewMode`, Codex emits the formatted Markdown
+answer that it injects into the parent context. The formatted answer is the
+user-visible result.
+
 A review runs as a **non-steerable turn**: `turn/start` or `turn/steer`
 against it fails with `codexErrorInfo:
 {"type":"activeTurnNotSteerable","turnKind":"review"}`
@@ -1272,18 +1284,24 @@ against it fails with `codexErrorInfo:
 
 ### Current state in agent-overflow
 
-`Session.StartReview` (`session_review.go`) sends the RPC through a closed
-`ReviewTarget` union whose only constructors are the four validated
-variants; the zero value refuses to marshal. `ReviewStarted.Detached` is
-derived from the returned id versus the session's own thread, so a server
-that answers differently than asked is observed rather than assumed away.
+`/review` follows the normal composer send transaction and calls
+`Session.StartReviewForTurn`. The outer id owns one visible turn and one
+`codex_review` agent launch. Review tools, thinking, and intermediate prose
+are parented under that launch. The private id stays in `activeTurnID` for
+Stop. The raw final JSON is discarded. The formatted answer becomes a
+top-level sourced `command_result`, so it reads as "Code review result"
+without claiming the parent agent authored it.
 
-`enteredReviewMode` / `exitedReviewMode` already reach the transcript as
-`review_status` notification rows (`protocol_item.go`, rendered by
-`NotificationRow.svelte`). A DETACHED review's own notifications arrive on
-a thread this session does not own, so they hit the fail-closed
-child-thread quarantine and are dropped — safe but inert until the
-returned `reviewThreadId` is registered with the routing tables.
+`config/read` resolves `review_model`; the parent model is the fallback. A
+DETACHED review is still refused because its returned thread is not registered
+with this session's routing tables.
+
+On disk, the root rollout contains the review boundary and formatted result,
+while a separate `source:{"subagent":"review"}` rollout contains the reviewer
+tools and reasoning. Session import joins that child by parent thread id and
+private control turn id. An incomplete root review is held behind the import
+cursor until its terminal boundary arrives, so refresh never persists a launch
+that a later independent batch cannot settle.
 
 ---
 

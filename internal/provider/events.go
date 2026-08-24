@@ -133,11 +133,10 @@ const (
 	// `system/task_updated` with the non-terminal `patch.is_backgrounded`,
 	// the reply to Ctrl+B or AO's `background_tasks` control_request). An
 	// agent launched async never emits it. It is the only statement that
-	// streaming for that agent stopped at this point — a backgrounded
-	// agent emits zero sidechain envelopes afterwards and its transcript
-	// completes only from the task_notification's output_file — so triage
-	// stamps the launch row with the cut timestamp and the pane renders the
-	// "streaming paused" marker from it. Meta is SubagentBackgroundedMeta.
+	// ordinary sidechain forwarding stopped at this point. New Claude
+	// sessions continue the transcript through `transcript_mirror`; triage
+	// stamps the launch row with the cut timestamp as detached-state
+	// provenance. Meta is SubagentBackgroundedMeta.
 	EventSubagentBackgrounded EventKind = "subagent_backgrounded"
 
 	// EventBackgroundTasksChanged is Claude's LEVEL signal for the set of
@@ -290,6 +289,18 @@ type ProviderEvent struct {
 	// consumers must use this typed value rather than decoding provider JSON.
 	Failure *FailureMeta `json:"-"`
 }
+
+// MetaTranscriptMirroredKey marks a subagent launch whose missing sidechain
+// is already being projected from the provider's live transcript mirror.
+// Terminal recovery may retain an on-disk fallback for older sessions but
+// must not parse the same transcript again when this marker is present.
+const MetaTranscriptMirroredKey = "transcript_mirrored"
+
+// MetaTranscriptSnapshotKey marks content reconstructed from a complete
+// transcript row rather than received as provider stream deltas. Consumers
+// must project it at its current state instead of replaying a fake typing or
+// thinking stream after the transcript has already advanced beyond it.
+const MetaTranscriptSnapshotKey = "transcript_snapshot"
 
 type FailureClass string
 
@@ -521,6 +532,21 @@ type CommandResultMeta struct {
 	// app-layer live-config reconciler is what settles an /effort or /fast
 	// apply from exactly this output.
 	Suppressed bool `json:"suppressed,omitempty"`
+	// AgentResult identifies a provider-executed command answer that came
+	// back from a forked agent. The row stays a command_result because the
+	// parent model did not author it, but this typed source lets the timeline
+	// render the answer as readable Markdown with honest attribution.
+	AgentResult *CommandAgentResultMeta `json:"agentResult,omitempty"`
+}
+
+// CommandAgentResultMeta is the durable source identity for a forked
+// command's final answer. LaunchID links the answer to the activity card
+// without parenting the row beneath it: the answer must remain top-level so
+// collapsing the activity cannot hide the result.
+type CommandAgentResultMeta struct {
+	LaunchID   string `json:"launchId"`
+	SourceKind string `json:"sourceKind"`
+	SourceName string `json:"sourceName"`
 }
 
 // TaskCreateMeta is the typed payload for EventTaskCreate.

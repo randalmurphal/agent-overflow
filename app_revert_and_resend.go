@@ -26,10 +26,6 @@ type RevertAndResendOptions struct {
 	// KillRunningBackgroundTasks is the caller's explicit consent to kill
 	// background work the revert orphans; see the method doc.
 	KillRunningBackgroundTasks bool `json:"killRunningBackgroundTasks,omitempty"`
-	// ProviderCommand mirrors SendMessageOptions.ProviderCommand: set only
-	// when the user invoked a provider-executed command from the command
-	// menu, so the Claude slash guard lets it through.
-	ProviderCommand bool `json:"providerCommand,omitempty"`
 }
 
 // RevertConversationAndResendMessage rolls a thread back to the selected
@@ -182,15 +178,11 @@ func (a *App) RevertConversationAndResendMessage(
 	//
 	// The option set is exact parity with the composer's own send
 	// (SendMessageWithOptions): this text was typed into a composer, so
-	// it gets D31 command expansion, and providerCommand carries the
-	// command-menu opt-in so an edited message naming a provider slash
-	// command reaches the CLI's command router instead of being guarded
-	// as prose. PreserveDraft keeps the send from consuming the crash
-	// copy — this saga settles that row itself, below.
+	// it gets D31 command expansion. PreserveDraft keeps the send from
+	// consuming the crash copy — this saga settles that row itself, below.
 	if _, err := a.sendMessageLocked(context.Background(), threadID, opts.Content, sendMessageOptions{
 		AttachmentIDs:          opts.AttachmentIDs,
 		ExpandComposerCommands: true,
-		ProviderCommand:        opts.ProviderCommand,
 		PreserveDraft:          true,
 	}, sendMessagePrepared{}); err != nil {
 		// The conversation is already truncated and the event already

@@ -375,14 +375,11 @@ func (a *App) dispatchFlushItem(threadID string, item triage.QueuedFlushItem) (Q
 		revisionSourceCommentIDs:     payload.RevisionSourceCommentIDs,
 		revisionSourceDiffReview:     payload.RevisionSourceDiffReview,
 		revisionSourceDiffCommentIDs: payload.RevisionSourceDiffCommentIDs,
-		// Every queued message was typed into the composer, so `/command`
-		// expansion applies (D31). It resolves HERE, at dispatch, not at
-		// enqueue: the block names the runs that are live when the message
-		// actually reaches the provider, and a message that waited out a
-		// long turn would otherwise carry a stale picture. Nothing about
-		// the block is persisted, so a requeue re-resolves it too.
-		expandComposerCommands: true,
-		providerCommand:        payload.ProviderCommand,
+		// Resolve composer commands HERE, at dispatch, not at enqueue: the
+		// block names the runs live when the message reaches the provider.
+		// App-injected wake prose keeps this false so a leading slash reaches
+		// the model rather than Claude's local router.
+		expandComposerCommands: payload.ExpandComposerCommands,
 	})
 	if err != nil {
 		return QueueFlushedItem{}, false, requeue, err
@@ -564,12 +561,10 @@ func (a *App) dispatchFlushItem(threadID string, item triage.QueuedFlushItem) (Q
 		InteractionMode: provider.NormalizeInteractionMode(thread.Mode),
 		Attachments:     providerAttachments,
 		UserMessageUUID: sendUUID,
-		// The slash-guard opt-in survives the queue wait on the payload, so
-		// a `/usage` typed during an active turn still reaches the CLI's
-		// command router when the boundary finally arrives — resolved here,
-		// at dispatch, from the same payload the direct send would have
-		// carried inline.
-		AllowClaudeSlashCommand: payload.ProviderCommand,
+		// Agent Overflow's own expanded command must bypass Claude's local
+		// router. Every other leading `/name` keeps Claude's native command
+		// semantics, independent of discovery timing.
+		GuardClaudeSlashCommand: !payload.ExpandComposerCommands || resolved.command != "",
 	}
 
 	// The provider queue requires a client message id and echoes it back on
@@ -885,13 +880,18 @@ func (a *App) persistFlushDispatchError(threadID string, turnIndex int, dispatch
 func (a *App) RegisterQueueItem(threadID string, message string, opts SendMessageOptions) (QueuedItem, error) {
 	// A user queueing a message has just consumed their composer draft, so the
 	// bound entry point clears it, and nothing is waiting on the dispatch.
-	return a.registerQueueItem(threadID, message, opts, injectedQueueOptions{})
+	return a.registerQueueItem(threadID, message, opts, injectedQueueOptions{
+		expandComposerCommands: true,
+	})
 }
 
 // injectedQueueOptions carries the two axes the wire does not, both of them
 // only meaningful for the app-internal injectors (a workflow wake) whose text
 // did not come from a person typing into the composer.
 type injectedQueueOptions struct {
+	// expandComposerCommands is true only for the public composer entry.
+	// App-injected wake text is prose even when its first word starts with `/`.
+	expandComposerCommands bool
 	// preserveDraft keeps the thread's durable composer draft. Clearing it
 	// would destroy text the user typed and has not sent — a silent data loss
 	// the user could not have anticipated from a run finishing in the
@@ -936,8 +936,18 @@ func (a *App) registerQueueItem(
 	// would otherwise grow a permanent in-memory queue entry that
 	// CleanupThread never sweeps (no session ever attached). Same
 	// validation as Send / Steer.
-	if _, err := a.store.GetThread(threadID); err != nil {
+	thread, err := a.store.GetThread(threadID)
+	if err != nil {
 		return QueuedItem{}, fmt.Errorf("register queue item: %w", err)
+	}
+	if injected.expandComposerCommands && thread.Provider == string(provider.Codex) {
+		_, isReview, parseErr := codexReviewCommandTarget(message)
+		if parseErr != nil {
+			return QueuedItem{}, fmt.Errorf("register queue item: /review: %w", parseErr)
+		}
+		if isReview {
+			return QueuedItem{}, fmt.Errorf("register queue item: /review needs an idle thread; wait for the current turn to finish")
+		}
 	}
 
 	// Defensive: production wires triage in initSubsystems. Mirrors
@@ -977,7 +987,7 @@ func (a *App) registerQueueItem(
 		RevisionSourceCommentIDs:     opts.RevisionSourceCommentIDs,
 		RevisionSourceDiffReview:     opts.RevisionSourceDiffReview,
 		RevisionSourceDiffCommentIDs: opts.RevisionSourceDiffCommentIDs,
-		ProviderCommand:              opts.ProviderCommand,
+		ExpandComposerCommands:       injected.expandComposerCommands,
 	}
 	payloadBytes, err := json.Marshal(payload)
 	if err != nil {
@@ -1001,7 +1011,6 @@ func (a *App) registerQueueItem(
 		RevisionSourceCommentIDs:     opts.RevisionSourceCommentIDs,
 		RevisionSourceDiffReview:     opts.RevisionSourceDiffReview,
 		RevisionSourceDiffCommentIDs: opts.RevisionSourceDiffCommentIDs,
-		ProviderCommand:              opts.ProviderCommand,
 		EnqueuedAt:                   enqueuedAt,
 	}
 	if !injected.preserveDraft {

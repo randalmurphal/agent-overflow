@@ -62,6 +62,9 @@ func (s *Session) handleServerRequest(method string, id *json.Number, params jso
 
 	turnID, itemID := readRouteFields(params)
 	parentToolUseID := s.parentToolUseForProviderThread(providerThreadIDFromParams(params))
+	if parentToolUseID == "" {
+		parentToolUseID = s.reviewScopeForTurn(turnID)
+	}
 	emit := func(evt provider.ProviderEvent) {
 		if parentToolUseID != "" {
 			evt.ParentToolUseID = parentToolUseID

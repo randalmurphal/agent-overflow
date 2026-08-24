@@ -1,6 +1,7 @@
 # Agent visibility design
 
-Status: DRAFT, awaiting sign-off (brainstorm 2026-08-22). Nothing implemented.
+Status: PARTIALLY IMPLEMENTED. Updated for direct command forks and live
+transcript mirroring on 2026-08-24. Unchecked success criteria remain open.
 
 ## Goal
 
@@ -21,10 +22,10 @@ launch, how do progress and terminal signals arrive, which controls exist
 
 ## Key decisions
 
-- Card = today's inline subagent card for every kind; awaited vs
-  background is a status pill, the capped-body + fade variant goes away
-  (Q6).
-- Collapsed row: kind chip (`agent` / `skill`), name, status pill,
+- Card = today's inline subagent card for every kind. Awaited vs background
+  changes placement and tray membership, not a card pill. Its expanded
+  digest is capped, virtualized, and faded at the top.
+- Collapsed row: kind chip (`agent` / `skill`), name, state indicator,
   elapsed, tool count, current activity line; tokens when the row has
   room, hidden under a container-width breakpoint (Q1).
 - The initial prompt is a plain user-side message row nested under the
@@ -51,13 +52,14 @@ launch, how do progress and terminal signals arrive, which controls exist
   twice, unformatted and cut mid-word.
 - Expanded body is an allowlist (ruling 2026-08-23): the initial prompt
   (first `user_text`), tool call rows, a provider refusal's reason
-  (`permission_denied` notification), error rows, nested child cards,
-  and the final text. Thinking, intermediate prose, later prompts,
-  progress chatter, compaction, and retries live in the pane; any of
-  them rendering in a card body is a bug. A spawned child shows as a
-  collapsed child card inside the parent's body (Q2, Q3).
-- Pane = new companion kind `agent` with a scope (launch item id),
-  rendered by the thread renderer filtered to `parent_id == scope`.
+  (`permission_denied` notification), error rows, and the final text.
+  Thinking, intermediate prose, later prompts, progress chatter,
+  compaction, retries, and child launches live in the pane. The digest is a
+  capped virtualized inner timeline with the normal bottom-follow spring and
+  reader escape. It never recursively embeds child agents in the main thread.
+- Pane = companion kind `agent` with a scope (launch item id), rendered by the
+  thread renderer filtered to direct `parent_id == scope` rows. A direct child
+  launch appears as a normal agent row without its descendants.
   Opening a child from inside swaps the scope and pushes a breadcrumb
   (`main › code-review › Angle B`); no stacking (Q4, Q4b).
 - Pane keeps the composer shell, non-interactive, with Stop (= kill
@@ -75,12 +77,23 @@ launch, how do progress and terminal signals arrive, which controls exist
   timeline to the card. Forks appear without a kill button (Q8).
 - Background action: icon button on a running inline agent or Bash row
   (Claude only: `background_tasks` control_request by `tool_use_id`);
-  no keyboard shortcut (Q9). A node backgrounded mid-flight stops
-  streaming until it completes (CC behavior); its pane shows a
-  "streaming paused until it finishes" marker at the cut.
+  no keyboard shortcut (Q9). Claude stops forwarding the node through the
+  ordinary sidechain stream, but AO's always-on session mirror continues its
+  pane live. Sessions started before mirror support fall back to terminal
+  transcript recovery.
 - Kill only where the wire can: Claude nodes with a task id
   (`stop_task`); never forks (interrupt-only) or Codex children
   (`close_agent` is model-only).
+- A direct Claude slash command appears as a running Command row on its
+  `command_lifecycle` started frame. If `attributionSkill` proves a fork, the
+  same row changes to Skill and owns the mirrored transcript. This uses wire
+  evidence, not a maintained list of commands that may fork.
+- A forked command's outer synthetic answer renders once after that activity
+  as top-level Markdown labelled `<skill> · skill result`. It remains a
+  system `command_result`, not parent-agent prose, and remains visible when
+  the activity collapses. When that sourced result exists, the matching
+  mirrored final assistant row remains in the agent pane but is excluded from
+  the Skill card digest. Without a synthetic result, the digest keeps it.
 - Live progress is in-memory UI state fed by Claude `task_progress`
   (tool count, tokens, elapsed, activity line) and, for Codex, the
   child thread's `thread/tokenUsage/updated` (unsuppressed into a scoped
@@ -147,12 +160,12 @@ launch, how do progress and terminal signals arrive, which controls exist
 
 ## Success criteria
 
-- [ ] A forked `code-review` renders as one `skill` card; none of its
+- [x] A forked `code-review` renders as one `skill` card; none of its
       tool calls appear as the main agent's.
 - [ ] A depth-2 background agent renders as a running card under its
       parent's card with live tool count and activity line, and in the
       background section indented under its parent.
-- [ ] Opening any card shows that node's full transcript in the agent
+- [x] Opening any card shows that node's full transcript in the agent
       pane; opening a child from inside swaps scope with a working
       breadcrumb; reload restores the pane to the same scope.
 - [ ] Every agent card and pane opens with what the agent was asked to
@@ -162,9 +175,9 @@ launch, how do progress and terminal signals arrive, which controls exist
 - [ ] A subagent's `permission_denied` and `can_use_tool` rows nest
       under its card; the card shows the approval pill while the prompt
       is pending.
-- [ ] Background button on a running inline agent returns the main
-      turn, the card flips to background, the pane shows the paused
-      marker, and the transcript completes on the task notification.
+- [x] Background button on a running inline agent returns the main turn, the
+      card flips to background, and the pane continues from session-mirror
+      rows without waiting for task notification.
 - [ ] Codex `spawn_agent` children render with the same card (at the
       completion point) and pane, counting the child thread's own
       cumulative spend (fresh input + cache writes + all output), which
@@ -176,7 +189,7 @@ launch, how do progress and terminal signals arrive, which controls exist
 
 | Old | New | Action |
 |-----|-----|--------|
-| Inline subagent group with capped body + top fade (`subagentGrouping.ts` group node, `AssistantMessage`/subagent card cap) | Shared agent card, expanded body on demand | MIGRATE (card first, then delete the cap/fade path) |
+| Unbounded expanded subagent digest | Capped virtualized digest with top fade and bottom follow | REPLACED |
 | Background completion card showing ack text as done | Same agent card with background pill | DELETE the ack-text rendering |
 | `parse_system.go` skip of `task_progress`, default-drop of `background_tasks_changed` | Typed progress event + level set | MIGRATE (parse, emit, consume) |
 | Codex `thread/tokenUsage/updated` suppressed for children (`collab_agents.go`) | Scoped child progress event | MIGRATE (unsuppress into the progress event, keep it off the parent's own meter) |

@@ -145,6 +145,4 @@ export interface ComposerInputSurfaceHandle {
    * sends. True means the host must NOT send — it is already handled.
    */
   consumeInterceptedSend(message: string): boolean;
-  /** Whether this message should carry `providerCommand: true`. */
-  isProviderCommandSend(message: string): boolean;
 }

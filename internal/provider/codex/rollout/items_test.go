@@ -338,10 +338,16 @@ func TestParsePaginatedMapsTheRemainingItemVariants(t *testing.T) {
 		summaries = append(summaries, n.Content)
 	}
 	joined := strings.Join(summaries, "|")
-	for _, want := range []string{"Agent paused for 1.5s", "root/reviewer started", "Code review started", "Code review finished"} {
+	for _, want := range []string{"Agent paused for 1.5s", "root/reviewer started"} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("notifications %q missing %q", joined, want)
 		}
+	}
+	if len(toolsByName(res.Events, importedCodexReviewToolName)) != 1 {
+		t.Errorf("no projected review launch: %v", kinds(res.Events))
+	}
+	if got := countKind(res.Events, provider.EventCommandResult); got != 1 {
+		t.Errorf("review result rows = %d, want 1", got)
 	}
 	if got := countKind(res.Events, provider.EventProposedPlan); got != 1 {
 		t.Errorf("plan rows = %d, want 1", got)

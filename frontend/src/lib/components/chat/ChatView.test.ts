@@ -334,7 +334,6 @@ describe('<ChatView>', () => {
           content: 'Update TWO of the lines',
           attachmentIds: [],
           killRunningBackgroundTasks: false,
-          providerCommand: false,
         },
       );
     });
@@ -371,7 +370,6 @@ describe('<ChatView>', () => {
           content: 'Update one of the lines',
           attachmentIds: [],
           killRunningBackgroundTasks: true,
-          providerCommand: false,
         },
       );
     });
@@ -493,7 +491,6 @@ describe('<ChatView>', () => {
         content: 'first prompt',
         attachmentIds: [],
         killRunningBackgroundTasks: false,
-        providerCommand: false,
       });
     });
     expect(resend).toHaveBeenCalledTimes(1);

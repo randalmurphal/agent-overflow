@@ -349,6 +349,25 @@ func TestConvertMarksBackgroundToolResults(t *testing.T) {
 	}
 }
 
+func TestConvertMarksForkedSkillResult(t *testing.T) {
+	events, _ := convertFixture(t, ConvertOptions{},
+		userRow("u1", "", "review", "2026-01-01T00:00:00.000Z"),
+		assistantRow("a1", "u1", "msg_1", []any{
+			toolUseBlock("toolu_skill", "Skill", map[string]any{"skill": "code-review"}),
+		}, "2026-01-01T00:00:01.000Z"),
+		toolResultRow("r1", "a1", "toolu_skill", "done", "2026-01-01T00:00:02.000Z",
+			with("toolUseResult", map[string]any{
+				"status": "forked", "agentId": "agent-1", "commandName": "code-review",
+			})),
+	)
+	completion := eventsOfKind(events, provider.EventToolComplete)[0]
+	meta := decodeMeta(t, completion.Meta)
+	fork, ok := meta["skillFork"].(map[string]any)
+	if !ok || fork["agentId"] != "agent-1" || fork["commandName"] != "code-review" {
+		t.Fatalf("skillFork = %#v", meta["skillFork"])
+	}
+}
+
 func TestConvertToolStartMetaMirrorsLiveParser(t *testing.T) {
 	events, _ := convertFixture(t, ConvertOptions{},
 		userRow("u1", "", "run", "2026-01-01T00:00:00.000Z"),

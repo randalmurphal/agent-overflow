@@ -34,6 +34,23 @@ func seedChildItem(
 	}
 }
 
+func seedToolChildItem(
+	t *testing.T,
+	s *Store,
+	threadID, id string,
+	turnIndex, itemIndex int,
+	parentID, summary, status string,
+) {
+	t.Helper()
+	if err := s.InsertItem(Item{
+		ID: id, ThreadID: threadID, TurnIndex: turnIndex, ItemIndex: itemIndex,
+		Kind: "tool_call", Role: "assistant", ToolName: "Bash", Status: status,
+		Summary: summary, ParentID: parentID, CreatedAt: int64(turnIndex*10 + itemIndex),
+	}); err != nil {
+		t.Fatalf("seed tool child item %s: %v", id, err)
+	}
+}
+
 // decodedSubagentMeta extracts the decoration keys from an anchor's
 // merged meta JSON. ok flags report key presence so tests can assert
 // "summary omitted" distinctly from "summary empty".
@@ -111,10 +128,10 @@ func TestListSubagentDescendants_MultiLevelOrderedAndExcludedFromWindows(t *test
 	if !hasCount || count != 2 {
 		t.Errorf("descendant count: got %v (present=%v), want 2", count, hasCount)
 	}
-	// Both descendants have summaries and neither is active, so the
-	// latest coordinate (child, turn 5) supplies the preview.
-	if !hasSummary || summary != "child" {
-		t.Errorf("latest summary: got %q (present=%v), want \"child\"", summary, hasSummary)
+	// Prose is not an activity preview. The nested Task launch is the latest
+	// observable action even though later assistant prose exists.
+	if !hasSummary || summary != "parent" {
+		t.Errorf("latest summary: got %q (present=%v), want \"parent\"", summary, hasSummary)
 	}
 }
 
@@ -292,14 +309,14 @@ func TestDecorateSubagentAnchors_PreviewPrefersActiveThenLatest(t *testing.T) {
 	// Anchor A: a running child with a summary beats a later-coordinate
 	// terminal child — mirrors the frontend's pickLatestChildSummary.
 	seedAnchorItem(t, s, "t", "anchor-a", 0, 0)
-	seedChildItem(t, s, "t", "a-run", 0, 1, "anchor-a", "working on auth", "running")
-	seedChildItem(t, s, "t", "a-done", 0, 2, "anchor-a", "finished tests", "completed")
+	seedToolChildItem(t, s, "t", "a-run", 0, 1, "anchor-a", "working on auth", "running")
+	seedToolChildItem(t, s, "t", "a-done", 0, 2, "anchor-a", "finished tests", "completed")
 
 	// Anchor B: an active child with an EMPTY summary loses to a
 	// terminal child that actually has text.
 	seedAnchorItem(t, s, "t", "anchor-b", 1, 0)
-	seedChildItem(t, s, "t", "b-done", 1, 1, "anchor-b", "did the thing", "completed")
-	seedChildItem(t, s, "t", "b-run-empty", 1, 2, "anchor-b", "", "running")
+	seedToolChildItem(t, s, "t", "b-done", 1, 1, "anchor-b", "did the thing", "completed")
+	seedToolChildItem(t, s, "t", "b-run-empty", 1, 2, "anchor-b", "", "running")
 
 	paged, err := s.ListRecentItems("t", 0)
 	if err != nil {

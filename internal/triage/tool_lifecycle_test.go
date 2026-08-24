@@ -1485,6 +1485,49 @@ func TestCodexSpawnLabelMetaUpdatePreservesFullReceiverList(t *testing.T) {
 	}
 }
 
+func TestMirroredCommandRowChangesToSkillInPlace(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	startMeta, _ := json.Marshal(map[string]any{
+		"toolName": "Command",
+		"input":    map[string]any{"command": "/code-review", "args": "high"},
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "claude-command:cmd-1",
+		ItemType: "Command", Meta: startMeta, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("provisional command start: %v", err)
+	}
+
+	skillMeta, _ := json.Marshal(map[string]any{
+		"meta_update_only": true,
+		"toolName":         "Skill",
+		"input":            map[string]any{"skill": "code-review", "args": "high"},
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "claude-command:cmd-1",
+		ItemType: "Skill", Meta: skillMeta, Timestamp: time.Now().Add(time.Millisecond),
+	}); err != nil {
+		t.Fatalf("skill classification update: %v", err)
+	}
+
+	item, found, err := st.GetThreadItem("t1", "claude-command:cmd-1")
+	if err != nil || !found {
+		t.Fatalf("get classified command row: found=%v err=%v", found, err)
+	}
+	if item.ToolName != "Skill" || item.Status != statusRunning {
+		t.Fatalf("classified command row = tool %q status %q, want running Skill", item.ToolName, item.Status)
+	}
+	var meta map[string]any
+	if err := json.Unmarshal([]byte(item.Meta), &meta); err != nil {
+		t.Fatalf("decode classified command meta: %v", err)
+	}
+	input, _ := meta["input"].(map[string]any)
+	if input["skill"] != "code-review" {
+		t.Fatalf("classified command input = %+v", input)
+	}
+}
+
 // TestMergeItemMetaCorrelationFieldsRebuildsMalformedExisting verifies
 // that a corrupt items.meta blob (e.g. truncated JSON from a prior
 // crash) does not block the merge — the helper rebuilds the meta

@@ -11,6 +11,24 @@
   export function nodeKey(node: _TNode): string {
     return timelineNodeKey(node);
   }
+
+  /**
+   * Main-thread agent digests never embed another agent card. Wait groups
+   * can contain completed agent cards, so filtering only direct children is
+   * insufficient. Keep the wait carrier and remove its nested agent rows.
+   */
+  export function withoutNestedAgentCards(node: _TNode): _TNode | null {
+    if (node.kind === 'group') return null;
+    if (node.kind !== 'wait_group') return node;
+    const children = node.children
+      .map(withoutNestedAgentCards)
+      .filter((child): child is _TNode => child !== null);
+    return {
+      ...node,
+      children,
+      descendantCount: children.length,
+    };
+  }
 </script>
 
 <script lang="ts">
@@ -29,10 +47,9 @@
   //   - live progress (tool count, activity line, tokens-when-room) from
   //     `provider:subagent_progress`, falling back to the final numbers
   //     triage persisted on the launch row at terminal;
-  //   - expanded body is a DIGEST: the node's tool calls, its final
-  //     text, and collapsed child cards. Thinking and intermediate text
-  //     live in the agent pane (Q2) — which is also why the body has no
-  //     height cap or fade: what remains is short by construction.
+  //   - expanded body is a capped, virtualized DIGEST of the node's tool
+  //     calls and final text. Thinking, intermediate text, and child-agent
+  //     navigation live in the agent pane.
   //   - open-in-pane button; a background button while a foreground
   //     Claude agent runs (Q9).
 
@@ -59,7 +76,7 @@
     codexCompletionPreview,
     codexSubagentLaunchInfo,
     codexSubagentTaskDescription,
-    isCodexSubagentLaunchItem,
+    isCodexAgentLaunchItem,
     launchRunsDetached,
     subagentLaunchInfo,
     type SubagentLaunchContext,
@@ -78,6 +95,8 @@
   import Icon from '../primitives/Icon.svelte';
   import PanelRightOpen from '@lucide/svelte/icons/panel-right-open';
   import SendToBack from '@lucide/svelte/icons/send-to-back';
+  import SubagentBodyClip from './SubagentBodyClip.svelte';
+  import { displayModelLabel } from '../../utils/modelLabels';
 
   let {
     pane,
@@ -127,11 +146,13 @@
   // user's expand state survives the window's overscan eviction. Local
   // fallback used only when `pane` is omitted (unit tests).
   let localExpanded = $state(false);
+  let navigationOnly = $derived(Boolean(pane?.agentScopeRootId));
   const expanded = $derived(
-    pane ? pane.isSubagentGroupExpanded(group.groupKey) : localExpanded,
+    navigationOnly ? false : pane ? pane.isSubagentGroupExpanded(group.groupKey) : localExpanded,
   );
 
   function toggle(): void {
+    if (navigationOnly) return;
     if (pane) {
       pane.toggleSubagentGroupExpanded(group.groupKey);
     } else {
@@ -145,7 +166,7 @@
   // dedupes in-flight and completed loads per anchor id, so this effect
   // re-running on unrelated state is harmless.
   $effect(() => {
-    if (!expanded || !pane) return;
+    if (navigationOnly || !expanded || !pane) return;
     if (group.loadedDescendantCount >= descendantCount) return;
     void pane.ensureSubagentChildren(group.parent.id);
   });
@@ -218,15 +239,20 @@
   let launchInfo = $derived(subagentLaunchInfo(parent, launchCtx));
   let kindLabel = $derived(launchInfo?.kind ?? 'agent');
   let agentTitle = $derived(launchInfo?.name ?? (parentToolName || 'Agent'));
-  let modelLabel = $derived(
-    deriveClaudeSubagentModelLabel(inputObject, parentMeta, parentToolName),
-  );
+  let modelLabel = $derived.by(() => {
+    if (launchInfo?.model) return displayModelLabel(launchInfo.provider, launchInfo.model);
+    const named = deriveClaudeSubagentModelLabel(inputObject, parentMeta, parentToolName);
+    if (named) return named;
+    if (launchInfo?.provider !== 'claude') return '';
+    const inherited = pane?.effectiveModel || pane?.thread?.model || '';
+    return inherited ? displayModelLabel('claude', inherited) : '';
+  });
   // The one-line task beside the title. Codex spawns read their OWN
   // shape (V1's plaintext prompt; V2 adds nothing, because its prompt is
   // encrypted and the label already is the task name it falls back to);
   // everything else reads the Claude input block.
   let inputDescription = $derived(
-    isCodexSubagentLaunchItem(parent)
+    isCodexAgentLaunchItem(parent)
       ? codexSubagentTaskDescription(codexSubagentLaunchInfo(parent))
       : deriveClaudeSubagentDescription(inputObject),
   );
@@ -374,11 +400,13 @@
   // produced — an ALLOWLIST, not a denylist: the initial prompt (the
   // first user_text — Codex echoes the spawn prompt as one), its tool
   // calls, a provider refusal's reason (the only place "why a tool did
-  // not run" lives), errors, nested child cards, and its FINAL text.
+  // not run" lives), errors, and its FINAL text.
   // Everything else — thinking, intermediate prose, later prompts,
   // progress chatter, compaction, retries — lives in the agent pane.
-  // That filter is also what keeps the body short enough to render
-  // uncapped (the old max-height + fade scroller is deleted, Q6).
+  // Nested launches also stay in the pane. There they render as direct
+  // child rows that navigate the same pane with breadcrumbs. The digest is
+  // capped and virtualized because one review can still run hundreds of
+  // tools after this filter.
   let bodyNodes = $derived.by<TimelineNode[]>(() => {
     // "Final text" exists only where a final answer can: while the agent
     // runs (the latest text is its live report) or after a clean
@@ -386,7 +414,12 @@
     // prose, not an answer — its body stays tool calls + nested cards
     // (user report 2026-08-22: a stopped agent's prose rendered in the
     // main chat history).
-    const keepFinalText = isRunning || completionStatus !== 'failure';
+    // Forked Skill commands publish their synthetic answer as a top-level
+    // sourced result. Keep the mirrored assistant row in the agent pane, but
+    // omit it from this inline digest so the main timeline never duplicates
+    // the answer above and below the activity boundary.
+    const keepFinalText = parentMeta?.directCommandResult !== true
+      && (isRunning || completionStatus !== 'failure');
     let lastTextId = '';
     let firstPromptId = '';
     for (const node of group.children) {
@@ -394,25 +427,30 @@
       if (keepFinalText && node.item.kind === 'assistant_text') lastTextId = node.item.id;
       if (!firstPromptId && node.item.kind === 'user_text') firstPromptId = node.item.id;
     }
-    return group.children.filter((node) => {
-      if (node.kind !== 'leaf') return true;
+    return group.children.flatMap((node) => {
+      if (node.kind !== 'leaf') {
+        const sanitized = withoutNestedAgentCards(node);
+        return sanitized ? [sanitized] : [];
+      }
       const item = node.item;
       switch (item.kind) {
         case 'tool_call':
         case 'tool_completion':
         case 'error':
         case 'api_error':
-          return true;
+          return [node];
         case 'user_text':
-          return item.id === firstPromptId;
+          return item.id === firstPromptId ? [node] : [];
         case 'assistant_text':
-          return item.id === lastTextId;
+          return item.id === lastTextId ? [node] : [];
         case 'notification': {
           const kind = parseJsonObject(item.meta)?.kind ?? item.toolName;
-          return kind === 'permission_denied';
+          return kind === 'permission_denied' || kind === 'transcript_mirror_degraded'
+            ? [node]
+            : [];
         }
         default:
-          return false;
+          return [];
       }
     });
   });
@@ -437,6 +475,7 @@
   >
     <TranscriptDisclosureHeader
       expanded={expanded}
+      expandable={!navigationOnly}
       controls={groupDomId}
       testId="subagent-group-toggle"
       class="rounded-[var(--radius-control)] px-1 py-1 hover:bg-surface-2/20"
@@ -516,7 +555,7 @@
             title="Open in agent pane"
             aria-label="Open {agentTitle} in agent pane"
             data-testid="subagent-group-open-pane"
-            class="opacity-0 group-hover/tool:opacity-100 focus-visible:opacity-100 rounded p-0.5 text-text-secondary hover:text-text-primary cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+            class={[navigationOnly ? 'opacity-100' : 'opacity-0 group-hover/tool:opacity-100 focus-visible:opacity-100', 'rounded p-0.5 text-text-secondary hover:text-text-primary cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50'].join(' ')}
           >
             <Icon icon={PanelRightOpen} size={12} />
           </button>
@@ -573,9 +612,12 @@
             Intermediate output only. Open the agent pane for the full transcript.
           </p>
         {:else}
-          {#each bodyNodes as child (nodeKey(child))}
-            {@render renderNode(child, depth + 1)}
-          {/each}
+          <SubagentBodyClip
+            nodes={bodyNodes}
+            depth={depth + 1}
+            live={isRunning}
+            {renderNode}
+          />
         {/if}
       </div>
     {/if}

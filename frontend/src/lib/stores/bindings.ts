@@ -631,15 +631,6 @@ export interface SendMessageOptions {
   revisionSourceCommentIds?: string[];
   revisionSourceDiffReview?: SourceDiffReview;
   revisionSourceDiffCommentIds?: string[];
-  /**
-   * Marks the message as a DELIBERATE provider-executed command, which
-   * opts the send out of Claude's outbound slash guard so the CLI runs
-   * the command instead of the model reading a neutralised copy of it.
-   * Set only when the draft's first word names a command the thread's
-   * provider actually reports; prose that happens to open with `/word`
-   * must leave it false.
-   */
-  providerCommand?: boolean;
 }
 
 export function SendMessageWithOptions(

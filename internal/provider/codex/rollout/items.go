@@ -158,15 +158,9 @@ func (c *converter) applyItemCompleted(env envelope) {
 	case "subagentactivity":
 		c.applySubAgentActivityItem(item)
 	case "enteredreviewmode":
-		c.emitNotification(reviewSummary("Code review started", item.UserFacingHint), map[string]any{
-			"kind":  "review_status",
-			"title": "Code review started",
-		}, "")
+		c.beginReviewItem(p, item)
 	case "exitedreviewmode":
-		c.emitNotification(exitedReviewSummary(item), map[string]any{
-			"kind":  "review_status",
-			"title": "Code review finished",
-		}, "")
+		c.exitReviewItem(item)
 
 	default:
 		// The enum is open and the installed CLI is routinely ahead of any

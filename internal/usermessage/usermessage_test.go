@@ -19,6 +19,20 @@ func TestMarshalReturnsEmptyForZeroInputs(t *testing.T) {
 	}
 }
 
+func TestMarshalRoundTripsComposerCommandProvenance(t *testing.T) {
+	encoded, err := Marshal(Input{ExpandComposerCommands: true})
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	meta, err := FromItem(store.Item{Meta: encoded})
+	if err != nil {
+		t.Fatalf("FromItem: %v", err)
+	}
+	if !meta.ExpandComposerCommands {
+		t.Fatalf("ExpandComposerCommands = false, want true in %s", encoded)
+	}
+}
+
 func TestMarshalIncludesAttachments(t *testing.T) {
 	attachments := []store.Attachment{
 		{ID: "a1", ThreadID: "t1", Filename: "shot.png", MimeType: "image/png", Size: 12345},
@@ -93,29 +107,6 @@ func TestMarshalJSONShapeMatchesContract(t *testing.T) {
 		strings.Contains(got, `"revisionSourceProposedPlan":`) ||
 		strings.Contains(got, `"revisionSourceDiffReview":`) {
 		t.Fatalf("omitempty fields leaked into output: %s", got)
-	}
-}
-
-func TestMarshalProviderCommandRoundTrip(t *testing.T) {
-	got, err := Marshal(Input{ProviderCommand: true})
-	if err != nil {
-		t.Fatalf("Marshal: %v", err)
-	}
-	// The flag alone is a non-empty meta: it is the only durable record
-	// of the slash-guard opt-in a requeue rebuilds its payload from.
-	if !strings.Contains(got, `"providerCommand":true`) {
-		t.Fatalf("missing providerCommand flag: %s", got)
-	}
-	meta, err := FromItem(store.Item{Meta: got})
-	if err != nil {
-		t.Fatalf("FromItem: %v", err)
-	}
-	if !meta.ProviderCommand {
-		t.Fatal("ProviderCommand lost on decode")
-	}
-	// A plain prose send still serialises to the empty meta.
-	if got, err := Marshal(Input{}); err != nil || got != "" {
-		t.Fatalf("Marshal(zero) = %q, %v — want empty", got, err)
 	}
 }
 

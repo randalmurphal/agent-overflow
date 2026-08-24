@@ -212,7 +212,8 @@ over stdio.
   for detached-child-agent terminal signals in raw mailbox carriers,
   rollout `response_item` records, and legacy standalone user-message
   carriers. Pure parsing (regex + JSON decode), no Session state.
-- `session_review.go` — `review/start` (`StartReview`) and
+- `session_review.go` — `review/start` (`StartReview`,
+  `StartReviewForTurn`) and
   `thread/compact/start` (`CompactThread`). `ReviewTarget` is a closed
   union with unexported fields and four validating constructors, so the
   four variants' different required payloads cannot be mixed and the zero
@@ -223,6 +224,13 @@ over stdio.
   notifications land on a thread this session does not own and are
   quarantined fail-closed; surfacing them needs the returned id registered
   with the routing tables first.
+- `session_review_projection.go` — inline review projection. Codex exposes
+  an outer review id on review items and the RPC response, plus a private
+  execution id on `turn/started`. The outer id owns the visible turn. The
+  private id stays in `activeTurnID` because it is the only id
+  `turn/interrupt` accepts. Review activity is scoped under one
+  `codex_review` launch and the formatted answer becomes one sourced
+  `command_result` after the launch.
 - `skills.go` — `skills/list` (`Session.ListSkills` for a live connection,
   `SkillsFetcher` for the ephemeral fallback), the wire→`codexskills.Skill`
   projection, and the `skills/changed` side channel. Every cwd must be
@@ -450,8 +458,9 @@ over stdio.
 - `review/start` — Codex's built-in code review, on one of four targets
   (`uncommittedChanges` / `baseBranch` / `commit` / `custom`) delivered
   `inline` (default) or `detached`. Not experimental, since 0.59.0. The
-  response's `reviewThreadId` is the routing authority for everything the
-  review emits.
+  response's `reviewThreadId` is the routing authority for the thread. For
+  inline delivery, review items carry the response turn id while the private
+  `turn/started` id is the interrupt authority. Do not merge those roles.
 - `thread/compact/start` — compact this thread's context now. Not
   experimental, since 0.96.0; response body is empty. The boundary arrives
   as the `contextCompaction` item, NOT on the response, and the older

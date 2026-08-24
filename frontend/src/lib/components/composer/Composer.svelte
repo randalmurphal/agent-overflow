@@ -464,12 +464,6 @@
       ? activeDiffReviewDraftComments
       : [];
     const message = hasDraftContentForSend ? composedMessage : '';
-    // Send-time classification: the first word naming a command the thread's
-    // provider reports means the CLI should execute it, so the send opts out
-    // of Claude's outbound slash guard. Derived from the message, never from
-    // whether the menu was used — a hand-typed `/usage` works, and an unknown
-    // `/word` stays guarded.
-    const providerCommand = message !== '' && (surface?.isProviderCommandSend(message) ?? false);
     // Drafts seeded by "Implement plan in new thread" carry a persisted
     // sourceProposedPlan ref. dispatchSend applies the revision-vs-source
     // precedence rule, so we forward both fields and let composerSend
@@ -507,7 +501,6 @@
 
       try {
         await registerQueueItem(midTurnThreadId, message, {
-          providerCommand,
           attachmentIds: queuedAttachmentIds,
           sourceProposedPlan: draftSourcePlan ?? null,
           revisionSourceProposedPlan: revisionPlanForMidTurn ?? null,
@@ -581,7 +574,6 @@
       const sent = await dispatchSend({
         threadId,
         message,
-        providerCommand,
         attachmentIds: snapshot.attachments.map((attachment) => attachment.id),
         sourceProposedPlan: draftSourcePlan ?? undefined,
         revisionSourceProposedPlan: sourceForSend && (hasDraftContentForSend || commentsForSend.length > 0)

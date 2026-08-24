@@ -41,6 +41,24 @@ function truncatedItem(overrides: Partial<Item> = {}): Item {
   });
 }
 
+function agentResultItem(overrides: Partial<Item> = {}): Item {
+  const markdown = '## Findings\n\n- Review `internal/triage/command_result.go:1`.';
+  return inlineItem({
+    id: 'command-result:skill-1',
+    summary: markdown,
+    meta: JSON.stringify({
+      kind: 'command_result',
+      preview: markdown,
+      agentResult: {
+        launchId: 'claude-command:cmd-1',
+        sourceKind: 'skill',
+        sourceName: 'code-review',
+      },
+    }),
+    ...overrides,
+  });
+}
+
 describe('<CommandResultRow>', () => {
   beforeEach(() => {
     resetBindingMocks();
@@ -66,6 +84,19 @@ describe('<CommandResultRow>', () => {
     // message from the model.
     expect(container.querySelector('svg[data-icon]')?.getAttribute('data-icon')).toBe('terminal');
     expect(getByTestId('command-result-label').textContent).toBe('command');
+  });
+
+  it('renders a forked Skill answer as sourced Markdown instead of terminal output', async () => {
+    const { getByTestId, queryByTestId, container } = render(CommandResultRow, {
+      props: { item: agentResultItem() },
+    });
+
+    expect(getByTestId('command-result-row')).toHaveAttribute('data-agent-result', 'true');
+    expect(getByTestId('agent-result-source').textContent).toContain('code-review · skill result');
+    expect(getByTestId('agent-result-body')).not.toHaveClass('font-mono');
+    expect(queryByTestId('command-result-output')).toBeNull();
+    await waitFor(() => expect(container.querySelector('h2')?.textContent).toBe('Findings'));
+    expect(container.querySelector('li')?.textContent).toContain('Review');
   });
 
   it('shows the preview plus a sized load affordance while truncated', () => {

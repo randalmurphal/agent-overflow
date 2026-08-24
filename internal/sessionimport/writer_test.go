@@ -53,6 +53,43 @@ func TestBuildStampsImportProvenanceOnEveryRow(t *testing.T) {
 	}
 }
 
+func TestBuildPreservesSourcedCommandResultAttribution(t *testing.T) {
+	st := newTestStore(t)
+	thread := seedThread(t, st, testThreadID, "codex", t.TempDir())
+	meta, err := json.Marshal(provider.CommandResultMeta{
+		AgentResult: &provider.CommandAgentResultMeta{
+			LaunchID: "review-launch", SourceKind: "review", SourceName: "Code review",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	batch, warnings, err := NewWriter(st, thread).Build([]importir.Event{
+		{ProviderEvent: provider.ProviderEvent{
+			Kind: provider.EventUserText, ThreadID: testThreadID,
+			Content: "/review", Timestamp: at(0),
+		}, SourceUUID: "line:1"},
+		{ProviderEvent: provider.ProviderEvent{
+			Kind: provider.EventCommandResult, ThreadID: testThreadID,
+			ItemID: "review-result", Content: "No findings.", Meta: meta, Timestamp: at(1),
+		}, SourceUUID: "line:2"},
+	})
+	if err != nil || len(warnings) != 0 {
+		t.Fatalf("build: warnings=%+v err=%v", warnings, err)
+	}
+	for _, row := range batch.Rows {
+		if row.Item.Kind != kindCommandResult {
+			continue
+		}
+		if !strings.Contains(row.Item.Meta, `"sourceKind":"review"`) ||
+			!strings.Contains(row.Item.Meta, `"launchId":"review-launch"`) {
+			t.Fatalf("command result meta = %s", row.Item.Meta)
+		}
+		return
+	}
+	t.Fatal("no command result row")
+}
+
 // SourceOffset is a resume position, never a substitute for provenance. A
 // reader that set only the offset is a reader bug, and the whole import is
 // refused rather than stamped with a coordinate nobody agreed on.

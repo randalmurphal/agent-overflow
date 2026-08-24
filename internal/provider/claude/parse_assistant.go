@@ -367,7 +367,7 @@ func (p *Parser) commandResultEvents(threadID string, msg assistantMessage, now 
 		}
 		meta, _ = json.Marshal(resultMeta)
 	}
-	return []provider.ProviderEvent{{
+	events := []provider.ProviderEvent{{
 		Kind:           provider.EventCommandResult,
 		ThreadID:       threadID,
 		ItemID:         strings.TrimSpace(msg.ID),
@@ -377,6 +377,10 @@ func (p *Parser) commandResultEvents(threadID string, msg assistantMessage, now 
 		Timestamp:      now,
 		Raw:            line,
 	}}
+	if p.activeCommandUUID != "" && p.holdMirroredCommandOutput(p.activeCommandUUID, events) {
+		return nil
+	}
+	return events
 }
 
 func assistantErrorEnum(raw map[string]json.RawMessage, msg assistantMessage) string {

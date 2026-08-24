@@ -521,11 +521,11 @@ func TestSubagentTranscriptBackfillAddsThePromptAnAsyncAgentNeverEchoed(t *testi
 	}
 }
 
-// An agent BACKGROUNDED mid-flight streams nothing further: its work
-// exists only in the sidechain JSONL the notification names. Exactly the
-// rows after the cut are replayed, under the launch, on the launch's own
-// turn, with the ids the live path would have minted — and a second
-// notification adds nothing.
+// Compatibility for a provider process started without session mirroring:
+// a mid-flight backgrounded agent stops ordinary sidechain forwarding.
+// Exactly the rows after the cut are replayed from the notification's
+// sidechain JSONL, under the launch, on the launch's own turn, with the ids
+// the live path would have minted. A second notification adds nothing.
 func TestSubagentTranscriptBackfillReplaysOnlyTheRowsAfterTheCut(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")

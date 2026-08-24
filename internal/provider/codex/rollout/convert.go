@@ -84,6 +84,11 @@ type converter struct {
 	// difference. See turns.go.
 	accounted tokenUsageWire
 
+	// review projects Codex's built-in review as one agent launch inside the
+	// root turn. The reviewer itself has a separate child rollout; the root
+	// file owns the command, boundary, and formatted result.
+	review *reviewConversion
+
 	// Tool correlation (tools.go). tools/toolOrder hold calls awaiting an
 	// output; toolItemIDs is the file-lifetime call_id → row id index the
 	// collab records parent themselves by (collab.go).
@@ -228,6 +233,14 @@ func (c *converter) countUnknown(env envelope) {
 // finish closes anything still open at end of file.
 func (c *converter) finish() {
 	c.closeTurn(nil, time.Time{})
+	if c.review != nil {
+		// A tail read can catch the root file between entered_review_mode and
+		// task_complete. Do not advance the durable cursor past a half-review:
+		// the import writer cannot settle a launch in a later independent batch.
+		c.events = c.events[:c.review.eventBase]
+		c.endOffset = c.review.startOffset
+		c.review = nil
+	}
 	if total := len(c.unknown); total > 0 {
 		c.warnings = append(c.warnings, importir.Warning{
 			Code:    WarnUnknownTypes,
@@ -254,6 +267,12 @@ func sortedKeys(m map[string]int) []string {
 // emit appends one event, stamping the coordinates of the line being read and
 // defaulting turn attribution to the open turn.
 func (c *converter) emit(evt provider.ProviderEvent) {
+	if c.review != nil && c.review.scopes(evt) {
+		evt.ParentToolUseID = c.review.launchID
+		if evt.Kind == provider.EventError {
+			c.review.errorText = strings.TrimSpace(evt.Content)
+		}
+	}
 	if evt.Timestamp.IsZero() {
 		evt.Timestamp = c.lastTimestamp
 	}
