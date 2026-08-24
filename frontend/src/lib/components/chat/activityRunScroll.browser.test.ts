@@ -658,14 +658,12 @@ describe('activity run — a clamped mount restore is re-applied as content meas
 
 describe('activity run — the top fade covers the clip\'s sub-pixel top edge', () => {
   // The clip's top lands on a fractional y in production (LayoutUnit sums of
-  // the rows above), and the composited scroller inside clips its content to
-  // the ENCLOSING pixel rect while the fade strip is antialiased at the
-  // fractional edge: one pixel row of content showed above the gradient,
-  // unfaded, strobing as rows glided under it. Whether the slit appears
-  // depends on compositor layer state, so a pixel assertion would be flaky;
-  // what can be pinned is the geometry that makes it unreachable — the strip
-  // starts a pixel above the clip, no wrapper clips that pixel back off, and
-  // the shortest run is taller than the strip, so it never hangs past a clip.
+  // the rows above), and browser clipping plus antialiasing can expose one
+  // pixel row of content above the gradient, unfaded and strobing as rows
+  // glide under it. Exact pixel output varies with browser layer state, so a
+  // pixel assertion would be flaky. What can be pinned is the geometry that
+  // makes it unreachable: the strip starts a pixel above the clip, no wrapper
+  // clips that pixel back off, and the shortest run is taller than the strip.
   const THREAD_ID = 'thread-run-fade-edge';
   const FADE_PX = 24;
   const clipOf = (scrollEl: HTMLElement): HTMLElement => {

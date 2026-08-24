@@ -66,12 +66,12 @@ the timeline virtualizer, or the scroll controller (`utils/scroll/`).
     DOM, and input remained live (bug-report-20260823T224631Z). Earlier
     promote/demote leases also caused three raster-transition flickers.
     The spring instead accounts for integer `scrollTop` in its motion
-    model. It carries rounding error forward and holds a cadence-aware
-    floor of one CSS pixel every `floor(refresh/60)` displayed frames,
-    yielding at least 60 visible position changes per second at 60,
-    90, 120, 144, 165, and 240Hz. The rule is independent of DPR because
-    tested Chromium scrollTop readback quantizes in CSS pixels. See
-    `quantizedMotionFloorPxPerFrame` in `spring.ts`.
+    model. It carries rounding error forward and holds a constant floor
+    of one CSS pixel per 60Hz-equivalent frame. Fractional integration
+    distributes those whole-pixel changes across display frames, keeping
+    the floor at 60px/s instead of changing it at refresh-rate rungs.
+    Real-Chromium coverage pins CSS-pixel quantization, and the soak rig's
+    `make soak-contract` probe checks the same contract in WebView2.
   - `intent.ts` — the event-sourced intent machine: wheel/scroll/pointer/
     key/touch listeners, escape and re-stick, restore-snap consent, and
     programmatic-write tagging. Intent is never geometry-inferred.
@@ -81,7 +81,7 @@ the timeline virtualizer, or the scroll controller (`utils/scroll/`).
     (below all three, the spring's own decay governs): the
     **acceleration slew** (a geometric onset ramp, ×1.10 per 60Hz frame
     over max(ramp base, current speed toward the target), the base a
-    display-independent 1.0 px/frame floored by the cadence floor — a
+    display-independent 1.0 px/frame floored by the motion floor — a
     standstill quantum eases in instead of jumping to its peak, and
     glides stretch into the next quantum's arrival instead of
     stop-starting per line), the **deceleration envelope** (0.11 ×
@@ -642,9 +642,9 @@ a smooth option, and never call `scrollIntoView()` on a virtualized row.
 
 `prefers-reduced-motion: reduce` forces sync-pin behavior regardless of
 requested animation mode. The app's `lowPowerMode` setting rides the same
-gate (`motionReduced()` in the controller): spring glides are the app's
-dominant GPU cost — one compositor frame per vsync for a whole chase — so
-low power means instant placement everywhere, including landing an
+gate (`motionReduced()` in the controller): spring glides keep rAF,
+geometry reads, scroll writes, and browser paint work active every frame,
+so low power means instant placement everywhere, including landing an
 in-flight chase on its next tick when the setting flips mid-glide. The
 same setting also snaps the streaming reveal to per-wire-chunk mutations
 (`PerItemSmoother`'s `revealImmediately` seam) and suppresses the
@@ -995,17 +995,17 @@ producer died with `DiffPanelDrawer` in the review-pane redesign — and
 the whole flash mechanism was removed rather than left dormant.)
 
 This is not an aesthetic preference; it is a present-policy constraint.
-The compositor presents a frame whose tiles have finished rastering —
+The browser presents a frame whose tiles have finished rastering —
 *unless an animation is active*, which flips its scheduler to
 smoothness-priority and licenses presenting with tiles missing. The
-timeline's core moves are compensated layer-space moves (bottom-held
+timeline's core moves are compensated viewport-space moves (bottom-held
 toggles, prune shifts, head splices): rows that stay screen-stationary
 while their tiles all invalidate at once. Under the default policy that
 is invisible; with any animation active in the same commit it is a
 checkerboard where text used to be (the 2026-08-17 expand flicker: a
 chevron rotate, a fade, and browser-re-dispatched hover transitions were
-enough). The two permitted owners are safe by construction: a scroll
-glide invalidates nothing (the compositor scrolls prepainted tiles), and
+enough). The two permitted owners are bounded by construction: a scroll
+glide changes only `scrollTop` and does not also mutate row geometry, and
 the line-slide animates a small clip whose tiles the same commit just
 painted.
 

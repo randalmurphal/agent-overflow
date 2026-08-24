@@ -13,7 +13,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   createSpringChase,
-  quantizedMotionFloorPxPerFrame,
+  SPRING_QUANTIZED_MOTION_FLOOR_PX_PER_FRAME,
   SPRING_WRITE_REFUSAL_LATCH_TICKS,
   SPRING_WRITE_REFUSAL_PROBE_INTERVAL_MS,
   type ArrivalReadback,
@@ -456,7 +456,7 @@ describe('momentum carry across catch-up', () => {
 });
 
 describe('acceleration slew (onset ramp + parked decay)', () => {
-  it('ramps a standstill onset geometrically from the cadence floor instead of jumping to the envelope peak', () => {
+  it('ramps a standstill onset geometrically from the motion floor instead of jumping to the envelope peak', () => {
     const h = makeHarness();
     h.setTarget(60);
     h.spring.markTargetChanged();
@@ -464,8 +464,8 @@ describe('acceleration slew (onset ramp + parked decay)', () => {
 
     const moves = displacements(h, 6);
     // Pre-slew, the first frame jumped straight to min(raw spring
-    // ≈3.8, envelope 6.6). Slewed: the cadence floor (the 60Hz phase
-    // lock, 1.0) × the ramp factor, compounding ~10% per frame.
+    // ≈3.8, envelope 6.6). Slewed: the 1px-per-60Hz-frame motion floor
+    // × the ramp factor, compounding ~10% per frame.
     expect(moves[0]).toBeGreaterThan(1.0);
     expect(moves[0]).toBeLessThan(1.2);
     for (let i = 1; i < moves.length; i++) {
@@ -535,10 +535,8 @@ describe('acceleration slew (onset ramp + parked decay)', () => {
     // after the same wall time: the ramp compounds G^stepFraction. In
     // this ceiling-dominated regime the tolerance pins the RAMP's time
     // scaling only — the integrator's own composability is pinned
-    // separately by the ceiling-free test below. 120Hz is
-    // the comparison point because its cadence-floor rung equals 60Hz's
-    // (both 1.0 px/frame), isolating time-scaling from the
-    // refresh-aware floor ladder.
+    // separately by the ceiling-free test below. The motion floor is
+    // display-independent, isolating time scaling from quantized motion.
     // 1s window over a long chase: ramp (~0.5s) + cruise. Bounded
     // one-off artifacts — the first tick integrates a full 60Hz step in
     // both drives (no prior timestamp), handing the finer drive ~half a
@@ -562,7 +560,7 @@ describe('acceleration slew (onset ramp + parked decay)', () => {
 
   it('integrates composably across fractional steps (60Hz vs 120Hz, ceiling-free regime)', () => {
     // A 6px quantum keeps every velocity below the slew base ramp
-    // (1.10), the envelope min (1.6), and the cadence floor — pure
+    // (1.10), the envelope min (1.6), and the motion floor — pure
     // spring physics, so this directly pins the integrator's
     // fractional-step composability: retention must be
     // (damping/mass)^f, not (damping^f)/mass. The historical form's
@@ -625,7 +623,7 @@ describe('acceleration slew (onset ramp + parked decay)', () => {
     }
   });
 
-  it('starts from the one-pixel cadence floor at standstill', () => {
+  it('starts from the one-pixel motion floor at standstill', () => {
     const h = makeHarness();
     h.setTarget(60);
     h.spring.markTargetChanged();
@@ -664,7 +662,7 @@ describe('acceleration slew (onset ramp + parked decay)', () => {
 describe('glide shaping (decel envelope + quantized tail)', () => {
   // The peak sits at the slew-ramp ↔ envelope crossover; the envelope
   // (0.09 · remaining) shapes the
-  // ease-out. The cadence floor holds its quantized tail until the final
+  // ease-out. The motion floor holds its quantized tail until the final
   // three-pixel landing. These tests pin the envelope bound, floor, and
   // error-carry continuity under integer scrollTop rounding.
   function parkAt(h: Harness, target: number): void {
@@ -687,7 +685,7 @@ describe('glide shaping (decel envelope + quantized tail)', () => {
     return moves;
   }
 
-  it('bounds the peak with the envelope and holds the cadence floor through the tail', () => {
+  it('bounds the peak with the envelope and holds the motion floor through the tail', () => {
     const h = makeHarness();
     parkAt(h, 100);
 
@@ -703,7 +701,7 @@ describe('glide shaping (decel envelope + quantized tail)', () => {
     }
     // Ease-out: once past the peak, per-frame moves only decelerate —
     // the envelope tracks remaining distance down, decays naturally,
-    // then plateaus at the cadence floor (equal frames allowed). The
+    // then plateaus at the motion floor (equal frames allowed). The
     // final frame is excluded: it combines the last decay step with
     // the sentinel-entry exact snap (≤1px arrival band, invisible), so
     // it reads larger than the step before it.
@@ -712,8 +710,8 @@ describe('glide shaping (decel envelope + quantized tail)', () => {
       expect(moves[i]).toBeLessThanOrEqual(moves[i - 1] + 0.01);
     }
     expect(moves[moves.length - 1]).toBeLessThanOrEqual(1.55);
-    // Cadence-floor hold: the deceleration parks at the floor (the 60Hz
-    // phase lock, 1.0 CSS px per frame at this harness's
+    // Motion-floor hold: the deceleration parks at 1.0 CSS px per
+    // 60Hz-equivalent frame at this harness's
     // 16.67ms cadence) instead of decaying through it.
     const floorHold = moves.filter((m) => m > 0.98 && m < 1.02);
     expect(floorHold.length).toBeGreaterThanOrEqual(2);
@@ -767,76 +765,68 @@ describe('glide shaping (decel envelope + quantized tail)', () => {
   });
 });
 
-describe('quantizedMotionFloorPxPerFrame', () => {
-  function cssPxPerDisplayedFrame(intervalMs: number): number {
-    return quantizedMotionFloorPxPerFrame(intervalMs) * (intervalMs / (1000 / 60));
+describe('quantized motion floor', () => {
+  it('holds one CSS pixel per 60Hz-equivalent frame without a refresh-rate rung', () => {
+    expect(SPRING_QUANTIZED_MOTION_FLOOR_PX_PER_FRAME).toBe(1);
+  });
+
+  function assertQuantizedTailCadence(warmHz: number, chaseHz: number): number {
+    const warmInterval = 1000 / warmHz;
+    const chaseInterval = 1000 / chaseHz;
+    const h = makeHarness({ quantize: true });
+    h.setTarget(100);
+    h.spring.markTargetChanged();
+    h.spring.start();
+    for (let i = 0; i < warmHz * 2; i++) frame(warmInterval);
+
+    h.setTarget(160);
+    h.spring.markTargetChanged();
+    const tailMoves: number[] = [];
+    for (let i = 0; i < chaseHz * 3 && h.getScrollTop() < 158; i++) {
+      const before = h.getScrollTop();
+      frame(chaseInterval);
+      if (before >= 152 && before < 157) {
+        tailMoves.push(h.getScrollTop() - before);
+      }
+    }
+    expect(h.getScrollTop()).toBeGreaterThanOrEqual(158);
+    expect(tailMoves.length).toBeGreaterThanOrEqual(3);
+    const tailDurationMs = tailMoves.length * chaseInterval;
+    const maxStationaryFrames = Math.max(0, Math.ceil(chaseHz / 60) - 1);
+    let stationaryRun = 0;
+    let longestStationaryRun = 0;
+    for (const move of tailMoves) {
+      expect(move).toBeGreaterThanOrEqual(0);
+      expect(move).toBeLessThanOrEqual(2);
+      if (move === 0) {
+        stationaryRun += 1;
+        longestStationaryRun = Math.max(longestStationaryRun, stationaryRun);
+      } else {
+        stationaryRun = 0;
+      }
+    }
+    expect(longestStationaryRun).toBeLessThanOrEqual(maxStationaryFrames);
+    return tailDurationMs;
   }
 
-  it('moves one CSS pixel per frame below 120Hz', () => {
-    expect(cssPxPerDisplayedFrame(1000 / 60)).toBeCloseTo(1, 5);
-    expect(cssPxPerDisplayedFrame(1000 / 90)).toBeCloseTo(1, 5);
+  it('keeps quantized tail speed stable from 60 through 240Hz', () => {
+    const durations = [60, 90, 120, 144, 165, 240]
+      .map((refreshHz) => assertQuantizedTailCadence(refreshHz, refreshHz));
+    expect(Math.max(...durations) - Math.min(...durations))
+      .toBeLessThanOrEqual(1000 / 60);
   });
 
-  it('uses one CSS pixel every two frames from 120 through 179Hz', () => {
-    expect(cssPxPerDisplayedFrame(1000 / 120)).toBeCloseTo(0.5, 5);
-    expect(cssPxPerDisplayedFrame(1000 / 144)).toBeCloseTo(0.5, 5);
-    expect(cssPxPerDisplayedFrame(1000 / 165)).toBeCloseTo(0.5, 5);
+  it.each([
+    [60, 240],
+    [240, 60],
+    [120, 165],
+    [165, 120],
+  ])('changes from %iHz to %iHz without a quantized-tail pulse', (warmHz, chaseHz) => {
+    const transitionedDuration = assertQuantizedTailCadence(warmHz, chaseHz);
+    const steadyDuration = assertQuantizedTailCadence(chaseHz, chaseHz);
+    expect(Math.abs(transitionedDuration - steadyDuration))
+      .toBeLessThanOrEqual(1000 / chaseHz);
   });
-
-  it('uses one CSS pixel every four frames at 240Hz', () => {
-    expect(cssPxPerDisplayedFrame(1000 / 240)).toBeCloseTo(0.25, 5);
-  });
-
-  it('falls back to the 60Hz assumption until cadence is measured', () => {
-    expect(quantizedMotionFloorPxPerFrame(null)).toBeCloseTo(
-      quantizedMotionFloorPxPerFrame(1000 / 60),
-      5,
-    );
-  });
-
-  it('bounds unusual and invalid cadence samples', () => {
-    expect(quantizedMotionFloorPxPerFrame(1000 / 100)).toBeCloseTo(1.6, 5);
-    expect(quantizedMotionFloorPxPerFrame(0)).toBeCloseTo(1, 5);
-  });
-
-  it.each([60, 90, 120, 144, 165, 240])(
-    'keeps quantized tail updates at 60Hz or faster on a %iHz display',
-    (refreshHz) => {
-      const interval = 1000 / refreshHz;
-      const h = makeHarness({ quantize: true });
-      h.setTarget(100);
-      h.spring.markTargetChanged();
-      h.spring.start();
-      for (let i = 0; i < refreshHz * 2; i++) frame(interval);
-
-      h.setTarget(160);
-      h.spring.markTargetChanged();
-      const tailMoves: number[] = [];
-      for (let i = 0; i < refreshHz * 3 && h.getScrollTop() < 157; i++) {
-        const before = h.getScrollTop();
-        frame(interval);
-        if (before >= 148 && before < 156) {
-          tailMoves.push(h.getScrollTop() - before);
-        }
-      }
-      expect(h.getScrollTop()).toBeGreaterThanOrEqual(157);
-      expect(tailMoves.length).toBeGreaterThanOrEqual(3);
-      const maxStationaryFrames = Math.max(0, Math.ceil(refreshHz / 60) - 1);
-      let stationaryRun = 0;
-      let longestStationaryRun = 0;
-      for (const move of tailMoves) {
-        expect(move).toBeGreaterThanOrEqual(0);
-        expect(move).toBeLessThanOrEqual(2);
-        if (move === 0) {
-          stationaryRun += 1;
-          longestStationaryRun = Math.max(longestStationaryRun, stationaryRun);
-        } else {
-          stationaryRun = 0;
-        }
-      }
-      expect(longestStationaryRun).toBeLessThanOrEqual(maxStationaryFrames);
-    },
-  );
 });
 
 describe('chase telemetry', () => {

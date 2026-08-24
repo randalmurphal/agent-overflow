@@ -692,8 +692,8 @@ Prose REVEALED after a run still closes it: the next activity row starts a
 new run, so a run with anything visible below it can never grow again. Since
 a settled turn usually ends `[…, activity_run, assistant_text]`, scanning
 backward past revealed prose would hand nearly every thread's last run a
-controller it can never use. Same factory, spring constants, fusion floor,
-and glide compositing as the main pane, so a streaming run feels identical
+controller it can never use. Same factory, spring constants, motion floor,
+and scrollTop-only glide as the main pane, so a streaming run feels identical
 to a streaming thread. Historical runs are plain `overflow-y: auto` with a
 restored `scrollTop`: they never chase, so a controller each would be a
 spring, an observer set, and intent listeners per run in the buffer for

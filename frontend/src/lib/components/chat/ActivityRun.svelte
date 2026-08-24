@@ -136,7 +136,7 @@
   // reader can SEE the displacing node, by which point the run's content is
   // quiet and the spring idle, so the handoff moves nothing.
   //
-  // Same factory, spring constants, and glide compositing as the main pane,
+  // Same factory, spring constants, and scrollTop-only motion as the main pane,
   // so a streaming run feels identical to a streaming thread. It NEVER
   // calls `pane.attachScrollController`: that slot is single-occupancy and
   // belongs to the timeline.
@@ -893,14 +893,13 @@
 
              It starts ONE PIXEL ABOVE the clip. The clip's top lands on a
              fractional y (row heights above it are LayoutUnit sums), and the
-             composited scroller inside clips its content to the ENCLOSING
-             pixel rect while this strip, painted in the ancestor layer, is
-             antialiased at the fractional edge — so the content's first
+             browser clips its content to device-pixel coverage while this
+             strip is antialiased at the fractional edge — so the content's first
              pixel row showed through above the gradient, unfaded: a bright
              1px slit of glyph bottoms that strobed as rows glided under it
-             (2026-08-22, "the top pixel is not in the fade"). Whether the
-             slit appears depends on compositor layer state, not on the
-             fraction, so the strip covers the row either way. Nothing clips
+             (2026-08-22, "the top pixel is not in the fade"). Presentation
+             varied with browser layer state, so the strip covers the row
+             regardless of that state. Nothing clips
              the strip — the overflow-hidden wrapper that used to bound it
              was the same antialiased fractional edge and cut the extra row
              back off. It needs no bound: the shortest run, one tool row, is

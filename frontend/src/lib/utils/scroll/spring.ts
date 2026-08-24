@@ -272,8 +272,8 @@ const SPRING_DECEL_ENVELOPE_MIN_PX_PER_FRAME = 1.6;
 // long the pane has actually been still.
 const SPRING_ACCEL_SLEW_FACTOR_PER_FRAME = 1.1;
 // Where a standstill ramp starts, in px per 60Hz frame. The ramp base
-// is max(this, quantized-motion floor). 1.0 equals the 60Hz cadence
-// floor, and every measured refresh starts its ramp within [1.0, 1.6].
+// is max(this, quantized-motion floor). Both are currently 1.0, so a
+// standstill starts at the same perceptual speed on every display.
 const SPRING_ACCEL_SLEW_BASE_PX_PER_FRAME = 1;
 // The quantized-motion floor releases inside this remaining distance, letting
 // the spring's natural exponential decay land the glide — a ~3-frame
@@ -281,48 +281,17 @@ const SPRING_ACCEL_SLEW_BASE_PX_PER_FRAME = 1;
 // which read as too firm (2026-07-04 feedback on the 1.2px release).
 const SPRING_QUANTIZED_FLOOR_RELEASE_PX = 3;
 
-// ===== Quantized-motion floor =====
 // Chromium and WebView2 quantize programmatic scrollTop writes to whole
-// CSS pixels at every tested devicePixelRatio. To avoid a slow stepped
-// tail, hold velocity at one CSS pixel every k displayed frames, where
-// k = floor(refresh / 60). That yields at least 60 visible changes per
-// second and avoids any authored transform or persistent GPU layer.
-const MIN_VISIBLE_MOTION_HZ = 60;
-const REFRESH_LADDER_TOLERANCE = 0.05;
-const QUANTIZED_FLOOR_MIN_PX_PER_FRAME = 1;
-const QUANTIZED_FLOOR_MAX_PX_PER_FRAME = 1.6;
+// CSS pixels. One CSS pixel per 60Hz-equivalent frame is a continuous
+// 60px/s floor at every refresh rate. Fractional integration plus the
+// rounding-error carry below distributes those pixels over displayed
+// frames without a refresh ladder whose rung changes alter glide speed.
+export const SPRING_QUANTIZED_MOTION_FLOOR_PX_PER_FRAME = 1;
 
-// Pure derivation, exported for tests. `frameIntervalMs` is the
-// spring's measured rAF cadence (null until first measured — falls
-// back to the 60Hz assumption, whose k=1 phase-locked floor is also
-// the safe transient choice). Returns px per 60Hz-equivalent frame,
-// the spring's velocity unit; the frame-rate-independent integration
-// (velocity · dtFrames) is what converts a held floor back into
-// exactly 1/k CSS pixels per displayed frame.
-export function quantizedMotionFloorPxPerFrame(
-  frameIntervalMs: number | null,
-): number {
-  const refreshHz =
-    frameIntervalMs !== null && frameIntervalMs > 0
-      ? 1000 / frameIntervalMs
-      : MIN_VISIBLE_MOTION_HZ;
-  const k = Math.max(
-    1,
-    Math.floor(refreshHz / MIN_VISIBLE_MOTION_HZ + REFRESH_LADDER_TOLERANCE),
-  );
-  const floorCssPxPerSecond = refreshHz / k;
-  return Math.min(
-    QUANTIZED_FLOOR_MAX_PX_PER_FRAME,
-    Math.max(QUANTIZED_FLOOR_MIN_PX_PER_FRAME, floorCssPxPerSecond / 60),
-  );
-}
-
-// Cadence input to the derivation above: EMA over real tick gaps,
-// bounded to plausible single-frame intervals so a missed frame or a
-// background stall never reads as a slow display. The EMA persists
-// across chases (cadence is a display property, not a chase property)
-// and re-converges within ~20 frames after the window moves to a
-// monitor with a different refresh rate.
+// Cadence telemetry: EMA over real tick gaps, bounded to plausible
+// single-frame intervals so a missed frame or a background stall never
+// reads as a slow display. It persists across chases and re-converges
+// after the window moves to a monitor with a different refresh rate.
 const FRAME_INTERVAL_EMA_ALPHA = 0.15;
 const FRAME_INTERVAL_SAMPLE_MIN_MS = 3;
 const FRAME_INTERVAL_SAMPLE_MAX_MS = 21;
@@ -996,8 +965,10 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
       // latch can never re-enter a display-rate loop.
       if (writeRefusalLatched) {
         if (now - lastRefusalProbeAt < SPRING_WRITE_REFUSAL_PROBE_INTERVAL_MS) {
-          const floor = quantizedMotionFloorPxPerFrame(frameIntervalEmaMs);
-          const base = Math.max(SPRING_ACCEL_SLEW_BASE_PX_PER_FRAME, floor);
+          const base = Math.max(
+            SPRING_ACCEL_SLEW_BASE_PX_PER_FRAME,
+            SPRING_QUANTIZED_MOTION_FLOOR_PX_PER_FRAME,
+          );
           const speed = Math.abs(velocity);
           if (speed > base) {
             velocity =
@@ -1058,17 +1029,11 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
       const withinTargetChangeRetainWindow =
         wantsSpringNow && now - lastTargetChangedAt < RETAIN_ANIMATION_DURATION_MS;
 
-      // Derive the cadence floor once here. The chase steps' floor hold, the
-      // slew ramp's base, and the caught-up branch's carry decay all
-      // read it.
-      const quantizedFloor = quantizedMotionFloorPxPerFrame(
-        frameIntervalEmaMs,
-      );
       // Standstill entry speed for the acceleration ramp — perceptual
-      // base, floored by display physics (see the constant).
+      // base, floored by the whole-pixel motion contract.
       const slewRampBase = Math.max(
         SPRING_ACCEL_SLEW_BASE_PX_PER_FRAME,
-        quantizedFloor,
+        SPRING_QUANTIZED_MOTION_FLOOR_PX_PER_FRAME,
       );
 
       if (current !== target && !deps.arrival.matches(target)) {
@@ -1224,20 +1189,22 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
               } else if (stepDiff < 0 && velocity < -slewCeiling) {
                 velocity = -slewCeiling;
               }
-              // Once this quantum has run faster than the cadence floor,
+              // Once this quantum has run faster than the motion floor,
               // do not let deceleration sink below it until the release
               // distance. This keeps integer scrollTop movement visible at
               // 60Hz or faster. Reversals still decelerate through zero.
-              if (Math.abs(velocity) >= quantizedFloor) {
+              if (
+                Math.abs(velocity) >= SPRING_QUANTIZED_MOTION_FLOOR_PX_PER_FRAME
+              ) {
                 quantizedFloorEngaged = true;
               } else if (
                 quantizedFloorEngaged
                 && remaining > SPRING_QUANTIZED_FLOOR_RELEASE_PX
               ) {
                 if (stepDiff > 0 && velocity > 0) {
-                  velocity = quantizedFloor;
+                  velocity = SPRING_QUANTIZED_MOTION_FLOOR_PX_PER_FRAME;
                 } else if (stepDiff < 0 && velocity < 0) {
-                  velocity = -quantizedFloor;
+                  velocity = -SPRING_QUANTIZED_MOTION_FLOOR_PX_PER_FRAME;
                 }
               }
               accumulated += velocity * stepFraction;

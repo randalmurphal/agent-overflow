@@ -75,13 +75,11 @@
   // here because the backdrop the old mask revealed is the flat
   // app-shell surface shown through ChatView's transparent timeline
   // (verified live 2026-07-21, max channel delta 2/255) — but their
-  // compositor cost is wildly different: a
-  // mask on the scroller rasterizes as a full viewport-sized texture
-  // whenever the pane's content layer is lease-promoted (~4.5MB
-  // renderer + the same again in the GPU-process mirror, per streaming
-  // pane — it was the single largest paint in the promoted scroller's
-  // layer stack) and re-applies on the raster path of every streaming
-  // repaint. The overlay is a 32px strip that paints once. Like the
+  // paint cost is wildly different. Prior layer experiments measured a
+  // mask on the scroller as a full viewport-sized texture (~4.5MB in
+  // the renderer plus a GPU-process mirror per streaming pane), and the
+  // mask re-applies on every streaming repaint. The overlay bounds that
+  // work to a 32px strip. Like the
   // mask, it is paint-only: no effect on scrollHeight/clientHeight/
   // scrollTop and no content-RO traffic, so it stays entirely clear of
   // the scroll controller.
@@ -848,7 +846,7 @@
 
       <!-- The outer wrapper is the warm-up gate's hide target. contentEl is
            the virtualizer's stable mounted-row plane and the controller's
-           registered compositor target (geometry itself is
+           registered geometry target (geometry itself is
            engine-sourced: the virtualizer's container has `contain:
            size; height: totalSize+'px'`, so its `onContentGeometry`
            samples report the content height the controller would
