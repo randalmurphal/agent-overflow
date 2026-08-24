@@ -251,7 +251,7 @@ describe('startAmbientPhase', () => {
   });
 
   it('leaves a script-driven animation alone', async () => {
-    // auto-animate drives every sidebar row this way. A script animation
+    // svelte's FLIP/transitions drive sidebar rows this way. A script animation
     // has no `animationName` at all, so a name check that only rejects
     // KNOWN-foreign strings would rewind it mid-flight.
     const el = mount('<span></span>');

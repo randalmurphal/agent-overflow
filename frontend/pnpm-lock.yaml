@@ -9,6 +9,9 @@ overrides:
   '@ungap/structured-clone': '>=1.3.1'
 
 patchedDependencies:
+  '@lucide/svelte@1.28.0':
+    hash: 43e19e76fe93d67e2285b40c93255a18f27e2601e67c83a90ccf4f5cc6b322b7
+    path: patches/@lucide__svelte@1.28.0.patch
   svelte@5.56.8:
     hash: bd5e6dfeff12d7feacf0d33f96258a18e400da0d3b7db56d157eeefa4188ef6c
     path: patches/svelte@5.56.8.patch
@@ -23,12 +26,9 @@ importers:
       '@fontsource/geist-sans':
         specifier: 5.3.0
         version: 5.3.0
-      '@formkit/auto-animate':
-        specifier: 0.9.0
-        version: 0.9.0
       '@lucide/svelte':
         specifier: 1.28.0
-        version: 1.28.0(svelte@5.56.8(patch_hash=bd5e6dfeff12d7feacf0d33f96258a18e400da0d3b7db56d157eeefa4188ef6c))
+        version: 1.28.0(patch_hash=43e19e76fe93d67e2285b40c93255a18f27e2601e67c83a90ccf4f5cc6b322b7)(svelte@5.56.8(patch_hash=bd5e6dfeff12d7feacf0d33f96258a18e400da0d3b7db56d157eeefa4188ef6c))
       '@wailsio/runtime':
         specifier: 3.0.0-beta.1
         version: 3.0.0-beta.1
@@ -197,9 +197,6 @@ packages:
 
   '@fontsource/geist-sans@5.3.0':
     resolution: {integrity: sha512-AmG7cE1AvE4NHROPaOl1sN+a02cB5xy6pA/ZV76HXqWTCsJTV2SCBc9DTFHfJqnVOODm7HhXIYtUIb75NP5QXQ==}
-
-  '@formkit/auto-animate@0.9.0':
-    resolution: {integrity: sha512-VhP4zEAacXS3dfTpJpJ88QdLqMTcabMg0jwpOSxZ/VzfQVfl3GkZSCZThhGC5uhq/TxPHPzW0dzr4H9Bb1OgKA==}
 
   '@iconify/types@2.0.0':
     resolution: {integrity: sha512-+wluvCrRhXrhyOmRDJ3q8mux9JkKy5SJ/v8ol2tu4FVjyYvtEzkc/3pK15ET6RKg4b4w4BmTk1+gsCUhf21Ykg==}
@@ -1681,8 +1678,6 @@ snapshots:
 
   '@fontsource/geist-sans@5.3.0': {}
 
-  '@formkit/auto-animate@0.9.0': {}
-
   '@iconify/types@2.0.0': {}
 
   '@iconify/utils@3.1.1':
@@ -1710,7 +1705,7 @@ snapshots:
       '@jridgewell/resolve-uri': 3.1.2
       '@jridgewell/sourcemap-codec': 1.5.5
 
-  '@lucide/svelte@1.28.0(svelte@5.56.8(patch_hash=bd5e6dfeff12d7feacf0d33f96258a18e400da0d3b7db56d157eeefa4188ef6c))':
+  '@lucide/svelte@1.28.0(patch_hash=43e19e76fe93d67e2285b40c93255a18f27e2601e67c83a90ccf4f5cc6b322b7)(svelte@5.56.8(patch_hash=bd5e6dfeff12d7feacf0d33f96258a18e400da0d3b7db56d157eeefa4188ef6c))':
     dependencies:
       svelte: 5.56.8(patch_hash=bd5e6dfeff12d7feacf0d33f96258a18e400da0d3b7db56d157eeefa4188ef6c)
 

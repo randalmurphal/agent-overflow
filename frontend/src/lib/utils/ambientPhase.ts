@@ -21,7 +21,7 @@
 // of main-thread work with 40 aligned dots running.
 
 /** The CSS animations this module owns. Anything else on the page —
- * `animate-spin`, view transitions, auto-animate's WAAPI effects — is
+ * `animate-spin`, view transitions, svelte transition/FLIP effects — is
  * left strictly alone. */
 const AMBIENT_ANIMATIONS: ReadonlySet<string> = new Set([
   'ambient-pulse',
@@ -50,7 +50,7 @@ function alignOne(animation: Animation): void {
   if (aligned.has(animation)) return;
   // Strict allowlist. Only a CSS animation running one of OUR keyframes is
   // ours to rewind. Anything else reaching this — a script-driven
-  // `element.animate()` (auto-animate runs one per sidebar row), a
+  // `element.animate()` (svelte's FLIP/transitions drive sidebar rows), a
   // CSSTransition, a foreign keyframe — carries no `animationName` we
   // recognise, and rewinding it would jump a transition mid-flight.
   const name = (animation as Partial<CSSAnimation>).animationName;

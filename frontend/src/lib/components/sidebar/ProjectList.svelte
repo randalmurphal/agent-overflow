@@ -5,7 +5,8 @@
 
   import type { ProjectWithCounts, Thread } from '../../types/models';
   import type { ThreadPane } from '../../stores/thread.svelte';
-  import { autoAnimate } from '../../utils/autoAnimate';
+  import { flip } from 'svelte/animate';
+  import { SIDEBAR_FLIP, sidebarEnter, sidebarExit } from '../../utils/sidebarAnimate';
   import ProjectItem from './ProjectItem.svelte';
   import type { ProjectNewThreadHandler, ProjectNewTerminalHandler } from './projectNewThread';
 
@@ -38,9 +39,12 @@
   <div
     class="px-2 py-1"
     data-testid="sidebar-project-list"
-    use:autoAnimate
   >
     {#each projects as project, index (project.project.id)}
+      <!-- animate:/transition: need an element as the each's immediate
+           child; ProjectItem is a component, so a layout-neutral block
+           wrapper carries them. -->
+      <div animate:flip={SIDEBAR_FLIP} in:sidebarEnter out:sidebarExit>
       <ProjectItem
         {project}
         threads={threadsByProject.get(project.project.id) ?? []}
@@ -51,6 +55,7 @@
         {onReorder}
         separatedFromPrevious={index > 0}
       />
+      </div>
     {/each}
   </div>
 {/if}

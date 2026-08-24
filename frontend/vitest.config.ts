@@ -22,12 +22,6 @@ const happyDomResolve = {
     // `import 'katex/dist/katex.min.css'`, which would crash component tests
     // with "Unknown file extension '.css'". Stub it explicitly.
     { find: 'katex/dist/katex.min.css', replacement: resolve(import.meta.dirname, 'src/test/mocks/empty-css.ts') },
-    // auto-animate's element poller leaves untracked node timers running
-    // after environment teardown (setInterval -> requestAnimationFrame on
-    // a torn-down happy-dom global), which flakes the suite with unhandled
-    // ReferenceErrors under load. Animations don't matter in tests — stub
-    // the module. See src/test/mocks/auto-animate.ts.
-    { find: '@formkit/auto-animate', replacement: resolve(import.meta.dirname, 'src/test/mocks/auto-animate.ts') },
   ],
 };
 

@@ -89,6 +89,18 @@ if (typeof Element !== 'undefined' && typeof Element.prototype.animate !== 'func
     };
 }
 
+// Companion to the animate stub: svelte's transition runner probes
+// `element.getAnimations()` before dismantling an out-transitioning node
+// (transitions.js `dispatch_event` path), and happy-dom lacks it too.
+// Nothing in the stub ever registers a live animation, so the honest
+// answer is always "none".
+if (typeof Element !== 'undefined' && typeof Element.prototype.getAnimations !== 'function') {
+  (Element.prototype as unknown as { getAnimations: () => Animation[] }).getAnimations =
+    function stubGetAnimations(): Animation[] {
+      return [];
+    };
+}
+
 // happy-dom does not implement document.execCommand. The composer +
 // textEditing dispatcher rely on it for `insertText` / `delete` so that
 // programmatic edits participate in the browser's native undo stack.

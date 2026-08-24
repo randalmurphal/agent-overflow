@@ -31,7 +31,8 @@
   import {
     getEffectiveThreadStatus,
   } from '../../stores/threadStatuses.svelte';
-  import { autoAnimate } from '../../utils/autoAnimate';
+  import { flip } from 'svelte/animate';
+  import { SIDEBAR_FLIP, sidebarEnter, sidebarExit } from '../../utils/sidebarAnimate';
   import Plus from '@lucide/svelte/icons/plus';
   import Icon from '../primitives/Icon.svelte';
   import ThreadRow from './ThreadRow.svelte';
@@ -171,10 +172,9 @@
     role="list"
     aria-label="Project Threads"
     data-testid="project-thread-list"
-    use:autoAnimate
   >
     {#each visibleNodes as node (node.thread.id)}
-      <div role="listitem">
+      <div role="listitem" animate:flip={SIDEBAR_FLIP} in:sidebarEnter out:sidebarExit>
         <ThreadRow
           thread={node.thread}
           {pane}

@@ -367,6 +367,12 @@ export function makeGitStatus(overrides: Partial<GitStatus> = {}): GitStatus {
  * with transition:fade or scale should call this from beforeAll.
  */
 export function installAnimateShim(): void {
+  if (typeof (Element.prototype as unknown as { getAnimations?: unknown }).getAnimations !== 'function') {
+    (Element.prototype as unknown as { getAnimations: () => unknown[] }).getAnimations =
+      function fakeGetAnimations() {
+        return [];
+      };
+  }
   if (typeof (Element.prototype as unknown as { animate?: unknown }).animate !== 'function') {
     (Element.prototype as unknown as { animate: (...args: unknown[]) => unknown }).animate =
       function fakeAnimate() {
