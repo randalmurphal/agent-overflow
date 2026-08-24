@@ -1,17 +1,12 @@
 // Wall-clock phase for the ambient indicator animations, plus the device
 // pixel ratio their sprite frame width snaps to.
 //
-// The animations themselves are plain CSS (app.css: `ambient-led`,
-// `ambient-spin`, `working-sprite-run`). CSS can express
+// The animations themselves are plain CSS (app.css: `ambient-pulse`,
+// `ambient-led`, `ambient-spin`, `working-sprite-run`). CSS can express
 // the waveform but not the PHASE: an animation starts when its element
 // does, so dots that appear as threads start running would each blink on
 // their own beat. Measured 2026-08-23: 40 dots mounted 37ms apart land in
 // 13 different 125ms slots without this, and in exactly 1 with it.
-//
-// `.animate-pulse` is deliberately NOT in this set and is not a CSS
-// animation at all — it mounts inside the timeline scroller, where an
-// animation object flips the present policy. utils/ambientTicker.ts
-// drives it with inline writes instead.
 //
 // One delegated `animationstart` listener catches every ambient animation
 // as it begins and pins its `startTime` so the animation's local time IS
@@ -29,6 +24,7 @@
  * `animate-spin`, view transitions, auto-animate's WAAPI effects — is
  * left strictly alone. */
 const AMBIENT_ANIMATIONS: ReadonlySet<string> = new Set([
+  'ambient-pulse',
   'ambient-led',
   'ambient-spin',
   'working-sprite-run',

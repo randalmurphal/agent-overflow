@@ -976,25 +976,32 @@ scroller:
 Everything else is still ink. No CSS transitions (the app.css timeline
 kill rule zeroes them — see `components/chat/AGENTS.md` §Row Contract),
 no Svelte `transition:`/`in:`/`out:`/`animate:` directives
-(`timelineAnimationDirectives.test.ts`), no decorative keyframes on row
-content (`timelineKeyframeAnimations.test.ts`) — `animate-pulse` is
-disarmed app-wide (`--animate-pulse: none` in the theme; the ambient
-ticker drives those opacities with inline style writes, which create no
-animation objects and so never flip the present policy). The guards make
-the wrong thing inert or loud rather than relying on review memory.
+(`timelineAnimationDirectives.test.ts`), and no keyframe animation on
+row content that moves anything but light
+(`timelineKeyframeAnimations.test.ts`). The guards make the wrong thing
+inert or loud rather than relying on review memory.
 
-The keyframe guard exists because that door was walked through. Commit
-`5c860a15` re-armed `--animate-pulse` as a stepped CSS animation for a
-measured main-thread win (the ambient indicators were 62% of renderer
-main-thread work) and shipped a live Animation object into the scroller
-on every running tool call — `chat/Indicator.svelte` renders the class
-from fourteen row components. Nothing caught it: the kill rule only
-reaches transitions and the directive walk only reaches Svelte
-directives. The guard now DERIVES the armed-class set from app.css, so
-re-arming a utility fails the build rather than needing a reviewer to
-remember this paragraph. Indicators that mount outside the scroller
-(`ambient-led`, `ambient-spin`, `working-sprite-run`) are free to be CSS
-animations and are.
+"Moves anything but light" is the keyframe rule, and it was briefly
+wider. `1633dcea` banned keyframe animations from the scroller
+outright, on the theory that any Animation object licenses the
+compositor to present before raster lands, and disarmed `animate-pulse`
+app-wide to satisfy it. Measurement (below) kept the hazard and killed
+the scoping, so that ban bought no quiet frame and charged ~28
+whole-document repaints/sec of inline style writes for it. What survives
+is the doctrine's own rule: a row may fade, never move. `opacity` adds no
+second motion owner and no geometry for the controller's compensation to
+fight, so it is the one property allowed, and the guard reads the
+`@keyframes` bodies in `app.css` to enforce it. A transform, a size, an
+inset — each is a third motion owner and fails the build.
+
+The ambient indicators are all CSS animations on compositable
+properties, phase-locked to wall clock by `utils/ambientPhase.ts`:
+`ambient-pulse`, `ambient-led`, `ambient-spin`, `working-sprite-run`.
+All four are stepped, which is a separate rule with its own incident
+(2026-07-04: one smoothly pulsing 6px dot was a standing 165
+presents/sec client that stuttered *other applications*) and its own
+check in the same file — run over `app.css` rather than over this
+directory, because that hazard is document-wide.
 
 One in-scroller-adjacent animation is allowlisted rather than removed:
 `MessageTimeline`'s explicit-jump landing flash is an overlay on the
@@ -1002,25 +1009,27 @@ NON-SCROLLING wrapper, a sibling after the scroller in source order,
 placed there deliberately so no row gains an animation. A jump is an
 instant teleport, not a compensated move.
 
-The guards do not yet cover everything the doctrine claims. Known
-in-scroller animations outside them, kept deliberately pending a
-product call: the `animate-spin` loading ring on `primitives/Button`
-(load-older/newer, the message editor's working state, plan-card
-expansion — a keyframe animation active during exactly the head-splice
-compensation commits load paging performs), and the vendored streamdown
-popovers' `transition:scale|global` dialogs (click-gated, outside the
-directive tripwire's `components/chat` walk). Removing or converting
-these (e.g. to the ticker-driven `SteppedSpinner`) changes visible
-behavior, so they are a decision, not a cleanup. (A third exception, the
+The guards do not yet cover everything the doctrine claims, because both
+walks cover `components/chat/` and the hazard is the scroller's DOM
+subtree. Known in-scroller animations outside them, kept deliberately
+pending a product call: the `animate-spin` loading ring on
+`primitives/Button` (load-older/newer, the message editor's working
+state, plan-card expansion — a *transform* animation, so a straight
+violation of the fade-never-move rule, and live during exactly the
+head-splice compensation commits load paging performs), and the vendored
+streamdown popovers' `transition:scale|global` dialogs (click-gated,
+outside the directive tripwire's `components/chat` walk). Removing or
+converting these (e.g. to the ticker-driven `SteppedSpinner`) changes
+visible behavior, so they are a decision, not a cleanup. (A third exception, the
 user-message jump-target glow, turned out to be dead code — its only
 producer died with `DiffPanelDrawer` in the review-pane redesign — and
 the whole flash mechanism was removed rather than left dormant.)
 
-This is not an aesthetic preference; it is a present-policy constraint.
-The browser has no reason to draw until raster lands — *unless an
-animation is active*, which drives a begin-frame every vsync, so the
-compositor draws on the frame deadline whether or not the tiles are
-ready.
+This is not an aesthetic preference. Two motion owners on the same
+pixels fight, and the compositor makes the fight visible: the browser
+has no reason to draw until raster lands — *unless an animation is
+active*, which drives a begin-frame every vsync, so it draws on the
+frame deadline whether or not the tiles are ready.
 
 That wording was corrected on 2026-08-24 against measurement
 (`scripts/perfprobe/present-policy-arms.mjs`; ledger entry in the
@@ -1031,8 +1040,8 @@ animations run, because that mode is driven by pinch and active
 compositor scroll, not by CSS animations. The conclusion held, the named
 mechanism did not.
 
-Two properties of the real mechanism do not match how the rules below
-are scoped, and both are open questions rather than settled practice:
+Two properties of the real mechanism do not match how a
+"no animation objects in the scroller" rule would be scoped:
 
 - **It is binary, not proportional.** One animation and thirty measure
   the same (20 / 15 / 17 / 17 draws landing during outstanding raster at
@@ -1043,6 +1052,16 @@ are scoped, and both are open questions rather than settled practice:
   scroller scores the same as one inside (18 vs 23). "It mounts outside
   the scroller" is therefore not, on its own, a safety argument — though
   it remains a correct statement about where a component renders.
+
+Zero is unreachable here and that settles it. The working sprite, the
+LED chase and the stepped spinner run through every working turn, and
+`TailClampedText`'s line-slide runs continuously through streaming — all
+four are wanted, and the last is one of the two permitted owners. So the
+counting rule was chasing a state the app never enters, which is why the
+guard now enforces the motion rule instead. What still narrows the
+window is keeping *fresh raster* out of the compensating commit, which
+is what the transition kill rule does: a decorative transition on a row
+does not merely exist during the toggle, it repaints during it.
 
 Caveat before quoting the numbers: headless, `SoftwareRenderer`, one
 raster thread. The arm-to-arm comparison is the result; the absolute

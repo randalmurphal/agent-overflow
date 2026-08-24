@@ -253,42 +253,48 @@ html.light {
   --font-sans: 'Geist Sans', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
   --font-mono: 'Geist Mono', ui-monospace, SFMono-Regular, Consolas, 'Liberation Mono', Menlo, monospace;
 
-  /* Disarm Tailwind's animate-pulse. Every animate-pulse in this app is
-     an ambient indicator (working dots in the sidebar/header/picker,
-     loading text, retry icons); the utility keeps its name but is a
-     MARKER class — utils/ambientTicker.ts discovers marked elements and
-     writes their pulsing opacity inline.
+  /* Ambient pulse. Every animate-pulse in this app is an ambient
+     indicator (working dots in the sidebar/header/picker/rows, loading
+     text, retry icons), so the utility keeps its name and is redefined
+     onto our own keyframes instead of Tailwind's.
 
-     This one is NOT a performance choice, and re-arming it to save main
-     thread work is the mistake to avoid. chat/Indicator.svelte renders
-     this class from fourteen chat row components, so an armed animation
-     puts a live Animation object inside the timeline scroller on every
-     running tool call — which flips Blink's present policy to
-     smoothness-priority and licenses presenting with un-rastered tiles
-     during the timeline's compensated moves. That is the 2026-08-17
-     checkerboard. An inline style write creates no animation object and
-     so never flips it. See docs/architecture/frontend-scroll.md
-     § The Print Doctrine, and the tripwire in
-     components/chat/timelineKeyframeAnimations.test.ts.
+     STEPPED, not smooth, and that half is load-bearing. The original
+     smooth pulse forced a GPU present every vsync — on a 165Hz panel
+     one 6px dot was a standing 165 presents/sec client that stuttered
+     OTHER apps (2026-07-04 incident; re-measured 2026-08-23 at 63/s
+     smooth vs 7.3/s stepped). Eight values per half-cycle reads as the
+     same breath and presents 8/s.
 
-     Separately, and still true: the original SMOOTH pulse forced a GPU
-     present every vsync — on a 165Hz panel one 6px dot was a standing
-     165 presents/sec client that stuttered OTHER apps (2026-07-04
-     incident; re-measured 2026-08-23 at 63/s smooth vs 7.3/s stepped).
-     Any stepped waveform here, CSS or JS, keeps that fixed.
+     A CSS animation rather than a JS style write because opacity is
+     compositable: Blink promotes the element and ticks it off the main
+     thread, so a running dot costs no style recalc and no paint. The
+     inline-write version cost ~28 whole-document repaints/sec whenever
+     dots were on screen, on the same thread that serves typing and
+     scrolling.
 
-     Indicators that mount OUTSIDE the scroller are free to be CSS
-     animations and are: `ambient-led`, `ambient-spin` and
-     `working-sprite-run` below all animate a compositable property, cost
-     zero style recalcs, and take their wall-clock phase from
-     utils/ambientPhase.ts.
+     History, because this flipped twice. 5c860a15 armed it; 1633dcea
+     disarmed it again on the theory that an Animation object inside the
+     timeline scroller licenses presenting with un-rastered tiles during
+     a compensated move (the 2026-08-17 checkerboard). Measurement on
+     2026-08-24 (scripts/perfprobe/present-policy-arms.mjs) kept the
+     hazard and killed the scoping: the exposure is BINARY (one
+     animation costs what thirty do) and DOCUMENT-wide (an animation
+     outside the scroller scores the same as one inside). The working
+     sprite, the LED chase and the stepped spinner run through every
+     working turn, and TailClampedText's line-slide runs through
+     streaming, so disarming this one utility bought no quiet frame and
+     charged for it on all the others. See
+     docs/architecture/frontend-scroll.md § The Print Doctrine.
+
+     Wall-clock phase comes from utils/ambientPhase.ts, so dots that
+     mount at different times breathe together.
 
      Spinners (animate-spin) are deliberately untouched — smooth
      rotation, transient use only. Standing spinners use
      primitives/SteppedSpinner.svelte: a spoked glyph whose steps(12)
      rotation lands on spoke positions, so the discretization reads as
      design. */
-  --animate-pulse: none;
+  --animate-pulse: ambient-pulse 2000ms steps(8, jump-none) infinite;
 
   /* Existing semantic colors. */
   --color-surface-0: var(--surface-0);
@@ -870,10 +876,13 @@ input[type="search"]::-webkit-search-cancel-button {
  * drives it through --ambient-glow-t (0 rest → 1 peak, 250ms steps)
  * written inline on the HOST element — a ::before can't take inline
  * styles, and the host-scoped var keeps invalidation to that row's
- * subtree. box-shadow can't be composited, and a CSS animation would
- * tick style recalc every vsync besides (see the --animate-pulse note
- * in @theme). Reduced-motion users get the static border: the ticker
- * withholds writes and the var() fallback (t=0) is the rest state.
+ * subtree. This is the one ambient indicator a CSS animation cannot
+ * take over: box-shadow is not compositable, and opacity alone cannot
+ * reproduce spread GROWTH — the ring would sit at full width and fade
+ * in instead of expanding.
+ *
+ * Reduced-motion users get the static border: the ticker withholds
+ * writes and the var() fallback (t=0) is the rest state.
  */
 .status-glow-warning,
 .status-glow-info {
@@ -898,17 +907,34 @@ input[type="search"]::-webkit-search-cancel-button {
   color: var(--info);
 }
 /*
- * Ambient pulse: no CSS here on purpose. The utility's animation is
- * disarmed in @theme and the ticker (utils/ambientTicker.ts) writes
- * inline opacity onto every `.animate-pulse` element — `animate-pulse`,
- * `ambient-pulse-s2` and `ambient-pulse-s4` (Indicator.svelte's
- * 250ms/500ms staggers) are marker classes the ticker discovers, not
- * styled selectors. They must stay that way: giving them an
- * animation-delay would require an animation to delay, which is exactly
- * what must not exist inside the timeline scroller (see @theme).
- * With the ticker stopped or reduced motion active, no inline style is
- * present and elements rest at their natural opacity.
+ * Ambient pulse: the working-dot / loading-text breath, 1 → 0.5 → 1
+ * over 2s. `animate-pulse` is redefined in @theme to run these with
+ * steps(8, jump-none), which lands 8 opacity values on each 1s half —
+ * 125ms per value, the same slot grid every other ambient indicator
+ * uses. Mirrors pulseOpacityAt() in utils/ambientTicker.ts, and
+ * ambientCss.browser.test.ts samples this rule against it.
+ *
+ * .ambient-pulse-s2 / -s4 are Indicator.svelte's staggers for the three
+ * backgrounded dots, one and two slots apart so they never breathe in
+ * unison. The delays are NEGATIVE on purpose: a positive delay would
+ * hold the dot un-animated at full opacity through its first quarter
+ * second and fire `animationstart` late, and that event is what
+ * ambientPhase.ts pins the wall-clock phase on. Direction is free in a
+ * periodic waveform; what matters is that the three sit a slot apart.
+ *
+ * Compound selectors so a stagger outranks the utility's own implied
+ * animation-delay: 0s whichever cascade layer either lands in.
+ *
+ * Reduced motion collapses these through the global reset at the bottom
+ * of this file, leaving the dot at its natural opacity.
  */
+@keyframes ambient-pulse {
+  0% { opacity: 1; }
+  50% { opacity: 0.5; }
+  100% { opacity: 1; }
+}
+.animate-pulse.ambient-pulse-s2 { animation-delay: -250ms; }
+.animate-pulse.ambient-pulse-s4 { animation-delay: -500ms; }
 
 /*
  * SteppedSpinner's rotation: one 30° spoke advance per 125ms slot, 12
@@ -1239,11 +1265,21 @@ html.light .working-sprite {
  * dots), so the only meaningful state is zero. And it is DOCUMENT-wide,
  * not scroller-scoped — an animation outside the scroller scores the
  * same as one inside (18 vs 23). Anything running anywhere in the
- * document during a compensated move opens the same window. The animations doing the
- * licensing were pure decoration starting in that same commit: the
- * disclosure chevron's rotate, the run fade's ease, the clip scrollbar's
- * activity fade, and the hover transitions the browser starts by
- * re-dispatching mouseover when new content appears under the cursor.
+ * document during a compensated move opens the same window.
+ *
+ * So this rule is NOT what buys a quiet frame, and pretending otherwise
+ * is how the ambient pulse got disarmed for nothing (see the
+ * --animate-pulse note in @theme). The ambient indicators and the
+ * line-slide already hold the drive open through every working turn.
+ * What the rule still buys is real and is a different thing: a
+ * transition on a row is decoration nobody asked for, it is reachable
+ * from any toggle commit, and it makes the window WIDER by adding fresh
+ * raster to the frame that is already behind. The animations doing the
+ * licensing in 2026-08-17 were exactly that, decoration starting in that
+ * same commit: the disclosure chevron's rotate, the run fade's ease, the
+ * clip scrollbar's activity fade, and the hover transitions the browser
+ * starts by re-dispatching mouseover when new content appears under the
+ * cursor.
  * On a 165Hz panel the raster deadline is ~6ms; expand (new clip content
  * + the moved region, ~2x collapse's raster load) missed it, collapse
  * didn't — hence flicker on expand only.

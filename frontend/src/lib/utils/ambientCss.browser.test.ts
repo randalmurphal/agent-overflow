@@ -5,6 +5,7 @@ import '../../app.css';
 import {
   AMBIENT_SLOT_MS,
   ledOpacitiesAt,
+  pulseOpacityAt,
   spinAngleAt,
 } from './ambientTicker';
 import { startAmbientPhase } from './ambientPhase';
@@ -64,23 +65,43 @@ afterEach(() => {
   for (const el of hosts.splice(0)) el.remove();
 });
 
-describe('ambient pulse', () => {
-  // The inverse of the other suites here. `.animate-pulse` is the one
-  // ambient indicator that must NOT be a CSS animation: chat/Indicator
-  // renders it inside the timeline scroller from fourteen row
-  // components, and an Animation object there flips the compositor's
-  // present policy (docs/architecture/frontend-scroll.md § The Print
-  // Doctrine). utils/ambientTicker.ts drives it with inline writes.
-  it('creates no animation object, so it cannot flip the present policy', () => {
+describe('ambient pulse keyframes', () => {
+  it('renders pulseOpacityAt() across the 2s cycle', () => {
     const dot = mount('<span class="animate-pulse"></span>');
-    const shifted = mount('<span class="animate-pulse ambient-pulse-s2"></span>');
+    const animation = animationOf(dot, 'ambient-pulse');
+    for (let t = 0; t < 2000; t += AMBIENT_SLOT_MS) {
+      sampleAt(animation, t);
+      expect(opacityOf(dot), `t=${t}ms`).toBeCloseTo(pulseOpacityAt(t), 4);
+    }
+  });
 
-    expect(dot.getAnimations(), 'animate-pulse must stay disarmed').toHaveLength(0);
-    expect(shifted.getAnimations(), 'the stagger classes are markers, not styled selectors').toHaveLength(0);
-    expect(getComputedStyle(dot).animationName).toBe('none');
-    // The stagger markers must not carry a delay either: a delay implies
-    // an animation to delay.
-    expect(getComputedStyle(shifted).animationName).toBe('none');
+  it('staggers the backgrounded dots one and two slots apart', () => {
+    // Indicator.svelte's three-dot `backgrounded` variant. The delays are
+    // NEGATIVE, so a stagger LEADS the base dot: at animation-local time
+    // t the effect is at t + 250 / t + 500. Direction is free in a
+    // periodic waveform; a positive delay would instead park the dot at
+    // full opacity through its first quarter-second and fire
+    // `animationstart` late, which is what ambientPhase.ts pins on.
+    const base = mount('<span class="animate-pulse"></span>');
+    const s2 = mount('<span class="animate-pulse ambient-pulse-s2"></span>');
+    const s4 = mount('<span class="animate-pulse ambient-pulse-s4"></span>');
+    const dots: [HTMLElement, number][] = [
+      [base, 0],
+      [s2, 250],
+      [s4, 500],
+    ];
+
+    for (let t = 0; t < 2000; t += AMBIENT_SLOT_MS) {
+      for (const [el, lead] of dots) {
+        sampleAt(animationOf(el, 'ambient-pulse'), t);
+        expect(opacityOf(el), `lead ${lead}ms at t=${t}ms`).toBeCloseTo(pulseOpacityAt(t + lead), 4);
+      }
+      // The whole point of the stagger, and it holds at every slot: the
+      // waveform is symmetric about slot 7.5, so two dots an even number
+      // of slots apart can never land on the same value.
+      const values = new Set(dots.map(([el]) => opacityOf(el).toFixed(4)));
+      expect(values.size, `dots share an opacity at t=${t}ms`).toBe(3);
+    }
   });
 });
 

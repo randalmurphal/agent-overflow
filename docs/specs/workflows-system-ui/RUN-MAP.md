@@ -68,8 +68,9 @@ being the only signal.
 | soft-stop armed | note on the loop decision node: "stops after this wave" |
 
 Colour decisions stay in `workflowRunSignal.ts` / `workflowNodeTone` —
-extend those, never inline hues in components. `animate-pulse` is a
-disarmed marker class (ambientTicker); do not use it for running.
+extend those, never inline hues in components. Do not use `animate-pulse`
+for running — running is the `SteppedSpinner` glyph, and a second
+"something is happening" signal would collide with it.
 
 **Node geometry is part of the vocabulary, and lives in the same module
 (`utils/workflowRunMapStyle.ts`, geometry section).** The hues say what a
@@ -906,9 +907,10 @@ implementation detail:
   nothing else moves. All gated by `motionReduced()`.
 - Running glyph = `SteppedSpinner`, whose stepped rotation is a
   compositable CSS animation (`stepped-spin`) — legal here because the
-  overlay is not the timeline scroller. Standing indicators otherwise use
-  the ambientTicker marker classes — no Tailwind `animate-*` loops
-  (disarmed/incident history).
+  overlay is not the timeline scroller. Any other standing indicator uses
+  the ambient classes, which are stepped — never Tailwind's smooth
+  `animate-spin`/`ping`/`bounce` loops, which pin GPU frame production to
+  panel refresh for as long as they are on screen (2026-07-04).
 - The svelte flush caps and quiet-work rules stay untouched — nothing
   here adds per-frame reactive work; the 1Hz clock is the only timer.
 

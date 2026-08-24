@@ -122,8 +122,8 @@ internal/highlight (tree-sitter, Go)
 Exhaustive sweep result: **zero** places snapshot computed colors into
 JS (no color `getComputedStyle` reads anywhere). All SVG icons use
 `currentColor`; heatmap/meters/separators use `color-mix(var(…))`
-inline; `ambientTicker` writes only opacity and a unitless glow
-scalar, and the ambient CSS keyframes animate opacity/transform. So a
+inline; `ambientTicker` writes only a unitless glow scalar, and the
+ambient CSS keyframes animate opacity/transform. So a
 runtime palette change repaints everything for free **except**:
 
 | Consumer | Today | For custom palettes |

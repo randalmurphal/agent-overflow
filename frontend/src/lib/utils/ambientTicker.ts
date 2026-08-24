@@ -1,69 +1,58 @@
-// Ambient-indicator waveforms, and the indicators that need a JS timer.
+// Ambient-indicator waveforms, and the one indicator that still needs a
+// JS timer.
 //
-// Two mechanisms, and which one an indicator gets is decided by WHERE it
-// mounts, not by taste:
+// Everything else is CSS keyframes on a compositable property,
+// phase-locked to wall clock by utils/ambientPhase.ts (app.css:
+// `ambient-pulse`, `ambient-led`, `ambient-spin`, `working-sprite-run`).
+// Blink promotes those elements and ticks them off the main thread, so
+// they cost no style recalc and no paint at all.
 //
-//   CSS keyframes on a compositable property, phase-locked to wall clock
-//   by utils/ambientPhase.ts (app.css: `ambient-led`, `ambient-spin`,
-//   `working-sprite-run`). Blink promotes the element and ticks it off
-//   the main thread, so these cost no style recalc and no paint at all.
+// The sidebar status glow is the exception, and the reason is a
+// PROPERTY, not a place. Its `--ambient-glow-t` drives three things at
+// once in app.css — shadow spread 0→2px, shadow alpha 0→0.22, and the
+// ::before's opacity 0.7→1.0, which lifts the 1px border with it.
+// box-shadow is not compositable, and opacity alone cannot reproduce
+// spread GROWTH: the ring would sit at full width and fade in rather
+// than expand. So this timer writes that one custom property inline on
+// the rows carrying a glow class, and nothing else.
 //
-//   This timer, writing inline styles (`.animate-pulse` opacity, the
-//   status glow's `--ambient-glow-t`). An inline write creates no
-//   Animation object.
+// It used to drive `.animate-pulse` too, on the theory that an Animation
+// object inside the timeline scroller licenses presenting with
+// un-rastered tiles. Measurement on 2026-08-24 kept the hazard and
+// killed the scoping — it is binary and document-wide, and the sprite,
+// the LED chase and the line-slide already hold it open through every
+// working turn — so the pulse went back to CSS and the inline write it
+// cost (~28 whole-document repaints/sec) went away. The reasoning lives
+// at app.css `--animate-pulse`.
 //
-// That last sentence is the whole reason the timer still exists.
-// Anything mounted INSIDE the timeline scroller must not create an
-// animation object: an active animation flips Blink's present policy to
-// smoothness-priority, which licenses presenting a frame with tiles
-// still un-rastered. The timeline's core moves are compensated
-// viewport-space moves (head splices, prune shifts, bottom-held
-// toggles) — rows that stay screen-stationary while every tile
-// invalidates at once — and under smoothness-priority that is a
-// checkerboard where text used to be (incident 2026-08-17). See
-// docs/architecture/frontend-scroll.md § The Print Doctrine.
-//
-// `.animate-pulse` is rendered by fourteen chat row components through
-// components/chat/Indicator.svelte, so every running tool call would
-// hold a live animation in the scroller. It stays on this timer.
-// `chat/timelineKeyframeAnimations.test.ts` is the tripwire that keeps
-// it that way.
-//
-// The status glow stays for a second, independent reason: its
-// `--ambient-glow-t` drives three things at once in app.css — shadow
-// spread 0→2px, shadow alpha 0→0.22, and the ::before's opacity
-// 0.7→1.0, which lifts the 1px border with it. box-shadow is not
-// compositable, and opacity alone cannot reproduce spread GROWTH: the
-// ring would sit at full width and fade in rather than expand.
-//
-// Measured 2026-08-23, per 5s with four indicators running:
-//
-//   glow as a CSS box-shadow animation   324 style recalcs   85.1ms
-//   glow on this timer                    40 style recalcs  127.0ms
-//   LED/spin/sprite as CSS animations      0 style recalcs    0.0ms
+// Measured 2026-08-23, per 5s: the sprite's old inline write cost
+// 163.0ms of main-thread work; as a CSS animation it costs 0.0ms.
 //
 // A write is what makes a tick expensive, and the timer stops entirely
-// when there is nothing to write — see `armWake` below.
+// when there is nothing to write — see `armWake` below. A thread
+// pending user action is the only thing that arms it, so in an ordinary
+// session it is suspended.
 //
-// The waveform functions are the authoritative specification for both
-// mechanisms, not dead code: ambientCss.browser.test.ts samples the
-// rendered CSS animations against them slot by slot, and the tests in
-// this module's suite pin the inline writes to the same functions, so
-// drift in either direction fails.
+// The waveform functions are the authoritative specification for the
+// CSS, not dead code: ambientCss.browser.test.ts samples the rendered
+// animations against them slot by slot, and this module's suite pins the
+// glow write to glowTAt, so drift in either direction fails.
 import { prefersReducedMotion, reducedMotionQuery } from './reducedMotion';
 import { startAmbientPhase } from './ambientPhase';
 
-/** One step slot. Every waveform's value changes only on multiples of
- * this (pulse 125ms, LEDs/glow 250ms, spin 125ms), so one grid-aligned
- * timer catches every boundary exactly. */
+/** One step slot: the grid every ambient waveform lands its value
+ * changes on (pulse 125ms, LEDs/glow 250ms, spin 125ms). The CSS
+ * animations step on it, and the timer arms on it, so a glow write
+ * catches its 250ms boundaries exactly. */
 export const AMBIENT_SLOT_MS = 125;
 
 const mod = (x: number, m: number): number => ((x % m) + m) % m;
 
 /**
- * `animate-pulse` opacity. Keyframes: base → 0.5 @50% → base over 2s,
- * steps(8, jump-none) per keyframe segment — 8 evenly spaced values
- * across each 1s half, endpoints included, 125ms per slot.
+ * `animate-pulse` opacity, mirroring app.css `@keyframes ambient-pulse`:
+ * base → 0.5 @50% → base over 2s, steps(8, jump-none) per keyframe
+ * segment — 8 evenly spaced values across each 1s half, endpoints
+ * included, 125ms per slot.
  */
 export function pulseOpacityAt(tMs: number): number {
   const slot = Math.floor(mod(tMs, 2000) / AMBIENT_SLOT_MS);
@@ -103,8 +92,6 @@ function formatValue(v: number): string {
   return String(Math.round(v * 10000) / 10000);
 }
 
-type StyledKind = 'pulse' | 'glow';
-
 const GLOW_CLASSES = ['status-glow-warning', 'status-glow-info'] as const;
 
 /** Consecutive empty ticks before the timer suspends. One second, so a
@@ -117,61 +104,43 @@ let timer: ReturnType<typeof setTimeout> | null = null;
 let wake: MutationObserver | null = null;
 let idleTicks = 0;
 let stopPhase: (() => void) | null = null;
-/** Elements carrying ticker-written inline styles, for mark-and-sweep
- * clearing when they lose their marker class or leave the document. */
-const styled = new Map<Element, StyledKind>();
+/** Elements carrying a ticker-written `--ambient-glow-t`, for
+ * mark-and-sweep clearing when they lose their marker class or leave the
+ * document. */
+const styled = new Set<Element>();
 
-function clearStyles(el: Element, kind: StyledKind): void {
-  const style = (el as HTMLElement | SVGElement).style;
-  if (kind === 'pulse') style.removeProperty('opacity');
-  else style.removeProperty('--ambient-glow-t');
+function clearStyles(el: Element): void {
+  (el as HTMLElement | SVGElement).style.removeProperty('--ambient-glow-t');
 }
 
 function clearAllStyles(): void {
-  for (const [el, kind] of styled) clearStyles(el, kind);
+  for (const el of styled) clearStyles(el);
   styled.clear();
-}
-
-function setStyle(el: Element, property: string, value: string): void {
-  const style = (el as HTMLElement | SVGElement).style;
-  if (style.getPropertyValue(property) !== value) style.setProperty(property, value);
 }
 
 /** Returns whether any consumer is currently on screen. */
 function writeStyles(tMs: number): boolean {
   const seen = new Set<Element>();
-  const mark = (el: Element, kind: StyledKind): void => {
-    seen.add(el);
-    styled.set(el, kind);
-  };
-
-  const pulse = formatValue(pulseOpacityAt(tMs));
-  const pulseS2 = formatValue(pulseOpacityAt(tMs - 250));
-  const pulseS4 = formatValue(pulseOpacityAt(tMs - 500));
-  for (const el of document.getElementsByClassName('animate-pulse')) {
-    const cls = el.classList;
-    setStyle(
-      el,
-      'opacity',
-      cls.contains('ambient-pulse-s2') ? pulseS2 : cls.contains('ambient-pulse-s4') ? pulseS4 : pulse,
-    );
-    mark(el, 'pulse');
-  }
-
   const glowT = formatValue(glowTAt(tMs));
+
   for (const name of GLOW_CLASSES) {
     for (const el of document.getElementsByClassName(name)) {
-      setStyle(el, '--ambient-glow-t', glowT);
-      mark(el, 'glow');
+      const style = (el as HTMLElement | SVGElement).style;
+      if (style.getPropertyValue('--ambient-glow-t') !== glowT) {
+        style.setProperty('--ambient-glow-t', glowT);
+      }
+      seen.add(el);
+      styled.add(el);
     }
   }
 
   // Sweep: anything styled on a previous tick that no longer carries a
   // marker class (toggled off, or detached) falls back to its CSS rest
-  // state. Clearing a detached element is harmless.
-  for (const [el, kind] of styled) {
+  // state — the var() fallback, t=0. Clearing a detached element is
+  // harmless.
+  for (const el of styled) {
     if (!seen.has(el)) {
-      clearStyles(el, kind);
+      clearStyles(el);
       styled.delete(el);
     }
   }

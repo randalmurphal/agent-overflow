@@ -93,8 +93,9 @@ cannot debug.
 - Do NOT parse or validate manifest contents here. Frame counts and
   timings are the frontend's.
 - Do NOT decode, resize, or re-encode a PNG. This package moves bytes;
-  the frontend decodes the strip and steps its frames from a JS timer
-  (`WorkingSprite.svelte` — never a CSS animation, per the
-  ambientTicker doctrine).
+  the frontend clips one frame of the strip and steps the rest past that
+  window with a `steps()` CSS translate (`WorkingSprite.svelte`), so
+  frame cadence and frame count are the manifest's business and nothing
+  here needs to know them.
 - Do NOT hand-edit `assets/SPINNERS.md` in a user's config directory —
   it is overwritten at boot. Edit the copy in this package.

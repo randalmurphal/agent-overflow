@@ -60,35 +60,45 @@ Draws landing while raster is still outstanding, 3 repeats:
 meaningful state is zero. **Document-wide, not scroller-scoped:** an animation
 outside the scroller scores the same as one inside (18 vs 23).
 
-Consequence for the ambient indicators, unresolved and with the user: keeping
-`ambient-led` / `ambient-spin` / `working-sprite-run` as CSS animations puts the
-compositor in per-vsync draw mode during exactly the working turns when the
-timeline splices, so reverting `animate-pulse` alone did not close the window it
-was reverted to close. Either go to zero animations app-wide, or accept the mode
-and stop paying the ticker for pulse. Do not propose a middle position — the
-measurement says there isn't one.
+**Resolved 2026-08-24, user's call: accept the mode.** Zero is unreachable —
+`working-sprite-run`, `ambient-led` and `ambient-spin` run through every working
+turn, and `TailClampedText`'s line-slide runs continuously through streaming, and
+all four are wanted. Reverting `animate-pulse` alone therefore closed nothing and
+charged ~28 whole-document repaints/sec for it, so pulse went back to CSS. Do not
+re-propose a middle position — the measurement says there isn't one.
 
 ## The ambient indicators drive ~two thirds of the renderer main thread
 
-**Built 2026-08-23, then partly reversed the same day.** LED chase,
-stepped spin and the sprite are CSS keyframes (`app.css`), phase-locked to
+**Built 2026-08-23, reversed, then re-landed 2026-08-24.** The pulse, LED chase,
+stepped spin and sprite are all CSS keyframes (`app.css`), phase-locked to
 wall clock by `utils/ambientPhase.ts`. The sprite was the single largest
-writer (25/s) and is the bulk of the win.
+writer (25/s) and is the bulk of the win; the pulse was ~28 whole-document
+repaints/sec on top.
 
-**`animate-pulse` is NOT re-armable, and this is the standing constraint.**
-It was re-armed in `5c860a15` and reverted in the same wave. `chat/Indicator.svelte`
-renders the class inside the timeline scroller from fourteen row components, and a
-CSS animation there creates an Animation object, which flips Blink to
-smoothness-priority and licenses presenting with un-rastered tiles during the
-timeline's compensated moves — the 2026-08-17 checkerboard. The inline write the
-ticker does creates no animation object; that property, not the recalc count, is
-why the ticker exists for pulse. Before proposing any ambient-indicator change,
-ask WHERE the indicator mounts. Guard:
-`frontend/src/lib/components/chat/timelineKeyframeAnimations.test.ts`, which derives
-the armed-class set from app.css so re-arming fails the build.
+**The rule is opacity-only and stepped, not "no animation objects".** `1633dcea`
+disarmed `animate-pulse` on the object-counting theory and was reverted once the
+section above measured it. What survives, guarded by
+`frontend/src/lib/components/chat/timelineKeyframeAnimations.test.ts`: an
+animation reachable from a chat row may animate `opacity` and nothing else (a
+transform or size is a third motion owner fighting the scroll controller's
+compensation), and anything `infinite` must be stepped, checked over `app.css`
+exhaustively because the 2026-07-04 present-rate hazard is document-wide. The
+guard reads `@keyframes` bodies and the armed-class set out of `app.css`, so a
+new animation fails the build rather than needing review memory.
 
-The ticker now also suspends outright when no consumer is on screen, waking from a
-MutationObserver, so an idle app has zero ambient wakeups.
+The status glow is the last indicator still on the JS ticker, and for a property
+reason, not a placement one: `box-shadow` is not compositable and opacity alone
+cannot reproduce spread GROWTH. The ticker suspends outright when no consumer is
+on screen, waking from a MutationObserver, and a glow only appears on a thread
+pending user action — so an ordinary session has zero ambient wakeups.
+
+**Promotion cost of arming the dots, measured 2026-08-24** (same headless rig,
+`LayerTree.enable` over the `present-policy-page.html` arms, 60-row scroller): a
+composited animation promotes its own element and nothing else. Layers went
+8 / 9 / 11 / 22 / 38 at 0 / 1 / 3 / 14 / 30 dots — exactly +1 per dot, no overlap
+cascade — and every added layer is the dot's own 8x8 box, so estimated texture
+went 34.30MB to 34.31MB across the whole sweep. Arming a small opacity animation
+is not a tile-memory question; do not re-litigate it as one.
 
 Two findings only the build surfaced: a composited translate resamples the sprite
 texture unless the frame width is snapped to whole DEVICE pixels (25px frame at 125%
@@ -122,8 +132,8 @@ of the 48 frames per second.**
 Blink promotes an element for a *known* animation and ticks
 opacity/transform on the compositor thread. A one-off inline style write is
 just a style change, so it repaints in the document's own layer — which is
-why the Paint clip is the whole viewport. `ambientTicker.ts` writes styles
-specifically to avoid CSS animations, and in doing so forfeits the
+why the Paint clip is the whole viewport. `ambientTicker.ts` wrote styles
+specifically to avoid CSS animations, and in doing so forfeited the
 promotion that made the repaints cheap.
 
 Spike, 600 svg-icon rows inside a `contain:paint` scroller, indicators in
@@ -174,14 +184,13 @@ The glow is the exception and **should not be re-expressed**. Its
 spread `0 -> 2px`, shadow alpha `0 -> 0.22`, and `::before` opacity
 `0.7 -> 1.0` (which lifts the 1px border with it). Opacity alone cannot
 reproduce spread growth: the ring would sit at full 2px and fade in instead
-of expanding. Keep the glow on the ticker and make the ticker **suspend
-itself when no `.status-glow-*` element is in the DOM** — it currently ticks
-at 8/s unconditionally, so gating it on its last consumer costs the glow
-nothing and costs zero whenever no glow is on screen.
+of expanding. Both landed: the glow stayed on the ticker, and the ticker now
+suspends itself when no `.status-glow-*` element is in the DOM, waking from a
+MutationObserver.
 
 ### The 2026-07-04 present-rate incident does not recur, if steps() stays
 
-`app.css`'s `--animate-pulse: none` note records that the original *smooth*
+`app.css`'s `--animate-pulse` note records that the original *smooth*
 pulse forced a GPU present every vsync — one 6px dot as a standing 165
 presents/sec client on a 165Hz panel, stuttering other apps. Compositing
 these animations puts them back on the compositor thread, so that incident

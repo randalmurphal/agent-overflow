@@ -111,12 +111,13 @@ Every row rendered inside `<TimelineVirtualizer>`:
   unconditional on purpose — a CSS transition needs the property present
   BEFORE the value changes, so gating the class on `pendingCutAfter` would
   make the dim snap in and out instead of fading.
-- **Runs no CSS transitions.** The timeline transition kill rule in
-  `app.css` zeroes `transition-duration` for everything inside the
-  scroller: an active animation licenses the compositor to present a
-  frame whose tiles have not finished rastering, and a bottom-held toggle
-  invalidates the tiles of every screen-stationary row below the toggled
-  run — the decorative transitions that started in that same commit
+- **Runs no CSS transitions, and may fade but never move.** The timeline
+  transition kill rule in `app.css` zeroes `transition-duration` for
+  everything inside the scroller. A bottom-held toggle invalidates the
+  tiles of every screen-stationary row below the toggled run, and an
+  animation active in that same commit drives a begin-frame every vsync,
+  so the compositor draws on the frame deadline whether or not the tiles
+  are ready — the decorative transitions that started in that commit
   (chevron rotate, fades, hover re-target) were what made the text below
   blank on expand (2026-08-17). New row polish must not rely on a CSS
   transition; it will be inert here and animate anywhere else the
@@ -125,13 +126,23 @@ Every row rendered inside `<TimelineVirtualizer>`:
   Svelte `transition:`/`in:`/`out:`/`animate:` directives are the same
   hazard through a door the CSS rule cannot reach (WAAPI/inline styles),
   so they are banned in this directory outside a verified
-  outside-the-scroller allowlist. The hazard is really the scroller's DOM
+  outside-the-scroller allowlist. A CSS **keyframe** animation is the
+  third door, and the rule there is narrower rather than absolute: it may
+  animate `opacity` and nothing else. A transform or a size is a third
+  motion owner fighting the scroll controller's compensation, which is
+  the doctrine's actual constraint — counting animation *objects* is not,
+  since that exposure is binary and document-wide and the ambient
+  indicators hold it open through every working turn anyway. Any
+  animation repeating forever must also be stepped, or it pins GPU frame
+  production to panel refresh for as long as it is on screen
+  (2026-07-04). The hazard is really the scroller's DOM
   subtree, not the directory — components rendered into rows from
-  elsewhere (the vendored streamdown popovers) carry directives the walk
-  cannot see, so a new external row dependency needs the same check by
-  hand. Guards:
+  elsewhere (`primitives/Button`'s `animate-spin`, the vendored streamdown
+  popovers) carry animations the walk cannot see, so a new external row
+  dependency needs the same check by hand. Guards:
   `timelineTransitionSuppression.browser.test.ts` (the CSS rule),
-  `timelineAnimationDirectives.test.ts` (the directive ban). The why —
+  `timelineAnimationDirectives.test.ts` (the directive ban),
+  `timelineKeyframeAnimations.test.ts` (opacity-only + stepped). The why —
   which two motion owners exist and why everything else renders as print
   — is `docs/architecture/frontend-scroll.md` §The Print Doctrine.
 

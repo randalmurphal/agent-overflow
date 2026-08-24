@@ -45,11 +45,10 @@ describe('<Indicator>', () => {
       expect(d.className).toContain('animate-pulse');
       expect(d.className).toContain('bg-accent');
     }
-    // Stagger is encoded via the ambient-ticker phase-shift marker
-    // classes (utils/ambientTicker.ts writes shifted inline opacity
-    // for ambient-pulse-s2/-s4). Dot 1 rides the unshifted pulse;
-    // dots 2 and 3 carry the 250ms/500ms shifted phases. Asserting on
-    // the class (the behavior contract) keeps the test resilient to
+    // Stagger is encoded via the phase-shift classes, which set a
+    // negative animation-delay in app.css. Dot 1 rides the unshifted
+    // pulse; dots 2 and 3 sit one and two 125ms slots off it. Asserting
+    // on the class (the behavior contract) keeps the test resilient to
     // how the phase value is wired.
     expect(dots[0].className).not.toContain('ambient-pulse-s');
     expect(dots[1].className).toContain('ambient-pulse-s2');

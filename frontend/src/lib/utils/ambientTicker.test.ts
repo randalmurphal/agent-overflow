@@ -153,36 +153,29 @@ describe('startAmbientTicker', () => {
     stop();
   });
 
-  it('writes pulse opacity, and leaves the CSS-animated indicators alone', () => {
-    // Split by WHERE they mount. `.animate-pulse` is rendered inside the
-    // timeline scroller by fourteen chat row components, where an
-    // Animation object would flip the compositor's present policy, so it
-    // stays an inline write. The LED chase, the stepped spinner and the
-    // sprite mount outside the scroller and are CSS animations
-    // (app.css), phase-locked by ambientPhase.ts — a tick that writes to
-    // those is the regression to catch, because an inline write forfeits
-    // the layer promotion that makes them free.
+  it('writes nothing to the CSS-animated indicators', () => {
+    // The glow is the only indicator this timer owns. The pulse dots,
+    // the LED chase, the stepped spinner and the sprite are CSS
+    // animations (app.css) phase-locked by ambientPhase.ts, running off
+    // the main thread — a tick that writes an inline style onto any of
+    // them is the regression to catch, because the write both forfeits
+    // the layer promotion that makes them free and fights the animation
+    // for the same property.
     const dot = addFixture('<span class="animate-pulse"></span>');
     const shifted = addFixture('<span class="animate-pulse ambient-pulse-s2"></span>');
     const chase = addFixture(
       '<span class="working-leds"><i class="working-led"></i><i class="working-led"></i><i class="working-led"></i></span>',
     );
     const spinner = addFixture('<svg class="stepped-spin"></svg>');
+    const strip = addFixture('<span class="working-sprite-strip"></span>');
 
     start();
     vi.setSystemTime(500);
     vi.advanceTimersByTime(AMBIENT_SLOT_MS);
 
-    // advanceTimersByTime moves the mocked clock too, and the module
-    // rounds to 4dp on the way out — read the waveform at the clock the
-    // write actually saw, and compare as numbers.
-    const now = Date.now();
-    expect(Number(dot.style.opacity)).toBeCloseTo(pulseOpacityAt(now), 4);
-    expect(Number(shifted.style.opacity)).toBeCloseTo(pulseOpacityAt(now - 250), 4);
-    expect(dot.style.opacity).not.toBe(shifted.style.opacity);
-
-    for (const led of chase.children) expect(led.getAttribute('style')).toBe(null);
-    expect(spinner.getAttribute('style')).toBe(null);
+    for (const el of [dot, shifted, spinner, strip, ...chase.children]) {
+      expect(el.getAttribute('style'), el.getAttribute('class') ?? el.tagName).toBe(null);
+    }
   });
 
   it('suspends the timer when nothing is on screen, and wakes on a DOM change', async () => {
