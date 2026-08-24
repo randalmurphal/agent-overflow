@@ -138,7 +138,9 @@ describe('App integration — send-queue flow (Phases G1–G10)', () => {
       expect.objectContaining({ attachmentIds: [] }),
     );
     expect(getQueueForThread('thread-1').map((q) => q.message)).toEqual(['queue mid-turn']);
-    expect(textarea.value).toBe('');
+    // Queueing clears the draft through the send path, which swaps the
+    // <textarea> element (recreateInput) — re-query for the live one.
+    expect((getByLabelText('Message Input') as HTMLTextAreaElement).value).toBe('');
   });
 
   // ---- T2 — provider:queue_state_changed mirrors backend snapshot --------

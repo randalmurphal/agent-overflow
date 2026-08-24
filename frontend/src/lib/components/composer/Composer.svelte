@@ -412,6 +412,7 @@
       // uploads, not part of the command, so they stay in the draft.
       draft.setContent('');
       resetTextareaHeight();
+      surface?.recreateInput();
       return;
     }
     // Before materialization, not after: applying the staged intent stamps
@@ -498,6 +499,7 @@
       };
       draft.clearLocalAfterQueue();
       resetTextareaHeight();
+      surface?.recreateInput();
 
       try {
         await registerQueueItem(midTurnThreadId, message, {
@@ -542,6 +544,10 @@
 
     draft.clearAfterSend();
     resetTextareaHeight();
+    // Release the element's per-character Blink edit-command retention (see
+    // recreateInput's contract in composerInputSurface.ts). After the clear,
+    // so the fresh element mounts empty.
+    surface?.recreateInput();
 
     const lastItem = pane.items.length > 0 ? pane.items[pane.items.length - 1] : null;
     const nextTurn = lastItem ? lastItem.turnIndex + 1 : 0;

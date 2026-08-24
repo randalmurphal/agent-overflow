@@ -412,6 +412,41 @@ describe('<ComposerInputSurface>', () => {
     expect(document.activeElement).not.toBe(textarea);
   });
 
+  it('recreateInput swaps the textarea element and restores focus only if it was held', async () => {
+    // The swap is the release mechanism for Blink's per-character edit-command
+    // retention (one command per typed character, kept for the ELEMENT's
+    // lifetime). Element identity changing is the whole point — assert it —
+    // and focus policy is the visible half: restored when the composer held
+    // it, left alone when the send came from a button.
+    const { handle, getByLabelText } = await mountSurface();
+    const first = getByLabelText('Message Input') as HTMLTextAreaElement;
+
+    first.focus();
+    expect(document.activeElement).toBe(first);
+    handle.recreateInput();
+    const second = getByLabelText('Message Input') as HTMLTextAreaElement;
+    expect(second).not.toBe(first);
+    expect(first.isConnected).toBe(false);
+    expect(document.activeElement).toBe(second);
+
+    second.blur();
+    handle.recreateInput();
+    const third = getByLabelText('Message Input') as HTMLTextAreaElement;
+    expect(third).not.toBe(second);
+    expect(document.activeElement).not.toBe(third);
+  });
+
+  it('recreateInput is a no-op mid-IME-composition', async () => {
+    const { handle, getByLabelText } = await mountSurface();
+    const first = getByLabelText('Message Input') as HTMLTextAreaElement;
+    await fireEvent.compositionStart(first);
+    handle.recreateInput();
+    expect(getByLabelText('Message Input')).toBe(first);
+    await fireEvent.compositionEnd(first);
+    handle.recreateInput();
+    expect(getByLabelText('Message Input')).not.toBe(first);
+  });
+
   // ---- local draft store ----
 
   it('drives a persistence: "none" store without any draft RPC', async () => {

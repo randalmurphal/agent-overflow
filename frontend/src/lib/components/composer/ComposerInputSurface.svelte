@@ -4,7 +4,7 @@
   // outside. See composerInputSurface.ts for the contract, and its doc
   // comment for what deliberately does NOT live here.
 
-  import { onDestroy } from 'svelte';
+  import { flushSync, onDestroy } from 'svelte';
   import { paneWorkspacePath } from '../../stores/thread.svelte';
   import ComposerAttachmentRow from './ComposerAttachmentRow.svelte';
   import ComposerCommandHighlight from './ComposerCommandHighlight.svelte';
@@ -45,6 +45,15 @@
   let textarea: HTMLTextAreaElement | undefined = $state(undefined);
   let lastAutosizedTextarea: HTMLTextAreaElement | undefined;
   let lastAutosizedValue = '';
+  // Bumped by recreateInput() to swap the <textarea> element itself (the
+  // {#key} below). Blink retains one edit command per character typed into a
+  // text control for the ELEMENT's lifetime — no API clears it, and each
+  // long-lived command pins a 128KB Oilpan page (measured 2026-08-24: ~50MB
+  // after a day of composer use). A send is the natural boundary: the
+  // programmatic clear has already emptied the native undo stack (measured —
+  // Ctrl+Z restores nothing either way), so replacing the element costs no
+  // behavior, and the same-flush refocus below keeps the swap invisible.
+  let inputEpoch = $state(0);
 
   // The textarea grows with its content through `field-sizing: content`
   // (the `field-sizing-content` + `max-h-50` utilities on the element) and
@@ -236,6 +245,26 @@
     textarea.style.height = 'auto';
   }
 
+  export function recreateInput(): void {
+    const node = textarea;
+    if (!node) return;
+    // Mid-composition the IME holds uncommitted state on the element; a swap
+    // would drop it. A send can't normally land here (Enter is consumed by
+    // the composition), so just skip — the next send catches the release.
+    if (composingText) return;
+    const hadFocus = document.activeElement === node;
+    inputEpoch += 1;
+    // Flush the {#key} swap synchronously so the destroy, the mount, and the
+    // conditional refocus all land in this task, before the next paint: no
+    // frame ever renders without the textarea or without focus, and the
+    // composer's focus-within styling never recalculates an unfocused state
+    // (measured frame-by-frame, 2026-08-24). Focus is restored only when the
+    // old element held it — a send clicked on the Send button keeps its
+    // focus on the button, exactly as before.
+    flushSync();
+    if (hadFocus && textarea) focusTextareaAtEnd(textarea);
+  }
+
   export function autosizeInput(): void {
     autosizeTextarea();
   }
@@ -314,6 +343,7 @@
       onHover={(idx) => slash.setSlashActiveIndex(idx)}
     />
 
+    {#key inputEpoch}
     <textarea
       bind:this={textarea}
       onbeforeinput={imagePlaceholders.handleBeforeInput}
@@ -333,6 +363,7 @@
       {value}
       class="field-sizing-content max-h-50 w-full resize-none bg-transparent px-1 py-1 text-[0.8125rem] leading-[1.55] text-fg placeholder:text-fg-hint focus:outline-none disabled:opacity-40 disabled:cursor-not-allowed"
     ></textarea>
+    {/key}
 
     <!-- After the textarea in DOM order as well as above it in paint
          order, so each accent word covers the glyphs it replaces. -->

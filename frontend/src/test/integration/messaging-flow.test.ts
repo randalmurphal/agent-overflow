@@ -77,7 +77,11 @@ describe('App integration — messaging flow', () => {
     expect(sendMock.mock.calls[0][2]).toEqual({
       attachmentIds: [],
     });
-    expect(textarea.value).toBe('');
+    // The send swapped the <textarea> element to release Blink's
+    // per-keystroke edit-command retention (recreateInput), so the
+    // pre-send node reference is detached — re-query for the live one.
+    expect(textarea.isConnected).toBe(false);
+    expect((getByLabelText('Message Input') as HTMLTextAreaElement).value).toBe('');
   });
 
   it('Enter during an active turn enqueues the message instead of dispatching', async () => {
@@ -123,7 +127,9 @@ describe('App integration — messaging flow', () => {
     // message.
     expect(sendMock).not.toHaveBeenCalled();
     expect(getQueueForThread('thread-1').map((item) => item.message)).toEqual(['queue this']);
-    expect(textarea.value).toBe('');
+    // Queueing clears the draft through the same send path, which swaps
+    // the <textarea> element (recreateInput) — re-query for the live one.
+    expect((getByLabelText('Message Input') as HTMLTextAreaElement).value).toBe('');
   });
 
   // The legacy frontend-driven drain tests have been removed: the
