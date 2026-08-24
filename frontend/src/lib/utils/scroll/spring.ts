@@ -272,8 +272,8 @@ const SPRING_DECEL_ENVELOPE_MIN_PX_PER_FRAME = 1.6;
 // long the pane has actually been still.
 const SPRING_ACCEL_SLEW_FACTOR_PER_FRAME = 1.1;
 // Where a standstill ramp starts, in px per 60Hz frame. The ramp base
-// is max(this, quantized-motion floor). Both are currently 1.0, so a
-// standstill starts at the same perceptual speed on every display.
+// is max(this, quantized-motion floor). Both are currently 1.0, so the
+// standstill starts at the same CSS-space rate at every refresh cadence.
 const SPRING_ACCEL_SLEW_BASE_PX_PER_FRAME = 1;
 // The quantized-motion floor releases inside this remaining distance, letting
 // the spring's natural exponential decay land the glide — a ~3-frame
@@ -286,6 +286,9 @@ const SPRING_QUANTIZED_FLOOR_RELEASE_PX = 3;
 // 60px/s floor at every refresh rate. Fractional integration plus the
 // rounding-error carry below distributes those pixels over displayed
 // frames without a refresh ladder whose rung changes alter glide speed.
+// Fractional DPR changes the device-pixel displacement pattern, not this
+// CSS-space rate; scroll-dpr.spec.ts pins Chromium's constant hairline raster
+// energy across those alternating physical steps.
 export const SPRING_QUANTIZED_MOTION_FLOOR_PX_PER_FRAME = 1;
 
 // Cadence telemetry: EMA over real tick gaps, bounded to plausible

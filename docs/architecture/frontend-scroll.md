@@ -70,8 +70,11 @@ the timeline virtualizer, or the scroll controller (`utils/scroll/`).
     of one CSS pixel per 60Hz-equivalent frame. Fractional integration
     distributes those whole-pixel changes across display frames, keeping
     the floor at 60px/s instead of changing it at refresh-rate rungs.
-    Real-Chromium coverage pins CSS-pixel quantization, and the soak rig's
-    `make soak-contract` probe checks the same contract in WebView2.
+    Real-Chromium coverage pins CSS-pixel quantization at DPR 1, 1.25, 1.5,
+    and 2. It also pins constant hairline raster energy while fractional DPR
+    turns equal CSS-space steps into alternating device-pixel displacement.
+    The soak rig's `make soak-contract` probe checks quantization and
+    compositor ownership in WebView2.
   - `intent.ts` — the event-sourced intent machine: wheel/scroll/pointer/
     key/touch listeners, escape and re-stick, restore-snap consent, and
     programmatic-write tagging. Intent is never geometry-inferred.
@@ -81,7 +84,7 @@ the timeline virtualizer, or the scroll controller (`utils/scroll/`).
     (below all three, the spring's own decay governs): the
     **acceleration slew** (a geometric onset ramp, ×1.10 per 60Hz frame
     over max(ramp base, current speed toward the target), the base a
-    display-independent 1.0 px/frame floored by the motion floor — a
+    refresh-independent CSS-space 1.0 px/frame floored by the motion floor — a
     standstill quantum eases in instead of jumping to its peak, and
     glides stretch into the next quantum's arrival instead of
     stop-starting per line), the **deceleration envelope** (0.11 ×
