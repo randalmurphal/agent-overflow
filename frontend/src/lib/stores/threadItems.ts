@@ -3,6 +3,8 @@ import { rowUiRetentionChanged } from '../utils/rowUiRetention';
 import { activityRunSummaryFieldsChanged } from '../utils/activityRunGrouping';
 import { itemTimelineStructureChanged } from '../utils/timelineStructure';
 
+const EMPTY_ID_SET: ReadonlySet<string> = new Set<string>();
+
 export interface TimelineCursorLike {
   turnIndex: number;
   itemIndex: number;
@@ -182,9 +184,9 @@ export function reconcileItemWindow(incoming: readonly Item[], current: readonly
 }
 
 /**
- * Install an attested `SyncThreadWindow` page over a window that was
- * painted from a cache (L1 snapshot or IndexedDB replica), keeping the
- * rows the wire delivered while the page was in flight.
+ * Reconcile a backend snapshot over the current window while keeping rows
+ * changed by live paths after the request began. Used for both initial
+ * `SyncThreadWindow` convergence and transport-gap refresh.
  *
  * Two rules, and they pull in opposite directions:
  *
@@ -208,10 +210,11 @@ export function reconcileItemWindow(incoming: readonly Item[], current: readonly
  * orphan rows the admission boundary exists to prevent (same contract as
  * `rejectedParentedItems` on the upsert merge). The caller swallows them.
  */
-export function applySyncPage(
+export function reconcileSnapshotPage(
   page: readonly Item[],
   current: readonly Item[],
   liveTouchedIds: ReadonlySet<string>,
+  liveRemovedIds: ReadonlySet<string> = EMPTY_ID_SET,
 ): { items: Item[]; orphanedLiveChildren: readonly Item[] } {
   if (page.length === 0 && current.length === 0) {
     return { items: current as Item[], orphanedLiveChildren: NO_REJECTED_ITEMS };
@@ -223,6 +226,7 @@ export function applySyncPage(
   const next: Item[] = [];
   const keptIds = new Set<string>();
   for (const item of page) {
+    if (liveRemovedIds.has(item.id)) continue;
     keptIds.add(item.id);
     const existing = currentById.get(item.id);
     if (!existing) {

@@ -98,7 +98,7 @@ function makeMemoryHarness(initial: readonly Item[] = []) {
 }
 
 // The admission DECISION lives in the window merges — see
-// `applyItemUpsertsToWindow parented admission` and `applySyncPage
+// `applyItemUpsertsToWindow parented admission` and `reconcileSnapshotPage
 // subagent admission` in threadItems.test.ts. This block covers the
 // ledger that silences what those merges reject.
 describe('threadSubagentMemory swallow ledger', () => {

@@ -3,7 +3,7 @@ import { makeItem } from '../../test/helpers/chat';
 import type { Item } from '../types/models';
 import {
   applyItemUpsertsToWindow,
-  applySyncPage,
+  reconcileSnapshotPage,
   compareItemsByTimelinePosition,
   cursorIsValid,
   itemsForThread,
@@ -123,6 +123,50 @@ describe('threadItems', () => {
     expect(changed).not.toBe(current);
     expect(changed[0]).toBe(existingA);
     expect(changed[1]).toBe(changedB);
+  });
+
+  it('merges a delayed snapshot under newer live rows', () => {
+    const live = makeItem({ id: 'streaming', turnIndex: 1, summary: 'live' });
+    const liveOnly = makeItem({ id: 'live-only', turnIndex: 2 });
+    const missed = makeItem({ id: 'missed', turnIndex: 1, itemIndex: 1 });
+
+    const merged = reconcileSnapshotPage([
+      makeItem({ id: 'streaming', turnIndex: 1, summary: 'stale' }),
+      missed,
+    ], [live, liveOnly], new Set(['streaming', 'live-only'])).items;
+
+    expect(merged.map((item) => item.id)).toEqual(['streaming', 'missed', 'live-only']);
+    expect(merged[0]).toBe(live);
+    expect(merged[1]).toBe(missed);
+    expect(merged[2]).toBe(liveOnly);
+  });
+
+  it('keeps the current array when a delayed snapshot contributes nothing', () => {
+    const live = makeItem({ id: 'streaming', summary: 'live' });
+    const current = [live];
+    expect(reconcileSnapshotPage([
+      makeItem({ id: 'streaming', summary: 'stale' }),
+    ], current, new Set(['streaming'])).items).toBe(current);
+  });
+
+  it('still applies snapshot deletions for untouched rows during live changes', () => {
+    const live = makeItem({ id: 'streaming', turnIndex: 1, summary: 'live' });
+    const obsolete = makeItem({ id: 'obsolete', turnIndex: 2 });
+    const merged = reconcileSnapshotPage([
+      makeItem({ id: 'streaming', turnIndex: 1, summary: 'stale' }),
+    ], [live, obsolete], new Set(['streaming'])).items;
+
+    expect(merged).toEqual([live]);
+  });
+
+  it('does not restore a row removed while the snapshot was in flight', () => {
+    const removed = makeItem({ id: 'removed' });
+    expect(reconcileSnapshotPage(
+      [removed],
+      [],
+      new Set(),
+      new Set(['removed']),
+    ).items).toEqual([]);
   });
 
   it('adds only missing rows and preserves existing row references', () => {
@@ -713,7 +757,7 @@ describe('applyItemUpsertsToWindow parented admission', () => {
   });
 });
 
-describe('applySyncPage subagent admission', () => {
+describe('reconcileSnapshotPage subagent admission', () => {
   it('keeps live children whose anchor survives and reports the orphaned ones', () => {
     const anchor = makeItem({
       id: 'anchor',
@@ -741,7 +785,7 @@ describe('applySyncPage subagent admission', () => {
     const page = [
       makeItem({ id: 'top', threadId: 'thread-1', turnIndex: 1, itemIndex: 0 }),
     ];
-    const result = applySyncPage(
+    const result = reconcileSnapshotPage(
       page,
       [anchor, child, stray],
       new Set(['anchor', 'child', 'stray']),
@@ -768,7 +812,7 @@ describe('applySyncPage subagent admission', () => {
     });
     // The anchor is neither in the page nor live-touched, so it is a
     // paint-only row and drops; its live child must not outlive it.
-    const result = applySyncPage([], [anchor, child], new Set(['child']));
+    const result = reconcileSnapshotPage([], [anchor, child], new Set(['child']));
     expect(result.items).toEqual([]);
     expect(result.orphanedLiveChildren.map((item) => item.id)).toEqual(['child']);
   });
@@ -777,8 +821,19 @@ describe('applySyncPage subagent admission', () => {
     const rows = [
       makeItem({ id: 'a', threadId: 'thread-1', turnIndex: 1, itemIndex: 0 }),
     ];
-    const result = applySyncPage(rows, rows, new Set());
+    const result = reconcileSnapshotPage(rows, rows, new Set());
     expect(result.items).toBe(rows);
     expect(result.orphanedLiveChildren).toEqual([]);
+  });
+
+  it('does not restore a row removed while the sync page was in flight', () => {
+    const removed = makeItem({ id: 'removed', threadId: 'thread-1' });
+    const result = reconcileSnapshotPage(
+      [removed],
+      [],
+      new Set(),
+      new Set(['removed']),
+    );
+    expect(result.items).toEqual([]);
   });
 });

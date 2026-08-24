@@ -3740,6 +3740,160 @@ describe('createThreadPane', () => {
       expect(pane.items.map((it) => it.id)).toEqual(['refreshed']);
     });
 
+    it('keeps live item mutations that land while a gap snapshot is in flight', async () => {
+      const pane = createThreadPane();
+      let sliceCall = 0;
+      let releaseRefresh!: (value: unknown) => void;
+      setBindingMock('ListThreadSliceAround', async () => {
+        sliceCall += 1;
+        if (sliceCall === 1) {
+          return {
+            items: [
+              makeItem({
+                id: 'streaming',
+                threadId: 't',
+                turnIndex: 1,
+                itemIndex: 0,
+                kind: 'assistant_text',
+                role: 'assistant',
+                status: 'streaming',
+                summary: 'persisted before stream',
+              }),
+              makeItem({
+                id: 'obsolete',
+                threadId: 't',
+                turnIndex: 1,
+                itemIndex: 2,
+              }),
+              makeItem({
+                id: 'removed-live',
+                threadId: 't',
+                turnIndex: 1,
+                itemIndex: 3,
+              }),
+            ],
+            oldestTurnIndex: 1,
+            newestTurnIndex: 1,
+            hasMore: false,
+            hasMoreOlder: false,
+            hasMoreNewer: false,
+          };
+        }
+        return new Promise((resolve) => {
+          releaseRefresh = resolve;
+        });
+      });
+
+      await pane.switchThread(makeThread({ id: 't' }));
+      const refreshing = pane.refreshFromBackend();
+      await flushMicrotasks();
+
+      pane.applyItemPatch({
+        threadId: 't',
+        itemId: 'streaming',
+        kind: 'assistant_text',
+        patch: { status: 'completed', updatedAt: 2 },
+      });
+      pane.upsertItem(makeItem({
+        id: 'live-only',
+        threadId: 't',
+        turnIndex: 2,
+        itemIndex: 0,
+        summary: 'not persisted yet',
+      }));
+      expect(pane.removeItemById('removed-live', 't')?.id).toBe('removed-live');
+
+      releaseRefresh({
+        items: [
+          makeItem({
+            id: 'streaming',
+            threadId: 't',
+            turnIndex: 1,
+            itemIndex: 0,
+            kind: 'assistant_text',
+            role: 'assistant',
+            status: 'streaming',
+            summary: 'persisted before stream',
+          }),
+          makeItem({
+            id: 'missed-event',
+            threadId: 't',
+            turnIndex: 1,
+            itemIndex: 1,
+            summary: 'recovered from snapshot',
+          }),
+          makeItem({
+            id: 'removed-live',
+            threadId: 't',
+            turnIndex: 1,
+            itemIndex: 3,
+          }),
+        ],
+        oldestTurnIndex: 1,
+        newestTurnIndex: 1,
+        hasMore: false,
+        hasMoreOlder: false,
+        hasMoreNewer: false,
+      });
+      await refreshing;
+
+      expect(pane.items.map((item) => [item.id, item.summary, item.status])).toEqual([
+        ['streaming', 'persisted before stream', 'completed'],
+        ['missed-event', 'recovered from snapshot', 'completed'],
+        ['live-only', 'not persisted yet', 'completed'],
+      ]);
+      expect(pane.newestLoadedTurnIndex).toBe(2);
+    });
+
+    it('does not let an older gap snapshot overwrite a newer refresh', async () => {
+      const pane = createThreadPane();
+      const releases: Array<(value: unknown) => void> = [];
+      let sliceCall = 0;
+      setBindingMock('ListThreadSliceAround', async () => {
+        sliceCall += 1;
+        if (sliceCall === 1) {
+          return {
+            items: [makeItem({ id: 'initial', threadId: 't' })],
+            oldestTurnIndex: 0,
+            newestTurnIndex: 0,
+            hasMore: false,
+            hasMoreOlder: false,
+            hasMoreNewer: false,
+          };
+        }
+        return new Promise((resolve) => releases.push(resolve));
+      });
+
+      await pane.switchThread(makeThread({ id: 't' }));
+      const older = pane.refreshFromBackend();
+      await flushMicrotasks();
+      const newer = pane.refreshFromBackend();
+      await flushMicrotasks();
+      expect(releases).toHaveLength(2);
+
+      releases[1]({
+        items: [makeItem({ id: 'newer', threadId: 't', turnIndex: 2 })],
+        oldestTurnIndex: 2,
+        newestTurnIndex: 2,
+        hasMore: false,
+        hasMoreOlder: false,
+        hasMoreNewer: false,
+      });
+      await newer;
+      releases[0]({
+        items: [makeItem({ id: 'older', threadId: 't', turnIndex: 1 })],
+        oldestTurnIndex: 1,
+        newestTurnIndex: 1,
+        hasMore: false,
+        hasMoreOlder: false,
+        hasMoreNewer: false,
+      });
+      await older;
+
+      expect(pane.items.map((item) => item.id)).toEqual(['newer']);
+      expect(pane.newestLoadedTurnIndex).toBe(2);
+    });
+
     it('prunes older rows when live tail growth exceeds the active window cap', async () => {
       const pane = createThreadPane();
       const initial = Array.from({ length: 800 }, (_, index) =>

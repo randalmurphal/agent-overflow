@@ -253,6 +253,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       activityRuns.noteMemberContentChanged(next.id);
     }
     items[index] = next;
+    switchLoad.noteItemMutation(next.id);
     itemBoxes.set(next.id, next);
   }
   const rowUiState = createThreadRowUiState({
@@ -288,6 +289,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
   const timelineWindow = createThreadTimelineWindow({
     getItems: () => items,
     replaceTimelineItems,
+    installTimelineItems,
     getThread: () => thread,
     getSwitchGeneration: () => switchGeneration,
     recomputeReveal: streamingReveal.recomputeReveal,
@@ -771,6 +773,27 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     } = {},
   ): boolean {
     if (items === nextItems) return false;
+    switchLoad.noteItemWindowReplacement(items, nextItems);
+    return commitTimelineItems(
+      nextItems,
+      options.disposeDropped ? droppedItemsBetween(items, nextItems) : NO_ITEMS,
+      options.exhaustedScope,
+    );
+  }
+
+  /**
+   * Install a cache/backend snapshot without reporting the snapshot's own
+   * changes as mutations that raced it. Only the switch/load pipeline gets
+   * this handle. Every external replacement uses replaceTimelineItems above.
+   */
+  function installTimelineItems(
+    nextItems: Item[],
+    options: {
+      disposeDropped?: boolean;
+      exhaustedScope?: ReadonlySet<string>;
+    } = {},
+  ): boolean {
+    if (items === nextItems) return false;
     return commitTimelineItems(
       nextItems,
       options.disposeDropped ? droppedItemsBetween(items, nextItems) : NO_ITEMS,
@@ -800,6 +823,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       else kept.push(item);
     }
     if (dropped.length === 0) return dropped;
+    switchLoad.noteItemWindowReplacement(items, kept);
     commitTimelineItems(kept, dropped, options.exhaustedScope);
     return dropped;
   }
@@ -826,6 +850,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
    */
   function commitUpsertResult(next: ApplyItemUpsertsToWindowResult): void {
     items = next.items;
+    switchLoad.noteItemMutations(next.changedItems);
     if (next.indexesNeedRebuild) {
       rebuildItemIndexes(items);
     } else {
@@ -910,7 +935,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       draftPlaceholder = null;
     },
     getItems: () => items,
-    replaceTimelineItems,
+    installTimelineItems,
     getSwitchGeneration: () => switchGeneration,
     bumpSwitchGeneration: () => ++switchGeneration,
     getLoading: () => loading,
@@ -962,15 +987,13 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
   });
 
   // Streaming item-application machine. Same construction rule as
-  // `switchLoad` above; it also reads that module's in-flight sync
-  // ledger, so it is declared after it.
+  // `switchLoad` above, so it is declared after it.
   const itemStream = createThreadItemStreamApply({
     getItems: () => items,
     itemIndexById,
     getThread: () => thread,
     writeItemAt,
     commitUpsertResult,
-    getLiveTouchedDuringSync: switchLoad.getLiveTouchedDuringSync,
     stampLiveContent,
     armLiveContentAppendSpring,
     optimisticItemIds,

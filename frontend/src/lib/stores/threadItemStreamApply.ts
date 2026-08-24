@@ -40,13 +40,6 @@ export interface ThreadItemStreamApplyOptions {
    * revision bump escapes it.
    */
   commitUpsertResult(next: ApplyItemUpsertsToWindowResult): void;
-  /**
-   * Ids the wire touched while a window sync is in flight, or null when
-   * no load leg is armed. See threadSwitchLoad.svelte.ts — the sync page
-   * application must not drop a row that arrived after its read
-   * snapshot.
-   */
-  getLiveTouchedDuringSync(): Set<string> | null;
   /** Stamp the pane's non-reactive live-content latch. */
   stampLiveContent(): void;
   /** Wire append to the loaded tail: arm the structural spring AND stamp. */
@@ -96,8 +89,7 @@ export interface ThreadItemStreamApply {
  * deliberately does NOT own the window's cursors (threadTimelineWindow),
  * the per-item smoothers and reveal gate (threadStreamingReveal), the
  * subagent fold policy (threadSubagentMemory), or the switch/sync
- * pipeline whose live-arrival ledger it reports into
- * (threadSwitchLoad) — it drives all four through their handles.
+ * pipeline (threadSwitchLoad) — it drives all four through their handles.
  */
 export function createThreadItemStreamApply(
   options: ThreadItemStreamApplyOptions,
@@ -153,7 +145,7 @@ export function createThreadItemStreamApply(
     // wholesale through `replaceTimelineItems` (server windows are
     // top-level-only; snapshots hold rows this pane already admitted),
     // and the window-sync page install enforces the same contract via
-    // `applySyncPage.orphanedLiveChildren`.
+    // `reconcileSnapshotPage.orphanedLiveChildren`.
     subagentMemory.recordAdmission(
       next.appendedItems,
       next.rejectedParentedItems,
@@ -166,10 +158,6 @@ export function createThreadItemStreamApply(
       // "nothing reached the window" to callers — the rejections were
       // recorded above and are not theirs to see.
       return next.droppedNewerItems ? next : null;
-    }
-    const liveTouchedDuringSync = options.getLiveTouchedDuringSync();
-    if (liveTouchedDuringSync) {
-      for (const changed of next.changedItems) liveTouchedDuringSync.add(changed.id);
     }
     options.commitUpsertResult(next);
     if (next.appendedItems.length > 0) {

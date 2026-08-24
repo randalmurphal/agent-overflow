@@ -29,9 +29,9 @@ import {
   type ThreadItemSnapshot,
 } from './threadItemCache';
 import {
-  applySyncPage,
+  itemsAreEqual,
   itemsForThread,
-  reconcileItemWindow,
+  reconcileSnapshotPage,
   type TimelineCursorLike,
 } from './threadItems';
 import { getThreadScrollSnapshot } from '../utils/threadScrollSnapshots';
@@ -109,8 +109,8 @@ export interface ThreadSwitchLoadOptions {
   clearDraftPlaceholder(): void;
   /** Current item window, sorted by (turnIndex, itemIndex). Re-read per call. */
   getItems(): Item[];
-  /** The pane's items-replacement chokepoint (index rebuild, fold retention, dispose, revision bump). */
-  replaceTimelineItems(
+  /** Install a cache/backend snapshot without recording that snapshot as a live race mutation. */
+  installTimelineItems(
     nextItems: Item[],
     options?: {
       disposeDropped?: boolean;
@@ -199,12 +199,18 @@ export interface ThreadSwitchLoad {
     materializedThreadId: string,
   ): Promise<void>;
   /**
-   * Ids the wire touched while a window sync was in flight, or null when
-   * no load leg is armed. The upsert path adds to it; `applySyncPage`
-   * reads it so a page cannot drop a row that arrived after its read
-   * snapshot.
+   * Ids the pane changed while a window sync was in flight, or null when
+   * no load leg is armed. The item-write chokepoints add to it;
+   * `reconcileSnapshotPage` reads it so a page cannot drop or regress a
+   * row that changed after its read snapshot.
    */
   getLiveTouchedDuringSync(): Set<string> | null;
+  /** Record a row write against every in-flight backend snapshot. */
+  noteItemMutation(itemId: string): void;
+  /** Batch form for an upsert commit that already has its changed rows. */
+  noteItemMutations(items: readonly Item[]): void;
+  /** Record a wholesale window replacement against in-flight snapshots. */
+  noteItemWindowReplacement(previous: readonly Item[], next: readonly Item[]): void;
   /**
    * Release everything this module holds for the pane's current thread:
    * the in-flight sync ledger, the window attestation, the replica
@@ -272,17 +278,27 @@ export function createThreadSwitchLoad(
   /**
    * Ids the wire touched while a window sync was in flight. Non-null
    * only for the duration of the item-load leg, so the ordinary upsert
-   * path pays one branch and nothing more. `applySyncPage` reads it to
-   * keep rows that post-date the page's read snapshot — without it,
-   * opening a thread mid-stream would drop the row it is streaming into.
+   * path pays one branch and nothing more. `reconcileSnapshotPage` reads
+   * it to keep rows that post-date the page's read snapshot — without
+   * it, opening a thread mid-stream would drop the row it is streaming
+   * into.
    */
   let liveTouchedDuringSync: Set<string> | null = null;
+  let liveRemovedDuringSync: Set<string> | null = null;
+  let liveMutationDuringRefresh: {
+    ids: Set<string>;
+    removedIds: Set<string>;
+  } | null = null;
   let failedHistoryLoad: {
     threadId: string;
     generation: number;
     anchorItemId: string;
   } | null = null;
   let historyRetryPromise: Promise<void> | null = null;
+  // Distinct from the pane switch generation: multiple gap refreshes can
+  // overlap on the same thread, and an older response must not overwrite a
+  // newer one. resetPipeline also advances it to invalidate detached work.
+  let refreshGeneration = 0;
   /**
    * The attestation for the window THIS PANE currently holds
    * (docs/specs/thread-replica-sync.md §3.4). Attestation is a property
@@ -727,7 +743,7 @@ export function createThreadSwitchLoad(
     // with was itself sync-attested.
     windowAttestation = null;
     if (cached) {
-      options.replaceTimelineItems(cached.items);
+      options.installTimelineItems(cached.items);
       options.subagentMemory.restoreFolds(cached.subagentFolds);
       options.subagentMemory.clearWindowDerivedState();
       options.timelineWindow.installFromSnapshot(cached);
@@ -736,7 +752,7 @@ export function createThreadSwitchLoad(
         attestCurrentWindow(cached.historyStamp.epoch, cached.historyStamp.rev);
       }
     } else {
-      options.replaceTimelineItems([]);
+      options.installTimelineItems([]);
       options.subagentMemory.resetForFreshThread();
       options.timelineWindow.resetForFreshThread();
     }
@@ -755,9 +771,10 @@ export function createThreadSwitchLoad(
     // already committed to the incoming thread, so a wire upsert can
     // land before the leg's first await resolves. Rows recorded from
     // this point survive the attested page that replaces the paint (see
-    // applySyncPage) — without the early arm, a thread opened while it
+    // reconcileSnapshotPage) — without the early arm, a thread opened while it
     // was streaming would lose the row it was streaming into.
     liveTouchedDuringSync = new Set();
+    liveRemovedDuringSync = new Set();
     return { cached, sliceAnchorId };
   }
 
@@ -825,7 +842,7 @@ export function createThreadSwitchLoad(
     coldLoadSyncStatus(paneId, response.status);
     if (response.status === 'gone') {
       dropCachedWindow(threadId);
-      options.replaceTimelineItems([], { disposeDropped: true });
+      options.installTimelineItems([], { disposeDropped: true });
       options.timelineWindow.resetAfterLoadError();
       options.setLatestSettledTurn(null);
       options.setGeneralError('This thread no longer exists.');
@@ -834,16 +851,17 @@ export function createThreadSwitchLoad(
     const page = response.page;
     if (page) {
       const incoming = itemsForThread((page.items ?? []) as Item[], threadId);
-      const next = applySyncPage(
+      const next = reconcileSnapshotPage(
         incoming,
         options.getItems(),
         liveTouchedDuringSync ?? EMPTY_ID_SET,
+        liveRemovedDuringSync ?? EMPTY_ID_SET,
       );
       // Live children whose anchor survived nowhere are swallowed, not
       // installed — their later deltas stay silent, and hydration
       // renders them when the anchor pages back in.
       options.subagentMemory.recordAdmission([], next.orphanedLiveChildren);
-      options.replaceTimelineItems(next.items, { disposeDropped: true });
+      options.installTimelineItems(next.items, { disposeDropped: true });
       options.timelineWindow.applyWindowMetadataFromPaged(page);
       // The warm-gate re-arm belongs to a FIRST content mount only. A
       // page landing over an already-painted window (L1 or replica) is a
@@ -1011,7 +1029,7 @@ export function createThreadSwitchLoad(
         // strictly better than blanking it; the next open re-converges.
         return;
       }
-      options.replaceTimelineItems([]);
+      options.installTimelineItems([]);
       options.timelineWindow.resetAfterLoadError();
       failedHistoryLoad = {
         threadId,
@@ -1027,7 +1045,10 @@ export function createThreadSwitchLoad(
       // Only when this leg is still the current one: a newer switch has
       // already armed its own set, and clearing it here would blind that
       // switch to the arrivals it is about to reconcile against.
-      if (gen === options.getSwitchGeneration()) liveTouchedDuringSync = null;
+      if (gen === options.getSwitchGeneration()) {
+        liveTouchedDuringSync = null;
+        liveRemovedDuringSync = null;
+      }
     }
   }
 
@@ -1204,6 +1225,7 @@ export function createThreadSwitchLoad(
         // upsert would accumulate into a set the next page
         // application reads as live arrivals it must not drop.
         liveTouchedDuringSync = null;
+        liveRemovedDuringSync = null;
       }
       if (liveStateHydrationToken !== 0 && !liveStateHydrationConsumed) {
         finishThreadLiveStateHydration(newThread.id, liveStateHydrationToken);
@@ -1227,6 +1249,14 @@ export function createThreadSwitchLoad(
     const currentThread = options.getThread();
     if (!currentThread) return;
     const gen = options.getSwitchGeneration();
+    const refreshGen = ++refreshGeneration;
+    const refreshIsCurrent = (): boolean =>
+      gen === options.getSwitchGeneration() && refreshGen === refreshGeneration;
+    const refreshMutations = {
+      ids: new Set<string>(),
+      removedIds: new Set<string>(),
+    };
+    liveMutationDuringRefresh = refreshMutations;
     let liveStateHydrationToken = beginThreadLiveStateHydration(
       currentThread.id,
     );
@@ -1240,15 +1270,28 @@ export function createThreadSwitchLoad(
           anchorItemId,
           ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS,
         );
-        if (gen !== options.getSwitchGeneration()) return;
-        const nextItems = reconcileItemWindow(
-          itemsForThread((paged.items ?? []) as Item[], currentThread.id),
-          options.getItems(),
+        if (!refreshIsCurrent()) return;
+        const snapshot = itemsForThread(
+          (paged.items ?? []) as Item[],
+          currentThread.id,
         );
-        options.replaceTimelineItems(nextItems, { disposeDropped: true });
+        const currentItems = options.getItems();
+        const changedDuringFetch =
+          refreshMutations.ids.size > 0 || refreshMutations.removedIds.size > 0;
+        const next = reconcileSnapshotPage(
+          snapshot,
+          currentItems,
+          refreshMutations.ids,
+          refreshMutations.removedIds,
+        );
+        options.subagentMemory.recordAdmission([], next.orphanedLiveChildren);
+        options.installTimelineItems(next.items, { disposeDropped: true });
         options.timelineWindow.applyWindowMetadataFromPaged(paged);
+        if (changedDuringFetch) {
+          options.timelineWindow.refreshCursorsAfterTailAppend();
+        }
       } catch (err) {
-        if (gen !== options.getSwitchGeneration()) return;
+        if (!refreshIsCurrent()) return;
         console.error('Failed to refresh thread items after gap:', err);
         return;
       }
@@ -1256,7 +1299,7 @@ export function createThreadSwitchLoad(
         const recent = (await ListRecentTurns(currentThread.id, 2)) as
           | TurnRow[]
           | null;
-        if (gen !== options.getSwitchGeneration()) return;
+        if (!refreshIsCurrent()) return;
         if (recent && recent.length > 0) {
           const settled = recent.find(
             (row) =>
@@ -1267,7 +1310,7 @@ export function createThreadSwitchLoad(
           }
         }
       } catch (err) {
-        if (gen !== options.getSwitchGeneration()) return;
+        if (!refreshIsCurrent()) return;
         console.error('Failed to refresh recent turns after gap:', err);
       }
       options.pendingInteractiveState.prepareForLiveStateHydration();
@@ -1278,6 +1321,9 @@ export function createThreadSwitchLoad(
       );
       liveStateHydrationToken = 0;
     } finally {
+      if (liveMutationDuringRefresh === refreshMutations) {
+        liveMutationDuringRefresh = null;
+      }
       if (liveStateHydrationToken !== 0) {
         finishThreadLiveStateHydration(
           currentThread.id,
@@ -1301,6 +1347,7 @@ export function createThreadSwitchLoad(
     const retry = (async () => {
       options.setLoading(true);
       liveTouchedDuringSync = new Set();
+      liveRemovedDuringSync = new Set();
       try {
         await runItemWindowSync(
           currentThread,
@@ -1345,9 +1392,29 @@ export function createThreadSwitchLoad(
     // sync" and refuse to drop.
     windowAttestation = null;
     liveTouchedDuringSync = null;
+    liveRemovedDuringSync = null;
+    liveMutationDuringRefresh = null;
     failedHistoryLoad = null;
     historyRetryPromise = null;
+    refreshGeneration += 1;
     pastSpinnerThreshold = false;
+  }
+
+  function recordItemMutation(itemId: string): void {
+    liveTouchedDuringSync?.add(itemId);
+    liveRemovedDuringSync?.delete(itemId);
+    liveMutationDuringRefresh?.ids.add(itemId);
+    liveMutationDuringRefresh?.removedIds.delete(itemId);
+  }
+
+  function noteItemMutation(itemId: string): void {
+    if (!liveTouchedDuringSync && !liveMutationDuringRefresh) return;
+    recordItemMutation(itemId);
+  }
+
+  function noteItemMutations(items: readonly Item[]): void {
+    if (!liveTouchedDuringSync && !liveMutationDuringRefresh) return;
+    for (const item of items) recordItemMutation(item.id);
   }
 
   return {
@@ -1362,6 +1429,31 @@ export function createThreadSwitchLoad(
     closeDraftPlaceholderTerminals,
     migrateDraftPlaceholderTerminals,
     getLiveTouchedDuringSync: () => liveTouchedDuringSync,
+    noteItemMutation,
+    noteItemMutations,
+    noteItemWindowReplacement: (
+      previous: readonly Item[],
+      next: readonly Item[],
+    ): void => {
+      if (!liveTouchedDuringSync && !liveMutationDuringRefresh) return;
+      const previousById = new Map(previous.map((item) => [item.id, item]));
+      const nextIds = new Set(next.map((item) => item.id));
+      for (const item of previous) {
+        if (nextIds.has(item.id)) continue;
+        liveTouchedDuringSync?.delete(item.id);
+        liveRemovedDuringSync?.add(item.id);
+        liveMutationDuringRefresh?.ids.delete(item.id);
+        liveMutationDuringRefresh?.removedIds.add(item.id);
+      }
+      for (const item of next) {
+        const prior = previousById.get(item.id);
+        if (prior && itemsAreEqual(prior, item)) continue;
+        liveTouchedDuringSync?.add(item.id);
+        liveRemovedDuringSync?.delete(item.id);
+        liveMutationDuringRefresh?.ids.add(item.id);
+        liveMutationDuringRefresh?.removedIds.delete(item.id);
+      }
+    },
     resetPipeline,
   };
 }

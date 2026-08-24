@@ -43,6 +43,17 @@ export interface ThreadTimelineWindowOptions {
       exhaustedScope?: ReadonlySet<string>;
     },
   ): boolean;
+  /**
+   * Install the initial cache/backend slice without classifying the slice
+   * itself as a live mutation.
+   */
+  installTimelineItems(
+    nextItems: Item[],
+    options?: {
+      disposeDropped?: boolean;
+      exhaustedScope?: ReadonlySet<string>;
+    },
+  ): boolean;
   getThread(): Thread | null;
   /** Pane switch generation — captured at load start, compared after awaits. */
   getSwitchGeneration(): number;
@@ -506,7 +517,7 @@ export function createThreadTimelineWindow(
   function applyInitialSlice(paged: PagedItems, threadID: string): void {
     const incoming = itemsForThread((paged.items ?? []) as Item[], threadID);
     const nextItems = mergeMissingItemsById(incoming, options.getItems());
-    options.replaceTimelineItems(nextItems, { disposeDropped: true });
+    options.installTimelineItems(nextItems, { disposeDropped: true });
     applyWindowMetadataFromPaged(paged);
   }
 

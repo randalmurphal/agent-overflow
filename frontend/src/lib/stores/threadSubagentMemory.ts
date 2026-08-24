@@ -81,7 +81,7 @@ export interface ThreadSubagentMemory {
    * back must stream again), rows that were `rejected` enter it. The
    * admission DECISION itself lives in the window merges
    * (`applyItemUpsertsToWindow.rejectedParentedItems`,
-   * `applySyncPage.orphanedLiveChildren`) — this module only keeps the
+   * `reconcileSnapshotPage.orphanedLiveChildren`) — this module only keeps the
    * ledger that silences the rejected rows' later deltas.
    */
   recordAdmission(landed: readonly Item[], rejected: readonly Item[]): void;
