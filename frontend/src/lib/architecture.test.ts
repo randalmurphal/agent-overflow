@@ -163,6 +163,12 @@ const SCROLL_PRESENTATION_PREFIXES = [
   'lib/utils/scroll/',
 ] as const;
 const AUTHORIZED_SCROLL_PRESENTATION_STATE = [
+  // Two ambient-indicator keyframes. Neither is scroll content: the owners are
+  // a fixed-size SVG spinner glyph and the composer's one-frame sprite window,
+  // both leaves outside the timeline planes. They animate transform precisely
+  // so Blink runs them off the main thread — see the notes in app.css.
+  'app.css|transform declaration or keyframe|to { transform: rotate(360deg); }',
+  'app.css|transform declaration or keyframe|to { transform: translateX(calc(-1 * var(--working-sprite-strip-w))); }',
   'lib/components/chat/CompactionDivider.svelte|Tailwind transform utility|class:rotate-90={expanded}',
   'lib/components/chat/DiagramModal.svelte|Svelte transform style directive|style:transform={transform}',
   'lib/components/chat/ExpandedImageDialog.svelte|Tailwind transform utility|class="absolute left-4 top-1/2 -translate-y-1/2 rounded-full bg-scrim-fg/10 p-2 text-scrim-fg transition hover:bg-scrim-fg/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-scrim-fg/70"',

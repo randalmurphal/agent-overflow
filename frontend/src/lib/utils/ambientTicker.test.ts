@@ -91,6 +91,8 @@ describe('startAmbientTicker', () => {
     return el;
   }
 
+  const glowVar = (el: HTMLElement): string => el.style.getPropertyValue('--ambient-glow-t');
+
   beforeEach(() => {
     vi.useFakeTimers();
     vi.setSystemTime(0);
@@ -111,89 +113,93 @@ describe('startAmbientTicker', () => {
     vi.useRealTimers();
   });
 
-  it('writes inline styles to marked elements immediately and clears them on stop', () => {
+  it('writes the glow variable immediately and clears it on stop', () => {
+    const warning = addFixture('<div class="status-glow-warning"></div>');
+    const info = addFixture('<div class="status-glow-info"></div>');
+
+    const stop = startAmbientTicker();
+    expect(glowVar(warning)).toBe('0'); // glow at t=0
+    expect(glowVar(info)).toBe('0');
+
+    vi.advanceTimersByTime(250);
+    expect(glowVar(warning)).toBe(String(glowTAt(250)));
+
+    stop();
+    expect(glowVar(warning)).toBe('');
+    expect(glowVar(info)).toBe('');
+  });
+
+  it('advances the glow on the slot grid', () => {
+    const glow = addFixture('<div class="status-glow-warning"></div>');
+    const stop = startAmbientTicker();
+    for (const t of [250, 500, 1000, 1250, 1500, 2250, 2500]) {
+      vi.setSystemTime(t);
+      vi.advanceTimersByTime(AMBIENT_SLOT_MS);
+      expect(glowVar(glow), `t=${t}`).toBe(String(glowTAt(t)));
+    }
+    stop();
+  });
+
+  it('leaves pulse, LED and spinner elements entirely alone', () => {
+    // These are CSS animations now (app.css), phase-locked by
+    // ambientPhase.ts. A tick that writes to them is the regression this
+    // whole change exists to prevent: an inline write is not composited,
+    // so each one repaints the whole document.
     const dot = addFixture('<span class="animate-pulse"></span>');
+    const shifted = addFixture('<span class="animate-pulse ambient-pulse-s2"></span>');
     const chase = addFixture(
       '<span class="working-leds"><i class="working-led"></i><i class="working-led"></i><i class="working-led"></i></span>',
     );
-    const glow = addFixture('<div class="status-glow-warning"></div>');
     const spinner = addFixture('<svg class="stepped-spin"></svg>');
 
     const stop = startAmbientTicker();
-    expect(dot.style.opacity).toBe('1'); // pulse at t=0
-    expect((chase.children[0] as HTMLElement).style.opacity).toBe('1');
-    expect((chase.children[1] as HTMLElement).style.opacity).toBe('0.2');
-    expect(glow.style.getPropertyValue('--ambient-glow-t')).toBe('0');
-    expect(spinner.style.transform).toBe('rotate(0deg)');
+    vi.advanceTimersByTime(1000);
 
-    stop();
-    expect(dot.style.opacity).toBe('');
-    expect((chase.children[0] as HTMLElement).style.opacity).toBe('');
-    expect(glow.style.getPropertyValue('--ambient-glow-t')).toBe('');
-    expect(spinner.style.transform).toBe('');
-  });
-
-  it('advances values on the slot grid', () => {
-    const chase = addFixture(
-      '<span class="working-leds"><i></i><i></i><i></i></span>',
-    );
-    const stop = startAmbientTicker();
-    expect((chase.children[0] as HTMLElement).style.opacity).toBe('1');
-    vi.advanceTimersByTime(250);
-    expect((chase.children[0] as HTMLElement).style.opacity).toBe('0.2');
-    expect((chase.children[1] as HTMLElement).style.opacity).toBe('1');
+    expect(dot.getAttribute('style')).toBe(null);
+    expect(shifted.getAttribute('style')).toBe(null);
+    for (const led of chase.children) expect(led.getAttribute('style')).toBe(null);
+    expect(spinner.getAttribute('style')).toBe(null);
     stop();
   });
 
-  it('applies the s2/s4 phase shifts to staggered pulse dots', () => {
-    const d0 = addFixture('<span class="animate-pulse"></span>');
-    const d2 = addFixture('<span class="animate-pulse ambient-pulse-s2"></span>');
-    const d4 = addFixture('<span class="animate-pulse ambient-pulse-s4"></span>');
+  it('sweeps the glow variable from elements that lose their marker class', () => {
+    const glow = addFixture('<div class="status-glow-warning"></div>');
     const stop = startAmbientTicker();
-    // The ticker writes values rounded to 4 decimals.
-    const fmt = (v: number): string => String(Math.round(v * 10000) / 10000);
-    expect(d0.style.opacity).toBe(fmt(pulseOpacityAt(0)));
-    expect(d2.style.opacity).toBe(fmt(pulseOpacityAt(-250)));
-    expect(d4.style.opacity).toBe(fmt(pulseOpacityAt(-500)));
-    stop();
-  });
-
-  it('sweeps inline styles from elements that lose their marker class', () => {
-    const dot = addFixture('<span class="animate-pulse"></span>');
-    const stop = startAmbientTicker();
-    expect(dot.style.opacity).not.toBe('');
-    dot.classList.remove('animate-pulse');
+    vi.setSystemTime(250);
     vi.advanceTimersByTime(AMBIENT_SLOT_MS);
-    expect(dot.style.opacity).toBe('');
+    expect(glowVar(glow)).not.toBe('');
+    glow.classList.remove('status-glow-warning');
+    vi.advanceTimersByTime(AMBIENT_SLOT_MS);
+    expect(glowVar(glow)).toBe('');
     // Re-adding the class picks it back up on the next tick.
-    dot.classList.add('animate-pulse');
+    glow.classList.add('status-glow-warning');
     vi.advanceTimersByTime(AMBIENT_SLOT_MS);
-    expect(dot.style.opacity).not.toBe('');
+    expect(glowVar(glow)).not.toBe('');
     stop();
   });
 
   it('is refcounted: the ticker survives until the last stop, stops are idempotent', () => {
-    const dot = addFixture('<span class="animate-pulse"></span>');
+    const glow = addFixture('<div class="status-glow-warning"></div>');
     const stopA = startAmbientTicker();
     const stopB = startAmbientTicker();
     stopA();
     stopA(); // double-stop must not release B's hold
-    vi.advanceTimersByTime(500);
-    expect(dot.style.opacity).not.toBe('');
+    vi.advanceTimersByTime(500); // advances the mocked clock with it
+    expect(glowVar(glow)).toBe(String(glowTAt(Date.now())));
     stopB();
-    expect(dot.style.opacity).toBe('');
+    expect(glowVar(glow)).toBe('');
     // A fresh start after full teardown works again.
     const stopC = startAmbientTicker();
-    expect(dot.style.opacity).not.toBe('');
+    expect(glowVar(glow)).toBe(String(glowTAt(Date.now())));
     stopC();
   });
 
   it('withholds writes under prefers-reduced-motion so CSS rest states apply', () => {
     matchMediaMock.matches = true;
-    const dot = addFixture('<span class="animate-pulse"></span>');
+    const glow = addFixture('<div class="status-glow-warning"></div>');
     const stop = startAmbientTicker();
     vi.advanceTimersByTime(1000);
-    expect(dot.style.opacity).toBe('');
+    expect(glowVar(glow)).toBe('');
     stop();
   });
 
@@ -206,13 +212,14 @@ describe('startAmbientTicker', () => {
       get: () => hidden,
     });
     try {
-      const dot = addFixture('<span class="animate-pulse"></span>');
+      const glow = addFixture('<div class="status-glow-warning"></div>');
       const stop = startAmbientTicker();
+      vi.setSystemTime(250);
       vi.advanceTimersByTime(1000);
-      expect(dot.style.opacity).toBe('');
+      expect(glowVar(glow)).toBe('');
       hidden = false;
       document.dispatchEvent(new Event('visibilitychange'));
-      expect(dot.style.opacity).not.toBe('');
+      expect(glowVar(glow)).not.toBe('');
       stop();
     } finally {
       delete (document as { hidden?: boolean }).hidden;

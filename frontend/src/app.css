@@ -253,28 +253,40 @@ html.light {
   --font-sans: 'Geist Sans', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
   --font-mono: 'Geist Mono', ui-monospace, SFMono-Regular, Consolas, 'Liberation Mono', Menlo, monospace;
 
-  /* Disarm Tailwind's animate-pulse animation. Every animate-pulse in
-     this app is an ambient indicator (working dots in the sidebar/
-     header/picker, loading text, retry icons); the utility keeps its
-     name but is now a MARKER class — utils/ambientTicker.ts discovers
-     marked elements and writes their pulsing opacity inline, so style
-     recalc touches only the dots and only when a value changes.
+  /* Every animate-pulse in this app is an ambient indicator (working
+     dots in the sidebar/header/picker, loading text, retry icons). The
+     waveform is `ambient-pulse` below, and it is authoritatively
+     specified by pulseOpacityAt() in utils/ambientTicker.ts — a browser
+     test samples the CSS against that function slot by slot.
 
-     History, because both halves matter: the original smooth pulse
-     forced a GPU present every vsync — on a 165Hz panel one 6px dot was
-     a standing 165 presents/sec client that stuttered OTHER apps
-     (2026-07-04 incident). A steps() timing function fixed the present
-     rate but not the style-recalc rate: a running CSS animation ticks
-     main-thread style recalc every vsync even when its output is
-     stepped (measured 2026-07-20: ~60 recalcs/sec from the ambient
-     indicators alone, each recalc allocating into Blink's Oilpan heap —
-     see ambientTicker.ts). The JS ticker closes that: style work now
-     happens only when a value actually changes. Spinners (animate-spin)
-     are deliberately untouched — smooth rotation, transient use only.
-     Standing spinners use primitives/SteppedSpinner.svelte: a spoked
-     glyph whose steps(12) rotation lands on spoke positions, so the
-     discretization reads as design. */
-  --animate-pulse: none;
+     Two facts govern the shape, both re-measured 2026-08-23:
+
+     1. steps() is load-bearing. The original SMOOTH pulse forced a GPU
+        present every vsync — on a 165Hz panel one 6px dot was a
+        standing 165 presents/sec client that stuttered OTHER apps
+        (2026-07-04 incident). It still reproduces: smooth presents 63/s,
+        stepped presents 7.3/s. Never remove the steps().
+
+     2. The property must be compositable. Blink promotes an element for
+        a known animation and ticks opacity/transform off the main
+        thread; a stepped opacity animation costs ZERO style recalcs and
+        zero paint. Animating a non-compositable property instead —
+        box-shadow, background-position — costs ~65 recalcs/sec, which
+        is what the retired JS ticker was built to avoid.
+
+     The ticker that replaced these keyframes in 2026-07 optimised
+     recalcs but forfeited that promotion, so each of its writes
+     repainted the whole document; it cost more total main-thread time
+     than the CSS it replaced. utils/ambientPhase.ts keeps every
+     indicator on one wall-clock beat, which is the one thing the
+     keyframes cannot do alone.
+
+     Spinners (animate-spin) are deliberately untouched — smooth
+     rotation, transient use only. Standing spinners use
+     primitives/SteppedSpinner.svelte: a spoked glyph whose steps(12)
+     rotation lands on spoke positions, so the discretization reads as
+     design. */
+  --animate-pulse: ambient-pulse 2s steps(8, jump-none) infinite;
 
   /* Existing semantic colors. */
   --color-surface-0: var(--surface-0);
@@ -884,18 +896,45 @@ input[type="search"]::-webkit-search-cancel-button {
   color: var(--info);
 }
 /*
- * Ambient pulse: no CSS here on purpose. The utility's animation is
- * disarmed in @theme (--animate-pulse: none) and the ticker
- * (utils/ambientTicker.ts) writes inline opacity onto every
- * `.animate-pulse` element — `animate-pulse`, `ambient-pulse-s2`, and
- * `ambient-pulse-s4` (Indicator.svelte's 250ms/500ms staggers) are
- * marker classes the ticker discovers, not styled selectors. Inline
- * leaf writes keep the recalc scope to the dots themselves; a shared
- * CSS variable on <html> was tried first and invalidated style for
- * the whole document per write (see the note in ambientTicker.ts).
- * With the ticker stopped or reduced motion active, no inline style
- * is present and elements rest at their natural opacity.
+ * Ambient pulse. base → 0.5 → base over 2s, steps(8, jump-none) applied
+ * to EACH half, which is 16 held values of 125ms — the grid every other
+ * ambient indicator shares. Mirrors pulseOpacityAt() exactly (the
+ * jump-none endpoints are why slots 7/8 both sit at 0.5 and slots 15/0
+ * both sit at base); ambientCss.browser.test.ts samples one against the
+ * other. See the --animate-pulse note in @theme for why it is stepped
+ * and why it is opacity.
+ *
+ * The staggers are Indicator.svelte's 250ms/500ms LAGS, so the delays
+ * are negative-equivalent (-1750ms ≡ +250ms at a 2s period) — a
+ * positive delay would leave the dot un-animated for its first cycle.
+ *
+ * Reduced motion is handled by the global reset at the bottom of this
+ * file: it collapses the animation, and with no fill-mode the element
+ * falls back to its natural opacity.
  */
+@keyframes ambient-pulse {
+  0% { opacity: 1; }
+  50% { opacity: 0.5; }
+  100% { opacity: 1; }
+}
+.ambient-pulse-s2 { animation-delay: -1750ms; }
+.ambient-pulse-s4 { animation-delay: -1500ms; }
+
+/*
+ * SteppedSpinner's rotation: one 30° spoke advance per 125ms slot, 12
+ * spokes per 1.5s revolution. Mirrors spinAngleAt(). transform is
+ * compositable, so this is free on the main thread; the discretization
+ * is what keeps a spoked glyph reading as design rather than as a
+ * broken smooth spin. Components drop the class (low power) or the
+ * global reduced-motion reset collapses it, and the glyph rests
+ * unrotated either way.
+ */
+@keyframes ambient-spin {
+  to { transform: rotate(360deg); }
+}
+.stepped-spin {
+  animation: ambient-spin 1500ms steps(12) infinite;
+}
 
 /*
  * Activity-rail working indicator: a static accent hairline across the
@@ -906,18 +945,20 @@ input[type="search"]::-webkit-search-cancel-button {
  * standing per-vsync compositor client — a continuously-eased
  * transform animation presents every vsync (165/s on a 165Hz panel)
  * for the entire working turn (same incident as the --animate-pulse
- * note in @theme). Here the hairline never animates, and the chase is
- * driven by utils/ambientTicker.ts (--ambient-led1/2/3, one-hot
- * advance every 250ms): 4 presents/s while working, and style recalc
- * only when a LED actually flips — a CSS animation would tick recalc
- * every vsync even with stepped timing (see the @theme note).
+ * note in @theme). The hairline never animates. The chase is one-hot,
+ * step-end, one LED lit per 250ms of a 750ms cycle: 4 presents/s while
+ * working, unchanged from the JS ticker that drove it before, but on a
+ * compositable property so it costs no main-thread work at all.
+ *
+ * Mirrors ledOpacitiesAt() exactly. The staggers are negative-
+ * equivalent lags (-500ms ≡ +250ms at a 750ms period) so no LED sits
+ * un-animated through its first cycle.
  *
  * Low-power mode omits the .working-leds wrapper class, which drops
- * the chase and leaves the LEDs at their resting opacity; the hairline
- * is static and stays in every mode. The ticker writes the chase as
- * inline opacity on the wrapper's children (leaf-scoped recalc); with
- * the ticker idle or reduced motion active there is no inline style
- * and all three LEDs rest at 0.45.
+ * the chase and leaves all three LEDs at their resting 0.45; the
+ * hairline is static and stays in every mode. Reduced motion falls
+ * back the same way through the global reset at the bottom of this
+ * file.
  */
 .working-hairline {
   background: linear-gradient(
@@ -930,6 +971,16 @@ input[type="search"]::-webkit-search-cancel-button {
 .working-led {
   opacity: 0.45;
 }
+@keyframes ambient-led {
+  0% { opacity: 1; }
+  33.3333% { opacity: 0.2; }
+  100% { opacity: 0.2; }
+}
+.working-leds > .working-led {
+  animation: ambient-led 750ms step-end infinite;
+}
+.working-leds > .working-led:nth-child(2) { animation-delay: -500ms; }
+.working-leds > .working-led:nth-child(3) { animation-delay: -250ms; }
 
 /*
  * Working-indicator sprite (components/composer/WorkingSprite.svelte):
@@ -941,15 +992,30 @@ input[type="search"]::-webkit-search-cancel-button {
  * box, eating the chip's padding instead of growing the row. All rem so
  * the invariant survives the font-size setting's root scale.
  *
- * Frame advance is an inline background-position-x write from the
- * component's own wall-clock timer — never a CSS animation (see the
- * ambientTicker note above). background-size pins the strip to N frame
- * widths so one frame shows regardless of the source strip's pixel
- * density.
+ * Frame advance is a steps() translate of the whole strip inside a
+ * one-frame clipping window, so the browser runs it off the main
+ * thread. The component writes the animation shorthand inline because
+ * cadence and frame count are the art's own.
+ *
+ * --working-sprite-fw is snapped to a whole number of DEVICE pixels,
+ * and that is not cosmetic. A composited transform is applied AFTER
+ * rasterization, so an offset landing between device pixels resamples
+ * the texture: measured 2026-08-23, a 25px frame (robo-typing) at 125%
+ * display scaling went from pixel-exact to 80.8% resampled pixels.
+ * Snapped, every strategy measures pixel-identical to the old
+ * background-position write across 5 frame widths x 3 scale factors.
+ * --dpr is written on :root by utils/ambientPhase.ts.
  *
  * The light-mode drop-shadow exists for the white robot mascots, which
  * otherwise wash out against light surfaces; a fg-derived shadow keeps
- * it themeable and invisible-ish on dark.
+ * it themeable and invisible-ish on dark. It stays on the WINDOW, not
+ * the strip: a filter on the strip would have its shadow clipped away
+ * at the frame boundary. It does wrap the animated layer, which was
+ * checked rather than assumed — measured 2026-08-23, a filtered
+ * ancestor still leaves the translate composited (0 style recalcs, 0
+ * paints over 5s), at the cost of ~1.5ms/s of compositor work per
+ * sprite in light mode, the same surface the old background-position
+ * write drove through it.
  */
 .working-sprite-slot {
   --working-sprite-sz: 1.5rem;
@@ -961,12 +1027,30 @@ input[type="search"]::-webkit-search-cancel-button {
   margin-block: calc((0.859375rem - var(--working-sprite-sz)) / 2);
 }
 .working-sprite {
-  --working-sprite-fw: calc(var(--working-sprite-sz) * var(--working-sprite-aspect, 1));
+  --working-sprite-fw: calc(
+    round(var(--working-sprite-sz) * var(--working-sprite-aspect, 1) * var(--dpr, 1), 1px) /
+      var(--dpr, 1)
+  );
+  --working-sprite-strip-w: calc(var(--working-sprite-fw) * var(--working-sprite-frames, 1));
+  position: relative;
   flex: none;
   width: var(--working-sprite-fw);
   height: var(--working-sprite-sz);
+  overflow: hidden;
+}
+.working-sprite-strip {
+  position: absolute;
+  inset-block: 0;
+  /* Physical `left`, not `inset-inline-start`: the frame advance is a
+     physical translateX, so a logical origin would run the strip the
+     wrong way under an RTL root. */
+  left: 0;
+  width: var(--working-sprite-strip-w);
   background-repeat: no-repeat;
-  background-size: calc(var(--working-sprite-fw) * var(--working-sprite-frames, 1)) var(--working-sprite-sz);
+  background-size: 100% 100%;
+}
+@keyframes working-sprite-run {
+  to { transform: translateX(calc(-1 * var(--working-sprite-strip-w))); }
 }
 html.light .working-sprite {
   filter: drop-shadow(0 0 1px color-mix(in oklab, var(--color-fg) 40%, transparent));

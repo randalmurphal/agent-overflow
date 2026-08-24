@@ -38,6 +38,19 @@ Edit a hunk with `pnpm patch svelte@<v> --edit-dir <dir>` (applies the existing 
 
 ## The ambient indicators drive ~two thirds of the renderer main thread
 
+**Built 2026-08-23.** Pulse, LED chase, stepped spin and the sprite are CSS
+keyframes again (`app.css`), phase-locked to wall clock by
+`utils/ambientPhase.ts`; the ticker survives for the glow alone and writes
+nothing when no `.status-glow-*` is on screen. The waveform functions in
+`ambientTicker.ts` stayed as the authoritative spec and
+`ambientCss.browser.test.ts` samples the rendered CSS against them slot by
+slot. Two findings only the build surfaced: a composited translate resamples
+the sprite texture unless the frame width is snapped to whole DEVICE pixels
+(25px frame at 125% scaling: 80.8% of pixels resampled), and a filtered
+ancestor (light mode's drop-shadow) does NOT de-composite the strip. The
+section below is the measurement that motivated it; keep it for the
+mechanism, not as a description of current code.
+
 Measured 2026-08-23 on the live app (`probe frames 20`, trace kept at
 `trace-postsvg.json`) plus four isolated Chrome 151 spikes under
 `/tmp/svg-chunk-spike/` (throwaway profile, never the app's).
@@ -205,5 +218,4 @@ moves. The library exposes no option to disable the poll.
 - Upstream issue/PR for the reconnect double registration (svelte `main` matched 5.56.8 on 2026-08-23).
 - Chromium perf bug for the `PlaneRootTransform` re-allocation (one-line reuse in `GeometryMapperTransformCache::Update`): not filed, and no longer reached by this app after `7b29f9d6`.
 - Side observation, unfiled: synthetic wheel events on the first composited plane scrolled the whole app view, so the app root may be scrollable.
-- Ambient indicators still ride the JS ticker; the four re-expressions above are measured but not built. Reported to the user 2026-08-23, awaiting a call.
 - `HeapVectorBacking<blink::PaintChunk>` is 0.55 of the residual 1.07 MB/min churn. It is rebuilt once per paint, so it falls with the frame rate rather than needing its own fix.

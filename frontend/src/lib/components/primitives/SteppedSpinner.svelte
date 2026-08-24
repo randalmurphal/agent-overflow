@@ -6,13 +6,14 @@
   // app.css `--animate-pulse` — but a plain glyph can't be stepped
   // without reading as broken. A spoked glyph can: each jump lands
   // exactly on the next spoke position (the iOS activity indicator's
-  // design). `stepped-spin` is a marker class: utils/ambientTicker.ts
-  // writes the rotation inline (one spoke per 125ms slot ≈ 1.5s/rev) —
-  // a CSS animation, even a stepped one, ticks main-thread style
-  // recalc every vsync while it runs (see the @theme note in app.css).
-  // With the ticker idle or reduced motion active there is no inline
-  // transform and the glyph rests unrotated. Transient spinners should
-  // keep using animate-spin.
+  // design). `stepped-spin` is the CSS animation in app.css: one spoke
+  // per 125ms slot, 12 spokes ≈ 1.5s/rev, `steps(12)` so the compositor
+  // presents 8 frames/s rather than one per vsync. It animates
+  // `transform`, which Blink ticks off the main thread, so it costs no
+  // style recalc at all while it runs; wall-clock phase comes from
+  // utils/ambientPhase.ts so every spinner on screen turns together.
+  // Reduced motion rests it unrotated. Transient spinners should keep
+  // using animate-spin.
   let {
     size = 11,
     class: className = '',
