@@ -40,11 +40,12 @@
     showArc?: boolean;
   } = $props();
 
-  const RADIUS = 9.75;
+  const RADIUS = 11.375;
   const CIRCUMFERENCE = 2 * Math.PI * RADIUS;
-  // Label-to-ring ratio the meters have always had (8.5px text in a
-  // 28px ring at default zoom), expressed in the 24-unit viewBox.
-  const LABEL_FONT_SIZE = (0.53125 / 1.75) * 24;
+  // Label-to-ring ratio the meters have always had: 8.5px text in a
+  // 28px ring at default zoom, and the 28-unit viewBox IS 28px there,
+  // so the ratio is the px value.
+  const LABEL_FONT_SIZE = 8.5;
 
   let clamped = $derived(
     Number.isFinite(percentage) ? Math.max(0, Math.min(100, percentage)) : 0,
@@ -53,20 +54,31 @@
 </script>
 
 <!-- The circles rotate -90° (arc origin at 12 o'clock) via the <g>;
-     the label sits outside the group so it does not rotate. -->
-<svg class="h-7 w-7" viewBox="0 0 24 24" aria-hidden="true">
-  <g transform="rotate(-90 12 12)">
+     the label sits outside the group so it does not rotate.
+
+     The 28-unit viewBox matches the h-7 rendered box at default zoom
+     on purpose: an <svg> rendered at a size other than its viewBox is
+     a SCALED replaced-content node in Blink, and Blink re-allocates
+     that node's GeometryMapperTransformCache (PlaneRootTransform) on
+     every paint-property change — which for this ring is every arc
+     dashoffset tick while a turn streams (measured 2026-08-24, the
+     scaled-svg class was 72% of Oilpan churn before the lucide mask
+     conversion). At identity scale the node is skipped. Non-default
+     app zoom rescales the rem box and brings the node back; the
+     default is the steady state we optimize. -->
+<svg class="h-7 w-7" viewBox="0 0 28 28" aria-hidden="true">
+  <g transform="rotate(-90 14 14)">
     <circle
-      cx="12" cy="12" r={RADIUS}
+      cx="14" cy="14" r={RADIUS}
       fill="none"
-      stroke-width="3"
+      stroke-width="3.5"
       class="stroke-text-secondary/20"
     />
     {#if showArc}
       <circle
-        cx="12" cy="12" r={RADIUS}
+        cx="14" cy="14" r={RADIUS}
         fill="none"
-        stroke-width="3"
+        stroke-width="3.5"
         stroke-linecap="round"
         stroke-dasharray={CIRCUMFERENCE}
         stroke-dashoffset={dashOffset}
@@ -75,7 +87,7 @@
     {/if}
   </g>
   <text
-    x="12" y="12"
+    x="14" y="14"
     text-anchor="middle"
     dominant-baseline="central"
     font-size={LABEL_FONT_SIZE}
