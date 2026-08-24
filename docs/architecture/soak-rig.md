@@ -16,7 +16,7 @@ later you ask `make soak-check` what happened.
 ```
 make soak         # build + launch the isolated instance (blocks; leave it running)
 make soak-check   # read-only: uptime, stalls, recovery episodes, controller rebuilds
-make soak-contract # verify scrollTop quantization in the actual WebView2 renderer
+make soak-contract # verify scrollTop quantization + compositor ownership in WebView2
 ```
 
 ## What makes it safe to run beside your own app
@@ -204,9 +204,11 @@ Note the WebView2 console-window caveat in
 app, which would end the soak.
 
 `make soak-contract` attaches to the soak WebView2 over its isolated CDP
-port, mounts an invisible offscreen scroller, writes fractional `scrollTop`
-values, verifies whole-CSS-pixel readback, and removes the element before
-returning. It changes no app state and needs no monitor-specific visual check.
+port. It first mounts an invisible offscreen scroller, verifies whole-CSS-pixel
+`scrollTop` readback, and removes the element. It then inspects the real mounted
+timeline, virtual rows, activity-run content, and layer tree. Authored transform
+state, authored `will-change`, row-owned drawing layers, and content-sized
+timeline-scroller layers fail the probe. It changes no app state.
 
 ## Restarting a soak
 

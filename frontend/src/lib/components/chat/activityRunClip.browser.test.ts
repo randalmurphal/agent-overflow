@@ -114,12 +114,6 @@ describe('activity run clip — scrollbar suppression', () => {
     expect(bar?.style.height).toBe('0px');
   });
 
-  it('leaves clip content on the browser-managed paint path', () => {
-    const { content } = mountColumn();
-    expect(getComputedStyle(content).willChange).toBe('auto');
-    expect(content.style.transform).toBe('');
-  });
-
   it('takes no gutter either, so its rows sit on the rail', () => {
     const { prose, clip, content } = mountColumn();
     rows(content, 40);

@@ -96,7 +96,6 @@ describe('<ActivityRun>', () => {
       // would consume HEIGHT and shift every row below it.
       expect(clip.className).toContain('overflow-y-auto');
       expect(clip.className).toContain('overflow-x-hidden');
-      expect(clip.firstElementChild?.className).not.toContain('scroll-composited-content');
       expect(getAllByTestId('command-output-row')).toHaveLength(3);
       expect(getByTestId('activity-run').getAttribute('data-collapsed')).toBe('false');
     });

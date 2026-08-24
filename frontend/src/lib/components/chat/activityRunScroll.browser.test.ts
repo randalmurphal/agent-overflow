@@ -107,6 +107,13 @@ describe('activity run — prepend compensation', () => {
     const runs = scrollEl.querySelectorAll('[data-testid="activity-run"]');
     expect(runs).toHaveLength(2);
     const clip = runs[0].querySelector('[data-testid="activity-run-clip"]') as HTMLElement;
+    const content = clip.firstElementChild as HTMLElement;
+    const paint = getComputedStyle(content);
+    expect(paint.willChange).toBe('auto');
+    expect(paint.transform).toBe('none');
+    expect(paint.translate).toBe('none');
+    expect(paint.rotate).toBe('none');
+    expect(paint.scale).toBe('none');
 
     // Vacuity guard: with the cap not engaged there is no scroll position to
     // hold, and the compensation would clamp to zero either way.

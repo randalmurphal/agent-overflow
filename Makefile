@@ -300,10 +300,12 @@ launch-wsl:
 soak-check:
 	@scripts/soak-check.sh
 
-# Probe the actual WebView2 scrollTop contract without touching visible UI.
+# Probe the actual WebView2 scroll and compositor contracts without changing
+# persisted state. Requires a running isolated soak instance.
 # Requires a running `make soak` instance on its isolated CDP port.
 soak-contract:
 	@AO_CDP_PORT=9224 scripts/perfprobe/probe scroll-contract
+	@AO_CDP_PORT=9224 scripts/perfprobe/probe compositor-contract
 
 # build-wsl: cross-compiles the Linux ELF backend + Windows .exe launcher
 # without running. Use this when you want to hand the .exe off (e.g.

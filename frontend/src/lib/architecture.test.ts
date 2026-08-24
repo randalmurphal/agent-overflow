@@ -13,7 +13,7 @@
 
 import { readFileSync } from 'node:fs';
 import { dirname, join, resolve, sep } from 'node:path';
-import { describe, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import {
   SRC_ROOT,
   expectAllowlistExact,
@@ -21,6 +21,7 @@ import {
   scannedSources,
   walkSources,
 } from '../test/sourceScan';
+import { findCompositorSourceFindings } from '../test/compositorSourceScan';
 
 const STORES_DIR = join(SRC_ROOT, 'lib', 'stores');
 const BINDINGS_MODULE = join(STORES_DIR, 'bindings');
@@ -150,19 +151,35 @@ const WAILS_EVENT_ALLOWLIST: Record<string, string> = {
     'provider:terminal_output is a byte stream written straight into this pane\'s xterm; buffering it in a store would duplicate the terminal\'s scrollback',
 };
 
-// These are the content surfaces the scroll controller can move. Authored
-// promotion or transform state creates a second paint position outside the
-// scrollTop chokepoint and can leave WebView2 presenting stale layer pixels.
-const SCROLL_CONTENT_SURFACES = [
-  'app.css',
-  'lib/components/chat/MessageTimeline.svelte',
-  'lib/components/chat/ActivityRun.svelte',
-  'lib/components/discussion/ChannelView.svelte',
-  'lib/components/virtual/TimelineVirtualizer.svelte',
-  'lib/utils/scroll/chokepoint.ts',
+// Authored promotion creates a second paint position outside the scrollTop
+// chokepoint and can leave WebView2 presenting stale layer pixels. `will-change`
+// is prohibited app-wide. Transform state is additionally reviewed across the
+// whole chat/discussion/virtual/scroll tree, not a list of today's plane files:
+// adding a new row component must not create an enforcement blind spot.
+const SCROLL_PRESENTATION_PREFIXES = [
+  'lib/components/chat/',
+  'lib/components/discussion/',
+  'lib/components/virtual/',
+  'lib/utils/scroll/',
 ] as const;
-const AUTHORED_SCROLL_COMPOSITOR_STATE =
-  /scroll-composited-content|will-change\s*:|style:(?:transform|translate|rotate)|setProperty\(\s*['"](?:translate|rotate)['"]/;
+const AUTHORIZED_SCROLL_PRESENTATION_STATE = [
+  'lib/components/chat/CompactionDivider.svelte|Tailwind transform utility|class:rotate-90={expanded}',
+  'lib/components/chat/DiagramModal.svelte|Svelte transform style directive|style:transform={transform}',
+  'lib/components/chat/ExpandedImageDialog.svelte|Tailwind transform utility|class="absolute left-4 top-1/2 -translate-y-1/2 rounded-full bg-scrim-fg/10 p-2 text-scrim-fg transition hover:bg-scrim-fg/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-scrim-fg/70"',
+  'lib/components/chat/ExpandedImageDialog.svelte|Tailwind transform utility|class="absolute right-4 top-1/2 -translate-y-1/2 rounded-full bg-scrim-fg/10 p-2 text-scrim-fg transition hover:bg-scrim-fg/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-scrim-fg/70"',
+  'lib/components/chat/MessageNavRail.svelte|Svelte transform style directive|style:transform={tickStyleTransform(i)}',
+  'lib/components/chat/MessageNavRail.svelte|Svelte transform style directive|style:transform={`translateY(${previewAnchor.translatePercent}%)`}',
+  'lib/components/chat/MessageNavRail.svelte|Tailwind transform utility|class="absolute h-[3px] w-[3px] -translate-x-1/2 -translate-y-1/2 rounded-full bg-accent/75"',
+  'lib/components/chat/ProposedPlanReviewSurface.svelte|Tailwind transform utility|class="pointer-events-none absolute left-1/2 top-full h-0 w-0 -translate-x-1/2 -translate-y-px border-x-[6px] border-t-[6px] border-x-transparent border-t-surface-2"',
+  'lib/components/chat/ProposedPlanReviewSurface.svelte|Tailwind transform utility|class="pointer-events-none absolute left-1/2 top-full h-0 w-0 -translate-x-1/2 border-x-[7px] border-t-[7px] border-x-transparent border-t-border"',
+  'lib/components/chat/ProposedPlanReviewSurface.svelte|transform declaration or keyframe|style={`top: ${pendingSelection.composerTop}px; left: ${pendingSelection.composerLeft}px; transform: translate(-50%, 0);`}',
+  'lib/components/chat/ProposedPlanReviewSurface.svelte|transform declaration or keyframe|style={`top: ${pendingSelection.triggerTop}px; left: ${pendingSelection.triggerLeft}px; transform: translate(-50%, -100%);`}',
+  "lib/components/chat/ScrollToBottomButton.svelte|Tailwind transform utility|'hover:bg-surface-2/80 hover:text-text-primary hover:scale-105 active:scale-95',",
+  "lib/components/chat/TailClampedText.svelte|transform declaration or keyframe|[{ transform: `translateY(${decision.startPx}px)` }, { transform: 'translateY(0px)' }],",
+  "lib/components/chat/ThreadTitleRegenerateButton.svelte|continuous spin animation|<Icon icon={RefreshCw} size={12} strokeWidth={2} class={pending ? 'animate-spin' : ''} />",
+  'lib/components/chat/TranscriptDisclosureHeader.svelte|Tailwind transform utility|class:rotate-90={expandable && expanded}',
+  "lib/components/chat/messageNavRailSync.ts|DOM transform property assignment|strip.style.transform = clip > 0 ? `translateY(${-clip}px)` : '';",
+] as const;
 const PERFPROBE_ROOT = resolve(SRC_ROOT, '..', '..', 'scripts', 'perfprobe');
 
 // ---------------------------------------------------------------------------
@@ -340,13 +357,25 @@ describe('architecture', () => {
   });
 
   it('keeps scroll content free of authored compositor state', () => {
-    const offenders = new Map<string, string[]>();
-    for (const path of SCROLL_CONTENT_SURFACES) {
-      const text = readFileSync(join(SRC_ROOT, path), 'utf8');
-      if (AUTHORED_SCROLL_COMPOSITOR_STATE.test(text)) {
-        offenders.set(path, ['authors content promotion or transform state']);
+    const actual = new Set<string>();
+    for (const file of scannedSources(/\.(css|svelte|ts)$/)) {
+      const path = repoPath(file);
+      const inScrollPresentationTree =
+        path === 'app.css'
+        || SCROLL_PRESENTATION_PREFIXES.some((prefix) => path.startsWith(prefix));
+      for (const finding of findCompositorSourceFindings(readFileSync(file, 'utf8'))) {
+        const isPromotion = /^will(?:-change|Change)/.test(finding.kind);
+        if (!isPromotion && !inScrollPresentationTree) continue;
+        actual.add(`${path}|${finding.kind}|${finding.source}`);
       }
     }
+    const sortedActual = [...actual].sort();
+    expect(
+      sortedActual,
+      'Authored scroll-presentation state changed. New entries need a bounded visual owner; removed entries must leave this shrink-only inventory.',
+    ).toEqual([...AUTHORIZED_SCROLL_PRESENTATION_STATE].sort());
+
+    const offenders = new Map<string, string[]>();
     for (const file of walkSources(PERFPROBE_ROOT, /\.mjs$/)) {
       const text = readFileSync(file, 'utf8');
       if (!text.includes('scroll-composited-content')) continue;
