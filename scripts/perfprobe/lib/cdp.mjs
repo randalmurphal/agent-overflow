@@ -6,6 +6,10 @@ export const PORT = process.env.AO_CDP_PORT || '9223';
 export const BASE = `http://127.0.0.1:${PORT}`;
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// Ceiling for one CDP round trip. Sized for the slowest call a probe makes (HeapProfiler.takeHeapSnapshot
+// on a few-hundred-MB heap), not for the poll intervals, which are plain sleeps between calls.
+const CALL_TIMEOUT_MS = +(process.env.AO_PROBE_CALL_TIMEOUT_MS || 120000);
+
 const NO_APP = `probe: nothing is listening on CDP port ${PORT}.\n`
   + `       Start the dev app with 'DEBUG=1 make dev-wsl' (port 9223), or the soak rig with 'make soak' (port 9224),\n`
   + `       or point AO_CDP_PORT at the right port.`;
@@ -64,7 +68,19 @@ function connect(url) {
       send: (method, params = {}) => new Promise((res, rej) => {
         if (dead) { rej(dead); return; }
         const mid = ++id;
-        pending.set(mid, { res, rej });
+        // A killed browser never sends a close frame, so onclose can stay silent while the socket
+        // black-holes. Every call therefore carries its own deadline: without one, a poll loop
+        // parks on a promise that can never settle and looks healthy to its supervisor forever.
+        // Generous enough for the slowest probe call (a heap snapshot on a large heap).
+        const timer = setTimeout(() => {
+          if (!pending.has(mid)) return;
+          pending.delete(mid);
+          rej(new Error(`cdp: ${method} got no answer in ${Math.round(CALL_TIMEOUT_MS / 1000)}s (browser gone or wedged)`));
+        }, CALL_TIMEOUT_MS);
+        pending.set(mid, {
+          res: (v) => { clearTimeout(timer); res(v); },
+          rej: (e) => { clearTimeout(timer); rej(e); },
+        });
         ws.send(JSON.stringify({ id: mid, method, params }));
       }),
       events,
